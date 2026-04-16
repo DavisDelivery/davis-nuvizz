@@ -1,0 +1,2 @@
+# SPA fallback — everything except /assets and /.netlify goes to index.html
+/*    /index.html   200
