@@ -18,7 +18,9 @@
 //   2. Cache JWT per tenant until expiresAt
 //   3. Forward with Authorization: Bearer <jwt>
 
-const NUVIZZ_BASE = 'https://contact-support.nuvizz.com/deliverit/openapi/v7';
+// Base URL can be overridden per-tenant via NUVIZZ_BASE_URL env var.
+// Default is the confirmed-working host (verified with Basic Auth returning valid JWT).
+const NUVIZZ_BASE = process.env.NUVIZZ_BASE_URL || 'https://portal.nuvizz.com/deliverit/openapi/v7';
 
 // ---- token cache (survives warm invocations) ----
 const tokenCache = {};
