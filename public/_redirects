@@ -1,2 +1,5 @@
-# SPA fallback — everything except /assets and /.netlify goes to index.html
+# Never rewrite Netlify function calls
+/.netlify/*    /.netlify/:splat   200
+
+# SPA fallback for everything else
 /*    /index.html   200
