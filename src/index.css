@@ -1,0 +1,17 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html, body, #root { height: 100%; }
+body {
+  -webkit-tap-highlight-color: transparent;
+  background: #f8fafc;
+  overscroll-behavior-y: contain;
+}
+input, button, textarea, select { -webkit-appearance: none; appearance: none; }
+nav.fixed.bottom-0 { padding-bottom: env(safe-area-inset-bottom); }
+
+/* Leaflet overrides */
+.leaflet-container { background: #e2e8f0 !important; font-family: system-ui, -apple-system, sans-serif; }
+.leaflet-control-zoom a { border-radius: 8px !important; }
+.dn-pin { background: transparent !important; border: none !important; }

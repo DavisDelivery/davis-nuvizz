@@ -1,0 +1,211 @@
+// src/lib/normalize.js — translate raw nuVizz API shapes into UI-friendly shapes
+
+// --- status buckets ---
+export function statusBucket(status) {
+  const s = (status || '').toString().toUpperCase();
+  if (s.includes('COMPLET') || s.includes('CLOSED') || s.includes('DELIV')) return 'completed';
+  if (s.includes('PROGRESS') || s.includes('DISPATCH') || s.includes('ENROUTE') || s.includes('ARRIVED')) return 'inProgress';
+  if (s.includes('FAIL')) return 'failed';
+  if (s.includes('CANCEL')) return 'cancelled';
+  return 'pending';
+}
+
+export const BUCKET_COLORS = {
+  completed: '#10b981',
+  inProgress: '#f59e0b',
+  pending: '#64748b',
+  failed: '#ef4444',
+  cancelled: '#dc2626',
+};
+
+export const BUCKET_LABELS = {
+  completed: 'Complete',
+  inProgress: 'In Progress',
+  pending: 'Pending',
+  failed: 'Failed',
+  cancelled: 'Cancelled',
+};
+
+// --- normalize a stop from the customer-search / today-aggregate response ---
+// The nuVizz Stop schema has `stop.from` (pickup) and `stop.to` (delivery); stopType tells us which matters.
+export function normalizeStop(raw) {
+  // Raw might come as { stop, stopExecutionInfo, load } OR flat with these merged.
+  // The Stop response from /stop/info/customer/... is likely flat; /stop/info/{nbr}/... is wrapped in { Stop: { stop, ... } }
+  const stop = raw.stop || raw;
+  const exec = raw.stopExecutionInfo || raw.execInfo || {};
+  const load = raw.load || raw.stopLoad || {};
+
+  // Determine PU vs DO - and use the right side's address
+  const stopType = stop.stopType || raw.stopType || '';
+  const primary = stopType === 'PU' ? (stop.from || {}) : (stop.to || stop.from || {});
+  const addr = primary.address || stop.address || {};
+  const schedule = primary.schedule || {};
+  const contact = primary.contact || {};
+  const optInfo = primary.stopOptInfo || {};
+
+  const fromTS = exec.from || {};
+  const toTS = exec.to || {};
+  const ts = stopType === 'PU' ? fromTS : toTS;
+
+  const status = exec.stopStatus || stop.status || raw.status || 'PENDING';
+
+  return {
+    id: stop.stopId || raw.stopId,
+    nbr: stop.stopNbr || raw.stopNbr,
+    seq: stop.stopSeq || raw.stopSeq,
+    type: stopType,
+    status,
+    bucket: statusBucket(status),
+
+    // location (from address)
+    name: addr.name || stop.custInfo?.custName || '',
+    addr1: addr.addr1,
+    addr2: addr.addr2,
+    city: addr.city,
+    state: addr.state,
+    zip: addr.zip,
+    lat: addr.latitude,
+    lng: addr.longitude,
+    fullAddress: [addr.addr1, addr.city, addr.state, addr.zip].filter(Boolean).join(', '),
+
+    // contact
+    contactName: contact.contactName,
+    phone: contact.phone,
+
+    // schedule (planned window)
+    plannedFrom: schedule.timeFrom,
+    plannedTo: schedule.timeTo,
+    estimatedDuration: schedule.estimatedDuration,
+
+    // timestamps (actuals)
+    plannedEta: ts.plannedEtaDTTM || optInfo.plannedEta,
+    actualEta: ts.etaDttm,
+    arrival: ts.arrivalDTTM,
+    departure: ts.departureDTTM,
+    confirmed: ts.confirmedDTTM,
+    dwellMin: ts.duration,
+    etaCode: ts.etaCode,
+
+    // references
+    txnRef: primary.txnRef || stop.proNumber,
+    proNumber: stop.proNumber,
+    sealNbr: stop.sealNbr,
+    shipmentNbr: stop.shipmentNbr,
+
+    // counts
+    cartons: stop.totalCartons,
+    pallets: stop.totalPallets,
+    weight: stop.weight,
+    weightUOM: stop.weightUOM,
+
+    // customer
+    customerName: stop.custInfo?.custName || raw.custInfo?.custName,
+    customerAcct: stop.accountNumber || stop.custInfo?.custAccNbr,
+
+    // load assoc
+    loadNbr: load.loadNbr || raw.loadNbr,
+    loadId: load.loadId,
+    driverName: load.driverName,
+    driverPhone: load.driverPhoneNum,
+    vehicleNbr: load.vehicleNbr,
+
+    // exceptions
+    exceptions: exec.exceptions || [],
+    hasException: !!exec.exceptionPresent,
+    cancellation: exec.cancellation,
+    rejection: exec.rejection,
+
+    // raw for debugging
+    _raw: raw,
+  };
+}
+
+// --- normalize a load (from /load/info/...) ---
+export function normalizeLoad(raw) {
+  const l = raw?.Load || raw;
+  const h = l.loadHeader || {};
+  const exec = l.loadExecutionInfo || {};
+  const asn = l.loadAssignment || {};
+  const stops = (l.stops || []).map(normalizeStop);
+
+  const completed = stops.filter(s => s.bucket === 'completed').length;
+  const total = stops.length;
+
+  return {
+    nbr: h.loadNbr,
+    id: h.loadId,
+    routeName: h.routeName,
+    status: exec.loadStatus || 'PLANNED',
+    bucket: statusBucket(exec.loadStatus),
+    driverName: asn.driverName,
+    driverPhone: asn.driverPhoneNumber,
+    driverEmail: asn.driverEmail,
+    vehicleType: h.vehicleType,
+    tractorNbr: h.tractorNbr,
+    trailerNbr: h.trailerNbr,
+
+    // timing
+    earliestStart: h.earliestStartDttm,
+    latestStart: h.latestStartDttm,
+    actualStart: exec.actualStartDTTM,
+    actualEnd: exec.actualEndDTTM,
+
+    // distance
+    plannedMiles: h.prePlannedLoadDistance || exec.plannedDistanceMiles,
+    actualMiles: exec.actualDistanceMiles,
+    plannedDuration: exec.plannedDuration || h.prePlannedLoadDuration,
+    actualDuration: exec.actualDuration,
+
+    // origin
+    origin: {
+      name: h.originName,
+      addr1: h.originAddr1,
+      city: h.originCity,
+      state: h.originState,
+      zip: h.originZip,
+      lat: h.originLatitude,
+      lng: h.originLongitude,
+    },
+
+    // counts
+    stopsOnRoute: exec.stopsOnRoute || stops.length,
+    completed,
+    total,
+    pctComplete: total ? Math.round((completed / total) * 100) : 0,
+
+    totalCartons: h.totalCartons,
+    totalPallets: h.totalPallets,
+    weight: h.weight,
+    weightUOM: h.weightUOM,
+
+    stops,
+    _raw: raw,
+  };
+}
+
+// --- time helpers ---
+export function fmtTime(iso) {
+  if (!iso) return '—';
+  try {
+    return new Date(iso).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  } catch { return iso; }
+}
+export function fmtDateTime(iso) {
+  if (!iso) return '—';
+  try {
+    const d = new Date(iso);
+    return d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' ' + d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  } catch { return iso; }
+}
+export function fmtDate(iso) {
+  if (!iso) return '—';
+  try { return new Date(iso).toLocaleDateString([], { month: 'short', day: 'numeric' }); }
+  catch { return iso; }
+}
+export function minutesBetween(a, b) {
+  if (!a || !b) return null;
+  return Math.round((new Date(b) - new Date(a)) / 60000);
+}
+export function stripLeadingZeros(s) {
+  return (s || '').toString().replace(/^0+/, '') || '0';
+}
