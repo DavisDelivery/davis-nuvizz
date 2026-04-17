@@ -16,7 +16,11 @@
 // Security is enforced via Firestore rules, not the API key.
 
 const FIRESTORE_BASE = 'https://firestore.googleapis.com/v1/projects/glorybounddispatch/databases/(default)/documents';
-const API_KEY = process.env.GLORYBOUND_FIREBASE_KEY || 'AIzaSyDY2OceDzBWMHPR3C3O1oxktrCIy3mKMqU';
+const API_KEY = process.env.GLORYBOUND_FIREBASE_KEY;
+// The Firebase web API key is a PUBLIC identifier (not a secret). It's embedded in the
+// glorybounddispatch web app's JS bundle. Security is enforced by Firestore rules, not by
+// keeping this value hidden. We read it from env var so Netlify's secret scanner doesn't
+// block deploys that include it in source. Set GLORYBOUND_FIREBASE_KEY in Netlify env.
 
 // --- Firestore value format → plain JS ---
 function fsVal(v) {
