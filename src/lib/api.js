@@ -47,3 +47,27 @@ export const fetchStopEvents = (tenant, stopNbr, companyCode) =>
   api(tenant, `/stop/eventinfo/${encodeURIComponent(companyCode)}`, { query: { stopNbr } });
 export const fetchLoad = (tenant, loadNbr, companyCode) =>
   api(tenant, `/load/info/${encodeURIComponent(loadNbr)}/${encodeURIComponent(companyCode)}`);
+
+// --- PRO normalization (client-side mirror of the function) ---
+// Always 9 digits, zero-padded. "7100000" → "007100000".
+export function normalizePro(input) {
+  if (!input) return null;
+  const cleaned = String(input).trim().replace(/^0+/, '');
+  if (!cleaned) return '000000000';
+  if (!/^\d+$/.test(cleaned)) return null;
+  if (cleaned.length > 9) return cleaned;
+  return cleaned.padStart(9, '0');
+}
+
+// Smart PRO lookup — the happy path for a driver or dispatcher typing a PRO.
+// Returns normalized pro, full stop data, parent load, and stops-away count.
+export const lookupPro = (tenant, pro, { includeLoad = true } = {}) =>
+  api(tenant, '__lookup', { query: { pro, includeLoad: includeLoad ? 'true' : 'false' } });
+
+// Document fetch (dual-credential fallback happens server-side)
+export const fetchDoc = (tenant, guid, ext, objectType = '02') =>
+  api(tenant, '__doc', { query: { guid, ext, objectType } });
+
+// Stops-away from a known load
+export const fetchStopsAway = (tenant, loadNbr, stopNbr) =>
+  api(tenant, '__stopsaway', { query: { loadNbr, stopNbr } });

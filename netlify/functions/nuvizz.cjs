@@ -2,29 +2,52 @@
 // Proxy + aggregator for nuVizz REST API v7.
 //
 // CREDENTIALS: Uses HTTP Basic Auth directly on every call (no JWT exchange).
-// The /auth/token endpoint issues JWTs that resource endpoints reject with
-// "Invalid signature" — but Basic Auth works directly. This matches the
-// pattern used by sentinel-time-theft, davisdeliverytracking, and Davis MarginIQ.
+// Two credential sets required:
+//   DAVIS  — for all shipment/stop/load/route data
+//   ULINE  — for document retrieval (photos, PODs). Many Uline stop docs are stored
+//            under the ULINE company code, not DAVIS. Try ULINE first, fallback DAVIS.
+//
+// COMPANY CODE CASING: NuVizz normalizes case internally (DAVIS, davis, Davis all work)
+// but the guide recommends uppercase DAVIS / ULINE for consistency.
+//
+// PRO NUMBERS: Always 9 digits, zero-padded. "7100000" → "007100000".
+// The URL parameter order is {stopNumber}/{companyCode} — stop number FIRST.
 //
 // Endpoints exposed:
-//   ?tenant=davis&path=__health             → auth check for both tenants
-//   ?tenant=davis&path=/stop/info/X/Davis   → raw passthrough (any nuVizz path)
-//   ?tenant=davis&path=__today              → aggregated today's stops + loads
-//   ?tenant=davis&path=__daterange&from=...&to=... → date-range aggregate
-//   ?tenant=davis&path=__loadsbydate&date=YYYY-MM-DD → loads for a specific day
+//   ?tenant=davis&path=__health        → auth check for both tenants
+//   ?tenant=davis&path=__lookup&pro=X  → smart PRO lookup (normalizes 9-digit, returns stop + load + docs)
+//   ?tenant=davis&path=__doc&guid=X&ext=jpg → document retrieval (ULINE first, DAVIS fallback)
+//   ?tenant=davis&path=__stopsaway&loadNbr=X&stopNbr=Y → count of non-delivered stops before Y
+//   ?tenant=davis&path=/stop/info/X/DAVIS → raw passthrough
+//   ?tenant=davis&path=__today         → aggregated today's stops (limited — see note below)
+//
+// NOTE ON __today: NuVizz v7 does not expose a "list all loads for today" endpoint.
+// Every query requires a specific reference (PRO, load number, customer account, etc).
+// So __today returns empty for Davis/Uline tenants unless a prior cache exists.
 
 const NUVIZZ_BASE = process.env.NUVIZZ_BASE_URL || 'https://portal.nuvizz.com/deliverit/openapi/v7';
+const DOC_BASE = process.env.NUVIZZ_DOC_BASE || 'https://portal.nuvizz.com/deliverit/openapi/documentapi';
+
+// PRO normalization: always 9 digits, zero-padded
+function normalizePro(input) {
+  if (!input) return null;
+  const cleaned = String(input).trim().replace(/^0+/, '');
+  if (!cleaned) return '000000000';
+  if (!/^\d+$/.test(cleaned)) return null; // non-numeric = invalid
+  if (cleaned.length > 9) return cleaned; // keep as-is if already longer than 9
+  return cleaned.padStart(9, '0');
+}
 
 function getCreds(tenant) {
   if (tenant === 'uline') {
     return {
-      companyCode: process.env.NUVIZZ_ULINE_COMPANY_CODE || 'Uline',
+      companyCode: process.env.NUVIZZ_ULINE_COMPANY_CODE || 'ULINE',
       user: process.env.NUVIZZ_ULINE_USER,
       pass: process.env.NUVIZZ_ULINE_PASS,
     };
   }
   return {
-    companyCode: process.env.NUVIZZ_DAVIS_COMPANY_CODE || 'Davis',
+    companyCode: process.env.NUVIZZ_DAVIS_COMPANY_CODE || 'DAVIS',
     user: process.env.NUVIZZ_DAVIS_USER,
     pass: process.env.NUVIZZ_DAVIS_PASS,
   };
@@ -34,6 +57,41 @@ function basicAuthHeader(tenant) {
   const { user, pass } = getCreds(tenant);
   if (!user || !pass) throw new Error(`Missing NUVIZZ_${tenant.toUpperCase()}_USER or _PASS env var`);
   return 'Basic ' + Buffer.from(`${user}:${pass}`).toString('base64');
+}
+
+// Document retrieval with dual-credential fallback.
+// Most Uline stop documents live under the ULINE company code, not DAVIS.
+// Strategy: try ULINE first, fall back to DAVIS if ULINE errors.
+async function fetchDocument(documentGuid, ext, objectType = '02') {
+  const tryOne = async (tenant) => {
+    const { companyCode } = getCreds(tenant);
+    const url = `${DOC_BASE}/doc/getdocument/${encodeURIComponent(companyCode)}?documentGuid=${encodeURIComponent(documentGuid)}&objectType=${encodeURIComponent(objectType)}`;
+    const resp = await fetch(url, {
+      headers: { Authorization: basicAuthHeader(tenant), Accept: 'application/json' },
+    });
+    if (!resp.ok) return null;
+    const data = await resp.json();
+    if (!data || !data.documentData) return null;
+    return data.documentData;
+  };
+
+  // Try ULINE first
+  let b64 = null;
+  try { b64 = await tryOne('uline'); } catch (_) {}
+  // Fallback to DAVIS
+  if (!b64) {
+    try { b64 = await tryOne('davis'); } catch (_) {}
+  }
+  if (!b64) return null;
+
+  // Prepend the correct data URI prefix based on extension
+  const extLower = (ext || 'jpg').toLowerCase();
+  const mime =
+    extLower === 'pdf' ? 'application/pdf' :
+    extLower === 'png' ? 'image/png' :
+    extLower === 'gif' ? 'image/gif' :
+    'image/jpeg';
+  return { dataUri: `data:${mime};base64,${b64}`, mime, ext: extLower };
 }
 
 // Core authenticated fetch against nuVizz (Basic Auth directly — no JWT)
@@ -258,6 +316,98 @@ exports.handler = async (event) => {
       const date = params.date || new Date().toISOString().slice(0, 10);
       const data = await fetchLoadNbrsForDate(tenant, date);
       return { statusCode: 200, headers: corsHeaders, body: JSON.stringify(data) };
+    }
+
+    // --- Smart PRO lookup ---
+    // Normalizes PRO to 9-digit zero-padded, fetches stop info, and includes
+    // the parent load header so the UI can show "stops away" / route context.
+    //   ?tenant=davis&path=__lookup&pro=7100000
+    if (apiPath === '__lookup') {
+      const rawPro = params.pro || params.stopNbr || '';
+      const pro = normalizePro(rawPro);
+      if (!pro) {
+        return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: 'Invalid PRO number — must be numeric' }) };
+      }
+      const { companyCode } = getCreds(tenant);
+      let stop;
+      try {
+        stop = await nvFetch(tenant, `/stop/info/${encodeURIComponent(pro)}/${encodeURIComponent(companyCode)}`);
+      } catch (e) {
+        return { statusCode: 404, headers: corsHeaders, body: JSON.stringify({ error: e.message, pro, normalizedPro: pro, original: rawPro }) };
+      }
+
+      // Optionally pull the load to compute stops-away
+      let load = null;
+      let stopsAway = null;
+      const loadNbr = stop?.Stop?.load?.loadNbr;
+      if (loadNbr && params.includeLoad !== 'false') {
+        try {
+          load = await nvFetch(tenant, `/load/info/${encodeURIComponent(loadNbr)}/${encodeURIComponent(companyCode)}`);
+          const stops = load?.Load?.stops || [];
+          const targetIdx = stops.findIndex(s => s?.stop?.stopNbr === pro);
+          if (targetIdx > 0) {
+            stopsAway = stops.slice(0, targetIdx)
+              .filter(s => (s?.stopExecutionInfo?.stopStatus || '') !== '90')
+              .length;
+          } else if (targetIdx === 0) {
+            stopsAway = 0;
+          }
+        } catch (_) {}
+      }
+
+      return {
+        statusCode: 200,
+        headers: corsHeaders,
+        body: JSON.stringify({
+          pro,
+          normalizedPro: pro,
+          originalInput: rawPro,
+          stop: stop?.Stop,
+          load: load?.Load,
+          stopsAway,
+        }),
+      };
+    }
+
+    // --- Document retrieval (dual-credential fallback: ULINE first, DAVIS fallback) ---
+    //   ?tenant=davis&path=__doc&guid=XXX&ext=jpg&objectType=02
+    if (apiPath === '__doc') {
+      const guid = params.guid || params.documentGuid;
+      const ext = params.ext || 'jpg';
+      const objectType = params.objectType || '02';
+      if (!guid) {
+        return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: 'Missing guid' }) };
+      }
+      const doc = await fetchDocument(guid, ext, objectType);
+      if (!doc) {
+        return { statusCode: 404, headers: corsHeaders, body: JSON.stringify({ error: 'Document not found under ULINE or DAVIS' }) };
+      }
+      return { statusCode: 200, headers: corsHeaders, body: JSON.stringify(doc) };
+    }
+
+    // --- Stops-away from a reference stop on a known load ---
+    //   ?tenant=davis&path=__stopsaway&loadNbr=X&stopNbr=Y
+    if (apiPath === '__stopsaway') {
+      const loadNbr = params.loadNbr;
+      const stopNbr = normalizePro(params.stopNbr);
+      if (!loadNbr || !stopNbr) {
+        return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: 'Need loadNbr and stopNbr' }) };
+      }
+      const { companyCode } = getCreds(tenant);
+      const load = await nvFetch(tenant, `/load/info/${encodeURIComponent(loadNbr)}/${encodeURIComponent(companyCode)}`);
+      const stops = load?.Load?.stops || [];
+      const idx = stops.findIndex(s => s?.stop?.stopNbr === stopNbr);
+      if (idx < 0) {
+        return { statusCode: 404, headers: corsHeaders, body: JSON.stringify({ error: 'Stop not found on load', loadNbr, stopNbr }) };
+      }
+      const stopsAway = stops.slice(0, idx)
+        .filter(s => (s?.stopExecutionInfo?.stopStatus || '') !== '90')
+        .length;
+      return {
+        statusCode: 200,
+        headers: corsHeaders,
+        body: JSON.stringify({ loadNbr, stopNbr, stopsAway, totalStopsOnLoad: stops.length, position: idx + 1 }),
+      };
     }
 
     // Passthrough
