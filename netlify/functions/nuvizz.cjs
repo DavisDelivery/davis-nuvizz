@@ -41,13 +41,13 @@ function normalizePro(input) {
 function getCreds(tenant) {
   if (tenant === 'uline') {
     return {
-      companyCode: process.env.NUVIZZ_ULINE_COMPANY_CODE || 'ULINE',
+      companyCode: (process.env.NUVIZZ_ULINE_COMPANY_CODE || 'ULINE').toUpperCase(),
       user: process.env.NUVIZZ_ULINE_USER,
       pass: process.env.NUVIZZ_ULINE_PASS,
     };
   }
   return {
-    companyCode: process.env.NUVIZZ_DAVIS_COMPANY_CODE || 'DAVIS',
+    companyCode: (process.env.NUVIZZ_DAVIS_COMPANY_CODE || 'DAVIS').toUpperCase(),
     user: process.env.NUVIZZ_DAVIS_USER,
     pass: process.env.NUVIZZ_DAVIS_PASS,
   };
@@ -339,6 +339,7 @@ exports.handler = async (event) => {
       // Optionally pull the load to compute stops-away
       let load = null;
       let stopsAway = null;
+      let loadError = null;
       const loadNbr = stop?.Stop?.load?.loadNbr;
       if (loadNbr && params.includeLoad !== 'false') {
         try {
@@ -352,7 +353,9 @@ exports.handler = async (event) => {
           } else if (targetIdx === 0) {
             stopsAway = 0;
           }
-        } catch (_) {}
+        } catch (e) {
+          loadError = e.message;
+        }
       }
 
       return {
@@ -362,11 +365,14 @@ exports.handler = async (event) => {
           pro,
           normalizedPro: pro,
           originalInput: rawPro,
-          stop: stop?.Stop,
-          load: load?.Load,
-          stopsAway,
+          stop: stop?.Stop ?? null,
+          load: (load?.Load) ?? null,
+          stopsAway: stopsAway ?? null,
+          loadError,
+          loadNbr,
         }),
       };
+    }
     }
 
     // --- Document retrieval (dual-credential fallback: ULINE first, DAVIS fallback) ---
