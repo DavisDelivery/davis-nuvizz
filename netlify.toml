@@ -5,6 +5,12 @@
 
 [functions]
   node_bundler = "esbuild"
+  # Pro plan: bump sync function timeout from 10s to 26s (max allowed).
+  # Needed for __fleet and __driver which scan ~150 load numbers in parallel against NuVizz.
+  [functions."nuvizz"]
+    timeout = 26
+  [functions."dispatch"]
+    timeout = 26
 
 [[redirects]]
   from = "/*"

@@ -324,9 +324,10 @@ function buildSummary(stops, loads) {
 
 // ---- Fleet scan: discover all loads for a given date via load-number range probe ----
 // Davis dispatches ~100 loads/day in sequential DAVIS{9-digit} format. NuVizz has no native
-// "list loads for date" endpoint, so we probe a range of load numbers in parallel. For a
-// typical query, we scan ~300 load numbers at concurrency 12 (~15s wall time).
-async function scanFleet(tenant, { dateFrom, dateTo, startNbr, endNbr, concurrency = 12 }) {
+// "list loads for date" endpoint, so we probe a range of load numbers in parallel. We use
+// a ±75 window (150 numbers) at concurrency 20, which completes in ~6-10 seconds and
+// reliably covers a full day's loads.
+async function scanFleet(tenant, { dateFrom, dateTo, startNbr, endNbr, concurrency = 20 }) {
   const { companyCode } = getCreds(tenant);
   const authHeader = basicAuthHeader(tenant);
   const prefix = companyCode; // "DAVIS" or "ULINE"
@@ -368,7 +369,6 @@ async function scanFleet(tenant, { dateFrom, dateTo, startNbr, endNbr, concurren
     } catch (e) { return null; }
   };
 
-  // Build list of numbers to scan
   const nums = [];
   for (let n = endNbr; n >= startNbr; n--) nums.push(n);
 
@@ -383,13 +383,35 @@ async function scanFleet(tenant, { dateFrom, dateTo, startNbr, endNbr, concurren
   };
   await Promise.all(Array.from({ length: concurrency }, runOne));
 
-  // Sort by route name for stable UI
   results.sort((a, b) => (a.route || '').localeCompare(b.route || ''));
   return results;
 }
 
+// ---- In-memory fleet cache (60s TTL, per-tenant, per-date) ----
+// Netlify Functions reuse instances across warm invocations, so this gives us fast
+// repeat loads without hitting NuVizz again. Clears automatically on cold start.
+const __fleetCache = new Map();
+const FLEET_CACHE_TTL_MS = 60 * 1000;
+function getCachedFleet(tenant, dateStr) {
+  const key = `${tenant}:${dateStr}`;
+  const hit = __fleetCache.get(key);
+  if (hit && Date.now() - hit.storedAt < FLEET_CACHE_TTL_MS) return hit.data;
+  return null;
+}
+function setCachedFleet(tenant, dateStr, data) {
+  const key = `${tenant}:${dateStr}`;
+  __fleetCache.set(key, { storedAt: Date.now(), data });
+  // Cap cache size at 50 entries (cheap LRU by insertion order)
+  if (__fleetCache.size > 50) {
+    const firstKey = __fleetCache.keys().next().value;
+    __fleetCache.delete(firstKey);
+  }
+}
+
 // Estimate the load number range for a given date. Since we know load 192596 was April 17
 // (from testing), extrapolate from that baseline at ~100 loads/day.
+// Window = ±75 (150 numbers) which is 1.5x daily volume — enough margin to catch today's
+// full spread without scanning into neighboring days.
 function estimateLoadRange(dateStr) {
   const BASELINE_DATE = new Date('2026-04-17T00:00:00Z');
   const BASELINE_LOAD = 192600;
@@ -397,8 +419,7 @@ function estimateLoadRange(dateStr) {
   const target = new Date(dateStr + 'T00:00:00Z');
   const daysDiff = Math.round((target - BASELINE_DATE) / (1000 * 60 * 60 * 24));
   const center = BASELINE_LOAD + daysDiff * LOADS_PER_DAY;
-  // 150 on either side = 300-wide window to absorb day-to-day variance
-  return { startNbr: center - 150, endNbr: center + 150 };
+  return { startNbr: center - 75, endNbr: center + 75 };
 }
 
 // ---- Handler ----
@@ -544,11 +565,26 @@ exports.handler = async (event) => {
     }
 
     // --- Fleet dispatch board: scan load-number range, return all loads for a date ---
-    //   ?tenant=davis&path=__fleet                    → today's fleet (auto-range)
+    //   ?tenant=davis&path=__fleet                    → today's fleet (auto-range, cached 60s)
     //   ?tenant=davis&path=__fleet&date=2026-04-15    → specific day
     //   ?tenant=davis&path=__fleet&from=192500&to=192800 → manual range override
+    //   ?tenant=davis&path=__fleet&nocache=1          → bypass cache
     if (apiPath === '__fleet') {
       const dateStr = params.date || new Date().toISOString().slice(0, 10);
+      const bypassCache = params.nocache === '1' || params.nocache === 'true';
+
+      // Serve from cache if fresh (only for default range — skip when manual range specified)
+      if (!bypassCache && !params.from && !params.to) {
+        const cached = getCachedFleet(tenant, dateStr);
+        if (cached) {
+          return {
+            statusCode: 200,
+            headers: { ...corsHeaders, 'X-Cache': 'HIT' },
+            body: JSON.stringify({ ...cached, cached: true }),
+          };
+        }
+      }
+
       let startNbr, endNbr;
       if (params.from && params.to) {
         startNbr = parseInt(params.from, 10);
@@ -563,10 +599,9 @@ exports.handler = async (event) => {
         dateTo: dateStr,
         startNbr,
         endNbr,
-        concurrency: 12,
+        concurrency: 20,
       });
 
-      // Summary stats for dispatch overview
       const summary = {
         totalLoads: loads.length,
         assignedLoads: loads.filter(l => l.driver).length,
@@ -579,10 +614,15 @@ exports.handler = async (event) => {
       };
       summary.pctComplete = summary.totalStops ? Math.round((summary.totalDelivered / summary.totalStops) * 100) : 0;
 
+      const result = { date: dateStr, loads, summary, scannedRange: { from: startNbr, to: endNbr } };
+
+      // Cache for 60s (only if using default range)
+      if (!params.from && !params.to) setCachedFleet(tenant, dateStr, result);
+
       return {
         statusCode: 200,
-        headers: corsHeaders,
-        body: JSON.stringify({ date: dateStr, loads, summary, scannedRange: { from: startNbr, to: endNbr } }),
+        headers: { ...corsHeaders, 'X-Cache': 'MISS' },
+        body: JSON.stringify(result),
       };
     }
 
@@ -609,15 +649,31 @@ exports.handler = async (event) => {
         } catch (_) {}
       }
 
-      // Scan the fleet for that date to find this driver's loads
-      const range = estimateLoadRange(dateStr);
-      const allLoads = await scanFleet(tenant, {
-        dateFrom: dateStr,
-        dateTo: dateStr,
-        startNbr: range.startNbr,
-        endNbr: range.endNbr,
-        concurrency: 12,
-      });
+      // Reuse the fleet cache if available — otherwise scan (caches for subsequent callers)
+      let allLoads = getCachedFleet(tenant, dateStr)?.loads;
+      if (!allLoads) {
+        const range = estimateLoadRange(dateStr);
+        allLoads = await scanFleet(tenant, {
+          dateFrom: dateStr,
+          dateTo: dateStr,
+          startNbr: range.startNbr,
+          endNbr: range.endNbr,
+          concurrency: 20,
+        });
+        // Also populate fleet cache so the fleet view is fast next
+        const summary = {
+          totalLoads: allLoads.length,
+          assignedLoads: allLoads.filter(l => l.driver).length,
+          unassignedLoads: allLoads.filter(l => !l.driver).length,
+          totalStops: allLoads.reduce((s, l) => s + l.totalStops, 0),
+          totalDelivered: allLoads.reduce((s, l) => s + l.delivered, 0),
+          totalInProgress: allLoads.reduce((s, l) => s + l.inProgress, 0),
+          totalExceptions: allLoads.reduce((s, l) => s + l.exceptions, 0),
+          uniqueDrivers: new Set(allLoads.map(l => l.driverUserName).filter(Boolean)).size,
+        };
+        summary.pctComplete = summary.totalStops ? Math.round((summary.totalDelivered / summary.totalStops) * 100) : 0;
+        setCachedFleet(tenant, dateStr, { date: dateStr, loads: allLoads, summary, scannedRange: { from: range.startNbr, to: range.endNbr } });
+      }
 
       const matchedLoads = allLoads.filter(l => {
         if (userName && l.driverUserName === userName) return true;
