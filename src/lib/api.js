@@ -4,8 +4,8 @@ const PROXY = '/.netlify/functions/nuvizz';
 const DISPATCH = '/.netlify/functions/dispatch';
 
 export const TENANTS = {
-  davis: { label: 'Davis', companyCode: 'Davis', color: '#1e5b92', accent: '#3b82f6' },
-  uline: { label: 'Uline', companyCode: 'Uline', color: '#c8102e', accent: '#ef4444' },
+  davis: { label: 'Davis', companyCode: 'DAVIS', color: '#1e5b92', accent: '#3b82f6' },
+  uline: { label: 'Uline', companyCode: 'ULINE', color: '#c8102e', accent: '#ef4444' },
   glorybound: { label: 'Glory Bound', companyCode: 'GloryBound', color: '#059669', accent: '#10b981' },
 };
 

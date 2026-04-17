@@ -65,14 +65,25 @@ function basicAuthHeader(tenant) {
 async function fetchDocument(documentGuid, ext, objectType = '02') {
   const attempts = [];
 
-  const tryOne = async (tenant) => {
+  // Build the list of combinations to try. NuVizz's document endpoint is finicky:
+  // - Some deployments want the documentType code as objectType (01=signature, 02=photo, 03=POD)
+  // - Some want empty objectType
+  // - Uline stop docs are usually under ULINE companyCode, fallback DAVIS
+  // We try all combinations until one returns the document.
+  const objectTypes = [objectType, '', '02', '03', '01'].filter((v, i, a) => a.indexOf(v) === i);
+  const tenants = ['uline', 'davis']; // ULINE first per integration guide
+
+  const tryOne = async (tenant, otype) => {
     const { companyCode } = getCreds(tenant);
-    const url = `${DOC_BASE}/doc/getdocument/${encodeURIComponent(companyCode)}?documentGuid=${encodeURIComponent(documentGuid)}&objectType=${encodeURIComponent(objectType)}`;
+    const qs = new URLSearchParams({ documentGuid });
+    // Empty objectType goes through as objectType= (explicit empty), non-empty as objectType=02
+    qs.set('objectType', otype);
+    const url = `${DOC_BASE}/doc/getdocument/${encodeURIComponent(companyCode)}?${qs.toString()}`;
     const resp = await fetch(url, {
       headers: { Authorization: basicAuthHeader(tenant), Accept: 'application/json' },
     });
     const text = await resp.text();
-    const info = { tenant, companyCode, url, status: resp.status, ok: resp.ok, bodyPreview: text.slice(0, 200) };
+    const info = { tenant, companyCode, objectType: otype, url, status: resp.status, ok: resp.ok, bodyPreview: text.slice(0, 200) };
     attempts.push(info);
     if (!resp.ok) return null;
     try {
@@ -90,13 +101,19 @@ async function fetchDocument(documentGuid, ext, objectType = '02') {
     }
   };
 
-  // Try ULINE first
+  // Iterate tenants x objectTypes until something works
   let b64 = null;
-  try { b64 = await tryOne('uline'); } catch (e) { attempts.push({ tenant: 'uline', error: e.message }); }
-  // Fallback to DAVIS
-  if (!b64) {
-    try { b64 = await tryOne('davis'); } catch (e) { attempts.push({ tenant: 'davis', error: e.message }); }
+  outer: for (const tenant of tenants) {
+    for (const otype of objectTypes) {
+      try {
+        const result = await tryOne(tenant, otype);
+        if (result) { b64 = result; break outer; }
+      } catch (e) {
+        attempts.push({ tenant, objectType: otype, error: e.message });
+      }
+    }
   }
+
   if (!b64) return { ok: false, attempts };
 
   // Prepend the correct data URI prefix based on extension

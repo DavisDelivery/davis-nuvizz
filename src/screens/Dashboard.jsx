@@ -13,6 +13,12 @@ import { KPI, Loading, ErrorBox, SectionHeader, ProgressBar, StatusPill, EmptySt
 export default function Dashboard({ tenant, onOpenLoad, onOpenStop, onOpenMap, onOpenStops }) {
   const [state, setState] = useState({ loading: true, error: null, data: null });
   const [proInput, setProInput] = useState('');
+  const [recentPros, setRecentPros] = useState(() => {
+    try {
+      const stored = JSON.parse(localStorage.getItem('dn_recent_pros') || '[]');
+      return Array.isArray(stored) ? stored.slice(0, 8) : [];
+    } catch { return []; }
+  });
   const t = TENANTS[tenant];
   const isNuvizz = tenant === 'davis' || tenant === 'uline';
 
@@ -28,9 +34,22 @@ export default function Dashboard({ tenant, onOpenLoad, onOpenStop, onOpenMap, o
 
   useEffect(() => { load(); }, [load]);
 
+  const addRecent = (pro) => {
+    const next = [pro, ...recentPros.filter(p => p !== pro)].slice(0, 8);
+    setRecentPros(next);
+    try { localStorage.setItem('dn_recent_pros', JSON.stringify(next)); } catch {}
+  };
+
   const submitPro = () => {
     const pro = normalizePro(proInput);
     if (!pro) return;
+    addRecent(pro);
+    setProInput('');
+    onOpenStop(pro);
+  };
+
+  const openRecent = (pro) => {
+    addRecent(pro); // refresh to top
     onOpenStop(pro);
   };
 
@@ -83,6 +102,22 @@ export default function Dashboard({ tenant, onOpenLoad, onOpenStop, onOpenMap, o
         {proInput && normalizePro(proInput) && normalizePro(proInput) !== proInput.trim() && (
           <div className="text-[10px] text-slate-500 mt-1.5 font-mono">
             → {normalizePro(proInput)} <span className="text-slate-400">(padded to 9 digits)</span>
+          </div>
+        )}
+        {recentPros.length > 0 && (
+          <div className="mt-3 pt-2.5 border-t">
+            <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold mb-1.5">Recent</div>
+            <div className="flex flex-wrap gap-1.5">
+              {recentPros.map((p) => (
+                <button
+                  key={p}
+                  onClick={() => openRecent(p)}
+                  className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 rounded-md text-[11px] font-mono"
+                >
+                  {p}
+                </button>
+              ))}
+            </div>
           </div>
         )}
       </div>
