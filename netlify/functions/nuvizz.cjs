@@ -63,26 +63,41 @@ function basicAuthHeader(tenant) {
 // Most Uline stop documents live under the ULINE company code, not DAVIS.
 // Strategy: try ULINE first, fall back to DAVIS if ULINE errors.
 async function fetchDocument(documentGuid, ext, objectType = '02') {
+  const attempts = [];
+
   const tryOne = async (tenant) => {
     const { companyCode } = getCreds(tenant);
     const url = `${DOC_BASE}/doc/getdocument/${encodeURIComponent(companyCode)}?documentGuid=${encodeURIComponent(documentGuid)}&objectType=${encodeURIComponent(objectType)}`;
     const resp = await fetch(url, {
       headers: { Authorization: basicAuthHeader(tenant), Accept: 'application/json' },
     });
+    const text = await resp.text();
+    const info = { tenant, companyCode, url, status: resp.status, ok: resp.ok, bodyPreview: text.slice(0, 200) };
+    attempts.push(info);
     if (!resp.ok) return null;
-    const data = await resp.json();
-    if (!data || !data.documentData) return null;
-    return data.documentData;
+    try {
+      const data = JSON.parse(text);
+      if (!data || !data.documentData) {
+        info.reason = 'missing documentData field';
+        info.keys = data ? Object.keys(data) : null;
+        return null;
+      }
+      info.sizeBytes = data.documentData.length;
+      return data.documentData;
+    } catch (e) {
+      info.reason = 'parse failed: ' + e.message;
+      return null;
+    }
   };
 
   // Try ULINE first
   let b64 = null;
-  try { b64 = await tryOne('uline'); } catch (_) {}
+  try { b64 = await tryOne('uline'); } catch (e) { attempts.push({ tenant: 'uline', error: e.message }); }
   // Fallback to DAVIS
   if (!b64) {
-    try { b64 = await tryOne('davis'); } catch (_) {}
+    try { b64 = await tryOne('davis'); } catch (e) { attempts.push({ tenant: 'davis', error: e.message }); }
   }
-  if (!b64) return null;
+  if (!b64) return { ok: false, attempts };
 
   // Prepend the correct data URI prefix based on extension
   const extLower = (ext || 'jpg').toLowerCase();
@@ -91,7 +106,7 @@ async function fetchDocument(documentGuid, ext, objectType = '02') {
     extLower === 'png' ? 'image/png' :
     extLower === 'gif' ? 'image/gif' :
     'image/jpeg';
-  return { dataUri: `data:${mime};base64,${b64}`, mime, ext: extLower };
+  return { ok: true, dataUri: `data:${mime};base64,${b64}`, mime, ext: extLower, attempts };
 }
 
 // Core authenticated fetch against nuVizz (Basic Auth directly — no JWT)
@@ -376,18 +391,29 @@ exports.handler = async (event) => {
 
     // --- Document retrieval (dual-credential fallback: ULINE first, DAVIS fallback) ---
     //   ?tenant=davis&path=__doc&guid=XXX&ext=jpg&objectType=02
+    //   ?tenant=davis&path=__doc&guid=XXX&ext=jpg&debug=1   → returns per-attempt details
     if (apiPath === '__doc') {
       const guid = params.guid || params.documentGuid;
       const ext = params.ext || 'jpg';
       const objectType = params.objectType || '02';
+      const debug = params.debug === '1' || params.debug === 'true';
       if (!guid) {
         return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: 'Missing guid' }) };
       }
       const doc = await fetchDocument(guid, ext, objectType);
-      if (!doc) {
-        return { statusCode: 404, headers: corsHeaders, body: JSON.stringify({ error: 'Document not found under ULINE or DAVIS' }) };
+      if (!doc.ok) {
+        return {
+          statusCode: 404,
+          headers: corsHeaders,
+          body: JSON.stringify({
+            error: 'Document not found under ULINE or DAVIS',
+            attempts: doc.attempts,
+          }),
+        };
       }
-      return { statusCode: 200, headers: corsHeaders, body: JSON.stringify(doc) };
+      const payload = { dataUri: doc.dataUri, mime: doc.mime, ext: doc.ext };
+      if (debug) payload.attempts = doc.attempts;
+      return { statusCode: 200, headers: corsHeaders, body: JSON.stringify(payload) };
     }
 
     // --- Stops-away from a reference stop on a known load ---
