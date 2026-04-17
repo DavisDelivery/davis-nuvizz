@@ -1,29 +1,19 @@
 // netlify/functions/nuvizz.js
 // Proxy + aggregator for nuVizz REST API v7.
 //
+// CREDENTIALS: Uses HTTP Basic Auth directly on every call (no JWT exchange).
+// The /auth/token endpoint issues JWTs that resource endpoints reject with
+// "Invalid signature" — but Basic Auth works directly. This matches the
+// pattern used by sentinel-time-theft, davisdeliverytracking, and Davis MarginIQ.
+//
 // Endpoints exposed:
-//   ?tenant=davis&path=__health              → auth check for both tenants
-//   ?tenant=davis&path=/stop/info/X/Davis    → raw passthrough (any nuVizz path)
-//   ?tenant=davis&path=__today               → aggregated today's stops + loads
-//   ?tenant=davis&path=__daterange&from=...&to=... → aggregated range
-//
-// The __today/__daterange endpoints are the heart of the dashboard:
-//   - Calls /stop/info/customer/{companyCode}?fromDTTM=...&toDTTM=...  (returns every stop in range)
-//   - Groups stops by loadNbr
-//   - For each unique load, calls /load/info/{loadNbr}/{companyCode} in parallel (concurrency-limited)
-//   - Returns { stops: [...], loads: [...], summary: {...} }
-//
-// Auth:
-//   1. GET /auth/token/{companyCode} with Basic Auth (creds from env)
-//   2. Cache JWT per tenant until expiresAt
-//   3. Forward with Authorization: Bearer <jwt>
+//   ?tenant=davis&path=__health             → auth check for both tenants
+//   ?tenant=davis&path=/stop/info/X/Davis   → raw passthrough (any nuVizz path)
+//   ?tenant=davis&path=__today              → aggregated today's stops + loads
+//   ?tenant=davis&path=__daterange&from=...&to=... → date-range aggregate
+//   ?tenant=davis&path=__loadsbydate&date=YYYY-MM-DD → loads for a specific day
 
-// Base URL can be overridden per-tenant via NUVIZZ_BASE_URL env var.
-// Default is the confirmed-working host (verified with Basic Auth returning valid JWT).
 const NUVIZZ_BASE = process.env.NUVIZZ_BASE_URL || 'https://portal.nuvizz.com/deliverit/openapi/v7';
-
-// ---- token cache (survives warm invocations) ----
-const tokenCache = {};
 
 function getCreds(tenant) {
   if (tenant === 'uline') {
@@ -40,40 +30,20 @@ function getCreds(tenant) {
   };
 }
 
-async function getToken(tenant) {
-  const now = Math.floor(Date.now() / 1000);
-  const cached = tokenCache[tenant];
-  if (cached && cached.expiresAt && cached.expiresAt - now > 60) return cached.token;
-
-  const { companyCode, user, pass } = getCreds(tenant);
+function basicAuthHeader(tenant) {
+  const { user, pass } = getCreds(tenant);
   if (!user || !pass) throw new Error(`Missing NUVIZZ_${tenant.toUpperCase()}_USER or _PASS env var`);
-
-  const basic = Buffer.from(`${user}:${pass}`).toString('base64');
-  const url = `${NUVIZZ_BASE}/auth/token/${encodeURIComponent(companyCode)}`;
-  const resp = await fetch(url, {
-    method: 'GET',
-    headers: { Authorization: `Basic ${basic}`, Accept: 'application/json' },
-  });
-  if (!resp.ok) {
-    const body = await resp.text();
-    throw new Error(`Auth failed (${resp.status}) for ${tenant}: ${body.slice(0, 300)}`);
-  }
-  const data = await resp.json();
-  if (!data.authToken) throw new Error(`Auth response missing authToken`);
-  const exp = parseInt(data.expiresAt, 10) || now + 3600;
-  tokenCache[tenant] = { token: data.authToken, expiresAt: exp };
-  return data.authToken;
+  return 'Basic ' + Buffer.from(`${user}:${pass}`).toString('base64');
 }
 
-// Core authenticated fetch against nuVizz
+// Core authenticated fetch against nuVizz (Basic Auth directly — no JWT)
 async function nvFetch(tenant, path, { method = 'GET', body = null, extraParams = {} } = {}) {
-  const token = await getToken(tenant);
   const qs = new URLSearchParams(extraParams).toString();
   const url = `${NUVIZZ_BASE}${path}${qs ? '?' + qs : ''}`;
   const resp = await fetch(url, {
     method,
     headers: {
-      Authorization: `Bearer ${token}`,
+      Authorization: basicAuthHeader(tenant),
       'Content-Type': 'application/json',
       Accept: 'application/json',
     },
@@ -83,7 +53,9 @@ async function nvFetch(tenant, path, { method = 'GET', body = null, extraParams 
   let data;
   try { data = JSON.parse(text); } catch { data = { raw: text }; }
   if (!resp.ok) {
-    const err = new Error(data?.reasons?.[0]?.reason || `HTTP ${resp.status}`);
+    // Bubble up the NuVizz error payload — it's more helpful than HTTP code alone
+    const nvMsg = data?.message || data?.reasons?.[0]?.description || `HTTP ${resp.status}`;
+    const err = new Error(nvMsg);
     err.status = resp.status;
     err.body = text.slice(0, 500);
     throw err;
@@ -106,38 +78,84 @@ async function parallelMap(items, limit, fn) {
   return out;
 }
 
-// ---- Aggregator: fetch all stops + loads for a date range ----
-async function fetchRange(tenant, fromDTTM, toDTTM) {
+// ---- Aggregator: fetch all loads for a date ----
+async function fetchLoadNbrsForDate(tenant, dateISO) {
+  const { companyCode } = getCreds(tenant);
+  const date = dateISO.slice(0, 10); // YYYY-MM-DD
+
+  // Strategy 1: /event/eventactivity for entityType=ROUTE
+  try {
+    const raw = await nvFetch(tenant, `/event/eventactivity/${encodeURIComponent(companyCode)}`, {
+      extraParams: { entityType: 'ROUTE', eventDttm: date },
+    });
+    const events = raw?.eventActivity || [];
+    const loadNbrs = [...new Set(events.map(e => e.entityNbr).filter(Boolean))];
+    if (loadNbrs.length > 0) return { loadNbrs, method: 'eventActivity' };
+  } catch (_) {}
+
+  // Strategy 2: /load/static/info with routeDate
+  try {
+    const raw = await nvFetch(tenant, `/load/static/info/${encodeURIComponent(companyCode)}`, {
+      extraParams: { routeDate: date },
+    });
+    const routes = raw?.routes || raw?.loads || [];
+    const loadNbrs = routes.map(r => r.loadNbr || r.routeNbr).filter(Boolean);
+    if (loadNbrs.length > 0) return { loadNbrs, method: 'staticRoute' };
+  } catch (_) {}
+
+  // Strategy 3: stop/eventinfo by date — extract unique loadNbrs from stop data
+  try {
+    const raw = await nvFetch(tenant, `/stop/eventinfo/${encodeURIComponent(companyCode)}`, {
+      extraParams: { eventDate: date },
+    });
+    const stops = raw?.stops || raw?.stopList || [];
+    const loadNbrs = [...new Set(stops.map(s => s.loadNbr || s.routeNbr).filter(Boolean))];
+    if (loadNbrs.length > 0) return { loadNbrs, method: 'stopEventInfo' };
+  } catch (_) {}
+
+  return { loadNbrs: [], method: 'none' };
+}
+
+async function fetchLoadsAndStopsForRange(tenant, fromDTTM, toDTTM) {
   const { companyCode } = getCreds(tenant);
 
-  // Stop Info By Customer with no customer filter but date range = all stops in range
-  // The endpoint accepts: fromDTTM, toDTTM (ISO format) - returns array of stops
-  const stopSearch = await nvFetch(tenant, `/stop/info/customer/${encodeURIComponent(companyCode)}`, {
-    method: 'GET',
-    extraParams: { fromDTTM, toDTTM },
-  });
+  // Get all stops in range via /stop/info/customer (no customer filter → all stops)
+  let stops = [];
+  try {
+    const stopSearch = await nvFetch(tenant, `/stop/info/customer/${encodeURIComponent(companyCode)}`, {
+      extraParams: { fromDTTM, toDTTM },
+    });
+    stops = stopSearch?.stops || stopSearch?.stopList || stopSearch?.Stops || [];
+  } catch (e) {
+    // Fallback — try event-driven discovery
+    const { loadNbrs } = await fetchLoadNbrsForDate(tenant, fromDTTM);
+    const loadsRaw = await parallelMap(loadNbrs, 5, async (loadNbr) => {
+      const data = await nvFetch(tenant, `/load/info/${encodeURIComponent(loadNbr)}/${encodeURIComponent(companyCode)}`);
+      return data?.Load || data;
+    });
+    const loads = loadsRaw.filter(l => !l.__error);
+    stops = loads.flatMap(l => (l.stops || []).map(s => ({ ...s, load: { loadNbr: l.loadHeader?.loadNbr } })));
+    return { stops, loads, loadNbrs, summary: buildSummary(stops, loads), method: 'event-driven-fallback', generated: new Date().toISOString() };
+  }
 
-  // The response shape varies; try several field names
-  const stops = stopSearch?.stops || stopSearch?.stopList || stopSearch?.Stops || stopSearch?.stopInfo || [];
-
-  // Unique loadNbrs present on those stops
+  // Unique loadNbrs on those stops
   const loadNbrs = Array.from(new Set(
     stops.map(s => s.load?.loadNbr || s.loadNbr || s.routeAsgnInfo?.routeNbr).filter(Boolean)
   ));
 
-  // Fetch load details in parallel, concurrency 5
+  // Fetch load details in parallel
   const loadsRaw = await parallelMap(loadNbrs, 5, async (loadNbr) => {
     const data = await nvFetch(tenant, `/load/info/${encodeURIComponent(loadNbr)}/${encodeURIComponent(companyCode)}`);
     return data?.Load || data;
   });
-
   const loads = loadsRaw.filter(l => !l.__error);
-  const loadErrors = loadsRaw.filter(l => l.__error).map(l => l.__error);
 
-  // Build summary KPIs
-  const summary = buildSummary(stops, loads);
-
-  return { stops, loads, loadNbrs, loadErrors, summary, generated: new Date().toISOString() };
+  return {
+    stops, loads, loadNbrs,
+    summary: buildSummary(stops, loads),
+    method: 'stop-customer-search',
+    generated: new Date().toISOString(),
+  };
 }
 
 function buildSummary(stops, loads) {
@@ -173,17 +191,10 @@ function buildSummary(stops, loads) {
   }
 
   return {
-    totalStops: total,
-    completed,
-    inProgress,
-    pending,
-    failed,
-    cancelled,
+    totalStops: total, completed, inProgress, pending, failed, cancelled,
     pctComplete: total ? Math.round((completed / total) * 100) : 0,
     avgDwellMin: dwellCount ? Math.round(dwellSum / dwellCount) : 0,
-    onTime,
-    late,
-    early,
+    onTime, late, early,
     totalLoads: loads.length,
     totalMiles: Math.round(miles),
     topCustomers: Object.entries(customerCounts).sort((a, b) => b[1] - a[1]).slice(0, 5).map(([name, count]) => ({ name, count })),
@@ -206,13 +217,19 @@ exports.handler = async (event) => {
     const apiPath = params.path;
     if (!apiPath) return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: 'Missing ?path=' }) };
 
-    // Health check
+    // Health check — just verify Basic Auth works on a cheap endpoint for each tenant
     if (apiPath === '__health') {
       const results = {};
       for (const t of ['davis', 'uline']) {
         try {
-          const tok = await getToken(t);
-          results[t] = { ok: true, tokenPrefix: tok.slice(0, 20) + '...', expiresAt: tokenCache[t].expiresAt };
+          const { companyCode } = getCreds(t);
+          // Hit a tiny endpoint that we know responds. /stop/info/NOTAREAL/ will 400 with
+          // a domain-level error meaning auth succeeded (we don't care about the 400).
+          const url = `${NUVIZZ_BASE}/stop/info/__probe__/${encodeURIComponent(companyCode)}`;
+          const r = await fetch(url, { headers: { Authorization: basicAuthHeader(t), Accept: 'application/json' } });
+          const txt = await r.text();
+          const authOk = r.status !== 401 && r.status !== 403;
+          results[t] = { ok: authOk, status: r.status, preview: txt.slice(0, 120) };
         } catch (e) { results[t] = { ok: false, error: e.message }; }
       }
       return { statusCode: 200, headers: corsHeaders, body: JSON.stringify(results) };
@@ -223,7 +240,7 @@ exports.handler = async (event) => {
       const now = new Date();
       const start = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0);
       const end = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59);
-      const data = await fetchRange(tenant, start.toISOString(), end.toISOString());
+      const data = await fetchLoadsAndStopsForRange(tenant, start.toISOString(), end.toISOString());
       return { statusCode: 200, headers: corsHeaders, body: JSON.stringify(data) };
     }
 
@@ -232,7 +249,14 @@ exports.handler = async (event) => {
       if (!params.from || !params.to) {
         return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: 'Need from & to ISO dates' }) };
       }
-      const data = await fetchRange(tenant, params.from, params.to);
+      const data = await fetchLoadsAndStopsForRange(tenant, params.from, params.to);
+      return { statusCode: 200, headers: corsHeaders, body: JSON.stringify(data) };
+    }
+
+    // Loads-by-date (simpler than today — just load nbrs, no full stop data)
+    if (apiPath === '__loadsbydate') {
+      const date = params.date || new Date().toISOString().slice(0, 10);
+      const data = await fetchLoadNbrsForDate(tenant, date);
       return { statusCode: 200, headers: corsHeaders, body: JSON.stringify(data) };
     }
 
