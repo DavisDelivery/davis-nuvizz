@@ -13,10 +13,16 @@ import DriversScreen from './screens/DriversScreen';
 import LoadDetail from './screens/LoadDetail';
 import StopDetail from './screens/StopDetail';
 
-const APP_VERSION = '0.2.0';
+const APP_VERSION = '0.3.0';
 
 export default function App() {
-  const [tenant, setTenant] = useState('davis');
+  const [tenant, setTenantState] = useState(() => {
+    try { return localStorage.getItem('dn_tenant') || 'davis'; } catch { return 'davis'; }
+  });
+  const setTenant = (t) => {
+    setTenantState(t);
+    try { localStorage.setItem('dn_tenant', t); } catch {}
+  };
   const [tab, setTab] = useState('dashboard');
   const [detail, setDetail] = useState(null);
   const [health, setHealth] = useState('checking');
@@ -60,7 +66,7 @@ export default function App() {
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 flex flex-col" style={{ fontFamily: 'system-ui, -apple-system, sans-serif' }}>
       {/* Top bar */}
-      <header className="sticky top-0 z-40 border-b bg-white/95 backdrop-blur">
+      <header className="sticky top-0 z-40 border-b bg-white/95 backdrop-blur" style={{ paddingTop: 'env(safe-area-inset-top)' }}>
         <div className="flex items-center justify-between px-4 py-3">
           <div className="flex items-center gap-2 min-w-0">
             {detail ? (
@@ -84,13 +90,13 @@ export default function App() {
         </div>
       </header>
 
-      {/* Health banner */}
-      {health === 'checking' && (
+      {/* Health banner — only relevant for NuVizz tenants */}
+      {health === 'checking' && tenant !== 'glorybound' && (
         <div className="bg-amber-50 border-b border-amber-200 px-4 py-2 text-xs text-amber-800 flex items-center gap-2">
           <RefreshCw size={12} className="animate-spin" /> Verifying NuVizz API credentials...
         </div>
       )}
-      {health && health !== 'checking' && !health[tenant]?.ok && (
+      {health && health !== 'checking' && tenant !== 'glorybound' && !health[tenant]?.ok && (
         <div className="bg-red-50 border-b border-red-200 px-4 py-2 text-xs text-red-800">
           <div className="font-semibold">Auth failed for {t.label}</div>
           <div className="mt-0.5 break-words">{(health[tenant]?.error || '').slice(0, 250)}</div>

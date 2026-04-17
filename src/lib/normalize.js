@@ -29,6 +29,13 @@ export const BUCKET_LABELS = {
 // --- normalize a stop from the customer-search / today-aggregate response ---
 // The nuVizz Stop schema has `stop.from` (pickup) and `stop.to` (delivery); stopType tells us which matters.
 export function normalizeStop(raw) {
+  // Idempotent: if the object is already normalized (has bucket/fullAddress), pass through.
+  // This lets pre-normalized data from the Firestore-backed dispatch source flow through
+  // the same rendering path as raw NuVizz payloads.
+  if (raw && typeof raw.bucket === 'string' && 'fullAddress' in raw) {
+    return raw;
+  }
+
   // Raw might come as { stop, stopExecutionInfo, load } OR flat with these merged.
   // The Stop response from /stop/info/customer/... is likely flat; /stop/info/{nbr}/... is wrapped in { Stop: { stop, ... } }
   const stop = raw.stop || raw;
@@ -122,6 +129,11 @@ export function normalizeStop(raw) {
 
 // --- normalize a load (from /load/info/...) ---
 export function normalizeLoad(raw) {
+  // Idempotent: if already normalized (has pctComplete + stops array of normalized stops), pass through.
+  if (raw && typeof raw.pctComplete === 'number' && Array.isArray(raw.stops)) {
+    return raw;
+  }
+
   const l = raw?.Load || raw;
   const h = l.loadHeader || {};
   const exec = l.loadExecutionInfo || {};
