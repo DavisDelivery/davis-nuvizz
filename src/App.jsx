@@ -13,7 +13,7 @@ import DriversScreen from './screens/DriversScreen';
 import LoadDetail from './screens/LoadDetail';
 import StopDetail from './screens/StopDetail';
 
-const APP_VERSION = '0.4.2';
+const APP_VERSION = '0.5.0';
 
 export default function App() {
   const [tenant, setTenantState] = useState(() => {
@@ -127,7 +127,7 @@ export default function App() {
         ) : tab === 'stops' ? (
           <StopsScreen tenant={tenant} onOpenStop={openStop} />
         ) : (
-          <DriversScreen tenant={tenant} onOpenLoad={openLoad} />
+          <DriversScreen tenant={tenant} onOpenLoad={openLoad} onOpenStop={openStop} />
         )}
       </main>
 

@@ -71,3 +71,51 @@ export const fetchDoc = (tenant, guid, ext, objectType = '02') =>
 // Stops-away from a known load
 export const fetchStopsAway = (tenant, loadNbr, stopNbr) =>
   api(tenant, '__stopsaway', { query: { loadNbr, stopNbr } });
+
+// Fleet dispatch board — scans load number range for a date, returns all loads + drivers
+export const fetchFleet = (tenant, date) =>
+  api(tenant, '__fleet', { query: date ? { date } : {} });
+
+// Unified driver view — one driver's loads and stops for a day
+export const fetchDriver = (tenant, userName, date) =>
+  api(tenant, '__driver', { query: { userName, ...(date ? { date } : {}) } });
+
+// --- Driver registry (baked in — discovered by probing /user/info/ with common names) ---
+// Refresh periodically by re-running the discovery probe. Source of truth: NuVizz user/info.
+export const DAVIS_DRIVERS = [
+  { userName: 'AARON',   name: 'Aaron Mitchell',       userId: 79957,  status: 'ENABLED' },
+  { userName: 'ALLEN',   name: 'Allen Council',        userId: 80428,  status: 'ENABLED' },
+  { userName: 'BEN',     name: 'Ben Paintsil',         userId: 4051,   status: 'ENABLED' },
+  { userName: 'BILL',    name: 'Bill Tillery',         userId: 227989, status: 'ENABLED' },
+  { userName: 'BRAD',    name: 'Brad Goodroe',         userId: 101788, status: 'DISABLED' },
+  { userName: 'BRETT',   name: 'Brett Spradley',       userId: 2569,   status: 'ENABLED' },
+  { userName: 'BRIAN',   name: 'Brian Worley',         userId: 105292, status: 'ENABLED' },
+  { userName: 'CHAD',    name: 'Chad Davis',           userId: 1889,   status: 'ENABLED' },
+  { userName: 'COLIN',   name: 'Colin Calhoun',        userId: 2773,   status: 'ENABLED' },
+  { userName: 'FRANK',   name: 'Frank Okine',          userId: 1987,   status: 'ENABLED' },
+  { userName: 'GARRY',   name: 'Garry Pitts',          userId: 36964,  status: 'DISABLED' },
+  { userName: 'GEORGE',  name: 'George Leonard',       userId: 1989,   status: 'ENABLED' },
+  { userName: 'JACK',    name: 'Jack Johnson',         userId: 116693, status: 'DISABLED' },
+  { userName: 'JEAN',    name: 'Jean Delsoin',         userId: 1981,   status: 'ENABLED' },
+  { userName: 'JERALD',  name: 'Jerald Buckley',       userId: 1975,   status: 'DISABLED' },
+  { userName: 'JIM',     name: 'Jim Pallette',         userId: 1883,   status: 'ENABLED' },
+  { userName: 'JOE',     name: 'Joe Gibbs',            userId: 141770, status: 'ENABLED' },
+  { userName: 'JOHN',    name: 'John Thompson',        userId: 1903,   status: 'ENABLED' },
+  { userName: 'KEN',     name: 'Ken Watkins',          userId: 1991,   status: 'ENABLED' },
+  { userName: 'LEROY',   name: 'Leroy Smith',          userId: 76840,  status: 'ENABLED' },
+  { userName: 'MARCUS',  name: 'Marcus Young',         userId: 1947,   status: 'ENABLED' },
+  { userName: 'MARTIN',  name: 'Martin Wyatt',         userId: 135785, status: 'ENABLED' },
+  { userName: 'MIKE',    name: 'Mike Kirkeby',         userId: 2142,   status: 'DISABLED' },
+  { userName: 'NELSON',  name: 'Oyieke Nelson',        userId: 102775, status: 'ENABLED' },
+  { userName: 'RICHARD', name: 'Richard Mawuenyega',   userId: 102049, status: 'ENABLED' },
+  { userName: 'ROBERT',  name: 'Robert Best',          userId: 137420, status: 'ENABLED' },
+  { userName: 'RONALD',  name: 'Ronald Gates',         userId: 125591, status: 'ENABLED' },
+  { userName: 'RYAN',    name: 'Ryan Freeland',        userId: 1895,   status: 'ENABLED' },
+  { userName: 'SAMUEL',  name: 'Samuel Osei',          userId: 2276,   status: 'ENABLED' },
+  { userName: 'SCOTT',   name: 'Scott Hart',           userId: 91489,  status: 'ENABLED' },
+  { userName: 'STEVEN',  name: 'Steven Adjetey',       userId: 183157, status: 'ENABLED' },
+  { userName: 'TERRY',   name: 'Terry Gambrell',       userId: 1971,   status: 'ENABLED' },
+  { userName: 'VICTOR',  name: 'Victor Fernandez',     userId: 1957,   status: 'ENABLED' },
+  { userName: 'VINCENT', name: 'Vincent Bonzo',        userId: 4355,   status: 'ENABLED' },
+  { userName: 'WILLIAM', name: 'William Kidd',         userId: 77035,  status: 'ENABLED' },
+];

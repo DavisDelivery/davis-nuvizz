@@ -18,12 +18,15 @@
 //   ?tenant=davis&path=__lookup&pro=X  → smart PRO lookup (normalizes 9-digit, returns stop + load + docs)
 //   ?tenant=davis&path=__doc&guid=X&ext=jpg → document retrieval (ULINE first, DAVIS fallback)
 //   ?tenant=davis&path=__stopsaway&loadNbr=X&stopNbr=Y → count of non-delivered stops before Y
+//   ?tenant=davis&path=__fleet&date=YYYY-MM-DD&from=N&to=N → scan load number range, return driver board
+//   ?tenant=davis&path=__driver&userName=JIM&date=... → one driver's loads+stops for a day
 //   ?tenant=davis&path=/stop/info/X/DAVIS → raw passthrough
-//   ?tenant=davis&path=__today         → aggregated today's stops (limited — see note below)
 //
-// NOTE ON __today: NuVizz v7 does not expose a "list all loads for today" endpoint.
-// Every query requires a specific reference (PRO, load number, customer account, etc).
-// So __today returns empty for Davis/Uline tenants unless a prior cache exists.
+// __fleet technique: since NuVizz v7 doesn't have a "list today's loads" endpoint, we scan
+// a range of load numbers (e.g. 192500-192800) in parallel via /load/info/, filter to the
+// target date, and return the dispatch board. Load numbers are roughly sequential per day
+// (Davis dispatches ~100 loads/day), so a 300-wide scan covers 2-3 days.
+
 
 const NUVIZZ_BASE = process.env.NUVIZZ_BASE_URL || 'https://portal.nuvizz.com/deliverit/openapi/v7';
 const DOC_BASE = process.env.NUVIZZ_DOC_BASE || 'https://portal.nuvizz.com/deliverit/openapi/documentapi';
@@ -319,6 +322,85 @@ function buildSummary(stops, loads) {
   };
 }
 
+// ---- Fleet scan: discover all loads for a given date via load-number range probe ----
+// Davis dispatches ~100 loads/day in sequential DAVIS{9-digit} format. NuVizz has no native
+// "list loads for date" endpoint, so we probe a range of load numbers in parallel. For a
+// typical query, we scan ~300 load numbers at concurrency 12 (~15s wall time).
+async function scanFleet(tenant, { dateFrom, dateTo, startNbr, endNbr, concurrency = 12 }) {
+  const { companyCode } = getCreds(tenant);
+  const authHeader = basicAuthHeader(tenant);
+  const prefix = companyCode; // "DAVIS" or "ULINE"
+
+  const probe = async (n) => {
+    const loadNbr = `${prefix}${String(n).padStart(9, '0')}`;
+    const url = `${NUVIZZ_BASE}/load/info/${encodeURIComponent(loadNbr)}/${encodeURIComponent(companyCode)}`;
+    try {
+      const resp = await fetch(url, { headers: { Authorization: authHeader, Accept: 'application/json' } });
+      if (!resp.ok) return null;
+      const d = await resp.json();
+      const h = d?.Load?.loadHeader || {};
+      const a = d?.Load?.loadAssignment || {};
+      const stops = d?.Load?.stops || [];
+      const startDate = (h.earliestStartDttm || '').slice(0, 10);
+      if (dateFrom && startDate < dateFrom) return null;
+      if (dateTo && startDate > dateTo) return null;
+      const delivered = stops.filter(s => s?.stopExecutionInfo?.stopStatus === '90').length;
+      const inProgress = stops.filter(s => ['30', '40'].includes(s?.stopExecutionInfo?.stopStatus)).length;
+      const exceptions = stops.filter(s => s?.stopExecutionInfo?.stopStatus === '50' || s?.stopExecutionInfo?.exceptionPresent).length;
+      return {
+        loadNbr: h.loadNbr,
+        loadId: h.loadId,
+        route: h.routeName,
+        startDate,
+        driver: a.driverName,
+        driverUserName: a.driverUserName,
+        driverEmail: a.driverEmail,
+        vehicleType: h.vehicleType,
+        totalStops: stops.length,
+        delivered,
+        inProgress,
+        exceptions,
+        pctComplete: stops.length ? Math.round((delivered / stops.length) * 100) : 0,
+        totalPallets: h.totalPallets,
+        totalCartons: h.totalCartons,
+        weight: h.weight,
+      };
+    } catch (e) { return null; }
+  };
+
+  // Build list of numbers to scan
+  const nums = [];
+  for (let n = endNbr; n >= startNbr; n--) nums.push(n);
+
+  const results = [];
+  let idx = 0;
+  const runOne = async () => {
+    while (idx < nums.length) {
+      const myIdx = idx++;
+      const r = await probe(nums[myIdx]);
+      if (r) results.push(r);
+    }
+  };
+  await Promise.all(Array.from({ length: concurrency }, runOne));
+
+  // Sort by route name for stable UI
+  results.sort((a, b) => (a.route || '').localeCompare(b.route || ''));
+  return results;
+}
+
+// Estimate the load number range for a given date. Since we know load 192596 was April 17
+// (from testing), extrapolate from that baseline at ~100 loads/day.
+function estimateLoadRange(dateStr) {
+  const BASELINE_DATE = new Date('2026-04-17T00:00:00Z');
+  const BASELINE_LOAD = 192600;
+  const LOADS_PER_DAY = 100;
+  const target = new Date(dateStr + 'T00:00:00Z');
+  const daysDiff = Math.round((target - BASELINE_DATE) / (1000 * 60 * 60 * 24));
+  const center = BASELINE_LOAD + daysDiff * LOADS_PER_DAY;
+  // 150 on either side = 300-wide window to absorb day-to-day variance
+  return { startNbr: center - 150, endNbr: center + 150 };
+}
+
 // ---- Handler ----
 exports.handler = async (event) => {
   const corsHeaders = {
@@ -459,6 +541,171 @@ exports.handler = async (event) => {
       const payload = { dataUri: doc.dataUri, mime: doc.mime, ext: doc.ext };
       if (debug) payload.attempts = doc.attempts;
       return { statusCode: 200, headers: corsHeaders, body: JSON.stringify(payload) };
+    }
+
+    // --- Fleet dispatch board: scan load-number range, return all loads for a date ---
+    //   ?tenant=davis&path=__fleet                    → today's fleet (auto-range)
+    //   ?tenant=davis&path=__fleet&date=2026-04-15    → specific day
+    //   ?tenant=davis&path=__fleet&from=192500&to=192800 → manual range override
+    if (apiPath === '__fleet') {
+      const dateStr = params.date || new Date().toISOString().slice(0, 10);
+      let startNbr, endNbr;
+      if (params.from && params.to) {
+        startNbr = parseInt(params.from, 10);
+        endNbr = parseInt(params.to, 10);
+      } else {
+        const range = estimateLoadRange(dateStr);
+        startNbr = range.startNbr;
+        endNbr = range.endNbr;
+      }
+      const loads = await scanFleet(tenant, {
+        dateFrom: dateStr,
+        dateTo: dateStr,
+        startNbr,
+        endNbr,
+        concurrency: 12,
+      });
+
+      // Summary stats for dispatch overview
+      const summary = {
+        totalLoads: loads.length,
+        assignedLoads: loads.filter(l => l.driver).length,
+        unassignedLoads: loads.filter(l => !l.driver).length,
+        totalStops: loads.reduce((sum, l) => sum + l.totalStops, 0),
+        totalDelivered: loads.reduce((sum, l) => sum + l.delivered, 0),
+        totalInProgress: loads.reduce((sum, l) => sum + l.inProgress, 0),
+        totalExceptions: loads.reduce((sum, l) => sum + l.exceptions, 0),
+        uniqueDrivers: new Set(loads.map(l => l.driverUserName).filter(Boolean)).size,
+      };
+      summary.pctComplete = summary.totalStops ? Math.round((summary.totalDelivered / summary.totalStops) * 100) : 0;
+
+      return {
+        statusCode: 200,
+        headers: corsHeaders,
+        body: JSON.stringify({ date: dateStr, loads, summary, scannedRange: { from: startNbr, to: endNbr } }),
+      };
+    }
+
+    // --- Driver view: all loads + stops for one driver on a given date ---
+    //   ?tenant=davis&path=__driver&userName=JIM
+    //   ?tenant=davis&path=__driver&userName=JIM&date=2026-04-17
+    //   ?tenant=davis&path=__driver&driverName=JIM+PALLETTE
+    if (apiPath === '__driver') {
+      const userName = (params.userName || '').toUpperCase();
+      const driverNameFilter = (params.driverName || '').toUpperCase();
+      const dateStr = params.date || new Date().toISOString().slice(0, 10);
+      if (!userName && !driverNameFilter) {
+        return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: 'Need userName or driverName' }) };
+      }
+
+      // Fetch the driver profile (if userName given) for sanity
+      let driverProfile = null;
+      if (userName) {
+        try {
+          const { companyCode } = getCreds(tenant);
+          driverProfile = await nvFetch(tenant, `/user/info/${encodeURIComponent(companyCode)}`, {
+            extraParams: { userName },
+          });
+        } catch (_) {}
+      }
+
+      // Scan the fleet for that date to find this driver's loads
+      const range = estimateLoadRange(dateStr);
+      const allLoads = await scanFleet(tenant, {
+        dateFrom: dateStr,
+        dateTo: dateStr,
+        startNbr: range.startNbr,
+        endNbr: range.endNbr,
+        concurrency: 12,
+      });
+
+      const matchedLoads = allLoads.filter(l => {
+        if (userName && l.driverUserName === userName) return true;
+        if (driverNameFilter) {
+          const dn = (l.driver || '').toUpperCase();
+          if (dn.includes(driverNameFilter) || driverNameFilter.split(/\s+/).every(tok => dn.includes(tok))) return true;
+        }
+        return false;
+      });
+
+      // For each matched load, fetch full stop details so the UI can show the full day
+      const { companyCode } = getCreds(tenant);
+      const loadsWithStops = await Promise.all(
+        matchedLoads.map(async (summary) => {
+          try {
+            const full = await nvFetch(tenant, `/load/info/${encodeURIComponent(summary.loadNbr)}/${encodeURIComponent(companyCode)}`);
+            return { ...summary, full: full?.Load };
+          } catch (e) {
+            return { ...summary, fullError: e.message };
+          }
+        })
+      );
+
+      // Flatten all stops into a unified list for driver-day view
+      const allStops = [];
+      for (const load of loadsWithStops) {
+        const stops = load.full?.stops || [];
+        for (const s of stops) {
+          allStops.push({
+            loadNbr: load.loadNbr,
+            route: load.route,
+            driver: load.driver,
+            stopNbr: s.stop?.stopNbr,
+            stopSeq: s.stop?.stopSeq,
+            stopType: s.stop?.stopType,
+            status: s.stopExecutionInfo?.stopStatus,
+            name: s.stop?.to?.address?.name,
+            city: s.stop?.to?.address?.city,
+            state: s.stop?.to?.address?.state,
+            bol: s.stop?.bol,
+            pallets: s.stop?.totalPallets,
+            weight: s.stop?.weight,
+            confirmedDTTM: s.stopExecutionInfo?.to?.confirmedDTTM,
+            plannedEta: s.stopExecutionInfo?.to?.plannedEtaDTTM,
+            arrivalDTTM: s.stopExecutionInfo?.to?.arrivalDTTM,
+            exceptionPresent: s.stopExecutionInfo?.exceptionPresent,
+          });
+        }
+      }
+      // Sort by stopSeq within each load, then by load
+      allStops.sort((a, b) => (a.loadNbr || '').localeCompare(b.loadNbr || '') || (a.stopSeq || 0) - (b.stopSeq || 0));
+
+      return {
+        statusCode: 200,
+        headers: corsHeaders,
+        body: JSON.stringify({
+          date: dateStr,
+          userName,
+          driverProfile: driverProfile ? {
+            userName: driverProfile.userName,
+            firstName: driverProfile.firstName,
+            lastName: (driverProfile.lastName || '').trim(),
+            email: driverProfile.email,
+            userId: driverProfile.userId,
+            accountStatus: driverProfile.accountStatus,
+          } : null,
+          loads: loadsWithStops.map(l => ({
+            loadNbr: l.loadNbr,
+            route: l.route,
+            driver: l.driver,
+            totalStops: l.totalStops,
+            delivered: l.delivered,
+            inProgress: l.inProgress,
+            exceptions: l.exceptions,
+            pctComplete: l.pctComplete,
+            vehicleType: l.vehicleType,
+          })),
+          stops: allStops,
+          summary: {
+            loadsCount: matchedLoads.length,
+            totalStops: allStops.length,
+            delivered: allStops.filter(s => s.status === '90').length,
+            inProgress: allStops.filter(s => s.status === '40').length,
+            pending: allStops.filter(s => ['10', '30'].includes(s.status)).length,
+            exceptions: allStops.filter(s => s.exceptionPresent || s.status === '50').length,
+          },
+        }),
+      };
     }
 
     // --- Stops-away from a reference stop on a known load ---
