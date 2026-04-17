@@ -373,7 +373,6 @@ exports.handler = async (event) => {
         }),
       };
     }
-    }
 
     // --- Document retrieval (dual-credential fallback: ULINE first, DAVIS fallback) ---
     //   ?tenant=davis&path=__doc&guid=XXX&ext=jpg&objectType=02
