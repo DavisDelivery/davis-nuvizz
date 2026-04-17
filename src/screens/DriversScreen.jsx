@@ -354,7 +354,7 @@ function DriverDetailView({ driver, state, tenant, onBack, onRefresh, onOpenLoad
                   className="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold text-white flex-shrink-0"
                   style={{ background: STATUS_COLOR[s.status] || '#64748b' }}
                 >
-                  {s.stopSeq || i + 1}
+                  {s.displaySeq || s.stopSeq || i + 1}
                 </div>
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 mb-0.5">

@@ -410,8 +410,8 @@ function setCachedFleet(tenant, dateStr, data) {
 
 // Estimate the load number range for a given date. Since we know load 192596 was April 17
 // (from testing), extrapolate from that baseline at ~100 loads/day.
-// Window = ±75 (150 numbers) which is 1.5x daily volume — enough margin to catch today's
-// full spread without scanning into neighboring days.
+// Window = ±100 (200 numbers) — 2x daily volume, catches the full day including early
+// morning and late-evening dispatches. At concurrency 20, scans in ~10-15s.
 function estimateLoadRange(dateStr) {
   const BASELINE_DATE = new Date('2026-04-17T00:00:00Z');
   const BASELINE_LOAD = 192600;
@@ -419,7 +419,7 @@ function estimateLoadRange(dateStr) {
   const target = new Date(dateStr + 'T00:00:00Z');
   const daysDiff = Math.round((target - BASELINE_DATE) / (1000 * 60 * 60 * 24));
   const center = BASELINE_LOAD + daysDiff * LOADS_PER_DAY;
-  return { startNbr: center - 75, endNbr: center + 75 };
+  return { startNbr: center - 100, endNbr: center + 100 };
 }
 
 // ---- Handler ----
@@ -723,8 +723,20 @@ exports.handler = async (event) => {
           });
         }
       }
-      // Sort by stopSeq within each load, then by load
-      allStops.sort((a, b) => (a.loadNbr || '').localeCompare(b.loadNbr || '') || (a.stopSeq || 0) - (b.stopSeq || 0));
+      // Sort by plannedEta (real route order — NuVizz's stopSeq field is always 1, unusable).
+      // Stops with no plannedEta go to the end. Within loads, this gives the driver's day in
+      // route order. Across multiple loads (rare), loadNbr is the tiebreaker.
+      allStops.sort((a, b) => {
+        const aEta = a.plannedEta || '';
+        const bEta = b.plannedEta || '';
+        if (aEta && bEta) return aEta.localeCompare(bEta);
+        if (aEta) return -1;
+        if (bEta) return 1;
+        return (a.loadNbr || '').localeCompare(b.loadNbr || '');
+      });
+
+      // Assign a display sequence number based on the sort — so the UI shows #1, #2, #3...
+      allStops.forEach((s, i) => { s.displaySeq = i + 1; });
 
       return {
         statusCode: 200,
