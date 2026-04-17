@@ -13,7 +13,7 @@ import DriversScreen from './screens/DriversScreen';
 import LoadDetail from './screens/LoadDetail';
 import StopDetail from './screens/StopDetail';
 
-const APP_VERSION = '0.4.1';
+const APP_VERSION = '0.4.2';
 
 export default function App() {
   const [tenant, setTenantState] = useState(() => {

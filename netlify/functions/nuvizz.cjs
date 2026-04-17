@@ -65,52 +65,80 @@ function basicAuthHeader(tenant) {
 async function fetchDocument(documentGuid, ext, objectType = '02') {
   const attempts = [];
 
-  // Build the list of combinations to try. NuVizz's document endpoint is finicky:
-  // - Some deployments want the documentType code as objectType (01=signature, 02=photo, 03=POD)
-  // - Some want empty objectType
-  // - Uline stop docs are usually under ULINE companyCode, fallback DAVIS
-  // We try all combinations until one returns the document.
+  // STRATEGY 1: Direct NuVizz call (preferred — own integration, no third-party hop)
+  // Tries every combination of tenant (ULINE first per guide) x objectType.
+  // NOTE: We've observed that NuVizz currently returns reasonCode 923 "No Document Found"
+  // for every direct call despite valid auth. The integration guide's /doc/getdocument
+  // endpoint may require params we can't yet determine (the tracker portal sends an
+  // X-API-KEY header we don't have and uses a different endpoint path tree).
+  // So this path often fails; strategy 2 is the working fallback.
   const objectTypes = [objectType, '', '02', '03', '01'].filter((v, i, a) => a.indexOf(v) === i);
-  const tenants = ['uline', 'davis']; // ULINE first per integration guide
+  const tenants = ['uline', 'davis'];
 
-  const tryOne = async (tenant, otype) => {
+  const tryDirect = async (tenant, otype) => {
     const { companyCode } = getCreds(tenant);
     const qs = new URLSearchParams({ documentGuid });
-    // Empty objectType goes through as objectType= (explicit empty), non-empty as objectType=02
     qs.set('objectType', otype);
+    if (ext) qs.set('extension', ext); // Missing field discovered in tracker portal JS
     const url = `${DOC_BASE}/doc/getdocument/${encodeURIComponent(companyCode)}?${qs.toString()}`;
     const resp = await fetch(url, {
       headers: { Authorization: basicAuthHeader(tenant), Accept: 'application/json' },
     });
     const text = await resp.text();
-    const info = { tenant, companyCode, objectType: otype, url, status: resp.status, ok: resp.ok, bodyPreview: text.slice(0, 200) };
+    const info = { strategy: 'direct', tenant, companyCode, objectType: otype, url, status: resp.status, ok: resp.ok, bodyPreview: text.slice(0, 150) };
     attempts.push(info);
     if (!resp.ok) return null;
     try {
       const data = JSON.parse(text);
-      if (!data || !data.documentData) {
-        info.reason = 'missing documentData field';
-        info.keys = data ? Object.keys(data) : null;
-        return null;
-      }
+      if (!data || !data.documentData) { info.reason = 'missing documentData'; return null; }
       info.sizeBytes = data.documentData.length;
       return data.documentData;
-    } catch (e) {
-      info.reason = 'parse failed: ' + e.message;
-      return null;
-    }
+    } catch (e) { info.reason = 'parse: ' + e.message; return null; }
   };
 
-  // Iterate tenants x objectTypes until something works
   let b64 = null;
   outer: for (const tenant of tenants) {
     for (const otype of objectTypes) {
       try {
-        const result = await tryOne(tenant, otype);
+        const result = await tryDirect(tenant, otype);
         if (result) { b64 = result; break outer; }
       } catch (e) {
-        attempts.push({ tenant, objectType: otype, error: e.message });
+        attempts.push({ strategy: 'direct', tenant, objectType: otype, error: e.message });
       }
+    }
+  }
+
+  // STRATEGY 2: Chain to tracking.davisdelivery.com's /doc function.
+  // That site has a working NuVizz document integration — same Netlify team, same creds.
+  // We proxy the call through it as a fallback until we fully understand the direct path.
+  if (!b64) {
+    const trackingUrl = `https://tracking.davisdelivery.com/.netlify/functions/doc?guid=${encodeURIComponent(documentGuid)}&ext=${encodeURIComponent(ext || 'jpg')}&company=ULINE`;
+    const chainInfo = { strategy: 'tracking-chain', url: trackingUrl };
+    try {
+      const resp = await fetch(trackingUrl, { headers: { Accept: 'application/json' } });
+      chainInfo.status = resp.status;
+      chainInfo.ok = resp.ok;
+      if (resp.ok) {
+        const data = await resp.json();
+        if (data && data.dataUri) {
+          // The tracking function already returns a data URI (fully formed), not raw base64.
+          // Unwrap the base64 portion so our caller can re-wrap with correct mime for the ext.
+          const commaIdx = data.dataUri.indexOf(',');
+          if (commaIdx > 0) {
+            b64 = data.dataUri.slice(commaIdx + 1);
+            chainInfo.sizeBytes = b64.length;
+          }
+        } else {
+          chainInfo.reason = 'no dataUri in response';
+        }
+      } else {
+        const txt = await resp.text();
+        chainInfo.bodyPreview = txt.slice(0, 150);
+      }
+      attempts.push(chainInfo);
+    } catch (e) {
+      chainInfo.error = e.message;
+      attempts.push(chainInfo);
     }
   }
 
