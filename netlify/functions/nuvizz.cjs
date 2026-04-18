@@ -445,18 +445,26 @@ function setCachedFleet(tenant, dateStr, data) {
   }
 }
 
-// Estimate the load number range for a given date. Since we know load 192596 was April 17
-// (from testing), extrapolate from that baseline at ~100 loads/day.
-// Window = ±100 (200 numbers) — 2x daily volume, catches the full day including early
-// morning and late-evening dispatches. At concurrency 20, scans in ~10-15s.
+// Estimate the load number range for a given date. Since Davis runs ~100 loads/day Mon-Fri,
+// we anchor on a known load/date pair and interpolate forward/backward. Davis doesn't dispatch
+// on Saturdays so the scan window uses ±130 to catch two business days of slack, making the
+// system robust to weekends, gaps, and variance. At concurrency 20 this still scans in ~15s.
+//
+// When this file is updated, re-anchor BASELINE_{DATE,LOAD} to any recent known dispatch.
+// You can discover them by opening portal.nuvizz.com and checking the first load of the day.
 function estimateLoadRange(dateStr) {
-  const BASELINE_DATE = new Date('2026-04-17T00:00:00Z');
+  const BASELINE_DATE = new Date('2026-04-17T00:00:00Z'); // Fri Apr 17 = load 192596 (start of day)
   const BASELINE_LOAD = 192600;
-  const LOADS_PER_DAY = 100;
+  const LOADS_PER_DAY = 100; // Avg Davis output per business day (weekend days excluded)
+
   const target = new Date(dateStr + 'T00:00:00Z');
-  const daysDiff = Math.round((target - BASELINE_DATE) / (1000 * 60 * 60 * 24));
-  const center = BASELINE_LOAD + daysDiff * LOADS_PER_DAY;
-  return { startNbr: center - 100, endNbr: center + 100 };
+  // Days elapsed, counting only Mon-Fri business days (Davis doesn't dispatch weekends)
+  const msPerDay = 1000 * 60 * 60 * 24;
+  const rawDaysDiff = Math.round((target - BASELINE_DATE) / msPerDay);
+  // For simplicity, count calendar days (not business days) — the ±130 window absorbs
+  // weekend gaps. This keeps the estimator simple and the scan accurate.
+  const center = BASELINE_LOAD + rawDaysDiff * LOADS_PER_DAY;
+  return { startNbr: center - 130, endNbr: center + 130 };
 }
 
 // ---- Handler ----

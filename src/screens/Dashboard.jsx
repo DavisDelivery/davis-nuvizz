@@ -3,14 +3,19 @@
 // Glory Bound tenant: pulls today's manifest from Firestore via fetchToday.
 
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { Truck, AlertTriangle, RefreshCw, ChevronRight, Clock, MapPin, User, Package, CheckCircle2, XCircle, Search, Users } from 'lucide-react';
+import { Truck, AlertTriangle, RefreshCw, ChevronRight, Clock, MapPin, User, Package, CheckCircle2, XCircle, Search, Users, Calendar, ChevronLeft } from 'lucide-react';
 import { fetchToday, fetchFleet, normalizePro, TENANTS } from '../lib/api';
 import { normalizeLoad, normalizeStop, fmtTime, fmtDate, BUCKET_COLORS } from '../lib/normalize';
 import { KPI, Loading, ErrorBox, SectionHeader, ProgressBar, StatusPill, EmptyState } from '../components/UI';
 
+function ymd(d) { return d.toISOString().slice(0, 10); }
+function parseDate(s) { return new Date(s + 'T00:00:00Z'); }
+function addDays(d, n) { const c = new Date(d); c.setUTCDate(c.getUTCDate() + n); return c; }
+
 export default function Dashboard({ tenant, onOpenLoad, onOpenStop, onOpenMap, onOpenStops, onOpenLoads, onOpenDrivers }) {
   const [state, setState] = useState({ loading: true, error: null, data: null });
   const [proInput, setProInput] = useState('');
+  const [viewDate, setViewDate] = useState(() => ymd(new Date())); // YYYY-MM-DD
   const [recentPros, setRecentPros] = useState(() => {
     try {
       const stored = JSON.parse(localStorage.getItem('dn_recent_pros') || '[]');
@@ -19,19 +24,27 @@ export default function Dashboard({ tenant, onOpenLoad, onOpenStop, onOpenMap, o
   });
   const t = TENANTS[tenant];
   const isNuvizz = tenant === 'davis' || tenant === 'uline';
+  const isToday = viewDate === ymd(new Date());
+  const dayLabel = parseDate(viewDate).toLocaleDateString([], { weekday: 'long', month: 'short', day: 'numeric', timeZone: 'UTC' });
 
   const load = useCallback(async () => {
     setState({ loading: true, error: null, data: null });
     try {
       // NuVizz tenants get real fleet data via __fleet; Glory Bound still uses Firestore via fetchToday
-      const data = isNuvizz ? await fetchFleet(tenant) : await fetchToday(tenant);
+      const data = isNuvizz ? await fetchFleet(tenant, viewDate) : await fetchToday(tenant);
       setState({ loading: false, error: null, data });
     } catch (e) {
       setState({ loading: false, error: e.message, data: null });
     }
-  }, [tenant, isNuvizz]);
+  }, [tenant, isNuvizz, viewDate]);
 
   useEffect(() => { load(); }, [load]);
+
+  const shiftDate = (days) => {
+    const current = parseDate(viewDate);
+    setViewDate(ymd(addDays(current, days)));
+  };
+  const goToToday = () => setViewDate(ymd(new Date()));
 
   const addRecent = (pro) => {
     const next = [pro, ...recentPros.filter(p => p !== pro)].slice(0, 8);
@@ -67,15 +80,34 @@ export default function Dashboard({ tenant, onOpenLoad, onOpenStop, onOpenMap, o
 
   return (
     <div className="p-4 space-y-4 pb-4">
-      {/* Header with date + refresh */}
+      {/* Header with date nav + refresh */}
       <div className="flex items-center justify-between">
-        <div>
-          <div className="text-[11px] uppercase tracking-wider text-slate-500 font-semibold">Today</div>
-          <div className="text-lg font-bold">{new Date().toLocaleDateString([], { weekday: 'long', month: 'short', day: 'numeric' })}</div>
+        <div className="flex-1 min-w-0">
+          <div className="text-[11px] uppercase tracking-wider text-slate-500 font-semibold">
+            {isToday ? 'Today' : 'Viewing'}
+          </div>
+          <div className="text-lg font-bold truncate">{dayLabel}</div>
         </div>
-        <button onClick={load} disabled={state.loading} className="p-2 rounded-lg hover:bg-slate-100 text-slate-600 disabled:opacity-50">
-          <RefreshCw size={18} className={state.loading ? 'animate-spin' : ''} />
-        </button>
+        <div className="flex items-center gap-1">
+          {isNuvizz && (
+            <>
+              <button onClick={() => shiftDate(-1)} className="p-2 rounded-lg hover:bg-slate-100 text-slate-600" title="Previous day">
+                <ChevronLeft size={18} />
+              </button>
+              {!isToday && (
+                <button onClick={goToToday} className="px-2.5 py-1 rounded-lg hover:bg-slate-100 text-slate-600 text-xs font-semibold">
+                  Today
+                </button>
+              )}
+              <button onClick={() => shiftDate(1)} className="p-2 rounded-lg hover:bg-slate-100 text-slate-600" title="Next day">
+                <ChevronRight size={18} />
+              </button>
+            </>
+          )}
+          <button onClick={load} disabled={state.loading} className="p-2 rounded-lg hover:bg-slate-100 text-slate-600 disabled:opacity-50">
+            <RefreshCw size={18} className={state.loading ? 'animate-spin' : ''} />
+          </button>
+        </div>
       </div>
 
       {/* PRO lookup bar — always visible, primary action for NuVizz tenants */}
@@ -140,7 +172,7 @@ export default function Dashboard({ tenant, onOpenLoad, onOpenStop, onOpenMap, o
       {state.error && <ErrorBox error={state.error} onRetry={load} />}
 
       {/* NUVIZZ FLEET VIEW — tappable tiles */}
-      {!state.loading && !state.error && isNuvizz && summary.totalLoads != null && (
+      {!state.loading && !state.error && isNuvizz && summary.totalLoads != null && summary.totalLoads > 0 && (
         <>
           <div className="bg-gradient-to-br from-slate-800 to-slate-900 rounded-xl p-4 text-white">
             <div className="text-[10px] uppercase tracking-wider opacity-70 font-semibold">Today's Fleet</div>
@@ -225,6 +257,31 @@ export default function Dashboard({ tenant, onOpenLoad, onOpenStop, onOpenMap, o
             <ChevronRight size={18} className="text-slate-300" />
           </button>
         </>
+      )}
+
+      {/* NuVizz: no loads today (common on Saturdays — Davis doesn't dispatch weekends) */}
+      {!state.loading && !state.error && isNuvizz && summary.totalLoads === 0 && (
+        <div className="bg-white rounded-xl border p-5 text-center">
+          <Truck size={28} className="mx-auto text-slate-300 mb-2" />
+          <div className="text-sm font-semibold text-slate-700 mb-1">No loads on {dayLabel.split(',')[0]}</div>
+          <div className="text-xs text-slate-500 max-w-xs mx-auto leading-relaxed mb-3">
+            Davis typically doesn't run routes on Saturdays and Sundays. Use the date arrows above to check another day, or look up a specific PRO.
+          </div>
+          <div className="flex gap-2 justify-center flex-wrap">
+            <button
+              onClick={() => {
+                // Jump to the previous business day (skip Sun & Sat)
+                const d = parseDate(viewDate);
+                let prev = addDays(d, -1);
+                while (prev.getUTCDay() === 0 || prev.getUTCDay() === 6) prev = addDays(prev, -1);
+                setViewDate(ymd(prev));
+              }}
+              className="px-3 py-1.5 bg-slate-800 text-white rounded-lg text-xs font-semibold"
+            >
+              ← Previous business day
+            </button>
+          </div>
+        </div>
       )}
 
       {/* GLORY BOUND VIEW — existing KPI + exceptions + loads (unchanged) */}
