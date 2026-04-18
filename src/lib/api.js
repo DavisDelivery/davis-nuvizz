@@ -76,6 +76,10 @@ export const fetchStopsAway = (tenant, loadNbr, stopNbr) =>
 export const fetchFleet = (tenant, date) =>
   api(tenant, '__fleet', { query: date ? { date } : {} });
 
+// Fleet stops — flat list of all stops across all loads (for Map/Stops views)
+export const fetchFleetStops = (tenant, date) =>
+  api(tenant, '__fleetstops', { query: date ? { date } : {} });
+
 // Unified driver view — one driver's loads and stops for a day
 export const fetchDriver = (tenant, userName, date) =>
   api(tenant, '__driver', { query: { userName, ...(date ? { date } : {}) } });

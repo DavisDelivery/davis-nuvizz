@@ -4,13 +4,62 @@
 
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { X, Filter, RefreshCw, User, ChevronRight, MapPin, Clock } from 'lucide-react';
-import { fetchToday } from '../lib/api';
-import { normalizeLoad, normalizeStop, BUCKET_COLORS, BUCKET_LABELS, fmtTime } from '../lib/normalize';
-import { TENANTS } from '../lib/api';
+import { fetchFleetStops, TENANTS } from '../lib/api';
+import { fmtTime } from '../lib/normalize';
 import { Loading, ErrorBox, StatusPill, Field } from '../components/UI';
 
 // Distinct colors for load route lines (cycles if more loads than colors)
 const ROUTE_COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ec4899', '#8b5cf6', '#06b6d4', '#f43f5e', '#84cc16', '#6366f1', '#f97316'];
+
+// NuVizz status codes → our color buckets (match the rest of the app)
+const BUCKET_FOR_STATUS = {
+  '10': 'pending', '30': 'pending',
+  '40': 'inProgress',
+  '50': 'failed',
+  '90': 'completed',
+};
+const BUCKET_COLORS = {
+  completed: '#10b981',
+  inProgress: '#f59e0b',
+  pending: '#64748b',
+  failed: '#ef4444',
+  cancelled: '#94a3b8',
+};
+const BUCKET_LABELS = {
+  completed: 'Delivered',
+  inProgress: 'En Route',
+  pending: 'Scheduled',
+  failed: 'Exception',
+  cancelled: 'Cancelled',
+};
+
+// Bridge the __fleetstops shape into what MapScreen expects
+function toMapStop(s) {
+  const bucket = s.exceptionPresent ? 'failed' : (BUCKET_FOR_STATUS[s.status] || 'pending');
+  return {
+    ...s,
+    nbr: s.stopNbr,
+    lat: s.latitude,
+    lng: s.longitude,
+    bucket,
+    status: s.status,
+    driverName: s.driver,
+    loadNbr: s.loadNbr,
+    routeName: s.route,
+    addr1: s.addr1,
+    city: s.city,
+    state: s.state,
+    zip: s.zip,
+    fullAddress: [s.addr1, s.city, s.state, s.zip].filter(Boolean).join(', '),
+    plannedEta: s.plannedEta,
+    confirmedAt: s.confirmedDTTM,
+    arrival: s.arrivalDTTM,
+    etaCode: s.etaCode,
+    hasException: !!s.exceptionPresent,
+    // MapScreen uses s.seq for labels — use displaySeq if we ever add one, else the PRO
+    seq: null,
+  };
+}
 
 export default function MapScreen({ tenant, onOpenStop }) {
   const [state, setState] = useState({ loading: true, error: null, data: null });
@@ -26,7 +75,7 @@ export default function MapScreen({ tenant, onOpenStop }) {
   const load = useCallback(async () => {
     setState({ loading: true, error: null, data: null });
     try {
-      const data = await fetchToday(tenant);
+      const data = await fetchFleetStops(tenant);
       setState({ loading: false, error: null, data });
     } catch (e) {
       setState({ loading: false, error: e.message, data: null });
@@ -37,8 +86,15 @@ export default function MapScreen({ tenant, onOpenStop }) {
 
   const { normalizedStops, normalizedLoads, stopsWithCoords, loadColorMap, drivers } = useMemo(() => {
     if (!state.data) return { normalizedStops: [], normalizedLoads: [], stopsWithCoords: [], loadColorMap: {}, drivers: [] };
-    const ns = (state.data.stops || []).map(normalizeStop);
-    const nl = (state.data.loads || []).map(normalizeLoad);
+    const ns = (state.data.stops || []).map(toMapStop);
+    // Derive unique loads from stops (since __fleetstops is stop-flat)
+    const loadMap = {};
+    ns.forEach(s => {
+      if (s.loadNbr && !loadMap[s.loadNbr]) {
+        loadMap[s.loadNbr] = { nbr: s.loadNbr, routeName: s.routeName, driverName: s.driverName };
+      }
+    });
+    const nl = Object.values(loadMap);
 
     // Assign a distinct color to each load (stable by loadNbr)
     const lcm = {};

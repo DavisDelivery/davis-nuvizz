@@ -1,16 +1,14 @@
 // src/screens/Dashboard.jsx — home screen
-// NuVizz tenants (davis/uline): shows PRO/load lookup search — "today" list isn't available
-// from NuVizz without prior references. Typed PRO flows to StopDetail via onOpenStop.
-// Glory Bound tenant: pulls full today's manifest from Firestore (normal KPI dashboard).
+// NuVizz tenants (davis/uline): PRO lookup search + full fleet summary from __fleet.
+// Glory Bound tenant: pulls today's manifest from Firestore via fetchToday.
 
-import React, { useState, useEffect, useCallback } from 'react';
-import { Truck, AlertTriangle, RefreshCw, ChevronRight, Clock, MapPin, User, Package, CheckCircle2, XCircle, Search } from 'lucide-react';
-import { fetchToday, normalizePro } from '../lib/api';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import { Truck, AlertTriangle, RefreshCw, ChevronRight, Clock, MapPin, User, Package, CheckCircle2, XCircle, Search, Users } from 'lucide-react';
+import { fetchToday, fetchFleet, normalizePro, TENANTS } from '../lib/api';
 import { normalizeLoad, normalizeStop, fmtTime, fmtDate, BUCKET_COLORS } from '../lib/normalize';
-import { TENANTS } from '../lib/api';
 import { KPI, Loading, ErrorBox, SectionHeader, ProgressBar, StatusPill, EmptyState } from '../components/UI';
 
-export default function Dashboard({ tenant, onOpenLoad, onOpenStop, onOpenMap, onOpenStops }) {
+export default function Dashboard({ tenant, onOpenLoad, onOpenStop, onOpenMap, onOpenStops, onOpenLoads, onOpenDrivers }) {
   const [state, setState] = useState({ loading: true, error: null, data: null });
   const [proInput, setProInput] = useState('');
   const [recentPros, setRecentPros] = useState(() => {
@@ -25,12 +23,13 @@ export default function Dashboard({ tenant, onOpenLoad, onOpenStop, onOpenMap, o
   const load = useCallback(async () => {
     setState({ loading: true, error: null, data: null });
     try {
-      const data = await fetchToday(tenant);
+      // NuVizz tenants get real fleet data via __fleet; Glory Bound still uses Firestore via fetchToday
+      const data = isNuvizz ? await fetchFleet(tenant) : await fetchToday(tenant);
       setState({ loading: false, error: null, data });
     } catch (e) {
       setState({ loading: false, error: e.message, data: null });
     }
-  }, [tenant]);
+  }, [tenant, isNuvizz]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -53,12 +52,18 @@ export default function Dashboard({ tenant, onOpenLoad, onOpenStop, onOpenMap, o
     onOpenStop(pro);
   };
 
-  const { stops = [], loads = [], summary = {}, notFound } = state.data || {};
-
-  const normalizedStops = stops.map(normalizeStop);
-  const normalizedLoads = loads.map(normalizeLoad);
-
+  // Data shape: fetchFleet returns {loads, summary} with fleet-style fields;
+  // fetchToday (Glory Bound) returns {stops, loads, summary} with old shape.
+  const fleetData = isNuvizz ? state.data : null;
+  const gloryData = !isNuvizz ? state.data : null;
+  const summary = fleetData?.summary || gloryData?.summary || {};
+  const fleetLoads = fleetData?.loads || [];
+  const normalizedLoads = (gloryData?.loads || []).map(normalizeLoad);
+  const normalizedStops = (gloryData?.stops || []).map(normalizeStop);
   const exceptions = normalizedStops.filter(s => s.bucket === 'failed' || s.bucket === 'cancelled' || s.etaCode === 'LATE' || s.hasException);
+
+  // Fleet-tenant exception loads (for the "Issues" tile in NuVizz dashboards)
+  const exceptionLoads = fleetLoads.filter(l => l.exceptions > 0);
 
   return (
     <div className="p-4 space-y-4 pb-4">
@@ -122,33 +127,42 @@ export default function Dashboard({ tenant, onOpenLoad, onOpenStop, onOpenMap, o
         )}
       </div>
 
-      {/* Body: loading / error / populated / empty */}
-      {state.loading ? (
-        <Loading msg={isNuvizz ? 'Checking NuVizz...' : "Loading today's dispatch..."} />
-      ) : state.error ? (
-        <ErrorBox error={state.error} onRetry={load} />
-      ) : summary.totalStops > 0 ? (
+      {/* Loading / error */}
+      {state.loading && (
+        <div className="bg-white rounded-xl p-4 border text-center">
+          <RefreshCw size={24} className="mx-auto text-slate-400 animate-spin mb-2" />
+          <div className="text-sm text-slate-600">
+            {isNuvizz ? 'Scanning NuVizz for today\'s fleet...' : 'Loading today\'s dispatch...'}
+          </div>
+          {isNuvizz && <div className="text-[10px] text-slate-400 mt-1">~13s first load, then cached</div>}
+        </div>
+      )}
+      {state.error && <ErrorBox error={state.error} onRetry={load} />}
+
+      {/* NUVIZZ FLEET VIEW — tappable tiles */}
+      {!state.loading && !state.error && isNuvizz && summary.totalLoads != null && (
         <>
-          {/* KPI Grid */}
-          <div className="grid grid-cols-2 gap-2">
-            <KPI label="Stops" value={summary.totalStops || 0} sub={`${summary.pctComplete || 0}% complete`} accent={t.color} onClick={onOpenStops} />
-            <KPI label="Loads" value={summary.totalLoads || 0} sub={`${normalizedLoads.filter(l => l.bucket === 'inProgress').length} active`} accent={t.color} />
-            <KPI label="Miles" value={summary.totalMiles || 0} sub="planned today" />
-            <KPI label="Avg Dwell" value={`${summary.avgDwellMin || 0}m`} sub="per stop" />
+          <div className="bg-gradient-to-br from-slate-800 to-slate-900 rounded-xl p-4 text-white">
+            <div className="text-[10px] uppercase tracking-wider opacity-70 font-semibold">Today's Fleet</div>
+            <div className="grid grid-cols-4 gap-2 mt-2">
+              <TappableStat label="Loads" value={summary.totalLoads} sub={`${summary.assignedLoads} assigned`} onClick={() => onOpenLoads && onOpenLoads('active')} />
+              <TappableStat label="Drivers" value={summary.uniqueDrivers} sub="on route" onClick={onOpenDrivers} />
+              <TappableStat label="Stops" value={summary.totalStops} sub={`${summary.pctComplete}% done`} onClick={() => onOpenStops && onOpenStops('active')} />
+              <TappableStat label="Issues" value={summary.totalExceptions} sub={summary.totalExceptions > 0 ? 'tap to triage' : 'none'} danger={summary.totalExceptions > 0} onClick={summary.totalExceptions > 0 ? () => onOpenStops && onOpenStops('exceptions') : undefined} />
+            </div>
           </div>
 
-          {/* Completion progress bar */}
+          {/* Completion progress */}
           <div className="bg-white rounded-xl p-4 border">
             <div className="flex items-center justify-between text-xs mb-2">
               <span className="font-semibold text-slate-700">Day Progress</span>
-              <span className="text-slate-500">{summary.completed}/{summary.totalStops} stops</span>
+              <span className="text-slate-500">{summary.totalDelivered}/{summary.totalStops} stops</span>
             </div>
-            <ProgressBar value={summary.completed} max={summary.totalStops} color="#10b981" height={10} />
+            <ProgressBar value={summary.totalDelivered} max={summary.totalStops} color="#10b981" height={10} />
             <div className="flex gap-3 mt-3 text-[11px]">
-              <StatusChip count={summary.completed} label="Complete" color="#10b981" />
-              <StatusChip count={summary.inProgress} label="Active" color="#f59e0b" />
-              <StatusChip count={summary.pending} label="Pending" color="#64748b" />
-              {summary.failed > 0 && <StatusChip count={summary.failed} label="Failed" color="#ef4444" />}
+              <StatusChip count={summary.totalDelivered} label="Delivered" color="#10b981" />
+              <StatusChip count={summary.totalInProgress} label="Active" color="#f59e0b" />
+              {summary.totalExceptions > 0 && <StatusChip count={summary.totalExceptions} label="Issues" color="#ef4444" />}
             </div>
           </div>
 
@@ -164,7 +178,90 @@ export default function Dashboard({ tenant, onOpenLoad, onOpenStop, onOpenMap, o
             <ChevronRight size={20} />
           </button>
 
-          {/* Exceptions feed */}
+          {/* Exception loads */}
+          {exceptionLoads.length > 0 && (
+            <div>
+              <SectionHeader title={`Loads with Issues (${exceptionLoads.length})`} />
+              <div className="bg-white rounded-xl border divide-y overflow-hidden">
+                {exceptionLoads.slice(0, 5).map((l) => (
+                  <button
+                    key={l.loadNbr}
+                    onClick={() => onOpenLoad(l.loadNbr)}
+                    className="w-full p-3 flex items-start gap-3 hover:bg-slate-50 text-left"
+                  >
+                    <AlertTriangle size={18} className="text-red-500 flex-shrink-0 mt-0.5" />
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className="font-semibold text-sm truncate">{l.route}</span>
+                        <span className="text-[9px] font-semibold px-1.5 py-0.5 rounded-full text-white bg-red-500">
+                          {l.exceptions} {l.exceptions === 1 ? 'issue' : 'issues'}
+                        </span>
+                      </div>
+                      <div className="text-[11px] text-slate-500 mt-0.5">
+                        {l.driver || 'Unassigned'} · {l.delivered}/{l.totalStops} done
+                      </div>
+                    </div>
+                    <ChevronRight size={16} className="text-slate-300 mt-1 flex-shrink-0" />
+                  </button>
+                ))}
+                {exceptionLoads.length > 5 && (
+                  <button onClick={() => onOpenLoads && onOpenLoads('exception')} className="w-full p-2.5 text-center text-xs text-blue-600 hover:bg-slate-50">
+                    See all {exceptionLoads.length} loads with issues →
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Drivers teaser */}
+          <button onClick={onOpenDrivers} className="w-full bg-white rounded-xl border p-4 flex items-center justify-between hover:bg-slate-50">
+            <div className="flex items-center gap-3">
+              <Users size={22} className="text-slate-400" />
+              <div className="text-left">
+                <div className="font-semibold text-sm">Drivers</div>
+                <div className="text-xs text-slate-500">{summary.uniqueDrivers} on route · find by name</div>
+              </div>
+            </div>
+            <ChevronRight size={18} className="text-slate-300" />
+          </button>
+        </>
+      )}
+
+      {/* GLORY BOUND VIEW — existing KPI + exceptions + loads (unchanged) */}
+      {!state.loading && !state.error && !isNuvizz && summary.totalStops > 0 && (
+        <>
+          <div className="grid grid-cols-2 gap-2">
+            <KPI label="Stops" value={summary.totalStops || 0} sub={`${summary.pctComplete || 0}% complete`} accent={t.color} onClick={() => onOpenStops && onOpenStops()} />
+            <KPI label="Loads" value={summary.totalLoads || 0} sub={`${normalizedLoads.filter(l => l.bucket === 'inProgress').length} active`} accent={t.color} />
+            <KPI label="Miles" value={summary.totalMiles || 0} sub="planned today" />
+            <KPI label="Avg Dwell" value={`${summary.avgDwellMin || 0}m`} sub="per stop" />
+          </div>
+
+          <div className="bg-white rounded-xl p-4 border">
+            <div className="flex items-center justify-between text-xs mb-2">
+              <span className="font-semibold text-slate-700">Day Progress</span>
+              <span className="text-slate-500">{summary.completed}/{summary.totalStops} stops</span>
+            </div>
+            <ProgressBar value={summary.completed} max={summary.totalStops} color="#10b981" height={10} />
+            <div className="flex gap-3 mt-3 text-[11px]">
+              <StatusChip count={summary.completed} label="Complete" color="#10b981" />
+              <StatusChip count={summary.inProgress} label="Active" color="#f59e0b" />
+              <StatusChip count={summary.pending} label="Pending" color="#64748b" />
+              {summary.failed > 0 && <StatusChip count={summary.failed} label="Failed" color="#ef4444" />}
+            </div>
+          </div>
+
+          <button onClick={onOpenMap} className="w-full bg-gradient-to-br from-slate-800 to-slate-900 rounded-xl p-4 flex items-center justify-between text-white">
+            <div className="flex items-center gap-3">
+              <MapPin size={22} />
+              <div className="text-left">
+                <div className="font-semibold">Map View</div>
+                <div className="text-xs text-slate-300">See all {summary.totalStops} stops + routes</div>
+              </div>
+            </div>
+            <ChevronRight size={20} />
+          </button>
+
           {exceptions.length > 0 && (
             <div>
               <SectionHeader title={`Exceptions (${exceptions.length})`} />
@@ -187,23 +284,14 @@ export default function Dashboard({ tenant, onOpenLoad, onOpenStop, onOpenMap, o
                       <div className="text-[11px] text-slate-500 truncate">
                         {s.city}{s.state ? `, ${s.state}` : ''} · {s.driverName || 'Unassigned'}
                       </div>
-                      {s.exceptions?.[0] && (
-                        <div className="text-[11px] text-red-700 mt-0.5 truncate">
-                          {s.exceptions[0].exceptionDesc || s.exceptions[0].exceptionCode}
-                        </div>
-                      )}
                     </div>
                     <ChevronRight size={16} className="text-slate-300 mt-1 flex-shrink-0" />
                   </button>
                 ))}
-                {exceptions.length > 5 && (
-                  <div className="p-2 text-center text-xs text-slate-500">+{exceptions.length - 5} more exceptions</div>
-                )}
               </div>
             </div>
           )}
 
-          {/* Today's loads */}
           <div>
             <SectionHeader title={`Active Loads (${normalizedLoads.length})`} />
             <div className="space-y-2">
@@ -213,23 +301,28 @@ export default function Dashboard({ tenant, onOpenLoad, onOpenStop, onOpenMap, o
             </div>
           </div>
         </>
-      ) : isNuvizz ? (
-        /* NuVizz-specific empty state — reminds user that lookup is the way */
-        <div className="bg-white rounded-xl border p-5 text-center">
-          <Search size={28} className="mx-auto text-slate-300 mb-2" />
-          <div className="text-sm font-semibold text-slate-700 mb-1">Lookup-only mode</div>
-          <div className="text-xs text-slate-500 max-w-xs mx-auto leading-relaxed">
-            NuVizz doesn't expose a "list all today's loads" endpoint.
-            Enter a PRO number above to look up a specific shipment.
-          </div>
-          <div className="text-[10px] text-slate-400 mt-2 font-mono">
-            Try any Uline PRO (7-9 digits) — we'll zero-pad to 9.
-          </div>
-        </div>
-      ) : (
+      )}
+
+      {/* Empty state for Glory Bound with no data */}
+      {!state.loading && !state.error && !isNuvizz && !(summary.totalStops > 0) && (
         <EmptyState icon={<Truck size={32} className="text-slate-300" />} title="No stops today" hint="Nothing has been dispatched yet today." />
       )}
     </div>
+  );
+}
+
+function TappableStat({ label, value, sub, danger, onClick }) {
+  const clickable = !!onClick;
+  return (
+    <button
+      onClick={onClick}
+      disabled={!clickable}
+      className={`text-left ${clickable ? 'active:scale-95 transition' : 'cursor-default'}`}
+    >
+      <div className="text-[9px] uppercase tracking-wider opacity-70">{label}</div>
+      <div className={`text-xl font-bold ${danger ? 'text-red-400' : ''}`}>{value ?? 0}</div>
+      <div className="text-[9px] opacity-60">{sub}</div>
+    </button>
   );
 }
 

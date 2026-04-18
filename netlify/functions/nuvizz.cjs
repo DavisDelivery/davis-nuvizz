@@ -327,7 +327,7 @@ function buildSummary(stops, loads) {
 // "list loads for date" endpoint, so we probe a range of load numbers in parallel. We use
 // a ±75 window (150 numbers) at concurrency 20, which completes in ~6-10 seconds and
 // reliably covers a full day's loads.
-async function scanFleet(tenant, { dateFrom, dateTo, startNbr, endNbr, concurrency = 20 }) {
+async function scanFleet(tenant, { dateFrom, dateTo, startNbr, endNbr, concurrency = 20, includeStops = false }) {
   const { companyCode } = getCreds(tenant);
   const authHeader = basicAuthHeader(tenant);
   const prefix = companyCode; // "DAVIS" or "ULINE"
@@ -348,7 +348,7 @@ async function scanFleet(tenant, { dateFrom, dateTo, startNbr, endNbr, concurren
       const delivered = stops.filter(s => s?.stopExecutionInfo?.stopStatus === '90').length;
       const inProgress = stops.filter(s => ['30', '40'].includes(s?.stopExecutionInfo?.stopStatus)).length;
       const exceptions = stops.filter(s => s?.stopExecutionInfo?.stopStatus === '50' || s?.stopExecutionInfo?.exceptionPresent).length;
-      return {
+      const summary = {
         loadNbr: h.loadNbr,
         loadId: h.loadId,
         route: h.routeName,
@@ -366,6 +366,43 @@ async function scanFleet(tenant, { dateFrom, dateTo, startNbr, endNbr, concurren
         totalCartons: h.totalCartons,
         weight: h.weight,
       };
+      // Flatten stops into slim objects for the stop-level views (Map/Stops)
+      if (includeStops) {
+        summary.stops = stops.map(s => {
+          const stop = s.stop || {};
+          const exec = s.stopExecutionInfo || {};
+          const toInfo = exec.to || {};
+          const addr = stop.to?.address || {};
+          return {
+            stopNbr: stop.stopNbr,
+            stopType: stop.stopType,
+            status: exec.stopStatus,
+            exceptionPresent: !!exec.exceptionPresent,
+            name: addr.name,
+            addr1: addr.addr1,
+            city: addr.city,
+            state: addr.state,
+            zip: addr.zip,
+            latitude: addr.latitude,
+            longitude: addr.longitude,
+            bol: stop.bol,
+            pallets: stop.totalPallets,
+            cartons: stop.totalCartons,
+            weight: stop.weight,
+            plannedEta: toInfo.plannedEtaDTTM,
+            etaDTTM: toInfo.etaDttm,
+            arrivalDTTM: toInfo.arrivalDTTM,
+            confirmedDTTM: toInfo.confirmedDTTM,
+            etaCode: toInfo.etaCode,
+            // carry load context so the UI can show "on JIM 1" or link back
+            loadNbr: h.loadNbr,
+            route: h.routeName,
+            driver: a.driverName,
+            driverUserName: a.driverUserName,
+          };
+        });
+      }
+      return summary;
     } catch (e) { return null; }
   };
 
@@ -618,6 +655,68 @@ exports.handler = async (event) => {
 
       // Cache for 60s (only if using default range)
       if (!params.from && !params.to) setCachedFleet(tenant, dateStr, result);
+
+      return {
+        statusCode: 200,
+        headers: { ...corsHeaders, 'X-Cache': 'MISS' },
+        body: JSON.stringify(result),
+      };
+    }
+
+    // --- Fleet stops: flat list of all stops across all of today's loads ---
+    //   ?tenant=davis&path=__fleetstops             → all stops today (Map/Stops views)
+    //   ?tenant=davis&path=__fleetstops&date=YYYY-MM-DD
+    // Shares scan with __fleet via the same cache entry (keyed with :stops suffix).
+    if (apiPath === '__fleetstops') {
+      const dateStr = params.date || new Date().toISOString().slice(0, 10);
+      const bypassCache = params.nocache === '1' || params.nocache === 'true';
+      const stopsCacheKey = `${tenant}:${dateStr}:stops`;
+
+      if (!bypassCache) {
+        const hit = __fleetCache.get(stopsCacheKey);
+        if (hit && Date.now() - hit.storedAt < FLEET_CACHE_TTL_MS) {
+          return {
+            statusCode: 200,
+            headers: { ...corsHeaders, 'X-Cache': 'HIT' },
+            body: JSON.stringify({ ...hit.data, cached: true }),
+          };
+        }
+      }
+
+      const range = estimateLoadRange(dateStr);
+      const loadsWithStops = await scanFleet(tenant, {
+        dateFrom: dateStr,
+        dateTo: dateStr,
+        startNbr: range.startNbr,
+        endNbr: range.endNbr,
+        concurrency: 20,
+        includeStops: true,
+      });
+
+      // Flatten to one array of stops
+      const stops = [];
+      for (const l of loadsWithStops) {
+        if (l.stops) stops.push(...l.stops);
+      }
+      // Sort by plannedEta for a chronological feed
+      stops.sort((a, b) => (a.plannedEta || '').localeCompare(b.plannedEta || ''));
+
+      const summary = {
+        totalStops: stops.length,
+        delivered: stops.filter(s => s.status === '90').length,
+        inProgress: stops.filter(s => s.status === '40').length,
+        scheduled: stops.filter(s => s.status === '30').length,
+        exceptions: stops.filter(s => s.exceptionPresent || s.status === '50').length,
+        withCoords: stops.filter(s => s.latitude && s.longitude).length,
+      };
+      summary.pctComplete = summary.totalStops ? Math.round((summary.delivered / summary.totalStops) * 100) : 0;
+
+      const result = { date: dateStr, stops, summary, scannedRange: { from: range.startNbr, to: range.endNbr } };
+      __fleetCache.set(stopsCacheKey, { storedAt: Date.now(), data: result });
+      if (__fleetCache.size > 50) {
+        const firstKey = __fleetCache.keys().next().value;
+        __fleetCache.delete(firstKey);
+      }
 
       return {
         statusCode: 200,

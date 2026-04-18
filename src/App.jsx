@@ -13,7 +13,7 @@ import DriversScreen from './screens/DriversScreen';
 import LoadDetail from './screens/LoadDetail';
 import StopDetail from './screens/StopDetail';
 
-const APP_VERSION = '0.5.1';
+const APP_VERSION = '0.6.0';
 
 export default function App() {
   const [tenant, setTenantState] = useState(() => {
@@ -24,9 +24,15 @@ export default function App() {
     try { localStorage.setItem('dn_tenant', t); } catch {}
   };
   const [tab, setTab] = useState('dashboard');
+  const [tabFilter, setTabFilter] = useState(null); // {tab: 'stops', filter: 'exceptions'} etc
   const [detail, setDetail] = useState(null);
   const [health, setHealth] = useState('checking');
   const [online, setOnline] = useState(navigator.onLine);
+
+  const goToTab = (targetTab, filter = null) => {
+    setTab(targetTab);
+    setTabFilter(filter ? { tab: targetTab, filter } : null);
+  };
 
   useEffect(() => {
     const on = () => setOnline(true);
@@ -118,14 +124,16 @@ export default function App() {
             onOpenLoad={openLoad}
             onOpenStop={openStop}
             onOpenMap={() => setTab('map')}
-            onOpenStops={() => setTab('stops')}
+            onOpenStops={(filter) => goToTab('stops', filter)}
+            onOpenLoads={(filter) => goToTab('loads', filter)}
+            onOpenDrivers={() => setTab('drivers')}
           />
         ) : tab === 'map' ? (
           <MapScreen tenant={tenant} onOpenStop={openStop} />
         ) : tab === 'loads' ? (
-          <LoadsScreen tenant={tenant} onOpenLoad={openLoad} />
+          <LoadsScreen tenant={tenant} onOpenLoad={openLoad} initialFilter={tabFilter?.tab === 'loads' ? tabFilter.filter : null} />
         ) : tab === 'stops' ? (
-          <StopsScreen tenant={tenant} onOpenStop={openStop} />
+          <StopsScreen tenant={tenant} onOpenStop={openStop} initialFilter={tabFilter?.tab === 'stops' ? tabFilter.filter : null} />
         ) : (
           <DriversScreen tenant={tenant} onOpenLoad={openLoad} onOpenStop={openStop} />
         )}
