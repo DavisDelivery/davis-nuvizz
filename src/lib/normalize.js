@@ -1,11 +1,24 @@
 // src/lib/normalize.js — translate raw nuVizz API shapes into UI-friendly shapes
 
 // --- status buckets ---
+// NuVizz uses numeric stop/load status codes:
+//   10=Created, 30=Scheduled, 40=In Transit / Out for Delivery / Arrived, 50=Exception, 90=Delivered/Complete
+// Glory Bound (Firestore) and older shapes use English strings. Handle both.
 export function statusBucket(status) {
-  const s = (status || '').toString().toUpperCase();
+  if (status == null) return 'pending';
+  const raw = status.toString().trim();
+
+  // Numeric NuVizz codes first (most common path in Davis/Uline tenants)
+  if (raw === '90') return 'completed';
+  if (raw === '40') return 'inProgress';
+  if (raw === '50') return 'failed';
+  if (raw === '10' || raw === '30') return 'pending';
+
+  // Fall back to string matching (Glory Bound tenant, older data, etc.)
+  const s = raw.toUpperCase();
   if (s.includes('COMPLET') || s.includes('CLOSED') || s.includes('DELIV')) return 'completed';
-  if (s.includes('PROGRESS') || s.includes('DISPATCH') || s.includes('ENROUTE') || s.includes('ARRIVED')) return 'inProgress';
-  if (s.includes('FAIL')) return 'failed';
+  if (s.includes('PROGRESS') || s.includes('DISPATCH') || s.includes('ENROUTE') || s.includes('ARRIVED') || s.includes('TRANSIT')) return 'inProgress';
+  if (s.includes('FAIL') || s.includes('EXCEPT')) return 'failed';
   if (s.includes('CANCEL')) return 'cancelled';
   return 'pending';
 }
@@ -19,10 +32,10 @@ export const BUCKET_COLORS = {
 };
 
 export const BUCKET_LABELS = {
-  completed: 'Complete',
-  inProgress: 'In Progress',
+  completed: 'Delivered',
+  inProgress: 'En Route',
   pending: 'Pending',
-  failed: 'Failed',
+  failed: 'Exception',
   cancelled: 'Cancelled',
 };
 
