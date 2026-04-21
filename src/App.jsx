@@ -1,7 +1,7 @@
 // src/App.jsx — main shell & routing
 
 import React, { useState, useEffect } from 'react';
-import { Home, MapPin, Truck, Package, Users, ArrowLeft, Wifi, WifiOff, RefreshCw } from 'lucide-react';
+import { Home, MapPin, Truck, Package, Users, ArrowLeft, Wifi, WifiOff, RefreshCw, ChevronLeft, ChevronRight, Calendar } from 'lucide-react';
 import { TENANTS, fetchHealth } from './lib/api';
 import { TenantSwitch, TabBtn } from './components/UI';
 
@@ -13,7 +13,13 @@ import DriversScreen from './screens/DriversScreen';
 import LoadDetail from './screens/LoadDetail';
 import StopDetail from './screens/StopDetail';
 
-const APP_VERSION = '0.6.1';
+const APP_VERSION = '0.7.1';
+
+// Date helpers - UTC-based so we don't drift across timezones
+function ymd(d) { return d.toISOString().slice(0, 10); }
+function parseYmd(s) { return new Date(s + 'T00:00:00Z'); }
+function addDays(d, n) { const c = new Date(d); c.setUTCDate(c.getUTCDate() + n); return c; }
+function isWeekend(d) { const day = d.getUTCDay(); return day === 0 || day === 6; }
 
 export default function App() {
   const [tenant, setTenantState] = useState(() => {
@@ -28,6 +34,20 @@ export default function App() {
   const [detail, setDetail] = useState(null);
   const [health, setHealth] = useState('checking');
   const [online, setOnline] = useState(navigator.onLine);
+
+  // Shared date state — used across all tabs so clicking around doesn't reset
+  const [viewDate, setViewDate] = useState(() => ymd(new Date()));
+  const isToday = viewDate === ymd(new Date());
+
+  const shiftDate = (days) => {
+    setViewDate(ymd(addDays(parseYmd(viewDate), days)));
+  };
+  const goToToday = () => setViewDate(ymd(new Date()));
+  const goToPrevBusinessDay = () => {
+    let d = addDays(parseYmd(viewDate), -1);
+    while (isWeekend(d)) d = addDays(d, -1);
+    setViewDate(ymd(d));
+  };
 
   const goToTab = (targetTab, filter = null) => {
     setTab(targetTab);
@@ -96,6 +116,47 @@ export default function App() {
         </div>
       </header>
 
+      {/* Date bar — sticky, visible on all tabs, hidden when drilling into detail */}
+      {!detail && tenant !== 'glorybound' && (
+        <div className="sticky z-30 bg-white border-b" style={{ top: 'calc(env(safe-area-inset-top) + 52px)' }}>
+          <div className="flex items-center justify-between px-3 py-2 gap-2">
+            <button
+              onClick={() => shiftDate(-1)}
+              className="p-2 rounded-lg hover:bg-slate-100 active:bg-slate-200 text-slate-600 flex-shrink-0"
+              aria-label="Previous day"
+            >
+              <ChevronLeft size={20} />
+            </button>
+            <div className="flex-1 flex items-center justify-center gap-2 min-w-0">
+              <Calendar size={14} className="text-slate-400 flex-shrink-0" />
+              <div className="text-center min-w-0">
+                <div className="text-[9px] uppercase tracking-wider text-slate-500 font-semibold leading-none">
+                  {isToday ? 'Today' : isWeekend(parseYmd(viewDate)) ? 'Weekend' : 'Viewing'}
+                </div>
+                <div className="text-sm font-bold leading-tight">
+                  {parseYmd(viewDate).toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric', timeZone: 'UTC' })}
+                </div>
+              </div>
+              {!isToday && (
+                <button
+                  onClick={goToToday}
+                  className="text-[10px] font-semibold text-blue-600 px-2 py-1 rounded hover:bg-blue-50 flex-shrink-0"
+                >
+                  Today
+                </button>
+              )}
+            </div>
+            <button
+              onClick={() => shiftDate(1)}
+              className="p-2 rounded-lg hover:bg-slate-100 active:bg-slate-200 text-slate-600 flex-shrink-0"
+              aria-label="Next day"
+            >
+              <ChevronRight size={20} />
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Health banner — only relevant for NuVizz tenants */}
       {health === 'checking' && tenant !== 'glorybound' && (
         <div className="bg-amber-50 border-b border-amber-200 px-4 py-2 text-xs text-amber-800 flex items-center gap-2">
@@ -121,6 +182,9 @@ export default function App() {
         ) : tab === 'dashboard' ? (
           <Dashboard
             tenant={tenant}
+            viewDate={viewDate}
+            isToday={isToday}
+            goToPrevBusinessDay={goToPrevBusinessDay}
             onOpenLoad={openLoad}
             onOpenStop={openStop}
             onOpenMap={() => setTab('map')}
@@ -129,13 +193,13 @@ export default function App() {
             onOpenDrivers={() => setTab('drivers')}
           />
         ) : tab === 'map' ? (
-          <MapScreen tenant={tenant} onOpenStop={openStop} />
+          <MapScreen tenant={tenant} viewDate={viewDate} onOpenStop={openStop} />
         ) : tab === 'loads' ? (
-          <LoadsScreen tenant={tenant} onOpenLoad={openLoad} initialFilter={tabFilter?.tab === 'loads' ? tabFilter.filter : null} />
+          <LoadsScreen tenant={tenant} viewDate={viewDate} onOpenLoad={openLoad} initialFilter={tabFilter?.tab === 'loads' ? tabFilter.filter : null} />
         ) : tab === 'stops' ? (
-          <StopsScreen tenant={tenant} onOpenStop={openStop} initialFilter={tabFilter?.tab === 'stops' ? tabFilter.filter : null} />
+          <StopsScreen tenant={tenant} viewDate={viewDate} onOpenStop={openStop} initialFilter={tabFilter?.tab === 'stops' ? tabFilter.filter : null} />
         ) : (
-          <DriversScreen tenant={tenant} onOpenLoad={openLoad} onOpenStop={openStop} />
+          <DriversScreen tenant={tenant} viewDate={viewDate} onOpenLoad={openLoad} onOpenStop={openStop} />
         )}
       </main>
 

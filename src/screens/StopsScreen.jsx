@@ -12,7 +12,7 @@ import { ErrorBox, EmptyState } from '../components/UI';
 const STATUS_LABEL = { '10': 'Created', '30': 'Scheduled', '40': 'En Route', '50': 'Exception', '90': 'Delivered' };
 const STATUS_COLOR = { '10': '#64748b', '30': '#64748b', '40': '#f59e0b', '50': '#ef4444', '90': '#10b981' };
 
-export default function StopsScreen({ tenant, onOpenStop, initialFilter }) {
+export default function StopsScreen({ tenant, viewDate, onOpenStop, initialFilter }) {
   const [state, setState] = useState({ loading: true, error: null, data: null });
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState(initialFilter || 'active'); // active = in-transit + scheduled + exceptions
@@ -26,12 +26,12 @@ export default function StopsScreen({ tenant, onOpenStop, initialFilter }) {
   const load = useCallback(async () => {
     setState({ loading: true, error: null, data: null });
     try {
-      const data = await fetchFleetStops(tenant);
+      const data = await fetchFleetStops(tenant, viewDate);
       setState({ loading: false, error: null, data });
     } catch (e) {
       setState({ loading: false, error: e.message, data: null });
     }
-  }, [tenant]);
+  }, [tenant, viewDate]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -65,8 +65,8 @@ export default function StopsScreen({ tenant, onOpenStop, initialFilter }) {
     <div className="p-4 space-y-3 pb-4">
       <div className="flex items-center justify-between">
         <div>
-          <div className="text-[11px] uppercase tracking-wider text-slate-500 font-semibold">Today's Stops</div>
-          <div className="text-lg font-bold">{new Date().toLocaleDateString([], { weekday: 'long', month: 'short', day: 'numeric' })}</div>
+          <div className="text-[11px] uppercase tracking-wider text-slate-500 font-semibold">Stops</div>
+          <div className="text-sm font-semibold text-slate-700">{counts.all} total · {counts.active} active</div>
         </div>
         <button onClick={load} disabled={state.loading} className="p-2 rounded-lg hover:bg-slate-100 text-slate-600 disabled:opacity-50">
           <RefreshCw size={18} className={state.loading ? 'animate-spin' : ''} />

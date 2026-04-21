@@ -13,7 +13,7 @@ import { Loading, ErrorBox, ProgressBar, EmptyState, SectionHeader } from '../co
 const STATUS_LABEL = { '10': 'Created', '30': 'Scheduled', '40': 'In Transit', '50': 'Exception', '90': 'Delivered' };
 const STATUS_COLOR = { '10': '#64748b', '30': '#64748b', '40': '#f59e0b', '50': '#ef4444', '90': '#10b981' };
 
-export default function DriversScreen({ tenant, onOpenLoad, onOpenStop }) {
+export default function DriversScreen({ tenant, viewDate, onOpenLoad, onOpenStop }) {
   const [view, setView] = useState('fleet');
   const [search, setSearch] = useState('');
   const [selectedDriver, setSelectedDriver] = useState(null);
@@ -24,22 +24,22 @@ export default function DriversScreen({ tenant, onOpenLoad, onOpenStop }) {
   const loadFleet = useCallback(async () => {
     setFleetState({ loading: true, error: null, data: null });
     try {
-      const data = await fetchFleet(tenant);
+      const data = await fetchFleet(tenant, viewDate);
       setFleetState({ loading: false, error: null, data });
     } catch (e) {
       setFleetState({ loading: false, error: e.message, data: null });
     }
-  }, [tenant]);
+  }, [tenant, viewDate]);
 
   const loadDriver = useCallback(async (userName) => {
     setDriverState({ loading: true, error: null, data: null });
     try {
-      const data = await fetchDriver(tenant, userName);
+      const data = await fetchDriver(tenant, userName, viewDate);
       setDriverState({ loading: false, error: null, data });
     } catch (e) {
       setDriverState({ loading: false, error: e.message, data: null });
     }
-  }, [tenant]);
+  }, [tenant, viewDate]);
 
   useEffect(() => {
     if (view === 'fleet') loadFleet();

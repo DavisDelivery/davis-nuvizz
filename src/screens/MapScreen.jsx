@@ -61,7 +61,7 @@ function toMapStop(s) {
   };
 }
 
-export default function MapScreen({ tenant, onOpenStop }) {
+export default function MapScreen({ tenant, viewDate, onOpenStop }) {
   const [state, setState] = useState({ loading: true, error: null, data: null });
   const [selected, setSelected] = useState(null); // a normalized stop
   const [showRoutes, setShowRoutes] = useState(true);
@@ -75,12 +75,12 @@ export default function MapScreen({ tenant, onOpenStop }) {
   const load = useCallback(async () => {
     setState({ loading: true, error: null, data: null });
     try {
-      const data = await fetchFleetStops(tenant);
+      const data = await fetchFleetStops(tenant, viewDate);
       setState({ loading: false, error: null, data });
     } catch (e) {
       setState({ loading: false, error: e.message, data: null });
     }
-  }, [tenant]);
+  }, [tenant, viewDate]);
 
   useEffect(() => { load(); }, [load]);
 

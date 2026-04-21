@@ -8,14 +8,9 @@ import { fetchToday, fetchFleet, normalizePro, TENANTS } from '../lib/api';
 import { normalizeLoad, normalizeStop, fmtTime, fmtDate, BUCKET_COLORS } from '../lib/normalize';
 import { KPI, Loading, ErrorBox, SectionHeader, ProgressBar, StatusPill, EmptyState } from '../components/UI';
 
-function ymd(d) { return d.toISOString().slice(0, 10); }
-function parseDate(s) { return new Date(s + 'T00:00:00Z'); }
-function addDays(d, n) { const c = new Date(d); c.setUTCDate(c.getUTCDate() + n); return c; }
-
-export default function Dashboard({ tenant, onOpenLoad, onOpenStop, onOpenMap, onOpenStops, onOpenLoads, onOpenDrivers }) {
+export default function Dashboard({ tenant, viewDate, isToday, goToPrevBusinessDay, onOpenLoad, onOpenStop, onOpenMap, onOpenStops, onOpenLoads, onOpenDrivers }) {
   const [state, setState] = useState({ loading: true, error: null, data: null });
   const [proInput, setProInput] = useState('');
-  const [viewDate, setViewDate] = useState(() => ymd(new Date())); // YYYY-MM-DD
   const [recentPros, setRecentPros] = useState(() => {
     try {
       const stored = JSON.parse(localStorage.getItem('dn_recent_pros') || '[]');
@@ -24,8 +19,7 @@ export default function Dashboard({ tenant, onOpenLoad, onOpenStop, onOpenMap, o
   });
   const t = TENANTS[tenant];
   const isNuvizz = tenant === 'davis' || tenant === 'uline';
-  const isToday = viewDate === ymd(new Date());
-  const dayLabel = parseDate(viewDate).toLocaleDateString([], { weekday: 'long', month: 'short', day: 'numeric', timeZone: 'UTC' });
+  const dayLabel = new Date(viewDate + 'T00:00:00Z').toLocaleDateString([], { weekday: 'long', month: 'short', day: 'numeric', timeZone: 'UTC' });
 
   const load = useCallback(async () => {
     setState({ loading: true, error: null, data: null });
@@ -39,12 +33,6 @@ export default function Dashboard({ tenant, onOpenLoad, onOpenStop, onOpenMap, o
   }, [tenant, isNuvizz, viewDate]);
 
   useEffect(() => { load(); }, [load]);
-
-  const shiftDate = (days) => {
-    const current = parseDate(viewDate);
-    setViewDate(ymd(addDays(current, days)));
-  };
-  const goToToday = () => setViewDate(ymd(new Date()));
 
   const addRecent = (pro) => {
     const next = [pro, ...recentPros.filter(p => p !== pro)].slice(0, 8);
@@ -80,34 +68,17 @@ export default function Dashboard({ tenant, onOpenLoad, onOpenStop, onOpenMap, o
 
   return (
     <div className="p-4 space-y-4 pb-4">
-      {/* Header with date nav + refresh */}
+      {/* Header just shows "Today" or the date label — App owns the date picker */}
       <div className="flex items-center justify-between">
         <div className="flex-1 min-w-0">
           <div className="text-[11px] uppercase tracking-wider text-slate-500 font-semibold">
-            {isToday ? 'Today' : 'Viewing'}
+            {isToday ? 'Today' : 'Fleet Overview'}
           </div>
           <div className="text-lg font-bold truncate">{dayLabel}</div>
         </div>
-        <div className="flex items-center gap-1">
-          {isNuvizz && (
-            <>
-              <button onClick={() => shiftDate(-1)} className="p-2 rounded-lg hover:bg-slate-100 text-slate-600" title="Previous day">
-                <ChevronLeft size={18} />
-              </button>
-              {!isToday && (
-                <button onClick={goToToday} className="px-2.5 py-1 rounded-lg hover:bg-slate-100 text-slate-600 text-xs font-semibold">
-                  Today
-                </button>
-              )}
-              <button onClick={() => shiftDate(1)} className="p-2 rounded-lg hover:bg-slate-100 text-slate-600" title="Next day">
-                <ChevronRight size={18} />
-              </button>
-            </>
-          )}
-          <button onClick={load} disabled={state.loading} className="p-2 rounded-lg hover:bg-slate-100 text-slate-600 disabled:opacity-50">
-            <RefreshCw size={18} className={state.loading ? 'animate-spin' : ''} />
-          </button>
-        </div>
+        <button onClick={load} disabled={state.loading} className="p-2 rounded-lg hover:bg-slate-100 text-slate-600 disabled:opacity-50">
+          <RefreshCw size={18} className={state.loading ? 'animate-spin' : ''} />
+        </button>
       </div>
 
       {/* PRO lookup bar — always visible, primary action for NuVizz tenants */}
@@ -184,19 +155,42 @@ export default function Dashboard({ tenant, onOpenLoad, onOpenStop, onOpenMap, o
             </div>
           </div>
 
-          {/* Completion progress */}
-          <div className="bg-white rounded-xl p-4 border">
+          {/* Completion progress — tappable to show delivered stops; chips filter by status */}
+          <button
+            onClick={() => onOpenStops && onOpenStops('delivered')}
+            className="w-full bg-white rounded-xl p-4 border text-left hover:bg-slate-50 active:scale-[0.99] transition"
+          >
             <div className="flex items-center justify-between text-xs mb-2">
-              <span className="font-semibold text-slate-700">Day Progress</span>
+              <span className="font-semibold text-slate-700 flex items-center gap-1.5">
+                Day Progress
+                <ChevronRight size={12} className="text-slate-400" />
+              </span>
               <span className="text-slate-500">{summary.totalDelivered}/{summary.totalStops} stops</span>
             </div>
             <ProgressBar value={summary.totalDelivered} max={summary.totalStops} color="#10b981" height={10} />
-            <div className="flex gap-3 mt-3 text-[11px]">
-              <StatusChip count={summary.totalDelivered} label="Delivered" color="#10b981" />
-              <StatusChip count={summary.totalInProgress} label="Active" color="#f59e0b" />
-              {summary.totalExceptions > 0 && <StatusChip count={summary.totalExceptions} label="Issues" color="#ef4444" />}
+            <div className="flex gap-1.5 mt-3 text-[11px]">
+              <FilterChip
+                count={summary.totalDelivered}
+                label="Delivered"
+                color="#10b981"
+                onClick={(e) => { e.stopPropagation(); onOpenStops && onOpenStops('delivered'); }}
+              />
+              <FilterChip
+                count={summary.totalInProgress}
+                label="Active"
+                color="#f59e0b"
+                onClick={(e) => { e.stopPropagation(); onOpenStops && onOpenStops('inTransit'); }}
+              />
+              {summary.totalExceptions > 0 && (
+                <FilterChip
+                  count={summary.totalExceptions}
+                  label="Issues"
+                  color="#ef4444"
+                  onClick={(e) => { e.stopPropagation(); onOpenStops && onOpenStops('exceptions'); }}
+                />
+              )}
             </div>
-          </div>
+          </button>
 
           {/* Map teaser */}
           <button onClick={onOpenMap} className="w-full bg-gradient-to-br from-slate-800 to-slate-900 rounded-xl p-4 flex items-center justify-between text-white">
@@ -269,13 +263,7 @@ export default function Dashboard({ tenant, onOpenLoad, onOpenStop, onOpenMap, o
           </div>
           <div className="flex gap-2 justify-center flex-wrap">
             <button
-              onClick={() => {
-                // Jump to the previous business day (skip Sun & Sat)
-                const d = parseDate(viewDate);
-                let prev = addDays(d, -1);
-                while (prev.getUTCDay() === 0 || prev.getUTCDay() === 6) prev = addDays(prev, -1);
-                setViewDate(ymd(prev));
-              }}
+              onClick={goToPrevBusinessDay}
               className="px-3 py-1.5 bg-slate-800 text-white rounded-lg text-xs font-semibold"
             >
               ← Previous business day
@@ -389,6 +377,20 @@ function StatusChip({ count, label, color }) {
       <span className="w-2 h-2 rounded-full" style={{ background: color }} />
       <span className="text-slate-600">{count} {label}</span>
     </div>
+  );
+}
+
+// Tappable variant — pill-shaped, used in Day Progress card so user can jump
+// straight to Stops tab pre-filtered to that status
+function FilterChip({ count, label, color, onClick }) {
+  return (
+    <button
+      onClick={onClick}
+      className="flex items-center gap-1 px-2 py-1 rounded-full hover:bg-slate-100 active:bg-slate-200 transition"
+    >
+      <span className="w-2 h-2 rounded-full" style={{ background: color }} />
+      <span className="text-slate-700 font-medium">{count} {label}</span>
+    </button>
   );
 }
 
