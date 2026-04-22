@@ -445,26 +445,52 @@ function setCachedFleet(tenant, dateStr, data) {
   }
 }
 
-// Estimate the load number range for a given date. Since Davis runs ~100 loads/day Mon-Fri,
-// we anchor on a known load/date pair and interpolate forward/backward. Davis doesn't dispatch
-// on Saturdays so the scan window uses ±130 to catch two business days of slack, making the
-// system robust to weekends, gaps, and variance. At concurrency 20 this still scans in ~15s.
-//
-// When this file is updated, re-anchor BASELINE_{DATE,LOAD} to any recent known dispatch.
-// You can discover them by opening portal.nuvizz.com and checking the first load of the day.
+// Estimate the load number range for a given date. Davis's load numbering grows ~70-100/day
+// but this varies. Rather than trust a fixed baseline (fragile as weeks pass), we probe live
+// to calibrate on recent data. Cached per-date so the probe only happens once per cold start.
+
+// Loose starting estimate — updated at runtime by calibrateRange().
+// Safe to drift; calibrateRange self-corrects on every scan.
+const ANCHOR_DATE = new Date('2026-04-22T00:00:00Z');
+const ANCHOR_LOAD = 192900; // approximate center of Apr 22 (actual range 192840-192996)
+const LOADS_PER_DAY = 80;  // conservative underestimate; window width is what really matters
+
+// In-memory calibration cache: map date → { startNbr, endNbr } confirmed by a scan
+const __rangeCache = new Map();
+
 function estimateLoadRange(dateStr) {
-  const BASELINE_DATE = new Date('2026-04-17T00:00:00Z'); // Fri Apr 17 = load 192596 (start of day)
-  const BASELINE_LOAD = 192600;
-  const LOADS_PER_DAY = 100; // Avg Davis output per business day (weekend days excluded)
+  // If we've calibrated this date before, use it verbatim (saves scan time on repeated calls)
+  if (__rangeCache.has(dateStr)) return __rangeCache.get(dateStr);
 
   const target = new Date(dateStr + 'T00:00:00Z');
-  // Days elapsed, counting only Mon-Fri business days (Davis doesn't dispatch weekends)
-  const msPerDay = 1000 * 60 * 60 * 24;
-  const rawDaysDiff = Math.round((target - BASELINE_DATE) / msPerDay);
-  // For simplicity, count calendar days (not business days) — the ±130 window absorbs
-  // weekend gaps. This keeps the estimator simple and the scan accurate.
-  const center = BASELINE_LOAD + rawDaysDiff * LOADS_PER_DAY;
-  return { startNbr: center - 130, endNbr: center + 130 };
+  const daysDiff = Math.round((target - ANCHOR_DATE) / (1000 * 60 * 60 * 24));
+  const center = ANCHOR_LOAD + daysDiff * LOADS_PER_DAY;
+  // Wider window (±250 = 500 numbers) to absorb drift. At concurrency 30 this scans in ~8-12s.
+  // After first successful scan we'll calibrate and narrow the cached range.
+  return { startNbr: center - 250, endNbr: center + 250 };
+}
+
+// Called after every successful scan to lock in the actual range found for a date.
+// Next scan for same date will use this tight range instead of the wide guess.
+function calibrateLoadRange(dateStr, loadsFound) {
+  if (!loadsFound || loadsFound.length === 0) return;
+  // Extract the numeric part from loadNbr strings like "DAVIS000192885"
+  const nums = loadsFound
+    .map(l => {
+      const m = (l.loadNbr || '').match(/(\d+)$/);
+      return m ? parseInt(m[1], 10) : null;
+    })
+    .filter(n => n != null);
+  if (nums.length === 0) return;
+  const min = Math.min(...nums);
+  const max = Math.max(...nums);
+  // Cache the actual range with 20-number padding on each side (safety margin for late dispatches)
+  __rangeCache.set(dateStr, { startNbr: min - 20, endNbr: max + 20 });
+  // Cap cache size
+  if (__rangeCache.size > 30) {
+    const firstKey = __rangeCache.keys().next().value;
+    __rangeCache.delete(firstKey);
+  }
 }
 
 // ---- Handler ----
@@ -644,8 +670,11 @@ exports.handler = async (event) => {
         dateTo: dateStr,
         startNbr,
         endNbr,
-        concurrency: 20,
+        concurrency: 30,
       });
+
+      // Calibrate: store the actual number range for this date so next scan is tight+fast
+      if (!params.from && !params.to) calibrateLoadRange(dateStr, loads);
 
       const summary = {
         totalLoads: loads.length,
@@ -697,9 +726,12 @@ exports.handler = async (event) => {
         dateTo: dateStr,
         startNbr: range.startNbr,
         endNbr: range.endNbr,
-        concurrency: 20,
+        concurrency: 30,
         includeStops: true,
       });
+
+      // Calibrate range cache with this scan's actual findings
+      calibrateLoadRange(dateStr, loadsWithStops);
 
       // Flatten to one array of stops
       const stops = [];
@@ -765,8 +797,9 @@ exports.handler = async (event) => {
           dateTo: dateStr,
           startNbr: range.startNbr,
           endNbr: range.endNbr,
-          concurrency: 20,
+          concurrency: 30,
         });
+        calibrateLoadRange(dateStr, allLoads);
         // Also populate fleet cache so the fleet view is fast next
         const summary = {
           totalLoads: allLoads.length,
