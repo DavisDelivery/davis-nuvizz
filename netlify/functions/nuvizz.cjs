@@ -459,8 +459,12 @@ const LOADS_PER_DAY = 80;  // conservative underestimate; window width is what r
 const __rangeCache = new Map();
 
 function estimateLoadRange(dateStr) {
-  // If we've calibrated this date before, use it verbatim (saves scan time on repeated calls)
-  if (__rangeCache.has(dateStr)) return __rangeCache.get(dateStr);
+  // If we have a recently-calibrated range for this date, use it (saves scan time).
+  // Expires after 10 min to let new dispatches show up.
+  const cached = __rangeCache.get(dateStr);
+  if (cached && Date.now() - cached.storedAt < RANGE_CACHE_TTL_MS) {
+    return cached.range;
+  }
 
   const target = new Date(dateStr + 'T00:00:00Z');
   const daysDiff = Math.round((target - ANCHOR_DATE) / (1000 * 60 * 60 * 24));
@@ -472,21 +476,31 @@ function estimateLoadRange(dateStr) {
 
 // Called after every successful scan to lock in the actual range found for a date.
 // Next scan for same date will use this tight range instead of the wide guess.
+//
+// Important: dispatchers add loads throughout the day, so we pad generously on the HIGH side
+// (+100) to catch late additions, and modestly on the LOW side (-20) since older loads rarely
+// backfill below the floor. Also TTL-expire the cache so a stale calibration from morning
+// doesn't permanently clamp an afternoon scan.
+//
+// SANITY: don't narrow the cache if we found very few loads — probably an early-morning scan
+// before dispatch finished. Keep the wide window for the next caller.
+const RANGE_CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
+const MIN_LOADS_TO_CALIBRATE = 50; // trust range narrowing only once we've found a decent batch
 function calibrateLoadRange(dateStr, loadsFound) {
-  if (!loadsFound || loadsFound.length === 0) return;
-  // Extract the numeric part from loadNbr strings like "DAVIS000192885"
+  if (!loadsFound || loadsFound.length < MIN_LOADS_TO_CALIBRATE) return;
   const nums = loadsFound
     .map(l => {
       const m = (l.loadNbr || '').match(/(\d+)$/);
       return m ? parseInt(m[1], 10) : null;
     })
     .filter(n => n != null);
-  if (nums.length === 0) return;
+  if (nums.length < MIN_LOADS_TO_CALIBRATE) return;
   const min = Math.min(...nums);
   const max = Math.max(...nums);
-  // Cache the actual range with 20-number padding on each side (safety margin for late dispatches)
-  __rangeCache.set(dateStr, { startNbr: min - 20, endNbr: max + 20 });
-  // Cap cache size
+  __rangeCache.set(dateStr, {
+    storedAt: Date.now(),
+    range: { startNbr: min - 20, endNbr: max + 100 },
+  });
   if (__rangeCache.size > 30) {
     const firstKey = __rangeCache.keys().next().value;
     __rangeCache.delete(firstKey);

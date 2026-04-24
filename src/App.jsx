@@ -13,7 +13,7 @@ import DriversScreen from './screens/DriversScreen';
 import LoadDetail from './screens/LoadDetail';
 import StopDetail from './screens/StopDetail';
 
-const APP_VERSION = '0.8.0';
+const APP_VERSION = '0.8.1';
 
 // Date helpers - UTC-based so we don't drift across timezones
 function ymd(d) { return d.toISOString().slice(0, 10); }
