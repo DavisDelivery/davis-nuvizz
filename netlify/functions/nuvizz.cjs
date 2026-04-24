@@ -438,10 +438,38 @@ function getCachedFleet(tenant, dateStr) {
 function setCachedFleet(tenant, dateStr, data) {
   const key = `${tenant}:${dateStr}`;
   __fleetCache.set(key, { storedAt: Date.now(), data });
-  // Cap cache size at 50 entries (cheap LRU by insertion order)
   if (__fleetCache.size > 50) {
     const firstKey = __fleetCache.keys().next().value;
     __fleetCache.delete(firstKey);
+  }
+}
+
+// ---- Persistent Blob storage (shared across function instances) ----
+// The scheduled function "fleet-refresh-background" writes pre-computed fleet data to
+// Netlify Blobs every 2 minutes. When users hit __fleet / __fleetstops, we read from
+// Blobs first — this eliminates the 10-15s cold-start scan on mobile.
+// Blobs freshness: accept up to BLOB_MAX_AGE_MS, otherwise fall back to live scan.
+const BLOB_MAX_AGE_MS = 5 * 60 * 1000; // 5 minutes — background refreshes every 2min
+async function readFleetBlob(tenant, dateStr, kind /* 'fleet' | 'stops' */) {
+  try {
+    const { getStore } = require('@netlify/blobs');
+    const store = getStore({ name: 'fleet-cache', consistency: 'eventual' });
+    const raw = await store.get(`${kind}:${tenant}:${dateStr}`, { type: 'json' });
+    if (!raw) return null;
+    if (!raw.storedAt || Date.now() - raw.storedAt > BLOB_MAX_AGE_MS) return null;
+    return raw.data;
+  } catch (e) {
+    // Blobs unavailable (local dev, misconfig, etc.) — fall through to live scan
+    return null;
+  }
+}
+async function writeFleetBlob(tenant, dateStr, kind, data) {
+  try {
+    const { getStore } = require('@netlify/blobs');
+    const store = getStore({ name: 'fleet-cache', consistency: 'eventual' });
+    await store.setJSON(`${kind}:${tenant}:${dateStr}`, { storedAt: Date.now(), data });
+  } catch (e) {
+    // Non-fatal — blob write failures shouldn't break the response
   }
 }
 
@@ -658,18 +686,35 @@ exports.handler = async (event) => {
       const dateStr = params.date || new Date().toISOString().slice(0, 10);
       const bypassCache = params.nocache === '1' || params.nocache === 'true';
 
-      // Serve from cache if fresh (only for default range — skip when manual range specified)
+      // Layer 1: in-memory cache (60s, per-function-instance)
       if (!bypassCache && !params.from && !params.to) {
         const cached = getCachedFleet(tenant, dateStr);
         if (cached) {
           return {
             statusCode: 200,
-            headers: { ...corsHeaders, 'X-Cache': 'HIT' },
+            headers: { ...corsHeaders, 'X-Cache': 'HIT-MEM' },
             body: JSON.stringify({ ...cached, cached: true }),
           };
         }
       }
 
+      // Layer 2: persistent Blob cache (populated by scheduled background function).
+      // This is the big speedup — users get pre-computed results instead of waiting for scan.
+      if (!bypassCache && !params.from && !params.to) {
+        const blob = await readFleetBlob(tenant, dateStr, 'fleet');
+        if (blob) {
+          setCachedFleet(tenant, dateStr, blob); // warm the in-memory cache too
+          return {
+            statusCode: 200,
+            headers: { ...corsHeaders, 'X-Cache': 'HIT-BLOB' },
+            body: JSON.stringify({ ...blob, cached: true }),
+          };
+        }
+      }
+
+      // Layer 3: live scan (~10-12s) — runs when blob is missing/stale.
+      // Typically only hits on a cold morning before the background function has run,
+      // or for historical date queries the background doesn't cover.
       let startNbr, endNbr;
       if (params.from && params.to) {
         startNbr = parseInt(params.from, 10);
@@ -704,8 +749,13 @@ exports.handler = async (event) => {
 
       const result = { date: dateStr, loads, summary, scannedRange: { from: startNbr, to: endNbr } };
 
-      // Cache for 60s (only if using default range)
-      if (!params.from && !params.to) setCachedFleet(tenant, dateStr, result);
+      // Cache in memory for 60s (only if using default range)
+      if (!params.from && !params.to) {
+        setCachedFleet(tenant, dateStr, result);
+        // Also write to persistent blob storage so next cold-start user gets it fast.
+        // Fire-and-forget: don't block the response on blob write latency.
+        writeFleetBlob(tenant, dateStr, 'fleet', result);
+      }
 
       return {
         statusCode: 200,
@@ -723,17 +773,32 @@ exports.handler = async (event) => {
       const bypassCache = params.nocache === '1' || params.nocache === 'true';
       const stopsCacheKey = `${tenant}:${dateStr}:stops`;
 
+      // Layer 1: in-memory cache
       if (!bypassCache) {
         const hit = __fleetCache.get(stopsCacheKey);
         if (hit && Date.now() - hit.storedAt < FLEET_CACHE_TTL_MS) {
           return {
             statusCode: 200,
-            headers: { ...corsHeaders, 'X-Cache': 'HIT' },
+            headers: { ...corsHeaders, 'X-Cache': 'HIT-MEM' },
             body: JSON.stringify({ ...hit.data, cached: true }),
           };
         }
       }
 
+      // Layer 2: persistent Blob (populated by scheduled function)
+      if (!bypassCache) {
+        const blob = await readFleetBlob(tenant, dateStr, 'stops');
+        if (blob) {
+          __fleetCache.set(stopsCacheKey, { storedAt: Date.now(), data: blob });
+          return {
+            statusCode: 200,
+            headers: { ...corsHeaders, 'X-Cache': 'HIT-BLOB' },
+            body: JSON.stringify({ ...blob, cached: true }),
+          };
+        }
+      }
+
+      // Layer 3: live scan
       const range = estimateLoadRange(dateStr);
       const loadsWithStops = await scanFleet(tenant, {
         dateFrom: dateStr,
@@ -744,7 +809,6 @@ exports.handler = async (event) => {
         includeStops: true,
       });
 
-      // Calibrate range cache with this scan's actual findings
       calibrateLoadRange(dateStr, loadsWithStops);
 
       // Flatten to one array of stops
@@ -771,6 +835,8 @@ exports.handler = async (event) => {
         const firstKey = __fleetCache.keys().next().value;
         __fleetCache.delete(firstKey);
       }
+      // Persist to blob for next cold-start user. Fire-and-forget.
+      writeFleetBlob(tenant, dateStr, 'stops', result);
 
       return {
         statusCode: 200,
