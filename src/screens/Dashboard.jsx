@@ -4,7 +4,7 @@
 
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { Truck, AlertTriangle, RefreshCw, ChevronRight, Clock, MapPin, User, Package, CheckCircle2, XCircle, Search, Users, Calendar, ChevronLeft } from 'lucide-react';
-import { fetchToday, fetchFleet, normalizePro, TENANTS } from '../lib/api';
+import { fetchToday, fetchFleet, refreshFleet, normalizePro, TENANTS } from '../lib/api';
 import { normalizeLoad, normalizeStop, fmtTime, fmtDate, BUCKET_COLORS } from '../lib/normalize';
 import { KPI, Loading, ErrorBox, SectionHeader, ProgressBar, StatusPill, EmptyState } from '../components/UI';
 
@@ -31,6 +31,20 @@ export default function Dashboard({ tenant, viewDate, isToday, goToPrevBusinessD
       setState({ loading: false, error: e.message, data: null });
     }
   }, [tenant, isNuvizz, viewDate]);
+
+  // Hard refresh: trigger a fresh NuVizz scan + Firestore rewrite, then reload data.
+  // Used by the explicit refresh button (vs `load` which just reads from cache).
+  const hardRefresh = useCallback(async () => {
+    if (!isNuvizz) return load(); // Glory Bound has no live scan, just re-fetch
+    setState(s => ({ ...s, loading: true, error: null }));
+    try {
+      await refreshFleet(tenant, viewDate); // ~10-12s — full scan + Firestore write
+      const data = await fetchFleet(tenant, viewDate); // now reads from Firestore — fast
+      setState({ loading: false, error: null, data });
+    } catch (e) {
+      setState({ loading: false, error: e.message, data: null });
+    }
+  }, [tenant, isNuvizz, viewDate, load]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -76,7 +90,7 @@ export default function Dashboard({ tenant, viewDate, isToday, goToPrevBusinessD
           </div>
           <div className="text-lg font-bold truncate">{dayLabel}</div>
         </div>
-        <button onClick={load} disabled={state.loading} className="p-2 rounded-lg hover:bg-slate-100 text-slate-600 disabled:opacity-50">
+        <button onClick={hardRefresh} disabled={state.loading} className="p-2 rounded-lg hover:bg-slate-100 text-slate-600 disabled:opacity-50" title="Refresh from NuVizz">
           <RefreshCw size={18} className={state.loading ? 'animate-spin' : ''} />
         </button>
       </div>

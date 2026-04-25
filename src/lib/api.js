@@ -84,6 +84,15 @@ export const fetchFleetStops = (tenant, date) =>
 export const fetchDriver = (tenant, userName, date) =>
   api(tenant, '__driver', { query: { userName, ...(date ? { date } : {}) } });
 
+// Force-refresh a single load: live-fetch from NuVizz, update cache, return fresh.
+// Used when a user opens LoadDetail / StopDetail for the freshest data on that screen.
+export const refreshLoad = (tenant, loadNbr, date) =>
+  api(tenant, '__refreshLoad', { query: { loadNbr, ...(date ? { date } : {}) } });
+
+// Force-refresh entire fleet: full scan + Firestore rewrite. Used by manual refresh button.
+export const refreshFleet = (tenant, date) =>
+  api(tenant, '__refreshFleet', { query: date ? { date } : {} });
+
 // --- Driver registry (baked in — discovered by probing /user/info/ with common names) ---
 // Refresh periodically by re-running the discovery probe. Source of truth: NuVizz user/info.
 export const DAVIS_DRIVERS = [

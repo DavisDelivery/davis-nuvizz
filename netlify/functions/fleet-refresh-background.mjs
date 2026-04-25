@@ -1,27 +1,26 @@
 // netlify/functions/fleet-refresh-background.mjs
 //
-// Scheduled function that pre-warms the fleet Blob cache every 2 minutes during business
-// hours. When users open the app, __fleet / __fleetstops serve the pre-computed data
-// instantly instead of waiting 10-15 seconds for a fresh NuVizz scan.
+// Scheduled function that pre-warms the Firestore fleet cache every 5 minutes during
+// business hours. When users open the app, __fleet / __fleetstops / __driver all read
+// from Firestore in <1 second instead of waiting 10-15 seconds for a fresh NuVizz scan.
 //
-// Strategy: call the existing /nuvizz?path=__fleet and __fleetstops endpoints with
-// nocache=1 so they bypass the in-memory cache, run a fresh scan, and write to Blob
-// as a side effect. This reuses all the scan/calibrate logic from nuvizz.cjs.
+// Strategy: hit the existing __refreshFleet endpoint, which does:
+//   1. Full NuVizz scan (with stops)
+//   2. Persists every load + summary + driver index to Firestore
+//   3. Returns summary stats
+// We just log results so the deploy log shows freshness.
 //
-// Runs for both DAVIS and ULINE tenants, only for today's date (historical dates are
-// unchanged so no need to refresh them).
+// Runs Mon-Fri only (Davis doesn't dispatch weekends).
 
 export default async () => {
-  const url = process.env.URL || process.env.DEPLOY_URL; // Netlify auto-provides these
+  const url = process.env.URL || process.env.DEPLOY_URL;
   if (!url) {
     console.error('fleet-refresh: no site URL available, skipping');
     return new Response('no site url', { status: 200 });
   }
 
-  // Today in UTC (matches what the app uses)
   const today = new Date().toISOString().slice(0, 10);
   const dayOfWeek = new Date().getUTCDay(); // 0=Sun, 6=Sat
-  // Skip weekends — Davis doesn't dispatch Sat/Sun, nothing to pre-warm
   if (dayOfWeek === 0 || dayOfWeek === 6) {
     console.log(`fleet-refresh: skipping weekend (${today})`);
     return new Response('weekend skip', { status: 200 });
@@ -31,30 +30,27 @@ export default async () => {
   const results = [];
 
   for (const tenant of tenants) {
-    // Warm both __fleet and __fleetstops. They share the scan internally via range cache,
-    // but need separate blob entries (different data shapes).
-    for (const kind of ['__fleet', '__fleetstops']) {
-      const startTime = Date.now();
-      try {
-        const endpoint = `${url}/.netlify/functions/nuvizz?tenant=${tenant}&path=${kind}&nocache=1&date=${today}`;
-        const resp = await fetch(endpoint, { method: 'GET' });
-        const ms = Date.now() - startTime;
-        if (!resp.ok) {
-          results.push({ tenant, kind, ok: false, status: resp.status, ms });
-          continue;
-        }
-        const data = await resp.json();
-        const summary = data.summary || {};
-        results.push({
-          tenant, kind, ok: true, ms,
-          totalLoads: summary.totalLoads,
-          totalStops: summary.totalStops,
-          totalDelivered: summary.totalDelivered ?? summary.delivered,
-          totalExceptions: summary.totalExceptions ?? summary.exceptions,
-        });
-      } catch (e) {
-        results.push({ tenant, kind, ok: false, error: e.message, ms: Date.now() - startTime });
+    const startTime = Date.now();
+    try {
+      const endpoint = `${url}/.netlify/functions/nuvizz?tenant=${tenant}&path=__refreshFleet&date=${today}`;
+      const resp = await fetch(endpoint, { method: 'GET' });
+      const ms = Date.now() - startTime;
+      if (!resp.ok) {
+        results.push({ tenant, ok: false, status: resp.status, ms });
+        continue;
       }
+      const data = await resp.json();
+      const s = data.summary || {};
+      results.push({
+        tenant, ok: true, ms,
+        loads: s.totalLoads,
+        stops: s.totalStops,
+        delivered: s.totalDelivered,
+        exceptions: s.totalExceptions,
+        drivers: s.uniqueDrivers,
+      });
+    } catch (e) {
+      results.push({ tenant, ok: false, error: e.message, ms: Date.now() - startTime });
     }
   }
 
@@ -65,7 +61,7 @@ export default async () => {
   });
 };
 
-// Cron: every 2 minutes, every day. Weekend skip is enforced in the handler above.
+// Cron: every 5 minutes. Weekend skip is enforced in the handler above.
 export const config = {
-  schedule: '*/2 * * * *',
+  schedule: '*/5 * * * *',
 };
