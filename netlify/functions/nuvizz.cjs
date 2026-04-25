@@ -1078,20 +1078,27 @@ exports.handler = async (event) => {
             userId: driverProfile.userId,
             accountStatus: driverProfile.accountStatus,
           } : null,
-          loads: loadsWithStops.map(l => ({
-            loadNbr: l.loadNbr,
-            route: l.route,
-            driver: l.driver,
-            totalStops: l.totalStops,
-            delivered: l.delivered,
-            inProgress: l.inProgress,
-            exceptions: l.exceptions,
-            pctComplete: l.pctComplete,
-            vehicleType: l.vehicleType,
-          })),
+          loads: loadsWithStops.map(l => {
+            const stops = l.full?.stops || [];
+            const delivered = stops.filter(s => s?.stopExecutionInfo?.stopStatus === '90').length;
+            const inProgress = stops.filter(s => ['30', '40'].includes(s?.stopExecutionInfo?.stopStatus)).length;
+            const exceptions = stops.filter(s => s?.stopExecutionInfo?.stopStatus === '50' || s?.stopExecutionInfo?.exceptionPresent).length;
+            const h = l.full?.loadHeader || {};
+            return {
+              loadNbr: l.loadNbr,
+              route: l.route,
+              driver: l.driver,
+              totalStops: stops.length,
+              delivered,
+              inProgress,
+              exceptions,
+              pctComplete: stops.length ? Math.round((delivered / stops.length) * 100) : 0,
+              vehicleType: h.vehicleType,
+            };
+          }),
           stops: allStops,
           summary: {
-            loadsCount: matchedLoads.length,
+            loadsCount: matchedLoadNbrs.length,
             totalStops: allStops.length,
             delivered: allStops.filter(s => s.status === '90').length,
             inProgress: allStops.filter(s => s.status === '40').length,
