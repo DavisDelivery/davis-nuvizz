@@ -69,13 +69,32 @@ export function normalizeStop(raw) {
 
   const status = exec.stopStatus || stop.status || raw.status || 'PENDING';
 
+  // NuVizz quirk: stopStatus=50 doesn't always mean "exception."
+  // When exceptions[] is empty AND exceptionPresent is false, the driver just
+  // didn't tap "Complete Delivery" — it's a paperwork issue, not a real problem.
+  // Bucket those as 'pending' (or 'inProgress' if they at least arrived) so they
+  // don't show up in the dispatcher's Issues count.
+  let bucket = statusBucket(status);
+  const realExceptions = exec.exceptions || [];
+  const realExceptionPresent = !!exec.exceptionPresent;
+  const hasArrival = !!toTS.arrivalDTTM || !!fromTS.arrivalDTTM;
+  if (status === '50' && !realExceptionPresent && realExceptions.length === 0) {
+    // Status code is exception but there's no actual exception data.
+    // Reclassify based on what the driver actually did:
+    if (hasArrival) {
+      bucket = 'inProgress'; // arrived but didn't close out → still active
+    } else {
+      bucket = 'pending';
+    }
+  }
+
   return {
     id: stop.stopId || raw.stopId,
     nbr: stop.stopNbr || raw.stopNbr,
     seq: stop.stopSeq || raw.stopSeq,
     type: stopType,
     status,
-    bucket: statusBucket(status),
+    bucket,
 
     // location (from address)
     name: addr.name || stop.custInfo?.custName || '',

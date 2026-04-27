@@ -350,7 +350,14 @@ async function scanFleet(tenant, { dateFrom, dateTo, startNbr, endNbr, concurren
       if (dateTo && startDate > dateTo) return null;
       const delivered = stops.filter(s => s?.stopExecutionInfo?.stopStatus === '90').length;
       const inProgress = stops.filter(s => ['30', '40'].includes(s?.stopExecutionInfo?.stopStatus)).length;
-      const exceptions = stops.filter(s => s?.stopExecutionInfo?.stopStatus === '50' || s?.stopExecutionInfo?.exceptionPresent).length;
+      // True exception: explicit flag or non-empty exceptions array. NuVizz sometimes leaves
+      // stopStatus=50 on stops where the driver photographed but didn't tap Complete — those
+      // aren't real problems and shouldn't inflate the dispatcher's issue count.
+      const exceptions = stops.filter(s => {
+        const ei = s?.stopExecutionInfo;
+        if (!ei) return false;
+        return ei.exceptionPresent === true || (Array.isArray(ei.exceptions) && ei.exceptions.length > 0);
+      }).length;
       const summary = {
         loadNbr: h.loadNbr,
         loadId: h.loadId,
@@ -381,6 +388,7 @@ async function scanFleet(tenant, { dateFrom, dateTo, startNbr, endNbr, concurren
             stopType: stop.stopType,
             status: exec.stopStatus,
             exceptionPresent: !!exec.exceptionPresent,
+            exceptions: Array.isArray(exec.exceptions) ? exec.exceptions : [],
             name: addr.name,
             addr1: addr.addr1,
             city: addr.city,
@@ -837,7 +845,7 @@ exports.handler = async (event) => {
             delivered: stops.filter(s => s.status === '90').length,
             inProgress: stops.filter(s => s.status === '40').length,
             scheduled: stops.filter(s => s.status === '30').length,
-            exceptions: stops.filter(s => s.exceptionPresent || s.status === '50').length,
+            exceptions: stops.filter(s => s.exceptionPresent === true).length,
             withCoords: stops.filter(s => s.latitude && s.longitude).length,
           };
           summary.pctComplete = summary.totalStops ? Math.round((summary.delivered / summary.totalStops) * 100) : 0;
@@ -877,7 +885,7 @@ exports.handler = async (event) => {
         delivered: stops.filter(s => s.status === '90').length,
         inProgress: stops.filter(s => s.status === '40').length,
         scheduled: stops.filter(s => s.status === '30').length,
-        exceptions: stops.filter(s => s.exceptionPresent || s.status === '50').length,
+        exceptions: stops.filter(s => s.exceptionPresent === true).length,
         withCoords: stops.filter(s => s.latitude && s.longitude).length,
       };
       summary.pctComplete = summary.totalStops ? Math.round((summary.delivered / summary.totalStops) * 100) : 0;
@@ -1103,7 +1111,7 @@ exports.handler = async (event) => {
             delivered: allStops.filter(s => s.status === '90').length,
             inProgress: allStops.filter(s => s.status === '40').length,
             pending: allStops.filter(s => ['10', '30'].includes(s.status)).length,
-            exceptions: allStops.filter(s => s.exceptionPresent || s.status === '50').length,
+            exceptions: allStops.filter(s => s.exceptionPresent === true).length,
           },
         }),
       };
@@ -1130,7 +1138,11 @@ exports.handler = async (event) => {
         // Build the slim load shape (same as scanFleet output)
         const delivered = stops.filter(s => s?.stopExecutionInfo?.stopStatus === '90').length;
         const inProgress = stops.filter(s => ['30', '40'].includes(s?.stopExecutionInfo?.stopStatus)).length;
-        const exceptions = stops.filter(s => s?.stopExecutionInfo?.stopStatus === '50' || s?.stopExecutionInfo?.exceptionPresent).length;
+        const exceptions = stops.filter(s => {
+          const ei = s?.stopExecutionInfo;
+          if (!ei) return false;
+          return ei.exceptionPresent === true || (Array.isArray(ei.exceptions) && ei.exceptions.length > 0);
+        }).length;
 
         const slimStops = stops.map(s => {
           const stop = s.stop || {};
@@ -1142,6 +1154,7 @@ exports.handler = async (event) => {
             stopType: stop.stopType,
             status: exec.stopStatus,
             exceptionPresent: !!exec.exceptionPresent,
+            exceptions: Array.isArray(exec.exceptions) ? exec.exceptions : [],
             name: addr.name,
             addr1: addr.addr1,
             city: addr.city,

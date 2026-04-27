@@ -102,9 +102,36 @@ export default function StopDetail({ tenant, stopNbr, onOpenLoad }) {
     ...toDocs.filter(td => !podDocs.some(pd => pd.documentGuid === td.documentGuid)).map(d => ({ ...d, kind: 'Doc' })),
   ];
 
-  // Status — prefer the numeric code label if we have one
+  // Status — NuVizz quirk: stopStatus=50 doesn't always mean "exception."
+  // It can also mean "needs attention" (e.g. driver took photo but didn't tap Complete).
+  // Look at exceptions[] / exceptionPresent — if both are empty, it's not really an
+  // exception, it's just incomplete paperwork. Show clearer language to dispatchers.
   const statusCode = rawExec?.stopStatus;
-  const statusLabel = STATUS_LABELS[statusCode] || s.status;
+  const realExceptionsArr = rawExec?.exceptions || [];
+  const realExceptionPresent = !!rawExec?.exceptionPresent;
+  const hasArrival = !!rawExec?.to?.arrivalDTTM;
+  const hasPodPhoto = !!(rawExec?.to?.podDoc?.length);
+  const isUnconfirmed = statusCode === '50' && !realExceptionPresent && realExceptionsArr.length === 0;
+
+  // Override the label and color when we detect "unconfirmed delivery" vs "real exception"
+  let statusLabel = STATUS_LABELS[statusCode] || s.status;
+  let statusColor = '#64748b';
+  if (statusCode === '90') {
+    statusColor = '#10b981';
+  } else if (statusCode === '50') {
+    if (isUnconfirmed && hasArrival) {
+      statusLabel = hasPodPhoto ? 'Photo · Not Closed' : 'Arrived · Not Closed';
+      statusColor = '#f59e0b'; // amber, not red — this isn't a real problem
+    } else if (realExceptionsArr.length > 0 || realExceptionPresent) {
+      statusLabel = 'Exception';
+      statusColor = '#ef4444';
+    } else {
+      statusLabel = 'Needs Attention';
+      statusColor = '#f59e0b';
+    }
+  } else if (statusCode === '40') {
+    statusColor = '#f59e0b';
+  }
 
   // confirmedDTTM from the guide is the real delivery time
   const confirmedDTTM = rawExec?.to?.confirmedDTTM;
@@ -131,7 +158,7 @@ export default function StopDetail({ tenant, stopNbr, onOpenLoad }) {
           </div>
           <div className="text-right flex-shrink-0">
             <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold">{statusCode}</div>
-            <div className="text-sm font-bold" style={{ color: statusCode === '90' ? '#10b981' : statusCode === '50' ? '#ef4444' : statusCode === '40' ? '#f59e0b' : '#64748b' }}>{statusLabel}</div>
+            <div className="text-sm font-bold" style={{ color: statusColor }}>{statusLabel}</div>
           </div>
         </div>
 
