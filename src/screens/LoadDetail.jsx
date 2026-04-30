@@ -118,7 +118,24 @@ export default function LoadDetail({ tenant, loadNbr, onOpenStop }) {
                 <div className="text-[11px] text-slate-500 truncate flex items-center gap-2">
                   <span>{[s.city, s.state].filter(Boolean).join(', ') || '—'}</span>
                   {s.plannedEta && <span>· ETA {fmtTime(s.plannedEta)}</span>}
-                  {s.arrival && <span>· arrived {fmtTime(s.arrival)}</span>}
+                  {/* Only show actual timestamps when we trust them.
+                      NuVizz sometimes leaves stale arrivalDTTM values on stops the driver
+                      hasn't actually visited yet. We trust:
+                       - confirmed time on delivered stops (status 90) — that's the true delivery
+                       - arrival on stop that has a confirmed time (driver was there even if delivery's edge-case)
+                       - arrival on stop status 50 IFF the arrival is after the planned ETA
+                         minus 2 hours (filters out NuVizz's garbage initialization timestamps
+                         like 04:51 AM on a stop with 3:40 PM ETA) */}
+                  {s.status === '90' && s.confirmed && (
+                    <span>· delivered {fmtTime(s.confirmed)}</span>
+                  )}
+                  {s.status !== '90' && s.confirmed && (
+                    <span>· arrived {fmtTime(s.confirmed)}</span>
+                  )}
+                  {s.status === '50' && !s.confirmed && s.arrival && s.plannedEta &&
+                   (new Date(s.arrival).getTime() > new Date(s.plannedEta).getTime() - 2*60*60*1000) && (
+                    <span>· arrived {fmtTime(s.arrival)}</span>
+                  )}
                 </div>
               </div>
               <ChevronRight size={14} className="text-slate-300 mt-1 flex-shrink-0" />
