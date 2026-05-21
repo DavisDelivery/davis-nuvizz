@@ -13,7 +13,13 @@ import DriversScreen from './screens/DriversScreen';
 import LoadDetail from './screens/LoadDetail';
 import StopDetail from './screens/StopDetail';
 
-const APP_VERSION = '1.1.1';
+const APP_VERSION = '1.1.2';
+// Injected by vite.config.js — bumps every build so the running app can prove which deploy is live.
+// eslint-disable-next-line no-undef
+const BUILD_COMMIT = typeof __BUILD_COMMIT__ !== 'undefined' ? __BUILD_COMMIT__ : 'dev';
+// eslint-disable-next-line no-undef
+const BUILD_TIME = typeof __BUILD_TIME__ !== 'undefined' ? __BUILD_TIME__ : '';
+const BUILD_STAMP = BUILD_TIME ? BUILD_TIME.slice(5, 16).replace('T', ' ') : '';
 
 // Date helpers - UTC-based so we don't drift across timezones
 function ymd(d) { return d.toISOString().slice(0, 10); }
@@ -214,8 +220,11 @@ export default function App() {
         </nav>
       )}
 
-      {/* version footer */}
-      <div className="fixed bottom-[70px] right-2 text-[9px] text-slate-400 pointer-events-none">v{APP_VERSION}</div>
+      {/* Version footer — APP_VERSION + per-deploy stamp so you can tell if the latest deploy is live */}
+      <div className="fixed bottom-[70px] right-2 text-[9px] text-slate-400 pointer-events-none text-right leading-tight">
+        <div>v{APP_VERSION} · {BUILD_COMMIT}</div>
+        {BUILD_STAMP && <div className="text-[8px] opacity-70">{BUILD_STAMP}Z</div>}
+      </div>
     </div>
   );
 }
