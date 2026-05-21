@@ -23,7 +23,7 @@
 //   auto_detected_at: Timestamp                             // last auto-scan write
 //   auto_detected_by: string                                // 'auto-scanner v0.3.0'
 
-import { doc, writeBatch, serverTimestamp, Firestore } from 'firebase/firestore';
+import { doc, writeBatch, serverTimestamp, deleteField, Firestore } from 'firebase/firestore';
 import type { ScanResult, SignalSource, FlagValue } from './signal-scanner';
 
 const MAX_BATCH = 450;       // Firestore caps at 500; leave headroom
@@ -85,6 +85,39 @@ export function decideWrite(
 
   const overrideOnRestrictions = existing?.manual_overrides?.equipment_restrictions === true;
 
+  // Compute the new equipment_restrictions explicitly so we can both add new
+  // detections AND clean up legacy v0.2.0 writes where orderInstructions hits
+  // were mis-tagged as no_tractor_trailer.
+  const detectedFlags: FlagValue[] = [...detectedFlagsThisScan];
+  const removedLegacyFlags: FlagValue[] = [];
+  const skippedDueToOverride: FlagValue[] = [];
+
+  // Migration: if no_tractor_trailer is on the doc but its only auto-source
+  // (across history) was orderInstructions, that's a legacy v0.2.0 write —
+  // swap it to uline_straight_truck. We only migrate values the scanner
+  // touched (not human-set ones); the manual_overrides flag is the canonical
+  // signal of human touch.
+  const ntSources = (existing?.auto_sources?.no_tractor_trailer || []) as SignalSource[];
+  const ntFromAddr2 = ntSources.includes('addressLine2') || detectedFlagsThisScan.has('no_tractor_trailer');
+  const existingArr: string[] = Array.isArray(existing?.equipment_restrictions) ? existing!.equipment_restrictions! : [];
+  const shouldMigrate =
+    !overrideOnRestrictions &&
+    existingArr.includes('no_tractor_trailer') &&
+    !ntFromAddr2 &&
+    ntSources.includes('orderInstructions');
+
+  if (shouldMigrate) {
+    // Carry the legacy audit trail forward under the new flag so the UI keeps
+    // showing the matched text (just under uline_straight_truck now).
+    const legacyMatches = existing?.auto_matches?.no_tractor_trailer || [];
+    if (legacyMatches.length) {
+      matchesByFlag.uline_straight_truck = [...(matchesByFlag.uline_straight_truck || []), ...legacyMatches];
+    }
+    sourcesByFlag.uline_straight_truck = [
+      ...new Set([...(sourcesByFlag.uline_straight_truck || []), ...ntSources]),
+    ];
+  }
+
   const payload: Record<string, any> = {
     match_key: stop.matchKey,
     raw_name: stop.businessName || '',
@@ -95,38 +128,26 @@ export function decideWrite(
     auto_detected_at: serverTimestamp(),
     auto_detected_by: SCANNER_TAG,
   };
-
-  // Compute the new equipment_restrictions explicitly so we can both add new
-  // detections AND clean up legacy v0.2.0 writes where orderInstructions hits
-  // were mis-tagged as no_tractor_trailer.
-  const detectedFlags: FlagValue[] = [...detectedFlagsThisScan];
-  const removedLegacyFlags: FlagValue[] = [];
-  const skippedDueToOverride: FlagValue[] = [];
+  if (shouldMigrate) {
+    // Drop the stale audit entry for the migrated-away flag so the UI doesn't
+    // keep listing it under its old name. Nested deleteField in a setDoc-merge
+    // call removes just that sub-key, leaving the rest of the map intact.
+    payload.auto_sources = { ...payload.auto_sources, no_tractor_trailer: deleteField() };
+    payload.auto_matches = { ...payload.auto_matches, no_tractor_trailer: deleteField() };
+  }
 
   if (overrideOnRestrictions) {
     // Dispatcher locked the field — only update the audit trail, never touch
     // the array itself.
     skippedDueToOverride.push(...detectedFlags);
   } else {
-    const existingArr: string[] = Array.isArray(existing?.equipment_restrictions) ? existing!.equipment_restrictions! : [];
     const next = new Set<string>(existingArr);
-
-    // Add anything we just detected.
     for (const f of detectedFlags) next.add(f);
-
-    // Migration: if no_tractor_trailer is in the array but its only auto-source
-    // (across history) was orderInstructions, that's a legacy v0.2.0 write —
-    // swap it to uline_straight_truck. We only migrate values the scanner
-    // touched (not human-set ones); the manual_overrides flag is the canonical
-    // signal of human touch.
-    const ntSources = (existing?.auto_sources?.no_tractor_trailer || []) as SignalSource[];
-    const ntFromAddr2 = ntSources.includes('addressLine2') || detectedFlagsThisScan.has('no_tractor_trailer');
-    if (next.has('no_tractor_trailer') && !ntFromAddr2 && ntSources.includes('orderInstructions')) {
+    if (shouldMigrate) {
       next.delete('no_tractor_trailer');
       next.add('uline_straight_truck');
       removedLegacyFlags.push('no_tractor_trailer');
     }
-
     payload.equipment_restrictions = [...next];
   }
 
