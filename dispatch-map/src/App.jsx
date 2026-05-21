@@ -348,6 +348,20 @@ function todayYmd() {
   return new Date().toISOString().slice(0, 10);
 }
 
+// JS Date.getDay() is 0=Sun..6=Sat; our DAYS array is Mon-first. Map between.
+function todayDayKey() {
+  const map = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
+  return map[new Date().getDay()];
+}
+
+// Compact display for "today's hours" — fits in a marker tooltip or a
+// narrow table column. Returns null when nothing is saved so callers can
+// decide whether to render anything.
+function todaysHoursDisplay(note) {
+  const hrs = note?.receiving_hours?.[todayDayKey()];
+  return hrs && String(hrs).trim() ? String(hrs).trim() : null;
+}
+
 // Empty/default note template — used when opening a stop that has no Firestore doc yet.
 function emptyNote(stop) {
   return {
@@ -1190,23 +1204,28 @@ function MapScreen({ user }) {
         const note = notes.get(s.matchKey);
         const variant = noTtMarkerVariant(s, note);
         let iconCfg;
-        let title = s.businessName || '';
+        const titleParts = [s.businessName || ''];
         let zIndex;
         if (variant === 'davis') {
           iconCfg = { url: davisNoTtPin(), scaledSize: new google.maps.Size(32, 42), anchor: new google.maps.Point(16, 40) };
-          title = `${title} — NO TRACTOR TRAILER (Davis)`;
+          titleParts[0] = `${titleParts[0]} — NO TRACTOR TRAILER (Davis)`;
           zIndex = 600;
         } else if (variant === 'uline') {
           iconCfg = { url: ulineStraightTruckPin(), scaledSize: new google.maps.Size(32, 42), anchor: new google.maps.Point(16, 40) };
-          title = `${title} — Uline says straight truck only (advisory)`;
+          titleParts[0] = `${titleParts[0]} — Uline says straight truck only (advisory)`;
           zIndex = 500;
         } else {
           iconCfg = { url: pinSvg(flagColor(note)), scaledSize: new google.maps.Size(28, 36), anchor: new google.maps.Point(14, 34) };
         }
+        // Today's saved hours surface in the hover tooltip so dispatchers can
+        // see them without clicking into the sidebar.
+        const hrs = todaysHoursDisplay(note);
+        if (hrs) titleParts.push(`Hours today (${todayDayKey().toUpperCase()}): ${hrs}`);
+        if (s.pro) titleParts.push(`PRO ${s.pro}`);
         const marker = new google.maps.Marker({
           position: { lat: s.lat, lng: s.lng },
           icon: iconCfg,
-          title,
+          title: titleParts.join('\n'),
           zIndex,
         });
         marker.addListener('click', () => setSelectedStop(s));
@@ -1501,8 +1520,9 @@ function MapScreen({ user }) {
 }
 
 function StopMiniTable({ stops, notes, onPick }) {
-  // Decorate rows with flag + emphasis (Davis/Uline) for sorting AND coloring
-  // the dot to match the map marker.
+  // Decorate rows with flag + emphasis (Davis/Uline) + today's hours so users
+  // can scan both the safety pin color and the day's operating window without
+  // opening the sidebar.
   const rows = useMemo(() => stops.map((s) => {
     const n = notes.get(s.matchKey);
     const variant = noTtMarkerVariant(s, n);
@@ -1511,6 +1531,7 @@ function StopMiniTable({ stops, notes, onPick }) {
       _flag: n?.priority_flag || 'none',
       _emphasis: variant, // 'davis' | 'uline' | null
       _hasNote: !!n,
+      _hoursToday: todaysHoursDisplay(n),
     };
   }), [stops, notes]);
   const { sorted, sortKey, sortDir, toggle } = useSortable(rows, 'businessName', 'asc');
@@ -1533,6 +1554,7 @@ function StopMiniTable({ stops, notes, onPick }) {
               <SortableTh label="Flag" k="_flag" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />
               <SortableTh label="Customer" k="businessName" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />
               <SortableTh label="City" k="city" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />
+              <SortableTh label={`Hrs ${todayDayKey().slice(0,1).toUpperCase()}${todayDayKey().slice(1)}`} k="_hoursToday" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />
               <SortableTh label="PRO" k="pro" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />
             </tr>
           </thead>
@@ -1544,6 +1566,9 @@ function StopMiniTable({ stops, notes, onPick }) {
                 </td>
                 <td className="px-2 py-1 truncate max-w-[120px]" title={s.businessName}>{s.businessName}</td>
                 <td className="px-2 py-1 text-slate-600">{s.city}</td>
+                <td className={`px-2 py-1 text-[10px] truncate max-w-[60px] ${s._hoursToday ? 'text-slate-700 font-medium' : 'text-slate-300'}`} title={s._hoursToday || ''}>
+                  {s._hoursToday || '—'}
+                </td>
                 <td className="px-2 py-1 font-mono text-[10px] text-slate-500">{s.pro}</td>
               </tr>
             ))}
