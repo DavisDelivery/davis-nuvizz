@@ -20,6 +20,15 @@ import fixture from '../../test/fixtures/nuvizz-today-stops.json' with { type: '
 
 const NUVIZZ_BASE = process.env.NUVIZZ_BASE_URL || 'https://portal.nuvizz.com/deliverit/openapi/v7';
 
+interface SignalSources {
+  // Raw address line 2 string — Davis's existing "dumping ground" convention.
+  addressLine2: string | null;
+  // All order-instruction comments joined by '\n'. Filtered to cmtType ORD_IN or
+  // commentDescription prefix 'SPL-INSTR-TEXT:'. Raw text preserved verbatim so
+  // the scanner can do exact-pattern matching downstream.
+  orderInstructions: string | null;
+}
+
 interface NormalizedStop {
   pro: string | null;
   stopNbr: string | null;
@@ -42,6 +51,7 @@ interface NormalizedStop {
   itemsSummary: string;
   customerAccount: string | null;
   driverName: string | null;
+  signalSources: SignalSources;
   raw: unknown;
 }
 
@@ -72,6 +82,24 @@ function normalizePro(input: any): string | null {
   return cleaned.padStart(9, '0');
 }
 
+// Pull "SPL-INSTR-TEXT" order instructions out of stop.comments[].
+// NuVizz tags these with cmtType === 'ORD_IN' and a 'SPL-INSTR-TEXT: ...' prefix
+// on commentDescription. We keep the raw description (prefix included) joined by
+// newline so downstream scanners and the UI can both work with it verbatim.
+function extractOrderInstructions(stop: any): string | null {
+  const comments = stop?.comments;
+  if (!Array.isArray(comments) || !comments.length) return null;
+  const lines: string[] = [];
+  for (const c of comments) {
+    if (!c) continue;
+    const desc = typeof c.commentDescription === 'string' ? c.commentDescription : '';
+    if (!desc) continue;
+    const isOrderInstr = c.cmtType === 'ORD_IN' || desc.startsWith('SPL-INSTR-TEXT:');
+    if (isOrderInstr) lines.push(desc);
+  }
+  return lines.length ? lines.join('\n') : null;
+}
+
 function normalizeStop(raw: any): NormalizedStop {
   const stop = raw.stop || raw;
   const exec = raw.stopExecutionInfo || {};
@@ -84,6 +112,8 @@ function normalizeStop(raw: any): NormalizedStop {
   if (stop.totalPallets) items.push(`${stop.totalPallets} pallets`);
   if (stop.totalCartons) items.push(`${stop.totalCartons} cartons`);
   if (stop.weight) items.push(`${stop.weight} ${stop.weightUOM || 'lbs'}`);
+  const addr2 = addr.addr2 ?? null;
+  const orderInstructions = extractOrderInstructions(stop);
   return {
     pro: normalizePro(stop.proNumber),
     stopNbr: stop.stopNbr ?? null,
@@ -92,7 +122,7 @@ function normalizeStop(raw: any): NormalizedStop {
     status: exec.stopStatus || stop.status || null,
     businessName: addr.name || stop.custInfo?.custName || null,
     addr1: addr.addr1 ?? null,
-    addr2: addr.addr2 ?? null,
+    addr2,
     city: addr.city ?? null,
     state: addr.state ?? null,
     zip: addr.zip ?? null,
@@ -106,6 +136,7 @@ function normalizeStop(raw: any): NormalizedStop {
     itemsSummary: items.join(' · ') || '—',
     customerAccount: stop.accountNumber || stop.custInfo?.custAccNbr || null,
     driverName: load.driverName ?? null,
+    signalSources: { addressLine2: addr2, orderInstructions },
     raw,
   };
 }

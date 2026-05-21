@@ -111,6 +111,132 @@ below.
   stops sortable by Flag / Customer / City / PRO via the `useSortable` hook +
   `<SortableTh/>` component — per the standing dev rule.
 
+## What's built — M2.1 (auto-scanner)
+
+Passive scanner that watches each stop's NuVizz signals and auto-populates
+`customer_notes.equipment_restrictions` when known patterns appear. v1 covers
+the `no_tractor_trailer` flag only; the pattern table is hardcoded and easy to
+extend.
+
+### Where SPL-INSTR-TEXT lives in the NuVizz response
+
+Confirmed by inspecting the live `/load/info/{loadNbr}/{companyCode}` response
+(the same payload that `nuvizz-pull-today-stops.mts` already pulls — no second
+endpoint needed). Each stop carries:
+
+```
+Load.stops[].stop.comments[]   // array of comment objects
+```
+
+Each comment with `cmtType === 'ORD_IN'` is an order instruction. Its
+`commentDescription` field is prefixed `"SPL-INSTR-TEXT: ..."`. The function
+joins all such comments by `\n` and surfaces them as
+`signalSources.orderInstructions` on the normalized stop payload.
+
+Sample (real, today): 1,994 comments across 713 stops, 1,280 of which are
+`SPL-INSTR-TEXT:` prefixed.
+
+### Performance — zero extra NuVizz calls
+
+The original spec assumed we might need a per-PRO fetch. We do not. The
+existing `/load/info/` response already contains `stop.comments[]` inline, so
+the scanner runs entirely against data we were already fetching. Map load time
+is unchanged.
+
+### Signal sources scanned
+
+```
+signalSources.addressLine2      // raw addr2 string
+signalSources.orderInstructions // joined SPL-INSTR-TEXT comments
+```
+
+Both raw, both nullable. Per the standing rule we preserve raw — the scanner
+reads these, doesn't mutate them.
+
+### Pattern rules
+
+Hardcoded in [`src/lib/signal-scanner.ts`](src/lib/signal-scanner.ts) under
+`PATTERNS`. v1:
+
+```
+no_tractor_trailer: [
+  /\bNO\s*TT\b/i,
+  /\bNO\s+TRACTOR\s+TRL?\b/i,
+  /\bNO\s+TRACTOR\s+TRAILER\b/i,
+  /\bSTRAIGHT\s+TRUCK\s+ONLY\b/i,
+  /\bST\s+ONLY\b/i,
+  /\bSTRAIGHT\s+ONLY\b/i,
+  /\bBOX\s+TRUCK\s+ONLY\b/i,
+  /\b26\s*['']\s*MAX\b/i,
+  /\b26\s*FT\s*MAX\b/i,
+  /\bSMALL\s+TRUCK\s+ONLY\b/i,
+  /\bNO\s+53\s*['']?\b/i,
+  /\bNO\s+53\s*FT\b/i,
+]
+```
+
+To extend: add a new flag key to `PATTERNS` whose value must match an
+`EQUIPMENT_OPTIONS[].value` in `App.jsx` (or a new option). When the rule set
+grows past ~5 flags, move to a Firestore `scanner_config` doc.
+
+### Writer behavior
+
+[`src/lib/customer-notes-writer.ts`](src/lib/customer-notes-writer.ts) walks
+scan results, groups by `match_key` (so two stops at the same customer merge
+into one write), and chunks writes into Firestore batches of 450. Each write
+is a `setDoc(..., {merge: true})` so we never clobber human fields.
+
+Schema additions on `customer_notes`:
+
+| Field | Type | Purpose |
+|---|---|---|
+| `manual_overrides.equipment_restrictions` | `boolean` | Dispatcher locked this field against the auto-scanner |
+| `auto_sources` | `{ [flag]: ('addressLine2' \| 'orderInstructions')[] }` | Which sources detected each flag |
+| `auto_matches` | `{ [flag]: { source, text, pattern }[] }` | Exact substring + pattern that hit |
+| `auto_detected_at` | `Timestamp` | Last auto-scan write |
+| `auto_detected_by` | `string` | `'auto-scanner v0.2.0'` |
+
+`equipment_restrictions` uses `arrayUnion` so the auto-scanner adds the flag
+without clobbering anything else the dispatcher has set on that array.
+
+### Manual-override mechanism
+
+The auto-scanner respects two signals:
+
+1. **`manual_overrides.equipment_restrictions === true`** — set explicitly by
+   the "Override auto-detection" button in the sidebar. While true, the scanner
+   updates `auto_*` audit fields but never touches `equipment_restrictions`.
+2. **Implicit override on save** — `handleSave()` in `App.jsx` compares the
+   draft `equipment_restrictions` against the existing doc as sets. If they
+   differ (added, removed, or replaced), the flag flips to `true` automatically.
+
+The override never disables the audit trail, so dispatchers can always see
+"the scanner would have detected X" via the Detection Source section.
+
+### UI disclosure
+
+The sidebar has a "Detection source" section (above the existing Customer
+Notes block). For every flag currently set OR currently detected, it shows:
+
+- The flag label (e.g. "No tractor trailer")
+- A small badge — `Auto-detected`, `Manually set`, `Auto + manual`, or
+  `Override · auto also detected`
+- The matched text strings indented under the source label
+
+When auto detections exist and `manual_overrides.equipment_restrictions` is
+false, an "Override auto-detection" button is shown that flips the flag.
+
+### Marker rendering
+
+Stops where `equipment_restrictions` includes `no_tractor_trailer` OR where the
+live scan turns up that flag render with a dedicated red pin (`noTtPinSvg()`,
+32×42) carrying a truck-with-slash glyph. `zIndex: 500` so they layer above
+ordinary colored pins. The map legend in the left rail documents this.
+
+The first-paint "live scan" path means a stop's marker turns red immediately,
+before the Firestore round-trip. Once the write lands the doc-driven path
+keeps it red.
+
 ## What's built — M4
 
 - `<MapScreen/>` has a "Show live drivers" toggle in the left rail.

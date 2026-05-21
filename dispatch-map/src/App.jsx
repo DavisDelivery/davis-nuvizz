@@ -25,10 +25,12 @@ import {
 
 import { auth, db, firebaseConfigured } from './lib/firebase.js';
 import { normalizeMatchKey } from './lib/matchKey.js';
+import { scanStop } from './lib/signal-scanner.ts';
+import { applyScannerResults } from './lib/customer-notes-writer.ts';
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.1.0';
+const APP_VERSION = '0.2.0';
 // eslint-disable-next-line no-undef
 const BUILD_COMMIT = typeof __BUILD_COMMIT__ !== 'undefined' ? __BUILD_COMMIT__ : 'dev';
 // eslint-disable-next-line no-undef
@@ -152,10 +154,12 @@ function useStops() {
       const resp = await fetch(url);
       const data = await resp.json();
       if (!data.ok) throw new Error(data.error || `HTTP ${resp.status}`);
-      // Attach the match key now so every consumer downstream can hit it.
+      // Attach matchKey + run the M2.1 signal scanner so downstream consumers
+      // (auto-writer, marker rendering, sidebar) all see the same per-stop hits.
       const decorated = (data.stops || []).map((s) => ({
         ...s,
         matchKey: normalizeMatchKey(s.businessName || '', s.addr1 || '', s.city || '', s.zip || ''),
+        scanResults: scanStop(s),
       }));
       setStops(decorated);
       setSource(data.source || 'nuvizz');
@@ -169,6 +173,48 @@ function useStops() {
 
   useEffect(() => { refresh(); }, [refresh]);
   return { stops, loading, error, lastRefreshed, source, refresh };
+}
+
+// M2.1 — Auto-write detected flags into customer_notes. Runs once per stops
+// payload identity (refresh button or initial fetch). Read-side respects the
+// dispatcher's manual_overrides flag on each doc; never clobbers human edits.
+function useAutoScanner(stops, notes, notesReady, user) {
+  const lastWrittenForRef = useRef(null);
+  const [summary, setSummary] = useState(null);
+  useEffect(() => {
+    if (!db || !user || !notesReady || !stops.length) return;
+    if (lastWrittenForRef.current === stops) return;
+    lastWrittenForRef.current = stops;
+    const scanned = stops
+      .filter((s) => s.matchKey && Array.isArray(s.scanResults) && s.scanResults.length > 0)
+      .map((s) => ({
+        matchKey: s.matchKey,
+        pro: s.pro,
+        businessName: s.businessName,
+        addr1: s.addr1,
+        city: s.city,
+        state: s.state,
+        zip: s.zip,
+        scanResults: s.scanResults,
+      }));
+    if (!scanned.length) {
+      setSummary({ attempted: 0, written: 0, overrideSkips: 0, errors: [] });
+      return;
+    }
+    applyScannerResults(db, scanned, notes)
+      .then(setSummary)
+      .catch((e) => console.error('auto-scanner write failed', e));
+  }, [stops, notesReady, user]);
+  return summary;
+}
+
+// Whether a stop should render with the "no tractor trailer" emphasis marker.
+// We look at both human-set restrictions AND the live scan (so the marker
+// turns red on the very first load, before the Firestore round-trip lands).
+function hasNoTtSignal(stop, note) {
+  if (note?.equipment_restrictions?.includes?.('no_tractor_trailer')) return true;
+  if (Array.isArray(stop?.scanResults) && stop.scanResults.some((r) => r.flagValue === 'no_tractor_trailer')) return true;
+  return false;
 }
 
 // Subscribe to ALL customer_notes docs and expose as a Map<match_key, note>.
@@ -240,6 +286,26 @@ function pinSvg(color) {
       <path d="M14 1c-7 0-13 5.4-13 12 0 9 13 22 13 22s13-13 13-22c0-6.6-6-12-13-12z"
         fill="${color}" stroke="white" stroke-width="2"/>
       <circle cx="14" cy="13" r="4.5" fill="white"/>
+    </svg>`;
+  return 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent(svg);
+}
+
+// M2.1: red marker with truck-with-slash overlay for stops carrying the
+// no_tractor_trailer restriction. Bigger than the standard pin so it stands out
+// against clustered colored pins.
+function noTtPinSvg() {
+  const svg = `
+    <svg xmlns="http://www.w3.org/2000/svg" width="32" height="42" viewBox="0 0 32 42">
+      <path d="M16 1c-8 0-15 6-15 13 0 10 15 27 15 27s15-17 15-27c0-7-7-13-15-13z"
+        fill="${FLAG_COLORS.red}" stroke="white" stroke-width="2.5"/>
+      <g transform="translate(7,8)">
+        <path d="M0 7h11v-5H0z" fill="white"/>
+        <path d="M11 4h4l2 3v3H11z" fill="white"/>
+        <circle cx="3" cy="9" r="1.5" fill="${FLAG_COLORS.red}"/>
+        <circle cx="14" cy="9" r="1.5" fill="${FLAG_COLORS.red}"/>
+        <line x1="-1" y1="13" x2="19" y2="-1" stroke="${FLAG_COLORS.red}" stroke-width="3"/>
+        <line x1="-1" y1="13" x2="19" y2="-1" stroke="white" stroke-width="1.5"/>
+      </g>
     </svg>`;
   return 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent(svg);
 }
@@ -477,6 +543,24 @@ function FilterPanel({ filters, setFilters, counts }) {
       <div className="text-xs text-slate-500 pt-2 border-t">
         Showing <span className="font-semibold text-slate-800">{counts.visible}</span> of {counts.total} stops
       </div>
+
+      <div className="pt-2 border-t">
+        <div className="text-xs font-semibold text-slate-600 mb-1">Map legend</div>
+        <ul className="text-[11px] text-slate-700 space-y-1">
+          <li className="flex items-center gap-2">
+            <img src={noTtPinSvg()} alt="" className="w-4 h-5" />
+            <span>No tractor trailer (auto-detected or set)</span>
+          </li>
+          <li className="flex items-center gap-2">
+            <span className="inline-block w-3 h-3 rounded-full" style={{ background: RESTRICTION_TINT }} />
+            <span>Has notes / other restrictions</span>
+          </li>
+          <li className="flex items-center gap-2">
+            <span className="inline-block w-3 h-3 rounded-full" style={{ background: UNFLAGGED_TINT }} />
+            <span>No notes yet</span>
+          </li>
+        </ul>
+      </div>
     </div>
   );
 }
@@ -518,8 +602,98 @@ function applyFilters(stops, notesByKey, filters) {
   });
 }
 
+// Resolve the human label for an equipment-restriction flag value.
+function flagLabel(flagValue) {
+  return EQUIPMENT_OPTIONS.find((o) => o.value === flagValue)?.label || flagValue;
+}
+
+// Detection Source — discloses to the dispatcher whether each equipment
+// restriction was auto-detected, manually set, or both. Also fronts the
+// "Override Auto-Detection" button when scanner output is currently driving
+// the equipment_restrictions value.
+function DetectionSourceSection({ stop, note, onOverrideAuto, saving }) {
+  const autoSources = note?.auto_sources || {};
+  const autoMatches = note?.auto_matches || {};
+  const manualOverride = note?.manual_overrides?.equipment_restrictions === true;
+
+  // Build the set of flags we want to disclose: anything currently set on the
+  // doc plus anything the live scan turned up (covers first-paint before the
+  // Firestore write lands).
+  const flagsToShow = new Set();
+  for (const f of note?.equipment_restrictions || []) flagsToShow.add(f);
+  for (const f of Object.keys(autoSources)) flagsToShow.add(f);
+  for (const r of stop?.scanResults || []) flagsToShow.add(r.flagValue);
+
+  if (!flagsToShow.size) return null;
+
+  const liveScanByFlag = {};
+  for (const r of stop?.scanResults || []) {
+    (liveScanByFlag[r.flagValue] = liveScanByFlag[r.flagValue] || []).push(r);
+  }
+
+  return (
+    <div className="px-4 py-3 border-b bg-slate-50/60 space-y-2">
+      <div className="flex items-center justify-between">
+        <div className="text-xs uppercase font-semibold text-slate-500">Detection source</div>
+        {manualOverride && (
+          <span className="text-[10px] font-semibold text-slate-700 bg-slate-200 rounded px-1.5 py-0.5">
+            override on
+          </span>
+        )}
+      </div>
+      <ul className="space-y-2">
+        {[...flagsToShow].map((flag) => {
+          const inNote = (note?.equipment_restrictions || []).includes(flag);
+          const sources = autoSources[flag] || [];
+          const matches = autoMatches[flag] || [];
+          // If the persisted note has no auto trail yet, fall back to the live
+          // scan so we still surface "Auto-detected" on first paint.
+          const liveSources = (liveScanByFlag[flag] || []).map((r) => r.matchedSource);
+          const liveMatches = (liveScanByFlag[flag] || []).map((r) => ({
+            source: r.matchedSource, text: r.matchedText, pattern: r.matchedPattern,
+          }));
+          const effectiveSources = sources.length ? sources : liveSources;
+          const effectiveMatches = matches.length ? matches : liveMatches;
+          const autoDetected = effectiveSources.length > 0;
+          const tag = manualOverride
+            ? (autoDetected ? 'Override · auto also detected' : 'Manually set')
+            : (autoDetected && inNote ? 'Auto + manual' : autoDetected ? 'Auto-detected' : 'Manually set');
+          return (
+            <li key={flag} className="text-xs">
+              <div className="flex items-center justify-between">
+                <div className="font-semibold text-slate-800">{flagLabel(flag)}</div>
+                <span className="text-[10px] uppercase tracking-wide text-slate-500">{tag}</span>
+              </div>
+              {effectiveMatches.length > 0 && (
+                <ul className="mt-1 space-y-0.5 text-[11px] text-slate-600 pl-3 border-l-2 border-amber-300">
+                  {effectiveMatches.map((m, i) => (
+                    <li key={i}>
+                      <span className="font-mono text-[10px] uppercase text-slate-400">{m.source}</span>{' '}
+                      <span className="text-slate-700">"{m.text}"</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+      {!manualOverride && Object.keys(autoSources).length > 0 && onOverrideAuto && (
+        <button
+          onClick={onOverrideAuto}
+          disabled={saving}
+          className="mt-1 w-full text-xs font-semibold border border-slate-300 bg-white text-slate-700 rounded px-2 py-1 hover:bg-slate-100 disabled:opacity-50"
+          title="Stop the auto-scanner from touching equipment_restrictions on this customer"
+        >
+          Override auto-detection
+        </button>
+      )}
+    </div>
+  );
+}
+
 // Right-side sidebar showing stop + metadata + edit form.
-function StopSidebar({ stop, note, onClose, onSave, saving, saveError }) {
+function StopSidebar({ stop, note, onClose, onSave, onOverrideAuto, saving, saveError }) {
   const [draft, setDraft] = useState(() => note || emptyNote(stop));
   const [editing, setEditing] = useState(!note);
   useEffect(() => {
@@ -583,6 +757,9 @@ function StopSidebar({ stop, note, onClose, onSave, saving, saveError }) {
             </div>
           )}
         </div>
+
+        {/* M2.1 — disclose where each restriction came from */}
+        <DetectionSourceSection stop={stop} note={note} onOverrideAuto={onOverrideAuto} saving={saving} />
 
         {/* Metadata / edit form */}
         <div className="px-4 py-3 space-y-3">
@@ -827,6 +1004,8 @@ function MapScreen({ user }) {
   const [saveError, setSaveError] = useState(null);
   const [showDrivers, setShowDrivers] = useState(false);
   const { drivers, error: driverErr, lastRefreshed: driversAt } = useDriverPositions(showDrivers);
+  // M2.1 — fire-and-forget auto-population of customer_notes from scanner hits.
+  const scanSummary = useAutoScanner(stops, notes, notesReady, user);
 
   const mapRef = useRef(null);
   const mapDiv = useRef(null);
@@ -861,15 +1040,25 @@ function MapScreen({ user }) {
       .filter((s) => s.lat != null && s.lng != null)
       .map((s) => {
         const note = notes.get(s.matchKey);
-        const color = flagColor(note);
+        const noTt = hasNoTtSignal(s, note);
+        const iconCfg = noTt
+          ? {
+              url: noTtPinSvg(),
+              scaledSize: new google.maps.Size(32, 42),
+              anchor: new google.maps.Point(16, 40),
+            }
+          : {
+              url: pinSvg(flagColor(note)),
+              scaledSize: new google.maps.Size(28, 36),
+              anchor: new google.maps.Point(14, 34),
+            };
         const marker = new google.maps.Marker({
           position: { lat: s.lat, lng: s.lng },
-          icon: {
-            url: pinSvg(color),
-            scaledSize: new google.maps.Size(28, 36),
-            anchor: new google.maps.Point(14, 34),
-          },
-          title: s.businessName || '',
+          icon: iconCfg,
+          title: noTt
+            ? `${s.businessName || ''} — NO TRACTOR TRAILER`
+            : (s.businessName || ''),
+          zIndex: noTt ? 500 : undefined,
         });
         marker.addListener('click', () => setSelectedStop(s));
         return marker;
@@ -909,16 +1098,53 @@ function MapScreen({ user }) {
       const existing = notes.get(key);
       const pro = selectedStop.pro;
       const proHistory = pro ? bumpProHistory(existing?.pro_history, pro) : (existing?.pro_history || []);
+      // M2.1: any dispatcher edit to equipment_restrictions locks the field
+      // against the auto-scanner. We compare draft vs existing as sets so that
+      // re-ordering or re-saving the same content doesn't flip the override.
+      const draftSet = new Set(draft.equipment_restrictions || []);
+      const existSet = new Set(existing?.equipment_restrictions || []);
+      const restrictionsChanged =
+        draftSet.size !== existSet.size ||
+        [...draftSet].some((x) => !existSet.has(x));
+      const manualOverrides = {
+        ...(existing?.manual_overrides || {}),
+        ...(restrictionsChanged ? { equipment_restrictions: true } : {}),
+      };
       const payload = {
         ...draft,
         match_key: key,
         raw_name: draft.raw_name || selectedStop.businessName || '',
         raw_address: draft.raw_address || [selectedStop.addr1, selectedStop.city, selectedStop.state, selectedStop.zip].filter(Boolean).join(', '),
         pro_history: proHistory,
+        manual_overrides: manualOverrides,
         last_updated: serverTimestamp(),
         updated_by: user?.email || 'unknown',
       };
       await setDoc(doc(db, 'customer_notes', key), payload, { merge: true });
+    } catch (e) {
+      setSaveError(e.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // Explicit override toggle — flips manual_overrides.equipment_restrictions
+  // without requiring the dispatcher to edit any specific value first.
+  const handleOverrideAuto = async () => {
+    if (!db || !selectedStop) return;
+    setSaving(true);
+    setSaveError(null);
+    try {
+      const key = selectedStop.matchKey;
+      const existing = notes.get(key) || {};
+      await setDoc(doc(db, 'customer_notes', key), {
+        match_key: key,
+        raw_name: existing.raw_name || selectedStop.businessName || '',
+        raw_address: existing.raw_address || [selectedStop.addr1, selectedStop.city, selectedStop.state, selectedStop.zip].filter(Boolean).join(', '),
+        manual_overrides: { ...(existing.manual_overrides || {}), equipment_restrictions: true },
+        last_updated: serverTimestamp(),
+        updated_by: user?.email || 'unknown',
+      }, { merge: true });
     } catch (e) {
       setSaveError(e.message);
     } finally {
@@ -1000,6 +1226,7 @@ function MapScreen({ user }) {
           note={notes.get(selectedStop.matchKey)}
           onClose={() => setSelectedStop(null)}
           onSave={handleSave}
+          onOverrideAuto={handleOverrideAuto}
           saving={saving}
           saveError={saveError}
         />
