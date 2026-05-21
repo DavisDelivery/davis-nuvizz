@@ -14,7 +14,7 @@ import { Loader as GoogleMapsLoader } from '@googlemaps/js-api-loader';
 import { MarkerClusterer } from '@googlemaps/markerclusterer';
 import {
   MapPin, RefreshCw, LogOut, X, AlertTriangle, Filter, Truck, Save, Plus, Trash2,
-  Activity, ChevronDown, ChevronUp, Eye, EyeOff, Layers,
+  Activity, ChevronDown, ChevronUp, Eye, EyeOff, Layers, Search, Check, ThumbsDown,
 } from 'lucide-react';
 import {
   onAuthStateChanged, signInAnonymously, signOut,
@@ -30,7 +30,7 @@ import { applyScannerResults } from './lib/customer-notes-writer.ts';
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.3.0';
+const APP_VERSION = '0.4.0';
 // eslint-disable-next-line no-undef
 const BUILD_COMMIT = typeof __BUILD_COMMIT__ !== 'undefined' ? __BUILD_COMMIT__ : 'dev';
 // eslint-disable-next-line no-undef
@@ -450,8 +450,74 @@ function LoginGate({ children }) {
   return children(user);
 }
 
-function FilterPanel({ filters, setFilters, counts }) {
+// Each legend item is expandable to reveal the list of business names that
+// currently carry that flag. Click a name → opens the sidebar + pans the map.
+function LegendItem({ swatch, label, stops, onPick }) {
+  const [open, setOpen] = useState(false);
+  const count = stops.length;
+  return (
+    <li>
+      <button
+        onClick={() => setOpen((v) => !v)}
+        disabled={!count}
+        className={`w-full flex items-center gap-2 text-left hover:bg-slate-100 rounded px-1 py-0.5 ${count ? '' : 'opacity-60 cursor-default'}`}
+      >
+        {swatch}
+        <span className="flex-1 text-[11px] text-slate-700">{label}</span>
+        <span className="text-[10px] text-slate-500 tabular-nums">{count}</span>
+        {count > 0 && (open ? <ChevronUp size={10} /> : <ChevronDown size={10} />)}
+      </button>
+      {open && count > 0 && (
+        <ul className="ml-6 mt-0.5 mb-1 max-h-40 overflow-y-auto space-y-0.5">
+          {stops.map((s) => (
+            <li key={s.stopNbr}>
+              <button
+                onClick={() => onPick(s)}
+                className="w-full text-left text-[10px] text-slate-700 hover:text-blue-700 hover:bg-blue-50 rounded px-1 py-0.5 truncate"
+                title={s.businessName}
+              >
+                <span className="font-medium">{s.businessName || '(no name)'}</span>
+                <span className="text-slate-400"> · {s.city}</span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </li>
+  );
+}
+
+function FilterPanel({ filters, setFilters, counts, stops, notes, onPick }) {
   const F = filters;
+  // Group stops by which legend bucket they belong to. We compute this once
+  // per render of the filter panel; cheap at ~700 stops.
+  const groups = useMemo(() => {
+    const davisNoTt = [];
+    const ulineST = [];
+    const restriction = [];
+    const unflagged = [];
+    for (const s of stops || []) {
+      const note = notes?.get(s.matchKey);
+      const restrictions = note?.equipment_restrictions || [];
+      const liveFlags = new Set((s.scanResults || []).map((r) => r.flagValue));
+      if (restrictions.includes('no_tractor_trailer') || liveFlags.has('no_tractor_trailer')) {
+        davisNoTt.push(s);
+      } else if (restrictions.includes('uline_straight_truck') || liveFlags.has('uline_straight_truck')) {
+        ulineST.push(s);
+      } else if (note && (restrictions.length || note.liftgate_required || note.appointment_required || note.priority_flag)) {
+        restriction.push(s);
+      } else if (!note) {
+        unflagged.push(s);
+      }
+    }
+    const byName = (a, b) => (a.businessName || '').localeCompare(b.businessName || '');
+    return {
+      davisNoTt: davisNoTt.sort(byName),
+      ulineST: ulineST.sort(byName),
+      restriction: restriction.sort(byName),
+      unflagged: unflagged.sort(byName),
+    };
+  }, [stops, notes]);
   return (
     <div className="p-3 space-y-3 text-sm">
       <div className="flex items-center justify-between">
@@ -529,23 +595,31 @@ function FilterPanel({ filters, setFilters, counts }) {
 
       <div className="pt-2 border-t">
         <div className="text-xs font-semibold text-slate-600 mb-1">Map legend</div>
-        <ul className="text-[11px] text-slate-700 space-y-1">
-          <li className="flex items-start gap-2">
-            <img src={davisNoTtPin()} alt="" className="w-4 h-5 flex-shrink-0" />
-            <span>No tractor trailer — Davis verified (addr2)</span>
-          </li>
-          <li className="flex items-start gap-2">
-            <img src={ulineStraightTruckPin()} alt="" className="w-4 h-5 flex-shrink-0" />
-            <span>Uline advisory — straight truck only (SPL-INSTR-TEXT)</span>
-          </li>
-          <li className="flex items-center gap-2">
-            <span className="inline-block w-3 h-3 rounded-full flex-shrink-0" style={{ background: RESTRICTION_TINT }} />
-            <span>Has notes / other restrictions</span>
-          </li>
-          <li className="flex items-center gap-2">
-            <span className="inline-block w-3 h-3 rounded-full flex-shrink-0" style={{ background: UNFLAGGED_TINT }} />
-            <span>No notes yet</span>
-          </li>
+        <ul className="text-[11px] text-slate-700 space-y-0.5">
+          <LegendItem
+            swatch={<img src={davisNoTtPin()} alt="" className="w-4 h-5 flex-shrink-0" />}
+            label="No tractor trailer — Davis verified (addr2)"
+            stops={groups.davisNoTt}
+            onPick={onPick}
+          />
+          <LegendItem
+            swatch={<img src={ulineStraightTruckPin()} alt="" className="w-4 h-5 flex-shrink-0" />}
+            label="Uline advisory — straight truck only (SPL-INSTR-TEXT)"
+            stops={groups.ulineST}
+            onPick={onPick}
+          />
+          <LegendItem
+            swatch={<span className="inline-block w-3 h-3 rounded-full flex-shrink-0" style={{ background: RESTRICTION_TINT }} />}
+            label="Has notes / other restrictions"
+            stops={groups.restriction}
+            onPick={onPick}
+          />
+          <LegendItem
+            swatch={<span className="inline-block w-3 h-3 rounded-full flex-shrink-0" style={{ background: UNFLAGGED_TINT }} />}
+            label="No notes yet"
+            stops={groups.unflagged}
+            onPick={onPick}
+          />
         </ul>
       </div>
     </div>
@@ -566,8 +640,23 @@ function Toggle({ label, checked, onChange }) {
   );
 }
 
-function applyFilters(stops, notesByKey, filters) {
+function applyFilters(stops, notesByKey, filters, searchQuery = '') {
+  // Search: case-insensitive substring across PRO digits + business name +
+  // address parts. PRO match strips leading zeros so users can type 7122698
+  // and match 007122698.
+  const q = (searchQuery || '').trim().toLowerCase();
+  const proQ = q.replace(/^0+/, '');
   return stops.filter((s) => {
+    if (q) {
+      const proStr = (s.pro || '').toLowerCase();
+      const proStrTrim = proStr.replace(/^0+/, '');
+      const hay = [s.businessName, s.addr1, s.city, s.zip].filter(Boolean).join(' ').toLowerCase();
+      const hits =
+        proStr.includes(q) ||
+        (proQ && proStrTrim.includes(proQ)) ||
+        hay.includes(q);
+      if (!hits) return false;
+    }
     const n = notesByKey.get(s.matchKey);
     if (filters.unflagged && n) return false;
     if (filters.flag && filters.flag.length) {
@@ -597,8 +686,8 @@ function flagLabel(flagValue) {
 // Detection Source — discloses to the dispatcher whether each equipment
 // restriction was auto-detected, manually set, or both. Also fronts the
 // "Override Auto-Detection" button when scanner output is currently driving
-// the equipment_restrictions value.
-function DetectionSourceSection({ stop, note, onOverrideAuto, saving }) {
+// the equipment_restrictions value, plus Confirm/Dismiss for Uline advisories.
+function DetectionSourceSection({ stop, note, onOverrideAuto, onConfirmUlineAdvisory, onDismissUlineAdvisory, saving }) {
   const autoSources = note?.auto_sources || {};
   const autoMatches = note?.auto_matches || {};
   const manualOverride = note?.manual_overrides?.equipment_restrictions === true;
@@ -672,6 +761,36 @@ function DetectionSourceSection({ stop, note, onOverrideAuto, saving }) {
           );
         })}
       </ul>
+      {/* Confirm / Dismiss for the Uline straight-truck advisory — shown
+          whenever the flag is present (in the persisted note OR live scan),
+          unless the user has already dismissed it. */}
+      {(flagsToShow.has('uline_straight_truck')) && !(note?.auto_scan_dismissed || []).includes('uline_straight_truck') && (
+        <div className="pt-1 grid grid-cols-2 gap-1.5">
+          <button
+            onClick={onConfirmUlineAdvisory}
+            disabled={saving}
+            className="text-[11px] font-semibold border border-red-300 bg-white text-red-700 rounded px-2 py-1 hover:bg-red-50 inline-flex items-center justify-center gap-1 disabled:opacity-50"
+            title="Promote to Davis-verified no_tractor_trailer and lock the field"
+          >
+            <Check size={11} /> Confirm (it's true)
+          </button>
+          <button
+            onClick={onDismissUlineAdvisory}
+            disabled={saving}
+            className="text-[11px] font-semibold border border-slate-300 bg-white text-slate-700 rounded px-2 py-1 hover:bg-slate-100 inline-flex items-center justify-center gap-1 disabled:opacity-50"
+            title="Remove and tell the scanner to stop re-adding it"
+          >
+            <ThumbsDown size={11} /> Dismiss (wrong)
+          </button>
+        </div>
+      )}
+
+      {(note?.auto_scan_dismissed || []).length > 0 && (
+        <div className="pt-1 text-[10px] text-slate-500">
+          Dismissed by dispatcher: {(note.auto_scan_dismissed || []).map(flagLabel).join(', ')}
+        </div>
+      )}
+
       {!manualOverride && Object.keys(autoSources).length > 0 && onOverrideAuto && (
         <button
           onClick={onOverrideAuto}
@@ -687,7 +806,7 @@ function DetectionSourceSection({ stop, note, onOverrideAuto, saving }) {
 }
 
 // Right-side sidebar showing stop + metadata + edit form.
-function StopSidebar({ stop, note, onClose, onSave, onOverrideAuto, saving, saveError }) {
+function StopSidebar({ stop, note, onClose, onSave, onOverrideAuto, onConfirmUlineAdvisory, onDismissUlineAdvisory, saving, saveError }) {
   const [draft, setDraft] = useState(() => note || emptyNote(stop));
   const [editing, setEditing] = useState(!note);
   useEffect(() => {
@@ -753,7 +872,14 @@ function StopSidebar({ stop, note, onClose, onSave, onOverrideAuto, saving, save
         </div>
 
         {/* M2.1 — disclose where each restriction came from */}
-        <DetectionSourceSection stop={stop} note={note} onOverrideAuto={onOverrideAuto} saving={saving} />
+        <DetectionSourceSection
+          stop={stop}
+          note={note}
+          onOverrideAuto={onOverrideAuto}
+          onConfirmUlineAdvisory={onConfirmUlineAdvisory}
+          onDismissUlineAdvisory={onDismissUlineAdvisory}
+          saving={saving}
+        />
 
         {/* Metadata / edit form */}
         <div className="px-4 py-3 space-y-3">
@@ -1009,6 +1135,7 @@ function MapScreen({ user }) {
   const { google, error: mapsError } = useGoogleMaps();
   const [selectedStop, setSelectedStop] = useState(null);
   const [filters, setFilters] = useState({});
+  const [searchQuery, setSearchQuery] = useState('');
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState(null);
   const [showDrivers, setShowDrivers] = useState(false);
@@ -1025,7 +1152,7 @@ function MapScreen({ user }) {
   const markersRef = useRef([]);
   const driverMarkersRef = useRef([]);
 
-  const visibleStops = useMemo(() => applyFilters(stops, notes, filters), [stops, notes, filters]);
+  const visibleStops = useMemo(() => applyFilters(stops, notes, filters, searchQuery), [stops, notes, filters, searchQuery]);
   const visibleSet = useMemo(() => new Set(visibleStops.map((s) => s.stopNbr)), [visibleStops]);
 
   // Init map once google + container are ready.
@@ -1111,6 +1238,76 @@ function MapScreen({ user }) {
       }));
   }, [google, drivers, showDrivers]);
 
+  // Open the sidebar for a stop AND pan/zoom the map to it. Used when picking
+  // a stop from the legend list or the search results — the dispatcher should
+  // see the location they just clicked, not have to hunt for it.
+  const focusStop = useCallback((stop) => {
+    setSelectedStop(stop);
+    if (mapRef.current && stop?.lat != null && stop?.lng != null) {
+      mapRef.current.panTo({ lat: stop.lat, lng: stop.lng });
+      if (mapRef.current.getZoom() < 13) mapRef.current.setZoom(13);
+    }
+  }, []);
+
+  // Confirm a Uline straight-truck advisory: promote it to the Davis-trusted
+  // no_tractor_trailer flag and lock the field against future auto changes.
+  const handleConfirmUlineAdvisory = async () => {
+    if (!db || !selectedStop) return;
+    setSaving(true);
+    setSaveError(null);
+    try {
+      const key = selectedStop.matchKey;
+      const existing = notes.get(key) || {};
+      const cur = new Set(existing.equipment_restrictions || []);
+      cur.delete('uline_straight_truck');
+      cur.add('no_tractor_trailer');
+      const dismissed = Array.from(new Set([...(existing.auto_scan_dismissed || []), 'uline_straight_truck']));
+      await setDoc(doc(db, 'customer_notes', key), {
+        match_key: key,
+        raw_name: existing.raw_name || selectedStop.businessName || '',
+        raw_address: existing.raw_address || [selectedStop.addr1, selectedStop.city, selectedStop.state, selectedStop.zip].filter(Boolean).join(', '),
+        equipment_restrictions: [...cur],
+        auto_scan_dismissed: dismissed,
+        manual_overrides: { ...(existing.manual_overrides || {}), equipment_restrictions: true },
+        last_updated: serverTimestamp(),
+        updated_by: user?.email || 'unknown',
+      }, { merge: true });
+    } catch (e) {
+      setSaveError(e.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // Dismiss a Uline advisory entirely: remove the flag and tell the scanner
+  // never to re-add it on this customer.
+  const handleDismissUlineAdvisory = async () => {
+    if (!db || !selectedStop) return;
+    setSaving(true);
+    setSaveError(null);
+    try {
+      const key = selectedStop.matchKey;
+      const existing = notes.get(key) || {};
+      const cur = new Set(existing.equipment_restrictions || []);
+      cur.delete('uline_straight_truck');
+      const dismissed = Array.from(new Set([...(existing.auto_scan_dismissed || []), 'uline_straight_truck']));
+      await setDoc(doc(db, 'customer_notes', key), {
+        match_key: key,
+        raw_name: existing.raw_name || selectedStop.businessName || '',
+        raw_address: existing.raw_address || [selectedStop.addr1, selectedStop.city, selectedStop.state, selectedStop.zip].filter(Boolean).join(', '),
+        equipment_restrictions: [...cur],
+        auto_scan_dismissed: dismissed,
+        manual_overrides: { ...(existing.manual_overrides || {}), equipment_restrictions: true },
+        last_updated: serverTimestamp(),
+        updated_by: user?.email || 'unknown',
+      }, { merge: true });
+    } catch (e) {
+      setSaveError(e.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const handleSave = async (draft) => {
     if (!db || !selectedStop) return;
     setSaving(true);
@@ -1178,10 +1375,40 @@ function MapScreen({ user }) {
     <div className="flex flex-1 overflow-hidden">
       {/* Left filter rail */}
       <div className="w-64 flex-shrink-0 bg-white border-r overflow-y-auto">
+        <div className="p-3 border-b">
+          <div className="text-xs font-semibold text-slate-600 mb-1 flex items-center gap-1.5">
+            <Search size={12} /> Search
+          </div>
+          <div className="relative">
+            <input
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="PRO, business, address…"
+              className="w-full border border-slate-300 rounded pl-2 pr-7 py-1.5 text-xs"
+            />
+            {searchQuery && (
+              <button
+                onClick={() => setSearchQuery('')}
+                className="absolute right-1.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700"
+                title="Clear"
+              >
+                <X size={12} />
+              </button>
+            )}
+          </div>
+          {searchQuery && (
+            <div className="text-[10px] text-slate-500 mt-1">
+              {visibleStops.length} match{visibleStops.length === 1 ? '' : 'es'}
+            </div>
+          )}
+        </div>
         <FilterPanel
           filters={filters}
           setFilters={setFilters}
           counts={{ visible: visibleStops.length, total: stops.length }}
+          stops={stops}
+          notes={notes}
+          onPick={focusStop}
         />
         <div className="border-t p-3 space-y-2">
           <button
@@ -1199,7 +1426,7 @@ function MapScreen({ user }) {
         </div>
 
         {/* Visible-stops mini table — sortable per dev rule */}
-        <StopMiniTable stops={visibleStops} notes={notes} onPick={setSelectedStop} />
+        <StopMiniTable stops={visibleStops} notes={notes} onPick={focusStop} />
       </div>
 
       {/* Map */}
@@ -1263,6 +1490,8 @@ function MapScreen({ user }) {
           onClose={() => setSelectedStop(null)}
           onSave={handleSave}
           onOverrideAuto={handleOverrideAuto}
+          onConfirmUlineAdvisory={handleConfirmUlineAdvisory}
+          onDismissUlineAdvisory={handleDismissUlineAdvisory}
           saving={saving}
           saveError={saveError}
         />
@@ -1272,16 +1501,28 @@ function MapScreen({ user }) {
 }
 
 function StopMiniTable({ stops, notes, onPick }) {
-  // Decorate rows with flag for sorting.
+  // Decorate rows with flag + emphasis (Davis/Uline) for sorting AND coloring
+  // the dot to match the map marker.
   const rows = useMemo(() => stops.map((s) => {
     const n = notes.get(s.matchKey);
+    const variant = noTtMarkerVariant(s, n);
     return {
       ...s,
       _flag: n?.priority_flag || 'none',
+      _emphasis: variant, // 'davis' | 'uline' | null
       _hasNote: !!n,
     };
   }), [stops, notes]);
   const { sorted, sortKey, sortDir, toggle } = useSortable(rows, 'businessName', 'asc');
+  const dotColor = (r) => {
+    // Davis-verified wins over everything else; Uline advisory next; then
+    // priority_flag; then "has restriction" purple; then unflagged gray.
+    if (r._emphasis === 'davis') return FLAG_COLORS.red;
+    if (r._emphasis === 'uline') return ULINE_ADVISORY_TINT;
+    if (r._flag !== 'none') return FLAG_COLORS[r._flag];
+    if (r._hasNote) return RESTRICTION_TINT;
+    return '#cbd5e1';
+  };
   return (
     <div className="border-t">
       <div className="px-3 py-2 text-xs font-semibold text-slate-600">Stops ({rows.length})</div>
@@ -1299,7 +1540,7 @@ function StopMiniTable({ stops, notes, onPick }) {
             {sorted.map((s) => (
               <tr key={s.stopNbr} onClick={() => onPick(s)} className="cursor-pointer hover:bg-blue-50 border-t">
                 <td className="px-2 py-1">
-                  <span className="inline-block w-2.5 h-2.5 rounded-full" style={{ background: s._flag !== 'none' ? FLAG_COLORS[s._flag] : (s._hasNote ? RESTRICTION_TINT : '#cbd5e1') }} />
+                  <span className="inline-block w-2.5 h-2.5 rounded-full" style={{ background: dotColor(s) }} />
                 </td>
                 <td className="px-2 py-1 truncate max-w-[120px]" title={s.businessName}>{s.businessName}</td>
                 <td className="px-2 py-1 text-slate-600">{s.city}</td>

@@ -267,6 +267,53 @@ just below the top-right status pill. ON → `google.maps.MapTypeId.HYBRID`
 so the dispatcher stays oriented while visually verifying Uline straight-truck
 advisories against actual site geometry (truck courts, gate sizes, etc.).
 
+### Search (v0.4.0)
+
+Top of the left rail. Substring match across PRO digits (leading zeros
+stripped), `businessName`, `addr1`, `city`, `zip`. Filters both the stops
+table AND the map markers — the dispatcher's map shrinks to the search
+result while typing. Clear with the X button or by deleting the input.
+
+### Expandable map legend (v0.4.0)
+
+Each legend item is a count + chevron. Click to expand a scrollable list of
+business names that currently match that bucket (Davis-verified, Uline
+advisory, has-notes, no-notes). Click a name in the list to open its sidebar
+AND pan/zoom the map to it (`focusStop` helper). Cheap to compute — runs
+once per render at ~700 stops.
+
+### Stops mini-table dot colors (v0.4.0)
+
+Dots now mirror the map marker color so the table and the map agree at a
+glance:
+
+1. `no_tractor_trailer` present (or live scan hit) → red
+2. `uline_straight_truck` present (or live scan hit) → amber
+3. priority_flag set → red/yellow/green
+4. has any restriction/note → purple
+5. unflagged → gray
+
+Order matters: Davis-verified wins over everything else.
+
+### Confirm / Dismiss Uline advisory (v0.4.0)
+
+When a stop carries `uline_straight_truck`, two buttons appear in the
+sidebar's Detection Source section:
+
+- **Confirm (it's true)** — promotes the advisory to `no_tractor_trailer`
+  (Davis-verified, red pin). Sets `manual_overrides.equipment_restrictions =
+  true` AND adds `uline_straight_truck` to `auto_scan_dismissed` so the
+  scanner can't reintroduce it.
+- **Dismiss (wrong)** — removes `uline_straight_truck` from
+  `equipment_restrictions` and adds it to `auto_scan_dismissed`. Marker drops
+  off the red/amber tier on next refresh.
+
+**New schema field:** `auto_scan_dismissed: string[]` — flags the user
+explicitly told the scanner to leave alone. The writer skips detected flags
+present in this list (no audit-trail update, no equipment_restrictions
+change). This is more surgical than the global `manual_overrides` lock — it
+silences specific advisories without disabling the whole field.
+
 ### Detection Source label semantics
 
 v0.3.0 only shows "Manually set" / "Override · auto also detected" when

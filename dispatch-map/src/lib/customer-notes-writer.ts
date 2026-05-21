@@ -27,7 +27,7 @@ import { doc, writeBatch, serverTimestamp, deleteField, Firestore } from 'fireba
 import type { ScanResult, SignalSource, FlagValue } from './signal-scanner';
 
 const MAX_BATCH = 450;       // Firestore caps at 500; leave headroom
-const SCANNER_TAG = 'auto-scanner v0.3.0';
+const SCANNER_TAG = 'auto-scanner v0.4.0';
 
 export interface ScannedStop {
   matchKey: string | null;
@@ -46,6 +46,9 @@ export interface ExistingNote {
   auto_sources?: Record<string, SignalSource[]>;
   auto_matches?: Record<string, { source: SignalSource; text: string; pattern: string }[]>;
   pro_history?: { pro: string; date: string }[];
+  // Flags the user explicitly dismissed via the sidebar — the scanner must
+  // not re-add these even if it keeps detecting them on every scan.
+  auto_scan_dismissed?: string[];
 }
 
 interface WriteDecision {
@@ -71,17 +74,23 @@ export function decideWrite(
   // Merge new scan with the doc's previously persisted auto trail. Per-flag
   // sources accumulate across days; matches reflect only the latest scan.
   const existingSources = existing?.auto_sources || {};
+  const dismissed = new Set<string>(existing?.auto_scan_dismissed || []);
   const sourcesByFlag: Record<string, SignalSource[]> = {};
   const matchesByFlag: Record<string, { source: SignalSource; text: string; pattern: string }[]> = {};
   const detectedFlagsThisScan = new Set<FlagValue>();
 
   for (const r of stop.scanResults) {
+    // Honor the user's explicit "dismiss this advisory" choice — we still
+    // record nothing for that flag (no audit trail update either, since the
+    // user said the signal is wrong for this customer).
+    if (dismissed.has(r.flagValue)) continue;
     detectedFlagsThisScan.add(r.flagValue);
     const sources = sourcesByFlag[r.flagValue] || (sourcesByFlag[r.flagValue] = [...(existingSources[r.flagValue] || [])]);
     if (!sources.includes(r.matchedSource)) sources.push(r.matchedSource);
     const matches = matchesByFlag[r.flagValue] || (matchesByFlag[r.flagValue] = []);
     matches.push({ source: r.matchedSource, text: r.matchedText, pattern: r.matchedPattern });
   }
+
 
   const overrideOnRestrictions = existing?.manual_overrides?.equipment_restrictions === true;
 
@@ -104,7 +113,12 @@ export function decideWrite(
     !overrideOnRestrictions &&
     existingArr.includes('no_tractor_trailer') &&
     !ntFromAddr2 &&
-    ntSources.includes('orderInstructions');
+    ntSources.includes('orderInstructions') &&
+    !dismissed.has('uline_straight_truck'); // user explicitly said this customer isn't ST-only
+
+  // If everything detected this scan was dismissed AND no migration is needed,
+  // there's nothing meaningful to write — skip to avoid churning audit fields.
+  if (!detectedFlags.length && !shouldMigrate) return null;
 
   if (shouldMigrate) {
     // Carry the legacy audit trail forward under the new flag so the UI keeps
