@@ -13,7 +13,7 @@ import DriversScreen from './screens/DriversScreen';
 import LoadDetail from './screens/LoadDetail';
 import StopDetail from './screens/StopDetail';
 
-const APP_VERSION = '1.1.2';
+const APP_VERSION = '1.2.0';
 // Injected by vite.config.js — bumps every build so the running app can prove which deploy is live.
 // eslint-disable-next-line no-undef
 const BUILD_COMMIT = typeof __BUILD_COMMIT__ !== 'undefined' ? __BUILD_COMMIT__ : 'dev';
@@ -199,7 +199,7 @@ export default function App() {
             onOpenDrivers={() => setTab('drivers')}
           />
         ) : tab === 'map' ? (
-          <MapScreen tenant={tenant} viewDate={viewDate} onOpenStop={openStop} />
+          <MapScreen tenant={tenant} viewDate={viewDate} onOpenStop={openStop} onOpenLoad={openLoad} />
         ) : tab === 'loads' ? (
           <LoadsScreen tenant={tenant} viewDate={viewDate} onOpenLoad={openLoad} initialFilter={tabFilter?.tab === 'loads' ? tabFilter.filter : null} />
         ) : tab === 'stops' ? (

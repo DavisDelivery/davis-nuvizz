@@ -375,6 +375,16 @@ async function scanFleet(tenant, { dateFrom, dateTo, startNbr, endNbr, concurren
         totalPallets: h.totalPallets,
         totalCartons: h.totalCartons,
         weight: h.weight,
+        // Origin / terminal — needed by Map view to draw terminal markers + stem-out lines.
+        origin: {
+          name: h.originName,
+          addr1: h.originAddr1,
+          city: h.originCity,
+          state: h.originState,
+          zip: h.originZip,
+          latitude: h.originLatitude,
+          longitude: h.originLongitude,
+        },
       };
       // Flatten stops into slim objects for the stop-level views (Map/Stops)
       if (includeStops) {
@@ -836,8 +846,16 @@ exports.handler = async (event) => {
         if (fsData && fsData.loads && fsData.loads.length > 0) {
           // Flatten stops across all loads
           const stops = [];
+          const loadsMeta = [];
           for (const l of fsData.loads) {
             if (Array.isArray(l.stops)) stops.push(...l.stops);
+            loadsMeta.push({
+              nbr: l.loadNbr, route: l.route, driver: l.driver,
+              driverUserName: l.driverUserName, vehicleType: l.vehicleType,
+              totalStops: l.totalStops, delivered: l.delivered,
+              inProgress: l.inProgress, exceptions: l.exceptions,
+              pctComplete: l.pctComplete, origin: l.origin || null,
+            });
           }
           stops.sort((a, b) => (a.plannedEta || '').localeCompare(b.plannedEta || ''));
           const summary = {
@@ -849,7 +867,7 @@ exports.handler = async (event) => {
             withCoords: stops.filter(s => s.latitude && s.longitude).length,
           };
           summary.pctComplete = summary.totalStops ? Math.round((summary.delivered / summary.totalStops) * 100) : 0;
-          const result = { date: dateStr, stops, summary, source: 'firestore' };
+          const result = { date: dateStr, stops, loads: loadsMeta, summary, source: 'firestore' };
           __fleetCache.set(stopsCacheKey, { storedAt: Date.now(), data: result });
           return {
             statusCode: 200,
@@ -872,10 +890,18 @@ exports.handler = async (event) => {
 
       calibrateLoadRange(dateStr, loadsWithStops);
 
-      // Flatten to one array of stops
+      // Flatten to one array of stops, and pull out per-load metadata for the map.
       const stops = [];
+      const loadsMeta = [];
       for (const l of loadsWithStops) {
         if (l.stops) stops.push(...l.stops);
+        loadsMeta.push({
+          nbr: l.loadNbr, route: l.route, driver: l.driver,
+          driverUserName: l.driverUserName, vehicleType: l.vehicleType,
+          totalStops: l.totalStops, delivered: l.delivered,
+          inProgress: l.inProgress, exceptions: l.exceptions,
+          pctComplete: l.pctComplete, origin: l.origin || null,
+        });
       }
       // Sort by plannedEta for a chronological feed
       stops.sort((a, b) => (a.plannedEta || '').localeCompare(b.plannedEta || ''));
@@ -890,7 +916,7 @@ exports.handler = async (event) => {
       };
       summary.pctComplete = summary.totalStops ? Math.round((summary.delivered / summary.totalStops) * 100) : 0;
 
-      const result = { date: dateStr, stops, summary, scannedRange: { from: range.startNbr, to: range.endNbr }, source: 'live-scan' };
+      const result = { date: dateStr, stops, loads: loadsMeta, summary, scannedRange: { from: range.startNbr, to: range.endNbr }, source: 'live-scan' };
       __fleetCache.set(stopsCacheKey, { storedAt: Date.now(), data: result });
       if (__fleetCache.size > 50) {
         const firstKey = __fleetCache.keys().next().value;
@@ -1195,6 +1221,15 @@ exports.handler = async (event) => {
           totalPallets: h.totalPallets,
           totalCartons: h.totalCartons,
           weight: h.weight,
+          origin: {
+            name: h.originName,
+            addr1: h.originAddr1,
+            city: h.originCity,
+            state: h.originState,
+            zip: h.originZip,
+            latitude: h.originLatitude,
+            longitude: h.originLongitude,
+          },
           stops: slimStops,
         };
 
