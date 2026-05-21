@@ -490,9 +490,16 @@ export default function MapScreen({ tenant, viewDate, onOpenStop, onOpenLoad }) 
       {selectedStop && (
         <StopBottomSheet
           stop={selectedStop}
+          loadMeta={loadsByNbr[selectedStop.loadNbr]}
+          loadColor={loadColorMap[selectedStop.loadNbr]}
+          driverFiltered={driverFilter === selectedStop.driverName}
           onClose={() => setSelectedStop(null)}
           onOpenDetails={() => onOpenStop(selectedStop.nbr)}
-          loadColor={loadColorMap[selectedStop.loadNbr]}
+          onHighlightDriver={() => {
+            const next = driverFilter === selectedStop.driverName ? null : selectedStop.driverName;
+            setDriverFilter(next);
+          }}
+          onOpenLoad={onOpenLoad ? () => onOpenLoad(selectedStop.loadNbr) : null}
         />
       )}
 
@@ -584,7 +591,19 @@ function Toggle({ label, checked, onChange, icon, hint }) {
   );
 }
 
-function StopBottomSheet({ stop, onClose, onOpenDetails, loadColor }) {
+function StopBottomSheet({ stop, loadMeta, loadColor, driverFiltered, onClose, onOpenDetails, onHighlightDriver, onOpenLoad }) {
+  const driverName = stop.driverName || loadMeta?.driver;
+  const initial = (driverName || '?').trim().charAt(0).toUpperCase();
+  const color = loadColor || '#64748b';
+  const route = loadMeta?.route || stop.routeName;
+  const vehicleType = loadMeta?.vehicleType;
+  const delivered = loadMeta?.delivered;
+  const totalStops = loadMeta?.totalStops;
+  const pctComplete = loadMeta?.pctComplete;
+  const progressLabel = (delivered != null && totalStops != null)
+    ? `${delivered}/${totalStops} stops${pctComplete != null ? ` · ${pctComplete}%` : ''}`
+    : null;
+
   return (
     <div className="absolute bottom-0 inset-x-0 z-[500] bg-white rounded-t-2xl shadow-2xl border-t" style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}>
       <div className="flex items-center justify-center pt-2 pb-1">
@@ -612,14 +631,56 @@ function StopBottomSheet({ stop, onClose, onOpenDetails, loadColor }) {
           <Field label="Arrival" value={fmtTime(stop.arrival)} />
         </div>
 
-        {stop.driverName && (
-          <div className="mt-3 flex items-center gap-2 text-xs">
-            <div className="w-2 h-2 rounded-full" style={{ background: loadColor || '#64748b' }} />
-            <User size={12} className="text-slate-400" />
-            <span>{stop.driverName}</span>
-            {stop.loadNbr && <span className="text-slate-500">· Load {stop.loadNbr}</span>}
-          </div>
-        )}
+        {/* Driver card — who has this delivery */}
+        <div className="mt-3 pt-3 border-t">
+          <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold mb-1.5">Who has it</div>
+          {driverName ? (
+            <div className="flex items-center gap-3">
+              <div
+                className="w-10 h-10 rounded-full flex items-center justify-center text-white font-bold text-sm flex-shrink-0"
+                style={{ background: color }}
+              >
+                {initial}
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="text-sm font-semibold text-slate-900 truncate">{driverName}</div>
+                <div className="text-xs text-slate-500 truncate flex items-center gap-1">
+                  {stop.loadNbr && <span className="font-mono">Load {stop.loadNbr}</span>}
+                  {route && <span>· {route}</span>}
+                  {vehicleType && <span>· {vehicleType}</span>}
+                </div>
+                {progressLabel && (
+                  <div className="text-[11px] text-slate-400 mt-0.5">{progressLabel}</div>
+                )}
+              </div>
+            </div>
+          ) : (
+            <div className="text-sm text-slate-500 italic">Unassigned · Load {stop.loadNbr || '—'}</div>
+          )}
+
+          {driverName && (
+            <div className="flex gap-2 mt-2.5">
+              <button
+                onClick={onHighlightDriver}
+                className={`flex-1 py-1.5 rounded text-xs font-medium border transition ${
+                  driverFiltered
+                    ? 'bg-blue-50 text-blue-700 border-blue-300'
+                    : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
+                }`}
+              >
+                {driverFiltered ? 'Highlighted ✓' : 'Highlight route'}
+              </button>
+              {onOpenLoad && stop.loadNbr && (
+                <button
+                  onClick={onOpenLoad}
+                  className="flex-1 py-1.5 rounded text-xs font-medium border bg-white text-slate-700 border-slate-200 hover:bg-slate-50"
+                >
+                  Open load
+                </button>
+              )}
+            </div>
+          )}
+        </div>
 
         <button onClick={onOpenDetails} className="w-full mt-3 py-2.5 bg-slate-900 text-white rounded-lg text-sm font-medium flex items-center justify-center gap-1">
           Open Stop Details <ChevronRight size={14} />
