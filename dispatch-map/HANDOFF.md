@@ -146,38 +146,45 @@ is unchanged.
 ### Signal sources scanned
 
 ```
-signalSources.addressLine2      // raw addr2 string
-signalSources.orderInstructions // joined SPL-INSTR-TEXT comments
+signalSources.addressLine2      // raw addr2 string — DAVIS-curated, trusted
+signalSources.orderInstructions // joined SPL-INSTR-TEXT comments — ULINE, advisory
 ```
 
 Both raw, both nullable. Per the standing rule we preserve raw — the scanner
 reads these, doesn't mutate them.
 
+### Source-locked flags (v0.3.0)
+
+The two sources have different confidence levels, so they map to different
+flags. Same physical icon (truck-with-slash) but different color:
+
+| Source | Flag | Marker | Trust |
+|---|---|---|---|
+| `addressLine2` | `no_tractor_trailer` | red truck-slash pin | Davis dispatcher curated |
+| `orderInstructions` | `uline_straight_truck` | amber truck-slash pin | Uline-supplied, verify |
+
+Source-locked, not text-locked: the same phrase (e.g. "STRAIGHT TRUCK ONLY")
+can appear in either field, but the trust level is determined by *who wrote
+it*, not what they wrote.
+
 ### Pattern rules
 
-Hardcoded in [`src/lib/signal-scanner.ts`](src/lib/signal-scanner.ts) under
-`PATTERNS`. v1:
+Hardcoded in [`src/lib/signal-scanner.ts`](src/lib/signal-scanner.ts).
+Two separate lists, one per source (`ADDR2_PATTERNS`, `ORDER_INSTR_PATTERNS`).
+v0.3.0 covers Davis "NO TRACTOR TRL / NO TT / STRAIGHT TRUCK ONLY / 26FT MAX /
+NO 53" phrasings, and Uline's standard SPL-INSTR wording.
 
-```
-no_tractor_trailer: [
-  /\bNO\s*TT\b/i,
-  /\bNO\s+TRACTOR\s+TRL?\b/i,
-  /\bNO\s+TRACTOR\s+TRAILER\b/i,
-  /\bSTRAIGHT\s+TRUCK\s+ONLY\b/i,
-  /\bST\s+ONLY\b/i,
-  /\bSTRAIGHT\s+ONLY\b/i,
-  /\bBOX\s+TRUCK\s+ONLY\b/i,
-  /\b26\s*['']\s*MAX\b/i,
-  /\b26\s*FT\s*MAX\b/i,
-  /\bSMALL\s+TRUCK\s+ONLY\b/i,
-  /\bNO\s+53\s*['']?\b/i,
-  /\bNO\s+53\s*FT\b/i,
-]
-```
+To extend: append to the appropriate `*_PATTERNS` array (or add a new source
+entry under `SOURCE_RULES`). When the rule set grows past ~5 flags, move to a
+Firestore `scanner_config` doc.
 
-To extend: add a new flag key to `PATTERNS` whose value must match an
-`EQUIPMENT_OPTIONS[].value` in `App.jsx` (or a new option). When the rule set
-grows past ~5 flags, move to a Firestore `scanner_config` doc.
+### Legacy migration
+
+v0.2.0 wrote `no_tractor_trailer` for *any* hit, including SPL-INSTR-TEXT.
+The v0.3.0 writer auto-migrates those docs: if `auto_sources.no_tractor_trailer`
+contains only `'orderInstructions'` and `manual_overrides.equipment_restrictions`
+is false, the writer swaps `no_tractor_trailer` → `uline_straight_truck` on
+the next scan. Manual overrides are always respected.
 
 ### Writer behavior
 
@@ -228,14 +235,45 @@ false, an "Override auto-detection" button is shown that flips the flag.
 
 ### Marker rendering
 
-Stops where `equipment_restrictions` includes `no_tractor_trailer` OR where the
-live scan turns up that flag render with a dedicated red pin (`noTtPinSvg()`,
-32×42) carrying a truck-with-slash glyph. `zIndex: 500` so they layer above
-ordinary colored pins. The map legend in the left rail documents this.
+Three tiers (highest confidence wins):
 
-The first-paint "live scan" path means a stop's marker turns red immediately,
-before the Firestore round-trip. Once the write lands the doc-driven path
-keeps it red.
+| Variant | When | Pin | zIndex |
+|---|---|---|---|
+| Davis no-TT | `equipment_restrictions` includes `no_tractor_trailer` OR live scan hit | red truck-slash | 600 |
+| Uline advisory | `equipment_restrictions` includes `uline_straight_truck` OR live scan hit | amber truck-slash | 500 |
+| Default | otherwise | standard colored pin via `flagColor()` | — |
+
+The first-paint "live scan" path means a stop's marker takes the right color
+immediately, before the Firestore round-trip. Once the write lands the
+doc-driven path keeps it in place.
+
+### General notes field
+
+Schema field `general_notes: string` on customer_notes. Free-form textarea in
+the sidebar Edit form (above Contacts). Persists per `match_key` like every
+other field — recurs automatically on future stops at the same customer.
+Designed for "anything that recurs" — gate codes, security desk procedures,
+specific contacts to call, weird parking instructions, etc.
+
+The existing structured fields (`receiving_hours`, `contacts[]`,
+`appointment_notes`, `dock_notes`) cover the common cases; `general_notes` is
+the catch-all when the recurring info doesn't fit a structured slot.
+
+### Satellite toggle
+
+`<MapScreen/>` carries a `satelliteMode` state and renders a toggle button
+just below the top-right status pill. ON → `google.maps.MapTypeId.HYBRID`
+(satellite imagery + road labels), OFF → `ROADMAP`. Hybrid keeps road labels
+so the dispatcher stays oriented while visually verifying Uline straight-truck
+advisories against actual site geometry (truck courts, gate sizes, etc.).
+
+### Detection Source label semantics
+
+v0.3.0 only shows "Manually set" / "Override · auto also detected" when
+`manual_overrides.equipment_restrictions === true`. Without that flag, a value
+in `equipment_restrictions` is assumed to be the auto-scanner's write
+(because the scanner is also a writer). The earlier "Auto + manual" badge was
+ambiguous and is gone.
 
 ## What's built — M4
 

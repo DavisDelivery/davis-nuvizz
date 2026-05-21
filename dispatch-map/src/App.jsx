@@ -14,7 +14,7 @@ import { Loader as GoogleMapsLoader } from '@googlemaps/js-api-loader';
 import { MarkerClusterer } from '@googlemaps/markerclusterer';
 import {
   MapPin, RefreshCw, LogOut, X, AlertTriangle, Filter, Truck, Save, Plus, Trash2,
-  Activity, ChevronDown, ChevronUp, Eye, EyeOff,
+  Activity, ChevronDown, ChevronUp, Eye, EyeOff, Layers,
 } from 'lucide-react';
 import {
   onAuthStateChanged, signInAnonymously, signOut,
@@ -30,7 +30,7 @@ import { applyScannerResults } from './lib/customer-notes-writer.ts';
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.2.0';
+const APP_VERSION = '0.3.0';
 // eslint-disable-next-line no-undef
 const BUILD_COMMIT = typeof __BUILD_COMMIT__ !== 'undefined' ? __BUILD_COMMIT__ : 'dev';
 // eslint-disable-next-line no-undef
@@ -49,7 +49,8 @@ const UNFLAGGED_TINT = '#1e5b92';          // no notes at all — brand blue
 const DRIVER_TINT = '#0f172a';             // M4 Motive driver pins
 
 const EQUIPMENT_OPTIONS = [
-  { value: 'no_tractor_trailer', label: 'No tractor trailer' },
+  { value: 'no_tractor_trailer', label: 'No tractor trailer (Davis)' },
+  { value: 'uline_straight_truck', label: 'Uline: straight truck only' },
   { value: '26ft_max', label: '26ft max' },
   { value: 'no_53ft', label: 'No 53ft' },
   { value: 'box_truck_only', label: 'Box truck only' },
@@ -208,13 +209,19 @@ function useAutoScanner(stops, notes, notesReady, user) {
   return summary;
 }
 
-// Whether a stop should render with the "no tractor trailer" emphasis marker.
-// We look at both human-set restrictions AND the live scan (so the marker
-// turns red on the very first load, before the Firestore round-trip lands).
-function hasNoTtSignal(stop, note) {
-  if (note?.equipment_restrictions?.includes?.('no_tractor_trailer')) return true;
-  if (Array.isArray(stop?.scanResults) && stop.scanResults.some((r) => r.flagValue === 'no_tractor_trailer')) return true;
-  return false;
+// Which emphasis marker (if any) a stop deserves. Davis-trusted wins over
+// Uline-advisory when both signals exist — the dispatcher sees the higher-
+// confidence indicator. Returns null if no constraint flag applies.
+//
+// We look at both the persisted equipment_restrictions array AND the live
+// scan, so a marker turns the right color on the very first load before the
+// Firestore write lands.
+function noTtMarkerVariant(stop, note) {
+  const restrictions = note?.equipment_restrictions || [];
+  const liveFlags = new Set((stop?.scanResults || []).map((r) => r.flagValue));
+  if (restrictions.includes('no_tractor_trailer') || liveFlags.has('no_tractor_trailer')) return 'davis';
+  if (restrictions.includes('uline_straight_truck') || liveFlags.has('uline_straight_truck')) return 'uline';
+  return null;
 }
 
 // Subscribe to ALL customer_notes docs and expose as a Map<match_key, note>.
@@ -290,25 +297,33 @@ function pinSvg(color) {
   return 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent(svg);
 }
 
-// M2.1: red marker with truck-with-slash overlay for stops carrying the
-// no_tractor_trailer restriction. Bigger than the standard pin so it stands out
+// M2.1: pin with truck-with-slash overlay. Red = Davis-verified no_tractor_trailer
+// (addressLine2 source). Amber = Uline advisory straight-truck-only
+// (orderInstructions source). Bigger than the standard pin so it stands out
 // against clustered colored pins.
-function noTtPinSvg() {
+function noTtPinSvg(color = FLAG_COLORS.red) {
   const svg = `
     <svg xmlns="http://www.w3.org/2000/svg" width="32" height="42" viewBox="0 0 32 42">
       <path d="M16 1c-8 0-15 6-15 13 0 10 15 27 15 27s15-17 15-27c0-7-7-13-15-13z"
-        fill="${FLAG_COLORS.red}" stroke="white" stroke-width="2.5"/>
+        fill="${color}" stroke="white" stroke-width="2.5"/>
       <g transform="translate(7,8)">
         <path d="M0 7h11v-5H0z" fill="white"/>
         <path d="M11 4h4l2 3v3H11z" fill="white"/>
-        <circle cx="3" cy="9" r="1.5" fill="${FLAG_COLORS.red}"/>
-        <circle cx="14" cy="9" r="1.5" fill="${FLAG_COLORS.red}"/>
-        <line x1="-1" y1="13" x2="19" y2="-1" stroke="${FLAG_COLORS.red}" stroke-width="3"/>
+        <circle cx="3" cy="9" r="1.5" fill="${color}"/>
+        <circle cx="14" cy="9" r="1.5" fill="${color}"/>
+        <line x1="-1" y1="13" x2="19" y2="-1" stroke="${color}" stroke-width="3"/>
         <line x1="-1" y1="13" x2="19" y2="-1" stroke="white" stroke-width="1.5"/>
       </g>
     </svg>`;
   return 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent(svg);
 }
+
+// Davis-trusted no_tractor_trailer pin — red.
+function davisNoTtPin() { return noTtPinSvg(FLAG_COLORS.red); }
+// Uline-advisory straight-truck-only pin — amber. Same icon so the constraint
+// is still legible at a glance, but the color says "verify before relying".
+const ULINE_ADVISORY_TINT = '#f59e0b';
+function ulineStraightTruckPin() { return noTtPinSvg(ULINE_ADVISORY_TINT); }
 
 function truckSvg(color) {
   const svg = `
@@ -347,6 +362,7 @@ function emptyNote(stop) {
     dock_type: null,
     contacts: [],
     dock_notes: '',
+    general_notes: '',
     priority_flag: null,
     photo_urls: [],
     pro_history: [],
@@ -514,16 +530,20 @@ function FilterPanel({ filters, setFilters, counts }) {
       <div className="pt-2 border-t">
         <div className="text-xs font-semibold text-slate-600 mb-1">Map legend</div>
         <ul className="text-[11px] text-slate-700 space-y-1">
-          <li className="flex items-center gap-2">
-            <img src={noTtPinSvg()} alt="" className="w-4 h-5" />
-            <span>No tractor trailer (auto-detected or set)</span>
+          <li className="flex items-start gap-2">
+            <img src={davisNoTtPin()} alt="" className="w-4 h-5 flex-shrink-0" />
+            <span>No tractor trailer — Davis verified (addr2)</span>
+          </li>
+          <li className="flex items-start gap-2">
+            <img src={ulineStraightTruckPin()} alt="" className="w-4 h-5 flex-shrink-0" />
+            <span>Uline advisory — straight truck only (SPL-INSTR-TEXT)</span>
           </li>
           <li className="flex items-center gap-2">
-            <span className="inline-block w-3 h-3 rounded-full" style={{ background: RESTRICTION_TINT }} />
+            <span className="inline-block w-3 h-3 rounded-full flex-shrink-0" style={{ background: RESTRICTION_TINT }} />
             <span>Has notes / other restrictions</span>
           </li>
           <li className="flex items-center gap-2">
-            <span className="inline-block w-3 h-3 rounded-full" style={{ background: UNFLAGGED_TINT }} />
+            <span className="inline-block w-3 h-3 rounded-full flex-shrink-0" style={{ background: UNFLAGGED_TINT }} />
             <span>No notes yet</span>
           </li>
         </ul>
@@ -622,9 +642,16 @@ function DetectionSourceSection({ stop, note, onOverrideAuto, saving }) {
           const effectiveSources = sources.length ? sources : liveSources;
           const effectiveMatches = matches.length ? matches : liveMatches;
           const autoDetected = effectiveSources.length > 0;
+          // manual_overrides is the only canonical signal of human touch on this
+          // field. Without it, "value is in the array" tells us nothing about
+          // who put it there — the scanner is also a writer. So we only call
+          // something "manually set" when the override flag is on.
           const tag = manualOverride
             ? (autoDetected ? 'Override · auto also detected' : 'Manually set')
-            : (autoDetected && inNote ? 'Auto + manual' : autoDetected ? 'Auto-detected' : 'Manually set');
+            : (autoDetected ? 'Auto-detected' : 'Manually set');
+          // suppress unused-var lint: keep `inNote` available for future
+          // policy refinements (e.g. showing "value present but no auto trail").
+          void inNote;
           return (
             <li key={flag} className="text-xs">
               <div className="flex items-center justify-between">
@@ -841,6 +868,20 @@ function StopSidebar({ stop, note, onClose, onSave, onOverrideAuto, saving, save
               </div>
 
               <div>
+                <div className="text-xs font-semibold text-slate-600 mb-1">
+                  General notes
+                  <span className="ml-1 text-[10px] text-slate-400 font-normal">(persists for this customer)</span>
+                </div>
+                <textarea
+                  value={D.general_notes || ''}
+                  onChange={(e) => setD({ general_notes: e.target.value })}
+                  rows={3}
+                  placeholder="Anything that recurs at this business — security desk, gate codes, who to call, etc."
+                  className="w-full border border-slate-300 rounded px-2 py-1 text-xs"
+                />
+              </div>
+
+              <div>
                 <div className="text-xs font-semibold text-slate-600 mb-1 flex items-center justify-between">
                   <span>Contacts</span>
                   <button onClick={addContact} className="text-xs text-blue-600 inline-flex items-center gap-0.5 hover:underline">
@@ -935,6 +976,7 @@ function ReadOnlyNoteView({ note }) {
     });
   }
   if (note.dock_notes) items.push({ k: 'Dock notes', v: note.dock_notes });
+  if (note.general_notes) items.push({ k: 'General notes', v: <div className="whitespace-pre-wrap">{note.general_notes}</div> });
   if (note.contacts?.length) {
     items.push({
       k: 'Contacts',
@@ -970,6 +1012,9 @@ function MapScreen({ user }) {
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState(null);
   const [showDrivers, setShowDrivers] = useState(false);
+  // Default to roadmap for the dispatcher's daily view; satellite is for
+  // spot-checking Uline straight-truck warnings against actual site geometry.
+  const [satelliteMode, setSatelliteMode] = useState(false);
   const { drivers, error: driverErr, lastRefreshed: driversAt } = useDriverPositions(showDrivers);
   // M2.1 — fire-and-forget auto-population of customer_notes from scanner hits.
   const scanSummary = useAutoScanner(stops, notes, notesReady, user);
@@ -995,6 +1040,15 @@ function MapScreen({ user }) {
     });
   }, [google]);
 
+  // Sync map type when the satellite toggle changes. Hybrid (satellite + road
+  // labels) keeps the dispatcher oriented while still showing site geometry.
+  useEffect(() => {
+    if (!google || !mapRef.current) return;
+    mapRef.current.setMapTypeId(
+      satelliteMode ? google.maps.MapTypeId.HYBRID : google.maps.MapTypeId.ROADMAP
+    );
+  }, [google, satelliteMode]);
+
   // Re-render stop markers whenever visibility / notes change.
   useEffect(() => {
     if (!google || !mapRef.current) return;
@@ -1007,25 +1061,26 @@ function MapScreen({ user }) {
       .filter((s) => s.lat != null && s.lng != null)
       .map((s) => {
         const note = notes.get(s.matchKey);
-        const noTt = hasNoTtSignal(s, note);
-        const iconCfg = noTt
-          ? {
-              url: noTtPinSvg(),
-              scaledSize: new google.maps.Size(32, 42),
-              anchor: new google.maps.Point(16, 40),
-            }
-          : {
-              url: pinSvg(flagColor(note)),
-              scaledSize: new google.maps.Size(28, 36),
-              anchor: new google.maps.Point(14, 34),
-            };
+        const variant = noTtMarkerVariant(s, note);
+        let iconCfg;
+        let title = s.businessName || '';
+        let zIndex;
+        if (variant === 'davis') {
+          iconCfg = { url: davisNoTtPin(), scaledSize: new google.maps.Size(32, 42), anchor: new google.maps.Point(16, 40) };
+          title = `${title} — NO TRACTOR TRAILER (Davis)`;
+          zIndex = 600;
+        } else if (variant === 'uline') {
+          iconCfg = { url: ulineStraightTruckPin(), scaledSize: new google.maps.Size(32, 42), anchor: new google.maps.Point(16, 40) };
+          title = `${title} — Uline says straight truck only (advisory)`;
+          zIndex = 500;
+        } else {
+          iconCfg = { url: pinSvg(flagColor(note)), scaledSize: new google.maps.Size(28, 36), anchor: new google.maps.Point(14, 34) };
+        }
         const marker = new google.maps.Marker({
           position: { lat: s.lat, lng: s.lng },
           icon: iconCfg,
-          title: noTt
-            ? `${s.businessName || ''} — NO TRACTOR TRAILER`
-            : (s.businessName || ''),
-          zIndex: noTt ? 500 : undefined,
+          title,
+          zIndex,
         });
         marker.addListener('click', () => setSelectedStop(s));
         return marker;
@@ -1178,6 +1233,20 @@ function MapScreen({ user }) {
             <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
           </button>
         </div>
+
+        {/* Satellite toggle — sits just below the status pill */}
+        <button
+          onClick={() => setSatelliteMode((v) => !v)}
+          className={`absolute top-[68px] right-3 backdrop-blur border rounded-lg shadow px-3 py-1.5 text-xs font-semibold inline-flex items-center gap-1.5 ${
+            satelliteMode
+              ? 'bg-slate-900 text-white border-slate-900'
+              : 'bg-white/95 text-slate-700 border-slate-200 hover:bg-slate-50'
+          }`}
+          title="Toggle satellite (hybrid) view"
+        >
+          <Layers size={13} />
+          {satelliteMode ? 'Satellite' : 'Roadmap'}
+        </button>
 
         {error && (
           <div className="absolute bottom-3 left-1/2 -translate-x-1/2 bg-red-50 border border-red-200 rounded px-3 py-1.5 text-xs text-red-700">

@@ -7,21 +7,27 @@
 // audit fields (auto_sources, auto_matches, auto_detected_at) so the UI can
 // disclose what *would have* been detected.
 //
+// Source-locked flags (v0.3.0):
+//   addressLine2     → no_tractor_trailer   (Davis-curated, trusted)
+//   orderInstructions → uline_straight_truck (Uline-supplied, advisory)
+//
+// Migration: if a doc currently carries `no_tractor_trailer` but its only
+// auto-detection source was `orderInstructions` (legacy v0.2.0 behavior where
+// SPL-INSTR-TEXT mapped to no_tractor_trailer), we swap it to
+// `uline_straight_truck`. Manual overrides are respected as always.
+//
 // Schema additions for M2.1:
 //   manual_overrides: { equipment_restrictions: boolean }   // dispatcher acknowledged
 //   auto_sources:     { [flag]: SignalSource[] }            // which sources detected each flag
 //   auto_matches:     { [flag]: { source, text, pattern }[] } // exact text that matched
 //   auto_detected_at: Timestamp                             // last auto-scan write
-//   auto_detected_by: string                                // 'auto-scanner v0.2.0'
-//
-// pro_history is also appended FIFO (max 20) so we keep visibility into which
-// PRO triggered the most recent detection at this customer.
+//   auto_detected_by: string                                // 'auto-scanner v0.3.0'
 
-import { doc, writeBatch, arrayUnion, serverTimestamp, Firestore } from 'firebase/firestore';
-import type { ScanResult, SignalSource } from './signal-scanner';
+import { doc, writeBatch, serverTimestamp, Firestore } from 'firebase/firestore';
+import type { ScanResult, SignalSource, FlagValue } from './signal-scanner';
 
 const MAX_BATCH = 450;       // Firestore caps at 500; leave headroom
-const SCANNER_TAG = 'auto-scanner v0.2.0';
+const SCANNER_TAG = 'auto-scanner v0.3.0';
 
 export interface ScannedStop {
   matchKey: string | null;
@@ -45,9 +51,9 @@ export interface ExistingNote {
 interface WriteDecision {
   matchKey: string;
   payload: Record<string, any>;
-  shouldMergeRestrictions: boolean;
-  detectedFlags: string[];
-  skippedDueToOverride: string[];
+  detectedFlags: FlagValue[];
+  removedLegacyFlags: FlagValue[];
+  skippedDueToOverride: FlagValue[];
 }
 
 function todayYmd(): string {
@@ -62,14 +68,16 @@ export function decideWrite(
 ): WriteDecision | null {
   if (!stop.matchKey || !stop.scanResults.length) return null;
 
-  // Group results by flag → sources + matches.
+  // Merge new scan with the doc's previously persisted auto trail. Per-flag
+  // sources accumulate across days; matches reflect only the latest scan.
+  const existingSources = existing?.auto_sources || {};
   const sourcesByFlag: Record<string, SignalSource[]> = {};
   const matchesByFlag: Record<string, { source: SignalSource; text: string; pattern: string }[]> = {};
-  const detectedFlags: string[] = [];
+  const detectedFlagsThisScan = new Set<FlagValue>();
 
   for (const r of stop.scanResults) {
-    if (!detectedFlags.includes(r.flagValue)) detectedFlags.push(r.flagValue);
-    const sources = sourcesByFlag[r.flagValue] || (sourcesByFlag[r.flagValue] = []);
+    detectedFlagsThisScan.add(r.flagValue);
+    const sources = sourcesByFlag[r.flagValue] || (sourcesByFlag[r.flagValue] = [...(existingSources[r.flagValue] || [])]);
     if (!sources.includes(r.matchedSource)) sources.push(r.matchedSource);
     const matches = matchesByFlag[r.flagValue] || (matchesByFlag[r.flagValue] = []);
     matches.push({ source: r.matchedSource, text: r.matchedText, pattern: r.matchedPattern });
@@ -77,33 +85,52 @@ export function decideWrite(
 
   const overrideOnRestrictions = existing?.manual_overrides?.equipment_restrictions === true;
 
-  // Audit fields are always written — disclosure should reflect what was detected
-  // even when override is on, so the UI can show "would have detected X".
   const payload: Record<string, any> = {
     match_key: stop.matchKey,
     raw_name: stop.businessName || '',
     raw_address: [stop.addr1, stop.city, stop.state, stop.zip].filter(Boolean).join(', '),
-    auto_sources: sourcesByFlag,
+    // Merge persisted auto trail so flags detected on earlier scans aren't lost.
+    auto_sources: { ...existingSources, ...sourcesByFlag },
     auto_matches: matchesByFlag,
     auto_detected_at: serverTimestamp(),
     auto_detected_by: SCANNER_TAG,
   };
 
-  // Restriction merge — only when override is OFF.
-  let shouldMergeRestrictions = false;
-  const skippedDueToOverride: string[] = [];
+  // Compute the new equipment_restrictions explicitly so we can both add new
+  // detections AND clean up legacy v0.2.0 writes where orderInstructions hits
+  // were mis-tagged as no_tractor_trailer.
+  const detectedFlags: FlagValue[] = [...detectedFlagsThisScan];
+  const removedLegacyFlags: FlagValue[] = [];
+  const skippedDueToOverride: FlagValue[] = [];
+
   if (overrideOnRestrictions) {
+    // Dispatcher locked the field — only update the audit trail, never touch
+    // the array itself.
     skippedDueToOverride.push(...detectedFlags);
   } else {
-    // Use arrayUnion so we never clobber human-added restrictions (e.g.
-    // 'liftgate_required' set by dispatcher stays put).
-    payload.equipment_restrictions = arrayUnion(...detectedFlags);
-    shouldMergeRestrictions = true;
+    const existingArr: string[] = Array.isArray(existing?.equipment_restrictions) ? existing!.equipment_restrictions! : [];
+    const next = new Set<string>(existingArr);
+
+    // Add anything we just detected.
+    for (const f of detectedFlags) next.add(f);
+
+    // Migration: if no_tractor_trailer is in the array but its only auto-source
+    // (across history) was orderInstructions, that's a legacy v0.2.0 write —
+    // swap it to uline_straight_truck. We only migrate values the scanner
+    // touched (not human-set ones); the manual_overrides flag is the canonical
+    // signal of human touch.
+    const ntSources = (existing?.auto_sources?.no_tractor_trailer || []) as SignalSource[];
+    const ntFromAddr2 = ntSources.includes('addressLine2') || detectedFlagsThisScan.has('no_tractor_trailer');
+    if (next.has('no_tractor_trailer') && !ntFromAddr2 && ntSources.includes('orderInstructions')) {
+      next.delete('no_tractor_trailer');
+      next.add('uline_straight_truck');
+      removedLegacyFlags.push('no_tractor_trailer');
+    }
+
+    payload.equipment_restrictions = [...next];
   }
 
-  // Append today's PRO to history (FIFO 20). arrayUnion would dedupe by exact
-  // equality but the {pro,date} object means today's same PRO would re-append
-  // forever, so we do this conditionally based on the existing tail.
+  // Append today's PRO to history (FIFO 20).
   if (stop.pro) {
     const arr = Array.isArray(existing?.pro_history) ? existing!.pro_history! : [];
     const today = todayYmd();
@@ -114,29 +141,26 @@ export function decideWrite(
     }
   }
 
-  return { matchKey: stop.matchKey, payload, shouldMergeRestrictions, detectedFlags, skippedDueToOverride };
+  return { matchKey: stop.matchKey, payload, detectedFlags, removedLegacyFlags, skippedDueToOverride };
 }
 
 export interface ApplyResult {
-  attempted: number;          // stops with detections
-  written: number;            // docs actually written
-  overrideSkips: number;      // docs where equipment_restrictions was respected as locked
+  attempted: number;
+  written: number;
+  overrideSkips: number;
+  legacyMigrations: number;
   errors: { matchKey: string; message: string }[];
 }
 
-// Apply scanner results across many stops.
-// `existingNotes` is the live Firestore snapshot Map<match_key, note>.
 export async function applyScannerResults(
   db: Firestore,
   stops: ScannedStop[],
   existingNotes: Map<string, ExistingNote>,
 ): Promise<ApplyResult> {
-  const result: ApplyResult = { attempted: 0, written: 0, overrideSkips: 0, errors: [] };
+  const result: ApplyResult = { attempted: 0, written: 0, overrideSkips: 0, legacyMigrations: 0, errors: [] };
   if (!db) return result;
 
-  // Dedupe by match_key — if two stops at the same customer both detect, we want
-  // ONE write that merges both stops' sources. (Common — Uline reships to the same
-  // consignee multiple times.)
+  // Dedupe by match_key — two stops at the same customer merge into one write.
   const merged = new Map<string, { stop: ScannedStop; results: ScanResult[] }>();
   for (const s of stops) {
     if (!s.matchKey || !s.scanResults.length) continue;
@@ -154,10 +178,10 @@ export async function applyScannerResults(
     const d = decideWrite({ ...stop, scanResults: results }, existingNotes.get(stop.matchKey));
     if (!d) continue;
     decisions.push(d);
-    if (!d.shouldMergeRestrictions && d.skippedDueToOverride.length) result.overrideSkips++;
+    if (d.skippedDueToOverride.length) result.overrideSkips++;
+    if (d.removedLegacyFlags.length) result.legacyMigrations++;
   }
 
-  // Chunk into Firestore-safe batches.
   for (let i = 0; i < decisions.length; i += MAX_BATCH) {
     const slice = decisions.slice(i, i + MAX_BATCH);
     const batch = writeBatch(db);
