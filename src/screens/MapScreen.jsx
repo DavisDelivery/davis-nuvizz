@@ -3,13 +3,43 @@
 // Tap a pin → slide-up detail panel with stop info + "Open Details" CTA.
 
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { X, Filter, RefreshCw, User, ChevronRight, MapPin, Clock } from 'lucide-react';
+import { X, Filter, RefreshCw, User, ChevronRight, MapPin, Clock, AlertCircle } from 'lucide-react';
 import { fetchFleetStops, TENANTS } from '../lib/api';
 import { fmtTime } from '../lib/normalize';
 import { Loading, ErrorBox, StatusPill, Field } from '../components/UI';
 
 // Distinct colors for load route lines (cycles if more loads than colors)
 const ROUTE_COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ec4899', '#8b5cf6', '#06b6d4', '#f43f5e', '#84cc16', '#6366f1', '#f97316'];
+
+// Single in-flight promise so concurrent mounts / StrictMode share one CDN fetch.
+let leafletLoadPromise = null;
+function loadLeafletOnce() {
+  if (typeof window === 'undefined') return Promise.reject(new Error('no window'));
+  if (window.L) return Promise.resolve();
+  if (leafletLoadPromise) return leafletLoadPromise;
+  leafletLoadPromise = new Promise((resolve, reject) => {
+    if (!document.querySelector('link[data-leaflet]')) {
+      const css = document.createElement('link');
+      css.rel = 'stylesheet';
+      css.href = 'https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css';
+      css.setAttribute('data-leaflet', '1');
+      document.head.appendChild(css);
+    }
+    const existing = document.querySelector('script[data-leaflet]');
+    if (existing) {
+      existing.addEventListener('load', () => resolve());
+      existing.addEventListener('error', reject);
+      return;
+    }
+    const s = document.createElement('script');
+    s.src = 'https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js';
+    s.setAttribute('data-leaflet', '1');
+    s.onload = () => resolve();
+    s.onerror = () => reject(new Error('leaflet script failed'));
+    document.head.appendChild(s);
+  });
+  return leafletLoadPromise;
+}
 
 // NuVizz status codes → our color buckets (match the rest of the app)
 const BUCKET_FOR_STATUS = {
@@ -67,14 +97,13 @@ export default function MapScreen({ tenant, viewDate, onOpenStop }) {
   const [showRoutes, setShowRoutes] = useState(true);
   const [bucketFilter, setBucketFilter] = useState(null); // null = all
   const [driverFilter, setDriverFilter] = useState(null);
-  // Toggled true once Leaflet finishes loading and the map instance is created.
+  // Flipped true once Leaflet has loaded AND the map instance is attached to the DOM.
   // The marker effect can't depend on refs (they don't trigger re-renders),
   // so without this it can miss the window where map is ready + data has arrived.
   const [mapReady, setMapReady] = useState(false);
   const mapRef = useRef(null);
   const mapInstanceRef = useRef(null);
   const layerRef = useRef(null);
-  const leafletLoadedRef = useRef(false);
 
   const load = useCallback(async () => {
     setState({ loading: true, error: null, data: null });
@@ -124,41 +153,44 @@ export default function MapScreen({ tenant, viewDate, onOpenStop }) {
     return { normalizedStops: ns, normalizedLoads: nl, stopsWithCoords: withCoords, loadColorMap: lcm, drivers: driverList };
   }, [state.data]);
 
-  // Load Leaflet from CDN (once)
+  // Load Leaflet from CDN once per page. Module-level so React StrictMode double-invokes
+  // and remounts (tab switching) reuse the same in-flight promise.
+  // After it resolves, the init effect below picks up the DOM node and creates the map.
+  const [leafletReady, setLeafletReady] = useState(() => typeof window !== 'undefined' && !!window.L);
+
   useEffect(() => {
-    if (leafletLoadedRef.current || typeof window === 'undefined') return;
+    if (leafletReady) return;
+    let cancelled = false;
+    loadLeafletOnce().then(() => { if (!cancelled) setLeafletReady(true); })
+      .catch(err => { if (!cancelled) setState(s => ({ ...s, error: 'Failed to load map library: ' + err.message })); });
+    return () => { cancelled = true; };
+  }, [leafletReady]);
 
-    const loadLeaflet = async () => {
-      if (window.L) { leafletLoadedRef.current = true; initMap(); return; }
-      // CSS
-      const css = document.createElement('link');
-      css.rel = 'stylesheet';
-      css.href = 'https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css';
-      document.head.appendChild(css);
-      // JS
-      await new Promise((resolve, reject) => {
-        const s = document.createElement('script');
-        s.src = 'https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js';
-        s.onload = resolve;
-        s.onerror = reject;
-        document.head.appendChild(s);
-      });
-      leafletLoadedRef.current = true;
-      initMap();
-    };
-    loadLeaflet();
-  }, []);
-
-  const initMap = useCallback(() => {
-    if (!mapRef.current || mapInstanceRef.current || !window.L) return;
+  // Attach Leaflet to the container as soon as the script is loaded. The
+  // map container is always mounted (no early returns above), so mapRef.current
+  // is guaranteed set by the time this effect fires.
+  useEffect(() => {
+    if (!leafletReady || mapInstanceRef.current || !mapRef.current || !window.L) return;
     const L = window.L;
-    // Default view = Buford, GA (Davis HQ)
     const map = L.map(mapRef.current, { zoomControl: false, attributionControl: false }).setView([34.12, -84.00], 9);
     L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', { maxZoom: 19 }).addTo(map);
     L.control.zoom({ position: 'topright' }).addTo(map);
     mapInstanceRef.current = map;
     layerRef.current = L.layerGroup().addTo(map);
+    // Leaflet measures the container at create-time; if it was sized via
+    // calc(100vh - 130px) but hadn't fully laid out, tiles can be off.
+    // Schedule an invalidate to be safe.
+    requestAnimationFrame(() => { try { map.invalidateSize(); } catch {} });
     setMapReady(true);
+  }, [leafletReady]);
+
+  // Clean up the Leaflet instance on unmount so a tab switch + return rebuilds cleanly.
+  useEffect(() => () => {
+    if (mapInstanceRef.current) {
+      try { mapInstanceRef.current.remove(); } catch {}
+      mapInstanceRef.current = null;
+      layerRef.current = null;
+    }
   }, []);
 
   // Render markers + route lines whenever data or filters change
@@ -214,17 +246,42 @@ export default function MapScreen({ tenant, viewDate, onOpenStop }) {
     } catch {}
   }, [mapReady, stopsWithCoords, showRoutes, bucketFilter, driverFilter, loadColorMap]);
 
-  if (state.loading) return <Loading msg="Loading map..." />;
-  if (state.error) return <ErrorBox error={state.error} onRetry={load} />;
-
-  const noCoords = normalizedStops.length > 0 && stopsWithCoords.length === 0;
+  const noCoords = !state.loading && normalizedStops.length > 0 && stopsWithCoords.length === 0;
+  const showLegend = !state.loading && !state.error && normalizedStops.length > 0;
 
   return (
     <div className="relative h-full w-full">
-      {/* Map container */}
+      {/* Map container — must always be mounted so Leaflet can attach to it,
+          regardless of loading / error / mapReady state. */}
       <div ref={mapRef} className="absolute inset-0 bg-slate-100" style={{ minHeight: 'calc(100vh - 130px)' }} />
 
-      {/* Top overlay - legend + filters */}
+      {/* Loading overlay */}
+      {(state.loading || !mapReady) && !state.error && (
+        <div className="absolute inset-0 z-[450] bg-slate-100/80 backdrop-blur-sm flex items-center justify-center pointer-events-none">
+          <div className="bg-white rounded-lg shadow-md px-4 py-3 flex items-center gap-2 text-sm text-slate-700">
+            <RefreshCw size={16} className="animate-spin text-slate-500" />
+            {state.loading ? 'Loading stops…' : 'Loading map…'}
+          </div>
+        </div>
+      )}
+
+      {/* Error overlay */}
+      {state.error && (
+        <div className="absolute inset-0 z-[450] bg-slate-100/90 flex items-center justify-center p-4">
+          <div className="bg-white rounded-lg shadow-md p-4 max-w-sm w-full">
+            <div className="flex items-center gap-2 text-red-600 font-semibold mb-2">
+              <AlertCircle size={18} /> Map error
+            </div>
+            <div className="text-sm text-slate-700 mb-3 break-words">{state.error}</div>
+            <button onClick={load} className="w-full py-2 bg-slate-900 text-white rounded text-sm font-medium">
+              Retry
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Top overlay - legend + filters (only once we have data) */}
+      {showLegend && (
       <div className="absolute top-3 left-3 right-3 z-[400] pointer-events-none flex items-start justify-between gap-2">
         <div className="bg-white/95 backdrop-blur rounded-lg shadow-md px-3 py-2 pointer-events-auto">
           <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold mb-1">Stops</div>
@@ -268,6 +325,7 @@ export default function MapScreen({ tenant, viewDate, onOpenStop }) {
           )}
         </div>
       </div>
+      )}
 
       {/* No-coords banner */}
       {noCoords && (
