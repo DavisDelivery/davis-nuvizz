@@ -56,7 +56,7 @@ function toMapStop(s) {
     arrival: s.arrivalDTTM,
     etaCode: s.etaCode,
     hasException: !!s.exceptionPresent,
-    // MapScreen uses s.seq for labels — use displaySeq if we ever add one, else the PRO
+    // seq is filled in after grouping by load — see useMemo below
     seq: null,
   };
 }
@@ -67,6 +67,10 @@ export default function MapScreen({ tenant, viewDate, onOpenStop }) {
   const [showRoutes, setShowRoutes] = useState(true);
   const [bucketFilter, setBucketFilter] = useState(null); // null = all
   const [driverFilter, setDriverFilter] = useState(null);
+  // Toggled true once Leaflet finishes loading and the map instance is created.
+  // The marker effect can't depend on refs (they don't trigger re-renders),
+  // so without this it can miss the window where map is ready + data has arrived.
+  const [mapReady, setMapReady] = useState(false);
   const mapRef = useRef(null);
   const mapInstanceRef = useRef(null);
   const layerRef = useRef(null);
@@ -87,6 +91,20 @@ export default function MapScreen({ tenant, viewDate, onOpenStop }) {
   const { normalizedStops, normalizedLoads, stopsWithCoords, loadColorMap, drivers } = useMemo(() => {
     if (!state.data) return { normalizedStops: [], normalizedLoads: [], stopsWithCoords: [], loadColorMap: {}, drivers: [] };
     const ns = (state.data.stops || []).map(toMapStop);
+
+    // Assign a per-load display sequence number based on plannedEta order.
+    // The cached __fleetstops payload doesn't carry stopSeq, so without this
+    // pin labels render blank and polylines connect stops in arbitrary order.
+    const byLoadForSeq = {};
+    ns.forEach(s => {
+      if (!s.loadNbr) return;
+      (byLoadForSeq[s.loadNbr] ||= []).push(s);
+    });
+    Object.values(byLoadForSeq).forEach(group => {
+      group.sort((a, b) => (a.plannedEta || '').localeCompare(b.plannedEta || ''));
+      group.forEach((s, i) => { s.seq = i + 1; });
+    });
+
     // Derive unique loads from stops (since __fleetstops is stop-flat)
     const loadMap = {};
     ns.forEach(s => {
@@ -140,6 +158,7 @@ export default function MapScreen({ tenant, viewDate, onOpenStop }) {
     L.control.zoom({ position: 'topright' }).addTo(map);
     mapInstanceRef.current = map;
     layerRef.current = L.layerGroup().addTo(map);
+    setMapReady(true);
   }, []);
 
   // Render markers + route lines whenever data or filters change
@@ -193,7 +212,7 @@ export default function MapScreen({ tenant, viewDate, onOpenStop }) {
       const bounds = L.latLngBounds(stopsToShow.map(s => [parseFloat(s.lat), parseFloat(s.lng)]));
       map.fitBounds(bounds, { padding: [40, 40], maxZoom: 13 });
     } catch {}
-  }, [stopsWithCoords, showRoutes, bucketFilter, driverFilter, loadColorMap]);
+  }, [mapReady, stopsWithCoords, showRoutes, bucketFilter, driverFilter, loadColorMap]);
 
   if (state.loading) return <Loading msg="Loading map..." />;
   if (state.error) return <ErrorBox error={state.error} onRetry={load} />;
