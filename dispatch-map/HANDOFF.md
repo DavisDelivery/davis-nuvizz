@@ -3,6 +3,36 @@
 Status of the build that landed on branch `claude/dispatch-map-build-eEbYe`.
 Pick this up when you start M3 + M5.
 
+## v0.3.0 — auth removed (action required)
+
+Firebase Authentication has been removed from the app to match the no-login
+pattern used by Glory Bound Dispatch and MarginIQ. The app now renders the
+map directly on load — no login screen, no `firebase/auth` import, no
+sign-out button.
+
+**Action required before merge can take effect in production:**
+Update the Firestore security rules in the
+[davismarginiq project](https://console.firebase.google.com/project/davismarginiq/firestore/rules)
+to open the `customer_notes` collection:
+
+```diff
+ match /customer_notes/{key} {
+-  allow read, write: if request.auth != null;
++  allow read, write: if true;
+ }
+```
+
+Without this rule change, the dispatch map will load fine but writes to
+customer_notes (Save in the sidebar, the auto-scanner if/when it lands) will
+fail silently with a permission-denied error in the console.
+
+**Other v0.3.0 changes:**
+- `customer_notes.updated_by` is now hardcoded to `'dispatcher'` everywhere
+  (see `NOTES_UPDATED_BY` constant in `src/App.jsx`). No per-user identity.
+- `firebase/auth` is gone from the bundle (~72 KB drop).
+- `VITE_FIREBASE_*` env vars are still required — Firestore needs them.
+- Header right side is empty (no email, no sign-out button).
+
 ## TL;DR
 
 - M1 (read-only map) and M2 (metadata + edit UI) are fully wired.
