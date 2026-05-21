@@ -17,7 +17,7 @@ import {
   Activity, ChevronDown, ChevronUp, Eye, EyeOff,
 } from 'lucide-react';
 import {
-  onAuthStateChanged, signInWithEmailAndPassword, signOut,
+  onAuthStateChanged, signInAnonymously, signOut,
 } from 'firebase/auth';
 import {
   collection, doc, getDoc, onSnapshot, setDoc, serverTimestamp,
@@ -302,14 +302,24 @@ function bumpProHistory(existing, pro) {
 
 function LoginGate({ children }) {
   const [user, setUser] = useState(undefined); // undefined = loading
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState(null);
+  const [authError, setAuthError] = useState(null);
 
   useEffect(() => {
     if (!auth) { setUser(null); return; }
-    return onAuthStateChanged(auth, (u) => setUser(u));
+    return onAuthStateChanged(auth, (u) => {
+      if (u) {
+        setUser(u);
+      } else {
+        // Auto-sign-in anonymously — no login screen by design.
+        // Requires "Anonymous" provider to be enabled in Firebase Auth settings.
+        signInAnonymously(auth).catch((err) => {
+          setAuthError(err?.code === 'auth/admin-restricted-operation'
+            ? 'Anonymous sign-in is disabled. Enable it in Firebase Console → Authentication → Sign-in method → Anonymous.'
+            : (err?.message || String(err)));
+          setUser(null);
+        });
+      }
+    });
   }, []);
 
   if (!firebaseConfigured) {
@@ -322,7 +332,7 @@ function LoginGate({ children }) {
               <div className="font-semibold text-slate-900">Firebase not configured</div>
               <p className="text-sm text-slate-600 mt-1">
                 Set the VITE_FIREBASE_* env vars (see <code className="px-1 bg-slate-100 rounded">.env.example</code>)
-                before the app can authenticate. Once configured, you'll see the login screen.
+                before the app can authenticate.
               </p>
             </div>
           </div>
@@ -331,69 +341,26 @@ function LoginGate({ children }) {
     );
   }
 
-  if (user === undefined) {
+  if (authError) {
     return (
-      <div className="min-h-screen flex items-center justify-center text-slate-500">
-        <RefreshCw size={18} className="animate-spin mr-2" /> Loading…
+      <div className="min-h-screen flex items-center justify-center p-6 bg-slate-50">
+        <div className="max-w-md w-full bg-white border border-red-300 rounded-lg p-6 shadow">
+          <div className="flex items-start gap-3">
+            <AlertTriangle className="text-red-500 flex-shrink-0" size={24} />
+            <div>
+              <div className="font-semibold text-slate-900">Sign-in failed</div>
+              <p className="text-sm text-slate-600 mt-1">{authError}</p>
+            </div>
+          </div>
+        </div>
       </div>
     );
   }
 
-  if (!user) {
-    const submit = async (e) => {
-      e.preventDefault();
-      setSubmitting(true);
-      setError(null);
-      try {
-        await signInWithEmailAndPassword(auth, email, password);
-      } catch (err) {
-        setError(err.message);
-      } finally {
-        setSubmitting(false);
-      }
-    };
+  if (user === undefined || !user) {
     return (
-      <div className="min-h-screen flex items-center justify-center p-6 bg-slate-100">
-        <form onSubmit={submit} className="max-w-sm w-full bg-white rounded-xl shadow-lg p-6 space-y-4">
-          <div className="text-center">
-            <div className="inline-flex items-center justify-center w-12 h-12 rounded-xl text-white font-bold mb-2" style={{ background: BRAND }}>
-              D
-            </div>
-            <div className="text-xl font-bold text-slate-900">Dispatch Map</div>
-            <div className="text-xs text-slate-500">Davis Delivery Service</div>
-          </div>
-          <div>
-            <label className="block text-xs font-semibold text-slate-600 mb-1">Email</label>
-            <input
-              type="email"
-              required
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              className="w-full border border-slate-300 rounded px-3 py-2 text-sm"
-              autoComplete="email"
-            />
-          </div>
-          <div>
-            <label className="block text-xs font-semibold text-slate-600 mb-1">Password</label>
-            <input
-              type="password"
-              required
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              className="w-full border border-slate-300 rounded px-3 py-2 text-sm"
-              autoComplete="current-password"
-            />
-          </div>
-          {error && <div className="text-xs text-red-600 bg-red-50 border border-red-200 rounded px-3 py-2">{error}</div>}
-          <button
-            type="submit"
-            disabled={submitting}
-            className="w-full text-white text-sm font-semibold py-2 rounded disabled:opacity-50"
-            style={{ background: BRAND }}
-          >
-            {submitting ? 'Signing in…' : 'Sign in'}
-          </button>
-        </form>
+      <div className="min-h-screen flex items-center justify-center text-slate-500">
+        <RefreshCw size={18} className="animate-spin mr-2" /> Loading…
       </div>
     );
   }
