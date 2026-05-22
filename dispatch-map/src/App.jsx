@@ -25,12 +25,22 @@ import {
 import { db } from './lib/firebase.js';
 import { normalizeMatchKey } from './lib/matchKey.js';
 import { haversineMiles, naiveEtaMinutes, formatEtaClockTime } from './lib/distance.js';
-import { scanStop } from './lib/signal-scanner.ts';
-import { applyScannerResults } from './lib/customer-notes-writer.ts';
+import { scanStop, scanStopFull } from './lib/signal-scanner';
+import { applyScannerResults } from './lib/customer-notes-writer';
+
+// Vite's tree-shaker considers function-only imports from .ts files to be
+// pure; it eliminates them even though they're called from useAutoScanner's
+// useEffect (which only fires after notesReady + stops load). Exposing the
+// entry points on window keeps the import chain observed so the bundle
+// retains the scanner + writer. Doubles as a QA hook —
+// window.__DD_SCANNER__.scanStop(...) lets QA test patterns in DevTools.
+if (typeof window !== 'undefined') {
+  window.__DD_SCANNER__ = { scanStop, scanStopFull, applyScannerResults };
+}
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.6.0';
+const APP_VERSION = '0.7.0';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -79,6 +89,10 @@ const LS_DRIVER_LABELS = 'dispatchMap.driverLabelsVisible';
 const LS_SEARCH_HISTORY = 'dispatchMap.searchHistory';
 const LS_LEGEND_EXPANDED = 'dispatchMap.legendExpanded';
 const LS_TABLE_COLUMNS = 'dispatchMap.tableColumns';
+// M4.4 — Filter toolbar persistence. mapFilters is the full toggle state object;
+// toolbarCollapsed is just the open/closed UI state of the toolbar itself.
+const LS_MAP_FILTERS = 'dispatchMap.mapFilters';
+const LS_FILTER_TOOLBAR_COLLAPSED = 'dispatchMap.filterToolbarCollapsed';
 const PANEL_DEFAULT_WIDTH = 320;
 const PANEL_MIN_WIDTH = 240;
 // Max width is computed at runtime as 60% of viewport — see useResizablePanel.
@@ -93,6 +107,17 @@ const DEFAULT_TABLE_COLUMNS = {
   city: true,
   pro: false,
   priority: true,
+};
+
+// M4.4 — Map filter toolbar. 5 toggles, persisted as a single object so adding
+// a 6th later doesn't churn separate LS keys. Defaults match the brief:
+// terminal/stem-out hidden = OFF (markers visible), unplanned/vehicles/clustering = ON.
+const DEFAULT_MAP_FILTERS = {
+  hideTerminal: false,
+  hideStemOut: false,
+  showUnplanned: true,
+  showVehicleLocation: true,
+  showClustered: true,
 };
 const TABLE_COLUMN_DEFS = [
   { key: 'flag',     label: 'Flag' },
@@ -232,6 +257,72 @@ const RESTRICTION_ICONS = {
       <circle cx="8" cy="17.5" r="1.3" fill="white"/>
       <circle cx="13" cy="17.5" r="1.3" fill="white"/>
     `,
+  },
+  // M4.4 — receiving hours present. Amber clock; not a prohibition. Synthesized
+  // from customer_notes.receiving_hours having any non-empty per-day value,
+  // OR from a scanner-detected hours range.
+  receiving_hours: {
+    label: 'Receiving hours',
+    short: 'Hours',
+    bg: '#f59e0b',
+    accent: '#f59e0b',
+    // 14×14 badge: clock face + hour/minute hands.
+    glyph: '<circle cx="7" cy="7" r="4.5" fill="none" stroke="white" stroke-width="1.3"/><path d="M7 4 L7 7 L9.5 8.5" stroke="white" stroke-width="1.3" stroke-linecap="round" fill="none"/>',
+    // 22×22 marker: clock face with bold hands at ~8 o'clock.
+    markerGlyph: `
+      <circle cx="11" cy="11" r="8" fill="none" stroke="currentColor" stroke-width="2"/>
+      <line x1="11" y1="11" x2="11" y2="5.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+      <line x1="11" y1="11" x2="15" y2="13" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+    `,
+  },
+  // M4.4 — closed Monday. Red circle + letter "M" + diagonal slash. Prohibition
+  // flag handles the slash via the marker-rendering pipeline (renderMarkerGlyph).
+  closed_monday: {
+    label: 'Closed Monday',
+    short: 'Closed Mon',
+    bg: '#dc2626',
+    accent: '#dc2626',
+    label_text: 'M',
+    prohibition: true,
+    glyph: '<text x="7" y="10" font-family="sans-serif" font-size="9" font-weight="bold" fill="white" text-anchor="middle">M</text>',
+    markerGlyph: `
+      <text x="11" y="16" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="800" fill="currentColor" text-anchor="middle">M</text>
+    `,
+  },
+  // M4.4 — closed Friday. Same template as Monday, letter F.
+  closed_friday: {
+    label: 'Closed Friday',
+    short: 'Closed Fri',
+    bg: '#dc2626',
+    accent: '#dc2626',
+    label_text: 'F',
+    prohibition: true,
+    glyph: '<text x="7" y="10" font-family="sans-serif" font-size="9" font-weight="bold" fill="white" text-anchor="middle">F</text>',
+    markerGlyph: `
+      <text x="11" y="16" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="800" fill="currentColor" text-anchor="middle">F</text>
+    `,
+  },
+  // Other closed days — same template, brief listed them as low-priority cheap
+  // additions. Letters Tu/W/Th/Sa/Su (2-char where needed for legibility).
+  closed_tuesday:  { label: 'Closed Tuesday',  short: 'Closed Tue',  bg: '#dc2626', accent: '#dc2626', prohibition: true,
+    glyph: '<text x="7" y="10" font-family="sans-serif" font-size="7" font-weight="bold" fill="white" text-anchor="middle">Tu</text>',
+    markerGlyph: '<text x="11" y="16" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="800" fill="currentColor" text-anchor="middle">Tu</text>',
+  },
+  closed_wednesday: { label: 'Closed Wednesday', short: 'Closed Wed', bg: '#dc2626', accent: '#dc2626', prohibition: true,
+    glyph: '<text x="7" y="10" font-family="sans-serif" font-size="9" font-weight="bold" fill="white" text-anchor="middle">W</text>',
+    markerGlyph: '<text x="11" y="16" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="800" fill="currentColor" text-anchor="middle">W</text>',
+  },
+  closed_thursday: { label: 'Closed Thursday', short: 'Closed Thu', bg: '#dc2626', accent: '#dc2626', prohibition: true,
+    glyph: '<text x="7" y="10" font-family="sans-serif" font-size="7" font-weight="bold" fill="white" text-anchor="middle">Th</text>',
+    markerGlyph: '<text x="11" y="16" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="800" fill="currentColor" text-anchor="middle">Th</text>',
+  },
+  closed_saturday: { label: 'Closed Saturday', short: 'Closed Sat', bg: '#dc2626', accent: '#dc2626', prohibition: true,
+    glyph: '<text x="7" y="10" font-family="sans-serif" font-size="7" font-weight="bold" fill="white" text-anchor="middle">Sa</text>',
+    markerGlyph: '<text x="11" y="16" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="800" fill="currentColor" text-anchor="middle">Sa</text>',
+  },
+  closed_sunday: { label: 'Closed Sunday', short: 'Closed Sun', bg: '#dc2626', accent: '#dc2626', prohibition: true,
+    glyph: '<text x="7" y="10" font-family="sans-serif" font-size="7" font-weight="bold" fill="white" text-anchor="middle">Su</text>',
+    markerGlyph: '<text x="11" y="16" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="800" fill="currentColor" text-anchor="middle">Su</text>',
   },
 };
 // Recognized aliases — straight_truck_only is sometimes used as a synonym
@@ -375,11 +466,13 @@ function useAutoScanner(stops, notes, notesReady) {
 
     const scanned = stops
       .map((s) => {
-        const scanResults = scanStop({
+        if (!s.matchKey) return null;
+        const full = scanStopFull({
           signalSources: s.signalSources,
           addr2: s.addr2,
         });
-        if (!scanResults.length || !s.matchKey) return null;
+        const hasAny = full.restrictions.length || full.hours || full.closedDays.length;
+        if (!hasAny) return null;
         return {
           matchKey: s.matchKey,
           pro: s.pro,
@@ -388,7 +481,9 @@ function useAutoScanner(stops, notes, notesReady) {
           city: s.city,
           state: s.state,
           zip: s.zip,
-          scanResults,
+          scanResults: full.restrictions,
+          hoursResult: full.hours,
+          closedDaysResult: full.closedDays,
         };
       })
       .filter(Boolean);
@@ -662,9 +757,26 @@ function resolveRestrictionKey(raw) {
   return RESTRICTION_ALIASES[raw] || raw;
 }
 
-// Build the list of restriction badge keys for a note. Includes the array-
-// based equipment_restrictions plus the boolean liftgate_required and
-// appointment_required fields, in display order. Returns [] if note is null.
+// True if customer_notes carries any non-empty receiving_hours value. Old
+// schema stored per-day as a single string ("6AM-2PM"); M4.4 schema stores
+// per-day as {open, close}. Either truthy form qualifies.
+function hasReceivingHours(note) {
+  const hrs = note?.receiving_hours;
+  if (!hrs) return false;
+  for (const k of Object.keys(hrs)) {
+    const v = hrs[k];
+    if (!v) continue;
+    if (typeof v === 'string' && v.trim()) return true;
+    if (typeof v === 'object' && (v.open || v.close)) return true;
+  }
+  return false;
+}
+
+// Build the list of restriction badge keys for a note. Includes equipment
+// restrictions, liftgate, appointment-required (M2-M4), and M4.4 additions:
+// receiving_hours (clock), closed_<day> per entry in note.closed_days.
+// Display order per brief P3.2: equipment first, then receiving hours, then
+// closed Monday, then closed Friday, then other closed days.
 function getRestrictionBadgeKeys(note) {
   if (!note) return [];
   const keys = [];
@@ -674,6 +786,15 @@ function getRestrictionBadgeKeys(note) {
   }
   if (note.liftgate_required && !keys.includes('liftgate_required')) keys.push('liftgate_required');
   if (note.appointment_required && !keys.includes('appointment_required')) keys.push('appointment_required');
+  if (hasReceivingHours(note)) keys.push('receiving_hours');
+  const closed = Array.isArray(note.closed_days) ? note.closed_days : [];
+  const closedOrder = ['mon', 'fri', 'tue', 'wed', 'thu', 'sat', 'sun'];
+  for (const day of closedOrder) {
+    if (closed.includes(day)) {
+      const key = `closed_${({mon:'monday', tue:'tuesday', wed:'wednesday', thu:'thursday', fri:'friday', sat:'saturday', sun:'sunday'})[day]}`;
+      if (!keys.includes(key)) keys.push(key);
+    }
+  }
   return keys;
 }
 
@@ -841,7 +962,19 @@ function emptyNote(stop) {
     raw_name: stop.businessName || '',
     raw_address: [stop.addr1, stop.city, stop.state, stop.zip].filter(Boolean).join(', '),
     match_key: stop.matchKey,
-    receiving_hours: { mon: '', tue: '', wed: '', thu: '', fri: '', sat: '', sun: '' },
+    // M4.4 — receiving_hours uses {open, close} per day. Empty strings keep
+    // <input type="time"> controls controlled without showing a placeholder.
+    receiving_hours: {
+      mon: { open: '', close: '' },
+      tue: { open: '', close: '' },
+      wed: { open: '', close: '' },
+      thu: { open: '', close: '' },
+      fri: { open: '', close: '' },
+      sat: { open: '', close: '' },
+      sun: { open: '', close: '' },
+    },
+    closed_days: [],
+    manual_overrides: {},
     appointment_required: false,
     appointment_notes: '',
     equipment_restrictions: [],
@@ -1132,6 +1265,88 @@ function Legend({ expanded, setExpanded }) {
   );
 }
 
+// M4.4 — Filter Toolbar. Floats over the map canvas at top-right with 5
+// toggles. Collapsible. State persists to localStorage. Pure presentation;
+// the parent applies filters to stops in applyMapFilters().
+function MapFilterToggle({ label, checked, onChange, warning }) {
+  return (
+    <div className="flex items-center justify-between gap-3 py-1.5">
+      <span className="text-xs text-slate-700">{label}</span>
+      <button
+        role="switch"
+        aria-checked={checked}
+        onClick={() => onChange(!checked)}
+        className="flex-shrink-0 relative w-9 h-5 rounded-full transition-colors"
+        style={{ background: checked ? '#16a34a' : '#cbd5e1' }}
+      >
+        <span
+          className="absolute top-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform"
+          style={{ left: checked ? 'calc(100% - 18px)' : '2px' }}
+        />
+      </button>
+      {warning && (
+        <span className="absolute right-0 -bottom-4 text-[9px] text-amber-700 italic">{warning}</span>
+      )}
+    </div>
+  );
+}
+
+function FilterToolbar({ filters, setFilters, collapsed, setCollapsed, stopCount }) {
+  const set = (key) => (v) => setFilters((prev) => ({ ...prev, [key]: v }));
+  const clusterWarning = !filters.showClustered && stopCount > 200
+    ? `Rendering ${stopCount} markers individually may be slow`
+    : null;
+  return (
+    <div
+      className="absolute top-4 right-4 bg-white rounded-lg shadow-md border border-slate-200"
+      style={{ width: 240, zIndex: 5, opacity: 0.95 }}
+    >
+      <button
+        onClick={() => setCollapsed((v) => !v)}
+        className="w-full px-3 py-2 flex items-center justify-between text-xs font-semibold text-slate-700 hover:bg-slate-50 rounded-t-lg"
+        aria-expanded={!collapsed}
+      >
+        <span className="inline-flex items-center gap-1.5">
+          <Filter size={13} /> Filters
+        </span>
+        {collapsed ? <ChevronDown size={13} /> : <ChevronUp size={13} />}
+      </button>
+      {!collapsed && (
+        <div className="px-3 pb-2 border-t">
+          <MapFilterToggle
+            label="Hide terminal markers"
+            checked={filters.hideTerminal}
+            onChange={set('hideTerminal')}
+          />
+          <MapFilterToggle
+            label="Hide stem out"
+            checked={filters.hideStemOut}
+            onChange={set('hideStemOut')}
+          />
+          <MapFilterToggle
+            label="Show unplanned stops"
+            checked={filters.showUnplanned}
+            onChange={set('showUnplanned')}
+          />
+          <MapFilterToggle
+            label="Show vehicle location"
+            checked={filters.showVehicleLocation}
+            onChange={set('showVehicleLocation')}
+          />
+          <MapFilterToggle
+            label="Show clustered markers"
+            checked={filters.showClustered}
+            onChange={set('showClustered')}
+          />
+          {clusterWarning && (
+            <div className="text-[10px] text-amber-700 italic mt-1 leading-tight">{clusterWarning}</div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function FilterPanel({ filters, setFilters, counts }) {
   const F = filters;
   return (
@@ -1298,7 +1513,81 @@ function StopSidebar({ stop, note, onClose, onSave, saving, saveError }) {
   if (!stop) return null;
   const D = draft;
   const setD = (patch) => setDraft({ ...D, ...patch });
-  const setHours = (day, v) => setD({ receiving_hours: { ...D.receiving_hours, [day]: v } });
+  // M4.4 — receiving_hours is now {open, close} per day. The setter accepts a
+  // partial {open?, close?} so the two time inputs can update independently.
+  // manual_overrides.receiving_hours is set to true on any per-day edit so
+  // the scanner stops auto-populating after dispatcher touched it.
+  const setHours = (day, partial) => {
+    const existing = D.receiving_hours?.[day] || { open: '', close: '' };
+    const merged = typeof existing === 'string'
+      ? { open: '', close: '', ...partial }
+      : { open: existing.open || '', close: existing.close || '', ...partial };
+    setD({
+      receiving_hours: { ...D.receiving_hours, [day]: merged },
+      manual_overrides: { ...(D.manual_overrides || {}), receiving_hours: true },
+    });
+  };
+  // Closed-day toggle. Switches whether `day` is in closed_days; sets the
+  // matching manual_override so the scanner respects the dispatcher's choice.
+  const toggleClosed = (day) => {
+    const current = Array.isArray(D.closed_days) ? D.closed_days : [];
+    const next = current.includes(day) ? current.filter((d) => d !== day) : [...current, day];
+    setD({
+      closed_days: next,
+      manual_overrides: { ...(D.manual_overrides || {}), closed_days: true },
+    });
+  };
+  const isClosed = (day) => Array.isArray(D.closed_days) && D.closed_days.includes(day);
+  // Copy Monday's hours to Tue-Fri. If Monday is closed, weekdays inherit the
+  // closed state too. No-op if Monday has no hours set AND isn't closed.
+  const [copyToast, setCopyToast] = useState(false);
+  const copyMondayToWeekdays = () => {
+    const monClosed = isClosed('mon');
+    const monHours = D.receiving_hours?.mon;
+    const monHasHours = monHours && (typeof monHours === 'object' ? (monHours.open || monHours.close) : monHours);
+    if (!monClosed && !monHasHours) return;
+    const weekdays = ['tue', 'wed', 'thu', 'fri'];
+    const patch = {
+      receiving_hours: { ...(D.receiving_hours || {}) },
+      closed_days: Array.isArray(D.closed_days) ? [...D.closed_days] : [],
+      manual_overrides: {
+        ...(D.manual_overrides || {}),
+        receiving_hours: true,
+        closed_days: true,
+      },
+    };
+    for (const d of weekdays) {
+      if (monClosed) {
+        if (!patch.closed_days.includes(d)) patch.closed_days.push(d);
+      } else {
+        patch.closed_days = patch.closed_days.filter((x) => x !== d);
+        patch.receiving_hours[d] = typeof monHours === 'string'
+          ? monHours
+          : { open: monHours.open || '', close: monHours.close || '' };
+      }
+    }
+    setD(patch);
+    setCopyToast(true);
+    setTimeout(() => setCopyToast(false), 1500);
+  };
+  // Read helpers for the hours inputs — gracefully handle both legacy string
+  // format and new {open, close} format so unmigrated docs still render.
+  const getOpen = (day) => {
+    const v = D.receiving_hours?.[day];
+    if (!v) return '';
+    if (typeof v === 'string') return '';
+    return v.open || '';
+  };
+  const getClose = (day) => {
+    const v = D.receiving_hours?.[day];
+    if (!v) return '';
+    if (typeof v === 'string') return '';
+    return v.close || '';
+  };
+  const getLegacyString = (day) => {
+    const v = D.receiving_hours?.[day];
+    return typeof v === 'string' ? v : '';
+  };
   const toggleRestriction = (val) => {
     const cur = D.equipment_restrictions || [];
     const next = cur.includes(val) ? cur.filter((x) => x !== val) : [...cur, val];
@@ -1392,18 +1681,87 @@ function StopSidebar({ stop, note, onClose, onSave, saving, saveError }) {
 
               <div>
                 <div className="text-xs font-semibold text-slate-600 mb-1">Receiving hours</div>
-                <div className="grid grid-cols-7 gap-1">
-                  {DAYS.map((d) => (
-                    <div key={d}>
-                      <div className="text-[10px] uppercase text-slate-500 text-center">{d}</div>
-                      <input
-                        value={D.receiving_hours?.[d] || ''}
-                        onChange={(e) => setHours(d, e.target.value)}
-                        placeholder="—"
-                        className="w-full border border-slate-300 rounded px-1 py-1 text-[11px] text-center"
-                      />
-                    </div>
-                  ))}
+                {/* M4.4 — Per-day Open/Closed toggle row. Clicking a day flips
+                whether it's in closed_days. Closed days hide their time inputs
+                below and show "Closed" + Re-open link. */}
+                <div className="grid grid-cols-7 gap-1 mb-2">
+                  {DAYS.map((d) => {
+                    const closed = isClosed(d);
+                    return (
+                      <button
+                        key={d}
+                        type="button"
+                        onClick={() => toggleClosed(d)}
+                        className={`text-[10px] uppercase font-semibold py-1 rounded border ${closed ? 'bg-red-100 border-red-300 text-red-700' : 'bg-white border-slate-300 text-slate-700 hover:bg-slate-50'}`}
+                        title={closed ? `${d.toUpperCase()} closed — click to open` : `${d.toUpperCase()} open — click to mark closed`}
+                      >
+                        {d}
+                      </button>
+                    );
+                  })}
+                </div>
+                {/* Copy-to-weekdays helper. */}
+                <div className="flex items-center gap-2 mb-2">
+                  <button
+                    type="button"
+                    onClick={copyMondayToWeekdays}
+                    disabled={!isClosed('mon') && !(D.receiving_hours?.mon && (
+                      typeof D.receiving_hours.mon === 'string'
+                        ? D.receiving_hours.mon
+                        : (D.receiving_hours.mon.open || D.receiving_hours.mon.close)
+                    ))}
+                    className="text-[10px] py-1 px-2 rounded border border-slate-300 text-slate-700 hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed"
+                    title="Apply Monday's hours/closed state to Tuesday-Friday"
+                  >
+                    Copy to all weekdays (Mon-Fri)
+                  </button>
+                  {copyToast && <span className="text-[10px] text-emerald-600">Copied</span>}
+                </div>
+                {/* Per-day rows. Closed days show "Closed" label + an inline
+                re-open button so dispatcher doesn't have to scroll back up. */}
+                <div className="space-y-1">
+                  {DAYS.map((d) => {
+                    const closed = isClosed(d);
+                    const legacy = getLegacyString(d);
+                    return (
+                      <div key={d} className="flex items-center gap-2">
+                        <div className="w-10 text-[10px] uppercase font-semibold text-slate-500">{d}</div>
+                        {closed ? (
+                          <div className="flex-1 flex items-center justify-between gap-2 px-2 py-1 rounded bg-red-50 border border-red-200">
+                            <span className="text-[11px] font-semibold text-red-700">Closed</span>
+                            <button
+                              type="button"
+                              onClick={() => toggleClosed(d)}
+                              className="text-[10px] text-blue-600 hover:underline"
+                            >
+                              Edit
+                            </button>
+                          </div>
+                        ) : (
+                          <div className="flex-1 flex items-center gap-1">
+                            <input
+                              type="time"
+                              value={getOpen(d)}
+                              onChange={(e) => setHours(d, { open: e.target.value })}
+                              className="flex-1 border border-slate-300 rounded px-1 py-1 text-[11px]"
+                              aria-label={`${d} open time`}
+                            />
+                            <span className="text-[10px] text-slate-400">–</span>
+                            <input
+                              type="time"
+                              value={getClose(d)}
+                              onChange={(e) => setHours(d, { close: e.target.value })}
+                              className="flex-1 border border-slate-300 rounded px-1 py-1 text-[11px]"
+                              aria-label={`${d} close time`}
+                            />
+                          </div>
+                        )}
+                        {legacy && !closed && (
+                          <div className="text-[9px] text-amber-700 italic" title={`Legacy free-text value: ${legacy}`}>(legacy)</div>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
 
@@ -1820,7 +2178,24 @@ function ReadOnlyNoteView({ note }) {
       ),
     });
   }
-  const hoursAny = Object.values(note.receiving_hours || {}).some(Boolean);
+  // M4.4 — receiving_hours can be legacy strings or {open, close} objects.
+  // Display: "8AM-2PM" style for legacy, "08:00-14:00" for structured, or "Closed"
+  // if the day is in note.closed_days. "—" means no hours set.
+  const closedSet = new Set(Array.isArray(note.closed_days) ? note.closed_days : []);
+  const hoursAny = Object.entries(note.receiving_hours || {}).some(([d, v]) => {
+    if (closedSet.has(d)) return true;
+    if (!v) return false;
+    if (typeof v === 'string') return v.trim().length > 0;
+    return !!(v.open || v.close);
+  }) || closedSet.size > 0;
+  const renderDayHours = (d) => {
+    if (closedSet.has(d)) return 'Closed';
+    const v = note.receiving_hours?.[d];
+    if (!v) return '—';
+    if (typeof v === 'string') return v;
+    if (v.open && v.close) return `${v.open}–${v.close}`;
+    return v.open || v.close || '—';
+  };
   if (hoursAny) {
     items.push({
       k: 'Hours',
@@ -1829,7 +2204,7 @@ function ReadOnlyNoteView({ note }) {
           {DAYS.map((d) => (
             <div key={d} className="text-center">
               <div className="text-[9px] uppercase text-slate-500">{d}</div>
-              <div className="text-[10px]">{note.receiving_hours?.[d] || '—'}</div>
+              <div className={`text-[10px] ${closedSet.has(d) ? 'text-red-600 font-semibold' : ''}`}>{renderDayHours(d)}</div>
             </div>
           ))}
         </div>
@@ -1940,13 +2315,21 @@ function MapScreen() {
   const [filters, setFilters] = useState({});
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState(null);
-  const [showDrivers, setShowDrivers] = useState(false);
   const [showDriverLabels, setShowDriverLabels] = useState(() => safeReadJSON(LS_DRIVER_LABELS, true));
   const [legendExpanded, setLegendExpanded] = useState(() => safeReadJSON(LS_LEGEND_EXPANDED, false));
   const [tableColumns, setTableColumns] = useState(() => ({
     ...DEFAULT_TABLE_COLUMNS,
     ...safeReadJSON(LS_TABLE_COLUMNS, {}),
   }));
+  // M4.4 — Map filter toolbar state. The "Show vehicle location" toggle is the
+  // same Motive driver overlay that previously lived in the left panel; the
+  // duplicate left-panel toggle is removed.
+  const [mapFilters, setMapFilters] = useState(() => ({
+    ...DEFAULT_MAP_FILTERS,
+    ...safeReadJSON(LS_MAP_FILTERS, {}),
+  }));
+  const [toolbarCollapsed, setToolbarCollapsed] = useState(() => safeReadJSON(LS_FILTER_TOOLBAR_COLLAPSED, false));
+  const showDrivers = mapFilters.showVehicleLocation;
   const [searchInput, setSearchInput] = useState('');
   const debouncedSearch = useDebouncedValue(searchInput, 200);
   const { history, remember } = useSearchHistory();
@@ -1968,9 +2351,42 @@ function MapScreen() {
   useEffect(() => { safeWriteJSON(LS_DRIVER_LABELS, showDriverLabels); }, [showDriverLabels]);
   useEffect(() => { safeWriteJSON(LS_LEGEND_EXPANDED, legendExpanded); }, [legendExpanded]);
   useEffect(() => { safeWriteJSON(LS_TABLE_COLUMNS, tableColumns); }, [tableColumns]);
+  useEffect(() => { safeWriteJSON(LS_MAP_FILTERS, mapFilters); }, [mapFilters]);
+  useEffect(() => { safeWriteJSON(LS_FILTER_TOOLBAR_COLLAPSED, toolbarCollapsed); }, [toolbarCollapsed]);
 
-  // Filter pipeline: filters → search. Memoized so we don't recompute on each render.
-  const filteredStops = useMemo(() => applyFilters(stops, notes, filters), [stops, notes, filters]);
+  // M4.4 — Compute stem-out set client-side. Stem-out = first non-terminal stop
+  // in each load (i.e. the outbound leg from terminal to first customer).
+  // Stops without a load assignment can't be marked stem-out.
+  const stemOutKeys = useMemo(() => {
+    const firstSeqByLoad = new Map();
+    for (const s of stops) {
+      if (!s.loadNbr || s.isTerminal || s.loadStopSeq == null) continue;
+      const prev = firstSeqByLoad.get(s.loadNbr);
+      if (prev == null || s.loadStopSeq < prev.seq) {
+        firstSeqByLoad.set(s.loadNbr, { seq: s.loadStopSeq, key: s.stopNbr });
+      }
+    }
+    const out = new Set();
+    for (const v of firstSeqByLoad.values()) if (v.key) out.add(v.key);
+    return out;
+  }, [stops]);
+
+  // M4.4 — Apply filter toolbar toggles after the existing flag/restriction
+  // filter pipeline. Each toggle is a simple inclusion/exclusion test.
+  const applyMapFilters = useCallback((rows) => {
+    return rows.filter((s) => {
+      if (mapFilters.hideTerminal && s.isTerminal) return false;
+      if (mapFilters.hideStemOut && stemOutKeys.has(s.stopNbr)) return false;
+      if (!mapFilters.showUnplanned && s.isUnplanned) return false;
+      return true;
+    });
+  }, [mapFilters.hideTerminal, mapFilters.hideStemOut, mapFilters.showUnplanned, stemOutKeys]);
+
+  // Filter pipeline: filters → mapFilters → search. Memoized so we don't recompute on each render.
+  const filteredStops = useMemo(
+    () => applyMapFilters(applyFilters(stops, notes, filters)),
+    [stops, notes, filters, applyMapFilters],
+  );
   const searchMatchSet = useMemo(() => {
     if (!debouncedSearch.trim()) return null; // null sentinel = no search active
     const set = new Set();
@@ -2055,8 +2471,15 @@ function MapScreen() {
     });
 
     markersRef.current = newMarkers;
-    clustererRef.current = new MarkerClusterer({ map: mapRef.current, markers: newMarkers });
-  }, [google, filteredStops, notes, searchMatchSet]);
+    // M4.4 — when clustering is disabled, attach markers directly to the map
+    // instead of routing through MarkerClusterer. Skipping clustering on 600+
+    // pins is intentionally slow at zoom-out; the toolbar surfaces a warning.
+    if (mapFilters.showClustered) {
+      clustererRef.current = new MarkerClusterer({ map: mapRef.current, markers: newMarkers });
+    } else {
+      newMarkers.forEach((m) => m.setMap(mapRef.current));
+    }
+  }, [google, filteredStops, notes, searchMatchSet, mapFilters.showClustered]);
 
   // Auto-zoom on search results: 1 match → center + open sidebar, 2-10 → fit bounds.
   useEffect(() => {
@@ -2240,15 +2663,12 @@ function MapScreen() {
           counts={{ visible: visibleStops.length, total: stops.length }}
         />
         <Legend expanded={legendExpanded} setExpanded={setLegendExpanded} />
-        <div className="border-t p-3 space-y-2">
-          <button
-            onClick={() => setShowDrivers((v) => !v)}
-            className={`w-full text-xs font-semibold py-1.5 rounded inline-flex items-center justify-center gap-1.5 ${showDrivers ? 'bg-slate-900 text-white' : 'bg-white border border-slate-300 text-slate-700'}`}
-          >
-            {showDrivers ? <Eye size={13} /> : <EyeOff size={13} />}
-            {showDrivers ? 'Hide live drivers' : 'Show live drivers'}
-          </button>
-          {showDrivers && (
+        {/* M4.4 — Vehicle visibility moved to the map filter toolbar. This
+        block keeps only the driver-status text + label-toggle, which are
+        secondary to the visibility decision. Hidden entirely when vehicles
+        are off. */}
+        {showDrivers && (
+          <div className="border-t p-3 space-y-2">
             <button
               onClick={() => setShowDriverLabels((v) => !v)}
               className="w-full text-xs py-1 rounded inline-flex items-center justify-center gap-1.5 bg-white border border-slate-300 text-slate-700 hover:bg-slate-50"
@@ -2257,13 +2677,11 @@ function MapScreen() {
               {showDriverLabels ? <Tags size={12} /> : <Tag size={12} />}
               {showDriverLabels ? 'Hide labels' : 'Show labels'}
             </button>
-          )}
-          {showDrivers && (
             <div className="text-[10px] text-slate-500">
               {driverErr ? <span className="text-red-600">⚠ {driverErr}</span> : `${drivers.length} drivers · refresh 60s${driversAt ? ` · ${fmtTimeAgo(driversAt)}` : ''}`}
             </div>
-          )}
-        </div>
+          </div>
+        )}
 
         <StopMiniTable
           stops={visibleStops}
@@ -2284,6 +2702,13 @@ function MapScreen() {
       {/* Map */}
       <div className="flex-1 relative min-w-0">
         <div ref={mapDiv} className="absolute inset-0" />
+        <FilterToolbar
+          filters={mapFilters}
+          setFilters={setMapFilters}
+          collapsed={toolbarCollapsed}
+          setCollapsed={setToolbarCollapsed}
+          stopCount={filteredStops.length}
+        />
         {mapsError && (
           <div className="absolute top-4 left-4 right-4 bg-red-50 border border-red-200 rounded p-3 text-sm text-red-800">
             <div className="font-semibold">Google Maps failed to load</div>

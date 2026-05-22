@@ -24,10 +24,15 @@
 //   auto_detected_by: string                                // 'auto-scanner v0.3.0'
 
 import { doc, writeBatch, serverTimestamp, deleteField, Firestore } from 'firebase/firestore';
-import type { ScanResult, SignalSource, FlagValue } from './signal-scanner';
+import type {
+  ScanResult, SignalSource, FlagValue, DayCode,
+  HoursScanResult, ClosedDayScanResult,
+} from './signal-scanner';
 
 const MAX_BATCH = 450;       // Firestore caps at 500; leave headroom
-const SCANNER_TAG = 'auto-scanner v0.4.0';
+const SCANNER_TAG = 'auto-scanner v0.7.0';
+
+const DAY_CODES: DayCode[] = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
 
 export interface ScannedStop {
   matchKey: string | null;
@@ -38,17 +43,30 @@ export interface ScannedStop {
   state: string | null;
   zip: string | null;
   scanResults: ScanResult[];
+  // M4.4 — receiving hours + closed-day detections. Optional so the equipment
+  // scanner can remain usable on its own.
+  hoursResult?: HoursScanResult | null;
+  closedDaysResult?: ClosedDayScanResult[];
 }
 
 export interface ExistingNote {
   equipment_restrictions?: string[];
-  manual_overrides?: { equipment_restrictions?: boolean };
+  manual_overrides?: {
+    equipment_restrictions?: boolean;
+    receiving_hours?: boolean; // M4.4
+    closed_days?: boolean;     // M4.4
+  };
   auto_sources?: Record<string, SignalSource[]>;
   auto_matches?: Record<string, { source: SignalSource; text: string; pattern: string }[]>;
   pro_history?: { pro: string; date: string }[];
   // Flags the user explicitly dismissed via the sidebar — the scanner must
   // not re-add these even if it keeps detecting them on every scan.
   auto_scan_dismissed?: string[];
+  // M4.4 schema. Old M2.x format was `Record<string, string>` (e.g. "6AM-2PM");
+  // new format is `Record<string, { open, close }>`. Type union lets the
+  // writer accept either when reading existing docs.
+  receiving_hours?: Record<string, { open: string; close: string }> | Record<string, string>;
+  closed_days?: DayCode[];
 }
 
 interface WriteDecision {
@@ -69,7 +87,13 @@ export function decideWrite(
   stop: ScannedStop,
   existing: ExistingNote | undefined,
 ): WriteDecision | null {
-  if (!stop.matchKey || !stop.scanResults.length) return null;
+  if (!stop.matchKey) return null;
+  // Need at least one signal class to write — equipment restriction, hours, or closed day.
+  const hasAnySignal =
+    stop.scanResults.length > 0 ||
+    !!stop.hoursResult ||
+    (stop.closedDaysResult && stop.closedDaysResult.length > 0);
+  if (!hasAnySignal) return null;
 
   // Merge new scan with the doc's previously persisted auto trail. Per-flag
   // sources accumulate across days; matches reflect only the latest scan.
@@ -176,6 +200,61 @@ export function decideWrite(
     }
   }
 
+  // ---------- M4.4: receiving hours + closed days ----------
+
+  // Receiving hours: if the scanner found a range and the dispatcher hasn't
+  // locked the field, populate all 7 days with that range. The audit trail
+  // (auto_sources.receiving_hours + auto_matches.receiving_hours) records the
+  // exact matched text and source so the dispatcher can review.
+  if (stop.hoursResult) {
+    const overrideHours = existing?.manual_overrides?.receiving_hours === true;
+    if (!overrideHours) {
+      const { open, close } = stop.hoursResult;
+      const filled: Record<string, { open: string; close: string }> = {};
+      // Don't overwrite days the dispatcher has set per-day (we have no
+      // per-day override flag — only the whole field — so this is all-or-nothing
+      // until the editor lands).
+      for (const d of DAY_CODES) filled[d] = { open, close };
+      payload.receiving_hours = filled;
+    }
+    // Audit trail regardless of override.
+    payload.auto_sources = {
+      ...payload.auto_sources,
+      receiving_hours: [stop.hoursResult.matchedSource],
+    };
+    payload.auto_matches = {
+      ...payload.auto_matches,
+      receiving_hours: [{
+        source: stop.hoursResult.matchedSource,
+        text: stop.hoursResult.matchedText,
+        pattern: 'hours_range',
+      }],
+    };
+  }
+
+  // Closed days: union with anything previously detected (don't drop days
+  // the scanner found yesterday but missed today — text may have rotated).
+  if (stop.closedDaysResult && stop.closedDaysResult.length) {
+    const overrideClosed = existing?.manual_overrides?.closed_days === true;
+    if (!overrideClosed) {
+      const next = new Set<DayCode>((existing?.closed_days || []) as DayCode[]);
+      for (const r of stop.closedDaysResult) next.add(r.day);
+      payload.closed_days = [...next];
+    }
+    payload.auto_sources = {
+      ...payload.auto_sources,
+      closed_days: [...new Set(stop.closedDaysResult.map((r) => r.matchedSource))],
+    };
+    payload.auto_matches = {
+      ...payload.auto_matches,
+      closed_days: stop.closedDaysResult.map((r) => ({
+        source: r.matchedSource,
+        text: r.matchedText,
+        pattern: `closed_${r.day}`,
+      })),
+    };
+  }
+
   return { matchKey: stop.matchKey, payload, detectedFlags, removedLegacyFlags, skippedDueToOverride };
 }
 
@@ -196,21 +275,42 @@ export async function applyScannerResults(
   if (!db) return result;
 
   // Dedupe by match_key — two stops at the same customer merge into one write.
-  const merged = new Map<string, { stop: ScannedStop; results: ScanResult[] }>();
+  // M4.4 — also dedupe hours (first wins) and closed_days (union across stops).
+  const merged = new Map<string, {
+    stop: ScannedStop;
+    results: ScanResult[];
+    hours: HoursScanResult | null;
+    closedDays: ClosedDayScanResult[];
+  }>();
   for (const s of stops) {
-    if (!s.matchKey || !s.scanResults.length) continue;
+    if (!s.matchKey) continue;
+    const hasAny = s.scanResults.length || s.hoursResult || (s.closedDaysResult && s.closedDaysResult.length);
+    if (!hasAny) continue;
     const prev = merged.get(s.matchKey);
     if (prev) {
       prev.results.push(...s.scanResults);
+      if (!prev.hours && s.hoursResult) prev.hours = s.hoursResult;
+      if (s.closedDaysResult) {
+        const seen = new Set(prev.closedDays.map((c) => c.day));
+        for (const c of s.closedDaysResult) if (!seen.has(c.day)) prev.closedDays.push(c);
+      }
     } else {
-      merged.set(s.matchKey, { stop: s, results: [...s.scanResults] });
+      merged.set(s.matchKey, {
+        stop: s,
+        results: [...s.scanResults],
+        hours: s.hoursResult ?? null,
+        closedDays: s.closedDaysResult ? [...s.closedDaysResult] : [],
+      });
     }
   }
   result.attempted = merged.size;
 
   const decisions: WriteDecision[] = [];
-  for (const { stop, results } of merged.values()) {
-    const d = decideWrite({ ...stop, scanResults: results }, existingNotes.get(stop.matchKey));
+  for (const { stop, results, hours, closedDays } of merged.values()) {
+    const d = decideWrite(
+      { ...stop, scanResults: results, hoursResult: hours, closedDaysResult: closedDays },
+      existingNotes.get(stop.matchKey),
+    );
     if (!d) continue;
     decisions.push(d);
     if (d.skippedDueToOverride.length) result.overrideSkips++;

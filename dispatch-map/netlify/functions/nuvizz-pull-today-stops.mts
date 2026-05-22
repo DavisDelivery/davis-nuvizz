@@ -36,6 +36,7 @@ interface NormalizedStop {
   proCount: number;            // pros.length
   stopNbr: string | null;
   loadNbr: string | null;
+  loadStopSeq: number | null;  // M4.4 — position within load's stops[] (0-based). Used by client to derive stem-out (first non-terminal stop in each load).
   stopType: string | null;
   status: string | null;
   businessName: string | null;
@@ -54,6 +55,9 @@ interface NormalizedStop {
   itemsSummary: string;
   customerAccount: string | null;
   driverName: string | null;
+  driverUserName: string | null; // M4.4 — stable driver code from loadAssignment.driverUserName. Null = unplanned.
+  isTerminal: boolean;           // M4.4 — Davis Buford terminal (943 Gainesville Hwy or "Davis Delivery" business name).
+  isUnplanned: boolean;          // M4.4 — no driver assignment in loadAssignment.
   signalSources: SignalSources;
   raw: unknown;
 }
@@ -95,6 +99,18 @@ function extractOrderInstructions(stop: any): string | null {
 }
 
 
+// M4.4 — Davis Buford terminal detection. Address heuristics: parent app's
+// terminal address is "943 Gainesville Hwy, Buford, GA 30518". Business name
+// occasionally shows as "Davis Delivery" / "Davis Delivery Service" on PU
+// stops where the terminal acts as origin.
+function detectTerminal(addr1: string | null, businessName: string | null): boolean {
+  const a = (addr1 || '').toUpperCase();
+  if (/\b943\b/.test(a) && /GAINESVILLE/.test(a)) return true;
+  const b = (businessName || '').toUpperCase();
+  if (/^DAVIS\s+DELIVERY(\s+SERVICE)?$/.test(b)) return true;
+  return false;
+}
+
 function normalizeStop(raw: any): NormalizedStop {
   const stop = raw.stop || raw;
   const exec = raw.stopExecutionInfo || {};
@@ -116,6 +132,10 @@ function normalizeStop(raw: any): NormalizedStop {
   const pros: string[] = stopNbr ? [stopNbr] : [];
   const addr2 = addr.addr2 ?? null;
   const orderInstructions = extractOrderInstructions(stop);
+  const businessName = addr.name || stop.custInfo?.custName || null;
+  const addr1 = addr.addr1 ?? null;
+  const driverUserName = load.driverUserName ?? null;
+  const driverName = load.driverName ?? null;
   return {
     pro: stopNbr,
     pros,
@@ -123,10 +143,11 @@ function normalizeStop(raw: any): NormalizedStop {
     proCount: pros.length,
     stopNbr,
     loadNbr: load.loadNbr || raw.loadNbr || null,
+    loadStopSeq: typeof load.stopSeq === 'number' ? load.stopSeq : null,
     stopType,
     status: exec.stopStatus || stop.status || null,
-    businessName: addr.name || stop.custInfo?.custName || null,
-    addr1: addr.addr1 ?? null,
+    businessName,
+    addr1,
     addr2,
     city: addr.city ?? null,
     state: addr.state ?? null,
@@ -140,7 +161,10 @@ function normalizeStop(raw: any): NormalizedStop {
     weight: stop.weight ?? null,
     itemsSummary: items.join(' · ') || '—',
     customerAccount: stop.accountNumber || stop.custInfo?.custAccNbr || null,
-    driverName: load.driverName ?? null,
+    driverName,
+    driverUserName,
+    isTerminal: detectTerminal(addr1, businessName),
+    isUnplanned: !driverUserName && !driverName,
     signalSources: { addressLine2: addr2, orderInstructions },
     raw,
   };
@@ -180,9 +204,17 @@ async function scanLoadRangeForDate(dateStr: string, startNbr: number, endNbr: n
       const startDate = (h.earliestStartDttm || '').slice(0, 10);
       if (startDate !== dateStr) return null;
       // Stamp load context onto each raw stop so normalizeStop can pull loadNbr/driverName.
-      return stops.map((s: any) => ({
+      // M4.4: also stamp the 0-based stop sequence and driverUserName so the
+      // client can derive stem-out (first non-terminal stop in each load) and
+      // unplanned status (no driverUserName).
+      return stops.map((s: any, i: number) => ({
         ...s,
-        load: { loadNbr: h.loadNbr, driverName: a.driverName },
+        load: {
+          loadNbr: h.loadNbr,
+          driverName: a.driverName,
+          driverUserName: a.driverUserName,
+          stopSeq: i,
+        },
       }));
     } catch {
       return null;
