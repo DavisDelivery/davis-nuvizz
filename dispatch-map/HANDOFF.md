@@ -1,8 +1,123 @@
 # Dispatch Map — Handoff
 
 Status of the build that landed on branch `claude/dispatch-map-build-eEbYe`.
-M3 + M5 still pending; M4.1 added the items below; Part 9 added restriction
-iconography in v0.5.0.
+M3 + M5 still pending. v0.4.0 = M4.1 (resizable panel, search, driver
+labels, day-snapshot). v0.5.0 = Part 9 restriction iconography (badge
+overlays). v0.5.1 = M4.1.6 pin-replacement (restriction icons become the
+marker itself when restricted).
+
+## v0.5.1 — M4.1.6 (pin replacement)
+
+In v0.5.0 the restriction icons were small badges layered on top of the
+existing pin. Visual review showed dispatchers still scanned for the pin
+shape and missed the restrictions. In v0.5.1 the pin disappears entirely
+when a stop has restrictions — the restriction icon(s) become the marker.
+
+### Marker rendering — three states
+
+| State | Trigger | Rendering |
+|---|---|---|
+| A | No restrictions | Classic 28×36 purple pin (unchanged from M4.1) |
+| B | Exactly 1 restriction | 36-diameter circle: white background, 2 px accent-color border, 22×22 monochrome icon glyph centered, drop shadow |
+| C | 2+ restrictions | 32-diameter circles side-by-side, 2 px gap, max 3 elements; 4+ → first 2 icons + dark gray "+N" overflow badge |
+
+Geographic anchor is the **bottom-center** of the marker group in all
+three states (so the marker visually "stands on" the lat/lng point).
+
+### Function split
+
+`pinSvg(color, badges)` from M4.1.5 is gone. Two functions replace it:
+
+- `pinSvgClassic(color)` — the 28×36 pin only. Used for State A. Returns
+  a data URL string.
+- `iconMarkerSvg(restrictions)` — used for States B and C. Returns
+  `{ url, width, height, anchor: [x, y] }` so the marker effect picks the
+  correct `scaledSize` and `anchor`.
+
+The marker effect (in `MapScreen`) picks one path:
+
+```js
+if (restrictions.length === 0) {
+  // State A
+  icon = { url: pinSvgClassic(color), scaledSize: 28×36, anchor: (14, 34) };
+} else {
+  // States B / C
+  const spec = iconMarkerSvg(restrictions);
+  icon = { url: spec.url, scaledSize: (spec.width, spec.height), anchor: spec.anchor };
+}
+```
+
+### Restriction-to-color (marker accent)
+
+The new `accent` field on each restriction defines the marker's border +
+glyph color. Distinct from the M4.1.5 `bg` field (still used for the
+badge background in the sidebar / legend per-icon list):
+
+| Kind | M4.1.6 marker accent | M4.1.5 badge bg (unchanged) |
+|---|---|---|
+| no_tractor_trailer | red `#dc2626` | red `#dc2626` |
+| straight_truck_only → box_truck_only | red `#dc2626` | slate `#475569` |
+| box_truck_only | red `#dc2626` | slate `#475569` |
+| liftgate_required | blue `#1e5b92` | purple `#7c3aed` |
+| appointment_required | amber `#f59e0b` | cyan `#0891b2` |
+| 26ft_max | red `#dc2626` | orange `#ea580c` |
+| no_53ft | red `#dc2626` | red `#dc2626` |
+| no_overhead_clearance | amber-brown `#a16207` | amber-brown `#a16207` |
+| unknown (fallback) | gray `#6b7280` | yellow `#eab308` |
+
+This split keeps the M4.1.5 sidebar badge appearance unchanged (preserves
+backward-compat) while giving the M4.1.6 marker a cleaner, more deliberate
+color language: red for vehicle-class restrictions, blue for equipment
+requirements, amber for time-based requirements.
+
+### Cluster behavior — unchanged
+
+When markers cluster (zoom out, multiple stops at same address), the
+cluster icon takes over. Individual restriction icons only show on
+un-clustered markers. Same as M4.1.5.
+
+### Sidebar — unchanged
+
+The sidebar restriction chips continue to use the small 14×14 badges
+(M4.1.5 `glyph` field). The brief explicitly preserved this behavior.
+
+### Legend — new "Restricted Stops" section
+
+The Legend panel (collapsible, persists to
+`localStorage["dispatchMap.legendExpanded"]`) now opens with a new
+"Restricted stops" section that:
+
+1. Explains the pin-replacement behavior in one sentence.
+2. Shows live examples rendered through the same `iconMarkerSvg` function
+   the map uses (so legend previews are byte-identical to map markers):
+   - Single restriction
+   - Multiple restrictions (2)
+   - Four or more (first 2 + overflow)
+3. The existing per-icon list (showing what each badge means) stays below.
+
+### Visual verification
+
+Each marker variant was rendered standalone via `rsvg-convert` and visually
+inspected. STADLER's `no_tractor_trailer` reads cleanly at a glance: red
+circle outline, red tractor-trailer silhouette, red diagonal slash. The
+3-element overflow case ("+2") reads as expected.
+
+### Known limitations (v0.5.1)
+
+1. The marker SVGs are slightly more complex than the M4.1 pin (more
+   shapes per icon). At 648 stops we haven't seen render lag, but if
+   future growth pushes past ~1500 markers, consider migrating to
+   `AdvancedMarkerElement` (the Google deprecation track that was
+   already pending) which renders via DOM and may be faster at scale.
+2. The marker glyphs use `currentColor` as a sentinel that's substituted
+   via string replace at render time. No CSS cascade required — works in
+   every SVG renderer we tested (browser, rsvg-convert).
+3. Prohibition slash on red glyphs: when both glyph and slash are red,
+   the slash visually merges where it crosses the icon. The gestalt of
+   cancellation still reads correctly because the slash extends into the
+   white background portions of the circle. If this looks unclear in
+   practice, the slash can be given a white outline (one-line change in
+   `renderMarkerGlyph`).
 
 ## v0.5.0 — Part 9 (restriction iconography)
 
