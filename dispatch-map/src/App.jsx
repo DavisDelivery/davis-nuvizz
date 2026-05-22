@@ -25,6 +25,8 @@ import {
 import { db } from './lib/firebase.js';
 import { normalizeMatchKey } from './lib/matchKey.js';
 import { haversineMiles, naiveEtaMinutes, formatEtaClockTime } from './lib/distance.js';
+import { scanStop } from './lib/signal-scanner.ts';
+import { applyScannerResults } from './lib/customer-notes-writer.ts';
 
 // ---------- constants ----------
 
@@ -53,6 +55,7 @@ const DRIVER_TINT = '#0f172a';             // M4 Motive driver pins
 
 const EQUIPMENT_OPTIONS = [
   { value: 'no_tractor_trailer', label: 'No tractor trailer' },
+  { value: 'uline_straight_truck', label: 'Uline: straight truck (advisory)' },
   { value: '26ft_max', label: '26ft max' },
   { value: 'no_53ft', label: 'No 53ft' },
   { value: 'box_truck_only', label: 'Box truck only' },
@@ -117,6 +120,27 @@ const RESTRICTION_ICONS = {
     accent: '#dc2626',
     glyph: '<rect x="2" y="6.5" width="7" height="3.5" fill="white"/><rect x="9" y="5" width="3" height="5" fill="white"/><circle cx="4" cy="10.5" r="1" fill="#dc2626"/><circle cx="10.5" cy="10.5" r="1" fill="#dc2626"/>',
     // 22x22: tractor (right) + trailer (left), 3 wheels. currentColor.
+    markerGlyph: `
+      <rect x="2" y="9" width="11" height="6.5" rx="0.5" fill="currentColor"/>
+      <rect x="13" y="7" width="6" height="8.5" rx="0.5" fill="currentColor"/>
+      <circle cx="5" cy="17" r="1.7" fill="white"/>
+      <circle cx="10" cy="17" r="1.7" fill="white"/>
+      <circle cx="16" cy="17" r="1.7" fill="white"/>
+      <circle cx="5" cy="17" r="1.7" fill="none" stroke="currentColor" stroke-width="0.7"/>
+      <circle cx="10" cy="17" r="1.7" fill="none" stroke="currentColor" stroke-width="0.7"/>
+      <circle cx="16" cy="17" r="1.7" fill="none" stroke="currentColor" stroke-width="0.7"/>
+    `,
+    prohibition: true,
+  },
+  // M2.1 — Uline SPL-INSTR-TEXT advisory: "STRAIGHT TRUCK ONLY" etc. detected
+  // in orderInstructions. Same shape as no_tractor_trailer but amber to signal
+  // "verify before relying" (Uline sometimes over-broadcasts this constraint).
+  uline_straight_truck: {
+    label: 'Uline: straight truck only (advisory)',
+    short: 'ST only',
+    bg: '#f59e0b',
+    accent: '#f59e0b',
+    glyph: '<rect x="2" y="6.5" width="7" height="3.5" fill="white"/><rect x="9" y="5" width="3" height="5" fill="white"/><circle cx="4" cy="10.5" r="1" fill="#f59e0b"/><circle cx="10.5" cy="10.5" r="1" fill="#f59e0b"/>',
     markerGlyph: `
       <rect x="2" y="9" width="11" height="6.5" rx="0.5" fill="currentColor"/>
       <rect x="13" y="7" width="6" height="8.5" rx="0.5" fill="currentColor"/>
@@ -332,6 +356,54 @@ function useStops() {
 
   useEffect(() => { refresh(); }, [refresh]);
   return { stops, loading, error, lastRefreshed, source, refresh };
+}
+
+// M2.1 — Auto-scan today's stops for SPL-INSTR-TEXT + addressLine2 signals
+// and enrich customer_notes accordingly. Source-locked (see signal-scanner.ts):
+//   addressLine2     → no_tractor_trailer  (Davis-curated, red)
+//   orderInstructions → uline_straight_truck (Uline advisory, amber)
+// Runs once per load+notes-ready combo; subsequent re-renders are no-ops.
+function useAutoScanner(stops, notes, notesReady) {
+  const lastSignatureRef = useRef(null);
+  useEffect(() => {
+    if (!db || !notesReady || !stops.length) return;
+    // Skip if we've already scanned this stop set. Signature = stop count +
+    // first/last pro, cheap and stable for a given session's load.
+    const sig = `${stops.length}|${stops[0]?.pro || ''}|${stops[stops.length - 1]?.pro || ''}`;
+    if (lastSignatureRef.current === sig) return;
+    lastSignatureRef.current = sig;
+
+    const scanned = stops
+      .map((s) => {
+        const scanResults = scanStop({
+          signalSources: s.signalSources,
+          addr2: s.addr2,
+        });
+        if (!scanResults.length || !s.matchKey) return null;
+        return {
+          matchKey: s.matchKey,
+          pro: s.pro,
+          businessName: s.businessName,
+          addr1: s.addr1,
+          city: s.city,
+          state: s.state,
+          zip: s.zip,
+          scanResults,
+        };
+      })
+      .filter(Boolean);
+
+    if (!scanned.length) return;
+
+    applyScannerResults(db, scanned, notes).then((res) => {
+      if (res.errors.length) {
+        console.warn('Scanner write errors:', res.errors.slice(0, 3));
+      }
+      console.log(`Auto-scanner: attempted ${res.attempted}, wrote ${res.written}, override-skips ${res.overrideSkips}, migrations ${res.legacyMigrations}`);
+    }).catch((err) => {
+      console.error('Auto-scanner failed:', err);
+    });
+  }, [stops, notes, notesReady]);
 }
 
 // Subscribe to ALL customer_notes docs and expose as a Map<match_key, note>.
@@ -1857,7 +1929,8 @@ function makeDriverLabelOverlayClass(google) {
 
 function MapScreen() {
   const { stops, loading, error, lastRefreshed, source, refresh } = useStops();
-  const { notes } = useCustomerNotes();
+  const { notes, ready: notesReady } = useCustomerNotes();
+  useAutoScanner(stops, notes, notesReady);
   const { google, error: mapsError } = useGoogleMaps();
   const viewportWidth = useViewportWidth();
   const isMobile = viewportWidth < MOBILE_BREAKPOINT;
