@@ -1,7 +1,225 @@
 # Dispatch Map — Handoff
 
 Status of the build that landed on branch `claude/dispatch-map-build-eEbYe`.
-Pick this up when you start M3 + M5.
+M3 + M5 still pending; M4.1 added the items below.
+
+## v0.4.0 — M4.1 (resizable panel + search + driver labels + day-snapshot)
+
+Five-part epic shipped on branch
+`claude/dispatch-map-m4.1-search-and-driver-id`. Summary by part:
+
+### Part 1 — Resizable left panel
+
+- Drag handle is a 6-px visible vertical strip inside a 12-px hit area
+  (`<ResizeHandle/>`). Hover lightens; active drag turns brand-blue at 30%
+  opacity. Document-level mousemove/mouseup so the drag survives the mouse
+  leaving the strip.
+- Width clamped to `[240, 60vw]`. Default on first load: 320 px. On every
+  drag tick we re-clamp and trigger `google.maps.event.trigger(map,
+  'resize')` so the map redraws without a gap. Width is persisted to
+  `localStorage["dispatchMap.leftPanelWidth"]` on drag end (not mid-drag).
+- Double-click the handle resets to 320 px.
+- Content tiers at width breakpoints:
+  - `>= 300 px`: city column shown, customer names no longer hard-truncated
+    (up to ~320 px column cap)
+  - `>= 450 px`: extra "Pri" priority-flag column (red/yellow/green/purple-R)
+  - At narrow widths the table itself becomes horizontally scrollable
+    (`overflow-x: auto`) instead of forcing rows to wrap.
+- Mobile (< 768 px viewport): we **disable** the drag handle and render the
+  panel as a top sheet (`max-height: 40vh`). The full drawer-slide UX from
+  the brief is intentionally deferred — see "Known limitations" below.
+
+### Part 2 — Search bar
+
+- Lives at the top of the left panel, above `<FilterPanel/>`. Single text
+  input, 200 ms debounce via `useDebouncedValue`.
+- Matches case-insensitive substrings against six fields per stop:
+  `businessName`, `pro`, `addr1`, `city`, `zip`,
+  `customer_notes.dock_notes`, `customer_notes.appointment_notes`.
+- Map behavior on a non-empty query:
+  - All markers stay on the map; non-matching pins drop to **0.3 opacity** so
+    spatial context is preserved.
+  - 1 match → `panTo` + zoom-in to ≥ 14, open the stop sidebar.
+  - 2–10 matches → `fitBounds` with 60 px padding.
+  - 11+ matches → no auto-zoom (would over-compress the view).
+- The left-rail "Stops (n)" table also filters to matching rows, and the
+  search bar shows `Showing N of M stops` (or a `No stops match "xyz"` empty
+  state).
+- Keyboard:
+  - `/` from anywhere focuses the search input (skipped while another
+    INPUT/TEXTAREA has focus).
+  - `Esc` clears + blurs.
+  - `Enter` commits the current query to history.
+- Search history: last 5 unique committed queries, in
+  `localStorage["dispatchMap.searchHistory"]`. Empty-input focus opens a
+  recent-searches dropdown; clicking a row re-applies it.
+
+### Part 3 — Driver marker labels
+
+- Each driver marker gets a custom `google.maps.OverlayView` label sitting
+  4 px below the pin. Two lines:
+
+    ```
+    0608 · Trevor S.
+    Stop 4 of 12
+    ```
+
+- Label rendering uses a lazy-instantiated class (the OverlayView base class
+  isn't available until Maps loads). White-85%-opacity background, 1-px
+  black-10%-opacity border, 11-px sans-serif, brand-blue line 1, slate
+  line 2. The label is `pointer-events: none` so it doesn't steal marker
+  clicks.
+- Line 2 status resolution order (matches brief):
+  1. `Stop {completed} of {total}` if route + progress known
+  2. `Route {route_id} · {total} stops` if assigned but no progress yet
+  3. `No route assigned` otherwise
+  4. Suffixes: ` · en route` (speed > 5 mph), ` · stopped` (speed ≤ 5 mph
+     for > 5 min), ` · stale` (GPS ping age > 30 min).
+- Toggle button below the "Show live drivers" button:
+  `[ Show Labels ]` / `[ Hide Labels ]`. Persists to
+  `localStorage["dispatchMap.driverLabelsVisible"]`. Default ON.
+- Drivers aren't clustered today, so the brief's "suppress labels within a
+  cluster" behavior is moot — but if the driver layer is ever clusterable
+  the OverlayView's `setVisible(false)` hook is in place.
+
+### Part 4 — Motive driver augmentation
+
+`netlify/functions/motive-driver-positions.mts` now returns the per-vehicle
+shape spec'd in the brief:
+
+| Field | Source |
+|---|---|
+| `vehicleId`, `vehicleNumber` | `vehicle.id`, `vehicle.number` / `vehicle.name` |
+| `driverId`, `driverName`, `driverFirstName`, `driverLastInitial` | `current_driver` on the vehicle entry, with a fallback enrichment via `/v2/driver_vehicle_assignments` when an entry has no `current_driver` attached |
+| `lat`, `lng`, `speedMph`, `heading`, `locatedAt`, `address` | `current_location` |
+| `routeAssigned`, `routeId`, `routeTotalStops`, `routeProgress`, `stoppedMinutes` | Placeholders — populated by the day-snapshot's per-driver call to `nuvizz-driver-route`, not by this endpoint |
+
+In-function 60-second cache keyed by `'default'` (one global call set);
+`?nocache=1` bypasses. The client polls every 60 s anyway, so the cache
+just smooths repeated re-renders.
+
+**Field shapes still need live verification.** I assumed the Motive
+documented `{ vehicles: [{ vehicle, current_location, current_driver }] }`
+shape. If a tenant returns a different envelope (`data: [...]` vs
+`vehicles: [...]`), the normalizer is tolerant of either — but the inner
+field names (`number`, `current_driver.full_name`, `current_location.lat`)
+need a smoke test against the live key. To verify:
+
+```bash
+curl -H "X-API-KEY: $MOTIVE_API_KEY" https://api.gomotive.com/v1/vehicle_locations | jq .vehicles[0]
+```
+
+If `current_driver` isn't attached, run the same against
+`/v2/driver_vehicle_assignments` and confirm `assignments[].driver.full_name`.
+
+### Part 5 — Driver day-snapshot sidebar
+
+Click a driver marker → right sidebar swaps to
+`<DriverSnapshotSidebar/>` (the stop sidebar is hidden while a driver is
+selected; clicking "← Back to stops" exits driver mode).
+
+Layout sections:
+1. Header — truck #, driver name, login time + on-duty duration (from HOS)
+2. Route Summary — id, total/completed/remaining, next stop with naive ETA
+3. Today's Stops — list with status icons (✓/▶/○) and on-time deltas;
+   each row is clickable when the stop has coordinates (centers map + zooms)
+4. Live Telemetry — speed, last ping (relative time), location
+5. Performance Today — on-time %, avg dwell (placeholder until data wired),
+   miles driven
+
+Data plumbing:
+- `useDriverSnapshot(driver)` (in `App.jsx`) calls
+  `/.netlify/functions/nuvizz-driver-route?truck=...&driver=...`. Per-driver
+  30-second in-memory cache keyed by truck #. The function ALSO caches 30 s
+  server-side (per-function-instance) for defense in depth.
+- The new `nuvizz-driver-route.mts` falls back to a load-info scan
+  (`/load/info/{loadNbr}/{companyCode}` across the same anchored range that
+  `nuvizz-pull-today-stops` uses), filters to loads whose `assignment.driverName`
+  matches the driver from Motive, and rebuilds a route + stop list from that.
+  This is a stand-in **until the dedicated NuVizz route-assignment endpoint
+  is discovered.**
+- Naive ETA: `haversine(driver_lat_lng, next_stop_lat_lng)` ÷ 30 mph effective.
+  Implementation in `src/lib/distance.js`. Intentionally crude — upgrade to
+  Google Distance Matrix later.
+
+#### NuVizz route endpoint — discovery still pending
+
+The brief explicitly told me to STOP and report if the NuVizz route
+endpoint couldn't be discovered. From this build environment I had no live
+NuVizz credentials, so I shipped both:
+
+1. `netlify/functions/nuvizz-debug-driver-routes.mts` — **temporary**
+   discovery harness. Probes nine plausible URLs in order and returns each
+   raw response. Hit it with
+   `curl https://dd-dispatch-map.netlify.app/.netlify/functions/nuvizz-debug-driver-routes?driver=Trevor+Seyers`
+   and inspect the `probes[].body` whose `.ok === true`. Confirm which one
+   exposes route_id + per-stop status + scheduled-time + actual-time fields.
+
+2. `netlify/functions/nuvizz-driver-route.mts` — the production endpoint the
+   UI calls. Currently uses the load-info-scan fallback. Once you confirm
+   the correct route endpoint, replace `buildRouteFromLoadScan` with a
+   single call to that endpoint.
+
+**Action item for Chad / next pass:** run the debug function against live
+NuVizz creds, decide which endpoint to use, update
+`nuvizz-driver-route.mts`, then DELETE `nuvizz-debug-driver-routes.mts`.
+
+#### Motive HOS + daily miles — best-effort
+
+- HOS: tries `/v1/users/duty_status_logs`, filters to the driver by name
+  and to today's date, sums on-duty time. If the tier doesn't expose that
+  endpoint, the snapshot just shows no login-time / on-duty-time row.
+- Daily miles: **not wired.** Motive exposes per-vehicle daily summary on a
+  separate endpoint that I didn't discover — the field is `null` and the
+  UI shows an em-dash. To complete, find the daily-miles endpoint for this
+  tier and populate `out.dailyMiles` in `nuvizz-driver-route.mts`.
+
+### localStorage keys (M4.1)
+
+| Key | Type | Default |
+|---|---|---|
+| `dispatchMap.leftPanelWidth` | number (px) | 320 |
+| `dispatchMap.driverLabelsVisible` | boolean | `true` |
+| `dispatchMap.searchHistory` | string[] (max 5) | `[]` |
+
+All three are clamped/validated on read. Width is re-clamped to
+`[240, viewport*0.6]` on every load and on viewport resize, so localStorage
+tampering can't hide the map.
+
+### Keyboard shortcuts
+
+| Key | Effect |
+|---|---|
+| `/` | Focus the search input (no-op while typing in another input) |
+| `Esc` (in search input) | Clear query + blur |
+| `Enter` (in search input) | Commit current query to history |
+
+### Naive ETA (intentional limitation)
+
+The Next Stop ETA uses `haversineMiles(driver, stop) / 30 mph × 60 = minutes`.
+This ignores roads, traffic, and dwell time. It is correct for v1 — upgrade
+to Google Distance Matrix when route-quality matters more than crow-flies
+distance.
+
+### Known limitations (M4.1)
+
+1. **NuVizz route endpoint** — see "discovery still pending" above. The
+   day-snapshot's Route Summary section may show `No route assigned today`
+   until the right endpoint is wired.
+2. **Mobile panel** — we ship a fixed top sheet on `< 768 px`, not the
+   drawer-slide UX in the brief. Functional but not animated.
+3. **Daily miles** — null until the Motive vehicle-daily-summary endpoint
+   is identified.
+4. **Avg dwell** — placeholder em-dash. Computable from stop arrival vs
+   completion timestamps once the NuVizz route endpoint is wired.
+5. **Driver markers don't cluster.** Brief specified suppressing labels
+   inside clusters; behavior is in `setVisible` on the OverlayView but
+   currently unreachable because the driver layer is single-pin.
+6. **Search-and-cluster interaction** — faded (non-matching) pins still
+   participate in cluster counts. The dispatcher gets visual context (the
+   pins are 0.3 opacity) but at very low zoom the cluster numbers don't
+   distinguish matched from context. Acceptable trade-off given that
+   `fitBounds` snaps to the matched set on small result counts.
 
 ## v0.3.0 — auth removed
 

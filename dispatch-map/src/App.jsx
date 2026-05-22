@@ -15,6 +15,7 @@ import { MarkerClusterer } from '@googlemaps/markerclusterer';
 import {
   MapPin, RefreshCw, X, Filter, Truck, Save, Plus, Trash2,
   Activity, ChevronDown, ChevronUp, Eye, EyeOff,
+  Search, Tag, Tags, ArrowLeft, Gauge, Clock, MapPinned,
 } from 'lucide-react';
 import {
   collection, doc, getDoc, onSnapshot, setDoc, serverTimestamp,
@@ -22,10 +23,11 @@ import {
 
 import { db } from './lib/firebase.js';
 import { normalizeMatchKey } from './lib/matchKey.js';
+import { haversineMiles, naiveEtaMinutes, formatEtaClockTime } from './lib/distance.js';
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.3.0';
+const APP_VERSION = '0.4.0';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -66,6 +68,15 @@ const DAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
 
 const MOCK_MODE = import.meta.env.VITE_USE_MOCK_NUVIZZ === 'true';
 const MAPS_KEY = import.meta.env.VITE_GOOGLE_MAPS_API_KEY;
+
+// M4.1 localStorage keys + sizing constants for the resizable left panel.
+const LS_PANEL_WIDTH = 'dispatchMap.leftPanelWidth';
+const LS_DRIVER_LABELS = 'dispatchMap.driverLabelsVisible';
+const LS_SEARCH_HISTORY = 'dispatchMap.searchHistory';
+const PANEL_DEFAULT_WIDTH = 320;
+const PANEL_MIN_WIDTH = 240;
+// Max width is computed at runtime as 60% of viewport — see useResizablePanel.
+const MOBILE_BREAKPOINT = 768;
 
 // ---------- hooks ----------
 
@@ -194,6 +205,193 @@ function useCustomerNotes() {
   return { notes, ready };
 }
 
+// --- M4.1 hooks ---
+
+function safeReadJSON(key, fallback) {
+  try {
+    const raw = localStorage.getItem(key);
+    if (raw == null) return fallback;
+    return JSON.parse(raw);
+  } catch {
+    return fallback;
+  }
+}
+
+function safeWriteJSON(key, value) {
+  try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* quota / private mode */ }
+}
+
+// Track viewport width so we can disable resize and switch the panel to a
+// drawer on mobile. Cheap — one resize listener.
+function useViewportWidth() {
+  const [w, setW] = useState(() => (typeof window === 'undefined' ? 1280 : window.innerWidth));
+  useEffect(() => {
+    const onResize = () => setW(window.innerWidth);
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+  return w;
+}
+
+// Left-panel width with mouse-drag handler. Caller spreads handleProps onto
+// the drag strip and reads width for the panel. Width is clamped to
+// [PANEL_MIN_WIDTH, 60vw] on every change so URL/localStorage tampering can't
+// hide the map.
+function useResizablePanel(viewportWidth) {
+  const maxWidth = Math.max(PANEL_MIN_WIDTH + 50, Math.round(viewportWidth * 0.6));
+  const clamp = useCallback((px) => Math.max(PANEL_MIN_WIDTH, Math.min(maxWidth, px)), [maxWidth]);
+
+  const [width, setWidthState] = useState(() => {
+    const stored = safeReadJSON(LS_PANEL_WIDTH, null);
+    const initial = typeof stored === 'number' ? stored : PANEL_DEFAULT_WIDTH;
+    return Math.max(PANEL_MIN_WIDTH, Math.min(initial, Math.round((typeof window === 'undefined' ? 1280 : window.innerWidth) * 0.6)));
+  });
+
+  // Re-clamp whenever the max drops (window narrowed).
+  useEffect(() => {
+    setWidthState((w) => Math.min(w, maxWidth));
+  }, [maxWidth]);
+
+  const isDraggingRef = useRef(false);
+  const lastWriteRef = useRef(width);
+
+  const setWidth = useCallback((next) => {
+    const clamped = clamp(next);
+    setWidthState(clamped);
+  }, [clamp]);
+
+  const onMouseDown = useCallback((e) => {
+    e.preventDefault();
+    isDraggingRef.current = true;
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+
+    let raf = null;
+    const onMove = (ev) => {
+      if (raf) return; // ~1 frame debounce
+      raf = requestAnimationFrame(() => {
+        raf = null;
+        const next = ev.clientX;
+        setWidth(next);
+      });
+    };
+    const onUp = () => {
+      isDraggingRef.current = false;
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      if (raf) cancelAnimationFrame(raf);
+      // Persist on release only — no localStorage thrash mid-drag.
+      const w = clamp(lastWriteRef.current);
+      safeWriteJSON(LS_PANEL_WIDTH, w);
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  }, [clamp, setWidth]);
+
+  const onDoubleClick = useCallback(() => {
+    setWidth(PANEL_DEFAULT_WIDTH);
+    safeWriteJSON(LS_PANEL_WIDTH, PANEL_DEFAULT_WIDTH);
+  }, [setWidth]);
+
+  // Track latest width for the on-release localStorage write.
+  useEffect(() => { lastWriteRef.current = width; }, [width]);
+
+  return { width, setWidth, onMouseDown, onDoubleClick, maxWidth, isDragging: isDraggingRef };
+}
+
+// Debounce any value. Used by the search bar (200ms) so we don't re-filter on
+// every keystroke.
+function useDebouncedValue(value, delayMs) {
+  const [debounced, setDebounced] = useState(value);
+  useEffect(() => {
+    const id = setTimeout(() => setDebounced(value), delayMs);
+    return () => clearTimeout(id);
+  }, [value, delayMs]);
+  return debounced;
+}
+
+// Search state + history. The query itself is local to the bar; history is a
+// 5-deep list of recent committed searches kept in localStorage.
+function useSearchHistory() {
+  const [history, setHistory] = useState(() => {
+    const arr = safeReadJSON(LS_SEARCH_HISTORY, []);
+    return Array.isArray(arr) ? arr.slice(0, 5) : [];
+  });
+  const remember = useCallback((q) => {
+    const trimmed = (q || '').trim();
+    if (!trimmed) return;
+    setHistory((prev) => {
+      const dedup = [trimmed, ...prev.filter((x) => x.toLowerCase() !== trimmed.toLowerCase())].slice(0, 5);
+      safeWriteJSON(LS_SEARCH_HISTORY, dedup);
+      return dedup;
+    });
+  }, []);
+  const clear = useCallback(() => {
+    setHistory([]);
+    safeWriteJSON(LS_SEARCH_HISTORY, []);
+  }, []);
+  return { history, remember, clear };
+}
+
+// Per-driver day-snapshot fetch with 30s in-memory cache keyed by truck number.
+// Snapshot shape is whatever /nuvizz-driver-route returns (NuVizz endpoint
+// discovery happens in nuvizz-debug-driver-routes.mts — until then this returns
+// a "no route assigned" stub so the rest of the UI keeps working).
+const __snapshotCache = new Map(); // truck# -> { storedAt, data }
+const SNAPSHOT_TTL_MS = 30 * 1000;
+
+function useDriverSnapshot(driver) {
+  const [snapshot, setSnapshot] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    if (!driver) { setSnapshot(null); setError(null); return; }
+    const key = driver.vehicleNumber || `id:${driver.vehicleId}`;
+    const cached = __snapshotCache.get(key);
+    if (cached && Date.now() - cached.storedAt < SNAPSHOT_TTL_MS) {
+      setSnapshot(cached.data);
+      setError(null);
+      return;
+    }
+    let cancelled = false;
+    setLoading(true);
+    setSnapshot(null);
+    setError(null);
+    (async () => {
+      try {
+        const url = `/.netlify/functions/nuvizz-driver-route?truck=${encodeURIComponent(driver.vehicleNumber || '')}&driver=${encodeURIComponent(driver.driverName || '')}`;
+        const resp = await fetch(url);
+        const data = await resp.json();
+        if (cancelled) return;
+        if (!data || data.ok === false) {
+          setError(data?.error || `HTTP ${resp.status}`);
+          // Still set a minimal snapshot so the UI shows telemetry sections.
+          const minimal = { route: null, stops: [], hos: null, dailyMiles: null };
+          __snapshotCache.set(key, { storedAt: Date.now(), data: minimal });
+          setSnapshot(minimal);
+        } else {
+          __snapshotCache.set(key, { storedAt: Date.now(), data });
+          setSnapshot(data);
+        }
+      } catch (e) {
+        if (!cancelled) {
+          setError(e.message);
+          const minimal = { route: null, stops: [], hos: null, dailyMiles: null };
+          setSnapshot(minimal);
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [driver?.vehicleId, driver?.vehicleNumber]);
+
+  return { snapshot, loading, error };
+}
+
 // M4: poll Motive every 60s while enabled.
 function useDriverPositions(enabled) {
   const [drivers, setDrivers] = useState([]);
@@ -300,7 +498,136 @@ function bumpProHistory(existing, pro) {
   return next.slice(-20);
 }
 
+// M4.1 — case-insensitive contains-match across business name, PRO,
+// address1, city, ZIP, and either of the customer-notes prose fields.
+// Returns true for empty queries (no filter applied).
+function stopMatchesSearch(stop, note, q) {
+  if (!q) return true;
+  const needle = q.toLowerCase();
+  const fields = [
+    stop.businessName,
+    stop.pro,
+    stop.addr1,
+    stop.city,
+    stop.zip,
+    note?.dock_notes,
+    note?.appointment_notes,
+  ];
+  for (const f of fields) {
+    if (f && String(f).toLowerCase().includes(needle)) return true;
+  }
+  return false;
+}
+
 // ---------- components ----------
+
+// 6-px visible bar centered in a 12-px hit area. The wider hit zone makes the
+// handle easier to grab; the visible bar is the affordance the dispatcher sees.
+function ResizeHandle({ onMouseDown, onDoubleClick }) {
+  const [hover, setHover] = useState(false);
+  const [active, setActive] = useState(false);
+  return (
+    <div
+      onMouseDown={(e) => { setActive(true); onMouseDown(e); const up = () => { setActive(false); document.removeEventListener('mouseup', up); }; document.addEventListener('mouseup', up); }}
+      onDoubleClick={onDoubleClick}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      className="flex-shrink-0 cursor-col-resize select-none"
+      style={{
+        width: 12,
+        marginLeft: -3,
+        marginRight: -3,
+        zIndex: 5,
+        position: 'relative',
+        background: 'transparent',
+      }}
+      title="Drag to resize. Double-click to reset."
+    >
+      <div
+        className="absolute top-0 bottom-0 left-1/2 -translate-x-1/2"
+        style={{
+          width: 6,
+          background: active
+            ? `rgba(30,91,146,0.30)`
+            : hover
+            ? 'rgba(148,163,184,0.25)'
+            : 'transparent',
+          transition: 'background 80ms linear',
+        }}
+      />
+      <div
+        className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 flex flex-col gap-0.5 pointer-events-none"
+        aria-hidden
+      >
+        <span className="block w-0.5 h-0.5 rounded-full bg-slate-400" />
+        <span className="block w-0.5 h-0.5 rounded-full bg-slate-400" />
+        <span className="block w-0.5 h-0.5 rounded-full bg-slate-400" />
+      </div>
+    </div>
+  );
+}
+
+// SearchBar — controlled input + recent-history dropdown. Owns its own draft
+// string; commits to parent (via onChange) immediately so the parent can
+// debounce + filter. onSubmit is called when Enter is pressed (used to commit
+// to localStorage history).
+function SearchBar({ value, onChange, onSubmit, history, inputRef, resultCount, totalCount }) {
+  const [focused, setFocused] = useState(false);
+  const showHistory = focused && !value && history.length > 0;
+  return (
+    <div className="px-3 pt-3 pb-1 relative">
+      <div className="relative">
+        <Search size={13} className="absolute left-2 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+        <input
+          ref={inputRef}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          onFocus={() => setFocused(true)}
+          onBlur={() => setTimeout(() => setFocused(false), 120)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') { onSubmit(value); e.currentTarget.blur(); }
+            if (e.key === 'Escape') { onChange(''); e.currentTarget.blur(); }
+          }}
+          placeholder="Search customer, PRO, city, address..."
+          className="w-full border border-slate-300 rounded pl-7 pr-7 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-400"
+          aria-label="Search stops"
+        />
+        {value && (
+          <button
+            onClick={() => onChange('')}
+            className="absolute right-1 top-1/2 -translate-y-1/2 p-0.5 rounded hover:bg-slate-100 text-slate-400 hover:text-slate-700"
+            aria-label="Clear search"
+            tabIndex={-1}
+          >
+            <X size={13} />
+          </button>
+        )}
+      </div>
+      {value && (
+        <div className="mt-1 text-[10px] text-slate-500">
+          {resultCount > 0
+            ? <>Showing <span className="font-semibold text-slate-700">{resultCount}</span> of {totalCount} stops</>
+            : <>No stops match "<span className="font-semibold">{value}</span>"</>
+          }
+        </div>
+      )}
+      {showHistory && (
+        <div className="absolute left-3 right-3 top-full mt-1 bg-white border border-slate-200 rounded shadow-md z-10 max-h-56 overflow-y-auto">
+          <div className="px-2 py-1 text-[9px] uppercase tracking-wide text-slate-400 border-b">Recent searches</div>
+          {history.map((h, i) => (
+            <button
+              key={i}
+              onMouseDown={(e) => { e.preventDefault(); onChange(h); onSubmit(h); }}
+              className="block w-full text-left px-2 py-1 text-xs hover:bg-blue-50"
+            >
+              {h}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function FilterPanel({ filters, setFilters, counts }) {
   const F = filters;
@@ -663,6 +990,234 @@ function StopSidebar({ stop, note, onClose, onSave, saving, saveError }) {
   );
 }
 
+// ---------- M4.1 driver day-snapshot sidebar ----------
+
+function fmtClockShort(ts) {
+  if (!ts) return null;
+  try {
+    const d = ts instanceof Date ? ts : new Date(ts);
+    if (Number.isNaN(d.getTime())) return null;
+    return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  } catch { return null; }
+}
+
+function fmtDurationHm(secs) {
+  if (secs == null) return null;
+  const h = Math.floor(secs / 3600);
+  const m = Math.floor((secs % 3600) / 60);
+  return `${h}h ${m}m`;
+}
+
+function classifyTimeliness(scheduledIso, actualIso) {
+  if (!scheduledIso || !actualIso) return null;
+  const sched = new Date(scheduledIso).getTime();
+  const act = new Date(actualIso).getTime();
+  if (Number.isNaN(sched) || Number.isNaN(act)) return null;
+  const deltaMin = Math.round((act - sched) / 60000);
+  let kind = 'ontime';
+  if (deltaMin > 15) kind = 'late';
+  else if (deltaMin < -15) kind = 'early';
+  return { deltaMin, kind };
+}
+
+function StopStatusIcon({ status }) {
+  if (status === 'completed') return <span style={{ color: '#16a34a' }}>✓</span>;
+  if (status === 'en_route' || status === 'current')
+    return <span style={{ color: '#1e5b92' }} className="inline-block animate-pulse">▶</span>;
+  return <span style={{ color: '#94a3b8' }}>○</span>;
+}
+
+function DriverSnapshotSidebar({ driver, snapshot, loading, error, onClose, onPanToStop }) {
+  if (!driver) return null;
+  const truckLabel = driver.vehicleNumber || `(truck ${driver.vehicleId || '?'})`;
+  const driverName = driver.driverName || '(no driver)';
+  const route = snapshot?.route || null;
+  const stops = Array.isArray(snapshot?.stops) ? snapshot.stops : [];
+  const hos = snapshot?.hos || null;
+
+  const nextStop = useMemo(() => {
+    if (!stops.length) return null;
+    return stops.find((s) => s.status !== 'completed') || null;
+  }, [stops]);
+
+  const eta = useMemo(() => {
+    if (!nextStop || nextStop.lat == null || nextStop.lng == null) return null;
+    if (driver.lat == null || driver.lng == null) return null;
+    const mins = naiveEtaMinutes(
+      { lat: driver.lat, lng: driver.lng },
+      { lat: nextStop.lat, lng: nextStop.lng },
+    );
+    return { minutes: mins, clock: formatEtaClockTime(mins) };
+  }, [driver?.lat, driver?.lng, nextStop?.lat, nextStop?.lng]);
+
+  const onTimePct = useMemo(() => {
+    const completed = stops.filter((s) => s.status === 'completed');
+    if (!completed.length) return null;
+    const onTime = completed.filter((s) => {
+      const t = classifyTimeliness(s.scheduledTime, s.actualArrival || s.actualCompletion);
+      return t?.kind === 'ontime' || t?.kind === 'early';
+    }).length;
+    return { onTime, total: completed.length, pct: Math.round((onTime / completed.length) * 100) };
+  }, [stops]);
+
+  return (
+    <aside className="w-[380px] flex-shrink-0 bg-white border-l shadow-lg flex flex-col h-full overflow-hidden">
+      <div className="px-4 py-3 border-b" style={{ background: BRAND, color: 'white' }}>
+        <button
+          onClick={onClose}
+          className="text-[10px] uppercase tracking-wider opacity-75 hover:opacity-100 inline-flex items-center gap-1 mb-1"
+        >
+          <ArrowLeft size={11} /> Back to stops
+        </button>
+        <div className="font-bold">Truck {truckLabel} · {driverName}</div>
+        {hos && (
+          <div className="text-[11px] opacity-80 mt-0.5">
+            {hos.loggedInAt && <>Logged in {fmtClockShort(hos.loggedInAt)}</>}
+            {hos.loggedInAt && hos.onDutySeconds != null && ' · '}
+            {hos.onDutySeconds != null && <>{fmtDurationHm(hos.onDutySeconds)} on duty</>}
+          </div>
+        )}
+      </div>
+
+      <div className="overflow-y-auto flex-1 text-sm">
+        {loading && <SnapshotSkeleton />}
+
+        {error && !loading && (
+          <div className="m-3 px-3 py-2 text-xs bg-amber-50 border border-amber-200 rounded text-amber-900">
+            {error}
+          </div>
+        )}
+
+        {!loading && (
+          <>
+            <SnapshotSection title="Route Summary">
+              {route ? (
+                <>
+                  <div className="font-semibold text-slate-900">
+                    Route {route.id || '—'} · {route.totalStops ?? stops.length} stops today
+                  </div>
+                  <div className="mt-1 text-xs text-slate-600">
+                    Completed: <span className="font-semibold text-slate-900">{route.completed ?? stops.filter((s) => s.status === 'completed').length}</span>
+                    {'   '}Remaining: <span className="font-semibold text-slate-900">{route.remaining ?? stops.filter((s) => s.status !== 'completed').length}</span>
+                  </div>
+                </>
+              ) : (
+                <div className="text-xs italic text-slate-500">No route assigned today</div>
+              )}
+
+              {nextStop && (
+                <div className="mt-2 pt-2 border-t">
+                  <div className="text-[10px] uppercase font-semibold text-slate-500">Next stop</div>
+                  <div className="text-sm font-semibold text-slate-900">{nextStop.businessName || nextStop.name || '—'}</div>
+                  <div className="text-xs text-slate-600">
+                    {[nextStop.addr1, nextStop.city, nextStop.state].filter(Boolean).join(', ') || '—'}
+                  </div>
+                  {eta?.minutes != null && (
+                    <div className="text-xs text-slate-700 mt-0.5">
+                      ETA: <span className="font-semibold">{eta.clock}</span>
+                      {eta.minutes != null && <> ({Math.round(eta.minutes)} min away)</>}
+                    </div>
+                  )}
+                </div>
+              )}
+            </SnapshotSection>
+
+            <SnapshotSection title="Today's Stops">
+              {stops.length === 0 ? (
+                <div className="text-xs italic text-slate-500">No stops loaded</div>
+              ) : (
+                <ul className="space-y-0.5">
+                  {stops.map((s, i) => {
+                    const timeliness = classifyTimeliness(s.scheduledTime, s.actualArrival || s.actualCompletion);
+                    const late = timeliness?.kind === 'late';
+                    const isClickable = s.lat != null && s.lng != null && onPanToStop;
+                    return (
+                      <li
+                        key={s.pro || s.stopNbr || i}
+                        onClick={isClickable ? () => onPanToStop(s) : undefined}
+                        className={`flex items-center gap-2 text-xs px-1 py-0.5 rounded ${isClickable ? 'cursor-pointer hover:bg-blue-50' : ''}`}
+                      >
+                        <span className="w-3 text-center"><StopStatusIcon status={s.status} /></span>
+                        <span className="w-12 font-mono text-[10px] text-slate-500">{fmtClockShort(s.scheduledTime) || '—'}</span>
+                        <span className="flex-1 truncate">{s.businessName || s.name || s.pro || '—'}</span>
+                        <span className="text-[10px] text-slate-500">
+                          {s.status === 'completed' && timeliness && (
+                            timeliness.kind === 'ontime'
+                              ? <span className="text-emerald-600">on-time</span>
+                              : timeliness.kind === 'early'
+                              ? <span className="text-slate-500">{Math.abs(timeliness.deltaMin)} min early</span>
+                              : <span className="text-red-600">{timeliness.deltaMin} min late ⚠</span>
+                          )}
+                          {(s.status === 'en_route' || s.status === 'current') && <span className="text-blue-700">en route</span>}
+                        </span>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </SnapshotSection>
+
+            <SnapshotSection title="Live Telemetry">
+              <div className="grid grid-cols-[16px_1fr] gap-x-2 gap-y-1 items-center text-xs">
+                <Gauge size={12} className="text-slate-400" />
+                <div>Speed: <span className="font-semibold">{driver.speedMph != null ? `${Math.round(driver.speedMph)} mph` : '—'}</span></div>
+                <Clock size={12} className="text-slate-400" />
+                <div>
+                  Last ping: <span className="font-semibold">{fmtClockShort(driver.locatedAt) || '—'}</span>
+                  {driver.locatedAt && <span className="text-slate-500"> ({fmtTimeAgo(new Date(driver.locatedAt))})</span>}
+                </div>
+                <MapPinned size={12} className="text-slate-400" />
+                <div className="truncate" title={driver.address || ''}>
+                  Location: <span className="font-semibold">{driver.address || '—'}</span>
+                </div>
+              </div>
+            </SnapshotSection>
+
+            <SnapshotSection title="Performance Today">
+              <div className="text-xs space-y-1">
+                <div>
+                  On-time stops:{' '}
+                  {onTimePct
+                    ? <span className="font-semibold">{onTimePct.onTime} of {onTimePct.total} ({onTimePct.pct}%)</span>
+                    : <span className="text-slate-500">—</span>
+                  }
+                </div>
+                <div>Avg dwell: <span className="text-slate-500">—</span></div>
+                <div>
+                  Miles driven:{' '}
+                  {snapshot?.dailyMiles != null
+                    ? <span className="font-semibold">{Number(snapshot.dailyMiles).toFixed(1)}</span>
+                    : <span className="text-slate-500">—</span>}
+                </div>
+              </div>
+            </SnapshotSection>
+          </>
+        )}
+      </div>
+    </aside>
+  );
+}
+
+function SnapshotSection({ title, children }) {
+  return (
+    <section className="px-4 py-3 border-b">
+      <div className="text-[10px] uppercase font-semibold text-slate-500 tracking-wide mb-1.5">{title}</div>
+      {children}
+    </section>
+  );
+}
+
+function SnapshotSkeleton() {
+  return (
+    <div className="p-4 space-y-3">
+      <div className="h-3 bg-slate-200 rounded w-3/4 animate-pulse" />
+      <div className="h-3 bg-slate-200 rounded w-1/2 animate-pulse" />
+      <div className="h-3 bg-slate-200 rounded w-2/3 animate-pulse" />
+      <div className="h-3 bg-slate-200 rounded w-1/3 animate-pulse" />
+    </div>
+  );
+}
+
 function ReadOnlyNoteView({ note }) {
   const items = [];
   if (note.priority_flag) items.push({ k: 'Flag', v: <span style={{ color: FLAG_COLORS[note.priority_flag] }} className="font-semibold capitalize">{note.priority_flag}</span> });
@@ -718,25 +1273,119 @@ function ReadOnlyNoteView({ note }) {
 
 // ---------- map screen ----------
 
+// Lazily create a custom OverlayView class for driver labels. Must be invoked
+// after `google` is loaded since OverlayView is provided by the Maps script.
+function makeDriverLabelOverlayClass(google) {
+  return class DriverLabelOverlay extends google.maps.OverlayView {
+    constructor(position, line1, line2, opts = {}) {
+      super();
+      this.position = position;
+      this.line1 = line1;
+      this.line2 = line2;
+      this.stale = opts.stale || false;
+      this.div = null;
+    }
+    onAdd() {
+      const div = document.createElement('div');
+      div.style.position = 'absolute';
+      div.style.transform = 'translate(-50%, 28px)';
+      div.style.pointerEvents = 'none';
+      div.style.background = 'rgba(255,255,255,0.85)';
+      div.style.border = '1px solid rgba(0,0,0,0.1)';
+      div.style.borderRadius = '4px';
+      div.style.padding = '2px 6px';
+      div.style.fontFamily = 'system-ui, -apple-system, sans-serif';
+      div.style.fontSize = '11px';
+      div.style.lineHeight = '1.25';
+      div.style.whiteSpace = 'nowrap';
+      div.style.textAlign = 'center';
+      div.style.boxShadow = '0 1px 2px rgba(0,0,0,0.08)';
+      div.style.opacity = this.stale ? '0.6' : '1';
+
+      const l1 = document.createElement('div');
+      l1.style.color = '#1e5b92';
+      l1.style.fontWeight = '600';
+      l1.textContent = this.line1 || '';
+
+      const l2 = document.createElement('div');
+      l2.style.color = '#555';
+      l2.style.fontSize = '10px';
+      l2.textContent = this.line2 || '';
+
+      div.appendChild(l1);
+      div.appendChild(l2);
+      this.div = div;
+      const panes = this.getPanes();
+      panes.floatPane.appendChild(div);
+    }
+    draw() {
+      if (!this.div) return;
+      const proj = this.getProjection();
+      if (!proj) return;
+      const px = proj.fromLatLngToDivPixel(this.position);
+      if (!px) return;
+      this.div.style.left = `${px.x}px`;
+      this.div.style.top = `${px.y}px`;
+    }
+    onRemove() {
+      if (this.div && this.div.parentNode) this.div.parentNode.removeChild(this.div);
+      this.div = null;
+    }
+    setVisible(v) {
+      if (this.div) this.div.style.display = v ? '' : 'none';
+    }
+  };
+}
+
 function MapScreen() {
   const { stops, loading, error, lastRefreshed, source, refresh } = useStops();
-  const { notes, ready: notesReady } = useCustomerNotes();
+  const { notes } = useCustomerNotes();
   const { google, error: mapsError } = useGoogleMaps();
+  const viewportWidth = useViewportWidth();
+  const isMobile = viewportWidth < MOBILE_BREAKPOINT;
+
   const [selectedStop, setSelectedStop] = useState(null);
+  const [selectedDriver, setSelectedDriver] = useState(null);
   const [filters, setFilters] = useState({});
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState(null);
   const [showDrivers, setShowDrivers] = useState(false);
-  const { drivers, error: driverErr, lastRefreshed: driversAt } = useDriverPositions(showDrivers);
+  const [showDriverLabels, setShowDriverLabels] = useState(() => safeReadJSON(LS_DRIVER_LABELS, true));
+  const [searchInput, setSearchInput] = useState('');
+  const debouncedSearch = useDebouncedValue(searchInput, 200);
+  const { history, remember } = useSearchHistory();
 
+  const { drivers, error: driverErr, lastRefreshed: driversAt } = useDriverPositions(showDrivers);
+  const { snapshot, loading: snapshotLoading, error: snapshotError } = useDriverSnapshot(selectedDriver);
+  const panel = useResizablePanel(viewportWidth);
+
+  const searchInputRef = useRef(null);
   const mapRef = useRef(null);
   const mapDiv = useRef(null);
   const clustererRef = useRef(null);
   const markersRef = useRef([]);
   const driverMarkersRef = useRef([]);
+  const driverLabelsRef = useRef([]);
+  const labelOverlayClassRef = useRef(null);
 
-  const visibleStops = useMemo(() => applyFilters(stops, notes, filters), [stops, notes, filters]);
-  const visibleSet = useMemo(() => new Set(visibleStops.map((s) => s.stopNbr)), [visibleStops]);
+  // Persist label-toggle preference whenever it changes.
+  useEffect(() => { safeWriteJSON(LS_DRIVER_LABELS, showDriverLabels); }, [showDriverLabels]);
+
+  // Filter pipeline: filters → search. Memoized so we don't recompute on each render.
+  const filteredStops = useMemo(() => applyFilters(stops, notes, filters), [stops, notes, filters]);
+  const searchMatchSet = useMemo(() => {
+    if (!debouncedSearch.trim()) return null; // null sentinel = no search active
+    const set = new Set();
+    for (const s of filteredStops) {
+      if (stopMatchesSearch(s, notes.get(s.matchKey), debouncedSearch)) set.add(s.stopNbr);
+    }
+    return set;
+  }, [filteredStops, notes, debouncedSearch]);
+
+  const visibleStops = useMemo(() => {
+    if (!searchMatchSet) return filteredStops;
+    return filteredStops.filter((s) => searchMatchSet.has(s.stopNbr));
+  }, [filteredStops, searchMatchSet]);
 
   // Init map once google + container are ready.
   useEffect(() => {
@@ -748,9 +1397,21 @@ function MapScreen() {
       streetViewControl: false,
       fullscreenControl: false,
     });
+    labelOverlayClassRef.current = makeDriverLabelOverlayClass(google);
   }, [google]);
 
-  // Re-render stop markers whenever visibility / notes change.
+  // Tell Google Maps to redraw as soon as the panel width changes — otherwise
+  // the map tiles leave a gap until the next interaction.
+  useEffect(() => {
+    if (!google || !mapRef.current) return;
+    google.maps.event.trigger(mapRef.current, 'resize');
+  }, [google, panel.width]);
+
+  // M4.1: render stop markers with full set + search opacity. We render ALL
+  // filteredStops as markers but dim non-matches when a search is active so
+  // the dispatcher keeps spatial context. Faded pins still cluster — at
+  // zoomed-out levels cluster counts include all in view; at zoom-in the
+  // 30%-opacity pins are obviously deprioritized.
   useEffect(() => {
     if (!google || !mapRef.current) return;
 
@@ -758,37 +1419,85 @@ function MapScreen() {
     markersRef.current.forEach((m) => m.setMap(null));
     markersRef.current = [];
 
-    const newMarkers = visibleStops
-      .filter((s) => s.lat != null && s.lng != null)
-      .map((s) => {
-        const note = notes.get(s.matchKey);
-        const color = flagColor(note);
-        const marker = new google.maps.Marker({
-          position: { lat: s.lat, lng: s.lng },
-          icon: {
-            url: pinSvg(color),
-            scaledSize: new google.maps.Size(28, 36),
-            anchor: new google.maps.Point(14, 34),
-          },
-          title: s.businessName || '',
-        });
-        marker.addListener('click', () => setSelectedStop(s));
-        return marker;
+    const positioned = filteredStops.filter((s) => s.lat != null && s.lng != null);
+    const newMarkers = positioned.map((s) => {
+      const note = notes.get(s.matchKey);
+      const color = flagColor(note);
+      const dim = searchMatchSet && !searchMatchSet.has(s.stopNbr);
+      const marker = new google.maps.Marker({
+        position: { lat: s.lat, lng: s.lng },
+        icon: {
+          url: pinSvg(color),
+          scaledSize: new google.maps.Size(28, 36),
+          anchor: new google.maps.Point(14, 34),
+        },
+        title: s.businessName || '',
+        opacity: dim ? 0.3 : 1,
       });
+      marker.addListener('click', () => {
+        setSelectedDriver(null);
+        setSelectedStop(s);
+      });
+      return marker;
+    });
 
     markersRef.current = newMarkers;
     clustererRef.current = new MarkerClusterer({ map: mapRef.current, markers: newMarkers });
-  }, [google, visibleStops, notes]);
+  }, [google, filteredStops, notes, searchMatchSet]);
 
-  // M4: driver markers — separate layer, not clustered, larger truck icon.
+  // Auto-zoom on search results: 1 match → center + open sidebar, 2-10 → fit bounds.
+  useEffect(() => {
+    if (!google || !mapRef.current) return;
+    if (!searchMatchSet) return;
+    const matched = filteredStops.filter((s) => searchMatchSet.has(s.stopNbr) && s.lat != null && s.lng != null);
+    if (matched.length === 1) {
+      const s = matched[0];
+      mapRef.current.panTo({ lat: s.lat, lng: s.lng });
+      mapRef.current.setZoom(Math.max(mapRef.current.getZoom() || 10, 14));
+      // Don't auto-open if user already navigated away from search results.
+      if (!selectedDriver) setSelectedStop(s);
+    } else if (matched.length >= 2 && matched.length <= 10) {
+      const bounds = new google.maps.LatLngBounds();
+      matched.forEach((s) => bounds.extend({ lat: s.lat, lng: s.lng }));
+      mapRef.current.fitBounds(bounds, 60);
+    }
+  }, [google, searchMatchSet]);  // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Build the driver-status line2 text per brief rules.
+  const driverStatusLine = useCallback((d) => {
+    let base;
+    if (d.routeAssigned && d.routeProgress) {
+      base = `Stop ${d.routeProgress.completed} of ${d.routeProgress.total}`;
+    } else if (d.routeAssigned && d.routeId) {
+      base = `Route ${d.routeId} · ${d.routeTotalStops ?? '?'} stops`;
+    } else {
+      base = 'No route assigned';
+    }
+    const suffix = [];
+    if (d.speedMph != null && d.speedMph > 5) suffix.push('en route');
+    else if (d.speedMph != null && d.speedMph <= 5 && d.stoppedMinutes != null && d.stoppedMinutes > 5) suffix.push('stopped');
+    if (d.locatedAt) {
+      const ageMin = (Date.now() - new Date(d.locatedAt).getTime()) / 60000;
+      if (ageMin > 30) suffix.push('stale');
+    }
+    return suffix.length ? `${base} · ${suffix.join(' · ')}` : base;
+  }, []);
+
+  // M4: driver markers + M4.1 labels — separate layer, larger truck icon.
   useEffect(() => {
     if (!google || !mapRef.current) return;
     driverMarkersRef.current.forEach((m) => m.setMap(null));
     driverMarkersRef.current = [];
+    driverLabelsRef.current.forEach((l) => l.setMap(null));
+    driverLabelsRef.current = [];
     if (!showDrivers) return;
-    driverMarkersRef.current = drivers
-      .filter((d) => d.lat != null && d.lng != null)
-      .map((d) => new google.maps.Marker({
+
+    const positioned = drivers.filter((d) => d.lat != null && d.lng != null);
+
+    driverMarkersRef.current = positioned.map((d) => {
+      const ageMin = d.locatedAt ? (Date.now() - new Date(d.locatedAt).getTime()) / 60000 : 0;
+      const stale = ageMin > 30;
+      const marker = new google.maps.Marker({
         position: { lat: d.lat, lng: d.lng },
         map: mapRef.current,
         icon: {
@@ -797,9 +1506,57 @@ function MapScreen() {
           anchor: new google.maps.Point(20, 20),
         },
         title: `${d.driverName || 'Driver'} · ${d.vehicleNumber || ''}`,
+        opacity: stale ? 0.55 : 1,
         zIndex: 1000,
-      }));
-  }, [google, drivers, showDrivers]);
+      });
+      marker.addListener('click', () => {
+        setSelectedStop(null);
+        setSelectedDriver(d);
+      });
+      return marker;
+    });
+
+    if (showDriverLabels && labelOverlayClassRef.current) {
+      const Klass = labelOverlayClassRef.current;
+      driverLabelsRef.current = positioned.map((d) => {
+        const ageMin = d.locatedAt ? (Date.now() - new Date(d.locatedAt).getTime()) / 60000 : 0;
+        const stale = ageMin > 30;
+        const first = d.driverFirstName || (d.driverName ? d.driverName.split(/\s+/)[0] : null);
+        const lastInit = d.driverLastInitial || (d.driverName ? (d.driverName.split(/\s+/).slice(-1)[0]?.[0] || '') : '');
+        const driverPart = d.driverName ? `${first}${lastInit ? ' ' + lastInit + '.' : ''}` : '(no driver)';
+        const line1 = `${d.vehicleNumber || '?'} · ${driverPart}`;
+        const line2 = driverStatusLine(d);
+        const overlay = new Klass(
+          new google.maps.LatLng(d.lat, d.lng),
+          line1,
+          line2,
+          { stale },
+        );
+        overlay.setMap(mapRef.current);
+        return overlay;
+      });
+    }
+  }, [google, drivers, showDrivers, showDriverLabels, driverStatusLine]);
+
+  // Keyboard shortcuts: `/` focuses search; Escape clears + blurs (handled in input).
+  useEffect(() => {
+    const onKey = (e) => {
+      // Don't hijack `/` if user is already typing in any input/textarea.
+      if (e.key === '/' && !['INPUT', 'TEXTAREA'].includes(e.target.tagName)) {
+        e.preventDefault();
+        searchInputRef.current?.focus();
+      }
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, []);
+
+  // Trigger map resize once after mount so the initial fit isn't clipped.
+  useEffect(() => {
+    if (!google || !mapRef.current) return;
+    const id = setTimeout(() => google.maps.event.trigger(mapRef.current, 'resize'), 50);
+    return () => clearTimeout(id);
+  }, [google]);
 
   const handleSave = async (draft) => {
     if (!db || !selectedStop) return;
@@ -827,10 +1584,44 @@ function MapScreen() {
     }
   };
 
+  const handlePanToStop = (stopFromSnapshot) => {
+    if (!google || !mapRef.current) return;
+    if (stopFromSnapshot.lat == null || stopFromSnapshot.lng == null) return;
+    mapRef.current.panTo({ lat: stopFromSnapshot.lat, lng: stopFromSnapshot.lng });
+    mapRef.current.setZoom(Math.max(mapRef.current.getZoom() || 10, 14));
+  };
+
+  // On mobile we drop the resize handle and let the panel be a top-edge sheet.
+  // Stretch goal per brief — we ship the simple desktop-only resize and
+  // collapse the panel by default on mobile; see HANDOFF.md.
+  const panelStyle = isMobile
+    ? { width: '100%', maxHeight: '40vh' }
+    : { width: panel.width, minWidth: PANEL_MIN_WIDTH, maxWidth: panel.maxWidth };
+
+  // Per brief width tiers:
+  //   240-300px: compact (names truncate, city shown)
+  //   300-450px: extended names, city shown
+  //   450px+:    add priority-flag column
+  const showCity = true;
+  const showExtraPriority = !isMobile && panel.width >= 450;
+  const useExtendedNames = !isMobile && panel.width >= 300;
+
   return (
-    <div className="flex flex-1 overflow-hidden">
-      {/* Left filter rail */}
-      <div className="w-64 flex-shrink-0 bg-white border-r overflow-y-auto">
+    <div className={`flex flex-1 overflow-hidden ${isMobile ? 'flex-col' : ''}`}>
+      {/* Left filter rail (top sheet on mobile) */}
+      <div
+        className="flex-shrink-0 bg-white border-r overflow-y-auto"
+        style={panelStyle}
+      >
+        <SearchBar
+          value={searchInput}
+          onChange={setSearchInput}
+          onSubmit={(v) => { if (v.trim()) remember(v.trim()); }}
+          history={history}
+          inputRef={searchInputRef}
+          resultCount={visibleStops.length}
+          totalCount={filteredStops.length}
+        />
         <FilterPanel
           filters={filters}
           setFilters={setFilters}
@@ -845,18 +1636,39 @@ function MapScreen() {
             {showDrivers ? 'Hide live drivers' : 'Show live drivers'}
           </button>
           {showDrivers && (
+            <button
+              onClick={() => setShowDriverLabels((v) => !v)}
+              className="w-full text-xs py-1 rounded inline-flex items-center justify-center gap-1.5 bg-white border border-slate-300 text-slate-700 hover:bg-slate-50"
+              title="Toggle truck/driver labels"
+            >
+              {showDriverLabels ? <Tags size={12} /> : <Tag size={12} />}
+              {showDriverLabels ? 'Hide labels' : 'Show labels'}
+            </button>
+          )}
+          {showDrivers && (
             <div className="text-[10px] text-slate-500">
               {driverErr ? <span className="text-red-600">⚠ {driverErr}</span> : `${drivers.length} drivers · refresh 60s${driversAt ? ` · ${fmtTimeAgo(driversAt)}` : ''}`}
             </div>
           )}
         </div>
 
-        {/* Visible-stops mini table — sortable per dev rule */}
-        <StopMiniTable stops={visibleStops} notes={notes} onPick={setSelectedStop} />
+        <StopMiniTable
+          stops={visibleStops}
+          notes={notes}
+          onPick={(s) => { setSelectedDriver(null); setSelectedStop(s); }}
+          showCity={showCity}
+          showPriorityColumn={showExtraPriority}
+          truncateNames={!useExtendedNames}
+        />
       </div>
 
+      {/* Resize handle — desktop only */}
+      {!isMobile && (
+        <ResizeHandle onMouseDown={panel.onMouseDown} onDoubleClick={panel.onDoubleClick} />
+      )}
+
       {/* Map */}
-      <div className="flex-1 relative">
+      <div className="flex-1 relative min-w-0">
         <div ref={mapDiv} className="absolute inset-0" />
         {mapsError && (
           <div className="absolute top-4 left-4 right-4 bg-red-50 border border-red-200 rounded p-3 text-sm text-red-800">
@@ -867,7 +1679,7 @@ function MapScreen() {
         )}
         {!visibleStops.length && !loading && !mapsError && (
           <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-white border border-slate-200 rounded shadow px-3 py-1.5 text-xs text-slate-600">
-            No stops match the current filters.
+            {debouncedSearch ? `No stops match "${debouncedSearch}"` : 'No stops match the current filters.'}
           </div>
         )}
 
@@ -894,8 +1706,18 @@ function MapScreen() {
         )}
       </div>
 
-      {/* Right sidebar */}
-      {selectedStop && (
+      {/* Right sidebar — driver snapshot takes priority when a driver is selected. */}
+      {selectedDriver && (
+        <DriverSnapshotSidebar
+          driver={selectedDriver}
+          snapshot={snapshot}
+          loading={snapshotLoading}
+          error={snapshotError}
+          onClose={() => setSelectedDriver(null)}
+          onPanToStop={handlePanToStop}
+        />
+      )}
+      {!selectedDriver && selectedStop && (
         <StopSidebar
           stop={selectedStop}
           note={notes.get(selectedStop.matchKey)}
@@ -909,7 +1731,7 @@ function MapScreen() {
   );
 }
 
-function StopMiniTable({ stops, notes, onPick }) {
+function StopMiniTable({ stops, notes, onPick, showCity = true, showPriorityColumn = false, truncateNames = true }) {
   // Decorate rows with flag for sorting.
   const rows = useMemo(() => stops.map((s) => {
     const n = notes.get(s.matchKey);
@@ -917,20 +1739,23 @@ function StopMiniTable({ stops, notes, onPick }) {
       ...s,
       _flag: n?.priority_flag || 'none',
       _hasNote: !!n,
+      _priorityRank: n?.priority_flag === 'red' ? 0 : n?.priority_flag === 'yellow' ? 1 : n?.priority_flag === 'green' ? 2 : 3,
     };
   }), [stops, notes]);
   const { sorted, sortKey, sortDir, toggle } = useSortable(rows, 'businessName', 'asc');
+  // Horizontal scroll if columns exceed panel width.
   return (
     <div className="border-t">
       <div className="px-3 py-2 text-xs font-semibold text-slate-600">Stops ({rows.length})</div>
-      <div className="max-h-[40vh] overflow-y-auto">
+      <div className="max-h-[40vh] overflow-y-auto overflow-x-auto">
         <table className="w-full text-xs">
           <thead className="bg-slate-50 sticky top-0">
             <tr>
               <SortableTh label="Flag" k="_flag" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />
               <SortableTh label="Customer" k="businessName" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />
-              <SortableTh label="City" k="city" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />
+              {showCity && <SortableTh label="City" k="city" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />}
               <SortableTh label="PRO" k="pro" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />
+              {showPriorityColumn && <SortableTh label="Pri" k="_priorityRank" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />}
             </tr>
           </thead>
           <tbody>
@@ -939,9 +1764,22 @@ function StopMiniTable({ stops, notes, onPick }) {
                 <td className="px-2 py-1">
                   <span className="inline-block w-2.5 h-2.5 rounded-full" style={{ background: s._flag !== 'none' ? FLAG_COLORS[s._flag] : (s._hasNote ? RESTRICTION_TINT : '#cbd5e1') }} />
                 </td>
-                <td className="px-2 py-1 truncate max-w-[120px]" title={s.businessName}>{s.businessName}</td>
-                <td className="px-2 py-1 text-slate-600">{s.city}</td>
-                <td className="px-2 py-1 font-mono text-[10px] text-slate-500">{s.pro}</td>
+                <td
+                  className={`px-2 py-1 ${truncateNames ? 'truncate max-w-[160px]' : ''}`}
+                  title={s.businessName}
+                  style={!truncateNames ? { maxWidth: 320 } : undefined}
+                >
+                  {s.businessName}
+                </td>
+                {showCity && <td className="px-2 py-1 text-slate-600 whitespace-nowrap">{s.city}</td>}
+                <td className="px-2 py-1 font-mono text-[10px] text-slate-500 whitespace-nowrap">{s.pro}</td>
+                {showPriorityColumn && (
+                  <td className="px-2 py-1 text-[10px] uppercase">
+                    {s._flag !== 'none' ? (
+                      <span style={{ color: FLAG_COLORS[s._flag] }} className="font-semibold">{s._flag.charAt(0)}</span>
+                    ) : (s._hasNote ? <span className="text-purple-600 font-semibold">R</span> : <span className="text-slate-300">—</span>)}
+                  </td>
+                )}
               </tr>
             ))}
           </tbody>
