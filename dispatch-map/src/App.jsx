@@ -40,7 +40,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.7.2';
+const APP_VERSION = '0.8.0';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -3397,7 +3397,16 @@ function MapScreen() {
   const [filters, setFilters] = useState({});
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState(null);
-  const [showDriverLabels, setShowDriverLabels] = useState(() => safeReadJSON(LS_DRIVER_LABELS, true));
+  // M4.5 P3.3 — Driver marker labels are hidden by default on mobile to reduce
+  // visual clutter; tapping a marker temporarily reveals the label as a side
+  // effect of opening the driver-snapshot drawer (the labels stay visible while
+  // the toggle is on; defaulting it off keeps the small viewport readable).
+  const [showDriverLabels, setShowDriverLabels] = useState(() => {
+    const stored = safeReadJSON(LS_DRIVER_LABELS, null);
+    if (typeof stored === 'boolean') return stored;
+    const w = typeof window === 'undefined' ? 1280 : window.innerWidth;
+    return w >= MOBILE_BREAKPOINT;
+  });
   const [legendExpanded, setLegendExpanded] = useState(() => safeReadJSON(LS_LEGEND_EXPANDED, false));
   const [tableColumns, setTableColumns] = useState(() => ({
     ...DEFAULT_TABLE_COLUMNS,
@@ -3874,12 +3883,35 @@ function MapScreen() {
             error={snapshotError}
             onClose={() => setSelectedDriver(null)}
             onPickStopFromSnapshot={(snapshotStop) => {
-              // The snapshot's stop shape differs from the live stops list
-              // (no matchKey), so close the driver drawer + pan the map.
-              // Opening the full stop detail drawer would need a live stop
-              // lookup by PRO — deferred to PR 3.
-              handlePanToStop(snapshotStop);
+              // Try to resolve the snapshot stop (which has its own row shape)
+              // back to a live stop from today's map so we can open the full
+              // stop detail drawer. Match on the primary PRO; fall back to any
+              // PRO in the stop.pros array. If no match, just pan the map.
+              const targetPros = new Set();
+              if (snapshotStop.primaryPro) targetPros.add(snapshotStop.primaryPro);
+              if (snapshotStop.pro) targetPros.add(snapshotStop.pro);
+              if (Array.isArray(snapshotStop.pros)) {
+                for (const p of snapshotStop.pros) targetPros.add(p);
+              }
+              const liveMatch = targetPros.size
+                ? stops.find((s) => {
+                    if (s.pro && targetPros.has(s.pro)) return true;
+                    if (Array.isArray(s.pros)) {
+                      for (const p of s.pros) if (targetPros.has(p)) return true;
+                    }
+                    return false;
+                  })
+                : null;
               setSelectedDriver(null);
+              if (liveMatch) {
+                setSelectedStop(liveMatch);
+                if (google && mapRef.current && liveMatch.lat != null && liveMatch.lng != null) {
+                  mapRef.current.panTo({ lat: liveMatch.lat, lng: liveMatch.lng });
+                  mapRef.current.setZoom(Math.max(mapRef.current.getZoom() || 10, 14));
+                }
+              } else {
+                handlePanToStop(snapshotStop);
+              }
             }}
           />
         )}
@@ -4147,7 +4179,7 @@ function StopMiniTable({ stops, notes, onPick, columns, onColumnsChange, searchQ
 
 function DiagnosticsScreen({ stops, notes }) {
   return (
-    <div className="flex-1 overflow-y-auto p-6 space-y-6 max-w-4xl mx-auto">
+    <div className="flex-1 overflow-y-auto p-3 sm:p-6 space-y-4 sm:space-y-6 max-w-4xl mx-auto w-full">
       <div>
         <h2 className="text-xl font-bold text-slate-900">Diagnostics</h2>
         <p className="text-sm text-slate-600 mt-1">M3 — stub. Each panel below has a TODO describing what to build.</p>

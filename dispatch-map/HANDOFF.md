@@ -8,6 +8,70 @@ marker itself when restricted). v0.6.0 = M4.2 (PRO pipeline fix, route
 matching fix, column toggle). v0.7.0 = M4.4 (filter toolbar, hours/closed-day
 scanner, time iconography). v0.7.1 = M4.5 PR 1 of 3 (mobile foundation).
 v0.7.2 = M4.5 PR 2 of 3 (stop-detail + driver-snapshot drawers).
+v0.8.0 = M4.5 PR 3 of 3 (final polish: marker labels, snapshot tap-through,
+mobile diagnostics, RESEARCH doc).
+
+## v0.8.0 — M4.5 mobile responsive complete (PR 3 of 3)
+
+Closes out the M4.5 milestone. Adds the smaller items that round out the
+mobile path and the deliverables called out in the brief.
+
+### Driver marker labels — mobile-aware default (brief P3.3)
+
+`showDriverLabels` defaulted to `true` for all viewports in M4.4, which made
+the small mobile viewport noisy when 35 driver labels were drawn at once.
+The default is now viewport-conditional: when the dispatcher has never
+touched the toggle, mobile (<768px) starts with labels **off**, and desktop
+starts with labels **on**. Once flipped, the preference is persisted to
+`dispatchMap.driverLabelsVisible` and respected on every subsequent load.
+This is detection-on-first-mount only — resizing the window after that does
+not flip the default.
+
+### Driver snapshot → stop detail (brief P4.2 follow-through)
+
+Tapping a stop row inside the `MobileDriverSnapshotDrawer` now resolves the
+snapshot's row back to a live stop from today's stops payload via **PRO
+match** (checks `primaryPro`, `pro`, and the `pros` array). When a match is
+found, the driver drawer closes, the map pans / zooms to the stop, and the
+stop detail drawer opens. When no match is found (e.g. snapshot stop is
+not in today's planned stops), the map pans to the snapshot's lat/lng
+without opening the detail drawer.
+
+### Diagnostics page — mobile padding
+
+`DiagnosticsScreen` switched from `p-6 space-y-6` to `p-3 sm:p-6
+space-y-4 sm:space-y-6` so the placeholders / TODO panels render reasonably
+on a 375 px viewport. The screen itself is still M3-stub heavy; M4.5's
+contribution is layout only. The version-chip menu (wired in PR 1) is the
+mobile path to reach this screen.
+
+### Deliverables
+
+- `RESEARCH-mobile-breakpoints.md` — full breakpoint matrix, touch-target
+  audit, safe-area inset usage, localStorage keys, scoped-out items, and
+  the pre-prod real-device verification checklist.
+- `APP_VERSION` 0.7.2 → **0.8.0** (matches M4.5 brief target).
+- `package.json` / `package-lock.json` bumped.
+- `HANDOFF.md` (this file) — v0.8.0 section.
+
+### Bundle size — final
+
+App bundle landed at 569.51 KB raw / 154.64 KB gzipped. M4.5 delta over
+v0.7.0 (M4.4): +17.67 KB raw, +3.53 KB gzipped — under the brief's 50 KB
+code-split threshold. No `manualChunks` work needed.
+
+### Scoped-out items (intentional)
+
+See `RESEARCH-mobile-breakpoints.md` § "What was deliberately scoped out"
+for the full list. Notable: the brief referenced a satellite-toggle that
+the M4.4 HANDOFF mentioned but never shipped to code, so M4.5 does not
+attempt to mobilize an absent control.
+
+### Real-device verification
+
+Required from Chad before declaring M4.5 production-ready. The
+`RESEARCH-mobile-breakpoints.md` § "Known limitations not yet tested on
+real devices" lists the five plausible iOS-specific issues to walk through.
 
 ## v0.7.2 — M4.5 mobile drawers (PR 2 of 3)
 
