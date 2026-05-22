@@ -21,7 +21,10 @@ import fixture from '../../test/fixtures/nuvizz-today-stops.json' with { type: '
 const NUVIZZ_BASE = process.env.NUVIZZ_BASE_URL || 'https://portal.nuvizz.com/deliverit/openapi/v7';
 
 interface NormalizedStop {
-  pro: string | null;
+  pro: string | null;          // primary PRO (= stopNbr in this tenant) — kept for back-compat
+  pros: string[];              // all PROs for this stop (currently length-1; future-proof for grouping)
+  primaryPro: string | null;   // pros[0] or null
+  proCount: number;            // pros.length
   stopNbr: string | null;
   loadNbr: string | null;
   stopType: string | null;
@@ -63,15 +66,6 @@ function todayUTC(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
-function normalizePro(input: any): string | null {
-  if (!input) return null;
-  const cleaned = String(input).trim().replace(/^0+/, '');
-  if (!cleaned) return '000000000';
-  if (!/^\d+$/.test(cleaned)) return null;
-  if (cleaned.length > 9) return cleaned;
-  return cleaned.padStart(9, '0');
-}
-
 function normalizeStop(raw: any): NormalizedStop {
   const stop = raw.stop || raw;
   const exec = raw.stopExecutionInfo || {};
@@ -84,9 +78,19 @@ function normalizeStop(raw: any): NormalizedStop {
   if (stop.totalPallets) items.push(`${stop.totalPallets} pallets`);
   if (stop.totalCartons) items.push(`${stop.totalCartons} cartons`);
   if (stop.weight) items.push(`${stop.weight} ${stop.weightUOM || 'lbs'}`);
+  // PRO resolution: dispatchers call this the "PRO". In Davis/Uline live data,
+  // `stop.proNumber` is a delivery-type code ("G1", "G6") — not what dispatchers
+  // see in NuVizz. The 9-digit identifier they call a PRO lives in `stop.stopNbr`.
+  // Parent app does the same: src/screens/StopDetail.jsx:152 displays `s.nbr`
+  // (= stop.stopNbr) as the user-facing identifier.
+  const stopNbr: string | null = stop.stopNbr ?? null;
+  const pros: string[] = stopNbr ? [stopNbr] : [];
   return {
-    pro: normalizePro(stop.proNumber),
-    stopNbr: stop.stopNbr ?? null,
+    pro: stopNbr,
+    pros,
+    primaryPro: pros[0] ?? null,
+    proCount: pros.length,
+    stopNbr,
     loadNbr: load.loadNbr || raw.loadNbr || null,
     stopType,
     status: exec.stopStatus || stop.status || null,

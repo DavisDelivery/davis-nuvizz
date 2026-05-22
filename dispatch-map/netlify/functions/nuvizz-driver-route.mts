@@ -4,26 +4,32 @@
 // HOS + daily miles, all bundled. Called by the M4.1 right-sidebar when the
 // dispatcher clicks a driver marker.
 //
-// Status: SCAFFOLDED. The NuVizz route-assignment endpoint is not yet
-// confirmed for this tenant — run `nuvizz-debug-driver-routes` against live
-// creds to discover which `/route/...` or `/driver/route/...` URL returns
-// usable data, then collapse this function to call only that one. Until then
-// this returns a defensible "no route assigned" stub PLUS whatever load-info
-// data we can reconstruct from the truck's driver name.
+// Approach: NuVizz v7 does not expose a list-loads-by-driver endpoint, so we
+// reuse the load-number scan that already powers nuvizz-pull-today-stops, and
+// filter by driver. Matching prefers loadAssignment.driverUserName (a stable
+// short code like "VINCENT") over loadAssignment.driverName (a full name like
+// "VINCENT  BONZO" that NuVizz returns with inconsistent internal whitespace).
+// This mirrors how netlify/functions/nuvizz.cjs:__driver in the parent app
+// matches drivers, which is the only proven pattern across the codebase.
 //
 // Query params:
 //   driver=<name>     driver full name from Motive (passed by client)
 //   truck=<number>    Motive vehicle number (passed by client)
+//   userName=<code>   optional stable driver code (e.g. "VINCENT") — preferred
+//                     match field. Resolved from `driver` via DAVIS_DRIVERS
+//                     when omitted.
 //   date=YYYY-MM-DD   optional, defaults to today UTC
 //
 // Response shape (consumed by App.jsx's useDriverSnapshot + DriverSnapshotSidebar):
 // {
 //   ok: true,
 //   route: { id, totalStops, completed, remaining } | null,
-//   stops: [{ pro, businessName, addr1, city, state, lat, lng, scheduledTime,
-//             actualArrival, actualCompletion, status, lateMinutes }, ...],
+//   stops: [{ pro, pros, primaryPro, proCount, businessName, addr1, city, state,
+//             lat, lng, scheduledTime, actualArrival, actualCompletion, status,
+//             lateMinutes, loadNbr }, ...],
 //   hos: { loggedInAt, onDutySeconds } | null,
 //   dailyMiles: number | null,
+//   matchedBy: 'userName' | 'driverName' | null,   // diagnostic
 //   raw: { ... }     // preserve at every layer per standing rules
 // }
 
@@ -48,6 +54,70 @@ function basicAuthHeader() {
   return 'Basic ' + Buffer.from(`${user}:${pass}`).toString('base64');
 }
 
+// DAVIS_DRIVERS — full registry mirrored from the parent app
+// (src/lib/api.js:99-134). Used to resolve a Motive full name into a NuVizz
+// userName, which is the stable matching key. Keep in sync with parent.
+const DAVIS_DRIVERS: Array<{ userName: string; name: string }> = [
+  { userName: 'AARON',   name: 'Aaron Mitchell' },
+  { userName: 'ALLEN',   name: 'Allen Council' },
+  { userName: 'BEN',     name: 'Ben Paintsil' },
+  { userName: 'BILL',    name: 'Bill Tillery' },
+  { userName: 'BRAD',    name: 'Brad Goodroe' },
+  { userName: 'BRETT',   name: 'Brett Spradley' },
+  { userName: 'BRIAN',   name: 'Brian Worley' },
+  { userName: 'CHAD',    name: 'Chad Davis' },
+  { userName: 'COLIN',   name: 'Colin Calhoun' },
+  { userName: 'FRANK',   name: 'Frank Okine' },
+  { userName: 'GARRY',   name: 'Garry Pitts' },
+  { userName: 'GEORGE',  name: 'George Leonard' },
+  { userName: 'JACK',    name: 'Jack Johnson' },
+  { userName: 'JEAN',    name: 'Jean Delsoin' },
+  { userName: 'JERALD',  name: 'Jerald Buckley' },
+  { userName: 'JIM',     name: 'Jim Pallette' },
+  { userName: 'JOE',     name: 'Joe Gibbs' },
+  { userName: 'JOHN',    name: 'John Thompson' },
+  { userName: 'KEN',     name: 'Ken Watkins' },
+  { userName: 'LEROY',   name: 'Leroy Smith' },
+  { userName: 'MARCUS',  name: 'Marcus Young' },
+  { userName: 'MARTIN',  name: 'Martin Wyatt' },
+  { userName: 'MIKE',    name: 'Mike Kirkeby' },
+  { userName: 'NELSON',  name: 'Oyieke Nelson' },
+  { userName: 'RICHARD', name: 'Richard Mawuenyega' },
+  { userName: 'ROBERT',  name: 'Robert Best' },
+  { userName: 'RONALD',  name: 'Ronald Gates' },
+  { userName: 'RYAN',    name: 'Ryan Freeland' },
+  { userName: 'SAMUEL',  name: 'Samuel Osei' },
+  { userName: 'SCOTT',   name: 'Scott Hart' },
+  { userName: 'STEVEN',  name: 'Steven Adjetey' },
+  { userName: 'TERRY',   name: 'Terry Gambrell' },
+  { userName: 'VICTOR',  name: 'Victor Fernandez' },
+  { userName: 'VINCENT', name: 'Vincent Bonzo' },
+  { userName: 'WILLIAM', name: 'William Kidd' },
+];
+
+// NuVizz returns driverName with inconsistent spacing ("VINCENT  BONZO" with
+// two spaces). Normalize: lowercase, collapse all whitespace runs to single
+// space, trim. Use everywhere a name comparison is done.
+function normName(s: string | null | undefined): string {
+  return (s || '').toLowerCase().replace(/\s+/g, ' ').trim();
+}
+
+// Resolve a Motive-supplied driver full name to the NuVizz userName via the
+// DAVIS_DRIVERS registry. Returns null if no match — caller should fall back
+// to normalized-name matching.
+function resolveUserName(driverFullName: string): string | null {
+  const target = normName(driverFullName);
+  if (!target) return null;
+  const exact = DAVIS_DRIVERS.find((d) => normName(d.name) === target);
+  if (exact) return exact.userName;
+  // Loose fallback: first token (first name) match. Helps when Motive sends
+  // "Vincent" but registry has "Vincent Bonzo".
+  const firstToken = target.split(' ')[0];
+  const byFirst = DAVIS_DRIVERS.filter((d) => normName(d.name).split(' ')[0] === firstToken);
+  if (byFirst.length === 1) return byFirst[0].userName;
+  return null;
+}
+
 // In-memory per-driver cache, 30s TTL. Matches the client cache; redundant
 // but cheap insurance.
 const __cache = new Map<string, { storedAt: number; data: any }>();
@@ -65,9 +135,13 @@ function normalizeStopStatus(raw: string | null): string {
 
 // Try to find route info for this driver via the load-info scan that
 // nuvizz-pull-today-stops uses. Same scan range; we just filter to loads
-// assigned to the given driver. Returns a route object + a stop list, both
-// possibly empty.
-async function buildRouteFromLoadScan(date: string, driverName: string): Promise<{ route: any; stops: any[] }> {
+// assigned to the given driver. Returns a route object + a stop list + a
+// diagnostic field saying which match strategy succeeded (or null).
+async function buildRouteFromLoadScan(
+  date: string,
+  driverFullName: string,
+  userName: string | null,
+): Promise<{ route: any; stops: any[]; matchedBy: 'userName' | 'driverName' | null }> {
   const { companyCode } = getCreds();
   // Anchor + range identical to nuvizz-pull-today-stops.mts — keep in sync if
   // you change one, change both.
@@ -84,7 +158,11 @@ async function buildRouteFromLoadScan(date: string, driverName: string): Promise
   const nums: number[] = [];
   for (let n = endNbr; n >= startNbr; n--) nums.push(n);
 
+  const targetName = normName(driverFullName);
+  const targetUser = (userName || '').toUpperCase().trim();
+
   const matchingLoads: any[] = [];
+  let matchedBy: 'userName' | 'driverName' | null = null;
   let idx = 0;
   const runOne = async () => {
     while (idx < nums.length) {
@@ -100,10 +178,16 @@ async function buildRouteFromLoadScan(date: string, driverName: string): Promise
         const a = d?.Load?.loadAssignment || {};
         const startDate = (h.earliestStartDttm || '').slice(0, 10);
         if (startDate !== date) continue;
-        const loadDriver: string = a.driverName || '';
-        if (!loadDriver) continue;
-        if (loadDriver.toLowerCase().trim() === driverName.toLowerCase().trim()) {
+        const loadUser: string = (a.driverUserName || '').toUpperCase().trim();
+        const loadDriver: string = normName(a.driverName);
+        if (!loadUser && !loadDriver) continue;
+        // Prefer stable userName match; fall back to whitespace-normalized name.
+        if (targetUser && loadUser === targetUser) {
           matchingLoads.push({ load: d.Load, loadHeader: h, assignment: a });
+          matchedBy = matchedBy || 'userName';
+        } else if (targetName && loadDriver === targetName) {
+          matchingLoads.push({ load: d.Load, loadHeader: h, assignment: a });
+          matchedBy = matchedBy || 'driverName';
         }
       } catch { /* skip */ }
     }
@@ -119,9 +203,16 @@ async function buildRouteFromLoadScan(date: string, driverName: string): Promise
       const addr = primary.address || s.address || {};
       const schedule = primary.schedule || {};
       const exec = s.stopExecutionInfo || {};
+      // PRO = stopNbr (see nuvizz-pull-today-stops.mts for the rationale —
+      // NuVizz `proNumber` is a code like "G1", not a number).
+      const stopNbr: string | null = s.stopNbr ?? null;
+      const pros: string[] = stopNbr ? [stopNbr] : [];
       stops.push({
-        pro: s.proNumber ?? null,
-        stopNbr: s.stopNbr ?? null,
+        pro: stopNbr,
+        pros,
+        primaryPro: pros[0] ?? null,
+        proCount: pros.length,
+        stopNbr,
         businessName: addr.name || s.custInfo?.custName || null,
         addr1: addr.addr1 ?? null,
         city: addr.city ?? null,
@@ -138,7 +229,7 @@ async function buildRouteFromLoadScan(date: string, driverName: string): Promise
   }
   stops.sort((a, b) => (a.scheduledTime || '').localeCompare(b.scheduledTime || ''));
 
-  if (!stops.length) return { route: null, stops: [] };
+  if (!stops.length) return { route: null, stops: [], matchedBy: null };
 
   const completed = stops.filter((s) => s.status === 'completed').length;
   // Use the first load's loadNbr as a stand-in "route id" until the real
@@ -152,6 +243,7 @@ async function buildRouteFromLoadScan(date: string, driverName: string): Promise
       remaining: stops.length - completed,
     },
     stops,
+    matchedBy,
   };
 }
 
@@ -207,10 +299,16 @@ export default async (req: Request): Promise<Response> => {
   const url = new URL(req.url);
   const driver = url.searchParams.get('driver') || '';
   const truck = url.searchParams.get('truck') || '';
+  const userNameParam = url.searchParams.get('userName') || '';
   const date = url.searchParams.get('date') || todayUTC();
   const bypassCache = url.searchParams.get('nocache') === '1';
 
-  const cacheKey = `${truck}|${driver}|${date}`;
+  // Resolve userName: explicit param wins; otherwise look up by name in the
+  // DAVIS_DRIVERS registry. Registry hit dramatically improves match rate
+  // because NuVizz returns driverName with inconsistent whitespace.
+  const userName = userNameParam || resolveUserName(driver);
+
+  const cacheKey = `${truck}|${userName || driver}|${date}`;
   if (!bypassCache) {
     const hit = __cache.get(cacheKey);
     if (hit && Date.now() - hit.storedAt < CACHE_TTL_MS) {
@@ -221,11 +319,13 @@ export default async (req: Request): Promise<Response> => {
   try {
     let route: any = null;
     let stops: any[] = [];
-    if (driver) {
+    let matchedBy: 'userName' | 'driverName' | null = null;
+    if (driver || userName) {
       try {
-        const r = await buildRouteFromLoadScan(date, driver);
+        const r = await buildRouteFromLoadScan(date, driver, userName);
         route = r.route;
         stops = r.stops;
+        matchedBy = r.matchedBy;
       } catch (e: any) {
         // If NuVizz creds missing or network fails, fall through with route=null.
         if (!/Missing NUVIZZ/.test(e.message)) console.warn('route scan failed', e.message);
@@ -242,11 +342,13 @@ export default async (req: Request): Promise<Response> => {
       ok: true,
       truck,
       driver,
+      userName,
       date,
       route,
       stops,
       hos,
       dailyMiles,
+      matchedBy,
       cached: false,
       generated: new Date().toISOString(),
     };
@@ -258,10 +360,12 @@ export default async (req: Request): Promise<Response> => {
       error: e.message,
       truck,
       driver,
+      userName,
       route: null,
       stops: [],
       hos: null,
       dailyMiles: null,
+      matchedBy: null,
     }), { status: 500, headers: cors });
   }
 };

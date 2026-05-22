@@ -16,7 +16,7 @@ import {
   MapPin, RefreshCw, X, Filter, Truck, Save, Plus, Trash2,
   Activity, ChevronDown, ChevronUp, Eye, EyeOff,
   Search, Tag, Tags, ArrowLeft, Gauge, Clock, MapPinned,
-  Info,
+  Info, Settings,
 } from 'lucide-react';
 import {
   collection, doc, getDoc, onSnapshot, setDoc, serverTimestamp,
@@ -28,7 +28,7 @@ import { haversineMiles, naiveEtaMinutes, formatEtaClockTime } from './lib/dista
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.5.1';
+const APP_VERSION = '0.6.0';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -75,10 +75,29 @@ const LS_PANEL_WIDTH = 'dispatchMap.leftPanelWidth';
 const LS_DRIVER_LABELS = 'dispatchMap.driverLabelsVisible';
 const LS_SEARCH_HISTORY = 'dispatchMap.searchHistory';
 const LS_LEGEND_EXPANDED = 'dispatchMap.legendExpanded';
+const LS_TABLE_COLUMNS = 'dispatchMap.tableColumns';
 const PANEL_DEFAULT_WIDTH = 320;
 const PANEL_MIN_WIDTH = 240;
 // Max width is computed at runtime as 60% of viewport — see useResizablePanel.
 const MOBILE_BREAKPOINT = 768;
+
+// Stops-table column visibility defaults. PRO and Flag are off by default —
+// dispatchers turn them on via the Columns gear when they need PRO search or
+// flag-only triage. Persisted to LS_TABLE_COLUMNS.
+const DEFAULT_TABLE_COLUMNS = {
+  flag: false,
+  customer: true,
+  city: true,
+  pro: false,
+  priority: true,
+};
+const TABLE_COLUMN_DEFS = [
+  { key: 'flag',     label: 'Flag' },
+  { key: 'customer', label: 'Customer' },
+  { key: 'city',     label: 'City' },
+  { key: 'pro',      label: 'PRO' },
+  { key: 'priority', label: 'Priority' },
+];
 
 // Restriction icon library — single source of truth used by:
 //   1. The M4.1.5 14×14 badge (`glyph`, `bg`) — rendered inside the sidebar
@@ -467,9 +486,9 @@ function useSearchHistory() {
 }
 
 // Per-driver day-snapshot fetch with 30s in-memory cache keyed by truck number.
-// Snapshot shape is whatever /nuvizz-driver-route returns (NuVizz endpoint
-// discovery happens in nuvizz-debug-driver-routes.mts — until then this returns
-// a "no route assigned" stub so the rest of the UI keeps working).
+// Snapshot shape is whatever /nuvizz-driver-route returns; the function scans
+// today's load-number range and filters by driverUserName (preferred) or by
+// whitespace-normalized driverName (fallback).
 const __snapshotCache = new Map(); // truck# -> { storedAt, data }
 const SNAPSHOT_TTL_MS = 30 * 1000;
 
@@ -798,15 +817,14 @@ function RestrictionIcon({ kind, size = 16, title }) {
   );
 }
 
-// M4.1 — case-insensitive contains-match across business name, PRO,
-// address1, city, ZIP, and either of the customer-notes prose fields.
-// Returns true for empty queries (no filter applied).
+// M4.1 — case-insensitive contains-match across business name, every PRO on
+// the stop, address1, city, ZIP, and either of the customer-notes prose
+// fields. Returns true for empty queries (no filter applied).
 function stopMatchesSearch(stop, note, q) {
   if (!q) return true;
   const needle = q.toLowerCase();
   const fields = [
     stop.businessName,
-    stop.pro,
     stop.addr1,
     stop.city,
     stop.zip,
@@ -816,7 +834,22 @@ function stopMatchesSearch(stop, note, q) {
   for (const f of fields) {
     if (f && String(f).toLowerCase().includes(needle)) return true;
   }
+  for (const pro of stop.pros || (stop.pro ? [stop.pro] : [])) {
+    if (String(pro).toLowerCase().includes(needle)) return true;
+  }
   return false;
+}
+
+// Return the PRO from a stop's pros list that matches the search needle.
+// Used so the table cell shows the matched PRO first (then "+N" others).
+function matchedPro(stop, q) {
+  if (!q) return null;
+  const needle = q.toLowerCase();
+  const list = stop.pros || (stop.pro ? [stop.pro] : []);
+  for (const pro of list) {
+    if (String(pro).toLowerCase().includes(needle)) return pro;
+  }
+  return null;
 }
 
 // ---------- components ----------
@@ -1145,6 +1178,43 @@ function applyFilters(stops, notesByKey, filters) {
 }
 
 // Right-side sidebar showing stop + metadata + edit form.
+function ProsSection({ stop }) {
+  const pros = stop.pros || (stop.pro ? [stop.pro] : []);
+  const [copied, setCopied] = useState(null);
+  const copy = (pro) => {
+    try {
+      navigator.clipboard.writeText(pro);
+      setCopied(pro);
+      setTimeout(() => setCopied((c) => (c === pro ? null : c)), 1200);
+    } catch { /* clipboard blocked */ }
+  };
+  return (
+    <div className="px-4 py-3 border-b">
+      <div className="text-xs uppercase font-semibold text-slate-500 mb-1.5">
+        PROs ({pros.length})
+      </div>
+      {pros.length === 0 ? (
+        <div className="text-xs italic text-slate-400">— No PROs —</div>
+      ) : (
+        <div className="space-y-0.5">
+          {pros.map((p) => (
+            <button
+              key={p}
+              type="button"
+              onClick={() => copy(p)}
+              className="block w-full text-left font-mono text-xs text-slate-700 hover:bg-slate-100 px-1 py-0.5 rounded"
+              title="Click to copy"
+            >
+              {p}
+              {copied === p && <span className="ml-2 text-[10px] text-emerald-600 font-sans">copied</span>}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function StopSidebar({ stop, note, onClose, onSave, saving, saveError }) {
   const [draft, setDraft] = useState(() => note || emptyNote(stop));
   const [editing, setEditing] = useState(!note);
@@ -1209,6 +1279,9 @@ function StopSidebar({ stop, note, onClose, onSave, saving, saveError }) {
             </div>
           )}
         </div>
+
+        {/* PROs section — click any to copy */}
+        <ProsSection stop={stop} />
 
         {/* Metadata / edit form */}
         <div className="px-4 py-3 space-y-3">
@@ -1539,6 +1612,17 @@ function DriverSnapshotSidebar({ driver, snapshot, loading, error, onClose, onPa
                         <span className="w-3 text-center"><StopStatusIcon status={s.status} /></span>
                         <span className="w-12 font-mono text-[10px] text-slate-500">{fmtClockShort(s.scheduledTime) || '—'}</span>
                         <span className="flex-1 truncate">{s.businessName || s.name || s.pro || '—'}</span>
+                        {(s.primaryPro || s.pro) && (
+                          <span
+                            className="font-mono text-[10px] text-slate-400"
+                            title={(s.pros || (s.pro ? [s.pro] : [])).join('\n')}
+                          >
+                            {s.primaryPro || s.pro}
+                            {((s.proCount ?? (s.pros?.length || 0)) > 1) && (
+                              <span className="text-slate-300"> +{(s.proCount ?? s.pros.length) - 1}</span>
+                            )}
+                          </span>
+                        )}
                         <span className="text-[10px] text-slate-500">
                           {s.status === 'completed' && timeliness && (
                             timeliness.kind === 'ontime'
@@ -1786,6 +1870,10 @@ function MapScreen() {
   const [showDrivers, setShowDrivers] = useState(false);
   const [showDriverLabels, setShowDriverLabels] = useState(() => safeReadJSON(LS_DRIVER_LABELS, true));
   const [legendExpanded, setLegendExpanded] = useState(() => safeReadJSON(LS_LEGEND_EXPANDED, false));
+  const [tableColumns, setTableColumns] = useState(() => ({
+    ...DEFAULT_TABLE_COLUMNS,
+    ...safeReadJSON(LS_TABLE_COLUMNS, {}),
+  }));
   const [searchInput, setSearchInput] = useState('');
   const debouncedSearch = useDebouncedValue(searchInput, 200);
   const { history, remember } = useSearchHistory();
@@ -1806,6 +1894,7 @@ function MapScreen() {
   // Persist label-toggle preference whenever it changes.
   useEffect(() => { safeWriteJSON(LS_DRIVER_LABELS, showDriverLabels); }, [showDriverLabels]);
   useEffect(() => { safeWriteJSON(LS_LEGEND_EXPANDED, legendExpanded); }, [legendExpanded]);
+  useEffect(() => { safeWriteJSON(LS_TABLE_COLUMNS, tableColumns); }, [tableColumns]);
 
   // Filter pipeline: filters → search. Memoized so we don't recompute on each render.
   const filteredStops = useMemo(() => applyFilters(stops, notes, filters), [stops, notes, filters]);
@@ -2049,12 +2138,11 @@ function MapScreen() {
     ? { width: '100%', maxHeight: '40vh' }
     : { width: panel.width, minWidth: PANEL_MIN_WIDTH, maxWidth: panel.maxWidth };
 
-  // Per brief width tiers:
-  //   240-300px: compact (names truncate, city shown)
-  //   300-450px: extended names, city shown
-  //   450px+:    add priority-flag column
-  const showCity = true;
-  const showExtraPriority = !isMobile && panel.width >= 450;
+  // Per brief width tiers (still used for the customer-name truncation cutoff):
+  //   240-300px: compact (names truncate)
+  //   300px+:    extended names
+  // Column visibility itself is user-controlled via the Columns gear (persisted
+  // to LS_TABLE_COLUMNS).
   const useExtendedNames = !isMobile && panel.width >= 300;
 
   return (
@@ -2108,8 +2196,9 @@ function MapScreen() {
           stops={visibleStops}
           notes={notes}
           onPick={(s) => { setSelectedDriver(null); setSelectedStop(s); }}
-          showCity={showCity}
-          showPriorityColumn={showExtraPriority}
+          columns={tableColumns}
+          onColumnsChange={setTableColumns}
+          searchQuery={debouncedSearch}
           truncateNames={!useExtendedNames}
         />
       </div>
@@ -2183,8 +2272,66 @@ function MapScreen() {
   );
 }
 
-function StopMiniTable({ stops, notes, onPick, showCity = true, showPriorityColumn = false, truncateNames = true }) {
-  // Decorate rows with flag for sorting.
+// Render the PRO cell content per brief: matched PRO first when a search is
+// active; "+N" suffix when proCount > 1; em dash when empty. Returns a
+// fragment so the parent <td> stays the layout boundary.
+function renderProCell(stop, searchQuery) {
+  const pros = stop.pros || (stop.pro ? [stop.pro] : []);
+  if (pros.length === 0) return <span>—</span>;
+  const matched = searchQuery ? matchedPro(stop, searchQuery) : null;
+  const head = matched || pros[0];
+  const rest = pros.length - 1;
+  const tooltip = pros.length > 1 ? pros.join('\n') : undefined;
+  return (
+    <span title={tooltip} tabIndex={pros.length > 1 ? 0 : -1}>
+      {head}{rest > 0 ? <span className="text-slate-400"> +{rest}</span> : null}
+    </span>
+  );
+}
+
+// Columns gear menu — anchored to the top-right of the StopMiniTable header.
+// Click toggles a checkbox; localStorage persistence is handled by parent.
+function ColumnsMenu({ columns, onChange }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    document.addEventListener('mousedown', onDoc);
+    return () => document.removeEventListener('mousedown', onDoc);
+  }, [open]);
+  return (
+    <div className="relative" ref={ref}>
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="p-1 rounded hover:bg-slate-100 text-slate-500"
+        title="Toggle table columns"
+        aria-label="Toggle table columns"
+      >
+        <Settings size={14} />
+      </button>
+      {open && (
+        <div className="absolute right-0 top-full mt-1 z-10 bg-white border border-slate-200 rounded shadow-md py-1 min-w-[140px]">
+          {TABLE_COLUMN_DEFS.map(({ key, label }) => (
+            <label key={key} className="flex items-center gap-2 px-3 py-1 text-xs hover:bg-slate-50 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={!!columns[key]}
+                onChange={(e) => onChange({ ...columns, [key]: e.target.checked })}
+              />
+              {label}
+            </label>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function StopMiniTable({ stops, notes, onPick, columns, onColumnsChange, searchQuery = '', truncateNames = true }) {
+  const cols = columns || DEFAULT_TABLE_COLUMNS;
+  // Decorate rows with flag for sorting. _proSort puts empty PROs last for asc.
   const rows = useMemo(() => stops.map((s) => {
     const n = notes.get(s.matchKey);
     return {
@@ -2192,40 +2339,52 @@ function StopMiniTable({ stops, notes, onPick, showCity = true, showPriorityColu
       _flag: n?.priority_flag || 'none',
       _hasNote: !!n,
       _priorityRank: n?.priority_flag === 'red' ? 0 : n?.priority_flag === 'yellow' ? 1 : n?.priority_flag === 'green' ? 2 : 3,
+      _proSort: s.primaryPro || s.pro || '￿',
     };
   }), [stops, notes]);
   const { sorted, sortKey, sortDir, toggle } = useSortable(rows, 'businessName', 'asc');
   // Horizontal scroll if columns exceed panel width.
   return (
     <div className="border-t">
-      <div className="px-3 py-2 text-xs font-semibold text-slate-600">Stops ({rows.length})</div>
+      <div className="px-3 py-2 flex items-center justify-between">
+        <div className="text-xs font-semibold text-slate-600">Stops ({rows.length})</div>
+        {onColumnsChange && <ColumnsMenu columns={cols} onChange={onColumnsChange} />}
+      </div>
       <div className="max-h-[40vh] overflow-y-auto overflow-x-auto">
         <table className="w-full text-xs">
           <thead className="bg-slate-50 sticky top-0">
             <tr>
-              <SortableTh label="Flag" k="_flag" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />
-              <SortableTh label="Customer" k="businessName" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />
-              {showCity && <SortableTh label="City" k="city" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />}
-              <SortableTh label="PRO" k="pro" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />
-              {showPriorityColumn && <SortableTh label="Pri" k="_priorityRank" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />}
+              {cols.flag && <SortableTh label="Flag" k="_flag" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />}
+              {cols.customer && <SortableTh label="Customer" k="businessName" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />}
+              {cols.city && <SortableTh label="City" k="city" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />}
+              {cols.pro && <SortableTh label="PRO" k="_proSort" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />}
+              {cols.priority && <SortableTh label="Pri" k="_priorityRank" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />}
             </tr>
           </thead>
           <tbody>
             {sorted.map((s) => (
               <tr key={s.stopNbr} onClick={() => onPick(s)} className="cursor-pointer hover:bg-blue-50 border-t">
-                <td className="px-2 py-1">
-                  <span className="inline-block w-2.5 h-2.5 rounded-full" style={{ background: s._flag !== 'none' ? FLAG_COLORS[s._flag] : (s._hasNote ? RESTRICTION_TINT : '#cbd5e1') }} />
-                </td>
-                <td
-                  className={`px-2 py-1 ${truncateNames ? 'truncate max-w-[160px]' : ''}`}
-                  title={s.businessName}
-                  style={!truncateNames ? { maxWidth: 320 } : undefined}
-                >
-                  {s.businessName}
-                </td>
-                {showCity && <td className="px-2 py-1 text-slate-600 whitespace-nowrap">{s.city}</td>}
-                <td className="px-2 py-1 font-mono text-[10px] text-slate-500 whitespace-nowrap">{s.pro}</td>
-                {showPriorityColumn && (
+                {cols.flag && (
+                  <td className="px-2 py-1">
+                    <span className="inline-block w-2.5 h-2.5 rounded-full" style={{ background: s._flag !== 'none' ? FLAG_COLORS[s._flag] : (s._hasNote ? RESTRICTION_TINT : '#cbd5e1') }} />
+                  </td>
+                )}
+                {cols.customer && (
+                  <td
+                    className={`px-2 py-1 ${truncateNames ? 'truncate max-w-[160px]' : ''}`}
+                    title={s.businessName}
+                    style={!truncateNames ? { maxWidth: 320 } : undefined}
+                  >
+                    {s.businessName}
+                  </td>
+                )}
+                {cols.city && <td className="px-2 py-1 text-slate-600 whitespace-nowrap">{s.city}</td>}
+                {cols.pro && (
+                  <td className="px-2 py-1 font-mono text-[10px] text-slate-500 whitespace-nowrap">
+                    {renderProCell(s, searchQuery)}
+                  </td>
+                )}
+                {cols.priority && (
                   <td className="px-2 py-1 text-[10px] uppercase">
                     {s._flag !== 'none' ? (
                       <span style={{ color: FLAG_COLORS[s._flag] }} className="font-semibold">{s._flag.charAt(0)}</span>

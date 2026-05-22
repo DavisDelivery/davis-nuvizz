@@ -4,7 +4,122 @@ Status of the build that landed on branch `claude/dispatch-map-build-eEbYe`.
 M3 + M5 still pending. v0.4.0 = M4.1 (resizable panel, search, driver
 labels, day-snapshot). v0.5.0 = Part 9 restriction iconography (badge
 overlays). v0.5.1 = M4.1.6 pin-replacement (restriction icons become the
-marker itself when restricted).
+marker itself when restricted). v0.6.0 = M4.2 (PRO pipeline fix, route
+matching fix, column toggle).
+
+## v0.6.0 — M4.2 (PRO pipeline + route matching + column toggle)
+
+Two production bugs and one UX addition. The M2.1 scanner work that was in
+the original brief turned out to never have shipped to `main` — see
+[RESEARCH-m21-regression.md](./RESEARCH-m21-regression.md) for the diagnosis
+and the deferred-scope decision. Forensics on the parent app patterns that
+back this change are in
+[RESEARCH-parent-app-endpoints.md](./RESEARCH-parent-app-endpoints.md).
+
+### Problem A — PROs missing on every stop (FIXED)
+
+**Bug:** `nuvizz-pull-today-stops.mts` extracted PROs from `stop.proNumber`.
+Live NuVizz responses have `proNumber: "G1"` (a delivery-type **code**, not
+a number). The 9-digit identifier dispatchers call a "PRO" lives in
+`stop.stopNbr` (e.g. `"007122719"`). Parent app does the same: see
+`src/screens/StopDetail.jsx:152` displays `s.nbr` = `stop.stopNbr` as the
+user-facing identifier.
+
+**Fix:** `normalizeStop()` now sets `pro = stopNbr` and exposes
+`pros: [stopNbr]`, `primaryPro`, `proCount` for the brief's array shape
+(future-proof for stop grouping; today `proCount` is always 1).
+`normalizePro()` was removed as dead code.
+
+### Problem B — "No route assigned today" for every driver (FIXED)
+
+**Bug:** `nuvizz-driver-route.mts` compared
+`a.driverName.toLowerCase().trim() === driverName.toLowerCase().trim()`.
+Live NuVizz returns `driverName` with inconsistent internal whitespace
+(`"VINCENT  BONZO"` with two spaces). Motive sends single-spaced names.
+`.trim()` doesn't collapse internal whitespace, so every comparison
+failed.
+
+**Fix:** Two layers.
+
+1. The DAVIS_DRIVERS registry from the parent app
+   (`src/lib/api.js:99-134`) is now baked into
+   `dispatch-map/netlify/functions/nuvizz-driver-route.mts`. The function
+   resolves the Motive-supplied full name → stable `userName` (e.g.
+   `"Vincent Bonzo"` → `"VINCENT"`) and matches NuVizz loads on
+   `loadAssignment.driverUserName` first. This mirrors how the parent's
+   `netlify/functions/nuvizz.cjs:__driver` handler works.
+2. As a fallback the function does a whitespace-normalized name compare
+   (`normName()` lowercases, collapses all internal whitespace runs to one
+   space, trims). So even drivers not in the registry can be matched.
+
+Function response now includes a `matchedBy: 'userName' | 'driverName' | null`
+field for diagnostics.
+
+`nuvizz-debug-driver-routes.mts` is **deleted** — its purpose was to
+discover the route endpoint, and we now have a working pattern.
+
+### Stops table — column toggle (NEW)
+
+The stops mini-table in the left panel has a Columns gear icon
+(`Settings` from lucide-react) in its header. Click to toggle visibility
+of Flag, Customer, City, PRO, Priority. Defaults: Customer / City /
+Priority on; Flag / PRO off. State persists across reloads in
+`localStorage["dispatchMap.tableColumns"]`.
+
+PRO cell display:
+- `proCount === 1` (today's data): full PRO shown (e.g. `007122719`)
+- `proCount > 1`: matched PRO first if a search is active, then ` +N`
+- `proCount === 0`: em dash
+- Multi-PRO cells get a `title` attribute (and `tabIndex={0}` for
+  keyboard focus) listing all PROs line by line
+
+### Search — PRO matching
+
+`stopMatchesSearch` now matches against every entry in `stop.pros`,
+case-insensitive substring. Searching `"007122"` matches any stop whose
+PRO contains that substring. `matchedPro(stop, q)` returns the specific
+matched PRO so the table cell can show it first.
+
+### Stop sidebar — PROs section (NEW)
+
+The stop detail sidebar now has a "PROs (N)" block above Customer Notes.
+Each PRO is a button — click to copy to clipboard, with a brief
+"copied" indicator. `proCount === 0` shows `— No PROs —` in italic
+gray.
+
+### Driver day-snapshot — per-stop PRO display
+
+The Today's Stops list in the driver day-snapshot sidebar now shows
+`primaryPro +N` to the right of the business name. Hover/focus reveals
+the full list.
+
+### localStorage keys added
+
+| Key | Default | Purpose |
+|---|---|---|
+| `dispatchMap.tableColumns` | `{ flag:false, customer:true, city:true, pro:false, priority:true }` | Stops-table column visibility |
+
+### Out of scope (deferred to a future PR)
+
+- **M2.1 SPL-INSTR-TEXT scanner.** The brief framed this as a regression, but
+  the scanner was never merged into `main` — see RESEARCH-m21-regression.md
+  for the full story. Chad confirmed defer to a separate PR.
+- **`/diagnostics` page.** Was scoped to verify scanner detections; with the
+  scanner deferred, the diagnostic page has no purpose. Skipped from this PR.
+- **Shared cache between `nuvizz-pull-today-stops` and
+  `nuvizz-driver-route`.** Today each driver-route call re-scans the full
+  500-load range (~10s latency). Sharing one cache (as the parent app
+  does) would drop this to ~50ms after the first scan of the day.
+  Documented in RESEARCH-parent-app-endpoints.md as a follow-up.
+
+### Deploy expectation
+
+Per Chad, the production `dd-dispatch-map.netlify.app` is currently served
+from the unmerged `claude/dispatch-map-m2.1-scanner` branch — not `main`.
+M4.2 changes land on `main` and will only be visible in prod after the
+Netlify deploy alias is re-pointed to `main` (or the M2.1 branch is
+forward-merged).
+
 
 ## v0.5.1 — M4.1.6 (pin replacement)
 
@@ -318,37 +433,27 @@ Data plumbing:
   `/.netlify/functions/nuvizz-driver-route?truck=...&driver=...`. Per-driver
   30-second in-memory cache keyed by truck #. The function ALSO caches 30 s
   server-side (per-function-instance) for defense in depth.
-- The new `nuvizz-driver-route.mts` falls back to a load-info scan
+- `nuvizz-driver-route.mts` uses a load-info scan
   (`/load/info/{loadNbr}/{companyCode}` across the same anchored range that
-  `nuvizz-pull-today-stops` uses), filters to loads whose `assignment.driverName`
-  matches the driver from Motive, and rebuilds a route + stop list from that.
-  This is a stand-in **until the dedicated NuVizz route-assignment endpoint
-  is discovered.**
+  `nuvizz-pull-today-stops` uses), filters to loads assigned to the target
+  driver, and rebuilds a route + stop list. As of v0.6.0 (M4.2) the match
+  prefers `loadAssignment.driverUserName` (resolved from a baked-in
+  DAVIS_DRIVERS registry) and falls back to a whitespace-normalized
+  `driverName` compare.
 - Naive ETA: `haversine(driver_lat_lng, next_stop_lat_lng)` ÷ 30 mph effective.
   Implementation in `src/lib/distance.js`. Intentionally crude — upgrade to
   Google Distance Matrix later.
 
-#### NuVizz route endpoint — discovery still pending
+#### NuVizz route endpoint — using load-info scan (v0.6.0 status)
 
-The brief explicitly told me to STOP and report if the NuVizz route
-endpoint couldn't be discovered. From this build environment I had no live
-NuVizz credentials, so I shipped both:
+The brief originally instructed a stop-and-report if the NuVizz route
+endpoint couldn't be discovered. The chosen pattern is the same load-info
+scan the parent app uses for `__driver` — there is no list-loads-by-driver
+endpoint in NuVizz v7, so scanning the load-number range is the working
+pattern across both apps.
 
-1. `netlify/functions/nuvizz-debug-driver-routes.mts` — **temporary**
-   discovery harness. Probes nine plausible URLs in order and returns each
-   raw response. Hit it with
-   `curl https://dd-dispatch-map.netlify.app/.netlify/functions/nuvizz-debug-driver-routes?driver=Trevor+Seyers`
-   and inspect the `probes[].body` whose `.ok === true`. Confirm which one
-   exposes route_id + per-stop status + scheduled-time + actual-time fields.
-
-2. `netlify/functions/nuvizz-driver-route.mts` — the production endpoint the
-   UI calls. Currently uses the load-info-scan fallback. Once you confirm
-   the correct route endpoint, replace `buildRouteFromLoadScan` with a
-   single call to that endpoint.
-
-**Action item for Chad / next pass:** run the debug function against live
-NuVizz creds, decide which endpoint to use, update
-`nuvizz-driver-route.mts`, then DELETE `nuvizz-debug-driver-routes.mts`.
+`nuvizz-debug-driver-routes.mts` was deleted in v0.6.0; the M4.2 fix made
+its discovery purpose moot.
 
 #### Motive HOS + daily miles — best-effort
 
