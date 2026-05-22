@@ -40,7 +40,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.8.0';
+const APP_VERSION = '0.8.1';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -417,6 +417,44 @@ function useGoogleMaps() {
   return { google, error };
 }
 
+// Fetch JSON from a Netlify Function with one automatic retry on 5xx.
+// Surfaces a useful error message on iOS Safari, which throws "The string did
+// not match the expected pattern" if you call Response.json() on a non-JSON
+// (e.g. empty 502) body. Checking resp.ok BEFORE parsing avoids that path and
+// gives us a real HTTP-status error message in its place.
+async function fetchJsonWithRetry(url, { retries = 1, backoffMs = 1500 } = {}) {
+  let lastErr = null;
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    try {
+      const resp = await fetch(url);
+      if (!resp.ok) {
+        // Always-empty 502s from Netlify Functions when the upstream timed
+        // out — surface the status, retry on 5xx.
+        const bodyText = await resp.text().catch(() => '');
+        const detail = bodyText ? ` — ${bodyText.slice(0, 120)}` : '';
+        const msg = `HTTP ${resp.status}${detail}`;
+        if (resp.status >= 500 && attempt < retries) {
+          lastErr = new Error(msg);
+          await new Promise((r) => setTimeout(r, backoffMs * (attempt + 1)));
+          continue;
+        }
+        throw new Error(msg);
+      }
+      return await resp.json();
+    } catch (e) {
+      lastErr = e;
+      // Only retry transient (5xx) network errors; bail immediately on
+      // explicit non-5xx errors (already thrown above).
+      if (attempt < retries && /HTTP 5\d\d|Failed to fetch|Load failed|NetworkError/.test(e.message || '')) {
+        await new Promise((r) => setTimeout(r, backoffMs * (attempt + 1)));
+        continue;
+      }
+      throw e;
+    }
+  }
+  throw lastErr || new Error('fetchJsonWithRetry: unknown error');
+}
+
 // Pull today's stops from the proxy function.
 function useStops() {
   const [stops, setStops] = useState([]);
@@ -430,9 +468,8 @@ function useStops() {
     setError(null);
     try {
       const url = '/.netlify/functions/nuvizz-pull-today-stops' + (MOCK_MODE ? '?mock=1' : '');
-      const resp = await fetch(url);
-      const data = await resp.json();
-      if (!data.ok) throw new Error(data.error || `HTTP ${resp.status}`);
+      const data = await fetchJsonWithRetry(url);
+      if (!data.ok) throw new Error(data.error || 'NuVizz function returned ok:false');
       // Attach the match key now so every consumer downstream can hit it.
       const decorated = (data.stops || []).map((s) => ({
         ...s,
@@ -722,15 +759,14 @@ function useDriverPositions(enabled) {
     let cancelled = false;
     const pull = async () => {
       try {
-        const resp = await fetch('/.netlify/functions/motive-driver-positions');
-        const data = await resp.json();
+        const data = await fetchJsonWithRetry('/.netlify/functions/motive-driver-positions');
         if (cancelled) return;
         if (data.ok) {
           setDrivers(data.drivers || []);
           setError(null);
           setLastRefreshed(new Date());
         } else {
-          setError(data.error || `HTTP ${resp.status}`);
+          setError(data.error || 'Motive function returned ok:false');
         }
       } catch (e) {
         if (!cancelled) setError(e.message);
