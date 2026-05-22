@@ -40,7 +40,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.7.1';
+const APP_VERSION = '0.7.2';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -1940,11 +1940,53 @@ function StopStatusIcon({ status }) {
 
 function DriverSnapshotSidebar({ driver, snapshot, loading, error, onClose, onPanToStop, mobile = false }) {
   if (!driver) return null;
+  return (
+    <aside
+      className={mobile
+        ? "absolute inset-0 bg-white shadow-lg flex flex-col overflow-hidden z-40"
+        : "w-[380px] flex-shrink-0 bg-white border-l shadow-lg flex flex-col h-full overflow-hidden"
+      }
+      style={mobile ? { paddingBottom: 'env(safe-area-inset-bottom)' } : undefined}
+    >
+      <DriverSnapshotHeader driver={driver} snapshot={snapshot} onClose={onClose} />
+      <DriverSnapshotBody
+        driver={driver}
+        snapshot={snapshot}
+        loading={loading}
+        error={error}
+        onPanToStop={onPanToStop}
+      />
+    </aside>
+  );
+}
+
+function DriverSnapshotHeader({ driver, snapshot, onClose }) {
   const truckLabel = driver.vehicleNumber || `(truck ${driver.vehicleId || '?'})`;
   const driverName = driver.driverName || '(no driver)';
+  const hos = snapshot?.hos || null;
+  return (
+    <div className="px-4 py-3 border-b flex-shrink-0" style={{ background: BRAND, color: 'white' }}>
+      <button
+        onClick={onClose}
+        className="text-[10px] uppercase tracking-wider opacity-75 hover:opacity-100 inline-flex items-center gap-1 mb-1"
+      >
+        <ArrowLeft size={11} /> Back to stops
+      </button>
+      <div className="font-bold">Truck {truckLabel} · {driverName}</div>
+      {hos && (
+        <div className="text-[11px] opacity-80 mt-0.5">
+          {hos.loggedInAt && <>Logged in {fmtClockShort(hos.loggedInAt)}</>}
+          {hos.loggedInAt && hos.onDutySeconds != null && ' · '}
+          {hos.onDutySeconds != null && <>{fmtDurationHm(hos.onDutySeconds)} on duty</>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DriverSnapshotBody({ driver, snapshot, loading, error, onPanToStop }) {
   const route = snapshot?.route || null;
   const stops = Array.isArray(snapshot?.stops) ? snapshot.stops : [];
-  const hos = snapshot?.hos || null;
 
   const nextStop = useMemo(() => {
     if (!stops.length) return null;
@@ -1972,40 +2014,16 @@ function DriverSnapshotSidebar({ driver, snapshot, loading, error, onClose, onPa
   }, [stops]);
 
   return (
-    <aside
-      className={mobile
-        ? "absolute inset-0 bg-white shadow-lg flex flex-col overflow-hidden z-40"
-        : "w-[380px] flex-shrink-0 bg-white border-l shadow-lg flex flex-col h-full overflow-hidden"
-      }
-      style={mobile ? { paddingBottom: 'env(safe-area-inset-bottom)' } : undefined}
-    >
-      <div className="px-4 py-3 border-b" style={{ background: BRAND, color: 'white' }}>
-        <button
-          onClick={onClose}
-          className="text-[10px] uppercase tracking-wider opacity-75 hover:opacity-100 inline-flex items-center gap-1 mb-1"
-        >
-          <ArrowLeft size={11} /> Back to stops
-        </button>
-        <div className="font-bold">Truck {truckLabel} · {driverName}</div>
-        {hos && (
-          <div className="text-[11px] opacity-80 mt-0.5">
-            {hos.loggedInAt && <>Logged in {fmtClockShort(hos.loggedInAt)}</>}
-            {hos.loggedInAt && hos.onDutySeconds != null && ' · '}
-            {hos.onDutySeconds != null && <>{fmtDurationHm(hos.onDutySeconds)} on duty</>}
-          </div>
-        )}
-      </div>
+    <div className="overflow-y-auto flex-1 text-sm">
+      {loading && <SnapshotSkeleton />}
 
-      <div className="overflow-y-auto flex-1 text-sm">
-        {loading && <SnapshotSkeleton />}
+      {error && !loading && (
+        <div className="m-3 px-3 py-2 text-xs bg-amber-50 border border-amber-200 rounded text-amber-900">
+          {error}
+        </div>
+      )}
 
-        {error && !loading && (
-          <div className="m-3 px-3 py-2 text-xs bg-amber-50 border border-amber-200 rounded text-amber-900">
-            {error}
-          </div>
-        )}
-
-        {!loading && (
+      {!loading && (
           <>
             <SnapshotSection title="Route Summary">
               {route ? (
@@ -2121,8 +2139,7 @@ function DriverSnapshotSidebar({ driver, snapshot, loading, error, onClose, onPa
             </SnapshotSection>
           </>
         )}
-      </div>
-    </aside>
+    </div>
   );
 }
 
@@ -2397,25 +2414,27 @@ function MobileFAB({ open, onToggle }) {
   );
 }
 
-// Drawer that slides up from the bottom edge. Three sizes (mini/default/expanded);
-// the drag handle moves between them. Default 60vh, mini 30vh, expanded 95vh.
-// Backdrop dims behind the drawer and dismisses on tap.
+// Shared bottom-sheet primitive. Owns the slide-up animation, the drag handle,
+// the snap behavior (3 height stops), the backdrop dim, and the close-on-fling.
+// Consumers compose their own header + body inside. Each drawer can specify
+// its preferred default height + an optional onDragHandle on top of children
+// (e.g. the StopDetail drawer puts a customer-name header above its tabs).
 //
-// Touch handling is implemented with native events (no library) — vertical
-// pointer drags on the handle adjust the height; release snaps to the nearest
-// of the three preset stops, with a downward fling past the mini stop closing
-// the drawer.
-const DRAWER_HEIGHTS = { mini: 0.30, default: 0.60, expanded: 0.95 };
+// Touch handling uses native events (no library) — vertical pointer drags on
+// the handle adjust height; release snaps to nearest of the snap stops, with
+// a downward fling past the smallest stop closing the sheet.
+const SHEET_HEIGHTS = { mini: 0.30, default: 0.60, expanded: 0.95 };
+const STOP_DETAIL_HEIGHTS = { mini: 0.30, default: 0.80, expanded: 0.95 };
 
-function MobileDrawer({ open, onClose, activeTab, setActiveTab, children }) {
-  const [heightFrac, setHeightFrac] = useState(DRAWER_HEIGHTS.default);
+function BottomSheet({ open, onClose, heights = SHEET_HEIGHTS, children, ariaLabel }) {
+  const [heightFrac, setHeightFrac] = useState(heights.default);
   const [dragging, setDragging] = useState(false);
-  const dragRef = useRef({ startY: 0, startFrac: DRAWER_HEIGHTS.default });
+  const dragRef = useRef({ startY: 0, startFrac: heights.default });
 
-  // Reset height to default each time the drawer opens.
+  // Reset to default each time the sheet opens.
   useEffect(() => {
-    if (open) setHeightFrac(DRAWER_HEIGHTS.default);
-  }, [open]);
+    if (open) setHeightFrac(heights.default);
+  }, [open, heights.default]);
 
   const onPointerDown = (e) => {
     e.preventDefault();
@@ -2428,7 +2447,6 @@ function MobileDrawer({ open, onClose, activeTab, setActiveTab, children }) {
       const y = ev.touches ? ev.touches[0].clientY : ev.clientY;
       const delta = y - dragRef.current.startY;
       const vh = window.innerHeight || 1;
-      // Drag down increases y → smaller height; drag up → larger height.
       const next = Math.max(0.15, Math.min(0.97, dragRef.current.startFrac - delta / vh));
       setHeightFrac(next);
     };
@@ -2437,13 +2455,13 @@ function MobileDrawer({ open, onClose, activeTab, setActiveTab, children }) {
       const delta = y - dragRef.current.startY;
       const vh = window.innerHeight || 1;
       const finalFrac = Math.max(0.15, Math.min(0.97, dragRef.current.startFrac - delta / vh));
-      // Snap to nearest preset; close if dragged below the mini stop.
-      if (finalFrac < 0.22 && delta > 60) {
+      // Close if dragged below the smallest snap stop with sufficient velocity.
+      if (finalFrac < (heights.mini - 0.08) && delta > 60) {
         setDragging(false);
         onClose();
         return;
       }
-      const candidates = Object.values(DRAWER_HEIGHTS);
+      const candidates = Object.values(heights);
       const snapped = candidates.reduce((best, c) =>
         Math.abs(c - finalFrac) < Math.abs(best - finalFrac) ? c : best,
         candidates[0],
@@ -2461,13 +2479,10 @@ function MobileDrawer({ open, onClose, activeTab, setActiveTab, children }) {
     document.addEventListener('touchend', up);
   };
 
-  // Always render to allow the slide-up animation. Translates fully offscreen
-  // when closed.
   const drawerHeight = `${(heightFrac * 100).toFixed(1)}vh`;
 
   return (
     <>
-      {/* Backdrop */}
       <div
         onClick={onClose}
         className="absolute inset-0 transition-opacity"
@@ -2489,8 +2504,8 @@ function MobileDrawer({ open, onClose, activeTab, setActiveTab, children }) {
         }}
         role="dialog"
         aria-modal="true"
+        aria-label={ariaLabel}
       >
-        {/* Drag handle */}
         <div
           onMouseDown={onPointerDown}
           onTouchStart={onPointerDown}
@@ -2499,36 +2514,42 @@ function MobileDrawer({ open, onClose, activeTab, setActiveTab, children }) {
         >
           <div className="w-8 h-1 rounded-full bg-slate-300" />
         </div>
-        {/* Tab header */}
-        <div className="flex-shrink-0 flex border-b border-slate-200">
-          {[
-            { id: 'stops', label: 'Stops' },
-            { id: 'filters', label: 'Filters' },
-            { id: 'drivers', label: 'Drivers' },
-          ].map((t) => {
-            const active = activeTab === t.id;
-            return (
-              <button
-                key={t.id}
-                onClick={() => setActiveTab(t.id)}
-                className={`flex-1 py-3 text-sm font-semibold transition-colors ${active ? '' : 'text-slate-500'}`}
-                style={{
-                  color: active ? BRAND : undefined,
-                  borderBottom: active ? `2px solid ${BRAND}` : '2px solid transparent',
-                  minHeight: 44,
-                }}
-              >
-                {t.label}
-              </button>
-            );
-          })}
-        </div>
-        {/* Tab content */}
-        <div className="flex-1 overflow-y-auto overscroll-contain">
-          {children}
-        </div>
+        {children}
       </div>
     </>
+  );
+}
+
+function MobileDrawer({ open, onClose, activeTab, setActiveTab, children }) {
+  return (
+    <BottomSheet open={open} onClose={onClose} heights={SHEET_HEIGHTS} ariaLabel="Stops, Filters, Drivers">
+      <div className="flex-shrink-0 flex border-b border-slate-200">
+        {[
+          { id: 'stops', label: 'Stops' },
+          { id: 'filters', label: 'Filters' },
+          { id: 'drivers', label: 'Drivers' },
+        ].map((t) => {
+          const active = activeTab === t.id;
+          return (
+            <button
+              key={t.id}
+              onClick={() => setActiveTab(t.id)}
+              className={`flex-1 py-3 text-sm font-semibold transition-colors ${active ? '' : 'text-slate-500'}`}
+              style={{
+                color: active ? BRAND : undefined,
+                borderBottom: active ? `2px solid ${BRAND}` : '2px solid transparent',
+                minHeight: 44,
+              }}
+            >
+              {t.label}
+            </button>
+          );
+        })}
+      </div>
+      <div className="flex-1 overflow-y-auto overscroll-contain">
+        {children}
+      </div>
+    </BottomSheet>
   );
 }
 
@@ -2689,6 +2710,677 @@ function MobileDriversTab({ drivers, error, onPickDriver }) {
         </button>
       ))}
     </div>
+  );
+}
+
+// ---------- M4.5 PR 2: stop-detail + driver-snapshot drawers ----------
+
+// Mobile stop-detail drawer. Replaces the full-screen StopSidebar overlay
+// from PR 1 with a proper bottom-sheet that has its own header + Info /
+// Notes / Hours / PROs tabs. Draft state spans all tabs so editing Notes
+// then switching to Hours preserves changes; one Save commits everything.
+function MobileStopDetailDrawer({ stop, note, onClose, onSave, saving, saveError }) {
+  const [activeTab, setActiveTab] = useState('info');
+  const [draft, setDraft] = useState(() => note || emptyNote(stop));
+  const [editing, setEditing] = useState(false);
+  const [confirmDiscard, setConfirmDiscard] = useState(false);
+
+  // Reset draft + tab when a different stop opens.
+  useEffect(() => {
+    setDraft(note || emptyNote(stop));
+    setEditing(false);
+    setActiveTab('info');
+    setConfirmDiscard(false);
+  }, [stop?.stopNbr, note?.id]);
+
+  if (!stop) return null;
+  const D = draft;
+  const setD = (patch) => setDraft({ ...D, ...patch });
+
+  const hasUnsaved = editing && JSON.stringify(draft) !== JSON.stringify(note || emptyNote(stop));
+
+  const tryClose = () => {
+    if (hasUnsaved) { setConfirmDiscard(true); return; }
+    onClose();
+  };
+
+  const switchTab = (next) => {
+    // No confirm needed for switching tabs; draft is preserved.
+    setActiveTab(next);
+  };
+
+  return (
+    <BottomSheet open onClose={tryClose} heights={STOP_DETAIL_HEIGHTS} ariaLabel={`Stop details: ${stop.businessName || stop.pro || ''}`}>
+      {/* Header */}
+      <div className="flex-shrink-0 px-4 pt-1 pb-2 border-b border-slate-200">
+        <div className="flex items-start justify-between gap-2">
+          <div className="min-w-0">
+            <div className="text-[10px] uppercase tracking-wider text-slate-500">PRO {stop.pro || '—'}</div>
+            <div className="font-bold text-base text-slate-900 truncate">{stop.businessName || '(no name)'}</div>
+            <div className="text-[12px] text-slate-500 truncate">{stop.addr1 || '—'}</div>
+          </div>
+          <button
+            onClick={tryClose}
+            className="flex-shrink-0 p-2 -mr-1 rounded-full hover:bg-slate-100 active:bg-slate-200"
+            style={{ minWidth: 44, minHeight: 44 }}
+            aria-label="Close stop details"
+          >
+            <X size={20} />
+          </button>
+        </div>
+      </div>
+      {/* Tabs */}
+      <div className="flex-shrink-0 flex border-b border-slate-200">
+        {[
+          { id: 'info', label: 'Info' },
+          { id: 'notes', label: 'Notes' },
+          { id: 'hours', label: 'Hours' },
+          { id: 'pros', label: 'PROs' },
+        ].map((t) => {
+          const active = activeTab === t.id;
+          return (
+            <button
+              key={t.id}
+              onClick={() => switchTab(t.id)}
+              className={`flex-1 py-2.5 text-sm font-semibold transition-colors ${active ? '' : 'text-slate-500'}`}
+              style={{
+                color: active ? BRAND : undefined,
+                borderBottom: active ? `2px solid ${BRAND}` : '2px solid transparent',
+                minHeight: 44,
+              }}
+            >
+              {t.label}
+            </button>
+          );
+        })}
+      </div>
+      {/* Tab content */}
+      <div className="flex-1 overflow-y-auto overscroll-contain">
+        {activeTab === 'info' && <StopInfoTabContent stop={stop} />}
+        {activeTab === 'notes' && (
+          <StopNotesTabContent
+            stop={stop}
+            note={note}
+            draft={D}
+            setDraft={setD}
+            editing={editing}
+            setEditing={setEditing}
+          />
+        )}
+        {activeTab === 'hours' && (
+          <StopHoursTabContent
+            draft={D}
+            setDraft={setD}
+            editing={editing}
+            setEditing={setEditing}
+          />
+        )}
+        {activeTab === 'pros' && <StopProsTabContent stop={stop} />}
+      </div>
+      {/* Sticky save bar — visible while editing on Notes or Hours tabs */}
+      {editing && (activeTab === 'notes' || activeTab === 'hours') && (
+        <div className="flex-shrink-0 border-t bg-white px-4 py-2 flex items-center justify-between gap-2"
+             style={{ paddingBottom: `calc(0.5rem + env(safe-area-inset-bottom))` }}>
+          {saveError && <span className="text-[11px] text-red-600 truncate">{saveError}</span>}
+          <div className="ml-auto flex gap-2">
+            <button
+              onClick={() => { setDraft(note || emptyNote(stop)); setEditing(false); }}
+              className="px-4 py-2 text-sm text-slate-600 hover:bg-slate-100 rounded"
+              style={{ minHeight: 44 }}
+            >
+              Cancel
+            </button>
+            <button
+              onClick={() => onSave(D)}
+              disabled={saving}
+              className="px-4 py-2 text-sm text-white font-semibold rounded inline-flex items-center gap-1.5 disabled:opacity-50"
+              style={{ background: BRAND, minHeight: 44 }}
+            >
+              {saving ? <RefreshCw size={14} className="animate-spin" /> : <Save size={14} />}
+              Save
+            </button>
+          </div>
+        </div>
+      )}
+      {/* Discard confirm dialog */}
+      {confirmDiscard && (
+        <div
+          className="absolute inset-0 flex items-center justify-center px-6"
+          style={{ background: 'rgba(0,0,0,0.45)', zIndex: 50 }}
+        >
+          <div className="bg-white rounded-lg shadow-lg max-w-sm w-full p-4">
+            <div className="font-semibold text-slate-900 mb-1">Discard changes?</div>
+            <div className="text-xs text-slate-600 mb-4">You have unsaved edits to this stop. Closing will lose them.</div>
+            <div className="flex gap-2 justify-end">
+              <button
+                onClick={() => setConfirmDiscard(false)}
+                className="px-3 py-2 text-sm text-slate-700 hover:bg-slate-100 rounded"
+                style={{ minHeight: 44 }}
+              >
+                Keep editing
+              </button>
+              <button
+                onClick={() => { setConfirmDiscard(false); onClose(); }}
+                className="px-3 py-2 text-sm text-white font-semibold rounded"
+                style={{ background: '#dc2626', minHeight: 44 }}
+              >
+                Discard
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </BottomSheet>
+  );
+}
+
+function StopInfoTabContent({ stop }) {
+  const cityLine = [stop.city, stop.state, stop.zip].filter(Boolean).join(', ').replace(/, ([A-Z]{2}) (\d)/, ', $1 $2');
+  return (
+    <div className="px-4 py-3 space-y-3 text-sm">
+      <div>
+        <div className="text-[10px] uppercase font-semibold text-slate-500 mb-0.5">Address</div>
+        <div className="text-slate-900">{stop.addr1 || '—'}</div>
+        {stop.addr2 && (
+          <div className="mt-1 px-2 py-1 text-[12px] bg-amber-50 border border-amber-200 rounded text-amber-900">
+            <span className="font-semibold">addr2:</span> {stop.addr2}
+          </div>
+        )}
+        <div className="text-slate-600">{cityLine || '—'}</div>
+      </div>
+      <div className="grid grid-cols-2 gap-3">
+        <div>
+          <div className="text-[10px] uppercase font-semibold text-slate-500">Window</div>
+          <div>{stop.scheduledFrom || '—'} – {stop.scheduledTo || '—'}</div>
+        </div>
+        <div>
+          <div className="text-[10px] uppercase font-semibold text-slate-500">Items</div>
+          <div>{stop.itemsSummary || '—'}</div>
+        </div>
+      </div>
+      {(stop.loadNbr || stop.driverName) && (
+        <div className="pt-2 border-t">
+          <div className="text-[10px] uppercase font-semibold text-slate-500">Load</div>
+          <div className="text-slate-900">
+            {stop.loadNbr && <span className="font-mono">{stop.loadNbr}</span>}
+            {stop.loadNbr && stop.driverName && ' · '}
+            {stop.driverName && <span>{stop.driverName}</span>}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function StopNotesTabContent({ stop, note, draft, setDraft, editing, setEditing }) {
+  const D = draft;
+  const setD = (patch) => setDraft(patch);
+  const toggleRestriction = (val) => {
+    const cur = D.equipment_restrictions || [];
+    const next = cur.includes(val) ? cur.filter((x) => x !== val) : [...cur, val];
+    setD({ equipment_restrictions: next });
+  };
+  const addContact = () => setD({ contacts: [...(D.contacts || []), { name: '', phone: '', role: '' }] });
+  const setContact = (i, patch) => {
+    const next = [...(D.contacts || [])];
+    next[i] = { ...next[i], ...patch };
+    setD({ contacts: next });
+  };
+  const removeContact = (i) => setD({ contacts: (D.contacts || []).filter((_, idx) => idx !== i) });
+
+  if (!editing) {
+    return (
+      <div className="px-4 py-3 space-y-3 text-sm">
+        <div className="flex items-center justify-between">
+          <div className="text-[10px] uppercase font-semibold text-slate-500">Customer notes</div>
+          <button
+            onClick={() => setEditing(true)}
+            className="px-3 py-1.5 text-xs text-white font-semibold rounded"
+            style={{ background: BRAND, minHeight: 36 }}
+          >
+            Edit
+          </button>
+        </div>
+        {!note ? (
+          <div className="text-xs text-slate-500 italic">No notes yet. Tap Edit to add.</div>
+        ) : (
+          <ReadOnlyNoteView note={note} />
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div className="px-4 py-3 space-y-4 text-sm">
+      {/* Priority flag */}
+      <div>
+        <div className="text-[11px] font-semibold text-slate-600 mb-1">Priority flag</div>
+        <div className="flex flex-wrap gap-1.5">
+          {[null, 'red', 'yellow', 'green'].map((v) => {
+            const active = D.priority_flag === v;
+            const swatch = v ? FLAG_COLORS[v] : '#e2e8f0';
+            return (
+              <button
+                key={String(v)}
+                onClick={() => setD({ priority_flag: v })}
+                className={`px-3 py-2 rounded border flex items-center gap-1.5 ${active ? 'bg-slate-900 text-white border-slate-900' : 'bg-white border-slate-300 text-slate-700'}`}
+                style={{ minHeight: 44 }}
+              >
+                <span className="w-3 h-3 rounded-full" style={{ background: swatch }} />
+                <span className="text-xs">{v || 'none'}</span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Toggles */}
+      <div className="space-y-2">
+        <MobileToggleRow
+          label="Appointment required"
+          checked={!!D.appointment_required}
+          onChange={(b) => setD({ appointment_required: b })}
+        />
+        <MobileToggleRow
+          label="Liftgate required"
+          checked={!!D.liftgate_required}
+          onChange={(b) => setD({ liftgate_required: b })}
+        />
+      </div>
+
+      {/* Equipment restriction chips */}
+      <div>
+        <div className="text-[11px] font-semibold text-slate-600 mb-1">Equipment restrictions</div>
+        <div className="flex flex-wrap gap-1.5">
+          {EQUIPMENT_OPTIONS.map((o) => {
+            const active = (D.equipment_restrictions || []).includes(o.value);
+            return (
+              <button
+                key={o.value}
+                onClick={() => toggleRestriction(o.value)}
+                className={`px-3 py-2 rounded-full text-xs border inline-flex items-center gap-1.5 ${active ? 'bg-purple-600 text-white border-purple-600' : 'bg-white border-slate-300 text-slate-700'}`}
+                style={{ minHeight: 44 }}
+              >
+                <RestrictionIcon kind={o.value} size={14} />
+                {o.label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Dock type */}
+      <div>
+        <div className="text-[11px] font-semibold text-slate-600 mb-1">Dock type</div>
+        <div className="flex flex-wrap gap-1.5">
+          {[...DOCK_TYPES, { value: null, label: 'unknown' }].map((o) => {
+            const active = (D.dock_type ?? null) === o.value;
+            return (
+              <button
+                key={String(o.value)}
+                onClick={() => setD({ dock_type: o.value })}
+                className={`px-3 py-2 rounded border text-xs ${active ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-300 bg-white text-slate-700'}`}
+                style={{ minHeight: 44 }}
+              >
+                {o.label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Dock notes */}
+      <div>
+        <div className="text-[11px] font-semibold text-slate-600 mb-1">Dock notes</div>
+        <textarea
+          value={D.dock_notes || ''}
+          onChange={(e) => setD({ dock_notes: e.target.value })}
+          rows={3}
+          className="w-full border border-slate-300 rounded px-2 py-2 text-sm"
+        />
+      </div>
+
+      {/* Appointment notes */}
+      <div>
+        <div className="text-[11px] font-semibold text-slate-600 mb-1">Appointment notes</div>
+        <input
+          value={D.appointment_notes || ''}
+          onChange={(e) => setD({ appointment_notes: e.target.value })}
+          className="w-full border border-slate-300 rounded px-2 text-sm"
+          style={{ minHeight: 44 }}
+        />
+      </div>
+
+      {/* Contacts */}
+      <div>
+        <div className="text-[11px] font-semibold text-slate-600 mb-1 flex items-center justify-between">
+          <span>Contacts</span>
+          <button onClick={addContact} className="text-xs text-blue-600 inline-flex items-center gap-0.5"
+                  style={{ minHeight: 36, minWidth: 44 }}>
+            <Plus size={13} /> Add
+          </button>
+        </div>
+        <div className="space-y-2">
+          {(D.contacts || []).map((c, i) => (
+            <div key={i} className="space-y-1.5 p-2 border border-slate-200 rounded">
+              <input
+                value={c.name || ''}
+                onChange={(e) => setContact(i, { name: e.target.value })}
+                placeholder="Name"
+                className="w-full border border-slate-300 rounded px-2 text-sm"
+                style={{ minHeight: 44 }}
+              />
+              <div className="grid grid-cols-[1fr_1fr_44px] gap-1.5 items-center">
+                <input
+                  value={c.phone || ''}
+                  onChange={(e) => setContact(i, { phone: e.target.value })}
+                  placeholder="Phone"
+                  type="tel"
+                  className="border border-slate-300 rounded px-2 text-sm"
+                  style={{ minHeight: 44 }}
+                />
+                <input
+                  value={c.role || ''}
+                  onChange={(e) => setContact(i, { role: e.target.value })}
+                  placeholder="Role"
+                  className="border border-slate-300 rounded px-2 text-sm"
+                  style={{ minHeight: 44 }}
+                />
+                <button
+                  onClick={() => removeContact(i)}
+                  className="text-slate-400 hover:text-red-600 flex items-center justify-center"
+                  style={{ minWidth: 44, minHeight: 44 }}
+                  aria-label="Remove contact"
+                >
+                  <Trash2 size={16} />
+                </button>
+              </div>
+            </div>
+          ))}
+          {(!D.contacts || !D.contacts.length) && (
+            <div className="text-xs text-slate-400 italic">No contacts yet</div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function StopHoursTabContent({ draft, setDraft, editing, setEditing }) {
+  const D = draft;
+  const setD = (patch) => setDraft(patch);
+
+  const isClosed = (day) => Array.isArray(D.closed_days) && D.closed_days.includes(day);
+  const toggleClosed = (day) => {
+    const current = Array.isArray(D.closed_days) ? D.closed_days : [];
+    const next = current.includes(day) ? current.filter((d) => d !== day) : [...current, day];
+    setD({
+      closed_days: next,
+      manual_overrides: { ...(D.manual_overrides || {}), closed_days: true },
+    });
+  };
+  const setHours = (day, partial) => {
+    const existing = D.receiving_hours?.[day] || { open: '', close: '' };
+    const merged = typeof existing === 'string'
+      ? { open: '', close: '', ...partial }
+      : { open: existing.open || '', close: existing.close || '', ...partial };
+    setD({
+      receiving_hours: { ...D.receiving_hours, [day]: merged },
+      manual_overrides: { ...(D.manual_overrides || {}), receiving_hours: true },
+    });
+  };
+  const getOpen = (day) => {
+    const v = D.receiving_hours?.[day];
+    if (!v || typeof v === 'string') return '';
+    return v.open || '';
+  };
+  const getClose = (day) => {
+    const v = D.receiving_hours?.[day];
+    if (!v || typeof v === 'string') return '';
+    return v.close || '';
+  };
+
+  const [copyToast, setCopyToast] = useState(false);
+  const copyMondayToWeekdays = () => {
+    const monClosed = isClosed('mon');
+    const monHours = D.receiving_hours?.mon;
+    const monHasHours = monHours && (typeof monHours === 'object' ? (monHours.open || monHours.close) : monHours);
+    if (!monClosed && !monHasHours) return;
+    const weekdays = ['tue', 'wed', 'thu', 'fri'];
+    const patch = {
+      receiving_hours: { ...(D.receiving_hours || {}) },
+      closed_days: Array.isArray(D.closed_days) ? [...D.closed_days] : [],
+      manual_overrides: {
+        ...(D.manual_overrides || {}),
+        receiving_hours: true,
+        closed_days: true,
+      },
+    };
+    for (const d of weekdays) {
+      if (monClosed) {
+        if (!patch.closed_days.includes(d)) patch.closed_days.push(d);
+      } else {
+        patch.closed_days = patch.closed_days.filter((x) => x !== d);
+        patch.receiving_hours[d] = typeof monHours === 'string'
+          ? monHours
+          : { open: monHours.open || '', close: monHours.close || '' };
+      }
+    }
+    setD(patch);
+    setCopyToast(true);
+    setTimeout(() => setCopyToast(false), 1500);
+  };
+
+  if (!editing) {
+    // View mode: compact list of each day.
+    return (
+      <div className="px-4 py-3 space-y-3 text-sm">
+        <div className="flex items-center justify-between">
+          <div className="text-[10px] uppercase font-semibold text-slate-500">Receiving hours</div>
+          <button
+            onClick={() => setEditing(true)}
+            className="px-3 py-1.5 text-xs text-white font-semibold rounded"
+            style={{ background: BRAND, minHeight: 36 }}
+          >
+            Edit
+          </button>
+        </div>
+        <div className="divide-y divide-slate-100 border border-slate-200 rounded overflow-hidden">
+          {DAYS.map((d) => {
+            const closed = isClosed(d);
+            const v = D.receiving_hours?.[d];
+            let label = '—';
+            if (closed) label = 'Closed';
+            else if (v) {
+              if (typeof v === 'string') label = v;
+              else if (v.open && v.close) label = `${v.open} – ${v.close}`;
+              else label = v.open || v.close || '—';
+            }
+            return (
+              <div key={d} className="px-3 py-2 flex items-center justify-between">
+                <span className="text-[11px] uppercase font-semibold text-slate-500">{d}</span>
+                <span className={`text-sm ${closed ? 'text-red-600 font-semibold' : 'text-slate-900'}`}>{label}</span>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="px-4 py-3 space-y-3 text-sm">
+      {/* Day open/closed toggle row — 44x44 buttons */}
+      <div>
+        <div className="text-[11px] font-semibold text-slate-600 mb-2">Open / Closed</div>
+        <div className="grid grid-cols-7 gap-1">
+          {DAYS.map((d) => {
+            const closed = isClosed(d);
+            return (
+              <button
+                key={d}
+                type="button"
+                onClick={() => toggleClosed(d)}
+                className={`uppercase font-semibold rounded border text-[11px] ${closed ? 'bg-red-100 border-red-300 text-red-700' : 'bg-white border-slate-300 text-slate-700'}`}
+                style={{ minHeight: 44, minWidth: 0 }}
+                aria-pressed={!closed}
+                title={closed ? `${d.toUpperCase()} closed — tap to open` : `${d.toUpperCase()} open — tap to mark closed`}
+              >
+                {d}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Copy-to-weekdays */}
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          onClick={copyMondayToWeekdays}
+          disabled={!isClosed('mon') && !(D.receiving_hours?.mon && (
+            typeof D.receiving_hours.mon === 'string'
+              ? D.receiving_hours.mon
+              : (D.receiving_hours.mon.open || D.receiving_hours.mon.close)
+          ))}
+          className="px-3 py-2 text-xs rounded border border-slate-300 text-slate-700 disabled:opacity-50"
+          style={{ minHeight: 44 }}
+        >
+          Copy Mon → Tue-Fri
+        </button>
+        {copyToast && <span className="text-xs text-emerald-600">Copied</span>}
+      </div>
+
+      {/* Per-day rows */}
+      <div className="space-y-2">
+        {DAYS.map((d) => {
+          const closed = isClosed(d);
+          return (
+            <div key={d} className="flex items-center gap-2">
+              <div className="w-10 text-[11px] uppercase font-semibold text-slate-500">{d}</div>
+              {closed ? (
+                <div className="flex-1 flex items-center justify-between gap-2 px-2 py-2 rounded bg-red-50 border border-red-200">
+                  <span className="text-sm font-semibold text-red-700">Closed</span>
+                  <button
+                    type="button"
+                    onClick={() => toggleClosed(d)}
+                    className="text-xs text-blue-600"
+                    style={{ minHeight: 36 }}
+                  >
+                    Open
+                  </button>
+                </div>
+              ) : (
+                <div className="flex-1 flex items-center gap-1.5">
+                  <input
+                    type="time"
+                    value={getOpen(d)}
+                    onChange={(e) => setHours(d, { open: e.target.value })}
+                    className="flex-1 border border-slate-300 rounded px-2 text-sm"
+                    style={{ minHeight: 44 }}
+                    aria-label={`${d} open time`}
+                  />
+                  <span className="text-slate-400">–</span>
+                  <input
+                    type="time"
+                    value={getClose(d)}
+                    onChange={(e) => setHours(d, { close: e.target.value })}
+                    className="flex-1 border border-slate-300 rounded px-2 text-sm"
+                    style={{ minHeight: 44 }}
+                    aria-label={`${d} close time`}
+                  />
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function StopProsTabContent({ stop }) {
+  const pros = stop.pros || (stop.pro ? [stop.pro] : []);
+  const [toast, setToast] = useState(null);
+  const copy = (pro) => {
+    try {
+      navigator.clipboard.writeText(pro);
+      setToast(pro);
+      setTimeout(() => setToast(null), 2000);
+    } catch { /* clipboard blocked */ }
+  };
+  return (
+    <div className="px-4 py-3 text-sm relative">
+      <div className="text-[10px] uppercase font-semibold text-slate-500 mb-2">
+        PROs ({pros.length})
+      </div>
+      {pros.length === 0 ? (
+        <div className="text-xs italic text-slate-400">— No PROs —</div>
+      ) : (
+        <div className="space-y-0.5">
+          {pros.map((p) => (
+            <button
+              key={p}
+              type="button"
+              onClick={() => copy(p)}
+              className="w-full text-left font-mono text-sm text-slate-700 hover:bg-slate-100 active:bg-slate-200 px-3 rounded"
+              style={{ minHeight: 48 }}
+              title="Tap to copy"
+            >
+              {p}
+            </button>
+          ))}
+        </div>
+      )}
+      {toast && (
+        <div
+          className="absolute left-1/2 -translate-x-1/2 px-3 py-1.5 rounded shadow-lg text-xs text-white"
+          style={{ top: 8, background: '#16a34a', zIndex: 60 }}
+        >
+          Copied “{toast}”
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MobileToggleRow({ label, checked, onChange }) {
+  return (
+    <label className="flex items-center justify-between gap-3 cursor-pointer" style={{ minHeight: 44 }}>
+      <span className="text-sm text-slate-700">{label}</span>
+      <button
+        role="switch"
+        aria-checked={checked}
+        onClick={() => onChange(!checked)}
+        className="flex-shrink-0 relative w-11 h-6 rounded-full transition-colors"
+        style={{ background: checked ? '#16a34a' : '#cbd5e1' }}
+      >
+        <span
+          className="absolute top-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform"
+          style={{ left: checked ? 'calc(100% - 22px)' : '2px' }}
+        />
+      </button>
+    </label>
+  );
+}
+
+// Mobile driver-snapshot drawer. Replaces the full-screen DriverSnapshotSidebar
+// overlay on mobile with a slide-up bottom sheet that re-uses the desktop
+// snapshot header + body subcomponents. Tap a stop row → drawer closes, map
+// pans, and the caller can open the stop detail drawer.
+function MobileDriverSnapshotDrawer({ driver, snapshot, loading, error, onClose, onPickStopFromSnapshot }) {
+  if (!driver) return null;
+  return (
+    <BottomSheet open onClose={onClose} heights={STOP_DETAIL_HEIGHTS} ariaLabel={`Driver snapshot: ${driver.driverName || ''}`}>
+      <DriverSnapshotHeader driver={driver} snapshot={snapshot} onClose={onClose} />
+      <DriverSnapshotBody
+        driver={driver}
+        snapshot={snapshot}
+        loading={loading}
+        error={error}
+        onPanToStop={onPickStopFromSnapshot}
+      />
+    </BottomSheet>
   );
 }
 
@@ -3151,28 +3843,44 @@ function MapScreen() {
           )}
         </MobileDrawer>
 
-        {/* Stop/driver detail overlays — temporary full-screen renders of the
-            existing sidebars until PR 2 of M4.5 replaces them with drawers. */}
+        {/* Stop detail drawer — slides up over the map. Tabs Info / Notes /
+            Hours / PROs. Editing on Notes or Hours pins a sticky Save bar. */}
+        {!selectedDriver && selectedStop && (
+          <MobileStopDetailDrawer
+            stop={selectedStop}
+            note={notes.get(selectedStop.matchKey)}
+            onClose={() => setSelectedStop(null)}
+            onSave={async (draft) => {
+              await handleSave(draft);
+              // handleSave clears saveError on success; close the drawer if
+              // there was no error this cycle. (saveError is checked on the
+              // next render, so we read the post-save state via a setTimeout
+              // tick — but simplest: leave the drawer open on save so the
+              // user can confirm the green state, and rely on the X to dismiss.)
+            }}
+            saving={saving}
+            saveError={saveError}
+          />
+        )}
+
+        {/* Driver snapshot drawer — slides up over the map. Tap a stop row in
+            the snapshot to dismiss the drawer, pan the map, and open the stop
+            detail drawer for that stop. */}
         {selectedDriver && (
-          <DriverSnapshotSidebar
+          <MobileDriverSnapshotDrawer
             driver={selectedDriver}
             snapshot={snapshot}
             loading={snapshotLoading}
             error={snapshotError}
             onClose={() => setSelectedDriver(null)}
-            onPanToStop={handlePanToStop}
-            mobile
-          />
-        )}
-        {!selectedDriver && selectedStop && (
-          <StopSidebar
-            stop={selectedStop}
-            note={notes.get(selectedStop.matchKey)}
-            onClose={() => setSelectedStop(null)}
-            onSave={handleSave}
-            saving={saving}
-            saveError={saveError}
-            mobile
+            onPickStopFromSnapshot={(snapshotStop) => {
+              // The snapshot's stop shape differs from the live stops list
+              // (no matchKey), so close the driver drawer + pan the map.
+              // Opening the full stop detail drawer would need a live stop
+              // lookup by PRO — deferred to PR 3.
+              handlePanToStop(snapshotStop);
+              setSelectedDriver(null);
+            }}
           />
         )}
       </div>

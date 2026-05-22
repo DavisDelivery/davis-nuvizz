@@ -7,6 +7,94 @@ overlays). v0.5.1 = M4.1.6 pin-replacement (restriction icons become the
 marker itself when restricted). v0.6.0 = M4.2 (PRO pipeline fix, route
 matching fix, column toggle). v0.7.0 = M4.4 (filter toolbar, hours/closed-day
 scanner, time iconography). v0.7.1 = M4.5 PR 1 of 3 (mobile foundation).
+v0.7.2 = M4.5 PR 2 of 3 (stop-detail + driver-snapshot drawers).
+
+## v0.7.2 — M4.5 mobile drawers (PR 2 of 3)
+
+Replaces the temporary full-screen `StopSidebar` / `DriverSnapshotSidebar`
+overlays from PR 1 with proper slide-up bottom-sheet drawers. Desktop /
+tablet (≥768px) layouts remain unchanged.
+
+### New shared primitive — `BottomSheet`
+
+Pulled the slide / drag / snap / backdrop behavior out of `MobileDrawer` and
+into a reusable `BottomSheet` component. Each consumer picks its own snap
+stops (`SHEET_HEIGHTS` 30/60/95vh for the main drawer, `STOP_DETAIL_HEIGHTS`
+30/80/95vh for the stop and driver detail drawers — defaults to 80vh per
+brief P2/P4). Touch handling is still native (no library).
+
+`MobileDrawer` is now a thin tab-header wrapper over `BottomSheet`.
+
+### `MobileStopDetailDrawer` (brief P2)
+
+Tap a stop card (or marker) on mobile → this drawer slides up.
+
+- Header: PRO label + customer name + truncated address line + 44×44 × close
+  button.
+- Tabs: **Info** / **Notes** / **Hours** / **PROs**.
+- **Info** — read-only address, addr2 (amber callout if present), city/state/zip,
+  window times, items summary, load + driver line.
+- **Notes** — view mode renders the existing `ReadOnlyNoteView`. Tap **Edit**
+  to expand into the full edit form (priority flag chips, appt + liftgate
+  44×44 toggle rows, equipment-restriction chips, dock type chips, dock
+  notes textarea, appointment notes input, contacts editor with add/remove).
+  All controls are touch-sized (44×44 minimum).
+- **Hours** — view mode renders a 7-row read-only list. Edit mode shows the
+  M4.4 hours editor: 44×44 day open/closed toggles, **Copy Mon → Tue-Fri**
+  helper, per-day native `<input type="time">` pairs (44px tall) or a red
+  "Closed" pill with inline **Open** action.
+- **PROs** — list of PROs, each row 48px. Tap copies to clipboard + shows
+  a green "Copied" toast at the top of the drawer for 2 seconds.
+- **Sticky Save / Cancel bar** appears at the bottom of the drawer while in
+  edit mode on Notes or Hours. Buttons are 44px tall and clear the iOS
+  home-indicator safe area. Save calls the same `handleSave` path the
+  desktop sidebar uses.
+- **Discard-changes confirm** — closing the drawer with unsaved edits opens
+  a modal dialog asking "Discard changes?". "Keep editing" returns to the
+  drawer; "Discard" closes without saving.
+- **Cross-tab draft preservation** — the draft is held at the drawer level,
+  so switching tabs while in edit mode does not lose changes; a single
+  Save commits the entire customer-notes document.
+
+### `MobileDriverSnapshotDrawer` (brief P4)
+
+Tap a driver row in the main drawer's Drivers tab (or a driver marker on
+the map) → this drawer slides up.
+
+- Re-uses two newly extracted subcomponents from `DriverSnapshotSidebar`:
+  `DriverSnapshotHeader` (truck label, driver name, HOS line) and
+  `DriverSnapshotBody` (Route Summary / Today's Stops / Live Telemetry /
+  Performance Today sections). Desktop sidebar still renders the same
+  subcomponents inside its 380px aside.
+- Each stop row in the snapshot is tap-friendly. Tap pans the map to that
+  stop and closes the snapshot drawer. (Opening the stop detail drawer
+  from a snapshot tap is deferred to PR 3 — would need a live-stop lookup
+  by PRO since the snapshot uses a different row shape than the live
+  stops list.)
+
+### `DriverSnapshotSidebar` refactor
+
+Body extracted into `DriverSnapshotHeader` + `DriverSnapshotBody` so both
+the desktop aside and the mobile drawer render identical content. No
+behavioral change on desktop.
+
+### Build size
+
+App bundle went from 552KB → 569KB raw (+17KB), 151KB → 154KB gzipped
+(+3KB). Under the brief's 50KB code-split threshold; no `manualChunks` work
+needed in this PR.
+
+### What's deferred to PR 3
+
+- Map interaction polish: satellite-toggle icon-only mode on mobile,
+  driver marker labels hidden by default + tap-to-show.
+- Diagnostics page mobile layout (cards instead of tables; access via
+  the app-bar version chip menu — already wired in PR 1).
+- Edit-mode polish per brief P6: drag-to-reorder restrictions (not
+  applicable per brief), restriction-chip type-ahead selector if needed.
+- Tap-to-open-stop-detail from inside the driver snapshot drawer.
+- M4.5 test pass + `RESEARCH-mobile-breakpoints.md` + final version bump
+  to 0.8.0.
 
 ## v0.7.1 — M4.5 mobile foundation (PR 1 of 3)
 
