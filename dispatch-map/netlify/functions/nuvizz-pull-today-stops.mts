@@ -20,6 +20,15 @@ import fixture from '../../test/fixtures/nuvizz-today-stops.json' with { type: '
 
 const NUVIZZ_BASE = process.env.NUVIZZ_BASE_URL || 'https://portal.nuvizz.com/deliverit/openapi/v7';
 
+interface SignalSources {
+  // Raw address line 2 string — Davis's existing "dumping ground" convention.
+  addressLine2: string | null;
+  // All order-instruction comments joined by '\n'. Filtered to cmtType ORD_IN or
+  // commentDescription prefix 'SPL-INSTR-TEXT:'. Raw text preserved verbatim so
+  // the scanner can do exact-pattern matching downstream.
+  orderInstructions: string | null;
+}
+
 interface NormalizedStop {
   pro: string | null;          // primary PRO (= stopNbr in this tenant) — kept for back-compat
   pros: string[];              // all PROs for this stop (currently length-1; future-proof for grouping)
@@ -45,6 +54,7 @@ interface NormalizedStop {
   itemsSummary: string;
   customerAccount: string | null;
   driverName: string | null;
+  signalSources: SignalSources;
   raw: unknown;
 }
 
@@ -66,6 +76,25 @@ function todayUTC(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
+// Pull "SPL-INSTR-TEXT" order instructions out of stop.comments[].
+// NuVizz tags these with cmtType === 'ORD_IN' and a 'SPL-INSTR-TEXT: ...' prefix
+// on commentDescription. We keep the raw description (prefix included) joined by
+// newline so downstream scanners and the UI can both work with it verbatim.
+function extractOrderInstructions(stop: any): string | null {
+  const comments = stop?.comments;
+  if (!Array.isArray(comments) || !comments.length) return null;
+  const lines: string[] = [];
+  for (const c of comments) {
+    if (!c) continue;
+    const desc = typeof c.commentDescription === 'string' ? c.commentDescription : '';
+    if (!desc) continue;
+    const isOrderInstr = c.cmtType === 'ORD_IN' || desc.startsWith('SPL-INSTR-TEXT:');
+    if (isOrderInstr) lines.push(desc);
+  }
+  return lines.length ? lines.join('\n') : null;
+}
+
+
 function normalizeStop(raw: any): NormalizedStop {
   const stop = raw.stop || raw;
   const exec = raw.stopExecutionInfo || {};
@@ -85,6 +114,8 @@ function normalizeStop(raw: any): NormalizedStop {
   // (= stop.stopNbr) as the user-facing identifier.
   const stopNbr: string | null = stop.stopNbr ?? null;
   const pros: string[] = stopNbr ? [stopNbr] : [];
+  const addr2 = addr.addr2 ?? null;
+  const orderInstructions = extractOrderInstructions(stop);
   return {
     pro: stopNbr,
     pros,
@@ -96,7 +127,7 @@ function normalizeStop(raw: any): NormalizedStop {
     status: exec.stopStatus || stop.status || null,
     businessName: addr.name || stop.custInfo?.custName || null,
     addr1: addr.addr1 ?? null,
-    addr2: addr.addr2 ?? null,
+    addr2,
     city: addr.city ?? null,
     state: addr.state ?? null,
     zip: addr.zip ?? null,
@@ -110,6 +141,7 @@ function normalizeStop(raw: any): NormalizedStop {
     itemsSummary: items.join(' · ') || '—',
     customerAccount: stop.accountNumber || stop.custInfo?.custAccNbr || null,
     driverName: load.driverName ?? null,
+    signalSources: { addressLine2: addr2, orderInstructions },
     raw,
   };
 }

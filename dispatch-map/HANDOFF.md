@@ -644,6 +644,217 @@ below.
   stops sortable by Flag / Customer / City / PRO via the `useSortable` hook +
   `<SortableTh/>` component — per the standing dev rule.
 
+## What's built — M2.1 (auto-scanner)
+
+Passive scanner that watches each stop's NuVizz signals and auto-populates
+`customer_notes.equipment_restrictions` when known patterns appear. v1 covers
+the `no_tractor_trailer` flag only; the pattern table is hardcoded and easy to
+extend.
+
+### Where SPL-INSTR-TEXT lives in the NuVizz response
+
+Confirmed by inspecting the live `/load/info/{loadNbr}/{companyCode}` response
+(the same payload that `nuvizz-pull-today-stops.mts` already pulls — no second
+endpoint needed). Each stop carries:
+
+```
+Load.stops[].stop.comments[]   // array of comment objects
+```
+
+Each comment with `cmtType === 'ORD_IN'` is an order instruction. Its
+`commentDescription` field is prefixed `"SPL-INSTR-TEXT: ..."`. The function
+joins all such comments by `\n` and surfaces them as
+`signalSources.orderInstructions` on the normalized stop payload.
+
+Sample (real, today): 1,994 comments across 713 stops, 1,280 of which are
+`SPL-INSTR-TEXT:` prefixed.
+
+### Performance — zero extra NuVizz calls
+
+The original spec assumed we might need a per-PRO fetch. We do not. The
+existing `/load/info/` response already contains `stop.comments[]` inline, so
+the scanner runs entirely against data we were already fetching. Map load time
+is unchanged.
+
+### Signal sources scanned
+
+```
+signalSources.addressLine2      // raw addr2 string — DAVIS-curated, trusted
+signalSources.orderInstructions // joined SPL-INSTR-TEXT comments — ULINE, advisory
+```
+
+Both raw, both nullable. Per the standing rule we preserve raw — the scanner
+reads these, doesn't mutate them.
+
+### Source-locked flags (v0.3.0)
+
+The two sources have different confidence levels, so they map to different
+flags. Same physical icon (truck-with-slash) but different color:
+
+| Source | Flag | Marker | Trust |
+|---|---|---|---|
+| `addressLine2` | `no_tractor_trailer` | red truck-slash pin | Davis dispatcher curated |
+| `orderInstructions` | `uline_straight_truck` | amber truck-slash pin | Uline-supplied, verify |
+
+Source-locked, not text-locked: the same phrase (e.g. "STRAIGHT TRUCK ONLY")
+can appear in either field, but the trust level is determined by *who wrote
+it*, not what they wrote.
+
+### Pattern rules
+
+Hardcoded in [`src/lib/signal-scanner.ts`](src/lib/signal-scanner.ts).
+Two separate lists, one per source (`ADDR2_PATTERNS`, `ORDER_INSTR_PATTERNS`).
+v0.3.0 covers Davis "NO TRACTOR TRL / NO TT / STRAIGHT TRUCK ONLY / 26FT MAX /
+NO 53" phrasings, and Uline's standard SPL-INSTR wording.
+
+To extend: append to the appropriate `*_PATTERNS` array (or add a new source
+entry under `SOURCE_RULES`). When the rule set grows past ~5 flags, move to a
+Firestore `scanner_config` doc.
+
+### Legacy migration
+
+v0.2.0 wrote `no_tractor_trailer` for *any* hit, including SPL-INSTR-TEXT.
+The v0.3.0 writer auto-migrates those docs: if `auto_sources.no_tractor_trailer`
+contains only `'orderInstructions'` and `manual_overrides.equipment_restrictions`
+is false, the writer swaps `no_tractor_trailer` → `uline_straight_truck` on
+the next scan. Manual overrides are always respected.
+
+### Writer behavior
+
+[`src/lib/customer-notes-writer.ts`](src/lib/customer-notes-writer.ts) walks
+scan results, groups by `match_key` (so two stops at the same customer merge
+into one write), and chunks writes into Firestore batches of 450. Each write
+is a `setDoc(..., {merge: true})` so we never clobber human fields.
+
+Schema additions on `customer_notes`:
+
+| Field | Type | Purpose |
+|---|---|---|
+| `manual_overrides.equipment_restrictions` | `boolean` | Dispatcher locked this field against the auto-scanner |
+| `auto_sources` | `{ [flag]: ('addressLine2' \| 'orderInstructions')[] }` | Which sources detected each flag |
+| `auto_matches` | `{ [flag]: { source, text, pattern }[] }` | Exact substring + pattern that hit |
+| `auto_detected_at` | `Timestamp` | Last auto-scan write |
+| `auto_detected_by` | `string` | `'auto-scanner v0.2.0'` |
+
+`equipment_restrictions` uses `arrayUnion` so the auto-scanner adds the flag
+without clobbering anything else the dispatcher has set on that array.
+
+### Manual-override mechanism
+
+The auto-scanner respects two signals:
+
+1. **`manual_overrides.equipment_restrictions === true`** — set explicitly by
+   the "Override auto-detection" button in the sidebar. While true, the scanner
+   updates `auto_*` audit fields but never touches `equipment_restrictions`.
+2. **Implicit override on save** — `handleSave()` in `App.jsx` compares the
+   draft `equipment_restrictions` against the existing doc as sets. If they
+   differ (added, removed, or replaced), the flag flips to `true` automatically.
+
+The override never disables the audit trail, so dispatchers can always see
+"the scanner would have detected X" via the Detection Source section.
+
+### UI disclosure
+
+The sidebar has a "Detection source" section (above the existing Customer
+Notes block). For every flag currently set OR currently detected, it shows:
+
+- The flag label (e.g. "No tractor trailer")
+- A small badge — `Auto-detected`, `Manually set`, `Auto + manual`, or
+  `Override · auto also detected`
+- The matched text strings indented under the source label
+
+When auto detections exist and `manual_overrides.equipment_restrictions` is
+false, an "Override auto-detection" button is shown that flips the flag.
+
+### Marker rendering
+
+Three tiers (highest confidence wins):
+
+| Variant | When | Pin | zIndex |
+|---|---|---|---|
+| Davis no-TT | `equipment_restrictions` includes `no_tractor_trailer` OR live scan hit | red truck-slash | 600 |
+| Uline advisory | `equipment_restrictions` includes `uline_straight_truck` OR live scan hit | amber truck-slash | 500 |
+| Default | otherwise | standard colored pin via `flagColor()` | — |
+
+The first-paint "live scan" path means a stop's marker takes the right color
+immediately, before the Firestore round-trip. Once the write lands the
+doc-driven path keeps it in place.
+
+### General notes field
+
+Schema field `general_notes: string` on customer_notes. Free-form textarea in
+the sidebar Edit form (above Contacts). Persists per `match_key` like every
+other field — recurs automatically on future stops at the same customer.
+Designed for "anything that recurs" — gate codes, security desk procedures,
+specific contacts to call, weird parking instructions, etc.
+
+The existing structured fields (`receiving_hours`, `contacts[]`,
+`appointment_notes`, `dock_notes`) cover the common cases; `general_notes` is
+the catch-all when the recurring info doesn't fit a structured slot.
+
+### Satellite toggle
+
+`<MapScreen/>` carries a `satelliteMode` state and renders a toggle button
+just below the top-right status pill. ON → `google.maps.MapTypeId.HYBRID`
+(satellite imagery + road labels), OFF → `ROADMAP`. Hybrid keeps road labels
+so the dispatcher stays oriented while visually verifying Uline straight-truck
+advisories against actual site geometry (truck courts, gate sizes, etc.).
+
+### Search (v0.4.0)
+
+Top of the left rail. Substring match across PRO digits (leading zeros
+stripped), `businessName`, `addr1`, `city`, `zip`. Filters both the stops
+table AND the map markers — the dispatcher's map shrinks to the search
+result while typing. Clear with the X button or by deleting the input.
+
+### Expandable map legend (v0.4.0)
+
+Each legend item is a count + chevron. Click to expand a scrollable list of
+business names that currently match that bucket (Davis-verified, Uline
+advisory, has-notes, no-notes). Click a name in the list to open its sidebar
+AND pan/zoom the map to it (`focusStop` helper). Cheap to compute — runs
+once per render at ~700 stops.
+
+### Stops mini-table dot colors (v0.4.0)
+
+Dots now mirror the map marker color so the table and the map agree at a
+glance:
+
+1. `no_tractor_trailer` present (or live scan hit) → red
+2. `uline_straight_truck` present (or live scan hit) → amber
+3. priority_flag set → red/yellow/green
+4. has any restriction/note → purple
+5. unflagged → gray
+
+Order matters: Davis-verified wins over everything else.
+
+### Confirm / Dismiss Uline advisory (v0.4.0)
+
+When a stop carries `uline_straight_truck`, two buttons appear in the
+sidebar's Detection Source section:
+
+- **Confirm (it's true)** — promotes the advisory to `no_tractor_trailer`
+  (Davis-verified, red pin). Sets `manual_overrides.equipment_restrictions =
+  true` AND adds `uline_straight_truck` to `auto_scan_dismissed` so the
+  scanner can't reintroduce it.
+- **Dismiss (wrong)** — removes `uline_straight_truck` from
+  `equipment_restrictions` and adds it to `auto_scan_dismissed`. Marker drops
+  off the red/amber tier on next refresh.
+
+**New schema field:** `auto_scan_dismissed: string[]` — flags the user
+explicitly told the scanner to leave alone. The writer skips detected flags
+present in this list (no audit-trail update, no equipment_restrictions
+change). This is more surgical than the global `manual_overrides` lock — it
+silences specific advisories without disabling the whole field.
+
+### Detection Source label semantics
+
+v0.3.0 only shows "Manually set" / "Override · auto also detected" when
+`manual_overrides.equipment_restrictions === true`. Without that flag, a value
+in `equipment_restrictions` is assumed to be the auto-scanner's write
+(because the scanner is also a writer). The earlier "Auto + manual" badge was
+ambiguous and is gone.
+
 ## What's built — M4
 
 - `<MapScreen/>` has a "Show live drivers" toggle in the left rail.
