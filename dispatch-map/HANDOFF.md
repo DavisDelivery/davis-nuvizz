@@ -5,7 +5,90 @@ M3 + M5 still pending. v0.4.0 = M4.1 (resizable panel, search, driver
 labels, day-snapshot). v0.5.0 = Part 9 restriction iconography (badge
 overlays). v0.5.1 = M4.1.6 pin-replacement (restriction icons become the
 marker itself when restricted). v0.6.0 = M4.2 (PRO pipeline fix, route
-matching fix, column toggle).
+matching fix, column toggle). v0.7.0 = M4.4 (filter toolbar, hours/closed-day
+scanner, time iconography). v0.7.1 = M4.5 PR 1 of 3 (mobile foundation).
+
+## v0.7.1 — M4.5 mobile foundation (PR 1 of 3)
+
+First slice of mobile responsive support. Adds the layout shell only — stop
+detail and driver snapshot still ride the existing right-side sidebars
+(rendered full-screen on mobile via a `mobile` prop until PR 2 replaces them
+with proper drawers).
+
+### What's mobile (<768px)
+
+- **App bar** — `MobileAppBar` replaces the desktop header. 48px compact, brand
+  blue, "D" mark + "Dispatch" label + tap-able version chip. Chip menu lets
+  the dispatcher jump to Diagnostics or back to Map (the desktop tab nav
+  has no room in the small bar).
+- **Map fills the viewport** — no left filter rail, no top sheet, no
+  persistent bottom nav. Map sits behind everything; status pill rides
+  top-right.
+- **FAB** — `MobileFAB`. Bottom-right, 56px circle, brand blue, list icon.
+  Open it and the drawer slides up; the FAB rotates 45° to act as the close
+  button. Sits above iOS safe-area inset.
+- **Mobile drawer** — `MobileDrawer`. Slides up from the bottom edge with a
+  drag handle. Three height stops (mini 30vh / default 60vh / expanded 95vh)
+  snap-aligned on release. Backdrop dim + tap-to-dismiss. Three tabs:
+  - **Stops** — search input + count, then a card list (1 tap = pan map to
+    stop + close drawer + open the existing StopSidebar full-screen).
+  - **Filters** — desktop `FilterPanel` re-used (priority flag, appt,
+    liftgate, has-any-restriction, unflagged, equipment), with the M4.4
+    map-display toggles stacked below. Clustering toggle is required on
+    mobile (locked ON, brief P3.4).
+  - **Drivers** — list of active Motive drivers. Tap a row pans the map
+    and opens the existing DriverSnapshotSidebar full-screen.
+- **Version chip in-map** — small `v0.7.1` chip positioned above the FAB so
+  dispatcher can confirm the live version without opening the bar menu.
+
+### Desktop / tablet (≥768px)
+
+Unchanged. The `MapScreen` branches on `isMobile` early and falls through to
+the existing JSX otherwise. M4.4 filter toolbar, resizable left panel,
+StopMiniTable, sidebars, footer — all behave exactly as before.
+
+### Why no separate `MobileApp.jsx`
+
+Per the brief's Rules of Engagement (prefer conditional renders to splitting
+single-file App.jsx). Adds ~400 lines to App.jsx but keeps every component
+co-located with its data plumbing. PR 2 + PR 3 will continue adding inline
+mobile components rather than spawning new files, unless the diff balloons.
+
+### localStorage keys added
+
+- `dispatchMap.mobileDrawerTab` — last-active drawer tab (`stops` | `filters`
+  | `drivers`). Defaults to `stops`. Drawer height intentionally NOT persisted.
+
+### Touch targets
+
+All mobile buttons / list rows are at minimum 44×44px (FAB is 56px, drawer
+tab headers 44px min-height, stop cards 64px, driver rows 56px, refresh
+button 32px+ padded). The search input is 44px tall. No hover-dependent
+behavior on any mobile control.
+
+### iOS safe-area handling
+
+- App bar uses `env(safe-area-inset-top)` padding (matches the pre-existing
+  desktop header pattern).
+- FAB and version chip add `env(safe-area-inset-bottom)` to their bottom
+  offset so neither hides under the home indicator.
+- Drawer's bottom padding consumes `env(safe-area-inset-bottom)` so its
+  interior content clears the home indicator.
+
+### What's deferred to PR 2 / PR 3
+
+- **PR 2**: replace `StopSidebar`/`DriverSnapshotSidebar` mobile overlays
+  with proper slide-up drawers (Info / Notes / Hours / PROs tabs for stops;
+  full snapshot drawer for drivers).
+- **PR 3**: marker-label tap behavior, satellite icon-only toggle, edit-mode
+  optimizations, diagnostics layout cards, M4.5 test pass + RESEARCH doc +
+  final version bump to 0.8.0.
+
+### Real-device testing
+
+Not done in this PR — the agent cannot test on actual iOS/Android. Verified
+in Chrome DevTools mobile emulation (iPhone 14 Pro and Pixel 7 viewport
+profiles). Real-device verification is dispatcher / Chad responsibility.
 
 ## v0.6.0 — M4.2 (PRO pipeline + route matching + column toggle)
 
