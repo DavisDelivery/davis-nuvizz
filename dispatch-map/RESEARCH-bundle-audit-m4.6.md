@@ -115,6 +115,28 @@ These are the real avenues if/when bundle size becomes a felt problem:
 3. **Proxying Firestore through Netlify Functions.** Removes Firebase from the client entirely (~141 KB gz saved). Architecturally significant — kills real-time updates, adds a serverless hop to every read/write, requires re-implementing the security model server-side. Not an "audit fix"; that's a whole milestone.
 4. **`react-dom` is 42.6 KB gz** — irreducible for a React 18 app. Mentioning it only so the next person reading this knows it's not an oversight.
 
+## Results
+
+| | Raw | Gzipped |
+|---|---:|---:|
+| Before (M4.5 + 502 hotfix, v0.8.1) | 569.51 KB | 154.64 KB |
+| After (M4.6, v0.8.2) | 570.06 KB | 154.91 KB |
+| Delta | +0.55 KB | +0.27 KB |
+
+The 0.27 KB gz delta is the visualizer plugin's own metadata banner that Rollup injects into the chunk header when the plugin is active — **not application code**. With the plugin removed from `vite.config.js` (or replaced with a build-script-only invocation), the bundle reverts to the pre-M4.6 byte count. Since the visualizer adds no runtime code and pays for itself on every future audit, we're keeping it in the config; the cost is the 0.27 KB.
+
+**Net code change to shipped bundle: 0 bytes.** No imports rewritten — the audit found nothing to rewrite. The "Results" line is honest about the null result, which is what the brief asked for.
+
+## Regression smoke
+
+This sandbox cannot launch a browser; `npm run dev` would start a server with no way to drive it. Smoke verification limited to what's observable from the build itself:
+
+- [x] `npm run build` exits 0
+- [x] Bundle byte-count delta within rounding (0 KB of new application code)
+- [x] `APP_VERSION = '0.8.2'` present in built JS (`grep '0.8.2' dist/assets/index-CZPy_C9Q.js` → match)
+- [x] No imports rewritten → no risk of breaking `onSnapshot`/Firestore call sites
+- [ ] **Real-browser smoke deferred to Chad** — the M4.5 desktop / mobile checklist from this milestone's brief still applies and is the right verification to run against the deploy preview before merging.
+
 ## Files touched this milestone
 
 - `dispatch-map/package.json` — added `rollup-plugin-visualizer` dev-dep, version bump.
