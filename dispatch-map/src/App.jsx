@@ -16,6 +16,7 @@ import {
   MapPin, RefreshCw, X, Filter, Truck, Save, Plus, Trash2,
   Activity, ChevronDown, ChevronUp, Eye, EyeOff,
   Search, Tag, Tags, ArrowLeft, Gauge, Clock, MapPinned,
+  Info,
 } from 'lucide-react';
 import {
   collection, doc, getDoc, onSnapshot, setDoc, serverTimestamp,
@@ -27,7 +28,7 @@ import { haversineMiles, naiveEtaMinutes, formatEtaClockTime } from './lib/dista
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.4.0';
+const APP_VERSION = '0.5.0';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -73,10 +74,82 @@ const MAPS_KEY = import.meta.env.VITE_GOOGLE_MAPS_API_KEY;
 const LS_PANEL_WIDTH = 'dispatchMap.leftPanelWidth';
 const LS_DRIVER_LABELS = 'dispatchMap.driverLabelsVisible';
 const LS_SEARCH_HISTORY = 'dispatchMap.searchHistory';
+const LS_LEGEND_EXPANDED = 'dispatchMap.legendExpanded';
 const PANEL_DEFAULT_WIDTH = 320;
 const PANEL_MIN_WIDTH = 240;
 // Max width is computed at runtime as 60% of viewport — see useResizablePanel.
 const MOBILE_BREAKPOINT = 768;
+
+// Part 9: restriction iconography. Each entry is a single source of truth
+// used both inside the marker SVG (rendered via data URL) and by the React
+// <RestrictionIcon/> in the sidebar + legend. The `glyph` is a raw SVG
+// fragment positioned inside a 14×14 viewBox (the badge circle is drawn for
+// you — your glyph just needs to fit inside). `prohibition: true` adds the
+// red-slash overlay (universal "no" symbol). `label_text` is a 2-char inline
+// label used for the "26"/"53" restrictions.
+const RESTRICTION_ICONS = {
+  no_tractor_trailer: {
+    label: 'No tractor trailer',
+    short: 'No T/T',
+    bg: '#dc2626',
+    // Side-view tractor (small box) + trailer (long box) + 2 wheels.
+    glyph: '<rect x="2" y="6.5" width="7" height="3.5" fill="white"/><rect x="9" y="5" width="3" height="5" fill="white"/><circle cx="4" cy="10.5" r="1" fill="#dc2626"/><circle cx="10.5" cy="10.5" r="1" fill="#dc2626"/>',
+    prohibition: true,
+  },
+  liftgate_required: {
+    label: 'Liftgate required',
+    short: 'Liftgate',
+    bg: '#7c3aed',
+    // Platform bar + up-arrow
+    glyph: '<path d="M2 11 L12 11" stroke="white" stroke-width="1.5" stroke-linecap="round"/><path d="M7 9 L7 3 M4.5 5.5 L7 3 L9.5 5.5" stroke="white" stroke-width="1.5" stroke-linecap="round" fill="none"/>',
+  },
+  '26ft_max': {
+    label: '26 ft max',
+    short: '26ft max',
+    bg: '#ea580c',
+    label_text: '26',
+  },
+  no_53ft: {
+    label: 'No 53 ft',
+    short: 'No 53ft',
+    bg: '#dc2626',
+    label_text: '53',
+    prohibition: true,
+  },
+  appointment_required: {
+    label: 'Appointment required',
+    short: 'Appt',
+    bg: '#0891b2',
+    // Clock face — circle + hands
+    glyph: '<circle cx="7" cy="7" r="3.5" fill="none" stroke="white" stroke-width="1.3"/><path d="M7 4.5 L7 7 L8.8 8" stroke="white" stroke-width="1.3" stroke-linecap="round" fill="none"/>',
+  },
+  box_truck_only: {
+    label: 'Box truck only',
+    short: 'Box only',
+    bg: '#475569',
+    // Box truck — square body + cab
+    glyph: '<rect x="3" y="6" width="6" height="4" fill="white"/><path d="M9 7 L9 10 L12 10 L12 8 L10.5 7 Z" fill="white"/><circle cx="4.5" cy="10.5" r="1" fill="#475569"/><circle cx="10.5" cy="10.5" r="1" fill="#475569"/>',
+  },
+  no_overhead_clearance: {
+    label: 'Low overhead clearance',
+    short: 'Low clear',
+    bg: '#a16207',
+    // Bridge / clearance arch
+    glyph: '<path d="M2 11 L2 6 Q7 2 12 6 L12 11" fill="none" stroke="white" stroke-width="1.5" stroke-linecap="round"/><path d="M5 11 L5 9 M9 11 L9 9" stroke="white" stroke-width="1.3"/>',
+  },
+};
+// Recognized aliases — straight_truck_only is sometimes used as a synonym
+// for box_truck_only in TMS systems.
+const RESTRICTION_ALIASES = {
+  straight_truck_only: 'box_truck_only',
+};
+const UNKNOWN_RESTRICTION = {
+  label: 'Unknown restriction',
+  short: 'Unknown',
+  bg: '#eab308',
+  // Fallback ⚠ exclamation
+  glyph: '<text x="7" y="10" font-family="sans-serif" font-size="9" font-weight="bold" fill="white" text-anchor="middle">!</text>',
+};
 
 // ---------- hooks ----------
 
@@ -433,13 +506,98 @@ function flagColor(note) {
   return UNFLAGGED_TINT;
 }
 
-function pinSvg(color) {
-  // Compact map pin in the given color. data: URI works as a Marker icon src.
+// Resolve a stored restriction string to a canonical key in RESTRICTION_ICONS.
+// Unknown values pass through untouched so the caller can detect them.
+function resolveRestrictionKey(raw) {
+  if (!raw) return null;
+  return RESTRICTION_ALIASES[raw] || raw;
+}
+
+// Build the list of restriction badge keys for a note. Includes the array-
+// based equipment_restrictions plus the boolean liftgate_required and
+// appointment_required fields, in display order. Returns [] if note is null.
+function getRestrictionBadgeKeys(note) {
+  if (!note) return [];
+  const keys = [];
+  for (const r of note.equipment_restrictions || []) {
+    const resolved = resolveRestrictionKey(r);
+    if (resolved && !keys.includes(resolved)) keys.push(resolved);
+  }
+  if (note.liftgate_required && !keys.includes('liftgate_required')) keys.push('liftgate_required');
+  if (note.appointment_required && !keys.includes('appointment_required')) keys.push('appointment_required');
+  return keys;
+}
+
+// Raw SVG fragment for a single 14×14 badge (used inside the marker SVG
+// data URL AND inside the React <RestrictionIcon/>). Logs unknown kinds
+// once to the console so they're discoverable rather than silent.
+const __unknownRestrictionsLogged = new Set();
+function badgeInnerSvg(kind) {
+  let def = RESTRICTION_ICONS[kind];
+  if (!def) {
+    if (!__unknownRestrictionsLogged.has(kind)) {
+      __unknownRestrictionsLogged.add(kind);
+      // eslint-disable-next-line no-console
+      console.warn(`[restriction-icons] unknown restriction kind: "${kind}" — rendering generic warning badge`);
+    }
+    def = UNKNOWN_RESTRICTION;
+  }
+  const slash = def.prohibition
+    ? '<line x1="2.5" y1="2.5" x2="11.5" y2="11.5" stroke="white" stroke-width="2" stroke-linecap="round"/>'
+    : '';
+  const labelText = def.label_text
+    ? `<text x="7" y="9.5" font-family="system-ui, sans-serif" font-size="6" font-weight="700" fill="white" text-anchor="middle">${def.label_text}</text>`
+    : '';
+  return `
+    <circle cx="7" cy="7" r="7" fill="${def.bg}" stroke="white" stroke-width="1.5"/>
+    ${def.glyph || ''}
+    ${labelText}
+    ${slash}
+  `;
+}
+
+// Compose the marker SVG with optional restriction badges. badges = []
+// keeps the historical 28×36 pin (faster, smaller); any badges expand to
+// 44×44 with badges stacked along the right edge. Up to 2 badges render;
+// 3+ collapse to first badge + "+N" overflow indicator.
+function pinSvg(color, badges = []) {
+  if (!badges.length) {
+    const svg = `
+      <svg xmlns="http://www.w3.org/2000/svg" width="28" height="36" viewBox="0 0 28 36">
+        <path d="M14 1c-7 0-13 5.4-13 12 0 9 13 22 13 22s13-13 13-22c0-6.6-6-12-13-12z"
+          fill="${color}" stroke="white" stroke-width="2"/>
+        <circle cx="14" cy="13" r="4.5" fill="white"/>
+      </svg>`;
+    return 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent(svg);
+  }
+
+  // Single badge centered vertically beside the pin; multi-badge stacked.
+  let badgeMarkup;
+  if (badges.length === 1) {
+    badgeMarkup = `<g transform="translate(28,18)">${badgeInnerSvg(badges[0])}</g>`;
+  } else if (badges.length === 2) {
+    badgeMarkup = `
+      <g transform="translate(28,12)">${badgeInnerSvg(badges[0])}</g>
+      <g transform="translate(28,26)">${badgeInnerSvg(badges[1])}</g>
+    `;
+  } else {
+    // 3+: first badge + overflow "+N"
+    const overflow = badges.length - 1;
+    badgeMarkup = `
+      <g transform="translate(28,12)">${badgeInnerSvg(badges[0])}</g>
+      <g transform="translate(28,26)">
+        <circle cx="7" cy="7" r="7" fill="#0f172a" stroke="white" stroke-width="1.5"/>
+        <text x="7" y="9.5" font-family="system-ui, sans-serif" font-size="6.5" font-weight="700" fill="white" text-anchor="middle">+${overflow}</text>
+      </g>
+    `;
+  }
+
   const svg = `
-    <svg xmlns="http://www.w3.org/2000/svg" width="28" height="36" viewBox="0 0 28 36">
+    <svg xmlns="http://www.w3.org/2000/svg" width="44" height="44" viewBox="0 0 44 44">
       <path d="M14 1c-7 0-13 5.4-13 12 0 9 13 22 13 22s13-13 13-22c0-6.6-6-12-13-12z"
         fill="${color}" stroke="white" stroke-width="2"/>
       <circle cx="14" cy="13" r="4.5" fill="white"/>
+      ${badgeMarkup}
     </svg>`;
   return 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent(svg);
 }
@@ -496,6 +654,29 @@ function bumpProHistory(existing, pro) {
   if (last && last.pro === pro && last.date === today) return arr;
   const next = [...arr, { pro, date: today }];
   return next.slice(-20);
+}
+
+// Part 9: render a single restriction icon at the given size. The inner SVG
+// is identical to what the marker embeds, so legend/sidebar/marker stay
+// visually consistent. Uses dangerouslySetInnerHTML inside an <svg> — the
+// browser preserves SVG namespace because the parent is svg, so the inner
+// nodes parse correctly.
+function RestrictionIcon({ kind, size = 16, title }) {
+  const resolved = resolveRestrictionKey(kind);
+  const def = RESTRICTION_ICONS[resolved] || UNKNOWN_RESTRICTION;
+  const titleText = title || def.label;
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 14 14"
+      role="img"
+      aria-label={titleText}
+    >
+      <title>{titleText}</title>
+      <g dangerouslySetInnerHTML={{ __html: badgeInnerSvg(resolved || 'unknown') }} />
+    </svg>
+  );
 }
 
 // M4.1 — case-insensitive contains-match across business name, PRO,
@@ -623,6 +804,64 @@ function SearchBar({ value, onChange, onSubmit, history, inputRef, resultCount, 
               {h}
             </button>
           ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Part 9: collapsible legend that explains both the priority-flag color
+// language and the restriction icons. Default collapsed; expanded state
+// persists to localStorage. Lives directly under <FilterPanel/>.
+function Legend({ expanded, setExpanded }) {
+  return (
+    <div className="border-t">
+      <button
+        onClick={() => setExpanded((v) => !v)}
+        className="w-full px-3 py-2 flex items-center justify-between text-xs font-semibold text-slate-600 hover:bg-slate-50"
+        aria-expanded={expanded}
+      >
+        <span className="inline-flex items-center gap-1.5">
+          <Info size={13} /> Legend
+        </span>
+        {expanded ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+      </button>
+      {expanded && (
+        <div className="px-3 pb-3 space-y-3 text-[11px]">
+          <div>
+            <div className="text-[10px] uppercase font-semibold text-slate-500 mb-1">Priority flag</div>
+            <div className="space-y-1">
+              {['red', 'yellow', 'green'].map((k) => (
+                <div key={k} className="flex items-center gap-2">
+                  <span className="w-2.5 h-2.5 rounded-full" style={{ background: FLAG_COLORS[k] }} />
+                  <span className="capitalize">{k}</span>
+                </div>
+              ))}
+              <div className="flex items-center gap-2">
+                <span className="w-2.5 h-2.5 rounded-full" style={{ background: RESTRICTION_TINT }} />
+                <span>Restricted (no flag set)</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="w-2.5 h-2.5 rounded-full" style={{ background: UNFLAGGED_TINT }} />
+                <span>No notes</span>
+              </div>
+            </div>
+          </div>
+          <div>
+            <div className="text-[10px] uppercase font-semibold text-slate-500 mb-1">Restriction icons</div>
+            <div className="space-y-1">
+              {Object.entries(RESTRICTION_ICONS).map(([key, def]) => (
+                <div key={key} className="flex items-center gap-2">
+                  <RestrictionIcon kind={key} size={16} />
+                  <span>{def.label}</span>
+                </div>
+              ))}
+              <div className="flex items-center gap-2 pt-1">
+                <span className="inline-flex items-center justify-center w-4 h-4 rounded-full text-white text-[8px] font-bold" style={{ background: '#0f172a' }}>+N</span>
+                <span className="text-slate-500">Three or more restrictions</span>
+              </div>
+            </div>
+          </div>
         </div>
       )}
     </div>
@@ -887,8 +1126,9 @@ function StopSidebar({ stop, note, onClose, onSave, saving, saveError }) {
                       <button
                         key={o.value}
                         onClick={() => toggleRestriction(o.value)}
-                        className={`px-2 py-0.5 rounded-full text-[11px] border ${active ? 'bg-purple-600 text-white border-purple-600' : 'bg-white border-slate-300 text-slate-700'}`}
+                        className={`px-2 py-0.5 rounded-full text-[11px] border inline-flex items-center gap-1.5 ${active ? 'bg-purple-600 text-white border-purple-600' : 'bg-white border-slate-300 text-slate-700'}`}
                       >
+                        <RestrictionIcon kind={o.value} size={14} />
                         {o.label}
                       </button>
                     );
@@ -1221,13 +1461,48 @@ function SnapshotSkeleton() {
 function ReadOnlyNoteView({ note }) {
   const items = [];
   if (note.priority_flag) items.push({ k: 'Flag', v: <span style={{ color: FLAG_COLORS[note.priority_flag] }} className="font-semibold capitalize">{note.priority_flag}</span> });
-  if (note.appointment_required) items.push({ k: 'Appointment', v: 'Required' + (note.appointment_notes ? ` — ${note.appointment_notes}` : '') });
-  if (note.liftgate_required) items.push({ k: 'Liftgate', v: 'Required' });
+  if (note.appointment_required) {
+    items.push({
+      k: 'Appointment',
+      v: (
+        <span className="inline-flex items-center gap-1.5">
+          <RestrictionIcon kind="appointment_required" size={14} />
+          Required{note.appointment_notes ? ` — ${note.appointment_notes}` : ''}
+        </span>
+      ),
+    });
+  }
+  if (note.liftgate_required) {
+    items.push({
+      k: 'Liftgate',
+      v: (
+        <span className="inline-flex items-center gap-1.5">
+          <RestrictionIcon kind="liftgate_required" size={14} />
+          Required
+        </span>
+      ),
+    });
+  }
   if (note.dock_type) items.push({ k: 'Dock', v: note.dock_type.replace('_', ' ') });
   if (note.equipment_restrictions?.length) {
     items.push({
       k: 'Restrictions',
-      v: note.equipment_restrictions.map(r => EQUIPMENT_OPTIONS.find(o => o.value === r)?.label || r).join(', '),
+      v: (
+        <ul className="space-y-1 mt-0.5">
+          {note.equipment_restrictions.map((r) => {
+            const key = resolveRestrictionKey(r);
+            const label = RESTRICTION_ICONS[key]?.label
+              || EQUIPMENT_OPTIONS.find((o) => o.value === r)?.label
+              || r;
+            return (
+              <li key={r} className="inline-flex items-center gap-1.5 mr-2">
+                <RestrictionIcon kind={r} size={14} />
+                <span>{label}</span>
+              </li>
+            );
+          })}
+        </ul>
+      ),
     });
   }
   const hoursAny = Object.values(note.receiving_hours || {}).some(Boolean);
@@ -1351,6 +1626,7 @@ function MapScreen() {
   const [saveError, setSaveError] = useState(null);
   const [showDrivers, setShowDrivers] = useState(false);
   const [showDriverLabels, setShowDriverLabels] = useState(() => safeReadJSON(LS_DRIVER_LABELS, true));
+  const [legendExpanded, setLegendExpanded] = useState(() => safeReadJSON(LS_LEGEND_EXPANDED, false));
   const [searchInput, setSearchInput] = useState('');
   const debouncedSearch = useDebouncedValue(searchInput, 200);
   const { history, remember } = useSearchHistory();
@@ -1370,6 +1646,7 @@ function MapScreen() {
 
   // Persist label-toggle preference whenever it changes.
   useEffect(() => { safeWriteJSON(LS_DRIVER_LABELS, showDriverLabels); }, [showDriverLabels]);
+  useEffect(() => { safeWriteJSON(LS_LEGEND_EXPANDED, legendExpanded); }, [legendExpanded]);
 
   // Filter pipeline: filters → search. Memoized so we don't recompute on each render.
   const filteredStops = useMemo(() => applyFilters(stops, notes, filters), [stops, notes, filters]);
@@ -1423,12 +1700,19 @@ function MapScreen() {
     const newMarkers = positioned.map((s) => {
       const note = notes.get(s.matchKey);
       const color = flagColor(note);
+      const badges = getRestrictionBadgeKeys(note);
       const dim = searchMatchSet && !searchMatchSet.has(s.stopNbr);
+      // With badges the SVG grows to 44×44 so badges have room on the right.
+      // The pin tip stays at (14, 34) in either coordinate system so anchor
+      // alignment is unchanged for the pin's geographic point.
+      const size = badges.length
+        ? new google.maps.Size(44, 44)
+        : new google.maps.Size(28, 36);
       const marker = new google.maps.Marker({
         position: { lat: s.lat, lng: s.lng },
         icon: {
-          url: pinSvg(color),
-          scaledSize: new google.maps.Size(28, 36),
+          url: pinSvg(color, badges),
+          scaledSize: size,
           anchor: new google.maps.Point(14, 34),
         },
         title: s.businessName || '',
@@ -1627,6 +1911,7 @@ function MapScreen() {
           setFilters={setFilters}
           counts={{ visible: visibleStops.length, total: stops.length }}
         />
+        <Legend expanded={legendExpanded} setExpanded={setLegendExpanded} />
         <div className="border-t p-3 space-y-2">
           <button
             onClick={() => setShowDrivers((v) => !v)}
