@@ -28,7 +28,7 @@ import { haversineMiles, naiveEtaMinutes, formatEtaClockTime } from './lib/dista
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.5.0';
+const APP_VERSION = '0.5.1';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -80,62 +80,115 @@ const PANEL_MIN_WIDTH = 240;
 // Max width is computed at runtime as 60% of viewport — see useResizablePanel.
 const MOBILE_BREAKPOINT = 768;
 
-// Part 9: restriction iconography. Each entry is a single source of truth
-// used both inside the marker SVG (rendered via data URL) and by the React
-// <RestrictionIcon/> in the sidebar + legend. The `glyph` is a raw SVG
-// fragment positioned inside a 14×14 viewBox (the badge circle is drawn for
-// you — your glyph just needs to fit inside). `prohibition: true` adds the
-// red-slash overlay (universal "no" symbol). `label_text` is a 2-char inline
-// label used for the "26"/"53" restrictions.
+// Restriction icon library — single source of truth used by:
+//   1. The M4.1.5 14×14 badge (`glyph`, `bg`) — rendered inside the sidebar
+//      restriction chips and the Legend per-icon list. White-on-colored-bg.
+//   2. The M4.1.6 22×22 marker icon (`markerGlyph`, `accent`) — rendered as
+//      the marker itself when a stop has restrictions (replacing the pin).
+//      Monochrome `currentColor` so the parent <g style="color:..."> tints
+//      both stroke and fill in one place.
+// `prohibition: true` adds the diagonal slash in the marker rendering
+// (slash is baked into the 14×14 glyph but applied programmatically for the
+// 22×22 marker version). Aliases live in RESTRICTION_ALIASES below.
 const RESTRICTION_ICONS = {
   no_tractor_trailer: {
     label: 'No tractor trailer',
     short: 'No T/T',
     bg: '#dc2626',
-    // Side-view tractor (small box) + trailer (long box) + 2 wheels.
+    accent: '#dc2626',
     glyph: '<rect x="2" y="6.5" width="7" height="3.5" fill="white"/><rect x="9" y="5" width="3" height="5" fill="white"/><circle cx="4" cy="10.5" r="1" fill="#dc2626"/><circle cx="10.5" cy="10.5" r="1" fill="#dc2626"/>',
+    // 22x22: tractor (right) + trailer (left), 3 wheels. currentColor.
+    markerGlyph: `
+      <rect x="2" y="9" width="11" height="6.5" rx="0.5" fill="currentColor"/>
+      <rect x="13" y="7" width="6" height="8.5" rx="0.5" fill="currentColor"/>
+      <circle cx="5" cy="17" r="1.7" fill="white"/>
+      <circle cx="10" cy="17" r="1.7" fill="white"/>
+      <circle cx="16" cy="17" r="1.7" fill="white"/>
+      <circle cx="5" cy="17" r="1.7" fill="none" stroke="currentColor" stroke-width="0.7"/>
+      <circle cx="10" cy="17" r="1.7" fill="none" stroke="currentColor" stroke-width="0.7"/>
+      <circle cx="16" cy="17" r="1.7" fill="none" stroke="currentColor" stroke-width="0.7"/>
+    `,
     prohibition: true,
   },
   liftgate_required: {
     label: 'Liftgate required',
     short: 'Liftgate',
     bg: '#7c3aed',
-    // Platform bar + up-arrow
+    accent: '#1e5b92',
     glyph: '<path d="M2 11 L12 11" stroke="white" stroke-width="1.5" stroke-linecap="round"/><path d="M7 9 L7 3 M4.5 5.5 L7 3 L9.5 5.5" stroke="white" stroke-width="1.5" stroke-linecap="round" fill="none"/>',
+    // 22x22: platform bar at bottom + up-arrow.
+    markerGlyph: `
+      <line x1="2" y1="18" x2="20" y2="18" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>
+      <line x1="11" y1="15" x2="11" y2="5" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>
+      <path d="M5.5 9 L11 3.5 L16.5 9" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+    `,
   },
   '26ft_max': {
     label: '26 ft max',
     short: '26ft max',
     bg: '#ea580c',
+    accent: '#dc2626',
     label_text: '26',
+    // 22x22: big "26" + tiny "FT MAX" caption below.
+    markerGlyph: `
+      <text x="11" y="14.5" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="800" fill="currentColor" text-anchor="middle">26</text>
+      <text x="11" y="20" font-family="system-ui, -apple-system, sans-serif" font-size="4.5" font-weight="700" fill="currentColor" text-anchor="middle">FT MAX</text>
+    `,
   },
   no_53ft: {
     label: 'No 53 ft',
     short: 'No 53ft',
     bg: '#dc2626',
+    accent: '#dc2626',
     label_text: '53',
     prohibition: true,
+    // 22x22: big "53" — slash applied via prohibition.
+    markerGlyph: `
+      <text x="11" y="16" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="800" fill="currentColor" text-anchor="middle">53</text>
+    `,
   },
   appointment_required: {
     label: 'Appointment required',
     short: 'Appt',
     bg: '#0891b2',
-    // Clock face — circle + hands
+    accent: '#f59e0b',
     glyph: '<circle cx="7" cy="7" r="3.5" fill="none" stroke="white" stroke-width="1.3"/><path d="M7 4.5 L7 7 L8.8 8" stroke="white" stroke-width="1.3" stroke-linecap="round" fill="none"/>',
+    // 22x22: clock face with hands at ~10 o'clock.
+    markerGlyph: `
+      <circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" stroke-width="2"/>
+      <line x1="11" y1="11" x2="11" y2="6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+      <line x1="11" y1="11" x2="14.5" y2="13" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+    `,
   },
   box_truck_only: {
     label: 'Box truck only',
     short: 'Box only',
     bg: '#475569',
-    // Box truck — square body + cab
+    accent: '#dc2626',
     glyph: '<rect x="3" y="6" width="6" height="4" fill="white"/><path d="M9 7 L9 10 L12 10 L12 8 L10.5 7 Z" fill="white"/><circle cx="4.5" cy="10.5" r="1" fill="#475569"/><circle cx="10.5" cy="10.5" r="1" fill="#475569"/>',
+    // 22x22: box truck — large box body + smaller cab + 2 wheels.
+    markerGlyph: `
+      <rect x="2" y="8" width="11" height="7.5" rx="0.5" fill="currentColor"/>
+      <path d="M13 9.5 L13 15.5 L19 15.5 L19 12 L16.5 9.5 Z" fill="currentColor"/>
+      <circle cx="5.5" cy="17.5" r="1.7" fill="white"/>
+      <circle cx="16" cy="17.5" r="1.7" fill="white"/>
+      <circle cx="5.5" cy="17.5" r="1.7" fill="none" stroke="currentColor" stroke-width="0.7"/>
+      <circle cx="16" cy="17.5" r="1.7" fill="none" stroke="currentColor" stroke-width="0.7"/>
+    `,
   },
   no_overhead_clearance: {
     label: 'Low overhead clearance',
     short: 'Low clear',
     bg: '#a16207',
-    // Bridge / clearance arch
+    accent: '#a16207',
     glyph: '<path d="M2 11 L2 6 Q7 2 12 6 L12 11" fill="none" stroke="white" stroke-width="1.5" stroke-linecap="round"/><path d="M5 11 L5 9 M9 11 L9 9" stroke="white" stroke-width="1.3"/>',
+    // 22x22: bridge arch + truck silhouette under it.
+    markerGlyph: `
+      <path d="M2 17 L2 11 Q11 3 20 11 L20 17" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>
+      <rect x="6" y="13" width="9" height="4" rx="0.4" fill="currentColor"/>
+      <circle cx="8" cy="17.5" r="1.3" fill="white"/>
+      <circle cx="13" cy="17.5" r="1.3" fill="white"/>
+    `,
   },
 };
 // Recognized aliases — straight_truck_only is sometimes used as a synonym
@@ -147,8 +200,13 @@ const UNKNOWN_RESTRICTION = {
   label: 'Unknown restriction',
   short: 'Unknown',
   bg: '#eab308',
-  // Fallback ⚠ exclamation
+  accent: '#6b7280',
+  // 14x14 badge fallback
   glyph: '<text x="7" y="10" font-family="sans-serif" font-size="9" font-weight="bold" fill="white" text-anchor="middle">!</text>',
+  // 22x22 marker fallback
+  markerGlyph: `
+    <text x="11" y="16" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="800" fill="currentColor" text-anchor="middle">!</text>
+  `,
 };
 
 // ---------- hooks ----------
@@ -556,50 +614,111 @@ function badgeInnerSvg(kind) {
   `;
 }
 
-// Compose the marker SVG with optional restriction badges. badges = []
-// keeps the historical 28×36 pin (faster, smaller); any badges expand to
-// 44×44 with badges stacked along the right edge. Up to 2 badges render;
-// 3+ collapse to first badge + "+N" overflow indicator.
-function pinSvg(color, badges = []) {
-  if (!badges.length) {
-    const svg = `
-      <svg xmlns="http://www.w3.org/2000/svg" width="28" height="36" viewBox="0 0 28 36">
-        <path d="M14 1c-7 0-13 5.4-13 12 0 9 13 22 13 22s13-13 13-22c0-6.6-6-12-13-12z"
-          fill="${color}" stroke="white" stroke-width="2"/>
-        <circle cx="14" cy="13" r="4.5" fill="white"/>
-      </svg>`;
-    return 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent(svg);
-  }
+// M4.1.6 — marker rendering split into two functions:
+//
+//   pinSvgClassic(color): the historical 28×36 pin. Used for State A (stop
+//     has no restrictions). No behavior change vs. M4.1 / M4.1.5 in this
+//     case — same SVG, same anchor (14, 34).
+//
+//   iconMarkerSvg(restrictions): the icon-only marker that replaces the pin
+//     entirely when 1+ restrictions are present. Returns { url, width,
+//     height, anchor: [x, y] } so the marker effect can size and anchor
+//     correctly. State B (1 restriction): single 36-diameter circle. State
+//     C (2+): 32-diameter circles side-by-side, capped at 3 elements (4+
+//     becomes "first 2 + overflow '+N' badge"). Geographic anchor is the
+//     bottom-center of the marker group in both states.
 
-  // Single badge centered vertically beside the pin; multi-badge stacked.
-  let badgeMarkup;
-  if (badges.length === 1) {
-    badgeMarkup = `<g transform="translate(28,18)">${badgeInnerSvg(badges[0])}</g>`;
-  } else if (badges.length === 2) {
-    badgeMarkup = `
-      <g transform="translate(28,12)">${badgeInnerSvg(badges[0])}</g>
-      <g transform="translate(28,26)">${badgeInnerSvg(badges[1])}</g>
-    `;
-  } else {
-    // 3+: first badge + overflow "+N"
-    const overflow = badges.length - 1;
-    badgeMarkup = `
-      <g transform="translate(28,12)">${badgeInnerSvg(badges[0])}</g>
-      <g transform="translate(28,26)">
-        <circle cx="7" cy="7" r="7" fill="#0f172a" stroke="white" stroke-width="1.5"/>
-        <text x="7" y="9.5" font-family="system-ui, sans-serif" font-size="6.5" font-weight="700" fill="white" text-anchor="middle">+${overflow}</text>
-      </g>
-    `;
-  }
-
+function pinSvgClassic(color) {
   const svg = `
-    <svg xmlns="http://www.w3.org/2000/svg" width="44" height="44" viewBox="0 0 44 44">
+    <svg xmlns="http://www.w3.org/2000/svg" width="28" height="36" viewBox="0 0 28 36">
       <path d="M14 1c-7 0-13 5.4-13 12 0 9 13 22 13 22s13-13 13-22c0-6.6-6-12-13-12z"
         fill="${color}" stroke="white" stroke-width="2"/>
       <circle cx="14" cy="13" r="4.5" fill="white"/>
-      ${badgeMarkup}
     </svg>`;
   return 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent(svg);
+}
+
+// Resolve a restriction kind to its accent color + 22×22 glyph fragment.
+// Substitutes `currentColor` in the template with the accent so the glyph
+// renders standalone (works in any SVG renderer, no CSS cascade required).
+// Returns the rendered glyph string plus the optional prohibition slash.
+function renderMarkerGlyph(restrictionKey, glyphX, glyphY) {
+  const resolved = resolveRestrictionKey(restrictionKey);
+  const def = RESTRICTION_ICONS[resolved] || UNKNOWN_RESTRICTION;
+  const color = def.accent || def.bg || '#6b7280';
+  const glyph = (def.markerGlyph || UNKNOWN_RESTRICTION.markerGlyph || '')
+    .replace(/currentColor/g, color);
+  const slash = def.prohibition
+    ? `<line x1="2" y1="2" x2="20" y2="20" stroke="${color}" stroke-width="3" stroke-linecap="round"/>`
+    : '';
+  return `<g transform="translate(${glyphX},${glyphY})">${glyph}${slash}</g>`;
+}
+
+function iconMarkerSvg(restrictions) {
+  if (!restrictions || restrictions.length === 0) return null;
+
+  // State B: single 36-diameter circle.
+  if (restrictions.length === 1) {
+    const r = restrictions[0];
+    const def = RESTRICTION_ICONS[resolveRestrictionKey(r)] || UNKNOWN_RESTRICTION;
+    const accent = def.accent || def.bg || '#6b7280';
+    const svg = `
+      <svg xmlns="http://www.w3.org/2000/svg" width="40" height="44" viewBox="0 0 40 44">
+        <ellipse cx="20" cy="40" rx="12" ry="1.8" fill="black" opacity="0.18"/>
+        <circle cx="20" cy="20" r="18" fill="white" fill-opacity="0.95" stroke="${accent}" stroke-width="2"/>
+        ${renderMarkerGlyph(r, 9, 9)}
+      </svg>`;
+    return {
+      url: 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent(svg),
+      width: 40,
+      height: 44,
+      anchor: [20, 38],
+    };
+  }
+
+  // State C: side-by-side 32-diameter circles. 2 or 3 raw restrictions
+  // render as-is; 4+ collapses to first 2 + "+N" overflow.
+  const elements = restrictions.length <= 3
+    ? restrictions.slice()
+    : [restrictions[0], restrictions[1], { __overflow: restrictions.length - 2 }];
+  const n = elements.length;
+  const slotW = 32;
+  const gap = 2;
+  const totalW = n * slotW + (n - 1) * gap;
+  const totalH = 40;
+
+  let elementsMarkup = '';
+  for (let i = 0; i < n; i++) {
+    const cx = i * (slotW + gap) + slotW / 2;
+    const cy = 18;
+    const el = elements[i];
+    if (el && typeof el === 'object' && '__overflow' in el) {
+      elementsMarkup += `
+        <circle cx="${cx}" cy="${cy}" r="15" fill="white" fill-opacity="0.95" stroke="#6b7280" stroke-width="2"/>
+        <text x="${cx}" y="${cy + 4}" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="800" fill="#374151" text-anchor="middle">+${el.__overflow}</text>
+      `;
+    } else {
+      const def = RESTRICTION_ICONS[resolveRestrictionKey(el)] || UNKNOWN_RESTRICTION;
+      const accent = def.accent || def.bg || '#6b7280';
+      elementsMarkup += `
+        <circle cx="${cx}" cy="${cy}" r="15" fill="white" fill-opacity="0.95" stroke="${accent}" stroke-width="2"/>
+        ${renderMarkerGlyph(el, cx - 11, cy - 11)}
+      `;
+    }
+  }
+
+  const shadowRx = Math.max(8, totalW / 2 - 6);
+  const svg = `
+    <svg xmlns="http://www.w3.org/2000/svg" width="${totalW}" height="${totalH}" viewBox="0 0 ${totalW} ${totalH}">
+      <ellipse cx="${totalW / 2}" cy="36" rx="${shadowRx}" ry="1.8" fill="black" opacity="0.15"/>
+      ${elementsMarkup}
+    </svg>`;
+  return {
+    url: 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent(svg),
+    width: totalW,
+    height: totalH,
+    anchor: [totalW / 2, 34],
+  };
 }
 
 function truckSvg(color) {
@@ -810,6 +929,26 @@ function SearchBar({ value, onChange, onSubmit, history, inputRef, resultCount, 
   );
 }
 
+// M4.1.6: render the same iconMarkerSvg output as an <img> for the legend
+// examples. This guarantees the legend preview is byte-identical to what
+// the map renders, so if the marker visual changes the legend stays in sync.
+function LegendMarkerExample({ restrictions, label }) {
+  const spec = useMemo(() => iconMarkerSvg(restrictions), [restrictions]);
+  if (!spec) return null;
+  return (
+    <div className="flex items-center gap-2">
+      <img
+        src={spec.url}
+        alt=""
+        width={spec.width}
+        height={spec.height}
+        style={{ display: 'block' }}
+      />
+      <span className="text-slate-600">{label}</span>
+    </div>
+  );
+}
+
 // Part 9: collapsible legend that explains both the priority-flag color
 // language and the restriction icons. Default collapsed; expanded state
 // persists to localStorage. Lives directly under <FilterPanel/>.
@@ -845,6 +984,26 @@ function Legend({ expanded, setExpanded }) {
                 <span className="w-2.5 h-2.5 rounded-full" style={{ background: UNFLAGGED_TINT }} />
                 <span>No notes</span>
               </div>
+            </div>
+          </div>
+          <div>
+            <div className="text-[10px] uppercase font-semibold text-slate-500 mb-1">Restricted stops</div>
+            <p className="text-slate-600 mb-2 leading-snug">
+              When a stop has equipment restrictions, the pin is replaced by the restriction icon(s) for quick visual scanning.
+            </p>
+            <div className="space-y-2">
+              <LegendMarkerExample
+                restrictions={['no_tractor_trailer']}
+                label="Single restriction"
+              />
+              <LegendMarkerExample
+                restrictions={['no_tractor_trailer', 'liftgate_required']}
+                label="Multiple restrictions"
+              />
+              <LegendMarkerExample
+                restrictions={['no_tractor_trailer', 'liftgate_required', 'appointment_required', 'no_overhead_clearance']}
+                label="Four or more — first 2 + overflow"
+              />
             </div>
           </div>
           <div>
@@ -1699,22 +1858,30 @@ function MapScreen() {
     const positioned = filteredStops.filter((s) => s.lat != null && s.lng != null);
     const newMarkers = positioned.map((s) => {
       const note = notes.get(s.matchKey);
-      const color = flagColor(note);
-      const badges = getRestrictionBadgeKeys(note);
+      const restrictions = getRestrictionBadgeKeys(note);
       const dim = searchMatchSet && !searchMatchSet.has(s.stopNbr);
-      // With badges the SVG grows to 44×44 so badges have room on the right.
-      // The pin tip stays at (14, 34) in either coordinate system so anchor
-      // alignment is unchanged for the pin's geographic point.
-      const size = badges.length
-        ? new google.maps.Size(44, 44)
-        : new google.maps.Size(28, 36);
+      // M4.1.6 — no restrictions → classic pin (State A). 1+ restrictions →
+      // the pin disappears and the icon(s) become the marker (States B/C).
+      // iconMarkerSvg returns size + anchor based on icon count.
+      let icon;
+      if (restrictions.length === 0) {
+        const color = flagColor(note);
+        icon = {
+          url: pinSvgClassic(color),
+          scaledSize: new google.maps.Size(28, 36),
+          anchor: new google.maps.Point(14, 34),
+        };
+      } else {
+        const spec = iconMarkerSvg(restrictions);
+        icon = {
+          url: spec.url,
+          scaledSize: new google.maps.Size(spec.width, spec.height),
+          anchor: new google.maps.Point(spec.anchor[0], spec.anchor[1]),
+        };
+      }
       const marker = new google.maps.Marker({
         position: { lat: s.lat, lng: s.lng },
-        icon: {
-          url: pinSvg(color, badges),
-          scaledSize: size,
-          anchor: new google.maps.Point(14, 34),
-        },
+        icon,
         title: s.businessName || '',
         opacity: dim ? 0.3 : 1,
       });
