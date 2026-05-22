@@ -1,7 +1,78 @@
 # Dispatch Map — Handoff
 
 Status of the build that landed on branch `claude/dispatch-map-build-eEbYe`.
-M3 + M5 still pending; M4.1 added the items below.
+M3 + M5 still pending; M4.1 added the items below; Part 9 added restriction
+iconography in v0.5.0.
+
+## v0.5.0 — Part 9 (restriction iconography)
+
+Map markers now visually communicate equipment restrictions. Layered visual
+hierarchy: priority-flag color still drives the base pin color; restriction
+icons render as small 14×14 circular badges in the bottom-right of the
+marker, on top of the existing pin.
+
+- **Icon library:** seven canonical restriction kinds defined once in
+  `RESTRICTION_ICONS` (in `src/App.jsx`). Each has a `bg` color and a raw
+  SVG glyph fragment. Single source of truth — the same fragment renders
+  inside the marker data URL (Option A from the brief) AND inside the
+  React `<RestrictionIcon/>` component used by the sidebar + legend.
+  Aliases (e.g. `straight_truck_only` → `box_truck_only`) live in
+  `RESTRICTION_ALIASES`. Unknown kinds render a generic ⚠ badge and log
+  once to `console.warn`.
+- **Marker SVG:** 28×36 pin when there are no restrictions (unchanged from
+  M4.1); expands to 44×44 with badges stacked on the right when 1+
+  restrictions exist. Single restriction → 1 badge centered next to the
+  pin; 2 → 2 stacked; 3+ → first badge + dark "+N" overflow badge. Pin
+  anchor stays at (14, 34) in either size so the geographic point is
+  identical.
+- **`<Legend/>`** panel sits between `<FilterPanel/>` and the
+  Show-Live-Drivers controls. Collapsed by default. Expand state persists
+  to `localStorage["dispatchMap.legendExpanded"]`. Shows priority-flag
+  colors and every restriction icon with its label, plus the "+N" overflow
+  indicator.
+- **Sidebar consistency:** the read-only note view now renders restriction
+  rows with the same icon next to each label; the editable equipment-
+  restriction chips also include the icon. The visual language between
+  marker, legend, and sidebar is identical.
+- **Live updates:** the existing `onSnapshot` subscription on
+  `customer_notes` already drives marker re-renders. Editing a stop's
+  restrictions in the sidebar → Save → marker icon updates immediately.
+
+### Edge cases handled
+
+| Scenario | Behavior |
+|---|---|
+| Stop has no customer_notes doc | No badges (existing flagColor unchanged) |
+| Unknown restriction kind | Generic ⚠ badge, console.warn once per unique value |
+| 3+ restrictions on one stop | First badge + dark "+N" badge |
+| Restriction edit saved in sidebar | onSnapshot re-fires, marker rebuilds with new badges |
+| Marker is inside a cluster | Cluster icon unchanged (existing behavior — restriction icons only show on un-clustered markers) |
+
+### Test against STADLER (College Park, GA)
+
+STADLER is tagged `no_tractor_trailer`. After this lands its marker should
+render with a red "no tractor trailer" badge in the bottom-right —
+visually distinguishable from unrestricted purple-tinted markers nearby.
+
+### New localStorage key
+
+| Key | Type | Default |
+|---|---|---|
+| `dispatchMap.legendExpanded` | boolean | `false` |
+
+### Known limitations (Part 9)
+
+- The brief mentioned **Option B (AdvancedMarkerElement + HTML content)**
+  as an alternative aligned with the Google deprecation migration. I went
+  with **Option A (SVG embedded in data URL)** since it requires no API
+  surface migration and keeps the existing cluster/marker plumbing
+  unchanged. The deprecation migration is still pending and tracked
+  separately in the v0.3.0 known-issues list.
+- Driver markers (truck pins) do **not** show restriction badges — only
+  stop pins do. That's intentional: restrictions are properties of the
+  destination customer, not the truck.
+- The Legend panel doesn't have a tooltip or "click to filter by
+  restriction" affordance. Useful future enhancement but out of scope here.
 
 ## v0.4.0 — M4.1 (resizable panel + search + driver labels + day-snapshot)
 
