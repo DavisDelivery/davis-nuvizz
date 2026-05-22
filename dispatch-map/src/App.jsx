@@ -13,22 +13,24 @@ import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react'
 import { Loader as GoogleMapsLoader } from '@googlemaps/js-api-loader';
 import { MarkerClusterer } from '@googlemaps/markerclusterer';
 import {
-  MapPin, RefreshCw, LogOut, X, AlertTriangle, Filter, Truck, Save, Plus, Trash2,
+  MapPin, RefreshCw, X, Filter, Truck, Save, Plus, Trash2,
   Activity, ChevronDown, ChevronUp, Eye, EyeOff,
 } from 'lucide-react';
-import {
-  onAuthStateChanged, signInWithEmailAndPassword, signOut,
-} from 'firebase/auth';
 import {
   collection, doc, getDoc, onSnapshot, setDoc, serverTimestamp,
 } from 'firebase/firestore';
 
-import { auth, db, firebaseConfigured } from './lib/firebase.js';
+import { db } from './lib/firebase.js';
 import { normalizeMatchKey } from './lib/matchKey.js';
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.1.0';
+const APP_VERSION = '0.3.0';
+
+// No auth — see firebase.js. customer_notes writes are stamped with this
+// hardcoded identity until we wire up a real per-user signal (out of scope
+// for v0.3.0; Glory Bound Dispatch / MarginIQ don't track this either).
+const NOTES_UPDATED_BY = 'dispatcher';
 // eslint-disable-next-line no-undef
 const BUILD_COMMIT = typeof __BUILD_COMMIT__ !== 'undefined' ? __BUILD_COMMIT__ : 'dev';
 // eslint-disable-next-line no-undef
@@ -299,107 +301,6 @@ function bumpProHistory(existing, pro) {
 }
 
 // ---------- components ----------
-
-function LoginGate({ children }) {
-  const [user, setUser] = useState(undefined); // undefined = loading
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState(null);
-
-  useEffect(() => {
-    if (!auth) { setUser(null); return; }
-    return onAuthStateChanged(auth, (u) => setUser(u));
-  }, []);
-
-  if (!firebaseConfigured) {
-    return (
-      <div className="min-h-screen flex items-center justify-center p-6 bg-slate-50">
-        <div className="max-w-md w-full bg-white border border-amber-300 rounded-lg p-6 shadow">
-          <div className="flex items-start gap-3">
-            <AlertTriangle className="text-amber-500 flex-shrink-0" size={24} />
-            <div>
-              <div className="font-semibold text-slate-900">Firebase not configured</div>
-              <p className="text-sm text-slate-600 mt-1">
-                Set the VITE_FIREBASE_* env vars (see <code className="px-1 bg-slate-100 rounded">.env.example</code>)
-                before the app can authenticate. Once configured, you'll see the login screen.
-              </p>
-            </div>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  if (user === undefined) {
-    return (
-      <div className="min-h-screen flex items-center justify-center text-slate-500">
-        <RefreshCw size={18} className="animate-spin mr-2" /> Loading…
-      </div>
-    );
-  }
-
-  if (!user) {
-    const submit = async (e) => {
-      e.preventDefault();
-      setSubmitting(true);
-      setError(null);
-      try {
-        await signInWithEmailAndPassword(auth, email, password);
-      } catch (err) {
-        setError(err.message);
-      } finally {
-        setSubmitting(false);
-      }
-    };
-    return (
-      <div className="min-h-screen flex items-center justify-center p-6 bg-slate-100">
-        <form onSubmit={submit} className="max-w-sm w-full bg-white rounded-xl shadow-lg p-6 space-y-4">
-          <div className="text-center">
-            <div className="inline-flex items-center justify-center w-12 h-12 rounded-xl text-white font-bold mb-2" style={{ background: BRAND }}>
-              D
-            </div>
-            <div className="text-xl font-bold text-slate-900">Dispatch Map</div>
-            <div className="text-xs text-slate-500">Davis Delivery Service</div>
-          </div>
-          <div>
-            <label className="block text-xs font-semibold text-slate-600 mb-1">Email</label>
-            <input
-              type="email"
-              required
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              className="w-full border border-slate-300 rounded px-3 py-2 text-sm"
-              autoComplete="email"
-            />
-          </div>
-          <div>
-            <label className="block text-xs font-semibold text-slate-600 mb-1">Password</label>
-            <input
-              type="password"
-              required
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              className="w-full border border-slate-300 rounded px-3 py-2 text-sm"
-              autoComplete="current-password"
-            />
-          </div>
-          {error && <div className="text-xs text-red-600 bg-red-50 border border-red-200 rounded px-3 py-2">{error}</div>}
-          <button
-            type="submit"
-            disabled={submitting}
-            className="w-full text-white text-sm font-semibold py-2 rounded disabled:opacity-50"
-            style={{ background: BRAND }}
-          >
-            {submitting ? 'Signing in…' : 'Sign in'}
-          </button>
-        </form>
-      </div>
-    );
-  }
-
-  return children(user);
-}
 
 function FilterPanel({ filters, setFilters, counts }) {
   const F = filters;
@@ -817,7 +718,7 @@ function ReadOnlyNoteView({ note }) {
 
 // ---------- map screen ----------
 
-function MapScreen({ user }) {
+function MapScreen() {
   const { stops, loading, error, lastRefreshed, source, refresh } = useStops();
   const { notes, ready: notesReady } = useCustomerNotes();
   const { google, error: mapsError } = useGoogleMaps();
@@ -916,7 +817,7 @@ function MapScreen({ user }) {
         raw_address: draft.raw_address || [selectedStop.addr1, selectedStop.city, selectedStop.state, selectedStop.zip].filter(Boolean).join(', '),
         pro_history: proHistory,
         last_updated: serverTimestamp(),
-        updated_by: user?.email || 'unknown',
+        updated_by: NOTES_UPDATED_BY,
       };
       await setDoc(doc(db, 'customer_notes', key), payload, { merge: true });
     } catch (e) {
@@ -1122,7 +1023,7 @@ function Placeholder({ count, hint }) {
 
 // ---------- shell ----------
 
-function Shell({ user }) {
+function Shell() {
   const [tab, setTab] = useState('map');
   // Diagnostics tab needs the same data — keep a single hook source by fetching here
   // would force a duplicate. For simplicity each screen fetches its own; the
@@ -1142,15 +1043,11 @@ function Shell({ user }) {
           <TabBtn label="Map" icon={<MapPin size={14} />} active={tab === 'map'} onClick={() => setTab('map')} />
           <TabBtn label="Diagnostics" icon={<Activity size={14} />} active={tab === 'diag'} onClick={() => setTab('diag')} />
         </nav>
-        <div className="flex items-center gap-3 text-xs">
-          <span className="text-slate-500 hidden sm:inline">{user?.email}</span>
-          <button onClick={() => signOut(auth)} className="text-slate-500 hover:text-slate-800 inline-flex items-center gap-1">
-            <LogOut size={14} /> sign out
-          </button>
-        </div>
+        {/* Right side intentionally empty — no auth in v0.3.0 (matches Glory Bound / MarginIQ). */}
+        <div />
       </header>
 
-      {tab === 'map' ? <MapScreen user={user} /> : <DiagnosticsRoute />}
+      {tab === 'map' ? <MapScreen /> : <DiagnosticsRoute />}
 
       <footer className="border-t bg-white px-4 py-1 text-[10px] text-slate-400 flex items-center justify-between">
         <div>Dispatch Map v{APP_VERSION} · {BUILD_COMMIT}{BUILD_TIME ? ` · built ${BUILD_TIME.slice(5, 16).replace('T', ' ')}Z` : ''}</div>
@@ -1181,9 +1078,5 @@ function TabBtn({ label, icon, active, onClick }) {
 }
 
 export default function App() {
-  return (
-    <LoginGate>
-      {(user) => <Shell user={user} />}
-    </LoginGate>
-  );
+  return <Shell />;
 }

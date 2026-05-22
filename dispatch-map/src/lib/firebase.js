@@ -1,8 +1,9 @@
 // Firebase init — reuses the davismarginiq project per project brief.
-// Auth + Firestore only; no Storage / Functions wired here.
+// Firestore only; auth removed in v0.3.0 to match Glory Bound Dispatch / MarginIQ
+// pattern (no login). The Firestore rule for customer_notes is open
+// (`allow read, write: if true;`) so unauth'd writes from this client work.
 
 import { initializeApp } from 'firebase/app';
-import { getAuth } from 'firebase/auth';
 import { getFirestore } from 'firebase/firestore';
 
 const cfg = {
@@ -17,5 +18,4 @@ const cfg = {
 export const firebaseConfigured = !!(cfg.apiKey && cfg.projectId);
 
 export const app = firebaseConfigured ? initializeApp(cfg) : null;
-export const auth = app ? getAuth(app) : null;
 export const db = app ? getFirestore(app) : null;
