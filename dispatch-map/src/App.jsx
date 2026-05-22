@@ -16,7 +16,7 @@ import {
   MapPin, RefreshCw, X, Filter, Truck, Save, Plus, Trash2,
   Activity, ChevronDown, ChevronUp, Eye, EyeOff,
   Search, Tag, Tags, ArrowLeft, Gauge, Clock, MapPinned,
-  Info, Settings,
+  Info, Settings, LayoutList,
 } from 'lucide-react';
 import {
   collection, doc, getDoc, onSnapshot, setDoc, serverTimestamp,
@@ -40,7 +40,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.7.0';
+const APP_VERSION = '0.7.1';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -93,6 +93,9 @@ const LS_TABLE_COLUMNS = 'dispatchMap.tableColumns';
 // toolbarCollapsed is just the open/closed UI state of the toolbar itself.
 const LS_MAP_FILTERS = 'dispatchMap.mapFilters';
 const LS_FILTER_TOOLBAR_COLLAPSED = 'dispatchMap.filterToolbarCollapsed';
+// M4.5 — Mobile drawer last-active tab (Stops/Filters/Drivers). Drawer height
+// intentionally NOT persisted — it always opens at the default size.
+const LS_MOBILE_DRAWER_TAB = 'dispatchMap.mobileDrawerTab';
 const PANEL_DEFAULT_WIDTH = 320;
 const PANEL_MIN_WIDTH = 240;
 // Max width is computed at runtime as 60% of viewport — see useResizablePanel.
@@ -1502,7 +1505,7 @@ function ProsSection({ stop }) {
   );
 }
 
-function StopSidebar({ stop, note, onClose, onSave, saving, saveError }) {
+function StopSidebar({ stop, note, onClose, onSave, saving, saveError, mobile = false }) {
   const [draft, setDraft] = useState(() => note || emptyNote(stop));
   const [editing, setEditing] = useState(!note);
   useEffect(() => {
@@ -1602,7 +1605,13 @@ function StopSidebar({ stop, note, onClose, onSave, saving, saveError }) {
   const removeContact = (i) => setD({ contacts: (D.contacts || []).filter((_, idx) => idx !== i) });
 
   return (
-    <aside className="w-[380px] flex-shrink-0 bg-white border-l shadow-lg flex flex-col h-full overflow-hidden">
+    <aside
+      className={mobile
+        ? "absolute inset-0 bg-white shadow-lg flex flex-col overflow-hidden z-40"
+        : "w-[380px] flex-shrink-0 bg-white border-l shadow-lg flex flex-col h-full overflow-hidden"
+      }
+      style={mobile ? { paddingBottom: 'env(safe-area-inset-bottom)' } : undefined}
+    >
       <div className="px-4 py-3 border-b flex items-center justify-between" style={{ background: BRAND, color: 'white' }}>
         <div className="min-w-0">
           <div className="text-[10px] uppercase tracking-wider opacity-75">PRO {stop.pro || '—'}</div>
@@ -1929,7 +1938,7 @@ function StopStatusIcon({ status }) {
   return <span style={{ color: '#94a3b8' }}>○</span>;
 }
 
-function DriverSnapshotSidebar({ driver, snapshot, loading, error, onClose, onPanToStop }) {
+function DriverSnapshotSidebar({ driver, snapshot, loading, error, onClose, onPanToStop, mobile = false }) {
   if (!driver) return null;
   const truckLabel = driver.vehicleNumber || `(truck ${driver.vehicleId || '?'})`;
   const driverName = driver.driverName || '(no driver)';
@@ -1963,7 +1972,13 @@ function DriverSnapshotSidebar({ driver, snapshot, loading, error, onClose, onPa
   }, [stops]);
 
   return (
-    <aside className="w-[380px] flex-shrink-0 bg-white border-l shadow-lg flex flex-col h-full overflow-hidden">
+    <aside
+      className={mobile
+        ? "absolute inset-0 bg-white shadow-lg flex flex-col overflow-hidden z-40"
+        : "w-[380px] flex-shrink-0 bg-white border-l shadow-lg flex flex-col h-full overflow-hidden"
+      }
+      style={mobile ? { paddingBottom: 'env(safe-area-inset-bottom)' } : undefined}
+    >
       <div className="px-4 py-3 border-b" style={{ background: BRAND, color: 'white' }}>
         <button
           onClick={onClose}
@@ -2302,6 +2317,381 @@ function makeDriverLabelOverlayClass(google) {
   };
 }
 
+// ---------- M4.5 mobile (<768px) layout primitives ----------
+// Compact 48px brand-blue top bar that replaces the desktop header below
+// MOBILE_BREAKPOINT. Renders the "D" mark, "Dispatch" label, and a tap-able
+// version chip on the right. Tapping the chip toggles a small overflow menu
+// the parent owns (Diagnostics access lives here, per brief P5.1).
+function MobileAppBar({ version, onChipMenu, chipMenuOpen, onSelectMenu }) {
+  return (
+    <header
+      className="flex-shrink-0 flex items-center justify-between px-3 text-white relative"
+      style={{
+        background: BRAND,
+        height: 48,
+        paddingTop: 'env(safe-area-inset-top)',
+      }}
+    >
+      <div className="flex items-center gap-2">
+        <div className="w-6 h-6 rounded flex items-center justify-center bg-white/15 text-white font-bold text-[11px]">D</div>
+        <span className="font-semibold text-[14px] leading-none">Dispatch</span>
+      </div>
+      <div className="relative">
+        <button
+          onClick={onChipMenu}
+          className="text-[10px] px-1.5 py-1 rounded bg-white/15 text-white/80 active:bg-white/25"
+          aria-haspopup="menu"
+          aria-expanded={chipMenuOpen}
+          title="Version menu"
+        >
+          v{version}
+        </button>
+        {chipMenuOpen && (
+          <div
+            className="absolute top-full right-0 mt-1 bg-white text-slate-800 rounded shadow-lg border border-slate-200 text-xs min-w-[140px] z-50"
+            role="menu"
+          >
+            <button
+              className="w-full text-left px-3 py-2 hover:bg-slate-50 inline-flex items-center gap-2"
+              onClick={() => onSelectMenu('diagnostics')}
+              role="menuitem"
+            >
+              <Activity size={12} /> Diagnostics
+            </button>
+            <button
+              className="w-full text-left px-3 py-2 hover:bg-slate-50 inline-flex items-center gap-2 border-t border-slate-100"
+              onClick={() => onSelectMenu('map')}
+              role="menuitem"
+            >
+              <MapPin size={12} /> Map
+            </button>
+          </div>
+        )}
+      </div>
+    </header>
+  );
+}
+
+// Floating action button. 56px circle, bottom-right above safe area. Rotates 45°
+// to act as an × close button when the drawer is open. Caller owns the open
+// state.
+function MobileFAB({ open, onToggle }) {
+  return (
+    <button
+      onClick={onToggle}
+      aria-label={open ? 'Close drawer' : 'Open drawer'}
+      className="absolute rounded-full text-white flex items-center justify-center transition-transform"
+      style={{
+        background: BRAND,
+        width: 56,
+        height: 56,
+        right: 16,
+        bottom: `calc(16px + env(safe-area-inset-bottom))`,
+        boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
+        transform: open ? 'rotate(45deg)' : 'rotate(0deg)',
+        zIndex: 30,
+      }}
+    >
+      {open ? <X size={24} /> : <LayoutList size={22} />}
+    </button>
+  );
+}
+
+// Drawer that slides up from the bottom edge. Three sizes (mini/default/expanded);
+// the drag handle moves between them. Default 60vh, mini 30vh, expanded 95vh.
+// Backdrop dims behind the drawer and dismisses on tap.
+//
+// Touch handling is implemented with native events (no library) — vertical
+// pointer drags on the handle adjust the height; release snaps to the nearest
+// of the three preset stops, with a downward fling past the mini stop closing
+// the drawer.
+const DRAWER_HEIGHTS = { mini: 0.30, default: 0.60, expanded: 0.95 };
+
+function MobileDrawer({ open, onClose, activeTab, setActiveTab, children }) {
+  const [heightFrac, setHeightFrac] = useState(DRAWER_HEIGHTS.default);
+  const [dragging, setDragging] = useState(false);
+  const dragRef = useRef({ startY: 0, startFrac: DRAWER_HEIGHTS.default });
+
+  // Reset height to default each time the drawer opens.
+  useEffect(() => {
+    if (open) setHeightFrac(DRAWER_HEIGHTS.default);
+  }, [open]);
+
+  const onPointerDown = (e) => {
+    e.preventDefault();
+    setDragging(true);
+    dragRef.current = {
+      startY: e.touches ? e.touches[0].clientY : e.clientY,
+      startFrac: heightFrac,
+    };
+    const move = (ev) => {
+      const y = ev.touches ? ev.touches[0].clientY : ev.clientY;
+      const delta = y - dragRef.current.startY;
+      const vh = window.innerHeight || 1;
+      // Drag down increases y → smaller height; drag up → larger height.
+      const next = Math.max(0.15, Math.min(0.97, dragRef.current.startFrac - delta / vh));
+      setHeightFrac(next);
+    };
+    const up = (ev) => {
+      const y = ev.changedTouches ? ev.changedTouches[0].clientY : ev.clientY;
+      const delta = y - dragRef.current.startY;
+      const vh = window.innerHeight || 1;
+      const finalFrac = Math.max(0.15, Math.min(0.97, dragRef.current.startFrac - delta / vh));
+      // Snap to nearest preset; close if dragged below the mini stop.
+      if (finalFrac < 0.22 && delta > 60) {
+        setDragging(false);
+        onClose();
+        return;
+      }
+      const candidates = Object.values(DRAWER_HEIGHTS);
+      const snapped = candidates.reduce((best, c) =>
+        Math.abs(c - finalFrac) < Math.abs(best - finalFrac) ? c : best,
+        candidates[0],
+      );
+      setHeightFrac(snapped);
+      setDragging(false);
+      document.removeEventListener('mousemove', move);
+      document.removeEventListener('mouseup', up);
+      document.removeEventListener('touchmove', move);
+      document.removeEventListener('touchend', up);
+    };
+    document.addEventListener('mousemove', move);
+    document.addEventListener('mouseup', up);
+    document.addEventListener('touchmove', move, { passive: false });
+    document.addEventListener('touchend', up);
+  };
+
+  // Always render to allow the slide-up animation. Translates fully offscreen
+  // when closed.
+  const drawerHeight = `${(heightFrac * 100).toFixed(1)}vh`;
+
+  return (
+    <>
+      {/* Backdrop */}
+      <div
+        onClick={onClose}
+        className="absolute inset-0 transition-opacity"
+        style={{
+          background: 'rgba(0,0,0,0.30)',
+          opacity: open ? 1 : 0,
+          pointerEvents: open ? 'auto' : 'none',
+          zIndex: 20,
+        }}
+      />
+      <div
+        className="absolute left-0 right-0 bottom-0 bg-white rounded-t-2xl shadow-2xl flex flex-col"
+        style={{
+          height: drawerHeight,
+          transform: open ? 'translateY(0)' : 'translateY(100%)',
+          transition: dragging ? 'none' : 'transform 220ms ease-out, height 180ms ease-out',
+          paddingBottom: 'env(safe-area-inset-bottom)',
+          zIndex: 25,
+        }}
+        role="dialog"
+        aria-modal="true"
+      >
+        {/* Drag handle */}
+        <div
+          onMouseDown={onPointerDown}
+          onTouchStart={onPointerDown}
+          className="flex-shrink-0 py-2 flex items-center justify-center cursor-grab active:cursor-grabbing select-none"
+          style={{ touchAction: 'none' }}
+        >
+          <div className="w-8 h-1 rounded-full bg-slate-300" />
+        </div>
+        {/* Tab header */}
+        <div className="flex-shrink-0 flex border-b border-slate-200">
+          {[
+            { id: 'stops', label: 'Stops' },
+            { id: 'filters', label: 'Filters' },
+            { id: 'drivers', label: 'Drivers' },
+          ].map((t) => {
+            const active = activeTab === t.id;
+            return (
+              <button
+                key={t.id}
+                onClick={() => setActiveTab(t.id)}
+                className={`flex-1 py-3 text-sm font-semibold transition-colors ${active ? '' : 'text-slate-500'}`}
+                style={{
+                  color: active ? BRAND : undefined,
+                  borderBottom: active ? `2px solid ${BRAND}` : '2px solid transparent',
+                  minHeight: 44,
+                }}
+              >
+                {t.label}
+              </button>
+            );
+          })}
+        </div>
+        {/* Tab content */}
+        <div className="flex-1 overflow-y-auto overscroll-contain">
+          {children}
+        </div>
+      </div>
+    </>
+  );
+}
+
+// Stops tab content. Search input + count + list of cards (one tap = pick stop).
+function MobileStopsTab({
+  stops, notes, searchInput, setSearchInput,
+  resultCount, totalCount, onPickStop,
+}) {
+  return (
+    <div className="flex flex-col">
+      <div className="p-3 border-b border-slate-100">
+        <div className="relative">
+          <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+          <input
+            type="search"
+            value={searchInput}
+            onChange={(e) => setSearchInput(e.target.value)}
+            placeholder="Customer, PRO, city, address…"
+            className="w-full pl-8 pr-3 border border-slate-300 rounded-lg text-sm"
+            style={{ minHeight: 44 }}
+          />
+        </div>
+        <div className="text-[11px] text-slate-500 mt-1.5 px-0.5">
+          Showing <span className="font-semibold text-slate-700">{resultCount}</span> of {totalCount} stops
+        </div>
+      </div>
+      <div className="divide-y divide-slate-100">
+        {stops.length === 0 && (
+          <div className="text-xs text-slate-400 italic px-4 py-6 text-center">
+            No stops match the current filters.
+          </div>
+        )}
+        {stops.map((s) => (
+          <MobileStopCard
+            key={s.stopNbr}
+            stop={s}
+            note={notes.get(s.matchKey)}
+            onPick={() => onPickStop(s)}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function MobileStopCard({ stop, note, onPick }) {
+  const flag = note?.priority_flag;
+  const restricted = !!(note && note.equipment_restrictions?.length);
+  const swatch = flag ? FLAG_COLORS[flag] : (restricted ? RESTRICTION_TINT : '#cbd5e1');
+  return (
+    <button
+      onClick={onPick}
+      className="w-full flex items-center gap-3 px-4 text-left active:bg-slate-100"
+      style={{ minHeight: 64 }}
+    >
+      <span
+        className="w-2.5 h-2.5 rounded-full flex-shrink-0"
+        style={{ background: swatch }}
+        aria-hidden
+      />
+      <div className="min-w-0 flex-1">
+        <div className="text-sm font-semibold text-slate-900 truncate">
+          {stop.businessName || '(no name)'}
+        </div>
+        <div className="text-[11px] text-slate-500 truncate">
+          {stop.city || '—'}{stop.state ? `, ${stop.state}` : ''}
+        </div>
+      </div>
+      {stop.pro && (
+        <span className="font-mono text-[10px] text-slate-500 bg-slate-100 border border-slate-200 rounded px-1.5 py-0.5 flex-shrink-0">
+          {stop.pro}
+        </span>
+      )}
+    </button>
+  );
+}
+
+// Filters tab. Re-uses the desktop FilterPanel's behavior (everything is just
+// props on the same filters object) and adds the M4.4 map-toolbar toggles
+// stacked underneath. Clustering toggle is forced ON + warning shown.
+function MobileFiltersTab({
+  filters, setFilters, counts,
+  mapFilters, setMapFilters,
+}) {
+  const setMF = (key) => (v) => setMapFilters((prev) => ({ ...prev, [key]: v }));
+  return (
+    <div className="flex flex-col">
+      <FilterPanel filters={filters} setFilters={setFilters} counts={counts} />
+      <div className="border-t px-3 py-3">
+        <div className="text-xs font-semibold text-slate-600 mb-2">Map display</div>
+        <div className="space-y-1.5">
+          <MapFilterToggle
+            label="Hide terminal markers"
+            checked={mapFilters.hideTerminal}
+            onChange={setMF('hideTerminal')}
+          />
+          <MapFilterToggle
+            label="Hide stem out"
+            checked={mapFilters.hideStemOut}
+            onChange={setMF('hideStemOut')}
+          />
+          <MapFilterToggle
+            label="Show unplanned stops"
+            checked={mapFilters.showUnplanned}
+            onChange={setMF('showUnplanned')}
+          />
+          <MapFilterToggle
+            label="Show vehicle location"
+            checked={mapFilters.showVehicleLocation}
+            onChange={setMF('showVehicleLocation')}
+          />
+          {/* Clustering required on mobile — see brief P3.4. */}
+          <div className="flex items-center justify-between gap-3 py-1.5">
+            <span className="text-xs text-slate-700">Show clustered markers</span>
+            <span className="text-[10px] uppercase text-amber-700 italic">required on mobile</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Drivers tab. Tap a driver row → caller centers the map and opens the
+// driver-snapshot UI (in PR 1 that's still the existing right-side sidebar;
+// PR 2 will replace it with a drawer).
+function MobileDriversTab({ drivers, error, onPickDriver }) {
+  if (error) {
+    return (
+      <div className="px-4 py-6 text-xs text-red-600">⚠ {error}</div>
+    );
+  }
+  if (!drivers || drivers.length === 0) {
+    return (
+      <div className="px-4 py-6 text-xs text-slate-400 italic text-center">
+        No active drivers.
+      </div>
+    );
+  }
+  return (
+    <div className="divide-y divide-slate-100">
+      {drivers.map((d) => (
+        <button
+          key={d.id || d.truckNumber}
+          onClick={() => onPickDriver(d)}
+          className="w-full flex items-center gap-3 px-4 text-left active:bg-slate-100"
+          style={{ minHeight: 56 }}
+        >
+          <Truck size={18} className="text-slate-500 flex-shrink-0" />
+          <div className="min-w-0 flex-1">
+            <div className="text-sm text-slate-900 truncate">
+              <span className="font-semibold">{d.truckNumber || '—'}</span>
+              {d.driverName ? <span className="text-slate-600"> · {d.driverName}</span> : null}
+            </div>
+            <div className="text-[11px] text-slate-500 truncate">
+              {d.status || (d.lastSeenAgo ? `last seen ${d.lastSeenAgo}` : 'unknown')}
+            </div>
+          </div>
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function MapScreen() {
   const { stops, loading, error, lastRefreshed, source, refresh } = useStops();
   const { notes, ready: notesReady } = useCustomerNotes();
@@ -2329,6 +2719,13 @@ function MapScreen() {
     ...safeReadJSON(LS_MAP_FILTERS, {}),
   }));
   const [toolbarCollapsed, setToolbarCollapsed] = useState(() => safeReadJSON(LS_FILTER_TOOLBAR_COLLAPSED, false));
+  // M4.5 — Mobile drawer is closed by default on every load; active tab is
+  // restored from localStorage so repeat dispatchers land where they left off.
+  const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false);
+  const [mobileDrawerTab, setMobileDrawerTab] = useState(() => {
+    const t = safeReadJSON(LS_MOBILE_DRAWER_TAB, 'stops');
+    return ['stops', 'filters', 'drivers'].includes(t) ? t : 'stops';
+  });
   const showDrivers = mapFilters.showVehicleLocation;
   const [searchInput, setSearchInput] = useState('');
   const debouncedSearch = useDebouncedValue(searchInput, 200);
@@ -2353,6 +2750,7 @@ function MapScreen() {
   useEffect(() => { safeWriteJSON(LS_TABLE_COLUMNS, tableColumns); }, [tableColumns]);
   useEffect(() => { safeWriteJSON(LS_MAP_FILTERS, mapFilters); }, [mapFilters]);
   useEffect(() => { safeWriteJSON(LS_FILTER_TOOLBAR_COLLAPSED, toolbarCollapsed); }, [toolbarCollapsed]);
+  useEffect(() => { safeWriteJSON(LS_MOBILE_DRAWER_TAB, mobileDrawerTab); }, [mobileDrawerTab]);
 
   // M4.4 — Compute stem-out set client-side. Stem-out = first non-terminal stop
   // in each load (i.e. the outbound leg from terminal to first customer).
@@ -2641,9 +3039,150 @@ function MapScreen() {
   // to LS_TABLE_COLUMNS).
   const useExtendedNames = !isMobile && panel.width >= 300;
 
+  // Mobile path: map fills the area, FAB + drawer surface the lists/filters,
+  // and the existing stop/driver sidebars switch to absolute full-screen
+  // overlay mode. PR 2 of M4.5 will swap those overlays for proper drawers.
+  if (isMobile) {
+    const pickStopFromMobile = (s) => {
+      setSelectedDriver(null);
+      setSelectedStop(s);
+      setMobileDrawerOpen(false);
+      if (google && mapRef.current && s.lat != null && s.lng != null) {
+        mapRef.current.panTo({ lat: s.lat, lng: s.lng });
+        mapRef.current.setZoom(Math.max(mapRef.current.getZoom() || 10, 14));
+      }
+    };
+    const pickDriverFromMobile = (d) => {
+      setSelectedStop(null);
+      setSelectedDriver(d);
+      setMobileDrawerOpen(false);
+      if (google && mapRef.current && d.lat != null && d.lng != null) {
+        mapRef.current.panTo({ lat: d.lat, lng: d.lng });
+        mapRef.current.setZoom(Math.max(mapRef.current.getZoom() || 10, 13));
+      }
+    };
+    return (
+      <div className="flex-1 relative min-w-0 overflow-hidden">
+        <div ref={mapDiv} className="absolute inset-0" />
+        {mapsError && (
+          <div className="absolute top-2 left-2 right-2 bg-red-50 border border-red-200 rounded p-2 text-xs text-red-800 z-10">
+            <div className="font-semibold">Google Maps failed to load</div>
+            <div className="mt-0.5">{mapsError}</div>
+          </div>
+        )}
+        {!visibleStops.length && !loading && !mapsError && (
+          <div className="absolute top-3 left-1/2 -translate-x-1/2 bg-white border border-slate-200 rounded shadow px-3 py-1 text-[11px] text-slate-600 z-10">
+            {debouncedSearch ? `No stops match "${debouncedSearch}"` : 'No stops match filters'}
+          </div>
+        )}
+
+        {/* Compact status pill — top-right, below the app bar */}
+        <div className="absolute top-2 right-2 bg-white/95 backdrop-blur border border-slate-200 rounded-lg shadow px-2.5 py-1.5 flex items-center gap-2 text-[11px] z-10">
+          <div className="leading-tight">
+            <div className="font-semibold">{stops.length} stops</div>
+            <div className="text-slate-500 text-[10px]">{source === 'fixture' ? 'MOCK' : 'NuVizz'} · {fmtTimeAgo(lastRefreshed)}</div>
+          </div>
+          <button
+            onClick={refresh}
+            disabled={loading}
+            className="p-1 rounded hover:bg-slate-100 active:bg-slate-200 disabled:opacity-50"
+            aria-label="Refresh"
+          >
+            <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
+          </button>
+        </div>
+
+        {error && (
+          <div className="absolute bottom-24 left-2 right-2 bg-red-50 border border-red-200 rounded px-2 py-1 text-[11px] text-red-700 z-10">
+            ⚠ {error}
+          </div>
+        )}
+
+        {/* APP_VERSION chip — above the FAB so they don't overlap.
+            Brief P3.5: 11px gray, white background. */}
+        <div
+          className="absolute right-3 text-[11px] text-slate-500 bg-white/95 rounded px-1.5 py-0.5 z-10 border border-slate-200"
+          style={{ bottom: `calc(80px + env(safe-area-inset-bottom))` }}
+        >
+          v{APP_VERSION}
+        </div>
+
+        {/* FAB (hidden when stop/driver overlay is showing — the overlay's
+            own Close button is the primary way out at that point). */}
+        {!selectedStop && !selectedDriver && (
+          <MobileFAB
+            open={mobileDrawerOpen}
+            onToggle={() => setMobileDrawerOpen((v) => !v)}
+          />
+        )}
+
+        <MobileDrawer
+          open={mobileDrawerOpen}
+          onClose={() => setMobileDrawerOpen(false)}
+          activeTab={mobileDrawerTab}
+          setActiveTab={setMobileDrawerTab}
+        >
+          {mobileDrawerTab === 'stops' && (
+            <MobileStopsTab
+              stops={visibleStops}
+              notes={notes}
+              searchInput={searchInput}
+              setSearchInput={setSearchInput}
+              resultCount={visibleStops.length}
+              totalCount={filteredStops.length}
+              onPickStop={pickStopFromMobile}
+            />
+          )}
+          {mobileDrawerTab === 'filters' && (
+            <MobileFiltersTab
+              filters={filters}
+              setFilters={setFilters}
+              counts={{ visible: visibleStops.length, total: stops.length }}
+              mapFilters={mapFilters}
+              setMapFilters={setMapFilters}
+            />
+          )}
+          {mobileDrawerTab === 'drivers' && (
+            <MobileDriversTab
+              drivers={drivers}
+              error={driverErr}
+              onPickDriver={pickDriverFromMobile}
+            />
+          )}
+        </MobileDrawer>
+
+        {/* Stop/driver detail overlays — temporary full-screen renders of the
+            existing sidebars until PR 2 of M4.5 replaces them with drawers. */}
+        {selectedDriver && (
+          <DriverSnapshotSidebar
+            driver={selectedDriver}
+            snapshot={snapshot}
+            loading={snapshotLoading}
+            error={snapshotError}
+            onClose={() => setSelectedDriver(null)}
+            onPanToStop={handlePanToStop}
+            mobile
+          />
+        )}
+        {!selectedDriver && selectedStop && (
+          <StopSidebar
+            stop={selectedStop}
+            note={notes.get(selectedStop.matchKey)}
+            onClose={() => setSelectedStop(null)}
+            onSave={handleSave}
+            saving={saving}
+            saveError={saveError}
+            mobile
+          />
+        )}
+      </div>
+    );
+  }
+
+  // Desktop / tablet (≥768px): existing layout unchanged.
   return (
-    <div className={`flex flex-1 overflow-hidden ${isMobile ? 'flex-col' : ''}`}>
-      {/* Left filter rail (top sheet on mobile) */}
+    <div className="flex flex-1 overflow-hidden">
+      {/* Left filter rail */}
       <div
         className="flex-shrink-0 bg-white border-r overflow-y-auto"
         style={panelStyle}
@@ -2695,9 +3234,7 @@ function MapScreen() {
       </div>
 
       {/* Resize handle — desktop only */}
-      {!isMobile && (
-        <ResizeHandle onMouseDown={panel.onMouseDown} onDoubleClick={panel.onDoubleClick} />
-      )}
+      <ResizeHandle onMouseDown={panel.onMouseDown} onDoubleClick={panel.onDoubleClick} />
 
       {/* Map */}
       <div className="flex-1 relative min-w-0">
@@ -2972,34 +3509,55 @@ function Placeholder({ count, hint }) {
 
 function Shell() {
   const [tab, setTab] = useState('map');
-  // Diagnostics tab needs the same data — keep a single hook source by fetching here
-  // would force a duplicate. For simplicity each screen fetches its own; the
-  // useStops hook is cheap (memoized network call + react state). M3 will probably
-  // promote this to context once it actually does something useful.
+  const viewportWidth = useViewportWidth();
+  const isMobile = viewportWidth < MOBILE_BREAKPOINT;
+  const [chipMenuOpen, setChipMenuOpen] = useState(false);
+
+  // Close chip menu on any tab change or click outside the bar.
+  useEffect(() => { setChipMenuOpen(false); }, [tab]);
+
+  const onSelectMenu = (next) => {
+    setChipMenuOpen(false);
+    setTab(next === 'diagnostics' ? 'diag' : 'map');
+  };
+
   return (
     <div className="h-screen flex flex-col">
-      <header className="flex items-center justify-between px-4 py-2 border-b bg-white" style={{ paddingTop: 'env(safe-area-inset-top)' }}>
-        <div className="flex items-center gap-3">
-          <div className="w-8 h-8 rounded-lg flex items-center justify-center text-white font-bold text-sm" style={{ background: BRAND }}>D</div>
-          <div>
-            <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold leading-none">Davis Delivery</div>
-            <div className="font-bold leading-tight">Dispatch Map</div>
+      {isMobile ? (
+        <MobileAppBar
+          version={APP_VERSION}
+          chipMenuOpen={chipMenuOpen}
+          onChipMenu={() => setChipMenuOpen((v) => !v)}
+          onSelectMenu={onSelectMenu}
+        />
+      ) : (
+        <header className="flex items-center justify-between px-4 py-2 border-b bg-white" style={{ paddingTop: 'env(safe-area-inset-top)' }}>
+          <div className="flex items-center gap-3">
+            <div className="w-8 h-8 rounded-lg flex items-center justify-center text-white font-bold text-sm" style={{ background: BRAND }}>D</div>
+            <div>
+              <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold leading-none">Davis Delivery</div>
+              <div className="font-bold leading-tight">Dispatch Map</div>
+            </div>
           </div>
-        </div>
-        <nav className="flex items-center gap-1 text-sm">
-          <TabBtn label="Map" icon={<MapPin size={14} />} active={tab === 'map'} onClick={() => setTab('map')} />
-          <TabBtn label="Diagnostics" icon={<Activity size={14} />} active={tab === 'diag'} onClick={() => setTab('diag')} />
-        </nav>
-        {/* Right side intentionally empty — no auth in v0.3.0 (matches Glory Bound / MarginIQ). */}
-        <div />
-      </header>
+          <nav className="flex items-center gap-1 text-sm">
+            <TabBtn label="Map" icon={<MapPin size={14} />} active={tab === 'map'} onClick={() => setTab('map')} />
+            <TabBtn label="Diagnostics" icon={<Activity size={14} />} active={tab === 'diag'} onClick={() => setTab('diag')} />
+          </nav>
+          {/* Right side intentionally empty — no auth in v0.3.0 (matches Glory Bound / MarginIQ). */}
+          <div />
+        </header>
+      )}
 
       {tab === 'map' ? <MapScreen /> : <DiagnosticsRoute />}
 
-      <footer className="border-t bg-white px-4 py-1 text-[10px] text-slate-400 flex items-center justify-between">
-        <div>Dispatch Map v{APP_VERSION} · {BUILD_COMMIT}{BUILD_TIME ? ` · built ${BUILD_TIME.slice(5, 16).replace('T', ' ')}Z` : ''}</div>
-        <div className="hidden sm:block">© Davis Delivery Service</div>
-      </footer>
+      {/* Footer is desktop/tablet only on mobile; the in-map version chip
+          and the top-bar chip cover the same info on small screens. */}
+      {!isMobile && (
+        <footer className="border-t bg-white px-4 py-1 text-[10px] text-slate-400 flex items-center justify-between">
+          <div>Dispatch Map v{APP_VERSION} · {BUILD_COMMIT}{BUILD_TIME ? ` · built ${BUILD_TIME.slice(5, 16).replace('T', ' ')}Z` : ''}</div>
+          <div className="hidden sm:block">© Davis Delivery Service</div>
+        </footer>
+      )}
     </div>
   );
 }
