@@ -1,11 +1,21 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
+import { visualizer } from 'rollup-plugin-visualizer';
 
 const commit = (process.env.COMMIT_REF || '').slice(0, 7) || 'dev';
 const builtAt = new Date().toISOString();
 
 export default defineConfig({
-  plugins: [react()],
+  plugins: [
+    react(),
+    visualizer({
+      filename: 'dist/bundle-stats.html',
+      template: 'treemap',
+      gzipSize: true,
+      brotliSize: true,
+      open: false,
+    }),
+  ],
   define: {
     __BUILD_COMMIT__: JSON.stringify(commit),
     __BUILD_TIME__: JSON.stringify(builtAt),
