@@ -195,14 +195,17 @@ async function buildRouteFromLoadScan(
   await Promise.all(Array.from({ length: 25 }, runOne));
 
   // Flatten stops across all matching loads, sort by scheduled time.
+  // NuVizz wraps each stop in { stop, stopExecutionInfo, ... } — unwrap to
+  // get to the actual stop fields. Mirrors nuvizz-pull-today-stops.mts.
   const stops: any[] = [];
   for (const ml of matchingLoads) {
     const stopsRaw = ml.load?.stops || [];
-    for (const s of stopsRaw) {
+    for (const raw of stopsRaw) {
+      const s = raw.stop || raw;
+      const exec = raw.stopExecutionInfo || {};
       const primary = s.stopType === 'PU' ? (s.from || {}) : (s.to || s.from || {});
       const addr = primary.address || s.address || {};
       const schedule = primary.schedule || {};
-      const exec = s.stopExecutionInfo || {};
       // PRO = stopNbr (see nuvizz-pull-today-stops.mts for the rationale —
       // NuVizz `proNumber` is a code like "G1", not a number).
       const stopNbr: string | null = s.stopNbr ?? null;
