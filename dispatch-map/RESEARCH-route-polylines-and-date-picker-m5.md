@@ -84,24 +84,34 @@ zig-zag incorrectly (two seq-0 stops).
   default can show the wrong day overnight. M5 must centralize a `todayInET()`
   util and have the **client** send an explicit ET date on every fetch.
 
-## Decision required from Chad (see status report)
+## Decision (confirmed by Chad)
 
-The brief's Phase 3 mandates a server function `nuvizz-routes.{js,mts}` calling
-`/route/list/customer/DAVIS?date=`. That endpoint does not exist. Two compliant
-paths forward — neither invents an endpoint:
+Chad confirmed the parent mobile app "shows drivers' routes once they're built"
+— and indeed the parent's `src/screens/MapScreen.jsx` is the reference
+implementation. It builds route polylines **entirely client-side** with no
+route endpoint:
 
-- **Option A (recommended): client-side route grouping.** Build polylines from
-  the existing stops payload (`loadNbr` + `loadStopSeq` + `driverUserName` +
-  lat/lng). No new function. Group by load for sequencing, color by driver.
-  Fastest, zero extra NuVizz calls, satisfies Rule #8 (the stops data already
-  came through a Netlify Function).
-- **Option B: server function via load-scan.** Create `nuvizz-routes.mts` that
-  runs the same verified load-info scan once, groups by driver/load, returns the
-  brief's normalized shape. Matches the brief's structure but duplicates the
-  ~500-probe scan the stops fetch already did (heavier, slower, redundant).
+- `MapScreen.jsx:2` — "Route lines grouped by load/driver (one color per load)."
+- `MapScreen.jsx:297-301` — groups visible stops by `loadNbr`.
+- `MapScreen.jsx:311-339` — one polyline per load, stops sorted by `seq`,
+  `coords.length < 2` skipped, color from a per-load palette.
+- `MapScreen.jsx:14` — `ROUTE_COLORS` 10-color palette.
 
-Recommendation: **Option A.** It delivers the brief's intent (per-driver,
-sequence-ordered polylines) using only verified data, with the best performance.
-Pending Chad's confirmation before implementing Phase 3.
+**Decision: Option A — client-side route grouping**, mirroring the parent app.
+No new Netlify function; no new NuVizz endpoint. The dispatch-map stops payload
+already carries `loadStopSeq` (the parent has to infer sequence from
+`plannedEta` because its cached payload lacks it — we're strictly better off).
 
-The Date Picker (Phase 2) is unaffected by this and is fully specified.
+Differences from the parent, per the M5 brief:
+- Color by **driver** (`djb2(driverUserName) % 16`) not by load — brief P3.1.
+  A driver with multiple loads shares one color.
+- Still draw **one polyline per load** (not per driver) so sequence doesn't
+  zig-zag across a driver's two loads (seq restarts at 0 per load).
+- Google Maps `google.maps.Polyline`, not Leaflet (dispatch-map uses Google).
+
+Standing Rule #7 (never invent endpoints) and #8 (NuVizz calls through Netlify
+Functions) are both satisfied: the only NuVizz call is the existing stops fetch
+through `nuvizz-pull-today-stops`.
+
+The Date Picker (Phase 2) is unaffected and fully specified.
+
