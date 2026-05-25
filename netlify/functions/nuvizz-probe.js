@@ -15,9 +15,9 @@
 const https = require('https');
 const { URL } = require('url');
 
-const COMPANY  = process.env.NUVIZZ_COMPANY  || 'davis';
-const USERNAME = process.env.NUVIZZ_USER;
-const PASSWORD = process.env.NUVIZZ_PASS;
+const COMPANY  = (process.env.NUVIZZ_DAVIS_COMPANY_CODE || process.env.NUVIZZ_COMPANY || 'DAVIS').toUpperCase();
+const USERNAME = process.env.NUVIZZ_DAVIS_USER || process.env.NUVIZZ_USER;
+const PASSWORD = process.env.NUVIZZ_DAVIS_PASS || process.env.NUVIZZ_PASS;
 const BASE_URL = process.env.NUVIZZ_BASE_URL || 'https://portal.nuvizz.com/deliverit/openapi/v7';
 
 const SAFE_PRO  = '00TESTPROBE999999';
