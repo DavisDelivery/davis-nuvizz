@@ -25,6 +25,7 @@ import {
 import { db } from './lib/firebase.js';
 import { normalizeMatchKey } from './lib/matchKey.js';
 import { haversineMiles, naiveEtaMinutes, formatEtaClockTime } from './lib/distance.js';
+import { todayInET, isTodayET, formatDateForDisplay, formatDateLong } from './lib/date-util.js';
 import { scanStop, scanStopFull } from './lib/signal-scanner';
 import { applyScannerResults } from './lib/customer-notes-writer';
 
@@ -40,7 +41,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.8.2';
+const APP_VERSION = '0.9.0';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -96,6 +97,29 @@ const LS_FILTER_TOOLBAR_COLLAPSED = 'dispatchMap.filterToolbarCollapsed';
 // M4.5 — Mobile drawer last-active tab (Stops/Filters/Drivers). Drawer height
 // intentionally NOT persisted — it always opens at the default size.
 const LS_MOBILE_DRAWER_TAB = 'dispatchMap.mobileDrawerTab';
+// M5 — Show Routes toggle persists; selectedDate intentionally does NOT
+// (resets to today every load, per brief P2.2).
+const LS_SHOW_ROUTES = 'dispatchMap.showRoutes';
+const LS_ROUTE_LEGEND_EXPANDED = 'dispatchMap.routeLegendExpanded';
+
+// M5 — Driver route polyline palette. 16 colors, distinct from brand colors
+// (#1e5b92, #dc2626, #16a34a, #f59e0b, #6b7280) and from each other, all
+// readable on Map + Satellite (no near-black). Assigned by stable djb2 hash of
+// driverUserName % 16 — same driver → same color every session.
+const ROUTE_PALETTE = [
+  '#e11d48', '#7c3aed', '#0891b2', '#ca8a04',
+  '#be123c', '#4338ca', '#0d9488', '#b45309',
+  '#9333ea', '#2563eb', '#65a30d', '#c2410c',
+  '#db2777', '#1d4ed8', '#15803d', '#a16207',
+];
+
+// djb2 string hash → stable palette index. Deterministic, no storage needed.
+function routeColorFor(driverUserName) {
+  const s = String(driverUserName || '');
+  let h = 5381;
+  for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) >>> 0;
+  return ROUTE_PALETTE[h % ROUTE_PALETTE.length];
+}
 const PANEL_DEFAULT_WIDTH = 320;
 const PANEL_MIN_WIDTH = 240;
 // Max width is computed at runtime as 60% of viewport — see useResizablePanel.
@@ -455,8 +479,8 @@ async function fetchJsonWithRetry(url, { retries = 1, backoffMs = 1500 } = {}) {
   throw lastErr || new Error('fetchJsonWithRetry: unknown error');
 }
 
-// Pull today's stops from the proxy function.
-function useStops() {
+// Pull stops for a given date (YYYY-MM-DD) from the proxy function.
+function useStops(date) {
   const [stops, setStops] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -467,7 +491,8 @@ function useStops() {
     setLoading(true);
     setError(null);
     try {
-      const url = '/.netlify/functions/nuvizz-pull-today-stops' + (MOCK_MODE ? '?mock=1' : '');
+      const params = MOCK_MODE ? '?mock=1' : (date ? `?date=${encodeURIComponent(date)}` : '');
+      const url = '/.netlify/functions/nuvizz-pull-today-stops' + params;
       const data = await fetchJsonWithRetry(url);
       if (!data.ok) throw new Error(data.error || 'NuVizz function returned ok:false');
       // Attach the match key now so every consumer downstream can hit it.
@@ -483,7 +508,7 @@ function useStops() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [date]);
 
   useEffect(() => { refresh(); }, [refresh]);
   return { stops, loading, error, lastRefreshed, source, refresh };
@@ -1307,20 +1332,22 @@ function Legend({ expanded, setExpanded }) {
 // M4.4 — Filter Toolbar. Floats over the map canvas at top-right with 5
 // toggles. Collapsible. State persists to localStorage. Pure presentation;
 // the parent applies filters to stops in applyMapFilters().
-function MapFilterToggle({ label, checked, onChange, warning }) {
+function MapFilterToggle({ label, checked, onChange, warning, disabled, disabledHint }) {
   return (
-    <div className="flex items-center justify-between gap-3 py-1.5">
-      <span className="text-xs text-slate-700">{label}</span>
+    <div className={`flex items-center justify-between gap-3 py-1.5 ${disabled ? 'opacity-50' : ''}`}>
+      <span className="text-xs text-slate-700" title={disabled ? disabledHint : undefined}>{label}</span>
       <button
         role="switch"
         aria-checked={checked}
-        onClick={() => onChange(!checked)}
-        className="flex-shrink-0 relative w-9 h-5 rounded-full transition-colors"
-        style={{ background: checked ? '#16a34a' : '#cbd5e1' }}
+        disabled={disabled}
+        onClick={() => !disabled && onChange(!checked)}
+        className={`flex-shrink-0 relative w-9 h-5 rounded-full transition-colors ${disabled ? 'cursor-not-allowed' : ''}`}
+        style={{ background: checked && !disabled ? '#16a34a' : '#cbd5e1' }}
+        title={disabled ? disabledHint : undefined}
       >
         <span
           className="absolute top-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform"
-          style={{ left: checked ? 'calc(100% - 18px)' : '2px' }}
+          style={{ left: checked && !disabled ? 'calc(100% - 18px)' : '2px' }}
         />
       </button>
       {warning && (
@@ -1330,7 +1357,86 @@ function MapFilterToggle({ label, checked, onChange, warning }) {
   );
 }
 
-function FilterToolbar({ filters, setFilters, collapsed, setCollapsed, stopCount }) {
+// M5 — Date picker. Native <input type="date"> for accessibility + native
+// mobile pickers. Shows the long date when not today, "Today" chip otherwise.
+// A "Today" reset button appears only when the selected date isn't today.
+function DatePicker({ selectedDate, onChange, onToday, compact }) {
+  const today = isTodayET(selectedDate);
+  return (
+    <div className={`flex items-center gap-1.5 ${compact ? '' : 'bg-white/95 backdrop-blur border border-slate-200 rounded-lg shadow px-2 py-1.5'}`}>
+      <input
+        type="date"
+        value={selectedDate}
+        onChange={(e) => { if (e.target.value) onChange(e.target.value); }}
+        className="text-xs border border-slate-300 rounded px-1.5 py-1 focus:outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-400"
+        aria-label="Select delivery date"
+      />
+      <span className="text-[11px] font-semibold text-slate-700 whitespace-nowrap">
+        {today ? 'Today' : formatDateLong(selectedDate)}
+      </span>
+      {!today && (
+        <button
+          onClick={onToday}
+          className="text-[10px] font-semibold py-1 px-2 rounded border border-blue-300 text-blue-700 bg-white hover:bg-blue-50 whitespace-nowrap"
+          title="Jump back to today"
+        >
+          Today
+        </button>
+      )}
+    </div>
+  );
+}
+
+// M5 — Show Routes toggle. Sits adjacent to the filter toolbar (top-right),
+// same visual treatment, but a standalone control (not in the 5-toggle group).
+function ShowRoutesToggle({ checked, onChange }) {
+  return (
+    <button
+      onClick={() => onChange(!checked)}
+      className="bg-white/95 backdrop-blur border border-slate-200 rounded-lg shadow px-3 py-2 flex items-center gap-2 text-xs font-semibold hover:bg-slate-50"
+      role="switch"
+      aria-checked={checked}
+      title="Toggle route polylines"
+    >
+      <Truck size={13} className={checked ? 'text-blue-700' : 'text-slate-400'} />
+      <span className={checked ? 'text-slate-800' : 'text-slate-500'}>Routes</span>
+      <span className="relative inline-block w-8 h-4 rounded-full transition-colors" style={{ background: checked ? '#16a34a' : '#cbd5e1' }}>
+        <span className="absolute top-0.5 w-3 h-3 bg-white rounded-full shadow transition-transform" style={{ left: checked ? 'calc(100% - 14px)' : '2px' }} />
+      </span>
+    </button>
+  );
+}
+
+// M5 — Driver route legend. Collapsible (same pattern as the restriction
+// legend). One row per driver: color swatch + display name + stop count.
+function DriverRouteLegend({ legend, expanded, setExpanded }) {
+  if (!legend.length) return null;
+  return (
+    <div className="border-t">
+      <button
+        onClick={() => setExpanded((v) => !v)}
+        className="w-full px-3 py-2 flex items-center justify-between text-xs font-semibold text-slate-600 hover:bg-slate-50"
+        aria-expanded={expanded}
+      >
+        <span className="inline-flex items-center gap-1.5"><Truck size={13} /> Routes ({legend.length} drivers)</span>
+        {expanded ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+      </button>
+      {expanded && (
+        <div className="px-3 pb-3 space-y-1 max-h-48 overflow-y-auto">
+          {legend.map((d) => (
+            <div key={d.driverUserName} className="flex items-center gap-2 text-[11px]">
+              <span className="w-3 h-1.5 rounded-sm flex-shrink-0" style={{ background: d.color }} />
+              <span className="flex-1 truncate">{d.driverName || d.driverUserName}</span>
+              <span className="text-slate-400">{d.stopCount}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function FilterToolbar({ filters, setFilters, collapsed, setCollapsed, stopCount, vehicleDisabled }) {
   const set = (key) => (v) => setFilters((prev) => ({ ...prev, [key]: v }));
   const clusterWarning = !filters.showClustered && stopCount > 200
     ? `Rendering ${stopCount} markers individually may be slow`
@@ -1371,7 +1477,12 @@ function FilterToolbar({ filters, setFilters, collapsed, setCollapsed, stopCount
             label="Show vehicle location"
             checked={filters.showVehicleLocation}
             onChange={set('showVehicleLocation')}
+            disabled={vehicleDisabled}
+            disabledHint="Live drivers only available for today's date."
           />
+          {vehicleDisabled && (
+            <div className="text-[10px] text-slate-500 italic -mt-1 mb-1 leading-tight">Live drivers only available for today.</div>
+          )}
           <MapFilterToggle
             label="Show clustered markers"
             checked={filters.showClustered}
@@ -2669,6 +2780,7 @@ function MobileStopCard({ stop, note, onPick }) {
 function MobileFiltersTab({
   filters, setFilters, counts,
   mapFilters, setMapFilters,
+  showRoutes, setShowRoutes, vehicleDisabled,
 }) {
   const setMF = (key) => (v) => setMapFilters((prev) => ({ ...prev, [key]: v }));
   return (
@@ -2696,6 +2808,17 @@ function MobileFiltersTab({
             label="Show vehicle location"
             checked={mapFilters.showVehicleLocation}
             onChange={setMF('showVehicleLocation')}
+            disabled={vehicleDisabled}
+            disabledHint="Live drivers only available for today's date."
+          />
+          {vehicleDisabled && (
+            <div className="text-[10px] text-slate-500 italic -mt-1 leading-tight">Live drivers only available for today.</div>
+          )}
+          {/* M5 — Show Routes lives in the mobile filters drawer (P3.7). */}
+          <MapFilterToggle
+            label="Show routes"
+            checked={showRoutes}
+            onChange={setShowRoutes}
           />
           {/* Clustering required on mobile — see brief P3.4. */}
           <div className="flex items-center justify-between gap-3 py-1.5">
@@ -3421,7 +3544,12 @@ function MobileDriverSnapshotDrawer({ driver, snapshot, loading, error, onClose,
 }
 
 function MapScreen() {
-  const { stops, loading, error, lastRefreshed, source, refresh } = useStops();
+  // M5 — selectedDate drives every fetch. Defaults to today (ET) and is NOT
+  // persisted: every page load resets to today (brief P2.2).
+  const [selectedDate, setSelectedDate] = useState(() => todayInET());
+  const dateIsToday = isTodayET(selectedDate);
+
+  const { stops, loading, error, lastRefreshed, source, refresh } = useStops(selectedDate);
   const { notes, ready: notesReady } = useCustomerNotes();
   useAutoScanner(stops, notes, notesReady);
   const { google, error: mapsError } = useGoogleMaps();
@@ -3430,6 +3558,8 @@ function MapScreen() {
 
   const [selectedStop, setSelectedStop] = useState(null);
   const [selectedDriver, setSelectedDriver] = useState(null);
+  // M5 — Show Routes toggle (persisted). Polylines render only when ON.
+  const [showRoutes, setShowRoutes] = useState(() => safeReadJSON(LS_SHOW_ROUTES, false));
   const [filters, setFilters] = useState({});
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState(null);
@@ -3444,6 +3574,7 @@ function MapScreen() {
     return w >= MOBILE_BREAKPOINT;
   });
   const [legendExpanded, setLegendExpanded] = useState(() => safeReadJSON(LS_LEGEND_EXPANDED, false));
+  const [routeLegendExpanded, setRouteLegendExpanded] = useState(() => safeReadJSON(LS_ROUTE_LEGEND_EXPANDED, true));
   const [tableColumns, setTableColumns] = useState(() => ({
     ...DEFAULT_TABLE_COLUMNS,
     ...safeReadJSON(LS_TABLE_COLUMNS, {}),
@@ -3463,7 +3594,9 @@ function MapScreen() {
     const t = safeReadJSON(LS_MOBILE_DRAWER_TAB, 'stops');
     return ['stops', 'filters', 'drivers'].includes(t) ? t : 'stops';
   });
-  const showDrivers = mapFilters.showVehicleLocation;
+  // M5 — live drivers (Motive) only meaningful for today. On any other date the
+  // overlay is forced off regardless of the toggle's stored value.
+  const showDrivers = mapFilters.showVehicleLocation && dateIsToday;
   const [searchInput, setSearchInput] = useState('');
   const debouncedSearch = useDebouncedValue(searchInput, 200);
   const { history, remember } = useSearchHistory();
@@ -3480,6 +3613,7 @@ function MapScreen() {
   const driverMarkersRef = useRef([]);
   const driverLabelsRef = useRef([]);
   const labelOverlayClassRef = useRef(null);
+  const routePolylinesRef = useRef([]);
 
   // Persist label-toggle preference whenever it changes.
   useEffect(() => { safeWriteJSON(LS_DRIVER_LABELS, showDriverLabels); }, [showDriverLabels]);
@@ -3488,6 +3622,27 @@ function MapScreen() {
   useEffect(() => { safeWriteJSON(LS_MAP_FILTERS, mapFilters); }, [mapFilters]);
   useEffect(() => { safeWriteJSON(LS_FILTER_TOOLBAR_COLLAPSED, toolbarCollapsed); }, [toolbarCollapsed]);
   useEffect(() => { safeWriteJSON(LS_MOBILE_DRAWER_TAB, mobileDrawerTab); }, [mobileDrawerTab]);
+  useEffect(() => { safeWriteJSON(LS_SHOW_ROUTES, showRoutes); }, [showRoutes]);
+  useEffect(() => { safeWriteJSON(LS_ROUTE_LEGEND_EXPANDED, routeLegendExpanded); }, [routeLegendExpanded]);
+
+  // M5 — date change side effects: close any open sidebars (their data was for
+  // the previous day) and surface a one-shot note if live drivers were on for a
+  // now-non-today date. Stops + routes refetch automatically (date is a dep of
+  // useStops + the routes memo). The auto-scanner re-runs when new stops land.
+  const [driverGateNote, setDriverGateNote] = useState(false);
+  const prevDateRef = useRef(selectedDate);
+  useEffect(() => {
+    if (prevDateRef.current === selectedDate) return;
+    prevDateRef.current = selectedDate;
+    setSelectedStop(null);
+    setSelectedDriver(null);
+    if (!dateIsToday && mapFilters.showVehicleLocation) {
+      setDriverGateNote(true);
+      setTimeout(() => setDriverGateNote(false), 4000);
+    }
+  }, [selectedDate, dateIsToday, mapFilters.showVehicleLocation]);
+
+  const goToToday = useCallback(() => setSelectedDate(todayInET()), []);
 
   // M4.4 — Compute stem-out set client-side. Stem-out = first non-terminal stop
   // in each load (i.e. the outbound leg from terminal to first customer).
@@ -3535,6 +3690,42 @@ function MapScreen() {
     if (!searchMatchSet) return filteredStops;
     return filteredStops.filter((s) => searchMatchSet.has(s.stopNbr));
   }, [filteredStops, searchMatchSet]);
+
+  // M5 — route grouping (client-side, mirrors parent app src/screens/MapScreen.jsx).
+  // Group positioned stops by loadNbr (sequence restarts per load, so one
+  // polyline per load keeps order correct). Color by DRIVER so a driver's
+  // multiple loads share a color (brief P3.1). Legend aggregates per driver.
+  const routeData = useMemo(() => {
+    if (!showRoutes) return { byLoad: [], legend: [] };
+    const positioned = stops.filter((s) => s.lat != null && s.lng != null && s.loadNbr && s.driverUserName);
+    const loadGroups = new Map();
+    for (const s of positioned) {
+      if (!loadGroups.has(s.loadNbr)) {
+        loadGroups.set(s.loadNbr, {
+          loadNbr: s.loadNbr,
+          driverUserName: s.driverUserName,
+          driverName: s.driverName || s.driverUserName,
+          stops: [],
+        });
+      }
+      loadGroups.get(s.loadNbr).stops.push(s);
+    }
+    const byLoad = [];
+    const driverAgg = new Map();
+    for (const g of loadGroups.values()) {
+      const ordered = [...g.stops].sort((a, b) => (a.loadStopSeq ?? 0) - (b.loadStopSeq ?? 0));
+      const color = routeColorFor(g.driverUserName);
+      if (ordered.length >= 2) {
+        byLoad.push({ loadNbr: g.loadNbr, driverUserName: g.driverUserName, color, path: ordered });
+      }
+      const agg = driverAgg.get(g.driverUserName)
+        || { driverUserName: g.driverUserName, driverName: g.driverName, color, stopCount: 0 };
+      agg.stopCount += g.stops.length;
+      driverAgg.set(g.driverUserName, agg);
+    }
+    const legend = [...driverAgg.values()].sort((a, b) => a.driverUserName.localeCompare(b.driverUserName));
+    return { byLoad, legend };
+  }, [showRoutes, stops]);
 
   // Init map once google + container are ready.
   useEffect(() => {
@@ -3615,6 +3806,34 @@ function MapScreen() {
       newMarkers.forEach((m) => m.setMap(mapRef.current));
     }
   }, [google, filteredStops, notes, searchMatchSet, mapFilters.showClustered]);
+
+  // M5 — route polylines. One straight-line Polyline per load, ordered by
+  // loadStopSeq, colored by driver. zIndex 1 keeps them below markers so pins
+  // stay clickable. Google redraws on pan/zoom itself — we only rebuild when
+  // routeData changes (toggle, refresh, or selectedDate change all flow through
+  // routeData via the stops dependency).
+  useEffect(() => {
+    if (!google || !mapRef.current) return;
+    routePolylinesRef.current.forEach((p) => p.setMap(null));
+    routePolylinesRef.current = [];
+    if (!showRoutes) return;
+    for (const route of routeData.byLoad) {
+      const path = route.path
+        .filter((s) => s.lat != null && s.lng != null)
+        .map((s) => ({ lat: s.lat, lng: s.lng }));
+      if (path.length < 2) continue;
+      const poly = new google.maps.Polyline({
+        path,
+        strokeColor: route.color,
+        strokeOpacity: 0.7,
+        strokeWeight: 3,
+        geodesic: false,
+        zIndex: 1,
+        map: mapRef.current,
+      });
+      routePolylinesRef.current.push(poly);
+    }
+  }, [google, showRoutes, routeData]);
 
   // Auto-zoom on search results: 1 match → center + open sidebar, 2-10 → fit bounds.
   useEffect(() => {
@@ -3801,6 +4020,31 @@ function MapScreen() {
     return (
       <div className="flex-1 relative min-w-0 overflow-hidden">
         <div ref={mapDiv} className="absolute inset-0" />
+        {/* M5 — date chip at top-left of the mobile map (P2.7): core control,
+            visible without opening the drawer. */}
+        <div className="absolute top-2 left-2 z-10 flex items-center gap-1 bg-white/95 backdrop-blur border border-slate-200 rounded-lg shadow px-1.5 py-1">
+          <input
+            type="date"
+            value={selectedDate}
+            onChange={(e) => { if (e.target.value) setSelectedDate(e.target.value); }}
+            className="text-[11px] border-0 p-0 focus:outline-none bg-transparent max-w-[112px]"
+            aria-label="Select delivery date"
+          />
+          {!dateIsToday && (
+            <button
+              onClick={goToToday}
+              className="text-[10px] font-semibold px-1.5 py-0.5 rounded border border-blue-300 text-blue-700 active:bg-blue-50"
+              title="Today"
+            >
+              Today
+            </button>
+          )}
+        </div>
+        {driverGateNote && (
+          <div className="absolute top-12 left-1/2 -translate-x-1/2 z-20 bg-amber-50 border border-amber-300 rounded shadow px-2 py-1 text-[10px] text-amber-800">
+            Live drivers only available for today.
+          </div>
+        )}
         {mapsError && (
           <div className="absolute top-2 left-2 right-2 bg-red-50 border border-red-200 rounded p-2 text-xs text-red-800 z-10">
             <div className="font-semibold">Google Maps failed to load</div>
@@ -3877,6 +4121,9 @@ function MapScreen() {
               counts={{ visible: visibleStops.length, total: stops.length }}
               mapFilters={mapFilters}
               setMapFilters={setMapFilters}
+              showRoutes={showRoutes}
+              setShowRoutes={setShowRoutes}
+              vehicleDisabled={!dateIsToday}
             />
           )}
           {mobileDrawerTab === 'drivers' && (
@@ -3978,6 +4225,9 @@ function MapScreen() {
           counts={{ visible: visibleStops.length, total: stops.length }}
         />
         <Legend expanded={legendExpanded} setExpanded={setLegendExpanded} />
+        {showRoutes && (
+          <DriverRouteLegend legend={routeData.legend} expanded={routeLegendExpanded} setExpanded={setRouteLegendExpanded} />
+        )}
         {/* M4.4 — Vehicle visibility moved to the map filter toolbar. This
         block keeps only the driver-status text + label-toggle, which are
         secondary to the visibility decision. Hidden entirely when vehicles
@@ -4015,12 +4265,31 @@ function MapScreen() {
       {/* Map */}
       <div className="flex-1 relative min-w-0">
         <div ref={mapDiv} className="absolute inset-0" />
+        {/* M5 — date picker, top-left of the map canvas. */}
+        {!isMobile && (
+          <div className="absolute top-3 left-3 z-[5]">
+            <DatePicker selectedDate={selectedDate} onChange={setSelectedDate} onToday={goToToday} />
+          </div>
+        )}
+        {/* M5 — Show Routes toggle, top-right adjacent to the filter toolbar. */}
+        {!isMobile && (
+          <div className="absolute top-3 right-3 z-[5]" style={{ marginRight: 256 }}>
+            <ShowRoutesToggle checked={showRoutes} onChange={setShowRoutes} />
+          </div>
+        )}
+        {/* M5 — one-shot note when live drivers were auto-disabled for a past/future date. */}
+        {driverGateNote && (
+          <div className="absolute top-16 left-1/2 -translate-x-1/2 z-[6] bg-amber-50 border border-amber-300 rounded shadow px-3 py-1.5 text-xs text-amber-800">
+            Live drivers only available for today's date.
+          </div>
+        )}
         <FilterToolbar
           filters={mapFilters}
           setFilters={setMapFilters}
           collapsed={toolbarCollapsed}
           setCollapsed={setToolbarCollapsed}
           stopCount={filteredStops.length}
+          vehicleDisabled={!dateIsToday}
         />
         {mapsError && (
           <div className="absolute top-4 left-4 right-4 bg-red-50 border border-red-200 rounded p-3 text-sm text-red-800">
