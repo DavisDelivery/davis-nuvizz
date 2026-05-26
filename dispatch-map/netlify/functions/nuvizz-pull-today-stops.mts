@@ -359,8 +359,11 @@ export default async (req: Request): Promise<Response> => {
   const fromParam = url.searchParams.get('from');
   const toParam = url.searchParams.get('to');
   const overrideRange = fromParam && toParam ? { from: parseInt(fromParam, 10), to: parseInt(toParam, 10) } : undefined;
-  // Unplanned (status-10 board) stops are included by default; ?unplanned=0 opts out.
-  const includeUnplanned = url.searchParams.get('unplanned') !== '0';
+  // HOTFIX: the M6 stop-number range scan is too heavy to run inline (it probes
+  // ~900 stop numbers and pushes the function past its 26s timeout → 502 on every
+  // map load). Disabled by default until it's reworked onto a single list query.
+  // Opt back in per-request with ?unplanned=1 for testing.
+  const includeUnplanned = url.searchParams.get('unplanned') === '1';
   const cors = {
     'Access-Control-Allow-Origin': '*',
     'Content-Type': 'application/json',
