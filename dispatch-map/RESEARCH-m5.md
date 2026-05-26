@@ -100,9 +100,49 @@ nuvizz_stop_index/{tenant}__{date}/stops/{stopNbr}  ← one doc per stop
 |---|---|
 | `lib/nuvizz-scan.mts` | Shared scan + normalize (`scanDate`) |
 | `lib/firestore.mts` | Firestore REST client + `writeStops` / `readStops` |
-| `nuvizz-refresh-stops-background.mts` | Scheduled (`*/5` Mon–Fri) background writer; scans today+7, writes the index. Also HTTP-triggerable. |
+| `lib/refresh-stops-core.mts` | Shared writer handler (`runRefreshStops`); scans today+7, writes the index. HTTP-triggerable. |
+| `nuvizz-refresh-stops-background.mts` | Daytime scheduled wrapper (`*/5 14-23 * * 1-5`) → core |
+| `nuvizz-refresh-stops-evening-background.mts` | Evening + Sun-night scheduled wrapper (`*/5 0-3 * * 1-6`) → core |
 | `nuvizz-pull-today-stops.mts` | Map feed — reads the index in <2s, returns `lastScannedAt` |
 | `src/App.jsx` | "Stops as of HH:MM" freshness label (`fmtStopFreshness`) |
+
+## 5a. Cron schedule + DST handling
+
+**Target (Eastern):** every 5 min, Mon–Fri 10:00am–11:59pm ET, **plus** Sun
+10:00pm–11:59pm ET (catches stops Uline drops over the weekend so Monday's
+dispatch starts fresh).
+
+**Netlify capability (confirmed via the Netlify coding context):** a scheduled
+function accepts exactly **one** cron expression (`config.schedule` is a single
+string — no arrays); crons run in **UTC**; the **`-background` suffix** grants the
+15-min budget the multi-day scan needs (a plain scheduled function caps at 30s);
+and **schedules only fire on published deploys** (never previews — use the manual
+POST to test). The target needs two disjoint UTC windows, so per option (a) we
+use **two scheduled function files** sharing one handler (`refresh-stops-core`).
+
+| Window | Cron (UTC) | Covers (ET, EDT) |
+|---|---|---|
+| Daytime | `*/5 14-23 * * 1-5` | Mon–Fri 10:00am–7:59pm |
+| Evening + Sun-night | `*/5 0-3 * * 1-6` | Sun 10pm–11:59pm **and** Mon–Fri 8pm–11:59pm |
+
+UTC weekday numbering ≠ ET: Sun-10pm-ET → Mon-02:00-UTC (day 1), Fri-evening-ET →
+Sat-00:00-UTC (day 6) — which is why the evening cron is `1-6` and there is **no**
+`getUTCDay()` weekend skip in the handler (it would wrongly drop the Fri-evening
+run that lands on Saturday UTC). A single union expression was rejected as lossy
+(`0-3,14-23 * * 1-6` would also scan Sat 10am–8pm ET, which Davis never dispatches).
+
+**DST:** expressions are tuned for **EDT (UTC−4)**. On **2026-11-01** ET → EST
+(UTC−5); shift every UTC hour **+1** to keep the same ET local times:
+
+| Window | EST cron (UTC) |
+|---|---|
+| Daytime | `*/5 15-23 * * 1-5` |
+| Evening + Sun-night | `*/5 0-4 * * 1-6` |
+
+Reverts on **2027-03-08** (EST→EDT) — restore the EDT expressions. Netlify cron is
+fixed UTC with no auto-DST, so this is a manual ~2-line edit per file each flip;
+the flip dates + replacement expressions are documented in-code at the top of
+`nuvizz-refresh-stops-background.mts`.
 
 ## 6. Acceptance test
 
