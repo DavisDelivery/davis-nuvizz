@@ -184,6 +184,85 @@ function estimateLoadRange(dateStr: string): { startNbr: number; endNbr: number 
   return { startNbr: center - 250, endNbr: center + 250 };
 }
 
+// ── M6 — Unplanned (status-10) board stops ──────────────────────────────────
+// The load scan above only surfaces stops already routed onto a load. Dispatch
+// also needs the day's *unplanned* stops: orders imported into NuVizz (stopStatus
+// '10' = ready-to-plan) but not yet assigned to any load/driver. These never
+// appear in /load/info, so we scan the /stop/info number space directly.
+//
+// Stop numbers are assigned sequentially as orders import and map almost linearly
+// onto the expected-arrival date (to.schedule.timeFrom). Unplanned stops are the
+// newest imports, so they cluster at the high end of the number space (the
+// "frontier"); numbers above it return 400 (not yet assigned). We estimate the
+// frontier from a calibrated anchor, scan a window biased downward from it, and
+// keep stops whose stopStatus === '10' and whose expected-arrival date matches.
+//
+// Calibrated 2026-05-26 against live data: stop 007123931 was the top of the
+// 5/26 block, 007124000+ did not yet exist. ~440 numbers/calendar-day (the wide
+// scan window absorbs weekend bunching). Recalibrate STOP_ANCHOR_* if the
+// estimate drifts off the live frontier (same maintenance posture as ANCHOR_LOAD).
+const STOP_ANCHOR_NBR = 7124000;
+const STOP_ANCHOR_DATE = new Date('2026-05-26T00:00:00Z');
+const STOPS_PER_DAY = 440;
+const UNPLANNED_STATUS = '10';
+// Window relative to the estimated frontier. Biased downward because the slope
+// tends to over-estimate the frontier for near-future dates (those days are only
+// partially imported), so the target block sits at or below the estimate.
+const UNPLANNED_WINDOW_BELOW = 700;
+const UNPLANNED_WINDOW_ABOVE = 200;
+
+function estimateStopFrontier(dateStr: string): number {
+  const target = new Date(dateStr + 'T00:00:00Z');
+  const daysDiff = Math.round((target.getTime() - STOP_ANCHOR_DATE.getTime()) / (1000 * 60 * 60 * 24));
+  return STOP_ANCHOR_NBR + daysDiff * STOPS_PER_DAY;
+}
+
+// Scan the stop-number window for the date and return raw {stop, stopExecutionInfo}
+// records (the shape normalizeStop already understands) for unplanned stops only.
+async function scanUnplannedStops(dateStr: string, concurrency = 40) {
+  const { companyCode } = getCreds();
+  const authHeader = basicAuthHeader();
+  const center = estimateStopFrontier(dateStr);
+  const low = center - UNPLANNED_WINDOW_BELOW;
+  const high = center + UNPLANNED_WINDOW_ABOVE;
+
+  const probe = async (n: number) => {
+    const stopNbr = String(n).padStart(9, '0');
+    const url = `${NUVIZZ_BASE}/stop/info/${encodeURIComponent(stopNbr)}/${encodeURIComponent(companyCode)}`;
+    try {
+      const resp = await fetch(url, { headers: { Authorization: authHeader, Accept: 'application/json' } });
+      if (!resp.ok) return null;
+      const d: any = await resp.json();
+      const wrap = d?.Stop || d?.stop || d;
+      const stop = wrap?.stop;
+      const exec = wrap?.stopExecutionInfo || {};
+      if (!stop?.stopNbr) return null;
+      if (exec.stopStatus !== UNPLANNED_STATUS) return null;
+      // Expected-arrival date == requested date. Unplanned stops aren't routed,
+      // so there's no plannedEta yet; the scheduled delivery window is the date.
+      const expected = (stop?.to?.schedule?.timeFrom || '').slice(0, 10);
+      if (expected !== dateStr) return null;
+      return { stop, stopExecutionInfo: exec };
+    } catch {
+      return null;
+    }
+  };
+
+  const nums: number[] = [];
+  for (let n = high; n >= low; n--) nums.push(n);
+
+  const results: any[] = [];
+  let idx = 0;
+  const runOne = async () => {
+    while (idx < nums.length) {
+      const r = await probe(nums[idx++]);
+      if (r) results.push(r);
+    }
+  };
+  await Promise.all(Array.from({ length: concurrency }, runOne));
+  return results;
+}
+
 // Probe a load-number range in parallel, return raw stops with load context stamped on each.
 // Mirrors scanFleet from netlify/functions/nuvizz.cjs (the existing tracking site's working pattern).
 async function scanLoadRangeForDate(dateStr: string, startNbr: number, endNbr: number, concurrency = 30) {
@@ -243,8 +322,8 @@ async function scanLoadRangeForDate(dateStr: string, startNbr: number, endNbr: n
 const __cache = new Map<string, { storedAt: number; data: any[] }>();
 const CACHE_TTL_MS = 60 * 1000;
 
-async function fetchFromNuvizz(date: string, overrideRange?: { from: number; to: number }, bypassCache = false) {
-  const cacheKey = `${date}`;
+async function fetchFromNuvizz(date: string, overrideRange?: { from: number; to: number }, bypassCache = false, includeUnplanned = true) {
+  const cacheKey = `${date}|${includeUnplanned ? 'u' : 'p'}`;
   if (!bypassCache && !overrideRange) {
     const hit = __cache.get(cacheKey);
     if (hit && Date.now() - hit.storedAt < CACHE_TTL_MS) return hit.data;
@@ -252,7 +331,22 @@ async function fetchFromNuvizz(date: string, overrideRange?: { from: number; to:
   const { startNbr, endNbr } = overrideRange
     ? { startNbr: overrideRange.from, endNbr: overrideRange.to }
     : estimateLoadRange(date);
-  const stops = await scanLoadRangeForDate(date, startNbr, endNbr);
+
+  // Load scan (planned stops) and unplanned-board scan run concurrently. The
+  // unplanned scan is fail-soft: if it errors we still return the planned feed.
+  const [loadStops, unplannedStops] = await Promise.all([
+    scanLoadRangeForDate(date, startNbr, endNbr),
+    includeUnplanned && !overrideRange ? scanUnplannedStops(date).catch(() => []) : Promise.resolve([]),
+  ]);
+
+  // Dedupe: a stop already surfaced via a load wins (it carries load context).
+  const seen = new Set<string>(loadStops.map((s: any) => s.stopNbr).filter(Boolean));
+  const extraUnplanned = unplannedStops.filter((u: any) => {
+    const nbr = u?.stop?.stopNbr;
+    return nbr && !seen.has(nbr);
+  });
+  const stops = [...loadStops, ...extraUnplanned];
+
   if (!overrideRange) __cache.set(cacheKey, { storedAt: Date.now(), data: stops });
   return stops;
 }
@@ -265,6 +359,8 @@ export default async (req: Request): Promise<Response> => {
   const fromParam = url.searchParams.get('from');
   const toParam = url.searchParams.get('to');
   const overrideRange = fromParam && toParam ? { from: parseInt(fromParam, 10), to: parseInt(toParam, 10) } : undefined;
+  // Unplanned (status-10 board) stops are included by default; ?unplanned=0 opts out.
+  const includeUnplanned = url.searchParams.get('unplanned') !== '0';
   const cors = {
     'Access-Control-Allow-Origin': '*',
     'Content-Type': 'application/json',
@@ -281,7 +377,7 @@ export default async (req: Request): Promise<Response> => {
       source = 'fixture';
     } else {
       try {
-        rawStops = await fetchFromNuvizz(date, overrideRange, bypassCache);
+        rawStops = await fetchFromNuvizz(date, overrideRange, bypassCache, includeUnplanned);
       } catch (e: any) {
         // Missing creds → fall back to fixture so the UI still renders in dev/preview.
         if (/Missing NUVIZZ/.test(e.message)) {
@@ -294,12 +390,14 @@ export default async (req: Request): Promise<Response> => {
     }
 
     const stops = rawStops.map(normalizeStop);
+    const unplannedCount = stops.filter((s) => s.isUnplanned).length;
     return new Response(JSON.stringify({
       ok: true,
       date,
       source,
       generated: new Date().toISOString(),
       count: stops.length,
+      unplannedCount,
       stops,
     }), { status: 200, headers: cors });
   } catch (e: any) {
