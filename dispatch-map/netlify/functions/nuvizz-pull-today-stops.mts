@@ -205,11 +205,30 @@ const STOP_ANCHOR_NBR = 7124000;
 const STOP_ANCHOR_DATE = new Date('2026-05-26T00:00:00Z');
 const STOPS_PER_DAY = 440;
 const UNPLANNED_STATUS = '10';
-// Window relative to the estimated frontier. Biased downward because the slope
-// tends to over-estimate the frontier for near-future dates (those days are only
-// partially imported), so the target block sits at or below the estimate.
-const UNPLANNED_WINDOW_BELOW = 700;
-const UNPLANNED_WINDOW_ABOVE = 200;
+
+// Bounded adaptive descent (M6.1). Replaces the fixed ±900 window that blew the
+// 26s function budget and caused 502s on every map load. We descend the
+// stop-number space from just above the estimated frontier, collecting
+// status-10 stops for the date, and stop early once we've passed the unplanned
+// cluster — unplanned orders are the newest imports, so they sit contiguously at
+// the high end of the number space. Typical cost for "today" is ~10 chunks
+// (~400 probes) vs the old fixed 900. Hard time/probe budgets cap the worst case
+// and the scan is fail-soft (returns whatever it has if a budget trips).
+const STOP_SCAN_CONCURRENCY = 40;
+const CEILING_MARGIN = 40;            // start a little above the estimated frontier
+const GALLOP_STEP = 200;              // upward correction step when we under-estimate
+const MAX_GALLOP = 6;                 // cap upward correction (+1200)
+const FLOOR_MARGIN = 2500;            // absolute lower bound below the estimate (safety)
+const FUTURE_CHUNKS_TO_STOP = 2;      // consecutive all-older chunks before any hit ⇒ date not imported yet
+const POST_TARGET_CHUNKS_TO_STOP = 3; // consecutive existing-but-no-new-target chunks ⇒ past the cluster
+const SCAN_TIME_BUDGET_MS = 16000;    // leave headroom under the 26s function cap
+const SCAN_MAX_PROBES = 800;          // hard ceiling on probe count
+
+// Self-calibration: highest existing stop number observed by this instance.
+// Seeds the ceiling on later scans so the scan self-corrects if the static
+// anchor drifts off the live frontier — the exact drift that caused the 502
+// incident the original fixed window was vulnerable to.
+let observedFrontier = 0;
 
 function estimateStopFrontier(dateStr: string): number {
   const target = new Date(dateStr + 'T00:00:00Z');
@@ -217,49 +236,126 @@ function estimateStopFrontier(dateStr: string): number {
   return STOP_ANCHOR_NBR + daysDiff * STOPS_PER_DAY;
 }
 
-// Scan the stop-number window for the date and return raw {stop, stopExecutionInfo}
-// records (the shape normalizeStop already understands) for unplanned stops only.
-async function scanUnplannedStops(dateStr: string, concurrency = 40) {
+interface StopProbe {
+  n: number;
+  exists: boolean;
+  expected?: string | null;        // expected-arrival date (YYYY-MM-DD) or null
+  record?: { stop: any; stopExecutionInfo: any } | null; // set only for status-10 stops matching the date
+}
+
+async function probeStop(n: number, dateStr: string, authHeader: string, companyCode: string): Promise<StopProbe> {
+  const stopNbr = String(n).padStart(9, '0');
+  const url = `${NUVIZZ_BASE}/stop/info/${encodeURIComponent(stopNbr)}/${encodeURIComponent(companyCode)}`;
+  try {
+    const resp = await fetch(url, { headers: { Authorization: authHeader, Accept: 'application/json' } });
+    if (!resp.ok) return { n, exists: false };
+    const d: any = await resp.json();
+    const wrap = d?.Stop || d?.stop || d;
+    const stop = wrap?.stop;
+    const exec = wrap?.stopExecutionInfo || {};
+    if (!stop?.stopNbr) return { n, exists: false };
+    // Expected-arrival date drives ordering. Unplanned stops aren't routed, so
+    // there's no plannedEta yet; the scheduled delivery window is the date.
+    const expected = ((stop?.to?.schedule?.timeFrom as string) || '').slice(0, 10) || null;
+    const isTarget = exec.stopStatus === UNPLANNED_STATUS && expected === dateStr;
+    return { n, exists: true, expected, record: isTarget ? { stop, stopExecutionInfo: exec } : null };
+  } catch {
+    return { n, exists: false };
+  }
+}
+
+// Locate a ceiling just above the live *global* frontier (the newest existing
+// stop number ≈ today's latest import). We anchor on today's estimate rather
+// than the query date's so the descent starts near the real top for any date —
+// otherwise a future date's estimate sits far above the number space and we'd
+// burn the probe budget scanning an empty gap. A doubling gallop corrects the
+// estimate in either direction (anchor drift) with a handful of cheap samples.
+async function findCeiling(dateStr: string, authHeader: string, companyCode: string): Promise<number> {
+  const sampleExists = async (top: number): Promise<boolean> => {
+    const sample = Array.from({ length: 8 }, (_, k) => top - k);
+    const rs = await Promise.all(sample.map((n) => probeStop(n, dateStr, authHeader, companyCode)));
+    return rs.some((r) => r.exists);
+  };
+  const base = Math.max(estimateStopFrontier(todayUTC()), observedFrontier);
+  let ceiling = base + CEILING_MARGIN;
+  if (await sampleExists(ceiling)) {
+    // Under-estimated: gallop up until a sample comes back empty (above frontier).
+    let step = GALLOP_STEP;
+    for (let g = 0; g < MAX_GALLOP; g++) {
+      ceiling += step;
+      step *= 2;
+      if (!(await sampleExists(ceiling))) break;
+    }
+  } else {
+    // Over-estimated: gallop down until a sample finds the frontier.
+    let step = GALLOP_STEP;
+    for (let g = 0; g < MAX_GALLOP; g++) {
+      const probe = ceiling - step;
+      if (await sampleExists(probe)) { ceiling = probe + CEILING_MARGIN; break; }
+      ceiling = probe;
+      step *= 2;
+    }
+  }
+  return ceiling;
+}
+
+// Scan the stop-number space downward for the date and return raw
+// {stop, stopExecutionInfo} records (the shape normalizeStop understands) for
+// unplanned (status-10) stops only.
+async function scanUnplannedStops(dateStr: string, concurrency = STOP_SCAN_CONCURRENCY) {
   const { companyCode } = getCreds();
   const authHeader = basicAuthHeader();
-  const center = estimateStopFrontier(dateStr);
-  const low = center - UNPLANNED_WINDOW_BELOW;
-  const high = center + UNPLANNED_WINDOW_ABOVE;
-
-  const probe = async (n: number) => {
-    const stopNbr = String(n).padStart(9, '0');
-    const url = `${NUVIZZ_BASE}/stop/info/${encodeURIComponent(stopNbr)}/${encodeURIComponent(companyCode)}`;
-    try {
-      const resp = await fetch(url, { headers: { Authorization: authHeader, Accept: 'application/json' } });
-      if (!resp.ok) return null;
-      const d: any = await resp.json();
-      const wrap = d?.Stop || d?.stop || d;
-      const stop = wrap?.stop;
-      const exec = wrap?.stopExecutionInfo || {};
-      if (!stop?.stopNbr) return null;
-      if (exec.stopStatus !== UNPLANNED_STATUS) return null;
-      // Expected-arrival date == requested date. Unplanned stops aren't routed,
-      // so there's no plannedEta yet; the scheduled delivery window is the date.
-      const expected = (stop?.to?.schedule?.timeFrom || '').slice(0, 10);
-      if (expected !== dateStr) return null;
-      return { stop, stopExecutionInfo: exec };
-    } catch {
-      return null;
-    }
-  };
-
-  const nums: number[] = [];
-  for (let n = high; n >= low; n--) nums.push(n);
+  const ceiling = await findCeiling(dateStr, authHeader, companyCode);
+  const floor = estimateStopFrontier(dateStr) - FLOOR_MARGIN;
 
   const results: any[] = [];
-  let idx = 0;
-  const runOne = async () => {
-    while (idx < nums.length) {
-      const r = await probe(nums[idx++]);
-      if (r) results.push(r);
+  let n = ceiling;
+  let foundTarget = false;
+  let futureStreak = 0;
+  let postTargetStreak = 0;
+  let probes = 0;
+  let maxSeen = 0;
+  const startedAt = Date.now();
+
+  while (n >= floor && probes < SCAN_MAX_PROBES && Date.now() - startedAt < SCAN_TIME_BUDGET_MS) {
+    const batch: number[] = [];
+    for (let i = 0; i < concurrency && n >= floor; i++) batch.push(n--);
+    probes += batch.length;
+    const rs = await Promise.all(batch.map((m) => probeStop(m, dateStr, authHeader, companyCode)));
+
+    let existing = 0;
+    let older = 0;
+    let chunkTarget = false;
+    for (const r of rs) {
+      if (!r.exists) continue;
+      existing++;
+      if (r.n > maxSeen) maxSeen = r.n;
+      if (r.record) { results.push(r.record); foundTarget = true; chunkTarget = true; }
+      if (r.expected && r.expected < dateStr) older++;
     }
-  };
-  await Promise.all(Array.from({ length: concurrency }, runOne));
+
+    if (existing > 0) {
+      // Future date: we're below the frontier but every existing stop is older
+      // than the query ⇒ the date hasn't been imported yet. Bail after a couple
+      // of confirming chunks.
+      if (!foundTarget && older === existing) {
+        if (++futureStreak >= FUTURE_CHUNKS_TO_STOP) break;
+      } else {
+        futureStreak = 0;
+      }
+      // Past the cluster: unplanned stops are the newest imports and sit
+      // contiguously at the top, so once we've collected some and then see
+      // consecutive chunks of existing stops with no new targets, we've
+      // descended out of the cluster.
+      if (foundTarget && !chunkTarget) {
+        if (++postTargetStreak >= POST_TARGET_CHUNKS_TO_STOP) break;
+      } else {
+        postTargetStreak = 0;
+      }
+    }
+  }
+
+  if (maxSeen > observedFrontier) observedFrontier = maxSeen;
   return results;
 }
 
@@ -359,11 +455,10 @@ export default async (req: Request): Promise<Response> => {
   const fromParam = url.searchParams.get('from');
   const toParam = url.searchParams.get('to');
   const overrideRange = fromParam && toParam ? { from: parseInt(fromParam, 10), to: parseInt(toParam, 10) } : undefined;
-  // HOTFIX: the M6 stop-number range scan is too heavy to run inline (it probes
-  // ~900 stop numbers and pushes the function past its 26s timeout → 502 on every
-  // map load). Disabled by default until it's reworked onto a single list query.
-  // Opt back in per-request with ?unplanned=1 for testing.
-  const includeUnplanned = url.searchParams.get('unplanned') === '1';
+  // M6.1: the unplanned (status-10) scan now uses a bounded adaptive descent
+  // (see scanUnplannedStops) that fits the 26s budget, so it runs by default.
+  // Opt out per-request with ?unplanned=0 as an emergency kill switch.
+  const includeUnplanned = url.searchParams.get('unplanned') !== '0';
   const cors = {
     'Access-Control-Allow-Origin': '*',
     'Content-Type': 'application/json',
