@@ -41,7 +41,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.11.0';
+const APP_VERSION = '0.11.1';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -63,6 +63,36 @@ const FLAG_COLORS = {
 const RESTRICTION_TINT = '#7c3aed';        // has restriction notes but no priority flag
 const UNFLAGGED_TINT = '#1e5b92';          // no notes at all — brand blue
 const DRIVER_TINT = '#0f172a';             // M4 Motive driver pins
+
+// M5.1 — stop execution-status visuals. Status is a SEPARATE channel from the
+// note-flag pin colors (rule #3): SCHEDULED keeps the existing flag color, and
+// every other state carries a distinguishing shape/glyph so it reads even where
+// a status hue is close to a flag hue. `color: null` → fall back to flagColor.
+//   glyph: null=white dot · 'check'=delivered · 'bang'=exception · 'arrow'=en route
+const STATUS_META = {
+  UNPLANNED:   { label: 'Unplanned',        color: '#64748b', hollow: true,  glyph: null,    badge: '#64748b' },
+  SCHEDULED:   { label: 'Scheduled',        color: null,      hollow: false, glyph: null,    badge: '#1e5b92' },
+  OUT_FOR_DEL: { label: 'Out for delivery', color: '#2563eb', hollow: false, glyph: 'arrow', badge: '#2563eb' },
+  ARRIVED:     { label: 'Arrived',          color: '#d97706', hollow: false, glyph: null,    badge: '#d97706' },
+  DELIVERED:   { label: 'Delivered',        color: '#15803d', hollow: false, glyph: 'check', badge: '#15803d' },
+  EXCEPTION:   { label: 'Exception',        color: '#dc2626', hollow: false, glyph: 'bang',  badge: '#dc2626' },
+};
+
+// Mirrors classifyStopStatus() in netlify/functions/lib/nuvizz-scan.mts so the
+// client works on Firestore-cached docs scanned before this field existed.
+// Prefers the server-computed normalizedStatus when present.
+function classifyStopStatus(stop) {
+  if (stop?.normalizedStatus && STATUS_META[stop.normalizedStatus]) return stop.normalizedStatus;
+  const code = String(stop?.status ?? '').trim();
+  const exec = (stop?.raw && stop.raw.stopExecutionInfo) || {};
+  const arrival = stop?.arrivalDTTM || exec.arrivalDTTM || exec.arrivalDttm || exec.arrivedDttm || exec.to?.arrivalDTTM || exec.to?.arrivalDttm || null;
+  const delivered = stop?.deliveredDTTM || exec.completionDTTM || exec.completedDttm || exec.completionDttm || exec.confirmedDTTM || exec.confirmDTTM || exec.to?.completionDTTM || null;
+  if (code === '90' || delivered) return 'DELIVERED';
+  if (code === '50') return 'EXCEPTION';
+  if (code === '40') return arrival ? 'ARRIVED' : 'OUT_FOR_DEL';
+  if (!stop?.isPlanned) return 'UNPLANNED';
+  return 'SCHEDULED';
+}
 
 const EQUIPMENT_OPTIONS = [
   { value: 'no_tractor_trailer', label: 'No tractor trailer' },
@@ -916,6 +946,34 @@ function pinSvgClassic(color) {
   return 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent(svg);
 }
 
+// M5.1 — same 28×36 pin as pinSvgClassic but status-aware: `hollow` draws an
+// outlined (gray) pin for UNPLANNED, and `glyph` swaps the center white dot for
+// a status mark (check=delivered, bang=exception, arrow=en route). Anchor is
+// unchanged (14, 34) so it's a drop-in for the classic pin.
+function pinSvgStatus(color, opts = {}) {
+  const { hollow = false, glyph = null } = opts;
+  const bodyFill = hollow ? '#ffffff' : color;
+  const bodyStroke = hollow ? color : '#ffffff';
+  const strokeW = hollow ? 2.5 : 2;
+  let center;
+  if (glyph === 'check') {
+    center = '<path d="M9.5 13.2l2.8 2.8 5.2-6" fill="none" stroke="white" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>';
+  } else if (glyph === 'bang') {
+    center = '<text x="14" y="17.5" font-family="system-ui, sans-serif" font-size="12" font-weight="800" fill="white" text-anchor="middle">!</text>';
+  } else if (glyph === 'arrow') {
+    center = '<path d="M9.5 13h6m-2.5-2.6l2.8 2.6-2.8 2.6" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>';
+  } else {
+    center = `<circle cx="14" cy="13" r="4.5" fill="${hollow ? color : 'white'}"/>`;
+  }
+  const svg = `
+    <svg xmlns="http://www.w3.org/2000/svg" width="28" height="36" viewBox="0 0 28 36">
+      <path d="M14 1c-7 0-13 5.4-13 12 0 9 13 22 13 22s13-13 13-22c0-6.6-6-12-13-12z"
+        fill="${bodyFill}" stroke="${bodyStroke}" stroke-width="${strokeW}"/>
+      ${center}
+    </svg>`;
+  return 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent(svg);
+}
+
 // Resolve a restriction kind to its accent color + 22×22 glyph fragment.
 // Substitutes `currentColor` in the template with the accent so the glyph
 // renders standalone (works in any SVG renderer, no CSS cascade required).
@@ -1408,24 +1466,6 @@ function DatePicker({ selectedDate, onChange, onToday, compact }) {
 
 // M5 — Show Routes toggle. Sits adjacent to the filter toolbar (top-right),
 // same visual treatment, but a standalone control (not in the 5-toggle group).
-function ShowRoutesToggle({ checked, onChange }) {
-  return (
-    <button
-      onClick={() => onChange(!checked)}
-      className="bg-white/95 backdrop-blur border border-slate-200 rounded-lg shadow px-3 py-2 flex items-center gap-2 text-xs font-semibold hover:bg-slate-50"
-      role="switch"
-      aria-checked={checked}
-      title="Toggle route polylines"
-    >
-      <Truck size={13} className={checked ? 'text-blue-700' : 'text-slate-400'} />
-      <span className={checked ? 'text-slate-800' : 'text-slate-500'}>Routes</span>
-      <span className="relative inline-block w-8 h-4 rounded-full transition-colors" style={{ background: checked ? '#16a34a' : '#cbd5e1' }}>
-        <span className="absolute top-0.5 w-3 h-3 bg-white rounded-full shadow transition-transform" style={{ left: checked ? 'calc(100% - 14px)' : '2px' }} />
-      </span>
-    </button>
-  );
-}
-
 // M5 — Driver route legend. Collapsible (same pattern as the restriction
 // legend). One row per driver: color swatch + display name + stop count.
 function DriverRouteLegend({ legend, expanded, setExpanded }) {
@@ -1455,15 +1495,15 @@ function DriverRouteLegend({ legend, expanded, setExpanded }) {
   );
 }
 
-function FilterToolbar({ filters, setFilters, collapsed, setCollapsed, stopCount, vehicleDisabled }) {
+function FilterToolbar({ filters, setFilters, collapsed, setCollapsed, stopCount, vehicleDisabled, showRoutes, setShowRoutes }) {
   const set = (key) => (v) => setFilters((prev) => ({ ...prev, [key]: v }));
   const clusterWarning = !filters.showClustered && stopCount > 200
     ? `Rendering ${stopCount} markers individually may be slow`
     : null;
   return (
     <div
-      className="absolute right-4 bg-white rounded-lg shadow-md border border-slate-200"
-      style={{ top: 64, width: 240, zIndex: 5, opacity: 0.95 }}
+      className="bg-white rounded-lg shadow-md border border-slate-200"
+      style={{ width: 240, opacity: 0.97 }}
     >
       <button
         onClick={() => setCollapsed((v) => !v)}
@@ -1509,6 +1549,13 @@ function FilterToolbar({ filters, setFilters, collapsed, setCollapsed, stopCount
           />
           {clusterWarning && (
             <div className="text-[10px] text-amber-700 italic mt-1 leading-tight">{clusterWarning}</div>
+          )}
+          {setShowRoutes && (
+            <MapFilterToggle
+              label="Show routes"
+              checked={showRoutes}
+              onChange={setShowRoutes}
+            />
           )}
         </div>
       )}
@@ -1680,6 +1727,11 @@ function StopSidebar({ stop, note, onClose, onSave, saving, saveError, mobile = 
   }, [stop?.stopNbr, note?.id]);
 
   if (!stop) return null;
+  const sidebarStatusKind = classifyStopStatus(stop);
+  const sidebarArrivedAt = sidebarStatusKind === 'ARRIVED'
+    ? fmtClockShort(stop.arrivalDTTM || stop.raw?.stopExecutionInfo?.arrivalDTTM) : null;
+  const sidebarDeliveredAt = sidebarStatusKind === 'DELIVERED'
+    ? fmtClockShort(stop.deliveredDTTM || stop.raw?.stopExecutionInfo?.completionDTTM) : null;
   const D = draft;
   const setD = (patch) => setDraft({ ...D, ...patch });
   // M4.4 — receiving_hours is now {open, close} per day. The setter accepts a
@@ -1784,6 +1836,13 @@ function StopSidebar({ stop, note, onClose, onSave, saving, saveError, mobile = 
           <div className="font-bold truncate">{stop.businessName || '(no name)'}</div>
         </div>
         <button onClick={onClose} className="p-1 hover:bg-white/20 rounded"><X size={20} /></button>
+      </div>
+
+      {/* M5.1 — execution-status badge bar */}
+      <div className="px-4 py-2 border-b bg-slate-50 flex items-center gap-2 flex-wrap">
+        <StatusBadge kind={sidebarStatusKind} />
+        {sidebarDeliveredAt && <span className="text-[11px] text-slate-500">Delivered {sidebarDeliveredAt}</span>}
+        {sidebarArrivedAt && <span className="text-[11px] text-slate-500">Arrived {sidebarArrivedAt}</span>}
       </div>
 
       <div className="overflow-y-auto flex-1">
@@ -3052,10 +3111,39 @@ function MobileStopDetailDrawer({ stop, note, onClose, onSave, saving, saveError
   );
 }
 
+// M5.1 — status pill for the stop-detail sidebar. Color matches the marker
+// hue; UNPLANNED renders as an outlined chip to echo its hollow pin.
+function StatusBadge({ kind }) {
+  const meta = STATUS_META[kind] || STATUS_META.SCHEDULED;
+  const c = meta.badge;
+  const outlined = kind === 'UNPLANNED';
+  return (
+    <span
+      className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-semibold"
+      style={
+        outlined
+          ? { color: c, border: `1px solid ${c}`, background: '#fff' }
+          : { color: '#fff', background: c }
+      }
+    >
+      <span className="inline-block w-1.5 h-1.5 rounded-full" style={{ background: outlined ? c : '#fff' }} />
+      {meta.label}
+    </span>
+  );
+}
+
 function StopInfoTabContent({ stop }) {
   const cityLine = [stop.city, stop.state, stop.zip].filter(Boolean).join(', ').replace(/, ([A-Z]{2}) (\d)/, ', $1 $2');
+  const statusKind = classifyStopStatus(stop);
+  const arrivedAt = statusKind === 'ARRIVED' ? fmtClockShort(stop.arrivalDTTM || stop.raw?.stopExecutionInfo?.arrivalDTTM) : null;
+  const deliveredAt = statusKind === 'DELIVERED' ? fmtClockShort(stop.deliveredDTTM || stop.raw?.stopExecutionInfo?.completionDTTM) : null;
   return (
     <div className="px-4 py-3 space-y-3 text-sm">
+      <div className="flex items-center gap-2">
+        <StatusBadge kind={statusKind} />
+        {deliveredAt && <span className="text-[11px] text-slate-500">Delivered {deliveredAt}</span>}
+        {arrivedAt && <span className="text-[11px] text-slate-500">Arrived {arrivedAt}</span>}
+      </div>
       <div>
         <div className="text-[10px] uppercase font-semibold text-slate-500 mb-0.5">Address</div>
         <div className="text-slate-900">{stop.addr1 || '—'}</div>
@@ -3788,9 +3876,12 @@ function MapScreen() {
       // iconMarkerSvg returns size + anchor based on icon count.
       let icon;
       if (restrictions.length === 0) {
-        const color = flagColor(note);
+        // M5.1 — status drives the pin. SCHEDULED keeps the note-flag color
+        // (no regression); other states use their status hue + shape/glyph.
+        const meta = STATUS_META[classifyStopStatus(s)] || STATUS_META.SCHEDULED;
+        const color = meta.color || flagColor(note);
         icon = {
-          url: pinSvgClassic(color),
+          url: pinSvgStatus(color, { hollow: meta.hollow, glyph: meta.glyph }),
           scaledSize: new google.maps.Size(28, 36),
           anchor: new google.maps.Point(14, 34),
         };
@@ -4290,11 +4381,13 @@ function MapScreen() {
             <DatePicker selectedDate={selectedDate} onChange={setSelectedDate} onToday={goToToday} />
           </div>
         )}
-        {/* M5 — top-right control stack: status pill + Routes toggle on one row,
-            the Filters panel sits below it (see FilterToolbar top offset). This
-            keeps the three controls from overlapping each other. */}
+        {/* M5.1 — top-right controls live in ONE right-aligned vertical column:
+            status pill (row), then the filter toolbar. Stacking them in-flow
+            (instead of absolute offsets) means the toolbar can never be buried
+            under the pill regardless of the pill's height — the overlap bug
+            that hid the toolbar. "Show routes" now lives inside the toolbar. */}
         {!isMobile && (
-          <div className="absolute top-3 right-3 z-[6] flex items-center gap-2">
+          <div className="absolute top-3 right-3 z-[6] flex flex-col items-end gap-2">
             <div className="bg-white/95 backdrop-blur border border-slate-200 rounded-lg shadow px-3 py-2 flex items-center gap-3 text-xs">
               <div>
                 <div className="font-semibold">{stops.length} stops</div>
@@ -4309,7 +4402,16 @@ function MapScreen() {
                 <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
               </button>
             </div>
-            <ShowRoutesToggle checked={showRoutes} onChange={setShowRoutes} />
+            <FilterToolbar
+              filters={mapFilters}
+              setFilters={setMapFilters}
+              collapsed={toolbarCollapsed}
+              setCollapsed={setToolbarCollapsed}
+              stopCount={filteredStops.length}
+              vehicleDisabled={!dateIsToday}
+              showRoutes={showRoutes}
+              setShowRoutes={setShowRoutes}
+            />
           </div>
         )}
         {/* M5 — one-shot note when live drivers were auto-disabled for a past/future date. */}
@@ -4318,14 +4420,6 @@ function MapScreen() {
             Live drivers only available for today's date.
           </div>
         )}
-        <FilterToolbar
-          filters={mapFilters}
-          setFilters={setMapFilters}
-          collapsed={toolbarCollapsed}
-          setCollapsed={setToolbarCollapsed}
-          stopCount={filteredStops.length}
-          vehicleDisabled={!dateIsToday}
-        />
         {mapsError && (
           <div className="absolute top-4 left-4 right-4 bg-red-50 border border-red-200 rounded p-3 text-sm text-red-800 z-[8]">
             <div className="font-semibold">Google Maps failed to load</div>

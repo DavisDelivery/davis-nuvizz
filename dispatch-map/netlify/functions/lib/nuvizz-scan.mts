@@ -52,8 +52,53 @@ export interface NormalizedStop {
   isTerminal: boolean;
   isUnplanned: boolean;
   isPlanned: boolean;     // M5.2 — came from a load scan (routed) vs the unplanned number-space scan.
+  normalizedStatus: StopStatusKind; // M5.1 — execution-lifecycle bucket for marker/sidebar.
+  arrivalDTTM: string | null;       // M5.1 — actual on-site time, when present.
+  deliveredDTTM: string | null;     // M5.1 — actual completion time, when present.
   signalSources: SignalSources;
   raw: unknown;
+}
+
+// M5.1 — canonical stop-status buckets driving marker visuals + sidebar badge.
+export type StopStatusKind =
+  | 'UNPLANNED'
+  | 'SCHEDULED'
+  | 'OUT_FOR_DEL'
+  | 'ARRIVED'
+  | 'DELIVERED'
+  | 'EXCEPTION';
+
+// Actual-execution timestamps. The live field name on executed stops is
+// unconfirmed (5/27 scan data carried none — only plannedEtaDTTM), so probe
+// the documented shapes defensively and treat any hit as "happened".
+export function execArrivalDTTM(exec: any): string | null {
+  return (
+    exec?.arrivalDTTM || exec?.arrivalDttm || exec?.arrivedDttm ||
+    exec?.to?.arrivalDTTM || exec?.to?.arrivalDttm || null
+  );
+}
+export function execDeliveredDTTM(exec: any): string | null {
+  return (
+    exec?.completionDTTM || exec?.completedDttm || exec?.completionDttm ||
+    exec?.confirmedDTTM || exec?.confirmDTTM || exec?.to?.completionDTTM || null
+  );
+}
+
+// Most-progressed state wins. UNPLANNED is keyed off isPlanned (board stops
+// keep code 10 until routed), NOT a status code. Observed real codes: 10
+// (unplanned), 20 (planned/scheduled). 30/40/50/90 per the NuVizz API guide.
+export function classifyStopStatus(opts: {
+  status: string | null;
+  isPlanned: boolean;
+  exec?: any;
+}): StopStatusKind {
+  const code = String(opts.status ?? '').trim();
+  const exec = opts.exec || {};
+  if (code === '90' || execDeliveredDTTM(exec)) return 'DELIVERED';
+  if (code === '50') return 'EXCEPTION';
+  if (code === '40') return execArrivalDTTM(exec) ? 'ARRIVED' : 'OUT_FOR_DEL';
+  if (!opts.isPlanned) return 'UNPLANNED';
+  return 'SCHEDULED';
 }
 
 export function getCreds() {
@@ -117,6 +162,10 @@ export function normalizeStop(raw: any): NormalizedStop {
   const driverUserName = load.driverUserName ?? null;
   const driverName = load.driverName ?? null;
   const loadNbr = load.loadNbr || raw.loadNbr || null;
+  const statusCode = exec.stopStatus || stop.status || null;
+  const isPlanned = !!loadNbr;
+  const arrivalDTTM = execArrivalDTTM(exec);
+  const deliveredDTTM = execDeliveredDTTM(exec);
   return {
     pro: stopNbr,
     pros,
@@ -126,7 +175,7 @@ export function normalizeStop(raw: any): NormalizedStop {
     loadNbr,
     loadStopSeq: typeof load.stopSeq === 'number' ? load.stopSeq : null,
     stopType,
-    status: exec.stopStatus || stop.status || null,
+    status: statusCode,
     businessName,
     addr1,
     addr2,
@@ -146,7 +195,10 @@ export function normalizeStop(raw: any): NormalizedStop {
     driverUserName,
     isTerminal: detectTerminal(addr1, businessName),
     isUnplanned: !driverUserName && !driverName,
-    isPlanned: !!loadNbr,
+    isPlanned,
+    normalizedStatus: classifyStopStatus({ status: statusCode, isPlanned, exec }),
+    arrivalDTTM,
+    deliveredDTTM,
     signalSources: { addressLine2: addr2, orderInstructions },
     raw,
   };
