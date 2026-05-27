@@ -1466,24 +1466,6 @@ function DatePicker({ selectedDate, onChange, onToday, compact }) {
 
 // M5 — Show Routes toggle. Sits adjacent to the filter toolbar (top-right),
 // same visual treatment, but a standalone control (not in the 5-toggle group).
-function ShowRoutesToggle({ checked, onChange }) {
-  return (
-    <button
-      onClick={() => onChange(!checked)}
-      className="bg-white/95 backdrop-blur border border-slate-200 rounded-lg shadow px-3 py-2 flex items-center gap-2 text-xs font-semibold hover:bg-slate-50"
-      role="switch"
-      aria-checked={checked}
-      title="Toggle route polylines"
-    >
-      <Truck size={13} className={checked ? 'text-blue-700' : 'text-slate-400'} />
-      <span className={checked ? 'text-slate-800' : 'text-slate-500'}>Routes</span>
-      <span className="relative inline-block w-8 h-4 rounded-full transition-colors" style={{ background: checked ? '#16a34a' : '#cbd5e1' }}>
-        <span className="absolute top-0.5 w-3 h-3 bg-white rounded-full shadow transition-transform" style={{ left: checked ? 'calc(100% - 14px)' : '2px' }} />
-      </span>
-    </button>
-  );
-}
-
 // M5 — Driver route legend. Collapsible (same pattern as the restriction
 // legend). One row per driver: color swatch + display name + stop count.
 function DriverRouteLegend({ legend, expanded, setExpanded }) {
@@ -1513,15 +1495,15 @@ function DriverRouteLegend({ legend, expanded, setExpanded }) {
   );
 }
 
-function FilterToolbar({ filters, setFilters, collapsed, setCollapsed, stopCount, vehicleDisabled }) {
+function FilterToolbar({ filters, setFilters, collapsed, setCollapsed, stopCount, vehicleDisabled, showRoutes, setShowRoutes }) {
   const set = (key) => (v) => setFilters((prev) => ({ ...prev, [key]: v }));
   const clusterWarning = !filters.showClustered && stopCount > 200
     ? `Rendering ${stopCount} markers individually may be slow`
     : null;
   return (
     <div
-      className="absolute right-4 bg-white rounded-lg shadow-md border border-slate-200"
-      style={{ top: 64, width: 240, zIndex: 5, opacity: 0.95 }}
+      className="bg-white rounded-lg shadow-md border border-slate-200"
+      style={{ width: 240, opacity: 0.97 }}
     >
       <button
         onClick={() => setCollapsed((v) => !v)}
@@ -1567,6 +1549,13 @@ function FilterToolbar({ filters, setFilters, collapsed, setCollapsed, stopCount
           />
           {clusterWarning && (
             <div className="text-[10px] text-amber-700 italic mt-1 leading-tight">{clusterWarning}</div>
+          )}
+          {setShowRoutes && (
+            <MapFilterToggle
+              label="Show routes"
+              checked={showRoutes}
+              onChange={setShowRoutes}
+            />
           )}
         </div>
       )}
@@ -4392,11 +4381,13 @@ function MapScreen() {
             <DatePicker selectedDate={selectedDate} onChange={setSelectedDate} onToday={goToToday} />
           </div>
         )}
-        {/* M5 — top-right control stack: status pill + Routes toggle on one row,
-            the Filters panel sits below it (see FilterToolbar top offset). This
-            keeps the three controls from overlapping each other. */}
+        {/* M5.1 — top-right controls live in ONE right-aligned vertical column:
+            status pill (row), then the filter toolbar. Stacking them in-flow
+            (instead of absolute offsets) means the toolbar can never be buried
+            under the pill regardless of the pill's height — the overlap bug
+            that hid the toolbar. "Show routes" now lives inside the toolbar. */}
         {!isMobile && (
-          <div className="absolute top-3 right-3 z-[6] flex items-center gap-2">
+          <div className="absolute top-3 right-3 z-[6] flex flex-col items-end gap-2">
             <div className="bg-white/95 backdrop-blur border border-slate-200 rounded-lg shadow px-3 py-2 flex items-center gap-3 text-xs">
               <div>
                 <div className="font-semibold">{stops.length} stops</div>
@@ -4411,7 +4402,16 @@ function MapScreen() {
                 <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
               </button>
             </div>
-            <ShowRoutesToggle checked={showRoutes} onChange={setShowRoutes} />
+            <FilterToolbar
+              filters={mapFilters}
+              setFilters={setMapFilters}
+              collapsed={toolbarCollapsed}
+              setCollapsed={setToolbarCollapsed}
+              stopCount={filteredStops.length}
+              vehicleDisabled={!dateIsToday}
+              showRoutes={showRoutes}
+              setShowRoutes={setShowRoutes}
+            />
           </div>
         )}
         {/* M5 — one-shot note when live drivers were auto-disabled for a past/future date. */}
@@ -4420,14 +4420,6 @@ function MapScreen() {
             Live drivers only available for today's date.
           </div>
         )}
-        <FilterToolbar
-          filters={mapFilters}
-          setFilters={setMapFilters}
-          collapsed={toolbarCollapsed}
-          setCollapsed={setToolbarCollapsed}
-          stopCount={filteredStops.length}
-          vehicleDisabled={!dateIsToday}
-        />
         {mapsError && (
           <div className="absolute top-4 left-4 right-4 bg-red-50 border border-red-200 rounded p-3 text-sm text-red-800 z-[8]">
             <div className="font-semibold">Google Maps failed to load</div>
