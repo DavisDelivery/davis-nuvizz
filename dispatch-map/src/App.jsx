@@ -41,7 +41,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.10.0';
+const APP_VERSION = '0.11.0';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -485,6 +485,7 @@ function useStops(date) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [lastRefreshed, setLastRefreshed] = useState(null);
+  const [lastScannedAt, setLastScannedAt] = useState(null);
   const [source, setSource] = useState(null);
 
   const refresh = useCallback(async () => {
@@ -502,6 +503,7 @@ function useStops(date) {
       }));
       setStops(decorated);
       setSource(data.source || 'nuvizz');
+      setLastScannedAt(data.lastScannedAt || null);
       setLastRefreshed(new Date());
     } catch (e) {
       setError(e.message);
@@ -511,7 +513,7 @@ function useStops(date) {
   }, [date]);
 
   useEffect(() => { refresh(); }, [refresh]);
-  return { stops, loading, error, lastRefreshed, source, refresh };
+  return { stops, loading, error, lastRefreshed, lastScannedAt, source, refresh };
 }
 
 // M2.1 — Auto-scan today's stops for SPL-INSTR-TEXT + addressLine2 signals
@@ -1014,6 +1016,23 @@ function fmtTimeAgo(d) {
   if (secs < 60) return `${secs}s ago`;
   if (secs < 3600) return `${Math.round(secs / 60)}m ago`;
   return `${Math.round(secs / 3600)}h ago`;
+}
+
+// M5.2 — data now comes from the pre-scanned Firestore stop index, refreshed by a
+// background scan every ~5 min. The meaningful freshness is when that scan ran
+// (lastScannedAt), not when the client fetched. Surface it so dispatchers know
+// how current the board is.
+function fmtStopFreshness(source, lastScannedAt) {
+  if (source === 'fixture') return 'MOCK DATA';
+  if (source === 'index-empty') return 'No scan yet';
+  if (source === 'live-scan') return 'Live scan';
+  if (lastScannedAt) {
+    const d = new Date(lastScannedAt);
+    if (!isNaN(d.getTime())) {
+      return `Stops as of ${d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+    }
+  }
+  return 'NuVizz';
 }
 
 function todayYmd() {
@@ -3549,7 +3568,7 @@ function MapScreen() {
   const [selectedDate, setSelectedDate] = useState(() => todayInET());
   const dateIsToday = isTodayET(selectedDate);
 
-  const { stops, loading, error, lastRefreshed, source, refresh } = useStops(selectedDate);
+  const { stops, loading, error, lastRefreshed, lastScannedAt, source, refresh } = useStops(selectedDate);
   const { notes, ready: notesReady } = useCustomerNotes();
   useAutoScanner(stops, notes, notesReady);
   const { google, error: mapsError } = useGoogleMaps();
@@ -4061,7 +4080,7 @@ function MapScreen() {
         <div className="absolute top-2 right-2 bg-white/95 backdrop-blur border border-slate-200 rounded-lg shadow px-2.5 py-1.5 flex items-center gap-2 text-[11px] z-10">
           <div className="leading-tight">
             <div className="font-semibold">{stops.length} stops</div>
-            <div className="text-slate-500 text-[10px]">{source === 'fixture' ? 'MOCK' : 'NuVizz'} · {fmtTimeAgo(lastRefreshed)}</div>
+            <div className="text-slate-500 text-[10px]">{fmtStopFreshness(source, lastScannedAt)}</div>
           </div>
           <button
             onClick={refresh}
@@ -4279,7 +4298,7 @@ function MapScreen() {
             <div className="bg-white/95 backdrop-blur border border-slate-200 rounded-lg shadow px-3 py-2 flex items-center gap-3 text-xs">
               <div>
                 <div className="font-semibold">{stops.length} stops</div>
-                <div className="text-slate-500">{source === 'fixture' ? 'MOCK DATA' : 'NuVizz'} · {fmtTimeAgo(lastRefreshed)}</div>
+                <div className="text-slate-500">{fmtStopFreshness(source, lastScannedAt)}</div>
               </div>
               <button
                 onClick={refresh}
