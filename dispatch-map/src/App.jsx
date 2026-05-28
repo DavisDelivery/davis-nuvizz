@@ -41,7 +41,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.11.6';
+const APP_VERSION = '0.11.7';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -1898,8 +1898,9 @@ function StopSidebar({ stop, note, onClose, onSave, saving, saveError, onOpenRou
             {stop.loadNbr ? (
               <div className="flex items-center justify-between gap-2">
                 <div className="min-w-0 text-sm">
-                  <div className="font-mono text-slate-700">{stop.loadNbr}</div>
+                  <div className="font-semibold text-slate-900 truncate">{stop.routeName || stop.loadNbr}</div>
                   {stop.driverName && <div className="text-xs text-slate-500 truncate">{stop.driverName}</div>}
+                  {stop.routeName && <div className="text-[10px] text-slate-400 font-mono">{stop.loadNbr}</div>}
                 </div>
                 {onOpenRoute && (
                   <button
@@ -3222,6 +3223,9 @@ function RouteDetailBody({ stops, onPickStop }) {
 }
 
 function RouteDetailSidebar({ loadNbr, stops, onClose, onPickStop, mobile = false }) {
+  // M5.2.1 — lead with the human route name (e.g. "DULUTH"); load # stays as fine
+  // print so the dispatcher can still grep for the internal identifier.
+  const routeName = stops.find((s) => s.routeName)?.routeName || null;
   return (
     <aside
       className={mobile
@@ -3233,7 +3237,8 @@ function RouteDetailSidebar({ loadNbr, stops, onClose, onPickStop, mobile = fals
       <div className="px-4 py-3 border-b flex items-center justify-between" style={{ background: BRAND, color: 'white' }}>
         <div className="min-w-0">
           <div className="text-[10px] uppercase tracking-wider opacity-75">Route</div>
-          <div className="font-bold font-mono truncate">{loadNbr}</div>
+          <div className="font-bold truncate">{routeName || loadNbr}</div>
+          {routeName && <div className="text-[10px] font-mono opacity-75">{loadNbr}</div>}
         </div>
         <button onClick={onClose} className="p-1 hover:bg-white/20 rounded" aria-label="Close route"><X size={20} /></button>
       </div>
@@ -3245,12 +3250,14 @@ function RouteDetailSidebar({ loadNbr, stops, onClose, onPickStop, mobile = fals
 }
 
 function MobileRouteDetailDrawer({ loadNbr, stops, onClose, onPickStop }) {
+  const routeName = stops.find((s) => s.routeName)?.routeName || null;
   return (
-    <BottomSheet open onClose={onClose} heights={SHEET_HEIGHTS} ariaLabel={`Route ${loadNbr}`}>
+    <BottomSheet open onClose={onClose} heights={SHEET_HEIGHTS} ariaLabel={`Route ${routeName || loadNbr}`}>
       <div className="flex-shrink-0 px-4 py-2 flex items-center justify-between border-b">
         <div className="min-w-0">
           <div className="text-[10px] uppercase tracking-wider text-slate-500">Route</div>
-          <div className="font-bold font-mono truncate">{loadNbr}</div>
+          <div className="font-bold truncate">{routeName || loadNbr}</div>
+          {routeName && <div className="text-[10px] font-mono text-slate-400">{loadNbr}</div>}
         </div>
         <button onClick={onClose} className="p-2 -mr-2" aria-label="Close route"><X size={20} /></button>
       </div>
@@ -3299,8 +3306,9 @@ function StopInfoTabContent({ stop, onOpenRoute }) {
         {stop.loadNbr ? (
           <div className="flex items-center justify-between gap-2">
             <div className="min-w-0">
-              <div className="text-slate-900 font-mono text-sm">{stop.loadNbr}</div>
+              <div className="text-slate-900 font-semibold text-sm truncate">{stop.routeName || stop.loadNbr}</div>
               {stop.driverName && <div className="text-xs text-slate-500 truncate">{stop.driverName}</div>}
+              {stop.routeName && <div className="text-[10px] text-slate-400 font-mono">{stop.loadNbr}</div>}
             </div>
             {onOpenRoute && (
               <button
