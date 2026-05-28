@@ -48,6 +48,7 @@ export interface NormalizedStop {
   itemsSummary: string;
   customerAccount: string | null;
   driverName: string | null;
+  routeName: string | null;         // M5.2.1 — human-readable route name (e.g. "DULUTH"). From loadHeader.routeName.
   driverUserName: string | null;
   isTerminal: boolean;
   isUnplanned: boolean;
@@ -213,6 +214,7 @@ export function normalizeStop(raw: any): NormalizedStop {
     customerAccount: stop.accountNumber || stop.custInfo?.custAccNbr || null,
     driverName,
     driverUserName,
+    routeName: load.routeName ?? null,
     isTerminal: detectTerminal(addr1, businessName),
     isUnplanned: !driverUserName && !driverName,
     isPlanned,
@@ -268,7 +270,7 @@ async function scanLoadRangeForDate(dateStr: string, startNbr: number, endNbr: n
       if (startDate !== dateStr) return null;
       return stops.map((s: any, i: number) => ({
         ...s,
-        load: { loadNbr: h.loadNbr, driverName: a.driverName, driverUserName: a.driverUserName, stopSeq: i },
+        load: { loadNbr: h.loadNbr, routeName: h.routeName, driverName: a.driverName, driverUserName: a.driverUserName, stopSeq: i },
       }));
     } catch {
       return null;
