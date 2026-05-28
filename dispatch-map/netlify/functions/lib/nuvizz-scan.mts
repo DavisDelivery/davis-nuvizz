@@ -90,20 +90,26 @@ export function execDeliveredDTTM(exec: any): string | null {
   );
 }
 
-// True when NuVizz recorded a real problem on the stop (driver-added exception or
-// a cancellation), vs the empty {} / [] placeholders present on healthy stops.
+// True ONLY when NuVizz recorded a real failure on the stop. Parent-app precedent
+// (normalize.js:80-89): status===50 with empty exceptions[] AND exceptionPresent=false
+// is JUST a paperwork issue (driver arrived but didn't tap Complete) — NOT a real
+// exception. So we require an authoritative signal: NuVizz's own exceptionPresent
+// flag, an actual cancellation timestamp, or a non-empty exceptions[] entry. A bare
+// status 50/80 code alone is NOT enough — many "50" stops are just unfinished
+// paperwork on a driver-arrived stop, which should classify as ARRIVED, not EXCEPTION.
 export function hasExceptionSignal(exec: any): boolean {
+  if (exec?.exceptionPresent === true) return true;
   if (Array.isArray(exec?.exceptions) && exec.exceptions.length > 0) return true;
   const c = exec?.cancellation;
-  return !!(c && (c.cancelDTTM || c.reasonCode));
+  return !!(c && c.cancelDTTM);
 }
 
-// Most-progressed state wins. UNPLANNED is keyed off isPlanned (board stops keep
-// code 10 until routed), NOT a status code. Status codes VERIFIED in live data:
-//   10 unplanned/created · 20 planned/assigned · 30 scheduled · 40 out-for-delivery
-//   50/80 exception (80 = "Unable to deliver" + cancellation) · 90/91 delivered.
-// Delivery + exception are also detected by execution signals (timestamp /
-// exceptions[] / cancellation) so an unmapped code still classifies correctly.
+// Most-progressed state wins, with one inversion: ARRIVED beats a bare-code EXCEPTION
+// (v0.11.8 — Chad's call). NuVizz often parks an arrived-but-not-completed stop at
+// status 50 with no real exception data; the driver IS at the customer, so classify
+// it ARRIVED. A REAL exception (exceptionPresent, cancelDTTM, exceptions[], or the
+// explicit "Unable to deliver" code 80) still wins even with an arrival recorded.
+// Status codes verified in live data: 10/20/30/40/50/80/90/91.
 export function classifyStopStatus(opts: {
   status: string | null;
   isPlanned: boolean;
@@ -112,8 +118,14 @@ export function classifyStopStatus(opts: {
   const code = String(opts.status ?? '').trim();
   const exec = opts.exec || {};
   if (code === '90' || code === '91' || execDeliveredDTTM(exec)) return 'DELIVERED';
-  if (code === '50' || code === '80' || hasExceptionSignal(exec)) return 'EXCEPTION';
-  if (code === '40') return execArrivalDTTM(exec) ? 'ARRIVED' : 'OUT_FOR_DEL';
+  // Code 80 ("Unable to deliver") is the explicit failure outcome — EXCEPTION even
+  // if an arrival was recorded earlier in the same lifecycle.
+  if (code === '80') return 'EXCEPTION';
+  // Authoritative exception signals (NuVizz's own flag, cancellation, real exceptions[]).
+  if (hasExceptionSignal(exec)) return 'EXCEPTION';
+  // Driver-on-site beats bare status 50 paperwork.
+  if (execArrivalDTTM(exec)) return 'ARRIVED';
+  if (code === '40') return 'OUT_FOR_DEL';
   if (!opts.isPlanned) return 'UNPLANNED';
   return 'SCHEDULED';
 }

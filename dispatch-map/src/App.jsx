@@ -41,7 +41,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.11.7';
+const APP_VERSION = '0.11.8';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -100,20 +100,25 @@ function execArrivalTs(exec) {
 function execDeliveredTs(exec) {
   return exec.to?.confirmedDTTM || exec.receiveDTTM || exec.confirmedDTTM || exec.completionDTTM || exec.completedDttm || exec.completionDttm || exec.confirmDTTM || exec.to?.completionDTTM || null;
 }
-// Mirrors classifyStopStatus() in netlify/functions/lib/nuvizz-scan.mts so the
-// client works on Firestore-cached docs scanned before this field existed.
-// Prefers the server-computed normalizedStatus when present. Status codes/fields
-// verified against live data (2026-05-27): 90/91 delivered, 50/80 exception.
+// Mirrors classifyStopStatus() in netlify/functions/lib/nuvizz-scan.mts. Prefers
+// the server-computed normalizedStatus when present. v0.11.8: bare status 50 with
+// NO real exception signal + an arrivalDTTM is reclassified ARRIVED (parent-app
+// normalize.js:80-89 precedent — driver-on-site paperwork issue, not a failure).
 function classifyStopStatus(stop) {
   if (stop?.normalizedStatus && STATUS_META[stop.normalizedStatus]) return stop.normalizedStatus;
   const code = String(stop?.status ?? '').trim();
   const exec = (stop?.raw && stop.raw.stopExecutionInfo) || {};
   const arrival = stop?.arrivalDTTM || execArrivalTs(exec);
   const delivered = stop?.deliveredDTTM || execDeliveredTs(exec);
-  const exception = (Array.isArray(exec.exceptions) && exec.exceptions.length > 0) || !!(exec.cancellation && (exec.cancellation.cancelDTTM || exec.cancellation.reasonCode));
+  const realException =
+    exec.exceptionPresent === true ||
+    (Array.isArray(exec.exceptions) && exec.exceptions.length > 0) ||
+    !!(exec.cancellation && exec.cancellation.cancelDTTM);
   if (code === '90' || code === '91' || delivered) return 'DELIVERED';
-  if (code === '50' || code === '80' || exception) return 'EXCEPTION';
-  if (code === '40') return arrival ? 'ARRIVED' : 'OUT_FOR_DEL';
+  if (code === '80') return 'EXCEPTION';
+  if (realException) return 'EXCEPTION';
+  if (arrival) return 'ARRIVED';
+  if (code === '40') return 'OUT_FOR_DEL';
   if (!stop?.isPlanned) return 'UNPLANNED';
   return 'SCHEDULED';
 }
