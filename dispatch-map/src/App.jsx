@@ -41,7 +41,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.11.2';
+const APP_VERSION = '0.11.3';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -4180,6 +4180,17 @@ function MapScreen() {
             aria-label="Refresh"
           >
             <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
+          </button>
+          {/* v0.11.3 — explicit Filters entry on mobile. The FAB also opens the
+              drawer, but its generic list icon wasn't read as "filters"; this puts
+              a labeled control right beside the status pill where dispatchers look. */}
+          <span className="w-px self-stretch bg-slate-200" aria-hidden />
+          <button
+            onClick={() => { setMobileDrawerTab('filters'); setMobileDrawerOpen(true); }}
+            className="flex items-center gap-1 px-1.5 py-1 rounded hover:bg-slate-100 active:bg-slate-200 font-semibold text-slate-700"
+            aria-label="Open filters"
+          >
+            <Filter size={14} /> Filters
           </button>
         </div>
 
