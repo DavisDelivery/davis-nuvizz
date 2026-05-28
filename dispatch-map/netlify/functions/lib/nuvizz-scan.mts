@@ -208,12 +208,24 @@ export function normalizeStop(raw: any): NormalizedStop {
 const ANCHOR_DATE = new Date('2026-04-22T00:00:00Z');
 const ANCHOR_LOAD = 192900;
 const LOADS_PER_DAY = 80;
+// Half-width of the load-number probe window around the date's estimated center.
+// MUST exceed a single day's actual load-number SPREAD plus any anchor-estimate
+// drift, or the window clips real loads. Regression (v0.11.4, observed 2026-05-27):
+// at ±250 the window was [195450,195950] but that day's loads ran 195406–195795,
+// so loads 195406–195449 (~340 delivered stops) were sliced off the bottom and
+// vanished from the index once they converted from unplanned(10) to delivered(90)
+// — the unplanned stop-number scan no longer caught them, and the load scan never
+// reached them. ±600 brackets a full day (span ~400) with ample drift margin.
+// Out-of-date loads in the wider window are discarded by the startDate filter in
+// scanLoadRangeForDate, so widening only costs probes (fine in the background fn),
+// never false positives.
+const LOAD_WINDOW_HALF = 600;
 
 function estimateLoadRange(dateStr: string): { startNbr: number; endNbr: number } {
   const target = new Date(dateStr + 'T00:00:00Z');
   const daysDiff = Math.round((target.getTime() - ANCHOR_DATE.getTime()) / (1000 * 60 * 60 * 24));
   const center = ANCHOR_LOAD + daysDiff * LOADS_PER_DAY;
-  return { startNbr: center - 250, endNbr: center + 250 };
+  return { startNbr: center - LOAD_WINDOW_HALF, endNbr: center + LOAD_WINDOW_HALF };
 }
 
 async function scanLoadRangeForDate(dateStr: string, startNbr: number, endNbr: number, concurrency = 30) {
