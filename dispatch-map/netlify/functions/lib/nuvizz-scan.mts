@@ -68,25 +68,40 @@ export type StopStatusKind =
   | 'DELIVERED'
   | 'EXCEPTION';
 
-// Actual-execution timestamps. The live field name on executed stops is
-// unconfirmed (5/27 scan data carried none — only plannedEtaDTTM), so probe
-// the documented shapes defensively and treat any hit as "happened".
+// Actual-execution timestamps. Field names VERIFIED against live delivered stops
+// (2026-05-27): arrival is exec.to.arrivalDTTM; delivery confirmation is
+// exec.to.confirmedDTTM (mirrored at exec.receiveDTTM). The earlier guesses
+// (completionDTTM/confirmDTTM/etc.) never matched, so deliveredDTTM came back null
+// and the sidebar showed no delivery time — keep them as fallbacks but probe the
+// real fields first.
 export function execArrivalDTTM(exec: any): string | null {
   return (
-    exec?.arrivalDTTM || exec?.arrivalDttm || exec?.arrivedDttm ||
-    exec?.to?.arrivalDTTM || exec?.to?.arrivalDttm || null
+    exec?.to?.arrivalDTTM || exec?.to?.arrivalDttm ||
+    exec?.arrivalDTTM || exec?.arrivalDttm || exec?.arrivedDttm || null
   );
 }
 export function execDeliveredDTTM(exec: any): string | null {
   return (
-    exec?.completionDTTM || exec?.completedDttm || exec?.completionDttm ||
-    exec?.confirmedDTTM || exec?.confirmDTTM || exec?.to?.completionDTTM || null
+    exec?.to?.confirmedDTTM || exec?.receiveDTTM ||
+    exec?.confirmedDTTM || exec?.completionDTTM || exec?.completedDttm ||
+    exec?.completionDttm || exec?.confirmDTTM || exec?.to?.completionDTTM || null
   );
 }
 
-// Most-progressed state wins. UNPLANNED is keyed off isPlanned (board stops
-// keep code 10 until routed), NOT a status code. Observed real codes: 10
-// (unplanned), 20 (planned/scheduled). 30/40/50/90 per the NuVizz API guide.
+// True when NuVizz recorded a real problem on the stop (driver-added exception or
+// a cancellation), vs the empty {} / [] placeholders present on healthy stops.
+export function hasExceptionSignal(exec: any): boolean {
+  if (Array.isArray(exec?.exceptions) && exec.exceptions.length > 0) return true;
+  const c = exec?.cancellation;
+  return !!(c && (c.cancelDTTM || c.reasonCode));
+}
+
+// Most-progressed state wins. UNPLANNED is keyed off isPlanned (board stops keep
+// code 10 until routed), NOT a status code. Status codes VERIFIED in live data:
+//   10 unplanned/created · 20 planned/assigned · 30 scheduled · 40 out-for-delivery
+//   50/80 exception (80 = "Unable to deliver" + cancellation) · 90/91 delivered.
+// Delivery + exception are also detected by execution signals (timestamp /
+// exceptions[] / cancellation) so an unmapped code still classifies correctly.
 export function classifyStopStatus(opts: {
   status: string | null;
   isPlanned: boolean;
@@ -94,8 +109,8 @@ export function classifyStopStatus(opts: {
 }): StopStatusKind {
   const code = String(opts.status ?? '').trim();
   const exec = opts.exec || {};
-  if (code === '90' || execDeliveredDTTM(exec)) return 'DELIVERED';
-  if (code === '50') return 'EXCEPTION';
+  if (code === '90' || code === '91' || execDeliveredDTTM(exec)) return 'DELIVERED';
+  if (code === '50' || code === '80' || hasExceptionSignal(exec)) return 'EXCEPTION';
   if (code === '40') return execArrivalDTTM(exec) ? 'ARRIVED' : 'OUT_FOR_DEL';
   if (!opts.isPlanned) return 'UNPLANNED';
   return 'SCHEDULED';
