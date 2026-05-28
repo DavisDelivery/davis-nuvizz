@@ -55,6 +55,7 @@ export interface NormalizedStop {
   normalizedStatus: StopStatusKind; // M5.1 — execution-lifecycle bucket for marker/sidebar.
   arrivalDTTM: string | null;       // M5.1 — actual on-site time, when present.
   deliveredDTTM: string | null;     // M5.1 — actual completion time, when present.
+  plannedEtaDTTM: string | null;    // M5.2 — canonical delivery-order timestamp for route polylines.
   signalSources: SignalSources;
   raw: unknown;
 }
@@ -181,6 +182,10 @@ export function normalizeStop(raw: any): NormalizedStop {
   const isPlanned = !!loadNbr;
   const arrivalDTTM = execArrivalDTTM(exec);
   const deliveredDTTM = execDeliveredDTTM(exec);
+  // M5.2 — plannedEtaDTTM is the canonical "delivery order" timestamp on a planned
+  // stop. Exposing it at the top level lets the client sort each load's stops into a
+  // real sequential polyline (NuVizz's array order / stopSeq is unreliable).
+  const plannedEtaDTTM: string | null = exec?.to?.plannedEtaDTTM || exec?.from?.plannedEtaDTTM || null;
   return {
     pro: stopNbr,
     pros,
@@ -214,6 +219,7 @@ export function normalizeStop(raw: any): NormalizedStop {
     normalizedStatus: classifyStopStatus({ status: statusCode, isPlanned, exec }),
     arrivalDTTM,
     deliveredDTTM,
+    plannedEtaDTTM,
     signalSources: { addressLine2: addr2, orderInstructions },
     raw,
   };

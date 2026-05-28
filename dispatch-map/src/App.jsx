@@ -41,7 +41,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.11.5';
+const APP_VERSION = '0.11.6';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -81,6 +81,19 @@ const STATUS_META = {
 // Mirrors classifyStopStatus() in netlify/functions/lib/nuvizz-scan.mts so the
 // client works on Firestore-cached docs scanned before this field existed.
 // Prefers the server-computed normalizedStatus when present.
+// M5.2 — canonical "delivery order" comparator. Mirrors the polyline sort so the
+// route detail list lines up 1:1 with what the line draws on the map.
+function compareByPlannedEta(a, b) {
+  const ae = a?.plannedEtaDTTM || a?.raw?.stopExecutionInfo?.to?.plannedEtaDTTM || null;
+  const be = b?.plannedEtaDTTM || b?.raw?.stopExecutionInfo?.to?.plannedEtaDTTM || null;
+  if (ae && be && ae !== be) return ae.localeCompare(be);
+  if (ae && !be) return -1;
+  if (!ae && be) return 1;
+  const seqDiff = (a?.loadStopSeq ?? 0) - (b?.loadStopSeq ?? 0);
+  if (seqDiff !== 0) return seqDiff;
+  return String(a?.stopNbr || '').localeCompare(String(b?.stopNbr || ''));
+}
+
 function execArrivalTs(exec) {
   return exec.to?.arrivalDTTM || exec.to?.arrivalDttm || exec.arrivalDTTM || exec.arrivalDttm || exec.arrivedDttm || null;
 }
@@ -1729,7 +1742,7 @@ function ProsSection({ stop }) {
   );
 }
 
-function StopSidebar({ stop, note, onClose, onSave, saving, saveError, mobile = false }) {
+function StopSidebar({ stop, note, onClose, onSave, saving, saveError, onOpenRoute, mobile = false }) {
   const [draft, setDraft] = useState(() => note || emptyNote(stop));
   const [editing, setEditing] = useState(!note);
   useEffect(() => {
@@ -1879,11 +1892,28 @@ function StopSidebar({ stop, note, onClose, onSave, saving, saveError, mobile = 
               <div className="text-sm">{stop.itemsSummary}</div>
             </div>
           </div>
-          {stop.driverName && (
-            <div className="pt-2 text-xs text-slate-500">
-              Load <span className="font-mono">{stop.loadNbr}</span> · {stop.driverName}
-            </div>
-          )}
+          {/* M5.2 — Route section: load + driver + jump to the full route */}
+          <div className="pt-2 mt-2 border-t">
+            <div className="text-xs uppercase font-semibold text-slate-500 mb-1">Route</div>
+            {stop.loadNbr ? (
+              <div className="flex items-center justify-between gap-2">
+                <div className="min-w-0 text-sm">
+                  <div className="font-mono text-slate-700">{stop.loadNbr}</div>
+                  {stop.driverName && <div className="text-xs text-slate-500 truncate">{stop.driverName}</div>}
+                </div>
+                {onOpenRoute && (
+                  <button
+                    onClick={() => onOpenRoute(stop.loadNbr)}
+                    className="flex-shrink-0 px-2 py-1 text-xs font-semibold text-blue-700 border border-blue-300 rounded hover:bg-blue-50 active:bg-blue-100"
+                  >
+                    View full route
+                  </button>
+                )}
+              </div>
+            ) : (
+              <div className="text-xs text-slate-500 italic">Not yet assigned</div>
+            )}
+          </div>
         </div>
 
         {/* PROs section — click any to copy */}
@@ -2967,7 +2997,7 @@ function MobileDriversTab({ drivers, error, onPickDriver }) {
 // from PR 1 with a proper bottom-sheet that has its own header + Info /
 // Notes / Hours / PROs tabs. Draft state spans all tabs so editing Notes
 // then switching to Hours preserves changes; one Save commits everything.
-function MobileStopDetailDrawer({ stop, note, onClose, onSave, saving, saveError }) {
+function MobileStopDetailDrawer({ stop, note, onClose, onSave, saving, saveError, onOpenRoute }) {
   const [activeTab, setActiveTab] = useState('info');
   const [draft, setDraft] = useState(() => note || emptyNote(stop));
   const [editing, setEditing] = useState(false);
@@ -3044,7 +3074,7 @@ function MobileStopDetailDrawer({ stop, note, onClose, onSave, saving, saveError
       </div>
       {/* Tab content */}
       <div className="flex-1 overflow-y-auto overscroll-contain">
-        {activeTab === 'info' && <StopInfoTabContent stop={stop} />}
+        {activeTab === 'info' && <StopInfoTabContent stop={stop} onOpenRoute={onOpenRoute} />}
         {activeTab === 'notes' && (
           <StopNotesTabContent
             stop={stop}
@@ -3143,7 +3173,95 @@ function StatusBadge({ kind }) {
   );
 }
 
-function StopInfoTabContent({ stop }) {
+// M5.2 — Route detail body, shared between the desktop sidebar and mobile drawer.
+// Shows the load's stops in compareByPlannedEta order (== polyline order) with status
+// badge + delivery/arrival/ETA time. Tap a row → onPickStop closes route + opens stop.
+function RouteDetailBody({ stops, onPickStop }) {
+  const sorted = [...stops].sort(compareByPlannedEta);
+  const driverName = sorted[0]?.driverName || sorted[0]?.driverUserName || '—';
+  const delivered = sorted.filter((s) => classifyStopStatus(s) === 'DELIVERED').length;
+  return (
+    <>
+      <div className="px-4 py-2 border-b bg-slate-50 flex items-center justify-between">
+        <div>
+          <div className="text-[10px] uppercase font-semibold text-slate-500">Driver</div>
+          <div className="text-sm font-semibold text-slate-900 truncate">{driverName}</div>
+        </div>
+        <div className="text-[11px] text-slate-500">{delivered}/{sorted.length} delivered</div>
+      </div>
+      <ol className="divide-y divide-slate-100">
+        {sorted.map((s, i) => {
+          const kind = classifyStopStatus(s);
+          const exec = s.raw?.stopExecutionInfo || {};
+          const time = kind === 'DELIVERED' ? fmtClockShort(s.deliveredDTTM || execDeliveredTs(exec))
+                     : kind === 'ARRIVED' ? fmtClockShort(s.arrivalDTTM || execArrivalTs(exec))
+                     : fmtClockShort(s.plannedEtaDTTM || exec.to?.plannedEtaDTTM);
+          return (
+            <li key={(s.stopNbr || '') + ':' + i}>
+              <button
+                onClick={() => onPickStop && onPickStop(s)}
+                className="w-full text-left px-4 py-2 flex items-center gap-2 hover:bg-slate-50 active:bg-slate-100"
+                style={{ minHeight: 56 }}
+              >
+                <span className="text-[10px] font-mono text-slate-400 w-5 flex-shrink-0 text-right">{i + 1}</span>
+                <StatusBadge kind={kind} />
+                <div className="min-w-0 flex-1">
+                  <div className="text-sm font-medium text-slate-900 truncate">{s.businessName || '(no name)'}</div>
+                  <div className="text-[11px] text-slate-500 truncate">
+                    {s.pro && <span className="font-mono mr-1">{s.pro}</span>}
+                    {time && <span>{time}</span>}
+                  </div>
+                </div>
+              </button>
+            </li>
+          );
+        })}
+      </ol>
+    </>
+  );
+}
+
+function RouteDetailSidebar({ loadNbr, stops, onClose, onPickStop, mobile = false }) {
+  return (
+    <aside
+      className={mobile
+        ? "absolute inset-0 bg-white shadow-lg flex flex-col overflow-hidden z-40"
+        : "w-[380px] flex-shrink-0 bg-white border-l shadow-lg flex flex-col h-full overflow-hidden"
+      }
+      style={mobile ? { paddingBottom: 'env(safe-area-inset-bottom)' } : undefined}
+    >
+      <div className="px-4 py-3 border-b flex items-center justify-between" style={{ background: BRAND, color: 'white' }}>
+        <div className="min-w-0">
+          <div className="text-[10px] uppercase tracking-wider opacity-75">Route</div>
+          <div className="font-bold font-mono truncate">{loadNbr}</div>
+        </div>
+        <button onClick={onClose} className="p-1 hover:bg-white/20 rounded" aria-label="Close route"><X size={20} /></button>
+      </div>
+      <div className="overflow-y-auto flex-1">
+        <RouteDetailBody stops={stops} onPickStop={onPickStop} />
+      </div>
+    </aside>
+  );
+}
+
+function MobileRouteDetailDrawer({ loadNbr, stops, onClose, onPickStop }) {
+  return (
+    <BottomSheet open onClose={onClose} heights={SHEET_HEIGHTS} ariaLabel={`Route ${loadNbr}`}>
+      <div className="flex-shrink-0 px-4 py-2 flex items-center justify-between border-b">
+        <div className="min-w-0">
+          <div className="text-[10px] uppercase tracking-wider text-slate-500">Route</div>
+          <div className="font-bold font-mono truncate">{loadNbr}</div>
+        </div>
+        <button onClick={onClose} className="p-2 -mr-2" aria-label="Close route"><X size={20} /></button>
+      </div>
+      <div className="flex-1 overflow-y-auto overscroll-contain">
+        <RouteDetailBody stops={stops} onPickStop={onPickStop} />
+      </div>
+    </BottomSheet>
+  );
+}
+
+function StopInfoTabContent({ stop, onOpenRoute }) {
   const cityLine = [stop.city, stop.state, stop.zip].filter(Boolean).join(', ').replace(/, ([A-Z]{2}) (\d)/, ', $1 $2');
   const statusKind = classifyStopStatus(stop);
   const arrivedAt = (statusKind === 'ARRIVED' || statusKind === 'DELIVERED') ? fmtClockShort(stop.arrivalDTTM || execArrivalTs(stop.raw?.stopExecutionInfo || {})) : null;
@@ -3175,16 +3293,29 @@ function StopInfoTabContent({ stop }) {
           <div>{stop.itemsSummary || '—'}</div>
         </div>
       </div>
-      {(stop.loadNbr || stop.driverName) && (
-        <div className="pt-2 border-t">
-          <div className="text-[10px] uppercase font-semibold text-slate-500">Load</div>
-          <div className="text-slate-900">
-            {stop.loadNbr && <span className="font-mono">{stop.loadNbr}</span>}
-            {stop.loadNbr && stop.driverName && ' · '}
-            {stop.driverName && <span>{stop.driverName}</span>}
+      {/* M5.2 — Route section */}
+      <div className="pt-2 border-t">
+        <div className="text-[10px] uppercase font-semibold text-slate-500 mb-0.5">Route</div>
+        {stop.loadNbr ? (
+          <div className="flex items-center justify-between gap-2">
+            <div className="min-w-0">
+              <div className="text-slate-900 font-mono text-sm">{stop.loadNbr}</div>
+              {stop.driverName && <div className="text-xs text-slate-500 truncate">{stop.driverName}</div>}
+            </div>
+            {onOpenRoute && (
+              <button
+                onClick={() => onOpenRoute(stop.loadNbr)}
+                className="flex-shrink-0 px-2 py-1 text-xs font-semibold text-blue-700 border border-blue-300 rounded active:bg-blue-100"
+                style={{ minHeight: 32 }}
+              >
+                View full route
+              </button>
+            )}
           </div>
-        </div>
-      )}
+        ) : (
+          <div className="text-xs text-slate-500 italic">Not yet assigned</div>
+        )}
+      </div>
     </div>
   );
 }
@@ -3676,6 +3807,7 @@ function MapScreen() {
 
   const [selectedStop, setSelectedStop] = useState(null);
   const [selectedDriver, setSelectedDriver] = useState(null);
+  const [selectedRoute, setSelectedRoute] = useState(null); // M5.2 — loadNbr of opened route, or null
   // M5 — Show Routes toggle (persisted). Polylines render only when ON.
   const [showRoutes, setShowRoutes] = useState(() => safeReadJSON(LS_SHOW_ROUTES, false));
   const [filters, setFilters] = useState({});
@@ -3831,7 +3963,12 @@ function MapScreen() {
     const byLoad = [];
     const driverAgg = new Map();
     for (const g of loadGroups.values()) {
-      const ordered = [...g.stops].sort((a, b) => (a.loadStopSeq ?? 0) - (b.loadStopSeq ?? 0));
+      // M5.2 — order by plannedEtaDTTM (compareByPlannedEta). NuVizz's stopSeq is
+      // unreliable (parent app audit §7) and loadStopSeq is just the array index
+      // from NuVizz's load.stops (creation order, NOT delivery order) — sorting by
+      // it produced the anchor-style chaos. Same comparator backs the route detail
+      // list, so polyline order == list order.
+      const ordered = [...g.stops].sort(compareByPlannedEta);
       const color = routeColorFor(g.driverUserName);
       if (ordered.length >= 2) {
         byLoad.push({ loadNbr: g.loadNbr, driverUserName: g.driverUserName, color, path: ordered });
@@ -3844,6 +3981,14 @@ function MapScreen() {
     const legend = [...driverAgg.values()].sort((a, b) => a.driverUserName.localeCompare(b.driverUserName));
     return { byLoad, legend };
   }, [showRoutes, stops]);
+
+  // M5.2 — the stops on the currently-opened route, kept separate from routeData
+  // (which depends on showRoutes). The route detail must render even when the
+  // polyline layer is hidden, so derive directly from `stops`.
+  const selectedRouteStops = useMemo(() => {
+    if (!selectedRoute) return [];
+    return stops.filter((s) => s.loadNbr === selectedRoute);
+  }, [stops, selectedRoute]);
 
   // Init map once google + container are ready.
   useEffect(() => {
@@ -3943,18 +4088,23 @@ function MapScreen() {
         .filter((s) => s.lat != null && s.lng != null)
         .map((s) => ({ lat: s.lat, lng: s.lng }));
       if (path.length < 2) continue;
+      // M5.2 — highlight the open route (thicker, on top, full opacity); when ANY
+      // route is open, dim the rest so the dispatcher's eye locks onto the path
+      // they're inspecting. No selection → all routes render at normal weight.
+      const isSelected = selectedRoute && route.loadNbr === selectedRoute;
+      const anySelected = !!selectedRoute;
       const poly = new google.maps.Polyline({
         path,
         strokeColor: route.color,
-        strokeOpacity: 0.7,
-        strokeWeight: 3,
+        strokeOpacity: isSelected ? 1 : (anySelected ? 0.25 : 0.7),
+        strokeWeight: isSelected ? 6 : 3,
         geodesic: false,
-        zIndex: 1,
+        zIndex: isSelected ? 3 : 1,
         map: mapRef.current,
       });
       routePolylinesRef.current.push(poly);
     }
-  }, [google, showRoutes, routeData]);
+  }, [google, showRoutes, routeData, selectedRoute]);
 
   // Auto-zoom on search results: 1 match → center + open sidebar, 2-10 → fit bounds.
   useEffect(() => {
@@ -4222,7 +4372,7 @@ function MapScreen() {
 
         {/* FAB (hidden when stop/driver overlay is showing — the overlay's
             own Close button is the primary way out at that point). */}
-        {!selectedStop && !selectedDriver && (
+        {!selectedStop && !selectedDriver && !selectedRoute && (
           <MobileFAB
             open={mobileDrawerOpen}
             onToggle={() => setMobileDrawerOpen((v) => !v)}
@@ -4269,11 +4419,12 @@ function MapScreen() {
 
         {/* Stop detail drawer — slides up over the map. Tabs Info / Notes /
             Hours / PROs. Editing on Notes or Hours pins a sticky Save bar. */}
-        {!selectedDriver && selectedStop && (
+        {!selectedDriver && !selectedRoute && selectedStop && (
           <MobileStopDetailDrawer
             stop={selectedStop}
             note={notes.get(selectedStop.matchKey)}
             onClose={() => setSelectedStop(null)}
+            onOpenRoute={(loadNbr) => { setSelectedStop(null); setSelectedRoute(loadNbr); }}
             onSave={async (draft) => {
               await handleSave(draft);
               // handleSave clears saveError on success; close the drawer if
@@ -4284,6 +4435,24 @@ function MapScreen() {
             }}
             saving={saving}
             saveError={saveError}
+          />
+        )}
+
+        {/* M5.2 — route detail drawer (mobile). Same bottom-sheet pattern as the
+            stop detail; opened from the stop detail's "View full route" button. */}
+        {!selectedDriver && selectedRoute && (
+          <MobileRouteDetailDrawer
+            loadNbr={selectedRoute}
+            stops={selectedRouteStops}
+            onClose={() => setSelectedRoute(null)}
+            onPickStop={(s) => {
+              setSelectedRoute(null);
+              setSelectedStop(s);
+              if (google && mapRef.current && s.lat != null && s.lng != null) {
+                mapRef.current.panTo({ lat: s.lat, lng: s.lng });
+                mapRef.current.setZoom(Math.max(mapRef.current.getZoom() || 10, 14));
+              }
+            }}
           />
         )}
 
@@ -4477,7 +4646,7 @@ function MapScreen() {
           onPanToStop={handlePanToStop}
         />
       )}
-      {!selectedDriver && selectedStop && (
+      {!selectedDriver && !selectedRoute && selectedStop && (
         <StopSidebar
           stop={selectedStop}
           note={notes.get(selectedStop.matchKey)}
@@ -4485,6 +4654,22 @@ function MapScreen() {
           onSave={handleSave}
           saving={saving}
           saveError={saveError}
+          onOpenRoute={(loadNbr) => { setSelectedStop(null); setSelectedRoute(loadNbr); }}
+        />
+      )}
+      {!selectedDriver && selectedRoute && (
+        <RouteDetailSidebar
+          loadNbr={selectedRoute}
+          stops={selectedRouteStops}
+          onClose={() => setSelectedRoute(null)}
+          onPickStop={(s) => {
+            setSelectedRoute(null);
+            setSelectedStop(s);
+            if (google && mapRef.current && s.lat != null && s.lng != null) {
+              mapRef.current.panTo({ lat: s.lat, lng: s.lng });
+              mapRef.current.setZoom(Math.max(mapRef.current.getZoom() || 10, 14));
+            }
+          }}
         />
       )}
     </div>
