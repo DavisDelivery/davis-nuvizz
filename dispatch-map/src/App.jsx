@@ -41,7 +41,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.11.4';
+const APP_VERSION = '0.11.5';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -81,14 +81,25 @@ const STATUS_META = {
 // Mirrors classifyStopStatus() in netlify/functions/lib/nuvizz-scan.mts so the
 // client works on Firestore-cached docs scanned before this field existed.
 // Prefers the server-computed normalizedStatus when present.
+function execArrivalTs(exec) {
+  return exec.to?.arrivalDTTM || exec.to?.arrivalDttm || exec.arrivalDTTM || exec.arrivalDttm || exec.arrivedDttm || null;
+}
+function execDeliveredTs(exec) {
+  return exec.to?.confirmedDTTM || exec.receiveDTTM || exec.confirmedDTTM || exec.completionDTTM || exec.completedDttm || exec.completionDttm || exec.confirmDTTM || exec.to?.completionDTTM || null;
+}
+// Mirrors classifyStopStatus() in netlify/functions/lib/nuvizz-scan.mts so the
+// client works on Firestore-cached docs scanned before this field existed.
+// Prefers the server-computed normalizedStatus when present. Status codes/fields
+// verified against live data (2026-05-27): 90/91 delivered, 50/80 exception.
 function classifyStopStatus(stop) {
   if (stop?.normalizedStatus && STATUS_META[stop.normalizedStatus]) return stop.normalizedStatus;
   const code = String(stop?.status ?? '').trim();
   const exec = (stop?.raw && stop.raw.stopExecutionInfo) || {};
-  const arrival = stop?.arrivalDTTM || exec.arrivalDTTM || exec.arrivalDttm || exec.arrivedDttm || exec.to?.arrivalDTTM || exec.to?.arrivalDttm || null;
-  const delivered = stop?.deliveredDTTM || exec.completionDTTM || exec.completedDttm || exec.completionDttm || exec.confirmedDTTM || exec.confirmDTTM || exec.to?.completionDTTM || null;
-  if (code === '90' || delivered) return 'DELIVERED';
-  if (code === '50') return 'EXCEPTION';
+  const arrival = stop?.arrivalDTTM || execArrivalTs(exec);
+  const delivered = stop?.deliveredDTTM || execDeliveredTs(exec);
+  const exception = (Array.isArray(exec.exceptions) && exec.exceptions.length > 0) || !!(exec.cancellation && (exec.cancellation.cancelDTTM || exec.cancellation.reasonCode));
+  if (code === '90' || code === '91' || delivered) return 'DELIVERED';
+  if (code === '50' || code === '80' || exception) return 'EXCEPTION';
   if (code === '40') return arrival ? 'ARRIVED' : 'OUT_FOR_DEL';
   if (!stop?.isPlanned) return 'UNPLANNED';
   return 'SCHEDULED';
@@ -1728,10 +1739,10 @@ function StopSidebar({ stop, note, onClose, onSave, saving, saveError, mobile = 
 
   if (!stop) return null;
   const sidebarStatusKind = classifyStopStatus(stop);
-  const sidebarArrivedAt = sidebarStatusKind === 'ARRIVED'
-    ? fmtClockShort(stop.arrivalDTTM || stop.raw?.stopExecutionInfo?.arrivalDTTM) : null;
+  const sidebarArrivedAt = (sidebarStatusKind === 'ARRIVED' || sidebarStatusKind === 'DELIVERED')
+    ? fmtClockShort(stop.arrivalDTTM || execArrivalTs(stop.raw?.stopExecutionInfo || {})) : null;
   const sidebarDeliveredAt = sidebarStatusKind === 'DELIVERED'
-    ? fmtClockShort(stop.deliveredDTTM || stop.raw?.stopExecutionInfo?.completionDTTM) : null;
+    ? fmtClockShort(stop.deliveredDTTM || execDeliveredTs(stop.raw?.stopExecutionInfo || {})) : null;
   const D = draft;
   const setD = (patch) => setDraft({ ...D, ...patch });
   // M4.4 — receiving_hours is now {open, close} per day. The setter accepts a
@@ -3135,8 +3146,8 @@ function StatusBadge({ kind }) {
 function StopInfoTabContent({ stop }) {
   const cityLine = [stop.city, stop.state, stop.zip].filter(Boolean).join(', ').replace(/, ([A-Z]{2}) (\d)/, ', $1 $2');
   const statusKind = classifyStopStatus(stop);
-  const arrivedAt = statusKind === 'ARRIVED' ? fmtClockShort(stop.arrivalDTTM || stop.raw?.stopExecutionInfo?.arrivalDTTM) : null;
-  const deliveredAt = statusKind === 'DELIVERED' ? fmtClockShort(stop.deliveredDTTM || stop.raw?.stopExecutionInfo?.completionDTTM) : null;
+  const arrivedAt = (statusKind === 'ARRIVED' || statusKind === 'DELIVERED') ? fmtClockShort(stop.arrivalDTTM || execArrivalTs(stop.raw?.stopExecutionInfo || {})) : null;
+  const deliveredAt = statusKind === 'DELIVERED' ? fmtClockShort(stop.deliveredDTTM || execDeliveredTs(stop.raw?.stopExecutionInfo || {})) : null;
   return (
     <div className="px-4 py-3 space-y-3 text-sm">
       <div className="flex items-center gap-2">
