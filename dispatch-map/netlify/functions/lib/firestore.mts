@@ -115,7 +115,10 @@ function objectToFields(obj: any): any {
   return fields;
 }
 
-async function getDoc(path: string): Promise<any | null> {
+// Exported (export-only, behavior-preserving) so the immutable history warehouse
+// (lib/history-store.mts) can reuse the same SA-JWT auth + value codecs instead
+// of duplicating the token/cache logic. The live-cache helpers below are unchanged.
+export async function getDoc(path: string): Promise<any | null> {
   const token = await getAccessToken();
   const sa = loadServiceAccount();
   const url = `${FIRESTORE_BASE}/projects/${sa.project_id}/databases/(default)/documents/${path}`;
@@ -125,7 +128,7 @@ async function getDoc(path: string): Promise<any | null> {
   return docToObject(await resp.json());
 }
 
-async function setDoc(path: string, data: any): Promise<boolean> {
+export async function setDoc(path: string, data: any): Promise<boolean> {
   const token = await getAccessToken();
   const sa = loadServiceAccount();
   const url = `${FIRESTORE_BASE}/projects/${sa.project_id}/databases/(default)/documents/${path}`;
@@ -138,7 +141,7 @@ async function setDoc(path: string, data: any): Promise<boolean> {
   return true;
 }
 
-async function listDocs(collectionPath: string): Promise<any[]> {
+export async function listDocs(collectionPath: string): Promise<any[]> {
   const token = await getAccessToken();
   const sa = loadServiceAccount();
   const all: any[] = [];
