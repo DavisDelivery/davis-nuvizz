@@ -26,6 +26,7 @@ import { db } from './lib/firebase.js';
 import { normalizeMatchKey } from './lib/matchKey.js';
 import { haversineMiles, naiveEtaMinutes, formatEtaClockTime } from './lib/distance.js';
 import { todayInET, isTodayET, formatDateForDisplay, formatDateLong } from './lib/date-util.js';
+import { pointInPolygon, latLngInBounds, boxFromCorners, formatReceivingHours, lineItemDims } from './lib/routing-select.js';
 import { scanStop, scanStopFull } from './lib/signal-scanner';
 import { applyScannerResults } from './lib/customer-notes-writer';
 
@@ -41,7 +42,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.14.2';
+const APP_VERSION = '0.15.0';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -4935,17 +4936,6 @@ const CLIENT_DEFAULT_TRUCKS = [
   { id: 'tractor_53', label: '53ft Trailer', truckClass: 'TRACTOR_53', maxSkids: 28, maxWeightLbs: 44000, deckLengthIn: 636, deckWidthIn: 100, capabilities: { liftgate: false, tractor: true, lengthClassFt: 53, overheadClearance: true }, active: true },
 ];
 
-// Ray-casting point-in-polygon (path = [[lat,lng], …]). Free; no geometry lib.
-function pointInPolygon(lat, lng, path) {
-  let inside = false;
-  for (let i = 0, j = path.length - 1; i < path.length; j = i++) {
-    const [yi, xi] = path[i], [yj, xj] = path[j];
-    const intersect = ((xi > lng) !== (xj > lng)) && (lat < ((yj - yi) * (lng - xi)) / ((xj - xi) || 1e-12) + yi);
-    if (intersect) inside = !inside;
-  }
-  return inside;
-}
-
 // ETAs are epoch-seconds anchored to the planning clock (date + depart in UTC),
 // so format in UTC to show the intended wall-clock time (e.g. 8:00 AM depart).
 function formatRoutingEta(sec) {
@@ -5002,6 +4992,145 @@ function CapacityBar({ label, used, cap, unit }) {
   );
 }
 
+// Drill-in detail for one selected stop. Reuses the parent app's customer_notes
+// helpers (getRestrictionBadgeKeys / RESTRICTION_ICONS / formatReceivingHours)
+// so a routing stop shows the SAME intelligence as the map markers, plus the
+// per-line products from stopDetails[]. Degrades cleanly: a stop with no note
+// shows no false flags, and an empty stopDetails[] shows "No line items".
+function RoutingStopDetail({ stop, note }) {
+  const keys = getRestrictionBadgeKeys(note);
+  const oversize = stopLooksOversize(stop);
+  const hoursStr = formatReceivingHours(note);
+  const lines = Array.isArray(stop.stopDetails) ? stop.stopDetails : [];
+  const addr = [stop.addr1, [stop.city, stop.state].filter(Boolean).join(', '), stop.zip].filter(Boolean).join(' · ');
+  const contact = (stop.contact && (stop.contact.name || stop.contact.phone)) ? stop.contact
+    : (note?.contacts && note.contacts[0]) || null;
+  const Cap = ({ children }) => <div className="text-[9px] uppercase font-semibold text-slate-500 tracking-wide">{children}</div>;
+  return (
+    <div className="rounded bg-slate-50 border border-slate-200 p-2 space-y-1.5 text-[11px]">
+      <div><Cap>Address</Cap><div className="text-slate-800">{addr || '—'}</div></div>
+      {contact && (
+        <div><Cap>Contact</Cap><div className="text-slate-800">{[contact.name, contact.phone].filter(Boolean).join(' · ') || '—'}</div></div>
+      )}
+      <div className="flex gap-6">
+        <div><Cap>Skids</Cap><div className="text-slate-800">{Number(stop.pallets) || 0}</div></div>
+        <div><Cap>Weight</Cap><div className="text-slate-800">{(Number(stop.weight) || 0).toLocaleString()} lb</div></div>
+      </div>
+      {(keys.length > 0 || oversize) && (
+        <div>
+          <Cap>Restrictions</Cap>
+          <ul className="mt-0.5">
+            {keys.map((k) => (
+              <li key={k} className="inline-flex items-center gap-1.5 mr-2 mb-0.5 align-middle">
+                <RestrictionIcon kind={k} size={14} /><span>{RESTRICTION_ICONS[k]?.label || k}</span>
+              </li>
+            ))}
+            {oversize && (
+              <li className="inline-flex items-center gap-1.5 mr-2 mb-0.5 align-middle">
+                <span className="text-[9px] font-bold text-amber-700 border border-amber-400 rounded px-1">OS</span><span>Oversize freight</span>
+              </li>
+            )}
+          </ul>
+        </div>
+      )}
+      {note?.appointment_required && (
+        <div><Cap>Appointment</Cap><div className="text-slate-800">Required{note.appointment_notes ? ` — ${note.appointment_notes}` : ''}</div></div>
+      )}
+      {hoursStr && <div><Cap>Receiving hours</Cap><div className="text-slate-800">{hoursStr}</div></div>}
+      <div>
+        <Cap>Products / line items</Cap>
+        {lines.length === 0 ? (
+          <div className="text-slate-400 italic">No line items</div>
+        ) : (
+          <ul className="mt-0.5 space-y-0.5">
+            {lines.map((d, i) => {
+              const name = d.product || d.sku || 'Item';
+              const sku = d.sku && d.product ? ` (${d.sku})` : '';
+              const qty = d.quantity != null ? `${d.quantity}${d.quantityUOM ? ` ${d.quantityUOM}` : ''}` : null;
+              const wt = d.weight != null ? `${Number(d.weight).toLocaleString()}${d.weightUOM ? ` ${d.weightUOM}` : ''}` : null;
+              const dims = lineItemDims(d);
+              const meta = [qty, wt, dims].filter(Boolean).join(' · ');
+              return (
+                <li key={i} className="text-slate-800">
+                  {name}{sku}{String(d.productCategory || '').toUpperCase() === 'L' && <span className="ml-1 text-[9px] font-bold text-amber-700">·OS</span>}
+                  {meta && <span className="text-slate-500"> — {meta}</span>}
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// The selected-stops list — the source of truth for "what is actually selected".
+// Mobile: collapsed by default, tap the header to expand. Desktop: persistent
+// (parent opens it by default). Each row taps open an inline detail accordion;
+// the × removes the stop from the selection (two-way sync via onRemove). Columns
+// are sortable via the shared useSortable hook.
+function RoutingSelectedList({ selectedStops, notes, onRemove, open, setOpen }) {
+  const [detailId, setDetailId] = useState(null);
+  const rows = useMemo(() => selectedStops.map((s) => {
+    const note = notes.get(s.matchKey) || null;
+    return {
+      id: String(s.stopNbr), stop: s, note,
+      keys: getRestrictionBadgeKeys(note),
+      oversize: stopLooksOversize(s),
+      customer: s.businessName || String(s.stopNbr),
+      city: s.city || '',
+      skids: Number(s.pallets) || 0,
+      weight: Number(s.weight) || 0,
+    };
+  }), [selectedStops, notes]);
+  const { sorted, sortKey, sortDir, toggle } = useSortable(rows, 'customer', 'asc');
+  const SortBtn = ({ label, k }) => (
+    <button onClick={() => toggle(k)} className="inline-flex items-center gap-0.5 hover:text-slate-700">
+      {label}{sortKey === k ? (sortDir === 'asc' ? <ChevronUp size={10} /> : <ChevronDown size={10} />) : null}
+    </button>
+  );
+  return (
+    <div className="border rounded">
+      <button onClick={() => setOpen((o) => !o)} className="w-full flex items-center justify-between px-2 py-1.5 text-[12px] font-semibold text-slate-700">
+        <span>Selected stops ({rows.length})</span>
+        {open ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+      </button>
+      {open && (rows.length === 0 ? (
+        <div className="px-2 pb-2 text-[11px] text-slate-400">No stops selected yet. Tap a stop on the map, or use Add in view / Box / Lasso.</div>
+      ) : (
+        <div className="border-t">
+          <div className="flex items-center gap-3 px-2 py-1 text-[10px] uppercase tracking-wide text-slate-500 border-b bg-slate-50">
+            <SortBtn label="Customer" k="customer" /><SortBtn label="City" k="city" /><SortBtn label="Skids" k="skids" /><SortBtn label="Wt" k="weight" />
+          </div>
+          <div className="max-h-[42vh] overflow-y-auto divide-y">
+            {sorted.map((r) => (
+              <div key={r.id}>
+                <div className="flex items-start gap-2 px-2 py-1.5">
+                  <button onClick={() => setDetailId((d) => (d === r.id ? null : r.id))} className="flex-1 text-left min-w-0">
+                    <div className="flex items-center gap-1.5">
+                      <span className="font-medium truncate">{r.customer}</span>
+                      {detailId === r.id ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+                    </div>
+                    <div className="text-[11px] text-slate-500 truncate">{[r.city, `${r.skids} skid${r.skids === 1 ? '' : 's'}`, `${r.weight.toLocaleString()} lb`].filter(Boolean).join(' · ')}</div>
+                    {(r.keys.length > 0 || r.oversize) && (
+                      <div className="flex flex-wrap items-center gap-1 mt-0.5">
+                        {r.keys.map((k) => <RestrictionIcon key={k} kind={k} size={14} />)}
+                        {r.oversize && <span className="text-[9px] font-bold text-amber-700 border border-amber-400 rounded px-1" title="Oversize freight">OS</span>}
+                      </div>
+                    )}
+                  </button>
+                  <button onClick={() => onRemove(r.id)} aria-label={`Remove ${r.customer} from selection`} className="text-slate-400 hover:text-red-600 px-1 leading-none text-lg shrink-0">×</button>
+                </div>
+                {detailId === r.id && <div className="px-2 pb-2"><RoutingStopDetail stop={r.stop} note={r.note} /></div>}
+              </div>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function RoutingScreen() {
   const [selectedDate, setSelectedDate] = useState(() => todayInET());
   const { stops, loading, error: stopsError } = useStops(selectedDate);
@@ -5015,8 +5144,24 @@ function RoutingScreen() {
   const mapRef = useRef(null);
   const markersRef = useRef([]);
   const polylinesRef = useRef([]);
-  const dmRef = useRef(null);
   const [mapReady, setMapReady] = useState(0);
+
+  // Touch-native selection. No DrawingManager (its drag-to-draw never worked on
+  // a phone and its async load could silently no-op): Box = tap two corners,
+  // Lasso = tap vertices then Done — both driven by plain map click listeners,
+  // so every tool works identically on touch and mouse. Refs hold the in-flight
+  // geometry + preview overlays; state drives the prompts.
+  const [selectMode, setSelectMode] = useState(null);   // null | 'box' | 'lasso'
+  const [boxStep, setBoxStep] = useState(0);             // corners placed so far
+  const [lassoCount, setLassoCount] = useState(0);       // vertices placed so far
+  const [lastAction, setLastAction] = useState(null);    // visible "N added" feedback
+  const selectModeRef = useRef(null);
+  const boxCornersRef = useRef([]);
+  const lassoVtxRef = useRef([]);
+  const tempMarkersRef = useRef([]);   // corner/vertex dots
+  const tempShapeRef = useRef(null);   // lasso preview polyline
+  const handleSelectPointRef = useRef(() => {});
+  useEffect(() => { selectModeRef.current = selectMode; }, [selectMode]);
 
   const [selectedIds, setSelectedIds] = useState(() => new Set());
   const [selectedTruckIds, setSelectedTruckIds] = useState(() => new Set());
@@ -5040,74 +5185,142 @@ function RoutingScreen() {
 
   const result = job?.status === 'done' ? job.result : null;
 
-  // Selection tally.
+  // Selection tally + a SPECIFIC per-restriction summary (replaces the old vague
+  // "equipment restriction in selection" line). Counts each restriction key and
+  // oversize across the selected stops, resolved through the same helpers the
+  // map markers use.
   const tally = useMemo(() => {
-    let skids = 0, weight = 0, oversize = false, restricted = false;
+    let skids = 0, weight = 0;
+    const counts = {};
+    let oversize = 0;
     for (const id of selectedIds) {
       const s = stopById.get(String(id));
       if (!s) continue;
       skids += Number(s.pallets) || 0;
       weight += Number(s.weight) || 0;
-      if (stopLooksOversize(s)) oversize = true;
+      if (stopLooksOversize(s)) oversize += 1;
       const note = notes.get(s.matchKey);
-      if (note && (getRestrictionBadgeKeys(note).length || note.liftgate_required)) restricted = true;
+      for (const k of getRestrictionBadgeKeys(note || null)) counts[k] = (counts[k] || 0) + 1;
     }
-    return { count: selectedIds.size, skids, weight, oversize, restricted };
+    const summary = Object.entries(counts).map(([k, n]) => `${n} ${RESTRICTION_ICONS[k]?.short || k}`);
+    if (oversize) summary.push(`${oversize} oversize`);
+    return { count: selectedIds.size, skids, weight, summary };
   }, [selectedIds, stopById, notes]);
+
+  const selectedStops = useMemo(
+    () => [...selectedIds].map((id) => stopById.get(String(id))).filter(Boolean),
+    [selectedIds, stopById],
+  );
 
   const toggleStop = useCallback((id) => {
     setSelectedIds((prev) => { const n = new Set(prev); const k = String(id); n.has(k) ? n.delete(k) : n.add(k); return n; });
   }, []);
-  const clearSelection = useCallback(() => setSelectedIds(new Set()), []);
+  const removeStop = useCallback((id) => {
+    setSelectedIds((prev) => { const n = new Set(prev); n.delete(String(id)); return n; });
+  }, []);
+  const clearSelection = useCallback(() => { setSelectedIds(new Set()); setLastAction('Cleared selection'); }, []);
+
+  // The selected-stops list: persistent on desktop, collapsed by default on mobile.
+  const [listOpen, setListOpen] = useState(!isMobile);
+  useEffect(() => { setListOpen(!isMobile); }, [isMobile]);
+
+  // ── Touch-native selection primitives ──
+  const clearTemp = useCallback(() => {
+    tempMarkersRef.current.forEach((m) => m.setMap(null));
+    tempMarkersRef.current = [];
+    if (tempShapeRef.current) { tempShapeRef.current.setMap(null); tempShapeRef.current = null; }
+  }, []);
+  const addTempMarker = useCallback((latLng) => {
+    if (!google || !mapRef.current) return;
+    const m = new google.maps.Marker({
+      position: latLng, map: mapRef.current, clickable: false, zIndex: 60,
+      icon: { path: google.maps.SymbolPath.CIRCLE, scale: 5, fillColor: '#f59e0b', fillOpacity: 1, strokeColor: '#fff', strokeWeight: 1.5 },
+    });
+    tempMarkersRef.current.push(m);
+  }, [google]);
+  const redrawLasso = useCallback(() => {
+    if (!google || !mapRef.current) return;
+    if (tempShapeRef.current) tempShapeRef.current.setMap(null);
+    tempShapeRef.current = new google.maps.Polyline({
+      path: lassoVtxRef.current.map((v) => ({ lat: v.lat, lng: v.lng })),
+      strokeColor: BRAND, strokeWeight: 2, strokeOpacity: 0.9, map: mapRef.current, zIndex: 55,
+    });
+  }, [google]);
+  const cancelMode = useCallback(() => {
+    clearTemp();
+    boxCornersRef.current = []; lassoVtxRef.current = [];
+    selectModeRef.current = null;
+    setSelectMode(null); setBoxStep(0); setLassoCount(0);
+  }, [clearTemp]);
+  const beginMode = useCallback((mode) => {
+    clearTemp();
+    boxCornersRef.current = []; lassoVtxRef.current = [];
+    selectModeRef.current = mode;
+    setSelectMode(mode); setBoxStep(0); setLassoCount(0); setLastAction(null);
+  }, [clearTemp]);
+  const addEnclosed = useCallback((arr) => {
+    if (!arr.length) { setLastAction('No stops in that area'); return; }
+    setSelectedIds((prev) => { const n = new Set(prev); for (const s of arr) n.add(String(s.stopNbr)); return n; });
+    setLastAction(`Added ${arr.length} stop${arr.length === 1 ? '' : 's'}`);
+  }, []);
+  const addInView = useCallback(() => {
+    if (!google || !mapRef.current) { setLastAction('Map not ready'); return; }
+    const b = mapRef.current.getBounds();
+    if (!b) { setLastAction('Map not ready'); return; }
+    const ne = b.getNorthEast(), sw = b.getSouthWest();
+    const box = { north: ne.lat(), south: sw.lat(), east: ne.lng(), west: sw.lng() };
+    addEnclosed(positionedRef.current.filter((s) => latLngInBounds(s.lat, s.lng, box)));
+  }, [google, addEnclosed]);
+  const finishLasso = useCallback(() => {
+    const verts = lassoVtxRef.current;
+    if (verts.length < 3) { setLastAction('Tap at least 3 points first'); return; }
+    const poly = verts.map((v) => [v.lat, v.lng]);
+    const enclosed = positionedRef.current.filter((s) => pointInPolygon(s.lat, s.lng, poly));
+    addEnclosed(enclosed);
+    cancelMode();
+  }, [addEnclosed, cancelMode]);
+  // A tap on the map (or a marker) while a draw mode is active places a corner /
+  // vertex. The once-bound map listener calls the latest version via a ref.
+  const handleSelectPoint = useCallback((latLng) => {
+    const mode = selectModeRef.current;
+    if (!mode || !google || !mapRef.current || !latLng) return;
+    if (mode === 'box') {
+      boxCornersRef.current.push({ lat: latLng.lat(), lng: latLng.lng() });
+      addTempMarker(latLng);
+      if (boxCornersRef.current.length >= 2) {
+        const box = boxFromCorners(boxCornersRef.current[0], boxCornersRef.current[1]);
+        addEnclosed(positionedRef.current.filter((s) => latLngInBounds(s.lat, s.lng, box)));
+        cancelMode();
+      } else {
+        setBoxStep(1);
+      }
+    } else if (mode === 'lasso') {
+      lassoVtxRef.current.push({ lat: latLng.lat(), lng: latLng.lng() });
+      addTempMarker(latLng);
+      redrawLasso();
+      setLassoCount(lassoVtxRef.current.length);
+    }
+  }, [google, addTempMarker, addEnclosed, redrawLasso, cancelMode]);
+  useEffect(() => { handleSelectPointRef.current = handleSelectPoint; }, [handleSelectPoint]);
 
   // (Re)init the map into the CURRENT container. Re-runs when the viewport crosses
   // the mobile/desktop breakpoint (the map div is then a different DOM node), so
-  // the markers + drawing manager rebind to the live map via the mapReady signal.
+  // the markers + click listener rebind to the live map via the mapReady signal.
   useEffect(() => {
     if (!google || !mapDiv.current) return;
+    // Any in-flight draw belongs to the old map node; reset it on re-init.
+    clearTemp();
+    boxCornersRef.current = []; lassoVtxRef.current = [];
+    selectModeRef.current = null; setSelectMode(null); setBoxStep(0); setLassoCount(0);
     mapRef.current = new google.maps.Map(mapDiv.current, {
       center: ROUTING_DEPOT, zoom: 9, mapTypeControl: false, streetViewControl: false, fullscreenControl: false,
+      gestureHandling: 'greedy', // one-finger pan/zoom on touch (no two-finger requirement)
     });
-    dmRef.current = null; // drawing manager must rebind to the new map
+    // Single click listener drives Box/Lasso. Empty-map taps place points; the
+    // latest handler is read via a ref so the listener is bound only once per map.
+    mapRef.current.addListener('click', (e) => { if (e.latLng) handleSelectPointRef.current(e.latLng); });
     setMapReady((n) => n + 1);
-  }, [google, isMobile]);
-
-  // Drawing manager for box (rectangle) + lasso (polygon) select. Adds enclosed
-  // stops to the selection; reads the latest positioned stops via a ref.
-  useEffect(() => {
-    if (!google || !mapRef.current || dmRef.current) return;
-    let cancelled = false;
-    google.maps.importLibrary('drawing').then(({ DrawingManager }) => {
-      if (cancelled) return;
-      const dm = new DrawingManager({
-        drawingControl: false,
-        rectangleOptions: { fillOpacity: 0.05, strokeColor: BRAND, strokeWeight: 1 },
-        polygonOptions: { fillOpacity: 0.05, strokeColor: BRAND, strokeWeight: 1 },
-      });
-      dm.setMap(mapRef.current);
-      dmRef.current = dm;
-      google.maps.event.addListener(dm, 'overlaycomplete', (e) => {
-        const enclosed = positionedRef.current.filter((s) => {
-          const ll = new google.maps.LatLng(s.lat, s.lng);
-          if (e.type === google.maps.drawing.OverlayType.RECTANGLE) return e.overlay.getBounds().contains(ll);
-          if (e.type === google.maps.drawing.OverlayType.POLYGON) {
-            const path = e.overlay.getPath().getArray().map((p) => [p.lat(), p.lng()]);
-            return pointInPolygon(s.lat, s.lng, path);
-          }
-          return false;
-        });
-        setSelectedIds((prev) => { const n = new Set(prev); for (const s of enclosed) n.add(String(s.stopNbr)); return n; });
-        e.overlay.setMap(null);
-        dm.setDrawingMode(null);
-      });
-    });
-    return () => { cancelled = true; };
-  }, [google, mapReady]);
-
-  const startDraw = useCallback((mode) => {
-    if (!dmRef.current || !google) return;
-    dmRef.current.setDrawingMode(mode === 'box' ? google.maps.drawing.OverlayType.RECTANGLE : google.maps.drawing.OverlayType.POLYGON);
-  }, [google]);
+  }, [google, isMobile]); // eslint-disable-line
 
   // Render stop markers — gray unselected, blue selected, truck-colored when a
   // result exists. Click toggles selection.
@@ -5126,7 +5339,10 @@ function RoutingScreen() {
         icon: { path: google.maps.SymbolPath.CIRCLE, scale: sel || routed ? 7 : 4.5, fillColor: fill, fillOpacity: 0.95, strokeColor: '#fff', strokeWeight: 1 },
         zIndex: sel || routed ? 30 : 10,
       });
-      marker.addListener('click', () => toggleStop(s.stopNbr));
+      marker.addListener('click', () => {
+        if (selectModeRef.current) handleSelectPointRef.current(marker.getPosition());
+        else toggleStop(s.stopNbr);
+      });
       marker.setMap(mapRef.current);
       return marker;
     });
@@ -5210,24 +5426,47 @@ function RoutingScreen() {
       </div>
       <div className="text-[11px] text-slate-500">{loading ? 'Loading stops…' : `${positioned.length} stops on ${formatDateLong(selectedDate)}`}{stopsError ? ` · ${stopsError}` : ''}</div>
 
-      {/* Selection tools */}
+      {/* Selection tools — all touch-native (no drag-to-draw). */}
       <div className="border rounded p-2 space-y-2">
         <div className="font-semibold text-slate-700">1 · Select stops</div>
-        <div className="flex gap-1">
-          <button onClick={() => startDraw('box')} className="flex-1 px-2 py-2 text-xs rounded border border-slate-300 hover:bg-slate-50 active:bg-slate-100">▱ Box</button>
-          <button onClick={() => startDraw('polygon')} className="flex-1 px-2 py-2 text-xs rounded border border-slate-300 hover:bg-slate-50 active:bg-slate-100">⬠ Lasso</button>
-          <button onClick={clearSelection} className="flex-1 px-2 py-2 text-xs rounded border border-slate-300 hover:bg-slate-50 active:bg-slate-100">Clear</button>
-        </div>
-        <div className="text-[11px] text-slate-600">Tap a stop to toggle, or draw a box/lasso to add a group.</div>
+        {selectMode ? (
+          <div className="rounded border border-amber-300 bg-amber-50 p-2 text-[12px] space-y-2">
+            {selectMode === 'box' ? (
+              <div>📦 <b>Tap two corners</b> on the map to box a group ({boxStep === 0 ? '1 of 2' : '2 of 2'}).</div>
+            ) : (
+              <div>⬠ <b>Tap points</b> around the stops, then <b>Done</b> ({lassoCount} {lassoCount === 1 ? 'point' : 'points'}; need ≥3).</div>
+            )}
+            <div className="flex gap-1">
+              {selectMode === 'lasso' && (
+                <button onClick={finishLasso} disabled={lassoCount < 3} className="flex-1 px-2 py-2 text-xs rounded text-white font-semibold disabled:opacity-40" style={{ background: BRAND }}>Done</button>
+              )}
+              <button onClick={cancelMode} className="flex-1 px-2 py-2 text-xs rounded border border-slate-300 bg-white hover:bg-slate-50 active:bg-slate-100">Cancel</button>
+            </div>
+          </div>
+        ) : (
+          <>
+            <button onClick={addInView} className="w-full px-2 py-2 text-xs rounded border-2 font-semibold hover:bg-blue-50 active:bg-blue-100" style={{ borderColor: BRAND, color: BRAND }}>＋ Add stops in view</button>
+            <div className="flex gap-1">
+              <button onClick={() => beginMode('box')} className="flex-1 px-2 py-2 text-xs rounded border border-slate-300 hover:bg-slate-50 active:bg-slate-100">▱ Box</button>
+              <button onClick={() => beginMode('lasso')} className="flex-1 px-2 py-2 text-xs rounded border border-slate-300 hover:bg-slate-50 active:bg-slate-100">⬠ Lasso</button>
+              <button onClick={clearSelection} className="flex-1 px-2 py-2 text-xs rounded border border-slate-300 hover:bg-slate-50 active:bg-slate-100">Clear</button>
+            </div>
+            <div className="text-[11px] text-slate-600">Tap a stop to toggle it. Or pan/zoom, then <b>Add stops in view</b>, <b>Box</b> (tap two corners), or <b>Lasso</b> (tap points).</div>
+          </>
+        )}
+        {lastAction && <div className="text-[11px] text-slate-500">{lastAction}</div>}
         <div className="bg-slate-50 rounded p-2 text-[12px] space-y-0.5">
           <div className="flex justify-between"><span>Selected</span><b>{tally.count}</b></div>
           <div className="flex justify-between"><span>Skids</span><b>{tally.skids}</b></div>
           <div className="flex justify-between"><span>Weight</span><b>{tally.weight.toLocaleString()} lb</b></div>
-          {(tally.oversize || tally.restricted) && (
-            <div className="text-[11px] text-amber-700 pt-1">⚠ {[tally.oversize && 'oversize item', tally.restricted && 'equipment restriction'].filter(Boolean).join(' · ')} in selection</div>
+          {tally.summary.length > 0 && (
+            <div className="text-[11px] text-amber-700 pt-1">⚠ {tally.summary.join(' · ')}</div>
           )}
           {tally.count > ROUTING_MAX_SELECTION && <div className="text-[11px] text-red-600 pt-1">Over {ROUTING_MAX_SELECTION}-stop limit — narrow the selection (matrix cost is quadratic).</div>}
         </div>
+
+        {/* The selected-stops list — source of truth for what's selected. */}
+        <RoutingSelectedList selectedStops={selectedStops} notes={notes} onRemove={removeStop} open={listOpen} setOpen={setListOpen} />
       </div>
 
       {/* Trucks */}

@@ -11,6 +11,58 @@ v0.7.2 = M4.5 PR 2 of 3 (stop-detail + driver-snapshot drawers).
 v0.8.0 = M4.5 PR 3 of 3 (final polish: marker labels, snapshot tap-through,
 mobile diagnostics, RESEARCH doc).
 
+## v0.15.0 — Routing Setup: usability + correctness pass (Phase 2 PR 3)
+
+The selection bones from v0.14.x worked on desktop but two of three tools were
+**dead on touch** (the owner dispatches from a phone), the per-stop intelligence
+we already track wasn't surfaced, and there was no way to see the stops you'd
+selected. This pass fixes all three. UI-only; engine/matrix/cost/cache/Phase 1
+untouched; still feature-flagged.
+
+### No dead buttons — touch-native selection
+- **Removed the Google `DrawingManager`.** Its drag-to-draw never worked on a
+  phone (the drag pans the map) and its `importLibrary('drawing')` had no error
+  path, so a load failure made Box/Lasso silently no-op. There is now no drawing
+  library to fail.
+- **Tap a stop** — toggle (unchanged, kept; it worked).
+- **Add stops in view** — selects every positioned stop inside the current map
+  bounds. The primary, bulletproof touch primitive: pan/zoom to a cluster, tap.
+- **Box = tap two corners** — tap corner 1, tap corner 2; the enclosed stops are
+  added. Prompt shows "1 of 2 / 2 of 2"; Cancel aborts. Works on touch and mouse.
+- **Lasso = tap-to-place vertices** — tap points around a group, then **Done**
+  (needs ≥3); Cancel aborts. Shown on both mobile and desktop (works on both).
+- Every tool gives visible feedback ("Added N stops" / "No stops in that area"),
+  and an active draw mode replaces the buttons with a prompt + Cancel, so nothing
+  shown can silently do nothing. `gestureHandling: 'greedy'` for one-finger pan.
+
+### Per-stop intelligence (reuses the existing helpers)
+- Each selected stop resolves its `customer_notes` by `matchKey` and renders the
+  SAME badges as the map via `getRestrictionBadgeKeys` + `RESTRICTION_ICONS`
+  (no-tractor-trailer, 26ft max, liftgate, appointment, receiving hours via
+  `hasReceivingHours`, closed days) plus an oversize chip from `stopDetails` L-flag.
+- The vague "equipment restriction in selection" line is replaced by a specific
+  count summary (e.g. "2 No T/T · 1 Appt · 3 Hours · 1 oversize"). No false flags
+  when a stop has no note.
+
+### The selected-stops list (new core surface)
+- Collapsible "Selected stops (N)" section under the tally — collapsed by default
+  on mobile, persistent on desktop. Sortable (Customer / City / Skids / Wt) via the
+  shared `useSortable` hook. Each row: customer, city, skids/weight, restriction
+  badges + oversize chip; a per-row **×** removes it (two-way map/tally sync).
+- Tap a row → inline detail: full address, contact, skids + weight, restriction
+  badges **with labels**, formatted receiving hours ("Mon–Fri 8:00a–3:00p · Sat
+  Closed"), appointment note, and the **products / line items** from `stopDetails[]`
+  (name/SKU, qty, weight, dims; "No line items" if empty).
+
+### Files
+- `src/App.jsx` — `RoutingScreen` selection rewrite; new `RoutingSelectedList` +
+  `RoutingStopDetail` inline components; specific tally summary. Single-file kept.
+- `src/lib/routing-select.js` (new) — pure geometry + display helpers
+  (`pointInPolygon`, `latLngInBounds`, `boxFromCorners`, `fmtTime12`,
+  `formatReceivingHours`, `lineItemDims`), so the selection math is unit-testable.
+- `test/routing-select.test.mjs` (new) — 10 tests covering bounds/box/lasso
+  selection and hours/dims formatting. **61 tests green** total.
+
 ## v0.14.1 — Routing (beta) mobile layout
 
 Makes the Routing tab usable on a phone (it was desktop-only in v0.14.0).
