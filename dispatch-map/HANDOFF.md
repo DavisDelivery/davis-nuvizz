@@ -11,6 +11,53 @@ v0.7.2 = M4.5 PR 2 of 3 (stop-detail + driver-snapshot drawers).
 v0.8.0 = M4.5 PR 3 of 3 (final polish: marker labels, snapshot tap-through,
 mobile diagnostics, RESEARCH doc).
 
+## v0.16.1 — Build reliability: killed the hang, made it fast (Phase 2 PR 5A)
+
+A normal route build hung and was slow. Two concrete defects in the build path
+(NOT the solver) were the cause; both fixed. Functions/engine-reliability only;
+solver math, cheap-by-default cost/matrix behavior, NuVizz read-only, cache, and
+Phase 1 untouched.
+
+### Root causes → fixes
+- **P0 dropped work (the hang).** `routing-build-background.mts` ran the
+  resolve→build→solve→write sequence in an **un-awaited** `(async () => {…})()` IIFE
+  and returned 202 immediately. In the background/serverless runtime, work after the
+  handler returns isn't guaranteed to finish, so the instance could freeze/recycle
+  before the result was written → job stuck at `status:'running'` forever, client
+  polling indefinitely. **Fix:** the handler now `await`s the full sequence to
+  completion (background functions are allowed the long duration). Every path ends
+  at `done` or `error`.
+- **P1 model in the hot path (slow / stallable).** The Opus deps were passed to the
+  pipeline whenever `isAnthropicEnabled()`, regardless of free/haversine mode, and
+  `callAnthropic` had no timeout — so a slow model call hung the build and many
+  ambiguous stops meant many sequential calls. **Fix:** the model is **opt-in via
+  `request.aiAssist`** (default **false**, exactly parallel to the Google matrix
+  opt-in). Off → the pipeline gets `undefined` model deps and runs fully
+  deterministically (**zero model calls** on a normal build).
+
+### Belt-and-suspenders
+- **P2 timeouts:** an 8s `AbortController` on **both** the Anthropic and Google
+  fetches (new `lib/async-util.mts#fetchWithTimeout`). On stall → abort → deterministic
+  fallback (haversine for the matrix; skip for the model). A stalled call can't hang
+  the build.
+- **P3 geometry cap:** even when AI is on, per-stop geometry assist is hard-capped
+  (`GEO_ASSIST_CAP = 10`) — never an unbounded sequential loop. Default off → never runs.
+- **P4 watchdog:** the whole pipeline runs under a 25s `withDeadline`; on overrun it
+  writes `status:'error'` ("build timed out — try fewer stops") so the client stops
+  polling. Belt-and-suspenders with the per-call timeouts.
+
+### Measured (real deterministic path, haversine, zero model calls)
+- **~3ms for 25 stops**, **~48ms for 100 stops** (placed all, no spill).
+
+### Files
+- `netlify/functions/lib/async-util.mts` *(new)* — `fetchWithTimeout`, `withDeadline`.
+- `netlify/functions/routing-build-background.mts` — await the work; `aiAssist`
+  opt-in gating; capped geometry assist; watchdog.
+- `netlify/functions/anthropic-routing.mts`, `google-route-matrix.mts` — 8s fetch timeouts.
+- `test/routing-reliability.test.mjs` *(new)* — watchdog, abort, fallback, and a
+  zero-model-call deterministic build (+ a <1s perf assertion). **69 tests green.**
+- No UI control needed (`aiAssist` defaults off). APP_VERSION 0.16.0 → 0.16.1.
+
 ## v0.16.0 — Desktop dispatch console (Phase 2 PR 4)
 
 Per the desktop-primary directive, the desktop Routing surface is now a real

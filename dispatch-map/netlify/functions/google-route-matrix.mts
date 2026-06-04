@@ -10,10 +10,13 @@
 // key is absent or a request fails, we fall back to a haversine estimate so the
 // engine still produces routes deterministically (degraded, clearly flagged).
 
+import { fetchWithTimeout } from './lib/async-util.mts';
+
 const ROUTES_URL = 'https://routes.googleapis.com/distanceMatrix/v2:computeRouteMatrix';
 const MAX_ELEMENTS = 600;         // under Google's 625 element cap, with margin
 const MAX_STOPS = 150;            // sane selection bound (surfaced as an error)
 const AVG_SPEED_MPS = 13.4;       // ~30 mph fallback effective speed
+const GOOGLE_TIMEOUT_MS = 8000;   // hard cap per chunk — a stalled call aborts → haversine fallback
 
 export interface LatLng { lat: number; lng: number }
 export interface Matrix { durationSec: number[][]; distanceMeters: number[][] }
@@ -53,7 +56,7 @@ function parseDuration(s: any): number {
 
 async function computeChunk(origins: LatLng[], destinations: LatLng[], apiKey: string): Promise<{ originIndex: number; destinationIndex: number; durationSec: number; distanceMeters: number }[]> {
   const wp = (p: LatLng) => ({ waypoint: { location: { latLng: { latitude: p.lat, longitude: p.lng } } } });
-  const resp = await fetch(ROUTES_URL, {
+  const resp = await fetchWithTimeout(ROUTES_URL, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -61,7 +64,7 @@ async function computeChunk(origins: LatLng[], destinations: LatLng[], apiKey: s
       'X-Goog-FieldMask': 'originIndex,destinationIndex,duration,distanceMeters,condition',
     },
     body: JSON.stringify({ origins: origins.map(wp), destinations: destinations.map(wp), travelMode: 'DRIVE' }),
-  });
+  }, GOOGLE_TIMEOUT_MS);
   if (!resp.ok) throw new Error(`computeRouteMatrix ${resp.status}: ${(await resp.text()).slice(0, 200)}`);
   const data: any = await resp.json();
   const rows = Array.isArray(data) ? data : (data.elements || data.matrix || []);
