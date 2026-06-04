@@ -331,6 +331,39 @@ closing time" in assignment + sequencing, using ETAs plus the receiving_hours / 
 already store. Together with the existing oversize/equipment handling, this is why our engine beats a
 generic optimizer, and it is the next real engine frontier after persistence + the flag drill-down.
 
+## Appendix C — Future options / evaluated alternatives (revisit later) — Jun 2026
+
+Researched how others build this kind of system. NEITHER lever is needed now — our blend
+(our engine owns constraint-aware bundling; Google does cheap per-route navigation) plus
+cheap-by-default stands, and Google cost is ~$0 at our volume. Logged to revisit when the
+trigger hits. Both fit behind interfaces we already have, so adopting later is contained,
+not a rewrite.
+
+LEVER 1 — Constraint-native solver upgrade (OR-Tools or VROOM).
+- Our nearest-neighbor + 2-opt is a fine sequencer; the field standard for QUALITY
+  assignment+sequencing under real constraints is a metaheuristic VRP solver. Google OR-Tools
+  and VROOM are both free and self-hostable, and natively model exactly our constraints:
+  capacity (skids/weight), time windows ("closes before we arrive"), vehicle "skills"
+  (= our equipment restrictions — only send a capable truck), max route duration / driver
+  breaks, service/dwell time, multi-depot, and minimize-trucks-used.
+- Slots behind our swappable solveRouting interface. Precedent at our scale: a published
+  70-truck / 341-stop OR-Tools setup with DOT breaks; a 1000+-stop OSRM+VROOM deployment
+  using the skills feature exactly like our equipment flags.
+- TRIGGER TO REVISIT: when route QUALITY (tighter routes, fewer trucks/miles) becomes the
+  priority over the current good-enough heuristic. Vocabulary note: "skills" is the standard
+  industry term for our equipment matching.
+
+LEVER 2 — Free road-distance matrices at scale (self-hosted OSRM).
+- Self-hosted OSRM (Table service) computes the full road distance/time matrix between all
+  stops for free, on a regional OpenStreetMap extract (Georgia/Southeast is small — the
+  planet-scale "128 GB server" warning does not apply to a regional box). Eliminates Google
+  matrix cost AND the per-call dependency. Trade-off: a server + DevOps + no real-time traffic.
+- Middle grounds if self-hosting is too much: cheaper-than-Google hosted matrix/VRP APIs
+  (OpenRouteService, Geoapify, Radar, NextBillion). A tiny hosted OSRM+VROOM exists but is a
+  one-person side project (reliability risk) — not for anything load-bearing.
+- TRIGGER TO REVISIT: if we ever want Google fully out, or want free optimization + matrices
+  together (pairs naturally with Lever 1 — VROOM has out-of-the-box OSRM integration).
+
 ## Revision log
 
 - Jun 2025 — Orchestrator — Initial charter. Spec pinned (Phase 0). Retention
@@ -444,3 +477,5 @@ generic optimizer, and it is the next real engine frontier after persistence + t
   untouched; still feature-flagged (62 tests green).
 
 - Jun 2026 — Orchestrator — Corrected the Google cost model (per Chad's review of Google's pricing). Three SKUs: Compute Routes = per request (~$0 at our volume), Compute Route Matrix = per element (pricey all-pairs, what we call today), Route Optimization/Fleet Routing = per stop (~$518/mo). DECISION: do NOT use Fleet Routing — our engine owns constraint-aware bundling. Earlier four-figure estimate superseded (~$0 realistic). Build direction: paid drive-times leg should use a per-route Compute Routes call, not a day-wide matrix. Added time-window-aware sequencing to the roadmap.
+
+- Jun 2026 — Orchestrator — Logged two future options in Appendix C after researching how others build this: (1) constraint-native solver upgrade (OR-Tools / VROOM — free, models capacity / time-windows / 'skills'=equipment / driver-hours, slots behind our swappable solver) for when route quality becomes the priority; (2) self-hosted OSRM for free road-distance matrices at scale (regional OSM extract) if we ever want Google fully out. Neither needed now; current blend + cheap-by-default stands.
