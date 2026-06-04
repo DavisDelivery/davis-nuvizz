@@ -99,7 +99,9 @@ export default async function handler(req: Request): Promise<Response> {
       if (!trucks.length) { await updateJob(jobId, { status: 'error', error: 'no truck profiles selected' }); return; }
 
       await updateJob(jobId, { stage: 'build' });
-      let matrixSource = 'haversine';
+      // Cheap by default (Appendix B): haversine unless the build explicitly opts
+      // into 'google'. resolveMatrix honors the mode; absent → haversine.
+      const matrixMode = r.matrixMode === 'google' ? 'google' : 'haversine';
       const pipelineReq: PipelineRequest = {
         stops, trucks,
         depot: r.depot || { lat: DEPOT.lat, lng: DEPOT.lng },
@@ -107,9 +109,10 @@ export default async function handler(req: Request): Promise<Response> {
         strategy: r.strategy || 'MIN_DISTANCE',
         objectiveWeights: r.objectiveWeights,
         date, departHHMM: r.departHHMM, serviceMin: r.serviceMin,
+        matrixMode,
       };
       const plan = await runPipeline(pipelineReq, {
-        buildMatrix: async (depot, pts) => { const m = await resolveMatrix(depot, pts); matrixSource = m.source; return m.matrix; },
+        buildMatrix: async (depot, pts) => resolveMatrix(depot, pts, matrixMode),
         parseIntent: isAnthropicEnabled() ? parseIntentModel : undefined,
         geometryAssist: isAnthropicEnabled() ? geometryAssistModel : undefined,
         explain: isAnthropicEnabled() ? explainModel : undefined,
@@ -118,7 +121,7 @@ export default async function handler(req: Request): Promise<Response> {
       await updateJob(jobId, {
         status: 'done',
         finished_at: new Date().toISOString(),
-        result: { ...plan, matrixSource, aiConfigured: isAnthropicEnabled() },
+        result: { ...plan, aiConfigured: isAnthropicEnabled() },
       });
     } catch (e: any) {
       console.error('routing-build:', e?.message);

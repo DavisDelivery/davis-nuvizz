@@ -92,27 +92,35 @@ export async function buildMatrixViaGoogle(depot: LatLng, stops: LatLng[], apiKe
   return { durationSec, distanceMeters };
 }
 
-// Resolve the best available matrix: Google when keyed, else haversine fallback.
-export async function resolveMatrix(depot: LatLng, stops: LatLng[]): Promise<{ matrix: Matrix; source: 'google' | 'haversine' }> {
+// Resolve the best available matrix for the requested mode (Appendix B: cheap by
+// default). Google is used ONLY when mode === 'google' AND the key is present;
+// otherwise (default) the free haversine estimate — even when the key exists.
+export async function resolveMatrix(depot: LatLng, stops: LatLng[], mode: 'haversine' | 'google' = 'haversine'): Promise<{ matrix: Matrix; source: 'google' | 'haversine' }> {
   if (stops.length > MAX_STOPS) throw new Error(`selection too large: ${stops.length} stops (max ${MAX_STOPS})`);
-  const key = process.env.GOOGLE_ROUTES_API_KEY;
-  if (key) {
-    try { return { matrix: await buildMatrixViaGoogle(depot, stops, key), source: 'google' }; }
-    catch (e: any) { console.error('google-route-matrix: falling back to haversine —', e?.message); }
+  if (mode === 'google') {
+    const key = process.env.GOOGLE_ROUTES_API_KEY;
+    if (key) {
+      try { return { matrix: await buildMatrixViaGoogle(depot, stops, key), source: 'google' }; }
+      catch (e: any) { console.error('google-route-matrix: falling back to haversine —', e?.message); }
+    } else {
+      console.error('google-route-matrix: mode=google requested but GOOGLE_ROUTES_API_KEY not set — using haversine');
+    }
   }
   return { matrix: haversineMatrix(depot, stops), source: 'haversine' };
 }
 
-// HTTP handler: POST { depot:{lat,lng}, stops:[{lat,lng}] } → { matrix, source }.
+// HTTP handler: POST { depot, stops, mode? } → { matrix, source }. Defaults to the
+// free haversine estimate; pass mode:'google' to bill live Google drive-times.
 export default async function handler(req: Request): Promise<Response> {
   if (req.method !== 'POST') return new Response('Method Not Allowed', { status: 405 });
   let body: any;
   try { body = await req.json(); } catch { return new Response(JSON.stringify({ error: 'bad json' }), { status: 400 }); }
   const depot = body?.depot;
   const stops = Array.isArray(body?.stops) ? body.stops : null;
+  const mode = body?.mode === 'google' || body?.matrixMode === 'google' ? 'google' : 'haversine';
   if (!depot || !stops) return new Response(JSON.stringify({ error: 'depot and stops required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
   try {
-    const { matrix, source } = await resolveMatrix(depot, stops);
+    const { matrix, source } = await resolveMatrix(depot, stops, mode);
     return new Response(JSON.stringify({ matrix, source, available: isGoogleRoutesEnabled() }), { status: 200, headers: { 'Content-Type': 'application/json' } });
   } catch (e: any) {
     return new Response(JSON.stringify({ error: e?.message }), { status: 400, headers: { 'Content-Type': 'application/json' } });

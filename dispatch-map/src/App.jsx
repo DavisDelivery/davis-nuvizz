@@ -41,7 +41,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.13.0';
+const APP_VERSION = '0.14.0';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -4887,6 +4887,487 @@ function Placeholder({ count, hint }) {
   );
 }
 
+// ============================================================================
+// Phase 2 (PR 2/2) — Routing (beta) tab. Inline per the single-file rule.
+// CHEAP BY DEFAULT (Appendix B): builds run free haversine unless the dispatcher
+// explicitly opts into Google live drive-times, and the per-build cost is shown.
+// Wires to the merged engine via the routing_jobs job-doc lifecycle; renders
+// exactly what the engine returns (no client-side feasibility/sequencing).
+// ============================================================================
+
+// Feature flag — OFF in production until Chad flips it. Enable via either the
+// build-time env VITE_ROUTING_BETA=true, or the URL query ?routing=1 (handy for
+// the deploy preview without an env change).
+const ROUTING_FLAG = (() => {
+  try {
+    if (import.meta.env.VITE_ROUTING_BETA === 'true') return true;
+    if (typeof window !== 'undefined' && /[?&]routing=1\b/.test(window.location.search)) return true;
+  } catch { /* ignore */ }
+  return false;
+})();
+
+const ROUTING_DEPOT = { name: 'Buford Terminal', lat: 34.14838, lng: -83.95948 };
+const ROUTING_STRATEGIES = [
+  ['MIN_DISTANCE', 'Min distance'],
+  ['MIN_TIME', 'Min time'],
+  ['CLOSEST_FIRST', 'Closest first'],
+  ['FARTHEST_FIRST', 'Farthest first'],
+];
+const ROUTING_MAX_SELECTION = 150; // matrix cost is quadratic (Appendix B)
+const BASIC_RATE_PER_1K_USD = 5.0; // mirror of routing-types BASIC_MATRIX_RATE (display only)
+
+// Client-side mirror of the server seed profiles (truck-profiles.mts). Used only
+// to seed the truck_profiles collection on first run; the server remains the
+// source of truth for a build (it reads truck_profiles by id).
+const CLIENT_DEFAULT_TRUCKS = [
+  { id: 'box_26', label: '26ft Box', truckClass: 'BOX_26', maxSkids: 14, maxWeightLbs: 10000, deckLengthIn: 312, deckWidthIn: 96, capabilities: { liftgate: true, tractor: false, lengthClassFt: 26, overheadClearance: true }, active: true },
+  { id: 'tractor_53', label: '53ft Trailer', truckClass: 'TRACTOR_53', maxSkids: 28, maxWeightLbs: 44000, deckLengthIn: 636, deckWidthIn: 100, capabilities: { liftgate: false, tractor: true, lengthClassFt: 53, overheadClearance: true }, active: true },
+];
+
+// Ray-casting point-in-polygon (path = [[lat,lng], …]). Free; no geometry lib.
+function pointInPolygon(lat, lng, path) {
+  let inside = false;
+  for (let i = 0, j = path.length - 1; i < path.length; j = i++) {
+    const [yi, xi] = path[i], [yj, xj] = path[j];
+    const intersect = ((xi > lng) !== (xj > lng)) && (lat < ((yj - yi) * (lng - xi)) / ((xj - xi) || 1e-12) + yi);
+    if (intersect) inside = !inside;
+  }
+  return inside;
+}
+
+// ETAs are epoch-seconds anchored to the planning clock (date + depart in UTC),
+// so format in UTC to show the intended wall-clock time (e.g. 8:00 AM depart).
+function formatRoutingEta(sec) {
+  if (sec == null || !Number.isFinite(sec)) return '—';
+  return new Date(sec * 1000).toLocaleTimeString('en-US', { timeZone: 'UTC', hour: 'numeric', minute: '2-digit' });
+}
+
+// A selected stop "looks oversize" for the live tally if any line item is NuVizz
+// category L. (The authoritative geometry is computed server-side at build time.)
+function stopLooksOversize(s) {
+  return Array.isArray(s?.stopDetails) && s.stopDetails.some((d) => String(d?.productCategory || '').toUpperCase() === 'L');
+}
+
+// Live truck_profiles, seeded on first run. Returns profiles + a persist helper.
+function useTruckProfiles() {
+  const [profiles, setProfiles] = useState([]);
+  const [ready, setReady] = useState(false);
+  useEffect(() => {
+    if (!db) { setReady(true); return; }
+    const unsub = onSnapshot(collection(db, 'truck_profiles'), async (snap) => {
+      if (snap.empty) {
+        // Seed defaults once; the snapshot will re-fire with them.
+        try { await Promise.all(CLIENT_DEFAULT_TRUCKS.map((p) => setDoc(doc(db, 'truck_profiles', p.id), p))); } catch { /* ignore */ }
+        return;
+      }
+      setProfiles(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+      setReady(true);
+    }, () => setReady(true));
+    return () => unsub();
+  }, []);
+  const saveProfile = useCallback(async (p) => {
+    if (!db) return;
+    await setDoc(doc(db, 'truck_profiles', p.id), p, { merge: true });
+  }, []);
+  return { profiles, ready, saveProfile };
+}
+
+// Load-vs-capacity bar (one dimension). Amber ≥90%, red >100% (shouldn't happen).
+function CapacityBar({ label, used, cap, unit }) {
+  const pct = cap > 0 ? Math.min(100, Math.round((used / cap) * 100)) : 0;
+  const over = used > cap;
+  const tight = !over && used > cap * 0.9;
+  const color = over ? '#dc2626' : tight ? '#f59e0b' : '#16a34a';
+  return (
+    <div className="text-[11px]">
+      <div className="flex justify-between text-slate-600">
+        <span>{label}</span>
+        <span>{Math.round(used).toLocaleString()} / {Math.round(cap).toLocaleString()} {unit}</span>
+      </div>
+      <div className="h-1.5 bg-slate-200 rounded overflow-hidden">
+        <div style={{ width: `${pct}%`, background: color }} className="h-full" />
+      </div>
+    </div>
+  );
+}
+
+function RoutingScreen() {
+  const [selectedDate, setSelectedDate] = useState(() => todayInET());
+  const { stops, loading, error: stopsError } = useStops(selectedDate);
+  const { notes } = useCustomerNotes();
+  const { profiles, saveProfile } = useTruckProfiles();
+  const { google, error: mapsError } = useGoogleMaps();
+
+  const mapDiv = useRef(null);
+  const mapRef = useRef(null);
+  const markersRef = useRef([]);
+  const polylinesRef = useRef([]);
+  const dmRef = useRef(null);
+
+  const [selectedIds, setSelectedIds] = useState(() => new Set());
+  const [selectedTruckIds, setSelectedTruckIds] = useState(() => new Set());
+  const [intent, setIntent] = useState('');
+  const [strategy, setStrategy] = useState('MIN_DISTANCE');
+  const [useGoogle, setUseGoogle] = useState(false);
+  const [job, setJob] = useState(null);     // { status, result, error }
+  const [building, setBuilding] = useState(false);
+  const [saveState, setSaveState] = useState(null); // null | 'saving' | 'saved' | error string
+  const [lastRequest, setLastRequest] = useState(null);
+
+  const positioned = useMemo(() => stops.filter((s) => s.lat != null && s.lng != null), [stops]);
+  const stopById = useMemo(() => new Map(positioned.map((s) => [String(s.stopNbr), s])), [positioned]);
+  const positionedRef = useRef(positioned);
+  useEffect(() => { positionedRef.current = positioned; }, [positioned]);
+
+  // Default trucks selected once profiles load.
+  useEffect(() => {
+    if (profiles.length && selectedTruckIds.size === 0) setSelectedTruckIds(new Set(profiles.map((p) => p.id)));
+  }, [profiles]); // eslint-disable-line
+
+  const result = job?.status === 'done' ? job.result : null;
+
+  // Selection tally.
+  const tally = useMemo(() => {
+    let skids = 0, weight = 0, oversize = false, restricted = false;
+    for (const id of selectedIds) {
+      const s = stopById.get(String(id));
+      if (!s) continue;
+      skids += Number(s.pallets) || 0;
+      weight += Number(s.weight) || 0;
+      if (stopLooksOversize(s)) oversize = true;
+      const note = notes.get(s.matchKey);
+      if (note && (getRestrictionBadgeKeys(note).length || note.liftgate_required)) restricted = true;
+    }
+    return { count: selectedIds.size, skids, weight, oversize, restricted };
+  }, [selectedIds, stopById, notes]);
+
+  const toggleStop = useCallback((id) => {
+    setSelectedIds((prev) => { const n = new Set(prev); const k = String(id); n.has(k) ? n.delete(k) : n.add(k); return n; });
+  }, []);
+  const clearSelection = useCallback(() => setSelectedIds(new Set()), []);
+
+  // Init map.
+  useEffect(() => {
+    if (!google || !mapDiv.current || mapRef.current) return;
+    mapRef.current = new google.maps.Map(mapDiv.current, {
+      center: ROUTING_DEPOT, zoom: 9, mapTypeControl: false, streetViewControl: false, fullscreenControl: false,
+    });
+  }, [google]);
+
+  // Drawing manager for box (rectangle) + lasso (polygon) select. Adds enclosed
+  // stops to the selection; reads the latest positioned stops via a ref.
+  useEffect(() => {
+    if (!google || !mapRef.current || dmRef.current) return;
+    let cancelled = false;
+    google.maps.importLibrary('drawing').then(({ DrawingManager }) => {
+      if (cancelled) return;
+      const dm = new DrawingManager({
+        drawingControl: false,
+        rectangleOptions: { fillOpacity: 0.05, strokeColor: BRAND, strokeWeight: 1 },
+        polygonOptions: { fillOpacity: 0.05, strokeColor: BRAND, strokeWeight: 1 },
+      });
+      dm.setMap(mapRef.current);
+      dmRef.current = dm;
+      google.maps.event.addListener(dm, 'overlaycomplete', (e) => {
+        const enclosed = positionedRef.current.filter((s) => {
+          const ll = new google.maps.LatLng(s.lat, s.lng);
+          if (e.type === google.maps.drawing.OverlayType.RECTANGLE) return e.overlay.getBounds().contains(ll);
+          if (e.type === google.maps.drawing.OverlayType.POLYGON) {
+            const path = e.overlay.getPath().getArray().map((p) => [p.lat(), p.lng()]);
+            return pointInPolygon(s.lat, s.lng, path);
+          }
+          return false;
+        });
+        setSelectedIds((prev) => { const n = new Set(prev); for (const s of enclosed) n.add(String(s.stopNbr)); return n; });
+        e.overlay.setMap(null);
+        dm.setDrawingMode(null);
+      });
+    });
+    return () => { cancelled = true; };
+  }, [google]);
+
+  const startDraw = useCallback((mode) => {
+    if (!dmRef.current || !google) return;
+    dmRef.current.setDrawingMode(mode === 'box' ? google.maps.drawing.OverlayType.RECTANGLE : google.maps.drawing.OverlayType.POLYGON);
+  }, [google]);
+
+  // Render stop markers — gray unselected, blue selected, truck-colored when a
+  // result exists. Click toggles selection.
+  useEffect(() => {
+    if (!google || !mapRef.current) return;
+    markersRef.current.forEach((m) => m.setMap(null));
+    const truckColorByStop = new Map();
+    if (result) result.routes.forEach((r, i) => r.orderedStopIds.forEach((id) => truckColorByStop.set(String(id), ROUTE_PALETTE[i % ROUTE_PALETTE.length])));
+    markersRef.current = positioned.map((s) => {
+      const sel = selectedIds.has(String(s.stopNbr));
+      const routed = truckColorByStop.get(String(s.stopNbr));
+      const fill = routed || (sel ? BRAND : '#94a3b8');
+      const marker = new google.maps.Marker({
+        position: { lat: s.lat, lng: s.lng },
+        title: s.businessName || s.stopNbr,
+        icon: { path: google.maps.SymbolPath.CIRCLE, scale: sel || routed ? 7 : 4.5, fillColor: fill, fillOpacity: 0.95, strokeColor: '#fff', strokeWeight: 1 },
+        zIndex: sel || routed ? 30 : 10,
+      });
+      marker.addListener('click', () => toggleStop(s.stopNbr));
+      marker.setMap(mapRef.current);
+      return marker;
+    });
+  }, [google, positioned, selectedIds, result, toggleStop]);
+
+  // Route polylines (one per truck, depot-anchored, engine's order, M5 palette).
+  useEffect(() => {
+    if (!google || !mapRef.current) return;
+    polylinesRef.current.forEach((p) => p.setMap(null));
+    polylinesRef.current = [];
+    if (!result) return;
+    result.routes.forEach((r, i) => {
+      const path = [{ lat: ROUTING_DEPOT.lat, lng: ROUTING_DEPOT.lng }];
+      for (const id of r.orderedStopIds) { const s = stopById.get(String(id)); if (s) path.push({ lat: s.lat, lng: s.lng }); }
+      const pl = new google.maps.Polyline({ path, strokeColor: ROUTE_PALETTE[i % ROUTE_PALETTE.length], strokeWeight: 3, strokeOpacity: 0.85, zIndex: 5 });
+      pl.setMap(mapRef.current);
+      polylinesRef.current.push(pl);
+    });
+  }, [google, result, stopById]);
+
+  const selectedTrucks = useMemo(() => profiles.filter((p) => selectedTruckIds.has(p.id)), [profiles, selectedTruckIds]);
+  const canBuild = selectedIds.size >= 1 && selectedTrucks.length >= 1 && selectedIds.size <= ROUTING_MAX_SELECTION && !building;
+  const wouldBeElements = (selectedIds.size + 1) ** 2;
+  const wouldBeCost = Math.round((wouldBeElements / 1000) * BASIC_RATE_PER_1K_USD * 100) / 100;
+
+  const runBuild = useCallback(async () => {
+    if (!db) { setJob({ status: 'error', error: 'Firestore not configured' }); return; }
+    setBuilding(true); setJob({ status: 'queued' }); setSaveState(null);
+    const jobId = `job_${(crypto.randomUUID ? crypto.randomUUID() : String(Date.now()))}`;
+    const request = {
+      tenant: 'davis', date: selectedDate,
+      selectedStopIds: [...selectedIds],
+      truckProfileIds: selectedTrucks.map((t) => t.id),
+      truckSnapshots: selectedTrucks,
+      intent: intent.trim(), strategy,
+      matrixMode: useGoogle ? 'google' : 'haversine',
+    };
+    setLastRequest(request);
+    try {
+      await setDoc(doc(db, 'routing_jobs', jobId), { id: jobId, status: 'queued', created_at: serverTimestamp(), created_by: 'dispatcher', app_version: APP_VERSION, request });
+      // Fire the background build; it returns 202 and we watch the doc.
+      fetch('/.netlify/functions/routing-build-background', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ jobId }) }).catch(() => {});
+      const unsub = onSnapshot(doc(db, 'routing_jobs', jobId), (snap) => {
+        const d = snap.data();
+        if (!d) return;
+        setJob(d);
+        if (d.status === 'done' || d.status === 'error') { setBuilding(false); unsub(); }
+      }, (e) => { setJob({ status: 'error', error: e.message }); setBuilding(false); });
+    } catch (e) {
+      setJob({ status: 'error', error: e.message }); setBuilding(false);
+    }
+  }, [selectedDate, selectedIds, selectedTrucks, intent, strategy, useGoogle]);
+
+  const savePlan = useCallback(async () => {
+    if (!db || !result) return;
+    setSaveState('saving');
+    const id = `routeset_${(crypto.randomUUID ? crypto.randomUUID() : String(Date.now()))}`;
+    try {
+      await setDoc(doc(db, 'routing_routes', id), {
+        id, status: 'saved', dispatched: false, created_at: serverTimestamp(), created_by: 'dispatcher', app_version: APP_VERSION,
+        request: lastRequest, result,
+      });
+      setSaveState('saved');
+    } catch (e) { setSaveState(e.message || 'save failed'); }
+  }, [result, lastRequest]);
+
+  const meta = result?.meta || {};
+  const usedGoogle = meta.matrixSource === 'google';
+
+  return (
+    <div className="flex-1 flex min-h-0">
+      {/* Left control rail */}
+      <div className="w-[340px] shrink-0 border-r bg-white overflow-y-auto p-3 space-y-3 text-sm">
+        <div className="flex items-center justify-between">
+          <div className="font-bold text-slate-800">Routing <span className="text-[10px] uppercase tracking-wide bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded">beta</span></div>
+          <DatePicker selectedDate={selectedDate} onChange={setSelectedDate} onToday={() => setSelectedDate(todayInET())} compact />
+        </div>
+        <div className="text-[11px] text-slate-500">{loading ? 'Loading stops…' : `${positioned.length} stops on ${formatDateLong(selectedDate)}`}{stopsError ? ` · ${stopsError}` : ''}</div>
+
+        {/* Selection tools */}
+        <div className="border rounded p-2 space-y-2">
+          <div className="font-semibold text-slate-700">1 · Select stops</div>
+          <div className="flex gap-1">
+            <button onClick={() => startDraw('box')} className="flex-1 px-2 py-1 text-xs rounded border border-slate-300 hover:bg-slate-50">▱ Box</button>
+            <button onClick={() => startDraw('polygon')} className="flex-1 px-2 py-1 text-xs rounded border border-slate-300 hover:bg-slate-50">⬠ Lasso</button>
+            <button onClick={clearSelection} className="flex-1 px-2 py-1 text-xs rounded border border-slate-300 hover:bg-slate-50">Clear</button>
+          </div>
+          <div className="text-[11px] text-slate-600">Click a stop to toggle, or draw a box/lasso to add a group.</div>
+          <div className="bg-slate-50 rounded p-2 text-[12px] space-y-0.5">
+            <div className="flex justify-between"><span>Selected</span><b>{tally.count}</b></div>
+            <div className="flex justify-between"><span>Skids</span><b>{tally.skids}</b></div>
+            <div className="flex justify-between"><span>Weight</span><b>{tally.weight.toLocaleString()} lb</b></div>
+            {(tally.oversize || tally.restricted) && (
+              <div className="text-[11px] text-amber-700 pt-1">⚠ {[tally.oversize && 'oversize item', tally.restricted && 'equipment restriction'].filter(Boolean).join(' · ')} in selection</div>
+            )}
+            {tally.count > ROUTING_MAX_SELECTION && <div className="text-[11px] text-red-600 pt-1">Over {ROUTING_MAX_SELECTION}-stop limit — narrow the selection (matrix cost is quadratic).</div>}
+          </div>
+        </div>
+
+        {/* Trucks */}
+        <div className="border rounded p-2 space-y-2">
+          <div className="font-semibold text-slate-700">2 · Trucks <span className="text-[11px] text-slate-400">({selectedTrucks.length} in play)</span></div>
+          {profiles.map((p) => (
+            <div key={p.id} className="border rounded p-1.5">
+              <label className="flex items-center gap-2">
+                <input type="checkbox" checked={selectedTruckIds.has(p.id)} onChange={() => setSelectedTruckIds((prev) => { const n = new Set(prev); n.has(p.id) ? n.delete(p.id) : n.add(p.id); return n; })} />
+                <span className="font-medium">{p.label}</span>
+              </label>
+              <div className="grid grid-cols-3 gap-1 mt-1 text-[10px] text-slate-500">
+                <label className="flex flex-col">Skids
+                  <input type="number" defaultValue={p.maxSkids} onBlur={(e) => saveProfile({ ...p, maxSkids: Number(e.target.value) })} className="border rounded px-1 py-0.5 text-slate-800" />
+                </label>
+                <label className="flex flex-col">Weight
+                  <input type="number" defaultValue={p.maxWeightLbs} onBlur={(e) => saveProfile({ ...p, maxWeightLbs: Number(e.target.value) })} className="border rounded px-1 py-0.5 text-slate-800" />
+                </label>
+                <label className="flex flex-col">Deck in
+                  <input type="number" defaultValue={p.deckLengthIn} onBlur={(e) => saveProfile({ ...p, deckLengthIn: Number(e.target.value) })} className="border rounded px-1 py-0.5 text-slate-800" />
+                </label>
+              </div>
+              <label className="flex items-center gap-1 text-[11px] mt-1">
+                <input type="checkbox" defaultChecked={!!p.capabilities?.liftgate} onChange={(e) => saveProfile({ ...p, capabilities: { ...p.capabilities, liftgate: e.target.checked } })} /> liftgate
+              </label>
+            </div>
+          ))}
+        </div>
+
+        {/* Controls */}
+        <div className="border rounded p-2 space-y-2">
+          <div className="font-semibold text-slate-700">3 · Plan</div>
+          <textarea value={intent} onChange={(e) => setIntent(e.target.value)} placeholder="Optional: tell the engine what you want (e.g. 'tight appointments first, keep the trailer off downtown')" rows={2} className="w-full border rounded p-1.5 text-[12px]" />
+          <label className="flex items-center justify-between text-[12px]">Strategy
+            <select value={strategy} onChange={(e) => setStrategy(e.target.value)} className="border rounded px-1 py-0.5">
+              {ROUTING_STRATEGIES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+            </select>
+          </label>
+          <label className={`flex items-start gap-2 text-[12px] rounded p-1.5 ${useGoogle ? 'bg-amber-50 border border-amber-300' : 'bg-slate-50'}`}>
+            <input type="checkbox" checked={useGoogle} onChange={(e) => setUseGoogle(e.target.checked)} className="mt-0.5" />
+            <span>Use live Google drive-times <b>(costs money)</b><br /><span className="text-[11px] text-slate-500">Default is a free straight-line estimate. {selectedIds.size > 0 && <>This build ≈ {wouldBeElements} elements ≈ <b>${wouldBeCost.toFixed(2)}</b>.</>}</span></span>
+          </label>
+          <button onClick={runBuild} disabled={!canBuild} className="w-full py-2 rounded text-white font-semibold disabled:opacity-40" style={{ background: BRAND }}>
+            {building ? 'Building…' : useGoogle ? 'Build with Google drive-times' : 'Build (free estimate)'}
+          </button>
+          {!canBuild && !building && <div className="text-[11px] text-slate-400">Select ≥1 stop and ≥1 truck to build.</div>}
+        </div>
+      </div>
+
+      {/* Map */}
+      <div className="flex-1 relative min-w-0">
+        <div ref={mapDiv} className="absolute inset-0" />
+        {mapsError && <div className="absolute top-2 left-1/2 -translate-x-1/2 bg-red-50 border border-red-300 text-red-700 text-[11px] rounded px-2 py-1">{mapsError}</div>}
+      </div>
+
+      {/* Result rail */}
+      <div className="w-[360px] shrink-0 border-l bg-white overflow-y-auto p-3 space-y-3 text-sm">
+        <RoutingResultPanel job={job} result={result} meta={meta} usedGoogle={usedGoogle} stopById={stopById}
+          onSave={savePlan} saveState={saveState} />
+      </div>
+    </div>
+  );
+}
+
+function RoutingResultPanel({ job, result, meta, usedGoogle, stopById, onSave, saveState }) {
+  if (!job) return <div className="text-[12px] text-slate-400">Build a plan to see routes, ETAs, load, spill, and cost here.</div>;
+  if (job.status === 'queued' || job.status === 'running') return <div className="text-[12px] text-slate-600">⏳ Building plan… ({job.stage || job.status})</div>;
+  if (job.status === 'error') return <div className="text-[12px] text-red-600">Build failed: {job.error || 'unknown error'}</div>;
+  if (!result) return <div className="text-[12px] text-slate-400">No result.</div>;
+
+  const cost = meta.estimatedCostUsd || 0;
+  const ai = result.aiAssist || {};
+  return (
+    <div className="space-y-3">
+      {/* Honesty banner */}
+      <div className="rounded border border-slate-300 bg-slate-50 p-2 text-[11px] text-slate-600">
+        This is a <b>plan saved in our system only</b>. It has <b>NOT</b> been sent to NuVizz or dispatched to any driver.
+      </div>
+
+      {/* Cost / quality readout */}
+      <div className={`rounded border p-2 text-[12px] ${usedGoogle ? 'border-amber-300 bg-amber-50' : 'border-green-300 bg-green-50'}`}>
+        <div className="font-semibold">{usedGoogle ? 'Google live drive-times' : 'Free estimate (straight-line)'}</div>
+        <div className="flex justify-between"><span>Matrix elements</span><b>{meta.googleElementCount ?? '—'}</b></div>
+        <div className="flex justify-between"><span>Estimated cost</span><b>${Number(cost).toFixed(2)}</b></div>
+        <div className="flex justify-between"><span>AI assist</span><b>{result.aiConfigured ? `${[ai.intent && 'intent', ai.explain && 'rationale', ai.geometry && 'geometry'].filter(Boolean).join(', ') || 'available, not needed'}` : 'off'}</b></div>
+      </div>
+
+      {/* Rationale + risk */}
+      {result.rationale && <div className="text-[12px] text-slate-700"><b>Rationale.</b> {result.rationale}</div>}
+      {Array.isArray(result.riskFlags) && result.riskFlags.length > 0 && (
+        <div className="text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded p-2">
+          <div className="font-semibold mb-0.5">Risk flags</div>
+          <ul className="list-disc ml-4 space-y-0.5">{result.riskFlags.map((f, i) => <li key={i}>{f}</li>)}</ul>
+        </div>
+      )}
+
+      {/* Routes */}
+      {result.routes.map((r, i) => (
+        <RoutingRouteCard key={r.truckId} route={r} color={ROUTE_PALETTE[i % ROUTE_PALETTE.length]} stopById={stopById} />
+      ))}
+
+      {/* Spill */}
+      {result.unassigned && result.unassigned.length > 0 && (
+        <div className="rounded border border-red-200 bg-red-50 p-2 text-[12px]">
+          <div className="font-semibold text-red-700 mb-1">Could not place ({result.unassigned.length})</div>
+          {result.unassigned.map((u) => {
+            const s = stopById.get(String(u.stopId));
+            return <div key={u.stopId} className="mb-1"><b>{s?.businessName || u.stopId}</b><div className="text-[11px] text-red-600">{u.reasons.join('; ')}</div></div>;
+          })}
+        </div>
+      )}
+
+      {/* Save */}
+      <button onClick={onSave} disabled={saveState === 'saving'} className="w-full py-2 rounded border border-slate-300 font-semibold hover:bg-slate-50 disabled:opacity-40">
+        {saveState === 'saving' ? 'Saving…' : saveState === 'saved' ? '✓ Saved (not dispatched)' : 'Save this plan'}
+      </button>
+      {saveState && saveState !== 'saving' && saveState !== 'saved' && <div className="text-[11px] text-red-600">{saveState}</div>}
+    </div>
+  );
+}
+
+function RoutingRouteCard({ route, color, stopById }) {
+  const rows = useMemo(() => route.orderedStopIds.map((id, idx) => {
+    const s = stopById.get(String(id));
+    return { seq: idx + 1, stopId: id, customer: s?.businessName || id, eta: route.etas?.[idx] ?? null, skids: Number(s?.pallets) || 0, weight: Number(s?.weight) || 0 };
+  }), [route, stopById]);
+  const { sorted, sortKey, sortDir, toggle } = useSortable(rows, 'seq', 'asc');
+  return (
+    <div className="rounded border border-slate-200">
+      <div className="px-2 py-1.5 flex items-center gap-2 border-b" style={{ borderLeft: `4px solid ${color}` }}>
+        <span className="font-semibold">{route.truckId}</span>
+        <span className="text-[11px] text-slate-500">{route.orderedStopIds.length} stops</span>
+      </div>
+      <div className="p-2 space-y-1.5">
+        <CapacityBar label="Skids" used={route.load.skids} cap={route.capacity.skids} unit="" />
+        <CapacityBar label="Weight" used={route.load.weightLbs} cap={route.capacity.weightLbs} unit="lb" />
+        <CapacityBar label="Deck" used={route.load.linearFeetIn} cap={route.capacity.linearFeetIn} unit="in" />
+      </div>
+      <table className="w-full text-[11px]">
+        <thead className="bg-slate-50"><tr>
+          <SortableTh label="#" k="seq" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />
+          <SortableTh label="Customer" k="customer" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />
+          <SortableTh label="ETA" k="eta" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />
+          <SortableTh label="Skids" k="skids" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />
+          <SortableTh label="Wt" k="weight" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />
+        </tr></thead>
+        <tbody>
+          {sorted.map((row) => (
+            <tr key={row.stopId} className="border-t">
+              <td className="px-2 py-1">{row.seq}</td>
+              <td className="px-2 py-1 truncate max-w-[120px]" title={row.customer}>{row.customer}</td>
+              <td className="px-2 py-1">{formatRoutingEta(row.eta)}</td>
+              <td className="px-2 py-1">{row.skids}</td>
+              <td className="px-2 py-1">{row.weight.toLocaleString()}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 // ---------- shell ----------
 
 function Shell() {
@@ -4923,6 +5404,7 @@ function Shell() {
           </div>
           <nav className="flex items-center gap-1 text-sm">
             <TabBtn label="Map" icon={<MapPin size={14} />} active={tab === 'map'} onClick={() => setTab('map')} />
+            {ROUTING_FLAG && <TabBtn label="Routing (beta)" icon={<MapPinned size={14} />} active={tab === 'routing'} onClick={() => setTab('routing')} />}
             <TabBtn label="Diagnostics" icon={<Activity size={14} />} active={tab === 'diag'} onClick={() => setTab('diag')} />
           </nav>
           {/* Right side intentionally empty — no auth in v0.3.0 (matches Glory Bound / MarginIQ). */}
@@ -4930,7 +5412,7 @@ function Shell() {
         </header>
       )}
 
-      {tab === 'map' ? <MapScreen /> : <DiagnosticsRoute />}
+      {tab === 'map' ? <MapScreen /> : (tab === 'routing' && ROUTING_FLAG) ? <RoutingScreen /> : <DiagnosticsRoute />}
 
       {/* Footer is desktop/tablet only on mobile; the in-map version chip
           and the top-bar chip cover the same info on small screens. */}
