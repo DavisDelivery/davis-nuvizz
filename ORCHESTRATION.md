@@ -380,3 +380,20 @@ near-term P2 follow-on, after the PR 2 routing tab and before any full-fleet rol
   haversine unless the Google toggle is used). UI-flag only; engine untouched.
 
 - Jun 2026 — Orchestrator — Set the routing/dispatch UI target to DESKTOP-PRIMARY, with mobile built in tandem and required to keep working. Flips the earlier mobile-first stance for this platform: desktop is the lead, get-it-correct-first surface (full dispatch-console layout); mobile is the responsive adaptation. Per Chad's direction.
+- Jun 2026 — Claude (Phase 2 PR3) — Routing Setup usability + correctness pass
+  (v0.15.0). Fixed the dead-on-touch selection tools: removed the Google
+  DrawingManager (drag-to-draw never worked on a phone and its async load could
+  silently no-op) and replaced it with touch-native primitives — Add-stops-in-view
+  (map bounds), Box (tap two corners), Lasso (tap vertices → Done) — all driven by
+  plain map click listeners that work identically on touch and mouse, so no control
+  is shown that can silently do nothing. Each selected stop now surfaces its
+  customer_notes restrictions + receiving hours + appointment + oversize via the
+  EXISTING helpers (getRestrictionBadgeKeys / RESTRICTION_ICONS / hasReceivingHours),
+  and the vague aggregate tally line is replaced by a specific per-restriction
+  summary. Added a real selected-stops list (collapsible on mobile, persistent on
+  desktop) with tap-in detail showing address, contact, skids/weight, badges with
+  labels, formatted receiving hours, and the per-line products from stopDetails[],
+  plus a per-row remove with two-way map/tally sync. Pure selection geometry +
+  display helpers extracted to src/lib/routing-select.js and unit-tested
+  (test/routing-select.test.mjs). Additive, still feature-flagged; NuVizz read-only;
+  engine/matrix/cost/cache untouched (61 tests green).
