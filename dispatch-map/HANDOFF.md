@@ -11,6 +11,54 @@ v0.7.2 = M4.5 PR 2 of 3 (stop-detail + driver-snapshot drawers).
 v0.8.0 = M4.5 PR 3 of 3 (final polish: marker labels, snapshot tap-through,
 mobile diagnostics, RESEARCH doc).
 
+## v0.16.0 — Desktop dispatch console (Phase 2 PR 4)
+
+Per the desktop-primary directive, the desktop Routing surface is now a real
+dispatch console; mobile keeps the v0.15.0 bottom-sheet flow unchanged. UI/layout
+only; engine/matrix/cost/cache/Phase 1 untouched; still feature-flagged.
+
+### Desktop: three-zone console
+- **Left (340px):** the Setup stack — 1 Select stops, 2 Trucks, 3 Plan (intent,
+  strategy, the Google live-drive-times opt-in, Build).
+- **Center:** the map as a large full-height canvas (markers + route polylines).
+- **Right (380px):** tabs — **Selected stops** (full sortable table + docked detail
+  panel) and **Result** (route cards, spill, cost readout). Result auto-surfaces on
+  build completion; Stops stays one click away. Tab choice persists (localStorage
+  `routing.rail`, a view pref).
+
+### Mouse-native selection (desktop)
+- **Click-drag rubber-band box** is the primary desktop gesture: a capture overlay
+  (rendered only while Box mode is armed) draws a rectangle, and mouseup converts the
+  two container-pixel corners to LatLng via a `google.maps.OverlayView` projection,
+  then reuses the **proven** `boxFromCorners` + `latLngInBounds` (no new geometry).
+  Esc or Cancel aborts. Drag works in any direction (unit-tested).
+- Click-toggle, **Add stops in view**, **Lasso** (click vertices → Done), and
+  **Clear** all kept and work with a mouse. The Box button arms drag on desktop and
+  tap-two-corners on mobile (width-aware prompt). No control silently no-ops.
+- Double-click-to-close lasso was intentionally NOT added (it would require disabling
+  the map's normal double-click-zoom); the Done button is the close action and works
+  with mouse + touch.
+
+### Live map ↔ list linkage
+- A shared `hoverId` drives both directions: hovering a table row emphasizes its
+  marker (larger, dark ring, raised z) and hovering a marker highlights + scrolls its
+  row into view. Only the two affected markers are re-iconned per hover (not all).
+  Selection stays the single source of truth; removes flow back through `onRemove`.
+
+### Loose pieces (the flagged gap)
+- **Loose pieces** = NuVizz `totalCartons` (already normalized as `stop.cartons`),
+  now counted/shown at the **group tally**, **per stop** (mobile list rows + detail,
+  desktop table column + detail), and **per route card** (column + route total).
+  (If NuVizz exposes a distinct floor-loaded/“loose” count separate from cartons, it
+  can be wired later; `totalCartons` is the piece count available today.)
+
+### Files
+- `src/App.jsx` — desktop three-zone layout; new `RoutingStopsPanel` (desktop table +
+  hover linkage + docked detail); drag-box overlay + handlers; hover-emphasis effect;
+  loose-pieces wiring across tally/list/detail/route card. Mobile path unchanged
+  except the floating chip + tally now show pieces. Single-file kept.
+- `test/routing-select.test.mjs` — added a drag-direction-independence test. **62 green.**
+
 ## v0.15.0 — Routing Setup: usability + correctness pass (Phase 2 PR 3)
 
 The selection bones from v0.14.x worked on desktop but two of three tools were

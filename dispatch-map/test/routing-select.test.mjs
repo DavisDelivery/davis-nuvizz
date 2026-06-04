@@ -60,6 +60,24 @@ test('Box end-to-end: corners → box → enclosed stops', () => {
   assert.deepEqual(inside, ['A', 'B']);
 });
 
+test('Desktop drag-box selects the same set regardless of drag direction', () => {
+  // The desktop rubber-band drag can start from any corner; the two LatLng
+  // corners it produces must normalize to one box and select the same stops.
+  const stops = [
+    { stopNbr: 'A', lat: 34.1, lng: -84.0 },  // inside
+    { stopNbr: 'B', lat: 34.9, lng: -83.1 },  // inside
+    { stopNbr: 'C', lat: 33.0, lng: -84.0 },  // out
+  ];
+  const tl = { lat: 35.0, lng: -84.5 }, br = { lat: 34.0, lng: -83.0 };
+  const tr = { lat: 35.0, lng: -83.0 }, bl = { lat: 34.0, lng: -84.5 };
+  const sel = (a, b) => stops.filter((s) => latLngInBounds(s.lat, s.lng, boxFromCorners(a, b))).map((s) => s.stopNbr);
+  const expected = ['A', 'B'];
+  assert.deepEqual(sel(tl, br), expected); // drag ↘
+  assert.deepEqual(sel(br, tl), expected); // drag ↖
+  assert.deepEqual(sel(tr, bl), expected); // drag ↙
+  assert.deepEqual(sel(bl, tr), expected); // drag ↗
+});
+
 // ── Receiving-hours formatting ──
 test('fmtTime12 converts 24h to compact 12h, passes through am/pm', () => {
   assert.equal(fmtTime12('08:00'), '8:00a');
