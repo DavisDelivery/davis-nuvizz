@@ -42,7 +42,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.15.0';
+const APP_VERSION = '0.16.0';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -5014,6 +5014,7 @@ function RoutingStopDetail({ stop, note }) {
       )}
       <div className="flex gap-6">
         <div><Cap>Skids</Cap><div className="text-slate-800">{Number(stop.pallets) || 0}</div></div>
+        <div><Cap>Loose pcs</Cap><div className="text-slate-800">{Number(stop.cartons) || 0}</div></div>
         <div><Cap>Weight</Cap><div className="text-slate-800">{(Number(stop.weight) || 0).toLocaleString()} lb</div></div>
       </div>
       {(keys.length > 0 || oversize) && (
@@ -5080,6 +5081,7 @@ function RoutingSelectedList({ selectedStops, notes, onRemove, open, setOpen }) 
       customer: s.businessName || String(s.stopNbr),
       city: s.city || '',
       skids: Number(s.pallets) || 0,
+      pieces: Number(s.cartons) || 0,
       weight: Number(s.weight) || 0,
     };
   }), [selectedStops, notes]);
@@ -5100,7 +5102,7 @@ function RoutingSelectedList({ selectedStops, notes, onRemove, open, setOpen }) 
       ) : (
         <div className="border-t">
           <div className="flex items-center gap-3 px-2 py-1 text-[10px] uppercase tracking-wide text-slate-500 border-b bg-slate-50">
-            <SortBtn label="Customer" k="customer" /><SortBtn label="City" k="city" /><SortBtn label="Skids" k="skids" /><SortBtn label="Wt" k="weight" />
+            <SortBtn label="Customer" k="customer" /><SortBtn label="City" k="city" /><SortBtn label="Skids" k="skids" /><SortBtn label="Pcs" k="pieces" /><SortBtn label="Wt" k="weight" />
           </div>
           <div className="max-h-[42vh] overflow-y-auto divide-y">
             {sorted.map((r) => (
@@ -5111,7 +5113,7 @@ function RoutingSelectedList({ selectedStops, notes, onRemove, open, setOpen }) 
                       <span className="font-medium truncate">{r.customer}</span>
                       {detailId === r.id ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
                     </div>
-                    <div className="text-[11px] text-slate-500 truncate">{[r.city, `${r.skids} skid${r.skids === 1 ? '' : 's'}`, `${r.weight.toLocaleString()} lb`].filter(Boolean).join(' · ')}</div>
+                    <div className="text-[11px] text-slate-500 truncate">{[r.city, `${r.skids} skid${r.skids === 1 ? '' : 's'}`, `${r.pieces} pc${r.pieces === 1 ? '' : 's'}`, `${r.weight.toLocaleString()} lb`].filter(Boolean).join(' · ')}</div>
                     {(r.keys.length > 0 || r.oversize) && (
                       <div className="flex flex-wrap items-center gap-1 mt-0.5">
                         {r.keys.map((k) => <RestrictionIcon key={k} kind={k} size={14} />)}
@@ -5127,6 +5129,97 @@ function RoutingSelectedList({ selectedStops, notes, onRemove, open, setOpen }) 
           </div>
         </div>
       ))}
+    </div>
+  );
+}
+
+// Desktop right-rail variant of the selected-stops list: a full, always-visible
+// sortable table with live map<->list hover linkage (hovering a row emphasizes
+// its marker and vice-versa via the shared hoverId), a per-row remove, and a
+// docked detail panel below the table. Reuses RoutingStopDetail + the same
+// customer_notes / stopDetails helpers. The selection is the single source of
+// truth (rows derive from selectedStops; remove flows back through onRemove).
+function RoutingStopsPanel({ selectedStops, notes, onRemove, hoverId, setHoverId }) {
+  const [detailId, setDetailId] = useState(null);
+  const rowRefs = useRef(new Map());
+  const rows = useMemo(() => selectedStops.map((s) => {
+    const note = notes.get(s.matchKey) || null;
+    return {
+      id: String(s.stopNbr), stop: s, note,
+      keys: getRestrictionBadgeKeys(note), oversize: stopLooksOversize(s),
+      customer: s.businessName || String(s.stopNbr), city: s.city || '',
+      skids: Number(s.pallets) || 0, pieces: Number(s.cartons) || 0, weight: Number(s.weight) || 0,
+    };
+  }), [selectedStops, notes]);
+  const { sorted, sortKey, sortDir, toggle } = useSortable(rows, 'customer', 'asc');
+  // Keep the hovered row visible. block:'nearest' is a no-op when the row is
+  // already on screen (pointer hover), so this only scrolls for map-driven hover.
+  useEffect(() => {
+    if (hoverId) rowRefs.current.get(hoverId)?.scrollIntoView({ block: 'nearest' });
+  }, [hoverId]);
+  // The active detail stop may have been removed from the selection.
+  const detailRow = rows.find((r) => r.id === detailId) || null;
+
+  if (rows.length === 0) {
+    return <div className="p-4 text-[12px] text-slate-400">No stops selected yet. Click a stop on the map, drag a box, lasso, or use “Add stops in view”.</div>;
+  }
+  return (
+    <div className="flex-1 min-h-0 flex flex-col">
+      <div className="flex-1 min-h-0 overflow-auto">
+        <table className="w-full text-[12px]">
+          <thead className="bg-slate-50 sticky top-0 z-10">
+            <tr>
+              <SortableTh label="Customer" k="customer" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />
+              <SortableTh label="City" k="city" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />
+              <SortableTh label="Skids" k="skids" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />
+              <SortableTh label="Pcs" k="pieces" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />
+              <SortableTh label="Wt" k="weight" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />
+              <th className="px-1" />
+            </tr>
+          </thead>
+          <tbody>
+            {sorted.map((r) => {
+              const active = detailId === r.id, hot = hoverId === r.id;
+              return (
+                <tr
+                  key={r.id}
+                  ref={(el) => { if (el) rowRefs.current.set(r.id, el); else rowRefs.current.delete(r.id); }}
+                  onMouseEnter={() => setHoverId(r.id)}
+                  onMouseLeave={() => setHoverId((h) => (h === r.id ? null : h))}
+                  onClick={() => setDetailId((d) => (d === r.id ? null : r.id))}
+                  className={`border-t cursor-pointer ${active ? 'bg-blue-50 ring-1 ring-inset ring-blue-300' : hot ? 'bg-amber-50' : 'hover:bg-slate-50'}`}
+                >
+                  <td className="px-2 py-1.5 max-w-[180px]">
+                    <div className="truncate font-medium" title={r.customer}>{r.customer}</div>
+                    {(r.keys.length > 0 || r.oversize) && (
+                      <div className="flex flex-wrap items-center gap-1 mt-0.5">
+                        {r.keys.map((k) => <RestrictionIcon key={k} kind={k} size={13} />)}
+                        {r.oversize && <span className="text-[9px] font-bold text-amber-700 border border-amber-400 rounded px-1" title="Oversize freight">OS</span>}
+                      </div>
+                    )}
+                  </td>
+                  <td className="px-2 py-1.5 text-slate-600 max-w-[110px] truncate" title={r.city}>{r.city}</td>
+                  <td className="px-2 py-1.5 tabular-nums">{r.skids}</td>
+                  <td className="px-2 py-1.5 tabular-nums">{r.pieces}</td>
+                  <td className="px-2 py-1.5 tabular-nums">{r.weight.toLocaleString()}</td>
+                  <td className="px-1 py-1.5">
+                    <button onClick={(e) => { e.stopPropagation(); onRemove(r.id); }} aria-label={`Remove ${r.customer} from selection`} className="text-slate-400 hover:text-red-600 leading-none text-lg">×</button>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      {detailRow && (
+        <div className="shrink-0 border-t bg-white max-h-[42%] overflow-y-auto">
+          <div className="flex items-center justify-between px-3 py-1.5 border-b bg-slate-50">
+            <div className="font-semibold text-[13px] truncate">{detailRow.customer}</div>
+            <button onClick={() => setDetailId(null)} className="text-slate-400 hover:text-slate-700 text-lg leading-none" aria-label="Close detail">×</button>
+          </div>
+          <div className="p-3"><RoutingStopDetail stop={detailRow.stop} note={detailRow.note} /></div>
+        </div>
+      )}
     </div>
   );
 }
@@ -5163,6 +5256,28 @@ function RoutingScreen() {
   const handleSelectPointRef = useRef(() => {});
   useEffect(() => { selectModeRef.current = selectMode; }, [selectMode]);
 
+  // Live map<->list linkage: the hovered stop id is shared between the markers
+  // and the desktop stop table, so emphasis is two-directional.
+  const [hoverId, setHoverId] = useState(null);
+  const hoverIdRef = useRef(null);
+  useEffect(() => { hoverIdRef.current = hoverId; }, [hoverId]);
+  const markerByIdRef = useRef(new Map());  // stopId -> { marker, sel, routed }
+  const lastEmphRef = useRef(null);
+
+  // Desktop click-drag rubber-band box. The overlay (rendered over the map only
+  // while Box mode is armed on desktop) captures the drag so it doesn't pan the
+  // map; mouseup converts the two pixel corners to LatLng via the map projection
+  // and reuses the proven boxFromCorners + latLngInBounds geometry.
+  const overlayRef = useRef(null);         // google.maps.OverlayView for px->latlng
+  const dragStartRef = useRef(null);
+  const [dragRect, setDragRect] = useState(null);
+
+  // Desktop right rail: Stops | Result. Persisted as a view pref (localStorage ok).
+  const [desktopRail, setDesktopRail] = useState(() => {
+    try { return localStorage.getItem('routing.rail') === 'result' ? 'result' : 'stops'; } catch { return 'stops'; }
+  });
+  useEffect(() => { try { localStorage.setItem('routing.rail', desktopRail); } catch { /* ignore */ } }, [desktopRail]);
+
   const [selectedIds, setSelectedIds] = useState(() => new Set());
   const [selectedTruckIds, setSelectedTruckIds] = useState(() => new Set());
   const [intent, setIntent] = useState('');
@@ -5190,13 +5305,14 @@ function RoutingScreen() {
   // oversize across the selected stops, resolved through the same helpers the
   // map markers use.
   const tally = useMemo(() => {
-    let skids = 0, weight = 0;
+    let skids = 0, pieces = 0, weight = 0;
     const counts = {};
     let oversize = 0;
     for (const id of selectedIds) {
       const s = stopById.get(String(id));
       if (!s) continue;
       skids += Number(s.pallets) || 0;
+      pieces += Number(s.cartons) || 0;
       weight += Number(s.weight) || 0;
       if (stopLooksOversize(s)) oversize += 1;
       const note = notes.get(s.matchKey);
@@ -5204,7 +5320,7 @@ function RoutingScreen() {
     }
     const summary = Object.entries(counts).map(([k, n]) => `${n} ${RESTRICTION_ICONS[k]?.short || k}`);
     if (oversize) summary.push(`${oversize} oversize`);
-    return { count: selectedIds.size, skids, weight, summary };
+    return { count: selectedIds.size, skids, pieces, weight, summary };
   }, [selectedIds, stopById, notes]);
 
   const selectedStops = useMemo(
@@ -5303,6 +5419,53 @@ function RoutingScreen() {
   }, [google, addTempMarker, addEnclosed, redrawLasso, cancelMode]);
   useEffect(() => { handleSelectPointRef.current = handleSelectPoint; }, [handleSelectPoint]);
 
+  // Marker icon for a given state. Hovered markers grow + get a dark ring so the
+  // map<->list linkage reads clearly.
+  const makeMarkerIcon = useCallback((sel, routed, hovered) => ({
+    path: google?.maps.SymbolPath.CIRCLE,
+    scale: hovered ? 9 : (sel || routed ? 7 : 4.5),
+    fillColor: routed || (sel ? BRAND : '#94a3b8'),
+    fillOpacity: 0.95,
+    strokeColor: hovered ? '#0f172a' : '#fff',
+    strokeWeight: hovered ? 2 : 1,
+  }), [google]);
+
+  // Desktop drag-box: convert a container-pixel point to LatLng via the overlay
+  // projection (exact, unlike interpolating viewport bounds).
+  const pxToLatLng = useCallback((px, py) => {
+    const proj = overlayRef.current?.getProjection();
+    if (!proj || !google) return null;
+    return proj.fromContainerPixelToLatLng(new google.maps.Point(px, py));
+  }, [google]);
+  const relPoint = (e) => { const r = e.currentTarget.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; };
+  const onBoxDown = useCallback((e) => { const p = relPoint(e); dragStartRef.current = p; setDragRect({ x0: p.x, y0: p.y, x1: p.x, y1: p.y }); }, []);
+  const onBoxMove = useCallback((e) => { if (!dragStartRef.current) return; const p = relPoint(e); setDragRect({ x0: dragStartRef.current.x, y0: dragStartRef.current.y, x1: p.x, y1: p.y }); }, []);
+  const onBoxUp = useCallback((e) => {
+    const start = dragStartRef.current;
+    dragStartRef.current = null; setDragRect(null);
+    if (!start) return;
+    const p = relPoint(e);
+    if (Math.abs(p.x - start.x) < 4 && Math.abs(p.y - start.y) < 4) { cancelMode(); return; } // a click, not a drag
+    const a = pxToLatLng(start.x, start.y), b = pxToLatLng(p.x, p.y);
+    if (a && b) {
+      const box = boxFromCorners({ lat: a.lat(), lng: a.lng() }, { lat: b.lat(), lng: b.lng() });
+      addEnclosed(positionedRef.current.filter((s) => latLngInBounds(s.lat, s.lng, box)));
+    }
+    cancelMode();
+  }, [pxToLatLng, addEnclosed, cancelMode]);
+
+  // Esc cancels any armed selection mode.
+  useEffect(() => {
+    if (!selectMode) return;
+    const onKey = (e) => { if (e.key === 'Escape') cancelMode(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [selectMode, cancelMode]);
+
+  // Auto-surface the Result in the desktop right rail when a build completes
+  // (Stops stays one click away).
+  useEffect(() => { if (job?.status === 'done') setDesktopRail('result'); }, [job?.status]);
+
   // (Re)init the map into the CURRENT container. Re-runs when the viewport crosses
   // the mobile/desktop breakpoint (the map div is then a different DOM node), so
   // the markers + click listener rebind to the live map via the mapReady signal.
@@ -5319,34 +5482,59 @@ function RoutingScreen() {
     // Single click listener drives Box/Lasso. Empty-map taps place points; the
     // latest handler is read via a ref so the listener is bound only once per map.
     mapRef.current.addListener('click', (e) => { if (e.latLng) handleSelectPointRef.current(e.latLng); });
+    // Invisible overlay → exact container-pixel ↔ LatLng projection for drag-box.
+    const ov = new google.maps.OverlayView();
+    ov.onAdd = ov.draw = ov.onRemove = () => {};
+    ov.setMap(mapRef.current);
+    overlayRef.current = ov;
     setMapReady((n) => n + 1);
   }, [google, isMobile]); // eslint-disable-line
 
   // Render stop markers — gray unselected, blue selected, truck-colored when a
-  // result exists. Click toggles selection.
+  // result exists. Click toggles selection; hover drives the map<->list linkage.
   useEffect(() => {
     if (!google || !mapRef.current) return;
     markersRef.current.forEach((m) => m.setMap(null));
+    const byId = new Map();
     const truckColorByStop = new Map();
     if (result) result.routes.forEach((r, i) => r.orderedStopIds.forEach((id) => truckColorByStop.set(String(id), ROUTE_PALETTE[i % ROUTE_PALETTE.length])));
     markersRef.current = positioned.map((s) => {
-      const sel = selectedIds.has(String(s.stopNbr));
-      const routed = truckColorByStop.get(String(s.stopNbr));
-      const fill = routed || (sel ? BRAND : '#94a3b8');
+      const id = String(s.stopNbr);
+      const sel = selectedIds.has(id);
+      const routed = truckColorByStop.get(id);
+      const hovered = hoverIdRef.current === id;
       const marker = new google.maps.Marker({
         position: { lat: s.lat, lng: s.lng },
         title: s.businessName || s.stopNbr,
-        icon: { path: google.maps.SymbolPath.CIRCLE, scale: sel || routed ? 7 : 4.5, fillColor: fill, fillOpacity: 0.95, strokeColor: '#fff', strokeWeight: 1 },
-        zIndex: sel || routed ? 30 : 10,
+        icon: makeMarkerIcon(sel, routed, hovered),
+        zIndex: hovered ? 50 : (sel || routed ? 30 : 10),
       });
       marker.addListener('click', () => {
         if (selectModeRef.current) handleSelectPointRef.current(marker.getPosition());
         else toggleStop(s.stopNbr);
       });
+      marker.addListener('mouseover', () => setHoverId(id));
+      marker.addListener('mouseout', () => setHoverId((h) => (h === id ? null : h)));
       marker.setMap(mapRef.current);
+      byId.set(id, { marker, sel, routed });
       return marker;
     });
-  }, [google, positioned, selectedIds, result, toggleStop, mapReady]);
+    markerByIdRef.current = byId;
+    lastEmphRef.current = hoverIdRef.current; // markers were built already-emphasized
+  }, [google, positioned, selectedIds, result, toggleStop, mapReady, makeMarkerIcon]);
+
+  // Hover emphasis — touch only the two affected markers, not all of them.
+  useEffect(() => {
+    const byId = markerByIdRef.current;
+    const setEmph = (id, on) => {
+      const e = byId.get(id); if (!e) return;
+      e.marker.setIcon(makeMarkerIcon(e.sel, e.routed, on));
+      e.marker.setZIndex(on ? 50 : (e.sel || e.routed ? 30 : 10));
+    };
+    if (lastEmphRef.current && lastEmphRef.current !== hoverId) setEmph(lastEmphRef.current, false);
+    if (hoverId) setEmph(hoverId, true);
+    lastEmphRef.current = hoverId;
+  }, [hoverId, makeMarkerIcon]);
 
   // Route polylines (one per truck, depot-anchored, engine's order, M5 palette).
   useEffect(() => {
@@ -5432,9 +5620,11 @@ function RoutingScreen() {
         {selectMode ? (
           <div className="rounded border border-amber-300 bg-amber-50 p-2 text-[12px] space-y-2">
             {selectMode === 'box' ? (
-              <div>📦 <b>Tap two corners</b> on the map to box a group ({boxStep === 0 ? '1 of 2' : '2 of 2'}).</div>
+              isMobile
+                ? <div>📦 <b>Tap two corners</b> on the map to box a group ({boxStep === 0 ? '1 of 2' : '2 of 2'}).</div>
+                : <div>📦 <b>Drag a box</b> around the stops on the map. Esc or Cancel to stop.</div>
             ) : (
-              <div>⬠ <b>Tap points</b> around the stops, then <b>Done</b> ({lassoCount} {lassoCount === 1 ? 'point' : 'points'}; need ≥3).</div>
+              <div>⬠ <b>{isMobile ? 'Tap' : 'Click'} points</b> around the stops, then <b>Done</b> ({lassoCount} {lassoCount === 1 ? 'point' : 'points'}; need ≥3).</div>
             )}
             <div className="flex gap-1">
               {selectMode === 'lasso' && (
@@ -5451,13 +5641,14 @@ function RoutingScreen() {
               <button onClick={() => beginMode('lasso')} className="flex-1 px-2 py-2 text-xs rounded border border-slate-300 hover:bg-slate-50 active:bg-slate-100">⬠ Lasso</button>
               <button onClick={clearSelection} className="flex-1 px-2 py-2 text-xs rounded border border-slate-300 hover:bg-slate-50 active:bg-slate-100">Clear</button>
             </div>
-            <div className="text-[11px] text-slate-600">Tap a stop to toggle it. Or pan/zoom, then <b>Add stops in view</b>, <b>Box</b> (tap two corners), or <b>Lasso</b> (tap points).</div>
+            <div className="text-[11px] text-slate-600">{isMobile ? 'Tap' : 'Click'} a stop to toggle it. Or {isMobile ? 'pan/zoom' : 'pan/zoom'}, then <b>Add stops in view</b>, <b>Box</b> ({isMobile ? 'tap two corners' : 'drag'}), or <b>Lasso</b> ({isMobile ? 'tap' : 'click'} points).</div>
           </>
         )}
         {lastAction && <div className="text-[11px] text-slate-500">{lastAction}</div>}
         <div className="bg-slate-50 rounded p-2 text-[12px] space-y-0.5">
           <div className="flex justify-between"><span>Selected</span><b>{tally.count}</b></div>
           <div className="flex justify-between"><span>Skids</span><b>{tally.skids}</b></div>
+          <div className="flex justify-between"><span>Loose pieces</span><b>{tally.pieces}</b></div>
           <div className="flex justify-between"><span>Weight</span><b>{tally.weight.toLocaleString()} lb</b></div>
           {tally.summary.length > 0 && (
             <div className="text-[11px] text-amber-700 pt-1">⚠ {tally.summary.join(' · ')}</div>
@@ -5465,8 +5656,9 @@ function RoutingScreen() {
           {tally.count > ROUTING_MAX_SELECTION && <div className="text-[11px] text-red-600 pt-1">Over {ROUTING_MAX_SELECTION}-stop limit — narrow the selection (matrix cost is quadratic).</div>}
         </div>
 
-        {/* The selected-stops list — source of truth for what's selected. */}
-        <RoutingSelectedList selectedStops={selectedStops} notes={notes} onRemove={removeStop} open={listOpen} setOpen={setListOpen} />
+        {/* On mobile the selected-stops list lives here in the Setup sheet (the #41
+            pattern). On desktop it is the right rail's Stops tab instead. */}
+        {isMobile && <RoutingSelectedList selectedStops={selectedStops} notes={notes} onRemove={removeStop} open={listOpen} setOpen={setListOpen} />}
       </div>
 
       {/* Trucks */}
@@ -5531,7 +5723,7 @@ function RoutingScreen() {
           <div ref={mapDiv} className="absolute inset-0" />
           {mapsError && <div className="absolute top-2 left-1/2 -translate-x-1/2 bg-red-50 border border-red-300 text-red-700 text-[11px] rounded px-2 py-1">{mapsError}</div>}
           {/* floating selection chip so the tally is visible while the sheet is collapsed */}
-          <div className="absolute top-2 left-2 bg-white/95 border border-slate-200 rounded shadow px-2 py-1 text-[11px]">{tally.count} selected · {tally.skids} skids</div>
+          <div className="absolute top-2 left-2 bg-white/95 border border-slate-200 rounded shadow px-2 py-1 text-[11px]">{tally.count} selected · {tally.skids} skids · {tally.pieces} pcs</div>
         </div>
         <div className="border-t bg-white flex flex-col shrink-0" style={{ height: sheetOpen ? '50vh' : 'auto' }}>
           <div className="flex items-center gap-2 px-2 py-1.5 border-b">
@@ -5551,23 +5743,55 @@ function RoutingScreen() {
     );
   }
 
-  // ── Desktop: three side rails ──
+  // ── Desktop: the dispatch console — Setup (left) · large map (center) ·
+  //    Stops/Result (right). ──
+  const railTab = (id, label) => (
+    <button
+      onClick={() => setDesktopRail(id)}
+      className={`flex-1 py-2 text-[13px] font-semibold border-b-2 ${desktopRail === id ? 'text-slate-900' : 'text-slate-500 border-transparent hover:text-slate-700'}`}
+      style={desktopRail === id ? { borderColor: BRAND, color: BRAND } : {}}
+    >{label}</button>
+  );
   return (
     <div className="flex-1 flex min-h-0">
-      {/* Left control rail */}
+      {/* Left: Setup stack */}
       <div className="w-[340px] shrink-0 border-r bg-white overflow-y-auto p-3 space-y-3 text-sm">
         {controlsContent}
       </div>
 
-      {/* Map */}
+      {/* Center: the map canvas */}
       <div className="flex-1 relative min-w-0">
         <div ref={mapDiv} className="absolute inset-0" />
         {mapsError && <div className="absolute top-2 left-1/2 -translate-x-1/2 bg-red-50 border border-red-300 text-red-700 text-[11px] rounded px-2 py-1">{mapsError}</div>}
+        {/* Drag-box capture overlay — active only while Box mode is armed on desktop. */}
+        {selectMode === 'box' && (
+          <div
+            className="absolute inset-0 z-10 cursor-crosshair"
+            onMouseDown={onBoxDown} onMouseMove={onBoxMove} onMouseUp={onBoxUp} onMouseLeave={onBoxUp}
+          >
+            <div className="absolute top-2 left-1/2 -translate-x-1/2 bg-slate-900/85 text-white text-[11px] rounded px-2 py-1 pointer-events-none">Drag a box around the stops · Esc to cancel</div>
+            {dragRect && (
+              <div className="absolute border-2 bg-blue-400/10 pointer-events-none" style={{
+                borderColor: BRAND,
+                left: Math.min(dragRect.x0, dragRect.x1), top: Math.min(dragRect.y0, dragRect.y1),
+                width: Math.abs(dragRect.x1 - dragRect.x0), height: Math.abs(dragRect.y1 - dragRect.y0),
+              }} />
+            )}
+          </div>
+        )}
       </div>
 
-      {/* Result rail */}
-      <div className="w-[360px] shrink-0 border-l bg-white overflow-y-auto p-3 space-y-3 text-sm">
-        {resultContent}
+      {/* Right: Stops | Result */}
+      <div className="w-[380px] shrink-0 border-l bg-white flex flex-col min-h-0">
+        <div className="flex border-b shrink-0">
+          {railTab('stops', `Selected stops${tally.count ? ` (${tally.count})` : ''}`)}
+          {railTab('result', `Result${result ? ` (${result.routes.length})` : (job?.status === 'running' || job?.status === 'queued') ? ' …' : ''}`)}
+        </div>
+        {desktopRail === 'stops' ? (
+          <RoutingStopsPanel selectedStops={selectedStops} notes={notes} onRemove={removeStop} hoverId={hoverId} setHoverId={setHoverId} />
+        ) : (
+          <div className="flex-1 min-h-0 overflow-y-auto p-3 space-y-3 text-sm">{resultContent}</div>
+        )}
       </div>
     </div>
   );
@@ -5633,14 +5857,15 @@ function RoutingResultPanel({ job, result, meta, usedGoogle, stopById, onSave, s
 function RoutingRouteCard({ route, color, stopById }) {
   const rows = useMemo(() => route.orderedStopIds.map((id, idx) => {
     const s = stopById.get(String(id));
-    return { seq: idx + 1, stopId: id, customer: s?.businessName || id, eta: route.etas?.[idx] ?? null, skids: Number(s?.pallets) || 0, weight: Number(s?.weight) || 0 };
+    return { seq: idx + 1, stopId: id, customer: s?.businessName || id, eta: route.etas?.[idx] ?? null, skids: Number(s?.pallets) || 0, pieces: Number(s?.cartons) || 0, weight: Number(s?.weight) || 0 };
   }), [route, stopById]);
+  const piecesTotal = useMemo(() => rows.reduce((a, r) => a + r.pieces, 0), [rows]);
   const { sorted, sortKey, sortDir, toggle } = useSortable(rows, 'seq', 'asc');
   return (
     <div className="rounded border border-slate-200">
       <div className="px-2 py-1.5 flex items-center gap-2 border-b" style={{ borderLeft: `4px solid ${color}` }}>
         <span className="font-semibold">{route.truckId}</span>
-        <span className="text-[11px] text-slate-500">{route.orderedStopIds.length} stops</span>
+        <span className="text-[11px] text-slate-500">{route.orderedStopIds.length} stops · {piecesTotal} loose pc{piecesTotal === 1 ? '' : 's'}</span>
       </div>
       <div className="p-2 space-y-1.5">
         <CapacityBar label="Skids" used={route.load.skids} cap={route.capacity.skids} unit="" />
@@ -5653,6 +5878,7 @@ function RoutingRouteCard({ route, color, stopById }) {
           <SortableTh label="Customer" k="customer" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />
           <SortableTh label="ETA" k="eta" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />
           <SortableTh label="Skids" k="skids" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />
+          <SortableTh label="Pcs" k="pieces" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />
           <SortableTh label="Wt" k="weight" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />
         </tr></thead>
         <tbody>
@@ -5662,6 +5888,7 @@ function RoutingRouteCard({ route, color, stopById }) {
               <td className="px-2 py-1 truncate max-w-[120px]" title={row.customer}>{row.customer}</td>
               <td className="px-2 py-1">{formatRoutingEta(row.eta)}</td>
               <td className="px-2 py-1">{row.skids}</td>
+              <td className="px-2 py-1">{row.pieces}</td>
               <td className="px-2 py-1">{row.weight.toLocaleString()}</td>
             </tr>
           ))}

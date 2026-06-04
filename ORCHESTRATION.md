@@ -397,3 +397,20 @@ near-term P2 follow-on, after the PR 2 routing tab and before any full-fleet rol
   display helpers extracted to src/lib/routing-select.js and unit-tested
   (test/routing-select.test.mjs). Additive, still feature-flagged; NuVizz read-only;
   engine/matrix/cost/cache untouched (61 tests green).
+
+- Jun 2026 — Claude (Phase 2 PR4) — Desktop dispatch console (v0.16.0). Elevated
+  the desktop Routing surface into a true three-zone console: Setup (left), a large
+  map canvas (center), and a Stops/Result right rail with tabs. Added mouse-native
+  click-drag rubber-band box selection (a capture overlay → two corners → the proven
+  boxFromCorners + latLngInBounds; no new geometry), kept Add-in-view / Lasso /
+  click-toggle, and Esc-to-cancel. Live map<->list hover linkage both directions
+  (hovering a row emphasizes its marker and scrolls it into view; hovering a marker
+  highlights its row), selection remaining the single source of truth. Right rail
+  shows a full sortable selected-stops table with a docked detail panel (address,
+  contact, restrictions, hours, products) and, after a build, the Result (route
+  cards, spill, cost readout) — auto-surfaced on completion, Stops one click away.
+  Also fixed the flagged gap: LOOSE PIECES (NuVizz totalCartons) are now counted and
+  displayed at the group tally, per-stop (list rows + detail), and per route card +
+  route total. Mobile keeps the #41 bottom-sheet flow unchanged (no regressions).
+  Drag-box geometry unit-tested. NuVizz read-only; engine/matrix/cost/cache/Phase 1
+  untouched; still feature-flagged (62 tests green).
