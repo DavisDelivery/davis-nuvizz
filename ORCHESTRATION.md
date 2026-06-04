@@ -58,6 +58,12 @@ the data is perishable.
   confirm the round trip landed.
 - **`App.jsx` stays single-file** in dispatch-map — add inline conditional
   components, do not split it.
+- **Routing/dispatch UI target = DESKTOP-PRIMARY, mobile in tandem.** Design and
+  perfect the desktop layout first (the dispatch console: setup controls + a large
+  map canvas + persistent selected-stops / detail / results panels that use the
+  full screen). Build the mobile layout alongside it and keep it fully working — no
+  regressions and no dead controls on EITHER. For this platform, mobile is the
+  responsive adaptation, not the lead target. (Flips the earlier mobile-first stance.)
 - **Claude Code briefs:** delivered as a single triple-backtick fenced block, no
   prose outside the fence, no nested backticks, plain-text headers
   (=== HEADER ===). Every brief opens with an unmerged-work resolution pass.
@@ -372,3 +378,5 @@ near-term P2 follow-on, after the PR 2 routing tab and before any full-fleet rol
   (no ?routing=1 / no env needed). Kill switch retained: VITE_ROUTING_BETA='false'
   or ?routing=0 hides it again without a revert. Cheap-by-default unchanged (free
   haversine unless the Google toggle is used). UI-flag only; engine untouched.
+
+- Jun 2026 — Orchestrator — Set the routing/dispatch UI target to DESKTOP-PRIMARY, with mobile built in tandem and required to keep working. Flips the earlier mobile-first stance for this platform: desktop is the lead, get-it-correct-first surface (full dispatch-console layout); mobile is the responsive adaptation. Per Chad's direction.
