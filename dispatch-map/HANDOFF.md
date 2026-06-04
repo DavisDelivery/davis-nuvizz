@@ -11,6 +11,63 @@ v0.7.2 = M4.5 PR 2 of 3 (stop-detail + driver-snapshot drawers).
 v0.8.0 = M4.5 PR 3 of 3 (final polish: marker labels, snapshot tap-through,
 mobile diagnostics, RESEARCH doc).
 
+## v0.12.0 — Phase 1: immutable daily history warehouse (backend only)
+
+First Phase 1 deliverable from the Davis Logistics Platform charter
+(`ORCHESTRATION.md`). Adds a scheduled, idempotent, immutable daily capture of
+every stop, route (load), and driver-day into NEW Firestore collections. No UI
+this phase; `APP_VERSION` bumped to **0.12.0** and still rendered in the map
+footer/chip per the standing rule.
+
+### What landed (all additive)
+
+- `netlify/functions/nuvizz-history-snapshot-background.mts` — scheduled
+  background writer, cron `0 6 * * *` (06:00 UTC ≈ 01:00–02:00 ET, after ET
+  midnight). Background (not plain scheduled) for the 15-min budget, same reason
+  as `nuvizz-refresh-stops-background`. Manual backfill: `?date=YYYY-MM-DD` or
+  `?from=...&to=...` (≤31 days).
+- `lib/history-core.mts` — shared capture core (mirrors `refresh-stops-core`):
+  parse target date(s), `scanDate()`, derive, write, verify-by-readback, manifest
+  last. Target for a scheduled run = the just-closed **America/New_York** day
+  (`etYesterday`, DST-safe).
+- `lib/history-derive.mts` — **pure** derivation (stops→routes→drivers, ordering,
+  sums, completion counts, on-time, checksum). Unit-tested.
+- `lib/history-store.mts` — thin warehouse Firestore layer; reuses the exported
+  `getDoc/setDoc/listDocs` from `firestore.mts` (no auth/codec duplication).
+- `lib/firestore.mts` — **export-only** change: `getDoc/setDoc/listDocs` are now
+  exported. Live-cache `writeStops/readStops` and behavior unchanged.
+- `test/history-derive.test.mjs` + `test/fixtures/history-normalized-stops.json`
+  — 11 passing tests (`npm test`, Node ≥22 strips `.mts` types natively).
+
+### Collections (immutable; separate from the live `nuvizz_stop_index` cache)
+
+```
+history_days/{davis}__{YYYY-MM-DD}                      manifest (written LAST)
+history_days/{davis}__{YYYY-MM-DD}/stops/{stopNbr}      full normalized stop + raw
+history_days/{davis}__{YYYY-MM-DD}/routes/{loadNbr}     ordered stops + sums + driver
+history_days/{davis}__{YYYY-MM-DD}/drivers/{driverKey}  loads + stop/completion counts
+history_days/{davis}__{YYYY-MM-DD}/captures/v{n}        append-only lineage audit
+history_driver_days/{davis}__{driverKey}/days/{date}    cross-day loads-by-driver index
+```
+
+### Invariants enforced
+
+Immutable (a past day is never pruned — re-capture UPSERTS and KEEPS absent
+prior stops, logging the discrepancy in the captures audit); append-only capture
+lineage with incrementing `capture_version` + content checksum; four-layer raw
+preserved on every stop (incl. `stopExecutionInfo`); verify-by-readback with the
+manifest written last and non-200 on mismatch; NuVizz read-only (only call is
+`scanDate`); the live cache and refresh functions are untouched.
+
+### Notes for the next agent
+
+- `motiveActuals` on each driver doc is `null` with a v1.1 TODO hook — do NOT
+  call Motive in v1.
+- A future "settle pass" (re-capture day-2 to absorb late POD) is a TODO, out of
+  v1 scope.
+- Phase 3 history UI is where the "Mon D, YYYY" date-display rule applies; storage
+  keys here intentionally use `YYYY-MM-DD` (internal).
+
 ## v0.8.0 — M4.5 mobile responsive complete (PR 3 of 3)
 
 Closes out the M4.5 milestone. Adds the smaller items that round out the

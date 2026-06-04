@@ -120,7 +120,7 @@ the data is perishable.
 | Phase | Name | Status |
 | --- | --- | --- |
 | 0 | Foundations (spec pin, this charter, retention check) | DONE |
-| 1 | Historical Data Warehouse (immutable daily capture) | NEXT / ACTIVE |
+| 1 | Historical Data Warehouse (immutable daily capture) | IN REVIEW |
 | 2 | Routing Engine (build on our own data, NuVizz read-only) | PLANNED |
 | 3 | Parent-App Historical Access + Shared Customer Notes | PLANNED |
 | 4 | NuVizz Write-Back (gated: one route, then more) | FUTURE |
@@ -136,7 +136,7 @@ the data is perishable.
 - Establish this orchestration charter. ✓
 - Confirm scan/index retention behavior (done — it is a cache, not history). ✓
 
-### Phase 1 — Historical Data Warehouse — NEXT / ACTIVE
+### Phase 1 — Historical Data Warehouse — IN REVIEW
 **Goal:** capture a true, immutable, queryable record of every stop, route, and
 driver, every day. Start NOW — the data is perishable.
 **Scope**
@@ -269,3 +269,19 @@ knowledge are deliberately separated.
 - Jun 2025 — Orchestrator — Initial charter. Spec pinned (Phase 0). Retention
   check complete: confirmed the stop index is a live cache, not history; Phase 1
   (immutable warehouse) is next. Phases 0–5 defined.
+- Jun 2026 — Claude (Phase 1 agent) — Built the immutable daily history warehouse
+  (v0.12.0). New backend only, additive: scheduled background capture
+  `nuvizz-history-snapshot-background.mts` (cron `0 6 * * *`, captures the
+  just-closed America/New_York day) delegating to new shared core
+  `lib/history-core.mts`, with pure derivation `lib/history-derive.mts` and a thin
+  Firestore reuse layer `lib/history-store.mts` (writes to new `history_days` /
+  `history_driver_days` collections only). One `scanDate()` read per capture;
+  routes + drivers derived by grouping. Invariants enforced: immutable (never
+  prunes the past), append-only `captures/v{n}` lineage, four-layer raw
+  preservation, verify-by-readback with manifest written last. Only behavior-
+  preserving change to shared code is EXPORT-ing `getDoc/setDoc/listDocs` from
+  `lib/firestore.mts`. Live `nuvizz_stop_index` cache and refresh functions
+  untouched; NuVizz remains read-only. Unmerged-work pass: M5.1 scan fields
+  (`normalizedStatus`/`arrivalDTTM`/`deliveredDTTM`/`classifyStopStatus`) confirmed
+  already on `main` (landed via #27→#35); history reads only those + raw, and does
+  not touch PR 27's files. Phase 1 → IN REVIEW pending Chad's merge authorization.
