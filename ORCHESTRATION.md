@@ -264,6 +264,39 @@ knowledge are deliberately separated.
 
 ---
 
+## Appendix B — Cost controls (routing / external APIs) — DECIDED Jun 2026
+
+The Google Route Matrix is the dominant external cost and is billed PER ELEMENT
+(origins x destinations), so cost is quadratic in matrix size. These are binding
+defaults for the routing engine. Reference envelope: total routing API spend should
+sit comfortably inside the existing logistics-software budget (~$1k/mo all-in) and,
+with caching, well below it.
+
+1. METERED ROLLOUT. Start on a small subset of stops; measure real element usage and
+   cost before any full-fleet rollout. Do not enable day-wide / full-fleet routing
+   until real numbers are in hand.
+2. HAVERSINE-FIRST, GOOGLE-SPARING. The free haversine matrix is the DEFAULT for
+   assignment and rough sequencing. Google Route Matrix (paid) is opt-in per build —
+   used for the committed/final plan or where real drive-time materially changes the
+   route, not on every exploratory build.
+3. MATRIX CACHING. Cache drive-time/distance by stop-pair (rounded coordinates) in
+   Firestore and reuse across days. Final-mile lanes/customers repeat heavily, so the
+   hit-rate climbs fast and paid calls collapse to genuinely-new pairs. Near-term P2
+   priority, right after the PR 2 UI and before full rollout.
+4. SMALL MATRICES ONLY. Never compute an all-pairs matrix over a whole day. Cluster
+   geographically (free) first; call Google only within truck/cluster-sized groups.
+5. BASIC TIER BY DEFAULT. Use the non-traffic (Basic, ~$5/1k elements) tier for
+   planning; reserve traffic-aware (Advanced, ~$10/1k) for where it matters
+   (it roughly doubles cost).
+6. HARD CEILING. A daily quota cap on the Routes API in GCP (so spend cannot run away)
+   plus a billing budget alert. Set generously enough not to break legitimate use;
+   tune to measured data. The dedicated server key is restricted to Routes API only.
+7. USAGE READOUT. Surface per-build element count + estimated cost in the UI/logs so we
+   budget on measured numbers, not estimates.
+
+PRIORITY NOTE: cheap-by-default (haversine-first + caching) is now slotted as a
+near-term P2 follow-on, after the PR 2 routing tab and before any full-fleet rollout.
+
 ## Revision log
 
 - Jun 2025 — Orchestrator — Initial charter. Spec pinned (Phase 0). Retention
@@ -305,3 +338,5 @@ knowledge are deliberately separated.
   without keys. 44 unit tests green. Unmerged-work pass: PR 27 confirmed superseded
   (its scan fields are on main via #35) — recommend closing it; this PR does not touch
   App.jsx scan logic. Phase 2 → IN REVIEW (engine); UI is the follow-up PR.
+
+- Jun 2026 — Orchestrator — Added Appendix B (cost controls). Locked in haversine-first + matrix caching + small-matrix clustering + Basic tier + a GCP daily quota cap/budget + a per-build usage readout as binding defaults, after the Google element-cost estimate looked high relative to the existing ~$1k/mo logistics-software spend. Rollout is metered: start small, measure real cost, then scale.
