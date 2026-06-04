@@ -57,8 +57,91 @@ export interface NormalizedStop {
   arrivalDTTM: string | null;       // M5.1 — actual on-site time, when present.
   deliveredDTTM: string | null;     // M5.1 — actual completion time, when present.
   plannedEtaDTTM: string | null;    // M5.2 — canonical delivery-order timestamp for route polylines.
+  // ── Phase 2 (routing engine) ADDITIVE fields. Surfaced for the solver; all
+  // nullable, raw preserved. Existing callers (live cache, Phase 1 derive) ignore
+  // them. None of the fields above are renamed or removed.
+  stopDetails: StopLineItem[];      // P2 — per-line freight (SKU, qty, weight, dims, L flag).
+  timeConstraint: string | null;    // P2 — STRICT vs soft delivery window.
+  estimatedDurationMin: number | null; // P2 — NuVizz dwell estimate; UNRELIABLE (flat ~20m).
+  plannedDistanceToNextStop: number | null; // P2 — NuVizz routing baseline.
+  plannedDurationToNextStop: number | null; // P2 — NuVizz routing baseline.
+  stopDistance: number | null;      // P2 — NuVizz per-stop distance.
+  contact: StopContact;             // P2 — destination contact.
+  origin: StopOrigin | null;        // P2 — pickup/depot origin address.
+  markfor: unknown;                 // P2 — NuVizz mark-for, when present (raw).
   signalSources: SignalSources;
   raw: unknown;
+}
+
+// P2 — normalized freight line item (additive). Mirrors NuVizz StopDetail fields
+// the routing geometry derivation needs; productCategory 'L' is NuVizz's own
+// oversize/long flag, criticalDimension/length feed linear-foot estimation.
+export interface StopLineItem {
+  product: string | null;
+  productIdentifier: unknown;       // SKU (may be object); preserved as-is.
+  sku: string | null;              // best-effort string form of productIdentifier.
+  quantity: number | null;
+  quantityUOM: string | null;
+  weight: number | null;
+  weightUOM: string | null;
+  productCategory: string | null;   // 'S' standard / 'L' long-oversize.
+  length: number | null;
+  lengthUOM: string | null;
+  width: number | null;
+  widthUOM: string | null;
+  height: number | null;
+  heightUOM: string | null;
+  criticalDimension: number | null;
+  criticalDimensionUOM: string | null;
+}
+
+export interface StopContact {
+  name: string | null;
+  phone: string | null;
+  sms: string | null;
+  email: string | null;
+}
+
+export interface StopOrigin {
+  name: string | null;
+  addr1: string | null;
+  city: string | null;
+  state: string | null;
+  zip: string | null;
+  lat: number | null;
+  lng: number | null;
+}
+
+function numOrNull(v: any): number | null {
+  if (v == null) return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+// P2 — additive: normalize a single NuVizz StopDetail line item.
+export function normalizeStopDetail(d: any): StopLineItem {
+  const pid = d?.productIdentifier ?? null;
+  const sku = pid == null ? null
+    : typeof pid === 'string' ? pid
+    : (pid.value || pid.id || pid.code || pid.productIdentifier || null);
+  return {
+    product: d?.product ?? null,
+    productIdentifier: pid,
+    sku: sku != null ? String(sku) : null,
+    quantity: numOrNull(d?.quantity),
+    quantityUOM: d?.quantityUOM ?? null,
+    weight: numOrNull(d?.weight),
+    weightUOM: d?.weightUOM ?? null,
+    productCategory: d?.productCategory ?? null,
+    length: numOrNull(d?.length),
+    lengthUOM: d?.lengthUOM ?? null,
+    width: numOrNull(d?.width),
+    widthUOM: d?.widthUOM ?? null,
+    height: numOrNull(d?.height),
+    heightUOM: d?.heightUOM ?? null,
+    criticalDimension: numOrNull(d?.criticalDimension),
+    criticalDimensionUOM: d?.criticalDimensionUOM ?? null,
+  };
 }
 
 // M5.1 — canonical stop-status buckets driving marker visuals + sidebar badge.
@@ -199,6 +282,26 @@ export function normalizeStop(raw: any): NormalizedStop {
   // stop. Exposing it at the top level lets the client sort each load's stops into a
   // real sequential polyline (NuVizz's array order / stopSeq is unreliable).
   const plannedEtaDTTM: string | null = exec?.to?.plannedEtaDTTM || exec?.from?.plannedEtaDTTM || null;
+  // P2 (additive) — surface freight + routing-baseline + contact/origin for the engine.
+  const rawDetails = Array.isArray(stop.stopDetails) ? stop.stopDetails : [];
+  const stopDetails: StopLineItem[] = rawDetails.map(normalizeStopDetail);
+  const contactRaw = primary.contact || {};
+  const contact: StopContact = {
+    name: contactRaw.contactName || contactRaw.name || null,
+    phone: contactRaw.phone ?? null,
+    sms: contactRaw.sms ?? null,
+    email: contactRaw.email ?? null,
+  };
+  const fromAddr = (stop.from && stop.from.address) || {};
+  const origin: StopOrigin | null = fromAddr.addr1 || fromAddr.latitude != null ? {
+    name: fromAddr.name ?? null,
+    addr1: fromAddr.addr1 ?? null,
+    city: fromAddr.city ?? null,
+    state: fromAddr.state ?? null,
+    zip: fromAddr.zip ?? null,
+    lat: fromAddr.latitude != null ? Number(fromAddr.latitude) : null,
+    lng: fromAddr.longitude != null ? Number(fromAddr.longitude) : null,
+  } : null;
   return {
     pro: stopNbr,
     pros,
@@ -234,6 +337,15 @@ export function normalizeStop(raw: any): NormalizedStop {
     arrivalDTTM,
     deliveredDTTM,
     plannedEtaDTTM,
+    stopDetails,
+    timeConstraint: schedule.timeConstraint ?? null,
+    estimatedDurationMin: numOrNull(schedule.estimatedDuration),
+    plannedDistanceToNextStop: numOrNull(exec.plannedDistanceToNextStop),
+    plannedDurationToNextStop: numOrNull(exec.plannedDurationToNextStop),
+    stopDistance: numOrNull(stop.stopDistance),
+    contact,
+    origin,
+    markfor: stop.markfor ?? null,
     signalSources: { addressLine2: addr2, orderInstructions },
     raw,
   };

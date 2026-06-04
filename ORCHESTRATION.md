@@ -121,7 +121,7 @@ the data is perishable.
 | --- | --- | --- |
 | 0 | Foundations (spec pin, this charter, retention check) | DONE |
 | 1 | Historical Data Warehouse (immutable daily capture) | IN REVIEW |
-| 2 | Routing Engine (build on our own data, NuVizz read-only) | PLANNED |
+| 2 | Routing Engine (build on our own data, NuVizz read-only) | IN REVIEW |
 | 3 | Parent-App Historical Access + Shared Customer Notes | PLANNED |
 | 4 | NuVizz Write-Back (gated: one route, then more) | FUTURE |
 | 5 | Toward Own Logistics Software (orders, billing, CS, analytics) | FUTURE |
@@ -158,7 +158,7 @@ driver, every day. Start NOW — the data is perishable.
 - Capturing is automatic and idempotent; a manual re-run for a date is safe.
 **Dependencies:** none (uses existing scan + Firestore). First Claude Code brief.
 
-### Phase 2 — Routing Engine (build on our own data) — PLANNED
+### Phase 2 — Routing Engine (build on our own data) — IN REVIEW
 **Goal:** build delivery routes ourselves, saved to our own store; NuVizz untouched.
 **Scope**
 - New "Routing" tab in `dispatch-map` (inline in `App.jsx`).
@@ -285,3 +285,23 @@ knowledge are deliberately separated.
   (`normalizedStatus`/`arrivalDTTM`/`deliveredDTTM`/`classifyStopStatus`) confirmed
   already on `main` (landed via #27→#35); history reads only those + raw, and does
   not touch PR 27's files. Phase 1 → IN REVIEW pending Chad's merge authorization.
+- Jun 2026 — Claude (Phase 2 agent, PR 1 of 2) — Routing-engine FOUNDATION
+  (v0.13.0): the deterministic, AI-led / solver-backed build engine, server-side and
+  fully unit-tested, behind a future feature flag (no UI in this PR — the Routing tab
+  is PR 2 of 2). New pure libs: `freight-geometry`, `routing-solver` (best-fit
+  bin-packing + strategy sequencing with nearest-neighbor + 2-opt), `routing-repair`
+  (guarantees every shown route is valid; spills with reasons), `routing-constraints`,
+  `routing-intent` (defensive model-JSON parsing + fallback), `routing-pipeline`
+  (5-stage parseIntent→matrix→solve→repair→explain with injected deps), `routing-types`,
+  `truck-profiles`, `routing-store`. New server functions: `google-route-matrix`
+  (computeRouteMatrix proxy, server-only GOOGLE_ROUTES_API_KEY, chunking + haversine
+  fallback), `anthropic-routing` (Opus proxy, server-only ANTHROPIC_API_KEY,
+  graceful), `routing-build-background` (async job orchestration → routing_jobs). New
+  collections: truck_profiles, routing_jobs, routing_routes (separate from the cache +
+  Phase 1). `normalizeStop` extended ADDITIVELY (stopDetails, timeConstraint,
+  estimatedDuration, plannedDistance/Duration, contact, origin, markfor; raw + all
+  existing fields intact — verified). Guardrails: NuVizz read-only (no write path),
+  cache + Phase 1 untouched, secrets server-side only, degrades to deterministic-only
+  without keys. 44 unit tests green. Unmerged-work pass: PR 27 confirmed superseded
+  (its scan fields are on main via #35) — recommend closing it; this PR does not touch
+  App.jsx scan logic. Phase 2 → IN REVIEW (engine); UI is the follow-up PR.
