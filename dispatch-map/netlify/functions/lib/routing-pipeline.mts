@@ -1,0 +1,199 @@
+// lib/routing-pipeline.mts
+//
+// The five-stage build pipeline (Section 5), wired with INJECTED dependencies so
+// the whole thing is unit-testable with a mock matrix and mock model — and so it
+// degrades to deterministic-only when a dependency is absent.
+//
+//   P1 parseIntent (opt, model) → { strategy, objectiveWeights, extraConstraints }
+//   P2 buildMatrix (model/Google) → duration + distance matrices
+//   P3 solve (deterministic)      → candidate routes + spill
+//   P4 repair (deterministic)     → provably-valid routes + final spill
+//   P5 explain (opt, model)       → rationale + risk flags (else deterministic summary)
+//
+// The model NEVER runs per-stop in a loop: parseIntent is one call, geometry assist
+// hits only ambiguous stops (cached), explain is one call.
+
+import {
+  DEFAULT_OBJECTIVE_WEIGHTS, DEFAULT_SERVICE_MIN, DEFAULT_DEPART_HHMM, DEPOT,
+  type SolverStop, type SolverTruck, type SolverInput, type SolverMatrix,
+  type Strategy, type ObjectiveWeights, type EquipmentReq, type BuiltRoute,
+} from './routing-types.mts';
+import { deriveGeometryForStops, type GeometryAssist } from './freight-geometry.mts';
+import { parseIntentResponse, parseGeometryAssist } from './routing-intent.mts';
+import { solveRouting } from './routing-solver.mts';
+import { repair } from './routing-repair.mts';
+
+export interface PipelineStopInput {
+  stopNbr?: string;
+  id?: string;
+  lat: number;
+  lng: number;
+  pallets?: number | null;
+  weight?: number | null;
+  weightUOM?: string | null;
+  stopDetails?: any[];
+  signalSources?: { orderInstructions?: string | null } | null;
+  addr2?: string | null;
+  scheduledFrom?: string | null;  // "HH:MM"
+  scheduledTo?: string | null;    // "HH:MM"
+  timeConstraint?: string | null; // "STRICT" | soft
+  equipmentReqs?: EquipmentReq[];
+  businessName?: string | null;
+}
+
+export interface PipelineRequest {
+  stops: PipelineStopInput[];
+  trucks: SolverTruck[];
+  depot?: { lat: number; lng: number };
+  intentText?: string;
+  strategy?: Strategy;
+  objectiveWeights?: ObjectiveWeights;
+  date?: string;            // YYYY-MM-DD (for window epochs)
+  departHHMM?: string;
+  serviceMin?: number;
+}
+
+export interface PipelineDeps {
+  buildMatrix: (depot: { lat: number; lng: number }, stops: { lat: number; lng: number }[]) => Promise<SolverMatrix>;
+  parseIntent?: (text: string, strategy: Strategy) => Promise<unknown>;
+  geometryAssist?: (stop: any) => Promise<GeometryAssist | null>;
+  explain?: (plan: any) => Promise<{ rationale?: string; riskFlags?: string[] } | null>;
+}
+
+export interface RoutingPlan {
+  routes: BuiltRoute[];
+  unassigned: { stopId: string; reasons: string[] }[];
+  intent: { strategy: Strategy; objectiveWeights: ObjectiveWeights; extraConstraints: Record<string, unknown>; source: string };
+  rationale: string;
+  riskFlags: string[];
+  aiAssist: { intent: boolean; geometry: boolean; explain: boolean };
+  meta: Record<string, unknown>;
+  generatedAt: string;
+}
+
+function hhmmToEpochSec(date: string | undefined, hhmm: string): number {
+  // UTC-anchored so depot departure and all windows share one clock (comparisons
+  // stay correct). Wall-clock/ET nuance for display is a UI concern, not the math.
+  const base = date || '1970-01-01';
+  const t = Date.parse(`${base}T${hhmm}:00Z`);
+  return Number.isFinite(t) ? Math.floor(t / 1000) : 0;
+}
+
+function toSolverStops(
+  stops: PipelineStopInput[],
+  geo: Map<string, any>,
+  date: string | undefined,
+  serviceMin: number,
+): SolverStop[] {
+  return stops.map((s) => {
+    const id = s.stopNbr ?? s.id!;
+    const g = geo.get(id) ?? { skids: 0, weightLbs: 0, linearFeetIn: 0, oversize: false };
+    const hasWindow = !!(s.scheduledFrom && s.scheduledTo);
+    return {
+      id,
+      lat: s.lat, lng: s.lng,
+      skids: g.skids, weightLbs: g.weightLbs, linearFeetIn: g.linearFeetIn, oversize: g.oversize,
+      serviceMin,
+      timeWindow: hasWindow ? { startSec: hhmmToEpochSec(date, s.scheduledFrom!), endSec: hhmmToEpochSec(date, s.scheduledTo!) } : null,
+      timeConstraint: String(s.timeConstraint || '').toUpperCase() === 'STRICT' ? 'STRICT' : 'SOFT',
+      equipmentReqs: s.equipmentReqs || [],
+    };
+  });
+}
+
+function deterministicRationale(plan: { routes: BuiltRoute[]; unassigned: any[] }, strategy: Strategy): string {
+  const r = plan.routes;
+  const totalStops = r.reduce((a, x) => a + x.orderedStopIds.length, 0);
+  const parts = [`${r.length} truck${r.length === 1 ? '' : 's'} routed ${totalStops} stop${totalStops === 1 ? '' : 's'} using ${strategy.replace(/_/g, ' ').toLowerCase()}.`];
+  if (plan.unassigned.length) parts.push(`${plan.unassigned.length} stop${plan.unassigned.length === 1 ? '' : 's'} could not be placed (see spill list).`);
+  return parts.join(' ');
+}
+
+function deterministicRiskFlags(input: SolverInput, plan: { routes: BuiltRoute[]; unassigned: any[] }): string[] {
+  const flags: string[] = [];
+  const stopById = new Map(input.stops.map((s) => [s.id, s]));
+  for (const route of plan.routes) {
+    if (route.load.skids > route.capacity.skids * 0.9) flags.push(`Truck ${route.truckId}: tight on skids (${route.load.skids}/${route.capacity.skids}).`);
+    if (route.load.weightLbs > route.capacity.weightLbs * 0.9) flags.push(`Truck ${route.truckId}: tight on weight (${route.load.weightLbs}/${route.capacity.weightLbs} lb).`);
+    if (route.load.linearFeetIn > route.capacity.linearFeetIn * 0.9) flags.push(`Truck ${route.truckId}: tight on deck length.`);
+    for (const id of route.orderedStopIds) {
+      const s = stopById.get(id);
+      if (s?.oversize) flags.push(`Stop ${id} is oversize — confirm it fits the assigned truck.`);
+      if (s?.equipmentReqs?.length) flags.push(`Stop ${id} has equipment restrictions (${s.equipmentReqs.join(', ')}) — confirm before dispatch.`);
+      if (s?.timeConstraint === 'STRICT') flags.push(`Stop ${id} has a STRICT appointment window.`);
+    }
+  }
+  if (plan.unassigned.length) flags.push(`${plan.unassigned.length} stop(s) spilled — review reasons.`);
+  return [...new Set(flags)];
+}
+
+export async function runPipeline(req: PipelineRequest, deps: PipelineDeps): Promise<RoutingPlan> {
+  const depot = req.depot || { lat: DEPOT.lat, lng: DEPOT.lng };
+  const chosenStrategy: Strategy = req.strategy || 'MIN_DISTANCE';
+  const serviceMin = req.serviceMin ?? DEFAULT_SERVICE_MIN;
+  const departEpochSec = hhmmToEpochSec(req.date, req.departHHMM || DEFAULT_DEPART_HHMM);
+
+  // ── P1 parseIntent (optional model) ──
+  let intentRaw: unknown = null;
+  let intentUsed = false;
+  if (deps.parseIntent && req.intentText && req.intentText.trim()) {
+    try { intentRaw = await deps.parseIntent(req.intentText, chosenStrategy); intentUsed = true; }
+    catch { intentRaw = null; intentUsed = false; }
+  }
+  const intent = parseIntentResponse(intentRaw, chosenStrategy);
+  if (req.objectiveWeights) intent.objectiveWeights = req.objectiveWeights; // explicit UI weights win
+
+  // ── geometry (deterministic; model assist only on ambiguous, cached) ──
+  let geometryUsed = false;
+  const assist = deps.geometryAssist
+    ? async (stop: any) => { const r = await deps.geometryAssist!(stop); const p = parseGeometryAssist(r); if (p) geometryUsed = true; return p; }
+    : undefined;
+  const stopsForGeo = req.stops.map((s) => ({ ...s, stopNbr: s.stopNbr ?? s.id }));
+  const geo = await deriveGeometryForStops(stopsForGeo, { assist });
+
+  const solverStops = toSolverStops(req.stops, geo, req.date, serviceMin);
+
+  // ── P2 buildMatrix (depot first, then stops in solverStops order) ──
+  const matrix = await deps.buildMatrix(depot, solverStops.map((s) => ({ lat: s.lat, lng: s.lng })));
+
+  const solverInput: SolverInput = {
+    stops: solverStops,
+    trucks: req.trucks,
+    depot,
+    matrix,
+    strategy: intent.strategy,
+    objectiveWeights: intent.objectiveWeights,
+    constraints: intent.extraConstraints,
+    departEpochSec,
+  };
+
+  // ── P3 solve + P4 repair (deterministic) ──
+  const solved = solveRouting(solverInput);
+  const repaired = repair(solverInput, solved);
+
+  // ── P5 explain (optional model; else deterministic summary) ──
+  let rationale = deterministicRationale(repaired, intent.strategy);
+  let riskFlags = deterministicRiskFlags(solverInput, repaired);
+  let explainUsed = false;
+  if (deps.explain) {
+    try {
+      const r = await deps.explain({ routes: repaired.routes, unassigned: repaired.unassigned, strategy: intent.strategy });
+      if (r && (r.rationale || r.riskFlags)) {
+        if (r.rationale) rationale = r.rationale;
+        if (Array.isArray(r.riskFlags) && r.riskFlags.length) riskFlags = r.riskFlags;
+        explainUsed = true;
+      }
+    } catch { /* keep deterministic */ }
+  }
+
+  return {
+    routes: repaired.routes,
+    unassigned: repaired.unassigned,
+    intent: { strategy: intent.strategy, objectiveWeights: intent.objectiveWeights, extraConstraints: intent.extraConstraints, source: intent.source },
+    rationale,
+    riskFlags,
+    aiAssist: { intent: intentUsed && intent.source === 'model', geometry: geometryUsed, explain: explainUsed },
+    meta: { ...repaired.meta, depot, departEpochSec, serviceMin },
+    generatedAt: new Date().toISOString(),
+  };
+}

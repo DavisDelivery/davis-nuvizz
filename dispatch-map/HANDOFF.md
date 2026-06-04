@@ -11,6 +11,61 @@ v0.7.2 = M4.5 PR 2 of 3 (stop-detail + driver-snapshot drawers).
 v0.8.0 = M4.5 PR 3 of 3 (final polish: marker labels, snapshot tap-through,
 mobile diagnostics, RESEARCH doc).
 
+## v0.13.0 — Phase 2: routing-engine foundation (PR 1 of 2, backend only)
+
+First half of Phase 2 (ORCHESTRATION charter): the AI-led / solver-backed routing
+ENGINE, server-side and fully unit-tested. **No UI in this PR** — the inline
+"Routing (beta)" tab in `App.jsx` is PR 2 of 2 (the engine/UI split the brief
+permits). `APP_VERSION` → **0.13.0**.
+
+### Pipeline (five individually-testable stages, `lib/routing-pipeline.mts`)
+
+`parseIntent` (Opus, optional) → `buildMatrix` (Google) → `solve` (deterministic)
+→ `repair` (deterministic) → `explain` (Opus, optional). Dependencies are injected,
+so the whole pipeline runs deterministically with the model/Google disabled and is
+unit-tested with mocks.
+
+### Files added (all under `netlify/functions/`)
+
+- `lib/routing-types.mts` — shared contracts; the `RoutingSolver` interface Google
+  optimizeTours (P2.4, deferred) can implement later without touching callers.
+- `lib/routing-constraints.mts` — equipment→capability mapping, capacity, windows.
+- `lib/freight-geometry.mts` — PURE skids/weight/linear-inches/oversize derivation;
+  deterministic-first, Opus assist only on ambiguous stops, cached by SKU.
+- `lib/routing-solver.mts` — best-fit bin-packing + strategy sequencing
+  (CLOSEST/FARTHEST by depot distance; MIN_DISTANCE/MIN_TIME = nearest-neighbor + 2-opt).
+- `lib/routing-repair.mts` — feasibility/repair; **guarantees every shown route is
+  valid** (capacity + equipment + STRICT windows), spills the rest with reasons.
+- `lib/routing-intent.mts` — defensive parsing of model JSON with deterministic fallback.
+- `lib/truck-profiles.mts` — seed profiles (26ft box / 53ft trailer) + `truck_profiles` store.
+- `lib/routing-store.mts` — `routing_jobs` / `routing_routes` helpers (reuse firestore.mts).
+- `google-route-matrix.mts` — computeRouteMatrix proxy; server-only
+  `GOOGLE_ROUTES_API_KEY`; chunks to the element cap; **haversine fallback** when unkeyed.
+- `anthropic-routing.mts` — Opus proxy; server-only `ANTHROPIC_API_KEY`,
+  `ANTHROPIC_MODEL` (default current Opus); JSON-structured + graceful.
+- `routing-build-background.mts` — async job orchestration; client writes
+  `routing_jobs/{jobId}` + polls; this runs the pipeline and writes the result.
+- Tests: `routing-geometry`, `routing-solver`, `routing-repair`, `routing-intent`,
+  `routing-pipeline` (+ fixtures). **44 tests green** via `npm test`.
+
+### normalizeStop extension (additive)
+
+`lib/nuvizz-scan.mts` now also surfaces `stopDetails[]` (SKU/qty/weight/dims/L flag),
+`timeConstraint`, `estimatedDurationMin` (UNRELIABLE flat ~20m), `plannedDistance/
+DurationToNextStop`, `stopDistance`, `contact`, `origin`, `markfor`. No field renamed
+or removed; `.raw` preserved — verified the cache + Phase 1 derive still read fine.
+
+### Env to set (Netlify dd-dispatch-map, functions scope) — tab stays dark until then
+
+`GOOGLE_ROUTES_API_KEY` (enable Routes API on the key), `ANTHROPIC_API_KEY`,
+optional `ANTHROPIC_MODEL`. `FIREBASE_SA` already present. No keys → engine runs
+deterministic-only (haversine matrix, no AI rationale).
+
+### Guardrails
+
+NuVizz read-only (no write path exists); `nuvizz_stop_index`, refresh functions, and
+Phase 1 history untouched; secrets server-side only; degrades gracefully without keys.
+
 ## v0.12.0 — Phase 1: immutable daily history warehouse (backend only)
 
 First Phase 1 deliverable from the Davis Logistics Platform charter

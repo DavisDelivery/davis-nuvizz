@@ -1,0 +1,130 @@
+// netlify/functions/routing-build-background.mts
+//
+// Async build-job orchestration (Section 5/6). BACKGROUND function: the model +
+// Google calls plus the solve/repair can exceed the 26s request cap, so the work
+// runs here and the client polls the routing_jobs/{jobId} doc it created.
+//
+// Flow: client writes routing_jobs/{jobId} { status:'queued', request } and POSTs
+// { jobId } here → we mark running, resolve the selected stops (live cache, READ-only)
+// + their equipment restrictions (customer_notes) + the chosen truck profiles, run
+// the five-stage pipeline with real deps (Google matrix + Opus, each gated by its
+// key), and write { status:'done', result } or { status:'error', error }.
+//
+// GUARDRAILS: NuVizz is never written. We only READ nuvizz_stop_index and
+// customer_notes. Nothing here touches the refresh functions or Phase 1 history.
+
+import { isFirestoreEnabled, readStops } from './lib/firestore.mts';
+import { getJob, updateJob } from './lib/routing-store.mts';
+import { profileToSolverTruck, getTruckProfile, type TruckProfile } from './lib/truck-profiles.mts';
+import { runPipeline, type PipelineRequest, type PipelineStopInput } from './lib/routing-pipeline.mts';
+import { resolveMatrix } from './google-route-matrix.mts';
+import { isAnthropicEnabled, parseIntentModel, geometryAssistModel, explainModel } from './anthropic-routing.mts';
+import { DEPOT, type EquipmentReq, type SolverTruck } from './lib/routing-types.mts';
+import { getDoc } from './lib/firestore.mts';
+import { normalizeMatchKey } from '../../src/lib/matchKey.js';
+
+const KNOWN_REQS = new Set<EquipmentReq>([
+  'no_tractor_trailer', 'uline_straight_truck', 'straight_truck_only', 'box_truck_only',
+  '26ft_max', 'no_53', 'no_overhead_clearance', 'liftgate_required',
+]);
+
+async function equipmentReqsFor(stop: any): Promise<EquipmentReq[]> {
+  try {
+    const key = normalizeMatchKey(stop.businessName, stop.addr1, stop.city, stop.zip);
+    const note = await getDoc(`customer_notes/${key}`);
+    const reqs: EquipmentReq[] = [];
+    const arr = note?.equipment_restrictions;
+    if (Array.isArray(arr)) for (const r of arr) if (KNOWN_REQS.has(r)) reqs.push(r);
+    if (note?.liftgate_required === true && !reqs.includes('liftgate_required')) reqs.push('liftgate_required');
+    return reqs;
+  } catch { return []; }
+}
+
+// Resolve the pipeline's stop inputs from selectedStopIds against the live cache.
+async function resolveStops(tenant: string, date: string, selectedStopIds: string[]): Promise<PipelineStopInput[]> {
+  const { stops } = await readStops(tenant, date);
+  const byId = new Map(stops.map((s: any) => [String(s.stopNbr), s]));
+  const want = new Set(selectedStopIds.map(String));
+  const out: PipelineStopInput[] = [];
+  for (const id of want) {
+    const s = byId.get(id);
+    if (!s || s.lat == null || s.lng == null) continue; // unmappable → skip (surfaced as missing)
+    out.push({
+      stopNbr: s.stopNbr, lat: Number(s.lat), lng: Number(s.lng),
+      pallets: s.pallets, weight: s.weight, weightUOM: s.weightUOM,
+      stopDetails: s.stopDetails || [],
+      signalSources: s.signalSources || null, addr2: s.addr2 || null,
+      scheduledFrom: s.scheduledFrom || null, scheduledTo: s.scheduledTo || null,
+      timeConstraint: s.timeConstraint || null,
+      equipmentReqs: await equipmentReqsFor(s),
+      businessName: s.businessName || null,
+    });
+  }
+  return out;
+}
+
+async function resolveTrucks(profileIds: string[]): Promise<SolverTruck[]> {
+  const trucks: SolverTruck[] = [];
+  for (const id of profileIds) {
+    const p = (await getTruckProfile(id)) as TruckProfile | null;
+    if (p) trucks.push(profileToSolverTruck(p));
+  }
+  return trucks;
+}
+
+export default async function handler(req: Request): Promise<Response> {
+  const json = (b: any, s = 202) => new Response(JSON.stringify(b), { status: s, headers: { 'Content-Type': 'application/json' } });
+  if (!isFirestoreEnabled()) return json({ ok: false, error: 'FIREBASE_SA not set' }, 200);
+  let body: any;
+  try { body = await req.json(); } catch { return json({ ok: false, error: 'bad json' }, 400); }
+  const jobId = body?.jobId;
+  if (!jobId) return json({ ok: false, error: 'jobId required' }, 400);
+
+  const job = await getJob(jobId);
+  if (!job) return json({ ok: false, error: 'job not found' }, 404);
+
+  // Run the pipeline (best-effort; failures are recorded on the job).
+  (async () => {
+    try {
+      await updateJob(jobId, { status: 'running', stage: 'resolve', started_at: new Date().toISOString() });
+      const r = job.request || {};
+      const tenant = r.tenant || 'davis';
+      const date = r.date;
+      const stops: PipelineStopInput[] = Array.isArray(r.stops) && r.stops.length
+        ? r.stops
+        : await resolveStops(tenant, date, r.selectedStopIds || []);
+      const trucks = Array.isArray(r.trucks) && r.trucks.length ? r.trucks : await resolveTrucks(r.truckProfileIds || []);
+
+      if (!stops.length) { await updateJob(jobId, { status: 'error', error: 'no mappable stops selected' }); return; }
+      if (!trucks.length) { await updateJob(jobId, { status: 'error', error: 'no truck profiles selected' }); return; }
+
+      await updateJob(jobId, { stage: 'build' });
+      let matrixSource = 'haversine';
+      const pipelineReq: PipelineRequest = {
+        stops, trucks,
+        depot: r.depot || { lat: DEPOT.lat, lng: DEPOT.lng },
+        intentText: r.intent || r.intentText || '',
+        strategy: r.strategy || 'MIN_DISTANCE',
+        objectiveWeights: r.objectiveWeights,
+        date, departHHMM: r.departHHMM, serviceMin: r.serviceMin,
+      };
+      const plan = await runPipeline(pipelineReq, {
+        buildMatrix: async (depot, pts) => { const m = await resolveMatrix(depot, pts); matrixSource = m.source; return m.matrix; },
+        parseIntent: isAnthropicEnabled() ? parseIntentModel : undefined,
+        geometryAssist: isAnthropicEnabled() ? geometryAssistModel : undefined,
+        explain: isAnthropicEnabled() ? explainModel : undefined,
+      });
+
+      await updateJob(jobId, {
+        status: 'done',
+        finished_at: new Date().toISOString(),
+        result: { ...plan, matrixSource, aiConfigured: isAnthropicEnabled() },
+      });
+    } catch (e: any) {
+      console.error('routing-build:', e?.message);
+      await updateJob(jobId, { status: 'error', error: e?.message || 'build failed', finished_at: new Date().toISOString() });
+    }
+  })();
+
+  return json({ ok: true, jobId, accepted: true });
+}
