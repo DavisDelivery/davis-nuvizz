@@ -41,7 +41,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.14.0';
+const APP_VERSION = '0.14.1';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -2640,8 +2640,17 @@ function MobileAppBar({ version, onChipMenu, chipMenuOpen, onSelectMenu }) {
             className="absolute top-full right-0 mt-1 bg-white text-slate-800 rounded shadow-lg border border-slate-200 text-xs min-w-[140px] z-50"
             role="menu"
           >
+            {ROUTING_FLAG && (
+              <button
+                className="w-full text-left px-3 py-2 hover:bg-slate-50 inline-flex items-center gap-2"
+                onClick={() => onSelectMenu('routing')}
+                role="menuitem"
+              >
+                <MapPinned size={12} /> Routing (beta)
+              </button>
+            )}
             <button
-              className="w-full text-left px-3 py-2 hover:bg-slate-50 inline-flex items-center gap-2"
+              className={`w-full text-left px-3 py-2 hover:bg-slate-50 inline-flex items-center gap-2${ROUTING_FLAG ? ' border-t border-slate-100' : ''}`}
               onClick={() => onSelectMenu('diagnostics')}
               role="menuitem"
             >
@@ -4997,12 +5006,15 @@ function RoutingScreen() {
   const { notes } = useCustomerNotes();
   const { profiles, saveProfile } = useTruckProfiles();
   const { google, error: mapsError } = useGoogleMaps();
+  const viewportWidth = useViewportWidth();
+  const isMobile = viewportWidth < MOBILE_BREAKPOINT;
 
   const mapDiv = useRef(null);
   const mapRef = useRef(null);
   const markersRef = useRef([]);
   const polylinesRef = useRef([]);
   const dmRef = useRef(null);
+  const [mapReady, setMapReady] = useState(0);
 
   const [selectedIds, setSelectedIds] = useState(() => new Set());
   const [selectedTruckIds, setSelectedTruckIds] = useState(() => new Set());
@@ -5046,13 +5058,17 @@ function RoutingScreen() {
   }, []);
   const clearSelection = useCallback(() => setSelectedIds(new Set()), []);
 
-  // Init map.
+  // (Re)init the map into the CURRENT container. Re-runs when the viewport crosses
+  // the mobile/desktop breakpoint (the map div is then a different DOM node), so
+  // the markers + drawing manager rebind to the live map via the mapReady signal.
   useEffect(() => {
-    if (!google || !mapDiv.current || mapRef.current) return;
+    if (!google || !mapDiv.current) return;
     mapRef.current = new google.maps.Map(mapDiv.current, {
       center: ROUTING_DEPOT, zoom: 9, mapTypeControl: false, streetViewControl: false, fullscreenControl: false,
     });
-  }, [google]);
+    dmRef.current = null; // drawing manager must rebind to the new map
+    setMapReady((n) => n + 1);
+  }, [google, isMobile]);
 
   // Drawing manager for box (rectangle) + lasso (polygon) select. Adds enclosed
   // stops to the selection; reads the latest positioned stops via a ref.
@@ -5084,7 +5100,7 @@ function RoutingScreen() {
       });
     });
     return () => { cancelled = true; };
-  }, [google]);
+  }, [google, mapReady]);
 
   const startDraw = useCallback((mode) => {
     if (!dmRef.current || !google) return;
@@ -5112,7 +5128,7 @@ function RoutingScreen() {
       marker.setMap(mapRef.current);
       return marker;
     });
-  }, [google, positioned, selectedIds, result, toggleStop]);
+  }, [google, positioned, selectedIds, result, toggleStop, mapReady]);
 
   // Route polylines (one per truck, depot-anchored, engine's order, M5 palette).
   useEffect(() => {
@@ -5127,7 +5143,7 @@ function RoutingScreen() {
       pl.setMap(mapRef.current);
       polylinesRef.current.push(pl);
     });
-  }, [google, result, stopById]);
+  }, [google, result, stopById, mapReady]);
 
   const selectedTrucks = useMemo(() => profiles.filter((p) => selectedTruckIds.has(p.id)), [profiles, selectedTruckIds]);
   const canBuild = selectedIds.size >= 1 && selectedTrucks.length >= 1 && selectedIds.size <= ROUTING_MAX_SELECTION && !building;
@@ -5178,81 +5194,128 @@ function RoutingScreen() {
   const meta = result?.meta || {};
   const usedGoogle = meta.matrixSource === 'google';
 
+  // Responsive: desktop = three side rails; mobile = full map + a collapsible
+  // bottom sheet that toggles between the Setup controls and the Result.
+  const [mobilePanel, setMobilePanel] = useState('setup');
+  const [sheetOpen, setSheetOpen] = useState(true);
+  useEffect(() => { if (job?.status === 'done') { setMobilePanel('result'); setSheetOpen(true); } }, [job?.status]);
+
+  const controlsContent = (
+    <>
+      <div className="flex items-center justify-between">
+        <div className="font-bold text-slate-800">Routing <span className="text-[10px] uppercase tracking-wide bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded">beta</span></div>
+        <DatePicker selectedDate={selectedDate} onChange={setSelectedDate} onToday={() => setSelectedDate(todayInET())} compact />
+      </div>
+      <div className="text-[11px] text-slate-500">{loading ? 'Loading stops…' : `${positioned.length} stops on ${formatDateLong(selectedDate)}`}{stopsError ? ` · ${stopsError}` : ''}</div>
+
+      {/* Selection tools */}
+      <div className="border rounded p-2 space-y-2">
+        <div className="font-semibold text-slate-700">1 · Select stops</div>
+        <div className="flex gap-1">
+          <button onClick={() => startDraw('box')} className="flex-1 px-2 py-2 text-xs rounded border border-slate-300 hover:bg-slate-50 active:bg-slate-100">▱ Box</button>
+          <button onClick={() => startDraw('polygon')} className="flex-1 px-2 py-2 text-xs rounded border border-slate-300 hover:bg-slate-50 active:bg-slate-100">⬠ Lasso</button>
+          <button onClick={clearSelection} className="flex-1 px-2 py-2 text-xs rounded border border-slate-300 hover:bg-slate-50 active:bg-slate-100">Clear</button>
+        </div>
+        <div className="text-[11px] text-slate-600">Tap a stop to toggle, or draw a box/lasso to add a group.</div>
+        <div className="bg-slate-50 rounded p-2 text-[12px] space-y-0.5">
+          <div className="flex justify-between"><span>Selected</span><b>{tally.count}</b></div>
+          <div className="flex justify-between"><span>Skids</span><b>{tally.skids}</b></div>
+          <div className="flex justify-between"><span>Weight</span><b>{tally.weight.toLocaleString()} lb</b></div>
+          {(tally.oversize || tally.restricted) && (
+            <div className="text-[11px] text-amber-700 pt-1">⚠ {[tally.oversize && 'oversize item', tally.restricted && 'equipment restriction'].filter(Boolean).join(' · ')} in selection</div>
+          )}
+          {tally.count > ROUTING_MAX_SELECTION && <div className="text-[11px] text-red-600 pt-1">Over {ROUTING_MAX_SELECTION}-stop limit — narrow the selection (matrix cost is quadratic).</div>}
+        </div>
+      </div>
+
+      {/* Trucks */}
+      <div className="border rounded p-2 space-y-2">
+        <div className="font-semibold text-slate-700">2 · Trucks <span className="text-[11px] text-slate-400">({selectedTrucks.length} in play)</span></div>
+        {profiles.map((p) => (
+          <div key={p.id} className="border rounded p-1.5">
+            <label className="flex items-center gap-2">
+              <input type="checkbox" checked={selectedTruckIds.has(p.id)} onChange={() => setSelectedTruckIds((prev) => { const n = new Set(prev); n.has(p.id) ? n.delete(p.id) : n.add(p.id); return n; })} />
+              <span className="font-medium">{p.label}</span>
+            </label>
+            <div className="grid grid-cols-3 gap-1 mt-1 text-[10px] text-slate-500">
+              <label className="flex flex-col">Skids
+                <input type="number" defaultValue={p.maxSkids} onBlur={(e) => saveProfile({ ...p, maxSkids: Number(e.target.value) })} className="border rounded px-1 py-0.5 text-slate-800" />
+              </label>
+              <label className="flex flex-col">Weight
+                <input type="number" defaultValue={p.maxWeightLbs} onBlur={(e) => saveProfile({ ...p, maxWeightLbs: Number(e.target.value) })} className="border rounded px-1 py-0.5 text-slate-800" />
+              </label>
+              <label className="flex flex-col">Deck in
+                <input type="number" defaultValue={p.deckLengthIn} onBlur={(e) => saveProfile({ ...p, deckLengthIn: Number(e.target.value) })} className="border rounded px-1 py-0.5 text-slate-800" />
+              </label>
+            </div>
+            <label className="flex items-center gap-1 text-[11px] mt-1">
+              <input type="checkbox" defaultChecked={!!p.capabilities?.liftgate} onChange={(e) => saveProfile({ ...p, capabilities: { ...p.capabilities, liftgate: e.target.checked } })} /> liftgate
+            </label>
+          </div>
+        ))}
+      </div>
+
+      {/* Controls */}
+      <div className="border rounded p-2 space-y-2">
+        <div className="font-semibold text-slate-700">3 · Plan</div>
+        <textarea value={intent} onChange={(e) => setIntent(e.target.value)} placeholder="Optional: tell the engine what you want (e.g. 'tight appointments first, keep the trailer off downtown')" rows={2} className="w-full border rounded p-1.5 text-[12px]" />
+        <label className="flex items-center justify-between text-[12px]">Strategy
+          <select value={strategy} onChange={(e) => setStrategy(e.target.value)} className="border rounded px-1 py-1">
+            {ROUTING_STRATEGIES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+          </select>
+        </label>
+        <label className={`flex items-start gap-2 text-[12px] rounded p-1.5 ${useGoogle ? 'bg-amber-50 border border-amber-300' : 'bg-slate-50'}`}>
+          <input type="checkbox" checked={useGoogle} onChange={(e) => setUseGoogle(e.target.checked)} className="mt-0.5" />
+          <span>Use live Google drive-times <b>(costs money)</b><br /><span className="text-[11px] text-slate-500">Default is a free straight-line estimate. {selectedIds.size > 0 && <>This build ≈ {wouldBeElements} elements ≈ <b>${wouldBeCost.toFixed(2)}</b>.</>}</span></span>
+        </label>
+        <button onClick={runBuild} disabled={!canBuild} className="w-full py-2 rounded text-white font-semibold disabled:opacity-40" style={{ background: BRAND }}>
+          {building ? 'Building…' : useGoogle ? 'Build with Google drive-times' : 'Build (free estimate)'}
+        </button>
+        {!canBuild && !building && <div className="text-[11px] text-slate-400">Select ≥1 stop and ≥1 truck to build.</div>}
+      </div>
+    </>
+  );
+
+  const resultContent = (
+    <RoutingResultPanel job={job} result={result} meta={meta} usedGoogle={usedGoogle} stopById={stopById}
+      onSave={savePlan} saveState={saveState} />
+  );
+
+  // ── Mobile: map + collapsible bottom sheet (Setup / Result) ──
+  if (isMobile) {
+    const tabCls = (on) => `flex-1 py-1.5 text-xs font-semibold rounded ${on ? 'text-white' : 'text-slate-600 bg-slate-100'}`;
+    return (
+      <div className="flex-1 flex flex-col min-h-0">
+        <div className="flex-1 relative min-w-0">
+          <div ref={mapDiv} className="absolute inset-0" />
+          {mapsError && <div className="absolute top-2 left-1/2 -translate-x-1/2 bg-red-50 border border-red-300 text-red-700 text-[11px] rounded px-2 py-1">{mapsError}</div>}
+          {/* floating selection chip so the tally is visible while the sheet is collapsed */}
+          <div className="absolute top-2 left-2 bg-white/95 border border-slate-200 rounded shadow px-2 py-1 text-[11px]">{tally.count} selected · {tally.skids} skids</div>
+        </div>
+        <div className="border-t bg-white flex flex-col shrink-0" style={{ height: sheetOpen ? '50vh' : 'auto' }}>
+          <div className="flex items-center gap-2 px-2 py-1.5 border-b">
+            <button onClick={() => setSheetOpen((o) => !o)} className="text-xs px-2 py-1 rounded border border-slate-300" aria-label={sheetOpen ? 'Collapse' : 'Expand'}>{sheetOpen ? '▾' : '▴'}</button>
+            <div className="flex-1 flex gap-1">
+              <button onClick={() => { setMobilePanel('setup'); setSheetOpen(true); }} className={tabCls(mobilePanel === 'setup')} style={mobilePanel === 'setup' ? { background: BRAND } : {}}>Setup{tally.count ? ` (${tally.count})` : ''}</button>
+              <button onClick={() => { setMobilePanel('result'); setSheetOpen(true); }} className={tabCls(mobilePanel === 'result')} style={mobilePanel === 'result' ? { background: BRAND } : {}}>Result{result ? ` (${result.routes.length})` : job?.status === 'running' || job?.status === 'queued' ? ' …' : ''}</button>
+            </div>
+          </div>
+          {sheetOpen && (
+            <div className="flex-1 overflow-y-auto p-3 space-y-3 text-sm" style={{ paddingBottom: 'calc(12px + env(safe-area-inset-bottom))' }}>
+              {mobilePanel === 'setup' ? controlsContent : resultContent}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // ── Desktop: three side rails ──
   return (
     <div className="flex-1 flex min-h-0">
       {/* Left control rail */}
       <div className="w-[340px] shrink-0 border-r bg-white overflow-y-auto p-3 space-y-3 text-sm">
-        <div className="flex items-center justify-between">
-          <div className="font-bold text-slate-800">Routing <span className="text-[10px] uppercase tracking-wide bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded">beta</span></div>
-          <DatePicker selectedDate={selectedDate} onChange={setSelectedDate} onToday={() => setSelectedDate(todayInET())} compact />
-        </div>
-        <div className="text-[11px] text-slate-500">{loading ? 'Loading stops…' : `${positioned.length} stops on ${formatDateLong(selectedDate)}`}{stopsError ? ` · ${stopsError}` : ''}</div>
-
-        {/* Selection tools */}
-        <div className="border rounded p-2 space-y-2">
-          <div className="font-semibold text-slate-700">1 · Select stops</div>
-          <div className="flex gap-1">
-            <button onClick={() => startDraw('box')} className="flex-1 px-2 py-1 text-xs rounded border border-slate-300 hover:bg-slate-50">▱ Box</button>
-            <button onClick={() => startDraw('polygon')} className="flex-1 px-2 py-1 text-xs rounded border border-slate-300 hover:bg-slate-50">⬠ Lasso</button>
-            <button onClick={clearSelection} className="flex-1 px-2 py-1 text-xs rounded border border-slate-300 hover:bg-slate-50">Clear</button>
-          </div>
-          <div className="text-[11px] text-slate-600">Click a stop to toggle, or draw a box/lasso to add a group.</div>
-          <div className="bg-slate-50 rounded p-2 text-[12px] space-y-0.5">
-            <div className="flex justify-between"><span>Selected</span><b>{tally.count}</b></div>
-            <div className="flex justify-between"><span>Skids</span><b>{tally.skids}</b></div>
-            <div className="flex justify-between"><span>Weight</span><b>{tally.weight.toLocaleString()} lb</b></div>
-            {(tally.oversize || tally.restricted) && (
-              <div className="text-[11px] text-amber-700 pt-1">⚠ {[tally.oversize && 'oversize item', tally.restricted && 'equipment restriction'].filter(Boolean).join(' · ')} in selection</div>
-            )}
-            {tally.count > ROUTING_MAX_SELECTION && <div className="text-[11px] text-red-600 pt-1">Over {ROUTING_MAX_SELECTION}-stop limit — narrow the selection (matrix cost is quadratic).</div>}
-          </div>
-        </div>
-
-        {/* Trucks */}
-        <div className="border rounded p-2 space-y-2">
-          <div className="font-semibold text-slate-700">2 · Trucks <span className="text-[11px] text-slate-400">({selectedTrucks.length} in play)</span></div>
-          {profiles.map((p) => (
-            <div key={p.id} className="border rounded p-1.5">
-              <label className="flex items-center gap-2">
-                <input type="checkbox" checked={selectedTruckIds.has(p.id)} onChange={() => setSelectedTruckIds((prev) => { const n = new Set(prev); n.has(p.id) ? n.delete(p.id) : n.add(p.id); return n; })} />
-                <span className="font-medium">{p.label}</span>
-              </label>
-              <div className="grid grid-cols-3 gap-1 mt-1 text-[10px] text-slate-500">
-                <label className="flex flex-col">Skids
-                  <input type="number" defaultValue={p.maxSkids} onBlur={(e) => saveProfile({ ...p, maxSkids: Number(e.target.value) })} className="border rounded px-1 py-0.5 text-slate-800" />
-                </label>
-                <label className="flex flex-col">Weight
-                  <input type="number" defaultValue={p.maxWeightLbs} onBlur={(e) => saveProfile({ ...p, maxWeightLbs: Number(e.target.value) })} className="border rounded px-1 py-0.5 text-slate-800" />
-                </label>
-                <label className="flex flex-col">Deck in
-                  <input type="number" defaultValue={p.deckLengthIn} onBlur={(e) => saveProfile({ ...p, deckLengthIn: Number(e.target.value) })} className="border rounded px-1 py-0.5 text-slate-800" />
-                </label>
-              </div>
-              <label className="flex items-center gap-1 text-[11px] mt-1">
-                <input type="checkbox" defaultChecked={!!p.capabilities?.liftgate} onChange={(e) => saveProfile({ ...p, capabilities: { ...p.capabilities, liftgate: e.target.checked } })} /> liftgate
-              </label>
-            </div>
-          ))}
-        </div>
-
-        {/* Controls */}
-        <div className="border rounded p-2 space-y-2">
-          <div className="font-semibold text-slate-700">3 · Plan</div>
-          <textarea value={intent} onChange={(e) => setIntent(e.target.value)} placeholder="Optional: tell the engine what you want (e.g. 'tight appointments first, keep the trailer off downtown')" rows={2} className="w-full border rounded p-1.5 text-[12px]" />
-          <label className="flex items-center justify-between text-[12px]">Strategy
-            <select value={strategy} onChange={(e) => setStrategy(e.target.value)} className="border rounded px-1 py-0.5">
-              {ROUTING_STRATEGIES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
-            </select>
-          </label>
-          <label className={`flex items-start gap-2 text-[12px] rounded p-1.5 ${useGoogle ? 'bg-amber-50 border border-amber-300' : 'bg-slate-50'}`}>
-            <input type="checkbox" checked={useGoogle} onChange={(e) => setUseGoogle(e.target.checked)} className="mt-0.5" />
-            <span>Use live Google drive-times <b>(costs money)</b><br /><span className="text-[11px] text-slate-500">Default is a free straight-line estimate. {selectedIds.size > 0 && <>This build ≈ {wouldBeElements} elements ≈ <b>${wouldBeCost.toFixed(2)}</b>.</>}</span></span>
-          </label>
-          <button onClick={runBuild} disabled={!canBuild} className="w-full py-2 rounded text-white font-semibold disabled:opacity-40" style={{ background: BRAND }}>
-            {building ? 'Building…' : useGoogle ? 'Build with Google drive-times' : 'Build (free estimate)'}
-          </button>
-          {!canBuild && !building && <div className="text-[11px] text-slate-400">Select ≥1 stop and ≥1 truck to build.</div>}
-        </div>
+        {controlsContent}
       </div>
 
       {/* Map */}
@@ -5263,8 +5326,7 @@ function RoutingScreen() {
 
       {/* Result rail */}
       <div className="w-[360px] shrink-0 border-l bg-white overflow-y-auto p-3 space-y-3 text-sm">
-        <RoutingResultPanel job={job} result={result} meta={meta} usedGoogle={usedGoogle} stopById={stopById}
-          onSave={savePlan} saveState={saveState} />
+        {resultContent}
       </div>
     </div>
   );
@@ -5381,7 +5443,7 @@ function Shell() {
 
   const onSelectMenu = (next) => {
     setChipMenuOpen(false);
-    setTab(next === 'diagnostics' ? 'diag' : 'map');
+    setTab(next === 'diagnostics' ? 'diag' : next === 'routing' ? 'routing' : 'map');
   };
 
   return (
