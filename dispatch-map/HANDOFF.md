@@ -11,6 +11,20 @@ v0.7.2 = M4.5 PR 2 of 3 (stop-detail + driver-snapshot drawers).
 v0.8.0 = M4.5 PR 3 of 3 (final polish: marker labels, snapshot tap-through,
 mobile diagnostics, RESEARCH doc).
 
+## v0.14.1 — Routing (beta) mobile layout
+
+Makes the Routing tab usable on a phone (it was desktop-only in v0.14.0).
+- **Mobile menu entry**: the version-chip menu (`MobileAppBar`) gains a flag-gated
+  "Routing (beta)" item; `Shell.onSelectMenu` routes it to the tab.
+- **Responsive `RoutingScreen`**: desktop keeps the three side rails; mobile
+  (`<768px`) renders a full-bleed map + a **collapsible bottom sheet** that toggles
+  between **Setup** (select / trucks / plan) and **Result**, with a floating
+  "N selected · N skids" tally on the map. Same state/handlers — the control and
+  result JSX are shared via `controlsContent` / `resultContent`.
+- The map **re-inits across the breakpoint** via a `mapReady` signal so markers +
+  the drawing manager rebind if the viewport crosses 768px.
+- UI-only, additive, still feature-flagged; engine untouched. `APP_VERSION` → 0.14.1.
+
 ## v0.14.0 — Phase 2: Routing (beta) tab (PR 2 of 2)
 
 The dispatcher-facing UI for the routing engine, inline in `App.jsx`, **feature-

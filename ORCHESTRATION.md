@@ -360,3 +360,10 @@ near-term P2 follow-on, after the PR 2 routing tab and before any full-fleet rol
   Unmerged-work pass: PR 27 STILL OPEN and superseded — it edits App.jsx (this PR's
   file) so it is a genuine conflict risk; branched from main, recommend Chad close
   PR 27 before merging this. Phase 2 (engine + UI) complete, pending validation/merge.
+- Jun 2026 — Claude (Phase 2 follow-up) — Routing (beta) mobile layout (v0.14.1):
+  made the Routing tab usable on phones. Added a Routing entry to the mobile chip
+  menu (flag-gated) and a responsive RoutingScreen — desktop keeps the three side
+  rails; mobile renders a full map + a collapsible bottom sheet that toggles
+  between Setup (select/trucks/plan) and Result, with a floating selection tally.
+  The map re-inits cleanly across the breakpoint (mapReady signal). UI-only,
+  additive, still feature-flagged; engine untouched (51 tests green).
