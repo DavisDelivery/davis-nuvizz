@@ -303,6 +303,34 @@ with caching, well below it.
 PRIORITY NOTE: cheap-by-default (haversine-first + caching) is now slotted as a
 near-term P2 follow-on, after the PR 2 routing tab and before any full-fleet rollout.
 
+## Appendix B — addendum: Google SKU model corrected + Fleet Routing decision (Jun 2026)
+
+Clarified against Google's current Routes pricing. Three distinct things, three billing models:
+- COMPUTE ROUTES (Directions) — billed PER REQUEST. One call per finished route returns the real
+  road distance/time/polyline/navigation for that route's stops. At Davis volume (~75 routes/day) this
+  is inside the ~10k/month free request cap = effectively $0, with headroom to re-run a few times daily.
+- COMPUTE ROUTE MATRIX — billed PER ELEMENT (origins x destinations), quadratic. This is what the
+  engine calls TODAY. It is the pricey pattern if used day-wide / all-pairs. Use only for small
+  clusters, if at all.
+- ROUTE OPTIMIZATION (Fleet Routing) — billed PER SHIPMENT/stop (~$0.03, Enterprise SKU, 1k free/mo),
+  ~$518/mo at 600 stops/day. DECISION: we do NOT use this. Our engine owns constraint-aware bundling
+  (oversize, straight-truck-only / no-tractor-trailer / 26ft-max / liftgate, receiving-hour/time
+  windows) that a generic optimizer can't see, so feeding it 800 unordered stops is both wrong and
+  unnecessary.
+
+CORRECTED COST PICTURE: the realistic Google cost for our blend at current volume is ~$0 — NOT the
+earlier four-figure estimate, which assumed all-pairs Compute Route Matrix. That estimate is superseded.
+
+BUILD DIRECTION (a future routing PR, not the immediate persistence/drill-down work): migrate the paid
+"live drive-times" leg from a day-wide Compute Route Matrix to ONE per-route Compute Routes (Directions)
+call per finished route. Keep the solve on free haversine; use Google only for the committed route's
+real road numbers + navigation. Basic (no-traffic) tier for planning; traffic-aware bumps to Advanced.
+
+ROADMAP CAPABILITY: time-window-aware sequencing — enforce "arrive before the receiving window /
+closing time" in assignment + sequencing, using ETAs plus the receiving_hours / scheduled windows we
+already store. Together with the existing oversize/equipment handling, this is why our engine beats a
+generic optimizer, and it is the next real engine frontier after persistence + the flag drill-down.
+
 ## Revision log
 
 - Jun 2025 — Orchestrator — Initial charter. Spec pinned (Phase 0). Retention
@@ -414,3 +442,5 @@ near-term P2 follow-on, after the PR 2 routing tab and before any full-fleet rol
   route total. Mobile keeps the #41 bottom-sheet flow unchanged (no regressions).
   Drag-box geometry unit-tested. NuVizz read-only; engine/matrix/cost/cache/Phase 1
   untouched; still feature-flagged (62 tests green).
+
+- Jun 2026 — Orchestrator — Corrected the Google cost model (per Chad's review of Google's pricing). Three SKUs: Compute Routes = per request (~$0 at our volume), Compute Route Matrix = per element (pricey all-pairs, what we call today), Route Optimization/Fleet Routing = per stop (~$518/mo). DECISION: do NOT use Fleet Routing — our engine owns constraint-aware bundling. Earlier four-figure estimate superseded (~$0 realistic). Build direction: paid drive-times leg should use a per-route Compute Routes call, not a day-wide matrix. Added time-window-aware sequencing to the roadmap.
