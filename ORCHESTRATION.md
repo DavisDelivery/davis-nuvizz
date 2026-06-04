@@ -340,3 +340,23 @@ near-term P2 follow-on, after the PR 2 routing tab and before any full-fleet rol
   App.jsx scan logic. Phase 2 → IN REVIEW (engine); UI is the follow-up PR.
 
 - Jun 2026 — Orchestrator — Added Appendix B (cost controls). Locked in haversine-first + matrix caching + small-matrix clustering + Basic tier + a GCP daily quota cap/budget + a per-build usage readout as binding defaults, after the Google element-cost estimate looked high relative to the existing ~$1k/mo logistics-software spend. Rollout is metered: start small, measure real cost, then scale.
+- Jun 2026 — Claude (Phase 2 agent, PR 2 of 2) — Routing (beta) TAB (v0.14.0):
+  the dispatcher-facing UI, inline in `App.jsx` (single-file), gated by a feature
+  flag (`VITE_ROUTING_BETA=true` or `?routing=1`, OFF in prod). Select stops by
+  click/box/lasso with a live tally (count, skids, weight, oversize/restriction
+  flag); choose + edit truck profiles (persisted to `truck_profiles`); set intent
+  + strategy; Build via the `routing_jobs` job-doc lifecycle (write doc → POST
+  `routing-build-background` → poll the doc) and render exactly what the engine
+  returns (colored polylines, sortable per-truck stop list with ETAs,
+  load-vs-capacity bars, spill list with reasons, rationale + risk flags); Save to
+  `routing_routes` with an explicit "plan only — NOT dispatched to NuVizz" banner.
+  Cheap by default (Appendix B): the one authorized engine change makes
+  `matrixMode` a per-build choice defaulting to free haversine even when the Google
+  key is present — Google is an explicit opt-in with the element count + estimated
+  $ shown; `result.meta` now carries `matrixSource`/`googleElementCount`/
+  `estimatedCostUsd`. 51 unit tests green (7 new cost tests; existing engine tests
+  unchanged). Guardrails: NuVizz read-only (no write path), live cache + Phase 1
+  untouched, secrets server-side only, graceful degradation, App.jsx single-file.
+  Unmerged-work pass: PR 27 STILL OPEN and superseded — it edits App.jsx (this PR's
+  file) so it is a genuine conflict risk; branched from main, recommend Chad close
+  PR 27 before merging this. Phase 2 (engine + UI) complete, pending validation/merge.

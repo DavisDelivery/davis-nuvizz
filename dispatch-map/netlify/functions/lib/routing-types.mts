@@ -10,6 +10,28 @@ export type Strategy = 'CLOSEST_FIRST' | 'FARTHEST_FIRST' | 'MIN_DISTANCE' | 'MI
 export const STRATEGIES: Strategy[] = ['CLOSEST_FIRST', 'FARTHEST_FIRST', 'MIN_DISTANCE', 'MIN_TIME'];
 export const DEFAULT_STRATEGY: Strategy = 'MIN_DISTANCE';
 
+// Matrix source is a PER-BUILD choice (Appendix B — cheap by default). The free
+// haversine estimate is the DEFAULT even when the Google key is present; Google
+// drive-times are an explicit per-build opt-in with the cost shown.
+export type MatrixMode = 'haversine' | 'google';
+export const DEFAULT_MATRIX_MODE: MatrixMode = 'haversine';
+
+// Google Routes computeRouteMatrix Basic (non-traffic) tier — ~$5 / 1000 elements
+// (Appendix B §5). Used for the transparent per-build cost estimate.
+export const BASIC_MATRIX_RATE_PER_1K_USD = 5.0;
+
+// Elements billed for an (depot + N stops) matrix = (N+1)² (origins × destinations).
+export function matrixElementCount(stopCount: number): number {
+  const nodes = stopCount + 1;
+  return nodes * nodes;
+}
+
+// Transparent cost estimate (Basic tier). Zero unless the build actually used Google.
+export function estimateMatrixCostUsd(elementCount: number, source: string): number {
+  if (source !== 'google') return 0;
+  return Math.round((elementCount / 1000) * BASIC_MATRIX_RATE_PER_1K_USD * 100) / 100;
+}
+
 // Equipment restriction kinds (from customer_notes; see HANDOFF.md). These are
 // HARD constraints — a shown route must satisfy them.
 export type EquipmentReq =

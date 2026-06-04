@@ -15,8 +15,9 @@
 
 import {
   DEFAULT_OBJECTIVE_WEIGHTS, DEFAULT_SERVICE_MIN, DEFAULT_DEPART_HHMM, DEPOT,
+  DEFAULT_MATRIX_MODE, matrixElementCount, estimateMatrixCostUsd,
   type SolverStop, type SolverTruck, type SolverInput, type SolverMatrix,
-  type Strategy, type ObjectiveWeights, type EquipmentReq, type BuiltRoute,
+  type Strategy, type ObjectiveWeights, type EquipmentReq, type BuiltRoute, type MatrixMode,
 } from './routing-types.mts';
 import { deriveGeometryForStops, type GeometryAssist } from './freight-geometry.mts';
 import { parseIntentResponse, parseGeometryAssist } from './routing-intent.mts';
@@ -51,10 +52,13 @@ export interface PipelineRequest {
   date?: string;            // YYYY-MM-DD (for window epochs)
   departHHMM?: string;
   serviceMin?: number;
+  matrixMode?: MatrixMode;  // 'haversine' (default, free) | 'google' (paid opt-in)
 }
 
 export interface PipelineDeps {
-  buildMatrix: (depot: { lat: number; lng: number }, stops: { lat: number; lng: number }[]) => Promise<SolverMatrix>;
+  // May return a bare matrix (legacy) or { matrix, source } so the pipeline can
+  // report the ACTUAL source used (Google can fall back to haversine on failure).
+  buildMatrix: (depot: { lat: number; lng: number }, stops: { lat: number; lng: number }[]) => Promise<SolverMatrix | { matrix: SolverMatrix; source: string }>;
   parseIntent?: (text: string, strategy: Strategy) => Promise<unknown>;
   geometryAssist?: (stop: any) => Promise<GeometryAssist | null>;
   explain?: (plan: any) => Promise<{ rationale?: string; riskFlags?: string[] } | null>;
@@ -154,7 +158,12 @@ export async function runPipeline(req: PipelineRequest, deps: PipelineDeps): Pro
   const solverStops = toSolverStops(req.stops, geo, req.date, serviceMin);
 
   // ── P2 buildMatrix (depot first, then stops in solverStops order) ──
-  const matrix = await deps.buildMatrix(depot, solverStops.map((s) => ({ lat: s.lat, lng: s.lng })));
+  const matrixMode: MatrixMode = req.matrixMode === 'google' ? 'google' : DEFAULT_MATRIX_MODE;
+  const mres: any = await deps.buildMatrix(depot, solverStops.map((s) => ({ lat: s.lat, lng: s.lng })));
+  const matrix: SolverMatrix = mres && mres.matrix ? mres.matrix : mres;
+  const matrixSource: string = (mres && mres.source) ? mres.source : matrixMode;
+  const googleElementCount = matrixElementCount(solverStops.length);
+  const estimatedCostUsd = estimateMatrixCostUsd(googleElementCount, matrixSource);
 
   const solverInput: SolverInput = {
     stops: solverStops,
@@ -193,7 +202,10 @@ export async function runPipeline(req: PipelineRequest, deps: PipelineDeps): Pro
     rationale,
     riskFlags,
     aiAssist: { intent: intentUsed && intent.source === 'model', geometry: geometryUsed, explain: explainUsed },
-    meta: { ...repaired.meta, depot, departEpochSec, serviceMin },
+    meta: {
+      ...repaired.meta, depot, departEpochSec, serviceMin,
+      matrixMode, matrixSource, googleElementCount, estimatedCostUsd,
+    },
     generatedAt: new Date().toISOString(),
   };
 }

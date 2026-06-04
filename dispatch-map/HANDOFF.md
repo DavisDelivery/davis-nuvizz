@@ -11,6 +11,54 @@ v0.7.2 = M4.5 PR 2 of 3 (stop-detail + driver-snapshot drawers).
 v0.8.0 = M4.5 PR 3 of 3 (final polish: marker labels, snapshot tap-through,
 mobile diagnostics, RESEARCH doc).
 
+## v0.14.0 — Phase 2: Routing (beta) tab (PR 2 of 2)
+
+The dispatcher-facing UI for the routing engine, inline in `App.jsx`, **feature-
+flagged OFF in production**. Plus the one authorized engine change: **cheap by
+default**.
+
+### Feature flag
+
+`VITE_ROUTING_BETA=true` (build-time env) **or** `?routing=1` on the URL. Off →
+the tab doesn't render and nothing changes. Turn on for the deploy preview with
+the query param; turn on in prod later by setting the env var.
+
+### The tab (desktop nav "Routing (beta)")
+
+- **Select** stops by click (toggle), box (rectangle), or lasso (polygon) — Google
+  Maps drawing lib loaded via `importLibrary('drawing')`. Live tally: count, skids,
+  weight, + an oversize/equipment-restriction flag. 150-stop client bound.
+- **Trucks**: choose + inline-edit profiles (skids/weight/deck/liftgate), persisted
+  to `truck_profiles` (seeded on first run from the server defaults).
+- **Plan**: free-text intent, strategy dropdown, and the **"Use live Google
+  drive-times (costs money)"** toggle (default OFF, shows the would-be element
+  count + $ estimate).
+- **Build**: writes `routing_jobs/{jobId}` → POSTs `routing-build-background` →
+  polls the job doc via `onSnapshot`. Renders exactly what the engine returns:
+  per-truck colored polylines (M5 palette), a **sortable** stop list (seq /
+  customer / ETA / skids / weight), **load-vs-capacity bars**, the **spill list
+  with reasons**, and the **rationale + risk flags**.
+- **Cost/quality readout**: matrix source (Free estimate vs Google live), element
+  count, estimated $ (0 when free), AI assist on/off.
+- **Save** → `routing_routes` (inputs + outputs), with an explicit banner: this is
+  a plan in our system and was **NOT** dispatched to NuVizz.
+
+### Engine change (the one authorized edit) — cheap by default (Appendix B)
+
+`matrixMode` is now a per-build choice: **haversine (free) is the default even when
+the Google key is present**; Google is an explicit opt-in. `resolveMatrix(depot,
+stops, mode='haversine')` only calls Google when `mode==='google'`. `result.meta`
+gains `matrixSource`, `googleElementCount`, `estimatedCostUsd` (Basic tier, ~$5/1k).
+The pipeline dep tolerates a bare matrix or `{matrix,source}` so existing callers
+are unchanged. 7 new tests in `test/routing-cost.test.mjs`; 51 total green.
+
+### Guardrails
+
+NuVizz read-only (no write path; routes only in `routing_routes`); live cache +
+Phase 1 untouched; secrets server-side only (client calls only our functions);
+`App.jsx` stays single-file; graceful degradation (haversine / deterministic
+rationale / job error all render cleanly). `APP_VERSION` → **0.14.0**.
+
 ## v0.13.0 — Phase 2: routing-engine foundation (PR 1 of 2, backend only)
 
 First half of Phase 2 (ORCHESTRATION charter): the AI-led / solver-backed routing
