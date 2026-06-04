@@ -41,7 +41,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.14.1';
+const APP_VERSION = '0.14.2';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -4904,15 +4904,17 @@ function Placeholder({ count, hint }) {
 // exactly what the engine returns (no client-side feasibility/sequencing).
 // ============================================================================
 
-// Feature flag — OFF in production until Chad flips it. Enable via either the
-// build-time env VITE_ROUTING_BETA=true, or the URL query ?routing=1 (handy for
-// the deploy preview without an env change).
+// Feature flag — Chad turned the Routing (beta) tab ON for all dispatchers
+// (v0.14.2). It is now VISIBLE BY DEFAULT. A kill switch remains so it can be
+// hidden again without a revert: set env VITE_ROUTING_BETA='false', or append
+// ?routing=0 to the URL. Cheap-by-default still holds (free estimate unless the
+// Google toggle is used), so exposing it carries no automatic cost.
 const ROUTING_FLAG = (() => {
   try {
-    if (import.meta.env.VITE_ROUTING_BETA === 'true') return true;
-    if (typeof window !== 'undefined' && /[?&]routing=1\b/.test(window.location.search)) return true;
+    if (import.meta.env.VITE_ROUTING_BETA === 'false') return false;
+    if (typeof window !== 'undefined' && /[?&]routing=0\b/.test(window.location.search)) return false;
   } catch { /* ignore */ }
-  return false;
+  return true;
 })();
 
 const ROUTING_DEPOT = { name: 'Buford Terminal', lat: 34.14838, lng: -83.95948 };

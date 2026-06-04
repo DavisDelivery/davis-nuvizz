@@ -367,3 +367,8 @@ near-term P2 follow-on, after the PR 2 routing tab and before any full-fleet rol
   between Setup (select/trucks/plan) and Result, with a floating selection tally.
   The map re-inits cleanly across the breakpoint (mapReady signal). UI-only,
   additive, still feature-flagged; engine untouched (51 tests green).
+- Jun 2026 — Claude (Phase 2 follow-up) — Routing (beta) ENABLED by default
+  (v0.14.2). Per Chad's call, the Routing tab is now visible to all dispatchers
+  (no ?routing=1 / no env needed). Kill switch retained: VITE_ROUTING_BETA='false'
+  or ?routing=0 hides it again without a revert. Cheap-by-default unchanged (free
+  haversine unless the Google toggle is used). UI-flag only; engine untouched.
