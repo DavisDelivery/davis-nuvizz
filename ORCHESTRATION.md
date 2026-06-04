@@ -479,3 +479,20 @@ LEVER 2 — Free road-distance matrices at scale (self-hosted OSRM).
 - Jun 2026 — Orchestrator — Corrected the Google cost model (per Chad's review of Google's pricing). Three SKUs: Compute Routes = per request (~$0 at our volume), Compute Route Matrix = per element (pricey all-pairs, what we call today), Route Optimization/Fleet Routing = per stop (~$518/mo). DECISION: do NOT use Fleet Routing — our engine owns constraint-aware bundling. Earlier four-figure estimate superseded (~$0 realistic). Build direction: paid drive-times leg should use a per-route Compute Routes call, not a day-wide matrix. Added time-window-aware sequencing to the roadmap.
 
 - Jun 2026 — Orchestrator — Logged two future options in Appendix C after researching how others build this: (1) constraint-native solver upgrade (OR-Tools / VROOM — free, models capacity / time-windows / 'skills'=equipment / driver-hours, slots behind our swappable solver) for when route quality becomes the priority; (2) self-hosted OSRM for free road-distance matrices at scale (regional OSM extract) if we ever want Google fully out. Neither needed now; current blend + cheap-by-default stands.
+- Jun 2026 — Claude (Phase 2 PR5A) — Build reliability: killed the hang, made it
+  fast (v0.16.1). Two root causes fixed in the build path (solver untouched).
+  P0 dropped work: routing-build-background ran the resolve→build→solve→write
+  sequence in an UN-AWAITED async IIFE and returned 202 before it finished, so the
+  background instance could freeze/recycle before writing the result and the job sat
+  at status:'running' forever (the hang). Now the handler AWAITs the full sequence;
+  every path ends 'done' or 'error'. P1 model in the hot path: the Opus deps were
+  passed whenever the key was present, regardless of mode, and callAnthropic had no
+  timeout. Now the model is OPT-IN via request.aiAssist (default false, parallel to
+  the Google opt-in); a default build passes NO model deps and makes ZERO model
+  calls (deterministic intent/geometry/explain). P2 hard 8s AbortController timeouts
+  on the Anthropic and Google fetches → deterministic fallback (haversine / skip) on
+  stall. P3 per-stop geometry assist hard-capped (10) when AI is on. P4 a 25s job
+  watchdog (withDeadline) writes 'error' on overrun so the client stops polling.
+  Measured deterministic build (real haversine path, zero model calls): ~3ms for 25
+  stops, ~48ms for 100. cheap-by-default intact; solver math unchanged; NuVizz
+  read-only; cache/Phase 1 untouched (69 tests green).

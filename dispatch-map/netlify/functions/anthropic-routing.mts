@@ -14,10 +14,12 @@
 
 import { parseGeometryAssist } from './lib/routing-intent.mts';
 import type { Strategy } from './lib/routing-types.mts';
+import { fetchWithTimeout } from './lib/async-util.mts';
 
 const MESSAGES_URL = 'https://api.anthropic.com/v1/messages';
 const DEFAULT_MODEL = 'claude-opus-4-8';
 const ANTHROPIC_VERSION = '2023-06-01';
+const ANTHROPIC_TIMEOUT_MS = 8000;  // hard cap per call — a stalled call aborts and falls back
 
 export function isAnthropicEnabled(): boolean {
   return !!process.env.ANTHROPIC_API_KEY;
@@ -30,7 +32,7 @@ function model(): string {
 async function callMessages(system: string, user: string, maxTokens = 700): Promise<string> {
   const key = process.env.ANTHROPIC_API_KEY;
   if (!key) throw new Error('ANTHROPIC_API_KEY not set');
-  const resp = await fetch(MESSAGES_URL, {
+  const resp = await fetchWithTimeout(MESSAGES_URL, {
     method: 'POST',
     headers: {
       'x-api-key': key,
@@ -43,7 +45,7 @@ async function callMessages(system: string, user: string, maxTokens = 700): Prom
       system,
       messages: [{ role: 'user', content: user }],
     }),
-  });
+  }, ANTHROPIC_TIMEOUT_MS);
   if (!resp.ok) throw new Error(`anthropic ${resp.status}: ${(await resp.text()).slice(0, 200)}`);
   const data: any = await resp.json();
   return (data?.content || []).filter((b: any) => b?.type === 'text').map((b: any) => b.text).join('\n').trim();
