@@ -620,3 +620,24 @@ LEVER 2 — Free road-distance matrices at scale (self-hosted OSRM).
   windows never flag/spill; genuine windows kept strict). Matrix/cost/skid-gate/deck
   untouched; NuVizz read-only. Geographic truck assignment is Chunk B (out of scope).
   96 tests green.
+- Jun 2026 — Claude (Phase 2 PR, Routing Quality Chunk B) — Geographic truck
+  assignment + equipment-override + green markers + beta version list (v0.23.0).
+  FIX 1 (routing-solver assign() ONLY): replaced the capacity-tightest-fit selection
+  (zero geography → two trucks criss-crossed the same cluster) with a deterministic,
+  PURE geography-aware capacitated assignment: equipment/oversize stops anchored first
+  on capable trucks (truckCanCarry/capacityFits stay the only gates), then each empty
+  truck seeded by farthest-point sampling, then global nearest-pair region growth by
+  haversine on lat/lng (independent of matrix mode). Capacity bounds territory; no
+  load-balancing objective. sequence()/nearestNeighbor/twoOpt/repair/pipeline/
+  constraints/matrix/cost untouched. Repair check: Phase A spills only capacity/
+  equipment/(strict-window) violators and Phase B only re-inserts SPILLED stops, so a
+  valid geographic assignment is never reshuffled across trucks (geography preserved);
+  not changed. FIX 2: routed stop markers are GREEN + slightly larger, keep the
+  sequence label; per-truck distinction is the route LINE color (ASSUMPTION flagged —
+  uniform green dots; one-line revert to per-truck dot color if preferred); restricted
+  stops keep their signal via a red ring. FIX 3 / added per Chad: tapping the build
+  badge opens a Beta version history list (VERSION_LOG). Tests: 4 Chunk B solver tests
+  (clean two-cluster split / equipment overrides geography / only-tractor spill /
+  capacity-driven split) + all prior green = 100. Couldn't verify the live map look or
+  real customer_notes coverage (no live NuVizz/map) — flagged. NuVizz read-only;
+  APP_VERSION 0.23.0.
