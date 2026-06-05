@@ -11,6 +11,50 @@ v0.7.2 = M4.5 PR 2 of 3 (stop-detail + driver-snapshot drawers).
 v0.8.0 = M4.5 PR 3 of 3 (final polish: marker labels, snapshot tap-through,
 mobile diagnostics, RESEARCH doc).
 
+## v0.25.0 — Phase 4 spike v2: assemble a LOAD from EXISTING stops (UAT, gated)
+
+**Corrects the v1 jargon error.** We do NOT author stops — the shipper (ULINE) does.
+We build LOADS and attach EXISTING Un-Planned stops to them BY REFERENCE (stopNbr), in
+our sequence. Probed live on UAT/Davisv5 via the gated `nuvizz-write-test.mts`
+(`action: assemble-existing`). **Nothing was created or altered** — the borrowed ULINE
+stop `050626_S15` stayed exactly Un-Planned (verified before/after).
+
+### Did attaching an existing stop to a load work? — NO (server-side blocker, named below)
+The correct operation is `POST /routePlan/update/{serviceName}/{companyCode}` with
+**`planStops` referencing existing `stopNbr`s** (not inline stop objects) + a `loadHeader`.
+- Request shape is RIGHT: it passes field validation (e.g. it enforces `routeName` ≤ 20).
+- But it returns **HTTP 500 / NPE 998 `"DeliverItLoad … is null"`** for serviceName
+  `default` (the value the v7 spec says to use when there's no custom integration) **and
+  every variant tried** (`Davisv5`, `DAVISV5`, `deliverit`, `routeplan`, …). The route →
+  load conversion yields null, so no load is built and nothing can be attached.
+- `/load/update/default` is a STOP importer here (would overwrite a borrowed stop) — **not
+  run** against the ULINE stop, by the no-alter rule. `/stop/partialUpdate` needs an
+  existing load to point `routeAsgnInfo` at (we can't create one) and previously returned
+  `errorCode 12 "Stop does not belong to the requested company"` from Davisv5 — **not run**.
+
+### The single precise ask to NuVizz (this is the deliverable)
+To assemble a load from existing stops on Davis, we need NuVizz to provide/confirm:
+1. **The route-assembly `serviceName`** for the Davis tenant — the mapping the portal's
+   "Add Stop(s) / Load(s)" action uses (set it as `NUVIZZ_WRITE_ROUTE_SERVICE`; `default`
+   500s). 
+2. **A registered origin/depot facility** (Buford terminal) — `facility/info` → 404; the
+   load may fail to build without it.
+3. **Which company owns the assembled load** — the stops are **ULINE**-owned (visible to
+   Davisv5); our creds are Davisv5-scoped (ULINE reads = 401). routePlan may be returning
+   null because it can't resolve cross-company stops into a Davisv5 load.
+Once #1–#3 are known: set `NUVIZZ_WRITE_ROUTE_SERVICE`, re-run `assemble-existing`, confirm
+the stop reads back with `routeAsgnInfo` = the test load, then `assemble-detach` (restores
+the stop to Un-Planned) and `assemble-cancel-load` (cancels the test load only — never the
+stop). The function already encodes that reversible lifecycle.
+
+### Function (`netlify/functions/nuvizz-write-test.mts`) — v2
+Same 4 gates (non-prod CONTEXT · `NUVIZZ_WRITE_TEST_ENABLED` · dedicated `NUVIZZ_WRITE_*`
+UAT creds · `confirm` token); never dispatches. New actions: `assemble-existing` (read
+existing stop → create neutral `DDTEST-…` load → attach by reference → read back),
+`assemble-detach` (re-plan with empty `planStops` → stop back to Un-Planned), and
+`assemble-cancel-load` (refuses any non-`DDTEST-/WT-LOAD-` load). Borrowed stops are never
+cancelled; only the test load is.
+
 ## v0.23.0 — Routing quality (Chunk B): geographic truck assignment + green markers
 
 Chunk A fixed *within-truck* sequencing; the remaining defect was *cross-truck

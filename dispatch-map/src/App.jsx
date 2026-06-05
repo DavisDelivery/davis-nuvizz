@@ -44,7 +44,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.23.0';
+const APP_VERSION = '0.25.0';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -64,6 +64,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.25.0', 'Phase 4 spike v2: assemble a load from EXISTING stops (gated UAT probe; routePlan blocker found)'],
   ['0.23.0', 'Geographic truck assignment (no two-truck criss-cross) + green stop markers'],
   ['0.22.0', 'Strategy ordering fixed — placeholder windows no longer clobber Min-distance/Closest'],
   ['0.21.0', 'Appointment windows are advisory (flag, don’t spill)'],
