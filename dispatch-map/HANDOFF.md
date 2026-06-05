@@ -11,6 +11,38 @@ v0.7.2 = M4.5 PR 2 of 3 (stop-detail + driver-snapshot drawers).
 v0.8.0 = M4.5 PR 3 of 3 (final polish: marker labels, snapshot tap-through,
 mobile diagnostics, RESEARCH doc).
 
+## v0.20.0 — Persistent build badge on the Routing screen
+
+The `APP_VERSION` chip only rendered on the main **Map** view (above the FAB) and
+the desktop footer — neither reaches `RoutingScreen`, so the Routing tabs
+(Stops/Loads/Result) showed no version. This adds a small persistent badge so the
+dispatcher always knows which build they're on.
+
+- **Where:** the map's **top-right corner** of the routing surface (the map is
+  always shown, so it's visible on every routing tab at both widths). `~10px`, muted
+  slate text, translucent white background, `pointer-events-none` so it never blocks
+  map drag/selection; doesn't overlap the tabs, the selection chip (top-left), the
+  viewing banner (top-center), map controls, or the Save/Discard row.
+- **Shows:** `v0.20.0 · <7-char commit> · <prod|preview>` so prod vs preview is
+  unambiguous. Full build time on hover (`title`).
+- **Build constants:** `vite.config.js` now also defines `__BUILD_CONTEXT__` from
+  Netlify `CONTEXT` (`production`→`prod`, `deploy-preview`→`preview`,
+  `branch-deploy`→`branch`, absent→`dev`), alongside the existing `__BUILD_COMMIT__`
+  / `__BUILD_TIME__`. App reads `BUILD_CONTEXT` + `BUILD_SHORT` (7-char commit, or
+  `local` when the vite fallback `dev` is in effect).
+- **Local dev** (no Netlify env) degrades to `v0.20.0 · local · dev` — never blank
+  or `undefined`. Verified the env→define→badge path by building with `COMMIT_REF` +
+  `CONTEXT` (preview → `a1b2c3d · preview`, production → `deadbee · prod`).
+- The existing map-view chip + desktop footer are **unchanged** (this only adds the
+  routing-screen badge). No engine/functions/cache/Phase 1 touched.
+- **Divergence note:** `netlify/functions/lib/history-core.mts` keeps its own capture
+  `APP_VERSION` const (unchanged); it is intentionally separate from the UI
+  `APP_VERSION` in `src/App.jsx`.
+
+Files: `vite.config.js` (+`__BUILD_CONTEXT__`), `src/App.jsx` (`BUILD_CONTEXT` /
+`BUILD_SHORT` consts + inline `RoutingBuildBadge`, rendered in both routing map
+containers). **89 tests green.** APP_VERSION 0.19.0 → 0.20.0.
+
 ## v0.19.0 — Routing UX: drag-lasso · PRO detail popups · per-load re-sequence
 
 Three dispatcher-requested interaction upgrades. Client-side selection + display +
