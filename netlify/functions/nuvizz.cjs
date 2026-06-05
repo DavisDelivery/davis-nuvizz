@@ -562,10 +562,10 @@ function estimateLoadRange(dateStr) {
   const target = new Date(dateStr + 'T00:00:00Z');
   const bizDaysDiff = businessDaysBetween(ANCHOR_DATE, target);
   const center = ANCHOR_LOAD + bizDaysDiff * LOADS_PER_BIZ_DAY;
-  // Wide window (±400 = 800 numbers) to absorb drift and a full extra business day of slack.
-  // At concurrency 30 this scans in ~12-18s. After first successful scan we calibrate and
-  // narrow the cached range so subsequent reads are tight+fast.
-  return { startNbr: center - 400, endNbr: center + 400 };
+  // Window ±300 (600 numbers): comfortably covers a day's ~100-load span plus drift slack,
+  // while fitting inside the 26s function timeout when scanning with stops at concurrency 50.
+  // The self-calibrating range cache narrows this after the first scan so reads stay fast.
+  return { startNbr: center - 300, endNbr: center + 300 };
 }
 
 // Called after every successful scan to lock in the actual range found for a date.
@@ -799,7 +799,7 @@ exports.handler = async (event) => {
         dateTo: dateStr,
         startNbr,
         endNbr,
-        concurrency: 30,
+        concurrency: 50,
         includeStops: true, // we need stops to write rich load docs to Firestore
       });
 
@@ -903,7 +903,7 @@ exports.handler = async (event) => {
         dateTo: dateStr,
         startNbr: range.startNbr,
         endNbr: range.endNbr,
-        concurrency: 30,
+        concurrency: 50,
         includeStops: true,
       });
 
@@ -1022,7 +1022,7 @@ exports.handler = async (event) => {
             dateTo: dateStr,
             startNbr: range.startNbr,
             endNbr: range.endNbr,
-            concurrency: 30,
+            concurrency: 50,
             includeStops: true,
           });
           calibrateLoadRange(dateStr, allLoads);
@@ -1286,7 +1286,7 @@ exports.handler = async (event) => {
         dateTo: dateStr,
         startNbr: range.startNbr,
         endNbr: range.endNbr,
-        concurrency: 30,
+        concurrency: 50,
         includeStops: true,
       });
       calibrateLoadRange(dateStr, loads);
