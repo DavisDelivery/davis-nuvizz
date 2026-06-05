@@ -44,7 +44,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.21.0';
+const APP_VERSION = '0.22.0';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -5736,15 +5736,19 @@ function RoutingScreen() {
   const onResequence = useCallback((truckId, strategy) => {
     if (!strategy) return;
     const depot = result?.meta?.depot || ROUTING_DEPOT;
+    const engineRoute = (result?.routes || []).find((r) => r.truckId === truckId);
     setRouteState((prev) => {
-      if (!prev || !prev[truckId]) return prev;
-      const curOrder = prev[truckId].order;
+      // Seed from routeState if present, else from the freshly-built engine route —
+      // so the dropdown reorders a route even before any manual edit (don't no-op).
+      const curOrder = (prev && prev[truckId]) ? prev[truckId].order
+        : (engineRoute ? engineRoute.orderedStopIds.map(String) : null);
+      if (!curOrder) return prev;
       const stops = curOrder.map((id) => { const s = stopById.get(String(id)); return s ? { id: String(id), lat: s.lat, lng: s.lng } : null; }).filter(Boolean);
       if (stops.length < 2) return prev;
       const newOrder = resequence(stops, depot, strategy).map((s) => s.id);
       const resolved = new Set(newOrder);
-      const tail = curOrder.map(String).filter((id) => !resolved.has(id)); // keep any unresolvable ids
-      return { ...prev, [truckId]: { order: [...newOrder, ...tail], reordered: true } };
+      const tail = curOrder.map(String).filter((id) => !resolved.has(id)); // keep any unresolvable ids (no silent drops)
+      return { ...(prev || {}), [truckId]: { order: [...newOrder, ...tail], reordered: true } };
     });
     setLastAction(`Re-sequenced ${truckId} · ${({ min: 'Min distance', closest: 'Closest first', farthest: 'Farthest first', reverse: 'Reverse' })[strategy] || strategy}`);
   }, [stopById, result]);
@@ -6245,7 +6249,8 @@ function RoutingScreen() {
 
 function RoutingResultPanel({ job, result, meta, usedGoogle, stopById, onSave, saveState, saveName, setSaveName, savedBy, setSavedBy, onDiscard, planEdited, routesView, onReorder, onMove, onResequence, readOnly, hoverId, setHoverId, onOpenStop, savedLoad, onCloseLoad, onRename, onToggleDispatch, onDelete, manageError }) {
   const [confirmDiscard, setConfirmDiscard] = useState(false);
-  useEffect(() => { setConfirmDiscard(false); }, [job, savedLoad]);
+  const [riskOpen, setRiskOpen] = useState(false); // risk flags are a collapsed disclosure; never auto-expand
+  useEffect(() => { setConfirmDiscard(false); setRiskOpen(false); }, [job, savedLoad]);
   // Live-build status gates only apply when NOT viewing a saved load.
   if (!savedLoad) {
     if (!job) return <div className="text-[12px] text-slate-400">Build a plan to see routes, ETAs, load, spill, and cost here.</div>;
@@ -6287,9 +6292,12 @@ function RoutingResultPanel({ job, result, meta, usedGoogle, stopById, onSave, s
       {/* Rationale + risk */}
       {result.rationale && <div className="text-[12px] text-slate-700"><b>Rationale.</b> {result.rationale}</div>}
       {Array.isArray(result.riskFlags) && result.riskFlags.length > 0 && (
-        <div className="text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded p-2">
-          <div className="font-semibold mb-0.5">Risk flags</div>
-          <ul className="list-disc ml-4 space-y-0.5">{result.riskFlags.map((f, i) => <li key={i}>{f}</li>)}</ul>
+        <div className="text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded">
+          <button onClick={() => setRiskOpen((o) => !o)} className="w-full flex items-center justify-between gap-2 px-2 py-1.5 font-semibold text-left" aria-expanded={riskOpen}>
+            <span>⚠ {result.riskFlags.length} risk flag{result.riskFlags.length === 1 ? '' : 's'}</span>
+            {riskOpen ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+          </button>
+          {riskOpen && <ul className="list-disc ml-5 pr-2 pb-2 space-y-0.5">{result.riskFlags.map((f, i) => <li key={i}>{f}</li>)}</ul>}
         </div>
       )}
 

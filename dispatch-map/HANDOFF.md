@@ -11,6 +11,49 @@ v0.7.2 = M4.5 PR 2 of 3 (stop-detail + driver-snapshot drawers).
 v0.8.0 = M4.5 PR 3 of 3 (final polish: marker labels, snapshot tap-through,
 mobile diagnostics, RESEARCH doc).
 
+## v0.22.0 — Routing quality (Chunk A, keystone): un-clobber the optimizer
+
+A ~22-stop MIN_DISTANCE / CLOSEST_FIRST build was ignoring the chosen strategy and
+shipping roughly the raw input order (zig-zag routes). Three exact points fixed; the
+solver/matrix/cost/skid-gate/deck math is untouched.
+
+### Fix 1 — real-window detection (`routing-pipeline.mts`)
+NuVizz placeholder schedules (`00:00`/`00:00` + a strict flag) were turning nearly
+every stop into STRICT-with-window, which made `routing-repair.orderForTruck` take
+the EDF (`windowAwareOrder`) branch and **discard `sequence(strategy)`** on every
+build. New `realWindowSec()` accepts a window only if **both ends present, neither a
+midnight/zero placeholder, both parse, and end > start**; `timeConstraint` is STRICT
+**only** when a real window exists AND NuVizz flags strict (else `null`/SOFT).
+`hhmmToEpochSec` hardened to parse `H:MM` / `HH:MM` / `HH:MM:SS`. **Net:** a normal
+build is `hasStrict=false`, so `orderForTruck` re-runs `sequence(strategy)` — the
+optimizer's order ships. `orderForTruck`/`windowAwareOrder` logic itself is unchanged.
+*(Could not reach live NuVizz to confirm the 00:00 placeholders — proceeded on the
+placeholder/zero-length guard, flagged. Genuine windows like 08:00–08:05 stay strict.)*
+
+### Fix 2 — re-sequence dropdown works on a fresh build (`src/App.jsx onResequence`)
+It no-op'd when `routeState` had no entry for the truck. It now **seeds from the
+engine route's `orderedStopIds`** (current rendered order) when `routeState` lacks
+the truck, then applies `resequence` — so "Closest first" / "Min distance" / etc.
+reorder a freshly built route. Unresolvable ids are preserved at the tail (no silent
+drops). Depot = `meta.depot` (Buford).
+
+### Fix 3 — risk flags collapsed (Result panel)
+The risk-flag wall is now a **collapsed disclosure**: a single "⚠ N risk flags" row
+that expands on tap and collapses again; never auto-expands (resets per build).
+Touch-safe, desktop + mobile.
+
+### Tests / evidence
+- Real-window detection + the key **ordering** test: a placeholder-window build's
+  route **equals `sequence(nodes,'MIN_DISTANCE',matrix)`** and **≠ raw input order**;
+  CLOSEST_FIRST equals the depot-distance sort; placeholder windows never flag/spill;
+  a genuine wide window stays served + unflagged. Existing strict/advisory window
+  tests (real 08:00–08:05 windows) stay green. **96 tests green.**
+- Before → after for the skew fixture (depot at origin; stops A=lng3, B=lng1, C=lng2):
+  before (clobbered) `A,B,C`; after (MIN_DISTANCE / CLOSEST_FIRST) `B,C,A`.
+
+Files: `routing-pipeline.mts`, `src/App.jsx`; `test/routing-pipeline.test.mjs`.
+APP_VERSION 0.21.0 → 0.22.0. Out of scope: geographic truck assignment (Chunk B).
+
 ## v0.21.0 — Appointment windows become advisory (flag, don't spill)
 
 A ~21-stop build routed only 8; 13 spilled "appointment window cannot be met" with

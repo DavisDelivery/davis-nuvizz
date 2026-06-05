@@ -115,3 +115,73 @@ test('ADVISORY (default): an unreachable appointment is KEPT + flagged, zero win
   // Risk flags name the out-of-window stop, not every STRICT stop.
   assert.ok(plan.riskFlags.some((f) => /FAR/.test(f) && /window/i.test(f)));
 });
+
+// ── Chunk A: real-window detection + un-clobbered ordering ──
+import { sequence } from '../netlify/functions/lib/routing-solver.mts';
+
+// Same euclidean matrix the mock produces (depot first), to predict sequence().
+function euclMatrix(depot, pts) {
+  const nodes = [depot, ...pts];
+  const dist = (a, b) => Math.round(Math.hypot(a.lat - b.lat, a.lng - b.lng) * 1000);
+  const distanceMeters = nodes.map((a) => nodes.map((b) => dist(a, b)));
+  return { distanceMeters, durationSec: distanceMeters };
+}
+const bigTruck = () => truck({ maxSkids: 999, maxWeightLbs: 1e7, deckLengthIn: 1e7 });
+const PLACEHOLDER = { scheduledFrom: '00:00', scheduledTo: '00:00', timeConstraint: 'STRICT' };
+// Input order A,B,C is NOT the optimal path from depot(0,0): A is farthest.
+const skewStops = () => [
+  { stopNbr: 'A', lat: 0, lng: 3, pallets: 1, weight: 100, weightUOM: 'LB', stopDetails: [], ...PLACEHOLDER },
+  { stopNbr: 'B', lat: 0, lng: 1, pallets: 1, weight: 100, weightUOM: 'LB', stopDetails: [], ...PLACEHOLDER },
+  { stopNbr: 'C', lat: 0, lng: 2, pallets: 1, weight: 100, weightUOM: 'LB', stopDetails: [], ...PLACEHOLDER },
+];
+const depot0 = { lat: 0, lng: 0 };
+
+test('placeholder 00:00/00:00 windows are NOT strict and never window-flag/spill', async () => {
+  const plan = await runPipeline(
+    { stops: skewStops(), trucks: [bigTruck()], depot: depot0, strategy: 'MIN_DISTANCE', date: '2026-06-10', departHHMM: '08:00' },
+    { buildMatrix: mockMatrix() },
+  );
+  assert.equal(plan.unassigned.length, 0, 'no spills');
+  const flagged = plan.routes.flatMap((r) => r.windowViolatedIds || []);
+  assert.deepEqual(flagged, [], 'placeholder windows never flagged');
+});
+
+test('ORDERING: a placeholder-window build ships the strategy order, not input order', async () => {
+  const reqStops = skewStops();
+  const plan = await runPipeline(
+    { stops: reqStops, trucks: [bigTruck()], depot: depot0, strategy: 'MIN_DISTANCE', date: '2026-06-10', departHHMM: '08:00' },
+    { buildMatrix: mockMatrix() },
+  );
+  const route = plan.routes.find((r) => r.orderedStopIds.length === 3);
+  assert.ok(route, 'all three on one truck');
+  // Predict sequence() on the same matrix/nodes the pipeline used.
+  const matrix = euclMatrix(depot0, reqStops.map((s) => ({ lat: s.lat, lng: s.lng })));
+  const expected = sequence([1, 2, 3], 'MIN_DISTANCE', matrix).map((n) => reqStops[n - 1].stopNbr);
+  assert.deepEqual(route.orderedStopIds, expected, 'route equals MIN_DISTANCE sequence');
+  assert.notDeepEqual(route.orderedStopIds, ['A', 'B', 'C'], 'NOT the raw input order (optimizer not clobbered)');
+});
+
+test('ORDERING: CLOSEST_FIRST puts the depot-nearest stop first', async () => {
+  const plan = await runPipeline(
+    { stops: skewStops(), trucks: [bigTruck()], depot: depot0, strategy: 'CLOSEST_FIRST', date: '2026-06-10', departHHMM: '08:00' },
+    { buildMatrix: mockMatrix() },
+  );
+  const route = plan.routes.find((r) => r.orderedStopIds.length === 3);
+  // depot-distance asc: B(lng1) < C(lng2) < A(lng3)
+  assert.deepEqual(route.orderedStopIds, ['B', 'C', 'A']);
+});
+
+test('a genuine wide window stays served + unflagged (real window honored)', async () => {
+  const reqStops = [
+    { stopNbr: 'N', lat: 0, lng: 1, pallets: 1, weight: 100, weightUOM: 'LB', stopDetails: [] },
+    { stopNbr: 'W', lat: 0, lng: 2, pallets: 1, weight: 100, weightUOM: 'LB', stopDetails: [], scheduledFrom: '06:00', scheduledTo: '23:00', timeConstraint: 'STRICT' },
+  ];
+  const plan = await runPipeline(
+    { stops: reqStops, trucks: [bigTruck()], depot: depot0, strategy: 'MIN_DISTANCE', date: '2026-06-10', departHHMM: '08:00' },
+    { buildMatrix: mockMatrix() },
+  );
+  const served = plan.routes.flatMap((r) => r.orderedStopIds);
+  assert.ok(served.includes('W') && served.includes('N'));
+  const flagged = new Set(plan.routes.flatMap((r) => r.windowViolatedIds || []));
+  assert.ok(!flagged.has('W'), 'a reachable real window is not flagged');
+});
