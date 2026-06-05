@@ -13,6 +13,23 @@ mobile diagnostics, RESEARCH doc).
 
 ## v0.25.0 — Phase 4 spike v2: assemble a LOAD from EXISTING stops (UAT, gated)
 
+> **Deep analysis update (live-docs cross-check).** Pulled the live v7 Redoc spec
+> (`developer.nuvizzapps.com/v7/webservices.html` → embedded `__redoc_state`; identical
+> 161-path spec to our repo copy) and compared it field-by-field. Findings: (1) `routePlan/update`
+> is the ONLY operation for attaching existing stops to a load — there is **no** dedicated
+> `load/addStops` / assign-stops-to-load endpoint (the only assign endpoints target carrier/driver).
+> (2) #55's `planStops` body **exactly matches the official `RouteExistingStops` example**;
+> `RouteCoMingledStops` confirms `planStops` (refs) is for EXISTING stops vs `route.stops` (full
+> objects) for new ones. (3) Required chain is fully satisfied: `RoutePlanLoad{companyCode,route}`
+> → `Route{loadHeader}` → `LoadHeader{loadNbr,earliestStartDttm}` → `PlanStop{stopNbr,from,to}` →
+> `RoutePlanStopSchedule{seq,schedule}`. (4) A **fullest-possible** body (all loadHeader fields +
+> `estimatedDuration`) still returns the same HTTP 500 / NPE 998 "DeliverItLoad is null". 
+> **Conclusion: no missing payload field — the route→load conversion under serviceName `default`
+> returns null server-side.** This is a NuVizz tenant-config matter (the `default` routePlan
+> handler isn't producing a DeliverItLoad on Davisv5), NOT a payload we can fix. The single ask
+> below is unchanged and now airtight. (Not cross-company: Chad assembles loads in the portal under
+> DAVIS creds daily.)
+
 **Corrects the v1 jargon error.** We do NOT author stops — the shipper (ULINE) does.
 We build LOADS and attach EXISTING Un-Planned stops to them BY REFERENCE (stopNbr), in
 our sequence. Probed live on UAT/Davisv5 via the gated `nuvizz-write-test.mts`
