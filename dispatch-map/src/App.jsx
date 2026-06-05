@@ -5947,6 +5947,17 @@ function RoutingScreen() {
   const [sheetOpen, setSheetOpen] = useState(true);
   useEffect(() => { if (job?.status === 'done') { setMobilePanel('result'); setSheetOpen(true); } }, [job?.status]);
 
+  // Discard the BUILT plan (output), keeping the selection + trucks (inputs) so the
+  // dispatcher can adjust and rebuild without re-selecting. Purely local — no
+  // Firestore write, saved Loads untouched. `planEdited` (a manual reorder or P3
+  // re-sequence) gates a one-tap confirm so hand-tuning isn't lost by accident.
+  const planEdited = !!(routeState && Object.values(routeState).some((s) => s.reordered));
+  const discardPlan = useCallback(() => {
+    setJob(null); setRouteState(null); setSaveState(null); setBuilding(false); setLastRequest(null);
+    setLastAction('Discarded plan — selection kept');
+    setMobilePanel('setup');
+  }, []);
+
   const controlsContent = (
     <>
       <div className="flex items-center justify-between">
@@ -6055,6 +6066,7 @@ function RoutingScreen() {
   const resultContent = (
     <RoutingResultPanel job={job} result={baseResult} meta={meta} usedGoogle={usedGoogle} stopById={vStopById}
       onSave={savePlan} saveState={saveState} saveName={saveName} setSaveName={setSaveName} savedBy={savedBy} setSavedBy={setSavedBy}
+      onDiscard={discardPlan} planEdited={planEdited}
       routesView={routesView} onReorder={reorderStop} onMove={moveStop} onResequence={onResequence} readOnly={viewing}
       hoverId={hoverId} setHoverId={setHoverId} onOpenStop={openStop}
       savedLoad={viewedLoad} onCloseLoad={() => setViewedLoad(null)}
@@ -6182,7 +6194,9 @@ function RoutingScreen() {
   );
 }
 
-function RoutingResultPanel({ job, result, meta, usedGoogle, stopById, onSave, saveState, saveName, setSaveName, savedBy, setSavedBy, routesView, onReorder, onMove, onResequence, readOnly, hoverId, setHoverId, onOpenStop, savedLoad, onCloseLoad, onRename, onToggleDispatch, onDelete, manageError }) {
+function RoutingResultPanel({ job, result, meta, usedGoogle, stopById, onSave, saveState, saveName, setSaveName, savedBy, setSavedBy, onDiscard, planEdited, routesView, onReorder, onMove, onResequence, readOnly, hoverId, setHoverId, onOpenStop, savedLoad, onCloseLoad, onRename, onToggleDispatch, onDelete, manageError }) {
+  const [confirmDiscard, setConfirmDiscard] = useState(false);
+  useEffect(() => { setConfirmDiscard(false); }, [job, savedLoad]);
   // Live-build status gates only apply when NOT viewing a saved load.
   if (!savedLoad) {
     if (!job) return <div className="text-[12px] text-slate-400">Build a plan to see routes, ETAs, load, spill, and cost here.</div>;
@@ -6259,10 +6273,24 @@ function RoutingResultPanel({ job, result, meta, usedGoogle, stopById, onSave, s
             <input value={saveName} onChange={(e) => setSaveName(e.target.value)} placeholder="Load name" className="mt-0.5 w-full border rounded px-2 py-1 text-[12px] font-normal text-slate-800" />
           </label>
           <input value={savedBy} onChange={(e) => setSavedBy(e.target.value)} placeholder="Saved by (initials, optional)" className="w-full border rounded px-2 py-1 text-[12px] text-slate-800" />
-          <button onClick={onSave} disabled={saveState === 'saving'} className="w-full py-2 rounded text-white font-semibold disabled:opacity-40" style={{ background: BRAND }}>
-            {saveState === 'saving' ? 'Saving…' : saveState === 'saved' ? '✓ Saved — shared (not dispatched)' : 'Save load'}
-          </button>
+          <div className="flex gap-2">
+            <button onClick={onSave} disabled={saveState === 'saving'} className="flex-1 py-2 rounded text-white font-semibold disabled:opacity-40" style={{ background: BRAND }}>
+              {saveState === 'saving' ? 'Saving…' : saveState === 'saved' ? '✓ Saved — shared' : 'Save load'}
+            </button>
+            {onDiscard && (
+              confirmDiscard ? (
+                <button onClick={() => { setConfirmDiscard(false); onDiscard(); }} className="shrink-0 px-3 py-2 rounded bg-red-600 text-white text-[12px] font-semibold">Discard hand-tuned plan?</button>
+              ) : (
+                <button
+                  onClick={() => (planEdited ? setConfirmDiscard(true) : onDiscard())}
+                  title="Throw away this built plan and start over (keeps your stop + truck selection)"
+                  className="shrink-0 px-3 py-2 rounded border border-red-300 text-red-700 text-[12px] font-semibold hover:bg-red-50"
+                >Discard plan</button>
+              )
+            )}
+          </div>
           {saveState && saveState !== 'saving' && saveState !== 'saved' && <div className="text-[11px] text-red-600">{saveState}</div>}
+          <div className="text-[10px] text-slate-400">Discard clears the routes (keeps your selection); it doesn’t touch any saved load.</div>
         </div>
       )}
     </div>

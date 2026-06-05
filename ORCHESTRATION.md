@@ -560,5 +560,10 @@ LEVER 2 — Free road-distance matrices at scale (self-hosted OSRM).
   depot-haversine sort, nearest-neighbour + bounded 2-opt, reverse), writing into the
   same routeState as manual drag so markers/polyline/ETAs update live and it carries
   the "Manual order / straight-line estimate" labeling; load/skids unchanged; manual
-  drag/▲▼ still works after. Engine/matrix/cost/cache/Phase 1/equipment/skid-gate
-  UNTOUCHED; NuVizz read-only; feature-flagged. Pure helpers unit-tested (89 green).
+  drag/▲▼ still works after. (4) DISCARD PLAN: a "Discard plan" button beside Save in
+  the Result panel clears the built output (job + routeState + saveState) and the map
+  routes, returning to the empty Result state while KEEPING the stop+truck selection;
+  local only (no Firestore write, saved Loads untouched); one-tap for a plain build,
+  one-tap CONFIRM when the plan was hand-edited (manual reorder or P3 re-sequence).
+  Engine/matrix/cost/cache/Phase 1/equipment/skid-gate UNTOUCHED; NuVizz read-only;
+  feature-flagged. Pure helpers unit-tested (89 green).

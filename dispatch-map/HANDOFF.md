@@ -47,6 +47,18 @@ untouched; NuVizz read-only; feature-flagged.
   are order-independent (unchanged); manual drag/▲▼ still fine-tunes afterward. Hidden
   when viewing a saved load (read-only).
 
+### Discard / cancel a built plan
+- A **"Discard plan"** button sits **beside Save load** in the Result panel, shown
+  whenever a finished plan is present and you're **not** viewing a saved load. It
+  clears the build output — `job`, `routeState` (incl. any manual reorder / P3
+  re-sequence), `saveState` — so the Result returns to its empty "Build a plan…"
+  state and the map drops the route markers/polylines (back to the selected stops).
+  **Selection + trucks are kept** (discards the output, not the input); on mobile it
+  bounces to the Setup tab. Purely **local — no Firestore write; saved Loads
+  untouched.** A plain build discards in one tap; a **hand-edited** plan (reorder or
+  re-sequence) shows a one-tap confirm. Styled as a secondary/destructive action,
+  distinct from Save.
+
 ### Files
 - `src/lib/routing-select.js` — `depotSort`/`nearestNeighbor`/`twoOpt`/`resequence`
   (+ existing `pointInPolygon`/`recomputeRoute`). `test/routing-select.test.mjs` — 4
