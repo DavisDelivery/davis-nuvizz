@@ -27,7 +27,7 @@ import { db } from './lib/firebase.js';
 import { normalizeMatchKey } from './lib/matchKey.js';
 import { haversineMiles, naiveEtaMinutes, formatEtaClockTime } from './lib/distance.js';
 import { todayInET, isTodayET, formatDateForDisplay, formatDateLong } from './lib/date-util.js';
-import { pointInPolygon, latLngInBounds, boxFromCorners, formatReceivingHours, lineItemDims, moveItem, recomputeRoute, DEFAULT_SERVICE_SEC } from './lib/routing-select.js';
+import { pointInPolygon, latLngInBounds, boxFromCorners, formatReceivingHours, lineItemDims, moveItem, recomputeRoute, resequence, DEFAULT_SERVICE_SEC } from './lib/routing-select.js';
 import { formatDateTime, tsToMillis, loadSummary, buildLoadAutoName } from './lib/routing-loads.js';
 import { scanStop, scanStopFull } from './lib/signal-scanner';
 import { applyScannerResults } from './lib/customer-notes-writer';
@@ -44,7 +44,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.18.0';
+const APP_VERSION = '0.19.0';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -5027,7 +5027,19 @@ function CapacityBar({ label, used, cap, unit }) {
 // so a routing stop shows the SAME intelligence as the map markers, plus the
 // per-line products from stopDetails[]. Degrades cleanly: a stop with no note
 // shows no false flags, and an empty stopDetails[] shows "No line items".
-function RoutingStopDetail({ stop, note }) {
+// A stop's PRO / order number as a clickable link that opens the detail popup.
+// Falls back to plain text when there's no opener (e.g. inside the popup itself)
+// or no number. Never a dead link.
+function ProLink({ stop, onOpen, className = '' }) {
+  const pro = stop?.pro || stop?.stopNbr || stop?.primaryPro || null;
+  if (!pro) return null;
+  if (!onOpen) return <span className={className}>#{pro}</span>;
+  return (
+    <button onClick={(e) => { e.stopPropagation(); onOpen(stop); }} className={`text-blue-700 underline hover:text-blue-900 ${className}`} title="Open stop details">#{pro}</button>
+  );
+}
+
+function RoutingStopDetail({ stop, note, onOpen }) {
   const keys = getRestrictionBadgeKeys(note);
   const oversize = stopLooksOversize(stop);
   const hoursStr = formatReceivingHours(note);
@@ -5036,8 +5048,16 @@ function RoutingStopDetail({ stop, note }) {
   const contact = (stop.contact && (stop.contact.name || stop.contact.phone)) ? stop.contact
     : (note?.contacts && note.contacts[0]) || null;
   const Cap = ({ children }) => <div className="text-[9px] uppercase font-semibold text-slate-500 tracking-wide">{children}</div>;
+  const pro = stop.pro || stop.stopNbr || stop.primaryPro || null;
   return (
     <div className="rounded bg-slate-50 border border-slate-200 p-2 space-y-1.5 text-[11px]">
+      <div className="flex gap-6 flex-wrap">
+        <div><Cap>Order / PRO</Cap><div className="text-slate-800"><ProLink stop={stop} onOpen={onOpen} className="font-medium" /> {!pro && '—'}</div></div>
+        {stop.loadNbr && <div><Cap>Load</Cap><div className="text-slate-800">{stop.loadNbr}</div></div>}
+        {stop.bol && <div><Cap>BOL</Cap><div className="text-slate-800">{stop.bol}</div></div>}
+        {stop.customerAccount && <div><Cap>Account</Cap><div className="text-slate-800">{stop.customerAccount}</div></div>}
+      </div>
+      <div><Cap>Business</Cap><div className="text-slate-800 font-medium">{stop.businessName || '—'}</div></div>
       <div><Cap>Address</Cap><div className="text-slate-800">{addr || '—'}</div></div>
       {contact && (
         <div><Cap>Contact</Cap><div className="text-slate-800">{[contact.name, contact.phone].filter(Boolean).join(' · ') || '—'}</div></div>
@@ -5095,12 +5115,43 @@ function RoutingStopDetail({ stop, note }) {
   );
 }
 
+// Full-detail popup for a stop, opened from any PRO/order-number link. Body reuses
+// RoutingStopDetail (the single detail view). Closes via X, backdrop, or Esc.
+// Never opens empty — guards a null stop.
+function RoutingStopModal({ stop, notes, onClose }) {
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+  if (!stop) return null;
+  const note = notes?.get?.(stop.matchKey) || null;
+  const pro = stop.pro || stop.stopNbr || stop.primaryPro || '';
+  return (
+    <div className="fixed inset-0 z-[1000] flex items-center justify-center p-4" role="dialog" aria-modal="true">
+      <div className="absolute inset-0 bg-black/40" onClick={onClose} />
+      <div className="relative bg-white rounded-lg shadow-xl w-full max-w-md max-h-[85vh] flex flex-col" style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}>
+        <div className="flex items-center justify-between px-3 py-2 border-b shrink-0">
+          <div className="min-w-0">
+            <div className="font-bold text-slate-800 truncate">{stop.businessName || `Stop ${pro}`}</div>
+            {pro && <div className="text-[11px] text-slate-500">Order / PRO #{pro}</div>}
+          </div>
+          <button onClick={onClose} aria-label="Close" className="text-slate-400 hover:text-slate-700 text-2xl leading-none px-1 shrink-0">×</button>
+        </div>
+        <div className="overflow-y-auto p-3">
+          <RoutingStopDetail stop={stop} note={note} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // The selected-stops list — the source of truth for "what is actually selected".
 // Mobile: collapsed by default, tap the header to expand. Desktop: persistent
 // (parent opens it by default). Each row taps open an inline detail accordion;
 // the × removes the stop from the selection (two-way sync via onRemove). Columns
 // are sortable via the shared useSortable hook.
-function RoutingSelectedList({ selectedStops, notes, onRemove, open, setOpen }) {
+function RoutingSelectedList({ selectedStops, notes, onRemove, open, setOpen, onOpenStop }) {
   const [detailId, setDetailId] = useState(null);
   const rows = useMemo(() => selectedStops.map((s) => {
     const note = notes.get(s.matchKey) || null;
@@ -5151,9 +5202,10 @@ function RoutingSelectedList({ selectedStops, notes, onRemove, open, setOpen }) 
                       </div>
                     )}
                   </button>
+                  <span className="text-[11px] shrink-0"><ProLink stop={r.stop} onOpen={onOpenStop} /></span>
                   <button onClick={() => onRemove(r.id)} aria-label={`Remove ${r.customer} from selection`} className="text-slate-400 hover:text-red-600 px-1 leading-none text-lg shrink-0">×</button>
                 </div>
-                {detailId === r.id && <div className="px-2 pb-2"><RoutingStopDetail stop={r.stop} note={r.note} /></div>}
+                {detailId === r.id && <div className="px-2 pb-2"><RoutingStopDetail stop={r.stop} note={r.note} onOpen={onOpenStop} /></div>}
               </div>
             ))}
           </div>
@@ -5169,7 +5221,7 @@ function RoutingSelectedList({ selectedStops, notes, onRemove, open, setOpen }) 
 // docked detail panel below the table. Reuses RoutingStopDetail + the same
 // customer_notes / stopDetails helpers. The selection is the single source of
 // truth (rows derive from selectedStops; remove flows back through onRemove).
-function RoutingStopsPanel({ selectedStops, notes, onRemove, hoverId, setHoverId }) {
+function RoutingStopsPanel({ selectedStops, notes, onRemove, hoverId, setHoverId, onOpenStop }) {
   const [detailId, setDetailId] = useState(null);
   const rowRefs = useRef(new Map());
   const rows = useMemo(() => selectedStops.map((s) => {
@@ -5232,7 +5284,8 @@ function RoutingStopsPanel({ selectedStops, notes, onRemove, hoverId, setHoverId
                   <td className="px-2 py-1.5 tabular-nums">{r.skids}</td>
                   <td className="px-2 py-1.5 tabular-nums">{r.pieces}</td>
                   <td className="px-2 py-1.5 tabular-nums">{r.weight.toLocaleString()}</td>
-                  <td className="px-1 py-1.5">
+                  <td className="px-1 py-1.5 whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
+                    <ProLink stop={r.stop} onOpen={onOpenStop} className="text-[11px] mr-1" />
                     <button onClick={(e) => { e.stopPropagation(); onRemove(r.id); }} aria-label={`Remove ${r.customer} from selection`} className="text-slate-400 hover:text-red-600 leading-none text-lg">×</button>
                   </td>
                 </tr>
@@ -5247,7 +5300,7 @@ function RoutingStopsPanel({ selectedStops, notes, onRemove, hoverId, setHoverId
             <div className="font-semibold text-[13px] truncate">{detailRow.customer}</div>
             <button onClick={() => setDetailId(null)} className="text-slate-400 hover:text-slate-700 text-lg leading-none" aria-label="Close detail">×</button>
           </div>
-          <div className="p-3"><RoutingStopDetail stop={detailRow.stop} note={detailRow.note} /></div>
+          <div className="p-3"><RoutingStopDetail stop={detailRow.stop} note={detailRow.note} onOpen={onOpenStop} /></div>
         </div>
       )}
     </div>
@@ -5301,6 +5354,18 @@ function RoutingScreen() {
   const overlayRef = useRef(null);         // google.maps.OverlayView for px->latlng
   const dragStartRef = useRef(null);
   const [dragRect, setDragRect] = useState(null);
+
+  // Desktop freehand drag-lasso: a pointer-captured SVG path (NOT DrawingManager).
+  // While lasso mode is armed the overlay intercepts pointer events so the map
+  // can't pan; pointer-up converts the pixel path to LatLng and selects via
+  // pointInPolygon. (Touch keeps the tap-vertices lasso — no overlay on mobile.)
+  const lassoDrawingRef = useRef(false);
+  const lassoPxRef = useRef([]);
+  const [lassoPath, setLassoPath] = useState([]);
+
+  // PRO-number detail popup — the stop being shown, or null.
+  const [detailModalStop, setDetailModalStop] = useState(null);
+  const openStop = useCallback((s) => setDetailModalStop(s || null), []);
 
   // Desktop right rail: Stops | Result. Persisted as a view pref (localStorage ok).
   const [desktopRail, setDesktopRail] = useState(() => {
@@ -5512,6 +5577,7 @@ function RoutingScreen() {
   const cancelMode = useCallback(() => {
     clearTemp();
     boxCornersRef.current = []; lassoVtxRef.current = [];
+    lassoDrawingRef.current = false; lassoPxRef.current = []; setLassoPath([]);
     selectModeRef.current = null;
     setSelectMode(null); setBoxStep(0); setLassoCount(0);
   }, [clearTemp]);
@@ -5601,6 +5667,48 @@ function RoutingScreen() {
     }
     cancelMode();
   }, [pxToLatLng, addEnclosed, cancelMode]);
+
+  // Desktop freehand drag-lasso (pointer-captured; stays armed for repeat draws —
+  // the Cancel button / Esc exits). pointInPolygon over the drawn pixel path
+  // mapped to LatLng, reusing the proven selection geometry.
+  const onLassoDown = useCallback((e) => { const p = relPoint(e); lassoDrawingRef.current = true; lassoPxRef.current = [p]; setLassoPath([p]); }, []);
+  const onLassoMove = useCallback((e) => {
+    if (!lassoDrawingRef.current) return;
+    const p = relPoint(e);
+    const arr = lassoPxRef.current;
+    const last = arr[arr.length - 1];
+    if (last && Math.hypot(p.x - last.x, p.y - last.y) < 3) return; // throttle by distance
+    arr.push(p); setLassoPath([...arr]);
+  }, []);
+  const onLassoUp = useCallback(() => {
+    if (!lassoDrawingRef.current) return;
+    lassoDrawingRef.current = false;
+    const pts = lassoPxRef.current;
+    lassoPxRef.current = []; setLassoPath([]);
+    if (pts.length < 3) { setLastAction('Draw a longer shape around the stops'); return; }
+    const poly = pts.map((p) => { const ll = pxToLatLng(p.x, p.y); return ll ? [ll.lat(), ll.lng()] : null; }).filter(Boolean);
+    if (poly.length >= 3) addEnclosed(positionedRef.current.filter((s) => pointInPolygon(s.lat, s.lng, poly)));
+    // stay in lasso mode so the dispatcher can draw more; Cancel/Esc exits.
+  }, [pxToLatLng, addEnclosed]);
+
+  // Re-sequence ONE route client-side (Min distance / Closest / Farthest / Reverse),
+  // writing into routeState exactly like a manual drag so the map + ETAs update live
+  // and it carries the "Manual order / straight-line estimate" treatment.
+  const onResequence = useCallback((truckId, strategy) => {
+    if (!strategy) return;
+    const depot = result?.meta?.depot || ROUTING_DEPOT;
+    setRouteState((prev) => {
+      if (!prev || !prev[truckId]) return prev;
+      const curOrder = prev[truckId].order;
+      const stops = curOrder.map((id) => { const s = stopById.get(String(id)); return s ? { id: String(id), lat: s.lat, lng: s.lng } : null; }).filter(Boolean);
+      if (stops.length < 2) return prev;
+      const newOrder = resequence(stops, depot, strategy).map((s) => s.id);
+      const resolved = new Set(newOrder);
+      const tail = curOrder.map(String).filter((id) => !resolved.has(id)); // keep any unresolvable ids
+      return { ...prev, [truckId]: { order: [...newOrder, ...tail], reordered: true } };
+    });
+    setLastAction(`Re-sequenced ${truckId} · ${({ min: 'Min distance', closest: 'Closest first', farthest: 'Farthest first', reverse: 'Reverse' })[strategy] || strategy}`);
+  }, [stopById, result]);
 
   // Esc cancels any armed selection mode.
   useEffect(() => {
@@ -5839,6 +5947,17 @@ function RoutingScreen() {
   const [sheetOpen, setSheetOpen] = useState(true);
   useEffect(() => { if (job?.status === 'done') { setMobilePanel('result'); setSheetOpen(true); } }, [job?.status]);
 
+  // Discard the BUILT plan (output), keeping the selection + trucks (inputs) so the
+  // dispatcher can adjust and rebuild without re-selecting. Purely local — no
+  // Firestore write, saved Loads untouched. `planEdited` (a manual reorder or P3
+  // re-sequence) gates a one-tap confirm so hand-tuning isn't lost by accident.
+  const planEdited = !!(routeState && Object.values(routeState).some((s) => s.reordered));
+  const discardPlan = useCallback(() => {
+    setJob(null); setRouteState(null); setSaveState(null); setBuilding(false); setLastRequest(null);
+    setLastAction('Discarded plan — selection kept');
+    setMobilePanel('setup');
+  }, []);
+
   const controlsContent = (
     <>
       <div className="flex items-center justify-between">
@@ -5857,10 +5976,12 @@ function RoutingScreen() {
                 ? <div>📦 <b>Tap two corners</b> on the map to box a group ({boxStep === 0 ? '1 of 2' : '2 of 2'}).</div>
                 : <div>📦 <b>Drag a box</b> around the stops on the map. Esc or Cancel to stop.</div>
             ) : (
-              <div>⬠ <b>{isMobile ? 'Tap' : 'Click'} points</b> around the stops, then <b>Done</b> ({lassoCount} {lassoCount === 1 ? 'point' : 'points'}; need ≥3).</div>
+              isMobile
+                ? <div>⬠ <b>Tap points</b> around the stops, then <b>Done</b> ({lassoCount} {lassoCount === 1 ? 'point' : 'points'}; need ≥3).</div>
+                : <div>⬠ <b>Hold and draw</b> a shape around the stops (release to select). Esc or Cancel to stop.</div>
             )}
             <div className="flex gap-1">
-              {selectMode === 'lasso' && (
+              {selectMode === 'lasso' && isMobile && (
                 <button onClick={finishLasso} disabled={lassoCount < 3} className="flex-1 px-2 py-2 text-xs rounded text-white font-semibold disabled:opacity-40" style={{ background: BRAND }}>Done</button>
               )}
               <button onClick={cancelMode} className="flex-1 px-2 py-2 text-xs rounded border border-slate-300 bg-white hover:bg-slate-50 active:bg-slate-100">Cancel</button>
@@ -5874,7 +5995,7 @@ function RoutingScreen() {
               <button onClick={() => beginMode('lasso')} className="flex-1 px-2 py-2 text-xs rounded border border-slate-300 hover:bg-slate-50 active:bg-slate-100">⬠ Lasso</button>
               <button onClick={clearSelection} className="flex-1 px-2 py-2 text-xs rounded border border-slate-300 hover:bg-slate-50 active:bg-slate-100">Clear</button>
             </div>
-            <div className="text-[11px] text-slate-600">{isMobile ? 'Tap' : 'Click'} a stop to toggle it. Or {isMobile ? 'pan/zoom' : 'pan/zoom'}, then <b>Add stops in view</b>, <b>Box</b> ({isMobile ? 'tap two corners' : 'drag'}), or <b>Lasso</b> ({isMobile ? 'tap' : 'click'} points).</div>
+            <div className="text-[11px] text-slate-600">{isMobile ? 'Tap' : 'Click'} a stop to toggle it. Or pan/zoom, then <b>Add stops in view</b>, <b>Box</b> ({isMobile ? 'tap two corners' : 'drag'}), or <b>Lasso</b> ({isMobile ? 'tap points' : 'hold & draw'}).</div>
           </>
         )}
         {lastAction && <div className="text-[11px] text-slate-500">{lastAction}</div>}
@@ -5891,7 +6012,7 @@ function RoutingScreen() {
 
         {/* On mobile the selected-stops list lives here in the Setup sheet (the #41
             pattern). On desktop it is the right rail's Stops tab instead. */}
-        {isMobile && <RoutingSelectedList selectedStops={selectedStops} notes={notes} onRemove={removeStop} open={listOpen} setOpen={setListOpen} />}
+        {isMobile && <RoutingSelectedList selectedStops={selectedStops} notes={notes} onRemove={removeStop} open={listOpen} setOpen={setListOpen} onOpenStop={openStop} />}
       </div>
 
       {/* Trucks */}
@@ -5945,8 +6066,9 @@ function RoutingScreen() {
   const resultContent = (
     <RoutingResultPanel job={job} result={baseResult} meta={meta} usedGoogle={usedGoogle} stopById={vStopById}
       onSave={savePlan} saveState={saveState} saveName={saveName} setSaveName={setSaveName} savedBy={savedBy} setSavedBy={setSavedBy}
-      routesView={routesView} onReorder={reorderStop} onMove={moveStop} readOnly={viewing}
-      hoverId={hoverId} setHoverId={setHoverId}
+      onDiscard={discardPlan} planEdited={planEdited}
+      routesView={routesView} onReorder={reorderStop} onMove={moveStop} onResequence={onResequence} readOnly={viewing}
+      hoverId={hoverId} setHoverId={setHoverId} onOpenStop={openStop}
       savedLoad={viewedLoad} onCloseLoad={() => setViewedLoad(null)}
       onRename={renameLoad} onToggleDispatch={toggleDispatched} onDelete={deleteLoad} manageError={manageError} />
   );
@@ -5985,6 +6107,7 @@ function RoutingScreen() {
             </div>
           )}
         </div>
+        {detailModalStop && <RoutingStopModal stop={detailModalStop} notes={notes} onClose={() => setDetailModalStop(null)} />}
       </div>
     );
   }
@@ -6031,6 +6154,21 @@ function RoutingScreen() {
             )}
           </div>
         )}
+        {/* Freehand drag-lasso capture overlay — desktop, while Lasso mode is armed.
+            Pointer-captured so the map can't pan; an SVG path previews the shape. */}
+        {selectMode === 'lasso' && (
+          <div
+            className="absolute inset-0 z-10 cursor-crosshair"
+            onMouseDown={onLassoDown} onMouseMove={onLassoMove} onMouseUp={onLassoUp} onMouseLeave={onLassoUp}
+          >
+            <div className="absolute top-2 left-1/2 -translate-x-1/2 bg-slate-900/85 text-white text-[11px] rounded px-2 py-1 pointer-events-none">Hold and draw a shape around the stops · Esc to cancel</div>
+            {lassoPath.length > 1 && (
+              <svg className="absolute inset-0 w-full h-full pointer-events-none">
+                <polyline points={lassoPath.map((p) => `${p.x},${p.y}`).join(' ')} fill="rgba(30,91,146,0.10)" stroke={BRAND} strokeWidth="2" strokeLinejoin="round" />
+              </svg>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Right: Stops | Result */}
@@ -6041,7 +6179,7 @@ function RoutingScreen() {
           {railTab('result', `Result${baseResult ? ` (${baseResult.routes.length})` : (job?.status === 'running' || job?.status === 'queued') ? ' …' : ''}`)}
         </div>
         {desktopRail === 'stops' ? (
-          <RoutingStopsPanel selectedStops={selectedStops} notes={notes} onRemove={removeStop} hoverId={hoverId} setHoverId={setHoverId} />
+          <RoutingStopsPanel selectedStops={selectedStops} notes={notes} onRemove={removeStop} hoverId={hoverId} setHoverId={setHoverId} onOpenStop={openStop} />
         ) : desktopRail === 'loads' ? (
           <RoutingLoadsPanel loads={loads} loading={loadsLoading} error={loadsError}
             viewedId={viewedLoad?.id || null}
@@ -6051,11 +6189,14 @@ function RoutingScreen() {
           <div className="flex-1 min-h-0 overflow-y-auto p-3 space-y-3 text-sm">{resultContent}</div>
         )}
       </div>
+      {detailModalStop && <RoutingStopModal stop={detailModalStop} notes={notes} onClose={() => setDetailModalStop(null)} />}
     </div>
   );
 }
 
-function RoutingResultPanel({ job, result, meta, usedGoogle, stopById, onSave, saveState, saveName, setSaveName, savedBy, setSavedBy, routesView, onReorder, onMove, readOnly, hoverId, setHoverId, savedLoad, onCloseLoad, onRename, onToggleDispatch, onDelete, manageError }) {
+function RoutingResultPanel({ job, result, meta, usedGoogle, stopById, onSave, saveState, saveName, setSaveName, savedBy, setSavedBy, onDiscard, planEdited, routesView, onReorder, onMove, onResequence, readOnly, hoverId, setHoverId, onOpenStop, savedLoad, onCloseLoad, onRename, onToggleDispatch, onDelete, manageError }) {
+  const [confirmDiscard, setConfirmDiscard] = useState(false);
+  useEffect(() => { setConfirmDiscard(false); }, [job, savedLoad]);
   // Live-build status gates only apply when NOT viewing a saved load.
   if (!savedLoad) {
     if (!job) return <div className="text-[12px] text-slate-400">Build a plan to see routes, ETAs, load, spill, and cost here.</div>;
@@ -6106,7 +6247,7 @@ function RoutingResultPanel({ job, result, meta, usedGoogle, stopById, onSave, s
       {/* Routes (numbered; reorderable unless viewing a saved load) */}
       {(routesView || []).map((rv) => (
         <RoutingRouteCard key={rv.truckId} rv={rv} stopById={stopById} usedGoogle={usedGoogle} readOnly={readOnly}
-          onReorder={onReorder} onMove={onMove} hoverId={hoverId} setHoverId={setHoverId} />
+          onReorder={onReorder} onMove={onMove} onResequence={onResequence} hoverId={hoverId} setHoverId={setHoverId} onOpenStop={onOpenStop} />
       ))}
 
       {/* Spill */}
@@ -6115,7 +6256,12 @@ function RoutingResultPanel({ job, result, meta, usedGoogle, stopById, onSave, s
           <div className="font-semibold text-red-700 mb-1">Could not place ({result.unassigned.length})</div>
           {result.unassigned.map((u) => {
             const s = stopById.get(String(u.stopId));
-            return <div key={u.stopId} className="mb-1"><b>{s?.businessName || u.stopId}</b><div className="text-[11px] text-red-600">{u.reasons.join('; ')}</div></div>;
+            return (
+              <div key={u.stopId} className="mb-1">
+                <div className="flex items-center gap-1.5"><b>{s?.businessName || u.stopId}</b>{s && <ProLink stop={s} onOpen={onOpenStop} className="text-[11px]" />}</div>
+                <div className="text-[11px] text-red-600">{u.reasons.join('; ')}</div>
+              </div>
+            );
           })}
         </div>
       )}
@@ -6127,10 +6273,24 @@ function RoutingResultPanel({ job, result, meta, usedGoogle, stopById, onSave, s
             <input value={saveName} onChange={(e) => setSaveName(e.target.value)} placeholder="Load name" className="mt-0.5 w-full border rounded px-2 py-1 text-[12px] font-normal text-slate-800" />
           </label>
           <input value={savedBy} onChange={(e) => setSavedBy(e.target.value)} placeholder="Saved by (initials, optional)" className="w-full border rounded px-2 py-1 text-[12px] text-slate-800" />
-          <button onClick={onSave} disabled={saveState === 'saving'} className="w-full py-2 rounded text-white font-semibold disabled:opacity-40" style={{ background: BRAND }}>
-            {saveState === 'saving' ? 'Saving…' : saveState === 'saved' ? '✓ Saved — shared (not dispatched)' : 'Save load'}
-          </button>
+          <div className="flex gap-2">
+            <button onClick={onSave} disabled={saveState === 'saving'} className="flex-1 py-2 rounded text-white font-semibold disabled:opacity-40" style={{ background: BRAND }}>
+              {saveState === 'saving' ? 'Saving…' : saveState === 'saved' ? '✓ Saved — shared' : 'Save load'}
+            </button>
+            {onDiscard && (
+              confirmDiscard ? (
+                <button onClick={() => { setConfirmDiscard(false); onDiscard(); }} className="shrink-0 px-3 py-2 rounded bg-red-600 text-white text-[12px] font-semibold">Discard hand-tuned plan?</button>
+              ) : (
+                <button
+                  onClick={() => (planEdited ? setConfirmDiscard(true) : onDiscard())}
+                  title="Throw away this built plan and start over (keeps your stop + truck selection)"
+                  className="shrink-0 px-3 py-2 rounded border border-red-300 text-red-700 text-[12px] font-semibold hover:bg-red-50"
+                >Discard plan</button>
+              )
+            )}
+          </div>
           {saveState && saveState !== 'saving' && saveState !== 'saved' && <div className="text-[11px] text-red-600">{saveState}</div>}
+          <div className="text-[10px] text-slate-400">Discard clears the routes (keeps your selection); it doesn’t touch any saved load.</div>
         </div>
       )}
     </div>
@@ -6286,11 +6446,11 @@ function fmtRouteDur(sec) {
 // One truck's route — NUMBERED stops in the CURRENT sequence (matching the map
 // markers). On a live build: drag-and-drop or ▲▼ to reorder. When viewing a
 // saved load (readOnly), the reorder affordances are hidden (view-only this PR).
-function RoutingRouteCard({ rv, stopById, usedGoogle, readOnly, onReorder, onMove, hoverId, setHoverId }) {
+function RoutingRouteCard({ rv, stopById, usedGoogle, readOnly, onReorder, onMove, onResequence, hoverId, setHoverId, onOpenStop }) {
   const route = rv.route;
   const rows = rv.order.map((id, idx) => {
     const s = stopById.get(String(id));
-    return { seq: idx + 1, stopId: String(id), customer: s?.businessName || id, eta: rv.etas?.[idx] ?? null,
+    return { seq: idx + 1, stopId: String(id), stop: s, customer: s?.businessName || id, eta: rv.etas?.[idx] ?? null,
       skids: Number(s?.pallets) || 0, pieces: Number(s?.cartons) || 0, weight: Number(s?.weight) || 0 };
   });
   const piecesTotal = rows.reduce((a, r) => a + r.pieces, 0);
@@ -6310,6 +6470,20 @@ function RoutingRouteCard({ rv, stopById, usedGoogle, readOnly, onReorder, onMov
         <span className="font-semibold">{route.truckId}</span>
         <span className="text-[11px] text-slate-500">{rows.length} stops · {piecesTotal} loose pc{piecesTotal === 1 ? '' : 's'}{miles != null ? ` · ~${miles.toFixed(1)} mi · ~${fmtRouteDur(rv.totalDurationSec)}` : ''}</span>
         {rv.reordered && <span className="text-[9px] font-bold uppercase tracking-wide bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded">Manual order</span>}
+        {!readOnly && onResequence && rows.length > 1 && (
+          <select
+            value=""
+            onChange={(e) => { const v = e.target.value; e.target.value = ''; if (v) onResequence(rv.truckId, v); }}
+            title="Re-sequence this route"
+            className="ml-auto text-[11px] border border-slate-300 rounded px-1 py-0.5 bg-white"
+          >
+            <option value="">Re-sequence…</option>
+            <option value="min">Min distance</option>
+            <option value="closest">Closest first</option>
+            <option value="farthest">Farthest first</option>
+            <option value="reverse">Reverse</option>
+          </select>
+        )}
       </div>
       <div className="p-2 space-y-1.5">
         <CapacityBar label="Skids" used={route.load.skids} cap={route.capacity.skids} unit="" />
@@ -6336,7 +6510,10 @@ function RoutingRouteCard({ rv, stopById, usedGoogle, readOnly, onReorder, onMov
               {!readOnly && <span className="cursor-grab text-slate-400 select-none text-sm leading-none" title="Drag to reorder" aria-hidden>⋮⋮</span>}
               <span className="w-5 h-5 shrink-0 rounded-full text-white text-[10px] font-bold flex items-center justify-center" style={{ background: rv.color }}>{row.seq}</span>
               <div className="flex-1 min-w-0">
-                <div className="truncate font-medium text-[12px]" title={row.customer}>{row.customer}</div>
+                <div className="flex items-center gap-1.5 min-w-0">
+                  <span className="truncate font-medium text-[12px]" title={row.customer}>{row.customer}</span>
+                  {row.stop && <span className="shrink-0 text-[10px]"><ProLink stop={row.stop} onOpen={onOpenStop} /></span>}
+                </div>
                 <div className="text-[10px] text-slate-500">{formatRoutingEta(row.eta)} · {row.skids} sk · {row.pieces} pc · {row.weight.toLocaleString()} lb</div>
               </div>
               {!readOnly && (

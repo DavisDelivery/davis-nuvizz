@@ -546,3 +546,24 @@ LEVER 2 — Free road-distance matrices at scale (self-hosted OSRM).
   collection (no new collection, no migration); no auth built. Engine/matrix/cost/
   cache/Phase 1/NuVizz untouched; feature-flagged. Pure helpers
   (src/lib/routing-loads.js) unit-tested (78 tests green).
+- Jun 2026 — Claude (Phase 2 PR) — Routing UX: true drag-lasso · PRO-number detail
+  popups · per-load re-sequence dropdown (v0.19.0). (1) DESKTOP freehand drag-lasso:
+  a pointer-captured SVG-overlay path (NOT DrawingManager — that stays gone per #41)
+  that selects stops via pointInPolygon on pointer-up; the overlay intercepts events
+  so the map can't pan while armed, and pans normally when lasso is off. TOUCH keeps
+  the tap-vertices+Done lasso (same pointInPolygon). (2) Every PRO/order number —
+  selected list, desktop stops table, route-card rows, spill rows, and the detail —
+  is a clickable link opening a full-detail popup (RoutingStopModal reusing
+  RoutingStopDetail; close via X/backdrop/Esc; never empty); PRO added to spill rows.
+  (3) A per-load dropdown (Min distance / Closest first / Farthest first / Reverse)
+  re-sequences ONE route CLIENT-SIDE (new pure resequence() in routing-select.js:
+  depot-haversine sort, nearest-neighbour + bounded 2-opt, reverse), writing into the
+  same routeState as manual drag so markers/polyline/ETAs update live and it carries
+  the "Manual order / straight-line estimate" labeling; load/skids unchanged; manual
+  drag/▲▼ still works after. (4) DISCARD PLAN: a "Discard plan" button beside Save in
+  the Result panel clears the built output (job + routeState + saveState) and the map
+  routes, returning to the empty Result state while KEEPING the stop+truck selection;
+  local only (no Firestore write, saved Loads untouched); one-tap for a plain build,
+  one-tap CONFIRM when the plan was hand-edited (manual reorder or P3 re-sequence).
+  Engine/matrix/cost/cache/Phase 1/equipment/skid-gate UNTOUCHED; NuVizz read-only;
+  feature-flagged. Pure helpers unit-tested (89 green).

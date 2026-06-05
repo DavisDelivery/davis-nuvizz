@@ -166,3 +166,37 @@ test('haversineMeters is ~0 for identical points and positive otherwise', () => 
   assert.equal(Math.round(haversineMeters({ lat: 34, lng: -84 }, { lat: 34, lng: -84 })), 0);
   assert.ok(haversineMeters({ lat: 34, lng: -84 }, { lat: 34.1, lng: -84 }) > 1000);
 });
+
+// ── Per-load re-sequence strategies ──
+import { resequence, depotSort, nearestNeighbor, twoOpt } from '../src/lib/routing-select.js';
+
+const depot0 = { lat: 0, lng: 0 };
+// Stops at increasing distance east of the depot.
+const pts = [
+  { id: 'C', lat: 0, lng: 3 },
+  { id: 'A', lat: 0, lng: 1 },
+  { id: 'D', lat: 0, lng: 5 },
+  { id: 'B', lat: 0, lng: 2 },
+];
+const ids = (arr) => arr.map((s) => s.id);
+
+test('resequence reverse flips the current order', () => {
+  assert.deepEqual(ids(resequence(pts, depot0, 'reverse')), ['B', 'D', 'A', 'C']);
+});
+
+test('resequence closest/farthest sort by depot distance', () => {
+  assert.deepEqual(ids(resequence(pts, depot0, 'closest')), ['A', 'B', 'C', 'D']);
+  assert.deepEqual(ids(resequence(pts, depot0, 'farthest')), ['D', 'C', 'B', 'A']);
+});
+
+test('resequence min returns a full permutation and is no worse than the input order', () => {
+  const out = resequence(pts, depot0, 'min');
+  assert.deepEqual([...ids(out)].sort(), ['A', 'B', 'C', 'D']); // permutation, all present
+  // for these colinear points the optimal tour is A,B,C,D (nearest-neighbour + 2opt finds it)
+  assert.deepEqual(ids(out), ['A', 'B', 'C', 'D']);
+});
+
+test('resequence is a no-op for <2 stops and unknown strategy', () => {
+  assert.deepEqual(ids(resequence([pts[0]], depot0, 'min')), ['C']);
+  assert.deepEqual(ids(resequence(pts, depot0, 'bogus')), ['C', 'A', 'D', 'B']);
+});
