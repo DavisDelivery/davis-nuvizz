@@ -11,6 +11,25 @@ v0.7.2 = M4.5 PR 2 of 3 (stop-detail + driver-snapshot drawers).
 v0.8.0 = M4.5 PR 3 of 3 (final polish: marker labels, snapshot tap-through,
 mobile diagnostics, RESEARCH doc).
 
+## v0.17.1 — Selection clearing made obvious (no-hunt batch management)
+
+Clearing/deselecting stops before a build already worked, but was hard to find.
+This surfaces it. Pure UI over the existing selection state; engine/cache/Phase 1
+untouched; NuVizz read-only; feature-flagged.
+
+- **Clear all (N)** — the old "Clear" relabeled to "Clear all" with the count;
+  disabled when empty; red hover so it reads as destructive. **One-tap Undo** next
+  to the status line restores the just-cleared batch (guards against an accidental
+  wipe of a big grab). Undo is dropped as soon as any new selection action happens.
+- **Auto-reveal the Selected-stops list on mobile** the moment the first stop is
+  selected, so the per-row **✕** (remove individual) is visible without expanding a
+  collapsed section. Desktop already shows the list in the right rail.
+- **Explicit how-to-drop hint** when a selection exists: tap a blue stop on the map,
+  use the ✕ on a Selected-stops row, or Clear all — width-aware (list is "below" on
+  mobile, "right panel" on desktop).
+- Existing mechanisms unchanged: tap a selected marker to deselect; box/lasso/add to
+  build a new batch after clearing. APP_VERSION 0.17.0 → 0.17.1.
+
 ## v0.17.0 — Manual route reorder: drag-and-drop, numbered stops, live map sync
 
 The load/route panel is now a working surface — the manual override every

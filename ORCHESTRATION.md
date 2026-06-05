@@ -512,3 +512,13 @@ LEVER 2 — Free road-distance matrices at scale (self-hosted OSRM).
   NuVizz read-only; still feature-flagged. Pure reorder+recompute helpers added to
   src/lib/routing-select.js and unit-tested (74 tests green). Cross-route drag and
   real Google road-leg recompute after reorder are noted as future items.
+- Jun 2026 — Claude (Phase 2 PR) — Selection clearing/management made obvious
+  (v0.17.1). The clear-all + per-stop remove + tap-to-deselect already existed but
+  were hard to find (esp. on mobile, where the Selected-stops list is collapsed).
+  Changes: "Clear" → "Clear all (N)" (disabled when empty, red hover, with one-tap
+  UNDO that restores the just-cleared batch); the Selected-stops list now
+  auto-expands on mobile the moment the first stop is selected (so the per-row ✕ is
+  visible without hunting); and an explicit hint shows how to drop stops before
+  building (tap a blue stop on the map, or the ✕ in Selected stops, or Clear all).
+  Pure UI over existing selection state; engine/cache/Phase 1 untouched; NuVizz
+  read-only; still feature-flagged (74 tests green).

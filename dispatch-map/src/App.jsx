@@ -42,7 +42,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.17.0';
+const APP_VERSION = '0.17.1';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -5404,17 +5404,35 @@ function RoutingScreen() {
     [selectedIds, stopById],
   );
 
+  const [undoableClear, setUndoableClear] = useState(null); // previous selection, for one-tap Undo
   const toggleStop = useCallback((id) => {
+    setUndoableClear(null);
     setSelectedIds((prev) => { const n = new Set(prev); const k = String(id); n.has(k) ? n.delete(k) : n.add(k); return n; });
   }, []);
   const removeStop = useCallback((id) => {
+    setUndoableClear(null);
     setSelectedIds((prev) => { const n = new Set(prev); n.delete(String(id)); return n; });
   }, []);
-  const clearSelection = useCallback(() => { setSelectedIds(new Set()); setLastAction('Cleared selection'); }, []);
+  const clearSelection = useCallback(() => {
+    if (selectedIds.size) { setUndoableClear(new Set(selectedIds)); setLastAction(`Cleared ${selectedIds.size} stop${selectedIds.size === 1 ? '' : 's'}`); }
+    else setLastAction('Nothing to clear');
+    setSelectedIds(new Set());
+  }, [selectedIds]);
+  const undoClear = useCallback(() => {
+    if (undoableClear) { setSelectedIds(new Set(undoableClear)); setUndoableClear(null); setLastAction('Restored selection'); }
+  }, [undoableClear]);
 
   // The selected-stops list: persistent on desktop, collapsed by default on mobile.
   const [listOpen, setListOpen] = useState(!isMobile);
   useEffect(() => { setListOpen(!isMobile); }, [isMobile]);
+  // On mobile, reveal the list the moment the first stop is selected, so the
+  // per-stop ✕ removes are visible without hunting for the collapsed section.
+  const prevSelCountRef = useRef(0);
+  useEffect(() => {
+    const n = selectedStops.length;
+    if (isMobile && n > 0 && prevSelCountRef.current === 0) setListOpen(true);
+    prevSelCountRef.current = n;
+  }, [selectedStops.length, isMobile]);
 
   // ── Touch-native selection primitives ──
   const clearTemp = useCallback(() => {
@@ -5452,6 +5470,7 @@ function RoutingScreen() {
   }, [clearTemp]);
   const addEnclosed = useCallback((arr) => {
     if (!arr.length) { setLastAction('No stops in that area'); return; }
+    setUndoableClear(null);
     setSelectedIds((prev) => { const n = new Set(prev); for (const s of arr) n.add(String(s.stopNbr)); return n; });
     setLastAction(`Added ${arr.length} stop${arr.length === 1 ? '' : 's'}`);
   }, []);
@@ -5725,12 +5744,18 @@ function RoutingScreen() {
             <div className="flex gap-1">
               <button onClick={() => beginMode('box')} className="flex-1 px-2 py-2 text-xs rounded border border-slate-300 hover:bg-slate-50 active:bg-slate-100">▱ Box</button>
               <button onClick={() => beginMode('lasso')} className="flex-1 px-2 py-2 text-xs rounded border border-slate-300 hover:bg-slate-50 active:bg-slate-100">⬠ Lasso</button>
-              <button onClick={clearSelection} className="flex-1 px-2 py-2 text-xs rounded border border-slate-300 hover:bg-slate-50 active:bg-slate-100">Clear</button>
+              <button onClick={clearSelection} disabled={tally.count === 0} title="Remove all selected stops" className="flex-1 px-2 py-2 text-xs rounded border border-slate-300 hover:bg-red-50 hover:border-red-300 hover:text-red-700 active:bg-red-100 disabled:opacity-40">Clear all{tally.count ? ` (${tally.count})` : ''}</button>
             </div>
-            <div className="text-[11px] text-slate-600">{isMobile ? 'Tap' : 'Click'} a stop to toggle it. Or {isMobile ? 'pan/zoom' : 'pan/zoom'}, then <b>Add stops in view</b>, <b>Box</b> ({isMobile ? 'tap two corners' : 'drag'}), or <b>Lasso</b> ({isMobile ? 'tap' : 'click'} points).</div>
+            <div className="text-[11px] text-slate-600">{isMobile ? 'Tap' : 'Click'} a stop to toggle it. Or pan/zoom, then <b>Add stops in view</b>, <b>Box</b> ({isMobile ? 'tap two corners' : 'drag'}), or <b>Lasso</b> ({isMobile ? 'tap' : 'click'} points).</div>
+            {tally.count > 0 && <div className="text-[11px] text-slate-500">To drop stops before building: {isMobile ? 'tap' : 'click'} a blue stop on the map, or use the <b>✕</b> on a row in <b>Selected stops</b> ({isMobile ? 'below' : 'right panel'}); <b>Clear all</b> empties the batch.</div>}
           </>
         )}
-        {lastAction && <div className="text-[11px] text-slate-500">{lastAction}</div>}
+        {(lastAction || undoableClear) && (
+          <div className="text-[11px] text-slate-500 flex items-center gap-2">
+            <span>{lastAction}</span>
+            {undoableClear && <button onClick={undoClear} className="underline text-blue-700 hover:text-blue-900">Undo</button>}
+          </div>
+        )}
         <div className="bg-slate-50 rounded p-2 text-[12px] space-y-0.5">
           <div className="flex justify-between"><span>Selected</span><b>{tally.count}</b></div>
           <div className="flex justify-between"><span>Skids</span><b>{tally.skids}</b></div>
