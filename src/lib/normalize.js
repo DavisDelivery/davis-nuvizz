@@ -172,15 +172,42 @@ export function normalizeLoad(raw) {
   const asn = l.loadAssignment || {};
   const stops = (l.stops || []).map(normalizeStop);
 
+  // Put the stops in route order and number them the way nuVizz sequences them.
+  // NuVizz leaves stop.stopSeq = 1 on every stop, so it's useless for ordering. The
+  // optimized route order is encoded in the planned ETA: earlier ETA = earlier on the
+  // route. Sort ascending by plannedEta (stops without an ETA fall to the end), then stamp
+  // a 1-based `routeSeq` for the UI. This mirrors the server-side __fleetstops/driver-day
+  // ordering and the MapScreen route lines.
+  stops.sort((a, b) => {
+    const ae = a.plannedEta || '';
+    const be = b.plannedEta || '';
+    if (ae && be) return ae.localeCompare(be);
+    if (ae) return -1;
+    if (be) return 1;
+    return 0;
+  });
+  stops.forEach((s, i) => { s.routeSeq = i + 1; });
+
   const completed = stops.filter(s => s.bucket === 'completed').length;
+  const inProgress = stops.filter(s => s.bucket === 'inProgress').length;
   const total = stops.length;
+
+  // Derive the load-level status from its stops. NuVizz keeps loadStatus at PLANNED/Pending
+  // even after the driver has delivered stops, which made loads read "Pending" while they
+  // were clearly underway. Trust the stop progress instead: all stops delivered => complete;
+  // any stop delivered or active => the load is running; otherwise fall back to loadStatus.
+  let bucket = statusBucket(exec.loadStatus);
+  if (total > 0) {
+    if (completed === total) bucket = 'completed';
+    else if (completed > 0 || inProgress > 0) bucket = 'inProgress';
+  }
 
   return {
     nbr: h.loadNbr,
     id: h.loadId,
     routeName: h.routeName,
     status: exec.loadStatus || 'PLANNED',
-    bucket: statusBucket(exec.loadStatus),
+    bucket,
     driverName: asn.driverName,
     driverPhone: asn.driverPhoneNumber,
     driverEmail: asn.driverEmail,

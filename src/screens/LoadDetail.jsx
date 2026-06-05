@@ -39,7 +39,7 @@ export default function LoadDetail({ tenant, loadNbr, onOpenStop }) {
             <div className="text-xl font-bold font-mono">{l.nbr}</div>
             {l.routeName && <div className="text-xs text-slate-500 mt-0.5">{l.routeName}</div>}
           </div>
-          <StatusPill status={l.status} />
+          <StatusPill bucket={l.bucket} />
         </div>
 
         <div className="mt-3">
@@ -104,7 +104,7 @@ export default function LoadDetail({ tenant, loadNbr, onOpenStop }) {
             >
               <div className="flex flex-col items-center">
                 <div className="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0" style={{ background: BUCKET_COLORS[s.bucket] + '22', color: BUCKET_COLORS[s.bucket] }}>
-                  {s.seq || i + 1}
+                  {s.routeSeq || i + 1}
                 </div>
                 {i < l.stops.length - 1 && <div className="w-px flex-1 bg-slate-200 mt-1 min-h-[20px]" />}
               </div>

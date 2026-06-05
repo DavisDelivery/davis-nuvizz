@@ -5,9 +5,11 @@ import { AlertCircle, RefreshCw, Building2, ChevronDown } from 'lucide-react';
 import { BUCKET_COLORS, BUCKET_LABELS, statusBucket } from '../lib/normalize';
 import { TENANTS } from '../lib/api';
 
-export function StatusPill({ status, size = 'sm' }) {
-  if (!status) return null;
-  const bucket = statusBucket(status);
+export function StatusPill({ status, bucket: bucketProp, size = 'sm' }) {
+  // Callers can pass an explicit `bucket` (e.g. a load status derived from its stops) or a
+  // raw `status` code/string that we bucket here. Explicit bucket wins.
+  const bucket = bucketProp || (status != null ? statusBucket(status) : null);
+  if (!bucket) return null;
   const color = BUCKET_COLORS[bucket];
   const label = BUCKET_LABELS[bucket];
   const pad = size === 'xs' ? 'text-[9px] px-1.5 py-0.5' : 'text-[10px] px-2 py-0.5';
