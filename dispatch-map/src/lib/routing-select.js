@@ -148,3 +148,73 @@ export function recomputeRoute(orderedStops, depot, departSec = 0, serviceSec = 
   return { legs, etas, totalDistanceMeters: Math.round(totalDistanceMeters), totalDurationSec };
 }
 
+
+// ── Per-load client-side re-sequencing (PR: routing UX) ───────────────────────
+// Mirrors the engine's sequencing strategies CLIENT-SIDE on haversine distance —
+// same convention as the manual reorder recompute. `stops` are { id, lat, lng } in
+// the route's CURRENT order; each returns a NEW array (a permutation of `stops`).
+// The caller maps the result to ids and recomputes legs/ETAs via recomputeRoute.
+
+function routeTotalMeters(orderedStops, depot) {
+  let total = 0;
+  let prev = depot;
+  for (const s of orderedStops) { total += haversineMeters(prev, s); prev = s; }
+  return total;
+}
+
+// Sort by crow-flies distance from the depot (Closest first / Farthest first).
+export function depotSort(stops, depot, dir = 'asc') {
+  const withD = stops.map((s) => ({ s, d: haversineMeters(depot, s) }));
+  withD.sort((a, b) => (dir === 'asc' ? a.d - b.d : b.d - a.d));
+  return withD.map((x) => x.s);
+}
+
+// Greedy nearest-neighbour tour starting from the depot.
+export function nearestNeighbor(stops, depot) {
+  const remaining = [...stops];
+  const out = [];
+  let cur = depot;
+  while (remaining.length) {
+    let bi = 0, bd = Infinity;
+    for (let i = 0; i < remaining.length; i++) {
+      const d = haversineMeters(cur, remaining[i]);
+      if (d < bd) { bd = d; bi = i; }
+    }
+    cur = remaining.splice(bi, 1)[0];
+    out.push(cur);
+  }
+  return out;
+}
+
+// Bounded 2-opt improvement over the depot-anchored path (segment reversals while
+// they shorten the total). Capped passes so it's cheap for a single route.
+export function twoOpt(stops, depot, maxPasses = 6) {
+  let best = [...stops];
+  let bestLen = routeTotalMeters(best, depot);
+  for (let pass = 0; pass < maxPasses; pass++) {
+    let improved = false;
+    for (let i = 0; i < best.length - 1; i++) {
+      for (let k = i + 1; k < best.length; k++) {
+        const cand = best.slice(0, i).concat(best.slice(i, k + 1).reverse(), best.slice(k + 1));
+        const len = routeTotalMeters(cand, depot);
+        if (len + 1e-6 < bestLen) { best = cand; bestLen = len; improved = true; }
+      }
+    }
+    if (!improved) break;
+  }
+  return best;
+}
+
+// Re-sequence one route's stops by strategy. 'reverse' flips the current order;
+// the others are computed fresh from depot + positions.
+export function resequence(stops, depot, strategy) {
+  const arr = Array.isArray(stops) ? stops : [];
+  if (arr.length < 2) return [...arr];
+  switch (strategy) {
+    case 'reverse': return [...arr].reverse();
+    case 'closest': return depotSort(arr, depot, 'asc');
+    case 'farthest': return depotSort(arr, depot, 'desc');
+    case 'min': return twoOpt(nearestNeighbor(arr, depot), depot);
+    default: return [...arr];
+  }
+}

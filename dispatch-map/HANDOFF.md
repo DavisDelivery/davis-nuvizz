@@ -11,6 +11,50 @@ v0.7.2 = M4.5 PR 2 of 3 (stop-detail + driver-snapshot drawers).
 v0.8.0 = M4.5 PR 3 of 3 (final polish: marker labels, snapshot tap-through,
 mobile diagnostics, RESEARCH doc).
 
+## v0.19.0 — Routing UX: drag-lasso · PRO detail popups · per-load re-sequence
+
+Three dispatcher-requested interaction upgrades. Client-side selection + display +
+client-side re-sequencing only; engine/matrix/cost/cache/Phase 1/equipment/skid-gate
+untouched; NuVizz read-only; feature-flagged.
+
+### True drag-lasso (desktop) + tap-vertices fallback (touch)
+- **Desktop:** in Lasso mode, hold and draw a freehand shape; release selects every
+  stop inside it (`pointInPolygon`). Drawn on a **pointer-captured SVG overlay** (the
+  same approach as the box-drag overlay) — **NOT** the Google DrawingManager (removed
+  in #41 and staying gone). While lasso is armed the overlay intercepts events so the
+  **map can't pan**; when lasso is off, pan/zoom is normal (no regression). Stays armed
+  for repeat draws; Cancel/Esc exits.
+- **Touch:** the existing **tap-vertices + Done** lasso is kept (freehand drag fights
+  map-pan on touch). Both paths select through the same `pointInPolygon`.
+
+### PRO/order number → full-detail popup
+- Every PRO/order number is a clickable `ProLink` — in the selected-stops list, the
+  desktop stops table, route-card rows, the **spill ("could not place") rows** (PRO
+  added there), and the stop detail. Clicking opens `RoutingStopModal` (reuses
+  `RoutingStopDetail`): business, address, order/PRO + load #, appointment/hours,
+  weight, skids, loose pieces, line items, restriction badges. Closes via **X /
+  backdrop / Esc**; guards a null stop (never empty). Works desktop + mobile.
+  (BOL isn't in the normalized NuVizz stop today — shown only if a `bol` field is
+  present; otherwise order/PRO + load # stand in.)
+
+### Per-load re-sequence dropdown
+- Each route card has a **Re-sequence…** dropdown: **Min distance · Closest first ·
+  Farthest first · Reverse**, computed **client-side** (new pure helpers in
+  `routing-select.js`: `depotSort`, `nearestNeighbor`, `twoOpt`, `resequence` — depot
+  haversine, nearest-neighbour + bounded 2-opt, reverse). Applying writes the new order
+  into the **same `routeState` as manual drag**, so markers/polyline/ETAs update live
+  and it carries the **"Manual order / straight-line estimate"** labeling. Load/skids
+  are order-independent (unchanged); manual drag/▲▼ still fine-tunes afterward. Hidden
+  when viewing a saved load (read-only).
+
+### Files
+- `src/lib/routing-select.js` — `depotSort`/`nearestNeighbor`/`twoOpt`/`resequence`
+  (+ existing `pointInPolygon`/`recomputeRoute`). `test/routing-select.test.mjs` — 4
+  new re-sequence tests. **89 tests green.**
+- `src/App.jsx` — desktop drag-lasso overlay + handlers; `ProLink` + `RoutingStopModal`
+  + PRO links wired through list/table/route/spill/detail; per-load `onResequence`.
+  Single-file kept. APP_VERSION 0.18.0 → 0.19.0.
+
 ## v0.18.0 — Shared loads: real-time persistence + live Loads view
 
 #44 persisted one dispatcher's plan; this makes saved loads **shared and live** — a
