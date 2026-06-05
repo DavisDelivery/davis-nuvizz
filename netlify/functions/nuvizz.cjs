@@ -325,6 +325,33 @@ function buildSummary(stops, loads) {
   };
 }
 
+// ---- Stop intelligence carriers ----
+// Pull the free-text instruction strings off a raw NuVizz stop so the client-side
+// parser (src/lib/parseStopComments.ts) can turn them into chips / receiving hours /
+// Non-Uline revenue. We carry the verbatim commentDescription strings — NEVER a parsed
+// or lossy form — so four-layer preservation holds end to end.
+function extractStopComments(stop) {
+  const out = [];
+  const pushFrom = (arr) => {
+    if (Array.isArray(arr)) {
+      for (const c of arr) {
+        const txt = (c && c.commentDescription) ? String(c.commentDescription) : '';
+        if (txt.trim()) out.push(txt);
+      }
+    }
+  };
+  // Comments can live at stop.comments or on the to/from leg.
+  pushFrom(stop?.comments);
+  pushFrom(stop?.to?.comments);
+  pushFrom(stop?.from?.comments);
+  return out;
+}
+// The planned receiving window lives on the delivery leg's schedule.
+function extractStopWindow(stop) {
+  const sched = stop?.to?.schedule || stop?.from?.schedule || {};
+  return { apptFrom: sched.timeFrom || null, apptTo: sched.timeTo || null };
+}
+
 // ---- Fleet scan: discover all loads for a given date via load-number range probe ----
 // Davis dispatches ~100 loads/day in sequential DAVIS{9-digit} format. NuVizz has no native
 // "list loads for date" endpoint, so we probe a range of load numbers in parallel. We use
@@ -344,6 +371,7 @@ async function scanFleet(tenant, { dateFrom, dateTo, startNbr, endNbr, concurren
       const d = await resp.json();
       const h = d?.Load?.loadHeader || {};
       const a = d?.Load?.loadAssignment || {};
+      const exec = d?.Load?.loadExecutionInfo || {};
       const stops = d?.Load?.stops || [];
       const startDate = (h.earliestStartDttm || '').slice(0, 10);
       if (dateFrom && startDate < dateFrom) return null;
@@ -375,6 +403,17 @@ async function scanFleet(tenant, { dateFrom, dateTo, startNbr, endNbr, concurren
         totalPallets: h.totalPallets,
         totalCartons: h.totalCartons,
         weight: h.weight,
+        weightUOM: h.weightUOM,
+        volume: h.volume,
+        volumeUOM: h.volumeUOM,
+        // Write-ready / grid fields for the Loads view (Part C). READ-ONLY today; these are
+        // the structured values a future POST /load/update or /load/assignanddispatch would
+        // need — carried as data, never as display strings. See LoadsScreen writeReadyModel().
+        loadStatus: exec.loadStatus || null,        // raw NuVizz load status (Draft/Planned/Dispatched/Cancelled)
+        pronbr: h.pronbr || null,                   // PRO number
+        reference: h.reference || null,             // customer reference
+        earliestStart: h.earliestStartDttm || null, // Start
+        latestStart: h.latestStartDttm || null,     // Latest Departure
         // Origin / terminal — needed by Map view to draw terminal markers + stem-out lines.
         origin: {
           name: h.originName,
@@ -393,6 +432,7 @@ async function scanFleet(tenant, { dateFrom, dateTo, startNbr, endNbr, concurren
           const exec = s.stopExecutionInfo || {};
           const toInfo = exec.to || {};
           const addr = stop.to?.address || {};
+          const window = extractStopWindow(stop);
           return {
             stopNbr: stop.stopNbr,
             stopType: stop.stopType,
@@ -410,6 +450,11 @@ async function scanFleet(tenant, { dateFrom, dateTo, startNbr, endNbr, concurren
             pallets: stop.totalPallets,
             cartons: stop.totalCartons,
             weight: stop.weight,
+            // Stops Intelligence carriers (parsed client-side by parseStopComments.ts)
+            comments: extractStopComments(stop),
+            sealNbr: stop.sealNbr || null,
+            apptFrom: window.apptFrom,
+            apptTo: window.apptTo,
             plannedEta: toInfo.plannedEtaDTTM,
             etaDTTM: toInfo.etaDttm,
             arrivalDTTM: toInfo.arrivalDTTM,
@@ -1095,6 +1140,11 @@ exports.handler = async (event) => {
             bol: s.stop?.bol,
             pallets: s.stop?.totalPallets,
             weight: s.stop?.weight,
+            // Stops Intelligence carriers (parsed client-side by parseStopComments.ts)
+            comments: extractStopComments(s.stop),
+            sealNbr: s.stop?.sealNbr || null,
+            apptFrom: s.stop?.to?.schedule?.timeFrom || null,
+            apptTo: s.stop?.to?.schedule?.timeTo || null,
             confirmedDTTM: s.stopExecutionInfo?.to?.confirmedDTTM,
             plannedEta: s.stopExecutionInfo?.to?.plannedEtaDTTM,
             arrivalDTTM: s.stopExecutionInfo?.to?.arrivalDTTM,
@@ -1194,6 +1244,7 @@ exports.handler = async (event) => {
           const exec = s.stopExecutionInfo || {};
           const toInfo = exec.to || {};
           const addr = stop.to?.address || {};
+          const window = extractStopWindow(stop);
           return {
             stopNbr: stop.stopNbr,
             stopType: stop.stopType,
@@ -1211,6 +1262,11 @@ exports.handler = async (event) => {
             pallets: stop.totalPallets,
             cartons: stop.totalCartons,
             weight: stop.weight,
+            // Stops Intelligence carriers (parsed client-side by parseStopComments.ts)
+            comments: extractStopComments(stop),
+            sealNbr: stop.sealNbr || null,
+            apptFrom: window.apptFrom,
+            apptTo: window.apptTo,
             plannedEta: toInfo.plannedEtaDTTM,
             etaDTTM: toInfo.etaDttm,
             arrivalDTTM: toInfo.arrivalDTTM,

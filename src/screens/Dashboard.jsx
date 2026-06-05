@@ -4,9 +4,10 @@
 
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { Truck, AlertTriangle, RefreshCw, ChevronRight, Clock, MapPin, User, Package, CheckCircle2, XCircle, Search, Users, Calendar, ChevronLeft } from 'lucide-react';
-import { fetchToday, fetchFleet, refreshFleet, normalizePro, TENANTS } from '../lib/api';
+import { fetchToday, fetchFleet, fetchFleetStops, refreshFleet, normalizePro, TENANTS } from '../lib/api';
 import { normalizeLoad, normalizeStop, fmtTime, fmtDate, BUCKET_COLORS } from '../lib/normalize';
 import { KPI, Loading, ErrorBox, SectionHeader, ProgressBar, StatusPill, EmptyState } from '../components/UI';
+import { intelForStop, fmtCurrency } from '../components/StopIntel';
 
 export default function Dashboard({ tenant, viewDate, isToday, goToPrevBusinessDay, onOpenLoad, onOpenStop, onOpenMap, onOpenStops, onOpenLoads, onOpenDrivers }) {
   const [state, setState] = useState({ loading: true, error: null, data: null });
@@ -47,6 +48,28 @@ export default function Dashboard({ tenant, viewDate, isToday, goToPrevBusinessD
   }, [tenant, isNuvizz, viewDate, load]);
 
   useEffect(() => { load(); }, [load]);
+
+  // Non-Uline revenue pulse — sum the parsed TOTAL-AMOUNT / SealNbr across today's stops.
+  // Lean secondary read of __fleetstops (cached after first hit); never blocks the main view.
+  const [rev, setRev] = useState({ loading: false, total: 0, billedStops: 0, asOf: null });
+  useEffect(() => {
+    let cancelled = false;
+    if (!isNuvizz) { setRev({ loading: false, total: 0, billedStops: 0, asOf: null }); return; }
+    setRev(r => ({ ...r, loading: true }));
+    fetchFleetStops(tenant, viewDate)
+      .then(data => {
+        if (cancelled) return;
+        const stops = data?.stops || [];
+        let total = 0, billedStops = 0;
+        for (const s of stops) {
+          const { revenue } = intelForStop(s);
+          if (revenue != null) { total += revenue; billedStops++; }
+        }
+        setRev({ loading: false, total, billedStops, asOf: new Date() });
+      })
+      .catch(() => { if (!cancelled) setRev(r => ({ ...r, loading: false })); });
+    return () => { cancelled = true; };
+  }, [tenant, viewDate, isNuvizz, state.data]);
 
   const addRecent = (pro) => {
     const next = [pro, ...recentPros.filter(p => p !== pro)].slice(0, 8);
@@ -167,6 +190,33 @@ export default function Dashboard({ tenant, viewDate, isToday, goToPrevBusinessD
               <TappableStat label="Stops" value={summary.totalStops} sub={`${summary.pctComplete}% done`} onClick={() => onOpenStops && onOpenStops('active')} />
               <TappableStat label="Issues" value={summary.totalExceptions} sub={summary.totalExceptions > 0 ? 'tap to triage' : 'none'} danger={summary.totalExceptions > 0} onClick={summary.totalExceptions > 0 ? () => onOpenStops && onOpenStops('exceptions') : undefined} />
             </div>
+            <div className="mt-2 text-[9px] opacity-50 text-right">
+              as of {rev.asOf ? rev.asOf.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : fmtTime(new Date().toISOString())}
+            </div>
+          </div>
+
+          {/* "Today" tiles — unassigned loads + Non-Uline revenue, each links pre-filtered */}
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              onClick={() => onOpenLoads && onOpenLoads('pending')}
+              className="bg-white rounded-xl p-3 border text-left active:scale-95 transition"
+            >
+              <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold">Unassigned Loads</div>
+              <div className="text-2xl font-bold mt-0.5" style={{ color: (summary.unassignedLoads || 0) > 0 ? '#b45309' : '#0f172a' }}>
+                {summary.unassignedLoads ?? 0}
+              </div>
+              <div className="text-[11px] text-slate-500 mt-0.5">need a driver</div>
+            </button>
+            <button
+              onClick={() => onOpenStops && onOpenStops('all')}
+              className="bg-white rounded-xl p-3 border text-left active:scale-95 transition"
+            >
+              <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold">Non-Uline Rev</div>
+              <div className="text-2xl font-bold mt-0.5 text-emerald-700">
+                {rev.loading && !rev.asOf ? '…' : (fmtCurrency(rev.total) || '$0.00')}
+              </div>
+              <div className="text-[11px] text-slate-500 mt-0.5">{rev.billedStops} billed stop{rev.billedStops === 1 ? '' : 's'} today</div>
+            </button>
           </div>
 
           {/* Completion progress — tappable to show delivered stops; chips filter by status */}

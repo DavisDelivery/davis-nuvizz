@@ -6,6 +6,7 @@ import { fetchLoad } from '../lib/api';
 import { normalizeLoad, fmtTime, fmtDateTime, minutesBetween, BUCKET_COLORS } from '../lib/normalize';
 import { TENANTS } from '../lib/api';
 import { Loading, ErrorBox, StatusPill, ProgressBar, Field, SectionHeader } from '../components/UI';
+import { intelForStop, StopChips, ReceivingHours, AppointmentReality, NonUlineRev } from '../components/StopIntel';
 
 export default function LoadDetail({ tenant, loadNbr, onOpenStop }) {
   const [state, setState] = useState({ loading: true, error: null, data: null });
@@ -96,7 +97,9 @@ export default function LoadDetail({ tenant, loadNbr, onOpenStop }) {
         <SectionHeader title={`Stops (${l.stops.length})`} />
         <div className="bg-white rounded-xl border divide-y overflow-hidden">
           {l.stops.length === 0 && <div className="p-4 text-sm text-slate-500">No stops on this load.</div>}
-          {l.stops.map((s, i) => (
+          {l.stops.map((s, i) => {
+            const intel = intelForStop({ comments: s.comments, sealNbr: s.sealNbr, plannedFrom: s.plannedFrom, plannedTo: s.plannedTo });
+            return (
             <button
               key={s.id || s.nbr}
               onClick={() => s.nbr && onOpenStop(s.nbr)}
@@ -113,8 +116,15 @@ export default function LoadDetail({ tenant, loadNbr, onOpenStop }) {
                   <span className="font-mono text-[10px] text-slate-500">{s.nbr}</span>
                   <StatusPill status={s.status} size="xs" />
                   {s.type && <span className="text-[9px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-600">{s.type}</span>}
+                  <span className="ml-auto"><NonUlineRev revenue={intel.revenue} fromAmount={intel.parsed.totalAmount != null} /></span>
                 </div>
                 <div className="text-sm font-medium truncate mt-0.5">{s.name || s.customerName || '—'}</div>
+                {/* Reuses Part A's Stops Intelligence chips + soft window + appointment reality */}
+                <StopChips parsed={intel.parsed} />
+                <div className="flex items-center flex-wrap gap-x-2 gap-y-0.5 mt-0.5">
+                  <AppointmentReality apptFrom={intel.apptFrom} apptTo={intel.apptTo} placeholder={intel.placeholder} />
+                  <ReceivingHours parsed={intel.parsed} />
+                </div>
                 <div className="text-[11px] text-slate-500 truncate flex items-center gap-2">
                   <span>{[s.city, s.state].filter(Boolean).join(', ') || '—'}</span>
                   {s.plannedEta && <span>· ETA {fmtTime(s.plannedEta)}</span>}
@@ -140,7 +150,8 @@ export default function LoadDetail({ tenant, loadNbr, onOpenStop }) {
               </div>
               <ChevronRight size={14} className="text-slate-300 mt-1 flex-shrink-0" />
             </button>
-          ))}
+            );
+          })}
         </div>
       </div>
     </div>

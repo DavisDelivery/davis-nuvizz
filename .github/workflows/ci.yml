@@ -1,0 +1,25 @@
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+jobs:
+  test-and-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      # Parser unit tests run on Node's built-in test runner with native TypeScript
+      # type-stripping — no install needed, so this stays green even if the lockfile
+      # drifts. (See src/lib/parseStopComments.test.ts)
+      - name: Unit tests (parser)
+        run: npm test
+      # Full build sanity — ensures the app still compiles with the new screens/lib.
+      - name: Install
+        run: npm install --no-audit --no-fund
+      - name: Build
+        run: npm run build
