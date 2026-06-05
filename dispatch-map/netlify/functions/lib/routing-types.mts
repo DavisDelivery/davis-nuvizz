@@ -16,6 +16,12 @@ export const DEFAULT_STRATEGY: Strategy = 'MIN_DISTANCE';
 export type MatrixMode = 'haversine' | 'google';
 export const DEFAULT_MATRIX_MODE: MatrixMode = 'haversine';
 
+// Appointment-window enforcement. ADVISORY (default): never spill a stop for a
+// window it can't meet — keep it and FLAG it (windowViolatedIds). STRICT (opt-in
+// kill switch): the historical behavior — drop unsatisfiable-window stops.
+export type WindowMode = 'advisory' | 'strict';
+export const DEFAULT_WINDOW_MODE: WindowMode = 'advisory';
+
 // Google Routes computeRouteMatrix Basic (non-traffic) tier — ~$5 / 1000 elements
 // (Appendix B §5). Used for the transparent per-build cost estimate.
 export const BASIC_MATRIX_RATE_PER_1K_USD = 5.0;
@@ -106,6 +112,7 @@ export interface BuiltRoute {
   load: RouteLoad;
   capacity: RouteLoad;     // the assigned truck's capacity (for load-vs-capacity bars)
   feasible: boolean;       // always true for a SHOWN route (repair guarantees it)
+  windowViolatedIds?: string[]; // stops kept on this route whose STRICT window the ETA misses (advisory flag)
 }
 
 export interface UnassignedStop { stopId: string; reasons: string[] }
@@ -125,6 +132,7 @@ export interface SolverInput {
   objectiveWeights: ObjectiveWeights;
   constraints?: Record<string, unknown>;
   departEpochSec?: number; // depot departure; defaults applied by pipeline
+  windowMode?: WindowMode; // 'advisory' (default) flags window misses; 'strict' spills them
 }
 
 export interface SolverOutput {

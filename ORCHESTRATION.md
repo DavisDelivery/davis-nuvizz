@@ -582,3 +582,21 @@ LEVER 2 — Free road-distance matrices at scale (self-hosted OSRM).
   map chip + desktop footer unchanged. No engine/functions/cache/Phase 1 touched.
   NOTE: history-core.mts keeps its own capture APP_VERSION const (unchanged) — that
   divergence from src/App.jsx APP_VERSION is intentional. 89 tests green.
+- Jun 2026 — Claude (Phase 2 PR) — Appointment windows become ADVISORY (flag, don't
+  spill) (v0.21.0). A ~21-stop build routed only 8; 13 spilled "appointment window
+  cannot be met" despite skid headroom — the repair loop was DROPPING any stop whose
+  STRICT window it couldn't satisfy (same hard-gate class as deck length, which #47
+  already made advisory). Fix (engine): a window-enforcement MODE, default ADVISORY —
+  the repair loop never spills for a window; it KEEPS the stop on its truck and marks
+  it windowViolated (new BuiltRoute.windowViolatedIds), with EDF sequencing still
+  trying to honor windows as a soft preference. STRICT (old behavior) is an opt-in
+  kill switch via request.windowMode or env ROUTING_WINDOWS=strict. windowViolatedIds
+  flows routing-types -> repair -> pipeline -> route result; the appointment window +
+  STRICT designation are PRESERVED on the stop for a future window-respecting solver.
+  UI: route-card rows + the PRO detail popup show "⚠ outside appointment window" (with
+  the window) when violated; the risk-flags summary now lists the stops ACTUALLY out
+  of window (not every STRICT stop); window-driven spills go to 0 in advisory. Skids
+  stay the only hard capacity gate; weight gates only >0; deck stays advisory (#47
+  gates untouched); equipment/matrix/cost/cache/Phase 1/solver-seeding untouched;
+  NuVizz read-only. Repair + pipeline unit-tested for both modes (92 tests green).
+  Built on the v0.20.0 version-badge branch (stacked); rebase onto main after #49.
