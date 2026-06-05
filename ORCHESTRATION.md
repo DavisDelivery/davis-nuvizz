@@ -208,8 +208,23 @@ until the day after — this is the mechanism that fixes that.
 - From a past stop, a user edits the customer's persistent notes; a future stop at
   that customer shows the restriction automatically.
 
-### Phase 4 — NuVizz Write-Back (gated) — FUTURE
+### Phase 4 — NuVizz Write-Back (gated) — FEASIBILITY TESTED (2026-06-05)
 **Goal:** dispatch a route we built — safely, one at a time.
+
+**Empirical findings (live UAT, tenant `Davisv5`) — see `dispatch-map/HANDOFF.md` + PR #54:**
+- ✅ **Writing works.** Auth always `200` (never `401/403`). Synchronous **stop** create
+  (`/stop/sync/update`) persists, reads back, and is reversible (`/stop/cancel`). Demo stop
+  `CLAUDE_DEMO_1720` left in the tenant. Order example pulled to
+  `reference/nuvizz-uat-order-example.json`.
+- ⛔ **Creating a load/route is blocked by tenant config, not the product:** `serviceName`
+  is a tenant integration mapping; the load/route one is NOT `default`. `/load/update/default`
+  makes only *stops*; `/routePlan/update/default` → **HTTP 500 NPE** (slot not wired);
+  `/load/update/deliverit` parses differently (proves other mappings exist). Depot is not a
+  registered **facility** (`facility/info` → 404). `XZS` (real Draft load) is **not
+  API-retrievable** (no load-list endpoint; display name ≠ loadNbr; ULINE cross-company =
+  401). **BLOCKER → needs NuVizz to supply the load/route `serviceName` + register the depot
+  facility before the writer can be built.** (See Open decisions.)
+
 **Scope (built against the pinned spec)**
 - Flow: Build -> Preview exact JSON -> create Load (no dispatch) -> Chad authorizes ->
   dispatch. Hard human gate on dispatch.
@@ -267,6 +282,13 @@ knowledge are deliberately separated.
 - Whether Phase 2 uses Google Route Optimization (optimizeTours) as the candidate
   generator from day one, or starts with Matrix + our own bin-packing only.
 - CS notes platform (Phase 5) architecture — deferred.
+- **[BLOCKING Phase 4 load-write] NuVizz tenant config (2026-06-05):** feasibility test proved
+  we can write *stops* to Davisv5 but not *loads/routes* — the load/route `serviceName` mapping
+  isn't `default` (and `routePlan/default` 500s), and the depot isn't a registered facility.
+  **Need from NuVizz:** (a) correct `serviceName`/doc-mapping for load + route import on Davis
+  (or wire `routePlan` to a working mapping); (b) register the Buford depot/origin facility;
+  (c) confirm target company for load-write (Davisv5 vs ULINE). Until resolved, Phase 4 load
+  writes cannot be built. Stop-level writes are unblocked. Detail in `dispatch-map/HANDOFF.md`.
 
 ---
 
