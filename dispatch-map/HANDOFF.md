@@ -11,6 +11,63 @@ v0.7.2 = M4.5 PR 2 of 3 (stop-detail + driver-snapshot drawers).
 v0.8.0 = M4.5 PR 3 of 3 (final polish: marker labels, snapshot tap-through,
 mobile diagnostics, RESEARCH doc).
 
+## Phase 4 — NuVizz WRITE feasibility (UAT/Davisv5): findings + handoff to orchestrator
+
+**Question we were answering:** can the dispatch map *write loads back* to NuVizz —
+specifically, take stops and create a load/route? **Verdict: writing works; creating a
+*load/route* is blocked by NuVizz-side tenant config, not by the product.** Detail below;
+the gated write spike is PR #54 (`netlify/functions/nuvizz-write-test.mts`). A real order
+was extracted to `reference/nuvizz-uat-order-example.json` (PII-redacted).
+
+### What works (proven live on UAT, tenant `Davisv5` = "Davis Delivery V5")
+- **Auth / write permission:** always `200`, never `401/403`. We can write.
+- **Stop create (synchronous):** `POST /stop/sync/update/{company}` → `200 "Stop created
+  successfully" {created:1}`, persists, reads back via `GET /stop/info/{stopNbr}/{company}`,
+  reversible via `POST /stop/cancel` (`reasonCode` required). NuVizz geocodes addresses and
+  normalizes the schedule TZ. A demo stop **`CLAUDE_DEMO_1720`** was left in the tenant for
+  Chad to see (KEROLABS CORP / Norcross). This is the trustworthy, inline-verdict path.
+
+### What's blocked, and why it's a config gap (not a wall)
+- **`serviceName` is a tenant-specific integration mapping**, and the load/route one is not
+  named `default` on Davisv5:
+  - `POST /load/update/default/{company}` → `200 "Async import SUCCESS"` **but creates only
+    STOPS** (no retrievable load). The `default` mapping here is a *stop* importer
+    (`sourceType=INTG`, `planningType=MANUAL`, no route assignment). No way to query the
+    async `AppMessageLog`.
+  - `POST /routePlan/update/default/{company}` ("Create or Update Route Plan" = stops→load,
+    exactly our use case) → **HTTP 500**, internal NPE 998 *"DeliverItLoad … is null"* for
+    every valid body shape (planStops refs, full inline stops, ±depot). The `default` slot
+    isn't wired for route creation.
+  - `POST /load/update/deliverit/{company}` → a *different* error → confirms other
+    serviceName mappings exist and parse differently. The portal's "Upload Load(s)" button
+    uses one of these configured mappings (that's how the `XZS` Draft load exists).
+- **Master data gap:** `GET /facility/info?label=Buford` → `404`. Our depot/origin terminal
+  is **not a registered facility**, which load creation needs.
+- **Route not API-retrievable with our creds:** `XZS` (a real Draft load in the UI) is not
+  findable by `load/info`/`stop/info` under any name variant — there is **no load-list
+  endpoint**, and **display name ≠ loadNbr** (system-generated). Cross-company reads into
+  `ULINE` (the data owner) return `401` — our creds are scoped to Davisv5. So we could pull
+  the **order** (stop/shipment) but **not** the **route**.
+
+### Order extracted ("taken out of their system")
+`reference/nuvizz-uat-order-example.json` — `GET /stop/info/050626_S2/Davisv5`, a real
+ULINE delivery (KEROLABS CORP, Norcross GA) with `stopDetails` line items (MISC/LATEX
+GLOVES/DRUM PUMP…), `bol 240600396001`, `stopAssignment {carrierCode: DDIS}` (assigned to
+carrier, unplanned/not-in-route), `sourceType: INTG`. This is the inbound order/stop shape.
+
+### Recommended next actions (orchestrator to route)
+1. **Ask NuVizz (blocking for Phase 4 load-write):** (a) the correct `serviceName` /
+   doc-mapping to use for **load + route** import on Davis (or point `routePlan` at a working
+   mapping); (b) register the **depot/origin facility** (Buford terminal) as master data;
+   (c) confirm whether load-write should target Davisv5 or the ULINE company space.
+2. Once #1 is known, **re-run** the spike against `/routePlan/update/{realService}` (and/or
+   `/load/update/{realService}`) and confirm a load reads back by loadNbr → then design the
+   dispatch-map → NuVizz load writer on the **synchronous** path where possible.
+3. Backlog still open: loose-pieces → NuVizz "volume"; inches→feet floor-length; dunnage /
+   loose-pieces breakdown.
+
+---
+
 ## v0.23.0 — Routing quality (Chunk B): geographic truck assignment + green markers
 
 Chunk A fixed *within-truck* sequencing; the remaining defect was *cross-truck

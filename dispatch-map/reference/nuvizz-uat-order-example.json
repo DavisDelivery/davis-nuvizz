@@ -1,0 +1,323 @@
+{
+  "_README": "Real NuVizz UAT (Davisv5) DELIVERY STOP / ORDER pulled 2026-06-05 via GET /stop/info/050626_S2/Davisv5. Customer contact PII redacted. This is the shape of an INBOUND order/shipment as it exists in NuVizz (sourceType=INTG, company=ULINE, visible to Davisv5). Use as the blueprint for what fields a load's stops carry.",
+  "extractedExample": {
+    "stopId": "6a22da7db03b5b43b15f5fde",
+    "stopNbr": "050626_S2",
+    "stopSeq": 1,
+    "stopType": "DO",
+    "stopExecution": "APP",
+    "shipmentType": "REG",
+    "company": {
+      "code": "ULINE",
+      "name": "ULINEUAT"
+    },
+    "visibility": [
+      {
+        "header": "CUSTOMER",
+        "values": []
+      },
+      {
+        "header": "FACILITIES",
+        "values": []
+      },
+      {
+        "header": "SHIPMENT",
+        "values": [
+          "Davis Delivery V5 (DAVISV5)",
+          "ULINEUAT (ULINE)"
+        ]
+      }
+    ],
+    "from": {
+      "address": {
+        "name": "ULINEUAT",
+        "addr1": "943 GAINESVILLE HIGHWAY",
+        "city": "BUFORD",
+        "state": "GEORGIA",
+        "zip": "30518",
+        "country": "UNITED STATES",
+        "latitude": -34.14838,
+        "longitude": -83.95948,
+        "addressType": "COM",
+        "fullAddress": "943 Gainesville Highway, Buford, Georgia 30518"
+      },
+      "contact": {},
+      "schedule": {
+        "timeFrom": "2026-06-05T00:00:00",
+        "timeTo": "2026-06-05T08:00:00",
+        "timeZone": "Etc/GMT+6",
+        "timeConstraint": "STRICT"
+      },
+      "signatureRequired": false,
+      "imageRequired": false,
+      "operatingHours": {
+        "timeFrom": "00:00:00",
+        "timeTo": "23:59:00"
+      }
+    },
+    "to": {
+      "address": {
+        "name": "KEROLABS CORP",
+        "addr1": "2825 PACIFIC DR STE C",
+        "city": "NORCROSS",
+        "state": "GA",
+        "zip": "30071",
+        "country": "US",
+        "latitude": 33.93828,
+        "longitude": -84.22846,
+        "addressType": "ANY",
+        "fullAddress": "2825 Pacific Dr Ste C, Norcross, GA 30071"
+      },
+      "contact": {
+        "contactName": "[REDACTED]",
+        "email": "[REDACTED]",
+        "phone": "[REDACTED]"
+      },
+      "schedule": {
+        "timeFrom": "2026-06-05T08:00:00",
+        "timeTo": "2026-06-05T20:00:00",
+        "timeZone": "America/New_York",
+        "timeConstraint": "STRICT"
+      },
+      "signatureRequired": false,
+      "imageRequired": false,
+      "documents": [
+        {
+          "description": "",
+          "dispositionType": "01",
+          "documentData": "",
+          "documentExtType": "pdf",
+          "documentName": "BOL",
+          "documentType": "03",
+          "documentCategory": "",
+          "reference": "9880de1c-61be-46b2-a331-cf0b4055ae65",
+          "documentGuid": "9880de1c-61be-46b2-a331-cf0b4055ae65",
+          "createdDTTM": "2026-06-05T10:17:34"
+        }
+      ],
+      "operatingHours": {
+        "timeFrom": "00:00:00",
+        "timeTo": "23:59:00"
+      },
+      "captureInfo": {
+        "captureImages": [
+          {
+            "name": "IMAGE",
+            "required": "MANDATORY"
+          }
+        ]
+      }
+    },
+    "shipForBP": "ULINE",
+    "profile": "ULINE",
+    "profileId": "62dac02e828c9a06da095749",
+    "markfor": {
+      "address": {
+        "name": "KEROLABS CORP",
+        "latitude": 14.99878,
+        "longitude": -30.78879,
+        "addressType": "ANY",
+        "fullAddress": ""
+      },
+      "contact": {
+        "contactName": "GABRIELA MIRAGLIA",
+        "email": "GR@KEROTIN.GOM",
+        "phone": "7348812285"
+      }
+    },
+    "shipmentNbr": "050626_S2",
+    "doConfirmation": "SCAN-VER-ALL",
+    "puConfirmation": "SKIP",
+    "billTo": {
+      "name": "ULINE - GA PRIMARY WHSE - G6",
+      "addr1": "705 BRASELTON INDUSTRIAL BLVD",
+      "city": "BRASELTON",
+      "state": "GA",
+      "zip": "30517",
+      "country": "US"
+    },
+    "bol": "240600396001",
+    "freightTerms": "DA",
+    "proNumber": "GABRIELA",
+    "reference1": "G6",
+    "reference2": "17347772",
+    "sealNbr": "$51.70",
+    "totalCartons": 2,
+    "totalPallets": 2,
+    "volume": 0.0,
+    "weight": 482.0,
+    "weightUOM": "Lbs",
+    "scheduleAttribute": "PREPAID",
+    "createdDttm": "2026-06-05T10:17:33",
+    "laneNumber": "76194632",
+    "deliveryAttempt": 0,
+    "entityType": "STOP",
+    "sourceType": "INTG",
+    "clientBillable": "NO",
+    "thirdParty": "NO",
+    "stopDetails": [
+      {
+        "product": "MISC",
+        "productIdentifier": "187645-05 ,SEQ# 1",
+        "quantity": 2,
+        "quantityUOM": "CTN",
+        "stopDetailSeq": 1,
+        "deliveryType": "DO",
+        "confirmationType": "P",
+        "referenceText": "125",
+        "originalLineNumber": "0",
+        "weight": 19.0,
+        "weightUOM": "Lbs",
+        "unitPrice": 0.0,
+        "productCategory": "S",
+        "confirmed": {},
+        "sourceType": "INTG",
+        "guid": "211d4c07-4fed-45da-bbb9-9359e87d1fcf"
+      },
+      {
+        "product": "LATEX GLOVES",
+        "productIdentifier": "156600-09 ,SEQ# 2",
+        "quantity": 4,
+        "quantityUOM": "CTN",
+        "stopDetailSeq": 2,
+        "deliveryType": "DO",
+        "confirmationType": "P",
+        "referenceText": "70",
+        "originalLineNumber": "0",
+        "weight": 34.0,
+        "weightUOM": "Lbs",
+        "unitPrice": 0.0,
+        "productCategory": "S",
+        "confirmed": {},
+        "sourceType": "INTG",
+        "guid": "9369db03-72f6-4b14-940d-21beed2fdcad"
+      },
+      {
+        "product": "DRUM PUMP",
+        "productIdentifier": "127940-02 ,SEQ# 3",
+        "quantity": 1,
+        "quantityUOM": "CTN",
+        "stopDetailSeq": 3,
+        "deliveryType": "DO",
+        "confirmationType": "P",
+        "referenceText": "77.5",
+        "originalLineNumber": "0",
+        "weight": 3.0,
+        "weightUOM": "Lbs",
+        "unitPrice": 0.0,
+        "productCategory": "S",
+        "confirmed": {},
+        "sourceType": "INTG",
+        "guid": "1a8fed2d-7318-4bbc-b8ca-5782a8ca4d97"
+      },
+      {
+        "product": "GLOVES WORKMANS CLASS",
+        "productIdentifier": "049920-00 ,SEQ# 4",
+        "quantity": 1,
+        "quantityUOM": "CTN",
+        "stopDetailSeq": 4,
+        "deliveryType": "DO",
+        "confirmationType": "P",
+        "referenceText": "77.5",
+        "originalLineNumber": "0",
+        "weight": 6.0,
+        "weightUOM": "Lbs",
+        "unitPrice": 0.0,
+        "productCategory": "S",
+        "confirmed": {},
+        "sourceType": "INTG",
+        "guid": "f9da3872-a10f-45d2-895d-10fbf66bd2f1"
+      },
+      {
+        "product": "ISOPROPANOL",
+        "productIdentifier": "42660-02 ,SEQ# 5",
+        "quantity": 1,
+        "quantityUOM": "DRM",
+        "stopDetailSeq": 5,
+        "deliveryType": "DO",
+        "confirmationType": "P",
+        "referenceText": "70",
+        "originalLineNumber": "0",
+        "weight": 420.0,
+        "weightUOM": "Lbs",
+        "unitPrice": 0.0,
+        "productCategory": "S",
+        "confirmed": {},
+        "sourceType": "INTG",
+        "guid": "74bed124-9ca9-43d9-bb2a-d718e24e1c47"
+      }
+    ],
+    "comments": [
+      {
+        "commentType": "01",
+        "cmtType": "ORD_IN",
+        "accessLevels": [
+          "DRIVER",
+          "DISPATCHER",
+          "CUSTOMER"
+        ],
+        "commentDescription": "SPL-INSTR-TEXT: LIFT GATE NEEDED",
+        "commentTypeDescription": "Order Instructions",
+        "addedByName": "ULINE INTEGRATION",
+        "addedOn": "2026-06-05T14:17:33",
+        "source": "Order - Order Instructions"
+      },
+      {
+        "commentType": "01",
+        "cmtType": "ORD_IN",
+        "accessLevels": [
+          "DRIVER",
+          "DISPATCHER",
+          "CUSTOMER"
+        ],
+        "commentDescription": "** DO NOT BREAK DOWN SKID  **",
+        "commentTypeDescription": "Order Instructions",
+        "addedByName": "ULINE INTEGRATION",
+        "addedOn": "2026-06-05T14:17:33",
+        "source": "Order - Order Instructions"
+      },
+      {
+        "commentType": "01",
+        "cmtType": "ORD_IN",
+        "accessLevels": [
+          "DRIVER",
+          "DISPATCHER",
+          "CUSTOMER"
+        ],
+        "commentDescription": "TOTAL-AMOUNT : 51.70",
+        "commentTypeDescription": "Order Instructions",
+        "addedByName": "ULINE INTEGRATION",
+        "addedOn": "2026-06-05T14:17:33",
+        "source": "Order - Order Instructions"
+      }
+    ],
+    "customAttributes": [
+      {
+        "keyField": "Markdown",
+        "keyValue": "15"
+      },
+      {
+        "keyField": "stopOrigPrice",
+        "keyValue": "60.82"
+      }
+    ],
+    "stopAssignment": {
+      "carrierCode": "DDIS",
+      "carrierName": "DDIS"
+    },
+    "planningType": "MANUAL",
+    "apptInfo": {
+      "apptStatus": "READY_TO_SCHEDULE"
+    },
+    "trackingInfo": {
+      "trackingEnabled": false
+    },
+    "stopDistance": 2249.52,
+    "createUpdateInfo": {
+      "createdBy": "ULINE INTEGRATION",
+      "updatedBy": "ULINE INTEGRATION",
+      "createdDTTM": "2026-06-05T14:17:33",
+      "lastUpdatedDTTM": "2026-06-05T14:17:33"
+    }
+  }
+}
