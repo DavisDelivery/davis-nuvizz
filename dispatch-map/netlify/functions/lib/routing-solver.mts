@@ -40,48 +40,117 @@ function serviceSec(stop: SolverStop): number {
 // ── assignment ───────────────────────────────────────────────────────────────
 interface Assignment { byTruck: Map<string, SolverStop[]>; unassigned: UnassignedStop[] }
 
-function assign(stops: SolverStop[], trucks: SolverTruck[]): Assignment {
+// Pure haversine (meters) on lat/lng — geographic proximity that does NOT depend on
+// the matrix mode (haversine vs google).
+function haversineM(a: { lat: number; lng: number }, b: { lat: number; lng: number }): number {
+  const R = 6371000, toRad = (d: number) => (d * Math.PI) / 180;
+  const dLat = toRad(b.lat - a.lat), dLng = toRad(b.lng - a.lng);
+  const s = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(a.lat)) * Math.cos(toRad(b.lat)) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(s));
+}
+
+// Geography-aware capacitated assignment (Chunk B). Operator rule: nearby stops ride
+// the SAME truck; two trucks share an area ONLY when (a) an equipment restriction
+// forces a stop onto a specific truck, or (b) a cluster exceeds one truck's capacity.
+// Equipment + capacity stay the ONLY hard gates (truckCanCarry / capacityFits); spill
+// reasons are unchanged. Deterministic: equipment/oversize anchors first, then
+// farthest-point seeds per empty truck, then global nearest-pair region growth.
+function assign(stops: SolverStop[], trucks: SolverTruck[], depot: { lat: number; lng: number }): Assignment {
   const byTruck = new Map<string, SolverStop[]>();
   const loadByTruck = new Map<string, ReturnType<typeof emptyLoad>>();
   for (const t of trucks) { byTruck.set(t.id, []); loadByTruck.set(t.id, emptyLoad()); }
   const unassigned: UnassignedStop[] = [];
 
-  // Hardest to place first: oversize, then most equipment reqs, then largest skids.
-  const order = [...stops].sort((a, b) =>
+  const place = (stop: SolverStop, t: SolverTruck) => {
+    byTruck.get(t.id)!.push(stop);
+    loadByTruck.set(t.id, addLoad(loadByTruck.get(t.id)!, stop));
+  };
+  const fits = (stop: SolverStop, t: SolverTruck) =>
+    truckCanCarry(stop, t).ok && capacityFits(loadByTruck.get(t.id)!, stop, t).ok;
+  // Distance from a stop to a truck's current territory (nearest assigned stop), or to
+  // the depot when the territory is still empty.
+  const distToTruck = (stop: SolverStop, t: SolverTruck): number => {
+    const terr = byTruck.get(t.id)!;
+    if (!terr.length) return haversineM(stop, depot);
+    let best = Infinity;
+    for (const s of terr) { const d = haversineM(stop, s); if (d < best) best = d; }
+    return best;
+  };
+  const spillNoTruck = (stop: SolverStop) => {
+    const reasons = new Set<string>();
+    for (const t of trucks) for (const r of truckCanCarry(stop, t).reasons) reasons.add(r);
+    unassigned.push({ stopId: stop.id, reasons: [REASON.noTruckFits, ...reasons] });
+  };
+  const spillCapacity = (stop: SolverStop, capable: SolverTruck[]) => {
+    const roomiest = capable.reduce((p, c) =>
+      (c.maxSkids - loadByTruck.get(c.id)!.skids) > (p.maxSkids - loadByTruck.get(p.id)!.skids) ? c : p);
+    unassigned.push({ stopId: stop.id, reasons: capacityFits(loadByTruck.get(roomiest.id)!, stop, roomiest).reasons });
+  };
+
+  // ── Phase 1: anchor restricted + oversize stops on a capable truck (equipment
+  //    decides; geography is secondary for these). Hardest-first, deterministic. ──
+  const isRestricted = (s: SolverStop) => s.oversize || (s.equipmentReqs?.length || 0) > 0;
+  const restricted = stops.filter(isRestricted).sort((a, b) =>
     (Number(b.oversize) - Number(a.oversize)) ||
     ((b.equipmentReqs?.length || 0) - (a.equipmentReqs?.length || 0)) ||
-    (b.skids - a.skids) || (b.weightLbs - a.weightLbs));
-
-  for (const stop of order) {
+    (b.skids - a.skids) || (b.weightLbs - a.weightLbs) || (a.id < b.id ? -1 : 1));
+  for (const stop of restricted) {
     const capable = trucks.filter((t) => truckCanCarry(stop, t).ok);
-    if (capable.length === 0) {
-      // Cannot ride on ANY selected truck — report the distinct binding reasons.
-      const reasons = new Set<string>();
-      for (const t of trucks) for (const r of truckCanCarry(stop, t).reasons) reasons.add(r);
-      unassigned.push({ stopId: stop.id, reasons: [REASON.noTruckFits, ...reasons] });
-      continue;
-    }
-    // Among capable trucks with remaining room, pick the TIGHTEST fit (least leftover
-    // skids, then weight) to pack efficiently and leave one partial truck for spillover.
-    let best: SolverTruck | null = null;
-    let bestLeftover = Infinity;
-    for (const t of capable) {
-      const load = loadByTruck.get(t.id)!;
-      if (!capacityFits(load, stop, t).ok) continue;
-      const leftover = (t.maxSkids - (load.skids + stop.skids)) * 1e6 + (t.maxWeightLbs - (load.weightLbs + stop.weightLbs));
-      if (leftover < bestLeftover) { bestLeftover = leftover; best = t; }
-    }
-    if (!best) {
-      // Capable in principle but every such truck is full → capacity spill. Report
-      // the breach against the capable truck with the most remaining skid room.
-      const roomiest = capable.reduce((p, c) =>
-        (c.maxSkids - loadByTruck.get(c.id)!.skids) > (p.maxSkids - loadByTruck.get(p.id)!.skids) ? c : p);
-      unassigned.push({ stopId: stop.id, reasons: capacityFits(loadByTruck.get(roomiest.id)!, stop, roomiest).reasons });
-      continue;
-    }
-    byTruck.get(best.id)!.push(stop);
-    loadByTruck.set(best.id, addLoad(loadByTruck.get(best.id)!, stop));
+    if (!capable.length) { spillNoTruck(stop); continue; }
+    const fitting = capable.filter((t) => capacityFits(loadByTruck.get(t.id)!, stop, t).ok);
+    if (!fitting.length) { spillCapacity(stop, capable); continue; }
+    const best = fitting.reduce((p, c) =>
+      (c.maxSkids - loadByTruck.get(c.id)!.skids) > (p.maxSkids - loadByTruck.get(p.id)!.skids) ? c : p);
+    place(stop, best);
   }
+
+  // ── Phase 2: seed each EMPTY truck with a geographically spread plain stop
+  //    (farthest-point sampling) so separated clusters land on different trucks. ──
+  const assignedIds = new Set<string>();
+  for (const terr of byTruck.values()) for (const s of terr) assignedIds.add(s.id);
+  const remaining = stops.filter((s) => !isRestricted(s) && !assignedIds.has(s.id));
+  const chosenSeeds: SolverStop[] = [];
+  const farthestPoint = (): SolverStop | null => {
+    let best: SolverStop | null = null, bestScore = -1;
+    for (const s of remaining) {
+      if (chosenSeeds.includes(s)) continue;
+      let score = haversineM(s, depot);
+      for (const seed of chosenSeeds) score = Math.min(score, haversineM(s, seed));
+      if (score > bestScore || (score === bestScore && best && s.id < best.id)) { bestScore = score; best = s; }
+    }
+    return best;
+  };
+  for (const t of trucks) {
+    if (byTruck.get(t.id)!.length) continue; // already anchored in phase 1
+    let seed = farthestPoint();
+    while (seed && !fits(seed, t)) { chosenSeeds.push(seed); seed = farthestPoint(); } // skip seeds this truck can't take
+    if (!seed) break;
+    chosenSeeds.push(seed);
+    place(seed, t);
+    remaining.splice(remaining.indexOf(seed), 1);
+  }
+
+  // ── Phase 3: global nearest-pair region growth for the rest. ──
+  let guard = 0;
+  while (remaining.length && guard++ <= remaining.length + 5) {
+    let bestStop: SolverStop | null = null, bestTruck: SolverTruck | null = null, bestD = Infinity;
+    for (const stop of remaining) {
+      for (const t of trucks) {
+        if (!fits(stop, t)) continue;
+        const d = distToTruck(stop, t);
+        if (d < bestD || (d === bestD && bestStop && stop.id < bestStop.id)) { bestD = d; bestStop = stop; bestTruck = t; }
+      }
+    }
+    if (!bestStop) break; // nothing fits any truck with room
+    place(bestStop, bestTruck!);
+    remaining.splice(remaining.indexOf(bestStop), 1);
+  }
+  // Anything still remaining fits no truck with room → capacity (or no-truck) spill.
+  for (const stop of remaining) {
+    const capable = trucks.filter((t) => truckCanCarry(stop, t).ok);
+    if (!capable.length) spillNoTruck(stop); else spillCapacity(stop, capable);
+  }
+
   return { byTruck, unassigned };
 }
 
@@ -186,7 +255,7 @@ export function solveRouting(input: SolverInput): SolverOutput {
   const indexById = buildIndex(stops);
   const departEpochSec = input.departEpochSec ?? 0;
 
-  const { byTruck, unassigned } = assign(stops, trucks);
+  const { byTruck, unassigned } = assign(stops, trucks, input.depot);
 
   const routes: BuiltRoute[] = [];
   for (const truck of trucks) {

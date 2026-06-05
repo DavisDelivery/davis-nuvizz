@@ -11,6 +11,59 @@ v0.7.2 = M4.5 PR 2 of 3 (stop-detail + driver-snapshot drawers).
 v0.8.0 = M4.5 PR 3 of 3 (final polish: marker labels, snapshot tap-through,
 mobile diagnostics, RESEARCH doc).
 
+## v0.23.0 — Routing quality (Chunk B): geographic truck assignment + green markers
+
+Chunk A fixed *within-truck* sequencing; the remaining defect was *cross-truck
+assignment* geography — `assign()` was capacity-only, so two trucks criss-crossed the
+same cluster. Solver-assignment-only change (+ marker styling + a version list).
+
+### Fix 1 — geographic assignment (`routing-solver.mts` `assign()` only)
+Replaced the capacity-tightest-fit selection with a **deterministic, pure,
+geography-aware capacitated assignment**:
+1. **Anchor** oversize/equipment-restricted stops first onto a capable truck
+   (`truckCanCarry`/`capacityFits` remain the **only** gates; spill reasons unchanged).
+2. **Seed** each still-empty truck via **farthest-point sampling** (so separated
+   clusters land on different trucks).
+3. **Grow** territories by **global nearest-pair** — repeatedly assign the unassigned
+   stop nearest to any truck's territory that still **fits** (skids binding).
+Proximity is a **pure haversine on lat/lng** (added `haversineM`), independent of the
+matrix mode. Capacity bounds territory; no load-balancing objective.
+`sequence()`/`nearestNeighbor`/`twoOpt`, `routing-repair`, `routing-pipeline`,
+`routing-constraints`, matrix, and cost are **untouched**.
+- **Repair re-assignment check:** Phase A spills only capacity/equipment/(strict-window)
+  violators; Phase B only re-inserts **spilled** stops. A valid geographic assignment is
+  never reshuffled across trucks → geography is preserved. (Not changed.)
+
+### Fix 2 — green stop markers (`src/App.jsx`)
+Routed stop markers are now **green and slightly larger** (scale 12→14), keep the
+**sequence-number label**, and a **restricted** stop (equipment restriction / oversize)
+keeps its signal via a **red ring**. **ASSUMPTION (confirm on preview):** markers are
+**uniformly green** and per-truck distinction is the **route LINE color** (lines stay
+red/purple). If you'd rather keep per-truck **dot** color, it's a one-line change
+(`fillColor: numbered ? routed : …`). Selection-phase dots (pre-build) are unchanged.
+
+### Added (per Chad) — beta version list
+The **build badge is now tappable** → opens a **"Beta version history"** popup
+(`VERSION_LOG`, newest first, current highlighted), so it's easy to track what changed.
+
+### Tests / evidence (100 green; +4)
+- **Two separated clusters** → each truck gets exactly one cluster, **no criss-cross**.
+- **Equipment overrides geography** → a straight-truck-only stop in the trailer's
+  cluster rides the **box**.
+- **Only the tractor selected** → a straight-truck-only stop **spills** with
+  `noTruckFits` + `needsStraightTruck`; the rest route.
+- **Cluster exceeds one truck** → 6 stops / two maxSkids-3 trucks → **3+3, 0 unassigned**.
+- **Couldn't verify** (no live NuVizz/map): how it looks on the real map (green dot
+  legibility, real-data criss-cross), real `customer_notes` restriction coverage.
+- **On-preview:** rebuild the ~22-stop/2-truck MIN_DISTANCE set → box & tractor each
+  cover a coherent area (no Dalton criss-cross); a straight/box-only stop rides the box;
+  deselect the box → that stop shows in risk flags as "needs straight/box truck"; markers
+  green + numbered + red ring on restricted; badge reads `v0.23.0 · preview`.
+
+Files: `netlify/functions/lib/routing-solver.mts`; `src/App.jsx`;
+`test/routing-solver.test.mjs`. APP_VERSION 0.22.0 → 0.23.0. Out of scope: loose-pieces,
+inches→feet floor length, dunnage, NuVizz write-back, Beta 2 app.
+
 ## v0.22.0 — Routing quality (Chunk A, keystone): un-clobber the optimizer
 
 A ~22-stop MIN_DISTANCE / CLOSEST_FIRST build was ignoring the chosen strategy and

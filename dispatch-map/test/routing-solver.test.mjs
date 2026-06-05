@@ -88,3 +88,56 @@ test('a stop that fits no truck spills with a clear reason', () => {
   assert.equal(out.unassigned.length, 1);
   assert.ok(out.unassigned[0].reasons.some((r) => /straight\/box truck/.test(r)));
 });
+
+// ── Chunk B: geographic truck assignment (anti-criss-cross) ──
+import { REASON } from '../netlify/functions/lib/routing-constraints.mts';
+const bigT = (id) => truck({ id, maxSkids: 100, maxWeightLbs: 1e6, deckLengthIn: 1e6 });
+const base = (over) => ({ depot: { lat: 0, lng: 0 }, strategy: 'MIN_DISTANCE', objectiveWeights: { distance: 1, time: 1, balance: 0 }, ...over });
+
+test('Chunk B: two separated clusters split cleanly across two trucks (no criss-cross)', () => {
+  const stops = [stop('A1', 0, 1), stop('A2', 0, 2), stop('A3', 0, 3), stop('B1', 0, 100), stop('B2', 0, 101), stop('B3', 0, 102)];
+  const matrix = lineMatrix([0, 1, 2, 3, 100, 101, 102]);
+  const out = solveRouting(base({ stops, trucks: [bigT('T1'), bigT('T2')], matrix }));
+  assert.equal(out.unassigned.length, 0);
+  const set = (id) => new Set(out.routes.find((r) => r.truckId === id)?.orderedStopIds || []);
+  const r1 = set('T1'), r2 = set('T2');
+  const A = new Set(['A1', 'A2', 'A3']), B = new Set(['B1', 'B2', 'B3']);
+  const isCluster = (s, c) => s.size === 3 && [...s].every((id) => c.has(id));
+  assert.ok((isCluster(r1, A) && isCluster(r2, B)) || (isCluster(r1, B) && isCluster(r2, A)),
+    `expected a clean A/B split, got T1=${[...r1]} T2=${[...r2]}`);
+});
+
+test('Chunk B: equipment overrides geography — a straight-truck-only stop in the trailer cluster rides the BOX', () => {
+  const stops = [stop('A1', 0, 1), stop('A2', 0, 2), stop('B1', 0, 100), stop('B2', 0, 101), stop('R', 0, 102, { equipmentReqs: ['straight_truck_only'] })];
+  const matrix = lineMatrix([0, 1, 2, 100, 101, 102]);
+  const box = truck({ id: 'BOX', maxSkids: 100, capabilities: { liftgate: true, tractor: false, lengthClassFt: 26 } });
+  const tractor = truck({ id: 'TRACTOR', maxSkids: 100, capabilities: { liftgate: false, tractor: true, lengthClassFt: 53 } });
+  const out = solveRouting(base({ stops, trucks: [tractor, box], matrix }));
+  const boxRoute = out.routes.find((r) => r.truckId === 'BOX');
+  assert.ok(boxRoute && boxRoute.orderedStopIds.includes('R'), 'restricted R must ride the BOX (overlap allowed)');
+  const tr = out.routes.find((r) => r.truckId === 'TRACTOR');
+  assert.ok(!tr || !tr.orderedStopIds.includes('R'), 'R must NOT be on the tractor');
+});
+
+test('Chunk B: only the tractor selected — a straight-truck-only stop spills with the reason; rest route', () => {
+  const stops = [stop('R', 0, 100, { equipmentReqs: ['straight_truck_only'] }), stop('N1', 0, 1), stop('N2', 0, 2)];
+  const matrix = lineMatrix([0, 100, 1, 2]);
+  const tractor = truck({ id: 'TRACTOR', maxSkids: 100, capabilities: { liftgate: false, tractor: true, lengthClassFt: 53 } });
+  const out = solveRouting(base({ stops, trucks: [tractor], matrix }));
+  const u = out.unassigned.find((x) => x.stopId === 'R');
+  assert.ok(u, 'R spilled');
+  assert.ok(u.reasons.includes(REASON.noTruckFits) && u.reasons.includes(REASON.needsStraightTruck));
+  const served = out.routes.flatMap((r) => r.orderedStopIds);
+  assert.ok(served.includes('N1') && served.includes('N2'), 'the rest route normally');
+});
+
+test('Chunk B: a cluster bigger than one truck splits across two (capacity-driven), all served', () => {
+  const stops = [stop('S1', 0, 1), stop('S2', 0, 1.1), stop('S3', 0, 1.2), stop('S4', 0, 1.3), stop('S5', 0, 1.4), stop('S6', 0, 1.5)];
+  const matrix = lineMatrix([0, 1, 1.1, 1.2, 1.3, 1.4, 1.5]);
+  const out = solveRouting(base({ stops, trucks: [truck({ id: 'T1', maxSkids: 3 }), truck({ id: 'T2', maxSkids: 3 })], matrix }));
+  assert.equal(out.unassigned.length, 0, 'all 6 served');
+  const c1 = out.routes.find((r) => r.truckId === 'T1')?.orderedStopIds.length || 0;
+  const c2 = out.routes.find((r) => r.truckId === 'T2')?.orderedStopIds.length || 0;
+  assert.equal(c1 + c2, 6);
+  assert.equal(c1, 3); assert.equal(c2, 3);
+});

@@ -44,7 +44,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.22.0';
+const APP_VERSION = '0.23.0';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -59,6 +59,24 @@ const BUILD_CONTEXT = typeof __BUILD_CONTEXT__ !== 'undefined' ? __BUILD_CONTEXT
 // Short commit for the build badge: the real 7-char hash on a Netlify build, or
 // 'local' in dev (the vite fallback is 'dev'). Never blank / 'undefined'.
 const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(0, 7) : 'local';
+
+// Beta version history — shown when the dispatcher taps the build badge, so it's
+// easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
+// Keep this curated + short (one line each); append a row on each release.
+const VERSION_LOG = [
+  ['0.23.0', 'Geographic truck assignment (no two-truck criss-cross) + green stop markers'],
+  ['0.22.0', 'Strategy ordering fixed — placeholder windows no longer clobber Min-distance/Closest'],
+  ['0.21.0', 'Appointment windows are advisory (flag, don’t spill)'],
+  ['0.20.0', 'Build badge on the routing screen'],
+  ['0.19.0', 'Drag-lasso, clickable PRO popups, per-load re-sequence, discard plan'],
+  ['0.18.0', 'Shared live Loads — save / open / rename / dispatch across devices'],
+  ['0.17.1', 'Route by skid count (deck length no longer blocks)'],
+  ['0.17.0', 'Manual route reorder — drag + numbered stops, live map sync'],
+  ['0.16.1', 'Build reliability — killed the hang, near-instant builds'],
+  ['0.16.0', 'Desktop dispatch console (Setup · map · Stops/Loads/Result)'],
+  ['0.15.0', 'Touch selection + per-stop intelligence + selected-stops list'],
+  ['0.14.0', 'Routing (beta) tab + cheap-by-default engine'],
+];
 
 const BUFORD = { lat: 33.9719, lng: -84.0008 };
 const BRAND = '#1e5b92';
@@ -5334,14 +5352,49 @@ function RoutingStopsPanel({ selectedStops, notes, onRemove, hoverId, setHoverId
 // routing tab (Stops/Loads/Result) at both widths since the map is always shown.
 // pointer-events-none so it never blocks map drag/selection. Shows app version +
 // short commit + deploy context; degrades to "local · dev" with no Netlify env.
-function RoutingBuildBadge() {
+function RoutingBuildBadge({ onClick }) {
   const built = BUILD_TIME ? ` · built ${BUILD_TIME.slice(5, 16).replace('T', ' ')}Z` : '';
   return (
-    <div
-      className="absolute top-2 right-2 z-20 pointer-events-none select-none bg-white/85 border border-slate-200 rounded px-1.5 py-0.5 text-[10px] leading-none text-slate-500 shadow-sm"
-      title={`Dispatch Map v${APP_VERSION} · ${BUILD_SHORT} · ${BUILD_CONTEXT}${built}`}
+    <button
+      onClick={onClick}
+      className="absolute top-2 right-2 z-20 select-none bg-white/85 hover:bg-white border border-slate-200 rounded px-1.5 py-0.5 text-[10px] leading-none text-slate-500 shadow-sm"
+      title={`Dispatch Map v${APP_VERSION} · ${BUILD_SHORT} · ${BUILD_CONTEXT}${built} — tap for version history`}
     >
       v{APP_VERSION} · {BUILD_SHORT} · {BUILD_CONTEXT}
+    </button>
+  );
+}
+
+// Beta version history popup (opened from the build badge).
+function VersionLogModal({ onClose }) {
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+  return (
+    <div className="fixed inset-0 z-[1000] flex items-center justify-center p-4" role="dialog" aria-modal="true">
+      <div className="absolute inset-0 bg-black/40" onClick={onClose} />
+      <div className="relative bg-white rounded-lg shadow-xl w-full max-w-sm max-h-[85vh] flex flex-col" style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}>
+        <div className="flex items-center justify-between px-3 py-2 border-b shrink-0">
+          <div className="font-bold text-slate-800">Beta version history</div>
+          <button onClick={onClose} aria-label="Close" className="text-slate-400 hover:text-slate-700 text-2xl leading-none px-1">×</button>
+        </div>
+        <div className="overflow-y-auto p-2">
+          <div className="px-1 pb-2 text-[10px] text-slate-400">Build {BUILD_SHORT} · {BUILD_CONTEXT}</div>
+          <ul className="divide-y">
+            {VERSION_LOG.map(([v, note]) => {
+              const current = v === APP_VERSION;
+              return (
+                <li key={v} className={`flex gap-2 px-1 py-1.5 text-[12px] ${current ? 'bg-emerald-50 rounded' : ''}`}>
+                  <span className="font-bold tabular-nums shrink-0" style={{ color: current ? '#16a34a' : '#334155' }}>v{v}</span>
+                  <span className="text-slate-600">{note}{current ? ' — current' : ''}</span>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      </div>
     </div>
   );
 }
@@ -5404,6 +5457,7 @@ function RoutingScreen() {
 
   // PRO-number detail popup — the stop being shown, or null.
   const [detailModalStop, setDetailModalStop] = useState(null);
+  const [versionLogOpen, setVersionLogOpen] = useState(false);
   const openStop = useCallback((s) => setDetailModalStop(s || null), []);
 
   // Desktop right rail: Stops | Result. Persisted as a view pref (localStorage ok).
@@ -5671,15 +5725,19 @@ function RoutingScreen() {
   }, [google, addTempMarker, addEnclosed, redrawLasso, cancelMode]);
   useEffect(() => { handleSelectPointRef.current = handleSelectPoint; }, [handleSelectPoint]);
 
-  // Base marker icon. `numbered` routed stops are larger so the sequence label
-  // fits. Hover/selection emphasis is layered on via emphIcon (keeps the label).
-  const makeMarkerIcon = useCallback((sel, routed, numbered) => ({
+  // Base marker icon. Routed (`numbered`) stops are GREEN + slightly larger for
+  // legibility (truck distinction is the per-truck route LINE color, not the dot);
+  // a RESTRICTED routed stop keeps its signal via a red ring. Selection-phase dots
+  // (pre-build) are unchanged (gray unselected / brand-blue selected). Hover emphasis
+  // is layered on via emphIcon (keeps the label + ring).
+  const ROUTED_GREEN = '#16a34a';
+  const makeMarkerIcon = useCallback((sel, routed, numbered, restricted) => ({
     path: google?.maps.SymbolPath.CIRCLE,
-    scale: numbered ? 12 : (sel || routed ? 7 : 4.5),
-    fillColor: routed || (sel ? BRAND : '#94a3b8'),
+    scale: numbered ? 14 : (sel || routed ? 7 : 4.5),
+    fillColor: numbered ? ROUTED_GREEN : (routed || (sel ? BRAND : '#94a3b8')),
     fillOpacity: 0.95,
-    strokeColor: '#fff',
-    strokeWeight: 1,
+    strokeColor: numbered && restricted ? '#dc2626' : '#fff',
+    strokeWeight: numbered && restricted ? 3 : 1.5,
   }), [google]);
   const emphIcon = useCallback((base) => ({ ...base, scale: base.scale + 2.5, strokeColor: '#0f172a', strokeWeight: 2 }), []);
 
@@ -5803,8 +5861,11 @@ function RoutingScreen() {
       const ri = routeInfo.get(id);              // { color, seq } when on a route
       const routed = ri?.color;
       const numbered = !!ri;
+      // Restricted = equipment restriction or oversize → keep the visual signal as a
+      // red ring on the green routed marker.
+      const restricted = numbered && (getRestrictionBadgeKeys(notes.get(s.matchKey) || null).length > 0 || stopLooksOversize(s));
       const hovered = hoverIdRef.current === id;
-      const baseIcon = makeMarkerIcon(sel, routed, numbered);
+      const baseIcon = makeMarkerIcon(sel, routed, numbered, restricted);
       const baseZ = sel || routed ? 30 : 10;
       const marker = new google.maps.Marker({
         position: { lat: s.lat, lng: s.lng },
@@ -5826,7 +5887,7 @@ function RoutingScreen() {
     });
     markerByIdRef.current = byId;
     lastEmphRef.current = hoverIdRef.current; // markers were built already-emphasized
-  }, [google, vPositioned, viewing, selectedIds, routeInfo, toggleStop, mapReady, makeMarkerIcon, emphIcon]);
+  }, [google, vPositioned, viewing, selectedIds, routeInfo, notes, toggleStop, mapReady, makeMarkerIcon, emphIcon]);
 
   // Hover emphasis — touch only the two affected markers, not all of them. Keeps
   // the sequence label intact (only the icon scale/ring change).
@@ -6138,7 +6199,7 @@ function RoutingScreen() {
       <div className="flex-1 flex flex-col min-h-0">
         <div className="flex-1 relative min-w-0">
           <div ref={mapDiv} className="absolute inset-0" />
-          <RoutingBuildBadge />
+          <RoutingBuildBadge onClick={() => setVersionLogOpen(true)} />
           {mapsError && <div className="absolute top-2 left-1/2 -translate-x-1/2 bg-red-50 border border-red-300 text-red-700 text-[11px] rounded px-2 py-1">{mapsError}</div>}
           {viewing
             ? <div className="absolute top-2 left-1/2 -translate-x-1/2 z-20 bg-indigo-600 text-white text-[11px] rounded shadow px-3 py-1.5 flex items-center gap-2 max-w-[92%]"><span className="truncate">👁 {viewedLoad?.name || viewedLoad?.id}</span><button onClick={() => setViewedLoad(null)} className="underline shrink-0">Back</button></div>
@@ -6160,6 +6221,7 @@ function RoutingScreen() {
           )}
         </div>
         {detailModalStop && <RoutingStopModal stop={detailModalStop} notes={notes} windowViolatedSet={windowViolatedSet} onClose={() => setDetailModalStop(null)} />}
+        {versionLogOpen && <VersionLogModal onClose={() => setVersionLogOpen(false)} />}
       </div>
     );
   }
@@ -6183,7 +6245,7 @@ function RoutingScreen() {
       {/* Center: the map canvas */}
       <div className="flex-1 relative min-w-0">
         <div ref={mapDiv} className="absolute inset-0" />
-        <RoutingBuildBadge />
+        <RoutingBuildBadge onClick={() => setVersionLogOpen(true)} />
         {mapsError && <div className="absolute top-2 left-1/2 -translate-x-1/2 bg-red-50 border border-red-300 text-red-700 text-[11px] rounded px-2 py-1">{mapsError}</div>}
         {viewing && (
           <div className="absolute top-2 left-1/2 -translate-x-1/2 z-20 bg-indigo-600 text-white text-[12px] rounded shadow px-3 py-1.5 flex items-center gap-3 max-w-[80%]">
@@ -6243,6 +6305,7 @@ function RoutingScreen() {
         )}
       </div>
       {detailModalStop && <RoutingStopModal stop={detailModalStop} notes={notes} windowViolatedSet={windowViolatedSet} onClose={() => setDetailModalStop(null)} />}
+        {versionLogOpen && <VersionLogModal onClose={() => setVersionLogOpen(false)} />}
     </div>
   );
 }
