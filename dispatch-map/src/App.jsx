@@ -44,7 +44,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.19.0';
+const APP_VERSION = '0.20.0';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -54,6 +54,11 @@ const NOTES_UPDATED_BY = 'dispatcher';
 const BUILD_COMMIT = typeof __BUILD_COMMIT__ !== 'undefined' ? __BUILD_COMMIT__ : 'dev';
 // eslint-disable-next-line no-undef
 const BUILD_TIME = typeof __BUILD_TIME__ !== 'undefined' ? __BUILD_TIME__ : '';
+// eslint-disable-next-line no-undef
+const BUILD_CONTEXT = typeof __BUILD_CONTEXT__ !== 'undefined' ? __BUILD_CONTEXT__ : 'dev';
+// Short commit for the build badge: the real 7-char hash on a Netlify build, or
+// 'local' in dev (the vite fallback is 'dev'). Never blank / 'undefined'.
+const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(0, 7) : 'local';
 
 const BUFORD = { lat: 33.9719, lng: -84.0008 };
 const BRAND = '#1e5b92';
@@ -5307,6 +5312,23 @@ function RoutingStopsPanel({ selectedStops, notes, onRemove, hoverId, setHoverId
   );
 }
 
+// Persistent build badge for the Routing surface (the map-view chip + desktop
+// footer don't reach here). Sits in the map's top-right corner — visible on every
+// routing tab (Stops/Loads/Result) at both widths since the map is always shown.
+// pointer-events-none so it never blocks map drag/selection. Shows app version +
+// short commit + deploy context; degrades to "local · dev" with no Netlify env.
+function RoutingBuildBadge() {
+  const built = BUILD_TIME ? ` · built ${BUILD_TIME.slice(5, 16).replace('T', ' ')}Z` : '';
+  return (
+    <div
+      className="absolute top-2 right-2 z-20 pointer-events-none select-none bg-white/85 border border-slate-200 rounded px-1.5 py-0.5 text-[10px] leading-none text-slate-500 shadow-sm"
+      title={`Dispatch Map v${APP_VERSION} · ${BUILD_SHORT} · ${BUILD_CONTEXT}${built}`}
+    >
+      v{APP_VERSION} · {BUILD_SHORT} · {BUILD_CONTEXT}
+    </div>
+  );
+}
+
 function RoutingScreen() {
   const [selectedDate, setSelectedDate] = useState(() => todayInET());
   const { stops, loading, error: stopsError } = useStops(selectedDate);
@@ -6087,6 +6109,7 @@ function RoutingScreen() {
       <div className="flex-1 flex flex-col min-h-0">
         <div className="flex-1 relative min-w-0">
           <div ref={mapDiv} className="absolute inset-0" />
+          <RoutingBuildBadge />
           {mapsError && <div className="absolute top-2 left-1/2 -translate-x-1/2 bg-red-50 border border-red-300 text-red-700 text-[11px] rounded px-2 py-1">{mapsError}</div>}
           {viewing
             ? <div className="absolute top-2 left-1/2 -translate-x-1/2 z-20 bg-indigo-600 text-white text-[11px] rounded shadow px-3 py-1.5 flex items-center gap-2 max-w-[92%]"><span className="truncate">👁 {viewedLoad?.name || viewedLoad?.id}</span><button onClick={() => setViewedLoad(null)} className="underline shrink-0">Back</button></div>
@@ -6131,6 +6154,7 @@ function RoutingScreen() {
       {/* Center: the map canvas */}
       <div className="flex-1 relative min-w-0">
         <div ref={mapDiv} className="absolute inset-0" />
+        <RoutingBuildBadge />
         {mapsError && <div className="absolute top-2 left-1/2 -translate-x-1/2 bg-red-50 border border-red-300 text-red-700 text-[11px] rounded px-2 py-1">{mapsError}</div>}
         {viewing && (
           <div className="absolute top-2 left-1/2 -translate-x-1/2 z-20 bg-indigo-600 text-white text-[12px] rounded shadow px-3 py-1.5 flex items-center gap-3 max-w-[80%]">

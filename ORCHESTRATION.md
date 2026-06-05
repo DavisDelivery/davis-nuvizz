@@ -567,3 +567,18 @@ LEVER 2 — Free road-distance matrices at scale (self-hosted OSRM).
   one-tap CONFIRM when the plan was hand-edited (manual reorder or P3 re-sequence).
   Engine/matrix/cost/cache/Phase 1/equipment/skid-gate UNTOUCHED; NuVizz read-only;
   feature-flagged. Pure helpers unit-tested (89 green).
+- Jun 2026 — Claude (Phase 2 PR) — Persistent build badge on the Routing screen
+  (v0.20.0). The APP_VERSION chip only rendered on the main Map view + the desktop
+  footer — neither reaches RoutingScreen, so the Routing tabs (Stops/Loads/Result)
+  showed no version. Added a small, muted, translucent badge in the map's top-right
+  corner of the routing surface (pointer-events-none so it never blocks map drag),
+  visible on every routing tab at both widths since the map is always shown. It
+  reads "v0.20.0 · <7-char commit> · <prod|preview>". vite.config now also defines
+  __BUILD_CONTEXT__ from Netlify CONTEXT (production→prod, deploy-preview→preview,
+  branch-deploy→branch, absent→dev), alongside the existing __BUILD_COMMIT__/
+  __BUILD_TIME__; in local dev with no Netlify env it degrades to "local · dev"
+  (never blank/undefined). Verified the env→define→badge path by building with
+  COMMIT_REF+CONTEXT (preview→a1b2c3d·preview, production→deadbee·prod). Existing
+  map chip + desktop footer unchanged. No engine/functions/cache/Phase 1 touched.
+  NOTE: history-core.mts keeps its own capture APP_VERSION const (unchanged) — that
+  divergence from src/App.jsx APP_VERSION is intentional. 89 tests green.
