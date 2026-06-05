@@ -528,3 +528,21 @@ LEVER 2 — Free road-distance matrices at scale (self-hosted OSRM).
   cost/oversize-ordering UNCHANGED. DEFERRED: rename deck→floor length + convert
   inches→FEET and fix the oversize linear estimate (cartons that stack don't each
   consume a full pallet-length); the diagnostic above feeds it. 81 tests green.
+- Jun 2026 — Claude (Phase 2 PR) — Shared loads: real-time persistence + live
+  Loads view (v0.18.0). Turned #44's single-dispatcher Save into a SHARED surface.
+  A live onSnapshot on routing_routes (created_at desc) feeds a Loads list that
+  updates across devices within seconds (clean teardown). Save now takes a NAME
+  (inline panel, sensible auto-name "Jun 5, 2026 2:14p · 3 trucks · 28 stops"; no
+  native prompt) + optional "saved by" initials, and writes name/updated_at + a
+  self-contained stops_snapshot (name+coords+counts) so a load renders on the map
+  on any day; verified by readback. Opening a load renders its saved plan on the
+  map (numbered markers + per-route polylines) and in the panel by REUSING #44's
+  routesView/routeInfo seeded from the saved result — view-only, with an indigo
+  "Viewing saved load" banner + Back-to-build; the in-progress build is never
+  touched (viewing only swaps what's rendered). Honesty labels (Manual order /
+  straight-line estimate) carry through. Manage: rename (inline), delete (explicit
+  confirm), toggle Dispatched — every write verified by readback, reflected live.
+  Explicit loading/empty/error states. Reuses the existing routing_routes
+  collection (no new collection, no migration); no auth built. Engine/matrix/cost/
+  cache/Phase 1/NuVizz untouched; feature-flagged. Pure helpers
+  (src/lib/routing-loads.js) unit-tested (78 tests green).

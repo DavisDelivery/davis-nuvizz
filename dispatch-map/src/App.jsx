@@ -20,6 +20,7 @@ import {
 } from 'lucide-react';
 import {
   collection, doc, getDoc, onSnapshot, setDoc, serverTimestamp,
+  query, orderBy, updateDoc, deleteDoc,
 } from 'firebase/firestore';
 
 import { db } from './lib/firebase.js';
@@ -27,6 +28,7 @@ import { normalizeMatchKey } from './lib/matchKey.js';
 import { haversineMiles, naiveEtaMinutes, formatEtaClockTime } from './lib/distance.js';
 import { todayInET, isTodayET, formatDateForDisplay, formatDateLong } from './lib/date-util.js';
 import { pointInPolygon, latLngInBounds, boxFromCorners, formatReceivingHours, lineItemDims, moveItem, recomputeRoute, DEFAULT_SERVICE_SEC } from './lib/routing-select.js';
+import { formatDateTime, tsToMillis, loadSummary, buildLoadAutoName } from './lib/routing-loads.js';
 import { scanStop, scanStopFull } from './lib/signal-scanner';
 import { applyScannerResults } from './lib/customer-notes-writer';
 
@@ -42,7 +44,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.17.1';
+const APP_VERSION = '0.18.0';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -4973,6 +4975,34 @@ function useTruckProfiles() {
   return { profiles, ready, saveProfile };
 }
 
+// Shared, live-synced saved loads. Subscribes to routing_routes (created_at desc)
+// so a save/rename/delete/dispatch on ANY device shows here within seconds, no
+// refresh. Clean teardown on unmount. Surfaces loading + error explicitly (never
+// a silent catch). Each load carries its own `result` (the saved plan).
+function useSavedLoads() {
+  const [loads, setLoads] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  useEffect(() => {
+    if (!db) { setLoading(false); setError('Firestore not configured'); return; }
+    let active = true;
+    const q = query(collection(db, 'routing_routes'), orderBy('created_at', 'desc'));
+    const unsub = onSnapshot(q, (snap) => {
+      if (!active) return;
+      setLoads(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+      setLoading(false);
+      setError(null);
+    }, (err) => {
+      if (!active) return;
+      console.error('routing_routes snapshot error', err);
+      setError(err?.message || 'failed to load saved loads');
+      setLoading(false);
+    });
+    return () => { active = false; unsub(); };
+  }, []);
+  return { loads, loading, error };
+}
+
 // Load-vs-capacity bar (one dimension). Amber ≥90%, red >100% (shouldn't happen).
 function CapacityBar({ label, used, cap, unit }) {
   const pct = cap > 0 ? Math.min(100, Math.round((used / cap) * 100)) : 0;
@@ -5300,6 +5330,30 @@ function RoutingScreen() {
 
   const result = job?.status === 'done' ? job.result : null;
 
+  // ── Shared loads (live) + "view a saved load" mode ──
+  // Viewing a saved load NEVER touches the live build state (selectedIds /
+  // routeState / job / selectedDate). It only swaps what's RENDERED: baseResult +
+  // the effective stop map. "Back to build" clears it and the in-progress build is
+  // exactly as it was.
+  const { loads, loading: loadsLoading, error: loadsError } = useSavedLoads();
+  const [viewedLoad, setViewedLoad] = useState(null);
+  const [manageError, setManageError] = useState(null);
+  const viewing = !!viewedLoad;
+  const baseResult = viewedLoad ? viewedLoad.result : result;
+
+  // A saved load carries its own stop snapshot so it renders on the map on any day
+  // (names + coords), independent of today's live cache. Old saves without it fall
+  // back to the live stopById (same-day loads still work).
+  const snapStopById = useMemo(() => {
+    const snap = viewedLoad?.stops_snapshot;
+    if (!snap) return null;
+    const m = new Map();
+    for (const [id, v] of Object.entries(snap)) {
+      m.set(String(id), { stopNbr: String(id), businessName: v.name ?? id, lat: v.lat, lng: v.lng, pallets: v.pallets ?? null, cartons: v.cartons ?? null, weight: v.weight ?? null });
+    }
+    return m;
+  }, [viewedLoad]);
+
   // ── Manual route reorder (client-side override of the engine's order) ──
   // routeState holds the CURRENT order per truck (the panel is the source of
   // truth) plus a `reordered` flag. It seeds from the engine result and the
@@ -5329,18 +5383,35 @@ function RoutingScreen() {
   }, []);
   const moveStop = useCallback((truckId, index, dir) => reorderStop(truckId, index, index + dir), [reorderStop]);
 
-  // Per-route display: the CURRENT order, plus legs/ETAs/totals — the engine's
-  // when untouched, or a client-side haversine recompute after a manual reorder
-  // (P4). Load/capacity are order-independent and come straight from the engine.
+  // Effective stop map / list — the saved load's snapshot when viewing one
+  // (renders any day), else today's live stops. Selection/build always use the
+  // live stopById; only the RESULT rendering switches.
+  const vStopById = (viewing && snapStopById && snapStopById.size) ? snapStopById : stopById;
+  const vPositioned = useMemo(
+    () => (viewing ? [...vStopById.values()].filter((s) => s.lat != null && s.lng != null) : positioned),
+    [viewing, vStopById, positioned],
+  );
+
+  // Per-route display: the CURRENT order, plus legs/ETAs/totals. Live build = the
+  // engine's order or a haversine recompute after a manual reorder (read/write).
+  // Viewing a saved load = render exactly as saved (read-only); its honesty flags
+  // (manualReorder / matrixSource) carry through from the doc.
   const routesView = useMemo(() => {
-    if (!result || !Array.isArray(result.routes) || !routeState) return [];
-    const depot = result.meta?.depot || ROUTING_DEPOT;
-    const departSec = Number(result.meta?.departEpochSec) || 0;
-    const serviceSec = Number(result.meta?.serviceMin) > 0 ? Number(result.meta.serviceMin) * 60 : DEFAULT_SERVICE_SEC;
+    const res = baseResult;
+    if (!res || !Array.isArray(res.routes)) return [];
+    if (!viewing && !routeState) return [];
+    const depot = res.meta?.depot || ROUTING_DEPOT;
+    const departSec = Number(res.meta?.departEpochSec) || 0;
+    const serviceSec = Number(res.meta?.serviceMin) > 0 ? Number(res.meta.serviceMin) * 60 : DEFAULT_SERVICE_SEC;
     const sum = (legs, k) => (Array.isArray(legs) ? legs.reduce((a, l) => a + (Number(l?.[k]) || 0), 0) : null);
-    return result.routes.map((r, i) => {
-      const st = routeState[r.truckId] || { order: r.orderedStopIds, reordered: false };
+    return res.routes.map((r, i) => {
       const color = ROUTE_PALETTE[i % ROUTE_PALETTE.length];
+      if (viewing) {
+        const reordered = !!(r.manualReorder || res.manualReorder);
+        return { truckId: r.truckId, color, order: r.orderedStopIds || [], reordered, etas: r.etas, legs: r.legs,
+          totalDistanceMeters: sum(r.legs, 'distanceMeters'), totalDurationSec: sum(r.legs, 'durationSec'), route: r };
+      }
+      const st = routeState[r.truckId] || { order: r.orderedStopIds, reordered: false };
       if (!st.reordered) {
         return { truckId: r.truckId, color, order: st.order, reordered: false, etas: r.etas, legs: r.legs,
           totalDistanceMeters: sum(r.legs, 'distanceMeters'), totalDurationSec: sum(r.legs, 'durationSec'), route: r };
@@ -5350,7 +5421,7 @@ function RoutingScreen() {
       return { truckId: r.truckId, color, order: st.order, reordered: true, etas: rc.etas, legs: rc.legs,
         totalDistanceMeters: rc.totalDistanceMeters, totalDurationSec: rc.totalDurationSec, route: r };
     });
-  }, [result, routeState, stopById]);
+  }, [baseResult, viewing, routeState, stopById]);
 
   // stopId -> { color, seq } for the numbered route markers (panel & map match).
   const routeInfo = useMemo(() => {
@@ -5575,9 +5646,9 @@ function RoutingScreen() {
     if (!google || !mapRef.current) return;
     markersRef.current.forEach((m) => m.setMap(null));
     const byId = new Map();
-    markersRef.current = positioned.map((s) => {
+    markersRef.current = vPositioned.map((s) => {
       const id = String(s.stopNbr);
-      const sel = selectedIds.has(id);
+      const sel = !viewing && selectedIds.has(id);
       const ri = routeInfo.get(id);              // { color, seq } when on a route
       const routed = ri?.color;
       const numbered = !!ri;
@@ -5592,6 +5663,7 @@ function RoutingScreen() {
         zIndex: hovered ? 50 : baseZ,
       });
       marker.addListener('click', () => {
+        if (viewing) return;                     // saved load is read-only
         if (selectModeRef.current) handleSelectPointRef.current(marker.getPosition());
         else toggleStop(s.stopNbr);
       });
@@ -5603,7 +5675,7 @@ function RoutingScreen() {
     });
     markerByIdRef.current = byId;
     lastEmphRef.current = hoverIdRef.current; // markers were built already-emphasized
-  }, [google, positioned, selectedIds, routeInfo, toggleStop, mapReady, makeMarkerIcon, emphIcon]);
+  }, [google, vPositioned, viewing, selectedIds, routeInfo, toggleStop, mapReady, makeMarkerIcon, emphIcon]);
 
   // Hover emphasis — touch only the two affected markers, not all of them. Keeps
   // the sequence label intact (only the icon scale/ring change).
@@ -5628,12 +5700,12 @@ function RoutingScreen() {
     if (!routesView.length) return;
     routesView.forEach((rv) => {
       const path = [{ lat: ROUTING_DEPOT.lat, lng: ROUTING_DEPOT.lng }];
-      for (const id of rv.order) { const s = stopById.get(String(id)); if (s) path.push({ lat: s.lat, lng: s.lng }); }
+      for (const id of rv.order) { const s = vStopById.get(String(id)); if (s && s.lat != null && s.lng != null) path.push({ lat: s.lat, lng: s.lng }); }
       const pl = new google.maps.Polyline({ path, strokeColor: rv.color, strokeWeight: 3, strokeOpacity: 0.85, zIndex: 5 });
       pl.setMap(mapRef.current);
       polylinesRef.current.push(pl);
     });
-  }, [google, routesView, stopById, mapReady]);
+  }, [google, routesView, vStopById, mapReady]);
 
   const selectedTrucks = useMemo(() => profiles.filter((p) => selectedTruckIds.has(p.id)), [profiles, selectedTruckIds]);
   const canBuild = selectedIds.size >= 1 && selectedTrucks.length >= 1 && selectedIds.size <= ROUTING_MAX_SELECTION && !building;
@@ -5668,22 +5740,97 @@ function RoutingScreen() {
     }
   }, [selectedDate, selectedIds, selectedTrucks, intent, strategy, useGoogle]);
 
+  // Save panel — a name (prefilled with a sensible auto-name per build) + optional
+  // free-text initials. No native prompt(); no auth.
+  const [saveName, setSaveName] = useState('');
+  const [savedBy, setSavedBy] = useState('');
+  useEffect(() => { if (result) setSaveName(buildLoadAutoName(editedResultForSave || result, Date.now())); }, [result]); // eslint-disable-line
+
   const savePlan = useCallback(async () => {
     if (!db || !result) return;
     setSaveState('saving');
     const id = `routeset_${(crypto.randomUUID ? crypto.randomUUID() : String(Date.now()))}`;
+    const plan = editedResultForSave || result;
+    const name = (saveName && saveName.trim()) || buildLoadAutoName(plan, Date.now());
+    // Self-contained stop snapshot (name + coords + counts) so the load renders on
+    // the map on any day, independent of today's live cache.
+    const stops_snapshot = {};
+    const ids = new Set();
+    for (const r of plan.routes || []) for (const sid of r.orderedStopIds || []) ids.add(String(sid));
+    for (const u of plan.unassigned || []) ids.add(String(u.stopId));
+    for (const sid of ids) {
+      const s = stopById.get(sid);
+      if (s) stops_snapshot[sid] = { name: s.businessName || sid, lat: s.lat ?? null, lng: s.lng ?? null, pallets: Number(s.pallets) || 0, cartons: Number(s.cartons) || 0, weight: Number(s.weight) || 0 };
+    }
     try {
-      // Persist the CURRENT plan — the engine result with any manual reorder applied.
       await setDoc(doc(db, 'routing_routes', id), {
-        id, status: 'saved', dispatched: false, created_at: serverTimestamp(), created_by: 'dispatcher', app_version: APP_VERSION,
-        request: lastRequest, result: editedResultForSave || result,
+        id, name, status: 'saved', dispatched: false,
+        created_at: serverTimestamp(), updated_at: serverTimestamp(),
+        created_by: 'dispatcher', saved_by: (savedBy && savedBy.trim()) || null,
+        app_version: APP_VERSION, request: lastRequest, result: plan,
         manual_reorder: !!(editedResultForSave && editedResultForSave.manualReorder),
+        stops_snapshot,
       });
+      // Verify by readback (convention: never trust the write alone).
+      const back = await getDoc(doc(db, 'routing_routes', id));
+      if (!back.exists() || back.data().name !== name) throw new Error('save not confirmed by readback');
       setSaveState('saved');
     } catch (e) { setSaveState(e.message || 'save failed'); }
-  }, [result, lastRequest, editedResultForSave]);
+  }, [result, lastRequest, editedResultForSave, saveName, savedBy, stopById]);
 
-  const meta = result?.meta || {};
+  // Manage a saved load (rename / dispatched / delete) — every write verified by
+  // readback; the live onSnapshot reflects the change everywhere.
+  const renameLoad = useCallback(async (id, name) => {
+    setManageError(null);
+    if (!db || !name || !name.trim()) return;
+    try {
+      await updateDoc(doc(db, 'routing_routes', id), { name: name.trim(), updated_at: serverTimestamp() });
+      const back = await getDoc(doc(db, 'routing_routes', id));
+      if (!back.exists() || back.data().name !== name.trim()) throw new Error('rename not confirmed');
+    } catch (e) { setManageError(e.message || 'rename failed'); }
+  }, []);
+  const toggleDispatched = useCallback(async (id, next) => {
+    setManageError(null);
+    if (!db) return;
+    try {
+      await updateDoc(doc(db, 'routing_routes', id), { dispatched: !!next, status: next ? 'dispatched' : 'saved', updated_at: serverTimestamp() });
+      const back = await getDoc(doc(db, 'routing_routes', id));
+      if (!back.exists() || back.data().dispatched !== !!next) throw new Error('dispatch toggle not confirmed');
+    } catch (e) { setManageError(e.message || 'update failed'); }
+  }, []);
+  const deleteLoad = useCallback(async (id) => {
+    setManageError(null);
+    if (!db) return;
+    try {
+      await deleteDoc(doc(db, 'routing_routes', id));
+      const back = await getDoc(doc(db, 'routing_routes', id));
+      if (back.exists()) throw new Error('delete not confirmed');
+      setViewedLoad((v) => (v && v.id === id ? null : v));
+    } catch (e) { setManageError(e.message || 'delete failed'); }
+  }, []);
+
+  // Keep the viewed load live: track edits from any device, close if deleted.
+  // Only swap when the doc actually changed (updated_at) so unrelated snapshot
+  // churn doesn't re-render the whole view.
+  useEffect(() => {
+    if (!viewedLoad) return;
+    const fresh = loads.find((l) => l.id === viewedLoad.id);
+    if (!fresh) { setViewedLoad(null); return; }
+    if (tsToMillis(fresh.updated_at) !== tsToMillis(viewedLoad.updated_at)) setViewedLoad(fresh);
+  }, [loads]); // eslint-disable-line
+
+  // Frame the map to a saved load's stops when it's opened (not on every refresh).
+  useEffect(() => {
+    if (!google || !mapRef.current || !viewing) return;
+    const pts = vPositioned.filter((s) => s.lat != null && s.lng != null);
+    if (!pts.length) return;
+    const b = new google.maps.LatLngBounds();
+    pts.forEach((s) => b.extend({ lat: s.lat, lng: s.lng }));
+    b.extend(ROUTING_DEPOT);
+    mapRef.current.fitBounds(b, 60);
+  }, [viewing, viewedLoad?.id, mapReady, google]); // eslint-disable-line
+
+  const meta = baseResult?.meta || {};
   const usedGoogle = meta.matrixSource === 'google';
 
   // Responsive: desktop = three side rails; mobile = full map + a collapsible
@@ -5796,10 +5943,19 @@ function RoutingScreen() {
   );
 
   const resultContent = (
-    <RoutingResultPanel job={job} result={result} meta={meta} usedGoogle={usedGoogle} stopById={stopById}
-      onSave={savePlan} saveState={saveState}
-      routesView={routesView} onReorder={reorderStop} onMove={moveStop}
-      hoverId={hoverId} setHoverId={setHoverId} />
+    <RoutingResultPanel job={job} result={baseResult} meta={meta} usedGoogle={usedGoogle} stopById={vStopById}
+      onSave={savePlan} saveState={saveState} saveName={saveName} setSaveName={setSaveName} savedBy={savedBy} setSavedBy={setSavedBy}
+      routesView={routesView} onReorder={reorderStop} onMove={moveStop} readOnly={viewing}
+      hoverId={hoverId} setHoverId={setHoverId}
+      savedLoad={viewedLoad} onCloseLoad={() => setViewedLoad(null)}
+      onRename={renameLoad} onToggleDispatch={toggleDispatched} onDelete={deleteLoad} manageError={manageError} />
+  );
+
+  const loadsContent = (
+    <RoutingLoadsPanel loads={loads} loading={loadsLoading} error={loadsError}
+      viewedId={viewedLoad?.id || null}
+      onOpen={(l) => { setViewedLoad(l); setMobilePanel('result'); setSheetOpen(true); }}
+      onRename={renameLoad} onToggleDispatch={toggleDispatched} onDelete={deleteLoad} manageError={manageError} />
   );
 
   // ── Mobile: map + collapsible bottom sheet (Setup / Result) ──
@@ -5810,20 +5966,22 @@ function RoutingScreen() {
         <div className="flex-1 relative min-w-0">
           <div ref={mapDiv} className="absolute inset-0" />
           {mapsError && <div className="absolute top-2 left-1/2 -translate-x-1/2 bg-red-50 border border-red-300 text-red-700 text-[11px] rounded px-2 py-1">{mapsError}</div>}
-          {/* floating selection chip so the tally is visible while the sheet is collapsed */}
-          <div className="absolute top-2 left-2 bg-white/95 border border-slate-200 rounded shadow px-2 py-1 text-[11px]">{tally.count} selected · {tally.skids} skids · {tally.pieces} pcs</div>
+          {viewing
+            ? <div className="absolute top-2 left-1/2 -translate-x-1/2 z-20 bg-indigo-600 text-white text-[11px] rounded shadow px-3 py-1.5 flex items-center gap-2 max-w-[92%]"><span className="truncate">👁 {viewedLoad?.name || viewedLoad?.id}</span><button onClick={() => setViewedLoad(null)} className="underline shrink-0">Back</button></div>
+            : <div className="absolute top-2 left-2 bg-white/95 border border-slate-200 rounded shadow px-2 py-1 text-[11px]">{tally.count} selected · {tally.skids} skids · {tally.pieces} pcs</div>}
         </div>
         <div className="border-t bg-white flex flex-col shrink-0" style={{ height: sheetOpen ? '50vh' : 'auto' }}>
           <div className="flex items-center gap-2 px-2 py-1.5 border-b">
             <button onClick={() => setSheetOpen((o) => !o)} className="text-xs px-2 py-1 rounded border border-slate-300" aria-label={sheetOpen ? 'Collapse' : 'Expand'}>{sheetOpen ? '▾' : '▴'}</button>
             <div className="flex-1 flex gap-1">
               <button onClick={() => { setMobilePanel('setup'); setSheetOpen(true); }} className={tabCls(mobilePanel === 'setup')} style={mobilePanel === 'setup' ? { background: BRAND } : {}}>Setup{tally.count ? ` (${tally.count})` : ''}</button>
-              <button onClick={() => { setMobilePanel('result'); setSheetOpen(true); }} className={tabCls(mobilePanel === 'result')} style={mobilePanel === 'result' ? { background: BRAND } : {}}>Result{result ? ` (${result.routes.length})` : job?.status === 'running' || job?.status === 'queued' ? ' …' : ''}</button>
+              <button onClick={() => { setMobilePanel('loads'); setSheetOpen(true); }} className={tabCls(mobilePanel === 'loads')} style={mobilePanel === 'loads' ? { background: BRAND } : {}}>Loads{loads.length ? ` (${loads.length})` : ''}</button>
+              <button onClick={() => { setMobilePanel('result'); setSheetOpen(true); }} className={tabCls(mobilePanel === 'result')} style={mobilePanel === 'result' ? { background: BRAND } : {}}>Result{baseResult ? ` (${baseResult.routes.length})` : job?.status === 'running' || job?.status === 'queued' ? ' …' : ''}</button>
             </div>
           </div>
           {sheetOpen && (
             <div className="flex-1 overflow-y-auto p-3 space-y-3 text-sm" style={{ paddingBottom: 'calc(12px + env(safe-area-inset-bottom))' }}>
-              {mobilePanel === 'setup' ? controlsContent : resultContent}
+              {mobilePanel === 'setup' ? controlsContent : mobilePanel === 'loads' ? loadsContent : resultContent}
             </div>
           )}
         </div>
@@ -5851,6 +6009,12 @@ function RoutingScreen() {
       <div className="flex-1 relative min-w-0">
         <div ref={mapDiv} className="absolute inset-0" />
         {mapsError && <div className="absolute top-2 left-1/2 -translate-x-1/2 bg-red-50 border border-red-300 text-red-700 text-[11px] rounded px-2 py-1">{mapsError}</div>}
+        {viewing && (
+          <div className="absolute top-2 left-1/2 -translate-x-1/2 z-20 bg-indigo-600 text-white text-[12px] rounded shadow px-3 py-1.5 flex items-center gap-3 max-w-[80%]">
+            <span className="truncate">👁 Viewing saved load: <b>{viewedLoad?.name || viewedLoad?.id}</b></span>
+            <button onClick={() => setViewedLoad(null)} className="underline shrink-0 font-semibold">Back to build</button>
+          </div>
+        )}
         {/* Drag-box capture overlay — active only while Box mode is armed on desktop. */}
         {selectMode === 'box' && (
           <div
@@ -5872,11 +6036,17 @@ function RoutingScreen() {
       {/* Right: Stops | Result */}
       <div className="w-[380px] shrink-0 border-l bg-white flex flex-col min-h-0">
         <div className="flex border-b shrink-0">
-          {railTab('stops', `Selected stops${tally.count ? ` (${tally.count})` : ''}`)}
-          {railTab('result', `Result${result ? ` (${result.routes.length})` : (job?.status === 'running' || job?.status === 'queued') ? ' …' : ''}`)}
+          {railTab('stops', `Stops${tally.count ? ` (${tally.count})` : ''}`)}
+          {railTab('loads', `Loads${loads.length ? ` (${loads.length})` : ''}`)}
+          {railTab('result', `Result${baseResult ? ` (${baseResult.routes.length})` : (job?.status === 'running' || job?.status === 'queued') ? ' …' : ''}`)}
         </div>
         {desktopRail === 'stops' ? (
           <RoutingStopsPanel selectedStops={selectedStops} notes={notes} onRemove={removeStop} hoverId={hoverId} setHoverId={setHoverId} />
+        ) : desktopRail === 'loads' ? (
+          <RoutingLoadsPanel loads={loads} loading={loadsLoading} error={loadsError}
+            viewedId={viewedLoad?.id || null}
+            onOpen={(l) => { setViewedLoad(l); setDesktopRail('result'); }}
+            onRename={renameLoad} onToggleDispatch={toggleDispatched} onDelete={deleteLoad} manageError={manageError} />
         ) : (
           <div className="flex-1 min-h-0 overflow-y-auto p-3 space-y-3 text-sm">{resultContent}</div>
         )}
@@ -5885,20 +6055,34 @@ function RoutingScreen() {
   );
 }
 
-function RoutingResultPanel({ job, result, meta, usedGoogle, stopById, onSave, saveState, routesView, onReorder, onMove, hoverId, setHoverId }) {
-  if (!job) return <div className="text-[12px] text-slate-400">Build a plan to see routes, ETAs, load, spill, and cost here.</div>;
-  if (job.status === 'queued' || job.status === 'running') return <div className="text-[12px] text-slate-600">⏳ Building plan… ({job.stage || job.status})</div>;
-  if (job.status === 'error') return <div className="text-[12px] text-red-600">Build failed: {job.error || 'unknown error'}</div>;
-  if (!result) return <div className="text-[12px] text-slate-400">No result.</div>;
+function RoutingResultPanel({ job, result, meta, usedGoogle, stopById, onSave, saveState, saveName, setSaveName, savedBy, setSavedBy, routesView, onReorder, onMove, readOnly, hoverId, setHoverId, savedLoad, onCloseLoad, onRename, onToggleDispatch, onDelete, manageError }) {
+  // Live-build status gates only apply when NOT viewing a saved load.
+  if (!savedLoad) {
+    if (!job) return <div className="text-[12px] text-slate-400">Build a plan to see routes, ETAs, load, spill, and cost here.</div>;
+    if (job.status === 'queued' || job.status === 'running') return <div className="text-[12px] text-slate-600">⏳ Building plan… ({job.stage || job.status})</div>;
+    if (job.status === 'error') return <div className="text-[12px] text-red-600">Build failed: {job.error || 'unknown error'}</div>;
+    if (!result) return <div className="text-[12px] text-slate-400">No result.</div>;
+  }
+  if (!result || !Array.isArray(result.routes)) {
+    return (
+      <div className="space-y-3">
+        {savedLoad && <SavedLoadManageBar load={savedLoad} onClose={onCloseLoad} onRename={onRename} onToggleDispatch={onToggleDispatch} onDelete={onDelete} manageError={manageError} />}
+        <div className="text-[12px] text-slate-400">This load has no routes to show.</div>
+      </div>
+    );
+  }
 
   const cost = meta.estimatedCostUsd || 0;
   const ai = result.aiAssist || {};
   return (
     <div className="space-y-3">
-      {/* Honesty banner */}
-      <div className="rounded border border-slate-300 bg-slate-50 p-2 text-[11px] text-slate-600">
-        This is a <b>plan saved in our system only</b>. It has <b>NOT</b> been sent to NuVizz or dispatched to any driver.
-      </div>
+      {savedLoad ? (
+        <SavedLoadManageBar load={savedLoad} onClose={onCloseLoad} onRename={onRename} onToggleDispatch={onToggleDispatch} onDelete={onDelete} manageError={manageError} />
+      ) : (
+        <div className="rounded border border-slate-300 bg-slate-50 p-2 text-[11px] text-slate-600">
+          This is a <b>plan saved in our system only</b>. It has <b>NOT</b> been sent to NuVizz or dispatched to any driver.
+        </div>
+      )}
 
       {/* Cost / quality readout */}
       <div className={`rounded border p-2 text-[12px] ${usedGoogle ? 'border-amber-300 bg-amber-50' : 'border-green-300 bg-green-50'}`}>
@@ -5908,7 +6092,7 @@ function RoutingResultPanel({ job, result, meta, usedGoogle, stopById, onSave, s
         <div className="flex justify-between"><span>AI assist</span><b>{result.aiConfigured ? `${[ai.intent && 'intent', ai.explain && 'rationale', ai.geometry && 'geometry'].filter(Boolean).join(', ') || 'available, not needed'}` : 'off'}</b></div>
       </div>
 
-      <div className="text-[11px] text-slate-500">Drag a stop (or use ▲▼) to reorder a route. The map and ETAs update live.</div>
+      {!readOnly && <div className="text-[11px] text-slate-500">Drag a stop (or use ▲▼) to reorder a route. The map and ETAs update live.</div>}
 
       {/* Rationale + risk */}
       {result.rationale && <div className="text-[12px] text-slate-700"><b>Rationale.</b> {result.rationale}</div>}
@@ -5919,9 +6103,9 @@ function RoutingResultPanel({ job, result, meta, usedGoogle, stopById, onSave, s
         </div>
       )}
 
-      {/* Routes (reorderable, numbered) */}
+      {/* Routes (numbered; reorderable unless viewing a saved load) */}
       {(routesView || []).map((rv) => (
-        <RoutingRouteCard key={rv.truckId} rv={rv} stopById={stopById} usedGoogle={usedGoogle}
+        <RoutingRouteCard key={rv.truckId} rv={rv} stopById={stopById} usedGoogle={usedGoogle} readOnly={readOnly}
           onReorder={onReorder} onMove={onMove} hoverId={hoverId} setHoverId={setHoverId} />
       ))}
 
@@ -5936,11 +6120,159 @@ function RoutingResultPanel({ job, result, meta, usedGoogle, stopById, onSave, s
         </div>
       )}
 
-      {/* Save */}
-      <button onClick={onSave} disabled={saveState === 'saving'} className="w-full py-2 rounded border border-slate-300 font-semibold hover:bg-slate-50 disabled:opacity-40">
-        {saveState === 'saving' ? 'Saving…' : saveState === 'saved' ? '✓ Saved (not dispatched)' : 'Save this plan'}
-      </button>
-      {saveState && saveState !== 'saving' && saveState !== 'saved' && <div className="text-[11px] text-red-600">{saveState}</div>}
+      {/* Save panel (live build only) */}
+      {!savedLoad && (
+        <div className="border-t pt-2 space-y-1.5">
+          <label className="block text-[11px] font-semibold text-slate-600">Save as
+            <input value={saveName} onChange={(e) => setSaveName(e.target.value)} placeholder="Load name" className="mt-0.5 w-full border rounded px-2 py-1 text-[12px] font-normal text-slate-800" />
+          </label>
+          <input value={savedBy} onChange={(e) => setSavedBy(e.target.value)} placeholder="Saved by (initials, optional)" className="w-full border rounded px-2 py-1 text-[12px] text-slate-800" />
+          <button onClick={onSave} disabled={saveState === 'saving'} className="w-full py-2 rounded text-white font-semibold disabled:opacity-40" style={{ background: BRAND }}>
+            {saveState === 'saving' ? 'Saving…' : saveState === 'saved' ? '✓ Saved — shared (not dispatched)' : 'Save load'}
+          </button>
+          {saveState && saveState !== 'saving' && saveState !== 'saved' && <div className="text-[11px] text-red-600">{saveState}</div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Saved-load header + manage row: rename (inline, no native prompt), toggle
+// Dispatched, Delete (explicit confirm), and "Back to build".
+function SavedLoadManageBar({ load, onClose, onRename, onToggleDispatch, onDelete, manageError }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(load?.name || '');
+  const [confirmDel, setConfirmDel] = useState(false);
+  useEffect(() => { setDraft(load?.name || ''); setEditing(false); setConfirmDel(false); }, [load?.id]);
+  const dispatched = !!load?.dispatched;
+  const created = formatDateTime(tsToMillis(load?.created_at));
+  return (
+    <div className="rounded border border-indigo-300 bg-indigo-50 p-2 text-[12px] space-y-1.5">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-[10px] uppercase font-bold tracking-wide text-indigo-700">Viewing saved load</span>
+        <button onClick={onClose} className="text-[11px] underline text-indigo-700 font-semibold shrink-0">← Back to build</button>
+      </div>
+      {editing ? (
+        <div className="flex items-center gap-1">
+          <input value={draft} onChange={(e) => setDraft(e.target.value)} className="flex-1 border rounded px-2 py-1 text-[12px]" />
+          <button onClick={() => { onRename(load.id, draft); setEditing(false); }} className="px-2 py-1 text-[11px] rounded text-white font-semibold" style={{ background: BRAND }}>Save</button>
+          <button onClick={() => { setDraft(load.name || ''); setEditing(false); }} className="px-2 py-1 text-[11px] rounded border border-slate-300">Cancel</button>
+        </div>
+      ) : (
+        <div className="flex items-center gap-2">
+          <span className="font-semibold text-slate-800 truncate flex-1" title={load?.name}>{load?.name || load?.id}</span>
+          <button onClick={() => setEditing(true)} className="text-[11px] underline text-slate-600 shrink-0">Rename</button>
+        </div>
+      )}
+      <div className="flex items-center gap-2 flex-wrap text-[10px] text-slate-500">
+        <span className={`px-1.5 py-0.5 rounded font-bold uppercase ${dispatched ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-200 text-slate-600'}`}>{dispatched ? 'Dispatched' : 'Saved'}</span>
+        {load?.manual_reorder && <span className="px-1.5 py-0.5 rounded font-bold uppercase bg-amber-100 text-amber-700">Manual order</span>}
+        {created && <span>{created}</span>}
+        {load?.saved_by && <span>· by {load.saved_by}</span>}
+        {load?.app_version && <span>· v{load.app_version}</span>}
+      </div>
+      <div className="flex items-center gap-1 pt-0.5">
+        <button onClick={() => onToggleDispatch(load.id, !dispatched)} className="flex-1 px-2 py-1 text-[11px] rounded border border-slate-300 bg-white hover:bg-slate-50">
+          {dispatched ? 'Mark not dispatched' : 'Mark dispatched'}
+        </button>
+        {confirmDel ? (
+          <>
+            <button onClick={() => onDelete(load.id)} className="px-2 py-1 text-[11px] rounded bg-red-600 text-white font-semibold">Confirm delete</button>
+            <button onClick={() => setConfirmDel(false)} className="px-2 py-1 text-[11px] rounded border border-slate-300">Cancel</button>
+          </>
+        ) : (
+          <button onClick={() => setConfirmDel(true)} className="px-2 py-1 text-[11px] rounded border border-red-300 text-red-700 hover:bg-red-50">Delete</button>
+        )}
+      </div>
+      {manageError && <div className="text-[11px] text-red-600">{manageError}</div>}
+    </div>
+  );
+}
+
+// The live, shared Loads list — fed by useSavedLoads (onSnapshot). Sortable;
+// explicit loading / empty / error. Each row opens the load on the map.
+function RoutingLoadsPanel({ loads, loading, error, viewedId, onOpen, onRename, onToggleDispatch, onDelete, manageError }) {
+  const rows = useMemo(() => (loads || []).map((l) => ({
+    id: l.id, doc: l,
+    name: l.name || l.id,
+    trucks: Array.isArray(l.result?.routes) ? l.result.routes.length : 0,
+    stops: Array.isArray(l.result?.routes) ? l.result.routes.reduce((a, r) => a + (r.orderedStopIds?.length || 0), 0) : 0,
+    status: l.dispatched ? 'Dispatched' : 'Saved',
+    created: tsToMillis(l.created_at) || 0,
+  })), [loads]);
+  const { sorted, sortKey, sortDir, toggle } = useSortable(rows, 'created', 'desc');
+
+  return (
+    <div className="flex-1 min-h-0 flex flex-col">
+      <div className="px-3 py-2 text-[11px] text-slate-500 border-b shrink-0">Saved loads are <b>shared live</b> — a save on any device shows here within seconds.{manageError && <span className="text-red-600"> · {manageError}</span>}</div>
+      {error ? (
+        <div className="p-4 text-[12px] text-red-600">Couldn’t load saved loads: {error}</div>
+      ) : loading ? (
+        <div className="p-4 text-[12px] text-slate-500">Loading saved loads…</div>
+      ) : rows.length === 0 ? (
+        <div className="p-4 text-[12px] text-slate-400">No saved loads yet. Build a plan and use <b>Save load</b>.</div>
+      ) : (
+        <div className="flex-1 min-h-0 overflow-auto">
+          <div className="flex items-center gap-3 px-3 py-1 text-[10px] uppercase tracking-wide text-slate-500 border-b bg-slate-50 sticky top-0">
+            <button onClick={() => toggle('name')} className="flex-1 text-left inline-flex items-center gap-0.5">Name{sortKey === 'name' ? (sortDir === 'asc' ? <ChevronUp size={10} /> : <ChevronDown size={10} />) : null}</button>
+            <button onClick={() => toggle('status')} className="inline-flex items-center gap-0.5">Status{sortKey === 'status' ? (sortDir === 'asc' ? <ChevronUp size={10} /> : <ChevronDown size={10} />) : null}</button>
+            <button onClick={() => toggle('stops')} className="inline-flex items-center gap-0.5">Stops{sortKey === 'stops' ? (sortDir === 'asc' ? <ChevronUp size={10} /> : <ChevronDown size={10} />) : null}</button>
+            <button onClick={() => toggle('created')} className="inline-flex items-center gap-0.5">Created{sortKey === 'created' ? (sortDir === 'asc' ? <ChevronUp size={10} /> : <ChevronDown size={10} />) : null}</button>
+          </div>
+          <div className="divide-y">
+            {sorted.map((r) => (
+              <LoadRow key={r.id} row={r} active={viewedId === r.id} onOpen={onOpen} onRename={onRename} onToggleDispatch={onToggleDispatch} onDelete={onDelete} />
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function LoadRow({ row, active, onOpen, onRename, onToggleDispatch, onDelete }) {
+  const l = row.doc;
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(l.name || '');
+  const [confirmDel, setConfirmDel] = useState(false);
+  const created = formatDateTime(row.created);
+  return (
+    <div className={`px-3 py-2 ${active ? 'bg-indigo-50' : 'hover:bg-slate-50'}`}>
+      {editing ? (
+        <div className="flex items-center gap-1 mb-1">
+          <input value={draft} onChange={(e) => setDraft(e.target.value)} className="flex-1 border rounded px-2 py-1 text-[12px]" />
+          <button onClick={() => { onRename(l.id, draft); setEditing(false); }} className="px-2 py-1 text-[11px] rounded text-white font-semibold" style={{ background: BRAND }}>Save</button>
+          <button onClick={() => { setDraft(l.name || ''); setEditing(false); }} className="px-2 py-1 text-[11px] rounded border border-slate-300">Cancel</button>
+        </div>
+      ) : (
+        <button onClick={() => onOpen(l)} className="w-full text-left">
+          <div className="flex items-center gap-1.5">
+            <span className="font-medium text-[12px] truncate flex-1" title={row.name}>{row.name}</span>
+            {active && <span className="text-[9px] font-bold text-indigo-700">VIEWING</span>}
+          </div>
+          <div className="text-[11px] text-slate-500 flex items-center gap-1.5 flex-wrap mt-0.5">
+            <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold uppercase ${l.dispatched ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-200 text-slate-600'}`}>{row.status}</span>
+            {l.manual_reorder && <span className="px-1.5 py-0.5 rounded text-[9px] font-bold uppercase bg-amber-100 text-amber-700">Manual order</span>}
+            <span>{row.trucks} truck{row.trucks === 1 ? '' : 's'} · {row.stops} stop{row.stops === 1 ? '' : 's'}</span>
+            {created && <span>· {created}</span>}
+            {l.saved_by && <span>· {l.saved_by}</span>}
+            {l.app_version && <span>· v{l.app_version}</span>}
+          </div>
+        </button>
+      )}
+      <div className="flex items-center gap-2 mt-1 text-[11px]">
+        <button onClick={() => onOpen(l)} className="underline text-blue-700">Open</button>
+        <button onClick={() => setEditing((e) => !e)} className="underline text-slate-600">Rename</button>
+        <button onClick={() => onToggleDispatch(l.id, !l.dispatched)} className="underline text-slate-600">{l.dispatched ? 'Un-dispatch' : 'Dispatch'}</button>
+        {confirmDel ? (
+          <span className="inline-flex items-center gap-1">
+            <button onClick={() => onDelete(l.id)} className="underline text-red-700 font-semibold">Confirm</button>
+            <button onClick={() => setConfirmDel(false)} className="underline text-slate-500">Cancel</button>
+          </span>
+        ) : (
+          <button onClick={() => setConfirmDel(true)} className="underline text-red-600 ml-auto">Delete</button>
+        )}
+      </div>
     </div>
   );
 }
@@ -5952,11 +6284,9 @@ function fmtRouteDur(sec) {
 }
 
 // One truck's route — NUMBERED stops in the CURRENT sequence (matching the map
-// markers), drag-and-drop to reorder, with ▲▼ move buttons as the guaranteed
-// touch fallback. Load/capacity come from the engine (order-independent); legs/
-// ETAs/totals are the engine's until a manual reorder, then a client-side
-// haversine recompute (labeled as a straight-line estimate).
-function RoutingRouteCard({ rv, stopById, usedGoogle, onReorder, onMove, hoverId, setHoverId }) {
+// markers). On a live build: drag-and-drop or ▲▼ to reorder. When viewing a
+// saved load (readOnly), the reorder affordances are hidden (view-only this PR).
+function RoutingRouteCard({ rv, stopById, usedGoogle, readOnly, onReorder, onMove, hoverId, setHoverId }) {
   const route = rv.route;
   const rows = rv.order.map((id, idx) => {
     const s = stopById.get(String(id));
@@ -5997,22 +6327,24 @@ function RoutingRouteCard({ rv, stopById, usedGoogle, onReorder, onMove, hoverId
           return (
             <li
               key={row.stopId}
-              draggable
-              onDragStart={onDragStart(i)} onDragOver={onDragOver(i)} onDrop={onDrop(i)} onDragEnd={onDragEnd}
+              draggable={!readOnly}
+              onDragStart={readOnly ? undefined : onDragStart(i)} onDragOver={readOnly ? undefined : onDragOver(i)} onDrop={readOnly ? undefined : onDrop(i)} onDragEnd={readOnly ? undefined : onDragEnd}
               onMouseEnter={() => setHoverId && setHoverId(row.stopId)}
               onMouseLeave={() => setHoverId && setHoverId((h) => (h === row.stopId ? null : h))}
               className={`flex items-center gap-2 px-2 py-1.5 ${overIdx === i ? 'border-t-2 border-t-blue-500' : ''} ${hot ? 'bg-amber-50' : 'hover:bg-slate-50'}`}
             >
-              <span className="cursor-grab text-slate-400 select-none text-sm leading-none" title="Drag to reorder" aria-hidden>⋮⋮</span>
+              {!readOnly && <span className="cursor-grab text-slate-400 select-none text-sm leading-none" title="Drag to reorder" aria-hidden>⋮⋮</span>}
               <span className="w-5 h-5 shrink-0 rounded-full text-white text-[10px] font-bold flex items-center justify-center" style={{ background: rv.color }}>{row.seq}</span>
               <div className="flex-1 min-w-0">
                 <div className="truncate font-medium text-[12px]" title={row.customer}>{row.customer}</div>
                 <div className="text-[10px] text-slate-500">{formatRoutingEta(row.eta)} · {row.skids} sk · {row.pieces} pc · {row.weight.toLocaleString()} lb</div>
               </div>
-              <div className="flex flex-col shrink-0">
-                <button onClick={() => onMove(rv.truckId, i, -1)} disabled={i === 0} aria-label={`Move ${row.customer} up`} className="text-slate-500 hover:text-slate-900 disabled:opacity-25 leading-none text-[11px]">▲</button>
-                <button onClick={() => onMove(rv.truckId, i, +1)} disabled={i === lastIdx} aria-label={`Move ${row.customer} down`} className="text-slate-500 hover:text-slate-900 disabled:opacity-25 leading-none text-[11px]">▼</button>
-              </div>
+              {!readOnly && (
+                <div className="flex flex-col shrink-0">
+                  <button onClick={() => onMove(rv.truckId, i, -1)} disabled={i === 0} aria-label={`Move ${row.customer} up`} className="text-slate-500 hover:text-slate-900 disabled:opacity-25 leading-none text-[11px]">▲</button>
+                  <button onClick={() => onMove(rv.truckId, i, +1)} disabled={i === lastIdx} aria-label={`Move ${row.customer} down`} className="text-slate-500 hover:text-slate-900 disabled:opacity-25 leading-none text-[11px]">▼</button>
+                </div>
+              )}
             </li>
           );
         })}
