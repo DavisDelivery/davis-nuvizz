@@ -520,15 +520,33 @@ async function writeFleetToFirestore(tenant, dateStr, loads, summary) {
   }
 }
 
-// Estimate the load number range for a given date. Davis's load numbering grows ~70-100/day
-// but this varies. Rather than trust a fixed baseline (fragile as weeks pass), we probe live
-// to calibrate on recent data. Cached per-date so the probe only happens once per cold start.
+// Estimate the load number range for a given date. Davis's load numbering grows ~100/business
+// day (Mon-Fri), with NO growth on weekends. The old calendar-day projection (×80/day including
+// weekends) drifted badly over weeks because it counted Sat/Sun as +80 each when they're really 0.
+// We now project using BUSINESS days only, anchored to a recent verified point.
 
-// Loose starting estimate — updated at runtime by calibrateRange().
-// Safe to drift; calibrateRange self-corrects on every scan.
-const ANCHOR_DATE = new Date('2026-04-22T00:00:00Z');
-const ANCHOR_LOAD = 192900; // approximate center of Apr 22 (actual range 192840-192996)
-const LOADS_PER_DAY = 80;  // conservative underestimate; window width is what really matters
+// Anchor: Fri Jun 5 2026, actual load range 196094-196192 (center ~196143).
+// Re-anchor this to any recent business day if drift returns: open the app, note today's
+// first/last load number, set ANCHOR_DATE + ANCHOR_LOAD to the center.
+const ANCHOR_DATE = new Date('2026-06-05T00:00:00Z');
+const ANCHOR_LOAD = 196143; // center of Jun 5 (range 196094-196192)
+const LOADS_PER_BIZ_DAY = 100; // Davis dispatches ~100 loads per business day
+
+// Count business days (Mon-Fri) between two dates. Positive if `to` is after `from`,
+// negative if before. Excludes weekends since Davis doesn't dispatch Sat/Sun.
+function businessDaysBetween(from, to) {
+  const msPerDay = 24 * 60 * 60 * 1000;
+  const sign = to >= from ? 1 : -1;
+  let count = 0;
+  let cur = new Date(Math.min(from, to));
+  const end = new Date(Math.max(from, to));
+  while (cur < end) {
+    cur = new Date(cur.getTime() + msPerDay);
+    const dow = cur.getUTCDay();
+    if (dow !== 0 && dow !== 6) count++;
+  }
+  return sign * count;
+}
 
 // In-memory calibration cache: map date → { startNbr, endNbr } confirmed by a scan
 const __rangeCache = new Map();
@@ -542,11 +560,12 @@ function estimateLoadRange(dateStr) {
   }
 
   const target = new Date(dateStr + 'T00:00:00Z');
-  const daysDiff = Math.round((target - ANCHOR_DATE) / (1000 * 60 * 60 * 24));
-  const center = ANCHOR_LOAD + daysDiff * LOADS_PER_DAY;
-  // Wider window (±250 = 500 numbers) to absorb drift. At concurrency 30 this scans in ~8-12s.
-  // After first successful scan we'll calibrate and narrow the cached range.
-  return { startNbr: center - 250, endNbr: center + 250 };
+  const bizDaysDiff = businessDaysBetween(ANCHOR_DATE, target);
+  const center = ANCHOR_LOAD + bizDaysDiff * LOADS_PER_BIZ_DAY;
+  // Wide window (±400 = 800 numbers) to absorb drift and a full extra business day of slack.
+  // At concurrency 30 this scans in ~12-18s. After first successful scan we calibrate and
+  // narrow the cached range so subsequent reads are tight+fast.
+  return { startNbr: center - 400, endNbr: center + 400 };
 }
 
 // Called after every successful scan to lock in the actual range found for a date.
