@@ -8,6 +8,7 @@ import assert from 'node:assert/strict';
 import {
   pointInPolygon, latLngInBounds, boxFromCorners,
   fmtTime12, formatReceivingHours, lineItemDims,
+  moveItem, recomputeRoute, haversineMeters,
 } from '../src/lib/routing-select.js';
 
 // ── Lasso: ray-casting point-in-polygon ──
@@ -119,4 +120,49 @@ test('lineItemDims renders L×W×H, falls back to critical dimension, else empty
   assert.equal(lineItemDims({ criticalDimension: 120 }), '120 in');
   assert.equal(lineItemDims({}), '');
   assert.equal(lineItemDims(null), '');
+});
+
+// ── Manual route reorder helpers ──
+test('moveItem reorders within the array and renumbers implicitly by position', () => {
+  assert.deepEqual(moveItem(['A', 'B', 'C', 'D'], 0, 2), ['B', 'C', 'A', 'D']); // A down to index 2
+  assert.deepEqual(moveItem(['A', 'B', 'C', 'D'], 3, 0), ['D', 'A', 'B', 'C']); // D to front
+  assert.deepEqual(moveItem(['A', 'B', 'C'], 1, 1), ['A', 'B', 'C']);           // no-op
+  assert.deepEqual(moveItem(['A', 'B', 'C'], 0, 9), ['A', 'B', 'C']);           // out of range → unchanged copy
+});
+
+test('recomputeRoute: order-dependent legs/ETAs, depot-anchored, service dwell applied', () => {
+  const depot = { lat: 0, lng: 0 };
+  const stops = [{ id: 'S1', lat: 0, lng: 1 }, { id: 'S2', lat: 0, lng: 2 }];
+  const r = recomputeRoute(stops, depot, 0, 600); // depart at 0, 10min service
+  assert.equal(r.legs.length, 2);
+  assert.equal(r.etas.length, 2);
+  assert.equal(r.legs[0].fromId, 'depot');
+  assert.equal(r.legs[1].fromId, 'S1');
+  // ETA(S2) = drive(depot->S1) + service + drive(S1->S2)
+  assert.equal(r.etas[1], r.legs[0].durationSec + 600 + r.legs[1].durationSec);
+  assert.ok(r.totalDistanceMeters > 0 && r.totalDurationSec > 0);
+});
+
+test('recomputeRoute: reversing the order changes the total distance', () => {
+  const depot = { lat: 0, lng: 0 };
+  const fwd = recomputeRoute([{ id: 'A', lat: 0, lng: 1 }, { id: 'B', lat: 0, lng: 5 }], depot, 0, 0);
+  const rev = recomputeRoute([{ id: 'B', lat: 0, lng: 5 }, { id: 'A', lat: 0, lng: 1 }], depot, 0, 0);
+  assert.notEqual(fwd.totalDistanceMeters, rev.totalDistanceMeters);
+});
+
+test('recomputeRoute: single-stop and empty routes are clean', () => {
+  const depot = { lat: 34, lng: -84 };
+  const one = recomputeRoute([{ id: 'X', lat: 34.1, lng: -84.1 }], depot, 1000, 600);
+  assert.equal(one.legs.length, 1);
+  assert.equal(one.etas.length, 1);
+  assert.equal(one.etas[0], 1000 + one.legs[0].durationSec);
+  const none = recomputeRoute([], depot, 0, 600);
+  assert.deepEqual(none.legs, []);
+  assert.deepEqual(none.etas, []);
+  assert.equal(none.totalDistanceMeters, 0);
+});
+
+test('haversineMeters is ~0 for identical points and positive otherwise', () => {
+  assert.equal(Math.round(haversineMeters({ lat: 34, lng: -84 }, { lat: 34, lng: -84 })), 0);
+  assert.ok(haversineMeters({ lat: 34, lng: -84 }, { lat: 34.1, lng: -84 }) > 1000);
 });

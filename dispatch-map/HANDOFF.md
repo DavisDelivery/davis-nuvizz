@@ -11,6 +11,56 @@ v0.7.2 = M4.5 PR 2 of 3 (stop-detail + driver-snapshot drawers).
 v0.8.0 = M4.5 PR 3 of 3 (final polish: marker labels, snapshot tap-through,
 mobile diagnostics, RESEARCH doc).
 
+## v0.17.0 — Manual route reorder: drag-and-drop, numbered stops, live map sync
+
+The load/route panel is now a working surface — the manual override every
+dispatcher reaches for. Client-side only (panel + map + recompute); the engine,
+matrix/cost path, cache, and Phase 1 are untouched; still feature-flagged.
+
+### Numbered stops (panel ↔ map locked together)
+- Each route's stops are numbered **1..N** (per route) in the load panel, shown as a
+  route-colored badge.
+- The route's map markers display the **same** sequence number as a white label on
+  the route-colored dot (markers grew to fit the number). Panel number and marker
+  number for a stop always match, and both update live on reorder.
+
+### Drag-and-drop reorder (desktop) + guaranteed fallback (touch)
+- Drag a stop row up/down to reorder **within** its route (HTML5 drag; drop target is
+  highlighted). On drop it renumbers 1..N immediately.
+- **▲▼ move buttons** on every row are the always-works fallback (HTML5 drag doesn't
+  fire on touch) — disabled at the ends, never a silent no-op.
+- Cross-route moves are out of scope (future); reorder is within-route only.
+
+### Live map sync + client-side recompute
+- On every reorder the map updates **in place** (no reload): marker numbers update and
+  the route **polyline redraws** depot→1→2→…→N. Driven by `routesView` (the current
+  per-truck order is the source of truth).
+- Legs / cumulative ETAs / route totals (miles, time) recompute instantly in the
+  browser from the stops' lat/lng via **haversine** (`recomputeRoute`), mirroring the
+  free build's 1.3× road factor + ~30 mph. **Load-vs-capacity is order-independent and
+  unchanged.** No server round-trip.
+
+### Road-number honesty
+- A reordered route is badged **"Manual order"** and its drive times are labeled
+  **straight-line estimates**; if the build had used Google road distances, the note
+  adds that the original Google road times no longer apply to this order. Stale Google
+  numbers are never presented as exact after a manual reorder. (A future per-route
+  Compute Routes call can recompute real road legs — out of scope here.)
+
+### Persist
+- **Save** writes the current manual order to `routing_routes` (`editedResultForSave`
+  applies the reordered `orderedStopIds`/`etas`/`legs`; `manual_reorder` flagged). Full
+  shared/multi-user persistence is a later brief.
+
+### Files
+- `src/lib/routing-select.js` — new pure helpers `moveItem`, `recomputeRoute`,
+  `haversineMeters` (+ road-factor/speed/service constants).
+- `src/App.jsx` — `routeState` (per-truck order + reordered flag), `routesView` /
+  `routeInfo` derivations, numbered markers + live polyline, reorderable
+  `RoutingRouteCard`, Save captures the manual order. Single-file kept.
+- `test/routing-select.test.mjs` — reorder/recompute tests. **74 tests green.**
+- APP_VERSION 0.16.1 → **0.17.0**.
+
 ## v0.16.1 — Build reliability: killed the hang, made it fast (Phase 2 PR 5A)
 
 A normal route build hung and was slow. Two concrete defects in the build path

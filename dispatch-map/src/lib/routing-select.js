@@ -95,3 +95,56 @@ export function lineItemDims(d) {
   if (d.criticalDimension != null) return `${d.criticalDimension} ${d.criticalDimensionUOM || 'in'}`;
   return '';
 }
+
+// ── Manual route reorder (PR: drag-and-drop) ──────────────────────────────────
+// Pure helpers so the reorder + client-side recompute are unit-testable without
+// the React/Maps shell. The recompute mirrors the engine's FREE haversine matrix
+// convention (1.3× road factor over crow-flies, ~30 mph effective) so a manually
+// reordered route's legs/ETAs are consistent with a free build.
+
+export const ROUTE_ROAD_FACTOR = 1.3;     // mirror of google-route-matrix haversine
+export const ROUTE_AVG_SPEED_MPS = 13.4;  // ~30 mph effective
+export const DEFAULT_SERVICE_SEC = 20 * 60;
+
+export function haversineMeters(a, b) {
+  const R = 6371000, toRad = (d) => (d * Math.PI) / 180;
+  const dLat = toRad(b.lat - a.lat), dLng = toRad(b.lng - a.lng);
+  const s = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(a.lat)) * Math.cos(toRad(b.lat)) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(s));
+}
+
+// Pure array move: returns a NEW array with the item at `from` moved to `to`.
+// Out-of-range / no-op moves return a shallow copy unchanged.
+export function moveItem(arr, from, to) {
+  const out = [...arr];
+  if (from < 0 || from >= out.length || to < 0 || to >= out.length || from === to) return out;
+  const [it] = out.splice(from, 1);
+  out.splice(to, 0, it);
+  return out;
+}
+
+// Recompute legs + cumulative arrival ETAs for an ordered list of stops, starting
+// from the depot at departSec, with serviceSec dwell after each stop. Returns
+// straight-line (haversine) estimates — used after a MANUAL reorder, where any
+// Google road legs no longer apply. orderedStops: [{ id, lat, lng }].
+export function recomputeRoute(orderedStops, depot, departSec = 0, serviceSec = DEFAULT_SERVICE_SEC) {
+  const legs = [];
+  const etas = [];
+  let totalDistanceMeters = 0;
+  let totalDurationSec = 0;
+  let prev = { id: 'depot', lat: depot.lat, lng: depot.lng };
+  let clock = departSec;
+  for (const s of orderedStops) {
+    const dist = haversineMeters(prev, s) * ROUTE_ROAD_FACTOR;
+    const dur = Math.round(dist / ROUTE_AVG_SPEED_MPS);
+    clock += dur;
+    legs.push({ fromId: prev.id, toId: s.id, distanceMeters: Math.round(dist), durationSec: dur });
+    etas.push(clock);                 // arrival at this stop
+    totalDistanceMeters += dist;
+    totalDurationSec += dur;
+    clock += serviceSec;              // dwell before departing to the next
+    prev = s;
+  }
+  return { legs, etas, totalDistanceMeters: Math.round(totalDistanceMeters), totalDurationSec };
+}
+
