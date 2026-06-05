@@ -66,6 +66,17 @@ carrier, unplanned/not-in-route), `sourceType: INTG`. This is the inbound order/
 3. Backlog still open: loose-pieces → NuVizz "volume"; inches→feet floor-length; dunnage /
    loose-pieces breakdown.
 
+### Test-data cleanup (UAT) — needs NuVizz admin
+Feasibility testing left stops in Davisv5. **All are cancelled (deactivated):**
+`CLAUDE_DEMO_1720`, `CLAUDELOAD1719_S1`, `CLAUDELOAD1719_S2`, `WT1780678384`. They could not
+be renamed or hard-deleted via the API — `stopNbr` is an immutable key, cancelled stops reject
+updates (`errorCode 906 "in Transit, can not be updated"`; `partialUpdate` → `errorCode 12`
+company-ownership), and the only delete endpoint (`/shipment/delete`) is a different NuVizz
+product line and 404s here. **Ask NuVizz to purge these test stops** (and confirm whether any
+API hard-delete exists for Davisv5). Interim: filter the Delivery list to exclude Cancelled.
+**Convention going forward:** name throwaway test data with a neutral prefix (e.g. `ZZTEST_`)
+and purge in the same step — never embed agent/vendor names in records written to a tenant.
+
 ---
 
 ## v0.23.0 — Routing quality (Chunk B): geographic truck assignment + green markers
