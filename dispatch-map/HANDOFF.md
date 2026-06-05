@@ -11,6 +11,52 @@ v0.7.2 = M4.5 PR 2 of 3 (stop-detail + driver-snapshot drawers).
 v0.8.0 = M4.5 PR 3 of 3 (final polish: marker labels, snapshot tap-through,
 mobile diagnostics, RESEARCH doc).
 
+## v0.17.1 — Hotfix: route by skid count; deck/floor length no longer blocks
+
+A real build (v0.17.0) spilled **all 25 selected stops** with "over deck length"
+and routed **0 trucks**. Surgical fix to the capacity gate only
+(`netlify/functions/lib/routing-constraints.mts#capacityFits`); the solver,
+sequencing, matrix, cost, equipment logic, cache, and Phase 1 are untouched.
+
+### Root cause (diagnosed via the real `deriveGeometryDeterministic`)
+The selected trucks have **real** deck caps (26ft box `deckLengthIn` 312in, 53ft
+trailer 636in — not 0/unset). The spill came from **inflated per-stop
+`linearFeetIn`**: the oversize estimator counts **every oversize piece as a full
+~pallet-length (~96in) × quantity**, so:
+
+```
+box_26 deck=312in · tractor_53 deck=636in   (maxSkids 14 / 28)
+plain 2-skid stop            → linearFeetIn 48     (fits)
+flooring, 30 ctn (cat L)     → linearFeetIn 2976   (OVER both)  ← 96 + 30×96
+cabinetry, 12 ea (cat L)     → linearFeetIn 1200   (OVER both)
+trim, 8 ea @144in (cat L)    → linearFeetIn 1200   (OVER both)
+```
+
+With deck as a hard gate, every flooring/LVT/cabinetry stop exceeded the deck on
+its own → `truckCanCarry` failed for all trucks → 0 routed. **Units:** both
+`deckLengthIn` and `linearFeetIn` are **inches**; the caps are right, the per-stop
+estimate is the wrong magnitude.
+
+### The fix
+- **Skid count is the binding gate** (always, when `maxSkids > 0`).
+- **Deck/floor length no longer blocks** — behind `CAPACITY_GATES = { skids:true,
+  weightLbs:true, deckLengthIn:false }`. It's still computed and still shown on the
+  CapacityBar as **info** (the bar may read over 100% until the feet rework, since
+  the underlying estimate is inflated — that's informational, not a spill).
+- **Weight** blocks only when `maxWeightLbs > 0`.
+- **Hardening:** `capLimited(cap)` — any non-positive / null / undefined / NaN cap
+  means **UNLIMITED** for that dimension. A missing/zero cap can never spill a stop
+  again (this whole class of bug is gone).
+
+### Deferred (explicitly): floor-length in FEET
+Rename "deck length" → "floor length", convert inches → **feet**, and fix the
+oversize linear estimate (cartons that stack/nest don't each consume a full pallet
+length — only genuinely long, non-stackable items do). Re-enabling the gate is then
+a one-line flip of `CAPACITY_GATES.deckLengthIn`. The diagnostic above feeds it.
+
+Files: `routing-constraints.mts` (gate + `CAPACITY_GATES` + `capLimited`);
+`test/routing-constraints.test.mjs` *(new)*. **81 tests green.** APP_VERSION 0.17.0 → 0.17.1.
+
 ## v0.17.0 — Manual route reorder: drag-and-drop, numbered stops, live map sync
 
 The load/route panel is now a working surface — the manual override every

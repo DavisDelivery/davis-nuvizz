@@ -512,3 +512,19 @@ LEVER 2 — Free road-distance matrices at scale (self-hosted OSRM).
   NuVizz read-only; still feature-flagged. Pure reorder+recompute helpers added to
   src/lib/routing-select.js and unit-tested (74 tests green). Cross-route drag and
   real Google road-leg recompute after reorder are noted as future items.
+- Jun 2026 — Claude (Phase 2 hotfix) — Route by skid count; deck/floor length no
+  longer blocks (v0.17.1). A real build spilled all 25 selected stops "over deck
+  length" and routed 0 trucks. Root cause (diagnosed via the real
+  deriveGeometryDeterministic): trucks have REAL deck caps (box 312in, 53ft 636in),
+  but the oversize estimator inflates per-stop linearFeetIn by counting every
+  oversize PIECE as a full ~pallet-length × quantity — a 30-carton flooring stop
+  computes ~2976in, far over any deck — and deck was a HARD gate, so every
+  flooring/LVT/cabinetry stop spilled. NOT a 0/unset cap. Fix (surgical, in
+  routing-constraints.mts capacityFits only): skid count is the binding gate; deck
+  is behind CAPACITY_GATES.deckLengthIn=false (still computed + shown as info, one
+  flag to re-enable after the feet rework); weight gates only when maxWeightLbs>0;
+  and a new capLimited() makes ANY non-positive/unset cap mean UNLIMITED (a missing
+  cap can never spill). Equipment constraints + solver assignment/sequencing/matrix/
+  cost/oversize-ordering UNCHANGED. DEFERRED: rename deck→floor length + convert
+  inches→FEET and fix the oversize linear estimate (cartons that stack don't each
+  consume a full pallet-length); the diagnostic above feeds it. 81 tests green.

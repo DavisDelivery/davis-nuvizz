@@ -78,13 +78,32 @@ export function computeLoad(stops: SolverStop[]): RouteLoad {
   return stops.reduce(addLoad, emptyLoad());
 }
 
+// Which capacity dimensions BLOCK placement. SKID COUNT is the limit the
+// dispatcher plans by, so it gates. DECK/FLOOR LENGTH does NOT block: the per-stop
+// linearFeetIn estimate is currently inflated for oversize freight (each oversize
+// piece is counted as a full ~pallet-length × quantity), which spilled entire
+// selections with "over deck length". Deck stays COMPUTED + shown as info; flip
+// `deckLengthIn` to true to re-enable it after the deferred floor-length-in-FEET
+// rework fixes that estimate. WEIGHT gates, but only when the truck has a real
+// positive weight cap (see capLimited).
+export const CAPACITY_GATES = { skids: true, weightLbs: true, deckLengthIn: false } as const;
+
+// Root-cause hardening: a capacity only constrains when it's a real positive
+// number. Non-positive / null / undefined / NaN means "NO LIMIT for that
+// dimension" — never zero. A missing or zero cap must never spill a stop.
+function capLimited(cap: number | null | undefined): cap is number {
+  return typeof cap === 'number' && Number.isFinite(cap) && cap > 0;
+}
+
 // Would adding `stop` to `current` load keep the truck within capacity? Reasons
-// for any breach. (Single-stop fit = check against an empty load.)
+// for any breach. (Single-stop fit = check against an empty load.) A dimension
+// only blocks when its gate is on AND the truck's cap for it is a real positive
+// number, so a missing/zero cap can never cause a spill.
 export function capacityFits(current: RouteLoad, stop: SolverStop, truck: SolverTruck): { ok: boolean; reasons: string[] } {
   const reasons: string[] = [];
-  if (current.skids + (stop.skids || 0) > truck.maxSkids) reasons.push(REASON.overSkids);
-  if (current.weightLbs + (stop.weightLbs || 0) > truck.maxWeightLbs) reasons.push(REASON.overWeight);
-  if (current.linearFeetIn + (stop.linearFeetIn || 0) > truck.deckLengthIn) reasons.push(REASON.overDeck);
+  if (CAPACITY_GATES.skids && capLimited(truck.maxSkids) && current.skids + (stop.skids || 0) > truck.maxSkids) reasons.push(REASON.overSkids);
+  if (CAPACITY_GATES.weightLbs && capLimited(truck.maxWeightLbs) && current.weightLbs + (stop.weightLbs || 0) > truck.maxWeightLbs) reasons.push(REASON.overWeight);
+  if (CAPACITY_GATES.deckLengthIn && capLimited(truck.deckLengthIn) && current.linearFeetIn + (stop.linearFeetIn || 0) > truck.deckLengthIn) reasons.push(REASON.overDeck);
   return { ok: reasons.length === 0, reasons };
 }
 
