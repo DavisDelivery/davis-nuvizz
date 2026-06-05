@@ -86,16 +86,32 @@ test('capacity overflow spills with reasons; shown route stays within capacity',
   assert.ok(plan.unassigned.every((u) => u.reasons.length > 0));
 });
 
-test('STRICT window honored: an unreachable appointment is spilled, route valid', async () => {
-  // S_far is geographically distant with a tight early STRICT window.
-  const reqStops = [
-    { stopNbr: 'NEAR', lat: 0, lng: 1, pallets: 1, weight: 100, weightUOM: 'LB', stopDetails: [] },
-    { stopNbr: 'FAR', lat: 0, lng: 500, pallets: 1, weight: 100, weightUOM: 'LB', stopDetails: [], scheduledFrom: '08:00', scheduledTo: '08:05', timeConstraint: 'STRICT' },
-  ];
+const windowStops = () => [
+  { stopNbr: 'NEAR', lat: 0, lng: 1, pallets: 1, weight: 100, weightUOM: 'LB', stopDetails: [] },
+  { stopNbr: 'FAR', lat: 0, lng: 500, pallets: 1, weight: 100, weightUOM: 'LB', stopDetails: [], scheduledFrom: '08:00', scheduledTo: '08:05', timeConstraint: 'STRICT' },
+];
+
+test('STRICT mode: an unreachable appointment is spilled, route valid', async () => {
   const plan = await runPipeline(
-    { stops: reqStops, trucks: [truck()], depot: { lat: 0, lng: 0 }, strategy: 'MIN_DISTANCE', date: '2026-06-10', departHHMM: '08:00' },
+    { stops: windowStops(), trucks: [truck()], depot: { lat: 0, lng: 0 }, strategy: 'MIN_DISTANCE', date: '2026-06-10', departHHMM: '08:00', windowMode: 'strict' },
     { buildMatrix: mockMatrix() },
   );
   assert.ok(plan.unassigned.some((u) => u.stopId === 'FAR' && u.reasons.some((r) => /window/.test(r))));
   assert.ok(plan.routes.some((r) => r.orderedStopIds.includes('NEAR')));
+});
+
+test('ADVISORY (default): an unreachable appointment is KEPT + flagged, zero window spills', async () => {
+  const plan = await runPipeline(
+    { stops: windowStops(), trucks: [truck()], depot: { lat: 0, lng: 0 }, strategy: 'MIN_DISTANCE', date: '2026-06-10', departHHMM: '08:00' /* default advisory */ },
+    { buildMatrix: mockMatrix() },
+  );
+  // No stop spilled for a window reason.
+  assert.ok(!plan.unassigned.some((u) => u.reasons.some((r) => /window/.test(r))), 'no window spills');
+  // FAR is kept on a route and flagged via windowViolatedIds.
+  const served = plan.routes.flatMap((r) => r.orderedStopIds);
+  assert.ok(served.includes('FAR') && served.includes('NEAR'));
+  const flagged = new Set(plan.routes.flatMap((r) => r.windowViolatedIds || []));
+  assert.ok(flagged.has('FAR'), 'FAR flagged out-of-window');
+  // Risk flags name the out-of-window stop, not every STRICT stop.
+  assert.ok(plan.riskFlags.some((f) => /FAR/.test(f) && /window/i.test(f)));
 });

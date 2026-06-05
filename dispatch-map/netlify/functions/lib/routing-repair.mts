@@ -75,9 +75,11 @@ function etasFor(ordered: SolverStop[], indexById: Map<string, number>, matrix: 
 }
 
 // Pick the worst violator in an ordered route, with its spill reason. Capacity /
-// equipment first (structural), then the STRICT-window stop with the most lateness.
+// equipment first (structural), then — ONLY when windows are enforced (strict) —
+// the STRICT-window stop with the most lateness. In advisory mode windows never
+// cause a spill (they're flagged on the route instead).
 function worstViolator(
-  ordered: SolverStop[], etas: number[], truck: SolverTruck,
+  ordered: SolverStop[], etas: number[], truck: SolverTruck, enforceWindows: boolean,
 ): { stop: SolverStop; reasons: string[] } | null {
   // Capacity: if over, drop the largest-skid stop.
   const load = computeLoad(ordered);
@@ -95,6 +97,8 @@ function worstViolator(
     if (!eq.ok) return { stop: s, reasons: eq.reasons };
   }
   // STRICT window: the stop with the greatest lateness past its window end.
+  // Skipped entirely in advisory mode (windows flag, never spill).
+  if (!enforceWindows) return null;
   let worst: SolverStop | null = null, worstLate = 0;
   ordered.forEach((s, i) => {
     if (!windowOk(s, etas[i])) {
@@ -107,14 +111,22 @@ function worstViolator(
 }
 
 // Can `stop` be inserted into this truck's stop set with the result fully valid?
-function canInsert(stop: SolverStop, truckStops: SolverStop[], truck: SolverTruck, input: SolverInput, indexById: Map<string, number>): boolean {
+// In advisory mode windows are ignored for the validity test (capacity + equipment
+// only), so a window-only mismatch never blocks recovery.
+function canInsert(stop: SolverStop, truckStops: SolverStop[], truck: SolverTruck, input: SolverInput, indexById: Map<string, number>, enforceWindows: boolean): boolean {
   const eq = equipmentOk(stop, truck);
   if (!eq.ok) return false;
   const cap = capacityFits(computeLoad(truckStops), stop, truck);
   if (!cap.ok) return false;
+  if (!enforceWindows) return true;
   const ordered = orderForTruck([...truckStops, stop], input, indexById);
   const etas = etasFor(ordered, indexById, input.matrix, input.departEpochSec ?? 0);
   return ordered.every((s, i) => windowOk(s, etas[i]));
+}
+
+// Stops kept on an ordered route whose STRICT-window ETA is missed (advisory flag).
+function windowViolations(ordered: SolverStop[], etas: number[]): string[] {
+  return ordered.filter((s, i) => !windowOk(s, etas[i])).map((s) => s.id);
 }
 
 export function repair(input: SolverInput, output: SolverOutput): SolverOutput {
@@ -124,6 +136,8 @@ export function repair(input: SolverInput, output: SolverOutput): SolverOutput {
   indexById.forEach((idx, id) => idByIndex.set(idx, id));
   const stopById = new Map(input.stops.map((s) => [s.id, s]));
   const depart = input.departEpochSec ?? 0;
+  // Default ADVISORY: windows flag, never spill. STRICT keeps the old drop behavior.
+  const enforceWindows = input.windowMode === 'strict';
 
   // Working stop sets per truck (from the solver's assignment).
   const sets = new Map<string, SolverStop[]>();
@@ -137,7 +151,7 @@ export function repair(input: SolverInput, output: SolverOutput): SolverOutput {
     while (stops.length && guard++ < stops.length + 2) {
       const ordered = orderForTruck(stops, input, indexById);
       const etas = etasFor(ordered, indexById, input.matrix, depart);
-      const v = worstViolator(ordered, etas, truck);
+      const v = worstViolator(ordered, etas, truck, enforceWindows);
       if (!v) { stops = ordered; break; }
       stops = ordered.filter((s) => s.id !== v.stop.id);
       unassigned.push({ stopId: v.stop.id, reasons: v.reasons });
@@ -152,7 +166,7 @@ export function repair(input: SolverInput, output: SolverOutput): SolverOutput {
     if (!stop) { stillUnassigned.push(u); continue; }
     let placed = false;
     for (const truck of input.trucks) {
-      if (canInsert(stop, sets.get(truck.id)!, truck, input, indexById)) {
+      if (canInsert(stop, sets.get(truck.id)!, truck, input, indexById, enforceWindows)) {
         sets.set(truck.id, [...sets.get(truck.id)!, stop]);
         placed = true;
         break;
@@ -168,7 +182,11 @@ export function repair(input: SolverInput, output: SolverOutput): SolverOutput {
     if (!stops.length) continue;
     const ordered = orderForTruck(stops, input, indexById);
     const nodes = ordered.map((s) => indexById.get(s.id)!);
-    routes.push(assembleRoute(truck, stops, nodes, idByIndex, input.matrix, depart));
+    const route = assembleRoute(truck, stops, nodes, idByIndex, input.matrix, depart);
+    // Advisory flag: STRICT-window stops kept on the route whose ETA misses the
+    // window (always empty in strict mode — those were spilled in Phase A).
+    route.windowViolatedIds = windowViolations(ordered, etasFor(ordered, indexById, input.matrix, depart));
+    routes.push(route);
   }
 
   return {

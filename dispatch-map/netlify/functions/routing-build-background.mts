@@ -115,6 +115,9 @@ export default async function handler(req: Request): Promise<Response> {
     // Cheap by default (Appendix B): haversine unless the build explicitly opts
     // into 'google'. resolveMatrix honors the mode; absent → haversine.
     const matrixMode = r.matrixMode === 'google' ? 'google' : 'haversine';
+    // Appointment windows are ADVISORY by default (flag, don't spill). Kill switch
+    // back to strict via the request or an env (ROUTING_WINDOWS=strict).
+    const windowMode = (r.windowMode === 'strict' || process.env.ROUTING_WINDOWS === 'strict') ? 'strict' : 'advisory';
 
     // P1 FIX: the Opus model is OPT-IN, default OFF — exactly parallel to the
     // Google matrix opt-in. The deps are passed ONLY when the build explicitly
@@ -136,7 +139,7 @@ export default async function handler(req: Request): Promise<Response> {
       strategy: r.strategy || 'MIN_DISTANCE',
       objectiveWeights: r.objectiveWeights,
       date, departHHMM: r.departHHMM, serviceMin: r.serviceMin,
-      matrixMode,
+      matrixMode, windowMode,
     };
     // P4 FIX: overall watchdog. If the pipeline somehow overruns, reject with a
     // clear, client-actionable message so the UI stops polling.

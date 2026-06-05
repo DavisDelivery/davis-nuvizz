@@ -11,6 +11,49 @@ v0.7.2 = M4.5 PR 2 of 3 (stop-detail + driver-snapshot drawers).
 v0.8.0 = M4.5 PR 3 of 3 (final polish: marker labels, snapshot tap-through,
 mobile diagnostics, RESEARCH doc).
 
+## v0.21.0 — Appointment windows become advisory (flag, don't spill)
+
+A ~21-stop build routed only 8; 13 spilled "appointment window cannot be met" with
+skid headroom to spare. Root cause: the repair loop **dropped** any stop whose
+STRICT window it couldn't satisfy (`REASON.windowUnsatisfiable`) — a hard gate, the
+same class of problem deck length was in before #47. Windows now **flag, not spill**.
+
+### Engine
+- New **window-enforcement mode**, default **`advisory`**. In advisory the repair
+  loop never spills a stop for a window: it **keeps** it on the assigned truck and
+  records it in **`BuiltRoute.windowViolatedIds`**. EDF (`windowAwareOrder`)
+  sequencing still tries to honor windows as a soft preference; `canInsert` ignores
+  windows for validity (capacity + equipment only). `worstViolator` only spills on
+  windows when enforcing.
+- **`strict`** (the old behavior — drop on unsatisfiable window) is an **opt-in kill
+  switch**: `request.windowMode === 'strict'` or env **`ROUTING_WINDOWS=strict`**
+  (handled in `routing-build-background`). Default is advisory.
+- `windowViolatedIds` flows `routing-types` → `routing-repair` → `routing-pipeline`
+  → route result. The appointment window + STRICT designation are **preserved** on
+  the stop (`SolverStop.timeWindow` / `timeConstraint`) for a future window-respecting
+  solver. The pipeline's risk flags now name the stops **actually out of window**
+  (with the window), not every STRICT stop.
+
+### UI (`src/App.jsx`)
+- Route-card rows and the PRO detail popup show **"⚠ outside appointment window"**
+  (with the window, e.g. `8:00a–8:05a`) when the stop is in `windowViolatedIds`; the
+  detail also shows the appointment window + `(strict)`. Existing "Manual order /
+  straight-line estimate" labeling unchanged.
+
+### Guardrails
+- Skids remain the only hard capacity gate; weight gates only when `maxWeightLbs>0`;
+  **deck stays advisory (#47 `capacityFits` gates untouched)**; equipment / matrix /
+  cost / cache / Phase 1 / solver seeding / NuVizz write all untouched.
+
+### Tests / files
+- `routing-types.mts` (`WindowMode`, `SolverInput.windowMode`, `BuiltRoute.windowViolatedIds`),
+  `routing-repair.mts` (mode gating + `windowViolatedIds`), `routing-pipeline.mts`
+  (thread mode + window-specific risk flags), `routing-build-background.mts` (default
+  advisory + env kill switch), `src/App.jsx` (row + popup flags, `apptWindowLabel`).
+  `test/routing-repair.test.mjs` + `test/routing-pipeline.test.mjs` cover both modes
+  (the prior strict-assuming tests now opt into `windowMode:'strict'`). **92 tests green.**
+- APP_VERSION 0.20.0 → 0.21.0. (Built on the v0.20.0 version-badge branch — stacked on #49.)
+
 ## v0.20.0 — Persistent build badge on the Routing screen
 
 The `APP_VERSION` chip only rendered on the main **Map** view (above the FAB) and

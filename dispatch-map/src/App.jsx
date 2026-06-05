@@ -27,7 +27,7 @@ import { db } from './lib/firebase.js';
 import { normalizeMatchKey } from './lib/matchKey.js';
 import { haversineMiles, naiveEtaMinutes, formatEtaClockTime } from './lib/distance.js';
 import { todayInET, isTodayET, formatDateForDisplay, formatDateLong } from './lib/date-util.js';
-import { pointInPolygon, latLngInBounds, boxFromCorners, formatReceivingHours, lineItemDims, moveItem, recomputeRoute, resequence, DEFAULT_SERVICE_SEC } from './lib/routing-select.js';
+import { pointInPolygon, latLngInBounds, boxFromCorners, formatReceivingHours, lineItemDims, moveItem, recomputeRoute, resequence, fmtTime12, DEFAULT_SERVICE_SEC } from './lib/routing-select.js';
 import { formatDateTime, tsToMillis, loadSummary, buildLoadAutoName } from './lib/routing-loads.js';
 import { scanStop, scanStopFull } from './lib/signal-scanner';
 import { applyScannerResults } from './lib/customer-notes-writer';
@@ -44,7 +44,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.20.0';
+const APP_VERSION = '0.21.0';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -5044,7 +5044,14 @@ function ProLink({ stop, onOpen, className = '' }) {
   );
 }
 
-function RoutingStopDetail({ stop, note, onOpen }) {
+// Appointment window label from a stop's scheduled times, e.g. "8:00a–8:05a".
+function apptWindowLabel(stop) {
+  const from = stop?.scheduledFrom, to = stop?.scheduledTo;
+  if (!from && !to) return null;
+  return `${from ? fmtTime12(from) : '?'}–${to ? fmtTime12(to) : '?'}`;
+}
+
+function RoutingStopDetail({ stop, note, onOpen, windowViolated }) {
   const keys = getRestrictionBadgeKeys(note);
   const oversize = stopLooksOversize(stop);
   const hoursStr = formatReceivingHours(note);
@@ -5092,6 +5099,15 @@ function RoutingStopDetail({ stop, note, onOpen }) {
       {note?.appointment_required && (
         <div><Cap>Appointment</Cap><div className="text-slate-800">Required{note.appointment_notes ? ` — ${note.appointment_notes}` : ''}</div></div>
       )}
+      {(apptWindowLabel(stop) || windowViolated) && (
+        <div>
+          <Cap>Appointment window</Cap>
+          <div className="text-slate-800">
+            {apptWindowLabel(stop) || '—'}{String(stop.timeConstraint || '').toUpperCase() === 'STRICT' ? ' (strict)' : ''}
+            {windowViolated && <span className="ml-1 text-amber-700 font-semibold">⚠ outside appointment window</span>}
+          </div>
+        </div>
+      )}
       {hoursStr && <div><Cap>Receiving hours</Cap><div className="text-slate-800">{hoursStr}</div></div>}
       <div>
         <Cap>Products / line items</Cap>
@@ -5123,7 +5139,7 @@ function RoutingStopDetail({ stop, note, onOpen }) {
 // Full-detail popup for a stop, opened from any PRO/order-number link. Body reuses
 // RoutingStopDetail (the single detail view). Closes via X, backdrop, or Esc.
 // Never opens empty — guards a null stop.
-function RoutingStopModal({ stop, notes, onClose }) {
+function RoutingStopModal({ stop, notes, onClose, windowViolatedSet }) {
   useEffect(() => {
     const onKey = (e) => { if (e.key === 'Escape') onClose(); };
     window.addEventListener('keydown', onKey);
@@ -5132,6 +5148,7 @@ function RoutingStopModal({ stop, notes, onClose }) {
   if (!stop) return null;
   const note = notes?.get?.(stop.matchKey) || null;
   const pro = stop.pro || stop.stopNbr || stop.primaryPro || '';
+  const windowViolated = !!(windowViolatedSet && windowViolatedSet.has(String(stop.stopNbr || stop.pro)));
   return (
     <div className="fixed inset-0 z-[1000] flex items-center justify-center p-4" role="dialog" aria-modal="true">
       <div className="absolute inset-0 bg-black/40" onClick={onClose} />
@@ -5144,7 +5161,7 @@ function RoutingStopModal({ stop, notes, onClose }) {
           <button onClick={onClose} aria-label="Close" className="text-slate-400 hover:text-slate-700 text-2xl leading-none px-1 shrink-0">×</button>
         </div>
         <div className="overflow-y-auto p-3">
-          <RoutingStopDetail stop={stop} note={note} />
+          <RoutingStopDetail stop={stop} note={note} windowViolated={windowViolated} />
         </div>
       </div>
     </div>
@@ -5960,6 +5977,14 @@ function RoutingScreen() {
     mapRef.current.fitBounds(b, 60);
   }, [viewing, viewedLoad?.id, mapReady, google]); // eslint-disable-line
 
+  // Stops kept on a route but outside their appointment window (advisory flag from
+  // the engine result). Used to flag rows + the detail popup.
+  const windowViolatedSet = useMemo(() => {
+    const s = new Set();
+    for (const r of (baseResult?.routes || [])) for (const id of (r.windowViolatedIds || [])) s.add(String(id));
+    return s;
+  }, [baseResult]);
+
   const meta = baseResult?.meta || {};
   const usedGoogle = meta.matrixSource === 'google';
 
@@ -6130,7 +6155,7 @@ function RoutingScreen() {
             </div>
           )}
         </div>
-        {detailModalStop && <RoutingStopModal stop={detailModalStop} notes={notes} onClose={() => setDetailModalStop(null)} />}
+        {detailModalStop && <RoutingStopModal stop={detailModalStop} notes={notes} windowViolatedSet={windowViolatedSet} onClose={() => setDetailModalStop(null)} />}
       </div>
     );
   }
@@ -6213,7 +6238,7 @@ function RoutingScreen() {
           <div className="flex-1 min-h-0 overflow-y-auto p-3 space-y-3 text-sm">{resultContent}</div>
         )}
       </div>
-      {detailModalStop && <RoutingStopModal stop={detailModalStop} notes={notes} onClose={() => setDetailModalStop(null)} />}
+      {detailModalStop && <RoutingStopModal stop={detailModalStop} notes={notes} windowViolatedSet={windowViolatedSet} onClose={() => setDetailModalStop(null)} />}
     </div>
   );
 }
@@ -6480,6 +6505,7 @@ function RoutingRouteCard({ rv, stopById, usedGoogle, readOnly, onReorder, onMov
   const piecesTotal = rows.reduce((a, r) => a + r.pieces, 0);
   const miles = rv.totalDistanceMeters != null ? rv.totalDistanceMeters / 1609.34 : null;
   const lastIdx = rows.length - 1;
+  const winViolated = new Set((route?.windowViolatedIds || []).map(String)); // advisory window flags
 
   const dragFrom = useRef(null);
   const [overIdx, setOverIdx] = useState(null);
@@ -6539,6 +6565,7 @@ function RoutingRouteCard({ rv, stopById, usedGoogle, readOnly, onReorder, onMov
                   {row.stop && <span className="shrink-0 text-[10px]"><ProLink stop={row.stop} onOpen={onOpenStop} /></span>}
                 </div>
                 <div className="text-[10px] text-slate-500">{formatRoutingEta(row.eta)} · {row.skids} sk · {row.pieces} pc · {row.weight.toLocaleString()} lb</div>
+                {winViolated.has(row.stopId) && <div className="text-[10px] text-amber-700 font-semibold">⚠ outside appointment window{apptWindowLabel(row.stop) ? ` (${apptWindowLabel(row.stop)})` : ''}</div>}
               </div>
               {!readOnly && (
                 <div className="flex flex-col shrink-0">

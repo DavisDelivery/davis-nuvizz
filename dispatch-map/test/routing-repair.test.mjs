@@ -29,22 +29,45 @@ function assertRouteValid(route, input) {
   });
 }
 
-test('STRICT window that cannot be met is spilled with reason; rest stays valid', () => {
+// A is 200s from everywhere → never reachable within a [0,100] window.
+const unreachableMatrix = {
+  durationSec: [[0, 200, 50], [200, 0, 200], [50, 200, 0]],
+  distanceMeters: [[0, 200, 50], [200, 0, 200], [50, 200, 0]],
+};
+
+test('STRICT mode: an unsatisfiable window is spilled with reason; rest stays valid', () => {
   const A = stop('A', { timeConstraint: 'STRICT', timeWindow: { startSec: 0, endSec: 100 } });
   const B = stop('B', { timeConstraint: 'STRICT', timeWindow: { startSec: 0, endSec: 100 } });
-  // A is 200s from everywhere → never reachable within its window.
-  const matrix = {
-    durationSec: [[0, 200, 50], [200, 0, 200], [50, 200, 0]],
-    distanceMeters: [[0, 200, 50], [200, 0, 200], [50, 200, 0]],
-  };
-  const input = { stops: [A, B], trucks: [truck()], depot: { lat: 0, lng: 0 }, matrix, strategy: 'MIN_DISTANCE', objectiveWeights: { distance: 1, time: 1, balance: 0 }, departEpochSec: 0 };
+  const input = { stops: [A, B], trucks: [truck()], depot: { lat: 0, lng: 0 }, matrix: unreachableMatrix, strategy: 'MIN_DISTANCE', objectiveWeights: { distance: 1, time: 1, balance: 0 }, departEpochSec: 0, windowMode: 'strict' };
   const out = repair(input, solveRouting(input));
   out.routes.forEach((r) => assertRouteValid(r, input));
   const spilledIds = out.unassigned.map((u) => u.stopId);
   assert.ok(spilledIds.includes('A'));
   assert.ok(out.unassigned.find((u) => u.stopId === 'A').reasons.some((r) => /window/.test(r)));
-  // B remains served.
-  assert.ok(out.routes.some((r) => r.orderedStopIds.includes('B')));
+});
+
+test('ADVISORY (default): an unsatisfiable window is KEPT on the truck and flagged, not spilled', () => {
+  const A = stop('A', { timeConstraint: 'STRICT', timeWindow: { startSec: 0, endSec: 100 } });
+  const B = stop('B', { timeConstraint: 'STRICT', timeWindow: { startSec: 0, endSec: 100 } });
+  const input = { stops: [A, B], trucks: [truck()], depot: { lat: 0, lng: 0 }, matrix: unreachableMatrix, strategy: 'MIN_DISTANCE', objectiveWeights: { distance: 1, time: 1, balance: 0 }, departEpochSec: 0 /* default advisory */ };
+  const out = repair(input, solveRouting(input));
+  const served = out.routes.flatMap((r) => r.orderedStopIds);
+  assert.ok(served.includes('A') && served.includes('B'), 'both stops kept');
+  assert.equal(out.unassigned.length, 0, 'no window spill in advisory mode');
+  const flagged = out.routes.flatMap((r) => r.windowViolatedIds || []);
+  assert.ok(flagged.includes('A'), 'A flagged as outside its window');
+  // capacity still holds even though windows are advisory
+  out.routes.forEach((r) => assert.ok(r.load.skids <= r.capacity.skids));
+});
+
+test('ADVISORY: a stop with no window is never window-flagged', () => {
+  const A = stop('A'); // SOFT, no window
+  const B = stop('B', { timeConstraint: 'STRICT', timeWindow: { startSec: 0, endSec: 100 } });
+  const input = { stops: [A, B], trucks: [truck()], depot: { lat: 0, lng: 0 }, matrix: unreachableMatrix, strategy: 'MIN_DISTANCE', objectiveWeights: { distance: 1, time: 1, balance: 0 }, departEpochSec: 0 };
+  const out = repair(input, solveRouting(input));
+  const flagged = new Set(out.routes.flatMap((r) => r.windowViolatedIds || []));
+  assert.ok(!flagged.has('A'), 'no-window stop never flagged');
+  assert.equal(out.unassigned.length, 0);
 });
 
 test('repair fixes a deliberately over-capacity candidate by spilling biggest stop(s)', () => {

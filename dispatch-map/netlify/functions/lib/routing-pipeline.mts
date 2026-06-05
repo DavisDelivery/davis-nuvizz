@@ -18,6 +18,7 @@ import {
   DEFAULT_MATRIX_MODE, matrixElementCount, estimateMatrixCostUsd,
   type SolverStop, type SolverTruck, type SolverInput, type SolverMatrix,
   type Strategy, type ObjectiveWeights, type EquipmentReq, type BuiltRoute, type MatrixMode,
+  type WindowMode, DEFAULT_WINDOW_MODE,
 } from './routing-types.mts';
 import { deriveGeometryForStops, type GeometryAssist } from './freight-geometry.mts';
 import { parseIntentResponse, parseGeometryAssist } from './routing-intent.mts';
@@ -53,6 +54,7 @@ export interface PipelineRequest {
   departHHMM?: string;
   serviceMin?: number;
   matrixMode?: MatrixMode;  // 'haversine' (default, free) | 'google' (paid opt-in)
+  windowMode?: WindowMode;  // 'advisory' (default, flag) | 'strict' (spill on unmet window)
 }
 
 export interface PipelineDeps {
@@ -113,6 +115,14 @@ function deterministicRationale(plan: { routes: BuiltRoute[]; unassigned: any[] 
   return parts.join(' ');
 }
 
+// "HH:MM–HH:MM" (UTC, matching the planning clock) for a STRICT window, or ''.
+function windowLabel(s: any): string {
+  const w = s?.timeWindow;
+  if (!w) return '';
+  const hhmm = (sec: number) => new Date(sec * 1000).toISOString().slice(11, 16);
+  return `${hhmm(w.startSec)}–${hhmm(w.endSec)}`;
+}
+
 function deterministicRiskFlags(input: SolverInput, plan: { routes: BuiltRoute[]; unassigned: any[] }): string[] {
   const flags: string[] = [];
   const stopById = new Map(input.stops.map((s) => [s.id, s]));
@@ -120,11 +130,13 @@ function deterministicRiskFlags(input: SolverInput, plan: { routes: BuiltRoute[]
     if (route.load.skids > route.capacity.skids * 0.9) flags.push(`Truck ${route.truckId}: tight on skids (${route.load.skids}/${route.capacity.skids}).`);
     if (route.load.weightLbs > route.capacity.weightLbs * 0.9) flags.push(`Truck ${route.truckId}: tight on weight (${route.load.weightLbs}/${route.capacity.weightLbs} lb).`);
     if (route.load.linearFeetIn > route.capacity.linearFeetIn * 0.9) flags.push(`Truck ${route.truckId}: tight on deck length.`);
+    const violated = new Set(route.windowViolatedIds || []);
     for (const id of route.orderedStopIds) {
       const s = stopById.get(id);
       if (s?.oversize) flags.push(`Stop ${id} is oversize — confirm it fits the assigned truck.`);
       if (s?.equipmentReqs?.length) flags.push(`Stop ${id} has equipment restrictions (${s.equipmentReqs.join(', ')}) — confirm before dispatch.`);
-      if (s?.timeConstraint === 'STRICT') flags.push(`Stop ${id} has a STRICT appointment window.`);
+      // Advisory windows: flag only the stops actually OUT OF WINDOW, not every STRICT stop.
+      if (violated.has(id)) { const w = windowLabel(s); flags.push(`Stop ${id} is outside its appointment window${w ? ` (${w})` : ''} — kept on the route as advisory.`); }
     }
   }
   if (plan.unassigned.length) flags.push(`${plan.unassigned.length} stop(s) spilled — review reasons.`);
@@ -174,6 +186,7 @@ export async function runPipeline(req: PipelineRequest, deps: PipelineDeps): Pro
     objectiveWeights: intent.objectiveWeights,
     constraints: intent.extraConstraints,
     departEpochSec,
+    windowMode: req.windowMode === 'strict' ? 'strict' : DEFAULT_WINDOW_MODE,
   };
 
   // ── P3 solve + P4 repair (deterministic) ──
