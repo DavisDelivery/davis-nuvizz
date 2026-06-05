@@ -496,3 +496,19 @@ LEVER 2 — Free road-distance matrices at scale (self-hosted OSRM).
   Measured deterministic build (real haversine path, zero model calls): ~3ms for 25
   stops, ~48ms for 100. cheap-by-default intact; solver math unchanged; NuVizz
   read-only; cache/Phase 1 untouched (69 tests green).
+- Jun 2026 — Claude (Phase 2 PR) — Manual route reorder: drag-and-drop, numbered
+  stops, live map sync (v0.17.0). The load/route panel is now a working surface:
+  each route's stops are NUMBERED 1..N and the route's map markers show the SAME
+  number in the route color (panel and map locked together). Dragging a stop row
+  (HTML5 drag, desktop-primary) reorders within the route and renumbers instantly;
+  ▲▼ move buttons on every row are the guaranteed touch fallback (no dead control).
+  On every reorder the map updates in place — marker numbers + the route polyline
+  redraw to the new sequence — and legs/ETAs/route totals recompute client-side via
+  haversine (free, consistent with the default build), load-vs-capacity unchanged.
+  Road-number honesty: a manually reordered route is badged "Manual order" and its
+  drive times are labeled straight-line estimates (with an explicit note that any
+  original Google road times no longer apply). Save persists the manual order to
+  routing_routes. Client-side only: engine/matrix/cost/cache/Phase 1 untouched;
+  NuVizz read-only; still feature-flagged. Pure reorder+recompute helpers added to
+  src/lib/routing-select.js and unit-tested (74 tests green). Cross-route drag and
+  real Google road-leg recompute after reorder are noted as future items.

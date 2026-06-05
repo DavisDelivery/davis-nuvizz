@@ -26,7 +26,7 @@ import { db } from './lib/firebase.js';
 import { normalizeMatchKey } from './lib/matchKey.js';
 import { haversineMiles, naiveEtaMinutes, formatEtaClockTime } from './lib/distance.js';
 import { todayInET, isTodayET, formatDateForDisplay, formatDateLong } from './lib/date-util.js';
-import { pointInPolygon, latLngInBounds, boxFromCorners, formatReceivingHours, lineItemDims } from './lib/routing-select.js';
+import { pointInPolygon, latLngInBounds, boxFromCorners, formatReceivingHours, lineItemDims, moveItem, recomputeRoute, DEFAULT_SERVICE_SEC } from './lib/routing-select.js';
 import { scanStop, scanStopFull } from './lib/signal-scanner';
 import { applyScannerResults } from './lib/customer-notes-writer';
 
@@ -42,7 +42,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.16.1';
+const APP_VERSION = '0.17.0';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -5300,6 +5300,82 @@ function RoutingScreen() {
 
   const result = job?.status === 'done' ? job.result : null;
 
+  // ── Manual route reorder (client-side override of the engine's order) ──
+  // routeState holds the CURRENT order per truck (the panel is the source of
+  // truth) plus a `reordered` flag. It seeds from the engine result and the
+  // dispatcher drags / moves stops to mutate it; the map + panel + recompute all
+  // read from here. The engine is never called to reorder.
+  const [routeState, setRouteState] = useState(null);
+  useEffect(() => {
+    if (result && Array.isArray(result.routes)) {
+      const init = {};
+      for (const r of result.routes) init[r.truckId] = { order: [...r.orderedStopIds], reordered: false };
+      setRouteState(init);
+    } else {
+      setRouteState(null);
+    }
+  }, [result]);
+
+  const reorderStop = useCallback((truckId, from, to) => {
+    setRouteState((prev) => {
+      if (!prev || !prev[truckId]) return prev;
+      const order = moveItem(prev[truckId].order, from, to);
+      if (order === prev[truckId].order || order.length !== prev[truckId].order.length) return prev;
+      // moveItem returns a new array even on no-op; detect a real change:
+      const changed = order.some((id, i) => id !== prev[truckId].order[i]);
+      if (!changed) return prev;
+      return { ...prev, [truckId]: { order, reordered: true } };
+    });
+  }, []);
+  const moveStop = useCallback((truckId, index, dir) => reorderStop(truckId, index, index + dir), [reorderStop]);
+
+  // Per-route display: the CURRENT order, plus legs/ETAs/totals — the engine's
+  // when untouched, or a client-side haversine recompute after a manual reorder
+  // (P4). Load/capacity are order-independent and come straight from the engine.
+  const routesView = useMemo(() => {
+    if (!result || !Array.isArray(result.routes) || !routeState) return [];
+    const depot = result.meta?.depot || ROUTING_DEPOT;
+    const departSec = Number(result.meta?.departEpochSec) || 0;
+    const serviceSec = Number(result.meta?.serviceMin) > 0 ? Number(result.meta.serviceMin) * 60 : DEFAULT_SERVICE_SEC;
+    const sum = (legs, k) => (Array.isArray(legs) ? legs.reduce((a, l) => a + (Number(l?.[k]) || 0), 0) : null);
+    return result.routes.map((r, i) => {
+      const st = routeState[r.truckId] || { order: r.orderedStopIds, reordered: false };
+      const color = ROUTE_PALETTE[i % ROUTE_PALETTE.length];
+      if (!st.reordered) {
+        return { truckId: r.truckId, color, order: st.order, reordered: false, etas: r.etas, legs: r.legs,
+          totalDistanceMeters: sum(r.legs, 'distanceMeters'), totalDurationSec: sum(r.legs, 'durationSec'), route: r };
+      }
+      const orderedStops = st.order.map((id) => { const s = stopById.get(String(id)); return s ? { id: String(id), lat: s.lat, lng: s.lng } : null; }).filter(Boolean);
+      const rc = recomputeRoute(orderedStops, depot, departSec, serviceSec);
+      return { truckId: r.truckId, color, order: st.order, reordered: true, etas: rc.etas, legs: rc.legs,
+        totalDistanceMeters: rc.totalDistanceMeters, totalDurationSec: rc.totalDurationSec, route: r };
+    });
+  }, [result, routeState, stopById]);
+
+  // stopId -> { color, seq } for the numbered route markers (panel & map match).
+  const routeInfo = useMemo(() => {
+    const m = new Map();
+    routesView.forEach((rv) => rv.order.forEach((id, idx) => m.set(String(id), { color: rv.color, seq: idx + 1 })));
+    return m;
+  }, [routesView]);
+
+  // The plan to persist on Save — engine result with any manual order applied.
+  const editedResultForSave = useMemo(() => {
+    if (!result) return null;
+    const anyReordered = routeState && Object.values(routeState).some((s) => s.reordered);
+    if (!anyReordered) return result;
+    const byTruck = new Map(routesView.map((rv) => [rv.truckId, rv]));
+    return {
+      ...result,
+      manualReorder: true,
+      routes: result.routes.map((r) => {
+        const rv = byTruck.get(r.truckId);
+        if (!rv || !rv.reordered) return r;
+        return { ...r, orderedStopIds: rv.order, etas: rv.etas, legs: rv.legs, manualReorder: true, drivenEstimate: 'haversine' };
+      }),
+    };
+  }, [result, routeState, routesView]);
+
   // Selection tally + a SPECIFIC per-restriction summary (replaces the old vague
   // "equipment restriction in selection" line). Counts each restriction key and
   // oversize across the selected stops, resolved through the same helpers the
@@ -5419,16 +5495,17 @@ function RoutingScreen() {
   }, [google, addTempMarker, addEnclosed, redrawLasso, cancelMode]);
   useEffect(() => { handleSelectPointRef.current = handleSelectPoint; }, [handleSelectPoint]);
 
-  // Marker icon for a given state. Hovered markers grow + get a dark ring so the
-  // map<->list linkage reads clearly.
-  const makeMarkerIcon = useCallback((sel, routed, hovered) => ({
+  // Base marker icon. `numbered` routed stops are larger so the sequence label
+  // fits. Hover/selection emphasis is layered on via emphIcon (keeps the label).
+  const makeMarkerIcon = useCallback((sel, routed, numbered) => ({
     path: google?.maps.SymbolPath.CIRCLE,
-    scale: hovered ? 9 : (sel || routed ? 7 : 4.5),
+    scale: numbered ? 12 : (sel || routed ? 7 : 4.5),
     fillColor: routed || (sel ? BRAND : '#94a3b8'),
     fillOpacity: 0.95,
-    strokeColor: hovered ? '#0f172a' : '#fff',
-    strokeWeight: hovered ? 2 : 1,
+    strokeColor: '#fff',
+    strokeWeight: 1,
   }), [google]);
+  const emphIcon = useCallback((base) => ({ ...base, scale: base.scale + 2.5, strokeColor: '#0f172a', strokeWeight: 2 }), []);
 
   // Desktop drag-box: convert a container-pixel point to LatLng via the overlay
   // projection (exact, unlike interpolating viewport bounds).
@@ -5490,24 +5567,29 @@ function RoutingScreen() {
     setMapReady((n) => n + 1);
   }, [google, isMobile]); // eslint-disable-line
 
-  // Render stop markers — gray unselected, blue selected, truck-colored when a
-  // result exists. Click toggles selection; hover drives the map<->list linkage.
+  // Render stop markers — gray unselected, blue selected, route-colored + NUMBERED
+  // (sequence 1..N matching the panel) once a result exists. Click toggles
+  // selection; hover drives the map<->list linkage. Numbers/colors track routeInfo
+  // so a manual reorder updates the labels live.
   useEffect(() => {
     if (!google || !mapRef.current) return;
     markersRef.current.forEach((m) => m.setMap(null));
     const byId = new Map();
-    const truckColorByStop = new Map();
-    if (result) result.routes.forEach((r, i) => r.orderedStopIds.forEach((id) => truckColorByStop.set(String(id), ROUTE_PALETTE[i % ROUTE_PALETTE.length])));
     markersRef.current = positioned.map((s) => {
       const id = String(s.stopNbr);
       const sel = selectedIds.has(id);
-      const routed = truckColorByStop.get(id);
+      const ri = routeInfo.get(id);              // { color, seq } when on a route
+      const routed = ri?.color;
+      const numbered = !!ri;
       const hovered = hoverIdRef.current === id;
+      const baseIcon = makeMarkerIcon(sel, routed, numbered);
+      const baseZ = sel || routed ? 30 : 10;
       const marker = new google.maps.Marker({
         position: { lat: s.lat, lng: s.lng },
         title: s.businessName || s.stopNbr,
-        icon: makeMarkerIcon(sel, routed, hovered),
-        zIndex: hovered ? 50 : (sel || routed ? 30 : 10),
+        icon: hovered ? emphIcon(baseIcon) : baseIcon,
+        label: numbered ? { text: String(ri.seq), color: '#fff', fontSize: '11px', fontWeight: '700' } : undefined,
+        zIndex: hovered ? 50 : baseZ,
       });
       marker.addListener('click', () => {
         if (selectModeRef.current) handleSelectPointRef.current(marker.getPosition());
@@ -5516,40 +5598,42 @@ function RoutingScreen() {
       marker.addListener('mouseover', () => setHoverId(id));
       marker.addListener('mouseout', () => setHoverId((h) => (h === id ? null : h)));
       marker.setMap(mapRef.current);
-      byId.set(id, { marker, sel, routed });
+      byId.set(id, { marker, baseIcon, baseZ });
       return marker;
     });
     markerByIdRef.current = byId;
     lastEmphRef.current = hoverIdRef.current; // markers were built already-emphasized
-  }, [google, positioned, selectedIds, result, toggleStop, mapReady, makeMarkerIcon]);
+  }, [google, positioned, selectedIds, routeInfo, toggleStop, mapReady, makeMarkerIcon, emphIcon]);
 
-  // Hover emphasis — touch only the two affected markers, not all of them.
+  // Hover emphasis — touch only the two affected markers, not all of them. Keeps
+  // the sequence label intact (only the icon scale/ring change).
   useEffect(() => {
     const byId = markerByIdRef.current;
     const setEmph = (id, on) => {
       const e = byId.get(id); if (!e) return;
-      e.marker.setIcon(makeMarkerIcon(e.sel, e.routed, on));
-      e.marker.setZIndex(on ? 50 : (e.sel || e.routed ? 30 : 10));
+      e.marker.setIcon(on ? emphIcon(e.baseIcon) : e.baseIcon);
+      e.marker.setZIndex(on ? 50 : e.baseZ);
     };
     if (lastEmphRef.current && lastEmphRef.current !== hoverId) setEmph(lastEmphRef.current, false);
     if (hoverId) setEmph(hoverId, true);
     lastEmphRef.current = hoverId;
-  }, [hoverId, makeMarkerIcon]);
+  }, [hoverId, emphIcon]);
 
-  // Route polylines (one per truck, depot-anchored, engine's order, M5 palette).
+  // Route polylines (one per truck, depot-anchored). Drawn in the CURRENT order
+  // (routesView), so a manual reorder redraws the path live.
   useEffect(() => {
     if (!google || !mapRef.current) return;
     polylinesRef.current.forEach((p) => p.setMap(null));
     polylinesRef.current = [];
-    if (!result) return;
-    result.routes.forEach((r, i) => {
+    if (!routesView.length) return;
+    routesView.forEach((rv) => {
       const path = [{ lat: ROUTING_DEPOT.lat, lng: ROUTING_DEPOT.lng }];
-      for (const id of r.orderedStopIds) { const s = stopById.get(String(id)); if (s) path.push({ lat: s.lat, lng: s.lng }); }
-      const pl = new google.maps.Polyline({ path, strokeColor: ROUTE_PALETTE[i % ROUTE_PALETTE.length], strokeWeight: 3, strokeOpacity: 0.85, zIndex: 5 });
+      for (const id of rv.order) { const s = stopById.get(String(id)); if (s) path.push({ lat: s.lat, lng: s.lng }); }
+      const pl = new google.maps.Polyline({ path, strokeColor: rv.color, strokeWeight: 3, strokeOpacity: 0.85, zIndex: 5 });
       pl.setMap(mapRef.current);
       polylinesRef.current.push(pl);
     });
-  }, [google, result, stopById, mapReady]);
+  }, [google, routesView, stopById, mapReady]);
 
   const selectedTrucks = useMemo(() => profiles.filter((p) => selectedTruckIds.has(p.id)), [profiles, selectedTruckIds]);
   const canBuild = selectedIds.size >= 1 && selectedTrucks.length >= 1 && selectedIds.size <= ROUTING_MAX_SELECTION && !building;
@@ -5589,13 +5673,15 @@ function RoutingScreen() {
     setSaveState('saving');
     const id = `routeset_${(crypto.randomUUID ? crypto.randomUUID() : String(Date.now()))}`;
     try {
+      // Persist the CURRENT plan — the engine result with any manual reorder applied.
       await setDoc(doc(db, 'routing_routes', id), {
         id, status: 'saved', dispatched: false, created_at: serverTimestamp(), created_by: 'dispatcher', app_version: APP_VERSION,
-        request: lastRequest, result,
+        request: lastRequest, result: editedResultForSave || result,
+        manual_reorder: !!(editedResultForSave && editedResultForSave.manualReorder),
       });
       setSaveState('saved');
     } catch (e) { setSaveState(e.message || 'save failed'); }
-  }, [result, lastRequest]);
+  }, [result, lastRequest, editedResultForSave]);
 
   const meta = result?.meta || {};
   const usedGoogle = meta.matrixSource === 'google';
@@ -5711,7 +5797,9 @@ function RoutingScreen() {
 
   const resultContent = (
     <RoutingResultPanel job={job} result={result} meta={meta} usedGoogle={usedGoogle} stopById={stopById}
-      onSave={savePlan} saveState={saveState} />
+      onSave={savePlan} saveState={saveState}
+      routesView={routesView} onReorder={reorderStop} onMove={moveStop}
+      hoverId={hoverId} setHoverId={setHoverId} />
   );
 
   // ── Mobile: map + collapsible bottom sheet (Setup / Result) ──
@@ -5797,7 +5885,7 @@ function RoutingScreen() {
   );
 }
 
-function RoutingResultPanel({ job, result, meta, usedGoogle, stopById, onSave, saveState }) {
+function RoutingResultPanel({ job, result, meta, usedGoogle, stopById, onSave, saveState, routesView, onReorder, onMove, hoverId, setHoverId }) {
   if (!job) return <div className="text-[12px] text-slate-400">Build a plan to see routes, ETAs, load, spill, and cost here.</div>;
   if (job.status === 'queued' || job.status === 'running') return <div className="text-[12px] text-slate-600">⏳ Building plan… ({job.stage || job.status})</div>;
   if (job.status === 'error') return <div className="text-[12px] text-red-600">Build failed: {job.error || 'unknown error'}</div>;
@@ -5820,6 +5908,8 @@ function RoutingResultPanel({ job, result, meta, usedGoogle, stopById, onSave, s
         <div className="flex justify-between"><span>AI assist</span><b>{result.aiConfigured ? `${[ai.intent && 'intent', ai.explain && 'rationale', ai.geometry && 'geometry'].filter(Boolean).join(', ') || 'available, not needed'}` : 'off'}</b></div>
       </div>
 
+      <div className="text-[11px] text-slate-500">Drag a stop (or use ▲▼) to reorder a route. The map and ETAs update live.</div>
+
       {/* Rationale + risk */}
       {result.rationale && <div className="text-[12px] text-slate-700"><b>Rationale.</b> {result.rationale}</div>}
       {Array.isArray(result.riskFlags) && result.riskFlags.length > 0 && (
@@ -5829,9 +5919,10 @@ function RoutingResultPanel({ job, result, meta, usedGoogle, stopById, onSave, s
         </div>
       )}
 
-      {/* Routes */}
-      {result.routes.map((r, i) => (
-        <RoutingRouteCard key={r.truckId} route={r} color={ROUTE_PALETTE[i % ROUTE_PALETTE.length]} stopById={stopById} />
+      {/* Routes (reorderable, numbered) */}
+      {(routesView || []).map((rv) => (
+        <RoutingRouteCard key={rv.truckId} rv={rv} stopById={stopById} usedGoogle={usedGoogle}
+          onReorder={onReorder} onMove={onMove} hoverId={hoverId} setHoverId={setHoverId} />
       ))}
 
       {/* Spill */}
@@ -5854,46 +5945,78 @@ function RoutingResultPanel({ job, result, meta, usedGoogle, stopById, onSave, s
   );
 }
 
-function RoutingRouteCard({ route, color, stopById }) {
-  const rows = useMemo(() => route.orderedStopIds.map((id, idx) => {
+function fmtRouteDur(sec) {
+  if (sec == null || !Number.isFinite(sec)) return '—';
+  const h = Math.floor(sec / 3600), m = Math.round((sec % 3600) / 60);
+  return h ? `${h}h ${m}m` : `${m}m`;
+}
+
+// One truck's route — NUMBERED stops in the CURRENT sequence (matching the map
+// markers), drag-and-drop to reorder, with ▲▼ move buttons as the guaranteed
+// touch fallback. Load/capacity come from the engine (order-independent); legs/
+// ETAs/totals are the engine's until a manual reorder, then a client-side
+// haversine recompute (labeled as a straight-line estimate).
+function RoutingRouteCard({ rv, stopById, usedGoogle, onReorder, onMove, hoverId, setHoverId }) {
+  const route = rv.route;
+  const rows = rv.order.map((id, idx) => {
     const s = stopById.get(String(id));
-    return { seq: idx + 1, stopId: id, customer: s?.businessName || id, eta: route.etas?.[idx] ?? null, skids: Number(s?.pallets) || 0, pieces: Number(s?.cartons) || 0, weight: Number(s?.weight) || 0 };
-  }), [route, stopById]);
-  const piecesTotal = useMemo(() => rows.reduce((a, r) => a + r.pieces, 0), [rows]);
-  const { sorted, sortKey, sortDir, toggle } = useSortable(rows, 'seq', 'asc');
+    return { seq: idx + 1, stopId: String(id), customer: s?.businessName || id, eta: rv.etas?.[idx] ?? null,
+      skids: Number(s?.pallets) || 0, pieces: Number(s?.cartons) || 0, weight: Number(s?.weight) || 0 };
+  });
+  const piecesTotal = rows.reduce((a, r) => a + r.pieces, 0);
+  const miles = rv.totalDistanceMeters != null ? rv.totalDistanceMeters / 1609.34 : null;
+  const lastIdx = rows.length - 1;
+
+  const dragFrom = useRef(null);
+  const [overIdx, setOverIdx] = useState(null);
+  const onDragStart = (i) => (e) => { dragFrom.current = i; e.dataTransfer.effectAllowed = 'move'; try { e.dataTransfer.setData('text/plain', String(i)); } catch { /* some browsers */ } };
+  const onDragOver = (i) => (e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; if (overIdx !== i) setOverIdx(i); };
+  const onDrop = (i) => (e) => { e.preventDefault(); const from = dragFrom.current; dragFrom.current = null; setOverIdx(null); if (from != null && from !== i) onReorder(rv.truckId, from, i); };
+  const onDragEnd = () => { dragFrom.current = null; setOverIdx(null); };
+
   return (
     <div className="rounded border border-slate-200">
-      <div className="px-2 py-1.5 flex items-center gap-2 border-b" style={{ borderLeft: `4px solid ${color}` }}>
+      <div className="px-2 py-1.5 flex items-center gap-2 border-b flex-wrap" style={{ borderLeft: `4px solid ${rv.color}` }}>
         <span className="font-semibold">{route.truckId}</span>
-        <span className="text-[11px] text-slate-500">{route.orderedStopIds.length} stops · {piecesTotal} loose pc{piecesTotal === 1 ? '' : 's'}</span>
+        <span className="text-[11px] text-slate-500">{rows.length} stops · {piecesTotal} loose pc{piecesTotal === 1 ? '' : 's'}{miles != null ? ` · ~${miles.toFixed(1)} mi · ~${fmtRouteDur(rv.totalDurationSec)}` : ''}</span>
+        {rv.reordered && <span className="text-[9px] font-bold uppercase tracking-wide bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded">Manual order</span>}
       </div>
       <div className="p-2 space-y-1.5">
         <CapacityBar label="Skids" used={route.load.skids} cap={route.capacity.skids} unit="" />
         <CapacityBar label="Weight" used={route.load.weightLbs} cap={route.capacity.weightLbs} unit="lb" />
         <CapacityBar label="Deck" used={route.load.linearFeetIn} cap={route.capacity.linearFeetIn} unit="in" />
       </div>
-      <table className="w-full text-[11px]">
-        <thead className="bg-slate-50"><tr>
-          <SortableTh label="#" k="seq" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />
-          <SortableTh label="Customer" k="customer" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />
-          <SortableTh label="ETA" k="eta" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />
-          <SortableTh label="Skids" k="skids" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />
-          <SortableTh label="Pcs" k="pieces" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />
-          <SortableTh label="Wt" k="weight" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />
-        </tr></thead>
-        <tbody>
-          {sorted.map((row) => (
-            <tr key={row.stopId} className="border-t">
-              <td className="px-2 py-1">{row.seq}</td>
-              <td className="px-2 py-1 truncate max-w-[120px]" title={row.customer}>{row.customer}</td>
-              <td className="px-2 py-1">{formatRoutingEta(row.eta)}</td>
-              <td className="px-2 py-1">{row.skids}</td>
-              <td className="px-2 py-1">{row.pieces}</td>
-              <td className="px-2 py-1">{row.weight.toLocaleString()}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+      {rv.reordered && (
+        <div className="px-2 pb-1 text-[10px] text-amber-700">
+          Sequence edited — drive times are straight-line estimates{usedGoogle ? ' (original Google road times no longer apply to this order)' : ''}.
+        </div>
+      )}
+      <ul className="divide-y">
+        {rows.map((row, i) => {
+          const hot = hoverId === row.stopId;
+          return (
+            <li
+              key={row.stopId}
+              draggable
+              onDragStart={onDragStart(i)} onDragOver={onDragOver(i)} onDrop={onDrop(i)} onDragEnd={onDragEnd}
+              onMouseEnter={() => setHoverId && setHoverId(row.stopId)}
+              onMouseLeave={() => setHoverId && setHoverId((h) => (h === row.stopId ? null : h))}
+              className={`flex items-center gap-2 px-2 py-1.5 ${overIdx === i ? 'border-t-2 border-t-blue-500' : ''} ${hot ? 'bg-amber-50' : 'hover:bg-slate-50'}`}
+            >
+              <span className="cursor-grab text-slate-400 select-none text-sm leading-none" title="Drag to reorder" aria-hidden>⋮⋮</span>
+              <span className="w-5 h-5 shrink-0 rounded-full text-white text-[10px] font-bold flex items-center justify-center" style={{ background: rv.color }}>{row.seq}</span>
+              <div className="flex-1 min-w-0">
+                <div className="truncate font-medium text-[12px]" title={row.customer}>{row.customer}</div>
+                <div className="text-[10px] text-slate-500">{formatRoutingEta(row.eta)} · {row.skids} sk · {row.pieces} pc · {row.weight.toLocaleString()} lb</div>
+              </div>
+              <div className="flex flex-col shrink-0">
+                <button onClick={() => onMove(rv.truckId, i, -1)} disabled={i === 0} aria-label={`Move ${row.customer} up`} className="text-slate-500 hover:text-slate-900 disabled:opacity-25 leading-none text-[11px]">▲</button>
+                <button onClick={() => onMove(rv.truckId, i, +1)} disabled={i === lastIdx} aria-label={`Move ${row.customer} down`} className="text-slate-500 hover:text-slate-900 disabled:opacity-25 leading-none text-[11px]">▼</button>
+              </div>
+            </li>
+          );
+        })}
+      </ul>
     </div>
   );
 }
