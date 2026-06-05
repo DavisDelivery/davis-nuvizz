@@ -600,3 +600,23 @@ LEVER 2 — Free road-distance matrices at scale (self-hosted OSRM).
   gates untouched); equipment/matrix/cost/cache/Phase 1/solver-seeding untouched;
   NuVizz read-only. Repair + pipeline unit-tested for both modes (92 tests green).
   Built on the v0.20.0 version-badge branch (stacked); rebase onto main after #49.
+- Jun 2026 — Claude (Phase 2 PR, Routing Quality Chunk A / keystone) — Un-clobber the
+  optimizer (v0.22.0). A ~22-stop MIN_DISTANCE/CLOSEST_FIRST build was ignoring the
+  chosen strategy and shipping ~input order. Traced + fixed three exact points:
+  (1) routing-pipeline toSolverStops fed FAKE strict windows: NuVizz placeholder
+  00:00/00:00 schedules became STRICT-with-window. New realWindowSec() requires both
+  ends present, non-placeholder (not 00:00/00:00), parseable, and end>start; STRICT
+  only when a REAL window exists AND NuVizz flags strict — else timeWindow=null/SOFT.
+  hhmmToEpochSec hardened to parse H:MM / HH:MM / HH:MM:SS. Net: a normal build has
+  hasStrict=false, so routing-repair orderForTruck re-runs sequence(strategy) — the
+  optimizer's order ships (orderForTruck/windowAwareOrder logic itself UNCHANGED).
+  (2) src/App.jsx onResequence no-opped on a fresh build (routeState empty); it now
+  SEEDS from the engine route's orderedStopIds, so the per-load Re-sequence dropdown
+  reorders a freshly built route (no silent id drops). (3) Result-panel risk flags are
+  now a COLLAPSED disclosure ("⚠ N risk flags", tap to expand; never auto-expands).
+  Could not reach live NuVizz to confirm the 00:00 placeholders — proceeded on the
+  placeholder/zero-length guard (flagged), unit-tested real-window detection + ordering
+  (route == sequence(MIN_DISTANCE), CLOSEST_FIRST == depot-distance sort; placeholder
+  windows never flag/spill; genuine windows kept strict). Matrix/cost/skid-gate/deck
+  untouched; NuVizz read-only. Geographic truck assignment is Chunk B (out of scope).
+  96 tests green.

@@ -80,9 +80,31 @@ export interface RoutingPlan {
 function hhmmToEpochSec(date: string | undefined, hhmm: string): number {
   // UTC-anchored so depot departure and all windows share one clock (comparisons
   // stay correct). Wall-clock/ET nuance for display is a UI concern, not the math.
+  // Tolerant of "HH:MM", "H:MM", and "HH:MM:SS" (NuVizz sometimes sends seconds).
   const base = date || '1970-01-01';
-  const t = Date.parse(`${base}T${hhmm}:00Z`);
+  const m = String(hhmm ?? '').match(/^(\d{1,2}):(\d{2})/);
+  if (!m) return 0;
+  const t = Date.parse(`${base}T${m[1].padStart(2, '0')}:${m[2]}:00Z`);
   return Number.isFinite(t) ? Math.floor(t / 1000) : 0;
+}
+
+// A schedule string is a placeholder when empty or midnight ("00:00"/"00:00:00").
+function isPlaceholderTime(t: string | null | undefined): boolean {
+  const s = String(t ?? '').trim();
+  return s === '' || /^0{1,2}:0{2}(:0{2})?$/.test(s);
+}
+
+// A stop has a REAL appointment window only if BOTH ends are present, neither is a
+// midnight/zero placeholder, both parse, and end > start. Otherwise null — so a
+// NuVizz placeholder schedule (00:00/00:00) does NOT become a STRICT window that
+// would clobber the optimizer's sequence. Returns { startSec, endSec } | null.
+function realWindowSec(date: string | undefined, from: string | null | undefined, to: string | null | undefined): { startSec: number; endSec: number } | null {
+  if (!from || !to) return null;
+  if (isPlaceholderTime(from) && isPlaceholderTime(to)) return null;
+  const startSec = hhmmToEpochSec(date, from);
+  const endSec = hhmmToEpochSec(date, to);
+  if (!startSec || !endSec || endSec <= startSec) return null; // zero/negative length or unparseable
+  return { startSec, endSec };
 }
 
 function toSolverStops(
@@ -94,14 +116,18 @@ function toSolverStops(
   return stops.map((s) => {
     const id = s.stopNbr ?? s.id!;
     const g = geo.get(id) ?? { skids: 0, weightLbs: 0, linearFeetIn: 0, oversize: false };
-    const hasWindow = !!(s.scheduledFrom && s.scheduledTo);
+    // REAL-window detection: a placeholder/zero-length schedule yields no window and
+    // SOFT, so a normal build has hasStrict=false and orderForTruck re-runs
+    // sequence(strategy) — the optimizer's order is what ships.
+    const win = realWindowSec(date, s.scheduledFrom, s.scheduledTo);
+    const strictFlag = String(s.timeConstraint || '').toUpperCase() === 'STRICT';
     return {
       id,
       lat: s.lat, lng: s.lng,
       skids: g.skids, weightLbs: g.weightLbs, linearFeetIn: g.linearFeetIn, oversize: g.oversize,
       serviceMin,
-      timeWindow: hasWindow ? { startSec: hhmmToEpochSec(date, s.scheduledFrom!), endSec: hhmmToEpochSec(date, s.scheduledTo!) } : null,
-      timeConstraint: String(s.timeConstraint || '').toUpperCase() === 'STRICT' ? 'STRICT' : 'SOFT',
+      timeWindow: win,
+      timeConstraint: (win && strictFlag) ? 'STRICT' : 'SOFT',  // STRICT only with a REAL window
       equipmentReqs: s.equipmentReqs || [],
     };
   });
