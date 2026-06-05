@@ -11,6 +11,49 @@ v0.7.2 = M4.5 PR 2 of 3 (stop-detail + driver-snapshot drawers).
 v0.8.0 = M4.5 PR 3 of 3 (final polish: marker labels, snapshot tap-through,
 mobile diagnostics, RESEARCH doc).
 
+## v0.18.0 — Shared loads: real-time persistence + live Loads view
+
+#44 persisted one dispatcher's plan; this makes saved loads **shared and live** — a
+load saved on any device shows up for everyone within seconds and can be opened on
+the map. Firestore read/write on the existing `routing_routes` collection + UI;
+engine/matrix/cost/cache/Phase 1/NuVizz untouched; feature-flagged. No auth built.
+
+### Live, shared list
+- `useSavedLoads()` subscribes via `onSnapshot(query(routing_routes, orderBy('created_at','desc')))`
+  with clean teardown; explicit loading / empty / error (never a silent catch).
+- A **Loads** tab (desktop right rail + mobile sheet) lists every load: name, status
+  chip (Saved/Dispatched), Manual-order chip, `N trucks · M stops`, created time
+  (`Jun 5, 2026 2:14p`), saved-by, and app_version. Sortable (name/status/stops/created).
+
+### Save with a name
+- The Save panel takes a **name** (prefilled with `buildLoadAutoName` →
+  "Jun 5, 2026 2:14p · 3 trucks · 28 stops"; no native prompt) + optional **saved-by**
+  initials. Writes `name`, `updated_at`, `created_by` (unchanged), and a self-contained
+  **`stops_snapshot`** ({name,lat,lng,pallets,cartons,weight} per stop) so the load
+  renders on the map on any day. **Verified by readback** (re-`getDoc`, check `name`).
+
+### Open a load → view on map + panel (read-only)
+- Selecting a load sets `viewedLoad`; `baseResult`/`vStopById`/`vPositioned` switch what's
+  RENDERED (reusing #44's `routesView`/`routeInfo` — numbered markers + per-route
+  polylines, map auto-fit to the load). The live build state (selectedIds/routeState/
+  job/selectedDate) is **never touched**, so "Back to build" returns to it intact.
+- An indigo **"Viewing saved load"** banner (map + panel) makes saved-vs-build
+  unmistakable; reorder affordances are hidden (view-only). Honesty labels (Manual
+  order / straight-line estimate) carry through from the saved doc.
+
+### Manage
+- **Rename** (inline, no prompt), **Delete** (explicit confirm), **toggle Dispatched** —
+  each `updateDoc`/`deleteDoc` **verified by readback**; the live snapshot reflects every
+  change everywhere. The open viewed-load tracks edits via `updated_at` and closes if
+  deleted elsewhere.
+
+### Files
+- `src/lib/routing-loads.js` *(new)* — `formatDateTime`, `tsToMillis`, `loadSummary`,
+  `buildLoadAutoName` (+ counts). `test/routing-loads.test.mjs` *(new)*. **78 tests green.**
+- `src/App.jsx` — `useSavedLoads`; view state + effective stop maps; save-with-name +
+  snapshot + readback; manage handlers; `RoutingLoadsPanel` / `LoadRow` /
+  `SavedLoadManageBar`; route card `readOnly`. Single-file kept. APP_VERSION 0.17.0 → 0.18.0.
+
 ## v0.17.1 — Hotfix: route by skid count; deck/floor length no longer blocks
 
 A real build (v0.17.0) spilled **all 25 selected stops** with "over deck length"
@@ -56,7 +99,6 @@ a one-line flip of `CAPACITY_GATES.deckLengthIn`. The diagnostic above feeds it.
 
 Files: `routing-constraints.mts` (gate + `CAPACITY_GATES` + `capLimited`);
 `test/routing-constraints.test.mjs` *(new)*. **81 tests green.** APP_VERSION 0.17.0 → 0.17.1.
-
 ## v0.17.0 — Manual route reorder: drag-and-drop, numbered stops, live map sync
 
 The load/route panel is now a working surface — the manual override every
