@@ -923,12 +923,38 @@ function hasReceivingHours(note) {
   return false;
 }
 
+// True if the note carries receiving hours for ONE specific weekday key
+// ('mon'..'sun'). Same legacy-string / {open,close} tolerance as above.
+function hasReceivingHoursForDay(note, dayKey) {
+  const v = note?.receiving_hours?.[dayKey];
+  if (!v) return false;
+  if (typeof v === 'string') return v.trim().length > 0;
+  return !!(v.open || v.close);
+}
+
+// Map a "YYYY-MM-DD" date string to a receiving-hours day key ('mon'..'sun').
+// Parsed at local noon so DST/UTC never shifts the weekday (matches date-util).
+// JS getDay() is 0=Sun..6=Sat; we re-key into our Mon-first DAYS vocabulary.
+function weekdayKeyFromDate(dateString) {
+  if (!dateString) return null;
+  const [y, m, d] = String(dateString).split('-').map(Number);
+  if (!y || !m || !d) return null;
+  const dt = new Date(y, m - 1, d, 12, 0, 0);
+  if (Number.isNaN(dt.getTime())) return null;
+  return ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'][dt.getDay()];
+}
+
 // Build the list of restriction badge keys for a note. Includes equipment
 // restrictions, liftgate, appointment-required (M2-M4), and M4.4 additions:
 // receiving_hours (clock), closed_<day> per entry in note.closed_days.
 // Display order per brief P3.2: equipment first, then receiving hours, then
 // closed Monday, then closed Friday, then other closed days.
-function getRestrictionBadgeKeys(note) {
+// `opts.day` ('mon'..'sun') makes the receiving-hours clock DAY-AWARE: the
+// clock badge is included only when that weekday actually has hours set, so a
+// customer with Friday-only hours shows the clock on Fridays and nowhere else.
+// Omit `opts.day` (legend, counts, sidebar badge row) to keep the old behavior
+// where any day's hours light the clock.
+function getRestrictionBadgeKeys(note, opts = {}) {
   if (!note) return [];
   const keys = [];
   for (const r of note.equipment_restrictions || []) {
@@ -937,7 +963,8 @@ function getRestrictionBadgeKeys(note) {
   }
   if (note.liftgate_required && !keys.includes('liftgate_required')) keys.push('liftgate_required');
   if (note.appointment_required && !keys.includes('appointment_required')) keys.push('appointment_required');
-  if (hasReceivingHours(note)) keys.push('receiving_hours');
+  const showHours = opts.day ? hasReceivingHoursForDay(note, opts.day) : hasReceivingHours(note);
+  if (showHours) keys.push('receiving_hours');
   const closed = Array.isArray(note.closed_days) ? note.closed_days : [];
   const closedOrder = ['mon', 'fri', 'tue', 'wed', 'thu', 'sat', 'sun'];
   for (const day of closedOrder) {
@@ -2175,7 +2202,7 @@ function StopSidebar({ stop, note, onClose, onSave, saving, saveError, onOpenRou
       </div>
 
       {editing && (
-        <div className="border-t px-4 py-2 flex items-center justify-between gap-2 bg-slate-50">
+        <div className="flex-shrink-0 border-t px-4 py-2 flex items-center justify-between gap-2 bg-slate-50">
           {saveError && <span className="text-xs text-red-600 truncate">{saveError}</span>}
           <div className="ml-auto flex gap-2">
             {note && (
@@ -4070,10 +4097,13 @@ function MapScreen() {
     markersRef.current.forEach((m) => m.setMap(null));
     markersRef.current = [];
 
+    // Day-aware receiving-hours clock: only light the clock on the weekday the
+    // map is showing. A Friday-only customer's clock appears on Fridays only.
+    const selectedDayKey = weekdayKeyFromDate(selectedDate);
     const positioned = filteredStops.filter((s) => s.lat != null && s.lng != null);
     const newMarkers = positioned.map((s) => {
       const note = notes.get(s.matchKey);
-      const restrictions = getRestrictionBadgeKeys(note);
+      const restrictions = getRestrictionBadgeKeys(note, { day: selectedDayKey });
       const dim = searchMatchSet && !searchMatchSet.has(s.stopNbr);
       // M4.1.6 — no restrictions → classic pin (State A). 1+ restrictions →
       // the pin disappears and the icon(s) become the marker (States B/C).
@@ -4119,7 +4149,7 @@ function MapScreen() {
     } else {
       newMarkers.forEach((m) => m.setMap(mapRef.current));
     }
-  }, [google, filteredStops, notes, searchMatchSet, mapFilters.showClustered]);
+  }, [google, filteredStops, notes, searchMatchSet, mapFilters.showClustered, selectedDate]);
 
   // M5 — route polylines. One straight-line Polyline per load, ordered by
   // loadStopSeq, colored by driver. zIndex 1 keeps them below markers so pins
@@ -6669,7 +6699,10 @@ function Shell() {
   };
 
   return (
-    <div className="h-screen flex flex-col">
+    // h-screen (100vh) is the fallback; the inline 100dvh wins on browsers that
+    // support it so iOS Safari's dynamic toolbars never hide the sticky Save bar
+    // at the bottom of the stop sidebar.
+    <div className="h-screen flex flex-col" style={{ height: '100dvh' }}>
       {isMobile ? (
         <MobileAppBar
           version={APP_VERSION}
