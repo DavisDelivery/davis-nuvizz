@@ -141,3 +141,17 @@ test('Chunk B: a cluster bigger than one truck splits across two (capacity-drive
   assert.equal(c1 + c2, 6);
   assert.equal(c1, 3); assert.equal(c2, 3);
 });
+
+test('Chunk B: a dense 12+ co-located cluster routes with ZERO raw spill (Phase 3 growth guard)', () => {
+  // Regression for the Phase 3 growth cap. The old guard re-read remaining.length each
+  // pass (guard++ <= remaining.length + 5); since remaining shrinks by one per pass, the
+  // budget halved and the loop bailed once the growth phase held >=8 stops, phantom-
+  // spilling routable ones with EMPTY reasons. 14 stops, all fitting, must all assign.
+  const N = 14;
+  const stops = Array.from({ length: N }, (_, i) => stop('S' + i, 0, 1 + i * 0.01));
+  const matrix = lineMatrix([0, ...stops.map((s) => s.lng)]);
+  const out = solveRouting(base({ stops, trucks: [bigT('T1'), bigT('T2')], matrix }));
+  assert.equal(out.unassigned.length, 0, `expected 0 raw spill, got ${JSON.stringify(out.unassigned)}`);
+  const served = out.routes.reduce((a, r) => a + r.orderedStopIds.length, 0);
+  assert.equal(served, N, 'every co-located stop must be assigned');
+});
