@@ -11,6 +11,29 @@ v0.7.2 = M4.5 PR 2 of 3 (stop-detail + driver-snapshot drawers).
 v0.8.0 = M4.5 PR 3 of 3 (final polish: marker labels, snapshot tap-through,
 mobile diagnostics, RESEARCH doc).
 
+## v0.27.0 — READ-ONLY versionId / route-read auth probe (UAT)
+
+Question: can we obtain a load's `versionId` + `loadHeader` + route `routeSeq` using ONLY Basic-auth
+GETs? (That decides whether a reversible load/edit-based unplan path exists.) Added read-only action
+`version-read-probe` (GET only). Read load `6a1d48c799a074a29ad5bae0` (routeName TODAY_1).
+
+**VERDICT: NO — no Basic-only path to a complete load/edit body.**
+- **A** `GET /openapi/v7/load/info/{loadNbr}/{co}` (Basic ✓): loadNbr-keyed only (loadId → 400; display
+  name `TODAY_1` → 924 "no load"; no planned stop reachable to resolve a real loadNbr). And the v7 spec
+  exposes **no `versionId` and no `routeSeq`** anywhere — so even with a valid loadNbr it yields at most
+  `loadHeader` (PARTIAL), never versionId/routeSeq.
+- **B** `GET /deliverit/routeapi/info/{loadId}` → **HTTP 500** (valid AND invalid id; ignores company
+  param/header). Basic auth is **accepted** (NOT 401 — it sets a fresh `SESSION` cookie), but the handler
+  500s without a logged-in portal session context. → versionId NOT obtainable via Basic.
+- **C** `GET /deliverit/routeapi/detailsdata/{loadId}` → 500. → routeSeq NOT obtainable via Basic.
+- **D** `GET /deliverit/routeapi/validateEditRoute/{loadId}` → 500.
+
+Auth distinction worth noting: `/stopapi` (v0.26.0) = **401** (Basic rejected outright); `/routeapi` =
+Basic **accepted** but **500** (needs portal session state: company/facility/user). Both block us.
+**Net:** the reversible unplan path is not reachable with Basic creds — neither nurejectstops (`/stopapi`
+401) nor a load/edit rebuild (`/routeapi` versionId/routeSeq 500). Unblocking needs a NuVizz-provided
+session-auth mechanism for `/routeapi`+`/stopapi`, or Basic-enabled versionId/routeSeq + unplan endpoints.
+
 ## v0.26.0 — insertstops / unplan reversible probe (UAT, gated)
 
 The portal attaches existing stops to a load with two id-keyed calls (NOT routePlan):

@@ -44,7 +44,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.26.0';
+const APP_VERSION = '0.27.0';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -64,6 +64,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.27.0', 'Read-only versionId/route auth probe: /routeapi needs portal session (no Basic-only edit path)'],
   ['0.26.0', 'NuVizz insertstops/unplan reversible probe (gated UAT): plan an existing stop onto a load + restore'],
   ['0.25.0', 'Phase 4 spike v2: assemble a load from EXISTING stops (gated UAT probe; routePlan blocker found)'],
   ['0.23.0', 'Geographic truck assignment (no two-truck criss-cross) + green stop markers'],

@@ -393,7 +393,42 @@ export default async function handler(req: Request): Promise<Response> {
       }
     }
 
-    return json({ ok: false, error: "action must be one of: assemble-existing | assemble-detach | assemble-cancel-load | stop-import | stop-verify | stop-cancel | insert-stops | unplan-stops | insert-unplan-cycle" }, 400);
+    // ============ READ-ONLY: can we get versionId + loadHeader + routeSeq via Basic GETs? ============
+    if (action === 'version-read-probe') {
+      // GET-only. Determines whether a load/edit body is assemblable from Basic-auth reads.
+      const loadId: string = body?.loadId || process.env.TEST_LOAD_ID || '';
+      const loadNbr: string | undefined = body?.loadNbr || process.env.TEST_LOAD_NBR;
+      const has = (b: unknown, f: string) => { try { return JSON.stringify(b).includes(`"${f}"`); } catch { return false; } };
+      // company-retry wrapper for a GET url-builder
+      const get = async (mk: (co: string) => string) => {
+        const r = await callRaw('GET', mk(company!), auth);
+        if (r.status >= 400 && company!.toUpperCase() !== company && /compan/i.test(JSON.stringify(r.body ?? ''))) {
+          const r2 = await callRaw('GET', mk(company!.toUpperCase()), auth); return { ...r2, companyUsed: company!.toUpperCase(), retriedUppercased: true };
+        }
+        return { ...r, companyUsed: company };
+      };
+      const probes: any = {};
+      // A — v7 load/info (Basic known-good). Needs a real loadNbr.
+      if (loadNbr) {
+        const a = await get((co) => `${hostRoot}/deliverit/openapi/v7/load/info/${enc(loadNbr)}/${enc(co)}`);
+        probes.A_loadInfo_v7 = { status: a.status, basicAuthAccepted: a.status !== 401, hasVersionId: has(a.body, 'versionId'), hasLoadId: has(a.body, 'loadId'), hasRouteName: has(a.body, 'routeName'), companyUsed: a.companyUsed };
+      } else probes.A_loadInfo_v7 = { skipped: 'no loadNbr to resolve (display name != loadNbr; none resolvable read-only)' };
+      // B/C/D — routeapi by loadId.
+      const b = await callRaw('GET', `${hostRoot}/deliverit/routeapi/info/${enc(loadId)}`, auth);
+      probes.B_routeapi_info = { status: b.status, basicAuthAccepted: b.status !== 401, hasVersionId: has(b.body, 'versionId'), note: b.status === 500 ? 'Basic authenticates but 500s — needs portal session context' : undefined };
+      const c = await callRaw('GET', `${hostRoot}/deliverit/routeapi/detailsdata/${enc(loadId)}`, auth);
+      probes.C_routeapi_detailsdata = { status: c.status, basicAuthAccepted: c.status !== 401, hasRouteSeq: has(c.body, 'routeSeq') };
+      const d = await callRaw('GET', `${hostRoot}/deliverit/routeapi/validateEditRoute/${enc(loadId)}`, auth);
+      probes.D_routeapi_validateEdit = { status: d.status, basicAuthAccepted: d.status !== 401 };
+      const versionIdViaBasic = !!(probes.A_loadInfo_v7?.hasVersionId || probes.B_routeapi_info.hasVersionId);
+      const routeSeqViaBasic = !!probes.C_routeapi_detailsdata.hasRouteSeq;
+      const verdict = versionIdViaBasic && routeSeqViaBasic ? 'YES'
+        : (probes.A_loadInfo_v7?.hasLoadId ? 'PARTIAL — loadHeader via Basic, but versionId+routeSeq need session-auth /routeapi'
+          : 'NO — versionId & routeSeq are /routeapi-only and 500 without a portal session');
+      return json({ ok: true, action, loadId, loadNbr, probes, verdict });
+    }
+
+    return json({ ok: false, error: "action must be one of: assemble-existing | assemble-detach | assemble-cancel-load | stop-import | stop-verify | stop-cancel | insert-stops | unplan-stops | insert-unplan-cycle | version-read-probe" }, 400);
   } catch (e: any) {
     return json({ ok: false, error: e?.message || 'request failed' }, 500);
   }
