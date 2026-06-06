@@ -11,6 +11,27 @@ v0.7.2 = M4.5 PR 2 of 3 (stop-detail + driver-snapshot drawers).
 v0.8.0 = M4.5 PR 3 of 3 (final polish: marker labels, snapshot tap-through,
 mobile diagnostics, RESEARCH doc).
 
+## v0.26.0 — insertstops / unplan reversible probe (UAT, gated)
+
+The portal attaches existing stops to a load with two id-keyed calls (NOT routePlan):
+`POST /deliverit/openapi/v7/load/insertstops/{co}` `{insertStopIds:[<stopId>], loadId:<loadId>}` and
+`POST /deliverit/stopapi/nurejectstops/{co}?stopIds=<stopId>&reason=&action=UNPLANNED`. Added gated
+actions `insert-stops`, `unplan-stops`, `insert-unplan-cycle` (ids from env `TEST_LOAD_ID/_NBR/
+TEST_STOP_ID/_NBR`, body-overridable; readback via `stop/info` is the source of truth; finally-restore).
+
+**Live auth probe (fake non-existent id, nothing touched):**
+- `insertstops` (/openapi/v7, Basic) → **400 "Please provide valid LoadId"** → Basic auth WORKS, request
+  shape correct, reached validation. With real ids it should plan the stop.
+- `nurejectstops` (/stopapi, Basic) → **HTTP 401**, `set-cookie: SESSION=; Max-Age=0` → **/stopapi needs
+  session-cookie auth (Spring Session), NOT Basic.** Per the brief we do NOT forge cookies/CSRF.
+
+**Therefore: the cycle was NOT run.** The INSERT leg is reachable under Basic, but the UNPLAN (restore)
+leg is 401 under Basic — so reversibility cannot be guaranteed from the function's Basic creds. Inserting
+without a working unplan would strand a real stop in Planned state. **Blocker / ask:** either a Basic-auth
+unplan path on `/openapi/v7`, or a session-auth (cookie) mechanism for `/stopapi` (out of current scope —
+no forging). To run once that's resolved: provide a neutral test load (`TEST_LOAD_ID` 24-hex + `TEST_LOAD_NBR`
+with a DDTEST-/WT-/ZZTEST prefix); candidate Un-Planned stop ready: `050626_S15` / stopId `6a22da87b03b5b43b15f6037`.
+
 ## v0.25.0 — Phase 4 spike v2: assemble a LOAD from EXISTING stops (UAT, gated)
 
 > **Deep analysis update (live-docs cross-check).** Pulled the live v7 Redoc spec

@@ -42,9 +42,24 @@
 //
 // The synchronous STOP path (stop-import/-verify/-cancel) below is proven to persist
 // and is reversible; kept for reference.
+//
+// ── v0.26.0: INSERTSTOPS / UNPLAN reversible probe ──────────────────────────────
+// The portal does NOT use routePlan to attach existing stops to a load. It uses two
+// calls (both verified in portal captures on UAT/DAVISV5), keyed by INTERNAL 24-hex ids:
+//   insert-stops  → POST {host}/deliverit/openapi/v7/load/insertstops/{company}
+//                   body { insertStopIds:[<stopId>], loadId:<loadId> }            → 200 {}
+//   unplan-stops  → POST {host}/deliverit/stopapi/nurejectstops/{company}
+//                   ?stopIds=<stopId>&reason=&action=UNPLANNED  (no body)         → 200 "SUCCESS"
+//   insert-unplan-cycle → readback(Un-Planned) → insert → readback(Planned) → unplan →
+//                   readback(Un-Planned). Reversible: a finally restores the stop if insert
+//                   succeeded but unplan didn't confirm. stop/info is the source of truth.
+// Ids come from env (TEST_LOAD_ID / TEST_LOAD_NBR / TEST_STOP_ID / TEST_STOP_NBR), body-overridable.
+// Extra gates: UAT-only host (Gate 5), TEST_LOAD_NBR must carry a test prefix, and the stop must be
+// Un-Planned before insert. Never dispatches; never cancels/deletes a stop. /stopapi Basic-auth is
+// unconfirmed — on 401/403/302 the probe reports verbatim and does NOT forge cookies/CSRF.
 
 const CONFIRM = 'WRITE-TEST-OK';
-const TEST_LOAD_PREFIXES = ['DDTEST-', 'WT-LOAD-', 'DDTEST', 'WT-LOAD'];
+const TEST_LOAD_PREFIXES = ['DDTEST-', 'WT-', 'ZZTEST'];
 
 function writeCreds() {
   return {
@@ -126,6 +141,34 @@ function buildAssembleBody(company: string, loadNbr: string, stops: any[]) {
   };
 }
 
+// ── insert/unplan probe helpers (v0.26.0) ──
+// The portal's plan/unplan path lives on TWO base paths under the same host:
+//   insertstops  → {host}/deliverit/openapi/v7/load/insertstops/{company}   (Basic auth known-good)
+//   nurejectstops→ {host}/deliverit/stopapi/nurejectstops/{company}         (Basic-auth support UNCONFIRMED)
+// NUVIZZ_WRITE_BASE_URL is the v7 base (…/deliverit/openapi/v7); derive the host root to reach both.
+function hostRootOf(base: string): string {
+  const i = base.indexOf('/deliverit');
+  return i > 0 ? base.slice(0, i) : base.replace(/\/$/, '');
+}
+// NuVizz internal ObjectId = 24 hex chars. We require the real internal id, never a stopNbr.
+function isHex24(s: unknown): boolean { return typeof s === 'string' && /^[0-9a-fA-F]{24}$/.test(s); }
+
+// Raw caller: does NOT follow redirects (so we can REPORT a 302 Location for the /stopapi auth probe),
+// and tolerates non-JSON bodies (nurejectstops returns the text "SUCCESS").
+async function callRaw(method: string, url: string, auth: string, opts?: { body?: unknown; contentType?: string }) {
+  const headers: Record<string, string> = { Authorization: auth, Accept: 'application/json' };
+  let body: string | undefined;
+  if (opts?.body !== undefined) {
+    headers['Content-Type'] = opts.contentType || 'application/json';
+    body = typeof opts.body === 'string' ? opts.body : JSON.stringify(opts.body);
+  }
+  const resp = await fetch(url, { method, headers, body, redirect: 'manual' });
+  const text = await resp.text();
+  let parsed: unknown = text;
+  try { parsed = JSON.parse(text); } catch { /* keep raw text (e.g. "SUCCESS") */ }
+  return { status: resp.status, ok: resp.status >= 200 && resp.status < 300, location: resp.headers.get('location'), body: parsed };
+}
+
 export default async function handler(req: Request): Promise<Response> {
   const json = (b: unknown, s = 200) => new Response(JSON.stringify(b, null, 2), { status: s, headers: { 'Content-Type': 'application/json' } });
 
@@ -142,6 +185,10 @@ export default async function handler(req: Request): Promise<Response> {
   if (!base || !user || !pass || !company) {
     return json({ ok: false, refused: 'Set NUVIZZ_WRITE_BASE_URL / _USER / _PASS / _COMPANY (UAT/sandbox) to run.' }, 400);
   }
+  // ── Gate 5: UAT-ONLY host. This function must NEVER touch production. ──
+  if (/portal\.nuvizz\.com/i.test(base)) {
+    return json({ ok: false, refused: 'ABORT: NUVIZZ_WRITE_BASE_URL points at production (portal.nuvizz.com). This probe is UAT-only.' }, 403);
+  }
 
   let body: any;
   try { body = await req.json(); } catch { return json({ ok: false, error: 'bad json' }, 400); }
@@ -154,6 +201,45 @@ export default async function handler(req: Request): Promise<Response> {
   const root = base!.replace(/\/$/, '');
   const action = body?.action;
   const enc = encodeURIComponent;
+
+  // ── insert/unplan probe inputs (env, with optional body override for ad-hoc runs) ──
+  const hostRoot = hostRootOf(base!);
+  const testLoadId: string | undefined = body?.testLoadId || process.env.TEST_LOAD_ID;
+  const testLoadNbr: string | undefined = body?.testLoadNbr || process.env.TEST_LOAD_NBR;
+  const testStopId: string | undefined = body?.testStopId || process.env.TEST_STOP_ID;
+  const testStopNbr: string | undefined = body?.testStopNbr || process.env.TEST_STOP_NBR;
+
+  // Readback = source of truth. Returns whether the stop is planned (routeAsgnInfo present).
+  const readStop = async (co: string) => {
+    const r = await callNuvizz('GET', `${hostRoot}/deliverit/openapi/v7/stop/info/${enc(testStopNbr!)}/${enc(co)}`, auth);
+    const stop = (r.body as any)?.Stop?.stop;
+    return { status: r.status, found: !!stop, routeAsgnInfo: stop?.routeAsgnInfo ?? null, planned: !!stop?.routeAsgnInfo, stopAssignment: stop?.stopAssignment ?? null };
+  };
+  // INSERT: plan an existing stop onto an existing load (portal's verified call).
+  const insertCall = (co: string) => callRaw('POST', `${hostRoot}/deliverit/openapi/v7/load/insertstops/${enc(co)}`, auth,
+    { body: { insertStopIds: [testStopId], loadId: testLoadId } });
+  // UNPLAN: remove a stop from its load → back to Un-Planned (query params, NO json body).
+  const unplanCall = (co: string) => callRaw('POST',
+    `${hostRoot}/deliverit/stopapi/nurejectstops/${enc(co)}?stopIds=${enc(testStopId!)}&reason=&action=UNPLANNED`, auth);
+  // Company-casing fallback: the captured calls used DAVISV5 (uppercase). Try as-is, retry once uppercased on a company-ish 400.
+  const withCompanyRetry = async (fn: (co: string) => Promise<any>) => {
+    const r = await fn(company!);
+    const up = company!.toUpperCase();
+    if (r.status === 400 && up !== company && JSON.stringify(r.body ?? '').toLowerCase().includes('compan')) {
+      const r2 = await fn(up); return { ...r2, companyUsed: up, retriedUppercased: true, firstStatus: r.status };
+    }
+    return { ...r, companyUsed: company };
+  };
+  // Gate for insert/cycle: require real 24-hex ids and a TEST-prefixed load number (never a real route).
+  const insertGate = (): any => {
+    if (!isHex24(testLoadId)) return { ok: false, error: 'need TEST_LOAD_ID (24-hex internal load id)', status: 400 };
+    if (!isHex24(testStopId)) return { ok: false, error: 'need TEST_STOP_ID (24-hex internal stop id)', status: 400 };
+    if (!testStopNbr) return { ok: false, error: 'need TEST_STOP_NBR (for readback via stop/info)', status: 400 };
+    if (!testLoadNbr || !isTestLoadNbr(testLoadNbr)) {
+      return { ok: false, refused: `ABORT: TEST_LOAD_NBR must start with a test prefix (${TEST_LOAD_PREFIXES.join(', ')}) so we never insert into a real route. Got: ${testLoadNbr ?? '(unset)'}`, status: 403 };
+    }
+    return null;
+  };
 
   try {
     // ============ ASSEMBLE A LOAD FROM EXISTING STOPS (the v2 operation) ============
@@ -242,7 +328,72 @@ export default async function handler(req: Request): Promise<Response> {
       return json({ ok: res.ok, action, stopNbr, url, response: res });
     }
 
-    return json({ ok: false, error: "action must be one of: assemble-existing | assemble-detach | assemble-cancel-load | stop-import | stop-verify | stop-cancel" }, 400);
+    // ============ INSERT: plan an EXISTING stop onto an EXISTING test load ============
+    if (action === 'insert-stops') {
+      const g = insertGate(); if (g) return json(g, g.status || 400);
+      // Pre-state guard: readback the stop; refuse if it is already planned.
+      const pre = await readStop(company!);
+      if (!pre.found) return json({ ok: false, error: `pre-state: stop ${testStopNbr} not found`, pre }, 400);
+      if (pre.planned) return json({ ok: false, refused: `ABORT: stop ${testStopNbr} is already planned (routeAsgnInfo present) — will not touch`, pre }, 409);
+      const res = await withCompanyRetry(insertCall);
+      const post = await readStop(res.companyUsed || company!);
+      const attached = post.planned && (!testLoadNbr || JSON.stringify(post.routeAsgnInfo).includes(testLoadNbr));
+      return json({ ok: res.ok && attached, action, testLoadId, testLoadNbr, testStopId, testStopNbr,
+        insert: { status: res.status, body: res.body, location: res.location, companyUsed: res.companyUsed, retriedUppercased: res.retriedUppercased },
+        readback: { afterInsert: post }, attached });
+    }
+
+    // ============ UNPLAN: remove a stop from its load → back to Un-Planned ============
+    if (action === 'unplan-stops') {
+      if (!isHex24(testStopId)) return json({ ok: false, error: 'unplan-stops needs TEST_STOP_ID (24-hex internal id)' }, 400);
+      const res = await withCompanyRetry(unplanCall);
+      // Auth probe (STEP 7): /stopapi Basic-auth support is unconfirmed — surface 401/403/302 verbatim.
+      if (res.status === 401 || res.status === 403 || res.status === 302) {
+        return json({ ok: false, action, authProbe: 'STOPAPI may require session auth — NOT forging cookies/CSRF',
+          unplan: { status: res.status, body: res.body, location: res.location } }, 200);
+      }
+      const post = testStopNbr ? await readStop(res.companyUsed || company!) : null;
+      return json({ ok: res.ok && (!post || !post.planned), action, testStopId, testStopNbr,
+        unplan: { status: res.status, body: res.body, location: res.location, companyUsed: res.companyUsed }, readback: { afterUnplan: post } });
+    }
+
+    // ============ FULL REVERSIBLE CYCLE: Un-Planned → Planned → Un-Planned ============
+    if (action === 'insert-unplan-cycle') {
+      const g = insertGate(); if (g) return json(g, g.status || 400);
+      const steps: any = {};
+      let inserted = false, unplanned = false;
+      try {
+        // 1) pre-state: must be Un-Planned
+        const pre = await readStop(company!); steps.pre = pre;
+        if (!pre.found) return json({ ok: false, error: `stop ${testStopNbr} not found`, steps }, 400);
+        if (pre.planned) return json({ ok: false, refused: `ABORT: stop ${testStopNbr} already planned — will not touch`, steps }, 409);
+        // 2) INSERT
+        const ins = await withCompanyRetry(insertCall);
+        steps.insert = { status: ins.status, body: ins.body, location: ins.location, companyUsed: ins.companyUsed, retriedUppercased: ins.retriedUppercased };
+        inserted = ins.ok;
+        if (ins.status === 401 || ins.status === 403 || ins.status === 302) { steps.authProbe = 'insertstops auth failed — reporting verbatim, no cookie/CSRF forging'; return json({ ok: false, action, steps }, 200); }
+        if (!ins.ok) return json({ ok: false, action, error: 'INSERT failed; nothing to revert', steps }, 200);
+        // 3) verify planned & assigned to the test load
+        const co = ins.companyUsed || company!;
+        const afterInsert = await readStop(co); steps.afterInsert = afterInsert;
+        steps.attachedToTestLoad = afterInsert.planned && (!testLoadNbr || JSON.stringify(afterInsert.routeAsgnInfo).includes(testLoadNbr));
+        // 4) UNPLAN
+        const unp = await withCompanyRetry(unplanCall);
+        steps.unplan = { status: unp.status, body: unp.body, location: unp.location, companyUsed: unp.companyUsed };
+        if (unp.status === 401 || unp.status === 403 || unp.status === 302) steps.unplanAuthProbe = 'STOPAPI auth failed — reporting verbatim, no cookie/CSRF forging';
+        // 5) verify restored to Un-Planned
+        const afterUnplan = await readStop(co); steps.afterUnplan = afterUnplan;
+        unplanned = !afterUnplan.planned;
+        const success = steps.attachedToTestLoad && unplanned;
+        return json({ ok: success, action, testLoadId, testLoadNbr, testStopId, testStopNbr, success,
+          summary: `${steps.pre.planned ? 'Planned' : 'Un-Planned'} → ${steps.afterInsert?.planned ? 'Planned' : 'Un-Planned'} → ${steps.afterUnplan?.planned ? 'Planned' : 'Un-Planned'}`, steps });
+      } finally {
+        // Reversibility: if we inserted but never confirmed the stop back to Un-Planned, best-effort restore.
+        if (inserted && !unplanned) { try { await unplanCall(company!); await unplanCall(company!.toUpperCase()); } catch { /* best-effort */ } }
+      }
+    }
+
+    return json({ ok: false, error: "action must be one of: assemble-existing | assemble-detach | assemble-cancel-load | stop-import | stop-verify | stop-cancel | insert-stops | unplan-stops | insert-unplan-cycle" }, 400);
   } catch (e: any) {
     return json({ ok: false, error: e?.message || 'request failed' }, 500);
   }
