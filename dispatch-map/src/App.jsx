@@ -702,6 +702,33 @@ function useViewportWidth() {
   return w;
 }
 
+// Track the *visible* viewport height in CSS pixels. The shell is laid out with
+// overflow-hidden (the page itself never scrolls), so on iOS Safari the static
+// `100vh` extends behind the dynamic toolbars and hides the bottom of the app —
+// most painfully the stop sidebar's Save bar. Sizing the shell to live
+// innerHeight keeps it within the visible area on every device. We deliberately
+// use a definite pixel height (not `dvh`) so the Google Maps container always
+// resolves a real, non-zero height — `dvh` collapsed the map in some webviews.
+function useViewportHeight() {
+  const read = () => {
+    if (typeof window === 'undefined') return 0;
+    return window.visualViewport?.height || window.innerHeight || 0;
+  };
+  const [h, setH] = useState(read);
+  useEffect(() => {
+    const onResize = () => setH(read());
+    window.addEventListener('resize', onResize);
+    window.addEventListener('orientationchange', onResize);
+    window.visualViewport?.addEventListener('resize', onResize);
+    return () => {
+      window.removeEventListener('resize', onResize);
+      window.removeEventListener('orientationchange', onResize);
+      window.visualViewport?.removeEventListener('resize', onResize);
+    };
+  }, []);
+  return h;
+}
+
 // Left-panel width with mouse-drag handler. Caller spreads handleProps onto
 // the drag strip and reads width for the panel. Width is clamped to
 // [PANEL_MIN_WIDTH, 60vw] on every change so URL/localStorage tampering can't
@@ -2545,13 +2572,16 @@ function ReadOnlyNoteView({ note }) {
     if (typeof v === 'string') return v.trim().length > 0;
     return !!(v.open || v.close);
   }) || closedSet.size > 0;
+  // Display in 12-hour am/pm (e.g. "8:00a–3:00p"), matching the rest of the app
+  // (formatReceivingHours). Stored values are 24h from <input type="time">;
+  // fmtTime12 also passes legacy free-text through untouched.
   const renderDayHours = (d) => {
     if (closedSet.has(d)) return 'Closed';
     const v = note.receiving_hours?.[d];
     if (!v) return '—';
-    if (typeof v === 'string') return v;
-    if (v.open && v.close) return `${v.open}–${v.close}`;
-    return v.open || v.close || '—';
+    if (typeof v === 'string') return fmtTime12(v) || v;
+    if (v.open && v.close) return `${fmtTime12(v.open)}–${fmtTime12(v.close)}`;
+    return fmtTime12(v.open || v.close) || '—';
   };
   if (hoursAny) {
     items.push({
@@ -3675,9 +3705,9 @@ function StopHoursTabContent({ draft, setDraft, editing, setEditing }) {
             let label = '—';
             if (closed) label = 'Closed';
             else if (v) {
-              if (typeof v === 'string') label = v;
-              else if (v.open && v.close) label = `${v.open} – ${v.close}`;
-              else label = v.open || v.close || '—';
+              if (typeof v === 'string') label = fmtTime12(v) || v;
+              else if (v.open && v.close) label = `${fmtTime12(v.open)} – ${fmtTime12(v.close)}`;
+              else label = fmtTime12(v.open || v.close) || '—';
             }
             return (
               <div key={d} className="px-3 py-2 flex items-center justify-between">
@@ -6687,6 +6717,7 @@ function RoutingRouteCard({ rv, stopById, usedGoogle, readOnly, onReorder, onMov
 function Shell() {
   const [tab, setTab] = useState('map');
   const viewportWidth = useViewportWidth();
+  const viewportHeight = useViewportHeight();
   const isMobile = viewportWidth < MOBILE_BREAKPOINT;
   const [chipMenuOpen, setChipMenuOpen] = useState(false);
 
@@ -6699,10 +6730,10 @@ function Shell() {
   };
 
   return (
-    // h-screen (100vh) is the fallback; the inline 100dvh wins on browsers that
-    // support it so iOS Safari's dynamic toolbars never hide the sticky Save bar
-    // at the bottom of the stop sidebar.
-    <div className="h-screen flex flex-col" style={{ height: '100dvh' }}>
+    // h-screen is the SSR/first-paint fallback; once mounted we pin the shell to
+    // the live visible viewport height (pixels) so iOS Safari toolbars can't hide
+    // the bottom Save bar. Pixel height keeps the map container non-zero.
+    <div className="h-screen flex flex-col" style={viewportHeight ? { height: viewportHeight } : undefined}>
       {isMobile ? (
         <MobileAppBar
           version={APP_VERSION}
