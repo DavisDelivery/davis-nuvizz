@@ -11,6 +11,33 @@ v0.7.2 = M4.5 PR 2 of 3 (stop-detail + driver-snapshot drawers).
 v0.8.0 = M4.5 PR 3 of 3 (final polish: marker labels, snapshot tap-through,
 mobile diagnostics, RESEARCH doc).
 
+## v0.23.1 — Phase 3 growth-guard fix (#52 retro / PR #58)
+
+Retro-review of #52 found one blocker in `assign()`. The Phase 3 region-growth
+loop capped iterations with `guard++ <= remaining.length + 5`, **re-reading the
+shrinking `remaining.length` every pass**. Since each pass splices one stop out,
+the budget halved as `guard` climbed: once the growth phase held ≳8 stops the
+loop bailed early and routable stops fell through to the post-loop spill —
+**phantom-spilling with empty reasons**. End-to-end the stops weren't dropped
+(repair Phase B recovers them) but recovery is first-truck-with-room
+(geography-blind), reintroducing skewed loads and the exact two-truck
+criss-cross Chunk B exists to prevent.
+
+### Fix (`routing-solver.mts` `assign()` only)
+Hoist the cap to a constant before the loop so the budget stays fixed:
+`const maxIters = remaining.length + 5;` then `while (remaining.length &&
+guard++ < maxIters)`. No other logic touched — anchor/seed/grow,
+`truckCanCarry`/`capacityFits` gates, spill reasons, sequencing, repair,
+pipeline, constraints, matrix, and cost are all unchanged.
+
+### Tests + CI
+- New regression: a dense 14-co-located-stop cluster on two trucks asserts
+  **0 raw spill** from `assign()` and all stops served (the 4 existing Chunk B
+  tests passed only because they used ≤7 growth-phase stops).
+- Added a `node --test` GitHub Actions job — the suite previously had **no CI
+  signal** beyond Netlify deploy checks, so a solver regression could merge
+  unseen. Full suite: 101/101.
+
 ## v0.23.0 — Routing quality (Chunk B): geographic truck assignment + green markers
 
 Chunk A fixed *within-truck* sequencing; the remaining defect was *cross-truck
