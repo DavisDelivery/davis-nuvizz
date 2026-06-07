@@ -131,8 +131,13 @@ function assign(stops: SolverStop[], trucks: SolverTruck[], depot: { lat: number
   }
 
   // ── Phase 3: global nearest-pair region growth for the rest. ──
+  // Cap the iterations up front: remaining.length shrinks by one each pass, so a cap
+  // that re-reads remaining.length would halve the budget and bail with routable stops
+  // still in hand (they'd then phantom-spill below). Each pass places exactly one stop,
+  // so remaining.length passes suffice; +5 is slack.
+  const maxIters = remaining.length + 5;
   let guard = 0;
-  while (remaining.length && guard++ <= remaining.length + 5) {
+  while (remaining.length && guard++ < maxIters) {
     let bestStop: SolverStop | null = null, bestTruck: SolverTruck | null = null, bestD = Infinity;
     for (const stop of remaining) {
       for (const t of trucks) {

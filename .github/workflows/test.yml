@@ -1,0 +1,27 @@
+name: tests
+
+# Runs the pure routing solver unit suite (node --test). Until now the only CI
+# signal was Netlify's deploy checks, which never execute these tests — so a
+# regression in the solver (e.g. the Phase 3 growth-guard spill) could merge
+# unnoticed. This job gates push/PR on the full suite.
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: dispatch-map
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      # The solver/repair libs and their tests import only local .mts modules and
+      # node: builtins, so Node 22's native TypeScript stripping runs them with no
+      # install step. `npm test` == `node --test "test/**/*.test.mjs"`.
+      - run: npm test
