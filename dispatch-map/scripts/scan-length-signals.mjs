@@ -16,7 +16,7 @@
 //              history_days/{tenant}__{date} day, read their stops, union.
 //              Requires FIREBASE_SA in env (the same SA the readers use).
 //   --demo   : read the committed synthetic fixture
-//              (test/fixtures/routing-geometry-stops.json) — no creds, lets you
+//              (test/fixtures/length-signal-demo-stops.json) — no creds, lets you
 //              validate the pattern + aggregation logic offline.
 //   --json P : read a local JSON array of ALREADY-REDACTION-SAFE normalized
 //              stops exported on the creds side. The script still only prints
@@ -52,20 +52,38 @@ const STOP_MAX = Number(val('--max', 'Infinity'));
 
 // ── redaction ───────────────────────────────────────────────────────────────
 // Conservative: length tokens are short (<=3 digits, maybe a decimal), so masking
-// runs of 4+ digits, emails, and 3+ consecutive Capitalized words never eats the
-// length signal but does scrub IDs / names / phones / street numbers.
+// runs of 4+ digits, emails, and 2+ consecutive Capitalized words never eats the
+// length signal but does scrub IDs / two-word contact names / phones / street nums.
 function redact(s) {
   return String(s)
     .replace(/\S+@\S+/g, '[REDACTED]')
     .replace(/\b\d{4,}\b/g, '[REDACTED]')
     .replace(/\b(?:\d[\d\-().\s]{6,}\d)\b/g, '[REDACTED]')
-    .replace(/\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+){2,})\b/g, '[REDACTED]')
+    .replace(/\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,})\b/g, '[REDACTED]')
     .trim();
 }
 function window(text, idx, len, pad = 14) {
   const a = Math.max(0, idx - pad);
   const b = Math.min(text.length, idx + len + pad);
   return (a > 0 ? '…' : '') + text.slice(a, b) + (b < text.length ? '…' : '');
+}
+
+// Pull human-readable text from raw.comments[]. Items may be plain strings or objects
+// with text/comment/value/commentDescription/description. Defensive: tolerates any
+// shape, returns '' when absent (e.g. history stops that don't carry raw).
+function rawCommentsText(stop) {
+  const c = stop?.raw?.comments;
+  if (!Array.isArray(c)) return '';
+  const out = [];
+  for (const item of c) {
+    if (item == null) continue;
+    if (typeof item === 'string') { out.push(item); continue; }
+    if (typeof item === 'object') {
+      const t = item.text ?? item.comment ?? item.value ?? item.commentDescription ?? item.description ?? '';
+      if (t) out.push(String(t));
+    }
+  }
+  return out.join('  ');
 }
 
 // ── free-text length pattern catalog ──────────────────────────────────────────
@@ -105,7 +123,10 @@ const A = {
 for (const p of PATTERNS) A.freetextHits[p.name] = { count: 0, examples: new Set() };
 const bump = (map, k) => { map[k] = (map[k] || 0) + 1; };
 
-function scanFreeText(text, structuredInchesForLine) {
+// Scan one free-text stream. `allowExamples` is false for addr2 so address-line
+// fragments are COUNTED toward patterns + coverage but never emitted as example
+// windows (a street fragment must not leak even redacted).
+function scanFreeText(text, allowExamples = true) {
   if (!text) return { sawNumericFeet: false, bestInches: null };
   let sawNumericFeet = false, bestInches = null;
   for (const p of PATTERNS) {
@@ -113,7 +134,7 @@ function scanFreeText(text, structuredInchesForLine) {
     let m;
     while ((m = p.re.exec(text)) !== null) {
       A.freetextHits[p.name].count++;
-      if (A.freetextHits[p.name].examples.size < 3) {
+      if (allowExamples && A.freetextHits[p.name].examples.size < 3) {
         A.freetextHits[p.name].examples.add(redact(window(text, m.index, m[0].length)));
       }
       const inch = p.inches(m);
@@ -152,14 +173,22 @@ function analyzeStop(stop) {
     if ((isCatL || longByText) && !(hasLen || hasCrit)) longLineNoStructured = true;
   }
 
-  // Free-text sources present in the live cache today: orderInstructions + addr2 +
-  // product description text (comments are folded into orderInstructions).
-  const freeText = [
+  // Free-text sources. orderInstructions only folds ORD_IN / SPL-INSTR-TEXT comments;
+  // length text in OTHER comment types survives ONLY under raw.comments[], so scan it
+  // too (cache stops carry raw; history stops may not — noted in the report). addr2 is
+  // scanned for COUNTS/coverage only, never for example windows (street-fragment leak).
+  const exampleText = [
     stop?.signalSources?.orderInstructions || '',
-    stop?.addr2 || '',
+    rawCommentsText(stop),
     details.map((d) => d?.product || '').join(' '),
   ].join('  ');
-  const ft = scanFreeText(freeText);
+  const ftMain = scanFreeText(exampleText, true);
+  const ftAddr = scanFreeText(stop?.addr2 || '', false);
+  const ft = {
+    sawNumericFeet: ftMain.sawNumericFeet || ftAddr.sawNumericFeet,
+    bestInches: Math.max(ftMain.bestInches ?? -Infinity, ftAddr.bestInches ?? -Infinity),
+  };
+  if (!Number.isFinite(ft.bestInches)) ft.bestInches = null;
 
   // Current oversize verdict from the REAL derivation (no re-implementation).
   let oversize = false;
@@ -180,7 +209,10 @@ function analyzeStop(stop) {
 // ── data sources ──────────────────────────────────────────────────────────────
 async function loadStops() {
   if (has('--demo')) {
-    const p = path.join(__dirname, '..', 'test', 'fixtures', 'routing-geometry-stops.json');
+    // Dedicated demo fixture (purpose-built to exercise structured FT/IN, folded vs
+    // raw.comments free-text, addr2 count-only, two-word-name redaction, divergence).
+    // The solver's routing-geometry-stops.json is intentionally left untouched.
+    const p = path.join(__dirname, '..', 'test', 'fixtures', 'length-signal-demo-stops.json');
     return { label: `fixture ${path.basename(p)}`, stops: JSON.parse(fs.readFileSync(p, 'utf8')) };
   }
   if (has('--json')) {
@@ -240,7 +272,7 @@ lines.push('   lengthUOM distinct values:'); lines.push(freqTable(A.lengthUOM));
 lines.push('   criticalDimensionUOM distinct values:'); lines.push(freqTable(A.critUOM));
 lines.push('   productCategory distinct values:'); lines.push(freqTable(A.prodCat));
 lines.push('');
-lines.push('2) FREE-TEXT LENGTH DENOTATIONS (orderInstructions + addr2 + product text)');
+lines.push('2) FREE-TEXT LENGTH DENOTATIONS (orderInstructions + raw.comments + product text; addr2 counted, not exampled)');
 for (const p of PATTERNS) {
   const h = A.freetextHits[p.name];
   lines.push(`   ${p.name.padEnd(16)} count=${h.count}   /${p.re.source}/${p.re.flags}`);
