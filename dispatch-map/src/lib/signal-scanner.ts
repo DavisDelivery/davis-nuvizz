@@ -130,15 +130,21 @@ export function scanStop(stop: ScannableStop): ScanResult[] {
 // ---------- M4.4: receiving hours + closed-day pattern matchers ----------
 
 // Match either "6AM-2PM" / "8-4" / "6:30 AM to 2:30 PM" style ranges. The
-// outer wrappers (`HOURS:`, `OPEN`, `RECEIVING:`, `DELIVER BETWEEN`,
-// `DELIVER BY`) precede the actual time range; we capture both pieces in
-// separate regexes so the wrapper is just a gate and the inner time parser
-// can be reused. matchedText returns the full wrapper+range slice so the
-// audit trail shows what triggered detection.
+// outer wrappers (`HOURS:`, `OPEN`, `RECEIVING:`, `RH` (Uline shorthand for
+// Receiving Hours, e.g. "RH 7-11AM"), `DELIVER BETWEEN`, `DELIVER BY`) precede
+// the actual time range; we capture both pieces in separate regexes so the
+// wrapper is just a gate and the inner time parser can be reused. matchedText
+// returns the full wrapper+range slice so the audit trail shows what triggered
+// detection.
 const HOURS_WRAPPERS: RegExp[] = [
   /\bHOURS?\s*[:\-]?\s*([0-9]{1,2}(?::[0-9]{2})?\s*(?:AM|PM)?\s*(?:-|TO|—)\s*[0-9]{1,2}(?::[0-9]{2})?\s*(?:AM|PM)?)/i,
   /\bOPEN\s*[:\-]?\s*([0-9]{1,2}(?::[0-9]{2})?\s*(?:AM|PM)?\s*(?:-|TO|—)\s*[0-9]{1,2}(?::[0-9]{2})?\s*(?:AM|PM)?)/i,
-  /\bRECEIVING\s*[:\-]?\s*([0-9]{1,2}(?::[0-9]{2})?\s*(?:AM|PM)?\s*(?:-|TO|—)\s*[0-9]{1,2}(?::[0-9]{2})?\s*(?:AM|PM)?)/i,
+  // "RECEIVING" optionally followed by "HOURS" — Uline often splits the label
+  // ("RECEIVING HOURS") and the range ("8AM-12PM") across separate SPL-INSTR-TEXT
+  // segments that join with whitespace/newline.
+  /\bRECEIVING(?:\s+HOURS?)?\s*[:\-]?\s*([0-9]{1,2}(?::[0-9]{2})?\s*(?:AM|PM)?\s*(?:-|TO|—)\s*[0-9]{1,2}(?::[0-9]{2})?\s*(?:AM|PM)?)/i,
+  // Uline "RH" = Receiving Hours, e.g. "RH 7-11AM" / "RH 8-3" / "RH7-11AM".
+  /\bRH\s*[:\-]?\s*([0-9]{1,2}(?::[0-9]{2})?\s*(?:AM|PM)?\s*(?:-|TO|—)\s*[0-9]{1,2}(?::[0-9]{2})?\s*(?:AM|PM)?)/i,
   /\bDELIVER(?:Y)?\s+BETWEEN\s+([0-9]{1,2}(?::[0-9]{2})?\s*(?:AM|PM)?\s*(?:-|TO|AND|—)\s*[0-9]{1,2}(?::[0-9]{2})?\s*(?:AM|PM)?)/i,
   /\bDELIVER(?:Y)?\s+BY\s+([0-9]{1,2}(?::[0-9]{2})?\s*(?:AM|PM)?)/i,
 ];
