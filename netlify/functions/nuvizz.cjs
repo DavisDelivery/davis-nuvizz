@@ -614,6 +614,12 @@ exports.handler = async (event) => {
   try {
     const params = event.queryStringParameters || {};
     const tenant = (params.tenant || 'davis').toLowerCase();
+    // All load/route/fleet data lives under the DAVIS company code — ULINE credentials
+    // exist only for document retrieval. The "uline" tenant is a shipper-branded view of
+    // the same Davis fleet, so fleet-family endpoints must scan DAVIS load numbers (a
+    // ULINE-prefixed probe finds nothing and the app shows an empty board on a busy day).
+    // Sharing the tenant key also means both views hit the same Firestore/memory cache.
+    const fleetTenant = tenant === 'uline' ? 'davis' : tenant;
     const apiPath = params.path;
     if (!apiPath) return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: 'Missing ?path=' }) };
 
@@ -754,7 +760,7 @@ exports.handler = async (event) => {
 
       // Layer 1: in-memory cache (60s, per-function-instance, fastest)
       if (!bypassCache && !params.from && !params.to) {
-        const cached = getCachedFleet(tenant, dateStr);
+        const cached = getCachedFleet(fleetTenant, dateStr);
         if (cached) {
           return {
             statusCode: 200,
@@ -767,7 +773,7 @@ exports.handler = async (event) => {
       // Layer 2: Firestore (cross-instance, populated by scheduled function or any prior scan)
       // This is the big speedup — sub-second response from a single Firestore query.
       if (!bypassCache && !params.from && !params.to) {
-        const fsData = await readFleetFromFirestore(tenant, dateStr);
+        const fsData = await readFleetFromFirestore(fleetTenant, dateStr);
         if (fsData && fsData.loads && fsData.loads.length > 0) {
           // Strip per-load stops to keep payload light — __fleet response is summary only
           const slimLoads = fsData.loads.map(({ stops, _updatedAt, ...rest }) => rest);
@@ -775,7 +781,7 @@ exports.handler = async (event) => {
           const summary = { ...fsData.summary };
           delete summary._updatedAt;
           const result = { date: dateStr, loads: slimLoads, summary, source: 'firestore' };
-          setCachedFleet(tenant, dateStr, result);
+          setCachedFleet(fleetTenant, dateStr, result);
           return {
             statusCode: 200,
             headers: { ...corsHeaders, 'X-Cache': 'HIT-FS' },
@@ -794,7 +800,7 @@ exports.handler = async (event) => {
         startNbr = range.startNbr;
         endNbr = range.endNbr;
       }
-      const loads = await scanFleet(tenant, {
+      const loads = await scanFleet(fleetTenant, {
         dateFrom: dateStr,
         dateTo: dateStr,
         startNbr,
@@ -821,7 +827,7 @@ exports.handler = async (event) => {
       // Persist to Firestore (with stops) — gives __fleetstops + __driver fast path later.
       // Fire-and-forget so we don't block the user's response on the write.
       if (!params.from && !params.to) {
-        writeFleetToFirestore(tenant, dateStr, loads, summary).catch(() => null);
+        writeFleetToFirestore(fleetTenant, dateStr, loads, summary).catch(() => null);
       }
 
       // Strip per-load stops from the response (caller of __fleet doesn't need them — saves bandwidth)
@@ -829,7 +835,7 @@ exports.handler = async (event) => {
       const result = { date: dateStr, loads: slimLoads, summary, scannedRange: { from: startNbr, to: endNbr }, source: 'live-scan' };
 
       // In-memory cache for 60s
-      if (!params.from && !params.to) setCachedFleet(tenant, dateStr, result);
+      if (!params.from && !params.to) setCachedFleet(fleetTenant, dateStr, result);
 
       return {
         statusCode: 200,
@@ -845,7 +851,7 @@ exports.handler = async (event) => {
     if (apiPath === '__fleetstops') {
       const dateStr = params.date || new Date().toISOString().slice(0, 10);
       const bypassCache = params.nocache === '1' || params.nocache === 'true';
-      const stopsCacheKey = `${tenant}:${dateStr}:stops`;
+      const stopsCacheKey = `${fleetTenant}:${dateStr}:stops`;
 
       // Layer 1: in-memory cache
       if (!bypassCache) {
@@ -861,7 +867,7 @@ exports.handler = async (event) => {
 
       // Layer 2: Firestore — load docs include their stops as inline arrays
       if (!bypassCache) {
-        const fsData = await readFleetFromFirestore(tenant, dateStr);
+        const fsData = await readFleetFromFirestore(fleetTenant, dateStr);
         if (fsData && fsData.loads && fsData.loads.length > 0) {
           // Flatten stops across all loads
           const stops = [];
@@ -898,7 +904,7 @@ exports.handler = async (event) => {
 
       // Layer 3: live scan
       const range = estimateLoadRange(dateStr);
-      const loadsWithStops = await scanFleet(tenant, {
+      const loadsWithStops = await scanFleet(fleetTenant, {
         dateFrom: dateStr,
         dateTo: dateStr,
         startNbr: range.startNbr,
@@ -955,7 +961,7 @@ exports.handler = async (event) => {
         uniqueDrivers: new Set(loadsWithStops.map(l => l.driverUserName).filter(Boolean)).size,
         pctComplete: summary.pctComplete,
       };
-      writeFleetToFirestore(tenant, dateStr, loadsWithStops, fleetSummary).catch(() => null);
+      writeFleetToFirestore(fleetTenant, dateStr, loadsWithStops, fleetSummary).catch(() => null);
 
       return {
         statusCode: 200,
@@ -980,8 +986,8 @@ exports.handler = async (event) => {
       let driverProfile = null;
       if (userName) {
         try {
-          const { companyCode } = getCreds(tenant);
-          driverProfile = await nvFetch(tenant, `/user/info/${encodeURIComponent(companyCode)}`, {
+          const { companyCode } = getCreds(fleetTenant);
+          driverProfile = await nvFetch(fleetTenant, `/user/info/${encodeURIComponent(companyCode)}`, {
             extraParams: { userName },
           });
         } catch (_) {}
@@ -994,7 +1000,7 @@ exports.handler = async (event) => {
 
       if (fs_db.isFirestoreEnabled() && userName) {
         try {
-          const idx = await fs_db.readDriverIndex(tenant, dateStr);
+          const idx = await fs_db.readDriverIndex(fleetTenant, dateStr);
           if (idx && idx.map && idx.map[userName]) {
             matchedLoadNbrs = idx.map[userName];
           }
@@ -1005,19 +1011,19 @@ exports.handler = async (event) => {
 
       // Fall back to in-memory cache for driverName text-match or if index missing
       if (matchedLoadNbrs.length === 0) {
-        allLoads = getCachedFleet(tenant, dateStr)?.loads;
+        allLoads = getCachedFleet(fleetTenant, dateStr)?.loads;
         if (!allLoads) {
           // Last resort: also try Firestore listLoads (tenant-wide) since the
           // driver index might be missing but loads are populated
           try {
-            const fsLoads = await fs_db.listLoads(tenant, dateStr);
+            const fsLoads = await fs_db.listLoads(fleetTenant, dateStr);
             if (fsLoads && fsLoads.length > 0) allLoads = fsLoads;
           } catch (_) {}
         }
         if (!allLoads) {
           // Nothing cached anywhere — do the full scan
           const range = estimateLoadRange(dateStr);
-          allLoads = await scanFleet(tenant, {
+          allLoads = await scanFleet(fleetTenant, {
             dateFrom: dateStr,
             dateTo: dateStr,
             startNbr: range.startNbr,
@@ -1038,7 +1044,7 @@ exports.handler = async (event) => {
           };
           summary.pctComplete = summary.totalStops ? Math.round((summary.totalDelivered / summary.totalStops) * 100) : 0;
           // Persist scan to Firestore so future requests benefit
-          writeFleetToFirestore(tenant, dateStr, allLoads, summary).catch(() => null);
+          writeFleetToFirestore(fleetTenant, dateStr, allLoads, summary).catch(() => null);
         }
         // Match by userName or driverName text
         const matched = allLoads.filter(l => {
@@ -1055,11 +1061,11 @@ exports.handler = async (event) => {
       // Now: re-fetch each matched load LIVE from NuVizz for freshest data on the screen
       // the user is actually looking at. This is the key insight from Chad's request:
       // when you tap a driver, that driver's data should be fresh, not the whole fleet's.
-      const { companyCode } = getCreds(tenant);
+      const { companyCode } = getCreds(fleetTenant);
       const loadsWithStops = await Promise.all(
         matchedLoadNbrs.map(async (loadNbr) => {
           try {
-            const full = await nvFetch(tenant, `/load/info/${encodeURIComponent(loadNbr)}/${encodeURIComponent(companyCode)}`);
+            const full = await nvFetch(fleetTenant, `/load/info/${encodeURIComponent(loadNbr)}/${encodeURIComponent(companyCode)}`);
             const h = full?.Load?.loadHeader || {};
             const a = full?.Load?.loadAssignment || {};
             const stops = full?.Load?.stops || [];
@@ -1173,9 +1179,9 @@ exports.handler = async (event) => {
       if (!loadNbr) {
         return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: 'Need loadNbr' }) };
       }
-      const { companyCode } = getCreds(tenant);
+      const { companyCode } = getCreds(fleetTenant);
       try {
-        const full = await nvFetch(tenant, `/load/info/${encodeURIComponent(loadNbr)}/${encodeURIComponent(companyCode)}`);
+        const full = await nvFetch(fleetTenant, `/load/info/${encodeURIComponent(loadNbr)}/${encodeURIComponent(companyCode)}`);
         const h = full?.Load?.loadHeader || {};
         const a = full?.Load?.loadAssignment || {};
         const stops = full?.Load?.stops || [];
@@ -1254,11 +1260,11 @@ exports.handler = async (event) => {
 
         // Persist the fresh load doc to Firestore (fire-and-forget)
         if (fs_db.isFirestoreEnabled()) {
-          fs_db.writeLoad(tenant, dateStr, loadDoc).catch(() => null);
+          fs_db.writeLoad(fleetTenant, dateStr, loadDoc).catch(() => null);
         }
         // Also invalidate the in-memory fleet cache so next __fleet read pulls from Firestore
-        __fleetCache.delete(`${tenant}:${dateStr}`);
-        __fleetCache.delete(`${tenant}:${dateStr}:stops`);
+        __fleetCache.delete(`${fleetTenant}:${dateStr}`);
+        __fleetCache.delete(`${fleetTenant}:${dateStr}:stops`);
 
         return {
           statusCode: 200,
@@ -1281,7 +1287,7 @@ exports.handler = async (event) => {
     if (apiPath === '__refreshFleet') {
       const dateStr = params.date || new Date().toISOString().slice(0, 10);
       const range = estimateLoadRange(dateStr);
-      const loads = await scanFleet(tenant, {
+      const loads = await scanFleet(fleetTenant, {
         dateFrom: dateStr,
         dateTo: dateStr,
         startNbr: range.startNbr,
@@ -1304,9 +1310,9 @@ exports.handler = async (event) => {
       summary.pctComplete = summary.totalStops ? Math.round((summary.totalDelivered / summary.totalStops) * 100) : 0;
 
       // Persist + clear in-memory caches so all future reads pull fresh
-      writeFleetToFirestore(tenant, dateStr, loads, summary).catch(() => null);
-      __fleetCache.delete(`${tenant}:${dateStr}`);
-      __fleetCache.delete(`${tenant}:${dateStr}:stops`);
+      writeFleetToFirestore(fleetTenant, dateStr, loads, summary).catch(() => null);
+      __fleetCache.delete(`${fleetTenant}:${dateStr}`);
+      __fleetCache.delete(`${fleetTenant}:${dateStr}:stops`);
 
       return {
         statusCode: 200,

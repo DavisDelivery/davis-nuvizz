@@ -26,7 +26,9 @@ export default async () => {
     return new Response('weekend skip', { status: 200 });
   }
 
-  const tenants = ['davis', 'uline'];
+  // Only davis: the uline tenant is a branded view of the same DAVIS fleet data, so the
+  // nuvizz function maps it to davis internally — refreshing it here would double-scan.
+  const tenants = ['davis'];
   const results = [];
 
   for (const tenant of tenants) {
