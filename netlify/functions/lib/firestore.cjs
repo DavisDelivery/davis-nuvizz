@@ -258,6 +258,46 @@ async function writeDriverIndex(tenant, dateStr, indexMap) {
   );
 }
 
+// ── Phase 4: shared call counter + circuit breaker (mirrors firestore.mts) ───
+const OPS_COLLECTION = 'nuvizz_ops';
+
+async function incrementCallCounter(dateStr, n) {
+  const token = await getAccessToken();
+  const sa = loadServiceAccount();
+  const docName = `projects/${sa.project_id}/databases/(default)/documents/${OPS_COLLECTION}/calls__${dateStr}`;
+  const url = `${FIRESTORE_BASE}/projects/${sa.project_id}/databases/(default)/documents:commit`;
+  const body = {
+    writes: [{
+      update: { name: docName, fields: { date: { stringValue: dateStr } } },
+      updateTransforms: [{ fieldPath: 'count', increment: { integerValue: String(n) } }],
+    }],
+  };
+  const resp = await fetch(url, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok) throw new Error(`incrementCallCounter failed: ${resp.status}`);
+  const out = await resp.json();
+  const tr = out.writeResults?.[0]?.transformResults?.[0];
+  return tr ? parseInt(tr.integerValue, 10) : NaN;
+}
+
+async function readCallCounter(dateStr) {
+  const doc = await getDoc(`${OPS_COLLECTION}/calls__${dateStr}`);
+  return doc && typeof doc.count === 'number' ? doc.count : 0;
+}
+
+async function readCircuit() {
+  const doc = await getDoc(`${OPS_COLLECTION}/circuit`);
+  if (!doc) return { open: false };
+  return { open: !!doc.open, reason: doc.reason, at: doc.at };
+}
+
+async function setCircuit(open, reason, atISO) {
+  await setDoc(`${OPS_COLLECTION}/circuit`, { open, reason, at: atISO });
+}
+
 module.exports = {
   isFirestoreEnabled,
   getAccessToken,
@@ -271,4 +311,8 @@ module.exports = {
   writeSummary,
   readDriverIndex,
   writeDriverIndex,
+  incrementCallCounter,
+  readCallCounter,
+  readCircuit,
+  setCircuit,
 };

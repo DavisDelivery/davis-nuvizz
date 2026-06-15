@@ -21,6 +21,13 @@ export default async () => {
     return new Response('scans disabled', { status: 200 });
   }
 
+  // Phase 4: when consolidated, SITE B is the sole scanner and SITE A reads the
+  // shared Firestore index — this cron must NOT scan NuVizz at all.
+  if (String(process.env.NUVIZZ_CONSOLIDATED || '').trim().toLowerCase() === 'true') {
+    console.log('fleet-refresh: NUVIZZ_CONSOLIDATED=true — SITE B is sole scanner, skipping');
+    return new Response('consolidated — site B scans', { status: 200 });
+  }
+
   const url = process.env.URL || process.env.DEPLOY_URL;
   if (!url) {
     console.error('fleet-refresh: no site URL available, skipping');

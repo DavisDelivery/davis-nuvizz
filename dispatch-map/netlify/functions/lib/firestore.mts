@@ -245,3 +245,89 @@ export async function readStops(tenant: string, dateStr: string): Promise<StopIn
   const stops = docs.map(({ _id, last_scanned_at, ...rest }) => rest);
   return { meta: (meta as StopIndexMeta) || null, stops };
 }
+
+// ── Phase 4: shared call counter + circuit breaker ───────────────────────────
+// One fleet-wide accountant. nuvizz-request.mts increments calls__{date} on every
+// NuVizz round-trip (both apps share this davismarginiq doc) and, when the day's
+// total crosses the ceiling, trips nuvizz_ops/circuit. scanGuardOpen() honours the
+// flag so a regression is throttled in minutes instead of by a vendor email.
+const OPS_COLLECTION = 'nuvizz_ops';
+
+/** Atomically add n to today's shared counter; returns the NEW total. */
+export async function incrementCallCounter(dateStr: string, n: number): Promise<number> {
+  const token = await getAccessToken();
+  const sa = loadServiceAccount();
+  const docName = `projects/${sa.project_id}/databases/(default)/documents/${OPS_COLLECTION}/calls__${dateStr}`;
+  const url = `${FIRESTORE_BASE}/projects/${sa.project_id}/databases/(default)/documents:commit`;
+  const body = {
+    writes: [{
+      update: { name: docName, fields: { date: { stringValue: dateStr } } },
+      updateTransforms: [{ fieldPath: 'count', increment: { integerValue: String(n) } }],
+    }],
+  };
+  const resp = await fetch(url, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok) throw new Error(`incrementCallCounter failed: ${resp.status} ${(await resp.text()).slice(0, 200)}`);
+  const out: any = await resp.json();
+  const tr = out.writeResults?.[0]?.transformResults?.[0];
+  return tr ? parseInt(tr.integerValue, 10) : NaN;
+}
+
+export async function readCallCounter(dateStr: string): Promise<number> {
+  const doc = await getDoc(`${OPS_COLLECTION}/calls__${dateStr}`);
+  return doc && typeof doc.count === 'number' ? doc.count : 0;
+}
+
+export interface CircuitState { open: boolean; reason?: string; at?: string }
+
+export async function readCircuit(): Promise<CircuitState> {
+  const doc = await getDoc(`${OPS_COLLECTION}/circuit`);
+  if (!doc) return { open: false };
+  return { open: !!doc.open, reason: doc.reason, at: doc.at };
+}
+
+export async function setCircuit(open: boolean, reason: string, atISO: string): Promise<void> {
+  await setDoc(`${OPS_COLLECTION}/circuit`, { open, reason, at: atISO });
+}
+
+// ── Phase 4: canonical fleet index (the shape SITE A already reads) ───────────
+// The sole scanner (this app) writes load summaries + aggregate + driver index to
+// nuvizzFleet/{tenant}__{date} — byte-compatible with the parent app's existing
+// reader (lib/firestore.cjs readSummary/listLoads/readDriverIndex) so SITE A can
+// render its dashboard straight from Firestore and STOP scanning NuVizz itself.
+const FLEET_COLLECTION = 'nuvizzFleet';
+
+export interface FleetSummary {
+  totalLoads: number; assignedLoads: number; unassignedLoads: number;
+  totalStops: number; totalDelivered: number; totalInProgress: number;
+  totalExceptions: number; uniqueDrivers: number; pctComplete: number;
+}
+
+export async function writeFleetIndex(
+  tenant: string, dateStr: string,
+  loads: any[], summary: FleetSummary, driverIndex: Record<string, string[]>, scannedAt: string,
+): Promise<void> {
+  const base = `${FLEET_COLLECTION}/${parentId(tenant, dateStr)}`;
+  const withNbr = loads.filter((l) => l && l.loadNbr);
+
+  // Prune loads that vanished since the previous scan.
+  const existing = await listDocs(`${base}/loads`);
+  const nextNbrs = new Set(withNbr.map((l) => String(l.loadNbr)));
+  await Promise.all(existing.filter((d) => !nextNbrs.has(String(d._id))).map((d) => deleteDoc(`${base}/loads/${d._id}`)));
+
+  const conc = 12; let i = 0;
+  const writeOne = async () => {
+    while (i < withNbr.length) {
+      const l = withNbr[i++];
+      await setDoc(`${base}/loads/${l.loadNbr}`, { ...l, _updatedAt: scannedAt });
+    }
+  };
+  await Promise.all(Array.from({ length: conc }, writeOne));
+  await setDoc(`${base}/meta/summary`, { ...summary, _updatedAt: scannedAt } as any);
+  await setDoc(`${base}/meta/driverIndex`, { map: driverIndex, _updatedAt: scannedAt } as any);
+  // Parent doc last, carrying freshness for SITE A's staleness check.
+  await setDoc(base, { tenant, date: dateStr, last_scanned_at: scannedAt } as any);
+}
