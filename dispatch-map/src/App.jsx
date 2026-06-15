@@ -46,7 +46,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.24.0';
+const APP_VERSION = '0.24.1';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -66,6 +66,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.24.1', 'Tractor Trailer Friendly — green positive equipment kind (manual; suppressed when No T/T set)'],
   ['0.24.0', 'AI Order Search — natural-language search box + chat panel over the loaded board'],
   ['0.23.1', 'Phase 3 growth-guard fix — no phantom spill / no criss-cross on dense builds'],
   ['0.23.0', 'Geographic truck assignment (no two-truck criss-cross) + green stop markers'],
@@ -160,6 +161,9 @@ const EQUIPMENT_OPTIONS = [
   { value: 'no_53ft', label: 'No 53ft' },
   { value: 'box_truck_only', label: 'Box truck only' },
   { value: 'no_overhead_clearance', label: 'Low overhead clearance' },
+  // Positive kind — set MANUALLY by the dispatcher (never auto-scanned). Renders
+  // green to read as "this stop CAN take a tractor trailer".
+  { value: 'tractor_trailer_friendly', label: 'Tractor trailer friendly' },
 ];
 
 const DOCK_TYPES = [
@@ -272,6 +276,28 @@ const RESTRICTION_ICONS = {
       <circle cx="16" cy="17" r="1.7" fill="none" stroke="currentColor" stroke-width="0.7"/>
     `,
     prohibition: true,
+  },
+  // POSITIVE kind (manual-only). Green tractor-trailer with a check — signals the
+  // stop CAN take a tractor trailer. NOT a prohibition (no slash). Mutually
+  // exclusive with no_tractor_trailer (suppressed in getRestrictionBadgeKeys).
+  tractor_trailer_friendly: {
+    label: 'Tractor trailer friendly',
+    short: 'T/T OK',
+    bg: '#16a34a',
+    accent: '#16a34a',
+    glyph: '<rect x="1.5" y="6.5" width="6.5" height="3.5" fill="white"/><rect x="8" y="5" width="2.8" height="5" fill="white"/><circle cx="3.5" cy="10.5" r="0.9" fill="#16a34a"/><circle cx="9.5" cy="10.5" r="0.9" fill="#16a34a"/><path d="M9.3 4 L10.8 5.6 L13.2 2.6" stroke="white" stroke-width="1.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/>',
+    // 22×22: tractor + trailer (currentColor) with a check mark above. No slash.
+    markerGlyph: `
+      <rect x="1" y="9" width="10" height="6.5" rx="0.5" fill="currentColor"/>
+      <rect x="11" y="7" width="6" height="8.5" rx="0.5" fill="currentColor"/>
+      <circle cx="4" cy="17" r="1.6" fill="white"/>
+      <circle cx="8.5" cy="17" r="1.6" fill="white"/>
+      <circle cx="14" cy="17" r="1.6" fill="white"/>
+      <circle cx="4" cy="17" r="1.6" fill="none" stroke="currentColor" stroke-width="0.7"/>
+      <circle cx="8.5" cy="17" r="1.6" fill="none" stroke="currentColor" stroke-width="0.7"/>
+      <circle cx="14" cy="17" r="1.6" fill="none" stroke="currentColor" stroke-width="0.7"/>
+      <path d="M14 5.5 L16.5 8 L21 3" stroke="currentColor" stroke-width="2.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    `,
   },
   // M2.1 — Uline SPL-INSTR-TEXT advisory: "STRAIGHT TRUCK ONLY" etc. detected
   // in orderInstructions. Same shape as no_tractor_trailer but amber to signal
@@ -442,9 +468,13 @@ const RESTRICTION_ICONS = {
   },
 };
 // Recognized aliases — straight_truck_only is sometimes used as a synonym
-// for box_truck_only in TMS systems.
+// for box_truck_only in TMS systems. tractor_trailer_friendly (a positive kind,
+// set manually) accepts a few natural synonyms.
 const RESTRICTION_ALIASES = {
   straight_truck_only: 'box_truck_only',
+  tt_friendly: 'tractor_trailer_friendly',
+  tractor_trailer_ok: 'tractor_trailer_friendly',
+  semi_friendly: 'tractor_trailer_friendly',
 };
 const UNKNOWN_RESTRICTION = {
   label: 'Unknown restriction',
@@ -985,12 +1015,25 @@ function weekdayKeyFromDate(dateString) {
 // customer with Friday-only hours shows the clock on Fridays and nowhere else.
 // Omit `opts.day` (legend, counts, sidebar badge row) to keep the old behavior
 // where any day's hours light the clock.
+let __ttFriendlyConflictLogged = false;
 function getRestrictionBadgeKeys(note, opts = {}) {
   if (!note) return [];
   const keys = [];
   for (const r of note.equipment_restrictions || []) {
     const resolved = resolveRestrictionKey(r);
     if (resolved && !keys.includes(resolved)) keys.push(resolved);
+  }
+  // Mutual exclusion: a real "no tractor trailer" restriction always wins over the
+  // positive "tractor trailer friendly" kind. Suppress friendly from render and
+  // warn once so the conflicting data is discoverable but never shown together.
+  if (keys.includes('no_tractor_trailer') && keys.includes('tractor_trailer_friendly')) {
+    const i = keys.indexOf('tractor_trailer_friendly');
+    keys.splice(i, 1);
+    if (!__ttFriendlyConflictLogged) {
+      __ttFriendlyConflictLogged = true;
+      // eslint-disable-next-line no-console
+      console.warn('[restriction-icons] stop has both no_tractor_trailer and tractor_trailer_friendly — suppressing the positive kind (the restriction wins)');
+    }
   }
   if (note.liftgate_required && !keys.includes('liftgate_required')) keys.push('liftgate_required');
   if (note.appointment_required && !keys.includes('appointment_required')) keys.push('appointment_required');
@@ -1539,16 +1582,25 @@ function Legend({ expanded, setExpanded }) {
           <div>
             <div className="text-[10px] uppercase font-semibold text-slate-500 mb-1">Restriction icons</div>
             <div className="space-y-1">
-              {Object.entries(RESTRICTION_ICONS).map(([key, def]) => (
-                <div key={key} className="flex items-center gap-2">
-                  <RestrictionIcon kind={key} size={16} />
-                  <span>{def.label}</span>
-                </div>
-              ))}
+              {Object.entries(RESTRICTION_ICONS)
+                .filter(([key]) => key !== 'tractor_trailer_friendly')
+                .map(([key, def]) => (
+                  <div key={key} className="flex items-center gap-2">
+                    <RestrictionIcon kind={key} size={16} />
+                    <span>{def.label}</span>
+                  </div>
+                ))}
               <div className="flex items-center gap-2 pt-1">
                 <span className="inline-flex items-center justify-center w-4 h-4 rounded-full text-white text-[8px] font-bold" style={{ background: '#0f172a' }}>+N</span>
                 <span className="text-slate-500">Three or more restrictions</span>
               </div>
+            </div>
+          </div>
+          <div>
+            <div className="text-[10px] uppercase font-semibold text-slate-500 mb-1">Allowed (green)</div>
+            <div className="flex items-center gap-2">
+              <RestrictionIcon kind="tractor_trailer_friendly" size={16} />
+              <span>{RESTRICTION_ICONS.tractor_trailer_friendly.label} — stop can take a tractor trailer</span>
             </div>
           </div>
         </div>

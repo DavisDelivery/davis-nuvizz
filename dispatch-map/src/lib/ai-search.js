@@ -29,7 +29,12 @@ export function dayKeyFromToken(token) {
 
 // Recognized restriction aliases — mirrors RESTRICTION_ALIASES in App.jsx so the
 // model's canonical kinds resolve to the keys customer_notes actually stores.
-const RESTRICTION_ALIASES = { straight_truck_only: 'box_truck_only' };
+const RESTRICTION_ALIASES = {
+  straight_truck_only: 'box_truck_only',
+  tt_friendly: 'tractor_trailer_friendly',
+  tractor_trailer_ok: 'tractor_trailer_friendly',
+  semi_friendly: 'tractor_trailer_friendly',
+};
 function canonRestriction(kind) {
   const k = String(kind || '').trim().toLowerCase();
   return RESTRICTION_ALIASES[k] || k;

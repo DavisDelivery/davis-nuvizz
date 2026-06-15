@@ -116,6 +116,28 @@ test('applyFilterSpec: empty spec matches nothing (caller falls back)', () => {
   assert.equal(applyFilterSpec(stops, notes, null).size, 0);
 });
 
+test('tractor_trailer_friendly: aliases resolve in restrictionsForStop', () => {
+  assert.deepEqual(restrictionsForStop({ equipment_restrictions: ['tt_friendly'] }), ['tractor_trailer_friendly']);
+  assert.deepEqual(restrictionsForStop({ equipment_restrictions: ['semi_friendly'] }), ['tractor_trailer_friendly']);
+  assert.deepEqual(restrictionsForStop({ equipment_restrictions: ['tractor_trailer_ok'] }), ['tractor_trailer_friendly']);
+});
+
+test('tractor_trailer_friendly: AI parse predicate matches via alias (M6 tie-in)', () => {
+  const ttStops = [
+    { stopNbr: 'A', matchKey: 'a', businessName: 'Big Dock', city: 'Acworth' },
+    { stopNbr: 'B', matchKey: 'b', businessName: 'Small Dock', city: 'Acworth' },
+  ];
+  const ttNotes = new Map([
+    ['a', { equipment_restrictions: ['tractor_trailer_friendly'] }],
+    ['b', { equipment_restrictions: ['no_tractor_trailer'] }],
+  ]);
+  // model may emit the canonical kind or an alias; both resolve
+  const canon = applyFilterSpec(ttStops, ttNotes, { predicates: [{ field: 'restrictions', op: 'includes', value: 'tractor_trailer_friendly' }], logic: 'AND' });
+  assert.deepEqual([...canon], ['A']);
+  const alias = applyFilterSpec(ttStops, ttNotes, { predicates: [{ field: 'restrictions', op: 'includes', value: 'semi_friendly' }], logic: 'AND' });
+  assert.deepEqual([...alias], ['A']);
+});
+
 test('summarizeSpec composes a one-line chip', () => {
   const s = summarizeSpec({ predicates: [
     { field: 'closed_days', value: 'Fri' },
