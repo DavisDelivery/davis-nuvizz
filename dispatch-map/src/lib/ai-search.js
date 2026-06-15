@@ -92,10 +92,19 @@ function zip5(stop) {
   return String(stop?.zip || '').trim().slice(0, 5);
 }
 
+// Raw NuVizz instruction text for a stop (order instructions + addr2). Receiving
+// hours, restrictions, etc. often live here verbatim in arbitrary phrasing
+// ("RH 7-11AM", "RECEIVING HOURS 8AM-12PM", "DELIVER BEFORE NOON"). Feeding it to
+// the chat lets the model read them no matter the format. Truncated for tokens.
+function rawInstructions(stop) {
+  const parts = [stop?.signalSources?.orderInstructions, stop?.addr2].filter(Boolean);
+  return parts.join(' | ').slice(0, 280);
+}
+
 // TrimmedStop projection — small, token-cheap shape for the chat endpoint.
-// dock_notes + appointment_notes are included raw (truncated) because receiving
-// hours are sometimes written there as free text rather than the structured
-// receiving_hours field; the chat prompt tells the model to look in both.
+// dock_notes + appointment_notes + instructions are included raw (truncated)
+// because receiving hours are often written there as free text rather than the
+// structured receiving_hours field; the chat prompt tells the model to look in all.
 export function buildTrimmedStop(stop, note) {
   return {
     id: stop.stopNbr,
@@ -111,6 +120,7 @@ export function buildTrimmedStop(stop, note) {
     restrictions: restrictionsForStop(note),
     dock_notes: String(note?.dock_notes || '').slice(0, 240),
     appointment_notes: String(note?.appointment_notes || '').slice(0, 240),
+    instructions: rawInstructions(stop),
     priority_flag: note?.priority_flag || null,
   };
 }
