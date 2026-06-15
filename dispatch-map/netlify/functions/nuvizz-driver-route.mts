@@ -33,6 +33,8 @@
 //   raw: { ... }     // preserve at every layer per standing rules
 // }
 
+import { scansEnabled } from './lib/nuvizz-scan.mts';
+
 const NUVIZZ_BASE = process.env.NUVIZZ_BASE_URL || 'https://portal.nuvizz.com/deliverit/openapi/v7';
 const MOTIVE_BASE = process.env.MOTIVE_BASE_URL || 'https://api.gomotive.com/v1';
 
@@ -142,6 +144,9 @@ async function buildRouteFromLoadScan(
   driverFullName: string,
   userName: string | null,
 ): Promise<{ route: any; stops: any[]; matchedBy: 'userName' | 'driverName' | null }> {
+  // P0 kill switch — when NUVIZZ_SCANS_ENABLED=false, this on-demand 501-load
+  // fan-out is suppressed (returns no route) so the disable is comprehensive.
+  if (!scansEnabled()) return { route: null, stops: [], matchedBy: null };
   const { companyCode } = getCreds();
   // Anchor + range identical to nuvizz-pull-today-stops.mts — keep in sync if
   // you change one, change both.
