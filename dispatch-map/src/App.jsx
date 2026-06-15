@@ -16,7 +16,7 @@ import {
   MapPin, RefreshCw, X, Filter, Truck, Save, Plus, Trash2,
   Activity, ChevronDown, ChevronUp, Eye, EyeOff,
   Search, Tag, Tags, ArrowLeft, Gauge, Clock, MapPinned,
-  Info, Settings, LayoutList,
+  Info, Settings, LayoutList, Sparkles, MessageSquare,
 } from 'lucide-react';
 import {
   collection, doc, getDoc, onSnapshot, setDoc, serverTimestamp,
@@ -31,6 +31,8 @@ import { pointInPolygon, latLngInBounds, boxFromCorners, formatReceivingHours, l
 import { formatDateTime, tsToMillis, loadSummary, buildLoadAutoName } from './lib/routing-loads.js';
 import { scanStop, scanStopFull } from './lib/signal-scanner';
 import { applyScannerResults } from './lib/customer-notes-writer';
+import { aiParse, aiChat, applyFilterSpec, summarizeSpec, buildTrimmedStops } from './lib/ai-search.js';
+import ChatPanel, { ChatLauncher } from './components/ChatPanel.jsx';
 
 // Vite's tree-shaker considers function-only imports from .ts files to be
 // pure; it eliminates them even though they're called from useAutoScanner's
@@ -44,7 +46,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.23.1';
+const APP_VERSION = '0.24.0';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -64,6 +66,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.24.0', 'AI Order Search — natural-language search box + chat panel over the loaded board'],
   ['0.23.1', 'Phase 3 growth-guard fix — no phantom spill / no criss-cross on dense builds'],
   ['0.23.0', 'Geographic truck assignment (no two-truck criss-cross) + green stop markers'],
   ['0.22.0', 'Strategy ordering fixed — placeholder windows no longer clobber Min-distance/Closest'],
@@ -1360,13 +1363,21 @@ function ResizeHandle({ onMouseDown, onDoubleClick }) {
 // string; commits to parent (via onChange) immediately so the parent can
 // debounce + filter. onSubmit is called when Enter is pressed (used to commit
 // to localStorage history).
-function SearchBar({ value, onChange, onSubmit, history, inputRef, resultCount, totalCount }) {
+function SearchBar({
+  value, onChange, onSubmit, history, inputRef, resultCount, totalCount,
+  // M6 — AI search props. When aiAvailable, a sparkle toggle switches the box
+  // into "Ask AI" mode; Enter (or the button) then runs a natural-language parse.
+  aiAvailable, aiMode, setAiMode, onAskAi, aiBusy, aiSummary, aiError, onClearAi,
+}) {
   const [focused, setFocused] = useState(false);
   const showHistory = focused && !value && history.length > 0;
+  const aiActive = !!aiSummary;
   return (
     <div className="px-3 pt-3 pb-1 relative">
       <div className="relative">
-        <Search size={13} className="absolute left-2 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+        {aiMode
+          ? <Sparkles size={13} className="absolute left-2 top-1/2 -translate-y-1/2 pointer-events-none" style={{ color: '#1e5b92' }} />
+          : <Search size={13} className="absolute left-2 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />}
         <input
           ref={inputRef}
           value={value}
@@ -1374,32 +1385,62 @@ function SearchBar({ value, onChange, onSubmit, history, inputRef, resultCount, 
           onFocus={() => setFocused(true)}
           onBlur={() => setTimeout(() => setFocused(false), 120)}
           onKeyDown={(e) => {
-            if (e.key === 'Enter') { onSubmit(value); e.currentTarget.blur(); }
+            if (e.key === 'Enter') {
+              if (aiMode && value.trim()) { onAskAi(value); }
+              else { onSubmit(value); }
+              e.currentTarget.blur();
+            }
             if (e.key === 'Escape') { onChange(''); e.currentTarget.blur(); }
           }}
-          placeholder="Search customer, PRO, city, address..."
-          className="w-full border border-slate-300 rounded pl-7 pr-7 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-400"
+          placeholder={aiMode ? 'Ask AI to filter (e.g. closed Fridays, liftgate)…' : 'Search customer, PRO, city, address...'}
+          className={'w-full border rounded pl-7 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-200 ' +
+            (aiAvailable ? 'pr-14 ' : 'pr-7 ') +
+            (aiMode ? 'border-blue-400 bg-blue-50/40' : 'border-slate-300 focus:border-blue-400')}
           aria-label="Search stops"
         />
-        {value && (
-          <button
-            onClick={() => onChange('')}
-            className="absolute right-1 top-1/2 -translate-y-1/2 p-0.5 rounded hover:bg-slate-100 text-slate-400 hover:text-slate-700"
-            aria-label="Clear search"
-            tabIndex={-1}
-          >
-            <X size={13} />
-          </button>
-        )}
+        <div className="absolute right-1 top-1/2 -translate-y-1/2 flex items-center gap-0.5">
+          {value && (
+            <button
+              onClick={() => onChange('')}
+              className="p-0.5 rounded hover:bg-slate-100 text-slate-400 hover:text-slate-700"
+              aria-label="Clear search"
+              tabIndex={-1}
+            >
+              <X size={13} />
+            </button>
+          )}
+          {aiAvailable && (
+            <button
+              onClick={() => setAiMode(!aiMode)}
+              className={'px-1.5 py-0.5 rounded text-[10px] font-semibold inline-flex items-center gap-1 ' +
+                (aiMode ? 'text-white' : 'text-slate-500 hover:bg-slate-100')}
+              style={aiMode ? { background: '#1e5b92' } : undefined}
+              title="Toggle natural-language AI search"
+              aria-pressed={aiMode}
+            >
+              <Sparkles size={11} /> AI
+            </button>
+          )}
+        </div>
       </div>
-      {value && (
+      {aiActive ? (
+        <div className="mt-1.5 flex items-center gap-1.5 text-[10px]">
+          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-blue-50 border border-blue-200 text-blue-800">
+            <Sparkles size={10} /> {aiSummary}
+          </span>
+          <button onClick={onClearAi} className="text-slate-500 hover:text-slate-800 underline">Clear</button>
+        </div>
+      ) : aiBusy ? (
+        <div className="mt-1 text-[10px] text-slate-500 inline-flex items-center gap-1"><Sparkles size={10} className="animate-pulse" /> Asking AI…</div>
+      ) : value && !aiMode ? (
         <div className="mt-1 text-[10px] text-slate-500">
           {resultCount > 0
             ? <>Showing <span className="font-semibold text-slate-700">{resultCount}</span> of {totalCount} stops</>
             : <>No stops match "<span className="font-semibold">{value}</span>"</>
           }
         </div>
-      )}
+      ) : null}
+      {aiError && <div className="mt-1 text-[10px] text-amber-700">{aiError}</div>}
       {showHistory && (
         <div className="absolute left-3 right-3 top-full mt-1 bg-white border border-slate-200 rounded shadow-md z-10 max-h-56 overflow-y-auto">
           <div className="px-2 py-1 text-[9px] uppercase tracking-wide text-slate-400 border-b">Recent searches</div>
@@ -2922,24 +2963,51 @@ function MobileDrawer({ open, onClose, activeTab, setActiveTab, children }) {
 function MobileStopsTab({
   stops, notes, searchInput, setSearchInput,
   resultCount, totalCount, onPickStop,
+  aiAvailable, onAskAi, aiBusy, aiSummary, aiError, onClearAi,
 }) {
   return (
     <div className="flex flex-col">
       <div className="p-3 border-b border-slate-100">
-        <div className="relative">
-          <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
-          <input
-            type="search"
-            value={searchInput}
-            onChange={(e) => setSearchInput(e.target.value)}
-            placeholder="Customer, PRO, city, address…"
-            className="w-full pl-8 pr-3 border border-slate-300 rounded-lg text-sm"
-            style={{ minHeight: 44 }}
-          />
+        <div className="flex items-center gap-2">
+          <div className="relative flex-1">
+            <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+            <input
+              type="search"
+              value={searchInput}
+              onChange={(e) => setSearchInput(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter' && aiAvailable && searchInput.trim()) { e.preventDefault(); onAskAi(searchInput); } }}
+              placeholder="Customer, PRO, city, address…"
+              className="w-full pl-8 pr-3 border border-slate-300 rounded-lg text-sm"
+              style={{ minHeight: 44 }}
+            />
+          </div>
+          {aiAvailable && (
+            <button
+              onClick={() => searchInput.trim() && onAskAi(searchInput)}
+              disabled={aiBusy || !searchInput.trim()}
+              className="rounded-lg text-white inline-flex items-center gap-1 px-3 text-xs font-semibold disabled:opacity-40"
+              style={{ background: '#1e5b92', minHeight: 44, minWidth: 44 }}
+              aria-label="Ask AI to filter"
+            >
+              <Sparkles size={14} /> AI
+            </button>
+          )}
         </div>
-        <div className="text-[11px] text-slate-500 mt-1.5 px-0.5">
-          Showing <span className="font-semibold text-slate-700">{resultCount}</span> of {totalCount} stops
-        </div>
+        {aiSummary ? (
+          <div className="mt-2 flex items-center gap-2 text-[11px]">
+            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-blue-50 border border-blue-200 text-blue-800">
+              <Sparkles size={11} /> {aiSummary}
+            </span>
+            <button onClick={onClearAi} className="text-slate-500 underline">Clear</button>
+          </div>
+        ) : aiBusy ? (
+          <div className="mt-2 text-[11px] text-slate-500">Asking AI…</div>
+        ) : (
+          <div className="text-[11px] text-slate-500 mt-1.5 px-0.5">
+            Showing <span className="font-semibold text-slate-700">{resultCount}</span> of {totalCount} stops
+          </div>
+        )}
+        {aiError && <div className="mt-1 text-[11px] text-amber-700">{aiError}</div>}
       </div>
       <div className="divide-y divide-slate-100">
         {stops.length === 0 && (
@@ -3957,6 +4025,25 @@ function MapScreen() {
   const debouncedSearch = useDebouncedValue(searchInput, 200);
   const { history, remember } = useSearchHistory();
 
+  // M6 — AI Order Search state. aiMode flips the search box into NL parse mode;
+  // aiResult holds the AI-derived match set (from search OR chat) that overrides
+  // the literal keyword filter. aiAvailable gates the affordance on the key being
+  // configured server-side (probed once via the function's GET endpoint).
+  const [aiMode, setAiMode] = useState(false);
+  const [aiResult, setAiResult] = useState(null); // { set:Set<stopNbr>, summary, source }
+  const [aiBusy, setAiBusy] = useState(false);
+  const [aiError, setAiError] = useState(null);
+  const [aiAvailable, setAiAvailable] = useState(true);
+  const [chatOpen, setChatOpen] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    fetch('/.netlify/functions/ai-search')
+      .then((r) => r.json())
+      .then((d) => { if (alive) setAiAvailable(!!d?.available); })
+      .catch(() => { /* leave optimistic; POST surfaces ai_key_missing if needed */ });
+    return () => { alive = false; };
+  }, []);
+
   const { drivers, error: driverErr, lastRefreshed: driversAt } = useDriverPositions(showDrivers);
   const { snapshot, loading: snapshotLoading, error: snapshotError } = useDriverSnapshot(selectedDriver);
   const panel = useResizablePanel(viewportWidth);
@@ -4034,18 +4121,68 @@ function MapScreen() {
     [stops, notes, filters, applyMapFilters],
   );
   const searchMatchSet = useMemo(() => {
-    if (!debouncedSearch.trim()) return null; // null sentinel = no search active
+    if (aiMode) return null;                       // AI mode: literal keyword filter suspended
+    if (!debouncedSearch.trim()) return null;      // null sentinel = no search active
     const set = new Set();
     for (const s of filteredStops) {
       if (stopMatchesSearch(s, notes.get(s.matchKey), debouncedSearch)) set.add(s.stopNbr);
     }
     return set;
-  }, [filteredStops, notes, debouncedSearch]);
+  }, [filteredStops, notes, debouncedSearch, aiMode]);
+
+  // M6 — an active AI result (search parse or chat highlight) takes precedence
+  // over the literal keyword set. Everything downstream (list + map dim/fit) reads
+  // effectiveMatchSet so both surfaces share one filter mechanism.
+  const effectiveMatchSet = aiResult ? aiResult.set : searchMatchSet;
 
   const visibleStops = useMemo(() => {
-    if (!searchMatchSet) return filteredStops;
-    return filteredStops.filter((s) => searchMatchSet.has(s.stopNbr));
-  }, [filteredStops, searchMatchSet]);
+    if (!effectiveMatchSet) return filteredStops;
+    return filteredStops.filter((s) => effectiveMatchSet.has(s.stopNbr));
+  }, [filteredStops, effectiveMatchSet]);
+
+  // M6 — AI search/chat handlers. runAiSearch parses the NL query and applies the
+  // returned spec locally; runChat builds the trimmed context and asks the model.
+  const runAiSearch = useCallback(async (q) => {
+    const query = (q || '').trim();
+    if (!query) return;
+    setAiBusy(true); setAiError(null);
+    try {
+      const { spec } = await aiParse(query);
+      const set = applyFilterSpec(filteredStops, notes, spec);
+      const empty = !spec || ((spec.predicates || []).length === 0 && !spec.text_match);
+      if (empty || set.size === 0) {
+        // Nothing parseable / no matches → fall back to literal keyword search.
+        setAiResult(null);
+        setAiMode(false);
+        setSearchInput(query);
+        setAiError(empty ? 'Couldn’t turn that into a filter — showing keyword matches.' : 'No stops matched that — showing keyword matches.');
+        return;
+      }
+      setAiResult({ set, summary: summarizeSpec(spec, set.size), source: 'search' });
+      remember(query);
+    } catch (e) {
+      setAiError(e?.code === 'ai_key_missing'
+        ? 'AI search isn’t configured yet (missing API key).'
+        : 'AI search is unavailable right now.');
+    } finally {
+      setAiBusy(false);
+    }
+  }, [filteredStops, notes, remember]);
+
+  const clearAi = useCallback(() => { setAiResult(null); setAiError(null); }, []);
+
+  const handleChatSend = useCallback(async (q) => {
+    const { stops: ctx, truncated, sent, total } = buildTrimmedStops(filteredStops, notes, 400);
+    const res = await aiChat(q, ctx);
+    return { ...res, truncated, sent, total };
+  }, [filteredStops, notes]);
+
+  const handleChatHighlight = useCallback((proIds) => {
+    const wanted = new Set((proIds || []).map((p) => String(p).trim()));
+    const set = new Set();
+    for (const s of filteredStops) if (wanted.has(String(s.stopNbr))) set.add(s.stopNbr);
+    setAiResult({ set, summary: `${set.size} stop${set.size === 1 ? '' : 's'} from chat`, source: 'chat' });
+  }, [filteredStops]);
 
   // M5 — route grouping (client-side, mirrors parent app src/screens/MapScreen.jsx).
   // Group positioned stops by loadNbr (sequence restarts per load, so one
@@ -4135,7 +4272,7 @@ function MapScreen() {
     const newMarkers = positioned.map((s) => {
       const note = notes.get(s.matchKey);
       const restrictions = getRestrictionBadgeKeys(note, { day: selectedDayKey });
-      const dim = searchMatchSet && !searchMatchSet.has(s.stopNbr);
+      const dim = effectiveMatchSet && !effectiveMatchSet.has(s.stopNbr);
       // M4.1.6 — no restrictions → classic pin (State A). 1+ restrictions →
       // the pin disappears and the icon(s) become the marker (States B/C).
       // iconMarkerSvg returns size + anchor based on icon count.
@@ -4180,7 +4317,7 @@ function MapScreen() {
     } else {
       newMarkers.forEach((m) => m.setMap(mapRef.current));
     }
-  }, [google, filteredStops, notes, searchMatchSet, mapFilters.showClustered, selectedDate]);
+  }, [google, filteredStops, notes, effectiveMatchSet, mapFilters.showClustered, selectedDate]);
 
   // M5 — route polylines. One straight-line Polyline per load, ordered by
   // loadStopSeq, colored by driver. zIndex 1 keeps them below markers so pins
@@ -4218,8 +4355,8 @@ function MapScreen() {
   // Auto-zoom on search results: 1 match → center + open sidebar, 2-10 → fit bounds.
   useEffect(() => {
     if (!google || !mapRef.current) return;
-    if (!searchMatchSet) return;
-    const matched = filteredStops.filter((s) => searchMatchSet.has(s.stopNbr) && s.lat != null && s.lng != null);
+    if (!effectiveMatchSet) return;
+    const matched = filteredStops.filter((s) => effectiveMatchSet.has(s.stopNbr) && s.lat != null && s.lng != null);
     if (matched.length === 1) {
       const s = matched[0];
       mapRef.current.panTo({ lat: s.lat, lng: s.lng });
@@ -4231,7 +4368,7 @@ function MapScreen() {
       matched.forEach((s) => bounds.extend({ lat: s.lat, lng: s.lng }));
       mapRef.current.fitBounds(bounds, 60);
     }
-  }, [google, searchMatchSet]);  // eslint-disable-line react-hooks/exhaustive-deps
+  }, [google, effectiveMatchSet]);  // eslint-disable-line react-hooks/exhaustive-deps
 
   // Build the driver-status line2 text per brief rules.
   const driverStatusLine = useCallback((d) => {
@@ -4488,6 +4625,23 @@ function MapScreen() {
           />
         )}
 
+        {/* M6 — AI chat launcher (mobile). Bottom-left so it never overlaps the
+            FAB. Hidden while the panel or an overlay is open. */}
+        {aiAvailable && !chatOpen && !selectedStop && !selectedDriver && !selectedRoute && !mobileDrawerOpen && (
+          <div className="absolute left-3 z-[39]" style={{ bottom: `calc(20px + env(safe-area-inset-bottom))` }}>
+            <ChatLauncher onClick={() => setChatOpen(true)} active={aiResult?.source === 'chat'} />
+          </div>
+        )}
+        <ChatPanel
+          open={chatOpen}
+          onClose={() => setChatOpen(false)}
+          onSend={handleChatSend}
+          onHighlight={handleChatHighlight}
+          onClear={clearAi}
+          highlightActive={aiResult?.source === 'chat'}
+          stopCount={filteredStops.length}
+        />
+
         <MobileDrawer
           open={mobileDrawerOpen}
           onClose={() => setMobileDrawerOpen(false)}
@@ -4503,6 +4657,12 @@ function MapScreen() {
               resultCount={visibleStops.length}
               totalCount={filteredStops.length}
               onPickStop={pickStopFromMobile}
+              aiAvailable={aiAvailable}
+              onAskAi={runAiSearch}
+              aiBusy={aiBusy}
+              aiSummary={aiResult?.source === 'search' ? aiResult.summary : null}
+              aiError={aiError}
+              onClearAi={clearAi}
             />
           )}
           {mobileDrawerTab === 'filters' && (
@@ -4628,6 +4788,14 @@ function MapScreen() {
           inputRef={searchInputRef}
           resultCount={visibleStops.length}
           totalCount={filteredStops.length}
+          aiAvailable={aiAvailable}
+          aiMode={aiMode}
+          setAiMode={(v) => { setAiMode(v); if (!v) clearAi(); }}
+          onAskAi={runAiSearch}
+          aiBusy={aiBusy}
+          aiSummary={aiResult?.source === 'search' ? aiResult.summary : null}
+          aiError={aiError}
+          onClearAi={clearAi}
         />
         <FilterPanel
           filters={filters}
@@ -4712,8 +4880,23 @@ function MapScreen() {
               showRoutes={showRoutes}
               setShowRoutes={setShowRoutes}
             />
+            {/* M6 — AI chat launcher. Sits at the bottom of the right control
+                column; hidden while the panel is open (the panel has its own X). */}
+            {aiAvailable && !chatOpen && (
+              <ChatLauncher onClick={() => setChatOpen(true)} active={aiResult?.source === 'chat'} />
+            )}
           </div>
         )}
+        {/* M6 — chat panel (fixed; renders as a card on desktop). */}
+        <ChatPanel
+          open={chatOpen}
+          onClose={() => setChatOpen(false)}
+          onSend={handleChatSend}
+          onHighlight={handleChatHighlight}
+          onClear={clearAi}
+          highlightActive={aiResult?.source === 'chat'}
+          stopCount={filteredStops.length}
+        />
         {/* M5 — one-shot note when live drivers were auto-disabled for a past/future date. */}
         {driverGateNote && (
           <div className="absolute top-16 left-1/2 -translate-x-1/2 z-[7] bg-amber-50 border border-amber-300 rounded shadow px-3 py-1.5 text-xs text-amber-800">
