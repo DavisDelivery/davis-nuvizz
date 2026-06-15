@@ -52,6 +52,29 @@ test('deriveFleetSummary: empty / null input is safe', () => {
   }
 });
 
+test('deriveFleetSummary: merges load-header fields (vehicleType/origin/pallets)', () => {
+  const stops = [stop('DAVIS000000001', 'DELIVERED'), stop('DAVIS000000001', 'SCHEDULED')];
+  const headers = {
+    DAVIS000000001: {
+      loadId: 'L-99', vehicleType: 'STRAIGHT TRUCK', driverEmail: 'jim@x.com', startDate: '2026-06-15',
+      totalPallets: 5, totalCartons: 40, weight: 1200,
+      origin: { name: 'DC1', city: 'Atlanta', state: 'GA' },
+    },
+  };
+  const f = deriveFleetSummary(stops, headers);
+  const l = f.loads[0];
+  assert.equal(l.vehicleType, 'STRAIGHT TRUCK');
+  assert.equal(l.loadId, 'L-99');
+  assert.equal(l.totalPallets, 5);
+  assert.equal(l.totalCartons, 40);
+  assert.equal(l.weight, 1200);
+  assert.equal(l.origin.city, 'Atlanta');
+  // header-less loads still derive with null header fields (back-compat)
+  const f2 = deriveFleetSummary(stops);
+  assert.equal(f2.loads[0].vehicleType, null);
+  assert.equal(f2.loads[0].origin, null);
+});
+
 test('deriveFleetSummary: a load with no driver counts as unassigned', () => {
   const f = deriveFleetSummary([
     { stopNbr: '1', loadNbr: 'DAVIS000000003', isPlanned: true, normalizedStatus: 'SCHEDULED', driverUserName: null, driverName: null, routeName: null },

@@ -67,11 +67,12 @@ redundant uline scan.)
 | `nuvizz_ops/calls__{date}` | `count` (atomic increment) | wrapper (both apps) | ops/monitoring |
 | `nuvizz_ops/circuit` | `open,reason,at` | wrapper (auto-trip) | both scanners |
 
-**Fidelity gap (documented):** the stop index lacks a few load-header-only fields
-(`loadId`, `vehicleType`, `origin`, pallet/carton totals). `deriveFleetSummary`
-leaves them out for now; a follow-up should retain the load header in
-`scanLoadRangeForDate` so the fleet index is byte-complete. The dashboard's core
-(load list, driver index, completion %) is fully covered today.
+**Fidelity:** the scanner now retains the full load **header** — `scanDate()`
+returns a `loadHeaders` map (`loadId`, `vehicleType`, `origin`, pallet/carton/weight,
+`startDate`, `driverEmail`) and `deriveFleetSummary(stops, loadHeaders)` merges it
+into each load. So the `nuvizzFleet` load cards SITE A renders are complete — not
+just load list / drivers / completion %, but vehicle type, origin and freight totals
+too. (Header-less call sites still work; those fields come back `null`.)
 
 ## Shared request wrapper (`nuvizz-request.mts` / `.cjs`)
 
@@ -118,6 +119,6 @@ Tunable: `*/30` halves `/load/info` to ~24k/day (30-min freshness vs 15).
    there — SITE A now reads the shared index and never scans.
 4. Watch `nuvizz_ops/calls__{date}`; confirm the daily total tracks ~50–100k and
    the breaker never trips in normal operation.
-5. Follow-up: retain the load header in the scanner for full fleet-index fidelity;
-   optionally route the on-demand apps (DDS-Tracking, Davis-wms, Driver-scorecards)
-   through the same wrapper so their human-triggered calls count too.
+5. Follow-up: optionally route the on-demand apps (DDS-Tracking, Davis-wms,
+   Driver-scorecards) through the same wrapper so their human-triggered calls
+   count against the shared ceiling too.

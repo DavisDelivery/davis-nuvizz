@@ -103,7 +103,7 @@ export async function runRefreshStops(req: Request): Promise<Response> {
       const meta = await writeStops(TENANT, date, scan.stops, scan.scannedAt);
       // Phase 4: also derive + write the canonical fleet index SITE A reads, so
       // SITE A renders its dashboard from Firestore and never scans NuVizz itself.
-      const fleet = deriveFleetSummary(scan.stops);
+      const fleet = deriveFleetSummary(scan.stops, scan.loadHeaders);
       await writeFleetIndex(TENANT, date, fleet.loads, fleet.summary, fleet.driverIndex, scan.scannedAt);
       results.push({ date, ok: true, ms: Date.now() - t0, count: meta.count, planned: meta.plannedCount, unplanned: meta.unplannedCount, loads: fleet.loads.length });
     } catch (e: any) {
