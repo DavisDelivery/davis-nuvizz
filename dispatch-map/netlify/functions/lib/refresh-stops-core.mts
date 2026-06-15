@@ -30,6 +30,17 @@ function addDaysUTC(dateStr: string, n: number): string {
 export async function runRefreshStops(req: Request): Promise<Response> {
   const startedAt = Date.now();
 
+  // Kill switch — set NUVIZZ_SCANS_ENABLED=false to stop the scheduled NuVizz
+  // stop-index scans (the board then serves the last scanned index and goes
+  // stale until re-enabled). Any value other than the string "false" leaves
+  // scanning on, so the default (unset) behavior is unchanged.
+  if (process.env.NUVIZZ_SCANS_ENABLED === 'false') {
+    console.log('refresh-stops: NUVIZZ_SCANS_ENABLED=false — scan skipped');
+    return new Response(JSON.stringify({ ok: true, skipped: true, reason: 'NUVIZZ_SCANS_ENABLED=false' }), {
+      status: 200, headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
   if (!isFirestoreEnabled()) {
     console.error('refresh-stops: FIREBASE_SA not set on this site — cannot write index');
     return new Response(JSON.stringify({ ok: false, error: 'FIREBASE_SA not set' }), {

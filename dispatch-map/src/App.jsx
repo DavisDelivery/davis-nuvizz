@@ -46,7 +46,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.24.7';
+const APP_VERSION = '0.24.8';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -66,6 +66,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.24.8', 'Add NUVIZZ_SCANS_ENABLED kill switch for the scheduled stop-index scan'],
   ['0.24.7', 'Satellite view toggle + Street View link on stop card + raw NuVizz instructions on stop card'],
   ['0.24.6', 'Driver labels: drop misleading "No route assigned" (routes come from NuVizz, not Motive)'],
   ['0.24.5', 'Receiving-hours scan: strip SPL-INSTR-TEXT line prefixes so split RECEIVING HOURS + range parse'],
