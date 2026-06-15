@@ -46,7 +46,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.24.6';
+const APP_VERSION = '0.24.7';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -66,6 +66,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.24.7', 'Satellite view toggle + Street View link on stop card + raw NuVizz instructions on stop card'],
   ['0.24.6', 'Driver labels: drop misleading "No route assigned" (routes come from NuVizz, not Motive)'],
   ['0.24.5', 'Receiving-hours scan: strip SPL-INSTR-TEXT line prefixes so split RECEIVING HOURS + range parse'],
   ['0.24.4', 'Filter: "Has receiving hours" toggle — show every stop with receiving hours set'],
@@ -1672,6 +1673,26 @@ function DatePicker({ selectedDate, onChange, onToday, compact }) {
   );
 }
 
+// Opens Google Street View for a stop — by coordinates when we have them (drops
+// the pano right at the dock), else a Maps search on the address. New tab.
+function StreetViewLink({ stop, className }) {
+  const addr = [stop.addr1, stop.city, stop.state, stop.zip].filter(Boolean).join(', ');
+  const url = (stop.lat != null && stop.lng != null)
+    ? `https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=${stop.lat},${stop.lng}`
+    : `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(addr)}`;
+  return (
+    <a
+      href={url}
+      target="_blank"
+      rel="noopener noreferrer"
+      className={className || 'inline-flex items-center gap-1 text-xs text-blue-700 hover:underline mt-1'}
+      style={{ minHeight: 44, alignItems: 'center' }}
+    >
+      <MapPinned size={13} /> Street View
+    </a>
+  );
+}
+
 // M5 — Show Routes toggle. Sits adjacent to the filter toolbar (top-right),
 // same visual treatment, but a standalone control (not in the 5-toggle group).
 // M5 — Driver route legend. Collapsible (same pattern as the restriction
@@ -1758,6 +1779,11 @@ function FilterToolbar({ filters, setFilters, collapsed, setCollapsed, stopCount
           {clusterWarning && (
             <div className="text-[10px] text-amber-700 italic mt-1 leading-tight">{clusterWarning}</div>
           )}
+          <MapFilterToggle
+            label="Satellite view"
+            checked={filters.satellite}
+            onChange={set('satellite')}
+          />
           {setShowRoutes && (
             <MapFilterToggle
               label="Show routes"
@@ -2071,7 +2097,14 @@ function StopSidebar({ stop, note, onClose, onSave, saving, saveError, onOpenRou
               </div>
             )}
             <div className="text-slate-600">{stop.city}, {stop.state} {stop.zip}</div>
+            <StreetViewLink stop={stop} />
           </div>
+          {stop.signalSources?.orderInstructions && (
+            <div className="pt-1">
+              <div className="text-xs uppercase font-semibold text-slate-500">NuVizz instructions</div>
+              <div className="text-xs text-slate-700 whitespace-pre-wrap leading-snug">{stop.signalSources.orderInstructions}</div>
+            </div>
+          )}
           <div className="grid grid-cols-2 gap-3 pt-2">
             <div>
               <div className="text-xs uppercase font-semibold text-slate-500">Window</div>
@@ -3518,7 +3551,14 @@ function StopInfoTabContent({ stop, onOpenRoute }) {
           </div>
         )}
         <div className="text-slate-600">{cityLine || '—'}</div>
+        <StreetViewLink stop={stop} className="inline-flex items-center gap-1 text-[13px] text-blue-700 mt-1" />
       </div>
+      {stop.signalSources?.orderInstructions && (
+        <div>
+          <div className="text-[10px] uppercase font-semibold text-slate-500 mb-0.5">NuVizz instructions</div>
+          <div className="text-[12px] text-slate-700 whitespace-pre-wrap leading-snug">{stop.signalSources.orderInstructions}</div>
+        </div>
+      )}
       <div className="grid grid-cols-2 gap-3">
         <div>
           <div className="text-[10px] uppercase font-semibold text-slate-500">Window</div>
@@ -4308,6 +4348,13 @@ function MapScreen() {
     });
     labelOverlayClassRef.current = makeDriverLabelOverlayClass(google);
   }, [google]);
+
+  // M4.4 — satellite/roadmap toggle. 'hybrid' = satellite imagery + road labels,
+  // which is most useful for spotting docks/yards while keeping street names.
+  useEffect(() => {
+    if (!google || !mapRef.current) return;
+    mapRef.current.setMapTypeId(mapFilters.satellite ? 'hybrid' : 'roadmap');
+  }, [google, mapFilters.satellite]);
 
   // Tell Google Maps to redraw as soon as the panel width changes — otherwise
   // the map tiles leave a gap until the next interaction.
