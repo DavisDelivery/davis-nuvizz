@@ -46,7 +46,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.24.3';
+const APP_VERSION = '0.24.4';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -66,6 +66,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.24.4', 'Filter: "Has receiving hours" toggle — show every stop with receiving hours set'],
   ['0.24.3', 'Receiving hours: scan "RH"/"RECEIVING HOURS" Uline formats + chat reads raw order instructions'],
   ['0.24.2', 'AI chat: 12-hour AM/PM times + reads free-text dock/appointment notes for receiving hours'],
   ['0.24.1', 'Tractor Trailer Friendly — green positive equipment kind (manual; suppressed when No T/T set)'],
@@ -1823,6 +1824,11 @@ function FilterPanel({ filters, setFilters, counts }) {
           onChange={(b) => setFilters({ ...F, hasRestriction: b || undefined })}
         />
         <Toggle
+          label="Has receiving hours"
+          checked={!!F.hasHours}
+          onChange={(b) => setFilters({ ...F, hasHours: b || undefined })}
+        />
+        <Toggle
           label="Unflagged only (no notes)"
           checked={!!F.unflagged}
           onChange={(b) => setFilters({ ...F, unflagged: b || undefined })}
@@ -1881,6 +1887,7 @@ function applyFilters(stops, notesByKey, filters) {
     if (filters.equipment) {
       if (!n?.equipment_restrictions?.includes(filters.equipment)) return false;
     }
+    if (filters.hasHours && !hasReceivingHours(n)) return false;
     return true;
   });
 }
