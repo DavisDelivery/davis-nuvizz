@@ -20,6 +20,7 @@ export default function Dashboard({ tenant, viewDate, isToday, goToPrevBusinessD
   const t = TENANTS[tenant];
   const isNuvizz = tenant === 'davis' || tenant === 'uline';
   const dayLabel = new Date(viewDate + 'T00:00:00Z').toLocaleDateString([], { weekday: 'long', month: 'short', day: 'numeric', timeZone: 'UTC' });
+  const isViewDateWeekend = [0, 6].includes(new Date(viewDate + 'T00:00:00Z').getUTCDay());
 
   const load = useCallback(async () => {
     setState({ loading: true, error: null, data: null });
@@ -267,21 +268,33 @@ export default function Dashboard({ tenant, viewDate, isToday, goToPrevBusinessD
         </>
       )}
 
-      {/* NuVizz: no loads today (common on Saturdays — Davis doesn't dispatch weekends) */}
+      {/* NuVizz: no loads found. Expected on weekends (Davis doesn't dispatch Sat/Sun);
+          on a weekday it usually means the scan missed, so offer a rescan instead. */}
       {!state.loading && !state.error && isNuvizz && summary.totalLoads === 0 && (
         <div className="bg-white rounded-xl border p-5 text-center">
           <Truck size={28} className="mx-auto text-slate-300 mb-2" />
-          <div className="text-sm font-semibold text-slate-700 mb-1">No loads on {dayLabel.split(',')[0]}</div>
+          <div className="text-sm font-semibold text-slate-700 mb-1">No loads found on {dayLabel.split(',')[0]}</div>
           <div className="text-xs text-slate-500 max-w-xs mx-auto leading-relaxed mb-3">
-            Davis typically doesn't run routes on Saturdays and Sundays. Use the date arrows above to check another day, or look up a specific PRO.
+            {isViewDateWeekend
+              ? "Davis typically doesn't run routes on Saturdays and Sundays. Use the date arrows above to check another day, or look up a specific PRO."
+              : 'Davis normally runs a full board on weekdays, so this is probably a missed scan. Rescan NuVizz below, or look up a specific PRO.'}
           </div>
           <div className="flex gap-2 justify-center flex-wrap">
-            <button
-              onClick={goToPrevBusinessDay}
-              className="px-3 py-1.5 bg-slate-800 text-white rounded-lg text-xs font-semibold"
-            >
-              ← Previous business day
-            </button>
+            {isViewDateWeekend ? (
+              <button
+                onClick={goToPrevBusinessDay}
+                className="px-3 py-1.5 bg-slate-800 text-white rounded-lg text-xs font-semibold"
+              >
+                ← Previous business day
+              </button>
+            ) : (
+              <button
+                onClick={hardRefresh}
+                className="px-3 py-1.5 bg-slate-800 text-white rounded-lg text-xs font-semibold flex items-center gap-1.5"
+              >
+                <RefreshCw size={12} /> Rescan NuVizz
+              </button>
+            )}
           </div>
         </div>
       )}
