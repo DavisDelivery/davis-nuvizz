@@ -57,7 +57,21 @@ export function closedDayLabels(note) {
   return days.map((d) => DAY_LABEL[dayKeyFromToken(d)] || d).filter(Boolean);
 }
 
-// A compact human-readable hours line, e.g. "Mon 08:00-16:00 · Fri 07:00-12:00".
+// Format a 24h "HH:MM" string as 12-hour AM/PM, e.g. "08:00" -> "8:00 AM",
+// "15:00" -> "3:00 PM", "00:00" -> "12:00 AM". Non-time strings pass through.
+export function to12h(hhmm) {
+  if (typeof hhmm !== 'string') return hhmm || '';
+  const m = hhmm.match(/^(\d{1,2}):(\d{2})/);
+  if (!m) return hhmm;
+  let h = Number(m[1]);
+  const min = m[2];
+  const ap = h >= 12 ? 'PM' : 'AM';
+  h = h % 12;
+  if (h === 0) h = 12;
+  return `${h}:${min} ${ap}`;
+}
+
+// A compact human-readable hours line, e.g. "Mon 8:00 AM–4:00 PM · Fri 7:00 AM–12:00 PM".
 // Days with no open/close are skipped. Returns '' when nothing is set.
 export function hoursSummary(note) {
   const hrs = note?.receiving_hours;
@@ -66,7 +80,7 @@ export function hoursSummary(note) {
   for (const k of DAY_KEYS) {
     const v = hrs[k];
     if (v && typeof v === 'object' && (v.open || v.close)) {
-      parts.push(`${DAY_LABEL[k]} ${v.open || '?'}-${v.close || '?'}`);
+      parts.push(`${DAY_LABEL[k]} ${v.open ? to12h(v.open) : '?'}–${v.close ? to12h(v.close) : '?'}`);
     } else if (typeof v === 'string' && v.trim()) {
       parts.push(`${DAY_LABEL[k]} ${v.trim()}`);
     }
@@ -79,8 +93,10 @@ function zip5(stop) {
 }
 
 // TrimmedStop projection — small, token-cheap shape for the chat endpoint.
+// dock_notes + appointment_notes are included raw (truncated) because receiving
+// hours are sometimes written there as free text rather than the structured
+// receiving_hours field; the chat prompt tells the model to look in both.
 export function buildTrimmedStop(stop, note) {
-  const dock = String(note?.dock_notes || '').slice(0, 200);
   return {
     id: stop.stopNbr,
     pro: String(stop.stopNbr ?? ''),
@@ -93,7 +109,8 @@ export function buildTrimmedStop(stop, note) {
     hours_summary: hoursSummary(note),
     closed_days: closedDayLabels(note),
     restrictions: restrictionsForStop(note),
-    dock_notes: dock,
+    dock_notes: String(note?.dock_notes || '').slice(0, 240),
+    appointment_notes: String(note?.appointment_notes || '').slice(0, 240),
     priority_flag: note?.priority_flag || null,
   };
 }
@@ -227,8 +244,8 @@ export function summarizeSpec(spec, count) {
   const bits = [];
   for (const p of spec?.predicates || []) {
     if (p.field === 'closed_days') bits.push(`closed ${DAY_LABEL[dayKeyFromToken(p.value)] || p.value}`);
-    else if (p.field === 'receiving_open') bits.push(`opens ${p.op} ${p.value}`);
-    else if (p.field === 'receiving_close') bits.push(`closes ${p.op} ${p.value}`);
+    else if (p.field === 'receiving_open') bits.push(`opens ${p.op} ${to12h(p.value)}`);
+    else if (p.field === 'receiving_close') bits.push(`closes ${p.op} ${to12h(p.value)}`);
     else if (p.field === 'restrictions') bits.push(String(p.value).replace(/_/g, ' '));
     else if (p.field === 'priority_flag') bits.push(`${p.value} flag`);
     else if (p.field === 'city') bits.push(`in ${p.value}`);

@@ -5,7 +5,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  dayKeyFromToken, restrictionsForStop, closedDayLabels, hoursSummary,
+  dayKeyFromToken, restrictionsForStop, closedDayLabels, hoursSummary, to12h,
   buildTrimmedStop, buildTrimmedStops, applyFilterSpec, summarizeSpec,
 } from '../src/lib/ai-search.js';
 
@@ -45,13 +45,21 @@ test('restrictionsForStop expands flags and aliases', () => {
   assert.deepEqual(restrictionsForStop(undefined), []);
 });
 
-test('closedDayLabels + hoursSummary render human strings', () => {
+test('closedDayLabels + hoursSummary render human strings (AM/PM)', () => {
   assert.deepEqual(closedDayLabels(notes.get('k1')), ['Fri']);
-  assert.equal(hoursSummary(notes.get('k1')), 'Mon 08:00-16:00 · Fri 07:00-11:00');
+  assert.equal(hoursSummary(notes.get('k1')), 'Mon 8:00 AM–4:00 PM · Fri 7:00 AM–11:00 AM');
   assert.equal(hoursSummary(notes.get('k3')), '');
 });
 
-test('buildTrimmedStop projects the compact shape', () => {
+test('to12h formats 24h clock as AM/PM', () => {
+  assert.equal(to12h('08:00'), '8:00 AM');
+  assert.equal(to12h('15:30'), '3:30 PM');
+  assert.equal(to12h('00:00'), '12:00 AM');
+  assert.equal(to12h('12:00'), '12:00 PM');
+  assert.equal(to12h(''), '');
+});
+
+test('buildTrimmedStop projects the compact shape incl. free-text notes', () => {
   const t = buildTrimmedStop(stops[0], notes.get('k1'));
   assert.equal(t.pro, '001');
   assert.equal(t.business, 'Acme Marietta');
@@ -59,6 +67,8 @@ test('buildTrimmedStop projects the compact shape', () => {
   assert.deepEqual(t.closed_days, ['Fri']);
   assert.deepEqual(t.restrictions, ['no_tractor_trailer', 'liftgate']);
   assert.equal(t.priority_flag, 'red');
+  assert.equal(t.dock_notes, 'Tight dock, call ahead');
+  assert.equal(t.appointment_notes, ''); // present in shape even when empty
 });
 
 test('buildTrimmedStops caps and reports truncation', () => {

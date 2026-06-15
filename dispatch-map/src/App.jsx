@@ -46,7 +46,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.24.1';
+const APP_VERSION = '0.24.2';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -66,6 +66,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.24.2', 'AI chat: 12-hour AM/PM times + reads free-text dock/appointment notes for receiving hours'],
   ['0.24.1', 'Tractor Trailer Friendly — green positive equipment kind (manual; suppressed when No T/T set)'],
   ['0.24.0', 'AI Order Search — natural-language search box + chat panel over the loaded board'],
   ['0.23.1', 'Phase 3 growth-guard fix — no phantom spill / no criss-cross on dense builds'],
