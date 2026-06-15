@@ -199,10 +199,19 @@ function parseTimePiece(piece: string, peer: string): string | null {
   return `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
 }
 
+// NuVizz joins each comment as its own "SPL-INSTR-TEXT: ..." line, so a label
+// and its time range often land on adjacent lines ("SPL-INSTR-TEXT: RECEIVING
+// HOURS" then "SPL-INSTR-TEXT: 8AM-12PM"). Strip those prefixes so the wrapper
+// regexes see "RECEIVING HOURS 8AM-12PM" contiguously.
+function stripCommentPrefixes(text: string): string {
+  return text.replace(/SPL-INSTR-TEXT\s*:?\s*/gi, ' ').replace(/[ \t]+/g, ' ');
+}
+
 function scanHours(text: string | null | undefined, source: SignalSource): HoursScanResult | null {
   if (!text) return null;
+  const normalized = stripCommentPrefixes(text);
   for (const w of HOURS_WRAPPERS) {
-    const m = w.exec(text);
+    const m = w.exec(normalized);
     if (m) {
       const range = m[1];
       const parsed = parseTimeRange(range);
