@@ -125,6 +125,13 @@ export function normalizeStop(raw) {
     dwellMin: ts.duration,
     etaCode: ts.etaCode,
 
+    // Stop Intelligence: verbatim instruction strings for parseStopComments().
+    // Pull from stop.comments and the delivery/pickup leg, preserving original text.
+    comments: [
+      ...(Array.isArray(stop.comments) ? stop.comments : []),
+      ...(Array.isArray(primary.comments) ? primary.comments : []),
+    ].map(c => (c && c.commentDescription ? String(c.commentDescription) : (typeof c === 'string' ? c : ''))).filter(Boolean),
+
     // references
     txnRef: primary.txnRef || stop.proNumber,
     proNumber: stop.proNumber,

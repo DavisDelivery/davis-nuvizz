@@ -1,24 +1,39 @@
-// src/screens/StopsScreen.jsx — today's stops with filters + search
+// src/screens/StopsScreen.jsx — today's stops with Stops Intelligence (v0.2.0)
 //
-// Uses __fleetstops endpoint which returns flat stop data across all loads.
-// Cached server-side 60s; shares scan with __fleet/__driver when possible.
+// Uses __fleetstops endpoint which returns flat stop data across all loads, now
+// carrying `comments` / `sealNbr` / `apptFrom` / `apptTo` so the client can surface
+// parsed flags (chips), the soft receiving-hours window, appointment reality, and
+// Non-Uline revenue. All parsing lives in src/lib/parseStopComments.ts.
 
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { Package, Search, MapPin, User, ChevronRight, RefreshCw, AlertTriangle, CheckCircle2, Clock } from 'lucide-react';
+import { Package, Search, MapPin, User, ChevronRight, RefreshCw, AlertTriangle, CheckCircle2, Clock, ArrowUpDown } from 'lucide-react';
 import { fetchFleetStops, TENANTS } from '../lib/api';
 import { fmtTime } from '../lib/normalize';
 import { ErrorBox, EmptyState } from '../components/UI';
+import { STOP_CHIPS } from '../lib/parseStopComments.ts';
+import { intelForStop, StopChips, ReceivingHours, AppointmentReality, NonUlineRev, ChipLegend } from '../components/StopIntel';
 
 const STATUS_LABEL = { '10': 'Created', '30': 'Scheduled', '40': 'En Route', '50': 'Exception', '90': 'Delivered' };
 const STATUS_COLOR = { '10': '#64748b', '30': '#64748b', '40': '#f59e0b', '50': '#ef4444', '90': '#10b981' };
 
+// Sort options — "Everything sortable" per convention.
+const SORTS = [
+  { k: 'eta', l: 'ETA' },
+  { k: 'name', l: 'Customer' },
+  { k: 'rev', l: 'Non-Uline Rev' },
+  { k: 'recv', l: 'Receiving Hrs' },
+];
+
 export default function StopsScreen({ tenant, viewDate, onOpenStop, initialFilter }) {
   const [state, setState] = useState({ loading: true, error: null, data: null });
   const [search, setSearch] = useState('');
-  const [filter, setFilter] = useState(initialFilter || 'active'); // active = in-transit + scheduled + exceptions
+  const [filter, setFilter] = useState(initialFilter || 'active'); // status filter
+  const [chipFilters, setChipFilters] = useState(() => new Set()); // active chip keys (AND)
+  const [hasRecvOnly, setHasRecvOnly] = useState(false);
+  const [sortKey, setSortKey] = useState('eta');
+  const [sortDir, setSortDir] = useState('asc');
   const t = TENANTS[tenant];
 
-  // React to changes in initialFilter (e.g. jumping from Home tile)
   useEffect(() => {
     if (initialFilter) setFilter(initialFilter);
   }, [initialFilter]);
@@ -38,6 +53,12 @@ export default function StopsScreen({ tenant, viewDate, onOpenStop, initialFilte
   const stops = state.data?.stops || [];
   const summary = state.data?.summary;
 
+  // Parse intelligence once per stop, keyed alongside the raw stop.
+  const enriched = useMemo(
+    () => stops.map((s) => ({ stop: s, intel: intelForStop(s) })),
+    [stops]
+  );
+
   const counts = useMemo(() => ({
     all: stops.length,
     active: stops.filter(s => s.status === '40' || s.status === '30' || s.status === '10' || s.exceptionPresent).length,
@@ -47,19 +68,66 @@ export default function StopsScreen({ tenant, viewDate, onOpenStop, initialFilte
     scheduled: stops.filter(s => s.status === '30' || s.status === '10').length,
   }), [stops]);
 
+  // Per-chip counts so the toggle row can show how many stops carry each flag.
+  const chipCounts = useMemo(() => {
+    const c = {};
+    for (const { key } of STOP_CHIPS) c[key] = 0;
+    let recv = 0;
+    for (const e of enriched) {
+      for (const { key } of STOP_CHIPS) if (e.intel.parsed[key]) c[key]++;
+      if (e.intel.parsed.receivingHours) recv++;
+    }
+    return { ...c, __recv: recv };
+  }, [enriched]);
+
+  const toggleChip = (key) => {
+    setChipFilters((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+  };
+
   const filtered = useMemo(() => {
     const q = search.toLowerCase().trim();
-    return stops.filter(s => {
+    const active = [...chipFilters];
+    let list = enriched.filter(({ stop: s, intel }) => {
+      // status filter
       if (filter === 'active' && !(s.status === '40' || s.status === '30' || s.status === '10' || s.exceptionPresent)) return false;
       if (filter === 'delivered' && s.status !== '90') return false;
       if (filter === 'inTransit' && s.status !== '40') return false;
       if (filter === 'exceptions' && !(s.exceptionPresent || s.status === '50')) return false;
       if (filter === 'scheduled' && !(s.status === '30' || s.status === '10')) return false;
+      // chip filters (AND — must carry every selected flag)
+      for (const key of active) if (!intel.parsed[key]) return false;
+      // has-receiving-hours filter
+      if (hasRecvOnly && !intel.parsed.receivingHours) return false;
+      // search
       if (!q) return true;
       return [s.stopNbr, s.name, s.city, s.state, s.bol, s.driver, s.route, s.loadNbr]
         .filter(Boolean).some(x => x.toString().toLowerCase().includes(q));
     });
-  }, [stops, search, filter]);
+
+    // sort
+    const dir = sortDir === 'asc' ? 1 : -1;
+    list = [...list].sort((a, b) => {
+      let av, bv;
+      switch (sortKey) {
+        case 'name': av = a.stop.name || ''; bv = b.stop.name || ''; return av.localeCompare(bv) * dir;
+        case 'rev': av = a.intel.revenue ?? -1; bv = b.intel.revenue ?? -1; return (av - bv) * dir;
+        case 'recv':
+          av = a.intel.parsed.receivingHours?.start || '99:99';
+          bv = b.intel.parsed.receivingHours?.start || '99:99';
+          return av.localeCompare(bv) * dir;
+        case 'eta':
+        default:
+          av = a.stop.plannedEta || ''; bv = b.stop.plannedEta || '';
+          if (av && bv) return av.localeCompare(bv) * dir;
+          if (av) return -1; if (bv) return 1; return 0;
+      }
+    });
+    return list;
+  }, [enriched, search, filter, chipFilters, hasRecvOnly, sortKey, sortDir]);
 
   return (
     <div className="p-4 space-y-3 pb-4">
@@ -92,6 +160,7 @@ export default function StopsScreen({ tenant, viewDate, onOpenStop, initialFilte
         />
       </div>
 
+      {/* Status filter chips */}
       <div className="flex gap-2 overflow-x-auto -mx-4 px-4 pb-1">
         {[
           { k: 'active', l: 'Active', n: counts.active, color: '#f59e0b' },
@@ -112,6 +181,56 @@ export default function StopsScreen({ tenant, viewDate, onOpenStop, initialFilte
         ))}
       </div>
 
+      {/* Intelligence filter toggles: per-flag chips + "has receiving hours" */}
+      <div className="flex gap-1.5 overflow-x-auto -mx-4 px-4 pb-1 items-center">
+        <span className="text-[10px] uppercase tracking-wide text-slate-400 font-semibold flex-shrink-0">Flags</span>
+        {STOP_CHIPS.map((c) => {
+          const on = chipFilters.has(c.key);
+          const n = chipCounts[c.key] || 0;
+          return (
+            <button
+              key={c.key}
+              onClick={() => toggleChip(c.key)}
+              disabled={n === 0 && !on}
+              className="px-2 py-1 rounded-full text-[10px] font-bold uppercase tracking-wide whitespace-nowrap transition disabled:opacity-30"
+              style={on
+                ? { background: c.color, color: '#fff' }
+                : { background: c.color + '1a', color: c.color }}
+            >
+              {c.label} {n > 0 ? n : ''}
+            </button>
+          );
+        })}
+        <button
+          onClick={() => setHasRecvOnly((v) => !v)}
+          className="px-2 py-1 rounded-full text-[10px] font-bold uppercase tracking-wide whitespace-nowrap transition flex items-center gap-1"
+          style={hasRecvOnly
+            ? { background: '#b45309', color: '#fff' }
+            : { background: '#b4530915', color: '#b45309' }}
+        >
+          <Clock size={9} /> Recv Hrs {chipCounts.__recv || ''}
+        </button>
+      </div>
+
+      {/* Sort control */}
+      <div className="flex items-center gap-2 flex-wrap">
+        <ArrowUpDown size={13} className="text-slate-400" />
+        {SORTS.map((s) => (
+          <button
+            key={s.k}
+            onClick={() => {
+              if (sortKey === s.k) setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
+              else { setSortKey(s.k); setSortDir('asc'); }
+            }}
+            className={`text-[11px] font-semibold px-2 py-1 rounded ${sortKey === s.k ? 'bg-slate-800 text-white' : 'text-slate-600 hover:bg-slate-100'}`}
+          >
+            {s.l}{sortKey === s.k ? (sortDir === 'asc' ? ' ↑' : ' ↓') : ''}
+          </button>
+        ))}
+      </div>
+
+      <ChipLegend />
+
       {state.loading && (
         <div className="bg-white rounded-xl p-4 border text-center">
           <RefreshCw size={24} className="mx-auto text-slate-400 animate-spin mb-2" />
@@ -123,11 +242,11 @@ export default function StopsScreen({ tenant, viewDate, onOpenStop, initialFilte
 
       {!state.loading && !state.error && (
         filtered.length === 0 ? (
-          <EmptyState icon={<Package size={32} className="text-slate-300" />} title="No stops" hint={search ? `Nothing matches "${search}"` : 'No stops in this filter'} />
+          <EmptyState icon={<Package size={32} className="text-slate-300" />} title="No stops" hint={search || chipFilters.size || hasRecvOnly ? 'Nothing matches the current filters' : 'No stops in this filter'} />
         ) : (
           <div className="bg-white rounded-xl border divide-y overflow-hidden">
-            {filtered.slice(0, 200).map((s, i) => (
-              <StopRow key={`${s.loadNbr}-${s.stopNbr}-${i}`} stop={s} onClick={() => onOpenStop(s.stopNbr)} />
+            {filtered.slice(0, 200).map(({ stop: s, intel }, i) => (
+              <StopRow key={`${s.loadNbr}-${s.stopNbr}-${i}`} stop={s} intel={intel} onClick={() => onOpenStop(s.stopNbr)} />
             ))}
             {filtered.length > 200 && (
               <div className="p-3 text-center text-xs text-slate-500">
@@ -150,7 +269,7 @@ function StatTile({ label, value, color }) {
   );
 }
 
-function StopRow({ stop: s, onClick }) {
+function StopRow({ stop: s, intel, onClick }) {
   const statusLabel = STATUS_LABEL[s.status] || s.status || '?';
   const statusColor = STATUS_COLOR[s.status] || '#64748b';
 
@@ -180,6 +299,16 @@ function StopRow({ stop: s, onClick }) {
             </>
           )}
         </div>
+
+        {/* Stops Intelligence: parsed flag chips */}
+        <StopChips parsed={intel.parsed} />
+
+        {/* Appointment reality + soft receiving window */}
+        <div className="flex items-center flex-wrap gap-x-2 gap-y-0.5 mt-1">
+          <AppointmentReality apptFrom={intel.apptFrom} apptTo={intel.apptTo} placeholder={intel.placeholder} />
+          <ReceivingHours parsed={intel.parsed} />
+        </div>
+
         {s.confirmedDTTM ? (
           <div className="text-[10px] text-emerald-700 mt-0.5 flex items-center gap-1">
             <CheckCircle2 size={10} /> Delivered {fmtTime(s.confirmedDTTM)}
@@ -190,7 +319,12 @@ function StopRow({ stop: s, onClick }) {
           </div>
         ) : null}
       </div>
-      <ChevronRight size={14} className="text-slate-300 mt-1 flex-shrink-0" />
+
+      {/* Right-aligned Non-Uline revenue (relabeled SealNbr / parsed TOTAL-AMOUNT) */}
+      <div className="flex flex-col items-end gap-1 flex-shrink-0 pl-1">
+        <NonUlineRev revenue={intel.revenue} fromAmount={intel.parsed.totalAmount != null} />
+        <ChevronRight size={14} className="text-slate-300" />
+      </div>
     </button>
   );
 }
