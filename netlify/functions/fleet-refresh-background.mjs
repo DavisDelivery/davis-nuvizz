@@ -13,6 +13,14 @@
 // Runs Mon-Fri only (Davis doesn't dispatch weekends).
 
 export default async () => {
+  // P0 kill switch — set Netlify env NUVIZZ_SCANS_ENABLED=false to disable the
+  // scheduled fleet refresh without a code deploy. The __refreshFleet endpoint it
+  // calls also honors the switch (scanFleet returns []), so this is belt-and-braces.
+  if (String(process.env.NUVIZZ_SCANS_ENABLED || '').trim().toLowerCase() === 'false') {
+    console.log('fleet-refresh: NUVIZZ_SCANS_ENABLED=false — skipping (kill switch active)');
+    return new Response('scans disabled', { status: 200 });
+  }
+
   const url = process.env.URL || process.env.DEPLOY_URL;
   if (!url) {
     console.error('fleet-refresh: no site URL available, skipping');
@@ -61,7 +69,12 @@ export default async () => {
   });
 };
 
-// Cron: every 5 minutes. Weekend skip is enforced in the handler above.
+// Cron: every 15 minutes. Weekend skip is enforced in the handler above.
+// P0 (Jun 2026, runaway-volume incident): eased from */5 (288 runs/day) to */15
+// (96 runs/day). Each run still scans the davis load-number range via __refreshFleet;
+// see the runaway-calls incident report. NOTE: this refresher scans BOTH the davis
+// and uline tenants today — the open PR #61 drops the redundant uline scan (all
+// load data lives under DAVIS), which roughly halves this function's volume again.
 export const config = {
-  schedule: '*/5 * * * *',
+  schedule: '*/15 * * * *',
 };

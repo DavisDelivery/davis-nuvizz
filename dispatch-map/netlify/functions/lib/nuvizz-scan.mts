@@ -231,6 +231,16 @@ export function todayUTC(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
+// ── Runaway-scan kill switch (P0, Jun 2026) ──────────────────────────────────
+// Every NuVizz scan path checks this. Set Netlify env NUVIZZ_SCANS_ENABLED=false
+// on the site to short-circuit ALL number-space scanning (load + unplanned) without
+// a code change — the map/app keep reading the last-written Firestore index, but no
+// new NuVizz traffic is generated. Default is ENABLED (only the literal string
+// "false" disables) so a missing/blank var never silently kills live data.
+export function scansEnabled(): boolean {
+  return String(process.env.NUVIZZ_SCANS_ENABLED ?? '').trim().toLowerCase() !== 'false';
+}
+
 function extractOrderInstructions(stop: any): string | null {
   const comments = stop?.comments;
   if (!Array.isArray(comments) || !comments.length) return null;
@@ -366,7 +376,16 @@ const LOADS_PER_DAY = 80;
 // Out-of-date loads in the wider window are discarded by the startDate filter in
 // scanLoadRangeForDate, so widening only costs probes (fine in the background fn),
 // never false positives.
-const LOAD_WINDOW_HALF = 600;
+//
+// P0 (Jun 2026, runaway-volume incident): narrowed 600 → 250. A day's load-number
+// SPREAD is ~400 wide but is CENTERED on the anchor estimate, so a ±250 window
+// (501 probes) still brackets a full day with drift margin while cutting per-scan
+// load probes by ~58% (1201 → 501). Each probe is one NuVizz /load/info call and
+// the background refresh runs this for several dates every cron tick, so this
+// window directly multiplies our NuVizz call volume. Re-widen only with the anchor
+// re-calibrated (see ANCHOR_DATE/ANCHOR_LOAD), never as a blind fix for "missing"
+// loads — a stale anchor is the usual cause and widening just hammers NuVizz harder.
+const LOAD_WINDOW_HALF = 250;
 
 function estimateLoadRange(dateStr: string): { startNbr: number; endNbr: number } {
   const target = new Date(dateStr + 'T00:00:00Z');
@@ -524,7 +543,12 @@ interface UnplannedScanOpts {
 async function scanUnplannedStops(dateStr: string, opts: UnplannedScanOpts = {}) {
   const concurrency = opts.concurrency ?? 40;
   const timeBudgetMs = opts.timeBudgetMs ?? 120_000;
-  const maxProbes = opts.maxProbes ?? 6000;
+  // P0 (Jun 2026): hard-cap the unplanned number-space descent. 6000 probes/run ×
+  // every-date × every-5-min cron was a primary contributor to the NuVizz overage.
+  // The early-stop heuristics (futureStreak/postTargetStreak) normally terminate
+  // long before this; the cap is the backstop so a calibration miss can't fan out
+  // thousands of extra /stop/info calls. Lowered 6000 → 2500.
+  const maxProbes = opts.maxProbes ?? 2500;
   const { companyCode } = getCreds();
   const authHeader = basicAuthHeader();
   const ceiling = await findCeiling(dateStr, authHeader, companyCode);
@@ -585,6 +609,12 @@ export interface ScanResult {
 // Full scan for one date: planned (load scan) + unplanned (number-space scan),
 // deduped (load-sourced wins), normalized. Used by the background writer.
 export async function scanDate(dateStr: string, opts: { unplanned?: UnplannedScanOpts } = {}): Promise<ScanResult> {
+  // P0 kill switch — when scans are disabled, generate ZERO NuVizz traffic and
+  // return an empty result. Callers (background refresh / history snapshot) treat
+  // this as "nothing new to write" and leave the existing Firestore index intact.
+  if (!scansEnabled()) {
+    return { date: dateStr, stops: [], plannedCount: 0, unplannedCount: 0, scannedAt: new Date().toISOString() };
+  }
   const { startNbr, endNbr } = estimateLoadRange(dateStr);
   const [loadStops, unplannedStops] = await Promise.all([
     scanLoadRangeForDate(dateStr, startNbr, endNbr),

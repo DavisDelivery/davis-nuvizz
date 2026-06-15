@@ -34,6 +34,15 @@ const DOC_BASE = process.env.NUVIZZ_DOC_BASE || 'https://portal.nuvizz.com/deliv
 // Firestore persistence layer (cross-instance cache for fleet data)
 const fs_db = require('./lib/firestore.cjs');
 
+// ── Runaway-scan kill switch (P0, Jun 2026) ──────────────────────────────────
+// Set Netlify env NUVIZZ_SCANS_ENABLED=false to suppress the load-number fleet
+// scan (the per-record fan-out that drives our NuVizz call volume) without a code
+// change. Reads still serve from the Firestore / in-memory cache; only the live
+// fan-out is disabled. Default ENABLED — only the literal string "false" disables.
+function scansEnabled() {
+  return String(process.env.NUVIZZ_SCANS_ENABLED || '').trim().toLowerCase() !== 'false';
+}
+
 // PRO normalization: always 9 digits, zero-padded
 function normalizePro(input) {
   if (!input) return null;
@@ -331,6 +340,11 @@ function buildSummary(stops, loads) {
 // a ±75 window (150 numbers) at concurrency 20, which completes in ~6-10 seconds and
 // reliably covers a full day's loads.
 async function scanFleet(tenant, { dateFrom, dateTo, startNbr, endNbr, concurrency = 20, includeStops = false }) {
+  // P0 kill switch — when disabled, do NOT fan out to NuVizz. Callers fall back to
+  // whatever is already cached in Firestore (live reads keep working; only new
+  // scan traffic stops). This is the single chokepoint for __fleet / __fleetstops
+  // / __driver / __refreshFleet load-number probing.
+  if (!scansEnabled()) return [];
   const { companyCode } = getCreds(tenant);
   const authHeader = basicAuthHeader(tenant);
   const prefix = companyCode; // "DAVIS" or "ULINE"

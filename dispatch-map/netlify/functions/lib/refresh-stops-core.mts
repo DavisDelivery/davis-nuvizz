@@ -15,11 +15,16 @@
 // skip here, because the Friday-evening ET window lands on Saturday UTC and a
 // naive getUTCDay() check would wrongly drop it. Manual HTTP runs always proceed.
 
-import { scanDate, todayUTC } from './nuvizz-scan.mts';
+import { scanDate, todayUTC, scansEnabled } from './nuvizz-scan.mts';
 import { isFirestoreEnabled, writeStops } from './firestore.mts';
 
 const TENANT = 'davis';
-const DEFAULT_DAYS = 8; // today + next 7
+// P0 (Jun 2026, runaway-volume incident): scheduled runs now scan TODAY ONLY.
+// Pre-scanning today + next 7 days every 5 minutes multiplied every cron tick's
+// NuVizz load by 8× for data almost nobody views (future dates change rarely).
+// Future-date browsing is still served on demand via the ?days=N / ?date=
+// manual overrides below, which the date-picker path can trigger sparingly.
+const DEFAULT_DAYS = 1; // today only (was 8 = today + next 7)
 
 function addDaysUTC(dateStr: string, n: number): string {
   const d = new Date(dateStr + 'T00:00:00Z');
@@ -29,6 +34,16 @@ function addDaysUTC(dateStr: string, n: number): string {
 
 export async function runRefreshStops(req: Request): Promise<Response> {
   const startedAt = Date.now();
+
+  // P0 kill switch — set Netlify env NUVIZZ_SCANS_ENABLED=false to disable the
+  // scheduled NuVizz scan without a code deploy. Returns 200 (so the cron run is
+  // recorded as a no-op, not a failure) and touches neither NuVizz nor Firestore.
+  if (!scansEnabled()) {
+    console.log('refresh-stops: NUVIZZ_SCANS_ENABLED=false — skipping scan (kill switch active)');
+    return new Response(JSON.stringify({ ok: true, skipped: 'scans-disabled' }), {
+      status: 200, headers: { 'Content-Type': 'application/json' },
+    });
+  }
 
   if (!isFirestoreEnabled()) {
     console.error('refresh-stops: FIREBASE_SA not set on this site — cannot write index');

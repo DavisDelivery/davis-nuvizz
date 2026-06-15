@@ -38,6 +38,12 @@ import { runRefreshStops } from './lib/refresh-stops-core.mts';
 
 export default runRefreshStops;
 
+// P0 (Jun 2026, runaway-volume incident): cron eased from */5 (288 runs/day) to
+// */15 (96 runs/day). Combined with the today-only scan (refresh-stops-core
+// DEFAULT_DAYS 8→1) and the narrowed load window (nuvizz-scan LOAD_WINDOW_HALF
+// 600→250), per-day scheduled NuVizz calls drop ~24× vs. the incident baseline.
+// A 15-minute index freshness is acceptable for a dispatch board; tighten again
+// only with real cost numbers in hand (see the runaway-calls incident report).
 export const config = {
-  schedule: '*/5 * * * *',
+  schedule: '*/15 * * * *',
 };
