@@ -69,6 +69,18 @@ test('buildTrimmedStop projects the compact shape incl. free-text notes', () => 
   assert.equal(t.priority_flag, 'red');
   assert.equal(t.dock_notes, 'Tight dock, call ahead');
   assert.equal(t.appointment_notes, ''); // present in shape even when empty
+  assert.equal(t.instructions, '');      // no raw instructions on this fixture
+});
+
+test('buildTrimmedStop surfaces raw NuVizz instructions (any-format hours)', () => {
+  const stop = {
+    stopNbr: '7133391', matchKey: 'z', businessName: 'Uline Dock', city: 'Suwanee',
+    signalSources: { orderInstructions: 'RECEIVING HOURS 8AM-12PM, DO NOT BREAKDOWN SKID' },
+    addr2: 'liftgate',
+  };
+  const t = buildTrimmedStop(stop, undefined);
+  assert.ok(t.instructions.includes('RECEIVING HOURS 8AM-12PM'));
+  assert.ok(t.instructions.includes('liftgate'));
 });
 
 test('buildTrimmedStops caps and reports truncation', () => {
