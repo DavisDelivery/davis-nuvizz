@@ -34,6 +34,10 @@ const DOC_BASE = process.env.NUVIZZ_DOC_BASE || 'https://portal.nuvizz.com/deliv
 // Firestore persistence layer (cross-instance cache for fleet data)
 const fs_db = require('./lib/firestore.cjs');
 
+// Phase 4: shared request wrapper (counts every call against the fleet-wide daily
+// ceiling + circuit breaker). All SITE A NuVizz traffic routes through it.
+const { getNuvizzRequester } = require('./lib/nuvizz-request.cjs');
+
 // ── Runaway-scan kill switch (P0, Jun 2026) ──────────────────────────────────
 // Set Netlify env NUVIZZ_SCANS_ENABLED=false to suppress the load-number fleet
 // scan (the per-record fan-out that drives our NuVizz call volume) without a code
@@ -41,6 +45,14 @@ const fs_db = require('./lib/firestore.cjs');
 // fan-out is disabled. Default ENABLED — only the literal string "false" disables.
 function scansEnabled() {
   return String(process.env.NUVIZZ_SCANS_ENABLED || '').trim().toLowerCase() !== 'false';
+}
+
+// Phase 4 consolidation flag. When NUVIZZ_CONSOLIDATED=true, SITE A treats the
+// shared davismarginiq Firestore (written by the sole scanner, SITE B) as
+// AUTHORITATIVE: it never live-scans NuVizz, and serves whatever the index holds
+// regardless of age. Default false preserves today's scan-on-stale behaviour.
+function consolidatedReads() {
+  return String(process.env.NUVIZZ_CONSOLIDATED || '').trim().toLowerCase() === 'true';
 }
 
 // PRO normalization: always 9 digits, zero-padded
@@ -173,7 +185,11 @@ async function fetchDocument(documentGuid, ext, objectType = '02') {
 async function nvFetch(tenant, path, { method = 'GET', body = null, extraParams = {} } = {}) {
   const qs = new URLSearchParams(extraParams).toString();
   const url = `${NUVIZZ_BASE}${path}${qs ? '?' + qs : ''}`;
-  const resp = await fetch(url, {
+  // Phase 4: route through the shared wrapper so this call counts against the
+  // fleet-wide daily ceiling and is short-circuited by the breaker. The route
+  // label is the path's first two segments (e.g. '/load/info').
+  const routeLabel = '/' + String(path).split('/').filter(Boolean).slice(0, 2).join('/');
+  const resp = await getNuvizzRequester().request(url, {
     method,
     headers: {
       Authorization: basicAuthHeader(tenant),
@@ -181,7 +197,7 @@ async function nvFetch(tenant, path, { method = 'GET', body = null, extraParams 
       Accept: 'application/json',
     },
     body: body ? JSON.stringify(body) : undefined,
-  });
+  }, { route: routeLabel, tenant });
   const text = await resp.text();
   let data;
   try { data = JSON.parse(text); } catch { data = { raw: text }; }
@@ -353,7 +369,8 @@ async function scanFleet(tenant, { dateFrom, dateTo, startNbr, endNbr, concurren
     const loadNbr = `${prefix}${String(n).padStart(9, '0')}`;
     const url = `${NUVIZZ_BASE}/load/info/${encodeURIComponent(loadNbr)}/${encodeURIComponent(companyCode)}`;
     try {
-      const resp = await fetch(url, { headers: { Authorization: authHeader, Accept: 'application/json' } });
+      // Phase 4: counted + breaker-guarded via the shared wrapper.
+      const resp = await getNuvizzRequester().request(url, { headers: { Authorization: authHeader, Accept: 'application/json' } }, { route: '/load/info', tenant: companyCode });
       if (!resp.ok) return null;
       const d = await resp.json();
       const h = d?.Load?.loadHeader || {};
@@ -495,6 +512,9 @@ async function readFleetFromFirestore(tenant, dateStr) {
       fs_db.listLoads(tenant, dateStr),
     ]);
     if (!summary || !loads || loads.length === 0) return null;
+    // Phase 4: when consolidated, the shared index (written by the sole scanner,
+    // SITE B) is authoritative — serve it regardless of age and NEVER live-scan.
+    if (consolidatedReads()) return { loads, summary };
     // Check age
     if (summary._updatedAt) {
       const age = Date.now() - new Date(summary._updatedAt).getTime();

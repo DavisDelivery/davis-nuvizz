@@ -14,6 +14,12 @@
 //     space, since unplanned orders never appear under any load.
 // This is why the scan must run in a 15-min background function, not inline
 // (inline load+unplanned scan = >22s, exceeds the 26s request cap → 502).
+//
+// Phase 4: every probe routes through the shared request wrapper
+// (getNuvizzRequester) so it is counted against the fleet-wide daily ceiling and
+// short-circuited by the circuit breaker.
+
+import { getNuvizzRequester } from './nuvizz-request.mts';
 
 const NUVIZZ_BASE = process.env.NUVIZZ_BASE_URL || 'https://portal.nuvizz.com/deliverit/openapi/v7';
 
@@ -403,7 +409,7 @@ async function scanLoadRangeForDate(dateStr: string, startNbr: number, endNbr: n
     const loadNbr = `${prefix}${String(n).padStart(9, '0')}`;
     const url = `${NUVIZZ_BASE}/load/info/${encodeURIComponent(loadNbr)}/${encodeURIComponent(companyCode)}`;
     try {
-      const resp = await fetch(url, { headers: { Authorization: authHeader, Accept: 'application/json' } });
+      const resp = await getNuvizzRequester().request(url, { headers: { Authorization: authHeader, Accept: 'application/json' } }, { route: '/load/info', tenant: companyCode });
       if (!resp.ok) return null;
       const d: any = await resp.json();
       const h = d?.Load?.loadHeader || {};
@@ -411,10 +417,21 @@ async function scanLoadRangeForDate(dateStr: string, startNbr: number, endNbr: n
       const stops = d?.Load?.stops || [];
       const startDate = (h.earliestStartDttm || '').slice(0, 10);
       if (startDate !== dateStr) return null;
-      return stops.map((s: any, i: number) => ({
-        ...s,
-        load: { loadNbr: h.loadNbr, routeName: h.routeName, driverName: a.driverName, driverUserName: a.driverUserName, stopSeq: i },
-      }));
+      // Phase 4: carry the full load HEADER (not just the 5 stop-linking fields)
+      // so the sole scanner can build SITE A's complete nuvizzFleet load cards —
+      // vehicleType, origin, pallet/carton/weight — without a second scan.
+      const header = {
+        loadNbr: h.loadNbr, routeName: h.routeName,
+        driverName: a.driverName, driverUserName: a.driverUserName, driverEmail: a.driverEmail ?? null,
+        loadId: h.loadId ?? null, vehicleType: h.vehicleType ?? null, startDate,
+        totalPallets: h.totalPallets ?? null, totalCartons: h.totalCartons ?? null, weight: h.weight ?? null,
+        origin: {
+          name: h.originName ?? null, addr1: h.originAddr1 ?? null, city: h.originCity ?? null,
+          state: h.originState ?? null, zip: h.originZip ?? null,
+          latitude: h.originLatitude ?? null, longitude: h.originLongitude ?? null,
+        },
+      };
+      return stops.map((s: any, i: number) => ({ ...s, load: { ...header, stopSeq: i } }));
     } catch {
       return null;
     }
@@ -472,7 +489,7 @@ async function probeStop(n: number, dateStr: string, authHeader: string, company
   const stopNbr = String(n).padStart(9, '0');
   const url = `${NUVIZZ_BASE}/stop/info/${encodeURIComponent(stopNbr)}/${encodeURIComponent(companyCode)}`;
   try {
-    const resp = await fetch(url, { headers: { Authorization: authHeader, Accept: 'application/json' } });
+    const resp = await getNuvizzRequester().request(url, { headers: { Authorization: authHeader, Accept: 'application/json' } }, { route: '/stop/info', tenant: companyCode });
     if (!resp.ok) return { n, exists: false };
     const d: any = await resp.json();
     const wrap = d?.Stop || d?.stop || d;
@@ -604,6 +621,10 @@ export interface ScanResult {
   plannedCount: number;
   unplannedCount: number;
   scannedAt: string;
+  // Phase 4: per-load header (vehicleType/origin/pallets/…) keyed by loadNbr, so
+  // deriveFleetSummary can build SITE A's complete fleet cards. Empty when scans
+  // are disabled.
+  loadHeaders?: Record<string, any>;
 }
 
 // Full scan for one date: planned (load scan) + unplanned (number-space scan),
@@ -629,11 +650,91 @@ export async function scanDate(dateStr: string, opts: { unplanned?: UnplannedSca
 
   const stops = [...loadStops, ...extraUnplanned].map(normalizeStop);
   const unplannedCount = stops.filter((s) => !s.isPlanned).length;
+
+  // Phase 4: collect the load headers (one per loadNbr) from the raw load-scan
+  // rows before normalization drops them. deriveFleetSummary merges these in.
+  const loadHeaders: Record<string, any> = {};
+  for (const ls of loadStops as any[]) {
+    const L = ls?.load;
+    if (L?.loadNbr && !loadHeaders[L.loadNbr]) {
+      const { stopSeq, ...rest } = L;
+      loadHeaders[L.loadNbr] = rest;
+    }
+  }
+
   return {
     date: dateStr,
     stops,
+    loadHeaders,
     plannedCount: stops.length - unplannedCount,
     unplannedCount,
     scannedAt: new Date().toISOString(),
+  };
+}
+
+// ── Phase 4: derive the canonical fleet summary from normalized stops ─────────
+// SITE A's mobile dashboard needs a load-level view (load list + aggregate +
+// driver index). Planned stops carry loadNbr / driverName / routeName /
+// normalizedStatus, and scanDate now also returns loadHeaders (vehicleType,
+// origin, pallet/carton/weight, loadId), so the sole scanner can derive SITE A's
+// COMPLETE nuvizzFleet shape WITHOUT a second scan — that's what lets SITE A stop
+// scanning NuVizz and read Firestore instead. Pure + unit-tested.
+export interface DerivedLoad {
+  loadNbr: string; route: string | null; driver: string | null; driverUserName: string | null;
+  driverEmail: string | null; loadId: string | null; vehicleType: string | null; startDate: string | null;
+  totalStops: number; delivered: number; inProgress: number; exceptions: number; pctComplete: number;
+  totalPallets: number | null; totalCartons: number | null; weight: number | null;
+  origin: any;
+}
+export interface DerivedFleet {
+  loads: DerivedLoad[];
+  summary: {
+    totalLoads: number; assignedLoads: number; unassignedLoads: number;
+    totalStops: number; totalDelivered: number; totalInProgress: number;
+    totalExceptions: number; uniqueDrivers: number; pctComplete: number;
+  };
+  driverIndex: Record<string, string[]>;
+}
+
+export function deriveFleetSummary(stops: any[], loadHeaders: Record<string, any> = {}): DerivedFleet {
+  const byLoad = new Map<string, any[]>();
+  for (const s of stops || []) {
+    if (!s || !s.isPlanned || !s.loadNbr) continue;
+    if (!byLoad.has(s.loadNbr)) byLoad.set(s.loadNbr, []);
+    byLoad.get(s.loadNbr)!.push(s);
+  }
+  const loads: DerivedLoad[] = [];
+  const driverIndex: Record<string, string[]> = {};
+  let totalStops = 0, totalDelivered = 0, totalInProgress = 0, totalExceptions = 0, assignedLoads = 0;
+  const drivers = new Set<string>();
+  for (const [loadNbr, ls] of byLoad) {
+    const delivered = ls.filter((s) => s.normalizedStatus === 'DELIVERED').length;
+    const inProgress = ls.filter((s) => s.normalizedStatus === 'OUT_FOR_DEL' || s.normalizedStatus === 'ARRIVED').length;
+    const exceptions = ls.filter((s) => s.normalizedStatus === 'EXCEPTION').length;
+    const driverUserName = ls.find((s) => s.driverUserName)?.driverUserName || null;
+    const driver = ls.find((s) => s.driverName)?.driverName || null;
+    const route = ls.find((s) => s.routeName)?.routeName || null;
+    const h = loadHeaders[loadNbr] || {};
+    const n = ls.length;
+    if (driverUserName) { assignedLoads++; drivers.add(driverUserName); (driverIndex[driverUserName] ||= []).push(loadNbr); }
+    totalStops += n; totalDelivered += delivered; totalInProgress += inProgress; totalExceptions += exceptions;
+    loads.push({
+      loadNbr, route, driver, driverUserName,
+      driverEmail: h.driverEmail ?? null, loadId: h.loadId ?? null, vehicleType: h.vehicleType ?? null, startDate: h.startDate ?? null,
+      totalStops: n, delivered, inProgress, exceptions, pctComplete: n ? Math.round((delivered / n) * 100) : 0,
+      totalPallets: h.totalPallets ?? null, totalCartons: h.totalCartons ?? null, weight: h.weight ?? null,
+      origin: h.origin ?? null,
+    });
+  }
+  loads.sort((a, b) => a.loadNbr.localeCompare(b.loadNbr));
+  return {
+    loads,
+    summary: {
+      totalLoads: loads.length, assignedLoads, unassignedLoads: loads.length - assignedLoads,
+      totalStops, totalDelivered, totalInProgress, totalExceptions,
+      uniqueDrivers: drivers.size,
+      pctComplete: totalStops ? Math.round((totalDelivered / totalStops) * 100) : 0,
+    },
+    driverIndex,
   };
 }

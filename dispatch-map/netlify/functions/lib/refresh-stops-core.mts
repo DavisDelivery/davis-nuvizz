@@ -15,8 +15,9 @@
 // skip here, because the Friday-evening ET window lands on Saturday UTC and a
 // naive getUTCDay() check would wrongly drop it. Manual HTTP runs always proceed.
 
-import { scanDate, todayUTC, scansEnabled } from './nuvizz-scan.mts';
-import { isFirestoreEnabled, writeStops } from './firestore.mts';
+import { scanDate, todayUTC, scansEnabled, deriveFleetSummary } from './nuvizz-scan.mts';
+import { isFirestoreEnabled, writeStops, writeFleetIndex, getDoc } from './firestore.mts';
+import { breakerTripped, scanIntervalElapsed } from './nuvizz-request.mts';
 
 const TENANT = 'davis';
 // P0 (Jun 2026, runaway-volume incident): scheduled runs now scan TODAY ONLY.
@@ -45,6 +46,16 @@ export async function runRefreshStops(req: Request): Promise<Response> {
     });
   }
 
+  // P0/Phase 4 circuit breaker — if the shared daily ceiling tripped the breaker,
+  // skip the whole run (the next regression is throttled in minutes, not by a
+  // vendor email). Reset by clearing nuvizz_ops/circuit, e.g. at the day rollover.
+  if (await breakerTripped()) {
+    console.warn('refresh-stops: NuVizz circuit breaker OPEN — skipping scan (daily ceiling reached)');
+    return new Response(JSON.stringify({ ok: true, skipped: 'circuit-open' }), {
+      status: 200, headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
   if (!isFirestoreEnabled()) {
     console.error('refresh-stops: FIREBASE_SA not set on this site — cannot write index');
     return new Response(JSON.stringify({ ok: false, error: 'FIREBASE_SA not set' }), {
@@ -52,14 +63,16 @@ export async function runRefreshStops(req: Request): Promise<Response> {
     });
   }
 
-  // Manual overrides: ?date=YYYY-MM-DD (single) | ?days=N (today+N-1).
-  // Scheduled invocations carry no query string (a JSON {next_run} body) and
-  // fall through to the today+7 default.
+  // Manual overrides: ?date=YYYY-MM-DD (single) | ?days=N (today+N-1). A manual
+  // override is "forced" and bypasses the min-interval floor; scheduled ticks
+  // (no query string) honor the floor so back-to-back crons can't double-scan.
   let dates: string[];
+  let forced = false;
   try {
     const url = new URL(req.url);
     const dateParam = url.searchParams.get('date');
     const daysParam = url.searchParams.get('days');
+    forced = !!(dateParam || daysParam);
     if (dateParam) {
       dates = [dateParam];
     } else {
@@ -77,9 +90,22 @@ export async function runRefreshStops(req: Request): Promise<Response> {
   for (const date of dates) {
     const t0 = Date.now();
     try {
+      // Min-interval floor: skip a date that was scanned within the floor window
+      // unless this is a forced manual run.
+      if (!forced) {
+        const metaDoc = await getDoc(`nuvizz_stop_index/${TENANT}__${date}`);
+        if (metaDoc && !scanIntervalElapsed(metaDoc.last_scanned_at, Date.now())) {
+          results.push({ date, ok: true, skipped: 'min-interval', ms: Date.now() - t0 });
+          continue;
+        }
+      }
       const scan = await scanDate(date);
       const meta = await writeStops(TENANT, date, scan.stops, scan.scannedAt);
-      results.push({ date, ok: true, ms: Date.now() - t0, count: meta.count, planned: meta.plannedCount, unplanned: meta.unplannedCount });
+      // Phase 4: also derive + write the canonical fleet index SITE A reads, so
+      // SITE A renders its dashboard from Firestore and never scans NuVizz itself.
+      const fleet = deriveFleetSummary(scan.stops, scan.loadHeaders);
+      await writeFleetIndex(TENANT, date, fleet.loads, fleet.summary, fleet.driverIndex, scan.scannedAt);
+      results.push({ date, ok: true, ms: Date.now() - t0, count: meta.count, planned: meta.plannedCount, unplanned: meta.unplannedCount, loads: fleet.loads.length });
     } catch (e: any) {
       results.push({ date, ok: false, ms: Date.now() - t0, error: e?.message });
     }
