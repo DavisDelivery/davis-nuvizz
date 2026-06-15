@@ -46,7 +46,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.24.5';
+const APP_VERSION = '0.24.6';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -66,6 +66,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.24.6', 'Driver labels: drop misleading "No route assigned" (routes come from NuVizz, not Motive)'],
   ['0.24.5', 'Receiving-hours scan: strip SPL-INSTR-TEXT line prefixes so split RECEIVING HOURS + range parse'],
   ['0.24.4', 'Filter: "Has receiving hours" toggle — show every stop with receiving hours set'],
   ['0.24.3', 'Receiving hours: scan "RH"/"RECEIVING HOURS" Uline formats + chat reads raw order instructions'],
@@ -2769,7 +2770,7 @@ function makeDriverLabelOverlayClass(google) {
       l2.textContent = this.line2 || '';
 
       div.appendChild(l1);
-      div.appendChild(l2);
+      if (this.line2) div.appendChild(l2);
       this.div = div;
       const panes = this.getPanes();
       panes.floatPane.appendChild(div);
@@ -4432,15 +4433,16 @@ function MapScreen() {
     }
   }, [google, effectiveMatchSet]);  // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Build the driver-status line2 text per brief rules.
+  // Build the driver-status line2 text. Route assignment is managed in NuVizz,
+  // not Motive, so we do NOT show a "No route assigned" line on the Motive driver
+  // tag — only movement status (en route / stopped / stale). If Motive ever does
+  // carry route progress we surface it, but its absence is not reported.
   const driverStatusLine = useCallback((d) => {
-    let base;
+    let base = '';
     if (d.routeAssigned && d.routeProgress) {
       base = `Stop ${d.routeProgress.completed} of ${d.routeProgress.total}`;
     } else if (d.routeAssigned && d.routeId) {
       base = `Route ${d.routeId} · ${d.routeTotalStops ?? '?'} stops`;
-    } else {
-      base = 'No route assigned';
     }
     const suffix = [];
     if (d.speedMph != null && d.speedMph > 5) suffix.push('en route');
@@ -4449,7 +4451,7 @@ function MapScreen() {
       const ageMin = (Date.now() - new Date(d.locatedAt).getTime()) / 60000;
       if (ageMin > 30) suffix.push('stale');
     }
-    return suffix.length ? `${base} · ${suffix.join(' · ')}` : base;
+    return [base, ...suffix].filter(Boolean).join(' · ');
   }, []);
 
   // M4: driver markers + M4.1 labels — separate layer, larger truck icon.
