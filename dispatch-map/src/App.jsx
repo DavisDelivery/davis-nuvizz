@@ -46,7 +46,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.25.2';
+const APP_VERSION = '0.25.3';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -66,6 +66,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.25.3', '"Has receiving hours" filter matches raw NuVizz instructions directly (finds stops the scanner missed)'],
   ['0.25.2', 'Scheduled scan covers today + next business day (was today-only), so tomorrow’s board stays fresh'],
   ['0.25.1', 'Scanner load-number estimate: business-day anchor + self-calibration (fixes the scheduled scan missing a full day of loads)'],
   ['0.25.0', 'Single source of truth (staged): sole NuVizz scanner writes the canonical fleet index + shared daily-ceiling call counter & circuit breaker'],
@@ -995,6 +996,24 @@ function hasReceivingHours(note) {
   return false;
 }
 
+// True if a stop has structured receiving hours OR references receiving hours in
+// its raw free text (NuVizz order instructions, addr2, dock/appointment notes).
+// The structured scanner is unreliable on some Uline formats, so the "Has
+// receiving hours" filter matches the raw text directly — this finds every loaded
+// stop that mentions receiving hours regardless of whether hours were parsed.
+// Matches Uline shapes: "RECEIVING HOURS", "RH 7-11AM", "REC HRS".
+const RECEIVING_REF = /\bRECEIVING\b|\bRH\b|\bREC\s*HRS?\b/i;
+function referencesReceivingHours(stop, note) {
+  if (hasReceivingHours(note)) return true;
+  const text = [
+    stop?.signalSources?.orderInstructions,
+    stop?.addr2,
+    note?.dock_notes,
+    note?.appointment_notes,
+  ].filter(Boolean).join(' \n ');
+  return RECEIVING_REF.test(text);
+}
+
 // True if the note carries receiving hours for ONE specific weekday key
 // ('mon'..'sun'). Same legacy-string / {open,close} tolerance as above.
 function hasReceivingHoursForDay(note, dayKey) {
@@ -1920,7 +1939,7 @@ function applyFilters(stops, notesByKey, filters) {
     if (filters.equipment) {
       if (!n?.equipment_restrictions?.includes(filters.equipment)) return false;
     }
-    if (filters.hasHours && !hasReceivingHours(n)) return false;
+    if (filters.hasHours && !referencesReceivingHours(s, n)) return false;
     return true;
   });
 }
