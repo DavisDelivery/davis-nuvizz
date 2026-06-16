@@ -46,7 +46,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.25.4';
+const APP_VERSION = '0.25.5';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -66,6 +66,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.25.5', 'Click a stop in the list to center the map on it + Google Maps link alongside Street View on the stop card'],
   ['0.25.4', 'Stop card NuVizz instructions: strip SPL-INSTR-TEXT prefix + hide boilerplate DO NOT BREAKDOWN SKID'],
   ['0.25.3', '"Has receiving hours" filter matches raw NuVizz instructions directly (finds stops the scanner missed)'],
   ['0.25.2', 'Scheduled scan covers today + next business day (was today-only), so tomorrow’s board stays fresh'],
@@ -1731,6 +1732,25 @@ function StreetViewLink({ stop, className }) {
   );
 }
 
+// Opens the stop in Google Maps (regular map / directions target) — by
+// coordinates when available, else an address search. New tab.
+function GoogleMapsLink({ stop, className }) {
+  const addr = [stop.addr1, stop.city, stop.state, stop.zip].filter(Boolean).join(', ');
+  const q = (stop.lat != null && stop.lng != null) ? `${stop.lat},${stop.lng}` : addr;
+  const url = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(q)}`;
+  return (
+    <a
+      href={url}
+      target="_blank"
+      rel="noopener noreferrer"
+      className={className || 'inline-flex items-center gap-1 text-xs text-blue-700 hover:underline mt-1'}
+      style={{ minHeight: 44, alignItems: 'center' }}
+    >
+      <MapPin size={13} /> Google Maps
+    </a>
+  );
+}
+
 // M5 — Show Routes toggle. Sits adjacent to the filter toolbar (top-right),
 // same visual treatment, but a standalone control (not in the 5-toggle group).
 // M5 — Driver route legend. Collapsible (same pattern as the restriction
@@ -2135,7 +2155,10 @@ function StopSidebar({ stop, note, onClose, onSave, saving, saveError, onOpenRou
               </div>
             )}
             <div className="text-slate-600">{stop.city}, {stop.state} {stop.zip}</div>
-            <StreetViewLink stop={stop} />
+            <div className="flex items-center gap-4">
+              <StreetViewLink stop={stop} />
+              <GoogleMapsLink stop={stop} />
+            </div>
           </div>
           {cleanInstructions(stop.signalSources?.orderInstructions) && (
             <div className="pt-1">
@@ -3589,7 +3612,10 @@ function StopInfoTabContent({ stop, onOpenRoute }) {
           </div>
         )}
         <div className="text-slate-600">{cityLine || '—'}</div>
-        <StreetViewLink stop={stop} className="inline-flex items-center gap-1 text-[13px] text-blue-700 mt-1" />
+        <div className="flex items-center gap-5 mt-1">
+          <StreetViewLink stop={stop} className="inline-flex items-center gap-1 text-[13px] text-blue-700" />
+          <GoogleMapsLink stop={stop} className="inline-flex items-center gap-1 text-[13px] text-blue-700" />
+        </div>
       </div>
       {cleanInstructions(stop.signalSources?.orderInstructions) && (
         <div>
@@ -4978,7 +5004,7 @@ function MapScreen() {
         <StopMiniTable
           stops={visibleStops}
           notes={notes}
-          onPick={(s) => { setSelectedDriver(null); setSelectedStop(s); }}
+          onPick={(s) => { setSelectedDriver(null); setSelectedStop(s); handlePanToStop(s); }}
           columns={tableColumns}
           onColumnsChange={setTableColumns}
           searchQuery={debouncedSearch}
