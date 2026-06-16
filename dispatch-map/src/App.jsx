@@ -46,7 +46,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.25.9';
+const APP_VERSION = '0.25.10';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -66,6 +66,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.25.10', 'Distinct route-line colors for every driver (golden-angle hue spread, no more repeats)'],
   ['0.25.9', 'Fix "Unplanned only" (use isPlanned, not driver-assigned) + rename driver toggle to "Show drivers (live)"'],
   ['0.25.8', 'Smaller plain (non-restriction) stop pins to cut map clutter'],
   ['0.25.7', '"Unplanned only" filter — show only unplanned deliveries (off = all); replaces "Show unplanned"'],
@@ -236,6 +237,28 @@ function routeColorFor(driverUserName) {
   let h = 5381;
   for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) >>> 0;
   return ROUTE_PALETTE[h % ROUTE_PALETTE.length];
+}
+
+// M5.3 — distinct route colors for ANY number of drivers. A fixed 16-color
+// palette repeats + clusters hues once you have 20-40+ routes. Instead we spread
+// hues around the wheel by the golden angle (137.508°) so successive drivers are
+// maximally far apart in hue and the whole set stays evenly distributed, then
+// nudge lightness/saturation in small bands so near-hue neighbors still differ.
+// S/L tuned mid-range so lines read on both Map (light) and Satellite (dark).
+function hslToHex(h, s, l) {
+  s /= 100; l /= 100;
+  const k = (n) => (n + h / 30) % 12;
+  const a = s * Math.min(l, 1 - l);
+  const f = (n) => l - a * Math.max(-1, Math.min(k(n) - 3, Math.min(9 - k(n), 1)));
+  const toHex = (x) => Math.round(255 * x).toString(16).padStart(2, '0');
+  return `#${toHex(f(0))}${toHex(f(8))}${toHex(f(4))}`;
+}
+const GOLDEN_ANGLE = 137.508;
+function routeColorByIndex(i) {
+  const hue = (i * GOLDEN_ANGLE) % 360;
+  const l = 42 + (i % 3) * 7;    // 42 / 49 / 56
+  const s = 68 + (i % 2) * 14;   // 68 / 82
+  return hslToHex(hue, s, l);
 }
 const PANEL_DEFAULT_WIDTH = 320;
 const PANEL_MIN_WIDTH = 240;
@@ -4385,14 +4408,15 @@ function MapScreen() {
     }
     const byLoad = [];
     const driverAgg = new Map();
+    // Stable, evenly-spread color per driver: sort distinct drivers, assign each
+    // a golden-angle hue by index so no two routes share a color (until there are
+    // a huge number) and adjacent drivers look clearly different.
+    const driverList = [...new Set([...loadGroups.values()].map((g) => g.driverUserName))]
+      .sort((a, b) => String(a).localeCompare(String(b)));
+    const colorByDriver = new Map(driverList.map((d, i) => [d, routeColorByIndex(i)]));
     for (const g of loadGroups.values()) {
-      // M5.2 — order by plannedEtaDTTM (compareByPlannedEta). NuVizz's stopSeq is
-      // unreliable (parent app audit §7) and loadStopSeq is just the array index
-      // from NuVizz's load.stops (creation order, NOT delivery order) — sorting by
-      // it produced the anchor-style chaos. Same comparator backs the route detail
-      // list, so polyline order == list order.
       const ordered = [...g.stops].sort(compareByPlannedEta);
-      const color = routeColorFor(g.driverUserName);
+      const color = colorByDriver.get(g.driverUserName);
       if (ordered.length >= 2) {
         byLoad.push({ loadNbr: g.loadNbr, driverUserName: g.driverUserName, color, path: ordered });
       }
