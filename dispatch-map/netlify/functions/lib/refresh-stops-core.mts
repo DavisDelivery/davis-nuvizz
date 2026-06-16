@@ -20,17 +20,34 @@ import { isFirestoreEnabled, writeStops, writeFleetIndex, getDoc } from './fires
 import { breakerTripped, scanIntervalElapsed } from './nuvizz-request.mts';
 
 const TENANT = 'davis';
-// P0 (Jun 2026, runaway-volume incident): scheduled runs now scan TODAY ONLY.
-// Pre-scanning today + next 7 days every 5 minutes multiplied every cron tick's
-// NuVizz load by 8× for data almost nobody views (future dates change rarely).
-// Future-date browsing is still served on demand via the ?days=N / ?date=
-// manual overrides below, which the date-picker path can trigger sparingly.
-const DEFAULT_DAYS = 1; // today only (was 8 = today + next 7)
+// Scheduled runs scan TODAY + the next BUSINESS day — the dispatcher's planning
+// horizon. (The original today+next-7 was an 8× multiplier on every cron tick;
+// today-only was too tight — it left tomorrow's board frozen, since the map only
+// READS Firestore and never scans a future date itself.) Business-day stepping so
+// a Friday run covers Monday, not an empty Saturday. Volume stays modest because
+// the load-window self-calibrates to each day's actual span (see nuvizz-scan.mts).
+const DEFAULT_DAYS = 2; // today + next business day (was 1 = today only)
 
 function addDaysUTC(dateStr: string, n: number): string {
   const d = new Date(dateStr + 'T00:00:00Z');
   d.setUTCDate(d.getUTCDate() + n);
   return d.toISOString().slice(0, 10);
+}
+
+// The next Mon–Fri date strictly after dateStr (skips Sat/Sun).
+export function nextBusinessDayUTC(dateStr: string): string {
+  let d = addDaysUTC(dateStr, 1);
+  let dow = new Date(d + 'T00:00:00Z').getUTCDay();
+  while (dow === 0 || dow === 6) { d = addDaysUTC(d, 1); dow = new Date(d + 'T00:00:00Z').getUTCDay(); }
+  return d;
+}
+
+// Build the scan date list: today + the next (n-1) BUSINESS days. Exported for tests.
+export function scanDatesFrom(today: string, n: number): string[] {
+  const dates = [today];
+  let cur = today;
+  for (let i = 1; i < n; i++) { cur = nextBusinessDayUTC(cur); dates.push(cur); }
+  return dates;
 }
 
 export async function runRefreshStops(req: Request): Promise<Response> {
@@ -77,12 +94,10 @@ export async function runRefreshStops(req: Request): Promise<Response> {
       dates = [dateParam];
     } else {
       const n = daysParam ? Math.max(1, Math.min(31, parseInt(daysParam, 10) || DEFAULT_DAYS)) : DEFAULT_DAYS;
-      const today = todayUTC();
-      dates = Array.from({ length: n }, (_, i) => addDaysUTC(today, i));
+      dates = scanDatesFrom(todayUTC(), n);
     }
   } catch {
-    const today = todayUTC();
-    dates = Array.from({ length: DEFAULT_DAYS }, (_, i) => addDaysUTC(today, i));
+    dates = scanDatesFrom(todayUTC(), DEFAULT_DAYS);
   }
 
   const results: any[] = [];

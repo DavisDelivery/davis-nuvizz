@@ -367,36 +367,66 @@ export function normalizeStop(raw: any): NormalizedStop {
   };
 }
 
-// ── Load-number range scan (planned stops) ──────────────────────────────────
-const ANCHOR_DATE = new Date('2026-04-22T00:00:00Z');
-const ANCHOR_LOAD = 192900;
-const LOADS_PER_DAY = 80;
-// Half-width of the load-number probe window around the date's estimated center.
-// MUST exceed a single day's actual load-number SPREAD plus any anchor-estimate
-// drift, or the window clips real loads. Regression (v0.11.4, observed 2026-05-27):
-// at ±250 the window was [195450,195950] but that day's loads ran 195406–195795,
-// so loads 195406–195449 (~340 delivered stops) were sliced off the bottom and
-// vanished from the index once they converted from unplanned(10) to delivered(90)
-// — the unplanned stop-number scan no longer caught them, and the load scan never
-// reached them. ±600 brackets a full day (span ~400) with ample drift margin.
-// Out-of-date loads in the wider window are discarded by the startDate filter in
-// scanLoadRangeForDate, so widening only costs probes (fine in the background fn),
-// never false positives.
-//
-// P0 (Jun 2026, runaway-volume incident): narrowed 600 → 250. A day's load-number
-// SPREAD is ~400 wide but is CENTERED on the anchor estimate, so a ±250 window
-// (501 probes) still brackets a full day with drift margin while cutting per-scan
-// load probes by ~58% (1201 → 501). Each probe is one NuVizz /load/info call and
-// the background refresh runs this for several dates every cron tick, so this
-// window directly multiplies our NuVizz call volume. Re-widen only with the anchor
-// re-calibrated (see ANCHOR_DATE/ANCHOR_LOAD), never as a blind fix for "missing"
-// loads — a stale anchor is the usual cause and widening just hammers NuVizz harder.
-const LOAD_WINDOW_HALF = 250;
+// ── Load-number range estimation (planned stops) ────────────────────────────
+// Davis dispatches only on BUSINESS days, so estimate a date's load-number center
+// by business-day count from a known anchor. The prior calendar-day math
+// (`daysDiff × 80`) OVERSHOOTS because it counts weekends that add no loads — that
+// drift, with the narrow ±250 window, made the scheduled scan miss an entire day
+// of loads (observed 2026-06-15: estimate 197220 vs actual ~196690, so the
+// [196970,197470] window clipped every real load). This mirrors the parent app's
+// proven anchor + self-calibration in netlify/functions/nuvizz.cjs.
+const ANCHOR_DATE = new Date('2026-06-05T00:00:00Z');
+const ANCHOR_LOAD = 196143; // center of Jun 5 (actual range 196094–196192)
+const LOADS_PER_BIZ_DAY = 100; // Davis dispatches ~100 loads per business day
 
-function estimateLoadRange(dateStr: string): { startNbr: number; endNbr: number } {
+// Half-width of the COLD/first-scan window. ±300 brackets a day's ~100-load span
+// plus drift slack so a fresh scan can't clip real loads; the self-calibration
+// below then narrows it to the day's ACTUAL span (~220 numbers) so steady-state
+// probe counts stay low. Re-widen only by re-calibrating the anchor, never as a
+// blind fix for "missing" loads — a stale anchor is the usual cause.
+const LOAD_WINDOW_HALF = 300;
+
+// Count Mon–Fri days between two dates (signed). Weekends excluded since Davis
+// doesn't dispatch Sat/Sun — this is what makes the estimate track real loads.
+export function businessDaysBetween(from: Date, to: Date): number {
+  const msPerDay = 24 * 60 * 60 * 1000;
+  const sign = to >= from ? 1 : -1;
+  let count = 0;
+  let cur = new Date(Math.min(from.getTime(), to.getTime()));
+  const end = new Date(Math.max(from.getTime(), to.getTime()));
+  while (cur < end) {
+    cur = new Date(cur.getTime() + msPerDay);
+    const dow = cur.getUTCDay();
+    if (dow !== 0 && dow !== 6) count++;
+  }
+  return sign * count;
+}
+
+// Self-calibration: after a scan finds the day's real load span, cache it so the
+// next scan (within the TTL) uses a tight, accurate window instead of the wide
+// static guess — accurate AND cheap. Pads +100 high (late same-day dispatches),
+// −20 low. Only narrows once a real batch (≥50) is found, so an early-morning
+// scan before dispatch finishes doesn't clamp the afternoon.
+const RANGE_CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
+const MIN_LOADS_TO_CALIBRATE = 50;
+const __rangeCache = new Map<string, { storedAt: number; range: { startNbr: number; endNbr: number } }>();
+
+export function calibrateLoadRange(dateStr: string, loadNbrs: string[]): void {
+  const nums = (loadNbrs || [])
+    .map((l) => { const m = String(l ?? '').match(/(\d+)$/); return m ? parseInt(m[1], 10) : null; })
+    .filter((n): n is number => n != null);
+  if (nums.length < MIN_LOADS_TO_CALIBRATE) return;
+  const min = Math.min(...nums), max = Math.max(...nums);
+  __rangeCache.set(dateStr, { storedAt: Date.now(), range: { startNbr: min - 20, endNbr: max + 100 } });
+  if (__rangeCache.size > 30) { const k = __rangeCache.keys().next().value; if (k) __rangeCache.delete(k); }
+}
+
+export function estimateLoadRange(dateStr: string): { startNbr: number; endNbr: number } {
+  const cached = __rangeCache.get(dateStr);
+  if (cached && Date.now() - cached.storedAt < RANGE_CACHE_TTL_MS) return cached.range;
   const target = new Date(dateStr + 'T00:00:00Z');
-  const daysDiff = Math.round((target.getTime() - ANCHOR_DATE.getTime()) / (1000 * 60 * 60 * 24));
-  const center = ANCHOR_LOAD + daysDiff * LOADS_PER_DAY;
+  const bizDaysDiff = businessDaysBetween(ANCHOR_DATE, target);
+  const center = ANCHOR_LOAD + bizDaysDiff * LOADS_PER_BIZ_DAY;
   return { startNbr: center - LOAD_WINDOW_HALF, endNbr: center + LOAD_WINDOW_HALF };
 }
 
@@ -661,6 +691,10 @@ export async function scanDate(dateStr: string, opts: { unplanned?: UnplannedSca
       loadHeaders[L.loadNbr] = rest;
     }
   }
+
+  // Self-calibrate the load-number window from the loads actually found, so the
+  // next scan of this date uses a tight, accurate range (see estimateLoadRange).
+  calibrateLoadRange(dateStr, Object.keys(loadHeaders));
 
   return {
     date: dateStr,
