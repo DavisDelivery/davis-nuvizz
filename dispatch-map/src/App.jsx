@@ -46,7 +46,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.25.6';
+const APP_VERSION = '0.25.7';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -66,6 +66,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.25.7', '"Unplanned only" filter — show only unplanned deliveries (off = all); replaces "Show unplanned"'],
   ['0.25.6', 'Full Google Map controls (type/rotate/pegman/fullscreen/zoom) + 3D tilt-rotate via vector Map ID'],
   ['0.25.5', 'Click a stop in the list to center the map on it + Google Maps link alongside Street View on the stop card'],
   ['0.25.4', 'Stop card NuVizz instructions: strip SPL-INSTR-TEXT prefix + hide boilerplate DO NOT BREAKDOWN SKID'],
@@ -256,7 +257,7 @@ const DEFAULT_TABLE_COLUMNS = {
 const DEFAULT_MAP_FILTERS = {
   hideTerminal: false,
   hideStemOut: false,
-  showUnplanned: true,
+  unplannedOnly: false,
   showVehicleLocation: true,
   showClustered: true,
 };
@@ -1822,9 +1823,9 @@ function FilterToolbar({ filters, setFilters, collapsed, setCollapsed, stopCount
             onChange={set('hideStemOut')}
           />
           <MapFilterToggle
-            label="Show unplanned stops"
-            checked={filters.showUnplanned}
-            onChange={set('showUnplanned')}
+            label="Unplanned only"
+            checked={filters.unplannedOnly}
+            onChange={set('unplannedOnly')}
           />
           <MapFilterToggle
             label="Show vehicle location"
@@ -3250,9 +3251,9 @@ function MobileFiltersTab({
             onChange={setMF('hideStemOut')}
           />
           <MapFilterToggle
-            label="Show unplanned stops"
-            checked={mapFilters.showUnplanned}
-            onChange={setMF('showUnplanned')}
+            label="Unplanned only"
+            checked={mapFilters.unplannedOnly}
+            onChange={setMF('unplannedOnly')}
           />
           <MapFilterToggle
             label="Show vehicle location"
@@ -4284,10 +4285,11 @@ function MapScreen() {
     return rows.filter((s) => {
       if (mapFilters.hideTerminal && s.isTerminal) return false;
       if (mapFilters.hideStemOut && stemOutKeys.has(s.stopNbr)) return false;
-      if (!mapFilters.showUnplanned && s.isUnplanned) return false;
+      // "Unplanned only" ON → hide everything that IS planned; OFF → show all.
+      if (mapFilters.unplannedOnly && !s.isUnplanned) return false;
       return true;
     });
-  }, [mapFilters.hideTerminal, mapFilters.hideStemOut, mapFilters.showUnplanned, stemOutKeys]);
+  }, [mapFilters.hideTerminal, mapFilters.hideStemOut, mapFilters.unplannedOnly, stemOutKeys]);
 
   // Filter pipeline: filters → mapFilters → search. Memoized so we don't recompute on each render.
   const filteredStops = useMemo(
