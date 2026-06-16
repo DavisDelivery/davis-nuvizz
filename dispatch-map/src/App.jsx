@@ -16,7 +16,7 @@ import {
   MapPin, RefreshCw, X, Filter, Truck, Save, Plus, Trash2,
   Activity, ChevronDown, ChevronUp, Eye, EyeOff,
   Search, Tag, Tags, ArrowLeft, Gauge, Clock, MapPinned,
-  Info, Settings, LayoutList, Sparkles, MessageSquare,
+  Info, Settings, LayoutList, Sparkles, MessageSquare, Square, Lasso,
 } from 'lucide-react';
 import {
   collection, doc, getDoc, onSnapshot, setDoc, serverTimestamp,
@@ -46,7 +46,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.25.11';
+const APP_VERSION = '0.25.12';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -66,6 +66,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.25.12', 'Box + lasso multi-select on the map — highlights and filters the selected stops'],
   ['0.25.11', 'Total pallets count (sum of NuVizz carton field) shown below the stop count'],
   ['0.25.10', 'Distinct route-line colors for every driver (golden-angle hue spread, no more repeats)'],
   ['0.25.9', 'Fix "Unplanned only" (use isPlanned, not driver-assigned) + rename driver toggle to "Show drivers (live)"'],
@@ -1782,6 +1783,98 @@ function GoogleMapsLink({ stop, className }) {
     >
       <MapPin size={13} /> Google Maps
     </a>
+  );
+}
+
+// Box / lasso selection toolbar. Two tools: Box (drag a rectangle) and Lasso
+// (draw a freeform shape). Toggling a tool off cancels it. When a selection
+// exists, a count chip clears it. Reused on desktop + mobile.
+function SelectionControls({ mode, setMode, count, onClear, className }) {
+  const btn = (active) =>
+    'px-2.5 py-1.5 rounded text-xs font-semibold inline-flex items-center gap-1 border min-h-[40px] ' +
+    (active ? 'text-white border-transparent' : 'bg-white border-slate-300 text-slate-700 hover:bg-slate-50');
+  return (
+    <div className={'bg-white/95 backdrop-blur border border-slate-200 rounded-lg shadow p-1 flex items-center gap-1 ' + (className || '')}>
+      <button onClick={() => setMode(mode === 'box' ? null : 'box')} className={btn(mode === 'box')} style={mode === 'box' ? { background: '#1e5b92' } : undefined} title="Drag a box to select stops">
+        <Square size={13} /> Box
+      </button>
+      <button onClick={() => setMode(mode === 'lasso' ? null : 'lasso')} className={btn(mode === 'lasso')} style={mode === 'lasso' ? { background: '#1e5b92' } : undefined} title="Draw a lasso around stops">
+        <Lasso size={13} /> Lasso
+      </button>
+      {count > 0 && (
+        <button onClick={onClear} className="px-2 py-1.5 rounded text-xs text-slate-600 hover:bg-slate-100 inline-flex items-center gap-1 min-h-[40px]" title="Clear selection">
+          <X size={13} /> {count}
+        </button>
+      )}
+    </div>
+  );
+}
+
+// Transparent capture layer rendered over the map while a select tool is armed.
+// Pointer events (mouse + touch) draw the shape in container-pixel space; on
+// release the parent converts pixels -> LatLng and tests enclosure. The overlay
+// intercepts events so the map itself doesn't pan while drawing.
+function SelectionOverlay({ mode, onBox, onLasso }) {
+  const elRef = useRef(null);
+  const drawingRef = useRef(false);
+  const startRef = useRef(null);
+  const ptsRef = useRef([]);
+  const [rect, setRect] = useState(null);
+  const [path, setPath] = useState([]);
+
+  const localXY = (e) => {
+    const r = elRef.current.getBoundingClientRect();
+    return { x: e.clientX - r.left, y: e.clientY - r.top };
+  };
+  const reset = () => { setRect(null); setPath([]); ptsRef.current = []; startRef.current = null; };
+
+  const onDown = (e) => {
+    e.currentTarget.setPointerCapture?.(e.pointerId);
+    const p = localXY(e);
+    drawingRef.current = true;
+    if (mode === 'box') { startRef.current = p; setRect({ x: p.x, y: p.y, w: 0, h: 0 }); }
+    else { ptsRef.current = [p]; setPath([p]); }
+  };
+  const onMove = (e) => {
+    if (!drawingRef.current) return;
+    const p = localXY(e);
+    if (mode === 'box') {
+      const s = startRef.current;
+      setRect({ x: Math.min(s.x, p.x), y: Math.min(s.y, p.y), w: Math.abs(p.x - s.x), h: Math.abs(p.y - s.y) });
+    } else { ptsRef.current.push(p); setPath(ptsRef.current.slice()); }
+  };
+  const onUp = (e) => {
+    if (!drawingRef.current) return;
+    drawingRef.current = false;
+    const p = localXY(e);
+    if (mode === 'box') {
+      const s = startRef.current;
+      if (s && (Math.abs(p.x - s.x) > 4 || Math.abs(p.y - s.y) > 4)) onBox(s, p);
+    } else if (ptsRef.current.length >= 3) {
+      onLasso(ptsRef.current.slice());
+    }
+    reset();
+  };
+
+  return (
+    <div
+      ref={elRef}
+      className="absolute inset-0 z-[15]"
+      style={{ cursor: 'crosshair', touchAction: 'none' }}
+      onPointerDown={onDown}
+      onPointerMove={onMove}
+      onPointerUp={onUp}
+      onPointerCancel={() => { drawingRef.current = false; reset(); }}
+    >
+      {mode === 'box' && rect && (
+        <div className="absolute border-2 pointer-events-none" style={{ left: rect.x, top: rect.y, width: rect.w, height: rect.h, borderColor: '#1e5b92', background: 'rgba(30,91,146,0.15)' }} />
+      )}
+      {mode === 'lasso' && path.length > 1 && (
+        <svg className="absolute inset-0 w-full h-full pointer-events-none">
+          <polyline points={path.map((p) => `${p.x},${p.y}`).join(' ')} fill="rgba(30,91,146,0.12)" stroke="#1e5b92" strokeWidth="2" strokeLinejoin="round" />
+        </svg>
+      )}
+    </div>
   );
 }
 
@@ -4245,6 +4338,15 @@ function MapScreen() {
     return () => { alive = false; };
   }, []);
 
+  // Box / lasso multi-select. selectMode is the armed tool while drawing;
+  // selectionSet is the resulting Set<stopNbr> that highlights + filters the
+  // board (via effectiveMatchSet, same mechanism as search/AI). The projection
+  // ref converts container pixels <-> LatLng for the drawn shape.
+  const [selectMode, setSelectMode] = useState(null); // null | 'box' | 'lasso'
+  const [selectionSet, setSelectionSet] = useState(null);
+  const [selectNote, setSelectNote] = useState(null);
+  const selectionProjRef = useRef(null);
+
   const { drivers, error: driverErr, lastRefreshed: driversAt } = useDriverPositions(showDrivers);
   const { snapshot, loading: snapshotLoading, error: snapshotError } = useDriverSnapshot(selectedDriver);
   const panel = useResizablePanel(viewportWidth);
@@ -4330,6 +4432,50 @@ function MapScreen() {
     () => stops.reduce((sum, s) => sum + (Number(s.cartons) || 0), 0),
     [stops],
   );
+
+  // ── Box / lasso selection ──────────────────────────────────────────────────
+  // An invisible OverlayView gives us the live pixel<->LatLng projection for the
+  // map container; the drawing overlay (rendered while a tool is armed) reports
+  // container-relative pixels which we convert here and test with the shared
+  // boxFromCorners/latLngInBounds and pointInPolygon geometry.
+  useEffect(() => {
+    if (!google || !mapRef.current) return;
+    const ov = new google.maps.OverlayView();
+    ov.onAdd = () => {};
+    ov.draw = () => { selectionProjRef.current = ov.getProjection(); };
+    ov.onRemove = () => {};
+    ov.setMap(mapRef.current);
+    return () => { ov.setMap(null); selectionProjRef.current = null; };
+  }, [google]);
+
+  const pxToLatLng = useCallback((x, y) => {
+    const proj = selectionProjRef.current;
+    if (!proj) return null;
+    const ll = proj.fromContainerPixelToLatLng(new google.maps.Point(x, y));
+    return ll ? { lat: ll.lat(), lng: ll.lng() } : null;
+  }, [google]);
+
+  const commitSelection = useCallback((hits) => {
+    if (!hits.length) { setSelectNote('No stops in that area'); setTimeout(() => setSelectNote(null), 2500); return; }
+    setSelectionSet(new Set(hits.map((s) => s.stopNbr)));
+    setSelectNote(`${hits.length} stop${hits.length === 1 ? '' : 's'} selected`);
+  }, []);
+
+  // Box: two opposite container-pixel corners. Lasso: a container-pixel path.
+  const selectByBox = useCallback((p1, p2) => {
+    const a = pxToLatLng(p1.x, p1.y), b = pxToLatLng(p2.x, p2.y);
+    if (!a || !b) return;
+    const box = boxFromCorners(a, b);
+    commitSelection(filteredStops.filter((s) => s.lat != null && s.lng != null && latLngInBounds(s.lat, s.lng, box)));
+  }, [pxToLatLng, filteredStops, commitSelection]);
+
+  const selectByLasso = useCallback((pts) => {
+    const poly = pts.map((p) => pxToLatLng(p.x, p.y)).filter(Boolean).map((ll) => [ll.lat, ll.lng]);
+    if (poly.length < 3) return;
+    commitSelection(filteredStops.filter((s) => s.lat != null && s.lng != null && pointInPolygon(s.lat, s.lng, poly)));
+  }, [pxToLatLng, filteredStops, commitSelection]);
+
+  const clearSelection = useCallback(() => { setSelectionSet(null); setSelectNote(null); }, []);
   const searchMatchSet = useMemo(() => {
     if (aiMode) return null;                       // AI mode: literal keyword filter suspended
     if (!debouncedSearch.trim()) return null;      // null sentinel = no search active
@@ -4342,8 +4488,9 @@ function MapScreen() {
 
   // M6 — an active AI result (search parse or chat highlight) takes precedence
   // over the literal keyword set. Everything downstream (list + map dim/fit) reads
-  // effectiveMatchSet so both surfaces share one filter mechanism.
-  const effectiveMatchSet = aiResult ? aiResult.set : searchMatchSet;
+  // effectiveMatchSet so all surfaces share one filter mechanism. Box/lasso
+  // selection takes precedence over search/AI when active.
+  const effectiveMatchSet = selectionSet || (aiResult ? aiResult.set : searchMatchSet);
 
   const visibleStops = useMemo(() => {
     if (!effectiveMatchSet) return filteredStops;
@@ -4777,6 +4924,19 @@ function MapScreen() {
     return (
       <div className="flex-1 relative min-w-0 overflow-hidden">
         <div ref={mapDiv} className="absolute inset-0" />
+        {/* Box/lasso multi-select: capture overlay (while a tool is armed) + the
+            tool controls (kept above the overlay so you can switch/cancel). */}
+        {selectMode && (
+          <SelectionOverlay
+            mode={selectMode}
+            onBox={(a, b) => { selectByBox(a, b); setSelectMode(null); }}
+            onLasso={(pts) => { selectByLasso(pts); setSelectMode(null); }}
+          />
+        )}
+        <div className="absolute top-12 left-2 z-[16] flex flex-col items-start gap-1">
+          <SelectionControls mode={selectMode} setMode={setSelectMode} count={selectionSet?.size || 0} onClear={clearSelection} />
+          {selectNote && <div className="text-[10px] bg-white/95 border border-slate-200 rounded px-1.5 py-0.5 shadow text-slate-700">{selectNote}</div>}
+        </div>
         {/* M5 — date chip at top-left of the mobile map (P2.7): core control,
             visible without opening the drawer. */}
         <div className="absolute top-2 left-2 z-10 flex items-center gap-1 bg-white/95 backdrop-blur border border-slate-200 rounded-lg shadow px-1.5 py-1">
@@ -5084,10 +5244,20 @@ function MapScreen() {
       {/* Map */}
       <div className="flex-1 relative min-w-0">
         <div ref={mapDiv} className="absolute inset-0" />
+        {/* Box/lasso multi-select: capture overlay + tool controls (above it). */}
+        {selectMode && (
+          <SelectionOverlay
+            mode={selectMode}
+            onBox={(a, b) => { selectByBox(a, b); setSelectMode(null); }}
+            onLasso={(pts) => { selectByLasso(pts); setSelectMode(null); }}
+          />
+        )}
         {/* M5 — date picker, top-left of the map canvas. */}
         {!isMobile && (
-          <div className="absolute top-3 left-3 z-[6]">
+          <div className="absolute top-3 left-3 z-[16] flex flex-col items-start gap-2">
             <DatePicker selectedDate={selectedDate} onChange={setSelectedDate} onToday={goToToday} />
+            <SelectionControls mode={selectMode} setMode={setSelectMode} count={selectionSet?.size || 0} onClear={clearSelection} />
+            {selectNote && <div className="text-[11px] bg-white/95 border border-slate-200 rounded px-2 py-0.5 shadow text-slate-700">{selectNote}</div>}
           </div>
         )}
         {/* M5.1 — top-right controls live in ONE right-aligned vertical column:
