@@ -46,7 +46,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.25.5';
+const APP_VERSION = '0.25.6';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -66,6 +66,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.25.6', 'Full Google Map controls (type/rotate/pegman/fullscreen/zoom) + 3D tilt-rotate via vector Map ID'],
   ['0.25.5', 'Click a stop in the list to center the map on it + Google Maps link alongside Street View on the stop card'],
   ['0.25.4', 'Stop card NuVizz instructions: strip SPL-INSTR-TEXT prefix + hide boilerplate DO NOT BREAKDOWN SKID'],
   ['0.25.3', '"Has receiving hours" filter matches raw NuVizz instructions directly (finds stops the scanner missed)'],
@@ -190,6 +191,12 @@ const DAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
 
 const MOCK_MODE = import.meta.env.VITE_USE_MOCK_NUVIZZ === 'true';
 const MAPS_KEY = import.meta.env.VITE_GOOGLE_MAPS_API_KEY;
+// Optional vector Map ID. When set, Google renders a VECTOR map which supports
+// interactive 3D tilt + rotation (hold ⌘/Ctrl and drag to spin around a point)
+// and 3D buildings. Unset → raster map (still gets the rotate control + 45°
+// aerial in Satellite where Google has imagery). Create one in Google Cloud
+// Console → Maps → Map Management (rendering: Vector, tilt + rotation enabled).
+const MAP_ID = import.meta.env.VITE_GOOGLE_MAP_ID || undefined;
 
 // M4.1 localStorage keys + sizing constants for the resizable left panel.
 const LS_PANEL_WIDTH = 'dispatchMap.leftPanelWidth';
@@ -4406,9 +4413,28 @@ function MapScreen() {
     mapRef.current = new google.maps.Map(mapDiv.current, {
       center: BUFORD,
       zoom: 10,
-      mapTypeControl: false,
-      streetViewControl: false,
-      fullscreenControl: false,
+      // Full Google control set + 3D. A vector mapId (VITE_GOOGLE_MAP_ID) unlocks
+      // interactive tilt/heading — hold ⌘/Ctrl + drag to tilt and spin around a
+      // location; without it the map is raster (rotate control + 45° aerial still
+      // work in Satellite where imagery exists).
+      ...(MAP_ID ? { mapId: MAP_ID } : {}),
+      mapTypeControl: true,
+      mapTypeControlOptions: {
+        position: google.maps.ControlPosition.LEFT_BOTTOM,
+        mapTypeIds: ['roadmap', 'satellite', 'hybrid', 'terrain'],
+      },
+      streetViewControl: true,
+      streetViewControlOptions: { position: google.maps.ControlPosition.RIGHT_BOTTOM },
+      fullscreenControl: true,
+      fullscreenControlOptions: { position: google.maps.ControlPosition.RIGHT_BOTTOM },
+      zoomControl: true,
+      zoomControlOptions: { position: google.maps.ControlPosition.RIGHT_BOTTOM },
+      rotateControl: true,
+      rotateControlOptions: { position: google.maps.ControlPosition.RIGHT_BOTTOM },
+      scaleControl: true,
+      tiltInteractionEnabled: true,
+      headingInteractionEnabled: true,
+      gestureHandling: 'greedy',
     });
     labelOverlayClassRef.current = makeDriverLabelOverlayClass(google);
   }, [google]);
