@@ -46,7 +46,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.25.10';
+const APP_VERSION = '0.25.11';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -66,6 +66,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.25.11', 'Total pallets count (sum of NuVizz carton field) shown below the stop count'],
   ['0.25.10', 'Distinct route-line colors for every driver (golden-angle hue spread, no more repeats)'],
   ['0.25.9', 'Fix "Unplanned only" (use isPlanned, not driver-assigned) + rename driver toggle to "Show drivers (live)"'],
   ['0.25.8', 'Smaller plain (non-restriction) stop pins to cut map clutter'],
@@ -4323,6 +4324,12 @@ function MapScreen() {
     () => applyMapFilters(applyFilters(stops, notes, filters)),
     [stops, notes, filters, applyMapFilters],
   );
+  // Total pallet count across the loaded board. NuVizz records the pallet count
+  // in its carton field (stop.cartons), so we sum that and label it pallets.
+  const totalPalletsCount = useMemo(
+    () => stops.reduce((sum, s) => sum + (Number(s.cartons) || 0), 0),
+    [stops],
+  );
   const searchMatchSet = useMemo(() => {
     if (aiMode) return null;                       // AI mode: literal keyword filter suspended
     if (!debouncedSearch.trim()) return null;      // null sentinel = no search active
@@ -4811,6 +4818,7 @@ function MapScreen() {
         <div className="absolute top-2 right-2 bg-white/95 backdrop-blur border border-slate-200 rounded-lg shadow px-2.5 py-1.5 flex items-center gap-2 text-[11px] z-10">
           <div className="leading-tight">
             <div className="font-semibold">{stops.length} stops</div>
+            <div className="text-slate-600 text-[10px]">{totalPalletsCount.toLocaleString()} total pallets</div>
             <div className="text-slate-500 text-[10px]">{fmtStopFreshness(source, lastScannedAt)}</div>
           </div>
           <button
@@ -5092,6 +5100,7 @@ function MapScreen() {
             <div className="bg-white/95 backdrop-blur border border-slate-200 rounded-lg shadow px-3 py-2 flex items-center gap-3 text-xs">
               <div>
                 <div className="font-semibold">{stops.length} stops</div>
+                <div className="text-slate-600">{totalPalletsCount.toLocaleString()} total pallets</div>
                 <div className="text-slate-500">{fmtStopFreshness(source, lastScannedAt)}</div>
               </div>
               <button
