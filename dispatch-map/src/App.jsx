@@ -46,7 +46,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.25.3';
+const APP_VERSION = '0.25.4';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -66,6 +66,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.25.4', 'Stop card NuVizz instructions: strip SPL-INSTR-TEXT prefix + hide boilerplate DO NOT BREAKDOWN SKID'],
   ['0.25.3', '"Has receiving hours" filter matches raw NuVizz instructions directly (finds stops the scanner missed)'],
   ['0.25.2', 'Scheduled scan covers today + next business day (was today-only), so tomorrow’s board stays fresh'],
   ['0.25.1', 'Scanner load-number estimate: business-day anchor + self-calibration (fixes the scheduled scan missing a full day of loads)'],
@@ -1012,6 +1013,19 @@ function referencesReceivingHours(stop, note) {
     note?.appointment_notes,
   ].filter(Boolean).join(' \n ');
   return RECEIVING_REF.test(text);
+}
+
+// Display-clean the raw NuVizz order instructions for the stop card: drop the
+// "SPL-INSTR-TEXT:" prefix on each line and hide boilerplate that rides on every
+// Uline order ("DO NOT BREAKDOWN SKID"). Returns '' when nothing meaningful is
+// left so the section hides entirely.
+function cleanInstructions(text) {
+  if (!text) return '';
+  return String(text)
+    .split('\n')
+    .map((l) => l.replace(/^\s*SPL-INSTR-TEXT\s*:?\s*/i, '').trim())
+    .filter((l) => l && !/do\s*not\s*break\s*down\s*skid/i.test(l))
+    .join('\n');
 }
 
 // True if the note carries receiving hours for ONE specific weekday key
@@ -2123,10 +2137,10 @@ function StopSidebar({ stop, note, onClose, onSave, saving, saveError, onOpenRou
             <div className="text-slate-600">{stop.city}, {stop.state} {stop.zip}</div>
             <StreetViewLink stop={stop} />
           </div>
-          {stop.signalSources?.orderInstructions && (
+          {cleanInstructions(stop.signalSources?.orderInstructions) && (
             <div className="pt-1">
               <div className="text-xs uppercase font-semibold text-slate-500">NuVizz instructions</div>
-              <div className="text-xs text-slate-700 whitespace-pre-wrap leading-snug">{stop.signalSources.orderInstructions}</div>
+              <div className="text-xs text-slate-700 whitespace-pre-wrap leading-snug">{cleanInstructions(stop.signalSources.orderInstructions)}</div>
             </div>
           )}
           <div className="grid grid-cols-2 gap-3 pt-2">
@@ -3577,10 +3591,10 @@ function StopInfoTabContent({ stop, onOpenRoute }) {
         <div className="text-slate-600">{cityLine || '—'}</div>
         <StreetViewLink stop={stop} className="inline-flex items-center gap-1 text-[13px] text-blue-700 mt-1" />
       </div>
-      {stop.signalSources?.orderInstructions && (
+      {cleanInstructions(stop.signalSources?.orderInstructions) && (
         <div>
           <div className="text-[10px] uppercase font-semibold text-slate-500 mb-0.5">NuVizz instructions</div>
-          <div className="text-[12px] text-slate-700 whitespace-pre-wrap leading-snug">{stop.signalSources.orderInstructions}</div>
+          <div className="text-[12px] text-slate-700 whitespace-pre-wrap leading-snug">{cleanInstructions(stop.signalSources.orderInstructions)}</div>
         </div>
       )}
       <div className="grid grid-cols-2 gap-3">
