@@ -46,7 +46,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.25.7';
+const APP_VERSION = '0.25.8';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -66,6 +66,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.25.8', 'Smaller plain (non-restriction) stop pins to cut map clutter'],
   ['0.25.7', '"Unplanned only" filter — show only unplanned deliveries (off = all); replaces "Show unplanned"'],
   ['0.25.6', 'Full Google Map controls (type/rotate/pegman/fullscreen/zoom) + 3D tilt-rotate via vector Map ID'],
   ['0.25.5', 'Click a stop in the list to center the map on it + Google Maps link alongside Street View on the stop card'],
@@ -4486,8 +4487,10 @@ function MapScreen() {
         const color = meta.color || flagColor(note);
         icon = {
           url: pinSvgStatus(color, { hollow: meta.hollow, glyph: meta.glyph }),
-          scaledSize: new google.maps.Size(28, 36),
-          anchor: new google.maps.Point(14, 34),
+          // Smaller than the restriction-icon markers so plain stops read as
+          // secondary and the board is less cluttered (esp. in satellite view).
+          scaledSize: new google.maps.Size(20, 26),
+          anchor: new google.maps.Point(10, 25),
         };
       } else {
         const spec = iconMarkerSvg(restrictions);
