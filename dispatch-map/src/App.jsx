@@ -46,7 +46,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.25.20';
+const APP_VERSION = '0.25.21';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -66,6 +66,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.25.21', 'Bottom stops table is drag-resizable (grab the top handle); height persists'],
   ['0.25.20', 'Correct a stop’s pin location — drag + save a per-customer override that persists for future loads'],
   ['0.25.19', 'Map controls match the requested set: compass + 2D/3D tilt, zoom, pegman, custom recenter crosshair'],
   ['0.25.18', 'Bottom stops table: search box + status filter (Un-Planned/Planned/In-Transit/Completed/Cancelled)'],
@@ -230,6 +231,7 @@ const LS_MOBILE_DRAWER_TAB = 'dispatchMap.mobileDrawerTab';
 const LS_SHOW_ROUTES = 'dispatchMap.showRoutes';
 const LS_ROUTE_LEGEND_EXPANDED = 'dispatchMap.routeLegendExpanded';
 const LS_BOTTOM_TABLE_OPEN = 'dispatchMap.bottomTableOpen';
+const LS_BOTTOM_TABLE_HEIGHT = 'dispatchMap.bottomTableHeight';
 
 // M5 — Driver route polyline palette. 16 colors, distinct from brand colors
 // (#1e5b92, #dc2626, #16a34a, #f59e0b, #6b7280) and from each other, all
@@ -5633,6 +5635,25 @@ function BottomStopsTable({ stops, notes, totalCount, open, setOpen, onPick }) {
   const [q, setQ] = useState('');
   const [statusSel, setStatusSel] = useState(() => new Set()); // empty = all
   const [statusOpen, setStatusOpen] = useState(false);
+  // Drag-resizable height (px), persisted. Drag the top handle up/down.
+  const [height, setHeight] = useState(() => {
+    const v = safeReadJSON(LS_BOTTOM_TABLE_HEIGHT, 300);
+    return typeof v === 'number' && v > 0 ? v : 300;
+  });
+  useEffect(() => { safeWriteJSON(LS_BOTTOM_TABLE_HEIGHT, height); }, [height]);
+  const onResizeDown = (e) => {
+    e.preventDefault();
+    const move = (ev) => {
+      const y = ev.touches ? ev.touches[0].clientY : ev.clientY;
+      setHeight(Math.max(120, Math.min(window.innerHeight * 0.85, window.innerHeight - y)));
+    };
+    const up = () => {
+      document.removeEventListener('pointermove', move);
+      document.removeEventListener('pointerup', up);
+    };
+    document.addEventListener('pointermove', move);
+    document.addEventListener('pointerup', up);
+  };
   const cols = [
     { k: 'stop', label: 'Stop #', w: 96, get: (s) => <span className="font-mono text-blue-700">{s.stopNbr}</span> },
     { k: 'name', label: 'Ship To Name', w: 220, get: (s) => s.businessName || '—' },
@@ -5663,7 +5684,17 @@ function BottomStopsTable({ stops, notes, totalCount, open, setOpen, onPick }) {
   }, [stops, q, statusSel]);
   const toggleStatus = (k) => setStatusSel((prev) => { const n = new Set(prev); n.has(k) ? n.delete(k) : n.add(k); return n; });
   return (
-    <div className="absolute left-0 right-0 bottom-0 z-[12] bg-white border-t border-slate-200 shadow-[0_-2px_10px_rgba(0,0,0,0.10)] flex flex-col" style={{ maxHeight: open ? '45vh' : undefined }}>
+    <div className="absolute left-0 right-0 bottom-0 z-[12] bg-white border-t border-slate-200 shadow-[0_-2px_10px_rgba(0,0,0,0.10)] flex flex-col" style={{ height: open ? height : undefined }}>
+      {open && (
+        <div
+          onPointerDown={onResizeDown}
+          className="absolute -top-1.5 left-0 right-0 h-3 cursor-row-resize z-10 flex items-center justify-center group"
+          title="Drag to resize"
+          style={{ touchAction: 'none' }}
+        >
+          <div className="w-10 h-1 rounded-full bg-slate-300 group-hover:bg-slate-400" />
+        </div>
+      )}
       <div className="flex items-center gap-2 px-3 py-1.5 border-b border-slate-100">
         <button onClick={() => setOpen(!open)} className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-700 hover:text-slate-900 whitespace-nowrap" aria-expanded={open}>
           {open ? <ChevronDown size={14} /> : <ChevronUp size={14} />}
@@ -5706,7 +5737,7 @@ function BottomStopsTable({ stops, notes, totalCount, open, setOpen, onPick }) {
         )}
       </div>
       {open && (
-        <div className="overflow-auto">
+        <div className="overflow-auto flex-1 min-h-0">
           <table className="text-[11px] border-collapse" style={{ minWidth: cols.reduce((a, c) => a + c.w, 0) }}>
             <thead className="sticky top-0 bg-slate-50 z-10">
               <tr>
