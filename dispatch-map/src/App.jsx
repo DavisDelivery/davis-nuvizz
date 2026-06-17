@@ -46,7 +46,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.25.22';
+const APP_VERSION = '0.25.23';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -66,6 +66,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.25.23', 'AI results: populate Stops list/table reliably, orange found-pins, cleaner chat formatting'],
   ['0.25.22', 'Clicking a customer zooms to building level (~18) instead of neighborhood level'],
   ['0.25.21', 'Bottom stops table is drag-resizable (grab the top handle); height persists'],
   ['0.25.20', 'Correct a stop’s pin location — drag + save a per-customer override that persists for future loads'],
@@ -4654,11 +4655,20 @@ function MapScreen() {
     return { ...res, truncated, sent, total };
   }, [filteredStops, notes]);
 
-  const handleChatHighlight = useCallback((proIds) => {
+  // Highlight the stops a chat answer referenced. Uses the model's MATCHED_PRO_IDS
+  // line AND any stop numbers it listed in the prose — the latter covers long
+  // answers where the trailing IDs line got cut off by the token cap. Returns the
+  // count so the chat bubble can report it. Only sets a highlight when non-empty.
+  const handleChatHighlight = useCallback((proIds, answerText) => {
     const wanted = new Set((proIds || []).map((p) => String(p).trim()));
+    const text = String(answerText || '');
     const set = new Set();
-    for (const s of filteredStops) if (wanted.has(String(s.stopNbr))) set.add(s.stopNbr);
-    setAiResult({ set, summary: `${set.size} stop${set.size === 1 ? '' : 's'} from chat`, source: 'chat' });
+    for (const s of filteredStops) {
+      const id = String(s.stopNbr);
+      if (wanted.has(id) || (id && text.includes(id))) set.add(s.stopNbr);
+    }
+    if (set.size) setAiResult({ set, summary: `${set.size} stop${set.size === 1 ? '' : 's'} from chat`, source: 'chat' });
+    return set.size;
   }, [filteredStops]);
 
   // M5 — route grouping (client-side, mirrors parent app src/screens/MapScreen.jsx).
@@ -4804,7 +4814,8 @@ function MapScreen() {
     const newMarkers = positioned.map((s) => {
       const note = notes.get(s.matchKey);
       const restrictions = getRestrictionBadgeKeys(note, { day: selectedDayKey });
-      const dim = effectiveMatchSet && !effectiveMatchSet.has(s.stopNbr);
+      const matched = effectiveMatchSet && effectiveMatchSet.has(s.stopNbr);
+      const dim = effectiveMatchSet && !matched;
       // M4.1.6 — no restrictions → classic pin (State A). 1+ restrictions →
       // the pin disappears and the icon(s) become the marker (States B/C).
       // iconMarkerSvg returns size + anchor based on icon count.
@@ -4812,14 +4823,15 @@ function MapScreen() {
       if (restrictions.length === 0) {
         // M5.1 — status drives the pin. SCHEDULED keeps the note-flag color
         // (no regression); other states use their status hue + shape/glyph.
+        // When a result set is active (search / AI / selection), the matched
+        // stops render ORANGE so the "found" ones pop against the dimmed rest.
         const meta = STATUS_META[classifyStopStatus(s)] || STATUS_META.SCHEDULED;
-        const color = meta.color || flagColor(note);
+        const color = matched ? '#f59e0b' : (meta.color || flagColor(note));
         icon = {
-          url: pinSvgStatus(color, { hollow: meta.hollow, glyph: meta.glyph }),
-          // Smaller than the restriction-icon markers so plain stops read as
-          // secondary and the board is less cluttered (esp. in satellite view).
-          scaledSize: new google.maps.Size(20, 26),
-          anchor: new google.maps.Point(10, 25),
+          url: pinSvgStatus(color, { hollow: matched ? false : meta.hollow, glyph: meta.glyph }),
+          // Slightly larger when matched so the found stops stand out.
+          scaledSize: matched ? new google.maps.Size(28, 36) : new google.maps.Size(20, 26),
+          anchor: matched ? new google.maps.Point(14, 34) : new google.maps.Point(10, 25),
         };
       } else {
         const spec = iconMarkerSvg(restrictions);
