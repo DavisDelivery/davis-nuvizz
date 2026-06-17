@@ -46,7 +46,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.25.16';
+const APP_VERSION = '0.25.17';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -66,6 +66,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.25.17', 'HOTFIX: app blank-screen crash — mapFilters referenced before declaration (carry-over fetch TDZ)'],
   ['0.25.16', 'Declutter map controls: drop the on-screen keypad + pegman/scale; keep zoom/rotate(spin)/type/fullscreen + Ctrl-drag 3D'],
   ['0.25.15', 'Compact map controls — icon-only Box/Lasso; Filters collapses to a label-width pill that expands on click'],
   ['0.25.14', 'Collapsible NuVizz-style stops data grid at the bottom of the dispatch map'],
@@ -4286,6 +4287,13 @@ function MapScreen() {
   const [selectedDate, setSelectedDate] = useState(() => todayInET());
   const dateIsToday = isTodayET(selectedDate);
 
+  // Declared before useStops because the carry-over fetch reads mapFilters.carryover
+  // (referencing it after the useStops call hit a temporal-dead-zone crash).
+  const [mapFilters, setMapFilters] = useState(() => ({
+    ...DEFAULT_MAP_FILTERS,
+    ...safeReadJSON(LS_MAP_FILTERS, {}),
+  }));
+
   const { stops, loading, error, lastRefreshed, lastScannedAt, source, refresh } = useStops(selectedDate, mapFilters.carryover ? CARRYOVER_DAYS : 0);
   const { notes, ready: notesReady } = useCustomerNotes();
   useAutoScanner(stops, notes, notesReady);
@@ -4321,10 +4329,6 @@ function MapScreen() {
   // M4.4 — Map filter toolbar state. The "Show vehicle location" toggle is the
   // same Motive driver overlay that previously lived in the left panel; the
   // duplicate left-panel toggle is removed.
-  const [mapFilters, setMapFilters] = useState(() => ({
-    ...DEFAULT_MAP_FILTERS,
-    ...safeReadJSON(LS_MAP_FILTERS, {}),
-  }));
   const [toolbarCollapsed, setToolbarCollapsed] = useState(() => safeReadJSON(LS_FILTER_TOOLBAR_COLLAPSED, true));
   // M4.5 — Mobile drawer is closed by default on every load; active tab is
   // restored from localStorage so repeat dispatchers land where they left off.
