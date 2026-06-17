@@ -46,7 +46,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.25.19';
+const APP_VERSION = '0.25.20';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -66,6 +66,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.25.20', 'Correct a stop’s pin location — drag + save a per-customer override that persists for future loads'],
   ['0.25.19', 'Map controls match the requested set: compass + 2D/3D tilt, zoom, pegman, custom recenter crosshair'],
   ['0.25.18', 'Bottom stops table: search box + status filter (Un-Planned/Planned/In-Transit/Completed/Cancelled)'],
   ['0.25.17', 'HOTFIX: app blank-screen crash — mapFilters referenced before declaration (carry-over fetch TDZ)'],
@@ -1891,6 +1892,22 @@ function SelectionOverlay({ mode, onBox, onLasso }) {
   );
 }
 
+// Floating bar shown while relocating a stop's pin. The dispatcher drags the blue
+// pin on the map; this saves (or resets) the per-customer location override.
+function MoveLocationBar({ stop, saving, onSave, onCancel, onReset }) {
+  return (
+    <div className="fixed left-1/2 -translate-x-1/2 bottom-6 z-[45] bg-white border border-slate-200 rounded-lg shadow-xl px-3 py-2 flex items-center gap-2 max-w-[94vw]">
+      <div className="text-xs text-slate-700 min-w-0">
+        <div className="font-semibold truncate max-w-[180px]">{stop.businessName || stop.stopNbr}</div>
+        <div className="text-slate-500 whitespace-nowrap">Drag the blue pin to the correct spot, then Save.</div>
+      </div>
+      <button onClick={onReset} disabled={saving} className="text-[11px] px-2 py-1.5 rounded border border-slate-300 text-slate-600 hover:bg-slate-50 disabled:opacity-50 min-h-[40px]" title="Clear the saved override (back to NuVizz location)">Reset</button>
+      <button onClick={onCancel} disabled={saving} className="text-[11px] px-2 py-1.5 rounded border border-slate-300 text-slate-600 hover:bg-slate-50 disabled:opacity-50 min-h-[40px]">Cancel</button>
+      <button onClick={onSave} disabled={saving} className="text-xs px-3 py-1.5 rounded text-white font-semibold disabled:opacity-50 min-h-[40px]" style={{ background: '#16a34a' }}>{saving ? 'Saving…' : 'Save location'}</button>
+    </div>
+  );
+}
+
 // M5 — Show Routes toggle. Sits adjacent to the filter toolbar (top-right),
 // same visual treatment, but a standalone control (not in the 5-toggle group).
 // M5 — Driver route legend. Collapsible (same pattern as the restriction
@@ -2161,7 +2178,7 @@ function ProsSection({ stop }) {
   );
 }
 
-function StopSidebar({ stop, note, onClose, onSave, saving, saveError, onOpenRoute, mobile = false }) {
+function StopSidebar({ stop, note, onClose, onSave, saving, saveError, onOpenRoute, onMoveLocation, mobile = false }) {
   const [draft, setDraft] = useState(() => note || emptyNote(stop));
   const [editing, setEditing] = useState(!note);
   useEffect(() => {
@@ -2304,6 +2321,11 @@ function StopSidebar({ stop, note, onClose, onSave, saving, saveError, onOpenRou
               <StreetViewLink stop={stop} />
               <GoogleMapsLink stop={stop} />
             </div>
+            {onMoveLocation && (
+              <button onClick={() => onMoveLocation(stop)} className="mt-1.5 inline-flex items-center gap-1 text-xs text-blue-700 hover:underline">
+                <MapPin size={13} /> Correct pin location{note?.location_override ? ' · custom saved' : ''}
+              </button>
+            )}
           </div>
           {cleanInstructions(stop.signalSources?.orderInstructions) && (
             <div className="pt-1">
@@ -3471,7 +3493,7 @@ function MobileDriversTab({ drivers, error, onPickDriver }) {
 // from PR 1 with a proper bottom-sheet that has its own header + Info /
 // Notes / Hours / PROs tabs. Draft state spans all tabs so editing Notes
 // then switching to Hours preserves changes; one Save commits everything.
-function MobileStopDetailDrawer({ stop, note, onClose, onSave, saving, saveError, onOpenRoute }) {
+function MobileStopDetailDrawer({ stop, note, onClose, onSave, saving, saveError, onOpenRoute, onMoveLocation }) {
   const [activeTab, setActiveTab] = useState('info');
   const [draft, setDraft] = useState(() => note || emptyNote(stop));
   const [editing, setEditing] = useState(false);
@@ -3766,6 +3788,11 @@ function StopInfoTabContent({ stop, onOpenRoute }) {
           <StreetViewLink stop={stop} className="inline-flex items-center gap-1 text-[13px] text-blue-700" />
           <GoogleMapsLink stop={stop} className="inline-flex items-center gap-1 text-[13px] text-blue-700" />
         </div>
+        {onMoveLocation && (
+          <button onClick={() => onMoveLocation(stop)} className="mt-1.5 inline-flex items-center gap-1 text-[13px] text-blue-700" style={{ minHeight: 40 }}>
+            <MapPin size={14} /> Correct pin location{note?.location_override ? ' · custom saved' : ''}
+          </button>
+        )}
       </div>
       {cleanInstructions(stop.signalSources?.orderInstructions) && (
         <div>
@@ -4374,6 +4401,13 @@ function MapScreen() {
   const [selectNote, setSelectNote] = useState(null);
   const selectionOverlayRef = useRef(null); // OverlayView; getProjection() on demand
 
+  // Pin relocation: movingStop is the stop whose pin is being dragged to its real
+  // spot; movedTo holds the dragged coords; saved to customer_notes.location_override.
+  const [movingStop, setMovingStop] = useState(null);
+  const [movedTo, setMovedTo] = useState(null);
+  const [savingLoc, setSavingLoc] = useState(false);
+  const movingMarkerRef = useRef(null);
+
   const { drivers, error: driverErr, lastRefreshed: driversAt } = useDriverPositions(showDrivers);
   const { snapshot, loading: snapshotLoading, error: snapshotError } = useDriverSnapshot(selectedDriver);
   const panel = useResizablePanel(viewportWidth);
@@ -4451,8 +4485,13 @@ function MapScreen() {
   }, [mapFilters.hideTerminal, mapFilters.hideStemOut, mapFilters.unplannedOnly, stemOutKeys]);
 
   // Filter pipeline: filters → mapFilters → search. Memoized so we don't recompute on each render.
+  // A saved customer_notes.location_override replaces the (often wrong) NuVizz
+  // geocode for that customer, so the corrected pin sticks for every future load.
   const filteredStops = useMemo(
-    () => applyMapFilters(applyFilters(stops, notes, filters)),
+    () => applyMapFilters(applyFilters(stops, notes, filters)).map((s) => {
+      const ov = notes.get(s.matchKey)?.location_override;
+      return (ov && typeof ov.lat === 'number' && typeof ov.lng === 'number') ? { ...s, lat: ov.lat, lng: ov.lng } : s;
+    }),
     [stops, notes, filters, applyMapFilters],
   );
   // Total pallet count across the loaded board. NuVizz records the pallet count
@@ -4495,6 +4534,63 @@ function MapScreen() {
   }, [pxToLatLng, filteredStops, commitSelection]);
 
   const clearSelection = useCallback(() => { setSelectionSet(null); setSelectNote(null); }, []);
+
+  // Pin relocation handlers + the draggable marker that the dispatcher drags.
+  const startMoveLocation = useCallback((stop) => {
+    setSelectedStop(null); setSelectedDriver(null);
+    setMovedTo(null); setMovingStop(stop);
+  }, []);
+  const cancelMoveLocation = useCallback(() => { setMovingStop(null); setMovedTo(null); }, []);
+  const saveStopLocation = useCallback(async () => {
+    if (!db || !movingStop || !movedTo) return;
+    setSavingLoc(true);
+    try {
+      await setDoc(doc(db, 'customer_notes', movingStop.matchKey), {
+        match_key: movingStop.matchKey,
+        raw_name: movingStop.businessName || '',
+        location_override: { lat: movedTo.lat, lng: movedTo.lng },
+        location_override_at: serverTimestamp(),
+        last_updated: serverTimestamp(),
+      }, { merge: true });
+      setMovingStop(null); setMovedTo(null);
+    } catch (e) { console.error('save location override', e); }
+    finally { setSavingLoc(false); }
+  }, [movingStop, movedTo]);
+  const resetStopLocation = useCallback(async () => {
+    if (!db || !movingStop) return;
+    setSavingLoc(true);
+    try {
+      await setDoc(doc(db, 'customer_notes', movingStop.matchKey), {
+        match_key: movingStop.matchKey, location_override: null, last_updated: serverTimestamp(),
+      }, { merge: true });
+      setMovingStop(null); setMovedTo(null);
+    } catch (e) { console.error('reset location override', e); }
+    finally { setSavingLoc(false); }
+  }, [movingStop]);
+
+  useEffect(() => {
+    if (movingMarkerRef.current) { movingMarkerRef.current.setMap(null); movingMarkerRef.current = null; }
+    if (!google || !mapRef.current || !movingStop) return;
+    const ov = notes.get(movingStop.matchKey)?.location_override;
+    const start = {
+      lat: (ov && typeof ov.lat === 'number') ? ov.lat : movingStop.lat,
+      lng: (ov && typeof ov.lng === 'number') ? ov.lng : movingStop.lng,
+    };
+    if (start.lat == null || start.lng == null) return;
+    setMovedTo(start);
+    const m = new google.maps.Marker({
+      position: start, map: mapRef.current, draggable: true, zIndex: 99999,
+      icon: { url: pinSvgStatus('#1e5b92', {}), scaledSize: new google.maps.Size(34, 44), anchor: new google.maps.Point(17, 42) },
+      title: 'Drag to the correct location',
+      animation: google.maps.Animation.DROP,
+    });
+    m.addListener('dragend', () => { const p = m.getPosition(); if (p) setMovedTo({ lat: p.lat(), lng: p.lng() }); });
+    movingMarkerRef.current = m;
+    mapRef.current.panTo(start);
+    if ((mapRef.current.getZoom() || 0) < 16) mapRef.current.setZoom(18);
+    return () => { m.setMap(null); };
+  }, [google, movingStop]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const searchMatchSet = useMemo(() => {
     if (aiMode) return null;                       // AI mode: literal keyword filter suspended
     if (!debouncedSearch.trim()) return null;      // null sentinel = no search active
@@ -4566,7 +4662,9 @@ function MapScreen() {
   // multiple loads share a color (brief P3.1). Legend aggregates per driver.
   const routeData = useMemo(() => {
     if (!showRoutes) return { byLoad: [], legend: [] };
-    const positioned = stops.filter((s) => s.lat != null && s.lng != null && s.loadNbr && s.driverUserName);
+    const positioned = stops
+      .map((s) => { const ov = notes.get(s.matchKey)?.location_override; return (ov && typeof ov.lat === 'number' && typeof ov.lng === 'number') ? { ...s, lat: ov.lat, lng: ov.lng } : s; })
+      .filter((s) => s.lat != null && s.lng != null && s.loadNbr && s.driverUserName);
     const loadGroups = new Map();
     for (const s of positioned) {
       if (!loadGroups.has(s.loadNbr)) {
@@ -4600,7 +4698,7 @@ function MapScreen() {
     }
     const legend = [...driverAgg.values()].sort((a, b) => a.driverUserName.localeCompare(b.driverUserName));
     return { byLoad, legend };
-  }, [showRoutes, stops]);
+  }, [showRoutes, stops, notes]);
 
   // M5.2 — the stops on the currently-opened route, kept separate from routeData
   // (which depends on showRoutes). The route detail must render even when the
@@ -5087,6 +5185,15 @@ function MapScreen() {
           highlightActive={aiResult?.source === 'chat'}
           stopCount={filteredStops.length}
         />
+        {movingStop && (
+          <MoveLocationBar
+            stop={movingStop}
+            saving={savingLoc}
+            onSave={saveStopLocation}
+            onCancel={cancelMoveLocation}
+            onReset={resetStopLocation}
+          />
+        )}
 
         <MobileDrawer
           open={mobileDrawerOpen}
@@ -5139,6 +5246,7 @@ function MapScreen() {
             stop={selectedStop}
             note={notes.get(selectedStop.matchKey)}
             onClose={() => setSelectedStop(null)}
+            onMoveLocation={startMoveLocation}
             onOpenRoute={(loadNbr) => { setSelectedStop(null); setSelectedRoute(loadNbr); }}
             onSave={async (draft) => {
               await handleSave(draft);
@@ -5354,6 +5462,15 @@ function MapScreen() {
           highlightActive={aiResult?.source === 'chat'}
           stopCount={filteredStops.length}
         />
+        {movingStop && (
+          <MoveLocationBar
+            stop={movingStop}
+            saving={savingLoc}
+            onSave={saveStopLocation}
+            onCancel={cancelMoveLocation}
+            onReset={resetStopLocation}
+          />
+        )}
         {/* M5 — one-shot note when live drivers were auto-disabled for a past/future date. */}
         {driverGateNote && (
           <div className="absolute top-16 left-1/2 -translate-x-1/2 z-[7] bg-amber-50 border border-amber-300 rounded shadow px-3 py-1.5 text-xs text-amber-800">
@@ -5410,6 +5527,7 @@ function MapScreen() {
           stop={selectedStop}
           note={notes.get(selectedStop.matchKey)}
           onClose={() => setSelectedStop(null)}
+          onMoveLocation={startMoveLocation}
           onSave={handleSave}
           saving={saving}
           saveError={saveError}
