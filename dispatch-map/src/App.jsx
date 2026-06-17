@@ -46,7 +46,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.25.18';
+const APP_VERSION = '0.25.19';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -66,6 +66,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.25.19', 'Map controls match the requested set: compass + 2D/3D tilt, zoom, pegman, custom recenter crosshair'],
   ['0.25.18', 'Bottom stops table: search box + status filter (Un-Planned/Planned/In-Transit/Completed/Cancelled)'],
   ['0.25.17', 'HOTFIX: app blank-screen crash — mapFilters referenced before declaration (carry-over fetch TDZ)'],
   ['0.25.16', 'Declutter map controls: drop the on-screen keypad + pegman/scale; keep zoom/rotate(spin)/type/fullscreen + Ctrl-drag 3D'],
@@ -4380,6 +4381,7 @@ function MapScreen() {
   const searchInputRef = useRef(null);
   const mapRef = useRef(null);
   const mapDiv = useRef(null);
+  const recenterRef = useRef(null); // latest "fit to stops" fn for the custom control
   const clustererRef = useRef(null);
   const markersRef = useRef([]);
   const driverMarkersRef = useRef([]);
@@ -4614,20 +4616,15 @@ function MapScreen() {
     mapRef.current = new google.maps.Map(mapDiv.current, {
       center: BUFORD,
       zoom: 10,
-      // 3D + a TRIMMED control set. A vector mapId (VITE_GOOGLE_MAP_ID) unlocks
-      // tilt/heading — hold ⌘/Ctrl + drag to spin around a location. We keep only
-      // zoom + rotate (the compass that spins) + map type, drop the redundant ones
-      // (pegman/scale), and turn OFF keyboardShortcuts so the big on-screen
-      // pan/zoom keypad (which duplicated drag/zoom) no longer appears.
+      // Exactly the vector-map control set the dispatcher asked for: the rotate
+      // compass + 2D/3D tilt (rotateControl on a vector mapId), zoom, the Street
+      // View pegman, and a custom Recenter crosshair (added below). Map-type +
+      // fullscreen are dropped (the Filters panel has the Satellite toggle).
       ...(MAP_ID ? { mapId: MAP_ID } : {}),
-      mapTypeControl: true,
-      mapTypeControlOptions: {
-        position: google.maps.ControlPosition.LEFT_BOTTOM,
-        mapTypeIds: ['roadmap', 'satellite', 'hybrid', 'terrain'],
-      },
-      streetViewControl: false,
-      fullscreenControl: true,
-      fullscreenControlOptions: { position: google.maps.ControlPosition.RIGHT_BOTTOM },
+      mapTypeControl: false,
+      streetViewControl: true,
+      streetViewControlOptions: { position: google.maps.ControlPosition.RIGHT_BOTTOM },
+      fullscreenControl: false,
       zoomControl: true,
       zoomControlOptions: { position: google.maps.ControlPosition.RIGHT_BOTTOM },
       rotateControl: true,
@@ -4639,6 +4636,16 @@ function MapScreen() {
       gestureHandling: 'greedy',
     });
     labelOverlayClassRef.current = makeDriverLabelOverlayClass(google);
+    // Custom "Recenter on stops" control (the crosshair). A ref holds the latest
+    // fit function so the once-created button always recenters the current board.
+    const recenterBtn = document.createElement('button');
+    recenterBtn.type = 'button';
+    recenterBtn.title = 'Recenter on stops';
+    recenterBtn.setAttribute('aria-label', 'Recenter on stops');
+    recenterBtn.style.cssText = 'background:#fff;border:none;border-radius:2px;box-shadow:0 1px 4px rgba(0,0,0,0.3);width:40px;height:40px;margin:0 10px 10px 0;cursor:pointer;display:flex;align-items:center;justify-content:center;';
+    recenterBtn.innerHTML = '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#5f6368" stroke-width="2"><circle cx="12" cy="12" r="6"/><line x1="12" y1="1" x2="12" y2="5"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="1" y1="12" x2="5" y2="12"/><line x1="19" y1="12" x2="23" y2="12"/><circle cx="12" cy="12" r="1.5" fill="#5f6368" stroke="none"/></svg>';
+    recenterBtn.addEventListener('click', () => recenterRef.current && recenterRef.current());
+    mapRef.current.controls[google.maps.ControlPosition.RIGHT_BOTTOM].push(recenterBtn);
     // Box/lasso projection: an invisible OverlayView exposes the live
     // pixel<->LatLng projection. Created HERE (not a separate [google] effect)
     // so it runs AFTER mapRef is set — otherwise it no-ops and selection breaks.
@@ -4647,6 +4654,19 @@ function MapScreen() {
     projOv.setMap(mapRef.current);
     selectionOverlayRef.current = projOv;
   }, [google]);
+
+  // Keep the Recenter button's action pointed at the current board: fit to all
+  // currently-shown stops (or fall back to the default center when none).
+  useEffect(() => {
+    recenterRef.current = () => {
+      if (!google || !mapRef.current) return;
+      const pts = filteredStops.filter((s) => s.lat != null && s.lng != null);
+      if (!pts.length) { mapRef.current.panTo(BUFORD); mapRef.current.setZoom(10); return; }
+      const b = new google.maps.LatLngBounds();
+      pts.forEach((s) => b.extend({ lat: s.lat, lng: s.lng }));
+      mapRef.current.fitBounds(b, 60);
+    };
+  }, [google, filteredStops]);
 
   // M4.4 — satellite/roadmap toggle. 'hybrid' = satellite imagery + road labels,
   // which is most useful for spotting docks/yards while keeping street names.
