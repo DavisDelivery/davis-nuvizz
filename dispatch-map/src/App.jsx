@@ -46,7 +46,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.25.12';
+const APP_VERSION = '0.25.13';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -66,6 +66,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.25.13', 'Carry-over unplanned (prior-day open orders) toggle + fix box/lasso selection (projection now ready)'],
   ['0.25.12', 'Box + lasso multi-select on the map — highlights and filters the selected stops'],
   ['0.25.11', 'Total pallets count (sum of NuVizz carton field) shown below the stop count'],
   ['0.25.10', 'Distinct route-line colors for every driver (golden-angle hue spread, no more repeats)'],
@@ -285,6 +286,7 @@ const DEFAULT_MAP_FILTERS = {
   hideTerminal: false,
   hideStemOut: false,
   unplannedOnly: false,
+  carryover: false,
   showVehicleLocation: true,
   showClustered: true,
 };
@@ -648,7 +650,7 @@ async function fetchJsonWithRetry(url, { retries = 1, backoffMs = 1500 } = {}) {
 }
 
 // Pull stops for a given date (YYYY-MM-DD) from the proxy function.
-function useStops(date) {
+function useStops(date, carryDays = 0) {
   const [stops, setStops] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -660,7 +662,10 @@ function useStops(date) {
     setLoading(true);
     setError(null);
     try {
-      const params = MOCK_MODE ? '?mock=1' : (date ? `?date=${encodeURIComponent(date)}` : '');
+      let params = MOCK_MODE ? '?mock=1' : (date ? `?date=${encodeURIComponent(date)}` : '');
+      // carryDays>0 also pulls still-unplanned stops from the prior N days (orders
+      // scheduled earlier that never got delivered) so they don't fall off the board.
+      if (!MOCK_MODE && carryDays > 0) params += (params ? '&' : '?') + `carryDays=${carryDays}`;
       const url = '/.netlify/functions/nuvizz-pull-today-stops' + params;
       const data = await fetchJsonWithRetry(url);
       if (!data.ok) throw new Error(data.error || 'NuVizz function returned ok:false');
@@ -683,6 +688,7 @@ function useStops(date) {
   useEffect(() => { refresh(); }, [refresh]);
   return { stops, loading, error, lastRefreshed, lastScannedAt, source, refresh };
 }
+const CARRYOVER_DAYS = 7; // how many prior days of still-unplanned orders to fold in
 
 // M2.1 — Auto-scan today's stops for SPL-INSTR-TEXT + addressLine2 signals
 // and enrich customer_notes accordingly. Source-locked (see signal-scanner.ts):
@@ -1945,6 +1951,11 @@ function FilterToolbar({ filters, setFilters, collapsed, setCollapsed, stopCount
             label="Unplanned only"
             checked={filters.unplannedOnly}
             onChange={set('unplannedOnly')}
+          />
+          <MapFilterToggle
+            label="Carry-over unplanned"
+            checked={filters.carryover}
+            onChange={set('carryover')}
           />
           <MapFilterToggle
             label="Show drivers (live)"
@@ -3375,6 +3386,11 @@ function MobileFiltersTab({
             onChange={setMF('unplannedOnly')}
           />
           <MapFilterToggle
+            label="Carry-over unplanned"
+            checked={mapFilters.carryover}
+            onChange={setMF('carryover')}
+          />
+          <MapFilterToggle
             label="Show drivers (live)"
             checked={mapFilters.showVehicleLocation}
             onChange={setMF('showVehicleLocation')}
@@ -4266,7 +4282,7 @@ function MapScreen() {
   const [selectedDate, setSelectedDate] = useState(() => todayInET());
   const dateIsToday = isTodayET(selectedDate);
 
-  const { stops, loading, error, lastRefreshed, lastScannedAt, source, refresh } = useStops(selectedDate);
+  const { stops, loading, error, lastRefreshed, lastScannedAt, source, refresh } = useStops(selectedDate, mapFilters.carryover ? CARRYOVER_DAYS : 0);
   const { notes, ready: notesReady } = useCustomerNotes();
   useAutoScanner(stops, notes, notesReady);
   const { google, error: mapsError } = useGoogleMaps();
@@ -4345,7 +4361,7 @@ function MapScreen() {
   const [selectMode, setSelectMode] = useState(null); // null | 'box' | 'lasso'
   const [selectionSet, setSelectionSet] = useState(null);
   const [selectNote, setSelectNote] = useState(null);
-  const selectionProjRef = useRef(null);
+  const selectionOverlayRef = useRef(null); // OverlayView; getProjection() on demand
 
   const { drivers, error: driverErr, lastRefreshed: driversAt } = useDriverPositions(showDrivers);
   const { snapshot, loading: snapshotLoading, error: snapshotError } = useDriverSnapshot(selectedDriver);
@@ -4432,24 +4448,14 @@ function MapScreen() {
     () => stops.reduce((sum, s) => sum + (Number(s.cartons) || 0), 0),
     [stops],
   );
+  const carryoverCount = useMemo(() => stops.reduce((n, s) => n + (s.carryover ? 1 : 0), 0), [stops]);
 
   // ── Box / lasso selection ──────────────────────────────────────────────────
-  // An invisible OverlayView gives us the live pixel<->LatLng projection for the
-  // map container; the drawing overlay (rendered while a tool is armed) reports
-  // container-relative pixels which we convert here and test with the shared
-  // boxFromCorners/latLngInBounds and pointInPolygon geometry.
-  useEffect(() => {
-    if (!google || !mapRef.current) return;
-    const ov = new google.maps.OverlayView();
-    ov.onAdd = () => {};
-    ov.draw = () => { selectionProjRef.current = ov.getProjection(); };
-    ov.onRemove = () => {};
-    ov.setMap(mapRef.current);
-    return () => { ov.setMap(null); selectionProjRef.current = null; };
-  }, [google]);
-
+  // The live pixel<->LatLng projection is published by an OverlayView created in
+  // the map-init effect (must run after mapRef exists). Converts the drawn
+  // shape's container pixels to LatLng for the shared enclosure geometry.
   const pxToLatLng = useCallback((x, y) => {
-    const proj = selectionProjRef.current;
+    const proj = selectionOverlayRef.current?.getProjection();
     if (!proj) return null;
     const ll = proj.fromContainerPixelToLatLng(new google.maps.Point(x, y));
     return ll ? { lat: ll.lat(), lng: ll.lng() } : null;
@@ -4621,6 +4627,13 @@ function MapScreen() {
       gestureHandling: 'greedy',
     });
     labelOverlayClassRef.current = makeDriverLabelOverlayClass(google);
+    // Box/lasso projection: an invisible OverlayView exposes the live
+    // pixel<->LatLng projection. Created HERE (not a separate [google] effect)
+    // so it runs AFTER mapRef is set — otherwise it no-ops and selection breaks.
+    const projOv = new google.maps.OverlayView();
+    projOv.onAdd = projOv.draw = projOv.onRemove = () => {};
+    projOv.setMap(mapRef.current);
+    selectionOverlayRef.current = projOv;
   }, [google]);
 
   // M4.4 — satellite/roadmap toggle. 'hybrid' = satellite imagery + road labels,
@@ -4977,7 +4990,7 @@ function MapScreen() {
         {/* Compact status pill — top-right, below the app bar */}
         <div className="absolute top-2 right-2 bg-white/95 backdrop-blur border border-slate-200 rounded-lg shadow px-2.5 py-1.5 flex items-center gap-2 text-[11px] z-10">
           <div className="leading-tight">
-            <div className="font-semibold">{stops.length} stops</div>
+            <div className="font-semibold">{stops.length} stops{carryoverCount > 0 ? <span className="text-amber-700 font-normal"> · {carryoverCount} c/o</span> : null}</div>
             <div className="text-slate-600 text-[10px]">{totalPalletsCount.toLocaleString()} total pallets</div>
             <div className="text-slate-500 text-[10px]">{fmtStopFreshness(source, lastScannedAt)}</div>
           </div>
@@ -5269,7 +5282,7 @@ function MapScreen() {
           <div className="absolute top-3 right-3 z-[6] flex flex-col items-end gap-2">
             <div className="bg-white/95 backdrop-blur border border-slate-200 rounded-lg shadow px-3 py-2 flex items-center gap-3 text-xs">
               <div>
-                <div className="font-semibold">{stops.length} stops</div>
+                <div className="font-semibold">{stops.length} stops{carryoverCount > 0 ? <span className="text-amber-700 font-normal"> · {carryoverCount} carry-over</span> : null}</div>
                 <div className="text-slate-600">{totalPalletsCount.toLocaleString()} total pallets</div>
                 <div className="text-slate-500">{fmtStopFreshness(source, lastScannedAt)}</div>
               </div>

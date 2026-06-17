@@ -12,6 +12,10 @@
 // Query params:
 //   date=YYYY-MM-DD   optional, defaults to today UTC
 //   mock=1            return the bundled fixture (no Firestore/NuVizz)
+//   carryDays=N       also fold in still-UNPLANNED stops from the prior N days
+//                     (orders scheduled earlier that were never delivered). These
+//                     come from the already-scanned per-day indexes — no extra
+//                     NuVizz traffic — and are flagged carryover:true. Capped at 14.
 //   live=1            DEBUG: bypass the index and scan NuVizz live (may exceed
 //                     the 26s cap for the unplanned scan — not for normal use)
 
@@ -21,11 +25,41 @@ import { isFirestoreEnabled, readStops } from './lib/firestore.mts';
 
 const TENANT = 'davis';
 
+function addDaysUTC(dateStr: string, n: number): string {
+  const d = new Date(dateStr + 'T00:00:00Z');
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+}
+
+// Fold still-unplanned stops from the prior `carryDays` days into `stops`,
+// deduped by stopNbr, flagged carryover + scheduledDate. Reads only existing
+// per-day indexes (cheap; possibly stale — they aren't re-scanned once past).
+async function mergeCarryover(stops: any[], date: string, carryDays: number): Promise<number> {
+  const seen = new Set(stops.map((s) => String(s.stopNbr)));
+  const priorDates = Array.from({ length: carryDays }, (_, i) => addDaysUTC(date, -(i + 1)));
+  const reads = await Promise.all(
+    priorDates.map((d) => readStops(TENANT, d).then((r) => ({ d, stops: r.stops })).catch(() => ({ d, stops: [] as any[] }))),
+  );
+  let added = 0;
+  for (const { d, stops: prior } of reads) {
+    for (const s of prior) {
+      if (!s || s.isPlanned || s.isTerminal) continue;   // only carry-over UNPLANNED, real stops
+      const key = String(s.stopNbr);
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      stops.push({ ...s, carryover: true, scheduledDate: d });
+      added++;
+    }
+  }
+  return added;
+}
+
 export default async (req: Request): Promise<Response> => {
   const url = new URL(req.url);
   const date = url.searchParams.get('date') || todayUTC();
   const useMock = url.searchParams.get('mock') === '1';
   const live = url.searchParams.get('live') === '1';
+  const carryDays = Math.max(0, Math.min(14, parseInt(url.searchParams.get('carryDays') || '0', 10) || 0));
   const cors = { 'Access-Control-Allow-Origin': '*', 'Content-Type': 'application/json' };
 
   if (req.method === 'OPTIONS') return new Response('', { status: 200, headers: cors });
@@ -58,6 +92,12 @@ export default async (req: Request): Promise<Response> => {
       source = 'fixture';
     }
 
+    // Fold in prior-day carry-over (Firestore-backed reads only).
+    let carryoverCount = 0;
+    if (carryDays > 0 && !useMock && !live && isFirestoreEnabled()) {
+      try { carryoverCount = await mergeCarryover(stops, date, carryDays); } catch { /* keep base stops */ }
+    }
+
     const unplannedCount = stops.filter((s) => s.isUnplanned).length;
     return new Response(JSON.stringify({
       ok: true,
@@ -67,6 +107,8 @@ export default async (req: Request): Promise<Response> => {
       lastScannedAt,
       count: stops.length,
       unplannedCount,
+      carryoverCount,
+      carryDays,
       stops,
     }), { status: 200, headers: cors });
   } catch (e: any) {
