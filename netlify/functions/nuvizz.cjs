@@ -862,7 +862,10 @@ exports.handler = async (event) => {
 
       // Layer 2: Firestore (cross-instance, populated by scheduled function or any prior scan)
       // This is the big speedup — sub-second response from a single Firestore query.
-      if (!bypassCache && !params.from && !params.to) {
+      // In consolidated mode Firestore IS the source of truth, so nocache must still
+      // read it fresh (bypassing only the in-memory cache) — never skip to the empty
+      // guard below, which would blank the board on any nocache request.
+      if ((!bypassCache || consolidatedReads()) && !params.from && !params.to) {
         const fsData = await readFleetFromFirestore(fleetTenant, dateStr);
         if (fsData && fsData.loads && fsData.loads.length > 0) {
           // Strip per-load stops to keep payload light — __fleet response is summary only
