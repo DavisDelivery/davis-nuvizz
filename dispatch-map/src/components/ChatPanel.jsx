@@ -18,6 +18,35 @@ import { MessageSquare, X, Send, Sparkles } from 'lucide-react';
 
 const BRAND = '#1e5b92';
 
+// Render **bold** runs within a line.
+function renderBold(s) {
+  return String(s).split(/(\*\*[^*]+\*\*)/g).map((p, i) => {
+    const m = /^\*\*([^*]+)\*\*$/.exec(p);
+    return m ? <strong key={i}>{m[1]}</strong> : <span key={i}>{p}</span>;
+  });
+}
+
+// Light formatter for assistant answers: drops markdown table separator rows,
+// turns "| a | b |" rows and "- "/"•" bullets into clean lines, keeps **bold**.
+function renderRich(text) {
+  const lines = String(text).split('\n')
+    .filter((l) => !/^\s*\|?\s*:?-{2,}.*\s*\|?\s*$/.test(l)); // drop |---|---| separators
+  return lines.map((line, i) => {
+    let l = line;
+    if (/^\s*\|.*\|\s*$/.test(l)) {
+      l = l.replace(/^\s*\|/, '').replace(/\|\s*$/, '').split('|').map((c) => c.trim()).filter(Boolean).join(' · ');
+    }
+    const bullet = /^\s*[-*•]\s+(.*)$/.exec(l);
+    if (l.trim() === '') return <div key={i} className="h-1.5" />;
+    return (
+      <div key={i} className={bullet ? 'flex gap-1.5 leading-snug' : 'leading-snug'}>
+        {bullet && <span className="text-slate-400 flex-shrink-0">•</span>}
+        <span>{renderBold(bullet ? bullet[1] : l)}</span>
+      </div>
+    );
+  });
+}
+
 export default function ChatPanel({ open, onClose, onSend, onHighlight, onClear, highlightActive, stopCount }) {
   const [messages, setMessages] = useState([]); // { role:'user'|'assistant', text, meta? }
   const [draft, setDraft] = useState('');
@@ -46,12 +75,14 @@ export default function ChatPanel({ open, onClose, onSend, onHighlight, onClear,
     try {
       const res = await onSend(q);
       const ids = Array.isArray(res?.matchedProIds) ? res.matchedProIds : [];
+      const answer = res?.answer || '(no answer)';
+      // Highlight by IDs + any stop numbers in the prose; use the real matched count.
+      const count = onHighlight(ids, answer) || 0;
       setMessages((m) => [...m, {
         role: 'assistant',
-        text: res?.answer || '(no answer)',
-        meta: { count: ids.length, truncated: res?.truncated, sent: res?.sent, total: res?.total },
+        text: answer,
+        meta: { count, truncated: res?.truncated, sent: res?.sent, total: res?.total },
       }]);
-      if (ids.length) onHighlight(ids);
     } catch (e) {
       const code = e?.code || 'ai_unavailable';
       setError(
@@ -117,12 +148,12 @@ export default function ChatPanel({ open, onClose, onSend, onHighlight, onClear,
           <div key={i} className={m.role === 'user' ? 'flex justify-end' : 'flex justify-start'}>
             <div
               className={
-                'max-w-[85%] rounded-2xl px-3 py-2 text-sm whitespace-pre-wrap break-words ' +
-                (m.role === 'user' ? 'text-white rounded-br-sm' : 'bg-slate-100 text-slate-800 rounded-bl-sm')
+                'max-w-[88%] rounded-2xl px-3 py-2 text-sm break-words ' +
+                (m.role === 'user' ? 'text-white rounded-br-sm whitespace-pre-wrap' : 'bg-slate-100 text-slate-800 rounded-bl-sm space-y-0.5')
               }
               style={m.role === 'user' ? { background: BRAND } : undefined}
             >
-              {m.text}
+              {m.role === 'assistant' ? renderRich(m.text) : m.text}
               {m.role === 'assistant' && m.meta && (
                 <div className="mt-1.5 text-[10px] text-slate-500">
                   {m.meta.count > 0 ? `Highlighted ${m.meta.count} stop${m.meta.count === 1 ? '' : 's'} on the map.` : 'No matching stops to highlight.'}
