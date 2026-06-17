@@ -46,7 +46,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.25.25';
+const APP_VERSION = '0.26.0';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -66,6 +66,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.26.0', 'NuVizz scan schedule (ET time-of-day gating ~14k/day) + working manual Scan-now + split load/order timestamps'],
   ['0.25.25', 'Map auto-refreshes from the DB index every 2 min (silent, visible-only) so a long-open tab stays current'],
   ['0.25.24', 'Default delivery pins use a brighter blue (#4285F4) so they read on satellite'],
   ['0.25.23', 'AI results: populate Stops list/table reliably, orange found-pins, cleaner chat formatting'],
@@ -675,6 +676,8 @@ function useStops(date, carryDays = 0) {
   const [error, setError] = useState(null);
   const [lastRefreshed, setLastRefreshed] = useState(null);
   const [lastScannedAt, setLastScannedAt] = useState(null);
+  const [lastLoadScanAt, setLastLoadScanAt] = useState(null);
+  const [lastUnplannedScanAt, setLastUnplannedScanAt] = useState(null);
   const [source, setSource] = useState(null);
 
   const refresh = useCallback(async ({ silent = false } = {}) => {
@@ -696,6 +699,8 @@ function useStops(date, carryDays = 0) {
       setStops(decorated);
       setSource(data.source || 'nuvizz');
       setLastScannedAt(data.lastScannedAt || null);
+      setLastLoadScanAt(data.lastLoadScanAt || null);
+      setLastUnplannedScanAt(data.lastUnplannedScanAt || null);
       setLastRefreshed(new Date());
     } catch (e) {
       if (!silent) setError(e.message); // a failed silent poll shouldn't surface an error banner
@@ -718,7 +723,7 @@ function useStops(date, carryDays = 0) {
     return () => { clearInterval(timer); document.removeEventListener('visibilitychange', onVis); };
   }, [refresh]);
 
-  return { stops, loading, error, lastRefreshed, lastScannedAt, source, refresh };
+  return { stops, loading, error, lastRefreshed, lastScannedAt, lastLoadScanAt, lastUnplannedScanAt, source, refresh };
 }
 const CARRYOVER_DAYS = 7; // how many prior days of still-unplanned orders to fold in
 
@@ -1348,6 +1353,47 @@ function fmtTimeAgo(d) {
   if (secs < 60) return `${secs}s ago`;
   if (secs < 3600) return `${Math.round(secs / 60)}m ago`;
   return `${Math.round(secs / 3600)}h ago`;
+}
+
+// Relative recency for a feed timestamp (ISO/UTC instant) — "3 min ago".
+function fmtFeedAge(iso) {
+  if (!iso) return null;
+  const secs = Math.round((Date.now() - new Date(iso).getTime()) / 1000);
+  if (secs < 60) return `${Math.max(0, secs)}s ago`;
+  if (secs < 3600) return `${Math.round(secs / 60)} min ago`;
+  if (secs < 86400) return `${Math.round(secs / 3600)} hr ago`;
+  return `${Math.round(secs / 86400)} d ago`;
+}
+// Absolute ET in house format: "Jul 14, 2025, 3:42 PM ET".
+function fmtAbsoluteET(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  const date = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', month: 'short', day: 'numeric', year: 'numeric' }).format(d);
+  const time = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit', hour12: true }).format(d);
+  return `${date}, ${time} ET`;
+}
+// Current ET hour (0-23) — for "Orders paused until 10 AM" messaging.
+function etHourNow() {
+  return Number(new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', hour: '2-digit', hour12: false }).format(new Date())) % 24;
+}
+
+// Split per-feed freshness: loads and orders run on different cadences, so a
+// single stamp would mislead. Shows relative recency; absolute ET on hover.
+// Before 10 AM ET the orders feed is intentionally idle → "paused until 10 AM".
+function FeedTimestamps({ loadAt, unplannedAt, isToday, className }) {
+  const ordersPaused = isToday && etHourNow() < 10;
+  const loadRel = fmtFeedAge(loadAt);
+  const orderRel = fmtFeedAge(unplannedAt);
+  return (
+    <div className={className || 'text-slate-500'}>
+      <span title={fmtAbsoluteET(loadAt)}>Loads {loadRel ? `updated ${loadRel}` : '—'}</span>
+      <span className="text-slate-300"> · </span>
+      <span title={fmtAbsoluteET(unplannedAt)}>
+        Orders {ordersPaused ? 'paused until 10 AM' : (orderRel ? `updated ${orderRel}` : '—')}
+      </span>
+    </div>
+  );
 }
 
 // M5.2 — data now comes from the pre-scanned Firestore stop index, refreshed by a
@@ -4347,7 +4393,32 @@ function MapScreen() {
     ...safeReadJSON(LS_MAP_FILTERS, {}),
   }));
 
-  const { stops, loading, error, lastRefreshed, lastScannedAt, source, refresh } = useStops(selectedDate, mapFilters.carryover ? CARRYOVER_DAYS : 0);
+  const { stops, loading, error, lastRefreshed, lastScannedAt, lastLoadScanAt, lastUnplannedScanAt, source, refresh } = useStops(selectedDate, mapFilters.carryover ? CARRYOVER_DAYS : 0);
+
+  // Manual "Scan now" — triggers a REAL on-demand NuVizz scan (today loads +
+  // today unplanned + tomorrow loads) via the synchronous endpoint, then re-reads
+  // the index. 60s cooldown so it can't be mashed.
+  const [scanning, setScanning] = useState(false);
+  const [scanCooldown, setScanCooldown] = useState(false);
+  const [scanErr, setScanErr] = useState(null);
+  const manualScan = useCallback(async () => {
+    if (scanning || scanCooldown) return;
+    setScanning(true); setScanErr(null);
+    try {
+      const resp = await fetch('/.netlify/functions/nuvizz-manual-scan', { method: 'POST' });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok || data.ok === false) throw new Error(data.error || 'Scan unavailable');
+      await refresh({ silent: true });
+      setScanCooldown(true);
+      setTimeout(() => setScanCooldown(false), 60000);
+    } catch (e) {
+      setScanErr(e?.message || 'Scan failed');
+      setTimeout(() => setScanErr(null), 5000);
+    } finally {
+      setScanning(false);
+    }
+  }, [scanning, scanCooldown, refresh]);
+
   const { notes, ready: notesReady } = useCustomerNotes();
   useAutoScanner(stops, notes, notesReady);
   const { google, error: mapsError } = useGoogleMaps();
@@ -5157,15 +5228,17 @@ function MapScreen() {
           <div className="leading-tight">
             <div className="font-semibold">{stops.length} stops{carryoverCount > 0 ? <span className="text-amber-700 font-normal"> · {carryoverCount} c/o</span> : null}</div>
             <div className="text-slate-600 text-[10px]">{totalPalletsCount.toLocaleString()} total pallets</div>
-            <div className="text-slate-500 text-[10px]">{fmtStopFreshness(source, lastScannedAt)}</div>
+            <FeedTimestamps loadAt={lastLoadScanAt} unplannedAt={lastUnplannedScanAt} isToday={dateIsToday} className="text-slate-500 text-[10px]" />
+            {scanErr && <div className="text-[10px] text-red-600">{scanErr}</div>}
           </div>
           <button
-            onClick={refresh}
-            disabled={loading}
+            onClick={manualScan}
+            disabled={scanning || scanCooldown}
             className="p-1 rounded hover:bg-slate-100 active:bg-slate-200 disabled:opacity-50"
-            aria-label="Refresh"
+            aria-label="Scan now"
+            title={scanCooldown ? 'Just scanned — try again shortly' : 'Scan now (fresh pull from NuVizz)'}
           >
-            <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
+            <RefreshCw size={14} className={scanning ? 'animate-spin' : ''} />
           </button>
           {/* v0.11.3 — explicit Filters entry on mobile. The FAB also opens the
               drawer, but its generic list icon wasn't read as "filters"; this puts
@@ -5459,15 +5532,16 @@ function MapScreen() {
               <div>
                 <div className="font-semibold">{stops.length} stops{carryoverCount > 0 ? <span className="text-amber-700 font-normal"> · {carryoverCount} carry-over</span> : null}</div>
                 <div className="text-slate-600">{totalPalletsCount.toLocaleString()} total pallets</div>
-                <div className="text-slate-500">{fmtStopFreshness(source, lastScannedAt)}</div>
+                <FeedTimestamps loadAt={lastLoadScanAt} unplannedAt={lastUnplannedScanAt} isToday={dateIsToday} className="text-slate-500" />
+                {scanErr && <div className="text-[11px] text-red-600">{scanErr}</div>}
               </div>
               <button
-                onClick={refresh}
-                disabled={loading}
+                onClick={manualScan}
+                disabled={scanning || scanCooldown}
                 className="p-1.5 rounded hover:bg-slate-100 disabled:opacity-50"
-                title="Refresh"
+                title={scanCooldown ? 'Just scanned — try again shortly' : 'Scan now (fresh pull from NuVizz)'}
               >
-                <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
+                <RefreshCw size={14} className={scanning ? 'animate-spin' : ''} />
               </button>
             </div>
             <FilterToolbar

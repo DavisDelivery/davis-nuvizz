@@ -7,6 +7,8 @@
   node_bundler = "esbuild"
   [functions."nuvizz-pull-today-stops"]
     timeout = 26
+  [functions."nuvizz-manual-scan"]
+    timeout = 26
   [functions."motive-driver-positions"]
     timeout = 10
 
