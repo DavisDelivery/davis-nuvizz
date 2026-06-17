@@ -46,7 +46,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.25.15';
+const APP_VERSION = '0.25.16';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -66,6 +66,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.25.16', 'Declutter map controls: drop the on-screen keypad + pegman/scale; keep zoom/rotate(spin)/type/fullscreen + Ctrl-drag 3D'],
   ['0.25.15', 'Compact map controls — icon-only Box/Lasso; Filters collapses to a label-width pill that expands on click'],
   ['0.25.14', 'Collapsible NuVizz-style stops data grid at the bottom of the dispatch map'],
   ['0.25.13', 'Carry-over unplanned (prior-day open orders) toggle + fix box/lasso selection (projection now ready)'],
@@ -4608,25 +4609,26 @@ function MapScreen() {
     mapRef.current = new google.maps.Map(mapDiv.current, {
       center: BUFORD,
       zoom: 10,
-      // Full Google control set + 3D. A vector mapId (VITE_GOOGLE_MAP_ID) unlocks
-      // interactive tilt/heading — hold ⌘/Ctrl + drag to tilt and spin around a
-      // location; without it the map is raster (rotate control + 45° aerial still
-      // work in Satellite where imagery exists).
+      // 3D + a TRIMMED control set. A vector mapId (VITE_GOOGLE_MAP_ID) unlocks
+      // tilt/heading — hold ⌘/Ctrl + drag to spin around a location. We keep only
+      // zoom + rotate (the compass that spins) + map type, drop the redundant ones
+      // (pegman/scale), and turn OFF keyboardShortcuts so the big on-screen
+      // pan/zoom keypad (which duplicated drag/zoom) no longer appears.
       ...(MAP_ID ? { mapId: MAP_ID } : {}),
       mapTypeControl: true,
       mapTypeControlOptions: {
         position: google.maps.ControlPosition.LEFT_BOTTOM,
         mapTypeIds: ['roadmap', 'satellite', 'hybrid', 'terrain'],
       },
-      streetViewControl: true,
-      streetViewControlOptions: { position: google.maps.ControlPosition.RIGHT_BOTTOM },
+      streetViewControl: false,
       fullscreenControl: true,
       fullscreenControlOptions: { position: google.maps.ControlPosition.RIGHT_BOTTOM },
       zoomControl: true,
       zoomControlOptions: { position: google.maps.ControlPosition.RIGHT_BOTTOM },
       rotateControl: true,
       rotateControlOptions: { position: google.maps.ControlPosition.RIGHT_BOTTOM },
-      scaleControl: true,
+      scaleControl: false,
+      keyboardShortcuts: false,
       tiltInteractionEnabled: true,
       headingInteractionEnabled: true,
       gestureHandling: 'greedy',
