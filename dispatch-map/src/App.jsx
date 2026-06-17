@@ -46,7 +46,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.25.23';
+const APP_VERSION = '0.25.24';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -66,6 +66,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.25.24', 'Default delivery pins use a brighter blue (#4285F4) so they read on satellite'],
   ['0.25.23', 'AI results: populate Stops list/table reliably, orange found-pins, cleaner chat formatting'],
   ['0.25.22', 'Clicking a customer zooms to building level (~18) instead of neighborhood level'],
   ['0.25.21', 'Bottom stops table is drag-resizable (grab the top handle); height persists'],
@@ -124,7 +125,7 @@ const FLAG_COLORS = {
   green: '#16a34a',
 };
 const RESTRICTION_TINT = '#7c3aed';        // has restriction notes but no priority flag
-const UNFLAGGED_TINT = '#1e5b92';          // no notes at all — brand blue
+const UNFLAGGED_TINT = '#4285F4';          // default delivery pin — bright blue, reads on satellite
 const DRIVER_TINT = '#0f172a';             // M4 Motive driver pins
 
 // M5.1 — stop execution-status visuals. Status is a SEPARATE channel from the
