@@ -46,7 +46,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.25.21';
+const APP_VERSION = '0.25.22';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -66,6 +66,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.25.22', 'Clicking a customer zooms to building level (~18) instead of neighborhood level'],
   ['0.25.21', 'Bottom stops table is drag-resizable (grab the top handle); height persists'],
   ['0.25.20', 'Correct a stop’s pin location — drag + save a per-customer override that persists for future loads'],
   ['0.25.19', 'Map controls match the requested set: compass + 2D/3D tilt, zoom, pegman, custom recenter crosshair'],
@@ -277,6 +278,8 @@ const PANEL_DEFAULT_WIDTH = 320;
 const PANEL_MIN_WIDTH = 240;
 // Max width is computed at runtime as 60% of viewport — see useResizablePanel.
 const MOBILE_BREAKPOINT = 768;
+// Zoom level when auto-focusing a single stop/customer (building level).
+const STOP_ZOOM = 18;
 
 // Stops-table column visibility defaults. PRO and Flag are off by default —
 // dispatchers turn them on via the Columns gear when they need PRO search or
@@ -4891,7 +4894,7 @@ function MapScreen() {
     if (matched.length === 1) {
       const s = matched[0];
       mapRef.current.panTo({ lat: s.lat, lng: s.lng });
-      mapRef.current.setZoom(Math.max(mapRef.current.getZoom() || 10, 14));
+      mapRef.current.setZoom(Math.max(mapRef.current.getZoom() || 10, STOP_ZOOM));
       // Don't auto-open if user already navigated away from search results.
       if (!selectedDriver) setSelectedStop(s);
     } else if (matched.length >= 2 && matched.length <= 10) {
@@ -5027,7 +5030,7 @@ function MapScreen() {
     if (!google || !mapRef.current) return;
     if (stopFromSnapshot.lat == null || stopFromSnapshot.lng == null) return;
     mapRef.current.panTo({ lat: stopFromSnapshot.lat, lng: stopFromSnapshot.lng });
-    mapRef.current.setZoom(Math.max(mapRef.current.getZoom() || 10, 14));
+    mapRef.current.setZoom(Math.max(mapRef.current.getZoom() || 10, STOP_ZOOM));
   };
 
   // On mobile we drop the resize handle and let the panel be a top-edge sheet.
@@ -5054,7 +5057,7 @@ function MapScreen() {
       setMobileDrawerOpen(false);
       if (google && mapRef.current && s.lat != null && s.lng != null) {
         mapRef.current.panTo({ lat: s.lat, lng: s.lng });
-        mapRef.current.setZoom(Math.max(mapRef.current.getZoom() || 10, 14));
+        mapRef.current.setZoom(Math.max(mapRef.current.getZoom() || 10, STOP_ZOOM));
       }
     };
     const pickDriverFromMobile = (d) => {
@@ -5275,7 +5278,7 @@ function MapScreen() {
               setSelectedStop(s);
               if (google && mapRef.current && s.lat != null && s.lng != null) {
                 mapRef.current.panTo({ lat: s.lat, lng: s.lng });
-                mapRef.current.setZoom(Math.max(mapRef.current.getZoom() || 10, 14));
+                mapRef.current.setZoom(Math.max(mapRef.current.getZoom() || 10, STOP_ZOOM));
               }
             }}
           />
@@ -5316,7 +5319,7 @@ function MapScreen() {
                 setSelectedStop(liveMatch);
                 if (google && mapRef.current && liveMatch.lat != null && liveMatch.lng != null) {
                   mapRef.current.panTo({ lat: liveMatch.lat, lng: liveMatch.lng });
-                  mapRef.current.setZoom(Math.max(mapRef.current.getZoom() || 10, 14));
+                  mapRef.current.setZoom(Math.max(mapRef.current.getZoom() || 10, STOP_ZOOM));
                 }
               } else {
                 handlePanToStop(snapshotStop);
@@ -5546,7 +5549,7 @@ function MapScreen() {
             setSelectedStop(s);
             if (google && mapRef.current && s.lat != null && s.lng != null) {
               mapRef.current.panTo({ lat: s.lat, lng: s.lng });
-              mapRef.current.setZoom(Math.max(mapRef.current.getZoom() || 10, 14));
+              mapRef.current.setZoom(Math.max(mapRef.current.getZoom() || 10, STOP_ZOOM));
             }
           }}
         />
