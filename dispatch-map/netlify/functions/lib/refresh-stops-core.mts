@@ -18,6 +18,7 @@
 import { scanDate, todayUTC, scansEnabled, deriveFleetSummary } from './nuvizz-scan.mts';
 import { isFirestoreEnabled, writeStops, writeFleetIndex, getDoc } from './firestore.mts';
 import { breakerTripped, scanIntervalElapsed } from './nuvizz-request.mts';
+import { scanDecision } from './scan-schedule.mts';
 
 const TENANT = 'davis';
 // Scheduled runs scan TODAY + the next BUSINESS day — the dispatcher's planning
@@ -80,53 +81,66 @@ export async function runRefreshStops(req: Request): Promise<Response> {
     });
   }
 
-  // Manual overrides: ?date=YYYY-MM-DD (single) | ?days=N (today+N-1). A manual
-  // override is "forced" and bypasses the min-interval floor; scheduled ticks
-  // (no query string) honor the floor so back-to-back crons can't double-scan.
-  let dates: string[];
-  let forced = false;
-  try {
-    const url = new URL(req.url);
-    const dateParam = url.searchParams.get('date');
-    const daysParam = url.searchParams.get('days');
-    forced = !!(dateParam || daysParam);
-    if (dateParam) {
-      dates = [dateParam];
-    } else {
-      const n = daysParam ? Math.max(1, Math.min(31, parseInt(daysParam, 10) || DEFAULT_DAYS)) : DEFAULT_DAYS;
-      dates = scanDatesFrom(todayUTC(), n);
-    }
-  } catch {
-    dates = scanDatesFrom(todayUTC(), DEFAULT_DAYS);
-  }
+  const url = new URL(req.url);
+  const isManual = url.searchParams.get('manual') === '1';
+  const dateParam = url.searchParams.get('date');
+  const daysParam = url.searchParams.get('days');
+  const explicit = !!(dateParam || daysParam); // ops/testing: full forced scan of given dates
 
+  const json = (body: any) => new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } });
   const results: any[] = [];
-  // Sequential per date — keeps concurrent NuVizz load light and bounds memory.
-  for (const date of dates) {
+
+  // scanAndWrite — one date. includeUnplanned gates the order descent; `forced`
+  // (manual/explicit) bypasses the per-date min-interval floor; manual caps the
+  // unplanned descent lower so the synchronous endpoint finishes in time.
+  const scanAndWrite = async (date: string, includeUnplanned: boolean, forced: boolean) => {
     const t0 = Date.now();
     try {
-      // Min-interval floor: skip a date that was scanned within the floor window
-      // unless this is a forced manual run.
       if (!forced) {
         const metaDoc = await getDoc(`nuvizz_stop_index/${TENANT}__${date}`);
         if (metaDoc && !scanIntervalElapsed(metaDoc.last_scanned_at, Date.now())) {
           results.push({ date, ok: true, skipped: 'min-interval', ms: Date.now() - t0 });
-          continue;
+          return;
         }
       }
-      const scan = await scanDate(date);
-      const meta = await writeStops(TENANT, date, scan.stops, scan.scannedAt);
-      // Phase 4: also derive + write the canonical fleet index SITE A reads, so
-      // SITE A renders its dashboard from Firestore and never scans NuVizz itself.
+      const scan = await scanDate(date, {
+        includeUnplanned,
+        unplanned: (isManual && includeUnplanned) ? { maxProbes: 800 } : undefined,
+      });
+      const meta = await writeStops(TENANT, date, scan.stops, scan.scannedAt, { includeUnplanned });
       const fleet = deriveFleetSummary(scan.stops, scan.loadHeaders);
       await writeFleetIndex(TENANT, date, fleet.loads, fleet.summary, fleet.driverIndex, scan.scannedAt);
-      results.push({ date, ok: true, ms: Date.now() - t0, count: meta.count, planned: meta.plannedCount, unplanned: meta.unplannedCount, loads: fleet.loads.length });
+      results.push({ date, ok: true, ms: Date.now() - t0, includeUnplanned, count: meta.count, planned: meta.plannedCount, unplanned: meta.unplannedCount, loads: fleet.loads.length });
     } catch (e: any) {
       results.push({ date, ok: false, ms: Date.now() - t0, error: e?.message });
     }
+  };
+
+  // Ops/testing path: ?date=… or ?days=N → full scan (loads + unplanned), forced.
+  if (explicit) {
+    let dates: string[];
+    if (dateParam) dates = [dateParam];
+    else { const n = Math.max(1, Math.min(31, parseInt(daysParam || '', 10) || DEFAULT_DAYS)); dates = scanDatesFrom(todayUTC(), n); }
+    for (const date of dates) await scanAndWrite(date, true, true);
+    const summary = { ok: true, tenant: TENANT, mode: 'explicit', totalMs: Date.now() - startedAt, dates: results };
+    console.log('refresh-stops results:', JSON.stringify(summary));
+    return json(summary);
   }
 
-  const summary = { ok: true, tenant: TENANT, totalMs: Date.now() - startedAt, dates: results };
+  // Scheduled / manual: the schedule decides whether to act and which feeds run.
+  const decision = scanDecision(new Date(), isManual);
+  console.log('refresh-stops decision:', JSON.stringify({ ...decision, isManual }));
+  if (!decision.act) {
+    return json({ ok: true, skipped: 'cadence', reason: decision.reason });
+  }
+
+  const [today, tomorrow] = scanDatesFrom(todayUTC(), 2);
+  // Today's loads always; today's order descent only inside its window.
+  await scanAndWrite(today, decision.scanUnplanned, isManual);
+  // Tomorrow's loads only inside its window; tomorrow's unplanned never.
+  if (decision.scanTomorrowLoads) await scanAndWrite(tomorrow, false, isManual);
+
+  const summary = { ok: true, tenant: TENANT, mode: isManual ? 'manual' : 'scheduled', decision, totalMs: Date.now() - startedAt, dates: results };
   console.log('refresh-stops results:', JSON.stringify(summary));
-  return new Response(JSON.stringify(summary), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  return json(summary);
 }

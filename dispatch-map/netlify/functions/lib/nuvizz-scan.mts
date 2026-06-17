@@ -655,21 +655,26 @@ export interface ScanResult {
   // deriveFleetSummary can build SITE A's complete fleet cards. Empty when scans
   // are disabled.
   loadHeaders?: Record<string, any>;
+  // True when the unplanned/status-10 descent ran this scan (false = load-only).
+  includeUnplanned?: boolean;
 }
 
 // Full scan for one date: planned (load scan) + unplanned (number-space scan),
 // deduped (load-sourced wins), normalized. Used by the background writer.
-export async function scanDate(dateStr: string, opts: { unplanned?: UnplannedScanOpts } = {}): Promise<ScanResult> {
+export async function scanDate(dateStr: string, opts: { unplanned?: UnplannedScanOpts; includeUnplanned?: boolean } = {}): Promise<ScanResult> {
+  const includeUnplanned = opts.includeUnplanned !== false; // default true
   // P0 kill switch — when scans are disabled, generate ZERO NuVizz traffic and
   // return an empty result. Callers (background refresh / history snapshot) treat
   // this as "nothing new to write" and leave the existing Firestore index intact.
   if (!scansEnabled()) {
-    return { date: dateStr, stops: [], plannedCount: 0, unplannedCount: 0, scannedAt: new Date().toISOString() };
+    return { date: dateStr, stops: [], plannedCount: 0, unplannedCount: 0, scannedAt: new Date().toISOString(), includeUnplanned };
   }
   const { startNbr, endNbr } = estimateLoadRange(dateStr);
+  // includeUnplanned=false → load scan ONLY. Skipping scanUnplannedStops also
+  // skips its findCeiling probing (the ceiling search only feeds the descent).
   const [loadStops, unplannedStops] = await Promise.all([
     scanLoadRangeForDate(dateStr, startNbr, endNbr),
-    scanUnplannedStops(dateStr, opts.unplanned).catch(() => []),
+    includeUnplanned ? scanUnplannedStops(dateStr, opts.unplanned).catch(() => []) : Promise.resolve([] as any[]),
   ]);
 
   const seen = new Set<string>(loadStops.map((s: any) => s.stopNbr).filter(Boolean));
@@ -703,6 +708,7 @@ export async function scanDate(dateStr: string, opts: { unplanned?: UnplannedSca
     plannedCount: stops.length - unplannedCount,
     unplannedCount,
     scannedAt: new Date().toISOString(),
+    includeUnplanned,
   };
 }
 

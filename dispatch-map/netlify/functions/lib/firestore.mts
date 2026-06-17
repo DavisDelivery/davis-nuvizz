@@ -188,36 +188,47 @@ export interface StopIndexMeta {
   count: number;
   plannedCount: number;
   unplannedCount: number;
+  // Per-feed scan times — loads and orders run on different cadences now, so a
+  // single stamp would mislead. UTC instants; the UI shows them split.
+  lastLoadScanAt?: string | null;
+  lastUnplannedScanAt?: string | null;
 }
 
 // Write a full day's normalized stops. Each stop doc is keyed by stopNbr and
 // carries isPlanned + last_scanned_at + the full normalized shape (incl. raw).
 // Stops that vanished since the previous scan are pruned so cancelled/replanned
 // orders don't linger. Returns the meta record written.
-export async function writeStops(tenant: string, dateStr: string, stops: any[], scannedAt: string): Promise<StopIndexMeta> {
+export async function writeStops(
+  tenant: string,
+  dateStr: string,
+  stops: any[],
+  scannedAt: string,
+  opts: { includeUnplanned?: boolean } = {},
+): Promise<StopIndexMeta> {
+  const includeUnplanned = opts.includeUnplanned !== false; // default true (full scan)
   const base = `${COLLECTION}/${parentId(tenant, dateStr)}`;
   const withNbr = stops.filter((s) => s && s.stopNbr);
-  const plannedCount = withNbr.filter((s) => s.isPlanned).length;
-
-  const meta: StopIndexMeta = {
-    tenant,
-    date: dateStr,
-    last_scanned_at: scannedAt,
-    count: withNbr.length,
-    plannedCount,
-    unplannedCount: withNbr.length - plannedCount,
-  };
-
-  // Prune stops no longer present in this scan.
-  const existing = await listDocs(`${base}/stops`);
   const nextNbrs = new Set(withNbr.map((s) => String(s.stopNbr)));
+
+  const [existing, prevMeta] = await Promise.all([
+    listDocs(`${base}/stops`),
+    getDoc(base) as Promise<StopIndexMeta | null>,
+  ]);
+
+  // PRESERVE-ON-SKIP: a load-only run (includeUnplanned=false) must NOT wipe the
+  // status-10 orders already on the board. Keep existing unplanned docs that this
+  // scan didn't touch; still prune planned docs that vanished from the load scan.
+  const preserved = !includeUnplanned
+    ? existing.filter((d) => d.isPlanned === false && !nextNbrs.has(String(d._id)))
+    : [];
+  const preservedNbrs = new Set(preserved.map((d) => String(d._id)));
   await Promise.all(
     existing
-      .filter((d) => !nextNbrs.has(String(d._id)))
+      .filter((d) => !nextNbrs.has(String(d._id)) && !preservedNbrs.has(String(d._id)))
       .map((d) => deleteDoc(`${base}/stops/${d._id}`)),
   );
 
-  // Upsert each stop (bounded concurrency to stay polite to Firestore).
+  // Upsert each freshly-scanned stop (bounded concurrency to stay polite).
   const conc = 12;
   let i = 0;
   const writeOne = async () => {
@@ -227,6 +238,23 @@ export async function writeStops(tenant: string, dateStr: string, stops: any[], 
     }
   };
   await Promise.all(Array.from({ length: conc }, writeOne));
+
+  // Counts reflect the FULL index = freshly scanned + any preserved unplanned.
+  const plannedCount = withNbr.filter((s) => s.isPlanned).length;
+  const count = withNbr.length + preserved.length;
+  const unplannedCount = (withNbr.length - plannedCount) + preserved.length;
+  const meta: StopIndexMeta = {
+    tenant,
+    date: dateStr,
+    last_scanned_at: scannedAt,
+    count,
+    plannedCount,
+    unplannedCount,
+    // Loads are scanned every acting run; carry forward the prior unplanned stamp
+    // on a load-only run so "Orders updated …" reflects the real last order scan.
+    lastLoadScanAt: scannedAt,
+    lastUnplannedScanAt: includeUnplanned ? scannedAt : (prevMeta?.lastUnplannedScanAt ?? null),
+  };
 
   // Meta doc last so a reader never sees a fresh timestamp over a half-written set.
   await setDoc(base, meta as any);
