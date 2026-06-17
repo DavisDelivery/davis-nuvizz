@@ -510,6 +510,28 @@ function mapIndexStopToSlim(s) {
   };
 }
 
+// Aggregate a fleet summary from the per-load docs. The loads are the source of
+// truth, so deriving from them keeps __fleet's headline counts correct even if the
+// separate meta/summary doc is stale or zeroed (e.g. overwritten by an empty
+// pre-consolidation live-scan). Mirrors deriveFleetSummary on the scanner side.
+function summarizeFleetLoads(loads) {
+  const sum = (k) => loads.reduce((acc, l) => acc + (l[k] || 0), 0);
+  const totalStops = sum('totalStops');
+  const totalDelivered = sum('delivered');
+  const assignedLoads = loads.filter((l) => l.driverUserName || l.driver).length;
+  return {
+    totalLoads: loads.length,
+    assignedLoads,
+    unassignedLoads: loads.length - assignedLoads,
+    totalStops,
+    totalDelivered,
+    totalInProgress: sum('inProgress'),
+    totalExceptions: sum('exceptions'),
+    uniqueDrivers: new Set(loads.map((l) => l.driverUserName).filter(Boolean)).size,
+    pctComplete: totalStops ? Math.round((totalDelivered / totalStops) * 100) : 0,
+  };
+}
+
 // ---- In-memory fleet cache (60s TTL, per-tenant, per-date) ----
 // Netlify Functions reuse instances across warm invocations, so this gives us fast
 // repeat loads without hitting NuVizz again. Clears automatically on cold start.
@@ -846,8 +868,9 @@ exports.handler = async (event) => {
           // Strip per-load stops to keep payload light — __fleet response is summary only
           const slimLoads = fsData.loads.map(({ stops, _updatedAt, ...rest }) => rest);
           slimLoads.sort((a, b) => (a.route || '').localeCompare(b.route || ''));
-          const summary = { ...fsData.summary };
-          delete summary._updatedAt;
+          // Derive headline counts from the load docs (authoritative) rather than
+          // trusting the meta/summary doc, which can be stale or zeroed.
+          const summary = summarizeFleetLoads(slimLoads);
           const result = { date: dateStr, loads: slimLoads, summary, source: 'firestore' };
           setCachedFleet(fleetTenant, dateStr, result);
           return {
