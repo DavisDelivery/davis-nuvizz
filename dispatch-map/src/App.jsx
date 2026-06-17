@@ -46,7 +46,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.25.14';
+const APP_VERSION = '0.25.15';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -66,6 +66,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.25.15', 'Compact map controls — icon-only Box/Lasso; Filters collapses to a label-width pill that expands on click'],
   ['0.25.14', 'Collapsible NuVizz-style stops data grid at the bottom of the dispatch map'],
   ['0.25.13', 'Carry-over unplanned (prior-day open orders) toggle + fix box/lasso selection (projection now ready)'],
   ['0.25.12', 'Box + lasso multi-select on the map — highlights and filters the selected stops'],
@@ -1799,19 +1800,19 @@ function GoogleMapsLink({ stop, className }) {
 // exists, a count chip clears it. Reused on desktop + mobile.
 function SelectionControls({ mode, setMode, count, onClear, className }) {
   const btn = (active) =>
-    'px-2.5 py-1.5 rounded text-xs font-semibold inline-flex items-center gap-1 border min-h-[40px] ' +
-    (active ? 'text-white border-transparent' : 'bg-white border-slate-300 text-slate-700 hover:bg-slate-50');
+    'p-1.5 rounded inline-flex items-center justify-center border ' +
+    (active ? 'text-white border-transparent' : 'bg-white border-slate-300 text-slate-600 hover:bg-slate-50');
   return (
-    <div className={'bg-white/95 backdrop-blur border border-slate-200 rounded-lg shadow p-1 flex items-center gap-1 ' + (className || '')}>
-      <button onClick={() => setMode(mode === 'box' ? null : 'box')} className={btn(mode === 'box')} style={mode === 'box' ? { background: '#1e5b92' } : undefined} title="Drag a box to select stops">
-        <Square size={13} /> Box
+    <div className={'bg-white/95 backdrop-blur border border-slate-200 rounded-lg shadow p-0.5 flex items-center gap-0.5 ' + (className || '')}>
+      <button onClick={() => setMode(mode === 'box' ? null : 'box')} className={btn(mode === 'box')} style={mode === 'box' ? { background: '#1e5b92' } : undefined} title="Box select — drag a rectangle" aria-label="Box select">
+        <Square size={15} />
       </button>
-      <button onClick={() => setMode(mode === 'lasso' ? null : 'lasso')} className={btn(mode === 'lasso')} style={mode === 'lasso' ? { background: '#1e5b92' } : undefined} title="Draw a lasso around stops">
-        <Lasso size={13} /> Lasso
+      <button onClick={() => setMode(mode === 'lasso' ? null : 'lasso')} className={btn(mode === 'lasso')} style={mode === 'lasso' ? { background: '#1e5b92' } : undefined} title="Lasso select — draw a shape" aria-label="Lasso select">
+        <Lasso size={15} />
       </button>
       {count > 0 && (
-        <button onClick={onClear} className="px-2 py-1.5 rounded text-xs text-slate-600 hover:bg-slate-100 inline-flex items-center gap-1 min-h-[40px]" title="Clear selection">
-          <X size={13} /> {count}
+        <button onClick={onClear} className="p-1.5 rounded text-[11px] font-semibold text-slate-600 hover:bg-slate-100 inline-flex items-center gap-0.5" title="Clear selection" aria-label="Clear selection">
+          <X size={14} />{count}
         </button>
       )}
     </div>
@@ -1924,15 +1925,15 @@ function FilterToolbar({ filters, setFilters, collapsed, setCollapsed, stopCount
     : null;
   return (
     <div
-      className="bg-white rounded-lg shadow-md border border-slate-200"
-      style={{ width: 240, opacity: 0.97 }}
+      className="bg-white rounded-lg shadow-md border border-slate-200 overflow-hidden"
+      style={{ width: collapsed ? 'auto' : 240, opacity: 0.97 }}
     >
       <button
         onClick={() => setCollapsed((v) => !v)}
-        className="w-full px-3 py-2 flex items-center justify-between text-xs font-semibold text-slate-700 hover:bg-slate-50 rounded-t-lg"
+        className="w-full px-2.5 py-1.5 flex items-center justify-between gap-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
         aria-expanded={!collapsed}
       >
-        <span className="inline-flex items-center gap-1.5">
+        <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
           <Filter size={13} /> Filters
         </span>
         {collapsed ? <ChevronDown size={13} /> : <ChevronUp size={13} />}
@@ -4323,7 +4324,7 @@ function MapScreen() {
     ...DEFAULT_MAP_FILTERS,
     ...safeReadJSON(LS_MAP_FILTERS, {}),
   }));
-  const [toolbarCollapsed, setToolbarCollapsed] = useState(() => safeReadJSON(LS_FILTER_TOOLBAR_COLLAPSED, false));
+  const [toolbarCollapsed, setToolbarCollapsed] = useState(() => safeReadJSON(LS_FILTER_TOOLBAR_COLLAPSED, true));
   // M4.5 — Mobile drawer is closed by default on every load; active tab is
   // restored from localStorage so repeat dispatchers land where they left off.
   const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false);
