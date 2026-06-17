@@ -46,7 +46,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.25.24';
+const APP_VERSION = '0.25.25';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -66,6 +66,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.25.25', 'Map auto-refreshes from the DB index every 2 min (silent, visible-only) so a long-open tab stays current'],
   ['0.25.24', 'Default delivery pins use a brighter blue (#4285F4) so they read on satellite'],
   ['0.25.23', 'AI results: populate Stops list/table reliably, orange found-pins, cleaner chat formatting'],
   ['0.25.22', 'Clicking a customer zooms to building level (~18) instead of neighborhood level'],
@@ -282,6 +283,9 @@ const PANEL_MIN_WIDTH = 240;
 const MOBILE_BREAKPOINT = 768;
 // Zoom level when auto-focusing a single stop/customer (building level).
 const STOP_ZOOM = 18;
+// How often the map silently re-reads the Firestore stop index (DB, not NuVizz)
+// so a long-open tab stays current. The background cron scans NuVizz every ~5m.
+const STOPS_REFRESH_MS = 120000; // 2 minutes
 
 // Stops-table column visibility defaults. PRO and Flag are off by default —
 // dispatchers turn them on via the Columns gear when they need PRO search or
@@ -673,8 +677,8 @@ function useStops(date, carryDays = 0) {
   const [lastScannedAt, setLastScannedAt] = useState(null);
   const [source, setSource] = useState(null);
 
-  const refresh = useCallback(async () => {
-    setLoading(true);
+  const refresh = useCallback(async ({ silent = false } = {}) => {
+    if (!silent) setLoading(true);
     setError(null);
     try {
       let params = MOCK_MODE ? '?mock=1' : (date ? `?date=${encodeURIComponent(date)}` : '');
@@ -694,13 +698,26 @@ function useStops(date, carryDays = 0) {
       setLastScannedAt(data.lastScannedAt || null);
       setLastRefreshed(new Date());
     } catch (e) {
-      setError(e.message);
+      if (!silent) setError(e.message); // a failed silent poll shouldn't surface an error banner
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
-  }, [date]);
+  }, [date, carryDays]);
 
   useEffect(() => { refresh(); }, [refresh]);
+
+  // Keep a long-open tab current by silently re-reading the Firestore index
+  // (the DB, NOT the NuVizz API — the cron handles scanning) on an interval.
+  // Silent = no spinner/flicker; only while the tab is visible; also on refocus.
+  useEffect(() => {
+    if (MOCK_MODE) return;
+    const tick = () => { if (typeof document === 'undefined' || document.visibilityState === 'visible') refresh({ silent: true }); };
+    const timer = setInterval(tick, STOPS_REFRESH_MS);
+    const onVis = () => { if (document.visibilityState === 'visible') refresh({ silent: true }); };
+    document.addEventListener('visibilitychange', onVis);
+    return () => { clearInterval(timer); document.removeEventListener('visibilitychange', onVis); };
+  }, [refresh]);
+
   return { stops, loading, error, lastRefreshed, lastScannedAt, source, refresh };
 }
 const CARRYOVER_DAYS = 7; // how many prior days of still-unplanned orders to fold in
