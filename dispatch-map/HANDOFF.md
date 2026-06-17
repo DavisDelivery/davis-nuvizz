@@ -1866,7 +1866,7 @@ each one should do:
 | `NUVIZZ_DAVIS_PASS` | same as davis-nuvizz project |
 | `NUVIZZ_DAVIS_COMPANY_CODE` | `DAVIS` |
 | `NUVIZZ_BASE_URL` | `https://portal.nuvizz.com/deliverit/openapi/v7` |
-| `MOTIVE_API_KEY` | `2eb96247-8869-4f47-8062-6964c1dc77a8` (per brief) |
+| `MOTIVE_API_KEY` | `__REDACTED__` (per brief) |
 | `MOTIVE_BASE_URL` | optional, `https://api.gomotive.com/v1` |
 
 `.env.example` in the repo lists all of these with the right shape.

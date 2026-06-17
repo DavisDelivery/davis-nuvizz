@@ -59,4 +59,4 @@ Required Netlify env vars (set in site → Build & deploy → Environment):
 - `VITE_GOOGLE_MAPS_API_KEY`
 - `NUVIZZ_DAVIS_USER` / `NUVIZZ_DAVIS_PASS` / `NUVIZZ_DAVIS_COMPANY_CODE`
 - `NUVIZZ_BASE_URL` (default `https://portal.nuvizz.com/deliverit/openapi/v7`)
-- `MOTIVE_API_KEY` (`2eb96247-8869-4f47-8062-6964c1dc77a8`)
+- `MOTIVE_API_KEY` (`__REDACTED__`)

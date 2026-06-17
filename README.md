@@ -49,11 +49,11 @@ Mobile-first dispatch dashboard for Davis Delivery over the nuVizz REST API v7. 
 | Var | Example |
 |---|---|
 | `NUVIZZ_DAVIS_COMPANY_CODE` | `Davis` |
-| `NUVIZZ_DAVIS_USER` | `Chad` |
-| `NUVIZZ_DAVIS_PASS` | `P@ssw0rd` |
+| `NUVIZZ_DAVIS_USER` | `__REDACTED__` |
+| `NUVIZZ_DAVIS_PASS` | `__REDACTED__` |
 | `NUVIZZ_ULINE_COMPANY_CODE` | `Uline` |
-| `NUVIZZ_ULINE_USER` | `Chad` |
-| `NUVIZZ_ULINE_PASS` | `Chad@Davis123` |
+| `NUVIZZ_ULINE_USER` | `__REDACTED__` |
+| `NUVIZZ_ULINE_PASS` | `__REDACTED__` |
 
 ## Deploy
 
