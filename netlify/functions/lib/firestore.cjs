@@ -250,6 +250,20 @@ async function readDriverIndex(tenant, dateStr) {
   return await getDoc(`nuvizzFleet/${fleetParentId(tenant, dateStr)}/meta/driverIndex`);
 }
 
+// ── nuvizz_stop_index readers (Phase 4 consolidation) ───────────────────────
+// The sole scanner (SITE B / dispatch-map) writes every normalized stop to
+// nuvizz_stop_index/{tenant}__{date}/stops/{stopNbr}. SITE A reads these instead
+// of live-scanning NuVizz for the Map / Stops / Driver-day views. The stored stop
+// is dispatch-map's normalized shape (lat/lng, businessName, normalizedStatus,
+// plannedEtaDTTM, isPlanned, …); the caller translates to SITE A's slim shape.
+async function listStopIndex(tenant, dateStr) {
+  return await listDocs(`nuvizz_stop_index/${fleetParentId(tenant, dateStr)}/stops`);
+}
+
+async function readStopIndexMeta(tenant, dateStr) {
+  return await getDoc(`nuvizz_stop_index/${fleetParentId(tenant, dateStr)}`);
+}
+
 async function writeDriverIndex(tenant, dateStr, indexMap) {
   await setDoc(`nuvizzFleet/${fleetParentId(tenant, dateStr)}`, { tenant, date: dateStr });
   return await setDoc(
@@ -311,6 +325,8 @@ module.exports = {
   writeSummary,
   readDriverIndex,
   writeDriverIndex,
+  listStopIndex,
+  readStopIndexMeta,
   incrementCallCounter,
   readCallCounter,
   readCircuit,

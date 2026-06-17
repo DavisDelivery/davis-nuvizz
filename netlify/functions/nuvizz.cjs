@@ -476,6 +476,40 @@ async function scanFleet(tenant, { dateFrom, dateTo, startNbr, endNbr, concurren
   return results;
 }
 
+// ---- Stop-index → slim-stop translation (Phase 4 consolidation) ----
+// SITE B's nuvizz_stop_index stores dispatch-map's normalized stop shape. SITE A's
+// Map / Stops / Driver views expect the slim shape that scanFleet(includeStops)
+// historically produced (latitude/longitude, numeric status code, exceptionPresent,
+// plannedEta, …). This maps one to the other so the consolidated read is a drop-in
+// for the live-scan path — no client change needed.
+function mapIndexStopToSlim(s) {
+  return {
+    stopNbr: s.stopNbr,
+    stopType: s.stopType,
+    status: s.status,                                  // raw numeric code (90/40/30/10/50)
+    exceptionPresent: s.normalizedStatus === 'EXCEPTION',
+    exceptions: [],
+    name: s.businessName,
+    addr1: s.addr1,
+    city: s.city,
+    state: s.state,
+    zip: s.zip,
+    latitude: s.lat,
+    longitude: s.lng,
+    pallets: s.pallets,
+    cartons: s.cartons,
+    weight: s.weight,
+    plannedEta: s.plannedEtaDTTM,
+    etaDTTM: null,
+    arrivalDTTM: s.arrivalDTTM,
+    confirmedDTTM: s.deliveredDTTM,
+    loadNbr: s.loadNbr,
+    route: s.routeName,
+    driver: s.driverName,
+    driverUserName: s.driverUserName,
+  };
+}
+
 // ---- In-memory fleet cache (60s TTL, per-tenant, per-date) ----
 // Netlify Functions reuse instances across warm invocations, so this gives us fast
 // repeat loads without hitting NuVizz again. Clears automatically on cold start.
@@ -824,6 +858,23 @@ exports.handler = async (event) => {
         }
       }
 
+      // Phase 4: in consolidated mode SITE A is NOT a scanner. The shared fleet
+      // index (written by SITE B) is authoritative; if it had nothing for this date,
+      // return an honest empty board rather than fanning out to NuVizz.
+      if (consolidatedReads()) {
+        const emptySummary = {
+          totalLoads: 0, assignedLoads: 0, unassignedLoads: 0, totalStops: 0,
+          totalDelivered: 0, totalInProgress: 0, totalExceptions: 0, uniqueDrivers: 0, pctComplete: 0,
+        };
+        const result = { date: dateStr, loads: [], summary: emptySummary, source: 'firestore-empty' };
+        if (!params.from && !params.to) setCachedFleet(fleetTenant, dateStr, result);
+        return {
+          statusCode: 200,
+          headers: { ...corsHeaders, 'X-Cache': 'CONSOLIDATED-EMPTY' },
+          body: JSON.stringify(result),
+        };
+      }
+
       // Layer 3: live scan (fallback, ~10-12s)
       let startNbr, endNbr;
       if (params.from && params.to) {
@@ -897,6 +948,48 @@ exports.handler = async (event) => {
             body: JSON.stringify({ ...hit.data, cached: true }),
           };
         }
+      }
+
+      // Phase 4: consolidated → stops come from the shared nuvizz_stop_index that
+      // SITE B writes (the same index the dispatch map reads), never a live scan.
+      // We surface routed (planned) stops to match the historical load-based feed.
+      if (consolidatedReads()) {
+        let indexStops = [];
+        try { indexStops = await fs_db.listStopIndex(fleetTenant, dateStr); }
+        catch (e) { console.error('consolidated __fleetstops index read failed:', e.message); }
+        const stops = indexStops
+          .filter(s => s && s.isPlanned === true)
+          .map(mapIndexStopToSlim);
+        stops.sort((a, b) => (a.plannedEta || '').localeCompare(b.plannedEta || ''));
+
+        let loadsMeta = [];
+        try {
+          const fsLoads = await fs_db.listLoads(fleetTenant, dateStr);
+          loadsMeta = (fsLoads || []).map(l => ({
+            nbr: l.loadNbr, route: l.route, driver: l.driver,
+            driverUserName: l.driverUserName, vehicleType: l.vehicleType,
+            totalStops: l.totalStops, delivered: l.delivered,
+            inProgress: l.inProgress, exceptions: l.exceptions,
+            pctComplete: l.pctComplete, origin: l.origin || null,
+          }));
+        } catch (e) { console.error('consolidated __fleetstops loads read failed:', e.message); }
+
+        const summary = {
+          totalStops: stops.length,
+          delivered: stops.filter(s => s.status === '90').length,
+          inProgress: stops.filter(s => s.status === '40').length,
+          scheduled: stops.filter(s => s.status === '30').length,
+          exceptions: stops.filter(s => s.exceptionPresent === true).length,
+          withCoords: stops.filter(s => s.latitude && s.longitude).length,
+        };
+        summary.pctComplete = summary.totalStops ? Math.round((summary.delivered / summary.totalStops) * 100) : 0;
+        const result = { date: dateStr, stops, loads: loadsMeta, summary, source: 'stop-index' };
+        __fleetCache.set(stopsCacheKey, { storedAt: Date.now(), data: result });
+        return {
+          statusCode: 200,
+          headers: { ...corsHeaders, 'X-Cache': 'CONSOLIDATED' },
+          body: JSON.stringify(result),
+        };
       }
 
       // Layer 2: Firestore — load docs include their stops as inline arrays
@@ -1014,6 +1107,75 @@ exports.handler = async (event) => {
       const dateStr = params.date || new Date().toISOString().slice(0, 10);
       if (!userName && !driverNameFilter) {
         return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: 'Need userName or driverName' }) };
+      }
+
+      // Phase 4: consolidated → build the driver-day view entirely from the shared
+      // index (driver index + fleet loads + stop index). Zero NuVizz calls.
+      if (consolidatedReads()) {
+        let matched = [];
+        try {
+          const [idx, fsLoads] = await Promise.all([
+            fs_db.readDriverIndex(fleetTenant, dateStr),
+            fs_db.listLoads(fleetTenant, dateStr),
+          ]);
+          const byNbr = new Map((fsLoads || []).map(l => [String(l.loadNbr), l]));
+          let nbrs = [];
+          if (userName && idx && idx.map && Array.isArray(idx.map[userName])) {
+            nbrs = idx.map[userName];
+          } else {
+            nbrs = (fsLoads || []).filter(l => {
+              if (userName && l.driverUserName === userName) return true;
+              if (driverNameFilter) {
+                const dn = (l.driver || '').toUpperCase();
+                return dn.includes(driverNameFilter) || driverNameFilter.split(/\s+/).every(tok => dn.includes(tok));
+              }
+              return false;
+            }).map(l => l.loadNbr);
+          }
+          matched = nbrs.map(n => byNbr.get(String(n))).filter(Boolean);
+        } catch (e) {
+          console.error('consolidated __driver read failed:', e.message);
+        }
+
+        const matchedSet = new Set(matched.map(l => String(l.loadNbr)));
+        let indexStops = [];
+        try { indexStops = await fs_db.listStopIndex(fleetTenant, dateStr); }
+        catch (e) { console.error('consolidated __driver stop index read failed:', e.message); }
+        const allStops = indexStops
+          .filter(s => s && matchedSet.has(String(s.loadNbr)))
+          .map(mapIndexStopToSlim);
+        allStops.sort((a, b) => {
+          const ae = a.plannedEta || '', be = b.plannedEta || '';
+          if (ae && be) return ae.localeCompare(be);
+          if (ae) return -1;
+          if (be) return 1;
+          return (a.loadNbr || '').localeCompare(b.loadNbr || '');
+        });
+        allStops.forEach((s, i) => { s.displaySeq = i + 1; });
+
+        return {
+          statusCode: 200,
+          headers: corsHeaders,
+          body: JSON.stringify({
+            date: dateStr,
+            userName,
+            driverProfile: null,
+            loads: matched.map(l => ({
+              loadNbr: l.loadNbr, route: l.route, driver: l.driver,
+              totalStops: l.totalStops, delivered: l.delivered, inProgress: l.inProgress,
+              exceptions: l.exceptions, pctComplete: l.pctComplete, vehicleType: l.vehicleType,
+            })),
+            stops: allStops,
+            summary: {
+              loadsCount: matched.length,
+              totalStops: allStops.length,
+              delivered: allStops.filter(s => s.status === '90').length,
+              inProgress: allStops.filter(s => s.status === '40').length,
+              pending: allStops.filter(s => ['10', '30'].includes(s.status)).length,
+              exceptions: allStops.filter(s => s.exceptionPresent === true).length,
+            },
+          }),
+        };
       }
 
       // Fetch the driver profile (if userName given) for sanity
@@ -1320,6 +1482,25 @@ exports.handler = async (event) => {
     // freshness summary; client should re-fetch __fleet/__fleetstops afterward.
     if (apiPath === '__refreshFleet') {
       const dateStr = params.date || new Date().toISOString().slice(0, 10);
+
+      // Phase 4: SITE A doesn't scan. Clear the in-memory caches so the next read
+      // pulls the freshest data SITE B has written, and return the current shared
+      // summary. (The sole scanner refreshes the index on its own cadence; the
+      // dispatch-map app carries the manual "Scan now" button.)
+      if (consolidatedReads()) {
+        __fleetCache.delete(`${fleetTenant}:${dateStr}`);
+        __fleetCache.delete(`${fleetTenant}:${dateStr}:stops`);
+        let summary = null;
+        try { summary = await fs_db.readSummary(fleetTenant, dateStr); }
+        catch (e) { console.error('consolidated __refreshFleet summary read failed:', e.message); }
+        if (summary) delete summary._updatedAt;
+        return {
+          statusCode: 200,
+          headers: corsHeaders,
+          body: JSON.stringify({ ok: true, consolidated: true, summary: summary || null, refreshedAt: new Date().toISOString() }),
+        };
+      }
+
       const range = estimateLoadRange(dateStr);
       const loads = await scanFleet(fleetTenant, {
         dateFrom: dateStr,
