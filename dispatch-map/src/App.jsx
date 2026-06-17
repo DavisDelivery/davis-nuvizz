@@ -46,7 +46,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.25.17';
+const APP_VERSION = '0.25.18';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -66,6 +66,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.25.18', 'Bottom stops table: search box + status filter (Un-Planned/Planned/In-Transit/Completed/Cancelled)'],
   ['0.25.17', 'HOTFIX: app blank-screen crash — mapFilters referenced before declaration (carry-over fetch TDZ)'],
   ['0.25.16', 'Declutter map controls: drop the on-screen keypad + pegman/scale; keep zoom/rotate(spin)/type/fullscreen + Ctrl-drag 3D'],
   ['0.25.15', 'Compact map controls — icon-only Box/Lasso; Filters collapses to a label-width pill that expands on click'],
@@ -5475,7 +5476,25 @@ function ColumnsMenu({ columns, onChange }) {
 // header bar stays as the toggle). Rows mirror the loaded board (respects
 // filters/search/box-lasso selection via the `stops` it's handed). Click a row
 // to open + center that stop. Horizontally scrollable for the wide column set.
+// NuVizz status buckets for the bottom-table status filter. Each maps to one or
+// more of the app's classifyStopStatus() values.
+const TABLE_STATUS_BUCKETS = [
+  { k: 'unplanned', label: 'Un-Planned', match: ['UNPLANNED'] },
+  { k: 'planned', label: 'Planned', match: ['SCHEDULED'] },
+  { k: 'in_transit', label: 'In-Transit', match: ['OUT_FOR_DEL', 'ARRIVED'] },
+  { k: 'completed', label: 'Completed', match: ['DELIVERED'] },
+  { k: 'cancelled', label: 'Cancelled', match: ['EXCEPTION'] },
+];
+function tableStatusBucket(stop) {
+  const st = classifyStopStatus(stop);
+  const b = TABLE_STATUS_BUCKETS.find((x) => x.match.includes(st));
+  return b ? b.k : 'planned';
+}
+
 function BottomStopsTable({ stops, notes, totalCount, open, setOpen, onPick }) {
+  const [q, setQ] = useState('');
+  const [statusSel, setStatusSel] = useState(() => new Set()); // empty = all
+  const [statusOpen, setStatusOpen] = useState(false);
   const cols = [
     { k: 'stop', label: 'Stop #', w: 96, get: (s) => <span className="font-mono text-blue-700">{s.stopNbr}</span> },
     { k: 'name', label: 'Ship To Name', w: 220, get: (s) => s.businessName || '—' },
@@ -5492,19 +5511,62 @@ function BottomStopsTable({ stops, notes, totalCount, open, setOpen, onPick }) {
     { k: 'load', label: 'Load', w: 150, get: (s) => s.routeName || s.loadNbr || '' },
     { k: 'driver', label: 'Driver', w: 150, get: (s) => s.driverName || '' },
   ];
+  const rows = useMemo(() => {
+    const needle = q.trim().toLowerCase();
+    return stops.filter((s) => {
+      if (statusSel.size && !statusSel.has(tableStatusBucket(s))) return false;
+      if (needle) {
+        const hay = [s.stopNbr, s.businessName, s.addr1, s.addr2, s.city, s.zip, s.routeName, s.loadNbr, s.driverName]
+          .filter(Boolean).join(' ').toLowerCase();
+        if (!hay.includes(needle)) return false;
+      }
+      return true;
+    });
+  }, [stops, q, statusSel]);
+  const toggleStatus = (k) => setStatusSel((prev) => { const n = new Set(prev); n.has(k) ? n.delete(k) : n.add(k); return n; });
   return (
     <div className="absolute left-0 right-0 bottom-0 z-[12] bg-white border-t border-slate-200 shadow-[0_-2px_10px_rgba(0,0,0,0.10)] flex flex-col" style={{ maxHeight: open ? '45vh' : undefined }}>
-      <button
-        onClick={() => setOpen(!open)}
-        className="flex items-center justify-between px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 border-b border-slate-100"
-        aria-expanded={open}
-      >
-        <span className="inline-flex items-center gap-1.5">
+      <div className="flex items-center gap-2 px-3 py-1.5 border-b border-slate-100">
+        <button onClick={() => setOpen(!open)} className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-700 hover:text-slate-900 whitespace-nowrap" aria-expanded={open}>
+          {open ? <ChevronDown size={14} /> : <ChevronUp size={14} />}
           <LayoutList size={13} /> Stops table
-          <span className="text-slate-400 font-normal">({stops.length}{totalCount != null && totalCount !== stops.length ? ` of ${totalCount}` : ''})</span>
-        </span>
-        {open ? <ChevronDown size={14} /> : <ChevronUp size={14} />}
-      </button>
+          <span className="text-slate-400 font-normal">({rows.length}{totalCount != null && totalCount !== rows.length ? ` of ${totalCount}` : ''})</span>
+        </button>
+        {open && (
+          <>
+            <div className="relative flex-1 max-w-xs">
+              <Search size={13} className="absolute left-2 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+              <input
+                value={q}
+                onChange={(e) => setQ(e.target.value)}
+                placeholder="Search table…"
+                className="w-full border border-slate-300 rounded pl-7 pr-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-400"
+              />
+            </div>
+            <div className="relative">
+              <button
+                onClick={() => setStatusOpen((v) => !v)}
+                className={'inline-flex items-center gap-1 px-2 py-1 rounded text-xs border ' + (statusSel.size ? 'border-blue-400 text-blue-700 bg-blue-50' : 'border-slate-300 text-slate-600 hover:bg-slate-50')}
+              >
+                <Filter size={12} /> Status{statusSel.size ? ` (${statusSel.size})` : ''}
+              </button>
+              {statusOpen && (
+                <div className="absolute right-0 bottom-full mb-1 w-40 bg-white border border-slate-200 rounded-lg shadow-lg z-20 p-1">
+                  {TABLE_STATUS_BUCKETS.map((b) => (
+                    <label key={b.k} className="flex items-center gap-2 px-2 py-1.5 text-xs hover:bg-slate-50 rounded cursor-pointer">
+                      <input type="checkbox" checked={statusSel.has(b.k)} onChange={() => toggleStatus(b.k)} className="rounded border-slate-300" />
+                      {b.label}
+                    </label>
+                  ))}
+                  {statusSel.size > 0 && (
+                    <button onClick={() => setStatusSel(new Set())} className="w-full text-left px-2 py-1.5 text-xs text-slate-500 hover:bg-slate-50 rounded border-t border-slate-100 mt-1">Clear</button>
+                  )}
+                </div>
+              )}
+            </div>
+          </>
+        )}
+      </div>
       {open && (
         <div className="overflow-auto">
           <table className="text-[11px] border-collapse" style={{ minWidth: cols.reduce((a, c) => a + c.w, 0) }}>
@@ -5516,10 +5578,10 @@ function BottomStopsTable({ stops, notes, totalCount, open, setOpen, onPick }) {
               </tr>
             </thead>
             <tbody>
-              {stops.length === 0 && (
-                <tr><td colSpan={cols.length} className="px-3 py-4 text-slate-400 italic text-center">No stops to show.</td></tr>
+              {rows.length === 0 && (
+                <tr><td colSpan={cols.length} className="px-3 py-4 text-slate-400 italic text-center">No stops match.</td></tr>
               )}
-              {stops.map((s) => (
+              {rows.map((s) => (
                 <tr
                   key={s.stopNbr}
                   onClick={() => onPick(s)}
