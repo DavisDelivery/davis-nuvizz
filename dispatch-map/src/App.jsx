@@ -46,7 +46,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.25.13';
+const APP_VERSION = '0.25.14';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -66,6 +66,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.25.14', 'Collapsible NuVizz-style stops data grid at the bottom of the dispatch map'],
   ['0.25.13', 'Carry-over unplanned (prior-day open orders) toggle + fix box/lasso selection (projection now ready)'],
   ['0.25.12', 'Box + lasso multi-select on the map — highlights and filters the selected stops'],
   ['0.25.11', 'Total pallets count (sum of NuVizz carton field) shown below the stop count'],
@@ -222,6 +223,7 @@ const LS_MOBILE_DRAWER_TAB = 'dispatchMap.mobileDrawerTab';
 // (resets to today every load, per brief P2.2).
 const LS_SHOW_ROUTES = 'dispatchMap.showRoutes';
 const LS_ROUTE_LEGEND_EXPANDED = 'dispatchMap.routeLegendExpanded';
+const LS_BOTTOM_TABLE_OPEN = 'dispatchMap.bottomTableOpen';
 
 // M5 — Driver route polyline palette. 16 colors, distinct from brand colors
 // (#1e5b92, #dc2626, #16a34a, #f59e0b, #6b7280) and from each other, all
@@ -4309,6 +4311,7 @@ function MapScreen() {
   });
   const [legendExpanded, setLegendExpanded] = useState(() => safeReadJSON(LS_LEGEND_EXPANDED, false));
   const [routeLegendExpanded, setRouteLegendExpanded] = useState(() => safeReadJSON(LS_ROUTE_LEGEND_EXPANDED, true));
+  const [bottomTableOpen, setBottomTableOpen] = useState(() => safeReadJSON(LS_BOTTOM_TABLE_OPEN, false));
   const [tableColumns, setTableColumns] = useState(() => ({
     ...DEFAULT_TABLE_COLUMNS,
     ...safeReadJSON(LS_TABLE_COLUMNS, {}),
@@ -4386,6 +4389,7 @@ function MapScreen() {
   useEffect(() => { safeWriteJSON(LS_MOBILE_DRAWER_TAB, mobileDrawerTab); }, [mobileDrawerTab]);
   useEffect(() => { safeWriteJSON(LS_SHOW_ROUTES, showRoutes); }, [showRoutes]);
   useEffect(() => { safeWriteJSON(LS_ROUTE_LEGEND_EXPANDED, routeLegendExpanded); }, [routeLegendExpanded]);
+  useEffect(() => { safeWriteJSON(LS_BOTTOM_TABLE_OPEN, bottomTableOpen); }, [bottomTableOpen]);
 
   // M5 — date change side effects: close any open sidebars (their data was for
   // the previous day) and surface a one-shot note if live drivers were on for a
@@ -5350,6 +5354,16 @@ function MapScreen() {
             ⚠ {error}
           </div>
         )}
+
+        {/* NuVizz-style bottom data grid — collapsible spreadsheet of the board. */}
+        <BottomStopsTable
+          stops={visibleStops}
+          notes={notes}
+          totalCount={filteredStops.length}
+          open={bottomTableOpen}
+          setOpen={setBottomTableOpen}
+          onPick={(s) => { setSelectedDriver(null); setSelectedStop(s); handlePanToStop(s); }}
+        />
       </div>
 
       {/* Right sidebar — driver snapshot takes priority when a driver is selected. */}
@@ -5444,6 +5458,74 @@ function ColumnsMenu({ columns, onChange }) {
               {label}
             </label>
           ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// NuVizz-style bottom data grid. Spans the map width, fully collapsible (the
+// header bar stays as the toggle). Rows mirror the loaded board (respects
+// filters/search/box-lasso selection via the `stops` it's handed). Click a row
+// to open + center that stop. Horizontally scrollable for the wide column set.
+function BottomStopsTable({ stops, notes, totalCount, open, setOpen, onPick }) {
+  const cols = [
+    { k: 'stop', label: 'Stop #', w: 96, get: (s) => <span className="font-mono text-blue-700">{s.stopNbr}</span> },
+    { k: 'name', label: 'Ship To Name', w: 220, get: (s) => s.businessName || '—' },
+    { k: 'addr1', label: 'Address 1', w: 200, get: (s) => s.addr1 || '—' },
+    { k: 'addr2', label: 'Address 2', w: 150, get: (s) => s.addr2 || '' },
+    { k: 'city', label: 'City', w: 120, get: (s) => s.city || '—' },
+    { k: 'zip', label: 'Zip', w: 70, get: (s) => s.zip || '' },
+    { k: 'cartons', label: 'Pallets', w: 70, get: (s) => (s.cartons ?? '—'), align: 'right' },
+    { k: 'weight', label: 'Weight', w: 80, get: (s) => (s.weight != null ? Number(s.weight).toLocaleString() : '—'), align: 'right' },
+    { k: 'restr', label: 'Restrictions', w: 160, get: (s) => {
+        const keys = getRestrictionBadgeKeys(notes.get(s.matchKey) || null);
+        return keys.length ? keys.map((k) => RESTRICTION_ICONS[k]?.short || k).join(', ') : '';
+      } },
+    { k: 'load', label: 'Load', w: 150, get: (s) => s.routeName || s.loadNbr || '' },
+    { k: 'driver', label: 'Driver', w: 150, get: (s) => s.driverName || '' },
+  ];
+  return (
+    <div className="absolute left-0 right-0 bottom-0 z-[12] bg-white border-t border-slate-200 shadow-[0_-2px_10px_rgba(0,0,0,0.10)] flex flex-col" style={{ maxHeight: open ? '45vh' : undefined }}>
+      <button
+        onClick={() => setOpen(!open)}
+        className="flex items-center justify-between px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 border-b border-slate-100"
+        aria-expanded={open}
+      >
+        <span className="inline-flex items-center gap-1.5">
+          <LayoutList size={13} /> Stops table
+          <span className="text-slate-400 font-normal">({stops.length}{totalCount != null && totalCount !== stops.length ? ` of ${totalCount}` : ''})</span>
+        </span>
+        {open ? <ChevronDown size={14} /> : <ChevronUp size={14} />}
+      </button>
+      {open && (
+        <div className="overflow-auto">
+          <table className="text-[11px] border-collapse" style={{ minWidth: cols.reduce((a, c) => a + c.w, 0) }}>
+            <thead className="sticky top-0 bg-slate-50 z-10">
+              <tr>
+                {cols.map((c) => (
+                  <th key={c.k} className="text-left font-semibold text-slate-500 px-2 py-1.5 border-b border-slate-200 whitespace-nowrap" style={{ width: c.w, textAlign: c.align || 'left' }}>{c.label}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {stops.length === 0 && (
+                <tr><td colSpan={cols.length} className="px-3 py-4 text-slate-400 italic text-center">No stops to show.</td></tr>
+              )}
+              {stops.map((s) => (
+                <tr
+                  key={s.stopNbr}
+                  onClick={() => onPick(s)}
+                  className={'cursor-pointer hover:bg-blue-50 ' + (s.carryover ? 'bg-amber-50/60' : '')}
+                  title={s.carryover ? `Carry-over from ${s.scheduledDate}` : undefined}
+                >
+                  {cols.map((c) => (
+                    <td key={c.k} className="px-2 py-1 border-b border-slate-100 whitespace-nowrap overflow-hidden text-ellipsis" style={{ maxWidth: c.w, textAlign: c.align || 'left' }}>{c.get(s)}</td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       )}
     </div>
