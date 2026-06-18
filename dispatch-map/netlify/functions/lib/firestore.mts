@@ -425,7 +425,8 @@ export interface ScanState {
   knownLoads: KnownLoad[];
   minLoadNbr: number | null;
   maxLoadNbr: number | null;
-  highWaterStopNbr: number | null;
+  highWaterStopNbr: number | null;          // max over ALL stops (planned + unplanned)
+  highWaterUnplannedStopNbr: number | null; // max over UNPLANNED stops only — bounds the lean order descent
   routeMap: Record<string, string>;
   lastScanAt: string;
   scanCount: number;

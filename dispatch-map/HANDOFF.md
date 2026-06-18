@@ -41,8 +41,10 @@ probing only known-active loads + a small buffer instead of a ±300 window.
   delivered stops. This is what makes the lean stop-set equal the wide-scan stop-set.
 - **Phase 3 (v0.27.19) — incremental unplanned descent, behind the same flag:** on a WARM
   cycle (roster + `highWaterStopNbr` present) the order descent only probes NEW stop numbers
-  above the last high-water (+50 buffer) via `unplannedFloor()` (pure, unit-tested) instead of
-  the full `FLOOR_MARGIN` range — new orders are the newest/highest numbers. `writeStops({partialUnplanned})`
+  above the UNPLANNED-only high-water (`highWaterUnplannedStopNbr`, +200 buffer) via `unplannedFloor()`
+  (pure, unit-tested) instead of the full `FLOOR_MARGIN` range — new orders are the newest/highest
+  numbers. (v0.27.20 audit fix: bound on the unplanned-only frontier, NOT the global high-water, so
+  a high PLANNED stop number can't ratchet the floor past genuine new orders.) `writeStops({partialUnplanned})`
   + `preserveStopOnWrite` preserve older still-unplanned orders not re-probed (mirrors partialLoads).
   COLD cycles still do the full descent (establishes the high-water). Default OFF.
 - **Phase 5 report — manually-completed (91) dimension (amendment):** terminal-skip is

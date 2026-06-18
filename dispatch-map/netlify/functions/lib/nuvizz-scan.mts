@@ -598,7 +598,7 @@ interface UnplannedScanOpts {
 
 // New unplanned orders cluster at the high end; re-check a small band below the
 // last high-water in case a near-frontier number was imported out of order.
-const UNPLANNED_HIGHWATER_BUFFER = 50;
+const UNPLANNED_HIGHWATER_BUFFER = 200;
 
 // PURE: the descent floor. Lean (sinceStopNbr set) raises the floor to just below
 // the last high-water; otherwise the full estimated floor. Unit-tested.
@@ -776,9 +776,16 @@ export function buildScanState(dateStr: string, stops: any[], prev: ScanState | 
   // EVERY one of its stops is DELIVERED (status 90/91) — conservative on purpose.
   const seenLoad = new Map<string, { routeName: string | null; allTerminal: boolean }>();
   let highWater = prev?.highWaterStopNbr ?? null;
+  // Separate UNPLANNED-only high-water: the lean order descent bounds off the
+  // unplanned frontier, NOT the global max — a planned stop number far above the
+  // order cluster must not ratchet the floor past genuine new unplanned orders.
+  let highWaterUnplanned = prev?.highWaterUnplannedStopNbr ?? null;
   for (const s of stops) {
     const sn = stopNbrToInt(s.stopNbr);
-    if (sn != null) highWater = highWater == null ? sn : Math.max(highWater, sn);
+    if (sn != null) {
+      highWater = highWater == null ? sn : Math.max(highWater, sn);
+      if (s.isPlanned === false) highWaterUnplanned = highWaterUnplanned == null ? sn : Math.max(highWaterUnplanned, sn);
+    }
     if (s.isPlanned && s.loadNbr) {
       const cur = seenLoad.get(s.loadNbr) || { routeName: s.routeName || null, allTerminal: true };
       if (!cur.routeName && s.routeName) cur.routeName = s.routeName;
@@ -803,6 +810,7 @@ export function buildScanState(dateStr: string, stops: any[], prev: ScanState | 
     minLoadNbr: nums.length ? Math.min(...nums) : (prev?.minLoadNbr ?? null),
     maxLoadNbr: nums.length ? Math.max(...nums) : (prev?.maxLoadNbr ?? null),
     highWaterStopNbr: highWater,
+    highWaterUnplannedStopNbr: highWaterUnplanned,
     routeMap,
     lastScanAt: nowISO,
     scanCount: (prev?.scanCount || 0) + 1,

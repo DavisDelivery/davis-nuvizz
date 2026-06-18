@@ -171,10 +171,12 @@ export async function runRefreshStops(req: Request): Promise<Response> {
       // Phase 3 lean unplanned: only on a WARM cycle (we have a roster + high-water);
       // descend only NEW stop numbers above the last high-water. Cold cycles do the
       // full descent (establishes the high-water), same as the wide load fallback.
-      const leanUnplanned = LEAN_DISCOVERY && includeUnplanned && !!loadTargets && (priorState?.highWaterStopNbr != null);
+      const leanUnplanned = LEAN_DISCOVERY && includeUnplanned && !!loadTargets && (priorState?.highWaterUnplannedStopNbr != null);
       const unplannedOpts: any = {};
       if (isManual && includeUnplanned) unplannedOpts.maxProbes = 800;
-      if (leanUnplanned) unplannedOpts.sinceStopNbr = priorState!.highWaterStopNbr;
+      // Bound on the UNPLANNED-only high-water so planned stop numbers can't ratchet
+      // the floor past genuine new orders (audit finding).
+      if (leanUnplanned) unplannedOpts.sinceStopNbr = priorState!.highWaterUnplannedStopNbr;
       const scan = await scanDate(date, {
         includeUnplanned,
         includeLoads,
