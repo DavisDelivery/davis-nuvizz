@@ -32,15 +32,21 @@ export default async (req: Request): Promise<Response> => {
     // Read the window of warehoused days (newest..oldest), best-effort per day.
     const dates = Array.from({ length: windowDays + 1 }, (_, i) => addDaysUTC(today, -i));
     const daysByDate: Record<string, any[]> = {};
+    const readErrors: string[] = [];
     await Promise.all(dates.map(async (d) => {
-      try { daysByDate[d] = await listStops(TENANT, d); } catch { daysByDate[d] = []; }
+      // Keep the date key present even on failure so the window range stays complete,
+      // but record the gap so a coverage hole isn't mistaken for a quiet day.
+      try { daysByDate[d] = await listStops(TENANT, d); } catch { daysByDate[d] = []; readErrors.push(d); }
     }));
     const report = buildUndeliveredReport(daysByDate, { windowDays, today });
-    // Window caveat (audit): classification is bounded to the read window, so a PRO whose
-    // true origin/delivery falls outside [today-windowDays, today] can have approximate
-    // dates (e.g. a rolled stop older than the window shows a clamped scheduledDate).
-    const note = `Derived from the ${windowDays + 1}-day history warehouse (zero NuVizz calls). Rows whose activity predates the window may have approximate scheduled/late dates.`;
-    return new Response(JSON.stringify({ ok: true, tenant: TENANT, generated: new Date().toISOString(), note, ...report }), { status: 200, headers: cors });
+    // Window caveat (audit): classification is bounded to the read window. Same-day
+    // deliveries on the window's oldest edge are surfaced under `indeterminate` (can't
+    // confirm on-time) rather than silently assumed on-time, and read failures are
+    // reported so a coverage gap isn't mistaken for a clean window.
+    const note = `Derived from the ${windowDays + 1}-day history warehouse (zero NuVizz calls). `
+      + `Rows in 'indeterminate' were delivered on the window's oldest day, so on-time vs late is unconfirmed.`
+      + (readErrors.length ? ` WARNING: ${readErrors.length} day(s) failed to read (${readErrors.sort().join(', ')}) — coverage is partial and some late deliveries may be missed.` : '');
+    return new Response(JSON.stringify({ ok: true, tenant: TENANT, generated: new Date().toISOString(), note, readErrors, ...report }), { status: 200, headers: cors });
   } catch (e: any) {
     return new Response(JSON.stringify({ ok: false, error: e?.message || 'report failed' }), { status: 500, headers: cors });
   }

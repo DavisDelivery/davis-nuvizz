@@ -12,8 +12,16 @@ export type CompletionKind = '90' | '91' | null;
 
 // 91 = dispatch-portal MANUAL completion; 90 = system/scan completion; null = not delivered.
 export function completionKind(stop: any): CompletionKind {
-  const code = String(stop?.status ?? stop?.executed?.stopStatus ?? '');
-  return code === '91' ? '91' : code === '90' ? '90' : null;
+  const code = String(stop?.status ?? stop?.executed?.stopStatus ?? '').trim();
+  if (code === '91') return '91';
+  if (code === '90') return '90';
+  // Align with production classifyStopStatus (nuvizz-scan): a stop with an actual
+  // delivery timestamp — or whose normalizedStatus already settled to DELIVERED —
+  // IS delivered even when the raw status code lags behind. Without this the report
+  // under-counts deliveries and mislabels delivered PROs as open/aged. A code-less
+  // delivery carries no 90/91 signal, so attribute it to the system (90).
+  if (stop?.deliveredDTTM || stop?.executed?.deliveredDTTM || stop?.normalizedStatus === 'DELIVERED') return '90';
+  return null;
 }
 
 function daysBetween(aDate: string, bDate: string): number {
@@ -53,6 +61,10 @@ export interface UndeliveredReport {
   deliveredLate: (ReportRow & { deliveredDate: string; daysLate: number; kind: 'manual' | 'system' })[];
   open: (ReportRow & { openDays: number })[];
   agedOut: (ReportRow & { ageDays: number })[];
+  // Delivered on its FIRST visible day, but that day is the window's oldest edge — the
+  // PRO may have rolled in from before the read window, so on-time vs late can't be
+  // confirmed. Surfaced separately instead of being silently assumed on-time.
+  indeterminate: (ReportRow & { deliveredDate: string; kind: 'manual' | 'system' })[];
   completions: CompletionSummary;
 }
 
@@ -63,6 +75,10 @@ export function buildUndeliveredReport(
 ): UndeliveredReport {
   const windowDays = opts.windowDays ?? 7;
   const dates = Object.keys(daysByDate).sort(); // ascending
+  // The oldest day we can actually see. A same-day delivery on this edge can't be
+  // confirmed on-time (its open origin may predate the window), so it's routed to
+  // `indeterminate` rather than silently dropped as on-time.
+  const oldestReadDate = dates[0] ?? opts.today;
 
   // Per-PRO timeline across days: earliest appearance + earliest terminal day.
   interface Pro { firstDate: string; terminalDate: string | null; terminalKind: CompletionKind; last: any }
@@ -82,7 +98,7 @@ export function buildUndeliveredReport(
     }
   }
 
-  const deliveredLate: any[] = [], open: any[] = [], agedOut: any[] = [];
+  const deliveredLate: any[] = [], open: any[] = [], agedOut: any[] = [], indeterminate: any[] = [];
   for (const [pro, e] of byPro) {
     const row: ReportRow = {
       stopNbr: pro, scheduledDate: e.firstDate,
@@ -91,8 +107,11 @@ export function buildUndeliveredReport(
     };
     if (e.terminalDate) {
       const daysLate = daysBetween(e.firstDate, e.terminalDate);
-      if (daysLate > 0) deliveredLate.push({ ...row, deliveredDate: e.terminalDate, daysLate, kind: e.terminalKind === '91' ? 'manual' : 'system' });
-      // daysLate === 0 → delivered on its scheduled day → on-time, excluded.
+      const kind = e.terminalKind === '91' ? 'manual' : 'system';
+      if (daysLate > 0) deliveredLate.push({ ...row, deliveredDate: e.terminalDate, daysLate, kind });
+      else if (e.firstDate === oldestReadDate) indeterminate.push({ ...row, deliveredDate: e.terminalDate, kind });
+      // daysLate === 0 strictly inside the window → we DID have visibility into earlier
+      // days and never saw it open, so it's genuine same-day on-time → excluded.
     } else {
       const age = daysBetween(e.firstDate, opts.today);
       if (age >= windowDays) agedOut.push({ ...row, ageDays: age });
@@ -102,5 +121,6 @@ export function buildUndeliveredReport(
   deliveredLate.sort((a, b) => b.daysLate - a.daysLate);
   open.sort((a, b) => (a.scheduledDate < b.scheduledDate ? 1 : -1));
   agedOut.sort((a, b) => b.ageDays - a.ageDays);
-  return { windowDays, today: opts.today, deliveredLate, open, agedOut, completions: summarizeCompletions(deliveredStops) };
+  indeterminate.sort((a, b) => (a.deliveredDate < b.deliveredDate ? 1 : -1));
+  return { windowDays, today: opts.today, deliveredLate, open, agedOut, indeterminate, completions: summarizeCompletions(deliveredStops) };
 }

@@ -99,11 +99,18 @@ export async function captureDate(date: string): Promise<any> {
   // index is empty / never written (don't capture an empty snapshot for the day).
   if (LEAN_HISTORY && isFirestoreEnabled()) {
     const idx = await readStops(TENANT, date);
-    if (idx.stops.length && idx.meta?.last_scanned_at) {
+    // Trust the index only if it's non-empty AND the day's last scan wasn't SUPPRESSED
+    // (ceiling/kill switch). A halted day's index is known-incomplete, so capturing it
+    // verbatim would mint a complete:true manifest over a partial snapshot — fall back
+    // to a fresh scan to fill the gap instead.
+    if (idx.stops.length && idx.meta?.last_scanned_at && !idx.meta?.scanState?.halted) {
       stops = idx.stops;
       sourceScannedAt = idx.meta.last_scanned_at;
       source = 'firestore-index';
     } else {
+      if (idx.meta?.scanState?.halted) {
+        console.warn(`[history] date=${date} index is HALTED (${idx.meta.scanState.reason}) — falling back to fresh scan`);
+      }
       const scan = await scanDate(date);
       stops = scan.stops; sourceScannedAt = scan.scannedAt;
     }

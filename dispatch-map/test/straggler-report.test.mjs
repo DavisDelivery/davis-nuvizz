@@ -14,6 +14,48 @@ test('completionKind: 91=manual, 90=system, else null (also reads executed.stopS
   assert.equal(completionKind({}), null);
 });
 
+test('completionKind: a code-less delivery (deliveredDTTM / normalizedStatus) counts as system 90', () => {
+  // status code lags but a real delivery timestamp is present → delivered (system).
+  assert.equal(completionKind({ status: '40', deliveredDTTM: '2026-07-10T18:00:00Z' }), '90');
+  assert.equal(completionKind({ executed: { deliveredDTTM: '2026-07-10T18:00:00Z' } }), '90');
+  assert.equal(completionKind({ status: '50', normalizedStatus: 'DELIVERED' }), '90');
+  // an explicit 91 still wins over a bare timestamp.
+  assert.equal(completionKind({ status: '91', deliveredDTTM: '2026-07-10T18:00:00Z' }), '91');
+  // padded codes are trimmed, to parity with classifyStopStatus.
+  assert.equal(completionKind({ status: ' 91 ' }), '91');
+  assert.equal(completionKind({ status: '90 ' }), '90');
+  // genuinely open: no code, no timestamp, not normalized delivered.
+  assert.equal(completionKind({ status: '10', normalizedStatus: 'EN_ROUTE' }), null);
+});
+
+test('report: same-day delivery on the window OLDEST edge is indeterminate, not on-time', () => {
+  // PRO 950 first/only appears on the oldest read day and is delivered same-day — its
+  // open origin could predate the window, so it can't be confirmed on-time.
+  const days = {
+    '2026-07-06': [stop('950', '90', '2026-07-06')],            // oldest edge, same-day delivered
+    '2026-07-08': [stop('951', '10', '2026-07-08'), stop('951', '90', '2026-07-08')], // mid-window same-day
+  };
+  const r = buildUndeliveredReport(days, { today: '2026-07-13', windowDays: 7 });
+  assert.deepEqual(r.indeterminate.map((x) => x.stopNbr), ['950']);
+  assert.equal(r.indeterminate[0].kind, 'system');
+  assert.equal(r.indeterminate[0].deliveredDate, '2026-07-06');
+  // 951 delivered same-day strictly inside the window (we saw it open first) → on-time, excluded everywhere.
+  assert.equal(r.deliveredLate.length, 0);
+  assert.equal(r.open.length, 0);
+  assert.ok(!r.indeterminate.some((x) => x.stopNbr === '951'));
+});
+
+test('report: a genuinely-late delivery is NOT downgraded to indeterminate even at the edge', () => {
+  const days = {
+    '2026-07-06': [stop('960', '10', '2026-07-06')],            // open on the oldest edge
+    '2026-07-09': [stop('960', '91', '2026-07-09')],            // delivered 3 days later
+  };
+  const r = buildUndeliveredReport(days, { today: '2026-07-13', windowDays: 7 });
+  assert.equal(r.deliveredLate.length, 1);
+  assert.equal(r.deliveredLate[0].daysLate, 3);
+  assert.equal(r.indeterminate.length, 0);
+});
+
 test('summarizeCompletions: overall + per-route 91-rate', () => {
   const s = summarizeCompletions([
     stop('1', '90', 'd', { route: 'A' }), stop('2', '91', 'd', { route: 'A' }),

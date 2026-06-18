@@ -331,10 +331,31 @@ export async function readStops(tenant: string, dateStr: string): Promise<StopIn
 const OPS_COLLECTION = 'nuvizz_ops';
 
 // Route label → field-safe per-route counter key, e.g. '/load/info' → 'count__load_info'.
-function routeFieldKey(route?: string | null): string | null {
+// Exported for tests: a route name can never alias onto the authoritative `count`
+// (it is always prefixed `count__`) nor inject a Firestore field path (non-alnum runs
+// collapse to `_`), which is the safety property the counter relies on.
+export function routeFieldKey(route?: string | null): string | null {
   if (!route) return null;
   const k = String(route).toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
   return k ? `count__${k}` : null;
+}
+
+// Build the Firestore :commit body for an atomic counter increment. Exported PURE so a
+// test can lock the merge-shape that the runaway-counter bug came from: the update MUST
+// carry updateMask:['date'] (so the write MERGES `date` instead of REPLACING the doc and
+// wiping `count`), and the increments MUST ride as updateTransforms with `count` first
+// (transformResults[0] is read back as the authoritative new total).
+export function buildCounterCommitBody(docName: string, dateStr: string, n: number, route?: string) {
+  const transforms: any[] = [{ fieldPath: 'count', increment: { integerValue: String(n) } }];
+  const rk = routeFieldKey(route);
+  if (rk) transforms.push({ fieldPath: rk, increment: { integerValue: String(n) } });
+  return {
+    writes: [{
+      update: { name: docName, fields: { date: { stringValue: dateStr } } },
+      updateMask: { fieldPaths: ['date'] }, // merge `date`; preserve + increment count/count__*
+      updateTransforms: transforms,
+    }],
+  };
 }
 
 /**
@@ -356,16 +377,7 @@ export async function incrementCallCounter(dateStr: string, n: number, route?: s
   const docName = `projects/${sa.project_id}/databases/(default)/documents/${OPS_COLLECTION}/calls__${dateStr}`;
   const url = `${FIRESTORE_BASE}/projects/${sa.project_id}/databases/(default)/documents:commit`;
   // count is always transform[0] so transformResults[0] is the authoritative total.
-  const transforms: any[] = [{ fieldPath: 'count', increment: { integerValue: String(n) } }];
-  const rk = routeFieldKey(route);
-  if (rk) transforms.push({ fieldPath: rk, increment: { integerValue: String(n) } });
-  const body = {
-    writes: [{
-      update: { name: docName, fields: { date: { stringValue: dateStr } } },
-      updateMask: { fieldPaths: ['date'] }, // merge `date`; preserve + increment count/count__*
-      updateTransforms: transforms,
-    }],
-  };
+  const body = buildCounterCommitBody(docName, dateStr, n, route);
   const resp = await fetch(url, {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
@@ -396,14 +408,18 @@ export async function readCallStats(dateStr: string): Promise<{ count: number; b
 
 export interface CircuitState { open: boolean; reason?: string; at?: string; day?: string }
 
-export async function readCircuit(): Promise<CircuitState> {
-  const doc = await getDoc(`${OPS_COLLECTION}/circuit`);
+// Day-scoped decision (Fix 3), exported PURE for tests: a flag tripped on a prior UTC
+// day is stale — treat as CLOSED so a yesterday-tripped breaker can't halt today's
+// scans at count 0; only an `open` flag stamped with today's day stays open.
+export function circuitFromDoc(doc: any, today: string): CircuitState {
   if (!doc) return { open: false };
-  // Day-scoped (Fix 3): a flag tripped on a prior UTC day is stale — treat as
-  // CLOSED so a yesterday-tripped breaker can't halt today's scans at count 0.
-  const today = new Date().toISOString().slice(0, 10);
   const open = !!doc.open && doc.day === today;
   return { open, reason: doc.reason, at: doc.at, day: doc.day };
+}
+
+export async function readCircuit(): Promise<CircuitState> {
+  const doc = await getDoc(`${OPS_COLLECTION}/circuit`);
+  return circuitFromDoc(doc, new Date().toISOString().slice(0, 10));
 }
 
 export async function setCircuit(open: boolean, reason: string, atISO: string): Promise<void> {
