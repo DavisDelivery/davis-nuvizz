@@ -26,6 +26,15 @@ probing only known-active loads + a small buffer instead of a ±300 window.
   Firestore snapshot, 7-day straggler watch + undelivered report) follow once the
   shadow log confirms the roster matches reality. Cold-start wide-window probe stays
   as the fallback; four-layer data preservation intact (freeze = stop querying, keep data).
+- **Phase 5 report — manually-completed (91) dimension (amendment):** terminal-skip is
+  unchanged (freeze on {90,91}; a 91 can't revert — a redo returns as a new PRO "-1",
+  discovered normally — so NO re-verify, max savings). The undelivered/aged-out report
+  ALSO flags stops whose terminal status is **91 (dispatch-portal manual completion)**
+  distinctly from **90 (system/scan completion)** — a derived view off the already-stored
+  status, ZERO extra NuVizz calls, no new ingest. Surface: per-day 91-vs-90 count +
+  breakdown by route/driver with each route's 91-rate (% of its completions); sortable;
+  dates "Mon D, YYYY". The 91 flag rides into the daily history snapshot so the report
+  works for past days too.
 
 Status of the build that landed on branch `claude/dispatch-map-build-eEbYe`.
 M3 + M5 still pending. v0.4.0 = M4.1 (resizable panel, search, driver
