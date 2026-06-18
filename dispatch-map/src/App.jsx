@@ -46,7 +46,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.27.7';
+const APP_VERSION = '0.27.8';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -66,6 +66,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.27.8', 'Customer notes: AM/PM "Delivery window" tag — tagged stops show an AM/PM pin on the map'],
   ['0.27.7', 'Order detail: "Find business" now opens a general Google search (name+address); removed the redundant Maps-search button (the "Google Maps" link still opens the map)'],
   ['0.27.6', 'Edit address: correct a mis-entered address — it re-geocodes and moves the pin for that customer (also restores the mobile pin-correct button)'],
   ['0.27.5', 'Order detail: added a "Find business" search link (business name + address)'],
@@ -1243,7 +1244,7 @@ function pinSvgClassic(color) {
 // a status mark (check=delivered, bang=exception, arrow=en route). Anchor is
 // unchanged (14, 34) so it's a drop-in for the classic pin.
 function pinSvgStatus(color, opts = {}) {
-  const { hollow = false, glyph = null } = opts;
+  const { hollow = false, glyph = null, tag = null } = opts;
   const bodyFill = hollow ? '#ffffff' : color;
   const bodyStroke = hollow ? color : '#ffffff';
   const strokeW = hollow ? 2.5 : 2;
@@ -1254,6 +1255,9 @@ function pinSvgStatus(color, opts = {}) {
     center = '<text x="14" y="17.5" font-family="system-ui, sans-serif" font-size="12" font-weight="800" fill="white" text-anchor="middle">!</text>';
   } else if (glyph === 'arrow') {
     center = '<path d="M9.5 13h6m-2.5-2.6l2.8 2.6-2.8 2.6" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>';
+  } else if (tag === 'AM' || tag === 'PM') {
+    // Delivery-window tag — render "AM"/"PM" in the pin head (replaces the dot).
+    center = `<text x="14" y="16.8" font-family="system-ui, sans-serif" font-size="10" font-weight="800" fill="${hollow ? color : 'white'}" text-anchor="middle" letter-spacing="-0.5">${tag}</text>`;
   } else {
     center = `<circle cx="14" cy="13" r="4.5" fill="${hollow ? color : 'white'}"/>`;
   }
@@ -1471,6 +1475,7 @@ function emptyNote(stop) {
     contacts: [],
     dock_notes: '',
     priority_flag: null,
+    delivery_window: null,   // 'AM' | 'PM' | null — shows an AM/PM tag on the map pin
     photo_urls: [],
     pro_history: [],
   };
@@ -2688,6 +2693,25 @@ function StopSidebar({ stop, note, onClose, onSave, saving, saveError, onOpenRou
               </div>
 
               <div>
+                <div className="text-xs font-semibold text-slate-600 mb-1">Delivery window</div>
+                <div className="flex gap-1.5">
+                  {[null, 'AM', 'PM'].map((v) => {
+                    const active = (D.delivery_window || null) === v;
+                    return (
+                      <button
+                        key={String(v)}
+                        onClick={() => setD({ delivery_window: v })}
+                        className={`px-2.5 py-1 rounded border text-xs font-semibold ${active ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-300 bg-white text-slate-700'}`}
+                        title={v ? `Tag this stop ${v} — shows an ${v} pin on the map` : 'No AM/PM tag'}
+                      >
+                        {v || 'none'}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div>
                 <div className="text-xs font-semibold text-slate-600 mb-1">Receiving hours</div>
                 {/* M4.4 — Per-day Open/Closed toggle row. Clicking a day flips
                 whether it's in closed_days. Closed days hide their time inputs
@@ -3165,6 +3189,7 @@ function SnapshotSkeleton() {
 function ReadOnlyNoteView({ note }) {
   const items = [];
   if (note.priority_flag) items.push({ k: 'Flag', v: <span style={{ color: FLAG_COLORS[note.priority_flag] }} className="font-semibold capitalize">{note.priority_flag}</span> });
+  if (note.delivery_window === 'AM' || note.delivery_window === 'PM') items.push({ k: 'Window', v: <span className="font-semibold">{note.delivery_window}</span> });
   if (note.appointment_required) {
     items.push({
       k: 'Appointment',
@@ -4188,6 +4213,26 @@ function StopNotesTabContent({ stop, note, draft, setDraft, editing, setEditing 
         </div>
       </div>
 
+      {/* Delivery window — AM/PM tag, shown as an AM/PM pin on the map */}
+      <div>
+        <div className="text-[11px] font-semibold text-slate-600 mb-1">Delivery window</div>
+        <div className="flex flex-wrap gap-1.5">
+          {[null, 'AM', 'PM'].map((v) => {
+            const active = (D.delivery_window || null) === v;
+            return (
+              <button
+                key={String(v)}
+                onClick={() => setD({ delivery_window: v })}
+                className={`px-3 py-2 rounded border ${active ? 'bg-slate-900 text-white border-slate-900' : 'bg-white border-slate-300 text-slate-700'}`}
+                style={{ minHeight: 44 }}
+              >
+                <span className="text-xs font-semibold">{v || 'none'}</span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
       {/* Toggles */}
       <div className="space-y-2">
         <MobileToggleRow
@@ -5150,11 +5195,15 @@ function MapScreen() {
         // stops render ORANGE so the "found" ones pop against the dimmed rest.
         const meta = STATUS_META[classifyStopStatus(s)] || STATUS_META.SCHEDULED;
         const color = matched ? '#f59e0b' : (meta.color || flagColor(note));
+        // Delivery-window tag (AM/PM) → shown in the pin head; tagged pins render
+        // at the larger size so the text stays legible.
+        const tag = (note?.delivery_window === 'AM' || note?.delivery_window === 'PM') ? note.delivery_window : null;
+        const big = matched || !!tag;
         icon = {
-          url: pinSvgStatus(color, { hollow: matched ? false : meta.hollow, glyph: meta.glyph }),
-          // Slightly larger when matched so the found stops stand out.
-          scaledSize: matched ? new google.maps.Size(28, 36) : new google.maps.Size(20, 26),
-          anchor: matched ? new google.maps.Point(14, 34) : new google.maps.Point(10, 25),
+          url: pinSvgStatus(color, { hollow: matched ? false : meta.hollow, glyph: meta.glyph, tag }),
+          // Slightly larger when matched or AM/PM-tagged so they stand out.
+          scaledSize: big ? new google.maps.Size(28, 36) : new google.maps.Size(20, 26),
+          anchor: big ? new google.maps.Point(14, 34) : new google.maps.Point(10, 25),
         };
       } else {
         const spec = iconMarkerSvg(restrictions);
