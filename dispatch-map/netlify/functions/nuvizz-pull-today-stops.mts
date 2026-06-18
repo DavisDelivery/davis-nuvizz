@@ -21,7 +21,8 @@
 
 import fixture from '../../test/fixtures/nuvizz-today-stops.json' with { type: 'json' };
 import { scanDate, todayUTC, normalizeStop } from './lib/nuvizz-scan.mts';
-import { isFirestoreEnabled, readStops } from './lib/firestore.mts';
+import { isFirestoreEnabled, readStops, readCallStats, readCircuit } from './lib/firestore.mts';
+import { breakerMode } from './lib/nuvizz-request.mts';
 
 const TENANT = 'davis';
 
@@ -107,6 +108,25 @@ export default async (req: Request): Promise<Response> => {
     }
 
     const unplannedCount = stops.filter((s) => s.isUnplanned).length;
+
+    // Fix 5 — surface today's NuVizz call volume. Keyed by the UTC day the calls
+    // happen (todayUTC), independent of the viewed delivery date. Best-effort:
+    // never fail the fast read path over ops.
+    let ops: any = null;
+    if (isFirestoreEnabled()) {
+      try {
+        const opsDate = todayUTC();
+        const [stats, circuit] = await Promise.all([readCallStats(opsDate), readCircuit()]);
+        ops = {
+          dayCount: stats.count,
+          byRoute: stats.byRoute,
+          ceiling: Number(process.env.NUVIZZ_DAILY_CEILING) || 100000,
+          breaker: circuit.open,
+          mode: breakerMode(),
+        };
+      } catch { /* ops is best-effort; leave null */ }
+    }
+
     return new Response(JSON.stringify({
       ok: true,
       date,
@@ -120,6 +140,7 @@ export default async (req: Request): Promise<Response> => {
       unplannedCount,
       carryoverCount,
       carryDays,
+      ops,
       stops,
     }), { status: 200, headers: cors });
   } catch (e: any) {

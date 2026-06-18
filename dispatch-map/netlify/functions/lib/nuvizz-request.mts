@@ -35,9 +35,24 @@ export interface NvRequestOptions {
   signal?: AbortSignal;
 }
 
+export type BreakerMode = 'monitor' | 'enforce';
+
+/**
+ * monitor (default): count + log everything and warn "WOULD trip" when the day's
+ *   total crosses the ceiling, but never open the breaker and never block a scan.
+ *   Lets us measure real volume safely before turning on enforcement.
+ * enforce: trip the breaker + block at the ceiling (the eventual spend cap).
+ */
+export const BREAKER_MODE: BreakerMode =
+  (process.env.NUVIZZ_BREAKER_MODE || '').toLowerCase() === 'enforce' ? 'enforce' : 'monitor';
+
+export function breakerMode(): BreakerMode { return BREAKER_MODE; }
+
 export interface RequesterConfig {
   /** Hard daily call ceiling across the whole fleet. Default 100_000. */
   dailyCeiling: number;
+  /** monitor (count+warn, never block) vs enforce (trip+block) at the ceiling. */
+  breakerMode: BreakerMode;
   /** Retry policy for 429/5xx. */
   maxRetries: number;
   backoffBaseMs: number;
@@ -50,6 +65,7 @@ export interface RequesterConfig {
 
 export const DEFAULT_CONFIG: RequesterConfig = {
   dailyCeiling: Number(process.env.NUVIZZ_DAILY_CEILING) || 100_000,
+  breakerMode: BREAKER_MODE,
   maxRetries: 4,
   backoffBaseMs: 500,
   backoffFactor: 2,
@@ -121,6 +137,7 @@ export function createNuvizzRequester(deps: RequesterDeps, config: Partial<Reque
   let breakerCheckedAt = 0;
   const breakerTtlMs = 5_000;
   let totalThisInstance = 0;
+  let wouldTripLogged = false; // monitor mode: warn once per warm instance
 
   async function breakerIsOpen(): Promise<boolean> {
     if (now() - breakerCheckedAt < breakerTtlMs) return breakerOpen;
@@ -151,12 +168,19 @@ export function createNuvizzRequester(deps: RequesterDeps, config: Partial<Reque
       // Count + log every actual network round-trip (success or failure).
       const total = await deps.recordCall(meta, 1);
       totalThisInstance++;
-      log({ route: meta.route, tenant: meta.tenant, status: resp.status, ms, dayTotal: total });
-      // Auto-trip the breaker the moment we cross the ceiling.
-      if (total >= cfg.dailyCeiling && !breakerOpen) {
-        breakerOpen = true; breakerCheckedAt = now();
-        await deps.tripCircuit(`daily ceiling ${cfg.dailyCeiling} reached (count=${total})`);
-        log({ event: 'circuit-tripped', route: meta.route, tenant: meta.tenant, dayTotal: total, ceiling: cfg.dailyCeiling });
+      log({ route: meta.route, tenant: meta.tenant, status: resp.status, ms, dayTotal: total, mode: cfg.breakerMode });
+      // At the ceiling: enforce → trip + (next call) block; monitor → warn only.
+      if (total >= cfg.dailyCeiling) {
+        if (cfg.breakerMode === 'enforce') {
+          if (!breakerOpen) {
+            breakerOpen = true; breakerCheckedAt = now();
+            await deps.tripCircuit(`daily ceiling ${cfg.dailyCeiling} reached (count=${total})`);
+            log({ event: 'circuit-tripped', route: meta.route, tenant: meta.tenant, dayTotal: total, ceiling: cfg.dailyCeiling });
+          }
+        } else if (!wouldTripLogged) {
+          wouldTripLogged = true;
+          log({ event: 'circuit-would-trip', mode: 'monitor', route: meta.route, tenant: meta.tenant, dayTotal: total, ceiling: cfg.dailyCeiling, msg: `WOULD trip at ${cfg.dailyCeiling} (monitor mode — not blocking)` });
+        }
       }
       if (!isRetryableStatus(resp.status) || attempt >= maxRetries) return resp;
       const wait = computeBackoffMs(attempt, cfg);
@@ -172,7 +196,8 @@ export function createNuvizzRequester(deps: RequesterDeps, config: Partial<Reque
    * whole scan rather than hammering a vendor that's already rate-limiting us).
    */
   async function request(url: string, opts: NvRequestOptions, meta: NvRequestMeta): Promise<Response> {
-    if (await breakerIsOpen()) {
+    // Only enforce mode blocks; monitor mode never refuses a scan.
+    if (cfg.breakerMode === 'enforce' && await breakerIsOpen()) {
       throw new NuvizzCircuitOpenError(`NuVizz circuit breaker open — refusing ${meta.route} (${meta.tenant})`);
     }
     const method = (opts.method || 'GET').toUpperCase();
@@ -192,7 +217,7 @@ export function createNuvizzRequester(deps: RequesterDeps, config: Partial<Reque
   }
 
   function getStats() {
-    return { totalThisInstance, breakerOpen, inflight: inflight.size, ceiling: cfg.dailyCeiling };
+    return { totalThisInstance, breakerOpen, inflight: inflight.size, ceiling: cfg.dailyCeiling, mode: cfg.breakerMode };
   }
 
   return { request, getStats, _config: cfg };
@@ -224,14 +249,20 @@ export function getNuvizzRequester() {
   if (__prod) return __prod;
   __prod = createNuvizzRequester({
     fetchImpl: (url, init) => fetch(url, init),
-    recordCall: (_meta, n) => incrementCallCounter(new Date().toISOString().slice(0, 10), n),
+    // Thread the route through so the per-route breakdown (count__*) populates.
+    recordCall: (meta, n) => incrementCallCounter(new Date().toISOString().slice(0, 10), n, meta.route),
     isCircuitOpen: async () => (await readCircuit()).open,
     tripCircuit: (reason) => setCircuit(true, reason, new Date().toISOString()),
   });
   return __prod;
 }
 
-/** True when the breaker has tripped — scan entrypoints skip the whole run. */
+/**
+ * True when the breaker has tripped — scan entrypoints skip the whole run.
+ * In monitor mode we never halt scans (we only measure), so this is always false.
+ * readCircuit is day-scoped, so a stale prior-day flag also reads as closed.
+ */
 export async function breakerTripped(): Promise<boolean> {
+  if (BREAKER_MODE === 'monitor') return false;
   try { return (await readCircuit()).open; } catch { return false; }
 }

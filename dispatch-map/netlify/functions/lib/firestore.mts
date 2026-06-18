@@ -312,16 +312,40 @@ export async function readStops(tenant: string, dateStr: string): Promise<StopIn
 // flag so a regression is throttled in minutes instead of by a vendor email.
 const OPS_COLLECTION = 'nuvizz_ops';
 
-/** Atomically add n to today's shared counter; returns the NEW total. */
-export async function incrementCallCounter(dateStr: string, n: number): Promise<number> {
+// Route label → field-safe per-route counter key, e.g. '/load/info' → 'count__load_info'.
+function routeFieldKey(route?: string | null): string | null {
+  if (!route) return null;
+  const k = String(route).toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+  return k ? `count__${k}` : null;
+}
+
+/**
+ * Atomically add n to today's shared counter; returns the NEW total.
+ *
+ * The update MUST carry an updateMask scoped to the non-transform fields. Without
+ * it, a commit `update` REPLACES the whole doc with just {date} on every call,
+ * wiping `count` — the transform then re-creates count=1 each time and the total
+ * never climbs (verified broken 2026-06-17). The mask makes the update MERGE so
+ * `count` (and per-route counters) survive and accumulate.
+ *
+ * When `route` is given, a per-route counter (count__<route>) is incremented in
+ * the SAME commit so we can see where the calls go. Total `count` stays
+ * authoritative for the ceiling. Returns the new total `count`.
+ */
+export async function incrementCallCounter(dateStr: string, n: number, route?: string): Promise<number> {
   const token = await getAccessToken();
   const sa = loadServiceAccount();
   const docName = `projects/${sa.project_id}/databases/(default)/documents/${OPS_COLLECTION}/calls__${dateStr}`;
   const url = `${FIRESTORE_BASE}/projects/${sa.project_id}/databases/(default)/documents:commit`;
+  // count is always transform[0] so transformResults[0] is the authoritative total.
+  const transforms: any[] = [{ fieldPath: 'count', increment: { integerValue: String(n) } }];
+  const rk = routeFieldKey(route);
+  if (rk) transforms.push({ fieldPath: rk, increment: { integerValue: String(n) } });
   const body = {
     writes: [{
       update: { name: docName, fields: { date: { stringValue: dateStr } } },
-      updateTransforms: [{ fieldPath: 'count', increment: { integerValue: String(n) } }],
+      updateMask: { fieldPaths: ['date'] }, // merge `date`; preserve + increment count/count__*
+      updateTransforms: transforms,
     }],
   };
   const resp = await fetch(url, {
@@ -340,16 +364,33 @@ export async function readCallCounter(dateStr: string): Promise<number> {
   return doc && typeof doc.count === 'number' ? doc.count : 0;
 }
 
-export interface CircuitState { open: boolean; reason?: string; at?: string }
+/** Today's total + per-route breakdown (count__* fields, route prefix stripped). */
+export async function readCallStats(dateStr: string): Promise<{ count: number; byRoute: Record<string, number> }> {
+  const doc = await getDoc(`${OPS_COLLECTION}/calls__${dateStr}`);
+  const byRoute: Record<string, number> = {};
+  if (doc) {
+    for (const [k, v] of Object.entries(doc)) {
+      if (k.startsWith('count__') && typeof v === 'number') byRoute[k.slice('count__'.length)] = v;
+    }
+  }
+  return { count: doc && typeof doc.count === 'number' ? doc.count : 0, byRoute };
+}
+
+export interface CircuitState { open: boolean; reason?: string; at?: string; day?: string }
 
 export async function readCircuit(): Promise<CircuitState> {
   const doc = await getDoc(`${OPS_COLLECTION}/circuit`);
   if (!doc) return { open: false };
-  return { open: !!doc.open, reason: doc.reason, at: doc.at };
+  // Day-scoped (Fix 3): a flag tripped on a prior UTC day is stale — treat as
+  // CLOSED so a yesterday-tripped breaker can't halt today's scans at count 0.
+  const today = new Date().toISOString().slice(0, 10);
+  const open = !!doc.open && doc.day === today;
+  return { open, reason: doc.reason, at: doc.at, day: doc.day };
 }
 
 export async function setCircuit(open: boolean, reason: string, atISO: string): Promise<void> {
-  await setDoc(`${OPS_COLLECTION}/circuit`, { open, reason, at: atISO });
+  // Stamp the UTC day of the trip so readCircuit can auto-expire it at midnight.
+  await setDoc(`${OPS_COLLECTION}/circuit`, { open, reason, at: atISO, day: atISO.slice(0, 10) });
 }
 
 // ── Phase 4: canonical fleet index (the shape SITE A already reads) ───────────
