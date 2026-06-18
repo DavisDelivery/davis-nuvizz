@@ -47,6 +47,13 @@ probing only known-active loads + a small buffer instead of a ±300 window.
   a high PLANNED stop number can't ratchet the floor past genuine new orders.) `writeStops({partialUnplanned})`
   + `preserveStopOnWrite` preserve older still-unplanned orders not re-probed (mirrors partialLoads).
   COLD cycles still do the full descent (establishes the high-water). Default OFF.
+- **Phase 4 (v0.27.21) — history snapshot from Firestore, behind the flag:** `captureDate`
+  (history-core.mts) builds the just-closed day's immutable snapshot from `readStops` (the
+  accumulated index, final ~02:00) instead of a fresh `scanDate()` — the daily 6 AM history
+  job drops from ~690 NuVizz calls to ~0. Snapshot is "as of last scan"; late (post-snapshot)
+  deliveries are reconciled by Phase 5's 7-day straggler watch. Flag OFF → unchanged (fresh scan).
+  (Phase 4b TODO: targeted /stop/info re-probe of the handful of non-terminal stragglers at
+  capture time, for same-day final status — deferred; the straggler watch covers it cross-day.)
 - **Phase 5 report — manually-completed (91) dimension (amendment):** terminal-skip is
   unchanged (freeze on {90,91}; a 91 can't revert — a redo returns as a new PRO "-1",
   discovered normally — so NO re-verify, max savings). The undelivered/aged-out report

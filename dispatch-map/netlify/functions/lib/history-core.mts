@@ -21,7 +21,7 @@
 //      manifest, non-200 for manual runs.
 
 import { scanDate } from './nuvizz-scan.mts';
-import { isFirestoreEnabled } from './firestore.mts';
+import { isFirestoreEnabled, readStops } from './firestore.mts';
 import {
   buildStopRecord, deriveRoutes, deriveDrivers, computeStopChecksum,
   manifestCountsFromReadback, type CaptureMeta, type DeriveCtx,
@@ -83,9 +83,28 @@ export function resolveDates(req: Request): string[] {
 }
 
 // ── per-date capture ─────────────────────────────────────────────────────────
+// Phase 4: when lean discovery is on, build the just-closed day's snapshot from
+// the already-accumulated Firestore stop-index (final by ~02:00) instead of a
+// fresh full scanDate() against NuVizz — the daily history job goes from ~690
+// NuVizz calls to ~0. The index is the source of truth the scans maintain (with
+// four-layer preservation), so the snapshot is "as of the last scan"; Phase 5's
+// 7-day straggler watch reconciles any late (post-snapshot) deliveries.
+const LEAN_HISTORY = (process.env.NUVIZZ_LEAN_DISCOVERY || '').toLowerCase() === 'on';
+
 export async function captureDate(date: string): Promise<any> {
-  const scan = await scanDate(date);
-  const stops = scan.stops;
+  let stops: any[];
+  let sourceScannedAt: string;
+  if (LEAN_HISTORY && isFirestoreEnabled()) {
+    const idx = await readStops(TENANT, date);
+    stops = idx.stops;
+    sourceScannedAt = idx.meta?.last_scanned_at || new Date().toISOString();
+    const nonTerminal = stops.filter((s) => s && s.isPlanned && s.normalizedStatus !== 'DELIVERED').length;
+    console.log(`[history] date=${date} source=firestore-index stops=${stops.length} nonTerminal=${nonTerminal} sourceScannedAt=${sourceScannedAt}`);
+  } else {
+    const scan = await scanDate(date);
+    stops = scan.stops;
+    sourceScannedAt = scan.scannedAt;
+  }
   const checksum = computeStopChecksum(stops);
 
   // capture_version increments per date.
@@ -95,7 +114,7 @@ export async function captureDate(date: string): Promise<any> {
   const capture: CaptureMeta = {
     capture_version: version,
     captured_at: new Date().toISOString(),
-    source_scanned_at: scan.scannedAt,
+    source_scanned_at: sourceScannedAt,
     app_version: APP_VERSION,
   };
   const ctx: DeriveCtx = { tenant: TENANT, date, capture };
