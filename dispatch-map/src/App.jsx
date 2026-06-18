@@ -46,7 +46,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.27.4';
+const APP_VERSION = '0.27.5';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -66,6 +66,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.27.5', 'Order detail: split the business search into "Find on Maps" + a general "Web search" (hours/phone/closed) link'],
   ['0.27.4', 'Order detail: "Find business" button (Maps search by name+address) + collapsible per-order items list (SKU/qty/weight/oversize)'],
   ['0.27.3', 'Date picker no longer shows the date twice; status card stacks its details and is collapsible to reclaim map space'],
   ['0.27.2', '“Scan now” runs the async scanner + polls (a busy date exceeded the 26s sync cap), so it never times out'],
@@ -1912,7 +1913,26 @@ function BusinessSearchLink({ stop, className }) {
       className={className || 'inline-flex items-center gap-1 text-xs text-blue-700 hover:underline mt-1'}
       style={{ minHeight: 44, alignItems: 'center' }}
     >
-      <Search size={13} /> Find business
+      <MapPinned size={13} /> Find on Maps
+    </a>
+  );
+}
+
+// General Google WEB search for the business name + address — for hours, phone,
+// "permanently closed", a different entrance, etc. that a Maps pin won't show.
+function WebSearchLink({ stop, className }) {
+  const q = [stop.businessName, stop.addr1, stop.city, stop.state, stop.zip].filter(Boolean).join(' ');
+  if (!q) return null;
+  const url = `https://www.google.com/search?q=${encodeURIComponent(q)}`;
+  return (
+    <a
+      href={url}
+      target="_blank"
+      rel="noopener noreferrer"
+      className={className || 'inline-flex items-center gap-1 text-xs text-blue-700 hover:underline mt-1'}
+      style={{ minHeight: 44, alignItems: 'center' }}
+    >
+      <Search size={13} /> Web search
     </a>
   );
 }
@@ -2492,6 +2512,7 @@ function StopSidebar({ stop, note, onClose, onSave, saving, saveError, onOpenRou
               <StreetViewLink stop={stop} />
               <GoogleMapsLink stop={stop} />
               <BusinessSearchLink stop={stop} />
+              <WebSearchLink stop={stop} />
             </div>
             {onMoveLocation && (
               <button onClick={() => onMoveLocation(stop)} className="mt-1.5 inline-flex items-center gap-1 text-xs text-blue-700 hover:underline">
@@ -3957,6 +3978,7 @@ function StopInfoTabContent({ stop, onOpenRoute }) {
           <StreetViewLink stop={stop} className="inline-flex items-center gap-1 text-[13px] text-blue-700" />
           <GoogleMapsLink stop={stop} className="inline-flex items-center gap-1 text-[13px] text-blue-700" />
           <BusinessSearchLink stop={stop} className="inline-flex items-center gap-1 text-[13px] text-blue-700" />
+          <WebSearchLink stop={stop} className="inline-flex items-center gap-1 text-[13px] text-blue-700" />
         </div>
         {onMoveLocation && (
           <button onClick={() => onMoveLocation(stop)} className="mt-1.5 inline-flex items-center gap-1 text-[13px] text-blue-700" style={{ minHeight: 40 }}>
