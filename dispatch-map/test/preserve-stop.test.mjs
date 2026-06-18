@@ -28,3 +28,9 @@ test('partialLoads (lean): PRESERVES planned stops not re-scanned (terminal-skip
   // unplanned still follows the unplanned-feed rule (descent ran, so not preserved here)
   assert.equal(preserveStopOnWrite(unplanned, o), false);
 });
+
+test('partialUnplanned (lean): PRESERVES older still-unplanned orders below the high-water', () => {
+  const o = { includeUnplanned: true, includeLoads: true, partialUnplanned: true };
+  assert.equal(preserveStopOnWrite(unplanned, o), true, 'older unplanned order not re-probed this cycle survives');
+  assert.equal(preserveStopOnWrite(planned, o), false, 'partialUnplanned does not affect planned stops');
+});

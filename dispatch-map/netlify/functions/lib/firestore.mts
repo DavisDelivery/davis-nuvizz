@@ -207,11 +207,15 @@ export interface StopIndexMeta {
 //    so terminal-skip never deletes already-delivered stops.
 export function preserveStopOnWrite(
   stop: { isPlanned?: boolean },
-  opts: { includeUnplanned: boolean; includeLoads: boolean; partialLoads?: boolean },
+  opts: { includeUnplanned: boolean; includeLoads: boolean; partialLoads?: boolean; partialUnplanned?: boolean },
 ): boolean {
   if (!opts.includeUnplanned && stop.isPlanned === false) return true;
   if (!opts.includeLoads && stop.isPlanned === true) return true;
   if (opts.partialLoads && stop.isPlanned === true) return true;
+  // Phase 3 lean: the unplanned descent only re-probed NEW stop numbers above the
+  // last high-water, so older still-unplanned orders weren't re-scanned → preserve
+  // them instead of pruning (mirrors partialLoads for the planned side).
+  if (opts.partialUnplanned && stop.isPlanned === false) return true;
   return false;
 }
 
@@ -224,11 +228,12 @@ export async function writeStops(
   dateStr: string,
   stops: any[],
   scannedAt: string,
-  opts: { includeUnplanned?: boolean; includeLoads?: boolean; partialLoads?: boolean } = {},
+  opts: { includeUnplanned?: boolean; includeLoads?: boolean; partialLoads?: boolean; partialUnplanned?: boolean } = {},
 ): Promise<StopIndexMeta> {
   const includeUnplanned = opts.includeUnplanned !== false; // default true (full scan)
   const includeLoads = opts.includeLoads !== false;         // default true
   const partialLoads = opts.partialLoads === true;          // Phase 2 lean: only a SUBSET of loads re-pulled
+  const partialUnplanned = opts.partialUnplanned === true;  // Phase 3 lean: only NEW stop numbers re-probed
   const base = `${COLLECTION}/${parentId(tenant, dateStr)}`;
   const withNbr = stops.filter((s) => s && s.stopNbr);
   const nextNbrs = new Set(withNbr.map((s) => String(s.stopNbr)));
@@ -242,7 +247,7 @@ export async function writeStops(
   // load-only run keeps existing status-10 orders; an unplanned-only run keeps
   // existing planned/routed stops. Docs re-scanned this run are upserted below.
   const preserved = existing.filter((d) =>
-    !nextNbrs.has(String(d._id)) && preserveStopOnWrite(d, { includeUnplanned, includeLoads, partialLoads }));
+    !nextNbrs.has(String(d._id)) && preserveStopOnWrite(d, { includeUnplanned, includeLoads, partialLoads, partialUnplanned }));
   const preservedNbrs = new Set(preserved.map((d) => String(d._id)));
   await Promise.all(
     existing
@@ -420,7 +425,8 @@ export interface ScanState {
   knownLoads: KnownLoad[];
   minLoadNbr: number | null;
   maxLoadNbr: number | null;
-  highWaterStopNbr: number | null;
+  highWaterStopNbr: number | null;          // max over ALL stops (planned + unplanned)
+  highWaterUnplannedStopNbr: number | null; // max over UNPLANNED stops only — bounds the lean order descent
   routeMap: Record<string, string>;
   lastScanAt: string;
   scanCount: number;

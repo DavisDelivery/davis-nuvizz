@@ -4,7 +4,26 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { buildScanState, shadowWouldProbe, loadNbrToInt, selectLoadProbeTargets } from '../netlify/functions/lib/nuvizz-scan.mts';
+import { buildScanState, shadowWouldProbe, loadNbrToInt, selectLoadProbeTargets, unplannedFloor } from '../netlify/functions/lib/nuvizz-scan.mts';
+
+test('unplannedFloor: null sinceStopNbr → full estimated floor; set → just below high-water', () => {
+  assert.equal(unplannedFloor(7_120_000, null), 7_120_000, 'no high-water → full descent floor');
+  assert.equal(unplannedFloor(7_120_000, undefined), 7_120_000);
+  // sinceStopNbr well above the estimated floor → raise the floor to highWater-200.
+  assert.equal(unplannedFloor(7_120_000, 7_135_000), 7_134_800, 'descend only new numbers + 200 buffer');
+  // never go BELOW the estimated floor (a low high-water shouldn't widen the scan).
+  assert.equal(unplannedFloor(7_120_000, 7_119_000), 7_120_000, 'floor never drops below the estimate');
+});
+
+test('buildScanState: unplanned high-water is UNPLANNED-only (a high planned stop must not ratchet it)', () => {
+  const s = buildScanState('2026-07-14', [
+    { loadNbr: 'DAVIS000196999', routeName: 'R1', stopNbr: '009999999', normalizedStatus: 'SCHEDULED', isPlanned: true }, // very high PLANNED
+    { loadNbr: null, routeName: null, stopNbr: '007135500', normalizedStatus: 'UNPLANNED', isPlanned: false },            // the order frontier
+    { loadNbr: null, routeName: null, stopNbr: '007135400', normalizedStatus: 'UNPLANNED', isPlanned: false },
+  ], null, NOW);
+  assert.equal(s.highWaterStopNbr, 9999999, 'global high-water includes the planned stop');
+  assert.equal(s.highWaterUnplannedStopNbr, 7135500, 'unplanned high-water tracks the ORDER frontier only');
+});
 
 // Hand-built scan_state for the planner tests.
 const mkLoad = (n, allTerminal) => ({ loadNbr: `DAVIS${String(n).padStart(9, '0')}`, routeName: `R${n}`, allTerminal, lastSeenAt: NOW });
