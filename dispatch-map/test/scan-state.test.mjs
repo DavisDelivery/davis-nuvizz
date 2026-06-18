@@ -4,7 +4,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { buildScanState, shadowWouldProbe, loadNbrToInt, selectLoadProbeTargets } from '../netlify/functions/lib/nuvizz-scan.mts';
+import { buildScanState, shadowWouldProbe, loadNbrToInt, selectLoadProbeTargets, unplannedFloor } from '../netlify/functions/lib/nuvizz-scan.mts';
+
+test('unplannedFloor: null sinceStopNbr → full estimated floor; set → just below high-water', () => {
+  assert.equal(unplannedFloor(7_120_000, null), 7_120_000, 'no high-water → full descent floor');
+  assert.equal(unplannedFloor(7_120_000, undefined), 7_120_000);
+  // sinceStopNbr well above the estimated floor → raise the floor to highWater-50.
+  assert.equal(unplannedFloor(7_120_000, 7_135_000), 7_134_950, 'descend only new numbers + 50 buffer');
+  // never go BELOW the estimated floor (a low high-water shouldn't widen the scan).
+  assert.equal(unplannedFloor(7_120_000, 7_119_000), 7_120_000, 'floor never drops below the estimate');
+});
 
 // Hand-built scan_state for the planner tests.
 const mkLoad = (n, allTerminal) => ({ loadNbr: `DAVIS${String(n).padStart(9, '0')}`, routeName: `R${n}`, allTerminal, lastSeenAt: NOW });

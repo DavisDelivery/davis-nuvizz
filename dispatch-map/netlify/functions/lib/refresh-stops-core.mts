@@ -168,16 +168,23 @@ export async function runRefreshStops(req: Request): Promise<Response> {
       // almost always cold → this is the real ~600-wide window). Only meaningful
       // when NOT using lean targets.
       const preRange = (includeLoads && !loadTargets) ? estimateLoadRange(date) : null;
+      // Phase 3 lean unplanned: only on a WARM cycle (we have a roster + high-water);
+      // descend only NEW stop numbers above the last high-water. Cold cycles do the
+      // full descent (establishes the high-water), same as the wide load fallback.
+      const leanUnplanned = LEAN_DISCOVERY && includeUnplanned && !!loadTargets && (priorState?.highWaterStopNbr != null);
+      const unplannedOpts: any = {};
+      if (isManual && includeUnplanned) unplannedOpts.maxProbes = 800;
+      if (leanUnplanned) unplannedOpts.sinceStopNbr = priorState!.highWaterStopNbr;
       const scan = await scanDate(date, {
         includeUnplanned,
         includeLoads,
         loadTargets,
-        unplanned: (isManual && includeUnplanned) ? { maxProbes: 800 } : undefined,
+        unplanned: Object.keys(unplannedOpts).length ? unplannedOpts : undefined,
       });
-      // partialLoads: in lean mode we re-pulled only a SUBSET of loads (terminal
-      // ones skipped) — tell writeStops to PRESERVE planned stops it didn't re-scan
-      // so terminal-skip never prunes already-delivered stops (four-layer safety).
-      const meta = await writeStops(TENANT, date, scan.stops, scan.scannedAt, { includeUnplanned, includeLoads, partialLoads: !!loadTargets });
+      // partial* : in lean mode we re-pulled only a SUBSET of each feed — tell
+      // writeStops to PRESERVE the stops it didn't re-scan (terminal loads /
+      // older still-unplanned orders) so lean never prunes already-known stops.
+      const meta = await writeStops(TENANT, date, scan.stops, scan.scannedAt, { includeUnplanned, includeLoads, partialLoads: !!loadTargets, partialUnplanned: leanUnplanned });
       // Only rebuild the fleet (load) index when we actually scanned loads — an
       // unplanned-only run would otherwise wipe the load index with an empty scan.
       if (includeLoads) {

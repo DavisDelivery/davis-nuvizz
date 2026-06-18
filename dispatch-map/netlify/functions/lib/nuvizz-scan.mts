@@ -590,6 +590,21 @@ interface UnplannedScanOpts {
   concurrency?: number;
   timeBudgetMs?: number;
   maxProbes?: number;
+  // Phase 3 lean: when set (last scan's highWaterStopNbr), descend only NEW stop
+  // numbers above it (+ a small buffer) instead of the full FLOOR_MARGIN range —
+  // new unplanned orders are the newest imports (highest numbers).
+  sinceStopNbr?: number | null;
+}
+
+// New unplanned orders cluster at the high end; re-check a small band below the
+// last high-water in case a near-frontier number was imported out of order.
+const UNPLANNED_HIGHWATER_BUFFER = 50;
+
+// PURE: the descent floor. Lean (sinceStopNbr set) raises the floor to just below
+// the last high-water; otherwise the full estimated floor. Unit-tested.
+export function unplannedFloor(estimateFloor: number, sinceStopNbr?: number | null): number {
+  if (sinceStopNbr == null) return estimateFloor;
+  return Math.max(estimateFloor, sinceStopNbr - UNPLANNED_HIGHWATER_BUFFER);
 }
 
 // Descend the stop-number space for the date, collecting status-10 stops.
@@ -607,7 +622,7 @@ async function scanUnplannedStops(dateStr: string, opts: UnplannedScanOpts = {})
   const { companyCode } = getCreds();
   const authHeader = basicAuthHeader();
   const ceiling = await findCeiling(dateStr, authHeader, companyCode);
-  const floor = estimateStopFrontier(dateStr) - FLOOR_MARGIN;
+  const floor = unplannedFloor(estimateStopFrontier(dateStr) - FLOOR_MARGIN, opts.sinceStopNbr);
 
   const results: any[] = [];
   let n = ceiling;
