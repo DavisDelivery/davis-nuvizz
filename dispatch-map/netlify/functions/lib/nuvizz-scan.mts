@@ -717,8 +717,10 @@ export async function scanDate(dateStr: string, opts: { unplanned?: UnplannedSca
 
   // Self-calibrate the load-number window from the loads actually found, so the
   // next scan of this date uses a tight, accurate range (see estimateLoadRange).
-  // Only when we actually scanned loads — an unplanned-only run found none.
-  if (includeLoads) calibrateLoadRange(dateStr, Object.keys(loadHeaders));
+  // Only from a FULL wide-window scan — never from a lean target set (useTargets):
+  // a lean scan deliberately omits terminal low-end loads, so calibrating off it
+  // would poison the cold-start fallback window with an artificially-high min.
+  if (includeLoads && !useTargets) calibrateLoadRange(dateStr, Object.keys(loadHeaders));
 
   return {
     date: dateStr,
@@ -802,17 +804,16 @@ export function shadowWouldProbe(state: ScanState, opts: { inWindow: boolean; fw
 }
 
 // ── Phase 2: lean load-discovery planner (PURE) ──────────────────────────────
-// Decide which load NUMBERS to probe this cycle from scan_state, instead of the
-// ±300 window. Returns null → caller MUST fall back to the wide window (cold start
-// with no prior state at all). Terminal loads are dropped (terminal-skip).
+// Decide which load NUMBERS to probe this cycle from today's scan_state, instead
+// of the ±300 window. Returns null → caller MUST fall back to the wide window
+// (cold start: no roster for today yet). Terminal loads are dropped (terminal-skip).
 export interface LoadProbePlan {
   numbers: number[];
-  mode: 'lean-warm' | 'cold-seed';
+  mode: 'lean-warm';
   activeLoads: number; forwardBuffer: number; gapSweep: boolean;
 }
 export function selectLoadProbeTargets(
   todayState: ScanState | null,
-  prevState: ScanState | null,
   opts: { inWindow: boolean; scanCount: number; fwdIn?: number; fwdOut?: number; gapSweepEvery?: number },
 ): LoadProbePlan | null {
   const fwd = opts.inWindow ? (opts.fwdIn ?? 50) : (opts.fwdOut ?? 10);
@@ -840,18 +841,13 @@ export function selectLoadProbeTargets(
     return { numbers, mode: 'lean-warm', activeLoads: active.length, forwardBuffer: fwd, gapSweep: doGap };
   }
 
-  // COLD START with a prior day → forward discovery from prior maxLoadNbr+1 (numbers
-  // regenerate ~+100/day in order). Do NOT force up to the prior count before loads
-  // exist; the forward span + subsequent warm cycles accrue the overnight growth.
-  if (prevState && prevState.maxLoadNbr != null) {
-    const start = prevState.maxLoadNbr + 1;
-    const span = Math.max(fwd, LOADS_PER_BIZ_DAY + 40); // one day's regen (~100) + slack
-    const numbers: number[] = [];
-    for (let n = start + span; n >= start; n--) numbers.push(n);
-    return { numbers, mode: 'cold-seed', activeLoads: 0, forwardBuffer: span, gapSweep: false };
-  }
-
-  // No state at all → caller falls back to the wide ±window probe.
+  // COLD START (no roster for today yet) → return null so the caller uses the
+  // PROVEN wide ±window probe for this one cycle. We intentionally do NOT seed a
+  // one-directional forward span from the prior day: an audit showed that if a
+  // day's load numbers don't increment contiguously (~+100/day) the real loads can
+  // fall outside the span AND the non-null plan would suppress the wide fallback —
+  // a parity gap. Correctness over savings: one wide scan per day (the first
+  // overnight cycle) seeds an accurate roster; every later cycle that day goes lean.
   return null;
 }
 

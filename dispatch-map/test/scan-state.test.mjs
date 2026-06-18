@@ -15,7 +15,7 @@ const mkState = (loads, scanCount = 1) => {
 
 test('selectLoadProbeTargets: WARM = non-terminal loads + forward buffer; terminal-skipped', () => {
   const st = mkState([mkLoad(196998, true), mkLoad(196999, false), mkLoad(197000, false)], 1);
-  const plan = selectLoadProbeTargets(st, null, { inWindow: true, scanCount: 1, fwdIn: 50, fwdOut: 10, gapSweepEvery: 3 });
+  const plan = selectLoadProbeTargets(st, { inWindow: true, scanCount: 1, fwdIn: 50, fwdOut: 10, gapSweepEvery: 3 });
   assert.equal(plan.mode, 'lean-warm');
   assert.equal(plan.activeLoads, 2, 'two non-terminal loads re-pulled');
   assert.equal(plan.gapSweep, false, 'scanCount 1 → no gap sweep');
@@ -27,29 +27,22 @@ test('selectLoadProbeTargets: WARM = non-terminal loads + forward buffer; termin
 
 test('selectLoadProbeTargets: gap sweep every 3rd cycle in-window fills missing numbers', () => {
   const st = mkState([mkLoad(196998, false), mkLoad(197000, false)], 3); // 196999 is a gap
-  const plan = selectLoadProbeTargets(st, null, { inWindow: true, scanCount: 3, gapSweepEvery: 3 });
+  const plan = selectLoadProbeTargets(st, { inWindow: true, scanCount: 3, gapSweepEvery: 3 });
   assert.equal(plan.gapSweep, true);
   assert.ok(plan.numbers.includes(196999), 'gap 196999 swept');
 });
 
 test('selectLoadProbeTargets: out-of-window = small buffer, never gap-sweeps', () => {
   const st = mkState([mkLoad(196998, false), mkLoad(197000, false)], 3);
-  const plan = selectLoadProbeTargets(st, null, { inWindow: false, scanCount: 3, fwdIn: 50, fwdOut: 10, gapSweepEvery: 3 });
+  const plan = selectLoadProbeTargets(st, { inWindow: false, scanCount: 3, fwdIn: 50, fwdOut: 10, gapSweepEvery: 3 });
   assert.equal(plan.forwardBuffer, 10);
   assert.equal(plan.gapSweep, false, 'no gap sweep outside the routing window');
 });
 
-test('selectLoadProbeTargets: COLD START seeds forward from prior-day maxLoadNbr+1', () => {
-  const prev = mkState([mkLoad(196800, true), mkLoad(196900, true)]);
-  const plan = selectLoadProbeTargets(null, prev, { inWindow: true, scanCount: 0, fwdIn: 50 });
-  assert.equal(plan.mode, 'cold-seed');
-  assert.ok(plan.numbers.includes(196901), 'starts at prior max+1');
-  assert.ok(Math.max(...plan.numbers) >= 196901 + 100, 'forward span covers a day of regen');
-  assert.ok(!plan.numbers.includes(196900), 'does not re-probe prior-day numbers');
-});
-
-test('selectLoadProbeTargets: no state at all → null (caller uses wide-window fallback)', () => {
-  assert.equal(selectLoadProbeTargets(null, null, { inWindow: true, scanCount: 0 }), null);
+test('selectLoadProbeTargets: COLD START (no roster yet) → null so caller uses the wide-window probe', () => {
+  // Even with a prior day available, cold start must NOT seed a one-directional span
+  // (could miss a non-contiguous day's loads); it falls back to the proven wide window.
+  assert.equal(selectLoadProbeTargets(null, { inWindow: true, scanCount: 0, fwdIn: 50 }), null);
 });
 
 test('loadNbrToInt: extracts the embedded integer from the prefixed/padded loadNbr', () => {
