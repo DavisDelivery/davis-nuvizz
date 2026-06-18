@@ -46,7 +46,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.27.10';
+const APP_VERSION = '0.27.11';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -66,6 +66,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.27.11', 'AM/PM pin takes the priority-flag color when a flag is set (e.g. red flag → red AM pin); pin tag text stays legible on light flags'],
   ['0.27.10', 'Unplanned pins are now bright blue for satellite contrast; customer-notes editor no longer loses in-progress edits when a background note write lands mid-edit'],
   ['0.27.9', 'Unplanned pins are now solid slate (was hollow white — better contrast on satellite) and a touch smaller'],
   ['0.27.8', 'Customer notes: AM/PM "Delivery window" tag — tagged stops show an AM/PM pin on the map'],
@@ -1245,6 +1246,15 @@ function pinSvgClassic(color) {
 // outlined (gray) pin for UNPLANNED, and `glyph` swaps the center white dot for
 // a status mark (check=delivered, bang=exception, arrow=en route). Anchor is
 // unchanged (14, 34) so it's a drop-in for the classic pin.
+// Dark or light text for legibility on a given solid fill (perceived luminance).
+function readableTextColor(hex) {
+  const h = String(hex || '').replace('#', '');
+  if (h.length < 6) return '#ffffff';
+  const r = parseInt(h.slice(0, 2), 16), g = parseInt(h.slice(2, 4), 16), b = parseInt(h.slice(4, 6), 16);
+  const L = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+  return L > 0.6 ? '#1f2937' : '#ffffff';
+}
+
 function pinSvgStatus(color, opts = {}) {
   const { hollow = false, glyph = null, tag = null } = opts;
   const bodyFill = hollow ? '#ffffff' : color;
@@ -1259,7 +1269,9 @@ function pinSvgStatus(color, opts = {}) {
     center = '<path d="M9.5 13h6m-2.5-2.6l2.8 2.6-2.8 2.6" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>';
   } else if (tag === 'AM' || tag === 'PM') {
     // Delivery-window tag — render "AM"/"PM" in the pin head (replaces the dot).
-    center = `<text x="14" y="16.8" font-family="system-ui, sans-serif" font-size="10" font-weight="800" fill="${hollow ? color : 'white'}" text-anchor="middle" letter-spacing="-0.5">${tag}</text>`;
+    // Text color contrasts with the pin fill (e.g. dark on a yellow-flag pin).
+    const txt = hollow ? color : readableTextColor(color);
+    center = `<text x="14" y="16.8" font-family="system-ui, sans-serif" font-size="10" font-weight="800" fill="${txt}" text-anchor="middle" letter-spacing="-0.5">${tag}</text>`;
   } else {
     center = `<circle cx="14" cy="13" r="4.5" fill="${hollow ? color : 'white'}"/>`;
   }
@@ -5224,10 +5236,16 @@ function MapScreen() {
         // stops render ORANGE so the "found" ones pop against the dimmed rest.
         const statusKind = classifyStopStatus(s);
         const meta = STATUS_META[statusKind] || STATUS_META.SCHEDULED;
-        const color = matched ? '#f59e0b' : (meta.color || flagColor(note));
         // Delivery-window tag (AM/PM) → shown in the pin head; tagged pins render
         // at the larger size so the text stays legible.
         const tag = (note?.delivery_window === 'AM' || note?.delivery_window === 'PM') ? note.delivery_window : null;
+        const flagHue = (note?.priority_flag && FLAG_COLORS[note.priority_flag]) ? FLAG_COLORS[note.priority_flag] : null;
+        // Color precedence: result-set match (orange) → an AM/PM pin takes the
+        // priority-flag color when one is set (so the AM/PM icon reflects the
+        // flag) → otherwise the status hue, falling back to the flag/restriction tint.
+        const color = matched ? '#f59e0b'
+          : (tag && flagHue) ? flagHue
+          : (meta.color || flagColor(note));
         const big = matched || !!tag;
         // Unplanned stops render a touch smaller than planned ones (de-emphasized
         // until they're routed), now solid slate for contrast on satellite.
