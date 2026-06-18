@@ -46,7 +46,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.27.14';
+const APP_VERSION = '0.27.15';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -66,6 +66,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.27.15', 'Incremental-scan: routing window corrected to OVERNIGHT 20:00–07:00 ET (when routes are built) — shadow buffers tuned (+50 overnight / +10 daytime)'],
   ['0.27.14', 'Incremental-scan Phase 1 (shadow): records a per-day scan_state roster and logs what lean load-discovery WOULD probe vs the current wide window — no scan behavior change yet'],
   ['0.27.13', 'NuVizz call counter now accumulates (was stuck at 1/day) with a per-route breakdown; daily-ceiling breaker is day-scoped + has a monitor/enforce mode (default monitor); today’s call volume shown in the status card'],
   ['0.27.12', 'Priority flag now drives the marker color in ALL cases — a flagged stop shows the flag color even when it renders a receiving-hours/restriction icon (the icon is recolored to the flag hue)'],

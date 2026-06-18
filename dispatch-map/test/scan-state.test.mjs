@@ -83,10 +83,10 @@ test('shadowWouldProbe: active loads + forward buffer (larger in routing window)
     stop('2', 'B', '2', 'OUT_FOR_DEL'),     // active
     stop('3', 'C', '3', 'ARRIVED'),         // active
   ], null, NOW);
-  const inW = shadowWouldProbe(s, { inWindow: true, fwdIn: 25, fwdOut: 5 });
+  const inW = shadowWouldProbe(s, { inWindow: true });   // overnight defaults: +50
   assert.equal(inW.activeLoads, 2);
   assert.equal(inW.terminalLoads, 1);
-  assert.equal(inW.wouldProbe, 27, '2 active + 25 in-window buffer');
-  const outW = shadowWouldProbe(s, { inWindow: false, fwdIn: 25, fwdOut: 5 });
-  assert.equal(outW.wouldProbe, 7, '2 active + 5 out-of-window buffer');
+  assert.equal(inW.wouldProbe, 52, '2 active + 50 in-window (overnight) buffer');
+  const outW = shadowWouldProbe(s, { inWindow: false });  // daytime default: +10
+  assert.equal(outW.wouldProbe, 12, '2 active + 10 out-of-window (daytime) buffer');
 });

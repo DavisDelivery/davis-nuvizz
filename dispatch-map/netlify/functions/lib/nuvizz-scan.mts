@@ -783,7 +783,9 @@ export function buildScanState(dateStr: string, stops: any[], prev: ScanState | 
 export interface WouldProbe { activeLoads: number; terminalLoads: number; forwardBuffer: number; wouldProbe: number }
 export function shadowWouldProbe(state: ScanState, opts: { inWindow: boolean; fwdIn?: number; fwdOut?: number }): WouldProbe {
   const active = state.knownLoads.filter((k) => !k.allTerminal).length;
-  const forwardBuffer = opts.inWindow ? (opts.fwdIn ?? 25) : (opts.fwdOut ?? 5);
+  // Overnight routing window = volatile → larger forward buffer for new load numbers;
+  // daytime = stable → small buffer for the rare add.
+  const forwardBuffer = opts.inWindow ? (opts.fwdIn ?? 50) : (opts.fwdOut ?? 10);
   return { activeLoads: active, terminalLoads: state.knownLoads.length - active, forwardBuffer, wouldProbe: active + forwardBuffer };
 }
 

@@ -46,12 +46,19 @@ export interface ScanDecision {
   reason: string;
 }
 
-// Routing window (ET hours): when routes are actively built/edited, so planned
-// discovery is thorough (active loads + periodic gap sweep + larger forward
-// buffer). Outside it, discovery is lean. Configurable via env. Default 4am–3pm ET.
-export const ROUTING_WINDOW_START = Number(process.env.NUVIZZ_ROUTING_WINDOW_START_ET) || 4;
-export const ROUTING_WINDOW_END = Number(process.env.NUVIZZ_ROUTING_WINDOW_END_ET) || 15;
+// Routing window (ET hours) — when routes are built/edited at Davis: OVERNIGHT,
+// 8 PM–7 AM ET. In-window = volatile (loads created, routes edited, stops added) →
+// thorough planned discovery. Out-of-window (daytime) = stable (trucks delivering,
+// loads only progressing to terminal) → lean discovery. The window WRAPS midnight,
+// so the test is `hour >= start OR hour < end` when start > end. Env-tunable.
+export const ROUTING_WINDOW_START = Number(process.env.NUVIZZ_ROUTING_WINDOW_START_ET) || 20;
+export const ROUTING_WINDOW_END = Number(process.env.NUVIZZ_ROUTING_WINDOW_END_ET) || 7;
 export function isInRoutingWindow(etHour: number): boolean {
+  // Wrapping window (start > end, e.g. 20→7): in window late evening OR early morning.
+  if (ROUTING_WINDOW_START > ROUTING_WINDOW_END) {
+    return etHour >= ROUTING_WINDOW_START || etHour < ROUTING_WINDOW_END;
+  }
+  // Non-wrapping (start < end): the simple between-check.
   return etHour >= ROUTING_WINDOW_START && etHour < ROUTING_WINDOW_END;
 }
 

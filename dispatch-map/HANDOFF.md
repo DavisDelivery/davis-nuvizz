@@ -10,8 +10,17 @@ probing only known-active loads + a small buffer instead of a ±300 window.
   CURRENT_WINDOW=<~600>`. A load is `allTerminal` only when EVERY stop is DELIVERED
   (status 90/91 — exceptions keep it active). Pure helpers `buildScanState` /
   `shadowWouldProbe` in `nuvizz-scan.mts` (unit-tested, `test/scan-state.test.mjs`).
-  Routing window (thorough vs lean) = `isInRoutingWindow` in `scan-schedule.mts`,
-  default 04:00–15:00 ET (env `NUVIZZ_ROUTING_WINDOW_*_ET`).
+  Routing window (thorough vs lean) = `isInRoutingWindow` in `scan-schedule.mts`.
+  **Window is OVERNIGHT 20:00–07:00 ET (wraps midnight)** — that's when Davis builds/
+  edits routes (volatile → thorough discovery, forward buffer +50, frequent gap sweep).
+  Daytime 07:00–20:00 = stable (trucks delivering, loads only going terminal) → lean
+  (re-pull non-terminal only, buffer +10, gap sweep low/off). Env `NUVIZZ_ROUTING_WINDOW_*_ET`.
+  **Phase 2 cold-start/growth:** overnight the roster legitimately grows from ~0 (≈8 PM)
+  toward ~55 by ~7 AM — do NOT force-probe up to the prior-day count before those loads
+  exist (wastes calls on empties). Seed the start near prior-day `maxLoadNbr+1` (numbers
+  regenerate ~+100/day in order); let forward-buffer + gap-sweep accrue loads cycle by
+  cycle; use prior-day count only as a soft "discovery likely complete" signal near 6–7 AM.
+  Full ±window probe stays the fallback ONLY when there is no prior scan_state at all.
 - Builds on #108 counter/breaker (count__load_info / count__stop_info measure the cut).
 - Phases 2–5 (act on scan_state + terminal-skip, unplanned high-water, history
   Firestore snapshot, 7-day straggler watch + undelivered report) follow once the

@@ -160,7 +160,7 @@ export async function runRefreshStops(req: Request): Promise<Response> {
           const state = buildScanState(date, scan.stops, prev, scan.scannedAt);
           await writeScanState(date, state);
           const inWindow = isInRoutingWindow(decision.etHour);
-          const wp = shadowWouldProbe(state, { inWindow, fwdIn: 25, fwdOut: 5 });
+          const wp = shadowWouldProbe(state, { inWindow, fwdIn: 50, fwdOut: 10 });
           const windowSize = preRange ? (preRange.endNbr - preRange.startNbr + 1) : null;
           console.log(`[scan-shadow] date=${date} knownLoads=${state.knownLoads.length} active=${wp.activeLoads} terminal=${wp.terminalLoads} routes=${Object.keys(state.routeMap).length} minLoad=${state.minLoadNbr} maxLoad=${state.maxLoadNbr} highWaterStop=${state.highWaterStopNbr} inWindow=${inWindow} WOULD_PROBE_LOADS=${wp.wouldProbe} (active=${wp.activeLoads}+buffer=${wp.forwardBuffer}) CURRENT_WINDOW=${windowSize} scanCount=${state.scanCount}`);
         } catch (e: any) { console.warn(`[scan-shadow] ${date} failed: ${e?.message}`); }
