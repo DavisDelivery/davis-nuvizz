@@ -4,7 +4,23 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { buildScanState, shadowWouldProbe } from '../netlify/functions/lib/nuvizz-scan.mts';
+import { buildScanState, shadowWouldProbe, loadNbrToInt } from '../netlify/functions/lib/nuvizz-scan.mts';
+
+test('loadNbrToInt: extracts the embedded integer from the prefixed/padded loadNbr', () => {
+  assert.equal(loadNbrToInt('DAVIS000196999'), 196999);
+  assert.equal(loadNbrToInt('196500'), 196500);
+  assert.equal(loadNbrToInt(''), null);
+  assert.equal(loadNbrToInt(null), null);
+});
+
+test('buildScanState: min/max use the embedded integer for real prefixed loadNbrs', () => {
+  const s = buildScanState('2026-07-14', [
+    { loadNbr: 'DAVIS000196999', routeName: 'BEN 1', stopNbr: '007133547', normalizedStatus: 'DELIVERED', isPlanned: true },
+    { loadNbr: 'DAVIS000197048', routeName: 'MITCHELL', stopNbr: '007133675', normalizedStatus: 'SCHEDULED', isPlanned: true },
+  ], null, NOW);
+  assert.equal(s.minLoadNbr, 196999);
+  assert.equal(s.maxLoadNbr, 197048);
+});
 
 const NOW = '2026-07-14T12:00:00.000Z';
 // Minimal normalized-stop shape the helpers read.

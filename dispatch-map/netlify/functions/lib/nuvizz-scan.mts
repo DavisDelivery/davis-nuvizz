@@ -724,11 +724,17 @@ export async function scanDate(dateStr: string, opts: { unplanned?: UnplannedSca
 // PURE: derive the next scan_state from a scan's normalized stops + the prior
 // state, and compute what lean planned-discovery WOULD probe. Phase 1 only logs
 // the comparison; later phases act on it. Unit-tested.
-const STOP_NBR_RE = /\d+/;
 function stopNbrToInt(stopNbr: any): number | null {
-  const m = STOP_NBR_RE.exec(String(stopNbr ?? ''));
+  const m = /\d+/.exec(String(stopNbr ?? ''));
   if (!m) return null;
   const n = parseInt(m[0], 10);
+  return Number.isFinite(n) ? n : null;
+}
+// loadNbr like "DAVIS000196999" → the embedded integer 196999 (what gets probed).
+export function loadNbrToInt(loadNbr: any): number | null {
+  const digits = String(loadNbr ?? '').replace(/\D/g, '');
+  if (!digits) return null;
+  const n = parseInt(digits, 10);
   return Number.isFinite(n) ? n : null;
 }
 
@@ -758,7 +764,10 @@ export function buildScanState(dateStr: string, stops: any[], prev: ScanState | 
   }
 
   const knownLoads = [...merged.values()];
-  const nums = knownLoads.map((k) => parseInt(k.loadNbr, 10)).filter((n) => Number.isFinite(n));
+  // loadNbr is the prefixed, zero-padded form (e.g. "DAVIS000196999"); the load
+  // NUMBER scanLoadRangeForDate probes is the embedded integer (196999). Extract
+  // the digits so min/max are comparable to estimateLoadRange's integer space.
+  const nums = knownLoads.map((k) => loadNbrToInt(k.loadNbr)).filter((n): n is number => n != null);
   return {
     date: dateStr,
     knownLoads,
