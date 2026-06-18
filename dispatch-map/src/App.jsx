@@ -46,7 +46,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.27.11';
+const APP_VERSION = '0.27.12';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -66,6 +66,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.27.12', 'Priority flag now drives the marker color in ALL cases — a flagged stop shows the flag color even when it renders a receiving-hours/restriction icon (the icon is recolored to the flag hue)'],
   ['0.27.11', 'AM/PM pin takes the priority-flag color when a flag is set (e.g. red flag → red AM pin); pin tag text stays legible on light flags'],
   ['0.27.10', 'Unplanned pins are now bright blue for satellite contrast; customer-notes editor no longer loses in-progress edits when a background note write lands mid-edit'],
   ['0.27.9', 'Unplanned pins are now solid slate (was hollow white — better contrast on satellite) and a touch smaller'],
@@ -1288,10 +1289,10 @@ function pinSvgStatus(color, opts = {}) {
 // Substitutes `currentColor` in the template with the accent so the glyph
 // renders standalone (works in any SVG renderer, no CSS cascade required).
 // Returns the rendered glyph string plus the optional prohibition slash.
-function renderMarkerGlyph(restrictionKey, glyphX, glyphY) {
+function renderMarkerGlyph(restrictionKey, glyphX, glyphY, tint) {
   const resolved = resolveRestrictionKey(restrictionKey);
   const def = RESTRICTION_ICONS[resolved] || UNKNOWN_RESTRICTION;
-  const color = def.accent || def.bg || '#6b7280';
+  const color = tint || def.accent || def.bg || '#6b7280';
   const glyph = (def.markerGlyph || UNKNOWN_RESTRICTION.markerGlyph || '')
     .replace(/currentColor/g, color);
   const slash = def.prohibition
@@ -1300,19 +1301,19 @@ function renderMarkerGlyph(restrictionKey, glyphX, glyphY) {
   return `<g transform="translate(${glyphX},${glyphY})">${glyph}${slash}</g>`;
 }
 
-function iconMarkerSvg(restrictions) {
+function iconMarkerSvg(restrictions, tint) {
   if (!restrictions || restrictions.length === 0) return null;
 
   // State B: single 36-diameter circle.
   if (restrictions.length === 1) {
     const r = restrictions[0];
     const def = RESTRICTION_ICONS[resolveRestrictionKey(r)] || UNKNOWN_RESTRICTION;
-    const accent = def.accent || def.bg || '#6b7280';
+    const accent = tint || def.accent || def.bg || '#6b7280';
     const svg = `
       <svg xmlns="http://www.w3.org/2000/svg" width="40" height="44" viewBox="0 0 40 44">
         <ellipse cx="20" cy="40" rx="12" ry="1.8" fill="black" opacity="0.18"/>
         <circle cx="20" cy="20" r="18" fill="white" fill-opacity="0.95" stroke="${accent}" stroke-width="2"/>
-        ${renderMarkerGlyph(r, 9, 9)}
+        ${renderMarkerGlyph(r, 9, 9, tint)}
       </svg>`;
     return {
       url: 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent(svg),
@@ -1340,15 +1341,15 @@ function iconMarkerSvg(restrictions) {
     const el = elements[i];
     if (el && typeof el === 'object' && '__overflow' in el) {
       elementsMarkup += `
-        <circle cx="${cx}" cy="${cy}" r="15" fill="white" fill-opacity="0.95" stroke="#6b7280" stroke-width="2"/>
-        <text x="${cx}" y="${cy + 4}" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="800" fill="#374151" text-anchor="middle">+${el.__overflow}</text>
+        <circle cx="${cx}" cy="${cy}" r="15" fill="white" fill-opacity="0.95" stroke="${tint || '#6b7280'}" stroke-width="2"/>
+        <text x="${cx}" y="${cy + 4}" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="800" fill="${tint || '#374151'}" text-anchor="middle">+${el.__overflow}</text>
       `;
     } else {
       const def = RESTRICTION_ICONS[resolveRestrictionKey(el)] || UNKNOWN_RESTRICTION;
-      const accent = def.accent || def.bg || '#6b7280';
+      const accent = tint || def.accent || def.bg || '#6b7280';
       elementsMarkup += `
         <circle cx="${cx}" cy="${cy}" r="15" fill="white" fill-opacity="0.95" stroke="${accent}" stroke-width="2"/>
-        ${renderMarkerGlyph(el, cx - 11, cy - 11)}
+        ${renderMarkerGlyph(el, cx - 11, cy - 11, tint)}
       `;
     }
   }
@@ -5225,6 +5226,10 @@ function MapScreen() {
       const restrictions = getRestrictionBadgeKeys(note, { day: selectedDayKey });
       const matched = effectiveMatchSet && effectiveMatchSet.has(s.stopNbr);
       const dim = effectiveMatchSet && !matched;
+      // A priority flag is the dispatcher's deliberate "watch this" signal, so it
+      // dominates the marker color in BOTH paths — the classic pin AND the special
+      // restriction/receiving-hours icons (which otherwise hid it).
+      const flagHue = (note?.priority_flag && FLAG_COLORS[note.priority_flag]) ? FLAG_COLORS[note.priority_flag] : null;
       // M4.1.6 — no restrictions → classic pin (State A). 1+ restrictions →
       // the pin disappears and the icon(s) become the marker (States B/C).
       // iconMarkerSvg returns size + anchor based on icon count.
@@ -5239,16 +5244,15 @@ function MapScreen() {
         // Delivery-window tag (AM/PM) → shown in the pin head; tagged pins render
         // at the larger size so the text stays legible.
         const tag = (note?.delivery_window === 'AM' || note?.delivery_window === 'PM') ? note.delivery_window : null;
-        const flagHue = (note?.priority_flag && FLAG_COLORS[note.priority_flag]) ? FLAG_COLORS[note.priority_flag] : null;
-        // Color precedence: result-set match (orange) → an AM/PM pin takes the
-        // priority-flag color when one is set (so the AM/PM icon reflects the
-        // flag) → otherwise the status hue, falling back to the flag/restriction tint.
+        // Color precedence: result-set match (orange) → priority flag (so a red
+        // flag makes a red pin, even on an unplanned/AM stop) → status hue →
+        // flag/restriction tint fallback.
         const color = matched ? '#f59e0b'
-          : (tag && flagHue) ? flagHue
-          : (meta.color || flagColor(note));
+          : flagHue
+          || meta.color || flagColor(note);
         const big = matched || !!tag;
         // Unplanned stops render a touch smaller than planned ones (de-emphasized
-        // until they're routed), now solid slate for contrast on satellite.
+        // until they're routed), now solid blue for contrast on satellite.
         const small = !big && statusKind === 'UNPLANNED';
         icon = {
           url: pinSvgStatus(color, { hollow: matched ? false : meta.hollow, glyph: meta.glyph, tag }),
@@ -5257,7 +5261,9 @@ function MapScreen() {
           anchor: big ? new google.maps.Point(14, 34) : (small ? new google.maps.Point(8, 20) : new google.maps.Point(10, 25)),
         };
       } else {
-        const spec = iconMarkerSvg(restrictions);
+        // Restriction / receiving-hours icons. A priority flag recolors them to
+        // the flag hue (overriding each icon's own accent) so priority still reads.
+        const spec = iconMarkerSvg(restrictions, flagHue);
         icon = {
           url: spec.url,
           scaledSize: new google.maps.Size(spec.width, spec.height),
