@@ -54,6 +54,15 @@ probing only known-active loads + a small buffer instead of a ±300 window.
   deliveries are reconciled by Phase 5's 7-day straggler watch. Flag OFF → unchanged (fresh scan).
   (Phase 4b TODO: targeted /stop/info re-probe of the handful of non-terminal stragglers at
   capture time, for same-day final status — deferred; the straggler watch covers it cross-day.)
+- **Phase 5 (v0.27.23) — undelivered/late/aged report + 91-vs-90, IMPLEMENTED:** pure
+  derivation over the multi-day history warehouse (`lib/straggler-report.mts`,
+  unit-tested) — ZERO NuVizz calls. Read-only endpoint `nuvizz-undelivered-report?days=N`
+  returns: deliveredLate (PRO terminal on a LATER day than scheduled — the rolled-PRO
+  case), open (non-terminal within the window), agedOut (non-terminal ≥ window), and the
+  91(manual portal)-vs-90(system) completion summary overall + per route with a 91-rate.
+  Derived because a missed stop rolls to a later day's board under the same PRO (NuVizz
+  ground truth) and every day is snapshotted — so no stateful /stop/info watchlist is
+  needed. FOLLOW-UP: a sortable UI surface consuming the endpoint (data layer is complete).
 - **Phase 5 report — manually-completed (91) dimension (amendment):** terminal-skip is
   unchanged (freeze on {90,91}; a 91 can't revert — a redo returns as a new PRO "-1",
   discovered normally — so NO re-verify, max savings). The undelivered/aged-out report
