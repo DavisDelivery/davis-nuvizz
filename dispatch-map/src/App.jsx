@@ -46,7 +46,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.27.6';
+const APP_VERSION = '0.27.7';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -66,8 +66,9 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.27.7', 'Order detail: "Find business" now opens a general Google search (name+address); removed the redundant Maps-search button (the "Google Maps" link still opens the map)'],
   ['0.27.6', 'Edit address: correct a mis-entered address — it re-geocodes and moves the pin for that customer (also restores the mobile pin-correct button)'],
-  ['0.27.5', 'Order detail: split the business search into "Find on Maps" + a general "Web search" (hours/phone/closed) link'],
+  ['0.27.5', 'Order detail: added a "Find business" search link (business name + address)'],
   ['0.27.4', 'Order detail: "Find business" button (Maps search by name+address) + collapsible per-order items list (SKU/qty/weight/oversize)'],
   ['0.27.3', 'Date picker no longer shows the date twice; status card stacks its details and is collapsible to reclaim map space'],
   ['0.27.2', '“Scan now” runs the async scanner + polls (a busy date exceeded the 26s sync cap), so it never times out'],
@@ -1898,29 +1899,10 @@ function GoogleMapsLink({ stop, className }) {
   );
 }
 
-// Opens a Google Maps search for the BUSINESS NAME + address (not just the
-// geocoded point). When the auto-placed pin is wrong, searching the name pulls
-// up the real business listing so the dispatcher can find/verify the correct
-// location. New tab.
-function BusinessSearchLink({ stop, className }) {
-  const q = [stop.businessName, stop.addr1, stop.city, stop.state, stop.zip].filter(Boolean).join(' ');
-  if (!q) return null;
-  const url = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(q)}`;
-  return (
-    <a
-      href={url}
-      target="_blank"
-      rel="noopener noreferrer"
-      className={className || 'inline-flex items-center gap-1 text-xs text-blue-700 hover:underline mt-1'}
-      style={{ minHeight: 44, alignItems: 'center' }}
-    >
-      <MapPinned size={13} /> Find on Maps
-    </a>
-  );
-}
-
-// General Google WEB search for the business name + address — for hours, phone,
-// "permanently closed", a different entrance, etc. that a Maps pin won't show.
+// "Find business" — a general Google WEB search for the business name + address.
+// The plain "Google Maps" link above already covers the map view; this is the
+// general search (listing, hours, phone, website, "permanently closed", etc.)
+// that helps locate/verify a business whose auto-placed pin looks wrong.
 function WebSearchLink({ stop, className }) {
   const q = [stop.businessName, stop.addr1, stop.city, stop.state, stop.zip].filter(Boolean).join(' ');
   if (!q) return null;
@@ -1933,7 +1915,7 @@ function WebSearchLink({ stop, className }) {
       className={className || 'inline-flex items-center gap-1 text-xs text-blue-700 hover:underline mt-1'}
       style={{ minHeight: 44, alignItems: 'center' }}
     >
-      <Search size={13} /> Web search
+      <Search size={13} /> Find business
     </a>
   );
 }
@@ -2614,7 +2596,6 @@ function StopSidebar({ stop, note, onClose, onSave, saving, saveError, onOpenRou
             <div className="flex items-center gap-4 flex-wrap">
               <StreetViewLink stop={stop} />
               <GoogleMapsLink stop={stop} />
-              <BusinessSearchLink stop={stop} />
               <WebSearchLink stop={stop} />
             </div>
             <div className="flex items-center gap-4 flex-wrap">
@@ -4091,7 +4072,6 @@ function StopInfoTabContent({ stop, note, onOpenRoute, onMoveLocation, onEditAdd
         <div className="flex items-center gap-5 mt-1 flex-wrap">
           <StreetViewLink stop={stop} className="inline-flex items-center gap-1 text-[13px] text-blue-700" />
           <GoogleMapsLink stop={stop} className="inline-flex items-center gap-1 text-[13px] text-blue-700" />
-          <BusinessSearchLink stop={stop} className="inline-flex items-center gap-1 text-[13px] text-blue-700" />
           <WebSearchLink stop={stop} className="inline-flex items-center gap-1 text-[13px] text-blue-700" />
         </div>
         <div className="flex items-center gap-5 flex-wrap">
