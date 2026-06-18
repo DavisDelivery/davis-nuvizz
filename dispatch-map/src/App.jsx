@@ -46,7 +46,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.27.4';
+const APP_VERSION = '0.27.9';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -66,6 +66,11 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.27.9', 'Unplanned pins are now solid slate (was hollow white — better contrast on satellite) and a touch smaller'],
+  ['0.27.8', 'Customer notes: AM/PM "Delivery window" tag — tagged stops show an AM/PM pin on the map'],
+  ['0.27.7', 'Order detail: "Find business" now opens a general Google search (name+address); removed the redundant Maps-search button (the "Google Maps" link still opens the map)'],
+  ['0.27.6', 'Edit address: correct a mis-entered address — it re-geocodes and moves the pin for that customer (also restores the mobile pin-correct button)'],
+  ['0.27.5', 'Order detail: added a "Find business" search link (business name + address)'],
   ['0.27.4', 'Order detail: "Find business" button (Maps search by name+address) + collapsible per-order items list (SKU/qty/weight/oversize)'],
   ['0.27.3', 'Date picker no longer shows the date twice; status card stacks its details and is collapsible to reclaim map space'],
   ['0.27.2', '“Scan now” runs the async scanner + polls (a busy date exceeded the 26s sync cap), so it never times out'],
@@ -141,7 +146,7 @@ const DRIVER_TINT = '#0f172a';             // M4 Motive driver pins
 // a status hue is close to a flag hue. `color: null` → fall back to flagColor.
 //   glyph: null=white dot · 'check'=delivered · 'bang'=exception · 'arrow'=en route
 const STATUS_META = {
-  UNPLANNED:   { label: 'Unplanned',        color: '#64748b', hollow: true,  glyph: null,    badge: '#64748b' },
+  UNPLANNED:   { label: 'Unplanned',        color: '#475569', hollow: false, glyph: null,    badge: '#475569' },
   SCHEDULED:   { label: 'Scheduled',        color: null,      hollow: false, glyph: null,    badge: '#1e5b92' },
   OUT_FOR_DEL: { label: 'Out for delivery', color: '#2563eb', hollow: false, glyph: 'arrow', badge: '#2563eb' },
   ARRIVED:     { label: 'Arrived',          color: '#d97706', hollow: false, glyph: null,    badge: '#d97706' },
@@ -1240,7 +1245,7 @@ function pinSvgClassic(color) {
 // a status mark (check=delivered, bang=exception, arrow=en route). Anchor is
 // unchanged (14, 34) so it's a drop-in for the classic pin.
 function pinSvgStatus(color, opts = {}) {
-  const { hollow = false, glyph = null } = opts;
+  const { hollow = false, glyph = null, tag = null } = opts;
   const bodyFill = hollow ? '#ffffff' : color;
   const bodyStroke = hollow ? color : '#ffffff';
   const strokeW = hollow ? 2.5 : 2;
@@ -1251,6 +1256,9 @@ function pinSvgStatus(color, opts = {}) {
     center = '<text x="14" y="17.5" font-family="system-ui, sans-serif" font-size="12" font-weight="800" fill="white" text-anchor="middle">!</text>';
   } else if (glyph === 'arrow') {
     center = '<path d="M9.5 13h6m-2.5-2.6l2.8 2.6-2.8 2.6" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>';
+  } else if (tag === 'AM' || tag === 'PM') {
+    // Delivery-window tag — render "AM"/"PM" in the pin head (replaces the dot).
+    center = `<text x="14" y="16.8" font-family="system-ui, sans-serif" font-size="10" font-weight="800" fill="${hollow ? color : 'white'}" text-anchor="middle" letter-spacing="-0.5">${tag}</text>`;
   } else {
     center = `<circle cx="14" cy="13" r="4.5" fill="${hollow ? color : 'white'}"/>`;
   }
@@ -1468,6 +1476,7 @@ function emptyNote(stop) {
     contacts: [],
     dock_notes: '',
     priority_flag: null,
+    delivery_window: null,   // 'AM' | 'PM' | null — shows an AM/PM tag on the map pin
     photo_urls: [],
     pro_history: [],
   };
@@ -1896,14 +1905,14 @@ function GoogleMapsLink({ stop, className }) {
   );
 }
 
-// Opens a Google Maps search for the BUSINESS NAME + address (not just the
-// geocoded point). When the auto-placed pin is wrong, searching the name pulls
-// up the real business listing so the dispatcher can find/verify the correct
-// location. New tab.
-function BusinessSearchLink({ stop, className }) {
+// "Find business" — a general Google WEB search for the business name + address.
+// The plain "Google Maps" link above already covers the map view; this is the
+// general search (listing, hours, phone, website, "permanently closed", etc.)
+// that helps locate/verify a business whose auto-placed pin looks wrong.
+function WebSearchLink({ stop, className }) {
   const q = [stop.businessName, stop.addr1, stop.city, stop.state, stop.zip].filter(Boolean).join(' ');
   if (!q) return null;
-  const url = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(q)}`;
+  const url = `https://www.google.com/search?q=${encodeURIComponent(q)}`;
   return (
     <a
       href={url}
@@ -2075,6 +2084,103 @@ function MoveLocationBar({ stop, saving, onSave, onCancel, onReset }) {
       <button onClick={onReset} disabled={saving} className="text-[11px] px-2 py-1.5 rounded border border-slate-300 text-slate-600 hover:bg-slate-50 disabled:opacity-50 min-h-[40px]" title="Clear the saved override (back to NuVizz location)">Reset</button>
       <button onClick={onCancel} disabled={saving} className="text-[11px] px-2 py-1.5 rounded border border-slate-300 text-slate-600 hover:bg-slate-50 disabled:opacity-50 min-h-[40px]">Cancel</button>
       <button onClick={onSave} disabled={saving} className="text-xs px-3 py-1.5 rounded text-white font-semibold disabled:opacity-50 min-h-[40px]" style={{ background: '#16a34a' }}>{saving ? 'Saving…' : 'Save location'}</button>
+    </div>
+  );
+}
+
+// Edit a stop's address when NuVizz has it wrong (so the pin lands in the wrong
+// place). The corrected address is GEOCODED client-side via the already-loaded
+// Google Geocoder; on success we persist BOTH the typed address (address_override,
+// shown in the panel) AND the resulting coordinates (location_override, the same
+// field the "Correct pin location" drag uses) to customer_notes — so fixing the
+// address also moves the pin, for this customer, on every future load.
+function AddressEditModal({ stop, note, google, onClose, onSaved }) {
+  const ov = note?.address_override || {};
+  const [addr1, setAddr1] = useState(ov.addr1 ?? stop.addr1 ?? '');
+  const [city, setCity] = useState(ov.city ?? stop.city ?? '');
+  const [state, setState] = useState(ov.state ?? stop.state ?? '');
+  const [zip, setZip] = useState(ov.zip ?? stop.zip ?? '');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState(null);
+  const hasOverride = !!note?.address_override;
+
+  const geocode = (q) => new Promise((resolve, reject) => {
+    if (!google?.maps?.Geocoder) { reject(new Error('Maps not ready')); return; }
+    new google.maps.Geocoder().geocode({ address: q }, (res, status) => {
+      if (status === 'OK' && res?.[0]?.geometry?.location) {
+        const loc = res[0].geometry.location;
+        resolve({ lat: loc.lat(), lng: loc.lng(), formatted: res[0].formatted_address });
+      } else {
+        reject(new Error(status === 'ZERO_RESULTS' ? "Couldn't find that address" : `Geocode failed (${status})`));
+      }
+    });
+  });
+
+  const save = async () => {
+    setErr(null);
+    const fields = { addr1: addr1.trim(), city: city.trim(), state: state.trim(), zip: zip.trim() };
+    const q = [fields.addr1, fields.city, fields.state, fields.zip].filter(Boolean).join(', ');
+    if (!q) { setErr('Enter an address'); return; }
+    setBusy(true);
+    try {
+      const geo = await geocode(q);
+      await setDoc(doc(db, 'customer_notes', stop.matchKey), {
+        match_key: stop.matchKey,
+        raw_name: stop.businessName || '',
+        address_override: fields,
+        address_override_at: serverTimestamp(),
+        location_override: { lat: geo.lat, lng: geo.lng },
+        location_override_at: serverTimestamp(),
+        last_updated: serverTimestamp(),
+      }, { merge: true });
+      onSaved?.();
+      onClose();
+    } catch (e) {
+      setErr(e.message || 'Could not save');
+    } finally { setBusy(false); }
+  };
+
+  const reset = async () => {
+    setBusy(true); setErr(null);
+    try {
+      await setDoc(doc(db, 'customer_notes', stop.matchKey), {
+        match_key: stop.matchKey, address_override: null, address_override_at: null,
+        location_override: null, last_updated: serverTimestamp(),
+      }, { merge: true });
+      onSaved?.();
+      onClose();
+    } catch (e) { setErr(e.message || 'Could not reset'); }
+    finally { setBusy(false); }
+  };
+
+  const field = 'w-full text-sm border border-slate-300 rounded px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-400';
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 p-4" onClick={onClose}>
+      <div className="bg-white rounded-lg shadow-xl w-full max-w-sm p-4 space-y-3" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between">
+          <div className="font-semibold text-slate-800">Edit address</div>
+          <button onClick={onClose} className="p-1 hover:bg-slate-100 rounded"><X size={18} /></button>
+        </div>
+        <div className="text-xs text-slate-500 -mt-1">{stop.businessName || stop.stopNbr} · saving re-geocodes and moves the pin for this customer.</div>
+        <div className="space-y-2">
+          <input className={field} value={addr1} onChange={(e) => setAddr1(e.target.value)} placeholder="Street address" aria-label="Street address" />
+          <div className="grid grid-cols-3 gap-2">
+            <input className={field + ' col-span-2'} value={city} onChange={(e) => setCity(e.target.value)} placeholder="City" aria-label="City" />
+            <input className={field} value={state} onChange={(e) => setState(e.target.value)} placeholder="State" aria-label="State" />
+          </div>
+          <input className={field} value={zip} onChange={(e) => setZip(e.target.value)} placeholder="ZIP" aria-label="ZIP" />
+        </div>
+        {err && <div className="text-xs text-red-600">{err}</div>}
+        <div className="flex items-center justify-between gap-2 pt-1">
+          {hasOverride
+            ? <button onClick={reset} disabled={busy} className="text-[11px] px-2 py-1.5 rounded border border-slate-300 text-slate-600 hover:bg-slate-50 disabled:opacity-50" title="Clear the correction (back to NuVizz address + pin)">Reset to original</button>
+            : <span />}
+          <div className="flex items-center gap-2">
+            <button onClick={onClose} disabled={busy} className="text-xs px-3 py-1.5 rounded border border-slate-300 text-slate-600 hover:bg-slate-50 disabled:opacity-50">Cancel</button>
+            <button onClick={save} disabled={busy} className="text-xs px-3 py-1.5 rounded text-white font-semibold disabled:opacity-50" style={{ background: '#16a34a' }}>{busy ? 'Saving…' : 'Save & move pin'}</button>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
@@ -2349,7 +2455,7 @@ function ProsSection({ stop }) {
   );
 }
 
-function StopSidebar({ stop, note, onClose, onSave, saving, saveError, onOpenRoute, onMoveLocation, mobile = false }) {
+function StopSidebar({ stop, note, onClose, onSave, saving, saveError, onOpenRoute, onMoveLocation, onEditAddress, mobile = false }) {
   const [draft, setDraft] = useState(() => note || emptyNote(stop));
   const [editing, setEditing] = useState(!note);
   useEffect(() => {
@@ -2480,24 +2586,36 @@ function StopSidebar({ stop, note, onClose, onSave, saving, saveError, onOpenRou
         {/* Raw stop data section */}
         <div className="px-4 py-3 border-b text-sm space-y-1">
           <div>
-            <div className="text-xs uppercase font-semibold text-slate-500">Address</div>
-            <div>{stop.addr1}</div>
+            <div className="text-xs uppercase font-semibold text-slate-500 flex items-center gap-1.5">
+              Address
+              {note?.address_override && <span className="px-1 rounded bg-blue-100 text-blue-700 text-[9px] font-semibold normal-case">corrected</span>}
+            </div>
+            <div>{note?.address_override?.addr1 || stop.addr1}</div>
             {stop.addr2 && (
               <div className="text-xs px-2 py-1 mt-1 bg-amber-50 border border-amber-200 rounded text-amber-900">
                 <span className="font-semibold">addr2:</span> {stop.addr2}
               </div>
             )}
-            <div className="text-slate-600">{stop.city}, {stop.state} {stop.zip}</div>
+            <div className="text-slate-600">
+              {(note?.address_override?.city ?? stop.city)}, {(note?.address_override?.state ?? stop.state)} {(note?.address_override?.zip ?? stop.zip)}
+            </div>
             <div className="flex items-center gap-4 flex-wrap">
               <StreetViewLink stop={stop} />
               <GoogleMapsLink stop={stop} />
-              <BusinessSearchLink stop={stop} />
+              <WebSearchLink stop={stop} />
             </div>
-            {onMoveLocation && (
-              <button onClick={() => onMoveLocation(stop)} className="mt-1.5 inline-flex items-center gap-1 text-xs text-blue-700 hover:underline">
-                <MapPin size={13} /> Correct pin location{note?.location_override ? ' · custom saved' : ''}
-              </button>
-            )}
+            <div className="flex items-center gap-4 flex-wrap">
+              {onEditAddress && (
+                <button onClick={() => onEditAddress(stop)} className="mt-1.5 inline-flex items-center gap-1 text-xs text-blue-700 hover:underline">
+                  <MapPin size={13} /> Edit address
+                </button>
+              )}
+              {onMoveLocation && (
+                <button onClick={() => onMoveLocation(stop)} className="mt-1.5 inline-flex items-center gap-1 text-xs text-blue-700 hover:underline">
+                  <MapPin size={13} /> Correct pin location{note?.location_override ? ' · custom saved' : ''}
+                </button>
+              )}
+            </div>
           </div>
           {cleanInstructions(stop.signalSources?.orderInstructions) && (
             <div className="pt-1">
@@ -2568,6 +2686,25 @@ function StopSidebar({ stop, note, onClose, onSave, saving, saveError, onOpenRou
                         className={`px-2 py-1 rounded border text-xs flex items-center gap-1 ${active ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-300 bg-white text-slate-700'}`}
                       >
                         <span className="w-2.5 h-2.5 rounded-full" style={{ background: swatch }} />
+                        {v || 'none'}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div>
+                <div className="text-xs font-semibold text-slate-600 mb-1">Delivery window</div>
+                <div className="flex gap-1.5">
+                  {[null, 'AM', 'PM'].map((v) => {
+                    const active = (D.delivery_window || null) === v;
+                    return (
+                      <button
+                        key={String(v)}
+                        onClick={() => setD({ delivery_window: v })}
+                        className={`px-2.5 py-1 rounded border text-xs font-semibold ${active ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-300 bg-white text-slate-700'}`}
+                        title={v ? `Tag this stop ${v} — shows an ${v} pin on the map` : 'No AM/PM tag'}
+                      >
                         {v || 'none'}
                       </button>
                     );
@@ -3053,6 +3190,7 @@ function SnapshotSkeleton() {
 function ReadOnlyNoteView({ note }) {
   const items = [];
   if (note.priority_flag) items.push({ k: 'Flag', v: <span style={{ color: FLAG_COLORS[note.priority_flag] }} className="font-semibold capitalize">{note.priority_flag}</span> });
+  if (note.delivery_window === 'AM' || note.delivery_window === 'PM') items.push({ k: 'Window', v: <span className="font-semibold">{note.delivery_window}</span> });
   if (note.appointment_required) {
     items.push({
       k: 'Appointment',
@@ -3662,7 +3800,7 @@ function MobileDriversTab({ drivers, error, onPickDriver }) {
 // from PR 1 with a proper bottom-sheet that has its own header + Info /
 // Notes / Hours / PROs tabs. Draft state spans all tabs so editing Notes
 // then switching to Hours preserves changes; one Save commits everything.
-function MobileStopDetailDrawer({ stop, note, onClose, onSave, saving, saveError, onOpenRoute, onMoveLocation }) {
+function MobileStopDetailDrawer({ stop, note, onClose, onSave, saving, saveError, onOpenRoute, onMoveLocation, onEditAddress }) {
   const [activeTab, setActiveTab] = useState('info');
   const [draft, setDraft] = useState(() => note || emptyNote(stop));
   const [editing, setEditing] = useState(false);
@@ -3739,7 +3877,7 @@ function MobileStopDetailDrawer({ stop, note, onClose, onSave, saving, saveError
       </div>
       {/* Tab content */}
       <div className="flex-1 overflow-y-auto overscroll-contain">
-        {activeTab === 'info' && <StopInfoTabContent stop={stop} onOpenRoute={onOpenRoute} />}
+        {activeTab === 'info' && <StopInfoTabContent stop={stop} note={note} onOpenRoute={onOpenRoute} onMoveLocation={onMoveLocation} onEditAddress={onEditAddress} />}
         {activeTab === 'notes' && (
           <StopNotesTabContent
             stop={stop}
@@ -3932,8 +4070,9 @@ function MobileRouteDetailDrawer({ loadNbr, stops, onClose, onPickStop }) {
   );
 }
 
-function StopInfoTabContent({ stop, onOpenRoute }) {
-  const cityLine = [stop.city, stop.state, stop.zip].filter(Boolean).join(', ').replace(/, ([A-Z]{2}) (\d)/, ', $1 $2');
+function StopInfoTabContent({ stop, note, onOpenRoute, onMoveLocation, onEditAddress }) {
+  const ao = note?.address_override || {};
+  const cityLine = [ao.city ?? stop.city, ao.state ?? stop.state, ao.zip ?? stop.zip].filter(Boolean).join(', ').replace(/, ([A-Z]{2}) (\d)/, ', $1 $2');
   const statusKind = classifyStopStatus(stop);
   const arrivedAt = (statusKind === 'ARRIVED' || statusKind === 'DELIVERED') ? fmtClockShort(stop.arrivalDTTM || execArrivalTs(stop.raw?.stopExecutionInfo || {})) : null;
   const deliveredAt = statusKind === 'DELIVERED' ? fmtClockShort(stop.deliveredDTTM || execDeliveredTs(stop.raw?.stopExecutionInfo || {})) : null;
@@ -3945,8 +4084,11 @@ function StopInfoTabContent({ stop, onOpenRoute }) {
         {arrivedAt && <span className="text-[11px] text-slate-500">Arrived {arrivedAt}</span>}
       </div>
       <div>
-        <div className="text-[10px] uppercase font-semibold text-slate-500 mb-0.5">Address</div>
-        <div className="text-slate-900">{stop.addr1 || '—'}</div>
+        <div className="text-[10px] uppercase font-semibold text-slate-500 mb-0.5 flex items-center gap-1.5">
+          Address
+          {note?.address_override && <span className="px-1 rounded bg-blue-100 text-blue-700 text-[9px] font-semibold">corrected</span>}
+        </div>
+        <div className="text-slate-900">{ao.addr1 || stop.addr1 || '—'}</div>
         {stop.addr2 && (
           <div className="mt-1 px-2 py-1 text-[12px] bg-amber-50 border border-amber-200 rounded text-amber-900">
             <span className="font-semibold">addr2:</span> {stop.addr2}
@@ -3956,13 +4098,20 @@ function StopInfoTabContent({ stop, onOpenRoute }) {
         <div className="flex items-center gap-5 mt-1 flex-wrap">
           <StreetViewLink stop={stop} className="inline-flex items-center gap-1 text-[13px] text-blue-700" />
           <GoogleMapsLink stop={stop} className="inline-flex items-center gap-1 text-[13px] text-blue-700" />
-          <BusinessSearchLink stop={stop} className="inline-flex items-center gap-1 text-[13px] text-blue-700" />
+          <WebSearchLink stop={stop} className="inline-flex items-center gap-1 text-[13px] text-blue-700" />
         </div>
-        {onMoveLocation && (
-          <button onClick={() => onMoveLocation(stop)} className="mt-1.5 inline-flex items-center gap-1 text-[13px] text-blue-700" style={{ minHeight: 40 }}>
-            <MapPin size={14} /> Correct pin location{note?.location_override ? ' · custom saved' : ''}
-          </button>
-        )}
+        <div className="flex items-center gap-5 flex-wrap">
+          {onEditAddress && (
+            <button onClick={() => onEditAddress(stop)} className="mt-1.5 inline-flex items-center gap-1 text-[13px] text-blue-700" style={{ minHeight: 40 }}>
+              <MapPin size={14} /> Edit address
+            </button>
+          )}
+          {onMoveLocation && (
+            <button onClick={() => onMoveLocation(stop)} className="mt-1.5 inline-flex items-center gap-1 text-[13px] text-blue-700" style={{ minHeight: 40 }}>
+              <MapPin size={14} /> Correct pin location{note?.location_override ? ' · custom saved' : ''}
+            </button>
+          )}
+        </div>
       </div>
       {cleanInstructions(stop.signalSources?.orderInstructions) && (
         <div>
@@ -4059,6 +4208,26 @@ function StopNotesTabContent({ stop, note, draft, setDraft, editing, setEditing 
               >
                 <span className="w-3 h-3 rounded-full" style={{ background: swatch }} />
                 <span className="text-xs">{v || 'none'}</span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Delivery window — AM/PM tag, shown as an AM/PM pin on the map */}
+      <div>
+        <div className="text-[11px] font-semibold text-slate-600 mb-1">Delivery window</div>
+        <div className="flex flex-wrap gap-1.5">
+          {[null, 'AM', 'PM'].map((v) => {
+            const active = (D.delivery_window || null) === v;
+            return (
+              <button
+                key={String(v)}
+                onClick={() => setD({ delivery_window: v })}
+                className={`px-3 py-2 rounded border ${active ? 'bg-slate-900 text-white border-slate-900' : 'bg-white border-slate-300 text-slate-700'}`}
+                style={{ minHeight: 44 }}
+              >
+                <span className="text-xs font-semibold">{v || 'none'}</span>
               </button>
             );
           })}
@@ -4610,6 +4779,7 @@ function MapScreen() {
   const [movingStop, setMovingStop] = useState(null);
   const [movedTo, setMovedTo] = useState(null);
   const [savingLoc, setSavingLoc] = useState(false);
+  const [editAddrStop, setEditAddrStop] = useState(null);
   const movingMarkerRef = useRef(null);
 
   const { drivers, error: driverErr, lastRefreshed: driversAt } = useDriverPositions(showDrivers);
@@ -5024,13 +5194,21 @@ function MapScreen() {
         // (no regression); other states use their status hue + shape/glyph.
         // When a result set is active (search / AI / selection), the matched
         // stops render ORANGE so the "found" ones pop against the dimmed rest.
-        const meta = STATUS_META[classifyStopStatus(s)] || STATUS_META.SCHEDULED;
+        const statusKind = classifyStopStatus(s);
+        const meta = STATUS_META[statusKind] || STATUS_META.SCHEDULED;
         const color = matched ? '#f59e0b' : (meta.color || flagColor(note));
+        // Delivery-window tag (AM/PM) → shown in the pin head; tagged pins render
+        // at the larger size so the text stays legible.
+        const tag = (note?.delivery_window === 'AM' || note?.delivery_window === 'PM') ? note.delivery_window : null;
+        const big = matched || !!tag;
+        // Unplanned stops render a touch smaller than planned ones (de-emphasized
+        // until they're routed), now solid slate for contrast on satellite.
+        const small = !big && statusKind === 'UNPLANNED';
         icon = {
-          url: pinSvgStatus(color, { hollow: matched ? false : meta.hollow, glyph: meta.glyph }),
-          // Slightly larger when matched so the found stops stand out.
-          scaledSize: matched ? new google.maps.Size(28, 36) : new google.maps.Size(20, 26),
-          anchor: matched ? new google.maps.Point(14, 34) : new google.maps.Point(10, 25),
+          url: pinSvgStatus(color, { hollow: matched ? false : meta.hollow, glyph: meta.glyph, tag }),
+          // Slightly larger when matched or AM/PM-tagged so they stand out.
+          scaledSize: big ? new google.maps.Size(28, 36) : (small ? new google.maps.Size(16, 21) : new google.maps.Size(20, 26)),
+          anchor: big ? new google.maps.Point(14, 34) : (small ? new google.maps.Point(8, 20) : new google.maps.Point(10, 25)),
         };
       } else {
         const spec = iconMarkerSvg(restrictions);
@@ -5419,6 +5597,15 @@ function MapScreen() {
             onReset={resetStopLocation}
           />
         )}
+        {editAddrStop && (
+          <AddressEditModal
+            stop={editAddrStop}
+            note={notes.get(editAddrStop.matchKey)}
+            google={google}
+            onClose={() => setEditAddrStop(null)}
+            onSaved={() => refresh({ silent: true })}
+          />
+        )}
 
         <MobileDrawer
           open={mobileDrawerOpen}
@@ -5472,6 +5659,7 @@ function MapScreen() {
             note={notes.get(selectedStop.matchKey)}
             onClose={() => setSelectedStop(null)}
             onMoveLocation={startMoveLocation}
+            onEditAddress={setEditAddrStop}
             onOpenRoute={(loadNbr) => { setSelectedStop(null); setSelectedRoute(loadNbr); }}
             onSave={async (draft) => {
               await handleSave(draft);
@@ -5711,6 +5899,15 @@ function MapScreen() {
             onReset={resetStopLocation}
           />
         )}
+        {editAddrStop && (
+          <AddressEditModal
+            stop={editAddrStop}
+            note={notes.get(editAddrStop.matchKey)}
+            google={google}
+            onClose={() => setEditAddrStop(null)}
+            onSaved={() => refresh({ silent: true })}
+          />
+        )}
         {/* M5 — one-shot note when live drivers were auto-disabled for a past/future date. */}
         {driverGateNote && (
           <div className="absolute top-16 left-1/2 -translate-x-1/2 z-[7] bg-amber-50 border border-amber-300 rounded shadow px-3 py-1.5 text-xs text-amber-800">
@@ -5768,6 +5965,7 @@ function MapScreen() {
           note={notes.get(selectedStop.matchKey)}
           onClose={() => setSelectedStop(null)}
           onMoveLocation={startMoveLocation}
+          onEditAddress={setEditAddrStop}
           onSave={handleSave}
           saving={saving}
           saveError={saveError}
