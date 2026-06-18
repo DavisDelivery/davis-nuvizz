@@ -46,7 +46,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.27.8';
+const APP_VERSION = '0.27.9';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -66,6 +66,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.27.9', 'Unplanned pins are now solid slate (was hollow white — better contrast on satellite) and a touch smaller'],
   ['0.27.8', 'Customer notes: AM/PM "Delivery window" tag — tagged stops show an AM/PM pin on the map'],
   ['0.27.7', 'Order detail: "Find business" now opens a general Google search (name+address); removed the redundant Maps-search button (the "Google Maps" link still opens the map)'],
   ['0.27.6', 'Edit address: correct a mis-entered address — it re-geocodes and moves the pin for that customer (also restores the mobile pin-correct button)'],
@@ -145,7 +146,7 @@ const DRIVER_TINT = '#0f172a';             // M4 Motive driver pins
 // a status hue is close to a flag hue. `color: null` → fall back to flagColor.
 //   glyph: null=white dot · 'check'=delivered · 'bang'=exception · 'arrow'=en route
 const STATUS_META = {
-  UNPLANNED:   { label: 'Unplanned',        color: '#64748b', hollow: true,  glyph: null,    badge: '#64748b' },
+  UNPLANNED:   { label: 'Unplanned',        color: '#475569', hollow: false, glyph: null,    badge: '#475569' },
   SCHEDULED:   { label: 'Scheduled',        color: null,      hollow: false, glyph: null,    badge: '#1e5b92' },
   OUT_FOR_DEL: { label: 'Out for delivery', color: '#2563eb', hollow: false, glyph: 'arrow', badge: '#2563eb' },
   ARRIVED:     { label: 'Arrived',          color: '#d97706', hollow: false, glyph: null,    badge: '#d97706' },
@@ -5193,17 +5194,21 @@ function MapScreen() {
         // (no regression); other states use their status hue + shape/glyph.
         // When a result set is active (search / AI / selection), the matched
         // stops render ORANGE so the "found" ones pop against the dimmed rest.
-        const meta = STATUS_META[classifyStopStatus(s)] || STATUS_META.SCHEDULED;
+        const statusKind = classifyStopStatus(s);
+        const meta = STATUS_META[statusKind] || STATUS_META.SCHEDULED;
         const color = matched ? '#f59e0b' : (meta.color || flagColor(note));
         // Delivery-window tag (AM/PM) → shown in the pin head; tagged pins render
         // at the larger size so the text stays legible.
         const tag = (note?.delivery_window === 'AM' || note?.delivery_window === 'PM') ? note.delivery_window : null;
         const big = matched || !!tag;
+        // Unplanned stops render a touch smaller than planned ones (de-emphasized
+        // until they're routed), now solid slate for contrast on satellite.
+        const small = !big && statusKind === 'UNPLANNED';
         icon = {
           url: pinSvgStatus(color, { hollow: matched ? false : meta.hollow, glyph: meta.glyph, tag }),
           // Slightly larger when matched or AM/PM-tagged so they stand out.
-          scaledSize: big ? new google.maps.Size(28, 36) : new google.maps.Size(20, 26),
-          anchor: big ? new google.maps.Point(14, 34) : new google.maps.Point(10, 25),
+          scaledSize: big ? new google.maps.Size(28, 36) : (small ? new google.maps.Size(16, 21) : new google.maps.Size(20, 26)),
+          anchor: big ? new google.maps.Point(14, 34) : (small ? new google.maps.Point(8, 20) : new google.maps.Point(10, 25)),
         };
       } else {
         const spec = iconMarkerSvg(restrictions);
