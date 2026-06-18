@@ -46,7 +46,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.27.1';
+const APP_VERSION = '0.27.2';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -66,6 +66,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.27.2', '“Scan now” runs the async scanner + polls (a busy date exceeded the 26s sync cap), so it never times out'],
   ['0.27.1', '“Scan now” refreshes just the viewed date (loads + orders) so it can’t time out'],
   ['0.27.0', 'Scan scheduler: elapsed-time cadence (fires on schedule despite cron jitter) + tomorrow’s orders scanned 10am–midnight + structured [scan] logs + daily-limit banner'],
   ['0.26.0', 'NuVizz scan schedule (ET time-of-day gating ~14k/day) + working manual Scan-now + split load/order timestamps'],
@@ -4409,13 +4410,23 @@ function MapScreen() {
     if (scanning || scanCooldown) return;
     setScanning(true); setScanErr(null);
     try {
-      // Scan ONLY the viewed date (loads + orders, forced) so the synchronous
-      // endpoint stays fast — a full today+tomorrow scan can exceed the function
-      // timeout. Viewing tomorrow still pulls tomorrow's orders.
-      const resp = await fetch(`/.netlify/functions/nuvizz-manual-scan?date=${encodeURIComponent(selectedDate)}`, { method: 'POST' });
-      const data = await resp.json().catch(() => ({}));
-      if (!resp.ok || data.ok === false) throw new Error(data.error || 'Scan unavailable');
+      // A busy date (hundreds of orders → hundreds of Firestore writes) can't finish
+      // inside the 26s synchronous-function cap. So fire the ASYNC background scanner
+      // (15-min budget) for the VIEWED date, then poll the index until it refreshes.
+      const before = lastScannedAt;
+      const pollUrl = `/.netlify/functions/nuvizz-pull-today-stops?date=${encodeURIComponent(selectedDate)}`;
+      const resp = await fetch(`/.netlify/functions/nuvizz-refresh-stops-background?date=${encodeURIComponent(selectedDate)}`, { method: 'POST' });
+      if (!resp.ok && resp.status !== 202) throw new Error('Scan unavailable');
+      let updated = false;
+      for (let i = 0; i < 20 && !updated; i++) {          // poll up to ~60s
+        await new Promise((r) => setTimeout(r, 3000));
+        try {
+          const d = await fetchJsonWithRetry(pollUrl);
+          if (d && d.lastScannedAt && d.lastScannedAt !== before) updated = true;
+        } catch { /* keep polling */ }
+      }
       await refresh({ silent: true });
+      if (!updated) { setScanErr('Scan running — the board will refresh automatically'); setTimeout(() => setScanErr(null), 6000); }
       setScanCooldown(true);
       setTimeout(() => setScanCooldown(false), 60000);
     } catch (e) {
@@ -4424,7 +4435,7 @@ function MapScreen() {
     } finally {
       setScanning(false);
     }
-  }, [scanning, scanCooldown, refresh, selectedDate]);
+  }, [scanning, scanCooldown, refresh, selectedDate, lastScannedAt]);
 
   const { notes, ready: notesReady } = useCustomerNotes();
   useAutoScanner(stops, notes, notesReady);
