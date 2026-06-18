@@ -46,7 +46,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.27.17';
+const APP_VERSION = '0.27.18';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -66,6 +66,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.27.18', 'Incremental-scan Phase 2 hardening (independent audit): lean scans no longer calibrate the fallback window, and cold-start now uses the proven wide-window probe instead of a forward seed that could miss a day with non-contiguous load numbers'],
   ['0.27.17', 'Incremental-scan Phase 2 safety: lean (terminal-skip) load scans now PRESERVE already-delivered stops instead of pruning them (writeStops partialLoads) — closes a data-loss path before lean discovery can be enabled'],
   ['0.27.16', 'Incremental-scan Phase 2 (behind NUVIZZ_LEAN_DISCOVERY=on, default OFF): probe only known-active loads + forward buffer + periodic gap sweep instead of the ±600 window; terminal-skip; wide window stays the cold-start fallback'],
   ['0.27.15', 'Incremental-scan: routing window corrected to OVERNIGHT 20:00–07:00 ET (when routes are built) — shadow buffers tuned (+50 overnight / +10 daytime)'],

@@ -149,8 +149,7 @@ export async function runRefreshStops(req: Request): Promise<Response> {
       let loadTargets: number[] | null = null;
       if (LEAN_DISCOVERY && includeLoads) {
         try {
-          const prevDayState = await readScanState(addDaysUTC(date, -1));
-          const plan = selectLoadProbeTargets(priorState, prevDayState, {
+          const plan = selectLoadProbeTargets(priorState, {
             inWindow: isInRoutingWindow(decision.etHour),
             scanCount: priorState?.scanCount || 0,
             fwdIn: 50, fwdOut: 10, gapSweepEvery: 3,
@@ -159,7 +158,7 @@ export async function runRefreshStops(req: Request): Promise<Response> {
             loadTargets = plan.numbers;
             console.log(`[scan-lean] date=${date} mode=${plan.mode} probe=${plan.numbers.length} active=${plan.activeLoads} buffer=${plan.forwardBuffer} gapSweep=${plan.gapSweep}`);
           } else {
-            console.log(`[scan-lean] date=${date} mode=cold-fallback (no scan_state) → wide window`);
+            console.log(`[scan-lean] date=${date} mode=cold-fallback (no roster yet) → wide window`);
           }
         } catch (e: any) { console.warn(`[scan-lean] ${date} planning failed, wide window: ${e?.message}`); }
       }
