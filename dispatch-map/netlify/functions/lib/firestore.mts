@@ -198,6 +198,23 @@ export interface StopIndexMeta {
   scanState?: { halted: boolean; reason: 'ceiling' | 'killswitch'; since: string } | null;
 }
 
+// Decide whether an EXISTING stop (not re-scanned this run) should be PRESERVED
+// rather than pruned. Pure + exported for tests. Preserve when:
+//  • the unplanned feed was skipped and this is an unplanned (status-10) stop, or
+//  • the load feed was skipped and this is a planned stop, or
+//  • partialLoads (Phase 2 lean): only a SUBSET of loads was re-pulled this cycle
+//    (terminal loads deliberately skipped) → keep planned stops we didn't re-scan
+//    so terminal-skip never deletes already-delivered stops.
+export function preserveStopOnWrite(
+  stop: { isPlanned?: boolean },
+  opts: { includeUnplanned: boolean; includeLoads: boolean; partialLoads?: boolean },
+): boolean {
+  if (!opts.includeUnplanned && stop.isPlanned === false) return true;
+  if (!opts.includeLoads && stop.isPlanned === true) return true;
+  if (opts.partialLoads && stop.isPlanned === true) return true;
+  return false;
+}
+
 // Write a full day's normalized stops. Each stop doc is keyed by stopNbr and
 // carries isPlanned + last_scanned_at + the full normalized shape (incl. raw).
 // Stops that vanished since the previous scan are pruned so cancelled/replanned
@@ -207,10 +224,11 @@ export async function writeStops(
   dateStr: string,
   stops: any[],
   scannedAt: string,
-  opts: { includeUnplanned?: boolean; includeLoads?: boolean } = {},
+  opts: { includeUnplanned?: boolean; includeLoads?: boolean; partialLoads?: boolean } = {},
 ): Promise<StopIndexMeta> {
   const includeUnplanned = opts.includeUnplanned !== false; // default true (full scan)
   const includeLoads = opts.includeLoads !== false;         // default true
+  const partialLoads = opts.partialLoads === true;          // Phase 2 lean: only a SUBSET of loads re-pulled
   const base = `${COLLECTION}/${parentId(tenant, dateStr)}`;
   const withNbr = stops.filter((s) => s && s.stopNbr);
   const nextNbrs = new Set(withNbr.map((s) => String(s.stopNbr)));
@@ -221,15 +239,10 @@ export async function writeStops(
   ]);
 
   // PRESERVE-ON-SKIP: a partial run must NOT wipe the feed it didn't scan. A
-  // load-only run (includeUnplanned=false) keeps existing status-10 orders; an
-  // unplanned-only run (includeLoads=false) keeps existing planned/routed stops.
-  // Docs re-scanned this run are upserted below, not preserved.
-  const preserved = existing.filter((d) => {
-    if (nextNbrs.has(String(d._id))) return false;
-    if (!includeUnplanned && d.isPlanned === false) return true;
-    if (!includeLoads && d.isPlanned === true) return true;
-    return false;
-  });
+  // load-only run keeps existing status-10 orders; an unplanned-only run keeps
+  // existing planned/routed stops. Docs re-scanned this run are upserted below.
+  const preserved = existing.filter((d) =>
+    !nextNbrs.has(String(d._id)) && preserveStopOnWrite(d, { includeUnplanned, includeLoads, partialLoads }));
   const preservedNbrs = new Set(preserved.map((d) => String(d._id)));
   await Promise.all(
     existing

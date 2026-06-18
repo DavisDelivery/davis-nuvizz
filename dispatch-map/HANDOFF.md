@@ -35,6 +35,10 @@ probing only known-active loads + a small buffer instead of a ±300 window.
   probes the explicit set via `scanLoadNumbers`; absent ⇒ unchanged window scan. Default OFF
   so merging changes nothing; flip ON only AFTER a deploy-preview confirms the written
   stop-set matches the wide-window scan for the same day (brief's parity gate). Unit-tested.
+  **Data-loss guard (v0.27.17):** lean re-pulls only a SUBSET of loads (terminal skipped),
+  so `writeStops({partialLoads:true})` PRESERVES planned stops it didn't re-scan instead of
+  pruning them (`preserveStopOnWrite`, unit-tested) — terminal-skip can never delete already-
+  delivered stops. This is what makes the lean stop-set equal the wide-scan stop-set.
 - **Phase 5 report — manually-completed (91) dimension (amendment):** terminal-skip is
   unchanged (freeze on {90,91}; a 91 can't revert — a redo returns as a new PRO "-1",
   discovered normally — so NO re-verify, max savings). The undelivered/aged-out report

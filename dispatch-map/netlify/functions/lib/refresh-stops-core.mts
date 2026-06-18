@@ -175,7 +175,10 @@ export async function runRefreshStops(req: Request): Promise<Response> {
         loadTargets,
         unplanned: (isManual && includeUnplanned) ? { maxProbes: 800 } : undefined,
       });
-      const meta = await writeStops(TENANT, date, scan.stops, scan.scannedAt, { includeUnplanned, includeLoads });
+      // partialLoads: in lean mode we re-pulled only a SUBSET of loads (terminal
+      // ones skipped) — tell writeStops to PRESERVE planned stops it didn't re-scan
+      // so terminal-skip never prunes already-delivered stops (four-layer safety).
+      const meta = await writeStops(TENANT, date, scan.stops, scan.scannedAt, { includeUnplanned, includeLoads, partialLoads: !!loadTargets });
       // Only rebuild the fleet (load) index when we actually scanned loads — an
       // unplanned-only run would otherwise wipe the load index with an empty scan.
       if (includeLoads) {
