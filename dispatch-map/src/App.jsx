@@ -46,7 +46,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.27.9';
+const APP_VERSION = '0.27.11';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -66,6 +66,8 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.27.11', 'AM/PM pin takes the priority-flag color when a flag is set (e.g. red flag → red AM pin); pin tag text stays legible on light flags'],
+  ['0.27.10', 'Unplanned pins are now bright blue for satellite contrast; customer-notes editor no longer loses in-progress edits when a background note write lands mid-edit'],
   ['0.27.9', 'Unplanned pins are now solid slate (was hollow white — better contrast on satellite) and a touch smaller'],
   ['0.27.8', 'Customer notes: AM/PM "Delivery window" tag — tagged stops show an AM/PM pin on the map'],
   ['0.27.7', 'Order detail: "Find business" now opens a general Google search (name+address); removed the redundant Maps-search button (the "Google Maps" link still opens the map)'],
@@ -146,7 +148,7 @@ const DRIVER_TINT = '#0f172a';             // M4 Motive driver pins
 // a status hue is close to a flag hue. `color: null` → fall back to flagColor.
 //   glyph: null=white dot · 'check'=delivered · 'bang'=exception · 'arrow'=en route
 const STATUS_META = {
-  UNPLANNED:   { label: 'Unplanned',        color: '#475569', hollow: false, glyph: null,    badge: '#475569' },
+  UNPLANNED:   { label: 'Unplanned',        color: '#0ea5e9', hollow: false, glyph: null,    badge: '#0ea5e9' },
   SCHEDULED:   { label: 'Scheduled',        color: null,      hollow: false, glyph: null,    badge: '#1e5b92' },
   OUT_FOR_DEL: { label: 'Out for delivery', color: '#2563eb', hollow: false, glyph: 'arrow', badge: '#2563eb' },
   ARRIVED:     { label: 'Arrived',          color: '#d97706', hollow: false, glyph: null,    badge: '#d97706' },
@@ -1244,6 +1246,15 @@ function pinSvgClassic(color) {
 // outlined (gray) pin for UNPLANNED, and `glyph` swaps the center white dot for
 // a status mark (check=delivered, bang=exception, arrow=en route). Anchor is
 // unchanged (14, 34) so it's a drop-in for the classic pin.
+// Dark or light text for legibility on a given solid fill (perceived luminance).
+function readableTextColor(hex) {
+  const h = String(hex || '').replace('#', '');
+  if (h.length < 6) return '#ffffff';
+  const r = parseInt(h.slice(0, 2), 16), g = parseInt(h.slice(2, 4), 16), b = parseInt(h.slice(4, 6), 16);
+  const L = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+  return L > 0.6 ? '#1f2937' : '#ffffff';
+}
+
 function pinSvgStatus(color, opts = {}) {
   const { hollow = false, glyph = null, tag = null } = opts;
   const bodyFill = hollow ? '#ffffff' : color;
@@ -1258,7 +1269,9 @@ function pinSvgStatus(color, opts = {}) {
     center = '<path d="M9.5 13h6m-2.5-2.6l2.8 2.6-2.8 2.6" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>';
   } else if (tag === 'AM' || tag === 'PM') {
     // Delivery-window tag — render "AM"/"PM" in the pin head (replaces the dot).
-    center = `<text x="14" y="16.8" font-family="system-ui, sans-serif" font-size="10" font-weight="800" fill="${hollow ? color : 'white'}" text-anchor="middle" letter-spacing="-0.5">${tag}</text>`;
+    // Text color contrasts with the pin fill (e.g. dark on a yellow-flag pin).
+    const txt = hollow ? color : readableTextColor(color);
+    center = `<text x="14" y="16.8" font-family="system-ui, sans-serif" font-size="10" font-weight="800" fill="${txt}" text-anchor="middle" letter-spacing="-0.5">${tag}</text>`;
   } else {
     center = `<circle cx="14" cy="13" r="4.5" fill="${hollow ? color : 'white'}"/>`;
   }
@@ -2458,10 +2471,26 @@ function ProsSection({ stop }) {
 function StopSidebar({ stop, note, onClose, onSave, saving, saveError, onOpenRoute, onMoveLocation, onEditAddress, mobile = false }) {
   const [draft, setDraft] = useState(() => note || emptyNote(stop));
   const [editing, setEditing] = useState(!note);
+  // True once the dispatcher edits the draft; cleared on stop-change and save.
+  // Guards against a background note write (async load, scanner, another device)
+  // resetting the draft mid-edit and silently wiping in-progress changes — the
+  // root cause of "I set the hours but they didn't save".
+  const dirtyRef = useRef(false);
+  // Re-init only when a DIFFERENT stop opens.
   useEffect(() => {
     setDraft(note || emptyNote(stop));
     setEditing(!note);
-  }, [stop?.stopNbr, note?.id]);
+    dirtyRef.current = false;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stop?.stopNbr]);
+  // Adopt a note that loads/updates after the stop opened — but NEVER while the
+  // dispatcher has unsaved edits, or their work would be clobbered.
+  useEffect(() => {
+    if (dirtyRef.current) return;
+    setDraft(note || emptyNote(stop));
+    setEditing(!note);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [note?.id]);
 
   if (!stop) return null;
   const sidebarStatusKind = classifyStopStatus(stop);
@@ -2470,7 +2499,7 @@ function StopSidebar({ stop, note, onClose, onSave, saving, saveError, onOpenRou
   const sidebarDeliveredAt = sidebarStatusKind === 'DELIVERED'
     ? fmtClockShort(stop.deliveredDTTM || execDeliveredTs(stop.raw?.stopExecutionInfo || {})) : null;
   const D = draft;
-  const setD = (patch) => setDraft({ ...D, ...patch });
+  const setD = (patch) => { dirtyRef.current = true; setDraft({ ...D, ...patch }); };
   // M4.4 — receiving_hours is now {open, close} per day. The setter accepts a
   // partial {open?, close?} so the two time inputs can update independently.
   // manual_overrides.receiving_hours is set to true on any per-day edit so
@@ -2905,12 +2934,12 @@ function StopSidebar({ stop, note, onClose, onSave, saving, saveError, onOpenRou
           {saveError && <span className="text-xs text-red-600 truncate">{saveError}</span>}
           <div className="ml-auto flex gap-2">
             {note && (
-              <button onClick={() => { setDraft(note); setEditing(false); }} className="px-3 py-1.5 text-xs text-slate-600 hover:bg-slate-200 rounded">
+              <button onClick={() => { dirtyRef.current = false; setDraft(note); setEditing(false); }} className="px-3 py-1.5 text-xs text-slate-600 hover:bg-slate-200 rounded">
                 Cancel
               </button>
             )}
             <button
-              onClick={() => onSave(D)}
+              onClick={() => { dirtyRef.current = false; onSave(D); }}
               disabled={saving}
               className="px-3 py-1.5 text-xs text-white font-semibold rounded inline-flex items-center gap-1 disabled:opacity-50"
               style={{ background: BRAND }}
@@ -3805,6 +3834,9 @@ function MobileStopDetailDrawer({ stop, note, onClose, onSave, saving, saveError
   const [draft, setDraft] = useState(() => note || emptyNote(stop));
   const [editing, setEditing] = useState(false);
   const [confirmDiscard, setConfirmDiscard] = useState(false);
+  // See StopSidebar: guards an open edit from being wiped by a background note
+  // write (the root cause of an empty saved note / lost receiving hours).
+  const dirtyRef = useRef(false);
 
   // Reset draft + tab when a different stop opens.
   useEffect(() => {
@@ -3812,11 +3844,19 @@ function MobileStopDetailDrawer({ stop, note, onClose, onSave, saving, saveError
     setEditing(false);
     setActiveTab('info');
     setConfirmDiscard(false);
-  }, [stop?.stopNbr, note?.id]);
+    dirtyRef.current = false;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stop?.stopNbr]);
+  // Adopt a note that loads/updates after open — unless mid-edit.
+  useEffect(() => {
+    if (dirtyRef.current) return;
+    setDraft(note || emptyNote(stop));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [note?.id]);
 
   if (!stop) return null;
   const D = draft;
-  const setD = (patch) => setDraft({ ...D, ...patch });
+  const setD = (patch) => { dirtyRef.current = true; setDraft({ ...D, ...patch }); };
 
   const hasUnsaved = editing && JSON.stringify(draft) !== JSON.stringify(note || emptyNote(stop));
 
@@ -3905,14 +3945,14 @@ function MobileStopDetailDrawer({ stop, note, onClose, onSave, saving, saveError
           {saveError && <span className="text-[11px] text-red-600 truncate">{saveError}</span>}
           <div className="ml-auto flex gap-2">
             <button
-              onClick={() => { setDraft(note || emptyNote(stop)); setEditing(false); }}
+              onClick={() => { dirtyRef.current = false; setDraft(note || emptyNote(stop)); setEditing(false); }}
               className="px-4 py-2 text-sm text-slate-600 hover:bg-slate-100 rounded"
               style={{ minHeight: 44 }}
             >
               Cancel
             </button>
             <button
-              onClick={() => onSave(D)}
+              onClick={() => { dirtyRef.current = false; onSave(D); }}
               disabled={saving}
               className="px-4 py-2 text-sm text-white font-semibold rounded inline-flex items-center gap-1.5 disabled:opacity-50"
               style={{ background: BRAND, minHeight: 44 }}
@@ -5196,10 +5236,16 @@ function MapScreen() {
         // stops render ORANGE so the "found" ones pop against the dimmed rest.
         const statusKind = classifyStopStatus(s);
         const meta = STATUS_META[statusKind] || STATUS_META.SCHEDULED;
-        const color = matched ? '#f59e0b' : (meta.color || flagColor(note));
         // Delivery-window tag (AM/PM) → shown in the pin head; tagged pins render
         // at the larger size so the text stays legible.
         const tag = (note?.delivery_window === 'AM' || note?.delivery_window === 'PM') ? note.delivery_window : null;
+        const flagHue = (note?.priority_flag && FLAG_COLORS[note.priority_flag]) ? FLAG_COLORS[note.priority_flag] : null;
+        // Color precedence: result-set match (orange) → an AM/PM pin takes the
+        // priority-flag color when one is set (so the AM/PM icon reflects the
+        // flag) → otherwise the status hue, falling back to the flag/restriction tint.
+        const color = matched ? '#f59e0b'
+          : (tag && flagHue) ? flagHue
+          : (meta.color || flagColor(note));
         const big = matched || !!tag;
         // Unplanned stops render a touch smaller than planned ones (de-emphasized
         // until they're routed), now solid slate for contrast on satellite.
