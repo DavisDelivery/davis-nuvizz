@@ -70,6 +70,7 @@ export default async (req: Request): Promise<Response> => {
     let lastScannedAt: string | null = null;
     let lastLoadScanAt: string | null = null;
     let lastUnplannedScanAt: string | null = null;
+    let scanState: { halted: boolean; reason: string; since: string } | null = null;
 
     if (useMock) {
       stops = ((fixture as any).stops || []).map(normalizeStop);
@@ -88,6 +89,7 @@ export default async (req: Request): Promise<Response> => {
       lastScannedAt = meta?.last_scanned_at ?? null;
       lastLoadScanAt = meta?.lastLoadScanAt ?? meta?.last_scanned_at ?? null;
       lastUnplannedScanAt = meta?.lastUnplannedScanAt ?? null;
+      scanState = (meta?.scanState as any) ?? null;
       // Empty index (background scan hasn't populated this date yet) is a normal
       // state, not an error — the UI shows an honest "no scan yet" empty state.
       source = indexed.length ? 'firestore' : 'index-empty';
@@ -113,6 +115,7 @@ export default async (req: Request): Promise<Response> => {
       lastScannedAt,
       lastLoadScanAt,
       lastUnplannedScanAt,
+      scanState,
       count: stops.length,
       unplannedCount,
       carryoverCount,

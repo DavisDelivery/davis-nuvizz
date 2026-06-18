@@ -192,6 +192,10 @@ export interface StopIndexMeta {
   // single stamp would mislead. UTC instants; the UI shows them split.
   lastLoadScanAt?: string | null;
   lastUnplannedScanAt?: string | null;
+  // Set when a scan cycle is SUPPRESSED (daily ceiling reached or kill switch),
+  // so the UI can show an honest banner instead of silent staleness. Cleared on
+  // the next successful scan.
+  scanState?: { halted: boolean; reason: 'ceiling' | 'killswitch'; since: string } | null;
 }
 
 // Write a full day's normalized stops. Each stop doc is keyed by stopNbr and
@@ -203,9 +207,10 @@ export async function writeStops(
   dateStr: string,
   stops: any[],
   scannedAt: string,
-  opts: { includeUnplanned?: boolean } = {},
+  opts: { includeUnplanned?: boolean; includeLoads?: boolean } = {},
 ): Promise<StopIndexMeta> {
   const includeUnplanned = opts.includeUnplanned !== false; // default true (full scan)
+  const includeLoads = opts.includeLoads !== false;         // default true
   const base = `${COLLECTION}/${parentId(tenant, dateStr)}`;
   const withNbr = stops.filter((s) => s && s.stopNbr);
   const nextNbrs = new Set(withNbr.map((s) => String(s.stopNbr)));
@@ -215,12 +220,16 @@ export async function writeStops(
     getDoc(base) as Promise<StopIndexMeta | null>,
   ]);
 
-  // PRESERVE-ON-SKIP: a load-only run (includeUnplanned=false) must NOT wipe the
-  // status-10 orders already on the board. Keep existing unplanned docs that this
-  // scan didn't touch; still prune planned docs that vanished from the load scan.
-  const preserved = !includeUnplanned
-    ? existing.filter((d) => d.isPlanned === false && !nextNbrs.has(String(d._id)))
-    : [];
+  // PRESERVE-ON-SKIP: a partial run must NOT wipe the feed it didn't scan. A
+  // load-only run (includeUnplanned=false) keeps existing status-10 orders; an
+  // unplanned-only run (includeLoads=false) keeps existing planned/routed stops.
+  // Docs re-scanned this run are upserted below, not preserved.
+  const preserved = existing.filter((d) => {
+    if (nextNbrs.has(String(d._id))) return false;
+    if (!includeUnplanned && d.isPlanned === false) return true;
+    if (!includeLoads && d.isPlanned === true) return true;
+    return false;
+  });
   const preservedNbrs = new Set(preserved.map((d) => String(d._id)));
   await Promise.all(
     existing
@@ -239,10 +248,13 @@ export async function writeStops(
   };
   await Promise.all(Array.from({ length: conc }, writeOne));
 
-  // Counts reflect the FULL index = freshly scanned + any preserved unplanned.
-  const plannedCount = withNbr.filter((s) => s.isPlanned).length;
+  // Counts reflect the FULL index = freshly scanned + preserved (the feed we
+  // didn't re-scan this run), split by planned vs unplanned.
+  const freshPlanned = withNbr.filter((s) => s.isPlanned).length;
+  const preservedPlanned = preserved.filter((d) => d.isPlanned === true).length;
   const count = withNbr.length + preserved.length;
-  const unplannedCount = (withNbr.length - plannedCount) + preserved.length;
+  const plannedCount = freshPlanned + preservedPlanned;
+  const unplannedCount = count - plannedCount;
   const meta: StopIndexMeta = {
     tenant,
     date: dateStr,
@@ -250,15 +262,34 @@ export async function writeStops(
     count,
     plannedCount,
     unplannedCount,
-    // Loads are scanned every acting run; carry forward the prior unplanned stamp
-    // on a load-only run so "Orders updated …" reflects the real last order scan.
-    lastLoadScanAt: scannedAt,
+    // Each per-feed stamp advances only when that feed actually ran; otherwise it
+    // carries forward, so "Loads/Orders updated …" reflects the real last scan.
+    lastLoadScanAt: includeLoads ? scannedAt : (prevMeta?.lastLoadScanAt ?? null),
     lastUnplannedScanAt: includeUnplanned ? scannedAt : (prevMeta?.lastUnplannedScanAt ?? null),
+    // A successful scan clears any prior halted state (ceiling/kill switch).
+    scanState: null,
   };
 
   // Meta doc last so a reader never sees a fresh timestamp over a half-written set.
   await setDoc(base, meta as any);
   return meta;
+}
+
+// Fix 5 — record that a scan cycle was SUPPRESSED (ceiling/kill switch) so the UI
+// can banner it. Read-modify-write so we never clobber the existing counts/stamps
+// (setDoc replaces the whole doc). A no-op-safe upsert when the meta is absent.
+export async function markScanState(
+  tenant: string,
+  dateStr: string,
+  state: { halted: boolean; reason: 'ceiling' | 'killswitch'; since: string } | null,
+): Promise<void> {
+  const base = `${COLLECTION}/${parentId(tenant, dateStr)}`;
+  const prev = (await getDoc(base)) as StopIndexMeta | null;
+  // Don't churn a write if nothing changed (avoids rewriting the meta every cron
+  // tick while halted).
+  if (prev && JSON.stringify(prev.scanState ?? null) === JSON.stringify(state ?? null)) return;
+  const next = { ...(prev || { tenant, date: dateStr }), scanState: state };
+  await setDoc(base, next as any);
 }
 
 export interface StopIndexRead {

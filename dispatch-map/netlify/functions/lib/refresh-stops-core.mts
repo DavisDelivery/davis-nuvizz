@@ -16,7 +16,7 @@
 // naive getUTCDay() check would wrongly drop it. Manual HTTP runs always proceed.
 
 import { scanDate, todayUTC, scansEnabled, deriveFleetSummary } from './nuvizz-scan.mts';
-import { isFirestoreEnabled, writeStops, writeFleetIndex, getDoc } from './firestore.mts';
+import { isFirestoreEnabled, writeStops, writeFleetIndex, getDoc, markScanState, readCallCounter } from './firestore.mts';
 import { breakerTripped, scanIntervalElapsed } from './nuvizz-request.mts';
 import { scanDecision } from './scan-schedule.mts';
 
@@ -53,47 +53,67 @@ export function scanDatesFrom(today: string, n: number): string[] {
 
 export async function runRefreshStops(req: Request): Promise<Response> {
   const startedAt = Date.now();
-
-  // P0 kill switch — set Netlify env NUVIZZ_SCANS_ENABLED=false to disable the
-  // scheduled NuVizz scan without a code deploy. Returns 200 (so the cron run is
-  // recorded as a no-op, not a failure) and touches neither NuVizz nor Firestore.
-  if (!scansEnabled()) {
-    console.log('refresh-stops: NUVIZZ_SCANS_ENABLED=false — skipping scan (kill switch active)');
-    return new Response(JSON.stringify({ ok: true, skipped: 'scans-disabled' }), {
-      status: 200, headers: { 'Content-Type': 'application/json' },
-    });
-  }
-
-  // P0/Phase 4 circuit breaker — if the shared daily ceiling tripped the breaker,
-  // skip the whole run (the next regression is throttled in minutes, not by a
-  // vendor email). Reset by clearing nuvizz_ops/circuit, e.g. at the day rollover.
-  if (await breakerTripped()) {
-    console.warn('refresh-stops: NuVizz circuit breaker OPEN — skipping scan (daily ceiling reached)');
-    return new Response(JSON.stringify({ ok: true, skipped: 'circuit-open' }), {
-      status: 200, headers: { 'Content-Type': 'application/json' },
-    });
-  }
-
-  if (!isFirestoreEnabled()) {
-    console.error('refresh-stops: FIREBASE_SA not set on this site — cannot write index');
-    return new Response(JSON.stringify({ ok: false, error: 'FIREBASE_SA not set' }), {
-      status: 200, headers: { 'Content-Type': 'application/json' },
-    });
-  }
-
+  const now = new Date();
   const url = new URL(req.url);
   const isManual = url.searchParams.get('manual') === '1';
   const dateParam = url.searchParams.get('date');
   const daysParam = url.searchParams.get('days');
   const explicit = !!(dateParam || daysParam); // ops/testing: full forced scan of given dates
+  const trigger = isManual ? 'manual' : (explicit ? 'explicit' : 'schedule');
+
+  const [today, tomorrow] = scanDatesFrom(todayUTC(), 2);
+  const fsOn = isFirestoreEnabled();
+  const ceiling = Number(process.env.NUVIZZ_DAILY_CEILING) || 100000;
+
+  // Read today's last LOAD scan time — this is what drives the elapsed-time
+  // cadence (Fix 1). Also read the shared day counter for the log line.
+  let lastLoadScanAt: string | null = null;
+  let dayCount = 0;
+  if (fsOn) {
+    try {
+      const m = (await getDoc(`nuvizz_stop_index/${TENANT}__${today}`)) as any;
+      lastLoadScanAt = m?.lastLoadScanAt ?? m?.last_scanned_at ?? null;
+    } catch { /* treat as never-scanned */ }
+    try { dayCount = await readCallCounter(today); } catch { /* best effort */ }
+  }
+
+  const decision = scanDecision(now, isManual, lastLoadScanAt);
+
+  // Fix 4 — exactly ONE structured line per invocation, so "why didn't it scan"
+  // is answerable from the log. today/tomorrow report the DECISION's feed intent.
+  const fmtEl = (m: number) => (m === Infinity ? 'inf' : String(Math.round(m)));
+  const no = { l: false, u: false };
+  const logScan = (skip: string, act: boolean, t: { l: boolean; u: boolean }, m: { l: boolean; u: boolean }, extra = '') => {
+    console.log(`[scan] trigger=${trigger} etHour=${decision.etHour} etMin=${decision.etMin} act=${act} today={loads:${t.l},unplanned:${t.u}} tomorrow={loads:${m.l},unplanned:${m.u}} lastLoadScanAt=${lastLoadScanAt || 'null'} elapsedMin=${fmtEl(decision.elapsedMin)} intervalMin=${decision.intervalMin} dayCount=${dayCount} ceiling=${ceiling} skip=${skip}${extra}`);
+  };
 
   const json = (body: any) => new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } });
+
+  // Kill switch (Fix 5: record halted state for the UI banner).
+  if (!scansEnabled()) {
+    if (fsOn) { try { await markScanState(TENANT, today, { halted: true, reason: 'killswitch', since: now.toISOString() }); } catch { /* */ } }
+    logScan('killswitch', false, no, no);
+    return json({ ok: true, skipped: 'scans-disabled' });
+  }
+
+  if (!fsOn) {
+    logScan('error', false, no, no, ' msg=FIREBASE_SA-not-set');
+    return json({ ok: false, error: 'FIREBASE_SA not set' });
+  }
+
+  // Circuit breaker — daily ceiling reached (Fix 5: record halted state).
+  if (await breakerTripped()) {
+    try { await markScanState(TENANT, today, { halted: true, reason: 'ceiling', since: now.toISOString() }); } catch { /* */ }
+    logScan('ceiling', false, no, no);
+    return json({ ok: true, skipped: 'circuit-open' });
+  }
+
   const results: any[] = [];
 
   // scanAndWrite — one date. includeUnplanned gates the order descent; `forced`
   // (manual/explicit) bypasses the per-date min-interval floor; manual caps the
   // unplanned descent lower so the synchronous endpoint finishes in time.
-  const scanAndWrite = async (date: string, includeUnplanned: boolean, forced: boolean) => {
+  const scanAndWrite = async (date: string, includeUnplanned: boolean, forced: boolean, includeLoads = true) => {
     const t0 = Date.now();
     try {
       if (!forced) {
@@ -105,12 +125,17 @@ export async function runRefreshStops(req: Request): Promise<Response> {
       }
       const scan = await scanDate(date, {
         includeUnplanned,
+        includeLoads,
         unplanned: (isManual && includeUnplanned) ? { maxProbes: 800 } : undefined,
       });
-      const meta = await writeStops(TENANT, date, scan.stops, scan.scannedAt, { includeUnplanned });
-      const fleet = deriveFleetSummary(scan.stops, scan.loadHeaders);
-      await writeFleetIndex(TENANT, date, fleet.loads, fleet.summary, fleet.driverIndex, scan.scannedAt);
-      results.push({ date, ok: true, ms: Date.now() - t0, includeUnplanned, count: meta.count, planned: meta.plannedCount, unplanned: meta.unplannedCount, loads: fleet.loads.length });
+      const meta = await writeStops(TENANT, date, scan.stops, scan.scannedAt, { includeUnplanned, includeLoads });
+      // Only rebuild the fleet (load) index when we actually scanned loads — an
+      // unplanned-only run would otherwise wipe the load index with an empty scan.
+      if (includeLoads) {
+        const fleet = deriveFleetSummary(scan.stops, scan.loadHeaders);
+        await writeFleetIndex(TENANT, date, fleet.loads, fleet.summary, fleet.driverIndex, scan.scannedAt);
+      }
+      results.push({ date, ok: true, ms: Date.now() - t0, includeUnplanned, includeLoads, count: meta.count, planned: meta.plannedCount, unplanned: meta.unplannedCount });
     } catch (e: any) {
       results.push({ date, ok: false, ms: Date.now() - t0, error: e?.message });
     }
@@ -122,25 +147,28 @@ export async function runRefreshStops(req: Request): Promise<Response> {
     if (dateParam) dates = [dateParam];
     else { const n = Math.max(1, Math.min(31, parseInt(daysParam || '', 10) || DEFAULT_DAYS)); dates = scanDatesFrom(todayUTC(), n); }
     for (const date of dates) await scanAndWrite(date, true, true);
-    const summary = { ok: true, tenant: TENANT, mode: 'explicit', totalMs: Date.now() - startedAt, dates: results };
-    console.log('refresh-stops results:', JSON.stringify(summary));
-    return json(summary);
+    try { dayCount = await readCallCounter(today); } catch { /* */ }
+    logScan('none', true, { l: true, u: true }, { l: true, u: true });
+    return json({ ok: true, tenant: TENANT, mode: 'explicit', totalMs: Date.now() - startedAt, dates: results });
   }
 
-  // Scheduled / manual: the schedule decides whether to act and which feeds run.
-  const decision = scanDecision(new Date(), isManual);
-  console.log('refresh-stops decision:', JSON.stringify({ ...decision, isManual }));
+  // Cadence gate (Fix 1: elapsed-time, not wall-clock minute).
   if (!decision.act) {
-    return json({ ok: true, skipped: 'cadence', reason: decision.reason });
+    logScan(decision.skip, false, no, no);
+    return json({ ok: true, skipped: decision.skip, reason: decision.reason });
   }
 
-  const [today, tomorrow] = scanDatesFrom(todayUTC(), 2);
-  // Today's loads always; today's order descent only inside its window.
-  await scanAndWrite(today, decision.scanUnplanned, isManual);
-  // Tomorrow's loads only inside its window; tomorrow's unplanned never.
-  if (decision.scanTomorrowLoads) await scanAndWrite(tomorrow, false, isManual);
+  // Today: loads always; orders inside the 10am-midnight window.
+  await scanAndWrite(today, decision.scanTodayUnplanned, isManual, true);
+  // Tomorrow (Fix 2): descend orders 10am-midnight, but only scan tomorrow's LOADS
+  // 8pm-midnight (they don't exist earlier) — avoids ~13 empty load scans/day.
+  if (decision.scanTomorrowLoads || decision.scanTomorrowUnplanned) {
+    await scanAndWrite(tomorrow, decision.scanTomorrowUnplanned, isManual, decision.scanTomorrowLoads);
+  }
 
-  const summary = { ok: true, tenant: TENANT, mode: isManual ? 'manual' : 'scheduled', decision, totalMs: Date.now() - startedAt, dates: results };
-  console.log('refresh-stops results:', JSON.stringify(summary));
-  return json(summary);
+  try { dayCount = await readCallCounter(today); } catch { /* */ }
+  logScan('none', true,
+    { l: true, u: decision.scanTodayUnplanned },
+    { l: decision.scanTomorrowLoads, u: decision.scanTomorrowUnplanned });
+  return json({ ok: true, tenant: TENANT, mode: isManual ? 'manual' : 'scheduled', decision, totalMs: Date.now() - startedAt, dates: results });
 }
