@@ -46,7 +46,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.26.0';
+const APP_VERSION = '0.27.0';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -66,6 +66,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.27.0', 'Scan scheduler: elapsed-time cadence (fires on schedule despite cron jitter) + tomorrow’s orders scanned 10am–midnight + structured [scan] logs + daily-limit banner'],
   ['0.26.0', 'NuVizz scan schedule (ET time-of-day gating ~14k/day) + working manual Scan-now + split load/order timestamps'],
   ['0.25.25', 'Map auto-refreshes from the DB index every 2 min (silent, visible-only) so a long-open tab stays current'],
   ['0.25.24', 'Default delivery pins use a brighter blue (#4285F4) so they read on satellite'],
@@ -678,6 +679,7 @@ function useStops(date, carryDays = 0) {
   const [lastScannedAt, setLastScannedAt] = useState(null);
   const [lastLoadScanAt, setLastLoadScanAt] = useState(null);
   const [lastUnplannedScanAt, setLastUnplannedScanAt] = useState(null);
+  const [scanState, setScanState] = useState(null);
   const [source, setSource] = useState(null);
 
   const refresh = useCallback(async ({ silent = false } = {}) => {
@@ -701,6 +703,7 @@ function useStops(date, carryDays = 0) {
       setLastScannedAt(data.lastScannedAt || null);
       setLastLoadScanAt(data.lastLoadScanAt || null);
       setLastUnplannedScanAt(data.lastUnplannedScanAt || null);
+      setScanState(data.scanState || null);
       setLastRefreshed(new Date());
     } catch (e) {
       if (!silent) setError(e.message); // a failed silent poll shouldn't surface an error banner
@@ -723,7 +726,7 @@ function useStops(date, carryDays = 0) {
     return () => { clearInterval(timer); document.removeEventListener('visibilitychange', onVis); };
   }, [refresh]);
 
-  return { stops, loading, error, lastRefreshed, lastScannedAt, lastLoadScanAt, lastUnplannedScanAt, source, refresh };
+  return { stops, loading, error, lastRefreshed, lastScannedAt, lastLoadScanAt, lastUnplannedScanAt, scanState, source, refresh };
 }
 const CARRYOVER_DAYS = 7; // how many prior days of still-unplanned orders to fold in
 
@@ -4393,7 +4396,7 @@ function MapScreen() {
     ...safeReadJSON(LS_MAP_FILTERS, {}),
   }));
 
-  const { stops, loading, error, lastRefreshed, lastScannedAt, lastLoadScanAt, lastUnplannedScanAt, source, refresh } = useStops(selectedDate, mapFilters.carryover ? CARRYOVER_DAYS : 0);
+  const { stops, loading, error, lastRefreshed, lastScannedAt, lastLoadScanAt, lastUnplannedScanAt, scanState, source, refresh } = useStops(selectedDate, mapFilters.carryover ? CARRYOVER_DAYS : 0);
 
   // Manual "Scan now" — triggers a REAL on-demand NuVizz scan (today loads +
   // today unplanned + tomorrow loads) via the synchronous endpoint, then re-reads
@@ -5229,6 +5232,13 @@ function MapScreen() {
             <div className="font-semibold">{stops.length} stops{carryoverCount > 0 ? <span className="text-amber-700 font-normal"> · {carryoverCount} c/o</span> : null}</div>
             <div className="text-slate-600 text-[10px]">{totalPalletsCount.toLocaleString()} total pallets</div>
             <FeedTimestamps loadAt={lastLoadScanAt} unplannedAt={lastUnplannedScanAt} isToday={dateIsToday} className="text-slate-500 text-[10px]" />
+            {scanState?.halted && (
+              <div className="text-[10px] font-semibold text-red-700">
+                {scanState.reason === 'ceiling'
+                  ? 'Daily scan limit reached — updates resume after midnight UTC'
+                  : 'Scanning paused (kill switch) — board may be stale'}
+              </div>
+            )}
             {scanErr && <div className="text-[10px] text-red-600">{scanErr}</div>}
           </div>
           <button

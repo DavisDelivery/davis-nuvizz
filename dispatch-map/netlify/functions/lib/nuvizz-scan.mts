@@ -657,23 +657,28 @@ export interface ScanResult {
   loadHeaders?: Record<string, any>;
   // True when the unplanned/status-10 descent ran this scan (false = load-only).
   includeUnplanned?: boolean;
+  // True when the load-number scan ran this scan (false = unplanned-only — used
+  // for tomorrow's order descent before its loads exist, ~10am-8pm ET).
+  includeLoads?: boolean;
 }
 
 // Full scan for one date: planned (load scan) + unplanned (number-space scan),
 // deduped (load-sourced wins), normalized. Used by the background writer.
-export async function scanDate(dateStr: string, opts: { unplanned?: UnplannedScanOpts; includeUnplanned?: boolean } = {}): Promise<ScanResult> {
+export async function scanDate(dateStr: string, opts: { unplanned?: UnplannedScanOpts; includeUnplanned?: boolean; includeLoads?: boolean } = {}): Promise<ScanResult> {
   const includeUnplanned = opts.includeUnplanned !== false; // default true
+  const includeLoads = opts.includeLoads !== false;         // default true
   // P0 kill switch — when scans are disabled, generate ZERO NuVizz traffic and
   // return an empty result. Callers (background refresh / history snapshot) treat
   // this as "nothing new to write" and leave the existing Firestore index intact.
   if (!scansEnabled()) {
-    return { date: dateStr, stops: [], plannedCount: 0, unplannedCount: 0, scannedAt: new Date().toISOString(), includeUnplanned };
+    return { date: dateStr, stops: [], plannedCount: 0, unplannedCount: 0, scannedAt: new Date().toISOString(), includeUnplanned, includeLoads };
   }
   const { startNbr, endNbr } = estimateLoadRange(dateStr);
-  // includeUnplanned=false → load scan ONLY. Skipping scanUnplannedStops also
-  // skips its findCeiling probing (the ceiling search only feeds the descent).
+  // includeLoads=false → unplanned-only (skip the load-number scan entirely — no
+  // /load/info probes). includeUnplanned=false → load-only (skip the descent +
+  // its findCeiling probing). At least one is always true at the call sites.
   const [loadStops, unplannedStops] = await Promise.all([
-    scanLoadRangeForDate(dateStr, startNbr, endNbr),
+    includeLoads ? scanLoadRangeForDate(dateStr, startNbr, endNbr) : Promise.resolve([] as any[]),
     includeUnplanned ? scanUnplannedStops(dateStr, opts.unplanned).catch(() => []) : Promise.resolve([] as any[]),
   ]);
 
@@ -699,7 +704,8 @@ export async function scanDate(dateStr: string, opts: { unplanned?: UnplannedSca
 
   // Self-calibrate the load-number window from the loads actually found, so the
   // next scan of this date uses a tight, accurate range (see estimateLoadRange).
-  calibrateLoadRange(dateStr, Object.keys(loadHeaders));
+  // Only when we actually scanned loads — an unplanned-only run found none.
+  if (includeLoads) calibrateLoadRange(dateStr, Object.keys(loadHeaders));
 
   return {
     date: dateStr,
@@ -709,6 +715,7 @@ export async function scanDate(dateStr: string, opts: { unplanned?: UnplannedSca
     unplannedCount,
     scannedAt: new Date().toISOString(),
     includeUnplanned,
+    includeLoads,
   };
 }
 
