@@ -94,17 +94,28 @@ const LEAN_HISTORY = (process.env.NUVIZZ_LEAN_DISCOVERY || '').toLowerCase() ===
 export async function captureDate(date: string): Promise<any> {
   let stops: any[];
   let sourceScannedAt: string;
+  let source: 'firestore-index' | 'scan' = 'scan';
+  // Phase 4: prefer the accumulated index, but fall back to a fresh scan if the
+  // index is empty / never written (don't capture an empty snapshot for the day).
   if (LEAN_HISTORY && isFirestoreEnabled()) {
     const idx = await readStops(TENANT, date);
-    stops = idx.stops;
-    sourceScannedAt = idx.meta?.last_scanned_at || new Date().toISOString();
-    const nonTerminal = stops.filter((s) => s && s.isPlanned && s.normalizedStatus !== 'DELIVERED').length;
-    console.log(`[history] date=${date} source=firestore-index stops=${stops.length} nonTerminal=${nonTerminal} sourceScannedAt=${sourceScannedAt}`);
+    if (idx.stops.length && idx.meta?.last_scanned_at) {
+      stops = idx.stops;
+      sourceScannedAt = idx.meta.last_scanned_at;
+      source = 'firestore-index';
+    } else {
+      const scan = await scanDate(date);
+      stops = scan.stops; sourceScannedAt = scan.scannedAt;
+    }
   } else {
     const scan = await scanDate(date);
-    stops = scan.stops;
-    sourceScannedAt = scan.scannedAt;
+    stops = scan.stops; sourceScannedAt = scan.scannedAt;
   }
+  // Counts available on BOTH paths (the lean path has no scanDate result).
+  const unplannedCount = stops.filter((s) => s && s.isPlanned === false).length;
+  const plannedCount = stops.length - unplannedCount;
+  const nonTerminal = stops.filter((s) => s && s.isPlanned && s.normalizedStatus !== 'DELIVERED').length;
+  console.log(`[history] date=${date} source=${source} stops=${stops.length} planned=${plannedCount} nonTerminal=${nonTerminal} sourceScannedAt=${sourceScannedAt}`);
   const checksum = computeStopChecksum(stops);
 
   // capture_version increments per date.
@@ -158,14 +169,14 @@ export async function captureDate(date: string): Promise<any> {
 
   const counts = manifestCountsFromReadback(rbStops, rbRoutes, rbDrivers);
   const intended = {
-    stops: stopRecords.length, planned: scan.plannedCount, unplanned: scan.unplannedCount,
+    stops: stopRecords.length, planned: plannedCount, unplanned: unplannedCount,
     routes: routeRecords.length, drivers: driverRecords.length,
   };
 
   // Append-only lineage — recorded for EVERY run, including failures.
   await appendCapture(TENANT, date, version, {
     tenant: TENANT, date, capture_version: version,
-    captured_at: capture.captured_at, app_version: APP_VERSION, source_scanned_at: scan.scannedAt,
+    captured_at: capture.captured_at, app_version: APP_VERSION, source_scanned_at: sourceScannedAt,
     checksum, intended, persisted: counts, verified,
     verify_detail: { stopsOk, routesOk, driversOk },
     absent_from_this_capture: absentFromThisCapture,
@@ -183,7 +194,7 @@ export async function captureDate(date: string): Promise<any> {
     tenant: TENANT, date,
     captured_at: capture.captured_at,
     capture_version: version,
-    source_scanned_at: scan.scannedAt,
+    source_scanned_at: sourceScannedAt,
     app_version: APP_VERSION,
     counts,
     checksum,
