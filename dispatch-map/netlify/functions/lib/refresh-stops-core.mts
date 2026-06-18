@@ -16,8 +16,8 @@
 // naive getUTCDay() check would wrongly drop it. Manual HTTP runs always proceed.
 
 import { scanDate, todayUTC, scansEnabled, deriveFleetSummary } from './nuvizz-scan.mts';
-import { isFirestoreEnabled, writeStops, writeFleetIndex, getDoc, markScanState, readCallCounter } from './firestore.mts';
-import { breakerTripped, scanIntervalElapsed } from './nuvizz-request.mts';
+import { isFirestoreEnabled, writeStops, writeFleetIndex, getDoc, markScanState, readCallStats, readCircuit } from './firestore.mts';
+import { breakerTripped, scanIntervalElapsed, breakerMode } from './nuvizz-request.mts';
 import { scanDecision } from './scan-schedule.mts';
 
 const TENANT = 'davis';
@@ -66,25 +66,37 @@ export async function runRefreshStops(req: Request): Promise<Response> {
   const ceiling = Number(process.env.NUVIZZ_DAILY_CEILING) || 100000;
 
   // Read today's last LOAD scan time — this is what drives the elapsed-time
-  // cadence (Fix 1). Also read the shared day counter for the log line.
+  // cadence (Fix 1). Also read the shared call counter + breaker for the log line.
   let lastLoadScanAt: string | null = null;
   let dayCount = 0;
+  let byRoute: Record<string, number> = {};
+  let breakerState = false;
+  const mode = breakerMode();
+  const refreshOps = async () => {
+    try { const st = await readCallStats(today); dayCount = st.count; byRoute = st.byRoute; } catch { /* best effort */ }
+    try { breakerState = (await readCircuit()).open; } catch { /* best effort */ }
+  };
   if (fsOn) {
     try {
       const m = (await getDoc(`nuvizz_stop_index/${TENANT}__${today}`)) as any;
       lastLoadScanAt = m?.lastLoadScanAt ?? m?.last_scanned_at ?? null;
     } catch { /* treat as never-scanned */ }
-    try { dayCount = await readCallCounter(today); } catch { /* best effort */ }
+    await refreshOps();
   }
 
   const decision = scanDecision(now, isManual, lastLoadScanAt);
 
   // Fix 4 — exactly ONE structured line per invocation, so "why didn't it scan"
   // is answerable from the log. today/tomorrow report the DECISION's feed intent.
+  // Now also carries today's NuVizz volume: total, per-route, breaker + mode.
   const fmtEl = (m: number) => (m === Infinity ? 'inf' : String(Math.round(m)));
+  const fmtByRoute = (br: Record<string, number>) => {
+    const parts = Object.entries(br).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k}:${v}`);
+    return parts.length ? parts.join(',') : '-';
+  };
   const no = { l: false, u: false };
   const logScan = (skip: string, act: boolean, t: { l: boolean; u: boolean }, m: { l: boolean; u: boolean }, extra = '') => {
-    console.log(`[scan] trigger=${trigger} etHour=${decision.etHour} etMin=${decision.etMin} act=${act} today={loads:${t.l},unplanned:${t.u}} tomorrow={loads:${m.l},unplanned:${m.u}} lastLoadScanAt=${lastLoadScanAt || 'null'} elapsedMin=${fmtEl(decision.elapsedMin)} intervalMin=${decision.intervalMin} dayCount=${dayCount} ceiling=${ceiling} skip=${skip}${extra}`);
+    console.log(`[scan] trigger=${trigger} etHour=${decision.etHour} etMin=${decision.etMin} act=${act} today={loads:${t.l},unplanned:${t.u}} tomorrow={loads:${m.l},unplanned:${m.u}} lastLoadScanAt=${lastLoadScanAt || 'null'} elapsedMin=${fmtEl(decision.elapsedMin)} intervalMin=${decision.intervalMin} dayCount=${dayCount} ceiling=${ceiling} mode=${mode} breaker=${breakerState} byRoute=${fmtByRoute(byRoute)} skip=${skip}${extra}`);
   };
 
   const json = (body: any) => new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } });
@@ -147,7 +159,7 @@ export async function runRefreshStops(req: Request): Promise<Response> {
     if (dateParam) dates = [dateParam];
     else { const n = Math.max(1, Math.min(31, parseInt(daysParam || '', 10) || DEFAULT_DAYS)); dates = scanDatesFrom(todayUTC(), n); }
     for (const date of dates) await scanAndWrite(date, true, true);
-    try { dayCount = await readCallCounter(today); } catch { /* */ }
+    await refreshOps();
     logScan('none', true, { l: true, u: true }, { l: true, u: true });
     return json({ ok: true, tenant: TENANT, mode: 'explicit', totalMs: Date.now() - startedAt, dates: results });
   }
@@ -166,7 +178,7 @@ export async function runRefreshStops(req: Request): Promise<Response> {
     await scanAndWrite(tomorrow, decision.scanTomorrowUnplanned, isManual, decision.scanTomorrowLoads);
   }
 
-  try { dayCount = await readCallCounter(today); } catch { /* */ }
+  await refreshOps();
   logScan('none', true,
     { l: true, u: decision.scanTodayUnplanned },
     { l: decision.scanTomorrowLoads, u: decision.scanTomorrowUnplanned });

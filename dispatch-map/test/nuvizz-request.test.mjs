@@ -16,7 +16,7 @@ import {
 const META = { route: '/load/info', tenant: 'DAVIS' };
 
 // Build a requester with in-memory counter/breaker and a scripted fetch.
-function makeHarness({ responses = [], ceiling = 100_000, fetchImpl } = {}) {
+function makeHarness({ responses = [], ceiling = 100_000, fetchImpl, breakerMode = 'enforce' } = {}) {
   let dayTotal = 0;
   let tripped = null;
   let calls = 0;
@@ -35,7 +35,7 @@ function makeHarness({ responses = [], ceiling = 100_000, fetchImpl } = {}) {
     now: () => 1_000_000, // frozen clock
     sleep: async () => {}, // no real waiting
   };
-  const r = createNuvizzRequester(deps, { dailyCeiling: ceiling, maxRetries: 3, backoffTotalCapMs: 1_000_000 });
+  const r = createNuvizzRequester(deps, { dailyCeiling: ceiling, breakerMode, maxRetries: 3, backoffTotalCapMs: 1_000_000 });
   return { r, get dayTotal() { return dayTotal; }, get tripped() { return tripped; }, get calls() { return calls; }, logs };
 }
 
@@ -133,4 +133,19 @@ test('trips the circuit breaker at the daily ceiling and then refuses', async ()
     () => h.r.request('https://x/load/info/4/DAVIS', {}, META),
     (e) => e instanceof NuvizzCircuitOpenError,
   );
+});
+
+test('monitor mode: crosses the ceiling but never trips or blocks (logs would-trip)', async () => {
+  const h = makeHarness({ responses: [200], ceiling: 2, breakerMode: 'monitor' });
+  await h.r.request('https://x/load/info/1/DAVIS', {}, META);
+  await h.r.request('https://x/load/info/2/DAVIS', {}, META); // hits ceiling=2
+  await h.r.request('https://x/load/info/3/DAVIS', {}, META); // over ceiling
+  assert.equal(h.tripped, null, 'monitor never opens the breaker');
+  assert.equal(h.dayTotal, 3, 'all calls still counted past the ceiling');
+  // not refused — the scan keeps running
+  const resp = await h.r.request('https://x/load/info/4/DAVIS', {}, META);
+  assert.equal(resp.status, 200, 'monitor never blocks a request');
+  const wouldTrip = h.logs.filter((e) => e.event === 'circuit-would-trip');
+  assert.equal(wouldTrip.length, 1, 'logs a single would-trip warning at the ceiling');
+  assert.equal(wouldTrip[0].mode, 'monitor');
 });

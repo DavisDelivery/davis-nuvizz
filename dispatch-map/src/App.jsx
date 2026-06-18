@@ -46,7 +46,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.27.12';
+const APP_VERSION = '0.27.13';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -66,6 +66,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.27.13', 'NuVizz call counter now accumulates (was stuck at 1/day) with a per-route breakdown; daily-ceiling breaker is day-scoped + has a monitor/enforce mode (default monitor); today’s call volume shown in the status card'],
   ['0.27.12', 'Priority flag now drives the marker color in ALL cases — a flagged stop shows the flag color even when it renders a receiving-hours/restriction icon (the icon is recolored to the flag hue)'],
   ['0.27.11', 'AM/PM pin takes the priority-flag color when a flag is set (e.g. red flag → red AM pin); pin tag text stays legible on light flags'],
   ['0.27.10', 'Unplanned pins are now bright blue for satellite contrast; customer-notes editor no longer loses in-progress edits when a background note write lands mid-edit'],
@@ -696,6 +697,7 @@ function useStops(date, carryDays = 0) {
   const [lastUnplannedScanAt, setLastUnplannedScanAt] = useState(null);
   const [scanState, setScanState] = useState(null);
   const [source, setSource] = useState(null);
+  const [ops, setOps] = useState(null); // today's NuVizz call volume (Fix 5)
 
   const refresh = useCallback(async ({ silent = false } = {}) => {
     if (!silent) setLoading(true);
@@ -719,6 +721,7 @@ function useStops(date, carryDays = 0) {
       setLastLoadScanAt(data.lastLoadScanAt || null);
       setLastUnplannedScanAt(data.lastUnplannedScanAt || null);
       setScanState(data.scanState || null);
+      setOps(data.ops || null);
       setLastRefreshed(new Date());
     } catch (e) {
       if (!silent) setError(e.message); // a failed silent poll shouldn't surface an error banner
@@ -741,7 +744,7 @@ function useStops(date, carryDays = 0) {
     return () => { clearInterval(timer); document.removeEventListener('visibilitychange', onVis); };
   }, [refresh]);
 
-  return { stops, loading, error, lastRefreshed, lastScannedAt, lastLoadScanAt, lastUnplannedScanAt, scanState, source, refresh };
+  return { stops, loading, error, lastRefreshed, lastScannedAt, lastLoadScanAt, lastUnplannedScanAt, scanState, source, ops, refresh };
 }
 const CARRYOVER_DAYS = 7; // how many prior days of still-unplanned orders to fold in
 
@@ -4698,7 +4701,7 @@ function MapScreen() {
     ...safeReadJSON(LS_MAP_FILTERS, {}),
   }));
 
-  const { stops, loading, error, lastRefreshed, lastScannedAt, lastLoadScanAt, lastUnplannedScanAt, scanState, source, refresh } = useStops(selectedDate, mapFilters.carryover ? CARRYOVER_DAYS : 0);
+  const { stops, loading, error, lastRefreshed, lastScannedAt, lastLoadScanAt, lastUnplannedScanAt, scanState, source, ops, refresh } = useStops(selectedDate, mapFilters.carryover ? CARRYOVER_DAYS : 0);
 
   // Manual "Scan now" — triggers a REAL on-demand NuVizz scan (today loads +
   // today unplanned + tomorrow loads) via the synchronous endpoint, then re-reads
@@ -5911,6 +5914,11 @@ function MapScreen() {
                 <div className="mt-0.5 leading-tight">
                   <div className="text-slate-600">{totalPalletsCount.toLocaleString()} total pallets</div>
                   <FeedTimestamps loadAt={lastLoadScanAt} unplannedAt={lastUnplannedScanAt} isToday={dateIsToday} className="text-slate-500" stacked />
+                  {ops && typeof ops.dayCount === 'number' && (
+                    <div className="text-slate-500" title={`Today's NuVizz API calls (${ops.mode})${ops.byRoute && Object.keys(ops.byRoute).length ? ' · ' + Object.entries(ops.byRoute).map(([k, v]) => `${k}:${v}`).join(' ') : ''}`}>
+                      NuVizz calls: {ops.dayCount.toLocaleString()}{ops.ceiling ? ` / ${ops.ceiling.toLocaleString()}` : ''} <span className="text-slate-400">({ops.mode}{ops.breaker ? ', halted' : ''})</span>
+                    </div>
+                  )}
                   {scanErr && <div className="text-[11px] text-red-600">{scanErr}</div>}
                 </div>
               )}
