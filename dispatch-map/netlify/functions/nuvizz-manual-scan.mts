@@ -3,11 +3,13 @@
 // SYNCHRONOUS on-demand scan for the manual "Scan now" button. Unlike the
 // scheduled -background writer, this is a plain function the client can AWAIT and
 // then repaint on completion. It runs runRefreshStops in manual mode:
-//   - scans today loads + today unplanned + tomorrow loads (tomorrow unplanned stays off)
+//   - the client passes ?date=<viewed date>, so it does a FORCED single-date scan
+//     of that date's LOADS + ORDERS (the explicit path). Scanning ONE date keeps
+//     it inside the synchronous timeout — a full today+tomorrow manual descent
+//     (loads + orders for both) can exceed it. (No ?date → full today+tomorrow.)
 //   - BYPASSES the cadence gate and the per-date MIN_SCAN_INTERVAL_MS floor
 //   - STILL HONORS the NUVIZZ_SCANS_ENABLED kill switch and the daily-ceiling breaker
-//   - caps the unplanned descent lower (maxProbes 800) so it finishes inside the
-//     synchronous function timeout (see netlify.toml timeout bump)
+//   - caps the unplanned descent lower (maxProbes 800) so it finishes in time
 
 import { runRefreshStops } from './lib/refresh-stops-core.mts';
 

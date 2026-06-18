@@ -46,7 +46,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.27.0';
+const APP_VERSION = '0.27.1';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -66,6 +66,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.27.1', '“Scan now” refreshes just the viewed date (loads + orders) so it can’t time out'],
   ['0.27.0', 'Scan scheduler: elapsed-time cadence (fires on schedule despite cron jitter) + tomorrow’s orders scanned 10am–midnight + structured [scan] logs + daily-limit banner'],
   ['0.26.0', 'NuVizz scan schedule (ET time-of-day gating ~14k/day) + working manual Scan-now + split load/order timestamps'],
   ['0.25.25', 'Map auto-refreshes from the DB index every 2 min (silent, visible-only) so a long-open tab stays current'],
@@ -4408,7 +4409,10 @@ function MapScreen() {
     if (scanning || scanCooldown) return;
     setScanning(true); setScanErr(null);
     try {
-      const resp = await fetch('/.netlify/functions/nuvizz-manual-scan', { method: 'POST' });
+      // Scan ONLY the viewed date (loads + orders, forced) so the synchronous
+      // endpoint stays fast — a full today+tomorrow scan can exceed the function
+      // timeout. Viewing tomorrow still pulls tomorrow's orders.
+      const resp = await fetch(`/.netlify/functions/nuvizz-manual-scan?date=${encodeURIComponent(selectedDate)}`, { method: 'POST' });
       const data = await resp.json().catch(() => ({}));
       if (!resp.ok || data.ok === false) throw new Error(data.error || 'Scan unavailable');
       await refresh({ silent: true });
@@ -4420,7 +4424,7 @@ function MapScreen() {
     } finally {
       setScanning(false);
     }
-  }, [scanning, scanCooldown, refresh]);
+  }, [scanning, scanCooldown, refresh, selectedDate]);
 
   const { notes, ready: notesReady } = useCustomerNotes();
   useAutoScanner(stops, notes, notesReady);
