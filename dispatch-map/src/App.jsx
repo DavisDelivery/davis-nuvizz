@@ -46,7 +46,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.27.2';
+const APP_VERSION = '0.27.4';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -66,6 +66,8 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.27.4', 'Order detail: "Find business" button (Maps search by name+address) + collapsible per-order items list (SKU/qty/weight/oversize)'],
+  ['0.27.3', 'Date picker no longer shows the date twice; status card stacks its details and is collapsible to reclaim map space'],
   ['0.27.2', '“Scan now” runs the async scanner + polls (a busy date exceeded the 26s sync cap), so it never times out'],
   ['0.27.1', '“Scan now” refreshes just the viewed date (loads + orders) so it can’t time out'],
   ['0.27.0', 'Scan scheduler: elapsed-time cadence (fires on schedule despite cron jitter) + tomorrow’s orders scanned 10am–midnight + structured [scan] logs + daily-limit banner'],
@@ -231,6 +233,9 @@ const LS_TABLE_COLUMNS = 'dispatchMap.tableColumns';
 // toolbarCollapsed is just the open/closed UI state of the toolbar itself.
 const LS_MAP_FILTERS = 'dispatchMap.mapFilters';
 const LS_FILTER_TOOLBAR_COLLAPSED = 'dispatchMap.filterToolbarCollapsed';
+// Status pill (stops/pallets/feed-age) open/closed UI state — collapsed shows
+// just the stops count + controls to reclaim map space.
+const LS_STATUS_PILL_COLLAPSED = 'dispatchMap.statusPillCollapsed';
 // M4.5 — Mobile drawer last-active tab (Stops/Filters/Drivers). Drawer height
 // intentionally NOT persisted — it always opens at the default size.
 const LS_MOBILE_DRAWER_TAB = 'dispatchMap.mobileDrawerTab';
@@ -1386,17 +1391,31 @@ function etHourNow() {
 // Split per-feed freshness: loads and orders run on different cadences, so a
 // single stamp would mislead. Shows relative recency; absolute ET on hover.
 // Before 10 AM ET the orders feed is intentionally idle → "paused until 10 AM".
-function FeedTimestamps({ loadAt, unplannedAt, isToday, className }) {
+function FeedTimestamps({ loadAt, unplannedAt, isToday, className, stacked }) {
   const ordersPaused = isToday && etHourNow() < 10;
   const loadRel = fmtFeedAge(loadAt);
   const orderRel = fmtFeedAge(unplannedAt);
+  const loads = <span title={fmtAbsoluteET(loadAt)}>Loads {loadRel ? `updated ${loadRel}` : '—'}</span>;
+  const orders = (
+    <span title={fmtAbsoluteET(unplannedAt)}>
+      Orders {ordersPaused ? 'paused until 10 AM' : (orderRel ? `updated ${orderRel}` : '—')}
+    </span>
+  );
+  // Stacked: one line each (saves horizontal space in the status card).
+  // Inline: both on a single line with a separator (compact map overlay).
+  if (stacked) {
+    return (
+      <div className={className || 'text-slate-500'}>
+        <div>{loads}</div>
+        <div>{orders}</div>
+      </div>
+    );
+  }
   return (
     <div className={className || 'text-slate-500'}>
-      <span title={fmtAbsoluteET(loadAt)}>Loads {loadRel ? `updated ${loadRel}` : '—'}</span>
+      {loads}
       <span className="text-slate-300"> · </span>
-      <span title={fmtAbsoluteET(unplannedAt)}>
-        Orders {ordersPaused ? 'paused until 10 AM' : (orderRel ? `updated ${orderRel}` : '—')}
-      </span>
+      {orders}
     </div>
   );
 }
@@ -1820,9 +1839,11 @@ function DatePicker({ selectedDate, onChange, onToday, compact }) {
         className="text-xs border border-slate-300 rounded px-1.5 py-1 focus:outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-400"
         aria-label="Select delivery date"
       />
-      <span className="text-[11px] font-semibold text-slate-700 whitespace-nowrap">
-        {today ? 'Today' : formatDateLong(selectedDate)}
-      </span>
+      {/* "Today" tag only — the native input already shows the full date, so we
+          don't repeat it as long text (was a redundant second copy of the date). */}
+      {today && (
+        <span className="text-[11px] font-semibold text-slate-700 whitespace-nowrap">Today</span>
+      )}
       {!today && (
         <button
           onClick={onToday}
@@ -1872,6 +1893,81 @@ function GoogleMapsLink({ stop, className }) {
     >
       <MapPin size={13} /> Google Maps
     </a>
+  );
+}
+
+// Opens a Google Maps search for the BUSINESS NAME + address (not just the
+// geocoded point). When the auto-placed pin is wrong, searching the name pulls
+// up the real business listing so the dispatcher can find/verify the correct
+// location. New tab.
+function BusinessSearchLink({ stop, className }) {
+  const q = [stop.businessName, stop.addr1, stop.city, stop.state, stop.zip].filter(Boolean).join(' ');
+  if (!q) return null;
+  const url = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(q)}`;
+  return (
+    <a
+      href={url}
+      target="_blank"
+      rel="noopener noreferrer"
+      className={className || 'inline-flex items-center gap-1 text-xs text-blue-700 hover:underline mt-1'}
+      style={{ minHeight: 44, alignItems: 'center' }}
+    >
+      <Search size={13} /> Find business
+    </a>
+  );
+}
+
+// Collapsible per-order line items. NuVizz returns stopDetails (SKU, qty, weight,
+// dims, S/L category); we show the one-line summary always and expand to the full
+// list on click. Self-contained state so both the desktop sidebar and mobile
+// drawer can drop it in without threading props.
+function OrderItemsSection({ stop, defaultOpen = false }) {
+  const items = Array.isArray(stop.stopDetails) ? stop.stopDetails : [];
+  const [open, setOpen] = useState(defaultOpen);
+  // No line-item breakdown available — keep the existing summary-only display.
+  if (!items.length) {
+    return (
+      <div>
+        <div className="text-xs uppercase font-semibold text-slate-500">Items</div>
+        <div className="text-sm">{stop.itemsSummary || '—'}</div>
+      </div>
+    );
+  }
+  return (
+    <div>
+      <button
+        onClick={() => setOpen((o) => !o)}
+        className="w-full flex items-center justify-between gap-2 text-left"
+        aria-expanded={open}
+      >
+        <span className="min-w-0">
+          <span className="text-xs uppercase font-semibold text-slate-500">Items ({items.length})</span>
+          <span className="block text-sm text-slate-700 truncate">{stop.itemsSummary || '—'}</span>
+        </span>
+        {open ? <ChevronUp size={15} className="text-slate-400 flex-shrink-0" /> : <ChevronDown size={15} className="text-slate-400 flex-shrink-0" />}
+      </button>
+      {open && (
+        <ul className="mt-1.5 space-y-1 border-t border-slate-100 pt-1.5">
+          {items.map((it, i) => {
+            const qty = it.quantity != null ? `${it.quantity}${it.quantityUOM ? ' ' + it.quantityUOM : ''}` : null;
+            const wt = it.weight != null ? `${it.weight}${it.weightUOM ? ' ' + it.weightUOM : ''}` : null;
+            const oversize = it.productCategory === 'L';
+            return (
+              <li key={i} className="text-[13px] leading-snug flex items-start justify-between gap-2">
+                <span className="min-w-0">
+                  <span className="text-slate-800">{it.product || it.sku || '(item)'}</span>
+                  {it.sku && it.product && <span className="ml-1 text-[10px] font-mono text-slate-400">{it.sku}</span>}
+                  {oversize && <span className="ml-1 px-1 rounded bg-amber-100 text-amber-800 text-[9px] font-semibold align-middle">L</span>}
+                </span>
+                <span className="text-slate-500 whitespace-nowrap text-right text-[12px]">
+                  {[qty, wt].filter(Boolean).join(' · ') || '—'}
+                </span>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </div>
   );
 }
 
@@ -2392,9 +2488,10 @@ function StopSidebar({ stop, note, onClose, onSave, saving, saveError, onOpenRou
               </div>
             )}
             <div className="text-slate-600">{stop.city}, {stop.state} {stop.zip}</div>
-            <div className="flex items-center gap-4">
+            <div className="flex items-center gap-4 flex-wrap">
               <StreetViewLink stop={stop} />
               <GoogleMapsLink stop={stop} />
+              <BusinessSearchLink stop={stop} />
             </div>
             {onMoveLocation && (
               <button onClick={() => onMoveLocation(stop)} className="mt-1.5 inline-flex items-center gap-1 text-xs text-blue-700 hover:underline">
@@ -2408,15 +2505,12 @@ function StopSidebar({ stop, note, onClose, onSave, saving, saveError, onOpenRou
               <div className="text-xs text-slate-700 whitespace-pre-wrap leading-snug">{cleanInstructions(stop.signalSources.orderInstructions)}</div>
             </div>
           )}
-          <div className="grid grid-cols-2 gap-3 pt-2">
-            <div>
-              <div className="text-xs uppercase font-semibold text-slate-500">Window</div>
-              <div className="text-sm">{stop.scheduledFrom || '—'} – {stop.scheduledTo || '—'}</div>
-            </div>
-            <div>
-              <div className="text-xs uppercase font-semibold text-slate-500">Items</div>
-              <div className="text-sm">{stop.itemsSummary}</div>
-            </div>
+          <div className="pt-2">
+            <div className="text-xs uppercase font-semibold text-slate-500">Window</div>
+            <div className="text-sm">{stop.scheduledFrom || '—'} – {stop.scheduledTo || '—'}</div>
+          </div>
+          <div className="pt-2">
+            <OrderItemsSection stop={stop} />
           </div>
           {/* M5.2 — Route section: load + driver + jump to the full route */}
           <div className="pt-2 mt-2 border-t">
@@ -3859,9 +3953,10 @@ function StopInfoTabContent({ stop, onOpenRoute }) {
           </div>
         )}
         <div className="text-slate-600">{cityLine || '—'}</div>
-        <div className="flex items-center gap-5 mt-1">
+        <div className="flex items-center gap-5 mt-1 flex-wrap">
           <StreetViewLink stop={stop} className="inline-flex items-center gap-1 text-[13px] text-blue-700" />
           <GoogleMapsLink stop={stop} className="inline-flex items-center gap-1 text-[13px] text-blue-700" />
+          <BusinessSearchLink stop={stop} className="inline-flex items-center gap-1 text-[13px] text-blue-700" />
         </div>
         {onMoveLocation && (
           <button onClick={() => onMoveLocation(stop)} className="mt-1.5 inline-flex items-center gap-1 text-[13px] text-blue-700" style={{ minHeight: 40 }}>
@@ -3875,16 +3970,11 @@ function StopInfoTabContent({ stop, onOpenRoute }) {
           <div className="text-[12px] text-slate-700 whitespace-pre-wrap leading-snug">{cleanInstructions(stop.signalSources.orderInstructions)}</div>
         </div>
       )}
-      <div className="grid grid-cols-2 gap-3">
-        <div>
-          <div className="text-[10px] uppercase font-semibold text-slate-500">Window</div>
-          <div>{stop.scheduledFrom || '—'} – {stop.scheduledTo || '—'}</div>
-        </div>
-        <div>
-          <div className="text-[10px] uppercase font-semibold text-slate-500">Items</div>
-          <div>{stop.itemsSummary || '—'}</div>
-        </div>
+      <div>
+        <div className="text-[10px] uppercase font-semibold text-slate-500">Window</div>
+        <div>{stop.scheduledFrom || '—'} – {stop.scheduledTo || '—'}</div>
       </div>
+      <OrderItemsSection stop={stop} />
       {/* M5.2 — Route section */}
       <div className="pt-2 border-t">
         <div className="text-[10px] uppercase font-semibold text-slate-500 mb-0.5">Route</div>
@@ -4472,6 +4562,7 @@ function MapScreen() {
   // same Motive driver overlay that previously lived in the left panel; the
   // duplicate left-panel toggle is removed.
   const [toolbarCollapsed, setToolbarCollapsed] = useState(() => safeReadJSON(LS_FILTER_TOOLBAR_COLLAPSED, true));
+  const [statusCollapsed, setStatusCollapsed] = useState(() => safeReadJSON(LS_STATUS_PILL_COLLAPSED, false));
   // M4.5 — Mobile drawer is closed by default on every load; active tab is
   // restored from localStorage so repeat dispatchers land where they left off.
   const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false);
@@ -4542,6 +4633,7 @@ function MapScreen() {
   useEffect(() => { safeWriteJSON(LS_TABLE_COLUMNS, tableColumns); }, [tableColumns]);
   useEffect(() => { safeWriteJSON(LS_MAP_FILTERS, mapFilters); }, [mapFilters]);
   useEffect(() => { safeWriteJSON(LS_FILTER_TOOLBAR_COLLAPSED, toolbarCollapsed); }, [toolbarCollapsed]);
+  useEffect(() => { safeWriteJSON(LS_STATUS_PILL_COLLAPSED, statusCollapsed); }, [statusCollapsed]);
   useEffect(() => { safeWriteJSON(LS_MOBILE_DRAWER_TAB, mobileDrawerTab); }, [mobileDrawerTab]);
   useEffect(() => { safeWriteJSON(LS_SHOW_ROUTES, showRoutes); }, [showRoutes]);
   useEffect(() => { safeWriteJSON(LS_ROUTE_LEGEND_EXPANDED, routeLegendExpanded); }, [routeLegendExpanded]);
@@ -5553,21 +5645,35 @@ function MapScreen() {
             that hid the toolbar. "Show routes" now lives inside the toolbar. */}
         {!isMobile && (
           <div className="absolute top-3 right-3 z-[6] flex flex-col items-end gap-2">
-            <div className="bg-white/95 backdrop-blur border border-slate-200 rounded-lg shadow px-3 py-2 flex items-center gap-3 text-xs">
-              <div>
-                <div className="font-semibold">{stops.length} stops{carryoverCount > 0 ? <span className="text-amber-700 font-normal"> · {carryoverCount} carry-over</span> : null}</div>
-                <div className="text-slate-600">{totalPalletsCount.toLocaleString()} total pallets</div>
-                <FeedTimestamps loadAt={lastLoadScanAt} unplannedAt={lastUnplannedScanAt} isToday={dateIsToday} className="text-slate-500" />
-                {scanErr && <div className="text-[11px] text-red-600">{scanErr}</div>}
+            <div className="bg-white/95 backdrop-blur border border-slate-200 rounded-lg shadow px-2.5 py-1.5 text-xs">
+              {/* Header row: stops count + collapse/refresh — always visible. */}
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setStatusCollapsed((c) => !c)}
+                  className="flex items-center gap-1 font-semibold hover:text-slate-600"
+                  title={statusCollapsed ? 'Show details' : 'Collapse'}
+                  aria-expanded={!statusCollapsed}
+                >
+                  {statusCollapsed ? <ChevronDown size={13} className="text-slate-400" /> : <ChevronUp size={13} className="text-slate-400" />}
+                  <span>{stops.length} stops{carryoverCount > 0 ? <span className="text-amber-700 font-normal"> · {carryoverCount} c/o</span> : null}</span>
+                </button>
+                <button
+                  onClick={manualScan}
+                  disabled={scanning || scanCooldown}
+                  className="ml-auto p-1 rounded hover:bg-slate-100 disabled:opacity-50"
+                  title={scanCooldown ? 'Just scanned — try again shortly' : 'Scan now (fresh pull from NuVizz)'}
+                >
+                  <RefreshCw size={13} className={scanning ? 'animate-spin' : ''} />
+                </button>
               </div>
-              <button
-                onClick={manualScan}
-                disabled={scanning || scanCooldown}
-                className="p-1.5 rounded hover:bg-slate-100 disabled:opacity-50"
-                title={scanCooldown ? 'Just scanned — try again shortly' : 'Scan now (fresh pull from NuVizz)'}
-              >
-                <RefreshCw size={14} className={scanning ? 'animate-spin' : ''} />
-              </button>
+              {/* Stacked details — hidden when collapsed. */}
+              {!statusCollapsed && (
+                <div className="mt-0.5 leading-tight">
+                  <div className="text-slate-600">{totalPalletsCount.toLocaleString()} total pallets</div>
+                  <FeedTimestamps loadAt={lastLoadScanAt} unplannedAt={lastUnplannedScanAt} isToday={dateIsToday} className="text-slate-500" stacked />
+                  {scanErr && <div className="text-[11px] text-red-600">{scanErr}</div>}
+                </div>
+              )}
             </div>
             <FilterToolbar
               filters={mapFilters}
