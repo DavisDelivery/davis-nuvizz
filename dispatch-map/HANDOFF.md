@@ -26,6 +26,15 @@ probing only known-active loads + a small buffer instead of a ±300 window.
   Firestore snapshot, 7-day straggler watch + undelivered report) follow once the
   shadow log confirms the roster matches reality. Cold-start wide-window probe stays
   as the fallback; four-layer data preservation intact (freeze = stop querying, keep data).
+- **Phase 2 (v0.27.16) — act on scan_state, behind `NUVIZZ_LEAN_DISCOVERY=on` (default OFF):**
+  `selectLoadProbeTargets` (pure, in `nuvizz-scan.mts`) builds the load NUMBERS to probe:
+  WARM = non-terminal known loads (terminal-skip) + forward buffer (+50 overnight / +10 day)
+  above maxLoadNbr + a gap re-sweep across [min,max] every 3rd cycle in-window only;
+  COLD-START with a prior day = forward span from prior `maxLoadNbr+1` (~+100/day regen);
+  no state at all ⇒ null ⇒ scanDate falls back to the wide ±window. `scanDate({loadTargets})`
+  probes the explicit set via `scanLoadNumbers`; absent ⇒ unchanged window scan. Default OFF
+  so merging changes nothing; flip ON only AFTER a deploy-preview confirms the written
+  stop-set matches the wide-window scan for the same day (brief's parity gate). Unit-tested.
 - **Phase 5 report — manually-completed (91) dimension (amendment):** terminal-skip is
   unchanged (freeze on {90,91}; a 91 can't revert — a redo returns as a new PRO "-1",
   discovered normally — so NO re-verify, max savings). The undelivered/aged-out report

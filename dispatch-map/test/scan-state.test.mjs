@@ -4,7 +4,53 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { buildScanState, shadowWouldProbe, loadNbrToInt } from '../netlify/functions/lib/nuvizz-scan.mts';
+import { buildScanState, shadowWouldProbe, loadNbrToInt, selectLoadProbeTargets } from '../netlify/functions/lib/nuvizz-scan.mts';
+
+// Hand-built scan_state for the planner tests.
+const mkLoad = (n, allTerminal) => ({ loadNbr: `DAVIS${String(n).padStart(9, '0')}`, routeName: `R${n}`, allTerminal, lastSeenAt: NOW });
+const mkState = (loads, scanCount = 1) => {
+  const nums = loads.map((l) => loadNbrToInt(l.loadNbr));
+  return { date: '2026-07-14', knownLoads: loads, minLoadNbr: Math.min(...nums), maxLoadNbr: Math.max(...nums), highWaterStopNbr: 1, routeMap: {}, lastScanAt: NOW, scanCount };
+};
+
+test('selectLoadProbeTargets: WARM = non-terminal loads + forward buffer; terminal-skipped', () => {
+  const st = mkState([mkLoad(196998, true), mkLoad(196999, false), mkLoad(197000, false)], 1);
+  const plan = selectLoadProbeTargets(st, null, { inWindow: true, scanCount: 1, fwdIn: 50, fwdOut: 10, gapSweepEvery: 3 });
+  assert.equal(plan.mode, 'lean-warm');
+  assert.equal(plan.activeLoads, 2, 'two non-terminal loads re-pulled');
+  assert.equal(plan.gapSweep, false, 'scanCount 1 → no gap sweep');
+  assert.ok(plan.numbers.includes(196999) && plan.numbers.includes(197000), 'active loads probed');
+  assert.ok(!plan.numbers.includes(196998), 'terminal load skipped');
+  assert.ok(plan.numbers.includes(197050) && !plan.numbers.includes(197051), 'forward buffer of 50 above max');
+  assert.equal(plan.numbers.length, 2 + 50);
+});
+
+test('selectLoadProbeTargets: gap sweep every 3rd cycle in-window fills missing numbers', () => {
+  const st = mkState([mkLoad(196998, false), mkLoad(197000, false)], 3); // 196999 is a gap
+  const plan = selectLoadProbeTargets(st, null, { inWindow: true, scanCount: 3, gapSweepEvery: 3 });
+  assert.equal(plan.gapSweep, true);
+  assert.ok(plan.numbers.includes(196999), 'gap 196999 swept');
+});
+
+test('selectLoadProbeTargets: out-of-window = small buffer, never gap-sweeps', () => {
+  const st = mkState([mkLoad(196998, false), mkLoad(197000, false)], 3);
+  const plan = selectLoadProbeTargets(st, null, { inWindow: false, scanCount: 3, fwdIn: 50, fwdOut: 10, gapSweepEvery: 3 });
+  assert.equal(plan.forwardBuffer, 10);
+  assert.equal(plan.gapSweep, false, 'no gap sweep outside the routing window');
+});
+
+test('selectLoadProbeTargets: COLD START seeds forward from prior-day maxLoadNbr+1', () => {
+  const prev = mkState([mkLoad(196800, true), mkLoad(196900, true)]);
+  const plan = selectLoadProbeTargets(null, prev, { inWindow: true, scanCount: 0, fwdIn: 50 });
+  assert.equal(plan.mode, 'cold-seed');
+  assert.ok(plan.numbers.includes(196901), 'starts at prior max+1');
+  assert.ok(Math.max(...plan.numbers) >= 196901 + 100, 'forward span covers a day of regen');
+  assert.ok(!plan.numbers.includes(196900), 'does not re-probe prior-day numbers');
+});
+
+test('selectLoadProbeTargets: no state at all → null (caller uses wide-window fallback)', () => {
+  assert.equal(selectLoadProbeTargets(null, null, { inWindow: true, scanCount: 0 }), null);
+});
 
 test('loadNbrToInt: extracts the embedded integer from the prefixed/padded loadNbr', () => {
   assert.equal(loadNbrToInt('DAVIS000196999'), 196999);

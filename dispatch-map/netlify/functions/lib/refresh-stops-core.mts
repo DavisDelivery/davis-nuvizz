@@ -15,7 +15,7 @@
 // skip here, because the Friday-evening ET window lands on Saturday UTC and a
 // naive getUTCDay() check would wrongly drop it. Manual HTTP runs always proceed.
 
-import { scanDate, todayUTC, scansEnabled, deriveFleetSummary, estimateLoadRange, buildScanState, shadowWouldProbe } from './nuvizz-scan.mts';
+import { scanDate, todayUTC, scansEnabled, deriveFleetSummary, estimateLoadRange, buildScanState, shadowWouldProbe, selectLoadProbeTargets } from './nuvizz-scan.mts';
 import { isFirestoreEnabled, writeStops, writeFleetIndex, getDoc, markScanState, readCallStats, readCircuit, readScanState, writeScanState } from './firestore.mts';
 import { breakerTripped, scanIntervalElapsed, breakerMode } from './nuvizz-request.mts';
 import { scanDecision, isInRoutingWindow } from './scan-schedule.mts';
@@ -64,6 +64,10 @@ export async function runRefreshStops(req: Request): Promise<Response> {
   const [today, tomorrow] = scanDatesFrom(todayUTC(), 2);
   const fsOn = isFirestoreEnabled();
   const ceiling = Number(process.env.NUVIZZ_DAILY_CEILING) || 100000;
+  // Phase 2 — lean load discovery (known-active + buffer + gap sweep). OFF by
+  // default; flip NUVIZZ_LEAN_DISCOVERY=on only AFTER preview stop-set parity is
+  // confirmed. Off = the proven wide-window probe, unchanged.
+  const LEAN_DISCOVERY = (process.env.NUVIZZ_LEAN_DISCOVERY || '').toLowerCase() === 'on';
 
   // Read today's last LOAD scan time — this is what drives the elapsed-time
   // cadence (Fix 1). Also read the shared call counter + breaker for the log line.
@@ -135,13 +139,40 @@ export async function runRefreshStops(req: Request): Promise<Response> {
           return;
         }
       }
+      // Read this date's existing roster ONCE — used for BOTH Phase 2 lean planning
+      // (as the current known-active set) and the Phase 1 shadow write below.
+      const priorState = includeLoads ? await readScanState(date) : null;
+
+      // Phase 2 (gated by NUVIZZ_LEAN_DISCOVERY=on): probe only known-active loads +
+      // forward buffer + periodic gap sweep instead of the ±window. null plan ⇒
+      // leave loadTargets undefined ⇒ scanDate falls back to the wide window.
+      let loadTargets: number[] | null = null;
+      if (LEAN_DISCOVERY && includeLoads) {
+        try {
+          const prevDayState = await readScanState(addDaysUTC(date, -1));
+          const plan = selectLoadProbeTargets(priorState, prevDayState, {
+            inWindow: isInRoutingWindow(decision.etHour),
+            scanCount: priorState?.scanCount || 0,
+            fwdIn: 50, fwdOut: 10, gapSweepEvery: 3,
+          });
+          if (plan) {
+            loadTargets = plan.numbers;
+            console.log(`[scan-lean] date=${date} mode=${plan.mode} probe=${plan.numbers.length} active=${plan.activeLoads} buffer=${plan.forwardBuffer} gapSweep=${plan.gapSweep}`);
+          } else {
+            console.log(`[scan-lean] date=${date} mode=cold-fallback (no scan_state) → wide window`);
+          }
+        } catch (e: any) { console.warn(`[scan-lean] ${date} planning failed, wide window: ${e?.message}`); }
+      }
+
       // Phase 1 (shadow): capture the load-number window THIS cycle is about to
       // probe BEFORE scanDate calibrates the in-memory cache (serverless runs are
-      // almost always cold → this is the real ~600-wide window).
-      const preRange = includeLoads ? estimateLoadRange(date) : null;
+      // almost always cold → this is the real ~600-wide window). Only meaningful
+      // when NOT using lean targets.
+      const preRange = (includeLoads && !loadTargets) ? estimateLoadRange(date) : null;
       const scan = await scanDate(date, {
         includeUnplanned,
         includeLoads,
+        loadTargets,
         unplanned: (isManual && includeUnplanned) ? { maxProbes: 800 } : undefined,
       });
       const meta = await writeStops(TENANT, date, scan.stops, scan.scannedAt, { includeUnplanned, includeLoads });
@@ -156,13 +187,12 @@ export async function runRefreshStops(req: Request): Promise<Response> {
       // NO probing change yet — this de-risks Phase 2. Best-effort; never fails a scan.
       if (includeLoads) {
         try {
-          const prev = await readScanState(date);
-          const state = buildScanState(date, scan.stops, prev, scan.scannedAt);
+          const state = buildScanState(date, scan.stops, priorState, scan.scannedAt);
           await writeScanState(date, state);
           const inWindow = isInRoutingWindow(decision.etHour);
           const wp = shadowWouldProbe(state, { inWindow, fwdIn: 50, fwdOut: 10 });
-          const windowSize = preRange ? (preRange.endNbr - preRange.startNbr + 1) : null;
-          console.log(`[scan-shadow] date=${date} knownLoads=${state.knownLoads.length} active=${wp.activeLoads} terminal=${wp.terminalLoads} routes=${Object.keys(state.routeMap).length} minLoad=${state.minLoadNbr} maxLoad=${state.maxLoadNbr} highWaterStop=${state.highWaterStopNbr} inWindow=${inWindow} WOULD_PROBE_LOADS=${wp.wouldProbe} (active=${wp.activeLoads}+buffer=${wp.forwardBuffer}) CURRENT_WINDOW=${windowSize} scanCount=${state.scanCount}`);
+          const windowSize = preRange ? (preRange.endNbr - preRange.startNbr + 1) : (loadTargets ? loadTargets.length : null);
+          console.log(`[scan-shadow] date=${date} lean=${!!loadTargets} knownLoads=${state.knownLoads.length} active=${wp.activeLoads} terminal=${wp.terminalLoads} routes=${Object.keys(state.routeMap).length} minLoad=${state.minLoadNbr} maxLoad=${state.maxLoadNbr} highWaterStop=${state.highWaterStopNbr} inWindow=${inWindow} WOULD_PROBE_LOADS=${wp.wouldProbe} (active=${wp.activeLoads}+buffer=${wp.forwardBuffer}) PROBED=${windowSize} scanCount=${state.scanCount}`);
         } catch (e: any) { console.warn(`[scan-shadow] ${date} failed: ${e?.message}`); }
       }
       results.push({ date, ok: true, ms: Date.now() - t0, includeUnplanned, includeLoads, count: meta.count, planned: meta.plannedCount, unplanned: meta.unplannedCount });
