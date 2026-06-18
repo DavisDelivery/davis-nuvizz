@@ -46,7 +46,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.27.3';
+const APP_VERSION = '0.27.4';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -66,6 +66,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.27.4', 'Order detail: "Find business" button (Maps search by name+address) + collapsible per-order items list (SKU/qty/weight/oversize)'],
   ['0.27.3', 'Date picker no longer shows the date twice; status card stacks its details and is collapsible to reclaim map space'],
   ['0.27.2', '“Scan now” runs the async scanner + polls (a busy date exceeded the 26s sync cap), so it never times out'],
   ['0.27.1', '“Scan now” refreshes just the viewed date (loads + orders) so it can’t time out'],
@@ -1895,6 +1896,81 @@ function GoogleMapsLink({ stop, className }) {
   );
 }
 
+// Opens a Google Maps search for the BUSINESS NAME + address (not just the
+// geocoded point). When the auto-placed pin is wrong, searching the name pulls
+// up the real business listing so the dispatcher can find/verify the correct
+// location. New tab.
+function BusinessSearchLink({ stop, className }) {
+  const q = [stop.businessName, stop.addr1, stop.city, stop.state, stop.zip].filter(Boolean).join(' ');
+  if (!q) return null;
+  const url = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(q)}`;
+  return (
+    <a
+      href={url}
+      target="_blank"
+      rel="noopener noreferrer"
+      className={className || 'inline-flex items-center gap-1 text-xs text-blue-700 hover:underline mt-1'}
+      style={{ minHeight: 44, alignItems: 'center' }}
+    >
+      <Search size={13} /> Find business
+    </a>
+  );
+}
+
+// Collapsible per-order line items. NuVizz returns stopDetails (SKU, qty, weight,
+// dims, S/L category); we show the one-line summary always and expand to the full
+// list on click. Self-contained state so both the desktop sidebar and mobile
+// drawer can drop it in without threading props.
+function OrderItemsSection({ stop, defaultOpen = false }) {
+  const items = Array.isArray(stop.stopDetails) ? stop.stopDetails : [];
+  const [open, setOpen] = useState(defaultOpen);
+  // No line-item breakdown available — keep the existing summary-only display.
+  if (!items.length) {
+    return (
+      <div>
+        <div className="text-xs uppercase font-semibold text-slate-500">Items</div>
+        <div className="text-sm">{stop.itemsSummary || '—'}</div>
+      </div>
+    );
+  }
+  return (
+    <div>
+      <button
+        onClick={() => setOpen((o) => !o)}
+        className="w-full flex items-center justify-between gap-2 text-left"
+        aria-expanded={open}
+      >
+        <span className="min-w-0">
+          <span className="text-xs uppercase font-semibold text-slate-500">Items ({items.length})</span>
+          <span className="block text-sm text-slate-700 truncate">{stop.itemsSummary || '—'}</span>
+        </span>
+        {open ? <ChevronUp size={15} className="text-slate-400 flex-shrink-0" /> : <ChevronDown size={15} className="text-slate-400 flex-shrink-0" />}
+      </button>
+      {open && (
+        <ul className="mt-1.5 space-y-1 border-t border-slate-100 pt-1.5">
+          {items.map((it, i) => {
+            const qty = it.quantity != null ? `${it.quantity}${it.quantityUOM ? ' ' + it.quantityUOM : ''}` : null;
+            const wt = it.weight != null ? `${it.weight}${it.weightUOM ? ' ' + it.weightUOM : ''}` : null;
+            const oversize = it.productCategory === 'L';
+            return (
+              <li key={i} className="text-[13px] leading-snug flex items-start justify-between gap-2">
+                <span className="min-w-0">
+                  <span className="text-slate-800">{it.product || it.sku || '(item)'}</span>
+                  {it.sku && it.product && <span className="ml-1 text-[10px] font-mono text-slate-400">{it.sku}</span>}
+                  {oversize && <span className="ml-1 px-1 rounded bg-amber-100 text-amber-800 text-[9px] font-semibold align-middle">L</span>}
+                </span>
+                <span className="text-slate-500 whitespace-nowrap text-right text-[12px]">
+                  {[qty, wt].filter(Boolean).join(' · ') || '—'}
+                </span>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 // Box / lasso selection toolbar. Two tools: Box (drag a rectangle) and Lasso
 // (draw a freeform shape). Toggling a tool off cancels it. When a selection
 // exists, a count chip clears it. Reused on desktop + mobile.
@@ -2412,9 +2488,10 @@ function StopSidebar({ stop, note, onClose, onSave, saving, saveError, onOpenRou
               </div>
             )}
             <div className="text-slate-600">{stop.city}, {stop.state} {stop.zip}</div>
-            <div className="flex items-center gap-4">
+            <div className="flex items-center gap-4 flex-wrap">
               <StreetViewLink stop={stop} />
               <GoogleMapsLink stop={stop} />
+              <BusinessSearchLink stop={stop} />
             </div>
             {onMoveLocation && (
               <button onClick={() => onMoveLocation(stop)} className="mt-1.5 inline-flex items-center gap-1 text-xs text-blue-700 hover:underline">
@@ -2428,15 +2505,12 @@ function StopSidebar({ stop, note, onClose, onSave, saving, saveError, onOpenRou
               <div className="text-xs text-slate-700 whitespace-pre-wrap leading-snug">{cleanInstructions(stop.signalSources.orderInstructions)}</div>
             </div>
           )}
-          <div className="grid grid-cols-2 gap-3 pt-2">
-            <div>
-              <div className="text-xs uppercase font-semibold text-slate-500">Window</div>
-              <div className="text-sm">{stop.scheduledFrom || '—'} – {stop.scheduledTo || '—'}</div>
-            </div>
-            <div>
-              <div className="text-xs uppercase font-semibold text-slate-500">Items</div>
-              <div className="text-sm">{stop.itemsSummary}</div>
-            </div>
+          <div className="pt-2">
+            <div className="text-xs uppercase font-semibold text-slate-500">Window</div>
+            <div className="text-sm">{stop.scheduledFrom || '—'} – {stop.scheduledTo || '—'}</div>
+          </div>
+          <div className="pt-2">
+            <OrderItemsSection stop={stop} />
           </div>
           {/* M5.2 — Route section: load + driver + jump to the full route */}
           <div className="pt-2 mt-2 border-t">
@@ -3879,9 +3953,10 @@ function StopInfoTabContent({ stop, onOpenRoute }) {
           </div>
         )}
         <div className="text-slate-600">{cityLine || '—'}</div>
-        <div className="flex items-center gap-5 mt-1">
+        <div className="flex items-center gap-5 mt-1 flex-wrap">
           <StreetViewLink stop={stop} className="inline-flex items-center gap-1 text-[13px] text-blue-700" />
           <GoogleMapsLink stop={stop} className="inline-flex items-center gap-1 text-[13px] text-blue-700" />
+          <BusinessSearchLink stop={stop} className="inline-flex items-center gap-1 text-[13px] text-blue-700" />
         </div>
         {onMoveLocation && (
           <button onClick={() => onMoveLocation(stop)} className="mt-1.5 inline-flex items-center gap-1 text-[13px] text-blue-700" style={{ minHeight: 40 }}>
@@ -3895,16 +3970,11 @@ function StopInfoTabContent({ stop, onOpenRoute }) {
           <div className="text-[12px] text-slate-700 whitespace-pre-wrap leading-snug">{cleanInstructions(stop.signalSources.orderInstructions)}</div>
         </div>
       )}
-      <div className="grid grid-cols-2 gap-3">
-        <div>
-          <div className="text-[10px] uppercase font-semibold text-slate-500">Window</div>
-          <div>{stop.scheduledFrom || '—'} – {stop.scheduledTo || '—'}</div>
-        </div>
-        <div>
-          <div className="text-[10px] uppercase font-semibold text-slate-500">Items</div>
-          <div>{stop.itemsSummary || '—'}</div>
-        </div>
+      <div>
+        <div className="text-[10px] uppercase font-semibold text-slate-500">Window</div>
+        <div>{stop.scheduledFrom || '—'} – {stop.scheduledTo || '—'}</div>
       </div>
+      <OrderItemsSection stop={stop} />
       {/* M5.2 — Route section */}
       <div className="pt-2 border-t">
         <div className="text-[10px] uppercase font-semibold text-slate-500 mb-0.5">Route</div>
