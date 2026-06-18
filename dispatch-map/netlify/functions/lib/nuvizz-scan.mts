@@ -432,6 +432,15 @@ export function estimateLoadRange(dateStr: string): { startNbr: number; endNbr: 
 }
 
 async function scanLoadRangeForDate(dateStr: string, startNbr: number, endNbr: number, concurrency = 30) {
+  const nums: number[] = [];
+  for (let n = endNbr; n >= startNbr; n--) nums.push(n);
+  return scanLoadNumbers(dateStr, nums, concurrency);
+}
+
+// Probe an EXPLICIT list of load numbers (Phase 2 lean discovery: known-active +
+// forward buffer + gap sweep). Same per-load /load/info call + date-filter as the
+// range scan — just an arbitrary set instead of a contiguous window.
+async function scanLoadNumbers(dateStr: string, numbers: number[], concurrency = 30) {
   const { companyCode } = getCreds();
   const authHeader = basicAuthHeader();
   const prefix = companyCode;
@@ -468,9 +477,7 @@ async function scanLoadRangeForDate(dateStr: string, startNbr: number, endNbr: n
     }
   };
 
-  const nums: number[] = [];
-  for (let n = endNbr; n >= startNbr; n--) nums.push(n);
-
+  const nums = numbers;
   const results: any[][] = [];
   let idx = 0;
   const runOne = async () => {
@@ -665,7 +672,7 @@ export interface ScanResult {
 
 // Full scan for one date: planned (load scan) + unplanned (number-space scan),
 // deduped (load-sourced wins), normalized. Used by the background writer.
-export async function scanDate(dateStr: string, opts: { unplanned?: UnplannedScanOpts; includeUnplanned?: boolean; includeLoads?: boolean } = {}): Promise<ScanResult> {
+export async function scanDate(dateStr: string, opts: { unplanned?: UnplannedScanOpts; includeUnplanned?: boolean; includeLoads?: boolean; loadTargets?: number[] | null } = {}): Promise<ScanResult> {
   const includeUnplanned = opts.includeUnplanned !== false; // default true
   const includeLoads = opts.includeLoads !== false;         // default true
   // P0 kill switch — when scans are disabled, generate ZERO NuVizz traffic and
@@ -674,12 +681,17 @@ export async function scanDate(dateStr: string, opts: { unplanned?: UnplannedSca
   if (!scansEnabled()) {
     return { date: dateStr, stops: [], plannedCount: 0, unplannedCount: 0, scannedAt: new Date().toISOString(), includeUnplanned, includeLoads };
   }
-  const { startNbr, endNbr } = estimateLoadRange(dateStr);
+  // Phase 2: when loadTargets is provided (lean discovery from scan_state), probe
+  // exactly that set; otherwise probe the calibrated ±window (cold-start fallback).
+  const useTargets = Array.isArray(opts.loadTargets) && opts.loadTargets.length > 0;
+  const { startNbr, endNbr } = useTargets ? { startNbr: 0, endNbr: 0 } : estimateLoadRange(dateStr);
   // includeLoads=false → unplanned-only (skip the load-number scan entirely — no
   // /load/info probes). includeUnplanned=false → load-only (skip the descent +
   // its findCeiling probing). At least one is always true at the call sites.
   const [loadStops, unplannedStops] = await Promise.all([
-    includeLoads ? scanLoadRangeForDate(dateStr, startNbr, endNbr) : Promise.resolve([] as any[]),
+    includeLoads
+      ? (useTargets ? scanLoadNumbers(dateStr, opts.loadTargets as number[]) : scanLoadRangeForDate(dateStr, startNbr, endNbr))
+      : Promise.resolve([] as any[]),
     includeUnplanned ? scanUnplannedStops(dateStr, opts.unplanned).catch(() => []) : Promise.resolve([] as any[]),
   ]);
 
@@ -783,8 +795,64 @@ export function buildScanState(dateStr: string, stops: any[], prev: ScanState | 
 export interface WouldProbe { activeLoads: number; terminalLoads: number; forwardBuffer: number; wouldProbe: number }
 export function shadowWouldProbe(state: ScanState, opts: { inWindow: boolean; fwdIn?: number; fwdOut?: number }): WouldProbe {
   const active = state.knownLoads.filter((k) => !k.allTerminal).length;
-  const forwardBuffer = opts.inWindow ? (opts.fwdIn ?? 25) : (opts.fwdOut ?? 5);
+  // Overnight routing window = volatile → larger forward buffer for new load numbers;
+  // daytime = stable → small buffer for the rare add.
+  const forwardBuffer = opts.inWindow ? (opts.fwdIn ?? 50) : (opts.fwdOut ?? 10);
   return { activeLoads: active, terminalLoads: state.knownLoads.length - active, forwardBuffer, wouldProbe: active + forwardBuffer };
+}
+
+// ── Phase 2: lean load-discovery planner (PURE) ──────────────────────────────
+// Decide which load NUMBERS to probe this cycle from scan_state, instead of the
+// ±300 window. Returns null → caller MUST fall back to the wide window (cold start
+// with no prior state at all). Terminal loads are dropped (terminal-skip).
+export interface LoadProbePlan {
+  numbers: number[];
+  mode: 'lean-warm' | 'cold-seed';
+  activeLoads: number; forwardBuffer: number; gapSweep: boolean;
+}
+export function selectLoadProbeTargets(
+  todayState: ScanState | null,
+  prevState: ScanState | null,
+  opts: { inWindow: boolean; scanCount: number; fwdIn?: number; fwdOut?: number; gapSweepEvery?: number },
+): LoadProbePlan | null {
+  const fwd = opts.inWindow ? (opts.fwdIn ?? 50) : (opts.fwdOut ?? 10);
+
+  // WARM — we already have today's roster: re-pull NON-TERMINAL loads (terminal-skip),
+  // + a forward buffer above maxLoadNbr (catch appended routes), + a periodic gap
+  // re-sweep across [min,max] (catch mid-window inserts), in-window only.
+  if (todayState && todayState.knownLoads.length && todayState.maxLoadNbr != null && todayState.minLoadNbr != null) {
+    const known = new Set<number>();
+    const active: number[] = [];
+    for (const k of todayState.knownLoads) {
+      const n = loadNbrToInt(k.loadNbr);
+      if (n == null) continue;
+      known.add(n);
+      if (!k.allTerminal) active.push(n);
+    }
+    const max = todayState.maxLoadNbr, min = todayState.minLoadNbr;
+    const forward: number[] = [];
+    for (let n = max + 1; n <= max + fwd; n++) forward.push(n);
+    const every = opts.gapSweepEvery ?? 3;
+    const doGap = opts.inWindow && every > 0 && (opts.scanCount % every === 0);
+    const gaps: number[] = [];
+    if (doGap) for (let n = min; n <= max; n++) if (!known.has(n)) gaps.push(n);
+    const numbers = [...new Set([...active, ...forward, ...gaps])].sort((a, b) => b - a);
+    return { numbers, mode: 'lean-warm', activeLoads: active.length, forwardBuffer: fwd, gapSweep: doGap };
+  }
+
+  // COLD START with a prior day → forward discovery from prior maxLoadNbr+1 (numbers
+  // regenerate ~+100/day in order). Do NOT force up to the prior count before loads
+  // exist; the forward span + subsequent warm cycles accrue the overnight growth.
+  if (prevState && prevState.maxLoadNbr != null) {
+    const start = prevState.maxLoadNbr + 1;
+    const span = Math.max(fwd, LOADS_PER_BIZ_DAY + 40); // one day's regen (~100) + slack
+    const numbers: number[] = [];
+    for (let n = start + span; n >= start; n--) numbers.push(n);
+    return { numbers, mode: 'cold-seed', activeLoads: 0, forwardBuffer: span, gapSweep: false };
+  }
+
+  // No state at all → caller falls back to the wide ±window probe.
+  return null;
 }
 
 // ── Phase 4: derive the canonical fleet summary from normalized stops ─────────

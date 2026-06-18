@@ -10,13 +10,44 @@ probing only known-active loads + a small buffer instead of a ±300 window.
   CURRENT_WINDOW=<~600>`. A load is `allTerminal` only when EVERY stop is DELIVERED
   (status 90/91 — exceptions keep it active). Pure helpers `buildScanState` /
   `shadowWouldProbe` in `nuvizz-scan.mts` (unit-tested, `test/scan-state.test.mjs`).
-  Routing window (thorough vs lean) = `isInRoutingWindow` in `scan-schedule.mts`,
-  default 04:00–15:00 ET (env `NUVIZZ_ROUTING_WINDOW_*_ET`).
+  Routing window (thorough vs lean) = `isInRoutingWindow` in `scan-schedule.mts`.
+  **Window is OVERNIGHT 20:00–07:00 ET (wraps midnight)** — that's when Davis builds/
+  edits routes (volatile → thorough discovery, forward buffer +50, frequent gap sweep).
+  Daytime 07:00–20:00 = stable (trucks delivering, loads only going terminal) → lean
+  (re-pull non-terminal only, buffer +10, gap sweep low/off). Env `NUVIZZ_ROUTING_WINDOW_*_ET`.
+  **Phase 2 cold-start/growth:** overnight the roster legitimately grows from ~0 (≈8 PM)
+  toward ~55 by ~7 AM — do NOT force-probe up to the prior-day count before those loads
+  exist (wastes calls on empties). Seed the start near prior-day `maxLoadNbr+1` (numbers
+  regenerate ~+100/day in order); let forward-buffer + gap-sweep accrue loads cycle by
+  cycle; use prior-day count only as a soft "discovery likely complete" signal near 6–7 AM.
+  Full ±window probe stays the fallback ONLY when there is no prior scan_state at all.
 - Builds on #108 counter/breaker (count__load_info / count__stop_info measure the cut).
 - Phases 2–5 (act on scan_state + terminal-skip, unplanned high-water, history
   Firestore snapshot, 7-day straggler watch + undelivered report) follow once the
   shadow log confirms the roster matches reality. Cold-start wide-window probe stays
   as the fallback; four-layer data preservation intact (freeze = stop querying, keep data).
+- **Phase 2 (v0.27.16) — act on scan_state, behind `NUVIZZ_LEAN_DISCOVERY=on` (default OFF):**
+  `selectLoadProbeTargets` (pure, in `nuvizz-scan.mts`) builds the load NUMBERS to probe:
+  WARM = non-terminal known loads (terminal-skip) + forward buffer (+50 overnight / +10 day)
+  above maxLoadNbr + a gap re-sweep across [min,max] every 3rd cycle in-window only;
+  COLD-START with a prior day = forward span from prior `maxLoadNbr+1` (~+100/day regen);
+  no state at all ⇒ null ⇒ scanDate falls back to the wide ±window. `scanDate({loadTargets})`
+  probes the explicit set via `scanLoadNumbers`; absent ⇒ unchanged window scan. Default OFF
+  so merging changes nothing; flip ON only AFTER a deploy-preview confirms the written
+  stop-set matches the wide-window scan for the same day (brief's parity gate). Unit-tested.
+  **Data-loss guard (v0.27.17):** lean re-pulls only a SUBSET of loads (terminal skipped),
+  so `writeStops({partialLoads:true})` PRESERVES planned stops it didn't re-scan instead of
+  pruning them (`preserveStopOnWrite`, unit-tested) — terminal-skip can never delete already-
+  delivered stops. This is what makes the lean stop-set equal the wide-scan stop-set.
+- **Phase 5 report — manually-completed (91) dimension (amendment):** terminal-skip is
+  unchanged (freeze on {90,91}; a 91 can't revert — a redo returns as a new PRO "-1",
+  discovered normally — so NO re-verify, max savings). The undelivered/aged-out report
+  ALSO flags stops whose terminal status is **91 (dispatch-portal manual completion)**
+  distinctly from **90 (system/scan completion)** — a derived view off the already-stored
+  status, ZERO extra NuVizz calls, no new ingest. Surface: per-day 91-vs-90 count +
+  breakdown by route/driver with each route's 91-rate (% of its completions); sortable;
+  dates "Mon D, YYYY". The 91 flag rides into the daily history snapshot so the report
+  works for past days too.
 
 Status of the build that landed on branch `claude/dispatch-map-build-eEbYe`.
 M3 + M5 still pending. v0.4.0 = M4.1 (resizable panel, search, driver

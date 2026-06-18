@@ -4,7 +4,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { scanDecision, intervalForHour, nowET } from '../netlify/functions/lib/scan-schedule.mts';
+import { scanDecision, intervalForHour, nowET, isInRoutingWindow } from '../netlify/functions/lib/scan-schedule.mts';
+
+test('isInRoutingWindow: overnight 20:00–07:00 ET wraps midnight', () => {
+  for (const h of [20, 21, 23, 0, 3, 6]) assert.equal(isInRoutingWindow(h), true, `hour ${h} should be IN window`);
+  for (const h of [7, 9, 12, 15, 19]) assert.equal(isInRoutingWindow(h), false, `hour ${h} should be OUT of window`);
+});
 
 // 2026-06-17 is EDT (UTC-4). Build a Date at a given ET hour/min.
 const at = (etHour, etMin = 0) => new Date(Date.UTC(2026, 5, 17, etHour + 4, etMin, 0));
