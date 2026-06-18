@@ -1,5 +1,23 @@
 # Dispatch Map — Handoff
 
+## Incremental-scan call reduction (Jul 2025) — Phase 1 SHADOW (v0.27.14)
+Goal: cut NuVizz calls/scan (~690 measured: 510 /load/info + 180 /stop/info) by
+probing only known-active loads + a small buffer instead of a ±300 window.
+- **Phase 1 (this PR, shadow only — NO behavior change):** after every load scan,
+  `refresh-stops-core` writes `scan_state/{date}` (roster: `knownLoads[{loadNbr,
+  routeName,allTerminal,lastSeenAt}]`, `min/maxLoadNbr`, `highWaterStopNbr`,
+  `routeMap`, `scanCount`) and logs `[scan-shadow] … WOULD_PROBE_LOADS=<active+buffer>
+  CURRENT_WINDOW=<~600>`. A load is `allTerminal` only when EVERY stop is DELIVERED
+  (status 90/91 — exceptions keep it active). Pure helpers `buildScanState` /
+  `shadowWouldProbe` in `nuvizz-scan.mts` (unit-tested, `test/scan-state.test.mjs`).
+  Routing window (thorough vs lean) = `isInRoutingWindow` in `scan-schedule.mts`,
+  default 04:00–15:00 ET (env `NUVIZZ_ROUTING_WINDOW_*_ET`).
+- Builds on #108 counter/breaker (count__load_info / count__stop_info measure the cut).
+- Phases 2–5 (act on scan_state + terminal-skip, unplanned high-water, history
+  Firestore snapshot, 7-day straggler watch + undelivered report) follow once the
+  shadow log confirms the roster matches reality. Cold-start wide-window probe stays
+  as the fallback; four-layer data preservation intact (freeze = stop querying, keep data).
+
 Status of the build that landed on branch `claude/dispatch-map-build-eEbYe`.
 M3 + M5 still pending. v0.4.0 = M4.1 (resizable panel, search, driver
 labels, day-snapshot). v0.5.0 = Part 9 restriction iconography (badge

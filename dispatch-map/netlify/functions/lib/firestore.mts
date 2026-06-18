@@ -393,6 +393,35 @@ export async function setCircuit(open: boolean, reason: string, atISO: string): 
   await setDoc(`${OPS_COLLECTION}/circuit`, { open, reason, at: atISO, day: atISO.slice(0, 10) });
 }
 
+// ── Incremental-scan state (call-reduction work) ─────────────────────────────
+// Per-date roster written after every scan, read at the start of the next: which
+// loads we already know (+ whether each is fully delivered), the load-number span,
+// route→load map, and the highest stop number seen. Phase 1 only POPULATES this
+// (shadow mode); later phases use it to probe only known-active loads + a buffer
+// instead of a wide window.
+const SCAN_STATE_COLLECTION = 'scan_state';
+
+export interface KnownLoad { loadNbr: string; routeName: string | null; allTerminal: boolean; lastSeenAt: string }
+export interface ScanState {
+  date: string;
+  knownLoads: KnownLoad[];
+  minLoadNbr: number | null;
+  maxLoadNbr: number | null;
+  highWaterStopNbr: number | null;
+  routeMap: Record<string, string>;
+  lastScanAt: string;
+  scanCount: number;
+}
+
+export async function readScanState(dateStr: string): Promise<ScanState | null> {
+  const doc = await getDoc(`${SCAN_STATE_COLLECTION}/${dateStr}`);
+  return (doc as any) || null;
+}
+
+export async function writeScanState(dateStr: string, state: ScanState): Promise<void> {
+  await setDoc(`${SCAN_STATE_COLLECTION}/${dateStr}`, state as any);
+}
+
 // ── Phase 4: canonical fleet index (the shape SITE A already reads) ───────────
 // The sole scanner (this app) writes load summaries + aggregate + driver index to
 // nuvizzFleet/{tenant}__{date} — byte-compatible with the parent app's existing

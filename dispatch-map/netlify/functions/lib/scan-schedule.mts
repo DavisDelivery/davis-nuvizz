@@ -46,6 +46,15 @@ export interface ScanDecision {
   reason: string;
 }
 
+// Routing window (ET hours): when routes are actively built/edited, so planned
+// discovery is thorough (active loads + periodic gap sweep + larger forward
+// buffer). Outside it, discovery is lean. Configurable via env. Default 4am–3pm ET.
+export const ROUTING_WINDOW_START = Number(process.env.NUVIZZ_ROUTING_WINDOW_START_ET) || 4;
+export const ROUTING_WINDOW_END = Number(process.env.NUVIZZ_ROUTING_WINDOW_END_ET) || 15;
+export function isInRoutingWindow(etHour: number): boolean {
+  return etHour >= ROUTING_WINDOW_START && etHour < ROUTING_WINDOW_END;
+}
+
 // Target interval (minutes) between scans for the given ET hour.
 export function intervalForHour(hour: number): number {
   if (hour >= 4 && hour < 7) return 15;

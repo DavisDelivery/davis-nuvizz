@@ -20,6 +20,7 @@
 // short-circuited by the circuit breaker.
 
 import { getNuvizzRequester } from './nuvizz-request.mts';
+import type { ScanState, KnownLoad } from './firestore.mts';
 
 const NUVIZZ_BASE = process.env.NUVIZZ_BASE_URL || 'https://portal.nuvizz.com/deliverit/openapi/v7';
 
@@ -717,6 +718,73 @@ export async function scanDate(dateStr: string, opts: { unplanned?: UnplannedSca
     includeUnplanned,
     includeLoads,
   };
+}
+
+// ── Incremental-scan shadow helpers (call-reduction Phase 1) ─────────────────
+// PURE: derive the next scan_state from a scan's normalized stops + the prior
+// state, and compute what lean planned-discovery WOULD probe. Phase 1 only logs
+// the comparison; later phases act on it. Unit-tested.
+function stopNbrToInt(stopNbr: any): number | null {
+  const m = /\d+/.exec(String(stopNbr ?? ''));
+  if (!m) return null;
+  const n = parseInt(m[0], 10);
+  return Number.isFinite(n) ? n : null;
+}
+// loadNbr like "DAVIS000196999" → the embedded integer 196999 (what gets probed).
+export function loadNbrToInt(loadNbr: any): number | null {
+  const digits = String(loadNbr ?? '').replace(/\D/g, '');
+  if (!digits) return null;
+  const n = parseInt(digits, 10);
+  return Number.isFinite(n) ? n : null;
+}
+
+export function buildScanState(dateStr: string, stops: any[], prev: ScanState | null, nowISO: string): ScanState {
+  // Merge the prior roster so an unplanned-only cycle can't wipe known loads.
+  const merged = new Map<string, KnownLoad>();
+  for (const k of prev?.knownLoads || []) merged.set(k.loadNbr, { ...k });
+
+  // Group THIS scan's planned stops by load; a load is allTerminal only when
+  // EVERY one of its stops is DELIVERED (status 90/91) — conservative on purpose.
+  const seenLoad = new Map<string, { routeName: string | null; allTerminal: boolean }>();
+  let highWater = prev?.highWaterStopNbr ?? null;
+  for (const s of stops) {
+    const sn = stopNbrToInt(s.stopNbr);
+    if (sn != null) highWater = highWater == null ? sn : Math.max(highWater, sn);
+    if (s.isPlanned && s.loadNbr) {
+      const cur = seenLoad.get(s.loadNbr) || { routeName: s.routeName || null, allTerminal: true };
+      if (!cur.routeName && s.routeName) cur.routeName = s.routeName;
+      if (s.normalizedStatus !== 'DELIVERED') cur.allTerminal = false;
+      seenLoad.set(s.loadNbr, cur);
+    }
+  }
+  const routeMap: Record<string, string> = { ...(prev?.routeMap || {}) };
+  for (const [loadNbr, v] of seenLoad) {
+    merged.set(loadNbr, { loadNbr, routeName: v.routeName, allTerminal: v.allTerminal, lastSeenAt: nowISO });
+    if (v.routeName) routeMap[v.routeName] = loadNbr;
+  }
+
+  const knownLoads = [...merged.values()];
+  // loadNbr is the prefixed, zero-padded form (e.g. "DAVIS000196999"); the load
+  // NUMBER scanLoadRangeForDate probes is the embedded integer (196999). Extract
+  // the digits so min/max are comparable to estimateLoadRange's integer space.
+  const nums = knownLoads.map((k) => loadNbrToInt(k.loadNbr)).filter((n): n is number => n != null);
+  return {
+    date: dateStr,
+    knownLoads,
+    minLoadNbr: nums.length ? Math.min(...nums) : (prev?.minLoadNbr ?? null),
+    maxLoadNbr: nums.length ? Math.max(...nums) : (prev?.maxLoadNbr ?? null),
+    highWaterStopNbr: highWater,
+    routeMap,
+    lastScanAt: nowISO,
+    scanCount: (prev?.scanCount || 0) + 1,
+  };
+}
+
+export interface WouldProbe { activeLoads: number; terminalLoads: number; forwardBuffer: number; wouldProbe: number }
+export function shadowWouldProbe(state: ScanState, opts: { inWindow: boolean; fwdIn?: number; fwdOut?: number }): WouldProbe {
+  const active = state.knownLoads.filter((k) => !k.allTerminal).length;
+  const forwardBuffer = opts.inWindow ? (opts.fwdIn ?? 25) : (opts.fwdOut ?? 5);
+  return { activeLoads: active, terminalLoads: state.knownLoads.length - active, forwardBuffer, wouldProbe: active + forwardBuffer };
 }
 
 // ── Phase 4: derive the canonical fleet summary from normalized stops ─────────
