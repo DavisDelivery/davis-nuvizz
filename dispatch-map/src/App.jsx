@@ -46,7 +46,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.27.20';
+const APP_VERSION = '0.27.22';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -66,6 +66,8 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.27.22', 'Phase 4 fix (audit): lean history path no longer references undefined scan result (would have thrown with the flag on); counts/timestamp derived from the index, and an empty index falls back to a fresh scan'],
+  ['0.27.21', 'Incremental-scan Phase 4 (when lean is on): the daily history snapshot is built from the accumulated Firestore stop-index instead of a fresh NuVizz scan (~690 calls → ~0); late deliveries reconciled by the Phase 5 straggler watch'],
   ['0.27.20', 'Incremental-scan Phase 3 hardening (audit): the lean order descent now bounds on an UNPLANNED-only high-water (a high planned stop can no longer ratchet the floor past new orders) + wider safety buffer — closes an order-loss path before enabling'],
   ['0.27.19', 'Incremental-scan Phase 3 (behind NUVIZZ_LEAN_DISCOVERY, default OFF): unplanned/order descent only probes NEW stop numbers above the persisted high-water on warm cycles; writeStops preserves older still-unplanned orders so the lean descent never prunes them'],
   ['0.27.18', 'Incremental-scan Phase 2 hardening (independent audit): lean scans no longer calibrate the fallback window, and cold-start now uses the proven wide-window probe instead of a forward seed that could miss a day with non-contiguous load numbers'],
