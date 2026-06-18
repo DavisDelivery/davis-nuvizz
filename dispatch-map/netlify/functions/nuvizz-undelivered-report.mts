@@ -36,7 +36,11 @@ export default async (req: Request): Promise<Response> => {
       try { daysByDate[d] = await listStops(TENANT, d); } catch { daysByDate[d] = []; }
     }));
     const report = buildUndeliveredReport(daysByDate, { windowDays, today });
-    return new Response(JSON.stringify({ ok: true, tenant: TENANT, generated: new Date().toISOString(), ...report }), { status: 200, headers: cors });
+    // Window caveat (audit): classification is bounded to the read window, so a PRO whose
+    // true origin/delivery falls outside [today-windowDays, today] can have approximate
+    // dates (e.g. a rolled stop older than the window shows a clamped scheduledDate).
+    const note = `Derived from the ${windowDays + 1}-day history warehouse (zero NuVizz calls). Rows whose activity predates the window may have approximate scheduled/late dates.`;
+    return new Response(JSON.stringify({ ok: true, tenant: TENANT, generated: new Date().toISOString(), note, ...report }), { status: 200, headers: cors });
   } catch (e: any) {
     return new Response(JSON.stringify({ ok: false, error: e?.message || 'report failed' }), { status: 500, headers: cors });
   }
