@@ -47,7 +47,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.27.30';
+const APP_VERSION = '0.27.31';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -67,6 +67,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.27.31', 'Auto-flag "CLOSED ON FRIDAYS/MONDAYS" (the Uline instruction format) — the closed-day scanner now also matches the optional "ON" and the plural "S", so e.g. "CLOSED ON FRIDAYS" auto-sets a red Closed-Fri badge on import (all 7 days). Address-fix is also more robust: if the Google Geocoding API is unavailable (REQUEST_DENIED), the corrected addr1/addr2 split is still saved and you can drag the pin via "Correct pin location" instead of losing the fix.'],
   ['0.27.30', 'Mobile status pill is now collapsible (like desktop) — collapses to just the stops count, and the expanded view now also shows the NuVizz call counter (today’s calls / ceiling + mode) alongside total pallets and the load/unplanned feed update times. Shares the collapse state with desktop.'],
   ['0.27.29', 'Address mis-split detection + one-click fix. NuVizz often puts the street in addr2 with a suite/dock/contact in addr1 (e.g. "BLDG 200" / "4310 INDUSTRIAL ACCESS RD"), so the geocoder lands on the wrong spot. Such stops now show an amber "!" pin and a "Address may be mis-split" banner on the stop card with "Fix & move pin" (one-click: swaps the lines, re-geocodes the clean street, saves the corrected address + pin) and "Edit…" (the modal, now with a suite/addr2 field, pre-filled with the suggestion). Detection is conservative and self-clears once corrected. Also adds a new "?" priority flag (indigo pin with a "?") alongside red/yellow/green.'],
   ['0.27.28', 'Bottom table: every column in both the Stops and Loads views is now sortable — click a header to cycle asc → desc (chevron shows the active column). Stops and Loads keep independent sort state. Numeric columns (Stop #, Pallets, Weight, stop count) sort numerically; the Loads Status column sorts by % delivered'],
@@ -5085,17 +5086,24 @@ function MapScreen() {
       city: stop.city || '', state: stop.state || '', zip: stop.zip || '',
     };
     const q = [fields.addr1, fields.city, fields.state, fields.zip].filter(Boolean).join(', ');
-    const geo = await geocodeAddress(google, q);
-    await setDoc(doc(db, 'customer_notes', stop.matchKey), {
+    // Geocode is best-effort: if it fails (e.g. the Geocoding API isn't enabled →
+    // REQUEST_DENIED), still SAVE the corrected addr1/addr2 split so the fix isn't
+    // lost — just leave the pin where it was. The dispatcher can drag it via
+    // "Correct pin location", and a re-fix will move it once geocoding works.
+    let geo = null, geoErr = null;
+    try { geo = await geocodeAddress(google, q); } catch (e) { geoErr = e; }
+    const payload = {
       match_key: stop.matchKey,
       raw_name: stop.businessName || '',
       address_override: fields,
       address_override_at: serverTimestamp(),
-      location_override: { lat: geo.lat, lng: geo.lng },
-      location_override_at: serverTimestamp(),
       last_updated: serverTimestamp(),
-    }, { merge: true });
+    };
+    if (geo) { payload.location_override = { lat: geo.lat, lng: geo.lng }; payload.location_override_at = serverTimestamp(); }
+    await setDoc(doc(db, 'customer_notes', stop.matchKey), payload, { merge: true });
     refresh({ silent: true });
+    // Saved the address; surface (non-fatally) that the pin couldn't be moved.
+    if (geoErr) throw new Error(`Address saved, but the pin couldn’t be moved — ${geoErr.message}. Enable the Geocoding API or use “Correct pin location” to drag it.`);
   }, [google, refresh]);
   const cancelMoveLocation = useCallback(() => { setMovingStop(null); setMovedTo(null); }, []);
   const saveStopLocation = useCallback(async () => {
