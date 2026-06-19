@@ -46,7 +46,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.27.26';
+const APP_VERSION = '0.27.27';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -66,6 +66,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.27.27', 'Bottom table: new Stops | Loads tab toggle. The Loads view groups the current board by loadNbr — one row per load with driver, stop count, a per-status breakdown, and pallet/weight totals. Click a load to open its route drawer and frame the map on that load’s stops'],
   ['0.27.26', 'Map fix: clicking a stop pin now recenters and zooms to STOP_ZOOM (18), matching the list/search behavior — the map-marker click handler was setting the selected stop without panning/zooming'],
   ['0.27.25', 'Incremental-scan Phase 6 (default OFF, flag NUVIZZ_TERMINAL_SKIP): terminal-stop skip cache — stops confirmed delivered (status 90/91) are immutable, so their stopNbr→expectedDate is persisted in Firestore (nuvizz_stop_terminal) and the unplanned /stop/info descent synthesizes them from cache instead of re-probing. Heuristics preserved exactly (synthesized probe carries the stored expected date); targets /stop/info, the dominant remaining call source'],
   ['0.27.24', 'Triple-check hardening (audit follow-ups): undelivered report counts code-less deliveries (deliveredDTTM/normalizedStatus) as delivered, and same-day deliveries on the window edge are surfaced as "indeterminate" (+ readErrors) instead of silently assumed on-time; lean history skips a HALTED (ceiling/kill-switch) index and re-scans; regression tests added for the call-counter merge shape and the day-scoped circuit-breaker expiry'],
@@ -6019,6 +6020,21 @@ function MapScreen() {
           open={bottomTableOpen}
           setOpen={setBottomTableOpen}
           onPick={(s) => { setSelectedDriver(null); setSelectedStop(s); handlePanToStop(s); }}
+          onPickLoad={(loadNbr) => {
+            // Open the load's route drawer (same surface as "View route" on a
+            // stop) and frame the map on that load's positioned stops.
+            setSelectedDriver(null);
+            setSelectedStop(null);
+            setSelectedRoute(loadNbr);
+            if (google && mapRef.current) {
+              const pts = stops.filter((s) => s.loadNbr === loadNbr && s.lat != null && s.lng != null);
+              if (pts.length) {
+                const b = new google.maps.LatLngBounds();
+                pts.forEach((s) => b.extend({ lat: s.lat, lng: s.lng }));
+                mapRef.current.fitBounds(b, 60);
+              }
+            }
+          }}
         />
       </div>
 
@@ -6140,9 +6156,19 @@ function tableStatusBucket(stop) {
   const b = TABLE_STATUS_BUCKETS.find((x) => x.match.includes(st));
   return b ? b.k : 'planned';
 }
+// Compact per-status chips for the Loads view status breakdown.
+const LOAD_BUCKET_ABBR = { unplanned: 'Un', planned: 'Pl', in_transit: 'Tr', completed: 'Dn', cancelled: 'Ex' };
+const LOAD_BUCKET_STYLE = {
+  unplanned: 'bg-slate-100 text-slate-600',
+  planned: 'bg-blue-100 text-blue-700',
+  in_transit: 'bg-amber-100 text-amber-700',
+  completed: 'bg-green-100 text-green-700',
+  cancelled: 'bg-red-100 text-red-700',
+};
 
-function BottomStopsTable({ stops, notes, totalCount, open, setOpen, onPick }) {
+function BottomStopsTable({ stops, notes, totalCount, open, setOpen, onPick, onPickLoad }) {
   const [q, setQ] = useState('');
+  const [view, setView] = useState('stops'); // 'stops' | 'loads'
   const [statusSel, setStatusSel] = useState(() => new Set()); // empty = all
   const [statusOpen, setStatusOpen] = useState(false);
   // Drag-resizable height (px), persisted. Drag the top handle up/down.
@@ -6192,6 +6218,49 @@ function BottomStopsTable({ stops, notes, totalCount, open, setOpen, onPick }) {
       return true;
     });
   }, [stops, q, statusSel]);
+  // Loads view — group the same board (the `stops` we're handed) by loadNbr so
+  // dispatchers can browse current loads instead of individual stops. Each row
+  // aggregates driver, stop count, a per-status breakdown, and pallet/weight
+  // totals. Click a row to open that load's route drawer + frame it on the map.
+  const loadRows = useMemo(() => {
+    const m = new Map();
+    for (const s of stops) {
+      if (!s.loadNbr) continue; // only real (built) loads
+      let g = m.get(s.loadNbr);
+      if (!g) { g = { loadNbr: s.loadNbr, routeName: s.routeName || '', driverName: s.driverName || '', stops: [] }; m.set(s.loadNbr, g); }
+      if (!g.routeName && s.routeName) g.routeName = s.routeName;
+      if (!g.driverName && s.driverName) g.driverName = s.driverName;
+      g.stops.push(s);
+    }
+    const needle = q.trim().toLowerCase();
+    let arr = [...m.values()].map((g) => {
+      const buckets = {};
+      let pallets = 0, weight = 0;
+      for (const s of g.stops) {
+        const bk = tableStatusBucket(s); buckets[bk] = (buckets[bk] || 0) + 1;
+        if (typeof s.cartons === 'number') pallets += s.cartons;
+        if (s.weight != null) weight += Number(s.weight) || 0;
+      }
+      return { loadNbr: g.loadNbr, routeName: g.routeName, driverName: g.driverName, count: g.stops.length, buckets, pallets, weight };
+    });
+    if (needle) arr = arr.filter((g) => [g.loadNbr, g.routeName, g.driverName].filter(Boolean).join(' ').toLowerCase().includes(needle));
+    arr.sort((a, b) => String(a.driverName || '~').localeCompare(String(b.driverName || '~')) || String(a.routeName || a.loadNbr).localeCompare(String(b.routeName || b.loadNbr)));
+    return arr;
+  }, [stops, q]);
+  const loadCols = [
+    { k: 'load', label: 'Load', w: 150, get: (g) => <span className="font-mono text-blue-700">{g.routeName || g.loadNbr}</span> },
+    { k: 'driver', label: 'Driver', w: 180, get: (g) => g.driverName || '—' },
+    { k: 'count', label: 'Stops', w: 60, align: 'right', get: (g) => g.count },
+    { k: 'status', label: 'Status', w: 210, get: (g) => (
+        <span className="inline-flex gap-1">
+          {TABLE_STATUS_BUCKETS.map((b) => g.buckets[b.k]
+            ? <span key={b.k} className={'px-1 rounded text-[10px] font-medium ' + (LOAD_BUCKET_STYLE[b.k] || '')} title={b.label}>{(LOAD_BUCKET_ABBR[b.k] || b.k)} {g.buckets[b.k]}</span>
+            : null)}
+        </span>
+      ) },
+    { k: 'pallets', label: 'Pallets', w: 70, align: 'right', get: (g) => g.pallets || '—' },
+    { k: 'weight', label: 'Weight', w: 90, align: 'right', get: (g) => g.weight ? Math.round(g.weight).toLocaleString() : '—' },
+  ];
   const toggleStatus = (k) => setStatusSel((prev) => { const n = new Set(prev); n.has(k) ? n.delete(k) : n.add(k); return n; });
   return (
     <div className="absolute left-0 right-0 bottom-0 z-[12] bg-white border-t border-slate-200 shadow-[0_-2px_10px_rgba(0,0,0,0.10)] flex flex-col" style={{ height: open ? height : undefined }}>
@@ -6206,11 +6275,25 @@ function BottomStopsTable({ stops, notes, totalCount, open, setOpen, onPick }) {
         </div>
       )}
       <div className="flex items-center gap-2 px-3 py-1.5 border-b border-slate-100">
-        <button onClick={() => setOpen(!open)} className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-700 hover:text-slate-900 whitespace-nowrap" aria-expanded={open}>
+        <button onClick={() => setOpen(!open)} className="inline-flex items-center text-slate-600 hover:text-slate-900" aria-expanded={open} title={open ? 'Collapse' : 'Expand'}>
           {open ? <ChevronDown size={14} /> : <ChevronUp size={14} />}
-          <LayoutList size={13} /> Stops table
-          <span className="text-slate-400 font-normal">({rows.length}{totalCount != null && totalCount !== rows.length ? ` of ${totalCount}` : ''})</span>
         </button>
+        <div className="inline-flex rounded-md border border-slate-200 overflow-hidden text-xs font-semibold whitespace-nowrap">
+          <button
+            onClick={() => { setView('stops'); setOpen(true); }}
+            className={'inline-flex items-center gap-1.5 px-2.5 py-1 ' + (view === 'stops' ? 'bg-blue-50 text-blue-700' : 'text-slate-600 hover:bg-slate-50')}
+          >
+            <LayoutList size={13} /> Stops
+            <span className="font-normal opacity-60">{rows.length}{totalCount != null && totalCount !== rows.length ? `/${totalCount}` : ''}</span>
+          </button>
+          <button
+            onClick={() => { setView('loads'); setOpen(true); }}
+            className={'inline-flex items-center gap-1.5 px-2.5 py-1 border-l border-slate-200 ' + (view === 'loads' ? 'bg-blue-50 text-blue-700' : 'text-slate-600 hover:bg-slate-50')}
+          >
+            <Truck size={13} /> Loads
+            <span className="font-normal opacity-60">{loadRows.length}</span>
+          </button>
+        </div>
         {open && (
           <>
             <div className="relative flex-1 max-w-xs">
@@ -6218,35 +6301,37 @@ function BottomStopsTable({ stops, notes, totalCount, open, setOpen, onPick }) {
               <input
                 value={q}
                 onChange={(e) => setQ(e.target.value)}
-                placeholder="Search table…"
+                placeholder={view === 'loads' ? 'Search loads…' : 'Search table…'}
                 className="w-full border border-slate-300 rounded pl-7 pr-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-400"
               />
             </div>
-            <div className="relative">
-              <button
-                onClick={() => setStatusOpen((v) => !v)}
-                className={'inline-flex items-center gap-1 px-2 py-1 rounded text-xs border ' + (statusSel.size ? 'border-blue-400 text-blue-700 bg-blue-50' : 'border-slate-300 text-slate-600 hover:bg-slate-50')}
-              >
-                <Filter size={12} /> Status{statusSel.size ? ` (${statusSel.size})` : ''}
-              </button>
-              {statusOpen && (
-                <div className="absolute right-0 bottom-full mb-1 w-40 bg-white border border-slate-200 rounded-lg shadow-lg z-20 p-1">
-                  {TABLE_STATUS_BUCKETS.map((b) => (
-                    <label key={b.k} className="flex items-center gap-2 px-2 py-1.5 text-xs hover:bg-slate-50 rounded cursor-pointer">
-                      <input type="checkbox" checked={statusSel.has(b.k)} onChange={() => toggleStatus(b.k)} className="rounded border-slate-300" />
-                      {b.label}
-                    </label>
-                  ))}
-                  {statusSel.size > 0 && (
-                    <button onClick={() => setStatusSel(new Set())} className="w-full text-left px-2 py-1.5 text-xs text-slate-500 hover:bg-slate-50 rounded border-t border-slate-100 mt-1">Clear</button>
-                  )}
-                </div>
-              )}
-            </div>
+            {view === 'stops' && (
+              <div className="relative">
+                <button
+                  onClick={() => setStatusOpen((v) => !v)}
+                  className={'inline-flex items-center gap-1 px-2 py-1 rounded text-xs border ' + (statusSel.size ? 'border-blue-400 text-blue-700 bg-blue-50' : 'border-slate-300 text-slate-600 hover:bg-slate-50')}
+                >
+                  <Filter size={12} /> Status{statusSel.size ? ` (${statusSel.size})` : ''}
+                </button>
+                {statusOpen && (
+                  <div className="absolute right-0 bottom-full mb-1 w-40 bg-white border border-slate-200 rounded-lg shadow-lg z-20 p-1">
+                    {TABLE_STATUS_BUCKETS.map((b) => (
+                      <label key={b.k} className="flex items-center gap-2 px-2 py-1.5 text-xs hover:bg-slate-50 rounded cursor-pointer">
+                        <input type="checkbox" checked={statusSel.has(b.k)} onChange={() => toggleStatus(b.k)} className="rounded border-slate-300" />
+                        {b.label}
+                      </label>
+                    ))}
+                    {statusSel.size > 0 && (
+                      <button onClick={() => setStatusSel(new Set())} className="w-full text-left px-2 py-1.5 text-xs text-slate-500 hover:bg-slate-50 rounded border-t border-slate-100 mt-1">Clear</button>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
           </>
         )}
       </div>
-      {open && (
+      {open && view === 'stops' && (
         <div className="overflow-auto flex-1 min-h-0">
           <table className="text-[11px] border-collapse" style={{ minWidth: cols.reduce((a, c) => a + c.w, 0) }}>
             <thead className="sticky top-0 bg-slate-50 z-10">
@@ -6269,6 +6354,35 @@ function BottomStopsTable({ stops, notes, totalCount, open, setOpen, onPick }) {
                 >
                   {cols.map((c) => (
                     <td key={c.k} className="px-2 py-1 border-b border-slate-100 whitespace-nowrap overflow-hidden text-ellipsis" style={{ maxWidth: c.w, textAlign: c.align || 'left' }}>{c.get(s)}</td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {open && view === 'loads' && (
+        <div className="overflow-auto flex-1 min-h-0">
+          <table className="text-[11px] border-collapse" style={{ minWidth: loadCols.reduce((a, c) => a + c.w, 0) }}>
+            <thead className="sticky top-0 bg-slate-50 z-10">
+              <tr>
+                {loadCols.map((c) => (
+                  <th key={c.k} className="text-left font-semibold text-slate-500 px-2 py-1.5 border-b border-slate-200 whitespace-nowrap" style={{ width: c.w, textAlign: c.align || 'left' }}>{c.label}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {loadRows.length === 0 && (
+                <tr><td colSpan={loadCols.length} className="px-3 py-4 text-slate-400 italic text-center">No loads on the current board.</td></tr>
+              )}
+              {loadRows.map((g) => (
+                <tr
+                  key={g.loadNbr}
+                  onClick={() => onPickLoad && onPickLoad(g.loadNbr)}
+                  className="cursor-pointer hover:bg-blue-50"
+                >
+                  {loadCols.map((c) => (
+                    <td key={c.k} className="px-2 py-1 border-b border-slate-100 whitespace-nowrap overflow-hidden text-ellipsis" style={{ maxWidth: c.w, textAlign: c.align || 'left' }}>{c.get(g)}</td>
                   ))}
                 </tr>
               ))}
