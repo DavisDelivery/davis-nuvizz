@@ -205,13 +205,30 @@ export interface StopIndexMeta {
 //  • partialLoads (Phase 2 lean): only a SUBSET of loads was re-pulled this cycle
 //    (terminal loads deliberately skipped) → keep planned stops we didn't re-scan
 //    so terminal-skip never deletes already-delivered stops.
+// Embedded integer of a prefixed loadNbr ("DAVIS000197184" → 197184). All-digits
+// form, matching loadNbrToInt in nuvizz-scan (kept local to avoid an import cycle).
+function loadDigits(loadNbr: any): number | null {
+  const d = String(loadNbr ?? '').replace(/\D/g, '');
+  return d ? parseInt(d, 10) : null;
+}
+
 export function preserveStopOnWrite(
-  stop: { isPlanned?: boolean },
-  opts: { includeUnplanned: boolean; includeLoads: boolean; partialLoads?: boolean; partialUnplanned?: boolean },
+  stop: { isPlanned?: boolean; loadNbr?: any },
+  opts: { includeUnplanned: boolean; includeLoads: boolean; partialLoads?: boolean; partialUnplanned?: boolean; rescannedLoads?: Set<number> },
 ): boolean {
   if (!opts.includeUnplanned && stop.isPlanned === false) return true;
   if (!opts.includeLoads && stop.isPlanned === true) return true;
-  if (opts.partialLoads && stop.isPlanned === true) return true;
+  if (opts.partialLoads && stop.isPlanned === true) {
+    // R1 (membership-aware): a lean cycle re-pulled only a SUBSET of loads. If THIS
+    // stop's load was among the loads we actually re-pulled and the stop is no
+    // longer in the fresh results, it was genuinely removed from that load → do
+    // NOT preserve (let it prune). Preserve only stops on loads we did NOT re-pull
+    // (terminal-skipped / outside the target set) — their absence is ambiguous, not
+    // a removal. rescannedLoads omitted → legacy behaviour (preserve all planned).
+    const ln = loadDigits(stop.loadNbr);
+    if (opts.rescannedLoads && ln != null && opts.rescannedLoads.has(ln)) return false;
+    return true;
+  }
   // Phase 3 lean: the unplanned descent only re-probed NEW stop numbers above the
   // last high-water, so older still-unplanned orders weren't re-scanned → preserve
   // them instead of pruning (mirrors partialLoads for the planned side).
@@ -228,12 +245,16 @@ export async function writeStops(
   dateStr: string,
   stops: any[],
   scannedAt: string,
-  opts: { includeUnplanned?: boolean; includeLoads?: boolean; partialLoads?: boolean; partialUnplanned?: boolean } = {},
+  opts: { includeUnplanned?: boolean; includeLoads?: boolean; partialLoads?: boolean; partialUnplanned?: boolean; rescannedLoads?: number[] } = {},
 ): Promise<StopIndexMeta> {
   const includeUnplanned = opts.includeUnplanned !== false; // default true (full scan)
   const includeLoads = opts.includeLoads !== false;         // default true
   const partialLoads = opts.partialLoads === true;          // Phase 2 lean: only a SUBSET of loads re-pulled
   const partialUnplanned = opts.partialUnplanned === true;  // Phase 3 lean: only NEW stop numbers re-probed
+  // R1: the load NUMBERS actually re-pulled this lean cycle — lets preserve prune a
+  // planned stop removed from a load we DID re-scan, while keeping stops on loads
+  // we didn't touch. Empty/undefined → preserve all planned (legacy partial-loads).
+  const rescannedLoads = opts.rescannedLoads && opts.rescannedLoads.length ? new Set(opts.rescannedLoads) : undefined;
   const base = `${COLLECTION}/${parentId(tenant, dateStr)}`;
   const withNbr = stops.filter((s) => s && s.stopNbr);
   const nextNbrs = new Set(withNbr.map((s) => String(s.stopNbr)));
@@ -247,7 +268,7 @@ export async function writeStops(
   // load-only run keeps existing status-10 orders; an unplanned-only run keeps
   // existing planned/routed stops. Docs re-scanned this run are upserted below.
   const preserved = existing.filter((d) =>
-    !nextNbrs.has(String(d._id)) && preserveStopOnWrite(d, { includeUnplanned, includeLoads, partialLoads, partialUnplanned }));
+    !nextNbrs.has(String(d._id)) && preserveStopOnWrite(d, { includeUnplanned, includeLoads, partialLoads, partialUnplanned, rescannedLoads }));
   const preservedNbrs = new Set(preserved.map((d) => String(d._id)));
   await Promise.all(
     existing
@@ -502,13 +523,20 @@ export interface ScanState {
   unplannedStopNbrs?: number[];
 }
 
-export async function readScanState(dateStr: string): Promise<ScanState | null> {
-  const doc = await getDoc(`${SCAN_STATE_COLLECTION}/${dateStr}`);
+// R5: scan_state is keyed per tenant so a second tenant can't collide on the
+// roster/high-water. Back-compat: `tenant` is optional; callers pass it now. On
+// the first read after this change the prefixed key is absent → null → one cold
+// (wide) cycle reseeds it. The legacy date-only docs are simply abandoned.
+function scanStateKey(tenant: string | undefined, dateStr: string): string {
+  return `${SCAN_STATE_COLLECTION}/${tenant ? `${tenant}__${dateStr}` : dateStr}`;
+}
+export async function readScanState(dateStr: string, tenant?: string): Promise<ScanState | null> {
+  const doc = await getDoc(scanStateKey(tenant, dateStr));
   return (doc as any) || null;
 }
 
-export async function writeScanState(dateStr: string, state: ScanState): Promise<void> {
-  await setDoc(`${SCAN_STATE_COLLECTION}/${dateStr}`, state as any);
+export async function writeScanState(dateStr: string, state: ScanState, tenant?: string): Promise<void> {
+  await setDoc(scanStateKey(tenant, dateStr), state as any);
 }
 
 // ── Phase 4: canonical fleet index (the shape SITE A already reads) ───────────

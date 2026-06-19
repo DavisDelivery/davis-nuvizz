@@ -51,6 +51,24 @@ test('selectLoadProbeTargets: gap sweep every 3rd cycle in-window fills missing 
   assert.ok(plan.numbers.includes(196999), 'gap 196999 swept');
 });
 
+test('selectLoadProbeTargets (R2): gap-sweep cycles RE-CONFIRM terminal loads; normal cycles skip them', () => {
+  const st = mkState([mkLoad(196998, true), mkLoad(196999, false), mkLoad(197000, true)], 3); // two terminal
+  const sweep = selectLoadProbeTargets(st, { inWindow: true, scanCount: 3, fwdIn: 50, fwdOut: 10, gapSweepEvery: 3 });
+  assert.equal(sweep.gapSweep, true);
+  assert.ok(sweep.numbers.includes(196998) && sweep.numbers.includes(197000), 'terminal loads re-confirmed on a gap-sweep cycle');
+  const normal = selectLoadProbeTargets(st, { inWindow: true, scanCount: 1, fwdIn: 50, fwdOut: 10, gapSweepEvery: 3 });
+  assert.equal(normal.gapSweep, false);
+  assert.ok(!normal.numbers.includes(196998) && !normal.numbers.includes(197000), 'terminal loads skipped on a normal cycle');
+  assert.equal(normal.activeLoads, 1, 'only the one non-terminal load is "active"');
+});
+
+test('selectLoadProbeTargets (R2): all-terminal roster on a gap-sweep cycle re-confirms every load', () => {
+  const st = mkState([mkLoad(197000, true), mkLoad(197001, true), mkLoad(197002, true)], 3);
+  const plan = selectLoadProbeTargets(st, { inWindow: true, scanCount: 3, fwdIn: 50, fwdOut: 10, gapSweepEvery: 3 });
+  assert.equal(plan.activeLoads, 0, 'no active (non-terminal) loads');
+  assert.ok([197000, 197001, 197002].every((n) => plan.numbers.includes(n)), 'all terminals re-confirmed on the sweep');
+});
+
 test('selectLoadProbeTargets: out-of-window = small buffer, never gap-sweeps', () => {
   const st = mkState([mkLoad(196998, false), mkLoad(197000, false)], 3);
   const plan = selectLoadProbeTargets(st, { inWindow: false, scanCount: 3, fwdIn: 50, fwdOut: 10, gapSweepEvery: 3 });

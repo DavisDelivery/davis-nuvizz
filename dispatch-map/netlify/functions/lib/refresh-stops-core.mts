@@ -148,13 +148,15 @@ export async function runRefreshStops(req: Request): Promise<Response> {
       }
       // Read this date's existing roster ONCE — used for BOTH Phase 2 lean planning
       // (as the current known-active set) and the Phase 1 shadow write below.
-      const priorState = includeLoads ? await readScanState(date) : null;
+      const priorState = includeLoads ? await readScanState(date, TENANT) : null;
 
       // Phase 2 (gated by NUVIZZ_LEAN_DISCOVERY=on): probe only known-active loads +
       // forward buffer + periodic gap sweep instead of the ±window. null plan ⇒
       // leave loadTargets undefined ⇒ scanDate falls back to the wide window.
+      // R10: a MANUAL scan bypasses lean entirely (wide window + full unplanned
+      // floor) so a human "refresh" is always the authoritative full re-scan.
       let loadTargets: number[] | null = null;
-      if (LEAN_DISCOVERY && includeLoads) {
+      if (LEAN_DISCOVERY && includeLoads && !isManual) {
         try {
           const plan = selectLoadProbeTargets(priorState, {
             inWindow: isInRoutingWindow(decision.etHour),
@@ -193,7 +195,10 @@ export async function runRefreshStops(req: Request): Promise<Response> {
       // partial* : in lean mode we re-pulled only a SUBSET of each feed — tell
       // writeStops to PRESERVE the stops it didn't re-scan (terminal loads /
       // older still-unplanned orders) so lean never prunes already-known stops.
-      const meta = await writeStops(TENANT, date, scan.stops, scan.scannedAt, { includeUnplanned, includeLoads, partialLoads: !!loadTargets, partialUnplanned: leanUnplanned });
+      // R1: tell writeStops which load NUMBERS we actually re-pulled this lean cycle
+      // so it can prune a stop removed from a re-scanned load (vs preserving stops on
+      // loads we didn't touch). Only meaningful in lean mode (loadTargets set).
+      const meta = await writeStops(TENANT, date, scan.stops, scan.scannedAt, { includeUnplanned, includeLoads, partialLoads: !!loadTargets, partialUnplanned: leanUnplanned, rescannedLoads: loadTargets || undefined });
       // Only rebuild the fleet (load) index when we actually scanned loads — an
       // unplanned-only run would otherwise wipe the load index with an empty scan.
       if (includeLoads) {
@@ -209,7 +214,7 @@ export async function runRefreshStops(req: Request): Promise<Response> {
             descentComplete: scan.descentComplete,
             observedFrontierStopNbr: scan.observedFrontierStopNbr,
           });
-          await writeScanState(date, state);
+          await writeScanState(date, state, TENANT);
           const inWindow = isInRoutingWindow(decision.etHour);
           const wp = shadowWouldProbe(state, { inWindow, fwdIn: 50, fwdOut: 10 });
           const windowSize = preRange ? (preRange.endNbr - preRange.startNbr + 1) : (loadTargets ? loadTargets.length : null);
