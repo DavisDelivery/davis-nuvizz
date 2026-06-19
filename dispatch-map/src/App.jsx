@@ -47,7 +47,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.27.31';
+const APP_VERSION = '0.27.32';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -67,6 +67,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.27.32', 'Filters: new "Potential address issues" checkbox (shows stops the mis-split detector flags) and an "Any equipment restriction" checkbox (complements the specific-restriction dropdown, which it supersedes when on). Address detector broadened: it now flags a stop whose addr1 doesn’t start with a house number while addr2 does — e.g. a dock descriptor "MGE1 NON INVENTORY DOCK DR 178" with the real street "652 BROADWAY AVE" in addr2 (previously missed because addr1 contained digits). Normal addresses (addr1 starting with the house number) are never flagged.'],
   ['0.27.31', 'Auto-flag "CLOSED ON FRIDAYS/MONDAYS" (the Uline instruction format) — the closed-day scanner now also matches the optional "ON" and the plural "S", so e.g. "CLOSED ON FRIDAYS" auto-sets a red Closed-Fri badge on import (all 7 days). Address-fix is also more robust: if the Google Geocoding API is unavailable (REQUEST_DENIED), the corrected addr1/addr2 split is still saved and you can drag the pin via "Correct pin location" instead of losing the fix.'],
   ['0.27.30', 'Mobile status pill is now collapsible (like desktop) — collapses to just the stops count, and the expanded view now also shows the NuVizz call counter (today’s calls / ceiling + mode) alongside total pallets and the load/unplanned feed update times. Shares the collapse state with desktop.'],
   ['0.27.29', 'Address mis-split detection + one-click fix. NuVizz often puts the street in addr2 with a suite/dock/contact in addr1 (e.g. "BLDG 200" / "4310 INDUSTRIAL ACCESS RD"), so the geocoder lands on the wrong spot. Such stops now show an amber "!" pin and a "Address may be mis-split" banner on the stop card with "Fix & move pin" (one-click: swaps the lines, re-geocodes the clean street, saves the corrected address + pin) and "Edit…" (the modal, now with a suite/addr2 field, pre-filled with the suggestion). Detection is conservative and self-clears once corrected. Also adds a new "?" priority flag (indigo pin with a "?") alongside red/yellow/green.'],
@@ -2486,14 +2487,26 @@ function FilterPanel({ filters, setFilters, counts }) {
           checked={!!F.unflagged}
           onChange={(b) => setFilters({ ...F, unflagged: b || undefined })}
         />
+        <Toggle
+          label="Potential address issues"
+          checked={!!F.addressIssue}
+          onChange={(b) => setFilters({ ...F, addressIssue: b || undefined })}
+        />
       </div>
 
       <div>
         <div className="text-xs font-semibold text-slate-600 mb-1">Equipment restriction</div>
+        <Toggle
+          label="Any equipment restriction"
+          checked={!!F.anyEquipment}
+          onChange={(b) => setFilters({ ...F, anyEquipment: b || undefined })}
+        />
         <select
           value={F.equipment || ''}
           onChange={(e) => setFilters({ ...F, equipment: e.target.value || undefined })}
-          className="w-full border border-slate-300 rounded px-2 py-1 text-xs"
+          className="w-full border border-slate-300 rounded px-2 py-1 text-xs mt-1"
+          disabled={!!F.anyEquipment}
+          title={F.anyEquipment ? 'Showing all equipment restrictions' : undefined}
         >
           <option value="">Any</option>
           {EQUIPMENT_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
@@ -2540,6 +2553,12 @@ function applyFilters(stops, notesByKey, filters) {
     if (filters.equipment) {
       if (!n?.equipment_restrictions?.includes(filters.equipment)) return false;
     }
+    // "Any equipment restriction" — stops carrying at least one equipment flag
+    // (the checkbox complement to the specific-restriction dropdown).
+    if (filters.anyEquipment && !(n?.equipment_restrictions?.length)) return false;
+    // "Potential address issues" — stops the mis-split detector flags (addr1 is a
+    // suite/dock/contact while the street is in addr2), so dispatch can sweep them.
+    if (filters.addressIssue && !addressLooksOff(s, n)) return false;
     if (filters.hasHours && !referencesReceivingHours(s, n)) return false;
     return true;
   });

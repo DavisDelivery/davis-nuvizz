@@ -48,3 +48,23 @@ test('never flags an already-corrected stop (has address_override)', () => {
 test('empty addr1 is left alone (different problem)', () => {
   assert.equal(addressLooksOff({ addr1: '', addr2: '123 Main St' }, null), false);
 });
+
+// Dock-descriptor addr1 that HAS digits but doesn't START with the house number,
+// with the real street in addr2 (the real AMAZON MGE1 stop that was missed).
+const AMAZON = { addr1: 'MGE1 NON INVENTORY DOCK DR 178', addr2: '652 BROADWAY AVE ATTN BEN SCRU', city: 'BRASELTON', state: 'GA', zip: '30517' };
+
+test('flags a dock-descriptor addr1 (digits but no leading house #) with street in addr2', () => {
+  assert.equal(addressLooksOff(AMAZON, null), true);
+  assert.deepEqual(suggestAddressFix(AMAZON), { addr1: '652 BROADWAY AVE ATTN BEN SCRU', addr2: 'MGE1 NON INVENTORY DOCK DR 178', reason: 'street was in addr2 (swapped)' });
+  const q = [suggestAddressFix(AMAZON).addr1, AMAZON.city, AMAZON.state, AMAZON.zip].join(', ');
+  assert.equal(q, '652 BROADWAY AVE ATTN BEN SCRU, BRASELTON, GA, 30517');
+});
+
+test('broadened rule does NOT over-flag: addr1 leads with a house number → clean', () => {
+  // Street already in addr1 (starts with a number) → never flagged, even if addr2 has a number.
+  assert.equal(addressLooksOff({ addr1: '178 DOCK DR', addr2: '652 OTHER ST' }, null), false);
+  assert.equal(addressLooksOff({ addr1: '652 BROADWAY AVE', addr2: 'MGE1 DOCK 178' }, null), false);
+  // addr2 not a street number → not a confident swap.
+  assert.equal(addressLooksOff({ addr1: 'HIGHWAY 20', addr2: 'SPRINGFIELD GA' }, null), false);
+  assert.equal(addressLooksOff({ addr1: 'MGE1 DOCK 178', addr2: '' }, null), false);
+});
