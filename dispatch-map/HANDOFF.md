@@ -1,5 +1,20 @@
 # Dispatch Map — Handoff
 
+## ⏰ OPEN REMINDER (set 2026-06-18 eve) — surface this at the next session
+- **Evaluate the unplanned "periodic deep sweep" (Phase 7 candidate) call cost.** Chad
+  chose to MEASURE FIRST (not implement yet). Tomorrow during work: (1) read the CLEAN
+  daily NuVizz counter (`nuvizz_ops/calls__<date>`, byRoute) now that Phase 6
+  terminal-skip (`NUVIZZ_TERMINAL_SKIP=on`, set on dd-dispatch-map) has run a full day —
+  compare /stop/info vs 6/18's 18,142 and total vs 24,446; (2) estimate how many EXTRA
+  calls a periodic full-band descent would add (mostly offset by Phase 6 caching the
+  delivered stops), then decide deep-sweep vs widen-buffer.
+- **Why the sweep is needed:** stop numbers track CREATION order, not delivery date, so an
+  order created early for a later delivery (e.g. PRO 7135100 — created 6/17 for 6/18) gets
+  a LOW number below its delivery-date cluster. The descent's early-stop
+  (POST_TARGET_CHUNKS_TO_STOP=3) quits before reaching such outliers, and the lean warm
+  floor (highWaterUnplanned − 200) never revisits them → silently missed. The deep sweep
+  must descend the full multi-day creation window WITHOUT early-stopping to catch them.
+
 ## Incremental-scan call reduction (Jul 2025) — Phase 1 SHADOW (v0.27.14)
 Goal: cut NuVizz calls/scan (~690 measured: 510 /load/info + 180 /stop/info) by
 probing only known-active loads + a small buffer instead of a ±300 window.
