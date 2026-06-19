@@ -46,7 +46,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.27.26';
+const APP_VERSION = '0.27.28';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -66,6 +66,8 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.27.28', 'Bottom table: every column in both the Stops and Loads views is now sortable — click a header to cycle asc → desc (chevron shows the active column). Stops and Loads keep independent sort state. Numeric columns (Stop #, Pallets, Weight, stop count) sort numerically; the Loads Status column sorts by % delivered'],
+  ['0.27.27', 'Bottom table: new Stops | Loads tab toggle. The Loads view groups the current board by loadNbr — one row per load with driver, stop count, a per-status breakdown, and pallet/weight totals. Click a load to open its route drawer and frame the map on that load’s stops'],
   ['0.27.26', 'Map fix: clicking a stop pin now recenters and zooms to STOP_ZOOM (18), matching the list/search behavior — the map-marker click handler was setting the selected stop without panning/zooming'],
   ['0.27.25', 'Incremental-scan Phase 6 (default OFF, flag NUVIZZ_TERMINAL_SKIP): terminal-stop skip cache — stops confirmed delivered (status 90/91) are immutable, so their stopNbr→expectedDate is persisted in Firestore (nuvizz_stop_terminal) and the unplanned /stop/info descent synthesizes them from cache instead of re-probing. Heuristics preserved exactly (synthesized probe carries the stored expected date); targets /stop/info, the dominant remaining call source'],
   ['0.27.24', 'Triple-check hardening (audit follow-ups): undelivered report counts code-less deliveries (deliveredDTTM/normalizedStatus) as delivered, and same-day deliveries on the window edge are surfaced as "indeterminate" (+ readErrors) instead of silently assumed on-time; lean history skips a HALTED (ceiling/kill-switch) index and re-scans; regression tests added for the call-counter merge shape and the day-scoped circuit-breaker expiry'],
@@ -635,6 +637,44 @@ function SortableTh({ label, k, sortKey, sortDir, onToggle, className = '' }) {
       <span className="inline-flex items-center gap-1">
         {label}
         {active ? (sortDir === 'asc' ? <ChevronUp size={12} /> : <ChevronDown size={12} />) : null}
+      </span>
+    </th>
+  );
+}
+
+// Sort an array of rows by a column's `sortVal` accessor (cols whose `get`
+// returns JSX can't be sorted on directly). `sort` = { key, dir }; null key =
+// original order. Numbers compare numerically, everything else natural-string.
+function sortRows(rows, cols, sort) {
+  if (!sort || !sort.key) return rows;
+  const col = cols.find((c) => c.k === sort.key);
+  const val = (col && col.sortVal) || (() => null);
+  const copy = [...rows];
+  copy.sort((a, b) => {
+    const av = val(a), bv = val(b);
+    if (av == null && bv == null) return 0;
+    if (av == null) return 1;
+    if (bv == null) return -1;
+    if (typeof av === 'number' && typeof bv === 'number') return av - bv;
+    return String(av).localeCompare(String(bv), undefined, { numeric: true, sensitivity: 'base' });
+  });
+  if (sort.dir === 'desc') copy.reverse();
+  return copy;
+}
+
+// Dense clickable header cell for the bottom data grid (matches its compact th
+// style; keeps the chevron next to the label even for right-aligned columns).
+function GridSortTh({ col, sort, onToggle }) {
+  const active = sort.key === col.k;
+  return (
+    <th
+      onClick={() => onToggle(col.k)}
+      className="font-semibold text-slate-500 px-2 py-1.5 border-b border-slate-200 whitespace-nowrap cursor-pointer select-none hover:bg-slate-100"
+      style={{ width: col.w, textAlign: col.align || 'left' }}
+    >
+      <span className="inline-flex items-center gap-1" style={{ flexDirection: col.align === 'right' ? 'row-reverse' : 'row' }}>
+        {col.label}
+        {active ? (sort.dir === 'asc' ? <ChevronUp size={12} /> : <ChevronDown size={12} />) : null}
       </span>
     </th>
   );
@@ -6019,6 +6059,21 @@ function MapScreen() {
           open={bottomTableOpen}
           setOpen={setBottomTableOpen}
           onPick={(s) => { setSelectedDriver(null); setSelectedStop(s); handlePanToStop(s); }}
+          onPickLoad={(loadNbr) => {
+            // Open the load's route drawer (same surface as "View route" on a
+            // stop) and frame the map on that load's positioned stops.
+            setSelectedDriver(null);
+            setSelectedStop(null);
+            setSelectedRoute(loadNbr);
+            if (google && mapRef.current) {
+              const pts = stops.filter((s) => s.loadNbr === loadNbr && s.lat != null && s.lng != null);
+              if (pts.length) {
+                const b = new google.maps.LatLngBounds();
+                pts.forEach((s) => b.extend({ lat: s.lat, lng: s.lng }));
+                mapRef.current.fitBounds(b, 60);
+              }
+            }
+          }}
         />
       </div>
 
@@ -6140,9 +6195,19 @@ function tableStatusBucket(stop) {
   const b = TABLE_STATUS_BUCKETS.find((x) => x.match.includes(st));
   return b ? b.k : 'planned';
 }
+// Compact per-status chips for the Loads view status breakdown.
+const LOAD_BUCKET_ABBR = { unplanned: 'Un', planned: 'Pl', in_transit: 'Tr', completed: 'Dn', cancelled: 'Ex' };
+const LOAD_BUCKET_STYLE = {
+  unplanned: 'bg-slate-100 text-slate-600',
+  planned: 'bg-blue-100 text-blue-700',
+  in_transit: 'bg-amber-100 text-amber-700',
+  completed: 'bg-green-100 text-green-700',
+  cancelled: 'bg-red-100 text-red-700',
+};
 
-function BottomStopsTable({ stops, notes, totalCount, open, setOpen, onPick }) {
+function BottomStopsTable({ stops, notes, totalCount, open, setOpen, onPick, onPickLoad }) {
   const [q, setQ] = useState('');
+  const [view, setView] = useState('stops'); // 'stops' | 'loads'
   const [statusSel, setStatusSel] = useState(() => new Set()); // empty = all
   const [statusOpen, setStatusOpen] = useState(false);
   // Drag-resizable height (px), persisted. Drag the top handle up/down.
@@ -6165,20 +6230,20 @@ function BottomStopsTable({ stops, notes, totalCount, open, setOpen, onPick }) {
     document.addEventListener('pointerup', up);
   };
   const cols = [
-    { k: 'stop', label: 'Stop #', w: 96, get: (s) => <span className="font-mono text-blue-700">{s.stopNbr}</span> },
-    { k: 'name', label: 'Ship To Name', w: 220, get: (s) => s.businessName || '—' },
-    { k: 'addr1', label: 'Address 1', w: 200, get: (s) => s.addr1 || '—' },
-    { k: 'addr2', label: 'Address 2', w: 150, get: (s) => s.addr2 || '' },
-    { k: 'city', label: 'City', w: 120, get: (s) => s.city || '—' },
-    { k: 'zip', label: 'Zip', w: 70, get: (s) => s.zip || '' },
-    { k: 'cartons', label: 'Pallets', w: 70, get: (s) => (s.cartons ?? '—'), align: 'right' },
-    { k: 'weight', label: 'Weight', w: 80, get: (s) => (s.weight != null ? Number(s.weight).toLocaleString() : '—'), align: 'right' },
+    { k: 'stop', label: 'Stop #', w: 96, get: (s) => <span className="font-mono text-blue-700">{s.stopNbr}</span>, sortVal: (s) => (Number.isFinite(Number(s.stopNbr)) ? Number(s.stopNbr) : s.stopNbr) },
+    { k: 'name', label: 'Ship To Name', w: 220, get: (s) => s.businessName || '—', sortVal: (s) => s.businessName },
+    { k: 'addr1', label: 'Address 1', w: 200, get: (s) => s.addr1 || '—', sortVal: (s) => s.addr1 },
+    { k: 'addr2', label: 'Address 2', w: 150, get: (s) => s.addr2 || '', sortVal: (s) => s.addr2 },
+    { k: 'city', label: 'City', w: 120, get: (s) => s.city || '—', sortVal: (s) => s.city },
+    { k: 'zip', label: 'Zip', w: 70, get: (s) => s.zip || '', sortVal: (s) => s.zip },
+    { k: 'cartons', label: 'Pallets', w: 70, get: (s) => (s.cartons ?? '—'), align: 'right', sortVal: (s) => (typeof s.cartons === 'number' ? s.cartons : null) },
+    { k: 'weight', label: 'Weight', w: 80, get: (s) => (s.weight != null ? Number(s.weight).toLocaleString() : '—'), align: 'right', sortVal: (s) => (s.weight != null ? Number(s.weight) : null) },
     { k: 'restr', label: 'Restrictions', w: 160, get: (s) => {
         const keys = getRestrictionBadgeKeys(notes.get(s.matchKey) || null);
         return keys.length ? keys.map((k) => RESTRICTION_ICONS[k]?.short || k).join(', ') : '';
-      } },
-    { k: 'load', label: 'Load', w: 150, get: (s) => s.routeName || s.loadNbr || '' },
-    { k: 'driver', label: 'Driver', w: 150, get: (s) => s.driverName || '' },
+      }, sortVal: (s) => getRestrictionBadgeKeys(notes.get(s.matchKey) || null).map((k) => RESTRICTION_ICONS[k]?.short || k).join(', ') },
+    { k: 'load', label: 'Load', w: 150, get: (s) => s.routeName || s.loadNbr || '', sortVal: (s) => s.routeName || s.loadNbr || '' },
+    { k: 'driver', label: 'Driver', w: 150, get: (s) => s.driverName || '', sortVal: (s) => s.driverName },
   ];
   const rows = useMemo(() => {
     const needle = q.trim().toLowerCase();
@@ -6192,6 +6257,58 @@ function BottomStopsTable({ stops, notes, totalCount, open, setOpen, onPick }) {
       return true;
     });
   }, [stops, q, statusSel]);
+  // Loads view — group the same board (the `stops` we're handed) by loadNbr so
+  // dispatchers can browse current loads instead of individual stops. Each row
+  // aggregates driver, stop count, a per-status breakdown, and pallet/weight
+  // totals. Click a row to open that load's route drawer + frame it on the map.
+  const loadRows = useMemo(() => {
+    const m = new Map();
+    for (const s of stops) {
+      if (!s.loadNbr) continue; // only real (built) loads
+      let g = m.get(s.loadNbr);
+      if (!g) { g = { loadNbr: s.loadNbr, routeName: s.routeName || '', driverName: s.driverName || '', stops: [] }; m.set(s.loadNbr, g); }
+      if (!g.routeName && s.routeName) g.routeName = s.routeName;
+      if (!g.driverName && s.driverName) g.driverName = s.driverName;
+      g.stops.push(s);
+    }
+    const needle = q.trim().toLowerCase();
+    let arr = [...m.values()].map((g) => {
+      const buckets = {};
+      let pallets = 0, weight = 0;
+      for (const s of g.stops) {
+        const bk = tableStatusBucket(s); buckets[bk] = (buckets[bk] || 0) + 1;
+        if (typeof s.cartons === 'number') pallets += s.cartons;
+        if (s.weight != null) weight += Number(s.weight) || 0;
+      }
+      return { loadNbr: g.loadNbr, routeName: g.routeName, driverName: g.driverName, count: g.stops.length, buckets, pallets, weight };
+    });
+    if (needle) arr = arr.filter((g) => [g.loadNbr, g.routeName, g.driverName].filter(Boolean).join(' ').toLowerCase().includes(needle));
+    arr.sort((a, b) => String(a.driverName || '~').localeCompare(String(b.driverName || '~')) || String(a.routeName || a.loadNbr).localeCompare(String(b.routeName || b.loadNbr)));
+    return arr;
+  }, [stops, q]);
+  const loadCols = [
+    { k: 'load', label: 'Load', w: 150, get: (g) => <span className="font-mono text-blue-700">{g.routeName || g.loadNbr}</span>, sortVal: (g) => g.routeName || g.loadNbr },
+    { k: 'driver', label: 'Driver', w: 180, get: (g) => g.driverName || '—', sortVal: (g) => g.driverName },
+    { k: 'count', label: 'Stops', w: 60, align: 'right', get: (g) => g.count, sortVal: (g) => g.count },
+    { k: 'status', label: 'Status', w: 210, get: (g) => (
+        <span className="inline-flex gap-1">
+          {TABLE_STATUS_BUCKETS.map((b) => g.buckets[b.k]
+            ? <span key={b.k} className={'px-1 rounded text-[10px] font-medium ' + (LOAD_BUCKET_STYLE[b.k] || '')} title={b.label}>{(LOAD_BUCKET_ABBR[b.k] || b.k)} {g.buckets[b.k]}</span>
+            : null)}
+        </span>
+      ), sortVal: (g) => (g.count ? (g.buckets.completed || 0) / g.count : 0) /* % delivered */ },
+    { k: 'pallets', label: 'Pallets', w: 70, align: 'right', get: (g) => g.pallets || '—', sortVal: (g) => g.pallets },
+    { k: 'weight', label: 'Weight', w: 90, align: 'right', get: (g) => g.weight ? Math.round(g.weight).toLocaleString() : '—', sortVal: (g) => g.weight },
+  ];
+  // Per-table column sort. null key = original order; click cycles asc → desc.
+  // Stops and Loads keep independent sort so switching tabs preserves each.
+  const [stopSort, setStopSort] = useState({ key: null, dir: 'asc' });
+  const [loadSort, setLoadSort] = useState({ key: null, dir: 'asc' });
+  const cycleSort = (setSort) => (k) => setSort((p) => (p.key === k ? { key: k, dir: p.dir === 'asc' ? 'desc' : 'asc' } : { key: k, dir: 'asc' }));
+  const toggleStopSort = cycleSort(setStopSort);
+  const toggleLoadSort = cycleSort(setLoadSort);
+  const sortedRows = useMemo(() => sortRows(rows, cols, stopSort), [rows, stopSort]); // eslint-disable-line react-hooks/exhaustive-deps
+  const sortedLoadRows = useMemo(() => sortRows(loadRows, loadCols, loadSort), [loadRows, loadSort]); // eslint-disable-line react-hooks/exhaustive-deps
   const toggleStatus = (k) => setStatusSel((prev) => { const n = new Set(prev); n.has(k) ? n.delete(k) : n.add(k); return n; });
   return (
     <div className="absolute left-0 right-0 bottom-0 z-[12] bg-white border-t border-slate-200 shadow-[0_-2px_10px_rgba(0,0,0,0.10)] flex flex-col" style={{ height: open ? height : undefined }}>
@@ -6206,11 +6323,25 @@ function BottomStopsTable({ stops, notes, totalCount, open, setOpen, onPick }) {
         </div>
       )}
       <div className="flex items-center gap-2 px-3 py-1.5 border-b border-slate-100">
-        <button onClick={() => setOpen(!open)} className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-700 hover:text-slate-900 whitespace-nowrap" aria-expanded={open}>
+        <button onClick={() => setOpen(!open)} className="inline-flex items-center text-slate-600 hover:text-slate-900" aria-expanded={open} title={open ? 'Collapse' : 'Expand'}>
           {open ? <ChevronDown size={14} /> : <ChevronUp size={14} />}
-          <LayoutList size={13} /> Stops table
-          <span className="text-slate-400 font-normal">({rows.length}{totalCount != null && totalCount !== rows.length ? ` of ${totalCount}` : ''})</span>
         </button>
+        <div className="inline-flex rounded-md border border-slate-200 overflow-hidden text-xs font-semibold whitespace-nowrap">
+          <button
+            onClick={() => { setView('stops'); setOpen(true); }}
+            className={'inline-flex items-center gap-1.5 px-2.5 py-1 ' + (view === 'stops' ? 'bg-blue-50 text-blue-700' : 'text-slate-600 hover:bg-slate-50')}
+          >
+            <LayoutList size={13} /> Stops
+            <span className="font-normal opacity-60">{rows.length}{totalCount != null && totalCount !== rows.length ? `/${totalCount}` : ''}</span>
+          </button>
+          <button
+            onClick={() => { setView('loads'); setOpen(true); }}
+            className={'inline-flex items-center gap-1.5 px-2.5 py-1 border-l border-slate-200 ' + (view === 'loads' ? 'bg-blue-50 text-blue-700' : 'text-slate-600 hover:bg-slate-50')}
+          >
+            <Truck size={13} /> Loads
+            <span className="font-normal opacity-60">{loadRows.length}</span>
+          </button>
+        </div>
         {open && (
           <>
             <div className="relative flex-1 max-w-xs">
@@ -6218,49 +6349,51 @@ function BottomStopsTable({ stops, notes, totalCount, open, setOpen, onPick }) {
               <input
                 value={q}
                 onChange={(e) => setQ(e.target.value)}
-                placeholder="Search table…"
+                placeholder={view === 'loads' ? 'Search loads…' : 'Search table…'}
                 className="w-full border border-slate-300 rounded pl-7 pr-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-400"
               />
             </div>
-            <div className="relative">
-              <button
-                onClick={() => setStatusOpen((v) => !v)}
-                className={'inline-flex items-center gap-1 px-2 py-1 rounded text-xs border ' + (statusSel.size ? 'border-blue-400 text-blue-700 bg-blue-50' : 'border-slate-300 text-slate-600 hover:bg-slate-50')}
-              >
-                <Filter size={12} /> Status{statusSel.size ? ` (${statusSel.size})` : ''}
-              </button>
-              {statusOpen && (
-                <div className="absolute right-0 bottom-full mb-1 w-40 bg-white border border-slate-200 rounded-lg shadow-lg z-20 p-1">
-                  {TABLE_STATUS_BUCKETS.map((b) => (
-                    <label key={b.k} className="flex items-center gap-2 px-2 py-1.5 text-xs hover:bg-slate-50 rounded cursor-pointer">
-                      <input type="checkbox" checked={statusSel.has(b.k)} onChange={() => toggleStatus(b.k)} className="rounded border-slate-300" />
-                      {b.label}
-                    </label>
-                  ))}
-                  {statusSel.size > 0 && (
-                    <button onClick={() => setStatusSel(new Set())} className="w-full text-left px-2 py-1.5 text-xs text-slate-500 hover:bg-slate-50 rounded border-t border-slate-100 mt-1">Clear</button>
-                  )}
-                </div>
-              )}
-            </div>
+            {view === 'stops' && (
+              <div className="relative">
+                <button
+                  onClick={() => setStatusOpen((v) => !v)}
+                  className={'inline-flex items-center gap-1 px-2 py-1 rounded text-xs border ' + (statusSel.size ? 'border-blue-400 text-blue-700 bg-blue-50' : 'border-slate-300 text-slate-600 hover:bg-slate-50')}
+                >
+                  <Filter size={12} /> Status{statusSel.size ? ` (${statusSel.size})` : ''}
+                </button>
+                {statusOpen && (
+                  <div className="absolute right-0 bottom-full mb-1 w-40 bg-white border border-slate-200 rounded-lg shadow-lg z-20 p-1">
+                    {TABLE_STATUS_BUCKETS.map((b) => (
+                      <label key={b.k} className="flex items-center gap-2 px-2 py-1.5 text-xs hover:bg-slate-50 rounded cursor-pointer">
+                        <input type="checkbox" checked={statusSel.has(b.k)} onChange={() => toggleStatus(b.k)} className="rounded border-slate-300" />
+                        {b.label}
+                      </label>
+                    ))}
+                    {statusSel.size > 0 && (
+                      <button onClick={() => setStatusSel(new Set())} className="w-full text-left px-2 py-1.5 text-xs text-slate-500 hover:bg-slate-50 rounded border-t border-slate-100 mt-1">Clear</button>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
           </>
         )}
       </div>
-      {open && (
+      {open && view === 'stops' && (
         <div className="overflow-auto flex-1 min-h-0">
           <table className="text-[11px] border-collapse" style={{ minWidth: cols.reduce((a, c) => a + c.w, 0) }}>
             <thead className="sticky top-0 bg-slate-50 z-10">
               <tr>
                 {cols.map((c) => (
-                  <th key={c.k} className="text-left font-semibold text-slate-500 px-2 py-1.5 border-b border-slate-200 whitespace-nowrap" style={{ width: c.w, textAlign: c.align || 'left' }}>{c.label}</th>
+                  <GridSortTh key={c.k} col={c} sort={stopSort} onToggle={toggleStopSort} />
                 ))}
               </tr>
             </thead>
             <tbody>
-              {rows.length === 0 && (
+              {sortedRows.length === 0 && (
                 <tr><td colSpan={cols.length} className="px-3 py-4 text-slate-400 italic text-center">No stops match.</td></tr>
               )}
-              {rows.map((s) => (
+              {sortedRows.map((s) => (
                 <tr
                   key={s.stopNbr}
                   onClick={() => onPick(s)}
@@ -6269,6 +6402,35 @@ function BottomStopsTable({ stops, notes, totalCount, open, setOpen, onPick }) {
                 >
                   {cols.map((c) => (
                     <td key={c.k} className="px-2 py-1 border-b border-slate-100 whitespace-nowrap overflow-hidden text-ellipsis" style={{ maxWidth: c.w, textAlign: c.align || 'left' }}>{c.get(s)}</td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {open && view === 'loads' && (
+        <div className="overflow-auto flex-1 min-h-0">
+          <table className="text-[11px] border-collapse" style={{ minWidth: loadCols.reduce((a, c) => a + c.w, 0) }}>
+            <thead className="sticky top-0 bg-slate-50 z-10">
+              <tr>
+                {loadCols.map((c) => (
+                  <GridSortTh key={c.k} col={c} sort={loadSort} onToggle={toggleLoadSort} />
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {sortedLoadRows.length === 0 && (
+                <tr><td colSpan={loadCols.length} className="px-3 py-4 text-slate-400 italic text-center">No loads on the current board.</td></tr>
+              )}
+              {sortedLoadRows.map((g) => (
+                <tr
+                  key={g.loadNbr}
+                  onClick={() => onPickLoad && onPickLoad(g.loadNbr)}
+                  className="cursor-pointer hover:bg-blue-50"
+                >
+                  {loadCols.map((c) => (
+                    <td key={c.k} className="px-2 py-1 border-b border-slate-100 whitespace-nowrap overflow-hidden text-ellipsis" style={{ maxWidth: c.w, textAlign: c.align || 'left' }}>{c.get(g)}</td>
                   ))}
                 </tr>
               ))}
