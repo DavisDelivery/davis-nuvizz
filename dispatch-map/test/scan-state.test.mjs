@@ -69,11 +69,16 @@ test('selectLoadProbeTargets (R2): all-terminal roster on a gap-sweep cycle re-c
   assert.ok([197000, 197001, 197002].every((n) => plan.numbers.includes(n)), 'all terminals re-confirmed on the sweep');
 });
 
-test('selectLoadProbeTargets: out-of-window = small buffer, never gap-sweeps', () => {
-  const st = mkState([mkLoad(196998, false), mkLoad(197000, false)], 3);
+test('selectLoadProbeTargets: out-of-window = small buffer, gap-sweeps EVERY cycle (daytime routing)', () => {
+  const st = mkState([mkLoad(196998, false), mkLoad(197000, false)], 3); // 196999 is a gap
   const plan = selectLoadProbeTargets(st, { inWindow: false, scanCount: 3, fwdIn: 50, fwdOut: 10, gapSweepEvery: 3 });
   assert.equal(plan.forwardBuffer, 10);
-  assert.equal(plan.gapSweep, false, 'no gap sweep outside the routing window');
+  assert.equal(plan.gapSweep, true, 'daytime gap-sweeps every cycle so mid-day routed loads are caught');
+  assert.ok(plan.numbers.includes(196999), 'the in-range gap (a route shell populated mid-day) is probed');
+  // And on a non-multiple cycle too (proves it is not gated on scanCount out-of-window).
+  const plan2 = selectLoadProbeTargets(st, { inWindow: false, scanCount: 2, fwdIn: 50, fwdOut: 10, gapSweepEvery: 3 });
+  assert.equal(plan2.gapSweep, true);
+  assert.ok(plan2.numbers.includes(196999));
 });
 
 test('selectLoadProbeTargets: COLD START (no roster yet) → null so caller uses the wide-window probe', () => {
