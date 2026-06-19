@@ -16,7 +16,7 @@ import {
   MapPin, RefreshCw, X, Filter, Truck, Save, Plus, Trash2,
   Activity, ChevronDown, ChevronUp, Eye, EyeOff,
   Search, Tag, Tags, ArrowLeft, Gauge, Clock, MapPinned,
-  Info, Settings, LayoutList, Sparkles, MessageSquare, Square, Lasso,
+  Info, Settings, LayoutList, Sparkles, MessageSquare, Square, Lasso, AlertTriangle,
 } from 'lucide-react';
 import {
   collection, doc, getDoc, onSnapshot, setDoc, serverTimestamp,
@@ -25,6 +25,7 @@ import {
 
 import { db } from './lib/firebase.js';
 import { normalizeMatchKey } from './lib/matchKey.js';
+import { addressLooksOff, suggestAddressFix } from './lib/address-fix.js';
 import { haversineMiles, naiveEtaMinutes, formatEtaClockTime } from './lib/distance.js';
 import { todayInET, isTodayET, formatDateForDisplay, formatDateLong } from './lib/date-util.js';
 import { pointInPolygon, latLngInBounds, boxFromCorners, formatReceivingHours, lineItemDims, moveItem, recomputeRoute, resequence, fmtTime12, DEFAULT_SERVICE_SEC } from './lib/routing-select.js';
@@ -46,7 +47,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.27.28';
+const APP_VERSION = '0.27.29';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -66,6 +67,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.27.29', 'Address mis-split detection + one-click fix. NuVizz often puts the street in addr2 with a suite/dock/contact in addr1 (e.g. "BLDG 200" / "4310 INDUSTRIAL ACCESS RD"), so the geocoder lands on the wrong spot. Such stops now show an amber "!" pin and a "Address may be mis-split" banner on the stop card with "Fix & move pin" (one-click: swaps the lines, re-geocodes the clean street, saves the corrected address + pin) and "Edit…" (the modal, now with a suite/addr2 field, pre-filled with the suggestion). Detection is conservative and self-clears once corrected. Also adds a new "?" priority flag (indigo pin with a "?") alongside red/yellow/green.'],
   ['0.27.28', 'Bottom table: every column in both the Stops and Loads views is now sortable — click a header to cycle asc → desc (chevron shows the active column). Stops and Loads keep independent sort state. Numeric columns (Stop #, Pallets, Weight, stop count) sort numerically; the Loads Status column sorts by % delivered'],
   ['0.27.27', 'Bottom table: new Stops | Loads tab toggle. The Loads view groups the current board by loadNbr — one row per load with driver, stop count, a per-status breakdown, and pallet/weight totals. Click a load to open its route drawer and frame the map on that load’s stops'],
   ['0.27.26', 'Map fix: clicking a stop pin now recenters and zooms to STOP_ZOOM (18), matching the list/search behavior — the map-marker click handler was setting the selected stop without panning/zooming'],
@@ -154,7 +156,11 @@ const FLAG_COLORS = {
   red: '#dc2626',
   yellow: '#eab308',
   green: '#16a34a',
+  question: '#6366f1',   // "?" flag — dispatcher-set "uncertain / look into this"
 };
+// Priority-flag values offered in the pickers (null = none).
+const FLAG_OPTIONS = ['red', 'yellow', 'green', 'question'];
+const ADDRESS_OFF_TINT = '#d97706';   // amber pin for an auto-detected mis-split address
 const RESTRICTION_TINT = '#7c3aed';        // has restriction notes but no priority flag
 const UNFLAGGED_TINT = '#4285F4';          // default delivery pin — bright blue, reads on satellite
 const DRIVER_TINT = '#0f172a';             // M4 Motive driver pins
@@ -1322,6 +1328,8 @@ function pinSvgStatus(color, opts = {}) {
     center = '<path d="M9.5 13.2l2.8 2.8 5.2-6" fill="none" stroke="white" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>';
   } else if (glyph === 'bang') {
     center = '<text x="14" y="17.5" font-family="system-ui, sans-serif" font-size="12" font-weight="800" fill="white" text-anchor="middle">!</text>';
+  } else if (glyph === 'question') {
+    center = '<text x="14" y="17.7" font-family="system-ui, sans-serif" font-size="13" font-weight="800" fill="white" text-anchor="middle">?</text>';
   } else if (glyph === 'arrow') {
     center = '<path d="M9.5 13h6m-2.5-2.6l2.8 2.6-2.8 2.6" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>';
   } else if (tag === 'AM' || tag === 'PM') {
@@ -1810,10 +1818,10 @@ function Legend({ expanded, setExpanded }) {
           <div>
             <div className="text-[10px] uppercase font-semibold text-slate-500 mb-1">Priority flag</div>
             <div className="space-y-1">
-              {['red', 'yellow', 'green'].map((k) => (
+              {FLAG_OPTIONS.map((k) => (
                 <div key={k} className="flex items-center gap-2">
                   <span className="w-2.5 h-2.5 rounded-full" style={{ background: FLAG_COLORS[k] }} />
-                  <span className="capitalize">{k}</span>
+                  <span className="capitalize">{k === 'question' ? 'Question (?)' : k}</span>
                 </div>
               ))}
               <div className="flex items-center gap-2">
@@ -2164,17 +2172,48 @@ function MoveLocationBar({ stop, saving, onSave, onCancel, onReset }) {
 // shown in the panel) AND the resulting coordinates (location_override, the same
 // field the "Correct pin location" drag uses) to customer_notes — so fixing the
 // address also moves the pin, for this customer, on every future load.
-function AddressEditModal({ stop, note, google, onClose, onSaved }) {
-  const ov = note?.address_override || {};
-  const [addr1, setAddr1] = useState(ov.addr1 ?? stop.addr1 ?? '');
-  const [city, setCity] = useState(ov.city ?? stop.city ?? '');
-  const [state, setState] = useState(ov.state ?? stop.state ?? '');
-  const [zip, setZip] = useState(ov.zip ?? stop.zip ?? '');
+// ⚠ banner shown on a stop whose addr1 looks mis-split (suite/contact where the
+// street should be). "Fix & move pin" applies the suggested swap, re-geocodes
+// the clean street and saves the override in one click; "Edit…" opens the modal
+// pre-filled with the suggestion. Renders nothing when the address looks fine.
+function AddressFixBanner({ stop, note, onAutoFix, onEdit }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState(null);
-  const hasOverride = !!note?.address_override;
+  if (!addressLooksOff(stop, note)) return null;
+  const fix = suggestAddressFix(stop);
+  const run = async () => {
+    if (!fix) { onEdit(stop, null); return; }      // can't auto-split → manual editor
+    setErr(null); setBusy(true);
+    try { await onAutoFix(stop, fix); }
+    catch (e) { setErr(e?.message || 'Could not fix the address'); }
+    finally { setBusy(false); }
+  };
+  return (
+    <div className="mt-2 p-2 rounded-lg bg-amber-50 border border-amber-200 text-[12px] text-amber-900">
+      <div className="flex items-start gap-1.5">
+        <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+        <div className="min-w-0">
+          <div><span className="font-semibold">Address may be mis-split.</span> The pin was geocoded from “{stop.addr1}”.</div>
+          {fix && <div className="mt-0.5 break-words">Suggested street: <span className="font-mono">{fix.addr1}</span>{fix.addr2 ? <> · suite → <span className="font-mono">{fix.addr2}</span></> : null}</div>}
+          {err && <div className="text-red-600 mt-0.5">{err}</div>}
+          <div className="flex items-center gap-2 mt-1.5">
+            <button onClick={run} disabled={busy} className="px-2 py-1 rounded text-white text-[11px] font-semibold disabled:opacity-50" style={{ background: '#16a34a' }}>
+              {busy ? 'Fixing…' : (fix ? 'Fix & move pin' : 'Fix in editor')}
+            </button>
+            {fix && (
+              <button onClick={() => onEdit(stop, fix)} disabled={busy} className="px-2 py-1 rounded border border-amber-300 text-amber-800 text-[11px] font-semibold disabled:opacity-50 hover:bg-amber-100">Edit…</button>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
 
-  const geocode = (q) => new Promise((resolve, reject) => {
+// Geocode a single-line address query via the Google client geocoder. Shared by
+// the address-edit modal and the one-click auto-fix. Rejects on any non-OK.
+function geocodeAddress(google, q) {
+  return new Promise((resolve, reject) => {
     if (!google?.maps?.Geocoder) { reject(new Error('Maps not ready')); return; }
     new google.maps.Geocoder().geocode({ address: q }, (res, status) => {
       if (status === 'OK' && res?.[0]?.geometry?.location) {
@@ -2185,15 +2224,31 @@ function AddressEditModal({ stop, note, google, onClose, onSaved }) {
       }
     });
   });
+}
+
+function AddressEditModal({ stop, note, google, seed, onClose, onSaved }) {
+  const ov = note?.address_override || {};
+  // `seed` (from the "Fix address" suggestion) wins, then a saved override, then
+  // the raw NuVizz field.
+  const [addr1, setAddr1] = useState(seed?.addr1 ?? ov.addr1 ?? stop.addr1 ?? '');
+  const [addr2, setAddr2] = useState(seed?.addr2 ?? ov.addr2 ?? stop.addr2 ?? '');
+  const [city, setCity] = useState(ov.city ?? stop.city ?? '');
+  const [state, setState] = useState(ov.state ?? stop.state ?? '');
+  const [zip, setZip] = useState(ov.zip ?? stop.zip ?? '');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState(null);
+  const hasOverride = !!note?.address_override;
 
   const save = async () => {
     setErr(null);
-    const fields = { addr1: addr1.trim(), city: city.trim(), state: state.trim(), zip: zip.trim() };
+    // addr2 (suite/dock/contact) is stored but deliberately kept OUT of the
+    // geocode query — only the street line + city/state/zip are geocoded.
+    const fields = { addr1: addr1.trim(), addr2: addr2.trim(), city: city.trim(), state: state.trim(), zip: zip.trim() };
     const q = [fields.addr1, fields.city, fields.state, fields.zip].filter(Boolean).join(', ');
     if (!q) { setErr('Enter an address'); return; }
     setBusy(true);
     try {
-      const geo = await geocode(q);
+      const geo = await geocodeAddress(google, q);
       await setDoc(doc(db, 'customer_notes', stop.matchKey), {
         match_key: stop.matchKey,
         raw_name: stop.businessName || '',
@@ -2234,6 +2289,7 @@ function AddressEditModal({ stop, note, google, onClose, onSaved }) {
         <div className="text-xs text-slate-500 -mt-1">{stop.businessName || stop.stopNbr} · saving re-geocodes and moves the pin for this customer.</div>
         <div className="space-y-2">
           <input className={field} value={addr1} onChange={(e) => setAddr1(e.target.value)} placeholder="Street address" aria-label="Street address" />
+          <input className={field} value={addr2} onChange={(e) => setAddr2(e.target.value)} placeholder="Suite / unit / dock (not geocoded)" aria-label="Suite, unit or dock" />
           <div className="grid grid-cols-3 gap-2">
             <input className={field + ' col-span-2'} value={city} onChange={(e) => setCity(e.target.value)} placeholder="City" aria-label="City" />
             <input className={field} value={state} onChange={(e) => setState(e.target.value)} placeholder="State" aria-label="State" />
@@ -2381,7 +2437,7 @@ function FilterPanel({ filters, setFilters, counts }) {
       <div>
         <div className="text-xs font-semibold text-slate-600 mb-1">Priority flag</div>
         <div className="flex flex-wrap gap-1.5">
-          {['red', 'yellow', 'green', 'none'].map((v) => {
+          {[...FLAG_OPTIONS, 'none'].map((v) => {
             const active = (F.flag || []).includes(v);
             const swatch = v === 'none' ? '#cbd5e1' : FLAG_COLORS[v];
             return (
@@ -2525,7 +2581,7 @@ function ProsSection({ stop }) {
   );
 }
 
-function StopSidebar({ stop, note, onClose, onSave, saving, saveError, onOpenRoute, onMoveLocation, onEditAddress, mobile = false }) {
+function StopSidebar({ stop, note, onClose, onSave, saving, saveError, onOpenRoute, onMoveLocation, onEditAddress, onAutoFixAddress, mobile = false }) {
   const [draft, setDraft] = useState(() => note || emptyNote(stop));
   const [editing, setEditing] = useState(!note);
   // True once the dispatcher edits the draft; cleared on stop-change and save.
@@ -2677,14 +2733,15 @@ function StopSidebar({ stop, note, onClose, onSave, saving, saveError, onOpenRou
               {note?.address_override && <span className="px-1 rounded bg-blue-100 text-blue-700 text-[9px] font-semibold normal-case">corrected</span>}
             </div>
             <div>{note?.address_override?.addr1 || stop.addr1}</div>
-            {stop.addr2 && (
+            {(note?.address_override?.addr2 ?? stop.addr2) && (
               <div className="text-xs px-2 py-1 mt-1 bg-amber-50 border border-amber-200 rounded text-amber-900">
-                <span className="font-semibold">addr2:</span> {stop.addr2}
+                <span className="font-semibold">addr2:</span> {note?.address_override?.addr2 ?? stop.addr2}
               </div>
             )}
             <div className="text-slate-600">
               {(note?.address_override?.city ?? stop.city)}, {(note?.address_override?.state ?? stop.state)} {(note?.address_override?.zip ?? stop.zip)}
             </div>
+            <AddressFixBanner stop={stop} note={note} onAutoFix={onAutoFixAddress} onEdit={onEditAddress} />
             <div className="flex items-center gap-4 flex-wrap">
               <StreetViewLink stop={stop} />
               <GoogleMapsLink stop={stop} />
@@ -2762,7 +2819,7 @@ function StopSidebar({ stop, note, onClose, onSave, saving, saveError, onOpenRou
               <div>
                 <div className="text-xs font-semibold text-slate-600 mb-1">Priority flag</div>
                 <div className="flex gap-1.5">
-                  {[null, 'red', 'yellow', 'green'].map((v) => {
+                  {[null, ...FLAG_OPTIONS].map((v) => {
                     const active = D.priority_flag === v;
                     const swatch = v ? FLAG_COLORS[v] : '#e2e8f0';
                     return (
@@ -2772,7 +2829,7 @@ function StopSidebar({ stop, note, onClose, onSave, saving, saveError, onOpenRou
                         className={`px-2 py-1 rounded border text-xs flex items-center gap-1 ${active ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-300 bg-white text-slate-700'}`}
                       >
                         <span className="w-2.5 h-2.5 rounded-full" style={{ background: swatch }} />
-                        {v || 'none'}
+                        {v === 'question' ? '?' : (v || 'none')}
                       </button>
                     );
                   })}
@@ -3886,7 +3943,7 @@ function MobileDriversTab({ drivers, error, onPickDriver }) {
 // from PR 1 with a proper bottom-sheet that has its own header + Info /
 // Notes / Hours / PROs tabs. Draft state spans all tabs so editing Notes
 // then switching to Hours preserves changes; one Save commits everything.
-function MobileStopDetailDrawer({ stop, note, onClose, onSave, saving, saveError, onOpenRoute, onMoveLocation, onEditAddress }) {
+function MobileStopDetailDrawer({ stop, note, onClose, onSave, saving, saveError, onOpenRoute, onMoveLocation, onEditAddress, onAutoFixAddress }) {
   const [activeTab, setActiveTab] = useState('info');
   const [draft, setDraft] = useState(() => note || emptyNote(stop));
   const [editing, setEditing] = useState(false);
@@ -3974,7 +4031,7 @@ function MobileStopDetailDrawer({ stop, note, onClose, onSave, saving, saveError
       </div>
       {/* Tab content */}
       <div className="flex-1 overflow-y-auto overscroll-contain">
-        {activeTab === 'info' && <StopInfoTabContent stop={stop} note={note} onOpenRoute={onOpenRoute} onMoveLocation={onMoveLocation} onEditAddress={onEditAddress} />}
+        {activeTab === 'info' && <StopInfoTabContent stop={stop} note={note} onOpenRoute={onOpenRoute} onMoveLocation={onMoveLocation} onEditAddress={onEditAddress} onAutoFixAddress={onAutoFixAddress} />}
         {activeTab === 'notes' && (
           <StopNotesTabContent
             stop={stop}
@@ -4167,7 +4224,7 @@ function MobileRouteDetailDrawer({ loadNbr, stops, onClose, onPickStop }) {
   );
 }
 
-function StopInfoTabContent({ stop, note, onOpenRoute, onMoveLocation, onEditAddress }) {
+function StopInfoTabContent({ stop, note, onOpenRoute, onMoveLocation, onEditAddress, onAutoFixAddress }) {
   const ao = note?.address_override || {};
   const cityLine = [ao.city ?? stop.city, ao.state ?? stop.state, ao.zip ?? stop.zip].filter(Boolean).join(', ').replace(/, ([A-Z]{2}) (\d)/, ', $1 $2');
   const statusKind = classifyStopStatus(stop);
@@ -4186,12 +4243,13 @@ function StopInfoTabContent({ stop, note, onOpenRoute, onMoveLocation, onEditAdd
           {note?.address_override && <span className="px-1 rounded bg-blue-100 text-blue-700 text-[9px] font-semibold">corrected</span>}
         </div>
         <div className="text-slate-900">{ao.addr1 || stop.addr1 || '—'}</div>
-        {stop.addr2 && (
+        {(ao.addr2 ?? stop.addr2) && (
           <div className="mt-1 px-2 py-1 text-[12px] bg-amber-50 border border-amber-200 rounded text-amber-900">
-            <span className="font-semibold">addr2:</span> {stop.addr2}
+            <span className="font-semibold">addr2:</span> {ao.addr2 ?? stop.addr2}
           </div>
         )}
         <div className="text-slate-600">{cityLine || '—'}</div>
+        <AddressFixBanner stop={stop} note={note} onAutoFix={onAutoFixAddress} onEdit={onEditAddress} />
         <div className="flex items-center gap-5 mt-1 flex-wrap">
           <StreetViewLink stop={stop} className="inline-flex items-center gap-1 text-[13px] text-blue-700" />
           <GoogleMapsLink stop={stop} className="inline-flex items-center gap-1 text-[13px] text-blue-700" />
@@ -4293,7 +4351,7 @@ function StopNotesTabContent({ stop, note, draft, setDraft, editing, setEditing 
       <div>
         <div className="text-[11px] font-semibold text-slate-600 mb-1">Priority flag</div>
         <div className="flex flex-wrap gap-1.5">
-          {[null, 'red', 'yellow', 'green'].map((v) => {
+          {[null, ...FLAG_OPTIONS].map((v) => {
             const active = D.priority_flag === v;
             const swatch = v ? FLAG_COLORS[v] : '#e2e8f0';
             return (
@@ -4304,7 +4362,7 @@ function StopNotesTabContent({ stop, note, draft, setDraft, editing, setEditing 
                 style={{ minHeight: 44 }}
               >
                 <span className="w-3 h-3 rounded-full" style={{ background: swatch }} />
-                <span className="text-xs">{v || 'none'}</span>
+                <span className="text-xs">{v === 'question' ? '? (question)' : (v || 'none')}</span>
               </button>
             );
           })}
@@ -4877,6 +4935,9 @@ function MapScreen() {
   const [movedTo, setMovedTo] = useState(null);
   const [savingLoc, setSavingLoc] = useState(false);
   const [editAddrStop, setEditAddrStop] = useState(null);
+  const [editAddrSeed, setEditAddrSeed] = useState(null); // suggested split when opened from the fix banner
+  // Open the address editor, optionally seeded with a suggested addr1/addr2 split.
+  const openAddrEditor = useCallback((stop, seed = null) => { setEditAddrSeed(seed || null); setEditAddrStop(stop); }, []);
   const movingMarkerRef = useRef(null);
 
   const { drivers, error: driverErr, lastRefreshed: driversAt } = useDriverPositions(showDrivers);
@@ -5012,6 +5073,29 @@ function MapScreen() {
     setSelectedStop(null); setSelectedDriver(null);
     setMovedTo(null); setMovingStop(stop);
   }, []);
+  // One-click address fix: apply the suggested split, re-geocode the clean street
+  // (addr2/suite deliberately excluded) and save address_override + the corrected
+  // pin. Throws on geocode/save failure so the banner can surface the error.
+  const autoFixAddress = useCallback(async (stop, suggestion) => {
+    if (!db || !stop || !suggestion) return;
+    const fields = {
+      addr1: (suggestion.addr1 || '').trim(),
+      addr2: (suggestion.addr2 || '').trim(),
+      city: stop.city || '', state: stop.state || '', zip: stop.zip || '',
+    };
+    const q = [fields.addr1, fields.city, fields.state, fields.zip].filter(Boolean).join(', ');
+    const geo = await geocodeAddress(google, q);
+    await setDoc(doc(db, 'customer_notes', stop.matchKey), {
+      match_key: stop.matchKey,
+      raw_name: stop.businessName || '',
+      address_override: fields,
+      address_override_at: serverTimestamp(),
+      location_override: { lat: geo.lat, lng: geo.lng },
+      location_override_at: serverTimestamp(),
+      last_updated: serverTimestamp(),
+    }, { merge: true });
+    refresh({ silent: true });
+  }, [google, refresh]);
   const cancelMoveLocation = useCallback(() => { setMovingStop(null); setMovedTo(null); }, []);
   const saveStopLocation = useCallback(async () => {
     if (!db || !movingStop || !movedTo) return;
@@ -5300,18 +5384,32 @@ function MapScreen() {
         // Delivery-window tag (AM/PM) → shown in the pin head; tagged pins render
         // at the larger size so the text stays legible.
         const tag = (note?.delivery_window === 'AM' || note?.delivery_window === 'PM') ? note.delivery_window : null;
+        // Auto "address looks off" signal — only on not-yet-acted-on stops
+        // (scheduled/unplanned) that aren't matched or flagged, so it never
+        // overrides a deliberate flag, a search match, or a delivered/exception
+        // glyph. Renders an amber pin with a "!" so wrong geocodes stand out.
+        const addressOff = !matched && !flagHue
+          && (statusKind === 'SCHEDULED' || statusKind === 'UNPLANNED')
+          && addressLooksOff(s, note);
         // Color precedence: result-set match (orange) → priority flag (so a red
-        // flag makes a red pin, even on an unplanned/AM stop) → status hue →
-        // flag/restriction tint fallback.
+        // flag makes a red pin, even on an unplanned/AM stop) → address-off amber
+        // → status hue → flag/restriction tint fallback.
         const color = matched ? '#f59e0b'
           : flagHue
-          || meta.color || flagColor(note);
+          || (addressOff ? ADDRESS_OFF_TINT : (meta.color || flagColor(note)));
+        // Glyph: a "?" flag shows "?", an address-off stop shows "!", otherwise
+        // the status glyph. A status glyph (check/bang/arrow) keeps priority.
+        let glyph = meta.glyph;
+        if (!matched) {
+          if (note?.priority_flag === 'question' && !glyph) glyph = 'question';
+          else if (addressOff) glyph = 'bang';
+        }
         const big = matched || !!tag;
         // Unplanned stops render a touch smaller than planned ones (de-emphasized
         // until they're routed), now solid blue for contrast on satellite.
         const small = !big && statusKind === 'UNPLANNED';
         icon = {
-          url: pinSvgStatus(color, { hollow: matched ? false : meta.hollow, glyph: meta.glyph, tag }),
+          url: pinSvgStatus(color, { hollow: matched ? false : meta.hollow, glyph, tag }),
           // Slightly larger when matched or AM/PM-tagged so they stand out.
           scaledSize: big ? new google.maps.Size(28, 36) : (small ? new google.maps.Size(16, 21) : new google.maps.Size(20, 26)),
           anchor: big ? new google.maps.Point(14, 34) : (small ? new google.maps.Point(8, 20) : new google.maps.Point(10, 25)),
@@ -5711,7 +5809,8 @@ function MapScreen() {
             stop={editAddrStop}
             note={notes.get(editAddrStop.matchKey)}
             google={google}
-            onClose={() => setEditAddrStop(null)}
+            seed={editAddrSeed}
+            onClose={() => { setEditAddrStop(null); setEditAddrSeed(null); }}
             onSaved={() => refresh({ silent: true })}
           />
         )}
@@ -5768,7 +5867,8 @@ function MapScreen() {
             note={notes.get(selectedStop.matchKey)}
             onClose={() => setSelectedStop(null)}
             onMoveLocation={startMoveLocation}
-            onEditAddress={setEditAddrStop}
+            onEditAddress={openAddrEditor}
+            onAutoFixAddress={autoFixAddress}
             onOpenRoute={(loadNbr) => { setSelectedStop(null); setSelectedRoute(loadNbr); }}
             onSave={async (draft) => {
               await handleSave(draft);
@@ -6018,7 +6118,8 @@ function MapScreen() {
             stop={editAddrStop}
             note={notes.get(editAddrStop.matchKey)}
             google={google}
-            onClose={() => setEditAddrStop(null)}
+            seed={editAddrSeed}
+            onClose={() => { setEditAddrStop(null); setEditAddrSeed(null); }}
             onSaved={() => refresh({ silent: true })}
           />
         )}
@@ -6094,7 +6195,8 @@ function MapScreen() {
           note={notes.get(selectedStop.matchKey)}
           onClose={() => setSelectedStop(null)}
           onMoveLocation={startMoveLocation}
-          onEditAddress={setEditAddrStop}
+          onEditAddress={openAddrEditor}
+          onAutoFixAddress={autoFixAddress}
           onSave={handleSave}
           saving={saving}
           saveError={saveError}
@@ -6451,7 +6553,7 @@ function StopMiniTable({ stops, notes, onPick, columns, onColumnsChange, searchQ
       ...s,
       _flag: n?.priority_flag || 'none',
       _hasNote: !!n,
-      _priorityRank: n?.priority_flag === 'red' ? 0 : n?.priority_flag === 'yellow' ? 1 : n?.priority_flag === 'green' ? 2 : 3,
+      _priorityRank: n?.priority_flag === 'red' ? 0 : n?.priority_flag === 'yellow' ? 1 : n?.priority_flag === 'green' ? 2 : n?.priority_flag === 'question' ? 3 : 4,
       _proSort: s.primaryPro || s.pro || '￿',
     };
   }), [stops, notes]);
