@@ -989,11 +989,12 @@ export function selectLoadProbeTargets(
   if (todayState && todayState.knownLoads.length && todayState.maxLoadNbr != null && todayState.minLoadNbr != null) {
     const known = new Set<number>();
     const active: number[] = [];
+    const terminal: number[] = [];
     for (const k of todayState.knownLoads) {
       const n = loadNbrToInt(k.loadNbr);
       if (n == null) continue;
       known.add(n);
-      if (!k.allTerminal) active.push(n);
+      if (!k.allTerminal) active.push(n); else terminal.push(n);
     }
     const max = todayState.maxLoadNbr, min = todayState.minLoadNbr;
     const forward: number[] = [];
@@ -1002,7 +1003,11 @@ export function selectLoadProbeTargets(
     const doGap = opts.inWindow && every > 0 && (opts.scanCount % every === 0);
     const gaps: number[] = [];
     if (doGap) for (let n = min; n <= max; n++) if (!known.has(n)) gaps.push(n);
-    const numbers = [...new Set([...active, ...forward, ...gaps])].sort((a, b) => b - a);
+    // R2: on gap-sweep cycles, also re-confirm TERMINAL (all-delivered) loads —
+    // otherwise a load is dropped forever once done and a same-day delivery
+    // correction / re-added stop on it would never be seen again.
+    const terminals = doGap ? terminal : [];
+    const numbers = [...new Set([...active, ...forward, ...gaps, ...terminals])].sort((a, b) => b - a);
     return { numbers, mode: 'lean-warm', activeLoads: active.length, forwardBuffer: fwd, gapSweep: doGap };
   }
 
