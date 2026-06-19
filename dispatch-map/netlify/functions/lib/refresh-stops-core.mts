@@ -15,10 +15,17 @@
 // skip here, because the Friday-evening ET window lands on Saturday UTC and a
 // naive getUTCDay() check would wrongly drop it. Manual HTTP runs always proceed.
 
-import { scanDate, todayUTC, scansEnabled, deriveFleetSummary, estimateLoadRange, buildScanState, shadowWouldProbe, selectLoadProbeTargets } from './nuvizz-scan.mts';
+import { scanDate, todayUTC, scansEnabled, deriveFleetSummary, estimateLoadRange, buildScanState, shadowWouldProbe, selectLoadProbeTargets, groupLoadMembers, estimateStopFrontier, unplannedFloor, FLOOR_MARGIN, loadNbrToInt, stopNbrToInt } from './nuvizz-scan.mts';
+import { loadProbeParity, frontierParity, loadMembershipDelta, dateSliceMismatch } from './scan-parity.mts';
 import { isFirestoreEnabled, writeStops, writeFleetIndex, getDoc, markScanState, readCallStats, readCircuit, readScanState, writeScanState } from './firestore.mts';
 import { breakerTripped, scanIntervalElapsed, breakerMode } from './nuvizz-request.mts';
 import { scanDecision, isInRoutingWindow } from './scan-schedule.mts';
+
+// Reuse the CANONICAL integer parsers from nuvizz-scan so the parity log's
+// load/stop numbers are extracted identically to selectLoadProbeTargets /
+// buildScanState (a divergent local parser could emit false MISSED_LOADS).
+const loadNbrInt = loadNbrToInt;
+const stopNbrInt = stopNbrToInt;
 
 const TENANT = 'davis';
 // Scheduled runs scan TODAY + the next BUSINESS day — the dispatcher's planning
@@ -198,12 +205,52 @@ export async function runRefreshStops(req: Request): Promise<Response> {
       // NO probing change yet — this de-risks Phase 2. Best-effort; never fails a scan.
       if (includeLoads) {
         try {
-          const state = buildScanState(date, scan.stops, priorState, scan.scannedAt);
+          const state = buildScanState(date, scan.stops, priorState, scan.scannedAt, {
+            descentComplete: scan.descentComplete,
+            observedFrontierStopNbr: scan.observedFrontierStopNbr,
+          });
           await writeScanState(date, state);
           const inWindow = isInRoutingWindow(decision.etHour);
           const wp = shadowWouldProbe(state, { inWindow, fwdIn: 50, fwdOut: 10 });
           const windowSize = preRange ? (preRange.endNbr - preRange.startNbr + 1) : (loadTargets ? loadTargets.length : null);
           console.log(`[scan-shadow] date=${date} lean=${!!loadTargets} knownLoads=${state.knownLoads.length} active=${wp.activeLoads} terminal=${wp.terminalLoads} routes=${Object.keys(state.routeMap).length} minLoad=${state.minLoadNbr} maxLoad=${state.maxLoadNbr} highWaterStop=${state.highWaterStopNbr} inWindow=${inWindow} WOULD_PROBE_LOADS=${wp.wouldProbe} (active=${wp.activeLoads}+buffer=${wp.forwardBuffer}) PROBED=${windowSize} scanCount=${state.scanCount}`);
+
+          // ── Step 1 parity (SHADOW; logging only — lean/frontier remain OFF) ──
+          // Set-membership comparison: what lean WOULD have probed from the PRIOR
+          // roster vs what the wide scan actually found. This is the real
+          // "would lean miss something?" gate. Self-contained try/catch so a
+          // parity bug can never affect the scan or the state write above.
+          try {
+            const foundLoads = [...new Set(
+              scan.stops.filter((s: any) => s.isPlanned && s.loadNbr)
+                .map((s: any) => loadNbrInt(s.loadNbr)).filter((n: any): n is number => n != null),
+            )];
+            const leanPlan = selectLoadProbeTargets(priorState, {
+              inWindow, scanCount: priorState?.scanCount || 0, fwdIn: 50, fwdOut: 10, gapSweepEvery: 3,
+            });
+            const lp = loadProbeParity(leanPlan ? leanPlan.numbers : null, foundLoads);
+
+            const foundUnplanned = scan.includeUnplanned
+              ? [...new Set(scan.stops.filter((s: any) => s.isPlanned === false)
+                  .map((s: any) => stopNbrInt(s.stopNbr)).filter((n: any): n is number => n != null))]
+              : [];
+            const hwu = priorState?.highWaterUnplannedStopNbr ?? null;
+            const floor = (scan.includeUnplanned && hwu != null)
+              ? unplannedFloor(estimateStopFrontier(date) - FLOOR_MARGIN, hwu) : null;
+            const fp = frontierParity(floor, foundUnplanned, priorState?.unplannedStopNbrs);
+
+            const mem = loadMembershipDelta(priorState?.loadMembers, groupLoadMembers(scan.stops));
+            const dmax = (state.maxLoadNbr != null && priorState?.maxLoadNbr != null)
+              ? state.maxLoadNbr - priorState.maxLoadNbr : null;
+            const dateAudit = scan.includeUnplanned
+              ? dateSliceMismatch(scan.stops.filter((s: any) => s.isPlanned === false).map((s: any) => s.scheduledFrom), date)
+              : { mismatch: 0, unauditable: 0 };
+
+            console.log(`[scan-parity] date=${date} loadMode=${lp.mode} foundLoads=${lp.foundCount} leanTargets=${lp.targetCount} MISSED_LOADS=${JSON.stringify(lp.missed)} emptyProbed=${lp.extra.length} | frontierFloor=${fp.floor ?? 'na'} foundUnplanned=${fp.foundCount} BELOW_FLOOR_NEW=${JSON.stringify(fp.belowFloorNew)} belowFloorKnown=${fp.belowFloorKnown.length} | LOAD_REMOVED=${mem.removed.length} LOAD_ADDED=${mem.added.length} | dMaxLoad=${dmax ?? 'na'} dateSliceMismatch=${dateAudit.mismatch} dateUnauditable=${dateAudit.unauditable} descentComplete=${scan.descentComplete ?? 'na'}`);
+            if (lp.missed.length) console.warn(`[scan-parity] date=${date} ⚠ LEAN WOULD MISS LOADS ${JSON.stringify(lp.missed)}`);
+            if (fp.belowFloorNew.length) console.warn(`[scan-parity] date=${date} ⚠ FRONTIER WOULD MISS NEW UNPLANNED ${JSON.stringify(fp.belowFloorNew.slice(0, 20))}${fp.belowFloorNew.length > 20 ? ' …' : ''}`);
+            if (mem.removed.length) console.log(`[scan-parity] date=${date} off-load removals=${JSON.stringify(mem.removed.slice(0, 20))}`);
+          } catch (e: any) { console.warn(`[scan-parity] ${date} failed: ${e?.message}`); }
         } catch (e: any) { console.warn(`[scan-shadow] ${date} failed: ${e?.message}`); }
       }
       results.push({ date, ok: true, ms: Date.now() - t0, includeUnplanned, includeLoads, count: meta.count, planned: meta.plannedCount, unplanned: meta.unplannedCount });

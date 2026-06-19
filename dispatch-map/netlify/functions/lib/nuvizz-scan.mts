@@ -504,7 +504,7 @@ const UNPLANNED_STATUS = '10';
 const CEILING_MARGIN = 40;
 const GALLOP_STEP = 200;
 const MAX_GALLOP = 6;
-const FLOOR_MARGIN = 2500;
+export const FLOOR_MARGIN = 2500;
 const FUTURE_CHUNKS_TO_STOP = 2;
 const POST_TARGET_CHUNKS_TO_STOP = 3;
 // Phase 6: keep ~2 weeks of recent stop numbers in the terminal skip cache so
@@ -515,7 +515,7 @@ const TERMINAL_RETENTION_BAND = STOPS_PER_DAY * 14;
 // Self-calibration: highest existing stop number observed this instance.
 let observedFrontier = 0;
 
-function estimateStopFrontier(dateStr: string): number {
+export function estimateStopFrontier(dateStr: string): number {
   const target = new Date(dateStr + 'T00:00:00Z');
   const daysDiff = Math.round((target.getTime() - STOP_ANCHOR_DATE.getTime()) / (1000 * 60 * 60 * 24));
   return STOP_ANCHOR_NBR + daysDiff * STOPS_PER_DAY;
@@ -738,7 +738,11 @@ async function scanUnplannedStops(dateStr: string, opts: UnplannedScanOpts = {})
     } catch { /* best-effort; a lost write just re-probes next scan */ }
   }
   if (useTerminalSkip) console.log(`[scan-terminal] date=${dateStr} probesIterated=${probes} skipped=${skipped} newTerminals=${Object.keys(newTerminals).length}`);
-  return results;
+  // complete = the descent stopped because it reached the floor or early-stopped
+  // BY DESIGN — not because it was truncated by the probe cap or the time budget.
+  // A truncated descent must NOT be trusted to advance the lean high-water (R9).
+  const complete = !(probes >= maxProbes) && !(Date.now() - startedAt >= timeBudgetMs);
+  return { records: results, complete, ceiling, floor, maxSeen };
 }
 
 export interface ScanResult {
@@ -756,6 +760,11 @@ export interface ScanResult {
   // True when the load-number scan ran this scan (false = unplanned-only — used
   // for tomorrow's order descent before its loads exist, ~10am-8pm ET).
   includeLoads?: boolean;
+  // Step 1 instrumentation. descentComplete: the unplanned descent reached the
+  // floor / early-stopped by design (not truncated by cap/budget/breaker) — only
+  // set when includeUnplanned. observedFrontierStopNbr: highest stop number seen.
+  descentComplete?: boolean;
+  observedFrontierStopNbr?: number | null;
 }
 
 // Full scan for one date: planned (load scan) + unplanned (number-space scan),
@@ -776,12 +785,16 @@ export async function scanDate(dateStr: string, opts: { unplanned?: UnplannedSca
   // includeLoads=false → unplanned-only (skip the load-number scan entirely — no
   // /load/info probes). includeUnplanned=false → load-only (skip the descent +
   // its findCeiling probing). At least one is always true at the call sites.
-  const [loadStops, unplannedStops] = await Promise.all([
+  const EMPTY_DESCENT = { records: [] as any[], complete: true, ceiling: 0, floor: 0, maxSeen: 0 };
+  const [loadStops, descent] = await Promise.all([
     includeLoads
       ? (useTargets ? scanLoadNumbers(dateStr, opts.loadTargets as number[]) : scanLoadRangeForDate(dateStr, startNbr, endNbr))
       : Promise.resolve([] as any[]),
-    includeUnplanned ? scanUnplannedStops(dateStr, opts.unplanned).catch(() => []) : Promise.resolve([] as any[]),
+    includeUnplanned
+      ? scanUnplannedStops(dateStr, opts.unplanned).catch(() => ({ ...EMPTY_DESCENT, complete: false }))
+      : Promise.resolve(EMPTY_DESCENT),
   ]);
+  const unplannedStops = descent.records;
 
   const seen = new Set<string>(loadStops.map((s: any) => s.stopNbr).filter(Boolean));
   const extraUnplanned = unplannedStops.filter((u: any) => {
@@ -819,6 +832,11 @@ export async function scanDate(dateStr: string, opts: { unplanned?: UnplannedSca
     scannedAt: new Date().toISOString(),
     includeUnplanned,
     includeLoads,
+    // Step 1 instrumentation: descent metadata (only meaningful when the unplanned
+    // descent ran this scan). descentComplete=false ⇒ truncated, don't trust the
+    // high-water to advance the lean floor (R9).
+    descentComplete: includeUnplanned ? descent.complete : undefined,
+    observedFrontierStopNbr: includeUnplanned ? (descent.maxSeen || null) : undefined,
   };
 }
 
@@ -826,7 +844,7 @@ export async function scanDate(dateStr: string, opts: { unplanned?: UnplannedSca
 // PURE: derive the next scan_state from a scan's normalized stops + the prior
 // state, and compute what lean planned-discovery WOULD probe. Phase 1 only logs
 // the comparison; later phases act on it. Unit-tested.
-function stopNbrToInt(stopNbr: any): number | null {
+export function stopNbrToInt(stopNbr: any): number | null {
   const m = /\d+/.exec(String(stopNbr ?? ''));
   if (!m) return null;
   const n = parseInt(m[0], 10);
@@ -840,10 +858,42 @@ export function loadNbrToInt(loadNbr: any): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
-export function buildScanState(dateStr: string, stops: any[], prev: ScanState | null, nowISO: string): ScanState {
+// PURE: group a scan's PLANNED stops into { loadNbr: sorted stopNbr[] }. Lets the
+// next cycle diff membership to detect stops pulled off a load (R1). Exported for
+// reuse by the shadow parity log and for unit tests.
+export function groupLoadMembers(stops: any[]): Record<string, string[]> {
+  const sets: Record<string, Set<string>> = {};
+  for (const s of stops || []) {
+    if (s && s.isPlanned && s.loadNbr && s.stopNbr) (sets[s.loadNbr] ||= new Set<string>()).add(String(s.stopNbr));
+  }
+  const out: Record<string, string[]> = {};
+  // Numeric sort (stop numbers are numeric strings — a default lexicographic
+  // sort would order "10" before "9"). Set-membership comparisons don't depend on
+  // order, but keeping the stored arrays/logs numerically ordered avoids foot-guns.
+  for (const k of Object.keys(sets)) out[k] = [...sets[k]].sort((a, b) => (parseInt(a, 10) || 0) - (parseInt(b, 10) || 0));
+  return out;
+}
+
+export function buildScanState(
+  dateStr: string,
+  stops: any[],
+  prev: ScanState | null,
+  nowISO: string,
+  extra?: { descentComplete?: boolean; observedFrontierStopNbr?: number | null },
+): ScanState {
   // Merge the prior roster so an unplanned-only cycle can't wipe known loads.
   const merged = new Map<string, KnownLoad>();
   for (const k of prev?.knownLoads || []) merged.set(k.loadNbr, { ...k });
+
+  // R9: a TRUNCATED descent (cap / time budget / breaker) did NOT reach the true
+  // frontier, so it must not advance the unplanned high-water (which bounds the
+  // lean floor) nor be trusted to refresh the known-unplanned set. descentComplete
+  // is: true = ran & reached floor/early-stopped; false = ran & truncated;
+  // undefined = the descent didn't run this cycle (load-only / kill-switch). We
+  // advance the high-water unless EXPLICITLY truncated (undefined defaults to the
+  // legacy "trust it" behaviour — load-only cycles have no unplanned stops anyway).
+  const descentTruncated = extra?.descentComplete === false;
+  const descentCompleted = extra?.descentComplete === true;
 
   // Group THIS scan's planned stops by load; a load is allTerminal only when
   // EVERY one of its stops is DELIVERED (status 90/91) — conservative on purpose.
@@ -857,7 +907,7 @@ export function buildScanState(dateStr: string, stops: any[], prev: ScanState | 
     const sn = stopNbrToInt(s.stopNbr);
     if (sn != null) {
       highWater = highWater == null ? sn : Math.max(highWater, sn);
-      if (s.isPlanned === false) highWaterUnplanned = highWaterUnplanned == null ? sn : Math.max(highWaterUnplanned, sn);
+      if (s.isPlanned === false && !descentTruncated) highWaterUnplanned = highWaterUnplanned == null ? sn : Math.max(highWaterUnplanned, sn);
     }
     if (s.isPlanned && s.loadNbr) {
       const cur = seenLoad.get(s.loadNbr) || { routeName: s.routeName || null, allTerminal: true };
@@ -877,6 +927,19 @@ export function buildScanState(dateStr: string, stops: any[], prev: ScanState | 
   // NUMBER scanLoadRangeForDate probes is the embedded integer (196999). Extract
   // the digits so min/max are comparable to estimateLoadRange's integer space.
   const nums = knownLoads.map((k) => loadNbrToInt(k.loadNbr)).filter((n): n is number => n != null);
+  // Merge per-load members: keep prior members for loads NOT re-scanned this cycle
+  // (e.g. future terminal-skipped loads), overwrite with the fresh grouping for
+  // loads we did see. In the Step-1 wide shadow every load is seen, so this is just
+  // the current grouping; the merge keeps it correct once lean coverage lands.
+  const loadMembers = { ...(prev?.loadMembers || {}), ...groupLoadMembers(stops) };
+  // Known-unplanned set: refresh ONLY from a descent that RAN AND COMPLETED. That
+  // single condition correctly handles every other case — a truncated descent
+  // (don't trust the partial set), a load-only cycle, and a kill-switched/empty
+  // scan (descentComplete undefined) all carry the prior set instead of wiping it.
+  // Default to [] (never undefined) so the Firestore doc stays clean.
+  const unplannedStopNbrs = descentCompleted
+    ? [...new Set(stops.filter((s) => s.isPlanned === false).map((s) => stopNbrToInt(s.stopNbr)).filter((n): n is number => n != null))].sort((a, b) => a - b)
+    : (prev?.unplannedStopNbrs ?? []);
   return {
     date: dateStr,
     knownLoads,
@@ -887,6 +950,12 @@ export function buildScanState(dateStr: string, stops: any[], prev: ScanState | 
     routeMap,
     lastScanAt: nowISO,
     scanCount: (prev?.scanCount || 0) + 1,
+    loadMembers,
+    // Carry the prior flag when this cycle didn't run the descent (load-only);
+    // default false so the field is never undefined on the persisted doc.
+    descentComplete: extra?.descentComplete ?? prev?.descentComplete ?? false,
+    observedFrontierStopNbr: extra?.observedFrontierStopNbr ?? prev?.observedFrontierStopNbr ?? null,
+    unplannedStopNbrs,
   };
 }
 

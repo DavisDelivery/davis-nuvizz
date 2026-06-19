@@ -484,6 +484,22 @@ export interface ScanState {
   routeMap: Record<string, string>;
   lastScanAt: string;
   scanCount: number;
+  // ── Step 1 shadow instrumentation (additive; existing readers ignore these) ──
+  // Per-load member stop numbers from the latest scan — lets the next cycle diff
+  // membership to surface stops pulled OFF a load (R1 evidence / future reconcile).
+  loadMembers?: Record<string, string[]>;
+  // True when the latest unplanned descent ran to the floor / early-stopped by
+  // design (NOT truncated by maxProbes / time budget / breaker). High-water must
+  // only be trusted to advance the lean floor when this is true (R9).
+  descentComplete?: boolean;
+  // Highest stop number actually SEEN to exist in the latest descent (frontier);
+  // lets a future cycle seed the ceiling without re-galloping.
+  observedFrontierStopNbr?: number | null;
+  // Unplanned stop numbers seen in the latest FULL descent — the "known last
+  // cycle" set, so the frontier audit can tell a NEW below-floor straggler
+  // (harmful miss) from an already-known below-floor order (benign). Preserved
+  // across load-only cycles (only refreshed when the descent actually ran).
+  unplannedStopNbrs?: number[];
 }
 
 export async function readScanState(dateStr: string): Promise<ScanState | null> {
