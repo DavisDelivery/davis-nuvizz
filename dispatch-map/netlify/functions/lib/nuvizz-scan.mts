@@ -21,6 +21,7 @@
 
 import { getNuvizzRequester } from './nuvizz-request.mts';
 import type { ScanState, KnownLoad } from './firestore.mts';
+import { readTerminalStops, mergeTerminalStops } from './firestore.mts';
 
 const NUVIZZ_BASE = process.env.NUVIZZ_BASE_URL || 'https://portal.nuvizz.com/deliverit/openapi/v7';
 
@@ -506,6 +507,10 @@ const MAX_GALLOP = 6;
 const FLOOR_MARGIN = 2500;
 const FUTURE_CHUNKS_TO_STOP = 2;
 const POST_TARGET_CHUNKS_TO_STOP = 3;
+// Phase 6: keep ~2 weeks of recent stop numbers in the terminal skip cache so
+// carry-over descents on older dates still hit it; older numbers are below every
+// descent floor and never re-probed, so dropping them is free.
+const TERMINAL_RETENTION_BAND = STOPS_PER_DAY * 14;
 
 // Self-calibration: highest existing stop number observed this instance.
 let observedFrontier = 0;
@@ -520,7 +525,16 @@ interface StopProbe {
   n: number;
   exists: boolean;
   expected?: string | null;
+  // Phase 6: status 90/91 → DELIVERED and immutable, so this number can be cached and
+  // skipped (no /stop/info) on future descents.
+  terminal?: boolean;
   record?: { stop: any; stopExecutionInfo: any } | null;
+}
+
+// 90 = system completion, 91 = manual/portal completion; both are terminal/immutable.
+export function isTerminalStatus(code: any): boolean {
+  const c = String(code ?? '').trim();
+  return c === '90' || c === '91';
 }
 
 async function probeStop(n: number, dateStr: string, authHeader: string, companyCode: string): Promise<StopProbe> {
@@ -536,10 +550,28 @@ async function probeStop(n: number, dateStr: string, authHeader: string, company
     if (!stop?.stopNbr) return { n, exists: false };
     const expected = ((stop?.to?.schedule?.timeFrom as string) || '').slice(0, 10) || null;
     const isTarget = exec.stopStatus === UNPLANNED_STATUS && expected === dateStr;
-    return { n, exists: true, expected, record: isTarget ? { stop, stopExecutionInfo: exec } : null };
+    return { n, exists: true, expected, terminal: isTerminalStatus(exec.stopStatus), record: isTarget ? { stop, stopExecutionInfo: exec } : null };
   } catch {
     return { n, exists: false };
   }
+}
+
+// PURE: partition a descent batch into numbers that still need a /stop/info call vs
+// ones we can synthesize from the terminal cache. A synthesized probe is identical to
+// what the real call would return for a delivered stop — exists, the stored expected
+// date, NOT a status-10 target — so the early-stop heuristics see the same inputs and
+// the descent extent is unchanged; only the network call is eliminated. Exported for tests.
+export function buildTerminalSkipPlan(
+  batch: number[], terminalCache: Map<number, string>,
+): { toProbe: number[]; synthesized: StopProbe[] } {
+  const toProbe: number[] = [];
+  const synthesized: StopProbe[] = [];
+  for (const n of batch) {
+    const expected = terminalCache.get(n);
+    if (expected !== undefined) synthesized.push({ n, exists: true, expected, terminal: true, record: null });
+    else toProbe.push(n);
+  }
+  return { toProbe, synthesized };
 }
 
 // Locate a ceiling just above the live frontier (highest existing stop number).
@@ -624,12 +656,25 @@ async function scanUnplannedStops(dateStr: string, opts: UnplannedScanOpts = {})
   const ceiling = await findCeiling(dateStr, authHeader, companyCode);
   const floor = unplannedFloor(estimateStopFrontier(dateStr) - FLOOR_MARGIN, opts.sinceStopNbr);
 
+  // Phase 6 (default OFF): load the terminal-stop skip cache so numbers already
+  // confirmed delivered (90/91) are synthesized instead of re-probed via /stop/info.
+  const useTerminalSkip = (process.env.NUVIZZ_TERMINAL_SKIP || '').toLowerCase() === 'on';
+  const terminalCache = new Map<number, string>();
+  if (useTerminalSkip) {
+    try {
+      const cached = await readTerminalStops(companyCode);
+      for (const [nbr, exp] of Object.entries(cached)) terminalCache.set(Number(nbr), exp);
+    } catch { /* cache is best-effort; fall back to full probing */ }
+  }
+  const newTerminals: Record<string, string> = {};
+
   const results: any[] = [];
   let n = ceiling;
   let foundTarget = false;
   let futureStreak = 0;
   let postTargetStreak = 0;
   let probes = 0;
+  let skipped = 0;
   let maxSeen = 0;
   const startedAt = Date.now();
 
@@ -637,7 +682,25 @@ async function scanUnplannedStops(dateStr: string, opts: UnplannedScanOpts = {})
     const batch: number[] = [];
     for (let i = 0; i < concurrency && n >= floor; i++) batch.push(n--);
     probes += batch.length;
-    const rs = await Promise.all(batch.map((m) => probeStop(m, dateStr, authHeader, companyCode)));
+    let rs: StopProbe[];
+    if (useTerminalSkip && terminalCache.size) {
+      // Synthesize the cached terminals (no call) + probe only the unknown numbers.
+      const plan = buildTerminalSkipPlan(batch, terminalCache);
+      skipped += plan.synthesized.length;
+      const probed = await Promise.all(plan.toProbe.map((m) => probeStop(m, dateStr, authHeader, companyCode)));
+      rs = [...plan.synthesized, ...probed];
+    } else {
+      rs = await Promise.all(batch.map((m) => probeStop(m, dateStr, authHeader, companyCode)));
+    }
+    // Record newly-confirmed terminals so future descents can skip them. Synthesized
+    // entries are already cached, so this only captures fresh real-probe deliveries.
+    if (useTerminalSkip) {
+      for (const r of rs) {
+        if (r.terminal && r.exists && r.expected && !terminalCache.has(r.n)) {
+          newTerminals[String(r.n).padStart(9, '0')] = r.expected;
+        }
+      }
+    }
 
     let existing = 0;
     let older = 0;
@@ -665,6 +728,16 @@ async function scanUnplannedStops(dateStr: string, opts: UnplannedScanOpts = {})
   }
 
   if (maxSeen > observedFrontier) observedFrontier = maxSeen;
+  // Persist freshly-confirmed terminals (best-effort). Retain a generous band below
+  // the ceiling so carry-over descents on older dates still benefit; numbers below
+  // that are never re-probed anyway.
+  if (useTerminalSkip && Object.keys(newTerminals).length) {
+    try {
+      const retainFloor = Math.max(0, ceiling - TERMINAL_RETENTION_BAND);
+      await mergeTerminalStops(companyCode, newTerminals, retainFloor);
+    } catch { /* best-effort; a lost write just re-probes next scan */ }
+  }
+  if (useTerminalSkip) console.log(`[scan-terminal] date=${dateStr} probesIterated=${probes} skipped=${skipped} newTerminals=${Object.keys(newTerminals).length}`);
   return results;
 }
 
