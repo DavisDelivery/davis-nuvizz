@@ -47,7 +47,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.27.32';
+const APP_VERSION = '0.27.33';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -67,6 +67,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.27.33', 'Three fixes: (1) deselecting a stop now zooms/pans back out to the board view it had before you clicked in (was staying at building zoom). (2) The Loads table now lists the full board’s loads regardless of stop filters — "Unplanned only" no longer empties it. (3) Lean scan now gap-sweeps the load range DURING THE DAY, so loads you populate by routing mid-morning (route shells that gain stops after the overnight scan) are picked up promptly instead of lingering as stale "unplanned" — fixes routed orders still showing unplanned.'],
   ['0.27.32', 'Filters: new "Potential address issues" checkbox (shows stops the mis-split detector flags) and an "Any equipment restriction" checkbox (complements the specific-restriction dropdown, which it supersedes when on). Address detector broadened: it now flags a stop whose addr1 doesn’t start with a house number while addr2 does — e.g. a dock descriptor "MGE1 NON INVENTORY DOCK DR 178" with the real street "652 BROADWAY AVE" in addr2 (previously missed because addr1 contained digits). Normal addresses (addr1 starting with the house number) are never flagged.'],
   ['0.27.31', 'Auto-flag "CLOSED ON FRIDAYS/MONDAYS" (the Uline instruction format) — the closed-day scanner now also matches the optional "ON" and the plural "S", so e.g. "CLOSED ON FRIDAYS" auto-sets a red Closed-Fri badge on import (all 7 days). Address-fix is also more robust: if the Google Geocoding API is unavailable (REQUEST_DENIED), the corrected addr1/addr2 split is still saved and you can drag the pin via "Correct pin location" instead of losing the fix.'],
   ['0.27.30', 'Mobile status pill is now collapsible (like desktop) — collapses to just the stops count, and the expanded view now also shows the NuVizz call counter (today’s calls / ceiling + mode) alongside total pallets and the load/unplanned feed update times. Shares the collapse state with desktop.'],
@@ -5650,12 +5651,31 @@ function MapScreen() {
     }
   };
 
+  // Remembers the board view (center+zoom) from BEFORE we zoomed into a stop, so
+  // deselecting restores it (see the selectedStop effect below).
+  const preStopViewRef = useRef(null);
   const handlePanToStop = (stopFromSnapshot) => {
     if (!google || !mapRef.current) return;
     if (stopFromSnapshot.lat == null || stopFromSnapshot.lng == null) return;
+    // Save the current (board) view once, before the first stop zoom-in.
+    if (!preStopViewRef.current) {
+      const c = mapRef.current.getCenter();
+      if (c) preStopViewRef.current = { center: c.toJSON(), zoom: mapRef.current.getZoom() || 10 };
+    }
     mapRef.current.panTo({ lat: stopFromSnapshot.lat, lng: stopFromSnapshot.lng });
     mapRef.current.setZoom(Math.max(mapRef.current.getZoom() || 10, STOP_ZOOM));
   };
+
+  // When the selected stop is cleared, zoom/pan back out to the saved board view.
+  useEffect(() => {
+    if (selectedStop) return;
+    const v = preStopViewRef.current;
+    if (v && mapRef.current) {
+      mapRef.current.panTo(v.center);
+      mapRef.current.setZoom(v.zoom);
+    }
+    preStopViewRef.current = null;
+  }, [selectedStop]);
 
   // On mobile we drop the resize handle and let the panel be a top-edge sheet.
   // Stretch goal per brief — we ship the simple desktop-only resize and
@@ -6200,6 +6220,7 @@ function MapScreen() {
         {/* NuVizz-style bottom data grid — collapsible spreadsheet of the board. */}
         <BottomStopsTable
           stops={visibleStops}
+          loadStops={stops}
           notes={notes}
           totalCount={filteredStops.length}
           open={bottomTableOpen}
@@ -6352,7 +6373,10 @@ const LOAD_BUCKET_STYLE = {
   cancelled: 'bg-red-100 text-red-700',
 };
 
-function BottomStopsTable({ stops, notes, totalCount, open, setOpen, onPick, onPickLoad }) {
+function BottomStopsTable({ stops, loadStops, notes, totalCount, open, setOpen, onPick, onPickLoad }) {
+  // Loads view groups the FULL board's loads (loadStops) so stop-level filters —
+  // notably "Unplanned only" — don't empty it. Falls back to the visible stops.
+  const loadSrc = loadStops || stops;
   const [q, setQ] = useState('');
   const [view, setView] = useState('stops'); // 'stops' | 'loads'
   const [statusSel, setStatusSel] = useState(() => new Set()); // empty = all
@@ -6410,7 +6434,7 @@ function BottomStopsTable({ stops, notes, totalCount, open, setOpen, onPick, onP
   // totals. Click a row to open that load's route drawer + frame it on the map.
   const loadRows = useMemo(() => {
     const m = new Map();
-    for (const s of stops) {
+    for (const s of loadSrc) {
       if (!s.loadNbr) continue; // only real (built) loads
       let g = m.get(s.loadNbr);
       if (!g) { g = { loadNbr: s.loadNbr, routeName: s.routeName || '', driverName: s.driverName || '', stops: [] }; m.set(s.loadNbr, g); }
@@ -6432,7 +6456,7 @@ function BottomStopsTable({ stops, notes, totalCount, open, setOpen, onPick, onP
     if (needle) arr = arr.filter((g) => [g.loadNbr, g.routeName, g.driverName].filter(Boolean).join(' ').toLowerCase().includes(needle));
     arr.sort((a, b) => String(a.driverName || '~').localeCompare(String(b.driverName || '~')) || String(a.routeName || a.loadNbr).localeCompare(String(b.routeName || b.loadNbr)));
     return arr;
-  }, [stops, q]);
+  }, [loadSrc, q]);
   const loadCols = [
     { k: 'load', label: 'Load', w: 150, get: (g) => <span className="font-mono text-blue-700">{g.routeName || g.loadNbr}</span>, sortVal: (g) => g.routeName || g.loadNbr },
     { k: 'driver', label: 'Driver', w: 180, get: (g) => g.driverName || '—', sortVal: (g) => g.driverName },

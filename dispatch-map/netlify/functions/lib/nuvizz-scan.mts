@@ -1020,7 +1020,11 @@ export function selectLoadProbeTargets(
     const forward: number[] = [];
     for (let n = max + 1; n <= max + fwd; n++) forward.push(n);
     const every = opts.gapSweepEvery ?? 3;
-    const doGap = opts.inWindow && every > 0 && (opts.scanCount % every === 0);
+    // Gap-sweep [min,max] for loads NOT yet in the roster — e.g. a route shell that
+    // gained today-stops AFTER the cold scan (dispatch routing mid-day). Davis
+    // routes during the DAY, so sweep EVERY out-of-window cycle (daytime cadence is
+    // already slow); overnight (high-frequency, volatile) sweep every Nth for cost.
+    const doGap = every > 0 && (!opts.inWindow || (opts.scanCount % every === 0));
     const gaps: number[] = [];
     if (doGap) for (let n = min; n <= max; n++) if (!known.has(n)) gaps.push(n);
     // R2: on gap-sweep cycles, also re-confirm TERMINAL (all-delivered) loads —
