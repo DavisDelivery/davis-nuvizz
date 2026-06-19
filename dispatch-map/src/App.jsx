@@ -46,7 +46,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.27.27';
+const APP_VERSION = '0.27.28';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -66,6 +66,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.27.28', 'Bottom table: every column in both the Stops and Loads views is now sortable — click a header to cycle asc → desc (chevron shows the active column). Stops and Loads keep independent sort state. Numeric columns (Stop #, Pallets, Weight, stop count) sort numerically; the Loads Status column sorts by % delivered'],
   ['0.27.27', 'Bottom table: new Stops | Loads tab toggle. The Loads view groups the current board by loadNbr — one row per load with driver, stop count, a per-status breakdown, and pallet/weight totals. Click a load to open its route drawer and frame the map on that load’s stops'],
   ['0.27.26', 'Map fix: clicking a stop pin now recenters and zooms to STOP_ZOOM (18), matching the list/search behavior — the map-marker click handler was setting the selected stop without panning/zooming'],
   ['0.27.25', 'Incremental-scan Phase 6 (default OFF, flag NUVIZZ_TERMINAL_SKIP): terminal-stop skip cache — stops confirmed delivered (status 90/91) are immutable, so their stopNbr→expectedDate is persisted in Firestore (nuvizz_stop_terminal) and the unplanned /stop/info descent synthesizes them from cache instead of re-probing. Heuristics preserved exactly (synthesized probe carries the stored expected date); targets /stop/info, the dominant remaining call source'],
@@ -636,6 +637,44 @@ function SortableTh({ label, k, sortKey, sortDir, onToggle, className = '' }) {
       <span className="inline-flex items-center gap-1">
         {label}
         {active ? (sortDir === 'asc' ? <ChevronUp size={12} /> : <ChevronDown size={12} />) : null}
+      </span>
+    </th>
+  );
+}
+
+// Sort an array of rows by a column's `sortVal` accessor (cols whose `get`
+// returns JSX can't be sorted on directly). `sort` = { key, dir }; null key =
+// original order. Numbers compare numerically, everything else natural-string.
+function sortRows(rows, cols, sort) {
+  if (!sort || !sort.key) return rows;
+  const col = cols.find((c) => c.k === sort.key);
+  const val = (col && col.sortVal) || (() => null);
+  const copy = [...rows];
+  copy.sort((a, b) => {
+    const av = val(a), bv = val(b);
+    if (av == null && bv == null) return 0;
+    if (av == null) return 1;
+    if (bv == null) return -1;
+    if (typeof av === 'number' && typeof bv === 'number') return av - bv;
+    return String(av).localeCompare(String(bv), undefined, { numeric: true, sensitivity: 'base' });
+  });
+  if (sort.dir === 'desc') copy.reverse();
+  return copy;
+}
+
+// Dense clickable header cell for the bottom data grid (matches its compact th
+// style; keeps the chevron next to the label even for right-aligned columns).
+function GridSortTh({ col, sort, onToggle }) {
+  const active = sort.key === col.k;
+  return (
+    <th
+      onClick={() => onToggle(col.k)}
+      className="font-semibold text-slate-500 px-2 py-1.5 border-b border-slate-200 whitespace-nowrap cursor-pointer select-none hover:bg-slate-100"
+      style={{ width: col.w, textAlign: col.align || 'left' }}
+    >
+      <span className="inline-flex items-center gap-1" style={{ flexDirection: col.align === 'right' ? 'row-reverse' : 'row' }}>
+        {col.label}
+        {active ? (sort.dir === 'asc' ? <ChevronUp size={12} /> : <ChevronDown size={12} />) : null}
       </span>
     </th>
   );
@@ -6191,20 +6230,20 @@ function BottomStopsTable({ stops, notes, totalCount, open, setOpen, onPick, onP
     document.addEventListener('pointerup', up);
   };
   const cols = [
-    { k: 'stop', label: 'Stop #', w: 96, get: (s) => <span className="font-mono text-blue-700">{s.stopNbr}</span> },
-    { k: 'name', label: 'Ship To Name', w: 220, get: (s) => s.businessName || '—' },
-    { k: 'addr1', label: 'Address 1', w: 200, get: (s) => s.addr1 || '—' },
-    { k: 'addr2', label: 'Address 2', w: 150, get: (s) => s.addr2 || '' },
-    { k: 'city', label: 'City', w: 120, get: (s) => s.city || '—' },
-    { k: 'zip', label: 'Zip', w: 70, get: (s) => s.zip || '' },
-    { k: 'cartons', label: 'Pallets', w: 70, get: (s) => (s.cartons ?? '—'), align: 'right' },
-    { k: 'weight', label: 'Weight', w: 80, get: (s) => (s.weight != null ? Number(s.weight).toLocaleString() : '—'), align: 'right' },
+    { k: 'stop', label: 'Stop #', w: 96, get: (s) => <span className="font-mono text-blue-700">{s.stopNbr}</span>, sortVal: (s) => (Number.isFinite(Number(s.stopNbr)) ? Number(s.stopNbr) : s.stopNbr) },
+    { k: 'name', label: 'Ship To Name', w: 220, get: (s) => s.businessName || '—', sortVal: (s) => s.businessName },
+    { k: 'addr1', label: 'Address 1', w: 200, get: (s) => s.addr1 || '—', sortVal: (s) => s.addr1 },
+    { k: 'addr2', label: 'Address 2', w: 150, get: (s) => s.addr2 || '', sortVal: (s) => s.addr2 },
+    { k: 'city', label: 'City', w: 120, get: (s) => s.city || '—', sortVal: (s) => s.city },
+    { k: 'zip', label: 'Zip', w: 70, get: (s) => s.zip || '', sortVal: (s) => s.zip },
+    { k: 'cartons', label: 'Pallets', w: 70, get: (s) => (s.cartons ?? '—'), align: 'right', sortVal: (s) => (typeof s.cartons === 'number' ? s.cartons : null) },
+    { k: 'weight', label: 'Weight', w: 80, get: (s) => (s.weight != null ? Number(s.weight).toLocaleString() : '—'), align: 'right', sortVal: (s) => (s.weight != null ? Number(s.weight) : null) },
     { k: 'restr', label: 'Restrictions', w: 160, get: (s) => {
         const keys = getRestrictionBadgeKeys(notes.get(s.matchKey) || null);
         return keys.length ? keys.map((k) => RESTRICTION_ICONS[k]?.short || k).join(', ') : '';
-      } },
-    { k: 'load', label: 'Load', w: 150, get: (s) => s.routeName || s.loadNbr || '' },
-    { k: 'driver', label: 'Driver', w: 150, get: (s) => s.driverName || '' },
+      }, sortVal: (s) => getRestrictionBadgeKeys(notes.get(s.matchKey) || null).map((k) => RESTRICTION_ICONS[k]?.short || k).join(', ') },
+    { k: 'load', label: 'Load', w: 150, get: (s) => s.routeName || s.loadNbr || '', sortVal: (s) => s.routeName || s.loadNbr || '' },
+    { k: 'driver', label: 'Driver', w: 150, get: (s) => s.driverName || '', sortVal: (s) => s.driverName },
   ];
   const rows = useMemo(() => {
     const needle = q.trim().toLowerCase();
@@ -6248,19 +6287,28 @@ function BottomStopsTable({ stops, notes, totalCount, open, setOpen, onPick, onP
     return arr;
   }, [stops, q]);
   const loadCols = [
-    { k: 'load', label: 'Load', w: 150, get: (g) => <span className="font-mono text-blue-700">{g.routeName || g.loadNbr}</span> },
-    { k: 'driver', label: 'Driver', w: 180, get: (g) => g.driverName || '—' },
-    { k: 'count', label: 'Stops', w: 60, align: 'right', get: (g) => g.count },
+    { k: 'load', label: 'Load', w: 150, get: (g) => <span className="font-mono text-blue-700">{g.routeName || g.loadNbr}</span>, sortVal: (g) => g.routeName || g.loadNbr },
+    { k: 'driver', label: 'Driver', w: 180, get: (g) => g.driverName || '—', sortVal: (g) => g.driverName },
+    { k: 'count', label: 'Stops', w: 60, align: 'right', get: (g) => g.count, sortVal: (g) => g.count },
     { k: 'status', label: 'Status', w: 210, get: (g) => (
         <span className="inline-flex gap-1">
           {TABLE_STATUS_BUCKETS.map((b) => g.buckets[b.k]
             ? <span key={b.k} className={'px-1 rounded text-[10px] font-medium ' + (LOAD_BUCKET_STYLE[b.k] || '')} title={b.label}>{(LOAD_BUCKET_ABBR[b.k] || b.k)} {g.buckets[b.k]}</span>
             : null)}
         </span>
-      ) },
-    { k: 'pallets', label: 'Pallets', w: 70, align: 'right', get: (g) => g.pallets || '—' },
-    { k: 'weight', label: 'Weight', w: 90, align: 'right', get: (g) => g.weight ? Math.round(g.weight).toLocaleString() : '—' },
+      ), sortVal: (g) => (g.count ? (g.buckets.completed || 0) / g.count : 0) /* % delivered */ },
+    { k: 'pallets', label: 'Pallets', w: 70, align: 'right', get: (g) => g.pallets || '—', sortVal: (g) => g.pallets },
+    { k: 'weight', label: 'Weight', w: 90, align: 'right', get: (g) => g.weight ? Math.round(g.weight).toLocaleString() : '—', sortVal: (g) => g.weight },
   ];
+  // Per-table column sort. null key = original order; click cycles asc → desc.
+  // Stops and Loads keep independent sort so switching tabs preserves each.
+  const [stopSort, setStopSort] = useState({ key: null, dir: 'asc' });
+  const [loadSort, setLoadSort] = useState({ key: null, dir: 'asc' });
+  const cycleSort = (setSort) => (k) => setSort((p) => (p.key === k ? { key: k, dir: p.dir === 'asc' ? 'desc' : 'asc' } : { key: k, dir: 'asc' }));
+  const toggleStopSort = cycleSort(setStopSort);
+  const toggleLoadSort = cycleSort(setLoadSort);
+  const sortedRows = useMemo(() => sortRows(rows, cols, stopSort), [rows, stopSort]); // eslint-disable-line react-hooks/exhaustive-deps
+  const sortedLoadRows = useMemo(() => sortRows(loadRows, loadCols, loadSort), [loadRows, loadSort]); // eslint-disable-line react-hooks/exhaustive-deps
   const toggleStatus = (k) => setStatusSel((prev) => { const n = new Set(prev); n.has(k) ? n.delete(k) : n.add(k); return n; });
   return (
     <div className="absolute left-0 right-0 bottom-0 z-[12] bg-white border-t border-slate-200 shadow-[0_-2px_10px_rgba(0,0,0,0.10)] flex flex-col" style={{ height: open ? height : undefined }}>
@@ -6337,15 +6385,15 @@ function BottomStopsTable({ stops, notes, totalCount, open, setOpen, onPick, onP
             <thead className="sticky top-0 bg-slate-50 z-10">
               <tr>
                 {cols.map((c) => (
-                  <th key={c.k} className="text-left font-semibold text-slate-500 px-2 py-1.5 border-b border-slate-200 whitespace-nowrap" style={{ width: c.w, textAlign: c.align || 'left' }}>{c.label}</th>
+                  <GridSortTh key={c.k} col={c} sort={stopSort} onToggle={toggleStopSort} />
                 ))}
               </tr>
             </thead>
             <tbody>
-              {rows.length === 0 && (
+              {sortedRows.length === 0 && (
                 <tr><td colSpan={cols.length} className="px-3 py-4 text-slate-400 italic text-center">No stops match.</td></tr>
               )}
-              {rows.map((s) => (
+              {sortedRows.map((s) => (
                 <tr
                   key={s.stopNbr}
                   onClick={() => onPick(s)}
@@ -6367,15 +6415,15 @@ function BottomStopsTable({ stops, notes, totalCount, open, setOpen, onPick, onP
             <thead className="sticky top-0 bg-slate-50 z-10">
               <tr>
                 {loadCols.map((c) => (
-                  <th key={c.k} className="text-left font-semibold text-slate-500 px-2 py-1.5 border-b border-slate-200 whitespace-nowrap" style={{ width: c.w, textAlign: c.align || 'left' }}>{c.label}</th>
+                  <GridSortTh key={c.k} col={c} sort={loadSort} onToggle={toggleLoadSort} />
                 ))}
               </tr>
             </thead>
             <tbody>
-              {loadRows.length === 0 && (
+              {sortedLoadRows.length === 0 && (
                 <tr><td colSpan={loadCols.length} className="px-3 py-4 text-slate-400 italic text-center">No loads on the current board.</td></tr>
               )}
-              {loadRows.map((g) => (
+              {sortedLoadRows.map((g) => (
                 <tr
                   key={g.loadNbr}
                   onClick={() => onPickLoad && onPickLoad(g.loadNbr)}
