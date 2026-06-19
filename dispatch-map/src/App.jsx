@@ -47,7 +47,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.27.33';
+const APP_VERSION = '0.27.34';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -67,6 +67,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.27.34', 'Route view now matches NuVizz: opening a route (a) frames/centers the map on that route’s stops (and restores your prior view on close), and (b) numbers the stops on the MAP in delivery sequence (planned-ETA order) — green=delivered / blue=scheduled numbered pins, with the rest of the board dimmed — mirroring NuVizz’s numbered route pins + numbered list.'],
   ['0.27.33', 'Three fixes: (1) deselecting a stop now zooms/pans back out to the board view it had before you clicked in (was staying at building zoom). (2) The Loads table now lists the full board’s loads regardless of stop filters — "Unplanned only" no longer empties it. (3) Lean scan now gap-sweeps the load range DURING THE DAY, so loads you populate by routing mid-morning (route shells that gain stops after the overnight scan) are picked up promptly instead of lingering as stale "unplanned" — fixes routed orders still showing unplanned.'],
   ['0.27.32', 'Filters: new "Potential address issues" checkbox (shows stops the mis-split detector flags) and an "Any equipment restriction" checkbox (complements the specific-restriction dropdown, which it supersedes when on). Address detector broadened: it now flags a stop whose addr1 doesn’t start with a house number while addr2 does — e.g. a dock descriptor "MGE1 NON INVENTORY DOCK DR 178" with the real street "652 BROADWAY AVE" in addr2 (previously missed because addr1 contained digits). Normal addresses (addr1 starting with the house number) are never flagged.'],
   ['0.27.31', 'Auto-flag "CLOSED ON FRIDAYS/MONDAYS" (the Uline instruction format) — the closed-day scanner now also matches the optional "ON" and the plural "S", so e.g. "CLOSED ON FRIDAYS" auto-sets a red Closed-Fri badge on import (all 7 days). Address-fix is also more robust: if the Google Geocoding API is unavailable (REQUEST_DENIED), the corrected addr1/addr2 split is still saved and you can drag the pin via "Correct pin location" instead of losing the fix.'],
@@ -1323,12 +1324,17 @@ function readableTextColor(hex) {
 }
 
 function pinSvgStatus(color, opts = {}) {
-  const { hollow = false, glyph = null, tag = null } = opts;
+  const { hollow = false, glyph = null, tag = null, label = null } = opts;
   const bodyFill = hollow ? '#ffffff' : color;
   const bodyStroke = hollow ? color : '#ffffff';
   const strokeW = hollow ? 2.5 : 2;
   let center;
-  if (glyph === 'check') {
+  if (label != null) {
+    // Route delivery-sequence number in the pin head (NuVizz-style numbered stop).
+    const txt = hollow ? color : readableTextColor(color);
+    const fs = String(label).length >= 2 ? 9 : 11;
+    center = `<text x="14" y="${String(label).length >= 2 ? 16.6 : 17}" font-family="system-ui, sans-serif" font-size="${fs}" font-weight="800" fill="${txt}" text-anchor="middle" letter-spacing="-0.5">${label}</text>`;
+  } else if (glyph === 'check') {
     center = '<path d="M9.5 13.2l2.8 2.8 5.2-6" fill="none" stroke="white" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>';
   } else if (glyph === 'bang') {
     center = '<text x="14" y="17.5" font-family="system-ui, sans-serif" font-size="12" font-weight="800" fill="white" text-anchor="middle">!</text>';
@@ -5390,11 +5396,19 @@ function MapScreen() {
     // map is showing. A Friday-only customer's clock appears on Fridays only.
     const selectedDayKey = weekdayKeyFromDate(selectedDate);
     const positioned = filteredStops.filter((s) => s.lat != null && s.lng != null);
+    // When a route is open, number its stops in delivery sequence (planned-ETA
+    // order = NuVizz's optimized order) and render numbered pins; dim the rest.
+    const routeSeqByStop = new Map();
+    if (selectedRoute && selectedRouteStops.length) {
+      [...selectedRouteStops].sort(compareByPlannedEta).forEach((s, i) => routeSeqByStop.set(s.stopNbr, i + 1));
+    }
     const newMarkers = positioned.map((s) => {
       const note = notes.get(s.matchKey);
+      const seq = routeSeqByStop.get(s.stopNbr);
+      const inRoute = seq != null;
       const restrictions = getRestrictionBadgeKeys(note, { day: selectedDayKey });
       const matched = effectiveMatchSet && effectiveMatchSet.has(s.stopNbr);
-      const dim = effectiveMatchSet && !matched;
+      const dim = (effectiveMatchSet && !matched) || (!!selectedRoute && !inRoute);
       // A priority flag is the dispatcher's deliberate "watch this" signal, so it
       // dominates the marker color in BOTH paths — the classic pin AND the special
       // restriction/receiving-hours icons (which otherwise hid it).
@@ -5403,7 +5417,18 @@ function MapScreen() {
       // the pin disappears and the icon(s) become the marker (States B/C).
       // iconMarkerSvg returns size + anchor based on icon count.
       let icon;
-      if (restrictions.length === 0) {
+      if (inRoute) {
+        // Numbered route pin (delivery sequence), colored by status (green=delivered
+        // / blue=scheduled), so the open route reads like NuVizz's numbered stops.
+        const statusKind = classifyStopStatus(s);
+        const meta = STATUS_META[statusKind] || STATUS_META.SCHEDULED;
+        const color = meta.color || flagColor(note);
+        icon = {
+          url: pinSvgStatus(color, { label: String(seq) }),
+          scaledSize: new google.maps.Size(30, 39),
+          anchor: new google.maps.Point(15, 37),
+        };
+      } else if (restrictions.length === 0) {
         // M5.1 — status drives the pin. SCHEDULED keeps the note-flag color
         // (no regression); other states use their status hue + shape/glyph.
         // When a result set is active (search / AI / selection), the matched
@@ -5476,7 +5501,29 @@ function MapScreen() {
     } else {
       newMarkers.forEach((m) => m.setMap(mapRef.current));
     }
-  }, [google, filteredStops, notes, effectiveMatchSet, mapFilters.showClustered, selectedDate]);
+  }, [google, filteredStops, notes, effectiveMatchSet, mapFilters.showClustered, selectedDate, selectedRoute, selectedRouteStops]);
+
+  // Center/zoom the map to fit a route's stops when it's opened (per dispatcher
+  // request — NuVizz frames the route on open). Restores the prior board view on close.
+  const preRouteViewRef = useRef(null);
+  useEffect(() => {
+    if (!google || !mapRef.current) return;
+    if (selectedRoute) {
+      const pts = selectedRouteStops.filter((s) => s.lat != null && s.lng != null);
+      if (!pts.length) return;
+      if (!preRouteViewRef.current) {
+        const c = mapRef.current.getCenter();
+        if (c) preRouteViewRef.current = { center: c.toJSON(), zoom: mapRef.current.getZoom() || 10 };
+      }
+      const b = new google.maps.LatLngBounds();
+      pts.forEach((s) => b.extend({ lat: s.lat, lng: s.lng }));
+      mapRef.current.fitBounds(b, 80);
+    } else if (preRouteViewRef.current) {
+      mapRef.current.panTo(preRouteViewRef.current.center);
+      mapRef.current.setZoom(preRouteViewRef.current.zoom);
+      preRouteViewRef.current = null;
+    }
+  }, [google, selectedRoute, selectedRouteStops]);
 
   // M5 — route polylines. One straight-line Polyline per load, ordered by
   // loadStopSeq, colored by driver. zIndex 1 keeps them below markers so pins
