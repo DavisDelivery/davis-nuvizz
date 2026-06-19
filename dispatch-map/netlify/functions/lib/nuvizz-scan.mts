@@ -38,6 +38,7 @@ export interface NormalizedStop {
   stopNbr: string | null;
   loadNbr: string | null;
   loadStopSeq: number | null;
+  routeSeq: number | null;          // M5.3 — NuVizz's authoritative route stop sequence (stop.to.seq). 1..N over physical stops; co-located orders share a number. This is the Route Workbench order, present even before ETAs exist (loadStopSeq is only array order — unreliable).
   stopType: string | null;
   status: string | null;
   businessName: string | null;
@@ -328,6 +329,7 @@ export function normalizeStop(raw: any): NormalizedStop {
     stopNbr,
     loadNbr,
     loadStopSeq: typeof load.stopSeq === 'number' ? load.stopSeq : null,
+    routeSeq: numOrNull(primary.seq),
     stopType,
     status: statusCode,
     businessName,

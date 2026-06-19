@@ -47,7 +47,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.27.34';
+const APP_VERSION = '0.27.35';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -67,6 +67,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.27.35', 'Route order now matches NuVizz exactly. Routes are sequenced by NuVizz’s own stop-sequence number (the Route Workbench order) instead of a fallback that could scramble stops — most importantly for routes that haven’t started yet (no ETAs computed), which previously fell back to NuVizz’s raw array order and looked random. The numbered map pins AND the route detail list now use that same sequence value, so co-located orders at one stop share its number, exactly like the Workbench.'],
   ['0.27.34', 'Route view now matches NuVizz: opening a route (a) frames/centers the map on that route’s stops (and restores your prior view on close), and (b) numbers the stops on the MAP in delivery sequence (planned-ETA order) — green=delivered / blue=scheduled numbered pins, with the rest of the board dimmed — mirroring NuVizz’s numbered route pins + numbered list.'],
   ['0.27.33', 'Three fixes: (1) deselecting a stop now zooms/pans back out to the board view it had before you clicked in (was staying at building zoom). (2) The Loads table now lists the full board’s loads regardless of stop filters — "Unplanned only" no longer empties it. (3) Lean scan now gap-sweeps the load range DURING THE DAY, so loads you populate by routing mid-morning (route shells that gain stops after the overnight scan) are picked up promptly instead of lingering as stale "unplanned" — fixes routed orders still showing unplanned.'],
   ['0.27.32', 'Filters: new "Potential address issues" checkbox (shows stops the mis-split detector flags) and an "Any equipment restriction" checkbox (complements the specific-restriction dropdown, which it supersedes when on). Address detector broadened: it now flags a stop whose addr1 doesn’t start with a house number while addr2 does — e.g. a dock descriptor "MGE1 NON INVENTORY DOCK DR 178" with the real street "652 BROADWAY AVE" in addr2 (previously missed because addr1 contained digits). Normal addresses (addr1 starting with the house number) are never flagged.'],
@@ -187,9 +188,29 @@ const STATUS_META = {
 // Mirrors classifyStopStatus() in netlify/functions/lib/nuvizz-scan.mts so the
 // client works on Firestore-cached docs scanned before this field existed.
 // Prefers the server-computed normalizedStatus when present.
-// M5.2 — canonical "delivery order" comparator. Mirrors the polyline sort so the
-// route detail list lines up 1:1 with what the line draws on the map.
+// M5.3 — NuVizz's authoritative route stop sequence (stop.to.seq), surfaced as
+// `routeSeq` by the scanner. This is the exact Route Workbench order (1..N over
+// physical stops; co-located orders share a number) and it's present even before
+// a route starts / before ETAs are computed. Falls back to the raw field for
+// Firestore docs cached before `routeSeq` existed.
+function routeSeqOf(s) {
+  if (typeof s?.routeSeq === 'number') return s.routeSeq;
+  const t = s?.raw?.stop?.to?.seq;
+  const f = s?.raw?.stop?.from?.seq;
+  if (typeof t === 'number') return t;
+  if (typeof f === 'number') return f;
+  return null;
+}
+
+// M5.2/M5.3 — canonical "delivery order" comparator. Mirrors the polyline sort so
+// the route detail list lines up 1:1 with what the line draws on the map. Primary
+// key is NuVizz's own sequence number (routeSeq); plannedEtaDTTM only breaks ties
+// between co-located orders that share a sequence, then loadStopSeq/stopNbr.
 function compareByPlannedEta(a, b) {
+  const as = routeSeqOf(a), bs = routeSeqOf(b);
+  if (as != null && bs != null && as !== bs) return as - bs;
+  if (as != null && bs == null) return -1;
+  if (as == null && bs != null) return 1;
   const ae = a?.plannedEtaDTTM || a?.raw?.stopExecutionInfo?.to?.plannedEtaDTTM || null;
   const be = b?.plannedEtaDTTM || b?.raw?.stopExecutionInfo?.to?.plannedEtaDTTM || null;
   if (ae && be && ae !== be) return ae.localeCompare(be);
@@ -4181,6 +4202,10 @@ function RouteDetailBody({ stops, onPickStop }) {
           const time = kind === 'DELIVERED' ? fmtClockShort(s.deliveredDTTM || execDeliveredTs(exec))
                      : kind === 'ARRIVED' ? fmtClockShort(s.arrivalDTTM || execArrivalTs(exec))
                      : fmtClockShort(s.plannedEtaDTTM || exec.to?.plannedEtaDTTM);
+          // Number by NuVizz's own sequence (routeSeq) so the list matches the Route
+          // Workbench and the numbered map pins 1:1; fall back to position if absent.
+          const rs = routeSeqOf(s);
+          const seqLabel = rs != null ? rs : i + 1;
           return (
             <li key={(s.stopNbr || '') + ':' + i}>
               <button
@@ -4188,7 +4213,7 @@ function RouteDetailBody({ stops, onPickStop }) {
                 className="w-full text-left px-4 py-2 flex items-center gap-2 hover:bg-slate-50 active:bg-slate-100"
                 style={{ minHeight: 56 }}
               >
-                <span className="text-[10px] font-mono text-slate-400 w-5 flex-shrink-0 text-right">{i + 1}</span>
+                <span className="text-[10px] font-mono text-slate-400 w-5 flex-shrink-0 text-right">{seqLabel}</span>
                 <StatusBadge kind={kind} />
                 <div className="min-w-0 flex-1">
                   <div className="text-sm font-medium text-slate-900 truncate">{s.businessName || '(no name)'}</div>
@@ -5400,7 +5425,14 @@ function MapScreen() {
     // order = NuVizz's optimized order) and render numbered pins; dim the rest.
     const routeSeqByStop = new Map();
     if (selectedRoute && selectedRouteStops.length) {
-      [...selectedRouteStops].sort(compareByPlannedEta).forEach((s, i) => routeSeqByStop.set(s.stopNbr, i + 1));
+      // Number by NuVizz's own sequence value (routeSeq) so the pins read exactly
+      // like the Route Workbench — co-located orders share a number, and the order
+      // is correct even before a route starts. Fall back to dense position for any
+      // stop missing routeSeq (old cached doc).
+      [...selectedRouteStops].sort(compareByPlannedEta).forEach((s, i) => {
+        const rs = routeSeqOf(s);
+        routeSeqByStop.set(s.stopNbr, rs != null ? rs : i + 1);
+      });
     }
     const newMarkers = positioned.map((s) => {
       const note = notes.get(s.matchKey);
