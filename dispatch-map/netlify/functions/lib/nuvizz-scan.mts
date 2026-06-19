@@ -635,9 +635,15 @@ interface UnplannedScanOpts {
   postTargetChunks?: number;
 }
 
-// New unplanned orders cluster at the high end; re-check a small band below the
-// last high-water in case a near-frontier number was imported out of order.
-const UNPLANNED_HIGHWATER_BUFFER = 200;
+// New unplanned orders cluster at the high end; re-check a band below the last
+// high-water each warm scan so the active unplanned cluster keeps getting
+// re-confirmed (status changes / out-of-order imports). Live data (Jun 2026)
+// shows the still-unplanned cluster spans ~160 numbers below the high-water at
+// the quiet end of the day, so this can't go tiny without leaning entirely on
+// the deep sweep for the lower part of the cluster. Trimmed 200 → 150 and made
+// env-tunable so it can be pulled lower (and reverted) without a deploy once the
+// [scan-parity] belowFloorNew gate confirms a smaller band misses nothing.
+const UNPLANNED_HIGHWATER_BUFFER = Number(process.env.NUVIZZ_UNPLANNED_HIGHWATER_BUFFER) || 150;
 
 // PURE: the descent floor. Lean (sinceStopNbr set) raises the floor to just below
 // the last high-water; otherwise the full estimated floor. Unit-tested.

@@ -9,8 +9,9 @@ import { buildScanState, shadowWouldProbe, loadNbrToInt, selectLoadProbeTargets,
 test('unplannedFloor: null sinceStopNbr → full estimated floor; set → just below high-water', () => {
   assert.equal(unplannedFloor(7_120_000, null), 7_120_000, 'no high-water → full descent floor');
   assert.equal(unplannedFloor(7_120_000, undefined), 7_120_000);
-  // sinceStopNbr well above the estimated floor → raise the floor to highWater-200.
-  assert.equal(unplannedFloor(7_120_000, 7_135_000), 7_134_800, 'descend only new numbers + 200 buffer');
+  // sinceStopNbr well above the estimated floor → raise the floor to highWater-buffer
+  // (default 150; env-tunable via NUVIZZ_UNPLANNED_HIGHWATER_BUFFER).
+  assert.equal(unplannedFloor(7_120_000, 7_135_000), 7_134_850, 'descend only new numbers + 150 buffer');
   // never go BELOW the estimated floor (a low high-water shouldn't widen the scan).
   assert.equal(unplannedFloor(7_120_000, 7_119_000), 7_120_000, 'floor never drops below the estimate');
 });

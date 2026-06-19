@@ -4,7 +4,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { scanDecision, intervalForHour, nowET, isInRoutingWindow } from '../netlify/functions/lib/scan-schedule.mts';
+import { scanDecision, intervalForHour, nowET, isInRoutingWindow, isWeekendBlackout } from '../netlify/functions/lib/scan-schedule.mts';
 
 test('isInRoutingWindow: overnight 20:00–07:00 ET wraps midnight', () => {
   for (const h of [20, 21, 23, 0, 3, 6]) assert.equal(isInRoutingWindow(h), true, `hour ${h} should be IN window`);
@@ -88,4 +88,69 @@ test('manual: always acts, full scan, floor bypassed', () => {
   assert.equal(d.scanTomorrowLoads, true);
   assert.equal(d.scanTomorrowUnplanned, true);
   assert.equal(d.reason, 'manual');
+});
+
+// ── Weekend blackout: Fri 22:00 ET → Sun 20:00 ET, no scheduled scans ──
+// June 2026 ET dates: 19=Fri, 20=Sat, 21=Sun, 22=Mon. Build a Date at an ET
+// hour on a chosen day-of-month (EDT, UTC-4).
+const dayAt = (dom, etHour, etMin = 0) => new Date(Date.UTC(2026, 5, dom, etHour + 4, etMin, 0));
+
+test('nowET reports the ET weekday (0=Sun..6=Sat)', () => {
+  assert.equal(nowET(dayAt(19, 12)).weekday, 5, 'Jun 19 2026 = Friday');
+  assert.equal(nowET(dayAt(20, 12)).weekday, 6, 'Jun 20 2026 = Saturday');
+  assert.equal(nowET(dayAt(21, 12)).weekday, 0, 'Jun 21 2026 = Sunday');
+  assert.equal(nowET(dayAt(22, 12)).weekday, 1, 'Jun 22 2026 = Monday');
+  // A late-Friday-night UTC instant is still Friday in ET (the weekday must be ET-local).
+  assert.equal(nowET(dayAt(19, 23)).weekday, 5);
+});
+
+test('isWeekendBlackout: Fri 22:00 → Sun 20:00 ET', () => {
+  // Friday: open until 21:59, blacked out from 22:00.
+  assert.equal(isWeekendBlackout(5, 21), false);
+  assert.equal(isWeekendBlackout(5, 22), true);
+  assert.equal(isWeekendBlackout(5, 23), true);
+  // Saturday: all day.
+  for (const h of [0, 8, 12, 20, 23]) assert.equal(isWeekendBlackout(6, h), true, `Sat ${h}`);
+  // Sunday: blacked out until 19:59, open from 20:00.
+  assert.equal(isWeekendBlackout(0, 0), true);
+  assert.equal(isWeekendBlackout(0, 19), true);
+  assert.equal(isWeekendBlackout(0, 20), false);
+  // Weekdays: never blacked out.
+  for (const wd of [1, 2, 3, 4]) for (const h of [0, 10, 22]) assert.equal(isWeekendBlackout(wd, h), false, `wd${wd} ${h}`);
+});
+
+test('scheduled scans are skipped during the weekend blackout', () => {
+  const sat = dayAt(20, 12);                       // Saturday noon
+  const d = scanDecision(sat, false, ago(sat, 600)); // plenty of elapsed time
+  assert.equal(d.act, false);
+  assert.equal(d.skip, 'weekend');
+  // Fri 22:00 and Sun 19:00 are also blacked out; Fri 21:00 and Sun 20:00 are not.
+  assert.equal(scanDecision(dayAt(19, 22), false, ago(dayAt(19, 22), 600)).act, false);
+  assert.equal(scanDecision(dayAt(21, 19), false, ago(dayAt(21, 19), 600)).act, false);
+  assert.equal(scanDecision(dayAt(19, 21), false, ago(dayAt(19, 21), 600)).act, true, 'Fri 21:00 still scans');
+  assert.equal(scanDecision(dayAt(21, 20), false, ago(dayAt(21, 20), 600)).act, true, 'Sun 20:00 resumes');
+});
+
+test('a MANUAL scan bypasses the weekend blackout', () => {
+  const sat = dayAt(20, 12);
+  const d = scanDecision(sat, true, ago(sat, 1));
+  assert.equal(d.act, true);
+  assert.equal(d.reason, 'manual');
+});
+
+test('blackout keys off ET weekday, not UTC: Fri 23:00 ET (= Sat UTC) still blacks out', () => {
+  // Fri 23:00 EDT is Sat 03:00 UTC — must be treated as Friday-night blackout.
+  const d = scanDecision(dayAt(19, 23), false, ago(dayAt(19, 23), 600));
+  assert.equal(d.act, false);
+  assert.equal(d.skip, 'weekend');
+  assert.equal(d.etHour, 23);
+});
+
+test('Sunday 20:00 resume selects the Monday-prep feeds', () => {
+  const d = scanDecision(dayAt(21, 20), false, ago(dayAt(21, 20), 600));
+  assert.equal(d.act, true);
+  assert.equal(d.skip, 'none');
+  assert.equal(d.scanTodayUnplanned, true);     // Sunday's incoming orders
+  assert.equal(d.scanTomorrowLoads, true);       // Monday's loads (exist after 8pm)
+  assert.equal(d.scanTomorrowUnplanned, true);   // Monday's incoming orders
 });

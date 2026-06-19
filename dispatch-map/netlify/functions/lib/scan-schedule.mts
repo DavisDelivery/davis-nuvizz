@@ -42,8 +42,23 @@ export interface ScanDecision {
   etMin: number;
   intervalMin: number;
   elapsedMin: number;            // Infinity when no prior load scan
-  skip: 'none' | 'cadence' | 'floor';
+  skip: 'none' | 'cadence' | 'floor' | 'weekend';
   reason: string;
+}
+
+// Weekend blackout (ET) — Davis doesn't work weekends, so no orders are created
+// and no routing happens. Skip ALL scheduled scans from Fri night until Sun
+// evening (when Monday prep begins), generating zero NuVizz traffic for ~46h.
+// Defaults: Fri 22:00 ET → Sun 20:00 ET. Both edges env-tunable. A MANUAL scan
+// always bypasses this (a dispatcher who explicitly scans on a weekend wants it).
+export const WEEKEND_BLACKOUT_START_HOUR = Number(process.env.NUVIZZ_WEEKEND_BLACKOUT_START_ET) || 22; // Fri from this ET hour
+export const WEEKEND_BLACKOUT_END_HOUR = Number(process.env.NUVIZZ_WEEKEND_BLACKOUT_END_ET) || 20;     // Sun until this ET hour
+// weekday: 0=Sun … 5=Fri … 6=Sat.
+export function isWeekendBlackout(weekday: number, etHour: number): boolean {
+  if (weekday === 5) return etHour >= WEEKEND_BLACKOUT_START_HOUR; // Friday from 22:00
+  if (weekday === 6) return true;                                  // all of Saturday
+  if (weekday === 0) return etHour < WEEKEND_BLACKOUT_END_HOUR;    // Sunday before 20:00
+  return false;
 }
 
 // Routing window (ET hours) — when routes are built/edited at Davis: OVERNIGHT,
@@ -71,14 +86,15 @@ export function intervalForHour(hour: number): number {
 
 // ET wall-clock hour (0-23) + minute. ET is a whole-hour UTC offset, so the
 // minute is identical to UTC's — the cron's :00/:15/:30/:45 align with ET.
-export function nowET(d: Date = new Date()): { hour: number; minute: number } {
+export function nowET(d: Date = new Date()): { hour: number; minute: number; weekday: number } {
   const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone: 'America/New_York', hour12: false, hour: '2-digit', minute: '2-digit',
+    timeZone: 'America/New_York', hour12: false, weekday: 'short', hour: '2-digit', minute: '2-digit',
   }).formatToParts(d);
   const get = (t: string) => parts.find((p) => p.type === t)?.value ?? '0';
   const hour = Number(get('hour')) % 24; // guards Intl's "24" at midnight
   const minute = Number(get('minute'));
-  return { hour, minute };
+  const weekday = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].indexOf(get('weekday'));
+  return { hour, minute, weekday };
 }
 
 export function scanDecision(
@@ -86,12 +102,13 @@ export function scanDecision(
   isManual = false,
   lastLoadScanAt: string | null = null,
 ): ScanDecision {
-  const { hour, minute } = nowET(d);
+  const { hour, minute, weekday } = nowET(d);
   const intervalMin = intervalForHour(hour);
   const lastMs = lastLoadScanAt ? new Date(lastLoadScanAt).getTime() : NaN;
   const elapsedMin = Number.isFinite(lastMs) ? (d.getTime() - lastMs) / 60000 : Infinity;
 
-  // Manual: always a full scan of today + tomorrow (loads + orders), floor bypassed.
+  // Manual: always a full scan of today + tomorrow (loads + orders), floor +
+  // weekend blackout bypassed.
   if (isManual) {
     return {
       act: true, scanTodayUnplanned: true, scanTomorrowLoads: true, scanTomorrowUnplanned: true,
@@ -100,6 +117,11 @@ export function scanDecision(
   }
 
   const base = { scanTodayUnplanned: false, scanTomorrowLoads: false, scanTomorrowUnplanned: false, etHour: hour, etMin: minute, intervalMin, elapsedMin };
+
+  // Weekend blackout — no work Fri 22:00 ET → Sun 20:00 ET, so no scheduled scans.
+  if (isWeekendBlackout(weekday, hour)) {
+    return { act: false, ...base, skip: 'weekend', reason: `weekend blackout wd=${weekday} h=${hour}` };
+  }
 
   // Hard floor — a scan ran very recently (e.g. a manual a moment ago); skip.
   if (elapsedMin < FLOOR_MIN) {
