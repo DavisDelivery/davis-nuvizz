@@ -47,7 +47,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.27.29';
+const APP_VERSION = '0.27.30';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -67,6 +67,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.27.30', 'Mobile status pill is now collapsible (like desktop) — collapses to just the stops count, and the expanded view now also shows the NuVizz call counter (today’s calls / ceiling + mode) alongside total pallets and the load/unplanned feed update times. Shares the collapse state with desktop.'],
   ['0.27.29', 'Address mis-split detection + one-click fix. NuVizz often puts the street in addr2 with a suite/dock/contact in addr1 (e.g. "BLDG 200" / "4310 INDUSTRIAL ACCESS RD"), so the geocoder lands on the wrong spot. Such stops now show an amber "!" pin and a "Address may be mis-split" banner on the stop card with "Fix & move pin" (one-click: swaps the lines, re-geocodes the clean street, saves the corrected address + pin) and "Edit…" (the modal, now with a suite/addr2 field, pre-filled with the suggestion). Detection is conservative and self-clears once corrected. Also adds a new "?" priority flag (indigo pin with a "?") alongside red/yellow/green.'],
   ['0.27.28', 'Bottom table: every column in both the Stops and Loads views is now sortable — click a header to cycle asc → desc (chevron shows the active column). Stops and Loads keep independent sort state. Numeric columns (Stop #, Pallets, Weight, stop count) sort numerically; the Loads Status column sorts by % delivered'],
   ['0.27.27', 'Bottom table: new Stops | Loads tab toggle. The Loads view groups the current board by loadNbr — one row per load with driver, stop count, a per-status breakdown, and pallet/weight totals. Click a load to open its route drawer and frame the map on that load’s stops'],
@@ -5718,41 +5719,58 @@ function MapScreen() {
           </div>
         )}
 
-        {/* Compact status pill — top-right, below the app bar */}
-        <div className="absolute top-2 right-2 bg-white/95 backdrop-blur border border-slate-200 rounded-lg shadow px-2.5 py-1.5 flex items-center gap-2 text-[11px] z-10">
-          <div className="leading-tight">
-            <div className="font-semibold">{stops.length} stops{carryoverCount > 0 ? <span className="text-amber-700 font-normal"> · {carryoverCount} c/o</span> : null}</div>
-            <div className="text-slate-600 text-[10px]">{totalPalletsCount.toLocaleString()} total pallets</div>
-            <FeedTimestamps loadAt={lastLoadScanAt} unplannedAt={lastUnplannedScanAt} isToday={dateIsToday} className="text-slate-500 text-[10px]" />
-            {scanState?.halted && (
-              <div className="text-[10px] font-semibold text-red-700">
-                {scanState.reason === 'ceiling'
-                  ? 'Daily scan limit reached — updates resume after midnight UTC'
-                  : 'Scanning paused (kill switch) — board may be stale'}
-              </div>
-            )}
-            {scanErr && <div className="text-[10px] text-red-600">{scanErr}</div>}
+        {/* Compact status pill — top-right, below the app bar. Collapsible to
+            just the stops count (shares statusCollapsed with desktop). */}
+        <div className="absolute top-2 right-2 bg-white/95 backdrop-blur border border-slate-200 rounded-lg shadow px-2.5 py-1.5 text-[11px] z-10 max-w-[70vw]">
+          {/* Header row — always visible: collapse toggle + stops, scan, filters. */}
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setStatusCollapsed((c) => !c)}
+              className="flex items-center gap-1 font-semibold"
+              aria-expanded={!statusCollapsed}
+              title={statusCollapsed ? 'Show details' : 'Collapse'}
+            >
+              {statusCollapsed ? <ChevronDown size={13} className="text-slate-400" /> : <ChevronUp size={13} className="text-slate-400" />}
+              <span>{stops.length} stops{carryoverCount > 0 ? <span className="text-amber-700 font-normal"> · {carryoverCount} c/o</span> : null}</span>
+            </button>
+            <button
+              onClick={manualScan}
+              disabled={scanning || scanCooldown}
+              className="ml-auto p-1 rounded hover:bg-slate-100 active:bg-slate-200 disabled:opacity-50"
+              aria-label="Scan now"
+              title={scanCooldown ? 'Just scanned — try again shortly' : 'Scan now (fresh pull from NuVizz)'}
+            >
+              <RefreshCw size={14} className={scanning ? 'animate-spin' : ''} />
+            </button>
+            <span className="w-px self-stretch bg-slate-200" aria-hidden />
+            <button
+              onClick={() => { setMobileDrawerTab('filters'); setMobileDrawerOpen(true); }}
+              className="flex items-center gap-1 px-1.5 py-1 rounded hover:bg-slate-100 active:bg-slate-200 font-semibold text-slate-700"
+              aria-label="Open filters"
+            >
+              <Filter size={14} /> Filters
+            </button>
           </div>
-          <button
-            onClick={manualScan}
-            disabled={scanning || scanCooldown}
-            className="p-1 rounded hover:bg-slate-100 active:bg-slate-200 disabled:opacity-50"
-            aria-label="Scan now"
-            title={scanCooldown ? 'Just scanned — try again shortly' : 'Scan now (fresh pull from NuVizz)'}
-          >
-            <RefreshCw size={14} className={scanning ? 'animate-spin' : ''} />
-          </button>
-          {/* v0.11.3 — explicit Filters entry on mobile. The FAB also opens the
-              drawer, but its generic list icon wasn't read as "filters"; this puts
-              a labeled control right beside the status pill where dispatchers look. */}
-          <span className="w-px self-stretch bg-slate-200" aria-hidden />
-          <button
-            onClick={() => { setMobileDrawerTab('filters'); setMobileDrawerOpen(true); }}
-            className="flex items-center gap-1 px-1.5 py-1 rounded hover:bg-slate-100 active:bg-slate-200 font-semibold text-slate-700"
-            aria-label="Open filters"
-          >
-            <Filter size={14} /> Filters
-          </button>
+          {/* Stacked details — hidden when collapsed (mirrors desktop). */}
+          {!statusCollapsed && (
+            <div className="mt-0.5 leading-tight">
+              <div className="text-slate-600 text-[10px]">{totalPalletsCount.toLocaleString()} total pallets</div>
+              <FeedTimestamps loadAt={lastLoadScanAt} unplannedAt={lastUnplannedScanAt} isToday={dateIsToday} className="text-slate-500 text-[10px]" stacked />
+              {ops && typeof ops.dayCount === 'number' && (
+                <div className="text-slate-500 text-[10px]" title={`Today's NuVizz API calls (${ops.mode})${ops.byRoute && Object.keys(ops.byRoute).length ? ' · ' + Object.entries(ops.byRoute).map(([k, v]) => `${k}:${v}`).join(' ') : ''}`}>
+                  NuVizz calls: {ops.dayCount.toLocaleString()}{ops.ceiling ? ` / ${ops.ceiling.toLocaleString()}` : ''} <span className="text-slate-400">({ops.mode}{ops.breaker ? ', halted' : ''})</span>
+                </div>
+              )}
+              {scanState?.halted && (
+                <div className="text-[10px] font-semibold text-red-700">
+                  {scanState.reason === 'ceiling'
+                    ? 'Daily scan limit reached — updates resume after midnight UTC'
+                    : 'Scanning paused (kill switch) — board may be stale'}
+                </div>
+              )}
+              {scanErr && <div className="text-[10px] text-red-600">{scanErr}</div>}
+            </div>
+          )}
         </div>
 
         {error && (
