@@ -244,14 +244,17 @@ function scanHours(text: string | null | undefined, source: SignalSource): Hours
 // Closed-day patterns. Per brief: every day, in case Uline ever sends
 // "CLOSED SUNDAY" etc. The map between matched text and day code is encoded
 // in the pattern entry so callers don't need to interpret the regex.
+// Each pattern allows an optional "ON" ("CLOSED ON FRIDAY") and an optional
+// trailing "S" plural ("CLOSED ON FRIDAYS" — the exact Uline instruction format),
+// in addition to the bare "CLOSED FRIDAY" / "NO FRIDAY" / "FRIDAY CLOSED" forms.
 const CLOSED_DAY_PATTERNS: { day: DayCode; patterns: RegExp[] }[] = [
-  { day: 'mon', patterns: [/\bCLOSED\s+MON(?:DAY)?\b/i, /\bNO\s+MONDAY\b/i, /\bMONDAY\s+CLOSED\b/i] },
-  { day: 'tue', patterns: [/\bCLOSED\s+TUE(?:S|SDAY)?\b/i, /\bNO\s+TUESDAY\b/i, /\bTUESDAY\s+CLOSED\b/i] },
-  { day: 'wed', patterns: [/\bCLOSED\s+WED(?:NESDAY)?\b/i, /\bNO\s+WEDNESDAY\b/i, /\bWEDNESDAY\s+CLOSED\b/i] },
-  { day: 'thu', patterns: [/\bCLOSED\s+THU(?:RS|RSDAY)?\b/i, /\bNO\s+THURSDAY\b/i, /\bTHURSDAY\s+CLOSED\b/i] },
-  { day: 'fri', patterns: [/\bCLOSED\s+FRI(?:DAY)?\b/i, /\bNO\s+FRIDAY\b/i, /\bNOT\s+OPEN\s+FRIDAY\b/i, /\bFRIDAY\s+CLOSED\b/i] },
-  { day: 'sat', patterns: [/\bCLOSED\s+SAT(?:URDAY)?\b/i, /\bNO\s+SATURDAY\b/i, /\bSATURDAY\s+CLOSED\b/i] },
-  { day: 'sun', patterns: [/\bCLOSED\s+SUN(?:DAY)?\b/i, /\bNO\s+SUNDAY\b/i, /\bSUNDAY\s+CLOSED\b/i] },
+  { day: 'mon', patterns: [/\bCLOSED\s+(?:ON\s+)?MON(?:DAY)?S?\b/i, /\bNO\s+MONDAYS?\b/i, /\bMONDAYS?\s+CLOSED\b/i] },
+  { day: 'tue', patterns: [/\bCLOSED\s+(?:ON\s+)?TUE(?:S|SDAY)?S?\b/i, /\bNO\s+TUESDAYS?\b/i, /\bTUESDAYS?\s+CLOSED\b/i] },
+  { day: 'wed', patterns: [/\bCLOSED\s+(?:ON\s+)?WED(?:NESDAY)?S?\b/i, /\bNO\s+WEDNESDAYS?\b/i, /\bWEDNESDAYS?\s+CLOSED\b/i] },
+  { day: 'thu', patterns: [/\bCLOSED\s+(?:ON\s+)?THU(?:RS|RSDAY)?S?\b/i, /\bNO\s+THURSDAYS?\b/i, /\bTHURSDAYS?\s+CLOSED\b/i] },
+  { day: 'fri', patterns: [/\bCLOSED\s+(?:ON\s+)?FRI(?:DAY)?S?\b/i, /\bNO\s+FRIDAYS?\b/i, /\bNOT\s+OPEN\s+FRIDAYS?\b/i, /\bFRIDAYS?\s+CLOSED\b/i] },
+  { day: 'sat', patterns: [/\bCLOSED\s+(?:ON\s+)?SAT(?:URDAY)?S?\b/i, /\bNO\s+SATURDAYS?\b/i, /\bSATURDAYS?\s+CLOSED\b/i] },
+  { day: 'sun', patterns: [/\bCLOSED\s+(?:ON\s+)?SUN(?:DAY)?S?\b/i, /\bNO\s+SUNDAYS?\b/i, /\bSUNDAYS?\s+CLOSED\b/i] },
 ];
 
 function scanClosedDays(text: string | null | undefined, source: SignalSource): ClosedDayScanResult[] {
