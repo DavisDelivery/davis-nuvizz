@@ -47,7 +47,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.27.36';
+const APP_VERSION = '0.27.37';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -67,6 +67,8 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.27.37', 'Mobile formatting fixes: (1) the app header no longer tucks under the notch/Dynamic Island — it now grows by the safe-area inset (and viewport-fit=cover is enabled so all safe-area padding actually applies). (2) Focusing the search field no longer clips the bottom sheet under the header — the sheet is now sized to the keyboard-aware visible viewport instead of a fixed vh. (3) The date chip and the status pill now share one row so they can never overlap on a narrow phone. (4) A global guard prevents any stray over-wide element from pushing the FAB / right-aligned PRO badges off the right edge. (5) Long addresses wrap instead of widening the stop drawer.'],
+  ['0.27.36', 'Scan-cost: weekend blackout (no scheduled scans Fri 10pm–Sun 8pm ET; manual still works) and a trimmed, env-tunable unplanned high-water buffer (200→150). Backend only — no UI change.'],
   ['0.27.35', 'Route order now matches NuVizz exactly. Routes are sequenced by NuVizz’s own stop-sequence number (the Route Workbench order) instead of a fallback that could scramble stops — most importantly for routes that haven’t started yet (no ETAs computed), which previously fell back to NuVizz’s raw array order and looked random. The numbered map pins AND the route detail list now use that same sequence value, so co-located orders at one stop share its number, exactly like the Workbench.'],
   ['0.27.34', 'Route view now matches NuVizz: opening a route (a) frames/centers the map on that route’s stops (and restores your prior view on close), and (b) numbers the stops on the MAP in delivery sequence (planned-ETA order) — green=delivered / blue=scheduled numbered pins, with the rest of the board dimmed — mirroring NuVizz’s numbered route pins + numbered list.'],
   ['0.27.33', 'Three fixes: (1) deselecting a stop now zooms/pans back out to the board view it had before you clicked in (was staying at building zoom). (2) The Loads table now lists the full board’s loads regardless of stop filters — "Unplanned only" no longer empties it. (3) Lean scan now gap-sweeps the load range DURING THE DAY, so loads you populate by routing mid-morning (route shells that gain stops after the overnight scan) are picked up promptly instead of lingering as stale "unplanned" — fixes routed orders still showing unplanned.'],
@@ -2781,13 +2783,13 @@ function StopSidebar({ stop, note, onClose, onSave, saving, saveError, onOpenRou
               Address
               {note?.address_override && <span className="px-1 rounded bg-blue-100 text-blue-700 text-[9px] font-semibold normal-case">corrected</span>}
             </div>
-            <div>{note?.address_override?.addr1 || stop.addr1}</div>
+            <div className="break-words">{note?.address_override?.addr1 || stop.addr1}</div>
             {(note?.address_override?.addr2 ?? stop.addr2) && (
               <div className="text-xs px-2 py-1 mt-1 bg-amber-50 border border-amber-200 rounded text-amber-900">
                 <span className="font-semibold">addr2:</span> {note?.address_override?.addr2 ?? stop.addr2}
               </div>
             )}
-            <div className="text-slate-600">
+            <div className="text-slate-600 break-words">
               {(note?.address_override?.city ?? stop.city)}, {(note?.address_override?.state ?? stop.state)} {(note?.address_override?.zip ?? stop.zip)}
             </div>
             <AddressFixBanner stop={stop} note={note} onAutoFix={onAutoFixAddress} onEdit={onEditAddress} />
@@ -2812,7 +2814,7 @@ function StopSidebar({ stop, note, onClose, onSave, saving, saveError, onOpenRou
           {cleanInstructions(stop.signalSources?.orderInstructions) && (
             <div className="pt-1">
               <div className="text-xs uppercase font-semibold text-slate-500">NuVizz instructions</div>
-              <div className="text-xs text-slate-700 whitespace-pre-wrap leading-snug">{cleanInstructions(stop.signalSources.orderInstructions)}</div>
+              <div className="text-xs text-slate-700 whitespace-pre-wrap break-words leading-snug">{cleanInstructions(stop.signalSources.orderInstructions)}</div>
             </div>
           )}
           <div className="pt-2">
@@ -3565,7 +3567,11 @@ function MobileAppBar({ version, onChipMenu, chipMenuOpen, onSelectMenu }) {
       className="flex-shrink-0 flex items-center justify-between px-3 text-white relative"
       style={{
         background: BRAND,
-        height: 48,
+        // minHeight (not a fixed height) + the notch inset as padding so the bar
+        // GROWS by the safe-area inset — content sits below the notch with a full
+        // 48px row, instead of the inset eating into a fixed 48px (which squeezed
+        // the logo/version under the status bar on notched phones).
+        minHeight: 'calc(48px + env(safe-area-inset-top))',
         paddingTop: 'env(safe-area-inset-top)',
       }}
     >
@@ -3672,17 +3678,20 @@ function BottomSheet({ open, onClose, heights = SHEET_HEIGHTS, children, ariaLab
       startY: e.touches ? e.touches[0].clientY : e.clientY,
       startFrac: heightFrac,
     };
+    // Use the VISIBLE viewport height (keyboard-aware) so drag tracking matches
+    // the sheet, which is sized as a % of the visible map container.
+    const visH = () => window.visualViewport?.height || window.innerHeight || 1;
     const move = (ev) => {
       const y = ev.touches ? ev.touches[0].clientY : ev.clientY;
       const delta = y - dragRef.current.startY;
-      const vh = window.innerHeight || 1;
+      const vh = visH();
       const next = Math.max(0.15, Math.min(0.97, dragRef.current.startFrac - delta / vh));
       setHeightFrac(next);
     };
     const up = (ev) => {
       const y = ev.changedTouches ? ev.changedTouches[0].clientY : ev.clientY;
       const delta = y - dragRef.current.startY;
-      const vh = window.innerHeight || 1;
+      const vh = visH();
       const finalFrac = Math.max(0.15, Math.min(0.97, dragRef.current.startFrac - delta / vh));
       // Close if dragged below the smallest snap stop with sufficient velocity.
       if (finalFrac < (heights.mini - 0.08) && delta > 60) {
@@ -3708,7 +3717,11 @@ function BottomSheet({ open, onClose, heights = SHEET_HEIGHTS, children, ariaLab
     document.addEventListener('touchend', up);
   };
 
-  const drawerHeight = `${(heightFrac * 100).toFixed(1)}vh`;
+  // Size as a PERCENT of the (relatively-positioned) map container, NOT `vh`.
+  // The map container is pinned to the live visualViewport height, so a % height
+  // shrinks with the on-screen keyboard and the sheet's top can never slide up
+  // under the app bar and get clipped (the old `vh` was keyboard-blind).
+  const drawerHeight = `${(heightFrac * 100).toFixed(1)}%`;
 
   return (
     <>
@@ -5808,25 +5821,86 @@ function MapScreen() {
           <SelectionControls mode={selectMode} setMode={setSelectMode} count={selectionSet?.size || 0} onClear={clearSelection} />
           {selectNote && <div className="text-[10px] bg-white/95 border border-slate-200 rounded px-1.5 py-0.5 shadow text-slate-700">{selectNote}</div>}
         </div>
-        {/* M5 — date chip at top-left of the mobile map (P2.7): core control,
-            visible without opening the drawer. */}
-        <div className="absolute top-2 left-2 z-10 flex items-center gap-1 bg-white/95 backdrop-blur border border-slate-200 rounded-lg shadow px-1.5 py-1">
-          <input
-            type="date"
-            value={selectedDate}
-            onChange={(e) => { if (e.target.value) setSelectedDate(e.target.value); }}
-            className="text-[11px] border-0 p-0 focus:outline-none bg-transparent max-w-[112px]"
-            aria-label="Select delivery date"
-          />
-          {!dateIsToday && (
-            <button
-              onClick={goToToday}
-              className="text-[10px] font-semibold px-1.5 py-0.5 rounded border border-blue-300 text-blue-700 active:bg-blue-50"
-              title="Today"
-            >
-              Today
-            </button>
-          )}
+        {/* Top overlay row: date chip (left) + status pill (right) share one
+            flex row anchored left-2/right-2, so on a narrow phone they lay out
+            side-by-side and can NEVER overlap (the old separate top-2 left/right
+            absolutes collided in the middle). The wrapper passes map gestures
+            through the gap (pointer-events-none) while each control stays tappable. */}
+        <div className="absolute top-2 left-2 right-2 z-10 flex items-start justify-between gap-2 pointer-events-none">
+          {/* date chip (P2.7): core control, visible without opening the drawer. */}
+          <div className="flex items-center gap-1 bg-white/95 backdrop-blur border border-slate-200 rounded-lg shadow px-1.5 py-1 pointer-events-auto flex-shrink-0">
+            <input
+              type="date"
+              value={selectedDate}
+              onChange={(e) => { if (e.target.value) setSelectedDate(e.target.value); }}
+              className="text-[11px] border-0 p-0 focus:outline-none bg-transparent max-w-[112px]"
+              aria-label="Select delivery date"
+            />
+            {!dateIsToday && (
+              <button
+                onClick={goToToday}
+                className="text-[10px] font-semibold px-1.5 py-0.5 rounded border border-blue-300 text-blue-700 active:bg-blue-50"
+                title="Today"
+              >
+                Today
+              </button>
+            )}
+          </div>
+
+          {/* Compact status pill — collapsible to just the stops count (shares
+              statusCollapsed with desktop). min-w-0 lets it shrink before it can
+              ever reach the date chip. */}
+          <div className="bg-white/95 backdrop-blur border border-slate-200 rounded-lg shadow px-2.5 py-1.5 text-[11px] pointer-events-auto min-w-0 max-w-[68vw]">
+            {/* Header row — always visible: collapse toggle + stops, scan, filters. */}
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setStatusCollapsed((c) => !c)}
+                className="flex items-center gap-1 font-semibold min-w-0"
+                aria-expanded={!statusCollapsed}
+                title={statusCollapsed ? 'Show details' : 'Collapse'}
+              >
+                {statusCollapsed ? <ChevronDown size={13} className="text-slate-400 flex-shrink-0" /> : <ChevronUp size={13} className="text-slate-400 flex-shrink-0" />}
+                <span className="truncate">{stops.length} stops{carryoverCount > 0 ? <span className="text-amber-700 font-normal"> · {carryoverCount} c/o</span> : null}</span>
+              </button>
+              <button
+                onClick={manualScan}
+                disabled={scanning || scanCooldown}
+                className="ml-auto p-1 rounded hover:bg-slate-100 active:bg-slate-200 disabled:opacity-50 flex-shrink-0"
+                aria-label="Scan now"
+                title={scanCooldown ? 'Just scanned — try again shortly' : 'Scan now (fresh pull from NuVizz)'}
+              >
+                <RefreshCw size={14} className={scanning ? 'animate-spin' : ''} />
+              </button>
+              <span className="w-px self-stretch bg-slate-200 flex-shrink-0" aria-hidden />
+              <button
+                onClick={() => { setMobileDrawerTab('filters'); setMobileDrawerOpen(true); }}
+                className="flex items-center gap-1 px-1.5 py-1 rounded hover:bg-slate-100 active:bg-slate-200 font-semibold text-slate-700 flex-shrink-0"
+                aria-label="Open filters"
+              >
+                <Filter size={14} /> Filters
+              </button>
+            </div>
+            {/* Stacked details — hidden when collapsed (mirrors desktop). */}
+            {!statusCollapsed && (
+              <div className="mt-0.5 leading-tight">
+                <div className="text-slate-600 text-[10px]">{totalPalletsCount.toLocaleString()} total pallets</div>
+                <FeedTimestamps loadAt={lastLoadScanAt} unplannedAt={lastUnplannedScanAt} isToday={dateIsToday} className="text-slate-500 text-[10px]" stacked />
+                {ops && typeof ops.dayCount === 'number' && (
+                  <div className="text-slate-500 text-[10px]" title={`Today's NuVizz API calls (${ops.mode})${ops.byRoute && Object.keys(ops.byRoute).length ? ' · ' + Object.entries(ops.byRoute).map(([k, v]) => `${k}:${v}`).join(' ') : ''}`}>
+                    NuVizz calls: {ops.dayCount.toLocaleString()}{ops.ceiling ? ` / ${ops.ceiling.toLocaleString()}` : ''} <span className="text-slate-400">({ops.mode}{ops.breaker ? ', halted' : ''})</span>
+                  </div>
+                )}
+                {scanState?.halted && (
+                  <div className="text-[10px] font-semibold text-red-700">
+                    {scanState.reason === 'ceiling'
+                      ? 'Daily scan limit reached — updates resume after midnight UTC'
+                      : 'Scanning paused (kill switch) — board may be stale'}
+                  </div>
+                )}
+                {scanErr && <div className="text-[10px] text-red-600">{scanErr}</div>}
+              </div>
+            )}
+          </div>
         </div>
         {driverGateNote && (
           <div className="absolute top-12 left-1/2 -translate-x-1/2 z-20 bg-amber-50 border border-amber-300 rounded shadow px-2 py-1 text-[10px] text-amber-800">
@@ -5844,60 +5918,6 @@ function MapScreen() {
             {debouncedSearch ? `No stops match "${debouncedSearch}"` : 'No stops match filters'}
           </div>
         )}
-
-        {/* Compact status pill — top-right, below the app bar. Collapsible to
-            just the stops count (shares statusCollapsed with desktop). */}
-        <div className="absolute top-2 right-2 bg-white/95 backdrop-blur border border-slate-200 rounded-lg shadow px-2.5 py-1.5 text-[11px] z-10 max-w-[70vw]">
-          {/* Header row — always visible: collapse toggle + stops, scan, filters. */}
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => setStatusCollapsed((c) => !c)}
-              className="flex items-center gap-1 font-semibold"
-              aria-expanded={!statusCollapsed}
-              title={statusCollapsed ? 'Show details' : 'Collapse'}
-            >
-              {statusCollapsed ? <ChevronDown size={13} className="text-slate-400" /> : <ChevronUp size={13} className="text-slate-400" />}
-              <span>{stops.length} stops{carryoverCount > 0 ? <span className="text-amber-700 font-normal"> · {carryoverCount} c/o</span> : null}</span>
-            </button>
-            <button
-              onClick={manualScan}
-              disabled={scanning || scanCooldown}
-              className="ml-auto p-1 rounded hover:bg-slate-100 active:bg-slate-200 disabled:opacity-50"
-              aria-label="Scan now"
-              title={scanCooldown ? 'Just scanned — try again shortly' : 'Scan now (fresh pull from NuVizz)'}
-            >
-              <RefreshCw size={14} className={scanning ? 'animate-spin' : ''} />
-            </button>
-            <span className="w-px self-stretch bg-slate-200" aria-hidden />
-            <button
-              onClick={() => { setMobileDrawerTab('filters'); setMobileDrawerOpen(true); }}
-              className="flex items-center gap-1 px-1.5 py-1 rounded hover:bg-slate-100 active:bg-slate-200 font-semibold text-slate-700"
-              aria-label="Open filters"
-            >
-              <Filter size={14} /> Filters
-            </button>
-          </div>
-          {/* Stacked details — hidden when collapsed (mirrors desktop). */}
-          {!statusCollapsed && (
-            <div className="mt-0.5 leading-tight">
-              <div className="text-slate-600 text-[10px]">{totalPalletsCount.toLocaleString()} total pallets</div>
-              <FeedTimestamps loadAt={lastLoadScanAt} unplannedAt={lastUnplannedScanAt} isToday={dateIsToday} className="text-slate-500 text-[10px]" stacked />
-              {ops && typeof ops.dayCount === 'number' && (
-                <div className="text-slate-500 text-[10px]" title={`Today's NuVizz API calls (${ops.mode})${ops.byRoute && Object.keys(ops.byRoute).length ? ' · ' + Object.entries(ops.byRoute).map(([k, v]) => `${k}:${v}`).join(' ') : ''}`}>
-                  NuVizz calls: {ops.dayCount.toLocaleString()}{ops.ceiling ? ` / ${ops.ceiling.toLocaleString()}` : ''} <span className="text-slate-400">({ops.mode}{ops.breaker ? ', halted' : ''})</span>
-                </div>
-              )}
-              {scanState?.halted && (
-                <div className="text-[10px] font-semibold text-red-700">
-                  {scanState.reason === 'ceiling'
-                    ? 'Daily scan limit reached — updates resume after midnight UTC'
-                    : 'Scanning paused (kill switch) — board may be stale'}
-                </div>
-              )}
-              {scanErr && <div className="text-[10px] text-red-600">{scanErr}</div>}
-            </div>
-          )}
-        </div>
 
         {error && (
           <div className="absolute bottom-24 left-2 right-2 bg-red-50 border border-red-200 rounded px-2 py-1 text-[11px] text-red-700 z-10">
@@ -8116,7 +8136,7 @@ function RoutingScreen() {
             ? <div className="absolute top-2 left-1/2 -translate-x-1/2 z-20 bg-indigo-600 text-white text-[11px] rounded shadow px-3 py-1.5 flex items-center gap-2 max-w-[92%]"><span className="truncate">👁 {viewedLoad?.name || viewedLoad?.id}</span><button onClick={() => setViewedLoad(null)} className="underline shrink-0">Back</button></div>
             : <div className="absolute top-2 left-2 bg-white/95 border border-slate-200 rounded shadow px-2 py-1 text-[11px]">{tally.count} selected · {tally.skids} skids · {tally.pieces} pcs</div>}
         </div>
-        <div className="border-t bg-white flex flex-col shrink-0" style={{ height: sheetOpen ? '50vh' : 'auto' }}>
+        <div className="border-t bg-white flex flex-col shrink-0" style={{ height: sheetOpen ? '50%' : 'auto' }}>
           <div className="flex items-center gap-2 px-2 py-1.5 border-b">
             <button onClick={() => setSheetOpen((o) => !o)} className="text-xs px-2 py-1 rounded border border-slate-300" aria-label={sheetOpen ? 'Collapse' : 'Expand'}>{sheetOpen ? '▾' : '▴'}</button>
             <div className="flex-1 flex gap-1">

@@ -3,6 +3,10 @@
 @tailwind utilities;
 
 html, body, #root { height: 100%; }
+/* Never let the page scroll/shift horizontally — a stray over-wide child would
+   otherwise push fixed/anchored controls (the FAB, right-aligned PRO badges)
+   partly off the right edge on mobile. Pin everything to the visible width. */
+html, body, #root { width: 100%; max-width: 100%; overflow-x: hidden; }
 body { font-family: system-ui, -apple-system, sans-serif; background: #f8fafc; color: #0f172a; }
 
 /* Google Maps InfoWindow restyling — match the brand */
