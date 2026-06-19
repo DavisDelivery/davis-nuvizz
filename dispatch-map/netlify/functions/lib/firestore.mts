@@ -521,6 +521,10 @@ export interface ScanState {
   // (harmful miss) from an already-known below-floor order (benign). Preserved
   // across load-only cycles (only refreshed when the descent actually ran).
   unplannedStopNbrs?: number[];
+  // Step 4: ISO timestamp of the last DEEP SWEEP (full-floor, relaxed-early-stop
+  // descent). Gates the deep-sweep cadence so the lean frontier's below-floor
+  // blind spot is reconciled a few times a day.
+  lastDeepSweepAt?: string;
 }
 
 // R5: scan_state is keyed per tenant so a second tenant can't collide on the

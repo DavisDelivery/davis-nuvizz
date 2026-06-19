@@ -626,6 +626,11 @@ interface UnplannedScanOpts {
   // numbers above it (+ a small buffer) instead of the full FLOOR_MARGIN range —
   // new unplanned orders are the newest imports (highest numbers).
   sinceStopNbr?: number | null;
+  // Step 4 deep sweep: raise the post-target early-stop threshold so the descent
+  // pushes THROUGH gaps of older/non-target stops to reach low-numbered advance
+  // stragglers (e.g. an order created days early, or one whose date moved to today)
+  // instead of quitting at the first gap. Defaults to POST_TARGET_CHUNKS_TO_STOP.
+  postTargetChunks?: number;
 }
 
 // New unplanned orders cluster at the high end; re-check a small band below the
@@ -651,6 +656,8 @@ async function scanUnplannedStops(dateStr: string, opts: UnplannedScanOpts = {})
   // long before this; the cap is the backstop so a calibration miss can't fan out
   // thousands of extra /stop/info calls. Lowered 6000 → 2500.
   const maxProbes = opts.maxProbes ?? 2500;
+  // Step 4: deep sweep raises this so the descent pushes past day-boundary gaps.
+  const postTargetStop = Math.max(1, opts.postTargetChunks ?? POST_TARGET_CHUNKS_TO_STOP);
   const { companyCode } = getCreds();
   const authHeader = basicAuthHeader();
   const ceiling = await findCeiling(dateStr, authHeader, companyCode);
@@ -720,7 +727,7 @@ async function scanUnplannedStops(dateStr: string, opts: UnplannedScanOpts = {})
         futureStreak = 0;
       }
       if (foundTarget && !chunkTarget) {
-        if (++postTargetStreak >= POST_TARGET_CHUNKS_TO_STOP) break;
+        if (++postTargetStreak >= postTargetStop) break;
       } else {
         postTargetStreak = 0;
       }
@@ -874,12 +881,23 @@ export function groupLoadMembers(stops: any[]): Record<string, string[]> {
   return out;
 }
 
+// PURE: should this cycle run a DEEP SWEEP (full-floor, relaxed-early-stop unplanned
+// descent)? True when none has run yet (cold) or the interval since the last has
+// elapsed. The deep sweep is the safety net that catches low advance-order
+// stragglers / date-changed orders the lean frontier floor would skip.
+export function shouldDeepSweep(lastAtISO: string | null | undefined, nowMs: number, intervalMs: number): boolean {
+  if (!lastAtISO) return true;
+  const last = Date.parse(lastAtISO);
+  if (!Number.isFinite(last)) return true;
+  return (nowMs - last) >= intervalMs;
+}
+
 export function buildScanState(
   dateStr: string,
   stops: any[],
   prev: ScanState | null,
   nowISO: string,
-  extra?: { descentComplete?: boolean; observedFrontierStopNbr?: number | null },
+  extra?: { descentComplete?: boolean; observedFrontierStopNbr?: number | null; deepSweepRan?: boolean },
 ): ScanState {
   // Merge the prior roster so an unplanned-only cycle can't wipe known loads.
   const merged = new Map<string, KnownLoad>();
@@ -956,6 +974,8 @@ export function buildScanState(
     descentComplete: extra?.descentComplete ?? prev?.descentComplete ?? false,
     observedFrontierStopNbr: extra?.observedFrontierStopNbr ?? prev?.observedFrontierStopNbr ?? null,
     unplannedStopNbrs,
+    // Stamp the deep-sweep time only on a cycle that actually ran one; else carry.
+    lastDeepSweepAt: extra?.deepSweepRan ? nowISO : (prev?.lastDeepSweepAt ?? undefined),
   };
 }
 

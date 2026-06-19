@@ -4,7 +4,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { buildScanState, shadowWouldProbe, loadNbrToInt, selectLoadProbeTargets, unplannedFloor } from '../netlify/functions/lib/nuvizz-scan.mts';
+import { buildScanState, shadowWouldProbe, loadNbrToInt, selectLoadProbeTargets, unplannedFloor, shouldDeepSweep } from '../netlify/functions/lib/nuvizz-scan.mts';
 
 test('unplannedFloor: null sinceStopNbr → full estimated floor; set → just below high-water', () => {
   assert.equal(unplannedFloor(7_120_000, null), 7_120_000, 'no high-water → full descent floor');
@@ -165,4 +165,27 @@ test('shadowWouldProbe: active loads + forward buffer (larger in routing window)
   assert.equal(inW.wouldProbe, 52, '2 active + 50 in-window (overnight) buffer');
   const outW = shadowWouldProbe(s, { inWindow: false });  // daytime default: +10
   assert.equal(outW.wouldProbe, 12, '2 active + 10 out-of-window (daytime) buffer');
+});
+
+// ── Step 4: deep-sweep cadence + lastDeepSweepAt persistence ─────────────────
+test('shouldDeepSweep: cold (no prior) or stale (>= interval) → true; recent → false', () => {
+  const now = Date.parse('2026-06-19T12:00:00Z');
+  const SIX_H = 6 * 3600_000;
+  assert.equal(shouldDeepSweep(null, now, SIX_H), true, 'cold start always sweeps');
+  assert.equal(shouldDeepSweep(undefined, now, SIX_H), true);
+  assert.equal(shouldDeepSweep('not-a-date', now, SIX_H), true, 'unparseable → sweep');
+  assert.equal(shouldDeepSweep('2026-06-19T05:00:00Z', now, SIX_H), true, '7h ago ≥ 6h → sweep');
+  assert.equal(shouldDeepSweep('2026-06-19T09:00:00Z', now, SIX_H), false, '3h ago < 6h → skip');
+  assert.equal(shouldDeepSweep('2026-06-19T06:00:00Z', now, SIX_H), true, 'exactly 6h ago → sweep (>=)');
+});
+
+test('buildScanState: lastDeepSweepAt stamped only when a deep sweep ran; carried otherwise', () => {
+  const ran = buildScanState('2026-06-19', [{ stopNbr: '7136000', isPlanned: false }], null, 'T-SWEEP', { descentComplete: true, deepSweepRan: true });
+  assert.equal(ran.lastDeepSweepAt, 'T-SWEEP');
+  // A later non-sweep cycle carries the prior timestamp.
+  const later = buildScanState('2026-06-19', [{ stopNbr: '7136001', isPlanned: false }], ran, 'T-LATER', { descentComplete: true });
+  assert.equal(later.lastDeepSweepAt, 'T-SWEEP', 'carried when this cycle did not deep-sweep');
+  // The next sweep re-stamps.
+  const again = buildScanState('2026-06-19', [{ stopNbr: '7136002', isPlanned: false }], later, 'T-AGAIN', { descentComplete: true, deepSweepRan: true });
+  assert.equal(again.lastDeepSweepAt, 'T-AGAIN');
 });

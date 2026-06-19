@@ -15,7 +15,7 @@
 // skip here, because the Friday-evening ET window lands on Saturday UTC and a
 // naive getUTCDay() check would wrongly drop it. Manual HTTP runs always proceed.
 
-import { scanDate, todayUTC, scansEnabled, deriveFleetSummary, estimateLoadRange, buildScanState, shadowWouldProbe, selectLoadProbeTargets, groupLoadMembers, estimateStopFrontier, unplannedFloor, FLOOR_MARGIN, loadNbrToInt, stopNbrToInt } from './nuvizz-scan.mts';
+import { scanDate, todayUTC, scansEnabled, deriveFleetSummary, estimateLoadRange, buildScanState, shadowWouldProbe, selectLoadProbeTargets, groupLoadMembers, estimateStopFrontier, unplannedFloor, FLOOR_MARGIN, loadNbrToInt, stopNbrToInt, shouldDeepSweep } from './nuvizz-scan.mts';
 import { loadProbeParity, frontierParity, loadMembershipDelta, dateSliceMismatch } from './scan-parity.mts';
 import { isFirestoreEnabled, writeStops, writeFleetIndex, getDoc, markScanState, readCallStats, readCircuit, readScanState, writeScanState } from './firestore.mts';
 import { breakerTripped, scanIntervalElapsed, breakerMode } from './nuvizz-request.mts';
@@ -181,11 +181,20 @@ export async function runRefreshStops(req: Request): Promise<Response> {
       // descend only NEW stop numbers above the last high-water. Cold cycles do the
       // full descent (establishes the high-water), same as the wide load fallback.
       const leanUnplanned = LEAN_DISCOVERY && includeUnplanned && !!loadTargets && (priorState?.highWaterUnplannedStopNbr != null);
+      // Step 4 — DEEP SWEEP: a few times a day (and on cold start) run a FULL-floor
+      // descent with a relaxed early-stop, even when lean is on, to catch low
+      // advance-order stragglers / date-changed orders the frontier floor skips.
+      // Only relevant when lean is active (otherwise every cycle is already full).
+      const DEEP_SWEEP_HOURS = Number(process.env.NUVIZZ_DEEP_SWEEP_HOURS) || 8;
+      const DEEP_SWEEP_CHUNKS = Number(process.env.NUVIZZ_DEEP_SWEEP_CHUNKS) || 25;
+      const deepSweep = LEAN_DISCOVERY && includeUnplanned && !isManual
+        && shouldDeepSweep(priorState?.lastDeepSweepAt, Date.now(), DEEP_SWEEP_HOURS * 3600_000);
       const unplannedOpts: any = {};
       if (isManual && includeUnplanned) unplannedOpts.maxProbes = 800;
-      // Bound on the UNPLANNED-only high-water so planned stop numbers can't ratchet
-      // the floor past genuine new orders (audit finding).
-      if (leanUnplanned) unplannedOpts.sinceStopNbr = priorState!.highWaterUnplannedStopNbr;
+      // Lean frontier floor (bounded on the UNPLANNED high-water) — but NOT on a
+      // deep sweep, which must descend the full floor.
+      if (leanUnplanned && !deepSweep) unplannedOpts.sinceStopNbr = priorState!.highWaterUnplannedStopNbr;
+      if (deepSweep) unplannedOpts.postTargetChunks = DEEP_SWEEP_CHUNKS;
       const scan = await scanDate(date, {
         includeUnplanned,
         includeLoads,
@@ -198,7 +207,15 @@ export async function runRefreshStops(req: Request): Promise<Response> {
       // R1: tell writeStops which load NUMBERS we actually re-pulled this lean cycle
       // so it can prune a stop removed from a re-scanned load (vs preserving stops on
       // loads we didn't touch). Only meaningful in lean mode (loadTargets set).
-      const meta = await writeStops(TENANT, date, scan.stops, scan.scannedAt, { includeUnplanned, includeLoads, partialLoads: !!loadTargets, partialUnplanned: leanUnplanned, rescannedLoads: loadTargets || undefined });
+      // partialUnplanned = PRESERVE un-rescanned unplanned (don't prune). True when:
+      //  • a lean frontier cycle (we only scanned above the high-water), OR
+      //  • the descent was TRUNCATED (cap/budget/breaker) — it didn't reach the
+      //    floor, so anything below the truncation point that we DIDN'T see must be
+      //    preserved, never pruned (else a truncated full/deep descent would delete
+      //    still-valid low unplanned orders). Only a COMPLETE full descent prunes.
+      const truncatedDescent = includeUnplanned && scan.descentComplete === false;
+      const partialUnplanned = (leanUnplanned && !deepSweep) || truncatedDescent;
+      const meta = await writeStops(TENANT, date, scan.stops, scan.scannedAt, { includeUnplanned, includeLoads, partialLoads: !!loadTargets, partialUnplanned, rescannedLoads: loadTargets || undefined });
       // Only rebuild the fleet (load) index when we actually scanned loads — an
       // unplanned-only run would otherwise wipe the load index with an empty scan.
       if (includeLoads) {
@@ -213,6 +230,12 @@ export async function runRefreshStops(req: Request): Promise<Response> {
           const state = buildScanState(date, scan.stops, priorState, scan.scannedAt, {
             descentComplete: scan.descentComplete,
             observedFrontierStopNbr: scan.observedFrontierStopNbr,
+            // Stamp the deep-sweep time whenever a sweep RAN (not gated on
+            // completeness): a truncated sweep still covered most of the band, and
+            // gating on completeness would loop every cycle into a deep sweep if it
+            // kept truncating — a cost blowup. Persistent truncation shows as
+            // descentComplete=false in the logs (a tuning signal), not a loop.
+            deepSweepRan: deepSweep,
           });
           await writeScanState(date, state, TENANT);
           const inWindow = isInRoutingWindow(decision.etHour);
@@ -251,7 +274,7 @@ export async function runRefreshStops(req: Request): Promise<Response> {
               ? dateSliceMismatch(scan.stops.filter((s: any) => s.isPlanned === false).map((s: any) => s.scheduledFrom), date)
               : { mismatch: 0, unauditable: 0 };
 
-            console.log(`[scan-parity] date=${date} loadMode=${lp.mode} foundLoads=${lp.foundCount} leanTargets=${lp.targetCount} MISSED_LOADS=${JSON.stringify(lp.missed)} emptyProbed=${lp.extra.length} | frontierFloor=${fp.floor ?? 'na'} foundUnplanned=${fp.foundCount} BELOW_FLOOR_NEW=${JSON.stringify(fp.belowFloorNew)} belowFloorKnown=${fp.belowFloorKnown.length} | LOAD_REMOVED=${mem.removed.length} LOAD_ADDED=${mem.added.length} | dMaxLoad=${dmax ?? 'na'} dateSliceMismatch=${dateAudit.mismatch} dateUnauditable=${dateAudit.unauditable} descentComplete=${scan.descentComplete ?? 'na'}`);
+            console.log(`[scan-parity] date=${date} loadMode=${lp.mode} foundLoads=${lp.foundCount} leanTargets=${lp.targetCount} MISSED_LOADS=${JSON.stringify(lp.missed)} emptyProbed=${lp.extra.length} | frontierFloor=${fp.floor ?? 'na'} foundUnplanned=${fp.foundCount} BELOW_FLOOR_NEW=${JSON.stringify(fp.belowFloorNew)} belowFloorKnown=${fp.belowFloorKnown.length} | LOAD_REMOVED=${mem.removed.length} LOAD_ADDED=${mem.added.length} | dMaxLoad=${dmax ?? 'na'} dateSliceMismatch=${dateAudit.mismatch} dateUnauditable=${dateAudit.unauditable} descentComplete=${scan.descentComplete ?? 'na'} deepSweep=${deepSweep}`);
             if (lp.missed.length) console.warn(`[scan-parity] date=${date} ⚠ LEAN WOULD MISS LOADS ${JSON.stringify(lp.missed)}`);
             if (fp.belowFloorNew.length) console.warn(`[scan-parity] date=${date} ⚠ FRONTIER WOULD MISS NEW UNPLANNED ${JSON.stringify(fp.belowFloorNew.slice(0, 20))}${fp.belowFloorNew.length > 20 ? ' …' : ''}`);
             if (mem.removed.length) console.log(`[scan-parity] date=${date} off-load removals=${JSON.stringify(mem.removed.slice(0, 20))}`);
