@@ -14,6 +14,13 @@
 // Unit / non-street tokens that should never lead a street line.
 export const UNIT_LEAD = /^\s*(suite|ste|unit|apt|apartment|#|bldg|building|dock|fl|floor|rm|room|lot|spc|space|gate)\b/i;
 
+// A real street line starts with a house number. Flag when addr1 does NOT begin
+// with a digit but addr2 DOES — the deliverable street is in addr2 and addr1 is a
+// dock/descriptor/contact (e.g. addr1 "MGE1 NON INVENTORY DOCK DR 178" — note it
+// HAS digits but doesn't START with the house number — and addr2 "652 BROADWAY
+// AVE"). This is broader than "addr1 has no digit" and catches dock descriptors.
+const STARTS_WITH_NUMBER = /^\s*\d/;
+
 // True when a stop's addr1 looks mis-split. Clears automatically once the stop
 // has an address_override (i.e. it's already been corrected).
 export function addressLooksOff(stop, note) {
@@ -22,8 +29,8 @@ export function addressLooksOff(stop, note) {
   const a1 = String(stop.addr1 || '').trim();
   const a2 = String(stop.addr2 || '').trim();
   if (!a1) return false;
-  if (UNIT_LEAD.test(a1)) return true;                       // suite/dock/contact in front
-  if (!/\d/.test(a1) && /^\s*\d/.test(a2)) return true;      // no street # in addr1, but addr2 has one → swapped
+  if (UNIT_LEAD.test(a1)) return true;                                  // suite/dock/contact token in front
+  if (!STARTS_WITH_NUMBER.test(a1) && STARTS_WITH_NUMBER.test(a2)) return true; // street (house #) is in addr2
   return false;
 }
 
@@ -48,8 +55,9 @@ export function suggestAddressFix(stop) {
     return null; // can't confidently split
   }
 
-  // Case B — addr1 has no street number but addr2 starts with one → swap.
-  if (!/\d/.test(a1) && /^\s*\d/.test(a2)) {
+  // Case B — addr1 doesn't start with a house number but addr2 does → swap so the
+  // real street (e.g. "652 BROADWAY AVE") leads and the dock/descriptor moves to addr2.
+  if (!STARTS_WITH_NUMBER.test(a1) && STARTS_WITH_NUMBER.test(a2)) {
     return { addr1: a2, addr2: a1, reason: 'street was in addr2 (swapped)' };
   }
   return null;
