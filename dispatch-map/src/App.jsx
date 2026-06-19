@@ -47,7 +47,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.27.37';
+const APP_VERSION = '0.28.0';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -67,6 +67,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.28.0', 'Mobile stop detail rebuilt for full desktop parity. The desktop sidebar and the mobile sheet now render the SAME shared components (one address/window/items/route block + one complete notes editor), so every edit option on desktop is on mobile and the two can never drift again. The mobile stop sheet is now a single scroll with one inline “Edit” that reveals the full editor — priority flag, AM/PM window, per-day receiving hours (with copy-to-weekdays), appointment required + notes, liftgate, equipment restrictions, dock type/notes, and contacts — instead of options split across tabs. Plus a mobile design-system sweep: Filters toggles no longer get pushed off the right edge, the header no longer clips under the notch, the date chip/status pill can’t overlap, long text wraps, modals/chat are keyboard-aware, and the stop sheet opens at a content-appropriate height (less empty space).'],
   ['0.27.37', 'Mobile formatting fixes: (1) the app header no longer tucks under the notch/Dynamic Island — it now grows by the safe-area inset (and viewport-fit=cover is enabled so all safe-area padding actually applies). (2) Focusing the search field no longer clips the bottom sheet under the header — the sheet is now sized to the keyboard-aware visible viewport instead of a fixed vh. (3) The date chip and the status pill now share one row so they can never overlap on a narrow phone. (4) A global guard prevents any stray over-wide element from pushing the FAB / right-aligned PRO badges off the right edge. (5) Long addresses wrap instead of widening the stop drawer.'],
   ['0.27.36', 'Scan-cost: weekend blackout (no scheduled scans Fri 10pm–Sun 8pm ET; manual still works) and a trimmed, env-tunable unplanned high-water buffer (200→150). Backend only — no UI change.'],
   ['0.27.35', 'Route order now matches NuVizz exactly. Routes are sequenced by NuVizz’s own stop-sequence number (the Route Workbench order) instead of a fallback that could scramble stops — most importantly for routes that haven’t started yet (no ETAs computed), which previously fell back to NuVizz’s raw array order and looked random. The numbered map pins AND the route detail list now use that same sequence value, so co-located orders at one stop share its number, exactly like the Workbench.'],
@@ -1922,8 +1923,8 @@ function Legend({ expanded, setExpanded }) {
 // the parent applies filters to stops in applyMapFilters().
 function MapFilterToggle({ label, checked, onChange, warning, disabled, disabledHint }) {
   return (
-    <div className={`flex items-center justify-between gap-3 py-1.5 ${disabled ? 'opacity-50' : ''}`}>
-      <span className="text-xs text-slate-700" title={disabled ? disabledHint : undefined}>{label}</span>
+    <div className={`relative flex items-center justify-between gap-3 py-1.5 ${disabled ? 'opacity-50' : ''}`}>
+      <span className="text-xs text-slate-700 min-w-0 flex-1 pr-2" title={disabled ? disabledHint : undefined}>{label}</span>
       <button
         role="switch"
         aria-checked={checked}
@@ -2187,10 +2188,10 @@ function SelectionOverlay({ mode, onBox, onLasso }) {
 // pin on the map; this saves (or resets) the per-customer location override.
 function MoveLocationBar({ stop, saving, onSave, onCancel, onReset }) {
   return (
-    <div className="fixed left-1/2 -translate-x-1/2 bottom-6 z-[45] bg-white border border-slate-200 rounded-lg shadow-xl px-3 py-2 flex items-center gap-2 max-w-[94vw]">
+    <div className="fixed left-1/2 -translate-x-1/2 bottom-6 z-[45] bg-white border border-slate-200 rounded-lg shadow-xl px-3 py-2 flex flex-wrap items-center gap-2 w-[94vw] max-w-md">
       <div className="text-xs text-slate-700 min-w-0">
         <div className="font-semibold truncate max-w-[180px]">{stop.businessName || stop.stopNbr}</div>
-        <div className="text-slate-500 whitespace-nowrap">Drag the blue pin to the correct spot, then Save.</div>
+        <div className="text-slate-500">Drag the blue pin to the correct spot, then Save.</div>
       </div>
       <button onClick={onReset} disabled={saving} className="text-[11px] px-2 py-1.5 rounded border border-slate-300 text-slate-600 hover:bg-slate-50 disabled:opacity-50 min-h-[40px]" title="Clear the saved override (back to NuVizz location)">Reset</button>
       <button onClick={onCancel} disabled={saving} className="text-[11px] px-2 py-1.5 rounded border border-slate-300 text-slate-600 hover:bg-slate-50 disabled:opacity-50 min-h-[40px]">Cancel</button>
@@ -2313,8 +2314,8 @@ function AddressEditModal({ stop, note, google, seed, onClose, onSaved }) {
 
   const field = 'w-full text-sm border border-slate-300 rounded px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-400';
   return (
-    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 p-4" onClick={onClose}>
-      <div className="bg-white rounded-lg shadow-xl w-full max-w-sm p-4 space-y-3" onClick={(e) => e.stopPropagation()}>
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 p-4 overflow-y-auto" onClick={onClose}>
+      <div className="bg-white rounded-lg shadow-xl w-full max-w-sm p-4 space-y-3 max-h-[90dvh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between">
           <div className="font-semibold text-slate-800">Edit address</div>
           <button onClick={onClose} className="p-1 hover:bg-slate-100 rounded"><X size={18} /></button>
@@ -2632,6 +2633,331 @@ function ProsSection({ stop }) {
   );
 }
 
+// ── Shared stop-detail building blocks ──────────────────────────────────────
+// SINGLE source of truth for the stop detail + editor, rendered identically by
+// the desktop sidebar AND the mobile sheet so the two can never drift. Read-only
+// data sections, the full notes editor, and the notes wrapper are all here.
+
+// Read-only data: address (+ fix banner + map links + edit/move), NuVizz
+// instructions, delivery window, items, and route. Used by desktop + mobile.
+function StopDataSections({ stop, note, onOpenRoute, onMoveLocation, onEditAddress, onAutoFixAddress }) {
+  return (
+    <div className="px-4 py-3 border-b text-sm space-y-1">
+      <div>
+        <div className="text-xs uppercase font-semibold text-slate-500 flex items-center gap-1.5">
+          Address
+          {note?.address_override && <span className="px-1 rounded bg-blue-100 text-blue-700 text-[9px] font-semibold normal-case">corrected</span>}
+        </div>
+        <div className="break-words">{note?.address_override?.addr1 || stop.addr1}</div>
+        {(note?.address_override?.addr2 ?? stop.addr2) && (
+          <div className="text-xs px-2 py-1 mt-1 bg-amber-50 border border-amber-200 rounded text-amber-900 break-words">
+            <span className="font-semibold">addr2:</span> {note?.address_override?.addr2 ?? stop.addr2}
+          </div>
+        )}
+        <div className="text-slate-600 break-words">
+          {(note?.address_override?.city ?? stop.city)}, {(note?.address_override?.state ?? stop.state)} {(note?.address_override?.zip ?? stop.zip)}
+        </div>
+        <AddressFixBanner stop={stop} note={note} onAutoFix={onAutoFixAddress} onEdit={onEditAddress} />
+        <div className="flex items-center gap-x-4 gap-y-1 flex-wrap mt-1">
+          <StreetViewLink stop={stop} />
+          <GoogleMapsLink stop={stop} />
+          <WebSearchLink stop={stop} />
+        </div>
+        <div className="flex items-center gap-x-4 gap-y-1 flex-wrap">
+          {onEditAddress && (
+            <button onClick={() => onEditAddress(stop)} className="mt-1.5 inline-flex items-center gap-1 text-xs text-blue-700 hover:underline">
+              <MapPin size={13} /> Edit address
+            </button>
+          )}
+          {onMoveLocation && (
+            <button onClick={() => onMoveLocation(stop)} className="mt-1.5 inline-flex items-center gap-1 text-xs text-blue-700 hover:underline">
+              <MapPin size={13} /> Correct pin location{note?.location_override ? ' · custom saved' : ''}
+            </button>
+          )}
+        </div>
+      </div>
+      {cleanInstructions(stop.signalSources?.orderInstructions) && (
+        <div className="pt-1">
+          <div className="text-xs uppercase font-semibold text-slate-500">NuVizz instructions</div>
+          <div className="text-xs text-slate-700 whitespace-pre-wrap break-words leading-snug">{cleanInstructions(stop.signalSources.orderInstructions)}</div>
+        </div>
+      )}
+      <div className="pt-2">
+        <div className="text-xs uppercase font-semibold text-slate-500">Window</div>
+        <div className="text-sm">{stop.scheduledFrom || '—'} – {stop.scheduledTo || '—'}</div>
+      </div>
+      <div className="pt-2">
+        <OrderItemsSection stop={stop} />
+      </div>
+      <div className="pt-2 mt-2 border-t">
+        <div className="text-xs uppercase font-semibold text-slate-500 mb-1">Route</div>
+        {stop.loadNbr ? (
+          <div className="flex items-center justify-between gap-2">
+            <div className="min-w-0 text-sm">
+              <div className="font-semibold text-slate-900 truncate">{stop.routeName || stop.loadNbr}</div>
+              {stop.driverName && <div className="text-xs text-slate-500 truncate">{stop.driverName}</div>}
+              {stop.routeName && <div className="text-[10px] text-slate-400 font-mono">{stop.loadNbr}</div>}
+            </div>
+            {onOpenRoute && (
+              <button
+                onClick={() => onOpenRoute(stop.loadNbr)}
+                className="flex-shrink-0 px-2 py-1 text-xs font-semibold text-blue-700 border border-blue-300 rounded hover:bg-blue-50 active:bg-blue-100"
+              >
+                View full route
+              </button>
+            )}
+          </div>
+        ) : (
+          <div className="text-xs text-slate-500 italic">Not yet assigned</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// The COMPLETE customer-notes editor — every editable field on a stop. `compact`
+// (desktop) tightens controls; otherwise controls use 44px touch targets.
+// `draft` is the working note; `setDraft` takes a PARTIAL patch and merges it
+// (the parent tracks dirty state + persists).
+function StopNotesEditor({ draft, setDraft, compact = false }) {
+  const D = draft;
+  const setD = (patch) => setDraft(patch);
+  const [copyToast, setCopyToast] = useState(false);
+  const setHours = (day, partial) => {
+    const existing = D.receiving_hours?.[day] || { open: '', close: '' };
+    const merged = typeof existing === 'string'
+      ? { open: '', close: '', ...partial }
+      : { open: existing.open || '', close: existing.close || '', ...partial };
+    setD({
+      receiving_hours: { ...D.receiving_hours, [day]: merged },
+      manual_overrides: { ...(D.manual_overrides || {}), receiving_hours: true },
+    });
+  };
+  const toggleClosed = (day) => {
+    const current = Array.isArray(D.closed_days) ? D.closed_days : [];
+    const next = current.includes(day) ? current.filter((d) => d !== day) : [...current, day];
+    setD({ closed_days: next, manual_overrides: { ...(D.manual_overrides || {}), closed_days: true } });
+  };
+  const isClosed = (day) => Array.isArray(D.closed_days) && D.closed_days.includes(day);
+  const copyMondayToWeekdays = () => {
+    const monClosed = isClosed('mon');
+    const monHours = D.receiving_hours?.mon;
+    const monHasHours = monHours && (typeof monHours === 'object' ? (monHours.open || monHours.close) : monHours);
+    if (!monClosed && !monHasHours) return;
+    const weekdays = ['tue', 'wed', 'thu', 'fri'];
+    const patch = {
+      receiving_hours: { ...(D.receiving_hours || {}) },
+      closed_days: Array.isArray(D.closed_days) ? [...D.closed_days] : [],
+      manual_overrides: { ...(D.manual_overrides || {}), receiving_hours: true, closed_days: true },
+    };
+    for (const d of weekdays) {
+      if (monClosed) {
+        if (!patch.closed_days.includes(d)) patch.closed_days.push(d);
+      } else {
+        patch.closed_days = patch.closed_days.filter((x) => x !== d);
+        patch.receiving_hours[d] = typeof monHours === 'string' ? monHours : { open: monHours.open || '', close: monHours.close || '' };
+      }
+    }
+    setD(patch);
+    setCopyToast(true);
+    setTimeout(() => setCopyToast(false), 1500);
+  };
+  const getOpen = (day) => { const v = D.receiving_hours?.[day]; if (!v || typeof v === 'string') return ''; return v.open || ''; };
+  const getClose = (day) => { const v = D.receiving_hours?.[day]; if (!v || typeof v === 'string') return ''; return v.close || ''; };
+  const getLegacyString = (day) => { const v = D.receiving_hours?.[day]; return typeof v === 'string' ? v : ''; };
+  const toggleRestriction = (val) => {
+    const cur = D.equipment_restrictions || [];
+    setD({ equipment_restrictions: cur.includes(val) ? cur.filter((x) => x !== val) : [...cur, val] });
+  };
+  const addContact = () => setD({ contacts: [...(D.contacts || []), { name: '', phone: '', role: '' }] });
+  const setContact = (i, patch) => { const next = [...(D.contacts || [])]; next[i] = { ...next[i], ...patch }; setD({ contacts: next }); };
+  const removeContact = (i) => setD({ contacts: (D.contacts || []).filter((_, idx) => idx !== i) });
+
+  // Tap-target sizing: compact = desktop density; otherwise 44px min targets.
+  const pad = compact ? 'px-2 py-1' : 'px-3 py-2';
+  const tap = compact ? undefined : { minHeight: 44 };
+
+  return (
+    <div className="space-y-4 text-sm">
+      <div>
+        <div className="text-[11px] font-semibold text-slate-600 mb-1">Priority flag</div>
+        <div className="flex flex-wrap gap-1.5">
+          {[null, ...FLAG_OPTIONS].map((v) => {
+            const active = D.priority_flag === v;
+            const swatch = v ? FLAG_COLORS[v] : '#e2e8f0';
+            return (
+              <button key={String(v)} onClick={() => setD({ priority_flag: v })} style={tap}
+                className={`${pad} rounded border text-xs flex items-center gap-1.5 ${active ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-300 bg-white text-slate-700'}`}>
+                <span className="w-3 h-3 rounded-full flex-shrink-0" style={{ background: swatch }} />
+                {v === 'question' ? '?' : (v || 'none')}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      <div>
+        <div className="text-[11px] font-semibold text-slate-600 mb-1">Delivery window</div>
+        <div className="flex flex-wrap gap-1.5">
+          {[null, 'AM', 'PM'].map((v) => {
+            const active = (D.delivery_window || null) === v;
+            return (
+              <button key={String(v)} onClick={() => setD({ delivery_window: v })} style={tap}
+                title={v ? `Tag this stop ${v} — shows an ${v} pin on the map` : 'No AM/PM tag'}
+                className={`${pad} rounded border text-xs font-semibold ${active ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-300 bg-white text-slate-700'}`}>
+                {v || 'none'}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      <div>
+        <div className="text-[11px] font-semibold text-slate-600 mb-1">Receiving hours</div>
+        <div className="grid grid-cols-7 gap-1 mb-2">
+          {DAYS.map((d) => {
+            const closed = isClosed(d);
+            return (
+              <button key={d} type="button" onClick={() => toggleClosed(d)}
+                className={`text-[10px] uppercase font-semibold py-1 rounded border ${closed ? 'bg-red-100 border-red-300 text-red-700' : 'bg-white border-slate-300 text-slate-700 hover:bg-slate-50'}`}
+                title={closed ? `${d.toUpperCase()} closed — click to open` : `${d.toUpperCase()} open — click to mark closed`}>
+                {d}
+              </button>
+            );
+          })}
+        </div>
+        <div className="flex items-center gap-2 mb-2">
+          <button type="button" onClick={copyMondayToWeekdays}
+            disabled={!isClosed('mon') && !(D.receiving_hours?.mon && (typeof D.receiving_hours.mon === 'string' ? D.receiving_hours.mon : (D.receiving_hours.mon.open || D.receiving_hours.mon.close)))}
+            className="text-[10px] py-1 px-2 rounded border border-slate-300 text-slate-700 hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed"
+            title="Apply Monday's hours/closed state to Tuesday-Friday">
+            Copy to all weekdays (Mon-Fri)
+          </button>
+          {copyToast && <span className="text-[10px] text-emerald-600">Copied</span>}
+        </div>
+        <div className="space-y-1">
+          {DAYS.map((d) => {
+            const closed = isClosed(d);
+            const legacy = getLegacyString(d);
+            return (
+              <div key={d} className="flex items-center gap-2">
+                <div className="w-10 text-[10px] uppercase font-semibold text-slate-500 flex-shrink-0">{d}</div>
+                {closed ? (
+                  <div className="flex-1 flex items-center justify-between gap-2 px-2 py-1 rounded bg-red-50 border border-red-200">
+                    <span className="text-[11px] font-semibold text-red-700">Closed</span>
+                    <button type="button" onClick={() => toggleClosed(d)} className="text-[10px] text-blue-600 hover:underline">Edit</button>
+                  </div>
+                ) : (
+                  <div className="flex-1 flex items-center gap-1 min-w-0">
+                    <input type="time" value={getOpen(d)} onChange={(e) => setHours(d, { open: e.target.value })} className="flex-1 min-w-0 border border-slate-300 rounded px-1 py-1 text-[11px]" aria-label={`${d} open time`} />
+                    <span className="text-[10px] text-slate-400 flex-shrink-0">–</span>
+                    <input type="time" value={getClose(d)} onChange={(e) => setHours(d, { close: e.target.value })} className="flex-1 min-w-0 border border-slate-300 rounded px-1 py-1 text-[11px]" aria-label={`${d} close time`} />
+                  </div>
+                )}
+                {legacy && !closed && <div className="text-[9px] text-amber-700 italic flex-shrink-0" title={`Legacy free-text value: ${legacy}`}>(legacy)</div>}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-2">
+        <Toggle label="Appointment required" checked={!!D.appointment_required} onChange={(b) => setD({ appointment_required: b })} />
+        <Toggle label="Liftgate required" checked={!!D.liftgate_required} onChange={(b) => setD({ liftgate_required: b })} />
+      </div>
+
+      <div>
+        <div className="text-[11px] font-semibold text-slate-600 mb-1">Appointment notes</div>
+        <input value={D.appointment_notes || ''} onChange={(e) => setD({ appointment_notes: e.target.value })} className="w-full border border-slate-300 rounded px-2 py-1 text-xs" style={tap} />
+      </div>
+
+      <div>
+        <div className="text-[11px] font-semibold text-slate-600 mb-1">Equipment restrictions</div>
+        <div className="flex flex-wrap gap-1.5">
+          {EQUIPMENT_OPTIONS.map((o) => {
+            const active = (D.equipment_restrictions || []).includes(o.value);
+            return (
+              <button key={o.value} onClick={() => toggleRestriction(o.value)} style={tap}
+                className={`${pad} rounded-full text-[11px] border inline-flex items-center gap-1.5 ${active ? 'bg-purple-600 text-white border-purple-600' : 'bg-white border-slate-300 text-slate-700'}`}>
+                <RestrictionIcon kind={o.value} size={14} />
+                {o.label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      <div>
+        <div className="text-[11px] font-semibold text-slate-600 mb-1">Dock type</div>
+        <div className="flex flex-wrap gap-1.5">
+          {[...DOCK_TYPES, { value: null, label: 'unknown' }].map((o) => {
+            const active = (D.dock_type ?? null) === o.value;
+            return (
+              <button key={String(o.value)} onClick={() => setD({ dock_type: o.value })} style={tap}
+                className={`${pad} rounded border text-xs ${active ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-300 bg-white text-slate-700'}`}>
+                {o.label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      <div>
+        <div className="text-[11px] font-semibold text-slate-600 mb-1">Dock notes</div>
+        <textarea value={D.dock_notes || ''} onChange={(e) => setD({ dock_notes: e.target.value })} rows={3} className="w-full border border-slate-300 rounded px-2 py-1 text-xs" />
+      </div>
+
+      <div>
+        <div className="text-[11px] font-semibold text-slate-600 mb-1 flex items-center justify-between">
+          <span>Contacts</span>
+          <button onClick={addContact} className="text-xs text-blue-600 inline-flex items-center gap-0.5 hover:underline"><Plus size={11} /> add</button>
+        </div>
+        <div className="space-y-1.5">
+          {(D.contacts || []).map((c, i) => (
+            <div key={i} className="grid grid-cols-[1fr_1fr_1fr_auto] gap-1 items-center">
+              <input value={c.name || ''} onChange={(e) => setContact(i, { name: e.target.value })} placeholder="Name" className="min-w-0 border border-slate-300 rounded px-1.5 py-1 text-xs" />
+              <input value={c.phone || ''} onChange={(e) => setContact(i, { phone: e.target.value })} placeholder="Phone" className="min-w-0 border border-slate-300 rounded px-1.5 py-1 text-xs" />
+              <input value={c.role || ''} onChange={(e) => setContact(i, { role: e.target.value })} placeholder="Role" className="min-w-0 border border-slate-300 rounded px-1.5 py-1 text-xs" />
+              <button onClick={() => removeContact(i)} className="text-slate-400 hover:text-red-600 flex-shrink-0"><Trash2 size={14} /></button>
+            </div>
+          ))}
+          {(!D.contacts || !D.contacts.length) && <div className="text-xs text-slate-400 italic">none</div>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Customer-notes section wrapper: the Edit toggle, the read-only view, the full
+// editor, and recent-PRO history. Shared by desktop + mobile.
+function StopNotesSection({ note, editing, setEditing, draft, setDraft, compact = false }) {
+  return (
+    <div className="px-4 py-3 space-y-3">
+      <div className="flex items-center justify-between">
+        <div className="text-xs uppercase font-semibold text-slate-500">Customer notes</div>
+        {!editing && (
+          compact
+            ? <button onClick={() => setEditing(true)} className="text-xs text-blue-600 hover:underline">Edit</button>
+            : <button onClick={() => setEditing(true)} className="px-3 py-1.5 text-xs text-white font-semibold rounded" style={{ background: BRAND, minHeight: 36 }}>Edit</button>
+        )}
+      </div>
+      {!editing && !note && <div className="text-xs text-slate-500 italic">No notes yet. {compact ? 'Click' : 'Tap'} Edit to add.</div>}
+      {!editing && note && <ReadOnlyNoteView note={note} />}
+      {editing && <StopNotesEditor draft={draft} setDraft={setDraft} compact={compact} />}
+      {note?.pro_history?.length > 0 && (
+        <div className="pt-2 border-t">
+          <div className="text-xs font-semibold text-slate-600 mb-1">Recent PROs at this customer</div>
+          <div className="flex flex-wrap gap-1">
+            {[...note.pro_history].reverse().slice(0, 10).map((h, i) => (
+              <span key={i} className="text-[10px] bg-slate-100 border border-slate-200 rounded px-1.5 py-0.5">{h.pro} · {h.date}</span>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function StopSidebar({ stop, note, onClose, onSave, saving, saveError, onOpenRoute, onMoveLocation, onEditAddress, onAutoFixAddress, mobile = false }) {
   const [draft, setDraft] = useState(() => note || emptyNote(stop));
   const [editing, setEditing] = useState(!note);
@@ -2663,94 +2989,10 @@ function StopSidebar({ stop, note, onClose, onSave, saving, saveError, onOpenRou
   const sidebarDeliveredAt = sidebarStatusKind === 'DELIVERED'
     ? fmtClockShort(stop.deliveredDTTM || execDeliveredTs(stop.raw?.stopExecutionInfo || {})) : null;
   const D = draft;
+  // setD merges a PARTIAL patch and marks the draft dirty (guards background
+  // writes from clobbering in-progress edits). All field helpers live in the
+  // shared <StopNotesEditor>.
   const setD = (patch) => { dirtyRef.current = true; setDraft({ ...D, ...patch }); };
-  // M4.4 — receiving_hours is now {open, close} per day. The setter accepts a
-  // partial {open?, close?} so the two time inputs can update independently.
-  // manual_overrides.receiving_hours is set to true on any per-day edit so
-  // the scanner stops auto-populating after dispatcher touched it.
-  const setHours = (day, partial) => {
-    const existing = D.receiving_hours?.[day] || { open: '', close: '' };
-    const merged = typeof existing === 'string'
-      ? { open: '', close: '', ...partial }
-      : { open: existing.open || '', close: existing.close || '', ...partial };
-    setD({
-      receiving_hours: { ...D.receiving_hours, [day]: merged },
-      manual_overrides: { ...(D.manual_overrides || {}), receiving_hours: true },
-    });
-  };
-  // Closed-day toggle. Switches whether `day` is in closed_days; sets the
-  // matching manual_override so the scanner respects the dispatcher's choice.
-  const toggleClosed = (day) => {
-    const current = Array.isArray(D.closed_days) ? D.closed_days : [];
-    const next = current.includes(day) ? current.filter((d) => d !== day) : [...current, day];
-    setD({
-      closed_days: next,
-      manual_overrides: { ...(D.manual_overrides || {}), closed_days: true },
-    });
-  };
-  const isClosed = (day) => Array.isArray(D.closed_days) && D.closed_days.includes(day);
-  // Copy Monday's hours to Tue-Fri. If Monday is closed, weekdays inherit the
-  // closed state too. No-op if Monday has no hours set AND isn't closed.
-  const [copyToast, setCopyToast] = useState(false);
-  const copyMondayToWeekdays = () => {
-    const monClosed = isClosed('mon');
-    const monHours = D.receiving_hours?.mon;
-    const monHasHours = monHours && (typeof monHours === 'object' ? (monHours.open || monHours.close) : monHours);
-    if (!monClosed && !monHasHours) return;
-    const weekdays = ['tue', 'wed', 'thu', 'fri'];
-    const patch = {
-      receiving_hours: { ...(D.receiving_hours || {}) },
-      closed_days: Array.isArray(D.closed_days) ? [...D.closed_days] : [],
-      manual_overrides: {
-        ...(D.manual_overrides || {}),
-        receiving_hours: true,
-        closed_days: true,
-      },
-    };
-    for (const d of weekdays) {
-      if (monClosed) {
-        if (!patch.closed_days.includes(d)) patch.closed_days.push(d);
-      } else {
-        patch.closed_days = patch.closed_days.filter((x) => x !== d);
-        patch.receiving_hours[d] = typeof monHours === 'string'
-          ? monHours
-          : { open: monHours.open || '', close: monHours.close || '' };
-      }
-    }
-    setD(patch);
-    setCopyToast(true);
-    setTimeout(() => setCopyToast(false), 1500);
-  };
-  // Read helpers for the hours inputs — gracefully handle both legacy string
-  // format and new {open, close} format so unmigrated docs still render.
-  const getOpen = (day) => {
-    const v = D.receiving_hours?.[day];
-    if (!v) return '';
-    if (typeof v === 'string') return '';
-    return v.open || '';
-  };
-  const getClose = (day) => {
-    const v = D.receiving_hours?.[day];
-    if (!v) return '';
-    if (typeof v === 'string') return '';
-    return v.close || '';
-  };
-  const getLegacyString = (day) => {
-    const v = D.receiving_hours?.[day];
-    return typeof v === 'string' ? v : '';
-  };
-  const toggleRestriction = (val) => {
-    const cur = D.equipment_restrictions || [];
-    const next = cur.includes(val) ? cur.filter((x) => x !== val) : [...cur, val];
-    setD({ equipment_restrictions: next });
-  };
-  const addContact = () => setD({ contacts: [...(D.contacts || []), { name: '', phone: '', role: '' }] });
-  const setContact = (i, patch) => {
-    const next = [...(D.contacts || [])];
-    next[i] = { ...next[i], ...patch };
-    setD({ contacts: next });
-  };
-  const removeContact = (i) => setD({ contacts: (D.contacts || []).filter((_, idx) => idx !== i) });
 
   return (
     <aside
@@ -2776,322 +3018,9 @@ function StopSidebar({ stop, note, onClose, onSave, saving, saveError, onOpenRou
       </div>
 
       <div className="overflow-y-auto flex-1">
-        {/* Raw stop data section */}
-        <div className="px-4 py-3 border-b text-sm space-y-1">
-          <div>
-            <div className="text-xs uppercase font-semibold text-slate-500 flex items-center gap-1.5">
-              Address
-              {note?.address_override && <span className="px-1 rounded bg-blue-100 text-blue-700 text-[9px] font-semibold normal-case">corrected</span>}
-            </div>
-            <div className="break-words">{note?.address_override?.addr1 || stop.addr1}</div>
-            {(note?.address_override?.addr2 ?? stop.addr2) && (
-              <div className="text-xs px-2 py-1 mt-1 bg-amber-50 border border-amber-200 rounded text-amber-900">
-                <span className="font-semibold">addr2:</span> {note?.address_override?.addr2 ?? stop.addr2}
-              </div>
-            )}
-            <div className="text-slate-600 break-words">
-              {(note?.address_override?.city ?? stop.city)}, {(note?.address_override?.state ?? stop.state)} {(note?.address_override?.zip ?? stop.zip)}
-            </div>
-            <AddressFixBanner stop={stop} note={note} onAutoFix={onAutoFixAddress} onEdit={onEditAddress} />
-            <div className="flex items-center gap-4 flex-wrap">
-              <StreetViewLink stop={stop} />
-              <GoogleMapsLink stop={stop} />
-              <WebSearchLink stop={stop} />
-            </div>
-            <div className="flex items-center gap-4 flex-wrap">
-              {onEditAddress && (
-                <button onClick={() => onEditAddress(stop)} className="mt-1.5 inline-flex items-center gap-1 text-xs text-blue-700 hover:underline">
-                  <MapPin size={13} /> Edit address
-                </button>
-              )}
-              {onMoveLocation && (
-                <button onClick={() => onMoveLocation(stop)} className="mt-1.5 inline-flex items-center gap-1 text-xs text-blue-700 hover:underline">
-                  <MapPin size={13} /> Correct pin location{note?.location_override ? ' · custom saved' : ''}
-                </button>
-              )}
-            </div>
-          </div>
-          {cleanInstructions(stop.signalSources?.orderInstructions) && (
-            <div className="pt-1">
-              <div className="text-xs uppercase font-semibold text-slate-500">NuVizz instructions</div>
-              <div className="text-xs text-slate-700 whitespace-pre-wrap break-words leading-snug">{cleanInstructions(stop.signalSources.orderInstructions)}</div>
-            </div>
-          )}
-          <div className="pt-2">
-            <div className="text-xs uppercase font-semibold text-slate-500">Window</div>
-            <div className="text-sm">{stop.scheduledFrom || '—'} – {stop.scheduledTo || '—'}</div>
-          </div>
-          <div className="pt-2">
-            <OrderItemsSection stop={stop} />
-          </div>
-          {/* M5.2 — Route section: load + driver + jump to the full route */}
-          <div className="pt-2 mt-2 border-t">
-            <div className="text-xs uppercase font-semibold text-slate-500 mb-1">Route</div>
-            {stop.loadNbr ? (
-              <div className="flex items-center justify-between gap-2">
-                <div className="min-w-0 text-sm">
-                  <div className="font-semibold text-slate-900 truncate">{stop.routeName || stop.loadNbr}</div>
-                  {stop.driverName && <div className="text-xs text-slate-500 truncate">{stop.driverName}</div>}
-                  {stop.routeName && <div className="text-[10px] text-slate-400 font-mono">{stop.loadNbr}</div>}
-                </div>
-                {onOpenRoute && (
-                  <button
-                    onClick={() => onOpenRoute(stop.loadNbr)}
-                    className="flex-shrink-0 px-2 py-1 text-xs font-semibold text-blue-700 border border-blue-300 rounded hover:bg-blue-50 active:bg-blue-100"
-                  >
-                    View full route
-                  </button>
-                )}
-              </div>
-            ) : (
-              <div className="text-xs text-slate-500 italic">Not yet assigned</div>
-            )}
-          </div>
-        </div>
-
-        {/* PROs section — click any to copy */}
+        <StopDataSections stop={stop} note={note} onOpenRoute={onOpenRoute} onMoveLocation={onMoveLocation} onEditAddress={onEditAddress} onAutoFixAddress={onAutoFixAddress} />
         <ProsSection stop={stop} />
-
-        {/* Metadata / edit form */}
-        <div className="px-4 py-3 space-y-3">
-          <div className="flex items-center justify-between">
-            <div className="text-xs uppercase font-semibold text-slate-500">Customer notes</div>
-            {note && !editing && (
-              <button onClick={() => setEditing(true)} className="text-xs text-blue-600 hover:underline">Edit</button>
-            )}
-          </div>
-
-          {!editing && !note && (
-            <div className="text-xs text-slate-500 italic">No notes yet. Click Edit to add.</div>
-          )}
-
-          {editing && (
-            <div className="space-y-3 text-sm">
-              <div>
-                <div className="text-xs font-semibold text-slate-600 mb-1">Priority flag</div>
-                <div className="flex gap-1.5">
-                  {[null, ...FLAG_OPTIONS].map((v) => {
-                    const active = D.priority_flag === v;
-                    const swatch = v ? FLAG_COLORS[v] : '#e2e8f0';
-                    return (
-                      <button
-                        key={String(v)}
-                        onClick={() => setD({ priority_flag: v })}
-                        className={`px-2 py-1 rounded border text-xs flex items-center gap-1 ${active ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-300 bg-white text-slate-700'}`}
-                      >
-                        <span className="w-2.5 h-2.5 rounded-full" style={{ background: swatch }} />
-                        {v === 'question' ? '?' : (v || 'none')}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-
-              <div>
-                <div className="text-xs font-semibold text-slate-600 mb-1">Delivery window</div>
-                <div className="flex gap-1.5">
-                  {[null, 'AM', 'PM'].map((v) => {
-                    const active = (D.delivery_window || null) === v;
-                    return (
-                      <button
-                        key={String(v)}
-                        onClick={() => setD({ delivery_window: v })}
-                        className={`px-2.5 py-1 rounded border text-xs font-semibold ${active ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-300 bg-white text-slate-700'}`}
-                        title={v ? `Tag this stop ${v} — shows an ${v} pin on the map` : 'No AM/PM tag'}
-                      >
-                        {v || 'none'}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-
-              <div>
-                <div className="text-xs font-semibold text-slate-600 mb-1">Receiving hours</div>
-                {/* M4.4 — Per-day Open/Closed toggle row. Clicking a day flips
-                whether it's in closed_days. Closed days hide their time inputs
-                below and show "Closed" + Re-open link. */}
-                <div className="grid grid-cols-7 gap-1 mb-2">
-                  {DAYS.map((d) => {
-                    const closed = isClosed(d);
-                    return (
-                      <button
-                        key={d}
-                        type="button"
-                        onClick={() => toggleClosed(d)}
-                        className={`text-[10px] uppercase font-semibold py-1 rounded border ${closed ? 'bg-red-100 border-red-300 text-red-700' : 'bg-white border-slate-300 text-slate-700 hover:bg-slate-50'}`}
-                        title={closed ? `${d.toUpperCase()} closed — click to open` : `${d.toUpperCase()} open — click to mark closed`}
-                      >
-                        {d}
-                      </button>
-                    );
-                  })}
-                </div>
-                {/* Copy-to-weekdays helper. */}
-                <div className="flex items-center gap-2 mb-2">
-                  <button
-                    type="button"
-                    onClick={copyMondayToWeekdays}
-                    disabled={!isClosed('mon') && !(D.receiving_hours?.mon && (
-                      typeof D.receiving_hours.mon === 'string'
-                        ? D.receiving_hours.mon
-                        : (D.receiving_hours.mon.open || D.receiving_hours.mon.close)
-                    ))}
-                    className="text-[10px] py-1 px-2 rounded border border-slate-300 text-slate-700 hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed"
-                    title="Apply Monday's hours/closed state to Tuesday-Friday"
-                  >
-                    Copy to all weekdays (Mon-Fri)
-                  </button>
-                  {copyToast && <span className="text-[10px] text-emerald-600">Copied</span>}
-                </div>
-                {/* Per-day rows. Closed days show "Closed" label + an inline
-                re-open button so dispatcher doesn't have to scroll back up. */}
-                <div className="space-y-1">
-                  {DAYS.map((d) => {
-                    const closed = isClosed(d);
-                    const legacy = getLegacyString(d);
-                    return (
-                      <div key={d} className="flex items-center gap-2">
-                        <div className="w-10 text-[10px] uppercase font-semibold text-slate-500">{d}</div>
-                        {closed ? (
-                          <div className="flex-1 flex items-center justify-between gap-2 px-2 py-1 rounded bg-red-50 border border-red-200">
-                            <span className="text-[11px] font-semibold text-red-700">Closed</span>
-                            <button
-                              type="button"
-                              onClick={() => toggleClosed(d)}
-                              className="text-[10px] text-blue-600 hover:underline"
-                            >
-                              Edit
-                            </button>
-                          </div>
-                        ) : (
-                          <div className="flex-1 flex items-center gap-1">
-                            <input
-                              type="time"
-                              value={getOpen(d)}
-                              onChange={(e) => setHours(d, { open: e.target.value })}
-                              className="flex-1 border border-slate-300 rounded px-1 py-1 text-[11px]"
-                              aria-label={`${d} open time`}
-                            />
-                            <span className="text-[10px] text-slate-400">–</span>
-                            <input
-                              type="time"
-                              value={getClose(d)}
-                              onChange={(e) => setHours(d, { close: e.target.value })}
-                              className="flex-1 border border-slate-300 rounded px-1 py-1 text-[11px]"
-                              aria-label={`${d} close time`}
-                            />
-                          </div>
-                        )}
-                        {legacy && !closed && (
-                          <div className="text-[9px] text-amber-700 italic" title={`Legacy free-text value: ${legacy}`}>(legacy)</div>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-2">
-                <Toggle label="Appointment required" checked={!!D.appointment_required} onChange={(b) => setD({ appointment_required: b })} />
-                <Toggle label="Liftgate required" checked={!!D.liftgate_required} onChange={(b) => setD({ liftgate_required: b })} />
-              </div>
-
-              <div>
-                <div className="text-xs font-semibold text-slate-600 mb-1">Appointment notes</div>
-                <input
-                  value={D.appointment_notes || ''}
-                  onChange={(e) => setD({ appointment_notes: e.target.value })}
-                  className="w-full border border-slate-300 rounded px-2 py-1 text-xs"
-                />
-              </div>
-
-              <div>
-                <div className="text-xs font-semibold text-slate-600 mb-1">Equipment restrictions</div>
-                <div className="flex flex-wrap gap-1.5">
-                  {EQUIPMENT_OPTIONS.map((o) => {
-                    const active = (D.equipment_restrictions || []).includes(o.value);
-                    return (
-                      <button
-                        key={o.value}
-                        onClick={() => toggleRestriction(o.value)}
-                        className={`px-2 py-0.5 rounded-full text-[11px] border inline-flex items-center gap-1.5 ${active ? 'bg-purple-600 text-white border-purple-600' : 'bg-white border-slate-300 text-slate-700'}`}
-                      >
-                        <RestrictionIcon kind={o.value} size={14} />
-                        {o.label}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-
-              <div>
-                <div className="text-xs font-semibold text-slate-600 mb-1">Dock type</div>
-                <div className="flex gap-1.5">
-                  {[...DOCK_TYPES, { value: null, label: 'unknown' }].map((o) => {
-                    const active = (D.dock_type ?? null) === o.value;
-                    return (
-                      <button
-                        key={String(o.value)}
-                        onClick={() => setD({ dock_type: o.value })}
-                        className={`px-2 py-1 rounded border text-xs ${active ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-300 bg-white text-slate-700'}`}
-                      >
-                        {o.label}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-
-              <div>
-                <div className="text-xs font-semibold text-slate-600 mb-1">Dock notes</div>
-                <textarea
-                  value={D.dock_notes || ''}
-                  onChange={(e) => setD({ dock_notes: e.target.value })}
-                  rows={3}
-                  className="w-full border border-slate-300 rounded px-2 py-1 text-xs"
-                />
-              </div>
-
-              <div>
-                <div className="text-xs font-semibold text-slate-600 mb-1 flex items-center justify-between">
-                  <span>Contacts</span>
-                  <button onClick={addContact} className="text-xs text-blue-600 inline-flex items-center gap-0.5 hover:underline">
-                    <Plus size={11} /> add
-                  </button>
-                </div>
-                <div className="space-y-1.5">
-                  {(D.contacts || []).map((c, i) => (
-                    <div key={i} className="grid grid-cols-[1fr_1fr_1fr_auto] gap-1 items-center">
-                      <input value={c.name || ''} onChange={(e) => setContact(i, { name: e.target.value })} placeholder="Name" className="border border-slate-300 rounded px-1.5 py-1 text-xs" />
-                      <input value={c.phone || ''} onChange={(e) => setContact(i, { phone: e.target.value })} placeholder="Phone" className="border border-slate-300 rounded px-1.5 py-1 text-xs" />
-                      <input value={c.role || ''} onChange={(e) => setContact(i, { role: e.target.value })} placeholder="Role" className="border border-slate-300 rounded px-1.5 py-1 text-xs" />
-                      <button onClick={() => removeContact(i)} className="text-slate-400 hover:text-red-600"><Trash2 size={14} /></button>
-                    </div>
-                  ))}
-                  {(!D.contacts || !D.contacts.length) && <div className="text-xs text-slate-400 italic">none</div>}
-                </div>
-              </div>
-            </div>
-          )}
-
-          {!editing && note && (
-            <ReadOnlyNoteView note={note} />
-          )}
-
-          {note?.pro_history?.length > 0 && (
-            <div className="pt-2 border-t">
-              <div className="text-xs font-semibold text-slate-600 mb-1">Recent PROs at this customer</div>
-              <div className="flex flex-wrap gap-1">
-                {[...note.pro_history].reverse().slice(0, 10).map((h, i) => (
-                  <span key={i} className="text-[10px] bg-slate-100 border border-slate-200 rounded px-1.5 py-0.5">
-                    {h.pro} · {h.date}
-                  </span>
-                ))}
-              </div>
-            </div>
-          )}
-        </div>
+        <StopNotesSection note={note} editing={editing} setEditing={setEditing} draft={D} setDraft={setD} compact />
       </div>
 
       {editing && (
@@ -3564,7 +3493,7 @@ function makeDriverLabelOverlayClass(google) {
 function MobileAppBar({ version, onChipMenu, chipMenuOpen, onSelectMenu }) {
   return (
     <header
-      className="flex-shrink-0 flex items-center justify-between px-3 text-white relative"
+      className="flex-shrink-0 flex items-center justify-between gap-2 px-3 text-white relative overflow-hidden"
       style={{
         background: BRAND,
         // minHeight (not a fixed height) + the notch inset as padding so the bar
@@ -3575,9 +3504,9 @@ function MobileAppBar({ version, onChipMenu, chipMenuOpen, onSelectMenu }) {
         paddingTop: 'env(safe-area-inset-top)',
       }}
     >
-      <div className="flex items-center gap-2">
-        <div className="w-6 h-6 rounded flex items-center justify-center bg-white/15 text-white font-bold text-[11px]">D</div>
-        <span className="font-semibold text-[14px] leading-none">Dispatch</span>
+      <div className="flex items-center gap-2 flex-shrink-0 min-w-0">
+        <div className="w-6 h-6 rounded flex items-center justify-center bg-white/15 text-white font-bold text-[11px] flex-shrink-0">D</div>
+        <span className="font-semibold text-[14px] leading-none truncate">Dispatch</span>
       </div>
       <div className="relative">
         <button
@@ -3659,7 +3588,7 @@ function MobileFAB({ open, onToggle }) {
 // the handle adjust height; release snaps to nearest of the snap stops, with
 // a downward fling past the smallest stop closing the sheet.
 const SHEET_HEIGHTS = { mini: 0.30, default: 0.60, expanded: 0.95 };
-const STOP_DETAIL_HEIGHTS = { mini: 0.30, default: 0.80, expanded: 0.95 };
+const STOP_DETAIL_HEIGHTS = { mini: 0.30, default: 0.66, expanded: 0.95 };
 
 function BottomSheet({ open, onClose, heights = SHEET_HEIGHTS, children, ariaLabel }) {
   const [heightFrac, setHeightFrac] = useState(heights.default);
@@ -3805,7 +3734,7 @@ function MobileStopsTab({
     <div className="flex flex-col">
       <div className="p-3 border-b border-slate-100">
         <div className="flex items-center gap-2">
-          <div className="relative flex-1">
+          <div className="relative flex-1 min-w-0">
             <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
             <input
               type="search"
@@ -3821,7 +3750,7 @@ function MobileStopsTab({
             <button
               onClick={() => searchInput.trim() && onAskAi(searchInput)}
               disabled={aiBusy || !searchInput.trim()}
-              className="rounded-lg text-white inline-flex items-center gap-1 px-3 text-xs font-semibold disabled:opacity-40"
+              className="flex-shrink-0 whitespace-nowrap rounded-lg text-white inline-flex items-center gap-1 px-3 text-xs font-semibold disabled:opacity-40"
               style={{ background: '#1e5b92', minHeight: 44, minWidth: 44 }}
               aria-label="Ask AI to filter"
             >
@@ -3831,10 +3760,10 @@ function MobileStopsTab({
         </div>
         {aiSummary ? (
           <div className="mt-2 flex items-center gap-2 text-[11px]">
-            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-blue-50 border border-blue-200 text-blue-800">
-              <Sparkles size={11} /> {aiSummary}
+            <span className="min-w-0 flex-1 inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-blue-50 border border-blue-200 text-blue-800">
+              <Sparkles size={11} className="flex-shrink-0" /> <span className="truncate">{aiSummary}</span>
             </span>
-            <button onClick={onClearAi} className="text-slate-500 underline">Clear</button>
+            <button onClick={onClearAi} className="flex-shrink-0 text-slate-500 underline px-1 py-1 -my-1">Clear</button>
           </div>
         ) : aiBusy ? (
           <div className="mt-2 text-[11px] text-slate-500">Asking AI…</div>
@@ -3948,9 +3877,9 @@ function MobileFiltersTab({
             onChange={setShowRoutes}
           />
           {/* Clustering required on mobile — see brief P3.4. */}
-          <div className="flex items-center justify-between gap-3 py-1.5">
-            <span className="text-xs text-slate-700">Show clustered markers</span>
-            <span className="text-[10px] uppercase text-amber-700 italic">required on mobile</span>
+          <div className="flex items-center justify-between gap-2 py-1.5">
+            <span className="text-xs text-slate-700 min-w-0 flex-1 truncate">Show clustered markers</span>
+            <span className="text-[10px] uppercase text-amber-700 italic flex-shrink-0 whitespace-nowrap">required on mobile</span>
           </div>
         </div>
       </div>
@@ -4001,12 +3930,11 @@ function MobileDriversTab({ drivers, error, onPickDriver }) {
 
 // ---------- M4.5 PR 2: stop-detail + driver-snapshot drawers ----------
 
-// Mobile stop-detail drawer. Replaces the full-screen StopSidebar overlay
-// from PR 1 with a proper bottom-sheet that has its own header + Info /
-// Notes / Hours / PROs tabs. Draft state spans all tabs so editing Notes
-// then switching to Hours preserves changes; one Save commits everything.
+// Mobile stop-detail drawer. A bottom-sheet that renders the SAME shared
+// stop components as the desktop sidebar (StopDataSections + ProsSection +
+// StopNotesSection) in a single scroll, so mobile has full desktop parity —
+// every edit option, one inline Edit, one Save.
 function MobileStopDetailDrawer({ stop, note, onClose, onSave, saving, saveError, onOpenRoute, onMoveLocation, onEditAddress, onAutoFixAddress }) {
-  const [activeTab, setActiveTab] = useState('info');
   const [draft, setDraft] = useState(() => note || emptyNote(stop));
   const [editing, setEditing] = useState(false);
   const [confirmDiscard, setConfirmDiscard] = useState(false);
@@ -4014,11 +3942,10 @@ function MobileStopDetailDrawer({ stop, note, onClose, onSave, saving, saveError
   // write (the root cause of an empty saved note / lost receiving hours).
   const dirtyRef = useRef(false);
 
-  // Reset draft + tab when a different stop opens.
+  // Reset draft when a different stop opens.
   useEffect(() => {
     setDraft(note || emptyNote(stop));
     setEditing(false);
-    setActiveTab('info');
     setConfirmDiscard(false);
     dirtyRef.current = false;
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -4041,11 +3968,6 @@ function MobileStopDetailDrawer({ stop, note, onClose, onSave, saving, saveError
     onClose();
   };
 
-  const switchTab = (next) => {
-    // No confirm needed for switching tabs; draft is preserved.
-    setActiveTab(next);
-  };
-
   return (
     <BottomSheet open onClose={tryClose} heights={STOP_DETAIL_HEIGHTS} ariaLabel={`Stop details: ${stop.businessName || stop.pro || ''}`}>
       {/* Header */}
@@ -4066,56 +3988,18 @@ function MobileStopDetailDrawer({ stop, note, onClose, onSave, saving, saveError
           </button>
         </div>
       </div>
-      {/* Tabs */}
-      <div className="flex-shrink-0 flex border-b border-slate-200">
-        {[
-          { id: 'info', label: 'Info' },
-          { id: 'notes', label: 'Notes' },
-          { id: 'hours', label: 'Hours' },
-          { id: 'pros', label: 'PROs' },
-        ].map((t) => {
-          const active = activeTab === t.id;
-          return (
-            <button
-              key={t.id}
-              onClick={() => switchTab(t.id)}
-              className={`flex-1 py-2.5 text-sm font-semibold transition-colors ${active ? '' : 'text-slate-500'}`}
-              style={{
-                color: active ? BRAND : undefined,
-                borderBottom: active ? `2px solid ${BRAND}` : '2px solid transparent',
-                minHeight: 44,
-              }}
-            >
-              {t.label}
-            </button>
-          );
-        })}
-      </div>
-      {/* Tab content */}
+      {/* Single scroll — the SAME shared detail + full editor as desktop, so
+          every option is present and the two can never drift. */}
       <div className="flex-1 overflow-y-auto overscroll-contain">
-        {activeTab === 'info' && <StopInfoTabContent stop={stop} note={note} onOpenRoute={onOpenRoute} onMoveLocation={onMoveLocation} onEditAddress={onEditAddress} onAutoFixAddress={onAutoFixAddress} />}
-        {activeTab === 'notes' && (
-          <StopNotesTabContent
-            stop={stop}
-            note={note}
-            draft={D}
-            setDraft={setD}
-            editing={editing}
-            setEditing={setEditing}
-          />
-        )}
-        {activeTab === 'hours' && (
-          <StopHoursTabContent
-            draft={D}
-            setDraft={setD}
-            editing={editing}
-            setEditing={setEditing}
-          />
-        )}
-        {activeTab === 'pros' && <StopProsTabContent stop={stop} />}
+        <div className="px-4 py-2 border-b bg-slate-50 flex items-center gap-2 flex-wrap">
+          <StatusBadge kind={classifyStopStatus(stop)} />
+        </div>
+        <StopDataSections stop={stop} note={note} onOpenRoute={onOpenRoute} onMoveLocation={onMoveLocation} onEditAddress={onEditAddress} onAutoFixAddress={onAutoFixAddress} />
+        <ProsSection stop={stop} />
+        <StopNotesSection note={note} editing={editing} setEditing={setEditing} draft={D} setDraft={setD} />
       </div>
-      {/* Sticky save bar — visible while editing on Notes or Hours tabs */}
-      {editing && (activeTab === 'notes' || activeTab === 'hours') && (
+      {/* Sticky save bar — visible while editing */}
+      {editing && (
         <div className="flex-shrink-0 border-t bg-white px-4 py-2 flex items-center justify-between gap-2"
              style={{ paddingBottom: `calc(0.5rem + env(safe-area-inset-bottom))` }}>
           {saveError && <span className="text-[11px] text-red-600 truncate">{saveError}</span>}
@@ -4290,560 +4174,6 @@ function MobileRouteDetailDrawer({ loadNbr, stops, onClose, onPickStop }) {
   );
 }
 
-function StopInfoTabContent({ stop, note, onOpenRoute, onMoveLocation, onEditAddress, onAutoFixAddress }) {
-  const ao = note?.address_override || {};
-  const cityLine = [ao.city ?? stop.city, ao.state ?? stop.state, ao.zip ?? stop.zip].filter(Boolean).join(', ').replace(/, ([A-Z]{2}) (\d)/, ', $1 $2');
-  const statusKind = classifyStopStatus(stop);
-  const arrivedAt = (statusKind === 'ARRIVED' || statusKind === 'DELIVERED') ? fmtClockShort(stop.arrivalDTTM || execArrivalTs(stop.raw?.stopExecutionInfo || {})) : null;
-  const deliveredAt = statusKind === 'DELIVERED' ? fmtClockShort(stop.deliveredDTTM || execDeliveredTs(stop.raw?.stopExecutionInfo || {})) : null;
-  return (
-    <div className="px-4 py-3 space-y-3 text-sm">
-      <div className="flex items-center gap-2">
-        <StatusBadge kind={statusKind} />
-        {deliveredAt && <span className="text-[11px] text-slate-500">Delivered {deliveredAt}</span>}
-        {arrivedAt && <span className="text-[11px] text-slate-500">Arrived {arrivedAt}</span>}
-      </div>
-      <div>
-        <div className="text-[10px] uppercase font-semibold text-slate-500 mb-0.5 flex items-center gap-1.5">
-          Address
-          {note?.address_override && <span className="px-1 rounded bg-blue-100 text-blue-700 text-[9px] font-semibold">corrected</span>}
-        </div>
-        <div className="text-slate-900">{ao.addr1 || stop.addr1 || '—'}</div>
-        {(ao.addr2 ?? stop.addr2) && (
-          <div className="mt-1 px-2 py-1 text-[12px] bg-amber-50 border border-amber-200 rounded text-amber-900">
-            <span className="font-semibold">addr2:</span> {ao.addr2 ?? stop.addr2}
-          </div>
-        )}
-        <div className="text-slate-600">{cityLine || '—'}</div>
-        <AddressFixBanner stop={stop} note={note} onAutoFix={onAutoFixAddress} onEdit={onEditAddress} />
-        <div className="flex items-center gap-5 mt-1 flex-wrap">
-          <StreetViewLink stop={stop} className="inline-flex items-center gap-1 text-[13px] text-blue-700" />
-          <GoogleMapsLink stop={stop} className="inline-flex items-center gap-1 text-[13px] text-blue-700" />
-          <WebSearchLink stop={stop} className="inline-flex items-center gap-1 text-[13px] text-blue-700" />
-        </div>
-        <div className="flex items-center gap-5 flex-wrap">
-          {onEditAddress && (
-            <button onClick={() => onEditAddress(stop)} className="mt-1.5 inline-flex items-center gap-1 text-[13px] text-blue-700" style={{ minHeight: 40 }}>
-              <MapPin size={14} /> Edit address
-            </button>
-          )}
-          {onMoveLocation && (
-            <button onClick={() => onMoveLocation(stop)} className="mt-1.5 inline-flex items-center gap-1 text-[13px] text-blue-700" style={{ minHeight: 40 }}>
-              <MapPin size={14} /> Correct pin location{note?.location_override ? ' · custom saved' : ''}
-            </button>
-          )}
-        </div>
-      </div>
-      {cleanInstructions(stop.signalSources?.orderInstructions) && (
-        <div>
-          <div className="text-[10px] uppercase font-semibold text-slate-500 mb-0.5">NuVizz instructions</div>
-          <div className="text-[12px] text-slate-700 whitespace-pre-wrap leading-snug">{cleanInstructions(stop.signalSources.orderInstructions)}</div>
-        </div>
-      )}
-      <div>
-        <div className="text-[10px] uppercase font-semibold text-slate-500">Window</div>
-        <div>{stop.scheduledFrom || '—'} – {stop.scheduledTo || '—'}</div>
-      </div>
-      <OrderItemsSection stop={stop} />
-      {/* M5.2 — Route section */}
-      <div className="pt-2 border-t">
-        <div className="text-[10px] uppercase font-semibold text-slate-500 mb-0.5">Route</div>
-        {stop.loadNbr ? (
-          <div className="flex items-center justify-between gap-2">
-            <div className="min-w-0">
-              <div className="text-slate-900 font-semibold text-sm truncate">{stop.routeName || stop.loadNbr}</div>
-              {stop.driverName && <div className="text-xs text-slate-500 truncate">{stop.driverName}</div>}
-              {stop.routeName && <div className="text-[10px] text-slate-400 font-mono">{stop.loadNbr}</div>}
-            </div>
-            {onOpenRoute && (
-              <button
-                onClick={() => onOpenRoute(stop.loadNbr)}
-                className="flex-shrink-0 px-2 py-1 text-xs font-semibold text-blue-700 border border-blue-300 rounded active:bg-blue-100"
-                style={{ minHeight: 32 }}
-              >
-                View full route
-              </button>
-            )}
-          </div>
-        ) : (
-          <div className="text-xs text-slate-500 italic">Not yet assigned</div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function StopNotesTabContent({ stop, note, draft, setDraft, editing, setEditing }) {
-  const D = draft;
-  const setD = (patch) => setDraft(patch);
-  const toggleRestriction = (val) => {
-    const cur = D.equipment_restrictions || [];
-    const next = cur.includes(val) ? cur.filter((x) => x !== val) : [...cur, val];
-    setD({ equipment_restrictions: next });
-  };
-  const addContact = () => setD({ contacts: [...(D.contacts || []), { name: '', phone: '', role: '' }] });
-  const setContact = (i, patch) => {
-    const next = [...(D.contacts || [])];
-    next[i] = { ...next[i], ...patch };
-    setD({ contacts: next });
-  };
-  const removeContact = (i) => setD({ contacts: (D.contacts || []).filter((_, idx) => idx !== i) });
-
-  if (!editing) {
-    return (
-      <div className="px-4 py-3 space-y-3 text-sm">
-        <div className="flex items-center justify-between">
-          <div className="text-[10px] uppercase font-semibold text-slate-500">Customer notes</div>
-          <button
-            onClick={() => setEditing(true)}
-            className="px-3 py-1.5 text-xs text-white font-semibold rounded"
-            style={{ background: BRAND, minHeight: 36 }}
-          >
-            Edit
-          </button>
-        </div>
-        {!note ? (
-          <div className="text-xs text-slate-500 italic">No notes yet. Tap Edit to add.</div>
-        ) : (
-          <ReadOnlyNoteView note={note} />
-        )}
-      </div>
-    );
-  }
-
-  return (
-    <div className="px-4 py-3 space-y-4 text-sm">
-      {/* Priority flag */}
-      <div>
-        <div className="text-[11px] font-semibold text-slate-600 mb-1">Priority flag</div>
-        <div className="flex flex-wrap gap-1.5">
-          {[null, ...FLAG_OPTIONS].map((v) => {
-            const active = D.priority_flag === v;
-            const swatch = v ? FLAG_COLORS[v] : '#e2e8f0';
-            return (
-              <button
-                key={String(v)}
-                onClick={() => setD({ priority_flag: v })}
-                className={`px-3 py-2 rounded border flex items-center gap-1.5 ${active ? 'bg-slate-900 text-white border-slate-900' : 'bg-white border-slate-300 text-slate-700'}`}
-                style={{ minHeight: 44 }}
-              >
-                <span className="w-3 h-3 rounded-full" style={{ background: swatch }} />
-                <span className="text-xs">{v === 'question' ? '? (question)' : (v || 'none')}</span>
-              </button>
-            );
-          })}
-        </div>
-      </div>
-
-      {/* Delivery window — AM/PM tag, shown as an AM/PM pin on the map */}
-      <div>
-        <div className="text-[11px] font-semibold text-slate-600 mb-1">Delivery window</div>
-        <div className="flex flex-wrap gap-1.5">
-          {[null, 'AM', 'PM'].map((v) => {
-            const active = (D.delivery_window || null) === v;
-            return (
-              <button
-                key={String(v)}
-                onClick={() => setD({ delivery_window: v })}
-                className={`px-3 py-2 rounded border ${active ? 'bg-slate-900 text-white border-slate-900' : 'bg-white border-slate-300 text-slate-700'}`}
-                style={{ minHeight: 44 }}
-              >
-                <span className="text-xs font-semibold">{v || 'none'}</span>
-              </button>
-            );
-          })}
-        </div>
-      </div>
-
-      {/* Toggles */}
-      <div className="space-y-2">
-        <MobileToggleRow
-          label="Appointment required"
-          checked={!!D.appointment_required}
-          onChange={(b) => setD({ appointment_required: b })}
-        />
-        <MobileToggleRow
-          label="Liftgate required"
-          checked={!!D.liftgate_required}
-          onChange={(b) => setD({ liftgate_required: b })}
-        />
-      </div>
-
-      {/* Equipment restriction chips */}
-      <div>
-        <div className="text-[11px] font-semibold text-slate-600 mb-1">Equipment restrictions</div>
-        <div className="flex flex-wrap gap-1.5">
-          {EQUIPMENT_OPTIONS.map((o) => {
-            const active = (D.equipment_restrictions || []).includes(o.value);
-            return (
-              <button
-                key={o.value}
-                onClick={() => toggleRestriction(o.value)}
-                className={`px-3 py-2 rounded-full text-xs border inline-flex items-center gap-1.5 ${active ? 'bg-purple-600 text-white border-purple-600' : 'bg-white border-slate-300 text-slate-700'}`}
-                style={{ minHeight: 44 }}
-              >
-                <RestrictionIcon kind={o.value} size={14} />
-                {o.label}
-              </button>
-            );
-          })}
-        </div>
-      </div>
-
-      {/* Dock type */}
-      <div>
-        <div className="text-[11px] font-semibold text-slate-600 mb-1">Dock type</div>
-        <div className="flex flex-wrap gap-1.5">
-          {[...DOCK_TYPES, { value: null, label: 'unknown' }].map((o) => {
-            const active = (D.dock_type ?? null) === o.value;
-            return (
-              <button
-                key={String(o.value)}
-                onClick={() => setD({ dock_type: o.value })}
-                className={`px-3 py-2 rounded border text-xs ${active ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-300 bg-white text-slate-700'}`}
-                style={{ minHeight: 44 }}
-              >
-                {o.label}
-              </button>
-            );
-          })}
-        </div>
-      </div>
-
-      {/* Dock notes */}
-      <div>
-        <div className="text-[11px] font-semibold text-slate-600 mb-1">Dock notes</div>
-        <textarea
-          value={D.dock_notes || ''}
-          onChange={(e) => setD({ dock_notes: e.target.value })}
-          rows={3}
-          className="w-full border border-slate-300 rounded px-2 py-2 text-sm"
-        />
-      </div>
-
-      {/* Appointment notes */}
-      <div>
-        <div className="text-[11px] font-semibold text-slate-600 mb-1">Appointment notes</div>
-        <input
-          value={D.appointment_notes || ''}
-          onChange={(e) => setD({ appointment_notes: e.target.value })}
-          className="w-full border border-slate-300 rounded px-2 text-sm"
-          style={{ minHeight: 44 }}
-        />
-      </div>
-
-      {/* Contacts */}
-      <div>
-        <div className="text-[11px] font-semibold text-slate-600 mb-1 flex items-center justify-between">
-          <span>Contacts</span>
-          <button onClick={addContact} className="text-xs text-blue-600 inline-flex items-center gap-0.5"
-                  style={{ minHeight: 36, minWidth: 44 }}>
-            <Plus size={13} /> Add
-          </button>
-        </div>
-        <div className="space-y-2">
-          {(D.contacts || []).map((c, i) => (
-            <div key={i} className="space-y-1.5 p-2 border border-slate-200 rounded">
-              <input
-                value={c.name || ''}
-                onChange={(e) => setContact(i, { name: e.target.value })}
-                placeholder="Name"
-                className="w-full border border-slate-300 rounded px-2 text-sm"
-                style={{ minHeight: 44 }}
-              />
-              <div className="grid grid-cols-[1fr_1fr_44px] gap-1.5 items-center">
-                <input
-                  value={c.phone || ''}
-                  onChange={(e) => setContact(i, { phone: e.target.value })}
-                  placeholder="Phone"
-                  type="tel"
-                  className="border border-slate-300 rounded px-2 text-sm"
-                  style={{ minHeight: 44 }}
-                />
-                <input
-                  value={c.role || ''}
-                  onChange={(e) => setContact(i, { role: e.target.value })}
-                  placeholder="Role"
-                  className="border border-slate-300 rounded px-2 text-sm"
-                  style={{ minHeight: 44 }}
-                />
-                <button
-                  onClick={() => removeContact(i)}
-                  className="text-slate-400 hover:text-red-600 flex items-center justify-center"
-                  style={{ minWidth: 44, minHeight: 44 }}
-                  aria-label="Remove contact"
-                >
-                  <Trash2 size={16} />
-                </button>
-              </div>
-            </div>
-          ))}
-          {(!D.contacts || !D.contacts.length) && (
-            <div className="text-xs text-slate-400 italic">No contacts yet</div>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function StopHoursTabContent({ draft, setDraft, editing, setEditing }) {
-  const D = draft;
-  const setD = (patch) => setDraft(patch);
-
-  const isClosed = (day) => Array.isArray(D.closed_days) && D.closed_days.includes(day);
-  const toggleClosed = (day) => {
-    const current = Array.isArray(D.closed_days) ? D.closed_days : [];
-    const next = current.includes(day) ? current.filter((d) => d !== day) : [...current, day];
-    setD({
-      closed_days: next,
-      manual_overrides: { ...(D.manual_overrides || {}), closed_days: true },
-    });
-  };
-  const setHours = (day, partial) => {
-    const existing = D.receiving_hours?.[day] || { open: '', close: '' };
-    const merged = typeof existing === 'string'
-      ? { open: '', close: '', ...partial }
-      : { open: existing.open || '', close: existing.close || '', ...partial };
-    setD({
-      receiving_hours: { ...D.receiving_hours, [day]: merged },
-      manual_overrides: { ...(D.manual_overrides || {}), receiving_hours: true },
-    });
-  };
-  const getOpen = (day) => {
-    const v = D.receiving_hours?.[day];
-    if (!v || typeof v === 'string') return '';
-    return v.open || '';
-  };
-  const getClose = (day) => {
-    const v = D.receiving_hours?.[day];
-    if (!v || typeof v === 'string') return '';
-    return v.close || '';
-  };
-
-  const [copyToast, setCopyToast] = useState(false);
-  const copyMondayToWeekdays = () => {
-    const monClosed = isClosed('mon');
-    const monHours = D.receiving_hours?.mon;
-    const monHasHours = monHours && (typeof monHours === 'object' ? (monHours.open || monHours.close) : monHours);
-    if (!monClosed && !monHasHours) return;
-    const weekdays = ['tue', 'wed', 'thu', 'fri'];
-    const patch = {
-      receiving_hours: { ...(D.receiving_hours || {}) },
-      closed_days: Array.isArray(D.closed_days) ? [...D.closed_days] : [],
-      manual_overrides: {
-        ...(D.manual_overrides || {}),
-        receiving_hours: true,
-        closed_days: true,
-      },
-    };
-    for (const d of weekdays) {
-      if (monClosed) {
-        if (!patch.closed_days.includes(d)) patch.closed_days.push(d);
-      } else {
-        patch.closed_days = patch.closed_days.filter((x) => x !== d);
-        patch.receiving_hours[d] = typeof monHours === 'string'
-          ? monHours
-          : { open: monHours.open || '', close: monHours.close || '' };
-      }
-    }
-    setD(patch);
-    setCopyToast(true);
-    setTimeout(() => setCopyToast(false), 1500);
-  };
-
-  if (!editing) {
-    // View mode: compact list of each day.
-    return (
-      <div className="px-4 py-3 space-y-3 text-sm">
-        <div className="flex items-center justify-between">
-          <div className="text-[10px] uppercase font-semibold text-slate-500">Receiving hours</div>
-          <button
-            onClick={() => setEditing(true)}
-            className="px-3 py-1.5 text-xs text-white font-semibold rounded"
-            style={{ background: BRAND, minHeight: 36 }}
-          >
-            Edit
-          </button>
-        </div>
-        <div className="divide-y divide-slate-100 border border-slate-200 rounded overflow-hidden">
-          {DAYS.map((d) => {
-            const closed = isClosed(d);
-            const v = D.receiving_hours?.[d];
-            let label = '—';
-            if (closed) label = 'Closed';
-            else if (v) {
-              if (typeof v === 'string') label = fmtTime12(v) || v;
-              else if (v.open && v.close) label = `${fmtTime12(v.open)} – ${fmtTime12(v.close)}`;
-              else label = fmtTime12(v.open || v.close) || '—';
-            }
-            return (
-              <div key={d} className="px-3 py-2 flex items-center justify-between">
-                <span className="text-[11px] uppercase font-semibold text-slate-500">{d}</span>
-                <span className={`text-sm ${closed ? 'text-red-600 font-semibold' : 'text-slate-900'}`}>{label}</span>
-              </div>
-            );
-          })}
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="px-4 py-3 space-y-3 text-sm">
-      {/* Day open/closed toggle row — 44x44 buttons */}
-      <div>
-        <div className="text-[11px] font-semibold text-slate-600 mb-2">Open / Closed</div>
-        <div className="grid grid-cols-7 gap-1">
-          {DAYS.map((d) => {
-            const closed = isClosed(d);
-            return (
-              <button
-                key={d}
-                type="button"
-                onClick={() => toggleClosed(d)}
-                className={`uppercase font-semibold rounded border text-[11px] ${closed ? 'bg-red-100 border-red-300 text-red-700' : 'bg-white border-slate-300 text-slate-700'}`}
-                style={{ minHeight: 44, minWidth: 0 }}
-                aria-pressed={!closed}
-                title={closed ? `${d.toUpperCase()} closed — tap to open` : `${d.toUpperCase()} open — tap to mark closed`}
-              >
-                {d}
-              </button>
-            );
-          })}
-        </div>
-      </div>
-
-      {/* Copy-to-weekdays */}
-      <div className="flex items-center gap-2">
-        <button
-          type="button"
-          onClick={copyMondayToWeekdays}
-          disabled={!isClosed('mon') && !(D.receiving_hours?.mon && (
-            typeof D.receiving_hours.mon === 'string'
-              ? D.receiving_hours.mon
-              : (D.receiving_hours.mon.open || D.receiving_hours.mon.close)
-          ))}
-          className="px-3 py-2 text-xs rounded border border-slate-300 text-slate-700 disabled:opacity-50"
-          style={{ minHeight: 44 }}
-        >
-          Copy Mon → Tue-Fri
-        </button>
-        {copyToast && <span className="text-xs text-emerald-600">Copied</span>}
-      </div>
-
-      {/* Per-day rows */}
-      <div className="space-y-2">
-        {DAYS.map((d) => {
-          const closed = isClosed(d);
-          return (
-            <div key={d} className="flex items-center gap-2">
-              <div className="w-10 text-[11px] uppercase font-semibold text-slate-500">{d}</div>
-              {closed ? (
-                <div className="flex-1 flex items-center justify-between gap-2 px-2 py-2 rounded bg-red-50 border border-red-200">
-                  <span className="text-sm font-semibold text-red-700">Closed</span>
-                  <button
-                    type="button"
-                    onClick={() => toggleClosed(d)}
-                    className="text-xs text-blue-600"
-                    style={{ minHeight: 36 }}
-                  >
-                    Open
-                  </button>
-                </div>
-              ) : (
-                <div className="flex-1 flex items-center gap-1.5">
-                  <input
-                    type="time"
-                    value={getOpen(d)}
-                    onChange={(e) => setHours(d, { open: e.target.value })}
-                    className="flex-1 border border-slate-300 rounded px-2 text-sm"
-                    style={{ minHeight: 44 }}
-                    aria-label={`${d} open time`}
-                  />
-                  <span className="text-slate-400">–</span>
-                  <input
-                    type="time"
-                    value={getClose(d)}
-                    onChange={(e) => setHours(d, { close: e.target.value })}
-                    className="flex-1 border border-slate-300 rounded px-2 text-sm"
-                    style={{ minHeight: 44 }}
-                    aria-label={`${d} close time`}
-                  />
-                </div>
-              )}
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-function StopProsTabContent({ stop }) {
-  const pros = stop.pros || (stop.pro ? [stop.pro] : []);
-  const [toast, setToast] = useState(null);
-  const copy = (pro) => {
-    try {
-      navigator.clipboard.writeText(pro);
-      setToast(pro);
-      setTimeout(() => setToast(null), 2000);
-    } catch { /* clipboard blocked */ }
-  };
-  return (
-    <div className="px-4 py-3 text-sm relative">
-      <div className="text-[10px] uppercase font-semibold text-slate-500 mb-2">
-        PROs ({pros.length})
-      </div>
-      {pros.length === 0 ? (
-        <div className="text-xs italic text-slate-400">— No PROs —</div>
-      ) : (
-        <div className="space-y-0.5">
-          {pros.map((p) => (
-            <button
-              key={p}
-              type="button"
-              onClick={() => copy(p)}
-              className="w-full text-left font-mono text-sm text-slate-700 hover:bg-slate-100 active:bg-slate-200 px-3 rounded"
-              style={{ minHeight: 48 }}
-              title="Tap to copy"
-            >
-              {p}
-            </button>
-          ))}
-        </div>
-      )}
-      {toast && (
-        <div
-          className="absolute left-1/2 -translate-x-1/2 px-3 py-1.5 rounded shadow-lg text-xs text-white"
-          style={{ top: 8, background: '#16a34a', zIndex: 60 }}
-        >
-          Copied “{toast}”
-        </div>
-      )}
-    </div>
-  );
-}
-
-function MobileToggleRow({ label, checked, onChange }) {
-  return (
-    <label className="flex items-center justify-between gap-3 cursor-pointer" style={{ minHeight: 44 }}>
-      <span className="text-sm text-slate-700">{label}</span>
-      <button
-        role="switch"
-        aria-checked={checked}
-        onClick={() => onChange(!checked)}
-        className="flex-shrink-0 relative w-11 h-6 rounded-full transition-colors"
-        style={{ background: checked ? '#16a34a' : '#cbd5e1' }}
-      >
-        <span
-          className="absolute top-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform"
-          style={{ left: checked ? 'calc(100% - 22px)' : '2px' }}
-        />
-      </button>
-    </label>
-  );
-}
 
 // Mobile driver-snapshot drawer. Replaces the full-screen DriverSnapshotSidebar
 // overlay on mobile with a slide-up bottom sheet that re-uses the desktop
@@ -5833,7 +5163,7 @@ function MapScreen() {
               type="date"
               value={selectedDate}
               onChange={(e) => { if (e.target.value) setSelectedDate(e.target.value); }}
-              className="text-[11px] border-0 p-0 focus:outline-none bg-transparent max-w-[112px]"
+              className="text-[11px] border-0 p-0 focus:outline-none bg-transparent w-[124px]"
               aria-label="Select delivery date"
             />
             {!dateIsToday && (
@@ -5850,7 +5180,7 @@ function MapScreen() {
           {/* Compact status pill — collapsible to just the stops count (shares
               statusCollapsed with desktop). min-w-0 lets it shrink before it can
               ever reach the date chip. */}
-          <div className="bg-white/95 backdrop-blur border border-slate-200 rounded-lg shadow px-2.5 py-1.5 text-[11px] pointer-events-auto min-w-0 max-w-[68vw]">
+          <div className="bg-white/95 backdrop-blur border border-slate-200 rounded-lg shadow px-2.5 py-1.5 text-[11px] pointer-events-auto min-w-0 flex-shrink max-w-[60vw] overflow-hidden">
             {/* Header row — always visible: collapse toggle + stops, scan, filters. */}
             <div className="flex items-center gap-2">
               <button
@@ -5882,7 +5212,7 @@ function MapScreen() {
             </div>
             {/* Stacked details — hidden when collapsed (mirrors desktop). */}
             {!statusCollapsed && (
-              <div className="mt-0.5 leading-tight">
+              <div className="mt-0.5 leading-tight min-w-0 [&>div]:truncate">
                 <div className="text-slate-600 text-[10px]">{totalPalletsCount.toLocaleString()} total pallets</div>
                 <FeedTimestamps loadAt={lastLoadScanAt} unplannedAt={lastUnplannedScanAt} isToday={dateIsToday} className="text-slate-500 text-[10px]" stacked />
                 {ops && typeof ops.dayCount === 'number' && (
@@ -7101,7 +6431,7 @@ function RoutingStopModal({ stop, notes, onClose, windowViolatedSet }) {
   return (
     <div className="fixed inset-0 z-[1000] flex items-center justify-center p-4" role="dialog" aria-modal="true">
       <div className="absolute inset-0 bg-black/40" onClick={onClose} />
-      <div className="relative bg-white rounded-lg shadow-xl w-full max-w-md max-h-[85vh] flex flex-col" style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}>
+      <div className="relative bg-white rounded-lg shadow-xl w-full max-w-md max-h-[85dvh] flex flex-col" style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}>
         <div className="flex items-center justify-between px-3 py-2 border-b shrink-0">
           <div className="min-w-0">
             <div className="font-bold text-slate-800 truncate">{stop.businessName || `Stop ${pro}`}</div>
@@ -7306,7 +6636,7 @@ function VersionLogModal({ onClose }) {
   return (
     <div className="fixed inset-0 z-[1000] flex items-center justify-center p-4" role="dialog" aria-modal="true">
       <div className="absolute inset-0 bg-black/40" onClick={onClose} />
-      <div className="relative bg-white rounded-lg shadow-xl w-full max-w-sm max-h-[85vh] flex flex-col" style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}>
+      <div className="relative bg-white rounded-lg shadow-xl w-full max-w-sm max-h-[85dvh] flex flex-col" style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}>
         <div className="flex items-center justify-between px-3 py-2 border-b shrink-0">
           <div className="font-bold text-slate-800">Beta version history</div>
           <button onClick={onClose} aria-label="Close" className="text-slate-400 hover:text-slate-700 text-2xl leading-none px-1">×</button>

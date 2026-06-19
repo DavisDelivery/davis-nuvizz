@@ -98,8 +98,8 @@ export default function ChatPanel({ open, onClose, onSend, onHighlight, onClear,
   return (
     <div
       className="fixed z-[40] bg-white border border-slate-200 shadow-2xl flex flex-col
-                 inset-x-0 bottom-0 rounded-t-2xl max-h-[80vh]
-                 sm:inset-x-auto sm:bottom-4 sm:right-4 sm:w-[380px] sm:h-[560px] sm:max-h-[80vh] sm:rounded-2xl"
+                 inset-x-0 bottom-0 rounded-t-2xl max-h-[85dvh] pb-[env(safe-area-inset-bottom)]
+                 sm:inset-x-auto sm:bottom-4 sm:right-4 sm:w-[380px] sm:h-[560px] sm:max-h-[80vh] sm:rounded-2xl sm:pb-0"
       role="dialog"
       aria-label="AI assistant"
     >
