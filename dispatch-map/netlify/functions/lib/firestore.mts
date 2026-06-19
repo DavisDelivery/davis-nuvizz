@@ -427,6 +427,44 @@ export async function setCircuit(open: boolean, reason: string, atISO: string): 
   await setDoc(`${OPS_COLLECTION}/circuit`, { open, reason, at: atISO, day: atISO.slice(0, 10) });
 }
 
+// ── Phase 6: terminal-stop skip cache ────────────────────────────────────────
+// A stop at status 90/91 is DELIVERED and immutable, so once the unplanned descent
+// has confirmed a stop number terminal there is no reason to spend a /stop/info call
+// re-probing it. We persist {stopNbr → expectedDate} for terminal numbers; the descent
+// synthesizes the would-be probe (exists, expected, non-target) from the cache instead
+// of calling NuVizz, which preserves the early-stop heuristics exactly. One doc per
+// tenant, pruned to the live band so it stays small (numbers far below the descent
+// floor are never re-probed anyway).
+const TERMINAL_COLLECTION = 'nuvizz_stop_terminal';
+
+// PURE: drop cache entries below the retained band so the doc stays bounded. Exported
+// for tests. Keeps numbers >= retainFloor (everything the descent could still re-probe).
+export function pruneTerminalMap(map: Record<string, string>, retainFloor: number): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [nbr, expected] of Object.entries(map)) {
+    if (Number(nbr) >= retainFloor) out[nbr] = expected;
+  }
+  return out;
+}
+
+export async function readTerminalStops(tenant: string): Promise<Record<string, string>> {
+  const doc = await getDoc(`${TERMINAL_COLLECTION}/${tenant}`);
+  const stops = doc?.stops;
+  return stops && typeof stops === 'object' ? (stops as Record<string, string>) : {};
+}
+
+// Merge newly-confirmed terminal numbers into the cache and prune to the live band.
+// Read-modify-write (last-write-wins): a lost race just re-probes a few stops next
+// scan — self-healing — so we skip the complexity of per-key field-path merges.
+export async function mergeTerminalStops(
+  tenant: string, additions: Record<string, string>, retainFloor: number,
+): Promise<number> {
+  const current = await readTerminalStops(tenant);
+  const merged = pruneTerminalMap({ ...current, ...additions }, retainFloor);
+  await setDoc(`${TERMINAL_COLLECTION}/${tenant}`, { tenant, stops: merged, updated_at: new Date().toISOString() });
+  return Object.keys(merged).length;
+}
+
 // ── Incremental-scan state (call-reduction work) ─────────────────────────────
 // Per-date roster written after every scan, read at the start of the next: which
 // loads we already know (+ whether each is fully delivered), the load-number span,

@@ -46,7 +46,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.27.24';
+const APP_VERSION = '0.27.25';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -66,6 +66,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.27.25', 'Incremental-scan Phase 6 (default OFF, flag NUVIZZ_TERMINAL_SKIP): terminal-stop skip cache — stops confirmed delivered (status 90/91) are immutable, so their stopNbr→expectedDate is persisted in Firestore (nuvizz_stop_terminal) and the unplanned /stop/info descent synthesizes them from cache instead of re-probing. Heuristics preserved exactly (synthesized probe carries the stored expected date); targets /stop/info, the dominant remaining call source'],
   ['0.27.24', 'Triple-check hardening (audit follow-ups): undelivered report counts code-less deliveries (deliveredDTTM/normalizedStatus) as delivered, and same-day deliveries on the window edge are surfaced as "indeterminate" (+ readErrors) instead of silently assumed on-time; lean history skips a HALTED (ceiling/kill-switch) index and re-scans; regression tests added for the call-counter merge shape and the day-scoped circuit-breaker expiry'],
   ['0.27.23', 'Incremental-scan Phase 5: undelivered / delivered-late / aged-out report + 91(manual)-vs-90(system) completion breakdown, derived from the multi-day history warehouse with zero NuVizz calls (read-only /nuvizz-undelivered-report endpoint)'],
   ['0.27.22', 'Phase 4 fix (audit): lean history path no longer references undefined scan result (would have thrown with the flag on); counts/timestamp derived from the index, and an empty index falls back to a fresh scan'],
