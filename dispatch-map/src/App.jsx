@@ -47,7 +47,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.29.0';
+const APP_VERSION = '0.29.1';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -67,6 +67,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.29.1', 'Fixes the right edge of the mobile app getting clipped (the last tab, the AI button, etc. cut off). On iOS the layout viewport can be a few pixels wider than the visible screen, and width:100% resolved to that wider value — pushing right-edge controls off the visible area. The app shell is now pinned to the live visible (visualViewport) width, so every control stays on-screen.'],
   ['0.29.0', 'Mobile is now a real full-screen app with a bottom tab bar (Map · Stops · Filters · Drivers), not a stack of half-height sheets over the map. Every view — the stops list + search, filters, drivers, stop detail + full editor, route detail, driver snapshot — fills the screen under a persistent header, so there’s no wasted empty space, nothing overlaps the map, and nothing hangs off the edge. The search works correctly: it stays at the top with the keyboard up so you can see what you’re typing, with results below; the tab bar stays put. Same features and data as desktop (full parity) — just laid out as a proper mobile app.'],
   ['0.28.3', 'Fixes the blank screen when you tap the search field on mobile. The page body was scrollable (a side effect of the overflow-x guard computing overflow-y to “auto”), so iOS scrolled the whole app up to the focused field, blanking everything above the keyboard. The app shell is now locked to the viewport (no page scroll/bounce); only the inner panels (sheets, lists) scroll. Verified across every mobile screen in Safari’s engine — map, Stops/Filters/Drivers drawers, stop detail + editor, route detail, driver snapshot.'],
   ['0.28.2', 'Mobile bottom sheets now fit their content — no more giant band of empty white space under a sparse stop. The sheet measures its content and sizes to min(content, ~⅔ screen): short stops open compact, while a long one (the full editor) caps at the screen fraction and scrolls with the Save bar pinned. Also hardened the Route row so the “View full route” button wraps instead of clipping. (Verified in Safari’s engine at multiple phone heights — both the content-fit and the cap-and-scroll cases.)'],
@@ -941,21 +942,24 @@ function useViewportWidth() {
   return w;
 }
 
-// Track the *visible* viewport height in CSS pixels. The shell is laid out with
-// overflow-hidden (the page itself never scrolls), so on iOS Safari the static
-// `100vh` extends behind the dynamic toolbars and hides the bottom of the app —
-// most painfully the stop sidebar's Save bar. Sizing the shell to live
-// innerHeight keeps it within the visible area on every device. We deliberately
-// use a definite pixel height (not `dvh`) so the Google Maps container always
-// resolves a real, non-zero height — `dvh` collapsed the map in some webviews.
-function useViewportHeight() {
+// Track the *visible* viewport size (width + height) in CSS pixels. The shell is
+// laid out with overflow-hidden (the page itself never scrolls), so on iOS Safari
+// the static `100vh` extends behind the dynamic toolbars and hides the bottom of
+// the app. We also pin the WIDTH: on iOS the layout viewport can be a few px WIDER
+// than the visible (visual) viewport, and `width:100%`/`100vw` resolve to that
+// wider layout width — which pushes right-edge controls (the last tab, the AI
+// button) off the visible screen. Sizing the shell to the live visualViewport
+// width keeps every control inside the visible area. Definite pixels (not dvh/vw)
+// so the Google Maps container always resolves a real, non-zero size.
+function useViewportSize() {
   const read = () => {
-    if (typeof window === 'undefined') return 0;
-    return window.visualViewport?.height || window.innerHeight || 0;
+    if (typeof window === 'undefined') return { h: 0, w: 0 };
+    const vv = window.visualViewport;
+    return { h: (vv?.height || window.innerHeight || 0), w: (vv?.width || window.innerWidth || 0) };
   };
-  const [h, setH] = useState(read);
+  const [size, setSize] = useState(read);
   useEffect(() => {
-    const onResize = () => setH(read());
+    const onResize = () => setSize(read());
     window.addEventListener('resize', onResize);
     window.addEventListener('orientationchange', onResize);
     window.visualViewport?.addEventListener('resize', onResize);
@@ -965,7 +969,7 @@ function useViewportHeight() {
       window.visualViewport?.removeEventListener('resize', onResize);
     };
   }, []);
-  return h;
+  return size;
 }
 
 // Left-panel width with mouse-drag handler. Caller spreads handleProps onto
@@ -7897,7 +7901,7 @@ function RoutingRouteCard({ rv, stopById, usedGoogle, readOnly, onReorder, onMov
 function Shell() {
   const [tab, setTab] = useState('map');
   const viewportWidth = useViewportWidth();
-  const viewportHeight = useViewportHeight();
+  const { h: viewportHeight, w: visibleWidth } = useViewportSize();
   const isMobile = viewportWidth < MOBILE_BREAKPOINT;
   const [chipMenuOpen, setChipMenuOpen] = useState(false);
 
@@ -7913,7 +7917,15 @@ function Shell() {
     // h-screen is the SSR/first-paint fallback; once mounted we pin the shell to
     // the live visible viewport height (pixels) so iOS Safari toolbars can't hide
     // the bottom Save bar. Pixel height keeps the map container non-zero.
-    <div className="h-screen flex flex-col" style={viewportHeight ? { height: viewportHeight } : undefined}>
+    <div
+      className="h-screen flex flex-col overflow-hidden"
+      style={{
+        ...(viewportHeight ? { height: viewportHeight } : {}),
+        // Pin to the visible width so iOS's slightly-wider layout viewport can't
+        // push right-edge controls off-screen.
+        ...(visibleWidth ? { width: visibleWidth, maxWidth: visibleWidth } : {}),
+      }}
+    >
       {isMobile ? (
         <MobileAppBar
           version={APP_VERSION}
