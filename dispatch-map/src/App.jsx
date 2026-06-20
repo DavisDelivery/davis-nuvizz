@@ -47,7 +47,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.29.1';
+const APP_VERSION = '0.29.2';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -67,6 +67,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.29.2', 'Mobile search no longer auto-calls AI: typing in the search box now just filters the loaded stops locally (live), and AI search is a separate, explicit action (the AI button) — pressing Enter dismisses the keyboard instead of firing AI. Also fixed the version (vX.Y.Z) menu being clipped/hidden behind the header.'],
   ['0.29.1', 'Fixes the right edge of the mobile app getting clipped (the last tab, the AI button, etc. cut off). On iOS the layout viewport can be a few pixels wider than the visible screen, and width:100% resolved to that wider value — pushing right-edge controls off the visible area. The app shell is now pinned to the live visible (visualViewport) width, so every control stays on-screen.'],
   ['0.29.0', 'Mobile is now a real full-screen app with a bottom tab bar (Map · Stops · Filters · Drivers), not a stack of half-height sheets over the map. Every view — the stops list + search, filters, drivers, stop detail + full editor, route detail, driver snapshot — fills the screen under a persistent header, so there’s no wasted empty space, nothing overlaps the map, and nothing hangs off the edge. The search works correctly: it stays at the top with the keyboard up so you can see what you’re typing, with results below; the tab bar stays put. Same features and data as desktop (full parity) — just laid out as a proper mobile app.'],
   ['0.28.3', 'Fixes the blank screen when you tap the search field on mobile. The page body was scrollable (a side effect of the overflow-x guard computing overflow-y to “auto”), so iOS scrolled the whole app up to the focused field, blanking everything above the keyboard. The app shell is now locked to the viewport (no page scroll/bounce); only the inner panels (sheets, lists) scroll. Verified across every mobile screen in Safari’s engine — map, Stops/Filters/Drivers drawers, stop detail + editor, route detail, driver snapshot.'],
@@ -3503,7 +3504,7 @@ function makeDriverLabelOverlayClass(google) {
 function MobileAppBar({ version, onChipMenu, chipMenuOpen, onSelectMenu }) {
   return (
     <header
-      className="flex-shrink-0 flex items-center justify-between gap-2 px-3 text-white relative overflow-hidden"
+      className="flex-shrink-0 flex items-center justify-between gap-2 px-3 text-white relative"
       style={{
         background: BRAND,
         // minHeight (not a fixed height) + the notch inset as padding so the bar
@@ -3711,7 +3712,7 @@ function MobileStopsTab({
               spellCheck={false}
               value={searchInput}
               onChange={(e) => setSearchInput(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter' && aiAvailable && searchInput.trim()) { e.preventDefault(); onAskAi(searchInput); } }}
+              onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); e.currentTarget.blur(); } }}
               placeholder="Customer, PRO, city, address…"
               className="w-full pl-8 pr-3 border border-slate-300 rounded-lg text-sm"
               style={{ minHeight: 44 }}
