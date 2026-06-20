@@ -47,7 +47,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.29.2';
+const APP_VERSION = '0.29.3';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -67,6 +67,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.29.3', 'New "Search past PROs / customer history" button on the mobile Stops tab. Tap it to look up a historical PRO or a customer by business name against the saved 20-stop history we keep per customer — no API calls for that. Searching a business name pulls up that customer’s last 20 PROs (with dates); searching a PRO number finds it across saved history. Business-name searches never call NuVizz. Only when you type a PRO that ISN’T in saved history do you get an explicit "Look up PRO in NuVizz (1 API call)" button — a single, deliberate, on-demand call you choose to make; nothing happens automatically.'],
   ['0.29.2', 'Mobile search no longer auto-calls AI: typing in the search box now just filters the loaded stops locally (live), and AI search is a separate, explicit action (the AI button) — pressing Enter dismisses the keyboard instead of firing AI. Also fixed the version (vX.Y.Z) menu being clipped/hidden behind the header.'],
   ['0.29.1', 'Fixes the right edge of the mobile app getting clipped (the last tab, the AI button, etc. cut off). On iOS the layout viewport can be a few pixels wider than the visible screen, and width:100% resolved to that wider value — pushing right-edge controls off the visible area. The app shell is now pinned to the live visible (visualViewport) width, so every control stays on-screen.'],
   ['0.29.0', 'Mobile is now a real full-screen app with a bottom tab bar (Map · Stops · Filters · Drivers), not a stack of half-height sheets over the map. Every view — the stops list + search, filters, drivers, stop detail + full editor, route detail, driver snapshot — fills the screen under a persistent header, so there’s no wasted empty space, nothing overlaps the map, and nothing hangs off the edge. The search works correctly: it stays at the top with the keyboard up so you can see what you’re typing, with results below; the tab bar stays put. Same features and data as desktop (full parity) — just laid out as a proper mobile app.'],
@@ -3691,11 +3692,134 @@ function MobileDrawer({ open, onClose, activeTab, setActiveTab, children }) {
 }
 
 // Stops tab content. Search input + count + list of cards (one tap = pick stop).
+// Historical PRO / customer lookup. Opened by an explicit button (not the live
+// search). Searches our SAVED 20-stop-per-customer history (customer_notes) with
+// zero API calls — by customer name (shows that customer's last 20 PROs) or by
+// PRO. ONLY when a typed PRO isn't in saved history does it offer a deliberate
+// NuVizz lookup (one call). Business-name searches never call the API.
+function PastProSearch({ notes, initialQuery, onClose }) {
+  const [q, setQ] = useState(initialQuery || '');
+  const [api, setApi] = useState(null); // null | {loading} | {stop} | {error}
+  const query = q.trim();
+  const lc = query.toLowerCase();
+  // PRO-like = contains digits and is a single token (no spaces) — names have spaces.
+  const isProLike = !!query && /\d/.test(query) && !/\s/.test(query);
+
+  const all = [...notes.values()];
+  const nameMatches = !query ? [] : all
+    .filter((n) => (n.raw_name || '').toLowerCase().includes(lc) && Array.isArray(n.pro_history) && n.pro_history.length)
+    .slice(0, 30)
+    .map((n) => ({ customer: n.raw_name || n.id, history: [...n.pro_history].reverse().slice(0, 20) }));
+  const proMatches = !query ? [] : all.flatMap((n) =>
+    (Array.isArray(n.pro_history) ? n.pro_history : [])
+      .filter((h) => String(h.pro).toLowerCase().includes(lc))
+      .map((h) => ({ customer: n.raw_name || n.id, pro: h.pro, date: h.date })),
+  ).slice(0, 60);
+  const noLocal = query && nameMatches.length === 0 && proMatches.length === 0;
+
+  const runApi = async () => {
+    setApi({ loading: true });
+    try {
+      const r = await fetch('/.netlify/functions/nuvizz-pro-lookup?pro=' + encodeURIComponent(query));
+      const d = await r.json();
+      setApi(d.ok && d.stop ? { stop: d.stop } : { error: d.reason || 'not found' });
+    } catch (e) { setApi({ error: e.message }); }
+  };
+
+  return (
+    <>
+      <div className="flex-shrink-0 px-3 py-2 border-b border-slate-200 flex items-center gap-2">
+        <button onClick={onClose} className="flex-shrink-0 p-2 -ml-1 rounded-full hover:bg-slate-100 active:bg-slate-200" style={{ minWidth: 40, minHeight: 40 }} aria-label="Back to stops"><ChevronDown size={18} className="rotate-90" /></button>
+        <div className="relative flex-1 min-w-0">
+          <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+          <input
+            type="search" inputMode="search" autoComplete="off" autoCorrect="off" autoCapitalize="none" spellCheck={false}
+            value={q} onChange={(e) => { setQ(e.target.value); setApi(null); }}
+            onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); e.currentTarget.blur(); } }}
+            placeholder="Customer name or PRO #…" autoFocus
+            className="w-full pl-8 pr-3 border border-slate-300 rounded-lg text-sm" style={{ minHeight: 44 }}
+          />
+        </div>
+      </div>
+      <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain" data-sheet-scroll>
+        <div className="px-3 py-2 text-[11px] text-slate-500">Searching saved history (last 20 PROs per customer). No API calls unless you look up an unknown PRO below.</div>
+        {!query && <div className="px-4 py-6 text-center text-xs text-slate-400 italic">Type a customer name or a PRO number.</div>}
+
+        {nameMatches.length > 0 && (
+          <div className="px-3 pb-2">
+            <div className="text-[10px] uppercase font-semibold text-slate-500 mb-1">Customers ({nameMatches.length})</div>
+            {nameMatches.map((m, i) => (
+              <div key={i} className="mb-2 border border-slate-200 rounded-lg p-2">
+                <div className="text-sm font-semibold text-slate-900 break-words">{m.customer}</div>
+                <div className="mt-1 flex flex-wrap gap-1">
+                  {m.history.map((h, j) => (
+                    <span key={j} className="text-[10px] font-mono bg-slate-100 border border-slate-200 rounded px-1.5 py-0.5">{h.pro} · {h.date}</span>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {proMatches.length > 0 && (
+          <div className="px-3 pb-2">
+            <div className="text-[10px] uppercase font-semibold text-slate-500 mb-1">PRO matches ({proMatches.length})</div>
+            <div className="divide-y divide-slate-100 border border-slate-200 rounded-lg">
+              {proMatches.map((m, i) => (
+                <div key={i} className="flex items-center gap-2 px-2 py-1.5 text-sm">
+                  <span className="font-mono text-[12px] flex-shrink-0">{m.pro}</span>
+                  <span className="text-slate-500 text-[11px] flex-shrink-0">{m.date}</span>
+                  <span className="min-w-0 flex-1 truncate text-right text-slate-700">{m.customer}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {noLocal && (
+          <div className="px-4 py-4 text-center">
+            <div className="text-xs text-slate-500 mb-2">Nothing in saved history for “{query}”.</div>
+            {isProLike ? (
+              !api ? (
+                <button onClick={runApi} className="px-3 py-2 text-sm text-white font-semibold rounded-lg" style={{ background: BRAND, minHeight: 44 }}>Look up PRO in NuVizz (1 API call)</button>
+              ) : api.loading ? (
+                <div className="text-xs text-slate-500 inline-flex items-center gap-1"><RefreshCw size={14} className="animate-spin" /> Looking up…</div>
+              ) : api.error ? (
+                <div className="text-xs text-red-600">PRO not found in NuVizz ({api.error}).</div>
+              ) : null
+            ) : (
+              <div className="text-[11px] text-slate-400 italic">Tip: business-name search only looks at saved history — type a PRO number to query NuVizz.</div>
+            )}
+          </div>
+        )}
+
+        {api?.stop && (
+          <div className="px-3 pb-3">
+            <div className="text-[10px] uppercase font-semibold text-slate-500 mb-1">From NuVizz</div>
+            <div className="border border-blue-200 bg-blue-50/40 rounded-lg p-3 text-sm">
+              <div className="text-[10px] uppercase tracking-wider text-slate-500">PRO {api.stop.pro || '—'}</div>
+              <div className="font-bold text-slate-900 break-words">{api.stop.businessName || '(no name)'}</div>
+              <div className="text-slate-600 break-words">{api.stop.addr1}</div>
+              <div className="text-slate-600 break-words">{[api.stop.city, api.stop.state, api.stop.zip].filter(Boolean).join(', ')}</div>
+              {(api.stop.scheduledFrom || api.stop.scheduledTo) && <div className="text-[12px] text-slate-500 mt-1">Window: {api.stop.scheduledFrom || '—'} – {api.stop.scheduledTo || '—'}</div>}
+              {api.stop.loadNbr && <div className="text-[12px] text-slate-500">Route: {api.stop.routeName || api.stop.loadNbr}{api.stop.driverName ? ` · ${api.stop.driverName}` : ''}</div>}
+              {api.stop.itemsSummary && <div className="text-[12px] text-slate-500">{api.stop.itemsSummary}</div>}
+            </div>
+          </div>
+        )}
+        <div className="h-3" />
+      </div>
+    </>
+  );
+}
+
 function MobileStopsTab({
   stops, notes, searchInput, setSearchInput,
   resultCount, totalCount, onPickStop,
   aiAvailable, onAskAi, aiBusy, aiSummary, aiError, onClearAi,
 }) {
+  const [histOpen, setHistOpen] = useState(false);
+  if (histOpen) return <PastProSearch notes={notes} initialQuery={searchInput} onClose={() => setHistOpen(false)} />;
   return (
     <div className="flex flex-col">
       <div className="p-3 border-b border-slate-100">
@@ -3745,6 +3869,12 @@ function MobileStopsTab({
           </div>
         )}
         {aiError && <div className="mt-1 text-[11px] text-amber-700">{aiError}</div>}
+        <button
+          onClick={() => setHistOpen(true)}
+          className="mt-2 w-full inline-flex items-center justify-center gap-1.5 text-xs font-semibold text-slate-700 border border-slate-300 rounded-lg py-2 active:bg-slate-100"
+        >
+          <Clock size={13} /> Search past PROs / customer history
+        </button>
       </div>
       <div className="divide-y divide-slate-100">
         {stops.length === 0 && (

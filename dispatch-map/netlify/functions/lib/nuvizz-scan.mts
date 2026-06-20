@@ -539,6 +539,31 @@ export function isTerminalStatus(code: any): boolean {
   return c === '90' || c === '91';
 }
 
+// On-demand lookup of a single stop by PRO/stop number — used by the mobile
+// "search past PROs" button when a typed PRO isn't in our saved 20-stop history.
+// Numeric PROs are zero-padded to 9 (NuVizz's format); alphanumeric (AVRT-…)
+// are used as-is. Goes through the shared requester so it counts toward the
+// daily call budget, and honors the kill switch.
+export async function lookupStopByPro(pro: string): Promise<{ ok: boolean; stop?: NormalizedStop; reason?: string }> {
+  if (!scansEnabled()) return { ok: false, reason: 'scans_disabled' };
+  const raw = String(pro || '').trim();
+  if (!raw) return { ok: false, reason: 'empty' };
+  const { companyCode } = getCreds();
+  const authHeader = basicAuthHeader();
+  const id = /^[0-9]+$/.test(raw) ? raw.padStart(9, '0') : raw;
+  const url = `${NUVIZZ_BASE}/stop/info/${encodeURIComponent(id)}/${encodeURIComponent(companyCode)}`;
+  try {
+    const resp = await getNuvizzRequester().request(url, { headers: { Authorization: authHeader, Accept: 'application/json' } }, { route: '/stop/info', tenant: companyCode });
+    if (!resp.ok) return { ok: false, reason: `http_${resp.status}` };
+    const d: any = await resp.json();
+    const wrap = d?.Stop || d?.stop || d;
+    if (!wrap?.stop?.stopNbr) return { ok: false, reason: 'not_found' };
+    return { ok: true, stop: normalizeStop(wrap) };
+  } catch (e: any) {
+    return { ok: false, reason: e?.message || 'error' };
+  }
+}
+
 async function probeStop(n: number, dateStr: string, authHeader: string, companyCode: string): Promise<StopProbe> {
   const stopNbr = String(n).padStart(9, '0');
   const url = `${NUVIZZ_BASE}/stop/info/${encodeURIComponent(stopNbr)}/${encodeURIComponent(companyCode)}`;
