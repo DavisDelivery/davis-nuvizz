@@ -3,6 +3,12 @@
 @tailwind utilities;
 
 html, body, #root { height: 100%; }
+/* Stop iOS Safari from auto-inflating text ("text boosting"). Without this,
+   iOS renders our small fixed sizes (text-[10px] etc.) LARGER than designed,
+   which widens every row and clips the right edge on the map overlays, the
+   filter rows, the stop sheet, and the editor — overflow that does NOT
+   reproduce in desktop engines. Pin text scaling to 100%. */
+html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
 /* Never let the page scroll/shift horizontally — a stray over-wide child would
    otherwise push fixed/anchored controls (the FAB, right-aligned PRO badges)
    partly off the right edge on mobile. Pin everything to the visible width. */
