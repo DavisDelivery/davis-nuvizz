@@ -47,7 +47,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.28.2';
+const APP_VERSION = '0.28.3';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -67,6 +67,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.28.3', 'Fixes the blank screen when you tap the search field on mobile. The page body was scrollable (a side effect of the overflow-x guard computing overflow-y to “auto”), so iOS scrolled the whole app up to the focused field, blanking everything above the keyboard. The app shell is now locked to the viewport (no page scroll/bounce); only the inner panels (sheets, lists) scroll. Verified across every mobile screen in Safari’s engine — map, Stops/Filters/Drivers drawers, stop detail + editor, route detail, driver snapshot.'],
   ['0.28.2', 'Mobile bottom sheets now fit their content — no more giant band of empty white space under a sparse stop. The sheet measures its content and sizes to min(content, ~⅔ screen): short stops open compact, while a long one (the full editor) caps at the screen fraction and scrolls with the Save bar pinned. Also hardened the Route row so the “View full route” button wraps instead of clipping. (Verified in Safari’s engine at multiple phone heights — both the content-fit and the cap-and-scroll cases.)'],
   ['0.28.1', 'Fixes the mobile right-edge clipping (status pill, filter rows, day buttons, item quantities, Save button all running off-screen). Root cause: iOS Safari was auto-inflating the small text beyond its set size, widening every row — now pinned with text-size-adjust:100% so the layout renders at the intended size. Also: the items list wraps cleanly (SKU/SEQ stacks under the product, quantity stays put), and focusing a field in the stop sheet now scrolls it into view above the keyboard so you can see what you’re typing. (Verified by rendering the real sheet in Safari’s engine at phone widths.)'],
   ['0.28.0', 'Mobile stop detail rebuilt for full desktop parity. The desktop sidebar and the mobile sheet now render the SAME shared components (one address/window/items/route block + one complete notes editor), so every edit option on desktop is on mobile and the two can never drift again. The mobile stop sheet is now a single scroll with one inline “Edit” that reveals the full editor — priority flag, AM/PM window, per-day receiving hours (with copy-to-weekdays), appointment required + notes, liftgate, equipment restrictions, dock type/notes, and contacts — instead of options split across tabs. Plus a mobile design-system sweep: Filters toggles no longer get pushed off the right edge, the header no longer clips under the notch, the date chip/status pill can’t overlap, long text wraps, modals/chat are keyboard-aware, and the stop sheet opens at a content-appropriate height (less empty space).'],
