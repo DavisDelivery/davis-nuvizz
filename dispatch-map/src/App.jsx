@@ -3166,7 +3166,7 @@ function DriverSnapshotBody({ driver, snapshot, loading, error, onPanToStop }) {
   }, [stops]);
 
   return (
-    <div className="overflow-y-auto flex-1 text-sm">
+    <div className="flex-1 min-h-0 overflow-y-auto text-sm" data-sheet-scroll>
       {loading && <SnapshotSkeleton />}
 
       {error && !loading && (
@@ -6175,7 +6175,7 @@ function StopMiniTable({ stops, notes, onPick, columns, onColumnsChange, searchQ
 
 function DiagnosticsScreen({ stops, notes }) {
   return (
-    <div className="flex-1 overflow-y-auto p-3 sm:p-6 space-y-4 sm:space-y-6 max-w-4xl mx-auto w-full">
+    <div className="flex-1 min-h-0 overflow-y-auto p-3 sm:p-6 space-y-4 sm:space-y-6 max-w-4xl mx-auto w-full">
       <div>
         <h2 className="text-xl font-bold text-slate-900">Diagnostics</h2>
         <p className="text-sm text-slate-600 mt-1">M3 — stub. Each panel below has a TODO describing what to build.</p>
@@ -6497,7 +6497,7 @@ function RoutingStopModal({ stop, notes, onClose, windowViolatedSet }) {
           </div>
           <button onClick={onClose} aria-label="Close" className="text-slate-400 hover:text-slate-700 text-2xl leading-none px-1 shrink-0">×</button>
         </div>
-        <div className="overflow-y-auto p-3">
+        <div className="flex-1 min-h-0 overflow-y-auto p-3">
           <RoutingStopDetail stop={stop} note={note} windowViolated={windowViolated} />
         </div>
       </div>
@@ -6699,7 +6699,7 @@ function VersionLogModal({ onClose }) {
           <div className="font-bold text-slate-800">Beta version history</div>
           <button onClick={onClose} aria-label="Close" className="text-slate-400 hover:text-slate-700 text-2xl leading-none px-1">×</button>
         </div>
-        <div className="overflow-y-auto p-2">
+        <div className="flex-1 min-h-0 overflow-y-auto p-2">
           <div className="px-1 pb-2 text-[10px] text-slate-400">Build {BUILD_SHORT} · {BUILD_CONTEXT}</div>
           <ul className="divide-y">
             {VERSION_LOG.map(([v, note]) => {
@@ -7534,7 +7534,7 @@ function RoutingScreen() {
             </div>
           </div>
           {sheetOpen && (
-            <div className="flex-1 overflow-y-auto p-3 space-y-3 text-sm" style={{ paddingBottom: 'calc(12px + env(safe-area-inset-bottom))' }}>
+            <div className="flex-1 min-h-0 overflow-y-auto p-3 space-y-3 text-sm" style={{ paddingBottom: 'calc(12px + env(safe-area-inset-bottom))' }}>
               {mobilePanel === 'setup' ? controlsContent : mobilePanel === 'loads' ? loadsContent : resultContent}
             </div>
           )}
