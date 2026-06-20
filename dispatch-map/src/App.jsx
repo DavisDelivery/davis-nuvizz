@@ -47,7 +47,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.28.2';
+const APP_VERSION = '0.28.3';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -67,6 +67,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.28.3', 'Fixes the blank screen when you tap the search field on mobile. The page body was scrollable (a side effect of the overflow-x guard computing overflow-y to “auto”), so iOS scrolled the whole app up to the focused field, blanking everything above the keyboard. The app shell is now locked to the viewport (no page scroll/bounce); only the inner panels (sheets, lists) scroll. Verified across every mobile screen in Safari’s engine — map, Stops/Filters/Drivers drawers, stop detail + editor, route detail, driver snapshot.'],
   ['0.28.2', 'Mobile bottom sheets now fit their content — no more giant band of empty white space under a sparse stop. The sheet measures its content and sizes to min(content, ~⅔ screen): short stops open compact, while a long one (the full editor) caps at the screen fraction and scrolls with the Save bar pinned. Also hardened the Route row so the “View full route” button wraps instead of clipping. (Verified in Safari’s engine at multiple phone heights — both the content-fit and the cap-and-scroll cases.)'],
   ['0.28.1', 'Fixes the mobile right-edge clipping (status pill, filter rows, day buttons, item quantities, Save button all running off-screen). Root cause: iOS Safari was auto-inflating the small text beyond its set size, widening every row — now pinned with text-size-adjust:100% so the layout renders at the intended size. Also: the items list wraps cleanly (SKU/SEQ stacks under the product, quantity stays put), and focusing a field in the stop sheet now scrolls it into view above the keyboard so you can see what you’re typing. (Verified by rendering the real sheet in Safari’s engine at phone widths.)'],
   ['0.28.0', 'Mobile stop detail rebuilt for full desktop parity. The desktop sidebar and the mobile sheet now render the SAME shared components (one address/window/items/route block + one complete notes editor), so every edit option on desktop is on mobile and the two can never drift again. The mobile stop sheet is now a single scroll with one inline “Edit” that reveals the full editor — priority flag, AM/PM window, per-day receiving hours (with copy-to-weekdays), appointment required + notes, liftgate, equipment restrictions, dock type/notes, and contacts — instead of options split across tabs. Plus a mobile design-system sweep: Filters toggles no longer get pushed off the right edge, the header no longer clips under the notch, the date chip/status pill can’t overlap, long text wraps, modals/chat are keyboard-aware, and the stop sheet opens at a content-appropriate height (less empty space).'],
@@ -3165,7 +3166,7 @@ function DriverSnapshotBody({ driver, snapshot, loading, error, onPanToStop }) {
   }, [stops]);
 
   return (
-    <div className="overflow-y-auto flex-1 text-sm">
+    <div className="flex-1 min-h-0 overflow-y-auto text-sm" data-sheet-scroll>
       {loading && <SnapshotSkeleton />}
 
       {error && !loading && (
@@ -6174,7 +6175,7 @@ function StopMiniTable({ stops, notes, onPick, columns, onColumnsChange, searchQ
 
 function DiagnosticsScreen({ stops, notes }) {
   return (
-    <div className="flex-1 overflow-y-auto p-3 sm:p-6 space-y-4 sm:space-y-6 max-w-4xl mx-auto w-full">
+    <div className="flex-1 min-h-0 overflow-y-auto p-3 sm:p-6 space-y-4 sm:space-y-6 max-w-4xl mx-auto w-full">
       <div>
         <h2 className="text-xl font-bold text-slate-900">Diagnostics</h2>
         <p className="text-sm text-slate-600 mt-1">M3 — stub. Each panel below has a TODO describing what to build.</p>
@@ -6496,7 +6497,7 @@ function RoutingStopModal({ stop, notes, onClose, windowViolatedSet }) {
           </div>
           <button onClick={onClose} aria-label="Close" className="text-slate-400 hover:text-slate-700 text-2xl leading-none px-1 shrink-0">×</button>
         </div>
-        <div className="overflow-y-auto p-3">
+        <div className="flex-1 min-h-0 overflow-y-auto p-3">
           <RoutingStopDetail stop={stop} note={note} windowViolated={windowViolated} />
         </div>
       </div>
@@ -6698,7 +6699,7 @@ function VersionLogModal({ onClose }) {
           <div className="font-bold text-slate-800">Beta version history</div>
           <button onClick={onClose} aria-label="Close" className="text-slate-400 hover:text-slate-700 text-2xl leading-none px-1">×</button>
         </div>
-        <div className="overflow-y-auto p-2">
+        <div className="flex-1 min-h-0 overflow-y-auto p-2">
           <div className="px-1 pb-2 text-[10px] text-slate-400">Build {BUILD_SHORT} · {BUILD_CONTEXT}</div>
           <ul className="divide-y">
             {VERSION_LOG.map(([v, note]) => {
@@ -7533,7 +7534,7 @@ function RoutingScreen() {
             </div>
           </div>
           {sheetOpen && (
-            <div className="flex-1 overflow-y-auto p-3 space-y-3 text-sm" style={{ paddingBottom: 'calc(12px + env(safe-area-inset-bottom))' }}>
+            <div className="flex-1 min-h-0 overflow-y-auto p-3 space-y-3 text-sm" style={{ paddingBottom: 'calc(12px + env(safe-area-inset-bottom))' }}>
               {mobilePanel === 'setup' ? controlsContent : mobilePanel === 'loads' ? loadsContent : resultContent}
             </div>
           )}
