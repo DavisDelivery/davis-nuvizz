@@ -9,7 +9,7 @@
 //   M4: live Motive driver overlay (toggle)
 //   M5: route polylines — not implemented this session, see HANDOFF.md
 
-import React, { useEffect, useLayoutEffect, useMemo, useRef, useState, useCallback } from 'react';
+import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { Loader as GoogleMapsLoader } from '@googlemaps/js-api-loader';
 import { MarkerClusterer } from '@googlemaps/markerclusterer';
 import {
@@ -47,7 +47,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.28.3';
+const APP_VERSION = '0.29.0';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -67,6 +67,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.29.0', 'Mobile is now a real full-screen app with a bottom tab bar (Map · Stops · Filters · Drivers), not a stack of half-height sheets over the map. Every view — the stops list + search, filters, drivers, stop detail + full editor, route detail, driver snapshot — fills the screen under a persistent header, so there’s no wasted empty space, nothing overlaps the map, and nothing hangs off the edge. The search works correctly: it stays at the top with the keyboard up so you can see what you’re typing, with results below; the tab bar stays put. Same features and data as desktop (full parity) — just laid out as a proper mobile app.'],
   ['0.28.3', 'Fixes the blank screen when you tap the search field on mobile. The page body was scrollable (a side effect of the overflow-x guard computing overflow-y to “auto”), so iOS scrolled the whole app up to the focused field, blanking everything above the keyboard. The app shell is now locked to the viewport (no page scroll/bounce); only the inner panels (sheets, lists) scroll. Verified across every mobile screen in Safari’s engine — map, Stops/Filters/Drivers drawers, stop detail + editor, route detail, driver snapshot.'],
   ['0.28.2', 'Mobile bottom sheets now fit their content — no more giant band of empty white space under a sparse stop. The sheet measures its content and sizes to min(content, ~⅔ screen): short stops open compact, while a long one (the full editor) caps at the screen fraction and scrolls with the Save bar pinned. Also hardened the Route row so the “View full route” button wraps instead of clipping. (Verified in Safari’s engine at multiple phone heights — both the content-fit and the cap-and-scroll cases.)'],
   ['0.28.1', 'Fixes the mobile right-edge clipping (status pill, filter rows, day buttons, item quantities, Save button all running off-screen). Root cause: iOS Safari was auto-inflating the small text beyond its set size, widening every row — now pinned with text-size-adjust:100% so the layout renders at the intended size. Also: the items list wraps cleanly (SKU/SEQ stacks under the product, quantity stays put), and focusing a field in the stop sheet now scrolls it into view above the keyboard so you can see what you’re typing. (Verified by rendering the real sheet in Safari’s engine at phone widths.)'],
@@ -3583,6 +3584,37 @@ function MobileFAB({ open, onToggle }) {
   );
 }
 
+// Persistent bottom navigation for the mobile app. Lives OUTSIDE the map/drawer
+// area so it stays visible over every full-screen view — tap Map to return to
+// the board, Stops/Filters/Drivers to open that full-screen view.
+function MobileTabBar({ active, onMap, onStops, onFilters, onDrivers }) {
+  const Tab = ({ id, label, icon, onClick }) => {
+    const on = active === id;
+    return (
+      <button
+        onClick={onClick}
+        aria-current={on ? 'page' : undefined}
+        className="flex-1 flex flex-col items-center justify-center gap-0.5 active:bg-slate-100"
+        style={{ color: on ? BRAND : '#64748b', minHeight: 50 }}
+      >
+        {icon}
+        <span className="text-[10px] font-semibold leading-none">{label}</span>
+      </button>
+    );
+  };
+  return (
+    <nav
+      className="flex-shrink-0 flex items-stretch border-t border-slate-200 bg-white"
+      style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}
+    >
+      <Tab id="map" label="Map" icon={<MapPin size={20} />} onClick={onMap} />
+      <Tab id="stops" label="Stops" icon={<LayoutList size={20} />} onClick={onStops} />
+      <Tab id="filters" label="Filters" icon={<Filter size={20} />} onClick={onFilters} />
+      <Tab id="drivers" label="Drivers" icon={<Truck size={20} />} onClick={onDrivers} />
+    </nav>
+  );
+}
+
 // Shared bottom-sheet primitive. Owns the slide-up animation, the drag handle,
 // the snap behavior (3 height stops), the backdrop dim, and the close-on-fling.
 // Consumers compose their own header + body inside. Each drawer can specify
@@ -3595,147 +3627,28 @@ function MobileFAB({ open, onToggle }) {
 const SHEET_HEIGHTS = { mini: 0.30, default: 0.60, expanded: 0.95 };
 const STOP_DETAIL_HEIGHTS = { mini: 0.30, default: 0.66, expanded: 0.95 };
 
-function BottomSheet({ open, onClose, heights = SHEET_HEIGHTS, children, ariaLabel }) {
-  const [heightFrac, setHeightFrac] = useState(heights.default);
-  const [dragging, setDragging] = useState(false);
-  const dragRef = useRef({ startY: 0, startFrac: heights.default });
-  // Definite sheet height = min(natural content, fraction-of-container). Measured
-  // in JS because CSS `max-height`/`fit-content` on this absolute flex column does
-  // NOT reliably cap-and-scroll in iOS Safari: a fixed `height` over-pads a sparse
-  // stop (big empty band) while `max-height` lets a tall editor overflow the top.
-  // min(content, cap) gives a definite height so the flex-1 scroll body fits short
-  // content (no empty space) yet caps + scrolls tall content (Save bar pinned).
-  const panelRef = useRef(null);
-  const [fitPx, setFitPx] = useState(null);
-
-  // Reset to default each time the sheet opens.
-  useEffect(() => {
-    if (open) setHeightFrac(heights.default);
-  }, [open, heights.default]);
-
-  // Measure natural content vs the fraction cap; re-measure on content/keyboard
-  // changes. Observes the content children (not the panel) so setting the panel
-  // height can't feed back into the measurement.
-  useLayoutEffect(() => {
-    if (!open) { setFitPx(null); return; }
-    const panel = panelRef.current;
-    if (!panel) return;
-    const scroller = () => panel.querySelector('[data-sheet-scroll]');
-    const compute = () => {
-      const sb = scroller();
-      let natural = 0;
-      for (const child of panel.children) {
-        if (child === sb && sb) {
-          // True content height of the scroll area — sum its children, NOT
-          // sb.scrollHeight (which returns the flex-stretched height ≈ the cap).
-          for (const k of sb.children) natural += k.offsetHeight;
-        } else {
-          natural += child.offsetHeight;
-        }
-      }
-      const cont = panel.parentElement;
-      const capPx = (cont ? cont.clientHeight : (window.visualViewport?.height || window.innerHeight)) * heightFrac;
-      setFitPx(Math.max(80, Math.min(natural, capPx)));
-    };
-    compute();
-    const ro = new ResizeObserver(compute);
-    const sb = scroller();
-    if (sb) Array.from(sb.children).forEach((c) => ro.observe(c));
-    const onVV = () => compute();
-    window.visualViewport?.addEventListener('resize', onVV);
-    return () => { ro.disconnect(); window.visualViewport?.removeEventListener('resize', onVV); };
-  }, [open, heightFrac, children]);
-
-  const onPointerDown = (e) => {
-    e.preventDefault();
-    setDragging(true);
-    dragRef.current = {
-      startY: e.touches ? e.touches[0].clientY : e.clientY,
-      startFrac: heightFrac,
-    };
-    // Use the VISIBLE viewport height (keyboard-aware) so drag tracking matches
-    // the sheet, which is sized as a % of the visible map container.
-    const visH = () => window.visualViewport?.height || window.innerHeight || 1;
-    const move = (ev) => {
-      const y = ev.touches ? ev.touches[0].clientY : ev.clientY;
-      const delta = y - dragRef.current.startY;
-      const vh = visH();
-      const next = Math.max(0.15, Math.min(0.97, dragRef.current.startFrac - delta / vh));
-      setHeightFrac(next);
-    };
-    const up = (ev) => {
-      const y = ev.changedTouches ? ev.changedTouches[0].clientY : ev.clientY;
-      const delta = y - dragRef.current.startY;
-      const vh = visH();
-      const finalFrac = Math.max(0.15, Math.min(0.97, dragRef.current.startFrac - delta / vh));
-      // Close if dragged below the smallest snap stop with sufficient velocity.
-      if (finalFrac < (heights.mini - 0.08) && delta > 60) {
-        setDragging(false);
-        onClose();
-        return;
-      }
-      const candidates = Object.values(heights);
-      const snapped = candidates.reduce((best, c) =>
-        Math.abs(c - finalFrac) < Math.abs(best - finalFrac) ? c : best,
-        candidates[0],
-      );
-      setHeightFrac(snapped);
-      setDragging(false);
-      document.removeEventListener('mousemove', move);
-      document.removeEventListener('mouseup', up);
-      document.removeEventListener('touchmove', move);
-      document.removeEventListener('touchend', up);
-    };
-    document.addEventListener('mousemove', move);
-    document.addEventListener('mouseup', up);
-    document.addEventListener('touchmove', move, { passive: false });
-    document.addEventListener('touchend', up);
-  };
-
-  // Cap the sheet at a PERCENT of the (keyboard-aware) map container, but let it
-  // SHRINK TO ITS CONTENT when that's shorter — `maxHeight` (not `height`) so a
-  // sparse stop doesn't open as a tall sheet with a big band of empty space.
-  // The scroll body (flex-1 min-h-0) only scrolls once content hits the cap.
-  const drawerHeight = `${(heightFrac * 100).toFixed(1)}%`;
-
+function BottomSheet({ open, onClose, children, ariaLabel }) {
+  // FULL-SCREEN mobile view. It slides up to fill the whole content area (under
+  // the persistent app header), rather than a partial bottom sheet. Full screen
+  // means: the search/editor/lists get the entire area, the on-screen keyboard
+  // never fights a half-height sheet (no blanking, you can see what you type),
+  // nothing overlaps the map, and there's no wasted empty band. Inner scrolling
+  // is owned by a child marked [data-sheet-scroll] (flex-1 min-h-0 overflow-y-auto).
   return (
-    <>
-      <div
-        onClick={onClose}
-        className="absolute inset-0 transition-opacity"
-        style={{
-          background: 'rgba(0,0,0,0.30)',
-          opacity: open ? 1 : 0,
-          pointerEvents: open ? 'auto' : 'none',
-          zIndex: 20,
-        }}
-      />
-      <div
-        ref={panelRef}
-        className="absolute left-0 right-0 bottom-0 bg-white rounded-t-2xl shadow-2xl flex flex-col"
-        style={{
-          height: fitPx != null ? `${fitPx}px` : drawerHeight,
-          maxHeight: drawerHeight,
-          transform: open ? 'translateY(0)' : 'translateY(100%)',
-          transition: dragging ? 'none' : 'transform 220ms ease-out',
-          paddingBottom: 'env(safe-area-inset-bottom)',
-          zIndex: 25,
-        }}
-        role="dialog"
-        aria-modal="true"
-        aria-label={ariaLabel}
-      >
-        <div
-          onMouseDown={onPointerDown}
-          onTouchStart={onPointerDown}
-          className="flex-shrink-0 py-2 flex items-center justify-center cursor-grab active:cursor-grabbing select-none"
-          style={{ touchAction: 'none' }}
-        >
-          <div className="w-8 h-1 rounded-full bg-slate-300" />
-        </div>
-        {children}
-      </div>
-    </>
+    <div
+      className="absolute inset-0 z-[25] bg-white flex flex-col"
+      style={{
+        transform: open ? 'translateY(0)' : 'translateY(100%)',
+        transition: 'transform 240ms ease-out',
+        pointerEvents: open ? 'auto' : 'none',
+        paddingBottom: 'env(safe-area-inset-bottom)',
+      }}
+      role="dialog"
+      aria-modal="true"
+      aria-label={ariaLabel}
+    >
+      {children}
+    </div>
   );
 }
 
@@ -3786,6 +3699,12 @@ function MobileStopsTab({
             <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
             <input
               type="search"
+              inputMode="search"
+              enterKeyHint="search"
+              autoComplete="off"
+              autoCorrect="off"
+              autoCapitalize="none"
+              spellCheck={false}
               value={searchInput}
               onChange={(e) => setSearchInput(e.target.value)}
               onKeyDown={(e) => { if (e.key === 'Enter' && aiAvailable && searchInput.trim()) { e.preventDefault(); onAskAi(searchInput); } }}
@@ -5194,7 +5113,8 @@ function MapScreen() {
       }
     };
     return (
-      <div className="flex-1 relative min-w-0 overflow-hidden">
+      <div className="flex-1 flex flex-col min-h-0">
+        <div className="flex-1 relative min-w-0 overflow-hidden">
         <div ref={mapDiv} className="absolute inset-0" />
         {/* Box/lasso multi-select: capture overlay (while a tool is armed) + the
             tool controls (kept above the overlay so you can switch/cancel). */}
@@ -5322,14 +5242,7 @@ function MapScreen() {
           v{APP_VERSION}
         </div>
 
-        {/* FAB (hidden when stop/driver overlay is showing — the overlay's
-            own Close button is the primary way out at that point). */}
-        {!selectedStop && !selectedDriver && !selectedRoute && (
-          <MobileFAB
-            open={mobileDrawerOpen}
-            onToggle={() => setMobileDrawerOpen((v) => !v)}
-          />
-        )}
+        {/* Navigation is the persistent bottom tab bar (below the map area). */}
 
         {/* M6 — AI chat launcher (mobile). Bottom-left so it never overlaps the
             FAB. Hidden while the panel or an overlay is open. */}
@@ -5496,6 +5409,14 @@ function MapScreen() {
             }}
           />
         )}
+        </div>
+        <MobileTabBar
+          active={mobileDrawerOpen ? mobileDrawerTab : (selectedStop || selectedRoute) ? 'stops' : selectedDriver ? 'drivers' : 'map'}
+          onMap={() => { setMobileDrawerOpen(false); setSelectedStop(null); setSelectedRoute(null); setSelectedDriver(null); }}
+          onStops={() => { setSelectedStop(null); setSelectedRoute(null); setSelectedDriver(null); setMobileDrawerTab('stops'); setMobileDrawerOpen(true); }}
+          onFilters={() => { setSelectedStop(null); setSelectedRoute(null); setSelectedDriver(null); setMobileDrawerTab('filters'); setMobileDrawerOpen(true); }}
+          onDrivers={() => { setSelectedStop(null); setSelectedRoute(null); setSelectedDriver(null); setMobileDrawerTab('drivers'); setMobileDrawerOpen(true); }}
+        />
       </div>
     );
   }
