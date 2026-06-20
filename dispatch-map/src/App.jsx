@@ -47,7 +47,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.28.0';
+const APP_VERSION = '0.28.1';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -67,6 +67,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.28.1', 'Fixes the mobile right-edge clipping (status pill, filter rows, day buttons, item quantities, Save button all running off-screen). Root cause: iOS Safari was auto-inflating the small text beyond its set size, widening every row — now pinned with text-size-adjust:100% so the layout renders at the intended size. Also: the items list wraps cleanly (SKU/SEQ stacks under the product, quantity stays put), and focusing a field in the stop sheet now scrolls it into view above the keyboard so you can see what you’re typing. (Verified by rendering the real sheet in Safari’s engine at phone widths.)'],
   ['0.28.0', 'Mobile stop detail rebuilt for full desktop parity. The desktop sidebar and the mobile sheet now render the SAME shared components (one address/window/items/route block + one complete notes editor), so every edit option on desktop is on mobile and the two can never drift again. The mobile stop sheet is now a single scroll with one inline “Edit” that reveals the full editor — priority flag, AM/PM window, per-day receiving hours (with copy-to-weekdays), appointment required + notes, liftgate, equipment restrictions, dock type/notes, and contacts — instead of options split across tabs. Plus a mobile design-system sweep: Filters toggles no longer get pushed off the right edge, the header no longer clips under the notch, the date chip/status pill can’t overlap, long text wraps, modals/chat are keyboard-aware, and the stop sheet opens at a content-appropriate height (less empty space).'],
   ['0.27.37', 'Mobile formatting fixes: (1) the app header no longer tucks under the notch/Dynamic Island — it now grows by the safe-area inset (and viewport-fit=cover is enabled so all safe-area padding actually applies). (2) Focusing the search field no longer clips the bottom sheet under the header — the sheet is now sized to the keyboard-aware visible viewport instead of a fixed vh. (3) The date chip and the status pill now share one row so they can never overlap on a narrow phone. (4) A global guard prevents any stray over-wide element from pushing the FAB / right-aligned PRO badges off the right edge. (5) Long addresses wrap instead of widening the stop drawer.'],
   ['0.27.36', 'Scan-cost: weekend blackout (no scheduled scans Fri 10pm–Sun 8pm ET; manual still works) and a trimmed, env-tunable unplanned high-water buffer (200→150). Backend only — no UI change.'],
@@ -2074,15 +2075,17 @@ function OrderItemsSection({ stop, defaultOpen = false }) {
             const wt = it.weight != null ? `${it.weight}${it.weightUOM ? ' ' + it.weightUOM : ''}` : null;
             const oversize = it.productCategory === 'L';
             return (
-              <li key={i} className="text-[13px] leading-snug flex items-start justify-between gap-2">
-                <span className="min-w-0">
-                  <span className="text-slate-800">{it.product || it.sku || '(item)'}</span>
-                  {it.sku && it.product && <span className="ml-1 text-[10px] font-mono text-slate-400">{it.sku}</span>}
-                  {oversize && <span className="ml-1 px-1 rounded bg-amber-100 text-amber-800 text-[9px] font-semibold align-middle">L</span>}
-                </span>
-                <span className="text-slate-500 whitespace-nowrap text-right text-[12px]">
-                  {[qty, wt].filter(Boolean).join(' · ') || '—'}
-                </span>
+              <li key={i} className="text-[13px] leading-snug">
+                <div className="flex items-baseline justify-between gap-2">
+                  <span className="min-w-0 flex-1 break-words text-slate-800">
+                    {it.product || it.sku || '(item)'}
+                    {oversize && <span className="ml-1 px-1 rounded bg-amber-100 text-amber-800 text-[9px] font-semibold align-middle">L</span>}
+                  </span>
+                  <span className="flex-shrink-0 text-slate-500 whitespace-nowrap text-right text-[12px]">
+                    {[qty, wt].filter(Boolean).join(' · ') || '—'}
+                  </span>
+                </div>
+                {it.sku && it.product && <div className="text-[10px] font-mono text-slate-400 break-all">{it.sku}</div>}
               </li>
             );
           })}
@@ -3989,8 +3992,18 @@ function MobileStopDetailDrawer({ stop, note, onClose, onSave, saving, saveError
         </div>
       </div>
       {/* Single scroll — the SAME shared detail + full editor as desktop, so
-          every option is present and the two can never drift. */}
-      <div className="flex-1 overflow-y-auto overscroll-contain">
+          every option is present and the two can never drift. onFocus scrolls
+          the focused field into view above the on-screen keyboard (the keyboard
+          shrinks the sheet, so a lower field would otherwise be hidden). */}
+      <div
+        className="flex-1 overflow-y-auto overscroll-contain"
+        onFocus={(e) => {
+          const t = e.target;
+          if (t && typeof t.matches === 'function' && t.matches('input,textarea,select')) {
+            setTimeout(() => { try { t.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch { /* ignore */ } }, 280);
+          }
+        }}
+      >
         <div className="px-4 py-2 border-b bg-slate-50 flex items-center gap-2 flex-wrap">
           <StatusBadge kind={classifyStopStatus(stop)} />
         </div>
