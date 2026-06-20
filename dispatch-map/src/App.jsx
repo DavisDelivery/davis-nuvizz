@@ -47,7 +47,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.29.3';
+const APP_VERSION = '0.29.4';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -67,6 +67,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.29.4', 'Fixes the mobile screen "shifting" — the app sliding partly off the left edge with a white gap on the right (seen when opening the past-PRO search). On iOS, focusing a field can scroll the VISIBLE viewport sideways inside the slightly-wider layout viewport; the app shell stayed anchored to the layout edge and slid off-screen. The shell is now pinned to the visible viewport’s actual position, so it always stays squared to the screen no matter what the keyboard/focus does.'],
   ['0.29.3', 'New "Search past PROs / customer history" button on the mobile Stops tab. Tap it to look up a historical PRO or a customer by business name against the saved 20-stop history we keep per customer — no API calls for that. Searching a business name pulls up that customer’s last 20 PROs (with dates); searching a PRO number finds it across saved history. Business-name searches never call NuVizz. Only when you type a PRO that ISN’T in saved history do you get an explicit "Look up PRO in NuVizz (1 API call)" button — a single, deliberate, on-demand call you choose to make; nothing happens automatically.'],
   ['0.29.2', 'Mobile search no longer auto-calls AI: typing in the search box now just filters the loaded stops locally (live), and AI search is a separate, explicit action (the AI button) — pressing Enter dismisses the keyboard instead of firing AI. Also fixed the version (vX.Y.Z) menu being clipped/hidden behind the header.'],
   ['0.29.1', 'Fixes the right edge of the mobile app getting clipped (the last tab, the AI button, etc. cut off). On iOS the layout viewport can be a few pixels wider than the visible screen, and width:100% resolved to that wider value — pushing right-edge controls off the visible area. The app shell is now pinned to the live visible (visualViewport) width, so every control stays on-screen.'],
@@ -955,9 +956,18 @@ function useViewportWidth() {
 // so the Google Maps container always resolves a real, non-zero size.
 function useViewportSize() {
   const read = () => {
-    if (typeof window === 'undefined') return { h: 0, w: 0 };
+    if (typeof window === 'undefined') return { h: 0, w: 0, x: 0, y: 0 };
     const vv = window.visualViewport;
-    return { h: (vv?.height || window.innerHeight || 0), w: (vv?.width || window.innerWidth || 0) };
+    return {
+      h: (vv?.height || window.innerHeight || 0),
+      w: (vv?.width || window.innerWidth || 0),
+      // iOS can scroll the VISUAL viewport sideways inside the (wider) LAYOUT
+      // viewport when an input is focused — e.g. the search field. offsetLeft/Top
+      // is how far the visible area has shifted; we re-apply it so the shell
+      // tracks the visible area instead of sliding off the left edge.
+      x: (vv?.offsetLeft || 0),
+      y: (vv?.offsetTop || 0),
+    };
   };
   const [size, setSize] = useState(read);
   useEffect(() => {
@@ -965,10 +975,13 @@ function useViewportSize() {
     window.addEventListener('resize', onResize);
     window.addEventListener('orientationchange', onResize);
     window.visualViewport?.addEventListener('resize', onResize);
+    // offsetLeft/Top change fires 'scroll' on visualViewport (not 'resize').
+    window.visualViewport?.addEventListener('scroll', onResize);
     return () => {
       window.removeEventListener('resize', onResize);
       window.removeEventListener('orientationchange', onResize);
       window.visualViewport?.removeEventListener('resize', onResize);
+      window.visualViewport?.removeEventListener('scroll', onResize);
     };
   }, []);
   return size;
@@ -8032,7 +8045,7 @@ function RoutingRouteCard({ rv, stopById, usedGoogle, readOnly, onReorder, onMov
 function Shell() {
   const [tab, setTab] = useState('map');
   const viewportWidth = useViewportWidth();
-  const { h: viewportHeight, w: visibleWidth } = useViewportSize();
+  const { h: viewportHeight, w: visibleWidth, x: viewportLeft, y: viewportTop } = useViewportSize();
   const isMobile = viewportWidth < MOBILE_BREAKPOINT;
   const [chipMenuOpen, setChipMenuOpen] = useState(false);
 
@@ -8055,6 +8068,14 @@ function Shell() {
         // Pin to the visible width so iOS's slightly-wider layout viewport can't
         // push right-edge controls off-screen.
         ...(visibleWidth ? { width: visibleWidth, maxWidth: visibleWidth } : {}),
+        // On mobile, anchor the shell to the visible (visual) viewport's actual
+        // position. When iOS focuses an input it can scroll the visual viewport
+        // sideways/up inside the wider layout viewport; without this the shell
+        // stays at the layout-left and slides partly off the visible screen
+        // (the "screen is shifting" / content hanging off the left edge bug).
+        ...(isMobile
+          ? { position: 'fixed', left: viewportLeft || 0, top: viewportTop || 0 }
+          : {}),
       }}
     >
       {isMobile ? (
