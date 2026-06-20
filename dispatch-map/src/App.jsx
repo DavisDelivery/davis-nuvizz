@@ -9,7 +9,7 @@
 //   M4: live Motive driver overlay (toggle)
 //   M5: route polylines — not implemented this session, see HANDOFF.md
 
-import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { Loader as GoogleMapsLoader } from '@googlemaps/js-api-loader';
 import { MarkerClusterer } from '@googlemaps/markerclusterer';
 import {
@@ -47,7 +47,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.28.1';
+const APP_VERSION = '0.28.2';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -67,6 +67,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.28.2', 'Mobile bottom sheets now fit their content — no more giant band of empty white space under a sparse stop. The sheet measures its content and sizes to min(content, ~⅔ screen): short stops open compact, while a long one (the full editor) caps at the screen fraction and scrolls with the Save bar pinned. Also hardened the Route row so the “View full route” button wraps instead of clipping. (Verified in Safari’s engine at multiple phone heights — both the content-fit and the cap-and-scroll cases.)'],
   ['0.28.1', 'Fixes the mobile right-edge clipping (status pill, filter rows, day buttons, item quantities, Save button all running off-screen). Root cause: iOS Safari was auto-inflating the small text beyond its set size, widening every row — now pinned with text-size-adjust:100% so the layout renders at the intended size. Also: the items list wraps cleanly (SKU/SEQ stacks under the product, quantity stays put), and focusing a field in the stop sheet now scrolls it into view above the keyboard so you can see what you’re typing. (Verified by rendering the real sheet in Safari’s engine at phone widths.)'],
   ['0.28.0', 'Mobile stop detail rebuilt for full desktop parity. The desktop sidebar and the mobile sheet now render the SAME shared components (one address/window/items/route block + one complete notes editor), so every edit option on desktop is on mobile and the two can never drift again. The mobile stop sheet is now a single scroll with one inline “Edit” that reveals the full editor — priority flag, AM/PM window, per-day receiving hours (with copy-to-weekdays), appointment required + notes, liftgate, equipment restrictions, dock type/notes, and contacts — instead of options split across tabs. Plus a mobile design-system sweep: Filters toggles no longer get pushed off the right edge, the header no longer clips under the notch, the date chip/status pill can’t overlap, long text wraps, modals/chat are keyboard-aware, and the stop sheet opens at a content-appropriate height (less empty space).'],
   ['0.27.37', 'Mobile formatting fixes: (1) the app header no longer tucks under the notch/Dynamic Island — it now grows by the safe-area inset (and viewport-fit=cover is enabled so all safe-area padding actually applies). (2) Focusing the search field no longer clips the bottom sheet under the header — the sheet is now sized to the keyboard-aware visible viewport instead of a fixed vh. (3) The date chip and the status pill now share one row so they can never overlap on a narrow phone. (4) A global guard prevents any stray over-wide element from pushing the FAB / right-aligned PRO badges off the right edge. (5) Long addresses wrap instead of widening the stop drawer.'],
@@ -2695,8 +2696,8 @@ function StopDataSections({ stop, note, onOpenRoute, onMoveLocation, onEditAddre
       <div className="pt-2 mt-2 border-t">
         <div className="text-xs uppercase font-semibold text-slate-500 mb-1">Route</div>
         {stop.loadNbr ? (
-          <div className="flex items-center justify-between gap-2">
-            <div className="min-w-0 text-sm">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="min-w-0 flex-1 text-sm">
               <div className="font-semibold text-slate-900 truncate">{stop.routeName || stop.loadNbr}</div>
               {stop.driverName && <div className="text-xs text-slate-500 truncate">{stop.driverName}</div>}
               {stop.routeName && <div className="text-[10px] text-slate-400 font-mono">{stop.loadNbr}</div>}
@@ -3597,11 +3598,52 @@ function BottomSheet({ open, onClose, heights = SHEET_HEIGHTS, children, ariaLab
   const [heightFrac, setHeightFrac] = useState(heights.default);
   const [dragging, setDragging] = useState(false);
   const dragRef = useRef({ startY: 0, startFrac: heights.default });
+  // Definite sheet height = min(natural content, fraction-of-container). Measured
+  // in JS because CSS `max-height`/`fit-content` on this absolute flex column does
+  // NOT reliably cap-and-scroll in iOS Safari: a fixed `height` over-pads a sparse
+  // stop (big empty band) while `max-height` lets a tall editor overflow the top.
+  // min(content, cap) gives a definite height so the flex-1 scroll body fits short
+  // content (no empty space) yet caps + scrolls tall content (Save bar pinned).
+  const panelRef = useRef(null);
+  const [fitPx, setFitPx] = useState(null);
 
   // Reset to default each time the sheet opens.
   useEffect(() => {
     if (open) setHeightFrac(heights.default);
   }, [open, heights.default]);
+
+  // Measure natural content vs the fraction cap; re-measure on content/keyboard
+  // changes. Observes the content children (not the panel) so setting the panel
+  // height can't feed back into the measurement.
+  useLayoutEffect(() => {
+    if (!open) { setFitPx(null); return; }
+    const panel = panelRef.current;
+    if (!panel) return;
+    const scroller = () => panel.querySelector('[data-sheet-scroll]');
+    const compute = () => {
+      const sb = scroller();
+      let natural = 0;
+      for (const child of panel.children) {
+        if (child === sb && sb) {
+          // True content height of the scroll area — sum its children, NOT
+          // sb.scrollHeight (which returns the flex-stretched height ≈ the cap).
+          for (const k of sb.children) natural += k.offsetHeight;
+        } else {
+          natural += child.offsetHeight;
+        }
+      }
+      const cont = panel.parentElement;
+      const capPx = (cont ? cont.clientHeight : (window.visualViewport?.height || window.innerHeight)) * heightFrac;
+      setFitPx(Math.max(80, Math.min(natural, capPx)));
+    };
+    compute();
+    const ro = new ResizeObserver(compute);
+    const sb = scroller();
+    if (sb) Array.from(sb.children).forEach((c) => ro.observe(c));
+    const onVV = () => compute();
+    window.visualViewport?.addEventListener('resize', onVV);
+    return () => { ro.disconnect(); window.visualViewport?.removeEventListener('resize', onVV); };
+  }, [open, heightFrac, children]);
 
   const onPointerDown = (e) => {
     e.preventDefault();
@@ -3649,10 +3691,10 @@ function BottomSheet({ open, onClose, heights = SHEET_HEIGHTS, children, ariaLab
     document.addEventListener('touchend', up);
   };
 
-  // Size as a PERCENT of the (relatively-positioned) map container, NOT `vh`.
-  // The map container is pinned to the live visualViewport height, so a % height
-  // shrinks with the on-screen keyboard and the sheet's top can never slide up
-  // under the app bar and get clipped (the old `vh` was keyboard-blind).
+  // Cap the sheet at a PERCENT of the (keyboard-aware) map container, but let it
+  // SHRINK TO ITS CONTENT when that's shorter — `maxHeight` (not `height`) so a
+  // sparse stop doesn't open as a tall sheet with a big band of empty space.
+  // The scroll body (flex-1 min-h-0) only scrolls once content hits the cap.
   const drawerHeight = `${(heightFrac * 100).toFixed(1)}%`;
 
   return (
@@ -3668,11 +3710,13 @@ function BottomSheet({ open, onClose, heights = SHEET_HEIGHTS, children, ariaLab
         }}
       />
       <div
+        ref={panelRef}
         className="absolute left-0 right-0 bottom-0 bg-white rounded-t-2xl shadow-2xl flex flex-col"
         style={{
-          height: drawerHeight,
+          height: fitPx != null ? `${fitPx}px` : drawerHeight,
+          maxHeight: drawerHeight,
           transform: open ? 'translateY(0)' : 'translateY(100%)',
-          transition: dragging ? 'none' : 'transform 220ms ease-out, height 180ms ease-out',
+          transition: dragging ? 'none' : 'transform 220ms ease-out',
           paddingBottom: 'env(safe-area-inset-bottom)',
           zIndex: 25,
         }}
@@ -3720,7 +3764,7 @@ function MobileDrawer({ open, onClose, activeTab, setActiveTab, children }) {
           );
         })}
       </div>
-      <div className="flex-1 overflow-y-auto overscroll-contain">
+      <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain" data-sheet-scroll>
         {children}
       </div>
     </BottomSheet>
@@ -3996,7 +4040,7 @@ function MobileStopDetailDrawer({ stop, note, onClose, onSave, saving, saveError
           the focused field into view above the on-screen keyboard (the keyboard
           shrinks the sheet, so a lower field would otherwise be hidden). */}
       <div
-        className="flex-1 overflow-y-auto overscroll-contain"
+        className="flex-1 min-h-0 overflow-y-auto overscroll-contain" data-sheet-scroll
         onFocus={(e) => {
           const t = e.target;
           if (t && typeof t.matches === 'function' && t.matches('input,textarea,select')) {
@@ -4180,7 +4224,7 @@ function MobileRouteDetailDrawer({ loadNbr, stops, onClose, onPickStop }) {
         </div>
         <button onClick={onClose} className="p-2 -mr-2" aria-label="Close route"><X size={20} /></button>
       </div>
-      <div className="flex-1 overflow-y-auto overscroll-contain">
+      <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain" data-sheet-scroll>
         <RouteDetailBody stops={stops} onPickStop={onPickStop} />
       </div>
     </BottomSheet>
