@@ -21,7 +21,7 @@
 
 import fixture from '../../test/fixtures/nuvizz-today-stops.json' with { type: 'json' };
 import { scanDate, todayUTC, normalizeStop } from './lib/nuvizz-scan.mts';
-import { isFirestoreEnabled, readStops, readCallStats, readCircuit } from './lib/firestore.mts';
+import { isFirestoreEnabled, readStops, readCallStats, readCircuit, etDayString } from './lib/firestore.mts';
 import { breakerMode } from './lib/nuvizz-request.mts';
 
 const TENANT = 'davis';
@@ -109,13 +109,14 @@ export default async (req: Request): Promise<Response> => {
 
     const unplannedCount = stops.filter((s) => s.isUnplanned).length;
 
-    // Fix 5 — surface today's NuVizz call volume. Keyed by the UTC day the calls
-    // happen (todayUTC), independent of the viewed delivery date. Best-effort:
-    // never fail the fast read path over ops.
+    // Fix 5 — surface today's NuVizz call volume. Keyed by the ET (local) day the
+    // calls happen, so "calls today" follows a normal midnight-to-midnight ET day
+    // (matches the writer in nuvizz-request). Best-effort: never fail the fast
+    // read path over ops.
     let ops: any = null;
     if (isFirestoreEnabled()) {
       try {
-        const opsDate = todayUTC();
+        const opsDate = etDayString();
         const [stats, circuit] = await Promise.all([readCallStats(opsDate), readCircuit()]);
         ops = {
           dayCount: stats.count,
