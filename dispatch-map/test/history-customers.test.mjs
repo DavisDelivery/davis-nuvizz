@@ -9,7 +9,35 @@ import assert from 'node:assert/strict';
 
 import {
   mergeProEntries, buildRollupsFromStops, MAX_PROS,
+  nameSearchTokens, queryWords, matchesAllWords,
 } from '../netlify/functions/lib/history-customers.mts';
+
+test('nameSearchTokens: prefix-grams of every word find a word anywhere in the name', () => {
+  const t = nameSearchTokens('SOLID LOCKSMITH');
+  assert.ok(t.includes('so') && t.includes('solid'));
+  assert.ok(t.includes('lo') && t.includes('lock') && t.includes('locksmith'));
+  assert.ok(!t.includes('l')); // single chars excluded
+});
+
+test('nameSearchTokens: strips punctuation, lowercases', () => {
+  const t = nameSearchTokens("A&M Supply, Inc.");
+  assert.ok(t.includes('supply'));
+  assert.ok(t.includes('su'));
+});
+
+test('queryWords: keeps words length >= 2', () => {
+  assert.deepEqual(queryWords('  Solid  A lock '), ['solid', 'lock']);
+  assert.deepEqual(queryWords('locksmith'), ['locksmith']);
+});
+
+test('matchesAllWords: ANDs every query word against stored tokens', () => {
+  const tokens = nameSearchTokens('SOLID LOCKSMITH');
+  assert.equal(matchesAllWords(tokens, ['locksmith']), true);   // mid-name word
+  assert.equal(matchesAllWords(tokens, ['lock']), true);        // partial mid-name word
+  assert.equal(matchesAllWords(tokens, ['solid', 'lock']), true); // both words
+  assert.equal(matchesAllWords(tokens, ['solid', 'steel']), false); // steel not present
+  assert.equal(matchesAllWords(tokens, []), false);
+});
 
 test('mergeProEntries: de-dupes by pro keeping the latest date, newest first', () => {
   const out = mergeProEntries(

@@ -22,6 +22,46 @@ import { getDoc, setDoc, runQuery } from './firestore.mts';
 
 export const CUSTOMERS_COLLECTION = 'history_customers';
 export const MAX_PROS = 20;
+const MAX_TOKEN_LEN = 15;   // cap each word's prefix length
+const MAX_TOKENS = 80;      // cap tokens per customer (bounds doc size)
+
+// PURE: word-prefix search tokens for a customer name. Firestore has no substring
+// search, so we store every prefix (length ≥ 2) of every word in the name; an
+// ARRAY_CONTAINS lookup on any of those tokens then matches a word ANYWHERE in
+// the name — e.g. "locksmith" or "lock" both find "SOLID LOCKSMITH". Exported for
+// tests.
+export function nameSearchTokens(name: string): string[] {
+  const words = String(name || '')
+    .toLowerCase()
+    .replace(/[^\w\s]/g, ' ')
+    .split(/\s+/)
+    .filter((w) => w.length >= 2);
+  const set = new Set<string>();
+  for (const w of words) {
+    const cap = Math.min(w.length, MAX_TOKEN_LEN);
+    for (let n = 2; n <= cap; n++) set.add(w.slice(0, n));
+    if (set.size >= MAX_TOKENS) break;
+  }
+  return [...set].slice(0, MAX_TOKENS);
+}
+
+// PURE: split a search query into matchable words (length ≥ 2). Exported for tests.
+export function queryWords(q: string): string[] {
+  return String(q || '')
+    .toLowerCase()
+    .replace(/[^\w\s]/g, ' ')
+    .split(/\s+/)
+    .filter((w) => w.length >= 2);
+}
+
+// PURE: does a customer (by its stored name_tokens) match EVERY query word? Used
+// to AND multi-word queries after the single ARRAY_CONTAINS anchor lookup.
+// Exported for tests.
+export function matchesAllWords(nameTokens: string[], words: string[]): boolean {
+  if (!words.length) return false;
+  const set = new Set(nameTokens || []);
+  return words.every((w) => set.has(w));
+}
 
 export function rollupId(tenant: string, matchKey: string): string {
   return `${tenant}__${matchKey}`;
@@ -107,6 +147,7 @@ export async function updateCustomerRollupsForDay(
         tenant,
         name,
         name_lower: String(name).toLowerCase().trim(),
+        name_tokens: nameSearchTokens(name),
         addr1: (useDayIdentity ? day.addr1 : existing.addr1) ?? existing?.addr1 ?? null,
         city: (useDayIdentity ? day.city : existing.city) ?? existing?.city ?? null,
         state: (useDayIdentity ? day.state : existing.state) ?? existing?.state ?? null,
@@ -137,9 +178,29 @@ function shapeCustomer(doc: any): any {
   };
 }
 
-// Prefix search on name_lower (matches names that START with the query). Single
-// field → automatic index, no composite index needed.
+// Word-anywhere search: matches a query word against ANY word in the customer
+// name (via the stored name_tokens prefix-grams), so "locksmith" finds "SOLID
+// LOCKSMITH". Multi-word queries are AND-ed. Single ARRAY_CONTAINS on the longest
+// word (automatic index, no composite needed) + an in-memory AND post-filter.
+// A sub-2-char query falls back to a name_lower prefix range.
 export async function queryCustomersByName(qLower: string, limit = 25): Promise<any[]> {
+  const words = queryWords(qLower);
+  if (!words.length) return queryCustomersByNamePrefix(qLower, limit);
+  const anchor = words.reduce((a, b) => (b.length > a.length ? b : a), words[0]);
+  const rows = await runQuery({
+    from: [{ collectionId: CUSTOMERS_COLLECTION }],
+    where: { fieldFilter: { field: { fieldPath: 'name_tokens' }, op: 'ARRAY_CONTAINS', value: { stringValue: anchor } } },
+    limit: Math.max(limit * 4, 60),
+  });
+  return rows
+    .filter((r) => matchesAllWords(r.name_tokens || [], words))
+    .slice(0, limit)
+    .map(shapeCustomer);
+}
+
+// Fallback for ultra-short (1-char) queries: name_lower prefix range. Single
+// field → automatic index, no composite index needed.
+async function queryCustomersByNamePrefix(qLower: string, limit = 25): Promise<any[]> {
   const q = String(qLower || '').toLowerCase().trim();
   if (!q) return [];
   const end = q + '';

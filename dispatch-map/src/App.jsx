@@ -47,7 +47,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.29.5';
+const APP_VERSION = '0.29.6';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -67,6 +67,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.29.6', 'Historical customer search now matches a word ANYWHERE in the name, not just the start — searching “locksmith” now finds “SOLID LOCKSMITH” (before, only “solid…” worked). Multi-word searches must match all words. (Built on per-customer name word-tokens; still reads only our saved history, no NuVizz call.)'],
   ['0.29.5', 'Historical customer/PRO search now actually finds everyone. It used to read only a sparse local cache (built just for customers with special receiving rules, off the live board — empty on weekends), so a customer like a locksmith we delivered Friday wouldn’t show up. It now searches our own saved delivery-history warehouse (every delivery, every day → each customer’s last 20 PROs), so business-name and PRO searches find any customer we’ve delivered to — and still WITHOUT calling NuVizz (it reads our own data; only an unknown PRO triggers the explicit one-call lookup).'],
   ['0.29.4', 'Fixes the mobile screen "shifting" — the app sliding partly off the left edge with a white gap on the right (seen when opening the past-PRO search). On iOS, focusing a field can scroll the VISIBLE viewport sideways inside the slightly-wider layout viewport; the app shell stayed anchored to the layout edge and slid off-screen. The shell is now pinned to the visible viewport’s actual position, so it always stays squared to the screen no matter what the keyboard/focus does.'],
   ['0.29.3', 'New "Search past PROs / customer history" button on the mobile Stops tab. Tap it to look up a historical PRO or a customer by business name against the saved 20-stop history we keep per customer — no API calls for that. Searching a business name pulls up that customer’s last 20 PROs (with dates); searching a PRO number finds it across saved history. Business-name searches never call NuVizz. Only when you type a PRO that ISN’T in saved history do you get an explicit "Look up PRO in NuVizz (1 API call)" button — a single, deliberate, on-demand call you choose to make; nothing happens automatically.'],
