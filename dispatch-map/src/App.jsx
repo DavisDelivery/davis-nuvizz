@@ -16,7 +16,7 @@ import {
   MapPin, RefreshCw, X, Filter, Truck, Save, Plus, Trash2,
   Activity, ChevronDown, ChevronUp, Eye, EyeOff,
   Search, Tag, Tags, ArrowLeft, Gauge, Clock, MapPinned,
-  Info, Settings, LayoutList, Sparkles, MessageSquare, Square, Lasso, AlertTriangle,
+  Info, Settings, LayoutList, Sparkles, MessageSquare, Square, Lasso, AlertTriangle, Ban,
 } from 'lucide-react';
 import {
   collection, doc, getDoc, onSnapshot, setDoc, serverTimestamp,
@@ -47,7 +47,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.29.6';
+const APP_VERSION = '0.29.7';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -67,6 +67,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.29.7', 'Two additions: (1) Tap a customer in the historical search to open their full detail + notes editor. (2) New "DNS — do not send" control: a red/white DNS badge that shows everywhere the customer appears (map pin = red pin with ✕, stop list, stop detail, and historical search), plus a do-not-send toggle and a multi-select of which drivers are not allowed to that customer (from the app driver list). Saved per customer alongside the other notes.'],
   ['0.29.6', 'Historical customer search now matches a word ANYWHERE in the name, not just the start — searching “locksmith” now finds “SOLID LOCKSMITH” (before, only “solid…” worked). Multi-word searches must match all words. (Built on per-customer name word-tokens; still reads only our saved history, no NuVizz call.)'],
   ['0.29.5', 'Historical customer/PRO search now actually finds everyone. It used to read only a sparse local cache (built just for customers with special receiving rules, off the live board — empty on weekends), so a customer like a locksmith we delivered Friday wouldn’t show up. It now searches our own saved delivery-history warehouse (every delivery, every day → each customer’s last 20 PROs), so business-name and PRO searches find any customer we’ve delivered to — and still WITHOUT calling NuVizz (it reads our own data; only an unknown PRO triggers the explicit one-call lookup).'],
   ['0.29.4', 'Fixes the mobile screen "shifting" — the app sliding partly off the left edge with a white gap on the right (seen when opening the past-PRO search). On iOS, focusing a field can scroll the VISIBLE viewport sideways inside the slightly-wider layout viewport; the app shell stayed anchored to the layout edge and slid off-screen. The shell is now pinned to the visible viewport’s actual position, so it always stays squared to the screen no matter what the keyboard/focus does.'],
@@ -1389,6 +1390,9 @@ function pinSvgStatus(color, opts = {}) {
     center = '<text x="14" y="17.5" font-family="system-ui, sans-serif" font-size="12" font-weight="800" fill="white" text-anchor="middle">!</text>';
   } else if (glyph === 'question') {
     center = '<text x="14" y="17.7" font-family="system-ui, sans-serif" font-size="13" font-weight="800" fill="white" text-anchor="middle">?</text>';
+  } else if (glyph === 'dns') {
+    // DNS — white "✕" in the pin head (do not send).
+    center = '<path d="M10.6 9.6l6.8 6.8M17.4 9.6l-6.8 6.8" stroke="white" stroke-width="2.4" stroke-linecap="round"/>';
   } else if (glyph === 'arrow') {
     center = '<path d="M9.5 13h6m-2.5-2.6l2.8 2.6-2.8 2.6" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>';
   } else if (tag === 'AM' || tag === 'PM') {
@@ -1616,6 +1620,8 @@ function emptyNote(stop) {
     delivery_window: null,   // 'AM' | 'PM' | null — shows an AM/PM tag on the map pin
     photo_urls: [],
     pro_history: [],
+    do_not_send: false,      // DNS — do-not-send flag (red badge everywhere)
+    dns_drivers: [],         // names of drivers barred from this customer
   };
 }
 
@@ -2667,6 +2673,29 @@ function ProsSection({ stop }) {
 
 // Read-only data: address (+ fix banner + map links + edit/move), NuVizz
 // instructions, delivery window, items, and route. Used by desktop + mobile.
+// DNS — "do not send" badge. Red/white pill shown anywhere a DNS customer
+// surfaces (map callout context, stop cards, detail, historical search). When
+// specific drivers are barred, they're listed in the tooltip + an optional
+// inline suffix.
+const DNS_COLOR = '#dc2626';
+function DnsBadge({ note, showDrivers = false, className = '' }) {
+  if (!note?.do_not_send) return null;
+  const drivers = Array.isArray(note.dns_drivers) ? note.dns_drivers.filter(Boolean) : [];
+  const title = drivers.length ? `Do not send — not allowed: ${drivers.join(', ')}` : 'Do not send';
+  return (
+    <span
+      className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-bold text-white flex-shrink-0 ${className}`}
+      style={{ background: DNS_COLOR }}
+      title={title}
+    >
+      <Ban size={11} strokeWidth={2.5} /> DNS
+      {showDrivers && drivers.length > 0 && (
+        <span className="font-semibold normal-case">· {drivers.join(', ')}</span>
+      )}
+    </span>
+  );
+}
+
 function StopDataSections({ stop, note, onOpenRoute, onMoveLocation, onEditAddress, onAutoFixAddress }) {
   return (
     <div className="px-4 py-3 border-b text-sm space-y-1">
@@ -2746,9 +2775,16 @@ function StopDataSections({ stop, note, onOpenRoute, onMoveLocation, onEditAddre
 // (desktop) tightens controls; otherwise controls use 44px touch targets.
 // `draft` is the working note; `setDraft` takes a PARTIAL patch and merges it
 // (the parent tracks dirty state + persists).
-function StopNotesEditor({ draft, setDraft, compact = false }) {
+function StopNotesEditor({ draft, setDraft, compact = false, drivers = [] }) {
   const D = draft;
   const setD = (patch) => setDraft(patch);
+  // DNS — barred-driver list. Names sourced from the app's known drivers.
+  const driverNames = [...new Set((drivers || []).map((d) => d?.driverName).filter(Boolean))].sort();
+  const barred = Array.isArray(D.dns_drivers) ? D.dns_drivers : [];
+  const toggleBarredDriver = (name) => {
+    const next = barred.includes(name) ? barred.filter((n) => n !== name) : [...barred, name];
+    setD({ dns_drivers: next });
+  };
   const [copyToast, setCopyToast] = useState(false);
   const setHours = (day, partial) => {
     const existing = D.receiving_hours?.[day] || { open: '', close: '' };
@@ -2806,6 +2842,43 @@ function StopNotesEditor({ draft, setDraft, compact = false }) {
 
   return (
     <div className="space-y-4 text-sm">
+      {/* DNS — do not send + which drivers are barred */}
+      <div className="rounded-lg border p-2" style={D.do_not_send ? { borderColor: DNS_COLOR, background: '#fef2f2' } : { borderColor: '#e2e8f0' }}>
+        <button
+          onClick={() => setD({ do_not_send: !D.do_not_send })}
+          style={{ ...tap, ...(D.do_not_send ? { background: DNS_COLOR, borderColor: DNS_COLOR, color: '#fff' } : {}) }}
+          className={`w-full flex items-center justify-between gap-2 ${pad} rounded border text-xs font-semibold ${D.do_not_send ? '' : 'border-slate-300 bg-white text-slate-700'}`}
+        >
+          <span className="inline-flex items-center gap-1.5">
+            <Ban size={14} strokeWidth={2.5} style={{ color: D.do_not_send ? '#fff' : DNS_COLOR }} />
+            Do not send (DNS)
+          </span>
+          <span className={`text-[10px] px-1.5 py-0.5 rounded ${D.do_not_send ? 'bg-white/25' : 'bg-slate-100 text-slate-500'}`}>{D.do_not_send ? 'ON' : 'OFF'}</span>
+        </button>
+        {D.do_not_send && (
+          <div className="mt-2">
+            <div className="text-[11px] font-semibold text-slate-600 mb-1">Drivers not allowed (tap to bar)</div>
+            {driverNames.length === 0 ? (
+              <div className="text-[11px] text-slate-400 italic">No drivers loaded yet. Open the Drivers tab to load them, or leave blank for a general do-not-send.</div>
+            ) : (
+              <div className="flex flex-wrap gap-1.5">
+                {driverNames.map((name) => {
+                  const on = barred.includes(name);
+                  return (
+                    <button key={name} onClick={() => toggleBarredDriver(name)} style={tap}
+                      className={`${pad} rounded border text-xs ${on ? 'border-red-600 bg-red-600 text-white' : 'border-slate-300 bg-white text-slate-700'}`}>
+                      {on ? '✕ ' : ''}{name}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+            {barred.length > 0 && (
+              <div className="mt-1 text-[10px] text-slate-500">Barred: {barred.join(', ')}</div>
+            )}
+          </div>
+        )}
+      </div>
       <div>
         <div className="text-[11px] font-semibold text-slate-600 mb-1">Priority flag</div>
         <div className="flex flex-wrap gap-1.5">
@@ -2957,7 +3030,7 @@ function StopNotesEditor({ draft, setDraft, compact = false }) {
 
 // Customer-notes section wrapper: the Edit toggle, the read-only view, the full
 // editor, and recent-PRO history. Shared by desktop + mobile.
-function StopNotesSection({ note, editing, setEditing, draft, setDraft, compact = false }) {
+function StopNotesSection({ note, editing, setEditing, draft, setDraft, compact = false, drivers = [] }) {
   return (
     <div className="px-4 py-3 space-y-3">
       <div className="flex items-center justify-between">
@@ -2970,7 +3043,7 @@ function StopNotesSection({ note, editing, setEditing, draft, setDraft, compact 
       </div>
       {!editing && !note && <div className="text-xs text-slate-500 italic">No notes yet. {compact ? 'Click' : 'Tap'} Edit to add.</div>}
       {!editing && note && <ReadOnlyNoteView note={note} />}
-      {editing && <StopNotesEditor draft={draft} setDraft={setDraft} compact={compact} />}
+      {editing && <StopNotesEditor draft={draft} setDraft={setDraft} compact={compact} drivers={drivers} />}
       {note?.pro_history?.length > 0 && (
         <div className="pt-2 border-t">
           <div className="text-xs font-semibold text-slate-600 mb-1">Recent PROs at this customer</div>
@@ -2985,7 +3058,7 @@ function StopNotesSection({ note, editing, setEditing, draft, setDraft, compact 
   );
 }
 
-function StopSidebar({ stop, note, onClose, onSave, saving, saveError, onOpenRoute, onMoveLocation, onEditAddress, onAutoFixAddress, mobile = false }) {
+function StopSidebar({ stop, note, onClose, onSave, saving, saveError, onOpenRoute, onMoveLocation, onEditAddress, onAutoFixAddress, drivers = [], mobile = false }) {
   const [draft, setDraft] = useState(() => note || emptyNote(stop));
   const [editing, setEditing] = useState(!note);
   // True once the dispatcher edits the draft; cleared on stop-change and save.
@@ -3040,6 +3113,7 @@ function StopSidebar({ stop, note, onClose, onSave, saving, saveError, onOpenRou
       {/* M5.1 — execution-status badge bar */}
       <div className="px-4 py-2 border-b bg-slate-50 flex items-center gap-2 flex-wrap">
         <StatusBadge kind={sidebarStatusKind} />
+        <DnsBadge note={note} showDrivers />
         {sidebarDeliveredAt && <span className="text-[11px] text-slate-500">Delivered {sidebarDeliveredAt}</span>}
         {sidebarArrivedAt && <span className="text-[11px] text-slate-500">Arrived {sidebarArrivedAt}</span>}
       </div>
@@ -3047,7 +3121,7 @@ function StopSidebar({ stop, note, onClose, onSave, saving, saveError, onOpenRou
       <div className="overflow-y-auto flex-1">
         <StopDataSections stop={stop} note={note} onOpenRoute={onOpenRoute} onMoveLocation={onMoveLocation} onEditAddress={onEditAddress} onAutoFixAddress={onAutoFixAddress} />
         <ProsSection stop={stop} />
-        <StopNotesSection note={note} editing={editing} setEditing={setEditing} draft={D} setDraft={setD} compact />
+        <StopNotesSection note={note} editing={editing} setEditing={setEditing} draft={D} setDraft={setD} compact drivers={drivers} />
       </div>
 
       {editing && (
@@ -3339,6 +3413,10 @@ function SnapshotSkeleton() {
 
 function ReadOnlyNoteView({ note }) {
   const items = [];
+  if (note.do_not_send) {
+    const barred = Array.isArray(note.dns_drivers) ? note.dns_drivers.filter(Boolean) : [];
+    items.push({ k: 'DNS', v: <span className="font-semibold" style={{ color: DNS_COLOR }}>Do not send{barred.length ? ` — not: ${barred.join(', ')}` : ''}</span> });
+  }
   if (note.priority_flag) items.push({ k: 'Flag', v: <span style={{ color: FLAG_COLORS[note.priority_flag] }} className="font-semibold capitalize">{note.priority_flag}</span> });
   if (note.delivery_window === 'AM' || note.delivery_window === 'PM') items.push({ k: 'Window', v: <span className="font-semibold">{note.delivery_window}</span> });
   if (note.appointment_required) {
@@ -3712,7 +3790,7 @@ function MobileDrawer({ open, onClose, activeTab, setActiveTab, children }) {
 // zero API calls — by customer name (shows that customer's last 20 PROs) or by
 // PRO. ONLY when a typed PRO isn't in saved history does it offer a deliberate
 // NuVizz lookup (one call). Business-name searches never call the API.
-function PastProSearch({ notes, initialQuery, onClose }) {
+function PastProSearch({ notes, initialQuery, onPickCustomer, onClose }) {
   const [q, setQ] = useState(initialQuery || '');
   const [api, setApi] = useState(null); // NuVizz single-PRO lookup: null | {loading} | {stop} | {error}
   const [remote, setRemote] = useState({ loading: false, customers: [], error: null }); // our delivery-history warehouse
@@ -3725,7 +3803,16 @@ function PastProSearch({ notes, initialQuery, onClose }) {
   const all = [...notes.values()];
   const localCustomers = !query ? [] : all
     .filter((n) => (n.raw_name || '').toLowerCase().includes(lc) && Array.isArray(n.pro_history) && n.pro_history.length)
-    .map((n) => ({ key: (n.raw_name || n.id || '').toLowerCase(), name: n.raw_name || n.id, history: [...n.pro_history].reverse().slice(0, 20) }));
+    .map((n) => ({
+      key: (n.raw_name || n.id || '').toLowerCase(),
+      matchKey: n.match_key || n.id || null,
+      name: n.raw_name || n.id,
+      addr1: n.address_override?.addr1 || null,
+      city: n.address_override?.city || null,
+      state: n.address_override?.state || null,
+      zip: n.address_override?.zip || null,
+      history: [...n.pro_history].reverse().slice(0, 20),
+    }));
   const proMatches = !query ? [] : all.flatMap((n) =>
     (Array.isArray(n.pro_history) ? n.pro_history : [])
       .filter((h) => String(h.pro).toLowerCase().includes(lc))
@@ -3757,18 +3844,41 @@ function PastProSearch({ notes, initialQuery, onClose }) {
   // last-20, so it wins on duplicates.
   const customers = (() => {
     const map = new Map();
-    for (const c of localCustomers) map.set(c.key, c);
+    for (const c of localCustomers) map.set(c.key, { ...c, addr: [c.addr1, c.city, c.state].filter(Boolean).join(', ') });
     for (const c of remote.customers) {
       const key = (c.name || c.matchKey || '').toLowerCase();
       if (!key) continue;
       map.set(key, {
-        key, name: c.name,
+        key, matchKey: c.matchKey || null, name: c.name,
+        addr1: c.addr1 || null, city: c.city || null, state: c.state || null, zip: c.zip || null,
         history: Array.isArray(c.pros) ? c.pros : [],
         addr: [c.addr1, c.city, c.state].filter(Boolean).join(', '),
       });
     }
     return [...map.values()].slice(0, 40);
   })();
+
+  // Open a historical customer in the full stop detail (synthetic stop — no live
+  // route/items, but the customer notes editor incl. DNS works and reads/writes
+  // customer_notes by matchKey).
+  const openCustomer = (m) => {
+    if (!onPickCustomer) return;
+    const matchKey = m.matchKey || normalizeMatchKey(m.name || '', m.addr1 || '', m.city || '', m.zip || '');
+    onPickCustomer({
+      stopNbr: 'hist:' + matchKey,
+      matchKey,
+      pro: null, pros: [], proCount: 0,
+      businessName: m.name || '',
+      addr1: m.addr1 || null, addr2: null,
+      city: m.city || null, state: m.state || null, zip: m.zip || null,
+      lat: null, lng: null,
+      loadNbr: null, routeName: null, driverName: null,
+      scheduledFrom: null, scheduledTo: null,
+      status: null, isPlanned: false, isUnplanned: true,
+      signalSources: {}, stopDetails: [], raw: {},
+      __historical: true,
+    });
+  };
 
   const noResults = query && !remote.loading && customers.length === 0 && proMatches.length === 0;
 
@@ -3806,17 +3916,28 @@ function PastProSearch({ notes, initialQuery, onClose }) {
         {customers.length > 0 && (
           <div className="px-3 pb-2">
             <div className="text-[10px] uppercase font-semibold text-slate-500 mb-1">Customers ({customers.length})</div>
-            {customers.map((m, i) => (
-              <div key={m.key || i} className="mb-2 border border-slate-200 rounded-lg p-2">
-                <div className="text-sm font-semibold text-slate-900 break-words">{m.name}</div>
-                {m.addr && <div className="text-[11px] text-slate-500 break-words">{m.addr}</div>}
-                <div className="mt-1 flex flex-wrap gap-1">
-                  {m.history.map((h, j) => (
-                    <span key={j} className="text-[10px] font-mono bg-slate-100 border border-slate-200 rounded px-1.5 py-0.5">{h.pro} · {h.date}</span>
-                  ))}
-                </div>
-              </div>
-            ))}
+            {customers.map((m, i) => {
+              const cNote = m.matchKey ? notes.get(m.matchKey) : null;
+              return (
+                <button
+                  key={m.key || i}
+                  onClick={() => openCustomer(m)}
+                  className="w-full text-left mb-2 border border-slate-200 rounded-lg p-2 active:bg-slate-50"
+                >
+                  <div className="flex items-center gap-2">
+                    <div className="text-sm font-semibold text-slate-900 break-words flex-1 min-w-0">{m.name}</div>
+                    <DnsBadge note={cNote} />
+                    <ChevronDown size={16} className="-rotate-90 text-slate-400 flex-shrink-0" />
+                  </div>
+                  {m.addr && <div className="text-[11px] text-slate-500 break-words">{m.addr}</div>}
+                  <div className="mt-1 flex flex-wrap gap-1">
+                    {m.history.map((h, j) => (
+                      <span key={j} className="text-[10px] font-mono bg-slate-100 border border-slate-200 rounded px-1.5 py-0.5">{h.pro} · {h.date}</span>
+                    ))}
+                  </div>
+                </button>
+              );
+            })}
           </div>
         )}
 
@@ -3873,12 +3994,12 @@ function PastProSearch({ notes, initialQuery, onClose }) {
 }
 
 function MobileStopsTab({
-  stops, notes, searchInput, setSearchInput,
+  stops, notes, drivers, searchInput, setSearchInput,
   resultCount, totalCount, onPickStop,
   aiAvailable, onAskAi, aiBusy, aiSummary, aiError, onClearAi,
 }) {
   const [histOpen, setHistOpen] = useState(false);
-  if (histOpen) return <PastProSearch notes={notes} initialQuery={searchInput} onClose={() => setHistOpen(false)} />;
+  if (histOpen) return <PastProSearch notes={notes} initialQuery={searchInput} onPickCustomer={onPickStop} onClose={() => setHistOpen(false)} />;
   return (
     <div className="flex flex-col">
       <div className="p-3 border-b border-slate-100">
@@ -3970,8 +4091,9 @@ function MobileStopCard({ stop, note, onPick }) {
         aria-hidden
       />
       <div className="min-w-0 flex-1">
-        <div className="text-sm font-semibold text-slate-900 truncate">
-          {stop.businessName || '(no name)'}
+        <div className="text-sm font-semibold text-slate-900 truncate flex items-center gap-1.5">
+          <span className="truncate">{stop.businessName || '(no name)'}</span>
+          <DnsBadge note={note} />
         </div>
         <div className="text-[11px] text-slate-500 truncate">
           {stop.city || '—'}{stop.state ? `, ${stop.state}` : ''}
@@ -4095,7 +4217,7 @@ function MobileDriversTab({ drivers, error, onPickDriver }) {
 // stop components as the desktop sidebar (StopDataSections + ProsSection +
 // StopNotesSection) in a single scroll, so mobile has full desktop parity —
 // every edit option, one inline Edit, one Save.
-function MobileStopDetailDrawer({ stop, note, onClose, onSave, saving, saveError, onOpenRoute, onMoveLocation, onEditAddress, onAutoFixAddress }) {
+function MobileStopDetailDrawer({ stop, note, onClose, onSave, saving, saveError, onOpenRoute, onMoveLocation, onEditAddress, onAutoFixAddress, drivers = [] }) {
   const [draft, setDraft] = useState(() => note || emptyNote(stop));
   const [editing, setEditing] = useState(false);
   const [confirmDiscard, setConfirmDiscard] = useState(false);
@@ -4164,10 +4286,11 @@ function MobileStopDetailDrawer({ stop, note, onClose, onSave, saving, saveError
       >
         <div className="px-4 py-2 border-b bg-slate-50 flex items-center gap-2 flex-wrap">
           <StatusBadge kind={classifyStopStatus(stop)} />
+          <DnsBadge note={note} showDrivers />
         </div>
         <StopDataSections stop={stop} note={note} onOpenRoute={onOpenRoute} onMoveLocation={onMoveLocation} onEditAddress={onEditAddress} onAutoFixAddress={onAutoFixAddress} />
         <ProsSection stop={stop} />
-        <StopNotesSection note={note} editing={editing} setEditing={setEditing} draft={D} setDraft={setD} />
+        <StopNotesSection note={note} editing={editing} setEditing={setEditing} draft={D} setDraft={setD} drivers={drivers} />
       </div>
       {/* Sticky save bar — visible while editing */}
       {editing && (
@@ -4963,7 +5086,16 @@ function MapScreen() {
       // the pin disappears and the icon(s) become the marker (States B/C).
       // iconMarkerSvg returns size + anchor based on icon count.
       let icon;
-      if (inRoute) {
+      const dnsStop = !!note?.do_not_send;
+      if (dnsStop) {
+        // DNS — strong red pin with a white ✕, taking precedence over status /
+        // restriction / route visuals so a "do not send" customer is unmissable.
+        icon = {
+          url: pinSvgStatus(DNS_COLOR, { glyph: 'dns' }),
+          scaledSize: new google.maps.Size(28, 36),
+          anchor: new google.maps.Point(14, 34),
+        };
+      } else if (inRoute) {
         // Numbered route pin (delivery sequence), colored by status (green=delivered
         // / blue=scheduled), so the open route reads like NuVizz's numbered stops.
         const statusKind = classifyStopStatus(s);
@@ -5484,6 +5616,7 @@ function MapScreen() {
             <MobileStopsTab
               stops={visibleStops}
               notes={notes}
+              drivers={drivers}
               searchInput={searchInput}
               setSearchInput={setSearchInput}
               resultCount={visibleStops.length}
@@ -5524,6 +5657,7 @@ function MapScreen() {
           <MobileStopDetailDrawer
             stop={selectedStop}
             note={notes.get(selectedStop.matchKey)}
+            drivers={drivers}
             onClose={() => setSelectedStop(null)}
             onMoveLocation={startMoveLocation}
             onEditAddress={openAddrEditor}
@@ -5861,6 +5995,7 @@ function MapScreen() {
         <StopSidebar
           stop={selectedStop}
           note={notes.get(selectedStop.matchKey)}
+          drivers={drivers}
           onClose={() => setSelectedStop(null)}
           onMoveLocation={startMoveLocation}
           onEditAddress={openAddrEditor}
@@ -6224,6 +6359,7 @@ function StopMiniTable({ stops, notes, onPick, columns, onColumnsChange, searchQ
       ...s,
       _flag: n?.priority_flag || 'none',
       _hasNote: !!n,
+      _dnsNote: n?.do_not_send ? n : null,
       _priorityRank: n?.priority_flag === 'red' ? 0 : n?.priority_flag === 'yellow' ? 1 : n?.priority_flag === 'green' ? 2 : n?.priority_flag === 'question' ? 3 : 4,
       _proSort: s.primaryPro || s.pro || '￿',
     };
@@ -6261,7 +6397,10 @@ function StopMiniTable({ stops, notes, onPick, columns, onColumnsChange, searchQ
                     title={s.businessName}
                     style={!truncateNames ? { maxWidth: 320 } : undefined}
                   >
-                    {s.businessName}
+                    <span className="inline-flex items-center gap-1.5">
+                      <span className={truncateNames ? 'truncate' : ''}>{s.businessName}</span>
+                      <DnsBadge note={s._dnsNote} />
+                    </span>
                   </td>
                 )}
                 {cols.city && <td className="px-2 py-1 text-slate-600 whitespace-nowrap">{s.city}</td>}
