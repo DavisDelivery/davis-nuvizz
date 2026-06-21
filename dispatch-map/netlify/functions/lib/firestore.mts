@@ -164,6 +164,31 @@ export async function listDocs(collectionPath: string): Promise<any[]> {
   return all;
 }
 
+// Structured query against a ROOT collection (no parent path), reusing the same
+// SA-JWT auth + value codec. Single-field filters only in our usage (single
+// tenant), so Firestore's automatic single-field indexes cover it — no composite
+// index config required. Returns plain objects (with _id) like listDocs.
+export async function runQuery(structuredQuery: any): Promise<any[]> {
+  const token = await getAccessToken();
+  const sa = loadServiceAccount();
+  const url = `${FIRESTORE_BASE}/projects/${sa.project_id}/databases/(default)/documents:runQuery`;
+  const resp = await fetch(url, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ structuredQuery }),
+  });
+  if (!resp.ok) throw new Error(`runQuery failed: ${resp.status} ${(await resp.text()).slice(0, 200)}`);
+  const rows: any[] = await resp.json();
+  const out: any[] = [];
+  for (const r of rows) {
+    if (!r || !r.document) continue;
+    const parts = (r.document.name || '').split('/');
+    const obj = docToObject(r.document);
+    if (obj) out.push({ _id: parts[parts.length - 1], ...obj });
+  }
+  return out;
+}
+
 // Delete a single document (used to prune stops that disappeared between scans).
 async function deleteDoc(path: string): Promise<void> {
   const token = await getAccessToken();
