@@ -47,7 +47,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.29.4';
+const APP_VERSION = '0.29.5';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -67,6 +67,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.29.5', 'Historical customer/PRO search now actually finds everyone. It used to read only a sparse local cache (built just for customers with special receiving rules, off the live board — empty on weekends), so a customer like a locksmith we delivered Friday wouldn’t show up. It now searches our own saved delivery-history warehouse (every delivery, every day → each customer’s last 20 PROs), so business-name and PRO searches find any customer we’ve delivered to — and still WITHOUT calling NuVizz (it reads our own data; only an unknown PRO triggers the explicit one-call lookup).'],
   ['0.29.4', 'Fixes the mobile screen "shifting" — the app sliding partly off the left edge with a white gap on the right (seen when opening the past-PRO search). On iOS, focusing a field can scroll the VISIBLE viewport sideways inside the slightly-wider layout viewport; the app shell stayed anchored to the layout edge and slid off-screen. The shell is now pinned to the visible viewport’s actual position, so it always stays squared to the screen no matter what the keyboard/focus does.'],
   ['0.29.3', 'New "Search past PROs / customer history" button on the mobile Stops tab. Tap it to look up a historical PRO or a customer by business name against the saved 20-stop history we keep per customer — no API calls for that. Searching a business name pulls up that customer’s last 20 PROs (with dates); searching a PRO number finds it across saved history. Business-name searches never call NuVizz. Only when you type a PRO that ISN’T in saved history do you get an explicit "Look up PRO in NuVizz (1 API call)" button — a single, deliberate, on-demand call you choose to make; nothing happens automatically.'],
   ['0.29.2', 'Mobile search no longer auto-calls AI: typing in the search box now just filters the loaded stops locally (live), and AI search is a separate, explicit action (the AI button) — pressing Enter dismisses the keyboard instead of firing AI. Also fixed the version (vX.Y.Z) menu being clipped/hidden behind the header.'],
@@ -3712,23 +3713,63 @@ function MobileDrawer({ open, onClose, activeTab, setActiveTab, children }) {
 // NuVizz lookup (one call). Business-name searches never call the API.
 function PastProSearch({ notes, initialQuery, onClose }) {
   const [q, setQ] = useState(initialQuery || '');
-  const [api, setApi] = useState(null); // null | {loading} | {stop} | {error}
+  const [api, setApi] = useState(null); // NuVizz single-PRO lookup: null | {loading} | {stop} | {error}
+  const [remote, setRemote] = useState({ loading: false, customers: [], error: null }); // our delivery-history warehouse
   const query = q.trim();
   const lc = query.toLowerCase();
   // PRO-like = contains digits and is a single token (no spaces) — names have spaces.
   const isProLike = !!query && /\d/.test(query) && !/\s/.test(query);
 
+  // Instant local pass over the already-loaded customer_notes (partial match).
   const all = [...notes.values()];
-  const nameMatches = !query ? [] : all
+  const localCustomers = !query ? [] : all
     .filter((n) => (n.raw_name || '').toLowerCase().includes(lc) && Array.isArray(n.pro_history) && n.pro_history.length)
-    .slice(0, 30)
-    .map((n) => ({ customer: n.raw_name || n.id, history: [...n.pro_history].reverse().slice(0, 20) }));
+    .map((n) => ({ key: (n.raw_name || n.id || '').toLowerCase(), name: n.raw_name || n.id, history: [...n.pro_history].reverse().slice(0, 20) }));
   const proMatches = !query ? [] : all.flatMap((n) =>
     (Array.isArray(n.pro_history) ? n.pro_history : [])
       .filter((h) => String(h.pro).toLowerCase().includes(lc))
       .map((h) => ({ customer: n.raw_name || n.id, pro: h.pro, date: h.date })),
   ).slice(0, 60);
-  const noLocal = query && nameMatches.length === 0 && proMatches.length === 0;
+
+  // Search our own delivery-history warehouse (history_customers rollup). This
+  // reads Firestore only — it NEVER calls NuVizz — so business-name search is
+  // free at NuVizz. Debounced; name → prefix search, PRO → exact.
+  useEffect(() => {
+    if (!query) { setRemote({ loading: false, customers: [], error: null }); return; }
+    let cancelled = false;
+    setRemote((r) => ({ ...r, loading: true, error: null }));
+    const param = isProLike ? ('pro=' + encodeURIComponent(query)) : ('name=' + encodeURIComponent(query));
+    const t = setTimeout(async () => {
+      try {
+        const res = await fetch('/.netlify/functions/nuvizz-customer-history?' + param);
+        const d = await res.json();
+        if (cancelled) return;
+        setRemote({ loading: false, customers: Array.isArray(d.customers) ? d.customers : [], error: d.ok ? null : (d.reason || null) });
+      } catch (e) {
+        if (!cancelled) setRemote({ loading: false, customers: [], error: e.message });
+      }
+    }, 300);
+    return () => { cancelled = true; clearTimeout(t); };
+  }, [query, isProLike]);
+
+  // Merge local + warehouse customers; the warehouse holds the authoritative
+  // last-20, so it wins on duplicates.
+  const customers = (() => {
+    const map = new Map();
+    for (const c of localCustomers) map.set(c.key, c);
+    for (const c of remote.customers) {
+      const key = (c.name || c.matchKey || '').toLowerCase();
+      if (!key) continue;
+      map.set(key, {
+        key, name: c.name,
+        history: Array.isArray(c.pros) ? c.pros : [],
+        addr: [c.addr1, c.city, c.state].filter(Boolean).join(', '),
+      });
+    }
+    return [...map.values()].slice(0, 40);
+  })();
+
+  const noResults = query && !remote.loading && customers.length === 0 && proMatches.length === 0;
 
   const runApi = async () => {
     setApi({ loading: true });
@@ -3755,15 +3796,19 @@ function PastProSearch({ notes, initialQuery, onClose }) {
         </div>
       </div>
       <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain" data-sheet-scroll>
-        <div className="px-3 py-2 text-[11px] text-slate-500">Searching saved history (last 20 PROs per customer). No API calls unless you look up an unknown PRO below.</div>
+        <div className="px-3 py-2 text-[11px] text-slate-500">Searches our saved delivery history (last 20 PROs per customer). Business-name search never calls NuVizz — only an unknown PRO lookup does.</div>
         {!query && <div className="px-4 py-6 text-center text-xs text-slate-400 italic">Type a customer name or a PRO number.</div>}
+        {query && remote.loading && customers.length === 0 && proMatches.length === 0 && (
+          <div className="px-4 py-6 text-center text-xs text-slate-400 inline-flex items-center gap-1.5 w-full justify-center"><RefreshCw size={13} className="animate-spin" /> Searching history…</div>
+        )}
 
-        {nameMatches.length > 0 && (
+        {customers.length > 0 && (
           <div className="px-3 pb-2">
-            <div className="text-[10px] uppercase font-semibold text-slate-500 mb-1">Customers ({nameMatches.length})</div>
-            {nameMatches.map((m, i) => (
-              <div key={i} className="mb-2 border border-slate-200 rounded-lg p-2">
-                <div className="text-sm font-semibold text-slate-900 break-words">{m.customer}</div>
+            <div className="text-[10px] uppercase font-semibold text-slate-500 mb-1">Customers ({customers.length})</div>
+            {customers.map((m, i) => (
+              <div key={m.key || i} className="mb-2 border border-slate-200 rounded-lg p-2">
+                <div className="text-sm font-semibold text-slate-900 break-words">{m.name}</div>
+                {m.addr && <div className="text-[11px] text-slate-500 break-words">{m.addr}</div>}
                 <div className="mt-1 flex flex-wrap gap-1">
                   {m.history.map((h, j) => (
                     <span key={j} className="text-[10px] font-mono bg-slate-100 border border-slate-200 rounded px-1.5 py-0.5">{h.pro} · {h.date}</span>
@@ -3789,7 +3834,7 @@ function PastProSearch({ notes, initialQuery, onClose }) {
           </div>
         )}
 
-        {noLocal && (
+        {noResults && (
           <div className="px-4 py-4 text-center">
             <div className="text-xs text-slate-500 mb-2">Nothing in saved history for “{query}”.</div>
             {isProLike ? (
@@ -3801,7 +3846,7 @@ function PastProSearch({ notes, initialQuery, onClose }) {
                 <div className="text-xs text-red-600">PRO not found in NuVizz ({api.error}).</div>
               ) : null
             ) : (
-              <div className="text-[11px] text-slate-400 italic">Tip: business-name search only looks at saved history — type a PRO number to query NuVizz.</div>
+              <div className="text-[11px] text-slate-400 italic">Tip: business-name search reads only our saved delivery history — try a different spelling, or search by PRO number.</div>
             )}
           </div>
         )}

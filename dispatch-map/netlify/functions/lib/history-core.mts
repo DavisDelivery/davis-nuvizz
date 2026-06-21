@@ -31,6 +31,7 @@ import {
   listStops, listRoutes, listDrivers,
   upsertStops, upsertRoutes, upsertDrivers, upsertDriverDayPointer,
 } from './history-store.mts';
+import { updateCustomerRollupsForDay } from './history-customers.mts';
 
 const TENANT = 'davis';
 // Keep in sync with src/App.jsx APP_VERSION. Stamped onto every manifest/capture
@@ -209,6 +210,15 @@ export async function captureDate(date: string): Promise<any> {
     complete: true,
     absent_kept_count: absentFromThisCapture.length,
   });
+
+  // Best-effort: keep the per-customer history rollup current from this day's
+  // stops. Never let a rollup hiccup fail the warehouse capture (the warehouse
+  // is the source of truth; the rollup can always be rebuilt from it).
+  try {
+    await updateCustomerRollupsForDay(TENANT, date, stopRecords);
+  } catch (e: any) {
+    console.error(`customer-rollup update failed for ${date}:`, e?.message);
+  }
 
   return { date, ok: true, verified: true, capture_version: version, counts, absent_kept: absentFromThisCapture.length };
 }
