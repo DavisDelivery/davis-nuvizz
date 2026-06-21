@@ -241,7 +241,7 @@ export function scanIntervalElapsed(lastScannedAtISO: string | null | undefined,
 // ── Production wiring (Firestore-backed counter + breaker) ───────────────────
 // A singleton per warm instance so in-flight dedupe + breaker memo survive across
 // invocations. Imported lazily to keep the pure module test-friendly.
-import { incrementCallCounter, readCircuit, setCircuit } from './firestore.mts';
+import { incrementCallCounter, readCircuit, setCircuit, etDayString } from './firestore.mts';
 
 let __prod: ReturnType<typeof createNuvizzRequester> | null = null;
 
@@ -250,7 +250,7 @@ export function getNuvizzRequester() {
   __prod = createNuvizzRequester({
     fetchImpl: (url, init) => fetch(url, init),
     // Thread the route through so the per-route breakdown (count__*) populates.
-    recordCall: (meta, n) => incrementCallCounter(new Date().toISOString().slice(0, 10), n, meta.route),
+    recordCall: (meta, n) => incrementCallCounter(etDayString(), n, meta.route),
     isCircuitOpen: async () => (await readCircuit()).open,
     tripCircuit: (reason) => setCircuit(true, reason, new Date().toISOString()),
   });

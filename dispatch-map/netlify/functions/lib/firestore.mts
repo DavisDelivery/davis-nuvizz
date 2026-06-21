@@ -37,6 +37,17 @@ export function isFirestoreEnabled(): boolean {
   return !!process.env.FIREBASE_SA;
 }
 
+// Traditional local-day (America/New_York) date string YYYY-MM-DD. The NuVizz
+// call counter is keyed by this so the displayed "calls today" follows a normal
+// midnight-to-midnight ET day. Without it, jobs that fire after UTC midnight but
+// before ET midnight (e.g. the 06:00 UTC ≈ 2am ET history snapshot) land on the
+// NEXT UTC date and inflate "today".
+export function etDayString(d: Date = new Date()): string {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit',
+  }).format(d);
+}
+
 function base64UrlEncode(buf: Buffer | string): string {
   return Buffer.from(buf).toString('base64').replace(/=+$/, '').replace(/\+/g, '-').replace(/\//g, '_');
 }

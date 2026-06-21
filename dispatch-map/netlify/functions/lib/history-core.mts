@@ -63,6 +63,13 @@ function addDaysUTC(dateStr: string, n: number): string {
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
+// A YYYY-MM-DD calendar date's weekday is timezone-independent (noon UTC avoids
+// any DST edge). 0 = Sun, 6 = Sat. Exported for tests.
+export function isWeekendDate(dateStr: string): boolean {
+  const day = new Date(dateStr + 'T12:00:00Z').getUTCDay();
+  return day === 0 || day === 6;
+}
+
 // Parse manual overrides (mirrors refresh-stops-core): ?date=YYYY-MM-DD (single)
 // or ?from=YYYY-MM-DD&to=YYYY-MM-DD (inclusive, ≤31 days). No query → ET-yesterday.
 export function resolveDates(req: Request): string[] {
@@ -80,7 +87,14 @@ export function resolveDates(req: Request): string[] {
       return dates;
     }
   } catch { /* fall through to scheduled default */ }
-  return [etYesterday()];
+  // Scheduled default: archive ET-yesterday — but SKIP weekend target days. Davis
+  // doesn't work weekends, so a Sat/Sun capture archives an empty day at full scan
+  // cost (~1,200 NuVizz calls) — and it can't even reuse the live index, since the
+  // live scan is itself blacked out on weekends. Friday is still captured (Sat run)
+  // and Monday is still captured (Tue run). Manual ?date=/?from&to backfills are
+  // unaffected (they return above), so a weekend day can still be archived on demand.
+  const y = etYesterday();
+  return isWeekendDate(y) ? [] : [y];
 }
 
 // ── per-date capture ─────────────────────────────────────────────────────────
@@ -235,6 +249,13 @@ export async function runHistorySnapshot(req: Request): Promise<Response> {
   }
 
   const dates = resolveDates(req);
+  if (dates.length === 0) {
+    // Scheduled weekend run — target day is Sat/Sun, which we don't archive.
+    console.log('history-snapshot: weekend target day — skipped (no NuVizz calls).');
+    return new Response(JSON.stringify({ ok: true, skipped: 'weekend', days: 0 }), {
+      status: 200, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   const results: any[] = [];
   // Sequential per date — keeps NuVizz load light and bounds memory (same as refresh).
   for (const date of dates) {
