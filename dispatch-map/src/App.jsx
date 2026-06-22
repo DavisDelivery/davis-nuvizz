@@ -47,7 +47,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.29.14';
+const APP_VERSION = '0.29.15';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -67,6 +67,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.29.15', 'DNS "Drivers not allowed" picker now lists the FULL driver roster from Motive (the fleet app), so you can bar ANY driver — not just ones on today\'s board or currently on the live map. New read-only /motive-drivers endpoint (server-cached ~1h); merged with today\'s board drivers and de-duped.'],
   ['0.29.14', 'DNS "Drivers not allowed" picker now always has drivers to choose from: it lists every driver assigned to the current board\'s loads (from the scan), not just the live Motive feed — which only loaded when "Show drivers (live)" was on for today. Fixed the misleading "Open the Drivers tab" hint too.'],
   ['0.29.13', 'Desktop: the "Search past PROs / customer history" button is now in the left sidebar (under the search box) — previously it existed only on mobile. Opens the same saved-delivery-history lookup as an overlay, prefilled with whatever is already typed in the live search.'],
   ['0.29.12', 'Fix: planned orders no longer show as "Unplanned". NuVizz keeps a stop at status-10 even after it has been put on a load (planned but not yet dispatched); the order/unplanned scan was re-tagging those load-assigned stops as unplanned, overwriting the load scan. The unplanned descent now excludes any stop that already carries a load number, so planned-but-not-started orders stay planned.'],
@@ -1184,6 +1185,25 @@ function useDriverPositions(enabled) {
     return () => { cancelled = true; clearInterval(id); };
   }, [enabled]);
   return { drivers, error, lastRefreshed };
+}
+
+// Full driver roster from Motive (the fleet-management app). Fetched ONCE on
+// mount (server-cached ~1h) so the DNS "barred drivers" picker can list every
+// driver in the fleet, not just those on today's board or currently positioned.
+// Best-effort: on failure the picker still has the board's assigned drivers.
+function useDriverRoster() {
+  const [roster, setRoster] = useState([]);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const data = await fetchJsonWithRetry('/.netlify/functions/motive-drivers');
+        if (!cancelled && data?.ok) setRoster(data.drivers || []);
+      } catch { /* roster is best-effort */ }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+  return roster;
 }
 
 // ---------- helpers ----------
@@ -2866,7 +2886,7 @@ function StopNotesEditor({ draft, setDraft, compact = false, drivers = [] }) {
           <div className="mt-2">
             <div className="text-[11px] font-semibold text-slate-600 mb-1">Drivers not allowed (tap to bar)</div>
             {driverNames.length === 0 ? (
-              <div className="text-[11px] text-slate-400 italic">No drivers on today's board yet to bar. They appear here once loads are assigned drivers (or turn on "Show drivers (live)" for today). Leave blank for a general do-not-send.</div>
+              <div className="text-[11px] text-slate-400 italic">No drivers found (fleet roster unavailable and none on today's board). Leave blank for a general do-not-send.</div>
             ) : (
               <div className="flex flex-wrap gap-1.5">
                 {driverNames.map((name) => {
@@ -4644,18 +4664,30 @@ function MapScreen() {
   const { snapshot, loading: snapshotLoading, error: snapshotError } = useDriverSnapshot(selectedDriver);
   const panel = useResizablePanel(viewportWidth);
 
-  // Driver source for the DNS "barred drivers" picker. The live Motive feed only
-  // loads when "Show drivers (live)" is on AND the date is today, so on its own
-  // the picker is usually empty. Merge in every driver assigned to the current
-  // board's loads (from the scan) so there's always a roster to bar from. Synthetic
-  // {driverName} objects are fine — the notes editor only reads .driverName.
+  // Driver source for the DNS "barred drivers" picker. Three sources, merged &
+  // de-duped case-insensitively (board form wins so a driver on today's loads
+  // keeps the label used elsewhere):
+  //   1. drivers assigned to the current board's loads (from the scan),
+  //   2. the FULL Motive roster (fleet app) — so ANY driver can be barred, not
+  //      just ones on today's board or currently positioned,
+  //   3. live-positioned Motive drivers (when "Show drivers (live)" is on).
+  // Synthetic {driverName} objects are fine — the notes editor only reads .driverName.
+  const driverRoster = useDriverRoster();
   const notesDrivers = useMemo(() => {
-    const names = new Set([
-      ...(drivers || []).map((d) => d?.driverName).filter(Boolean),
-      ...(stops || []).map((s) => s.driverName).filter(Boolean),
-    ]);
-    return [...names].sort().map((driverName) => ({ driverName }));
-  }, [drivers, stops]);
+    const seen = new Set();
+    const out = [];
+    const add = (name) => {
+      const nm = (name || '').trim();
+      const k = nm.toLowerCase();
+      if (!nm || seen.has(k)) return;
+      seen.add(k);
+      out.push({ driverName: nm });
+    };
+    (stops || []).forEach((s) => add(s.driverName));
+    (driverRoster || []).forEach((d) => add(d?.name));
+    (drivers || []).forEach((d) => add(d?.driverName));
+    return out.sort((a, b) => a.driverName.localeCompare(b.driverName));
+  }, [drivers, stops, driverRoster]);
 
   const searchInputRef = useRef(null);
   const mapRef = useRef(null);
