@@ -21,8 +21,8 @@ test('test harness maps ET hours correctly (EDT UTC-4)', () => {
   assert.equal(nowET(at(0)).hour, 0);
 });
 
-test('intervalForHour: 15/30/60 by window', () => {
-  assert.equal(intervalForHour(5), 15);
+test('intervalForHour: 30 for 4am-1pm, 60 otherwise', () => {
+  assert.equal(intervalForHour(5), 30);  // 4-7am lowered from 15 → 30
   assert.equal(intervalForHour(9), 30);
   assert.equal(intervalForHour(14), 60);
   assert.equal(intervalForHour(2), 60);  // overnight
@@ -52,13 +52,14 @@ test('never-scanned (null) always acts (elapsed=Infinity)', () => {
   assert.equal(d.elapsedMin, Infinity);
 });
 
-test('cadence by window: 30-min (7am-1pm) and 15-min (4-7am, floor-bound)', () => {
+test('cadence by window: 30-min across 4am-1pm (4-7am lowered from 15m)', () => {
   const m = at(9, 7);
   assert.equal(scanDecision(m, false, ago(m, 24)).act, true);   // 24 >= 30-7
   assert.equal(scanDecision(m, false, ago(m, 20)).act, false);  // 20 < 23
-  const e = at(5, 2);
-  assert.equal(scanDecision(e, false, ago(e, 11)).act, true);   // 11 >= max(15-7, floor10)
-  assert.equal(scanDecision(e, false, ago(e, 9)).skip, 'floor'); // 9 < 10 floor
+  const e = at(5, 2);                                            // 5am ET — now 30m, not 15m
+  assert.equal(scanDecision(e, false, ago(e, 30)).act, true);   // 30 >= 30-7
+  assert.equal(scanDecision(e, false, ago(e, 20)).skip, 'cadence'); // 20 < 23 (acted under old 15m)
+  assert.equal(scanDecision(e, false, ago(e, 9)).skip, 'floor');    // 9 < 10 floor
 });
 
 test('DEFECT 2 fixed: tomorrow orders descend 10am-midnight; loads only 8pm-midnight', () => {
