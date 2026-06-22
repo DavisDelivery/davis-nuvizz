@@ -47,7 +47,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.29.12';
+const APP_VERSION = '0.29.13';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -67,6 +67,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.29.13', 'Desktop: the "Search past PROs / customer history" button is now in the left sidebar (under the search box) — previously it existed only on mobile. Opens the same saved-delivery-history lookup as an overlay, prefilled with whatever is already typed in the live search.'],
   ['0.29.12', 'Fix: planned orders no longer show as "Unplanned". NuVizz keeps a stop at status-10 even after it has been put on a load (planned but not yet dispatched); the order/unplanned scan was re-tagging those load-assigned stops as unplanned, overwriting the load scan. The unplanned descent now excludes any stop that already carries a load number, so planned-but-not-started orders stay planned.'],
   ['0.29.11', 'Unplanned stop pins recolored to thistle (light purple) per dispatch request.'],
   ['0.29.10', 'Map pins: planned and unplanned stops now render at the same smaller size (only search-matched / AM-PM-tagged pins are enlarged for emphasis), and unplanned stops are tinted mint instead of blue so they read distinctly on satellite.'],
@@ -4595,6 +4596,9 @@ function MapScreen() {
   const [searchInput, setSearchInput] = useState('');
   const debouncedSearch = useDebouncedValue(searchInput, 200);
   const { history, remember } = useSearchHistory();
+  // Desktop historical PRO / customer-history lookup (mobile has its own in
+  // MobileStopsTab). Rendered as an overlay so the board stays mounted behind it.
+  const [histOpen, setHistOpen] = useState(false);
 
   // M6 — AI Order Search state. aiMode flips the search box into NL parse mode;
   // aiResult holds the AI-derived match set (from search OR chat) that overrides
@@ -5757,6 +5761,23 @@ function MapScreen() {
   // Desktop / tablet (≥768px): existing layout unchanged.
   return (
     <div className="flex flex-1 overflow-hidden">
+      {/* Historical PRO / customer-history lookup — overlay (desktop). Prefilled
+          with whatever's typed in the live search so it searches immediately. */}
+      {histOpen && (
+        <div
+          className="fixed inset-0 z-[1100] bg-slate-900/40 flex items-start justify-center p-4 sm:p-8"
+          onMouseDown={(e) => { if (e.target === e.currentTarget) setHistOpen(false); }}
+        >
+          <div className="w-full max-w-lg max-h-[85vh] bg-white rounded-xl shadow-2xl flex flex-col overflow-hidden">
+            <PastProSearch
+              notes={notes}
+              initialQuery={searchInput}
+              onPickCustomer={(s) => { setHistOpen(false); setSelectedDriver(null); setSelectedStop(s); }}
+              onClose={() => setHistOpen(false)}
+            />
+          </div>
+        </div>
+      )}
       {/* Left filter rail */}
       <div
         className="flex-shrink-0 bg-white border-r overflow-y-auto"
@@ -5779,6 +5800,14 @@ function MapScreen() {
           aiError={aiError}
           onClearAi={clearAi}
         />
+        <div className="px-3 pt-2">
+          <button
+            onClick={() => setHistOpen(true)}
+            className="w-full inline-flex items-center justify-center gap-1.5 text-xs font-semibold text-slate-700 border border-slate-300 rounded-lg py-2 hover:bg-slate-50 active:bg-slate-100"
+          >
+            <Clock size={13} /> Search past PROs / customer history
+          </button>
+        </div>
         <FilterPanel
           filters={filters}
           setFilters={setFilters}
