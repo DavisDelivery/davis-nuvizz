@@ -192,7 +192,7 @@ const DRIVER_TINT = '#0f172a';             // M4 Motive driver pins
 // a status hue is close to a flag hue. `color: null` → fall back to flagColor.
 //   glyph: null=white dot · 'check'=delivered · 'bang'=exception · 'arrow'=en route
 const STATUS_META = {
-  UNPLANNED:   { label: 'Unplanned',        color: '#0ea5e9', hollow: false, glyph: null,    badge: '#0ea5e9' },
+  UNPLANNED:   { label: 'Unplanned',        color: '#6d28d9', hollow: false, glyph: null,    badge: '#6d28d9' },
   SCHEDULED:   { label: 'Scheduled',        color: null,      hollow: false, glyph: null,    badge: '#1e5b92' },
   OUT_FOR_DEL: { label: 'Out for delivery', color: '#2563eb', hollow: false, glyph: 'arrow', badge: '#2563eb' },
   ARRIVED:     { label: 'Arrived',          color: '#d97706', hollow: false, glyph: null,    badge: '#d97706' },
