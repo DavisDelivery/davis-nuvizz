@@ -47,7 +47,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.29.15';
+const APP_VERSION = '0.29.16';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -67,6 +67,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.29.16', 'New per-customer "Email customer service when scheduled" toggle in notes. When the scan finds an opted-in customer on a day\'s board, it emails CS once (the first time that customer appears that day, deduped) from our no-reply account via Resend. Requires RESEND_API_KEY + RESEND_FROM + NOTIFY_CS_TO env vars to be set.'],
   ['0.29.15', 'DNS "Drivers not allowed" picker now lists the FULL driver roster from Motive (the fleet app), so you can bar ANY driver — not just ones on today\'s board or currently on the live map. New read-only /motive-drivers endpoint (server-cached ~1h); merged with today\'s board drivers and de-duped.'],
   ['0.29.14', 'DNS "Drivers not allowed" picker now always has drivers to choose from: it lists every driver assigned to the current board\'s loads (from the scan), not just the live Motive feed — which only loaded when "Show drivers (live)" was on for today. Fixed the misleading "Open the Drivers tab" hint too.'],
   ['0.29.13', 'Desktop: the "Search past PROs / customer history" button is now in the left sidebar (under the search box) — previously it existed only on mobile. Opens the same saved-delivery-history lookup as an overlay, prefilled with whatever is already typed in the live search.'],
@@ -1649,6 +1650,7 @@ function emptyNote(stop) {
     pro_history: [],
     do_not_send: false,      // DNS — do-not-send flag (red badge everywhere)
     dns_drivers: [],         // names of drivers barred from this customer
+    notify_cs: false,        // email customer service when this customer is scheduled
   };
 }
 
@@ -2904,6 +2906,24 @@ function StopNotesEditor({ draft, setDraft, compact = false, drivers = [] }) {
               <div className="mt-1 text-[10px] text-slate-500">Barred: {barred.join(', ')}</div>
             )}
           </div>
+        )}
+      </div>
+      {/* Notify CS — email customer service the first time this customer is
+          scheduled each day (handled server-side by the scan). */}
+      <div className="rounded-lg border p-2" style={D.notify_cs ? { borderColor: '#2563eb', background: '#eff6ff' } : { borderColor: '#e2e8f0' }}>
+        <button
+          onClick={() => setD({ notify_cs: !D.notify_cs })}
+          style={{ ...tap, ...(D.notify_cs ? { background: '#2563eb', borderColor: '#2563eb', color: '#fff' } : {}) }}
+          className={`w-full flex items-center justify-between gap-2 ${pad} rounded border text-xs font-semibold ${D.notify_cs ? '' : 'border-slate-300 bg-white text-slate-700'}`}
+        >
+          <span className="inline-flex items-center gap-1.5">
+            <MessageSquare size={14} strokeWidth={2.5} style={{ color: D.notify_cs ? '#fff' : '#2563eb' }} />
+            Email customer service when scheduled
+          </span>
+          <span className={`text-[10px] px-1.5 py-0.5 rounded ${D.notify_cs ? 'bg-white/25' : 'bg-slate-100 text-slate-500'}`}>{D.notify_cs ? 'ON' : 'OFF'}</span>
+        </button>
+        {D.notify_cs && (
+          <div className="mt-1 text-[10px] text-slate-500">CS gets one email the first time this customer appears on a day's board.</div>
         )}
       </div>
       <div>
