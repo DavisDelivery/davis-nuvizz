@@ -18,7 +18,7 @@
 // at :01, so the board only refreshed on the 4-7am window or manual scans. Gating
 // on elapsed time makes the on-cadence fire scan even when it lands a few minutes
 // late.
-//   target interval: 4-7am → 15m · 7am-1pm → 30m · 1pm-4am (incl. overnight) → 60m
+//   target interval: 4am-1pm → 30m · 1pm-4am (incl. overnight) → 60m
 //   act = elapsed >= interval - TOLERANCE   (tolerance absorbs cron jitter)
 // Feeds when a fire ACTS: TODAY loads ALWAYS · TODAY unplanned 10:00-24:00 ·
 // TOMORROW loads 20:00-24:00 · TOMORROW unplanned 10:00-24:00 (orders for tomorrow
@@ -79,8 +79,7 @@ export function isInRoutingWindow(etHour: number): boolean {
 
 // Target interval (minutes) between scans for the given ET hour.
 export function intervalForHour(hour: number): number {
-  if (hour >= 4 && hour < 7) return 15;
-  if (hour >= 7 && hour < 13) return 30;
+  if (hour >= 4 && hour < 13) return 30; // 04:00-12:59 (4-7am lowered from 15m → 30m)
   return 60; // 13:00-03:59 incl. overnight
 }
 

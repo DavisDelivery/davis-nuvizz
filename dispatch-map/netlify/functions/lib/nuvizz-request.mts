@@ -49,7 +49,7 @@ export const BREAKER_MODE: BreakerMode =
 export function breakerMode(): BreakerMode { return BREAKER_MODE; }
 
 export interface RequesterConfig {
-  /** Hard daily call ceiling across the whole fleet. Default 100_000. */
+  /** Hard daily call ceiling across the whole fleet. Default 12_000 (budget cap). */
   dailyCeiling: number;
   /** monitor (count+warn, never block) vs enforce (trip+block) at the ceiling. */
   breakerMode: BreakerMode;
@@ -64,7 +64,10 @@ export interface RequesterConfig {
 }
 
 export const DEFAULT_CONFIG: RequesterConfig = {
-  dailyCeiling: Number(process.env.NUVIZZ_DAILY_CEILING) || 100_000,
+  // Default tuned to the operational budget (~6k target, 12k cap). In monitor
+  // mode this only sets the "would-trip" warning threshold + the ceiling shown
+  // in the UI pill — it never blocks. Override per-site via NUVIZZ_DAILY_CEILING.
+  dailyCeiling: Number(process.env.NUVIZZ_DAILY_CEILING) || 12_000,
   breakerMode: BREAKER_MODE,
   maxRetries: 4,
   backoffBaseMs: 500,

@@ -37,7 +37,13 @@ function computeBackoffMs(attempt, cfg) {
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const today = () => new Date().toISOString().slice(0, 10);
+// ET (America/New_York) calendar day — MUST match dispatch-map's etDayString so
+// BOTH apps increment the SAME shared nuvizz_ops/calls__{date} bucket. Plain UTC
+// (toISOString) here split the day's count across two docs during the 8pm–midnight
+// ET window (UTC already on the next date), making the displayed total jump.
+const today = () => new Intl.DateTimeFormat('en-CA', {
+  timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit',
+}).format(new Date());
 
 function createRequester(config = {}) {
   const cfg = { ...DEFAULT_CONFIG, ...config };

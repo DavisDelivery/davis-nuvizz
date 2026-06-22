@@ -17,7 +17,7 @@
 
 import { scanDate, todayUTC, scansEnabled, deriveFleetSummary, estimateLoadRange, buildScanState, shadowWouldProbe, selectLoadProbeTargets, groupLoadMembers, estimateStopFrontier, unplannedFloor, FLOOR_MARGIN, loadNbrToInt, stopNbrToInt, shouldDeepSweep } from './nuvizz-scan.mts';
 import { loadProbeParity, frontierParity, loadMembershipDelta, dateSliceMismatch } from './scan-parity.mts';
-import { isFirestoreEnabled, writeStops, writeFleetIndex, getDoc, markScanState, readCallStats, readCircuit, readScanState, writeScanState, recordScanMetric, etDayString } from './firestore.mts';
+import { isFirestoreEnabled, writeStops, writeFleetIndex, getDoc, markScanState, readCallStats, readCircuit, readScanState, writeScanState, readRecentFrontier, recordScanMetric, etDayString } from './firestore.mts';
 import { maxConsecutiveGap } from './scan-metrics.mts';
 import { breakerTripped, scanIntervalElapsed, breakerMode } from './nuvizz-request.mts';
 import { scanDecision, isInRoutingWindow } from './scan-schedule.mts';
@@ -71,11 +71,21 @@ export async function runRefreshStops(req: Request): Promise<Response> {
 
   const [today, tomorrow] = scanDatesFrom(todayUTC(), 2);
   const fsOn = isFirestoreEnabled();
-  const ceiling = Number(process.env.NUVIZZ_DAILY_CEILING) || 100000;
+  const ceiling = Number(process.env.NUVIZZ_DAILY_CEILING) || 12000;
   // Phase 2 — lean load discovery (known-active + buffer + gap sweep). OFF by
   // default; flip NUVIZZ_LEAN_DISCOVERY=on only AFTER preview stop-set parity is
   // confirmed. Off = the proven wide-window probe, unchanged.
   const LEAN_DISCOVERY = (process.env.NUVIZZ_LEAN_DISCOVERY || '').toLowerCase() === 'on';
+  // Adaptive forward discovery (default ON; set NUVIZZ_FORWARD_SCAN=off to revert
+  // to the wide-window/lean behavior). Instead of a cold ~601-wide load window +
+  // findCeiling order descent, seed from the persisted frontier (carried ACROSS
+  // days on a cold/resumption day — e.g. Sunday after the weekend blackout) and
+  // walk FORWARD in 25-chunks until nothing new turns up. Nothing changes below the
+  // frontier over the weekend, so the Sunday resume is a cheap forward walk, not a
+  // big sweep. Takes precedence over lean. The deep sweep (every
+  // NUVIZZ_DEEP_SWEEP_HOURS, default 8) stays the periodic full-floor backstop that
+  // reconciles below-frontier status changes / out-of-order imports.
+  const FORWARD_SCAN = (process.env.NUVIZZ_FORWARD_SCAN || '').toLowerCase() !== 'off';
 
   // Read today's last LOAD scan time — this is what drives the elapsed-time
   // cadence (Fix 1). Also read the shared call counter + breaker for the log line.
@@ -149,15 +159,16 @@ export async function runRefreshStops(req: Request): Promise<Response> {
       }
       // Read this date's existing roster ONCE — used for BOTH Phase 2 lean planning
       // (as the current known-active set) and the Phase 1 shadow write below.
-      const priorState = includeLoads ? await readScanState(date, TENANT) : null;
+      const priorState = (includeLoads || FORWARD_SCAN) ? await readScanState(date, TENANT) : null;
 
       // Phase 2 (gated by NUVIZZ_LEAN_DISCOVERY=on): probe only known-active loads +
       // forward buffer + periodic gap sweep instead of the ±window. null plan ⇒
       // leave loadTargets undefined ⇒ scanDate falls back to the wide window.
       // R10: a MANUAL scan bypasses lean entirely (wide window + full unplanned
       // floor) so a human "refresh" is always the authoritative full re-scan.
+      // FORWARD_SCAN takes precedence over lean (mutually exclusive load strategies).
       let loadTargets: number[] | null = null;
-      if (LEAN_DISCOVERY && includeLoads && !isManual) {
+      if (!FORWARD_SCAN && LEAN_DISCOVERY && includeLoads && !isManual) {
         try {
           const plan = selectLoadProbeTargets(priorState, {
             inWindow: isInRoutingWindow(decision.etHour),
@@ -182,14 +193,52 @@ export async function runRefreshStops(req: Request): Promise<Response> {
       // descend only NEW stop numbers above the last high-water. Cold cycles do the
       // full descent (establishes the high-water), same as the wide load fallback.
       const leanUnplanned = LEAN_DISCOVERY && includeUnplanned && !!loadTargets && (priorState?.highWaterUnplannedStopNbr != null);
-      // Step 4 — DEEP SWEEP: a few times a day (and on cold start) run a FULL-floor
-      // descent with a relaxed early-stop, even when lean is on, to catch low
-      // advance-order stragglers / date-changed orders the frontier floor skips.
-      // Only relevant when lean is active (otherwise every cycle is already full).
       const DEEP_SWEEP_HOURS = Number(process.env.NUVIZZ_DEEP_SWEEP_HOURS) || 8;
       const DEEP_SWEEP_CHUNKS = Number(process.env.NUVIZZ_DEEP_SWEEP_CHUNKS) || 25;
-      const deepSweep = LEAN_DISCOVERY && includeUnplanned && !isManual
+
+      // Adaptive forward seeds (NUVIZZ_FORWARD_SCAN). Loads: re-pull today's
+      // known-active loads + walk forward from the max known load number. Orders:
+      // walk forward from the unplanned high-water. Both seeds carry ACROSS days
+      // when today has no roster yet (cold/resumption) so the Sunday post-blackout
+      // fire is a cheap forward walk, NOT a cold wide rescan.
+      let forwardLoad: { start: number; known?: number[] } | null = null;
+      let forwardUnplanned: { start: number } | null = null;
+      let resumption = false;
+      if (FORWARD_SCAN && !isManual) {
+        const carried = await readRecentFrontier(TENANT, date, 4)
+          .catch(() => ({ maxLoadNbr: null, maxStopNbr: null, maxUnplannedStopNbr: null, carriedLoadNbrs: [] as number[] }));
+        const todayCold = !(priorState && (priorState.knownLoads?.length || 0) > 0);
+        resumption = todayCold && (carried.maxLoadNbr != null || carried.maxStopNbr != null || carried.maxUnplannedStopNbr != null);
+        if (includeLoads) {
+          const start = priorState?.maxLoadNbr ?? carried.maxLoadNbr ?? null;
+          if (start != null) {
+            const todayKnown = (priorState?.knownLoads || []).filter((k) => !k.allTerminal)
+              .map((k) => loadNbrInt(k.loadNbr)).filter((n): n is number => n != null);
+            // Also re-pull recent NON-TERMINAL loads from prior days — a carryover /
+            // earlier-started route can still deliver stops today; forward-only would
+            // miss it (it's below the frontier). probeLoad keeps just its today-stops.
+            const known = [...new Set([...todayKnown, ...(carried.carriedLoadNbrs || [])])];
+            forwardLoad = { start, known };
+          }
+        }
+        if (includeUnplanned) {
+          const ustart = priorState?.highWaterUnplannedStopNbr ?? carried.maxUnplannedStopNbr ?? carried.maxStopNbr ?? null;
+          if (ustart != null) forwardUnplanned = { start: ustart };
+        }
+      }
+
+      // DEEP SWEEP — periodic FULL-floor descent (relaxed early-stop) that catches
+      // low advance-order stragglers / date-changed orders the frontier floor or the
+      // forward walk skip. Runs in lean OR forward mode, never on a MANUAL run, and
+      // never on the cold RESUMPTION fire (that one must stay cheap — and nothing
+      // changed below the frontier over the weekend anyway; a due sweep runs on the
+      // next warm cycle instead).
+      const deepSweep = (LEAN_DISCOVERY || FORWARD_SCAN) && includeUnplanned && !isManual && !resumption
         && shouldDeepSweep(priorState?.lastDeepSweepAt, Date.now(), DEEP_SWEEP_HOURS * 3600_000);
+      // A deep sweep is the authoritative full re-baseline → drop forward/lean and
+      // probe the full load window + full unplanned floor.
+      if (deepSweep) { forwardLoad = null; forwardUnplanned = null; loadTargets = null; }
+
       const unplannedOpts: any = {};
       if (isManual && includeUnplanned) unplannedOpts.maxProbes = 800;
       // Lean frontier floor (bounded on the UNPLANNED high-water) — but NOT on a
@@ -200,6 +249,8 @@ export async function runRefreshStops(req: Request): Promise<Response> {
         includeUnplanned,
         includeLoads,
         loadTargets,
+        forwardLoad,
+        forwardUnplanned,
         unplanned: Object.keys(unplannedOpts).length ? unplannedOpts : undefined,
       });
       // partial* : in lean mode we re-pulled only a SUBSET of each feed — tell
@@ -215,8 +266,11 @@ export async function runRefreshStops(req: Request): Promise<Response> {
       //    preserved, never pruned (else a truncated full/deep descent would delete
       //    still-valid low unplanned orders). Only a COMPLETE full descent prunes.
       const truncatedDescent = includeUnplanned && scan.descentComplete === false;
-      const partialUnplanned = (leanUnplanned && !deepSweep) || truncatedDescent;
-      const meta = await writeStops(TENANT, date, scan.stops, scan.scannedAt, { includeUnplanned, includeLoads, partialLoads: !!loadTargets, partialUnplanned, rescannedLoads: loadTargets || undefined });
+      // Forward + lean both re-pulled only a SUBSET → PRESERVE un-rescanned stops
+      // (never prune). Only a COMPLETE full descent / deep sweep prunes.
+      const partialUnplanned = (leanUnplanned && !deepSweep) || !!forwardUnplanned || truncatedDescent;
+      const partialLoads = !!loadTargets || !!forwardLoad;
+      const meta = await writeStops(TENANT, date, scan.stops, scan.scannedAt, { includeUnplanned, includeLoads, partialLoads, partialUnplanned, rescannedLoads: loadTargets || undefined });
       // Only rebuild the fleet (load) index when we actually scanned loads — an
       // unplanned-only run would otherwise wipe the load index with an empty scan.
       if (includeLoads) {

@@ -440,52 +440,85 @@ async function scanLoadRangeForDate(dateStr: string, startNbr: number, endNbr: n
   return scanLoadNumbers(dateStr, nums, concurrency);
 }
 
+// PURE: a stop's own scheduled delivery date (YYYY-MM-DD) from a raw load-stop,
+// mirroring normalizeStop's primary-schedule resolution. null when absent.
+export function rawStopScheduledDate(rawStop: any): string | null {
+  const stop = rawStop?.stop || rawStop || {};
+  const stopType = stop.stopType || rawStop?.stopType || 'DO';
+  const primary = stopType === 'PU' ? (stop.from || {}) : (stop.to || stop.from || {});
+  const tf = primary?.schedule?.timeFrom || '';
+  return typeof tf === 'string' && tf.length >= 10 ? tf.slice(0, 10) : null;
+}
+
+// PURE: a load can span days (carryover / multi-day routes that started on an
+// earlier day but still deliver stops today). Keep only the stops whose OWN
+// scheduled date matches the board date — so such a load contributes its today
+// stops (correctly PLANNED) without polluting the day with its other-day stops.
+// Stops with no schedule fall back to the load's start date. Returns the kept
+// stops paired with their original index (preserves stopSeq). Exported for tests.
+export function loadStopsForDate(rawStops: any[], dateStr: string, loadStartDate: string | null): Array<{ s: any; i: number }> {
+  const out: Array<{ s: any; i: number }> = [];
+  for (let i = 0; i < (rawStops?.length || 0); i++) {
+    const s = rawStops[i];
+    const d = rawStopScheduledDate(s);
+    const keep = d == null ? loadStartDate === dateStr : d === dateStr;
+    if (keep) out.push({ s, i });
+  }
+  return out;
+}
+
+// Probe ONE load number for a date. Returns the load's stop rows (header-stamped)
+// for the stops that DELIVER on dateStr (so carryover loads contribute), else null.
+// Extracted so both the set/range scan and the adaptive forward scan share one
+// definition of "a load probe".
+async function probeLoad(n: number, dateStr: string, authHeader: string, companyCode: string): Promise<any[] | null> {
+  const loadNbr = `${companyCode}${String(n).padStart(9, '0')}`;
+  const url = `${NUVIZZ_BASE}/load/info/${encodeURIComponent(loadNbr)}/${encodeURIComponent(companyCode)}`;
+  try {
+    const resp = await getNuvizzRequester().request(url, { headers: { Authorization: authHeader, Accept: 'application/json' } }, { route: '/load/info', tenant: companyCode });
+    if (!resp.ok) return null;
+    const d: any = await resp.json();
+    const h = d?.Load?.loadHeader || {};
+    const a = d?.Load?.loadAssignment || {};
+    const stops = d?.Load?.stops || [];
+    const startDate = (h.earliestStartDttm || '').slice(0, 10) || null;
+    // Phase 4: carry the full load HEADER (not just the 5 stop-linking fields)
+    // so the sole scanner can build SITE A's complete nuvizzFleet load cards —
+    // vehicleType, origin, pallet/carton/weight — without a second scan.
+    const header = {
+      loadNbr: h.loadNbr, routeName: h.routeName,
+      driverName: a.driverName, driverUserName: a.driverUserName, driverEmail: a.driverEmail ?? null,
+      loadId: h.loadId ?? null, vehicleType: h.vehicleType ?? null, startDate,
+      totalPallets: h.totalPallets ?? null, totalCartons: h.totalCartons ?? null, weight: h.weight ?? null,
+      origin: {
+        name: h.originName ?? null, addr1: h.originAddr1 ?? null, city: h.originCity ?? null,
+        state: h.originState ?? null, zip: h.originZip ?? null,
+        latitude: h.originLatitude ?? null, longitude: h.originLongitude ?? null,
+      },
+    };
+    // Match by the STOP's delivery date, not the load's start date, so a load that
+    // started on a prior day still surfaces its today-stops as planned.
+    const kept = loadStopsForDate(stops, dateStr, startDate);
+    if (!kept.length) return null;
+    return kept.map(({ s, i }) => ({ ...s, load: { ...header, stopSeq: i } }));
+  } catch {
+    return null;
+  }
+}
+
 // Probe an EXPLICIT list of load numbers (Phase 2 lean discovery: known-active +
 // forward buffer + gap sweep). Same per-load /load/info call + date-filter as the
 // range scan — just an arbitrary set instead of a contiguous window.
 async function scanLoadNumbers(dateStr: string, numbers: number[], concurrency = PROBE_CONCURRENCY) {
   const { companyCode } = getCreds();
   const authHeader = basicAuthHeader();
-  const prefix = companyCode;
-
-  const probe = async (n: number) => {
-    const loadNbr = `${prefix}${String(n).padStart(9, '0')}`;
-    const url = `${NUVIZZ_BASE}/load/info/${encodeURIComponent(loadNbr)}/${encodeURIComponent(companyCode)}`;
-    try {
-      const resp = await getNuvizzRequester().request(url, { headers: { Authorization: authHeader, Accept: 'application/json' } }, { route: '/load/info', tenant: companyCode });
-      if (!resp.ok) return null;
-      const d: any = await resp.json();
-      const h = d?.Load?.loadHeader || {};
-      const a = d?.Load?.loadAssignment || {};
-      const stops = d?.Load?.stops || [];
-      const startDate = (h.earliestStartDttm || '').slice(0, 10);
-      if (startDate !== dateStr) return null;
-      // Phase 4: carry the full load HEADER (not just the 5 stop-linking fields)
-      // so the sole scanner can build SITE A's complete nuvizzFleet load cards —
-      // vehicleType, origin, pallet/carton/weight — without a second scan.
-      const header = {
-        loadNbr: h.loadNbr, routeName: h.routeName,
-        driverName: a.driverName, driverUserName: a.driverUserName, driverEmail: a.driverEmail ?? null,
-        loadId: h.loadId ?? null, vehicleType: h.vehicleType ?? null, startDate,
-        totalPallets: h.totalPallets ?? null, totalCartons: h.totalCartons ?? null, weight: h.weight ?? null,
-        origin: {
-          name: h.originName ?? null, addr1: h.originAddr1 ?? null, city: h.originCity ?? null,
-          state: h.originState ?? null, zip: h.originZip ?? null,
-          latitude: h.originLatitude ?? null, longitude: h.originLongitude ?? null,
-        },
-      };
-      return stops.map((s: any, i: number) => ({ ...s, load: { ...header, stopSeq: i } }));
-    } catch {
-      return null;
-    }
-  };
 
   const nums = numbers;
   const results: any[][] = [];
   let idx = 0;
   const runOne = async () => {
     while (idx < nums.length) {
-      const r = await probe(nums[idx++]);
+      const r = await probeLoad(nums[idx++], dateStr, authHeader, companyCode);
       if (r && r.length) results.push(r);
     }
   };
@@ -806,6 +839,98 @@ async function scanUnplannedStops(dateStr: string, opts: UnplannedScanOpts = {})
   return { records: results, complete, ceiling, floor, maxSeen };
 }
 
+// ── Adaptive forward discovery (call-reduction: weekend/cold resumption) ─────
+// New loads + orders always cluster ABOVE the last-known frontier (they're the
+// newest imports → higher numbers). Instead of a cold ~601-wide load window +
+// findCeiling-then-descend order scan, walk FORWARD from the persisted frontier
+// in small chunks and stop once a run of chunks turns up nothing new. Over the
+// weekend nothing changes below the frontier (Davis isn't working), so on the
+// Sunday resumption "freeze Friday's frontier, scan forward" is both correct and
+// far cheaper. Gated by NUVIZZ_FORWARD_SCAN; the deep sweep remains the periodic
+// backstop that re-confirms the band BELOW the frontier (out-of-order imports).
+export const FORWARD_CHUNK = Number(process.env.NUVIZZ_FORWARD_CHUNK) || 25;
+// Stop after this many CONSECUTIVE chunks find nothing new (absorbs numbering
+// gaps). Chad's spec is "until we don't find any new" — 2 empty 25-chunks = a
+// 50-number dead zone, a strong end-of-frontier signal. Env-tunable to 1.
+export const FORWARD_STOP_AFTER_EMPTY = Number(process.env.NUVIZZ_FORWARD_STOP_AFTER_EMPTY) || 2;
+
+export interface ForwardProbe { exists: boolean; isNew: boolean; record?: any }
+export interface ForwardScanResult { records: any[]; maxSeen: number; probes: number; complete: boolean }
+export interface ForwardScanOpts { chunk?: number; maxProbes?: number; stopAfterEmpty?: number; timeBudgetMs?: number }
+
+// Adaptive forward walk: probe `chunk` consecutive numbers from `start`, extend by
+// another chunk while chunks keep turning up NEW items, stop after `stopAfterEmpty`
+// consecutive empty chunks. maxProbes + timeBudget are hard backstops. Generic over
+// what a "probe" means (loads vs orders) so one definition serves both. PURE w.r.t.
+// the injected probe → unit-testable with no network (see test/scan-forward.test.mjs).
+export async function scanForward(
+  start: number,
+  probe: (n: number) => Promise<ForwardProbe>,
+  opts: ForwardScanOpts = {},
+): Promise<ForwardScanResult> {
+  const chunk = Math.max(1, opts.chunk ?? FORWARD_CHUNK);
+  const maxProbes = opts.maxProbes ?? 2500;
+  const stopAfterEmpty = Math.max(1, opts.stopAfterEmpty ?? FORWARD_STOP_AFTER_EMPTY);
+  const timeBudgetMs = opts.timeBudgetMs ?? 120_000;
+  const records: any[] = [];
+  let n = start;
+  let probes = 0;
+  let emptyStreak = 0;
+  let maxSeen = 0;
+  const startedAt = Date.now();
+  while (probes < maxProbes && Date.now() - startedAt < timeBudgetMs) {
+    const batch: number[] = [];
+    for (let i = 0; i < chunk; i++) batch.push(n++);
+    probes += batch.length;
+    const rs = await Promise.all(batch.map((m) => probe(m).then((r) => ({ m, ...r }))));
+    let newCount = 0;
+    for (const r of rs) {
+      if (r.exists && r.m > maxSeen) maxSeen = r.m;
+      if (r.isNew) {
+        newCount++;
+        if (r.record !== undefined && r.record !== null) records.push(r.record);
+      }
+    }
+    if (newCount === 0) {
+      if (++emptyStreak >= stopAfterEmpty) break;
+    } else {
+      emptyStreak = 0;
+    }
+  }
+  const complete = !(probes >= maxProbes) && !(Date.now() - startedAt >= timeBudgetMs);
+  return { records, maxSeen, probes, complete };
+}
+
+// Forward order discovery: walk UP from the last-known unplanned high-water,
+// collecting status-10 target stops, until the frontier runs dry. Mirrors the
+// return shape of scanUnplannedStops so scanDate consumes it identically.
+async function scanUnplannedForward(dateStr: string, fromStopNbr: number, opts: ForwardScanOpts = {}) {
+  const { companyCode } = getCreds();
+  const authHeader = basicAuthHeader();
+  const start = fromStopNbr + 1;
+  const r = await scanForward(start, async (n) => {
+    const p = await probeStop(n, dateStr, authHeader, companyCode);
+    return { exists: p.exists, isNew: !!p.record, record: p.record ?? undefined };
+  }, opts);
+  if (r.maxSeen > observedFrontier) observedFrontier = r.maxSeen;
+  return { records: r.records, complete: r.complete, ceiling: r.maxSeen || fromStopNbr, floor: start, maxSeen: r.maxSeen };
+}
+
+// Forward load discovery: re-pull already-known active loads (status updates),
+// then walk UP from the last-known max load number for NEW loads until the
+// frontier runs dry. Returns flattened stop rows like scanLoadNumbers.
+async function scanLoadForward(dateStr: string, fromLoadNbr: number, knownActive: number[], opts: ForwardScanOpts = {}) {
+  const { companyCode } = getCreds();
+  const authHeader = basicAuthHeader();
+  const knownRows = knownActive.length ? await scanLoadNumbers(dateStr, knownActive) : [];
+  const fwd = await scanForward(fromLoadNbr + 1, async (n) => {
+    const rows = await probeLoad(n, dateStr, authHeader, companyCode);
+    const hit = !!(rows && rows.length);
+    return { exists: hit, isNew: hit, record: hit ? rows : undefined };
+  }, opts);
+  return [...knownRows, ...fwd.records.flat()];
+}
+
 export interface ScanResult {
   date: string;
   stops: NormalizedStop[];
@@ -830,7 +955,7 @@ export interface ScanResult {
 
 // Full scan for one date: planned (load scan) + unplanned (number-space scan),
 // deduped (load-sourced wins), normalized. Used by the background writer.
-export async function scanDate(dateStr: string, opts: { unplanned?: UnplannedScanOpts; includeUnplanned?: boolean; includeLoads?: boolean; loadTargets?: number[] | null } = {}): Promise<ScanResult> {
+export async function scanDate(dateStr: string, opts: { unplanned?: UnplannedScanOpts; includeUnplanned?: boolean; includeLoads?: boolean; loadTargets?: number[] | null; forwardLoad?: { start: number; known?: number[] } | null; forwardUnplanned?: { start: number } | null } = {}): Promise<ScanResult> {
   const includeUnplanned = opts.includeUnplanned !== false; // default true
   const includeLoads = opts.includeLoads !== false;         // default true
   // P0 kill switch — when scans are disabled, generate ZERO NuVizz traffic and
@@ -840,21 +965,31 @@ export async function scanDate(dateStr: string, opts: { unplanned?: UnplannedSca
     return { date: dateStr, stops: [], plannedCount: 0, unplannedCount: 0, scannedAt: new Date().toISOString(), includeUnplanned, includeLoads };
   }
   // Phase 2: when loadTargets is provided (lean discovery from scan_state), probe
-  // exactly that set; otherwise probe the calibrated ±window (cold-start fallback).
+  // exactly that set; forwardLoad → adaptive forward walk from the carried frontier;
+  // otherwise probe the calibrated ±window (cold-start fallback).
   const useTargets = Array.isArray(opts.loadTargets) && opts.loadTargets.length > 0;
-  const { startNbr, endNbr } = useTargets ? { startNbr: 0, endNbr: 0 } : estimateLoadRange(dateStr);
+  const useForwardLoad = !!opts.forwardLoad;
+  // partialLoad = we deliberately probed a SUBSET (lean set / forward walk), not the
+  // full window — so don't calibrate the cold-start window off it (would poison it).
+  const partialLoad = useTargets || useForwardLoad;
+  const { startNbr, endNbr } = partialLoad ? { startNbr: 0, endNbr: 0 } : estimateLoadRange(dateStr);
   // includeLoads=false → unplanned-only (skip the load-number scan entirely — no
   // /load/info probes). includeUnplanned=false → load-only (skip the descent +
   // its findCeiling probing). At least one is always true at the call sites.
   const EMPTY_DESCENT = { records: [] as any[], complete: true, ceiling: 0, floor: 0, maxSeen: 0 };
-  const [loadStops, descent] = await Promise.all([
-    includeLoads
-      ? (useTargets ? scanLoadNumbers(dateStr, opts.loadTargets as number[]) : scanLoadRangeForDate(dateStr, startNbr, endNbr))
-      : Promise.resolve([] as any[]),
-    includeUnplanned
-      ? scanUnplannedStops(dateStr, opts.unplanned).catch(() => ({ ...EMPTY_DESCENT, complete: false }))
-      : Promise.resolve(EMPTY_DESCENT),
-  ]);
+  const loadScan = !includeLoads
+    ? Promise.resolve([] as any[])
+    : useForwardLoad
+      ? scanLoadForward(dateStr, opts.forwardLoad!.start, opts.forwardLoad!.known || [])
+      : useTargets
+        ? scanLoadNumbers(dateStr, opts.loadTargets as number[])
+        : scanLoadRangeForDate(dateStr, startNbr, endNbr);
+  const unplannedScan = !includeUnplanned
+    ? Promise.resolve(EMPTY_DESCENT)
+    : opts.forwardUnplanned
+      ? scanUnplannedForward(dateStr, opts.forwardUnplanned.start).catch(() => ({ ...EMPTY_DESCENT, complete: false }))
+      : scanUnplannedStops(dateStr, opts.unplanned).catch(() => ({ ...EMPTY_DESCENT, complete: false }));
+  const [loadStops, descent] = await Promise.all([loadScan, unplannedScan]);
   const unplannedStops = descent.records;
 
   const seen = new Set<string>(loadStops.map((s: any) => s.stopNbr).filter(Boolean));
@@ -882,7 +1017,7 @@ export async function scanDate(dateStr: string, opts: { unplanned?: UnplannedSca
   // Only from a FULL wide-window scan — never from a lean target set (useTargets):
   // a lean scan deliberately omits terminal low-end loads, so calibrating off it
   // would poison the cold-start fallback window with an artificially-high min.
-  if (includeLoads && !useTargets) calibrateLoadRange(dateStr, Object.keys(loadHeaders));
+  if (includeLoads && !partialLoad) calibrateLoadRange(dateStr, Object.keys(loadHeaders));
 
   return {
     date: dateStr,

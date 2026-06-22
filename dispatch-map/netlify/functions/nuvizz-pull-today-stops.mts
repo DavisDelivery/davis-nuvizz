@@ -122,7 +122,7 @@ export default async (req: Request): Promise<Response> => {
         ops = {
           dayCount: stats.count,
           byRoute: stats.byRoute,
-          ceiling: Number(process.env.NUVIZZ_DAILY_CEILING) || 100000,
+          ceiling: Number(process.env.NUVIZZ_DAILY_CEILING) || 12000,
           breaker: circuit.open,
           mode: breakerMode(),
           // Learned scan-discovery summary (avg/max new loads/day, worst gap,
