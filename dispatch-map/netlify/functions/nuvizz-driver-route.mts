@@ -4,13 +4,24 @@
 // HOS + daily miles, all bundled. Called by the M4.1 right-sidebar when the
 // dispatcher clicks a driver marker.
 //
-// Approach: NuVizz v7 does not expose a list-loads-by-driver endpoint, so we
-// reuse the load-number scan that already powers nuvizz-pull-today-stops, and
-// filter by driver. Matching prefers loadAssignment.driverUserName (a stable
-// short code like "VINCENT") over loadAssignment.driverName (a full name like
-// "VINCENT  BONZO" that NuVizz returns with inconsistent internal whitespace).
-// This mirrors how netlify/functions/nuvizz.cjs:__driver in the parent app
-// matches drivers, which is the only proven pattern across the codebase.
+// Data source: the pre-scanned Firestore stop index
+// (nuvizz_stop_index/{tenant}__{date}) that nuvizz-refresh-stops-background
+// already populates — the SAME index nuvizz-pull-today-stops serves to the map.
+// We read it and filter to the loads assigned to this driver. This costs ZERO
+// NuVizz calls per click.
+//
+// History: this function used to scan ~501 live /load/info numbers on EVERY
+// click, via a raw fetch() that bypassed getNuvizzRequester() — so that traffic
+// was invisible to the shared daily call counter AND not subject to the circuit
+// breaker. A single dispatcher opening a dozen driver panels could fire ~6,000
+// uncounted NuVizz calls. Reading the index removes that entirely: every NuVizz
+// call the app makes now goes through the metered requester, so the counter is
+// complete. (Regression-guarded by test/no-direct-nuvizz-fetch.test.mjs.)
+//
+// Matching prefers loadAssignment.driverUserName (a stable short code like
+// "VINCENT") over loadAssignment.driverName (a full name like "VINCENT  BONZO"
+// that NuVizz returns with inconsistent internal whitespace), mirroring the
+// proven pattern in the parent app's nuvizz.cjs:__driver.
 //
 // Query params:
 //   driver=<name>     driver full name from Motive (passed by client)
@@ -33,27 +44,13 @@
 //   raw: { ... }     // preserve at every layer per standing rules
 // }
 
-import { scansEnabled } from './lib/nuvizz-scan.mts';
+import { isFirestoreEnabled, readStops } from './lib/firestore.mts';
 
-const NUVIZZ_BASE = process.env.NUVIZZ_BASE_URL || 'https://portal.nuvizz.com/deliverit/openapi/v7';
 const MOTIVE_BASE = process.env.MOTIVE_BASE_URL || 'https://api.gomotive.com/v1';
+const TENANT = 'davis'; // index tenant key — matches nuvizz-pull-today-stops.mts
 
 function todayUTC(): string {
   return new Date().toISOString().slice(0, 10);
-}
-
-function getCreds() {
-  return {
-    companyCode: (process.env.NUVIZZ_DAVIS_COMPANY_CODE || 'DAVIS').toUpperCase(),
-    user: process.env.NUVIZZ_DAVIS_USER,
-    pass: process.env.NUVIZZ_DAVIS_PASS,
-  };
-}
-
-function basicAuthHeader() {
-  const { user, pass } = getCreds();
-  if (!user || !pass) throw new Error('Missing NUVIZZ_DAVIS_USER or NUVIZZ_DAVIS_PASS');
-  return 'Basic ' + Buffer.from(`${user}:${pass}`).toString('base64');
 }
 
 // DAVIS_DRIVERS — full registry mirrored from the parent app
@@ -121,128 +118,81 @@ function resolveUserName(driverFullName: string): string | null {
 }
 
 // In-memory per-driver cache, 30s TTL. Matches the client cache; redundant
-// but cheap insurance.
+// but cheap insurance against repeated Firestore reads on rapid re-clicks.
 const __cache = new Map<string, { storedAt: number; data: any }>();
 const CACHE_TTL_MS = 30 * 1000;
 
-// Normalize a NuVizz stop status string to one of {completed, en_route, current, pending}.
-function normalizeStopStatus(raw: string | null): string {
-  if (!raw) return 'pending';
-  const s = raw.toLowerCase();
-  if (s.includes('deliver') || s.includes('complete') || s.includes('arrived') || s === 'd') return 'completed';
-  if (s.includes('enroute') || s.includes('en route') || s.includes('in_transit') || s === 'e') return 'en_route';
-  if (s.includes('current') || s.includes('next')) return 'current';
-  return 'pending';
+// Map the index's execution-lifecycle bucket (StopStatusKind) to the coarse
+// status the driver sidebar renders. Anything not in-flight or delivered counts
+// as 'pending' (incl. SCHEDULED / EXCEPTION / UNPLANNED) so the route's
+// completed/remaining split matches the fleet summary.
+function driverStatusFromNormalized(n: string | null | undefined): string {
+  switch (n) {
+    case 'DELIVERED': return 'completed';
+    case 'OUT_FOR_DEL': return 'en_route';
+    case 'ARRIVED': return 'current';
+    default: return 'pending';
+  }
 }
 
-// Try to find route info for this driver via the load-info scan that
-// nuvizz-pull-today-stops uses. Same scan range; we just filter to loads
-// assigned to the given driver. Returns a route object + a stop list + a
-// diagnostic field saying which match strategy succeeded (or null).
-async function buildRouteFromLoadScan(
-  date: string,
+// PURE: given the pre-scanned stop index for a date, return the driver's route +
+// stops in the snapshot shape. No I/O — unit-testable. Sources every field from
+// the Firestore index that the map already uses, so it costs ZERO NuVizz calls.
+export function buildDriverRouteFromStops(
+  indexed: any[],
   driverFullName: string,
   userName: string | null,
-): Promise<{ route: any; stops: any[]; matchedBy: 'userName' | 'driverName' | null }> {
-  // P0 kill switch — when NUVIZZ_SCANS_ENABLED=false, this on-demand 501-load
-  // fan-out is suppressed (returns no route) so the disable is comprehensive.
-  if (!scansEnabled()) return { route: null, stops: [], matchedBy: null };
-  const { companyCode } = getCreds();
-  // Anchor + range identical to nuvizz-pull-today-stops.mts — keep in sync if
-  // you change one, change both.
-  const ANCHOR_DATE = new Date('2026-04-22T00:00:00Z');
-  const ANCHOR_LOAD = 192900;
-  const LOADS_PER_DAY = 80;
-  const target = new Date(date + 'T00:00:00Z');
-  const daysDiff = Math.round((target.getTime() - ANCHOR_DATE.getTime()) / (1000 * 60 * 60 * 24));
-  const center = ANCHOR_LOAD + daysDiff * LOADS_PER_DAY;
-  const startNbr = center - 250;
-  const endNbr = center + 250;
-
-  const auth = basicAuthHeader();
-  const nums: number[] = [];
-  for (let n = endNbr; n >= startNbr; n--) nums.push(n);
-
+): { route: any; stops: any[]; matchedBy: 'userName' | 'driverName' | null } {
   const targetName = normName(driverFullName);
   const targetUser = (userName || '').toUpperCase().trim();
 
-  const matchingLoads: any[] = [];
+  const mine: any[] = [];
   let matchedBy: 'userName' | 'driverName' | null = null;
-  let idx = 0;
-  const runOne = async () => {
-    while (idx < nums.length) {
-      const myIdx = idx++;
-      const n = nums[myIdx];
-      const loadNbr = `${companyCode}${String(n).padStart(9, '0')}`;
-      const url = `${NUVIZZ_BASE}/load/info/${encodeURIComponent(loadNbr)}/${encodeURIComponent(companyCode)}`;
-      try {
-        const resp = await fetch(url, { headers: { Authorization: auth, Accept: 'application/json' } });
-        if (!resp.ok) continue;
-        const d: any = await resp.json();
-        const h = d?.Load?.loadHeader || {};
-        const a = d?.Load?.loadAssignment || {};
-        const startDate = (h.earliestStartDttm || '').slice(0, 10);
-        if (startDate !== date) continue;
-        const loadUser: string = (a.driverUserName || '').toUpperCase().trim();
-        const loadDriver: string = normName(a.driverName);
-        if (!loadUser && !loadDriver) continue;
-        // Prefer stable userName match; fall back to whitespace-normalized name.
-        if (targetUser && loadUser === targetUser) {
-          matchingLoads.push({ load: d.Load, loadHeader: h, assignment: a });
-          matchedBy = matchedBy || 'userName';
-        } else if (targetName && loadDriver === targetName) {
-          matchingLoads.push({ load: d.Load, loadHeader: h, assignment: a });
-          matchedBy = matchedBy || 'driverName';
-        }
-      } catch { /* skip */ }
-    }
-  };
-  await Promise.all(Array.from({ length: 25 }, runOne));
-
-  // Flatten stops across all matching loads, sort by scheduled time.
-  // NuVizz wraps each stop in { stop, stopExecutionInfo, ... } — unwrap to
-  // get to the actual stop fields. Mirrors nuvizz-pull-today-stops.mts.
-  const stops: any[] = [];
-  for (const ml of matchingLoads) {
-    const stopsRaw = ml.load?.stops || [];
-    for (const raw of stopsRaw) {
-      const s = raw.stop || raw;
-      const exec = raw.stopExecutionInfo || {};
-      const primary = s.stopType === 'PU' ? (s.from || {}) : (s.to || s.from || {});
-      const addr = primary.address || s.address || {};
-      const schedule = primary.schedule || {};
-      // PRO = stopNbr (see nuvizz-pull-today-stops.mts for the rationale —
-      // NuVizz `proNumber` is a code like "G1", not a number).
-      const stopNbr: string | null = s.stopNbr ?? null;
-      const pros: string[] = stopNbr ? [stopNbr] : [];
-      stops.push({
-        pro: stopNbr,
-        pros,
-        primaryPro: pros[0] ?? null,
-        proCount: pros.length,
-        stopNbr,
-        businessName: addr.name || s.custInfo?.custName || null,
-        addr1: addr.addr1 ?? null,
-        city: addr.city ?? null,
-        state: addr.state ?? null,
-        lat: addr.latitude != null ? Number(addr.latitude) : null,
-        lng: addr.longitude != null ? Number(addr.longitude) : null,
-        scheduledTime: schedule.timeFrom ?? null,
-        actualArrival: exec.arrivalDttm ?? exec.arrivedDttm ?? null,
-        actualCompletion: exec.completionDttm ?? exec.completedDttm ?? null,
-        status: normalizeStopStatus(exec.stopStatus || s.status || null),
-        loadNbr: ml.loadHeader.loadNbr,
-      });
+  for (const s of indexed || []) {
+    if (!s || !s.isPlanned) continue; // only routed/planned stops belong to a driver
+    const loadUser = String(s.driverUserName || '').toUpperCase().trim();
+    const loadDriver = normName(s.driverName);
+    if (!loadUser && !loadDriver) continue;
+    // Prefer stable userName match; fall back to whitespace-normalized name.
+    if (targetUser && loadUser === targetUser) {
+      mine.push(s);
+      matchedBy = matchedBy || 'userName';
+    } else if (targetName && loadDriver === targetName) {
+      mine.push(s);
+      matchedBy = matchedBy || 'driverName';
     }
   }
+
+  const stops = mine.map((s) => {
+    const stopNbr: string | null = s.stopNbr ?? null;
+    const pros: string[] = Array.isArray(s.pros) && s.pros.length ? s.pros : (stopNbr ? [stopNbr] : []);
+    return {
+      pro: s.pro ?? stopNbr,
+      pros,
+      primaryPro: s.primaryPro ?? pros[0] ?? null,
+      proCount: typeof s.proCount === 'number' ? s.proCount : pros.length,
+      stopNbr,
+      businessName: s.businessName ?? null,
+      addr1: s.addr1 ?? null,
+      city: s.city ?? null,
+      state: s.state ?? null,
+      lat: s.lat ?? null,
+      lng: s.lng ?? null,
+      scheduledTime: s.scheduledFrom ?? null,
+      actualArrival: s.arrivalDTTM ?? null,
+      actualCompletion: s.deliveredDTTM ?? null,
+      status: driverStatusFromNormalized(s.normalizedStatus),
+      loadNbr: s.loadNbr ?? null,
+    };
+  });
+  // Sort by scheduled time so the sidebar shows the route in delivery order.
   stops.sort((a, b) => (a.scheduledTime || '').localeCompare(b.scheduledTime || ''));
 
   if (!stops.length) return { route: null, stops: [], matchedBy: null };
 
   const completed = stops.filter((s) => s.status === 'completed').length;
-  // Use the first load's loadNbr as a stand-in "route id" until the real
-  // route endpoint is wired; the dispatcher will still see a useful value.
-  const routeId = matchingLoads[0]?.loadHeader?.loadNbr || null;
+  // Use the first matched load's loadNbr as a stand-in "route id".
+  const routeId = mine[0]?.loadNbr || null;
   return {
     route: {
       id: routeId,
@@ -253,6 +203,18 @@ async function buildRouteFromLoadScan(
     stops,
     matchedBy,
   };
+}
+
+// Read the pre-scanned index for the date and build the driver's route from it.
+// Degrades safely (empty route) when Firestore is not configured.
+async function buildRouteFromIndex(
+  date: string,
+  driverFullName: string,
+  userName: string | null,
+): Promise<{ route: any; stops: any[]; matchedBy: 'userName' | 'driverName' | null }> {
+  if (!isFirestoreEnabled()) return { route: null, stops: [], matchedBy: null };
+  const { stops: indexed } = await readStops(TENANT, date);
+  return buildDriverRouteFromStops(indexed, driverFullName, userName);
 }
 
 // Motive HOS — best-effort. Returns null if not exposed for this tier.
@@ -330,13 +292,13 @@ export default async (req: Request): Promise<Response> => {
     let matchedBy: 'userName' | 'driverName' | null = null;
     if (driver || userName) {
       try {
-        const r = await buildRouteFromLoadScan(date, driver, userName);
+        const r = await buildRouteFromIndex(date, driver, userName);
         route = r.route;
         stops = r.stops;
         matchedBy = r.matchedBy;
       } catch (e: any) {
-        // If NuVizz creds missing or network fails, fall through with route=null.
-        if (!/Missing NUVIZZ/.test(e.message)) console.warn('route scan failed', e.message);
+        // Index read failed (e.g. Firestore hiccup) — fall through with route=null.
+        console.warn('driver-route index read failed', e.message);
       }
     }
 

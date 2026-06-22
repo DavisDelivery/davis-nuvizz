@@ -70,7 +70,7 @@ export async function runRefreshStops(req: Request): Promise<Response> {
 
   const [today, tomorrow] = scanDatesFrom(todayUTC(), 2);
   const fsOn = isFirestoreEnabled();
-  const ceiling = Number(process.env.NUVIZZ_DAILY_CEILING) || 100000;
+  const ceiling = Number(process.env.NUVIZZ_DAILY_CEILING) || 12000;
   // Phase 2 — lean load discovery (known-active + buffer + gap sweep). OFF by
   // default; flip NUVIZZ_LEAN_DISCOVERY=on only AFTER preview stop-set parity is
   // confirmed. Off = the proven wide-window probe, unchanged.
