@@ -17,7 +17,8 @@
 
 import { scanDate, todayUTC, scansEnabled, deriveFleetSummary, estimateLoadRange, buildScanState, shadowWouldProbe, selectLoadProbeTargets, groupLoadMembers, estimateStopFrontier, unplannedFloor, FLOOR_MARGIN, loadNbrToInt, stopNbrToInt, shouldDeepSweep } from './nuvizz-scan.mts';
 import { loadProbeParity, frontierParity, loadMembershipDelta, dateSliceMismatch } from './scan-parity.mts';
-import { isFirestoreEnabled, writeStops, writeFleetIndex, getDoc, markScanState, readCallStats, readCircuit, readScanState, writeScanState } from './firestore.mts';
+import { isFirestoreEnabled, writeStops, writeFleetIndex, getDoc, markScanState, readCallStats, readCircuit, readScanState, writeScanState, recordScanMetric, etDayString } from './firestore.mts';
+import { maxConsecutiveGap } from './scan-metrics.mts';
 import { breakerTripped, scanIntervalElapsed, breakerMode } from './nuvizz-request.mts';
 import { scanDecision, isInRoutingWindow } from './scan-schedule.mts';
 
@@ -275,6 +276,20 @@ export async function runRefreshStops(req: Request): Promise<Response> {
               : { mismatch: 0, unauditable: 0 };
 
             console.log(`[scan-parity] date=${date} loadMode=${lp.mode} foundLoads=${lp.foundCount} leanTargets=${lp.targetCount} MISSED_LOADS=${JSON.stringify(lp.missed)} emptyProbed=${lp.extra.length} | frontierFloor=${fp.floor ?? 'na'} foundUnplanned=${fp.foundCount} BELOW_FLOOR_NEW=${JSON.stringify(fp.belowFloorNew)} belowFloorKnown=${fp.belowFloorKnown.length} | LOAD_REMOVED=${mem.removed.length} LOAD_ADDED=${mem.added.length} | dMaxLoad=${dmax ?? 'na'} dateSliceMismatch=${dateAudit.mismatch} dateUnauditable=${dateAudit.unauditable} descentComplete=${scan.descentComplete ?? 'na'} deepSweep=${deepSweep}`);
+            // Learning instrumentation: record this scan's real load delta + worst
+            // gap so we can size the adaptive forward-walk from evidence. Today only
+            // (the date the dispatcher actually works); best-effort.
+            if (date === today) {
+              await recordScanMetric({
+                date, at: etDayString() + ' ' + new Date().toISOString().slice(11, 16),
+                foundLoads: lp.foundCount,
+                newLoads: dmax,
+                maxGap: maxConsecutiveGap(foundLoads),
+                windowProbed: windowSize,
+                lean: !!loadTargets,
+                missed: lp.missed.length,
+              });
+            }
             if (lp.missed.length) console.warn(`[scan-parity] date=${date} ⚠ LEAN WOULD MISS LOADS ${JSON.stringify(lp.missed)}`);
             if (fp.belowFloorNew.length) console.warn(`[scan-parity] date=${date} ⚠ FRONTIER WOULD MISS NEW UNPLANNED ${JSON.stringify(fp.belowFloorNew.slice(0, 20))}${fp.belowFloorNew.length > 20 ? ' …' : ''}`);
             if (mem.removed.length) console.log(`[scan-parity] date=${date} off-load removals=${JSON.stringify(mem.removed.slice(0, 20))}`);

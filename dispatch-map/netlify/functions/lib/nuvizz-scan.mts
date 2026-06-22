@@ -434,7 +434,7 @@ export function estimateLoadRange(dateStr: string): { startNbr: number; endNbr: 
   return { startNbr: center - LOAD_WINDOW_HALF, endNbr: center + LOAD_WINDOW_HALF };
 }
 
-async function scanLoadRangeForDate(dateStr: string, startNbr: number, endNbr: number, concurrency = 30) {
+async function scanLoadRangeForDate(dateStr: string, startNbr: number, endNbr: number, concurrency = PROBE_CONCURRENCY) {
   const nums: number[] = [];
   for (let n = endNbr; n >= startNbr; n--) nums.push(n);
   return scanLoadNumbers(dateStr, nums, concurrency);
@@ -443,7 +443,7 @@ async function scanLoadRangeForDate(dateStr: string, startNbr: number, endNbr: n
 // Probe an EXPLICIT list of load numbers (Phase 2 lean discovery: known-active +
 // forward buffer + gap sweep). Same per-load /load/info call + date-filter as the
 // range scan — just an arbitrary set instead of a contiguous window.
-async function scanLoadNumbers(dateStr: string, numbers: number[], concurrency = 30) {
+async function scanLoadNumbers(dateStr: string, numbers: number[], concurrency = PROBE_CONCURRENCY) {
   const { companyCode } = getCreds();
   const authHeader = basicAuthHeader();
   const prefix = companyCode;
@@ -507,6 +507,13 @@ const CEILING_MARGIN = 40;
 const GALLOP_STEP = 200;
 const MAX_GALLOP = 6;
 export const FLOOR_MARGIN = 2500;
+// Probe concurrency — how many /load/info or /stop/info calls fire in parallel.
+// LOW by default so a scan SPREADS its calls over time instead of bursting (the
+// NuVizz complaint: "1000+ at a single time, single minute"). Env-tunable so we
+// can dial it without a deploy. Loads use the small value; the unplanned descent
+// is gallop-based so it tolerates a slightly larger pool.
+const PROBE_CONCURRENCY = Number(process.env.NUVIZZ_PROBE_CONCURRENCY) || 6;
+const DESCENT_CONCURRENCY = Number(process.env.NUVIZZ_DESCENT_CONCURRENCY) || 10;
 const FUTURE_CHUNKS_TO_STOP = 2;
 const POST_TARGET_CHUNKS_TO_STOP = 3;
 // Phase 6: keep ~2 weeks of recent stop numbers in the terminal skip cache so
@@ -681,7 +688,7 @@ export function unplannedFloor(estimateFloor: number, sinceStopNbr?: number | nu
 // Background callers pass generous budgets (no 26s cap) so the cluster is never
 // truncated; the early-stop heuristics keep it from scanning the whole space.
 async function scanUnplannedStops(dateStr: string, opts: UnplannedScanOpts = {}) {
-  const concurrency = opts.concurrency ?? 40;
+  const concurrency = opts.concurrency ?? DESCENT_CONCURRENCY;
   const timeBudgetMs = opts.timeBudgetMs ?? 120_000;
   // P0 (Jun 2026): hard-cap the unplanned number-space descent. 6000 probes/run ×
   // every-date × every-5-min cron was a primary contributor to the NuVizz overage.
