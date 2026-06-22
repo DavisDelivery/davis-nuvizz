@@ -47,7 +47,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.29.8';
+const APP_VERSION = '0.29.14';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -67,6 +67,12 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.29.14', 'DNS "Drivers not allowed" picker now always has drivers to choose from: it lists every driver assigned to the current board\'s loads (from the scan), not just the live Motive feed — which only loaded when "Show drivers (live)" was on for today. Fixed the misleading "Open the Drivers tab" hint too.'],
+  ['0.29.13', 'Desktop: the "Search past PROs / customer history" button is now in the left sidebar (under the search box) — previously it existed only on mobile. Opens the same saved-delivery-history lookup as an overlay, prefilled with whatever is already typed in the live search.'],
+  ['0.29.12', 'Fix: planned orders no longer show as "Unplanned". NuVizz keeps a stop at status-10 even after it has been put on a load (planned but not yet dispatched); the order/unplanned scan was re-tagging those load-assigned stops as unplanned, overwriting the load scan. The unplanned descent now excludes any stop that already carries a load number, so planned-but-not-started orders stay planned.'],
+  ['0.29.11', 'Unplanned stop pins recolored to thistle (light purple) per dispatch request.'],
+  ['0.29.10', 'Map pins: planned and unplanned stops now render at the same smaller size (only search-matched / AM-PM-tagged pins are enlarged for emphasis), and unplanned stops are tinted mint instead of blue so they read distinctly on satellite.'],
+  ['0.29.9', 'NuVizz scan politeness + learning (addresses their "1000+ calls in a single minute" notice). (1) Probe concurrency is throttled (was firing ~30 load lookups in parallel = a burst) and is now env-tunable, so a scan SPREADS its calls over time instead of hammering NuVizz at once. (2) New scan-discovery monitoring records, every scan, how many loads were found, how many were NEW vs the prior day, and the largest gap between load numbers — surfaced as a learned summary (avg/max new-loads/day, worst gap, recommended look-ahead) so we can safely switch to a no-daily-seed incremental scan next, tuned from real data instead of guesses.'],
   ['0.29.8', 'Weekend call savings + a clearer call counter. (1) The nightly history-warehouse snapshot now skips Saturday & Sunday — it was archiving empty non-working days at full cost (~1,200 NuVizz calls each), which is why calls showed on a weekend even with the live scan off. Friday and Monday are still archived; on-demand backfill is unchanged. (2) The "calls today" counter now follows a normal midnight-to-midnight Eastern day instead of UTC, so after-midnight-UTC jobs (the ~2am ET snapshot) count on the right local day and a truly quiet day reads 0.'],
   ['0.29.7', 'Two additions: (1) Tap a customer in the historical search to open their full detail + notes editor. (2) New "DNS — do not send" control: a red/white DNS badge that shows everywhere the customer appears (map pin = red pin with ✕, stop list, stop detail, and historical search), plus a do-not-send toggle and a multi-select of which drivers are not allowed to that customer (from the app driver list). Saved per customer alongside the other notes.'],
   ['0.29.6', 'Historical customer search now matches a word ANYWHERE in the name, not just the start — searching “locksmith” now finds “SOLID LOCKSMITH” (before, only “solid…” worked). Multi-word searches must match all words. (Built on per-customer name word-tokens; still reads only our saved history, no NuVizz call.)'],
@@ -2860,7 +2866,7 @@ function StopNotesEditor({ draft, setDraft, compact = false, drivers = [] }) {
           <div className="mt-2">
             <div className="text-[11px] font-semibold text-slate-600 mb-1">Drivers not allowed (tap to bar)</div>
             {driverNames.length === 0 ? (
-              <div className="text-[11px] text-slate-400 italic">No drivers loaded yet. Open the Drivers tab to load them, or leave blank for a general do-not-send.</div>
+              <div className="text-[11px] text-slate-400 italic">No drivers on today's board yet to bar. They appear here once loads are assigned drivers (or turn on "Show drivers (live)" for today). Leave blank for a general do-not-send.</div>
             ) : (
               <div className="flex flex-wrap gap-1.5">
                 {driverNames.map((name) => {
@@ -4591,6 +4597,9 @@ function MapScreen() {
   const [searchInput, setSearchInput] = useState('');
   const debouncedSearch = useDebouncedValue(searchInput, 200);
   const { history, remember } = useSearchHistory();
+  // Desktop historical PRO / customer-history lookup (mobile has its own in
+  // MobileStopsTab). Rendered as an overlay so the board stays mounted behind it.
+  const [histOpen, setHistOpen] = useState(false);
 
   // M6 — AI Order Search state. aiMode flips the search box into NL parse mode;
   // aiResult holds the AI-derived match set (from search OR chat) that overrides
@@ -4634,6 +4643,19 @@ function MapScreen() {
   const { drivers, error: driverErr, lastRefreshed: driversAt } = useDriverPositions(showDrivers);
   const { snapshot, loading: snapshotLoading, error: snapshotError } = useDriverSnapshot(selectedDriver);
   const panel = useResizablePanel(viewportWidth);
+
+  // Driver source for the DNS "barred drivers" picker. The live Motive feed only
+  // loads when "Show drivers (live)" is on AND the date is today, so on its own
+  // the picker is usually empty. Merge in every driver assigned to the current
+  // board's loads (from the scan) so there's always a roster to bar from. Synthetic
+  // {driverName} objects are fine — the notes editor only reads .driverName.
+  const notesDrivers = useMemo(() => {
+    const names = new Set([
+      ...(drivers || []).map((d) => d?.driverName).filter(Boolean),
+      ...(stops || []).map((s) => s.driverName).filter(Boolean),
+    ]);
+    return [...names].sort().map((driverName) => ({ driverName }));
+  }, [drivers, stops]);
 
   const searchInputRef = useRef(null);
   const mapRef = useRef(null);
@@ -5138,14 +5160,14 @@ function MapScreen() {
           else if (addressOff) glyph = 'bang';
         }
         const big = matched || !!tag;
-        // Unplanned stops render a touch smaller than planned ones (de-emphasized
-        // until they're routed), now solid blue for contrast on satellite.
-        const small = !big && statusKind === 'UNPLANNED';
+        // Planned and unplanned stops render at the SAME smaller size — only a
+        // matched/AM-PM-tagged pin is enlarged for emphasis. Unplanned stops are
+        // tinted thistle (STATUS_META.UNPLANNED) to read distinctly from planned.
         icon = {
           url: pinSvgStatus(color, { hollow: matched ? false : meta.hollow, glyph, tag }),
           // Slightly larger when matched or AM/PM-tagged so they stand out.
-          scaledSize: big ? new google.maps.Size(28, 36) : (small ? new google.maps.Size(16, 21) : new google.maps.Size(20, 26)),
-          anchor: big ? new google.maps.Point(14, 34) : (small ? new google.maps.Point(8, 20) : new google.maps.Point(10, 25)),
+          scaledSize: big ? new google.maps.Size(28, 36) : new google.maps.Size(16, 21),
+          anchor: big ? new google.maps.Point(14, 34) : new google.maps.Point(8, 20),
         };
       } else {
         // Restriction / receiving-hours icons. A priority flag recolors them to
@@ -5658,7 +5680,7 @@ function MapScreen() {
           <MobileStopDetailDrawer
             stop={selectedStop}
             note={notes.get(selectedStop.matchKey)}
-            drivers={drivers}
+            drivers={notesDrivers}
             onClose={() => setSelectedStop(null)}
             onMoveLocation={startMoveLocation}
             onEditAddress={openAddrEditor}
@@ -5753,6 +5775,23 @@ function MapScreen() {
   // Desktop / tablet (≥768px): existing layout unchanged.
   return (
     <div className="flex flex-1 overflow-hidden">
+      {/* Historical PRO / customer-history lookup — overlay (desktop). Prefilled
+          with whatever's typed in the live search so it searches immediately. */}
+      {histOpen && (
+        <div
+          className="fixed inset-0 z-[1100] bg-slate-900/40 flex items-start justify-center p-4 sm:p-8"
+          onMouseDown={(e) => { if (e.target === e.currentTarget) setHistOpen(false); }}
+        >
+          <div className="w-full max-w-lg max-h-[85vh] bg-white rounded-xl shadow-2xl flex flex-col overflow-hidden">
+            <PastProSearch
+              notes={notes}
+              initialQuery={searchInput}
+              onPickCustomer={(s) => { setHistOpen(false); setSelectedDriver(null); setSelectedStop(s); }}
+              onClose={() => setHistOpen(false)}
+            />
+          </div>
+        </div>
+      )}
       {/* Left filter rail */}
       <div
         className="flex-shrink-0 bg-white border-r overflow-y-auto"
@@ -5775,6 +5814,14 @@ function MapScreen() {
           aiError={aiError}
           onClearAi={clearAi}
         />
+        <div className="px-3 pt-2">
+          <button
+            onClick={() => setHistOpen(true)}
+            className="w-full inline-flex items-center justify-center gap-1.5 text-xs font-semibold text-slate-700 border border-slate-300 rounded-lg py-2 hover:bg-slate-50 active:bg-slate-100"
+          >
+            <Clock size={13} /> Search past PROs / customer history
+          </button>
+        </div>
         <FilterPanel
           filters={filters}
           setFilters={setFilters}
@@ -5996,7 +6043,7 @@ function MapScreen() {
         <StopSidebar
           stop={selectedStop}
           note={notes.get(selectedStop.matchKey)}
-          drivers={drivers}
+          drivers={notesDrivers}
           onClose={() => setSelectedStop(null)}
           onMoveLocation={startMoveLocation}
           onEditAddress={openAddrEditor}

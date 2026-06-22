@@ -484,6 +484,24 @@ export async function setCircuit(open: boolean, reason: string, atISO: string): 
   await setDoc(`${OPS_COLLECTION}/circuit`, { open, reason, at: atISO, day: atISO.slice(0, 10) });
 }
 
+// ── Scan-discovery metrics (learn the real load delta / gaps) ────────────────
+// One rolling doc holds the last N per-scan samples so we can see, from evidence,
+// how many new loads appear per day and the worst gap between load numbers — i.e.
+// how big the adaptive forward-walk's "stop after K empties" really needs to be.
+const SCAN_METRICS_MAX = 500;
+export async function recordScanMetric(sample: any): Promise<void> {
+  try {
+    const doc = await getDoc(`${OPS_COLLECTION}/scan_metrics`);
+    const prev: any[] = Array.isArray(doc?.samples) ? doc.samples : [];
+    const samples = [...prev, sample].slice(-SCAN_METRICS_MAX);
+    await setDoc(`${OPS_COLLECTION}/scan_metrics`, { samples, updated_at: new Date().toISOString() });
+  } catch { /* best-effort: metrics must never affect a scan */ }
+}
+export async function readScanMetrics(): Promise<any[]> {
+  const doc = await getDoc(`${OPS_COLLECTION}/scan_metrics`);
+  return Array.isArray(doc?.samples) ? doc.samples : [];
+}
+
 // ── Phase 6: terminal-stop skip cache ────────────────────────────────────────
 // A stop at status 90/91 is DELIVERED and immutable, so once the unplanned descent
 // has confirmed a stop number terminal there is no reason to spend a /stop/info call
