@@ -47,7 +47,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.29.9';
+const APP_VERSION = '0.29.10';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -67,6 +67,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.29.10', 'Map pins: planned and unplanned stops now render at the same smaller size (only search-matched / AM-PM-tagged pins are enlarged for emphasis), and unplanned stops are tinted mint instead of blue so they read distinctly on satellite.'],
   ['0.29.9', 'NuVizz scan politeness + learning (addresses their "1000+ calls in a single minute" notice). (1) Probe concurrency is throttled (was firing ~30 load lookups in parallel = a burst) and is now env-tunable, so a scan SPREADS its calls over time instead of hammering NuVizz at once. (2) New scan-discovery monitoring records, every scan, how many loads were found, how many were NEW vs the prior day, and the largest gap between load numbers — surfaced as a learned summary (avg/max new-loads/day, worst gap, recommended look-ahead) so we can safely switch to a no-daily-seed incremental scan next, tuned from real data instead of guesses.'],
   ['0.29.8', 'Weekend call savings + a clearer call counter. (1) The nightly history-warehouse snapshot now skips Saturday & Sunday — it was archiving empty non-working days at full cost (~1,200 NuVizz calls each), which is why calls showed on a weekend even with the live scan off. Friday and Monday are still archived; on-demand backfill is unchanged. (2) The "calls today" counter now follows a normal midnight-to-midnight Eastern day instead of UTC, so after-midnight-UTC jobs (the ~2am ET snapshot) count on the right local day and a truly quiet day reads 0.'],
   ['0.29.7', 'Two additions: (1) Tap a customer in the historical search to open their full detail + notes editor. (2) New "DNS — do not send" control: a red/white DNS badge that shows everywhere the customer appears (map pin = red pin with ✕, stop list, stop detail, and historical search), plus a do-not-send toggle and a multi-select of which drivers are not allowed to that customer (from the app driver list). Saved per customer alongside the other notes.'],
@@ -193,7 +194,7 @@ const DRIVER_TINT = '#0f172a';             // M4 Motive driver pins
 // a status hue is close to a flag hue. `color: null` → fall back to flagColor.
 //   glyph: null=white dot · 'check'=delivered · 'bang'=exception · 'arrow'=en route
 const STATUS_META = {
-  UNPLANNED:   { label: 'Unplanned',        color: '#0ea5e9', hollow: false, glyph: null,    badge: '#0ea5e9' },
+  UNPLANNED:   { label: 'Unplanned',        color: '#3eb489', hollow: false, glyph: null,    badge: '#3eb489' },
   SCHEDULED:   { label: 'Scheduled',        color: null,      hollow: false, glyph: null,    badge: '#1e5b92' },
   OUT_FOR_DEL: { label: 'Out for delivery', color: '#2563eb', hollow: false, glyph: 'arrow', badge: '#2563eb' },
   ARRIVED:     { label: 'Arrived',          color: '#d97706', hollow: false, glyph: null,    badge: '#d97706' },
@@ -5139,14 +5140,14 @@ function MapScreen() {
           else if (addressOff) glyph = 'bang';
         }
         const big = matched || !!tag;
-        // Unplanned stops render a touch smaller than planned ones (de-emphasized
-        // until they're routed), now solid blue for contrast on satellite.
-        const small = !big && statusKind === 'UNPLANNED';
+        // Planned and unplanned stops render at the SAME smaller size — only a
+        // matched/AM-PM-tagged pin is enlarged for emphasis. Unplanned stops are
+        // tinted mint (STATUS_META.UNPLANNED) to read distinctly on satellite.
         icon = {
           url: pinSvgStatus(color, { hollow: matched ? false : meta.hollow, glyph, tag }),
           // Slightly larger when matched or AM/PM-tagged so they stand out.
-          scaledSize: big ? new google.maps.Size(28, 36) : (small ? new google.maps.Size(16, 21) : new google.maps.Size(20, 26)),
-          anchor: big ? new google.maps.Point(14, 34) : (small ? new google.maps.Point(8, 20) : new google.maps.Point(10, 25)),
+          scaledSize: big ? new google.maps.Size(28, 36) : new google.maps.Size(16, 21),
+          anchor: big ? new google.maps.Point(14, 34) : new google.maps.Point(8, 20),
         };
       } else {
         // Restriction / receiving-hours icons. A priority flag recolors them to
