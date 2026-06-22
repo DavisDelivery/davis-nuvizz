@@ -47,7 +47,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.29.10';
+const APP_VERSION = '0.29.11';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -67,6 +67,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.29.11', 'Unplanned stop pins recolored to thistle (light purple) per dispatch request.'],
   ['0.29.10', 'Map pins: planned and unplanned stops now render at the same smaller size (only search-matched / AM-PM-tagged pins are enlarged for emphasis), and unplanned stops are tinted mint instead of blue so they read distinctly on satellite.'],
   ['0.29.9', 'NuVizz scan politeness + learning (addresses their "1000+ calls in a single minute" notice). (1) Probe concurrency is throttled (was firing ~30 load lookups in parallel = a burst) and is now env-tunable, so a scan SPREADS its calls over time instead of hammering NuVizz at once. (2) New scan-discovery monitoring records, every scan, how many loads were found, how many were NEW vs the prior day, and the largest gap between load numbers — surfaced as a learned summary (avg/max new-loads/day, worst gap, recommended look-ahead) so we can safely switch to a no-daily-seed incremental scan next, tuned from real data instead of guesses.'],
   ['0.29.8', 'Weekend call savings + a clearer call counter. (1) The nightly history-warehouse snapshot now skips Saturday & Sunday — it was archiving empty non-working days at full cost (~1,200 NuVizz calls each), which is why calls showed on a weekend even with the live scan off. Friday and Monday are still archived; on-demand backfill is unchanged. (2) The "calls today" counter now follows a normal midnight-to-midnight Eastern day instead of UTC, so after-midnight-UTC jobs (the ~2am ET snapshot) count on the right local day and a truly quiet day reads 0.'],
@@ -194,7 +195,7 @@ const DRIVER_TINT = '#0f172a';             // M4 Motive driver pins
 // a status hue is close to a flag hue. `color: null` → fall back to flagColor.
 //   glyph: null=white dot · 'check'=delivered · 'bang'=exception · 'arrow'=en route
 const STATUS_META = {
-  UNPLANNED:   { label: 'Unplanned',        color: '#3eb489', hollow: false, glyph: null,    badge: '#3eb489' },
+  UNPLANNED:   { label: 'Unplanned',        color: '#d8bfd8', hollow: false, glyph: null,    badge: '#d8bfd8' },
   SCHEDULED:   { label: 'Scheduled',        color: null,      hollow: false, glyph: null,    badge: '#1e5b92' },
   OUT_FOR_DEL: { label: 'Out for delivery', color: '#2563eb', hollow: false, glyph: 'arrow', badge: '#2563eb' },
   ARRIVED:     { label: 'Arrived',          color: '#d97706', hollow: false, glyph: null,    badge: '#d97706' },
@@ -5142,7 +5143,7 @@ function MapScreen() {
         const big = matched || !!tag;
         // Planned and unplanned stops render at the SAME smaller size — only a
         // matched/AM-PM-tagged pin is enlarged for emphasis. Unplanned stops are
-        // tinted mint (STATUS_META.UNPLANNED) to read distinctly on satellite.
+        // tinted thistle (STATUS_META.UNPLANNED) to read distinctly from planned.
         icon = {
           url: pinSvgStatus(color, { hollow: matched ? false : meta.hollow, glyph, tag }),
           // Slightly larger when matched or AM/PM-tagged so they stand out.
