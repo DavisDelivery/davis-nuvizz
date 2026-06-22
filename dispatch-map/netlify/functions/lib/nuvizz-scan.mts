@@ -503,6 +503,17 @@ const STOP_ANCHOR_DATE = new Date('2026-05-26T00:00:00Z');
 const STOPS_PER_DAY = 440;
 const UNPLANNED_STATUS = '10';
 
+// PURE: is a probed stop a genuine UNPLANNED order this descent should write?
+// It must be status-10 (not yet started), scheduled for the scan date, AND not
+// already assigned to a load. The load check is critical: NuVizz keeps a stop at
+// status-10 even after it's been put on a load (planned but not dispatched). Such
+// a stop is PLANNED — the load scan owns it — so the unplanned descent must not
+// claim it, or it would overwrite the load scan's isPlanned=true record with
+// isPlanned=false and the stop would wrongly surface under "Unplanned only".
+export function isUnplannedTarget(stopStatus: any, expected: string | null, dateStr: string, loadNbr: any): boolean {
+  return stopStatus === UNPLANNED_STATUS && expected === dateStr && !loadNbr;
+}
+
 const CEILING_MARGIN = 40;
 const GALLOP_STEP = 200;
 const MAX_GALLOP = 6;
@@ -583,7 +594,10 @@ async function probeStop(n: number, dateStr: string, authHeader: string, company
     const exec = wrap?.stopExecutionInfo || {};
     if (!stop?.stopNbr) return { n, exists: false };
     const expected = ((stop?.to?.schedule?.timeFrom as string) || '').slice(0, 10) || null;
-    const isTarget = exec.stopStatus === UNPLANNED_STATUS && expected === dateStr;
+    // A stop already on a load is PLANNED even at status-10 — exclude it so the
+    // descent never clobbers the load scan's planned record (see isUnplannedTarget).
+    const loadNbr = wrap?.load?.loadNbr ?? null;
+    const isTarget = isUnplannedTarget(exec.stopStatus, expected, dateStr, loadNbr);
     return { n, exists: true, expected, terminal: isTerminalStatus(exec.stopStatus), record: isTarget ? { stop, stopExecutionInfo: exec } : null };
   } catch {
     return { n, exists: false };
