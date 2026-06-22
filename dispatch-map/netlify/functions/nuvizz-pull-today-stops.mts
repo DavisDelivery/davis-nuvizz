@@ -21,7 +21,8 @@
 
 import fixture from '../../test/fixtures/nuvizz-today-stops.json' with { type: 'json' };
 import { scanDate, todayUTC, normalizeStop } from './lib/nuvizz-scan.mts';
-import { isFirestoreEnabled, readStops, readCallStats, readCircuit, etDayString } from './lib/firestore.mts';
+import { isFirestoreEnabled, readStops, readCallStats, readCircuit, etDayString, readScanMetrics } from './lib/firestore.mts';
+import { summarizeScanMetrics } from './lib/scan-metrics.mts';
 import { breakerMode } from './lib/nuvizz-request.mts';
 
 const TENANT = 'davis';
@@ -117,13 +118,16 @@ export default async (req: Request): Promise<Response> => {
     if (isFirestoreEnabled()) {
       try {
         const opsDate = etDayString();
-        const [stats, circuit] = await Promise.all([readCallStats(opsDate), readCircuit()]);
+        const [stats, circuit, metrics] = await Promise.all([readCallStats(opsDate), readCircuit(), readScanMetrics()]);
         ops = {
           dayCount: stats.count,
           byRoute: stats.byRoute,
           ceiling: Number(process.env.NUVIZZ_DAILY_CEILING) || 100000,
           breaker: circuit.open,
           mode: breakerMode(),
+          // Learned scan-discovery summary (avg/max new loads/day, worst gap,
+          // recommended adaptive-walk stop threshold, any parity misses).
+          scanLearning: summarizeScanMetrics(metrics),
         };
       } catch { /* ops is best-effort; leave null */ }
     }

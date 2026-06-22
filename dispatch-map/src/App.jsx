@@ -47,7 +47,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.29.8';
+const APP_VERSION = '0.29.9';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -67,6 +67,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.29.9', 'NuVizz scan politeness + learning (addresses their "1000+ calls in a single minute" notice). (1) Probe concurrency is throttled (was firing ~30 load lookups in parallel = a burst) and is now env-tunable, so a scan SPREADS its calls over time instead of hammering NuVizz at once. (2) New scan-discovery monitoring records, every scan, how many loads were found, how many were NEW vs the prior day, and the largest gap between load numbers — surfaced as a learned summary (avg/max new-loads/day, worst gap, recommended look-ahead) so we can safely switch to a no-daily-seed incremental scan next, tuned from real data instead of guesses.'],
   ['0.29.8', 'Weekend call savings + a clearer call counter. (1) The nightly history-warehouse snapshot now skips Saturday & Sunday — it was archiving empty non-working days at full cost (~1,200 NuVizz calls each), which is why calls showed on a weekend even with the live scan off. Friday and Monday are still archived; on-demand backfill is unchanged. (2) The "calls today" counter now follows a normal midnight-to-midnight Eastern day instead of UTC, so after-midnight-UTC jobs (the ~2am ET snapshot) count on the right local day and a truly quiet day reads 0.'],
   ['0.29.7', 'Two additions: (1) Tap a customer in the historical search to open their full detail + notes editor. (2) New "DNS — do not send" control: a red/white DNS badge that shows everywhere the customer appears (map pin = red pin with ✕, stop list, stop detail, and historical search), plus a do-not-send toggle and a multi-select of which drivers are not allowed to that customer (from the app driver list). Saved per customer alongside the other notes.'],
   ['0.29.6', 'Historical customer search now matches a word ANYWHERE in the name, not just the start — searching “locksmith” now finds “SOLID LOCKSMITH” (before, only “solid…” worked). Multi-word searches must match all words. (Built on per-customer name word-tokens; still reads only our saved history, no NuVizz call.)'],
