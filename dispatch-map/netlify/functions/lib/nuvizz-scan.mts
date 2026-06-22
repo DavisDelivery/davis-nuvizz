@@ -440,9 +440,37 @@ async function scanLoadRangeForDate(dateStr: string, startNbr: number, endNbr: n
   return scanLoadNumbers(dateStr, nums, concurrency);
 }
 
+// PURE: a stop's own scheduled delivery date (YYYY-MM-DD) from a raw load-stop,
+// mirroring normalizeStop's primary-schedule resolution. null when absent.
+export function rawStopScheduledDate(rawStop: any): string | null {
+  const stop = rawStop?.stop || rawStop || {};
+  const stopType = stop.stopType || rawStop?.stopType || 'DO';
+  const primary = stopType === 'PU' ? (stop.from || {}) : (stop.to || stop.from || {});
+  const tf = primary?.schedule?.timeFrom || '';
+  return typeof tf === 'string' && tf.length >= 10 ? tf.slice(0, 10) : null;
+}
+
+// PURE: a load can span days (carryover / multi-day routes that started on an
+// earlier day but still deliver stops today). Keep only the stops whose OWN
+// scheduled date matches the board date — so such a load contributes its today
+// stops (correctly PLANNED) without polluting the day with its other-day stops.
+// Stops with no schedule fall back to the load's start date. Returns the kept
+// stops paired with their original index (preserves stopSeq). Exported for tests.
+export function loadStopsForDate(rawStops: any[], dateStr: string, loadStartDate: string | null): Array<{ s: any; i: number }> {
+  const out: Array<{ s: any; i: number }> = [];
+  for (let i = 0; i < (rawStops?.length || 0); i++) {
+    const s = rawStops[i];
+    const d = rawStopScheduledDate(s);
+    const keep = d == null ? loadStartDate === dateStr : d === dateStr;
+    if (keep) out.push({ s, i });
+  }
+  return out;
+}
+
 // Probe ONE load number for a date. Returns the load's stop rows (header-stamped)
-// when the load exists AND belongs to dateStr, else null. Extracted so both the
-// set/range scan and the adaptive forward scan share one definition of "a load probe".
+// for the stops that DELIVER on dateStr (so carryover loads contribute), else null.
+// Extracted so both the set/range scan and the adaptive forward scan share one
+// definition of "a load probe".
 async function probeLoad(n: number, dateStr: string, authHeader: string, companyCode: string): Promise<any[] | null> {
   const loadNbr = `${companyCode}${String(n).padStart(9, '0')}`;
   const url = `${NUVIZZ_BASE}/load/info/${encodeURIComponent(loadNbr)}/${encodeURIComponent(companyCode)}`;
@@ -453,8 +481,7 @@ async function probeLoad(n: number, dateStr: string, authHeader: string, company
     const h = d?.Load?.loadHeader || {};
     const a = d?.Load?.loadAssignment || {};
     const stops = d?.Load?.stops || [];
-    const startDate = (h.earliestStartDttm || '').slice(0, 10);
-    if (startDate !== dateStr) return null;
+    const startDate = (h.earliestStartDttm || '').slice(0, 10) || null;
     // Phase 4: carry the full load HEADER (not just the 5 stop-linking fields)
     // so the sole scanner can build SITE A's complete nuvizzFleet load cards —
     // vehicleType, origin, pallet/carton/weight — without a second scan.
@@ -469,7 +496,11 @@ async function probeLoad(n: number, dateStr: string, authHeader: string, company
         latitude: h.originLatitude ?? null, longitude: h.originLongitude ?? null,
       },
     };
-    return stops.map((s: any, i: number) => ({ ...s, load: { ...header, stopSeq: i } }));
+    // Match by the STOP's delivery date, not the load's start date, so a load that
+    // started on a prior day still surfaces its today-stops as planned.
+    const kept = loadStopsForDate(stops, dateStr, startDate);
+    if (!kept.length) return null;
+    return kept.map(({ s, i }) => ({ ...s, load: { ...header, stopSeq: i } }));
   } catch {
     return null;
   }

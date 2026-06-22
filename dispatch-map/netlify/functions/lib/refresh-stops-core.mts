@@ -205,14 +205,18 @@ export async function runRefreshStops(req: Request): Promise<Response> {
       let resumption = false;
       if (FORWARD_SCAN && !isManual) {
         const carried = await readRecentFrontier(TENANT, date, 4)
-          .catch(() => ({ maxLoadNbr: null, maxStopNbr: null, maxUnplannedStopNbr: null }));
+          .catch(() => ({ maxLoadNbr: null, maxStopNbr: null, maxUnplannedStopNbr: null, carriedLoadNbrs: [] as number[] }));
         const todayCold = !(priorState && (priorState.knownLoads?.length || 0) > 0);
         resumption = todayCold && (carried.maxLoadNbr != null || carried.maxStopNbr != null || carried.maxUnplannedStopNbr != null);
         if (includeLoads) {
           const start = priorState?.maxLoadNbr ?? carried.maxLoadNbr ?? null;
           if (start != null) {
-            const known = (priorState?.knownLoads || []).filter((k) => !k.allTerminal)
+            const todayKnown = (priorState?.knownLoads || []).filter((k) => !k.allTerminal)
               .map((k) => loadNbrInt(k.loadNbr)).filter((n): n is number => n != null);
+            // Also re-pull recent NON-TERMINAL loads from prior days — a carryover /
+            // earlier-started route can still deliver stops today; forward-only would
+            // miss it (it's below the frontier). probeLoad keeps just its today-stops.
+            const known = [...new Set([...todayKnown, ...(carried.carriedLoadNbrs || [])])];
             forwardLoad = { start, known };
           }
         }

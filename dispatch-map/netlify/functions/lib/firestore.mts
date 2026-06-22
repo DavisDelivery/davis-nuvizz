@@ -586,10 +586,15 @@ export async function writeScanState(dateStr: string, state: ScanState, tenant?:
 // wide rescan. Unit-tested (test/recent-frontier.test.mjs).
 export function mergeFrontier(
   states: Array<Partial<ScanState> | null | undefined>,
-): { maxLoadNbr: number | null; maxStopNbr: number | null; maxUnplannedStopNbr: number | null } {
+): { maxLoadNbr: number | null; maxStopNbr: number | null; maxUnplannedStopNbr: number | null; carriedLoadNbrs: number[] } {
   let maxLoadNbr: number | null = null;
   let maxStopNbr: number | null = null;
   let maxUnplannedStopNbr: number | null = null;
+  const carried = new Set<number>();
+  const loadInt = (ln: any): number | null => {
+    const digits = String(ln ?? '').replace(/\D/g, '');
+    return digits ? parseInt(digits, 10) : null;
+  };
   const up = (cur: number | null, v: number | null | undefined) =>
     v == null ? cur : (cur == null ? v : Math.max(cur, v));
   for (const s of states) {
@@ -598,8 +603,18 @@ export function mergeFrontier(
     maxStopNbr = up(maxStopNbr, s.highWaterStopNbr);
     maxStopNbr = up(maxStopNbr, s.observedFrontierStopNbr);
     maxUnplannedStopNbr = up(maxUnplannedStopNbr, s.highWaterUnplannedStopNbr);
+    // Carryover candidates: non-terminal loads from prior days that may still
+    // deliver stops today (a multi-day / earlier-started route). The forward scan
+    // re-pulls these so it doesn't miss loads below the frontier; probeLoad then
+    // keeps only the stops actually scheduled for the board date.
+    for (const k of s.knownLoads || []) {
+      if (k && k.allTerminal === false) {
+        const n = loadInt(k.loadNbr);
+        if (n != null) carried.add(n);
+      }
+    }
   }
-  return { maxLoadNbr, maxStopNbr, maxUnplannedStopNbr };
+  return { maxLoadNbr, maxStopNbr, maxUnplannedStopNbr, carriedLoadNbrs: [...carried] };
 }
 
 // Read the most recent prior days' scan states and fold them into a carried
@@ -609,7 +624,7 @@ export async function readRecentFrontier(
   tenant: string,
   dateStr: string,
   lookbackDays = 4,
-): Promise<{ maxLoadNbr: number | null; maxStopNbr: number | null; maxUnplannedStopNbr: number | null }> {
+): Promise<{ maxLoadNbr: number | null; maxStopNbr: number | null; maxUnplannedStopNbr: number | null; carriedLoadNbrs: number[] }> {
   const base = new Date(dateStr + 'T00:00:00Z');
   const dates: string[] = [];
   for (let i = 1; i <= lookbackDays; i++) {

@@ -21,8 +21,19 @@ test('folds the max load / stop / unplanned-stop across prior states', () => {
 test('all-empty / nullish input → all null', () => {
   assert.deepEqual(
     mergeFrontier([null, undefined, {}, { maxLoadNbr: null }]),
-    { maxLoadNbr: null, maxStopNbr: null, maxUnplannedStopNbr: null },
+    { maxLoadNbr: null, maxStopNbr: null, maxUnplannedStopNbr: null, carriedLoadNbrs: [] },
   );
+});
+
+test('collects non-terminal prior loads as carryover candidates (terminal dropped)', () => {
+  const f = mergeFrontier([
+    { knownLoads: [
+      { loadNbr: 'DAVIS000197197', allTerminal: false },
+      { loadNbr: 'DAVIS000197100', allTerminal: true },  // delivered → not carried
+    ] },
+    { knownLoads: [{ loadNbr: 'DAVIS000197197', allTerminal: false }] }, // dup → unique
+  ]);
+  assert.deepEqual(f.carriedLoadNbrs, [197197]);
 });
 
 test('observedFrontier alone seeds the stop frontier when high-water is missing', () => {
