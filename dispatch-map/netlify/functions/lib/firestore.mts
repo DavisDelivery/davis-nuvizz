@@ -579,6 +579,48 @@ export async function writeScanState(dateStr: string, state: ScanState, tenant?:
   await setDoc(scanStateKey(tenant, dateStr), state as any);
 }
 
+// PURE: fold prior-day scan states into a single carried frontier — the max load
+// number, max stop number, and max UNPLANNED stop number seen across them. Seeds
+// the adaptive forward scan on a cold/resumption day (e.g. Sunday after the
+// weekend blackout) so we resume from "what we finished with" instead of a cold
+// wide rescan. Unit-tested (test/recent-frontier.test.mjs).
+export function mergeFrontier(
+  states: Array<Partial<ScanState> | null | undefined>,
+): { maxLoadNbr: number | null; maxStopNbr: number | null; maxUnplannedStopNbr: number | null } {
+  let maxLoadNbr: number | null = null;
+  let maxStopNbr: number | null = null;
+  let maxUnplannedStopNbr: number | null = null;
+  const up = (cur: number | null, v: number | null | undefined) =>
+    v == null ? cur : (cur == null ? v : Math.max(cur, v));
+  for (const s of states) {
+    if (!s) continue;
+    maxLoadNbr = up(maxLoadNbr, s.maxLoadNbr);
+    maxStopNbr = up(maxStopNbr, s.highWaterStopNbr);
+    maxStopNbr = up(maxStopNbr, s.observedFrontierStopNbr);
+    maxUnplannedStopNbr = up(maxUnplannedStopNbr, s.highWaterUnplannedStopNbr);
+  }
+  return { maxLoadNbr, maxStopNbr, maxUnplannedStopNbr };
+}
+
+// Read the most recent prior days' scan states and fold them into a carried
+// frontier. Looks back `lookbackDays` calendar days (default 4 — spans a weekend:
+// Sun reads back through Thu, picking up Friday's end-state).
+export async function readRecentFrontier(
+  tenant: string,
+  dateStr: string,
+  lookbackDays = 4,
+): Promise<{ maxLoadNbr: number | null; maxStopNbr: number | null; maxUnplannedStopNbr: number | null }> {
+  const base = new Date(dateStr + 'T00:00:00Z');
+  const dates: string[] = [];
+  for (let i = 1; i <= lookbackDays; i++) {
+    const d = new Date(base);
+    d.setUTCDate(d.getUTCDate() - i);
+    dates.push(d.toISOString().slice(0, 10));
+  }
+  const states = await Promise.all(dates.map((d) => readScanState(d, tenant).catch(() => null)));
+  return mergeFrontier(states);
+}
+
 // ── Phase 4: canonical fleet index (the shape SITE A already reads) ───────────
 // The sole scanner (this app) writes load summaries + aggregate + driver index to
 // nuvizzFleet/{tenant}__{date} — byte-compatible with the parent app's existing
