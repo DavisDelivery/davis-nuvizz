@@ -283,6 +283,13 @@ async function incrementCallCounter(dateStr, n) {
   const body = {
     writes: [{
       update: { name: docName, fields: { date: { stringValue: dateStr } } },
+      // CRITICAL: without updateMask, this `update` REPLACES the whole doc with just
+      // {date} on every call — wiping the accumulated `count` (and the dispatch-map
+      // count__* breakdown) before the transform re-creates count=n. That makes the
+      // SHARED counter swing up/down as the two apps write the same doc. The mask
+      // scopes the update to MERGE `date`, so count survives and the transform
+      // accumulates. Mirrors dispatch-map buildCounterCommitBody (firestore.mts).
+      updateMask: { fieldPaths: ['date'] },
       updateTransforms: [{ fieldPath: 'count', increment: { integerValue: String(n) } }],
     }],
   };
