@@ -75,14 +75,16 @@ export async function runRefreshStops(req: Request): Promise<Response> {
   // default; flip NUVIZZ_LEAN_DISCOVERY=on only AFTER preview stop-set parity is
   // confirmed. Off = the proven wide-window probe, unchanged.
   const LEAN_DISCOVERY = (process.env.NUVIZZ_LEAN_DISCOVERY || '').toLowerCase() === 'on';
-  // Adaptive forward discovery (NUVIZZ_FORWARD_SCAN=on): instead of a cold wide
-  // load window + findCeiling order descent, seed from the persisted frontier
-  // (carried ACROSS days on a cold/resumption day — e.g. Sunday after the weekend
-  // blackout) and walk FORWARD in 25-chunks until nothing new turns up. Takes
-  // precedence over lean. OFF by default; validate stop-set parity on the deploy
-  // preview before enabling. The deep sweep (every NUVIZZ_DEEP_SWEEP_HOURS) stays
-  // the periodic full-floor backstop that reconciles the band BELOW the frontier.
-  const FORWARD_SCAN = (process.env.NUVIZZ_FORWARD_SCAN || '').toLowerCase() === 'on';
+  // Adaptive forward discovery (default ON; set NUVIZZ_FORWARD_SCAN=off to revert
+  // to the wide-window/lean behavior). Instead of a cold ~601-wide load window +
+  // findCeiling order descent, seed from the persisted frontier (carried ACROSS
+  // days on a cold/resumption day — e.g. Sunday after the weekend blackout) and
+  // walk FORWARD in 25-chunks until nothing new turns up. Nothing changes below the
+  // frontier over the weekend, so the Sunday resume is a cheap forward walk, not a
+  // big sweep. Takes precedence over lean. The deep sweep (every
+  // NUVIZZ_DEEP_SWEEP_HOURS, default 8) stays the periodic full-floor backstop that
+  // reconciles below-frontier status changes / out-of-order imports.
+  const FORWARD_SCAN = (process.env.NUVIZZ_FORWARD_SCAN || '').toLowerCase() !== 'off';
 
   // Read today's last LOAD scan time — this is what drives the elapsed-time
   // cadence (Fix 1). Also read the shared call counter + breaker for the log line.
