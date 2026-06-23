@@ -39,3 +39,22 @@ test('normal same-day load is unchanged (all stops kept)', () => {
   const stops = [doStop('A', '2026-06-22'), doStop('B', '2026-06-22')];
   assert.equal(loadStopsForDate(stops, '2026-06-22', '2026-06-22').length, 2);
 });
+
+test('today\'s load keeps a rolled-in older order (re-added undelivered stop)', () => {
+  // PAULSEN case: an order from a prior day that failed delivery, was put back to
+  // unplanned, and re-added to TODAY's load — it keeps its original (older) date
+  // but must still show on today's route. Load STARTED today, so membership wins.
+  const stops = [
+    doStop('A', '2026-06-23'),   // today
+    doStop('PAULSEN', '2026-06-19'), // rolled-in older order — KEEP
+    doStop('FUTURE', '2026-06-25'),  // pre-staged future stop — drop
+  ];
+  const kept = loadStopsForDate(stops, '2026-06-23', '2026-06-23').map((x) => x.s.stop.stopNbr);
+  assert.deepEqual(kept, ['A', 'PAULSEN']);
+});
+
+test('carryover load still excludes older-dated stops (no regression)', () => {
+  const stops = [doStop('A', '2026-06-23'), doStop('OLD', '2026-06-19')];
+  // load started 6/19 (carryover) → only today-dated stops kept
+  assert.deepEqual(loadStopsForDate(stops, '2026-06-23', '2026-06-19').map((x) => x.s.stop.stopNbr), ['A']);
+});
