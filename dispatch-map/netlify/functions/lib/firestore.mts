@@ -48,6 +48,18 @@ export function etDayString(d: Date = new Date()): string {
   }).format(d);
 }
 
+// ET hour-of-day as 'HH' (00–23). The call counter increments an hour__HH bucket
+// keyed by this in the SAME atomic commit as the total, giving a midnight-to-midnight
+// ET hourly breakdown for free (zero extra NuVizz calls) so spikes (e.g. the 10am
+// unplanned open) are visible per-hour. en-GB yields 00–23; a midnight 'hour: 24'
+// quirk is normalized via % 24.
+export function etHourString(d: Date = new Date()): string {
+  const h = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'America/New_York', hour: '2-digit', hour12: false,
+  }).format(d);
+  return String(parseInt(h, 10) % 24).padStart(2, '0');
+}
+
 function base64UrlEncode(buf: Buffer | string): string {
   return Buffer.from(buf).toString('base64').replace(/=+$/, '').replace(/\+/g, '-').replace(/\//g, '_');
 }
@@ -397,15 +409,27 @@ export function routeFieldKey(route?: string | null): string | null {
   return k ? `count__${k}` : null;
 }
 
+// ET hour 'HH' → hourly bucket field key, e.g. '10' → 'hour__10'. A DISTINCT prefix
+// from count__ so per-hour totals never bleed into the per-route breakdown, and the
+// strict 00–23 shape check means no arbitrary field path can be injected. Returns
+// null for anything that isn't a valid two-digit ET hour.
+export function hourFieldKey(hour?: string | null): string | null {
+  return hour && /^([01]\d|2[0-3])$/.test(hour) ? `hour__${hour}` : null;
+}
+
 // Build the Firestore :commit body for an atomic counter increment. Exported PURE so a
 // test can lock the merge-shape that the runaway-counter bug came from: the update MUST
 // carry updateMask:['date'] (so the write MERGES `date` instead of REPLACING the doc and
 // wiping `count`), and the increments MUST ride as updateTransforms with `count` first
 // (transformResults[0] is read back as the authoritative new total).
-export function buildCounterCommitBody(docName: string, dateStr: string, n: number, route?: string) {
+export function buildCounterCommitBody(docName: string, dateStr: string, n: number, route?: string, hour?: string) {
   const transforms: any[] = [{ fieldPath: 'count', increment: { integerValue: String(n) } }];
   const rk = routeFieldKey(route);
   if (rk) transforms.push({ fieldPath: rk, increment: { integerValue: String(n) } });
+  // Per-hour bucket rides in the SAME commit, AFTER count/route, so `count` stays
+  // transform[0] (the authoritative read-back) and the existing route ordering holds.
+  const hk = hourFieldKey(hour);
+  if (hk) transforms.push({ fieldPath: hk, increment: { integerValue: String(n) } });
   return {
     writes: [{
       update: { name: docName, fields: { date: { stringValue: dateStr } } },
@@ -434,7 +458,8 @@ export async function incrementCallCounter(dateStr: string, n: number, route?: s
   const docName = `projects/${sa.project_id}/databases/(default)/documents/${OPS_COLLECTION}/calls__${dateStr}`;
   const url = `${FIRESTORE_BASE}/projects/${sa.project_id}/databases/(default)/documents:commit`;
   // count is always transform[0] so transformResults[0] is the authoritative total.
-  const body = buildCounterCommitBody(docName, dateStr, n, route);
+  // Stamp the current ET hour so the same commit also grows that hour's bucket.
+  const body = buildCounterCommitBody(docName, dateStr, n, route, etHourString());
   const resp = await fetch(url, {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
@@ -451,16 +476,23 @@ export async function readCallCounter(dateStr: string): Promise<number> {
   return doc && typeof doc.count === 'number' ? doc.count : 0;
 }
 
-/** Today's total + per-route breakdown (count__* fields, route prefix stripped). */
-export async function readCallStats(dateStr: string): Promise<{ count: number; byRoute: Record<string, number> }> {
+/**
+ * Today's total + per-route breakdown (count__* fields, route prefix stripped) +
+ * per-hour breakdown (hour__HH fields → { '00'..'23': n }). byHour lets the UI/ops
+ * see WHEN calls land (e.g. the 10am unplanned open) without any extra reads.
+ */
+export async function readCallStats(dateStr: string): Promise<{ count: number; byRoute: Record<string, number>; byHour: Record<string, number> }> {
   const doc = await getDoc(`${OPS_COLLECTION}/calls__${dateStr}`);
   const byRoute: Record<string, number> = {};
+  const byHour: Record<string, number> = {};
   if (doc) {
     for (const [k, v] of Object.entries(doc)) {
-      if (k.startsWith('count__') && typeof v === 'number') byRoute[k.slice('count__'.length)] = v;
+      if (typeof v !== 'number') continue;
+      if (k.startsWith('count__')) byRoute[k.slice('count__'.length)] = v;
+      else if (k.startsWith('hour__')) byHour[k.slice('hour__'.length)] = v;
     }
   }
-  return { count: doc && typeof doc.count === 'number' ? doc.count : 0, byRoute };
+  return { count: doc && typeof doc.count === 'number' ? doc.count : 0, byRoute, byHour };
 }
 
 export interface CircuitState { open: boolean; reason?: string; at?: string; day?: string }

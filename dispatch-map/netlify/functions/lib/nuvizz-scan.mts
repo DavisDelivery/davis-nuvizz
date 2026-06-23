@@ -1081,6 +1081,19 @@ export function shouldDeepSweep(lastAtISO: string | null | undefined, nowMs: num
   return (nowMs - last) >= intervalMs;
 }
 
+// Whether THIS unplanned cycle may run the full-floor deep sweep — the only ~2k-probe
+// descent, and the cause of the 10am open SPIKE (shouldDeepSweep() returns true on a
+// cold day, so the very first unplanned cycle would otherwise full-sweep). Pure so the
+// "never spike on the cold open" guarantee is unit-tested. The sweep runs only when:
+//   - it's DUE (shouldDeepSweep), AND
+//   - the cycle is WARM (today's unplanned high-water already set by the cheap forward
+//     walk) — never the cold opening cycle, which must ramp gently, AND
+//   - we're at/after the off-peak ET hour, so the one daily reconciliation lands in the
+//     afternoon lull instead of the morning order rush.
+export function deepSweepGate(opts: { due: boolean; todayUnplannedWarm: boolean; etHour: number; offPeakHour: number }): boolean {
+  return opts.due && opts.todayUnplannedWarm && opts.etHour >= opts.offPeakHour;
+}
+
 export function buildScanState(
   dateStr: string,
   stops: any[],

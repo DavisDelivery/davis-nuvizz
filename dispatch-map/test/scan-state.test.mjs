@@ -4,7 +4,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { buildScanState, shadowWouldProbe, loadNbrToInt, selectLoadProbeTargets, unplannedFloor, shouldDeepSweep } from '../netlify/functions/lib/nuvizz-scan.mts';
+import { buildScanState, shadowWouldProbe, loadNbrToInt, selectLoadProbeTargets, unplannedFloor, shouldDeepSweep, deepSweepGate } from '../netlify/functions/lib/nuvizz-scan.mts';
 
 test('unplannedFloor: null sinceStopNbr → full estimated floor; set → just below high-water', () => {
   assert.equal(unplannedFloor(7_120_000, null), 7_120_000, 'no high-water → full descent floor');
@@ -183,6 +183,30 @@ test('shouldDeepSweep: cold (no prior) or stale (>= interval) → true; recent �
   assert.equal(shouldDeepSweep('2026-06-19T05:00:00Z', now, SIX_H), true, '7h ago ≥ 6h → sweep');
   assert.equal(shouldDeepSweep('2026-06-19T09:00:00Z', now, SIX_H), false, '3h ago < 6h → skip');
   assert.equal(shouldDeepSweep('2026-06-19T06:00:00Z', now, SIX_H), true, 'exactly 6h ago → sweep (>=)');
+});
+
+test('deepSweepGate: the 10am cold open NEVER full-sweeps (no spike); fires warm + off-peak', () => {
+  // The whole point: even when DUE, a cold opening cycle (no today high-water yet) must
+  // not run the ~2k-probe full descent — it must ramp via the cheap forward walk.
+  assert.equal(
+    deepSweepGate({ due: true, todayUnplannedWarm: false, etHour: 10, offPeakHour: 13 }),
+    false, '10am cold open must NOT deep-sweep',
+  );
+  // Warm but before the off-peak hour → still hold (avoid the morning rush).
+  assert.equal(
+    deepSweepGate({ due: true, todayUnplannedWarm: true, etHour: 11, offPeakHour: 13 }),
+    false, 'warm but pre-off-peak → defer',
+  );
+  // Warm, due, at/after the off-peak hour → the one daily sweep runs.
+  assert.equal(
+    deepSweepGate({ due: true, todayUnplannedWarm: true, etHour: 13, offPeakHour: 13 }),
+    true, 'warm + due + off-peak → sweep',
+  );
+  // Not due → never sweep regardless of hour/warmth.
+  assert.equal(
+    deepSweepGate({ due: false, todayUnplannedWarm: true, etHour: 20, offPeakHour: 13 }),
+    false, 'not due → no sweep',
+  );
 });
 
 test('buildScanState: lastDeepSweepAt stamped only when a deep sweep ran; carried otherwise', () => {

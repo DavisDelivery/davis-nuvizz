@@ -122,6 +122,7 @@ export default async (req: Request): Promise<Response> => {
         ops = {
           dayCount: stats.count,
           byRoute: stats.byRoute,
+          byHour: stats.byHour, // per-ET-hour call counts { '00'..'23': n } — surfaces spikes
           ceiling: Number(process.env.NUVIZZ_DAILY_CEILING) || 12000,
           breaker: circuit.open,
           mode: breakerMode(),
