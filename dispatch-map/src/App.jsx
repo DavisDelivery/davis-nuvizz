@@ -33,7 +33,7 @@ import { formatDateTime, tsToMillis, loadSummary, buildLoadAutoName } from './li
 import { scanStop, scanStopFull } from './lib/signal-scanner';
 import { applyScannerResults } from './lib/customer-notes-writer';
 import { aiParse, aiChat, applyFilterSpec, summarizeSpec, buildTrimmedStops } from './lib/ai-search.js';
-import ChatPanel, { ChatLauncher } from './components/ChatPanel.jsx';
+import ChatPanel, { ChatLauncher, MessagesLauncher } from './components/ChatPanel.jsx';
 
 // Vite's tree-shaker considers function-only imports from .ts files to be
 // pure; it eliminates them even though they're called from useAutoScanner's
@@ -47,7 +47,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.29.23';
+const APP_VERSION = '0.29.24';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -67,6 +67,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.29.24', 'Cleaner buttons: the floating message-bubble icon (desktop + mobile) now opens TEXTING, and the AI assistant moved to a "?" button next to it. On mobile the texting window is full-screen (iOS-style) with notch/home-bar safe spacing; on desktop it stays a side drawer over the map. The message button shows an unread badge.'],
   ['0.29.23', 'Texting — two-way conversations. Messages now opens as a window OVER the map (no more leaving the screen; fixes the blank-screen bug). It shows full back-and-forth threads per customer/driver — your sent texts and their replies together — with an inline reply box. Inbound replies are matched to a customer (from saved contacts) or driver (from MarginIQ) by phone, and driver threads are tagged. New: "Text drivers" from the box/lasso selection texts the drivers of the selected stops at once.'],
   ['0.29.22', 'Fix: a previously-undelivered order rolled back to unplanned and re-added to today\'s load now shows on the driver\'s route. The scan was dropping any load member whose own delivery date wasn\'t today; for a load that started today we now keep all its members (rolled-in older orders included), so a stop like Paulsen Foods on Rasko\'s load appears. No extra NuVizz calls — that stop was already in the load data we fetch. Genuine multi-day carryover loads are unaffected.'],
   ['0.29.21', 'Texting Stage 2 — text drivers. The driver panel now has a "Text driver" button; the driver\'s mobile number is pulled from their MarginIQ employee card (matched by name) on the server, so numbers stay private. Works on desktop + mobile.'],
@@ -4707,7 +4708,7 @@ function MobileDriverSnapshotDrawer({ driver, snapshot, loading, error, onClose,
   );
 }
 
-function MapScreen() {
+function MapScreen({ onOpenMessages, smsUnread = 0 }) {
   // M5 — selectedDate drives every fetch. Defaults to today (ET) and is NOT
   // persisted: every page load resets to today (brief P2.2).
   const [selectedDate, setSelectedDate] = useState(() => todayInET());
@@ -5854,11 +5855,12 @@ function MapScreen() {
 
         {/* Navigation is the persistent bottom tab bar (below the map area). */}
 
-        {/* M6 — AI chat launcher (mobile). Bottom-left so it never overlaps the
-            FAB. Hidden while the panel or an overlay is open. */}
-        {aiAvailable && !chatOpen && !selectedStop && !selectedDriver && !selectedRoute && !mobileDrawerOpen && (
-          <div className="absolute left-3 z-[39]" style={{ bottom: `calc(20px + env(safe-area-inset-bottom))` }}>
-            <ChatLauncher onClick={() => setChatOpen(true)} active={aiResult?.source === 'chat'} />
+        {/* Floating launchers (mobile), bottom-left: texting (message bubble) +
+            AI assistant ("?"). Hidden while a panel/overlay is open. */}
+        {!chatOpen && !selectedStop && !selectedDriver && !selectedRoute && !mobileDrawerOpen && (
+          <div className="absolute left-3 z-[39] flex flex-col gap-2" style={{ bottom: `calc(20px + env(safe-area-inset-bottom))` }}>
+            {onOpenMessages && <MessagesLauncher onClick={onOpenMessages} unread={smsUnread} />}
+            {aiAvailable && <ChatLauncher onClick={() => setChatOpen(true)} active={aiResult?.source === 'chat'} />}
           </div>
         )}
         <ChatPanel
@@ -6200,8 +6202,9 @@ function MapScreen() {
               showRoutes={showRoutes}
               setShowRoutes={setShowRoutes}
             />
-            {/* M6 — AI chat launcher. Sits at the bottom of the right control
-                column; hidden while the panel is open (the panel has its own X). */}
+            {/* Launchers at the bottom of the right control column: texting
+                (message bubble) + AI assistant ("?"). */}
+            {onOpenMessages && <MessagesLauncher onClick={onOpenMessages} unread={smsUnread} />}
             {aiAvailable && !chatOpen && (
               <ChatLauncher onClick={() => setChatOpen(true)} active={aiResult?.source === 'chat'} />
             )}
@@ -8615,7 +8618,7 @@ function Shell() {
         </header>
       )}
 
-      {tab === 'map' ? <MapScreen /> : (tab === 'routing' && ROUTING_FLAG) ? <RoutingScreen /> : <DiagnosticsRoute />}
+      {tab === 'map' ? <MapScreen onOpenMessages={openMessages} smsUnread={smsUnread} /> : (tab === 'routing' && ROUTING_FLAG) ? <RoutingScreen /> : <DiagnosticsRoute />}
 
       {/* Messages floats OVER the current screen (you never leave the map). */}
       {messagesOpen && <MessagesOverlay messages={inbound} seenAt={smsSeenAt} onClose={closeMessages} />}
@@ -8713,14 +8716,16 @@ function MessagesOverlay({ messages, seenAt = 0, onClose }) {
   };
 
   return (
-    <div className="fixed inset-0 z-[1200] bg-slate-900/40 flex justify-end" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+    // Mobile: full-screen (no backdrop gap), iOS-Messages style. Desktop: a right
+    // drawer floating over the map.
+    <div className="fixed inset-0 z-[1200] sm:bg-slate-900/40 flex justify-end" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <div className="w-full sm:max-w-md bg-white h-full shadow-2xl flex flex-col">
-        <div className="px-4 py-3 border-b flex items-center justify-between flex-shrink-0" style={{ background: BRAND, color: 'white' }}>
-          <div className="font-semibold inline-flex items-center gap-2">
-            {openThread && <button onClick={() => setSelected(null)} className="opacity-80 hover:opacity-100" aria-label="Back"><ArrowLeft size={16} /></button>}
-            <MessageSquare size={16} /> {openThread ? titleOf(openThread) : 'Messages'}
+        <div className="px-4 py-3 border-b flex items-center justify-between flex-shrink-0" style={{ background: BRAND, color: 'white', paddingTop: 'max(0.75rem, env(safe-area-inset-top))' }}>
+          <div className="font-semibold inline-flex items-center gap-2 min-w-0">
+            {openThread && <button onClick={() => setSelected(null)} className="opacity-80 hover:opacity-100 flex-shrink-0" aria-label="Back"><ArrowLeft size={16} /></button>}
+            <MessageSquare size={16} className="flex-shrink-0" /> <span className="truncate">{openThread ? titleOf(openThread) : 'Messages'}</span>
           </div>
-          <button onClick={onClose} className="opacity-80 hover:opacity-100 p-1 -mr-1" aria-label="Close"><X size={18} /></button>
+          <button onClick={onClose} className="opacity-80 hover:opacity-100 p-1 -mr-1 flex-shrink-0" aria-label="Close"><X size={18} /></button>
         </div>
 
         {!openThread ? (
@@ -8755,7 +8760,7 @@ function MessagesOverlay({ messages, seenAt = 0, onClose }) {
                 </div>
               ))}
             </div>
-            <div className="border-t p-2 flex-shrink-0">
+            <div className="border-t p-2 flex-shrink-0" style={{ paddingBottom: 'max(0.5rem, env(safe-area-inset-bottom))' }}>
               {err && <div className="text-[11px] text-red-600 px-1 pb-1">{err}</div>}
               <div className="flex items-end gap-2">
                 <textarea
