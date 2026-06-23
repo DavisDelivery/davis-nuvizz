@@ -512,6 +512,20 @@ export async function readCallStats(dateStr: string): Promise<{ count: number; b
   return { count: doc && typeof doc.count === 'number' ? doc.count : 0, byRoute, byHour };
 }
 
+// Live-editable scan configuration doc (Diagnostics UI). Stored as a flat doc at
+// nuvizz_ops/scan_config; absent → the scanner uses env/hardcoded defaults. The
+// SHAPE/validation lives in scan-schedule.mts (ScanConfig + clampScanConfig); this
+// is just the persistence. Typed loosely to avoid an import cycle with scan-schedule.
+const SCAN_CONFIG_PATH = `${OPS_COLLECTION}/scan_config`;
+export async function readScanConfig(): Promise<Record<string, any>> {
+  const doc = await getDoc(SCAN_CONFIG_PATH);
+  return (doc as Record<string, any>) || {};
+}
+export async function writeScanConfig(cfg: Record<string, any>): Promise<void> {
+  // setDoc PATCH-merges, so the write endpoint sends the full managed field set.
+  await setDoc(SCAN_CONFIG_PATH, cfg);
+}
+
 export interface CircuitState { open: boolean; reason?: string; at?: string; day?: string }
 
 // Day-scoped decision (Fix 3), exported PURE for tests: a flag tripped on a prior UTC

@@ -76,6 +76,19 @@ export const DEFAULT_CONFIG: RequesterConfig = {
   backoffTotalCapMs: 20_000,
 };
 
+// Runtime daily-ceiling override (Diagnostics UI → scan_config). The requester is a
+// warm-instance singleton built once with DEFAULT_CONFIG, so the editable ceiling is
+// applied per-invocation via this module-level override rather than rebuilding it.
+// null = use the configured/default cfg.dailyCeiling. The scanner sets this from the
+// live config at the start of each run (see refresh-stops-core).
+let __dailyCeilingOverride: number | null = null;
+export function setDailyCeilingOverride(n: number | null | undefined): void {
+  __dailyCeilingOverride = (typeof n === 'number' && Number.isFinite(n) && n > 0) ? Math.floor(n) : null;
+}
+export function effectiveDailyCeiling(fallback = DEFAULT_CONFIG.dailyCeiling): number {
+  return __dailyCeilingOverride ?? fallback;
+}
+
 export interface RequesterDeps {
   /** The real network call. Injected so tests can stub it. */
   fetchImpl: (url: string, init: any) => Promise<Response>;
@@ -173,16 +186,18 @@ export function createNuvizzRequester(deps: RequesterDeps, config: Partial<Reque
       totalThisInstance++;
       log({ route: meta.route, tenant: meta.tenant, status: resp.status, ms, dayTotal: total, mode: cfg.breakerMode });
       // At the ceiling: enforce → trip + (next call) block; monitor → warn only.
-      if (total >= cfg.dailyCeiling) {
+      // The effective ceiling honors a live UI override (scan_config) over cfg.
+      const ceiling = __dailyCeilingOverride ?? cfg.dailyCeiling;
+      if (total >= ceiling) {
         if (cfg.breakerMode === 'enforce') {
           if (!breakerOpen) {
             breakerOpen = true; breakerCheckedAt = now();
-            await deps.tripCircuit(`daily ceiling ${cfg.dailyCeiling} reached (count=${total})`);
-            log({ event: 'circuit-tripped', route: meta.route, tenant: meta.tenant, dayTotal: total, ceiling: cfg.dailyCeiling });
+            await deps.tripCircuit(`daily ceiling ${ceiling} reached (count=${total})`);
+            log({ event: 'circuit-tripped', route: meta.route, tenant: meta.tenant, dayTotal: total, ceiling });
           }
         } else if (!wouldTripLogged) {
           wouldTripLogged = true;
-          log({ event: 'circuit-would-trip', mode: 'monitor', route: meta.route, tenant: meta.tenant, dayTotal: total, ceiling: cfg.dailyCeiling, msg: `WOULD trip at ${cfg.dailyCeiling} (monitor mode — not blocking)` });
+          log({ event: 'circuit-would-trip', mode: 'monitor', route: meta.route, tenant: meta.tenant, dayTotal: total, ceiling, msg: `WOULD trip at ${ceiling} (monitor mode — not blocking)` });
         }
       }
       if (!isRetryableStatus(resp.status) || attempt >= maxRetries) return resp;
@@ -220,7 +235,7 @@ export function createNuvizzRequester(deps: RequesterDeps, config: Partial<Reque
   }
 
   function getStats() {
-    return { totalThisInstance, breakerOpen, inflight: inflight.size, ceiling: cfg.dailyCeiling, mode: cfg.breakerMode };
+    return { totalThisInstance, breakerOpen, inflight: inflight.size, ceiling: __dailyCeilingOverride ?? cfg.dailyCeiling, mode: cfg.breakerMode };
   }
 
   return { request, getStats, _config: cfg };

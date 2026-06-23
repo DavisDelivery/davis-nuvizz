@@ -21,7 +21,7 @@
 
 import fixture from '../../test/fixtures/nuvizz-today-stops.json' with { type: 'json' };
 import { scanDate, todayUTC, normalizeStop } from './lib/nuvizz-scan.mts';
-import { isFirestoreEnabled, readStops, readCallStats, readCircuit, etDayString, readScanMetrics } from './lib/firestore.mts';
+import { isFirestoreEnabled, readStops, readCallStats, readCircuit, etDayString, readScanMetrics, readScanConfig } from './lib/firestore.mts';
 import { summarizeScanMetrics } from './lib/scan-metrics.mts';
 import { breakerMode } from './lib/nuvizz-request.mts';
 
@@ -118,12 +118,13 @@ export default async (req: Request): Promise<Response> => {
     if (isFirestoreEnabled()) {
       try {
         const opsDate = etDayString();
-        const [stats, circuit, metrics] = await Promise.all([readCallStats(opsDate), readCircuit(), readScanMetrics()]);
+        const [stats, circuit, metrics, scanCfg] = await Promise.all([readCallStats(opsDate), readCircuit(), readScanMetrics(), readScanConfig().catch(() => ({}))]);
         ops = {
           dayCount: stats.count,
           byRoute: stats.byRoute,
           byHour: stats.byHour, // per-ET-hour call counts { '00'..'23': n } — surfaces spikes
-          ceiling: Number(process.env.NUVIZZ_DAILY_CEILING) || 12000,
+          // Effective spend cap: the live UI-configured ceiling wins over the env default.
+          ceiling: (typeof (scanCfg as any)?.dailyCeiling === 'number' ? (scanCfg as any).dailyCeiling : (Number(process.env.NUVIZZ_DAILY_CEILING) || 12000)),
           breaker: circuit.open,
           mode: breakerMode(),
           // Learned scan-discovery summary (avg/max new loads/day, worst gap,
