@@ -20,7 +20,7 @@ import {
 } from 'lucide-react';
 import {
   collection, doc, getDoc, onSnapshot, setDoc, serverTimestamp,
-  query, orderBy, updateDoc, deleteDoc,
+  query, orderBy, limit, updateDoc, deleteDoc,
 } from 'firebase/firestore';
 
 import { db } from './lib/firebase.js';
@@ -47,7 +47,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.29.19';
+const APP_VERSION = '0.29.20';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -67,6 +67,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.29.20', 'Texting Stage 3 — inbound replies. New "Messages" tab shows customer text replies (newest first, matched to a customer name by phone when known), with a Reply button and an unread badge. Replies arrive via a SimpleTexting webhook into the app.'],
   ['0.29.19', 'Texting fix: the "Text customer" button now always shows in a stop\'s detail (desktop + mobile) even when no phone is on file — you can type/confirm the number right in the compose box. Previously it was hidden whenever a stop had no saved number, so it looked missing on mobile.'],
   ['0.29.18', 'Texting is now active — the SimpleTexting account is connected, so the "Text customer" and "Text selected" buttons send real messages from our number.'],
   ['0.29.17', 'Texting (SMS) via SimpleTexting — Stage 1 (outbound). New "Text customer" button in stop detail and "Text selected" in the box/lasso selection toolbar; both open a compose box and send via our number. Customer number = notes contact, falling back to the NuVizz scan contact. Server send endpoint has a daily send cap. Requires SIMPLETEXTING_API_KEY (and optional SIMPLETEXTING_FROM) env vars. Next stages: text drivers + inbound replies inbox.'],
@@ -930,6 +931,23 @@ function useCustomerNotes() {
     return unsub;
   }, []);
   return { notes, ready };
+}
+
+// Subscribe to inbound SMS replies (written by the SimpleTexting webhook).
+// Newest first, capped. LS_SMS_SEEN tracks the last time the inbox was opened so
+// we can show an unread badge.
+const LS_SMS_SEEN = 'dispatchMap.smsInboxSeenAt';
+function useInboundSms() {
+  const [messages, setMessages] = useState([]);
+  useEffect(() => {
+    if (!db) return;
+    const q = query(collection(db, 'sms_inbound'), orderBy('received_at', 'desc'), limit(300));
+    const unsub = onSnapshot(q, (snap) => {
+      setMessages(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+    }, (err) => console.error('sms_inbound snapshot error', err));
+    return unsub;
+  }, []);
+  return messages;
 }
 
 // --- M4.1 hooks ---
@@ -3761,7 +3779,7 @@ function makeDriverLabelOverlayClass(google) {
 // MOBILE_BREAKPOINT. Renders the "D" mark, "Dispatch" label, and a tap-able
 // version chip on the right. Tapping the chip toggles a small overflow menu
 // the parent owns (Diagnostics access lives here, per brief P5.1).
-function MobileAppBar({ version, onChipMenu, chipMenuOpen, onSelectMenu }) {
+function MobileAppBar({ version, onChipMenu, chipMenuOpen, onSelectMenu, smsUnread = 0 }) {
   return (
     <header
       className="flex-shrink-0 flex items-center justify-between gap-2 px-3 text-white relative"
@@ -3805,6 +3823,14 @@ function MobileAppBar({ version, onChipMenu, chipMenuOpen, onSelectMenu }) {
             )}
             <button
               className={`w-full text-left px-3 py-2 hover:bg-slate-50 inline-flex items-center gap-2${ROUTING_FLAG ? ' border-t border-slate-100' : ''}`}
+              onClick={() => onSelectMenu('messages')}
+              role="menuitem"
+            >
+              <MessageSquare size={12} /> Messages
+              {smsUnread > 0 && <span className="ml-auto min-w-[16px] h-4 px-1 rounded-full bg-red-600 text-white text-[10px] font-bold inline-flex items-center justify-center">{smsUnread > 99 ? '99+' : smsUnread}</span>}
+            </button>
+            <button
+              className="w-full text-left px-3 py-2 hover:bg-slate-50 inline-flex items-center gap-2 border-t border-slate-100"
               onClick={() => onSelectMenu('diagnostics')}
               role="menuitem"
             >
@@ -8481,11 +8507,18 @@ function Shell() {
   const isMobile = viewportWidth < MOBILE_BREAKPOINT;
   const [chipMenuOpen, setChipMenuOpen] = useState(false);
 
+  // Inbound SMS replies + unread badge (cleared when the Messages tab is opened).
+  const inbound = useInboundSms();
+  const [smsSeenAt, setSmsSeenAt] = useState(() => Number(safeReadJSON(LS_SMS_SEEN, 0)) || 0);
+  const smsUnread = inbound.filter((m) => new Date(m.received_at || 0).getTime() > smsSeenAt).length;
+  const openMessages = () => { const now = Date.now(); setSmsSeenAt(now); safeWriteJSON(LS_SMS_SEEN, now); setTab('messages'); };
+
   // Close chip menu on any tab change or click outside the bar.
   useEffect(() => { setChipMenuOpen(false); }, [tab]);
 
   const onSelectMenu = (next) => {
     setChipMenuOpen(false);
+    if (next === 'messages') { openMessages(); return; }
     setTab(next === 'diagnostics' ? 'diag' : next === 'routing' ? 'routing' : 'map');
   };
 
@@ -8516,6 +8549,7 @@ function Shell() {
           chipMenuOpen={chipMenuOpen}
           onChipMenu={() => setChipMenuOpen((v) => !v)}
           onSelectMenu={onSelectMenu}
+          smsUnread={smsUnread}
         />
       ) : (
         <header className="flex items-center justify-between px-4 py-2 border-b bg-white" style={{ paddingTop: 'env(safe-area-inset-top)' }}>
@@ -8529,6 +8563,7 @@ function Shell() {
           <nav className="flex items-center gap-1 text-sm">
             <TabBtn label="Map" icon={<MapPin size={14} />} active={tab === 'map'} onClick={() => setTab('map')} />
             {ROUTING_FLAG && <TabBtn label="Routing (beta)" icon={<MapPinned size={14} />} active={tab === 'routing'} onClick={() => setTab('routing')} />}
+            <TabBtn label="Messages" icon={<MessageSquare size={14} />} active={tab === 'messages'} onClick={openMessages} badge={smsUnread} />
             <TabBtn label="Diagnostics" icon={<Activity size={14} />} active={tab === 'diag'} onClick={() => setTab('diag')} />
           </nav>
           {/* Right side intentionally empty — no auth in v0.3.0 (matches Glory Bound / MarginIQ). */}
@@ -8536,7 +8571,7 @@ function Shell() {
         </header>
       )}
 
-      {tab === 'map' ? <MapScreen /> : (tab === 'routing' && ROUTING_FLAG) ? <RoutingScreen /> : <DiagnosticsRoute />}
+      {tab === 'map' ? <MapScreen /> : (tab === 'routing' && ROUTING_FLAG) ? <RoutingScreen /> : tab === 'messages' ? <MessagesRoute messages={inbound} /> : <DiagnosticsRoute />}
 
       {/* Footer is desktop/tablet only on mobile; the in-map version chip
           and the top-bar chip cover the same info on small screens. */}
@@ -8558,14 +8593,74 @@ function DiagnosticsRoute() {
   return <DiagnosticsScreen stops={stops} notes={notes} />;
 }
 
-function TabBtn({ label, icon, active, onClick }) {
+// Pretty-print a 10-digit number as (xxx) xxx-xxxx; pass through anything else.
+function fmtPhone(raw) {
+  const d = String(raw || '').replace(/\D/g, '');
+  const ten = d.length === 11 && d.startsWith('1') ? d.slice(1) : d;
+  return ten.length === 10 ? `(${ten.slice(0, 3)}) ${ten.slice(3, 6)}-${ten.slice(6)}` : (raw || '');
+}
+
+// Messages inbox — inbound SMS replies from customers, newest first, matched to a
+// customer name by phone where we have one on file. Reply reuses SmsComposeModal.
+function MessagesRoute({ messages }) {
+  const { notes } = useCustomerNotes();
+  const [reply, setReply] = useState(null);
+  // phone (normalized) → customer name, from saved notes contacts.
+  const nameByPhone = useMemo(() => {
+    const norm = (p) => { const d = String(p || '').replace(/\D/g, ''); return d.length === 11 && d.startsWith('1') ? d.slice(1) : d; };
+    const m = new Map();
+    for (const n of notes.values()) {
+      for (const c of (n.contacts || [])) { const k = norm(c?.phone); if (k && !m.has(k)) m.set(k, n.raw_name || ''); }
+    }
+    return m;
+  }, [notes]);
+  const rows = messages || [];
+  return (
+    <div className="flex-1 min-h-0 overflow-y-auto p-3 sm:p-6 max-w-3xl mx-auto w-full">
+      {reply && <SmsComposeModal title={reply.title} recipients={reply.recipients} onClose={() => setReply(null)} />}
+      <h2 className="text-xl font-bold text-slate-900 mb-1">Messages</h2>
+      <p className="text-sm text-slate-600 mb-4">Inbound replies from customers. {rows.length} recent.</p>
+      {rows.length === 0 ? (
+        <div className="text-sm text-slate-400 italic py-10 text-center border border-slate-100 rounded-lg">No replies yet. Inbound texts appear here once customers reply.</div>
+      ) : (
+        <div className="divide-y divide-slate-100 border border-slate-200 rounded-lg bg-white">
+          {rows.map((m) => {
+            const name = nameByPhone.get(String(m.contactPhone || '').replace(/\D/g, '')) || null;
+            const when = m.received_at ? fmtTimeAgo(m.received_at) : '';
+            return (
+              <div key={m.id} className="p-3 flex items-start gap-3">
+                <div className="min-w-0 flex-1">
+                  <div className="text-sm font-semibold text-slate-800 truncate">{name || fmtPhone(m.contactPhone)} {name && <span className="font-normal text-slate-400">· {fmtPhone(m.contactPhone)}</span>}</div>
+                  <div className="text-sm text-slate-700 break-words whitespace-pre-wrap">{m.text}</div>
+                  <div className="text-[10px] text-slate-400 mt-0.5">{when}</div>
+                </div>
+                <button
+                  onClick={() => setReply({ title: `Reply to ${name || fmtPhone(m.contactPhone)}`, recipients: [{ to: m.contactPhone, label: name || fmtPhone(m.contactPhone) }] })}
+                  className="shrink-0 inline-flex items-center gap-1 text-xs font-semibold text-white rounded-lg px-2.5 py-1.5"
+                  style={{ background: BRAND }}
+                >
+                  <Send size={13} /> Reply
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TabBtn({ label, icon, active, onClick, badge = 0 }) {
   return (
     <button
       onClick={onClick}
-      className={`px-3 py-1.5 rounded inline-flex items-center gap-1.5 font-medium ${active ? 'text-white' : 'text-slate-600 hover:bg-slate-100'}`}
+      className={`relative px-3 py-1.5 rounded inline-flex items-center gap-1.5 font-medium ${active ? 'text-white' : 'text-slate-600 hover:bg-slate-100'}`}
       style={active ? { background: BRAND } : {}}
     >
       {icon}{label}
+      {badge > 0 && (
+        <span className="ml-0.5 min-w-[16px] h-4 px-1 rounded-full bg-red-600 text-white text-[10px] font-bold inline-flex items-center justify-center">{badge > 99 ? '99+' : badge}</span>
+      )}
     </button>
   );
 }
