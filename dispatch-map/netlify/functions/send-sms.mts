@@ -16,6 +16,7 @@
 
 import { smsEnabled, sendSms } from './lib/sms.mts';
 import { resolveDriverPhone } from './lib/marginiq.mts';
+import { recordSmsMessage } from './lib/sms-store.mts';
 import { isFirestoreEnabled, getDoc, setDoc, etDayString } from './lib/firestore.mts';
 
 const OPS = 'nuvizz_ops';
@@ -47,7 +48,7 @@ export default async (req: Request): Promise<Response> => {
   // Resolve driver names → phones; collect unresolved as failures (reported back).
   const unresolved: any[] = [];
   const seen = new Set<string>();
-  const recipients: { to: string; label?: string }[] = [];
+  const recipients: { to: string; label?: string; driverName?: string }[] = [];
   for (const r of raw) {
     let to = r.to;
     const label = r.label || r.driverName;
@@ -58,7 +59,7 @@ export default async (req: Request): Promise<Response> => {
     }
     if (!to || seen.has(to)) continue;
     seen.add(to);
-    recipients.push({ to, label });
+    recipients.push({ to, label, driverName: r.driverName });
   }
   if (!recipients.length) {
     return new Response(JSON.stringify({ ok: false, error: 'no deliverable recipients', sent: 0, failed: unresolved.length, capped: 0, results: unresolved }), { status: 200, headers: cors });
@@ -79,8 +80,11 @@ export default async (req: Request): Promise<Response> => {
   for (const r of recipients) {
     if (sent >= remaining) { capped++; results.push({ to: r.to, label: r.label, ok: false, error: 'daily cap reached' }); continue; }
     const res = await sendSms({ to: r.to, text });
-    if (res.ok) { sent++; results.push({ to: r.to, label: r.label, ok: true, id: res.id }); }
-    else { failed++; results.push({ to: r.to, label: r.label, ok: false, error: res.error }); }
+    if (res.ok) {
+      sent++; results.push({ to: r.to, label: r.label, ok: true, id: res.id });
+      // Record the outbound message so the conversation thread shows both sides.
+      await recordSmsMessage({ direction: 'out', contactPhone: r.to, text, driverName: r.driverName || null, label: r.label || null, messageId: res.id || null });
+    } else { failed++; results.push({ to: r.to, label: r.label, ok: false, error: res.error }); }
   }
 
   if (isFirestoreEnabled() && sent > 0) {
