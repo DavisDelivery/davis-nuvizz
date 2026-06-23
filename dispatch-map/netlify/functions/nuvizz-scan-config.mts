@@ -19,7 +19,7 @@ import { isFirestoreEnabled, readScanConfig, writeScanConfig } from './lib/fires
 import { clampScanConfig, effectiveScanConfig, scanConfigDefaults, SCAN_CONFIG_BOUNDS } from './lib/scan-schedule.mts';
 
 export default async (req: Request): Promise<Response> => {
-  const cors = { 'Access-Control-Allow-Origin': '*', 'Content-Type': 'application/json' };
+  const cors = { 'Access-Control-Allow-Origin': '*', 'Content-Type': 'application/json', 'Cache-Control': 'no-store' };
   if (req.method === 'OPTIONS') return new Response('', { status: 200, headers: cors });
 
   if (!isFirestoreEnabled()) {
