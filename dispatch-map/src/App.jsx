@@ -47,7 +47,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.29.17';
+const APP_VERSION = '0.29.18';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -67,6 +67,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.29.18', 'Texting is now active — the SimpleTexting account is connected, so the "Text customer" and "Text selected" buttons send real messages from our number.'],
   ['0.29.17', 'Texting (SMS) via SimpleTexting — Stage 1 (outbound). New "Text customer" button in stop detail and "Text selected" in the box/lasso selection toolbar; both open a compose box and send via our number. Customer number = notes contact, falling back to the NuVizz scan contact. Server send endpoint has a daily send cap. Requires SIMPLETEXTING_API_KEY (and optional SIMPLETEXTING_FROM) env vars. Next stages: text drivers + inbound replies inbox.'],
   ['0.29.16', 'New per-customer "Email customer service when scheduled" toggle in notes. When the scan finds an opted-in customer on a day\'s board, it emails CS once (the first time that customer appears that day, deduped) from our no-reply account via Resend. Requires RESEND_API_KEY + RESEND_FROM + NOTIFY_CS_TO env vars to be set.'],
   ['0.29.15', 'DNS "Drivers not allowed" picker now lists the FULL driver roster from Motive (the fleet app), so you can bar ANY driver — not just ones on today\'s board or currently on the live map. New read-only /motive-drivers endpoint (server-cached ~1h); merged with today\'s board drivers and de-duped.'],
