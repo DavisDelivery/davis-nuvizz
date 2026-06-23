@@ -47,7 +47,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.29.21';
+const APP_VERSION = '0.29.22';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -67,6 +67,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.29.22', 'Fix: a previously-undelivered order rolled back to unplanned and re-added to today\'s load now shows on the driver\'s route. The scan was dropping any load member whose own delivery date wasn\'t today; for a load that started today we now keep all its members (rolled-in older orders included), so a stop like Paulsen Foods on Rasko\'s load appears. No extra NuVizz calls — that stop was already in the load data we fetch. Genuine multi-day carryover loads are unaffected.'],
   ['0.29.21', 'Texting Stage 2 — text drivers. The driver panel now has a "Text driver" button; the driver\'s mobile number is pulled from their MarginIQ employee card (matched by name) on the server, so numbers stay private. Works on desktop + mobile.'],
   ['0.29.20', 'Texting Stage 3 — inbound replies. New "Messages" tab shows customer text replies (newest first, matched to a customer name by phone when known), with a Reply button and an unread badge. Replies arrive via a SimpleTexting webhook into the app.'],
   ['0.29.19', 'Texting fix: the "Text customer" button now always shows in a stop\'s detail (desktop + mobile) even when no phone is on file — you can type/confirm the number right in the compose box. Previously it was hidden whenever a stop had no saved number, so it looked missing on mobile.'],
