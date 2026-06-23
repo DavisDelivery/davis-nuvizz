@@ -280,6 +280,12 @@ async function incrementCallCounter(dateStr, n) {
   const sa = loadServiceAccount();
   const docName = `projects/${sa.project_id}/databases/(default)/documents/${OPS_COLLECTION}/calls__${dateStr}`;
   const url = `${FIRESTORE_BASE}/projects/${sa.project_id}/databases/(default)/documents:commit`;
+  // Per-ET-hour bucket (hour__HH) rides in the SAME commit as `count`, mirroring
+  // dispatch-map (firestore.mts) so the shared doc's hour buckets always sum to the
+  // total no matter which app made the call. en-GB yields 00–23; %24 guards midnight.
+  const etHour = String(parseInt(new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'America/New_York', hour: '2-digit', hour12: false,
+  }).format(new Date()), 10) % 24).padStart(2, '0');
   const body = {
     writes: [{
       update: { name: docName, fields: { date: { stringValue: dateStr } } },
@@ -290,7 +296,10 @@ async function incrementCallCounter(dateStr, n) {
       // scopes the update to MERGE `date`, so count survives and the transform
       // accumulates. Mirrors dispatch-map buildCounterCommitBody (firestore.mts).
       updateMask: { fieldPaths: ['date'] },
-      updateTransforms: [{ fieldPath: 'count', increment: { integerValue: String(n) } }],
+      updateTransforms: [
+        { fieldPath: 'count', increment: { integerValue: String(n) } }, // transform[0] = authoritative total
+        { fieldPath: `hour__${etHour}`, increment: { integerValue: String(n) } },
+      ],
     }],
   };
   const resp = await fetch(url, {

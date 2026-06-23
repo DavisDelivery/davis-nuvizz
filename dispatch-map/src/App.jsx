@@ -1621,6 +1621,34 @@ function FeedTimestamps({ loadAt, unplannedAt, isToday, className, stacked }) {
   );
 }
 
+// Compact 24-bar sparkline of NuVizz API calls per ET hour (ops.byHour). Makes
+// spikes (e.g. the 10am unplanned open) visible at a glance without leaving the board.
+// Renders nothing until there's at least one call today.
+function HourlyCalls({ byHour, className }) {
+  if (!byHour) return null;
+  const hours = Array.from({ length: 24 }, (_, h) => String(h).padStart(2, '0'));
+  const vals = hours.map((h) => byHour[h] || 0);
+  const total = vals.reduce((a, b) => a + b, 0);
+  if (!total) return null;
+  const max = Math.max(...vals);
+  const peak = vals.indexOf(max);
+  return (
+    <div className={className || 'text-slate-400 text-[10px]'}>
+      <div className="flex items-end gap-px h-5" title="NuVizz API calls per ET hour (00–23)">
+        {vals.map((v, h) => (
+          <div
+            key={h}
+            className={v ? 'w-1 bg-violet-500/70' : 'w-1 bg-slate-200'}
+            style={{ height: `${Math.max(2, Math.round((v / max) * 20))}px` }}
+            title={`${hours[h]}:00 ET — ${v.toLocaleString()} calls`}
+          />
+        ))}
+      </div>
+      <div>by hour (ET) · peak {hours[peak]}:00 = {max.toLocaleString()}</div>
+    </div>
+  );
+}
+
 // M5.2 — data now comes from the pre-scanned Firestore stop index, refreshed by a
 // background scan every ~5 min. The meaningful freshness is when that scan ran
 // (lastScannedAt), not when the client fetched. Surface it so dispatchers know
@@ -5804,9 +5832,12 @@ function MapScreen() {
                 <div className="text-slate-600 text-[10px]">{totalPalletsCount.toLocaleString()} total pallets</div>
                 <FeedTimestamps loadAt={lastLoadScanAt} unplannedAt={lastUnplannedScanAt} isToday={dateIsToday} className="text-slate-500 text-[10px]" stacked />
                 {ops && typeof ops.dayCount === 'number' && (
-                  <div className="text-slate-500 text-[10px]" title={`Today's NuVizz API calls (${ops.mode})${ops.byRoute && Object.keys(ops.byRoute).length ? ' · ' + Object.entries(ops.byRoute).map(([k, v]) => `${k}:${v}`).join(' ') : ''}`}>
-                    NuVizz calls: {ops.dayCount.toLocaleString()}{ops.ceiling ? ` / ${ops.ceiling.toLocaleString()}` : ''} <span className="text-slate-400">({ops.mode}{ops.breaker ? ', halted' : ''})</span>
-                  </div>
+                  <>
+                    <div className="text-slate-500 text-[10px]" title={`Today's NuVizz API calls (${ops.mode})${ops.byRoute && Object.keys(ops.byRoute).length ? ' · ' + Object.entries(ops.byRoute).map(([k, v]) => `${k}:${v}`).join(' ') : ''}`}>
+                      NuVizz calls: {ops.dayCount.toLocaleString()}{ops.ceiling ? ` / ${ops.ceiling.toLocaleString()}` : ''} <span className="text-slate-400">({ops.mode}{ops.breaker ? ', halted' : ''})</span>
+                    </div>
+                    <HourlyCalls byHour={ops.byHour} className="text-slate-400 text-[10px] mt-0.5" />
+                  </>
                 )}
                 {scanState?.halted && (
                   <div className="text-[10px] font-semibold text-red-700">
@@ -6182,9 +6213,12 @@ function MapScreen() {
                   <div className="text-slate-600">{totalPalletsCount.toLocaleString()} total pallets</div>
                   <FeedTimestamps loadAt={lastLoadScanAt} unplannedAt={lastUnplannedScanAt} isToday={dateIsToday} className="text-slate-500" stacked />
                   {ops && typeof ops.dayCount === 'number' && (
-                    <div className="text-slate-500" title={`Today's NuVizz API calls (${ops.mode})${ops.byRoute && Object.keys(ops.byRoute).length ? ' · ' + Object.entries(ops.byRoute).map(([k, v]) => `${k}:${v}`).join(' ') : ''}`}>
-                      NuVizz calls: {ops.dayCount.toLocaleString()}{ops.ceiling ? ` / ${ops.ceiling.toLocaleString()}` : ''} <span className="text-slate-400">({ops.mode}{ops.breaker ? ', halted' : ''})</span>
-                    </div>
+                    <>
+                      <div className="text-slate-500" title={`Today's NuVizz API calls (${ops.mode})${ops.byRoute && Object.keys(ops.byRoute).length ? ' · ' + Object.entries(ops.byRoute).map(([k, v]) => `${k}:${v}`).join(' ') : ''}`}>
+                        NuVizz calls: {ops.dayCount.toLocaleString()}{ops.ceiling ? ` / ${ops.ceiling.toLocaleString()}` : ''} <span className="text-slate-400">({ops.mode}{ops.breaker ? ', halted' : ''})</span>
+                      </div>
+                      <HourlyCalls byHour={ops.byHour} className="text-slate-400 text-[10px] mt-0.5" />
+                    </>
                   )}
                   {scanErr && <div className="text-[11px] text-red-600">{scanErr}</div>}
                 </div>

@@ -5,7 +5,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { buildCounterCommitBody, routeFieldKey, circuitFromDoc } from '../netlify/functions/lib/firestore.mts';
+import { buildCounterCommitBody, routeFieldKey, hourFieldKey, etHourString, circuitFromDoc } from '../netlify/functions/lib/firestore.mts';
 
 const DOC = 'projects/p/databases/(default)/documents/nuvizz_ops/calls__2026-06-18';
 
@@ -35,6 +35,40 @@ test('counter body: a route adds a count__<route> transform without disturbing c
   assert.equal(t[0].fieldPath, 'count', 'total stays transform[0] (authoritative readback)');
   assert.equal(t[1].fieldPath, 'count__load_info');
   assert.equal(t[1].increment.integerValue, '1');
+});
+
+test('counter body: an hour bucket rides AFTER count/route so count stays transform[0]', () => {
+  // route + hour together: count[0], count__route[1], hour__HH[2].
+  const withRoute = buildCounterCommitBody(DOC, '2026-06-18', 1, '/load/info', '10');
+  const t = withRoute.writes[0].updateTransforms;
+  assert.equal(t[0].fieldPath, 'count', 'total stays transform[0]');
+  assert.equal(t[1].fieldPath, 'count__load_info');
+  assert.equal(t[2].fieldPath, 'hour__10', 'hour bucket appended last');
+  assert.equal(t[2].increment.integerValue, '1');
+  // hour with NO route: count[0], hour__HH[1] (no per-route transform).
+  const noRoute = buildCounterCommitBody(DOC, '2026-06-18', 3, undefined, '14');
+  const t2 = noRoute.writes[0].updateTransforms;
+  assert.equal(t2.length, 2);
+  assert.equal(t2[1].fieldPath, 'hour__14');
+  assert.equal(t2[1].increment.integerValue, '3');
+});
+
+test('hourFieldKey: only a valid 00–23 hour becomes hour__HH (no field-path injection)', () => {
+  assert.equal(hourFieldKey('00'), 'hour__00');
+  assert.equal(hourFieldKey('10'), 'hour__10');
+  assert.equal(hourFieldKey('23'), 'hour__23');
+  assert.equal(hourFieldKey('24'), null, 'out of 0–23 range rejected');
+  assert.equal(hourFieldKey('9'), null, 'must be two digits');
+  assert.equal(hourFieldKey('1a'), null);
+  assert.equal(hourFieldKey(''), null);
+  assert.equal(hourFieldKey(null), null);
+});
+
+test('etHourString: emits a zero-padded ET hour (EDT offset, deterministic)', () => {
+  // 2026-06-23 17:30 UTC → 13:30 America/New_York (EDT, UTC-4).
+  assert.equal(etHourString(new Date('2026-06-23T17:30:00Z')), '13');
+  // Just after ET midnight: 2026-06-23 04:30 UTC → 00:30 EDT.
+  assert.equal(etHourString(new Date('2026-06-23T04:30:00Z')), '00');
 });
 
 test('routeFieldKey: never aliases onto count, never injects a field path', () => {

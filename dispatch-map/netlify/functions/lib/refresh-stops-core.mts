@@ -15,7 +15,7 @@
 // skip here, because the Friday-evening ET window lands on Saturday UTC and a
 // naive getUTCDay() check would wrongly drop it. Manual HTTP runs always proceed.
 
-import { scanDate, todayUTC, scansEnabled, deriveFleetSummary, estimateLoadRange, buildScanState, shadowWouldProbe, selectLoadProbeTargets, groupLoadMembers, estimateStopFrontier, unplannedFloor, FLOOR_MARGIN, loadNbrToInt, stopNbrToInt, shouldDeepSweep } from './nuvizz-scan.mts';
+import { scanDate, todayUTC, scansEnabled, deriveFleetSummary, estimateLoadRange, buildScanState, shadowWouldProbe, selectLoadProbeTargets, groupLoadMembers, estimateStopFrontier, unplannedFloor, FLOOR_MARGIN, loadNbrToInt, stopNbrToInt, shouldDeepSweep, deepSweepGate } from './nuvizz-scan.mts';
 import { loadProbeParity, frontierParity, loadMembershipDelta, dateSliceMismatch } from './scan-parity.mts';
 import { isFirestoreEnabled, writeStops, writeFleetIndex, getDoc, markScanState, readCallStats, readCircuit, readScanState, writeScanState, readRecentFrontier, recordScanMetric, etDayString } from './firestore.mts';
 import { maxConsecutiveGap } from './scan-metrics.mts';
@@ -234,8 +234,21 @@ export async function runRefreshStops(req: Request): Promise<Response> {
       // never on the cold RESUMPTION fire (that one must stay cheap — and nothing
       // changed below the frontier over the weekend anyway; a due sweep runs on the
       // next warm cycle instead).
+      // No-spike morning open: the deep sweep is the only FULL-floor descent (~2k
+      // probes), and shouldDeepSweep() returns true on a cold day — so without a guard
+      // the very FIRST unplanned cycle (the 10am open, when there are <~100 new orders)
+      // would full-sweep and spike. deepSweepGate holds it back to a WARM cycle (today's
+      // unplanned high-water already set by the cheap forward walk) at/after an off-peak
+      // ET hour (NUVIZZ_DEEP_SWEEP_HOUR, default 13:00), so the open ramps up gently and
+      // the one daily reconciliation lands in the afternoon lull.
+      const DEEP_SWEEP_HOUR = Number(process.env.NUVIZZ_DEEP_SWEEP_HOUR) || 13;
       const deepSweep = (LEAN_DISCOVERY || FORWARD_SCAN) && includeUnplanned && !isManual && !resumption
-        && shouldDeepSweep(priorState?.lastDeepSweepAt, Date.now(), DEEP_SWEEP_HOURS * 3600_000);
+        && deepSweepGate({
+          due: shouldDeepSweep(priorState?.lastDeepSweepAt, Date.now(), DEEP_SWEEP_HOURS * 3600_000),
+          todayUnplannedWarm: priorState?.highWaterUnplannedStopNbr != null,
+          etHour: decision.etHour,
+          offPeakHour: DEEP_SWEEP_HOUR,
+        });
       // A deep sweep is the authoritative full re-baseline → drop forward/lean and
       // probe the full load window + full unplanned floor.
       if (deepSweep) { forwardLoad = null; forwardUnplanned = null; loadTargets = null; }
