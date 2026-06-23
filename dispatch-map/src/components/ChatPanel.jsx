@@ -14,7 +14,7 @@
 //   stopCount        — number of currently-loaded stops (shown as scope hint)
 
 import { useState, useRef, useEffect } from 'react';
-import { MessageSquare, X, Send, Sparkles } from 'lucide-react';
+import { MessageSquare, X, Send, Sparkles, HelpCircle } from 'lucide-react';
 
 const BRAND = '#1e5b92';
 
@@ -204,18 +204,39 @@ export default function ChatPanel({ open, onClose, onSend, onHighlight, onClear,
   );
 }
 
-// Floating button that opens the chat panel. Reused on desktop (toolbar column)
-// and mobile (FAB). 44px min touch target.
+// Floating button that opens the AI assistant. A "?" so it reads as "ask a
+// question about the board" — distinct from the texting (message-bubble) button.
 export function ChatLauncher({ onClick, active }) {
   return (
     <button
       onClick={onClick}
       className="rounded-full shadow-lg text-white flex items-center justify-center w-12 h-12"
       style={{ background: active ? '#16a34a' : BRAND }}
-      aria-label="Open AI assistant"
+      aria-label="Ask AI about the board"
       title="Ask AI about the board"
     >
+      <HelpCircle size={22} />
+    </button>
+  );
+}
+
+// Floating button that opens the texting/messages window. Message bubble icon +
+// an unread badge. Distinct from the AI "?" launcher.
+export function MessagesLauncher({ onClick, unread = 0 }) {
+  return (
+    <button
+      onClick={onClick}
+      className="relative rounded-full shadow-lg text-white flex items-center justify-center w-12 h-12"
+      style={{ background: BRAND }}
+      aria-label="Open messages"
+      title="Texting / messages"
+    >
       <MessageSquare size={20} />
+      {unread > 0 && (
+        <span className="absolute -top-1 -right-1 min-w-[18px] h-[18px] px-1 rounded-full bg-red-600 text-white text-[10px] font-bold flex items-center justify-center border-2 border-white">
+          {unread > 99 ? '99+' : unread}
+        </span>
+      )}
     </button>
   );
 }

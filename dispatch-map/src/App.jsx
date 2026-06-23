@@ -33,7 +33,8 @@ import { formatDateTime, tsToMillis, loadSummary, buildLoadAutoName } from './li
 import { scanStop, scanStopFull } from './lib/signal-scanner';
 import { applyScannerResults } from './lib/customer-notes-writer';
 import { aiParse, aiChat, applyFilterSpec, summarizeSpec, buildTrimmedStops } from './lib/ai-search.js';
-import ChatPanel, { ChatLauncher } from './components/ChatPanel.jsx';
+import ChatPanel, { ChatLauncher, MessagesLauncher } from './components/ChatPanel.jsx';
+import MessagesPanel from './components/MessagesPanel.jsx';
 
 // Vite's tree-shaker considers function-only imports from .ts files to be
 // pure; it eliminates them even though they're called from useAutoScanner's
@@ -47,7 +48,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.29.23';
+const APP_VERSION = '0.29.26';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -67,6 +68,9 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.29.26', 'Messages on mobile: the texting window now sizes to the visible screen, so the keyboard no longer hides the message box and Send button — you can actually type and send a text on a phone. Same fix keeps the conversation above the keyboard in every view.'],
+  ['0.29.25', 'Messages, rebuilt (iOS-style). The texting window is now a real messaging app: a searchable conversation list with avatars, names, role tags and unread dots; a "New message" button that opens a CONTACT PICKER split into Drivers / Contractors / Customers / Team (drivers + contractors come from the employee roster via a new /messaging-roster endpoint) plus Recent and "text any typed number"; and a conversation view with iMessage-style bubbles, grouped time stamps, a pill composer, instant (optimistic) send and tap-to-retry on failures. You can now START a text to anyone, not just reply to people who texted first.'],
+  ['0.29.24', 'Cleaner buttons: the floating message-bubble icon (desktop + mobile) now opens TEXTING, and the AI assistant moved to a "?" button next to it. On mobile the texting window is full-screen (iOS-style) with notch/home-bar safe spacing; on desktop it stays a side drawer over the map. The message button shows an unread badge.'],
   ['0.29.23', 'Texting — two-way conversations. Messages now opens as a window OVER the map (no more leaving the screen; fixes the blank-screen bug). It shows full back-and-forth threads per customer/driver — your sent texts and their replies together — with an inline reply box. Inbound replies are matched to a customer (from saved contacts) or driver (from MarginIQ) by phone, and driver threads are tagged. New: "Text drivers" from the box/lasso selection texts the drivers of the selected stops at once.'],
   ['0.29.22', 'Fix: a previously-undelivered order rolled back to unplanned and re-added to today\'s load now shows on the driver\'s route. The scan was dropping any load member whose own delivery date wasn\'t today; for a load that started today we now keep all its members (rolled-in older orders included), so a stop like Paulsen Foods on Rasko\'s load appears. No extra NuVizz calls — that stop was already in the load data we fetch. Genuine multi-day carryover loads are unaffected.'],
   ['0.29.21', 'Texting Stage 2 — text drivers. The driver panel now has a "Text driver" button; the driver\'s mobile number is pulled from their MarginIQ employee card (matched by name) on the server, so numbers stay private. Works on desktop + mobile.'],
@@ -4735,7 +4739,7 @@ function MobileDriverSnapshotDrawer({ driver, snapshot, loading, error, onClose,
   );
 }
 
-function MapScreen() {
+function MapScreen({ onOpenMessages, smsUnread = 0 }) {
   // M5 — selectedDate drives every fetch. Defaults to today (ET) and is NOT
   // persisted: every page load resets to today (brief P2.2).
   const [selectedDate, setSelectedDate] = useState(() => todayInET());
@@ -5885,11 +5889,12 @@ function MapScreen() {
 
         {/* Navigation is the persistent bottom tab bar (below the map area). */}
 
-        {/* M6 — AI chat launcher (mobile). Bottom-left so it never overlaps the
-            FAB. Hidden while the panel or an overlay is open. */}
-        {aiAvailable && !chatOpen && !selectedStop && !selectedDriver && !selectedRoute && !mobileDrawerOpen && (
-          <div className="absolute left-3 z-[39]" style={{ bottom: `calc(20px + env(safe-area-inset-bottom))` }}>
-            <ChatLauncher onClick={() => setChatOpen(true)} active={aiResult?.source === 'chat'} />
+        {/* Floating launchers (mobile), bottom-left: texting (message bubble) +
+            AI assistant ("?"). Hidden while a panel/overlay is open. */}
+        {!chatOpen && !selectedStop && !selectedDriver && !selectedRoute && !mobileDrawerOpen && (
+          <div className="absolute left-3 z-[39] flex flex-col gap-2" style={{ bottom: `calc(20px + env(safe-area-inset-bottom))` }}>
+            {onOpenMessages && <MessagesLauncher onClick={onOpenMessages} unread={smsUnread} />}
+            {aiAvailable && <ChatLauncher onClick={() => setChatOpen(true)} active={aiResult?.source === 'chat'} />}
           </div>
         )}
         <ChatPanel
@@ -6234,8 +6239,9 @@ function MapScreen() {
               showRoutes={showRoutes}
               setShowRoutes={setShowRoutes}
             />
-            {/* M6 — AI chat launcher. Sits at the bottom of the right control
-                column; hidden while the panel is open (the panel has its own X). */}
+            {/* Launchers at the bottom of the right control column: texting
+                (message bubble) + AI assistant ("?"). */}
+            {onOpenMessages && <MessagesLauncher onClick={onOpenMessages} unread={smsUnread} />}
             {aiAvailable && !chatOpen && (
               <ChatLauncher onClick={() => setChatOpen(true)} active={aiResult?.source === 'chat'} />
             )}
@@ -8943,11 +8949,24 @@ function Shell() {
   // SMS messages + unread badge. Messages is a WINDOW over the current screen
   // (it doesn't navigate away), so it's a toggle, not a tab.
   const inbound = useSmsMessages();
+  const { notes } = useCustomerNotes();
   const [messagesOpen, setMessagesOpen] = useState(false);
   const [smsSeenAt, setSmsSeenAt] = useState(() => Number(safeReadJSON(LS_SMS_SEEN, 0)) || 0);
   const smsUnread = inbound.filter((m) => m.direction === 'in' && new Date(m.at || 0).getTime() > smsSeenAt).length;
   const openMessages = () => { setMessagesOpen(true); };
   const closeMessages = () => { setMessagesOpen(false); const now = Date.now(); setSmsSeenAt(now); safeWriteJSON(LS_SMS_SEEN, now); };
+
+  // Customer contacts (phone → name) from saved notes, for the Messages contact
+  // picker. Employees (drivers/contractors) come from the roster endpoint inside
+  // the panel; customers are the names we already know locally.
+  const customerContacts = useMemo(() => {
+    const seen = new Set(); const out = [];
+    for (const n of notes.values()) for (const c of (n.contacts || [])) {
+      const k = normPhone(c?.phone); if (k.length !== 10 || seen.has(k)) continue;
+      seen.add(k); out.push({ phone: k, name: n.raw_name || c?.name || '' });
+    }
+    return out;
+  }, [notes]);
 
   // Close chip menu on any tab change or click outside the bar.
   useEffect(() => { setChipMenuOpen(false); }, [tab]);
@@ -9007,10 +9026,10 @@ function Shell() {
         </header>
       )}
 
-      {tab === 'map' ? <MapScreen /> : (tab === 'routing' && ROUTING_FLAG) ? <RoutingScreen /> : <DiagnosticsRoute />}
+      {tab === 'map' ? <MapScreen onOpenMessages={openMessages} smsUnread={smsUnread} /> : (tab === 'routing' && ROUTING_FLAG) ? <RoutingScreen /> : <DiagnosticsRoute />}
 
       {/* Messages floats OVER the current screen (you never leave the map). */}
-      {messagesOpen && <MessagesOverlay messages={inbound} seenAt={smsSeenAt} onClose={closeMessages} />}
+      {messagesOpen && <MessagesPanel messages={inbound} seenAt={smsSeenAt} onClose={closeMessages} customerContacts={customerContacts} />}
 
       {/* Footer is desktop/tablet only on mobile; the in-map version chip
           and the top-bar chip cover the same info on small screens. */}
@@ -9042,140 +9061,9 @@ function DiagnosticsRoute() {
   );
 }
 
-// Pretty-print a 10-digit number as (xxx) xxx-xxxx; pass through anything else.
-function fmtPhone(raw) {
-  const d = String(raw || '').replace(/\D/g, '');
-  const ten = d.length === 11 && d.startsWith('1') ? d.slice(1) : d;
-  return ten.length === 10 ? `(${ten.slice(0, 3)}) ${ten.slice(3, 6)}-${ten.slice(6)}` : (raw || '');
-}
-
+// Normalize a phone to 10 digits (drops a leading US country-code 1). Used by the
+// shell to derive customer contacts handed to the Messages panel.
 const normPhone = (p) => { const d = String(p || '').replace(/\D/g, ''); return d.length === 11 && d.startsWith('1') ? d.slice(1) : d; };
-
-// Relative age from an ISO string (fmtTimeAgo wants a Date — this is the string form).
-function fmtAgoIso(iso) {
-  if (!iso) return '';
-  const secs = Math.round((Date.now() - new Date(iso).getTime()) / 1000);
-  if (!Number.isFinite(secs)) return '';
-  if (secs < 60) return 'just now';
-  if (secs < 3600) return `${Math.round(secs / 60)}m ago`;
-  if (secs < 86400) return `${Math.round(secs / 3600)}h ago`;
-  return `${Math.round(secs / 86400)}d ago`;
-}
-
-// Two-way messaging window — floats OVER the map (doesn't navigate away). Left:
-// conversation threads (grouped by the other party's phone, newest first, matched
-// to a customer name from notes or a driver name from the message itself). Right:
-// the selected conversation (in/out bubbles) with an inline reply box.
-function MessagesOverlay({ messages, seenAt = 0, onClose }) {
-  const { notes } = useCustomerNotes();
-  const [selected, setSelected] = useState(null); // phone of open thread
-  const [draft, setDraft] = useState('');
-  const [sending, setSending] = useState(false);
-  const [err, setErr] = useState(null);
-
-  // phone → customer name (from saved notes contacts).
-  const nameByPhone = useMemo(() => {
-    const m = new Map();
-    for (const n of notes.values()) for (const c of (n.contacts || [])) { const k = normPhone(c?.phone); if (k && !m.has(k)) m.set(k, n.raw_name || ''); }
-    return m;
-  }, [notes]);
-
-  // Group messages into threads by the other party's phone.
-  const threads = useMemo(() => {
-    const byPhone = new Map();
-    for (const m of messages || []) {
-      const k = normPhone(m.contactPhone); if (!k) continue;
-      let t = byPhone.get(k);
-      if (!t) { t = { phone: k, msgs: [], driverName: null }; byPhone.set(k, t); }
-      t.msgs.push(m);
-      if (m.driverName && !t.driverName) t.driverName = m.driverName; // a driver send tags the thread
-    }
-    const arr = [...byPhone.values()].map((t) => {
-      t.msgs.sort((a, b) => new Date(a.at || 0) - new Date(b.at || 0));
-      const last = t.msgs[t.msgs.length - 1];
-      const isDriver = !!t.driverName;
-      const name = t.driverName || nameByPhone.get(t.phone) || null;
-      const unread = t.msgs.some((m) => m.direction === 'in' && new Date(m.at || 0).getTime() > seenAt);
-      return { ...t, isDriver, name, last, lastAt: last?.at || null, unread };
-    });
-    arr.sort((a, b) => new Date(b.lastAt || 0) - new Date(a.lastAt || 0));
-    return arr;
-  }, [messages, nameByPhone, seenAt]);
-
-  const openThread = threads.find((t) => t.phone === selected) || null;
-  const titleOf = (t) => t.name || fmtPhone(t.phone);
-
-  const sendReply = async () => {
-    if (!draft.trim() || sending || !openThread) return;
-    setSending(true); setErr(null);
-    try {
-      const res = await postSendSms({ text: draft.trim(), recipients: [{ to: openThread.phone, label: titleOf(openThread) }] });
-      if (res.ok || res.sent) { setDraft(''); } else { setErr(res.results?.[0]?.error || res.error || 'send failed'); }
-    } catch (e) { setErr(e.message); } finally { setSending(false); }
-  };
-
-  return (
-    <div className="fixed inset-0 z-[1200] bg-slate-900/40 flex justify-end" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <div className="w-full sm:max-w-md bg-white h-full shadow-2xl flex flex-col">
-        <div className="px-4 py-3 border-b flex items-center justify-between flex-shrink-0" style={{ background: BRAND, color: 'white' }}>
-          <div className="font-semibold inline-flex items-center gap-2">
-            {openThread && <button onClick={() => setSelected(null)} className="opacity-80 hover:opacity-100" aria-label="Back"><ArrowLeft size={16} /></button>}
-            <MessageSquare size={16} /> {openThread ? titleOf(openThread) : 'Messages'}
-          </div>
-          <button onClick={onClose} className="opacity-80 hover:opacity-100 p-1 -mr-1" aria-label="Close"><X size={18} /></button>
-        </div>
-
-        {!openThread ? (
-          <div className="flex-1 min-h-0 overflow-y-auto">
-            {threads.length === 0 ? (
-              <div className="text-sm text-slate-400 italic py-12 text-center px-4">No conversations yet. Texts you send and customer/driver replies show up here.</div>
-            ) : threads.map((t) => (
-              <button key={t.phone} onClick={() => setSelected(t.phone)} className="w-full text-left px-4 py-3 border-b border-slate-100 hover:bg-slate-50 flex items-start gap-2">
-                {t.unread && <span className="mt-1.5 w-2 h-2 rounded-full bg-red-600 flex-shrink-0" />}
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center justify-between gap-2">
-                    <span className={`text-sm truncate ${t.unread ? 'font-bold text-slate-900' : 'font-semibold text-slate-800'}`}>
-                      {titleOf(t)} {t.isDriver && <span className="text-[9px] uppercase bg-slate-200 text-slate-600 rounded px-1 py-0.5 align-middle">driver</span>}
-                    </span>
-                    <span className="text-[10px] text-slate-400 flex-shrink-0">{fmtAgoIso(t.lastAt)}</span>
-                  </div>
-                  <div className="text-xs text-slate-500 truncate">{t.last?.direction === 'out' ? 'You: ' : ''}{t.last?.text}</div>
-                </div>
-              </button>
-            ))}
-          </div>
-        ) : (
-          <>
-            <div className="flex-1 min-h-0 overflow-y-auto p-3 space-y-2 bg-slate-50">
-              <div className="text-center text-[10px] text-slate-400">{fmtPhone(openThread.phone)}{openThread.isDriver ? ' · driver' : ''}</div>
-              {openThread.msgs.map((m) => (
-                <div key={m.id} className={`flex ${m.direction === 'out' ? 'justify-end' : 'justify-start'}`}>
-                  <div className={`max-w-[80%] rounded-2xl px-3 py-2 text-sm break-words whitespace-pre-wrap ${m.direction === 'out' ? 'text-white rounded-br-sm' : 'bg-white border border-slate-200 text-slate-800 rounded-bl-sm'}`} style={m.direction === 'out' ? { background: BRAND } : {}}>
-                    {m.text}
-                    <div className={`text-[9px] mt-0.5 ${m.direction === 'out' ? 'text-white/70' : 'text-slate-400'}`}>{fmtAgoIso(m.at)}</div>
-                  </div>
-                </div>
-              ))}
-            </div>
-            <div className="border-t p-2 flex-shrink-0">
-              {err && <div className="text-[11px] text-red-600 px-1 pb-1">{err}</div>}
-              <div className="flex items-end gap-2">
-                <textarea
-                  value={draft} onChange={(e) => setDraft(e.target.value)} rows={1}
-                  onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendReply(); } }}
-                  placeholder="Type a reply…" className="flex-1 border border-slate-300 rounded-lg px-2 py-1.5 text-sm resize-none max-h-28"
-                />
-                <button onClick={sendReply} disabled={!draft.trim() || sending} className="flex-shrink-0 inline-flex items-center gap-1 text-sm font-semibold text-white rounded-lg px-3 py-2 disabled:opacity-50" style={{ background: BRAND }}>
-                  <Send size={14} /> {sending ? '…' : 'Send'}
-                </button>
-              </div>
-            </div>
-          </>
-        )}
-      </div>
-    </div>
-  );
-}
 
 function TabBtn({ label, icon, active, onClick, badge = 0 }) {
   return (
