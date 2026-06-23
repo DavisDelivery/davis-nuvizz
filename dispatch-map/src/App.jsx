@@ -16,7 +16,7 @@ import {
   MapPin, RefreshCw, X, Filter, Truck, Save, Plus, Trash2,
   Activity, ChevronDown, ChevronUp, Eye, EyeOff,
   Search, Tag, Tags, ArrowLeft, Gauge, Clock, MapPinned,
-  Info, Settings, LayoutList, Sparkles, MessageSquare, Square, Lasso, AlertTriangle, Ban,
+  Info, Settings, LayoutList, Sparkles, MessageSquare, Square, Lasso, AlertTriangle, Ban, Send,
 } from 'lucide-react';
 import {
   collection, doc, getDoc, onSnapshot, setDoc, serverTimestamp,
@@ -47,7 +47,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.29.16';
+const APP_VERSION = '0.29.17';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -67,6 +67,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.29.17', 'Texting (SMS) via SimpleTexting — Stage 1 (outbound). New "Text customer" button in stop detail and "Text selected" in the box/lasso selection toolbar; both open a compose box and send via our number. Customer number = notes contact, falling back to the NuVizz scan contact. Server send endpoint has a daily send cap. Requires SIMPLETEXTING_API_KEY (and optional SIMPLETEXTING_FROM) env vars. Next stages: text drivers + inbound replies inbox.'],
   ['0.29.16', 'New per-customer "Email customer service when scheduled" toggle in notes. When the scan finds an opted-in customer on a day\'s board, it emails CS once (the first time that customer appears that day, deduped) from our no-reply account via Resend. Requires RESEND_API_KEY + RESEND_FROM + NOTIFY_CS_TO env vars to be set.'],
   ['0.29.15', 'DNS "Drivers not allowed" picker now lists the FULL driver roster from Motive (the fleet app), so you can bar ANY driver — not just ones on today\'s board or currently on the live map. New read-only /motive-drivers endpoint (server-cached ~1h); merged with today\'s board drivers and de-duped.'],
   ['0.29.14', 'DNS "Drivers not allowed" picker now always has drivers to choose from: it lists every driver assigned to the current board\'s loads (from the scan), not just the live Motive feed — which only loaded when "Show drivers (live)" was on for today. Fixed the misleading "Open the Drivers tab" hint too.'],
@@ -2157,7 +2158,7 @@ function OrderItemsSection({ stop, defaultOpen = false }) {
 // Box / lasso selection toolbar. Two tools: Box (drag a rectangle) and Lasso
 // (draw a freeform shape). Toggling a tool off cancels it. When a selection
 // exists, a count chip clears it. Reused on desktop + mobile.
-function SelectionControls({ mode, setMode, count, onClear, className }) {
+function SelectionControls({ mode, setMode, count, onClear, onText, className }) {
   const btn = (active) =>
     'p-1.5 rounded inline-flex items-center justify-center border ' +
     (active ? 'text-white border-transparent' : 'bg-white border-slate-300 text-slate-600 hover:bg-slate-50');
@@ -2169,11 +2170,107 @@ function SelectionControls({ mode, setMode, count, onClear, className }) {
       <button onClick={() => setMode(mode === 'lasso' ? null : 'lasso')} className={btn(mode === 'lasso')} style={mode === 'lasso' ? { background: '#1e5b92' } : undefined} title="Lasso select — draw a shape" aria-label="Lasso select">
         <Lasso size={15} />
       </button>
+      {count > 0 && onText && (
+        <button onClick={onText} className="p-1.5 rounded text-[11px] font-semibold text-slate-600 hover:bg-slate-100 inline-flex items-center gap-0.5" title="Text selected customers" aria-label="Text selected customers">
+          <MessageSquare size={14} />
+        </button>
+      )}
       {count > 0 && (
         <button onClick={onClear} className="p-1.5 rounded text-[11px] font-semibold text-slate-600 hover:bg-slate-100 inline-flex items-center gap-0.5" title="Clear selection" aria-label="Clear selection">
           <X size={14} />{count}
         </button>
       )}
+    </div>
+  );
+}
+
+// Resolve a customer's text number: prefer a manually-entered notes contact
+// phone, fall back to the NuVizz scan's destination contact. Returns '' if none.
+function resolveStopPhone(stop, note) {
+  const has10 = (p) => p && String(p).replace(/\D/g, '').length >= 10;
+  const fromNote = (note?.contacts || []).map((c) => c?.phone).find(has10);
+  const fromStop = has10(stop?.contact?.phone) ? stop.contact.phone : null;
+  return String(fromNote || fromStop || '').trim();
+}
+
+async function postSendSms(payload) {
+  const r = await fetch('/.netlify/functions/send-sms', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+  });
+  return r.json();
+}
+
+// Shared SMS compose modal. `recipients` = [{ to, label }] (phones pre-resolved).
+// Used by the single-stop "Text" button and the bulk "Text selected" action.
+function SmsComposeModal({ title, recipients, onClose }) {
+  const [text, setText] = useState('');
+  const [sending, setSending] = useState(false);
+  const [result, setResult] = useState(null);
+  const chars = text.length;
+  const segments = chars === 0 ? 0 : Math.ceil(chars / (chars <= 160 ? 160 : 153));
+  const send = async () => {
+    if (!text.trim() || sending) return;
+    setSending(true); setResult(null);
+    try {
+      const res = await postSendSms({ text: text.trim(), recipients: recipients.map((r) => ({ to: r.to, label: r.label })) });
+      setResult(res);
+    } catch (e) {
+      setResult({ ok: false, error: e.message, results: [] });
+    } finally { setSending(false); }
+  };
+  return (
+    <div className="fixed inset-0 z-[1200] bg-slate-900/40 flex items-start justify-center p-4 sm:p-8" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="w-full max-w-md bg-white rounded-xl shadow-2xl flex flex-col max-h-[85vh]">
+        <div className="px-4 py-3 border-b flex items-center justify-between">
+          <div className="font-semibold text-slate-800 inline-flex items-center gap-1.5"><MessageSquare size={16} /> {title}</div>
+          <button onClick={onClose} className="p-1.5 -mr-1 rounded-full hover:bg-slate-100" aria-label="Close"><X size={18} /></button>
+        </div>
+        <div className="p-4 overflow-y-auto">
+          <div className="text-[11px] text-slate-500 mb-2">
+            {recipients.length === 1
+              ? <>To <b className="text-slate-700">{recipients[0].label || recipients[0].to}</b> · {recipients[0].to}</>
+              : <>To <b className="text-slate-700">{recipients.length} recipients</b></>}
+          </div>
+          {recipients.length > 1 && (
+            <div className="mb-2 max-h-24 overflow-y-auto text-[11px] text-slate-500 border border-slate-100 rounded p-1.5">
+              {recipients.map((r, i) => <div key={i} className="truncate">{r.label || '—'} · {r.to}</div>)}
+            </div>
+          )}
+          {!result && (
+            <>
+              <textarea
+                value={text} onChange={(e) => setText(e.target.value)} rows={4} autoFocus
+                placeholder="Type your message…"
+                className="w-full border border-slate-300 rounded-lg p-2 text-sm resize-y"
+              />
+              <div className="mt-1 text-[10px] text-slate-400">{chars} chars · ~{segments} SMS segment{segments === 1 ? '' : 's'} each</div>
+            </>
+          )}
+          {result && (
+            <div className="text-sm">
+              <div className={`font-semibold ${result.ok ? 'text-green-700' : 'text-amber-700'}`}>
+                {result.sent != null ? `Sent ${result.sent}` : ''}{result.failed ? ` · failed ${result.failed}` : ''}{result.capped ? ` · capped ${result.capped}` : ''}
+                {result.error && !result.results?.length ? `Error: ${result.error}` : ''}
+              </div>
+              {Array.isArray(result.results) && result.results.some((r) => !r.ok) && (
+                <div className="mt-2 max-h-32 overflow-y-auto text-[11px] text-slate-500 space-y-0.5">
+                  {result.results.filter((r) => !r.ok).map((r, i) => <div key={i} className="truncate">⚠ {r.label || r.to}: {r.error}</div>)}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+        <div className="px-4 py-3 border-t flex justify-end gap-2">
+          {result
+            ? <button onClick={onClose} className="px-3 py-2 rounded-lg text-sm font-semibold text-white" style={{ background: BRAND }}>Done</button>
+            : <>
+                <button onClick={onClose} className="px-3 py-2 rounded-lg text-sm text-slate-600 border border-slate-300">Cancel</button>
+                <button onClick={send} disabled={!text.trim() || sending} className="px-3 py-2 rounded-lg text-sm font-semibold text-white disabled:opacity-50 inline-flex items-center gap-1.5" style={{ background: BRAND }}>
+                  <Send size={14} /> {sending ? 'Sending…' : `Send${recipients.length > 1 ? ` (${recipients.length})` : ''}`}
+                </button>
+              </>}
+        </div>
+      </div>
     </div>
   );
 }
@@ -2725,7 +2822,8 @@ function DnsBadge({ note, showDrivers = false, className = '' }) {
   );
 }
 
-function StopDataSections({ stop, note, onOpenRoute, onMoveLocation, onEditAddress, onAutoFixAddress }) {
+function StopDataSections({ stop, note, onOpenRoute, onMoveLocation, onEditAddress, onAutoFixAddress, onText }) {
+  const textPhone = resolveStopPhone(stop, note);
   return (
     <div className="px-4 py-3 border-b text-sm space-y-1">
       <div>
@@ -2757,6 +2855,11 @@ function StopDataSections({ stop, note, onOpenRoute, onMoveLocation, onEditAddre
           {onMoveLocation && (
             <button onClick={() => onMoveLocation(stop)} className="mt-1.5 inline-flex items-center gap-1 text-xs text-blue-700 hover:underline">
               <MapPin size={13} /> Correct pin location{note?.location_override ? ' · custom saved' : ''}
+            </button>
+          )}
+          {onText && textPhone && (
+            <button onClick={() => onText(stop)} className="mt-1.5 inline-flex items-center gap-1 text-xs text-blue-700 hover:underline">
+              <MessageSquare size={13} /> Text customer
             </button>
           )}
         </div>
@@ -3105,7 +3208,7 @@ function StopNotesSection({ note, editing, setEditing, draft, setDraft, compact 
   );
 }
 
-function StopSidebar({ stop, note, onClose, onSave, saving, saveError, onOpenRoute, onMoveLocation, onEditAddress, onAutoFixAddress, drivers = [], mobile = false }) {
+function StopSidebar({ stop, note, onClose, onSave, saving, saveError, onOpenRoute, onMoveLocation, onEditAddress, onAutoFixAddress, onText, drivers = [], mobile = false }) {
   const [draft, setDraft] = useState(() => note || emptyNote(stop));
   const [editing, setEditing] = useState(!note);
   // True once the dispatcher edits the draft; cleared on stop-change and save.
@@ -3166,7 +3269,7 @@ function StopSidebar({ stop, note, onClose, onSave, saving, saveError, onOpenRou
       </div>
 
       <div className="overflow-y-auto flex-1">
-        <StopDataSections stop={stop} note={note} onOpenRoute={onOpenRoute} onMoveLocation={onMoveLocation} onEditAddress={onEditAddress} onAutoFixAddress={onAutoFixAddress} />
+        <StopDataSections stop={stop} note={note} onOpenRoute={onOpenRoute} onMoveLocation={onMoveLocation} onEditAddress={onEditAddress} onAutoFixAddress={onAutoFixAddress} onText={onText} />
         <ProsSection stop={stop} />
         <StopNotesSection note={note} editing={editing} setEditing={setEditing} draft={D} setDraft={setD} compact drivers={drivers} />
       </div>
@@ -4264,7 +4367,7 @@ function MobileDriversTab({ drivers, error, onPickDriver }) {
 // stop components as the desktop sidebar (StopDataSections + ProsSection +
 // StopNotesSection) in a single scroll, so mobile has full desktop parity —
 // every edit option, one inline Edit, one Save.
-function MobileStopDetailDrawer({ stop, note, onClose, onSave, saving, saveError, onOpenRoute, onMoveLocation, onEditAddress, onAutoFixAddress, drivers = [] }) {
+function MobileStopDetailDrawer({ stop, note, onClose, onSave, saving, saveError, onOpenRoute, onMoveLocation, onEditAddress, onAutoFixAddress, onText, drivers = [] }) {
   const [draft, setDraft] = useState(() => note || emptyNote(stop));
   const [editing, setEditing] = useState(false);
   const [confirmDiscard, setConfirmDiscard] = useState(false);
@@ -4335,7 +4438,7 @@ function MobileStopDetailDrawer({ stop, note, onClose, onSave, saving, saveError
           <StatusBadge kind={classifyStopStatus(stop)} />
           <DnsBadge note={note} showDrivers />
         </div>
-        <StopDataSections stop={stop} note={note} onOpenRoute={onOpenRoute} onMoveLocation={onMoveLocation} onEditAddress={onEditAddress} onAutoFixAddress={onAutoFixAddress} />
+        <StopDataSections stop={stop} note={note} onOpenRoute={onOpenRoute} onMoveLocation={onMoveLocation} onEditAddress={onEditAddress} onAutoFixAddress={onAutoFixAddress} onText={onText} />
         <ProsSection stop={stop} />
         <StopNotesSection note={note} editing={editing} setEditing={setEditing} draft={D} setDraft={setD} drivers={drivers} />
       </div>
@@ -4832,6 +4935,29 @@ function MapScreen() {
   }, [pxToLatLng, filteredStops, commitSelection]);
 
   const clearSelection = useCallback(() => { setSelectionSet(null); setSelectNote(null); }, []);
+
+  // SMS compose target ({ title, recipients }) — null = closed. Set by the
+  // single-stop "Text" button and the bulk "Text selected" action.
+  const [smsTargets, setSmsTargets] = useState(null);
+  const textCustomer = useCallback((stop) => {
+    if (!stop) return;
+    const phone = resolveStopPhone(stop, notes.get(stop.matchKey));
+    if (!phone) { setSelectNote(`No phone on file for ${stop.businessName || 'this customer'}`); return; }
+    setSmsTargets({ title: `Text ${stop.businessName || 'customer'}`, recipients: [{ to: phone, label: stop.businessName || stop.stopNbr }] });
+  }, [notes]);
+  const textSelected = useCallback(() => {
+    if (!selectionSet?.size) return;
+    const chosen = stops.filter((s) => selectionSet.has(s.stopNbr));
+    const recipients = [];
+    let skipped = 0;
+    for (const s of chosen) {
+      const phone = resolveStopPhone(s, notes.get(s.matchKey));
+      if (phone) recipients.push({ to: phone, label: s.businessName || s.stopNbr });
+      else skipped++;
+    }
+    if (!recipients.length) { setSelectNote('No phone numbers in the selected stops'); return; }
+    setSmsTargets({ title: `Text ${recipients.length} selected${skipped ? ` (${skipped} have no phone)` : ''}`, recipients });
+  }, [selectionSet, stops, notes]);
 
   // Pin relocation handlers + the draggable marker that the dispatcher drags.
   const startMoveLocation = useCallback((stop) => {
@@ -5515,6 +5641,7 @@ function MapScreen() {
     };
     return (
       <div className="flex-1 flex flex-col min-h-0">
+        {smsTargets && <SmsComposeModal title={smsTargets.title} recipients={smsTargets.recipients} onClose={() => setSmsTargets(null)} />}
         <div className="flex-1 relative min-w-0 overflow-hidden">
         <div ref={mapDiv} className="absolute inset-0" />
         {/* Box/lasso multi-select: capture overlay (while a tool is armed) + the
@@ -5527,7 +5654,7 @@ function MapScreen() {
           />
         )}
         <div className="absolute top-12 left-2 z-[16] flex flex-col items-start gap-1">
-          <SelectionControls mode={selectMode} setMode={setSelectMode} count={selectionSet?.size || 0} onClear={clearSelection} />
+          <SelectionControls mode={selectMode} setMode={setSelectMode} count={selectionSet?.size || 0} onClear={clearSelection} onText={textSelected} />
           {selectNote && <div className="text-[10px] bg-white/95 border border-slate-200 rounded px-1.5 py-0.5 shadow text-slate-700">{selectNote}</div>}
         </div>
         {/* Top overlay row: date chip (left) + status pill (right) share one
@@ -5733,6 +5860,7 @@ function MapScreen() {
             stop={selectedStop}
             note={notes.get(selectedStop.matchKey)}
             drivers={notesDrivers}
+            onText={textCustomer}
             onClose={() => setSelectedStop(null)}
             onMoveLocation={startMoveLocation}
             onEditAddress={openAddrEditor}
@@ -5844,6 +5972,7 @@ function MapScreen() {
           </div>
         </div>
       )}
+      {smsTargets && <SmsComposeModal title={smsTargets.title} recipients={smsTargets.recipients} onClose={() => setSmsTargets(null)} />}
       {/* Left filter rail */}
       <div
         className="flex-shrink-0 bg-white border-r overflow-y-auto"
@@ -5932,7 +6061,7 @@ function MapScreen() {
         {!isMobile && (
           <div className="absolute top-3 left-3 z-[16] flex flex-col items-start gap-2">
             <DatePicker selectedDate={selectedDate} onChange={setSelectedDate} onToday={goToToday} />
-            <SelectionControls mode={selectMode} setMode={setSelectMode} count={selectionSet?.size || 0} onClear={clearSelection} />
+            <SelectionControls mode={selectMode} setMode={setSelectMode} count={selectionSet?.size || 0} onClear={clearSelection} onText={textSelected} />
             {selectNote && <div className="text-[11px] bg-white/95 border border-slate-200 rounded px-2 py-0.5 shadow text-slate-700">{selectNote}</div>}
           </div>
         )}
@@ -6096,6 +6225,7 @@ function MapScreen() {
           stop={selectedStop}
           note={notes.get(selectedStop.matchKey)}
           drivers={notesDrivers}
+          onText={textCustomer}
           onClose={() => setSelectedStop(null)}
           onMoveLocation={startMoveLocation}
           onEditAddress={openAddrEditor}
