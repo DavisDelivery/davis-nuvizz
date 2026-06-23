@@ -47,7 +47,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.29.22';
+const APP_VERSION = '0.29.23';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -67,6 +67,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.29.23', 'Texting — two-way conversations. Messages now opens as a window OVER the map (no more leaving the screen; fixes the blank-screen bug). It shows full back-and-forth threads per customer/driver — your sent texts and their replies together — with an inline reply box. Inbound replies are matched to a customer (from saved contacts) or driver (from MarginIQ) by phone, and driver threads are tagged. New: "Text drivers" from the box/lasso selection texts the drivers of the selected stops at once.'],
   ['0.29.22', 'Fix: a previously-undelivered order rolled back to unplanned and re-added to today\'s load now shows on the driver\'s route. The scan was dropping any load member whose own delivery date wasn\'t today; for a load that started today we now keep all its members (rolled-in older orders included), so a stop like Paulsen Foods on Rasko\'s load appears. No extra NuVizz calls — that stop was already in the load data we fetch. Genuine multi-day carryover loads are unaffected.'],
   ['0.29.21', 'Texting Stage 2 — text drivers. The driver panel now has a "Text driver" button; the driver\'s mobile number is pulled from their MarginIQ employee card (matched by name) on the server, so numbers stay private. Works on desktop + mobile.'],
   ['0.29.20', 'Texting Stage 3 — inbound replies. New "Messages" tab shows customer text replies (newest first, matched to a customer name by phone when known), with a Reply button and an unread badge. Replies arrive via a SimpleTexting webhook into the app.'],
@@ -935,18 +936,18 @@ function useCustomerNotes() {
   return { notes, ready };
 }
 
-// Subscribe to inbound SMS replies (written by the SimpleTexting webhook).
-// Newest first, capped. LS_SMS_SEEN tracks the last time the inbox was opened so
-// we can show an unread badge.
+// Subscribe to ALL SMS messages (both directions) written to sms_messages by the
+// webhook (inbound) and send-sms (outbound). Newest first, capped. LS_SMS_SEEN
+// tracks the last time the inbox was opened so we can show an unread badge.
 const LS_SMS_SEEN = 'dispatchMap.smsInboxSeenAt';
-function useInboundSms() {
+function useSmsMessages() {
   const [messages, setMessages] = useState([]);
   useEffect(() => {
     if (!db) return;
-    const q = query(collection(db, 'sms_inbound'), orderBy('received_at', 'desc'), limit(300));
+    const q = query(collection(db, 'sms_messages'), orderBy('at', 'desc'), limit(500));
     const unsub = onSnapshot(q, (snap) => {
       setMessages(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
-    }, (err) => console.error('sms_inbound snapshot error', err));
+    }, (err) => console.error('sms_messages snapshot error', err));
     return unsub;
   }, []);
   return messages;
@@ -2180,7 +2181,7 @@ function OrderItemsSection({ stop, defaultOpen = false }) {
 // Box / lasso selection toolbar. Two tools: Box (drag a rectangle) and Lasso
 // (draw a freeform shape). Toggling a tool off cancels it. When a selection
 // exists, a count chip clears it. Reused on desktop + mobile.
-function SelectionControls({ mode, setMode, count, onClear, onText, className }) {
+function SelectionControls({ mode, setMode, count, onClear, onText, onTextDrivers, className }) {
   const btn = (active) =>
     'p-1.5 rounded inline-flex items-center justify-center border ' +
     (active ? 'text-white border-transparent' : 'bg-white border-slate-300 text-slate-600 hover:bg-slate-50');
@@ -2195,6 +2196,11 @@ function SelectionControls({ mode, setMode, count, onClear, onText, className })
       {count > 0 && onText && (
         <button onClick={onText} className="p-1.5 rounded text-[11px] font-semibold text-slate-600 hover:bg-slate-100 inline-flex items-center gap-0.5" title="Text selected customers" aria-label="Text selected customers">
           <MessageSquare size={14} />
+        </button>
+      )}
+      {count > 0 && onTextDrivers && (
+        <button onClick={onTextDrivers} className="p-1.5 rounded text-[11px] font-semibold text-slate-600 hover:bg-slate-100 inline-flex items-center gap-0.5" title="Text drivers of selected stops" aria-label="Text drivers of selected stops">
+          <Truck size={14} />
         </button>
       )}
       {count > 0 && (
@@ -5027,6 +5033,13 @@ function MapScreen() {
     if (!driverName) return;
     setSmsTargets({ title: `Text ${driverName}`, recipients: [{ driverName, label: driverName }] });
   }, []);
+  // Bulk: text the DISTINCT drivers of the selected stops (one text per driver).
+  const textSelectedDrivers = useCallback(() => {
+    if (!selectionSet?.size) return;
+    const names = [...new Set(stops.filter((s) => selectionSet.has(s.stopNbr)).map((s) => s.driverName).filter(Boolean))];
+    if (!names.length) { setSelectNote('No drivers assigned to the selected stops'); return; }
+    setSmsTargets({ title: `Text ${names.length} driver${names.length === 1 ? '' : 's'}`, recipients: names.map((driverName) => ({ driverName, label: driverName })) });
+  }, [selectionSet, stops]);
 
   // Pin relocation handlers + the draggable marker that the dispatcher drags.
   const startMoveLocation = useCallback((stop) => {
@@ -5723,7 +5736,7 @@ function MapScreen() {
           />
         )}
         <div className="absolute top-12 left-2 z-[16] flex flex-col items-start gap-1">
-          <SelectionControls mode={selectMode} setMode={setSelectMode} count={selectionSet?.size || 0} onClear={clearSelection} onText={textSelected} />
+          <SelectionControls mode={selectMode} setMode={setSelectMode} count={selectionSet?.size || 0} onClear={clearSelection} onText={textSelected} onTextDrivers={textSelectedDrivers} />
           {selectNote && <div className="text-[10px] bg-white/95 border border-slate-200 rounded px-1.5 py-0.5 shadow text-slate-700">{selectNote}</div>}
         </div>
         {/* Top overlay row: date chip (left) + status pill (right) share one
@@ -6131,7 +6144,7 @@ function MapScreen() {
         {!isMobile && (
           <div className="absolute top-3 left-3 z-[16] flex flex-col items-start gap-2">
             <DatePicker selectedDate={selectedDate} onChange={setSelectedDate} onToday={goToToday} />
-            <SelectionControls mode={selectMode} setMode={setSelectMode} count={selectionSet?.size || 0} onClear={clearSelection} onText={textSelected} />
+            <SelectionControls mode={selectMode} setMode={setSelectMode} count={selectionSet?.size || 0} onClear={clearSelection} onText={textSelected} onTextDrivers={textSelectedDrivers} />
             {selectNote && <div className="text-[11px] bg-white/95 border border-slate-200 rounded px-2 py-0.5 shadow text-slate-700">{selectNote}</div>}
           </div>
         )}
@@ -8535,11 +8548,14 @@ function Shell() {
   const isMobile = viewportWidth < MOBILE_BREAKPOINT;
   const [chipMenuOpen, setChipMenuOpen] = useState(false);
 
-  // Inbound SMS replies + unread badge (cleared when the Messages tab is opened).
-  const inbound = useInboundSms();
+  // SMS messages + unread badge. Messages is a WINDOW over the current screen
+  // (it doesn't navigate away), so it's a toggle, not a tab.
+  const inbound = useSmsMessages();
+  const [messagesOpen, setMessagesOpen] = useState(false);
   const [smsSeenAt, setSmsSeenAt] = useState(() => Number(safeReadJSON(LS_SMS_SEEN, 0)) || 0);
-  const smsUnread = inbound.filter((m) => new Date(m.received_at || 0).getTime() > smsSeenAt).length;
-  const openMessages = () => { const now = Date.now(); setSmsSeenAt(now); safeWriteJSON(LS_SMS_SEEN, now); setTab('messages'); };
+  const smsUnread = inbound.filter((m) => m.direction === 'in' && new Date(m.at || 0).getTime() > smsSeenAt).length;
+  const openMessages = () => { setMessagesOpen(true); };
+  const closeMessages = () => { setMessagesOpen(false); const now = Date.now(); setSmsSeenAt(now); safeWriteJSON(LS_SMS_SEEN, now); };
 
   // Close chip menu on any tab change or click outside the bar.
   useEffect(() => { setChipMenuOpen(false); }, [tab]);
@@ -8591,7 +8607,7 @@ function Shell() {
           <nav className="flex items-center gap-1 text-sm">
             <TabBtn label="Map" icon={<MapPin size={14} />} active={tab === 'map'} onClick={() => setTab('map')} />
             {ROUTING_FLAG && <TabBtn label="Routing (beta)" icon={<MapPinned size={14} />} active={tab === 'routing'} onClick={() => setTab('routing')} />}
-            <TabBtn label="Messages" icon={<MessageSquare size={14} />} active={tab === 'messages'} onClick={openMessages} badge={smsUnread} />
+            <TabBtn label="Messages" icon={<MessageSquare size={14} />} active={messagesOpen} onClick={openMessages} badge={smsUnread} />
             <TabBtn label="Diagnostics" icon={<Activity size={14} />} active={tab === 'diag'} onClick={() => setTab('diag')} />
           </nav>
           {/* Right side intentionally empty — no auth in v0.3.0 (matches Glory Bound / MarginIQ). */}
@@ -8599,7 +8615,10 @@ function Shell() {
         </header>
       )}
 
-      {tab === 'map' ? <MapScreen /> : (tab === 'routing' && ROUTING_FLAG) ? <RoutingScreen /> : tab === 'messages' ? <MessagesRoute messages={inbound} /> : <DiagnosticsRoute />}
+      {tab === 'map' ? <MapScreen /> : (tab === 'routing' && ROUTING_FLAG) ? <RoutingScreen /> : <DiagnosticsRoute />}
+
+      {/* Messages floats OVER the current screen (you never leave the map). */}
+      {messagesOpen && <MessagesOverlay messages={inbound} seenAt={smsSeenAt} onClose={closeMessages} />}
 
       {/* Footer is desktop/tablet only on mobile; the in-map version chip
           and the top-bar chip cover the same info on small screens. */}
@@ -8628,52 +8647,130 @@ function fmtPhone(raw) {
   return ten.length === 10 ? `(${ten.slice(0, 3)}) ${ten.slice(3, 6)}-${ten.slice(6)}` : (raw || '');
 }
 
-// Messages inbox — inbound SMS replies from customers, newest first, matched to a
-// customer name by phone where we have one on file. Reply reuses SmsComposeModal.
-function MessagesRoute({ messages }) {
+const normPhone = (p) => { const d = String(p || '').replace(/\D/g, ''); return d.length === 11 && d.startsWith('1') ? d.slice(1) : d; };
+
+// Relative age from an ISO string (fmtTimeAgo wants a Date — this is the string form).
+function fmtAgoIso(iso) {
+  if (!iso) return '';
+  const secs = Math.round((Date.now() - new Date(iso).getTime()) / 1000);
+  if (!Number.isFinite(secs)) return '';
+  if (secs < 60) return 'just now';
+  if (secs < 3600) return `${Math.round(secs / 60)}m ago`;
+  if (secs < 86400) return `${Math.round(secs / 3600)}h ago`;
+  return `${Math.round(secs / 86400)}d ago`;
+}
+
+// Two-way messaging window — floats OVER the map (doesn't navigate away). Left:
+// conversation threads (grouped by the other party's phone, newest first, matched
+// to a customer name from notes or a driver name from the message itself). Right:
+// the selected conversation (in/out bubbles) with an inline reply box.
+function MessagesOverlay({ messages, seenAt = 0, onClose }) {
   const { notes } = useCustomerNotes();
-  const [reply, setReply] = useState(null);
-  // phone (normalized) → customer name, from saved notes contacts.
+  const [selected, setSelected] = useState(null); // phone of open thread
+  const [draft, setDraft] = useState('');
+  const [sending, setSending] = useState(false);
+  const [err, setErr] = useState(null);
+
+  // phone → customer name (from saved notes contacts).
   const nameByPhone = useMemo(() => {
-    const norm = (p) => { const d = String(p || '').replace(/\D/g, ''); return d.length === 11 && d.startsWith('1') ? d.slice(1) : d; };
     const m = new Map();
-    for (const n of notes.values()) {
-      for (const c of (n.contacts || [])) { const k = norm(c?.phone); if (k && !m.has(k)) m.set(k, n.raw_name || ''); }
-    }
+    for (const n of notes.values()) for (const c of (n.contacts || [])) { const k = normPhone(c?.phone); if (k && !m.has(k)) m.set(k, n.raw_name || ''); }
     return m;
   }, [notes]);
-  const rows = messages || [];
+
+  // Group messages into threads by the other party's phone.
+  const threads = useMemo(() => {
+    const byPhone = new Map();
+    for (const m of messages || []) {
+      const k = normPhone(m.contactPhone); if (!k) continue;
+      let t = byPhone.get(k);
+      if (!t) { t = { phone: k, msgs: [], driverName: null }; byPhone.set(k, t); }
+      t.msgs.push(m);
+      if (m.driverName && !t.driverName) t.driverName = m.driverName; // a driver send tags the thread
+    }
+    const arr = [...byPhone.values()].map((t) => {
+      t.msgs.sort((a, b) => new Date(a.at || 0) - new Date(b.at || 0));
+      const last = t.msgs[t.msgs.length - 1];
+      const isDriver = !!t.driverName;
+      const name = t.driverName || nameByPhone.get(t.phone) || null;
+      const unread = t.msgs.some((m) => m.direction === 'in' && new Date(m.at || 0).getTime() > seenAt);
+      return { ...t, isDriver, name, last, lastAt: last?.at || null, unread };
+    });
+    arr.sort((a, b) => new Date(b.lastAt || 0) - new Date(a.lastAt || 0));
+    return arr;
+  }, [messages, nameByPhone, seenAt]);
+
+  const openThread = threads.find((t) => t.phone === selected) || null;
+  const titleOf = (t) => t.name || fmtPhone(t.phone);
+
+  const sendReply = async () => {
+    if (!draft.trim() || sending || !openThread) return;
+    setSending(true); setErr(null);
+    try {
+      const res = await postSendSms({ text: draft.trim(), recipients: [{ to: openThread.phone, label: titleOf(openThread) }] });
+      if (res.ok || res.sent) { setDraft(''); } else { setErr(res.results?.[0]?.error || res.error || 'send failed'); }
+    } catch (e) { setErr(e.message); } finally { setSending(false); }
+  };
+
   return (
-    <div className="flex-1 min-h-0 overflow-y-auto p-3 sm:p-6 max-w-3xl mx-auto w-full">
-      {reply && <SmsComposeModal title={reply.title} recipients={reply.recipients} onClose={() => setReply(null)} />}
-      <h2 className="text-xl font-bold text-slate-900 mb-1">Messages</h2>
-      <p className="text-sm text-slate-600 mb-4">Inbound replies from customers. {rows.length} recent.</p>
-      {rows.length === 0 ? (
-        <div className="text-sm text-slate-400 italic py-10 text-center border border-slate-100 rounded-lg">No replies yet. Inbound texts appear here once customers reply.</div>
-      ) : (
-        <div className="divide-y divide-slate-100 border border-slate-200 rounded-lg bg-white">
-          {rows.map((m) => {
-            const name = nameByPhone.get(String(m.contactPhone || '').replace(/\D/g, '')) || null;
-            const when = m.received_at ? fmtTimeAgo(m.received_at) : '';
-            return (
-              <div key={m.id} className="p-3 flex items-start gap-3">
+    <div className="fixed inset-0 z-[1200] bg-slate-900/40 flex justify-end" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="w-full sm:max-w-md bg-white h-full shadow-2xl flex flex-col">
+        <div className="px-4 py-3 border-b flex items-center justify-between flex-shrink-0" style={{ background: BRAND, color: 'white' }}>
+          <div className="font-semibold inline-flex items-center gap-2">
+            {openThread && <button onClick={() => setSelected(null)} className="opacity-80 hover:opacity-100" aria-label="Back"><ArrowLeft size={16} /></button>}
+            <MessageSquare size={16} /> {openThread ? titleOf(openThread) : 'Messages'}
+          </div>
+          <button onClick={onClose} className="opacity-80 hover:opacity-100 p-1 -mr-1" aria-label="Close"><X size={18} /></button>
+        </div>
+
+        {!openThread ? (
+          <div className="flex-1 min-h-0 overflow-y-auto">
+            {threads.length === 0 ? (
+              <div className="text-sm text-slate-400 italic py-12 text-center px-4">No conversations yet. Texts you send and customer/driver replies show up here.</div>
+            ) : threads.map((t) => (
+              <button key={t.phone} onClick={() => setSelected(t.phone)} className="w-full text-left px-4 py-3 border-b border-slate-100 hover:bg-slate-50 flex items-start gap-2">
+                {t.unread && <span className="mt-1.5 w-2 h-2 rounded-full bg-red-600 flex-shrink-0" />}
                 <div className="min-w-0 flex-1">
-                  <div className="text-sm font-semibold text-slate-800 truncate">{name || fmtPhone(m.contactPhone)} {name && <span className="font-normal text-slate-400">· {fmtPhone(m.contactPhone)}</span>}</div>
-                  <div className="text-sm text-slate-700 break-words whitespace-pre-wrap">{m.text}</div>
-                  <div className="text-[10px] text-slate-400 mt-0.5">{when}</div>
+                  <div className="flex items-center justify-between gap-2">
+                    <span className={`text-sm truncate ${t.unread ? 'font-bold text-slate-900' : 'font-semibold text-slate-800'}`}>
+                      {titleOf(t)} {t.isDriver && <span className="text-[9px] uppercase bg-slate-200 text-slate-600 rounded px-1 py-0.5 align-middle">driver</span>}
+                    </span>
+                    <span className="text-[10px] text-slate-400 flex-shrink-0">{fmtAgoIso(t.lastAt)}</span>
+                  </div>
+                  <div className="text-xs text-slate-500 truncate">{t.last?.direction === 'out' ? 'You: ' : ''}{t.last?.text}</div>
                 </div>
-                <button
-                  onClick={() => setReply({ title: `Reply to ${name || fmtPhone(m.contactPhone)}`, recipients: [{ to: m.contactPhone, label: name || fmtPhone(m.contactPhone) }] })}
-                  className="shrink-0 inline-flex items-center gap-1 text-xs font-semibold text-white rounded-lg px-2.5 py-1.5"
-                  style={{ background: BRAND }}
-                >
-                  <Send size={13} /> Reply
+              </button>
+            ))}
+          </div>
+        ) : (
+          <>
+            <div className="flex-1 min-h-0 overflow-y-auto p-3 space-y-2 bg-slate-50">
+              <div className="text-center text-[10px] text-slate-400">{fmtPhone(openThread.phone)}{openThread.isDriver ? ' · driver' : ''}</div>
+              {openThread.msgs.map((m) => (
+                <div key={m.id} className={`flex ${m.direction === 'out' ? 'justify-end' : 'justify-start'}`}>
+                  <div className={`max-w-[80%] rounded-2xl px-3 py-2 text-sm break-words whitespace-pre-wrap ${m.direction === 'out' ? 'text-white rounded-br-sm' : 'bg-white border border-slate-200 text-slate-800 rounded-bl-sm'}`} style={m.direction === 'out' ? { background: BRAND } : {}}>
+                    {m.text}
+                    <div className={`text-[9px] mt-0.5 ${m.direction === 'out' ? 'text-white/70' : 'text-slate-400'}`}>{fmtAgoIso(m.at)}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div className="border-t p-2 flex-shrink-0">
+              {err && <div className="text-[11px] text-red-600 px-1 pb-1">{err}</div>}
+              <div className="flex items-end gap-2">
+                <textarea
+                  value={draft} onChange={(e) => setDraft(e.target.value)} rows={1}
+                  onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendReply(); } }}
+                  placeholder="Type a reply…" className="flex-1 border border-slate-300 rounded-lg px-2 py-1.5 text-sm resize-none max-h-28"
+                />
+                <button onClick={sendReply} disabled={!draft.trim() || sending} className="flex-shrink-0 inline-flex items-center gap-1 text-sm font-semibold text-white rounded-lg px-3 py-2 disabled:opacity-50" style={{ background: BRAND }}>
+                  <Send size={14} /> {sending ? '…' : 'Send'}
                 </button>
               </div>
-            );
-          })}
-        </div>
-      )}
+            </div>
+          </>
+        )}
+      </div>
     </div>
   );
 }

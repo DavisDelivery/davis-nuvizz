@@ -15,10 +15,9 @@
 //       messageId, text, subject, mediaItems[], accountPhone, contactPhone, timestamp } }
 // SimpleTexting may send a single object or a batch array; we handle both.
 
-import { isFirestoreEnabled, setDoc } from './lib/firestore.mts';
+import { isFirestoreEnabled } from './lib/firestore.mts';
 import { normalizePhone } from './lib/sms.mts';
-
-const COLLECTION = 'sms_inbound';
+import { recordSmsMessage } from './lib/sms-store.mts';
 
 function asReports(body: any): any[] {
   if (Array.isArray(body)) return body;
@@ -52,18 +51,13 @@ export default async (req: Request): Promise<Response> => {
     const contactPhone = normalizePhone(v?.contactPhone);
     const text = v?.text ?? '';
     if (!contactPhone && !text) continue;
-    const id = String(v?.messageId || r?.reportId || `${contactPhone}_${Date.now()}`);
     try {
-      await setDoc(`${COLLECTION}/${id}`, {
-        messageId: v?.messageId || null,
+      await recordSmsMessage({
+        direction: 'in',
         contactPhone,
-        accountPhone: normalizePhone(v?.accountPhone) || null,
+        accountPhone: v?.accountPhone,
         text,
-        subject: v?.subject || null,
-        mediaItems: Array.isArray(v?.mediaItems) ? v.mediaItems : [],
-        timestamp: v?.timestamp || null,
-        received_at: new Date().toISOString(),
-        type: 'INCOMING_MESSAGE',
+        messageId: v?.messageId || r?.reportId || null,
       });
       stored++;
     } catch (e: any) { console.warn(`[st-webhook] store failed: ${e?.message}`); }
