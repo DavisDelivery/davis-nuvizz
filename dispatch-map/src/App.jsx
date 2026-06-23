@@ -776,7 +776,10 @@ async function fetchJsonWithRetry(url, { retries = 1, backoffMs = 1500 } = {}) {
   let lastErr = null;
   for (let attempt = 0; attempt <= retries; attempt += 1) {
     try {
-      const resp = await fetch(url);
+      // cache:'no-store' — these are live ops endpoints; iOS Safari otherwise
+      // serves a stale cached GET, so Refresh/auto-poll appear to "do nothing"
+      // (e.g. a changed call-cap never showing up at the top).
+      const resp = await fetch(url, { cache: 'no-store' });
       if (!resp.ok) {
         // Always-empty 502s from Netlify Functions when the upstream timed
         // out — surface the status, retry on 5xx.
@@ -6803,7 +6806,7 @@ function DiagnosticsScreen({ stops, notes, ops, lastLoadScanAt, lastUnplannedSca
       </div>
 
       <ApiCallsPanel ops={ops} lastLoadScanAt={lastLoadScanAt} lastUnplannedScanAt={lastUnplannedScanAt} onRefresh={onRefresh} refreshing={refreshing} onScanNow={scanNow} scanning={scanning} />
-      <SchedulePanel onScanNow={scanNow} scanning={scanning} />
+      <SchedulePanel onScanNow={scanNow} scanning={scanning} onSaved={onRefresh} />
 
       <details className="group">
         <summary className="cursor-pointer text-xs font-semibold text-slate-400 hover:text-slate-600 select-none">Data-quality checks (M3, in progress)</summary>
@@ -7094,7 +7097,7 @@ function EstimateLine({ form }) {
   return <div className="text-[11px] text-slate-500 mt-2">≈ <span className="font-semibold">{total}</span> scans/day at this cadence (weekday, outside blackout).</div>;
 }
 
-function SchedulePanel({ onScanNow, scanning }) {
+function SchedulePanel({ onScanNow, scanning, onSaved }) {
   const [data, setData] = useState(null);
   const [form, setForm] = useState(null);
   const [status, setStatus] = useState('loading'); // loading|ready|saving|saved|error
@@ -7103,7 +7106,7 @@ function SchedulePanel({ onScanNow, scanning }) {
   const load = useCallback(async () => {
     setStatus('loading'); setErr(null);
     try {
-      const r = await fetch(SCAN_CONFIG_URL);
+      const r = await fetch(SCAN_CONFIG_URL, { cache: 'no-store' });
       const j = await r.json();
       if (!j.ok) throw new Error(j.error || 'load failed');
       setData(j); setForm({ ...j.config }); setStatus('ready');
@@ -7130,6 +7133,7 @@ function SchedulePanel({ onScanNow, scanning }) {
       const j = await r.json();
       if (!j.ok) throw new Error(j.error || 'save failed');
       setData(j); setForm({ ...j.config }); setStatus('saved');
+      onSaved?.(); // refetch the top API-calls panel so a changed ceiling shows immediately
       setTimeout(() => setStatus('ready'), 2500);
     } catch (e) { setErr(e.message); setStatus('error'); }
   };
@@ -9056,7 +9060,7 @@ function DiagnosticsRoute() {
       lastLoadScanAt={lastLoadScanAt}
       lastUnplannedScanAt={lastUnplannedScanAt}
       refreshing={loading}
-      onRefresh={() => refresh({ silent: true })}
+      onRefresh={() => refresh()}
     />
   );
 }
