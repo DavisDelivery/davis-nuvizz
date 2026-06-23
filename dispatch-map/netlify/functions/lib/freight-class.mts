@@ -71,6 +71,9 @@ export interface ShipmentFreight {
   weightLb: number | null;
   pallets: number | null;
   cartons: number | null;
+  lbPerPallet: number | null;       // weight ÷ pallets — the real signal when dims are absent
+  skus: string[];                   // distinct SKUs on the shipment (for a product→class table)
+  products: string[];               // distinct product descriptions
   cubeFt3Dims: number | null;       // from L×W×H of lines that have all three
   cubeFt3PalletEst: number | null;  // pallets × footprint × stack height
   cubeFt3Used: number | null;
@@ -94,6 +97,8 @@ export function deriveShipmentFreight(stop: any, opts: { stackHeightIn?: number 
   let oversize = false;
   let lineWeightSum = 0;
   let sawLineWeight = false;
+  const skuSet = new Set<string>();
+  const productSet = new Set<string>();
 
   for (const d of details) {
     const qty = Math.max(1, Math.round(Number(d?.quantity) || 1));
@@ -108,6 +113,10 @@ export function deriveShipmentFreight(stop: any, opts: { stackHeightIn?: number 
     if (String(d?.productCategory || '').toUpperCase() === 'L') { hasLongCat = true; oversize = true; }
     const lw = toLbs(d?.weight, d?.weightUOM);
     if (lw != null) { lineWeightSum += lw; sawLineWeight = true; }
+    const sku = d?.sku != null ? String(d.sku).trim() : '';
+    if (sku) skuSet.add(sku);
+    const product = d?.product != null ? String(d.product).trim() : '';
+    if (product) productSet.add(product);
   }
 
   const lines = details.length;
@@ -124,6 +133,7 @@ export function deriveShipmentFreight(stop: any, opts: { stackHeightIn?: number 
 
   const pallets = Number.isFinite(stop?.pallets) ? Number(stop.pallets) : null;
   const cartons = Number.isFinite(stop?.cartons) ? Number(stop.cartons) : null;
+  const lbPerPallet = weightLb != null && pallets && pallets > 0 ? round2(weightLb / pallets) : null;
 
   const cubeFt3Dims = dimsCoverage === 'full' && cubeDims > 0 ? round2(cubeDims) : null;
   const cubeFt3PalletEst = pallets && pallets > 0
@@ -140,7 +150,8 @@ export function deriveShipmentFreight(stop: any, opts: { stackHeightIn?: number 
 
   return {
     lines, linesWithFullDims, dimsCoverage,
-    weightLb, pallets, cartons,
+    weightLb, pallets, cartons, lbPerPallet,
+    skus: [...skuSet], products: [...productSet],
     cubeFt3Dims, cubeFt3PalletEst, cubeFt3Used, cubeSource,
     densityPcf, freightClass, oversize, hasLongCat,
   };

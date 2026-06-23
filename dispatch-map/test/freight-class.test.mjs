@@ -31,7 +31,7 @@ test('deriveShipmentFreight: full L×W×H → real density + class', () => {
   // One pallet-sized line, 48x40x48 in (~53.33 ft³), 800 lb → ~15 pcf → class 70.
   const stop = {
     pallets: 1, weight: 800, weightUOM: 'LB',
-    stopDetails: [{ quantity: 1, length: 48, lengthUOM: 'IN', width: 40, widthUOM: 'IN', height: 48, heightUOM: 'IN', weight: 800, weightUOM: 'LB' }],
+    stopDetails: [{ quantity: 1, sku: 'SKU-1', product: 'Widget', length: 48, lengthUOM: 'IN', width: 40, widthUOM: 'IN', height: 48, heightUOM: 'IN', weight: 800, weightUOM: 'LB' }],
   };
   const f = deriveShipmentFreight(stop);
   assert.equal(f.dimsCoverage, 'full');
@@ -39,6 +39,9 @@ test('deriveShipmentFreight: full L×W×H → real density + class', () => {
   assert.ok(Math.abs(f.cubeFt3Used - 53.33) < 0.1);
   assert.ok(Math.abs(f.densityPcf - 15.0) < 0.2);
   assert.equal(f.freightClass, 70);
+  assert.equal(f.lbPerPallet, 800);
+  assert.deepEqual(f.skus, ['SKU-1']);
+  assert.deepEqual(f.products, ['Widget']);
 });
 
 test('deriveShipmentFreight: no dims → pallet-cube fallback, coverage flagged', () => {
