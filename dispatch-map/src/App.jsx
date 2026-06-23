@@ -6781,14 +6781,33 @@ function StopMiniTable({ stops, notes, onPick, columns, onColumnsChange, searchQ
 
 // ---------- M3 stub ----------
 
-function DiagnosticsScreen({ stops, notes }) {
+function DiagnosticsScreen({ stops, notes, ops, lastLoadScanAt, lastUnplannedScanAt, onRefresh, refreshing }) {
+  const [scanning, setScanning] = useState(false);
+  const scanNow = useCallback(async () => {
+    setScanning(true);
+    try {
+      const r = await fetch(`${SCAN_NOW_URL}?manual=1`, { method: 'POST' });
+      if (!r.ok && r.status !== 202) throw new Error('scan unavailable');
+      // Background scan runs async — re-pull stats a couple times as results land.
+      setTimeout(() => onRefresh?.(), 6000);
+      setTimeout(() => onRefresh?.(), 16000);
+    } catch { /* the stats refresh will reflect reality either way */ }
+    finally { setTimeout(() => setScanning(false), 16000); }
+  }, [onRefresh]);
+
   return (
     <div className="flex-1 min-h-0 overflow-y-auto p-3 sm:p-6 space-y-4 sm:space-y-6 max-w-4xl mx-auto w-full">
       <div>
         <h2 className="text-xl font-bold text-slate-900">Diagnostics</h2>
-        <p className="text-sm text-slate-600 mt-1">M3 — stub. Each panel below has a TODO describing what to build.</p>
+        <p className="text-sm text-slate-600 mt-1">NuVizz API usage and the live scan schedule. Schedule edits apply to the running scanner.</p>
       </div>
 
+      <ApiCallsPanel ops={ops} lastLoadScanAt={lastLoadScanAt} lastUnplannedScanAt={lastUnplannedScanAt} onRefresh={onRefresh} refreshing={refreshing} onScanNow={scanNow} scanning={scanning} />
+      <SchedulePanel onScanNow={scanNow} scanning={scanning} />
+
+      <details className="group">
+        <summary className="cursor-pointer text-xs font-semibold text-slate-400 hover:text-slate-600 select-none">Data-quality checks (M3, in progress)</summary>
+        <div className="space-y-4 sm:space-y-6 mt-3">
       <Panel title="Unmatched Stops Today">
         {/*
           TODO (M3-A):
@@ -6825,15 +6844,18 @@ function DiagnosticsScreen({ stops, notes }) {
         */}
         <Placeholder count={stops.filter((s) => (s.addr2 || '').trim()).length} hint="addr2 fields populated today" />
       </Panel>
+        </div>
+      </details>
     </div>
   );
 }
 
-function Panel({ title, children }) {
+function Panel({ title, action, children }) {
   return (
     <section className="bg-white border border-slate-200 rounded-lg overflow-hidden">
-      <div className="px-4 py-3 border-b bg-slate-50">
+      <div className="px-4 py-3 border-b bg-slate-50 flex items-center justify-between gap-2">
         <h3 className="font-semibold text-slate-900">{title}</h3>
+        {action}
       </div>
       <div className="p-4">{children}</div>
     </section>
@@ -6846,6 +6868,342 @@ function Placeholder({ count, hint }) {
       <Activity size={16} />
       <span>{count} {hint} · not implemented (see TODO)</span>
     </div>
+  );
+}
+
+// ============================================================================
+// Diagnostics — NuVizz API-call analytics + live-editable scan schedule.
+// Reads call volume from the pull endpoint (ops); reads/writes the schedule via
+// /.netlify/functions/nuvizz-scan-config (persists to Firestore, scanner obeys it).
+// ============================================================================
+const SCAN_CONFIG_URL = '/.netlify/functions/nuvizz-scan-config';
+const SCAN_NOW_URL = '/.netlify/functions/nuvizz-refresh-stops-background';
+
+// Small pill badge with a few semantic tones.
+function MiniBadge({ tone = 'slate', children }) {
+  const tones = {
+    slate: 'bg-slate-100 text-slate-600',
+    green: 'bg-emerald-100 text-emerald-700',
+    amber: 'bg-amber-100 text-amber-700',
+    red: 'bg-red-100 text-red-700',
+    violet: 'bg-violet-100 text-violet-700',
+  };
+  return <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-semibold ${tones[tone] || tones.slate}`}>{children}</span>;
+}
+
+function Stat({ label, value }) {
+  return (
+    <div className="rounded-md bg-slate-50 border border-slate-100 px-2.5 py-1.5">
+      <div className="text-[10px] uppercase tracking-wide text-slate-400">{label}</div>
+      <div className="text-sm font-semibold text-slate-800 tabular-nums">{typeof value === 'number' ? value.toLocaleString() : value}</div>
+    </div>
+  );
+}
+
+// 24-bar hourly call chart with axis ticks, peak marker, and per-bar tooltip.
+function HourBarChart({ byHour }) {
+  const hours = Array.from({ length: 24 }, (_, h) => String(h).padStart(2, '0'));
+  const vals = hours.map((h) => (byHour && byHour[h]) || 0);
+  const total = vals.reduce((a, b) => a + b, 0);
+  if (!total) return <div className="text-sm text-slate-400 italic">No calls recorded yet today.</div>;
+  const max = Math.max(...vals);
+  const peak = vals.indexOf(max);
+  return (
+    <div>
+      <div className="flex items-end gap-[3px] h-28" role="img" aria-label="NuVizz API calls per ET hour">
+        {vals.map((v, h) => (
+          <div key={h} className="flex-1 flex flex-col justify-end items-center group relative">
+            <div
+              className={`w-full rounded-t ${h === peak ? 'bg-violet-600' : 'bg-violet-400/70'} group-hover:bg-violet-700 transition-colors`}
+              style={{ height: `${Math.max(2, Math.round((v / max) * 100))}%` }}
+            />
+            <div className="pointer-events-none absolute -top-7 hidden group-hover:block whitespace-nowrap rounded bg-slate-900 text-white text-[10px] px-1.5 py-0.5 z-10">
+              {hours[h]}:00 · {v.toLocaleString()}
+            </div>
+          </div>
+        ))}
+      </div>
+      <div className="flex justify-between text-[10px] text-slate-400 mt-1">
+        <span>00</span><span>06</span><span>12</span><span>18</span><span>23</span>
+      </div>
+      <div className="text-[11px] text-slate-500 mt-1">Peak {hours[peak]}:00 ET · {max.toLocaleString()} calls · {total.toLocaleString()} total</div>
+    </div>
+  );
+}
+
+// Per-endpoint breakdown as labeled horizontal bars (sorted desc).
+function RouteBars({ byRoute }) {
+  const entries = Object.entries(byRoute || {}).sort((a, b) => b[1] - a[1]);
+  if (!entries.length) return <div className="text-sm text-slate-400 italic">No per-endpoint data yet.</div>;
+  const max = Math.max(...entries.map(([, v]) => v));
+  return (
+    <div className="space-y-1.5">
+      {entries.map(([route, v]) => (
+        <div key={route} className="flex items-center gap-2 text-xs">
+          <div className="w-28 shrink-0 truncate text-slate-600 font-mono" title={route}>{route}</div>
+          <div className="flex-1 bg-slate-100 rounded h-4 overflow-hidden">
+            <div className="h-full bg-sky-400/80 rounded" style={{ width: `${Math.max(2, Math.round((v / max) * 100))}%` }} />
+          </div>
+          <div className="w-16 shrink-0 text-right tabular-nums text-slate-700 font-semibold">{v.toLocaleString()}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function ApiCallsPanel({ ops, lastLoadScanAt, lastUnplannedScanAt, onRefresh, refreshing, onScanNow, scanning }) {
+  const headerBtns = (
+    <div className="flex items-center gap-2">
+      <button onClick={onScanNow} disabled={scanning}
+        className="inline-flex items-center gap-1 rounded-md border border-slate-300 px-2 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50">
+        <RefreshCw size={12} className={scanning ? 'animate-spin' : ''} /> Scan now
+      </button>
+      <button onClick={onRefresh} disabled={refreshing} aria-label="Refresh stats"
+        className="inline-flex items-center gap-1 rounded-md border border-slate-300 px-2 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50">
+        <RefreshCw size={12} className={refreshing ? 'animate-spin' : ''} /> Refresh
+      </button>
+    </div>
+  );
+  if (!ops) {
+    return (
+      <Panel title="NuVizz API Calls (today)" action={headerBtns}>
+        <div className="text-sm text-slate-400 italic">No call data available (Firestore off, or no scans yet today).</div>
+      </Panel>
+    );
+  }
+  const used = ops.dayCount || 0;
+  const ceiling = ops.ceiling || 0;
+  const pct = ceiling ? Math.min(100, Math.round((used / ceiling) * 100)) : 0;
+  const tone = pct >= 85 ? 'red' : pct >= 60 ? 'amber' : 'green';
+  const barColor = pct >= 85 ? 'bg-red-500' : pct >= 60 ? 'bg-amber-500' : 'bg-emerald-500';
+  const learn = ops.scanLearning || {};
+  return (
+    <Panel title="NuVizz API Calls (today)" action={headerBtns}>
+      <div className="space-y-4">
+        <div>
+          <div className="flex items-end justify-between mb-1 flex-wrap gap-1">
+            <div className="flex items-baseline gap-2">
+              <span className="text-2xl font-bold text-slate-900 tabular-nums">{used.toLocaleString()}</span>
+              <span className="text-sm text-slate-500">/ {ceiling.toLocaleString()} calls</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <MiniBadge tone={ops.mode === 'enforce' ? 'violet' : 'slate'}><Gauge size={11} /> {ops.mode}</MiniBadge>
+              {ops.breaker
+                ? <MiniBadge tone="red"><Ban size={11} /> halted</MiniBadge>
+                : <MiniBadge tone={tone}>{pct}% of cap</MiniBadge>}
+            </div>
+          </div>
+          <div className="h-2.5 w-full bg-slate-100 rounded-full overflow-hidden">
+            <div className={`h-full ${barColor} rounded-full transition-all`} style={{ width: `${pct}%` }} />
+          </div>
+        </div>
+
+        <div>
+          <div className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2 flex items-center gap-1"><Clock size={12} /> Calls by hour (ET)</div>
+          <HourBarChart byHour={ops.byHour} />
+        </div>
+
+        <div>
+          <div className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">By endpoint</div>
+          <RouteBars byRoute={ops.byRoute} />
+        </div>
+
+        <div>
+          <div className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Scanner learning</div>
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+            <Stat label="Scans (sampled)" value={learn.scans ?? '—'} />
+            <Stat label="Loads found / scan" value={learn.lastFoundLoads ?? '—'} />
+            <Stat label="Max ID gap" value={learn.maxGap ?? '—'} />
+            <Stat label="Rec. empty-stop" value={learn.recommendedEmptyStop ?? '—'} />
+            <Stat label="New loads/day (max)" value={learn.maxNewLoads ?? '—'} />
+            <Stat label="Missed scans" value={learn.missedScans ?? '—'} />
+          </div>
+        </div>
+
+        <div className="text-[11px] text-slate-400 flex flex-wrap gap-x-4 gap-y-1 pt-1 border-t">
+          <span title={fmtAbsoluteET(lastLoadScanAt)}>Loads scanned {fmtFeedAge(lastLoadScanAt) || '—'}</span>
+          <span title={fmtAbsoluteET(lastUnplannedScanAt)}>Orders scanned {fmtFeedAge(lastUnplannedScanAt) || '—'}</span>
+        </div>
+      </div>
+    </Panel>
+  );
+}
+
+// One numeric field bound to the schedule form, with bounds + default hint and an
+// "edited" highlight when the value differs from the site default.
+function NumberField({ label, hint, value, def, bound, unit, onChange }) {
+  const [lo, hi] = bound || [0, 9999];
+  const overridden = def != null && Number(value) !== Number(def);
+  return (
+    <label className="block">
+      <div className="flex items-center justify-between">
+        <span className="text-xs font-medium text-slate-700">{label}</span>
+        {overridden && <span className="text-[10px] text-violet-600 font-semibold">edited</span>}
+      </div>
+      <div className="mt-1 flex items-center gap-1.5">
+        <input
+          type="number" min={lo} max={hi} value={value}
+          onChange={(e) => onChange(e.target.value === '' ? '' : Number(e.target.value))}
+          className={`w-full rounded-md border px-2 py-1 text-sm tabular-nums focus:outline-none focus:ring-2 focus:ring-sky-300 ${overridden ? 'border-violet-300 bg-violet-50/40' : 'border-slate-300'}`}
+        />
+        {unit && <span className="text-xs text-slate-400 shrink-0">{unit}</span>}
+      </div>
+      {hint && <div className="text-[10px] text-slate-400 mt-0.5">{hint}{def != null ? ` · default ${def}` : ''}</div>}
+    </label>
+  );
+}
+
+function SwitchToggle({ checked, onChange, label, hint }) {
+  return (
+    <div className="flex items-center justify-between gap-3 rounded-md border border-slate-200 px-3 py-2">
+      <div>
+        <div className="text-sm font-medium text-slate-800">{label}</div>
+        {hint && <div className="text-[11px] text-slate-400">{hint}</div>}
+      </div>
+      <button
+        role="switch" aria-checked={checked} aria-label={label}
+        onClick={() => onChange(!checked)}
+        className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors ${checked ? 'bg-emerald-500' : 'bg-slate-300'}`}
+      >
+        <span className={`inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform ${checked ? 'translate-x-5' : 'translate-x-0.5'}`} />
+      </button>
+    </div>
+  );
+}
+
+function SchedSection({ icon, title, desc, children }) {
+  return (
+    <div>
+      <div className="text-xs font-semibold text-slate-600 uppercase tracking-wide flex items-center gap-1">{icon} {title}</div>
+      {desc && <div className="text-[11px] text-slate-400 mt-0.5 mb-2">{desc}</div>}
+      {children}
+    </div>
+  );
+}
+
+// Rough daily-scan-count estimate from the cadence form, so the cost impact of an
+// edit is visible before saving.
+function EstimateLine({ form }) {
+  const dayStart = Number(form.dayBandStartHour), dayEnd = Number(form.dayBandEndHour);
+  const dayHours = Math.max(0, dayEnd - dayStart);
+  const nightHours = Math.max(0, 24 - dayHours);
+  const dayScans = Number(form.intervalDayMin) > 0 ? (dayHours * 60) / Number(form.intervalDayMin) : 0;
+  const nightScans = Number(form.intervalNightMin) > 0 ? (nightHours * 60) / Number(form.intervalNightMin) : 0;
+  const total = Math.round(dayScans + nightScans);
+  if (!Number.isFinite(total) || total <= 0) return null;
+  return <div className="text-[11px] text-slate-500 mt-2">≈ <span className="font-semibold">{total}</span> scans/day at this cadence (weekday, outside blackout).</div>;
+}
+
+function SchedulePanel({ onScanNow, scanning }) {
+  const [data, setData] = useState(null);
+  const [form, setForm] = useState(null);
+  const [status, setStatus] = useState('loading'); // loading|ready|saving|saved|error
+  const [err, setErr] = useState(null);
+
+  const load = useCallback(async () => {
+    setStatus('loading'); setErr(null);
+    try {
+      const r = await fetch(SCAN_CONFIG_URL);
+      const j = await r.json();
+      if (!j.ok) throw new Error(j.error || 'load failed');
+      setData(j); setForm({ ...j.config }); setStatus('ready');
+    } catch (e) { setErr(e.message); setStatus('error'); }
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  if (status === 'loading' || !form) {
+    return <Panel title="Scan Schedule"><div className="text-sm text-slate-400 italic flex items-center gap-2"><RefreshCw size={14} className="animate-spin" /> Loading schedule…</div></Panel>;
+  }
+  if (status === 'error' && !data) {
+    return <Panel title="Scan Schedule"><div className="text-sm text-red-600 flex items-center gap-2"><AlertTriangle size={14} /> Couldn't load schedule: {err}</div></Panel>;
+  }
+
+  const { defaults, bounds, persistent, stored } = data;
+  const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
+  const dirty = JSON.stringify(form) !== JSON.stringify(data.config);
+
+  const save = async (override) => {
+    setStatus('saving'); setErr(null);
+    try {
+      const payload = override || form;
+      const r = await fetch(SCAN_CONFIG_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+      const j = await r.json();
+      if (!j.ok) throw new Error(j.error || 'save failed');
+      setData(j); setForm({ ...j.config }); setStatus('saved');
+      setTimeout(() => setStatus('ready'), 2500);
+    } catch (e) { setErr(e.message); setStatus('error'); }
+  };
+  const resetDefaults = () => { setForm({ ...defaults }); save({ ...defaults }); };
+
+  const action = (
+    <div className="flex items-center gap-2">
+      {!persistent && <MiniBadge tone="amber"><AlertTriangle size={11} /> read-only</MiniBadge>}
+      {status === 'saved' && <MiniBadge tone="green">saved</MiniBadge>}
+      <button onClick={onScanNow} disabled={scanning}
+        className="inline-flex items-center gap-1 rounded-md border border-slate-300 px-2 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50">
+        <RefreshCw size={12} className={scanning ? 'animate-spin' : ''} /> Scan now
+      </button>
+    </div>
+  );
+
+  return (
+    <Panel title="Scan Schedule" action={action}>
+      <div className="space-y-5">
+        <SwitchToggle
+          label="Scheduled scans enabled"
+          hint="Master switch — off pauses automatic scanning (Scan now still works)."
+          checked={form.scansEnabled !== false}
+          onChange={set('scansEnabled')}
+        />
+
+        <SchedSection icon={<Clock size={12} />} title="Cadence" desc="How often the scanner runs, by ET time of day.">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <NumberField label="Day interval" hint="between scans, day band" unit="min" value={form.intervalDayMin} def={defaults.intervalDayMin} bound={bounds.intervalDayMin} onChange={set('intervalDayMin')} />
+            <NumberField label="Night interval" hint="between scans, overnight" unit="min" value={form.intervalNightMin} def={defaults.intervalNightMin} bound={bounds.intervalNightMin} onChange={set('intervalNightMin')} />
+            <NumberField label="Day band start" hint="ET hour faster cadence begins" unit="h ET" value={form.dayBandStartHour} def={defaults.dayBandStartHour} bound={bounds.dayBandStartHour} onChange={set('dayBandStartHour')} />
+            <NumberField label="Day band end" hint="ET hour it ends (exclusive)" unit="h ET" value={form.dayBandEndHour} def={defaults.dayBandEndHour} bound={bounds.dayBandEndHour} onChange={set('dayBandEndHour')} />
+          </div>
+          <EstimateLine form={form} />
+        </SchedSection>
+
+        <SchedSection icon={<Gauge size={12} />} title="Spend cap" desc="Daily NuVizz call ceiling — the breaker threshold and the gauge up top.">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <NumberField label="Daily ceiling" hint="max calls per day" unit="calls" value={form.dailyCeiling} def={defaults.dailyCeiling} bound={bounds.dailyCeiling} onChange={set('dailyCeiling')} />
+          </div>
+        </SchedSection>
+
+        <SchedSection icon={<Clock size={12} />} title="Deep sweep" desc="The once-a-day full reconciliation, held off the 10am open to avoid a spike.">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <NumberField label="Min hours between" hint="how often a full sweep may run" unit="h" value={form.deepSweepHours} def={defaults.deepSweepHours} bound={bounds.deepSweepHours} onChange={set('deepSweepHours')} />
+            <NumberField label="Earliest hour" hint="off-peak ET hour it's allowed" unit="h ET" value={form.deepSweepHour} def={defaults.deepSweepHour} bound={bounds.deepSweepHour} onChange={set('deepSweepHour')} />
+          </div>
+        </SchedSection>
+
+        <SchedSection icon={<Settings size={12} />} title="Windows" desc="Overnight routing window (thorough vs lean discovery) and the weekend blackout.">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <NumberField label="Routing window start" hint="overnight window opens" unit="h ET" value={form.routingWindowStart} def={defaults.routingWindowStart} bound={bounds.routingWindowStart} onChange={set('routingWindowStart')} />
+            <NumberField label="Routing window end" hint="window closes (wraps midnight)" unit="h ET" value={form.routingWindowEnd} def={defaults.routingWindowEnd} bound={bounds.routingWindowEnd} onChange={set('routingWindowEnd')} />
+            <NumberField label="Weekend blackout start" hint="Friday scans stop" unit="h ET" value={form.weekendBlackoutStart} def={defaults.weekendBlackoutStart} bound={bounds.weekendBlackoutStart} onChange={set('weekendBlackoutStart')} />
+            <NumberField label="Weekend blackout end" hint="Sunday scans resume" unit="h ET" value={form.weekendBlackoutEnd} def={defaults.weekendBlackoutEnd} bound={bounds.weekendBlackoutEnd} onChange={set('weekendBlackoutEnd')} />
+          </div>
+        </SchedSection>
+
+        {err && <div className="text-sm text-red-600 flex items-center gap-1"><AlertTriangle size={14} /> {err}</div>}
+
+        <div className="flex items-center justify-between gap-2 pt-1 border-t">
+          <button onClick={resetDefaults} disabled={!persistent || status === 'saving'}
+            className="text-xs text-slate-500 hover:text-slate-700 underline disabled:opacity-50">Reset to defaults</button>
+          <div className="flex items-center gap-2">
+            {stored?.updatedAt && <span className="text-[10px] text-slate-400">edited {fmtFeedAge(stored.updatedAt) || ''}</span>}
+            <button onClick={() => save()} disabled={!persistent || !dirty || status === 'saving'}
+              className="inline-flex items-center gap-1.5 rounded-md bg-sky-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-sky-700 disabled:opacity-40 disabled:cursor-not-allowed">
+              <Save size={14} /> {status === 'saving' ? 'Saving…' : 'Save schedule'}
+            </button>
+          </div>
+        </div>
+        <p className="text-[11px] text-slate-400">Saved changes take effect on the next scheduled scan (~15 min). Out-of-range values are clamped to safe limits automatically.</p>
+      </div>
+    </Panel>
   );
 }
 
@@ -8688,9 +9046,19 @@ function Shell() {
 // Tiny diagnostics wrapper so the screen has its own data fetch
 // (rather than threading the map's state through props).
 function DiagnosticsRoute() {
-  const { stops } = useStops();
+  const { stops, ops, lastLoadScanAt, lastUnplannedScanAt, loading, refresh } = useStops();
   const { notes } = useCustomerNotes();
-  return <DiagnosticsScreen stops={stops} notes={notes} />;
+  return (
+    <DiagnosticsScreen
+      stops={stops}
+      notes={notes}
+      ops={ops}
+      lastLoadScanAt={lastLoadScanAt}
+      lastUnplannedScanAt={lastUnplannedScanAt}
+      refreshing={loading}
+      onRefresh={() => refresh({ silent: true })}
+    />
+  );
 }
 
 // Normalize a phone to 10 digits (drops a leading US country-code 1). Used by the

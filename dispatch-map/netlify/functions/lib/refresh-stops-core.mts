@@ -17,11 +17,11 @@
 
 import { scanDate, todayUTC, scansEnabled, deriveFleetSummary, estimateLoadRange, buildScanState, shadowWouldProbe, selectLoadProbeTargets, groupLoadMembers, estimateStopFrontier, unplannedFloor, FLOOR_MARGIN, loadNbrToInt, stopNbrToInt, shouldDeepSweep, deepSweepGate } from './nuvizz-scan.mts';
 import { loadProbeParity, frontierParity, loadMembershipDelta, dateSliceMismatch } from './scan-parity.mts';
-import { isFirestoreEnabled, writeStops, writeFleetIndex, getDoc, markScanState, readCallStats, readCircuit, readScanState, writeScanState, readRecentFrontier, recordScanMetric, etDayString } from './firestore.mts';
+import { isFirestoreEnabled, writeStops, writeFleetIndex, getDoc, markScanState, readCallStats, readCircuit, readScanState, writeScanState, readRecentFrontier, recordScanMetric, etDayString, readScanConfig } from './firestore.mts';
 import { maxConsecutiveGap } from './scan-metrics.mts';
 import { notifyMarkedCustomers } from './cs-notify.mts';
-import { breakerTripped, scanIntervalElapsed, breakerMode } from './nuvizz-request.mts';
-import { scanDecision, isInRoutingWindow } from './scan-schedule.mts';
+import { breakerTripped, scanIntervalElapsed, breakerMode, setDailyCeilingOverride } from './nuvizz-request.mts';
+import { scanDecision, isInRoutingWindow, clampScanConfig } from './scan-schedule.mts';
 
 // Reuse the CANONICAL integer parsers from nuvizz-scan so the parity log's
 // load/stop numbers are extracted identically to selectLoadProbeTargets /
@@ -72,7 +72,7 @@ export async function runRefreshStops(req: Request): Promise<Response> {
 
   const [today, tomorrow] = scanDatesFrom(todayUTC(), 2);
   const fsOn = isFirestoreEnabled();
-  const ceiling = Number(process.env.NUVIZZ_DAILY_CEILING) || 12000;
+  let ceiling = Number(process.env.NUVIZZ_DAILY_CEILING) || 12000;
   // Phase 2 — lean load discovery (known-active + buffer + gap sweep). OFF by
   // default; flip NUVIZZ_LEAN_DISCOVERY=on only AFTER preview stop-set parity is
   // confirmed. Off = the proven wide-window probe, unchanged.
@@ -107,7 +107,16 @@ export async function runRefreshStops(req: Request): Promise<Response> {
     await refreshOps();
   }
 
-  const decision = scanDecision(now, isManual, lastLoadScanAt);
+  // Live-editable schedule (Diagnostics UI → nuvizz_ops/scan_config). Best-effort and
+  // clamped to safe bounds: an empty/missing doc or a read failure = the proven
+  // env/default behavior. Overlaid on defaults inside scanDecision/intervalForHour.
+  let scanCfg: Record<string, any> = {};
+  if (fsOn) { try { scanCfg = clampScanConfig(await readScanConfig()); } catch { scanCfg = {}; } }
+  if (typeof scanCfg.dailyCeiling === 'number') ceiling = scanCfg.dailyCeiling;
+  // Apply the configured spend cap to the per-call breaker for THIS invocation.
+  setDailyCeilingOverride(typeof scanCfg.dailyCeiling === 'number' ? scanCfg.dailyCeiling : null);
+
+  const decision = scanDecision(now, isManual, lastLoadScanAt, scanCfg);
 
   // Fix 4 — exactly ONE structured line per invocation, so "why didn't it scan"
   // is answerable from the log. today/tomorrow report the DECISION's feed intent.
@@ -124,8 +133,9 @@ export async function runRefreshStops(req: Request): Promise<Response> {
 
   const json = (body: any) => new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } });
 
-  // Kill switch (Fix 5: record halted state for the UI banner).
-  if (!scansEnabled()) {
+  // Kill switch (Fix 5: record halted state for the UI banner). Honors BOTH the env
+  // kill switch and the UI master toggle (scan_config.scansEnabled === false).
+  if (!scansEnabled() || scanCfg.scansEnabled === false) {
     if (fsOn) { try { await markScanState(TENANT, today, { halted: true, reason: 'killswitch', since: now.toISOString() }); } catch { /* */ } }
     logScan('killswitch', false, no, no);
     return json({ ok: true, skipped: 'scans-disabled' });
@@ -172,7 +182,7 @@ export async function runRefreshStops(req: Request): Promise<Response> {
       if (!FORWARD_SCAN && LEAN_DISCOVERY && includeLoads && !isManual) {
         try {
           const plan = selectLoadProbeTargets(priorState, {
-            inWindow: isInRoutingWindow(decision.etHour),
+            inWindow: isInRoutingWindow(decision.etHour, scanCfg),
             scanCount: priorState?.scanCount || 0,
             fwdIn: 50, fwdOut: 10, gapSweepEvery: 3,
           });
@@ -194,7 +204,7 @@ export async function runRefreshStops(req: Request): Promise<Response> {
       // descend only NEW stop numbers above the last high-water. Cold cycles do the
       // full descent (establishes the high-water), same as the wide load fallback.
       const leanUnplanned = LEAN_DISCOVERY && includeUnplanned && !!loadTargets && (priorState?.highWaterUnplannedStopNbr != null);
-      const DEEP_SWEEP_HOURS = Number(process.env.NUVIZZ_DEEP_SWEEP_HOURS) || 8;
+      const DEEP_SWEEP_HOURS = scanCfg.deepSweepHours ?? (Number(process.env.NUVIZZ_DEEP_SWEEP_HOURS) || 8);
       const DEEP_SWEEP_CHUNKS = Number(process.env.NUVIZZ_DEEP_SWEEP_CHUNKS) || 25;
 
       // Adaptive forward seeds (NUVIZZ_FORWARD_SCAN). Loads: re-pull today's
@@ -241,7 +251,7 @@ export async function runRefreshStops(req: Request): Promise<Response> {
       // unplanned high-water already set by the cheap forward walk) at/after an off-peak
       // ET hour (NUVIZZ_DEEP_SWEEP_HOUR, default 13:00), so the open ramps up gently and
       // the one daily reconciliation lands in the afternoon lull.
-      const DEEP_SWEEP_HOUR = Number(process.env.NUVIZZ_DEEP_SWEEP_HOUR) || 13;
+      const DEEP_SWEEP_HOUR = scanCfg.deepSweepHour ?? (Number(process.env.NUVIZZ_DEEP_SWEEP_HOUR) || 13);
       const deepSweep = (LEAN_DISCOVERY || FORWARD_SCAN) && includeUnplanned && !isManual && !resumption
         && deepSweepGate({
           due: shouldDeepSweep(priorState?.lastDeepSweepAt, Date.now(), DEEP_SWEEP_HOURS * 3600_000),
@@ -307,7 +317,7 @@ export async function runRefreshStops(req: Request): Promise<Response> {
             deepSweepRan: deepSweep,
           });
           await writeScanState(date, state, TENANT);
-          const inWindow = isInRoutingWindow(decision.etHour);
+          const inWindow = isInRoutingWindow(decision.etHour, scanCfg);
           const wp = shadowWouldProbe(state, { inWindow, fwdIn: 50, fwdOut: 10 });
           const windowSize = preRange ? (preRange.endNbr - preRange.startNbr + 1) : (loadTargets ? loadTargets.length : null);
           console.log(`[scan-shadow] date=${date} lean=${!!loadTargets} knownLoads=${state.knownLoads.length} active=${wp.activeLoads} terminal=${wp.terminalLoads} routes=${Object.keys(state.routeMap).length} minLoad=${state.minLoadNbr} maxLoad=${state.maxLoadNbr} highWaterStop=${state.highWaterStopNbr} inWindow=${inWindow} WOULD_PROBE_LOADS=${wp.wouldProbe} (active=${wp.activeLoads}+buffer=${wp.forwardBuffer}) PROBED=${windowSize} scanCount=${state.scanCount}`);

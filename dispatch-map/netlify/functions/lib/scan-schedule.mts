@@ -26,6 +26,101 @@
 
 import { MIN_SCAN_INTERVAL_MS } from './nuvizz-request.mts';
 
+// Live-editable scan configuration (Diagnostics UI → Firestore nuvizz_ops/scan_config).
+// EVERY field is optional: an absent field falls back to the env/hardcoded default,
+// so an empty or missing doc reproduces today's proven behavior exactly. The scanner
+// reads this each invocation and overlays it on the defaults (see effectiveScanConfig).
+export interface ScanConfig {
+  // Cadence — minutes between scans in the day band vs the night/overnight band.
+  intervalDayMin?: number;
+  intervalNightMin?: number;
+  dayBandStartHour?: number;   // ET hour the day (faster) band starts (default 4)
+  dayBandEndHour?: number;     // ET hour the day band ends, exclusive (default 13)
+  // Discovery windows.
+  routingWindowStart?: number; // ET hour the overnight routing window opens (default 20)
+  routingWindowEnd?: number;   // ET hour it closes, wraps midnight (default 7)
+  weekendBlackoutStart?: number; // Fri ET hour scans stop (default 22)
+  weekendBlackoutEnd?: number;   // Sun ET hour scans resume (default 20)
+  // Deep sweep (the daily full-floor reconciliation) + spend cap + master switch.
+  deepSweepHours?: number;     // min hours between deep sweeps (default 8)
+  deepSweepHour?: number;      // earliest ET hour a deep sweep may run (default 13)
+  dailyCeiling?: number;       // hard daily NuVizz call cap / breaker threshold
+  scansEnabled?: boolean;      // master on/off (false = same as the kill switch)
+  // Metadata (set by the write endpoint).
+  updatedAt?: string;
+  updatedBy?: string;
+}
+
+// Safe edit bounds per numeric field — the write endpoint clamps to these so a
+// fat-fingered value can never, say, hammer the vendor every minute or lift the
+// ceiling into the millions. [min, max] inclusive.
+export const SCAN_CONFIG_BOUNDS: Record<string, [number, number]> = {
+  intervalDayMin: [10, 240],
+  intervalNightMin: [10, 360],
+  dayBandStartHour: [0, 23],
+  dayBandEndHour: [1, 24],
+  routingWindowStart: [0, 23],
+  routingWindowEnd: [0, 23],
+  weekendBlackoutStart: [0, 23],
+  weekendBlackoutEnd: [0, 23],
+  deepSweepHours: [1, 168],
+  deepSweepHour: [0, 23],
+  dailyCeiling: [100, 200_000],
+};
+
+// The default schedule, computed from env (so the UI shows the SITE's real current
+// values, e.g. the prod deep-sweep=24 / ceiling=35000 overrides). Pure: env injected.
+export function scanConfigDefaults(env: Record<string, any> = process.env): Required<Omit<ScanConfig, 'updatedAt' | 'updatedBy'>> {
+  return {
+    intervalDayMin: 30,
+    intervalNightMin: 60,
+    dayBandStartHour: 4,
+    dayBandEndHour: 13,
+    routingWindowStart: Number(env.NUVIZZ_ROUTING_WINDOW_START_ET) || 20,
+    routingWindowEnd: Number(env.NUVIZZ_ROUTING_WINDOW_END_ET) || 7,
+    weekendBlackoutStart: Number(env.NUVIZZ_WEEKEND_BLACKOUT_START_ET) || 22,
+    weekendBlackoutEnd: Number(env.NUVIZZ_WEEKEND_BLACKOUT_END_ET) || 20,
+    deepSweepHours: Number(env.NUVIZZ_DEEP_SWEEP_HOURS) || 8,
+    deepSweepHour: Number(env.NUVIZZ_DEEP_SWEEP_HOUR) || 13,
+    dailyCeiling: Number(env.NUVIZZ_DAILY_CEILING) || 12_000,
+    scansEnabled: String(env.NUVIZZ_SCANS_ENABLED ?? '').toLowerCase() !== 'false',
+  };
+}
+
+// Validate + clamp an incoming (untrusted) partial config to the safe bounds,
+// dropping unknown keys, blanks, and NaN. PURE → unit-tested. Used by the write
+// endpoint before persisting and by the scanner before applying.
+export function clampScanConfig(input: any): ScanConfig {
+  const out: ScanConfig = {};
+  if (!input || typeof input !== 'object') return out;
+  for (const k of Object.keys(SCAN_CONFIG_BOUNDS)) {
+    const v = (input as any)[k];
+    if (v === undefined || v === null || v === '') continue;
+    const n = Math.round(Number(v));
+    if (!Number.isFinite(n)) continue;
+    const [lo, hi] = SCAN_CONFIG_BOUNDS[k];
+    (out as any)[k] = Math.min(hi, Math.max(lo, n));
+  }
+  if (typeof input.scansEnabled === 'boolean') out.scansEnabled = input.scansEnabled;
+  // Cross-field sanity: the day band must be a real forward interval, else drop
+  // both edits so we fall back to the proven 4→13 default rather than a band that
+  // never matches (which would silently force the slow night cadence all day).
+  if (out.dayBandStartHour != null && out.dayBandEndHour != null && out.dayBandStartHour >= out.dayBandEndHour) {
+    delete out.dayBandStartHour;
+    delete out.dayBandEndHour;
+  }
+  return out;
+}
+
+// Effective config = env defaults overlaid with the (clamped) stored overrides.
+// What the scanner actually runs and what the UI displays as the live schedule.
+export function effectiveScanConfig(stored: ScanConfig | null | undefined, env: Record<string, any> = process.env): Required<Omit<ScanConfig, 'updatedAt' | 'updatedBy'>> & Pick<ScanConfig, 'updatedAt' | 'updatedBy'> {
+  const merged: any = { ...scanConfigDefaults(env), ...clampScanConfig(stored || {}) };
+  if (stored?.updatedAt) merged.updatedAt = stored.updatedAt;
+  if (stored?.updatedBy) merged.updatedBy = stored.updatedBy;
+  return merged;
+}
+
 // ~half the */15 cron period: lets an on-cadence fire that lands a minute or two
 // late still scan, without letting an off-cadence fire scan early.
 const TOLERANCE_MIN = 7;
@@ -54,10 +149,12 @@ export interface ScanDecision {
 export const WEEKEND_BLACKOUT_START_HOUR = Number(process.env.NUVIZZ_WEEKEND_BLACKOUT_START_ET) || 22; // Fri from this ET hour
 export const WEEKEND_BLACKOUT_END_HOUR = Number(process.env.NUVIZZ_WEEKEND_BLACKOUT_END_ET) || 20;     // Sun until this ET hour
 // weekday: 0=Sun … 5=Fri … 6=Sat.
-export function isWeekendBlackout(weekday: number, etHour: number): boolean {
-  if (weekday === 5) return etHour >= WEEKEND_BLACKOUT_START_HOUR; // Friday from 22:00
-  if (weekday === 6) return true;                                  // all of Saturday
-  if (weekday === 0) return etHour < WEEKEND_BLACKOUT_END_HOUR;    // Sunday before 20:00
+export function isWeekendBlackout(weekday: number, etHour: number, cfg: ScanConfig = {}): boolean {
+  const start = cfg.weekendBlackoutStart ?? WEEKEND_BLACKOUT_START_HOUR;
+  const end = cfg.weekendBlackoutEnd ?? WEEKEND_BLACKOUT_END_HOUR;
+  if (weekday === 5) return etHour >= start; // Friday from the blackout start hour
+  if (weekday === 6) return true;            // all of Saturday
+  if (weekday === 0) return etHour < end;    // Sunday before the resume hour
   return false;
 }
 
@@ -68,19 +165,24 @@ export function isWeekendBlackout(weekday: number, etHour: number): boolean {
 // so the test is `hour >= start OR hour < end` when start > end. Env-tunable.
 export const ROUTING_WINDOW_START = Number(process.env.NUVIZZ_ROUTING_WINDOW_START_ET) || 20;
 export const ROUTING_WINDOW_END = Number(process.env.NUVIZZ_ROUTING_WINDOW_END_ET) || 7;
-export function isInRoutingWindow(etHour: number): boolean {
+export function isInRoutingWindow(etHour: number, cfg: ScanConfig = {}): boolean {
+  const start = cfg.routingWindowStart ?? ROUTING_WINDOW_START;
+  const end = cfg.routingWindowEnd ?? ROUTING_WINDOW_END;
   // Wrapping window (start > end, e.g. 20→7): in window late evening OR early morning.
-  if (ROUTING_WINDOW_START > ROUTING_WINDOW_END) {
-    return etHour >= ROUTING_WINDOW_START || etHour < ROUTING_WINDOW_END;
-  }
+  if (start > end) return etHour >= start || etHour < end;
   // Non-wrapping (start < end): the simple between-check.
-  return etHour >= ROUTING_WINDOW_START && etHour < ROUTING_WINDOW_END;
+  return etHour >= start && etHour < end;
 }
 
-// Target interval (minutes) between scans for the given ET hour.
-export function intervalForHour(hour: number): number {
-  if (hour >= 4 && hour < 13) return 30; // 04:00-12:59 (4-7am lowered from 15m → 30m)
-  return 60; // 13:00-03:59 incl. overnight
+// Target interval (minutes) between scans for the given ET hour: the faster day-band
+// cadence inside [dayBandStart, dayBandEnd), else the night/overnight cadence. Both
+// bands + edges are config-overridable (defaults: 30m in 04:00–12:59, else 60m).
+export function intervalForHour(hour: number, cfg: ScanConfig = {}): number {
+  const dayStart = cfg.dayBandStartHour ?? 4;
+  const dayEnd = cfg.dayBandEndHour ?? 13;
+  const dayMin = cfg.intervalDayMin ?? 30;
+  const nightMin = cfg.intervalNightMin ?? 60;
+  return (hour >= dayStart && hour < dayEnd) ? dayMin : nightMin;
 }
 
 // ET wall-clock hour (0-23) + minute. ET is a whole-hour UTC offset, so the
@@ -100,9 +202,10 @@ export function scanDecision(
   d: Date = new Date(),
   isManual = false,
   lastLoadScanAt: string | null = null,
+  cfg: ScanConfig = {},
 ): ScanDecision {
   const { hour, minute, weekday } = nowET(d);
-  const intervalMin = intervalForHour(hour);
+  const intervalMin = intervalForHour(hour, cfg);
   const lastMs = lastLoadScanAt ? new Date(lastLoadScanAt).getTime() : NaN;
   const elapsedMin = Number.isFinite(lastMs) ? (d.getTime() - lastMs) / 60000 : Infinity;
 
@@ -118,7 +221,7 @@ export function scanDecision(
   const base = { scanTodayUnplanned: false, scanTomorrowLoads: false, scanTomorrowUnplanned: false, etHour: hour, etMin: minute, intervalMin, elapsedMin };
 
   // Weekend blackout — no work Fri 22:00 ET → Sun 20:00 ET, so no scheduled scans.
-  if (isWeekendBlackout(weekday, hour)) {
+  if (isWeekendBlackout(weekday, hour, cfg)) {
     return { act: false, ...base, skip: 'weekend', reason: `weekend blackout wd=${weekday} h=${hour}` };
   }
 
