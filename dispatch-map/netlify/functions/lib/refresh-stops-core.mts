@@ -19,6 +19,7 @@ import { scanDate, todayUTC, scansEnabled, deriveFleetSummary, estimateLoadRange
 import { loadProbeParity, frontierParity, loadMembershipDelta, dateSliceMismatch } from './scan-parity.mts';
 import { isFirestoreEnabled, writeStops, writeFleetIndex, getDoc, markScanState, readCallStats, readCircuit, readScanState, writeScanState, readRecentFrontier, recordScanMetric, etDayString } from './firestore.mts';
 import { maxConsecutiveGap } from './scan-metrics.mts';
+import { notifyMarkedCustomers } from './cs-notify.mts';
 import { breakerTripped, scanIntervalElapsed, breakerMode } from './nuvizz-request.mts';
 import { scanDecision, isInRoutingWindow } from './scan-schedule.mts';
 
@@ -363,6 +364,13 @@ export async function runRefreshStops(req: Request): Promise<Response> {
           } catch (e: any) { console.warn(`[scan-parity] ${date} failed: ${e?.message}`); }
         } catch (e: any) { console.warn(`[scan-shadow] ${date} failed: ${e?.message}`); }
       }
+      // CS notify — email customer service the first time a "notify_cs"-flagged
+      // customer appears on this date's board (deduped per delivery date). Fully
+      // best-effort; a mail failure never affects the scan.
+      try {
+        const n = await notifyMarkedCustomers(date, scan.stops);
+        if (n.matched) console.log(`[cs-notify] date=${date} matched=${n.matched} sent=${n.sent} failed=${n.failed}${n.skipped ? ` skipped=${n.skipped}` : ''}`);
+      } catch (e: any) { console.warn(`[cs-notify] ${date} failed: ${e?.message}`); }
       results.push({ date, ok: true, ms: Date.now() - t0, includeUnplanned, includeLoads, count: meta.count, planned: meta.plannedCount, unplanned: meta.unplannedCount });
     } catch (e: any) {
       results.push({ date, ok: false, ms: Date.now() - t0, error: e?.message });

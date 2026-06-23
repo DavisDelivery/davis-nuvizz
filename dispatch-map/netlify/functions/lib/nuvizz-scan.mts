@@ -458,10 +458,18 @@ export function rawStopScheduledDate(rawStop: any): string | null {
 // stops paired with their original index (preserves stopSeq). Exported for tests.
 export function loadStopsForDate(rawStops: any[], dateStr: string, loadStartDate: string | null): Array<{ s: any; i: number }> {
   const out: Array<{ s: any; i: number }> = [];
+  // A load that STARTED today is today's run, so trust LOAD MEMBERSHIP: keep all
+  // its stops even when a stop carries an older date — that's a previously-
+  // undelivered order rolled back to unplanned and re-added to today's truck (it
+  // keeps its original delivery date but rides today). We still drop strictly
+  // future-dated stops. A genuine CARRYOVER load (started on an earlier day) keeps
+  // the original behavior: only its stops whose OWN date is today, so the load's
+  // other-day stops don't leak onto this board.
+  const todaysLoad = loadStartDate === dateStr;
   for (let i = 0; i < (rawStops?.length || 0); i++) {
     const s = rawStops[i];
     const d = rawStopScheduledDate(s);
-    const keep = d == null ? loadStartDate === dateStr : d === dateStr;
+    const keep = todaysLoad ? (d == null || d <= dateStr) : (d === dateStr);
     if (keep) out.push({ s, i });
   }
   return out;

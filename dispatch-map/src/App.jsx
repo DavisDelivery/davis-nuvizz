@@ -16,11 +16,11 @@ import {
   MapPin, RefreshCw, X, Filter, Truck, Save, Plus, Trash2,
   Activity, ChevronDown, ChevronUp, Eye, EyeOff,
   Search, Tag, Tags, ArrowLeft, Gauge, Clock, MapPinned,
-  Info, Settings, LayoutList, Sparkles, MessageSquare, Square, Lasso, AlertTriangle, Ban,
+  Info, Settings, LayoutList, Sparkles, MessageSquare, Square, Lasso, AlertTriangle, Ban, Send,
 } from 'lucide-react';
 import {
   collection, doc, getDoc, onSnapshot, setDoc, serverTimestamp,
-  query, orderBy, updateDoc, deleteDoc,
+  query, orderBy, limit, updateDoc, deleteDoc,
 } from 'firebase/firestore';
 
 import { db } from './lib/firebase.js';
@@ -47,7 +47,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.29.14';
+const APP_VERSION = '0.29.23';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -67,6 +67,15 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.29.23', 'Texting — two-way conversations. Messages now opens as a window OVER the map (no more leaving the screen; fixes the blank-screen bug). It shows full back-and-forth threads per customer/driver — your sent texts and their replies together — with an inline reply box. Inbound replies are matched to a customer (from saved contacts) or driver (from MarginIQ) by phone, and driver threads are tagged. New: "Text drivers" from the box/lasso selection texts the drivers of the selected stops at once.'],
+  ['0.29.22', 'Fix: a previously-undelivered order rolled back to unplanned and re-added to today\'s load now shows on the driver\'s route. The scan was dropping any load member whose own delivery date wasn\'t today; for a load that started today we now keep all its members (rolled-in older orders included), so a stop like Paulsen Foods on Rasko\'s load appears. No extra NuVizz calls — that stop was already in the load data we fetch. Genuine multi-day carryover loads are unaffected.'],
+  ['0.29.21', 'Texting Stage 2 — text drivers. The driver panel now has a "Text driver" button; the driver\'s mobile number is pulled from their MarginIQ employee card (matched by name) on the server, so numbers stay private. Works on desktop + mobile.'],
+  ['0.29.20', 'Texting Stage 3 — inbound replies. New "Messages" tab shows customer text replies (newest first, matched to a customer name by phone when known), with a Reply button and an unread badge. Replies arrive via a SimpleTexting webhook into the app.'],
+  ['0.29.19', 'Texting fix: the "Text customer" button now always shows in a stop\'s detail (desktop + mobile) even when no phone is on file — you can type/confirm the number right in the compose box. Previously it was hidden whenever a stop had no saved number, so it looked missing on mobile.'],
+  ['0.29.18', 'Texting is now active — the SimpleTexting account is connected, so the "Text customer" and "Text selected" buttons send real messages from our number.'],
+  ['0.29.17', 'Texting (SMS) via SimpleTexting — Stage 1 (outbound). New "Text customer" button in stop detail and "Text selected" in the box/lasso selection toolbar; both open a compose box and send via our number. Customer number = notes contact, falling back to the NuVizz scan contact. Server send endpoint has a daily send cap. Requires SIMPLETEXTING_API_KEY (and optional SIMPLETEXTING_FROM) env vars. Next stages: text drivers + inbound replies inbox.'],
+  ['0.29.16', 'New per-customer "Email customer service when scheduled" toggle in notes. When the scan finds an opted-in customer on a day\'s board, it emails CS once (the first time that customer appears that day, deduped) from our no-reply account via Resend. Requires RESEND_API_KEY + RESEND_FROM + NOTIFY_CS_TO env vars to be set.'],
+  ['0.29.15', 'DNS "Drivers not allowed" picker now lists the FULL driver roster from Motive (the fleet app), so you can bar ANY driver — not just ones on today\'s board or currently on the live map. New read-only /motive-drivers endpoint (server-cached ~1h); merged with today\'s board drivers and de-duped.'],
   ['0.29.14', 'DNS "Drivers not allowed" picker now always has drivers to choose from: it lists every driver assigned to the current board\'s loads (from the scan), not just the live Motive feed — which only loaded when "Show drivers (live)" was on for today. Fixed the misleading "Open the Drivers tab" hint too.'],
   ['0.29.13', 'Desktop: the "Search past PROs / customer history" button is now in the left sidebar (under the search box) — previously it existed only on mobile. Opens the same saved-delivery-history lookup as an overlay, prefilled with whatever is already typed in the live search.'],
   ['0.29.12', 'Fix: planned orders no longer show as "Unplanned". NuVizz keeps a stop at status-10 even after it has been put on a load (planned but not yet dispatched); the order/unplanned scan was re-tagging those load-assigned stops as unplanned, overwriting the load scan. The unplanned descent now excludes any stop that already carries a load number, so planned-but-not-started orders stay planned.'],
@@ -927,6 +936,23 @@ function useCustomerNotes() {
   return { notes, ready };
 }
 
+// Subscribe to ALL SMS messages (both directions) written to sms_messages by the
+// webhook (inbound) and send-sms (outbound). Newest first, capped. LS_SMS_SEEN
+// tracks the last time the inbox was opened so we can show an unread badge.
+const LS_SMS_SEEN = 'dispatchMap.smsInboxSeenAt';
+function useSmsMessages() {
+  const [messages, setMessages] = useState([]);
+  useEffect(() => {
+    if (!db) return;
+    const q = query(collection(db, 'sms_messages'), orderBy('at', 'desc'), limit(500));
+    const unsub = onSnapshot(q, (snap) => {
+      setMessages(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+    }, (err) => console.error('sms_messages snapshot error', err));
+    return unsub;
+  }, []);
+  return messages;
+}
+
 // --- M4.1 hooks ---
 
 function safeReadJSON(key, fallback) {
@@ -1184,6 +1210,25 @@ function useDriverPositions(enabled) {
     return () => { cancelled = true; clearInterval(id); };
   }, [enabled]);
   return { drivers, error, lastRefreshed };
+}
+
+// Full driver roster from Motive (the fleet-management app). Fetched ONCE on
+// mount (server-cached ~1h) so the DNS "barred drivers" picker can list every
+// driver in the fleet, not just those on today's board or currently positioned.
+// Best-effort: on failure the picker still has the board's assigned drivers.
+function useDriverRoster() {
+  const [roster, setRoster] = useState([]);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const data = await fetchJsonWithRetry('/.netlify/functions/motive-drivers');
+        if (!cancelled && data?.ok) setRoster(data.drivers || []);
+      } catch { /* roster is best-effort */ }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+  return roster;
 }
 
 // ---------- helpers ----------
@@ -1657,6 +1702,7 @@ function emptyNote(stop) {
     pro_history: [],
     do_not_send: false,      // DNS — do-not-send flag (red badge everywhere)
     dns_drivers: [],         // names of drivers barred from this customer
+    notify_cs: false,        // email customer service when this customer is scheduled
   };
 }
 
@@ -2163,7 +2209,7 @@ function OrderItemsSection({ stop, defaultOpen = false }) {
 // Box / lasso selection toolbar. Two tools: Box (drag a rectangle) and Lasso
 // (draw a freeform shape). Toggling a tool off cancels it. When a selection
 // exists, a count chip clears it. Reused on desktop + mobile.
-function SelectionControls({ mode, setMode, count, onClear, className }) {
+function SelectionControls({ mode, setMode, count, onClear, onText, onTextDrivers, className }) {
   const btn = (active) =>
     'p-1.5 rounded inline-flex items-center justify-center border ' +
     (active ? 'text-white border-transparent' : 'bg-white border-slate-300 text-slate-600 hover:bg-slate-50');
@@ -2175,11 +2221,133 @@ function SelectionControls({ mode, setMode, count, onClear, className }) {
       <button onClick={() => setMode(mode === 'lasso' ? null : 'lasso')} className={btn(mode === 'lasso')} style={mode === 'lasso' ? { background: '#1e5b92' } : undefined} title="Lasso select — draw a shape" aria-label="Lasso select">
         <Lasso size={15} />
       </button>
+      {count > 0 && onText && (
+        <button onClick={onText} className="p-1.5 rounded text-[11px] font-semibold text-slate-600 hover:bg-slate-100 inline-flex items-center gap-0.5" title="Text selected customers" aria-label="Text selected customers">
+          <MessageSquare size={14} />
+        </button>
+      )}
+      {count > 0 && onTextDrivers && (
+        <button onClick={onTextDrivers} className="p-1.5 rounded text-[11px] font-semibold text-slate-600 hover:bg-slate-100 inline-flex items-center gap-0.5" title="Text drivers of selected stops" aria-label="Text drivers of selected stops">
+          <Truck size={14} />
+        </button>
+      )}
       {count > 0 && (
         <button onClick={onClear} className="p-1.5 rounded text-[11px] font-semibold text-slate-600 hover:bg-slate-100 inline-flex items-center gap-0.5" title="Clear selection" aria-label="Clear selection">
           <X size={14} />{count}
         </button>
       )}
+    </div>
+  );
+}
+
+// Resolve a customer's text number: prefer a manually-entered notes contact
+// phone, fall back to the NuVizz scan's destination contact. Returns '' if none.
+function resolveStopPhone(stop, note) {
+  const has10 = (p) => p && String(p).replace(/\D/g, '').length >= 10;
+  const fromNote = (note?.contacts || []).map((c) => c?.phone).find(has10);
+  const fromStop = has10(stop?.contact?.phone) ? stop.contact.phone : null;
+  return String(fromNote || fromStop || '').trim();
+}
+
+async function postSendSms(payload) {
+  const r = await fetch('/.netlify/functions/send-sms', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+  });
+  return r.json();
+}
+
+// Shared SMS compose modal. `recipients` = [{ to?, driverName?, label }]. A
+// `driverName` recipient is sent by name — the server resolves the phone from the
+// MarginIQ roster (number never reaches the browser). A single `to` recipient
+// (customer) gets an editable phone field. Used by Text customer / selected / driver.
+function SmsComposeModal({ title, recipients, onClose }) {
+  const driverMode = recipients.some((r) => r.driverName);
+  const editable = recipients.length === 1 && !driverMode; // customer single → editable phone
+  const [text, setText] = useState('');
+  const [phone, setPhone] = useState(editable ? (recipients[0].to || '') : '');
+  const [sending, setSending] = useState(false);
+  const [result, setResult] = useState(null);
+  const chars = text.length;
+  const segments = chars === 0 ? 0 : Math.ceil(chars / (chars <= 160 ? 160 : 153));
+  const phoneDigits = phone.replace(/\D/g, '');
+  const phoneOk = phoneDigits.length === 10 || (phoneDigits.length === 11 && phoneDigits.startsWith('1'));
+  const canSend = !!text.trim() && !sending && (editable ? phoneOk : true);
+  const send = async () => {
+    if (!canSend) return;
+    setSending(true); setResult(null);
+    const list = editable
+      ? [{ to: phone, label: recipients[0].label }]
+      : recipients.map((r) => (r.driverName ? { driverName: r.driverName, label: r.label } : { to: r.to, label: r.label }));
+    try {
+      const res = await postSendSms({ text: text.trim(), recipients: list });
+      setResult(res);
+    } catch (e) {
+      setResult({ ok: false, error: e.message, results: [] });
+    } finally { setSending(false); }
+  };
+  return (
+    <div className="fixed inset-0 z-[1200] bg-slate-900/40 flex items-start justify-center p-4 sm:p-8" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="w-full max-w-md bg-white rounded-xl shadow-2xl flex flex-col max-h-[85vh]">
+        <div className="px-4 py-3 border-b flex items-center justify-between">
+          <div className="font-semibold text-slate-800 inline-flex items-center gap-1.5"><MessageSquare size={16} /> {title}</div>
+          <button onClick={onClose} className="p-1.5 -mr-1 rounded-full hover:bg-slate-100" aria-label="Close"><X size={18} /></button>
+        </div>
+        <div className="p-4 overflow-y-auto">
+          {editable ? (
+            <label className="block mb-2">
+              <span className="text-[11px] font-semibold text-slate-600">To {recipients[0].label || 'customer'}</span>
+              <input
+                type="tel" inputMode="tel" value={phone} onChange={(e) => setPhone(e.target.value)}
+                placeholder="Phone number (10 digits)"
+                className={`mt-0.5 w-full border rounded-lg px-2 py-1.5 text-sm ${phone && !phoneOk ? 'border-red-300' : 'border-slate-300'}`}
+              />
+              {phone && !phoneOk && <span className="text-[10px] text-red-600">Enter a valid 10-digit US number</span>}
+            </label>
+          ) : driverMode && recipients.length === 1 ? (
+            <div className="text-[11px] text-slate-500 mb-2">To <b className="text-slate-700">{recipients[0].label}</b> · number from employee roster</div>
+          ) : (
+            <div className="text-[11px] text-slate-500 mb-2">To <b className="text-slate-700">{recipients.length} recipients</b></div>
+          )}
+          {recipients.length > 1 && (
+            <div className="mb-2 max-h-24 overflow-y-auto text-[11px] text-slate-500 border border-slate-100 rounded p-1.5">
+              {recipients.map((r, i) => <div key={i} className="truncate">{r.label || '—'}{r.to ? ` · ${r.to}` : ''}</div>)}
+            </div>
+          )}
+          {!result && (
+            <>
+              <textarea
+                value={text} onChange={(e) => setText(e.target.value)} rows={4} autoFocus
+                placeholder="Type your message…"
+                className="w-full border border-slate-300 rounded-lg p-2 text-sm resize-y"
+              />
+              <div className="mt-1 text-[10px] text-slate-400">{chars} chars · ~{segments} SMS segment{segments === 1 ? '' : 's'} each</div>
+            </>
+          )}
+          {result && (
+            <div className="text-sm">
+              <div className={`font-semibold ${result.ok ? 'text-green-700' : 'text-amber-700'}`}>
+                {result.sent != null ? `Sent ${result.sent}` : ''}{result.failed ? ` · failed ${result.failed}` : ''}{result.capped ? ` · capped ${result.capped}` : ''}
+                {result.error && !result.results?.length ? `Error: ${result.error}` : ''}
+              </div>
+              {Array.isArray(result.results) && result.results.some((r) => !r.ok) && (
+                <div className="mt-2 max-h-32 overflow-y-auto text-[11px] text-slate-500 space-y-0.5">
+                  {result.results.filter((r) => !r.ok).map((r, i) => <div key={i} className="truncate">⚠ {r.label || r.to}: {r.error}</div>)}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+        <div className="px-4 py-3 border-t flex justify-end gap-2">
+          {result
+            ? <button onClick={onClose} className="px-3 py-2 rounded-lg text-sm font-semibold text-white" style={{ background: BRAND }}>Done</button>
+            : <>
+                <button onClick={onClose} className="px-3 py-2 rounded-lg text-sm text-slate-600 border border-slate-300">Cancel</button>
+                <button onClick={send} disabled={!canSend} className="px-3 py-2 rounded-lg text-sm font-semibold text-white disabled:opacity-50 inline-flex items-center gap-1.5" style={{ background: BRAND }}>
+                  <Send size={14} /> {sending ? 'Sending…' : `Send${recipients.length > 1 ? ` (${recipients.length})` : ''}`}
+                </button>
+              </>}
+        </div>
+      </div>
     </div>
   );
 }
@@ -2731,7 +2899,8 @@ function DnsBadge({ note, showDrivers = false, className = '' }) {
   );
 }
 
-function StopDataSections({ stop, note, onOpenRoute, onMoveLocation, onEditAddress, onAutoFixAddress }) {
+function StopDataSections({ stop, note, onOpenRoute, onMoveLocation, onEditAddress, onAutoFixAddress, onText }) {
+  const textPhone = resolveStopPhone(stop, note);
   return (
     <div className="px-4 py-3 border-b text-sm space-y-1">
       <div>
@@ -2763,6 +2932,11 @@ function StopDataSections({ stop, note, onOpenRoute, onMoveLocation, onEditAddre
           {onMoveLocation && (
             <button onClick={() => onMoveLocation(stop)} className="mt-1.5 inline-flex items-center gap-1 text-xs text-blue-700 hover:underline">
               <MapPin size={13} /> Correct pin location{note?.location_override ? ' · custom saved' : ''}
+            </button>
+          )}
+          {onText && (
+            <button onClick={() => onText(stop)} className="mt-1.5 inline-flex items-center gap-1 text-xs text-blue-700 hover:underline">
+              <MessageSquare size={13} /> Text customer{textPhone ? '' : ' (add #)'}
             </button>
           )}
         </div>
@@ -2894,7 +3068,7 @@ function StopNotesEditor({ draft, setDraft, compact = false, drivers = [] }) {
           <div className="mt-2">
             <div className="text-[11px] font-semibold text-slate-600 mb-1">Drivers not allowed (tap to bar)</div>
             {driverNames.length === 0 ? (
-              <div className="text-[11px] text-slate-400 italic">No drivers on today's board yet to bar. They appear here once loads are assigned drivers (or turn on "Show drivers (live)" for today). Leave blank for a general do-not-send.</div>
+              <div className="text-[11px] text-slate-400 italic">No drivers found (fleet roster unavailable and none on today's board). Leave blank for a general do-not-send.</div>
             ) : (
               <div className="flex flex-wrap gap-1.5">
                 {driverNames.map((name) => {
@@ -2912,6 +3086,24 @@ function StopNotesEditor({ draft, setDraft, compact = false, drivers = [] }) {
               <div className="mt-1 text-[10px] text-slate-500">Barred: {barred.join(', ')}</div>
             )}
           </div>
+        )}
+      </div>
+      {/* Notify CS — email customer service the first time this customer is
+          scheduled each day (handled server-side by the scan). */}
+      <div className="rounded-lg border p-2" style={D.notify_cs ? { borderColor: '#2563eb', background: '#eff6ff' } : { borderColor: '#e2e8f0' }}>
+        <button
+          onClick={() => setD({ notify_cs: !D.notify_cs })}
+          style={{ ...tap, ...(D.notify_cs ? { background: '#2563eb', borderColor: '#2563eb', color: '#fff' } : {}) }}
+          className={`w-full flex items-center justify-between gap-2 ${pad} rounded border text-xs font-semibold ${D.notify_cs ? '' : 'border-slate-300 bg-white text-slate-700'}`}
+        >
+          <span className="inline-flex items-center gap-1.5">
+            <MessageSquare size={14} strokeWidth={2.5} style={{ color: D.notify_cs ? '#fff' : '#2563eb' }} />
+            Email customer service when scheduled
+          </span>
+          <span className={`text-[10px] px-1.5 py-0.5 rounded ${D.notify_cs ? 'bg-white/25' : 'bg-slate-100 text-slate-500'}`}>{D.notify_cs ? 'ON' : 'OFF'}</span>
+        </button>
+        {D.notify_cs && (
+          <div className="mt-1 text-[10px] text-slate-500">CS gets one email the first time this customer appears on a day's board.</div>
         )}
       </div>
       <div>
@@ -3093,7 +3285,7 @@ function StopNotesSection({ note, editing, setEditing, draft, setDraft, compact 
   );
 }
 
-function StopSidebar({ stop, note, onClose, onSave, saving, saveError, onOpenRoute, onMoveLocation, onEditAddress, onAutoFixAddress, drivers = [], mobile = false }) {
+function StopSidebar({ stop, note, onClose, onSave, saving, saveError, onOpenRoute, onMoveLocation, onEditAddress, onAutoFixAddress, onText, drivers = [], mobile = false }) {
   const [draft, setDraft] = useState(() => note || emptyNote(stop));
   const [editing, setEditing] = useState(!note);
   // True once the dispatcher edits the draft; cleared on stop-change and save.
@@ -3154,7 +3346,7 @@ function StopSidebar({ stop, note, onClose, onSave, saving, saveError, onOpenRou
       </div>
 
       <div className="overflow-y-auto flex-1">
-        <StopDataSections stop={stop} note={note} onOpenRoute={onOpenRoute} onMoveLocation={onMoveLocation} onEditAddress={onEditAddress} onAutoFixAddress={onAutoFixAddress} />
+        <StopDataSections stop={stop} note={note} onOpenRoute={onOpenRoute} onMoveLocation={onMoveLocation} onEditAddress={onEditAddress} onAutoFixAddress={onAutoFixAddress} onText={onText} />
         <ProsSection stop={stop} />
         <StopNotesSection note={note} editing={editing} setEditing={setEditing} draft={D} setDraft={setD} compact drivers={drivers} />
       </div>
@@ -3221,7 +3413,7 @@ function StopStatusIcon({ status }) {
   return <span style={{ color: '#94a3b8' }}>○</span>;
 }
 
-function DriverSnapshotSidebar({ driver, snapshot, loading, error, onClose, onPanToStop, mobile = false }) {
+function DriverSnapshotSidebar({ driver, snapshot, loading, error, onClose, onPanToStop, onText, mobile = false }) {
   if (!driver) return null;
   return (
     <aside
@@ -3231,7 +3423,7 @@ function DriverSnapshotSidebar({ driver, snapshot, loading, error, onClose, onPa
       }
       style={mobile ? { paddingBottom: 'env(safe-area-inset-bottom)' } : undefined}
     >
-      <DriverSnapshotHeader driver={driver} snapshot={snapshot} onClose={onClose} />
+      <DriverSnapshotHeader driver={driver} snapshot={snapshot} onClose={onClose} onText={onText} />
       <DriverSnapshotBody
         driver={driver}
         snapshot={snapshot}
@@ -3243,18 +3435,29 @@ function DriverSnapshotSidebar({ driver, snapshot, loading, error, onClose, onPa
   );
 }
 
-function DriverSnapshotHeader({ driver, snapshot, onClose }) {
+function DriverSnapshotHeader({ driver, snapshot, onClose, onText }) {
   const truckLabel = driver.vehicleNumber || `(truck ${driver.vehicleId || '?'})`;
   const driverName = driver.driverName || '(no driver)';
   const hos = snapshot?.hos || null;
   return (
     <div className="px-4 py-3 border-b flex-shrink-0" style={{ background: BRAND, color: 'white' }}>
-      <button
-        onClick={onClose}
-        className="text-[10px] uppercase tracking-wider opacity-75 hover:opacity-100 inline-flex items-center gap-1 mb-1"
-      >
-        <ArrowLeft size={11} /> Back to stops
-      </button>
+      <div className="flex items-center justify-between gap-2 mb-1">
+        <button
+          onClick={onClose}
+          className="text-[10px] uppercase tracking-wider opacity-75 hover:opacity-100 inline-flex items-center gap-1"
+        >
+          <ArrowLeft size={11} /> Back to stops
+        </button>
+        {onText && driver.driverName && (
+          <button
+            onClick={() => onText(driver.driverName)}
+            className="text-[11px] font-semibold inline-flex items-center gap-1 bg-white/15 hover:bg-white/25 rounded px-2 py-1"
+            title={`Text ${driverName}`}
+          >
+            <MessageSquare size={12} /> Text driver
+          </button>
+        )}
+      </div>
       <div className="font-bold">Truck {truckLabel} · {driverName}</div>
       {hos && (
         <div className="text-[11px] opacity-80 mt-0.5">
@@ -3630,7 +3833,7 @@ function makeDriverLabelOverlayClass(google) {
 // MOBILE_BREAKPOINT. Renders the "D" mark, "Dispatch" label, and a tap-able
 // version chip on the right. Tapping the chip toggles a small overflow menu
 // the parent owns (Diagnostics access lives here, per brief P5.1).
-function MobileAppBar({ version, onChipMenu, chipMenuOpen, onSelectMenu }) {
+function MobileAppBar({ version, onChipMenu, chipMenuOpen, onSelectMenu, smsUnread = 0 }) {
   return (
     <header
       className="flex-shrink-0 flex items-center justify-between gap-2 px-3 text-white relative"
@@ -3674,6 +3877,14 @@ function MobileAppBar({ version, onChipMenu, chipMenuOpen, onSelectMenu }) {
             )}
             <button
               className={`w-full text-left px-3 py-2 hover:bg-slate-50 inline-flex items-center gap-2${ROUTING_FLAG ? ' border-t border-slate-100' : ''}`}
+              onClick={() => onSelectMenu('messages')}
+              role="menuitem"
+            >
+              <MessageSquare size={12} /> Messages
+              {smsUnread > 0 && <span className="ml-auto min-w-[16px] h-4 px-1 rounded-full bg-red-600 text-white text-[10px] font-bold inline-flex items-center justify-center">{smsUnread > 99 ? '99+' : smsUnread}</span>}
+            </button>
+            <button
+              className="w-full text-left px-3 py-2 hover:bg-slate-50 inline-flex items-center gap-2 border-t border-slate-100"
               onClick={() => onSelectMenu('diagnostics')}
               role="menuitem"
             >
@@ -4252,7 +4463,7 @@ function MobileDriversTab({ drivers, error, onPickDriver }) {
 // stop components as the desktop sidebar (StopDataSections + ProsSection +
 // StopNotesSection) in a single scroll, so mobile has full desktop parity —
 // every edit option, one inline Edit, one Save.
-function MobileStopDetailDrawer({ stop, note, onClose, onSave, saving, saveError, onOpenRoute, onMoveLocation, onEditAddress, onAutoFixAddress, drivers = [] }) {
+function MobileStopDetailDrawer({ stop, note, onClose, onSave, saving, saveError, onOpenRoute, onMoveLocation, onEditAddress, onAutoFixAddress, onText, drivers = [] }) {
   const [draft, setDraft] = useState(() => note || emptyNote(stop));
   const [editing, setEditing] = useState(false);
   const [confirmDiscard, setConfirmDiscard] = useState(false);
@@ -4323,7 +4534,7 @@ function MobileStopDetailDrawer({ stop, note, onClose, onSave, saving, saveError
           <StatusBadge kind={classifyStopStatus(stop)} />
           <DnsBadge note={note} showDrivers />
         </div>
-        <StopDataSections stop={stop} note={note} onOpenRoute={onOpenRoute} onMoveLocation={onMoveLocation} onEditAddress={onEditAddress} onAutoFixAddress={onAutoFixAddress} />
+        <StopDataSections stop={stop} note={note} onOpenRoute={onOpenRoute} onMoveLocation={onMoveLocation} onEditAddress={onEditAddress} onAutoFixAddress={onAutoFixAddress} onText={onText} />
         <ProsSection stop={stop} />
         <StopNotesSection note={note} editing={editing} setEditing={setEditing} draft={D} setDraft={setD} drivers={drivers} />
       </div>
@@ -4508,11 +4719,11 @@ function MobileRouteDetailDrawer({ loadNbr, stops, onClose, onPickStop }) {
 // overlay on mobile with a slide-up bottom sheet that re-uses the desktop
 // snapshot header + body subcomponents. Tap a stop row → drawer closes, map
 // pans, and the caller can open the stop detail drawer.
-function MobileDriverSnapshotDrawer({ driver, snapshot, loading, error, onClose, onPickStopFromSnapshot }) {
+function MobileDriverSnapshotDrawer({ driver, snapshot, loading, error, onClose, onPickStopFromSnapshot, onText }) {
   if (!driver) return null;
   return (
     <BottomSheet open onClose={onClose} heights={STOP_DETAIL_HEIGHTS} ariaLabel={`Driver snapshot: ${driver.driverName || ''}`}>
-      <DriverSnapshotHeader driver={driver} snapshot={snapshot} onClose={onClose} />
+      <DriverSnapshotHeader driver={driver} snapshot={snapshot} onClose={onClose} onText={onText} />
       <DriverSnapshotBody
         driver={driver}
         snapshot={snapshot}
@@ -4672,18 +4883,30 @@ function MapScreen() {
   const { snapshot, loading: snapshotLoading, error: snapshotError } = useDriverSnapshot(selectedDriver);
   const panel = useResizablePanel(viewportWidth);
 
-  // Driver source for the DNS "barred drivers" picker. The live Motive feed only
-  // loads when "Show drivers (live)" is on AND the date is today, so on its own
-  // the picker is usually empty. Merge in every driver assigned to the current
-  // board's loads (from the scan) so there's always a roster to bar from. Synthetic
-  // {driverName} objects are fine — the notes editor only reads .driverName.
+  // Driver source for the DNS "barred drivers" picker. Three sources, merged &
+  // de-duped case-insensitively (board form wins so a driver on today's loads
+  // keeps the label used elsewhere):
+  //   1. drivers assigned to the current board's loads (from the scan),
+  //   2. the FULL Motive roster (fleet app) — so ANY driver can be barred, not
+  //      just ones on today's board or currently positioned,
+  //   3. live-positioned Motive drivers (when "Show drivers (live)" is on).
+  // Synthetic {driverName} objects are fine — the notes editor only reads .driverName.
+  const driverRoster = useDriverRoster();
   const notesDrivers = useMemo(() => {
-    const names = new Set([
-      ...(drivers || []).map((d) => d?.driverName).filter(Boolean),
-      ...(stops || []).map((s) => s.driverName).filter(Boolean),
-    ]);
-    return [...names].sort().map((driverName) => ({ driverName }));
-  }, [drivers, stops]);
+    const seen = new Set();
+    const out = [];
+    const add = (name) => {
+      const nm = (name || '').trim();
+      const k = nm.toLowerCase();
+      if (!nm || seen.has(k)) return;
+      seen.add(k);
+      out.push({ driverName: nm });
+    };
+    (stops || []).forEach((s) => add(s.driverName));
+    (driverRoster || []).forEach((d) => add(d?.name));
+    (drivers || []).forEach((d) => add(d?.driverName));
+    return out.sort((a, b) => a.driverName.localeCompare(b.driverName));
+  }, [drivers, stops, driverRoster]);
 
   const searchInputRef = useRef(null);
   const mapRef = useRef(null);
@@ -4808,6 +5031,43 @@ function MapScreen() {
   }, [pxToLatLng, filteredStops, commitSelection]);
 
   const clearSelection = useCallback(() => { setSelectionSet(null); setSelectNote(null); }, []);
+
+  // SMS compose target ({ title, recipients }) — null = closed. Set by the
+  // single-stop "Text" button and the bulk "Text selected" action.
+  const [smsTargets, setSmsTargets] = useState(null);
+  const textCustomer = useCallback((stop) => {
+    if (!stop) return;
+    const phone = resolveStopPhone(stop, notes.get(stop.matchKey));
+    // Always open the composer; if no number is on file the dispatcher can type
+    // one in (the modal validates before allowing send).
+    setSmsTargets({ title: `Text ${stop.businessName || 'customer'}`, recipients: [{ to: phone, label: stop.businessName || stop.stopNbr }] });
+  }, [notes]);
+  const textSelected = useCallback(() => {
+    if (!selectionSet?.size) return;
+    const chosen = stops.filter((s) => selectionSet.has(s.stopNbr));
+    const recipients = [];
+    let skipped = 0;
+    for (const s of chosen) {
+      const phone = resolveStopPhone(s, notes.get(s.matchKey));
+      if (phone) recipients.push({ to: phone, label: s.businessName || s.stopNbr });
+      else skipped++;
+    }
+    if (!recipients.length) { setSelectNote('No phone numbers in the selected stops'); return; }
+    setSmsTargets({ title: `Text ${recipients.length} selected${skipped ? ` (${skipped} have no phone)` : ''}`, recipients });
+  }, [selectionSet, stops, notes]);
+  // Text a driver by NAME — the phone is resolved server-side from the MarginIQ
+  // employee roster (number never reaches the browser).
+  const textDriver = useCallback((driverName) => {
+    if (!driverName) return;
+    setSmsTargets({ title: `Text ${driverName}`, recipients: [{ driverName, label: driverName }] });
+  }, []);
+  // Bulk: text the DISTINCT drivers of the selected stops (one text per driver).
+  const textSelectedDrivers = useCallback(() => {
+    if (!selectionSet?.size) return;
+    const names = [...new Set(stops.filter((s) => selectionSet.has(s.stopNbr)).map((s) => s.driverName).filter(Boolean))];
+    if (!names.length) { setSelectNote('No drivers assigned to the selected stops'); return; }
+    setSmsTargets({ title: `Text ${names.length} driver${names.length === 1 ? '' : 's'}`, recipients: names.map((driverName) => ({ driverName, label: driverName })) });
+  }, [selectionSet, stops]);
 
   // Pin relocation handlers + the draggable marker that the dispatcher drags.
   const startMoveLocation = useCallback((stop) => {
@@ -5491,6 +5751,7 @@ function MapScreen() {
     };
     return (
       <div className="flex-1 flex flex-col min-h-0">
+        {smsTargets && <SmsComposeModal title={smsTargets.title} recipients={smsTargets.recipients} onClose={() => setSmsTargets(null)} />}
         <div className="flex-1 relative min-w-0 overflow-hidden">
         <div ref={mapDiv} className="absolute inset-0" />
         {/* Box/lasso multi-select: capture overlay (while a tool is armed) + the
@@ -5503,7 +5764,7 @@ function MapScreen() {
           />
         )}
         <div className="absolute top-12 left-2 z-[16] flex flex-col items-start gap-1">
-          <SelectionControls mode={selectMode} setMode={setSelectMode} count={selectionSet?.size || 0} onClear={clearSelection} />
+          <SelectionControls mode={selectMode} setMode={setSelectMode} count={selectionSet?.size || 0} onClear={clearSelection} onText={textSelected} onTextDrivers={textSelectedDrivers} />
           {selectNote && <div className="text-[10px] bg-white/95 border border-slate-200 rounded px-1.5 py-0.5 shadow text-slate-700">{selectNote}</div>}
         </div>
         {/* Top overlay row: date chip (left) + status pill (right) share one
@@ -5712,6 +5973,7 @@ function MapScreen() {
             stop={selectedStop}
             note={notes.get(selectedStop.matchKey)}
             drivers={notesDrivers}
+            onText={textCustomer}
             onClose={() => setSelectedStop(null)}
             onMoveLocation={startMoveLocation}
             onEditAddress={openAddrEditor}
@@ -5757,6 +6019,7 @@ function MapScreen() {
             snapshot={snapshot}
             loading={snapshotLoading}
             error={snapshotError}
+            onText={textDriver}
             onClose={() => setSelectedDriver(null)}
             onPickStopFromSnapshot={(snapshotStop) => {
               // Try to resolve the snapshot stop (which has its own row shape)
@@ -5823,6 +6086,7 @@ function MapScreen() {
           </div>
         </div>
       )}
+      {smsTargets && <SmsComposeModal title={smsTargets.title} recipients={smsTargets.recipients} onClose={() => setSmsTargets(null)} />}
       {/* Left filter rail */}
       <div
         className="flex-shrink-0 bg-white border-r overflow-y-auto"
@@ -5911,7 +6175,7 @@ function MapScreen() {
         {!isMobile && (
           <div className="absolute top-3 left-3 z-[16] flex flex-col items-start gap-2">
             <DatePicker selectedDate={selectedDate} onChange={setSelectedDate} onToday={goToToday} />
-            <SelectionControls mode={selectMode} setMode={setSelectMode} count={selectionSet?.size || 0} onClear={clearSelection} />
+            <SelectionControls mode={selectMode} setMode={setSelectMode} count={selectionSet?.size || 0} onClear={clearSelection} onText={textSelected} onTextDrivers={textSelectedDrivers} />
             {selectNote && <div className="text-[11px] bg-white/95 border border-slate-200 rounded px-2 py-0.5 shadow text-slate-700">{selectNote}</div>}
           </div>
         )}
@@ -6069,6 +6333,7 @@ function MapScreen() {
           snapshot={snapshot}
           loading={snapshotLoading}
           error={snapshotError}
+          onText={textDriver}
           onClose={() => setSelectedDriver(null)}
           onPanToStop={handlePanToStop}
         />
@@ -6078,6 +6343,7 @@ function MapScreen() {
           stop={selectedStop}
           note={notes.get(selectedStop.matchKey)}
           drivers={notesDrivers}
+          onText={textCustomer}
           onClose={() => setSelectedStop(null)}
           onMoveLocation={startMoveLocation}
           onEditAddress={openAddrEditor}
@@ -8316,11 +8582,21 @@ function Shell() {
   const isMobile = viewportWidth < MOBILE_BREAKPOINT;
   const [chipMenuOpen, setChipMenuOpen] = useState(false);
 
+  // SMS messages + unread badge. Messages is a WINDOW over the current screen
+  // (it doesn't navigate away), so it's a toggle, not a tab.
+  const inbound = useSmsMessages();
+  const [messagesOpen, setMessagesOpen] = useState(false);
+  const [smsSeenAt, setSmsSeenAt] = useState(() => Number(safeReadJSON(LS_SMS_SEEN, 0)) || 0);
+  const smsUnread = inbound.filter((m) => m.direction === 'in' && new Date(m.at || 0).getTime() > smsSeenAt).length;
+  const openMessages = () => { setMessagesOpen(true); };
+  const closeMessages = () => { setMessagesOpen(false); const now = Date.now(); setSmsSeenAt(now); safeWriteJSON(LS_SMS_SEEN, now); };
+
   // Close chip menu on any tab change or click outside the bar.
   useEffect(() => { setChipMenuOpen(false); }, [tab]);
 
   const onSelectMenu = (next) => {
     setChipMenuOpen(false);
+    if (next === 'messages') { openMessages(); return; }
     setTab(next === 'diagnostics' ? 'diag' : next === 'routing' ? 'routing' : 'map');
   };
 
@@ -8351,6 +8627,7 @@ function Shell() {
           chipMenuOpen={chipMenuOpen}
           onChipMenu={() => setChipMenuOpen((v) => !v)}
           onSelectMenu={onSelectMenu}
+          smsUnread={smsUnread}
         />
       ) : (
         <header className="flex items-center justify-between px-4 py-2 border-b bg-white" style={{ paddingTop: 'env(safe-area-inset-top)' }}>
@@ -8364,6 +8641,7 @@ function Shell() {
           <nav className="flex items-center gap-1 text-sm">
             <TabBtn label="Map" icon={<MapPin size={14} />} active={tab === 'map'} onClick={() => setTab('map')} />
             {ROUTING_FLAG && <TabBtn label="Routing (beta)" icon={<MapPinned size={14} />} active={tab === 'routing'} onClick={() => setTab('routing')} />}
+            <TabBtn label="Messages" icon={<MessageSquare size={14} />} active={messagesOpen} onClick={openMessages} badge={smsUnread} />
             <TabBtn label="Diagnostics" icon={<Activity size={14} />} active={tab === 'diag'} onClick={() => setTab('diag')} />
           </nav>
           {/* Right side intentionally empty — no auth in v0.3.0 (matches Glory Bound / MarginIQ). */}
@@ -8372,6 +8650,9 @@ function Shell() {
       )}
 
       {tab === 'map' ? <MapScreen /> : (tab === 'routing' && ROUTING_FLAG) ? <RoutingScreen /> : <DiagnosticsRoute />}
+
+      {/* Messages floats OVER the current screen (you never leave the map). */}
+      {messagesOpen && <MessagesOverlay messages={inbound} seenAt={smsSeenAt} onClose={closeMessages} />}
 
       {/* Footer is desktop/tablet only on mobile; the in-map version chip
           and the top-bar chip cover the same info on small screens. */}
@@ -8393,14 +8674,152 @@ function DiagnosticsRoute() {
   return <DiagnosticsScreen stops={stops} notes={notes} />;
 }
 
-function TabBtn({ label, icon, active, onClick }) {
+// Pretty-print a 10-digit number as (xxx) xxx-xxxx; pass through anything else.
+function fmtPhone(raw) {
+  const d = String(raw || '').replace(/\D/g, '');
+  const ten = d.length === 11 && d.startsWith('1') ? d.slice(1) : d;
+  return ten.length === 10 ? `(${ten.slice(0, 3)}) ${ten.slice(3, 6)}-${ten.slice(6)}` : (raw || '');
+}
+
+const normPhone = (p) => { const d = String(p || '').replace(/\D/g, ''); return d.length === 11 && d.startsWith('1') ? d.slice(1) : d; };
+
+// Relative age from an ISO string (fmtTimeAgo wants a Date — this is the string form).
+function fmtAgoIso(iso) {
+  if (!iso) return '';
+  const secs = Math.round((Date.now() - new Date(iso).getTime()) / 1000);
+  if (!Number.isFinite(secs)) return '';
+  if (secs < 60) return 'just now';
+  if (secs < 3600) return `${Math.round(secs / 60)}m ago`;
+  if (secs < 86400) return `${Math.round(secs / 3600)}h ago`;
+  return `${Math.round(secs / 86400)}d ago`;
+}
+
+// Two-way messaging window — floats OVER the map (doesn't navigate away). Left:
+// conversation threads (grouped by the other party's phone, newest first, matched
+// to a customer name from notes or a driver name from the message itself). Right:
+// the selected conversation (in/out bubbles) with an inline reply box.
+function MessagesOverlay({ messages, seenAt = 0, onClose }) {
+  const { notes } = useCustomerNotes();
+  const [selected, setSelected] = useState(null); // phone of open thread
+  const [draft, setDraft] = useState('');
+  const [sending, setSending] = useState(false);
+  const [err, setErr] = useState(null);
+
+  // phone → customer name (from saved notes contacts).
+  const nameByPhone = useMemo(() => {
+    const m = new Map();
+    for (const n of notes.values()) for (const c of (n.contacts || [])) { const k = normPhone(c?.phone); if (k && !m.has(k)) m.set(k, n.raw_name || ''); }
+    return m;
+  }, [notes]);
+
+  // Group messages into threads by the other party's phone.
+  const threads = useMemo(() => {
+    const byPhone = new Map();
+    for (const m of messages || []) {
+      const k = normPhone(m.contactPhone); if (!k) continue;
+      let t = byPhone.get(k);
+      if (!t) { t = { phone: k, msgs: [], driverName: null }; byPhone.set(k, t); }
+      t.msgs.push(m);
+      if (m.driverName && !t.driverName) t.driverName = m.driverName; // a driver send tags the thread
+    }
+    const arr = [...byPhone.values()].map((t) => {
+      t.msgs.sort((a, b) => new Date(a.at || 0) - new Date(b.at || 0));
+      const last = t.msgs[t.msgs.length - 1];
+      const isDriver = !!t.driverName;
+      const name = t.driverName || nameByPhone.get(t.phone) || null;
+      const unread = t.msgs.some((m) => m.direction === 'in' && new Date(m.at || 0).getTime() > seenAt);
+      return { ...t, isDriver, name, last, lastAt: last?.at || null, unread };
+    });
+    arr.sort((a, b) => new Date(b.lastAt || 0) - new Date(a.lastAt || 0));
+    return arr;
+  }, [messages, nameByPhone, seenAt]);
+
+  const openThread = threads.find((t) => t.phone === selected) || null;
+  const titleOf = (t) => t.name || fmtPhone(t.phone);
+
+  const sendReply = async () => {
+    if (!draft.trim() || sending || !openThread) return;
+    setSending(true); setErr(null);
+    try {
+      const res = await postSendSms({ text: draft.trim(), recipients: [{ to: openThread.phone, label: titleOf(openThread) }] });
+      if (res.ok || res.sent) { setDraft(''); } else { setErr(res.results?.[0]?.error || res.error || 'send failed'); }
+    } catch (e) { setErr(e.message); } finally { setSending(false); }
+  };
+
+  return (
+    <div className="fixed inset-0 z-[1200] bg-slate-900/40 flex justify-end" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="w-full sm:max-w-md bg-white h-full shadow-2xl flex flex-col">
+        <div className="px-4 py-3 border-b flex items-center justify-between flex-shrink-0" style={{ background: BRAND, color: 'white' }}>
+          <div className="font-semibold inline-flex items-center gap-2">
+            {openThread && <button onClick={() => setSelected(null)} className="opacity-80 hover:opacity-100" aria-label="Back"><ArrowLeft size={16} /></button>}
+            <MessageSquare size={16} /> {openThread ? titleOf(openThread) : 'Messages'}
+          </div>
+          <button onClick={onClose} className="opacity-80 hover:opacity-100 p-1 -mr-1" aria-label="Close"><X size={18} /></button>
+        </div>
+
+        {!openThread ? (
+          <div className="flex-1 min-h-0 overflow-y-auto">
+            {threads.length === 0 ? (
+              <div className="text-sm text-slate-400 italic py-12 text-center px-4">No conversations yet. Texts you send and customer/driver replies show up here.</div>
+            ) : threads.map((t) => (
+              <button key={t.phone} onClick={() => setSelected(t.phone)} className="w-full text-left px-4 py-3 border-b border-slate-100 hover:bg-slate-50 flex items-start gap-2">
+                {t.unread && <span className="mt-1.5 w-2 h-2 rounded-full bg-red-600 flex-shrink-0" />}
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className={`text-sm truncate ${t.unread ? 'font-bold text-slate-900' : 'font-semibold text-slate-800'}`}>
+                      {titleOf(t)} {t.isDriver && <span className="text-[9px] uppercase bg-slate-200 text-slate-600 rounded px-1 py-0.5 align-middle">driver</span>}
+                    </span>
+                    <span className="text-[10px] text-slate-400 flex-shrink-0">{fmtAgoIso(t.lastAt)}</span>
+                  </div>
+                  <div className="text-xs text-slate-500 truncate">{t.last?.direction === 'out' ? 'You: ' : ''}{t.last?.text}</div>
+                </div>
+              </button>
+            ))}
+          </div>
+        ) : (
+          <>
+            <div className="flex-1 min-h-0 overflow-y-auto p-3 space-y-2 bg-slate-50">
+              <div className="text-center text-[10px] text-slate-400">{fmtPhone(openThread.phone)}{openThread.isDriver ? ' · driver' : ''}</div>
+              {openThread.msgs.map((m) => (
+                <div key={m.id} className={`flex ${m.direction === 'out' ? 'justify-end' : 'justify-start'}`}>
+                  <div className={`max-w-[80%] rounded-2xl px-3 py-2 text-sm break-words whitespace-pre-wrap ${m.direction === 'out' ? 'text-white rounded-br-sm' : 'bg-white border border-slate-200 text-slate-800 rounded-bl-sm'}`} style={m.direction === 'out' ? { background: BRAND } : {}}>
+                    {m.text}
+                    <div className={`text-[9px] mt-0.5 ${m.direction === 'out' ? 'text-white/70' : 'text-slate-400'}`}>{fmtAgoIso(m.at)}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div className="border-t p-2 flex-shrink-0">
+              {err && <div className="text-[11px] text-red-600 px-1 pb-1">{err}</div>}
+              <div className="flex items-end gap-2">
+                <textarea
+                  value={draft} onChange={(e) => setDraft(e.target.value)} rows={1}
+                  onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendReply(); } }}
+                  placeholder="Type a reply…" className="flex-1 border border-slate-300 rounded-lg px-2 py-1.5 text-sm resize-none max-h-28"
+                />
+                <button onClick={sendReply} disabled={!draft.trim() || sending} className="flex-shrink-0 inline-flex items-center gap-1 text-sm font-semibold text-white rounded-lg px-3 py-2 disabled:opacity-50" style={{ background: BRAND }}>
+                  <Send size={14} /> {sending ? '…' : 'Send'}
+                </button>
+              </div>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function TabBtn({ label, icon, active, onClick, badge = 0 }) {
   return (
     <button
       onClick={onClick}
-      className={`px-3 py-1.5 rounded inline-flex items-center gap-1.5 font-medium ${active ? 'text-white' : 'text-slate-600 hover:bg-slate-100'}`}
+      className={`relative px-3 py-1.5 rounded inline-flex items-center gap-1.5 font-medium ${active ? 'text-white' : 'text-slate-600 hover:bg-slate-100'}`}
       style={active ? { background: BRAND } : {}}
     >
       {icon}{label}
+      {badge > 0 && (
+        <span className="ml-0.5 min-w-[16px] h-4 px-1 rounded-full bg-red-600 text-white text-[10px] font-bold inline-flex items-center justify-center">{badge > 99 ? '99+' : badge}</span>
+      )}
     </button>
   );
 }

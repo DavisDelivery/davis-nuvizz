@@ -212,6 +212,23 @@ export async function runQuery(structuredQuery: any): Promise<any[]> {
   return out;
 }
 
+// List top-level collection ids (or sub-collections under `docPath` if given).
+// Used to DISCOVER the MarginIQ employees collection name from the shared DB.
+export async function listCollectionIds(docPath?: string): Promise<string[]> {
+  const token = await getAccessToken();
+  const sa = loadServiceAccount();
+  const base = `${FIRESTORE_BASE}/projects/${sa.project_id}/databases/(default)/documents`;
+  const url = `${docPath ? `${base}/${docPath}` : base}:listCollectionIds`;
+  const resp = await fetch(url, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ pageSize: 300 }),
+  });
+  if (!resp.ok) throw new Error(`listCollectionIds failed: ${resp.status} ${(await resp.text()).slice(0, 200)}`);
+  const body: any = await resp.json();
+  return body.collectionIds || [];
+}
+
 // Delete a single document (used to prune stops that disappeared between scans).
 async function deleteDoc(path: string): Promise<void> {
   const token = await getAccessToken();
