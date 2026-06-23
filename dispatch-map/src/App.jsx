@@ -47,7 +47,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.29.20';
+const APP_VERSION = '0.29.21';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -67,6 +67,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.29.21', 'Texting Stage 2 — text drivers. The driver panel now has a "Text driver" button; the driver\'s mobile number is pulled from their MarginIQ employee card (matched by name) on the server, so numbers stay private. Works on desktop + mobile.'],
   ['0.29.20', 'Texting Stage 3 — inbound replies. New "Messages" tab shows customer text replies (newest first, matched to a customer name by phone when known), with a Reply button and an unread badge. Replies arrive via a SimpleTexting webhook into the app.'],
   ['0.29.19', 'Texting fix: the "Text customer" button now always shows in a stop\'s detail (desktop + mobile) even when no phone is on file — you can type/confirm the number right in the compose box. Previously it was hidden whenever a stop had no saved number, so it looked missing on mobile.'],
   ['0.29.18', 'Texting is now active — the SimpleTexting account is connected, so the "Text customer" and "Text selected" buttons send real messages from our number.'],
@@ -2220,23 +2221,28 @@ async function postSendSms(payload) {
   return r.json();
 }
 
-// Shared SMS compose modal. `recipients` = [{ to, label }] (phones pre-resolved).
-// Used by the single-stop "Text" button and the bulk "Text selected" action.
+// Shared SMS compose modal. `recipients` = [{ to?, driverName?, label }]. A
+// `driverName` recipient is sent by name — the server resolves the phone from the
+// MarginIQ roster (number never reaches the browser). A single `to` recipient
+// (customer) gets an editable phone field. Used by Text customer / selected / driver.
 function SmsComposeModal({ title, recipients, onClose }) {
-  const single = recipients.length === 1;
+  const driverMode = recipients.some((r) => r.driverName);
+  const editable = recipients.length === 1 && !driverMode; // customer single → editable phone
   const [text, setText] = useState('');
-  const [phone, setPhone] = useState(single ? (recipients[0].to || '') : '');
+  const [phone, setPhone] = useState(editable ? (recipients[0].to || '') : '');
   const [sending, setSending] = useState(false);
   const [result, setResult] = useState(null);
   const chars = text.length;
   const segments = chars === 0 ? 0 : Math.ceil(chars / (chars <= 160 ? 160 : 153));
   const phoneDigits = phone.replace(/\D/g, '');
   const phoneOk = phoneDigits.length === 10 || (phoneDigits.length === 11 && phoneDigits.startsWith('1'));
-  const canSend = !!text.trim() && !sending && (single ? phoneOk : true);
+  const canSend = !!text.trim() && !sending && (editable ? phoneOk : true);
   const send = async () => {
     if (!canSend) return;
     setSending(true); setResult(null);
-    const list = single ? [{ to: phone, label: recipients[0].label }] : recipients.map((r) => ({ to: r.to, label: r.label }));
+    const list = editable
+      ? [{ to: phone, label: recipients[0].label }]
+      : recipients.map((r) => (r.driverName ? { driverName: r.driverName, label: r.label } : { to: r.to, label: r.label }));
     try {
       const res = await postSendSms({ text: text.trim(), recipients: list });
       setResult(res);
@@ -2252,7 +2258,7 @@ function SmsComposeModal({ title, recipients, onClose }) {
           <button onClick={onClose} className="p-1.5 -mr-1 rounded-full hover:bg-slate-100" aria-label="Close"><X size={18} /></button>
         </div>
         <div className="p-4 overflow-y-auto">
-          {single ? (
+          {editable ? (
             <label className="block mb-2">
               <span className="text-[11px] font-semibold text-slate-600">To {recipients[0].label || 'customer'}</span>
               <input
@@ -2262,12 +2268,14 @@ function SmsComposeModal({ title, recipients, onClose }) {
               />
               {phone && !phoneOk && <span className="text-[10px] text-red-600">Enter a valid 10-digit US number</span>}
             </label>
+          ) : driverMode && recipients.length === 1 ? (
+            <div className="text-[11px] text-slate-500 mb-2">To <b className="text-slate-700">{recipients[0].label}</b> · number from employee roster</div>
           ) : (
             <div className="text-[11px] text-slate-500 mb-2">To <b className="text-slate-700">{recipients.length} recipients</b></div>
           )}
           {recipients.length > 1 && (
             <div className="mb-2 max-h-24 overflow-y-auto text-[11px] text-slate-500 border border-slate-100 rounded p-1.5">
-              {recipients.map((r, i) => <div key={i} className="truncate">{r.label || '—'} · {r.to}</div>)}
+              {recipients.map((r, i) => <div key={i} className="truncate">{r.label || '—'}{r.to ? ` · ${r.to}` : ''}</div>)}
             </div>
           )}
           {!result && (
@@ -3370,7 +3378,7 @@ function StopStatusIcon({ status }) {
   return <span style={{ color: '#94a3b8' }}>○</span>;
 }
 
-function DriverSnapshotSidebar({ driver, snapshot, loading, error, onClose, onPanToStop, mobile = false }) {
+function DriverSnapshotSidebar({ driver, snapshot, loading, error, onClose, onPanToStop, onText, mobile = false }) {
   if (!driver) return null;
   return (
     <aside
@@ -3380,7 +3388,7 @@ function DriverSnapshotSidebar({ driver, snapshot, loading, error, onClose, onPa
       }
       style={mobile ? { paddingBottom: 'env(safe-area-inset-bottom)' } : undefined}
     >
-      <DriverSnapshotHeader driver={driver} snapshot={snapshot} onClose={onClose} />
+      <DriverSnapshotHeader driver={driver} snapshot={snapshot} onClose={onClose} onText={onText} />
       <DriverSnapshotBody
         driver={driver}
         snapshot={snapshot}
@@ -3392,18 +3400,29 @@ function DriverSnapshotSidebar({ driver, snapshot, loading, error, onClose, onPa
   );
 }
 
-function DriverSnapshotHeader({ driver, snapshot, onClose }) {
+function DriverSnapshotHeader({ driver, snapshot, onClose, onText }) {
   const truckLabel = driver.vehicleNumber || `(truck ${driver.vehicleId || '?'})`;
   const driverName = driver.driverName || '(no driver)';
   const hos = snapshot?.hos || null;
   return (
     <div className="px-4 py-3 border-b flex-shrink-0" style={{ background: BRAND, color: 'white' }}>
-      <button
-        onClick={onClose}
-        className="text-[10px] uppercase tracking-wider opacity-75 hover:opacity-100 inline-flex items-center gap-1 mb-1"
-      >
-        <ArrowLeft size={11} /> Back to stops
-      </button>
+      <div className="flex items-center justify-between gap-2 mb-1">
+        <button
+          onClick={onClose}
+          className="text-[10px] uppercase tracking-wider opacity-75 hover:opacity-100 inline-flex items-center gap-1"
+        >
+          <ArrowLeft size={11} /> Back to stops
+        </button>
+        {onText && driver.driverName && (
+          <button
+            onClick={() => onText(driver.driverName)}
+            className="text-[11px] font-semibold inline-flex items-center gap-1 bg-white/15 hover:bg-white/25 rounded px-2 py-1"
+            title={`Text ${driverName}`}
+          >
+            <MessageSquare size={12} /> Text driver
+          </button>
+        )}
+      </div>
       <div className="font-bold">Truck {truckLabel} · {driverName}</div>
       {hos && (
         <div className="text-[11px] opacity-80 mt-0.5">
@@ -4665,11 +4684,11 @@ function MobileRouteDetailDrawer({ loadNbr, stops, onClose, onPickStop }) {
 // overlay on mobile with a slide-up bottom sheet that re-uses the desktop
 // snapshot header + body subcomponents. Tap a stop row → drawer closes, map
 // pans, and the caller can open the stop detail drawer.
-function MobileDriverSnapshotDrawer({ driver, snapshot, loading, error, onClose, onPickStopFromSnapshot }) {
+function MobileDriverSnapshotDrawer({ driver, snapshot, loading, error, onClose, onPickStopFromSnapshot, onText }) {
   if (!driver) return null;
   return (
     <BottomSheet open onClose={onClose} heights={STOP_DETAIL_HEIGHTS} ariaLabel={`Driver snapshot: ${driver.driverName || ''}`}>
-      <DriverSnapshotHeader driver={driver} snapshot={snapshot} onClose={onClose} />
+      <DriverSnapshotHeader driver={driver} snapshot={snapshot} onClose={onClose} onText={onText} />
       <DriverSnapshotBody
         driver={driver}
         snapshot={snapshot}
@@ -5001,6 +5020,12 @@ function MapScreen() {
     if (!recipients.length) { setSelectNote('No phone numbers in the selected stops'); return; }
     setSmsTargets({ title: `Text ${recipients.length} selected${skipped ? ` (${skipped} have no phone)` : ''}`, recipients });
   }, [selectionSet, stops, notes]);
+  // Text a driver by NAME — the phone is resolved server-side from the MarginIQ
+  // employee roster (number never reaches the browser).
+  const textDriver = useCallback((driverName) => {
+    if (!driverName) return;
+    setSmsTargets({ title: `Text ${driverName}`, recipients: [{ driverName, label: driverName }] });
+  }, []);
 
   // Pin relocation handlers + the draggable marker that the dispatcher drags.
   const startMoveLocation = useCallback((stop) => {
@@ -5949,6 +5974,7 @@ function MapScreen() {
             snapshot={snapshot}
             loading={snapshotLoading}
             error={snapshotError}
+            onText={textDriver}
             onClose={() => setSelectedDriver(null)}
             onPickStopFromSnapshot={(snapshotStop) => {
               // Try to resolve the snapshot stop (which has its own row shape)
@@ -6259,6 +6285,7 @@ function MapScreen() {
           snapshot={snapshot}
           loading={snapshotLoading}
           error={snapshotError}
+          onText={textDriver}
           onClose={() => setSelectedDriver(null)}
           onPanToStop={handlePanToStop}
         />

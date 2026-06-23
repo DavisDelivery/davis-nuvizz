@@ -15,6 +15,7 @@
 // auth (Firebase App Check / signed request) before exposing this widely.
 
 import { smsEnabled, sendSms } from './lib/sms.mts';
+import { resolveDriverPhone } from './lib/marginiq.mts';
 import { isFirestoreEnabled, getDoc, setDoc, etDayString } from './lib/firestore.mts';
 
 const OPS = 'nuvizz_ops';
@@ -33,16 +34,35 @@ export default async (req: Request): Promise<Response> => {
   try { body = await req.json(); } catch { return new Response(JSON.stringify({ ok: false, error: 'invalid JSON' }), { status: 400, headers: cors }); }
 
   const text = String(body?.text ?? '').trim();
-  let recipients: { to: string; label?: string }[] = Array.isArray(body?.recipients)
-    ? body.recipients.map((r: any) => ({ to: String(r?.to ?? ''), label: r?.label }))
-    : (body?.to ? [{ to: String(body.to), label: body?.label }] : []);
-  // De-dupe by phone, drop blanks.
-  const seen = new Set<string>();
-  recipients = recipients.filter((r) => r.to && !seen.has(r.to) && seen.add(r.to));
+  // Recipients carry a phone (`to`) and/or a `driverName` to resolve server-side
+  // from the MarginIQ employee roster (so driver numbers never reach the browser).
+  const raw: { to: string; driverName?: string; label?: string }[] = Array.isArray(body?.recipients)
+    ? body.recipients.map((r: any) => ({ to: String(r?.to ?? ''), driverName: r?.driverName ? String(r.driverName) : undefined, label: r?.label }))
+    : (body?.to || body?.driverName ? [{ to: String(body?.to ?? ''), driverName: body?.driverName, label: body?.label }] : []);
 
   if (!text) return new Response(JSON.stringify({ ok: false, error: 'text required' }), { status: 400, headers: cors });
-  if (!recipients.length) return new Response(JSON.stringify({ ok: false, error: 'no recipients' }), { status: 400, headers: cors });
-  if (recipients.length > BATCH_LIMIT) return new Response(JSON.stringify({ ok: false, error: `too many recipients (max ${BATCH_LIMIT})` }), { status: 400, headers: cors });
+  if (!raw.length) return new Response(JSON.stringify({ ok: false, error: 'no recipients' }), { status: 400, headers: cors });
+  if (raw.length > BATCH_LIMIT) return new Response(JSON.stringify({ ok: false, error: `too many recipients (max ${BATCH_LIMIT})` }), { status: 400, headers: cors });
+
+  // Resolve driver names → phones; collect unresolved as failures (reported back).
+  const unresolved: any[] = [];
+  const seen = new Set<string>();
+  const recipients: { to: string; label?: string }[] = [];
+  for (const r of raw) {
+    let to = r.to;
+    const label = r.label || r.driverName;
+    if (!to && r.driverName) {
+      const resolved = await resolveDriverPhone(r.driverName);
+      if (!resolved) { unresolved.push({ to: '', label, ok: false, error: `no phone on file for ${r.driverName}` }); continue; }
+      to = resolved;
+    }
+    if (!to || seen.has(to)) continue;
+    seen.add(to);
+    recipients.push({ to, label });
+  }
+  if (!recipients.length) {
+    return new Response(JSON.stringify({ ok: false, error: 'no deliverable recipients', sent: 0, failed: unresolved.length, capped: 0, results: unresolved }), { status: 200, headers: cors });
+  }
 
   // Daily cap (best-effort; skipped if Firestore is off).
   const cap = Number(process.env.SMS_DAILY_CAP) || 500;
@@ -54,8 +74,8 @@ export default async (req: Request): Promise<Response> => {
   }
   const remaining = Math.max(0, cap - used);
 
-  const results: any[] = [];
-  let sent = 0, failed = 0, capped = 0;
+  const results: any[] = [...unresolved];
+  let sent = 0, failed = unresolved.length, capped = 0;
   for (const r of recipients) {
     if (sent >= remaining) { capped++; results.push({ to: r.to, label: r.label, ok: false, error: 'daily cap reached' }); continue; }
     const res = await sendSms({ to: r.to, text });
