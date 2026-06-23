@@ -103,6 +103,32 @@ function useMessagingRoster() {
   return { contacts, ready };
 }
 
+// Track the VISIBLE viewport (height + top offset). On mobile the panel is
+// position:fixed, which iOS sizes to the *layout* viewport — so when the soft
+// keyboard opens, a bottom-pinned composer ends up hidden BEHIND the keyboard
+// ("no way to send"). Sizing the panel to window.visualViewport keeps the
+// composer and Send button above the keyboard, like the rest of the app does.
+function useVisualViewport() {
+  const read = () => {
+    if (typeof window === 'undefined') return { h: 0, top: 0 };
+    const vv = window.visualViewport;
+    return { h: vv ? vv.height : window.innerHeight, top: vv ? vv.offsetTop : 0 };
+  };
+  const [vp, setVp] = useState(read);
+  useEffect(() => {
+    const vv = window.visualViewport;
+    const update = () => setVp(read());
+    update();
+    if (vv) { vv.addEventListener('resize', update); vv.addEventListener('scroll', update); }
+    window.addEventListener('resize', update);
+    return () => {
+      if (vv) { vv.removeEventListener('resize', update); vv.removeEventListener('scroll', update); }
+      window.removeEventListener('resize', update);
+    };
+  }, []);
+  return vp;
+}
+
 // ---------- small presentational bits ----------
 
 const GROUP_META = {
@@ -135,6 +161,7 @@ function GroupChip({ group }) {
 
 export default function MessagesPanel({ messages, seenAt = 0, onClose, customerContacts = [] }) {
   const { contacts: roster } = useMessagingRoster();
+  const vp = useVisualViewport();
 
   const [view, setView] = useState('list');          // 'list' | 'new' | 'thread'
   const [active, setActive] = useState(null);        // { phone, name, group, isEmployee }
@@ -327,8 +354,14 @@ export default function MessagesPanel({ messages, seenAt = 0, onClose, customerC
   );
 
   return (
-    <div className="fixed inset-0 z-[1200] sm:bg-slate-900/40 flex justify-end" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <div className="w-full sm:max-w-[400px] bg-white h-full shadow-2xl flex flex-col">
+    // Pinned to the VISIBLE viewport (height + top offset) so the bottom composer
+    // stays above the iOS keyboard instead of being hidden behind it.
+    <div
+      className="fixed inset-x-0 z-[1200] sm:bg-slate-900/40 flex justify-end overflow-hidden"
+      style={{ top: vp.top || 0, height: vp.h ? vp.h : '100%' }}
+      onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div className="w-full sm:max-w-[400px] bg-white h-full shadow-2xl flex flex-col min-h-0">
         {Header}
 
         {/* ---------- LIST ---------- */}
