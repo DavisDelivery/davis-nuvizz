@@ -47,7 +47,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.29.18';
+const APP_VERSION = '0.29.19';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -67,6 +67,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.29.19', 'Texting fix: the "Text customer" button now always shows in a stop\'s detail (desktop + mobile) even when no phone is on file — you can type/confirm the number right in the compose box. Previously it was hidden whenever a stop had no saved number, so it looked missing on mobile.'],
   ['0.29.18', 'Texting is now active — the SimpleTexting account is connected, so the "Text customer" and "Text selected" buttons send real messages from our number.'],
   ['0.29.17', 'Texting (SMS) via SimpleTexting — Stage 1 (outbound). New "Text customer" button in stop detail and "Text selected" in the box/lasso selection toolbar; both open a compose box and send via our number. Customer number = notes contact, falling back to the NuVizz scan contact. Server send endpoint has a daily send cap. Requires SIMPLETEXTING_API_KEY (and optional SIMPLETEXTING_FROM) env vars. Next stages: text drivers + inbound replies inbox.'],
   ['0.29.16', 'New per-customer "Email customer service when scheduled" toggle in notes. When the scan finds an opted-in customer on a day\'s board, it emails CS once (the first time that customer appears that day, deduped) from our no-reply account via Resend. Requires RESEND_API_KEY + RESEND_FROM + NOTIFY_CS_TO env vars to be set.'],
@@ -2204,16 +2205,22 @@ async function postSendSms(payload) {
 // Shared SMS compose modal. `recipients` = [{ to, label }] (phones pre-resolved).
 // Used by the single-stop "Text" button and the bulk "Text selected" action.
 function SmsComposeModal({ title, recipients, onClose }) {
+  const single = recipients.length === 1;
   const [text, setText] = useState('');
+  const [phone, setPhone] = useState(single ? (recipients[0].to || '') : '');
   const [sending, setSending] = useState(false);
   const [result, setResult] = useState(null);
   const chars = text.length;
   const segments = chars === 0 ? 0 : Math.ceil(chars / (chars <= 160 ? 160 : 153));
+  const phoneDigits = phone.replace(/\D/g, '');
+  const phoneOk = phoneDigits.length === 10 || (phoneDigits.length === 11 && phoneDigits.startsWith('1'));
+  const canSend = !!text.trim() && !sending && (single ? phoneOk : true);
   const send = async () => {
-    if (!text.trim() || sending) return;
+    if (!canSend) return;
     setSending(true); setResult(null);
+    const list = single ? [{ to: phone, label: recipients[0].label }] : recipients.map((r) => ({ to: r.to, label: r.label }));
     try {
-      const res = await postSendSms({ text: text.trim(), recipients: recipients.map((r) => ({ to: r.to, label: r.label })) });
+      const res = await postSendSms({ text: text.trim(), recipients: list });
       setResult(res);
     } catch (e) {
       setResult({ ok: false, error: e.message, results: [] });
@@ -2227,11 +2234,19 @@ function SmsComposeModal({ title, recipients, onClose }) {
           <button onClick={onClose} className="p-1.5 -mr-1 rounded-full hover:bg-slate-100" aria-label="Close"><X size={18} /></button>
         </div>
         <div className="p-4 overflow-y-auto">
-          <div className="text-[11px] text-slate-500 mb-2">
-            {recipients.length === 1
-              ? <>To <b className="text-slate-700">{recipients[0].label || recipients[0].to}</b> · {recipients[0].to}</>
-              : <>To <b className="text-slate-700">{recipients.length} recipients</b></>}
-          </div>
+          {single ? (
+            <label className="block mb-2">
+              <span className="text-[11px] font-semibold text-slate-600">To {recipients[0].label || 'customer'}</span>
+              <input
+                type="tel" inputMode="tel" value={phone} onChange={(e) => setPhone(e.target.value)}
+                placeholder="Phone number (10 digits)"
+                className={`mt-0.5 w-full border rounded-lg px-2 py-1.5 text-sm ${phone && !phoneOk ? 'border-red-300' : 'border-slate-300'}`}
+              />
+              {phone && !phoneOk && <span className="text-[10px] text-red-600">Enter a valid 10-digit US number</span>}
+            </label>
+          ) : (
+            <div className="text-[11px] text-slate-500 mb-2">To <b className="text-slate-700">{recipients.length} recipients</b></div>
+          )}
           {recipients.length > 1 && (
             <div className="mb-2 max-h-24 overflow-y-auto text-[11px] text-slate-500 border border-slate-100 rounded p-1.5">
               {recipients.map((r, i) => <div key={i} className="truncate">{r.label || '—'} · {r.to}</div>)}
@@ -2266,7 +2281,7 @@ function SmsComposeModal({ title, recipients, onClose }) {
             ? <button onClick={onClose} className="px-3 py-2 rounded-lg text-sm font-semibold text-white" style={{ background: BRAND }}>Done</button>
             : <>
                 <button onClick={onClose} className="px-3 py-2 rounded-lg text-sm text-slate-600 border border-slate-300">Cancel</button>
-                <button onClick={send} disabled={!text.trim() || sending} className="px-3 py-2 rounded-lg text-sm font-semibold text-white disabled:opacity-50 inline-flex items-center gap-1.5" style={{ background: BRAND }}>
+                <button onClick={send} disabled={!canSend} className="px-3 py-2 rounded-lg text-sm font-semibold text-white disabled:opacity-50 inline-flex items-center gap-1.5" style={{ background: BRAND }}>
                   <Send size={14} /> {sending ? 'Sending…' : `Send${recipients.length > 1 ? ` (${recipients.length})` : ''}`}
                 </button>
               </>}
@@ -2858,9 +2873,9 @@ function StopDataSections({ stop, note, onOpenRoute, onMoveLocation, onEditAddre
               <MapPin size={13} /> Correct pin location{note?.location_override ? ' · custom saved' : ''}
             </button>
           )}
-          {onText && textPhone && (
+          {onText && (
             <button onClick={() => onText(stop)} className="mt-1.5 inline-flex items-center gap-1 text-xs text-blue-700 hover:underline">
-              <MessageSquare size={13} /> Text customer
+              <MessageSquare size={13} /> Text customer{textPhone ? '' : ' (add #)'}
             </button>
           )}
         </div>
@@ -4943,7 +4958,8 @@ function MapScreen() {
   const textCustomer = useCallback((stop) => {
     if (!stop) return;
     const phone = resolveStopPhone(stop, notes.get(stop.matchKey));
-    if (!phone) { setSelectNote(`No phone on file for ${stop.businessName || 'this customer'}`); return; }
+    // Always open the composer; if no number is on file the dispatcher can type
+    // one in (the modal validates before allowing send).
     setSmsTargets({ title: `Text ${stop.businessName || 'customer'}`, recipients: [{ to: phone, label: stop.businessName || stop.stopNbr }] });
   }, [notes]);
   const textSelected = useCallback(() => {
