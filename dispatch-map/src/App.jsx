@@ -6914,8 +6914,8 @@ function HourBarChart({ byHour }) {
         {vals.map((v, h) => (
           <div key={h} className="flex-1 flex flex-col justify-end items-center group relative">
             <div
-              className={`w-full rounded-t ${h === peak ? 'bg-violet-600' : 'bg-violet-400/70'} group-hover:bg-violet-700 transition-colors`}
-              style={{ height: `${Math.max(2, Math.round((v / max) * 100))}%` }}
+              className={`w-full rounded-t transition-colors ${v ? `${h === peak ? 'bg-violet-600' : 'bg-violet-400/70'} group-hover:bg-violet-700` : 'bg-slate-200'}`}
+              style={{ height: `${v ? Math.max(3, Math.round((v / max) * 104)) : 2}px` }}
             />
             <div className="pointer-events-none absolute -top-7 hidden group-hover:block whitespace-nowrap rounded bg-slate-900 text-white text-[10px] px-1.5 py-0.5 z-10">
               {hours[h]}:00 · {v.toLocaleString()}
@@ -7011,7 +7011,7 @@ function ApiCallsPanel({ ops, lastLoadScanAt, lastUnplannedScanAt, onRefresh, re
         <div>
           <div className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Scanner learning</div>
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-            <Stat label="Scans (sampled)" value={learn.scans ?? '—'} />
+            <Stat label="Recent scans" value={learn.scans ?? '—'} />
             <Stat label="Loads found / scan" value={learn.lastFoundLoads ?? '—'} />
             <Stat label="Max ID gap" value={learn.maxGap ?? '—'} />
             <Stat label="Rec. empty-stop" value={learn.recommendedEmptyStop ?? '—'} />
