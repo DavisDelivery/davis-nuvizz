@@ -190,6 +190,29 @@ export async function listScanForDate(targetDateUTC: string): Promise<any[]> {
   return stops;
 }
 
+// Static per-stop detail (from /stop/info) the list lacks — added by the enrichment
+// pass and carried forward across scans via the index. Deliberately EXCLUDES live
+// fields (status / loadNbr / driver / normalizedStatus) so the list keeps refreshing
+// those each scan; enrichment only fills the stable detail.
+export const ENRICH_FIELDS = [
+  'lat', 'lng', 'stopDetails', 'contact', 'origin', 'scheduledFrom', 'scheduledTo',
+  'timeConstraint', 'estimatedDurationMin', 'itemsSummary', 'customerAccount',
+  'plannedEtaDTTM', 'loadStopSeq', 'routeSeq',
+];
+// Copy meaningful ENRICH_FIELDS from src (a /stop/info-normalized stop, or a prior
+// enriched index doc) onto target, then mark it enriched. Never overwrites a real
+// value with null/blank, so list-derived values survive when detail is sparse.
+export function mergeEnrich(target: any, src: any): any {
+  if (!src) return target;
+  for (const f of ENRICH_FIELDS) {
+    const v = src[f];
+    if (v === null || v === undefined || v === '' || (Array.isArray(v) && v.length === 0)) continue;
+    target[f] = v;
+  }
+  target.enriched = true;
+  return target;
+}
+
 // Exposed for tests: intermediate rows → board stops (dedup by stopNbr, last wins).
 export function fromRows(rows: any[]): any[] {
   const byNbr = new Map<string, any>();

@@ -15,10 +15,10 @@
 // skip here, because the Friday-evening ET window lands on Saturday UTC and a
 // naive getUTCDay() check would wrongly drop it. Manual HTTP runs always proceed.
 
-import { scanDate, todayUTC, scansEnabled, deriveFleetSummary, estimateLoadRange, buildScanState, shadowWouldProbe, selectLoadProbeTargets, groupLoadMembers, estimateStopFrontier, unplannedFloor, FLOOR_MARGIN, loadNbrToInt, stopNbrToInt, shouldDeepSweep, deepSweepGate } from './nuvizz-scan.mts';
+import { scanDate, todayUTC, scansEnabled, deriveFleetSummary, estimateLoadRange, buildScanState, shadowWouldProbe, selectLoadProbeTargets, groupLoadMembers, estimateStopFrontier, unplannedFloor, FLOOR_MARGIN, loadNbrToInt, stopNbrToInt, shouldDeepSweep, deepSweepGate, lookupStopByPro } from './nuvizz-scan.mts';
 import { loadProbeParity, frontierParity, loadMembershipDelta, dateSliceMismatch } from './scan-parity.mts';
 import { isFirestoreEnabled, writeStops, writeFleetIndex, getDoc, markScanState, readCallStats, readCircuit, readScanState, writeScanState, readRecentFrontier, recordScanMetric, etDayString, readScanConfig, readStops } from './firestore.mts';
-import { listScanForDate } from './nuvizz-list.mts';
+import { listScanForDate, mergeEnrich } from './nuvizz-list.mts';
 import { resolveCoords, addrKey } from './geocode.mts';
 import { maxConsecutiveGap } from './scan-metrics.mts';
 import { notifyMarkedCustomers } from './cs-notify.mts';
@@ -94,6 +94,14 @@ export async function runRefreshStops(req: Request): Promise<Response> {
   // Coordinates are carried forward from the existing index + geocoded for new
   // addresses. The number-probe below remains the automatic FALLBACK.
   const LIST_DISCOVERY = (process.env.NUVIZZ_LIST_DISCOVERY || '').toLowerCase() === 'on';
+  // Enrichment: one /stop/info per NEW PRO (the list gives us exact PRO #s, so these
+  // are direct calls). Enriched detail (real coords, line items, contact, schedule)
+  // is carried forward via the index, so each PRO is enriched ONCE; as orders arrive
+  // through the day each scan only enriches the increment, spreading the calls. ON by
+  // default; cap is per-scan (default 10000 = no real throttle).
+  const ENRICH = (process.env.NUVIZZ_ENRICH || '').toLowerCase() !== 'off';
+  const ENRICH_MAX = Number(process.env.NUVIZZ_ENRICH_MAX_PER_SCAN) || 10000;
+  const ENRICH_CONC = Number(process.env.NUVIZZ_ENRICH_CONC) || 8;
 
   // Read today's last LOAD scan time — this is what drives the elapsed-time
   // cadence (Fix 1). Also read the shared call counter + breaker for the log line.
@@ -426,20 +434,48 @@ export async function runRefreshStops(req: Request): Promise<Response> {
         // Per-day pull, ET-adjusted period (one request; the entity page param doesn't paginate).
         const dateStops = await listScanForDate(date);
         if (!dateStops.length) { results.push({ date, ok: true, skipped: 'list-empty', source: 'list' }); continue; }
-        // Carry coords forward from the existing index; geocode only new addresses.
-        const seed = new Map<string, { lat: number; lng: number }>();
+
+        // Read this date's existing index ONCE — used to carry forward enriched detail
+        // (so each PRO is enriched a single time) and as a coord seed.
+        const prevByNbr = new Map<string, any>();
         try {
           const prev = await readStops(TENANT, date);
-          for (const s of (prev?.stops || [])) {
-            if (typeof s.lat === 'number' && typeof s.lng === 'number') {
-              const k = addrKey(s); if (k) seed.set(k, { lat: s.lat, lng: s.lng });
-            }
+          for (const p of (prev?.stops || [])) prevByNbr.set(String(p.stopNbr), p);
+        } catch { /* no prior index */ }
+        const seed = new Map<string, { lat: number; lng: number }>();
+        const toEnrich: any[] = [];
+        for (const s of dateStops) {
+          const p = prevByNbr.get(String(s.stopNbr));
+          if (p) {
+            if (p.enriched) mergeEnrich(s, p); // carry static detail forward (incl real coords)
+            if (typeof p.lat === 'number' && typeof p.lng === 'number') { const k = addrKey(p); if (k) seed.set(k, { lat: p.lat, lng: p.lng }); }
           }
-        } catch { /* no prior index — geocode everything */ }
-        const coords = await resolveCoords(dateStops, seed);
-        for (const s of dateStops) { const k = addrKey(s); const pt = k ? coords.get(k) : null; if (pt) { s.lat = pt.lat; s.lng = pt.lng; } }
+          if (!s.enriched) toEnrich.push(s); // new PRO → needs a /stop/info enrichment
+        }
+
+        // Enrichment: one direct /stop/info per new PRO (bounded concurrency, capped).
+        let enriched = 0;
+        if (ENRICH && toEnrich.length) {
+          const batch = toEnrich.slice(0, ENRICH_MAX);
+          let i = 0;
+          const worker = async () => {
+            while (i < batch.length) {
+              const s = batch[i++];
+              try { const r = await lookupStopByPro(s.stopNbr); if (r.ok && r.stop) { mergeEnrich(s, r.stop); enriched++; } } catch { /* skip; geocode fallback below */ }
+            }
+          };
+          await Promise.all(Array.from({ length: Math.min(ENRICH_CONC, batch.length) }, worker));
+        }
+
+        // Coords: geocode any stop STILL missing coords (enrichment off / failed / capped).
+        const need = dateStops.filter((s) => typeof s.lat !== 'number' || typeof s.lng !== 'number');
+        if (need.length) {
+          const coords = await resolveCoords(need, seed);
+          for (const s of need) { const k = addrKey(s); const pt = k ? coords.get(k) : null; if (pt) { s.lat = pt.lat; s.lng = pt.lng; } }
+        }
+
         const meta = await writeStops(TENANT, date, dateStops, scannedAt, { includeUnplanned: true, includeLoads: true });
-        results.push({ date, ok: true, source: 'list', count: meta.count, planned: meta.plannedCount, unplanned: meta.unplannedCount });
+        results.push({ date, ok: true, source: 'list', count: meta.count, planned: meta.plannedCount, unplanned: meta.unplannedCount, enriched, newPros: toEnrich.length });
       }
     } catch (e: any) {
       // List-only: do NOT fall back to the number-probe; preserve the existing index.
