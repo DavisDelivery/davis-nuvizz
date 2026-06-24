@@ -1,0 +1,96 @@
+// test/nuvizz-list.test.mjs — the list-discovery scan helpers (the primary board
+// source). Guards status-code mapping, arrival-date parsing/bucketing, the row→board
+// shape, and the geocode cache key. Pure functions only (no network).
+import test from 'node:test';
+import assert from 'node:assert/strict';
+
+import { statusFromCode, parseSchedDate, toBoardStop, bucketByDate, fromRows, normalize } from '../netlify/functions/lib/nuvizz-list.mts';
+import { addrKey } from '../netlify/functions/lib/geocode.mts';
+
+test('statusFromCode: NuVizz codes → board status + planned flag', () => {
+  assert.deepEqual(statusFromCode('10', false), { status: 'UNPLANNED', planned: false });
+  assert.deepEqual(statusFromCode('20', true), { status: 'SCHEDULED', planned: true });
+  assert.deepEqual(statusFromCode('40', true), { status: 'OUT_FOR_DEL', planned: true });
+  assert.deepEqual(statusFromCode('50', true), { status: 'ARRIVED', planned: true });
+  assert.deepEqual(statusFromCode('90', true), { status: 'DELIVERED', planned: true });
+  assert.deepEqual(statusFromCode('91', true), { status: 'DELIVERED', planned: true });
+  assert.equal(statusFromCode('99', true).status, 'EXCEPTION');
+  // Unknown code falls back on route membership.
+  assert.deepEqual(statusFromCode('', true), { status: 'SCHEDULED', planned: true });
+  assert.deepEqual(statusFromCode('', false), { status: 'UNPLANNED', planned: false });
+});
+
+test('parseSchedDate: "M/D/YY h:mm AM" → date + ordered iso, null on junk', () => {
+  assert.deepEqual(parseSchedDate('6/24/26 08:00 AM'), { date: '2026-06-24', iso: '2026-06-24T08:00:00' });
+  assert.deepEqual(parseSchedDate('12/9/26 5:30 PM'), { date: '2026-12-09', iso: '2026-12-09T17:30:00' });
+  assert.equal(parseSchedDate('12/9/26 12:00 AM').iso, '2026-12-09T00:00:00', 'midnight 12 AM → 00');
+  assert.equal(parseSchedDate('12/9/26 12:00 PM').iso, '2026-12-09T12:00:00', 'noon 12 PM → 12');
+  assert.equal(parseSchedDate(''), null);
+  assert.equal(parseSchedDate('not a date'), null);
+});
+
+test('toBoardStop: planned stop carries load + ordering; unplanned has no load', () => {
+  const planned = toBoardStop({ stopNbr: '007', statusCode: '20', routeName: 'TRAILER 1', driverName: 'DENIS', scheduledArrival: '6/24/26 09:00 AM', businessName: 'ACME', addr1: '1 Main', city: 'Buford', zip: '30518', cartons: 3, weight: 500, comments: 'liftgate' });
+  assert.equal(planned.isPlanned, true);
+  assert.equal(planned.loadNbr, 'TRAILER 1', 'route name doubles as the load id');
+  assert.equal(planned.normalizedStatus, 'SCHEDULED');
+  assert.equal(planned.plannedEtaDTTM, '2026-06-24T09:00:00', 'ordering key from scheduled arrival');
+  assert.equal(planned.scheduledDate, '2026-06-24');
+  assert.equal(planned.lat, null, 'coords filled later by geocode/carry-forward');
+
+  const unplanned = toBoardStop({ stopNbr: '008', statusCode: '10', routeName: '', scheduledArrival: '6/24/26 10:00 AM', businessName: 'BETA', addr1: '2 Oak', city: 'Buford', zip: '30518' });
+  assert.equal(unplanned.isPlanned, false);
+  assert.equal(unplanned.isUnplanned, true);
+  assert.equal(unplanned.loadNbr, null);
+});
+
+test('fromRows: dedups by stopNbr (last wins) and drops blank stopNbr', () => {
+  const rows = [
+    { stopNbr: 'A', statusCode: '10', scheduledArrival: '6/24/26 09:00 AM' },
+    { stopNbr: 'A', statusCode: '20', routeName: 'L1', scheduledArrival: '6/24/26 09:00 AM' }, // later wins
+    { stopNbr: '', statusCode: '10' }, // dropped
+  ];
+  const out = fromRows(rows);
+  assert.equal(out.length, 1);
+  assert.equal(out[0].isPlanned, true, 'last row for stop A wins');
+});
+
+test('bucketByDate: groups board stops by scheduled delivery date', () => {
+  const stops = [
+    toBoardStop({ stopNbr: '1', statusCode: '10', scheduledArrival: '6/24/26 09:00 AM' }),
+    toBoardStop({ stopNbr: '2', statusCode: '10', scheduledArrival: '6/24/26 14:00 PM' }),
+    toBoardStop({ stopNbr: '3', statusCode: '10', scheduledArrival: '6/25/26 09:00 AM' }),
+    toBoardStop({ stopNbr: '4', statusCode: '10', scheduledArrival: '' }), // no date → excluded
+  ];
+  const m = bucketByDate(stops);
+  assert.equal(m.get('2026-06-24').length, 2);
+  assert.equal(m.get('2026-06-25').length, 1);
+  assert.ok(!m.has('undefined'));
+});
+
+test('normalize: maps the live VizzonStop response (filterData defs + values rows) by key', () => {
+  const colOrder = [
+    'KeyColumn', 'default_vizzonInfo.shipmentInfo.status', 'vizzonInfo.shipmentInfo.stopNbr',
+    'vizzonInfo.createdTime', 'vizzonInfo.shipmentInfo.shipmentNbr', 'route.driver.driverId',
+    'route.name', 'vizzonInfo.destination.address.name', 'vizzonInfo.destination.address.line1',
+    'vizzonInfo.destination.address.line2', 'vizzonInfo.destination.address.city',
+    'vizzonInfo.destination.address.zipCode', 'vizzonInfo.shipmentInfo.cartons',
+    'vizzonInfo.shipmentInfo.weight', 'vizzonInfo.shipmentInfo.status', 'vizzonInfo.shipmentInfo.proNbr',
+    'vizzonInfo.destination.earliestSchTime', 'comments.commentList.commentText',
+  ];
+  const filterData = [Object.fromEntries(colOrder.map((k) => [k, { columnName: k }]))];
+  const row = ['id1', '10', '{"columnValue":"007137806"}', '6/23/26 07:50 PM', '007137806', 'DENIS', 'TRAILER 1', 'ACME', '1 Main', '', 'Buford', '30518', '2', '400', 'Un-Planned', 'G6', '6/24/26 08:00 AM', 'note'];
+  const [r] = normalize({ filterData, values: [row] });
+  assert.equal(r.stopNbr, '007137806');
+  assert.equal(r.statusCode, '10');
+  assert.equal(r.routeName, 'TRAILER 1');
+  assert.equal(r.scheduledArrival, '6/24/26 08:00 AM');
+});
+
+test('addrKey: stable + case/space-insensitive; null without a street address', () => {
+  const a = addrKey({ addr1: '1 Main St', city: 'Buford', state: 'GA', zip: '30518' });
+  const b = addrKey({ addr1: '  1 MAIN ST ', city: 'buford', state: 'ga', zip: '30518' });
+  assert.equal(a, b, 'normalized identically');
+  assert.equal(addrKey({ city: 'Buford', zip: '30518' }), null, 'no street → null (never geocode a bare city)');
+  assert.equal(addrKey({ addr1: '' }), null);
+});

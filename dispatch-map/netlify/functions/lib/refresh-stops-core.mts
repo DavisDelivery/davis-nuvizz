@@ -17,7 +17,9 @@
 
 import { scanDate, todayUTC, scansEnabled, deriveFleetSummary, estimateLoadRange, buildScanState, shadowWouldProbe, selectLoadProbeTargets, groupLoadMembers, estimateStopFrontier, unplannedFloor, FLOOR_MARGIN, loadNbrToInt, stopNbrToInt, shouldDeepSweep, deepSweepGate } from './nuvizz-scan.mts';
 import { loadProbeParity, frontierParity, loadMembershipDelta, dateSliceMismatch } from './scan-parity.mts';
-import { isFirestoreEnabled, writeStops, writeFleetIndex, getDoc, markScanState, readCallStats, readCircuit, readScanState, writeScanState, readRecentFrontier, recordScanMetric, etDayString, readScanConfig } from './firestore.mts';
+import { isFirestoreEnabled, writeStops, writeFleetIndex, getDoc, markScanState, readCallStats, readCircuit, readScanState, writeScanState, readRecentFrontier, recordScanMetric, etDayString, readScanConfig, readStops } from './firestore.mts';
+import { listScanWindow } from './nuvizz-list.mts';
+import { resolveCoords, addrKey } from './geocode.mts';
 import { maxConsecutiveGap } from './scan-metrics.mts';
 import { notifyMarkedCustomers } from './cs-notify.mts';
 import { breakerTripped, scanIntervalElapsed, breakerMode, setDailyCeilingOverride } from './nuvizz-request.mts';
@@ -87,6 +89,11 @@ export async function runRefreshStops(req: Request): Promise<Response> {
   // NUVIZZ_DEEP_SWEEP_HOURS, default 8) stays the periodic full-floor backstop that
   // reconciles below-frontier status changes / out-of-order imports.
   const FORWARD_SCAN = (process.env.NUVIZZ_FORWARD_SCAN || '').toLowerCase() !== 'off';
+  // PRIMARY list discovery (NUVIZZ_LIST_DISCOVERY=on): source the board from NuVizz's
+  // stop LIST in one windowed pull instead of number-probing /load/info & /stop/info.
+  // Coordinates are carried forward from the existing index + geocoded for new
+  // addresses. The number-probe below remains the automatic FALLBACK.
+  const LIST_DISCOVERY = (process.env.NUVIZZ_LIST_DISCOVERY || '').toLowerCase() === 'on';
 
   // Read today's last LOAD scan time — this is what drives the elapsed-time
   // cadence (Fix 1). Also read the shared call counter + breaker for the log line.
@@ -402,6 +409,48 @@ export async function runRefreshStops(req: Request): Promise<Response> {
   if (!decision.act) {
     logScan(decision.skip, false, no, no);
     return json({ ok: true, skipped: decision.skip, reason: decision.reason });
+  }
+
+  // ── PRIMARY: list-discovery (one windowed pull replaces number-probing) ──────
+  // Pull NuVizz's stop list once, bucket by delivery date, geocode/carry-forward
+  // coords, and write each target date as a full authoritative set. Empty buckets
+  // are NEVER written (so an API hiccup can't wipe the board) and any failure falls
+  // through to the number-probe below.
+  if (LIST_DISCOVERY) {
+    try {
+      const scannedAt = new Date().toISOString();
+      const { byDate } = await listScanWindow();
+      const targets = [today];
+      if (decision.scanTomorrowLoads || decision.scanTomorrowUnplanned) targets.push(tomorrow);
+      let wroteAny = false;
+      for (const date of targets) {
+        const dateStops = byDate.get(date) || [];
+        if (!dateStops.length) { results.push({ date, ok: true, skipped: 'list-empty', source: 'list' }); continue; }
+        // Carry coords forward from the existing index; geocode only new addresses.
+        const seed = new Map<string, { lat: number; lng: number }>();
+        try {
+          const prev = await readStops(TENANT, date);
+          for (const s of (prev?.stops || [])) {
+            if (typeof s.lat === 'number' && typeof s.lng === 'number') {
+              const k = addrKey(s); if (k) seed.set(k, { lat: s.lat, lng: s.lng });
+            }
+          }
+        } catch { /* no prior index — geocode everything */ }
+        const coords = await resolveCoords(dateStops, seed);
+        for (const s of dateStops) { const k = addrKey(s); const pt = k ? coords.get(k) : null; if (pt) { s.lat = pt.lat; s.lng = pt.lng; } }
+        const meta = await writeStops(TENANT, date, dateStops, scannedAt, { includeUnplanned: true, includeLoads: true });
+        wroteAny = true;
+        results.push({ date, ok: true, source: 'list', count: meta.count, planned: meta.plannedCount, unplanned: meta.unplannedCount });
+      }
+      if (wroteAny) {
+        await refreshOps();
+        logScan('none', true, { l: true, u: true }, { l: decision.scanTomorrowLoads, u: decision.scanTomorrowUnplanned }, ' src=list');
+        return json({ ok: true, tenant: TENANT, mode: isManual ? 'manual' : 'scheduled', source: 'list', decision, totalMs: Date.now() - startedAt, dates: results });
+      }
+      console.warn('[scan] list-discovery wrote nothing (empty buckets) → number-probe fallback');
+    } catch (e: any) {
+      console.warn(`[scan] list-discovery failed (${e?.message}) → number-probe fallback`);
+    }
   }
 
   // Today: loads always; orders inside the 10am-midnight window.
