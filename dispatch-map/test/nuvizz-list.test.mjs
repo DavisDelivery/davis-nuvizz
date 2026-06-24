@@ -111,7 +111,7 @@ test('mergeEnrich: adds static detail + enriched flag; never nukes list values w
   assert.deepEqual(s.contact, { phone: '555' });
   assert.equal(s.scheduledFrom, '2026-06-24T08:30:00');
   assert.equal(s.itemsSummary, '3 pallets');
-  // live fields (status/loadNbr) are NOT in ENRICH_FIELDS → list keeps owning them.
+  // live fields (status/loadNbr) ARE in LIVE_LIST_FIELDS → list keeps owning them.
   assert.equal(s.status, '20');
   assert.equal(s.loadNbr, 'L1');
   // blank src values don't overwrite existing.
