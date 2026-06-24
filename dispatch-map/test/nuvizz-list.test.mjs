@@ -4,7 +4,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { statusFromCode, parseSchedDate, toBoardStop, bucketByDate, fromRows, normalize, periodForDate, mergeEnrich, mergeTwoScan, etDateForTargetUTC, SAVED_SEARCHES } from '../netlify/functions/lib/nuvizz-list.mts';
+import { statusFromCode, parseSchedDate, parseReqDate, toBoardStop, bucketByDate, fromRows, normalize, periodForDate, mergeEnrich, mergeTwoScan, etDateForTargetUTC, SAVED_SEARCHES } from '../netlify/functions/lib/nuvizz-list.mts';
 import { addrKey } from '../netlify/functions/lib/geocode.mts';
 
 test('statusFromCode: NuVizz codes → board status + planned flag', () => {
@@ -136,6 +136,58 @@ test('bucketByDate: groups board stops by scheduled delivery date', () => {
   assert.equal(m.get('2026-06-24').length, 2);
   assert.equal(m.get('2026-06-25').length, 1);
   assert.ok(!m.has('undefined'));
+});
+
+test('parseReqDate: lenient — date-only, time, window, or ISO all yield the day; null on junk', () => {
+  assert.equal(parseReqDate('6/24/26'), '2026-06-24', 'date only');
+  assert.equal(parseReqDate('6/24/26 08:00 AM'), '2026-06-24', 'date + time');
+  assert.equal(parseReqDate('6/24/26 08:00 AM - 08:00 PM'), '2026-06-24', 'requested window → leading day');
+  assert.equal(parseReqDate('2026-06-24T08:00:00'), '2026-06-24', 'ISO');
+  assert.equal(parseReqDate(''), null);
+  assert.equal(parseReqDate('n/a'), null);
+});
+
+test('toBoardStop: buckets on Requested Date; falls back to Estimated Arrival when it is blank', () => {
+  // Mitchell's case: a planned stop that came over with a Requested Date but whose Estimated
+  // Arrival (earliestSchTime) was never populated. It MUST still land on its requested day.
+  const noArrival = toBoardStop({ stopNbr: '007137950', statusCode: '20', routeName: 'MITCHELL', requestedArrival: '6/24/26 08:00 AM - 08:00 PM', scheduledArrival: '' });
+  assert.equal(noArrival.requestedDate, '2026-06-24');
+  assert.equal(noArrival.scheduledDate, null, 'no estimated arrival');
+  assert.equal(noArrival.boardDate, '2026-06-24', 'requested date carries the board day');
+
+  // Rollover: requested for today but still carrying YESTERDAY's stale arrival — board day
+  // follows the request (today), not the stale arrival.
+  const rollover = toBoardStop({ stopNbr: 'R', statusCode: '20', routeName: 'L1', requestedArrival: '6/24/26', scheduledArrival: '6/23/26 09:00 AM' });
+  assert.equal(rollover.boardDate, '2026-06-24', 'requested date wins over stale arrival');
+  assert.equal(rollover.scheduledDate, '2026-06-23', 'arrival preserved for routing/ETA ordering');
+
+  // No requested date at all → fall back to arrival (prior behavior preserved).
+  const fallback = toBoardStop({ stopNbr: 'F', statusCode: '20', routeName: 'L1', scheduledArrival: '6/25/26 09:00 AM' });
+  assert.equal(fallback.boardDate, '2026-06-25', 'falls back to estimated arrival');
+});
+
+test('bucketByDate: a planned stop with a Requested Date but NO arrival is kept, not dropped', () => {
+  const stops = [
+    toBoardStop({ stopNbr: '1', statusCode: '20', routeName: 'L1', requestedArrival: '6/24/26', scheduledArrival: '' }),
+    toBoardStop({ stopNbr: '2', statusCode: '20', routeName: 'L1', scheduledArrival: '6/24/26 09:00 AM' }),
+    toBoardStop({ stopNbr: '3', statusCode: '20', routeName: 'L1' }), // neither date → excluded
+  ];
+  const m = bucketByDate(stops);
+  assert.equal(m.get('2026-06-24').length, 2, 'requested-only stop bucketed alongside the arrival-only stop');
+  assert.ok(!m.has('undefined'));
+});
+
+test('normalize: discovers the Requested Date column by pattern (key varies by saved def)', () => {
+  const cols = ['KeyColumn', 'vizzonInfo.shipmentInfo.stopNbr', 'vizzonInfo.destination.requestedDttm', 'vizzonInfo.destination.earliestSchTime'];
+  const filterData = [Object.fromEntries(cols.map((k) => [k, { columnName: k }]))];
+  const [r] = normalize({ filterData, values: [['id1', '007137950', '6/24/26 08:00 AM', '']] });
+  assert.equal(r.requestedArrival, '6/24/26 08:00 AM', 'requested column ingested by pattern');
+  assert.equal(r.scheduledArrival, '', 'arrival empty for this stop');
+  // No requested column present → requestedArrival is blank, board falls back to arrival.
+  const cols2 = ['KeyColumn', 'vizzonInfo.shipmentInfo.stopNbr', 'vizzonInfo.destination.earliestSchTime'];
+  const fd2 = [Object.fromEntries(cols2.map((k) => [k, { columnName: k }]))];
+  const [r2] = normalize({ filterData: fd2, values: [['id1', '007', '6/24/26 09:00 AM']] });
+  assert.equal(r2.requestedArrival, '', 'no requested column → blank, safe fallback');
 });
 
 test('normalize: maps the live VizzonStop response (filterData defs + values rows) by key', () => {

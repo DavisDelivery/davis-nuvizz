@@ -64,6 +64,15 @@ export function normalize(j: any): any[] {
   const updatedKey =
     cols.find((k) => /updat/i.test(k) && /(dttm|date|time)/i.test(k) && /stop|shipment|vizzon/i.test(k)) ||
     cols.find((k) => /updat/i.test(k) && /(dttm|date|time)/i.test(k)) || null;
+  // The portal's "Requested Date & Time" column — the date the order comes over with, found
+  // by PATTERN like updatedKey (the dotted key varies by saved list def). This is the date we
+  // bucket on (Estimated Arrival / earliestSchTime can be blank on a not-yet-sequenced stop
+  // or stale on a rollover, which silently drops/mis-files the stop — see toBoardStop). Prefer
+  // a stop/shipment/destination-scoped requested column; never let it collide with earliestSch
+  // (that has no "request" token, so it can't match here).
+  const requestedKey =
+    cols.find((k) => /request/i.test(k) && /(dttm|date|time)/i.test(k) && /stop|shipment|vizzon|destination/i.test(k)) ||
+    cols.find((k) => /request/i.test(k) && /(dttm|date|time)/i.test(k)) || null;
   return ((j && j.values) || []).map((row: any[]) => ({
     stopNbr: String(g(row, 'vizzonInfo.shipmentInfo.stopNbr') ?? ''),
     statusCode: String(g(row, 'default_vizzonInfo.shipmentInfo.status') ?? ''),
@@ -79,6 +88,7 @@ export function normalize(j: any): any[] {
     weight: numOrNull(g(row, 'vizzonInfo.shipmentInfo.weight')),
     proNbr: g(row, 'vizzonInfo.shipmentInfo.proNbr') ?? '',
     scheduledArrival: g(row, 'vizzonInfo.destination.earliestSchTime') ?? '',
+    requestedArrival: requestedKey ? String(g(row, requestedKey) ?? '') : '',
     createdTime: g(row, 'vizzonInfo.createdTime') ?? '',
     updatedTime: updatedKey ? String(g(row, updatedKey) ?? '') : '',
     comments: g(row, 'comments.commentList.commentText') ?? '',
@@ -117,12 +127,27 @@ export function parseSchedDate(s: any): { date: string; iso: string } | null {
   return { date, iso: `${date}T${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}:00` };
 }
 
+// Pull just the calendar day (YYYY-MM-DD) out of a Requested Date value. Unlike
+// parseSchedDate this is lenient: the column may arrive date-only ("6/24/26"), as a
+// window ("6/24/26 8:00 AM - 8:00 PM"), or ISO — we only need the day for bucketing, so
+// grab the leading date and ignore any time/range. Null if no date is present.
+export function parseReqDate(s: any): string | null {
+  const str = String(s || '');
+  const iso = str.match(/(\d{4})-(\d{2})-(\d{2})/);
+  if (iso) return `${iso[1]}-${iso[2]}-${iso[3]}`;
+  const m = str.match(/(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);
+  if (!m) return null;
+  let y = +m[3]; if (y < 100) y += 2000;
+  return `${y}-${String(+m[1]).padStart(2, '0')}-${String(+m[2]).padStart(2, '0')}`;
+}
+
 // Intermediate row → board-shaped stop (coords filled later). routeName doubles as
 // the load id since the list carries the load NAME, not the numeric loadNbr.
 export function toBoardStop(r: any): any {
   const hasRoute = !!String(r.routeName || '').trim();
   const { status, planned } = statusFromCode(r.statusCode, hasRoute);
   const sched = parseSchedDate(r.scheduledArrival);
+  const reqDate = parseReqDate(r.requestedArrival);
   const upd = parseSchedDate(r.updatedTime);
   const listUpdatedDTTM = upd ? upd.iso : (r.updatedTime || null);
   return {
@@ -159,6 +184,15 @@ export function toBoardStop(r: any): any {
     orderInstructions: r.comments || null,
     proNbr: r.proNbr || null,
     scheduledDate: sched ? sched.date : null,
+    // The Requested delivery date (the date the order comes over with). Always populated
+    // when the saved search exposes the column; used as the authoritative board day.
+    requestedDate: reqDate,
+    // The day this stop sits on the board. Prefer Requested Date over Estimated Arrival:
+    // earliestSchTime is blank for a stop that hasn't been sequenced yet (→ bucketByDate
+    // would DROP it) and stale on a rollover (→ bucketByDate parks it on the OLD day, off
+    // today's route). Requested Date keeps a planned stop on its correct day for its whole
+    // lifecycle; arrival is only the fallback when no Requested Date came over.
+    boardDate: reqDate || (sched ? sched.date : null),
     // "Stop Updated Dttm" from the list — when the order last changed (status flips incl.
     // planned→unplanned→planned, edits, delivery). A LIVE field: refreshed every scan, free,
     // no /stop/info call. Drives the "last updated" display + signals when detail is stale.
@@ -175,11 +209,13 @@ export function toBoardStop(r: any): any {
   };
 }
 
-// Group board stops by their scheduled delivery date (YYYY-MM-DD).
+// Group board stops by their board day (YYYY-MM-DD) — boardDate (Requested Date, falling
+// back to Estimated Arrival). Falls through to requestedDate/scheduledDate for stops built
+// before boardDate existed. Stops with no determinable day can't be placed and are dropped.
 export function bucketByDate(stops: any[]): Map<string, any[]> {
   const m = new Map<string, any[]>();
   for (const s of stops) {
-    const d = s.scheduledDate;
+    const d = s.boardDate || s.requestedDate || s.scheduledDate;
     if (!d) continue;
     if (!m.has(d)) m.set(d, []);
     m.get(d)!.push(s);
@@ -224,7 +260,8 @@ export async function fetchListRows(period: string, statusCsv: string = LIST_STA
 // period is ET-adjusted so it matches the number-probe's "today" board.
 export async function listScanForDate(targetDateUTC: string): Promise<any[]> {
   const stops = fromRows(await fetchListRows(periodForDate(targetDateUTC)));
-  for (const s of stops) s.scheduledDate = targetDateUTC; // authoritative: we queried this exact day
+  // authoritative: we queried this exact day, so pin both the scheduled and board day to it.
+  for (const s of stops) { s.scheduledDate = targetDateUTC; s.boardDate = targetDateUTC; }
   return stops;
 }
 
@@ -342,7 +379,7 @@ export function etDateForTargetUTC(targetDateUTC: string, todayUTC: string, etTo
 export const LIVE_LIST_FIELDS = [
   'status', 'normalizedStatus', 'isPlanned', 'isUnplanned',
   'loadNbr', 'routeName', 'driverName', 'driverUserName',
-  'scheduledDate', 'listUpdatedDTTM', 'source',
+  'scheduledDate', 'requestedDate', 'boardDate', 'listUpdatedDTTM', 'source',
 ];
 // Copy ALL non-live fields from src (a /stop/info-normalized stop, or a prior enriched
 // index doc) onto target, then mark it enriched. Never overwrites a real value with a
