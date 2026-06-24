@@ -5733,7 +5733,7 @@ function RoutingScreen() {
   const [hoverId, setHoverId] = useState(null);
   const hoverIdRef = useRef(null);
   useEffect(() => { hoverIdRef.current = hoverId; }, [hoverId]);
-  const markerByIdRef = useRef(new Map());  // stopId -> { marker, sel, routed }
+  const markerByIdRef = useRef(new Map());  // stopId -> { marker, baseIcon, emphIconObj, baseOpacity, baseZ }
   const lastEmphRef = useRef(null);
 
   // Desktop click-drag rubber-band box. The overlay (rendered over the map only
