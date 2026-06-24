@@ -16,7 +16,7 @@ import {
   MapPin, RefreshCw, X, Filter, Truck, Save, Plus, Trash2,
   Activity, ChevronDown, ChevronUp, Eye, EyeOff,
   Search, Tag, Tags, ArrowLeft, Gauge, Clock, MapPinned,
-  Info, Settings, LayoutList, Sparkles, MessageSquare, Square, Lasso, AlertTriangle, Ban, Send,
+  Info, Settings, LayoutList, Sparkles, MessageSquare, Square, Lasso, AlertTriangle, Ban, Send, Package,
   FileCheck, ExternalLink,
 } from 'lucide-react';
 import {
@@ -49,7 +49,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.29.26';
+const APP_VERSION = '0.29.28';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -69,6 +69,8 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.29.28', 'Loads: added a % delivered figure on each load in the Loads list and on the load detail header (green at 100%). The load detail now also shows each stop\'s address under the business name.'],
+  ['0.29.27', 'Mobile: swapped the "Drivers" tab for "Loads". The bottom-nav and bottom-sheet tab now lists the day\'s loads (route/load #, driver, delivered-of-total, pallets, weight); tapping a load opens its route detail. Live driver pins on the map are unchanged.'],
   ['0.29.26', 'Messages on mobile: the texting window now sizes to the visible screen, so the keyboard no longer hides the message box and Send button — you can actually type and send a text on a phone. Same fix keeps the conversation above the keyboard in every view.'],
   ['0.29.25', 'Messages, rebuilt (iOS-style). The texting window is now a real messaging app: a searchable conversation list with avatars, names, role tags and unread dots; a "New message" button that opens a CONTACT PICKER split into Drivers / Contractors / Customers / Team (drivers + contractors come from the employee roster via a new /messaging-roster endpoint) plus Recent and "text any typed number"; and a conversation view with iMessage-style bubbles, grouped time stamps, a pill composer, instant (optimistic) send and tap-to-retry on failures. You can now START a text to anyone, not just reply to people who texted first.'],
   ['0.29.24', 'Cleaner buttons: the floating message-bubble icon (desktop + mobile) now opens TEXTING, and the AI assistant moved to a "?" button next to it. On mobile the texting window is full-screen (iOS-style) with notch/home-bar safe spacing; on desktop it stays a side drawer over the map. The message button shows an unread badge.'],
@@ -4152,8 +4154,8 @@ function MobileFAB({ open, onToggle }) {
 
 // Persistent bottom navigation for the mobile app. Lives OUTSIDE the map/drawer
 // area so it stays visible over every full-screen view — tap Map to return to
-// the board, Stops/Filters/Drivers to open that full-screen view.
-function MobileTabBar({ active, onMap, onStops, onFilters, onDrivers }) {
+// the board, Stops/Filters/Loads to open that full-screen view.
+function MobileTabBar({ active, onMap, onStops, onFilters, onLoads }) {
   const Tab = ({ id, label, icon, onClick }) => {
     const on = active === id;
     return (
@@ -4176,7 +4178,7 @@ function MobileTabBar({ active, onMap, onStops, onFilters, onDrivers }) {
       <Tab id="map" label="Map" icon={<MapPin size={20} />} onClick={onMap} />
       <Tab id="stops" label="Stops" icon={<LayoutList size={20} />} onClick={onStops} />
       <Tab id="filters" label="Filters" icon={<Filter size={20} />} onClick={onFilters} />
-      <Tab id="drivers" label="Drivers" icon={<Truck size={20} />} onClick={onDrivers} />
+      <Tab id="loads" label="Loads" icon={<Package size={20} />} onClick={onLoads} />
     </nav>
   );
 }
@@ -4220,12 +4222,12 @@ function BottomSheet({ open, onClose, children, ariaLabel }) {
 
 function MobileDrawer({ open, onClose, activeTab, setActiveTab, children }) {
   return (
-    <BottomSheet open={open} onClose={onClose} heights={SHEET_HEIGHTS} ariaLabel="Stops, Filters, Drivers">
+    <BottomSheet open={open} onClose={onClose} heights={SHEET_HEIGHTS} ariaLabel="Stops, Filters, Loads">
       <div className="flex-shrink-0 flex border-b border-slate-200">
         {[
           { id: 'stops', label: 'Stops' },
           { id: 'filters', label: 'Filters' },
-          { id: 'drivers', label: 'Drivers' },
+          { id: 'loads', label: 'Loads' },
         ].map((t) => {
           const active = activeTab === t.id;
           return (
@@ -4677,6 +4679,50 @@ function MobileDriversTab({ drivers, error, onPickDriver }) {
   );
 }
 
+// Loads tab content — the day's loads grouped from the board (one tap opens that
+// load's route detail). Shows route/load id, driver, delivered-of-total progress,
+// and pallet/weight totals.
+function MobileLoadsTab({ loads, onPickLoad }) {
+  if (!loads || loads.length === 0) {
+    return (
+      <div className="px-4 py-6 text-xs text-slate-400 italic text-center">
+        No loads on the board for this date.
+      </div>
+    );
+  }
+  return (
+    <div className="divide-y divide-slate-100">
+      {loads.map((l) => {
+        const pct = l.stops ? Math.round((100 * l.delivered) / l.stops) : 0;
+        return (
+        <button
+          key={l.loadNbr}
+          onClick={() => onPickLoad(l.loadNbr)}
+          className="w-full flex items-center gap-3 px-4 text-left active:bg-slate-100"
+          style={{ minHeight: 56 }}
+        >
+          <Package size={18} className="text-slate-500 flex-shrink-0" />
+          <div className="min-w-0 flex-1">
+            <div className="text-sm text-slate-900 truncate">
+              <span className="font-semibold">{l.routeName || l.loadNbr}</span>
+              {l.driverName ? <span className="text-slate-600"> · {l.driverName}</span> : null}
+            </div>
+            <div className="text-[11px] text-slate-500 truncate">
+              {l.delivered}/{l.stops} delivered
+              {l.pallets ? ` · ${l.pallets} plt` : ''}
+              {l.weight ? ` · ${l.weight.toLocaleString()} lb` : ''}
+            </div>
+          </div>
+          <div className="text-right flex-shrink-0">
+            <div className="text-sm font-bold" style={{ color: pct === 100 ? '#16a34a' : BRAND }}>{pct}%</div>
+            <div className="text-[10px] text-slate-400">{l.stops} stop{l.stops === 1 ? '' : 's'}</div>
+          </div>
+        </button>
+      ); })}
+    </div>
+  );
+}
+
 // ---------- M4.5 PR 2: stop-detail + driver-snapshot drawers ----------
 
 // Mobile stop-detail drawer. A bottom-sheet that renders the SAME shared
@@ -4843,14 +4889,18 @@ function RouteDetailBody({ stops, onPickStop }) {
   const sorted = orderRouteStops(stops);
   const driverName = sorted[0]?.driverName || sorted[0]?.driverUserName || '—';
   const delivered = sorted.filter((s) => classifyStopStatus(s) === 'DELIVERED').length;
+  const pct = sorted.length ? Math.round((100 * delivered) / sorted.length) : 0;
   return (
     <>
       <div className="px-4 py-2 border-b bg-slate-50 flex items-center justify-between">
-        <div>
+        <div className="min-w-0">
           <div className="text-[10px] uppercase font-semibold text-slate-500">Driver</div>
           <div className="text-sm font-semibold text-slate-900 truncate">{driverName}</div>
         </div>
-        <div className="text-[11px] text-slate-500">{delivered}/{sorted.length} delivered</div>
+        <div className="text-right flex-shrink-0 pl-2">
+          <div className="text-base font-bold leading-none" style={{ color: pct === 100 ? '#16a34a' : BRAND }}>{pct}%</div>
+          <div className="text-[11px] text-slate-500 mt-0.5">{delivered}/{sorted.length} delivered</div>
+        </div>
       </div>
       <ol className="divide-y divide-slate-100">
         {sorted.map((s, i) => {
@@ -4863,6 +4913,7 @@ function RouteDetailBody({ stops, onPickStop }) {
           // Workbench and the numbered map pins 1:1; fall back to position if absent.
           const rs = routeSeqOf(s);
           const seqLabel = rs != null ? rs : i + 1;
+          const addr = [s.addr1, s.city, s.state].filter(Boolean).join(', ');
           return (
             <li key={(s.stopNbr || '') + ':' + i}>
               <button
@@ -4874,7 +4925,8 @@ function RouteDetailBody({ stops, onPickStop }) {
                 <StatusBadge kind={kind} />
                 <div className="min-w-0 flex-1">
                   <div className="text-sm font-medium text-slate-900 truncate">{s.businessName || '(no name)'}</div>
-                  <div className="text-[11px] text-slate-500 truncate">
+                  {addr && <div className="text-[11px] text-slate-500 truncate">{addr}</div>}
+                  <div className="text-[11px] text-slate-400 truncate">
                     {s.pro && <span className="font-mono mr-1">{s.pro}</span>}
                     {time && <span>{time}</span>}
                   </div>
@@ -5048,7 +5100,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0 }) {
   const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false);
   const [mobileDrawerTab, setMobileDrawerTab] = useState(() => {
     const t = safeReadJSON(LS_MOBILE_DRAWER_TAB, 'stops');
-    return ['stops', 'filters', 'drivers'].includes(t) ? t : 'stops';
+    return ['stops', 'filters', 'loads'].includes(t) ? t : 'stops';
   });
   // M5 — live drivers (Motive) only meaningful for today. On any other date the
   // overlay is forced off regardless of the toggle's stored value.
@@ -5500,6 +5552,24 @@ function MapScreen({ onOpenMessages, smsUnread = 0 }) {
     if (!selectedRoute) return [];
     return stops.filter((s) => s.loadNbr === selectedRoute);
   }, [stops, selectedRoute]);
+
+  // The day's loads, grouped from the board by loadNbr — powers the mobile Loads
+  // tab. Delivered count is tolerant of status casing; pallet/weight are summed.
+  const loads = useMemo(() => {
+    const m = new Map();
+    for (const s of stops) {
+      if (!s.loadNbr) continue;
+      let g = m.get(s.loadNbr);
+      if (!g) { g = { loadNbr: s.loadNbr, routeName: s.routeName || null, driverName: s.driverName || null, stops: 0, delivered: 0, pallets: 0, weight: 0 }; m.set(s.loadNbr, g); }
+      g.stops++;
+      if (/deliver/i.test(s.normalizedStatus || s.status || '')) g.delivered++;
+      g.pallets += Number(s.pallets) || 0;
+      g.weight += Number(s.weight) || 0;
+      if (!g.driverName && s.driverName) g.driverName = s.driverName;
+      if (!g.routeName && s.routeName) g.routeName = s.routeName;
+    }
+    return [...m.values()].sort((a, b) => String(a.routeName || a.loadNbr).localeCompare(String(b.routeName || b.loadNbr)));
+  }, [stops]);
 
   // Init map once google + container are ready.
   useEffect(() => {
@@ -5969,6 +6039,13 @@ function MapScreen({ onOpenMessages, smsUnread = 0 }) {
         mapRef.current.setZoom(Math.max(mapRef.current.getZoom() || 10, 13));
       }
     };
+    // Tap a load → open its route detail (reuses the route drawer) and close the sheet.
+    const pickLoadFromMobile = (loadNbr) => {
+      setSelectedStop(null);
+      setSelectedDriver(null);
+      setMobileDrawerOpen(false);
+      setSelectedRoute(loadNbr);
+    };
     return (
       <div className="flex-1 flex flex-col min-h-0">
         {smsTargets && <SmsComposeModal title={smsTargets.title} recipients={smsTargets.recipients} onClose={() => setSmsTargets(null)} />}
@@ -6178,11 +6255,10 @@ function MapScreen({ onOpenMessages, smsUnread = 0 }) {
               vehicleDisabled={!dateIsToday}
             />
           )}
-          {mobileDrawerTab === 'drivers' && (
-            <MobileDriversTab
-              drivers={drivers}
-              error={driverErr}
-              onPickDriver={pickDriverFromMobile}
+          {mobileDrawerTab === 'loads' && (
+            <MobileLoadsTab
+              loads={loads}
+              onPickLoad={pickLoadFromMobile}
             />
           )}
         </MobileDrawer>
@@ -6277,11 +6353,11 @@ function MapScreen({ onOpenMessages, smsUnread = 0 }) {
         )}
         </div>
         <MobileTabBar
-          active={mobileDrawerOpen ? mobileDrawerTab : (selectedStop || selectedRoute) ? 'stops' : selectedDriver ? 'drivers' : 'map'}
+          active={mobileDrawerOpen ? mobileDrawerTab : selectedRoute ? 'loads' : selectedStop ? 'stops' : 'map'}
           onMap={() => { setMobileDrawerOpen(false); setSelectedStop(null); setSelectedRoute(null); setSelectedDriver(null); }}
           onStops={() => { setSelectedStop(null); setSelectedRoute(null); setSelectedDriver(null); setMobileDrawerTab('stops'); setMobileDrawerOpen(true); }}
           onFilters={() => { setSelectedStop(null); setSelectedRoute(null); setSelectedDriver(null); setMobileDrawerTab('filters'); setMobileDrawerOpen(true); }}
-          onDrivers={() => { setSelectedStop(null); setSelectedRoute(null); setSelectedDriver(null); setMobileDrawerTab('drivers'); setMobileDrawerOpen(true); }}
+          onLoads={() => { setSelectedStop(null); setSelectedRoute(null); setSelectedDriver(null); setMobileDrawerTab('loads'); setMobileDrawerOpen(true); }}
         />
       </div>
     );
