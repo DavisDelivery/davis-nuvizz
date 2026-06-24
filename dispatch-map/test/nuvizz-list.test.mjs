@@ -4,7 +4,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { statusFromCode, parseSchedDate, toBoardStop, bucketByDate, fromRows, normalize, periodForDate } from '../netlify/functions/lib/nuvizz-list.mts';
+import { statusFromCode, parseSchedDate, toBoardStop, bucketByDate, fromRows, normalize, periodForDate, mergeEnrich } from '../netlify/functions/lib/nuvizz-list.mts';
 import { addrKey } from '../netlify/functions/lib/geocode.mts';
 
 test('statusFromCode: NuVizz codes → board status + planned flag', () => {
@@ -96,6 +96,28 @@ test('periodForDate: ET-adjusts the UTC doc date to NuVizz period (the tz-drift 
   assert.equal(periodForDate('2026-06-25', '2026-06-23'), '+2d');
   // A past doc → negative.
   assert.equal(periodForDate('2026-06-23', '2026-06-24'), '-1d');
+});
+
+test('mergeEnrich: adds static detail + enriched flag; never nukes list values with blanks', () => {
+  // A list-sourced board stop (no detail yet).
+  const s = toBoardStop({ stopNbr: '7', statusCode: '20', routeName: 'L1', scheduledArrival: '6/24/26 09:00 AM', businessName: 'ACME', lat: null });
+  assert.equal(s.enriched, undefined);
+  // Enrichment detail from /stop/info (normalized): real coords + line items + contact.
+  mergeEnrich(s, { lat: 33.9, lng: -83.8, stopDetails: [{ sku: 'A' }], contact: { phone: '555' }, scheduledFrom: '2026-06-24T08:30:00', itemsSummary: '3 pallets', routeName: '', status: 'SHOULD_NOT_COPY' });
+  assert.equal(s.enriched, true);
+  assert.equal(s.lat, 33.9);
+  assert.equal(s.lng, -83.8);
+  assert.deepEqual(s.stopDetails, [{ sku: 'A' }]);
+  assert.deepEqual(s.contact, { phone: '555' });
+  assert.equal(s.scheduledFrom, '2026-06-24T08:30:00');
+  assert.equal(s.itemsSummary, '3 pallets');
+  // live fields (status/loadNbr) are NOT in ENRICH_FIELDS → list keeps owning them.
+  assert.equal(s.status, '20');
+  assert.equal(s.loadNbr, 'L1');
+  // blank src values don't overwrite existing.
+  const t = { lat: 1, lng: 2 };
+  mergeEnrich(t, { lat: null, lng: undefined, stopDetails: [] });
+  assert.equal(t.lat, 1); assert.equal(t.lng, 2); assert.ok(!('stopDetails' in t));
 });
 
 test('addrKey: stable + case/space-insensitive; null without a street address', () => {
