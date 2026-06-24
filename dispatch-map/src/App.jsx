@@ -258,6 +258,50 @@ function compareByPlannedEta(a, b) {
   return String(a?.stopNbr || '').localeCompare(String(b?.stopNbr || ''));
 }
 
+// When NuVizz's real route sequence is available the polyline follows the true delivery
+// order. But the live LIST feed carries NEITHER a route sequence NOR distinct per-stop ETAs
+// (only a generic arrival window), so for un-enriched stops compareByPlannedEta collapses to
+// stop-number order and the line crisscrosses. Detect that and fall back to a nearest-neighbor
+// geographic chain so the line reads like a route, not a web. Best-effort only — enriching a
+// stop via /stop/info restores NuVizz's authoritative routeSeq and the exact order returns.
+function hasRealRouteSequence(stops) {
+  const seqs = stops.map(routeSeqOf).filter((x) => x != null);
+  if (seqs.length >= 2) return true;
+  const etas = [...new Set(stops.map((s) => s?.plannedEtaDTTM).filter(Boolean))];
+  return etas.length >= 2;
+}
+function nearestNeighborOrder(stops) {
+  const pts = stops.filter((s) => s.lat != null && s.lng != null);
+  const rest = stops.filter((s) => s.lat == null || s.lng == null);
+  if (pts.length < 3) return [...stops];
+  // Start from the most north-west stop for a stable, repeatable path, then always hop to
+  // the closest unvisited stop (squared lat/lng distance — fine at metro scale).
+  let start = 0;
+  for (let i = 1; i < pts.length; i++) {
+    if (pts[i].lat - pts[i].lng > pts[start].lat - pts[start].lng) start = i;
+  }
+  const used = new Array(pts.length).fill(false);
+  used[start] = true;
+  const order = [pts[start]];
+  let curr = start;
+  for (let k = 1; k < pts.length; k++) {
+    let best = -1, bestD = Infinity;
+    for (let j = 0; j < pts.length; j++) {
+      if (used[j]) continue;
+      const dlat = pts[curr].lat - pts[j].lat, dlng = pts[curr].lng - pts[j].lng;
+      const d = dlat * dlat + dlng * dlng;
+      if (d < bestD) { bestD = d; best = j; }
+    }
+    used[best] = true; order.push(pts[best]); curr = best;
+  }
+  return [...order, ...rest];
+}
+// True route order when NuVizz gives us a sequence; otherwise a geographic best-effort so
+// the line doesn't crisscross. Used for the polyline AND the route detail list so they match.
+function orderRouteStops(stops) {
+  return hasRealRouteSequence(stops) ? [...stops].sort(compareByPlannedEta) : nearestNeighborOrder(stops);
+}
+
 function execArrivalTs(exec) {
   return exec.to?.arrivalDTTM || exec.to?.arrivalDttm || exec.arrivalDTTM || exec.arrivalDttm || exec.arrivedDttm || null;
 }
@@ -2948,6 +2992,139 @@ function PodDocsSection({ stop }) {
   );
 }
 
+// "2026-06-23T15:35:26" → "Jun 23, 3:35 PM" (NuVizz event/comment timestamps are local ET).
+function fmtNoteTime(s) {
+  const m = String(s || '').match(/(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})/);
+  if (!m) return String(s || '');
+  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  let h = +m[4]; const ap = h >= 12 ? 'PM' : 'AM'; h = h % 12 || 12;
+  return `${months[+m[2] - 1]} ${+m[3]}, ${h}:${m[5]} ${ap}`;
+}
+
+const COMMENT_TYPE_LABEL = { ORD_IN: 'Order instruction', PRE_VISIT: 'Pre-visit', GEN: 'General' };
+
+// The full NuVizz comment list — the portal's "Driver Instruction" panel: EVERY comment
+// (order instructions, pre-visit, billing, …) with its type, author + time. Strips the
+// SPL-INSTR-TEXT prefix and hides the "DO NOT BREAKDOWN SKID" boilerplate (per request).
+function StopNotesList({ comments }) {
+  const rows = (comments || [])
+    .map((c) => ({ ...c, text: String(c.text || '').replace(/^\s*SPL-INSTR-TEXT\s*:?\s*/i, '').trim() }))
+    .filter((c) => c.text && !/do\s*not\s*break\s*down\s*skid/i.test(c.text));
+  if (!rows.length) return null;
+  return (
+    <div className="pt-1">
+      <div className="text-xs uppercase font-semibold text-slate-500 mb-1">Notes</div>
+      <div className="space-y-1.5">
+        {rows.map((c, i) => {
+          const label = c.typeDesc || COMMENT_TYPE_LABEL[c.type] || c.type || 'Note';
+          const meta = [c.addedBy, c.source, c.addedOn && fmtNoteTime(c.addedOn)].filter(Boolean).join(' · ');
+          return (
+            <div key={i} className="rounded bg-slate-50 border border-slate-200 px-2 py-1">
+              <div className="text-xs text-slate-800 whitespace-pre-wrap break-words leading-snug">{c.text}</div>
+              <div className="text-[10px] text-slate-500 mt-0.5">{label}{meta ? ` — ${meta}` : ''}</div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// Activity timeline (the portal's "Activity Timeline"). Collapsed by default; the FIRST
+// time it's expanded it calls /.netlify/functions/nuvizz-stop-events on demand — even if
+// Refresh wasn't pressed. Prefers the rich /event/eventinfo (By:/From:) when stopId is known.
+function StopActivityTimeline({ stopNbr, stopId }) {
+  const [open, setOpen] = useState(false);
+  const [st, setSt] = useState({ loading: false, events: null, error: null });
+  useEffect(() => {
+    if (!open || st.events || st.loading) return;
+    let cancelled = false;
+    setSt((s) => ({ ...s, loading: true, error: null }));
+    const qs = new URLSearchParams();
+    if (stopNbr) qs.set('stopNbr', stopNbr);
+    if (stopId) qs.set('stopId', stopId);
+    fetch('/.netlify/functions/nuvizz-stop-events?' + qs.toString(), { cache: 'no-store' })
+      .then((r) => r.json())
+      .then((d) => { if (!cancelled) setSt({ loading: false, events: d.ok ? (d.events || []) : [], error: d.ok ? null : (d.reason || 'failed') }); })
+      .catch((e) => { if (!cancelled) setSt({ loading: false, events: [], error: e.message }); });
+    return () => { cancelled = true; };
+  }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
+  return (
+    <div className="pt-2 mt-2 border-t">
+      <button onClick={() => setOpen((o) => !o)} className="w-full flex items-center justify-between text-xs uppercase font-semibold text-slate-500">
+        <span className="inline-flex items-center gap-1"><Activity size={12} /> Activity timeline</span>
+        {open ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+      </button>
+      {open && (
+        <div className="mt-1.5">
+          {st.loading && <div className="text-xs text-slate-500">Loading…</div>}
+          {!st.loading && st.error && <div className="text-[11px] text-amber-700">Couldn’t load timeline: {st.error}</div>}
+          {!st.loading && st.events && !st.error && st.events.length === 0 && <div className="text-xs text-slate-500">No activity recorded.</div>}
+          {!st.loading && st.events && st.events.length > 0 && (
+            <ol className="space-y-1.5">
+              {st.events.map((e, i) => (
+                <li key={i} className="flex gap-2">
+                  <div className="flex-shrink-0 w-1.5 h-1.5 mt-1.5 rounded-full bg-slate-400" />
+                  <div className="min-w-0">
+                    <div className="text-xs font-semibold text-slate-800">{e.name || '—'}</div>
+                    <div className="text-[10px] text-slate-500">
+                      {[fmtNoteTime(e.dttm), e.user, e.company].filter(Boolean).join(' · ')}
+                    </div>
+                  </div>
+                </li>
+              ))}
+            </ol>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Notes + Refresh + Activity timeline for the open stop. Refresh re-pulls the order from
+// NuVizz (/stop/info via nuvizz-pro-lookup) and merges the fresh detail — full comment
+// list, stopId, route sequence — into a LOCAL copy so the panel updates immediately. Keyed
+// by stop number at the call site so it resets when a different order is opened.
+function StopLiveDetail({ stop }) {
+  const [fresh, setFresh] = useState(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshErr, setRefreshErr] = useState(null);
+  const live = fresh || stop;
+  const refresh = async () => {
+    const pro = stop.primaryPro || stop.pro || stop.stopNbr;
+    if (!pro || refreshing) return;
+    setRefreshing(true); setRefreshErr(null);
+    try {
+      const r = await fetch('/.netlify/functions/nuvizz-pro-lookup?pro=' + encodeURIComponent(pro), { cache: 'no-store' });
+      const d = await r.json();
+      if (d.ok && d.stop) setFresh((prev) => ({ ...(prev || stop), ...d.stop }));
+      else setRefreshErr(d.reason || 'not found');
+    } catch (e) { setRefreshErr(e.message); }
+    finally { setRefreshing(false); }
+  };
+  const cleaned = cleanInstructions(live.signalSources?.orderInstructions);
+  return (
+    <div className="pt-1 space-y-2">
+      <div className="flex items-center justify-end">
+        <button onClick={refresh} disabled={refreshing} className="inline-flex items-center gap-1 text-xs text-blue-700 hover:underline disabled:opacity-50">
+          <RefreshCw size={12} className={refreshing ? 'animate-spin' : ''} /> {refreshing ? 'Refreshing…' : 'Refresh from NuVizz'}
+        </button>
+      </div>
+      {refreshErr && <div className="text-[11px] text-amber-700">Couldn’t refresh: {refreshErr}</div>}
+      {live.allComments?.length ? (
+        <StopNotesList comments={live.allComments} />
+      ) : cleaned ? (
+        <div className="pt-1">
+          <div className="text-xs uppercase font-semibold text-slate-500">NuVizz instructions</div>
+          <div className="text-xs text-slate-700 whitespace-pre-wrap break-words leading-snug">{cleaned}</div>
+          <div className="text-[10px] text-slate-400 mt-0.5">Refresh to load all notes</div>
+        </div>
+      ) : null}
+      <StopActivityTimeline stopNbr={live.stopNbr || live.pro} stopId={live.stopId} />
+    </div>
+  );
+}
+
 function StopDataSections({ stop, note, onOpenRoute, onMoveLocation, onEditAddress, onAutoFixAddress, onText }) {
   const textPhone = resolveStopPhone(stop, note);
   return (
@@ -2990,12 +3167,7 @@ function StopDataSections({ stop, note, onOpenRoute, onMoveLocation, onEditAddre
           )}
         </div>
       </div>
-      {cleanInstructions(stop.signalSources?.orderInstructions) && (
-        <div className="pt-1">
-          <div className="text-xs uppercase font-semibold text-slate-500">NuVizz instructions</div>
-          <div className="text-xs text-slate-700 whitespace-pre-wrap break-words leading-snug">{cleanInstructions(stop.signalSources.orderInstructions)}</div>
-        </div>
-      )}
+      <StopLiveDetail key={stop.stopNbr || stop.pro} stop={stop} />
       <div className="pt-2">
         <OrderItemsSection stop={stop} />
       </div>
@@ -4714,7 +4886,7 @@ function StatusBadge({ kind }) {
 // Shows the load's stops in compareByPlannedEta order (== polyline order) with status
 // badge + delivery/arrival/ETA time. Tap a row → onPickStop closes route + opens stop.
 function RouteDetailBody({ stops, onPickStop }) {
-  const sorted = [...stops].sort(compareByPlannedEta);
+  const sorted = orderRouteStops(stops);
   const driverName = sorted[0]?.driverName || sorted[0]?.driverUserName || '—';
   const delivered = sorted.filter((s) => classifyStopStatus(s) === 'DELIVERED').length;
   const pct = sorted.length ? Math.round((100 * delivered) / sorted.length) : 0;
@@ -5359,7 +5531,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0 }) {
       .sort((a, b) => String(a).localeCompare(String(b)));
     const colorByDriver = new Map(driverList.map((d, i) => [d, routeColorByIndex(i)]));
     for (const g of loadGroups.values()) {
-      const ordered = [...g.stops].sort(compareByPlannedEta);
+      const ordered = orderRouteStops(g.stops);
       const color = colorByDriver.get(g.driverUserName);
       if (ordered.length >= 2) {
         byLoad.push({ loadNbr: g.loadNbr, driverUserName: g.driverUserName, color, path: ordered });
@@ -5495,7 +5667,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0 }) {
       // like the Route Workbench — co-located orders share a number, and the order
       // is correct even before a route starts. Fall back to dense position for any
       // stop missing routeSeq (old cached doc).
-      [...selectedRouteStops].sort(compareByPlannedEta).forEach((s, i) => {
+      orderRouteStops(selectedRouteStops).forEach((s, i) => {
         const rs = routeSeqOf(s);
         routeSeqByStop.set(s.stopNbr, rs != null ? rs : i + 1);
       });

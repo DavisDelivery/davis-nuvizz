@@ -64,6 +64,15 @@ export function normalize(j: any): any[] {
   const updatedKey =
     cols.find((k) => /updat/i.test(k) && /(dttm|date|time)/i.test(k) && /stop|shipment|vizzon/i.test(k)) ||
     cols.find((k) => /updat/i.test(k) && /(dttm|date|time)/i.test(k)) || null;
+  // The portal's "Requested Date & Time" column — the date the order comes over with, found
+  // by PATTERN like updatedKey (the dotted key varies by saved list def). This is the date we
+  // bucket on (Estimated Arrival / earliestSchTime can be blank on a not-yet-sequenced stop
+  // or stale on a rollover, which silently drops/mis-files the stop — see toBoardStop). Prefer
+  // a stop/shipment/destination-scoped requested column; never let it collide with earliestSch
+  // (that has no "request" token, so it can't match here).
+  const requestedKey =
+    cols.find((k) => /request/i.test(k) && /(dttm|date|time)/i.test(k) && /stop|shipment|vizzon|destination/i.test(k)) ||
+    cols.find((k) => /request/i.test(k) && /(dttm|date|time)/i.test(k)) || null;
   return ((j && j.values) || []).map((row: any[]) => ({
     stopNbr: String(g(row, 'vizzonInfo.shipmentInfo.stopNbr') ?? ''),
     statusCode: String(g(row, 'default_vizzonInfo.shipmentInfo.status') ?? ''),
@@ -79,6 +88,7 @@ export function normalize(j: any): any[] {
     weight: numOrNull(g(row, 'vizzonInfo.shipmentInfo.weight')),
     proNbr: g(row, 'vizzonInfo.shipmentInfo.proNbr') ?? '',
     scheduledArrival: g(row, 'vizzonInfo.destination.earliestSchTime') ?? '',
+    requestedArrival: requestedKey ? String(g(row, requestedKey) ?? '') : '',
     createdTime: g(row, 'vizzonInfo.createdTime') ?? '',
     updatedTime: updatedKey ? String(g(row, updatedKey) ?? '') : '',
     comments: g(row, 'comments.commentList.commentText') ?? '',
@@ -117,12 +127,27 @@ export function parseSchedDate(s: any): { date: string; iso: string } | null {
   return { date, iso: `${date}T${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}:00` };
 }
 
+// Pull just the calendar day (YYYY-MM-DD) out of a Requested Date value. Unlike
+// parseSchedDate this is lenient: the column may arrive date-only ("6/24/26"), as a
+// window ("6/24/26 8:00 AM - 8:00 PM"), or ISO — we only need the day for bucketing, so
+// grab the leading date and ignore any time/range. Null if no date is present.
+export function parseReqDate(s: any): string | null {
+  const str = String(s || '');
+  const iso = str.match(/(\d{4})-(\d{2})-(\d{2})/);
+  if (iso) return `${iso[1]}-${iso[2]}-${iso[3]}`;
+  const m = str.match(/(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);
+  if (!m) return null;
+  let y = +m[3]; if (y < 100) y += 2000;
+  return `${y}-${String(+m[1]).padStart(2, '0')}-${String(+m[2]).padStart(2, '0')}`;
+}
+
 // Intermediate row → board-shaped stop (coords filled later). routeName doubles as
 // the load id since the list carries the load NAME, not the numeric loadNbr.
 export function toBoardStop(r: any): any {
   const hasRoute = !!String(r.routeName || '').trim();
   const { status, planned } = statusFromCode(r.statusCode, hasRoute);
   const sched = parseSchedDate(r.scheduledArrival);
+  const reqDate = parseReqDate(r.requestedArrival);
   const upd = parseSchedDate(r.updatedTime);
   const listUpdatedDTTM = upd ? upd.iso : (r.updatedTime || null);
   return {
@@ -159,6 +184,16 @@ export function toBoardStop(r: any): any {
     orderInstructions: r.comments || null,
     proNbr: r.proNbr || null,
     scheduledDate: sched ? sched.date : null,
+    // The Requested delivery date — a FALLBACK board day for when Estimated Arrival is blank.
+    // (In Davis's saved-search feed this column is usually empty; kept for the case where it
+    // is populated and a stop has no arrival yet.)
+    requestedDate: reqDate,
+    // The intended board day: Estimated Arrival (earliestSchTime), falling back to Requested
+    // Date when arrival is blank. NOTE this is only the INTENDED day — it can be stale: a
+    // rolled-over stop keeps YESTERDAY's arrival (NuVizz doesn't roll it forward) even though
+    // the driver runs it today. bucketByDate clamps such open, route-assigned stops forward to
+    // today so live work is never parked on a past day's board.
+    boardDate: (sched ? sched.date : null) || reqDate,
     // "Stop Updated Dttm" from the list — when the order last changed (status flips incl.
     // planned→unplanned→planned, edits, delivery). A LIVE field: refreshed every scan, free,
     // no /stop/info call. Drives the "last updated" display + signals when detail is stale.
@@ -175,11 +210,21 @@ export function toBoardStop(r: any): any {
   };
 }
 
-// Group board stops by their scheduled delivery date (YYYY-MM-DD).
-export function bucketByDate(stops: any[]): Map<string, any[]> {
+// Group board stops by their board day (YYYY-MM-DD). The day is boardDate (Estimated Arrival,
+// falling back to Requested Date), with one correction for live work: an OPEN (not delivered
+// /exception) stop that's ASSIGNED TO A ROUTE never buckets onto a PAST day. NuVizz does not
+// roll a rolled-over stop's Estimated Arrival forward — it keeps yesterday's arrival (or none)
+// even though the driver runs it today — which otherwise parks it on yesterday's board, off
+// today's route (Mitchell's 007137332 / 007137372). Such stops are clamped forward to `today`
+// (ET). Finished stops keep their real day so history/analytics stay accurate; open stops with
+// no route are left where they are. Stops with no determinable day are dropped.
+export function bucketByDate(stops: any[], today: string = etDayString()): Map<string, any[]> {
   const m = new Map<string, any[]>();
   for (const s of stops) {
-    const d = s.scheduledDate;
+    let d = s.boardDate || s.requestedDate || s.scheduledDate;
+    const finished = s.normalizedStatus === 'DELIVERED' || s.normalizedStatus === 'EXCEPTION';
+    const onRoute = !!s.loadNbr;
+    if (!finished && onRoute && (!d || d < today)) d = today; // live route work → today, not the past
     if (!d) continue;
     if (!m.has(d)) m.set(d, []);
     m.get(d)!.push(s);
@@ -224,7 +269,8 @@ export async function fetchListRows(period: string, statusCsv: string = LIST_STA
 // period is ET-adjusted so it matches the number-probe's "today" board.
 export async function listScanForDate(targetDateUTC: string): Promise<any[]> {
   const stops = fromRows(await fetchListRows(periodForDate(targetDateUTC)));
-  for (const s of stops) s.scheduledDate = targetDateUTC; // authoritative: we queried this exact day
+  // authoritative: we queried this exact day, so pin both the scheduled and board day to it.
+  for (const s of stops) { s.scheduledDate = targetDateUTC; s.boardDate = targetDateUTC; }
   return stops;
 }
 
@@ -305,6 +351,25 @@ export async function fetchSavedSearchRows(
   return normalize(await resp.json());
 }
 
+// DIAGNOSTIC (read-only): pull one saved search and return its RAW column-def keys plus a few
+// raw value rows. Lets us see exactly which columns a saved search exposes (e.g. a route-stop
+// sequence or a real sequenced ETA) without guessing — used by the stop-explorer's debug path.
+export async function fetchSavedSearchRaw(
+  def: { customListDefId: number; filterList: any[] }, sampleRows: number = 3, pageSize: number = 50,
+): Promise<{ cols: string[]; rows: any[][] }> {
+  const { companyCode } = getCreds();
+  const hdr = { Authorization: basicAuthHeader(), 'Content-Type': 'application/json', Accept: 'application/json' };
+  const reqr = getNuvizzRequester();
+  const url = `${OPENAPI_BASE}/entity/filterdata/VizzonStop/${companyCode}`;
+  const body = JSON.stringify(buildSavedBody(def, pageSize));
+  const resp = await reqr.request(url, { method: 'POST', headers: hdr, body }, { route: '/entity/filterdata', tenant: companyCode });
+  if (!resp.ok) throw new Error(`saved-search ${def.customListDefId} filterdata ${resp.status}`);
+  const j: any = await resp.json();
+  const cols = Object.keys((j && j.filterData && j.filterData[0]) || {});
+  const rows = ((j && j.values) || []).slice(0, sampleRows);
+  return { cols, rows };
+}
+
 // Merge the two pulls into per-scheduled-date board buckets. COMPLETED wins over ACTIVE
 // for the same stop (it's the newer state — a stop that flipped to delivered drops out of
 // the active search and reappears here). Buckets by each stop's scheduled-arrival date so
@@ -342,7 +407,7 @@ export function etDateForTargetUTC(targetDateUTC: string, todayUTC: string, etTo
 export const LIVE_LIST_FIELDS = [
   'status', 'normalizedStatus', 'isPlanned', 'isUnplanned',
   'loadNbr', 'routeName', 'driverName', 'driverUserName',
-  'scheduledDate', 'listUpdatedDTTM', 'source',
+  'scheduledDate', 'requestedDate', 'boardDate', 'listUpdatedDTTM', 'source',
 ];
 // Copy ALL non-live fields from src (a /stop/info-normalized stop, or a prior enriched
 // index doc) onto target, then mark it enriched. Never overwrites a real value with a
