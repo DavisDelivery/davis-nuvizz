@@ -18,7 +18,7 @@
 import { scanDate, todayUTC, scansEnabled, deriveFleetSummary, estimateLoadRange, buildScanState, shadowWouldProbe, selectLoadProbeTargets, groupLoadMembers, estimateStopFrontier, unplannedFloor, FLOOR_MARGIN, loadNbrToInt, stopNbrToInt, shouldDeepSweep, deepSweepGate } from './nuvizz-scan.mts';
 import { loadProbeParity, frontierParity, loadMembershipDelta, dateSliceMismatch } from './scan-parity.mts';
 import { isFirestoreEnabled, writeStops, writeFleetIndex, getDoc, markScanState, readCallStats, readCircuit, readScanState, writeScanState, readRecentFrontier, recordScanMetric, etDayString, readScanConfig, readStops } from './firestore.mts';
-import { listScanWindow } from './nuvizz-list.mts';
+import { listScanForDate } from './nuvizz-list.mts';
 import { resolveCoords, addrKey } from './geocode.mts';
 import { maxConsecutiveGap } from './scan-metrics.mts';
 import { notifyMarkedCustomers } from './cs-notify.mts';
@@ -419,12 +419,12 @@ export async function runRefreshStops(req: Request): Promise<Response> {
   if (LIST_DISCOVERY) {
     try {
       const scannedAt = new Date().toISOString();
-      const { byDate } = await listScanWindow();
       const targets = [today];
       if (decision.scanTomorrowLoads || decision.scanTomorrowUnplanned) targets.push(tomorrow);
       let wroteAny = false;
       for (const date of targets) {
-        const dateStops = byDate.get(date) || [];
+        // Per-day pull, ET-adjusted period (one request; the entity page param doesn't paginate).
+        const dateStops = await listScanForDate(date);
         if (!dateStops.length) { results.push({ date, ok: true, skipped: 'list-empty', source: 'list' }); continue; }
         // Carry coords forward from the existing index; geocode only new addresses.
         const seed = new Map<string, { lat: number; lng: number }>();

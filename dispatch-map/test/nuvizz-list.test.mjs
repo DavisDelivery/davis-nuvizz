@@ -4,7 +4,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { statusFromCode, parseSchedDate, toBoardStop, bucketByDate, fromRows, normalize } from '../netlify/functions/lib/nuvizz-list.mts';
+import { statusFromCode, parseSchedDate, toBoardStop, bucketByDate, fromRows, normalize, periodForDate } from '../netlify/functions/lib/nuvizz-list.mts';
 import { addrKey } from '../netlify/functions/lib/geocode.mts';
 
 test('statusFromCode: NuVizz codes → board status + planned flag', () => {
@@ -85,6 +85,17 @@ test('normalize: maps the live VizzonStop response (filterData defs + values row
   assert.equal(r.statusCode, '10');
   assert.equal(r.routeName, 'TRAILER 1');
   assert.equal(r.scheduledArrival, '6/24/26 08:00 AM');
+});
+
+test('periodForDate: ET-adjusts the UTC doc date to NuVizz period (the tz-drift fix)', () => {
+  // ET daytime: UTC date == ET date → today is "0d".
+  assert.equal(periodForDate('2026-06-24', '2026-06-24'), '0d');
+  // ET evening: UTC already rolled +1 while ET is still yesterday → todayUTC = "+1d".
+  assert.equal(periodForDate('2026-06-24', '2026-06-23'), '+1d');
+  // The next-day doc from that same evening → "+2d".
+  assert.equal(periodForDate('2026-06-25', '2026-06-23'), '+2d');
+  // A past doc → negative.
+  assert.equal(periodForDate('2026-06-23', '2026-06-24'), '-1d');
 });
 
 test('addrKey: stable + case/space-insensitive; null without a street address', () => {

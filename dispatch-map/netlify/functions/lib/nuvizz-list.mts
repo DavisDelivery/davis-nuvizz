@@ -13,6 +13,7 @@
 
 import { getNuvizzRequester } from './nuvizz-request.mts';
 import { getCreds, basicAuthHeader } from './nuvizz-scan.mts';
+import { etDayString } from './firestore.mts';
 
 const NUVIZZ_BASE = process.env.NUVIZZ_BASE_URL || 'https://portal.nuvizz.com/deliverit/openapi/v7';
 export const OPENAPI_BASE = NUVIZZ_BASE.replace(/\/v7\/?$/, ''); // → .../deliverit/openapi
@@ -150,32 +151,43 @@ export function bucketByDate(stops: any[]): Map<string, any[]> {
 
 // ── Live pull ────────────────────────────────────────────────────────────────
 
-export const LIST_PAGE_SIZE = Number(process.env.NUVIZZ_LIST_PAGE_SIZE) || 200;
-export const LIST_MAX_PAGES = Number(process.env.NUVIZZ_LIST_MAX_PAGES) || 30;
+// The entity endpoint's `page` param does NOT paginate (it returns page 1 every
+// time), so we pull a whole day in ONE request with a high maxResult. Davis runs
+// ~700 stops/day; 5000 is ample headroom (and the response was uncapped at 2000).
+export const LIST_MAX_RESULT = Number(process.env.NUVIZZ_LIST_MAX_RESULT) || 5000;
+// Status codes to include (seq 2). Default '-1' = all, so the board shows delivered
+// /cancelled stops like the number-probe does — per-day scoping keeps OTHER days'
+// completed out. Env-overridable to e.g. '10,20,40,50' (active only).
+export const LIST_STATUS = process.env.NUVIZZ_LIST_STATUS || '-1';
 
-// Pull every stop in the given Estimated-Arrival window (all statuses), paged. Rides
-// the shared requester so calls count in the dashboard + honor the breaker.
-export async function fetchListRows(period: string): Promise<any[]> {
+// Period string for a target UTC date relative to NuVizz's ET "today". Handles the
+// ET/UTC drift: at ~10pm ET the UTC date is already +1, so todayUTC → "+1d"; during
+// the ET day they align → "0d". Mirrors how the scanner keys docs by UTC date while
+// NuVizz's period filter is ET-relative.
+export function periodForDate(targetDateUTC: string, etToday: string = etDayString()): string {
+  const off = Math.round((Date.parse(targetDateUTC + 'T00:00:00Z') - Date.parse(etToday + 'T00:00:00Z')) / 86400000);
+  return off === 0 ? '0d' : (off > 0 ? `+${off}d` : `${off}d`);
+}
+
+// Pull all stops for a single Estimated-Arrival day (one request). Rides the shared
+// requester so calls count in the dashboard + honor the breaker.
+export async function fetchListRows(period: string, statusCsv: string = LIST_STATUS): Promise<any[]> {
   const { companyCode } = getCreds();
   const hdr = { Authorization: basicAuthHeader(), 'Content-Type': 'application/json', Accept: 'application/json' };
   const reqr = getNuvizzRequester();
   const url = `${OPENAPI_BASE}/entity/filterdata/VizzonStop/${companyCode}`;
-  const all: any[] = [];
-  for (let page = 1; page <= LIST_MAX_PAGES; page++) {
-    const body = JSON.stringify(buildBody(cleanPeriod(period), '-1', page, LIST_PAGE_SIZE));
-    const resp = await reqr.request(url, { method: 'POST', headers: hdr, body }, { route: '/entity/filterdata', tenant: companyCode });
-    if (!resp.ok) throw new Error(`list filterdata ${resp.status}`);
-    const rows = normalize(await resp.json());
-    all.push(...rows);
-    if (rows.length < LIST_PAGE_SIZE) break;
-  }
-  return all;
+  const body = JSON.stringify(buildBody(cleanPeriod(period), statusCsv || '-1', 1, LIST_MAX_RESULT));
+  const resp = await reqr.request(url, { method: 'POST', headers: hdr, body }, { route: '/entity/filterdata', tenant: companyCode });
+  if (!resp.ok) throw new Error(`list filterdata ${resp.status}`);
+  return normalize(await resp.json());
 }
 
-// Pull the window and return board-shaped stops + a date→stops bucket map.
-export async function listScanWindow(period = '+/-7d'): Promise<{ stops: any[]; byDate: Map<string, any[]> }> {
-  const stops = fromRows(await fetchListRows(period));
-  return { stops, byDate: bucketByDate(stops) };
+// Board stops for a specific target UTC date (the doc key the scanner writes). The
+// period is ET-adjusted so it matches the number-probe's "today" board.
+export async function listScanForDate(targetDateUTC: string): Promise<any[]> {
+  const stops = fromRows(await fetchListRows(periodForDate(targetDateUTC)));
+  for (const s of stops) s.scheduledDate = targetDateUTC; // authoritative: we queried this exact day
+  return stops;
 }
 
 // Exposed for tests: intermediate rows → board stops (dedup by stopNbr, last wins).
