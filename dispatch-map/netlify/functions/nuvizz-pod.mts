@@ -4,12 +4,15 @@
 // document a doc-download endpoint; the portal serves POD images from an internal document
 // service whose URL we keep server-side. The board carries each POD's `documentPath` (a ready
 // query string: cc=…&objType=stop&docGuid=…&ext=jpg&docName=…). This function fetches the bytes
-// with the Basic creds and streams them back, so the browser never sees creds.
+// (through the metered requester, so it counts against the ceiling) and streams them back, so
+// the browser never sees creds.
 //
 //   GET ?documentPath=<the podDoc.documentPath>        → image/pdf bytes
 //   GET ?probe=1&documentPath=<...>                    → DIAGNOSTIC: try candidate bases,
-//                                                        report which returns real bytes.
-import { basicAuthHeader } from './lib/nuvizz-scan.mts';
+//                                                        report status + a body snippet so we
+//                                                        can confirm the real endpoint/params.
+import { getNuvizzRequester } from './lib/nuvizz-request.mts';
+import { getCreds, basicAuthHeader } from './lib/nuvizz-scan.mts';
 
 const NUVIZZ_BASE = process.env.NUVIZZ_BASE_URL || 'https://portal.nuvizz.com/deliverit/openapi/v7';
 const DELIVERIT = NUVIZZ_BASE.replace(/\/openapi\/v7\/?$/, ''); // → https://portal.nuvizz.com/deliverit
@@ -26,9 +29,6 @@ function candidateBases(): string[] {
     `${DELIVERIT}/document/download`,
     `${DELIVERIT}/rest/document`,
     `${DELIVERIT}/documentServlet`,
-    `${DELIVERIT}/openapi/document`,
-    `${NUVIZZ_BASE}/document`,
-    `${NUVIZZ_BASE}/document/download`,
   ];
 }
 
@@ -41,19 +41,22 @@ export default async (req: Request): Promise<Response> => {
   const url = new URL(req.url);
   const documentPath = url.searchParams.get('documentPath') || '';
   if (!documentPath.trim()) return new Response(JSON.stringify({ ok: false, reason: 'missing documentPath' }), { status: 400, headers: { ...cors, 'Content-Type': 'application/json' } });
-  const auth = { Authorization: basicAuthHeader() };
+  const { companyCode } = getCreds();
+  const headers = { Authorization: basicAuthHeader(), Accept: '*/*' };
+  const reqr = getNuvizzRequester();
   const qs = documentPath.startsWith('?') ? documentPath : `?${documentPath}`;
 
-  // DIAGNOSTIC: probe candidates, report what each returns (read-only).
+  // DIAGNOSTIC: probe candidates, report status + a body snippet (read-only).
   if (url.searchParams.get('probe')) {
     const out: any[] = [];
     for (const base of candidateBases()) {
       try {
-        const r = await fetch(`${base}${qs}`, { headers: auth });
+        const r = await reqr.request(`${base}${qs}`, { method: 'GET', headers }, { route: '/document', tenant: companyCode });
         const ct = r.headers.get('content-type') || '';
-        const buf = r.ok ? await r.arrayBuffer() : new ArrayBuffer(0);
-        out.push({ base, status: r.status, contentType: ct, bytes: buf.byteLength, looksLikeImage: looksLikeBytes(ct, buf.byteLength) });
-      } catch (e: any) { out.push({ base, error: e?.message || 'fetch failed' }); }
+        const ab = await r.arrayBuffer();
+        const snippet = /json|text|html/i.test(ct) ? new TextDecoder().decode(ab).slice(0, 180) : '';
+        out.push({ base, status: r.status, contentType: ct, bytes: ab.byteLength, looksLikeImage: looksLikeBytes(ct, ab.byteLength), snippet });
+      } catch (e: any) { out.push({ base, error: e?.message || 'request failed' }); }
     }
     return new Response(JSON.stringify({ ok: true, results: out }, null, 2), { status: 200, headers: { ...cors, 'Content-Type': 'application/json' } });
   }
@@ -61,12 +64,12 @@ export default async (req: Request): Promise<Response> => {
   // Normal: fetch from the first candidate that returns real bytes; stream it back.
   for (const base of candidateBases()) {
     try {
-      const r = await fetch(`${base}${qs}`, { headers: auth });
+      const r = await reqr.request(`${base}${qs}`, { method: 'GET', headers }, { route: '/document', tenant: companyCode });
       if (!r.ok) continue;
       const ct = r.headers.get('content-type') || 'application/octet-stream';
-      const buf = await r.arrayBuffer();
-      if (!looksLikeBytes(ct, buf.byteLength)) continue;
-      return new Response(buf, { status: 200, headers: { ...cors, 'Content-Type': ct } });
+      const ab = await r.arrayBuffer();
+      if (!looksLikeBytes(ct, ab.byteLength)) continue;
+      return new Response(ab, { status: 200, headers: { ...cors, 'Content-Type': ct } });
     } catch { /* try next */ }
   }
   return new Response(JSON.stringify({ ok: false, reason: 'document not retrievable' }), { status: 502, headers: { ...cors, 'Content-Type': 'application/json' } });
