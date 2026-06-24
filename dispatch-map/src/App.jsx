@@ -2955,10 +2955,6 @@ function StopDataSections({ stop, note, onOpenRoute, onMoveLocation, onEditAddre
         </div>
       )}
       <div className="pt-2">
-        <div className="text-xs uppercase font-semibold text-slate-500">Window</div>
-        <div className="text-sm">{stop.scheduledFrom || '—'} – {stop.scheduledTo || '—'}</div>
-      </div>
-      <div className="pt-2">
         <OrderItemsSection stop={stop} />
       </div>
       <div className="pt-2 mt-2 border-t">
@@ -4234,7 +4230,6 @@ function PastProSearch({ notes, initialQuery, onPickCustomer, onClose }) {
               <div className="font-bold text-slate-900 break-words">{api.stop.businessName || '(no name)'}</div>
               <div className="text-slate-600 break-words">{api.stop.addr1}</div>
               <div className="text-slate-600 break-words">{[api.stop.city, api.stop.state, api.stop.zip].filter(Boolean).join(', ')}</div>
-              {(api.stop.scheduledFrom || api.stop.scheduledTo) && <div className="text-[12px] text-slate-500 mt-1">Window: {api.stop.scheduledFrom || '—'} – {api.stop.scheduledTo || '—'}</div>}
               {api.stop.loadNbr && <div className="text-[12px] text-slate-500">Route: {api.stop.routeName || api.stop.loadNbr}{api.stop.driverName ? ` · ${api.stop.driverName}` : ''}</div>}
               {api.stop.itemsSummary && <div className="text-[12px] text-slate-500">{api.stop.itemsSummary}</div>}
             </div>
