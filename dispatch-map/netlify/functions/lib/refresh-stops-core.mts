@@ -450,16 +450,14 @@ export async function runRefreshStops(req: Request): Promise<Response> {
             if (p.enriched) mergeEnrich(s, p); // carry static detail forward (incl real coords)
             if (typeof p.lat === 'number' && typeof p.lng === 'number') { const k = addrKey(p); if (k) seed.set(k, { lat: p.lat, lng: p.lng }); }
           }
-          // Status is FREE & live from the list every scan (see LIVE_LIST_FIELDS), so we do
-          // NOT spend a /stop/info call just to track it. We enrich a PRO once when it first
-          // appears (static detail), then ONE more time when it reaches a terminal state but
-          // we haven't captured the delivery detail yet — deliveredDTTM (needed for the
-          // on-time/late history analytics) and the POD documents only exist post-delivery.
-          // `!s.deliveredDTTM` after the carry-forward is self-bounding: once captured, the
-          // detail is carried forward and this never re-fires for that PRO.
-          const terminal = s.normalizedStatus === 'DELIVERED' || s.normalizedStatus === 'EXCEPTION';
-          const needsDeliveryDetail = terminal && !s.deliveredDTTM;
-          if (!s.enriched || needsDeliveryDetail) toEnrich.push(s);
+          // Status AND the delivery time are FREE & live from the list every scan (see
+          // LIVE_LIST_FIELDS + toBoardStop's deliveredDTTM), so we do NOT spend a /stop/info
+          // call to track delivery. We enrich a PRO exactly ONCE — when it first appears — for
+          // the static detail (line items, coords, contact, …); the list keeps status/delivery
+          // current thereafter. POD photos are pulled ON DEMAND when a stop is opened (a single
+          // /stop/info + documentapi fetch keyed by the clicked PRO), never in the background,
+          // so a delivery costs zero scheduled calls.
+          if (!s.enriched) toEnrich.push(s);
         }
 
         // Enrichment: one direct /stop/info per new PRO (bounded concurrency, capped).
