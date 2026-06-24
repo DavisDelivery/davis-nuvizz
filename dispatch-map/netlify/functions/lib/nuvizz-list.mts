@@ -53,6 +53,12 @@ export function normalize(j: any): any[] {
   const idx: Record<string, number> = {};
   cols.forEach((k, i) => { idx[k] = i; });
   const g = (row: any[], key: string) => (idx[key] != null ? row[idx[key]] : undefined);
+  // The portal's "Stop Updated Dttm" column — found by PATTERN, not a hardcoded key (the
+  // dotted key varies by saved list def). Prefer a stop/shipment-scoped update column so an
+  // unrelated "updatedBy/updatedOn" never wins; require an update token + a date/time token.
+  const updatedKey =
+    cols.find((k) => /updat/i.test(k) && /(dttm|date|time)/i.test(k) && /stop|shipment|vizzon/i.test(k)) ||
+    cols.find((k) => /updat/i.test(k) && /(dttm|date|time)/i.test(k)) || null;
   return ((j && j.values) || []).map((row: any[]) => ({
     stopNbr: String(linkVal(g(row, 'vizzonInfo.shipmentInfo.stopNbr')) ?? ''),
     statusCode: String(g(row, 'default_vizzonInfo.shipmentInfo.status') ?? ''),
@@ -69,6 +75,7 @@ export function normalize(j: any): any[] {
     proNbr: g(row, 'vizzonInfo.shipmentInfo.proNbr') ?? '',
     scheduledArrival: g(row, 'vizzonInfo.destination.earliestSchTime') ?? '',
     createdTime: g(row, 'vizzonInfo.createdTime') ?? '',
+    updatedTime: updatedKey ? String(linkVal(g(row, updatedKey)) ?? '') : '',
     comments: g(row, 'comments.commentList.commentText') ?? '',
   }));
 }
@@ -106,6 +113,7 @@ export function toBoardStop(r: any): any {
   const hasRoute = !!String(r.routeName || '').trim();
   const { status, planned } = statusFromCode(r.statusCode, hasRoute);
   const sched = parseSchedDate(r.scheduledArrival);
+  const upd = parseSchedDate(r.updatedTime);
   return {
     stopNbr: r.stopNbr || null,
     loadNbr: hasRoute ? r.routeName : null,
@@ -133,6 +141,10 @@ export function toBoardStop(r: any): any {
     orderInstructions: r.comments || null,
     proNbr: r.proNbr || null,
     scheduledDate: sched ? sched.date : null,
+    // "Stop Updated Dttm" from the list — when the order last changed (status flips incl.
+    // planned→unplanned→planned, edits, delivery). A LIVE field: refreshed every scan, free,
+    // no /stop/info call. Drives the "last updated" display + signals when detail is stale.
+    listUpdatedDTTM: upd ? upd.iso : (r.updatedTime || null),
     source: 'nuvizz-list',
   };
 }
@@ -198,7 +210,7 @@ export async function listScanForDate(targetDateUTC: string): Promise<any[]> {
 export const LIVE_LIST_FIELDS = [
   'status', 'normalizedStatus', 'isPlanned', 'isUnplanned',
   'loadNbr', 'routeName', 'driverName', 'driverUserName',
-  'scheduledDate', 'source',
+  'scheduledDate', 'listUpdatedDTTM', 'source',
 ];
 // Copy ALL non-live fields from src (a /stop/info-normalized stop, or a prior enriched
 // index doc) onto target, then mark it enriched. Never overwrites a real value with a

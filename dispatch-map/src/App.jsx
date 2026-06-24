@@ -17,6 +17,7 @@ import {
   Activity, ChevronDown, ChevronUp, Eye, EyeOff,
   Search, Tag, Tags, ArrowLeft, Gauge, Clock, MapPinned,
   Info, Settings, LayoutList, Sparkles, MessageSquare, Square, Lasso, AlertTriangle, Ban, Send,
+  FileCheck, ExternalLink,
 } from 'lucide-react';
 import {
   collection, doc, getDoc, onSnapshot, setDoc, serverTimestamp,
@@ -2906,6 +2907,45 @@ function DnsBadge({ note, showDrivers = false, className = '' }) {
   );
 }
 
+// Proof-of-delivery documents (photos / signed PDFs). NuVizz returns metadata
+// (name / guid / path / extension) on a stop once it's delivered; we surface it here.
+// `documentPath` is a portal-relative path — if it's an absolute URL we link it directly,
+// otherwise we show the doc as captured (the raw bytes need a server-side fetch we proxy
+// through /.netlify/functions/nuvizz-pod once the document endpoint is confirmed).
+function PodDocsSection({ stop }) {
+  const docs = Array.isArray(stop?.podDocs) ? stop.podDocs : [];
+  if (!docs.length) return null;
+  const isUrl = (p) => typeof p === 'string' && /^https?:\/\//i.test(p);
+  return (
+    <div className="pt-2">
+      <div className="text-xs uppercase font-semibold text-slate-500 flex items-center gap-1.5">
+        <FileCheck size={13} /> Proof of delivery
+      </div>
+      <ul className="mt-1 space-y-1">
+        {docs.map((d, i) => {
+          const label = d.documentName || `POD document${d.extension ? ` (.${d.extension})` : ''}`;
+          const when = fmtClockShort(d.createdTime);
+          return (
+            <li key={d.documentGuid || d.documentPath || i} className="text-xs text-slate-700 flex items-center gap-1.5 break-words">
+              {isUrl(d.documentPath) ? (
+                <a href={d.documentPath} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-blue-700 hover:underline">
+                  {label} <ExternalLink size={11} />
+                </a>
+              ) : (
+                <span className="inline-flex items-center gap-1">
+                  {label}
+                  {d.extension && <span className="px-1 rounded bg-slate-100 text-slate-500 text-[9px] uppercase">{d.extension}</span>}
+                </span>
+              )}
+              {when && <span className="text-slate-400">· {when}</span>}
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
 function StopDataSections({ stop, note, onOpenRoute, onMoveLocation, onEditAddress, onAutoFixAddress, onText }) {
   const textPhone = resolveStopPhone(stop, note);
   return (
@@ -2957,6 +2997,7 @@ function StopDataSections({ stop, note, onOpenRoute, onMoveLocation, onEditAddre
       <div className="pt-2">
         <OrderItemsSection stop={stop} />
       </div>
+      <PodDocsSection stop={stop} />
       <div className="pt-2 mt-2 border-t">
         <div className="text-xs uppercase font-semibold text-slate-500 mb-1">Route</div>
         {stop.loadNbr ? (
@@ -2979,6 +3020,9 @@ function StopDataSections({ stop, note, onOpenRoute, onMoveLocation, onEditAddre
           <div className="text-xs text-slate-500 italic">Not yet assigned</div>
         )}
       </div>
+      {stop.listUpdatedDTTM && fmtClockShort(stop.listUpdatedDTTM) && (
+        <div className="pt-2 text-[11px] text-slate-400">Updated {fmtClockShort(stop.listUpdatedDTTM)}</div>
+      )}
     </div>
   );
 }

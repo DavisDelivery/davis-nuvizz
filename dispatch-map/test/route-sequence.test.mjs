@@ -52,3 +52,24 @@ test('ordering by routeSeq matches NuVizz, not the scrambled array order', () =>
   const byArray = [...stops].sort((a, b) => a.loadStopSeq - b.loadStopSeq).map((s) => s.stopNbr);
   assert.deepEqual(byArray, ['C', 'B', 'A']);
 });
+
+// POD docs: NuVizz hangs proof-of-delivery doc metadata off stopExecutionInfo.to.podDoc[]
+// (a delivery's docs are on `to`). normalizeStop surfaces it as podDocs[].
+test('normalizeStop surfaces POD document metadata from exec.to.podDoc (delivered stop)', () => {
+  const raw = doStop({ stopNbr: '007137806', toSeq: 1, loadStopSeq: 0, eta: '2026-06-24T14:00:00' });
+  raw.stopExecutionInfo.stopStatus = '90';
+  raw.stopExecutionInfo.to.podDoc = [
+    { documentName: 'Cumberland Mall Delivery', documentGuid: 'guid-1', documentPath: '/documents/pod-1.pdf', extension: 'pdf', createdTime: '2026-06-24T14:41:00' },
+    { documentName: 'Signature', documentGuid: 'guid-2', documentPath: 'https://cdn.nuvizz.com/pod-2.jpg', extension: 'jpg', createdTime: '2026-06-24T14:42:00' },
+  ];
+  const n = normalizeStop(raw);
+  assert.equal(n.podDocs.length, 2);
+  assert.equal(n.podDocs[0].documentGuid, 'guid-1');
+  assert.equal(n.podDocs[0].extension, 'pdf');
+  assert.equal(n.podDocs[1].documentPath, 'https://cdn.nuvizz.com/pod-2.jpg');
+});
+
+test('normalizeStop: podDocs is an empty array when no POD captured yet (pre-delivery)', () => {
+  const n = normalizeStop(doStop({ stopNbr: '007137806', toSeq: 1, loadStopSeq: 0, eta: null }));
+  assert.deepEqual(n.podDocs, []);
+});

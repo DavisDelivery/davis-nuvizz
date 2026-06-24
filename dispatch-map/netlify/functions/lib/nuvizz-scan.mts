@@ -65,6 +65,8 @@ export interface NormalizedStop {
   normalizedStatus: StopStatusKind; // M5.1 — execution-lifecycle bucket for marker/sidebar.
   arrivalDTTM: string | null;       // M5.1 — actual on-site time, when present.
   deliveredDTTM: string | null;     // M5.1 — actual completion time, when present.
+  podDocs: PodDoc[];                // Proof-of-delivery document metadata (name/guid/path/ext);
+                                    // only present once delivered. Bytes need a separate fetch.
   plannedEtaDTTM: string | null;    // M5.2 — canonical delivery-order timestamp for route polylines.
   // ── Phase 2 (routing engine) ADDITIVE fields. Surfaced for the solver; all
   // nullable, raw preserved. Existing callers (live cache, Phase 1 derive) ignore
@@ -80,6 +82,18 @@ export interface NormalizedStop {
   markfor: unknown;                 // P2 — NuVizz mark-for, when present (raw).
   signalSources: SignalSources;
   raw: unknown;
+}
+
+// Proof-of-delivery document metadata, as NuVizz returns it under
+// stopExecutionInfo.{to,from}.podDoc[] in the /stop/info response. This is METADATA only —
+// the actual file bytes (image/PDF) live on NuVizz's document server and need a separate
+// fetch keyed by documentGuid/documentPath.
+export interface PodDoc {
+  documentName: string | null;
+  documentGuid: string | null;
+  documentPath: string | null;
+  extension: string | null;
+  createdTime: string | null;
 }
 
 // P2 — normalized freight line item (additive). Mirrors NuVizz StopDetail fields
@@ -301,6 +315,19 @@ export function normalizeStop(raw: any): NormalizedStop {
   // stop. Exposing it at the top level lets the client sort each load's stops into a
   // real sequential polyline (NuVizz's array order / stopSeq is unreliable).
   const plannedEtaDTTM: string | null = exec?.to?.plannedEtaDTTM || exec?.from?.plannedEtaDTTM || null;
+  // Proof-of-delivery docs — only populated once the stop is delivered (driver capture).
+  // For a delivery (DO) the docs hang off exec.to; pickups (PU) off exec.from.
+  const rawPods = [
+    ...(Array.isArray(exec?.to?.podDoc) ? exec.to.podDoc : []),
+    ...(Array.isArray(exec?.from?.podDoc) ? exec.from.podDoc : []),
+  ];
+  const podDocs: PodDoc[] = rawPods.map((d: any) => ({
+    documentName: d?.documentName ?? null,
+    documentGuid: d?.documentGuid ?? null,
+    documentPath: d?.documentPath ?? null,
+    extension: d?.extension ?? null,
+    createdTime: d?.createdTime ?? null,
+  })).filter((d: PodDoc) => d.documentGuid || d.documentPath || d.documentName);
   // P2 (additive) — surface freight + routing-baseline + contact/origin for the engine.
   const rawDetails = Array.isArray(stop.stopDetails) ? stop.stopDetails : [];
   const stopDetails: StopLineItem[] = rawDetails.map(normalizeStopDetail);
@@ -356,6 +383,7 @@ export function normalizeStop(raw: any): NormalizedStop {
     normalizedStatus: classifyStopStatus({ status: statusCode, isPlanned, exec }),
     arrivalDTTM,
     deliveredDTTM,
+    podDocs,
     plannedEtaDTTM,
     stopDetails,
     timeConstraint: schedule.timeConstraint ?? null,
