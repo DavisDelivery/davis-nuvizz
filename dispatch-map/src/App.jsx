@@ -3098,43 +3098,6 @@ function StopNotesEditor({ draft, setDraft, compact = false, drivers = [] }) {
 
   return (
     <div className="space-y-4 text-sm">
-      {/* DNS — do not send + which drivers are barred */}
-      <div className="rounded-lg border p-2" style={D.do_not_send ? { borderColor: DNS_COLOR, background: '#fef2f2' } : { borderColor: '#e2e8f0' }}>
-        <button
-          onClick={() => setD({ do_not_send: !D.do_not_send })}
-          style={{ ...tap, ...(D.do_not_send ? { background: DNS_COLOR, borderColor: DNS_COLOR, color: '#fff' } : {}) }}
-          className={`w-full flex items-center justify-between gap-2 ${pad} rounded border text-xs font-semibold ${D.do_not_send ? '' : 'border-slate-300 bg-white text-slate-700'}`}
-        >
-          <span className="inline-flex items-center gap-1.5">
-            <Ban size={14} strokeWidth={2.5} style={{ color: D.do_not_send ? '#fff' : DNS_COLOR }} />
-            Do not send (DNS)
-          </span>
-          <span className={`text-[10px] px-1.5 py-0.5 rounded ${D.do_not_send ? 'bg-white/25' : 'bg-slate-100 text-slate-500'}`}>{D.do_not_send ? 'ON' : 'OFF'}</span>
-        </button>
-        {D.do_not_send && (
-          <div className="mt-2">
-            <div className="text-[11px] font-semibold text-slate-600 mb-1">Drivers not allowed (tap to bar)</div>
-            {driverNames.length === 0 ? (
-              <div className="text-[11px] text-slate-400 italic">No drivers found (fleet roster unavailable and none on today's board). Leave blank for a general do-not-send.</div>
-            ) : (
-              <div className="flex flex-wrap gap-1.5">
-                {driverNames.map((name) => {
-                  const on = barred.includes(name);
-                  return (
-                    <button key={name} onClick={() => toggleBarredDriver(name)} style={tap}
-                      className={`${pad} rounded border text-xs ${on ? 'border-red-600 bg-red-600 text-white' : 'border-slate-300 bg-white text-slate-700'}`}>
-                      {on ? '✕ ' : ''}{name}
-                    </button>
-                  );
-                })}
-              </div>
-            )}
-            {barred.length > 0 && (
-              <div className="mt-1 text-[10px] text-slate-500">Barred: {barred.join(', ')}</div>
-            )}
-          </div>
-        )}
-      </div>
       {/* Notify CS — email customer service the first time this customer is
           scheduled each day (handled server-side by the scan). */}
       <div className="rounded-lg border p-2" style={D.notify_cs ? { borderColor: '#2563eb', background: '#eff6ff' } : { borderColor: '#e2e8f0' }}>
@@ -3297,6 +3260,45 @@ function StopNotesEditor({ draft, setDraft, compact = false, drivers = [] }) {
           ))}
           {(!D.contacts || !D.contacts.length) && <div className="text-xs text-slate-400 italic">none</div>}
         </div>
+      </div>
+
+      {/* DNS — do not send + which drivers are barred. Placed LAST in the panel: it's
+          rarely used, so the common fields (priority, hours, restrictions, …) come first. */}
+      <div className="rounded-lg border p-2" style={D.do_not_send ? { borderColor: DNS_COLOR, background: '#fef2f2' } : { borderColor: '#e2e8f0' }}>
+        <button
+          onClick={() => setD({ do_not_send: !D.do_not_send })}
+          style={{ ...tap, ...(D.do_not_send ? { background: DNS_COLOR, borderColor: DNS_COLOR, color: '#fff' } : {}) }}
+          className={`w-full flex items-center justify-between gap-2 ${pad} rounded border text-xs font-semibold ${D.do_not_send ? '' : 'border-slate-300 bg-white text-slate-700'}`}
+        >
+          <span className="inline-flex items-center gap-1.5">
+            <Ban size={14} strokeWidth={2.5} style={{ color: D.do_not_send ? '#fff' : DNS_COLOR }} />
+            Do not send (DNS)
+          </span>
+          <span className={`text-[10px] px-1.5 py-0.5 rounded ${D.do_not_send ? 'bg-white/25' : 'bg-slate-100 text-slate-500'}`}>{D.do_not_send ? 'ON' : 'OFF'}</span>
+        </button>
+        {D.do_not_send && (
+          <div className="mt-2">
+            <div className="text-[11px] font-semibold text-slate-600 mb-1">Drivers not allowed (tap to bar)</div>
+            {driverNames.length === 0 ? (
+              <div className="text-[11px] text-slate-400 italic">No drivers found (fleet roster unavailable and none on today's board). Leave blank for a general do-not-send.</div>
+            ) : (
+              <div className="flex flex-wrap gap-1.5">
+                {driverNames.map((name) => {
+                  const on = barred.includes(name);
+                  return (
+                    <button key={name} onClick={() => toggleBarredDriver(name)} style={tap}
+                      className={`${pad} rounded border text-xs ${on ? 'border-red-600 bg-red-600 text-white' : 'border-slate-300 bg-white text-slate-700'}`}>
+                      {on ? '✕ ' : ''}{name}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+            {barred.length > 0 && (
+              <div className="mt-1 text-[10px] text-slate-500">Barred: {barred.join(', ')}</div>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
