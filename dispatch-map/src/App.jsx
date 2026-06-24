@@ -44,7 +44,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.23.1';
+const APP_VERSION = '0.24.0';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -64,6 +64,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.24.0', 'Routing tab: full Stops/Loads data table + map dots now match the Dispatch icons'],
   ['0.23.1', 'Phase 3 growth-guard fix — no phantom spill / no criss-cross on dense builds'],
   ['0.23.0', 'Geographic truck assignment (no two-truck criss-cross) + green stop markers'],
   ['0.22.0', 'Strategy ordering fixed — placeholder windows no longer clobber Min-distance/Closest'],
@@ -5460,6 +5461,241 @@ function VersionLogModal({ onClose }) {
   );
 }
 
+// ── Routing data table (the dispatch "Stops / Loads" grid, on the Routing tab) ──
+// A full-width tabular view of the day's stops and the loads they roll up into,
+// matching the main Dispatch table: Stop # · Ship To · Address · City · Zip ·
+// Pallets · Weight · Restrictions · Load · Driver, with a Stops/Loads toggle, a
+// search box, and a Status filter. Pure presentation over the same `stops` + `notes`
+// the routing map already has; clicking a row opens the existing stop detail modal.
+const ROUTING_TABLE_STATUSES = ['UNPLANNED', 'SCHEDULED', 'OUT_FOR_DEL', 'ARRIVED', 'DELIVERED', 'EXCEPTION'];
+
+function restrictionShortLabels(note) {
+  return getRestrictionBadgeKeys(note).map((k) => RESTRICTION_ICONS[k]?.short || k);
+}
+
+function RoutingTableStatusFilter({ active, setActive, counts }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    document.addEventListener('mousedown', onDoc);
+    return () => document.removeEventListener('mousedown', onDoc);
+  }, [open]);
+  const allOn = active.size === 0; // empty set = no filter (show all)
+  const toggle = (k) => setActive((prev) => {
+    const n = new Set(prev);
+    n.has(k) ? n.delete(k) : n.add(k);
+    return n;
+  });
+  return (
+    <div className="relative" ref={ref}>
+      <button
+        onClick={() => setOpen((o) => !o)}
+        className={`inline-flex items-center gap-1 px-2.5 py-1.5 text-xs rounded border ${allOn ? 'border-slate-300 text-slate-600' : 'border-blue-400 text-blue-700 bg-blue-50'}`}
+      >
+        <Filter size={13} /> Status{allOn ? '' : ` (${active.size})`}
+      </button>
+      {open && (
+        <div className="absolute right-0 mt-1 z-50 w-48 bg-white border border-slate-200 rounded shadow-lg p-1 text-xs">
+          <div className="flex items-center justify-between px-2 py-1">
+            <span className="font-semibold text-slate-500 uppercase text-[10px] tracking-wide">Filter status</span>
+            {!allOn && <button onClick={() => setActive(new Set())} className="text-blue-600 hover:underline">Clear</button>}
+          </div>
+          {ROUTING_TABLE_STATUSES.map((k) => {
+            const meta = STATUS_META[k];
+            const on = allOn || active.has(k);
+            return (
+              <label key={k} className="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-slate-50 cursor-pointer">
+                <input type="checkbox" checked={on} onChange={() => toggle(k)} />
+                <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: meta.badge }} />
+                <span className="flex-1">{meta.label}</span>
+                <span className="text-slate-400">{counts[k] || 0}</span>
+              </label>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function RoutingDataTable({ stops, notes, loading, onOpenStop }) {
+  const [mode, setMode] = useState('stops');        // 'stops' | 'loads'
+  const [query, setQuery] = useState('');
+  const [statusFilter, setStatusFilter] = useState(() => new Set()); // empty = all
+
+  const q = query.trim().toLowerCase();
+  const noteFor = useCallback((s) => notes.get(s.matchKey) || null, [notes]);
+
+  // Per-stop derived row (load = routeName||loadNbr, driver = driverName).
+  const rows = useMemo(() => stops.map((s) => {
+    const note = noteFor(s);
+    return {
+      s,
+      id: String(s.stopNbr ?? ''),
+      stopNbr: s.stopNbr ?? '',
+      name: s.businessName || '',
+      addr1: s.addr1 || '',
+      addr2: s.addr2 || '',
+      city: s.city || '',
+      zip: s.zip || '',
+      pallets: s.pallets,
+      weight: s.weight,
+      restrictions: restrictionShortLabels(note),
+      load: s.routeName || s.loadNbr || '',
+      driver: s.driverName || s.driverUserName || '',
+      status: classifyStopStatus(s),
+    };
+  }), [stops, noteFor]);
+
+  const statusCounts = useMemo(() => {
+    const c = {};
+    for (const r of rows) c[r.status] = (c[r.status] || 0) + 1;
+    return c;
+  }, [rows]);
+
+  // Loads roll-up — group stops by their assigned load.
+  const loadRows = useMemo(() => {
+    const m = new Map();
+    for (const r of rows) {
+      const key = r.load || '—';
+      let g = m.get(key);
+      if (!g) { g = { load: key, loadNbr: r.s.loadNbr || '', driver: '', stops: 0, pallets: 0, weight: 0, cities: new Set(), restricted: 0 }; m.set(key, g); }
+      g.stops += 1;
+      g.pallets += Number(r.pallets) || 0;
+      g.weight += Number(r.weight) || 0;
+      if (r.city) g.cities.add(r.city);
+      if (!g.driver && r.driver) g.driver = r.driver;
+      if (r.restrictions.length) g.restricted += 1;
+    }
+    return [...m.values()].sort((a, b) => (a.load === '—' ? 1 : b.load === '—' ? -1 : a.load.localeCompare(b.load)));
+  }, [rows]);
+
+  const loadsCount = useMemo(() => loadRows.filter((g) => g.load !== '—').length, [loadRows]);
+
+  const visibleStops = useMemo(() => {
+    const sf = statusFilter;
+    return rows.filter((r) => {
+      if (sf.size && !sf.has(r.status)) return false;
+      if (!q) return true;
+      return [r.stopNbr, r.name, r.addr1, r.addr2, r.city, r.zip, r.load, r.driver]
+        .join(' ').toLowerCase().includes(q);
+    });
+  }, [rows, statusFilter, q]);
+
+  const visibleLoads = useMemo(() => {
+    if (!q) return loadRows;
+    return loadRows.filter((g) => [g.load, g.loadNbr, g.driver, [...g.cities].join(' ')].join(' ').toLowerCase().includes(q));
+  }, [loadRows, q]);
+
+  const fmt = (n) => (n == null || n === '' || !Number.isFinite(Number(n)) ? '' : Number(n).toLocaleString());
+  const th = 'text-left font-semibold text-slate-500 uppercase tracking-wide text-[10px] px-3 py-2 whitespace-nowrap';
+  const td = 'px-3 py-2 align-top whitespace-nowrap';
+  const tabBtn = (on) => `px-3 py-1.5 text-sm font-semibold rounded-md inline-flex items-center gap-1.5 ${on ? 'bg-white shadow text-slate-900' : 'text-slate-500 hover:text-slate-700'}`;
+
+  return (
+    <div className="flex flex-col min-h-0 h-full bg-white">
+      {/* Header: Stops/Loads toggle · search · Status filter */}
+      <div className="shrink-0 flex flex-wrap items-center gap-2 px-3 py-2 border-b bg-white">
+        <div className="inline-flex rounded-lg border border-slate-200 p-0.5 bg-slate-50">
+          <button onClick={() => setMode('stops')} className={tabBtn(mode === 'stops')}>
+            <LayoutList size={14} /> Stops <span className="text-slate-400 font-normal">{rows.length}</span>
+          </button>
+          <button onClick={() => setMode('loads')} className={tabBtn(mode === 'loads')}>
+            <Truck size={14} /> Loads <span className="text-slate-400 font-normal">{loadsCount}</span>
+          </button>
+        </div>
+        <div className="relative flex-1 min-w-[180px]">
+          <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
+          <input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search table…"
+            className="w-full pl-8 pr-2 py-1.5 text-sm border border-slate-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-400"
+          />
+        </div>
+        {mode === 'stops' && (
+          <RoutingTableStatusFilter active={statusFilter} setActive={setStatusFilter} counts={statusCounts} />
+        )}
+      </div>
+
+      {/* Body */}
+      <div className="flex-1 min-h-0 overflow-auto">
+        {loading && !rows.length ? (
+          <div className="p-6 text-sm text-slate-400">Loading stops…</div>
+        ) : mode === 'stops' ? (
+          <table className="w-full text-sm border-collapse">
+            <thead className="sticky top-0 bg-white shadow-[0_1px_0_rgba(0,0,0,0.06)]">
+              <tr>
+                <th className={th}>Stop #</th><th className={th}>Ship To Name</th><th className={th}>Address 1</th>
+                <th className={th}>Address 2</th><th className={th}>City</th><th className={th}>Zip</th>
+                <th className={`${th} text-right`}>Pallets</th><th className={`${th} text-right`}>Weight</th>
+                <th className={th}>Restrictions</th><th className={th}>Load</th><th className={th}>Driver</th>
+              </tr>
+            </thead>
+            <tbody>
+              {visibleStops.map((r) => (
+                <tr key={r.id} onClick={() => onOpenStop?.(r.s)} className="border-b border-slate-100 hover:bg-blue-50/40 cursor-pointer">
+                  <td className={`${td} text-blue-600 font-medium`}>{r.stopNbr}</td>
+                  <td className={`${td} text-slate-800`}>{r.name}</td>
+                  <td className={td}>{r.addr1}</td>
+                  <td className={`${td} text-slate-500`}>{r.addr2}</td>
+                  <td className={td}>{r.city}</td>
+                  <td className={td}>{r.zip}</td>
+                  <td className={`${td} text-right tabular-nums`}>{fmt(r.pallets)}</td>
+                  <td className={`${td} text-right tabular-nums`}>{fmt(r.weight)}</td>
+                  <td className={td}>
+                    {r.restrictions.length ? (
+                      <span className="inline-flex flex-wrap gap-1">
+                        {r.restrictions.map((lbl, i) => (
+                          <span key={i} className="text-[11px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-600">{lbl}</span>
+                        ))}
+                      </span>
+                    ) : ''}
+                  </td>
+                  <td className={`${td} text-slate-700`}>{r.load}</td>
+                  <td className={`${td} text-slate-700`}>{r.driver}</td>
+                </tr>
+              ))}
+              {!visibleStops.length && (
+                <tr><td colSpan={11} className="px-3 py-6 text-center text-slate-400">No stops match.</td></tr>
+              )}
+            </tbody>
+          </table>
+        ) : (
+          <table className="w-full text-sm border-collapse">
+            <thead className="sticky top-0 bg-white shadow-[0_1px_0_rgba(0,0,0,0.06)]">
+              <tr>
+                <th className={th}>Load</th><th className={th}>Driver</th>
+                <th className={`${th} text-right`}>Stops</th><th className={`${th} text-right`}>Pallets</th>
+                <th className={`${th} text-right`}>Weight</th><th className={`${th} text-right`}>Restricted</th>
+                <th className={th}>Cities</th>
+              </tr>
+            </thead>
+            <tbody>
+              {visibleLoads.map((g) => (
+                <tr key={g.load} className="border-b border-slate-100 hover:bg-blue-50/40">
+                  <td className={`${td} font-medium ${g.load === '—' ? 'text-slate-400' : 'text-slate-800'}`}>{g.load === '—' ? 'Unassigned' : g.load}</td>
+                  <td className={`${td} text-slate-700`}>{g.driver}</td>
+                  <td className={`${td} text-right tabular-nums`}>{g.stops}</td>
+                  <td className={`${td} text-right tabular-nums`}>{fmt(g.pallets)}</td>
+                  <td className={`${td} text-right tabular-nums`}>{fmt(g.weight)}</td>
+                  <td className={`${td} text-right tabular-nums ${g.restricted ? 'text-amber-700' : 'text-slate-400'}`}>{g.restricted || ''}</td>
+                  <td className={`${td} text-slate-500 whitespace-normal`}>{[...g.cities].slice(0, 4).join(', ')}{g.cities.size > 4 ? ` +${g.cities.size - 4}` : ''}</td>
+                </tr>
+              ))}
+              {!visibleLoads.length && (
+                <tr><td colSpan={7} className="px-3 py-6 text-center text-slate-400">No loads match.</td></tr>
+              )}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function RoutingScreen() {
   const [selectedDate, setSelectedDate] = useState(() => todayInET());
   const { stops, loading, error: stopsError } = useStops(selectedDate);
@@ -5526,6 +5762,12 @@ function RoutingScreen() {
     try { return localStorage.getItem('routing.rail') === 'result' ? 'result' : 'stops'; } catch { return 'stops'; }
   });
   useEffect(() => { try { localStorage.setItem('routing.rail', desktopRail); } catch { /* ignore */ } }, [desktopRail]);
+
+  // Map vs. full-width data Table view (the dispatch "Stops / Loads" grid). Persisted.
+  const [routingView, setRoutingView] = useState(() => {
+    try { return localStorage.getItem('routing.view') === 'table' ? 'table' : 'map'; } catch { return 'map'; }
+  });
+  useEffect(() => { try { localStorage.setItem('routing.view', routingView); } catch { /* ignore */ } }, [routingView]);
 
   const [selectedIds, setSelectedIds] = useState(() => new Set());
   const [selectedTruckIds, setSelectedTruckIds] = useState(() => new Set());
@@ -5908,31 +6150,66 @@ function RoutingScreen() {
     setMapReady((n) => n + 1);
   }, [google, isMobile]); // eslint-disable-line
 
-  // Render stop markers — gray unselected, blue selected, route-colored + NUMBERED
-  // (sequence 1..N matching the panel) once a result exists. Click toggles
-  // selection; hover drives the map<->list linkage. Numbers/colors track routeInfo
-  // so a manual reorder updates the labels live.
+  // Per-stop marker VISUALS, independent of selection (so toggling a stop doesn't
+  // regenerate hundreds of SVG data URLs). UNROUTED stops get the SAME icon the
+  // Dispatch map uses — a restriction-icon marker when the customer note carries
+  // restrictions, else a status-colored pin — so the dispatcher sees the exact
+  // customizations they curated. ROUTED stops keep the green NUMBERED sequence
+  // marker (+ red ring when restricted) so the built route order stays readable.
+  const markerVisuals = useMemo(() => {
+    const m = new Map();
+    if (!google) return m;
+    const dayKey = weekdayKeyFromDate(selectedDate);
+    for (const s of vPositioned) {
+      const id = String(s.stopNbr);
+      const note = notes.get(s.matchKey) || null;
+      const ri = routeInfo.get(id);
+      if (ri) {
+        const restricted = getRestrictionBadgeKeys(note).length > 0 || stopLooksOversize(s);
+        const base = makeMarkerIcon(false, ri.color, true, restricted);
+        m.set(id, { baseIcon: base, emphIconObj: emphIcon(base), label: { text: String(ri.seq), color: '#fff', fontSize: '11px', fontWeight: '700' }, routed: true });
+        continue;
+      }
+      const restrictions = getRestrictionBadgeKeys(note, { day: dayKey });
+      const spec = restrictions.length ? iconMarkerSvg(restrictions) : null;
+      let baseIcon, emphIconObj;
+      if (spec) {
+        baseIcon = { url: spec.url, scaledSize: new google.maps.Size(spec.width, spec.height), anchor: new google.maps.Point(spec.anchor[0], spec.anchor[1]) };
+        emphIconObj = { url: spec.url, scaledSize: new google.maps.Size(Math.round(spec.width * 1.18), Math.round(spec.height * 1.18)), anchor: new google.maps.Point(Math.round(spec.anchor[0] * 1.18), Math.round(spec.anchor[1] * 1.18)) };
+      } else {
+        const meta = STATUS_META[classifyStopStatus(s)] || STATUS_META.SCHEDULED;
+        const color = meta.color || flagColor(note);
+        const url = pinSvgStatus(color, { hollow: meta.hollow, glyph: meta.glyph });
+        baseIcon = { url, scaledSize: new google.maps.Size(28, 36), anchor: new google.maps.Point(14, 34) };
+        emphIconObj = { url, scaledSize: new google.maps.Size(33, 42), anchor: new google.maps.Point(16, 40) };
+      }
+      m.set(id, { baseIcon, emphIconObj, label: undefined, routed: false });
+    }
+    return m;
+  }, [google, vPositioned, notes, routeInfo, selectedDate, makeMarkerIcon, emphIcon]);
+
+  // Place the markers. Selection is shown by DIMMING the unselected stops once a
+  // selection exists (mirrors the dispatch map's search-dim) — the icons themselves
+  // stay identical to dispatch. Click toggles selection; hover drives map<->list.
   useEffect(() => {
     if (!google || !mapRef.current) return;
     markersRef.current.forEach((m) => m.setMap(null));
+    const hasSelection = !viewing && selectedIds.size > 0;
     const byId = new Map();
     markersRef.current = vPositioned.map((s) => {
       const id = String(s.stopNbr);
+      const vis = markerVisuals.get(id);
+      if (!vis) return null;
       const sel = !viewing && selectedIds.has(id);
-      const ri = routeInfo.get(id);              // { color, seq } when on a route
-      const routed = ri?.color;
-      const numbered = !!ri;
-      // Restricted = equipment restriction or oversize → keep the visual signal as a
-      // red ring on the green routed marker.
-      const restricted = numbered && (getRestrictionBadgeKeys(notes.get(s.matchKey) || null).length > 0 || stopLooksOversize(s));
+      const baseOpacity = vis.routed ? 1 : (sel ? 1 : (hasSelection ? 0.4 : 1));
+      const baseZ = (vis.routed || sel) ? 30 : 10;
       const hovered = hoverIdRef.current === id;
-      const baseIcon = makeMarkerIcon(sel, routed, numbered, restricted);
-      const baseZ = sel || routed ? 30 : 10;
       const marker = new google.maps.Marker({
         position: { lat: s.lat, lng: s.lng },
         title: s.businessName || s.stopNbr,
-        icon: hovered ? emphIcon(baseIcon) : baseIcon,
-        label: numbered ? { text: String(ri.seq), color: '#fff', fontSize: '11px', fontWeight: '700' } : undefined,
+        icon: hovered ? vis.emphIconObj : vis.baseIcon,
+        label: vis.label,
+        opacity: hovered ? 1 : baseOpacity,
         zIndex: hovered ? 50 : baseZ,
       });
       marker.addListener('click', () => {
@@ -5943,26 +6220,27 @@ function RoutingScreen() {
       marker.addListener('mouseover', () => setHoverId(id));
       marker.addListener('mouseout', () => setHoverId((h) => (h === id ? null : h)));
       marker.setMap(mapRef.current);
-      byId.set(id, { marker, baseIcon, baseZ });
+      byId.set(id, { marker, baseIcon: vis.baseIcon, emphIconObj: vis.emphIconObj, baseOpacity, baseZ });
       return marker;
-    });
+    }).filter(Boolean);
     markerByIdRef.current = byId;
     lastEmphRef.current = hoverIdRef.current; // markers were built already-emphasized
-  }, [google, vPositioned, viewing, selectedIds, routeInfo, notes, toggleStop, mapReady, makeMarkerIcon, emphIcon]);
+  }, [google, vPositioned, viewing, selectedIds, markerVisuals, toggleStop, mapReady]);
 
   // Hover emphasis — touch only the two affected markers, not all of them. Keeps
-  // the sequence label intact (only the icon scale/ring change).
+  // the sequence label intact (only the icon size + opacity + z change).
   useEffect(() => {
     const byId = markerByIdRef.current;
     const setEmph = (id, on) => {
       const e = byId.get(id); if (!e) return;
-      e.marker.setIcon(on ? emphIcon(e.baseIcon) : e.baseIcon);
+      e.marker.setIcon(on ? e.emphIconObj : e.baseIcon);
+      e.marker.setOpacity(on ? 1 : e.baseOpacity);
       e.marker.setZIndex(on ? 50 : e.baseZ);
     };
     if (lastEmphRef.current && lastEmphRef.current !== hoverId) setEmph(lastEmphRef.current, false);
     if (hoverId) setEmph(hoverId, true);
     lastEmphRef.current = hoverId;
-  }, [hoverId, emphIcon]);
+  }, [hoverId]);
 
   // Route polylines (one per truck, depot-anchored). Drawn in the CURRENT order
   // (routesView), so a manual reorder redraws the path live.
@@ -6253,13 +6531,33 @@ function RoutingScreen() {
       onRename={renameLoad} onToggleDispatch={toggleDispatched} onDelete={deleteLoad} manageError={manageError} />
   );
 
+  // Map vs. Table view toggle + the full-width data-table overlay. The map (mapDiv)
+  // stays mounted underneath in Table mode so Google Maps never loses its container.
+  const routeViewSeg = (on) => `px-3 py-1 text-xs font-semibold rounded-md inline-flex items-center gap-1 ${on ? 'bg-white shadow text-slate-900' : 'text-slate-500 hover:text-slate-700'}`;
+  const viewToggleBar = (
+    <div className="shrink-0 flex items-center gap-2 px-2 py-1.5 border-b bg-white">
+      <div className="inline-flex rounded-lg border border-slate-200 p-0.5 bg-slate-50">
+        <button onClick={() => setRoutingView('map')} className={routeViewSeg(routingView === 'map')}><MapPinned size={13} /> Map</button>
+        <button onClick={() => setRoutingView('table')} className={routeViewSeg(routingView === 'table')}><LayoutList size={13} /> Table</button>
+      </div>
+      <div className="text-[11px] text-slate-500">{loading ? 'Loading…' : `${positioned.length} stops`}</div>
+    </div>
+  );
+  const tableOverlay = routingView === 'table' ? (
+    <div className="absolute inset-0 z-30 bg-white">
+      <RoutingDataTable stops={stops} notes={notes} loading={loading} onOpenStop={openStop} />
+    </div>
+  ) : null;
+
   // ── Mobile: map + collapsible bottom sheet (Setup / Result) ──
   if (isMobile) {
     const tabCls = (on) => `flex-1 py-1.5 text-xs font-semibold rounded ${on ? 'text-white' : 'text-slate-600 bg-slate-100'}`;
     return (
       <div className="flex-1 flex flex-col min-h-0">
+        {viewToggleBar}
         <div className="flex-1 relative min-w-0">
           <div ref={mapDiv} className="absolute inset-0" />
+          {tableOverlay}
           <RoutingBuildBadge onClick={() => setVersionLogOpen(true)} />
           {mapsError && <div className="absolute top-2 left-1/2 -translate-x-1/2 bg-red-50 border border-red-300 text-red-700 text-[11px] rounded px-2 py-1">{mapsError}</div>}
           {viewing
@@ -6297,7 +6595,9 @@ function RoutingScreen() {
     >{label}</button>
   );
   return (
-    <div className="flex-1 flex min-h-0">
+    <div className="flex-1 flex flex-col min-h-0">
+      {viewToggleBar}
+      <div className="flex-1 flex min-h-0 relative">
       {/* Left: Setup stack */}
       <div className="w-[340px] shrink-0 border-r bg-white overflow-y-auto p-3 space-y-3 text-sm">
         {controlsContent}
@@ -6365,8 +6665,10 @@ function RoutingScreen() {
           <div className="flex-1 min-h-0 overflow-y-auto p-3 space-y-3 text-sm">{resultContent}</div>
         )}
       </div>
+        {tableOverlay}
+      </div>
       {detailModalStop && <RoutingStopModal stop={detailModalStop} notes={notes} windowViolatedSet={windowViolatedSet} onClose={() => setDetailModalStop(null)} />}
-        {versionLogOpen && <VersionLogModal onClose={() => setVersionLogOpen(false)} />}
+      {versionLogOpen && <VersionLogModal onClose={() => setVersionLogOpen(false)} />}
     </div>
   );
 }
