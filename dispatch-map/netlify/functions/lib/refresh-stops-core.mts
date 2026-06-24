@@ -411,17 +411,17 @@ export async function runRefreshStops(req: Request): Promise<Response> {
     return json({ ok: true, skipped: decision.skip, reason: decision.reason });
   }
 
-  // ── PRIMARY: list-discovery (one windowed pull replaces number-probing) ──────
-  // Pull NuVizz's stop list once, bucket by delivery date, geocode/carry-forward
-  // coords, and write each target date as a full authoritative set. Empty buckets
-  // are NEVER written (so an API hiccup can't wipe the board) and any failure falls
-  // through to the number-probe below.
+  // ── PRIMARY: list-discovery, EXCLUSIVE (no number-probe) ─────────────────────
+  // When on, the board is sourced ONLY from NuVizz's stop list (one pull/day), with
+  // geocoded/carried-forward coords. The old number-probe NEVER runs here. Safety:
+  // an empty/failed pull writes nothing for that date, so the last-good board is
+  // preserved (stale, never blank) — per Chad's call we'd just fix-forward if the
+  // list endpoint ever changes, rather than fall back to the expensive probe.
   if (LIST_DISCOVERY) {
     try {
       const scannedAt = new Date().toISOString();
       const targets = [today];
       if (decision.scanTomorrowLoads || decision.scanTomorrowUnplanned) targets.push(tomorrow);
-      let wroteAny = false;
       for (const date of targets) {
         // Per-day pull, ET-adjusted period (one request; the entity page param doesn't paginate).
         const dateStops = await listScanForDate(date);
@@ -439,18 +439,16 @@ export async function runRefreshStops(req: Request): Promise<Response> {
         const coords = await resolveCoords(dateStops, seed);
         for (const s of dateStops) { const k = addrKey(s); const pt = k ? coords.get(k) : null; if (pt) { s.lat = pt.lat; s.lng = pt.lng; } }
         const meta = await writeStops(TENANT, date, dateStops, scannedAt, { includeUnplanned: true, includeLoads: true });
-        wroteAny = true;
         results.push({ date, ok: true, source: 'list', count: meta.count, planned: meta.plannedCount, unplanned: meta.unplannedCount });
       }
-      if (wroteAny) {
-        await refreshOps();
-        logScan('none', true, { l: true, u: true }, { l: decision.scanTomorrowLoads, u: decision.scanTomorrowUnplanned }, ' src=list');
-        return json({ ok: true, tenant: TENANT, mode: isManual ? 'manual' : 'scheduled', source: 'list', decision, totalMs: Date.now() - startedAt, dates: results });
-      }
-      console.warn('[scan] list-discovery wrote nothing (empty buckets) → number-probe fallback');
     } catch (e: any) {
-      console.warn(`[scan] list-discovery failed (${e?.message}) → number-probe fallback`);
+      // List-only: do NOT fall back to the number-probe; preserve the existing index.
+      console.warn(`[scan] list-discovery error (${e?.message}); preserving last-good board (list-only, no number-probe)`);
+      results.push({ ok: false, source: 'list', error: e?.message });
     }
+    await refreshOps();
+    logScan('none', decision.act, { l: true, u: true }, { l: decision.scanTomorrowLoads, u: decision.scanTomorrowUnplanned }, ' src=list-only');
+    return json({ ok: true, tenant: TENANT, mode: isManual ? 'manual' : 'scheduled', source: 'list', decision, totalMs: Date.now() - startedAt, dates: results });
   }
 
   // Today: loads always; orders inside the 10am-midnight window.
