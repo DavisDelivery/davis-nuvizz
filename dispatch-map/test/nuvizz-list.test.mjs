@@ -147,33 +147,40 @@ test('parseReqDate: lenient — date-only, time, window, or ISO all yield the da
   assert.equal(parseReqDate('n/a'), null);
 });
 
-test('toBoardStop: buckets on Requested Date; falls back to Estimated Arrival when it is blank', () => {
-  // Mitchell's case: a planned stop that came over with a Requested Date but whose Estimated
-  // Arrival (earliestSchTime) was never populated. It MUST still land on its requested day.
-  const noArrival = toBoardStop({ stopNbr: '007137950', statusCode: '20', routeName: 'MITCHELL', requestedArrival: '6/24/26 08:00 AM - 08:00 PM', scheduledArrival: '' });
-  assert.equal(noArrival.requestedDate, '2026-06-24');
+test('toBoardStop: boardDate = Estimated Arrival, falling back to Requested Date when blank', () => {
+  // Arrival present → it's the intended board day; requested is only a fallback.
+  const both = toBoardStop({ stopNbr: 'X', statusCode: '20', routeName: 'L1', requestedArrival: '6/26/26', scheduledArrival: '6/24/26 09:00 AM' });
+  assert.equal(both.boardDate, '2026-06-24', 'arrival is the intended day');
+  assert.equal(both.requestedDate, '2026-06-26');
+  // Arrival blank → fall back to Requested Date so the stop still has a day to sit on.
+  const noArrival = toBoardStop({ stopNbr: 'Y', statusCode: '20', routeName: 'L1', requestedArrival: '6/24/26 08:00 AM - 08:00 PM', scheduledArrival: '' });
   assert.equal(noArrival.scheduledDate, null, 'no estimated arrival');
-  assert.equal(noArrival.boardDate, '2026-06-24', 'requested date carries the board day');
-
-  // Rollover: requested for today but still carrying YESTERDAY's stale arrival — board day
-  // follows the request (today), not the stale arrival.
-  const rollover = toBoardStop({ stopNbr: 'R', statusCode: '20', routeName: 'L1', requestedArrival: '6/24/26', scheduledArrival: '6/23/26 09:00 AM' });
-  assert.equal(rollover.boardDate, '2026-06-24', 'requested date wins over stale arrival');
-  assert.equal(rollover.scheduledDate, '2026-06-23', 'arrival preserved for routing/ETA ordering');
-
-  // No requested date at all → fall back to arrival (prior behavior preserved).
-  const fallback = toBoardStop({ stopNbr: 'F', statusCode: '20', routeName: 'L1', scheduledArrival: '6/25/26 09:00 AM' });
-  assert.equal(fallback.boardDate, '2026-06-25', 'falls back to estimated arrival');
+  assert.equal(noArrival.boardDate, '2026-06-24', 'requested date fills in when arrival is blank');
+  // Neither → no intended day (bucketByDate decides whether to clamp it to today by route).
+  const neither = toBoardStop({ stopNbr: 'Z', statusCode: '20', routeName: 'L1' });
+  assert.equal(neither.boardDate, null);
 });
 
-test('bucketByDate: a planned stop with a Requested Date but NO arrival is kept, not dropped', () => {
+test('bucketByDate: open route-assigned stops never bucket before today (the rollover fix)', () => {
+  const today = '2026-06-24';
   const stops = [
-    toBoardStop({ stopNbr: '1', statusCode: '20', routeName: 'L1', requestedArrival: '6/24/26', scheduledArrival: '' }),
-    toBoardStop({ stopNbr: '2', statusCode: '20', routeName: 'L1', scheduledArrival: '6/24/26 09:00 AM' }),
-    toBoardStop({ stopNbr: '3', statusCode: '20', routeName: 'L1' }), // neither date → excluded
+    // Rollover: planned on a route but carrying YESTERDAY's stale arrival → clamped to today.
+    toBoardStop({ stopNbr: '372', statusCode: '20', routeName: 'MITCHELL', scheduledArrival: '6/23/26 08:00 AM' }),
+    // Normal: planned for today → stays today.
+    toBoardStop({ stopNbr: '953', statusCode: '20', routeName: 'MITCHELL', scheduledArrival: '6/24/26 08:00 AM' }),
+    // On a route but NO date at all → still surfaced on today, not dropped.
+    toBoardStop({ stopNbr: 'ND', statusCode: '20', routeName: 'MITCHELL' }),
+    // Future planned (tomorrow's pre-built load) → NOT clamped, stays on its day.
+    toBoardStop({ stopNbr: 'FUT', statusCode: '20', routeName: 'MITCHELL', scheduledArrival: '6/25/26 08:00 AM' }),
+    // Delivered yesterday → keeps its real day so history/analytics stay accurate.
+    toBoardStop({ stopNbr: 'DEL', statusCode: '90', routeName: 'MITCHELL', scheduledArrival: '6/23/26 08:00 AM', updatedTime: '6/23/26 02:00 PM' }),
+    // Open but NOT on a route (unplanned, unrouted) with a stale arrival → left where it is.
+    toBoardStop({ stopNbr: 'UNR', statusCode: '10', scheduledArrival: '6/23/26 08:00 AM' }),
   ];
-  const m = bucketByDate(stops);
-  assert.equal(m.get('2026-06-24').length, 2, 'requested-only stop bucketed alongside the arrival-only stop');
+  const m = bucketByDate(stops, today);
+  assert.deepEqual((m.get('2026-06-24') || []).map((s) => s.stopNbr).sort(), ['372', '953', 'ND'], 'rollover + today + no-date route stops all land on today');
+  assert.deepEqual((m.get('2026-06-25') || []).map((s) => s.stopNbr), ['FUT'], 'future load untouched');
+  assert.deepEqual((m.get('2026-06-23') || []).map((s) => s.stopNbr).sort(), ['DEL', 'UNR'], 'finished + unrouted keep their real day');
   assert.ok(!m.has('undefined'));
 });
 

@@ -184,15 +184,16 @@ export function toBoardStop(r: any): any {
     orderInstructions: r.comments || null,
     proNbr: r.proNbr || null,
     scheduledDate: sched ? sched.date : null,
-    // The Requested delivery date (the date the order comes over with). Always populated
-    // when the saved search exposes the column; used as the authoritative board day.
+    // The Requested delivery date — a FALLBACK board day for when Estimated Arrival is blank.
+    // (In Davis's saved-search feed this column is usually empty; kept for the case where it
+    // is populated and a stop has no arrival yet.)
     requestedDate: reqDate,
-    // The day this stop sits on the board. Prefer Requested Date over Estimated Arrival:
-    // earliestSchTime is blank for a stop that hasn't been sequenced yet (→ bucketByDate
-    // would DROP it) and stale on a rollover (→ bucketByDate parks it on the OLD day, off
-    // today's route). Requested Date keeps a planned stop on its correct day for its whole
-    // lifecycle; arrival is only the fallback when no Requested Date came over.
-    boardDate: reqDate || (sched ? sched.date : null),
+    // The intended board day: Estimated Arrival (earliestSchTime), falling back to Requested
+    // Date when arrival is blank. NOTE this is only the INTENDED day — it can be stale: a
+    // rolled-over stop keeps YESTERDAY's arrival (NuVizz doesn't roll it forward) even though
+    // the driver runs it today. bucketByDate clamps such open, route-assigned stops forward to
+    // today so live work is never parked on a past day's board.
+    boardDate: (sched ? sched.date : null) || reqDate,
     // "Stop Updated Dttm" from the list — when the order last changed (status flips incl.
     // planned→unplanned→planned, edits, delivery). A LIVE field: refreshed every scan, free,
     // no /stop/info call. Drives the "last updated" display + signals when detail is stale.
@@ -209,13 +210,21 @@ export function toBoardStop(r: any): any {
   };
 }
 
-// Group board stops by their board day (YYYY-MM-DD) — boardDate (Requested Date, falling
-// back to Estimated Arrival). Falls through to requestedDate/scheduledDate for stops built
-// before boardDate existed. Stops with no determinable day can't be placed and are dropped.
-export function bucketByDate(stops: any[]): Map<string, any[]> {
+// Group board stops by their board day (YYYY-MM-DD). The day is boardDate (Estimated Arrival,
+// falling back to Requested Date), with one correction for live work: an OPEN (not delivered
+// /exception) stop that's ASSIGNED TO A ROUTE never buckets onto a PAST day. NuVizz does not
+// roll a rolled-over stop's Estimated Arrival forward — it keeps yesterday's arrival (or none)
+// even though the driver runs it today — which otherwise parks it on yesterday's board, off
+// today's route (Mitchell's 007137332 / 007137372). Such stops are clamped forward to `today`
+// (ET). Finished stops keep their real day so history/analytics stay accurate; open stops with
+// no route are left where they are. Stops with no determinable day are dropped.
+export function bucketByDate(stops: any[], today: string = etDayString()): Map<string, any[]> {
   const m = new Map<string, any[]>();
   for (const s of stops) {
-    const d = s.boardDate || s.requestedDate || s.scheduledDate;
+    let d = s.boardDate || s.requestedDate || s.scheduledDate;
+    const finished = s.normalizedStatus === 'DELIVERED' || s.normalizedStatus === 'EXCEPTION';
+    const onRoute = !!s.loadNbr;
+    if (!finished && onRoute && (!d || d < today)) d = today; // live route work → today, not the past
     if (!d) continue;
     if (!m.has(d)) m.set(d, []);
     m.get(d)!.push(s);
