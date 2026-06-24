@@ -6446,11 +6446,11 @@ function ColumnsMenu({ columns, onChange }) {
 // NuVizz status buckets for the bottom-table status filter. Each maps to one or
 // more of the app's classifyStopStatus() values.
 const TABLE_STATUS_BUCKETS = [
-  { k: 'unplanned', label: 'Un-Planned', match: ['UNPLANNED'] },
-  { k: 'planned', label: 'Planned', match: ['SCHEDULED'] },
-  { k: 'in_transit', label: 'In-Transit', match: ['OUT_FOR_DEL', 'ARRIVED'] },
-  { k: 'completed', label: 'Completed', match: ['DELIVERED'] },
-  { k: 'cancelled', label: 'Cancelled', match: ['EXCEPTION'] },
+  { k: 'unplanned', label: 'Un-Planned', match: ['UNPLANNED'], codes: ['10'] },
+  { k: 'planned', label: 'Planned', match: ['SCHEDULED'], codes: ['20'] },
+  { k: 'in_transit', label: 'In-Transit', match: ['OUT_FOR_DEL', 'ARRIVED'], codes: ['40', '50'] },
+  { k: 'completed', label: 'Completed', match: ['DELIVERED'], codes: ['90', '91'] },
+  { k: 'cancelled', label: 'Cancelled', match: ['EXCEPTION'], codes: ['99'] },
 ];
 function tableStatusBucket(stop) {
   const st = classifyStopStatus(stop);
@@ -6475,6 +6475,16 @@ function BottomStopsTable({ stops, loadStops, notes, totalCount, open, setOpen, 
   const [view, setView] = useState('stops'); // 'stops' | 'loads'
   const [statusSel, setStatusSel] = useState(() => new Set()); // empty = all
   const [statusOpen, setStatusOpen] = useState(false);
+  // NuVizz live pull (desktop toolbar): when nvWindow is set, the grid shows stops
+  // fetched straight from NuVizz's stop list (any delivery-date window / status)
+  // instead of today's board — e.g. "all unplanned ±7 days". Driver is a local
+  // refinement applied to whatever rows are shown.
+  const [nvWindow, setNvWindow] = useState(''); // '' = board; else arrival period ('0d','+/-7d')
+  const [nvRows, setNvRows] = useState([]);
+  const [nvTotal, setNvTotal] = useState(0);
+  const [nvLoading, setNvLoading] = useState(false);
+  const [nvErr, setNvErr] = useState(null);
+  const [driverSel, setDriverSel] = useState('');
   // Drag-resizable height (px), persisted. Drag the top handle up/down.
   const [height, setHeight] = useState(() => {
     const v = safeReadJSON(LS_BOTTOM_TABLE_HEIGHT, 300);
@@ -6510,10 +6520,45 @@ function BottomStopsTable({ stops, loadStops, notes, totalCount, open, setOpen, 
     { k: 'load', label: 'Load', w: 150, get: (s) => s.routeName || s.loadNbr || '', sortVal: (s) => s.routeName || s.loadNbr || '' },
     { k: 'driver', label: 'Driver', w: 150, get: (s) => s.driverName || '', sortVal: (s) => s.driverName },
   ];
+  // Board mode shows today's loaded stops; NuVizz mode shows the live-pulled set.
+  const baseStops = nvWindow ? nvRows : stops;
+  // Pull from NuVizz whenever a date window is selected (re-pull when the status
+  // selection changes so status filters server-side, not just on the loaded page).
+  useEffect(() => {
+    if (!nvWindow) { setNvErr(null); return; }
+    let cancelled = false;
+    const codes = TABLE_STATUS_BUCKETS.filter((b) => statusSel.has(b.k)).flatMap((b) => b.codes);
+    setNvLoading(true); setNvErr(null);
+    fetch('/.netlify/functions/nuvizz-stop-explorer', {
+      method: 'POST', cache: 'no-store', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ arrivalPeriod: nvWindow, statusCodes: codes, page: 1, pageSize: 200 }),
+    })
+      .then((r) => r.json())
+      .then((j) => {
+        if (cancelled) return;
+        if (!j.ok) throw new Error(j.error || 'pull failed');
+        const decorated = (j.rows || []).map((s) => ({
+          ...s,
+          matchKey: normalizeMatchKey(s.businessName || '', s.addr1 || '', s.city || '', s.zip || ''),
+          loadNbr: s.routeName || '',
+        }));
+        setNvRows(decorated); setNvTotal(j.total ?? decorated.length);
+      })
+      .catch((e) => { if (!cancelled) { setNvErr(e.message); setNvRows([]); setNvTotal(0); } })
+      .finally(() => { if (!cancelled) setNvLoading(false); });
+    return () => { cancelled = true; };
+  }, [nvWindow, statusSel]);
+  const driverOptions = useMemo(() => {
+    const set = new Set();
+    for (const s of baseStops) if (s.driverName) set.add(s.driverName);
+    return [...set].sort();
+  }, [baseStops]);
   const rows = useMemo(() => {
     const needle = q.trim().toLowerCase();
-    return stops.filter((s) => {
-      if (statusSel.size && !statusSel.has(tableStatusBucket(s))) return false;
+    return baseStops.filter((s) => {
+      // Status: client-side in board mode; server-side (already filtered) in NuVizz mode.
+      if (!nvWindow && statusSel.size && !statusSel.has(tableStatusBucket(s))) return false;
+      if (driverSel && (s.driverName || '') !== driverSel) return false;
       if (needle) {
         const hay = [s.stopNbr, s.businessName, s.addr1, s.addr2, s.city, s.zip, s.routeName, s.loadNbr, s.driverName]
           .filter(Boolean).join(' ').toLowerCase();
@@ -6521,7 +6566,7 @@ function BottomStopsTable({ stops, loadStops, notes, totalCount, open, setOpen, 
       }
       return true;
     });
-  }, [stops, q, statusSel]);
+  }, [baseStops, q, statusSel, driverSel, nvWindow]);
   // Loads view — group the same board (the `stops` we're handed) by loadNbr so
   // dispatchers can browse current loads instead of individual stops. Each row
   // aggregates driver, stop count, a per-status breakdown, and pallet/weight
@@ -6597,7 +6642,7 @@ function BottomStopsTable({ stops, loadStops, notes, totalCount, open, setOpen, 
             className={'inline-flex items-center gap-1.5 px-2.5 py-1 ' + (view === 'stops' ? 'bg-blue-50 text-blue-700' : 'text-slate-600 hover:bg-slate-50')}
           >
             <LayoutList size={13} /> Stops
-            <span className="font-normal opacity-60">{rows.length}{totalCount != null && totalCount !== rows.length ? `/${totalCount}` : ''}</span>
+            <span className="font-normal opacity-60">{rows.length}{nvWindow ? (nvTotal && nvTotal !== rows.length ? `/${nvTotal.toLocaleString()}` : '') : (totalCount != null && totalCount !== rows.length ? `/${totalCount}` : '')}</span>
           </button>
           <button
             onClick={() => { setView('loads'); setOpen(true); }}
@@ -6640,6 +6685,41 @@ function BottomStopsTable({ stops, loadStops, notes, totalCount, open, setOpen, 
                   </div>
                 )}
               </div>
+            )}
+            {/* NuVizz live pull (desktop): delivery-date window + driver, on the same
+                top row as search. Window = Board uses today's loaded data (no calls);
+                a NuVizz window pulls the stop list straight from NuVizz. */}
+            {view === 'stops' && (
+              <>
+                <select
+                  value={nvWindow}
+                  onChange={(e) => setNvWindow(e.target.value)}
+                  title="Data source / delivery-date window"
+                  className="hidden sm:inline-block border border-slate-300 rounded px-1.5 py-1 text-xs text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-400"
+                >
+                  <option value="">Board (today)</option>
+                  <option value="0d">NuVizz · Today</option>
+                  <option value="+/-7d">NuVizz · ±7 days</option>
+                </select>
+                <select
+                  value={driverSel}
+                  onChange={(e) => setDriverSel(e.target.value)}
+                  title="Filter by driver"
+                  className="hidden sm:inline-block border border-slate-300 rounded px-1.5 py-1 text-xs text-slate-700 max-w-[150px] focus:outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-400"
+                >
+                  <option value="">All drivers</option>
+                  {driverOptions.map((d) => <option key={d} value={d}>{d}</option>)}
+                </select>
+                {nvWindow && (
+                  <span className="hidden sm:inline text-[11px] text-slate-500 whitespace-nowrap">
+                    {nvLoading
+                      ? <span className="inline-flex items-center gap-1"><RefreshCw size={11} className="animate-spin" /> pulling…</span>
+                      : nvErr
+                        ? <span className="text-red-600">NuVizz: {nvErr}</span>
+                        : <>NuVizz · {nvTotal.toLocaleString()} stops</>}
+                  </span>
+                )}
+              </>
             )}
           </>
         )}
