@@ -2956,40 +2956,60 @@ function DnsBadge({ note, showDrivers = false, className = '' }) {
 }
 
 // Proof-of-delivery documents (photos / signed PDFs). NuVizz returns metadata
-// (name / guid / path / extension) on a stop once it's delivered; we surface it here.
-// `documentPath` is a portal-relative path — if it's an absolute URL we link it directly,
-// otherwise we show the doc as captured (the raw bytes need a server-side fetch we proxy
-// through /.netlify/functions/nuvizz-pod once the document endpoint is confirmed).
+// (name / guid / path / extension) on a stop once it's delivered; the actual bytes are
+// fetched server-side through /.netlify/functions/nuvizz-pod (documentapi/getdocument with
+// Basic creds) so an <img src> can render the photo without exposing credentials.
+function podDocUrl(d, opts = {}) {
+  const p = new URLSearchParams();
+  if (d.documentPath) p.set('documentPath', d.documentPath);
+  else {
+    if (d.documentGuid) p.set('documentGuid', d.documentGuid);
+    if (d.extension) p.set('extension', d.extension);
+  }
+  if (opts.dataUri) p.set('format', 'datauri');
+  return `/.netlify/functions/nuvizz-pod?${p.toString()}`;
+}
+const isPodImage = (ext) => /^(jpe?g|png|gif|webp)$/i.test(String(ext || ''));
+
 function PodDocsSection({ stop }) {
   const docs = Array.isArray(stop?.podDocs) ? stop.podDocs : [];
   if (!docs.length) return null;
-  const isUrl = (p) => typeof p === 'string' && /^https?:\/\//i.test(p);
+  const photos = docs.filter((d) => isPodImage(d.extension));
+  const others = docs.filter((d) => !isPodImage(d.extension));
   return (
     <div className="pt-2">
       <div className="text-xs uppercase font-semibold text-slate-500 flex items-center gap-1.5">
         <FileCheck size={13} /> Proof of delivery
       </div>
-      <ul className="mt-1 space-y-1">
-        {docs.map((d, i) => {
-          const label = d.documentName || `POD document${d.extension ? ` (.${d.extension})` : ''}`;
-          const when = fmtClockShort(d.createdTime);
-          return (
-            <li key={d.documentGuid || d.documentPath || i} className="text-xs text-slate-700 flex items-center gap-1.5 break-words">
-              {isUrl(d.documentPath) ? (
-                <a href={d.documentPath} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-blue-700 hover:underline">
+      {photos.length > 0 && (
+        <div className="mt-1.5 grid grid-cols-3 gap-1.5">
+          {photos.map((d, i) => {
+            const src = podDocUrl(d);
+            return (
+              <a key={d.documentGuid || i} href={src} target="_blank" rel="noopener noreferrer" className="block" title={`${d.documentName || 'POD photo'}${fmtClockShort(d.createdTime) ? ` · ${fmtClockShort(d.createdTime)}` : ''}`}>
+                <img src={src} alt={d.documentName || 'POD photo'} loading="lazy" className="w-full h-20 object-cover rounded border border-slate-200 bg-slate-50" />
+              </a>
+            );
+          })}
+        </div>
+      )}
+      {others.length > 0 && (
+        <ul className="mt-1 space-y-1">
+          {others.map((d, i) => {
+            const label = d.documentName || `POD document${d.extension ? ` (.${d.extension})` : ''}`;
+            const when = fmtClockShort(d.createdTime);
+            return (
+              <li key={d.documentGuid || d.documentPath || i} className="text-xs text-slate-700 flex items-center gap-1.5 break-words">
+                <a href={podDocUrl(d)} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-blue-700 hover:underline">
                   {label} <ExternalLink size={11} />
                 </a>
-              ) : (
-                <span className="inline-flex items-center gap-1">
-                  {label}
-                  {d.extension && <span className="px-1 rounded bg-slate-100 text-slate-500 text-[9px] uppercase">{d.extension}</span>}
-                </span>
-              )}
-              {when && <span className="text-slate-400">· {when}</span>}
-            </li>
-          );
-        })}
-      </ul>
+                {d.extension && <span className="px-1 rounded bg-slate-100 text-slate-500 text-[9px] uppercase">{d.extension}</span>}
+                {when && <span className="text-slate-400">· {when}</span>}
+              </li>
+            );
+          })}
+        </ul>
+      )}
     </div>
   );
 }
