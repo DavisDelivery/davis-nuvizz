@@ -478,12 +478,11 @@ export async function runRefreshStops(req: Request): Promise<Response> {
           // current thereafter. POD photos are pulled ON DEMAND when a stop is opened (a single
           // /stop/info + documentapi fetch keyed by the clicked PRO), never in the background,
           // so a delivery costs zero scheduled calls.
-          // ALSO re-enrich a stop enriched by an OLDER build that's missing newer fields
-          // (allComments — the full notes list; stopId — the activity-timeline entityId):
-          // carry-forward marked it enriched, so it would otherwise never backfill. The
-          // `=== undefined` test is the "old build" tell — a freshly-enriched stop with no
-          // comments has allComments=[] and is correctly left alone (one-time sweep).
-          if (!s.enriched || s.allComments === undefined) toEnrich.push(s);
+          // We do NOT re-enrich already-enriched stops to backfill newer fields (full notes,
+          // stopId) — those load ON DEMAND when a dispatcher opens the stop (the card's Refresh
+          // / timeline), keeping background calls minimal (dispatcher's choice). New orders get
+          // the fields on their first (and only) enrichment.
+          if (!s.enriched) toEnrich.push(s);
         }
 
         // Enrichment: one direct /stop/info per new PRO (bounded concurrency, capped).
