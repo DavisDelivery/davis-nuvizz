@@ -1,0 +1,62 @@
+name: auto-merge
+
+# Squash-merges automation PRs as soon as CI is green — no manual click, no review.
+#
+# Policy (per repo owner): every PR whose head branch is named `claude/*` is merged
+# automatically once the `tests` workflow passes. CI is the only gate. PRs on any
+# other branch (manual work) are never touched. Drafts are flipped to ready first so
+# the bot's draft PRs still merge.
+#
+# It runs off the `tests` workflow's completion (workflow_run) rather than on the PR
+# directly, so it only ever fires after the unit suite has actually finished and gone
+# green for that exact commit.
+
+on:
+  workflow_run:
+    workflows: ["tests"]
+    types: [completed]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  automerge:
+    # Only act on a SUCCESSFUL tests run that was triggered by a pull request.
+    if: >
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Squash-merge passing claude/* PRs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+        run: |
+          set -euo pipefail
+
+          # Gate on the branch-name convention — every automation PR uses claude/*.
+          case "$HEAD_BRANCH" in
+            claude/*) ;;
+            *) echo "Branch '$HEAD_BRANCH' is not claude/* — leaving it alone."; exit 0 ;;
+          esac
+
+          # Find the open PR for this branch (workflow_run doesn't carry the PR number
+          # reliably for all events, but head_branch is always present).
+          num=$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$HEAD_BRANCH" --state open \
+                  --json number --jq '.[0].number // empty')
+          if [ -z "$num" ]; then
+            echo "No open PR for '$HEAD_BRANCH' — nothing to merge."
+            exit 0
+          fi
+
+          # Flip a draft to ready so it can merge (the bot opens PRs as drafts).
+          if [ "$(gh pr view "$num" --repo "$GITHUB_REPOSITORY" --json isDraft --jq '.isDraft')" = "true" ]; then
+            echo "PR #$num is a draft — marking ready for review."
+            gh pr ready "$num" --repo "$GITHUB_REPOSITORY"
+          fi
+
+          echo "Squash-merging PR #$num ($HEAD_BRANCH)…"
+          # If it isn't mergeable yet (e.g. a conflict), this exits non-zero; that's
+          # fine — the next green CI run on the branch will retry.
+          gh pr merge "$num" --repo "$GITHUB_REPOSITORY" --squash --delete-branch
