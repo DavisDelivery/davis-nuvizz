@@ -740,9 +740,16 @@ export async function fetchStopEvents(
   const { companyCode } = getCreds();
   const hdr = { Authorization: basicAuthHeader(), Accept: 'application/json' };
   const reqr = getNuvizzRequester();
+  // Resolve the system stopId if the caller didn't supply one, so we can use the RICH
+  // /event/eventinfo (carries the "By:" user, "From:" company and GPS, and returns more
+  // events) instead of the lean /stop/eventinfo. One extra /stop/info only when needed.
+  let id = stopId && String(stopId).trim() ? String(stopId).trim() : null;
+  if (!id && String(stopNbr || '').trim()) {
+    try { const r = await lookupStopByPro(String(stopNbr)); if (r.ok && r.stop?.stopId) id = String(r.stop.stopId); } catch { /* fall back to lean below */ }
+  }
   try {
-    if (stopId && String(stopId).trim()) {
-      const url = `${NUVIZZ_BASE}/event/eventinfo/${encodeURIComponent(companyCode)}?entityType=STOP&entityId=${encodeURIComponent(String(stopId).trim())}`;
+    if (id) {
+      const url = `${NUVIZZ_BASE}/event/eventinfo/${encodeURIComponent(companyCode)}?entityType=STOP&entityId=${encodeURIComponent(id)}`;
       const resp = await reqr.request(url, { headers: hdr }, { route: '/event/eventinfo', tenant: companyCode });
       if (resp.ok) return { ok: true, source: 'event', events: normalizeStopEvents(await resp.json()) };
     }
