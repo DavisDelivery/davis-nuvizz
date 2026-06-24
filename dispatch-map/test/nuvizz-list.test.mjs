@@ -37,12 +37,30 @@ test('toBoardStop: planned stop carries load + ordering; unplanned has no load',
   assert.equal(planned.plannedEtaDTTM, '2026-06-24T09:00:00', 'ordering key from scheduled arrival');
   assert.equal(planned.scheduledDate, '2026-06-24');
   assert.equal(planned.listUpdatedDTTM, '2026-06-24T04:37:00', 'free "last updated" from the list (parsed)');
+  assert.equal(planned.deliveredDTTM, null, 'not delivered yet → no delivery time');
+  // PRO == stop number, surfaced FREE from the list so every stop shows it without enrichment.
+  assert.equal(planned.pro, '007');
+  assert.deepEqual(planned.pros, ['007']);
+  assert.equal(planned.primaryPro, '007');
   assert.equal(planned.lat, null, 'coords filled later by geocode/carry-forward');
 
   const unplanned = toBoardStop({ stopNbr: '008', statusCode: '10', routeName: '', scheduledArrival: '6/24/26 10:00 AM', businessName: 'BETA', addr1: '2 Oak', city: 'Buford', zip: '30518' });
   assert.equal(unplanned.isPlanned, false);
   assert.equal(unplanned.isUnplanned, true);
   assert.equal(unplanned.loadNbr, null);
+});
+
+test('toBoardStop: delivery time comes FREE from the list flip — deliveredDTTM = Stop Updated Dttm when DELIVERED', () => {
+  // Status 90/91 (Completed) → the list update time IS the delivery flip time. No /stop/info.
+  const delivered = toBoardStop({ stopNbr: '009', statusCode: '90', routeName: 'TRAILER 1', scheduledArrival: '6/24/26 09:00 AM', updatedTime: '6/24/26 02:15 PM' });
+  assert.equal(delivered.normalizedStatus, 'DELIVERED');
+  assert.equal(delivered.deliveredDTTM, '2026-06-24T14:15:00', 'delivery time taken from the list update at the delivered flip');
+  assert.equal(delivered.deliveredDTTM, delivered.listUpdatedDTTM, 'same free signal — no extra call');
+
+  // EXCEPTION/cancelled (99) is terminal but NOT a delivery → stays null (never counts on-time/late).
+  const exception = toBoardStop({ stopNbr: '010', statusCode: '99', routeName: 'TRAILER 1', scheduledArrival: '6/24/26 09:00 AM', updatedTime: '6/24/26 03:00 PM' });
+  assert.equal(exception.normalizedStatus, 'EXCEPTION');
+  assert.equal(exception.deliveredDTTM, null, 'an exception is not a delivery');
 });
 
 test('fromRows: dedups by stopNbr (last wins) and drops blank stopNbr', () => {

@@ -119,8 +119,16 @@ export function toBoardStop(r: any): any {
   const { status, planned } = statusFromCode(r.statusCode, hasRoute);
   const sched = parseSchedDate(r.scheduledArrival);
   const upd = parseSchedDate(r.updatedTime);
+  const listUpdatedDTTM = upd ? upd.iso : (r.updatedTime || null);
   return {
     stopNbr: r.stopNbr || null,
+    // The PRO IS the stop number (see nuvizz-scan: pros = [stopNbr]). The list carries it for
+    // EVERY stop, so surface it here — the board's PRO column reads pro/pros and would otherwise
+    // show "—" on every un-enriched stop (enrichment is one capped /stop/info per new PRO, so
+    // with hundreds of stops most never catch up). Free from the list, shown immediately.
+    pro: r.stopNbr || null,
+    pros: r.stopNbr ? [r.stopNbr] : [],
+    primaryPro: r.stopNbr || null,
     loadNbr: hasRoute ? r.routeName : null,
     routeName: r.routeName || null,
     stopType: 'DO',
@@ -149,7 +157,15 @@ export function toBoardStop(r: any): any {
     // "Stop Updated Dttm" from the list — when the order last changed (status flips incl.
     // planned→unplanned→planned, edits, delivery). A LIVE field: refreshed every scan, free,
     // no /stop/info call. Drives the "last updated" display + signals when detail is stale.
-    listUpdatedDTTM: upd ? upd.iso : (r.updatedTime || null),
+    listUpdatedDTTM,
+    // Delivery time, FREE from the list: the "Stop Updated Dttm" at the scan where the stop
+    // first reads DELIVERED is the delivery flip time (accuracy = scan interval). This replaces
+    // the per-delivery /stop/info read — the precise execution deliveredDTTM — for the on-time
+    // /late analytics. It's a STATIC field (not in LIVE_LIST_FIELDS), so once a prior scan/enrich
+    // has set it, carry-forward (mergeEnrich) freezes it at the first-observed flip time rather
+    // than letting a later list update drift it. EXCEPTION/cancelled is terminal but NOT a
+    // delivery, so it stays null and never counts as on-time/late.
+    deliveredDTTM: status === 'DELIVERED' ? listUpdatedDTTM : null,
     source: 'nuvizz-list',
   };
 }
