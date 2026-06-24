@@ -3070,8 +3070,17 @@ function StopActivityTimeline({ stopNbr, stopId }) {
                   <div className="min-w-0">
                     <div className="text-xs font-semibold text-slate-800">{e.name || '—'}</div>
                     <div className="text-[10px] text-slate-500">
-                      {[fmtNoteTime(e.dttm), e.user, e.company].filter(Boolean).join(' · ')}
+                      {[fmtNoteTime(e.dttm), e.user && `by ${e.user}`, e.company && `from ${e.company}`].filter(Boolean).join(' · ')}
                     </div>
+                    {e.lat != null && e.lng != null && (
+                      <a
+                        href={`https://www.google.com/maps/search/?api=1&query=${e.lat},${e.lng}`}
+                        target="_blank" rel="noopener noreferrer"
+                        className="text-[10px] text-blue-700 hover:underline inline-flex items-center gap-0.5"
+                      >
+                        <MapPin size={10} /> {Number(e.lat).toFixed(5)}, {Number(e.lng).toFixed(5)}
+                      </a>
+                    )}
                   </div>
                 </li>
               ))}
