@@ -65,10 +65,10 @@ export default async (req: Request): Promise<Response> => {
       const target = `${base}/doc/getdocument/${encodeURIComponent(company)}?documentGuid=${encodeURIComponent(guid)}&objectType=02&extension=${encodeURIComponent(ext)}`;
       try {
         const r = await reqr.request(target, { method: 'GET', headers }, { route: '/documentapi/getdocument', tenant: company });
-        if (!r.ok) { attempts.push({ company, host: base, status: r.status }); continue; }
+        if (!r.ok) { attempts.push({ company, host: base, status: r.status, body: debug ? (await r.text()).slice(0, 200) : undefined }); continue; }
         const j: any = await r.json();
         const b64 = j?.documentData || j?.documentdata;
-        if (!b64 || typeof b64 !== 'string') { attempts.push({ company, host: base, status: r.status, note: 'no documentData' }); continue; }
+        if (!b64 || typeof b64 !== 'string') { attempts.push({ company, host: base, status: r.status, note: 'no documentData', keys: debug ? Object.keys(j || {}) : undefined }); continue; }
         if (debug) return new Response(JSON.stringify({ ok: true, company, host: base, bytes: b64.length, attempts }), { status: 200, headers: jsonHdr });
         const mime = MIME[ext] || 'application/octet-stream';
         if (url.searchParams.get('format') === 'datauri') {
