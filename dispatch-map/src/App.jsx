@@ -256,6 +256,50 @@ function compareByPlannedEta(a, b) {
   return String(a?.stopNbr || '').localeCompare(String(b?.stopNbr || ''));
 }
 
+// When NuVizz's real route sequence is available the polyline follows the true delivery
+// order. But the live LIST feed carries NEITHER a route sequence NOR distinct per-stop ETAs
+// (only a generic arrival window), so for un-enriched stops compareByPlannedEta collapses to
+// stop-number order and the line crisscrosses. Detect that and fall back to a nearest-neighbor
+// geographic chain so the line reads like a route, not a web. Best-effort only — enriching a
+// stop via /stop/info restores NuVizz's authoritative routeSeq and the exact order returns.
+function hasRealRouteSequence(stops) {
+  const seqs = stops.map(routeSeqOf).filter((x) => x != null);
+  if (seqs.length >= 2) return true;
+  const etas = [...new Set(stops.map((s) => s?.plannedEtaDTTM).filter(Boolean))];
+  return etas.length >= 2;
+}
+function nearestNeighborOrder(stops) {
+  const pts = stops.filter((s) => s.lat != null && s.lng != null);
+  const rest = stops.filter((s) => s.lat == null || s.lng == null);
+  if (pts.length < 3) return [...stops];
+  // Start from the most north-west stop for a stable, repeatable path, then always hop to
+  // the closest unvisited stop (squared lat/lng distance — fine at metro scale).
+  let start = 0;
+  for (let i = 1; i < pts.length; i++) {
+    if (pts[i].lat - pts[i].lng > pts[start].lat - pts[start].lng) start = i;
+  }
+  const used = new Array(pts.length).fill(false);
+  used[start] = true;
+  const order = [pts[start]];
+  let curr = start;
+  for (let k = 1; k < pts.length; k++) {
+    let best = -1, bestD = Infinity;
+    for (let j = 0; j < pts.length; j++) {
+      if (used[j]) continue;
+      const dlat = pts[curr].lat - pts[j].lat, dlng = pts[curr].lng - pts[j].lng;
+      const d = dlat * dlat + dlng * dlng;
+      if (d < bestD) { bestD = d; best = j; }
+    }
+    used[best] = true; order.push(pts[best]); curr = best;
+  }
+  return [...order, ...rest];
+}
+// True route order when NuVizz gives us a sequence; otherwise a geographic best-effort so
+// the line doesn't crisscross. Used for the polyline AND the route detail list so they match.
+function orderRouteStops(stops) {
+  return hasRealRouteSequence(stops) ? [...stops].sort(compareByPlannedEta) : nearestNeighborOrder(stops);
+}
+
 function execArrivalTs(exec) {
   return exec.to?.arrivalDTTM || exec.to?.arrivalDttm || exec.arrivalDTTM || exec.arrivalDttm || exec.arrivedDttm || null;
 }
@@ -4796,7 +4840,7 @@ function StatusBadge({ kind }) {
 // Shows the load's stops in compareByPlannedEta order (== polyline order) with status
 // badge + delivery/arrival/ETA time. Tap a row → onPickStop closes route + opens stop.
 function RouteDetailBody({ stops, onPickStop }) {
-  const sorted = [...stops].sort(compareByPlannedEta);
+  const sorted = orderRouteStops(stops);
   const driverName = sorted[0]?.driverName || sorted[0]?.driverUserName || '—';
   const delivered = sorted.filter((s) => classifyStopStatus(s) === 'DELIVERED').length;
   return (
@@ -5435,7 +5479,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0 }) {
       .sort((a, b) => String(a).localeCompare(String(b)));
     const colorByDriver = new Map(driverList.map((d, i) => [d, routeColorByIndex(i)]));
     for (const g of loadGroups.values()) {
-      const ordered = [...g.stops].sort(compareByPlannedEta);
+      const ordered = orderRouteStops(g.stops);
       const color = colorByDriver.get(g.driverUserName);
       if (ordered.length >= 2) {
         byLoad.push({ loadNbr: g.loadNbr, driverUserName: g.driverUserName, color, path: ordered });
@@ -5553,7 +5597,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0 }) {
       // like the Route Workbench — co-located orders share a number, and the order
       // is correct even before a route starts. Fall back to dense position for any
       // stop missing routeSeq (old cached doc).
-      [...selectedRouteStops].sort(compareByPlannedEta).forEach((s, i) => {
+      orderRouteStops(selectedRouteStops).forEach((s, i) => {
         const rs = routeSeqOf(s);
         routeSeqByStop.set(s.stopNbr, rs != null ? rs : i + 1);
       });
