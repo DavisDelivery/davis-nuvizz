@@ -30,12 +30,39 @@ export interface SignalSources {
   orderInstructions: string | null;
 }
 
+// One NuVizz stop comment, surfaced VERBATIM for the stop card's notes panel (the portal's
+// "Driver Instruction" list). Unlike orderInstructions (filtered to ORD_IN/SPL-INSTR-TEXT)
+// this carries EVERY comment with its type, author and time so the card can show them all.
+export interface StopComment {
+  text: string;
+  type: string | null;          // cmtType (e.g. ORD_IN) or legacy commentType code
+  typeDesc: string | null;      // commentTypeDescription (human label)
+  addedBy: string | null;       // addedByName
+  addedOn: string | null;       // addedOn (yyyy-MM-ddTHH:mm:ss)
+  access: string[];             // accessLevels (DISPATCHER/DRIVER/CUSTOMER)
+  source: string | null;        // origin company (e.g. ULINE / DAVIS DELIVERY)
+}
+
+// One activity-timeline event for a stop (the portal's "Activity Timeline"). From NuVizz's
+// /event/eventinfo (rich: carries user + company) or /stop/eventinfo (lean: no user/company).
+export interface StopEvent {
+  code: string | null;          // eventCode
+  name: string | null;          // eventName (e.g. "Stop Planned", "Stop Departure")
+  dttm: string | null;          // eventDTTM (yyyy-MM-ddTHH:mm:ss)
+  user: string | null;          // userName — the "By:" actor (rich endpoint only)
+  company: string | null;       // companyName — the "From:" company (rich endpoint only)
+  routeName: string | null;     // routeName (rich endpoint, STOP entity)
+  lat: number | null;
+  lng: number | null;
+}
+
 export interface NormalizedStop {
   pro: string | null;
   pros: string[];
   primaryPro: string | null;
   proCount: number;
   stopNbr: string | null;
+  stopId: string | null;            // NuVizz system stop id (stop.stopId) — entityId for /event/eventinfo (activity timeline).
   loadNbr: string | null;
   loadStopSeq: number | null;
   routeSeq: number | null;          // M5.3 — NuVizz's authoritative route stop sequence (stop.to.seq). 1..N over physical stops; co-located orders share a number. This is the Route Workbench order, present even before ETAs exist (loadStopSeq is only array order — unreliable).
@@ -81,6 +108,7 @@ export interface NormalizedStop {
   origin: StopOrigin | null;        // P2 — pickup/depot origin address.
   markfor: unknown;                 // P2 — NuVizz mark-for, when present (raw).
   signalSources: SignalSources;
+  allComments: StopComment[];       // FULL comment list (every type, author + time) for the notes panel.
   raw: unknown;
 }
 
@@ -278,6 +306,30 @@ function extractOrderInstructions(stop: any): string | null {
   return lines.length ? lines.join('\n') : null;
 }
 
+// The FULL comment list (every type), surfaced verbatim for the stop card's notes panel.
+// Unlike extractOrderInstructions (filtered to delivery instructions), this keeps billing,
+// pre-visit, etc. with their type/author/time so the card mirrors the portal's notes.
+function extractAllComments(stop: any): StopComment[] {
+  const comments = stop?.comments;
+  if (!Array.isArray(comments) || !comments.length) return [];
+  const out: StopComment[] = [];
+  for (const c of comments) {
+    if (!c) continue;
+    const text = typeof c.commentDescription === 'string' ? c.commentDescription.trim() : '';
+    if (!text) continue;
+    out.push({
+      text,
+      type: c.cmtType ?? c.commentType ?? null,
+      typeDesc: c.commentTypeDescription ?? null,
+      addedBy: c.addedByName ?? null,
+      addedOn: c.addedOn ?? null,
+      access: Array.isArray(c.accessLevels) ? c.accessLevels : [],
+      source: c.source ?? null,
+    });
+  }
+  return out;
+}
+
 function detectTerminal(addr1: string | null, businessName: string | null): boolean {
   const a = (addr1 || '').toUpperCase();
   if (/\b943\b/.test(a) && /GAINESVILLE/.test(a)) return true;
@@ -302,6 +354,7 @@ export function normalizeStop(raw: any): NormalizedStop {
   const pros: string[] = stopNbr ? [stopNbr] : [];
   const addr2 = addr.addr2 ?? null;
   const orderInstructions = extractOrderInstructions(stop);
+  const allComments = extractAllComments(stop);
   const businessName = addr.name || stop.custInfo?.custName || null;
   const addr1 = addr.addr1 ?? null;
   const driverUserName = load.driverUserName ?? null;
@@ -354,6 +407,7 @@ export function normalizeStop(raw: any): NormalizedStop {
     primaryPro: pros[0] ?? null,
     proCount: pros.length,
     stopNbr,
+    stopId: stop.stopId ?? null,
     loadNbr,
     loadStopSeq: typeof load.stopSeq === 'number' ? load.stopSeq : null,
     routeSeq: numOrNull(primary.seq),
@@ -395,6 +449,7 @@ export function normalizeStop(raw: any): NormalizedStop {
     origin,
     markfor: stop.markfor ?? null,
     signalSources: { addressLine2: addr2, orderInstructions },
+    allComments,
     raw,
   };
 }
@@ -646,6 +701,58 @@ export async function lookupStopByPro(pro: string): Promise<{ ok: boolean; stop?
     const wrap = d?.Stop || d?.stop || d;
     if (!wrap?.stop?.stopNbr) return { ok: false, reason: 'not_found' };
     return { ok: true, stop: normalizeStop(wrap) };
+  } catch (e: any) {
+    return { ok: false, reason: e?.message || 'error' };
+  }
+}
+
+// Map a NuVizz event-info response (either wrapper shape) into our common StopEvent[].
+// Newest-first so the timeline reads top-down like the portal. PURE — unit-tested.
+export function normalizeStopEvents(d: any): StopEvent[] {
+  const arr =
+    (Array.isArray(d?.events) && d.events) ||
+    (Array.isArray(d?.stopEvents) && d.stopEvents) ||
+    (Array.isArray(d?.eventList) && d.eventList) ||
+    (Array.isArray(d) && d) || [];
+  const out: StopEvent[] = arr.map((e: any) => ({
+    code: e?.eventCode != null ? String(e.eventCode) : null,
+    name: e?.eventName ?? null,
+    dttm: e?.eventDTTM ?? e?.eventDttm ?? null,
+    user: e?.userName ?? null,
+    company: e?.companyName ?? null,
+    routeName: e?.routeName ?? null,
+    lat: e?.latitude != null ? Number(e.latitude) : null,
+    lng: e?.longitude != null ? Number(e.longitude) : null,
+  })).filter((e: StopEvent) => e.name || e.dttm);
+  // Sort newest-first by eventDTTM (ISO-like strings sort lexically); undated go last.
+  out.sort((a, b) => String(b.dttm || '').localeCompare(String(a.dttm || '')));
+  return out;
+}
+
+// On-demand activity timeline for a single stop. Prefers /event/eventinfo (carries the
+// "By:" user + "From:" company) when the system stopId is known; falls back to
+// /stop/eventinfo by stop number. One NuVizz call (two only if the rich call fails and we
+// fall back). Rides the shared requester so it counts against the daily ceiling.
+export async function fetchStopEvents(
+  stopNbr: string, stopId?: string | null,
+): Promise<{ ok: boolean; events?: StopEvent[]; source?: string; reason?: string }> {
+  if (!scansEnabled()) return { ok: false, reason: 'scans_disabled' };
+  const { companyCode } = getCreds();
+  const hdr = { Authorization: basicAuthHeader(), Accept: 'application/json' };
+  const reqr = getNuvizzRequester();
+  try {
+    if (stopId && String(stopId).trim()) {
+      const url = `${NUVIZZ_BASE}/event/eventinfo/${encodeURIComponent(companyCode)}?entityType=STOP&entityId=${encodeURIComponent(String(stopId).trim())}`;
+      const resp = await reqr.request(url, { headers: hdr }, { route: '/event/eventinfo', tenant: companyCode });
+      if (resp.ok) return { ok: true, source: 'event', events: normalizeStopEvents(await resp.json()) };
+    }
+    const raw = String(stopNbr || '').trim();
+    const id = /^[0-9]+$/.test(raw) ? raw.padStart(9, '0') : raw;
+    if (!id) return { ok: false, reason: 'missing id' };
+    const url = `${NUVIZZ_BASE}/stop/eventinfo/${encodeURIComponent(companyCode)}?stopNbr=${encodeURIComponent(id)}`;
+    const resp = await reqr.request(url, { headers: hdr }, { route: '/stop/eventinfo', tenant: companyCode });
+    if (!resp.ok) return { ok: false, reason: `http_${resp.status}` };
+    return { ok: true, source: 'stop', events: normalizeStopEvents(await resp.json()) };
   } catch (e: any) {
     return { ok: false, reason: e?.message || 'error' };
   }

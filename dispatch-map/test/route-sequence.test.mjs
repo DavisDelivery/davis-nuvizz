@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizeStop } from '../netlify/functions/lib/nuvizz-scan.mts';
+import { normalizeStop, normalizeStopEvents } from '../netlify/functions/lib/nuvizz-scan.mts';
 
 // A delivery (DO) stop as it arrives from /load/info: NuVizz's authoritative route
 // sequence lives in stop.to.seq (the Route Workbench order). loadStopSeq is only the
@@ -51,6 +51,48 @@ test('ordering by routeSeq matches NuVizz, not the scrambled array order', () =>
   // The raw array order (loadStopSeq) would have produced C, B, A — i.e. wrong.
   const byArray = [...stops].sort((a, b) => a.loadStopSeq - b.loadStopSeq).map((s) => s.stopNbr);
   assert.deepEqual(byArray, ['C', 'B', 'A']);
+});
+
+// stopId (entityId for the activity timeline) + the FULL comment list for the notes panel.
+test('normalizeStop surfaces stopId and the full comment list (all types, author + time)', () => {
+  const raw = doStop({ stopNbr: '007137372', toSeq: 1, loadStopSeq: 0, eta: null });
+  raw.stop.stopId = 'ST-SYS-123';
+  raw.stop.comments = [
+    { commentDescription: 'MISSLOADED', cmtType: 'PRE_VISIT', commentTypeDescription: 'Pre-Visit', addedByName: 'FREDDY PEREZ', addedOn: '2026-06-23T15:35:26', accessLevels: ['DISPATCHER'], source: 'ULINE' },
+    { commentDescription: 'SPL-INSTR-TEXT: INSIDE DELIVERY', cmtType: 'ORD_IN', commentTypeDescription: 'Order Instructions', addedByName: 'FREDDY PEREZ', addedOn: '2026-06-23T15:35:26', accessLevels: ['DRIVER'], source: 'ULINE' },
+    { commentDescription: '   ' }, // blank → dropped
+  ];
+  const n = normalizeStop(raw);
+  assert.equal(n.stopId, 'ST-SYS-123');
+  assert.equal(n.allComments.length, 2, 'both non-blank comments kept (billing/pre-visit NOT filtered out)');
+  assert.equal(n.allComments[0].text, 'MISSLOADED');
+  assert.equal(n.allComments[0].type, 'PRE_VISIT');
+  assert.equal(n.allComments[0].addedBy, 'FREDDY PEREZ');
+  assert.equal(n.allComments[0].source, 'ULINE');
+  // orderInstructions still only carries the filtered delivery instruction.
+  assert.equal(n.signalSources.orderInstructions, 'SPL-INSTR-TEXT: INSIDE DELIVERY');
+});
+
+test('normalizeStopEvents: maps both wrapper shapes, newest-first, with By/From when present', () => {
+  // Rich /event/eventinfo shape ({ events }) — carries userName + companyName.
+  const rich = normalizeStopEvents({ events: [
+    { eventCode: '7000', eventName: 'Stop Planned', eventDTTM: '2026-06-23T04:36:00', userName: 'Zach Johnston', companyName: 'DAVIS DELIVERY', routeName: 'MITCHELL' },
+    { eventCode: '7008', eventName: 'Stop Departure', eventDTTM: '2026-06-24T10:01:00', userName: 'Aaron Mitchell', companyName: 'DAVIS DELIVERY' },
+  ] });
+  assert.equal(rich.length, 2);
+  assert.equal(rich[0].name, 'Stop Departure', 'newest event first');
+  assert.equal(rich[0].user, 'Aaron Mitchell');
+  assert.equal(rich[1].company, 'DAVIS DELIVERY');
+  // Lean /stop/eventinfo shape ({ stopEvents }) — no user/company.
+  const lean = normalizeStopEvents({ stopEvents: [
+    { eventCode: '7000', eventName: 'Stop Planned', eventDTTM: '2026-06-23T04:36:00' },
+  ] });
+  assert.equal(lean.length, 1);
+  assert.equal(lean[0].user, null);
+  assert.equal(lean[0].name, 'Stop Planned');
+  // Junk → empty.
+  assert.deepEqual(normalizeStopEvents({}), []);
+  assert.deepEqual(normalizeStopEvents(null), []);
 });
 
 // POD docs: NuVizz hangs proof-of-delivery doc metadata off stopExecutionInfo.to.podDoc[]

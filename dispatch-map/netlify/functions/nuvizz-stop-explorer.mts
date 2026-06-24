@@ -10,7 +10,7 @@
 
 import { getNuvizzRequester } from './lib/nuvizz-request.mts';
 import { getCreds, basicAuthHeader } from './lib/nuvizz-scan.mts';
-import { buildBody, normalize, cleanPeriod, OPENAPI_BASE } from './lib/nuvizz-list.mts';
+import { buildBody, normalize, cleanPeriod, OPENAPI_BASE, SAVED_SEARCHES, fetchSavedSearchRaw } from './lib/nuvizz-list.mts';
 
 // Re-exported so the existing test (test/stop-explorer.test.mjs) keeps importing them here.
 export { buildBody, normalize, cleanPeriod } from './lib/nuvizz-list.mts';
@@ -22,6 +22,20 @@ export default async (req: Request): Promise<Response> => {
 
   let body: any = {};
   try { body = await req.json(); } catch { /* defaults */ }
+
+  // DIAGNOSTIC (read-only): { savedSearch: 'active'|'completed', raw: true } returns the saved
+  // search's raw column-def keys + a few raw rows, so we can see exactly which columns it
+  // exposes (route sequence? real sequenced ETA?). One filterdata call; rides the requester.
+  if (body.raw && (body.savedSearch === 'active' || body.savedSearch === 'completed')) {
+    try {
+      const def = SAVED_SEARCHES[body.savedSearch as 'active' | 'completed'];
+      const { cols, rows } = await fetchSavedSearchRaw(def, 3);
+      return new Response(JSON.stringify({ ok: true, savedSearch: body.savedSearch, customListDefId: def.customListDefId, cols, rows }), { status: 200, headers: cors });
+    } catch (e: any) {
+      return new Response(JSON.stringify({ ok: false, error: e?.message || 'raw saved-search failed' }), { status: 500, headers: cors });
+    }
+  }
+
   const period = cleanPeriod(body.arrivalPeriod);
   const codes = Array.isArray(body.statusCodes) ? body.statusCodes.filter((c: any) => /^\d{1,2}$/.test(String(c))).map(String) : [];
   const statusCsv = codes.length ? codes.join(',') : '-1';

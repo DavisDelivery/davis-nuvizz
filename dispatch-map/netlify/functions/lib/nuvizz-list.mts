@@ -351,6 +351,25 @@ export async function fetchSavedSearchRows(
   return normalize(await resp.json());
 }
 
+// DIAGNOSTIC (read-only): pull one saved search and return its RAW column-def keys plus a few
+// raw value rows. Lets us see exactly which columns a saved search exposes (e.g. a route-stop
+// sequence or a real sequenced ETA) without guessing — used by the stop-explorer's debug path.
+export async function fetchSavedSearchRaw(
+  def: { customListDefId: number; filterList: any[] }, sampleRows: number = 3, pageSize: number = 50,
+): Promise<{ cols: string[]; rows: any[][] }> {
+  const { companyCode } = getCreds();
+  const hdr = { Authorization: basicAuthHeader(), 'Content-Type': 'application/json', Accept: 'application/json' };
+  const reqr = getNuvizzRequester();
+  const url = `${OPENAPI_BASE}/entity/filterdata/VizzonStop/${companyCode}`;
+  const body = JSON.stringify(buildSavedBody(def, pageSize));
+  const resp = await reqr.request(url, { method: 'POST', headers: hdr, body }, { route: '/entity/filterdata', tenant: companyCode });
+  if (!resp.ok) throw new Error(`saved-search ${def.customListDefId} filterdata ${resp.status}`);
+  const j: any = await resp.json();
+  const cols = Object.keys((j && j.filterData && j.filterData[0]) || {});
+  const rows = ((j && j.values) || []).slice(0, sampleRows);
+  return { cols, rows };
+}
+
 // Merge the two pulls into per-scheduled-date board buckets. COMPLETED wins over ACTIVE
 // for the same stop (it's the newer state — a stop that flipped to delivered drops out of
 // the active search and reappears here). Buckets by each stop's scheduled-arrival date so
