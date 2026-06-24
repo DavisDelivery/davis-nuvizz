@@ -2987,7 +2987,11 @@ function PodDocsSection({ stop }) {
             const src = podDocUrl(d);
             return (
               <a key={d.documentGuid || i} href={src} target="_blank" rel="noopener noreferrer" className="block" title={`${d.documentName || 'POD photo'}${fmtClockShort(d.createdTime) ? ` · ${fmtClockShort(d.createdTime)}` : ''}`}>
-                <img src={src} alt={d.documentName || 'POD photo'} loading="lazy" className="w-full h-20 object-cover rounded border border-slate-200 bg-slate-50" />
+                <img
+                  src={src} alt={d.documentName || 'POD photo'} loading="lazy"
+                  className="w-full h-20 object-cover rounded border border-slate-200 bg-slate-50"
+                  onError={(e) => { const a = e.currentTarget.closest('a'); if (a) a.style.display = 'none'; }}
+                />
               </a>
             );
           })}
