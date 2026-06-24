@@ -52,7 +52,12 @@ export function normalize(j: any): any[] {
   const cols = Object.keys((j && j.filterData && j.filterData[0]) || {});
   const idx: Record<string, number> = {};
   cols.forEach((k, i) => { idx[k] = i; });
-  const g = (row: any[], key: string) => (idx[key] != null ? row[idx[key]] : undefined);
+  // Unwrap "link object" columns ({"colmnLinkId":..,"columnValue":".."}) at read time.
+  // NuVizz wraps several text columns this way — load name, driver, PRO, stop #, updated —
+  // and adds more over time. linkVal is a no-op on plain values, so unwrapping EVERY column
+  // is safe and future-proofs us against NuVizz wrapping additional columns (otherwise the
+  // raw JSON leaks straight to the board's Load/Driver/PRO cells).
+  const g = (row: any[], key: string) => (idx[key] != null ? linkVal(row[idx[key]]) : undefined);
   // The portal's "Stop Updated Dttm" column — found by PATTERN, not a hardcoded key (the
   // dotted key varies by saved list def). Prefer a stop/shipment-scoped update column so an
   // unrelated "updatedBy/updatedOn" never wins; require an update token + a date/time token.
@@ -60,7 +65,7 @@ export function normalize(j: any): any[] {
     cols.find((k) => /updat/i.test(k) && /(dttm|date|time)/i.test(k) && /stop|shipment|vizzon/i.test(k)) ||
     cols.find((k) => /updat/i.test(k) && /(dttm|date|time)/i.test(k)) || null;
   return ((j && j.values) || []).map((row: any[]) => ({
-    stopNbr: String(linkVal(g(row, 'vizzonInfo.shipmentInfo.stopNbr')) ?? ''),
+    stopNbr: String(g(row, 'vizzonInfo.shipmentInfo.stopNbr') ?? ''),
     statusCode: String(g(row, 'default_vizzonInfo.shipmentInfo.status') ?? ''),
     statusText: g(row, 'vizzonInfo.shipmentInfo.status') ?? '',
     businessName: g(row, 'vizzonInfo.destination.address.name') ?? '',
@@ -75,7 +80,7 @@ export function normalize(j: any): any[] {
     proNbr: g(row, 'vizzonInfo.shipmentInfo.proNbr') ?? '',
     scheduledArrival: g(row, 'vizzonInfo.destination.earliestSchTime') ?? '',
     createdTime: g(row, 'vizzonInfo.createdTime') ?? '',
-    updatedTime: updatedKey ? String(linkVal(g(row, updatedKey)) ?? '') : '',
+    updatedTime: updatedKey ? String(g(row, updatedKey) ?? '') : '',
     comments: g(row, 'comments.commentList.commentText') ?? '',
   }));
 }

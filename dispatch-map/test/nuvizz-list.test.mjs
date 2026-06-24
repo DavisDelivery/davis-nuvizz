@@ -89,6 +89,33 @@ test('normalize: maps the live VizzonStop response (filterData defs + values row
   assert.equal(r.updatedTime, '6/24/26 04:37 AM', 'Stop Updated Dttm discovered by pattern, ingested free');
 });
 
+test('normalize: unwraps "link object" columns (load, driver, PRO) — no raw JSON leaks to the board', () => {
+  // NuVizz wraps several text columns as {"colmnLinkId":..,"columnValue":".."} strings.
+  const cols = [
+    'KeyColumn', 'default_vizzonInfo.shipmentInfo.status', 'vizzonInfo.shipmentInfo.stopNbr',
+    'route.driver.driverId', 'route.name', 'vizzonInfo.shipmentInfo.proNbr',
+    'vizzonInfo.destination.earliestSchTime',
+  ];
+  const filterData = [Object.fromEntries(cols.map((k) => [k, { columnName: k }]))];
+  const row = [
+    'id1', '20', '{"colmnLinkId":"abc","columnValue":"007137480"}',
+    '{"colmnLinkId":"105292","columnValue":"DENIS"}',
+    '{"colmnLinkId":"6a340f6c58e3","columnValue":"TRAILER 1"}',
+    '{"colmnLinkId":"xyz","columnValue":"G6"}',
+    '6/24/26 08:00 AM',
+  ];
+  const [r] = normalize({ filterData, values: [row] });
+  assert.equal(r.stopNbr, '007137480');
+  assert.equal(r.driverName, 'DENIS', 'driver unwrapped from link object');
+  assert.equal(r.routeName, 'TRAILER 1', 'load/route name unwrapped from link object');
+  assert.equal(r.proNbr, 'G6', 'PRO unwrapped from link object');
+  // And the board stop carries clean values (loadNbr doubles as the load name).
+  const b = toBoardStop(r);
+  assert.equal(b.loadNbr, 'TRAILER 1');
+  assert.equal(b.driverName, 'DENIS');
+  assert.equal(b.proNbr, 'G6');
+});
+
 test('normalize: updated-column detection prefers a stop-scoped column over an unrelated updatedBy', () => {
   // Two candidate columns: an unrelated route audit field and the real stop update time.
   const cols = ['KeyColumn', 'route.updatedOn', 'vizzonInfo.shipmentInfo.stopUpdatedDttm', 'vizzonInfo.shipmentInfo.stopNbr'];
