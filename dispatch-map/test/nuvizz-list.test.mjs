@@ -4,7 +4,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { statusFromCode, parseSchedDate, toBoardStop, bucketByDate, fromRows, normalize, periodForDate, mergeEnrich } from '../netlify/functions/lib/nuvizz-list.mts';
+import { statusFromCode, parseSchedDate, toBoardStop, bucketByDate, fromRows, normalize, periodForDate, mergeEnrich, mergeTwoScan, etDateForTargetUTC, SAVED_SEARCHES } from '../netlify/functions/lib/nuvizz-list.mts';
 import { addrKey } from '../netlify/functions/lib/geocode.mts';
 
 test('statusFromCode: NuVizz codes → board status + planned flag', () => {
@@ -14,10 +14,61 @@ test('statusFromCode: NuVizz codes → board status + planned flag', () => {
   assert.deepEqual(statusFromCode('50', true), { status: 'ARRIVED', planned: true });
   assert.deepEqual(statusFromCode('90', true), { status: 'DELIVERED', planned: true });
   assert.deepEqual(statusFromCode('91', true), { status: 'DELIVERED', planned: true });
+  // 80 = "Unable to deliver" — finished but NOT a delivery → EXCEPTION (matches nuvizz-scan).
+  assert.deepEqual(statusFromCode('80', true), { status: 'EXCEPTION', planned: true });
   assert.equal(statusFromCode('99', true).status, 'EXCEPTION');
   // Unknown code falls back on route membership.
   assert.deepEqual(statusFromCode('', true), { status: 'SCHEDULED', planned: true });
   assert.deepEqual(statusFromCode('', false), { status: 'UNPLANNED', planned: false });
+});
+
+test('SAVED_SEARCHES: active + completed map to the portal saved searches (HAR-captured)', () => {
+  // ACTIVE = "Dispatch Map Planned Unplanned": status 20,10 + Estimated Arrival +/-7d (seq 10).
+  assert.equal(SAVED_SEARCHES.active.customListDefId, 77128);
+  const a = Object.fromEntries(SAVED_SEARCHES.active.filterList.map((f) => [f.sequence, f.value]));
+  assert.equal(a[2], '20,10');
+  assert.equal(a[10], JSON.stringify({ period: '+/-7d' }));
+  assert.equal(SAVED_SEARCHES.active.filterList.length, 12, 'active def has 12 sequences');
+  // COMPLETED = "Dispatch Map Completed": status 90,91,80 + arrival +/-7d (seq 10) + updated today (seq 11).
+  assert.equal(SAVED_SEARCHES.completed.customListDefId, 77131);
+  const c = Object.fromEntries(SAVED_SEARCHES.completed.filterList.map((f) => [f.sequence, f.value]));
+  assert.equal(c[2], '90,91,80');
+  assert.equal(c[10], JSON.stringify({ period: '+/-7d' }));
+  assert.equal(c[11], JSON.stringify({ period: '0d' }), 'Stop Detail Updated = today');
+  assert.equal(SAVED_SEARCHES.completed.filterList.length, 11, 'completed def has 11 sequences');
+});
+
+test('mergeTwoScan: completed wins over active per stop; buckets by scheduled date', () => {
+  const active = [
+    { stopNbr: 'A', statusCode: '20', routeName: 'L1', scheduledArrival: '6/24/26 09:00 AM' },
+    { stopNbr: 'B', statusCode: '10', scheduledArrival: '6/25/26 09:00 AM' },
+  ];
+  const completed = [
+    // A flipped to delivered — it left the active search and reappears here; completed wins.
+    { stopNbr: 'A', statusCode: '90', routeName: 'L1', scheduledArrival: '6/24/26 09:00 AM', updatedTime: '6/24/26 02:00 PM' },
+    // C = an unable-to-deliver (80) finished today, scheduled for the 24th.
+    { stopNbr: 'C', statusCode: '80', routeName: 'L1', scheduledArrival: '6/24/26 11:00 AM', updatedTime: '6/24/26 03:00 PM' },
+  ];
+  const m = mergeTwoScan(active, completed);
+  const d24 = m.get('2026-06-24');
+  const d25 = m.get('2026-06-25');
+  assert.equal(d24.length, 2, 'A (delivered) + C (exception) on the 24th');
+  assert.equal(d25.length, 1, 'B still open on the 25th');
+  const A = d24.find((s) => s.stopNbr === 'A');
+  assert.equal(A.normalizedStatus, 'DELIVERED', 'completed pull overrides the active version');
+  assert.equal(A.deliveredDTTM, '2026-06-24T14:00:00');
+  const C = d24.find((s) => s.stopNbr === 'C');
+  assert.equal(C.normalizedStatus, 'EXCEPTION', '80 = unable to deliver');
+  assert.equal(C.deliveredDTTM, null, 'an unable-to-deliver is not a delivery');
+});
+
+test('etDateForTargetUTC: maps a UTC board key to its ET-equivalent bucket date', () => {
+  // ET daytime: UTC == ET → same date.
+  assert.equal(etDateForTargetUTC('2026-06-24', '2026-06-24', '2026-06-24'), '2026-06-24');
+  // ET evening: UTC already rolled +1 (today=todayUTC ahead of etToday) → today maps back to etToday.
+  assert.equal(etDateForTargetUTC('2026-06-24', '2026-06-24', '2026-06-23'), '2026-06-23');
+  // The next UTC board from that same evening maps to ET "today".
+  assert.equal(etDateForTargetUTC('2026-06-25', '2026-06-24', '2026-06-23'), '2026-06-24');
 });
 
 test('parseSchedDate: "M/D/YY h:mm AM" → date + ordered iso, null on junk', () => {
