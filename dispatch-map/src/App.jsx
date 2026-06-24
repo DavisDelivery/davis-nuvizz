@@ -49,7 +49,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.29.28';
+const APP_VERSION = '0.29.29';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -69,6 +69,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.29.29', 'Stop card upgrade: opening an order now shows its FULL NuVizz notes (every comment — order instructions, pre-visit, billing — with who added it and when), a "Refresh from NuVizz" button that re-pulls the order on demand, and a collapsible Activity Timeline (Stop Planned / Departure / Dispatched / Updated, with the By: and From:). Plus fixes: rolled-over undelivered orders now stay on TODAY\'s route instead of dropping off, and the map route lines no longer crisscross. Existing orders backfill their full notes automatically over the next few scans.'],
   ['0.29.28', 'Loads: added a % delivered figure on each load in the Loads list and on the load detail header (green at 100%). The load detail now also shows each stop\'s address under the business name.'],
   ['0.29.27', 'Mobile: swapped the "Drivers" tab for "Loads". The bottom-nav and bottom-sheet tab now lists the day\'s loads (route/load #, driver, delivered-of-total, pallets, weight); tapping a load opens its route detail. Live driver pins on the map are unchanged.'],
   ['0.29.26', 'Messages on mobile: the texting window now sizes to the visible screen, so the keyboard no longer hides the message box and Send button — you can actually type and send a text on a phone. Same fix keeps the conversation above the keyboard in every view.'],
