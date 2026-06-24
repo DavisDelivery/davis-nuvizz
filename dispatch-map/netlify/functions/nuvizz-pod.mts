@@ -22,6 +22,16 @@ import { getNuvizzRequester } from './lib/nuvizz-request.mts';
 import { basicAuthHeader } from './lib/nuvizz-scan.mts';
 
 const DOC_BASE = process.env.NUVIZZ_DOC_BASE || 'https://portal.nuvizz.com/deliverit/openapi/documentapi';
+// The documentapi may need an account with access to the document's org (e.g. Uline). If a
+// dedicated doc account is configured, use it; otherwise fall back to the scanner's creds.
+function docAuthHeader(): string {
+  const u = process.env.NUVIZZ_DOC_USER, p = process.env.NUVIZZ_DOC_PASS;
+  if (u && p) return 'Basic ' + Buffer.from(`${u}:${p}`).toString('base64');
+  return basicAuthHeader();
+}
+// Optional explicit company override for the document request; default order is
+// [docCc, ULINE, DAVIS].
+const DOC_COMPANY = process.env.NUVIZZ_DOC_COMPANY || '';
 const FAILOVER = (u: string) => u.replace('portal.nuvizz.com', 'contact-support.nuvizz.com');
 const MIME: Record<string, string> = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif', webp: 'image/webp', pdf: 'application/pdf' };
 
@@ -44,9 +54,9 @@ export default async (req: Request): Promise<Response> => {
   if (!guid) return new Response(JSON.stringify({ ok: false, reason: 'missing documentGuid' }), { status: 400, headers: jsonHdr });
   ext = ext || 'jpg';
 
-  const headers = { Authorization: basicAuthHeader(), Accept: 'application/json' };
+  const headers = { Authorization: docAuthHeader(), Accept: 'application/json' };
   const reqr = getNuvizzRequester();
-  const companies = [...new Set([cc, 'ULINE', 'DAVIS'].filter(Boolean).map((s) => s.toUpperCase()))];
+  const companies = [...new Set([DOC_COMPANY, cc, 'ULINE', 'DAVIS'].filter(Boolean).map((s) => s.toUpperCase()))];
   const debug = !!url.searchParams.get('debug');
   const attempts: any[] = [];
 
