@@ -94,6 +94,11 @@ export function statusFromCode(code: any, hasRoute: boolean): { status: string; 
     case '40': return { status: 'OUT_FOR_DEL', planned: true };
     case '50': return { status: 'ARRIVED', planned: true };
     case '90': case '91': return { status: 'DELIVERED', planned: true };
+    // 80 = "Unable to deliver" — the explicit failure outcome (see nuvizz-scan
+    // statusFromInfo). It's a FINISHED stop (the Completed saved search bundles it
+    // with 90/91), but it is NOT a delivery, so it must read EXCEPTION here so
+    // toBoardStop leaves deliveredDTTM null and on-time analytics never count it.
+    case '80': return { status: 'EXCEPTION', planned: true };
     case '99': return { status: 'EXCEPTION', planned: hasRoute };
     default: return hasRoute ? { status: 'SCHEDULED', planned: true } : { status: 'UNPLANNED', planned: false };
   }
@@ -221,6 +226,112 @@ export async function listScanForDate(targetDateUTC: string): Promise<any[]> {
   const stops = fromRows(await fetchListRows(periodForDate(targetDateUTC)));
   for (const s of stops) s.scheduledDate = targetDateUTC; // authoritative: we queried this exact day
   return stops;
+}
+
+// ── Two saved-search scans (the live board's source) ─────────────────────────
+//
+// Davis drives the board off TWO of the portal's saved searches (captured in the
+// "Nuvizz_New_Filters" HAR) instead of one ad-hoc query:
+//   • ACTIVE    (customListDefId 77128, "Dispatch Map Planned Unplanned") — status
+//     20,10, Estimated-Arrival within +/-7d. The open work.
+//   • COMPLETED (customListDefId 77131, "Dispatch Map Completed") — status 90,91,80
+//     (delivered + unable-to-deliver), Estimated-Arrival +/-7d, AND Stop-Detail-Updated
+//     = today (period "0d"). Just-finished stops, kept small by the "updated today" clamp.
+//
+// Each saved search is its OWN list def with its OWN filter-sequence layout (77128 has
+// 12 sequences, 77131 has 11, the legacy 35824 has 13 — the date fields sit at different
+// sequences in each), so we send each VERBATIM by customListDefId; we cannot reuse one
+// def's sequence map for another. Periods are RELATIVE and server-evaluated against
+// NuVizz's ET "today", so "+/-7d"/"0d" always mean the right window whenever we call.
+// IDs/status/periods are env-overridable so the saved searches can be retuned in the
+// portal without a code change.
+const seq = (sequence: number, value: any) => ({ sequence, value });
+// Build a filterList of `count` sequences (all "-1") with the given overrides applied.
+function filterListOf(count: number, overrides: Record<number, any>): any[] {
+  const arr = Array.from({ length: count }, (_, i) => seq(i + 1, '-1'));
+  for (const [s, v] of Object.entries(overrides)) arr[Number(s) - 1] = seq(Number(s), v);
+  return arr;
+}
+const ACTIVE_STATUS = process.env.NUVIZZ_ACTIVE_STATUS || '20,10';
+const COMPLETED_STATUS = process.env.NUVIZZ_COMPLETED_STATUS || '90,91,80';
+const ACTIVE_ARRIVAL = cleanPeriod(process.env.NUVIZZ_ACTIVE_ARRIVAL || '+/-7d');
+const COMPLETED_ARRIVAL = cleanPeriod(process.env.NUVIZZ_COMPLETED_ARRIVAL || '+/-7d');
+const COMPLETED_UPDATED = cleanPeriod(process.env.NUVIZZ_COMPLETED_UPDATED || '0d');
+export const SAVED_SEARCHES = {
+  active: {
+    customListDefId: Number(process.env.NUVIZZ_LISTDEF_ACTIVE) || 77128,
+    // seq2=status, seq10=Estimated Arrival, seq12=Stop Created (unfiltered).
+    filterList: filterListOf(12, {
+      2: ACTIVE_STATUS,
+      10: JSON.stringify({ period: ACTIVE_ARRIVAL }),
+      12: JSON.stringify({ period: '' }),
+    }),
+  },
+  completed: {
+    customListDefId: Number(process.env.NUVIZZ_LISTDEF_COMPLETED) || 77131,
+    // seq2=status, seq10=Estimated Arrival, seq11=Stop Detail Updated (= today).
+    filterList: filterListOf(11, {
+      2: COMPLETED_STATUS,
+      10: JSON.stringify({ period: COMPLETED_ARRIVAL }),
+      11: JSON.stringify({ period: COMPLETED_UPDATED }),
+    }),
+  },
+};
+
+// Body for a saved search — exactly the portal's shape (userDefaultFilter:false + an
+// explicit filterList), pulling the whole result set in one request via a high maxResult
+// (the portal's currentPageSize paging is a UI concern; the API honors maxResult).
+function buildSavedBody(def: { customListDefId: number; filterList: any[] }, pageSize: number) {
+  return {
+    filterList: def.filterList,
+    listDefId: '', customListDefId: def.customListDefId, userDefaultFilter: false,
+    currentPageSize: 0, canDelete: false, canEdit: false, canShow: false, canSelect: true,
+    page: 1, maxResult: pageSize, defaultSize: pageSize, filterArgsJson: {}, filterValues: [],
+  };
+}
+
+// Pull one saved search's intermediate rows (rides the shared requester → counts in the
+// dashboard + honors the breaker, same as fetchListRows).
+export async function fetchSavedSearchRows(
+  def: { customListDefId: number; filterList: any[] }, pageSize: number = LIST_MAX_RESULT,
+): Promise<any[]> {
+  const { companyCode } = getCreds();
+  const hdr = { Authorization: basicAuthHeader(), 'Content-Type': 'application/json', Accept: 'application/json' };
+  const reqr = getNuvizzRequester();
+  const url = `${OPENAPI_BASE}/entity/filterdata/VizzonStop/${companyCode}`;
+  const body = JSON.stringify(buildSavedBody(def, pageSize));
+  const resp = await reqr.request(url, { method: 'POST', headers: hdr, body }, { route: '/entity/filterdata', tenant: companyCode });
+  if (!resp.ok) throw new Error(`saved-search ${def.customListDefId} filterdata ${resp.status}`);
+  return normalize(await resp.json());
+}
+
+// Merge the two pulls into per-scheduled-date board buckets. COMPLETED wins over ACTIVE
+// for the same stop (it's the newer state — a stop that flipped to delivered drops out of
+// the active search and reappears here). Buckets by each stop's scheduled-arrival date so
+// a stop sits on its delivery day's board through its whole lifecycle; stops with no
+// parseable arrival date can't be placed and are dropped. PURE — unit-tested.
+export function mergeTwoScan(activeRows: any[], completedRows: any[]): Map<string, any[]> {
+  const byNbr = new Map<string, any>();
+  for (const r of activeRows) { const s = toBoardStop(r); if (s.stopNbr) byNbr.set(s.stopNbr, s); }
+  for (const r of completedRows) { const s = toBoardStop(r); if (s.stopNbr) byNbr.set(s.stopNbr, s); }
+  return bucketByDate([...byNbr.values()]);
+}
+
+// Run both saved searches (in parallel) → per-date board buckets.
+export async function twoScanBuckets(): Promise<Map<string, any[]>> {
+  const [active, completed] = await Promise.all([
+    fetchSavedSearchRows(SAVED_SEARCHES.active),
+    fetchSavedSearchRows(SAVED_SEARCHES.completed),
+  ]);
+  return mergeTwoScan(active, completed);
+}
+
+// The saved searches bucket by ET arrival date, but the scanner keys boards by UTC date.
+// Map a target UTC date to its ET-equivalent date (same offset from "today" in both
+// frames, so todayUTC→etToday handles the late-night ET/UTC drift). PURE — unit-tested.
+export function etDateForTargetUTC(targetDateUTC: string, todayUTC: string, etToday: string = etDayString()): string {
+  const off = Math.round((Date.parse(targetDateUTC + 'T00:00:00Z') - Date.parse(todayUTC + 'T00:00:00Z')) / 86400000);
+  return new Date(Date.parse(etToday + 'T00:00:00Z') + off * 86400000).toISOString().slice(0, 10);
 }
 
 // Live fields the LIST owns and refreshes every scan (current planning + status);

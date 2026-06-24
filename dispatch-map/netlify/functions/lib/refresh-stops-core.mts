@@ -18,7 +18,7 @@
 import { scanDate, todayUTC, scansEnabled, deriveFleetSummary, estimateLoadRange, buildScanState, shadowWouldProbe, selectLoadProbeTargets, groupLoadMembers, estimateStopFrontier, unplannedFloor, FLOOR_MARGIN, loadNbrToInt, stopNbrToInt, shouldDeepSweep, deepSweepGate, lookupStopByPro } from './nuvizz-scan.mts';
 import { loadProbeParity, frontierParity, loadMembershipDelta, dateSliceMismatch } from './scan-parity.mts';
 import { isFirestoreEnabled, writeStops, writeFleetIndex, getDoc, markScanState, readCallStats, readCircuit, readScanState, writeScanState, readRecentFrontier, recordScanMetric, etDayString, readScanConfig, readStops } from './firestore.mts';
-import { listScanForDate, mergeEnrich } from './nuvizz-list.mts';
+import { listScanForDate, mergeEnrich, twoScanBuckets, etDateForTargetUTC } from './nuvizz-list.mts';
 import { resolveCoords, addrKey } from './geocode.mts';
 import { maxConsecutiveGap } from './scan-metrics.mts';
 import { notifyMarkedCustomers } from './cs-notify.mts';
@@ -94,6 +94,10 @@ export async function runRefreshStops(req: Request): Promise<Response> {
   // Coordinates are carried forward from the existing index + geocoded for new
   // addresses. The number-probe below remains the automatic FALLBACK.
   const LIST_DISCOVERY = (process.env.NUVIZZ_LIST_DISCOVERY || '').toLowerCase() === 'on';
+  // Two-saved-search source (see nuvizz-list SAVED_SEARCHES): one ACTIVE pull
+  // (planned+unplanned) + one COMPLETED pull (delivered/unable-to-deliver, updated
+  // today), merged and bucketed by date. OFF = the legacy per-day single query.
+  const TWO_SCAN = (process.env.NUVIZZ_TWO_SCAN || '').toLowerCase() === 'on';
   // Enrichment: one /stop/info per NEW PRO (the list gives us exact PRO #s, so these
   // are direct calls). Enriched detail (real coords, line items, contact, schedule)
   // is carried forward via the index, so each PRO is enriched ONCE; as orders arrive
@@ -430,9 +434,16 @@ export async function runRefreshStops(req: Request): Promise<Response> {
       const scannedAt = new Date().toISOString();
       const targets = [today];
       if (decision.scanTomorrowLoads || decision.scanTomorrowUnplanned) targets.push(tomorrow);
+      // Two-scan mode pulls both saved searches ONCE up front (not per target day) and
+      // buckets by date; a fetch failure throws → outer catch preserves the last-good board.
+      const buckets = TWO_SCAN ? await twoScanBuckets() : null;
       for (const date of targets) {
-        // Per-day pull, ET-adjusted period (one request; the entity page param doesn't paginate).
-        const dateStops = await listScanForDate(date);
+        // Two-scan: this day's slice of the merged active+completed pull (board keys are
+        // UTC, the saved searches bucket by ET arrival date — map across the frames).
+        // Legacy: per-day pull, ET-adjusted period (one request; entity page doesn't paginate).
+        const dateStops = TWO_SCAN
+          ? (buckets!.get(etDateForTargetUTC(date, today)) || []).map((s) => { s.scheduledDate = date; return s; })
+          : await listScanForDate(date);
         if (!dateStops.length) { results.push({ date, ok: true, skipped: 'list-empty', source: 'list' }); continue; }
 
         // Read this date's existing index ONCE — used to carry forward enriched detail
@@ -442,6 +453,16 @@ export async function runRefreshStops(req: Request): Promise<Response> {
           const prev = await readStops(TENANT, date);
           for (const p of (prev?.stops || [])) prevByNbr.set(String(p.stopNbr), p);
         } catch { /* no prior index */ }
+
+        // Two-scan carry-forward: the two saved searches only cover open (20,10) and
+        // finished (90,91,80) stops, so a stop mid-flight (in-transit/arrived) momentarily
+        // matches NEITHER. Re-add any stop already on this day's board that's absent from
+        // this scan, keeping its last-known state, so the live board never loses a stop
+        // between status flips. (Firestore holds prior days; this protects the current one.)
+        if (TWO_SCAN) {
+          const have = new Set(dateStops.map((s) => String(s.stopNbr)));
+          for (const [nbr, p] of prevByNbr) if (!have.has(nbr)) dateStops.push(p);
+        }
         const seed = new Map<string, { lat: number; lng: number }>();
         const toEnrich: any[] = [];
         for (const s of dateStops) {
