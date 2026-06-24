@@ -30,12 +30,13 @@ test('parseSchedDate: "M/D/YY h:mm AM" → date + ordered iso, null on junk', ()
 });
 
 test('toBoardStop: planned stop carries load + ordering; unplanned has no load', () => {
-  const planned = toBoardStop({ stopNbr: '007', statusCode: '20', routeName: 'TRAILER 1', driverName: 'DENIS', scheduledArrival: '6/24/26 09:00 AM', businessName: 'ACME', addr1: '1 Main', city: 'Buford', zip: '30518', cartons: 3, weight: 500, comments: 'liftgate' });
+  const planned = toBoardStop({ stopNbr: '007', statusCode: '20', routeName: 'TRAILER 1', driverName: 'DENIS', scheduledArrival: '6/24/26 09:00 AM', businessName: 'ACME', addr1: '1 Main', city: 'Buford', zip: '30518', cartons: 3, weight: 500, comments: 'liftgate', updatedTime: '6/24/26 04:37 AM' });
   assert.equal(planned.isPlanned, true);
   assert.equal(planned.loadNbr, 'TRAILER 1', 'route name doubles as the load id');
   assert.equal(planned.normalizedStatus, 'SCHEDULED');
   assert.equal(planned.plannedEtaDTTM, '2026-06-24T09:00:00', 'ordering key from scheduled arrival');
   assert.equal(planned.scheduledDate, '2026-06-24');
+  assert.equal(planned.listUpdatedDTTM, '2026-06-24T04:37:00', 'free "last updated" from the list (parsed)');
   assert.equal(planned.lat, null, 'coords filled later by geocode/carry-forward');
 
   const unplanned = toBoardStop({ stopNbr: '008', statusCode: '10', routeName: '', scheduledArrival: '6/24/26 10:00 AM', businessName: 'BETA', addr1: '2 Oak', city: 'Buford', zip: '30518' });
@@ -76,15 +77,31 @@ test('normalize: maps the live VizzonStop response (filterData defs + values row
     'vizzonInfo.destination.address.line2', 'vizzonInfo.destination.address.city',
     'vizzonInfo.destination.address.zipCode', 'vizzonInfo.shipmentInfo.cartons',
     'vizzonInfo.shipmentInfo.weight', 'vizzonInfo.shipmentInfo.status', 'vizzonInfo.shipmentInfo.proNbr',
-    'vizzonInfo.destination.earliestSchTime', 'comments.commentList.commentText',
+    'vizzonInfo.destination.earliestSchTime', 'vizzonInfo.shipmentInfo.stopUpdatedDttm', 'comments.commentList.commentText',
   ];
   const filterData = [Object.fromEntries(colOrder.map((k) => [k, { columnName: k }]))];
-  const row = ['id1', '10', '{"columnValue":"007137806"}', '6/23/26 07:50 PM', '007137806', 'DENIS', 'TRAILER 1', 'ACME', '1 Main', '', 'Buford', '30518', '2', '400', 'Un-Planned', 'G6', '6/24/26 08:00 AM', 'note'];
+  const row = ['id1', '10', '{"columnValue":"007137806"}', '6/23/26 07:50 PM', '007137806', 'DENIS', 'TRAILER 1', 'ACME', '1 Main', '', 'Buford', '30518', '2', '400', 'Un-Planned', 'G6', '6/24/26 08:00 AM', '6/24/26 04:37 AM', 'note'];
   const [r] = normalize({ filterData, values: [row] });
   assert.equal(r.stopNbr, '007137806');
   assert.equal(r.statusCode, '10');
   assert.equal(r.routeName, 'TRAILER 1');
   assert.equal(r.scheduledArrival, '6/24/26 08:00 AM');
+  assert.equal(r.updatedTime, '6/24/26 04:37 AM', 'Stop Updated Dttm discovered by pattern, ingested free');
+});
+
+test('normalize: updated-column detection prefers a stop-scoped column over an unrelated updatedBy', () => {
+  // Two candidate columns: an unrelated route audit field and the real stop update time.
+  const cols = ['KeyColumn', 'route.updatedOn', 'vizzonInfo.shipmentInfo.stopUpdatedDttm', 'vizzonInfo.shipmentInfo.stopNbr'];
+  const filterData = [Object.fromEntries(cols.map((k) => [k, { columnName: k }]))];
+  const row = ['id1', '1/1/26 01:00 AM', '6/24/26 04:37 AM', '007'];
+  const [r] = normalize({ filterData, values: [row] });
+  assert.equal(r.updatedTime, '6/24/26 04:37 AM', 'stop/shipment-scoped update column wins over route.updatedOn');
+
+  // With ONLY a bare updated column, fall back to it rather than missing it.
+  const cols2 = ['KeyColumn', 'order.lastUpdatedTime', 'vizzonInfo.shipmentInfo.stopNbr'];
+  const fd2 = [Object.fromEntries(cols2.map((k) => [k, { columnName: k }]))];
+  const [r2] = normalize({ filterData: fd2, values: [['id1', '6/24/26 05:00 AM', '008']] });
+  assert.equal(r2.updatedTime, '6/24/26 05:00 AM', 'bare updated column used as fallback');
 });
 
 test('periodForDate: ET-adjusts the UTC doc date to NuVizz period (the tz-drift fix)', () => {
