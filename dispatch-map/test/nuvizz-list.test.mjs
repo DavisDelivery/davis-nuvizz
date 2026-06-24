@@ -38,6 +38,10 @@ test('toBoardStop: planned stop carries load + ordering; unplanned has no load',
   assert.equal(planned.scheduledDate, '2026-06-24');
   assert.equal(planned.listUpdatedDTTM, '2026-06-24T04:37:00', 'free "last updated" from the list (parsed)');
   assert.equal(planned.deliveredDTTM, null, 'not delivered yet → no delivery time');
+  // PRO == stop number, surfaced FREE from the list so every stop shows it without enrichment.
+  assert.equal(planned.pro, '007');
+  assert.deepEqual(planned.pros, ['007']);
+  assert.equal(planned.primaryPro, '007');
   assert.equal(planned.lat, null, 'coords filled later by geocode/carry-forward');
 
   const unplanned = toBoardStop({ stopNbr: '008', statusCode: '10', routeName: '', scheduledArrival: '6/24/26 10:00 AM', businessName: 'BETA', addr1: '2 Oak', city: 'Buford', zip: '30518' });

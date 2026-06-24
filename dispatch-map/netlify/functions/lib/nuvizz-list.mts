@@ -117,6 +117,13 @@ export function toBoardStop(r: any): any {
   const listUpdatedDTTM = upd ? upd.iso : (r.updatedTime || null);
   return {
     stopNbr: r.stopNbr || null,
+    // The PRO IS the stop number (see nuvizz-scan: pros = [stopNbr]). The list carries it for
+    // EVERY stop, so surface it here — the board's PRO column reads pro/pros and would otherwise
+    // show "—" on every un-enriched stop (enrichment is one capped /stop/info per new PRO, so
+    // with hundreds of stops most never catch up). Free from the list, shown immediately.
+    pro: r.stopNbr || null,
+    pros: r.stopNbr ? [r.stopNbr] : [],
+    primaryPro: r.stopNbr || null,
     loadNbr: hasRoute ? r.routeName : null,
     routeName: r.routeName || null,
     stopType: 'DO',
