@@ -409,6 +409,45 @@ export async function readStops(tenant: string, dateStr: string): Promise<StopIn
   return { meta: (meta as StopIndexMeta) || null, stops };
 }
 
+// ── Per-PRO enrichment registry (day-independent) ────────────────────────────
+// A running log of which PRO numbers have been enriched, keyed by stopNbr (NOT by date).
+// A PRO that's in here is never auto-enriched again by the scanner — it's re-pulled only by
+// a manual Refresh or an activity-timeline open. Reads are TARGETED (getDoc by stopNbr for
+// just the candidate set), never a full-collection scan, so read cost is bounded by the
+// stops we'd otherwise enrich — not by registry size — and no pruning is needed for cost.
+const enrichRegPath = (tenant: string, stopNbr: string) => `nuvizz_enriched/${tenant}/pros/${encodeURIComponent(stopNbr)}`;
+
+// Look up enrichment detail for a set of PROs (parallel getDoc, bounded concurrency).
+export async function readEnrichedPros(tenant: string, stopNbrs: string[], conc = 12): Promise<Map<string, any>> {
+  const out = new Map<string, any>();
+  const ids = [...new Set(stopNbrs.map((x) => String(x)).filter(Boolean))];
+  let i = 0;
+  const worker = async () => {
+    while (i < ids.length) {
+      const id = ids[i++];
+      try { const d = await getDoc(enrichRegPath(tenant, id)); if (d) out.set(id, d); } catch { /* skip */ }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(conc, ids.length) }, worker));
+  return out;
+}
+
+// Record freshly-enriched PROs in the registry. Drops the bulky raw NuVizz payload; keeps the
+// normalized detail (line items, coords, contact, pros, stopId, notes) needed to carry forward.
+export async function writeEnrichedPros(tenant: string, stops: any[], atISO: string, conc = 12): Promise<number> {
+  const list = stops.filter((s) => s && s.stopNbr && s.enriched);
+  let i = 0, n = 0;
+  const worker = async () => {
+    while (i < list.length) {
+      const s = list[i++];
+      const { raw, ...lean } = s;
+      try { await setDoc(enrichRegPath(tenant, String(s.stopNbr)), { ...lean, enriched: true, enriched_at: atISO }); n++; } catch { /* skip */ }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(conc, list.length) }, worker));
+  return n;
+}
+
 // ── Phase 4: shared call counter + circuit breaker ───────────────────────────
 // One fleet-wide accountant. nuvizz-request.mts increments calls__{date} on every
 // NuVizz round-trip (both apps share this davismarginiq doc) and, when the day's
