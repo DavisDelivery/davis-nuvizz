@@ -299,6 +299,10 @@ async function incrementCallCounter(dateStr, n) {
       updateTransforms: [
         { fieldPath: 'count', increment: { integerValue: String(n) } }, // transform[0] = authoritative total
         { fieldPath: `hour__${etHour}`, increment: { integerValue: String(n) } },
+        // App attribution on the SHARED counter so the dispatch-map diagnostics can tell
+        // THIS (root/parent) app's calls apart from dispatch-map's. Matches dispatch-map's
+        // attrFieldKey('app',…) → 'app__<name>'. Env-overridable; defaults to 'parent'.
+        { fieldPath: `app__${(process.env.NUVIZZ_APP_NAME || 'parent').toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '')}`, increment: { integerValue: String(n) } },
       ],
     }],
   };

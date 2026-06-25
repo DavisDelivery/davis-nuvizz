@@ -18,12 +18,12 @@
 import { scanDate, todayUTC, scansEnabled, deriveFleetSummary, estimateLoadRange, buildScanState, shadowWouldProbe, selectLoadProbeTargets, groupLoadMembers, estimateStopFrontier, unplannedFloor, FLOOR_MARGIN, loadNbrToInt, stopNbrToInt, shouldDeepSweep, deepSweepGate, lookupStopByPro } from './nuvizz-scan.mts';
 import { loadProbeParity, frontierParity, loadMembershipDelta, dateSliceMismatch } from './scan-parity.mts';
 import { isFirestoreEnabled, writeStops, writeFleetIndex, getDoc, markScanState, readCallStats, readCircuit, readScanState, writeScanState, readRecentFrontier, recordScanMetric, etDayString, readScanConfig, readStops, readEnrichedPros, writeEnrichedPros } from './firestore.mts';
-import { listScanForDate, mergeEnrich, twoScanBuckets, etDateForTargetUTC } from './nuvizz-list.mts';
+import { listScanForDate, mergeEnrich, twoScanBuckets, etDateForTargetUTC, boardDayFor } from './nuvizz-list.mts';
 import { loadIdsForDate, dropForeignLoadStops } from './nuvizz-loads.mts';
 import { resolveCoords, addrKey } from './geocode.mts';
 import { maxConsecutiveGap } from './scan-metrics.mts';
 import { notifyMarkedCustomers } from './cs-notify.mts';
-import { breakerTripped, scanIntervalElapsed, breakerMode, setDailyCeilingOverride } from './nuvizz-request.mts';
+import { breakerTripped, scanIntervalElapsed, breakerMode, setDailyCeilingOverride, setCallTrigger } from './nuvizz-request.mts';
 import { scanDecision, isInRoutingWindow, clampScanConfig } from './scan-schedule.mts';
 
 // Reuse the CANONICAL integer parsers from nuvizz-scan so the parity log's
@@ -72,6 +72,10 @@ export async function runRefreshStops(req: Request): Promise<Response> {
   const daysParam = url.searchParams.get('days');
   const explicit = !!(dateParam || daysParam); // ops/testing: full forced scan of given dates
   const trigger = isManual ? 'manual' : (explicit ? 'explicit' : 'schedule');
+  // Attribute every NuVizz call this run makes (list pulls + enrichment) to the right
+  // trigger on the shared counter, so a spike is traceable to the scheduled scanner vs
+  // a manual scan vs on-demand. ('scheduled-scan' is the cron path; 'manual' a human scan.)
+  setCallTrigger(isManual ? 'manual' : 'scheduled-scan');
 
   const [today, tomorrow] = scanDatesFrom(todayUTC(), 2);
   const fsOn = isFirestoreEnabled();
@@ -111,7 +115,12 @@ export async function runRefreshStops(req: Request): Promise<Response> {
   // bled in. Best-effort: a load-list failure is swallowed and the board is unchanged.
   const LOAD_ANCHOR = (process.env.NUVIZZ_LOAD_ANCHOR || '').toLowerCase() === 'on';
   const loadIdCache = new Map<string, Set<string>>();
-  const ENRICH_MAX = Number(process.env.NUVIZZ_ENRICH_MAX_PER_SCAN) || 10000;
+  // Hard per-scan enrichment cap (backstop against a burst). 250 comfortably covers a
+  // real day's incremental new orders (~700/day spread across many */15 scans) while
+  // bounding the worst case if the registry is ever cold/unavailable — a cold board just
+  // backfills over a few ticks instead of firing thousands of /stop/info at once. Was
+  // 10000 (effectively unbounded), which let the registry cold-start spike to ~1,400.
+  const ENRICH_MAX = Number(process.env.NUVIZZ_ENRICH_MAX_PER_SCAN) || 250;
   const ENRICH_CONC = Number(process.env.NUVIZZ_ENRICH_CONC) || 8;
 
   // Read today's last LOAD scan time — this is what drives the elapsed-time
@@ -466,9 +475,24 @@ export async function runRefreshStops(req: Request): Promise<Response> {
         // matches NEITHER. Re-add any stop already on this day's board that's absent from
         // this scan, keeping its last-known state, so the live board never loses a stop
         // between status flips. (Firestore holds prior days; this protects the current one.)
+        //
+        // BOARD-DAY GUARD: only carry a stop forward if it actually belongs to THIS board's
+        // day (boardDayFor === this board's ET date). Without it, the carry-forward re-added
+        // EVERY stop from a board's prior index regardless of day, so once a stop landed on
+        // the wrong day it was re-added every scan forever — that snowball was filing all of
+        // today's ~700 deliveries onto tomorrow's board (and triggering their re-enrichment).
+        // Wrong-day stays out of dateStops → the full writeStops below prunes it, self-healing
+        // an already-polluted index on the next scan.
+        const boardEtDate = TWO_SCAN ? etDateForTargetUTC(date, today) : date;
         if (TWO_SCAN) {
           const have = new Set(dateStops.map((s) => String(s.stopNbr)));
-          for (const [nbr, p] of prevByNbr) if (!have.has(nbr)) dateStops.push(p);
+          let dropped = 0;
+          for (const [nbr, p] of prevByNbr) {
+            if (have.has(nbr)) continue;
+            if (boardDayFor(p) !== boardEtDate) { dropped++; continue; } // belongs to another day
+            dateStops.push(p);
+          }
+          if (dropped) console.log(`[scan] ${date}: carry-forward dropped ${dropped} wrong-day stop(s) (board=${boardEtDate})`);
         }
         const seed = new Map<string, { lat: number; lng: number }>();
         const toEnrich: any[] = [];
@@ -496,15 +520,24 @@ export async function runRefreshStops(req: Request): Promise<Response> {
         // the registry for any PRO not already enriched via a recent day-board. A PRO ever
         // enriched (on ANY day) is carried forward and NEVER re-pulled — only a manual Refresh
         // or a timeline open re-fetches it. Targeted reads (just the candidate set).
+        // FAIL-SAFE: if the registry read THROWS (Firestore hiccup), we must NOT fall through
+        // and re-enrich every candidate — that's how a transient blip turned into a ~700-call
+        // /stop/info burst. A failed read = we can't prove a PRO is new, so we skip enrichment
+        // this cycle entirely and retry next scan. Under-enriching for one tick is harmless;
+        // bursting the vendor is not.
+        let regOk = true;
         if (ENRICH && toEnrich.length) {
           try {
             const reg = await readEnrichedPros(TENANT, toEnrich.map((s) => String(s.stopNbr)));
             if (reg.size) for (const s of toEnrich) { const r = reg.get(String(s.stopNbr)); if (r) mergeEnrich(s, r); }
-          } catch { /* registry unavailable → fall through to /stop/info */ }
+          } catch (e: any) { regOk = false; console.warn(`[scan] ${date}: enrichment registry read failed (${e?.message}); SKIPPING enrichment this cycle to avoid a burst`); }
         }
         // Enrichment: one direct /stop/info per genuinely-new PRO (bounded concurrency, capped).
+        // The hard per-scan cap (ENRICH_MAX) is a backstop: even a cold/empty registry can never
+        // burst more than ENRICH_MAX calls in one scan — a cold board backfills over a few ticks.
         let enriched = 0;
-        const stillNeed = toEnrich.filter((s) => !s.enriched);
+        const stillNeed = (ENRICH && regOk) ? toEnrich.filter((s) => !s.enriched) : [];
+        if (stillNeed.length > ENRICH_MAX) console.warn(`[scan] ${date}: ${stillNeed.length} PROs need enrichment; capping at ENRICH_MAX=${ENRICH_MAX} this scan (rest next tick)`);
         if (ENRICH && stillNeed.length) {
           const batch = stillNeed.slice(0, ENRICH_MAX);
           let i = 0;

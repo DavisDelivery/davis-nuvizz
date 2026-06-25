@@ -6,10 +6,12 @@
 // it call this — so it's a deliberate, one-off NuVizz call, not background
 // traffic. Business-name searches never reach here (handled fully client-side).
 import { lookupStopByPro } from './lib/nuvizz-scan.mts';
+import { setCallTrigger } from './lib/nuvizz-request.mts';
 
 export default async (req: Request): Promise<Response> => {
   const cors = { 'Access-Control-Allow-Origin': '*', 'Content-Type': 'application/json' };
   if (req.method === 'OPTIONS') return new Response('', { status: 200, headers: cors });
+  setCallTrigger('on-demand'); // dispatcher-initiated PRO lookup → attribute as on-demand
   const pro = new URL(req.url).searchParams.get('pro') || '';
   if (!pro.trim()) return new Response(JSON.stringify({ ok: false, reason: 'missing pro' }), { status: 400, headers: cors });
   try {
