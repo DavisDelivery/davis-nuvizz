@@ -10,18 +10,19 @@
 //
 //   2. ATTEMPT SCAN (~8:00pm ET) — runAttemptScan(date)
 //      By evening, a delivery the driver couldn't complete has had "ATT" prepended
-//      to its SHIPMENT number by customer service and been unplanned. We read the
-//      EVENING live board index (Firestore — the */15 refresh has kept it current all
-//      day) and keep the stops now carrying the ATT marker, JOINing each back to its
-//      morning driver by stopNbr (which never changes — the ATT prefix lands on
-//      shipmentNbr only). The result is a per-day attempts list answering "who had
-//      this delivery when it was attempted".
+//      to its SHIPMENT number by customer service and been unplanned. We make ONE
+//      NuVizz call — the ATTEMPTS saved search (SAVED_SEARCHES.attempts: Shipment Number
+//      starts-with "att", Estimated Arrival = today) — and JOIN each returned stop back
+//      to its morning driver by stopNbr (which never changes — the ATT prefix lands on
+//      shipmentNbr only). The result is a per-day attempts list answering "who had this
+//      delivery when it was attempted".
 //
-// WHY read the index instead of re-probing each stop: an ATT-marked shipment is
-// unplanned (status 10), so it stays in the ACTIVE saved search and is therefore
-// already on the live board index with its shipmentNbr/isAttempt set live every scan.
-// Reading the index costs ZERO NuVizz calls. The previous implementation re-probed
-// every morning stop via /stop/info (~700 vendor calls/night) — removed.
+// WHY a dedicated saved search (not the live board index): the active (20,10) and
+// completed (90,91,80) searches that feed the board do NOT reliably return ATT stops,
+// so attempts have their OWN portal filter. It's the same single /entity/filterdata pull
+// the board already uses, just a different filter — exactly ONE vendor call at 8pm. The
+// original implementation re-probed every morning stop via /stop/info (~700 calls/night)
+// — removed.
 //
 // DST: the crons fire on fixed UTC instants; everything date/hour here is computed
 // off the America/New_York clock (nowET / etDayString), so the spring/fall flips
@@ -31,6 +32,8 @@
 import { nowET } from './scan-schedule.mts';
 import { etDayString, isFirestoreEnabled, readStops } from './firestore.mts';
 import { isAttemptShipment } from './nuvizz-scan.mts';
+import { fetchSavedSearchRows, fromRows, SAVED_SEARCHES } from './nuvizz-list.mts';
+import { setCallTrigger } from './nuvizz-request.mts';
 import { driverKeyFor, stopMatchKey } from './history-derive.mts';
 import {
   getPlanMeta, setPlanMeta, listPlanStops, upsertPlanStops,
@@ -182,37 +185,41 @@ export async function runAttemptScan(date: string): Promise<any> {
   const [plan, planMeta] = await Promise.all([listPlanStops(TENANT, date), getPlanMeta(TENANT, date)]);
   const detectedAt = new Date().toISOString();
 
-  // ZERO NuVizz calls: read the evening live board index (the */15 refresh has kept it
-  // current all day). An ATT-marked shipment stays in the ACTIVE saved search (status 10,
-  // unplanned) so it is present on the board with its shipmentNbr/isAttempt set live. We
-  // join each morning-plan stop to its current board state by stopNbr — no per-stop
-  // /stop/info re-probe (that loop was ~700 vendor calls/night and is gone).
-  const idx = await readStops(TENANT, date);
-  const curByNbr = new Map<string, any>();
-  for (const s of (idx.stops || [])) if (s && s.stopNbr) curByNbr.set(String(s.stopNbr), s);
+  // ONE NuVizz call: pull the ATTEMPTS saved search (Shipment Number starts-with "att",
+  // Estimated Arrival = today) — the same single /entity/filterdata pull the board uses for
+  // the active/completed searches, just a different filter. The active (20,10) and completed
+  // (90,91,80) searches don't reliably return ATT stops, which is why attempts have their
+  // own filter. Each returned stop is then JOINED back to the morning plan snapshot
+  // (Firestore, zero calls) by stopNbr to attribute the driver who had it.
+  setCallTrigger('attempts'); // attribute this run's single call on the shared counter
+  let attemptStops: any[] = [];
+  let fetchOk = true;
+  try {
+    attemptStops = fromRows(await fetchSavedSearchRows(SAVED_SEARCHES.attempts));
+  } catch (e: any) {
+    fetchOk = false;
+    console.warn(`[att-scan] date=${date} attempts saved-search pull failed (${e?.message}); writing empty attempts list`);
+  }
+
+  const planByNbr = new Map<string, any>();
+  for (const p of plan) if (p && p.stopNbr) planByNbr.set(String(p.stopNbr), p);
 
   const items: any[] = [];
-  let resolved = 0; // morning stops found on the evening board
-  let missing = 0;  // morning stops no longer on the board (off-board / aged out)
-  for (const p of plan) {
-    const cur = curByNbr.get(String(p.stopNbr));
-    if (!cur) { missing++; continue; }
-    resolved++;
-    if (cur.isAttempt || isAttemptShipment(cur.shipmentNbr)) {
-      items.push(buildAttemptItem(p, cur, date, detectedAt));
-    }
+  for (const cur of attemptStops) {
+    // Defensive: only keep stops actually carrying the ATT marker (the saved search already
+    // filters to these, but never trust a feed blindly).
+    if (!cur || !cur.stopNbr || !isAttemptShipment(cur.shipmentNbr)) continue;
+    const p = planByNbr.get(String(cur.stopNbr)) || { stopNbr: String(cur.stopNbr) };
+    items.push(buildAttemptItem(p, cur, date, detectedAt));
   }
 
   const matched = items.filter((it) => it.matched).length;
   await upsertAttemptItems(TENANT, date, items);
   const counts = {
-    candidates: plan.length,
-    resolved,
-    missing,
-    probed: resolved,   // back-compat aliases (the old field names) for any manifest reader
-    unprobed: missing,
-    attempts: items.length,
-    matched,
+    candidates: plan.length,       // morning-plan size (the attribution source)
+    found: attemptStops.length,    // rows the attempts filter returned
+    attempts: items.length,        // confirmed ATT stops written
+    matched,                       // attempts we could attribute to a morning driver
     unmatched: items.length - matched,
   };
   // Manifest LAST.
@@ -220,9 +227,10 @@ export async function runAttemptScan(date: string): Promise<any> {
     tenant: TENANT, date, generatedAt: detectedAt,
     planSnapshotAt: planMeta?.capturedAt ?? null,
     planMissing: !planMeta,
+    fetchOk,
     counts, ok: true,
   });
-  console.log(`[att-scan] date=${date} ${JSON.stringify(counts)} planMissing=${!planMeta} (index-only, 0 NuVizz calls)`);
+  console.log(`[att-scan] date=${date} ${JSON.stringify(counts)} planMissing=${!planMeta} fetchOk=${fetchOk} (1 NuVizz call)`);
   return { date, ok: true, ...counts };
 }
 

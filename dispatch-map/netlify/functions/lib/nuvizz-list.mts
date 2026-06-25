@@ -358,6 +358,14 @@ const COMPLETED_STATUS = process.env.NUVIZZ_COMPLETED_STATUS || '90,91,80';
 const ACTIVE_ARRIVAL = cleanPeriod(process.env.NUVIZZ_ACTIVE_ARRIVAL || '+/-7d');
 const COMPLETED_ARRIVAL = cleanPeriod(process.env.NUVIZZ_COMPLETED_ARRIVAL || '+/-7d');
 const COMPLETED_UPDATED = cleanPeriod(process.env.NUVIZZ_COMPLETED_UPDATED || '0d');
+// ATTEMPTS saved search — a re-delivery attempt is a stop whose SHIPMENT number now starts
+// with "ATT" (customer service prepends it on a failed delivery). Neither the active
+// (20,10) nor completed (90,91,80) search reliably returns these, so attempts have their
+// OWN portal filter. Captured verbatim from the portal HAR (customListDefId 77203, 11
+// sequences): seq7 = Shipment Number "starts with" att, seq9 = Estimated Arrival = today
+// (0d). All other sequences unfiltered. IDs/values env-overridable for portal retunes.
+const ATT_SHIPMENT_PREFIX = process.env.NUVIZZ_ATT_SHIPMENT_PREFIX || 'att';
+const ATT_ARRIVAL = cleanPeriod(process.env.NUVIZZ_ATT_ARRIVAL || '0d');
 export const SAVED_SEARCHES = {
   active: {
     customListDefId: Number(process.env.NUVIZZ_LISTDEF_ACTIVE) || 77128,
@@ -375,6 +383,15 @@ export const SAVED_SEARCHES = {
       2: COMPLETED_STATUS,
       10: JSON.stringify({ period: COMPLETED_ARRIVAL }),
       11: JSON.stringify({ period: COMPLETED_UPDATED }),
+    }),
+  },
+  attempts: {
+    customListDefId: Number(process.env.NUVIZZ_LISTDEF_ATTEMPTS) || 77203,
+    // seq7=Shipment Number "starts with" att, seq9=Estimated Arrival (today), seq10=blank.
+    filterList: filterListOf(11, {
+      7: ATT_SHIPMENT_PREFIX,
+      9: JSON.stringify({ period: ATT_ARRIVAL }),
+      10: JSON.stringify({ period: '' }),
     }),
   },
 };

@@ -97,6 +97,13 @@ test('SAVED_SEARCHES: active + completed map to the portal saved searches (HAR-c
   assert.equal(c[10], JSON.stringify({ period: '+/-7d' }));
   assert.equal(c[11], JSON.stringify({ period: '0d' }), 'Stop Detail Updated = today');
   assert.equal(SAVED_SEARCHES.completed.filterList.length, 11, 'completed def has 11 sequences');
+  // ATTEMPTS = "Dispatch Map Attempts": Shipment Number starts-with att (seq 7) + arrival today
+  // (seq 9). Captured verbatim from the attempts HAR (customListDefId 77203, 11 sequences).
+  assert.equal(SAVED_SEARCHES.attempts.customListDefId, 77203);
+  const at = Object.fromEntries(SAVED_SEARCHES.attempts.filterList.map((f) => [f.sequence, f.value]));
+  assert.equal(at[7], 'att', 'Shipment Number starts-with att');
+  assert.equal(at[9], JSON.stringify({ period: '0d' }), 'Estimated Arrival = today');
+  assert.equal(SAVED_SEARCHES.attempts.filterList.length, 11, 'attempts def has 11 sequences');
 });
 
 test('mergeTwoScan: completed wins over active per stop; buckets by scheduled date', () => {
