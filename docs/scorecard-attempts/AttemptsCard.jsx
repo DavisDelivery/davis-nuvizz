@@ -54,8 +54,11 @@ function StatusPill({ attempt }) {
  * @param {string} [props.driver]   Optional driver filter (userName or name substring)
  *                                  — pass this on a single-driver scorecard so the
  *                                  card shows only that driver's attempts.
+ * @param {boolean} [props.allowDelete=true] Show a per-row delete (×) button that
+ *                                  removes that attempt and refreshes. Set false for
+ *                                  a read-only view (e.g. a per-driver scorecard).
  */
-export default function AttemptsCard({ apiBase = DEFAULT_API_BASE, date: dateProp, driver }) {
+export default function AttemptsCard({ apiBase = DEFAULT_API_BASE, date: dateProp, driver, allowDelete = true }) {
   const [date, setDate] = useState(dateProp || todayStr());
   const [state, setState] = useState({ loading: true, error: null, attempts: [], manifest: null });
 
@@ -78,6 +81,21 @@ export default function AttemptsCard({ apiBase = DEFAULT_API_BASE, date: datePro
   }, [apiBase, date, driver]);
 
   useEffect(() => { load(); }, [load]);
+
+  // Delete one row, then refresh. Uses the endpoint's DELETE verb (?stopNbr=).
+  const removeRow = useCallback(async (stopNbr) => {
+    if (typeof window !== 'undefined' && !window.confirm(`Remove the attempt for stop ${stopNbr}?`)) return;
+    try {
+      const url = new URL(`${apiBase}/.netlify/functions/nuvizz-attempts`);
+      url.searchParams.set('date', date);
+      url.searchParams.set('stopNbr', stopNbr);
+      const res = await fetch(url.toString(), { method: 'DELETE' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      await load();
+    } catch (e) {
+      setState((s) => ({ ...s, error: `delete failed: ${e.message}` }));
+    }
+  }, [apiBase, date, load]);
 
   const { loading, error, attempts, manifest } = state;
   const counts = manifest?.counts;
@@ -146,6 +164,7 @@ export default function AttemptsCard({ apiBase = DEFAULT_API_BASE, date: datePro
                   <th className="py-2 pr-4 font-medium">Stop&nbsp;#</th>
                   <th className="py-2 pr-4 font-medium">Route</th>
                   <th className="py-2 pr-4 font-medium">Status</th>
+                  {allowDelete && <th className="py-2 pr-2 font-medium sr-only">Remove</th>}
                 </tr>
               </thead>
               <tbody>
@@ -166,6 +185,20 @@ export default function AttemptsCard({ apiBase = DEFAULT_API_BASE, date: datePro
                     <td className="py-2 pr-4 font-mono text-xs text-slate-500">{a.stopNbr}</td>
                     <td className="py-2 pr-4 text-slate-600">{a.routeName || '—'}</td>
                     <td className="py-2 pr-4"><StatusPill attempt={a} /></td>
+                    {allowDelete && (
+                      <td className="py-2 pr-2 text-right">
+                        <button
+                          onClick={() => removeRow(a.stopNbr)}
+                          title="Remove this attempt"
+                          aria-label={`Remove attempt for stop ${a.stopNbr}`}
+                          className="rounded p-1 text-slate-300 hover:bg-rose-50 hover:text-rose-600"
+                        >
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" aria-hidden="true">
+                            <path d="M18 6 6 18M6 6l12 12" />
+                          </svg>
+                        </button>
+                      </td>
+                    )}
                   </tr>
                 ))}
               </tbody>
