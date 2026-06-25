@@ -46,6 +46,11 @@ export function buildBody(period: string, statusCsv: string, page: number, pageS
   };
 }
 
+// One-time warning if the saved-search columns carry NO shipment-number column — that
+// would make the ATT attempt-marker detection silently inert (zero calls, but zero
+// attempts ever found). Module-level so it logs once per warm instance, not per row.
+let __warnedNoShipmentKey = false;
+
 // Map the column-def order (filterData[0]) onto each values[] row, pulling fields BY
 // KEY (robust to column reordering) into an intermediate row object.
 export function normalize(j: any): any[] {
@@ -80,6 +85,10 @@ export function normalize(j: any): any[] {
   const shipmentKey =
     (idx['vizzonInfo.shipmentInfo.shipmentNbr'] != null ? 'vizzonInfo.shipmentInfo.shipmentNbr' : null) ||
     cols.find((k) => /shipment/i.test(k) && /(nbr|number)/i.test(k) && !/stop/i.test(k)) || null;
+  if (!shipmentKey && cols.length && !__warnedNoShipmentKey) {
+    __warnedNoShipmentKey = true;
+    console.warn(`[nuvizz-list] no shipment-number column in saved-search results — ATT attempt detection is INERT until a shipment column is present. cols=${JSON.stringify(cols).slice(0, 600)}`);
+  }
   return ((j && j.values) || []).map((row: any[]) => ({
     stopNbr: String(g(row, 'vizzonInfo.shipmentInfo.stopNbr') ?? ''),
     shipmentNbr: shipmentKey ? String(g(row, shipmentKey) ?? '') : '',
