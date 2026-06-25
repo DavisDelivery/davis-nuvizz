@@ -735,31 +735,32 @@ export function normalizeStopEvents(d: any): StopEvent[] {
 // fall back). Rides the shared requester so it counts against the daily ceiling.
 export async function fetchStopEvents(
   stopNbr: string, stopId?: string | null,
-): Promise<{ ok: boolean; events?: StopEvent[]; source?: string; reason?: string }> {
+): Promise<{ ok: boolean; events?: StopEvent[]; source?: string; reason?: string; stop?: NormalizedStop | null }> {
   if (!scansEnabled()) return { ok: false, reason: 'scans_disabled' };
   const { companyCode } = getCreds();
   const hdr = { Authorization: basicAuthHeader(), Accept: 'application/json' };
   const reqr = getNuvizzRequester();
-  // Resolve the system stopId if the caller didn't supply one, so we can use the RICH
-  // /event/eventinfo (carries the "By:" user, "From:" company and GPS, and returns more
-  // events) instead of the lean /stop/eventinfo. One extra /stop/info only when needed.
+  // Opening the timeline ALSO refreshes the delivery's detail: do one /stop/info so we catch
+  // any newly-added notes/items, AND get the system stopId for the RICH /event/eventinfo
+  // (carries the "By:" user, "From:" company and GPS). One /stop/info + one events call.
   let id = stopId && String(stopId).trim() ? String(stopId).trim() : null;
-  if (!id && String(stopNbr || '').trim()) {
-    try { const r = await lookupStopByPro(String(stopNbr)); if (r.ok && r.stop?.stopId) id = String(r.stop.stopId); } catch { /* fall back to lean below */ }
+  let refreshed: NormalizedStop | null = null;
+  if (String(stopNbr || '').trim()) {
+    try { const r = await lookupStopByPro(String(stopNbr)); if (r.ok && r.stop) { refreshed = r.stop; if (!id && r.stop.stopId) id = String(r.stop.stopId); } } catch { /* fall back to lean below */ }
   }
   try {
     if (id) {
       const url = `${NUVIZZ_BASE}/event/eventinfo/${encodeURIComponent(companyCode)}?entityType=STOP&entityId=${encodeURIComponent(id)}`;
       const resp = await reqr.request(url, { headers: hdr }, { route: '/event/eventinfo', tenant: companyCode });
-      if (resp.ok) return { ok: true, source: 'event', events: normalizeStopEvents(await resp.json()) };
+      if (resp.ok) return { ok: true, source: 'event', events: normalizeStopEvents(await resp.json()), stop: refreshed };
     }
     const raw = String(stopNbr || '').trim();
-    const id = /^[0-9]+$/.test(raw) ? raw.padStart(9, '0') : raw;
-    if (!id) return { ok: false, reason: 'missing id' };
-    const url = `${NUVIZZ_BASE}/stop/eventinfo/${encodeURIComponent(companyCode)}?stopNbr=${encodeURIComponent(id)}`;
+    const id2 = /^[0-9]+$/.test(raw) ? raw.padStart(9, '0') : raw;
+    if (!id2) return { ok: false, reason: 'missing id' };
+    const url = `${NUVIZZ_BASE}/stop/eventinfo/${encodeURIComponent(companyCode)}?stopNbr=${encodeURIComponent(id2)}`;
     const resp = await reqr.request(url, { headers: hdr }, { route: '/stop/eventinfo', tenant: companyCode });
-    if (!resp.ok) return { ok: false, reason: `http_${resp.status}` };
-    return { ok: true, source: 'stop', events: normalizeStopEvents(await resp.json()) };
+    if (!resp.ok) return { ok: false, reason: `http_${resp.status}`, stop: refreshed };
+    return { ok: true, source: 'stop', events: normalizeStopEvents(await resp.json()), stop: refreshed };
   } catch (e: any) {
     return { ok: false, reason: e?.message || 'error' };
   }

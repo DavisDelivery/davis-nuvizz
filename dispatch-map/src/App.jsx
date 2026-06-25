@@ -3060,7 +3060,7 @@ function StopNotesList({ comments }) {
 // Activity timeline (the portal's "Activity Timeline"). Collapsed by default; the FIRST
 // time it's expanded it calls /.netlify/functions/nuvizz-stop-events on demand — even if
 // Refresh wasn't pressed. Prefers the rich /event/eventinfo (By:/From:) when stopId is known.
-function StopActivityTimeline({ stopNbr, stopId }) {
+function StopActivityTimeline({ stopNbr, stopId, onRefreshed }) {
   const [open, setOpen] = useState(false);
   const [st, setSt] = useState({ loading: false, events: null, error: null });
   useEffect(() => {
@@ -3072,7 +3072,13 @@ function StopActivityTimeline({ stopNbr, stopId }) {
     if (stopId) qs.set('stopId', stopId);
     fetch('/.netlify/functions/nuvizz-stop-events?' + qs.toString(), { cache: 'no-store' })
       .then((r) => r.json())
-      .then((d) => { if (!cancelled) setSt({ loading: false, events: d.ok ? (d.events || []) : [], error: d.ok ? null : (d.reason || 'failed') }); })
+      .then((d) => {
+        if (cancelled) return;
+        setSt({ loading: false, events: d.ok ? (d.events || []) : [], error: d.ok ? null : (d.reason || 'failed') });
+        // Opening the timeline already costs a /stop/info — fold that fresh detail back into
+        // the card so any newly-added notes/items show without a separate Refresh.
+        if (d.ok && d.stop && onRefreshed) onRefreshed(d.stop);
+      })
       .catch((e) => { if (!cancelled) setSt({ loading: false, events: [], error: e.message }); });
     return () => { cancelled = true; };
   }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -3156,7 +3162,7 @@ function StopLiveDetail({ stop }) {
           <div className="text-[10px] text-slate-400 mt-0.5">Refresh to load all notes</div>
         </div>
       ) : null}
-      <StopActivityTimeline stopNbr={live.stopNbr || live.pro} stopId={live.stopId} />
+      <StopActivityTimeline stopNbr={live.stopNbr || live.pro} stopId={live.stopId} onRefreshed={(d) => setFresh((prev) => ({ ...(prev || stop), ...d }))} />
     </div>
   );
 }
