@@ -61,6 +61,14 @@ export interface NormalizedStop {
   pros: string[];
   primaryPro: string | null;
   proCount: number;
+  // Raw NuVizz shipment number. Normally equals stopNbr (RESEARCH-parent-app-endpoints:
+  // "stop.shipmentNbr always equals stopNbr"). When a delivery fails, Davis customer
+  // service prepends "ATT" to the SHIPMENT number (e.g. stopNbr 007137828 →
+  // shipmentNbr ATT007137828) and unplans it — so an ATT prefix here is the
+  // authoritative re-delivery-attempt marker, while stopNbr stays clean (the stable
+  // key that joins an attempt back to the morning routed-plan snapshot).
+  shipmentNbr: string | null;
+  isAttempt: boolean; // shipmentNbr carries the "ATT" re-attempt marker (see isAttemptShipment).
   stopNbr: string | null;
   stopId: string | null;            // NuVizz system stop id (stop.stopId) — entityId for /event/eventinfo (activity timeline).
   loadNbr: string | null;
@@ -264,6 +272,17 @@ export function classifyStopStatus(opts: {
   return 'SCHEDULED';
 }
 
+// PURE: does this shipment number carry the "ATT" re-delivery-attempt marker?
+// Davis customer service prepends "ATT" (case-insensitive in live data — both
+// "ATT007137828" and "att007138005" observed) to the shipment number of a failed
+// delivery before unplanning it for re-routing. The stop number itself is never
+// prefixed, so this is the one authoritative signal that a stop is an attempt —
+// the same filter the NuVizz portal "Attempts" saved search uses ("Shipment Number
+// Starts With att"). Exported + pure so it is unit-tested without the network.
+export function isAttemptShipment(shipmentNbr: string | null | undefined): boolean {
+  return /^att/i.test(String(shipmentNbr ?? '').trim());
+}
+
 export function getCreds() {
   return {
     companyCode: (process.env.NUVIZZ_DAVIS_COMPANY_CODE || 'DAVIS').toUpperCase(),
@@ -351,6 +370,10 @@ export function normalizeStop(raw: any): NormalizedStop {
   if (stop.totalCartons) items.push(`${stop.totalCartons} cartons`);
   if (stop.weight) items.push(`${stop.weight} ${stop.weightUOM || 'lbs'}`);
   const stopNbr: string | null = stop.stopNbr ?? null;
+  // Shipment number is a distinct raw field from stopNbr (usually identical). The
+  // "ATT" prefix that customer service adds to a failed delivery lives HERE, not on
+  // stopNbr — so it is preserved verbatim and surfaced as the attempt marker.
+  const shipmentNbr: string | null = stop.shipmentNbr ?? null;
   const pros: string[] = stopNbr ? [stopNbr] : [];
   const addr2 = addr.addr2 ?? null;
   const orderInstructions = extractOrderInstructions(stop);
@@ -406,6 +429,8 @@ export function normalizeStop(raw: any): NormalizedStop {
     pros,
     primaryPro: pros[0] ?? null,
     proCount: pros.length,
+    shipmentNbr,
+    isAttempt: isAttemptShipment(shipmentNbr),
     stopNbr,
     stopId: stop.stopId ?? null,
     loadNbr,
