@@ -21,6 +21,7 @@
 //      manifest, non-200 for manual runs.
 
 import { scanDate } from './nuvizz-scan.mts';
+import { setCallTrigger } from './nuvizz-request.mts';
 import { isFirestoreEnabled, readStops } from './firestore.mts';
 import {
   buildStopRecord, deriveRoutes, deriveDrivers, computeStopChecksum,
@@ -240,6 +241,7 @@ export async function captureDate(date: string): Promise<any> {
 // ── HTTP / scheduled entrypoint ──────────────────────────────────────────────
 export async function runHistorySnapshot(req: Request): Promise<Response> {
   const startedAt = Date.now();
+  setCallTrigger('history-snapshot'); // attribute the nightly history capture's NuVizz calls
 
   if (!isFirestoreEnabled()) {
     console.error('history-snapshot: FIREBASE_SA not set on this site — cannot write warehouse');

@@ -8,7 +8,7 @@
 //
 // POST body: { arrivalPeriod?: "0d"|"+/-7d"|..., statusCodes?: string[], page?, pageSize? }
 
-import { getNuvizzRequester } from './lib/nuvizz-request.mts';
+import { getNuvizzRequester, setCallTrigger } from './lib/nuvizz-request.mts';
 import { getCreds, basicAuthHeader } from './lib/nuvizz-scan.mts';
 import { buildBody, normalize, cleanPeriod, OPENAPI_BASE, SAVED_SEARCHES, fetchSavedSearchRaw } from './lib/nuvizz-list.mts';
 
@@ -19,6 +19,7 @@ export default async (req: Request): Promise<Response> => {
   const cors = { 'Access-Control-Allow-Origin': '*', 'Content-Type': 'application/json', 'Cache-Control': 'no-store' };
   if (req.method === 'OPTIONS') return new Response('', { status: 200, headers: cors });
   if (req.method !== 'POST') return new Response(JSON.stringify({ ok: false, error: 'POST only' }), { status: 405, headers: cors });
+  setCallTrigger('on-demand'); // bottom-grid stop explorer pull → on-demand
 
   let body: any = {};
   try { body = await req.json(); } catch { /* defaults */ }

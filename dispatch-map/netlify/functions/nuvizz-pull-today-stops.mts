@@ -123,6 +123,10 @@ export default async (req: Request): Promise<Response> => {
           dayCount: stats.count,
           byRoute: stats.byRoute,
           byHour: stats.byHour, // per-ET-hour call counts { '00'..'23': n } — surfaces spikes
+          byApp: stats.byApp,         // which app made the calls (dispatch-map vs parent)
+          byTrigger: stats.byTrigger, // WHY: scheduled-scan | enrichment | attempts | on-demand | …
+          bySource: stats.bySource,
+          byTenant: stats.byTenant,
           // Effective spend cap: the live UI-configured ceiling wins over the env default.
           ceiling: (typeof (scanCfg as any)?.dailyCeiling === 'number' ? (scanCfg as any).dailyCeiling : (Number(process.env.NUVIZZ_DAILY_CEILING) || 12000)),
           breaker: circuit.open,

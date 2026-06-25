@@ -7,10 +7,12 @@
 // /event/eventinfo (carries the "By:"/"From:") when the system stopId is known; otherwise
 // falls back to /stop/eventinfo by stop number. Creds stay server-side.
 import { fetchStopEvents } from './lib/nuvizz-scan.mts';
+import { setCallTrigger } from './lib/nuvizz-request.mts';
 
 export default async (req: Request): Promise<Response> => {
   const cors = { 'Access-Control-Allow-Origin': '*', 'Content-Type': 'application/json', 'Cache-Control': 'no-store' };
   if (req.method === 'OPTIONS') return new Response('', { status: 200, headers: cors });
+  setCallTrigger('on-demand'); // dispatcher opened the activity timeline → on-demand
   const url = new URL(req.url);
   const stopNbr = url.searchParams.get('stopNbr') || '';
   const stopId = url.searchParams.get('stopId') || '';

@@ -7399,6 +7399,28 @@ function RouteBars({ byRoute }) {
   );
 }
 
+// Generic labeled horizontal-bar breakdown (by app / by trigger), sorted desc. Same
+// shape as RouteBars but with a configurable bar color and a wider label column so
+// "scheduled-scan" / "dispatch-map" read cleanly.
+function LabelBars({ data, color = 'bg-violet-400/80' }) {
+  const entries = Object.entries(data || {}).sort((a, b) => b[1] - a[1]);
+  if (!entries.length) return <div className="text-sm text-slate-400 italic">No data yet.</div>;
+  const max = Math.max(...entries.map(([, v]) => v));
+  return (
+    <div className="space-y-1.5">
+      {entries.map(([label, v]) => (
+        <div key={label} className="flex items-center gap-2 text-xs">
+          <div className="w-32 shrink-0 truncate text-slate-600" title={label}>{label}</div>
+          <div className="flex-1 bg-slate-100 rounded h-4 overflow-hidden">
+            <div className={`h-full ${color} rounded`} style={{ width: `${Math.max(2, Math.round((v / max) * 100))}%` }} />
+          </div>
+          <div className="w-16 shrink-0 text-right tabular-nums text-slate-700 font-semibold">{v.toLocaleString()}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function ApiCallsPanel({ ops, lastLoadScanAt, lastUnplannedScanAt, onRefresh, refreshing, onScanNow, scanning }) {
   const headerBtns = (
     <div className="flex items-center gap-2">
@@ -7455,6 +7477,20 @@ function ApiCallsPanel({ ops, lastLoadScanAt, lastUnplannedScanAt, onRefresh, re
           <div className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">By endpoint</div>
           <RouteBars byRoute={ops.byRoute} />
         </div>
+
+        {ops.byTrigger && Object.keys(ops.byTrigger).length > 0 && (
+          <div>
+            <div className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">By trigger (why)</div>
+            <LabelBars data={ops.byTrigger} color="bg-violet-400/80" />
+          </div>
+        )}
+
+        {ops.byApp && Object.keys(ops.byApp).length > 0 && (
+          <div>
+            <div className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">By app</div>
+            <LabelBars data={ops.byApp} color="bg-emerald-400/80" />
+          </div>
+        )}
 
         <div>
           <div className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Scanner learning</div>
