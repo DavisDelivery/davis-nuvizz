@@ -49,7 +49,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.29.35';
+const APP_VERSION = '0.29.36';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -69,6 +69,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.29.36', 'Routing (beta) map now matches the dispatch Map: same satellite imagery + road labels (hybrid) and the same vector map style, instead of the plain green roadmap base.'],
   ['0.29.35', 'Historical PRO lookup: tap the NuVizz result to open a full stop card — a centered window over the map with all of the order\'s detail (address + Street View / Maps / web links, status & activity timeline, line items, delivery photos, route/driver). Uses the data the lookup already pulled, so no extra NuVizz call.'],
   ['0.29.34', 'Fix: make the load-ID anchor actually work. The load-roster request sent the date filter as an object; the NuVizz openapi endpoint requires it as a JSON string and was rejecting the call (HTTP 400) — so the anchor silently did nothing. Verified live: the corrected request returns the day\'s loads with their unique IDs. With NUVIZZ_LOAD_ANCHOR=on, the next scan drops yesterday\'s stops that were being carried onto today.'],
   ['0.29.33', 'Scan: optional load-ID anchor (off by default, NUVIZZ_LOAD_ANCHOR=on). Recurring routes (e.g. "BEN 2") reuse the same NAME daily but each day\'s instance has its own unique load ID; the scan can now pull the day\'s authoritative load roster and drop any board stop whose load ID belongs to a prior day — a second, identity-based guard against yesterday\'s stops bleeding onto today. Best-effort: a load-list hiccup leaves the board untouched.'],
@@ -8586,6 +8587,10 @@ function RoutingScreen() {
     mapRef.current = new google.maps.Map(mapDiv.current, {
       center: ROUTING_DEPOT, zoom: 9, mapTypeControl: false, streetViewControl: false, fullscreenControl: false,
       gestureHandling: 'greedy', // one-finger pan/zoom on touch (no two-finger requirement)
+      // Match the dispatch Map's look: the same vector map style (mapId) + satellite
+      // imagery with road labels (hybrid), instead of the plain roadmap base.
+      ...(MAP_ID ? { mapId: MAP_ID } : {}),
+      mapTypeId: 'hybrid',
     });
     // Single click listener drives Box/Lasso. Empty-map taps place points; the
     // latest handler is read via a ref so the listener is bound only once per map.
