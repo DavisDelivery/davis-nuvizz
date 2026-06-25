@@ -437,6 +437,25 @@ export async function runRefreshStops(req: Request): Promise<Response> {
       // Two-scan mode pulls both saved searches ONCE up front (not per target day) and
       // buckets by date; a fetch failure throws → outer catch preserves the last-good board.
       const buckets = TWO_SCAN ? await twoScanBuckets() : null;
+      // Read the recent day-indexes (yesterday/today/tomorrow) ONCE. enrichedByNbr maps a
+      // stopNbr → its enriched doc from ANY of those days, so an order enriched on one day's
+      // board is recognized (and its detail reused) when it lands on another day's board.
+      // This makes enrichment once-per-ORDER, not once-per-day-board — so when the routing
+      // pass refiles orders across days (the 8pm wave), they are NOT re-pulled from NuVizz.
+      const addDaysUTC = (ds: string, n: number) => new Date(Date.parse(ds + 'T00:00:00Z') + n * 86400000).toISOString().slice(0, 10);
+      const idxCache = new Map<string, Map<string, any>>();
+      const enrichedByNbr = new Map<string, any>();
+      for (const d of [...new Set([addDaysUTC(today, -1), today, tomorrow])]) {
+        const m = new Map<string, any>();
+        try {
+          const idx = await readStops(TENANT, d);
+          for (const p of (idx?.stops || [])) {
+            m.set(String(p.stopNbr), p);
+            if (p.enriched && !enrichedByNbr.has(String(p.stopNbr))) enrichedByNbr.set(String(p.stopNbr), p);
+          }
+        } catch { /* no index for this day */ }
+        idxCache.set(d, m);
+      }
       for (const date of targets) {
         // Two-scan: this day's slice of the merged active+completed pull (board keys are
         // UTC, the saved searches bucket by ET arrival date — map across the frames).
@@ -446,13 +465,8 @@ export async function runRefreshStops(req: Request): Promise<Response> {
           : await listScanForDate(date);
         if (!dateStops.length) { results.push({ date, ok: true, skipped: 'list-empty', source: 'list' }); continue; }
 
-        // Read this date's existing index ONCE — used to carry forward enriched detail
-        // (so each PRO is enriched a single time) and as a coord seed.
-        const prevByNbr = new Map<string, any>();
-        try {
-          const prev = await readStops(TENANT, date);
-          for (const p of (prev?.stops || [])) prevByNbr.set(String(p.stopNbr), p);
-        } catch { /* no prior index */ }
+        // This day's prior index (from the shared cache read once above).
+        const prevByNbr = idxCache.get(date) || new Map<string, any>();
 
         // Two-scan carry-forward: the two saved searches only cover open (20,10) and
         // finished (90,91,80) stops, so a stop mid-flight (in-transit/arrived) momentarily
@@ -466,11 +480,16 @@ export async function runRefreshStops(req: Request): Promise<Response> {
         const seed = new Map<string, { lat: number; lng: number }>();
         const toEnrich: any[] = [];
         for (const s of dateStops) {
-          const p = prevByNbr.get(String(s.stopNbr));
-          if (p) {
-            if (p.enriched) mergeEnrich(s, p); // carry static detail forward (incl real coords)
-            if (typeof p.lat === 'number' && typeof p.lng === 'number') { const k = addrKey(p); if (k) seed.set(k, { lat: p.lat, lng: p.lng }); }
-          }
+          const nbr = String(s.stopNbr);
+          const p = prevByNbr.get(nbr);
+          // Carry enriched DETAIL forward from THIS day OR any recent day the order was
+          // already enriched on (enrichedByNbr) → enrichment is once per ORDER, not per
+          // day-board. This is what stops the 8pm re-enrich when routing refiles orders.
+          const enr = (p && p.enriched) ? p : enrichedByNbr.get(nbr);
+          if (enr && enr.enriched) mergeEnrich(s, enr); // sets s.enriched=true → not re-pulled
+          const coordSrc = (p && typeof p.lat === 'number' && typeof p.lng === 'number') ? p
+            : (enr && typeof enr.lat === 'number' && typeof enr.lng === 'number') ? enr : null;
+          if (coordSrc) { const k = addrKey(coordSrc); if (k) seed.set(k, { lat: coordSrc.lat, lng: coordSrc.lng }); }
           // Status AND the delivery time are FREE & live from the list every scan (see
           // LIVE_LIST_FIELDS + toBoardStop's deliveredDTTM), so we do NOT spend a /stop/info
           // call to track delivery. We enrich a PRO exactly ONCE — when it first appears — for
