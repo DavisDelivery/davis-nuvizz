@@ -49,7 +49,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.29.36';
+const APP_VERSION = '0.29.37';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -69,6 +69,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.29.37', 'Routing (beta) now IS the dispatch Map: the map shows the exact same rich markers — status colors, priority-flag colors, AM/PM tags, "address looks off" flags, equipment / receiving-hours restriction icons, and DNS pins — instead of plain gray dots. Selected stops pop orange and routed stops become numbered route-colored pins. Added the same collapsible Stops/Loads data grid along the bottom; tap a row to frame it and add it to the route, or tap a load to select all of its stops.'],
   ['0.29.36', 'Routing (beta) map now matches the dispatch Map: same satellite imagery + road labels (hybrid) and the same vector map style, instead of the plain green roadmap base.'],
   ['0.29.35', 'Historical PRO lookup: tap the NuVizz result to open a full stop card — a centered window over the map with all of the order\'s detail (address + Street View / Maps / web links, status & activity timeline, line items, delivery photos, route/driver). Uses the data the lookup already pulled, so no extra NuVizz call.'],
   ['0.29.34', 'Fix: make the load-ID anchor actually work. The load-roster request sent the date filter as an object; the NuVizz openapi endpoint requires it as a JSON string and was rejecting the call (HTTP 400) — so the anchor silently did nothing. Verified live: the corrected request returns the day\'s loads with their unique IDs. With NUVIZZ_LOAD_ANCHOR=on, the next scan drops yesterday\'s stops that were being carried onto today.'],
@@ -1607,6 +1608,62 @@ function iconMarkerSvg(restrictions, tint) {
     height: totalH,
     anchor: [totalW / 2, 34],
   };
+}
+
+// Build the rich dispatch-map marker icon for a single stop — the shared source of
+// truth so BOTH the Map screen and the Routing screen render IDENTICAL markers
+// (DNS pin → numbered route pin → status/flag/AM-PM/address-off pin → restriction
+// icons). Returns a google.maps Icon ({ url, scaledSize, anchor }).
+//   opts.selectedDayKey — day key for receiving-hours restriction badges
+//   opts.matched        — stop is in the active result set (renders ORANGE + enlarged)
+//   opts.inRoute        — stop is in the open/selected route (renders a numbered pin)
+//   opts.seq            — the route sequence number drawn in the numbered pin
+//   opts.routeColor     — overrides the numbered pin's color (Routing colors by route,
+//                         the Map colors by status); omit to keep status coloring.
+function stopMarkerIcon(google, s, note, opts = {}) {
+  const { selectedDayKey, matched = false, inRoute = false, seq, routeColor } = opts;
+  const restrictions = getRestrictionBadgeKeys(note, { day: selectedDayKey });
+  const flagHue = (note?.priority_flag && FLAG_COLORS[note.priority_flag]) ? FLAG_COLORS[note.priority_flag] : null;
+  const dnsStop = !!note?.do_not_send;
+  if (dnsStop) {
+    // DNS — strong red pin with a white ✕, taking precedence over everything else.
+    return { url: pinSvgStatus(DNS_COLOR, { glyph: 'dns' }), scaledSize: new google.maps.Size(28, 36), anchor: new google.maps.Point(14, 34) };
+  }
+  if (inRoute) {
+    // Numbered route pin (delivery sequence). Colored by route when a routeColor is
+    // given (Routing), else by status (Map): green=delivered / blue=scheduled.
+    const statusKind = classifyStopStatus(s);
+    const meta = STATUS_META[statusKind] || STATUS_META.SCHEDULED;
+    const color = routeColor || meta.color || flagColor(note);
+    return { url: pinSvgStatus(color, { label: String(seq) }), scaledSize: new google.maps.Size(30, 39), anchor: new google.maps.Point(15, 37) };
+  }
+  if (restrictions.length === 0) {
+    // State A — status drives the pin; matched stops pop orange; a priority flag,
+    // AM/PM window, or "address looks off" signal recolor/reglyph as appropriate.
+    const statusKind = classifyStopStatus(s);
+    const meta = STATUS_META[statusKind] || STATUS_META.SCHEDULED;
+    const tag = (note?.delivery_window === 'AM' || note?.delivery_window === 'PM') ? note.delivery_window : null;
+    const addressOff = !matched && !flagHue
+      && (statusKind === 'SCHEDULED' || statusKind === 'UNPLANNED')
+      && addressLooksOff(s, note);
+    const color = matched ? '#f59e0b'
+      : flagHue
+      || (addressOff ? ADDRESS_OFF_TINT : (meta.color || flagColor(note)));
+    let glyph = meta.glyph;
+    if (!matched) {
+      if (note?.priority_flag === 'question' && !glyph) glyph = 'question';
+      else if (addressOff) glyph = 'bang';
+    }
+    const big = matched || !!tag;
+    return {
+      url: pinSvgStatus(color, { hollow: matched ? false : meta.hollow, glyph, tag }),
+      scaledSize: big ? new google.maps.Size(28, 36) : new google.maps.Size(16, 21),
+      anchor: big ? new google.maps.Point(14, 34) : new google.maps.Point(8, 20),
+    };
+  }
+  // States B/C — restriction / receiving-hours icons; a priority flag recolors them.
+  const spec = iconMarkerSvg(restrictions, flagHue);
+  return { url: spec.url, scaledSize: new google.maps.Size(spec.width, spec.height), anchor: new google.maps.Point(spec.anchor[0], spec.anchor[1]) };
 }
 
 function truckSvg(color) {
@@ -5770,87 +5827,12 @@ function MapScreen({ onOpenMessages, smsUnread = 0 }) {
       const note = notes.get(s.matchKey);
       const seq = routeSeqByStop.get(s.stopNbr);
       const inRoute = seq != null;
-      const restrictions = getRestrictionBadgeKeys(note, { day: selectedDayKey });
       const matched = effectiveMatchSet && effectiveMatchSet.has(s.stopNbr);
       const dim = (effectiveMatchSet && !matched) || (!!selectedRoute && !inRoute);
-      // A priority flag is the dispatcher's deliberate "watch this" signal, so it
-      // dominates the marker color in BOTH paths — the classic pin AND the special
-      // restriction/receiving-hours icons (which otherwise hid it).
-      const flagHue = (note?.priority_flag && FLAG_COLORS[note.priority_flag]) ? FLAG_COLORS[note.priority_flag] : null;
-      // M4.1.6 — no restrictions → classic pin (State A). 1+ restrictions →
-      // the pin disappears and the icon(s) become the marker (States B/C).
-      // iconMarkerSvg returns size + anchor based on icon count.
-      let icon;
-      const dnsStop = !!note?.do_not_send;
-      if (dnsStop) {
-        // DNS — strong red pin with a white ✕, taking precedence over status /
-        // restriction / route visuals so a "do not send" customer is unmissable.
-        icon = {
-          url: pinSvgStatus(DNS_COLOR, { glyph: 'dns' }),
-          scaledSize: new google.maps.Size(28, 36),
-          anchor: new google.maps.Point(14, 34),
-        };
-      } else if (inRoute) {
-        // Numbered route pin (delivery sequence), colored by status (green=delivered
-        // / blue=scheduled), so the open route reads like NuVizz's numbered stops.
-        const statusKind = classifyStopStatus(s);
-        const meta = STATUS_META[statusKind] || STATUS_META.SCHEDULED;
-        const color = meta.color || flagColor(note);
-        icon = {
-          url: pinSvgStatus(color, { label: String(seq) }),
-          scaledSize: new google.maps.Size(30, 39),
-          anchor: new google.maps.Point(15, 37),
-        };
-      } else if (restrictions.length === 0) {
-        // M5.1 — status drives the pin. SCHEDULED keeps the note-flag color
-        // (no regression); other states use their status hue + shape/glyph.
-        // When a result set is active (search / AI / selection), the matched
-        // stops render ORANGE so the "found" ones pop against the dimmed rest.
-        const statusKind = classifyStopStatus(s);
-        const meta = STATUS_META[statusKind] || STATUS_META.SCHEDULED;
-        // Delivery-window tag (AM/PM) → shown in the pin head; tagged pins render
-        // at the larger size so the text stays legible.
-        const tag = (note?.delivery_window === 'AM' || note?.delivery_window === 'PM') ? note.delivery_window : null;
-        // Auto "address looks off" signal — only on not-yet-acted-on stops
-        // (scheduled/unplanned) that aren't matched or flagged, so it never
-        // overrides a deliberate flag, a search match, or a delivered/exception
-        // glyph. Renders an amber pin with a "!" so wrong geocodes stand out.
-        const addressOff = !matched && !flagHue
-          && (statusKind === 'SCHEDULED' || statusKind === 'UNPLANNED')
-          && addressLooksOff(s, note);
-        // Color precedence: result-set match (orange) → priority flag (so a red
-        // flag makes a red pin, even on an unplanned/AM stop) → address-off amber
-        // → status hue → flag/restriction tint fallback.
-        const color = matched ? '#f59e0b'
-          : flagHue
-          || (addressOff ? ADDRESS_OFF_TINT : (meta.color || flagColor(note)));
-        // Glyph: a "?" flag shows "?", an address-off stop shows "!", otherwise
-        // the status glyph. A status glyph (check/bang/arrow) keeps priority.
-        let glyph = meta.glyph;
-        if (!matched) {
-          if (note?.priority_flag === 'question' && !glyph) glyph = 'question';
-          else if (addressOff) glyph = 'bang';
-        }
-        const big = matched || !!tag;
-        // Planned and unplanned stops render at the SAME smaller size — only a
-        // matched/AM-PM-tagged pin is enlarged for emphasis. Unplanned stops are
-        // tinted thistle (STATUS_META.UNPLANNED) to read distinctly from planned.
-        icon = {
-          url: pinSvgStatus(color, { hollow: matched ? false : meta.hollow, glyph, tag }),
-          // Slightly larger when matched or AM/PM-tagged so they stand out.
-          scaledSize: big ? new google.maps.Size(28, 36) : new google.maps.Size(16, 21),
-          anchor: big ? new google.maps.Point(14, 34) : new google.maps.Point(8, 20),
-        };
-      } else {
-        // Restriction / receiving-hours icons. A priority flag recolors them to
-        // the flag hue (overriding each icon's own accent) so priority still reads.
-        const spec = iconMarkerSvg(restrictions, flagHue);
-        icon = {
-          url: spec.url,
-          scaledSize: new google.maps.Size(spec.width, spec.height),
-          anchor: new google.maps.Point(spec.anchor[0], spec.anchor[1]),
-        };
-      }
+      // The rich per-stop icon (DNS / numbered route / status-flag-window /
+      // restriction) is built by the shared stopMarkerIcon helper so the Map and
+      // Routing screens stay pixel-identical.
+      const icon = stopMarkerIcon(google, s, note, { selectedDayKey, matched, inRoute, seq });
       const marker = new google.maps.Marker({
         position: { lat: s.lat, lng: s.lng },
         icon,
@@ -8212,6 +8194,10 @@ function RoutingScreen() {
   const [versionLogOpen, setVersionLogOpen] = useState(false);
   const openStop = useCallback((s) => setDetailModalStop(s || null), []);
 
+  // The NuVizz-style bottom data grid (same spreadsheet as the dispatch Map) —
+  // collapsed by default so it doesn't cover the map until opened.
+  const [bottomTableOpen, setBottomTableOpen] = useState(false);
+
   // Desktop right rail: Stops | Result. Persisted as a view pref (localStorage ok).
   const [desktopRail, setDesktopRail] = useState(() => {
     try { return localStorage.getItem('routing.rail') === 'result' ? 'result' : 'stops'; } catch { return 'stops'; }
@@ -8393,6 +8379,35 @@ function RoutingScreen() {
   }, []);
   const clearSelection = useCallback(() => { setSelectedIds(new Set()); setLastAction('Cleared selection'); }, []);
 
+  // ── Bottom-table pick handlers (the dispatch-Map grid, made route-able) ──
+  // Pan/zoom the map to a stop.
+  const panToStop = useCallback((s) => {
+    if (!s || s.lat == null || s.lng == null || !mapRef.current) return;
+    mapRef.current.panTo({ lat: s.lat, lng: s.lng });
+    if ((mapRef.current.getZoom() || 0) < 12) mapRef.current.setZoom(13);
+  }, []);
+  // Tap a table row → frame it on the map AND toggle it into the route selection,
+  // so the dispatcher can build a route straight from the spreadsheet.
+  const pickStopFromTable = useCallback((s) => {
+    if (!s) return;
+    panToStop(s);
+    if (viewing) return;                       // saved-load view is read-only
+    toggleStop(s.stopNbr);
+  }, [panToStop, viewing, toggleStop]);
+  // Tap a load → select ALL of that load's positioned stops and frame them.
+  const pickLoadFromTable = useCallback((loadNbr) => {
+    if (viewing || !loadNbr || !google) return;
+    const pts = positioned.filter((s) => (s.routeName || s.loadNbr) === loadNbr);
+    if (!pts.length) return;
+    setSelectedIds((prev) => { const n = new Set(prev); pts.forEach((s) => n.add(String(s.stopNbr))); return n; });
+    setLastAction(`Selected ${pts.length} stop${pts.length === 1 ? '' : 's'} from load ${loadNbr}`);
+    if (mapRef.current) {
+      const b = new google.maps.LatLngBounds();
+      pts.forEach((s) => b.extend({ lat: s.lat, lng: s.lng }));
+      mapRef.current.fitBounds(b, 60);
+    }
+  }, [viewing, google, positioned]);
+
   // The selected-stops list: persistent on desktop, collapsed by default on mobile.
   const [listOpen, setListOpen] = useState(!isMobile);
   useEffect(() => { setListOpen(!isMobile); }, [isMobile]);
@@ -8477,21 +8492,20 @@ function RoutingScreen() {
   }, [google, addTempMarker, addEnclosed, redrawLasso, cancelMode]);
   useEffect(() => { handleSelectPointRef.current = handleSelectPoint; }, [handleSelectPoint]);
 
-  // Base marker icon. Routed (`numbered`) stops are GREEN + slightly larger for
-  // legibility (truck distinction is the per-truck route LINE color, not the dot);
-  // a RESTRICTED routed stop keeps its signal via a red ring. Selection-phase dots
-  // (pre-build) are unchanged (gray unselected / brand-blue selected). Hover emphasis
-  // is layered on via emphIcon (keeps the label + ring).
-  const ROUTED_GREEN = '#16a34a';
-  const makeMarkerIcon = useCallback((sel, routed, numbered, restricted) => ({
-    path: google?.maps.SymbolPath.CIRCLE,
-    scale: numbered ? 14 : (sel || routed ? 7 : 4.5),
-    fillColor: numbered ? ROUTED_GREEN : (routed || (sel ? BRAND : '#94a3b8')),
-    fillOpacity: 0.95,
-    strokeColor: numbered && restricted ? '#dc2626' : '#fff',
-    strokeWeight: numbered && restricted ? 3 : 1.5,
-  }), [google]);
-  const emphIcon = useCallback((base) => ({ ...base, scale: base.scale + 2.5, strokeColor: '#0f172a', strokeWeight: 2 }), []);
+  // The weekday key drives the receiving-hours restriction badges (same as the Map).
+  const selectedDayKey = useMemo(() => weekdayKeyFromDate(selectedDate), [selectedDate]);
+
+  // Hover emphasis for the rich image-pin markers — scale the rendered SVG up ~30%
+  // and shift the anchor to match (image icons have no Symbol `scale`). Falls back
+  // to the Symbol-path bump for any non-image icon (e.g. temp selection dots).
+  const emphIcon = useCallback((base) => {
+    if (base && base.url && base.scaledSize) {
+      const f = 1.3;
+      const w = Math.round(base.scaledSize.width * f), h = Math.round(base.scaledSize.height * f);
+      return { ...base, scaledSize: new google.maps.Size(w, h), anchor: new google.maps.Point(base.anchor.x * f, base.anchor.y * f) };
+    }
+    return { ...base, scale: (base.scale || 6) + 2.5, strokeColor: '#0f172a', strokeWeight: 2 };
+  }, [google]);
 
   // Desktop drag-box: convert a container-pixel point to LatLng via the overlay
   // projection (exact, unlike interpolating viewport bounds).
@@ -8603,10 +8617,13 @@ function RoutingScreen() {
     setMapReady((n) => n + 1);
   }, [google, isMobile]); // eslint-disable-line
 
-  // Render stop markers — gray unselected, blue selected, route-colored + NUMBERED
-  // (sequence 1..N matching the panel) once a result exists. Click toggles
-  // selection; hover drives the map<->list linkage. Numbers/colors track routeInfo
-  // so a manual reorder updates the labels live.
+  // Render stop markers — the SAME rich dispatch-map pins (status / priority flag /
+  // AM-PM window / restriction icons / DNS) via the shared stopMarkerIcon helper, so
+  // Routing reads exactly like the Map. Layered with routing semantics: a SELECTED
+  // (not-yet-routed) stop pops ORANGE (matched), and a ROUTED stop becomes a numbered
+  // pin in its truck's route color (sequence 1..N matching the panel). Click toggles
+  // selection; hover drives the map<->list linkage. Numbers/colors track routeInfo so
+  // a manual reorder updates the labels live.
   useEffect(() => {
     if (!google || !mapRef.current) return;
     markersRef.current.forEach((m) => m.setMap(null));
@@ -8615,19 +8632,21 @@ function RoutingScreen() {
       const id = String(s.stopNbr);
       const sel = !viewing && selectedIds.has(id);
       const ri = routeInfo.get(id);              // { color, seq } when on a route
-      const routed = ri?.color;
       const numbered = !!ri;
-      // Restricted = equipment restriction or oversize → keep the visual signal as a
-      // red ring on the green routed marker.
-      const restricted = numbered && (getRestrictionBadgeKeys(notes.get(s.matchKey) || null).length > 0 || stopLooksOversize(s));
+      const note = notes.get(s.matchKey) || null;
       const hovered = hoverIdRef.current === id;
-      const baseIcon = makeMarkerIcon(sel, routed, numbered, restricted);
-      const baseZ = sel || routed ? 30 : 10;
+      const baseIcon = stopMarkerIcon(google, s, note, {
+        selectedDayKey,
+        matched: sel,
+        inRoute: numbered,
+        seq: ri?.seq,
+        routeColor: ri?.color,
+      });
+      const baseZ = numbered ? 30 : (sel ? 25 : 10);
       const marker = new google.maps.Marker({
         position: { lat: s.lat, lng: s.lng },
         title: s.businessName || s.stopNbr,
         icon: hovered ? emphIcon(baseIcon) : baseIcon,
-        label: numbered ? { text: String(ri.seq), color: '#fff', fontSize: '11px', fontWeight: '700' } : undefined,
         zIndex: hovered ? 50 : baseZ,
       });
       marker.addListener('click', () => {
@@ -8643,7 +8662,7 @@ function RoutingScreen() {
     });
     markerByIdRef.current = byId;
     lastEmphRef.current = hoverIdRef.current; // markers were built already-emphasized
-  }, [google, vPositioned, viewing, selectedIds, routeInfo, notes, toggleStop, mapReady, makeMarkerIcon, emphIcon]);
+  }, [google, vPositioned, viewing, selectedIds, routeInfo, notes, toggleStop, mapReady, selectedDayKey, emphIcon]);
 
   // Hover emphasis — touch only the two affected markers, not all of them. Keeps
   // the sequence label intact (only the icon scale/ring change).
@@ -8960,6 +8979,17 @@ function RoutingScreen() {
           {viewing
             ? <div className="absolute top-2 left-1/2 -translate-x-1/2 z-20 bg-indigo-600 text-white text-[11px] rounded shadow px-3 py-1.5 flex items-center gap-2 max-w-[92%]"><span className="truncate">👁 {viewedLoad?.name || viewedLoad?.id}</span><button onClick={() => setViewedLoad(null)} className="underline shrink-0">Back</button></div>
             : <div className="absolute top-2 left-2 bg-white/95 border border-slate-200 rounded shadow px-2 py-1 text-[11px]">{tally.count} selected · {tally.skids} skids · {tally.pieces} pcs</div>}
+          {/* The dispatch-Map data grid — Stops/Loads spreadsheet, route-able. */}
+          <BottomStopsTable
+            stops={stops}
+            loadStops={stops}
+            notes={notes}
+            totalCount={stops.length}
+            open={bottomTableOpen}
+            setOpen={setBottomTableOpen}
+            onPick={pickStopFromTable}
+            onPickLoad={pickLoadFromTable}
+          />
         </div>
         <div className="border-t bg-white flex flex-col shrink-0" style={{ height: sheetOpen ? '50%' : 'auto' }}>
           <div className="flex items-center gap-2 px-2 py-1.5 border-b">
@@ -9040,6 +9070,17 @@ function RoutingScreen() {
             )}
           </div>
         )}
+        {/* The dispatch-Map data grid — Stops/Loads spreadsheet, route-able. */}
+        <BottomStopsTable
+          stops={stops}
+          loadStops={stops}
+          notes={notes}
+          totalCount={stops.length}
+          open={bottomTableOpen}
+          setOpen={setBottomTableOpen}
+          onPick={pickStopFromTable}
+          onPickLoad={pickLoadFromTable}
+        />
       </div>
 
       {/* Right: Stops | Result */}
