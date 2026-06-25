@@ -49,7 +49,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.29.34';
+const APP_VERSION = '0.29.35';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -69,6 +69,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.29.35', 'Historical PRO lookup: tap the NuVizz result to open a full stop card — a centered window over the map with all of the order\'s detail (address + Street View / Maps / web links, status & activity timeline, line items, delivery photos, route/driver). Uses the data the lookup already pulled, so no extra NuVizz call.'],
   ['0.29.34', 'Fix: make the load-ID anchor actually work. The load-roster request sent the date filter as an object; the NuVizz openapi endpoint requires it as a JSON string and was rejecting the call (HTTP 400) — so the anchor silently did nothing. Verified live: the corrected request returns the day\'s loads with their unique IDs. With NUVIZZ_LOAD_ANCHOR=on, the next scan drops yesterday\'s stops that were being carried onto today.'],
   ['0.29.33', 'Scan: optional load-ID anchor (off by default, NUVIZZ_LOAD_ANCHOR=on). Recurring routes (e.g. "BEN 2") reuse the same NAME daily but each day\'s instance has its own unique load ID; the scan can now pull the day\'s authoritative load roster and drop any board stop whose load ID belongs to a prior day — a second, identity-based guard against yesterday\'s stops bleeding onto today. Best-effort: a load-list hiccup leaves the board untouched.'],
   ['0.29.32', 'Fix: today\'s board no longer doubles with yesterday\'s completed stops. The list-discovery scan was stamping every stop from its multi-day window onto the queried day, so prior-day DELIVERED / unable-to-deliver stops bled onto today (≈700 extra). Those finished stops now stay on their own day; today shows only today\'s work plus genuinely-open carryover.'],
@@ -4307,6 +4308,7 @@ function MobileDrawer({ open, onClose, activeTab, setActiveTab, children }) {
 function PastProSearch({ notes, initialQuery, onPickCustomer, onClose }) {
   const [q, setQ] = useState(initialQuery || '');
   const [api, setApi] = useState(null); // NuVizz single-PRO lookup: null | {loading} | {stop} | {error}
+  const [detail, setDetail] = useState(null); // stop shown in the full-detail modal
   const [remote, setRemote] = useState({ loading: false, customers: [], error: null }); // our delivery-history warehouse
   const query = q.trim();
   const lc = query.toLowerCase();
@@ -4490,19 +4492,65 @@ function PastProSearch({ notes, initialQuery, onPickCustomer, onClose }) {
         {api?.stop && (
           <div className="px-3 pb-3">
             <div className="text-[10px] uppercase font-semibold text-slate-500 mb-1">From NuVizz</div>
-            <div className="border border-blue-200 bg-blue-50/40 rounded-lg p-3 text-sm">
-              <div className="text-[10px] uppercase tracking-wider text-slate-500">PRO {api.stop.pro || '—'}</div>
-              <div className="font-bold text-slate-900 break-words">{api.stop.businessName || '(no name)'}</div>
-              <div className="text-slate-600 break-words">{api.stop.addr1}</div>
-              <div className="text-slate-600 break-words">{[api.stop.city, api.stop.state, api.stop.zip].filter(Boolean).join(', ')}</div>
-              {api.stop.loadNbr && <div className="text-[12px] text-slate-500">Route: {api.stop.routeName || api.stop.loadNbr}{api.stop.driverName ? ` · ${api.stop.driverName}` : ''}</div>}
-              {api.stop.itemsSummary && <div className="text-[12px] text-slate-500">{api.stop.itemsSummary}</div>}
-            </div>
+            <button
+              onClick={() => setDetail(api.stop)}
+              className="w-full text-left border border-blue-200 bg-blue-50/40 rounded-lg p-3 text-sm hover:bg-blue-50 active:bg-blue-100"
+            >
+              <div className="flex items-start gap-2">
+                <div className="min-w-0 flex-1">
+                  <div className="text-[10px] uppercase tracking-wider text-slate-500">PRO {api.stop.pro || '—'}</div>
+                  <div className="font-bold text-slate-900 break-words">{api.stop.businessName || '(no name)'}</div>
+                  <div className="text-slate-600 break-words">{api.stop.addr1}</div>
+                  <div className="text-slate-600 break-words">{[api.stop.city, api.stop.state, api.stop.zip].filter(Boolean).join(', ')}</div>
+                  {api.stop.loadNbr && <div className="text-[12px] text-slate-500">Route: {api.stop.routeName || api.stop.loadNbr}{api.stop.driverName ? ` · ${api.stop.driverName}` : ''}</div>}
+                  {api.stop.itemsSummary && <div className="text-[12px] text-slate-500">{api.stop.itemsSummary}</div>}
+                </div>
+                <ChevronDown size={18} className="-rotate-90 text-blue-400 flex-shrink-0 mt-0.5" />
+              </div>
+              <div className="mt-1.5 text-[11px] font-semibold" style={{ color: BRAND }}>Tap for full details →</div>
+            </button>
           </div>
         )}
         <div className="h-3" />
       </div>
+      {detail && (
+        <LookupStopModal stop={detail} note={(detail.matchKey && notes.get(detail.matchKey)) || null} onClose={() => setDetail(null)} />
+      )}
     </>
+  );
+}
+
+// Full stop-detail modal for a historical PRO lookup — a centered window over the
+// map showing ALL of the already-fetched detail (address + map links, live status
+// /timeline, order line items, POD photos, route). Reuses StopDataSections read-only
+// (no action callbacks → edit/pin/route buttons hidden). No extra NuVizz call — it
+// renders the stop the lookup already returned; the inner "Refresh" button is opt-in.
+function LookupStopModal({ stop, note, onClose }) {
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+  if (!stop) return null;
+  const pro = stop.pro || stop.primaryPro || stop.stopNbr || '';
+  return (
+    <div className="fixed inset-0 z-[1300] flex items-center justify-center p-3 sm:p-6" role="dialog" aria-modal="true">
+      <div className="absolute inset-0 bg-black/50" onClick={onClose} />
+      <div className="relative bg-white rounded-xl shadow-2xl w-full max-w-2xl max-h-[90dvh] flex flex-col overflow-hidden" style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}>
+        <div className="flex items-center justify-between px-4 py-3 flex-shrink-0" style={{ background: BRAND, color: 'white', paddingTop: 'max(0.75rem, env(safe-area-inset-top))' }}>
+          <div className="min-w-0">
+            <div className="font-bold truncate">{stop.businessName || `Stop ${pro}`}</div>
+            <div className="text-[11px] text-white/80 truncate">
+              {pro ? `PRO #${pro}` : ''}{stop.routeName || stop.loadNbr ? ` · ${stop.routeName || stop.loadNbr}` : ''}{stop.driverName ? ` · ${stop.driverName}` : ''}
+            </div>
+          </div>
+          <button onClick={onClose} aria-label="Close" className="opacity-80 hover:opacity-100 p-1 -mr-1 flex-shrink-0"><X size={20} /></button>
+        </div>
+        <div className="flex-1 min-h-0 overflow-y-auto">
+          <StopDataSections stop={stop} note={note} />
+        </div>
+      </div>
+    </div>
   );
 }
 
