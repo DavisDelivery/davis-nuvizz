@@ -35,7 +35,10 @@ const LOAD_MAX_RESULT = Number(process.env.NUVIZZ_LOAD_MAX_RESULT) || 500;
 export function buildLoadBody(period: string, pageSize: number = LOAD_MAX_RESULT) {
   return {
     filterList: [
-      { sequence: 1, value: { period } },
+      // The openapi entity endpoint deserializes each sequence `value` as a STRING, so the
+      // period filter must be a JSON-stringified object, not a raw object (an object value
+      // returns HTTP 400 "Cannot deserialize ... from Object value"). Verified live.
+      { sequence: 1, value: JSON.stringify({ period }) },
       { sequence: 2, value: '-1' },
       { sequence: 3, value: '-1' },
       { sequence: 4, value: '-1' },

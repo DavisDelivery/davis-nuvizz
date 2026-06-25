@@ -48,9 +48,11 @@ test('dropForeignLoadStops: empty id set is a NO-OP (load list unavailable → b
   assert.equal(dropForeignLoadStops(stops, new Set()).length, 1);
 });
 
-test('buildLoadBody: period in seq1, the captured saved-load def id', () => {
+test('buildLoadBody: period as a JSON STRING in seq1, the captured saved-load def id', () => {
   const b = buildLoadBody('0d');
-  assert.deepEqual(b.filterList[0], { sequence: 1, value: { period: '0d' } });
+  // openapi deserializes value as a String → must be JSON-stringified, not a raw object.
+  assert.deepEqual(b.filterList[0], { sequence: 1, value: '{"period":"0d"}' });
   assert.equal(b.customListDefId, 35833);
+  assert.equal(b.canSelect, true);
   assert.equal(b.page, 1);
 });
