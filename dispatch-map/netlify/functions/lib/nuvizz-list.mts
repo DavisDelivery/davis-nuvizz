@@ -265,13 +265,34 @@ export async function fetchListRows(period: string, statusCsv: string = LIST_STA
   return normalize(await resp.json());
 }
 
+// PURE: from a windowed list pull, keep the rows that belong on `targetDate`'s board.
+// The saved/list search returns a multi-day window, so it can include PRIOR-day stops
+// that are already FINISHED (delivered / unable-to-deliver) — those belong to their OWN
+// day's board, not today. Dropping them stops yesterday's completed deliveries from
+// bleeding onto today (the ~2× board). Everything else (today's stops, still-open work,
+// and undated rows) keeps the "we queried this exact day" stamp. Exported for tests.
+export function keepForBoardDate(stops: any[], targetDate: string): any[] {
+  const out: any[] = [];
+  for (const s of stops) {
+    // Each stop's OWN day — same resolution bucketByDate uses (Estimated Arrival, then
+    // Requested Date, then scheduled), so the single-scan path agrees with the two-scan path.
+    const own = s.boardDate || s.requestedDate || s.scheduledDate;
+    const finished = s.normalizedStatus === 'DELIVERED' || s.normalizedStatus === 'EXCEPTION';
+    if (own && own < targetDate && finished) continue; // prior-day completed → its own day, not today
+    // authoritative: we queried this exact day, so pin both the scheduled and board day to it.
+    s.scheduledDate = targetDate;
+    s.boardDate = targetDate;
+    out.push(s);
+  }
+  return out;
+}
+
 // Board stops for a specific target UTC date (the doc key the scanner writes). The
-// period is ET-adjusted so it matches the number-probe's "today" board.
+// period is ET-adjusted so it matches the number-probe's "today" board. Prior-day
+// completed stops in the window are filed to their own day (keepForBoardDate), not here.
 export async function listScanForDate(targetDateUTC: string): Promise<any[]> {
   const stops = fromRows(await fetchListRows(periodForDate(targetDateUTC)));
-  // authoritative: we queried this exact day, so pin both the scheduled and board day to it.
-  for (const s of stops) { s.scheduledDate = targetDateUTC; s.boardDate = targetDateUTC; }
-  return stops;
+  return keepForBoardDate(stops, targetDateUTC);
 }
 
 // ── Two saved-search scans (the live board's source) ─────────────────────────
