@@ -18,7 +18,7 @@
 //   GET ?documentGuid=<g>&extension=<ext>&cc=<companyCode>   → image bytes (explicit)
 //   add &format=datauri                                      → { dataUri } JSON
 //   add &debug=1                                             → { attempts } JSON (diagnostic)
-import { getNuvizzRequester } from './lib/nuvizz-request.mts';
+import { getNuvizzRequester, setCallTrigger } from './lib/nuvizz-request.mts';
 import { basicAuthHeader } from './lib/nuvizz-scan.mts';
 
 const DOC_BASE = process.env.NUVIZZ_DOC_BASE || 'https://portal.nuvizz.com/deliverit/openapi/documentapi';
@@ -39,6 +39,7 @@ export default async (req: Request): Promise<Response> => {
   const cors = { 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'private, max-age=300' };
   const jsonHdr = { ...cors, 'Content-Type': 'application/json', 'Cache-Control': 'no-store' };
   if (req.method === 'OPTIONS') return new Response('', { status: 200, headers: cors });
+  setCallTrigger('on-demand'); // POD photo opened by a dispatcher → on-demand
   const url = new URL(req.url);
 
   let guid = url.searchParams.get('documentGuid') || '';

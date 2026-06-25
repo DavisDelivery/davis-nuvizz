@@ -4,8 +4,54 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { statusFromCode, parseSchedDate, parseReqDate, toBoardStop, bucketByDate, fromRows, normalize, periodForDate, mergeEnrich, mergeTwoScan, etDateForTargetUTC, SAVED_SEARCHES, keepForBoardDate } from '../netlify/functions/lib/nuvizz-list.mts';
+import { statusFromCode, parseSchedDate, parseReqDate, toBoardStop, bucketByDate, boardDayFor, fromRows, normalize, periodForDate, mergeEnrich, mergeTwoScan, etDateForTargetUTC, SAVED_SEARCHES, keepForBoardDate } from '../netlify/functions/lib/nuvizz-list.mts';
 import { addrKey } from '../netlify/functions/lib/geocode.mts';
+
+// ── boardDayFor: the ONE day-resolution authority (bucketing + carry-forward guard) ──
+test('boardDayFor: resolves boardDate → requested → scheduled; null when none', () => {
+  assert.equal(boardDayFor({ boardDate: '2026-06-26' }, '2026-06-25'), '2026-06-26');
+  assert.equal(boardDayFor({ requestedDate: '2026-06-26' }, '2026-06-25'), '2026-06-26');
+  assert.equal(boardDayFor({ scheduledDate: '2026-06-26' }, '2026-06-25'), '2026-06-26');
+  assert.equal(boardDayFor({}, '2026-06-25'), null);
+});
+
+test('boardDayFor: open ON-ROUTE stop with a stale/missing day clamps forward to today', () => {
+  // rolled-over open route stop keeps yesterday's arrival → must run today, not the past
+  assert.equal(boardDayFor({ boardDate: '2026-06-23', normalizedStatus: 'SCHEDULED', loadNbr: 'L1' }, '2026-06-25'), '2026-06-25');
+  assert.equal(boardDayFor({ normalizedStatus: 'SCHEDULED', loadNbr: 'L1' }, '2026-06-25'), '2026-06-25');
+  // FINISHED stop keeps its real day (history accuracy) — no clamp
+  assert.equal(boardDayFor({ boardDate: '2026-06-23', normalizedStatus: 'DELIVERED', loadNbr: 'L1' }, '2026-06-25'), '2026-06-23');
+  // open but NOT on a route → left where it is
+  assert.equal(boardDayFor({ boardDate: '2026-06-23', normalizedStatus: 'UNPLANNED' }, '2026-06-25'), '2026-06-23');
+});
+
+test('carry-forward guard: a Thursday stop does NOT belong on Friday board (the bleed fix)', () => {
+  // This is exactly the refresh-stops carry-forward guard: only carry p if boardDayFor(p)===boardEtDate.
+  const thursdayStop = { stopNbr: 'X', boardDate: '2026-06-25', normalizedStatus: 'UNPLANNED' };
+  const fridayStop = { stopNbr: 'Y', boardDate: '2026-06-26', normalizedStatus: 'SCHEDULED', loadNbr: 'L1' };
+  const fridayBoard = '2026-06-26';
+  assert.notEqual(boardDayFor(thursdayStop), fridayBoard, 'Thursday stop must be dropped from Friday carry-forward');
+  assert.equal(boardDayFor(fridayStop), fridayBoard, 'genuine Friday stop is kept');
+});
+
+test('bucketByDate: files each stop on its own day (no cross-day bleed)', () => {
+  const m = bucketByDate([
+    { stopNbr: 'A', boardDate: '2026-06-25', normalizedStatus: 'UNPLANNED' },
+    { stopNbr: 'B', boardDate: '2026-06-26', normalizedStatus: 'UNPLANNED' },
+  ], '2026-06-25');
+  assert.deepEqual((m.get('2026-06-25') || []).map((s) => s.stopNbr), ['A']);
+  assert.deepEqual((m.get('2026-06-26') || []).map((s) => s.stopNbr), ['B']);
+});
+
+test('toBoardStop: surfaces shipmentNbr + isAttempt (ATT marker) from the list row', () => {
+  const normal = toBoardStop({ stopNbr: '007', shipmentNbr: '007', statusCode: '20', routeName: 'R1' });
+  assert.equal(normal.shipmentNbr, '007');
+  assert.equal(normal.isAttempt, false);
+  const att = toBoardStop({ stopNbr: '008', shipmentNbr: 'ATT008', statusCode: '10' });
+  assert.equal(att.isAttempt, true, 'ATT-prefixed shipment is flagged as an attempt');
+  const attLower = toBoardStop({ stopNbr: '009', shipmentNbr: 'att009', statusCode: '10' });
+  assert.equal(attLower.isAttempt, true, 'case-insensitive');
+});
 
 test('keepForBoardDate: drops PRIOR-day finished stops, keeps today + open carryover', () => {
   const stops = [
@@ -51,6 +97,13 @@ test('SAVED_SEARCHES: active + completed map to the portal saved searches (HAR-c
   assert.equal(c[10], JSON.stringify({ period: '+/-7d' }));
   assert.equal(c[11], JSON.stringify({ period: '0d' }), 'Stop Detail Updated = today');
   assert.equal(SAVED_SEARCHES.completed.filterList.length, 11, 'completed def has 11 sequences');
+  // ATTEMPTS = "Dispatch Map Attempts": Shipment Number starts-with att (seq 7) + arrival today
+  // (seq 9). Captured verbatim from the attempts HAR (customListDefId 77203, 11 sequences).
+  assert.equal(SAVED_SEARCHES.attempts.customListDefId, 77203);
+  const at = Object.fromEntries(SAVED_SEARCHES.attempts.filterList.map((f) => [f.sequence, f.value]));
+  assert.equal(at[7], 'att', 'Shipment Number starts-with att');
+  assert.equal(at[9], JSON.stringify({ period: '0d' }), 'Estimated Arrival = today');
+  assert.equal(SAVED_SEARCHES.attempts.filterList.length, 11, 'attempts def has 11 sequences');
 });
 
 test('mergeTwoScan: completed wins over active per stop; buckets by scheduled date', () => {

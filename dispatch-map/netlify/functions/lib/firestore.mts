@@ -229,8 +229,10 @@ export async function listCollectionIds(docPath?: string): Promise<string[]> {
   return body.collectionIds || [];
 }
 
-// Delete a single document (used to prune stops that disappeared between scans).
-async function deleteDoc(path: string): Promise<void> {
+// Delete a single document (used to prune stops that disappeared between scans,
+// and to remove an attempts-list row on request). Exported so the attempts store
+// can reuse the same SA-JWT auth instead of duplicating it.
+export async function deleteDoc(path: string): Promise<void> {
   const token = await getAccessToken();
   const sa = loadServiceAccount();
   const url = `${FIRESTORE_BASE}/projects/${sa.project_id}/databases/(default)/documents/${path}`;
@@ -465,6 +467,30 @@ export function routeFieldKey(route?: string | null): string | null {
   return k ? `count__${k}` : null;
 }
 
+// Attribution field key: a DISTINCT prefix per dimension so app / trigger / source / tenant
+// counters never collide with each other, with `count`, or with the hour buckets. Same
+// non-alnum→`_` collapse as routeFieldKey (so a label can't inject a Firestore field path).
+// This is what makes a spike SELF-EXPLAINING — every call records which app made it, WHY
+// (trigger), the finer caller (source), and the tenant, in the same atomic commit:
+//   app__<app>   dispatch-map | parent        trig__<trigger>  scheduled-scan | enrichment | attempts | on-demand | history | manual
+//   src__<src>   board-list | pod | timeline  ten__<tenant>    davis | uline
+export function attrFieldKey(prefix: 'app' | 'trig' | 'src' | 'ten', value?: string | null): string | null {
+  if (!value) return null;
+  const k = String(value).toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+  return k ? `${prefix}__${k}` : null;
+}
+
+// Attribution carried with a counted call. Every field optional + backward-compatible: an
+// un-attributed call still counts toward `count`, `count__route`, and the hour bucket — it
+// just won't add the app/trigger/source/tenant breakdowns.
+export interface CallAttribution {
+  route?: string | null;
+  app?: string | null;
+  trigger?: string | null;
+  source?: string | null;
+  tenant?: string | null;
+}
+
 // ET hour 'HH' → hourly bucket field key, e.g. '10' → 'hour__10'. A DISTINCT prefix
 // from count__ so per-hour totals never bleed into the per-route breakdown, and the
 // strict 00–23 shape check means no arbitrary field path can be injected. Returns
@@ -478,7 +504,7 @@ export function hourFieldKey(hour?: string | null): string | null {
 // carry updateMask:['date'] (so the write MERGES `date` instead of REPLACING the doc and
 // wiping `count`), and the increments MUST ride as updateTransforms with `count` first
 // (transformResults[0] is read back as the authoritative new total).
-export function buildCounterCommitBody(docName: string, dateStr: string, n: number, route?: string, hour?: string) {
+export function buildCounterCommitBody(docName: string, dateStr: string, n: number, route?: string, hour?: string, attr?: CallAttribution) {
   const transforms: any[] = [{ fieldPath: 'count', increment: { integerValue: String(n) } }];
   const rk = routeFieldKey(route);
   if (rk) transforms.push({ fieldPath: rk, increment: { integerValue: String(n) } });
@@ -486,6 +512,12 @@ export function buildCounterCommitBody(docName: string, dateStr: string, n: numb
   // transform[0] (the authoritative read-back) and the existing route ordering holds.
   const hk = hourFieldKey(hour);
   if (hk) transforms.push({ fieldPath: hk, increment: { integerValue: String(n) } });
+  // Attribution buckets (app/trigger/source/tenant) ride LAST, after count/route/hour, so
+  // none of them can displace `count` from transform[0]. Each is independent + optional.
+  for (const [prefix, value] of [['app', attr?.app], ['trig', attr?.trigger], ['src', attr?.source], ['ten', attr?.tenant]] as const) {
+    const fk = attrFieldKey(prefix, value);
+    if (fk) transforms.push({ fieldPath: fk, increment: { integerValue: String(n) } });
+  }
   return {
     writes: [{
       update: { name: docName, fields: { date: { stringValue: dateStr } } },
@@ -508,14 +540,16 @@ export function buildCounterCommitBody(docName: string, dateStr: string, n: numb
  * the SAME commit so we can see where the calls go. Total `count` stays
  * authoritative for the ceiling. Returns the new total `count`.
  */
-export async function incrementCallCounter(dateStr: string, n: number, route?: string): Promise<number> {
+export async function incrementCallCounter(dateStr: string, n: number, meta?: string | CallAttribution): Promise<number> {
+  // Back-compat: a bare string is treated as the route (the original 3-arg signature).
+  const attr: CallAttribution = typeof meta === 'string' ? { route: meta } : (meta || {});
   const token = await getAccessToken();
   const sa = loadServiceAccount();
   const docName = `projects/${sa.project_id}/databases/(default)/documents/${OPS_COLLECTION}/calls__${dateStr}`;
   const url = `${FIRESTORE_BASE}/projects/${sa.project_id}/databases/(default)/documents:commit`;
   // count is always transform[0] so transformResults[0] is the authoritative total.
   // Stamp the current ET hour so the same commit also grows that hour's bucket.
-  const body = buildCounterCommitBody(docName, dateStr, n, route, etHourString());
+  const body = buildCounterCommitBody(docName, dateStr, n, attr.route ?? undefined, etHourString(), attr);
   const resp = await fetch(url, {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
@@ -537,18 +571,26 @@ export async function readCallCounter(dateStr: string): Promise<number> {
  * per-hour breakdown (hour__HH fields → { '00'..'23': n }). byHour lets the UI/ops
  * see WHEN calls land (e.g. the 10am unplanned open) without any extra reads.
  */
-export async function readCallStats(dateStr: string): Promise<{ count: number; byRoute: Record<string, number>; byHour: Record<string, number> }> {
+export async function readCallStats(dateStr: string): Promise<{ count: number; byRoute: Record<string, number>; byHour: Record<string, number>; byApp: Record<string, number>; byTrigger: Record<string, number>; bySource: Record<string, number>; byTenant: Record<string, number> }> {
   const doc = await getDoc(`${OPS_COLLECTION}/calls__${dateStr}`);
   const byRoute: Record<string, number> = {};
   const byHour: Record<string, number> = {};
+  const byApp: Record<string, number> = {};
+  const byTrigger: Record<string, number> = {};
+  const bySource: Record<string, number> = {};
+  const byTenant: Record<string, number> = {};
   if (doc) {
     for (const [k, v] of Object.entries(doc)) {
       if (typeof v !== 'number') continue;
       if (k.startsWith('count__')) byRoute[k.slice('count__'.length)] = v;
       else if (k.startsWith('hour__')) byHour[k.slice('hour__'.length)] = v;
+      else if (k.startsWith('app__')) byApp[k.slice('app__'.length)] = v;
+      else if (k.startsWith('trig__')) byTrigger[k.slice('trig__'.length)] = v;
+      else if (k.startsWith('src__')) bySource[k.slice('src__'.length)] = v;
+      else if (k.startsWith('ten__')) byTenant[k.slice('ten__'.length)] = v;
     }
   }
-  return { count: doc && typeof doc.count === 'number' ? doc.count : 0, byRoute, byHour };
+  return { count: doc && typeof doc.count === 'number' ? doc.count : 0, byRoute, byHour, byApp, byTrigger, bySource, byTenant };
 }
 
 // Live-editable scan configuration doc (Diagnostics UI). Stored as a flat doc at

@@ -12,7 +12,7 @@
 // lat/lng (geocoded — see lib/geocode.mts) and per-line freight detail.
 
 import { getNuvizzRequester } from './nuvizz-request.mts';
-import { getCreds, basicAuthHeader } from './nuvizz-scan.mts';
+import { getCreds, basicAuthHeader, isAttemptShipment } from './nuvizz-scan.mts';
 import { etDayString } from './firestore.mts';
 
 const NUVIZZ_BASE = process.env.NUVIZZ_BASE_URL || 'https://portal.nuvizz.com/deliverit/openapi/v7';
@@ -46,6 +46,11 @@ export function buildBody(period: string, statusCsv: string, page: number, pageS
   };
 }
 
+// One-time warning if the saved-search columns carry NO shipment-number column — that
+// would make the ATT attempt-marker detection silently inert (zero calls, but zero
+// attempts ever found). Module-level so it logs once per warm instance, not per row.
+let __warnedNoShipmentKey = false;
+
 // Map the column-def order (filterData[0]) onto each values[] row, pulling fields BY
 // KEY (robust to column reordering) into an intermediate row object.
 export function normalize(j: any): any[] {
@@ -73,8 +78,20 @@ export function normalize(j: any): any[] {
   const requestedKey =
     cols.find((k) => /request/i.test(k) && /(dttm|date|time)/i.test(k) && /stop|shipment|vizzon|destination/i.test(k)) ||
     cols.find((k) => /request/i.test(k) && /(dttm|date|time)/i.test(k)) || null;
+  // The SHIPMENT number column (distinct from stopNbr). Customer service prepends "ATT" to
+  // a failed delivery's shipment number, so this is the authoritative re-attempt marker.
+  // Found by pattern (dotted key varies by list def); exclude any "stop" key so it can never
+  // alias onto stopNbr. The usual key is vizzonInfo.shipmentInfo.shipmentNbr.
+  const shipmentKey =
+    (idx['vizzonInfo.shipmentInfo.shipmentNbr'] != null ? 'vizzonInfo.shipmentInfo.shipmentNbr' : null) ||
+    cols.find((k) => /shipment/i.test(k) && /(nbr|number)/i.test(k) && !/stop/i.test(k)) || null;
+  if (!shipmentKey && cols.length && !__warnedNoShipmentKey) {
+    __warnedNoShipmentKey = true;
+    console.warn(`[nuvizz-list] no shipment-number column in saved-search results — ATT attempt detection is INERT until a shipment column is present. cols=${JSON.stringify(cols).slice(0, 600)}`);
+  }
   return ((j && j.values) || []).map((row: any[]) => ({
     stopNbr: String(g(row, 'vizzonInfo.shipmentInfo.stopNbr') ?? ''),
+    shipmentNbr: shipmentKey ? String(g(row, shipmentKey) ?? '') : '',
     statusCode: String(g(row, 'default_vizzonInfo.shipmentInfo.status') ?? ''),
     statusText: g(row, 'vizzonInfo.shipmentInfo.status') ?? '',
     businessName: g(row, 'vizzonInfo.destination.address.name') ?? '',
@@ -152,6 +169,12 @@ export function toBoardStop(r: any): any {
   const listUpdatedDTTM = upd ? upd.iso : (r.updatedTime || null);
   return {
     stopNbr: r.stopNbr || null,
+    // Shipment number (usually equals stopNbr). Customer service prepends "ATT" to a failed
+    // delivery's shipment number, so this carries the re-delivery-attempt marker; surfaced
+    // FREE from the list every scan so the attempts feature reads it from the board index
+    // (zero extra NuVizz calls) instead of re-probing each stop via /stop/info.
+    shipmentNbr: r.shipmentNbr || null,
+    isAttempt: isAttemptShipment(r.shipmentNbr),
     // The PRO IS the stop number (see nuvizz-scan: pros = [stopNbr]). The list carries it for
     // EVERY stop, so surface it here — the board's PRO column reads pro/pros and would otherwise
     // show "—" on every un-enriched stop (enrichment is one capped /stop/info per new PRO, so
@@ -218,13 +241,24 @@ export function toBoardStop(r: any): any {
 // today's route (Mitchell's 007137332 / 007137372). Such stops are clamped forward to `today`
 // (ET). Finished stops keep their real day so history/analytics stay accurate; open stops with
 // no route are left where they are. Stops with no determinable day are dropped.
+// PURE: the single board day (YYYY-MM-DD) a stop belongs on — Estimated Arrival, then
+// Requested Date, then scheduled — with the live-route clamp described above. Returns
+// null when no day can be determined. This is the ONE authority for "which day is this
+// stop's board"; both bucketByDate (initial filing) AND the two-scan carry-forward guard
+// (refresh-stops-core) call it, so a stop can never be filed one way and carried another
+// — which is exactly how today's board was bleeding wholesale onto tomorrow's.
+export function boardDayFor(s: any, today: string = etDayString()): string | null {
+  let d = s.boardDate || s.requestedDate || s.scheduledDate || null;
+  const finished = s.normalizedStatus === 'DELIVERED' || s.normalizedStatus === 'EXCEPTION';
+  const onRoute = !!s.loadNbr;
+  if (!finished && onRoute && (!d || d < today)) d = today; // live route work → today, not the past
+  return d || null;
+}
+
 export function bucketByDate(stops: any[], today: string = etDayString()): Map<string, any[]> {
   const m = new Map<string, any[]>();
   for (const s of stops) {
-    let d = s.boardDate || s.requestedDate || s.scheduledDate;
-    const finished = s.normalizedStatus === 'DELIVERED' || s.normalizedStatus === 'EXCEPTION';
-    const onRoute = !!s.loadNbr;
-    if (!finished && onRoute && (!d || d < today)) d = today; // live route work → today, not the past
+    const d = boardDayFor(s, today);
     if (!d) continue;
     if (!m.has(d)) m.set(d, []);
     m.get(d)!.push(s);
@@ -324,6 +358,14 @@ const COMPLETED_STATUS = process.env.NUVIZZ_COMPLETED_STATUS || '90,91,80';
 const ACTIVE_ARRIVAL = cleanPeriod(process.env.NUVIZZ_ACTIVE_ARRIVAL || '+/-7d');
 const COMPLETED_ARRIVAL = cleanPeriod(process.env.NUVIZZ_COMPLETED_ARRIVAL || '+/-7d');
 const COMPLETED_UPDATED = cleanPeriod(process.env.NUVIZZ_COMPLETED_UPDATED || '0d');
+// ATTEMPTS saved search — a re-delivery attempt is a stop whose SHIPMENT number now starts
+// with "ATT" (customer service prepends it on a failed delivery). Neither the active
+// (20,10) nor completed (90,91,80) search reliably returns these, so attempts have their
+// OWN portal filter. Captured verbatim from the portal HAR (customListDefId 77203, 11
+// sequences): seq7 = Shipment Number "starts with" att, seq9 = Estimated Arrival = today
+// (0d). All other sequences unfiltered. IDs/values env-overridable for portal retunes.
+const ATT_SHIPMENT_PREFIX = process.env.NUVIZZ_ATT_SHIPMENT_PREFIX || 'att';
+const ATT_ARRIVAL = cleanPeriod(process.env.NUVIZZ_ATT_ARRIVAL || '0d');
 export const SAVED_SEARCHES = {
   active: {
     customListDefId: Number(process.env.NUVIZZ_LISTDEF_ACTIVE) || 77128,
@@ -341,6 +383,15 @@ export const SAVED_SEARCHES = {
       2: COMPLETED_STATUS,
       10: JSON.stringify({ period: COMPLETED_ARRIVAL }),
       11: JSON.stringify({ period: COMPLETED_UPDATED }),
+    }),
+  },
+  attempts: {
+    customListDefId: Number(process.env.NUVIZZ_LISTDEF_ATTEMPTS) || 77203,
+    // seq7=Shipment Number "starts with" att, seq9=Estimated Arrival (today), seq10=blank.
+    filterList: filterListOf(11, {
+      7: ATT_SHIPMENT_PREFIX,
+      9: JSON.stringify({ period: ATT_ARRIVAL }),
+      10: JSON.stringify({ period: '' }),
     }),
   },
 };
@@ -429,6 +480,9 @@ export const LIVE_LIST_FIELDS = [
   'status', 'normalizedStatus', 'isPlanned', 'isUnplanned',
   'loadNbr', 'routeName', 'driverName', 'driverUserName',
   'scheduledDate', 'requestedDate', 'boardDate', 'listUpdatedDTTM', 'source',
+  // Shipment number + its derived attempt flag are LIVE: the "ATT" marker appears DURING the
+  // day, so it must refresh every scan from the list (never frozen by an earlier enrichment).
+  'shipmentNbr', 'isAttempt',
 ];
 // Copy ALL non-live fields from src (a /stop/info-normalized stop, or a prior enriched
 // index doc) onto target, then mark it enriched. Never overwrites a real value with a

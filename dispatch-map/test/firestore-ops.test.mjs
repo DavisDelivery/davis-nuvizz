@@ -5,7 +5,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { buildCounterCommitBody, routeFieldKey, hourFieldKey, etHourString, circuitFromDoc } from '../netlify/functions/lib/firestore.mts';
+import { buildCounterCommitBody, routeFieldKey, hourFieldKey, attrFieldKey, etHourString, circuitFromDoc } from '../netlify/functions/lib/firestore.mts';
 
 const DOC = 'projects/p/databases/(default)/documents/nuvizz_ops/calls__2026-06-18';
 
@@ -79,6 +79,41 @@ test('routeFieldKey: never aliases onto count, never injects a field path', () =
   assert.equal(routeFieldKey('a.b c'), 'count__a_b_c');
   assert.equal(routeFieldKey(''), null);
   assert.equal(routeFieldKey(null), null);
+});
+
+test('attrFieldKey: prefixes per dimension + sanitizes (no field-path injection, no count alias)', () => {
+  assert.equal(attrFieldKey('app', 'dispatch-map'), 'app__dispatch_map');
+  assert.equal(attrFieldKey('trig', 'scheduled-scan'), 'trig__scheduled_scan');
+  assert.equal(attrFieldKey('src', 'board-list'), 'src__board_list');
+  assert.equal(attrFieldKey('ten', 'DAVIS'), 'ten__davis');
+  // slashes/dots/spaces collapse so no nested-path injection
+  assert.equal(attrFieldKey('trig', 'a.b/c d'), 'trig__a_b_c_d');
+  assert.equal(attrFieldKey('app', ''), null);
+  assert.equal(attrFieldKey('app', null), null);
+});
+
+test('counter body: attribution buckets ride AFTER count/route/hour (count stays transform[0])', () => {
+  const body = buildCounterCommitBody(DOC, '2026-06-18', 1, '/stop/info', '10', {
+    app: 'dispatch-map', trigger: 'enrichment', source: 'board-list', tenant: 'DAVIS',
+  });
+  const t = body.writes[0].updateTransforms;
+  assert.equal(t[0].fieldPath, 'count', 'total stays transform[0] (authoritative readback)');
+  assert.equal(t[1].fieldPath, 'count__stop_info');
+  assert.equal(t[2].fieldPath, 'hour__10');
+  const after = t.slice(3).map((x) => x.fieldPath);
+  assert.deepEqual(after, ['app__dispatch_map', 'trig__enrichment', 'src__board_list', 'ten__davis']);
+  for (const x of t.slice(3)) assert.equal(x.increment.integerValue, '1');
+});
+
+test('counter body: no attribution → no extra transforms (backward compatible)', () => {
+  const body = buildCounterCommitBody(DOC, '2026-06-18', 1, '/stop/info', '10');
+  const t = body.writes[0].updateTransforms;
+  assert.equal(t.length, 3, 'count + route + hour only when attr omitted');
+  // partial attribution: only the present dimensions add transforms
+  const partial = buildCounterCommitBody(DOC, '2026-06-18', 1, undefined, undefined, { app: 'parent' });
+  const pt = partial.writes[0].updateTransforms;
+  assert.equal(pt[0].fieldPath, 'count');
+  assert.deepEqual(pt.slice(1).map((x) => x.fieldPath), ['app__parent']);
 });
 
 test('circuitFromDoc: a flag tripped YESTERDAY reads CLOSED today (day-scoped expiry)', () => {

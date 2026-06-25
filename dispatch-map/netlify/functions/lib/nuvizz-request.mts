@@ -24,7 +24,26 @@ export interface NvRequestMeta {
   route: string;
   /** Tenant company code, e.g. 'DAVIS' / 'ULINE'. */
   tenant: string;
+  /** Finer caller label, e.g. 'board-list', 'enrichment', 'pod', 'timeline'. Optional. */
+  source?: string;
+  /**
+   * WHY this call fired: 'scheduled-scan' | 'enrichment' | 'on-demand' | 'attempts' |
+   * 'history' | 'manual'. Optional per-call override; otherwise the requester falls back
+   * to the module-level trigger context set by each entrypoint (setCallTrigger).
+   */
+  trigger?: string;
 }
+
+// ── Attribution context ──────────────────────────────────────────────────────
+// `app` is constant per deployment (env NUVIZZ_APP_NAME — 'dispatch-map' here, 'parent'
+// on the root site) so a SHARED counter can tell the two apps apart. `trigger` is set
+// once at each entrypoint (the scheduled scan, an HTTP handler, …) and read by every
+// call made during that invocation, so callers don't have to thread it through every
+// function. Serverless invocations are single-request, so a module-level trigger is safe.
+export const APP_NAME = process.env.NUVIZZ_APP_NAME || 'dispatch-map';
+let __callTrigger: string | undefined;
+export function setCallTrigger(trigger: string | null | undefined): void { __callTrigger = trigger || undefined; }
+export function getCallTrigger(): string | undefined { return __callTrigger; }
 
 export interface NvRequestOptions {
   method?: string;
@@ -184,7 +203,7 @@ export function createNuvizzRequester(deps: RequesterDeps, config: Partial<Reque
       // Count + log every actual network round-trip (success or failure).
       const total = await deps.recordCall(meta, 1);
       totalThisInstance++;
-      log({ route: meta.route, tenant: meta.tenant, status: resp.status, ms, dayTotal: total, mode: cfg.breakerMode });
+      log({ app: APP_NAME, trigger: meta.trigger ?? __callTrigger ?? 'unknown', source: meta.source, route: meta.route, tenant: meta.tenant, status: resp.status, ms, dayTotal: total, mode: cfg.breakerMode });
       // At the ceiling: enforce → trip + (next call) block; monitor → warn only.
       // The effective ceiling honors a live UI override (scan_config) over cfg.
       const ceiling = __dailyCeilingOverride ?? cfg.dailyCeiling;
@@ -267,8 +286,16 @@ export function getNuvizzRequester() {
   if (__prod) return __prod;
   __prod = createNuvizzRequester({
     fetchImpl: (url, init) => fetch(url, init),
-    // Thread the route through so the per-route breakdown (count__*) populates.
-    recordCall: (meta, n) => incrementCallCounter(etDayString(), n, meta.route),
+    // Thread full attribution through so the counter records route + app + WHY (trigger)
+    // + finer source + tenant — making any spike self-explaining. app is the deployment
+    // constant; trigger falls back to the entrypoint's module context, then 'unknown'.
+    recordCall: (meta, n) => incrementCallCounter(etDayString(), n, {
+      route: meta.route,
+      tenant: meta.tenant,
+      app: APP_NAME,
+      trigger: meta.trigger ?? __callTrigger ?? 'unknown',
+      source: meta.source,
+    }),
     isCircuitOpen: async () => (await readCircuit()).open,
     tripCircuit: (reason) => setCircuit(true, reason, new Date().toISOString()),
   });
