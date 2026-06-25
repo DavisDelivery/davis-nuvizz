@@ -19,6 +19,7 @@ import { scanDate, todayUTC, scansEnabled, deriveFleetSummary, estimateLoadRange
 import { loadProbeParity, frontierParity, loadMembershipDelta, dateSliceMismatch } from './scan-parity.mts';
 import { isFirestoreEnabled, writeStops, writeFleetIndex, getDoc, markScanState, readCallStats, readCircuit, readScanState, writeScanState, readRecentFrontier, recordScanMetric, etDayString, readScanConfig, readStops, readEnrichedPros, writeEnrichedPros } from './firestore.mts';
 import { listScanForDate, mergeEnrich, twoScanBuckets, etDateForTargetUTC } from './nuvizz-list.mts';
+import { loadIdsForDate, dropForeignLoadStops } from './nuvizz-loads.mts';
 import { resolveCoords, addrKey } from './geocode.mts';
 import { maxConsecutiveGap } from './scan-metrics.mts';
 import { notifyMarkedCustomers } from './cs-notify.mts';
@@ -104,6 +105,12 @@ export async function runRefreshStops(req: Request): Promise<Response> {
   // through the day each scan only enriches the increment, spreading the calls. ON by
   // default; cap is per-scan (default 10000 = no real throttle).
   const ENRICH = (process.env.NUVIZZ_ENRICH || '').toLowerCase() !== 'off';
+  // Load-ID anchor (NUVIZZ_LOAD_ANCHOR=on; default OFF): pull the day's authoritative
+  // load roster (PkgRoute list, unique per-day loadIds) and drop board stops carrying a
+  // loadId that isn't in today's set — a prior-day instance of a recurring route that
+  // bled in. Best-effort: a load-list failure is swallowed and the board is unchanged.
+  const LOAD_ANCHOR = (process.env.NUVIZZ_LOAD_ANCHOR || '').toLowerCase() === 'on';
+  const loadIdCache = new Map<string, Set<string>>();
   const ENRICH_MAX = Number(process.env.NUVIZZ_ENRICH_MAX_PER_SCAN) || 10000;
   const ENRICH_CONC = Number(process.env.NUVIZZ_ENRICH_CONC) || 8;
 
@@ -441,7 +448,7 @@ export async function runRefreshStops(req: Request): Promise<Response> {
         // Two-scan: this day's slice of the merged active+completed pull (board keys are
         // UTC, the saved searches bucket by ET arrival date — map across the frames).
         // Legacy: per-day pull, ET-adjusted period (one request; entity page doesn't paginate).
-        const dateStops = TWO_SCAN
+        let dateStops = TWO_SCAN
           ? (buckets!.get(etDateForTargetUTC(date, today)) || []).map((s) => { s.scheduledDate = date; return s; })
           : await listScanForDate(date);
         if (!dateStops.length) { results.push({ date, ok: true, skipped: 'list-empty', source: 'list' }); continue; }
@@ -517,6 +524,18 @@ export async function runRefreshStops(req: Request): Promise<Response> {
         if (need.length) {
           const coords = await resolveCoords(need, seed);
           for (const s of need) { const k = addrKey(s); const pt = k ? coords.get(k) : null; if (pt) { s.lat = pt.lat; s.lng = pt.lng; } }
+        }
+
+        // Load-ID anchor: drop prior-day instances of recurring routes whose loadId isn't
+        // in today's authoritative load roster (one extra NuVizz call per day, cached).
+        if (LOAD_ANCHOR) {
+          try {
+            let ids = loadIdCache.get(date);
+            if (!ids) { const r = await loadIdsForDate(date); ids = r.ids; loadIdCache.set(date, ids); console.log(`[scan] load-anchor ${date}: ${r.count} loads (${r.cols} cols)`); }
+            const before = dateStops.length;
+            dateStops = dropForeignLoadStops(dateStops, ids, date);
+            if (dateStops.length !== before) console.log(`[scan] load-anchor ${date}: dropped ${before - dateStops.length} foreign-load stops`);
+          } catch (e: any) { console.warn(`[scan] load-anchor ${date} skipped: ${e?.message}`); }
         }
 
         const meta = await writeStops(TENANT, date, dateStops, scannedAt, { includeUnplanned: true, includeLoads: true });
