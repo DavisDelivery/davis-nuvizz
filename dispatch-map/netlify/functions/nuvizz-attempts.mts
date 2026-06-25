@@ -16,7 +16,7 @@
 //                       currentStatus, currentlyUnplanned, matched, detectedAt }
 
 import { isFirestoreEnabled, etDayString } from './lib/firestore.mts';
-import { getAttemptsManifest, listAttemptItems } from './lib/attempts-store.mts';
+import { getAttemptsManifest, listAttemptItems, deleteAttemptItem } from './lib/attempts-store.mts';
 
 const TENANT = 'davis';
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -25,7 +25,7 @@ export default async (req: Request): Promise<Response> => {
   const cors = {
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Headers': 'Content-Type',
-    'Access-Control-Allow-Methods': 'GET,OPTIONS',
+    'Access-Control-Allow-Methods': 'GET,POST,DELETE,OPTIONS',
     'Content-Type': 'application/json',
     'Cache-Control': 'no-store',
   };
@@ -35,6 +35,34 @@ export default async (req: Request): Promise<Response> => {
   const qDate = url.searchParams.get('date');
   const date = qDate && DATE_RE.test(qDate) ? qDate : etDayString();
   const driver = (url.searchParams.get('driver') || '').trim().toLowerCase();
+
+  // ── delete a row ────────────────────────────────────────────────────────────
+  // DELETE ?date=…&stopNbr=…   (the REST verb)         or, curl/browser-friendly,
+  // POST   ?date=…&delete=…    (?delete=<stopNbr>).    Removes one item from the
+  // day's attempts list and recomputes the manifest counts.
+  const delStop = (req.method === 'DELETE'
+    ? (url.searchParams.get('stopNbr') || url.searchParams.get('stop'))
+    : (req.method === 'POST' ? url.searchParams.get('delete') : null)) || '';
+  if (delStop) {
+    if (!isFirestoreEnabled()) {
+      return new Response(JSON.stringify({ ok: false, error: 'firestore-disabled' }), { status: 200, headers: cors });
+    }
+    try {
+      const res = await deleteAttemptItem(TENANT, date, String(delStop).trim());
+      return new Response(JSON.stringify({ ok: true, date, stopNbr: String(delStop).trim(), ...res }), {
+        status: 200, headers: cors,
+      });
+    } catch (e: any) {
+      return new Response(JSON.stringify({ ok: false, date, error: e?.message || 'delete failed' }), {
+        status: 500, headers: cors,
+      });
+    }
+  }
+  if (req.method !== 'GET' && req.method !== 'HEAD') {
+    return new Response(JSON.stringify({ ok: false, error: 'method not allowed (DELETE needs ?stopNbr=, POST needs ?delete=)' }), {
+      status: 405, headers: cors,
+    });
+  }
 
   try {
     if (!isFirestoreEnabled()) {

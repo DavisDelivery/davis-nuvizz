@@ -7,6 +7,7 @@ import { isAttemptShipment } from '../netlify/functions/lib/nuvizz-scan.mts';
 import {
   attemptFireDecision, buildPlanRecord, buildAttemptItem,
 } from '../netlify/functions/lib/attempts-core.mts';
+import { recountManifest } from '../netlify/functions/lib/attempts-store.mts';
 
 // ── ATT marker ────────────────────────────────────────────────────────────────
 test('isAttemptShipment: ATT prefix (any case) marks an attempt; clean numbers do not', () => {
@@ -110,4 +111,32 @@ test('buildAttemptItem: matched=false when the morning plan had no driver', () =
   const item = buildAttemptItem(planNoDriver, { shipmentNbr: 'ATT007140000' }, '2026-06-23', 'now');
   assert.equal(item.matched, false);
   assert.equal(item.originalDriverName, null);
+});
+
+// ── delete: manifest recount ──────────────────────────────────────────────────
+test('recountManifest: recomputes attempts/matched/unmatched, preserves scan-only counts', () => {
+  const prev = {
+    date: '2026-06-23', ok: true,
+    counts: { candidates: 680, probed: 680, unprobed: 0, attempts: 3, matched: 2, unmatched: 1 },
+  };
+  const survivors = [
+    { stopNbr: '1', matched: true },
+    { stopNbr: '2', matched: false },
+  ]; // one matched row was deleted
+  const next = recountManifest(prev, survivors);
+  assert.equal(next.counts.attempts, 2);
+  assert.equal(next.counts.matched, 1);
+  assert.equal(next.counts.unmatched, 1);
+  // scan-only fields the read can't re-derive are preserved
+  assert.equal(next.counts.candidates, 680);
+  assert.equal(next.counts.probed, 680);
+  assert.equal(next.date, '2026-06-23');
+});
+
+test('recountManifest: empty survivors zeroes the attempt counts', () => {
+  const next = recountManifest({ counts: { candidates: 5, attempts: 1, matched: 1, unmatched: 0 } }, []);
+  assert.equal(next.counts.attempts, 0);
+  assert.equal(next.counts.matched, 0);
+  assert.equal(next.counts.unmatched, 0);
+  assert.equal(next.counts.candidates, 5);
 });

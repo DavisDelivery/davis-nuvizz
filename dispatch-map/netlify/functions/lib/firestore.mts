@@ -229,8 +229,10 @@ export async function listCollectionIds(docPath?: string): Promise<string[]> {
   return body.collectionIds || [];
 }
 
-// Delete a single document (used to prune stops that disappeared between scans).
-async function deleteDoc(path: string): Promise<void> {
+// Delete a single document (used to prune stops that disappeared between scans,
+// and to remove an attempts-list row on request). Exported so the attempts store
+// can reuse the same SA-JWT auth instead of duplicating it.
+export async function deleteDoc(path: string): Promise<void> {
   const token = await getAccessToken();
   const sa = loadServiceAccount();
   const url = `${FIRESTORE_BASE}/projects/${sa.project_id}/databases/(default)/documents/${path}`;

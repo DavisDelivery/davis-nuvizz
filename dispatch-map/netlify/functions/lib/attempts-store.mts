@@ -21,7 +21,7 @@
 // stopNbr is the stable join key between the two (an ATT prefix lands on shipmentNbr,
 // never on stopNbr — see lib/nuvizz-scan.mts isAttemptShipment).
 
-import { getDoc, setDoc, listDocs } from './firestore.mts';
+import { getDoc, setDoc, listDocs, deleteDoc } from './firestore.mts';
 
 export const PLAN_COLLECTION = 'att_plan';
 export const ATTEMPTS_COLLECTION = 'attempts';
@@ -78,4 +78,44 @@ export async function listAttemptItems(tenant: string, date: string): Promise<an
 export async function upsertAttemptItems(tenant: string, date: string, items: any[]): Promise<void> {
   const base = attemptsPath(tenant, date);
   await upsertAll(items, (r: any) => `${base}/items/${r.stopNbr}`);
+}
+
+// PURE: recompute the manifest counts from the surviving items, preserving the
+// scan-only fields (probed/unprobed/candidates) the read can't re-derive. Exported
+// for tests.
+export function recountManifest(prevManifest: any, items: any[]): any {
+  const matched = items.filter((it) => it && it.matched).length;
+  const prevCounts = (prevManifest && prevManifest.counts) || {};
+  return {
+    ...(prevManifest || {}),
+    counts: {
+      ...prevCounts,
+      attempts: items.length,
+      matched,
+      unmatched: items.length - matched,
+    },
+  };
+}
+
+// Remove ONE attempts-list row and keep the manifest counts honest. Returns whether
+// a row was actually present, plus the post-delete count. Re-lists the surviving
+// items and rewrites the manifest (counts only) so the read endpoint and the card
+// stay consistent. Idempotent: deleting a missing row is a no-op success.
+export async function deleteAttemptItem(
+  tenant: string, date: string, stopNbr: string,
+): Promise<{ deleted: boolean; remaining: number }> {
+  const base = attemptsPath(tenant, date);
+  await deleteDoc(`${base}/items/${stopNbr}`);
+  const [items, prevManifest] = await Promise.all([
+    listAttemptItems(tenant, date),
+    getAttemptsManifest(tenant, date),
+  ]);
+  const survived = items.some((it) => String(it.stopNbr ?? it._id) === String(stopNbr));
+  if (prevManifest) {
+    await setAttemptsManifest(tenant, date, {
+      ...recountManifest(prevManifest, items),
+      lastEditedAt: new Date().toISOString(),
+    });
+  }
+  return { deleted: !survived, remaining: items.length };
 }
