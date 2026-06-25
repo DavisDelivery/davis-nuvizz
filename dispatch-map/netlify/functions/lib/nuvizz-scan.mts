@@ -88,6 +88,7 @@ export interface NormalizedStop {
   scheduledTo: string | null;
   cartons: number | null;
   pallets: number | null;
+  volume: number | null;            // loose-piece count (Davis records loose pieces in NuVizz `volume`).
   weight: number | null;
   itemsSummary: string;
   customerAccount: string | null;
@@ -368,6 +369,8 @@ export function normalizeStop(raw: any): NormalizedStop {
   const items = [];
   if (stop.totalPallets) items.push(`${stop.totalPallets} pallets`);
   if (stop.totalCartons) items.push(`${stop.totalCartons} cartons`);
+  // NuVizz `volume` is how Davis records LOOSE pieces (per dispatch). Surface it.
+  if (stop.volume) items.push(`${stop.volume} loose`);
   if (stop.weight) items.push(`${stop.weight} ${stop.weightUOM || 'lbs'}`);
   const stopNbr: string | null = stop.stopNbr ?? null;
   // Shipment number is a distinct raw field from stopNbr (usually identical). The
@@ -466,6 +469,7 @@ export function normalizeStop(raw: any): NormalizedStop {
     scheduledTo: schedule.timeTo ?? null,
     cartons: stop.totalCartons ?? null,
     pallets: stop.totalPallets ?? null,
+    volume: numOrNull(stop.volume),         // loose-piece count (Davis uses NuVizz `volume`)
     weight: stop.weight ?? null,
     itemsSummary: items.join(' · ') || '—',
     customerAccount: stop.accountNumber || stop.custInfo?.custAccNbr || null,

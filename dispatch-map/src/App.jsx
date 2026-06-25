@@ -49,7 +49,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.29.38';
+const APP_VERSION = '0.29.39';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -69,6 +69,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.29.39', 'Stop card fixes: (1) the status badge now updates when you Refresh or open the timeline — a delivered order the board still shows as "Scheduled" flips to "Delivered" once its real status comes back from NuVizz (the header badge was stuck on the stale board value). (2) Loose pieces: NuVizz\'s "volume" field — how Davis records loose pieces — is now pulled in and shown in the Items section (Skids / cartons / loose pcs). (3) The "View delivery photo" button (added last version) lives in the Proof of delivery section of the stop card.'],
   ['0.29.38', 'Delivery photos: opening a delivered order now shows a "View delivery photo" button under Proof of delivery — it pulls the driver\'s captured photo on demand (the photo from the DOCUMENT CAPTURE timeline events). NuVizz exposes these capture photos in a separate place from the signed POD, which is why the proof-of-delivery section used to come up empty; the card now reads both. Plus: closing a stop from the map (left list or the detail panel) zooms the map back out to where it was before you opened the order.'],
   ['0.29.37', 'Routing (beta) now IS the dispatch Map: the map shows the exact same rich markers — status colors, priority-flag colors, AM/PM tags, "address looks off" flags, equipment / receiving-hours restriction icons, and DNS pins — instead of plain gray dots. Selected stops pop orange and routed stops become numbered route-colored pins. Added the same collapsible Stops/Loads data grid along the bottom; tap a row to frame it and add it to the route, or tap a load to select all of its stops.'],
   ['0.29.36', 'Routing (beta) map now matches the dispatch Map: same satellite imagery + road labels (hybrid) and the same vector map style, instead of the plain green roadmap base.'],
@@ -2274,6 +2275,24 @@ function WebSearchLink({ stop, className }) {
 // dims, S/L category); we show the one-line summary always and expand to the full
 // list on click. Self-contained state so both the desktop sidebar and mobile
 // drawer can drop it in without threading props.
+// Skids / cartons / LOOSE pieces breakdown. Davis records loose pieces in NuVizz's
+// `volume` field, so we surface it explicitly here (it only appears once the stop has
+// been refreshed/re-scanned with the field). Renders nothing when there's no count.
+function FreightBreakdown({ stop }) {
+  const parts = [];
+  if (stop.pallets) parts.push([stop.pallets, `skid${stop.pallets === 1 ? '' : 's'}`]);
+  if (stop.cartons) parts.push([stop.cartons, `carton${stop.cartons === 1 ? '' : 's'}`]);
+  if (stop.volume) parts.push([stop.volume, `loose pc${stop.volume === 1 ? '' : 's'}`]);
+  if (!parts.length) return null;
+  return (
+    <div className="mt-0.5 flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-slate-500">
+      {parts.map(([n, label], i) => (
+        <span key={i}><b className="text-slate-700">{n}</b> {label}</span>
+      ))}
+    </div>
+  );
+}
+
 function OrderItemsSection({ stop, defaultOpen = false }) {
   const items = Array.isArray(stop.stopDetails) ? stop.stopDetails : [];
   const [open, setOpen] = useState(defaultOpen);
@@ -2283,6 +2302,7 @@ function OrderItemsSection({ stop, defaultOpen = false }) {
       <div>
         <div className="text-xs uppercase font-semibold text-slate-500">Items</div>
         <div className="text-sm">{stop.itemsSummary || '—'}</div>
+        <FreightBreakdown stop={stop} />
       </div>
     );
   }
@@ -2296,6 +2316,7 @@ function OrderItemsSection({ stop, defaultOpen = false }) {
         <span className="min-w-0">
           <span className="text-xs uppercase font-semibold text-slate-500">Items ({items.length})</span>
           <span className="block text-sm text-slate-700 truncate">{stop.itemsSummary || '—'}</span>
+          <FreightBreakdown stop={stop} />
         </span>
         {open ? <ChevronUp size={15} className="text-slate-400 flex-shrink-0" /> : <ChevronDown size={15} className="text-slate-400 flex-shrink-0" />}
       </button>
@@ -3269,18 +3290,28 @@ function StopLiveDetail({ stop, onRefreshed }) {
   );
 }
 
-function StopDataSections({ stop, note, onOpenRoute, onMoveLocation, onEditAddress, onAutoFixAddress, onText }) {
-  // A "Refresh from NuVizz" (or opening the timeline) re-pulls the order and may surface
-  // newly-captured proof-of-delivery photos. Hold that fresh detail HERE — at the card
-  // level — so the merged stop reaches PodDocsSection / OrderItemsSection / Route too, not
-  // just the notes panel. (Previously the fresh copy was trapped inside StopLiveDetail, so
-  // refreshed POD photos never appeared.) Reset the overlay when a different stop opens.
-  const stopKey = stop.stopNbr || stop.pro;
+// Owns the "live" overlay for an open stop. A Refresh / timeline-open / "View delivery
+// photo" pull merges fresh /stop/info fields over the board stop, so the WHOLE card — the
+// header status badge included — reflects the latest NuVizz state (e.g. a stop the board
+// still shows Scheduled flips to Delivered once its real status 90 comes back). Resets when
+// a different stop opens. Returns [liveStop, onRefreshed].
+function useLiveStop(stop) {
+  const stopKey = stop?.stopNbr || stop?.pro;
   const [fresh, setFresh] = useState(null);
   const [prevKey, setPrevKey] = useState(stopKey);
   if (stopKey !== prevKey) { setPrevKey(stopKey); setFresh(null); }
   const live = fresh ? { ...stop, ...fresh } : stop;
   const onRefreshed = useCallback((d) => { if (d) setFresh((prev) => ({ ...(prev || {}), ...d })); }, []);
+  return [live, onRefreshed];
+}
+
+function StopDataSections({ stop, note, onRefreshed, onOpenRoute, onMoveLocation, onEditAddress, onAutoFixAddress, onText }) {
+  // `stop` is the already-merged "live" stop the PARENT owns (see useLiveStop). The parent
+  // holds the refresh overlay so the header status badge updates too — not just this body.
+  // `onRefreshed` bubbles a fresh /stop/info pull (Refresh button, timeline open, or the
+  // "View delivery photo" button) back up to that parent.
+  const live = stop;
+  const stopKey = stop.stopNbr || stop.pro;
   const textPhone = resolveStopPhone(live, note);
   return (
     <div className="px-4 py-3 border-b text-sm space-y-1">
@@ -3687,12 +3718,15 @@ function StopSidebar({ stop, note, onClose, onSave, saving, saveError, onOpenRou
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [note?.id]);
 
+  // The live overlay: a Refresh / timeline open updates the status badge below, so a board
+  // stop still tagged Scheduled flips to Delivered once its real status comes back.
+  const [live, onRefreshed] = useLiveStop(stop);
   if (!stop) return null;
-  const sidebarStatusKind = classifyStopStatus(stop);
+  const sidebarStatusKind = classifyStopStatus(live);
   const sidebarArrivedAt = (sidebarStatusKind === 'ARRIVED' || sidebarStatusKind === 'DELIVERED')
-    ? fmtClockShort(stop.arrivalDTTM || execArrivalTs(stop.raw?.stopExecutionInfo || {})) : null;
+    ? fmtClockShort(live.arrivalDTTM || execArrivalTs(live.raw?.stopExecutionInfo || {})) : null;
   const sidebarDeliveredAt = sidebarStatusKind === 'DELIVERED'
-    ? fmtClockShort(stop.deliveredDTTM || execDeliveredTs(stop.raw?.stopExecutionInfo || {})) : null;
+    ? fmtClockShort(live.deliveredDTTM || execDeliveredTs(live.raw?.stopExecutionInfo || {})) : null;
   const D = draft;
   // setD merges a PARTIAL patch and marks the draft dirty (guards background
   // writes from clobbering in-progress edits). All field helpers live in the
@@ -3724,8 +3758,8 @@ function StopSidebar({ stop, note, onClose, onSave, saving, saveError, onOpenRou
       </div>
 
       <div className="overflow-y-auto flex-1">
-        <StopDataSections stop={stop} note={note} onOpenRoute={onOpenRoute} onMoveLocation={onMoveLocation} onEditAddress={onEditAddress} onAutoFixAddress={onAutoFixAddress} onText={onText} />
-        <ProsSection stop={stop} />
+        <StopDataSections stop={live} note={note} onRefreshed={onRefreshed} onOpenRoute={onOpenRoute} onMoveLocation={onMoveLocation} onEditAddress={onEditAddress} onAutoFixAddress={onAutoFixAddress} onText={onText} />
+        <ProsSection stop={live} />
         <StopNotesSection note={note} editing={editing} setEditing={setEditing} draft={D} setDraft={setD} compact drivers={drivers} />
       </div>
 
@@ -4635,6 +4669,7 @@ function PastProSearch({ notes, initialQuery, onPickCustomer, onClose }) {
 // (no action callbacks → edit/pin/route buttons hidden). No extra NuVizz call — it
 // renders the stop the lookup already returned; the inner "Refresh" button is opt-in.
 function LookupStopModal({ stop, note, onClose }) {
+  const [live, onRefreshed] = useLiveStop(stop);
   useEffect(() => {
     const onKey = (e) => { if (e.key === 'Escape') onClose(); };
     window.addEventListener('keydown', onKey);
@@ -4656,7 +4691,7 @@ function LookupStopModal({ stop, note, onClose }) {
           <button onClick={onClose} aria-label="Close" className="opacity-80 hover:opacity-100 p-1 -mr-1 flex-shrink-0"><X size={20} /></button>
         </div>
         <div className="flex-1 min-h-0 overflow-y-auto">
-          <StopDataSections stop={stop} note={note} />
+          <StopDataSections stop={live} note={note} onRefreshed={onRefreshed} />
         </div>
       </div>
     </div>
@@ -4954,6 +4989,9 @@ function MobileStopDetailDrawer({ stop, note, onClose, onSave, saving, saveError
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [note?.id]);
 
+  // Live overlay so the status badge below updates on Refresh / timeline open (a board
+  // stop tagged Scheduled flips to Delivered once its real status 90 comes back).
+  const [live, onRefreshed] = useLiveStop(stop);
   if (!stop) return null;
   const D = draft;
   const setD = (patch) => { dirtyRef.current = true; setDraft({ ...D, ...patch }); };
@@ -4999,11 +5037,11 @@ function MobileStopDetailDrawer({ stop, note, onClose, onSave, saving, saveError
         }}
       >
         <div className="px-4 py-2 border-b bg-slate-50 flex items-center gap-2 flex-wrap">
-          <StatusBadge kind={classifyStopStatus(stop)} />
+          <StatusBadge kind={classifyStopStatus(live)} />
           <DnsBadge note={note} showDrivers />
         </div>
-        <StopDataSections stop={stop} note={note} onOpenRoute={onOpenRoute} onMoveLocation={onMoveLocation} onEditAddress={onEditAddress} onAutoFixAddress={onAutoFixAddress} onText={onText} />
-        <ProsSection stop={stop} />
+        <StopDataSections stop={live} note={note} onRefreshed={onRefreshed} onOpenRoute={onOpenRoute} onMoveLocation={onMoveLocation} onEditAddress={onEditAddress} onAutoFixAddress={onAutoFixAddress} onText={onText} />
+        <ProsSection stop={live} />
         <StopNotesSection note={note} editing={editing} setEditing={setEditing} draft={D} setDraft={setD} drivers={drivers} />
       </div>
       {/* Sticky save bar — visible while editing */}
