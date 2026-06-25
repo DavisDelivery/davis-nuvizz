@@ -49,7 +49,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.29.33';
+const APP_VERSION = '0.29.34';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -69,6 +69,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.29.34', 'Fix: make the load-ID anchor actually work. The load-roster request sent the date filter as an object; the NuVizz openapi endpoint requires it as a JSON string and was rejecting the call (HTTP 400) — so the anchor silently did nothing. Verified live: the corrected request returns the day\'s loads with their unique IDs. With NUVIZZ_LOAD_ANCHOR=on, the next scan drops yesterday\'s stops that were being carried onto today.'],
   ['0.29.33', 'Scan: optional load-ID anchor (off by default, NUVIZZ_LOAD_ANCHOR=on). Recurring routes (e.g. "BEN 2") reuse the same NAME daily but each day\'s instance has its own unique load ID; the scan can now pull the day\'s authoritative load roster and drop any board stop whose load ID belongs to a prior day — a second, identity-based guard against yesterday\'s stops bleeding onto today. Best-effort: a load-list hiccup leaves the board untouched.'],
   ['0.29.32', 'Fix: today\'s board no longer doubles with yesterday\'s completed stops. The list-discovery scan was stamping every stop from its multi-day window onto the queried day, so prior-day DELIVERED / unable-to-deliver stops bled onto today (≈700 extra). Those finished stops now stay on their own day; today shows only today\'s work plus genuinely-open carryover.'],
   ['0.29.31', 'Proof-of-delivery photos are now viewable: a delivered order\'s stop card shows a thumbnail gallery of the driver\'s delivery photos (tap to open full size). Pulled securely server-side from NuVizz. The activity timeline also now shows each event\'s GPS location as a tappable map link.'],
