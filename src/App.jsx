@@ -1,7 +1,7 @@
 // src/App.jsx — main shell & routing
 
 import React, { useState, useEffect } from 'react';
-import { Home, MapPin, Truck, Package, Users, ArrowLeft, Wifi, WifiOff, RefreshCw, ChevronLeft, ChevronRight, Calendar } from 'lucide-react';
+import { Home, MapPin, Truck, Package, Users, ArrowLeft, Wifi, WifiOff, RefreshCw, ChevronLeft, ChevronRight, Calendar, Calculator } from 'lucide-react';
 import { TENANTS, fetchHealth } from './lib/api';
 import { TenantSwitch, TabBtn } from './components/UI';
 
@@ -12,8 +12,9 @@ import StopsScreen from './screens/StopsScreen';
 import DriversScreen from './screens/DriversScreen';
 import LoadDetail from './screens/LoadDetail';
 import StopDetail from './screens/StopDetail';
+import QuoteScreen from './screens/QuoteScreen';
 
-const APP_VERSION = '1.4.2';
+const APP_VERSION = '1.5.0';
 // Injected by vite.config.js — bumps every build so the running app can prove which deploy is live.
 // eslint-disable-next-line no-undef
 const BUILD_COMMIT = typeof __BUILD_COMMIT__ !== 'undefined' ? __BUILD_COMMIT__ : 'dev';
@@ -38,6 +39,7 @@ export default function App() {
   const [tab, setTab] = useState('dashboard');
   const [tabFilter, setTabFilter] = useState(null); // {tab: 'stops', filter: 'exceptions'} etc
   const [detail, setDetail] = useState(null);
+  const [quotePrefill, setQuotePrefill] = useState(null); // {zip,weight,skids,loose} seeded from a selected stop
   const [health, setHealth] = useState('checking');
   const [online, setOnline] = useState(navigator.onLine);
 
@@ -58,6 +60,13 @@ export default function App() {
   const goToTab = (targetTab, filter = null) => {
     setTab(targetTab);
     setTabFilter(filter ? { tab: targetTab, filter } : null);
+  };
+
+  // Open the Quote tab, optionally seeded from a selected stop's freight.
+  const goToQuote = (prefill = null) => {
+    setQuotePrefill(prefill);
+    setDetail(null);
+    setTab('quote');
   };
 
   useEffect(() => {
@@ -91,6 +100,7 @@ export default function App() {
       case 'loads': return 'Loads';
       case 'stops': return 'Stops';
       case 'drivers': return 'Drivers';
+      case 'quote': return 'Quote';
       default: return t.label;
     }
   };
@@ -183,7 +193,7 @@ export default function App() {
           detail.type === 'load' ? (
             <LoadDetail tenant={tenant} loadNbr={detail.id} onOpenStop={openStop} />
           ) : (
-            <StopDetail tenant={tenant} stopNbr={detail.id} onOpenLoad={openLoad} />
+            <StopDetail tenant={tenant} stopNbr={detail.id} onOpenLoad={openLoad} onQuote={goToQuote} />
           )
         ) : tab === 'dashboard' ? (
           <Dashboard
@@ -204,6 +214,8 @@ export default function App() {
           <LoadsScreen tenant={tenant} viewDate={viewDate} onOpenLoad={openLoad} initialFilter={tabFilter?.tab === 'loads' ? tabFilter.filter : null} />
         ) : tab === 'stops' ? (
           <StopsScreen tenant={tenant} viewDate={viewDate} onOpenStop={openStop} initialFilter={tabFilter?.tab === 'stops' ? tabFilter.filter : null} />
+        ) : tab === 'quote' ? (
+          <QuoteScreen prefill={quotePrefill} />
         ) : (
           <DriversScreen tenant={tenant} viewDate={viewDate} onOpenLoad={openLoad} onOpenStop={openStop} />
         )}
@@ -211,12 +223,13 @@ export default function App() {
 
       {/* Bottom nav */}
       {!detail && (
-        <nav className="fixed bottom-0 inset-x-0 z-40 bg-white border-t grid grid-cols-5">
+        <nav className="fixed bottom-0 inset-x-0 z-40 bg-white border-t grid grid-cols-6">
           <TabBtn active={tab === 'dashboard'} icon={<Home size={20} />} label="Home" onClick={() => setTab('dashboard')} color={t.color} />
           <TabBtn active={tab === 'map'} icon={<MapPin size={20} />} label="Map" onClick={() => setTab('map')} color={t.color} />
           <TabBtn active={tab === 'loads'} icon={<Truck size={20} />} label="Loads" onClick={() => setTab('loads')} color={t.color} />
           <TabBtn active={tab === 'stops'} icon={<Package size={20} />} label="Stops" onClick={() => setTab('stops')} color={t.color} />
           <TabBtn active={tab === 'drivers'} icon={<Users size={20} />} label="Drivers" onClick={() => setTab('drivers')} color={t.color} />
+          <TabBtn active={tab === 'quote'} icon={<Calculator size={20} />} label="Quote" onClick={() => goToQuote()} color={t.color} />
         </nav>
       )}
 

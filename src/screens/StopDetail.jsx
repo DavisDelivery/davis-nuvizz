@@ -35,7 +35,7 @@ function fmtEtaWindow(iso) {
   } catch { return null; }
 }
 
-export default function StopDetail({ tenant, stopNbr, onOpenLoad }) {
+export default function StopDetail({ tenant, stopNbr, onOpenLoad, onQuote }) {
   const [state, setState] = useState({ loading: true, error: null, stop: null, load: null, stopsAway: null, raw: null });
   const [docs, setDocs] = useState({}); // { guid: { loading, dataUri, error } }
   const t = TENANTS[tenant];
@@ -233,6 +233,14 @@ export default function StopDetail({ tenant, stopNbr, onOpenLoad }) {
             {s.sealNbr && <Field label="Seal" value={s.sealNbr} mono />}
             {s.shipmentNbr && <Field label="Shipment" value={s.shipmentNbr} mono />}
           </div>
+          {onQuote && s.zip && (
+            <button
+              onClick={() => onQuote({ zip: s.zip, weight: s.weight, skids: s.pallets, loose: s.cartons })}
+              className="mt-3 w-full bg-blue-600 text-white rounded-lg py-2 text-sm font-semibold hover:bg-blue-700"
+            >
+              Get Uline quote →
+            </button>
+          )}
           {rawStop.stopDetails?.length > 0 && (
             <div className="mt-3 pt-3 border-t space-y-1">
               {rawStop.stopDetails.map((d, i) => (
