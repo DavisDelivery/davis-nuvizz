@@ -4,8 +4,23 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { statusFromCode, parseSchedDate, parseReqDate, toBoardStop, bucketByDate, fromRows, normalize, periodForDate, mergeEnrich, mergeTwoScan, etDateForTargetUTC, SAVED_SEARCHES } from '../netlify/functions/lib/nuvizz-list.mts';
+import { statusFromCode, parseSchedDate, parseReqDate, toBoardStop, bucketByDate, fromRows, normalize, periodForDate, mergeEnrich, mergeTwoScan, etDateForTargetUTC, SAVED_SEARCHES, keepForBoardDate } from '../netlify/functions/lib/nuvizz-list.mts';
 import { addrKey } from '../netlify/functions/lib/geocode.mts';
+
+test('keepForBoardDate: drops PRIOR-day finished stops, keeps today + open carryover', () => {
+  const stops = [
+    { stopNbr: 'TODAY_OPEN', boardDate: '2026-06-25', normalizedStatus: 'SCHEDULED' },
+    { stopNbr: 'TODAY_DONE', boardDate: '2026-06-25', normalizedStatus: 'DELIVERED' },
+    { stopNbr: 'YDAY_DELIVERED', boardDate: '2026-06-24', normalizedStatus: 'DELIVERED' }, // bleed → drop
+    { stopNbr: 'YDAY_UNABLE', boardDate: '2026-06-24', normalizedStatus: 'EXCEPTION' },    // finished prior day → drop
+    { stopNbr: 'YDAY_OPEN', boardDate: '2026-06-24', normalizedStatus: 'SCHEDULED' },      // open carryover → keep
+    { stopNbr: 'UNDATED', boardDate: null, normalizedStatus: 'UNPLANNED' },                 // undated → keep
+  ];
+  const kept = keepForBoardDate(stops, '2026-06-25');
+  assert.deepEqual(kept.map((s) => s.stopNbr), ['TODAY_OPEN', 'TODAY_DONE', 'YDAY_OPEN', 'UNDATED']);
+  // kept rows are stamped to the board date (both fields)
+  assert.ok(kept.every((s) => s.scheduledDate === '2026-06-25' && s.boardDate === '2026-06-25'));
+});
 
 test('statusFromCode: NuVizz codes → board status + planned flag', () => {
   assert.deepEqual(statusFromCode('10', false), { status: 'UNPLANNED', planned: false });
