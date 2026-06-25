@@ -391,19 +391,35 @@ export function normalizeStop(raw: any): NormalizedStop {
   // stop. Exposing it at the top level lets the client sort each load's stops into a
   // real sequential polyline (NuVizz's array order / stopSeq is unreliable).
   const plannedEtaDTTM: string | null = exec?.to?.plannedEtaDTTM || exec?.from?.plannedEtaDTTM || null;
-  // Proof-of-delivery docs — only populated once the stop is delivered (driver capture).
-  // For a delivery (DO) the docs hang off exec.to; pickups (PU) off exec.from.
+  // Proof-of-delivery docs — populated once the stop is delivered (driver capture). NuVizz
+  // exposes these in TWO places and the portal merges both, so we must too:
+  //   • exec.to/from.podDoc       — the signed POD bundle
+  //   • stop.to/from.documents    — the driver's "Document Capture" photos (the timeline's
+  //                                 DOCUMENT CAPTURE events). These are NOT under podDoc, so
+  //                                 a stop with capture photos but no signed POD showed an
+  //                                 EMPTY proof-of-delivery section before this merge.
+  // For a delivery (DO) the docs hang off .to; pickups (PU) off .from. Deduped by guid below.
   const rawPods = [
     ...(Array.isArray(exec?.to?.podDoc) ? exec.to.podDoc : []),
     ...(Array.isArray(exec?.from?.podDoc) ? exec.from.podDoc : []),
+    ...(Array.isArray(stop?.to?.documents) ? stop.to.documents : []),
+    ...(Array.isArray(stop?.from?.documents) ? stop.from.documents : []),
   ];
+  const seenDocKey = new Set<string>();
   const podDocs: PodDoc[] = rawPods.map((d: any) => ({
     documentName: d?.documentName ?? null,
     documentGuid: d?.documentGuid ?? null,
     documentPath: d?.documentPath ?? null,
-    extension: d?.extension ?? null,
-    createdTime: d?.createdTime ?? null,
-  })).filter((d: PodDoc) => d.documentGuid || d.documentPath || d.documentName);
+    // Capture docs key the extension as documentExtType (e.g. "JPG"); POD docs use extension.
+    extension: d?.extension ?? d?.documentExtType ?? null,
+    createdTime: d?.createdTime ?? d?.createdDTTM ?? null,
+  })).filter((d: PodDoc) => {
+    if (!(d.documentGuid || d.documentPath || d.documentName)) return false;
+    const key = d.documentGuid || d.documentPath || d.documentName || '';
+    if (seenDocKey.has(key)) return false;       // same doc surfaced under both podDoc + documents
+    seenDocKey.add(key);
+    return true;
+  });
   // P2 (additive) — surface freight + routing-baseline + contact/origin for the engine.
   const rawDetails = Array.isArray(stop.stopDetails) ? stop.stopDetails : [];
   const stopDetails: StopLineItem[] = rawDetails.map(normalizeStopDetail);

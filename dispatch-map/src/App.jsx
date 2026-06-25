@@ -17,7 +17,7 @@ import {
   Activity, ChevronDown, ChevronUp, Eye, EyeOff,
   Search, Tag, Tags, ArrowLeft, Gauge, Clock, MapPinned,
   Info, Settings, LayoutList, Sparkles, MessageSquare, Square, Lasso, AlertTriangle, Ban, Send, Package,
-  FileCheck, ExternalLink,
+  FileCheck, ExternalLink, Image as ImageIcon,
 } from 'lucide-react';
 import {
   collection, doc, getDoc, onSnapshot, setDoc, serverTimestamp,
@@ -49,7 +49,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.29.37';
+const APP_VERSION = '0.29.38';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -69,6 +69,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.29.38', 'Delivery photos: opening a delivered order now shows a "View delivery photo" button under Proof of delivery — it pulls the driver\'s captured photo on demand (the photo from the DOCUMENT CAPTURE timeline events). NuVizz exposes these capture photos in a separate place from the signed POD, which is why the proof-of-delivery section used to come up empty; the card now reads both. Plus: closing a stop from the map (left list or the detail panel) zooms the map back out to where it was before you opened the order.'],
   ['0.29.37', 'Routing (beta) now IS the dispatch Map: the map shows the exact same rich markers — status colors, priority-flag colors, AM/PM tags, "address looks off" flags, equipment / receiving-hours restriction icons, and DNS pins — instead of plain gray dots. Selected stops pop orange and routed stops become numbered route-colored pins. Added the same collapsible Stops/Loads data grid along the bottom; tap a row to frame it and add it to the route, or tap a load to select all of its stops.'],
   ['0.29.36', 'Routing (beta) map now matches the dispatch Map: same satellite imagery + road labels (hybrid) and the same vector map style, instead of the plain green roadmap base.'],
   ['0.29.35', 'Historical PRO lookup: tap the NuVizz result to open a full stop card — a centered window over the map with all of the order\'s detail (address + Street View / Maps / web links, status & activity timeline, line items, delivery photos, route/driver). Uses the data the lookup already pulled, so no extra NuVizz call.'],
@@ -3034,9 +3035,50 @@ function podDocUrl(d, opts = {}) {
 }
 const isPodImage = (ext) => /^(jpe?g|png|gif|webp)$/i.test(String(ext || ''));
 
-function PodDocsSection({ stop }) {
+function PodDocsSection({ stop, onRefreshed }) {
   const docs = Array.isArray(stop?.podDocs) ? stop.podDocs : [];
-  if (!docs.length) return null;
+  const delivered = classifyStopStatus(stop) === 'DELIVERED';
+  const [loading, setLoading] = useState(false);
+  const [tried, setTried] = useState(false);
+  const [err, setErr] = useState(null);
+  // Pull the driver's capture photos on demand (NuVizz doesn't return the doc metadata
+  // until we re-pull the stop). One /stop/info via pro-lookup, folded into the card so the
+  // photo grid renders below. Same call the "Refresh from NuVizz" button makes.
+  const loadPhotos = async () => {
+    const pro = stop.primaryPro || stop.pro || stop.stopNbr;
+    if (!pro || loading) return;
+    setLoading(true); setErr(null);
+    try {
+      const r = await fetch('/.netlify/functions/nuvizz-pro-lookup?pro=' + encodeURIComponent(pro), { cache: 'no-store' });
+      const d = await r.json();
+      if (d.ok && d.stop) { setTried(true); onRefreshed?.(d.stop); }
+      else setErr(d.reason || 'not found');
+    } catch (e) { setErr(e.message); }
+    finally { setLoading(false); }
+  };
+  // No docs on the stop yet. For a DELIVERED order, the driver almost always captured a
+  // photo — surface an explicit button to fetch it (this is the button the dispatcher was
+  // looking for). For a not-yet-delivered order there's nothing to show.
+  if (!docs.length) {
+    if (!delivered) return null;
+    return (
+      <div className="pt-2">
+        <div className="text-xs uppercase font-semibold text-slate-500 flex items-center gap-1.5">
+          <FileCheck size={13} /> Proof of delivery
+        </div>
+        <button
+          onClick={loadPhotos}
+          disabled={loading}
+          className="mt-1.5 inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold text-blue-700 border border-blue-300 rounded hover:bg-blue-50 active:bg-blue-100 disabled:opacity-50"
+        >
+          <ImageIcon size={13} className={loading ? 'animate-pulse' : ''} />
+          {loading ? 'Loading photo…' : 'View delivery photo'}
+        </button>
+        {err && <div className="text-[11px] text-amber-700 mt-1">Couldn’t load photo: {err}</div>}
+        {tried && !err && <div className="text-[11px] text-slate-400 mt-1">No delivery photo on file for this order.</div>}
+      </div>
+    );
+  }
   const photos = docs.filter((d) => isPodImage(d.extension));
   const others = docs.filter((d) => !isPodImage(d.extension));
   return (
@@ -3189,11 +3231,9 @@ function StopActivityTimeline({ stopNbr, stopId, onRefreshed }) {
 // NuVizz (/stop/info via nuvizz-pro-lookup) and merges the fresh detail — full comment
 // list, stopId, route sequence — into a LOCAL copy so the panel updates immediately. Keyed
 // by stop number at the call site so it resets when a different order is opened.
-function StopLiveDetail({ stop }) {
-  const [fresh, setFresh] = useState(null);
+function StopLiveDetail({ stop, onRefreshed }) {
   const [refreshing, setRefreshing] = useState(false);
   const [refreshErr, setRefreshErr] = useState(null);
-  const live = fresh || stop;
   const refresh = async () => {
     const pro = stop.primaryPro || stop.pro || stop.stopNbr;
     if (!pro || refreshing) return;
@@ -3201,12 +3241,12 @@ function StopLiveDetail({ stop }) {
     try {
       const r = await fetch('/.netlify/functions/nuvizz-pro-lookup?pro=' + encodeURIComponent(pro), { cache: 'no-store' });
       const d = await r.json();
-      if (d.ok && d.stop) setFresh((prev) => ({ ...(prev || stop), ...d.stop }));
+      if (d.ok && d.stop) onRefreshed?.(d.stop);
       else setRefreshErr(d.reason || 'not found');
     } catch (e) { setRefreshErr(e.message); }
     finally { setRefreshing(false); }
   };
-  const cleaned = cleanInstructions(live.signalSources?.orderInstructions);
+  const cleaned = cleanInstructions(stop.signalSources?.orderInstructions);
   return (
     <div className="pt-1 space-y-2">
       <div className="flex items-center justify-end">
@@ -3215,8 +3255,8 @@ function StopLiveDetail({ stop }) {
         </button>
       </div>
       {refreshErr && <div className="text-[11px] text-amber-700">Couldn’t refresh: {refreshErr}</div>}
-      {live.allComments?.length ? (
-        <StopNotesList comments={live.allComments} />
+      {stop.allComments?.length ? (
+        <StopNotesList comments={stop.allComments} />
       ) : cleaned ? (
         <div className="pt-1">
           <div className="text-xs uppercase font-semibold text-slate-500">NuVizz instructions</div>
@@ -3224,13 +3264,24 @@ function StopLiveDetail({ stop }) {
           <div className="text-[10px] text-slate-400 mt-0.5">Refresh to load all notes</div>
         </div>
       ) : null}
-      <StopActivityTimeline stopNbr={live.stopNbr || live.pro} stopId={live.stopId} onRefreshed={(d) => setFresh((prev) => ({ ...(prev || stop), ...d }))} />
+      <StopActivityTimeline stopNbr={stop.stopNbr || stop.pro} stopId={stop.stopId} onRefreshed={onRefreshed} />
     </div>
   );
 }
 
 function StopDataSections({ stop, note, onOpenRoute, onMoveLocation, onEditAddress, onAutoFixAddress, onText }) {
-  const textPhone = resolveStopPhone(stop, note);
+  // A "Refresh from NuVizz" (or opening the timeline) re-pulls the order and may surface
+  // newly-captured proof-of-delivery photos. Hold that fresh detail HERE — at the card
+  // level — so the merged stop reaches PodDocsSection / OrderItemsSection / Route too, not
+  // just the notes panel. (Previously the fresh copy was trapped inside StopLiveDetail, so
+  // refreshed POD photos never appeared.) Reset the overlay when a different stop opens.
+  const stopKey = stop.stopNbr || stop.pro;
+  const [fresh, setFresh] = useState(null);
+  const [prevKey, setPrevKey] = useState(stopKey);
+  if (stopKey !== prevKey) { setPrevKey(stopKey); setFresh(null); }
+  const live = fresh ? { ...stop, ...fresh } : stop;
+  const onRefreshed = useCallback((d) => { if (d) setFresh((prev) => ({ ...(prev || {}), ...d })); }, []);
+  const textPhone = resolveStopPhone(live, note);
   return (
     <div className="px-4 py-3 border-b text-sm space-y-1">
       <div>
@@ -3238,56 +3289,56 @@ function StopDataSections({ stop, note, onOpenRoute, onMoveLocation, onEditAddre
           Address
           {note?.address_override && <span className="px-1 rounded bg-blue-100 text-blue-700 text-[9px] font-semibold normal-case">corrected</span>}
         </div>
-        <div className="break-words">{note?.address_override?.addr1 || stop.addr1}</div>
-        {(note?.address_override?.addr2 ?? stop.addr2) && (
+        <div className="break-words">{note?.address_override?.addr1 || live.addr1}</div>
+        {(note?.address_override?.addr2 ?? live.addr2) && (
           <div className="text-xs px-2 py-1 mt-1 bg-amber-50 border border-amber-200 rounded text-amber-900 break-words">
-            <span className="font-semibold">addr2:</span> {note?.address_override?.addr2 ?? stop.addr2}
+            <span className="font-semibold">addr2:</span> {note?.address_override?.addr2 ?? live.addr2}
           </div>
         )}
         <div className="text-slate-600 break-words">
-          {(note?.address_override?.city ?? stop.city)}, {(note?.address_override?.state ?? stop.state)} {(note?.address_override?.zip ?? stop.zip)}
+          {(note?.address_override?.city ?? live.city)}, {(note?.address_override?.state ?? live.state)} {(note?.address_override?.zip ?? live.zip)}
         </div>
-        <AddressFixBanner stop={stop} note={note} onAutoFix={onAutoFixAddress} onEdit={onEditAddress} />
+        <AddressFixBanner stop={live} note={note} onAutoFix={onAutoFixAddress} onEdit={onEditAddress} />
         <div className="flex items-center gap-x-4 gap-y-1 flex-wrap mt-1">
-          <StreetViewLink stop={stop} />
-          <GoogleMapsLink stop={stop} />
-          <WebSearchLink stop={stop} />
+          <StreetViewLink stop={live} />
+          <GoogleMapsLink stop={live} />
+          <WebSearchLink stop={live} />
         </div>
         <div className="flex items-center gap-x-4 gap-y-1 flex-wrap">
           {onEditAddress && (
-            <button onClick={() => onEditAddress(stop)} className="mt-1.5 inline-flex items-center gap-1 text-xs text-blue-700 hover:underline">
+            <button onClick={() => onEditAddress(live)} className="mt-1.5 inline-flex items-center gap-1 text-xs text-blue-700 hover:underline">
               <MapPin size={13} /> Edit address
             </button>
           )}
           {onMoveLocation && (
-            <button onClick={() => onMoveLocation(stop)} className="mt-1.5 inline-flex items-center gap-1 text-xs text-blue-700 hover:underline">
+            <button onClick={() => onMoveLocation(live)} className="mt-1.5 inline-flex items-center gap-1 text-xs text-blue-700 hover:underline">
               <MapPin size={13} /> Correct pin location{note?.location_override ? ' · custom saved' : ''}
             </button>
           )}
           {onText && (
-            <button onClick={() => onText(stop)} className="mt-1.5 inline-flex items-center gap-1 text-xs text-blue-700 hover:underline">
+            <button onClick={() => onText(live)} className="mt-1.5 inline-flex items-center gap-1 text-xs text-blue-700 hover:underline">
               <MessageSquare size={13} /> Text customer{textPhone ? '' : ' (add #)'}
             </button>
           )}
         </div>
       </div>
-      <StopLiveDetail key={stop.stopNbr || stop.pro} stop={stop} />
+      <StopLiveDetail key={stopKey} stop={live} onRefreshed={onRefreshed} />
       <div className="pt-2">
-        <OrderItemsSection stop={stop} />
+        <OrderItemsSection stop={live} />
       </div>
-      <PodDocsSection stop={stop} />
+      <PodDocsSection stop={live} onRefreshed={onRefreshed} />
       <div className="pt-2 mt-2 border-t">
         <div className="text-xs uppercase font-semibold text-slate-500 mb-1">Route</div>
-        {stop.loadNbr ? (
+        {live.loadNbr ? (
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div className="min-w-0 flex-1 text-sm">
-              <div className="font-semibold text-slate-900 truncate">{stop.routeName || stop.loadNbr}</div>
-              {stop.driverName && <div className="text-xs text-slate-500 truncate">{stop.driverName}</div>}
-              {stop.routeName && <div className="text-[10px] text-slate-400 font-mono">{stop.loadNbr}</div>}
+              <div className="font-semibold text-slate-900 truncate">{live.routeName || live.loadNbr}</div>
+              {live.driverName && <div className="text-xs text-slate-500 truncate">{live.driverName}</div>}
+              {live.routeName && <div className="text-[10px] text-slate-400 font-mono">{live.loadNbr}</div>}
             </div>
             {onOpenRoute && (
               <button
-                onClick={() => onOpenRoute(stop.loadNbr)}
+                onClick={() => onOpenRoute(live.loadNbr)}
                 className="flex-shrink-0 px-2 py-1 text-xs font-semibold text-blue-700 border border-blue-300 rounded hover:bg-blue-50 active:bg-blue-100"
               >
                 View full route
@@ -3298,8 +3349,8 @@ function StopDataSections({ stop, note, onOpenRoute, onMoveLocation, onEditAddre
           <div className="text-xs text-slate-500 italic">Not yet assigned</div>
         )}
       </div>
-      {stop.listUpdatedDTTM && fmtClockShort(stop.listUpdatedDTTM) && (
-        <div className="pt-2 text-[11px] text-slate-400">Updated {fmtClockShort(stop.listUpdatedDTTM)}</div>
+      {live.listUpdatedDTTM && fmtClockShort(live.listUpdatedDTTM) && (
+        <div className="pt-2 text-[11px] text-slate-400">Updated {fmtClockShort(live.listUpdatedDTTM)}</div>
       )}
     </div>
   );
@@ -5920,10 +5971,9 @@ function MapScreen({ onOpenMessages, smsUnread = 0 }) {
     const matched = filteredStops.filter((s) => effectiveMatchSet.has(s.stopNbr) && s.lat != null && s.lng != null);
     if (matched.length === 1) {
       const s = matched[0];
-      mapRef.current.panTo({ lat: s.lat, lng: s.lng });
-      mapRef.current.setZoom(Math.max(mapRef.current.getZoom() || 10, STOP_ZOOM));
       // Don't auto-open if user already navigated away from search results.
-      if (!selectedDriver) setSelectedStop(s);
+      if (!selectedDriver) { setSelectedStop(s); handlePanToStop(s); }   // saves board view → closing zooms back out
+      else { mapRef.current.panTo({ lat: s.lat, lng: s.lng }); mapRef.current.setZoom(Math.max(mapRef.current.getZoom() || 10, STOP_ZOOM)); }
     } else if (matched.length >= 2 && matched.length <= 10) {
       const bounds = new google.maps.LatLngBounds();
       matched.forEach((s) => bounds.extend({ lat: s.lat, lng: s.lng }));
@@ -6101,10 +6151,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0 }) {
       setSelectedDriver(null);
       setSelectedStop(s);
       setMobileDrawerOpen(false);
-      if (google && mapRef.current && s.lat != null && s.lng != null) {
-        mapRef.current.panTo({ lat: s.lat, lng: s.lng });
-        mapRef.current.setZoom(Math.max(mapRef.current.getZoom() || 10, STOP_ZOOM));
-      }
+      handlePanToStop(s);   // saves the board view so closing zooms back out
     };
     const pickDriverFromMobile = (d) => {
       setSelectedStop(null);
@@ -6375,10 +6422,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0 }) {
             onPickStop={(s) => {
               setSelectedRoute(null);
               setSelectedStop(s);
-              if (google && mapRef.current && s.lat != null && s.lng != null) {
-                mapRef.current.panTo({ lat: s.lat, lng: s.lng });
-                mapRef.current.setZoom(Math.max(mapRef.current.getZoom() || 10, STOP_ZOOM));
-              }
+              handlePanToStop(s);   // saves the board view so closing zooms back out
             }}
           />
         )}
@@ -6417,10 +6461,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0 }) {
               setSelectedDriver(null);
               if (liveMatch) {
                 setSelectedStop(liveMatch);
-                if (google && mapRef.current && liveMatch.lat != null && liveMatch.lng != null) {
-                  mapRef.current.panTo({ lat: liveMatch.lat, lng: liveMatch.lng });
-                  mapRef.current.setZoom(Math.max(mapRef.current.getZoom() || 10, STOP_ZOOM));
-                }
+                handlePanToStop(liveMatch);   // saves the board view so closing zooms back out
               } else {
                 handlePanToStop(snapshotStop);
               }
@@ -6736,10 +6777,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0 }) {
           onPickStop={(s) => {
             setSelectedRoute(null);
             setSelectedStop(s);
-            if (google && mapRef.current && s.lat != null && s.lng != null) {
-              mapRef.current.panTo({ lat: s.lat, lng: s.lng });
-              mapRef.current.setZoom(Math.max(mapRef.current.getZoom() || 10, STOP_ZOOM));
-            }
+            handlePanToStop(s);   // saves the board view so closing zooms back out
           }}
         />
       )}
