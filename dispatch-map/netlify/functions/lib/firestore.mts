@@ -420,18 +420,33 @@ export async function readStops(tenant: string, dateStr: string): Promise<StopIn
 const enrichRegPath = (tenant: string, stopNbr: string) => `nuvizz_enriched/${tenant}/pros/${encodeURIComponent(stopNbr)}`;
 
 // Look up enrichment detail for a set of PROs (parallel getDoc, bounded concurrency).
-export async function readEnrichedPros(tenant: string, stopNbrs: string[], conc = 12): Promise<Map<string, any>> {
-  const out = new Map<string, any>();
+export async function readEnrichedPros(tenant: string, stopNbrs: string[], conc = 12): Promise<{ found: Map<string, any>; unresolved: Set<string> }> {
+  const found = new Map<string, any>();
+  const unresolved = new Set<string>(); // reads that ERRORED after retries — status UNKNOWN, NOT "new"
   const ids = [...new Set(stopNbrs.map((x) => String(x)).filter(Boolean))];
+  // getDoc returns null for a genuine 404 (PRO truly not in the registry → enrich it) but THROWS
+  // on a transient 429/500/network blip. Swallowing that throw used to drop the PRO from the map,
+  // so an already-enriched PRO looked "new" and got re-enriched (a rate-limit-driven, unbounded
+  // spike). Retry transient errors with small backoff; if still failing, mark UNRESOLVED so the
+  // caller SKIPS it this cycle (retry next scan) instead of re-enriching on a read failure.
+  const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+  const getWithRetry = async (path: string): Promise<any | null> => {
+    let lastErr: any;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try { return await getDoc(path); } catch (e) { lastErr = e; await sleep(120 * (attempt + 1)); }
+    }
+    throw lastErr;
+  };
   let i = 0;
   const worker = async () => {
     while (i < ids.length) {
       const id = ids[i++];
-      try { const d = await getDoc(enrichRegPath(tenant, id)); if (d) out.set(id, d); } catch { /* skip */ }
+      try { const d = await getWithRetry(enrichRegPath(tenant, id)); if (d) found.set(id, d); }
+      catch { unresolved.add(id); }
     }
   };
   await Promise.all(Array.from({ length: Math.min(conc, ids.length) }, worker));
-  return out;
+  return { found, unresolved };
 }
 
 // Record freshly-enriched PROs in the registry. Drops the bulky raw NuVizz payload; keeps the
