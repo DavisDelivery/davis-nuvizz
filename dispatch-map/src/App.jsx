@@ -49,7 +49,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.29.43';
+const APP_VERSION = '0.29.44';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -69,6 +69,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.29.44', 'Loose pieces (NuVizz "volume") now shows as its own column in the data tables: the bottom Stops/Loads grid and the Routing tab\'s selected-stops tables all get a "Loose" column next to Skids/Pallets, so you can see skids, loose pieces, and total pieces at a glance. (The stop detail card already showed loose under Items.)'],
   ['0.29.43', 'The "Delivery Ticket" button now opens the actual NuVizz Delivery Ticket (the per-stop manifest — sequence + Drop Off/Pick Up, Ship-To, requested window, the weight/loose/pallets/total-pieces summary, the PO line-item table, every special-instruction comment with who/when, signature + driver-comment lines, and the Next-Stop ETA) instead of the Bill of Lading. Generated from the order data we already have — no extra NuVizz call. Plus: the PRO number at the top of the stop card is bigger, and the Items list moved up directly under the address.'],
   ['0.29.42', 'Renamed the "Bill of Lading" button on the stop card to "Delivery Ticket" (the document it opens is unchanged — the same NuVizz-matched printable).'],
   ['0.29.41', 'Three things: (1) Printable Bill of Lading — every order now has a "Bill of Lading" button on its stop card that opens a print-ready BOL that copies NuVizz\'s exactly (Davis logo, header, Ship-To/Buyer, special instructions, line items with class/weight, skid/loose/total-piece totals, signature line). Built from the order data we already have — no extra NuVizz call. (2) Routing screen freight now uses the corrected mapping everywhere — skids, loose pieces, total pieces, and truck-capacity (max skids) math all read the right NuVizz fields, so routes no longer over-fill. (3) The Davis Delivery Service logo now appears throughout the app (top header, version panel, and the BOL).'],
@@ -7416,6 +7417,7 @@ function BottomStopsTable({ stops, loadStops, notes, totalCount, open, setOpen, 
     { k: 'city', label: 'City', w: 120, get: (s) => s.city || '—', sortVal: (s) => s.city },
     { k: 'zip', label: 'Zip', w: 70, get: (s) => s.zip || '', sortVal: (s) => s.zip },
     { k: 'cartons', label: 'Pallets', w: 70, get: (s) => (s.cartons ?? '—'), align: 'right', sortVal: (s) => (typeof s.cartons === 'number' ? s.cartons : null) },
+    { k: 'volume', label: 'Loose', w: 64, get: (s) => (s.volume ?? '—'), align: 'right', sortVal: (s) => (typeof s.volume === 'number' ? s.volume : null) },
     { k: 'weight', label: 'Weight', w: 80, get: (s) => (s.weight != null ? Number(s.weight).toLocaleString() : '—'), align: 'right', sortVal: (s) => (s.weight != null ? Number(s.weight) : null) },
     { k: 'restr', label: 'Restrictions', w: 160, get: (s) => {
         const keys = getRestrictionBadgeKeys(notes.get(s.matchKey) || null);
@@ -7488,13 +7490,14 @@ function BottomStopsTable({ stops, loadStops, notes, totalCount, open, setOpen, 
     const needle = q.trim().toLowerCase();
     let arr = [...m.values()].map((g) => {
       const buckets = {};
-      let pallets = 0, weight = 0;
+      let pallets = 0, loose = 0, weight = 0;
       for (const s of g.stops) {
         const bk = tableStatusBucket(s); buckets[bk] = (buckets[bk] || 0) + 1;
         if (typeof s.cartons === 'number') pallets += s.cartons;
+        if (typeof s.volume === 'number') loose += s.volume;
         if (s.weight != null) weight += Number(s.weight) || 0;
       }
-      return { loadNbr: g.loadNbr, routeName: g.routeName, driverName: g.driverName, count: g.stops.length, buckets, pallets, weight };
+      return { loadNbr: g.loadNbr, routeName: g.routeName, driverName: g.driverName, count: g.stops.length, buckets, pallets, loose, weight };
     });
     if (needle) arr = arr.filter((g) => [g.loadNbr, g.routeName, g.driverName].filter(Boolean).join(' ').toLowerCase().includes(needle));
     arr.sort((a, b) => String(a.driverName || '~').localeCompare(String(b.driverName || '~')) || String(a.routeName || a.loadNbr).localeCompare(String(b.routeName || b.loadNbr)));
@@ -7512,6 +7515,7 @@ function BottomStopsTable({ stops, loadStops, notes, totalCount, open, setOpen, 
         </span>
       ), sortVal: (g) => (g.count ? (g.buckets.completed || 0) / g.count : 0) /* % delivered */ },
     { k: 'pallets', label: 'Pallets', w: 70, align: 'right', get: (g) => g.pallets || '—', sortVal: (g) => g.pallets },
+    { k: 'loose', label: 'Loose', w: 64, align: 'right', get: (g) => g.loose || '—', sortVal: (g) => g.loose },
     { k: 'weight', label: 'Weight', w: 90, align: 'right', get: (g) => g.weight ? Math.round(g.weight).toLocaleString() : '—', sortVal: (g) => g.weight },
   ];
   // Per-table column sort. null key = original order; click cycles asc → desc.
@@ -8512,6 +8516,7 @@ function RoutingSelectedList({ selectedStops, notes, onRemove, open, setOpen, on
       customer: s.businessName || String(s.stopNbr),
       city: s.city || '',
       skids: Number(s.cartons) || 0,         // NuVizz totalCartons = real skids
+      loose: Number(s.volume) || 0,          // NuVizz volume = loose pieces
       pieces: Number(s.pallets) || 0,        // NuVizz totalPallets = total pieces
       weight: Number(s.weight) || 0,
     };
@@ -8533,7 +8538,7 @@ function RoutingSelectedList({ selectedStops, notes, onRemove, open, setOpen, on
       ) : (
         <div className="border-t">
           <div className="flex items-center gap-3 px-2 py-1 text-[10px] uppercase tracking-wide text-slate-500 border-b bg-slate-50">
-            <SortBtn label="Customer" k="customer" /><SortBtn label="City" k="city" /><SortBtn label="Skids" k="skids" /><SortBtn label="Pcs" k="pieces" /><SortBtn label="Wt" k="weight" />
+            <SortBtn label="Customer" k="customer" /><SortBtn label="City" k="city" /><SortBtn label="Skids" k="skids" /><SortBtn label="Loose" k="loose" /><SortBtn label="Pcs" k="pieces" /><SortBtn label="Wt" k="weight" />
           </div>
           <div className="max-h-[42vh] overflow-y-auto divide-y">
             {sorted.map((r) => (
@@ -8544,7 +8549,7 @@ function RoutingSelectedList({ selectedStops, notes, onRemove, open, setOpen, on
                       <span className="font-medium truncate">{r.customer}</span>
                       {detailId === r.id ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
                     </div>
-                    <div className="text-[11px] text-slate-500 truncate">{[r.city, `${r.skids} skid${r.skids === 1 ? '' : 's'}`, `${r.pieces} pc${r.pieces === 1 ? '' : 's'}`, `${r.weight.toLocaleString()} lb`].filter(Boolean).join(' · ')}</div>
+                    <div className="text-[11px] text-slate-500 truncate">{[r.city, `${r.skids} skid${r.skids === 1 ? '' : 's'}`, `${r.loose} loose`, `${r.pieces} pc${r.pieces === 1 ? '' : 's'}`, `${r.weight.toLocaleString()} lb`].filter(Boolean).join(' · ')}</div>
                     {(r.keys.length > 0 || r.oversize) && (
                       <div className="flex flex-wrap items-center gap-1 mt-0.5">
                         {r.keys.map((k) => <RestrictionIcon key={k} kind={k} size={14} />)}
@@ -8580,7 +8585,7 @@ function RoutingStopsPanel({ selectedStops, notes, onRemove, hoverId, setHoverId
       id: String(s.stopNbr), stop: s, note,
       keys: getRestrictionBadgeKeys(note), oversize: stopLooksOversize(s),
       customer: s.businessName || String(s.stopNbr), city: s.city || '',
-      skids: Number(s.cartons) || 0, pieces: Number(s.pallets) || 0, weight: Number(s.weight) || 0,
+      skids: Number(s.cartons) || 0, loose: Number(s.volume) || 0, pieces: Number(s.pallets) || 0, weight: Number(s.weight) || 0,
     };
   }), [selectedStops, notes]);
   const { sorted, sortKey, sortDir, toggle } = useSortable(rows, 'customer', 'asc');
@@ -8604,6 +8609,7 @@ function RoutingStopsPanel({ selectedStops, notes, onRemove, hoverId, setHoverId
               <SortableTh label="Customer" k="customer" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />
               <SortableTh label="City" k="city" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />
               <SortableTh label="Skids" k="skids" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />
+              <SortableTh label="Loose" k="loose" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />
               <SortableTh label="Pcs" k="pieces" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />
               <SortableTh label="Wt" k="weight" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />
               <th className="px-1" />
@@ -8632,6 +8638,7 @@ function RoutingStopsPanel({ selectedStops, notes, onRemove, hoverId, setHoverId
                   </td>
                   <td className="px-2 py-1.5 text-slate-600 max-w-[110px] truncate" title={r.city}>{r.city}</td>
                   <td className="px-2 py-1.5 tabular-nums">{r.skids}</td>
+                  <td className="px-2 py-1.5 tabular-nums">{r.loose}</td>
                   <td className="px-2 py-1.5 tabular-nums">{r.pieces}</td>
                   <td className="px-2 py-1.5 tabular-nums">{r.weight.toLocaleString()}</td>
                   <td className="px-1 py-1.5 whitespace-nowrap" onClick={(e) => e.stopPropagation()}>

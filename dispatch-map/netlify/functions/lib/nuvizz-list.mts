@@ -102,6 +102,7 @@ export function normalize(j: any): any[] {
     routeName: g(row, 'route.name') ?? '',
     driverName: g(row, 'route.driver.driverId') ?? '',
     cartons: numOrNull(g(row, 'vizzonInfo.shipmentInfo.cartons')),
+    volume: numOrNull(g(row, 'vizzonInfo.shipmentInfo.volume')),   // loose-piece count
     weight: numOrNull(g(row, 'vizzonInfo.shipmentInfo.weight')),
     proNbr: g(row, 'vizzonInfo.shipmentInfo.proNbr') ?? '',
     scheduledArrival: g(row, 'vizzonInfo.destination.earliestSchTime') ?? '',
@@ -195,6 +196,7 @@ export function toBoardStop(r: any): any {
     lat: null,
     lng: null,
     cartons: r.cartons,
+    volume: r.volume,
     weight: r.weight,
     driverName: r.driverName || null,
     driverUserName: r.driverName || null,
