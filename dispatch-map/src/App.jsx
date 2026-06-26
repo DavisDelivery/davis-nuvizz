@@ -3272,7 +3272,8 @@ function buildBolHtml(stop, logoUrl) {
   .top { display:flex; align-items:center; justify-content:space-between; border-bottom:2px solid #1e5b92; padding-bottom:6px; margin-bottom:8px; }
   .top img { height:46px; width:auto; }
   .title { font-size:20px; font-weight:bold; text-decoration:underline; color:#111; }
-  table { border-collapse:collapse; width:100%; }
+  td, .grid2 > div, .si { word-break:break-word; overflow-wrap:anywhere; }
+  table { border-collapse:collapse; width:100%; table-layout:fixed; }
   .meta td { border:1px solid #111; padding:3px 5px; vertical-align:top; font-size:10.5px; }
   .lbl { font-weight:bold; }
   .box { border:1px solid #111; padding:4px 6px; }
@@ -3368,12 +3369,25 @@ function buildBolHtml(stop, logoUrl) {
 // iframe (so Print outputs just the document), with Print + Close. No API call.
 function BolModal({ stop, onClose }) {
   const iframeRef = useRef(null);
+  const wrapRef = useRef(null);
+  const PAGE_W = 816;   // 8.5in @ 96dpi — the BOL lays out at full Letter width…
+  const [scale, setScale] = useState(1);   // …then we scale the whole page to fit the screen
+  const [pageH, setPageH] = useState(1056);
   const html = useMemo(() => buildBolHtml(stop, (typeof window !== 'undefined' ? window.location.origin : '') + '/davis-logo.jpg'), [stop]);
   useEffect(() => {
     const onKey = (e) => { if (e.key === 'Escape') onClose(); };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [onClose]);
+  useEffect(() => {
+    const fit = () => { const w = (wrapRef.current?.clientWidth || PAGE_W) - 16; setScale(Math.min(1, w / PAGE_W)); };
+    fit();
+    window.addEventListener('resize', fit);
+    return () => window.removeEventListener('resize', fit);
+  }, []);
+  const onLoad = () => {
+    try { const h = iframeRef.current?.contentWindow?.document?.body?.scrollHeight; if (h && h > 120) setPageH(h + 8); } catch { /* same-origin srcdoc — safe */ }
+  };
   const doPrint = () => { try { iframeRef.current?.contentWindow?.focus(); iframeRef.current?.contentWindow?.print(); } catch { /* popup/print blocked */ } };
   return (
     <div className="fixed inset-0 z-[1400] flex flex-col bg-slate-900/80" role="dialog" aria-modal="true"
@@ -3385,8 +3399,13 @@ function BolModal({ stop, onClose }) {
           <button onClick={onClose} className="p-2 rounded-full hover:bg-white/15" aria-label="Close" style={{ minWidth: 44, minHeight: 44 }}><X size={22} /></button>
         </div>
       </div>
-      <div className="flex-1 min-h-0 bg-white">
-        <iframe ref={iframeRef} title="Bill of Lading" srcDoc={html} className="w-full h-full border-0" />
+      <div ref={wrapRef} className="flex-1 min-h-0 overflow-auto p-2 flex justify-center">
+        <div style={{ width: PAGE_W * scale, height: pageH * scale }} className="flex-shrink-0">
+          <iframe
+            ref={iframeRef} title="Bill of Lading" srcDoc={html} onLoad={onLoad}
+            style={{ width: PAGE_W, height: pageH, border: 0, background: 'white', transform: `scale(${scale})`, transformOrigin: 'top left', boxShadow: '0 2px 14px rgba(0,0,0,0.35)' }}
+          />
+        </div>
       </div>
     </div>
   );
