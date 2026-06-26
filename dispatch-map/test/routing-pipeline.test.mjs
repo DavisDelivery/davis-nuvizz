@@ -21,9 +21,9 @@ const truck = (over = {}) => ({
 });
 
 const stops = [
-  { stopNbr: 'S1', lat: 0, lng: 1, pallets: 2, weight: 1000, weightUOM: 'LB', stopDetails: [] },
-  { stopNbr: 'S2', lat: 0, lng: 2, pallets: 2, weight: 1000, weightUOM: 'LB', stopDetails: [] },
-  { stopNbr: 'S3', lat: 0, lng: 3, pallets: 2, weight: 1000, weightUOM: 'LB', stopDetails: [] },
+  { stopNbr: 'S1', lat: 0, lng: 1, cartons: 2, weight: 1000, weightUOM: 'LB', stopDetails: [] },
+  { stopNbr: 'S2', lat: 0, lng: 2, cartons: 2, weight: 1000, weightUOM: 'LB', stopDetails: [] },
+  { stopNbr: 'S3', lat: 0, lng: 3, cartons: 2, weight: 1000, weightUOM: 'LB', stopDetails: [] },
 ];
 
 test('deterministic-only (no model deps): produces valid routes + deterministic rationale', async () => {
@@ -75,7 +75,7 @@ test('a broken explain model falls back to deterministic summary (no crash)', as
 });
 
 test('capacity overflow spills with reasons; shown route stays within capacity', async () => {
-  const many = Array.from({ length: 10 }, (_, i) => ({ stopNbr: `S${i}`, lat: 0, lng: i + 1, pallets: 3, weight: 1000, weightUOM: 'LB', stopDetails: [] }));
+  const many = Array.from({ length: 10 }, (_, i) => ({ stopNbr: `S${i}`, lat: 0, lng: i + 1, cartons: 3, weight: 1000, weightUOM: 'LB', stopDetails: [] }));
   const plan = await runPipeline(
     { stops: many, trucks: [truck({ maxSkids: 9 })], depot: { lat: 0, lng: 0 }, strategy: 'MIN_DISTANCE', date: '2026-06-10' },
     { buildMatrix: mockMatrix() },
@@ -87,8 +87,8 @@ test('capacity overflow spills with reasons; shown route stays within capacity',
 });
 
 const windowStops = () => [
-  { stopNbr: 'NEAR', lat: 0, lng: 1, pallets: 1, weight: 100, weightUOM: 'LB', stopDetails: [] },
-  { stopNbr: 'FAR', lat: 0, lng: 500, pallets: 1, weight: 100, weightUOM: 'LB', stopDetails: [], scheduledFrom: '08:00', scheduledTo: '08:05', timeConstraint: 'STRICT' },
+  { stopNbr: 'NEAR', lat: 0, lng: 1, cartons: 1, weight: 100, weightUOM: 'LB', stopDetails: [] },
+  { stopNbr: 'FAR', lat: 0, lng: 500, cartons: 1, weight: 100, weightUOM: 'LB', stopDetails: [], scheduledFrom: '08:00', scheduledTo: '08:05', timeConstraint: 'STRICT' },
 ];
 
 test('STRICT mode: an unreachable appointment is spilled, route valid', async () => {
@@ -130,9 +130,9 @@ const bigTruck = () => truck({ maxSkids: 999, maxWeightLbs: 1e7, deckLengthIn: 1
 const PLACEHOLDER = { scheduledFrom: '00:00', scheduledTo: '00:00', timeConstraint: 'STRICT' };
 // Input order A,B,C is NOT the optimal path from depot(0,0): A is farthest.
 const skewStops = () => [
-  { stopNbr: 'A', lat: 0, lng: 3, pallets: 1, weight: 100, weightUOM: 'LB', stopDetails: [], ...PLACEHOLDER },
-  { stopNbr: 'B', lat: 0, lng: 1, pallets: 1, weight: 100, weightUOM: 'LB', stopDetails: [], ...PLACEHOLDER },
-  { stopNbr: 'C', lat: 0, lng: 2, pallets: 1, weight: 100, weightUOM: 'LB', stopDetails: [], ...PLACEHOLDER },
+  { stopNbr: 'A', lat: 0, lng: 3, cartons: 1, weight: 100, weightUOM: 'LB', stopDetails: [], ...PLACEHOLDER },
+  { stopNbr: 'B', lat: 0, lng: 1, cartons: 1, weight: 100, weightUOM: 'LB', stopDetails: [], ...PLACEHOLDER },
+  { stopNbr: 'C', lat: 0, lng: 2, cartons: 1, weight: 100, weightUOM: 'LB', stopDetails: [], ...PLACEHOLDER },
 ];
 const depot0 = { lat: 0, lng: 0 };
 
@@ -173,8 +173,8 @@ test('ORDERING: CLOSEST_FIRST puts the depot-nearest stop first', async () => {
 
 test('a genuine wide window stays served + unflagged (real window honored)', async () => {
   const reqStops = [
-    { stopNbr: 'N', lat: 0, lng: 1, pallets: 1, weight: 100, weightUOM: 'LB', stopDetails: [] },
-    { stopNbr: 'W', lat: 0, lng: 2, pallets: 1, weight: 100, weightUOM: 'LB', stopDetails: [], scheduledFrom: '06:00', scheduledTo: '23:00', timeConstraint: 'STRICT' },
+    { stopNbr: 'N', lat: 0, lng: 1, cartons: 1, weight: 100, weightUOM: 'LB', stopDetails: [] },
+    { stopNbr: 'W', lat: 0, lng: 2, cartons: 1, weight: 100, weightUOM: 'LB', stopDetails: [], scheduledFrom: '06:00', scheduledTo: '23:00', timeConstraint: 'STRICT' },
   ];
   const plan = await runPipeline(
     { stops: reqStops, trucks: [bigTruck()], depot: depot0, strategy: 'MIN_DISTANCE', date: '2026-06-10', departHHMM: '08:00' },

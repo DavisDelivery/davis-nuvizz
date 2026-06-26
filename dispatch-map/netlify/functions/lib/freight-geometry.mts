@@ -65,8 +65,11 @@ export function deriveGeometryDeterministic(
   const details: any[] = Array.isArray(stop?.stopDetails) ? stop.stopDetails : [];
   const notes: string[] = [];
 
-  // Skids: prefer the normalized totalPallets; else sum pallet-UOM line quantities.
-  let skids = Number.isFinite(stop?.pallets) && stop.pallets != null ? Number(stop.pallets) : 0;
+  // Skids: NuVizz MISLABELS its freight fields — the normalized `cartons` field (NuVizz
+  // totalCartons) is the real PALLET/SKID count, while `pallets` (NuVizz totalPallets) is
+  // the TOTAL piece count (pallets + loose). Use the real skid count for deck capacity;
+  // else sum pallet-UOM line quantities.
+  let skids = Number.isFinite(stop?.cartons) && stop.cartons != null ? Number(stop.cartons) : 0;
   if (!skids && details.length) {
     skids = details.reduce((a, d) => {
       const uom = String(d?.quantityUOM || '').toUpperCase();

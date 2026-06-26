@@ -17,7 +17,7 @@ import {
   Activity, ChevronDown, ChevronUp, Eye, EyeOff,
   Search, Tag, Tags, ArrowLeft, Gauge, Clock, MapPinned,
   Info, Settings, LayoutList, Sparkles, MessageSquare, Square, Lasso, AlertTriangle, Ban, Send, Package,
-  FileCheck, ExternalLink, Image as ImageIcon,
+  FileCheck, ExternalLink, Image as ImageIcon, Printer, FileText,
 } from 'lucide-react';
 import {
   collection, doc, getDoc, onSnapshot, setDoc, serverTimestamp,
@@ -49,7 +49,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.29.40';
+const APP_VERSION = '0.29.41';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -69,6 +69,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.29.41', 'Three things: (1) Printable Bill of Lading — every order now has a "Bill of Lading" button on its stop card that opens a print-ready BOL that copies NuVizz\'s exactly (Davis logo, header, Ship-To/Buyer, special instructions, line items with class/weight, skid/loose/total-piece totals, signature line). Built from the order data we already have — no extra NuVizz call. (2) Routing screen freight now uses the corrected mapping everywhere — skids, loose pieces, total pieces, and truck-capacity (max skids) math all read the right NuVizz fields, so routes no longer over-fill. (3) The Davis Delivery Service logo now appears throughout the app (top header, version panel, and the BOL).'],
   ['0.29.40', 'Stop card: (1) Freight labels corrected — NuVizz mislabels its fields, so the Items breakdown now reads them as their real meaning: the field NuVizz calls "cartons" is shown as PALLETS, "volume" as LOOSE pieces, and "pallets" as TOTAL pieces (pallets + loose). A stop now reads e.g. "1 pallet · 2 loose pcs · 3 total pieces". (2) Proof-of-delivery photos and documents (BOL) now open in an in-app viewer WITH a Close button — before, tapping one filled the screen with no way back inside the installed app. (3) The "Refresh from NuVizz" button is now a clean full-width button instead of floating to the right.'],
   ['0.29.39', 'Stop card fixes: (1) the status badge now updates when you Refresh or open the timeline — a delivered order the board still shows as "Scheduled" flips to "Delivered" once its real status comes back from NuVizz (the header badge was stuck on the stale board value). (2) Loose pieces: NuVizz\'s "volume" field — how Davis records loose pieces — is now pulled in and shown in the Items section (Skids / cartons / loose pcs). (3) The "View delivery photo" button (added last version) lives in the Proof of delivery section of the stop card.'],
   ['0.29.38', 'Delivery photos: opening a delivered order now shows a "View delivery photo" button under Proof of delivery — it pulls the driver\'s captured photo on demand (the photo from the DOCUMENT CAPTURE timeline events). NuVizz exposes these capture photos in a separate place from the signed POD, which is why the proof-of-delivery section used to come up empty; the card now reads both. Plus: closing a stop from the map (left list or the detail panel) zooms the map back out to where it was before you opened the order.'],
@@ -3194,6 +3195,203 @@ function PodDocsSection({ stop, onRefreshed }) {
   );
 }
 
+// ── Bill of Lading (printable) ───────────────────────────────────────────────
+// A faithful replica of the NuVizz Bill of Lading PDF, generated entirely from the
+// already-enriched stop data — NO API call. Available on every order. Field → source
+// mapping (NuVizz mislabels several fields; we read the normalized values):
+//   Order# laneNumber · Terms scheduleAttribute · Whse proNumber · Cust# reference2
+//   BOLID bol · PRO# stopNbr · Date to.schedule.timeTo · PO reference1
+//   Ship To to.address + contact.phone · Buyer contact (name/email/phone)
+//   Special Instructions comments · Line items stopDetails (cat/qty/uom/product/class/weight)
+//   # Skids totalCartons · # Loose volume · Total Pieces totalPallets · Weight weight
+const bolEsc = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+const bolNum = (n, dp = 1) => (n == null || n === '' || isNaN(Number(n)) ? '' : Number(n).toFixed(dp));
+
+function bolData(stop) {
+  const raw = (stop && stop.raw && stop.raw.stop) || {};
+  const toAddr = raw.to?.address || {};
+  const contact = stop.contact || raw.to?.contact || {};
+  const comments = Array.isArray(stop.allComments) && stop.allComments.length
+    ? stop.allComments
+    : (raw.comments || []).map((c) => ({ text: c.commentDescription }));
+  const items = (Array.isArray(stop.stopDetails) && stop.stopDetails.length ? stop.stopDetails : (raw.stopDetails || []));
+  const lineWtSum = items.reduce((a, it) => a + (Number(it.weight) || 0), 0);
+  const weight = (stop.weight != null ? Number(stop.weight) : null) ?? (raw.weight != null ? Number(raw.weight) : null) ?? lineWtSum;
+  return {
+    orderNbr: stop.orderNbr ?? raw.laneNumber ?? '',
+    terms: stop.terms ?? raw.scheduleAttribute ?? '',
+    whse: stop.warehouse ?? raw.proNumber ?? '',
+    custRef: stop.custRef ?? raw.reference2 ?? '',
+    bol: stop.bol ?? raw.bol ?? '',
+    pro: stop.stopNbr || stop.pro || '',
+    dateTime: stop.scheduledTo ?? raw.to?.schedule?.timeTo ?? '',
+    po: stop.poRef ?? raw.reference1 ?? '',
+    shipName: stop.businessName ?? toAddr.name ?? '',
+    shipAddr1: stop.addr1 ?? toAddr.addr1 ?? '',
+    shipAddr2: stop.addr2 ?? toAddr.addr2 ?? '',
+    shipCity: stop.city ?? toAddr.city ?? '',
+    shipState: stop.state ?? toAddr.state ?? '',
+    shipZip: stop.zip ?? toAddr.zip ?? '',
+    phone: contact.phone ?? contact.sms ?? '',
+    buyerName: contact.name ?? contact.contactName ?? '',
+    buyerEmail: contact.email ?? '',
+    comments: comments.map((c) => c.text).filter(Boolean),
+    items: items.map((it) => ({
+      sl: it.productCategory ?? '', pc: it.quantity ?? '', pkg: it.quantityUOM ?? '',
+      desc: it.product ?? it.sku ?? '', cls: it.referenceText ?? '', wt: it.weight,
+    })),
+    skids: Number(stop.cartons ?? raw.totalCartons ?? 0) || 0,
+    loose: Number(stop.volume ?? raw.volume ?? 0) || 0,
+    totalPieces: Number(stop.pallets ?? raw.totalPallets ?? 0) || 0,
+    weight,
+  };
+}
+
+function buildBolHtml(stop, logoUrl) {
+  const d = bolData(stop);
+  const cityLine = [d.shipCity, [d.shipState, d.shipZip].filter(Boolean).join(' ')].filter(Boolean).join(', ');
+  const MIN_ROWS = 12;
+  const rows = d.items.map((it) => `
+      <tr>
+        <td class="c">${bolEsc(it.sl)}</td>
+        <td class="c">${bolEsc(it.pc)}</td>
+        <td class="c">${bolEsc(it.pkg)}</td>
+        <td>${bolEsc(it.desc)}</td>
+        <td class="c">${bolEsc(it.cls)}</td>
+        <td class="r">${bolNum(it.wt)}</td>
+      </tr>`).join('');
+  const filler = Array.from({ length: Math.max(0, MIN_ROWS - d.items.length) }, () =>
+    '<tr><td>&nbsp;</td><td></td><td></td><td></td><td></td><td></td></tr>').join('');
+  const instr = d.comments.length ? d.comments.map((c) => bolEsc(c)).join('<br/>') : '&nbsp;';
+  return `<!doctype html><html><head><meta charset="utf-8"><title>Bill of Lading ${bolEsc(d.pro)}</title>
+<style>
+  @page { size: letter portrait; margin: 0.4in; }
+  * { box-sizing: border-box; }
+  html,body { margin:0; padding:0; }
+  body { font-family: Arial, Helvetica, sans-serif; color:#111; font-size:11px; padding:10px; }
+  .top { display:flex; align-items:center; justify-content:space-between; border-bottom:2px solid #1e5b92; padding-bottom:6px; margin-bottom:8px; }
+  .top img { height:46px; width:auto; }
+  .title { font-size:20px; font-weight:bold; text-decoration:underline; color:#111; }
+  table { border-collapse:collapse; width:100%; }
+  .meta td { border:1px solid #111; padding:3px 5px; vertical-align:top; font-size:10.5px; }
+  .lbl { font-weight:bold; }
+  .box { border:1px solid #111; padding:4px 6px; }
+  .grid2 { display:flex; gap:0; margin-top:6px; }
+  .grid2 > div { border:1px solid #111; padding:5px 7px; width:50%; }
+  .grid2 > div + div { border-left:0; }
+  .sec-h { font-weight:bold; font-size:10px; text-transform:uppercase; color:#333; margin-bottom:2px; }
+  .si { margin-top:6px; }
+  .items { margin-top:6px; }
+  .items th { border:1px solid #111; background:#eee; padding:3px 5px; font-size:9.5px; text-transform:uppercase; }
+  .items td { border:1px solid #111; padding:3px 5px; height:16px; }
+  .items td.c, .items th.c { text-align:center; }
+  .items td.r, .items th.r { text-align:right; }
+  .totals { display:flex; justify-content:flex-end; margin-top:6px; }
+  .totals table td { border:1px solid #111; padding:3px 7px; font-size:10.5px; }
+  .sig { margin-top:26px; font-size:11px; }
+</style></head>
+<body>
+  <div class="top">
+    <img src="${bolEsc(logoUrl)}" alt="Davis Delivery Service"/>
+    <div class="title">Bill of Lading</div>
+    <div style="width:46px"></div>
+  </div>
+
+  <table class="meta"><tbody>
+    <tr>
+      <td style="width:34%"><span class="lbl">Order#:</span> ${bolEsc(d.orderNbr)}</td>
+      <td style="width:33%"><span class="lbl">BOLID:</span> ${bolEsc(d.bol)}</td>
+      <td style="width:33%"><span class="lbl">Date and Time:</span> ${bolEsc(d.dateTime)}</td>
+    </tr>
+    <tr>
+      <td><span class="lbl">Terms:</span> ${bolEsc(d.terms)}</td>
+      <td><span class="lbl">PRO#:</span> ${bolEsc(d.pro)}</td>
+      <td><span class="lbl">Page:</span> 1 of 1</td>
+    </tr>
+    <tr>
+      <td><span class="lbl">Whse:</span> ${bolEsc(d.whse)}</td>
+      <td></td>
+      <td><span class="lbl">PO:</span> ${bolEsc(d.po)}</td>
+    </tr>
+    <tr>
+      <td><span class="lbl">Cust#:</span> ${bolEsc(d.custRef)}</td>
+      <td></td>
+      <td></td>
+    </tr>
+  </tbody></table>
+
+  <div class="grid2">
+    <div>
+      <div class="sec-h">Ship To</div>
+      ${bolEsc(d.shipName)}<br/>
+      ${d.shipAddr1 ? bolEsc(d.shipAddr1) + '<br/>' : ''}${d.shipAddr2 ? bolEsc(d.shipAddr2) + '<br/>' : ''}${bolEsc(cityLine)}<br/>
+      <span class="lbl">Phone Number:</span> ${bolEsc(d.phone)}
+    </div>
+    <div>
+      <div class="sec-h">Buyer</div>
+      <span class="lbl">Name:</span> ${bolEsc(d.buyerName)}<br/>
+      <span class="lbl">Email:</span> ${bolEsc(d.buyerEmail)}<br/>
+      <span class="lbl">Phone Number:</span> ${bolEsc(d.phone)}
+    </div>
+  </div>
+
+  <div class="si box">
+    <div class="sec-h">Special Instructions</div>
+    ${instr}
+  </div>
+
+  <table class="items"><thead>
+    <tr>
+      <th class="c" style="width:10%">SKID/LOOSE</th>
+      <th class="c" style="width:7%">PC</th>
+      <th class="c" style="width:9%">PKG</th>
+      <th>FREIGHT ID DESCRIPTION</th>
+      <th class="c" style="width:12%">CLASS</th>
+      <th class="r" style="width:14%">WEIGHT (Lbs)</th>
+    </tr></thead>
+    <tbody>${rows}${filler}</tbody>
+  </table>
+
+  <div class="totals">
+    <table><tbody>
+      <tr><td class="lbl"># Of Skids: ${d.skids}</td><td class="lbl">Sub Weight: ${bolNum(d.weight)}</td></tr>
+      <tr><td class="lbl"># of Loose: ${bolNum(d.loose)}</td><td></td></tr>
+      <tr><td class="lbl">Total Pieces: ${d.totalPieces}</td><td class="lbl">Total Weight: ${bolNum(d.weight)}</td></tr>
+    </tbody></table>
+  </div>
+
+  <div class="sig">Customer Signature: ______________________________________</div>
+</body></html>`;
+}
+
+// Full-screen viewer for the printable Bill of Lading. Renders the generated HTML in an
+// iframe (so Print outputs just the document), with Print + Close. No API call.
+function BolModal({ stop, onClose }) {
+  const iframeRef = useRef(null);
+  const html = useMemo(() => buildBolHtml(stop, (typeof window !== 'undefined' ? window.location.origin : '') + '/davis-logo.jpg'), [stop]);
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+  const doPrint = () => { try { iframeRef.current?.contentWindow?.focus(); iframeRef.current?.contentWindow?.print(); } catch { /* popup/print blocked */ } };
+  return (
+    <div className="fixed inset-0 z-[1400] flex flex-col bg-slate-900/80" role="dialog" aria-modal="true"
+      style={{ paddingTop: 'env(safe-area-inset-top)', paddingBottom: 'env(safe-area-inset-bottom)' }}>
+      <div className="flex items-center justify-between gap-2 px-4 py-3 text-white flex-shrink-0">
+        <div className="font-semibold truncate">Bill of Lading · PRO {stop.pro || stop.stopNbr || ''}</div>
+        <div className="flex items-center gap-2 flex-shrink-0">
+          <button onClick={doPrint} className="px-3 py-2 rounded-lg bg-white text-slate-900 text-sm font-semibold inline-flex items-center gap-1.5"><Printer size={16} /> Print</button>
+          <button onClick={onClose} className="p-2 rounded-full hover:bg-white/15" aria-label="Close" style={{ minWidth: 44, minHeight: 44 }}><X size={22} /></button>
+        </div>
+      </div>
+      <div className="flex-1 min-h-0 bg-white">
+        <iframe ref={iframeRef} title="Bill of Lading" srcDoc={html} className="w-full h-full border-0" />
+      </div>
+    </div>
+  );
+}
+
 // "2026-06-23T15:35:26" → "Jun 23, 3:35 PM" (NuVizz event/comment timestamps are local ET).
 function fmtNoteTime(s) {
   const m = String(s || '').match(/(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})/);
@@ -3362,6 +3560,7 @@ function StopDataSections({ stop, note, onRefreshed, onOpenRoute, onMoveLocation
   // "View delivery photo" button) back up to that parent.
   const live = stop;
   const stopKey = stop.stopNbr || stop.pro;
+  const [showBol, setShowBol] = useState(false);
   const textPhone = resolveStopPhone(live, note);
   return (
     <div className="px-4 py-3 border-b text-sm space-y-1">
@@ -3403,6 +3602,16 @@ function StopDataSections({ stop, note, onRefreshed, onOpenRoute, onMoveLocation
           )}
         </div>
       </div>
+      <div className="pt-2">
+        <button
+          onClick={() => setShowBol(true)}
+          className="w-full inline-flex items-center justify-center gap-1.5 text-xs font-semibold text-white rounded-md px-3 py-2"
+          style={{ background: BRAND }}
+        >
+          <FileText size={14} /> Bill of Lading
+        </button>
+      </div>
+      {showBol && <BolModal stop={live} onClose={() => setShowBol(false)} />}
       <StopLiveDetail key={stopKey} stop={live} onRefreshed={onRefreshed} />
       <div className="pt-2">
         <OrderItemsSection stop={live} />
@@ -4310,7 +4519,9 @@ function MobileAppBar({ version, onChipMenu, chipMenuOpen, onSelectMenu, smsUnre
       }}
     >
       <div className="flex items-center gap-2 flex-shrink-0 min-w-0">
-        <div className="w-6 h-6 rounded flex items-center justify-center bg-white/15 text-white font-bold text-[11px] flex-shrink-0">D</div>
+        <div className="bg-white rounded px-1.5 py-1 flex items-center flex-shrink-0">
+          <img src="/davis-logo.jpg" alt="Davis Delivery Service" className="h-5 w-auto" />
+        </div>
         <span className="font-semibold text-[14px] leading-none truncate">Dispatch</span>
       </div>
       <div className="relative">
@@ -7988,9 +8199,10 @@ function RoutingStopDetail({ stop, note, onOpen, windowViolated }) {
       {contact && (
         <div><Cap>Contact</Cap><div className="text-slate-800">{[contact.name, contact.phone].filter(Boolean).join(' · ') || '—'}</div></div>
       )}
-      <div className="flex gap-6">
-        <div><Cap>Skids</Cap><div className="text-slate-800">{Number(stop.pallets) || 0}</div></div>
-        <div><Cap>Loose pcs</Cap><div className="text-slate-800">{Number(stop.cartons) || 0}</div></div>
+      <div className="flex gap-6 flex-wrap">
+        <div><Cap>Skids</Cap><div className="text-slate-800">{Number(stop.cartons) || 0}</div></div>
+        <div><Cap>Loose pcs</Cap><div className="text-slate-800">{Number(stop.volume) || 0}</div></div>
+        <div><Cap>Total pcs</Cap><div className="text-slate-800">{Number(stop.pallets) || 0}</div></div>
         <div><Cap>Weight</Cap><div className="text-slate-800">{(Number(stop.weight) || 0).toLocaleString()} lb</div></div>
       </div>
       {(keys.length > 0 || oversize) && (
@@ -8097,8 +8309,8 @@ function RoutingSelectedList({ selectedStops, notes, onRemove, open, setOpen, on
       oversize: stopLooksOversize(s),
       customer: s.businessName || String(s.stopNbr),
       city: s.city || '',
-      skids: Number(s.pallets) || 0,
-      pieces: Number(s.cartons) || 0,
+      skids: Number(s.cartons) || 0,         // NuVizz totalCartons = real skids
+      pieces: Number(s.pallets) || 0,        // NuVizz totalPallets = total pieces
       weight: Number(s.weight) || 0,
     };
   }), [selectedStops, notes]);
@@ -8166,7 +8378,7 @@ function RoutingStopsPanel({ selectedStops, notes, onRemove, hoverId, setHoverId
       id: String(s.stopNbr), stop: s, note,
       keys: getRestrictionBadgeKeys(note), oversize: stopLooksOversize(s),
       customer: s.businessName || String(s.stopNbr), city: s.city || '',
-      skids: Number(s.pallets) || 0, pieces: Number(s.cartons) || 0, weight: Number(s.weight) || 0,
+      skids: Number(s.cartons) || 0, pieces: Number(s.pallets) || 0, weight: Number(s.weight) || 0,
     };
   }), [selectedStops, notes]);
   const { sorted, sortKey, sortDir, toggle } = useSortable(rows, 'customer', 'asc');
@@ -8273,7 +8485,10 @@ function VersionLogModal({ onClose }) {
       <div className="absolute inset-0 bg-black/40" onClick={onClose} />
       <div className="relative bg-white rounded-lg shadow-xl w-full max-w-sm max-h-[85dvh] flex flex-col" style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}>
         <div className="flex items-center justify-between px-3 py-2 border-b shrink-0">
-          <div className="font-bold text-slate-800">Beta version history</div>
+          <div className="flex items-center gap-2 min-w-0">
+            <img src="/davis-logo.jpg" alt="Davis Delivery Service" className="h-7 w-auto" />
+            <div className="font-bold text-slate-800 border-l border-slate-200 pl-2">Version history</div>
+          </div>
           <button onClick={onClose} aria-label="Close" className="text-slate-400 hover:text-slate-700 text-2xl leading-none px-1">×</button>
         </div>
         <div className="flex-1 min-h-0 overflow-y-auto p-2">
@@ -8516,8 +8731,8 @@ function RoutingScreen() {
     for (const id of selectedIds) {
       const s = stopById.get(String(id));
       if (!s) continue;
-      skids += Number(s.pallets) || 0;
-      pieces += Number(s.cartons) || 0;
+      skids += Number(s.cartons) || 0;       // NuVizz totalCartons = real skids
+      pieces += Number(s.pallets) || 0;      // NuVizz totalPallets = total pieces
       weight += Number(s.weight) || 0;
       if (stopLooksOversize(s)) oversize += 1;
       const note = notes.get(s.matchKey);
@@ -9530,9 +9745,10 @@ function RoutingRouteCard({ rv, stopById, usedGoogle, readOnly, onReorder, onMov
   const rows = rv.order.map((id, idx) => {
     const s = stopById.get(String(id));
     return { seq: idx + 1, stopId: String(id), stop: s, customer: s?.businessName || id, eta: rv.etas?.[idx] ?? null,
-      skids: Number(s?.pallets) || 0, pieces: Number(s?.cartons) || 0, weight: Number(s?.weight) || 0 };
+      skids: Number(s?.cartons) || 0, pieces: Number(s?.pallets) || 0, weight: Number(s?.weight) || 0 };
   });
   const piecesTotal = rows.reduce((a, r) => a + r.pieces, 0);
+  const skidsTotal = rows.reduce((a, r) => a + r.skids, 0);
   const miles = rv.totalDistanceMeters != null ? rv.totalDistanceMeters / 1609.34 : null;
   const lastIdx = rows.length - 1;
   const winViolated = new Set((route?.windowViolatedIds || []).map(String)); // advisory window flags
@@ -9548,7 +9764,7 @@ function RoutingRouteCard({ rv, stopById, usedGoogle, readOnly, onReorder, onMov
     <div className="rounded border border-slate-200">
       <div className="px-2 py-1.5 flex items-center gap-2 border-b flex-wrap" style={{ borderLeft: `4px solid ${rv.color}` }}>
         <span className="font-semibold">{route.truckId}</span>
-        <span className="text-[11px] text-slate-500">{rows.length} stops · {piecesTotal} loose pc{piecesTotal === 1 ? '' : 's'}{miles != null ? ` · ~${miles.toFixed(1)} mi · ~${fmtRouteDur(rv.totalDurationSec)}` : ''}</span>
+        <span className="text-[11px] text-slate-500">{rows.length} stops · {skidsTotal} skid{skidsTotal === 1 ? '' : 's'} · {piecesTotal} pc{piecesTotal === 1 ? '' : 's'}{miles != null ? ` · ~${miles.toFixed(1)} mi · ~${fmtRouteDur(rv.totalDurationSec)}` : ''}</span>
         {rv.reordered && <span className="text-[9px] font-bold uppercase tracking-wide bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded">Manual order</span>}
         {!readOnly && onResequence && rows.length > 1 && (
           <select
@@ -9683,11 +9899,8 @@ function Shell() {
       ) : (
         <header className="flex items-center justify-between px-4 py-2 border-b bg-white" style={{ paddingTop: 'env(safe-area-inset-top)' }}>
           <div className="flex items-center gap-3">
-            <div className="w-8 h-8 rounded-lg flex items-center justify-center text-white font-bold text-sm" style={{ background: BRAND }}>D</div>
-            <div>
-              <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold leading-none">Davis Delivery</div>
-              <div className="font-bold leading-tight">Dispatch Map</div>
-            </div>
+            <img src="/davis-logo.jpg" alt="Davis Delivery Service" className="h-9 w-auto" />
+            <div className="font-bold leading-tight text-slate-800 border-l border-slate-200 pl-3">Dispatch Map</div>
           </div>
           <nav className="flex items-center gap-1 text-sm">
             <TabBtn label="Map" icon={<MapPin size={14} />} active={tab === 'map'} onClick={() => setTab('map')} />
