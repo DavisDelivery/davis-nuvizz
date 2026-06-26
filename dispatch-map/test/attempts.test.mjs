@@ -113,6 +113,22 @@ test('buildAttemptItem: matched=false when the morning plan had no driver', () =
   assert.equal(item.originalDriverName, null);
 });
 
+test('buildAttemptItem: attribution is the morning driver, not the current re-delivery driver', () => {
+  const plan = buildPlanRecord(PLANNED_STOP, '2026-06-23', '2026-06-23T13:00:00Z'); // Tony Smith @ 8am
+  // By evening the stop has been re-planned onto a DIFFERENT driver for re-delivery.
+  const current = {
+    stopNbr: '007137828', shipmentNbr: 'ATT007137828',
+    driverName: 'Jean Delsoin', driverUserName: 'JEAN', isUnplanned: false, normalizedStatus: 'SCHEDULED',
+  };
+  const item = buildAttemptItem(plan, current, '2026-06-23', 'now');
+  // ORIGINAL must be the 8am driver…
+  assert.equal(item.originalDriverName, 'Tony Smith');
+  assert.equal(item.originalDriverUserName, 'TONY');
+  // …and the current re-delivery driver is surfaced only as info, never attribution.
+  assert.equal(item.currentDriverName, 'Jean Delsoin');
+  assert.equal(item.currentDriverUserName, 'JEAN');
+});
+
 // ── delete: manifest recount ──────────────────────────────────────────────────
 test('recountManifest: recomputes attempts/matched/unmatched, preserves scan-only counts', () => {
   const prev = {

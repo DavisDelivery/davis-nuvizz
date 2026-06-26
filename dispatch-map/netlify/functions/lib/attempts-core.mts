@@ -37,7 +37,7 @@ import { setCallTrigger } from './nuvizz-request.mts';
 import { driverKeyFor, stopMatchKey } from './history-derive.mts';
 import {
   getPlanMeta, setPlanMeta, listPlanStops, upsertPlanStops,
-  getAttemptsManifest, setAttemptsManifest, upsertAttemptItems,
+  setAttemptsManifest, upsertAttemptItems,
 } from './attempts-store.mts';
 
 const TENANT = 'davis';
@@ -144,6 +144,11 @@ export function buildAttemptItem(plan: any, current: any, date: string, detected
     city: plan.city ?? current?.city ?? null,
     state: plan.state ?? current?.state ?? null,
     zip: plan.zip ?? current?.zip ?? null,
+    // CURRENT (info only) — who the stop is on NOW (the re-delivery driver) and its
+    // current state. NEVER used for attribution: by evening this is whoever it was
+    // re-planned onto, not who attempted it. Kept so the UI can show "now on X".
+    currentDriverName: current?.driverName ?? null,
+    currentDriverUserName: current?.driverUserName ?? null,
     currentStatus: current?.normalizedStatus ?? null,
     currentlyUnplanned: !!current?.isUnplanned,
     matched,
@@ -237,7 +242,7 @@ export async function runAttemptScan(date: string): Promise<any> {
 // ── shared HTTP / scheduled entrypoint (gate → work → JSON) ────────────────────
 async function runGated(
   req: Request,
-  cfg: { label: string; startHour: number; endHour: number; work: (date: string) => Promise<any>; alreadyDone: (date: string) => Promise<boolean> },
+  cfg: { label: string; startHour: number; endHour: number; work: (date: string) => Promise<any>; alreadyDone?: (date: string) => Promise<boolean> },
 ): Promise<Response> {
   const json = (status: number, body: any) =>
     new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
@@ -248,7 +253,10 @@ async function runGated(
   }
   const { date, isManual } = resolveAttemptDate(req);
   const enabled = attEnabled();
-  const alreadyDone = !isManual && enabled ? await cfg.alreadyDone(date).catch(() => false) : false;
+  // alreadyDone applies only to once-per-day jobs (the snapshot). The scan omits it so
+  // every in-window fire re-runs — attempts accumulate through the evening, and a manual
+  // run must never block the scheduled one (the bug that lost 6/25's evening attempts).
+  const alreadyDone = !isManual && enabled && cfg.alreadyDone ? await cfg.alreadyDone(date).catch(() => false) : false;
   const decision = attemptFireDecision({ startHour: cfg.startHour, endHour: cfg.endHour, isManual, alreadyDone, enabled });
   if (!decision.act) {
     console.log(`[${cfg.label}] skip date=${date} ${decision.reason}`);
@@ -276,10 +284,11 @@ export function runPlanSnapshot(req: Request): Promise<Response> {
 
 export function runAttemptsScan(req: Request): Promise<Response> {
   // Window [20,24) ET: after the day's deliveries are in and CS has marked/unplanned
-  // the failures, but the same ET day as the morning snapshot we join against.
+  // the failures, but the same ET day as the morning snapshot we join against. NO
+  // alreadyDone gate — it re-runs on every in-window fire so late-marked attempts are
+  // caught and a manual run can't block the scheduled one (one cheap saved-search call).
   return runGated(req, {
     label: 'att-scan', startHour: 20, endHour: 24,
     work: runAttemptScan,
-    alreadyDone: (date) => getAttemptsManifest(TENANT, date).then((m) => !!m),
   });
 }
