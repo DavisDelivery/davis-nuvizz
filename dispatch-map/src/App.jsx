@@ -49,7 +49,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.29.39';
+const APP_VERSION = '0.29.40';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -69,6 +69,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.29.40', 'Stop card: (1) Freight labels corrected — NuVizz mislabels its fields, so the Items breakdown now reads them as their real meaning: the field NuVizz calls "cartons" is shown as PALLETS, "volume" as LOOSE pieces, and "pallets" as TOTAL pieces (pallets + loose). A stop now reads e.g. "1 pallet · 2 loose pcs · 3 total pieces". (2) Proof-of-delivery photos and documents (BOL) now open in an in-app viewer WITH a Close button — before, tapping one filled the screen with no way back inside the installed app. (3) The "Refresh from NuVizz" button is now a clean full-width button instead of floating to the right.'],
   ['0.29.39', 'Stop card fixes: (1) the status badge now updates when you Refresh or open the timeline — a delivered order the board still shows as "Scheduled" flips to "Delivered" once its real status comes back from NuVizz (the header badge was stuck on the stale board value). (2) Loose pieces: NuVizz\'s "volume" field — how Davis records loose pieces — is now pulled in and shown in the Items section (Skids / cartons / loose pcs). (3) The "View delivery photo" button (added last version) lives in the Proof of delivery section of the stop card.'],
   ['0.29.38', 'Delivery photos: opening a delivered order now shows a "View delivery photo" button under Proof of delivery — it pulls the driver\'s captured photo on demand (the photo from the DOCUMENT CAPTURE timeline events). NuVizz exposes these capture photos in a separate place from the signed POD, which is why the proof-of-delivery section used to come up empty; the card now reads both. Plus: closing a stop from the map (left list or the detail panel) zooms the map back out to where it was before you opened the order.'],
   ['0.29.37', 'Routing (beta) now IS the dispatch Map: the map shows the exact same rich markers — status colors, priority-flag colors, AM/PM tags, "address looks off" flags, equipment / receiving-hours restriction icons, and DNS pins — instead of plain gray dots. Selected stops pop orange and routed stops become numbered route-colored pins. Added the same collapsible Stops/Loads data grid along the bottom; tap a row to frame it and add it to the route, or tap a load to select all of its stops.'],
@@ -2275,14 +2276,15 @@ function WebSearchLink({ stop, className }) {
 // dims, S/L category); we show the one-line summary always and expand to the full
 // list on click. Self-contained state so both the desktop sidebar and mobile
 // drawer can drop it in without threading props.
-// Skids / cartons / LOOSE pieces breakdown. Davis records loose pieces in NuVizz's
-// `volume` field, so we surface it explicitly here (it only appears once the stop has
-// been refreshed/re-scanned with the field). Renders nothing when there's no count.
+// Pallets / loose pieces / total pieces breakdown. NuVizz mislabels its freight fields
+// (confirmed by Davis dispatch): the field it calls `cartons` is really PALLETS, `volume`
+// is LOOSE pieces, and `pallets` is the TOTAL piece count (pallets + loose). The normalized
+// field names still mirror NuVizz's raw naming; we relabel to the real meaning here.
 function FreightBreakdown({ stop }) {
   const parts = [];
-  if (stop.pallets) parts.push([stop.pallets, `skid${stop.pallets === 1 ? '' : 's'}`]);
-  if (stop.cartons) parts.push([stop.cartons, `carton${stop.cartons === 1 ? '' : 's'}`]);
+  if (stop.cartons) parts.push([stop.cartons, `pallet${stop.cartons === 1 ? '' : 's'}`]);
   if (stop.volume) parts.push([stop.volume, `loose pc${stop.volume === 1 ? '' : 's'}`]);
+  if (stop.pallets) parts.push([stop.pallets, `total piece${stop.pallets === 1 ? '' : 's'}`]);
   if (!parts.length) return null;
   return (
     <div className="mt-0.5 flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-slate-500">
@@ -3056,7 +3058,54 @@ function podDocUrl(d, opts = {}) {
 }
 const isPodImage = (ext) => /^(jpe?g|png|gif|webp)$/i.test(String(ext || ''));
 
+// In-app viewer for a POD photo / document. Opens OVER the app with a clear Close (X) —
+// previously these opened via target="_blank", which inside the installed PWA has no
+// browser chrome, so a tapped photo/BOL filled the screen with no way back. Esc / backdrop
+// / the X / the bottom Close button all dismiss it; an "open in browser" escape hatch
+// remains for anyone who wants the native viewer.
+function PodViewerModal({ doc, onClose }) {
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+  if (!doc) return null;
+  const src = podDocUrl(doc);
+  const isImg = isPodImage(doc.extension);
+  const label = doc.documentName || 'Proof of delivery';
+  const when = fmtClockShort(doc.createdTime);
+  return (
+    <div
+      className="fixed inset-0 z-[1400] flex flex-col bg-black/90"
+      role="dialog" aria-modal="true"
+      style={{ paddingTop: 'env(safe-area-inset-top)', paddingBottom: 'env(safe-area-inset-bottom)' }}
+    >
+      <div className="flex items-center justify-between gap-2 px-4 py-3 text-white flex-shrink-0">
+        <div className="min-w-0">
+          <div className="font-semibold truncate">{label}</div>
+          {when && <div className="text-[11px] text-white/70">{when}</div>}
+        </div>
+        <div className="flex items-center gap-1 flex-shrink-0">
+          <a href={src} target="_blank" rel="noopener noreferrer" className="p-2 rounded-full hover:bg-white/15 text-white/90" title="Open in browser" aria-label="Open in browser"><ExternalLink size={18} /></a>
+          <button onClick={onClose} className="p-2 rounded-full hover:bg-white/15" aria-label="Close" style={{ minWidth: 44, minHeight: 44 }}><X size={22} /></button>
+        </div>
+      </div>
+      <div className="flex-1 min-h-0 flex items-center justify-center overflow-auto" onClick={onClose}>
+        {isImg ? (
+          <img src={src} alt={label} className="max-w-full max-h-full object-contain" onClick={(e) => e.stopPropagation()} />
+        ) : (
+          <iframe title={label} src={src} className="w-full h-full bg-white" onClick={(e) => e.stopPropagation()} />
+        )}
+      </div>
+      <div className="px-4 py-2 flex-shrink-0 text-center">
+        <button onClick={onClose} className="px-5 py-2 rounded-lg bg-white/15 hover:bg-white/25 text-white text-sm font-semibold" style={{ minHeight: 44 }}>Close</button>
+      </div>
+    </div>
+  );
+}
+
 function PodDocsSection({ stop, onRefreshed }) {
+  const [viewDoc, setViewDoc] = useState(null);
   const docs = Array.isArray(stop?.podDocs) ? stop.podDocs : [];
   const delivered = classifyStopStatus(stop) === 'DELIVERED';
   const [loading, setLoading] = useState(false);
@@ -3109,18 +3158,18 @@ function PodDocsSection({ stop, onRefreshed }) {
       </div>
       {photos.length > 0 && (
         <div className="mt-1.5 grid grid-cols-3 gap-1.5">
-          {photos.map((d, i) => {
-            const src = podDocUrl(d);
-            return (
-              <a key={d.documentGuid || i} href={src} target="_blank" rel="noopener noreferrer" className="block" title={`${d.documentName || 'POD photo'}${fmtClockShort(d.createdTime) ? ` · ${fmtClockShort(d.createdTime)}` : ''}`}>
-                <img
-                  src={src} alt={d.documentName || 'POD photo'} loading="lazy"
-                  className="w-full h-20 object-cover rounded border border-slate-200 bg-slate-50"
-                  onError={(e) => { const a = e.currentTarget.closest('a'); if (a) a.style.display = 'none'; }}
-                />
-              </a>
-            );
-          })}
+          {photos.map((d, i) => (
+            <button
+              key={d.documentGuid || i} type="button" onClick={() => setViewDoc(d)}
+              className="block w-full" title={`${d.documentName || 'POD photo'}${fmtClockShort(d.createdTime) ? ` · ${fmtClockShort(d.createdTime)}` : ''}`}
+            >
+              <img
+                src={podDocUrl(d)} alt={d.documentName || 'POD photo'} loading="lazy"
+                className="w-full h-20 object-cover rounded border border-slate-200 bg-slate-50"
+                onError={(e) => { const b = e.currentTarget.closest('button'); if (b) b.style.display = 'none'; }}
+              />
+            </button>
+          ))}
         </div>
       )}
       {others.length > 0 && (
@@ -3130,9 +3179,9 @@ function PodDocsSection({ stop, onRefreshed }) {
             const when = fmtClockShort(d.createdTime);
             return (
               <li key={d.documentGuid || d.documentPath || i} className="text-xs text-slate-700 flex items-center gap-1.5 break-words">
-                <a href={podDocUrl(d)} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-blue-700 hover:underline">
-                  {label} <ExternalLink size={11} />
-                </a>
+                <button type="button" onClick={() => setViewDoc(d)} className="inline-flex items-center gap-1 text-blue-700 hover:underline">
+                  {label} <Eye size={12} />
+                </button>
                 {d.extension && <span className="px-1 rounded bg-slate-100 text-slate-500 text-[9px] uppercase">{d.extension}</span>}
                 {when && <span className="text-slate-400">· {when}</span>}
               </li>
@@ -3140,6 +3189,7 @@ function PodDocsSection({ stop, onRefreshed }) {
           })}
         </ul>
       )}
+      <PodViewerModal doc={viewDoc} onClose={() => setViewDoc(null)} />
     </div>
   );
 }
@@ -3270,9 +3320,9 @@ function StopLiveDetail({ stop, onRefreshed }) {
   const cleaned = cleanInstructions(stop.signalSources?.orderInstructions);
   return (
     <div className="pt-1 space-y-2">
-      <div className="flex items-center justify-end">
-        <button onClick={refresh} disabled={refreshing} className="inline-flex items-center gap-1 text-xs text-blue-700 hover:underline disabled:opacity-50">
-          <RefreshCw size={12} className={refreshing ? 'animate-spin' : ''} /> {refreshing ? 'Refreshing…' : 'Refresh from NuVizz'}
+      <div>
+        <button onClick={refresh} disabled={refreshing} className="w-full inline-flex items-center justify-center gap-1.5 text-xs font-semibold text-blue-700 border border-blue-200 rounded-md px-3 py-1.5 hover:bg-blue-50 active:bg-blue-100 disabled:opacity-50">
+          <RefreshCw size={13} className={refreshing ? 'animate-spin' : ''} /> {refreshing ? 'Refreshing…' : 'Refresh from NuVizz'}
         </button>
       </div>
       {refreshErr && <div className="text-[11px] text-amber-700">Couldn’t refresh: {refreshErr}</div>}

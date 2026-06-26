@@ -366,11 +366,16 @@ export function normalizeStop(raw: any): NormalizedStop {
   const primary = stopType === 'PU' ? (stop.from || {}) : (stop.to || stop.from || {});
   const addr = primary.address || stop.address || {};
   const schedule = primary.schedule || {};
+  // NuVizz MISLABELS its freight fields (confirmed by Davis dispatch):
+  //   • totalCartons = PALLETS (skids)
+  //   • volume       = LOOSE pieces
+  //   • totalPallets = TOTAL pieces  (= pallets + loose)
+  // We relabel them to their real meaning here. (The normalized field names below still
+  // mirror NuVizz's raw naming — only the display labels are corrected.)
   const items = [];
-  if (stop.totalPallets) items.push(`${stop.totalPallets} pallets`);
-  if (stop.totalCartons) items.push(`${stop.totalCartons} cartons`);
-  // NuVizz `volume` is how Davis records LOOSE pieces (per dispatch). Surface it.
+  if (stop.totalCartons) items.push(`${stop.totalCartons} pallet${stop.totalCartons === 1 ? '' : 's'}`);
   if (stop.volume) items.push(`${stop.volume} loose`);
+  if (stop.totalPallets) items.push(`${stop.totalPallets} ${stop.totalPallets === 1 ? 'piece' : 'pieces'}`);
   if (stop.weight) items.push(`${stop.weight} ${stop.weightUOM || 'lbs'}`);
   const stopNbr: string | null = stop.stopNbr ?? null;
   // Shipment number is a distinct raw field from stopNbr (usually identical). The
