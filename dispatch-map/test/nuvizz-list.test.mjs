@@ -43,6 +43,18 @@ test('bucketByDate: files each stop on its own day (no cross-day bleed)', () => 
   assert.deepEqual((m.get('2026-06-26') || []).map((s) => s.stopNbr), ['B']);
 });
 
+test('mergeEnrich: never overwrites the list stopNbr (registry-key stability)', () => {
+  // The /stop/info payload can return the stop number in a different format. If mergeEnrich
+  // copied it over the board stop, the per-PRO registry would be written under a drifted key
+  // and read under the list key next day → permanent miss → re-enriched forever. stopNbr is LIVE.
+  const board = { stopNbr: '007138819', shipmentNbr: '007138819' };
+  mergeEnrich(board, { stopNbr: '7138819', lat: 1, lng: 2, contactName: 'X' });
+  assert.equal(board.stopNbr, '007138819', 'stopNbr stays the authoritative list value');
+  assert.equal(board.enriched, true);
+  assert.equal(board.lat, 1, 'detail fields still merge');
+  assert.equal(board.contactName, 'X');
+});
+
 test('toBoardStop: surfaces shipmentNbr + isAttempt (ATT marker) from the list row', () => {
   const normal = toBoardStop({ stopNbr: '007', shipmentNbr: '007', statusCode: '20', routeName: 'R1' });
   assert.equal(normal.shipmentNbr, '007');
