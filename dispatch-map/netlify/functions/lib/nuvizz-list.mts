@@ -483,6 +483,13 @@ export const LIVE_LIST_FIELDS = [
   // Shipment number + its derived attempt flag are LIVE: the "ATT" marker appears DURING the
   // day, so it must refresh every scan from the list (never frozen by an earlier enrichment).
   'shipmentNbr', 'isAttempt',
+  // stopNbr is LIVE = it is the authoritative key from the LIST and must NEVER be overwritten
+  // by a /stop/info result during mergeEnrich. The /stop/info payload can return the stop
+  // number in a different format (e.g. without leading zeros); if mergeEnrich copied that over
+  // the board stop, the per-PRO registry would be WRITTEN under the drifted key but READ under
+  // the list key next day → a permanent miss → that PRO re-enriched forever. Pinning stopNbr to
+  // the list value keeps the registry read/write key identical across days.
+  'stopNbr',
 ];
 // Copy ALL non-live fields from src (a /stop/info-normalized stop, or a prior enriched
 // index doc) onto target, then mark it enriched. Never overwrites a real value with a

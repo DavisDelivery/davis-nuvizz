@@ -526,19 +526,27 @@ export async function runRefreshStops(req: Request): Promise<Response> {
         // this cycle entirely and retry next scan. Under-enriching for one tick is harmless;
         // bursting the vendor is not.
         let regOk = true;
+        let regUnresolved = new Set<string>();
         if (ENRICH && toEnrich.length) {
           try {
             const reg = await readEnrichedPros(TENANT, toEnrich.map((s) => String(s.stopNbr)));
-            if (reg.size) for (const s of toEnrich) { const r = reg.get(String(s.stopNbr)); if (r) mergeEnrich(s, r); }
+            regUnresolved = reg.unresolved;
+            if (reg.found.size) for (const s of toEnrich) { const r = reg.found.get(String(s.stopNbr)); if (r) mergeEnrich(s, r); }
+            if (regUnresolved.size) console.warn(`[scan] ${date}: registry read could not resolve ${regUnresolved.size} PRO(s) after retries; SKIPPING those this cycle (retry next scan, never re-enrich on a read error)`);
           } catch (e: any) { regOk = false; console.warn(`[scan] ${date}: enrichment registry read failed (${e?.message}); SKIPPING enrichment this cycle to avoid a burst`); }
         }
         // Enrichment: one direct /stop/info per genuinely-new PRO (bounded concurrency, capped).
         // The hard per-scan cap (ENRICH_MAX) is a backstop: even a cold/empty registry can never
         // burst more than ENRICH_MAX calls in one scan — a cold board backfills over a few ticks.
+        // A registry read that ERRORED for a PRO (regUnresolved) is treated as UNKNOWN, not "new":
+        // it is excluded here so a transient Firestore blip can never cause a re-enrichment spike.
         let enriched = 0;
-        const stillNeed = (ENRICH && regOk) ? toEnrich.filter((s) => !s.enriched) : [];
+        const stillNeed = (ENRICH && regOk) ? toEnrich.filter((s) => !s.enriched && !regUnresolved.has(String(s.stopNbr))) : [];
         if (stillNeed.length > ENRICH_MAX) console.warn(`[scan] ${date}: ${stillNeed.length} PROs need enrichment; capping at ENRICH_MAX=${ENRICH_MAX} this scan (rest next tick)`);
         if (ENRICH && stillNeed.length) {
+          // Observability: log WHICH PROs we're about to enrich + a sample, so a future "spike"
+          // is self-diagnosing (cross-check these against the registry to catch any miss).
+          console.log(`[scan] ${date}: enriching ${Math.min(stillNeed.length, ENRICH_MAX)} new PRO(s) via /stop/info — sample ${JSON.stringify(stillNeed.slice(0, 10).map((s) => String(s.stopNbr)))}`);
           const batch = stillNeed.slice(0, ENRICH_MAX);
           let i = 0;
           const worker = async () => {
