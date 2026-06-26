@@ -49,7 +49,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.29.45';
+const APP_VERSION = '0.29.46';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -69,6 +69,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.29.46', 'Mobile Stops list rows now show more at a glance: the street address, the driver, skids + loose pieces, and a Scheduled/Delivered (or Arrived/Out-for-delivery/Exception) status badge — on top of the business name, city, and PRO that were already there.'],
   ['0.29.45', 'Delivery Tickets now print in portrait (Letter) instead of landscape.'],
   ['0.29.44', 'Loose pieces (NuVizz "volume") now shows as its own column in the data tables: the bottom Stops/Loads grid and the Routing tab\'s selected-stops tables all get a "Loose" column next to Skids/Pallets, so you can see skids, loose pieces, and total pieces at a glance. (The stop detail card already showed loose under Items.)'],
   ['0.29.43', 'The "Delivery Ticket" button now opens the actual NuVizz Delivery Ticket (the per-stop manifest — sequence + Drop Off/Pick Up, Ship-To, requested window, the weight/loose/pallets/total-pieces summary, the PO line-item table, every special-instruction comment with who/when, signature + driver-comment lines, and the Next-Stop ETA) instead of the Bill of Lading. Generated from the order data we already have — no extra NuVizz call. Plus: the PRO number at the top of the stop card is bigger, and the Items list moved up directly under the address.'],
@@ -5249,31 +5250,43 @@ function MobileStopCard({ stop, note, onPick }) {
   const flag = note?.priority_flag;
   const restricted = !!(note && note.equipment_restrictions?.length);
   const swatch = flag ? FLAG_COLORS[flag] : (restricted ? RESTRICTION_TINT : '#cbd5e1');
+  const statusKind = classifyStopStatus(stop);
+  // NuVizz mislabels its freight fields: cartons = real skids, volume = loose pieces.
+  const freight = [];
+  if (stop.cartons) freight.push(`${stop.cartons} skid${stop.cartons === 1 ? '' : 's'}`);
+  if (stop.volume) freight.push(`${stop.volume} loose`);
   return (
     <button
       onClick={onPick}
-      className="w-full flex items-center gap-3 px-4 text-left active:bg-slate-100"
+      className="w-full flex items-start gap-3 px-4 py-2 text-left active:bg-slate-100"
       style={{ minHeight: 64 }}
     >
       <span
-        className="w-2.5 h-2.5 rounded-full flex-shrink-0"
+        className="w-2.5 h-2.5 rounded-full flex-shrink-0 mt-1.5"
         style={{ background: swatch }}
         aria-hidden
       />
       <div className="min-w-0 flex-1">
-        <div className="text-sm font-semibold text-slate-900 truncate flex items-center gap-1.5">
-          <span className="truncate">{stop.businessName || '(no name)'}</span>
-          <DnsBadge note={note} />
+        <div className="flex items-center justify-between gap-2">
+          <div className="text-sm font-semibold text-slate-900 truncate flex items-center gap-1.5 min-w-0">
+            <span className="truncate">{stop.businessName || '(no name)'}</span>
+            <DnsBadge note={note} />
+          </div>
+          {stop.pro && (
+            <span className="font-mono text-[10px] text-slate-500 bg-slate-100 border border-slate-200 rounded px-1.5 py-0.5 flex-shrink-0">
+              {stop.pro}
+            </span>
+          )}
         </div>
         <div className="text-[11px] text-slate-500 truncate">
-          {stop.city || '—'}{stop.state ? `, ${stop.state}` : ''}
+          {stop.addr1 ? `${stop.addr1} · ` : ''}{stop.city || '—'}{stop.state ? `, ${stop.state}` : ''}
+        </div>
+        <div className="mt-1 flex items-center gap-x-2 gap-y-1 flex-wrap">
+          <StatusBadge kind={statusKind} />
+          {stop.driverName && <span className="text-[11px] text-slate-600 truncate max-w-[45%]">{stop.driverName}</span>}
+          {freight.length > 0 && <span className="text-[11px] text-slate-500">{freight.join(' · ')}</span>}
         </div>
       </div>
-      {stop.pro && (
-        <span className="font-mono text-[10px] text-slate-500 bg-slate-100 border border-slate-200 rounded px-1.5 py-0.5 flex-shrink-0">
-          {stop.pro}
-        </span>
-      )}
     </button>
   );
 }
