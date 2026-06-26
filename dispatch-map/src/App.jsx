@@ -49,7 +49,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.29.44';
+const APP_VERSION = '0.29.45';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -69,6 +69,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.29.45', 'Delivery Tickets now print in portrait (Letter) instead of landscape.'],
   ['0.29.44', 'Loose pieces (NuVizz "volume") now shows as its own column in the data tables: the bottom Stops/Loads grid and the Routing tab\'s selected-stops tables all get a "Loose" column next to Skids/Pallets, so you can see skids, loose pieces, and total pieces at a glance. (The stop detail card already showed loose under Items.)'],
   ['0.29.43', 'The "Delivery Ticket" button now opens the actual NuVizz Delivery Ticket (the per-stop manifest — sequence + Drop Off/Pick Up, Ship-To, requested window, the weight/loose/pallets/total-pieces summary, the PO line-item table, every special-instruction comment with who/when, signature + driver-comment lines, and the Next-Stop ETA) instead of the Bill of Lading. Generated from the order data we already have — no extra NuVizz call. Plus: the PRO number at the top of the stop card is bigger, and the Items list moved up directly under the address.'],
   ['0.29.42', 'Renamed the "Bill of Lading" button on the stop card to "Delivery Ticket" (the document it opens is unchanged — the same NuVizz-matched printable).'],
@@ -3510,7 +3511,7 @@ function buildTicketHtml(stop, logoUrl) {
       </div>`).join('');
   return `<!doctype html><html><head><meta charset="utf-8"><title>Delivery Ticket ${bolEsc(d.pro)}</title>
 <style>
-  @page { size: letter landscape; margin: 0.35in; }
+  @page { size: letter portrait; margin: 0.4in; }
   * { box-sizing: border-box; }
   html,body { margin:0; padding:0; }
   body { font-family: Arial, Helvetica, sans-serif; color:#111; font-size:11px; padding:8px; }
@@ -3814,7 +3815,7 @@ function StopDataSections({ stop, note, onRefreshed, onOpenRoute, onMoveLocation
         <PrintDocModal
           title={`Delivery Ticket · PRO ${live.pro || live.stopNbr || ''}`}
           html={ticketHtml}
-          pageW={1056}
+          pageW={816}
           onClose={() => setShowTicket(false)}
         />
       )}
