@@ -2,7 +2,7 @@
   {
     "_case": "plain pallets, no line items",
     "stopNbr": "G-001",
-    "pallets": 4,
+    "cartons": 4,
     "weight": 1450,
     "weightUOM": "LB",
     "stopDetails": [],
@@ -12,7 +12,7 @@
   {
     "_case": "oversize via productCategory L + structured length",
     "stopNbr": "G-002",
-    "pallets": 2,
+    "cartons": 2,
     "weight": 2000,
     "weightUOM": "LB",
     "stopDetails": [
@@ -23,7 +23,7 @@
   {
     "_case": "weight in KG converts to lbs; standard category",
     "stopNbr": "G-003",
-    "pallets": 1,
+    "cartons": 1,
     "weight": null,
     "stopDetails": [
       { "product": "Boxed widgets", "sku": "WID-1", "quantity": 1, "quantityUOM": "PLT", "weight": 100, "weightUOM": "KG", "productCategory": "S" }
@@ -33,7 +33,7 @@
   {
     "_case": "ambiguous: free-text mentions racking, no structured length",
     "stopNbr": "G-004",
-    "pallets": 1,
+    "cartons": 1,
     "weight": 500,
     "weightUOM": "LB",
     "stopDetails": [
@@ -44,7 +44,7 @@
   {
     "_case": "skids summed from pallet-UOM lines when totalPallets missing",
     "stopNbr": "G-005",
-    "pallets": null,
+    "cartons": null,
     "weight": 800,
     "weightUOM": "LB",
     "stopDetails": [

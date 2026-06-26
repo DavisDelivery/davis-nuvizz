@@ -90,6 +90,14 @@ export interface NormalizedStop {
   pallets: number | null;
   volume: number | null;            // loose-piece count (Davis records loose pieces in NuVizz `volume`).
   weight: number | null;
+  // Bill-of-Lading header fields (NuVizz field → BOL label):
+  bol: string | null;               // BOLID
+  orderNbr: string | null;          // Order#  (NuVizz laneNumber)
+  terms: string | null;             // Terms   (NuVizz scheduleAttribute, e.g. PREPAID)
+  warehouse: string | null;         // Whse    (NuVizz proNumber, e.g. G6)
+  custRef: string | null;           // Cust#   (NuVizz reference2)
+  poRef: string | null;             // PO      (NuVizz reference1)
+  billTo: any;                      // bill-to party block (name/addr/city/state/zip)
   itemsSummary: string;
   customerAccount: string | null;
   driverName: string | null;
@@ -145,6 +153,7 @@ export interface StopLineItem {
   weight: number | null;
   weightUOM: string | null;
   productCategory: string | null;   // 'S' standard / 'L' long-oversize.
+  referenceText: string | null;     // freight CLASS value shown on the Bill of Lading.
   length: number | null;
   lengthUOM: string | null;
   width: number | null;
@@ -193,6 +202,7 @@ export function normalizeStopDetail(d: any): StopLineItem {
     weight: numOrNull(d?.weight),
     weightUOM: d?.weightUOM ?? null,
     productCategory: d?.productCategory ?? null,
+    referenceText: d?.referenceText ?? null,
     length: numOrNull(d?.length),
     lengthUOM: d?.lengthUOM ?? null,
     width: numOrNull(d?.width),
@@ -476,6 +486,14 @@ export function normalizeStop(raw: any): NormalizedStop {
     pallets: stop.totalPallets ?? null,
     volume: numOrNull(stop.volume),         // loose-piece count (Davis uses NuVizz `volume`)
     weight: stop.weight ?? null,
+    // Bill-of-Lading header fields (see interface for NuVizz→BOL mapping).
+    bol: stop.bol ?? null,
+    orderNbr: stop.laneNumber ?? null,
+    terms: stop.scheduleAttribute ?? null,
+    warehouse: stop.proNumber ?? null,
+    custRef: stop.reference2 ?? null,
+    poRef: stop.reference1 ?? null,
+    billTo: stop.billTo ?? null,
     itemsSummary: items.join(' · ') || '—',
     customerAccount: stop.accountNumber || stop.custInfo?.custAccNbr || null,
     driverName,
