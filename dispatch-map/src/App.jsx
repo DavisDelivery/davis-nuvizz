@@ -49,7 +49,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.29.42';
+const APP_VERSION = '0.29.43';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -69,6 +69,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.29.43', 'The "Delivery Ticket" button now opens the actual NuVizz Delivery Ticket (the per-stop manifest — sequence + Drop Off/Pick Up, Ship-To, requested window, the weight/loose/pallets/total-pieces summary, the PO line-item table, every special-instruction comment with who/when, signature + driver-comment lines, and the Next-Stop ETA) instead of the Bill of Lading. Generated from the order data we already have — no extra NuVizz call. Plus: the PRO number at the top of the stop card is bigger, and the Items list moved up directly under the address.'],
   ['0.29.42', 'Renamed the "Bill of Lading" button on the stop card to "Delivery Ticket" (the document it opens is unchanged — the same NuVizz-matched printable).'],
   ['0.29.41', 'Three things: (1) Printable Bill of Lading — every order now has a "Bill of Lading" button on its stop card that opens a print-ready BOL that copies NuVizz\'s exactly (Davis logo, header, Ship-To/Buyer, special instructions, line items with class/weight, skid/loose/total-piece totals, signature line). Built from the order data we already have — no extra NuVizz call. (2) Routing screen freight now uses the corrected mapping everywhere — skids, loose pieces, total pieces, and truck-capacity (max skids) math all read the right NuVizz fields, so routes no longer over-fill. (3) The Davis Delivery Service logo now appears throughout the app (top header, version panel, and the BOL).'],
   ['0.29.40', 'Stop card: (1) Freight labels corrected — NuVizz mislabels its fields, so the Items breakdown now reads them as their real meaning: the field NuVizz calls "cartons" is shown as PALLETS, "volume" as LOOSE pieces, and "pallets" as TOTAL pieces (pallets + loose). A stop now reads e.g. "1 pallet · 2 loose pcs · 3 total pieces". (2) Proof-of-delivery photos and documents (BOL) now open in an in-app viewer WITH a Close button — before, tapping one filled the screen with no way back inside the installed app. (3) The "Refresh from NuVizz" button is now a clean full-width button instead of floating to the right.'],
@@ -3366,15 +3367,16 @@ function buildBolHtml(stop, logoUrl) {
 </body></html>`;
 }
 
-// Full-screen viewer for the printable Bill of Lading. Renders the generated HTML in an
-// iframe (so Print outputs just the document), with Print + Close. No API call.
-function BolModal({ stop, onClose }) {
+// Full-screen viewer for a printable document (Delivery Ticket / Bill of Lading). Renders
+// the supplied HTML in an iframe (so Print outputs just the document) and scales the page
+// to fit the screen. `pageW` is the doc's CSS layout width (816 portrait / 1056 landscape
+// Letter @ 96dpi). No API call.
+function PrintDocModal({ title, html, pageW = 816, onClose }) {
   const iframeRef = useRef(null);
   const wrapRef = useRef(null);
-  const PAGE_W = 816;   // 8.5in @ 96dpi — the BOL lays out at full Letter width…
-  const [scale, setScale] = useState(1);   // …then we scale the whole page to fit the screen
-  const [pageH, setPageH] = useState(1056);
-  const html = useMemo(() => buildBolHtml(stop, (typeof window !== 'undefined' ? window.location.origin : '') + '/davis-logo.jpg'), [stop]);
+  const PAGE_W = pageW;
+  const [scale, setScale] = useState(1);   // scale the whole page to fit the screen
+  const [pageH, setPageH] = useState(Math.round(pageW * 1.294)); // ~Letter aspect until measured
   useEffect(() => {
     const onKey = (e) => { if (e.key === 'Escape') onClose(); };
     window.addEventListener('keydown', onKey);
@@ -3394,7 +3396,7 @@ function BolModal({ stop, onClose }) {
     <div className="fixed inset-0 z-[1400] flex flex-col bg-slate-900/80" role="dialog" aria-modal="true"
       style={{ paddingTop: 'env(safe-area-inset-top)', paddingBottom: 'env(safe-area-inset-bottom)' }}>
       <div className="flex items-center justify-between gap-2 px-4 py-3 text-white flex-shrink-0">
-        <div className="font-semibold truncate">Delivery Ticket · PRO {stop.pro || stop.stopNbr || ''}</div>
+        <div className="font-semibold truncate">{title}</div>
         <div className="flex items-center gap-2 flex-shrink-0">
           <button onClick={doPrint} className="px-3 py-2 rounded-lg bg-white text-slate-900 text-sm font-semibold inline-flex items-center gap-1.5"><Printer size={16} /> Print</button>
           <button onClick={onClose} className="p-2 rounded-full hover:bg-white/15" aria-label="Close" style={{ minWidth: 44, minHeight: 44 }}><X size={22} /></button>
@@ -3403,13 +3405,182 @@ function BolModal({ stop, onClose }) {
       <div ref={wrapRef} className="flex-1 min-h-0 overflow-auto p-2 flex justify-center">
         <div style={{ width: PAGE_W * scale, height: pageH * scale }} className="flex-shrink-0">
           <iframe
-            ref={iframeRef} title="Bill of Lading" srcDoc={html} onLoad={onLoad}
+            ref={iframeRef} title={title || 'Document'} srcDoc={html} onLoad={onLoad}
             style={{ width: PAGE_W, height: pageH, border: 0, background: 'white', transform: `scale(${scale})`, transformOrigin: 'top left', boxShadow: '0 2px 14px rgba(0,0,0,0.35)' }}
           />
         </div>
       </div>
     </div>
   );
+}
+
+// ── Delivery Ticket (printable) ──────────────────────────────────────────────
+// A faithful replica of NuVizz's per-stop Delivery Ticket / manifest, generated from the
+// enriched stop data — NO API call. Field → source: seq routeSeq · type stopType ·
+// PRO stopNbr · BOL bol · Ship-To to.address + contact.phone · Requested schedule from/to ·
+// summary weight / volume(loose) / cartons(pallets) / pallets(total pieces) · line items
+// stopDetails · Comments allComments · Next Stop plannedEtaDTTM.
+const TKT_MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+function tktReqTime(iso) {   // "23 Jun 2026 08:00 AM"
+  const m = String(iso || '').match(/(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})/);
+  if (!m) return '';
+  let h = +m[4]; const ap = h >= 12 ? 'PM' : 'AM'; h = h % 12 || 12;
+  return `${+m[3]} ${TKT_MON[+m[2] - 1]} ${m[1]} ${String(h).padStart(2, '0')}:${m[5]} ${ap}`;
+}
+function tktReqClock(iso) {   // "08:00 PM"
+  const m = String(iso || '').match(/[T ](\d{2}):(\d{2})/);
+  if (!m) return '';
+  let h = +m[1]; const ap = h >= 12 ? 'PM' : 'AM'; h = h % 12 || 12;
+  return `${String(h).padStart(2, '0')}:${m[2]} ${ap}`;
+}
+function tktDayOffset(a, b) {
+  const A = String(a || '').slice(0, 10), B = String(b || '').slice(0, 10);
+  if (!A || !B || A === B) return 0;
+  return Math.round((Date.parse(B) - Date.parse(A)) / 86400000) || 0;
+}
+function tktNextStop(iso) {   // "06/26/2026 10:32:29 AM"
+  const m = String(iso || '').match(/(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2}):(\d{2})/);
+  if (!m) return '';
+  let h = +m[4]; const ap = h >= 12 ? 'PM' : 'AM'; h = h % 12 || 12;
+  return `${m[2]}/${m[3]}/${m[1]} ${String(h).padStart(2, '0')}:${m[5]}:${m[6]} ${ap}`;
+}
+function tktCommentTime(iso) {   // comment addedOn is UTC → show in ET, "Jun 22, 2026, 7:05:13 PM"
+  if (!iso) return '';
+  const d = new Date(/[Zz]$/.test(iso) ? iso : iso + 'Z');
+  if (isNaN(d.getTime())) return '';
+  try {
+    return d.toLocaleString('en-US', { timeZone: 'America/New_York', month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit', second: '2-digit', hour12: true });
+  } catch { return String(iso); }
+}
+function ticketData(stop) {
+  const raw = (stop && stop.raw && stop.raw.stop) || {};
+  const exec = (stop && stop.raw && stop.raw.stopExecutionInfo) || {};
+  const toAddr = raw.to?.address || {};
+  const contact = stop.contact || raw.to?.contact || {};
+  const comments = (Array.isArray(stop.allComments) && stop.allComments.length)
+    ? stop.allComments.map((c) => ({ text: c.text, by: c.addedBy, on: c.addedOn }))
+    : (raw.comments || []).map((c) => ({ text: c.commentDescription, by: c.addedByName, on: c.addedOn }));
+  const items = (Array.isArray(stop.stopDetails) && stop.stopDetails.length ? stop.stopDetails : (raw.stopDetails || []));
+  const idStr = (it) => {
+    const pid = it.productIdentifier ?? it.sku ?? '';
+    return typeof pid === 'string' ? pid : (pid?.value || pid?.id || pid?.code || '');
+  };
+  return {
+    seq: stop.routeSeq ?? raw.to?.seq ?? '',
+    type: ((stop.stopType || raw.stopType) === 'PU') ? 'Pick Up' : 'Drop Off',
+    pro: stop.stopNbr || stop.pro || '',
+    bol: stop.bol ?? raw.bol ?? '',
+    shipName: stop.businessName ?? toAddr.name ?? '',
+    shipAddr1: stop.addr1 ?? toAddr.addr1 ?? '',
+    shipAddr2: stop.addr2 ?? toAddr.addr2 ?? '',
+    shipCity: stop.city ?? toAddr.city ?? '', shipState: stop.state ?? toAddr.state ?? '', shipZip: stop.zip ?? toAddr.zip ?? '',
+    phone: contact.phone ?? contact.sms ?? '',
+    reqFrom: stop.scheduledFrom ?? raw.to?.schedule?.timeFrom ?? '',
+    reqTo: stop.scheduledTo ?? raw.to?.schedule?.timeTo ?? '',
+    weight: Number(stop.weight ?? raw.weight ?? 0) || 0,
+    loose: Number(stop.volume ?? raw.volume ?? 0) || 0,
+    pallets: Number(stop.cartons ?? raw.totalCartons ?? 0) || 0,
+    totalPieces: Number(stop.pallets ?? raw.totalPallets ?? 0) || 0,
+    items: items.map((it) => ({ po: it.product ?? '', ident: idStr(it), qty: it.quantity ?? '', wt: it.weight })),
+    comments,
+    nextStop: exec.to?.plannedEtaDTTM ?? stop.plannedEtaDTTM ?? '',
+  };
+}
+function buildTicketHtml(stop, logoUrl) {
+  const d = ticketData(stop);
+  const cityLine = [d.shipCity, [d.shipState, d.shipZip].filter(Boolean).join(' ')].filter(Boolean).join(', ');
+  const reqLine = (d.reqFrom || d.reqTo) ? `${tktReqTime(d.reqFrom)} - ${tktReqClock(d.reqTo)} +${tktDayOffset(d.reqFrom, d.reqTo)}D` : '';
+  const MIN_ROWS = 6;
+  const itemRows = d.items.map((it) => `
+      <tr>
+        <td>${bolEsc(it.po)}</td>
+        <td>${bolEsc(it.ident)}</td>
+        <td class="c">${bolEsc(it.qty)}</td>
+        <td class="c">-/-</td>
+        <td class="r">${it.wt == null || it.wt === '' ? '' : Number(it.wt).toLocaleString() + ' Lbs'}</td>
+        <td></td>
+      </tr>`).join('');
+  const itemFiller = Array.from({ length: Math.max(0, MIN_ROWS - d.items.length) }, () =>
+    '<tr><td>&nbsp;</td><td></td><td></td><td></td><td></td><td></td></tr>').join('');
+  const commentCells = d.comments.map((c) => `
+      <div class="cmt">
+        <div class="cmt-t">${bolEsc(c.text)}</div>
+        <div class="cmt-m"><span>~By ${bolEsc(c.by || '')}</span><span>${bolEsc(tktCommentTime(c.on))}</span></div>
+      </div>`).join('');
+  return `<!doctype html><html><head><meta charset="utf-8"><title>Delivery Ticket ${bolEsc(d.pro)}</title>
+<style>
+  @page { size: letter landscape; margin: 0.35in; }
+  * { box-sizing: border-box; }
+  html,body { margin:0; padding:0; }
+  body { font-family: Arial, Helvetica, sans-serif; color:#111; font-size:11px; padding:8px; }
+  .brand { display:flex; align-items:center; gap:8px; border-bottom:2px solid #1e5b92; padding-bottom:5px; margin-bottom:8px; }
+  .brand img { height:34px; width:auto; }
+  .brand .t { font-size:15px; font-weight:bold; color:#1e5b92; }
+  .head { display:flex; justify-content:space-between; gap:16px; }
+  .head .row1 { display:flex; align-items:center; gap:10px; }
+  .seq { border:1px solid #111; border-radius:14px; min-width:24px; height:24px; padding:0 7px; display:inline-flex; align-items:center; justify-content:center; font-weight:bold; }
+  .type { border:1px solid #111; border-radius:13px; padding:2px 10px; font-weight:bold; }
+  .pro { font-size:20px; font-weight:bold; letter-spacing:0.5px; }
+  .lbl { font-weight:bold; }
+  .ship { text-align:right; }
+  .ship .h { font-weight:bold; }
+  .meta { margin-top:4px; }
+  .summary { display:flex; border:1px solid #ccc; border-radius:4px; margin:8px 0; background:#f6f7f9; }
+  .summary > div { flex:1; text-align:center; padding:6px 4px; border-right:1px solid #e2e5ea; font-weight:bold; }
+  .summary > div:last-child { border-right:0; }
+  table { border-collapse:collapse; width:100%; table-layout:fixed; }
+  .items th { border-bottom:1px solid #bbb; background:#f0f1f3; padding:4px 6px; text-align:left; font-size:10px; }
+  .items td { border-bottom:1px solid #e6e6e6; padding:4px 6px; word-break:break-word; }
+  .items td.c, .items th.c { text-align:center; }
+  .items td.r, .items th.r { text-align:right; }
+  .cmts-h { font-weight:bold; margin:10px 0 4px; }
+  .cmts { display:grid; grid-template-columns:1fr 1fr; }
+  .cmt { border:1px solid #111; padding:5px 7px; min-height:34px; }
+  .cmt-t { font-weight:bold; }
+  .cmt-m { display:flex; justify-content:space-between; color:#444; font-size:10px; margin-top:6px; }
+  .sign { display:flex; gap:12px; margin-top:14px; align-items:flex-end; }
+  .sign .f { font-size:11px; }
+  .sign .sigbox { border:1px solid #111; height:54px; }
+  .sign .col { display:flex; flex-direction:column; }
+  .next { text-align:right; font-weight:bold; margin-top:8px; }
+</style></head>
+<body>
+  <div class="brand"><img src="${bolEsc(logoUrl)}" alt="Davis Delivery Service"/><div class="t">Delivery Ticket</div></div>
+  <div class="head">
+    <div class="l">
+      <div class="row1">
+        <span class="seq">${bolEsc(d.seq)}</span>
+        <span class="type">${bolEsc(d.type)}</span>
+        <span class="pro">${bolEsc(d.pro)}</span>
+      </div>
+      <div class="meta"><span class="lbl">BOL:</span> ${bolEsc(d.bol)}</div>
+      <div class="meta"><span class="lbl">Requested Date &amp; Time:</span><br/>${bolEsc(reqLine)}</div>
+    </div>
+    <div class="ship">
+      <div class="h">Ship To:</div>
+      ${bolEsc(d.shipName)}<br/>
+      ${d.shipAddr1 ? bolEsc(d.shipAddr1) + ',<br/>' : ''}${d.shipAddr2 ? bolEsc(d.shipAddr2) + ',<br/>' : ''}${bolEsc(cityLine)}<br/>
+      <span class="lbl">Call:</span> ${bolEsc(d.phone)}
+    </div>
+  </div>
+  <div class="summary">
+    <div>${Number(d.weight).toLocaleString()} Lbs</div>
+    <div>${d.loose} Loose</div>
+    <div>${d.pallets} Pallets</div>
+    <div>${d.totalPieces} Total Pieces</div>
+  </div>
+  <table class="items"><thead>
+    <tr><th style="width:22%">PO</th><th style="width:22%">PO Identifier</th><th class="c" style="width:10%">Quantity</th><th class="c" style="width:24%">Exceptions/Comments</th><th class="r" style="width:12%">Weight</th><th style="width:10%">Volume</th></tr>
+  </thead><tbody>${itemRows}${itemFiller}</tbody></table>
+  <div class="cmts-h">Comments:</div>
+  <div class="cmts">${commentCells}</div>
+  <div class="sign">
+    <div class="col" style="min-width:160px"><span class="f"><span class="lbl">Signed By:</span> _____________</span><span class="f" style="margin-top:10px"><span class="lbl">Actual Time:</span> ___________</span></div>
+    <div class="col" style="flex:1"><span class="f lbl">Signature:</span><div class="sigbox"></div></div>
+    <div class="col" style="flex:1"><span class="f lbl">Driver Comment:</span><div class="sigbox"></div></div>
+  </div>
+  ${d.nextStop ? `<div class="next">Next Stop: ${bolEsc(tktNextStop(d.nextStop))}</div>` : ''}
+</body></html>`;
 }
 
 // "2026-06-23T15:35:26" → "Jun 23, 3:35 PM" (NuVizz event/comment timestamps are local ET).
@@ -3580,7 +3751,11 @@ function StopDataSections({ stop, note, onRefreshed, onOpenRoute, onMoveLocation
   // "View delivery photo" button) back up to that parent.
   const live = stop;
   const stopKey = stop.stopNbr || stop.pro;
-  const [showBol, setShowBol] = useState(false);
+  const [showTicket, setShowTicket] = useState(false);
+  const ticketHtml = useMemo(
+    () => (showTicket ? buildTicketHtml(live, (typeof window !== 'undefined' ? window.location.origin : '') + '/davis-logo.jpg') : ''),
+    [showTicket, live],
+  );
   const textPhone = resolveStopPhone(live, note);
   return (
     <div className="px-4 py-3 border-b text-sm space-y-1">
@@ -3623,19 +3798,26 @@ function StopDataSections({ stop, note, onRefreshed, onOpenRoute, onMoveLocation
         </div>
       </div>
       <div className="pt-2">
+        <OrderItemsSection stop={live} />
+      </div>
+      <div className="pt-2">
         <button
-          onClick={() => setShowBol(true)}
+          onClick={() => setShowTicket(true)}
           className="w-full inline-flex items-center justify-center gap-1.5 text-xs font-semibold text-white rounded-md px-3 py-2"
           style={{ background: BRAND }}
         >
           <FileText size={14} /> Delivery Ticket
         </button>
       </div>
-      {showBol && <BolModal stop={live} onClose={() => setShowBol(false)} />}
+      {showTicket && (
+        <PrintDocModal
+          title={`Delivery Ticket · PRO ${live.pro || live.stopNbr || ''}`}
+          html={ticketHtml}
+          pageW={1056}
+          onClose={() => setShowTicket(false)}
+        />
+      )}
       <StopLiveDetail key={stopKey} stop={live} onRefreshed={onRefreshed} />
-      <div className="pt-2">
-        <OrderItemsSection stop={live} />
-      </div>
       <PodDocsSection stop={live} onRefreshed={onRefreshed} />
       <div className="pt-2 mt-2 border-t">
         <div className="text-xs uppercase font-semibold text-slate-500 mb-1">Route</div>
@@ -4022,7 +4204,7 @@ function StopSidebar({ stop, note, onClose, onSave, saving, saveError, onOpenRou
     >
       <div className="px-4 py-3 border-b flex items-center justify-between" style={{ background: BRAND, color: 'white' }}>
         <div className="min-w-0">
-          <div className="text-[10px] uppercase tracking-wider opacity-75">PRO {stop.pro || '—'}</div>
+          <div className="text-sm font-semibold tracking-wide opacity-90">PRO {stop.pro || '—'}</div>
           <div className="font-bold truncate">{stop.businessName || '(no name)'}</div>
         </div>
         <button onClick={onClose} className="p-1 hover:bg-white/20 rounded"><X size={20} /></button>
@@ -5290,7 +5472,7 @@ function MobileStopDetailDrawer({ stop, note, onClose, onSave, saving, saveError
       <div className="flex-shrink-0 px-4 pt-1 pb-2 border-b border-slate-200">
         <div className="flex items-start justify-between gap-2">
           <div className="min-w-0">
-            <div className="text-[10px] uppercase tracking-wider text-slate-500">PRO {stop.pro || '—'}</div>
+            <div className="text-sm font-semibold tracking-wide text-slate-600">PRO {stop.pro || '—'}</div>
             <div className="font-bold text-base text-slate-900 truncate">{stop.businessName || '(no name)'}</div>
             <div className="text-[12px] text-slate-500 truncate">{stop.addr1 || '—'}</div>
           </div>
