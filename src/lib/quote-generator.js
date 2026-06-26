@@ -1,6 +1,6 @@
-import { jsxs as n, jsx as e, Fragment as D } from "react/jsx-runtime";
-import { useState as u, useEffect as F, useMemo as s0, useRef as K0 } from "react";
-const O0 = {
+import { jsxs as o, jsx as t, Fragment as D } from "react/jsx-runtime";
+import { useState as m, useEffect as R, useMemo as d3, useRef as Q3 } from "react";
+const C3 = {
   30002: 68.67,
   30004: 65.77,
   30005: 65.77,
@@ -201,7 +201,7 @@ const O0 = {
   30721: 71.58,
   30724: 71.58,
   30734: 71.58
-}, P0 = {
+}, W3 = {
   300: 65.77,
   301: 68.67,
   302: 71.58,
@@ -209,7 +209,7 @@ const O0 = {
   305: 65.77,
   306: 68.67,
   307: 71.58
-}, J0 = 68.67, Z0 = 0.28, Q0 = [
+}, j3 = 68.67, M3 = 0.28, T3 = [
   0,
   100,
   200,
@@ -242,7 +242,7 @@ const O0 = {
   5e3,
   8e3,
   99999
-], W0 = {
+], H3 = {
   "65.77": [
     [
       0,
@@ -715,7 +715,7 @@ const O0 = {
       232.582
     ]
   ]
-}, C0 = [
+}, D3 = [
   [
     0,
     53.65
@@ -832,7 +832,7 @@ const O0 = {
     3500,
     230.308
   ]
-], j0 = [
+], R3 = [
   1,
   2,
   3,
@@ -840,7 +840,7 @@ const O0 = {
   6,
   9,
   99
-], T0 = [
+], F3 = [
   0,
   1,
   2,
@@ -848,7 +848,7 @@ const O0 = {
   8,
   16,
   999
-], H0 = [
+], E3 = [
   0,
   500,
   800,
@@ -856,7 +856,7 @@ const O0 = {
   2e3,
   4e3,
   99999
-], D0 = {
+], I3 = {
   "68.67|0|0|0": 0,
   "65.77|4|0|3": 0.049,
   "68.67|1|0|2": 1.659,
@@ -1237,7 +1237,7 @@ const O0 = {
   "68.67|2|2|4": 13.113,
   "68.67|1|4|4": 45.222,
   "65.77|2|5|4": 81.591
-}, F0 = {
+}, L3 = {
   "0|0|0": 0,
   "4|0|3": 1.065,
   "1|0|2": 0.012,
@@ -1386,7 +1386,7 @@ const O0 = {
   "5|5|4": 49.308,
   "4|1|2": 31.126,
   "5|4|4": 36.896
-}, R0 = {
+}, B3 = {
   "0|0": 0,
   "4|0": -2.812,
   "1|0": 0,
@@ -1423,7 +1423,7 @@ const O0 = {
   "5|5": 49.308,
   "4|4": 68.791,
   "4|3": 27.82
-}, M0 = {
+}, X3 = {
   Z1: {
     "< 500": 65.77,
     "500 - 999": 83.79,
@@ -1456,14 +1456,14 @@ const O0 = {
     "5,000 - 9,999": 696.54,
     "10,000 +": 1221.4
   }
-}, E0 = [
+}, G3 = [
   "< 500",
   "500 - 999",
   "1,000 - 2,499",
   "2,500 - 4,999",
   "5,000 - 9,999",
   "10,000 +"
-], L0 = {
+], Y3 = {
   Z1: [
     "5,000 - 9,999",
     "10,000 +"
@@ -1481,12 +1481,12 @@ const O0 = {
     "5,000 - 9,999",
     "10,000 +"
   ]
-}, I0 = {
+}, $3 = {
   Z1: 65.77,
   Z2: 68.67,
   Z3: 71.58,
   Z4: 103.01
-}, B0 = {
+}, _3 = {
   50: 0.63,
   55: 0.69,
   60: 0.74,
@@ -1503,7 +1503,7 @@ const O0 = {
   300: 2.69,
   "77.5": 0.94,
   "92.5": 1.06
-}, X0 = 85, G0 = {
+}, e8 = 85, r8 = {
   70: 6.2,
   85: 30.2,
   100: 5.3,
@@ -1513,87 +1513,8748 @@ const O0 = {
   175: 0.8,
   "77.5": 39,
   "92.5": 13.2
-}, u0 = {
-  zone5: O0,
-  zone3: P0,
-  global_: J0,
-  fuel_embedded: Z0,
-  KN: Q0,
-  curves: W0,
-  pk: C0,
-  SKB: j0,
-  LOB: T0,
-  WBc: H0,
-  resM: D0,
-  resG: F0,
-  resW: R0,
-  rateSheet: M0,
-  breaks: E0,
-  estCells: L0,
-  zoneMin: I0,
-  classMult: B0,
-  classDefault: X0,
-  classMix: G0
-}, Y0 = "v0.9.2", $0 = "data:image/jpeg;base64,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", _0 = (r, t) => {
-  let o = 0, c = r.length;
-  for (; o < c; ) {
-    const i = o + c >> 1;
-    r[i] <= t ? o = i + 1 : c = i;
+}, t8 = [
+  34.12,
+  -83.79
+], a8 = 80, n8 = 1.75, B = {
+  zone5: C3,
+  zone3: W3,
+  global_: j3,
+  fuel_embedded: M3,
+  KN: T3,
+  curves: H3,
+  pk: D3,
+  SKB: R3,
+  LOB: F3,
+  WBc: E3,
+  resM: I3,
+  resG: L3,
+  resW: B3,
+  rateSheet: X3,
+  breaks: G3,
+  estCells: Y3,
+  zoneMin: $3,
+  classMult: _3,
+  classDefault: e8,
+  classMix: r8,
+  origin: t8,
+  dataRadiusMi: a8,
+  oaPerMile: n8
+}, v3 = {
+  24201: [
+    36.6116,
+    -82.1686
+  ],
+  24202: [
+    36.6563,
+    -82.2122
+  ],
+  24219: [
+    36.8344,
+    -82.7491
+  ],
+  24221: [
+    36.6253,
+    -82.9988
+  ],
+  24243: [
+    36.7843,
+    -82.9198
+  ],
+  24244: [
+    36.7077,
+    -82.8035
+  ],
+  24246: [
+    36.8662,
+    -82.7439
+  ],
+  24248: [
+    36.6096,
+    -83.5098
+  ],
+  24250: [
+    36.7566,
+    -82.5877
+  ],
+  24251: [
+    36.6571,
+    -82.5994
+  ],
+  24258: [
+    36.6492,
+    -82.4087
+  ],
+  24263: [
+    36.6682,
+    -83.1671
+  ],
+  24265: [
+    36.8327,
+    -82.9465
+  ],
+  24271: [
+    36.7488,
+    -82.4172
+  ],
+  24277: [
+    36.7495,
+    -83.0195
+  ],
+  24281: [
+    36.6373,
+    -83.3402
+  ],
+  24282: [
+    36.8188,
+    -83.0543
+  ],
+  24290: [
+    36.6161,
+    -82.5613
+  ],
+  28006: [
+    35.4104,
+    -81.092
+  ],
+  28012: [
+    35.2115,
+    -81.0379
+  ],
+  28016: [
+    35.3149,
+    -81.2833
+  ],
+  28017: [
+    35.2471,
+    -81.6707
+  ],
+  28018: [
+    35.489,
+    -81.8034
+  ],
+  28019: [
+    35.2839,
+    -81.7939
+  ],
+  28020: [
+    35.5241,
+    -81.6432
+  ],
+  28021: [
+    35.4008,
+    -81.4033
+  ],
+  28024: [
+    35.2433,
+    -81.7706
+  ],
+  28027: [
+    35.4133,
+    -80.6755
+  ],
+  28031: [
+    35.4752,
+    -80.8937
+  ],
+  28032: [
+    35.233,
+    -81.0795
+  ],
+  28033: [
+    35.4191,
+    -81.3284
+  ],
+  28034: [
+    35.3537,
+    -81.1789
+  ],
+  28036: [
+    35.4821,
+    -80.7934
+  ],
+  28037: [
+    35.4955,
+    -81.0185
+  ],
+  28040: [
+    35.39,
+    -81.7522
+  ],
+  28042: [
+    35.423,
+    -81.5075
+  ],
+  28043: [
+    35.3124,
+    -81.8703
+  ],
+  28052: [
+    35.228,
+    -81.2317
+  ],
+  28054: [
+    35.2614,
+    -81.1501
+  ],
+  28056: [
+    35.2169,
+    -81.125
+  ],
+  28073: [
+    35.1986,
+    -81.4838
+  ],
+  28074: [
+    35.2394,
+    -81.8782
+  ],
+  28075: [
+    35.3019,
+    -80.6393
+  ],
+  28076: [
+    35.2564,
+    -81.7795
+  ],
+  28077: [
+    35.4048,
+    -81.2028
+  ],
+  28078: [
+    35.4048,
+    -80.8665
+  ],
+  28079: [
+    35.1147,
+    -80.6006
+  ],
+  28080: [
+    35.4567,
+    -81.1057
+  ],
+  28086: [
+    35.2442,
+    -81.3779
+  ],
+  28089: [
+    35.3203,
+    -81.6607
+  ],
+  28090: [
+    35.4547,
+    -81.5596
+  ],
+  28092: [
+    35.4832,
+    -81.2531
+  ],
+  28098: [
+    35.2711,
+    -81.1008
+  ],
+  28101: [
+    35.2558,
+    -81.0754
+  ],
+  28104: [
+    35.058,
+    -80.6978
+  ],
+  28105: [
+    35.1198,
+    -80.7097
+  ],
+  28108: [
+    34.9332,
+    -80.6795
+  ],
+  28110: [
+    35.066,
+    -80.5091
+  ],
+  28112: [
+    34.8899,
+    -80.5495
+  ],
+  28114: [
+    35.2304,
+    -81.7477
+  ],
+  28115: [
+    35.5754,
+    -80.7749
+  ],
+  28117: [
+    35.575,
+    -80.8942
+  ],
+  28120: [
+    35.3286,
+    -81.0264
+  ],
+  28134: [
+    35.0845,
+    -80.8915
+  ],
+  28136: [
+    35.4205,
+    -81.6424
+  ],
+  28139: [
+    35.3484,
+    -81.9947
+  ],
+  28150: [
+    35.3427,
+    -81.5762
+  ],
+  28152: [
+    35.2408,
+    -81.5914
+  ],
+  28160: [
+    35.3607,
+    -81.9223
+  ],
+  28164: [
+    35.3894,
+    -81.0371
+  ],
+  28166: [
+    35.6772,
+    -80.868
+  ],
+  28167: [
+    35.5064,
+    -81.9594
+  ],
+  28168: [
+    35.5524,
+    -81.4251
+  ],
+  28169: [
+    35.3581,
+    -81.4306
+  ],
+  28173: [
+    34.9192,
+    -80.7306
+  ],
+  28174: [
+    34.969,
+    -80.4396
+  ],
+  28202: [
+    35.2273,
+    -80.8442
+  ],
+  28203: [
+    35.209,
+    -80.8576
+  ],
+  28204: [
+    35.2146,
+    -80.8268
+  ],
+  28205: [
+    35.2188,
+    -80.7896
+  ],
+  28206: [
+    35.2554,
+    -80.8215
+  ],
+  28207: [
+    35.1941,
+    -80.8246
+  ],
+  28208: [
+    35.232,
+    -80.905
+  ],
+  28209: [
+    35.1787,
+    -80.854
+  ],
+  28210: [
+    35.1305,
+    -80.8567
+  ],
+  28211: [
+    35.1663,
+    -80.7973
+  ],
+  28212: [
+    35.1877,
+    -80.7446
+  ],
+  28213: [
+    35.2862,
+    -80.7352
+  ],
+  28214: [
+    35.272,
+    -80.9681
+  ],
+  28215: [
+    35.2456,
+    -80.6989
+  ],
+  28216: [
+    35.3102,
+    -80.8896
+  ],
+  28217: [
+    35.1687,
+    -80.9084
+  ],
+  28223: [
+    35.3089,
+    -80.7325
+  ],
+  28226: [
+    35.1027,
+    -80.8221
+  ],
+  28227: [
+    35.1896,
+    -80.6454
+  ],
+  28244: [
+    35.2246,
+    -80.8431
+  ],
+  28262: [
+    35.3221,
+    -80.74
+  ],
+  28269: [
+    35.3373,
+    -80.8035
+  ],
+  28270: [
+    35.112,
+    -80.7646
+  ],
+  28273: [
+    35.1237,
+    -80.9485
+  ],
+  28274: [
+    35.1891,
+    -80.8338
+  ],
+  28277: [
+    35.0499,
+    -80.818
+  ],
+  28278: [
+    35.1334,
+    -81.0088
+  ],
+  28280: [
+    35.2263,
+    -80.8431
+  ],
+  28282: [
+    35.2248,
+    -80.8453
+  ],
+  28601: [
+    35.7724,
+    -81.3267
+  ],
+  28602: [
+    35.6735,
+    -81.3826
+  ],
+  28604: [
+    36.1776,
+    -81.8581
+  ],
+  28605: [
+    36.1296,
+    -81.6949
+  ],
+  28606: [
+    36.0518,
+    -81.3069
+  ],
+  28607: [
+    36.2149,
+    -81.6467
+  ],
+  28609: [
+    35.6785,
+    -81.0574
+  ],
+  28610: [
+    35.7292,
+    -81.1453
+  ],
+  28611: [
+    36.006,
+    -81.737
+  ],
+  28612: [
+    35.6504,
+    -81.5376
+  ],
+  28613: [
+    35.7376,
+    -81.2077
+  ],
+  28616: [
+    36.0215,
+    -81.9302
+  ],
+  28618: [
+    36.2135,
+    -81.5169
+  ],
+  28619: [
+    35.7601,
+    -81.6068
+  ],
+  28622: [
+    36.195,
+    -81.9489
+  ],
+  28624: [
+    36.1197,
+    -81.4132
+  ],
+  28626: [
+    36.2926,
+    -81.5176
+  ],
+  28628: [
+    35.7292,
+    -81.7783
+  ],
+  28630: [
+    35.832,
+    -81.4202
+  ],
+  28636: [
+    35.9394,
+    -81.0634
+  ],
+  28637: [
+    35.7177,
+    -81.4194
+  ],
+  28638: [
+    35.8451,
+    -81.4779
+  ],
+  28641: [
+    35.9755,
+    -81.8949
+  ],
+  28645: [
+    35.9788,
+    -81.5478
+  ],
+  28646: [
+    36.0731,
+    -81.847
+  ],
+  28650: [
+    35.5714,
+    -81.1584
+  ],
+  28652: [
+    36.0897,
+    -81.9865
+  ],
+  28653: [
+    36.066,
+    -81.901
+  ],
+  28655: [
+    35.7633,
+    -81.7499
+  ],
+  28657: [
+    36.022,
+    -81.9424
+  ],
+  28658: [
+    35.6376,
+    -81.2359
+  ],
+  28662: [
+    36.0225,
+    -81.8917
+  ],
+  28664: [
+    36.0424,
+    -82.0059
+  ],
+  28665: [
+    36.2097,
+    -81.3739
+  ],
+  28666: [
+    35.7186,
+    -81.4706
+  ],
+  28667: [
+    35.7745,
+    -81.4251
+  ],
+  28671: [
+    35.7502,
+    -81.5266
+  ],
+  28673: [
+    35.6177,
+    -80.9988
+  ],
+  28677: [
+    35.7381,
+    -80.9261
+  ],
+  28678: [
+    35.8326,
+    -81.0711
+  ],
+  28679: [
+    36.2602,
+    -81.8403
+  ],
+  28681: [
+    35.9227,
+    -81.2231
+  ],
+  28682: [
+    35.5883,
+    -80.9652
+  ],
+  28684: [
+    36.3345,
+    -81.6068
+  ],
+  28690: [
+    35.7327,
+    -81.5742
+  ],
+  28692: [
+    36.3146,
+    -81.8375
+  ],
+  28698: [
+    36.314,
+    -81.7609
+  ],
+  28701: [
+    35.7051,
+    -82.6365
+  ],
+  28702: [
+    35.38,
+    -83.642
+  ],
+  28704: [
+    35.4614,
+    -82.5708
+  ],
+  28705: [
+    36.0352,
+    -82.1515
+  ],
+  28707: [
+    35.3987,
+    -83.0662
+  ],
+  28708: [
+    35.271,
+    -82.8598
+  ],
+  28709: [
+    35.7714,
+    -82.3792
+  ],
+  28710: [
+    35.4569,
+    -82.2797
+  ],
+  28711: [
+    35.6006,
+    -82.2697
+  ],
+  28712: [
+    35.1733,
+    -82.7708
+  ],
+  28713: [
+    35.3657,
+    -83.5117
+  ],
+  28714: [
+    35.8783,
+    -82.3049
+  ],
+  28715: [
+    35.512,
+    -82.7117
+  ],
+  28716: [
+    35.4393,
+    -82.8479
+  ],
+  28717: [
+    35.0495,
+    -83.0933
+  ],
+  28718: [
+    35.1591,
+    -82.635
+  ],
+  28719: [
+    35.5109,
+    -83.5203
+  ],
+  28720: [
+    35.4477,
+    -82.2622
+  ],
+  28721: [
+    35.6338,
+    -82.9308
+  ],
+  28722: [
+    35.2085,
+    -82.061
+  ],
+  28723: [
+    35.3141,
+    -83.0135
+  ],
+  28725: [
+    35.3822,
+    -83.2681
+  ],
+  28726: [
+    35.281,
+    -82.4166
+  ],
+  28729: [
+    35.3196,
+    -82.6029
+  ],
+  28730: [
+    35.5314,
+    -82.3598
+  ],
+  28731: [
+    35.2935,
+    -82.3803
+  ],
+  28732: [
+    35.4517,
+    -82.4457
+  ],
+  28733: [
+    35.4274,
+    -83.777
+  ],
+  28734: [
+    35.1793,
+    -83.437
+  ],
+  28735: [
+    35.4754,
+    -82.3485
+  ],
+  28736: [
+    35.1757,
+    -83.0865
+  ],
+  28739: [
+    35.2739,
+    -82.5286
+  ],
+  28740: [
+    36.0257,
+    -82.3053
+  ],
+  28741: [
+    35.0664,
+    -83.2106
+  ],
+  28742: [
+    35.3828,
+    -82.6513
+  ],
+  28743: [
+    35.8003,
+    -82.8812
+  ],
+  28745: [
+    35.5221,
+    -82.974
+  ],
+  28746: [
+    35.4772,
+    -82.1617
+  ],
+  28747: [
+    35.1456,
+    -82.9173
+  ],
+  28748: [
+    35.6549,
+    -82.7603
+  ],
+  28749: [
+    35.841,
+    -82.0979
+  ],
+  28751: [
+    35.5055,
+    -83.1196
+  ],
+  28752: [
+    35.7096,
+    -82.0356
+  ],
+  28753: [
+    35.8642,
+    -82.7126
+  ],
+  28754: [
+    35.8769,
+    -82.5144
+  ],
+  28755: [
+    35.9082,
+    -82.2175
+  ],
+  28756: [
+    35.3559,
+    -82.2086
+  ],
+  28757: [
+    35.648,
+    -82.2992
+  ],
+  28758: [
+    35.3749,
+    -82.4957
+  ],
+  28759: [
+    35.3813,
+    -82.5889
+  ],
+  28761: [
+    35.6903,
+    -81.9068
+  ],
+  28762: [
+    35.6353,
+    -82.1898
+  ],
+  28763: [
+    35.0287,
+    -83.4659
+  ],
+  28766: [
+    35.2494,
+    -82.6193
+  ],
+  28768: [
+    35.325,
+    -82.7072
+  ],
+  28770: [
+    35.6211,
+    -82.2782
+  ],
+  28771: [
+    35.3429,
+    -83.8545
+  ],
+  28772: [
+    35.1391,
+    -82.8369
+  ],
+  28773: [
+    35.2611,
+    -82.298
+  ],
+  28774: [
+    35.0935,
+    -82.995
+  ],
+  28775: [
+    35.0192,
+    -83.3211
+  ],
+  28777: [
+    35.9077,
+    -82.0653
+  ],
+  28778: [
+    35.6142,
+    -82.3977
+  ],
+  28779: [
+    35.3558,
+    -83.2097
+  ],
+  28781: [
+    35.2241,
+    -83.6355
+  ],
+  28782: [
+    35.2343,
+    -82.1474
+  ],
+  28783: [
+    35.2423,
+    -83.0211
+  ],
+  28785: [
+    35.6533,
+    -83.1396
+  ],
+  28786: [
+    35.462,
+    -82.9887
+  ],
+  28787: [
+    35.7415,
+    -82.5156
+  ],
+  28788: [
+    35.3506,
+    -83.2227
+  ],
+  28789: [
+    35.4071,
+    -83.3168
+  ],
+  28790: [
+    35.1982,
+    -82.4952
+  ],
+  28791: [
+    35.357,
+    -82.507
+  ],
+  28792: [
+    35.3944,
+    -82.3684
+  ],
+  28801: [
+    35.5945,
+    -82.558
+  ],
+  28803: [
+    35.5317,
+    -82.523
+  ],
+  28804: [
+    35.645,
+    -82.5577
+  ],
+  28805: [
+    35.6139,
+    -82.4797
+  ],
+  28806: [
+    35.5696,
+    -82.6168
+  ],
+  28901: [
+    35.2013,
+    -83.8051
+  ],
+  28902: [
+    35.0229,
+    -83.9583
+  ],
+  28904: [
+    35.0686,
+    -83.7336
+  ],
+  28905: [
+    35.1631,
+    -83.9409
+  ],
+  28906: [
+    35.0872,
+    -84.1366
+  ],
+  28909: [
+    35.0011,
+    -83.9033
+  ],
+  29001: [
+    33.7866,
+    -80.1741
+  ],
+  29003: [
+    33.2412,
+    -81.0238
+  ],
+  29006: [
+    33.8691,
+    -81.5511
+  ],
+  29009: [
+    34.443,
+    -80.3646
+  ],
+  29010: [
+    34.2236,
+    -80.2723
+  ],
+  29014: [
+    34.5234,
+    -81.1145
+  ],
+  29015: [
+    34.4454,
+    -81.3378
+  ],
+  29016: [
+    34.204,
+    -80.9928
+  ],
+  29018: [
+    33.3488,
+    -80.6392
+  ],
+  29020: [
+    34.3139,
+    -80.5738
+  ],
+  29030: [
+    33.5763,
+    -80.6476
+  ],
+  29031: [
+    34.6068,
+    -81.429
+  ],
+  29032: [
+    34.337,
+    -80.4443
+  ],
+  29033: [
+    33.9531,
+    -81.0552
+  ],
+  29036: [
+    34.134,
+    -81.3399
+  ],
+  29037: [
+    34.1899,
+    -81.8677
+  ],
+  29038: [
+    33.3809,
+    -80.9813
+  ],
+  29039: [
+    33.4204,
+    -80.8922
+  ],
+  29040: [
+    34.0607,
+    -80.4378
+  ],
+  29042: [
+    33.3056,
+    -81.1479
+  ],
+  29044: [
+    33.9257,
+    -80.6952
+  ],
+  29045: [
+    34.1851,
+    -80.805
+  ],
+  29046: [
+    34.1125,
+    -80.1613
+  ],
+  29047: [
+    33.5322,
+    -80.5802
+  ],
+  29048: [
+    33.3906,
+    -80.2953
+  ],
+  29051: [
+    33.8616,
+    -80.1278
+  ],
+  29052: [
+    33.7983,
+    -80.7413
+  ],
+  29053: [
+    33.8275,
+    -81.0909
+  ],
+  29054: [
+    33.9479,
+    -81.3828
+  ],
+  29055: [
+    34.5742,
+    -80.9149
+  ],
+  29056: [
+    33.6086,
+    -80.006
+  ],
+  29058: [
+    34.5543,
+    -80.7497
+  ],
+  29059: [
+    33.3292,
+    -80.4191
+  ],
+  29061: [
+    33.8975,
+    -80.8506
+  ],
+  29062: [
+    34.0043,
+    -80.6055
+  ],
+  29063: [
+    34.1372,
+    -81.2023
+  ],
+  29065: [
+    34.2983,
+    -81.3173
+  ],
+  29067: [
+    34.5442,
+    -80.5371
+  ],
+  29069: [
+    34.1801,
+    -80.0946
+  ],
+  29070: [
+    33.9167,
+    -81.4492
+  ],
+  29072: [
+    33.9989,
+    -81.2729
+  ],
+  29073: [
+    33.888,
+    -81.2386
+  ],
+  29074: [
+    34.4411,
+    -80.8184
+  ],
+  29075: [
+    34.2007,
+    -81.3778
+  ],
+  29078: [
+    34.1816,
+    -80.6994
+  ],
+  29079: [
+    34.2891,
+    -80.1132
+  ],
+  29080: [
+    34.0122,
+    -80.0856
+  ],
+  29081: [
+    33.0891,
+    -81.0474
+  ],
+  29082: [
+    33.0382,
+    -80.9391
+  ],
+  29101: [
+    34.4818,
+    -80.2446
+  ],
+  29102: [
+    33.6542,
+    -80.2023
+  ],
+  29104: [
+    33.9947,
+    -80.2118
+  ],
+  29105: [
+    33.8064,
+    -81.5936
+  ],
+  29107: [
+    33.5234,
+    -81.1176
+  ],
+  29108: [
+    34.3055,
+    -81.6273
+  ],
+  29111: [
+    33.7785,
+    -80.0206
+  ],
+  29112: [
+    33.6251,
+    -81.0817
+  ],
+  29113: [
+    33.4324,
+    -81.1353
+  ],
+  29114: [
+    33.9543,
+    -79.9323
+  ],
+  29115: [
+    33.4777,
+    -80.8442
+  ],
+  29117: [
+    33.4983,
+    -80.8501
+  ],
+  29118: [
+    33.5694,
+    -80.8886
+  ],
+  29122: [
+    34.2388,
+    -81.3283
+  ],
+  29123: [
+    33.7574,
+    -81.2613
+  ],
+  29125: [
+    33.6959,
+    -80.4749
+  ],
+  29126: [
+    34.3289,
+    -81.4195
+  ],
+  29127: [
+    34.1533,
+    -81.5125
+  ],
+  29128: [
+    34.0957,
+    -80.5321
+  ],
+  29129: [
+    33.7892,
+    -81.6726
+  ],
+  29130: [
+    34.3316,
+    -80.8804
+  ],
+  29133: [
+    33.3589,
+    -80.8031
+  ],
+  29135: [
+    33.7018,
+    -80.7511
+  ],
+  29137: [
+    33.5962,
+    -81.3214
+  ],
+  29138: [
+    34.0424,
+    -81.7762
+  ],
+  29142: [
+    33.4652,
+    -80.5225
+  ],
+  29145: [
+    34.2168,
+    -81.8068
+  ],
+  29146: [
+    33.5082,
+    -81.2954
+  ],
+  29148: [
+    33.5349,
+    -80.3358
+  ],
+  29150: [
+    33.8189,
+    -80.3169
+  ],
+  29152: [
+    33.9727,
+    -80.4673
+  ],
+  29153: [
+    33.9706,
+    -80.3058
+  ],
+  29154: [
+    33.8153,
+    -80.4353
+  ],
+  29160: [
+    33.7469,
+    -81.0355
+  ],
+  29161: [
+    34.1037,
+    -79.9434
+  ],
+  29162: [
+    33.8897,
+    -80.0082
+  ],
+  29163: [
+    33.4176,
+    -80.4464
+  ],
+  29164: [
+    33.6585,
+    -81.4308
+  ],
+  29166: [
+    33.8971,
+    -81.7123
+  ],
+  29168: [
+    33.8484,
+    -80.5408
+  ],
+  29169: [
+    33.9975,
+    -81.0974
+  ],
+  29170: [
+    33.9391,
+    -81.1446
+  ],
+  29172: [
+    33.9058,
+    -81.0755
+  ],
+  29175: [
+    34.4427,
+    -80.6066
+  ],
+  29177: [
+    34.1405,
+    -81.2675
+  ],
+  29178: [
+    34.4958,
+    -81.5897
+  ],
+  29180: [
+    34.3655,
+    -81.0985
+  ],
+  29201: [
+    33.9825,
+    -81.0281
+  ],
+  29203: [
+    34.1006,
+    -81.0407
+  ],
+  29204: [
+    34.029,
+    -80.9998
+  ],
+  29205: [
+    33.99,
+    -80.9966
+  ],
+  29206: [
+    34.0289,
+    -80.961
+  ],
+  29207: [
+    34.0424,
+    -80.846
+  ],
+  29208: [
+    33.9975,
+    -81.0268
+  ],
+  29209: [
+    33.9268,
+    -80.9504
+  ],
+  29210: [
+    34.0455,
+    -81.1103
+  ],
+  29212: [
+    34.0776,
+    -81.2023
+  ],
+  29223: [
+    34.0926,
+    -80.9193
+  ],
+  29225: [
+    33.9954,
+    -81.0301
+  ],
+  29229: [
+    34.146,
+    -80.8944
+  ],
+  29301: [
+    34.9352,
+    -82.0148
+  ],
+  29302: [
+    34.8844,
+    -81.8436
+  ],
+  29303: [
+    34.9953,
+    -81.9684
+  ],
+  29306: [
+    34.8926,
+    -81.9215
+  ],
+  29307: [
+    34.9827,
+    -81.8316
+  ],
+  29316: [
+    35.043,
+    -81.9751
+  ],
+  29320: [
+    34.9586,
+    -81.9926
+  ],
+  29321: [
+    34.7147,
+    -81.7411
+  ],
+  29322: [
+    35.1211,
+    -82.1324
+  ],
+  29323: [
+    35.1263,
+    -81.9075
+  ],
+  29324: [
+    34.9913,
+    -81.8241
+  ],
+  29325: [
+    34.4682,
+    -81.8452
+  ],
+  29329: [
+    34.9925,
+    -81.836
+  ],
+  29330: [
+    35.0526,
+    -81.8043
+  ],
+  29331: [
+    34.6442,
+    -81.858
+  ],
+  29332: [
+    34.2787,
+    -81.9704
+  ],
+  29333: [
+    34.971,
+    -81.9108
+  ],
+  29334: [
+    34.9056,
+    -82.1244
+  ],
+  29335: [
+    34.6593,
+    -81.9067
+  ],
+  29338: [
+    35.1345,
+    -82.0018
+  ],
+  29340: [
+    34.9723,
+    -81.5859
+  ],
+  29341: [
+    35.1197,
+    -81.7126
+  ],
+  29346: [
+    34.9452,
+    -81.8362
+  ],
+  29349: [
+    35.0673,
+    -82.0681
+  ],
+  29351: [
+    34.421,
+    -81.808
+  ],
+  29353: [
+    34.8307,
+    -81.6486
+  ],
+  29355: [
+    34.3634,
+    -81.7476
+  ],
+  29356: [
+    35.1469,
+    -82.2608
+  ],
+  29360: [
+    34.488,
+    -82.0458
+  ],
+  29364: [
+    34.7883,
+    -81.4623
+  ],
+  29365: [
+    34.9811,
+    -82.1719
+  ],
+  29368: [
+    35.0826,
+    -81.8628
+  ],
+  29369: [
+    34.8656,
+    -82.0195
+  ],
+  29370: [
+    34.373,
+    -81.9774
+  ],
+  29372: [
+    34.9021,
+    -81.7118
+  ],
+  29373: [
+    34.9245,
+    -81.743
+  ],
+  29374: [
+    34.7893,
+    -81.8453
+  ],
+  29375: [
+    34.8605,
+    -82.1138
+  ],
+  29376: [
+    34.8114,
+    -81.9442
+  ],
+  29377: [
+    34.9307,
+    -82.0968
+  ],
+  29378: [
+    34.9668,
+    -81.9687
+  ],
+  29379: [
+    34.6876,
+    -81.6016
+  ],
+  29384: [
+    34.3403,
+    -82.0902
+  ],
+  29385: [
+    34.9727,
+    -82.1014
+  ],
+  29388: [
+    34.763,
+    -82.0457
+  ],
+  29401: [
+    32.7772,
+    -79.932
+  ],
+  29403: [
+    32.8033,
+    -79.9457
+  ],
+  29404: [
+    32.8978,
+    -80.0524
+  ],
+  29405: [
+    32.8523,
+    -79.98
+  ],
+  29406: [
+    32.9372,
+    -80.0355
+  ],
+  29407: [
+    32.7989,
+    -79.9978
+  ],
+  29409: [
+    32.7967,
+    -79.9607
+  ],
+  29410: [
+    32.9382,
+    -80.0149
+  ],
+  29412: [
+    32.712,
+    -79.9522
+  ],
+  29414: [
+    32.8429,
+    -80.1046
+  ],
+  29418: [
+    32.9095,
+    -80.0957
+  ],
+  29420: [
+    32.9325,
+    -80.1001
+  ],
+  29424: [
+    32.7849,
+    -79.9377
+  ],
+  29425: [
+    32.7853,
+    -79.9484
+  ],
+  29426: [
+    32.7721,
+    -80.3741
+  ],
+  29429: [
+    32.9886,
+    -79.6962
+  ],
+  29431: [
+    33.2714,
+    -79.8817
+  ],
+  29432: [
+    33.2285,
+    -80.8139
+  ],
+  29434: [
+    33.1409,
+    -79.8437
+  ],
+  29435: [
+    32.9531,
+    -80.4661
+  ],
+  29436: [
+    33.3154,
+    -80.1873
+  ],
+  29437: [
+    33.1352,
+    -80.4178
+  ],
+  29438: [
+    32.5659,
+    -80.3217
+  ],
+  29439: [
+    32.648,
+    -79.9601
+  ],
+  29440: [
+    33.3811,
+    -79.3298
+  ],
+  29445: [
+    32.997,
+    -79.9666
+  ],
+  29446: [
+    32.5889,
+    -80.5108
+  ],
+  29448: [
+    33.2555,
+    -80.4528
+  ],
+  29449: [
+    32.6998,
+    -80.2809
+  ],
+  29450: [
+    33.0874,
+    -79.7715
+  ],
+  29451: [
+    32.828,
+    -79.7505
+  ],
+  29452: [
+    32.7176,
+    -80.4707
+  ],
+  29453: [
+    33.2229,
+    -79.6073
+  ],
+  29455: [
+    32.6842,
+    -80.092
+  ],
+  29456: [
+    32.9842,
+    -80.1133
+  ],
+  29458: [
+    33.1195,
+    -79.4862
+  ],
+  29461: [
+    33.171,
+    -80.0086
+  ],
+  29464: [
+    32.8195,
+    -79.857
+  ],
+  29466: [
+    32.8755,
+    -79.7837
+  ],
+  29468: [
+    33.4273,
+    -80.0798
+  ],
+  29469: [
+    33.2437,
+    -80.1311
+  ],
+  29470: [
+    32.8142,
+    -80.2103
+  ],
+  29471: [
+    33.1927,
+    -80.6705
+  ],
+  29472: [
+    33.0546,
+    -80.3253
+  ],
+  29474: [
+    32.9027,
+    -80.524
+  ],
+  29475: [
+    32.9669,
+    -80.8194
+  ],
+  29477: [
+    33.1632,
+    -80.5652
+  ],
+  29479: [
+    33.3806,
+    -79.8906
+  ],
+  29481: [
+    33.1204,
+    -80.7931
+  ],
+  29482: [
+    32.7709,
+    -79.8311
+  ],
+  29483: [
+    33.0302,
+    -80.2338
+  ],
+  29485: [
+    32.9332,
+    -80.2072
+  ],
+  29486: [
+    33.1032,
+    -80.1667
+  ],
+  29487: [
+    32.6577,
+    -80.1839
+  ],
+  29488: [
+    32.9068,
+    -80.6728
+  ],
+  29492: [
+    32.9094,
+    -79.8799
+  ],
+  29493: [
+    33.0453,
+    -80.8428
+  ],
+  29501: [
+    34.2046,
+    -79.827
+  ],
+  29505: [
+    34.1301,
+    -79.6889
+  ],
+  29506: [
+    34.2105,
+    -79.6499
+  ],
+  29510: [
+    33.4543,
+    -79.6131
+  ],
+  29511: [
+    33.9756,
+    -79.1222
+  ],
+  29512: [
+    34.619,
+    -79.718
+  ],
+  29516: [
+    34.4429,
+    -79.6148
+  ],
+  29518: [
+    33.7948,
+    -79.8466
+  ],
+  29519: [
+    34.0162,
+    -79.3605
+  ],
+  29520: [
+    34.688,
+    -79.9295
+  ],
+  29525: [
+    34.5631,
+    -79.5155
+  ],
+  29526: [
+    33.8678,
+    -78.9765
+  ],
+  29527: [
+    33.7851,
+    -79.1402
+  ],
+  29530: [
+    33.9961,
+    -79.7401
+  ],
+  29532: [
+    34.2828,
+    -79.8502
+  ],
+  29536: [
+    34.4189,
+    -79.372
+  ],
+  29540: [
+    34.3838,
+    -79.8505
+  ],
+  29541: [
+    34.0649,
+    -79.7408
+  ],
+  29543: [
+    34.2876,
+    -79.2659
+  ],
+  29544: [
+    34.0016,
+    -79.2208
+  ],
+  29545: [
+    34.1637,
+    -78.9665
+  ],
+  29546: [
+    33.8838,
+    -79.3494
+  ],
+  29547: [
+    34.4881,
+    -79.3281
+  ],
+  29550: [
+    34.3933,
+    -80.077
+  ],
+  29554: [
+    33.7026,
+    -79.3925
+  ],
+  29555: [
+    33.8409,
+    -79.4576
+  ],
+  29556: [
+    33.6682,
+    -79.7631
+  ],
+  29560: [
+    33.8387,
+    -79.7499
+  ],
+  29563: [
+    34.3533,
+    -79.2087
+  ],
+  29564: [
+    33.4759,
+    -79.8561
+  ],
+  29565: [
+    34.3581,
+    -79.4993
+  ],
+  29566: [
+    33.889,
+    -78.6594
+  ],
+  29567: [
+    34.561,
+    -79.4327
+  ],
+  29568: [
+    33.9136,
+    -78.7503
+  ],
+  29569: [
+    34.0326,
+    -78.9116
+  ],
+  29570: [
+    34.6679,
+    -79.5627
+  ],
+  29571: [
+    34.1351,
+    -79.4251
+  ],
+  29572: [
+    33.7695,
+    -78.7923
+  ],
+  29574: [
+    34.1654,
+    -79.2608
+  ],
+  29575: [
+    33.6291,
+    -78.9704
+  ],
+  29576: [
+    33.5698,
+    -79.0535
+  ],
+  29577: [
+    33.6976,
+    -78.9065
+  ],
+  29579: [
+    33.7664,
+    -78.9135
+  ],
+  29580: [
+    33.6531,
+    -79.552
+  ],
+  29581: [
+    34.1949,
+    -79.1142
+  ],
+  29582: [
+    33.832,
+    -78.6548
+  ],
+  29583: [
+    33.9779,
+    -79.5711
+  ],
+  29584: [
+    34.5765,
+    -80.0536
+  ],
+  29585: [
+    33.5565,
+    -79.089
+  ],
+  29588: [
+    33.6708,
+    -79.0231
+  ],
+  29589: [
+    34.1006,
+    -79.3202
+  ],
+  29590: [
+    33.5689,
+    -79.8487
+  ],
+  29591: [
+    33.938,
+    -79.7623
+  ],
+  29592: [
+    34.2451,
+    -79.4544
+  ],
+  29593: [
+    34.4931,
+    -79.857
+  ],
+  29594: [
+    34.6402,
+    -79.5774
+  ],
+  29596: [
+    34.7361,
+    -79.8512
+  ],
+  29601: [
+    34.8473,
+    -82.4021
+  ],
+  29605: [
+    34.778,
+    -82.3802
+  ],
+  29607: [
+    34.8096,
+    -82.3289
+  ],
+  29609: [
+    34.9126,
+    -82.3882
+  ],
+  29611: [
+    34.8309,
+    -82.4585
+  ],
+  29613: [
+    34.9243,
+    -82.4405
+  ],
+  29614: [
+    34.8737,
+    -82.363
+  ],
+  29615: [
+    34.8568,
+    -82.2961
+  ],
+  29617: [
+    34.9144,
+    -82.4661
+  ],
+  29620: [
+    34.1824,
+    -82.4256
+  ],
+  29621: [
+    34.5063,
+    -82.6036
+  ],
+  29624: [
+    34.4359,
+    -82.6241
+  ],
+  29625: [
+    34.5555,
+    -82.7656
+  ],
+  29626: [
+    34.4608,
+    -82.7565
+  ],
+  29627: [
+    34.5186,
+    -82.4803
+  ],
+  29628: [
+    34.0885,
+    -82.5645
+  ],
+  29630: [
+    34.7387,
+    -82.7992
+  ],
+  29631: [
+    34.6816,
+    -82.8178
+  ],
+  29634: [
+    34.6756,
+    -82.8352
+  ],
+  29635: [
+    35.0765,
+    -82.6348
+  ],
+  29638: [
+    34.3639,
+    -82.3382
+  ],
+  29639: [
+    34.3037,
+    -82.4288
+  ],
+  29640: [
+    34.8777,
+    -82.5754
+  ],
+  29642: [
+    34.7767,
+    -82.5636
+  ],
+  29643: [
+    34.5076,
+    -82.9753
+  ],
+  29644: [
+    34.6661,
+    -82.1954
+  ],
+  29645: [
+    34.5877,
+    -82.1274
+  ],
+  29646: [
+    34.1361,
+    -82.1485
+  ],
+  29649: [
+    34.2389,
+    -82.145
+  ],
+  29650: [
+    34.898,
+    -82.258
+  ],
+  29651: [
+    35.0238,
+    -82.2796
+  ],
+  29653: [
+    34.306,
+    -82.2325
+  ],
+  29654: [
+    34.4555,
+    -82.3702
+  ],
+  29655: [
+    34.2653,
+    -82.6324
+  ],
+  29657: [
+    34.7671,
+    -82.6866
+  ],
+  29658: [
+    34.7715,
+    -83.3033
+  ],
+  29659: [
+    34.2117,
+    -82.6453
+  ],
+  29661: [
+    35.0575,
+    -82.5547
+  ],
+  29662: [
+    34.7792,
+    -82.3031
+  ],
+  29664: [
+    34.8609,
+    -83.1576
+  ],
+  29665: [
+    34.7248,
+    -82.9146
+  ],
+  29666: [
+    34.1133,
+    -81.9796
+  ],
+  29667: [
+    34.7643,
+    -82.7565
+  ],
+  29669: [
+    34.6387,
+    -82.4125
+  ],
+  29670: [
+    34.644,
+    -82.7232
+  ],
+  29671: [
+    34.9438,
+    -82.7211
+  ],
+  29672: [
+    34.7517,
+    -82.9321
+  ],
+  29673: [
+    34.7202,
+    -82.4552
+  ],
+  29676: [
+    34.9537,
+    -82.985
+  ],
+  29678: [
+    34.6345,
+    -82.9373
+  ],
+  29680: [
+    34.6849,
+    -82.2938
+  ],
+  29681: [
+    34.7677,
+    -82.225
+  ],
+  29682: [
+    34.8362,
+    -82.8534
+  ],
+  29683: [
+    35.0301,
+    -82.4929
+  ],
+  29684: [
+    34.3794,
+    -82.7187
+  ],
+  29685: [
+    34.9834,
+    -82.8449
+  ],
+  29686: [
+    34.9582,
+    -83.0531
+  ],
+  29687: [
+    34.9866,
+    -82.3275
+  ],
+  29689: [
+    34.5367,
+    -82.8759
+  ],
+  29690: [
+    35.0598,
+    -82.4172
+  ],
+  29691: [
+    34.7836,
+    -83.0769
+  ],
+  29692: [
+    34.4118,
+    -82.2195
+  ],
+  29693: [
+    34.6418,
+    -83.1546
+  ],
+  29696: [
+    34.7811,
+    -83.0085
+  ],
+  29697: [
+    34.6256,
+    -82.5486
+  ],
+  29702: [
+    35.1161,
+    -81.4731
+  ],
+  29704: [
+    34.8321,
+    -80.9098
+  ],
+  29706: [
+    34.7156,
+    -81.2345
+  ],
+  29707: [
+    34.9876,
+    -80.8582
+  ],
+  29708: [
+    35.0482,
+    -80.9867
+  ],
+  29709: [
+    34.7185,
+    -80.0989
+  ],
+  29710: [
+    35.1063,
+    -81.2215
+  ],
+  29712: [
+    34.798,
+    -80.9755
+  ],
+  29714: [
+    34.7118,
+    -80.9138
+  ],
+  29715: [
+    35.0113,
+    -80.9271
+  ],
+  29717: [
+    34.9507,
+    -81.4489
+  ],
+  29718: [
+    34.6298,
+    -80.3576
+  ],
+  29720: [
+    34.7453,
+    -80.7433
+  ],
+  29724: [
+    34.775,
+    -81.0125
+  ],
+  29726: [
+    34.8609,
+    -81.2361
+  ],
+  29727: [
+    34.7193,
+    -80.2646
+  ],
+  29728: [
+    34.765,
+    -80.4006
+  ],
+  29729: [
+    34.6891,
+    -81.0068
+  ],
+  29730: [
+    34.8849,
+    -81.0212
+  ],
+  29732: [
+    34.9707,
+    -81.0814
+  ],
+  29733: [
+    34.9395,
+    -81.0317
+  ],
+  29741: [
+    34.7253,
+    -80.1955
+  ],
+  29742: [
+    34.87,
+    -81.3923
+  ],
+  29743: [
+    35.0261,
+    -81.4231
+  ],
+  29745: [
+    34.9909,
+    -81.2141
+  ],
+  29801: [
+    33.5859,
+    -81.6917
+  ],
+  29803: [
+    33.4535,
+    -81.7019
+  ],
+  29805: [
+    33.6419,
+    -81.6141
+  ],
+  29809: [
+    33.4162,
+    -81.6893
+  ],
+  29810: [
+    32.9864,
+    -81.3781
+  ],
+  29812: [
+    33.2144,
+    -81.3834
+  ],
+  29816: [
+    33.5021,
+    -81.8726
+  ],
+  29817: [
+    33.3695,
+    -81.2708
+  ],
+  29819: [
+    34.0442,
+    -82.2274
+  ],
+  29821: [
+    33.6366,
+    -82.1152
+  ],
+  29824: [
+    33.8145,
+    -81.9939
+  ],
+  29826: [
+    33.3854,
+    -81.3596
+  ],
+  29827: [
+    32.9701,
+    -81.2423
+  ],
+  29828: [
+    33.5234,
+    -81.8296
+  ],
+  29829: [
+    33.5747,
+    -81.8577
+  ],
+  29831: [
+    33.3387,
+    -81.8641
+  ],
+  29832: [
+    33.839,
+    -81.8037
+  ],
+  29834: [
+    33.5178,
+    -81.843
+  ],
+  29835: [
+    33.9206,
+    -82.2945
+  ],
+  29836: [
+    33.0852,
+    -81.496
+  ],
+  29838: [
+    33.7475,
+    -82.1511
+  ],
+  29840: [
+    33.9965,
+    -82.5426
+  ],
+  29841: [
+    33.5264,
+    -81.9393
+  ],
+  29842: [
+    33.457,
+    -81.8607
+  ],
+  29843: [
+    33.1821,
+    -81.1798
+  ],
+  29844: [
+    33.7852,
+    -82.2141
+  ],
+  29845: [
+    33.8259,
+    -82.2134
+  ],
+  29847: [
+    33.7041,
+    -81.8473
+  ],
+  29848: [
+    33.9723,
+    -82.0604
+  ],
+  29849: [
+    33.1036,
+    -81.2383
+  ],
+  29851: [
+    33.5111,
+    -81.8159
+  ],
+  29853: [
+    33.3992,
+    -81.4318
+  ],
+  29856: [
+    33.4853,
+    -81.5118
+  ],
+  29860: [
+    33.6147,
+    -81.9844
+  ],
+  29899: [
+    33.928,
+    -82.2506
+  ],
+  29902: [
+    32.3176,
+    -80.6822
+  ],
+  29904: [
+    32.4788,
+    -80.722
+  ],
+  29905: [
+    32.3554,
+    -80.7003
+  ],
+  29906: [
+    32.4451,
+    -80.7529
+  ],
+  29907: [
+    32.4747,
+    -80.5992
+  ],
+  29909: [
+    32.337,
+    -80.8481
+  ],
+  29910: [
+    32.2178,
+    -80.895
+  ],
+  29911: [
+    32.9288,
+    -81.1552
+  ],
+  29912: [
+    32.5845,
+    -80.9285
+  ],
+  29915: [
+    32.1187,
+    -80.8612
+  ],
+  29916: [
+    32.729,
+    -80.9587
+  ],
+  29918: [
+    32.7445,
+    -81.2474
+  ],
+  29920: [
+    32.3642,
+    -80.5536
+  ],
+  29921: [
+    32.6866,
+    -81.1801
+  ],
+  29922: [
+    32.5883,
+    -81.2801
+  ],
+  29923: [
+    32.8482,
+    -81.2386
+  ],
+  29924: [
+    32.8769,
+    -81.1113
+  ],
+  29926: [
+    32.2373,
+    -80.7343
+  ],
+  29927: [
+    32.2466,
+    -81.0575
+  ],
+  29928: [
+    32.1671,
+    -80.7536
+  ],
+  29929: [
+    32.9552,
+    -80.9238
+  ],
+  29932: [
+    32.8335,
+    -81.3443
+  ],
+  29934: [
+    32.595,
+    -81.1125
+  ],
+  29935: [
+    32.3826,
+    -80.6956
+  ],
+  29936: [
+    32.4834,
+    -80.9663
+  ],
+  29939: [
+    32.6813,
+    -81.2453
+  ],
+  29940: [
+    32.5527,
+    -80.6777
+  ],
+  29941: [
+    32.5348,
+    -80.8197
+  ],
+  29943: [
+    32.4911,
+    -81.1467
+  ],
+  29944: [
+    32.7957,
+    -81.0345
+  ],
+  29945: [
+    32.6815,
+    -80.7959
+  ],
+  30002: [
+    33.7733,
+    -84.2617
+  ],
+  30004: [
+    34.1456,
+    -84.2919
+  ],
+  30005: [
+    34.0891,
+    -84.217
+  ],
+  30008: [
+    33.9006,
+    -84.5909
+  ],
+  30009: [
+    34.0781,
+    -84.3034
+  ],
+  30011: [
+    34.0199,
+    -83.8372
+  ],
+  30012: [
+    33.7178,
+    -84.0025
+  ],
+  30013: [
+    33.6426,
+    -83.9719
+  ],
+  30014: [
+    33.5872,
+    -83.8222
+  ],
+  30016: [
+    33.5174,
+    -83.9287
+  ],
+  30017: [
+    33.8887,
+    -83.9637
+  ],
+  30018: [
+    33.7169,
+    -83.8043
+  ],
+  30019: [
+    33.9756,
+    -83.8838
+  ],
+  30021: [
+    33.808,
+    -84.239
+  ],
+  30022: [
+    34.0261,
+    -84.2474
+  ],
+  30024: [
+    34.0635,
+    -84.0911
+  ],
+  30025: [
+    33.656,
+    -83.6958
+  ],
+  30028: [
+    34.2932,
+    -84.1759
+  ],
+  30030: [
+    33.7727,
+    -84.291
+  ],
+  30032: [
+    33.7407,
+    -84.2645
+  ],
+  30033: [
+    33.8137,
+    -84.2844
+  ],
+  30034: [
+    33.6909,
+    -84.2486
+  ],
+  30035: [
+    33.7245,
+    -84.2042
+  ],
+  30038: [
+    33.6665,
+    -84.1399
+  ],
+  30039: [
+    33.7992,
+    -84.0344
+  ],
+  30040: [
+    34.2234,
+    -84.1764
+  ],
+  30041: [
+    34.1962,
+    -84.0967
+  ],
+  30043: [
+    34.01,
+    -84.005
+  ],
+  30044: [
+    33.9215,
+    -84.0689
+  ],
+  30045: [
+    33.9365,
+    -83.9277
+  ],
+  30046: [
+    33.9497,
+    -83.9935
+  ],
+  30047: [
+    33.8701,
+    -84.1123
+  ],
+  30052: [
+    33.817,
+    -83.8973
+  ],
+  30054: [
+    33.6784,
+    -83.883
+  ],
+  30055: [
+    33.4974,
+    -83.7498
+  ],
+  30056: [
+    33.492,
+    -83.6501
+  ],
+  30058: [
+    33.7383,
+    -84.1074
+  ],
+  30060: [
+    33.9201,
+    -84.5431
+  ],
+  30062: [
+    34.0065,
+    -84.473
+  ],
+  30064: [
+    33.9405,
+    -84.6097
+  ],
+  30066: [
+    34.0324,
+    -84.5052
+  ],
+  30067: [
+    33.9343,
+    -84.4622
+  ],
+  30068: [
+    33.9681,
+    -84.4317
+  ],
+  30070: [
+    33.5733,
+    -83.8956
+  ],
+  30071: [
+    33.9407,
+    -84.2067
+  ],
+  30072: [
+    33.7914,
+    -84.2048
+  ],
+  30075: [
+    34.0527,
+    -84.3916
+  ],
+  30076: [
+    34.0286,
+    -84.3114
+  ],
+  30078: [
+    33.861,
+    -84.018
+  ],
+  30079: [
+    33.7917,
+    -84.2607
+  ],
+  30080: [
+    33.8778,
+    -84.5017
+  ],
+  30082: [
+    33.8547,
+    -84.5364
+  ],
+  30083: [
+    33.7966,
+    -84.1926
+  ],
+  30084: [
+    33.8541,
+    -84.2162
+  ],
+  30087: [
+    33.7914,
+    -84.0983
+  ],
+  30088: [
+    33.7561,
+    -84.1824
+  ],
+  30090: [
+    33.9531,
+    -84.5482
+  ],
+  30092: [
+    33.9724,
+    -84.232
+  ],
+  30093: [
+    33.9089,
+    -84.1792
+  ],
+  30094: [
+    33.6125,
+    -84.0515
+  ],
+  30096: [
+    33.9743,
+    -84.1454
+  ],
+  30097: [
+    34.0263,
+    -84.1457
+  ],
+  30101: [
+    34.0345,
+    -84.7073
+  ],
+  30102: [
+    34.1016,
+    -84.6452
+  ],
+  30103: [
+    34.3632,
+    -84.9202
+  ],
+  30104: [
+    34.0889,
+    -85.0704
+  ],
+  30105: [
+    34.4325,
+    -85.1724
+  ],
+  30106: [
+    33.8329,
+    -84.6281
+  ],
+  30107: [
+    34.3361,
+    -84.3455
+  ],
+  30108: [
+    33.5317,
+    -85.263
+  ],
+  30110: [
+    33.7392,
+    -85.1354
+  ],
+  30111: [
+    33.8318,
+    -84.655
+  ],
+  30113: [
+    33.8507,
+    -85.2053
+  ],
+  30114: [
+    34.2435,
+    -84.5358
+  ],
+  30115: [
+    34.2155,
+    -84.4024
+  ],
+  30116: [
+    33.5391,
+    -84.9956
+  ],
+  30117: [
+    33.5819,
+    -85.1324
+  ],
+  30118: [
+    33.5729,
+    -85.0994
+  ],
+  30120: [
+    34.1752,
+    -84.86
+  ],
+  30121: [
+    34.2119,
+    -84.7769
+  ],
+  30122: [
+    33.7669,
+    -84.6414
+  ],
+  30124: [
+    34.1337,
+    -85.3458
+  ],
+  30125: [
+    34.0006,
+    -85.2768
+  ],
+  30126: [
+    33.815,
+    -84.5538
+  ],
+  30127: [
+    33.8751,
+    -84.6993
+  ],
+  30132: [
+    33.9776,
+    -84.8515
+  ],
+  30134: [
+    33.7775,
+    -84.7814
+  ],
+  30135: [
+    33.6723,
+    -84.733
+  ],
+  30137: [
+    34.1166,
+    -84.7657
+  ],
+  30139: [
+    34.4323,
+    -84.7055
+  ],
+  30141: [
+    33.8604,
+    -84.7698
+  ],
+  30143: [
+    34.4628,
+    -84.4252
+  ],
+  30144: [
+    34.0368,
+    -84.591
+  ],
+  30145: [
+    34.2457,
+    -84.9859
+  ],
+  30147: [
+    34.1349,
+    -85.2221
+  ],
+  30148: [
+    34.4605,
+    -84.2657
+  ],
+  30149: [
+    34.3168,
+    -85.2203
+  ],
+  30152: [
+    33.9916,
+    -84.6469
+  ],
+  30153: [
+    33.9738,
+    -85.0529
+  ],
+  30157: [
+    33.8847,
+    -84.8719
+  ],
+  30161: [
+    34.2362,
+    -85.174
+  ],
+  30165: [
+    34.3158,
+    -85.2951
+  ],
+  30168: [
+    33.7835,
+    -84.5881
+  ],
+  30170: [
+    33.4328,
+    -85.1647
+  ],
+  30171: [
+    34.3634,
+    -84.7274
+  ],
+  30173: [
+    34.1331,
+    -85.1535
+  ],
+  30175: [
+    34.5349,
+    -84.5267
+  ],
+  30176: [
+    33.7713,
+    -85.3044
+  ],
+  30177: [
+    34.4071,
+    -84.374
+  ],
+  30178: [
+    34.0955,
+    -84.9711
+  ],
+  30179: [
+    33.7816,
+    -85.0148
+  ],
+  30180: [
+    33.7189,
+    -84.9188
+  ],
+  30182: [
+    33.6558,
+    -85.2488
+  ],
+  30183: [
+    34.3388,
+    -84.6024
+  ],
+  30184: [
+    34.2521,
+    -84.7411
+  ],
+  30185: [
+    33.5198,
+    -84.9181
+  ],
+  30187: [
+    33.6528,
+    -84.8562
+  ],
+  30188: [
+    34.1235,
+    -84.4577
+  ],
+  30189: [
+    34.1242,
+    -84.5707
+  ],
+  30204: [
+    33.0562,
+    -84.1217
+  ],
+  30205: [
+    33.2674,
+    -84.4751
+  ],
+  30206: [
+    33.0961,
+    -84.4583
+  ],
+  30213: [
+    33.5867,
+    -84.6244
+  ],
+  30214: [
+    33.4905,
+    -84.486
+  ],
+  30215: [
+    33.3916,
+    -84.4564
+  ],
+  30216: [
+    33.2288,
+    -83.8849
+  ],
+  30217: [
+    33.2913,
+    -85.1379
+  ],
+  30218: [
+    33.1203,
+    -84.5875
+  ],
+  30220: [
+    33.2308,
+    -84.8249
+  ],
+  30222: [
+    33.0372,
+    -84.7347
+  ],
+  30223: [
+    33.2888,
+    -84.2799
+  ],
+  30224: [
+    33.2044,
+    -84.2397
+  ],
+  30228: [
+    33.4006,
+    -84.3077
+  ],
+  30229: [
+    33.2279,
+    -84.5703
+  ],
+  30230: [
+    33.1667,
+    -84.9205
+  ],
+  30233: [
+    33.2947,
+    -83.9756
+  ],
+  30234: [
+    33.3326,
+    -84.0253
+  ],
+  30236: [
+    33.5199,
+    -84.3252
+  ],
+  30238: [
+    33.5018,
+    -84.3822
+  ],
+  30240: [
+    33.0368,
+    -85.1201
+  ],
+  30241: [
+    33.0217,
+    -84.9562
+  ],
+  30248: [
+    33.3505,
+    -84.1091
+  ],
+  30250: [
+    33.4348,
+    -84.3061
+  ],
+  30251: [
+    33.1982,
+    -84.6981
+  ],
+  30252: [
+    33.4735,
+    -84.0572
+  ],
+  30253: [
+    33.4536,
+    -84.1872
+  ],
+  30256: [
+    33.0075,
+    -84.3099
+  ],
+  30257: [
+    33.1434,
+    -84.1862
+  ],
+  30258: [
+    32.9909,
+    -84.47
+  ],
+  30259: [
+    33.2657,
+    -84.7417
+  ],
+  30260: [
+    33.5872,
+    -84.3343
+  ],
+  30263: [
+    33.3884,
+    -84.8589
+  ],
+  30265: [
+    33.4187,
+    -84.7132
+  ],
+  30268: [
+    33.5464,
+    -84.7226
+  ],
+  30269: [
+    33.3939,
+    -84.5693
+  ],
+  30272: [
+    33.6231,
+    -84.5018
+  ],
+  30273: [
+    33.5838,
+    -84.271
+  ],
+  30274: [
+    33.5573,
+    -84.4005
+  ],
+  30275: [
+    33.4307,
+    -84.8679
+  ],
+  30276: [
+    33.2633,
+    -84.5835
+  ],
+  30277: [
+    33.3753,
+    -84.6492
+  ],
+  30281: [
+    33.5569,
+    -84.1952
+  ],
+  30284: [
+    33.3403,
+    -84.2886
+  ],
+  30285: [
+    32.9877,
+    -84.2582
+  ],
+  30286: [
+    32.8811,
+    -84.3332
+  ],
+  30288: [
+    33.6529,
+    -84.3271
+  ],
+  30289: [
+    33.3236,
+    -84.6337
+  ],
+  30290: [
+    33.4764,
+    -84.5897
+  ],
+  30291: [
+    33.5759,
+    -84.5438
+  ],
+  30292: [
+    33.1685,
+    -84.3932
+  ],
+  30293: [
+    32.9791,
+    -84.5963
+  ],
+  30294: [
+    33.6367,
+    -84.265
+  ],
+  30295: [
+    33.0903,
+    -84.3176
+  ],
+  30296: [
+    33.5632,
+    -84.4412
+  ],
+  30297: [
+    33.615,
+    -84.3717
+  ],
+  30303: [
+    33.7528,
+    -84.3902
+  ],
+  30305: [
+    33.8341,
+    -84.3921
+  ],
+  30306: [
+    33.7881,
+    -84.3526
+  ],
+  30307: [
+    33.7711,
+    -84.3336
+  ],
+  30308: [
+    33.771,
+    -84.3777
+  ],
+  30309: [
+    33.7999,
+    -84.3858
+  ],
+  30310: [
+    33.7269,
+    -84.4289
+  ],
+  30311: [
+    33.7233,
+    -84.476
+  ],
+  30312: [
+    33.7446,
+    -84.3758
+  ],
+  30313: [
+    33.7636,
+    -84.3977
+  ],
+  30314: [
+    33.7579,
+    -84.432
+  ],
+  30315: [
+    33.7027,
+    -84.3829
+  ],
+  30316: [
+    33.7168,
+    -84.3313
+  ],
+  30317: [
+    33.748,
+    -84.3156
+  ],
+  30318: [
+    33.7927,
+    -84.448
+  ],
+  30319: [
+    33.876,
+    -84.3348
+  ],
+  30322: [
+    33.7946,
+    -84.3252
+  ],
+  30324: [
+    33.8184,
+    -84.3582
+  ],
+  30326: [
+    33.8496,
+    -84.3635
+  ],
+  30327: [
+    33.8697,
+    -84.4173
+  ],
+  30328: [
+    33.9333,
+    -84.3867
+  ],
+  30329: [
+    33.8272,
+    -84.3221
+  ],
+  30331: [
+    33.7054,
+    -84.5441
+  ],
+  30332: [
+    33.7776,
+    -84.4043
+  ],
+  30334: [
+    33.7487,
+    -84.3879
+  ],
+  30336: [
+    33.7354,
+    -84.569
+  ],
+  30337: [
+    33.6401,
+    -84.4501
+  ],
+  30338: [
+    33.9462,
+    -84.3181
+  ],
+  30339: [
+    33.8676,
+    -84.4646
+  ],
+  30340: [
+    33.8979,
+    -84.2528
+  ],
+  30341: [
+    33.8885,
+    -84.2895
+  ],
+  30342: [
+    33.8843,
+    -84.375
+  ],
+  30344: [
+    33.6766,
+    -84.4616
+  ],
+  30345: [
+    33.8517,
+    -84.2837
+  ],
+  30346: [
+    33.9243,
+    -84.3388
+  ],
+  30349: [
+    33.6225,
+    -84.5239
+  ],
+  30350: [
+    33.9803,
+    -84.33
+  ],
+  30354: [
+    33.6604,
+    -84.3865
+  ],
+  30360: [
+    33.9339,
+    -84.272
+  ],
+  30363: [
+    33.7915,
+    -84.3989
+  ],
+  30401: [
+    32.6047,
+    -82.348
+  ],
+  30410: [
+    32.1886,
+    -82.5135
+  ],
+  30411: [
+    32.1241,
+    -82.794
+  ],
+  30412: [
+    32.0803,
+    -82.4861
+  ],
+  30413: [
+    32.8847,
+    -82.5131
+  ],
+  30414: [
+    32.157,
+    -81.99
+  ],
+  30415: [
+    32.3245,
+    -81.6035
+  ],
+  30417: [
+    32.1705,
+    -81.921
+  ],
+  30420: [
+    32.3066,
+    -82.1309
+  ],
+  30421: [
+    32.1854,
+    -82.1109
+  ],
+  30423: [
+    32.1463,
+    -81.8241
+  ],
+  30425: [
+    32.682,
+    -82.0946
+  ],
+  30426: [
+    33.0473,
+    -81.6488
+  ],
+  30427: [
+    31.9229,
+    -81.9624
+  ],
+  30428: [
+    32.2245,
+    -82.7151
+  ],
+  30429: [
+    32.1568,
+    -81.9349
+  ],
+  30434: [
+    33.0246,
+    -82.3663
+  ],
+  30436: [
+    32.1549,
+    -82.293
+  ],
+  30439: [
+    32.4167,
+    -82.0704
+  ],
+  30441: [
+    32.8156,
+    -82.2372
+  ],
+  30442: [
+    32.8162,
+    -81.9698
+  ],
+  30445: [
+    32.1656,
+    -82.5807
+  ],
+  30446: [
+    32.5635,
+    -81.463
+  ],
+  30448: [
+    32.4882,
+    -82.3634
+  ],
+  30449: [
+    32.5253,
+    -81.5345
+  ],
+  30450: [
+    32.556,
+    -81.9274
+  ],
+  30451: [
+    32.3933,
+    -81.9562
+  ],
+  30452: [
+    32.3161,
+    -81.8919
+  ],
+  30453: [
+    32.0262,
+    -82.1112
+  ],
+  30454: [
+    32.4361,
+    -82.7304
+  ],
+  30455: [
+    32.6983,
+    -81.8099
+  ],
+  30456: [
+    32.9807,
+    -81.7961
+  ],
+  30457: [
+    32.3999,
+    -82.5609
+  ],
+  30458: [
+    32.3994,
+    -81.8289
+  ],
+  30460: [
+    32.4271,
+    -81.7832
+  ],
+  30461: [
+    32.497,
+    -81.7231
+  ],
+  30464: [
+    32.4372,
+    -82.225
+  ],
+  30467: [
+    32.7538,
+    -81.6035
+  ],
+  30470: [
+    32.3589,
+    -82.4975
+  ],
+  30471: [
+    32.5433,
+    -82.1809
+  ],
+  30473: [
+    32.0155,
+    -82.4731
+  ],
+  30474: [
+    32.224,
+    -82.4137
+  ],
+  30477: [
+    32.8626,
+    -82.4008
+  ],
+  30501: [
+    34.319,
+    -83.8144
+  ],
+  30504: [
+    34.2665,
+    -83.8886
+  ],
+  30506: [
+    34.3469,
+    -83.8956
+  ],
+  30507: [
+    34.2647,
+    -83.7694
+  ],
+  30510: [
+    34.4449,
+    -83.5707
+  ],
+  30511: [
+    34.4497,
+    -83.4867
+  ],
+  30512: [
+    34.8568,
+    -83.968
+  ],
+  30513: [
+    34.821,
+    -84.3224
+  ],
+  30516: [
+    34.3809,
+    -83.0307
+  ],
+  30517: [
+    34.1303,
+    -83.7973
+  ],
+  30518: [
+    34.1338,
+    -84.0226
+  ],
+  30519: [
+    34.0874,
+    -83.9451
+  ],
+  30520: [
+    34.3399,
+    -83.0827
+  ],
+  30521: [
+    34.3624,
+    -83.2923
+  ],
+  30522: [
+    34.7837,
+    -84.3437
+  ],
+  30523: [
+    34.7132,
+    -83.5513
+  ],
+  30525: [
+    34.9072,
+    -83.3693
+  ],
+  30527: [
+    34.4809,
+    -83.7818
+  ],
+  30528: [
+    34.6091,
+    -83.776
+  ],
+  30529: [
+    34.2172,
+    -83.4827
+  ],
+  30530: [
+    34.2229,
+    -83.3938
+  ],
+  30531: [
+    34.5126,
+    -83.5922
+  ],
+  30533: [
+    34.571,
+    -84.0138
+  ],
+  30534: [
+    34.4311,
+    -84.1443
+  ],
+  30535: [
+    34.5737,
+    -83.5748
+  ],
+  30536: [
+    34.652,
+    -84.3594
+  ],
+  30537: [
+    34.9791,
+    -83.3315
+  ],
+  30538: [
+    34.501,
+    -83.2638
+  ],
+  30539: [
+    34.6806,
+    -84.4701
+  ],
+  30540: [
+    34.7281,
+    -84.5435
+  ],
+  30541: [
+    34.9173,
+    -84.5177
+  ],
+  30542: [
+    34.1798,
+    -83.9101
+  ],
+  30543: [
+    34.3013,
+    -83.6537
+  ],
+  30545: [
+    34.7623,
+    -83.7621
+  ],
+  30546: [
+    34.9084,
+    -83.7178
+  ],
+  30547: [
+    34.362,
+    -83.4556
+  ],
+  30548: [
+    34.0894,
+    -83.7636
+  ],
+  30549: [
+    34.108,
+    -83.5775
+  ],
+  30552: [
+    34.7738,
+    -83.4707
+  ],
+  30553: [
+    34.4438,
+    -83.0841
+  ],
+  30554: [
+    34.3981,
+    -83.6619
+  ],
+  30555: [
+    34.9694,
+    -84.4195
+  ],
+  30557: [
+    34.4798,
+    -83.1849
+  ],
+  30558: [
+    34.264,
+    -83.5668
+  ],
+  30559: [
+    34.9579,
+    -84.2743
+  ],
+  30560: [
+    34.8768,
+    -84.2047
+  ],
+  30562: [
+    34.919,
+    -83.3837
+  ],
+  30563: [
+    34.559,
+    -83.4618
+  ],
+  30564: [
+    34.464,
+    -83.8893
+  ],
+  30565: [
+    34.0862,
+    -83.4115
+  ],
+  30566: [
+    34.2387,
+    -83.8968
+  ],
+  30567: [
+    34.1808,
+    -83.6766
+  ],
+  30568: [
+    34.9548,
+    -83.4111
+  ],
+  30571: [
+    34.7163,
+    -83.6821
+  ],
+  30572: [
+    34.7358,
+    -84.0725
+  ],
+  30573: [
+    34.7413,
+    -83.3935
+  ],
+  30575: [
+    34.2076,
+    -83.7134
+  ],
+  30576: [
+    34.8346,
+    -83.4521
+  ],
+  30577: [
+    34.5562,
+    -83.3289
+  ],
+  30581: [
+    34.7963,
+    -83.4245
+  ],
+  30582: [
+    34.9565,
+    -83.9098
+  ],
+  30597: [
+    34.5276,
+    -83.9846
+  ],
+  30598: [
+    34.5966,
+    -83.3542
+  ],
+  30601: [
+    33.9992,
+    -83.347
+  ],
+  30602: [
+    33.9439,
+    -83.3739
+  ],
+  30605: [
+    33.9043,
+    -83.3256
+  ],
+  30606: [
+    33.9403,
+    -83.4336
+  ],
+  30607: [
+    34.0173,
+    -83.4476
+  ],
+  30609: [
+    33.9331,
+    -83.3723
+  ],
+  30619: [
+    33.8558,
+    -83.2447
+  ],
+  30620: [
+    33.9295,
+    -83.7585
+  ],
+  30621: [
+    33.7968,
+    -83.4712
+  ],
+  30622: [
+    33.9213,
+    -83.5308
+  ],
+  30623: [
+    33.7287,
+    -83.513
+  ],
+  30624: [
+    34.181,
+    -83.0379
+  ],
+  30625: [
+    33.5203,
+    -83.3335
+  ],
+  30627: [
+    33.9722,
+    -82.9637
+  ],
+  30628: [
+    34.0321,
+    -83.216
+  ],
+  30629: [
+    34.078,
+    -83.1104
+  ],
+  30630: [
+    33.9004,
+    -83.1453
+  ],
+  30631: [
+    33.5583,
+    -82.8665
+  ],
+  30633: [
+    34.1809,
+    -83.2492
+  ],
+  30634: [
+    34.2022,
+    -82.9422
+  ],
+  30635: [
+    34.1058,
+    -82.7931
+  ],
+  30639: [
+    34.2827,
+    -83.1524
+  ],
+  30641: [
+    33.7696,
+    -83.5648
+  ],
+  30642: [
+    33.5443,
+    -83.184
+  ],
+  30643: [
+    34.3655,
+    -82.9119
+  ],
+  30646: [
+    34.0857,
+    -83.3025
+  ],
+  30648: [
+    33.8708,
+    -83.0382
+  ],
+  30650: [
+    33.5906,
+    -83.4676
+  ],
+  30655: [
+    33.7802,
+    -83.6925
+  ],
+  30656: [
+    33.8621,
+    -83.7162
+  ],
+  30660: [
+    33.7827,
+    -82.9313
+  ],
+  30662: [
+    34.267,
+    -83.1376
+  ],
+  30663: [
+    33.6155,
+    -83.6003
+  ],
+  30664: [
+    33.5563,
+    -82.7983
+  ],
+  30665: [
+    33.5373,
+    -83.074
+  ],
+  30666: [
+    33.9621,
+    -83.5846
+  ],
+  30667: [
+    33.7969,
+    -83.1755
+  ],
+  30668: [
+    33.8957,
+    -82.6972
+  ],
+  30669: [
+    33.6764,
+    -83.1181
+  ],
+  30673: [
+    33.7281,
+    -82.7162
+  ],
+  30677: [
+    33.7832,
+    -83.3733
+  ],
+  30678: [
+    33.453,
+    -83.0659
+  ],
+  30680: [
+    33.9952,
+    -83.6975
+  ],
+  30683: [
+    33.9468,
+    -83.2571
+  ],
+  30701: [
+    34.4944,
+    -84.9542
+  ],
+  30705: [
+    34.7475,
+    -84.7484
+  ],
+  30707: [
+    34.7789,
+    -85.3653
+  ],
+  30708: [
+    34.9399,
+    -84.6676
+  ],
+  30710: [
+    34.9388,
+    -84.9173
+  ],
+  30711: [
+    34.9318,
+    -84.7686
+  ],
+  30720: [
+    34.7336,
+    -85.0008
+  ],
+  30721: [
+    34.793,
+    -84.9087
+  ],
+  30724: [
+    34.8252,
+    -84.7579
+  ],
+  30725: [
+    34.9248,
+    -85.3527
+  ],
+  30726: [
+    34.9749,
+    -85.141
+  ],
+  30728: [
+    34.6849,
+    -85.2258
+  ],
+  30730: [
+    34.3638,
+    -85.416
+  ],
+  30731: [
+    34.5642,
+    -85.4719
+  ],
+  30733: [
+    34.4146,
+    -85.0506
+  ],
+  30734: [
+    34.5328,
+    -84.7149
+  ],
+  30735: [
+    34.6029,
+    -84.8827
+  ],
+  30736: [
+    34.9024,
+    -85.1341
+  ],
+  30738: [
+    34.7966,
+    -85.4809
+  ],
+  30739: [
+    34.8059,
+    -85.216
+  ],
+  30740: [
+    34.7574,
+    -85.072
+  ],
+  30741: [
+    34.9527,
+    -85.2813
+  ],
+  30742: [
+    34.9356,
+    -85.2448
+  ],
+  30746: [
+    34.5921,
+    -85.0329
+  ],
+  30747: [
+    34.5041,
+    -85.2928
+  ],
+  30750: [
+    34.9368,
+    -85.3882
+  ],
+  30751: [
+    34.9845,
+    -84.7327
+  ],
+  30752: [
+    34.915,
+    -85.538
+  ],
+  30753: [
+    34.5823,
+    -85.2858
+  ],
+  30755: [
+    34.8694,
+    -85.0407
+  ],
+  30756: [
+    34.9011,
+    -84.9746
+  ],
+  30757: [
+    34.9358,
+    -85.4415
+  ],
+  30802: [
+    33.6014,
+    -82.2999
+  ],
+  30803: [
+    33.1335,
+    -82.5492
+  ],
+  30805: [
+    33.2796,
+    -82.1918
+  ],
+  30807: [
+    33.4574,
+    -82.6486
+  ],
+  30808: [
+    33.3841,
+    -82.3919
+  ],
+  30809: [
+    33.5585,
+    -82.1712
+  ],
+  30810: [
+    33.232,
+    -82.5875
+  ],
+  30812: [
+    33.3675,
+    -82.0291
+  ],
+  30813: [
+    33.4667,
+    -82.2282
+  ],
+  30814: [
+    33.4311,
+    -82.3188
+  ],
+  30815: [
+    33.2849,
+    -82.0722
+  ],
+  30816: [
+    33.1634,
+    -82.1762
+  ],
+  30817: [
+    33.7784,
+    -82.4302
+  ],
+  30818: [
+    33.2696,
+    -82.3261
+  ],
+  30820: [
+    33.2224,
+    -82.7245
+  ],
+  30821: [
+    33.4921,
+    -82.738
+  ],
+  30822: [
+    32.9193,
+    -81.9444
+  ],
+  30823: [
+    33.222,
+    -82.4561
+  ],
+  30824: [
+    33.513,
+    -82.5149
+  ],
+  30828: [
+    33.368,
+    -82.6563
+  ],
+  30830: [
+    33.0851,
+    -81.9787
+  ],
+  30833: [
+    33.1912,
+    -82.3531
+  ],
+  30901: [
+    33.4372,
+    -81.9562
+  ],
+  30904: [
+    33.4783,
+    -82.0141
+  ],
+  30905: [
+    33.4115,
+    -82.1491
+  ],
+  30906: [
+    33.3467,
+    -81.9677
+  ],
+  30907: [
+    33.5237,
+    -82.0857
+  ],
+  30909: [
+    33.4705,
+    -82.083
+  ],
+  30912: [
+    33.4702,
+    -81.9879
+  ],
+  31001: [
+    31.9763,
+    -83.3397
+  ],
+  31002: [
+    32.554,
+    -82.5953
+  ],
+  31003: [
+    32.5969,
+    -83.2229
+  ],
+  31004: [
+    32.9517,
+    -83.8053
+  ],
+  31005: [
+    32.5446,
+    -83.5937
+  ],
+  31006: [
+    32.5807,
+    -84.2507
+  ],
+  31007: [
+    32.1885,
+    -83.9273
+  ],
+  31008: [
+    32.6654,
+    -83.7861
+  ],
+  31009: [
+    32.2702,
+    -83.0005
+  ],
+  31011: [
+    32.1306,
+    -83.0523
+  ],
+  31012: [
+    32.3943,
+    -83.1737
+  ],
+  31014: [
+    32.4159,
+    -83.3491
+  ],
+  31015: [
+    31.943,
+    -83.7786
+  ],
+  31016: [
+    32.8293,
+    -84.0916
+  ],
+  31017: [
+    32.6211,
+    -83.2322
+  ],
+  31018: [
+    32.9765,
+    -82.6168
+  ],
+  31019: [
+    32.4242,
+    -83.0513
+  ],
+  31020: [
+    32.6545,
+    -83.4985
+  ],
+  31021: [
+    32.4895,
+    -82.935
+  ],
+  31022: [
+    32.5115,
+    -83.1166
+  ],
+  31023: [
+    32.1832,
+    -83.1995
+  ],
+  31024: [
+    33.323,
+    -83.37
+  ],
+  31025: [
+    32.3354,
+    -83.7409
+  ],
+  31027: [
+    32.5719,
+    -82.8226
+  ],
+  31028: [
+    32.6328,
+    -83.6839
+  ],
+  31029: [
+    33.0436,
+    -83.9353
+  ],
+  31030: [
+    32.569,
+    -83.8919
+  ],
+  31031: [
+    32.8663,
+    -83.3283
+  ],
+  31032: [
+    33.012,
+    -83.5733
+  ],
+  31033: [
+    33.0793,
+    -83.434
+  ],
+  31034: [
+    33.0546,
+    -83.2255
+  ],
+  31035: [
+    32.8541,
+    -82.7078
+  ],
+  31036: [
+    32.2701,
+    -83.4926
+  ],
+  31037: [
+    32.1216,
+    -82.9363
+  ],
+  31038: [
+    33.1425,
+    -83.6214
+  ],
+  31039: [
+    32.6041,
+    -84.3791
+  ],
+  31041: [
+    32.3824,
+    -84.1678
+  ],
+  31042: [
+    32.7436,
+    -83.1891
+  ],
+  31044: [
+    32.6562,
+    -83.3909
+  ],
+  31045: [
+    33.2829,
+    -82.7945
+  ],
+  31046: [
+    33.0543,
+    -83.7961
+  ],
+  31047: [
+    32.4669,
+    -83.581
+  ],
+  31049: [
+    32.6783,
+    -82.5234
+  ],
+  31050: [
+    32.7215,
+    -83.9373
+  ],
+  31051: [
+    32.1431,
+    -83.8794
+  ],
+  31052: [
+    32.789,
+    -83.8401
+  ],
+  31054: [
+    32.8899,
+    -83.2141
+  ],
+  31055: [
+    31.9859,
+    -82.8831
+  ],
+  31057: [
+    32.4298,
+    -83.9443
+  ],
+  31058: [
+    32.4887,
+    -84.4104
+  ],
+  31060: [
+    31.9864,
+    -83.0563
+  ],
+  31061: [
+    33.0591,
+    -83.2264
+  ],
+  31062: [
+    33.0434,
+    -83.2158
+  ],
+  31063: [
+    32.289,
+    -83.9633
+  ],
+  31064: [
+    33.2865,
+    -83.7023
+  ],
+  31065: [
+    32.5641,
+    -83.1885
+  ],
+  31066: [
+    32.8024,
+    -83.9781
+  ],
+  31067: [
+    32.8523,
+    -82.9617
+  ],
+  31068: [
+    32.3327,
+    -84.1111
+  ],
+  31069: [
+    32.4401,
+    -83.7486
+  ],
+  31070: [
+    32.1866,
+    -83.7898
+  ],
+  31071: [
+    32.1294,
+    -83.5408
+  ],
+  31072: [
+    31.9745,
+    -83.5668
+  ],
+  31075: [
+    32.361,
+    -82.9546
+  ],
+  31076: [
+    32.5497,
+    -84.105
+  ],
+  31077: [
+    31.9423,
+    -83.1698
+  ],
+  31078: [
+    32.6948,
+    -84.0757
+  ],
+  31079: [
+    31.9425,
+    -83.4634
+  ],
+  31081: [
+    32.4124,
+    -84.284
+  ],
+  31082: [
+    32.9964,
+    -82.9031
+  ],
+  31083: [
+    32.0441,
+    -82.822
+  ],
+  31084: [
+    31.9615,
+    -83.6026
+  ],
+  31085: [
+    33.4273,
+    -83.6277
+  ],
+  31087: [
+    33.2514,
+    -83.001
+  ],
+  31088: [
+    32.5862,
+    -83.6551
+  ],
+  31089: [
+    32.8508,
+    -82.8603
+  ],
+  31090: [
+    32.7936,
+    -83.0484
+  ],
+  31091: [
+    32.2379,
+    -83.7045
+  ],
+  31092: [
+    32.0897,
+    -83.7827
+  ],
+  31093: [
+    32.6479,
+    -83.6572
+  ],
+  31094: [
+    33.1136,
+    -82.7958
+  ],
+  31096: [
+    32.7233,
+    -82.7073
+  ],
+  31097: [
+    32.8904,
+    -84.1669
+  ],
+  31098: [
+    32.6148,
+    -83.5784
+  ],
+  31201: [
+    32.8063,
+    -83.6179
+  ],
+  31204: [
+    32.8485,
+    -83.6747
+  ],
+  31206: [
+    32.7934,
+    -83.6846
+  ],
+  31207: [
+    32.8286,
+    -83.6493
+  ],
+  31210: [
+    32.9076,
+    -83.7351
+  ],
+  31211: [
+    32.9043,
+    -83.5985
+  ],
+  31213: [
+    32.8401,
+    -83.6393
+  ],
+  31216: [
+    32.7324,
+    -83.6714
+  ],
+  31217: [
+    32.8441,
+    -83.5
+  ],
+  31220: [
+    32.8845,
+    -83.8181
+  ],
+  31301: [
+    31.7583,
+    -81.6051
+  ],
+  31302: [
+    32.1258,
+    -81.3404
+  ],
+  31303: [
+    32.5054,
+    -81.3134
+  ],
+  31305: [
+    31.3676,
+    -81.3782
+  ],
+  31307: [
+    32.1764,
+    -81.3976
+  ],
+  31308: [
+    32.1803,
+    -81.4713
+  ],
+  31309: [
+    31.8804,
+    -81.4412
+  ],
+  31312: [
+    32.3187,
+    -81.401
+  ],
+  31313: [
+    31.8366,
+    -81.6168
+  ],
+  31314: [
+    31.9069,
+    -81.6175
+  ],
+  31315: [
+    31.8877,
+    -81.606
+  ],
+  31316: [
+    31.7193,
+    -81.7333
+  ],
+  31318: [
+    32.1348,
+    -81.3723
+  ],
+  31320: [
+    31.7655,
+    -81.3684
+  ],
+  31321: [
+    32.1851,
+    -81.6598
+  ],
+  31322: [
+    32.102,
+    -81.2554
+  ],
+  31323: [
+    31.6684,
+    -81.4542
+  ],
+  31324: [
+    31.8502,
+    -81.2648
+  ],
+  31326: [
+    32.2966,
+    -81.2227
+  ],
+  31327: [
+    31.4232,
+    -81.2901
+  ],
+  31328: [
+    32.0043,
+    -80.8908
+  ],
+  31329: [
+    32.4273,
+    -81.35
+  ],
+  31331: [
+    31.4902,
+    -81.4215
+  ],
+  31333: [
+    31.7678,
+    -81.6275
+  ],
+  31401: [
+    32.0683,
+    -81.0928
+  ],
+  31404: [
+    32.0508,
+    -81.053
+  ],
+  31405: [
+    32.0394,
+    -81.1792
+  ],
+  31406: [
+    31.9804,
+    -81.0852
+  ],
+  31407: [
+    32.1832,
+    -81.1979
+  ],
+  31408: [
+    32.1041,
+    -81.1811
+  ],
+  31409: [
+    32.0156,
+    -81.1448
+  ],
+  31410: [
+    32.0149,
+    -80.9882
+  ],
+  31411: [
+    31.9375,
+    -81.0343
+  ],
+  31415: [
+    32.0806,
+    -81.1272
+  ],
+  31419: [
+    31.9846,
+    -81.2369
+  ],
+  31421: [
+    32.087,
+    -81.0782
+  ],
+  31501: [
+    31.2276,
+    -82.3479
+  ],
+  31503: [
+    31.1769,
+    -82.4013
+  ],
+  31510: [
+    31.5465,
+    -82.4335
+  ],
+  31512: [
+    31.5457,
+    -83.0184
+  ],
+  31513: [
+    31.7774,
+    -82.346
+  ],
+  31516: [
+    31.3094,
+    -82.2533
+  ],
+  31518: [
+    31.5126,
+    -82.1851
+  ],
+  31519: [
+    31.6681,
+    -82.869
+  ],
+  31520: [
+    31.1781,
+    -81.4876
+  ],
+  31522: [
+    31.2573,
+    -81.342
+  ],
+  31523: [
+    31.2126,
+    -81.6168
+  ],
+  31524: [
+    31.2406,
+    -81.4734
+  ],
+  31525: [
+    31.321,
+    -81.5264
+  ],
+  31527: [
+    31.0751,
+    -81.416
+  ],
+  31532: [
+    31.7264,
+    -82.7457
+  ],
+  31533: [
+    31.5627,
+    -82.829
+  ],
+  31535: [
+    31.4595,
+    -82.8673
+  ],
+  31537: [
+    30.9265,
+    -82.1765
+  ],
+  31539: [
+    31.8139,
+    -82.6022
+  ],
+  31542: [
+    31.1427,
+    -82.1194
+  ],
+  31543: [
+    31.3265,
+    -81.8697
+  ],
+  31544: [
+    31.8405,
+    -82.9639
+  ],
+  31545: [
+    31.5726,
+    -81.9909
+  ],
+  31546: [
+    31.5303,
+    -81.7949
+  ],
+  31547: [
+    30.7903,
+    -81.5353
+  ],
+  31548: [
+    30.7958,
+    -81.7124
+  ],
+  31549: [
+    31.9214,
+    -82.7299
+  ],
+  31550: [
+    31.1471,
+    -82.5956
+  ],
+  31551: [
+    31.4883,
+    -82.2668
+  ],
+  31552: [
+    31.2899,
+    -82.5991
+  ],
+  31553: [
+    31.1664,
+    -81.9824
+  ],
+  31554: [
+    31.4858,
+    -82.6205
+  ],
+  31555: [
+    31.7031,
+    -82.0694
+  ],
+  31556: [
+    31.405,
+    -82.1152
+  ],
+  31557: [
+    31.3753,
+    -82.0988
+  ],
+  31558: [
+    30.8023,
+    -81.5077
+  ],
+  31560: [
+    31.5056,
+    -82.0296
+  ],
+  31561: [
+    31.2091,
+    -81.3099
+  ],
+  31562: [
+    30.4753,
+    -82.1039
+  ],
+  31563: [
+    31.7382,
+    -82.1778
+  ],
+  31564: [
+    31.2487,
+    -82.4709
+  ],
+  31565: [
+    31.0707,
+    -81.6434
+  ],
+  31566: [
+    31.1828,
+    -81.8056
+  ],
+  31567: [
+    31.6309,
+    -82.7062
+  ],
+  31568: [
+    31.0134,
+    -81.8191
+  ],
+  31569: [
+    30.9338,
+    -81.7371
+  ],
+  31599: [
+    31.5627,
+    -81.9017
+  ],
+  31601: [
+    30.7755,
+    -83.3336
+  ],
+  31602: [
+    30.8682,
+    -83.3423
+  ],
+  31605: [
+    30.933,
+    -83.2219
+  ],
+  31606: [
+    30.7987,
+    -83.1799
+  ],
+  31620: [
+    31.1173,
+    -83.4342
+  ],
+  31622: [
+    31.3723,
+    -83.1993
+  ],
+  31623: [
+    31.0714,
+    -82.644
+  ],
+  31624: [
+    31.2962,
+    -82.7303
+  ],
+  31625: [
+    30.9893,
+    -83.5225
+  ],
+  31626: [
+    30.7756,
+    -83.8031
+  ],
+  31627: [
+    31.0396,
+    -83.3921
+  ],
+  31629: [
+    30.8168,
+    -83.6894
+  ],
+  31630: [
+    30.9242,
+    -82.86
+  ],
+  31631: [
+    30.7082,
+    -82.6444
+  ],
+  31632: [
+    30.9863,
+    -83.3549
+  ],
+  31634: [
+    31.0305,
+    -82.7328
+  ],
+  31635: [
+    31.0969,
+    -83.0485
+  ],
+  31636: [
+    30.731,
+    -83.1114
+  ],
+  31637: [
+    31.296,
+    -83.4402
+  ],
+  31638: [
+    30.9064,
+    -83.5122
+  ],
+  31639: [
+    31.2133,
+    -83.1909
+  ],
+  31641: [
+    30.921,
+    -83.0936
+  ],
+  31642: [
+    31.2628,
+    -82.8832
+  ],
+  31643: [
+    30.7731,
+    -83.5569
+  ],
+  31645: [
+    31.0607,
+    -83.2187
+  ],
+  31647: [
+    31.2112,
+    -83.4317
+  ],
+  31648: [
+    30.7084,
+    -83.0084
+  ],
+  31649: [
+    30.9405,
+    -83.0139
+  ],
+  31650: [
+    31.37,
+    -83.0189
+  ],
+  31698: [
+    30.849,
+    -83.2896
+  ],
+  31699: [
+    30.9696,
+    -83.1943
+  ],
+  31701: [
+    31.5731,
+    -84.1548
+  ],
+  31704: [
+    31.5497,
+    -84.0555
+  ],
+  31705: [
+    31.5169,
+    -84.0429
+  ],
+  31707: [
+    31.5869,
+    -84.2064
+  ],
+  31709: [
+    32.0464,
+    -84.1496
+  ],
+  31711: [
+    32.1877,
+    -84.1222
+  ],
+  31712: [
+    31.8194,
+    -83.7192
+  ],
+  31714: [
+    31.7081,
+    -83.6784
+  ],
+  31716: [
+    31.3661,
+    -84.1107
+  ],
+  31719: [
+    32.0903,
+    -84.3107
+  ],
+  31720: [
+    30.8782,
+    -83.7246
+  ],
+  31721: [
+    31.5253,
+    -84.3015
+  ],
+  31722: [
+    31.0483,
+    -83.6109
+  ],
+  31727: [
+    31.4178,
+    -83.3874
+  ],
+  31730: [
+    31.2109,
+    -84.2806
+  ],
+  31733: [
+    31.5932,
+    -83.4898
+  ],
+  31735: [
+    31.9696,
+    -83.9733
+  ],
+  31738: [
+    31.0082,
+    -83.8797
+  ],
+  31743: [
+    31.8965,
+    -84.0075
+  ],
+  31744: [
+    31.3403,
+    -83.9031
+  ],
+  31747: [
+    31.1746,
+    -83.5849
+  ],
+  31749: [
+    31.4205,
+    -83.3301
+  ],
+  31750: [
+    31.7365,
+    -83.215
+  ],
+  31753: [
+    31.2004,
+    -83.8728
+  ],
+  31756: [
+    31.1769,
+    -83.9623
+  ],
+  31757: [
+    30.8714,
+    -83.9031
+  ],
+  31763: [
+    31.7361,
+    -84.1482
+  ],
+  31764: [
+    31.9763,
+    -84.0888
+  ],
+  31765: [
+    31.0876,
+    -84.0272
+  ],
+  31768: [
+    31.1891,
+    -83.8411
+  ],
+  31771: [
+    31.2481,
+    -83.6542
+  ],
+  31772: [
+    31.7242,
+    -83.961
+  ],
+  31773: [
+    30.9777,
+    -84.0458
+  ],
+  31774: [
+    31.5655,
+    -83.2637
+  ],
+  31775: [
+    31.3343,
+    -83.5989
+  ],
+  31778: [
+    30.975,
+    -83.7001
+  ],
+  31779: [
+    31.0902,
+    -84.1917
+  ],
+  31780: [
+    32.0277,
+    -84.3912
+  ],
+  31781: [
+    31.5606,
+    -83.7963
+  ],
+  31783: [
+    31.759,
+    -83.4701
+  ],
+  31784: [
+    31.2524,
+    -84.0485
+  ],
+  31787: [
+    31.8956,
+    -84.2482
+  ],
+  31788: [
+    31.1115,
+    -83.6839
+  ],
+  31789: [
+    31.4833,
+    -83.7339
+  ],
+  31790: [
+    31.6525,
+    -83.578
+  ],
+  31791: [
+    31.5289,
+    -83.8943
+  ],
+  31792: [
+    30.7656,
+    -84.0432
+  ],
+  31793: [
+    31.4619,
+    -83.5812
+  ],
+  31794: [
+    31.4459,
+    -83.4527
+  ],
+  31795: [
+    31.4346,
+    -83.6398
+  ],
+  31796: [
+    31.7712,
+    -83.875
+  ],
+  31798: [
+    31.6444,
+    -83.0473
+  ],
+  31801: [
+    32.5193,
+    -84.5948
+  ],
+  31803: [
+    32.3074,
+    -84.5172
+  ],
+  31804: [
+    32.6644,
+    -84.8784
+  ],
+  31805: [
+    32.2631,
+    -84.7395
+  ],
+  31806: [
+    32.2602,
+    -84.2995
+  ],
+  31807: [
+    32.6447,
+    -84.8045
+  ],
+  31808: [
+    32.6316,
+    -85.0105
+  ],
+  31810: [
+    32.5683,
+    -84.5249
+  ],
+  31811: [
+    32.7374,
+    -84.9374
+  ],
+  31812: [
+    32.6349,
+    -84.4251
+  ],
+  31814: [
+    32.1974,
+    -84.865
+  ],
+  31815: [
+    32.0418,
+    -84.8561
+  ],
+  31816: [
+    32.8789,
+    -84.6013
+  ],
+  31820: [
+    32.5758,
+    -84.8291
+  ],
+  31821: [
+    32.1425,
+    -84.9747
+  ],
+  31822: [
+    32.865,
+    -84.9103
+  ],
+  31823: [
+    32.7978,
+    -84.8114
+  ],
+  31824: [
+    32.0579,
+    -84.5206
+  ],
+  31825: [
+    32.1162,
+    -84.6709
+  ],
+  31826: [
+    32.8002,
+    -84.7031
+  ],
+  31827: [
+    32.6955,
+    -84.5038
+  ],
+  31829: [
+    32.5662,
+    -84.7254
+  ],
+  31830: [
+    32.9007,
+    -84.7291
+  ],
+  31831: [
+    32.6669,
+    -84.7048
+  ],
+  31832: [
+    31.9582,
+    -84.6149
+  ],
+  31833: [
+    32.8429,
+    -85.0918
+  ],
+  31836: [
+    32.7964,
+    -84.5351
+  ],
+  31901: [
+    32.4644,
+    -84.9801
+  ],
+  31903: [
+    32.416,
+    -84.9525
+  ],
+  31904: [
+    32.5543,
+    -85.0095
+  ],
+  31905: [
+    32.3728,
+    -84.8434
+  ],
+  31906: [
+    32.4678,
+    -84.9502
+  ],
+  31907: [
+    32.4844,
+    -84.8999
+  ],
+  31909: [
+    32.5488,
+    -84.9241
+  ],
+  35004: [
+    33.6034,
+    -86.4938
+  ],
+  35005: [
+    33.6059,
+    -86.9937
+  ],
+  35007: [
+    33.2214,
+    -86.7877
+  ],
+  35010: [
+    32.9167,
+    -85.9406
+  ],
+  35013: [
+    33.9022,
+    -86.5178
+  ],
+  35014: [
+    33.3559,
+    -86.2617
+  ],
+  35016: [
+    34.3249,
+    -86.5043
+  ],
+  35019: [
+    34.3021,
+    -86.6341
+  ],
+  35020: [
+    33.4048,
+    -86.954
+  ],
+  35022: [
+    33.3318,
+    -86.9591
+  ],
+  35023: [
+    33.4678,
+    -87.0882
+  ],
+  35031: [
+    34.0975,
+    -86.555
+  ],
+  35032: [
+    33.2631,
+    -86.3341
+  ],
+  35033: [
+    33.9217,
+    -87.0106
+  ],
+  35035: [
+    33.0437,
+    -86.9684
+  ],
+  35036: [
+    33.6405,
+    -86.9164
+  ],
+  35040: [
+    33.103,
+    -86.7289
+  ],
+  35043: [
+    33.3106,
+    -86.6629
+  ],
+  35044: [
+    33.2672,
+    -86.3665
+  ],
+  35045: [
+    32.8116,
+    -86.6732
+  ],
+  35046: [
+    32.9213,
+    -86.5305
+  ],
+  35049: [
+    33.9619,
+    -86.6121
+  ],
+  35051: [
+    33.2194,
+    -86.6008
+  ],
+  35052: [
+    33.5907,
+    -86.4099
+  ],
+  35053: [
+    34.0655,
+    -87.0664
+  ],
+  35054: [
+    33.502,
+    -86.3379
+  ],
+  35055: [
+    34.1512,
+    -86.7587
+  ],
+  35057: [
+    34.1803,
+    -86.9343
+  ],
+  35058: [
+    34.2368,
+    -86.7302
+  ],
+  35060: [
+    33.5576,
+    -86.9282
+  ],
+  35061: [
+    33.4753,
+    -86.9468
+  ],
+  35062: [
+    33.719,
+    -87.0177
+  ],
+  35063: [
+    33.8182,
+    -87.0206
+  ],
+  35064: [
+    33.4748,
+    -86.9196
+  ],
+  35068: [
+    33.6093,
+    -86.8317
+  ],
+  35070: [
+    34.0137,
+    -86.7427
+  ],
+  35071: [
+    33.6951,
+    -86.849
+  ],
+  35072: [
+    33.0935,
+    -86.0669
+  ],
+  35073: [
+    33.6513,
+    -86.987
+  ],
+  35077: [
+    34.0212,
+    -86.8327
+  ],
+  35078: [
+    33.3244,
+    -86.445
+  ],
+  35079: [
+    33.9385,
+    -86.757
+  ],
+  35080: [
+    33.2493,
+    -86.9148
+  ],
+  35082: [
+    33.158,
+    -86.1539
+  ],
+  35083: [
+    34.2038,
+    -86.5953
+  ],
+  35085: [
+    32.9765,
+    -86.7392
+  ],
+  35087: [
+    34.3065,
+    -86.5843
+  ],
+  35089: [
+    32.9458,
+    -86.0818
+  ],
+  35091: [
+    33.7835,
+    -86.7895
+  ],
+  35094: [
+    33.5135,
+    -86.5712
+  ],
+  35096: [
+    33.6203,
+    -86.1077
+  ],
+  35097: [
+    33.8922,
+    -86.6271
+  ],
+  35098: [
+    34.1394,
+    -87.0388
+  ],
+  35111: [
+    33.2809,
+    -87.0898
+  ],
+  35112: [
+    33.6941,
+    -86.4747
+  ],
+  35114: [
+    33.2225,
+    -86.8666
+  ],
+  35115: [
+    33.1427,
+    -86.8916
+  ],
+  35116: [
+    33.7313,
+    -86.77
+  ],
+  35117: [
+    33.6678,
+    -86.8926
+  ],
+  35118: [
+    33.5273,
+    -87.0346
+  ],
+  35119: [
+    33.638,
+    -86.7786
+  ],
+  35120: [
+    33.6686,
+    -86.4217
+  ],
+  35121: [
+    33.9411,
+    -86.4506
+  ],
+  35124: [
+    33.3218,
+    -86.7422
+  ],
+  35125: [
+    33.6334,
+    -86.2887
+  ],
+  35126: [
+    33.7309,
+    -86.655
+  ],
+  35127: [
+    33.4912,
+    -86.9758
+  ],
+  35128: [
+    33.5524,
+    -86.3378
+  ],
+  35130: [
+    33.6332,
+    -87.1367
+  ],
+  35131: [
+    33.7143,
+    -86.1925
+  ],
+  35133: [
+    33.8289,
+    -86.5955
+  ],
+  35135: [
+    33.6281,
+    -86.1957
+  ],
+  35136: [
+    32.8791,
+    -86.287
+  ],
+  35143: [
+    33.0902,
+    -86.5561
+  ],
+  35146: [
+    33.7951,
+    -86.4533
+  ],
+  35147: [
+    33.4159,
+    -86.531
+  ],
+  35148: [
+    33.7561,
+    -87.0456
+  ],
+  35149: [
+    33.2396,
+    -86.2099
+  ],
+  35150: [
+    33.1902,
+    -86.2446
+  ],
+  35151: [
+    33.1198,
+    -86.339
+  ],
+  35160: [
+    33.3634,
+    -86.1107
+  ],
+  35171: [
+    32.8714,
+    -86.7463
+  ],
+  35172: [
+    33.8452,
+    -86.6953
+  ],
+  35173: [
+    33.6552,
+    -86.5632
+  ],
+  35175: [
+    34.4357,
+    -86.5114
+  ],
+  35176: [
+    33.4818,
+    -86.5024
+  ],
+  35178: [
+    33.4159,
+    -86.4118
+  ],
+  35179: [
+    34.2733,
+    -86.969
+  ],
+  35180: [
+    33.8327,
+    -86.8488
+  ],
+  35181: [
+    33.6264,
+    -86.88
+  ],
+  35183: [
+    33.0064,
+    -86.3576
+  ],
+  35185: [
+    33.349,
+    -86.5388
+  ],
+  35186: [
+    33.2567,
+    -86.5103
+  ],
+  35203: [
+    33.5184,
+    -86.8101
+  ],
+  35204: [
+    33.522,
+    -86.8407
+  ],
+  35205: [
+    33.4951,
+    -86.8082
+  ],
+  35206: [
+    33.5703,
+    -86.7131
+  ],
+  35207: [
+    33.5677,
+    -86.825
+  ],
+  35208: [
+    33.4972,
+    -86.8791
+  ],
+  35209: [
+    33.4653,
+    -86.811
+  ],
+  35210: [
+    33.5418,
+    -86.669
+  ],
+  35211: [
+    33.4565,
+    -86.8685
+  ],
+  35212: [
+    33.5477,
+    -86.7527
+  ],
+  35213: [
+    33.5067,
+    -86.7443
+  ],
+  35214: [
+    33.5709,
+    -86.8923
+  ],
+  35215: [
+    33.6499,
+    -86.7038
+  ],
+  35216: [
+    33.4192,
+    -86.7894
+  ],
+  35217: [
+    33.6067,
+    -86.763
+  ],
+  35218: [
+    33.5077,
+    -86.894
+  ],
+  35221: [
+    33.4497,
+    -86.899
+  ],
+  35222: [
+    33.5237,
+    -86.7701
+  ],
+  35223: [
+    33.4881,
+    -86.7348
+  ],
+  35224: [
+    33.5277,
+    -86.9452
+  ],
+  35226: [
+    33.3988,
+    -86.8418
+  ],
+  35228: [
+    33.456,
+    -86.9216
+  ],
+  35229: [
+    33.4644,
+    -86.794
+  ],
+  35233: [
+    33.5092,
+    -86.8014
+  ],
+  35234: [
+    33.54,
+    -86.8038
+  ],
+  35235: [
+    33.6153,
+    -86.6454
+  ],
+  35242: [
+    33.4246,
+    -86.6709
+  ],
+  35243: [
+    33.441,
+    -86.7415
+  ],
+  35244: [
+    33.3529,
+    -86.8253
+  ],
+  35249: [
+    33.5066,
+    -86.8032
+  ],
+  35254: [
+    33.5137,
+    -86.8529
+  ],
+  35504: [
+    33.8941,
+    -87.1708
+  ],
+  35540: [
+    34.2186,
+    -87.1928
+  ],
+  35541: [
+    34.0813,
+    -87.1743
+  ],
+  35550: [
+    33.7454,
+    -87.1605
+  ],
+  35572: [
+    34.2013,
+    -87.2826
+  ],
+  35584: [
+    33.8193,
+    -87.0879
+  ],
+  35601: [
+    34.6057,
+    -87.0083
+  ],
+  35603: [
+    34.5355,
+    -86.9712
+  ],
+  35611: [
+    34.7738,
+    -87.0841
+  ],
+  35613: [
+    34.8202,
+    -86.8822
+  ],
+  35614: [
+    34.8586,
+    -87.0802
+  ],
+  35615: [
+    34.6623,
+    -86.876
+  ],
+  35619: [
+    34.3827,
+    -87.1521
+  ],
+  35620: [
+    34.9308,
+    -87.0202
+  ],
+  35621: [
+    34.335,
+    -86.7271
+  ],
+  35622: [
+    34.3466,
+    -86.899
+  ],
+  35640: [
+    34.4407,
+    -86.9437
+  ],
+  35643: [
+    34.6726,
+    -87.2019
+  ],
+  35647: [
+    34.9677,
+    -87.117
+  ],
+  35649: [
+    34.6252,
+    -86.8716
+  ],
+  35670: [
+    34.4638,
+    -86.7294
+  ],
+  35671: [
+    34.669,
+    -86.95
+  ],
+  35673: [
+    34.5859,
+    -87.1385
+  ],
+  35739: [
+    34.9686,
+    -86.791
+  ],
+  35740: [
+    34.9653,
+    -85.7774
+  ],
+  35741: [
+    34.7296,
+    -86.4633
+  ],
+  35744: [
+    34.6127,
+    -85.9045
+  ],
+  35745: [
+    34.9434,
+    -86.1802
+  ],
+  35746: [
+    34.8286,
+    -86.006
+  ],
+  35747: [
+    34.4949,
+    -86.299
+  ],
+  35748: [
+    34.7295,
+    -86.395
+  ],
+  35749: [
+    34.8222,
+    -86.7579
+  ],
+  35750: [
+    34.9562,
+    -86.5895
+  ],
+  35751: [
+    34.8112,
+    -86.2765
+  ],
+  35752: [
+    34.7641,
+    -85.9801
+  ],
+  35754: [
+    34.5146,
+    -86.6157
+  ],
+  35755: [
+    34.5096,
+    -86.1175
+  ],
+  35756: [
+    34.6437,
+    -86.8181
+  ],
+  35757: [
+    34.7845,
+    -86.7443
+  ],
+  35758: [
+    34.7114,
+    -86.7465
+  ],
+  35759: [
+    34.8684,
+    -86.5461
+  ],
+  35760: [
+    34.5439,
+    -86.3839
+  ],
+  35761: [
+    34.9118,
+    -86.4048
+  ],
+  35763: [
+    34.6117,
+    -86.473
+  ],
+  35764: [
+    34.7332,
+    -86.3127
+  ],
+  35765: [
+    34.6956,
+    -85.82
+  ],
+  35766: [
+    34.8675,
+    -86.2999
+  ],
+  35768: [
+    34.7839,
+    -86.1022
+  ],
+  35769: [
+    34.5976,
+    -86.1051
+  ],
+  35771: [
+    34.5386,
+    -86.0054
+  ],
+  35772: [
+    34.937,
+    -85.9484
+  ],
+  35773: [
+    34.8911,
+    -86.7079
+  ],
+  35774: [
+    34.7652,
+    -86.2265
+  ],
+  35775: [
+    34.5429,
+    -86.706
+  ],
+  35776: [
+    34.6612,
+    -86.2523
+  ],
+  35801: [
+    34.7246,
+    -86.5655
+  ],
+  35802: [
+    34.6765,
+    -86.5546
+  ],
+  35803: [
+    34.5632,
+    -86.5195
+  ],
+  35805: [
+    34.7071,
+    -86.6217
+  ],
+  35806: [
+    34.7664,
+    -86.6836
+  ],
+  35808: [
+    34.6329,
+    -86.6558
+  ],
+  35810: [
+    34.803,
+    -86.6035
+  ],
+  35811: [
+    34.7988,
+    -86.5039
+  ],
+  35816: [
+    34.7383,
+    -86.6318
+  ],
+  35824: [
+    34.6449,
+    -86.7521
+  ],
+  35896: [
+    34.753,
+    -86.6516
+  ],
+  35901: [
+    34.0476,
+    -85.9333
+  ],
+  35903: [
+    34.0257,
+    -85.8451
+  ],
+  35904: [
+    34.0706,
+    -85.9901
+  ],
+  35905: [
+    33.9614,
+    -85.9224
+  ],
+  35906: [
+    33.9271,
+    -86.0951
+  ],
+  35907: [
+    33.8908,
+    -86.018
+  ],
+  35950: [
+    34.2498,
+    -86.2611
+  ],
+  35951: [
+    34.3464,
+    -86.1462
+  ],
+  35952: [
+    34.0524,
+    -86.3107
+  ],
+  35953: [
+    33.8094,
+    -86.173
+  ],
+  35954: [
+    34.0898,
+    -86.0574
+  ],
+  35956: [
+    34.1461,
+    -86.1467
+  ],
+  35957: [
+    34.1962,
+    -86.1969
+  ],
+  35958: [
+    34.916,
+    -85.646
+  ],
+  35959: [
+    34.2452,
+    -85.6055
+  ],
+  35960: [
+    34.1286,
+    -85.5661
+  ],
+  35961: [
+    34.3043,
+    -85.846
+  ],
+  35962: [
+    34.2993,
+    -86.0366
+  ],
+  35963: [
+    34.3598,
+    -85.9272
+  ],
+  35966: [
+    34.795,
+    -85.7033
+  ],
+  35967: [
+    34.3938,
+    -85.698
+  ],
+  35968: [
+    34.476,
+    -85.7901
+  ],
+  35971: [
+    34.456,
+    -85.9466
+  ],
+  35972: [
+    33.9913,
+    -86.2242
+  ],
+  35973: [
+    34.344,
+    -85.5515
+  ],
+  35974: [
+    34.3628,
+    -86.0103
+  ],
+  35975: [
+    34.4404,
+    -86.0724
+  ],
+  35976: [
+    34.3413,
+    -86.3222
+  ],
+  35978: [
+    34.6428,
+    -85.729
+  ],
+  35979: [
+    34.83,
+    -85.6126
+  ],
+  35980: [
+    34.1721,
+    -86.3896
+  ],
+  35981: [
+    34.7222,
+    -85.6407
+  ],
+  35983: [
+    34.1728,
+    -85.7662
+  ],
+  35984: [
+    34.5186,
+    -85.5578
+  ],
+  35986: [
+    34.5048,
+    -85.8403
+  ],
+  35987: [
+    33.9134,
+    -86.2422
+  ],
+  35988: [
+    34.5579,
+    -85.7969
+  ],
+  35989: [
+    34.5985,
+    -85.6351
+  ],
+  35990: [
+    34.0667,
+    -86.3052
+  ],
+  36005: [
+    31.8876,
+    -85.736
+  ],
+  36006: [
+    32.6415,
+    -86.7277
+  ],
+  36008: [
+    32.4961,
+    -86.5654
+  ],
+  36013: [
+    32.2968,
+    -85.9795
+  ],
+  36016: [
+    31.8502,
+    -85.4147
+  ],
+  36017: [
+    31.6794,
+    -85.5577
+  ],
+  36020: [
+    32.4979,
+    -86.3164
+  ],
+  36022: [
+    32.6234,
+    -86.4056
+  ],
+  36024: [
+    32.6635,
+    -86.0364
+  ],
+  36025: [
+    32.5454,
+    -86.3409
+  ],
+  36026: [
+    32.7755,
+    -86.131
+  ],
+  36027: [
+    31.9778,
+    -85.1839
+  ],
+  36029: [
+    32.1819,
+    -85.9332
+  ],
+  36031: [
+    32.2477,
+    -85.7695
+  ],
+  36039: [
+    32.2857,
+    -85.8213
+  ],
+  36048: [
+    31.8042,
+    -85.592
+  ],
+  36051: [
+    32.6867,
+    -86.4788
+  ],
+  36052: [
+    32.1827,
+    -86.0428
+  ],
+  36053: [
+    32.0425,
+    -85.4484
+  ],
+  36054: [
+    32.4664,
+    -86.3595
+  ],
+  36057: [
+    32.3747,
+    -86.0846
+  ],
+  36064: [
+    32.3042,
+    -86.0899
+  ],
+  36066: [
+    32.4797,
+    -86.424
+  ],
+  36067: [
+    32.5165,
+    -86.5615
+  ],
+  36069: [
+    32.098,
+    -86.1655
+  ],
+  36075: [
+    32.3784,
+    -85.9237
+  ],
+  36078: [
+    32.547,
+    -85.9427
+  ],
+  36080: [
+    32.7118,
+    -86.284
+  ],
+  36081: [
+    31.9112,
+    -85.8981
+  ],
+  36083: [
+    32.3867,
+    -85.6844
+  ],
+  36088: [
+    32.4197,
+    -85.7171
+  ],
+  36089: [
+    32.1567,
+    -85.7015
+  ],
+  36091: [
+    32.7495,
+    -86.5193
+  ],
+  36092: [
+    32.6145,
+    -86.1972
+  ],
+  36093: [
+    32.4946,
+    -86.1336
+  ],
+  36101: [
+    32.3818,
+    -86.2976
+  ],
+  36104: [
+    32.4019,
+    -86.3185
+  ],
+  36105: [
+    32.2148,
+    -86.2773
+  ],
+  36106: [
+    32.3534,
+    -86.257
+  ],
+  36107: [
+    32.3843,
+    -86.2795
+  ],
+  36108: [
+    32.3391,
+    -86.4011
+  ],
+  36109: [
+    32.3858,
+    -86.2379
+  ],
+  36110: [
+    32.4466,
+    -86.2558
+  ],
+  36111: [
+    32.3366,
+    -86.2713
+  ],
+  36112: [
+    32.3809,
+    -86.3637
+  ],
+  36113: [
+    32.3802,
+    -86.342
+  ],
+  36114: [
+    32.4048,
+    -86.2457
+  ],
+  36115: [
+    32.4069,
+    -86.2467
+  ],
+  36116: [
+    32.2716,
+    -86.2193
+  ],
+  36117: [
+    32.3779,
+    -86.1489
+  ],
+  36130: [
+    32.3775,
+    -86.2994
+  ],
+  36201: [
+    33.6475,
+    -85.8841
+  ],
+  36203: [
+    33.583,
+    -85.8345
+  ],
+  36205: [
+    33.6996,
+    -85.7874
+  ],
+  36206: [
+    33.7328,
+    -85.818
+  ],
+  36207: [
+    33.6841,
+    -85.7052
+  ],
+  36250: [
+    33.7647,
+    -85.8939
+  ],
+  36251: [
+    33.2265,
+    -85.8567
+  ],
+  36255: [
+    33.1825,
+    -85.7373
+  ],
+  36256: [
+    33.0463,
+    -85.7048
+  ],
+  36258: [
+    33.4777,
+    -85.7173
+  ],
+  36260: [
+    33.5879,
+    -86.0011
+  ],
+  36262: [
+    33.7934,
+    -85.4683
+  ],
+  36263: [
+    33.4672,
+    -85.3602
+  ],
+  36264: [
+    33.5968,
+    -85.5515
+  ],
+  36265: [
+    33.8477,
+    -85.7849
+  ],
+  36266: [
+    33.3539,
+    -85.7493
+  ],
+  36267: [
+    33.1951,
+    -85.9465
+  ],
+  36268: [
+    33.4948,
+    -85.9295
+  ],
+  36269: [
+    33.7398,
+    -85.3839
+  ],
+  36271: [
+    33.7812,
+    -86.0187
+  ],
+  36272: [
+    33.9472,
+    -85.6011
+  ],
+  36273: [
+    33.545,
+    -85.378
+  ],
+  36274: [
+    33.1793,
+    -85.3603
+  ],
+  36276: [
+    33.1258,
+    -85.5742
+  ],
+  36277: [
+    33.7613,
+    -85.8152
+  ],
+  36278: [
+    33.311,
+    -85.5268
+  ],
+  36279: [
+    33.8723,
+    -85.8897
+  ],
+  36280: [
+    33.3864,
+    -85.3925
+  ],
+  36310: [
+    31.5951,
+    -85.2088
+  ],
+  36317: [
+    31.6346,
+    -85.3895
+  ],
+  36373: [
+    31.5187,
+    -85.0891
+  ],
+  36750: [
+    32.7896,
+    -86.8494
+  ],
+  36792: [
+    32.918,
+    -86.9157
+  ],
+  36801: [
+    32.7025,
+    -85.3855
+  ],
+  36804: [
+    32.534,
+    -85.3475
+  ],
+  36830: [
+    32.5349,
+    -85.4938
+  ],
+  36832: [
+    32.5829,
+    -85.5859
+  ],
+  36849: [
+    32.5991,
+    -85.4893
+  ],
+  36850: [
+    32.7869,
+    -85.6558
+  ],
+  36851: [
+    32.1504,
+    -85.0809
+  ],
+  36852: [
+    32.7566,
+    -85.2789
+  ],
+  36853: [
+    32.8048,
+    -85.7681
+  ],
+  36854: [
+    32.7516,
+    -85.1895
+  ],
+  36855: [
+    33.0289,
+    -85.3082
+  ],
+  36856: [
+    32.261,
+    -84.9954
+  ],
+  36858: [
+    32.3232,
+    -85.3078
+  ],
+  36860: [
+    32.2745,
+    -85.4244
+  ],
+  36861: [
+    32.8909,
+    -85.8492
+  ],
+  36862: [
+    32.904,
+    -85.4552
+  ],
+  36863: [
+    32.8895,
+    -85.2638
+  ],
+  36865: [
+    32.6026,
+    -85.5893
+  ],
+  36866: [
+    32.5653,
+    -85.7121
+  ],
+  36867: [
+    32.4981,
+    -85.0236
+  ],
+  36869: [
+    32.4197,
+    -85.0646
+  ],
+  36870: [
+    32.4828,
+    -85.1199
+  ],
+  36871: [
+    32.1582,
+    -85.1567
+  ],
+  36874: [
+    32.5643,
+    -85.1985
+  ],
+  36875: [
+    32.3186,
+    -85.1672
+  ],
+  36877: [
+    32.5732,
+    -85.1014
+  ],
+  36879: [
+    32.7313,
+    -85.5446
+  ],
+  37012: [
+    36.0711,
+    -86.0056
+  ],
+  37016: [
+    35.9636,
+    -86.1136
+  ],
+  37018: [
+    35.6314,
+    -86.211
+  ],
+  37019: [
+    35.3909,
+    -86.7093
+  ],
+  37020: [
+    35.6344,
+    -86.4071
+  ],
+  37026: [
+    35.6958,
+    -86.1075
+  ],
+  37030: [
+    36.2717,
+    -85.9424
+  ],
+  37034: [
+    35.6371,
+    -86.6948
+  ],
+  37037: [
+    35.7031,
+    -86.3512
+  ],
+  37047: [
+    35.3129,
+    -86.8319
+  ],
+  37059: [
+    35.985,
+    -85.9031
+  ],
+  37060: [
+    35.7492,
+    -86.6343
+  ],
+  37085: [
+    35.9531,
+    -86.2791
+  ],
+  37090: [
+    36.1154,
+    -86.2976
+  ],
+  37091: [
+    35.4892,
+    -86.7675
+  ],
+  37095: [
+    35.9659,
+    -85.9611
+  ],
+  37110: [
+    35.6451,
+    -85.7413
+  ],
+  37118: [
+    35.9257,
+    -86.189
+  ],
+  37127: [
+    35.7795,
+    -86.3272
+  ],
+  37128: [
+    35.8032,
+    -86.4746
+  ],
+  37129: [
+    35.9298,
+    -86.4508
+  ],
+  37130: [
+    35.8817,
+    -86.3187
+  ],
+  37132: [
+    35.8487,
+    -86.3628
+  ],
+  37144: [
+    35.3051,
+    -86.6559
+  ],
+  37145: [
+    36.3809,
+    -85.917
+  ],
+  37149: [
+    35.8087,
+    -86.1932
+  ],
+  37151: [
+    36.3092,
+    -86.043
+  ],
+  37153: [
+    35.7645,
+    -86.5553
+  ],
+  37160: [
+    35.4557,
+    -86.4848
+  ],
+  37166: [
+    35.918,
+    -85.7869
+  ],
+  37180: [
+    35.6215,
+    -86.5754
+  ],
+  37183: [
+    35.5053,
+    -86.2874
+  ],
+  37184: [
+    36.0868,
+    -86.1452
+  ],
+  37190: [
+    35.8231,
+    -86.0422
+  ],
+  37301: [
+    35.4172,
+    -85.7952
+  ],
+  37302: [
+    35.0157,
+    -85.0217
+  ],
+  37303: [
+    35.4426,
+    -84.6397
+  ],
+  37305: [
+    35.458,
+    -85.702
+  ],
+  37306: [
+    35.0968,
+    -86.1918
+  ],
+  37307: [
+    35.165,
+    -84.6263
+  ],
+  37308: [
+    35.3426,
+    -84.9938
+  ],
+  37309: [
+    35.3018,
+    -84.7415
+  ],
+  37310: [
+    35.2525,
+    -84.7101
+  ],
+  37311: [
+    35.104,
+    -84.9208
+  ],
+  37312: [
+    35.226,
+    -84.8745
+  ],
+  37313: [
+    35.3764,
+    -85.6955
+  ],
+  37315: [
+    35.0472,
+    -85.0516
+  ],
+  37316: [
+    35.0017,
+    -84.7297
+  ],
+  37317: [
+    35.031,
+    -84.4431
+  ],
+  37318: [
+    35.1787,
+    -85.98
+  ],
+  37321: [
+    35.5021,
+    -85.008
+  ],
+  37322: [
+    35.502,
+    -84.8251
+  ],
+  37323: [
+    35.0962,
+    -84.8165
+  ],
+  37324: [
+    35.2398,
+    -85.9872
+  ],
+  37325: [
+    35.2531,
+    -84.6049
+  ],
+  37326: [
+    35.0403,
+    -84.3833
+  ],
+  37327: [
+    35.4163,
+    -85.3944
+  ],
+  37328: [
+    35.0369,
+    -86.3574
+  ],
+  37329: [
+    35.392,
+    -84.4601
+  ],
+  37330: [
+    35.2796,
+    -86.1306
+  ],
+  37331: [
+    35.3162,
+    -84.5358
+  ],
+  37332: [
+    35.6006,
+    -84.9495
+  ],
+  37333: [
+    35.1484,
+    -84.3598
+  ],
+  37334: [
+    35.1654,
+    -86.5796
+  ],
+  37335: [
+    35.0689,
+    -86.404
+  ],
+  37336: [
+    35.3088,
+    -84.9315
+  ],
+  37337: [
+    35.7871,
+    -84.8507
+  ],
+  37338: [
+    35.4298,
+    -85.2095
+  ],
+  37339: [
+    35.3739,
+    -85.6322
+  ],
+  37340: [
+    35.022,
+    -85.5199
+  ],
+  37341: [
+    35.2199,
+    -85.073
+  ],
+  37342: [
+    35.3835,
+    -85.9469
+  ],
+  37343: [
+    35.1666,
+    -85.2123
+  ],
+  37345: [
+    35.0168,
+    -86.203
+  ],
+  37347: [
+    35.0635,
+    -85.6134
+  ],
+  37348: [
+    35.1218,
+    -86.4308
+  ],
+  37350: [
+    34.9945,
+    -85.3516
+  ],
+  37351: [
+    35.1003,
+    -85.2604
+  ],
+  37352: [
+    35.2775,
+    -86.353
+  ],
+  37353: [
+    35.1229,
+    -84.9855
+  ],
+  37354: [
+    35.5063,
+    -84.3474
+  ],
+  37355: [
+    35.5093,
+    -86.0793
+  ],
+  37356: [
+    35.2289,
+    -85.8237
+  ],
+  37357: [
+    35.5939,
+    -85.9183
+  ],
+  37359: [
+    35.2043,
+    -86.4039
+  ],
+  37360: [
+    35.4376,
+    -86.2543
+  ],
+  37361: [
+    35.0879,
+    -84.6567
+  ],
+  37362: [
+    35.0313,
+    -84.6809
+  ],
+  37363: [
+    35.121,
+    -85.0556
+  ],
+  37365: [
+    35.3687,
+    -85.5163
+  ],
+  37366: [
+    35.3389,
+    -85.83
+  ],
+  37367: [
+    35.6195,
+    -85.2263
+  ],
+  37369: [
+    35.2056,
+    -84.4644
+  ],
+  37370: [
+    35.359,
+    -84.7006
+  ],
+  37373: [
+    35.4075,
+    -85.0928
+  ],
+  37374: [
+    35.165,
+    -85.6618
+  ],
+  37375: [
+    35.1505,
+    -85.8904
+  ],
+  37376: [
+    35.0474,
+    -85.9584
+  ],
+  37377: [
+    35.2121,
+    -85.3623
+  ],
+  37379: [
+    35.2846,
+    -85.1949
+  ],
+  37380: [
+    35.0709,
+    -85.7546
+  ],
+  37381: [
+    35.687,
+    -84.8774
+  ],
+  37383: [
+    35.2114,
+    -85.9132
+  ],
+  37385: [
+    35.3368,
+    -84.2283
+  ],
+  37387: [
+    35.2743,
+    -85.7206
+  ],
+  37388: [
+    35.3515,
+    -86.1982
+  ],
+  37391: [
+    35.0932,
+    -84.3539
+  ],
+  37394: [
+    35.5392,
+    -85.8606
+  ],
+  37396: [
+    35.0019,
+    -85.5035
+  ],
+  37397: [
+    35.2076,
+    -85.5179
+  ],
+  37398: [
+    35.1812,
+    -86.1384
+  ],
+  37402: [
+    35.0468,
+    -85.3163
+  ],
+  37403: [
+    35.0483,
+    -85.2944
+  ],
+  37404: [
+    35.0282,
+    -85.2733
+  ],
+  37405: [
+    35.1299,
+    -85.3828
+  ],
+  37406: [
+    35.0731,
+    -85.2456
+  ],
+  37407: [
+    35.0019,
+    -85.2897
+  ],
+  37408: [
+    35.0308,
+    -85.3116
+  ],
+  37409: [
+    35.0103,
+    -85.3359
+  ],
+  37410: [
+    35.0019,
+    -85.3142
+  ],
+  37411: [
+    35.0266,
+    -85.2302
+  ],
+  37412: [
+    34.9974,
+    -85.2272
+  ],
+  37415: [
+    35.1247,
+    -85.2812
+  ],
+  37416: [
+    35.0989,
+    -85.157
+  ],
+  37419: [
+    35.0516,
+    -85.4211
+  ],
+  37421: [
+    35.0275,
+    -85.1536
+  ],
+  37450: [
+    35.049,
+    -85.3122
+  ],
+  37601: [
+    36.3383,
+    -82.3181
+  ],
+  37604: [
+    36.2992,
+    -82.383
+  ],
+  37614: [
+    36.301,
+    -82.3674
+  ],
+  37615: [
+    36.3982,
+    -82.4524
+  ],
+  37616: [
+    36.2225,
+    -82.7516
+  ],
+  37617: [
+    36.5245,
+    -82.3657
+  ],
+  37618: [
+    36.4603,
+    -82.2087
+  ],
+  37620: [
+    36.5496,
+    -82.094
+  ],
+  37640: [
+    36.3268,
+    -81.9747
+  ],
+  37641: [
+    36.1999,
+    -82.6635
+  ],
+  37642: [
+    36.5313,
+    -82.7269
+  ],
+  37643: [
+    36.3705,
+    -82.1223
+  ],
+  37645: [
+    36.5628,
+    -82.6625
+  ],
+  37650: [
+    36.0878,
+    -82.4686
+  ],
+  37656: [
+    36.4,
+    -82.6308
+  ],
+  37657: [
+    36.0172,
+    -82.5605
+  ],
+  37658: [
+    36.2604,
+    -82.1516
+  ],
+  37659: [
+    36.2798,
+    -82.5061
+  ],
+  37660: [
+    36.5269,
+    -82.572
+  ],
+  37663: [
+    36.463,
+    -82.4887
+  ],
+  37664: [
+    36.5081,
+    -82.5102
+  ],
+  37665: [
+    36.5795,
+    -82.5731
+  ],
+  37681: [
+    36.258,
+    -82.6206
+  ],
+  37682: [
+    36.3003,
+    -82.2917
+  ],
+  37683: [
+    36.453,
+    -81.8224
+  ],
+  37686: [
+    36.4402,
+    -82.3488
+  ],
+  37687: [
+    36.1787,
+    -82.097
+  ],
+  37688: [
+    36.5454,
+    -81.8829
+  ],
+  37690: [
+    36.2512,
+    -82.559
+  ],
+  37691: [
+    36.3679,
+    -81.7552
+  ],
+  37692: [
+    36.1846,
+    -82.3041
+  ],
+  37694: [
+    36.3838,
+    -82.2787
+  ],
+  37701: [
+    35.7917,
+    -83.9872
+  ],
+  37705: [
+    36.2269,
+    -84.0097
+  ],
+  37708: [
+    36.3306,
+    -83.3171
+  ],
+  37709: [
+    36.1665,
+    -83.665
+  ],
+  37710: [
+    36.158,
+    -84.3177
+  ],
+  37711: [
+    36.2814,
+    -83.0454
+  ],
+  37713: [
+    36.0815,
+    -83.1343
+  ],
+  37714: [
+    36.2309,
+    -84.2542
+  ],
+  37715: [
+    36.5532,
+    -83.9589
+  ],
+  37716: [
+    36.1009,
+    -84.1687
+  ],
+  37719: [
+    36.0219,
+    -84.4281
+  ],
+  37721: [
+    36.1306,
+    -83.8149
+  ],
+  37722: [
+    35.8152,
+    -83.2011
+  ],
+  37723: [
+    35.9704,
+    -84.8137
+  ],
+  37724: [
+    36.5485,
+    -83.7103
+  ],
+  37725: [
+    35.9976,
+    -83.3933
+  ],
+  37726: [
+    36.1881,
+    -84.8103
+  ],
+  37727: [
+    35.8851,
+    -83.023
+  ],
+  37729: [
+    36.5141,
+    -84.0328
+  ],
+  37730: [
+    36.5684,
+    -83.9736
+  ],
+  37731: [
+    36.5487,
+    -83.0091
+  ],
+  37732: [
+    36.328,
+    -84.6282
+  ],
+  37733: [
+    36.3567,
+    -84.695
+  ],
+  37737: [
+    35.7614,
+    -84.1202
+  ],
+  37738: [
+    35.6713,
+    -83.4765
+  ],
+  37742: [
+    35.6758,
+    -84.1792
+  ],
+  37743: [
+    36.0683,
+    -82.8557
+  ],
+  37745: [
+    36.2763,
+    -82.8312
+  ],
+  37748: [
+    35.9454,
+    -84.5164
+  ],
+  37752: [
+    36.576,
+    -83.5474
+  ],
+  37753: [
+    35.8228,
+    -83.098
+  ],
+  37754: [
+    36.1391,
+    -84.0298
+  ],
+  37755: [
+    36.4228,
+    -84.5327
+  ],
+  37756: [
+    36.3016,
+    -84.407
+  ],
+  37757: [
+    36.2614,
+    -84.1058
+  ],
+  37760: [
+    36.1038,
+    -83.4663
+  ],
+  37762: [
+    36.5764,
+    -84.1192
+  ],
+  37763: [
+    35.8234,
+    -84.4882
+  ],
+  37764: [
+    35.9703,
+    -83.6166
+  ],
+  37765: [
+    36.5723,
+    -83.0586
+  ],
+  37766: [
+    36.3984,
+    -84.073
+  ],
+  37769: [
+    36.2178,
+    -84.1555
+  ],
+  37770: [
+    36.1524,
+    -84.6418
+  ],
+  37771: [
+    35.8385,
+    -84.3164
+  ],
+  37772: [
+    35.7934,
+    -84.2121
+  ],
+  37774: [
+    35.7291,
+    -84.359
+  ],
+  37777: [
+    35.8226,
+    -84.0524
+  ],
+  37779: [
+    36.2109,
+    -83.7579
+  ],
+  37801: [
+    35.6717,
+    -84.0805
+  ],
+  37803: [
+    35.6608,
+    -83.9814
+  ],
+  37804: [
+    35.7923,
+    -83.8931
+  ],
+  37806: [
+    36.0847,
+    -83.728
+  ],
+  37807: [
+    36.2597,
+    -83.826
+  ],
+  37809: [
+    36.1567,
+    -83.0381
+  ],
+  37810: [
+    36.1777,
+    -83.102
+  ],
+  37811: [
+    36.346,
+    -83.2123
+  ],
+  37813: [
+    36.1751,
+    -83.257
+  ],
+  37814: [
+    36.2333,
+    -83.3379
+  ],
+  37818: [
+    36.1856,
+    -82.973
+  ],
+  37819: [
+    36.5683,
+    -84.2058
+  ],
+  37820: [
+    36.0852,
+    -83.5661
+  ],
+  37821: [
+    35.9751,
+    -83.1955
+  ],
+  37825: [
+    36.4159,
+    -83.6791
+  ],
+  37826: [
+    35.5582,
+    -84.5898
+  ],
+  37828: [
+    36.1978,
+    -84.0689
+  ],
+  37829: [
+    36.001,
+    -84.6174
+  ],
+  37830: [
+    35.9665,
+    -84.2905
+  ],
+  37840: [
+    36.0678,
+    -84.3696
+  ],
+  37841: [
+    36.5087,
+    -84.5438
+  ],
+  37843: [
+    36.0107,
+    -83.0484
+  ],
+  37845: [
+    36.1037,
+    -84.4502
+  ],
+  37846: [
+    35.6793,
+    -84.4818
+  ],
+  37847: [
+    36.4316,
+    -84.2734
+  ],
+  37848: [
+    36.237,
+    -83.6817
+  ],
+  37849: [
+    36.054,
+    -84.0485
+  ],
+  37851: [
+    36.5656,
+    -83.7925
+  ],
+  37852: [
+    36.3241,
+    -84.5795
+  ],
+  37853: [
+    35.8368,
+    -83.9108
+  ],
+  37854: [
+    35.8861,
+    -84.7091
+  ],
+  37857: [
+    36.4243,
+    -82.9414
+  ],
+  37860: [
+    36.2402,
+    -83.18
+  ],
+  37861: [
+    36.2407,
+    -83.5137
+  ],
+  37862: [
+    35.7364,
+    -83.6724
+  ],
+  37863: [
+    35.7864,
+    -83.5637
+  ],
+  37865: [
+    35.8512,
+    -83.7349
+  ],
+  37866: [
+    36.3473,
+    -83.8433
+  ],
+  37869: [
+    36.5148,
+    -83.245
+  ],
+  37870: [
+    36.4629,
+    -83.8338
+  ],
+  37871: [
+    36.047,
+    -83.6813
+  ],
+  37872: [
+    36.2687,
+    -84.6812
+  ],
+  37873: [
+    36.5263,
+    -82.843
+  ],
+  37874: [
+    35.5983,
+    -84.4565
+  ],
+  37876: [
+    35.8651,
+    -83.479
+  ],
+  37877: [
+    36.1511,
+    -83.4068
+  ],
+  37878: [
+    35.5966,
+    -83.9813
+  ],
+  37879: [
+    36.4733,
+    -83.5133
+  ],
+  37880: [
+    35.7009,
+    -84.6601
+  ],
+  37881: [
+    36.3981,
+    -83.3625
+  ],
+  37882: [
+    35.6044,
+    -83.8194
+  ],
+  37885: [
+    35.4989,
+    -84.1377
+  ],
+  37886: [
+    35.7415,
+    -83.8075
+  ],
+  37887: [
+    36.0707,
+    -84.6141
+  ],
+  37888: [
+    36.3299,
+    -83.5791
+  ],
+  37890: [
+    36.0804,
+    -83.2931
+  ],
+  37891: [
+    36.2921,
+    -83.1381
+  ],
+  37892: [
+    36.5557,
+    -84.3576
+  ],
+  37902: [
+    35.962,
+    -83.9196
+  ],
+  37909: [
+    35.9472,
+    -84.0227
+  ],
+  37912: [
+    36.0085,
+    -83.9847
+  ],
+  37914: [
+    35.9832,
+    -83.7958
+  ],
+  37915: [
+    35.9708,
+    -83.9004
+  ],
+  37916: [
+    35.9531,
+    -83.9326
+  ],
+  37917: [
+    36.0016,
+    -83.9126
+  ],
+  37918: [
+    36.0569,
+    -83.9174
+  ],
+  37919: [
+    35.9147,
+    -84.0002
+  ],
+  37920: [
+    35.9116,
+    -83.8578
+  ],
+  37921: [
+    35.9783,
+    -84.0019
+  ],
+  37922: [
+    35.8605,
+    -84.1005
+  ],
+  37923: [
+    35.9275,
+    -84.0807
+  ],
+  37924: [
+    36.0262,
+    -83.8119
+  ],
+  37929: [
+    35.9624,
+    -83.916
+  ],
+  37931: [
+    35.9763,
+    -84.1263
+  ],
+  37932: [
+    35.9173,
+    -84.1988
+  ],
+  37934: [
+    35.8762,
+    -84.18
+  ],
+  37938: [
+    36.125,
+    -83.9382
+  ],
+  38449: [
+    35.0431,
+    -86.8311
+  ],
+  38453: [
+    35.1192,
+    -86.8147
+  ],
+  38455: [
+    35.062,
+    -86.8936
+  ],
+  38459: [
+    35.1913,
+    -86.8022
+  ],
+  38477: [
+    35.0598,
+    -87.0189
+  ],
+  38478: [
+    35.2329,
+    -87.0059
+  ],
+  38488: [
+    35.0285,
+    -86.6865
+  ],
+  38501: [
+    36.226,
+    -85.5333
+  ],
+  38503: [
+    36.1632,
+    -85.5057
+  ],
+  38504: [
+    36.3931,
+    -84.7353
+  ],
+  38505: [
+    36.1732,
+    -85.5056
+  ],
+  38506: [
+    36.187,
+    -85.4335
+  ],
+  38541: [
+    36.538,
+    -85.3356
+  ],
+  38542: [
+    36.3158,
+    -85.2012
+  ],
+  38543: [
+    36.3501,
+    -85.15
+  ],
+  38544: [
+    36.1099,
+    -85.6523
+  ],
+  38545: [
+    36.2313,
+    -85.6597
+  ],
+  38547: [
+    36.1547,
+    -86.0095
+  ],
+  38548: [
+    36.1748,
+    -85.792
+  ],
+  38549: [
+    36.5621,
+    -85.1491
+  ],
+  38550: [
+    35.7698,
+    -85.6327
+  ],
+  38551: [
+    36.5581,
+    -85.4872
+  ],
+  38552: [
+    36.2177,
+    -85.8138
+  ],
+  38553: [
+    36.2032,
+    -85.0044
+  ],
+  38554: [
+    36.2513,
+    -85.161
+  ],
+  38555: [
+    35.8879,
+    -84.989
+  ],
+  38556: [
+    36.4076,
+    -84.9276
+  ],
+  38558: [
+    36.0099,
+    -84.8666
+  ],
+  38559: [
+    35.8084,
+    -85.508
+  ],
+  38560: [
+    36.2219,
+    -85.8556
+  ],
+  38562: [
+    36.3516,
+    -85.6593
+  ],
+  38563: [
+    36.2088,
+    -86.0207
+  ],
+  38564: [
+    36.2569,
+    -85.7545
+  ],
+  38565: [
+    36.263,
+    -85.0099
+  ],
+  38567: [
+    36.1328,
+    -85.9257
+  ],
+  38568: [
+    36.4385,
+    -85.4731
+  ],
+  38569: [
+    36.1187,
+    -85.8592
+  ],
+  38570: [
+    36.3763,
+    -85.3264
+  ],
+  38571: [
+    36.0516,
+    -85.0128
+  ],
+  38572: [
+    35.8491,
+    -85.129
+  ],
+  38573: [
+    36.4934,
+    -85.2239
+  ],
+  38574: [
+    36.1436,
+    -85.2293
+  ],
+  38575: [
+    36.5532,
+    -85.6295
+  ],
+  38577: [
+    36.5622,
+    -84.9531
+  ],
+  38578: [
+    35.9803,
+    -85.1963
+  ],
+  38579: [
+    35.8359,
+    -85.5482
+  ],
+  38580: [
+    36.2773,
+    -85.2953
+  ],
+  38581: [
+    35.741,
+    -85.6208
+  ],
+  38582: [
+    36.0994,
+    -85.7645
+  ],
+  38583: [
+    35.9531,
+    -85.4304
+  ],
+  38585: [
+    35.6881,
+    -85.4148
+  ],
+  38587: [
+    35.8648,
+    -85.614
+  ],
+  38588: [
+    36.4464,
+    -85.7307
+  ],
+  38589: [
+    36.2855,
+    -85.0762
+  ],
+  39813: [
+    31.4232,
+    -84.6843
+  ],
+  39815: [
+    30.7388,
+    -84.4907
+  ],
+  39817: [
+    30.9479,
+    -84.5934
+  ],
+  39819: [
+    30.7854,
+    -84.6452
+  ],
+  39823: [
+    31.3336,
+    -84.947
+  ],
+  39824: [
+    31.5284,
+    -84.8648
+  ],
+  39825: [
+    30.9308,
+    -84.7408
+  ],
+  39826: [
+    31.8185,
+    -84.3211
+  ],
+  39827: [
+    30.9476,
+    -84.2104
+  ],
+  39828: [
+    30.7986,
+    -84.2267
+  ],
+  39832: [
+    31.1911,
+    -85.0279
+  ],
+  39834: [
+    30.8943,
+    -84.4312
+  ],
+  39836: [
+    31.666,
+    -84.8686
+  ],
+  39837: [
+    31.1521,
+    -84.6777
+  ],
+  39840: [
+    31.7813,
+    -84.7641
+  ],
+  39841: [
+    31.2929,
+    -84.685
+  ],
+  39842: [
+    31.7543,
+    -84.4355
+  ],
+  39845: [
+    30.9515,
+    -84.8927
+  ],
+  39846: [
+    31.569,
+    -84.746
+  ],
+  39851: [
+    31.6198,
+    -84.9926
+  ],
+  39854: [
+    31.8692,
+    -85.0526
+  ],
+  39859: [
+    30.9876,
+    -84.8128
+  ],
+  39861: [
+    31.1353,
+    -84.9872
+  ],
+  39862: [
+    31.4594,
+    -84.5174
+  ],
+  39866: [
+    31.5609,
+    -84.6032
+  ],
+  39867: [
+    31.8428,
+    -84.9308
+  ],
+  39870: [
+    31.322,
+    -84.4141
+  ],
+  39877: [
+    31.9152,
+    -84.5116
+  ],
+  39885: [
+    31.7219,
+    -84.343
+  ],
+  39886: [
+    31.7325,
+    -84.6172
+  ],
+  39897: [
+    30.9112,
+    -84.3298
+  ],
+  40701: [
+    36.9136,
+    -84.1681
+  ],
+  40734: [
+    36.9299,
+    -83.975
+  ],
+  40759: [
+    36.813,
+    -84.0571
+  ],
+  40763: [
+    36.6892,
+    -83.9256
+  ],
+  40769: [
+    36.7044,
+    -84.1897
+  ],
+  40771: [
+    36.8625,
+    -84.0376
+  ],
+  40801: [
+    36.857,
+    -83.2549
+  ],
+  40806: [
+    36.8912,
+    -83.297
+  ],
+  40810: [
+    36.9364,
+    -83.2806
+  ],
+  40813: [
+    36.7102,
+    -83.5923
+  ],
+  40815: [
+    36.7916,
+    -83.2325
+  ],
+  40818: [
+    36.8216,
+    -83.2431
+  ],
+  40819: [
+    36.8023,
+    -83.4416
+  ],
+  40820: [
+    36.7979,
+    -83.1588
+  ],
+  40824: [
+    36.8253,
+    -83.3753
+  ],
+  40828: [
+    36.8718,
+    -83.1526
+  ],
+  40829: [
+    36.7961,
+    -83.3023
+  ],
+  40830: [
+    36.7764,
+    -83.3313
+  ],
+  40831: [
+    36.7602,
+    -83.3286
+  ],
+  40840: [
+    36.9446,
+    -83.419
+  ],
+  40843: [
+    36.8948,
+    -82.9316
+  ],
+  40845: [
+    36.7847,
+    -83.5035
+  ],
+  40847: [
+    36.8524,
+    -83.1571
+  ],
+  40849: [
+    36.8994,
+    -83.1355
+  ],
+  40854: [
+    36.8453,
+    -83.3617
+  ],
+  40856: [
+    36.7232,
+    -83.5275
+  ],
+  40863: [
+    36.7272,
+    -83.4309
+  ],
+  40865: [
+    36.9201,
+    -83.2112
+  ],
+  40870: [
+    36.942,
+    -83.153
+  ],
+  40873: [
+    36.8109,
+    -83.4
+  ],
+  40874: [
+    36.9891,
+    -83.4725
+  ],
+  40902: [
+    36.8615,
+    -83.6022
+  ],
+  40903: [
+    36.8029,
+    -83.8009
+  ],
+  40906: [
+    36.8892,
+    -83.8756
+  ],
+  40913: [
+    36.9361,
+    -83.5589
+  ],
+  40915: [
+    36.8904,
+    -83.8126
+  ],
+  40921: [
+    36.7917,
+    -83.9016
+  ],
+  40923: [
+    36.9193,
+    -83.8454
+  ],
+  40927: [
+    36.9001,
+    -83.013
+  ],
+  40935: [
+    36.9582,
+    -83.7528
+  ],
+  40939: [
+    36.8104,
+    -83.7207
+  ],
+  40940: [
+    36.6025,
+    -83.939
+  ],
+  40943: [
+    36.9563,
+    -83.8475
+  ],
+  40946: [
+    36.9576,
+    -83.8246
+  ],
+  40949: [
+    36.9011,
+    -83.8683
+  ],
+  40953: [
+    36.938,
+    -83.8013
+  ],
+  40958: [
+    36.8099,
+    -83.5969
+  ],
+  40964: [
+    36.7826,
+    -83.3377
+  ],
+  40965: [
+    36.62,
+    -83.7318
+  ],
+  40977: [
+    36.724,
+    -83.7292
+  ],
+  40982: [
+    36.933,
+    -83.6872
+  ],
+  40988: [
+    36.8698,
+    -83.5227
+  ],
+  40995: [
+    36.7527,
+    -83.8232
+  ],
+  40997: [
+    36.8945,
+    -83.662
+  ],
+  42518: [
+    36.906,
+    -84.6397
+  ],
+  42602: [
+    36.726,
+    -85.1215
+  ],
+  42603: [
+    36.7836,
+    -85.0141
+  ],
+  42631: [
+    36.7404,
+    -84.481
+  ],
+  42633: [
+    36.8008,
+    -84.8266
+  ],
+  42634: [
+    36.8932,
+    -84.4223
+  ],
+  42635: [
+    36.6762,
+    -84.4032
+  ],
+  42638: [
+    36.6744,
+    -84.4699
+  ],
+  42647: [
+    36.6813,
+    -84.6273
+  ],
+  42649: [
+    36.6265,
+    -84.415
+  ],
+  42653: [
+    36.7821,
+    -84.4547
+  ]
+}, o8 = "v0.13", F = [
+  { key: "sameday", label: "Same-day", amount: 100 },
+  { key: "residential", label: "Residential", amount: 50 },
+  { key: "liftgate", label: "Liftgate", amount: 25 }
+], c8 = (e, r) => {
+  let n = 0, c = e.length;
+  for (; n < c; ) {
+    const i = n + c >> 1;
+    e[i] <= r ? n = i + 1 : c = i;
   }
-  return o;
-}, R = (r, t) => _0(r, t) - 1;
-function ee(r, t) {
-  if (t <= r[0][0]) return r[0][1];
-  const o = r.length;
-  if (t >= r[o - 1][0]) {
-    const [c, i] = r[o - 2], [l, d] = r[o - 1];
-    return l === c ? d : i + (d - i) * (t - c) / (l - c);
+  return n;
+}, E = (e, r) => c8(e, r) - 1;
+function i8(e, r) {
+  if (r <= e[0][0]) return e[0][1];
+  const n = e.length;
+  if (r >= e[n - 1][0]) {
+    const [c, i] = e[n - 2], [l, s] = e[n - 1];
+    return l === c ? s : i + (s - i) * (r - c) / (l - c);
   }
-  for (let c = 1; c < o; c++)
-    if (t <= r[c][0]) {
-      const [i, l] = r[c - 1], [d, h] = r[c];
-      return d > i ? l + (h - l) * (t - i) / (d - i) : l;
+  for (let c = 1; c < n; c++)
+    if (r <= e[c][0]) {
+      const [i, l] = e[c - 1], [s, h] = e[c];
+      return s > i ? l + (h - l) * (r - i) / (s - i) : l;
     }
-  return r[o - 1][1];
+  return e[n - 1][1];
 }
-const C = { 65.77: "Z1", 68.67: "Z2", 71.58: "Z3", 103.01: "Z4" }, re = (r) => C[Math.round(r * 100) / 100] || "Z?", y = (r) => r.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }), te = (r, t) => (t = String(t), r.zone5[t] ?? r.zone3[t.slice(0, 3)] ?? r.global_), ae = (r, t, o) => Math.max(ee(r.curves[String(Math.round(t * 100) / 100)] || r.pk, o), t / 1.28);
-function ne(r, t, o, c, i) {
-  const l = Math.round(t * 100) / 100, d = R(r.SKB, Math.max(o, 1)), h = R(r.LOB, c), f = R(r.WBc, i), k = `${l}|${d}|${h}|${f}`;
-  if (k in r.resM) return r.resM[k];
-  const p = `${d}|${h}|${f}`;
-  if (p in r.resG) return r.resG[p];
-  const b = `${d}|${h}`;
-  return b in r.resW ? r.resW[b] : 0;
+const j = { 65.77: "Z1", 68.67: "Z2", 71.58: "Z3", 103.01: "Z4" }, l8 = (e) => j[Math.round(e * 100) / 100] || "Z?", A = (e) => e.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }), s8 = (e, r) => (r = String(r), e.zone5[r] ?? e.zone3[r.slice(0, 3)] ?? e.global_), p3 = (e, r, n) => Math.max(i8(e.curves[String(Math.round(r * 100) / 100)] || e.pk, n), r / 1.28);
+function h3(e, r, n, c, i) {
+  const l = Math.round(r * 100) / 100, s = E(e.SKB, Math.max(n, 1)), h = E(e.LOB, c), u = E(e.WBc, i), v = `${l}|${s}|${h}|${u}`;
+  if (v in e.resM) return e.resM[v];
+  const b = `${s}|${h}|${u}`;
+  if (b in e.resG) return e.resG[b];
+  const x = `${s}|${h}`;
+  return x in e.resW ? e.resW[x] : 0;
 }
-function f0(r, t, o, c, i) {
-  const l = te(r, t);
-  return { zb: l, lh: ae(r, l, o) + ne(r, l, c, i, o) };
-}
-function oe(r) {
-  const t = { Z1: { min: 65.77, zips: [], pfx: [] }, Z2: { min: 68.67, zips: [], pfx: [] }, Z3: { min: 71.58, zips: [], pfx: [] }, Z4: { min: 103.01, zips: [], pfx: [] } };
-  for (const [o, c] of Object.entries(r.zone5)) {
-    const i = C[Math.round(c * 100) / 100];
-    t[i] && t[i].zips.push(o);
+function d8(e) {
+  const r = { Z1: { min: 65.77, zips: [], pfx: [] }, Z2: { min: 68.67, zips: [], pfx: [] }, Z3: { min: 71.58, zips: [], pfx: [] }, Z4: { min: 103.01, zips: [], pfx: [] } };
+  for (const [n, c] of Object.entries(e.zone5)) {
+    const i = j[Math.round(c * 100) / 100];
+    r[i] && r[i].zips.push(n);
   }
-  for (const [o, c] of Object.entries(r.zone3)) {
-    const i = C[Math.round(c * 100) / 100];
-    t[i] && t[i].pfx.push(o);
+  for (const [n, c] of Object.entries(e.zone3)) {
+    const i = j[Math.round(c * 100) / 100];
+    r[i] && r[i].pfx.push(n);
   }
-  for (const o in t)
-    t[o].zips.sort(), t[o].pfx.sort();
-  return t;
+  for (const n in r)
+    r[n].zips.sort(), r[n].pfx.sort();
+  return r;
 }
-function ve(r, { zip: t, weight: o, skids: c = 1, loose: i = 0, fuelPct: l = 28, marginPct: d = 0 }) {
-  const h = Number(o) || 0, f = (Number(l) || 0) / 100, k = (Number(d) || 0) / 100, p = f0(r, t, h, c, i), b = p.lh * (1 + f);
-  return { zone: C[Math.round(p.zb * 100) / 100] || "Z?", zb: p.zb, linehaul: p.lh, fuelAmt: p.lh * f, allIn: b, quoted: b * (1 + k) };
+const p8 = 3958.8;
+function x3(e, r) {
+  const [n, c] = e, [i, l] = r, s = n * Math.PI / 180, h = i * Math.PI / 180, u = (i - n) * Math.PI / 180, v = (l - c) * Math.PI / 180, b = Math.sin(u / 2) ** 2 + Math.cos(s) * Math.cos(h) * Math.sin(v / 2) ** 2;
+  return 2 * p8 * Math.asin(Math.sqrt(b));
 }
-const xe = u0;
-let q = u0;
-const ce = (r, t, o, c) => f0(q, r, t, o, c);
-function ie(r, t, o, c) {
-  return r ? t > 6 || o > 2500 || c > 4 ? { key: "est", label: "estimate", note: "Heavy or high-piece freight prices with wider variance — treat this as a starting figure." } : c > 0 ? { key: "std", label: "has loose freight", note: "Loose pieces run looser than pallet freight — within $5 on ~69% vs ~94% pallet-only." } : t <= 4 && o <= 1500 ? { key: "core", label: "high confidence", note: "Pallet freight in the core range — matches Uline within $5 on ~94% of shipments." } : { key: "std", label: "standard", note: "Weight-and-zone estimate — Uline's basis for this lane." } : { key: "est", label: "estimate", note: "This ZIP isn't in the recent Uline data — rate is estimated from the surrounding area zone." };
+let u3 = null, f3 = null;
+function h8(e) {
+  if (f3 !== e) {
+    const r = new Set(Object.keys(e.zone3 || {}));
+    for (const n of Object.keys(e.zone5)) r.add(n.slice(0, 3));
+    u3 = r, f3 = e;
+  }
+  return u3;
 }
-const d0 = { orange: "#f96332", blue: "#2ca8ff", green: "#18ce0f", purple: "#9368e9", red: "#ff3636" }, le = { orange: "#e8521f", blue: "#1f93e6", green: "#15b30d", purple: "#7e52d8", red: "#e62a2a" }, se = { orange: "#f9633233", blue: "#2ca8ff33", green: "#18ce0f33", purple: "#9368e933", red: "#ff363633" }, M = [{ key: "sameday", label: "Same-day", fee: 100 }, { key: "residential", label: "Residential", fee: 50 }, { key: "liftgate", label: "Liftgate", fee: 25 }], de = `
+function u8(e, r = v3, n = B.origin) {
+  const c = r[String(e).slice(0, 5)];
+  return c && n ? x3(n, c) : null;
+}
+function k3(e, { zip: r, w: n, sk: c, lo: i, distMi: l, oaPerMile: s }) {
+  const h = String(r), u = e.dataRadiusMi ?? 80, v = h in e.zone5, b = h8(e).has(h.slice(0, 3));
+  if (!(!v && (!b || l != null && l > u))) {
+    const S = s8(e, r);
+    return { tier: v ? "data" : "nearby", zb: S, lh: p3(e, S, n) + h3(e, S, c, i, n), distMi: l, oaExtra: 0, radius: u };
+  }
+  const f = e.zoneMin && e.zoneMin.Z3 || 71.58, g = s ?? e.oaPerMile ?? 1.75, w = l != null ? Math.max(0, l - u) : 0, z = g * w;
+  return { tier: "oa", zb: f, lh: p3(e, f, n) + h3(e, f, c, i, n) + z, distMi: l, oaExtra: z, radius: u };
+}
+function z8(e, { zip: r, weight: n, skids: c = 1, loose: i = 0, fuelPct: l = 28, marginPct: s = 0, accessorial: h = 0, distMi: u = null }) {
+  const v = Number(n) || 0, b = (Number(l) || 0) / 100, x = (Number(s) || 0) / 100, f = k3(e, { zip: r, w: v, sk: c, lo: i, distMi: u ?? u8(r) }), g = f.lh * (1 + b), w = Number(h) || 0, z = g * (1 + x);
+  return { zone: j[Math.round(f.zb * 100) / 100] || "Z?", zb: f.zb, tier: f.tier, distMi: f.distMi, oaExtra: f.oaExtra, linehaul: f.lh, fuelAmt: f.lh * b, allIn: g, accessorial: w, freight: z, quoted: z + w };
+}
+const V8 = B;
+let q = B;
+const f8 = (e) => {
+  const r = v3[String(e).slice(0, 5)];
+  return q.origin && r ? x3(q.origin, r) : null;
+}, b8 = (e, r, n, c) => k3(q, { zip: e, w: r, sk: n, lo: c, distMi: f8(e) });
+function g8(e, r, n, c, i) {
+  return e === "oa" ? { key: "oa", label: "out-of-area", note: `Outside our Uline data${i != null ? ` (~${Math.round(i)} mi from the depot)` : ""} — this is a distance-based estimate, not a data-backed rate. Confirm before quoting firm.` } : e === "nearby" ? { key: "est", label: "nearby estimate", note: "This ZIP isn't in the data, but a neighboring area is — rate uses the nearby zone." } : r > 6 || n > 2500 || c > 4 ? { key: "est", label: "estimate", note: "Heavy or high-piece freight prices with wider variance — treat this as a starting figure." } : c > 0 ? { key: "std", label: "has loose freight", note: "Loose pieces run looser than pallet freight — within $5 on ~69% vs ~94% pallet-only." } : r <= 4 && n <= 1500 ? { key: "core", label: "high confidence", note: "Pallet freight in the core range — matches Uline within $5 on ~94% of shipments." } : { key: "std", label: "standard", note: "Weight-and-zone estimate — Uline's basis for this lane." };
+}
+const b3 = { orange: "#f96332", blue: "#2ca8ff", green: "#18ce0f", purple: "#9368e9", red: "#ff3636" }, m8 = { orange: "#e8521f", blue: "#1f93e6", green: "#15b30d", purple: "#7e52d8", red: "#e62a2a" }, v8 = { orange: "#f9633233", blue: "#2ca8ff33", green: "#18ce0f33", purple: "#9368e933", red: "#ff363633" }, x8 = "data:image/jpeg;base64,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", k8 = `
 @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700&display=swap');
 
 .rc-root{ --s1:4px;--s2:8px;--s3:12px;--s4:16px;--s5:20px;--s6:24px;--s8:32px;
@@ -1657,6 +10318,8 @@ const d0 = { orange: "#f96332", blue: "#2ca8ff", green: "#18ce0f", purple: "#936
 .rc-hpill{ display:inline-flex;align-items:center;gap:6px;font-size:11px;font-weight:600;padding:4px 10px;border-radius:var(--pill);background:rgba(255,255,255,.10);color:#fff; }
 .rc-hdot{ width:6px;height:6px;border-radius:50%;background:rgba(255,255,255,.6); }
 .rc-hpill.ok .rc-hdot{ background:var(--ok); } .rc-hpill.warn .rc-hdot{ background:var(--warn); }
+.rc-alert{ display:flex;gap:10px;align-items:flex-start;margin:0 0 var(--s4);padding:12px 14px;border-radius:var(--rc);background:#fff7ed;border:1px solid #fed7aa;color:#9a3412;font-size:12.5px;line-height:1.45;font-weight:500; }
+.rc-alerticon{ flex:none;width:18px;height:18px;border-radius:50%;background:#f97316;color:#fff;font-weight:800;font-size:12px;line-height:18px;text-align:center; }
 .rc-sparkwrap{ margin:16px -20px 0; }
 .rc-spark{ display:block;width:100%;height:auto; }
 
@@ -1708,13 +10371,14 @@ const d0 = { orange: "#f96332", blue: "#2ca8ff", green: "#18ce0f", purple: "#936
 .rc-preset{ font-size:12.5px;font-weight:600;color:var(--muted);padding:6px 12px;border-radius:var(--pill);transition:background var(--t),color var(--t); }
 .rc-preset:hover{ color:var(--ink); }
 .rc-preset.on{ background:var(--accent);color:#fff;box-shadow:0 4px 10px -3px var(--accent-ring); }
-.rc-accs{ display:flex;flex-wrap:wrap;gap:6px; }
-.rc-acc-btn{ font-size:12.5px;font-weight:600;color:var(--ink);padding:7px 12px;border-radius:var(--pill);background:var(--card);border:1px solid var(--line-2);transition:background var(--t),color var(--t),border-color var(--t),box-shadow var(--t); }
-.rc-acc-btn:hover{ border-color:var(--accent); }
-.rc-acc-btn.on{ background:var(--accent);color:#fff;border-color:var(--accent);box-shadow:0 4px 10px -3px var(--accent-ring); }
-.rc-acc-btn:focus-visible{ outline:none;box-shadow:0 0 0 2px var(--accent-ring); }
 .rc-preset:focus-visible{ outline:none;box-shadow:0 0 0 2px var(--accent-ring); }
 .rc-fuelrow .rc-sfx{ margin-left:auto;width:90px; }
+.rc-accs{ display:flex;flex-wrap:wrap;gap:8px; }
+.rc-acc{ font-size:12.5px;font-weight:600;color:var(--muted);background:#eceef3;border-radius:var(--pill);padding:9px 14px;transition:background var(--t),color var(--t),box-shadow var(--t); }
+.rc-acc:hover{ color:var(--ink); }
+.rc-acc.on{ background:var(--accent);color:#fff;box-shadow:0 4px 10px -3px var(--accent-ring); }
+.rc-acc:focus-visible{ outline:none;box-shadow:0 0 0 2px var(--accent-ring); }
+.rc-acc .rc-accamt{ opacity:.85;font-weight:700; }
 
 /* buttons + links */
 .rc-btn{ font-size:12.5px;font-weight:600;padding:9px 16px;border-radius:var(--pill);background:#eceef3;color:var(--ink);transition:background var(--t),transform var(--t),box-shadow var(--t); }
@@ -1778,350 +10442,367 @@ const d0 = { orange: "#f96332", blue: "#2ca8ff", green: "#18ce0f", purple: "#936
 
 .rc-pagefoot{ text-align:center;margin-top:var(--s4);font-size:11px;color:var(--faint);font-weight:500; }
 `;
-function p0({ value: r, set: t, min: o = 0 }) {
-  return /* @__PURE__ */ n("div", { className: "rc-step", children: [
-    /* @__PURE__ */ e("button", { onClick: () => t(Math.max(o, r - 1)), disabled: r <= o, "aria-label": "decrease", children: "−" }),
-    /* @__PURE__ */ e("span", { className: "rc-count", children: r }),
-    /* @__PURE__ */ e("button", { onClick: () => t(r + 1), "aria-label": "increase", children: "+" })
+function g3({ value: e, set: r, min: n = 0 }) {
+  return /* @__PURE__ */ o("div", { className: "rc-step", children: [
+    /* @__PURE__ */ t("button", { onClick: () => r(Math.max(n, e - 1)), disabled: e <= n, "aria-label": "decrease", children: "−" }),
+    /* @__PURE__ */ t("span", { className: "rc-count", children: e }),
+    /* @__PURE__ */ t("button", { onClick: () => r(e + 1), "aria-label": "increase", children: "+" })
   ] });
 }
-const E = "uline_customer_profiles_v1", h0 = [
+const I = "uline_customer_profiles_v1", m3 = [
   { id: "list", name: "List (Uline)", markup: 0, locked: !0 },
   { id: "retail", name: "Retail +15%", markup: 15 }
-], L = typeof window < "u" && window.storage && typeof window.storage.get == "function" ? { get: (r) => window.storage.get(r), set: (r, t) => window.storage.set(r, t) } : typeof window < "u" && window.localStorage ? {
-  get: async (r) => {
-    const t = window.localStorage.getItem(r);
-    return t == null ? null : { value: t };
+], L = typeof window < "u" && window.storage && typeof window.storage.get == "function" ? { get: (e) => window.storage.get(e), set: (e, r) => window.storage.set(e, r) } : typeof window < "u" && window.localStorage ? {
+  get: async (e) => {
+    const r = window.localStorage.getItem(e);
+    return r == null ? null : { value: r };
   },
-  set: async (r, t) => (window.localStorage.setItem(r, t), { value: t })
+  set: async (e, r) => (window.localStorage.setItem(e, r), { value: r })
 } : { get: async () => null, set: async () => null };
-function w({ label: r, hint: t, children: o, full: c }) {
-  return /* @__PURE__ */ n("div", { className: "rc-field" + (c ? " col" : ""), children: [
-    /* @__PURE__ */ n("span", { className: "rc-label", children: [
-      r,
-      t && /* @__PURE__ */ e("span", { className: "rc-hint", children: t })
+function U({ label: e, hint: r, children: n, full: c }) {
+  return /* @__PURE__ */ o("div", { className: "rc-field" + (c ? " col" : ""), children: [
+    /* @__PURE__ */ o("span", { className: "rc-label", children: [
+      e,
+      r && /* @__PURE__ */ t("span", { className: "rc-hint", children: r })
     ] }),
-    o
+    n
   ] });
 }
-function pe({ tab: r, setTab: t }) {
-  return /* @__PURE__ */ e("div", { className: "rc-tabs", role: "tablist", children: [["quote", "Quote"], ["zones", "Zones"], ["sheet", "Rate sheet"]].map(([o, c]) => /* @__PURE__ */ e("button", { role: "tab", "aria-selected": r === o, className: "rc-tab" + (r === o ? " on" : ""), onClick: () => t(o), children: c }, o)) });
+function N8({ tab: e, setTab: r }) {
+  return /* @__PURE__ */ t("div", { className: "rc-tabs", role: "tablist", children: [["quote", "Quote"], ["zones", "Zones"], ["sheet", "Rate sheet"]].map(([n, c]) => /* @__PURE__ */ t("button", { role: "tab", "aria-selected": e === n, className: "rc-tab" + (e === n ? " on" : ""), onClick: () => r(n), children: c }, n)) });
 }
-function he({ accentHex: r }) {
-  const t = [["Z1", 65.77], ["Z2", 68.67], ["Z3", 71.58], ["Z4", 103.01]], o = 103.01, c = 320, i = 96, l = 46, d = (c - 4 * l) / 5;
-  return /* @__PURE__ */ e("svg", { viewBox: `0 0 ${c} ${i}`, style: { display: "block", width: "100%", height: "auto" }, role: "img", "aria-label": "Minimum charge by zone", children: t.map(([h, f], k) => {
-    const p = (i - 30) * (f / o), b = d + k * (l + d), N = i - 20 - p;
-    return /* @__PURE__ */ n("g", { children: [
-      /* @__PURE__ */ e("rect", { x: b, y: N, width: l, height: p, rx: "5", fill: r, opacity: "0.88" }),
-      /* @__PURE__ */ e("text", { x: b + l / 2, y: i - 5, textAnchor: "middle", className: "rc-barlbl", children: h }),
-      /* @__PURE__ */ n("text", { x: b + l / 2, y: N - 5, textAnchor: "middle", className: "rc-barval", children: [
+function y8({ accentHex: e }) {
+  const r = [["Z1", 65.77], ["Z2", 68.67], ["Z3", 71.58], ["Z4", 103.01]], n = 103.01, c = 320, i = 96, l = 46, s = (c - 4 * l) / 5;
+  return /* @__PURE__ */ t("svg", { viewBox: `0 0 ${c} ${i}`, style: { display: "block", width: "100%", height: "auto" }, role: "img", "aria-label": "Minimum charge by zone", children: r.map(([h, u], v) => {
+    const b = (i - 30) * (u / n), x = s + v * (l + s), f = i - 20 - b;
+    return /* @__PURE__ */ o("g", { children: [
+      /* @__PURE__ */ t("rect", { x, y: f, width: l, height: b, rx: "5", fill: e, opacity: "0.88" }),
+      /* @__PURE__ */ t("text", { x: x + l / 2, y: i - 5, textAnchor: "middle", className: "rc-barlbl", children: h }),
+      /* @__PURE__ */ o("text", { x: x + l / 2, y: f - 5, textAnchor: "middle", className: "rc-barval", children: [
         "$",
-        Math.round(f)
+        Math.round(u)
       ] })
     ] }, h);
   }) });
 }
-function W({ k: r, v: t, disc: o }) {
-  return /* @__PURE__ */ n("div", { className: "rc-lrow", children: [
-    /* @__PURE__ */ e("span", { className: "rc-lk", children: r }),
-    /* @__PURE__ */ e("span", { className: "rc-lv" + (o ? " disc" : ""), children: t })
+function J({ k: e, v: r, disc: n }) {
+  return /* @__PURE__ */ o("div", { className: "rc-lrow", children: [
+    /* @__PURE__ */ t("span", { className: "rc-lk", children: e }),
+    /* @__PURE__ */ t("span", { className: "rc-lv" + (n ? " disc" : ""), children: r })
   ] });
 }
-function ue({ profiles: r, profileId: t, marginPct: o, curProfile: c, showAdd: i, newName: l, newMk: d, selectProfile: h, saveProfile: f, deleteProfile: k, setShowAdd: p, setNewName: b, setNewMk: N }) {
-  return /* @__PURE__ */ n(w, { full: !0, label: "Customer profile", hint: "Applies a saved markup or discount", children: [
-    /* @__PURE__ */ n("select", { className: "rc-select", value: t, onChange: (g) => h(g.target.value), children: [
-      r.map((g) => /* @__PURE__ */ n("option", { value: g.id, children: [
+function q8({ profiles: e, profileId: r, marginPct: n, curProfile: c, showAdd: i, newName: l, newMk: s, selectProfile: h, saveProfile: u, deleteProfile: v, setShowAdd: b, setNewName: x, setNewMk: f }) {
+  return /* @__PURE__ */ o(U, { full: !0, label: "Customer profile", hint: "Applies a saved markup or discount", children: [
+    /* @__PURE__ */ o("select", { className: "rc-select", value: r, onChange: (g) => h(g.target.value), children: [
+      e.map((g) => /* @__PURE__ */ o("option", { value: g.id, children: [
         g.name,
         g.id !== "list" ? `  (${g.markup > 0 ? "+" : ""}${g.markup}%)` : ""
       ] }, g.id)),
-      t === "__custom__" && /* @__PURE__ */ n("option", { value: "__custom__", children: [
+      r === "__custom__" && /* @__PURE__ */ o("option", { value: "__custom__", children: [
         "Custom (",
-        o > 0 ? "+" : "",
-        o,
+        n > 0 ? "+" : "",
+        n,
         "%)"
       ] }),
-      /* @__PURE__ */ e("option", { value: "__add__", children: "+ Add customer profile…" })
+      /* @__PURE__ */ t("option", { value: "__add__", children: "+ Add customer profile…" })
     ] }),
-    i && /* @__PURE__ */ n("div", { className: "rc-addbox", children: [
-      /* @__PURE__ */ e("input", { className: "rc-input nm", placeholder: "Customer name", value: l, onChange: (g) => b(g.target.value) }),
-      /* @__PURE__ */ e("input", { className: "rc-input mk", inputMode: "decimal", placeholder: "%", value: d, onChange: (g) => N(g.target.value.replace(/[^0-9.\-]/g, "")) }),
-      /* @__PURE__ */ e("button", { className: "rc-btn primary", onClick: f, children: "Save" }),
-      /* @__PURE__ */ e("button", { className: "rc-btn", onClick: () => {
-        p(!1), b(""), N("");
+    i && /* @__PURE__ */ o("div", { className: "rc-addbox", children: [
+      /* @__PURE__ */ t("input", { className: "rc-input nm", placeholder: "Customer name", value: l, onChange: (g) => x(g.target.value) }),
+      /* @__PURE__ */ t("input", { className: "rc-input mk", inputMode: "decimal", placeholder: "%", value: s, onChange: (g) => f(g.target.value.replace(/[^0-9.\-]/g, "")) }),
+      /* @__PURE__ */ t("button", { className: "rc-btn primary", onClick: u, children: "Save" }),
+      /* @__PURE__ */ t("button", { className: "rc-btn", onClick: () => {
+        b(!1), x(""), f("");
       }, children: "Cancel" })
     ] }),
-    c && !c.locked && t !== "__custom__" && !i && /* @__PURE__ */ n("button", { className: "rc-link", onClick: k, children: [
+    c && !c.locked && r !== "__custom__" && !i && /* @__PURE__ */ o("button", { className: "rc-link", onClick: v, children: [
       'Delete "',
       c.name,
       '"'
     ] })
   ] });
 }
-function fe({ name: r, info: t, rateRow: o }) {
-  const [c, i] = u(!1);
-  return /* @__PURE__ */ n("div", { className: "rc-card", style: { marginBottom: 0 }, children: [
-    /* @__PURE__ */ n("div", { className: "rc-zhd", children: [
-      /* @__PURE__ */ n("div", { children: [
-        /* @__PURE__ */ n("div", { className: "rc-zname", children: [
+function w8({ name: e, info: r, rateRow: n }) {
+  const [c, i] = m(!1);
+  return /* @__PURE__ */ o("div", { className: "rc-card", style: { marginBottom: 0 }, children: [
+    /* @__PURE__ */ o("div", { className: "rc-zhd", children: [
+      /* @__PURE__ */ o("div", { children: [
+        /* @__PURE__ */ o("div", { className: "rc-zname", children: [
           "Zone ",
-          r
+          e
         ] }),
-        /* @__PURE__ */ n("div", { className: "rc-zct", children: [
-          t.zips.length,
+        /* @__PURE__ */ o("div", { className: "rc-zct", children: [
+          r.zips.length,
           " ZIPs",
-          t.pfx.length ? ` · ${t.pfx.length} area fallbacks` : ""
+          r.pfx.length ? ` · ${r.pfx.length} area fallbacks` : ""
         ] })
       ] }),
-      /* @__PURE__ */ n("div", { children: [
-        /* @__PURE__ */ n("div", { className: "rc-zmin", children: [
+      /* @__PURE__ */ o("div", { children: [
+        /* @__PURE__ */ o("div", { className: "rc-zmin", children: [
           "$",
-          y(t.min)
+          A(r.min)
         ] }),
-        /* @__PURE__ */ e("div", { className: "rc-zminl", children: "min charge" })
+        /* @__PURE__ */ t("div", { className: "rc-zminl", children: "min charge" })
       ] })
     ] }),
-    /* @__PURE__ */ n("div", { className: "rc-zbody", children: [
-      /* @__PURE__ */ n("div", { className: "rc-zrate", children: [
+    /* @__PURE__ */ o("div", { className: "rc-zbody", children: [
+      /* @__PURE__ */ o("div", { className: "rc-zrate", children: [
         "All-in @ 28%, single pallet — ",
-        /* @__PURE__ */ n("b", { children: [
+        /* @__PURE__ */ o("b", { children: [
           "$",
-          o["500 - 999"]
+          n["500 - 999"]
         ] }),
         " at 500–999 lb · ",
-        /* @__PURE__ */ n("b", { children: [
+        /* @__PURE__ */ o("b", { children: [
           "$",
-          o["1,000 - 2,499"]
+          n["1,000 - 2,499"]
         ] }),
         " at 1,000–2,499 lb"
       ] }),
-      /* @__PURE__ */ e("div", { className: "rc-zips", children: (c ? t.zips : t.zips.slice(0, 24)).map((l) => /* @__PURE__ */ e("span", { className: "rc-zchip", children: l }, l)) }),
-      t.zips.length > 24 && /* @__PURE__ */ e("button", { className: "rc-zmore", onClick: () => i(!c), children: c ? "Show fewer" : `Show all ${t.zips.length} ZIPs` }),
-      t.pfx.length > 0 && /* @__PURE__ */ n("div", { className: "rc-pfx", children: [
+      /* @__PURE__ */ t("div", { className: "rc-zips", children: (c ? r.zips : r.zips.slice(0, 24)).map((l) => /* @__PURE__ */ t("span", { className: "rc-zchip", children: l }, l)) }),
+      r.zips.length > 24 && /* @__PURE__ */ t("button", { className: "rc-zmore", onClick: () => i(!c), children: c ? "Show fewer" : `Show all ${r.zips.length} ZIPs` }),
+      r.pfx.length > 0 && /* @__PURE__ */ o("div", { className: "rc-pfx", children: [
         "Area fallbacks (3-digit): ",
-        /* @__PURE__ */ e("b", { children: t.pfx.join(", ") })
+        /* @__PURE__ */ t("b", { children: r.pfx.join(", ") })
       ] })
     ] })
   ] });
 }
-function be() {
-  return /* @__PURE__ */ n("div", { className: "rc-card", children: [
-    /* @__PURE__ */ n("div", { className: "rc-chead", children: [
-      /* @__PURE__ */ e("div", { className: "rc-ccat", children: "All-in @ 28% fuel" }),
-      /* @__PURE__ */ e("h3", { className: "rc-ctitle", children: "Rate sheet by weight break" }),
-      /* @__PURE__ */ e("p", { className: "rc-csub", children: "Single pallet, normalized across 18 months. Italic cells (5,000 lb+) are thin on Uline volume — loose and bulky freight rates higher." })
+function S8() {
+  return /* @__PURE__ */ o("div", { className: "rc-card", children: [
+    /* @__PURE__ */ o("div", { className: "rc-chead", children: [
+      /* @__PURE__ */ t("div", { className: "rc-ccat", children: "All-in @ 28% fuel" }),
+      /* @__PURE__ */ t("h3", { className: "rc-ctitle", children: "Rate sheet by weight break" }),
+      /* @__PURE__ */ t("p", { className: "rc-csub", children: "Single pallet, normalized across 18 months. Italic cells (5,000 lb+) are thin on Uline volume — loose and bulky freight rates higher." })
     ] }),
-    /* @__PURE__ */ e("div", { className: "rc-tblwrap", children: /* @__PURE__ */ n("table", { className: "rc-tbl", children: [
-      /* @__PURE__ */ e("thead", { children: /* @__PURE__ */ n("tr", { children: [
-        /* @__PURE__ */ e("th", { children: "Weight (lb)" }),
-        /* @__PURE__ */ e("th", { children: "Z1" }),
-        /* @__PURE__ */ e("th", { children: "Z2" }),
-        /* @__PURE__ */ e("th", { children: "Z3" }),
-        /* @__PURE__ */ e("th", { children: "Z4" })
+    /* @__PURE__ */ t("div", { className: "rc-tblwrap", children: /* @__PURE__ */ o("table", { className: "rc-tbl", children: [
+      /* @__PURE__ */ t("thead", { children: /* @__PURE__ */ o("tr", { children: [
+        /* @__PURE__ */ t("th", { children: "Weight (lb)" }),
+        /* @__PURE__ */ t("th", { children: "Z1" }),
+        /* @__PURE__ */ t("th", { children: "Z2" }),
+        /* @__PURE__ */ t("th", { children: "Z3" }),
+        /* @__PURE__ */ t("th", { children: "Z4" })
       ] }) }),
-      /* @__PURE__ */ e("tbody", { children: q.breaks.map((r) => /* @__PURE__ */ n("tr", { children: [
-        /* @__PURE__ */ e("td", { className: "brk", children: r }),
-        ["Z1", "Z2", "Z3", "Z4"].map((t) => /* @__PURE__ */ n("td", { className: q.estCells[t].includes(r) ? "est" : "", children: [
+      /* @__PURE__ */ t("tbody", { children: q.breaks.map((e) => /* @__PURE__ */ o("tr", { children: [
+        /* @__PURE__ */ t("td", { className: "brk", children: e }),
+        ["Z1", "Z2", "Z3", "Z4"].map((r) => /* @__PURE__ */ o("td", { className: q.estCells[r].includes(e) ? "est" : "", children: [
           "$",
-          y(q.rateSheet[t][r])
-        ] }, t))
-      ] }, r)) })
+          A(q.rateSheet[r][e])
+        ] }, r))
+      ] }, e)) })
     ] }) })
   ] });
 }
-function ke({ model: r, modelUrl: t, initialZip: o, initialWeight: c, initialSkids: i, initialLoose: l, embedded: d } = {}) {
-  const [h] = u("blue"), [f, k] = u("quote"), [p, b] = u(o != null ? String(o).replace(/[^0-9]/g, "").slice(0, 5) : "30127"), [N, g] = u(c != null ? String(Math.max(0, Math.round(Number(c) || 0))) : "1330"), [O, b0] = u(i != null ? Number(i) : 3), [U, g0] = u(l != null ? Number(l) : 0), [z, I] = u("28"), [P, J] = u("0"), [V, m0] = u({ sameday: !1, residential: !1, liftgate: !1 }), [S, B] = u(h0), [Z, Q] = u("list"), [v0, j] = u(!1), [X, G] = u(""), [Y, $] = u(""), [_, e0] = u(0);
-  F(() => {
-    if (r && r.zone5) {
-      q = r, e0((a) => a + 1);
+function K8({ model: e, modelUrl: r, initialZip: n, initialWeight: c, initialSkids: i, initialLoose: l, embedded: s } = {}) {
+  const [h] = m("blue"), [u, v] = m("quote"), [b, x] = m(n != null ? String(n).replace(/[^0-9]/g, "").slice(0, 5) : "30127"), [f, g] = m(c != null ? String(Math.max(0, Math.round(Number(c) || 0))) : "1330"), [w, z] = m(i != null ? Number(i) : 3), [S, N3] = m(l != null ? Number(l) : 0), [V, X] = m("28"), [Z, Q] = m("0"), [O, y3] = m({ sameday: !1, residential: !1, liftgate: !1 }), [K, G] = m(m3), [C, W] = m("list"), [q3, M] = m(!1), [Y, $] = m(""), [_, e3] = m(""), [r3, t3] = m(0);
+  R(() => {
+    if (e && e.zone5) {
+      q = e, t3((a) => a + 1);
       return;
     }
-    if (t) {
+    if (r) {
       let a = !0;
-      return fetch(t).then((s) => s.json()).then((s) => {
-        a && s && s.zone5 && (q = s, e0((v) => v + 1));
+      return fetch(r).then((p) => p.json()).then((p) => {
+        a && p && p.zone5 && (q = p, t3((N) => N + 1));
       }).catch(() => {
       }), () => {
         a = !1;
       };
     }
-  }, [r, t]), F(() => {
+  }, [e, r]), R(() => {
     (async () => {
       try {
-        const a = await L.get(E);
+        const a = await L.get(I);
         if (a && a.value) {
-          const s = JSON.parse(a.value);
-          Array.isArray(s) && s.length && B(s);
+          const p = JSON.parse(a.value);
+          Array.isArray(p) && p.length && G(p);
         } else
-          await L.set(E, JSON.stringify(h0));
+          await L.set(I, JSON.stringify(m3));
       } catch {
       }
     })();
   }, []);
-  const r0 = async (a) => {
-    B(a);
+  const a3 = async (a) => {
+    G(a);
     try {
-      await L.set(E, JSON.stringify(a));
+      await L.set(I, JSON.stringify(a));
     } catch {
     }
-  }, x0 = (a) => {
+  }, w3 = (a) => {
     if (a === "__add__") {
-      j(!0);
+      M(!0);
       return;
     }
-    const s = S.find((v) => v.id === a);
-    s && (Q(a), J(String(s.markup)));
-  }, k0 = () => {
-    const a = X.trim();
+    const p = K.find((N) => N.id === a);
+    p && (W(a), Q(String(p.markup)));
+  }, S3 = () => {
+    const a = Y.trim();
     if (!a) return;
-    const s = Number(Y) || 0, v = "p" + Date.now(), A = [...S, { id: v, name: a, markup: s }];
-    r0(A), Q(v), J(String(s)), j(!1), G(""), $("");
-  }, N0 = () => {
-    const a = S.find((v) => v.id === Z);
+    const p = Number(_) || 0, N = "p" + Date.now(), y = [...K, { id: N, name: a, markup: p }];
+    a3(y), W(N), Q(String(p)), M(!1), $(""), e3("");
+  }, A3 = () => {
+    const a = K.find((N) => N.id === C);
     if (!a || a.locked) return;
-    const s = S.filter((v) => v.id !== Z);
-    r0(s), Q("list"), J("0");
-  }, q0 = (a) => {
-    J(a), Q("__custom__");
-  }, x = s0(() => {
-    const a = Number(N) || 0, s = (Number(z) || 0) / 100, v = (Number(P) || 0) / 100, A = ce(p, a, O, U), T = A.lh * (1 + s), H = T * (1 + v), c0 = M.reduce((V0, l0) => V0 + (V[l0.key] ? l0.fee : 0), 0), U0 = H + c0, z0 = Math.max(O + U, 1), i0 = String(p) in q.zone5;
-    return { zb: A.zb, lh: A.lh, fuelAmt: A.lh * s, allIn: T, quoted: H, accTotal: c0, total: U0, marginAmt: H - T, zipFound: i0, conf: ie(i0, z0, a, U) };
-  }, [p, N, O, U, z, P, V, _]), t0 = K0(null);
-  F(() => {
-    const a = t0.current;
+    const p = K.filter((N) => N.id !== C);
+    a3(p), W("list"), Q("0");
+  }, U3 = (a) => {
+    Q(a), W("__custom__");
+  }, d = d3(() => {
+    const a = Number(f) || 0, p = (Number(V) || 0) / 100, N = (Number(Z) || 0) / 100, y = b8(b, a, w, S), T = y.lh * (1 + p), H = T * (1 + N), l3 = F.reduce((Z3, s3) => Z3 + (O[s3.key] ? s3.amount : 0), 0), P3 = H + l3, J3 = Math.max(w + S, 1);
+    return { zb: y.zb, lh: y.lh, fuelAmt: y.lh * p, allIn: T, freight: H, accAmt: l3, quoted: P3, marginAmt: H - T, tier: y.tier, distMi: y.distMi, oaExtra: y.oaExtra, radius: y.radius, conf: g8(y.tier, J3, a, S, y.distMi) };
+  }, [b, f, w, S, V, Z, r3, O]), n3 = Q3(null);
+  R(() => {
+    const a = n3.current;
     a && (a.classList.remove("rc-anim"), a.offsetWidth, a.classList.add("rc-anim"));
-  }, [x.total]);
-  const a0 = Number(z) || 0, m = Number(P) || 0, n0 = m === 0 ? "" : m > 0 ? `+${m}% margin` : `${m}% discount`, K = S.find((a) => a.id === Z), w0 = K && K.id !== "list" && K.id !== "__custom__" ? " · " + K.name : "", y0 = `${m === 0 ? "all-in" : "quote"} · ${a0}% fuel${n0 ? " · " + n0 : ""}${w0}`, o0 = x.conf.key === "core" ? "ok" : x.conf.key === "est" ? "warn" : "", S0 = s0(() => oe(q), [_]), A0 = { "--accent": d0[h], "--accent-d": le[h], "--accent-ring": se[h] };
-  return /* @__PURE__ */ n("div", { className: "rc-root" + (d ? " rc-embedded" : ""), style: A0, children: [
-    /* @__PURE__ */ e("style", { children: de }),
-    /* @__PURE__ */ n("div", { className: "rc-wrap", children: [
-      /* @__PURE__ */ n("header", { className: "rc-head", children: [
-        /* @__PURE__ */ n("div", { className: "rc-brand", children: [
-          /* @__PURE__ */ e("img", { className: "rc-logoimg", src: $0, alt: "Davis Delivery Service" }),
-          /* @__PURE__ */ e("div", { className: "rc-bs", children: "Uline Rate Console" })
+  }, [d.quoted]);
+  const o3 = Number(V) || 0, k = Number(Z) || 0, c3 = k === 0 ? "" : k > 0 ? `+${k}% margin` : `${k}% discount`, P = K.find((a) => a.id === C), z3 = P && P.id !== "list" && P.id !== "__custom__" ? " · " + P.name : "", V3 = `${k === 0 ? "all-in" : "quote"} · ${o3}% fuel${c3 ? " · " + c3 : ""}${z3}`, i3 = d.conf.key === "core" ? "ok" : d.conf.key === "est" || d.conf.key === "oa" ? "warn" : "", K3 = d3(() => d8(q), [r3]), O3 = { "--accent": b3[h], "--accent-d": m8[h], "--accent-ring": v8[h] };
+  return /* @__PURE__ */ o("div", { className: "rc-root" + (s ? " rc-embedded" : ""), style: O3, children: [
+    /* @__PURE__ */ t("style", { children: k8 }),
+    /* @__PURE__ */ o("div", { className: "rc-wrap", children: [
+      /* @__PURE__ */ o("header", { className: "rc-head", children: [
+        /* @__PURE__ */ o("div", { className: "rc-brand", children: [
+          /* @__PURE__ */ t("img", { className: "rc-logoimg", src: x8, alt: "Davis Delivery Service" }),
+          /* @__PURE__ */ t("div", { className: "rc-bs", children: "Uline Rate Console" })
         ] }),
-        /* @__PURE__ */ e("div", { className: "rc-right", children: /* @__PURE__ */ e("span", { className: "rc-ver", children: Y0 }) })
+        /* @__PURE__ */ t("div", { className: "rc-right", children: /* @__PURE__ */ t("span", { className: "rc-ver", children: o8 }) })
       ] }),
-      /* @__PURE__ */ e(pe, { tab: f, setTab: k }),
-      f === "quote" && /* @__PURE__ */ n(D, { children: [
-        /* @__PURE__ */ n("div", { className: "rc-hero", children: [
-          /* @__PURE__ */ e("div", { className: "rc-cat", children: m === 0 ? "All-in quote" : "Customer quote" }),
-          /* @__PURE__ */ n("div", { className: "rc-price", children: [
-            /* @__PURE__ */ e("span", { className: "rc-cur", children: "$" }),
-            /* @__PURE__ */ e("span", { className: "rc-amt", ref: t0, children: y(x.total) })
-          ] }),
-          /* @__PURE__ */ e("div", { className: "rc-sub", children: y0 }),
-          /* @__PURE__ */ n("div", { className: "rc-hstatus", children: [
-            /* @__PURE__ */ n("span", { className: "rc-hpill " + o0, children: [
-              /* @__PURE__ */ e("span", { className: "rc-hdot" }),
-              x.conf.label
-            ] }),
-            /* @__PURE__ */ n("span", { className: "rc-hpill", children: [
-              "zone ",
-              re(x.zb)
-            ] }),
-            /* @__PURE__ */ e("span", { className: "rc-hpill", children: String(p).slice(0, 5) || "—" })
+      /* @__PURE__ */ t(N8, { tab: u, setTab: v }),
+      u === "quote" && /* @__PURE__ */ o(D, { children: [
+        (d.tier === "oa" || d.tier === "nearby") && /* @__PURE__ */ o("div", { className: "rc-alert", children: [
+          /* @__PURE__ */ t("span", { className: "rc-alerticon", children: "!" }),
+          d.tier === "oa" ? /* @__PURE__ */ o("div", { children: [
+            /* @__PURE__ */ t("b", { children: "Out-of-area quote." }),
+            " ",
+            d.distMi != null ? `~${Math.round(d.distMi)} mi from the depot — ` : "",
+            "beyond our Uline data. This is a distance-based estimate, not a data-backed rate."
+          ] }) : /* @__PURE__ */ o("div", { children: [
+            /* @__PURE__ */ t("b", { children: "Out-of-area quote." }),
+            " This ZIP isn't in our Uline data — priced from the nearest known zone. Confirm before quoting firm."
           ] })
         ] }),
-        /* @__PURE__ */ n("div", { className: "rc-card", children: [
-          /* @__PURE__ */ n("div", { className: "rc-chead", children: [
-            /* @__PURE__ */ e("div", { className: "rc-ccat", children: "Breakdown" }),
-            /* @__PURE__ */ e("h3", { className: "rc-ctitle", children: "Charge detail" })
+        /* @__PURE__ */ o("div", { className: "rc-hero", children: [
+          /* @__PURE__ */ t("div", { className: "rc-cat", children: k === 0 ? "All-in quote" : "Customer quote" }),
+          /* @__PURE__ */ o("div", { className: "rc-price", children: [
+            /* @__PURE__ */ t("span", { className: "rc-cur", children: "$" }),
+            /* @__PURE__ */ t("span", { className: "rc-amt", ref: n3, children: A(d.quoted) })
           ] }),
-          /* @__PURE__ */ n("div", { className: "rc-ledger", children: [
-            /* @__PURE__ */ e(W, { k: "Linehaul", v: "$" + y(x.lh) }),
-            /* @__PURE__ */ e(W, { k: `Fuel · ${a0}%`, v: "$" + y(x.fuelAmt) }),
-            m !== 0 && /* @__PURE__ */ e(W, { k: `${m > 0 ? "Margin" : "Discount"} · ${m > 0 ? "+" : ""}${m}%`, v: (m < 0 ? "−" : "+") + "$" + y(Math.abs(x.marginAmt)), disc: m < 0 }),
-            M.filter((a) => V[a.key]).map((a) => /* @__PURE__ */ e(W, { k: a.label, v: "+$" + y(a.fee) }, a.key)),
-            /* @__PURE__ */ n("div", { className: "rc-lrow tot", children: [
-              /* @__PURE__ */ e("span", { className: "rc-lk", children: "Quote" }),
-              /* @__PURE__ */ n("span", { className: "rc-lv", children: [
+          /* @__PURE__ */ t("div", { className: "rc-sub", children: V3 }),
+          /* @__PURE__ */ o("div", { className: "rc-hstatus", children: [
+            /* @__PURE__ */ o("span", { className: "rc-hpill " + i3, children: [
+              /* @__PURE__ */ t("span", { className: "rc-hdot" }),
+              d.conf.label
+            ] }),
+            /* @__PURE__ */ t("span", { className: "rc-hpill", children: d.tier !== "data" ? "out-of-area" : "zone " + l8(d.zb) }),
+            d.distMi != null && /* @__PURE__ */ o("span", { className: "rc-hpill", children: [
+              Math.round(d.distMi),
+              " mi"
+            ] }),
+            /* @__PURE__ */ t("span", { className: "rc-hpill", children: String(b).slice(0, 5) || "—" })
+          ] })
+        ] }),
+        /* @__PURE__ */ o("div", { className: "rc-card", children: [
+          /* @__PURE__ */ o("div", { className: "rc-chead", children: [
+            /* @__PURE__ */ t("div", { className: "rc-ccat", children: "Breakdown" }),
+            /* @__PURE__ */ t("h3", { className: "rc-ctitle", children: "Charge detail" })
+          ] }),
+          /* @__PURE__ */ o("div", { className: "rc-ledger", children: [
+            /* @__PURE__ */ t(J, { k: "Linehaul", v: "$" + A(d.lh) }),
+            d.tier === "oa" && d.oaExtra > 0 && /* @__PURE__ */ t(J, { k: `incl. distance · +${Math.round(Math.max(0, d.distMi - d.radius))} mi`, v: "$" + A(d.oaExtra * (1 + (Number(V) || 0) / 100)) }),
+            /* @__PURE__ */ t(J, { k: `Fuel · ${o3}%`, v: "$" + A(d.fuelAmt) }),
+            k !== 0 && /* @__PURE__ */ t(J, { k: `${k > 0 ? "Margin" : "Discount"} · ${k > 0 ? "+" : ""}${k}%`, v: (k < 0 ? "−" : "+") + "$" + A(Math.abs(d.marginAmt)), disc: k < 0 }),
+            F.filter((a) => O[a.key]).map((a) => /* @__PURE__ */ t(J, { k: a.label, v: "+$" + A(a.amount) }, a.key)),
+            /* @__PURE__ */ o("div", { className: "rc-lrow tot", children: [
+              /* @__PURE__ */ t("span", { className: "rc-lk", children: "Quote" }),
+              /* @__PURE__ */ o("span", { className: "rc-lv", children: [
                 "$",
-                y(x.total)
+                A(d.quoted)
               ] })
             ] })
           ] }),
-          /* @__PURE__ */ e("div", { className: "rc-divhd", children: "Shipment" }),
-          /* @__PURE__ */ n("div", { className: "rc-form", children: [
-            /* @__PURE__ */ e(
-              ue,
+          /* @__PURE__ */ t("div", { className: "rc-divhd", children: "Shipment" }),
+          /* @__PURE__ */ o("div", { className: "rc-form", children: [
+            /* @__PURE__ */ t(
+              q8,
               {
-                profiles: S,
-                profileId: Z,
-                marginPct: m,
-                curProfile: K,
-                showAdd: v0,
-                newName: X,
-                newMk: Y,
-                selectProfile: x0,
-                saveProfile: k0,
-                deleteProfile: N0,
-                setShowAdd: j,
-                setNewName: G,
-                setNewMk: $
+                profiles: K,
+                profileId: C,
+                marginPct: k,
+                curProfile: P,
+                showAdd: q3,
+                newName: Y,
+                newMk: _,
+                selectProfile: w3,
+                saveProfile: S3,
+                deleteProfile: A3,
+                setShowAdd: M,
+                setNewName: $,
+                setNewMk: e3
               }
             ),
-            /* @__PURE__ */ e(w, { label: "Destination ZIP", hint: "Sets the rate zone", children: /* @__PURE__ */ e("input", { className: "rc-input", inputMode: "numeric", maxLength: 5, value: p, onChange: (a) => b(a.target.value.replace(/[^0-9]/g, "").slice(0, 5)) }) }),
-            /* @__PURE__ */ e(w, { label: "Weight", hint: "Total pounds", children: /* @__PURE__ */ e("input", { className: "rc-input", inputMode: "numeric", value: N, onChange: (a) => g(a.target.value.replace(/[^0-9]/g, "")) }) }),
-            /* @__PURE__ */ e(w, { label: "Skids", hint: "Pallet count", children: /* @__PURE__ */ e(p0, { value: O, set: b0, min: 0 }) }),
-            /* @__PURE__ */ e(w, { label: "Loose pieces", hint: "Non-palletized", children: /* @__PURE__ */ e(p0, { value: U, set: g0, min: 0 }) }),
-            /* @__PURE__ */ e(w, { full: !0, label: "Fuel surcharge", hint: "2025: 23% → 20% (Jun 14) · 2026: 25% (Mar 21) → 28% (Apr 20)", children: /* @__PURE__ */ n("div", { className: "rc-fuelrow", children: [
-              /* @__PURE__ */ e("div", { className: "rc-presets", children: ["20", "23", "25", "28"].map((a) => /* @__PURE__ */ n("button", { className: "rc-preset" + (z === a ? " on" : ""), onClick: () => I(a), children: [
+            /* @__PURE__ */ t(U, { label: "Destination ZIP", hint: "Sets the rate zone", children: /* @__PURE__ */ t("input", { className: "rc-input", inputMode: "numeric", maxLength: 5, value: b, onChange: (a) => x(a.target.value.replace(/[^0-9]/g, "").slice(0, 5)) }) }),
+            /* @__PURE__ */ t(U, { label: "Weight", hint: "Total pounds", children: /* @__PURE__ */ t("input", { className: "rc-input", inputMode: "numeric", value: f, onChange: (a) => g(a.target.value.replace(/[^0-9]/g, "")) }) }),
+            /* @__PURE__ */ t(U, { label: "Skids", hint: "Pallet count", children: /* @__PURE__ */ t(g3, { value: w, set: z, min: 0 }) }),
+            /* @__PURE__ */ t(U, { label: "Loose pieces", hint: "Non-palletized", children: /* @__PURE__ */ t(g3, { value: S, set: N3, min: 0 }) }),
+            /* @__PURE__ */ t(U, { full: !0, label: "Fuel surcharge", hint: "2025: 23% → 20% (Jun 14) · 2026: 25% (Mar 21) → 28% (Apr 20)", children: /* @__PURE__ */ o("div", { className: "rc-fuelrow", children: [
+              /* @__PURE__ */ t("div", { className: "rc-presets", children: ["20", "23", "25", "28"].map((a) => /* @__PURE__ */ o("button", { className: "rc-preset" + (V === a ? " on" : ""), onClick: () => X(a), children: [
                 a,
                 "%"
               ] }, a)) }),
-              /* @__PURE__ */ n("div", { className: "rc-sfx", children: [
-                /* @__PURE__ */ e("input", { inputMode: "decimal", value: z, onChange: (a) => I(a.target.value.replace(/[^0-9.]/g, "")) }),
-                /* @__PURE__ */ e("span", { className: "rc-unit", children: "%" })
+              /* @__PURE__ */ o("div", { className: "rc-sfx", children: [
+                /* @__PURE__ */ t("input", { inputMode: "decimal", value: V, onChange: (a) => X(a.target.value.replace(/[^0-9.]/g, "")) }),
+                /* @__PURE__ */ t("span", { className: "rc-unit", children: "%" })
               ] })
             ] }) }),
-            /* @__PURE__ */ e(w, { full: !0, label: "Accessorials", hint: "Flat add-ons — toggle to add to the quote", children: /* @__PURE__ */ e("div", { className: "rc-accs", children: M.map((a) => /* @__PURE__ */ n("button", { type: "button", className: "rc-acc-btn" + (V[a.key] ? " on" : ""), "aria-pressed": V[a.key], onClick: () => m0((s) => ({ ...s, [a.key]: !s[a.key] })), children: [
+            /* @__PURE__ */ t(U, { full: !0, label: "Margin / discount", hint: "+ markup or − discount on the quote", children: /* @__PURE__ */ o("div", { className: "rc-sfx rc-narrow", children: [
+              /* @__PURE__ */ t("input", { inputMode: "decimal", value: Z, onChange: (a) => U3(a.target.value.replace(/[^0-9.\-]/g, "")) }),
+              /* @__PURE__ */ t("span", { className: "rc-unit", children: "%" })
+            ] }) }),
+            /* @__PURE__ */ t(U, { full: !0, label: "Accessorials", hint: "Flat fees added to the quote", children: /* @__PURE__ */ t("div", { className: "rc-accs", children: F.map((a) => /* @__PURE__ */ o("button", { className: "rc-acc" + (O[a.key] ? " on" : ""), onClick: () => y3((p) => ({ ...p, [a.key]: !p[a.key] })), "aria-pressed": !!O[a.key], children: [
               a.label,
-              " $",
-              a.fee
-            ] }, a.key)) }) }),
-            /* @__PURE__ */ e(w, { full: !0, label: "Margin / discount", hint: "+ markup or − discount on the quote", children: /* @__PURE__ */ n("div", { className: "rc-sfx rc-narrow", children: [
-              /* @__PURE__ */ e("input", { inputMode: "decimal", value: P, onChange: (a) => q0(a.target.value.replace(/[^0-9.\-]/g, "")) }),
-              /* @__PURE__ */ e("span", { className: "rc-unit", children: "%" })
-            ] }) })
+              " ",
+              /* @__PURE__ */ o("span", { className: "rc-accamt", children: [
+                "+$",
+                a.amount
+              ] })
+            ] }, a.key)) }) })
           ] }),
-          /* @__PURE__ */ n("div", { className: "rc-foot", children: [
-            /* @__PURE__ */ n("div", { className: "rc-note " + o0, children: [
-              /* @__PURE__ */ e("span", { className: "rc-notedot" }),
-              x.conf.note
+          /* @__PURE__ */ o("div", { className: "rc-foot", children: [
+            /* @__PURE__ */ o("div", { className: "rc-note " + i3, children: [
+              /* @__PURE__ */ t("span", { className: "rc-notedot" }),
+              d.conf.note
             ] }),
-            /* @__PURE__ */ n("div", { className: "rc-prov", children: [
+            /* @__PURE__ */ o("div", { className: "rc-prov", children: [
               "Modeled from ",
-              /* @__PURE__ */ e("b", { children: "226,073" }),
+              /* @__PURE__ */ t("b", { children: "226,073" }),
               " Uline shipments · ",
-              /* @__PURE__ */ e("b", { children: "Jan 2025 – Jun 2026" }),
+              /* @__PURE__ */ t("b", { children: "Jan 2025 – Jun 2026" }),
               ". Base rate flat 18 months. Uline bills on ",
-              /* @__PURE__ */ e("b", { children: "weight and zone" }),
+              /* @__PURE__ */ t("b", { children: "weight and zone" }),
               " — freight class and density don't change the rate (verified on 4,737 shipments). Pallet freight matches within $5 on ~94%."
             ] })
           ] })
         ] })
       ] }),
-      f === "zones" && /* @__PURE__ */ n(D, { children: [
-        /* @__PURE__ */ n("div", { className: "rc-card", children: [
-          /* @__PURE__ */ n("div", { className: "rc-chead", children: [
-            /* @__PURE__ */ e("div", { className: "rc-ccat", children: "Minimum charge" }),
-            /* @__PURE__ */ e("h3", { className: "rc-ctitle", children: "Rate zones" }),
-            /* @__PURE__ */ e("p", { className: "rc-csub", children: "Set by destination ZIP. Zones differ almost entirely by minimum charge — per-pound rates are nearly identical (short-haul metro / North GA). Z4 is the far / special tier." })
+      u === "zones" && /* @__PURE__ */ o(D, { children: [
+        /* @__PURE__ */ o("div", { className: "rc-card", children: [
+          /* @__PURE__ */ o("div", { className: "rc-chead", children: [
+            /* @__PURE__ */ t("div", { className: "rc-ccat", children: "Minimum charge" }),
+            /* @__PURE__ */ t("h3", { className: "rc-ctitle", children: "Rate zones" }),
+            /* @__PURE__ */ t("p", { className: "rc-csub", children: "Set by destination ZIP. Zones differ almost entirely by minimum charge — per-pound rates are nearly identical (short-haul metro / North GA). Z4 is the far / special tier." })
           ] }),
-          /* @__PURE__ */ e("div", { className: "rc-tblwrap", children: /* @__PURE__ */ e(he, { accentHex: d0[h] }) })
+          /* @__PURE__ */ t("div", { className: "rc-tblwrap", children: /* @__PURE__ */ t(y8, { accentHex: b3[h] }) })
         ] }),
-        /* @__PURE__ */ e("div", { className: "rc-zwrap", children: ["Z1", "Z2", "Z3", "Z4"].map((a) => /* @__PURE__ */ e(fe, { name: a, info: S0[a], rateRow: q.rateSheet[a] }, a)) })
+        /* @__PURE__ */ t("div", { className: "rc-zwrap", children: ["Z1", "Z2", "Z3", "Z4"].map((a) => /* @__PURE__ */ t(w8, { name: a, info: K3[a], rateRow: q.rateSheet[a] }, a)) })
       ] }),
-      f === "sheet" && /* @__PURE__ */ n(D, { children: [
-        /* @__PURE__ */ e(be, {}),
-        /* @__PURE__ */ e("div", { className: "rc-card", children: /* @__PURE__ */ e("div", { className: "rc-foot", style: { borderTop: "none" }, children: /* @__PURE__ */ e("div", { className: "rc-prov", children: "Per-CWT rates decline by weight break: ≈$26/cwt at the minimum, ≈$11/cwt at 500–1,000 lb, ≈$7/cwt at 1,000–2,500 lb. Quote a live figure on the Quote tab." }) }) })
+      u === "sheet" && /* @__PURE__ */ o(D, { children: [
+        /* @__PURE__ */ t(S8, {}),
+        /* @__PURE__ */ t("div", { className: "rc-card", children: /* @__PURE__ */ t("div", { className: "rc-foot", style: { borderTop: "none" }, children: /* @__PURE__ */ t("div", { className: "rc-prov", children: "Per-CWT rates decline by weight break: ≈$26/cwt at the minimum, ≈$11/cwt at 500–1,000 lb, ≈$7/cwt at 1,000–2,500 lb. Quote a live figure on the Quote tab." }) }) })
       ] }),
-      !d && /* @__PURE__ */ e("div", { className: "rc-pagefoot", children: "Modeled estimate from billing history · not a published Uline tariff" })
+      !s && /* @__PURE__ */ t("div", { className: "rc-pagefoot", children: "Modeled estimate from billing history · not a published Uline tariff" })
     ] })
   ] });
 }
 export {
-  ke as UlineQuoteConsole,
-  xe as defaultModel,
-  ve as priceQuote
+  K8 as UlineQuoteConsole,
+  V8 as defaultModel,
+  z8 as priceQuote
 };
