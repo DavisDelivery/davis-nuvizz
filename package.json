@@ -1,6 +1,6 @@
 {
   "name": "davis-nuvizz",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "private": true,
   "type": "module",
   "scripts": {
@@ -9,7 +9,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@davisdelivery/quote-generator": "github:DavisDelivery/Quotes#v0.9.1",
+    "@davisdelivery/quote-generator": "github:DavisDelivery/Quotes#4d7556cf2354cb7e297fdbe28436b3cd7b4cfa01",
     "@netlify/blobs": "^10.7.4",
     "lucide-react": "^0.400.0",
     "netlify-cli": "^24.11.3",
