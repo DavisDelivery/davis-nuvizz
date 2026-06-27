@@ -7,7 +7,8 @@
 // to main or deploys; the agent opens a PR the dispatcher reviews.
 //
 // Required env:
-//   GITHUB_TOKEN (or GH_TOKEN)   PAT with `repo` (or fine-grained Issues:write) scope.
+//   DEBUG_CAPTURE_GH_TOKEN   PAT with `repo` (or fine-grained Issues:write) scope.
+//   NOTE: GITHUB_TOKEN is RESERVED on Netlify and can't be set; GH_TOKEN also works.
 // Optional env:
 //   DEBUG_CAPTURE_REPO     "owner/repo"            (default: DavisDelivery/davis-nuvizz)
 //   DEBUG_CAPTURE_LABELS   "a,b" labels to apply   (default: none — avoids 422 on missing label)
@@ -30,7 +31,9 @@ const CORS = {
 };
 
 function getToken(): string | undefined {
-  return process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
+  // GITHUB_TOKEN is a RESERVED name on Netlify (its GitHub integration owns it)
+  // and can't be set as a project env var, so the primary name is custom.
+  return process.env.DEBUG_CAPTURE_GH_TOKEN || process.env.GH_TOKEN || process.env.GITHUB_TOKEN;
 }
 
 // Truncate so the RETURNED string — including the truncation notice — is <= max.
@@ -115,7 +118,7 @@ export default async (req: Request): Promise<Response> => {
   const token = getToken();
   if (!token) {
     return new Response(
-      JSON.stringify({ ok: false, error: 'Server is missing GITHUB_TOKEN — set it in Netlify env to enable filing issues.' }),
+      JSON.stringify({ ok: false, error: 'Server is missing DEBUG_CAPTURE_GH_TOKEN — set it in Netlify env to enable filing issues.' }),
       { status: 503, headers: CORS },
     );
   }
