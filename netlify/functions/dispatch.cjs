@@ -17,6 +17,23 @@
 
 const FIRESTORE_BASE = 'https://firestore.googleapis.com/v1/projects/glorybounddispatch/databases/(default)/documents';
 const API_KEY = process.env.GLORYBOUND_FIREBASE_KEY;
+
+// "YYYY-MM-DD" for the current calendar day in America/New_York. Manifests are
+// keyed by the ET day, so "today" must be derived in ET — not the UTC day,
+// which rolls to tomorrow after ~8pm ET and would request an empty manifest.
+function etToday() {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit',
+  }).format(new Date());
+}
+
+// Subtract n calendar days from a "YYYY-MM-DD" string (UTC-anchored math is
+// timezone-stable on a fixed date string).
+function minusDays(dateStr, n) {
+  const d = new Date(dateStr + 'T00:00:00Z');
+  d.setUTCDate(d.getUTCDate() - n);
+  return d.toISOString().slice(0, 10);
+}
 // The Firebase web API key is a PUBLIC identifier (not a secret). It's embedded in the
 // glorybounddispatch web app's JS bundle. Security is enforced by Firestore rules, not by
 // keeping this value hidden. We read it from env var so Netlify's secret scanner doesn't
@@ -264,8 +281,7 @@ exports.handler = async (event) => {
 
     // Today
     if (apiPath === '__today') {
-      const now = new Date();
-      const dateKey = now.toISOString().slice(0, 10);
+      const dateKey = etToday();
       const { entries, updatedAt, notFound } = await fetchManifest(dateKey);
       const stops = entries.map(e => entryToStop(e, dateKey));
       const loads = buildLoadsFromStops(stops);
@@ -311,11 +327,9 @@ exports.handler = async (event) => {
     if (apiPath === '__range') {
       const days = Math.min(parseInt(params.days || '7', 10), 31);
       const results = [];
-      const now = new Date();
+      const today = etToday();
       for (let i = 0; i < days; i++) {
-        const d = new Date(now);
-        d.setDate(d.getDate() - i);
-        const dateKey = d.toISOString().slice(0, 10);
+        const dateKey = minusDays(today, i);
         try {
           const { entries, updatedAt, notFound } = await fetchManifest(dateKey);
           const stops = entries.map(e => entryToStop(e, dateKey));

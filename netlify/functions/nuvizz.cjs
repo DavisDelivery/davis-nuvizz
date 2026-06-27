@@ -31,6 +31,15 @@
 const NUVIZZ_BASE = process.env.NUVIZZ_BASE_URL || 'https://portal.nuvizz.com/deliverit/openapi/v7';
 const DOC_BASE = process.env.NUVIZZ_DOC_BASE || 'https://portal.nuvizz.com/deliverit/openapi/documentapi';
 
+// "YYYY-MM-DD" for the current calendar day in America/New_York (Buford GA).
+// All "today" defaults go through this so we never fall back to the UTC day,
+// which is already tomorrow after ~8pm ET — matches the ET-anchored board.
+function etToday() {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit',
+  }).format(new Date());
+}
+
 // Firestore persistence layer (cross-instance cache for fleet data)
 const fs_db = require('./lib/firestore.cjs');
 
@@ -751,7 +760,7 @@ exports.handler = async (event) => {
 
     // Loads-by-date (simpler than today — just load nbrs, no full stop data)
     if (apiPath === '__loadsbydate') {
-      const date = params.date || new Date().toISOString().slice(0, 10);
+      const date = params.date || etToday();
       const data = await fetchLoadNbrsForDate(tenant, date);
       return { statusCode: 200, headers: corsHeaders, body: JSON.stringify(data) };
     }
@@ -845,7 +854,7 @@ exports.handler = async (event) => {
     //   ?tenant=davis&path=__fleet&from=192500&to=192800 → manual range override
     //   ?tenant=davis&path=__fleet&nocache=1          → bypass cache
     if (apiPath === '__fleet') {
-      const dateStr = params.date || new Date().toISOString().slice(0, 10);
+      const dateStr = params.date || etToday();
       const bypassCache = params.nocache === '1' || params.nocache === 'true';
 
       // Layer 1: in-memory cache (60s, per-function-instance, fastest)
@@ -960,7 +969,7 @@ exports.handler = async (event) => {
     //   ?tenant=davis&path=__fleetstops&date=YYYY-MM-DD
     // Shares scan with __fleet via the same cache entry (keyed with :stops suffix).
     if (apiPath === '__fleetstops') {
-      const dateStr = params.date || new Date().toISOString().slice(0, 10);
+      const dateStr = params.date || etToday();
       const bypassCache = params.nocache === '1' || params.nocache === 'true';
       const stopsCacheKey = `${fleetTenant}:${dateStr}:stops`;
 
@@ -1130,7 +1139,7 @@ exports.handler = async (event) => {
     if (apiPath === '__driver') {
       const userName = (params.userName || '').toUpperCase();
       const driverNameFilter = (params.driverName || '').toUpperCase();
-      const dateStr = params.date || new Date().toISOString().slice(0, 10);
+      const dateStr = params.date || etToday();
       if (!userName && !driverNameFilter) {
         return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: 'Need userName or driverName' }) };
       }
@@ -1397,7 +1406,7 @@ exports.handler = async (event) => {
     // effect so other tabs (Stops, Map, Drivers) see the freshness.
     if (apiPath === '__refreshLoad') {
       const loadNbr = params.loadNbr;
-      const dateStr = params.date || new Date().toISOString().slice(0, 10);
+      const dateStr = params.date || etToday();
       if (!loadNbr) {
         return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: 'Need loadNbr' }) };
       }
@@ -1507,7 +1516,7 @@ exports.handler = async (event) => {
     // Used by the explicit "refresh fleet" button on Home. Returns immediately with a
     // freshness summary; client should re-fetch __fleet/__fleetstops afterward.
     if (apiPath === '__refreshFleet') {
-      const dateStr = params.date || new Date().toISOString().slice(0, 10);
+      const dateStr = params.date || etToday();
 
       // Phase 4: SITE A doesn't scan. Clear the in-memory caches so the next read
       // pulls the freshest data SITE B has written, and return the current shared
