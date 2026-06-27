@@ -22,6 +22,7 @@
 
 const DEFAULT_REPO = 'DavisDelivery/davis-nuvizz';
 const MAX_BODY_CHARS = 60000; // GitHub issue body hard cap is 65536.
+const FN_BUILD = 'debug-capture v1'; // touch to force a full (non-empty) rebuild
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
