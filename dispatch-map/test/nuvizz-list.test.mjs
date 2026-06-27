@@ -30,8 +30,11 @@ test('carry-forward guard: a Thursday stop does NOT belong on Friday board (the 
   const thursdayStop = { stopNbr: 'X', boardDate: '2026-06-25', normalizedStatus: 'UNPLANNED' };
   const fridayStop = { stopNbr: 'Y', boardDate: '2026-06-26', normalizedStatus: 'SCHEDULED', loadNbr: 'L1' };
   const fridayBoard = '2026-06-26';
-  assert.notEqual(boardDayFor(thursdayStop), fridayBoard, 'Thursday stop must be dropped from Friday carry-forward');
-  assert.equal(boardDayFor(fridayStop), fridayBoard, 'genuine Friday stop is kept');
+  // Pin `today` to the board day under test so the live-route clamp is evaluated against
+  // Friday (the carry-forward guard's boardEtDate), not the real wall-clock date — otherwise
+  // this test silently breaks once the machine clock passes Friday.
+  assert.notEqual(boardDayFor(thursdayStop, fridayBoard), fridayBoard, 'Thursday stop must be dropped from Friday carry-forward');
+  assert.equal(boardDayFor(fridayStop, fridayBoard), fridayBoard, 'genuine Friday stop is kept');
 });
 
 test('Sunday-pulled / Tuesday-requested orders board on Tuesday, never Monday', () => {
