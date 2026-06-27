@@ -3,6 +3,7 @@
 import React, { useState, useEffect } from 'react';
 import { Home, MapPin, Truck, Package, Users, ArrowLeft, Wifi, WifiOff, RefreshCw, ChevronLeft, ChevronRight, Calendar, Calculator } from 'lucide-react';
 import { TENANTS, fetchHealth } from './lib/api';
+import { todayInET } from './lib/date-util';
 import { TenantSwitch, TabBtn } from './components/UI';
 
 import Dashboard from './screens/Dashboard';
@@ -14,7 +15,7 @@ import LoadDetail from './screens/LoadDetail';
 import StopDetail from './screens/StopDetail';
 import QuoteScreen from './screens/QuoteScreen';
 
-const APP_VERSION = '1.5.4';
+const APP_VERSION = '1.5.5';
 // Injected by vite.config.js — bumps every build so the running app can prove which deploy is live.
 // eslint-disable-next-line no-undef
 const BUILD_COMMIT = typeof __BUILD_COMMIT__ !== 'undefined' ? __BUILD_COMMIT__ : 'dev';
@@ -22,7 +23,11 @@ const BUILD_COMMIT = typeof __BUILD_COMMIT__ !== 'undefined' ? __BUILD_COMMIT__ 
 const BUILD_TIME = typeof __BUILD_TIME__ !== 'undefined' ? __BUILD_TIME__ : '';
 const BUILD_STAMP = BUILD_TIME ? BUILD_TIME.slice(5, 16).replace('T', ' ') : '';
 
-// Date helpers - UTC-based so we don't drift across timezones
+// Date helpers. "Today" is anchored on the America/New_York calendar day via
+// todayInET() (matches dispatch-map and the ET-anchored board), so the app
+// never jumps a day ahead overnight. The string-math helpers below operate on
+// a fixed "YYYY-MM-DD" anchored at UTC midnight, which is timezone-stable for
+// pure day arithmetic on an already-chosen date.
 function ymd(d) { return d.toISOString().slice(0, 10); }
 function parseYmd(s) { return new Date(s + 'T00:00:00Z'); }
 function addDays(d, n) { const c = new Date(d); c.setUTCDate(c.getUTCDate() + n); return c; }
@@ -44,13 +49,13 @@ export default function App() {
   const [online, setOnline] = useState(navigator.onLine);
 
   // Shared date state — used across all tabs so clicking around doesn't reset
-  const [viewDate, setViewDate] = useState(() => ymd(new Date()));
-  const isToday = viewDate === ymd(new Date());
+  const [viewDate, setViewDate] = useState(() => todayInET());
+  const isToday = viewDate === todayInET();
 
   const shiftDate = (days) => {
     setViewDate(ymd(addDays(parseYmd(viewDate), days)));
   };
-  const goToToday = () => setViewDate(ymd(new Date()));
+  const goToToday = () => setViewDate(todayInET());
   const goToPrevBusinessDay = () => {
     let d = addDays(parseYmd(viewDate), -1);
     while (isWeekend(d)) d = addDays(d, -1);

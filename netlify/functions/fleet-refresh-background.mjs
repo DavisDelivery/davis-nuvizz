@@ -34,9 +34,18 @@ export default async () => {
     return new Response('no site url', { status: 200 });
   }
 
-  const today = new Date().toISOString().slice(0, 10);
-  const dayOfWeek = new Date().getUTCDay(); // 0=Sun, 6=Sat
-  if (dayOfWeek === 0 || dayOfWeek === 6) {
+  // Anchor "today" + the weekend skip on the America/New_York calendar day, not
+  // UTC. A cron firing Friday evening or Sunday night ET reads a UTC date that
+  // has already rolled to the next day, which would mis-attribute the refresh
+  // day and wrongly skip/scan the weekend boundary.
+  const etParts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/New_York',
+    weekday: 'short', year: 'numeric', month: '2-digit', day: '2-digit',
+  }).formatToParts(new Date());
+  const get = (t) => etParts.find((p) => p.type === t)?.value;
+  const today = `${get('year')}-${get('month')}-${get('day')}`;
+  const weekday = get('weekday'); // Mon, Tue, ... Sun
+  if (weekday === 'Sat' || weekday === 'Sun') {
     console.log(`fleet-refresh: skipping weekend (${today})`);
     return new Response('weekend skip', { status: 200 });
   }
