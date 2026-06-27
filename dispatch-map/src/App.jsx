@@ -49,7 +49,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.29.52';
+const APP_VERSION = '0.29.53';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -69,6 +69,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.29.53', 'Routing (beta) — new right-panel "Routes / Drivers" view (part 3 of the workbench). From the gear settings you can now switch the right panel between today\'s Stops/Loads/Result tabs and a live Routes/Drivers roster: one summary card per route showing route name, driver, stop count, skids, weight, and a delivery-progress bar (X/Y delivered). Click a card to select that route\'s stops and frame them on the map. Routing-beta only.'],
   ['0.29.52', 'Routing (beta) — the floating "Selected N" panel now has sortable columns (click any header — Stop#, Type, Location, City, Zip, Window, Wt, Plt — to sort asc/desc), and a new panel-settings menu (gear, next to the date picker) where you turn the floating panel on and off. The gear is the start of the configurable panel layout — it will grow to switch the right panel between today\'s Stops/Loads/Result tabs and the new Routes/Drivers view, all Routing-beta only.'],
   ['0.29.51', 'Routing (beta) — new floating "Selected N" panel (part 2 of the routing workbench). A NuVizz-style overlay that floats over the map and lists every selected stop at a glance: Stop# · type (DO/PU) · location · city · zip · requested window · weight · pallets, with a running total and per-row open/remove. Toggle it on/off from the "1 · Select stops" controls (or the × on the panel / the "selected" chip on the map); the preference is remembered.'],
   ['0.29.50', 'Fixed "yesterday\'s stuff on today\'s board" on weekends. The background scanner now anchors each board on the EASTERN calendar day instead of the UTC day — previously the Friday-evening scan (after 8pm ET, when UTC has already rolled to Saturday) wrote Friday\'s live board into SATURDAY\'s board, and with no weekend scan to correct it, Friday\'s completed deliveries sat on Saturday\'s board all weekend. The board view also now strips any stale prior-day delivered/exception stops at load time as a safety net, so a mis-dated bleed is never shown even on a board that can\'t be re-scanned. No effect on normal weekday boards.'],
@@ -8817,9 +8818,49 @@ function RoutingStopsPanel({ selectedStops, notes, onRemove, hoverId, setHoverId
 // pallets), with per-row open/remove. Toggleable on/off (selPanelOpen); floats over the map at
 // both widths. The selection is the single source of truth — rows derive from selectedStops and
 // remove flows back through onRemove (same contract as RoutingStopsPanel).
-// Routing panel-settings menu — a gear button opening a small popover of panel on/off toggles.
-// Seed for the configurable-layout work: callers pass `panels` (each { key, label, on, setOn }).
-function RoutingSettingsMenu({ panels }) {
+// The Routing right-panel "Routes" view (workbench part 3): the day's routes/drivers as summary
+// cards — route name, driver, stop count, skids, weight, and delivery progress. Click a card to
+// select that route's stops and frame them on the map (reuses pickLoadFromTable via onPick).
+function RoutingRoutesPanel({ groups, onPick }) {
+  if (!groups.length) {
+    return <div className="p-4 text-[12px] text-slate-400">No routes on this day's board yet. Routes appear here once orders are assigned to a load.</div>;
+  }
+  const tot = groups.reduce((a, g) => ({ stops: a.stops + g.count, skids: a.skids + g.skids, weight: a.weight + g.weight }), { stops: 0, skids: 0, weight: 0 });
+  return (
+    <div className="flex-1 min-h-0 overflow-y-auto">
+      <div className="px-3 py-1.5 text-[11px] text-slate-500 border-b bg-slate-50 sticky top-0 z-10">
+        {groups.length} route{groups.length === 1 ? '' : 's'} · {tot.stops} stops · {tot.skids} skids · {Math.round(tot.weight).toLocaleString()} lb
+      </div>
+      <div className="p-2 space-y-2">
+        {groups.map((g) => {
+          const pct = g.count ? Math.round((100 * g.delivered) / g.count) : 0;
+          const done = pct === 100;
+          return (
+            <button key={g.key} onClick={() => onPick(g.key)} className="w-full text-left border rounded-lg p-2 hover:bg-slate-50 active:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-300">
+              <div className="flex items-center justify-between gap-2">
+                <div className="font-semibold text-slate-800 truncate">{g.name}</div>
+                <div className="text-[12px] font-bold shrink-0" style={{ color: done ? '#16a34a' : BRAND }}>{pct}%</div>
+              </div>
+              <div className="text-[11px] text-slate-500 truncate">{g.driver || 'No driver assigned'}</div>
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 mt-1 text-[11px] text-slate-600">
+                <span>{g.count} stop{g.count === 1 ? '' : 's'}</span>
+                <span>{g.skids} skids</span>
+                <span>{Math.round(g.weight).toLocaleString()} lb</span>
+                <span className="text-slate-400">{g.delivered}/{g.count} delivered</span>
+              </div>
+              <div className="mt-1.5 h-1 rounded bg-slate-100 overflow-hidden"><div className="h-full rounded" style={{ width: `${pct}%`, background: done ? '#16a34a' : BRAND }} /></div>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// Routing panel-settings menu — a gear button opening a small popover of panel on/off toggles
+// (`panels`: { key, label, on, setOn }) plus optional single-choice view switchers
+// (`views`: { key, label, value, setValue, options: [{ value, label }] }).
+function RoutingSettingsMenu({ panels = [], views = [] }) {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
   useEffect(() => {
@@ -8837,13 +8878,28 @@ function RoutingSettingsMenu({ panels }) {
       </button>
       {open && (
         <div className="absolute right-0 mt-1 z-30 w-60 bg-white border border-slate-300 rounded-lg shadow-xl p-2 text-[12px]">
-          <div className="font-semibold text-slate-700 px-1 pb-1 mb-1 border-b">Panels</div>
-          {panels.map((p) => (
-            <label key={p.key} className="flex items-center justify-between gap-2 px-1 py-1.5 rounded hover:bg-slate-50 cursor-pointer">
-              <span className="text-slate-700">{p.label}</span>
-              <input type="checkbox" checked={p.on} onChange={(e) => p.setOn(e.target.checked)} />
-            </label>
+          {views.map((v) => (
+            <div key={v.key} className="mb-1.5">
+              <div className="font-semibold text-slate-700 px-1 pb-1 mb-1 border-b">{v.label}</div>
+              {v.options.map((o) => (
+                <label key={o.value} className="flex items-center gap-2 px-1 py-1.5 rounded hover:bg-slate-50 cursor-pointer">
+                  <input type="radio" name={`rt-view-${v.key}`} checked={v.value === o.value} onChange={() => v.setValue(o.value)} />
+                  <span className="text-slate-700">{o.label}</span>
+                </label>
+              ))}
+            </div>
           ))}
+          {panels.length > 0 && (
+            <>
+              <div className="font-semibold text-slate-700 px-1 pb-1 mb-1 border-b">Panels</div>
+              {panels.map((p) => (
+                <label key={p.key} className="flex items-center justify-between gap-2 px-1 py-1.5 rounded hover:bg-slate-50 cursor-pointer">
+                  <span className="text-slate-700">{p.label}</span>
+                  <input type="checkbox" checked={p.on} onChange={(e) => p.setOn(e.target.checked)} />
+                </label>
+              ))}
+            </>
+          )}
         </div>
       )}
     </div>
@@ -9063,6 +9119,13 @@ function RoutingScreen() {
   });
   useEffect(() => { try { localStorage.setItem('routing.selPanel', selPanelOpen ? 'on' : 'off'); } catch { /* ignore */ } }, [selPanelOpen]);
 
+  // Right-panel layout version (Routing-beta only): 'tabs' = today's Stops/Loads/Result rail,
+  // 'routes' = the new live Routes/Drivers roster. Chosen from the gear settings; persisted.
+  const [rightPanelMode, setRightPanelMode] = useState(() => {
+    try { return localStorage.getItem('routing.rightPanel') === 'routes' ? 'routes' : 'tabs'; } catch { return 'tabs'; }
+  });
+  useEffect(() => { try { localStorage.setItem('routing.rightPanel', rightPanelMode); } catch { /* ignore */ } }, [rightPanelMode]);
+
   const [selectedIds, setSelectedIds] = useState(() => new Set());
   const [selectedTruckIds, setSelectedTruckIds] = useState(() => new Set());
   const [intent, setIntent] = useState('');
@@ -9077,6 +9140,25 @@ function RoutingScreen() {
   const stopById = useMemo(() => new Map(positioned.map((s) => [String(s.stopNbr), s])), [positioned]);
   const positionedRef = useRef(positioned);
   useEffect(() => { positionedRef.current = positioned; }, [positioned]);
+
+  // The day's routes/drivers roster — group the board by load (route name) for the right-panel
+  // "Routes" view: stop count, driver, skids (cartons), weight, and delivery progress per route.
+  const routeGroups = useMemo(() => {
+    const m = new Map();
+    for (const s of stops) {
+      const key = s.routeName || s.loadNbr;
+      if (!key) continue;
+      let g = m.get(key);
+      if (!g) { g = { key, name: s.routeName || key, loadNbr: s.loadNbr || key, driver: '', count: 0, delivered: 0, skids: 0, weight: 0 }; m.set(key, g); }
+      if (!g.driver && (s.driverName || s.driverUserName)) g.driver = s.driverName || s.driverUserName;
+      g.count += 1;
+      if (classifyStopStatus(s) === 'DELIVERED') g.delivered += 1;
+      g.skids += Number(s.cartons) || 0;          // NuVizz totalCartons = real skids
+      g.weight += Number(s.weight) || 0;
+    }
+    return [...m.values()].sort((a, b) =>
+      String(a.driver || '~').localeCompare(String(b.driver || '~')) || String(a.name).localeCompare(String(b.name)));
+  }, [stops]);
 
   // Default trucks selected once profiles load.
   useEffect(() => {
@@ -9710,7 +9792,10 @@ function RoutingScreen() {
         <div className="font-bold text-slate-800">Routing <span className="text-[10px] uppercase tracking-wide bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded">beta</span></div>
         <div className="flex items-center gap-1.5">
           <DatePicker selectedDate={selectedDate} onChange={setSelectedDate} onToday={() => setSelectedDate(todayInET())} compact />
-          <RoutingSettingsMenu panels={[{ key: 'selPanel', label: 'Floating selected-stops panel', on: selPanelOpen, setOn: setSelPanelOpen }]} />
+          <RoutingSettingsMenu
+            views={[{ key: 'rightPanel', label: 'Right panel', value: rightPanelMode, setValue: setRightPanelMode, options: [{ value: 'tabs', label: 'Tabs (Stops / Loads / Result)' }, { value: 'routes', label: 'Routes / Drivers' }] }]}
+            panels={[{ key: 'selPanel', label: 'Floating selected-stops panel', on: selPanelOpen, setOn: setSelPanelOpen }]}
+          />
         </div>
       </div>
       <div className="text-[11px] text-slate-500">{loading ? 'Loading stops…' : `${positioned.length} stops on ${formatDateLong(selectedDate)}`}{stopsError ? ` · ${stopsError}` : ''}</div>
@@ -9863,13 +9948,13 @@ function RoutingScreen() {
             <button onClick={() => setSheetOpen((o) => !o)} className="text-xs px-2 py-1 rounded border border-slate-300" aria-label={sheetOpen ? 'Collapse' : 'Expand'}>{sheetOpen ? '▾' : '▴'}</button>
             <div className="flex-1 flex gap-1">
               <button onClick={() => { setMobilePanel('setup'); setSheetOpen(true); }} className={tabCls(mobilePanel === 'setup')} style={mobilePanel === 'setup' ? { background: BRAND } : {}}>Setup{tally.count ? ` (${tally.count})` : ''}</button>
-              <button onClick={() => { setMobilePanel('loads'); setSheetOpen(true); }} className={tabCls(mobilePanel === 'loads')} style={mobilePanel === 'loads' ? { background: BRAND } : {}}>Loads{loads.length ? ` (${loads.length})` : ''}</button>
+              <button onClick={() => { setMobilePanel('loads'); setSheetOpen(true); }} className={tabCls(mobilePanel === 'loads')} style={mobilePanel === 'loads' ? { background: BRAND } : {}}>{rightPanelMode === 'routes' ? `Routes${routeGroups.length ? ` (${routeGroups.length})` : ''}` : `Loads${loads.length ? ` (${loads.length})` : ''}`}</button>
               <button onClick={() => { setMobilePanel('result'); setSheetOpen(true); }} className={tabCls(mobilePanel === 'result')} style={mobilePanel === 'result' ? { background: BRAND } : {}}>Result{baseResult ? ` (${baseResult.routes.length})` : job?.status === 'running' || job?.status === 'queued' ? ' …' : ''}</button>
             </div>
           </div>
           {sheetOpen && (
             <div className="flex-1 min-h-0 overflow-y-auto p-3 space-y-3 text-sm" style={{ paddingBottom: 'calc(12px + env(safe-area-inset-bottom))' }}>
-              {mobilePanel === 'setup' ? controlsContent : mobilePanel === 'loads' ? loadsContent : resultContent}
+              {mobilePanel === 'setup' ? controlsContent : mobilePanel === 'loads' ? (rightPanelMode === 'routes' ? <RoutingRoutesPanel groups={routeGroups} onPick={pickLoadFromTable} /> : loadsContent) : resultContent}
             </div>
           )}
         </div>
@@ -9961,6 +10046,16 @@ function RoutingScreen() {
 
       {/* Right: Stops | Result */}
       <div className="w-[380px] shrink-0 border-l bg-white flex flex-col min-h-0">
+        {rightPanelMode === 'routes' ? (
+          <>
+            <div className="flex items-center justify-between px-3 py-2 border-b shrink-0">
+              <span className="text-[13px] font-semibold" style={{ color: BRAND }}>Routes / Drivers{routeGroups.length ? ` (${routeGroups.length})` : ''}</span>
+              <span className="text-[10px] uppercase tracking-wide text-slate-400">{formatDateLong(selectedDate)}</span>
+            </div>
+            <RoutingRoutesPanel groups={routeGroups} onPick={pickLoadFromTable} />
+          </>
+        ) : (
+        <>
         <div className="flex border-b shrink-0">
           {railTab('stops', `Stops${tally.count ? ` (${tally.count})` : ''}`)}
           {railTab('loads', `Loads${loads.length ? ` (${loads.length})` : ''}`)}
@@ -9975,6 +10070,8 @@ function RoutingScreen() {
             onRename={renameLoad} onToggleDispatch={toggleDispatched} onDelete={deleteLoad} manageError={manageError} />
         ) : (
           <div className="flex-1 min-h-0 overflow-y-auto p-3 space-y-3 text-sm">{resultContent}</div>
+        )}
+        </>
         )}
       </div>
       {detailModalStop && <RoutingStopModal stop={detailModalStop} notes={notes} windowViolatedSet={windowViolatedSet} onClose={() => setDetailModalStop(null)} />}
