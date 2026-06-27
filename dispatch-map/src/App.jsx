@@ -49,7 +49,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.29.54';
+const APP_VERSION = '0.29.55';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -69,6 +69,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.29.55', 'Routing (beta) — Ninja mode (part 5). With the Compare panel open, hit "🥷 Ninja" in its header: every stop you then click on the map is appended (in click order) to the target route. The target defaults to the leftmost card; with 2+ routes open, a radio on each card switches which one receives the clicks (the active card is highlighted amber). A stop only ever sits on one card — ninja-clicking it onto a route pulls it off any other open route. Turning ninja off (or closing the panel) returns the map to normal stop-toggling.'],
   ['0.29.54', 'Routing (beta) — route workbench (part 4). Click a route in the right Routes/Drivers panel to open it as a card on the left; open up to 3 side by side (the left panel replaces Setup while routes are open — "Back to Setup" closes them). Each card shows the route\'s stops in order with a re-sequence picker (Shortest distance / Farthest first / Closest first / Reverse), collapse/close, and a per-stop "→" menu to move a stop to another open route. It\'s a planning overlay — reorders and moves stay in the workbench and don\'t change the board. (Next: smooth desktop drag-and-drop between routes.)'],
   ['0.29.53', 'Routing (beta) — new right-panel "Routes / Drivers" view (part 3 of the workbench). From the gear settings you can now switch the right panel between today\'s Stops/Loads/Result tabs and a live Routes/Drivers roster: one summary card per route showing route name, driver, stop count, skids, weight, and a delivery-progress bar (X/Y delivered). Click a card to select that route\'s stops and frame them on the map. Routing-beta only.'],
   ['0.29.52', 'Routing (beta) — the floating "Selected N" panel now has sortable columns (click any header — Stop#, Type, Location, City, Zip, Window, Wt, Plt — to sort asc/desc), and a new panel-settings menu (gear, next to the date picker) where you turn the floating panel on and off. The gear is the start of the configurable panel layout — it will grow to switch the right panel between today\'s Stops/Loads/Result tabs and the new Routes/Drivers view, all Routing-beta only.'],
@@ -8863,7 +8864,7 @@ function RoutingRoutesPanel({ groups, onPick }) {
 // Closest / Reverse), collapse/close, per-stop open, and — when other routes are open — a
 // "move to route" picker that reassigns a stop to another open card. The order lives in wbRoutes
 // state; this is a planning overlay (it does not mutate the board).
-function RoutingWorkbenchCard({ route, stopById, otherKeys, onResequence, onCollapse, onClose, onMoveStop, onOpenStop, isMobile }) {
+function RoutingWorkbenchCard({ route, stopById, otherKeys, ninjaMode, isActive, onSetActive, onResequence, onCollapse, onClose, onMoveStop, onOpenStop, isMobile }) {
   const rows = route.order.map((id) => stopById.get(String(id))).filter(Boolean);
   let skids = 0, weight = 0, delivered = 0;
   let driverName = '';
@@ -8873,14 +8874,22 @@ function RoutingWorkbenchCard({ route, stopById, otherKeys, onResequence, onColl
     if (!driverName && (s.driverName || s.driverUserName)) driverName = s.driverName || s.driverUserName;
   }
   return (
-    <div className={`${isMobile ? 'w-full' : 'w-[300px]'} shrink-0 border rounded-lg bg-white flex flex-col min-h-0 ${isMobile ? '' : 'max-h-full'}`}>
-      <div className="px-2 py-1.5 border-b bg-slate-50 rounded-t-lg shrink-0">
+    <div className={`${isMobile ? 'w-full' : 'w-[300px]'} shrink-0 border rounded-lg bg-white flex flex-col min-h-0 ${isMobile ? '' : 'max-h-full'} ${ninjaMode && isActive ? 'ring-2 ring-amber-400 border-amber-300' : ''}`}>
+      <div className={`px-2 py-1.5 border-b rounded-t-lg shrink-0 ${ninjaMode && isActive ? 'bg-amber-50' : 'bg-slate-50'}`}>
         <div className="flex items-center justify-between gap-1">
           <button onClick={onCollapse} className="flex items-center gap-1 min-w-0" aria-expanded={!route.collapsed}>
             {route.collapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
             <span className="font-semibold text-slate-800 truncate">{route.key}</span>
           </button>
-          <button onClick={onClose} className="text-slate-400 hover:text-red-600 leading-none text-lg shrink-0" aria-label={`Close route ${route.key}`}>×</button>
+          <div className="flex items-center gap-1.5 shrink-0">
+            {ninjaMode && (
+              <label className={`flex items-center gap-1 text-[10px] font-semibold cursor-pointer ${isActive ? 'text-amber-700' : 'text-slate-400'}`} title="Ninja clicks add to this route">
+                <input type="radio" name="wb-active-route" checked={isActive} onChange={onSetActive} />
+                🥷 {isActive ? 'target' : 'set'}
+              </label>
+            )}
+            <button onClick={onClose} className="text-slate-400 hover:text-red-600 leading-none text-lg" aria-label={`Close route ${route.key}`}>×</button>
+          </div>
         </div>
         <div className="text-[11px] text-slate-500 truncate">{driverName || 'No driver'} · {rows.length} stop{rows.length === 1 ? '' : 's'} · {skids} sk · {Math.round(weight).toLocaleString()} lb · {rows.length ? Math.round((100 * delivered) / rows.length) : 0}%</div>
         {!route.collapsed && (
@@ -8921,13 +8930,24 @@ function RoutingWorkbenchCard({ route, stopById, otherKeys, onResequence, onColl
 // The route workbench (part 4): the 1–3 route cards opened from the right Routes panel, laid out
 // side by side (desktop) or stacked (mobile). Replaces the Setup stack on the left while routes
 // are open; "Back to Setup" closes them all.
-function RoutingWorkbench({ wbRoutes, stopById, onResequence, onCollapse, onClose, onCloseAll, onMoveStop, onOpenStop, isMobile }) {
+function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, activeKey, onSetActive, onResequence, onCollapse, onClose, onCloseAll, onMoveStop, onOpenStop, isMobile }) {
   return (
     <div className="flex flex-col h-full min-h-0">
-      <div className="flex items-center justify-between px-2 py-1.5 border-b shrink-0 bg-white">
-        <span className="font-semibold text-slate-800 text-[13px]">Route workbench <span className="text-slate-400 text-[11px]">({wbRoutes.length}/3)</span></span>
-        <button onClick={onCloseAll} className="text-[11px] text-slate-500 hover:text-slate-800 underline">Back to Setup</button>
+      <div className="flex items-center justify-between gap-2 px-2 py-1.5 border-b shrink-0 bg-white">
+        <span className="font-semibold text-slate-800 text-[13px] shrink-0">Compare <span className="text-slate-400 text-[11px]">({wbRoutes.length}/3)</span></span>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => onToggleNinja(!ninjaMode)}
+            className={`text-[11px] font-semibold px-2 py-1 rounded border ${ninjaMode ? 'bg-amber-400 border-amber-500 text-amber-950' : 'border-slate-300 text-slate-600 hover:bg-slate-50'}`}
+            title="Ninja mode: each stop you click on the map is added to the target route"
+            aria-pressed={ninjaMode}
+          >🥷 Ninja{ninjaMode ? ' on' : ''}</button>
+          <button onClick={onCloseAll} className="text-[11px] text-slate-500 hover:text-slate-800 underline shrink-0">Back to Setup</button>
+        </div>
       </div>
+      {ninjaMode && (
+        <div className="px-2 py-1 text-[11px] bg-amber-50 border-b border-amber-200 text-amber-800 shrink-0">🥷 Ninja on — clicking a stop adds it to <b>{activeKey || '—'}</b>{wbRoutes.length > 1 ? ' (use the radio on a card to switch target)' : ''}.</div>
+      )}
       <div className={`flex-1 min-h-0 gap-2 p-2 ${isMobile ? 'flex flex-col overflow-y-auto' : 'flex overflow-x-auto'}`}>
         {wbRoutes.map((r) => (
           <RoutingWorkbenchCard
@@ -8935,6 +8955,9 @@ function RoutingWorkbench({ wbRoutes, stopById, onResequence, onCollapse, onClos
             route={r}
             stopById={stopById}
             otherKeys={wbRoutes.map((x) => x.key).filter((k) => k !== r.key)}
+            ninjaMode={ninjaMode}
+            isActive={activeKey === r.key}
+            onSetActive={() => onSetActive(r.key)}
             onResequence={(strat) => onResequence(r.key, strat)}
             onCollapse={() => onCollapse(r.key)}
             onClose={() => onClose(r.key)}
@@ -9222,6 +9245,12 @@ function RoutingScreen() {
   // overlay only — reorders/moves live here, they don't mutate the board.
   const WB_MAX = 3;
   const [wbRoutes, setWbRoutes] = useState([]);
+  // Ninja mode (part 5): while on, each stop clicked on the map is appended (in click order) to
+  // the ACTIVE compare-panel route. activeRouteKey picks the target; defaults to the leftmost card.
+  const [ninjaMode, setNinjaMode] = useState(false);
+  const [activeRouteKey, setActiveRouteKey] = useState(null);
+  const effectiveActiveKey = (activeRouteKey && wbRoutes.some((r) => r.key === activeRouteKey)) ? activeRouteKey : (wbRoutes[0]?.key || null);
+  const ninjaActionRef = useRef(null);
 
   const [selectedIds, setSelectedIds] = useState(() => new Set());
   const [selectedTruckIds, setSelectedTruckIds] = useState(() => new Set());
@@ -9294,6 +9323,27 @@ function RoutingScreen() {
     }));
     setLastAction(`Moved ${stopNbr} → ${toKey}`);
   }, []);
+  // Ninja-add: append a clicked stop to the active route (in click order), removing it from any
+  // OTHER open route so a stop only ever sits on one compare-panel card. No-op if it's already there.
+  const ninjaAddStop = useCallback((stopNbr) => {
+    const id = String(stopNbr);
+    setWbRoutes((prev) => {
+      if (!prev.length) return prev;
+      const target = (activeRouteKey && prev.some((r) => r.key === activeRouteKey)) ? activeRouteKey : prev[0].key;
+      const already = prev.find((r) => r.key === target)?.order.includes(id);
+      setLastAction(already ? `${stopNbr} already on ${target}` : `Ninja → ${stopNbr} onto ${target}`);
+      if (already) return prev;
+      return prev.map((r) => {
+        if (r.key === target) return { ...r, order: [...r.order, id] };
+        return r.order.includes(id) ? { ...r, order: r.order.filter((x) => x !== id) } : r;
+      });
+    });
+  }, [activeRouteKey]);
+  // The marker click listener is bound once; route ninja clicks through a ref so toggling ninja
+  // (or closing the panel) never re-creates the markers. Null = ninja off / nothing to add to.
+  useEffect(() => { ninjaActionRef.current = (ninjaMode && wbRoutes.length > 0) ? ninjaAddStop : null; }, [ninjaMode, wbRoutes.length, ninjaAddStop]);
+  // Ninja needs an open route; drop it when the panel empties so the map returns to normal toggling.
+  useEffect(() => { if (!wbRoutes.length && ninjaMode) setNinjaMode(false); }, [wbRoutes.length, ninjaMode]);
 
   // Default trucks selected once profiles load.
   useEffect(() => {
@@ -9739,6 +9789,7 @@ function RoutingScreen() {
       marker.addListener('click', () => {
         if (viewing) return;                     // saved load is read-only
         if (selectModeRef.current) handleSelectPointRef.current(marker.getPosition());
+        else if (ninjaActionRef.current) ninjaActionRef.current(s.stopNbr);   // ninja → add to active route
         else toggleStop(s.stopNbr);
       });
       marker.addListener('mouseover', () => setHoverId(id));
@@ -10102,7 +10153,7 @@ function RoutingScreen() {
             <div className="flex-1 min-h-0 overflow-y-auto p-3 space-y-3 text-sm" style={{ paddingBottom: 'calc(12px + env(safe-area-inset-bottom))' }}>
               {mobilePanel === 'setup'
                 ? (wbRoutes.length > 0
-                    ? <RoutingWorkbench wbRoutes={wbRoutes} stopById={stopById} onResequence={wbResequence} onCollapse={toggleWbCollapse} onClose={closeWbRoute} onCloseAll={closeAllWb} onMoveStop={wbMoveStop} onOpenStop={openStop} isMobile />
+                    ? <RoutingWorkbench wbRoutes={wbRoutes} stopById={stopById} ninjaMode={ninjaMode} onToggleNinja={setNinjaMode} activeKey={effectiveActiveKey} onSetActive={setActiveRouteKey} onResequence={wbResequence} onCollapse={toggleWbCollapse} onClose={closeWbRoute} onCloseAll={closeAllWb} onMoveStop={wbMoveStop} onOpenStop={openStop} isMobile />
                     : controlsContent)
                 : mobilePanel === 'loads'
                   ? (rightPanelMode === 'routes' ? <RoutingRoutesPanel groups={routeGroups} onPick={onPickRoute} /> : loadsContent)
@@ -10130,7 +10181,7 @@ function RoutingScreen() {
       {/* Left: Setup stack — OR the route workbench (cards) when routes are open from the right panel. */}
       {wbRoutes.length > 0 ? (
         <div className="shrink-0 border-r bg-white min-h-0" style={{ width: Math.min(WB_MAX, wbRoutes.length) * 308 + 8 }}>
-          <RoutingWorkbench wbRoutes={wbRoutes} stopById={stopById} onResequence={wbResequence} onCollapse={toggleWbCollapse} onClose={closeWbRoute} onCloseAll={closeAllWb} onMoveStop={wbMoveStop} onOpenStop={openStop} isMobile={false} />
+          <RoutingWorkbench wbRoutes={wbRoutes} stopById={stopById} ninjaMode={ninjaMode} onToggleNinja={setNinjaMode} activeKey={effectiveActiveKey} onSetActive={setActiveRouteKey} onResequence={wbResequence} onCollapse={toggleWbCollapse} onClose={closeWbRoute} onCloseAll={closeAllWb} onMoveStop={wbMoveStop} onOpenStop={openStop} isMobile={false} />
         </div>
       ) : (
         <div className="w-[340px] shrink-0 border-r bg-white overflow-y-auto p-3 space-y-3 text-sm">
