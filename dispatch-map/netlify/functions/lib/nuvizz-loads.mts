@@ -117,3 +117,16 @@ export async function loadIdsForDate(targetDateUTC: string): Promise<{ ids: Set<
   const rows = normalizeLoads(j);
   return { ids: new Set(rows.map((r) => r.loadId)), count: rows.length, cols: Object.keys((j && j.filterData && j.filterData[0]) || {}).length };
 }
+
+// Fetch the FULL load roster for a date (every load incl. empty ones, with status + trip
+// count) — used to surface loads that have NO orders assigned yet (a Monday load created
+// but unfilled never appears on the stop-grouped board). One deliberate call; best-effort.
+export async function loadRosterForDate(targetDateUTC: string): Promise<Array<{ loadId: string; name: string; status: string; trips: number | null }>> {
+  const { companyCode } = getCreds();
+  const hdr = { Authorization: basicAuthHeader(), 'Content-Type': 'application/json', Accept: 'application/json' };
+  const url = `${OPENAPI_BASE}/entity/filterdata/${LOAD_ENTITY}/${companyCode}`;
+  const body = JSON.stringify(buildLoadBody(periodForDate(targetDateUTC)));
+  const resp = await getNuvizzRequester().request(url, { method: 'POST', headers: hdr, body }, { route: '/entity/filterdata(roster)', tenant: companyCode });
+  if (!resp.ok) throw new Error(`load roster filterdata ${resp.status}`);
+  return normalizeLoads(await resp.json());
+}

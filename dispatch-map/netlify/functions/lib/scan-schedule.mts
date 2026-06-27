@@ -78,8 +78,8 @@ export function scanConfigDefaults(env: Record<string, any> = process.env): Requ
     dayBandEndHour: 13,
     routingWindowStart: Number(env.NUVIZZ_ROUTING_WINDOW_START_ET) || 20,
     routingWindowEnd: Number(env.NUVIZZ_ROUTING_WINDOW_END_ET) || 7,
-    weekendBlackoutStart: Number(env.NUVIZZ_WEEKEND_BLACKOUT_START_ET) || 22,
-    weekendBlackoutEnd: Number(env.NUVIZZ_WEEKEND_BLACKOUT_END_ET) || 20,
+    weekendBlackoutStart: Number(env.NUVIZZ_WEEKEND_BLACKOUT_START_ET) || 23,
+    weekendBlackoutEnd: Number(env.NUVIZZ_WEEKEND_BLACKOUT_END_ET) || 19,
     deepSweepHours: Number(env.NUVIZZ_DEEP_SWEEP_HOURS) || 8,
     deepSweepHour: Number(env.NUVIZZ_DEEP_SWEEP_HOUR) || 13,
     dailyCeiling: Number(env.NUVIZZ_DAILY_CEILING) || 12_000,
@@ -144,10 +144,11 @@ export interface ScanDecision {
 // Weekend blackout (ET) — Davis doesn't work weekends, so no orders are created
 // and no routing happens. Skip ALL scheduled scans from Fri night until Sun
 // evening (when Monday prep begins), generating zero NuVizz traffic for ~46h.
-// Defaults: Fri 22:00 ET → Sun 20:00 ET. Both edges env-tunable. A MANUAL scan
-// always bypasses this (a dispatcher who explicitly scans on a weekend wants it).
-export const WEEKEND_BLACKOUT_START_HOUR = Number(process.env.NUVIZZ_WEEKEND_BLACKOUT_START_ET) || 22; // Fri from this ET hour
-export const WEEKEND_BLACKOUT_END_HOUR = Number(process.env.NUVIZZ_WEEKEND_BLACKOUT_END_ET) || 20;     // Sun until this ET hour
+// Defaults: Fri 23:00 ET → Sun 19:00 ET (Davis runs Friday loads later + starts Sunday
+// Monday-prep earlier). Both edges env-tunable. A MANUAL scan always bypasses this (a
+// dispatcher who explicitly scans on a weekend wants it).
+export const WEEKEND_BLACKOUT_START_HOUR = Number(process.env.NUVIZZ_WEEKEND_BLACKOUT_START_ET) || 23; // Fri from this ET hour
+export const WEEKEND_BLACKOUT_END_HOUR = Number(process.env.NUVIZZ_WEEKEND_BLACKOUT_END_ET) || 19;     // Sun until this ET hour
 // weekday: 0=Sun … 5=Fri … 6=Sat.
 export function isWeekendBlackout(weekday: number, etHour: number, cfg: ScanConfig = {}): boolean {
   const start = cfg.weekendBlackoutStart ?? WEEKEND_BLACKOUT_START_HOUR;

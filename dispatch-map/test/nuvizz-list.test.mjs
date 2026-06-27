@@ -34,6 +34,22 @@ test('carry-forward guard: a Thursday stop does NOT belong on Friday board (the 
   assert.equal(boardDayFor(fridayStop), fridayBoard, 'genuine Friday stop is kept');
 });
 
+test('Sunday-pulled / Tuesday-requested orders board on Tuesday, never Monday', () => {
+  // Real case (PROs 0071367xx): Uline drops orders Sunday whose REQUESTED delivery window
+  // (schedule.timeFrom → boardDate) is the following Tuesday. The board day is the order's
+  // own requested date, NOT when it was pulled — so these must land on Tuesday's board.
+  const monday = '2026-06-22';
+  const tuesday = '2026-06-23';
+  const sundayPulled = [
+    { stopNbr: 'P1', boardDate: tuesday, requestedDate: tuesday, normalizedStatus: 'UNPLANNED' },
+    { stopNbr: 'P2', boardDate: tuesday, requestedDate: tuesday, normalizedStatus: 'UNPLANNED' },
+  ];
+  for (const s of sundayPulled) assert.equal(boardDayFor(s, monday), tuesday, `${s.stopNbr} → Tuesday`);
+  const m = bucketByDate(sundayPulled, monday);
+  assert.equal(m.has(monday), false, 'nothing lands on Monday');
+  assert.equal(m.get(tuesday)?.length, 2, 'both land on Tuesday');
+});
+
 test('bucketByDate: files each stop on its own day (no cross-day bleed)', () => {
   const m = bucketByDate([
     { stopNbr: 'A', boardDate: '2026-06-25', normalizedStatus: 'UNPLANNED' },
