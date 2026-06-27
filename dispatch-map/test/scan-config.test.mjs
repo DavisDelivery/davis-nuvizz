@@ -78,8 +78,8 @@ test('isInRoutingWindow / isWeekendBlackout: respect overrides, default when abs
   assert.equal(isInRoutingWindow(12, { routingWindowStart: 8, routingWindowEnd: 17 }), true);
   assert.equal(isInRoutingWindow(22, { routingWindowStart: 8, routingWindowEnd: 17 }), false);
   // Blackout: Friday(5) from start hour; override start to 18.
-  assert.equal(isWeekendBlackout(5, 20), false, 'default Fri start is 22');
-  assert.equal(isWeekendBlackout(5, 20, { weekendBlackoutStart: 18 }), true);
+  assert.equal(isWeekendBlackout(5, 22), false, 'default Fri start is 23 — 22:00 still scans');
+  assert.equal(isWeekendBlackout(5, 22, { weekendBlackoutStart: 18 }), true);
 });
 
 test('scanDecision: a longer configured interval defers an otherwise-due fire', () => {

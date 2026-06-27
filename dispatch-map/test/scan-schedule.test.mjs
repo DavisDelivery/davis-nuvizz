@@ -91,7 +91,7 @@ test('manual: always acts, full scan, floor bypassed', () => {
   assert.equal(d.reason, 'manual');
 });
 
-// ── Weekend blackout: Fri 22:00 ET → Sun 20:00 ET, no scheduled scans ──
+// ── Weekend blackout: Fri 23:00 ET → Sun 19:00 ET, no scheduled scans ──
 // June 2026 ET dates: 19=Fri, 20=Sat, 21=Sun, 22=Mon. Build a Date at an ET
 // hour on a chosen day-of-month (EDT, UTC-4).
 const dayAt = (dom, etHour, etMin = 0) => new Date(Date.UTC(2026, 5, dom, etHour + 4, etMin, 0));
@@ -105,17 +105,17 @@ test('nowET reports the ET weekday (0=Sun..6=Sat)', () => {
   assert.equal(nowET(dayAt(19, 23)).weekday, 5);
 });
 
-test('isWeekendBlackout: Fri 22:00 → Sun 20:00 ET', () => {
-  // Friday: open until 21:59, blacked out from 22:00.
+test('isWeekendBlackout: Fri 23:00 → Sun 19:00 ET', () => {
+  // Friday: open until 22:59, blacked out from 23:00 (extended an hour later).
   assert.equal(isWeekendBlackout(5, 21), false);
-  assert.equal(isWeekendBlackout(5, 22), true);
+  assert.equal(isWeekendBlackout(5, 22), false);
   assert.equal(isWeekendBlackout(5, 23), true);
   // Saturday: all day.
   for (const h of [0, 8, 12, 20, 23]) assert.equal(isWeekendBlackout(6, h), true, `Sat ${h}`);
-  // Sunday: blacked out until 19:59, open from 20:00.
+  // Sunday: blacked out until 18:59, open from 19:00 (Monday prep starts an hour earlier).
   assert.equal(isWeekendBlackout(0, 0), true);
-  assert.equal(isWeekendBlackout(0, 19), true);
-  assert.equal(isWeekendBlackout(0, 20), false);
+  assert.equal(isWeekendBlackout(0, 18), true);
+  assert.equal(isWeekendBlackout(0, 19), false);
   // Weekdays: never blacked out.
   for (const wd of [1, 2, 3, 4]) for (const h of [0, 10, 22]) assert.equal(isWeekendBlackout(wd, h), false, `wd${wd} ${h}`);
 });
@@ -125,11 +125,11 @@ test('scheduled scans are skipped during the weekend blackout', () => {
   const d = scanDecision(sat, false, ago(sat, 600)); // plenty of elapsed time
   assert.equal(d.act, false);
   assert.equal(d.skip, 'weekend');
-  // Fri 22:00 and Sun 19:00 are also blacked out; Fri 21:00 and Sun 20:00 are not.
-  assert.equal(scanDecision(dayAt(19, 22), false, ago(dayAt(19, 22), 600)).act, false);
-  assert.equal(scanDecision(dayAt(21, 19), false, ago(dayAt(21, 19), 600)).act, false);
-  assert.equal(scanDecision(dayAt(19, 21), false, ago(dayAt(19, 21), 600)).act, true, 'Fri 21:00 still scans');
-  assert.equal(scanDecision(dayAt(21, 20), false, ago(dayAt(21, 20), 600)).act, true, 'Sun 20:00 resumes');
+  // Fri 23:00 and Sun 18:00 are blacked out; Fri 22:00 and Sun 19:00 are not.
+  assert.equal(scanDecision(dayAt(19, 23), false, ago(dayAt(19, 23), 600)).act, false);
+  assert.equal(scanDecision(dayAt(21, 18), false, ago(dayAt(21, 18), 600)).act, false);
+  assert.equal(scanDecision(dayAt(19, 22), false, ago(dayAt(19, 22), 600)).act, true, 'Fri 22:00 still scans');
+  assert.equal(scanDecision(dayAt(21, 19), false, ago(dayAt(21, 19), 600)).act, true, 'Sun 19:00 resumes');
 });
 
 test('a MANUAL scan bypasses the weekend blackout', () => {

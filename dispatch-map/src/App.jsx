@@ -49,7 +49,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.29.46';
+const APP_VERSION = '0.29.47';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -69,6 +69,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.29.47', 'Empty loads now show on the Loads tab: a load that\'s been created for the day but has no orders assigned yet (e.g. Monday\'s loads waiting to be filled) appears with a "No orders yet" status badge, pulled from the day\'s load roster. Also: orders pulled on Sunday but requested for Tuesday now correctly board on Tuesday, never Monday; and the weekend scan window is extended (Friday scans run until 11 PM, Sunday scans resume at 7 PM) now that API call volume is low.'],
   ['0.29.46', 'Mobile Stops list rows now show more at a glance: the street address, the driver, skids + loose pieces, and a Scheduled/Delivered (or Arrived/Out-for-delivery/Exception) status badge — on top of the business name, city, and PRO that were already there.'],
   ['0.29.45', 'Delivery Tickets now print in portrait (Letter) instead of landscape.'],
   ['0.29.44', 'Loose pieces (NuVizz "volume") now shows as its own column in the data tables: the bottom Stops/Loads grid and the Routing tab\'s selected-stops tables all get a "Loose" column next to Skids/Pallets, so you can see skids, loose pieces, and total pieces at a glance. (The stop detail card already showed loose under Items.)'],
@@ -7234,6 +7235,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0 }) {
         <BottomStopsTable
           stops={visibleStops}
           loadStops={stops}
+          boardDate={selectedDate}
           notes={notes}
           totalCount={filteredStops.length}
           open={bottomTableOpen}
@@ -7386,12 +7388,16 @@ const LOAD_BUCKET_STYLE = {
   cancelled: 'bg-red-100 text-red-700',
 };
 
-function BottomStopsTable({ stops, loadStops, notes, totalCount, open, setOpen, onPick, onPickLoad }) {
+function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open, setOpen, onPick, onPickLoad }) {
   // Loads view groups the FULL board's loads (loadStops) so stop-level filters —
   // notably "Unplanned only" — don't empty it. Falls back to the visible stops.
   const loadSrc = loadStops || stops;
   const [q, setQ] = useState('');
   const [view, setView] = useState('stops'); // 'stops' | 'loads'
+  // The day's full load ROSTER (incl. empty loads with no orders yet), pulled on demand
+  // when the Loads view is open. Empty loads can't appear from stop-grouping (no stops to
+  // group), so we merge these in. Follows the selected board date.
+  const [roster, setRoster] = useState([]);
   const [statusSel, setStatusSel] = useState(() => new Set()); // empty = all
   const [statusOpen, setStatusOpen] = useState(false);
   // NuVizz live pull (desktop toolbar): when nvWindow is set, the grid shows stops
@@ -7487,10 +7493,23 @@ function BottomStopsTable({ stops, loadStops, notes, totalCount, open, setOpen, 
       return true;
     });
   }, [baseStops, q, statusSel, driverSel, nvWindow]);
+  // Pull the day's full load ROSTER (incl. empty loads) when the Loads view is open in
+  // board mode — empty loads have no stops to group, so this is the only way to see them.
+  useEffect(() => {
+    if (view !== 'loads' || nvWindow || !boardDate) return;
+    let cancelled = false;
+    fetch('/.netlify/functions/nuvizz-loads-roster?date=' + encodeURIComponent(boardDate), { cache: 'no-store' })
+      .then((r) => r.json())
+      .then((j) => { if (!cancelled) setRoster(j.ok ? (j.loads || []) : []); })
+      .catch(() => { if (!cancelled) setRoster([]); });
+    return () => { cancelled = true; };
+  }, [view, nvWindow, boardDate]);
+
   // Loads view — group the same board (the `stops` we're handed) by loadNbr so
   // dispatchers can browse current loads instead of individual stops. Each row
   // aggregates driver, stop count, a per-status breakdown, and pallet/weight
   // totals. Click a row to open that load's route drawer + frame it on the map.
+  // Empty loads (no orders assigned yet) are merged in from the roster below.
   const loadRows = useMemo(() => {
     const m = new Map();
     for (const s of loadSrc) {
@@ -7513,21 +7532,34 @@ function BottomStopsTable({ stops, loadStops, notes, totalCount, open, setOpen, 
       }
       return { loadNbr: g.loadNbr, routeName: g.routeName, driverName: g.driverName, count: g.stops.length, buckets, pallets, loose, weight };
     });
+    // Merge in EMPTY loads from the day's roster — loads created but with no orders assigned
+    // yet have no stops to group, so they never appear from stop-grouping. Match by route
+    // name to avoid duplicating loads we already built from stops.
+    if (!nvWindow && roster.length) {
+      const haveNames = new Set(arr.map((g) => String(g.routeName || '').trim().toLowerCase()).filter(Boolean));
+      for (const r of roster) {
+        const nm = String(r.name || '').trim();
+        if (!nm || haveNames.has(nm.toLowerCase())) continue;
+        arr.push({ loadNbr: r.loadId, routeName: nm, driverName: '', count: r.trips || 0, buckets: {}, pallets: 0, loose: 0, weight: 0, empty: true, rosterStatus: r.status });
+      }
+    }
     if (needle) arr = arr.filter((g) => [g.loadNbr, g.routeName, g.driverName].filter(Boolean).join(' ').toLowerCase().includes(needle));
     arr.sort((a, b) => String(a.driverName || '~').localeCompare(String(b.driverName || '~')) || String(a.routeName || a.loadNbr).localeCompare(String(b.routeName || b.loadNbr)));
     return arr;
-  }, [loadSrc, q]);
+  }, [loadSrc, q, roster, nvWindow]);
   const loadCols = [
     { k: 'load', label: 'Load', w: 150, get: (g) => <span className="font-mono text-blue-700">{g.routeName || g.loadNbr}</span>, sortVal: (g) => g.routeName || g.loadNbr },
     { k: 'driver', label: 'Driver', w: 180, get: (g) => g.driverName || '—', sortVal: (g) => g.driverName },
     { k: 'count', label: 'Stops', w: 60, align: 'right', get: (g) => g.count, sortVal: (g) => g.count },
-    { k: 'status', label: 'Status', w: 210, get: (g) => (
+    { k: 'status', label: 'Status', w: 210, get: (g) => (g.empty
+        ? <span className="inline-flex items-center gap-1 px-1.5 rounded text-[10px] font-medium bg-amber-50 text-amber-700 border border-amber-200" title={g.rosterStatus ? ('Load status: ' + g.rosterStatus) : 'No orders assigned yet'}>No orders yet{g.rosterStatus ? ' · ' + g.rosterStatus : ''}</span>
+        : (
         <span className="inline-flex gap-1">
           {TABLE_STATUS_BUCKETS.map((b) => g.buckets[b.k]
             ? <span key={b.k} className={'px-1 rounded text-[10px] font-medium ' + (LOAD_BUCKET_STYLE[b.k] || '')} title={b.label}>{(LOAD_BUCKET_ABBR[b.k] || b.k)} {g.buckets[b.k]}</span>
             : null)}
         </span>
-      ), sortVal: (g) => (g.count ? (g.buckets.completed || 0) / g.count : 0) /* % delivered */ },
+      )), sortVal: (g) => (g.empty ? -1 : (g.count ? (g.buckets.completed || 0) / g.count : 0)) /* % delivered; empty loads sort first */ },
     { k: 'pallets', label: 'Pallets', w: 70, align: 'right', get: (g) => g.pallets || '—', sortVal: (g) => g.pallets },
     { k: 'loose', label: 'Loose', w: 64, align: 'right', get: (g) => g.loose || '—', sortVal: (g) => g.loose },
     { k: 'weight', label: 'Weight', w: 90, align: 'right', get: (g) => g.weight ? Math.round(g.weight).toLocaleString() : '—', sortVal: (g) => g.weight },
@@ -9583,6 +9615,7 @@ function RoutingScreen() {
           <BottomStopsTable
             stops={stops}
             loadStops={stops}
+            boardDate={selectedDate}
             notes={notes}
             totalCount={stops.length}
             open={bottomTableOpen}
@@ -9674,6 +9707,7 @@ function RoutingScreen() {
         <BottomStopsTable
           stops={stops}
           loadStops={stops}
+          boardDate={selectedDate}
           notes={notes}
           totalCount={stops.length}
           open={bottomTableOpen}
