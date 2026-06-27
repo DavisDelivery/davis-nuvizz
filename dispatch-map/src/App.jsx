@@ -5826,6 +5826,78 @@ function MobileDriverSnapshotDrawer({ driver, snapshot, loading, error, onClose,
   );
 }
 
+// ---------- debug capture ----------
+// "Debug this view" bundles what the dispatcher is looking at so a coding agent
+// can see the data behind a bad behavior. We ship coordinates + state, not a
+// screenshot (the Google map is WebGL and iOS Safari has no getDisplayMedia).
+// Customer names/addresses/contacts and the raw NuVizz payload are scrubbed.
+function scrubStop(s, seq, note) {
+  if (!s) return null;
+  return {
+    seq: seq == null ? undefined : seq,
+    stopNbr: s.stopNbr,
+    pro: s.pro,
+    loadNbr: s.loadNbr,
+    status: s.status,
+    normalizedStatus: s.normalizedStatus,
+    isPlanned: s.isPlanned,
+    isUnplanned: s.isUnplanned,
+    isTerminal: s.isTerminal,
+    carryover: s.carryover,
+    driverName: s.driverName,
+    driverUserName: s.driverUserName,
+    routeSeq: s.routeSeq,
+    loadStopSeq: s.loadStopSeq,
+    plannedEtaDTTM: s.plannedEtaDTTM,
+    arrivalDTTM: s.arrivalDTTM,
+    deliveredDTTM: s.deliveredDTTM,
+    cartons: s.cartons,
+    pallets: s.pallets,
+    volume: s.volume,
+    weight: s.weight,
+    lat: s.lat,
+    lng: s.lng,
+    matchKey: s.matchKey,
+    hasNote: !!note,
+    flag: note?.priority_flag ?? null,
+    // dropped (PII / huge): businessName, addr1, addr2, city, state, zip,
+    // contact, origin, stopDetails, allComments, raw
+  };
+}
+
+// Reconstruct a Google Static Maps URL from the live viewport + visible pins, so
+// a reviewer can see the same view without WebGL. Uses a __MAPS_KEY__ placeholder
+// so no real key lands in the bundle.
+function buildStaticMapUrl(center, zoom, stops) {
+  if (!center) return null;
+  const params = [
+    `center=${center.lat},${center.lng}`,
+    `zoom=${Math.round(zoom || 11)}`,
+    'size=640x640',
+    'scale=2',
+  ];
+  const pins = (stops || [])
+    .filter((s) => s.lat != null && s.lng != null)
+    .slice(0, 20)
+    .map((s) => `${(+s.lat).toFixed(5)},${(+s.lng).toFixed(5)}`);
+  if (pins.length) params.push(`markers=size:small%7C${pins.join('%7C')}`);
+  params.push('key=__MAPS_KEY__');
+  return `https://maps.googleapis.com/maps/api/staticmap?${params.join('&')}`;
+}
+
+// POST a capture bundle to the backend, which files it as a GitHub issue.
+async function postDebugBundle(bundle) {
+  const secret = import.meta.env.VITE_DEBUG_CAPTURE_SECRET;
+  const resp = await fetch('/.netlify/functions/debug-capture', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...(secret ? { 'x-debug-secret': secret } : {}) },
+    body: JSON.stringify(bundle),
+  });
+  const data = await resp.json();
+  if (!resp.ok || !data.ok) throw new Error(data.error || `HTTP ${resp.status}`);
+  return data; // { ok, issueUrl, issueNumber }
+}
+
 function MapScreen({ onOpenMessages, smsUnread = 0 }) {
   // M5 — selectedDate drives every fetch. Defaults to today (ET) and is NOT
   // persisted: every page load resets to today (brief P2.2).
@@ -6319,6 +6391,97 @@ function MapScreen({ onOpenMessages, smsUnread = 0 }) {
     if (set.size) setAiResult({ set, summary: `${set.size} stop${set.size === 1 ? '' : 's'} from chat`, source: 'chat' });
     return set.size;
   }, [filteredStops]);
+
+  // "Debug this view" — snapshot what the dispatcher is looking at right now and
+  // hand it to the coding agent. Reads live map refs + state; scrubs PII; never
+  // leaks the Maps key. Returns the backend result ({ issueUrl, issueNumber }).
+  const handleDebugCapture = useCallback(async (note) => {
+    const map = mapRef.current;
+    let viewport = null;
+    if (map && typeof map.getCenter === 'function') {
+      const c = map.getCenter?.();
+      const b = map.getBounds?.();
+      viewport = {
+        center: c ? { lat: +c.lat().toFixed(6), lng: +c.lng().toFixed(6) } : null,
+        zoom: map.getZoom?.() ?? null,
+        bounds: b ? b.toJSON() : null,
+      };
+    }
+    const noteFor = (mk) => notes.get(mk) || null;
+    const CAP = 500;
+
+    const bundle = {
+      schema: 'dispatch-map.debug-capture/v1',
+      captured_at: new Date().toISOString(),
+      app: {
+        version: APP_VERSION,
+        build_commit: BUILD_COMMIT,
+        build_time: BUILD_TIME,
+        build_context: BUILD_CONTEXT,
+        user_agent: typeof navigator !== 'undefined' ? navigator.userAgent : '',
+        viewport_width: viewportWidth,
+        is_mobile: isMobile,
+      },
+      scope: {
+        date: selectedDate,
+        date_is_today: dateIsToday,
+        mock_mode: MOCK_MODE,
+        maps_loaded: !!google,
+      },
+      source: {
+        stops_source: source,
+        loading,
+        error: error || null,
+        stops_count_total: stops.length,
+        stops_count_visible: filteredStops.length,
+        last_refreshed: lastRefreshed ? new Date(lastRefreshed).toISOString() : null,
+        last_scanned_at: lastScannedAt || null,
+        last_load_scan_at: lastLoadScanAt || null,
+        last_unplanned_scan_at: lastUnplannedScanAt || null,
+        scan_state: scanState ?? null,
+        ops: ops ?? null,
+      },
+      map_filters: mapFilters,
+      filters,
+      search: { query: debouncedSearch, ai_mode: aiMode },
+      ai: aiResult
+        ? { active: true, summary: aiResult.summary, source: aiResult.source, match_count: aiResult.set ? aiResult.set.size : null }
+        : { active: false },
+      selection: {
+        kind: selectedDriver ? 'driver' : selectedRoute ? 'route' : selectedStop ? 'stop' : (selectionSet && selectionSet.size ? 'multi' : null),
+        stop: selectedStop ? scrubStop(selectedStop, null, noteFor(selectedStop.matchKey)) : null,
+        driver: selectedDriver
+          ? { driverName: selectedDriver.driverName, driverUserName: selectedDriver.driverUserName, vehicleNumber: selectedDriver.vehicleNumber }
+          : null,
+        route_load_nbr: selectedRoute || null,
+        multi_count: selectionSet ? selectionSet.size : 0,
+        select_mode: selectMode,
+      },
+      map_viewport: viewport,
+      static_map_url: viewport ? buildStaticMapUrl(viewport.center, viewport.zoom, filteredStops) : null,
+      rendered_stops: filteredStops.slice(0, CAP).map((s, i) => scrubStop(s, i, noteFor(s.matchKey))),
+      rendered_stops_truncated: filteredStops.length > CAP,
+      rendered_stops_note: 'order = filtered board order, NOT geographic route sequence; routeSeq/loadStopSeq carry NuVizz sequence',
+      notes_meta: { loaded_count: notes.size },
+      warnings: [
+        'static_map_url embeds the Maps key as __MAPS_KEY__ — swap it in locally to view; no real secret is included.',
+        'Customer names/addresses/contacts and the raw NuVizz payload are scrubbed from stops; only the join matchKey + coords remain.',
+      ],
+      user_note: note || '',
+    };
+
+    // Safety net: never let the real Maps key escape into the bundle.
+    if (MAPS_KEY) {
+      const text = JSON.stringify(bundle);
+      if (text.includes(MAPS_KEY)) return postDebugBundle(JSON.parse(text.split(MAPS_KEY).join('__MAPS_KEY__')));
+    }
+    return postDebugBundle(bundle);
+  }, [
+    notes, filteredStops, stops, selectedDate, dateIsToday, google, source, loading, error,
+    lastRefreshed, lastScannedAt, lastLoadScanAt, lastUnplannedScanAt, scanState, ops,
+    mapFilters, filters, debouncedSearch, aiMode, aiResult, selectedStop, selectedDriver,
+    selectedRoute, selectionSet, selectMode, viewportWidth, isMobile,
+  ]);
 
   // M5 — route grouping (client-side, mirrors parent app src/screens/MapScreen.jsx).
   // Group positioned stops by loadNbr (sequence restarts per load, so one
@@ -6938,6 +7101,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0 }) {
           onClear={clearAi}
           highlightActive={aiResult?.source === 'chat'}
           stopCount={filteredStops.length}
+          onDebugCapture={handleDebugCapture}
         />
         {movingStop && (
           <MoveLocationBar
@@ -7282,6 +7446,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0 }) {
           onClear={clearAi}
           highlightActive={aiResult?.source === 'chat'}
           stopCount={filteredStops.length}
+          onDebugCapture={handleDebugCapture}
         />
         {movingStop && (
           <MoveLocationBar

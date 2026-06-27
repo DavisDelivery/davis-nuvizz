@@ -14,7 +14,7 @@
 //   stopCount        — number of currently-loaded stops (shown as scope hint)
 
 import { useState, useRef, useEffect } from 'react';
-import { MessageSquare, X, Send, Sparkles, HelpCircle } from 'lucide-react';
+import { MessageSquare, X, Send, Sparkles, HelpCircle, Bug } from 'lucide-react';
 
 const BRAND = '#1e5b92';
 
@@ -47,7 +47,7 @@ function renderRich(text) {
   });
 }
 
-export default function ChatPanel({ open, onClose, onSend, onHighlight, onClear, highlightActive, stopCount }) {
+export default function ChatPanel({ open, onClose, onSend, onHighlight, onClear, highlightActive, stopCount, onDebugCapture }) {
   const [messages, setMessages] = useState([]); // { role:'user'|'assistant', text, meta? }
   const [draft, setDraft] = useState('');
   const [busy, setBusy] = useState(false);
@@ -95,6 +95,32 @@ export default function ChatPanel({ open, onClose, onSend, onHighlight, onClear,
     }
   };
 
+  // "Debug this view" — capture the current board context and hand it to the
+  // coding agent (parent builds the bundle + files an issue). The composer text,
+  // if any, rides along as the note. Reuses the same message thread + busy state.
+  const runDebugCapture = async () => {
+    if (busy || !onDebugCapture) return;
+    const note = draft.trim();
+    setDraft('');
+    setError(null);
+    setMessages((m) => [...m, { role: 'user', text: note ? `🐛 Debug this view — ${note}` : '🐛 Debug this view' }]);
+    setBusy(true);
+    try {
+      const res = await onDebugCapture(note);
+      setMessages((m) => [...m, {
+        role: 'assistant',
+        text: res?.issueNumber
+          ? `Captured this view and opened **issue #${res.issueNumber}** for the coding agent.`
+          : 'Captured this view for the coding agent.',
+        meta: { issueUrl: res?.issueUrl, issueNumber: res?.issueNumber },
+      }]);
+    } catch (e) {
+      setError(e?.message || 'Could not send the debug capture. Please try again.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <div
       className="fixed z-[40] bg-white border border-slate-200 shadow-2xl flex flex-col
@@ -107,6 +133,17 @@ export default function ChatPanel({ open, onClose, onSend, onHighlight, onClear,
       <div className="flex items-center gap-2 px-3 py-2.5 border-b" style={{ color: BRAND }}>
         <Sparkles size={16} />
         <div className="font-semibold text-sm flex-1">Ask about the board</div>
+        {onDebugCapture && (
+          <button
+            onClick={runDebugCapture}
+            disabled={busy}
+            title="Capture this view for the coding agent"
+            aria-label="Debug this view"
+            className="p-2 rounded hover:bg-slate-100 text-slate-500 disabled:opacity-40 min-w-[40px] min-h-[40px] flex items-center justify-center"
+          >
+            <Bug size={16} />
+          </button>
+        )}
         {highlightActive && (
           <button
             onClick={onClear}
@@ -155,10 +192,22 @@ export default function ChatPanel({ open, onClose, onSend, onHighlight, onClear,
             >
               {m.role === 'assistant' ? renderRich(m.text) : m.text}
               {m.role === 'assistant' && m.meta && (
-                <div className="mt-1.5 text-[10px] text-slate-500">
-                  {m.meta.count > 0 ? `Highlighted ${m.meta.count} stop${m.meta.count === 1 ? '' : 's'} on the map.` : 'No matching stops to highlight.'}
-                  {m.meta.truncated ? ` Answer covers the first ${m.meta.sent} of ${m.meta.total} loaded stops.` : ''}
-                </div>
+                m.meta.issueUrl ? (
+                  <a
+                    href={m.meta.issueUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="mt-1.5 inline-flex items-center gap-1 text-[11px] font-medium hover:underline"
+                    style={{ color: BRAND }}
+                  >
+                    Open issue{m.meta.issueNumber ? ` #${m.meta.issueNumber}` : ''} →
+                  </a>
+                ) : m.meta.count != null ? (
+                  <div className="mt-1.5 text-[10px] text-slate-500">
+                    {m.meta.count > 0 ? `Highlighted ${m.meta.count} stop${m.meta.count === 1 ? '' : 's'} on the map.` : 'No matching stops to highlight.'}
+                    {m.meta.truncated ? ` Answer covers the first ${m.meta.sent} of ${m.meta.total} loaded stops.` : ''}
+                  </div>
+                ) : null
               )}
             </div>
           </div>
