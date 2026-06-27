@@ -49,7 +49,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.29.55';
+const APP_VERSION = '0.29.56';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -69,6 +69,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.29.56', 'Routing (beta) — Ninja mode now uses a little masked-ninja icon (a crisp SVG that looks the same on every device and matches the button color) instead of the emoji, on the toggle, the on-panel hint, and each card\'s target radio.'],
   ['0.29.55', 'Routing (beta) — Ninja mode (part 5). With the Compare panel open, hit "🥷 Ninja" in its header: every stop you then click on the map is appended (in click order) to the target route. The target defaults to the leftmost card; with 2+ routes open, a radio on each card switches which one receives the clicks (the active card is highlighted amber). A stop only ever sits on one card — ninja-clicking it onto a route pulls it off any other open route. Turning ninja off (or closing the panel) returns the map to normal stop-toggling.'],
   ['0.29.54', 'Routing (beta) — route workbench (part 4). Click a route in the right Routes/Drivers panel to open it as a card on the left; open up to 3 side by side (the left panel replaces Setup while routes are open — "Back to Setup" closes them). Each card shows the route\'s stops in order with a re-sequence picker (Shortest distance / Farthest first / Closest first / Reverse), collapse/close, and a per-stop "→" menu to move a stop to another open route. It\'s a planning overlay — reorders and moves stay in the workbench and don\'t change the board. (Next: smooth desktop drag-and-drop between routes.)'],
   ['0.29.53', 'Routing (beta) — new right-panel "Routes / Drivers" view (part 3 of the workbench). From the gear settings you can now switch the right panel between today\'s Stops/Loads/Result tabs and a live Routes/Drivers roster: one summary card per route showing route name, driver, stop count, skids, weight, and a delivery-progress bar (X/Y delivered). Click a card to select that route\'s stops and frame them on the map. Routing-beta only.'],
@@ -8859,6 +8860,20 @@ function RoutingRoutesPanel({ groups, onPick }) {
   );
 }
 
+// A little masked-ninja icon for Ninja mode — hooded head with side headband tails and a
+// white eye-slit. Uses currentColor so it inherits the button's text color.
+function NinjaIcon({ size = 14, className = '' }) {
+  return (
+    <svg viewBox="0 0 24 24" width={size} height={size} className={className} aria-hidden="true" fill="none">
+      <path d="M3.5 12C3.5 7 7.4 4 12 4s8.5 3 8.5 8c0 .9-.2 1.7-.6 2.4H4.1c-.4-.7-.6-1.5-.6-2.4Z" fill="currentColor" />
+      <path d="M19.4 9.4l3.1 1.3-3.1 1.3M4.6 9.4 1.5 10.7l3.1 1.3" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+      <rect x="5.5" y="10" width="13" height="3" rx="1.5" fill="#fff" />
+      <circle cx="9.5" cy="11.5" r="1.1" fill="currentColor" />
+      <circle cx="14.6" cy="11.5" r="1.1" fill="currentColor" />
+    </svg>
+  );
+}
+
 // One route card in the workbench (part 4): a route opened from the right Routes panel. Shows
 // the route's stops in working order with a re-sequence strategy picker (Shortest / Farthest /
 // Closest / Reverse), collapse/close, per-stop open, and — when other routes are open — a
@@ -8885,7 +8900,7 @@ function RoutingWorkbenchCard({ route, stopById, otherKeys, ninjaMode, isActive,
             {ninjaMode && (
               <label className={`flex items-center gap-1 text-[10px] font-semibold cursor-pointer ${isActive ? 'text-amber-700' : 'text-slate-400'}`} title="Ninja clicks add to this route">
                 <input type="radio" name="wb-active-route" checked={isActive} onChange={onSetActive} />
-                🥷 {isActive ? 'target' : 'set'}
+                <NinjaIcon size={13} /> {isActive ? 'target' : 'set'}
               </label>
             )}
             <button onClick={onClose} className="text-slate-400 hover:text-red-600 leading-none text-lg" aria-label={`Close route ${route.key}`}>×</button>
@@ -8941,12 +8956,12 @@ function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, active
             className={`text-[11px] font-semibold px-2 py-1 rounded border ${ninjaMode ? 'bg-amber-400 border-amber-500 text-amber-950' : 'border-slate-300 text-slate-600 hover:bg-slate-50'}`}
             title="Ninja mode: each stop you click on the map is added to the target route"
             aria-pressed={ninjaMode}
-          >🥷 Ninja{ninjaMode ? ' on' : ''}</button>
+          ><span className="inline-flex items-center gap-1"><NinjaIcon size={14} /> Ninja{ninjaMode ? ' on' : ''}</span></button>
           <button onClick={onCloseAll} className="text-[11px] text-slate-500 hover:text-slate-800 underline shrink-0">Back to Setup</button>
         </div>
       </div>
       {ninjaMode && (
-        <div className="px-2 py-1 text-[11px] bg-amber-50 border-b border-amber-200 text-amber-800 shrink-0">🥷 Ninja on — clicking a stop adds it to <b>{activeKey || '—'}</b>{wbRoutes.length > 1 ? ' (use the radio on a card to switch target)' : ''}.</div>
+        <div className="px-2 py-1 text-[11px] bg-amber-50 border-b border-amber-200 text-amber-800 shrink-0 flex items-center gap-1"><NinjaIcon size={13} /><span>Ninja on — clicking a stop adds it to <b>{activeKey || '—'}</b>{wbRoutes.length > 1 ? ' (use the radio on a card to switch target)' : ''}.</span></div>
       )}
       <div className={`flex-1 min-h-0 gap-2 p-2 ${isMobile ? 'flex flex-col overflow-y-auto' : 'flex overflow-x-auto'}`}>
         {wbRoutes.map((r) => (
