@@ -14,8 +14,13 @@
 // nuvizz-refresh-stops-background.mts) — there is deliberately no UTC-weekday
 // skip here, because the Friday-evening ET window lands on Saturday UTC and a
 // naive getUTCDay() check would wrongly drop it. Manual HTTP runs always proceed.
+//
+// The board day is anchored on the EASTERN calendar day (etDayString), not the UTC
+// day: after ~8pm ET the UTC date is already tomorrow, so a UTC anchor filed the
+// Friday-evening live board under Saturday's doc key — which, with no weekend scan to
+// re-derive it, left Friday's deliveries sitting on Saturday's board all weekend.
 
-import { scanDate, todayUTC, scansEnabled, deriveFleetSummary, estimateLoadRange, buildScanState, shadowWouldProbe, selectLoadProbeTargets, groupLoadMembers, estimateStopFrontier, unplannedFloor, FLOOR_MARGIN, loadNbrToInt, stopNbrToInt, shouldDeepSweep, deepSweepGate, lookupStopByPro } from './nuvizz-scan.mts';
+import { scanDate, scansEnabled, deriveFleetSummary, estimateLoadRange, buildScanState, shadowWouldProbe, selectLoadProbeTargets, groupLoadMembers, estimateStopFrontier, unplannedFloor, FLOOR_MARGIN, loadNbrToInt, stopNbrToInt, shouldDeepSweep, deepSweepGate, lookupStopByPro } from './nuvizz-scan.mts';
 import { loadProbeParity, frontierParity, loadMembershipDelta, dateSliceMismatch } from './scan-parity.mts';
 import { isFirestoreEnabled, writeStops, writeFleetIndex, getDoc, markScanState, readCallStats, readCircuit, readScanState, writeScanState, readRecentFrontier, recordScanMetric, etDayString, readScanConfig, readStops, readEnrichedPros, writeEnrichedPros } from './firestore.mts';
 import { listScanForDate, mergeEnrich, twoScanBuckets, etDateForTargetUTC, boardDayFor } from './nuvizz-list.mts';
@@ -77,7 +82,13 @@ export async function runRefreshStops(req: Request): Promise<Response> {
   // a manual scan vs on-demand. ('scheduled-scan' is the cron path; 'manual' a human scan.)
   setCallTrigger(isManual ? 'manual' : 'scheduled-scan');
 
-  const [today, tomorrow] = scanDatesFrom(todayUTC(), 2);
+  // Anchor the board day on the EASTERN calendar day, NOT the UTC day. They agree all day
+  // and diverge only after ~8pm ET (UTC already rolled to tomorrow). The board doc is keyed by
+  // this date AND the dispatcher's date picker selects an ET calendar day, so anchoring on UTC
+  // made the Friday-evening run write FRIDAY's live board into the SATURDAY-keyed doc — and on a
+  // weekend (no follow-up scan) that stale bleed sat on Saturday's board all weekend. ET-anchoring
+  // files each day's board under its own ET date (the same fix attempts-core already uses).
+  const [today, tomorrow] = scanDatesFrom(etDayString(), 2);
   const fsOn = isFirestoreEnabled();
   let ceiling = Number(process.env.NUVIZZ_DAILY_CEILING) || 12000;
   // Phase 2 — lean load discovery (known-active + buffer + gap sweep). OFF by
@@ -426,7 +437,7 @@ export async function runRefreshStops(req: Request): Promise<Response> {
   if (explicit) {
     let dates: string[];
     if (dateParam) dates = [dateParam];
-    else { const n = Math.max(1, Math.min(31, parseInt(daysParam || '', 10) || DEFAULT_DAYS)); dates = scanDatesFrom(todayUTC(), n); }
+    else { const n = Math.max(1, Math.min(31, parseInt(daysParam || '', 10) || DEFAULT_DAYS)); dates = scanDatesFrom(etDayString(), n); }
     for (const date of dates) await scanAndWrite(date, true, true);
     await refreshOps();
     logScan('none', true, { l: true, u: true }, { l: true, u: true });

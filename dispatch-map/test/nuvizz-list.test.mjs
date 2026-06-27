@@ -4,7 +4,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { statusFromCode, parseSchedDate, parseReqDate, toBoardStop, bucketByDate, boardDayFor, fromRows, normalize, periodForDate, mergeEnrich, mergeTwoScan, etDateForTargetUTC, SAVED_SEARCHES, keepForBoardDate } from '../netlify/functions/lib/nuvizz-list.mts';
+import { statusFromCode, parseSchedDate, parseReqDate, toBoardStop, bucketByDate, boardDayFor, fromRows, normalize, periodForDate, mergeEnrich, mergeTwoScan, etDateForTargetUTC, SAVED_SEARCHES, keepForBoardDate, filterFinishedPriorDay } from '../netlify/functions/lib/nuvizz-list.mts';
 import { addrKey } from '../netlify/functions/lib/geocode.mts';
 
 // ── boardDayFor: the ONE day-resolution authority (bucketing + carry-forward guard) ──
@@ -97,6 +97,25 @@ test('keepForBoardDate: drops PRIOR-day finished stops, keeps today + open carry
   assert.deepEqual(kept.map((s) => s.stopNbr), ['TODAY_OPEN', 'TODAY_DONE', 'YDAY_OPEN', 'UNDATED']);
   // kept rows are stamped to the board date (both fields)
   assert.ok(kept.every((s) => s.scheduledDate === '2026-06-25' && s.boardDate === '2026-06-25'));
+});
+
+test('filterFinishedPriorDay: READ-time guard strips a stale prior-day FINISHED bleed, keeps the rest', () => {
+  // The exact weekend bug: Friday's delivered stops sitting on Saturday's (2026-06-27) doc.
+  const saturday = '2026-06-27';
+  const stops = [
+    { stopNbr: 'SAT_SCHED', boardDate: '2026-06-27', normalizedStatus: 'SCHEDULED' },        // true Saturday → keep
+    { stopNbr: 'FRI_DELIVERED', boardDate: '2026-06-26', normalizedStatus: 'DELIVERED' },    // Friday bleed → drop
+    { stopNbr: 'FRI_UNABLE', boardDate: '2026-06-26', normalizedStatus: 'EXCEPTION' },        // Friday finished → drop
+    { stopNbr: 'FRI_OPEN', boardDate: '2026-06-26', normalizedStatus: 'SCHEDULED' },          // open (not finished) → keep
+    { stopNbr: 'SAT_UNDATED', boardDate: null, normalizedStatus: 'UNPLANNED' },               // undated → keep
+  ];
+  const shown = filterFinishedPriorDay(stops, saturday);
+  assert.deepEqual(shown.map((s) => s.stopNbr), ['SAT_SCHED', 'FRI_OPEN', 'SAT_UNDATED']);
+  // Read-only: it filters, it does NOT mutate the surviving rows' dates.
+  assert.equal(shown[0].boardDate, '2026-06-27');
+  // A clean same-day board is untouched (no-op).
+  const clean = [{ stopNbr: 'A', boardDate: saturday, normalizedStatus: 'DELIVERED' }];
+  assert.equal(filterFinishedPriorDay(clean, saturday).length, 1);
 });
 
 test('statusFromCode: NuVizz codes → board status + planned flag', () => {

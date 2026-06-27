@@ -20,9 +20,10 @@
 //                     the 26s cap for the unplanned scan — not for normal use)
 
 import fixture from '../../test/fixtures/nuvizz-today-stops.json' with { type: 'json' };
-import { scanDate, todayUTC, normalizeStop } from './lib/nuvizz-scan.mts';
+import { scanDate, normalizeStop } from './lib/nuvizz-scan.mts';
 import { isFirestoreEnabled, readStops, readCallStats, readCircuit, etDayString, readScanMetrics, readScanConfig } from './lib/firestore.mts';
 import { summarizeScanMetrics } from './lib/scan-metrics.mts';
+import { filterFinishedPriorDay } from './lib/nuvizz-list.mts';
 import { breakerMode } from './lib/nuvizz-request.mts';
 
 const TENANT = 'davis';
@@ -58,7 +59,10 @@ async function mergeCarryover(stops: any[], date: string, carryDays: number): Pr
 
 export default async (req: Request): Promise<Response> => {
   const url = new URL(req.url);
-  const date = url.searchParams.get('date') || todayUTC();
+  // Default to the EASTERN calendar day (matches the board's ET-anchored doc keys and the
+  // dispatcher's date picker), not the UTC day — else an after-8pm-ET read with no date param
+  // would fetch tomorrow's (empty/forming) board.
+  const date = url.searchParams.get('date') || etDayString();
   const useMock = url.searchParams.get('mock') === '1';
   const live = url.searchParams.get('live') === '1';
   const carryDays = Math.max(0, Math.min(14, parseInt(url.searchParams.get('carryDays') || '0', 10) || 0));
@@ -87,7 +91,11 @@ export default async (req: Request): Promise<Response> => {
       source = 'live-scan';
     } else if (isFirestoreEnabled()) {
       const { meta, stops: indexed } = await readStops(TENANT, date);
-      stops = indexed;
+      // READ-time board-day guard: never SHOW a prior-day FINISHED stop on this date's board.
+      // The scanner keys boards by ET day so this is normally a no-op, but a board written under
+      // the old UTC anchor (which filed Friday's deliveries onto Saturday's doc) sits in a weekend
+      // scan-blackout that can't re-prune it — this strips that stale bleed at serve time.
+      stops = filterFinishedPriorDay(indexed, date);
       lastScannedAt = meta?.last_scanned_at ?? null;
       lastLoadScanAt = meta?.lastLoadScanAt ?? meta?.last_scanned_at ?? null;
       lastUnplannedScanAt = meta?.lastUnplannedScanAt ?? null;
