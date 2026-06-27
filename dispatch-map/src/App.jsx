@@ -49,7 +49,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.29.56';
+const APP_VERSION = '0.29.57';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -69,6 +69,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.29.57', 'Routing (beta) mobile fix — opening a route now jumps you straight to the Compare panel (the Setup tab), where the 🥷 Ninja toggle lives. Before, tapping a route from the Routes tab quietly opened it on the (hidden) Setup tab, so the Compare panel and Ninja mode never appeared. (To get there on a phone: gear → Right panel: Routes/Drivers → tap a route.)'],
   ['0.29.56', 'Routing (beta) — Ninja mode now uses a little masked-ninja icon (a crisp SVG that looks the same on every device and matches the button color) instead of the emoji, on the toggle, the on-panel hint, and each card\'s target radio.'],
   ['0.29.55', 'Routing (beta) — Ninja mode (part 5). With the Compare panel open, hit "🥷 Ninja" in its header: every stop you then click on the map is appended (in click order) to the target route. The target defaults to the leftmost card; with 2+ routes open, a radio on each card switches which one receives the clicks (the active card is highlighted amber). A stop only ever sits on one card — ninja-clicking it onto a route pulls it off any other open route. Turning ninja off (or closing the panel) returns the map to normal stop-toggling.'],
   ['0.29.54', 'Routing (beta) — route workbench (part 4). Click a route in the right Routes/Drivers panel to open it as a card on the left; open up to 3 side by side (the left panel replaces Setup while routes are open — "Back to Setup" closes them). Each card shows the route\'s stops in order with a re-sequence picker (Shortest distance / Farthest first / Closest first / Reverse), collapse/close, and a per-stop "→" menu to move a stop to another open route. It\'s a planning overlay — reorders and moves stay in the workbench and don\'t change the board. (Next: smooth desktop drag-and-drop between routes.)'],
@@ -9986,6 +9987,14 @@ function RoutingScreen() {
   const [mobilePanel, setMobilePanel] = useState('setup');
   const [sheetOpen, setSheetOpen] = useState(true);
   useEffect(() => { if (job?.status === 'done') { setMobilePanel('result'); setSheetOpen(true); } }, [job?.status]);
+  // Mobile: when the FIRST route is opened into the Compare panel, jump to the Setup tab (which
+  // hosts the Compare workbench + the Ninja toggle) and open the sheet — otherwise opening a route
+  // from the Routes tab looks like nothing happened and Ninja mode is never seen.
+  const prevWbLenRef = useRef(0);
+  useEffect(() => {
+    if (isMobile && wbRoutes.length > 0 && prevWbLenRef.current === 0) { setMobilePanel('setup'); setSheetOpen(true); }
+    prevWbLenRef.current = wbRoutes.length;
+  }, [wbRoutes.length, isMobile]);
 
   // Discard the BUILT plan (output), keeping the selection + trucks (inputs) so the
   // dispatcher can adjust and rebuild without re-selecting. Purely local — no
