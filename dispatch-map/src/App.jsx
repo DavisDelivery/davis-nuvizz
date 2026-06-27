@@ -49,7 +49,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.29.53';
+const APP_VERSION = '0.29.54';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -69,6 +69,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.29.54', 'Routing (beta) — route workbench (part 4). Click a route in the right Routes/Drivers panel to open it as a card on the left; open up to 3 side by side (the left panel replaces Setup while routes are open — "Back to Setup" closes them). Each card shows the route\'s stops in order with a re-sequence picker (Shortest distance / Farthest first / Closest first / Reverse), collapse/close, and a per-stop "→" menu to move a stop to another open route. It\'s a planning overlay — reorders and moves stay in the workbench and don\'t change the board. (Next: smooth desktop drag-and-drop between routes.)'],
   ['0.29.53', 'Routing (beta) — new right-panel "Routes / Drivers" view (part 3 of the workbench). From the gear settings you can now switch the right panel between today\'s Stops/Loads/Result tabs and a live Routes/Drivers roster: one summary card per route showing route name, driver, stop count, skids, weight, and a delivery-progress bar (X/Y delivered). Click a card to select that route\'s stops and frame them on the map. Routing-beta only.'],
   ['0.29.52', 'Routing (beta) — the floating "Selected N" panel now has sortable columns (click any header — Stop#, Type, Location, City, Zip, Window, Wt, Plt — to sort asc/desc), and a new panel-settings menu (gear, next to the date picker) where you turn the floating panel on and off. The gear is the start of the configurable panel layout — it will grow to switch the right panel between today\'s Stops/Loads/Result tabs and the new Routes/Drivers view, all Routing-beta only.'],
   ['0.29.51', 'Routing (beta) — new floating "Selected N" panel (part 2 of the routing workbench). A NuVizz-style overlay that floats over the map and lists every selected stop at a glance: Stop# · type (DO/PU) · location · city · zip · requested window · weight · pallets, with a running total and per-row open/remove. Toggle it on/off from the "1 · Select stops" controls (or the × on the panel / the "selected" chip on the map); the preference is remembered.'],
@@ -8857,6 +8858,96 @@ function RoutingRoutesPanel({ groups, onPick }) {
   );
 }
 
+// One route card in the workbench (part 4): a route opened from the right Routes panel. Shows
+// the route's stops in working order with a re-sequence strategy picker (Shortest / Farthest /
+// Closest / Reverse), collapse/close, per-stop open, and — when other routes are open — a
+// "move to route" picker that reassigns a stop to another open card. The order lives in wbRoutes
+// state; this is a planning overlay (it does not mutate the board).
+function RoutingWorkbenchCard({ route, stopById, otherKeys, onResequence, onCollapse, onClose, onMoveStop, onOpenStop, isMobile }) {
+  const rows = route.order.map((id) => stopById.get(String(id))).filter(Boolean);
+  let skids = 0, weight = 0, delivered = 0;
+  let driverName = '';
+  for (const s of rows) {
+    skids += Number(s.cartons) || 0; weight += Number(s.weight) || 0;
+    if (classifyStopStatus(s) === 'DELIVERED') delivered += 1;
+    if (!driverName && (s.driverName || s.driverUserName)) driverName = s.driverName || s.driverUserName;
+  }
+  return (
+    <div className={`${isMobile ? 'w-full' : 'w-[300px]'} shrink-0 border rounded-lg bg-white flex flex-col min-h-0 ${isMobile ? '' : 'max-h-full'}`}>
+      <div className="px-2 py-1.5 border-b bg-slate-50 rounded-t-lg shrink-0">
+        <div className="flex items-center justify-between gap-1">
+          <button onClick={onCollapse} className="flex items-center gap-1 min-w-0" aria-expanded={!route.collapsed}>
+            {route.collapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
+            <span className="font-semibold text-slate-800 truncate">{route.key}</span>
+          </button>
+          <button onClick={onClose} className="text-slate-400 hover:text-red-600 leading-none text-lg shrink-0" aria-label={`Close route ${route.key}`}>×</button>
+        </div>
+        <div className="text-[11px] text-slate-500 truncate">{driverName || 'No driver'} · {rows.length} stop{rows.length === 1 ? '' : 's'} · {skids} sk · {Math.round(weight).toLocaleString()} lb · {rows.length ? Math.round((100 * delivered) / rows.length) : 0}%</div>
+        {!route.collapsed && (
+          <select onChange={(e) => { if (e.target.value) onResequence(e.target.value); e.target.value = ''; }} defaultValue="" className="mt-1 w-full border rounded px-1 py-1 text-[11px] bg-white">
+            <option value="" disabled>Re-sequence…</option>
+            <option value="min">Shortest distance</option>
+            <option value="farthest">Farthest first</option>
+            <option value="closest">Closest first</option>
+            <option value="reverse">Reverse</option>
+          </select>
+        )}
+      </div>
+      {!route.collapsed && (
+        <ol className={`${isMobile ? 'max-h-[40vh]' : 'flex-1'} min-h-0 overflow-y-auto divide-y`}>
+          {rows.length === 0 && <li className="px-2 py-2 text-[11px] text-slate-400">No stops on this route.</li>}
+          {rows.map((s, i) => (
+            <li key={String(s.stopNbr)} className="px-2 py-1 flex items-center gap-2 text-[11px]">
+              <span className="w-4 text-right text-slate-400 font-mono shrink-0">{i + 1}</span>
+              <div className="min-w-0 flex-1">
+                <div className="truncate font-medium text-slate-800">{s.businessName || String(s.stopNbr)}</div>
+                <div className="truncate text-slate-500">{[s.city, `${Number(s.cartons) || 0} sk`].filter(Boolean).join(' · ')}</div>
+              </div>
+              <button onClick={() => onOpenStop && onOpenStop(s)} className="font-mono text-blue-700 text-[10px] shrink-0" title="Open stop">{s.primaryPro || s.pro || s.stopNbr}</button>
+              {otherKeys.length > 0 && (
+                <select onChange={(e) => { if (e.target.value) onMoveStop(String(s.stopNbr), e.target.value); e.target.value = ''; }} defaultValue="" className="border rounded text-[10px] px-0.5 py-0.5 bg-white shrink-0" title="Move to another route" aria-label={`Move ${s.businessName || s.stopNbr} to another route`}>
+                  <option value="">→</option>
+                  {otherKeys.map((k) => <option key={k} value={k}>{k}</option>)}
+                </select>
+              )}
+            </li>
+          ))}
+        </ol>
+      )}
+    </div>
+  );
+}
+
+// The route workbench (part 4): the 1–3 route cards opened from the right Routes panel, laid out
+// side by side (desktop) or stacked (mobile). Replaces the Setup stack on the left while routes
+// are open; "Back to Setup" closes them all.
+function RoutingWorkbench({ wbRoutes, stopById, onResequence, onCollapse, onClose, onCloseAll, onMoveStop, onOpenStop, isMobile }) {
+  return (
+    <div className="flex flex-col h-full min-h-0">
+      <div className="flex items-center justify-between px-2 py-1.5 border-b shrink-0 bg-white">
+        <span className="font-semibold text-slate-800 text-[13px]">Route workbench <span className="text-slate-400 text-[11px]">({wbRoutes.length}/3)</span></span>
+        <button onClick={onCloseAll} className="text-[11px] text-slate-500 hover:text-slate-800 underline">Back to Setup</button>
+      </div>
+      <div className={`flex-1 min-h-0 gap-2 p-2 ${isMobile ? 'flex flex-col overflow-y-auto' : 'flex overflow-x-auto'}`}>
+        {wbRoutes.map((r) => (
+          <RoutingWorkbenchCard
+            key={r.key}
+            route={r}
+            stopById={stopById}
+            otherKeys={wbRoutes.map((x) => x.key).filter((k) => k !== r.key)}
+            onResequence={(strat) => onResequence(r.key, strat)}
+            onCollapse={() => onCollapse(r.key)}
+            onClose={() => onClose(r.key)}
+            onMoveStop={(stopNbr, toKey) => onMoveStop(r.key, stopNbr, toKey)}
+            onOpenStop={onOpenStop}
+            isMobile={isMobile}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // Routing panel-settings menu — a gear button opening a small popover of panel on/off toggles
 // (`panels`: { key, label, on, setOn }) plus optional single-choice view switchers
 // (`views`: { key, label, value, setValue, options: [{ value, label }] }).
@@ -9126,6 +9217,12 @@ function RoutingScreen() {
   });
   useEffect(() => { try { localStorage.setItem('routing.rightPanel', rightPanelMode); } catch { /* ignore */ } }, [rightPanelMode]);
 
+  // Route workbench (part 4): routes opened from the right Routes panel become side-by-side
+  // cards you tune. Each entry { key, order:[stopNbr...], collapsed }; capped at 3. Planning
+  // overlay only — reorders/moves live here, they don't mutate the board.
+  const WB_MAX = 3;
+  const [wbRoutes, setWbRoutes] = useState([]);
+
   const [selectedIds, setSelectedIds] = useState(() => new Set());
   const [selectedTruckIds, setSelectedTruckIds] = useState(() => new Set());
   const [intent, setIntent] = useState('');
@@ -9159,6 +9256,44 @@ function RoutingScreen() {
     return [...m.values()].sort((a, b) =>
       String(a.driver || '~').localeCompare(String(b.driver || '~')) || String(a.name).localeCompare(String(b.name)));
   }, [stops]);
+
+  // Workbench handlers — open a route into the side-by-side cards, tune it, close it.
+  const openRouteInWorkbench = useCallback((key) => {
+    if (!key) return;
+    setWbRoutes((prev) => {
+      if (prev.some((r) => r.key === key)) return prev;                 // already open
+      if (prev.length >= WB_MAX) { setLastAction(`Workbench is full (${WB_MAX} routes) — close one first.`); return prev; }
+      const routeStops = positionedRef.current.filter((s) => (s.routeName || s.loadNbr) === key);
+      const order = orderRouteStops(routeStops).map((s) => String(s.stopNbr));
+      return [...prev, { key, order, collapsed: false }];
+    });
+  }, []);
+  const closeWbRoute = useCallback((key) => setWbRoutes((prev) => prev.filter((r) => r.key !== key)), []);
+  const closeAllWb = useCallback(() => setWbRoutes([]), []);
+  const toggleWbCollapse = useCallback((key) => setWbRoutes((prev) => prev.map((r) => (r.key === key ? { ...r, collapsed: !r.collapsed } : r))), []);
+  const wbResequence = useCallback((key, strategy) => {
+    if (!strategy) return;
+    setWbRoutes((prev) => prev.map((r) => {
+      if (r.key !== key) return r;
+      const pts = r.order.map((id) => { const s = stopById.get(String(id)); return s ? { id: String(id), lat: s.lat, lng: s.lng } : null; }).filter(Boolean);
+      if (pts.length < 2) return r;
+      const newOrder = resequence(pts, ROUTING_DEPOT, strategy).map((s) => s.id);
+      const resolved = new Set(newOrder);
+      const tail = r.order.map(String).filter((id) => !resolved.has(id));   // never drop unresolvable ids
+      return { ...r, order: [...newOrder, ...tail] };
+    }));
+    setLastAction(`Re-sequenced ${key} · ${({ min: 'Shortest distance', closest: 'Closest first', farthest: 'Farthest first', reverse: 'Reverse' })[strategy] || strategy}`);
+  }, [stopById]);
+  const wbMoveStop = useCallback((fromKey, stopNbr, toKey) => {
+    if (!toKey || fromKey === toKey) return;
+    const id = String(stopNbr);
+    setWbRoutes((prev) => prev.map((r) => {
+      if (r.key === fromKey) return { ...r, order: r.order.filter((x) => x !== id) };
+      if (r.key === toKey) return r.order.includes(id) ? r : { ...r, order: [...r.order, id] };
+      return r;
+    }));
+    setLastAction(`Moved ${stopNbr} → ${toKey}`);
+  }, []);
 
   // Default trucks selected once profiles load.
   useEffect(() => {
@@ -9348,6 +9483,17 @@ function RoutingScreen() {
       mapRef.current.fitBounds(b, 60);
     }
   }, [viewing, google, positioned]);
+  // Right Routes-panel click → open that route into the workbench (cards) and frame it on the
+  // map. Unlike pickLoadFromTable it does NOT add the stops to the selection set.
+  const onPickRoute = useCallback((key) => {
+    openRouteInWorkbench(key);
+    if (!google || !mapRef.current) return;
+    const pts = positioned.filter((s) => (s.routeName || s.loadNbr) === key && s.lat != null && s.lng != null);
+    if (!pts.length) return;
+    const b = new google.maps.LatLngBounds();
+    pts.forEach((s) => b.extend({ lat: s.lat, lng: s.lng }));
+    mapRef.current.fitBounds(b, 60);
+  }, [openRouteInWorkbench, google, positioned]);
 
   // The selected-stops list: persistent on desktop, collapsed by default on mobile.
   const [listOpen, setListOpen] = useState(!isMobile);
@@ -9954,7 +10100,13 @@ function RoutingScreen() {
           </div>
           {sheetOpen && (
             <div className="flex-1 min-h-0 overflow-y-auto p-3 space-y-3 text-sm" style={{ paddingBottom: 'calc(12px + env(safe-area-inset-bottom))' }}>
-              {mobilePanel === 'setup' ? controlsContent : mobilePanel === 'loads' ? (rightPanelMode === 'routes' ? <RoutingRoutesPanel groups={routeGroups} onPick={pickLoadFromTable} /> : loadsContent) : resultContent}
+              {mobilePanel === 'setup'
+                ? (wbRoutes.length > 0
+                    ? <RoutingWorkbench wbRoutes={wbRoutes} stopById={stopById} onResequence={wbResequence} onCollapse={toggleWbCollapse} onClose={closeWbRoute} onCloseAll={closeAllWb} onMoveStop={wbMoveStop} onOpenStop={openStop} isMobile />
+                    : controlsContent)
+                : mobilePanel === 'loads'
+                  ? (rightPanelMode === 'routes' ? <RoutingRoutesPanel groups={routeGroups} onPick={onPickRoute} /> : loadsContent)
+                  : resultContent}
             </div>
           )}
         </div>
@@ -9975,10 +10127,16 @@ function RoutingScreen() {
   );
   return (
     <div className="flex-1 flex min-h-0">
-      {/* Left: Setup stack */}
-      <div className="w-[340px] shrink-0 border-r bg-white overflow-y-auto p-3 space-y-3 text-sm">
-        {controlsContent}
-      </div>
+      {/* Left: Setup stack — OR the route workbench (cards) when routes are open from the right panel. */}
+      {wbRoutes.length > 0 ? (
+        <div className="shrink-0 border-r bg-white min-h-0" style={{ width: Math.min(WB_MAX, wbRoutes.length) * 308 + 8 }}>
+          <RoutingWorkbench wbRoutes={wbRoutes} stopById={stopById} onResequence={wbResequence} onCollapse={toggleWbCollapse} onClose={closeWbRoute} onCloseAll={closeAllWb} onMoveStop={wbMoveStop} onOpenStop={openStop} isMobile={false} />
+        </div>
+      ) : (
+        <div className="w-[340px] shrink-0 border-r bg-white overflow-y-auto p-3 space-y-3 text-sm">
+          {controlsContent}
+        </div>
+      )}
 
       {/* Center: the map canvas */}
       <div className="flex-1 relative min-w-0">
@@ -10052,7 +10210,7 @@ function RoutingScreen() {
               <span className="text-[13px] font-semibold" style={{ color: BRAND }}>Routes / Drivers{routeGroups.length ? ` (${routeGroups.length})` : ''}</span>
               <span className="text-[10px] uppercase tracking-wide text-slate-400">{formatDateLong(selectedDate)}</span>
             </div>
-            <RoutingRoutesPanel groups={routeGroups} onPick={pickLoadFromTable} />
+            <RoutingRoutesPanel groups={routeGroups} onPick={onPickRoute} />
           </>
         ) : (
         <>
