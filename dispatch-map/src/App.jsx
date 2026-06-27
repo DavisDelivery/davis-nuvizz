@@ -49,7 +49,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.29.49';
+const APP_VERSION = '0.29.50';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -69,6 +69,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.29.50', 'Fixed "yesterday\'s stuff on today\'s board" on weekends. The background scanner now anchors each board on the EASTERN calendar day instead of the UTC day — previously the Friday-evening scan (after 8pm ET, when UTC has already rolled to Saturday) wrote Friday\'s live board into SATURDAY\'s board, and with no weekend scan to correct it, Friday\'s completed deliveries sat on Saturday\'s board all weekend. The board view also now strips any stale prior-day delivered/exception stops at load time as a safety net, so a mis-dated bleed is never shown even on a board that can\'t be re-scanned. No effect on normal weekday boards.'],
   ['0.29.49', 'Print Manifest pagination: the first printed page is now the summary plus the first delivery ticket, and every page after that is exactly one delivery ticket (a ticket is never split across two pages). Verified against a real print-to-PDF.'],
   ['0.29.48', 'Each route now has a "Print Manifest" button (in the route detail panel, on both the map and mobile): it prints the whole route as one job — a summary cover page (route name, origin, requested window, stop count, driver, and the freight totals: weight · loose · pallets · total pieces) followed by every stop\'s Delivery Ticket in route-delivery order, one per page. Recreates the NuVizz driver manifest, generated entirely from the order data we already have — no extra NuVizz call.'],
   ['0.29.47', 'Empty loads now show on the Loads tab: a load that\'s been created for the day but has no orders assigned yet (e.g. Monday\'s loads waiting to be filled) appears with a "No orders yet" status badge, pulled from the day\'s load roster. Also: orders pulled on Sunday but requested for Tuesday now correctly board on Tuesday, never Monday; and the weekend scan window is extended (Friday scans run until 11 PM, Sunday scans resume at 7 PM) now that API call volume is low.'],
