@@ -49,7 +49,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.29.57';
+const APP_VERSION = '0.29.58';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -69,6 +69,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.29.58', 'Routing (beta) — configurable, resizable layout (part 6, the finale). The left and right panels are now drag-to-resize, just like the dispatch map (drag the divider, double-click to reset; widths are remembered). The gear settings menu is now the one control center: turn the floating Selected panel and the bottom data grid on/off, switch the right panel between Tabs and Routes/Drivers, and "↺ Reset layout to defaults". Routing-beta only.'],
   ['0.29.57', 'Routing (beta) mobile fix — opening a route now jumps you straight to the Compare panel (the Setup tab), where the 🥷 Ninja toggle lives. Before, tapping a route from the Routes tab quietly opened it on the (hidden) Setup tab, so the Compare panel and Ninja mode never appeared. (To get there on a phone: gear → Right panel: Routes/Drivers → tap a route.)'],
   ['0.29.56', 'Routing (beta) — Ninja mode now uses a little masked-ninja icon (a crisp SVG that looks the same on every device and matches the button color) instead of the emoji, on the toggle, the on-panel hint, and each card\'s target radio.'],
   ['0.29.55', 'Routing (beta) — Ninja mode (part 5). With the Compare panel open, hit "🥷 Ninja" in its header: every stop you then click on the map is appended (in click order) to the target route. The target defaults to the leftmost card; with 2+ routes open, a radio on each card switches which one receives the clicks (the active card is highlighted amber). A stop only ever sits on one card — ninja-clicking it onto a route pulls it off any other open route. Turning ninja off (or closing the panel) returns the map to normal stop-toggling.'],
@@ -1172,6 +1173,37 @@ function useResizablePanel(viewportWidth) {
   useEffect(() => { lastWriteRef.current = width; }, [width]);
 
   return { width, setWidth, onMouseDown, onDoubleClick, maxWidth, isDragging: isDraggingRef };
+}
+
+// Generic resizable side panel (used by the Routing workbench for its LEFT and RIGHT columns,
+// like the dispatch map's left panel). `side` 'left' = width grows with the cursor's X; 'right'
+// = width = viewport − X. Own localStorage key so the two panels persist independently. Width is
+// clamped to [min, 55vw] and re-clamped on narrowing. Persist on release / reset on double-click.
+function useSidePanelWidth(side, lsKey, def, min, viewportWidth) {
+  const maxWidth = Math.max(min + 60, Math.round(viewportWidth * 0.55));
+  const clamp = useCallback((px) => Math.max(min, Math.min(maxWidth, px)), [maxWidth, min]);
+  const [width, setWidth] = useState(() => { const s = safeReadJSON(lsKey, null); return Math.max(min, Math.min(typeof s === 'number' ? s : def, Math.round((typeof window === 'undefined' ? 1280 : window.innerWidth) * 0.55))); });
+  useEffect(() => { setWidth((w) => clamp(w)); }, [clamp]);
+  const lastRef = useRef(width);
+  useEffect(() => { lastRef.current = width; }, [width]);
+  const onMouseDown = useCallback((e) => {
+    e.preventDefault();
+    document.body.style.cursor = 'col-resize'; document.body.style.userSelect = 'none';
+    let raf = null;
+    const onMove = (ev) => {
+      if (raf) return;
+      raf = requestAnimationFrame(() => { raf = null; const next = side === 'right' ? (window.innerWidth - ev.clientX) : ev.clientX; setWidth(clamp(next)); });
+    };
+    const onUp = () => {
+      document.body.style.cursor = ''; document.body.style.userSelect = '';
+      document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp);
+      if (raf) cancelAnimationFrame(raf);
+      safeWriteJSON(lsKey, clamp(lastRef.current));
+    };
+    document.addEventListener('mousemove', onMove); document.addEventListener('mouseup', onUp);
+  }, [side, lsKey, clamp]);
+  const onDoubleClick = useCallback(() => { setWidth(def); safeWriteJSON(lsKey, def); }, [def, lsKey]);
+  return { width, setWidth, onMouseDown, onDoubleClick };
 }
 
 // Debounce any value. Used by the search bar (200ms) so we don't re-filter on
@@ -8990,7 +9022,7 @@ function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, active
 // Routing panel-settings menu — a gear button opening a small popover of panel on/off toggles
 // (`panels`: { key, label, on, setOn }) plus optional single-choice view switchers
 // (`views`: { key, label, value, setValue, options: [{ value, label }] }).
-function RoutingSettingsMenu({ panels = [], views = [] }) {
+function RoutingSettingsMenu({ panels = [], views = [], actions = [] }) {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
   useEffect(() => {
@@ -9029,6 +9061,13 @@ function RoutingSettingsMenu({ panels = [], views = [] }) {
                 </label>
               ))}
             </>
+          )}
+          {actions.length > 0 && (
+            <div className="mt-1 pt-1 border-t flex flex-col gap-1">
+              {actions.map((a) => (
+                <button key={a.key} onClick={() => { a.onClick(); setOpen(false); }} className="text-left px-1 py-1.5 rounded text-slate-600 hover:bg-slate-50">{a.label}</button>
+              ))}
+            </div>
           )}
         </div>
       )}
@@ -9255,6 +9294,21 @@ function RoutingScreen() {
     try { return localStorage.getItem('routing.rightPanel') === 'routes' ? 'routes' : 'tabs'; } catch { return 'tabs'; }
   });
   useEffect(() => { try { localStorage.setItem('routing.rightPanel', rightPanelMode); } catch { /* ignore */ } }, [rightPanelMode]);
+
+  // Part 6 — resizable left & right panels (the bottom grid already resizes via BottomStopsTable),
+  // and a bottom-grid on/off toggle. All persisted; Routing-beta only.
+  const leftPanel = useSidePanelWidth('left', 'routing.leftW', 340, 240, viewportWidth);
+  const rightPanel = useSidePanelWidth('right', 'routing.rightW', 380, 280, viewportWidth);
+  const [bottomGridOn, setBottomGridOn] = useState(() => { try { return localStorage.getItem('routing.bottomGrid') !== 'off'; } catch { return true; } });
+  useEffect(() => { try { localStorage.setItem('routing.bottomGrid', bottomGridOn ? 'on' : 'off'); } catch { /* ignore */ } }, [bottomGridOn]);
+  const resetRoutingLayout = useCallback(() => {
+    leftPanel.onDoubleClick(); rightPanel.onDoubleClick();
+    setSelPanelOpen(true); setRightPanelMode('tabs'); setBottomGridOn(true);
+  }, [leftPanel, rightPanel]);
+  // Nudge Google Maps to re-render when a side panel resizes (the canvas changed width).
+  useEffect(() => {
+    if (google && mapRef.current) { try { google.maps.event.trigger(mapRef.current, 'resize'); } catch { /* ignore */ } }
+  }, [leftPanel.width, rightPanel.width, google]);
 
   // Route workbench (part 4): routes opened from the right Routes panel become side-by-side
   // cards you tune. Each entry { key, order:[stopNbr...], collapsed }; capped at 3. Planning
@@ -10015,7 +10069,11 @@ function RoutingScreen() {
           <DatePicker selectedDate={selectedDate} onChange={setSelectedDate} onToday={() => setSelectedDate(todayInET())} compact />
           <RoutingSettingsMenu
             views={[{ key: 'rightPanel', label: 'Right panel', value: rightPanelMode, setValue: setRightPanelMode, options: [{ value: 'tabs', label: 'Tabs (Stops / Loads / Result)' }, { value: 'routes', label: 'Routes / Drivers' }] }]}
-            panels={[{ key: 'selPanel', label: 'Floating selected-stops panel', on: selPanelOpen, setOn: setSelPanelOpen }]}
+            panels={[
+              { key: 'selPanel', label: 'Floating selected-stops panel', on: selPanelOpen, setOn: setSelPanelOpen },
+              { key: 'bottomGrid', label: 'Bottom data grid', on: bottomGridOn, setOn: setBottomGridOn },
+            ]}
+            actions={[{ key: 'reset', label: '↺ Reset layout to defaults', onClick: resetRoutingLayout }]}
           />
         </div>
       </div>
@@ -10151,8 +10209,8 @@ function RoutingScreen() {
           {!viewing && selPanelOpen && selectedStops.length > 0 && (
             <RoutingSelectionFloatPanel selectedStops={selectedStops} onRemove={removeStop} onOpenStop={openStop} onClose={() => setSelPanelOpen(false)} isMobile />
           )}
-          {/* The dispatch-Map data grid — Stops/Loads spreadsheet, route-able. */}
-          <BottomStopsTable
+          {/* The dispatch-Map data grid — Stops/Loads spreadsheet, route-able. Toggleable (gear). */}
+          {bottomGridOn && <BottomStopsTable
             stops={stops}
             loadStops={stops}
             boardDate={selectedDate}
@@ -10162,7 +10220,7 @@ function RoutingScreen() {
             setOpen={setBottomTableOpen}
             onPick={pickStopFromTable}
             onPickLoad={pickLoadFromTable}
-          />
+          />}
         </div>
         <div className="border-t bg-white flex flex-col shrink-0" style={{ height: sheetOpen ? '50%' : 'auto' }}>
           <div className="flex items-center gap-2 px-2 py-1.5 border-b">
@@ -10202,16 +10260,18 @@ function RoutingScreen() {
   );
   return (
     <div className="flex-1 flex min-h-0">
-      {/* Left: Setup stack — OR the route workbench (cards) when routes are open from the right panel. */}
+      {/* Left: Setup stack — OR the route workbench (cards) when routes are open from the right panel.
+          Drag the divider (or double-click to reset) to resize, like the dispatch map. */}
       {wbRoutes.length > 0 ? (
-        <div className="shrink-0 border-r bg-white min-h-0" style={{ width: Math.min(WB_MAX, wbRoutes.length) * 308 + 8 }}>
+        <div className="shrink-0 border-r bg-white min-h-0 overflow-x-auto" style={{ width: leftPanel.width }}>
           <RoutingWorkbench wbRoutes={wbRoutes} stopById={stopById} ninjaMode={ninjaMode} onToggleNinja={setNinjaMode} activeKey={effectiveActiveKey} onSetActive={setActiveRouteKey} onResequence={wbResequence} onCollapse={toggleWbCollapse} onClose={closeWbRoute} onCloseAll={closeAllWb} onMoveStop={wbMoveStop} onOpenStop={openStop} isMobile={false} />
         </div>
       ) : (
-        <div className="w-[340px] shrink-0 border-r bg-white overflow-y-auto p-3 space-y-3 text-sm">
+        <div className="shrink-0 border-r bg-white overflow-y-auto p-3 space-y-3 text-sm" style={{ width: leftPanel.width }}>
           {controlsContent}
         </div>
       )}
+      <ResizeHandle onMouseDown={leftPanel.onMouseDown} onDoubleClick={leftPanel.onDoubleClick} />
 
       {/* Center: the map canvas */}
       <div className="flex-1 relative min-w-0">
@@ -10263,8 +10323,8 @@ function RoutingScreen() {
             )}
           </div>
         )}
-        {/* The dispatch-Map data grid — Stops/Loads spreadsheet, route-able. */}
-        <BottomStopsTable
+        {/* The dispatch-Map data grid — Stops/Loads spreadsheet, route-able. Toggleable (gear). */}
+        {bottomGridOn && <BottomStopsTable
           stops={stops}
           loadStops={stops}
           boardDate={selectedDate}
@@ -10274,11 +10334,12 @@ function RoutingScreen() {
           setOpen={setBottomTableOpen}
           onPick={pickStopFromTable}
           onPickLoad={pickLoadFromTable}
-        />
+        />}
       </div>
 
-      {/* Right: Stops | Result */}
-      <div className="w-[380px] shrink-0 border-l bg-white flex flex-col min-h-0">
+      {/* Right: Stops | Result (or the Routes/Drivers view) — resizable, like the left. */}
+      <ResizeHandle onMouseDown={rightPanel.onMouseDown} onDoubleClick={rightPanel.onDoubleClick} />
+      <div className="shrink-0 border-l bg-white flex flex-col min-h-0" style={{ width: rightPanel.width }}>
         {rightPanelMode === 'routes' ? (
           <>
             <div className="flex items-center justify-between px-3 py-2 border-b shrink-0">
