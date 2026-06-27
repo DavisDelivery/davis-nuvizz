@@ -49,7 +49,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.29.51';
+const APP_VERSION = '0.29.52';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -69,6 +69,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.29.52', 'Routing (beta) — the floating "Selected N" panel now has sortable columns (click any header — Stop#, Type, Location, City, Zip, Window, Wt, Plt — to sort asc/desc), and a new panel-settings menu (gear, next to the date picker) where you turn the floating panel on and off. The gear is the start of the configurable panel layout — it will grow to switch the right panel between today\'s Stops/Loads/Result tabs and the new Routes/Drivers view, all Routing-beta only.'],
   ['0.29.51', 'Routing (beta) — new floating "Selected N" panel (part 2 of the routing workbench). A NuVizz-style overlay that floats over the map and lists every selected stop at a glance: Stop# · type (DO/PU) · location · city · zip · requested window · weight · pallets, with a running total and per-row open/remove. Toggle it on/off from the "1 · Select stops" controls (or the × on the panel / the "selected" chip on the map); the preference is remembered.'],
   ['0.29.50', 'Fixed "yesterday\'s stuff on today\'s board" on weekends. The background scanner now anchors each board on the EASTERN calendar day instead of the UTC day — previously the Friday-evening scan (after 8pm ET, when UTC has already rolled to Saturday) wrote Friday\'s live board into SATURDAY\'s board, and with no weekend scan to correct it, Friday\'s completed deliveries sat on Saturday\'s board all weekend. The board view also now strips any stale prior-day delivered/exception stops at load time as a safety net, so a mis-dated bleed is never shown even on a board that can\'t be re-scanned. No effect on normal weekday boards.'],
   ['0.29.49', 'Print Manifest pagination: the first printed page is now the summary plus the first delivery ticket, and every page after that is exactly one delivery ticket (a ticket is never split across two pages). Verified against a real print-to-PDF.'],
@@ -8816,6 +8817,39 @@ function RoutingStopsPanel({ selectedStops, notes, onRemove, hoverId, setHoverId
 // pallets), with per-row open/remove. Toggleable on/off (selPanelOpen); floats over the map at
 // both widths. The selection is the single source of truth — rows derive from selectedStops and
 // remove flows back through onRemove (same contract as RoutingStopsPanel).
+// Routing panel-settings menu — a gear button opening a small popover of panel on/off toggles.
+// Seed for the configurable-layout work: callers pass `panels` (each { key, label, on, setOn }).
+function RoutingSettingsMenu({ panels }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    const onKey = (e) => { if (e.key === 'Escape') setOpen(false); };
+    document.addEventListener('mousedown', onDoc);
+    window.addEventListener('keydown', onKey);
+    return () => { document.removeEventListener('mousedown', onDoc); window.removeEventListener('keydown', onKey); };
+  }, [open]);
+  return (
+    <div className="relative shrink-0" ref={ref}>
+      <button onClick={() => setOpen((o) => !o)} className={`p-1.5 rounded border ${open ? 'border-slate-400 bg-slate-100' : 'border-slate-300 hover:bg-slate-50'} text-slate-600`} title="Panel settings" aria-label="Panel settings" aria-expanded={open}>
+        <Settings size={16} />
+      </button>
+      {open && (
+        <div className="absolute right-0 mt-1 z-30 w-60 bg-white border border-slate-300 rounded-lg shadow-xl p-2 text-[12px]">
+          <div className="font-semibold text-slate-700 px-1 pb-1 mb-1 border-b">Panels</div>
+          {panels.map((p) => (
+            <label key={p.key} className="flex items-center justify-between gap-2 px-1 py-1.5 rounded hover:bg-slate-50 cursor-pointer">
+              <span className="text-slate-700">{p.label}</span>
+              <input type="checkbox" checked={p.on} onChange={(e) => p.setOn(e.target.checked)} />
+            </label>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function RoutingSelectionFloatPanel({ selectedStops, onRemove, onOpenStop, onClose, isMobile }) {
   // Compact window from the naive (zoneless) schedule ISO — parse the clock straight off the
   // string so there's no local-timezone drift. "8:00a", "8:00a–8:00p".
@@ -8834,11 +8868,19 @@ function RoutingSelectionFloatPanel({ selectedStops, onRemove, onOpenStop, onClo
       location: s.businessName || s.addr1 || String(s.stopNbr),
       city: s.city || '', zip: s.zip || '',
       win: f && t ? `${f}–${t}` : (f || t || ''),
+      winSort: s.scheduledFrom || '',    // sort the window by the real (zoneless) start time
       weight: Number(s.weight) || 0,
       pallets: Number(s.cartons) || 0,   // NuVizz totalCartons = real skids/pallets
     };
   }), [selectedStops]);
   const tot = rows.reduce((a, r) => ({ wt: a.wt + r.weight, plt: a.plt + r.pallets }), { wt: 0, plt: 0 });
+  const { sorted, sortKey, sortDir, toggle } = useSortable(rows, null, 'asc');
+  // Compact, click-to-sort header cell (the shared SortableTh is sized for the wider docked tables).
+  const Th = ({ label, k, align }) => (
+    <th onClick={() => toggle(k)} className={`px-1.5 py-1 cursor-pointer select-none hover:bg-slate-100 ${align === 'right' ? 'text-right' : 'text-left'}`}>
+      <span className={`inline-flex items-center gap-0.5 ${align === 'right' ? 'justify-end' : ''}`}>{label}{sortKey === k ? (sortDir === 'asc' ? <ChevronUp size={9} /> : <ChevronDown size={9} />) : null}</span>
+    </th>
+  );
   return (
     <div className={`absolute z-20 bg-white/97 backdrop-blur-sm border border-slate-300 rounded-lg shadow-xl flex flex-col ${isMobile ? 'left-2 right-2 top-12 max-h-[45vh]' : 'right-2 top-12 w-[480px] max-w-[calc(100%-1rem)] max-h-[60vh]'}`}>
       <div className="flex items-center justify-between gap-2 px-3 py-1.5 border-b bg-slate-50 rounded-t-lg shrink-0">
@@ -8855,19 +8897,19 @@ function RoutingSelectionFloatPanel({ selectedStops, onRemove, onOpenStop, onClo
           <table className="w-full text-[11px]">
             <thead className="bg-slate-50 sticky top-0 z-10">
               <tr className="text-[9px] uppercase tracking-wide text-slate-500">
-                <th className="px-1.5 py-1 text-left">Stop#</th>
-                <th className="px-1 py-1 text-left">Type</th>
-                <th className="px-1.5 py-1 text-left">Location</th>
-                <th className="px-1.5 py-1 text-left">City</th>
-                <th className="px-1 py-1 text-left">Zip</th>
-                <th className="px-1 py-1 text-left">Window</th>
-                <th className="px-1 py-1 text-right">Wt</th>
-                <th className="px-1 py-1 text-right">Plt</th>
+                <Th label="Stop#" k="pro" />
+                <Th label="Type" k="type" />
+                <Th label="Location" k="location" />
+                <Th label="City" k="city" />
+                <Th label="Zip" k="zip" />
+                <Th label="Window" k="winSort" />
+                <Th label="Wt" k="weight" align="right" />
+                <Th label="Plt" k="pallets" align="right" />
                 <th className="px-1 py-1" />
               </tr>
             </thead>
             <tbody>
-              {rows.map((r) => (
+              {sorted.map((r) => (
                 <tr key={r.id} className="border-t hover:bg-slate-50">
                   <td className="px-1.5 py-1 whitespace-nowrap"><button onClick={() => onOpenStop && onOpenStop(r.stop)} className="font-mono text-blue-700 hover:underline">{r.pro}</button></td>
                   <td className="px-1 py-1"><span className={`text-[9px] font-bold px-1 rounded ${r.type === 'PU' ? 'bg-violet-100 text-violet-700' : 'bg-slate-100 text-slate-600'}`}>{r.type}</span></td>
@@ -9664,9 +9706,12 @@ function RoutingScreen() {
 
   const controlsContent = (
     <>
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-2">
         <div className="font-bold text-slate-800">Routing <span className="text-[10px] uppercase tracking-wide bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded">beta</span></div>
-        <DatePicker selectedDate={selectedDate} onChange={setSelectedDate} onToday={() => setSelectedDate(todayInET())} compact />
+        <div className="flex items-center gap-1.5">
+          <DatePicker selectedDate={selectedDate} onChange={setSelectedDate} onToday={() => setSelectedDate(todayInET())} compact />
+          <RoutingSettingsMenu panels={[{ key: 'selPanel', label: 'Floating selected-stops panel', on: selPanelOpen, setOn: setSelPanelOpen }]} />
+        </div>
       </div>
       <div className="text-[11px] text-slate-500">{loading ? 'Loading stops…' : `${positioned.length} stops on ${formatDateLong(selectedDate)}`}{stopsError ? ` · ${stopsError}` : ''}</div>
 
@@ -9700,10 +9745,6 @@ function RoutingScreen() {
               <button onClick={clearSelection} className="flex-1 px-2 py-2 text-xs rounded border border-slate-300 hover:bg-slate-50 active:bg-slate-100">Clear</button>
             </div>
             <div className="text-[11px] text-slate-600">{isMobile ? 'Tap' : 'Click'} a stop to toggle it. Or pan/zoom, then <b>Add stops in view</b>, <b>Box</b> ({isMobile ? 'tap two corners' : 'drag'}), or <b>Lasso</b> ({isMobile ? 'tap points' : 'hold & draw'}).</div>
-            <label className="flex items-center gap-2 text-[12px] text-slate-700 pt-0.5 cursor-pointer select-none">
-              <input type="checkbox" checked={selPanelOpen} onChange={(e) => setSelPanelOpen(e.target.checked)} />
-              Floating selected-stops panel
-            </label>
           </>
         )}
         {lastAction && <div className="text-[11px] text-slate-500">{lastAction}</div>}
