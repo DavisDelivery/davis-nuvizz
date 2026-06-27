@@ -49,7 +49,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.29.50';
+const APP_VERSION = '0.29.51';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -69,6 +69,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.29.51', 'Routing (beta) — new floating "Selected N" panel (part 2 of the routing workbench). A NuVizz-style overlay that floats over the map and lists every selected stop at a glance: Stop# · type (DO/PU) · location · city · zip · requested window · weight · pallets, with a running total and per-row open/remove. Toggle it on/off from the "1 · Select stops" controls (or the × on the panel / the "selected" chip on the map); the preference is remembered.'],
   ['0.29.50', 'Fixed "yesterday\'s stuff on today\'s board" on weekends. The background scanner now anchors each board on the EASTERN calendar day instead of the UTC day — previously the Friday-evening scan (after 8pm ET, when UTC has already rolled to Saturday) wrote Friday\'s live board into SATURDAY\'s board, and with no weekend scan to correct it, Friday\'s completed deliveries sat on Saturday\'s board all weekend. The board view also now strips any stale prior-day delivered/exception stops at load time as a safety net, so a mis-dated bleed is never shown even on a board that can\'t be re-scanned. No effect on normal weekday boards.'],
   ['0.29.49', 'Print Manifest pagination: the first printed page is now the summary plus the first delivery ticket, and every page after that is exactly one delivery ticket (a ticket is never split across two pages). Verified against a real print-to-PDF.'],
   ['0.29.48', 'Each route now has a "Print Manifest" button (in the route detail panel, on both the map and mobile): it prints the whole route as one job — a summary cover page (route name, origin, requested window, stop count, driver, and the freight totals: weight · loose · pallets · total pieces) followed by every stop\'s Delivery Ticket in route-delivery order, one per page. Recreates the NuVizz driver manifest, generated entirely from the order data we already have — no extra NuVizz call.'],
@@ -8810,6 +8811,83 @@ function RoutingStopsPanel({ selectedStops, notes, onRemove, hoverId, setHoverId
   );
 }
 
+// Floating "Selected N" overlay for the Routing map — a NuVizz-style panel that lists EVERY
+// selected stop at a glance (Stop# · type · location · city · zip · requested window · weight ·
+// pallets), with per-row open/remove. Toggleable on/off (selPanelOpen); floats over the map at
+// both widths. The selection is the single source of truth — rows derive from selectedStops and
+// remove flows back through onRemove (same contract as RoutingStopsPanel).
+function RoutingSelectionFloatPanel({ selectedStops, onRemove, onOpenStop, onClose, isMobile }) {
+  // Compact window from the naive (zoneless) schedule ISO — parse the clock straight off the
+  // string so there's no local-timezone drift. "8:00a", "8:00a–8:00p".
+  const fmtWin = (iso) => {
+    const m = String(iso || '').match(/[T ](\d{2}):(\d{2})/);
+    if (!m) return '';
+    let h = +m[1]; const ap = h >= 12 ? 'p' : 'a'; h = h % 12 || 12;
+    return `${h}:${m[2]}${ap}`;
+  };
+  const rows = useMemo(() => selectedStops.map((s) => {
+    const f = fmtWin(s.scheduledFrom), t = fmtWin(s.scheduledTo);
+    return {
+      id: String(s.stopNbr), stop: s,
+      pro: s.primaryPro || s.pro || s.stopNbr || '',
+      type: ((s.stopType || '') === 'PU') ? 'PU' : 'DO',
+      location: s.businessName || s.addr1 || String(s.stopNbr),
+      city: s.city || '', zip: s.zip || '',
+      win: f && t ? `${f}–${t}` : (f || t || ''),
+      weight: Number(s.weight) || 0,
+      pallets: Number(s.cartons) || 0,   // NuVizz totalCartons = real skids/pallets
+    };
+  }), [selectedStops]);
+  const tot = rows.reduce((a, r) => ({ wt: a.wt + r.weight, plt: a.plt + r.pallets }), { wt: 0, plt: 0 });
+  return (
+    <div className={`absolute z-20 bg-white/97 backdrop-blur-sm border border-slate-300 rounded-lg shadow-xl flex flex-col ${isMobile ? 'left-2 right-2 top-12 max-h-[45vh]' : 'right-2 top-12 w-[480px] max-w-[calc(100%-1rem)] max-h-[60vh]'}`}>
+      <div className="flex items-center justify-between gap-2 px-3 py-1.5 border-b bg-slate-50 rounded-t-lg shrink-0">
+        <div className="font-semibold text-[13px] text-slate-800">
+          Selected {rows.length}
+          {rows.length > 0 && <span className="text-slate-500 font-normal"> · {tot.plt} plt · {tot.wt.toLocaleString()} lb</span>}
+        </div>
+        <button onClick={onClose} className="text-slate-400 hover:text-slate-700 leading-none p-1" aria-label="Hide selected panel"><X size={16} /></button>
+      </div>
+      {rows.length === 0 ? (
+        <div className="px-3 py-3 text-[11px] text-slate-400">No stops selected yet. Tap a stop on the map, or use Add in view / Box / Lasso.</div>
+      ) : (
+        <div className="overflow-auto">
+          <table className="w-full text-[11px]">
+            <thead className="bg-slate-50 sticky top-0 z-10">
+              <tr className="text-[9px] uppercase tracking-wide text-slate-500">
+                <th className="px-1.5 py-1 text-left">Stop#</th>
+                <th className="px-1 py-1 text-left">Type</th>
+                <th className="px-1.5 py-1 text-left">Location</th>
+                <th className="px-1.5 py-1 text-left">City</th>
+                <th className="px-1 py-1 text-left">Zip</th>
+                <th className="px-1 py-1 text-left">Window</th>
+                <th className="px-1 py-1 text-right">Wt</th>
+                <th className="px-1 py-1 text-right">Plt</th>
+                <th className="px-1 py-1" />
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r) => (
+                <tr key={r.id} className="border-t hover:bg-slate-50">
+                  <td className="px-1.5 py-1 whitespace-nowrap"><button onClick={() => onOpenStop && onOpenStop(r.stop)} className="font-mono text-blue-700 hover:underline">{r.pro}</button></td>
+                  <td className="px-1 py-1"><span className={`text-[9px] font-bold px-1 rounded ${r.type === 'PU' ? 'bg-violet-100 text-violet-700' : 'bg-slate-100 text-slate-600'}`}>{r.type}</span></td>
+                  <td className="px-1.5 py-1 max-w-[150px] truncate" title={r.location}>{r.location}</td>
+                  <td className="px-1.5 py-1 max-w-[90px] truncate" title={r.city}>{r.city}</td>
+                  <td className="px-1 py-1 whitespace-nowrap text-slate-600">{r.zip}</td>
+                  <td className="px-1 py-1 whitespace-nowrap text-slate-600">{r.win}</td>
+                  <td className="px-1 py-1 text-right tabular-nums">{r.weight.toLocaleString()}</td>
+                  <td className="px-1 py-1 text-right tabular-nums">{r.pallets}</td>
+                  <td className="px-1 py-1"><button onClick={() => onRemove(r.id)} aria-label={`Remove ${r.location} from selection`} className="text-slate-400 hover:text-red-600 leading-none text-base">×</button></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // Persistent build badge for the Routing surface (the map-view chip + desktop
 // footer don't reach here). Sits in the map's top-right corner — visible on every
 // routing tab (Stops/Loads/Result) at both widths since the map is always shown.
@@ -8935,6 +9013,13 @@ function RoutingScreen() {
     try { return localStorage.getItem('routing.rail') === 'result' ? 'result' : 'stops'; } catch { return 'stops'; }
   });
   useEffect(() => { try { localStorage.setItem('routing.rail', desktopRail); } catch { /* ignore */ } }, [desktopRail]);
+
+  // Floating "Selected N" panel (NuVizz-style overlay listing every selected stop). A view
+  // pref the dispatcher can turn on/off; default ON. Persisted in localStorage.
+  const [selPanelOpen, setSelPanelOpen] = useState(() => {
+    try { return localStorage.getItem('routing.selPanel') !== 'off'; } catch { return true; }
+  });
+  useEffect(() => { try { localStorage.setItem('routing.selPanel', selPanelOpen ? 'on' : 'off'); } catch { /* ignore */ } }, [selPanelOpen]);
 
   const [selectedIds, setSelectedIds] = useState(() => new Set());
   const [selectedTruckIds, setSelectedTruckIds] = useState(() => new Set());
@@ -9615,6 +9700,10 @@ function RoutingScreen() {
               <button onClick={clearSelection} className="flex-1 px-2 py-2 text-xs rounded border border-slate-300 hover:bg-slate-50 active:bg-slate-100">Clear</button>
             </div>
             <div className="text-[11px] text-slate-600">{isMobile ? 'Tap' : 'Click'} a stop to toggle it. Or pan/zoom, then <b>Add stops in view</b>, <b>Box</b> ({isMobile ? 'tap two corners' : 'drag'}), or <b>Lasso</b> ({isMobile ? 'tap points' : 'hold & draw'}).</div>
+            <label className="flex items-center gap-2 text-[12px] text-slate-700 pt-0.5 cursor-pointer select-none">
+              <input type="checkbox" checked={selPanelOpen} onChange={(e) => setSelPanelOpen(e.target.checked)} />
+              Floating selected-stops panel
+            </label>
           </>
         )}
         {lastAction && <div className="text-[11px] text-slate-500">{lastAction}</div>}
@@ -9710,7 +9799,11 @@ function RoutingScreen() {
           {mapsError && <div className="absolute top-2 left-1/2 -translate-x-1/2 bg-red-50 border border-red-300 text-red-700 text-[11px] rounded px-2 py-1">{mapsError}</div>}
           {viewing
             ? <div className="absolute top-2 left-1/2 -translate-x-1/2 z-20 bg-indigo-600 text-white text-[11px] rounded shadow px-3 py-1.5 flex items-center gap-2 max-w-[92%]"><span className="truncate">👁 {viewedLoad?.name || viewedLoad?.id}</span><button onClick={() => setViewedLoad(null)} className="underline shrink-0">Back</button></div>
-            : <div className="absolute top-2 left-2 bg-white/95 border border-slate-200 rounded shadow px-2 py-1 text-[11px]">{tally.count} selected · {tally.skids} skids · {tally.pieces} pcs</div>}
+            : <button onClick={() => setSelPanelOpen((o) => !o)} className="absolute top-2 left-2 z-20 bg-white/95 border border-slate-200 rounded shadow px-2 py-1 text-[11px]" title={selPanelOpen ? 'Hide selected panel' : 'Show selected panel'}>{tally.count} selected · {tally.skids} skids · {tally.pieces} pcs</button>}
+          {/* Floating "Selected N" panel (toggleable) — lists every selected stop over the map. */}
+          {!viewing && selPanelOpen && selectedStops.length > 0 && (
+            <RoutingSelectionFloatPanel selectedStops={selectedStops} onRemove={removeStop} onOpenStop={openStop} onClose={() => setSelPanelOpen(false)} isMobile />
+          )}
           {/* The dispatch-Map data grid — Stops/Loads spreadsheet, route-able. */}
           <BottomStopsTable
             stops={stops}
@@ -9771,6 +9864,14 @@ function RoutingScreen() {
             <span className="truncate">👁 Viewing saved load: <b>{viewedLoad?.name || viewedLoad?.id}</b></span>
             <button onClick={() => setViewedLoad(null)} className="underline shrink-0 font-semibold">Back to build</button>
           </div>
+        )}
+        {/* Floating "Selected N" panel (toggleable) — lists every selected stop over the map. */}
+        {!viewing && selPanelOpen && selectedStops.length > 0 && (
+          <RoutingSelectionFloatPanel selectedStops={selectedStops} onRemove={removeStop} onOpenStop={openStop} onClose={() => setSelPanelOpen(false)} isMobile={false} />
+        )}
+        {/* Reopen chip when the panel is toggled off but stops are selected. */}
+        {!viewing && !selPanelOpen && selectedStops.length > 0 && (
+          <button onClick={() => setSelPanelOpen(true)} className="absolute top-2 left-2 z-20 bg-white/95 border border-slate-300 rounded shadow px-2 py-1 text-[12px] font-medium text-slate-700 hover:bg-white" title="Show selected panel">▦ Selected ({selectedStops.length})</button>
         )}
         {/* Drag-box capture overlay — active only while Box mode is armed on desktop. */}
         {selectMode === 'box' && (
