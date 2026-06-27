@@ -49,7 +49,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.29.48';
+const APP_VERSION = '0.29.49';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -69,6 +69,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.29.49', 'Print Manifest pagination: the first printed page is now the summary plus the first delivery ticket, and every page after that is exactly one delivery ticket (a ticket is never split across two pages). Verified against a real print-to-PDF.'],
   ['0.29.48', 'Each route now has a "Print Manifest" button (in the route detail panel, on both the map and mobile): it prints the whole route as one job — a summary cover page (route name, origin, requested window, stop count, driver, and the freight totals: weight · loose · pallets · total pieces) followed by every stop\'s Delivery Ticket in route-delivery order, one per page. Recreates the NuVizz driver manifest, generated entirely from the order data we already have — no extra NuVizz call.'],
   ['0.29.47', 'Empty loads now show on the Loads tab: a load that\'s been created for the day but has no orders assigned yet (e.g. Monday\'s loads waiting to be filled) appears with a "No orders yet" status badge, pulled from the day\'s load roster. Also: orders pulled on Sunday but requested for Tuesday now correctly board on Tuesday, never Monday; and the weekend scan window is extended (Friday scans run until 11 PM, Sunday scans resume at 7 PM) now that API call volume is low.'],
   ['0.29.46', 'Mobile Stops list rows now show more at a glance: the street address, the driver, skids + loose pieces, and a Scheduled/Delivered (or Arrived/Out-for-delivery/Exception) status badge — on top of the business name, city, and PRO that were already there.'],
@@ -3632,7 +3633,10 @@ function buildManifestHtml(stops, logoUrl) {
   const pages = ordered.map((s) => `<section class="tkt">${ticketBody(s, logoUrl)}</section>`).join('');
   return `<!doctype html><html><head><meta charset="utf-8"><title>Driver Manifest ${bolEsc(routeName)}</title>
 <style>${TICKET_STYLE}
-  .tkt { padding:8px; page-break-before: always; }
+  /* Page 1 = summary header + the first ticket; every ticket after starts a new page,
+     and no single ticket is ever split across a page boundary. */
+  .tkt { padding:8px; break-inside: avoid; page-break-inside: avoid; }
+  .tkt + .tkt { break-before: page; page-break-before: always; }
   .mf-head { margin-bottom:6px; }
   .mf-route { font-size:26px; font-weight:bold; color:#1e5b92; line-height:1.1; }
   .mf-grid { display:grid; grid-template-columns:auto 1fr; gap:2px 10px; margin-top:8px; font-size:12px; }
