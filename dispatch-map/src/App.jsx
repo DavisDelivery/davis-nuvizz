@@ -49,7 +49,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.29.47';
+const APP_VERSION = '0.29.48';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -69,6 +69,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.29.48', 'Each route now has a "Print Manifest" button (in the route detail panel, on both the map and mobile): it prints the whole route as one job — a summary cover page (route name, origin, requested window, stop count, driver, and the freight totals: weight · loose · pallets · total pieces) followed by every stop\'s Delivery Ticket in route-delivery order, one per page. Recreates the NuVizz driver manifest, generated entirely from the order data we already have — no extra NuVizz call.'],
   ['0.29.47', 'Empty loads now show on the Loads tab: a load that\'s been created for the day but has no orders assigned yet (e.g. Monday\'s loads waiting to be filled) appears with a "No orders yet" status badge, pulled from the day\'s load roster. Also: orders pulled on Sunday but requested for Tuesday now correctly board on Tuesday, never Monday; and the weekend scan window is extended (Friday scans run until 11 PM, Sunday scans resume at 7 PM) now that API call volume is low.'],
   ['0.29.46', 'Mobile Stops list rows now show more at a glance: the street address, the driver, skids + loose pieces, and a Scheduled/Delivered (or Arrived/Out-for-delivery/Exception) status badge — on top of the business name, city, and PRO that were already there.'],
   ['0.29.45', 'Delivery Tickets now print in portrait (Letter) instead of landscape.'],
@@ -3490,29 +3491,9 @@ function ticketData(stop) {
     nextStop: exec.to?.plannedEtaDTTM ?? stop.plannedEtaDTTM ?? '',
   };
 }
-function buildTicketHtml(stop, logoUrl) {
-  const d = ticketData(stop);
-  const cityLine = [d.shipCity, [d.shipState, d.shipZip].filter(Boolean).join(' ')].filter(Boolean).join(', ');
-  const reqLine = (d.reqFrom || d.reqTo) ? `${tktReqTime(d.reqFrom)} - ${tktReqClock(d.reqTo)} +${tktDayOffset(d.reqFrom, d.reqTo)}D` : '';
-  const MIN_ROWS = 6;
-  const itemRows = d.items.map((it) => `
-      <tr>
-        <td>${bolEsc(it.po)}</td>
-        <td>${bolEsc(it.ident)}</td>
-        <td class="c">${bolEsc(it.qty)}</td>
-        <td class="c">-/-</td>
-        <td class="r">${it.wt == null || it.wt === '' ? '' : Number(it.wt).toLocaleString() + ' Lbs'}</td>
-        <td></td>
-      </tr>`).join('');
-  const itemFiller = Array.from({ length: Math.max(0, MIN_ROWS - d.items.length) }, () =>
-    '<tr><td>&nbsp;</td><td></td><td></td><td></td><td></td><td></td></tr>').join('');
-  const commentCells = d.comments.map((c) => `
-      <div class="cmt">
-        <div class="cmt-t">${bolEsc(c.text)}</div>
-        <div class="cmt-m"><span>~By ${bolEsc(c.by || '')}</span><span>${bolEsc(tktCommentTime(c.on))}</span></div>
-      </div>`).join('');
-  return `<!doctype html><html><head><meta charset="utf-8"><title>Delivery Ticket ${bolEsc(d.pro)}</title>
-<style>
+// The Delivery-Ticket CSS, shared by the single-stop ticket and the multi-stop manifest
+// (the manifest concatenates many ticket bodies, so the styles must live in one place).
+const TICKET_STYLE = `
   @page { size: letter portrait; margin: 0.4in; }
   * { box-sizing: border-box; }
   html,body { margin:0; padding:0; }
@@ -3546,10 +3527,33 @@ function buildTicketHtml(stop, logoUrl) {
   .sign .f { font-size:11px; }
   .sign .sigbox { border:1px solid #111; height:54px; }
   .sign .col { display:flex; flex-direction:column; }
-  .next { text-align:right; font-weight:bold; margin-top:8px; }
-</style></head>
-<body>
-  <div class="brand"><img src="${bolEsc(logoUrl)}" alt="Davis Delivery Service"/><div class="t">Delivery Ticket</div></div>
+  .next { text-align:right; font-weight:bold; margin-top:8px; }`;
+
+// The INNER markup of one Delivery Ticket (no <html>/<style> wrapper) — so it can be
+// emitted standalone (buildTicketHtml) or concatenated into the manifest (buildManifestHtml).
+function ticketBody(stop, logoUrl, brandTitle = 'Delivery Ticket') {
+  const d = ticketData(stop);
+  const cityLine = [d.shipCity, [d.shipState, d.shipZip].filter(Boolean).join(' ')].filter(Boolean).join(', ');
+  const reqLine = (d.reqFrom || d.reqTo) ? `${tktReqTime(d.reqFrom)} - ${tktReqClock(d.reqTo)} +${tktDayOffset(d.reqFrom, d.reqTo)}D` : '';
+  const MIN_ROWS = 6;
+  const itemRows = d.items.map((it) => `
+      <tr>
+        <td>${bolEsc(it.po)}</td>
+        <td>${bolEsc(it.ident)}</td>
+        <td class="c">${bolEsc(it.qty)}</td>
+        <td class="c">-/-</td>
+        <td class="r">${it.wt == null || it.wt === '' ? '' : Number(it.wt).toLocaleString() + ' Lbs'}</td>
+        <td></td>
+      </tr>`).join('');
+  const itemFiller = Array.from({ length: Math.max(0, MIN_ROWS - d.items.length) }, () =>
+    '<tr><td>&nbsp;</td><td></td><td></td><td></td><td></td><td></td></tr>').join('');
+  const commentCells = d.comments.map((c) => `
+      <div class="cmt">
+        <div class="cmt-t">${bolEsc(c.text)}</div>
+        <div class="cmt-m"><span>~By ${bolEsc(c.by || '')}</span><span>${bolEsc(tktCommentTime(c.on))}</span></div>
+      </div>`).join('');
+  return `
+  <div class="brand"><img src="${bolEsc(logoUrl)}" alt="Davis Delivery Service"/><div class="t">${bolEsc(brandTitle)}</div></div>
   <div class="head">
     <div class="l">
       <div class="row1">
@@ -3583,7 +3587,75 @@ function buildTicketHtml(stop, logoUrl) {
     <div class="col" style="flex:1"><span class="f lbl">Signature:</span><div class="sigbox"></div></div>
     <div class="col" style="flex:1"><span class="f lbl">Driver Comment:</span><div class="sigbox"></div></div>
   </div>
-  ${d.nextStop ? `<div class="next">Next Stop: ${bolEsc(tktNextStop(d.nextStop))}</div>` : ''}
+  ${d.nextStop ? `<div class="next">Next Stop: ${bolEsc(tktNextStop(d.nextStop))}</div>` : ''}`;
+}
+function buildTicketHtml(stop, logoUrl) {
+  const d = ticketData(stop);
+  return `<!doctype html><html><head><meta charset="utf-8"><title>Delivery Ticket ${bolEsc(d.pro)}</title>
+<style>${TICKET_STYLE}</style></head>
+<body>${ticketBody(stop, logoUrl)}</body></html>`;
+}
+
+// ── Driver Manifest (printable) ──────────────────────────────────────────────
+// The whole route as one print job: a summary cover page (route, origin, requested window,
+// stop count, driver, freight totals) followed by every stop's Delivery Ticket in route
+// order (the same order as the route detail list + numbered map pins). NO API call — built
+// from the enriched stops we already hold.
+function manifestOrigin(stops) {
+  for (const s of stops) {
+    const f = s?.raw?.stop?.from?.address;
+    if (f && (f.addr1 || f.name || f.city)) {
+      const cityLine = [f.city, [f.state, f.zip].filter(Boolean).join(' ')].filter(Boolean).join(', ');
+      return [f.name, f.addr1, f.addr2, cityLine].filter(Boolean).join(', ');
+    }
+  }
+  return '';
+}
+function buildManifestHtml(stops, logoUrl) {
+  const ordered = orderRouteStops(stops);
+  const routeName = ordered.find((s) => s.routeName)?.routeName || ordered.find((s) => s.loadNbr)?.loadNbr || 'Route';
+  const driver = ordered.find((s) => s.driverName)?.driverName || ordered.find((s) => s.driverUserName)?.driverUserName || '—';
+  const origin = manifestOrigin(ordered);
+  // Per-stop ticket data once, reused for the totals and the page bodies.
+  const data = ordered.map((s) => ticketData(s));
+  const froms = data.map((d) => d.reqFrom).filter(Boolean).sort();
+  const tos = data.map((d) => d.reqTo).filter(Boolean).sort();
+  const windowStr = (froms[0] || tos[0])
+    ? `${tktReqTime(froms[0] || tos[0])}${tos.length ? ' – ' + tktReqTime(tos[tos.length - 1]) : ''}`
+    : '';
+  const tot = data.reduce((a, d) => ({
+    weight: a.weight + (Number(d.weight) || 0),
+    loose: a.loose + (Number(d.loose) || 0),
+    pallets: a.pallets + (Number(d.pallets) || 0),
+    pieces: a.pieces + (Number(d.totalPieces) || 0),
+  }), { weight: 0, loose: 0, pallets: 0, pieces: 0 });
+  const pages = ordered.map((s) => `<section class="tkt">${ticketBody(s, logoUrl)}</section>`).join('');
+  return `<!doctype html><html><head><meta charset="utf-8"><title>Driver Manifest ${bolEsc(routeName)}</title>
+<style>${TICKET_STYLE}
+  .tkt { padding:8px; page-break-before: always; }
+  .mf-head { margin-bottom:6px; }
+  .mf-route { font-size:26px; font-weight:bold; color:#1e5b92; line-height:1.1; }
+  .mf-grid { display:grid; grid-template-columns:auto 1fr; gap:2px 10px; margin-top:8px; font-size:12px; }
+  .mf-grid .k { font-weight:bold; color:#444; white-space:nowrap; }
+</style></head>
+<body>
+  <div class="brand"><img src="${bolEsc(logoUrl)}" alt="Davis Delivery Service"/><div class="t">Driver Manifest</div></div>
+  <div class="mf-head">
+    <div class="mf-route">${bolEsc(routeName)}</div>
+    <div class="mf-grid">
+      ${origin ? `<div class="k">Origin</div><div>${bolEsc(origin)}</div>` : ''}
+      ${windowStr ? `<div class="k">Requested</div><div>${bolEsc(windowStr)}</div>` : ''}
+      <div class="k">Stops</div><div>${ordered.length} Stop${ordered.length === 1 ? '' : 's'}</div>
+      <div class="k">Driver</div><div>${bolEsc(driver)}</div>
+    </div>
+  </div>
+  <div class="summary">
+    <div>${Math.round(tot.weight).toLocaleString()} Lbs</div>
+    <div>${tot.loose} Loose</div>
+    <div>${tot.pallets} Pallets</div>
+    <div>${tot.pieces} Total Pieces</div>
+  </div>
+  ${pages}
 </body></html>`;
 }
 
@@ -5609,6 +5681,12 @@ function RouteDetailBody({ stops, onPickStop }) {
   const driverName = sorted[0]?.driverName || sorted[0]?.driverUserName || '—';
   const delivered = sorted.filter((s) => classifyStopStatus(s) === 'DELIVERED').length;
   const pct = sorted.length ? Math.round((100 * delivered) / sorted.length) : 0;
+  const [showManifest, setShowManifest] = useState(false);
+  const routeName = sorted.find((s) => s.routeName)?.routeName || sorted.find((s) => s.loadNbr)?.loadNbr || 'Route';
+  const manifestHtml = useMemo(
+    () => (showManifest ? buildManifestHtml(sorted, (typeof window !== 'undefined' ? window.location.origin : '') + '/davis-logo.jpg') : ''),
+    [showManifest, sorted],
+  );
   return (
     <>
       <div className="px-4 py-2 border-b bg-slate-50 flex items-center justify-between">
@@ -5621,6 +5699,23 @@ function RouteDetailBody({ stops, onPickStop }) {
           <div className="text-[11px] text-slate-500 mt-0.5">{delivered}/{sorted.length} delivered</div>
         </div>
       </div>
+      <div className="px-4 py-2 border-b">
+        <button
+          onClick={() => setShowManifest(true)}
+          disabled={!sorted.length}
+          className="w-full inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg border border-slate-300 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          <Printer size={15} /> Print Manifest
+        </button>
+      </div>
+      {showManifest && (
+        <PrintDocModal
+          title={`Driver Manifest · ${routeName}`}
+          html={manifestHtml}
+          pageW={816}
+          onClose={() => setShowManifest(false)}
+        />
+      )}
       <ol className="divide-y divide-slate-100">
         {sorted.map((s, i) => {
           const kind = classifyStopStatus(s);
