@@ -49,7 +49,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.29.59';
+const APP_VERSION = '0.29.60';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -69,6 +69,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.29.60', 'Routing (beta), mobile fix (#232) — you can tap stops and use Ninja again. The floating Selected panel used to cover the whole map (and the Box/Lasso/Ninja tool rail) on phones; on mobile the selected list now lives in the Setup sheet instead — tap the "N selected" chip to open it, leaving the map fully tappable. The on-map tool rail sits above everything now, and Ninja is always tappable: if no route is open in the Compare panel yet, it shows a quick hint ("open a route first") instead of looking broken.'],
   ['0.29.59', 'Routing (beta) — Box, Lasso, and Ninja are now small selector buttons that live ON THE MAP (left edge), so they\'re always reachable — including while the Compare panel has replaced the Setup stack. (They moved off the Setup panel / Compare header.) Also: the Compare panel now AUTO-SIZES to the number of open route cards — open a 2nd route and it grows to fit two, close one and it collapses back to one. (The Setup and right panels stay manually resizable.)'],
   ['0.29.58', 'Routing (beta) — configurable, resizable layout (part 6, the finale). The left and right panels are now drag-to-resize, just like the dispatch map (drag the divider, double-click to reset; widths are remembered). The gear settings menu is now the one control center: turn the floating Selected panel and the bottom data grid on/off, switch the right panel between Tabs and Routes/Drivers, and "↺ Reset layout to defaults". Routing-beta only.'],
   ['0.29.57', 'Routing (beta) mobile fix — opening a route now jumps you straight to the Compare panel (the Setup tab), where the 🥷 Ninja toggle lives. Before, tapping a route from the Routes tab quietly opened it on the (hidden) Setup tab, so the Compare panel and Ninja mode never appeared. (To get there on a phone: gear → Right panel: Routes/Drivers → tap a route.)'],
@@ -9189,11 +9190,14 @@ function RoutingMapTools({ selectMode, onBox, onLasso, ninjaMode, onToggleNinja,
       className={`w-9 h-9 flex items-center justify-center rounded-lg border shadow-sm ${active ? 'bg-blue-600 border-blue-700 text-white' : 'bg-white/95 border-slate-300 text-slate-700 hover:bg-white'} disabled:opacity-40 disabled:cursor-not-allowed`}
     >{children}</button>
   );
+  // z-30 keeps the tools above the Selected panel and chips so they're always tappable (issue #232).
+  // Ninja is never disabled — when no Compare route is open, tapping it surfaces a hint (handled by
+  // onToggleNinja) instead of presenting a dead button the dispatcher can't tell apart from a bug.
   return (
-    <div className="absolute left-2 top-1/2 -translate-y-1/2 z-20 flex flex-col gap-1.5">
+    <div className="absolute left-2 top-1/2 -translate-y-1/2 z-30 flex flex-col gap-1.5">
       <Btn active={selectMode === 'box'} onClick={onBox} title="Box select — tap two corners (or drag) to grab a group"><Square size={16} /></Btn>
       <Btn active={selectMode === 'lasso'} onClick={onLasso} title="Lasso select — tap points (or hold & draw) around stops"><Lasso size={16} /></Btn>
-      <Btn active={ninjaMode} onClick={onToggleNinja} disabled={!ninjaAvailable} title={ninjaAvailable ? 'Ninja — click stops onto the active Compare route' : 'Ninja: open a route in the Compare panel first'}><NinjaIcon size={16} /></Btn>
+      <Btn active={ninjaMode} onClick={onToggleNinja} title={ninjaAvailable ? 'Ninja — click stops onto the active Compare route' : 'Ninja — open a route in the Compare panel first'}><NinjaIcon size={16} /></Btn>
     </div>
   );
 }
@@ -9697,6 +9701,26 @@ function RoutingScreen({ debugCaptureRef }) {
   useEffect(() => { ninjaActionRef.current = (ninjaMode && wbRoutes.length > 0) ? ninjaAddStop : null; }, [ninjaMode, wbRoutes.length, ninjaAddStop]);
   // Ninja needs an open route; drop it when the panel empties so the map returns to normal toggling.
   useEffect(() => { if (!wbRoutes.length && ninjaMode) setNinjaMode(false); }, [wbRoutes.length, ninjaMode]);
+
+  // Transient on-map hint (issue #232) — a small banner that auto-dismisses. Used to explain why
+  // Ninja can't arm yet (no Compare route open) instead of leaving a silently-dead button.
+  const [mapToast, setMapToast] = useState('');
+  const mapToastTimer = useRef(null);
+  const showMapToast = useCallback((msg) => {
+    setMapToast(msg);
+    if (mapToastTimer.current) clearTimeout(mapToastTimer.current);
+    mapToastTimer.current = setTimeout(() => setMapToast(''), 4000);
+  }, []);
+  useEffect(() => () => { if (mapToastTimer.current) clearTimeout(mapToastTimer.current); }, []);
+  // Ninja toolbar tap: arm/disarm when a Compare route is open; otherwise coach the dispatcher to
+  // open one first (the button stays tappable so the hint is reachable on mobile too).
+  const onNinjaTool = useCallback(() => {
+    if (wbRoutes.length === 0) {
+      showMapToast('Ninja needs a route — open one in the Routes list, then tap Ninja to drop stops onto it.');
+      return;
+    }
+    setNinjaMode((v) => !v);
+  }, [wbRoutes.length, showMapToast]);
 
   // Default trucks selected once profiles load.
   useEffect(() => {
@@ -10558,15 +10582,14 @@ function RoutingScreen({ debugCaptureRef }) {
         <div className="flex-1 relative min-w-0">
           <div ref={mapDiv} className="absolute inset-0" />
           <RoutingBuildBadge onClick={() => setVersionLogOpen(true)} />
-          {!viewing && <RoutingMapTools selectMode={selectMode} onBox={() => (selectMode === 'box' ? cancelMode() : beginMode('box'))} onLasso={() => (selectMode === 'lasso' ? cancelMode() : beginMode('lasso'))} ninjaMode={ninjaMode} onToggleNinja={() => setNinjaMode((v) => !v)} ninjaAvailable={wbRoutes.length > 0} />}
+          {!viewing && <RoutingMapTools selectMode={selectMode} onBox={() => (selectMode === 'box' ? cancelMode() : beginMode('box'))} onLasso={() => (selectMode === 'lasso' ? cancelMode() : beginMode('lasso'))} ninjaMode={ninjaMode} onToggleNinja={onNinjaTool} ninjaAvailable={wbRoutes.length > 0} />}
           {mapsError && <div className="absolute top-2 left-1/2 -translate-x-1/2 bg-red-50 border border-red-300 text-red-700 text-[11px] rounded px-2 py-1">{mapsError}</div>}
+          {mapToast && <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-30 max-w-[92%] bg-slate-900/90 text-white text-[11px] rounded-lg shadow-lg px-3 py-1.5 text-center"><NinjaIcon size={12} className="inline -mt-0.5 mr-1" />{mapToast}</div>}
           {viewing
             ? <div className="absolute top-2 left-1/2 -translate-x-1/2 z-20 bg-indigo-600 text-white text-[11px] rounded shadow px-3 py-1.5 flex items-center gap-2 max-w-[92%]"><span className="truncate">👁 {viewedLoad?.name || viewedLoad?.id}</span><button onClick={() => setViewedLoad(null)} className="underline shrink-0">Back</button></div>
-            : <button onClick={() => setSelPanelOpen((o) => !o)} className="absolute top-2 left-2 z-20 bg-white/95 border border-slate-200 rounded shadow px-2 py-1 text-[11px]" title={selPanelOpen ? 'Hide selected panel' : 'Show selected panel'}>{tally.count} selected · {tally.skids} skids · {tally.pieces} pcs</button>}
-          {/* Floating "Selected N" panel (toggleable) — lists every selected stop over the map. */}
-          {!viewing && selPanelOpen && selectedStops.length > 0 && (
-            <RoutingSelectionFloatPanel selectedStops={selectedStops} onRemove={removeStop} onOpenStop={openStop} onClose={() => setSelPanelOpen(false)} isMobile />
-          )}
+            : <button onClick={() => { setMobilePanel('setup'); setSheetOpen(true); }} className="absolute top-2 left-2 z-20 bg-white/95 border border-slate-200 rounded shadow px-2 py-1 text-[11px]" title="Review selected stops in the Setup panel">{tally.count} selected · {tally.skids} skids · {tally.pieces} pcs</button>}
+          {/* On mobile the selected list lives in the Setup sheet (tap the chip) — a full-width map
+              overlay here covered the stops and tool rail (issue #232), so it's desktop-only now. */}
           {/* The dispatch-Map data grid — Stops/Loads spreadsheet, route-able. Toggleable (gear). */}
           {bottomGridOn && <BottomStopsTable
             stops={stops}
@@ -10640,8 +10663,9 @@ function RoutingScreen({ debugCaptureRef }) {
       <div className="flex-1 relative min-w-0">
         <div ref={mapDiv} className="absolute inset-0" />
         <RoutingBuildBadge onClick={() => setVersionLogOpen(true)} />
-        {!viewing && <RoutingMapTools selectMode={selectMode} onBox={() => (selectMode === 'box' ? cancelMode() : beginMode('box'))} onLasso={() => (selectMode === 'lasso' ? cancelMode() : beginMode('lasso'))} ninjaMode={ninjaMode} onToggleNinja={() => setNinjaMode((v) => !v)} ninjaAvailable={wbRoutes.length > 0} />}
+        {!viewing && <RoutingMapTools selectMode={selectMode} onBox={() => (selectMode === 'box' ? cancelMode() : beginMode('box'))} onLasso={() => (selectMode === 'lasso' ? cancelMode() : beginMode('lasso'))} ninjaMode={ninjaMode} onToggleNinja={onNinjaTool} ninjaAvailable={wbRoutes.length > 0} />}
         {mapsError && <div className="absolute top-2 left-1/2 -translate-x-1/2 bg-red-50 border border-red-300 text-red-700 text-[11px] rounded px-2 py-1">{mapsError}</div>}
+        {mapToast && <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-30 max-w-[80%] bg-slate-900/90 text-white text-[12px] rounded-lg shadow-lg px-3 py-1.5 text-center"><NinjaIcon size={13} className="inline -mt-0.5 mr-1" />{mapToast}</div>}
         {viewing && (
           <div className="absolute top-2 left-1/2 -translate-x-1/2 z-20 bg-indigo-600 text-white text-[12px] rounded shadow px-3 py-1.5 flex items-center gap-3 max-w-[80%]">
             <span className="truncate">👁 Viewing saved load: <b>{viewedLoad?.name || viewedLoad?.id}</b></span>
