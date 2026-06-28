@@ -10,7 +10,7 @@
 
 import { getNuvizzRequester, setCallTrigger } from './lib/nuvizz-request.mts';
 import { getCreds, basicAuthHeader } from './lib/nuvizz-scan.mts';
-import { buildBody, normalize, cleanPeriod, OPENAPI_BASE, SAVED_SEARCHES, fetchSavedSearchRaw } from './lib/nuvizz-list.mts';
+import { buildBody, normalize, cleanPeriod, OPENAPI_BASE, SAVED_SEARCHES, fetchSavedSearchRaw, fetchSavedSearchRows, toBoardStop, boardDayFor } from './lib/nuvizz-list.mts';
 
 // Re-exported so the existing test (test/stop-explorer.test.mjs) keeps importing them here.
 export { buildBody, normalize, cleanPeriod } from './lib/nuvizz-list.mts';
@@ -34,6 +34,35 @@ export default async (req: Request): Promise<Response> => {
       return new Response(JSON.stringify({ ok: true, savedSearch: body.savedSearch, customListDefId: def.customListDefId, cols, rows }), { status: 200, headers: cors });
     } catch (e: any) {
       return new Response(JSON.stringify({ ok: false, error: e?.message || 'raw saved-search failed' }), { status: 500, headers: cors });
+    }
+  }
+
+  // DIAGNOSTIC (read-only): { savedSearch:'active'|'completed', full:true, find?:'<stopNbr>' } runs the
+  // EXACT saved-search pull the scanner uses (full result set, our filterList verbatim) and reports the
+  // total rows it returns, the per-board-day + per-status distribution, and whether a specific PRO is in
+  // it. Lets us compare OUR pull against the portal's run of the same saved search. One filterdata call.
+  if (body.full && (body.savedSearch === 'active' || body.savedSearch === 'completed')) {
+    try {
+      const def = SAVED_SEARCHES[body.savedSearch as 'active' | 'completed'];
+      const rows = await fetchSavedSearchRows(def);
+      const stops = rows.map(toBoardStop);
+      const byDay: Record<string, number> = {};
+      const statusCounts: Record<string, number> = {};
+      for (const s of stops) {
+        const d = boardDayFor(s) || '(no board day)';
+        byDay[d] = (byDay[d] || 0) + 1;
+        const st = String(s.status ?? '?');
+        statusCounts[st] = (statusCounts[st] || 0) + 1;
+      }
+      let found: any = null;
+      if (body.find) {
+        const want = String(body.find).replace(/^0+/, '');
+        const hit = stops.find((s: any) => String(s.stopNbr ?? '').replace(/^0+/, '') === want);
+        if (hit) found = { stopNbr: hit.stopNbr, status: hit.status, normalizedStatus: hit.normalizedStatus, isUnplanned: hit.isUnplanned, scheduledFrom: hit.scheduledFrom, scheduledDate: hit.scheduledDate, requestedDate: hit.requestedDate, boardDate: hit.boardDate, routeName: hit.routeName };
+      }
+      return new Response(JSON.stringify({ ok: true, savedSearch: body.savedSearch, customListDefId: def.customListDefId, total: stops.length, byDay, statusCounts, find: body.find || null, present: !!found, found }), { status: 200, headers: cors });
+    } catch (e: any) {
+      return new Response(JSON.stringify({ ok: false, error: e?.message || 'full saved-search failed' }), { status: 500, headers: cors });
     }
   }
 
