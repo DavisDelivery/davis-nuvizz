@@ -485,7 +485,7 @@ const DEFAULT_MAP_FILTERS = {
   hideTerminal: false,
   hideStemOut: false,
   unplannedOnly: false,
-  carryover: false,
+  carryoverDays: 0, // 0 = today only (default); N folds in still-unplanned from the prior N days
   showVehicleLocation: true,
   showClustered: true,
 };
@@ -2808,7 +2808,59 @@ function DriverRouteLegend({ legend, expanded, setExpanded }) {
   );
 }
 
-function FilterToolbar({ filters, setFilters, collapsed, setCollapsed, stopCount, vehicleDisabled, showRoutes, setShowRoutes }) {
+// Carry-over look-back: how many prior days of still-unplanned orders to fold
+// onto the board. 0 = today only (default). Presets + a calendar "since" date
+// stay in sync — both just set a day count, which useStops passes through as
+// carryDays=N (backend already pulls prior-day still-unplanned for that window).
+function CarryoverControl({ value = 0, onChange, boardDate }) {
+  const PRESETS = [
+    { d: 0, label: 'Off' },
+    { d: 3, label: '3d' },
+    { d: CARRYOVER_DAYS, label: '7d' },
+    { d: 14, label: '14d' },
+  ];
+  const boardMs = boardDate ? Date.parse(`${boardDate}T00:00:00Z`) : NaN;
+  const dayMs = 86400000;
+  const sinceForValue = (!value || Number.isNaN(boardMs)) ? '' : new Date(boardMs - value * dayMs).toISOString().slice(0, 10);
+  const maxSince = Number.isNaN(boardMs) ? undefined : new Date(boardMs - dayMs).toISOString().slice(0, 10);
+  const onSince = (e) => {
+    const v = e.target.value;
+    if (!v || Number.isNaN(boardMs)) { onChange(0); return; }
+    const days = Math.round((boardMs - Date.parse(`${v}T00:00:00Z`)) / dayMs);
+    onChange(Math.max(0, days));
+  };
+  return (
+    <div className="py-1.5">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-xs text-slate-700">Carry-over unplanned</span>
+        <span className="text-[10px] text-amber-700 flex-shrink-0">{value > 0 ? `last ${value}d` : 'today only'}</span>
+      </div>
+      <div className="mt-1 flex flex-wrap items-center gap-1">
+        {PRESETS.map((p) => (
+          <button
+            key={p.d}
+            type="button"
+            onClick={() => onChange(p.d)}
+            className={'text-[11px] px-2 py-0.5 rounded border ' + (value === p.d ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50')}
+          >
+            {p.label}
+          </button>
+        ))}
+        <input
+          type="date"
+          value={sinceForValue}
+          max={maxSince}
+          onChange={onSince}
+          title="Fold in still-unplanned orders since this date"
+          aria-label="Carry-over since date"
+          className="text-[11px] px-1.5 py-0.5 rounded border border-slate-300 text-slate-600 min-w-0 flex-1"
+        />
+      </div>
+    </div>
+  );
+}
+
+function FilterToolbar({ filters, setFilters, collapsed, setCollapsed, stopCount, vehicleDisabled, showRoutes, setShowRoutes, boardDate }) {
   const set = (key) => (v) => setFilters((prev) => ({ ...prev, [key]: v }));
   const clusterWarning = !filters.showClustered && stopCount > 200
     ? `Rendering ${stopCount} markers individually may be slow`
@@ -2845,10 +2897,10 @@ function FilterToolbar({ filters, setFilters, collapsed, setCollapsed, stopCount
             checked={filters.unplannedOnly}
             onChange={set('unplannedOnly')}
           />
-          <MapFilterToggle
-            label="Carry-over unplanned"
-            checked={filters.carryover}
-            onChange={set('carryover')}
+          <CarryoverControl
+            value={filters.carryoverDays}
+            onChange={(d) => setFilters((prev) => ({ ...prev, carryoverDays: d }))}
+            boardDate={boardDate}
           />
           <MapFilterToggle
             label="Show drivers (live)"
@@ -5425,7 +5477,7 @@ function MobileStopCard({ stop, note, onPick }) {
 function MobileFiltersTab({
   filters, setFilters, counts,
   mapFilters, setMapFilters,
-  showRoutes, setShowRoutes, vehicleDisabled,
+  showRoutes, setShowRoutes, vehicleDisabled, boardDate,
 }) {
   const setMF = (key) => (v) => setMapFilters((prev) => ({ ...prev, [key]: v }));
   return (
@@ -5449,10 +5501,10 @@ function MobileFiltersTab({
             checked={mapFilters.unplannedOnly}
             onChange={setMF('unplannedOnly')}
           />
-          <MapFilterToggle
-            label="Carry-over unplanned"
-            checked={mapFilters.carryover}
-            onChange={setMF('carryover')}
+          <CarryoverControl
+            value={mapFilters.carryoverDays}
+            onChange={(d) => setMapFilters((prev) => ({ ...prev, carryoverDays: d }))}
+            boardDate={boardDate}
           />
           <MapFilterToggle
             label="Show drivers (live)"
@@ -6056,7 +6108,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef }) {
     ...safeReadJSON(LS_MAP_FILTERS, {}),
   }));
 
-  const { stops, loading, error, lastRefreshed, lastScannedAt, lastLoadScanAt, lastUnplannedScanAt, scanState, source, ops, refresh } = useStops(selectedDate, mapFilters.carryover ? CARRYOVER_DAYS : 0);
+  const { stops, loading, error, lastRefreshed, lastScannedAt, lastLoadScanAt, lastUnplannedScanAt, scanState, source, ops, refresh } = useStops(selectedDate, mapFilters.carryoverDays || 0);
 
   // Manual "Scan now" — triggers a REAL on-demand NuVizz scan (today loads +
   // today unplanned + tomorrow loads) via the synchronous endpoint, then re-reads
@@ -7306,6 +7358,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef }) {
               showRoutes={showRoutes}
               setShowRoutes={setShowRoutes}
               vehicleDisabled={!dateIsToday}
+              boardDate={selectedDate}
             />
           )}
           {mobileDrawerTab === 'loads' && (
@@ -7577,6 +7630,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef }) {
               vehicleDisabled={!dateIsToday}
               showRoutes={showRoutes}
               setShowRoutes={setShowRoutes}
+              boardDate={selectedDate}
             />
             {/* Launchers at the bottom of the right control column: texting
                 (message bubble) + AI assistant ("?"). */}
