@@ -50,7 +50,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.29.65';
+const APP_VERSION = '0.29.66';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -70,6 +70,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.29.66', 'Refresh button cost fix (#244) — the refresh/Scan-now button beside the stops count now fires ONLY the cheap scheduled-scan path: the saved-search planned/unplanned (77128) + completed (77131) pulls + the load roster, for today and tomorrow (~4 NuVizz calls, plus one per genuinely-new order). It used to pass the viewed date, which flipped the scanner into the full number-probe — a ~3,000-call cold scan. Same button, ~4 calls instead of thousands.'],
   ['0.29.65', 'Carry-over clarity (#245) — the carry-over control now shows the actual window it’s covering, e.g. "since Jun 22 · 7d back", so it’s clear the calendar date and the presets are the SAME setting. Picking "since 6/22" on a 6/29 board IS the 7d preset (7 days back) — it was never overriding your date, just showing the same window two ways.'],
   ['0.29.64', 'Unplanned across multiple days (#239) — the "Carry-over unplanned" filter is now a configurable look-back instead of a fixed on/off. Pick a preset (Off / 3d / 7d / 14d) or a calendar "since" date, and the board folds in every still-unplanned order from that many prior days onto the day you’re viewing (each tagged amber, counted in the "· N c/o" badge). Default is today-only; your old on/off setting migrates to 7 days.'],
   ['0.29.63', 'Routing (beta), Ninja onto a load (#237) — you can now build any load with Ninja, even an empty one. Tap a load in the bottom Loads grid (including the "No orders yet" empties) and it opens in the Compare panel; from there a new "Ninja: add stops" button arms ninja (on mobile it drops the sheet so you can tap stops straight onto the map), and a bright "Ninja on — tap stops → <route>" banner shows it’s live. So: tap an available load → Ninja: add stops → tap stops on the map.'],
@@ -6128,9 +6129,12 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef }) {
 
   const { stops, loading, error, lastRefreshed, lastScannedAt, lastLoadScanAt, lastUnplannedScanAt, scanState, source, ops, refresh } = useStops(selectedDate, mapFilters.carryoverDays || 0);
 
-  // Manual "Scan now" — triggers a REAL on-demand NuVizz scan (today loads +
-  // today unplanned + tomorrow loads) via the synchronous endpoint, then re-reads
-  // the index. 60s cooldown so it can't be mashed.
+  // Manual "Scan now" — fires the SAME cheap scheduled scan path (NUVIZZ_LIST_DISCOVERY):
+  // the saved-search planned/unplanned (77128) + completed (77131) pulls + the load roster,
+  // for today AND tomorrow. ~4 NuVizz calls (plus one /stop/info per genuinely-new order).
+  // It must NOT pass ?date= — that flips runRefreshStops into the EXPLICIT number-probe path,
+  // a ~3,000-call cold scan. ?manual=1 bypasses the cadence gate and runs list-discovery only.
+  // 60s cooldown so it can't be mashed.
   const [scanning, setScanning] = useState(false);
   const [scanCooldown, setScanCooldown] = useState(false);
   const [scanErr, setScanErr] = useState(null);
@@ -6138,12 +6142,11 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef }) {
     if (scanning || scanCooldown) return;
     setScanning(true); setScanErr(null);
     try {
-      // A busy date (hundreds of orders → hundreds of Firestore writes) can't finish
-      // inside the 26s synchronous-function cap. So fire the ASYNC background scanner
-      // (15-min budget) for the VIEWED date, then poll the index until it refreshes.
+      // Fire the ASYNC background scanner (15-min budget) in list-discovery mode (manual=1, NO
+      // date), then poll the viewed date's index until it refreshes.
       const before = lastScannedAt;
       const pollUrl = `/.netlify/functions/nuvizz-pull-today-stops?date=${encodeURIComponent(selectedDate)}`;
-      const resp = await fetch(`/.netlify/functions/nuvizz-refresh-stops-background?date=${encodeURIComponent(selectedDate)}`, { method: 'POST' });
+      const resp = await fetch(`/.netlify/functions/nuvizz-refresh-stops-background?manual=1`, { method: 'POST' });
       if (!resp.ok && resp.status !== 202) throw new Error('Scan unavailable');
       let updated = false;
       for (let i = 0; i < 20 && !updated; i++) {          // poll up to ~60s
@@ -7232,7 +7235,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef }) {
                 disabled={scanning || scanCooldown}
                 className="ml-auto p-1 rounded hover:bg-slate-100 active:bg-slate-200 disabled:opacity-50 flex-shrink-0"
                 aria-label="Scan now"
-                title={scanCooldown ? 'Just scanned — try again shortly' : 'Scan now (fresh pull from NuVizz)'}
+                title={scanCooldown ? 'Just scanned — try again shortly' : 'Refresh from NuVizz — planned/unplanned + completed + loads (~4 calls)'}
               >
                 <RefreshCw size={14} className={scanning ? 'animate-spin' : ''} />
               </button>
@@ -7617,7 +7620,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef }) {
                   onClick={manualScan}
                   disabled={scanning || scanCooldown}
                   className="ml-auto p-1 rounded hover:bg-slate-100 disabled:opacity-50"
-                  title={scanCooldown ? 'Just scanned — try again shortly' : 'Scan now (fresh pull from NuVizz)'}
+                  title={scanCooldown ? 'Just scanned — try again shortly' : 'Refresh from NuVizz — planned/unplanned + completed + loads (~4 calls)'}
                 >
                   <RefreshCw size={13} className={scanning ? 'animate-spin' : ''} />
                 </button>
