@@ -851,3 +851,24 @@ export async function writeFleetIndex(
   // Parent doc last, carrying freshness for SITE A's staleness check.
   await setDoc(base, { tenant, date: dateStr, last_scanned_at: scannedAt } as any);
 }
+
+// ── Load roster cache (empty loads incl.) ──────────────────────────────────────
+// The portal's PkgRoute "Loads" grid for a date — every load, INCLUDING ones created
+// but not yet filled with orders ("empty loads"). The scanner persists it so the
+// dispatcher can see e.g. Monday's empty loads without a live fetch, and so the next
+// day's roster is captured ONCE (it doesn't change) instead of re-pulled per request.
+// Stored as a single JSON field (an array of {loadId,name,status,trips}) to sidestep
+// the value codec's nested array-of-map handling. One doc per tenant+date.
+const LOAD_ROSTER_COLLECTION = 'nuvizz_load_roster';
+export async function writeLoadRoster(tenant: string, dateStr: string, loads: any[], scannedAt: string): Promise<void> {
+  await setDoc(`${LOAD_ROSTER_COLLECTION}/${parentId(tenant, dateStr)}`, {
+    tenant, date: dateStr, at: scannedAt, count: (loads || []).length, loadsJson: JSON.stringify(loads || []),
+  } as any);
+}
+export async function readLoadRoster(tenant: string, dateStr: string): Promise<{ at: string | null; loads: any[] } | null> {
+  const doc = await getDoc(`${LOAD_ROSTER_COLLECTION}/${parentId(tenant, dateStr)}`);
+  if (!doc) return null;
+  let loads: any[] = [];
+  try { loads = JSON.parse(doc.loadsJson || '[]'); } catch { loads = []; }
+  return { at: doc.at || doc._updatedAt || null, loads };
+}
