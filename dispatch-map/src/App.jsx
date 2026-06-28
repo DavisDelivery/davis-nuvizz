@@ -50,7 +50,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.29.61';
+const APP_VERSION = '0.29.62';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -70,6 +70,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.29.62', 'Empty loads — the next business day’s load roster (including loads created but not yet filled with orders) is now scanned ONCE and cached, so e.g. Monday’s empty loads show up on the Loads view without waiting on a live pull. The Loads view serves the cached roster instantly; a manual "Scan now" on a future date refreshes it. Next-day loads are static, so they’re only pulled once a day (no extra NuVizz traffic).'],
   ['0.29.61', 'Routing (beta), Compare panel — two big ones. (1) Your route optimizations now SHOW ON THE MAP: every route open in the Compare panel is drawn as a colour-coded line with numbered stops (matching a colour dot on each card), and it redraws live as you re-sequence, move, or ninja stops. (2) Drag-and-drop between Compare cards — grab any stop by its handle and drop it to reorder within a route or move it onto another route (a blue line shows where it lands). The old "→" move menu stays for phones.'],
   ['0.29.60', 'Routing (beta), mobile fix (#232) — you can tap stops and use Ninja again. The floating Selected panel used to cover the whole map (and the Box/Lasso/Ninja tool rail) on phones; on mobile the selected list now lives in the Setup sheet instead — tap the "N selected" chip to open it, leaving the map fully tappable. The on-map tool rail sits above everything now, and Ninja is always tappable: if no route is open in the Compare panel yet, it shows a quick hint ("open a route first") instead of looking broken.'],
   ['0.29.59', 'Routing (beta) — Box, Lasso, and Ninja are now small selector buttons that live ON THE MAP (left edge), so they\'re always reachable — including while the Compare panel has replaced the Setup stack. (They moved off the Setup panel / Compare header.) Also: the Compare panel now AUTO-SIZES to the number of open route cards — open a 2nd route and it grows to fit two, close one and it collapses back to one. (The Setup and right panels stay manually resizable.)'],

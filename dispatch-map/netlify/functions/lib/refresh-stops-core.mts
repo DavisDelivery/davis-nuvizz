@@ -22,9 +22,9 @@
 
 import { scanDate, scansEnabled, deriveFleetSummary, estimateLoadRange, buildScanState, shadowWouldProbe, selectLoadProbeTargets, groupLoadMembers, estimateStopFrontier, unplannedFloor, FLOOR_MARGIN, loadNbrToInt, stopNbrToInt, shouldDeepSweep, deepSweepGate, lookupStopByPro } from './nuvizz-scan.mts';
 import { loadProbeParity, frontierParity, loadMembershipDelta, dateSliceMismatch } from './scan-parity.mts';
-import { isFirestoreEnabled, writeStops, writeFleetIndex, getDoc, markScanState, readCallStats, readCircuit, readScanState, writeScanState, readRecentFrontier, recordScanMetric, etDayString, readScanConfig, readStops, readEnrichedPros, writeEnrichedPros } from './firestore.mts';
+import { isFirestoreEnabled, writeStops, writeFleetIndex, getDoc, markScanState, readCallStats, readCircuit, readScanState, writeScanState, readRecentFrontier, recordScanMetric, etDayString, readScanConfig, readStops, readEnrichedPros, writeEnrichedPros, writeLoadRoster, readLoadRoster } from './firestore.mts';
 import { listScanForDate, mergeEnrich, twoScanBuckets, etDateForTargetUTC, boardDayFor } from './nuvizz-list.mts';
-import { loadIdsForDate, dropForeignLoadStops } from './nuvizz-loads.mts';
+import { loadIdsForDate, dropForeignLoadStops, loadRosterForDate } from './nuvizz-loads.mts';
 import { resolveCoords, addrKey } from './geocode.mts';
 import { maxConsecutiveGap } from './scan-metrics.mts';
 import { notifyMarkedCustomers } from './cs-notify.mts';
@@ -201,6 +201,24 @@ export async function runRefreshStops(req: Request): Promise<Response> {
 
   const results: any[] = [];
 
+  // Capture a date's FULL load roster (incl. empty loads not yet filled with orders) into the
+  // cache the Loads view reads. For a FUTURE date it's pulled ONCE per scan-day — next-day loads
+  // are static, so there's no point re-pulling them every cycle (the dispatcher's explicit ask).
+  // Today's roster refreshes each load-scan since new loads appear through the day. Best-effort:
+  // a roster hiccup is logged and never affects the stop scan.
+  const persistLoadRoster = async (date: string, scannedAt: string) => {
+    if (!fsOn) return;
+    try {
+      if (date !== today) {
+        const cached = await readLoadRoster(TENANT, date).catch(() => null);
+        if (cached?.at && etDayString(new Date(cached.at)) === etDayString()) return; // already captured today
+      }
+      const roster = await loadRosterForDate(date);
+      await writeLoadRoster(TENANT, date, roster, scannedAt);
+      console.log(`[scan] load-roster ${date}: cached ${roster.length} load(s)${date !== today ? ' (next-day, once/day)' : ''}`);
+    } catch (e: any) { console.warn(`[scan] load-roster ${date} skipped: ${e?.message}`); }
+  };
+
   // scanAndWrite — one date. includeUnplanned gates the order descent; `forced`
   // (manual/explicit) bypasses the per-date min-interval floor; manual caps the
   // unplanned descent lower so the synchronous endpoint finishes in time.
@@ -346,6 +364,8 @@ export async function runRefreshStops(req: Request): Promise<Response> {
       if (includeLoads) {
         const fleet = deriveFleetSummary(scan.stops, scan.loadHeaders);
         await writeFleetIndex(TENANT, date, fleet.loads, fleet.summary, fleet.driverIndex, scan.scannedAt);
+        // Cache the date's empty-loads roster too (once/day for a future date).
+        await persistLoadRoster(date, scan.scannedAt);
       }
       // Phase 1 (shadow mode): persist scan_state + log what lean discovery WOULD
       // probe (known-active loads + buffer) vs the wide window we ACTUALLY probed.
@@ -591,6 +611,9 @@ export async function runRefreshStops(req: Request): Promise<Response> {
         }
 
         const meta = await writeStops(TENANT, date, dateStops, scannedAt, { includeUnplanned: true, includeLoads: true });
+        // Cache the date's empty-loads roster (once/day for a future date) so the Loads view can
+        // show e.g. Monday's empty loads without a per-request live fetch.
+        await persistLoadRoster(date, scannedAt);
         results.push({ date, ok: true, source: 'list', count: meta.count, planned: meta.plannedCount, unplanned: meta.unplannedCount, enriched, newPros: stillNeed.length });
       }
     } catch (e: any) {
