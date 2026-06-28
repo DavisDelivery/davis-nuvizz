@@ -6103,12 +6103,17 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef }) {
   const [selectedDate, setSelectedDate] = useState(() => todayInET());
   const dateIsToday = isTodayET(selectedDate);
 
-  // Declared before useStops because the carry-over fetch reads mapFilters.carryover
+  // Declared before useStops because the carry-over fetch reads mapFilters.carryoverDays
   // (referencing it after the useStops call hit a temporal-dead-zone crash).
-  const [mapFilters, setMapFilters] = useState(() => ({
-    ...DEFAULT_MAP_FILTERS,
-    ...safeReadJSON(LS_MAP_FILTERS, {}),
-  }));
+  const [mapFilters, setMapFilters] = useState(() => {
+    const stored = safeReadJSON(LS_MAP_FILTERS, {}) || {};
+    // Migrate the old boolean carry-over toggle → day count (true meant 7 days).
+    if (stored.carryoverDays == null && typeof stored.carryover === 'boolean') {
+      stored.carryoverDays = stored.carryover ? CARRYOVER_DAYS : 0;
+      delete stored.carryover;
+    }
+    return { ...DEFAULT_MAP_FILTERS, ...stored };
+  });
 
   const { stops, loading, error, lastRefreshed, lastScannedAt, lastLoadScanAt, lastUnplannedScanAt, scanState, source, ops, refresh } = useStops(selectedDate, mapFilters.carryoverDays || 0);
 
