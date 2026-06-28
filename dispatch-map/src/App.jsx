@@ -18,6 +18,7 @@ import {
   Search, Tag, Tags, ArrowLeft, Gauge, Clock, MapPinned,
   Info, Settings, LayoutList, Sparkles, MessageSquare, Square, Lasso, AlertTriangle, Ban, Send, Package,
   FileCheck, ExternalLink, Image as ImageIcon, Printer, FileText, Bug,
+  ChevronRight, GripVertical,
 } from 'lucide-react';
 import {
   collection, doc, getDoc, onSnapshot, setDoc, serverTimestamp,
@@ -49,7 +50,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.29.60';
+const APP_VERSION = '0.29.61';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -69,6 +70,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.29.61', 'Routing (beta), Compare panel — two big ones. (1) Your route optimizations now SHOW ON THE MAP: every route open in the Compare panel is drawn as a colour-coded line with numbered stops (matching a colour dot on each card), and it redraws live as you re-sequence, move, or ninja stops. (2) Drag-and-drop between Compare cards — grab any stop by its handle and drop it to reorder within a route or move it onto another route (a blue line shows where it lands). The old "→" move menu stays for phones.'],
   ['0.29.60', 'Routing (beta), mobile fix (#232) — you can tap stops and use Ninja again. The floating Selected panel used to cover the whole map (and the Box/Lasso/Ninja tool rail) on phones; on mobile the selected list now lives in the Setup sheet instead — tap the "N selected" chip to open it, leaving the map fully tappable. The on-map tool rail sits above everything now, and Ninja is always tappable: if no route is open in the Compare panel yet, it shows a quick hint ("open a route first") instead of looking broken.'],
   ['0.29.59', 'Routing (beta) — Box, Lasso, and Ninja are now small selector buttons that live ON THE MAP (left edge), so they\'re always reachable — including while the Compare panel has replaced the Setup stack. (They moved off the Setup panel / Compare header.) Also: the Compare panel now AUTO-SIZES to the number of open route cards — open a 2nd route and it grows to fit two, close one and it collapses back to one. (The Setup and right panels stay manually resizable.)'],
   ['0.29.58', 'Routing (beta) — configurable, resizable layout (part 6, the finale). The left and right panels are now drag-to-resize, just like the dispatch map (drag the divider, double-click to reset; widths are remembered). The gear settings menu is now the one control center: turn the floating Selected panel and the bottom data grid on/off, switch the right panel between Tabs and Routes/Drivers, and "↺ Reset layout to defaults". Routing-beta only.'],
@@ -9207,8 +9209,19 @@ function RoutingMapTools({ selectMode, onBox, onLasso, ninjaMode, onToggleNinja,
 // Closest / Reverse), collapse/close, per-stop open, and — when other routes are open — a
 // "move to route" picker that reassigns a stop to another open card. The order lives in wbRoutes
 // state; this is a planning overlay (it does not mutate the board).
-function RoutingWorkbenchCard({ route, stopById, otherKeys, ninjaMode, isActive, onSetActive, onResequence, onCollapse, onClose, onMoveStop, onOpenStop, isMobile }) {
+function RoutingWorkbenchCard({ route, stopById, otherKeys, ninjaMode, isActive, onSetActive, onResequence, onCollapse, onClose, onMoveStop, onDropStop, onOpenStop, isMobile }) {
   const rows = route.order.map((id) => stopById.get(String(id))).filter(Boolean);
+  // Drag-and-drop (desktop): track which row we're hovering so we can show a drop line, and read
+  // the dragged stop out of dataTransfer on drop. beforeId=null means "append to the end".
+  const [dragOverId, setDragOverId] = useState(null);
+  const onRowDragStart = (e, id) => { try { e.dataTransfer.setData('text/plain', JSON.stringify({ fromKey: route.key, id: String(id) })); e.dataTransfer.effectAllowed = 'move'; } catch { /* ignore */ } };
+  const readDrag = (e) => { try { return JSON.parse(e.dataTransfer.getData('text/plain')); } catch { return null; } };
+  const onDrop = (e, beforeId) => {
+    e.preventDefault(); e.stopPropagation(); setDragOverId(null);
+    const d = readDrag(e);
+    if (d && d.id) onDropStop(d.fromKey, d.id, route.key, beforeId);
+  };
+  const color = route.color || '#64748b';
   let skids = 0, weight = 0, delivered = 0;
   let driverName = '';
   for (const s of rows) {
@@ -9222,6 +9235,7 @@ function RoutingWorkbenchCard({ route, stopById, otherKeys, ninjaMode, isActive,
         <div className="flex items-center justify-between gap-1">
           <button onClick={onCollapse} className="flex items-center gap-1 min-w-0" aria-expanded={!route.collapsed}>
             {route.collapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
+            <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: color }} title="Route colour on the map" />
             <span className="font-semibold text-slate-800 truncate">{route.key}</span>
           </button>
           <div className="flex items-center gap-1.5 shrink-0">
@@ -9246,10 +9260,23 @@ function RoutingWorkbenchCard({ route, stopById, otherKeys, ninjaMode, isActive,
         )}
       </div>
       {!route.collapsed && (
-        <ol className={`${isMobile ? 'max-h-[40vh]' : 'flex-1'} min-h-0 overflow-y-auto divide-y`}>
-          {rows.length === 0 && <li className="px-2 py-2 text-[11px] text-slate-400">No stops on this route.</li>}
+        <ol
+          className={`${isMobile ? 'max-h-[40vh]' : 'flex-1'} min-h-0 overflow-y-auto divide-y`}
+          onDragOver={isMobile ? undefined : (e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; }}
+          onDrop={isMobile ? undefined : (e) => onDrop(e, null)}
+        >
+          {rows.length === 0 && <li className="px-2 py-2 text-[11px] text-slate-400">{isMobile ? 'No stops on this route.' : 'No stops — drag one here.'}</li>}
           {rows.map((s, i) => (
-            <li key={String(s.stopNbr)} className="px-2 py-1 flex items-center gap-2 text-[11px]">
+            <li
+              key={String(s.stopNbr)}
+              draggable={!isMobile}
+              onDragStart={isMobile ? undefined : (e) => onRowDragStart(e, s.stopNbr)}
+              onDragOver={isMobile ? undefined : (e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; setDragOverId(String(s.stopNbr)); }}
+              onDragLeave={isMobile ? undefined : () => setDragOverId((d) => (d === String(s.stopNbr) ? null : d))}
+              onDrop={isMobile ? undefined : (e) => onDrop(e, s.stopNbr)}
+              className={`px-2 py-1 flex items-center gap-2 text-[11px] ${isMobile ? '' : 'cursor-grab active:cursor-grabbing'} ${dragOverId === String(s.stopNbr) ? 'border-t-2 border-t-blue-500 bg-blue-50/60' : ''}`}
+            >
+              {!isMobile && <GripVertical size={11} className="text-slate-300 shrink-0" />}
               <span className="w-4 text-right text-slate-400 font-mono shrink-0">{i + 1}</span>
               <div className="min-w-0 flex-1">
                 <div className="truncate font-medium text-slate-800">{s.businessName || String(s.stopNbr)}</div>
@@ -9273,7 +9300,7 @@ function RoutingWorkbenchCard({ route, stopById, otherKeys, ninjaMode, isActive,
 // The route workbench (part 4): the 1–3 route cards opened from the right Routes panel, laid out
 // side by side (desktop) or stacked (mobile). Replaces the Setup stack on the left while routes
 // are open; "Back to Setup" closes them all.
-function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, activeKey, onSetActive, onResequence, onCollapse, onClose, onCloseAll, onMoveStop, onOpenStop, isMobile }) {
+function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, activeKey, onSetActive, onResequence, onCollapse, onClose, onCloseAll, onMoveStop, onDropStop, onOpenStop, isMobile }) {
   return (
     <div className="flex flex-col h-full min-h-0">
       <div className="flex items-center justify-between gap-2 px-2 py-1.5 border-b shrink-0 bg-white">
@@ -9297,6 +9324,7 @@ function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, active
             onCollapse={() => onCollapse(r.key)}
             onClose={() => onClose(r.key)}
             onMoveStop={(stopNbr, toKey) => onMoveStop(r.key, stopNbr, toKey)}
+            onDropStop={onDropStop}
             onOpenStop={onOpenStop}
             isMobile={isMobile}
           />
@@ -9680,6 +9708,27 @@ function RoutingScreen({ debugCaptureRef }) {
     }));
     setLastAction(`Moved ${stopNbr} → ${toKey}`);
   }, []);
+  // Drag-and-drop between/within Compare cards (desktop). Drops a stop into `toKey` at the slot
+  // before `beforeId` (or the end when null), and strips it from every other card so a stop only
+  // ever sits on one route. Same-card drops reorder; cross-card drops move. Map polyline + numbers
+  // redraw live off wbRoutes. (The `→` move menu stays for touch / a11y.)
+  const wbDropStop = useCallback((fromKey, stopNbr, toKey, beforeId) => {
+    if (!toKey) return;
+    const id = String(stopNbr);
+    const before = beforeId == null ? null : String(beforeId);
+    if (id === before) return;                                  // dropped onto itself — no-op
+    setWbRoutes((prev) => prev.map((r) => {
+      if (r.key === toKey) {
+        const order = r.order.filter((x) => x !== id);
+        let idx = before == null ? order.length : order.indexOf(before);
+        if (idx < 0) idx = order.length;
+        order.splice(idx, 0, id);
+        return { ...r, order };
+      }
+      return r.order.includes(id) ? { ...r, order: r.order.filter((x) => x !== id) } : r;
+    }));
+    setLastAction(fromKey === toKey ? `Reordered ${stopNbr} in ${toKey}` : `Moved ${stopNbr} → ${toKey}`);
+  }, []);
   // Ninja-add: append a clicked stop to the active route (in click order), removing it from any
   // OTHER open route so a stop only ever sits on one compare-panel card. No-op if it's already there.
   const ninjaAddStop = useCallback((stopNbr) => {
@@ -9904,6 +9953,21 @@ function RoutingScreen({ debugCaptureRef }) {
     routesView.forEach((rv) => rv.order.forEach((id, idx) => m.set(String(id), { color: rv.color, seq: idx + 1 })));
     return m;
   }, [routesView]);
+
+  // Compare-panel routes on the map ("not seeing my route optimizations in the compare panel").
+  // Each open card gets a stable palette color; its stops are numbered + linked by a depot-anchored
+  // polyline that redraws live on re-sequence / move / drag / ninja-add. While the Compare panel
+  // has routes open it is the working set, so the map tracks THESE instead of the engine result.
+  const wbRoutesColored = useMemo(
+    () => wbRoutes.map((r, i) => ({ ...r, color: ROUTE_PALETTE[i % ROUTE_PALETTE.length] })),
+    [wbRoutes],
+  );
+  const wbRouteInfo = useMemo(() => {
+    const m = new Map();
+    wbRoutesColored.forEach((rv) => rv.order.forEach((id, idx) => m.set(String(id), { color: rv.color, seq: idx + 1 })));
+    return m;
+  }, [wbRoutesColored]);
+  const effectiveRouteInfo = wbRoutesColored.length ? wbRouteInfo : routeInfo;
 
   // The plan to persist on Save — engine result with any manual order applied.
   const editedResultForSave = useMemo(() => {
@@ -10221,7 +10285,7 @@ function RoutingScreen({ debugCaptureRef }) {
     markersRef.current = vPositioned.map((s) => {
       const id = String(s.stopNbr);
       const sel = !viewing && selectedIds.has(id);
-      const ri = routeInfo.get(id);              // { color, seq } when on a route
+      const ri = effectiveRouteInfo.get(id);     // { color, seq } when on a route (Compare cards win)
       const numbered = !!ri;
       const note = notes.get(s.matchKey) || null;
       const hovered = hoverIdRef.current === id;
@@ -10253,7 +10317,7 @@ function RoutingScreen({ debugCaptureRef }) {
     });
     markerByIdRef.current = byId;
     lastEmphRef.current = hoverIdRef.current; // markers were built already-emphasized
-  }, [google, vPositioned, viewing, selectedIds, routeInfo, notes, toggleStop, mapReady, selectedDayKey, emphIcon]);
+  }, [google, vPositioned, viewing, selectedIds, effectiveRouteInfo, notes, toggleStop, mapReady, selectedDayKey, emphIcon]);
 
   // Hover emphasis — touch only the two affected markers, not all of them. Keeps
   // the sequence label intact (only the icon scale/ring change).
@@ -10269,21 +10333,23 @@ function RoutingScreen({ debugCaptureRef }) {
     lastEmphRef.current = hoverId;
   }, [hoverId, emphIcon]);
 
-  // Route polylines (one per truck, depot-anchored). Drawn in the CURRENT order
-  // (routesView), so a manual reorder redraws the path live.
+  // Route polylines (one per route, depot-anchored), drawn in the CURRENT order so any reorder
+  // redraws the path live. While the Compare panel has routes open it draws THOSE (the working set
+  // the dispatcher is tuning); otherwise it draws the engine Build result (routesView).
   useEffect(() => {
     if (!google || !mapRef.current) return;
     polylinesRef.current.forEach((p) => p.setMap(null));
     polylinesRef.current = [];
-    if (!routesView.length) return;
-    routesView.forEach((rv) => {
+    const toDraw = wbRoutesColored.length ? wbRoutesColored : routesView;
+    if (!toDraw.length) return;
+    toDraw.forEach((rv) => {
       const path = [{ lat: ROUTING_DEPOT.lat, lng: ROUTING_DEPOT.lng }];
       for (const id of rv.order) { const s = vStopById.get(String(id)); if (s && s.lat != null && s.lng != null) path.push({ lat: s.lat, lng: s.lng }); }
       const pl = new google.maps.Polyline({ path, strokeColor: rv.color, strokeWeight: 3, strokeOpacity: 0.85, zIndex: 5 });
       pl.setMap(mapRef.current);
       polylinesRef.current.push(pl);
     });
-  }, [google, routesView, vStopById, mapReady]);
+  }, [google, routesView, wbRoutesColored, vStopById, mapReady]);
 
   const selectedTrucks = useMemo(() => profiles.filter((p) => selectedTruckIds.has(p.id)), [profiles, selectedTruckIds]);
   const canBuild = selectedIds.size >= 1 && selectedTrucks.length >= 1 && selectedIds.size <= ROUTING_MAX_SELECTION && !building;
@@ -10616,7 +10682,7 @@ function RoutingScreen({ debugCaptureRef }) {
             <div className="flex-1 min-h-0 overflow-y-auto p-3 space-y-3 text-sm" style={{ paddingBottom: 'calc(12px + env(safe-area-inset-bottom))' }}>
               {mobilePanel === 'setup'
                 ? (wbRoutes.length > 0
-                    ? <RoutingWorkbench wbRoutes={wbRoutes} stopById={stopById} ninjaMode={ninjaMode} onToggleNinja={setNinjaMode} activeKey={effectiveActiveKey} onSetActive={setActiveRouteKey} onResequence={wbResequence} onCollapse={toggleWbCollapse} onClose={closeWbRoute} onCloseAll={closeAllWb} onMoveStop={wbMoveStop} onOpenStop={openStop} isMobile />
+                    ? <RoutingWorkbench wbRoutes={wbRoutesColored} stopById={stopById} ninjaMode={ninjaMode} onToggleNinja={setNinjaMode} activeKey={effectiveActiveKey} onSetActive={setActiveRouteKey} onResequence={wbResequence} onCollapse={toggleWbCollapse} onClose={closeWbRoute} onCloseAll={closeAllWb} onMoveStop={wbMoveStop} onDropStop={wbDropStop} onOpenStop={openStop} isMobile />
                     : controlsContent)
                 : mobilePanel === 'loads'
                   ? (rightPanelMode === 'routes' ? <RoutingRoutesPanel groups={routeGroups} onPick={onPickRoute} /> : loadsContent)
@@ -10649,7 +10715,7 @@ function RoutingScreen({ debugCaptureRef }) {
       {/* Left: Setup stack (resizable) — OR the route workbench, which auto-sizes to its open cards. */}
       {wbRoutes.length > 0 ? (
         <div className="shrink-0 border-r bg-white min-h-0 overflow-x-auto" style={{ width: wbWidth }}>
-          <RoutingWorkbench wbRoutes={wbRoutes} stopById={stopById} ninjaMode={ninjaMode} onToggleNinja={setNinjaMode} activeKey={effectiveActiveKey} onSetActive={setActiveRouteKey} onResequence={wbResequence} onCollapse={toggleWbCollapse} onClose={closeWbRoute} onCloseAll={closeAllWb} onMoveStop={wbMoveStop} onOpenStop={openStop} isMobile={false} />
+          <RoutingWorkbench wbRoutes={wbRoutesColored} stopById={stopById} ninjaMode={ninjaMode} onToggleNinja={setNinjaMode} activeKey={effectiveActiveKey} onSetActive={setActiveRouteKey} onResequence={wbResequence} onCollapse={toggleWbCollapse} onClose={closeWbRoute} onCloseAll={closeAllWb} onMoveStop={wbMoveStop} onDropStop={wbDropStop} onOpenStop={openStop} isMobile={false} />
         </div>
       ) : (
         <div className="shrink-0 border-r bg-white overflow-y-auto p-3 space-y-3 text-sm" style={{ width: leftPanel.width }}>
