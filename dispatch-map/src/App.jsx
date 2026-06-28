@@ -50,7 +50,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.29.62';
+const APP_VERSION = '0.29.63';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -70,6 +70,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.29.63', 'Routing (beta), Ninja onto a load (#237) — you can now build any load with Ninja, even an empty one. Tap a load in the bottom Loads grid (including the "No orders yet" empties) and it opens in the Compare panel; from there a new "Ninja: add stops" button arms ninja (on mobile it drops the sheet so you can tap stops straight onto the map), and a bright "Ninja on — tap stops → <route>" banner shows it’s live. So: tap an available load → Ninja: add stops → tap stops on the map.'],
   ['0.29.62', 'Empty loads — the next business day’s load roster (including loads created but not yet filled with orders) is now scanned ONCE and cached, so e.g. Monday’s empty loads show up on the Loads view without waiting on a live pull. The Loads view serves the cached roster instantly; a manual "Scan now" on a future date refreshes it. Next-day loads are static, so they’re only pulled once a day (no extra NuVizz traffic).'],
   ['0.29.61', 'Routing (beta), Compare panel — two big ones. (1) Your route optimizations now SHOW ON THE MAP: every route open in the Compare panel is drawn as a colour-coded line with numbered stops (matching a colour dot on each card), and it redraws live as you re-sequence, move, or ninja stops. (2) Drag-and-drop between Compare cards — grab any stop by its handle and drop it to reorder within a route or move it onto another route (a blue line shows where it lands). The old "→" move menu stays for phones.'],
   ['0.29.60', 'Routing (beta), mobile fix (#232) — you can tap stops and use Ninja again. The floating Selected panel used to cover the whole map (and the Box/Lasso/Ninja tool rail) on phones; on mobile the selected list now lives in the Setup sheet instead — tap the "N selected" chip to open it, leaving the map fully tappable. The on-map tool rail sits above everything now, and Ninja is always tappable: if no route is open in the Compare panel yet, it shows a quick hint ("open a route first") instead of looking broken.'],
@@ -9301,12 +9302,24 @@ function RoutingWorkbenchCard({ route, stopById, otherKeys, ninjaMode, isActive,
 // The route workbench (part 4): the 1–3 route cards opened from the right Routes panel, laid out
 // side by side (desktop) or stacked (mobile). Replaces the Setup stack on the left while routes
 // are open; "Back to Setup" closes them all.
-function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, activeKey, onSetActive, onResequence, onCollapse, onClose, onCloseAll, onMoveStop, onDropStop, onOpenStop, isMobile }) {
+function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmNinja, activeKey, onSetActive, onResequence, onCollapse, onClose, onCloseAll, onMoveStop, onDropStop, onOpenStop, isMobile }) {
   return (
     <div className="flex flex-col h-full min-h-0">
       <div className="flex items-center justify-between gap-2 px-2 py-1.5 border-b shrink-0 bg-white">
         <span className="font-semibold text-slate-800 text-[13px] shrink-0">Compare <span className="text-slate-400 text-[11px]">({wbRoutes.length}/3)</span></span>
-        <button onClick={onCloseAll} className="text-[11px] text-slate-500 hover:text-slate-800 underline shrink-0">Back to Setup</button>
+        <div className="flex items-center gap-2 shrink-0">
+          {/* Arm Ninja right here — the on-map tool is easy to miss, and on mobile this drops the
+              sheet so you can tap stops onto the active route. */}
+          <button
+            onClick={onArmNinja}
+            aria-pressed={ninjaMode}
+            title="Ninja — then tap stops on the map to add them to the active route"
+            className={`flex items-center gap-1 text-[11px] font-semibold px-2 py-1 rounded border ${ninjaMode ? 'bg-amber-500 border-amber-600 text-white' : 'bg-white border-slate-300 text-slate-700 hover:bg-slate-50'}`}
+          >
+            <NinjaIcon size={13} /> {ninjaMode ? 'Ninja on — tap stops' : 'Ninja: add stops'}
+          </button>
+          <button onClick={onCloseAll} className="text-[11px] text-slate-500 hover:text-slate-800 underline">Back to Setup</button>
+        </div>
       </div>
       {ninjaMode && (
         <div className="px-2 py-1 text-[11px] bg-amber-50 border-b border-amber-200 text-amber-800 shrink-0 flex items-center gap-1"><NinjaIcon size={13} /><span>Ninja on — clicking a stop adds it to <b>{activeKey || '—'}</b>{wbRoutes.length > 1 ? ' (use the radio on a card to switch target)' : ''}.</span></div>
@@ -10038,19 +10051,6 @@ function RoutingScreen({ debugCaptureRef }) {
     if (viewing) return;                       // saved-load view is read-only
     toggleStop(s.stopNbr);
   }, [panToStop, viewing, toggleStop]);
-  // Tap a load → select ALL of that load's positioned stops and frame them.
-  const pickLoadFromTable = useCallback((loadNbr) => {
-    if (viewing || !loadNbr || !google) return;
-    const pts = positioned.filter((s) => (s.routeName || s.loadNbr) === loadNbr);
-    if (!pts.length) return;
-    setSelectedIds((prev) => { const n = new Set(prev); pts.forEach((s) => n.add(String(s.stopNbr))); return n; });
-    setLastAction(`Selected ${pts.length} stop${pts.length === 1 ? '' : 's'} from load ${loadNbr}`);
-    if (mapRef.current) {
-      const b = new google.maps.LatLngBounds();
-      pts.forEach((s) => b.extend({ lat: s.lat, lng: s.lng }));
-      mapRef.current.fitBounds(b, 60);
-    }
-  }, [viewing, google, positioned]);
   // Right Routes-panel click → open that route into the workbench (cards) and frame it on the
   // map. Unlike pickLoadFromTable it does NOT add the stops to the selection set.
   const onPickRoute = useCallback((key) => {
@@ -10491,6 +10491,34 @@ function RoutingScreen({ debugCaptureRef }) {
   const [mobilePanel, setMobilePanel] = useState('setup');
   const [sheetOpen, setSheetOpen] = useState(true);
   useEffect(() => { if (job?.status === 'done') { setMobilePanel('result'); setSheetOpen(true); } }, [job?.status]);
+  // Tap a load in the bottom Loads grid → OPEN IT IN COMPARE (so you can ninja stops onto it),
+  // including EMPTY loads with no orders yet (issue #237 — "add stops to one of the available
+  // loads... can't figure out how"). The grid clicks with the raw loadNbr; resolve it to the
+  // canonical workbench key (routeName||loadNbr) off a matching stop so a route WITH stops opens
+  // populated, while an empty load (no match) opens as a blank card ready to fill.
+  const pickLoadToCompare = useCallback((loadNbr) => {
+    if (viewing || !loadNbr) return;
+    const s = positioned.find((p) => p.loadNbr === loadNbr || (p.routeName || p.loadNbr) === loadNbr);
+    const key = s ? (s.routeName || s.loadNbr) : loadNbr;
+    openRouteInWorkbench(key);
+    if (isMobile) { setMobilePanel('setup'); setSheetOpen(true); }
+    const pts = positioned.filter((p) => (p.routeName || p.loadNbr) === key && p.lat != null && p.lng != null);
+    if (google && mapRef.current && pts.length) {
+      const b = new google.maps.LatLngBounds();
+      pts.forEach((p) => b.extend({ lat: p.lat, lng: p.lng }));
+      mapRef.current.fitBounds(b, 60);
+    }
+  }, [viewing, positioned, openRouteInWorkbench, google, isMobile]);
+  // Arm/disarm Ninja from the Compare panel button (the on-map tool is easy to miss). When arming
+  // on mobile, drop the bottom sheet so the map — and the stops you're about to tap — are visible.
+  const armNinjaFromPanel = useCallback(() => {
+    if (wbRoutes.length === 0) return;
+    setNinjaMode((v) => {
+      const next = !v;
+      if (next && isMobile) setSheetOpen(false);
+      return next;
+    });
+  }, [wbRoutes.length, isMobile]);
   // Mobile: when the FIRST route is opened into the Compare panel, jump to the Setup tab (which
   // hosts the Compare workbench + the Ninja toggle) and open the sheet — otherwise opening a route
   // from the Routes tab looks like nothing happened and Ninja mode is never seen.
@@ -10652,6 +10680,14 @@ function RoutingScreen({ debugCaptureRef }) {
           {!viewing && <RoutingMapTools selectMode={selectMode} onBox={() => (selectMode === 'box' ? cancelMode() : beginMode('box'))} onLasso={() => (selectMode === 'lasso' ? cancelMode() : beginMode('lasso'))} ninjaMode={ninjaMode} onToggleNinja={onNinjaTool} ninjaAvailable={wbRoutes.length > 0} />}
           {mapsError && <div className="absolute top-2 left-1/2 -translate-x-1/2 bg-red-50 border border-red-300 text-red-700 text-[11px] rounded px-2 py-1">{mapsError}</div>}
           {mapToast && <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-30 max-w-[92%] bg-slate-900/90 text-white text-[11px] rounded-lg shadow-lg px-3 py-1.5 text-center"><NinjaIcon size={12} className="inline -mt-0.5 mr-1" />{mapToast}</div>}
+          {/* Ninja status — while armed, tapping a stop on the map adds it to the active route. Shown
+              here so it's clear even with the bottom sheet collapsed (the sheet drops on arm). */}
+          {!viewing && ninjaMode && wbRoutes.length > 0 && (
+            <div className="absolute top-12 left-1/2 -translate-x-1/2 z-30 max-w-[92%] bg-amber-500 text-white text-[11px] font-semibold rounded-full shadow-lg px-3 py-1 flex items-center gap-1.5">
+              <NinjaIcon size={13} /><span>Ninja on — tap stops → <b>{effectiveActiveKey || '—'}</b></span>
+              <button onClick={() => setNinjaMode(false)} className="ml-1 underline font-normal">done</button>
+            </div>
+          )}
           {viewing
             ? <div className="absolute top-2 left-1/2 -translate-x-1/2 z-20 bg-indigo-600 text-white text-[11px] rounded shadow px-3 py-1.5 flex items-center gap-2 max-w-[92%]"><span className="truncate">👁 {viewedLoad?.name || viewedLoad?.id}</span><button onClick={() => setViewedLoad(null)} className="underline shrink-0">Back</button></div>
             : <button onClick={() => { setMobilePanel('setup'); setSheetOpen(true); }} className="absolute top-2 left-2 z-20 bg-white/95 border border-slate-200 rounded shadow px-2 py-1 text-[11px]" title="Review selected stops in the Setup panel">{tally.count} selected · {tally.skids} skids · {tally.pieces} pcs</button>}
@@ -10667,7 +10703,7 @@ function RoutingScreen({ debugCaptureRef }) {
             open={bottomTableOpen}
             setOpen={setBottomTableOpen}
             onPick={pickStopFromTable}
-            onPickLoad={pickLoadFromTable}
+            onPickLoad={pickLoadToCompare}
           />}
         </div>
         <div className="border-t bg-white flex flex-col shrink-0" style={{ height: sheetOpen ? '50%' : 'auto' }}>
@@ -10683,7 +10719,7 @@ function RoutingScreen({ debugCaptureRef }) {
             <div className="flex-1 min-h-0 overflow-y-auto p-3 space-y-3 text-sm" style={{ paddingBottom: 'calc(12px + env(safe-area-inset-bottom))' }}>
               {mobilePanel === 'setup'
                 ? (wbRoutes.length > 0
-                    ? <RoutingWorkbench wbRoutes={wbRoutesColored} stopById={stopById} ninjaMode={ninjaMode} onToggleNinja={setNinjaMode} activeKey={effectiveActiveKey} onSetActive={setActiveRouteKey} onResequence={wbResequence} onCollapse={toggleWbCollapse} onClose={closeWbRoute} onCloseAll={closeAllWb} onMoveStop={wbMoveStop} onDropStop={wbDropStop} onOpenStop={openStop} isMobile />
+                    ? <RoutingWorkbench wbRoutes={wbRoutesColored} stopById={stopById} ninjaMode={ninjaMode} onToggleNinja={setNinjaMode} onArmNinja={armNinjaFromPanel} activeKey={effectiveActiveKey} onSetActive={setActiveRouteKey} onResequence={wbResequence} onCollapse={toggleWbCollapse} onClose={closeWbRoute} onCloseAll={closeAllWb} onMoveStop={wbMoveStop} onDropStop={wbDropStop} onOpenStop={openStop} isMobile />
                     : controlsContent)
                 : mobilePanel === 'loads'
                   ? (rightPanelMode === 'routes' ? <RoutingRoutesPanel groups={routeGroups} onPick={onPickRoute} /> : loadsContent)
@@ -10716,7 +10752,7 @@ function RoutingScreen({ debugCaptureRef }) {
       {/* Left: Setup stack (resizable) — OR the route workbench, which auto-sizes to its open cards. */}
       {wbRoutes.length > 0 ? (
         <div className="shrink-0 border-r bg-white min-h-0 overflow-x-auto" style={{ width: wbWidth }}>
-          <RoutingWorkbench wbRoutes={wbRoutesColored} stopById={stopById} ninjaMode={ninjaMode} onToggleNinja={setNinjaMode} activeKey={effectiveActiveKey} onSetActive={setActiveRouteKey} onResequence={wbResequence} onCollapse={toggleWbCollapse} onClose={closeWbRoute} onCloseAll={closeAllWb} onMoveStop={wbMoveStop} onDropStop={wbDropStop} onOpenStop={openStop} isMobile={false} />
+          <RoutingWorkbench wbRoutes={wbRoutesColored} stopById={stopById} ninjaMode={ninjaMode} onToggleNinja={setNinjaMode} onArmNinja={armNinjaFromPanel} activeKey={effectiveActiveKey} onSetActive={setActiveRouteKey} onResequence={wbResequence} onCollapse={toggleWbCollapse} onClose={closeWbRoute} onCloseAll={closeAllWb} onMoveStop={wbMoveStop} onDropStop={wbDropStop} onOpenStop={openStop} isMobile={false} />
         </div>
       ) : (
         <div className="shrink-0 border-r bg-white overflow-y-auto p-3 space-y-3 text-sm" style={{ width: leftPanel.width }}>
@@ -10788,7 +10824,7 @@ function RoutingScreen({ debugCaptureRef }) {
           open={bottomTableOpen}
           setOpen={setBottomTableOpen}
           onPick={pickStopFromTable}
-          onPickLoad={pickLoadFromTable}
+          onPickLoad={pickLoadToCompare}
         />}
       </div>
 
