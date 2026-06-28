@@ -49,7 +49,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.29.58';
+const APP_VERSION = '0.29.59';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -69,6 +69,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.29.59', 'Routing (beta) — Box, Lasso, and Ninja are now small selector buttons that live ON THE MAP (left edge), so they\'re always reachable — including while the Compare panel has replaced the Setup stack. (They moved off the Setup panel / Compare header.) Also: the Compare panel now AUTO-SIZES to the number of open route cards — open a 2nd route and it grows to fit two, close one and it collapses back to one. (The Setup and right panels stay manually resizable.)'],
   ['0.29.58', 'Routing (beta) — configurable, resizable layout (part 6, the finale). The left and right panels are now drag-to-resize, just like the dispatch map (drag the divider, double-click to reset; widths are remembered). The gear settings menu is now the one control center: turn the floating Selected panel and the bottom data grid on/off, switch the right panel between Tabs and Routes/Drivers, and "↺ Reset layout to defaults". Routing-beta only.'],
   ['0.29.57', 'Routing (beta) mobile fix — opening a route now jumps you straight to the Compare panel (the Setup tab), where the 🥷 Ninja toggle lives. Before, tapping a route from the Routes tab quietly opened it on the (hidden) Setup tab, so the Compare panel and Ninja mode never appeared. (To get there on a phone: gear → Right panel: Routes/Drivers → tap a route.)'],
   ['0.29.56', 'Routing (beta) — Ninja mode now uses a little masked-ninja icon (a crisp SVG that looks the same on every device and matches the button color) instead of the emoji, on the toggle, the on-panel hint, and each card\'s target radio.'],
@@ -8907,6 +8908,25 @@ function NinjaIcon({ size = 14, className = '' }) {
   );
 }
 
+// Floating on-map selection toolbar: Box · Lasso · Ninja, as small selectors that live on the
+// map (so they're reachable even when the Compare panel replaces the Setup stack). Box/Lasso
+// toggle their select mode; Ninja toggles ninja mode (disabled until a route is open in Compare).
+function RoutingMapTools({ selectMode, onBox, onLasso, ninjaMode, onToggleNinja, ninjaAvailable }) {
+  const Btn = ({ active, onClick, disabled, title, children }) => (
+    <button
+      onClick={onClick} disabled={disabled} title={title} aria-pressed={!!active}
+      className={`w-9 h-9 flex items-center justify-center rounded-lg border shadow-sm ${active ? 'bg-blue-600 border-blue-700 text-white' : 'bg-white/95 border-slate-300 text-slate-700 hover:bg-white'} disabled:opacity-40 disabled:cursor-not-allowed`}
+    >{children}</button>
+  );
+  return (
+    <div className="absolute left-2 top-1/2 -translate-y-1/2 z-20 flex flex-col gap-1.5">
+      <Btn active={selectMode === 'box'} onClick={onBox} title="Box select — tap two corners (or drag) to grab a group"><Square size={16} /></Btn>
+      <Btn active={selectMode === 'lasso'} onClick={onLasso} title="Lasso select — tap points (or hold & draw) around stops"><Lasso size={16} /></Btn>
+      <Btn active={ninjaMode} onClick={onToggleNinja} disabled={!ninjaAvailable} title={ninjaAvailable ? 'Ninja — click stops onto the active Compare route' : 'Ninja: open a route in the Compare panel first'}><NinjaIcon size={16} /></Btn>
+    </div>
+  );
+}
+
 // One route card in the workbench (part 4): a route opened from the right Routes panel. Shows
 // the route's stops in working order with a re-sequence strategy picker (Shortest / Farthest /
 // Closest / Reverse), collapse/close, per-stop open, and — when other routes are open — a
@@ -8983,15 +9003,7 @@ function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, active
     <div className="flex flex-col h-full min-h-0">
       <div className="flex items-center justify-between gap-2 px-2 py-1.5 border-b shrink-0 bg-white">
         <span className="font-semibold text-slate-800 text-[13px] shrink-0">Compare <span className="text-slate-400 text-[11px]">({wbRoutes.length}/3)</span></span>
-        <div className="flex items-center gap-2">
-          <button
-            onClick={() => onToggleNinja(!ninjaMode)}
-            className={`text-[11px] font-semibold px-2 py-1 rounded border ${ninjaMode ? 'bg-amber-400 border-amber-500 text-amber-950' : 'border-slate-300 text-slate-600 hover:bg-slate-50'}`}
-            title="Ninja mode: each stop you click on the map is added to the target route"
-            aria-pressed={ninjaMode}
-          ><span className="inline-flex items-center gap-1"><NinjaIcon size={14} /> Ninja{ninjaMode ? ' on' : ''}</span></button>
-          <button onClick={onCloseAll} className="text-[11px] text-slate-500 hover:text-slate-800 underline shrink-0">Back to Setup</button>
-        </div>
+        <button onClick={onCloseAll} className="text-[11px] text-slate-500 hover:text-slate-800 underline shrink-0">Back to Setup</button>
       </div>
       {ninjaMode && (
         <div className="px-2 py-1 text-[11px] bg-amber-50 border-b border-amber-200 text-amber-800 shrink-0 flex items-center gap-1"><NinjaIcon size={13} /><span>Ninja on — clicking a stop adds it to <b>{activeKey || '—'}</b>{wbRoutes.length > 1 ? ' (use the radio on a card to switch target)' : ''}.</span></div>
@@ -10102,13 +10114,11 @@ function RoutingScreen() {
           </div>
         ) : (
           <>
-            <button onClick={addInView} className="w-full px-2 py-2 text-xs rounded border-2 font-semibold hover:bg-blue-50 active:bg-blue-100" style={{ borderColor: BRAND, color: BRAND }}>＋ Add stops in view</button>
             <div className="flex gap-1">
-              <button onClick={() => beginMode('box')} className="flex-1 px-2 py-2 text-xs rounded border border-slate-300 hover:bg-slate-50 active:bg-slate-100">▱ Box</button>
-              <button onClick={() => beginMode('lasso')} className="flex-1 px-2 py-2 text-xs rounded border border-slate-300 hover:bg-slate-50 active:bg-slate-100">⬠ Lasso</button>
-              <button onClick={clearSelection} className="flex-1 px-2 py-2 text-xs rounded border border-slate-300 hover:bg-slate-50 active:bg-slate-100">Clear</button>
+              <button onClick={addInView} className="flex-1 px-2 py-2 text-xs rounded border-2 font-semibold hover:bg-blue-50 active:bg-blue-100" style={{ borderColor: BRAND, color: BRAND }}>＋ Add stops in view</button>
+              <button onClick={clearSelection} className="px-3 py-2 text-xs rounded border border-slate-300 hover:bg-slate-50 active:bg-slate-100">Clear</button>
             </div>
-            <div className="text-[11px] text-slate-600">{isMobile ? 'Tap' : 'Click'} a stop to toggle it. Or pan/zoom, then <b>Add stops in view</b>, <b>Box</b> ({isMobile ? 'tap two corners' : 'drag'}), or <b>Lasso</b> ({isMobile ? 'tap points' : 'hold & draw'}).</div>
+            <div className="text-[11px] text-slate-600">{isMobile ? 'Tap' : 'Click'} a stop to toggle it. Use the <b>Box</b> / <b>Lasso</b> / <b>Ninja</b> tools on the map (left edge), or pan/zoom then <b>Add stops in view</b>.</div>
           </>
         )}
         {lastAction && <div className="text-[11px] text-slate-500">{lastAction}</div>}
@@ -10201,6 +10211,7 @@ function RoutingScreen() {
         <div className="flex-1 relative min-w-0">
           <div ref={mapDiv} className="absolute inset-0" />
           <RoutingBuildBadge onClick={() => setVersionLogOpen(true)} />
+          {!viewing && <RoutingMapTools selectMode={selectMode} onBox={() => (selectMode === 'box' ? cancelMode() : beginMode('box'))} onLasso={() => (selectMode === 'lasso' ? cancelMode() : beginMode('lasso'))} ninjaMode={ninjaMode} onToggleNinja={() => setNinjaMode((v) => !v)} ninjaAvailable={wbRoutes.length > 0} />}
           {mapsError && <div className="absolute top-2 left-1/2 -translate-x-1/2 bg-red-50 border border-red-300 text-red-700 text-[11px] rounded px-2 py-1">{mapsError}</div>}
           {viewing
             ? <div className="absolute top-2 left-1/2 -translate-x-1/2 z-20 bg-indigo-600 text-white text-[11px] rounded shadow px-3 py-1.5 flex items-center gap-2 max-w-[92%]"><span className="truncate">👁 {viewedLoad?.name || viewedLoad?.id}</span><button onClick={() => setViewedLoad(null)} className="underline shrink-0">Back</button></div>
@@ -10258,12 +10269,16 @@ function RoutingScreen() {
       style={desktopRail === id ? { borderColor: BRAND, color: BRAND } : {}}
     >{label}</button>
   );
+  // The Compare panel AUTO-SIZES to the number of open route cards (1→3): each card is 300px wide
+  // plus the 8px gaps and 16px padding, clamped to 72% of the viewport. So opening a 2nd route
+  // grows it to two, closing one collapses it back to one. (The Setup left panel stays resizable.)
+  const wbCols = Math.min(WB_MAX, wbRoutes.length);
+  const wbWidth = Math.min(wbCols * 300 + Math.max(0, wbCols - 1) * 8 + 16, Math.round(viewportWidth * 0.72));
   return (
     <div className="flex-1 flex min-h-0">
-      {/* Left: Setup stack — OR the route workbench (cards) when routes are open from the right panel.
-          Drag the divider (or double-click to reset) to resize, like the dispatch map. */}
+      {/* Left: Setup stack (resizable) — OR the route workbench, which auto-sizes to its open cards. */}
       {wbRoutes.length > 0 ? (
-        <div className="shrink-0 border-r bg-white min-h-0 overflow-x-auto" style={{ width: leftPanel.width }}>
+        <div className="shrink-0 border-r bg-white min-h-0 overflow-x-auto" style={{ width: wbWidth }}>
           <RoutingWorkbench wbRoutes={wbRoutes} stopById={stopById} ninjaMode={ninjaMode} onToggleNinja={setNinjaMode} activeKey={effectiveActiveKey} onSetActive={setActiveRouteKey} onResequence={wbResequence} onCollapse={toggleWbCollapse} onClose={closeWbRoute} onCloseAll={closeAllWb} onMoveStop={wbMoveStop} onOpenStop={openStop} isMobile={false} />
         </div>
       ) : (
@@ -10271,12 +10286,14 @@ function RoutingScreen() {
           {controlsContent}
         </div>
       )}
-      <ResizeHandle onMouseDown={leftPanel.onMouseDown} onDoubleClick={leftPanel.onDoubleClick} />
+      {/* Resize the Setup panel; the Compare panel auto-sizes to its cards, so no handle there. */}
+      {wbRoutes.length === 0 && <ResizeHandle onMouseDown={leftPanel.onMouseDown} onDoubleClick={leftPanel.onDoubleClick} />}
 
       {/* Center: the map canvas */}
       <div className="flex-1 relative min-w-0">
         <div ref={mapDiv} className="absolute inset-0" />
         <RoutingBuildBadge onClick={() => setVersionLogOpen(true)} />
+        {!viewing && <RoutingMapTools selectMode={selectMode} onBox={() => (selectMode === 'box' ? cancelMode() : beginMode('box'))} onLasso={() => (selectMode === 'lasso' ? cancelMode() : beginMode('lasso'))} ninjaMode={ninjaMode} onToggleNinja={() => setNinjaMode((v) => !v)} ninjaAvailable={wbRoutes.length > 0} />}
         {mapsError && <div className="absolute top-2 left-1/2 -translate-x-1/2 bg-red-50 border border-red-300 text-red-700 text-[11px] rounded px-2 py-1">{mapsError}</div>}
         {viewing && (
           <div className="absolute top-2 left-1/2 -translate-x-1/2 z-20 bg-indigo-600 text-white text-[12px] rounded shadow px-3 py-1.5 flex items-center gap-3 max-w-[80%]">
