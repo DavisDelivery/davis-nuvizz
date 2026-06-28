@@ -50,7 +50,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.29.63';
+const APP_VERSION = '0.29.64';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -70,6 +70,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.29.64', 'Unplanned across multiple days (#239) — the "Carry-over unplanned" filter is now a configurable look-back instead of a fixed on/off. Pick a preset (Off / 3d / 7d / 14d) or a calendar "since" date, and the board folds in every still-unplanned order from that many prior days onto the day you’re viewing (each tagged amber, counted in the "· N c/o" badge). Default is today-only; your old on/off setting migrates to 7 days.'],
   ['0.29.63', 'Routing (beta), Ninja onto a load (#237) — you can now build any load with Ninja, even an empty one. Tap a load in the bottom Loads grid (including the "No orders yet" empties) and it opens in the Compare panel; from there a new "Ninja: add stops" button arms ninja (on mobile it drops the sheet so you can tap stops straight onto the map), and a bright "Ninja on — tap stops → <route>" banner shows it’s live. So: tap an available load → Ninja: add stops → tap stops on the map.'],
   ['0.29.62', 'Empty loads — the next business day’s load roster (including loads created but not yet filled with orders) is now scanned ONCE and cached, so e.g. Monday’s empty loads show up on the Loads view without waiting on a live pull. The Loads view serves the cached roster instantly; a manual "Scan now" on a future date refreshes it. Next-day loads are static, so they’re only pulled once a day (no extra NuVizz traffic).'],
   ['0.29.61', 'Routing (beta), Compare panel — two big ones. (1) Your route optimizations now SHOW ON THE MAP: every route open in the Compare panel is drawn as a colour-coded line with numbered stops (matching a colour dot on each card), and it redraws live as you re-sequence, move, or ninja stops. (2) Drag-and-drop between Compare cards — grab any stop by its handle and drop it to reorder within a route or move it onto another route (a blue line shows where it lands). The old "→" move menu stays for phones.'],
