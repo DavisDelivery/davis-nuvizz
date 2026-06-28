@@ -50,7 +50,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.29.64';
+const APP_VERSION = '0.29.65';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -70,6 +70,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.29.65', 'Carry-over clarity (#245) — the carry-over control now shows the actual window it’s covering, e.g. "since Jun 22 · 7d back", so it’s clear the calendar date and the presets are the SAME setting. Picking "since 6/22" on a 6/29 board IS the 7d preset (7 days back) — it was never overriding your date, just showing the same window two ways.'],
   ['0.29.64', 'Unplanned across multiple days (#239) — the "Carry-over unplanned" filter is now a configurable look-back instead of a fixed on/off. Pick a preset (Off / 3d / 7d / 14d) or a calendar "since" date, and the board folds in every still-unplanned order from that many prior days onto the day you’re viewing (each tagged amber, counted in the "· N c/o" badge). Default is today-only; your old on/off setting migrates to 7 days.'],
   ['0.29.63', 'Routing (beta), Ninja onto a load (#237) — you can now build any load with Ninja, even an empty one. Tap a load in the bottom Loads grid (including the "No orders yet" empties) and it opens in the Compare panel; from there a new "Ninja: add stops" button arms ninja (on mobile it drops the sheet so you can tap stops straight onto the map), and a bright "Ninja on — tap stops → <route>" banner shows it’s live. So: tap an available load → Ninja: add stops → tap stops on the map.'],
   ['0.29.62', 'Empty loads — the next business day’s load roster (including loads created but not yet filled with orders) is now scanned ONCE and cached, so e.g. Monday’s empty loads show up on the Loads view without waiting on a live pull. The Loads view serves the cached roster instantly; a manual "Scan now" on a future date refreshes it. Next-day loads are static, so they’re only pulled once a day (no extra NuVizz traffic).'],
@@ -2832,11 +2833,20 @@ function CarryoverControl({ value = 0, onChange, boardDate }) {
     const days = Math.round((boardMs - Date.parse(`${v}T00:00:00Z`)) / dayMs);
     onChange(Math.max(0, days));
   };
+  // "2026-06-22" → "Jun 22" (parse the parts so there's no timezone drift).
+  const fmtSince = (iso) => {
+    const m = String(iso).match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (!m) return iso;
+    return `${['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][+m[2] - 1]} ${+m[3]}`;
+  };
   return (
     <div className="py-1.5">
       <div className="flex items-center justify-between gap-2">
         <span className="text-xs text-slate-700">Carry-over unplanned</span>
-        <span className="text-[10px] text-amber-700 flex-shrink-0">{value > 0 ? `last ${value}d` : 'today only'}</span>
+        {/* Show the resolved since-date AND the day count together, so it's clear the presets and
+            the calendar are the SAME setting — e.g. "since Jun 22" on a Jun 29 board IS 7d, the
+            7d preset isn't overriding the date (issue #245). */}
+        <span className="text-[10px] text-amber-700 flex-shrink-0">{value > 0 ? `since ${fmtSince(sinceForValue)} · ${value}d back` : 'today only'}</span>
       </div>
       <div className="mt-1 flex flex-wrap items-center gap-1">
         {PRESETS.map((p) => (
@@ -2854,7 +2864,7 @@ function CarryoverControl({ value = 0, onChange, boardDate }) {
           value={sinceForValue}
           max={maxSince}
           onChange={onSince}
-          title="Fold in still-unplanned orders since this date"
+          title="Fold in still-unplanned orders since this date — the same look-back window as the presets (e.g. 7 days back = the 7d button)"
           aria-label="Carry-over since date"
           className="text-[11px] px-1.5 py-0.5 rounded border border-slate-300 text-slate-600 min-w-0 flex-1"
         />
