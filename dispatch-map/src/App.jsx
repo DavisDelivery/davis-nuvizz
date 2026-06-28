@@ -17,7 +17,7 @@ import {
   Activity, ChevronDown, ChevronUp, Eye, EyeOff,
   Search, Tag, Tags, ArrowLeft, Gauge, Clock, MapPinned,
   Info, Settings, LayoutList, Sparkles, MessageSquare, Square, Lasso, AlertTriangle, Ban, Send, Package,
-  FileCheck, ExternalLink, Image as ImageIcon, Printer, FileText,
+  FileCheck, ExternalLink, Image as ImageIcon, Printer, FileText, Bug,
 } from 'lucide-react';
 import {
   collection, doc, getDoc, onSnapshot, setDoc, serverTimestamp,
@@ -4888,6 +4888,13 @@ function MobileAppBar({ version, onChipMenu, chipMenuOpen, onSelectMenu, smsUnre
             </button>
             <button
               className="w-full text-left px-3 py-2 hover:bg-slate-50 inline-flex items-center gap-2 border-t border-slate-100"
+              onClick={() => onSelectMenu('debug')}
+              role="menuitem"
+            >
+              <Bug size={12} /> Debug this view
+            </button>
+            <button
+              className="w-full text-left px-3 py-2 hover:bg-slate-50 inline-flex items-center gap-2 border-t border-slate-100"
               onClick={() => onSelectMenu('map')}
               role="menuitem"
             >
@@ -5866,7 +5873,174 @@ function MobileDriverSnapshotDrawer({ driver, snapshot, loading, error, onClose,
   );
 }
 
-function MapScreen({ onOpenMessages, smsUnread = 0 }) {
+// ---------- debug capture ----------
+// "Debug this view" bundles what the dispatcher is looking at so a coding agent
+// can see the data behind a bad behavior. We ship coordinates + state, not a
+// screenshot (the Google map is WebGL and iOS Safari has no getDisplayMedia).
+// Customer names/addresses/contacts and the raw NuVizz payload are scrubbed.
+function scrubStop(s, seq, note) {
+  if (!s) return null;
+  return {
+    seq: seq == null ? undefined : seq,
+    stopNbr: s.stopNbr,
+    pro: s.pro,
+    loadNbr: s.loadNbr,
+    status: s.status,
+    normalizedStatus: s.normalizedStatus,
+    isPlanned: s.isPlanned,
+    isUnplanned: s.isUnplanned,
+    isTerminal: s.isTerminal,
+    carryover: s.carryover,
+    driverName: s.driverName,
+    driverUserName: s.driverUserName,
+    routeSeq: s.routeSeq,
+    loadStopSeq: s.loadStopSeq,
+    plannedEtaDTTM: s.plannedEtaDTTM,
+    arrivalDTTM: s.arrivalDTTM,
+    deliveredDTTM: s.deliveredDTTM,
+    cartons: s.cartons,
+    pallets: s.pallets,
+    volume: s.volume,
+    weight: s.weight,
+    lat: s.lat,
+    lng: s.lng,
+    matchKey: s.matchKey,
+    hasNote: !!note,
+    flag: note?.priority_flag ?? null,
+    // dropped (PII / huge): businessName, addr1, addr2, city, state, zip,
+    // contact, origin, stopDetails, allComments, raw
+  };
+}
+
+// Reconstruct a Google Static Maps URL from the live viewport + visible pins, so
+// a reviewer can see the same view without WebGL. Uses a __MAPS_KEY__ placeholder
+// so no real key lands in the bundle.
+function buildStaticMapUrl(center, zoom, stops) {
+  if (!center) return null;
+  const params = [
+    `center=${center.lat},${center.lng}`,
+    `zoom=${Math.round(zoom || 11)}`,
+    'size=640x640',
+    'scale=2',
+  ];
+  const pins = (stops || [])
+    .filter((s) => s.lat != null && s.lng != null)
+    .slice(0, 20)
+    .map((s) => `${(+s.lat).toFixed(5)},${(+s.lng).toFixed(5)}`);
+  if (pins.length) params.push(`markers=size:small%7C${pins.join('%7C')}`);
+  params.push('key=__MAPS_KEY__');
+  return `https://maps.googleapis.com/maps/api/staticmap?${params.join('&')}`;
+}
+
+// POST a capture bundle to the backend, which files it as a GitHub issue.
+async function postDebugBundle(bundle) {
+  const secret = import.meta.env.VITE_DEBUG_CAPTURE_SECRET;
+  const resp = await fetch('/.netlify/functions/debug-capture', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...(secret ? { 'x-debug-secret': secret } : {}) },
+    body: JSON.stringify(bundle),
+  });
+  const data = await resp.json();
+  if (!resp.ok || !data.ok) throw new Error(data.error || `HTTP ${resp.status}`);
+  return data; // { ok, issueUrl, issueNumber }
+}
+
+// The active screen registers its bundle builder into a shared ref so the
+// Shell-level "Debug this view" entry (chip menu / desktop nav) can capture
+// whatever screen the dispatcher is on. Screens are mounted one at a time, so a
+// single ref is unambiguous; the cleanup clears it on tab switch.
+function useRegisterDebugCapture(ref, builder) {
+  useEffect(() => {
+    if (!ref) return undefined;
+    ref.current = builder;
+    return () => { if (ref.current === builder) ref.current = null; };
+  }, [ref, builder]);
+}
+
+// Shell-owned capture modal, reachable from any tab. Pulls the active screen's
+// bundle from captureRef, posts it, and shows the resulting issue link.
+function DebugCaptureSheet({ open, onClose, captureRef }) {
+  const [note, setNote] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState(null);
+  const [error, setError] = useState(null);
+  const mountedRef = useRef(true);
+  useEffect(() => () => { mountedRef.current = false; }, []);
+  // Fresh sheet each time it opens; Escape closes it.
+  useEffect(() => { if (open) { setNote(''); setResult(null); setError(null); } }, [open]);
+  useEffect(() => {
+    if (!open) return undefined;
+    const onKey = (e) => { if (e.key === 'Escape') onClose(); };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [open, onClose]);
+  if (!open) return null;
+
+  const send = async () => {
+    if (busy) return;
+    const builder = captureRef && captureRef.current;
+    if (typeof builder !== 'function') { setError('Nothing to capture on this screen yet.'); return; }
+    setBusy(true); setError(null); setResult(null);
+    try {
+      const bundle = builder(note.trim());
+      const res = await postDebugBundle(bundle);
+      if (mountedRef.current) setResult(res);
+    } catch (e) {
+      if (mountedRef.current) setError(e?.message || 'Could not send the capture. Please try again.');
+    } finally {
+      if (mountedRef.current) setBusy(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-[60] flex items-end sm:items-center sm:justify-center bg-black/30" onClick={onClose}>
+      <div
+        className="bg-white w-full sm:w-[420px] rounded-t-2xl sm:rounded-2xl shadow-2xl border border-slate-200 max-h-[85dvh] flex flex-col pb-[env(safe-area-inset-bottom)] sm:pb-0"
+        onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-label="Debug this view"
+      >
+        <div className="flex items-center gap-2 px-4 py-3 border-b" style={{ color: BRAND }}>
+          <Bug size={16} />
+          <div className="font-semibold text-sm flex-1">Debug this view</div>
+          <button onClick={onClose} className="p-2 rounded hover:bg-slate-100 text-slate-500 min-w-[40px] min-h-[40px] flex items-center justify-center" aria-label="Close">
+            <X size={18} />
+          </button>
+        </div>
+        <div className="p-4 space-y-3 overflow-y-auto">
+          <p className="text-xs text-slate-500">
+            Captures what you're looking at right now (data only — no customer names or addresses) and opens a GitHub issue a coding agent can pick up.
+          </p>
+          <textarea
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+            placeholder="What looked wrong? (optional)"
+            className="w-full text-sm border border-slate-300 rounded-xl px-3 py-2 h-24 resize-y focus:outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-400"
+          />
+          {result && (
+            <a href={result.issueUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-sm font-medium hover:underline" style={{ color: BRAND }}>
+              <ExternalLink size={14} /> Opened issue{result.issueNumber ? ` #${result.issueNumber}` : ''} →
+            </a>
+          )}
+          {error && <div className="text-xs text-red-600 bg-red-50 border border-red-200 rounded px-2 py-1.5">{error}</div>}
+        </div>
+        <div className="border-t p-3">
+          <button
+            onClick={send}
+            disabled={busy}
+            className="w-full text-sm font-semibold py-2.5 rounded-xl text-white disabled:opacity-50 inline-flex items-center justify-center gap-2"
+            style={{ background: BRAND }}
+          >
+            {busy ? <RefreshCw size={15} className="animate-spin" /> : <Send size={15} />}
+            {busy ? 'Sending…' : 'Send to coding agent'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef }) {
   // M5 — selectedDate drives every fetch. Defaults to today (ET) and is NOT
   // persisted: every page load resets to today (brief P2.2).
   const [selectedDate, setSelectedDate] = useState(() => todayInET());
@@ -6359,6 +6533,101 @@ function MapScreen({ onOpenMessages, smsUnread = 0 }) {
     if (set.size) setAiResult({ set, summary: `${set.size} stop${set.size === 1 ? '' : 's'} from chat`, source: 'chat' });
     return set.size;
   }, [filteredStops]);
+
+  // "Debug this view" — snapshot what the dispatcher is looking at right now and
+  // hand it to the coding agent. Reads live map refs + state; scrubs PII; never
+  // leaks the Maps key. Returns the backend result ({ issueUrl, issueNumber }).
+  const buildDebugBundle = useCallback((note) => {
+    const map = mapRef.current;
+    let viewport = null;
+    if (map && typeof map.getCenter === 'function') {
+      const c = map.getCenter?.();
+      const b = map.getBounds?.();
+      viewport = {
+        center: c ? { lat: +c.lat().toFixed(6), lng: +c.lng().toFixed(6) } : null,
+        zoom: map.getZoom?.() ?? null,
+        bounds: b ? b.toJSON() : null,
+      };
+    }
+    const noteFor = (mk) => notes.get(mk) || null;
+    const CAP = 500;
+
+    const bundle = {
+      schema: 'dispatch-map.debug-capture/v1',
+      captured_at: new Date().toISOString(),
+      app: {
+        version: APP_VERSION,
+        build_commit: BUILD_COMMIT,
+        build_time: BUILD_TIME,
+        build_context: BUILD_CONTEXT,
+        user_agent: typeof navigator !== 'undefined' ? navigator.userAgent : '',
+        viewport_width: viewportWidth,
+        is_mobile: isMobile,
+      },
+      scope: {
+        date: selectedDate,
+        date_is_today: dateIsToday,
+        mock_mode: MOCK_MODE,
+        maps_loaded: !!google,
+      },
+      source: {
+        stops_source: source,
+        loading,
+        error: error || null,
+        stops_count_total: stops.length,
+        stops_count_visible: filteredStops.length,
+        last_refreshed: lastRefreshed ? new Date(lastRefreshed).toISOString() : null,
+        last_scanned_at: lastScannedAt || null,
+        last_load_scan_at: lastLoadScanAt || null,
+        last_unplanned_scan_at: lastUnplannedScanAt || null,
+        scan_state: scanState ?? null,
+        ops: ops ?? null,
+      },
+      map_filters: mapFilters,
+      filters,
+      search: { query: debouncedSearch, ai_mode: aiMode },
+      ai: aiResult
+        ? { active: true, summary: aiResult.summary, source: aiResult.source, match_count: aiResult.set ? aiResult.set.size : null }
+        : { active: false },
+      selection: {
+        kind: selectedDriver ? 'driver' : selectedRoute ? 'route' : selectedStop ? 'stop' : (selectionSet && selectionSet.size ? 'multi' : null),
+        stop: selectedStop ? scrubStop(selectedStop, null, noteFor(selectedStop.matchKey)) : null,
+        driver: selectedDriver
+          ? { driverName: selectedDriver.driverName, driverUserName: selectedDriver.driverUserName, vehicleNumber: selectedDriver.vehicleNumber }
+          : null,
+        route_load_nbr: selectedRoute || null,
+        multi_count: selectionSet ? selectionSet.size : 0,
+        select_mode: selectMode,
+      },
+      map_viewport: viewport,
+      static_map_url: viewport ? buildStaticMapUrl(viewport.center, viewport.zoom, filteredStops) : null,
+      rendered_stops: filteredStops.slice(0, CAP).map((s, i) => scrubStop(s, i, noteFor(s.matchKey))),
+      rendered_stops_truncated: filteredStops.length > CAP,
+      rendered_stops_note: 'order = filtered board order, NOT geographic route sequence; routeSeq/loadStopSeq carry NuVizz sequence',
+      notes_meta: { loaded_count: notes.size },
+      warnings: [
+        'static_map_url embeds the Maps key as __MAPS_KEY__ — swap it in locally to view; no real secret is included.',
+        'Customer names/addresses/contacts and the raw NuVizz payload are scrubbed from stops; only the join matchKey + coords remain.',
+      ],
+      user_note: note || '',
+    };
+
+    // Safety net: never let the real Maps key escape into the bundle.
+    if (MAPS_KEY) {
+      const text = JSON.stringify(bundle);
+      if (text.includes(MAPS_KEY)) return JSON.parse(text.split(MAPS_KEY).join('__MAPS_KEY__'));
+    }
+    return bundle;
+  }, [
+    notes, filteredStops, stops, selectedDate, dateIsToday, google, source, loading, error,
+    lastRefreshed, lastScannedAt, lastLoadScanAt, lastUnplannedScanAt, scanState, ops,
+    mapFilters, filters, debouncedSearch, aiMode, aiResult, selectedStop, selectedDriver,
+    selectedRoute, selectionSet, selectMode, viewportWidth, isMobile,
+  ]);
+
+  // Chat fold posts directly; the Shell sheet pulls the bundle via the ref.
+  const handleDebugCapture = useCallback((note) => postDebugBundle(buildDebugBundle(note)), [buildDebugBundle]);
+  useRegisterDebugCapture(debugCaptureRef, buildDebugBundle);
 
   // M5 — route grouping (client-side, mirrors parent app src/screens/MapScreen.jsx).
   // Group positioned stops by loadNbr (sequence restarts per load, so one
@@ -6978,6 +7247,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0 }) {
           onClear={clearAi}
           highlightActive={aiResult?.source === 'chat'}
           stopCount={filteredStops.length}
+          onDebugCapture={handleDebugCapture}
         />
         {movingStop && (
           <MoveLocationBar
@@ -7322,6 +7592,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0 }) {
           onClear={clearAi}
           highlightActive={aiResult?.source === 'chat'}
           stopCount={filteredStops.length}
+          onDebugCapture={handleDebugCapture}
         />
         {movingStop && (
           <MoveLocationBar
@@ -9222,7 +9493,7 @@ function VersionLogModal({ onClose }) {
   );
 }
 
-function RoutingScreen() {
+function RoutingScreen({ debugCaptureRef }) {
   const [selectedDate, setSelectedDate] = useState(() => todayInET());
   const { stops, loading, error: stopsError } = useStops(selectedDate);
   const { notes } = useCustomerNotes();
@@ -9433,6 +9704,82 @@ function RoutingScreen() {
   }, [profiles]); // eslint-disable-line
 
   const result = job?.status === 'done' ? job.result : null;
+
+  // "Debug this view" bundle for the routing screen — captures the solver state
+  // (job/result routes, selection, strategy) so a coding agent can see the data
+  // behind a bad route. Same scrub + Maps-key guard as the map bundle.
+  const buildRoutingBundle = useCallback((note) => {
+    const map = mapRef.current;
+    let viewport = null;
+    if (map && typeof map.getCenter === 'function') {
+      const c = map.getCenter?.();
+      const b = map.getBounds?.();
+      viewport = {
+        center: c ? { lat: +c.lat().toFixed(6), lng: +c.lng().toFixed(6) } : null,
+        zoom: map.getZoom?.() ?? null,
+        bounds: b ? b.toJSON() : null,
+      };
+    }
+    const noteFor = (mk) => notes.get(mk) || null;
+    const selStops = [...selectedIds].map((id) => stopById.get(String(id))).filter(Boolean);
+    const res = job?.status === 'done' ? job.result : null;
+    const bundle = {
+      schema: 'dispatch-map.debug-capture/v1',
+      captured_at: new Date().toISOString(),
+      screen: 'routing',
+      app: {
+        version: APP_VERSION, build_commit: BUILD_COMMIT, build_time: BUILD_TIME, build_context: BUILD_CONTEXT,
+        user_agent: typeof navigator !== 'undefined' ? navigator.userAgent : '',
+        viewport_width: viewportWidth, is_mobile: isMobile,
+      },
+      scope: { date: selectedDate, mock_mode: MOCK_MODE, maps_loaded: !!google },
+      source: { stops_count_total: stops.length, stops_positioned: positioned.length, loading, error: stopsError || null },
+      routing: {
+        job_status: job?.status ?? null,
+        job_error: job?.error ?? null,
+        strategy,
+        intent,
+        use_google: useGoogle,
+        select_mode: selectMode,
+        selected_stop_count: selectedIds.size,
+        selected_truck_count: selectedTruckIds.size,
+        truck_ids: [...selectedTruckIds],
+        last_request: lastRequest || null,
+        routes: res?.routes
+          ? res.routes.map((r) => ({
+              truckId: r.truckId,
+              stop_count: Array.isArray(r.orderedStopIds) ? r.orderedStopIds.length : null,
+              orderedStopIds: r.orderedStopIds,
+              totalDistanceMeters: r.totalDistanceMeters,
+              totalDurationSec: r.totalDurationSec,
+              eta_count: Array.isArray(r.etas) ? r.etas.length : null,
+              leg_count: Array.isArray(r.legs) ? r.legs.length : null,
+            }))
+          : null,
+        meta: res?.meta || null,
+      },
+      selected_stops: selStops.slice(0, 500).map((s, i) => scrubStop(s, i, noteFor(s.matchKey))),
+      selected_stops_truncated: selStops.length > 500,
+      map_viewport: viewport,
+      static_map_url: viewport ? buildStaticMapUrl(viewport.center, viewport.zoom, selStops) : null,
+      notes_meta: { loaded_count: notes.size },
+      warnings: [
+        'static_map_url embeds the Maps key as __MAPS_KEY__ — swap it in locally to view; no real secret is included.',
+        'Customer names/addresses/contacts and the raw NuVizz payload are scrubbed from stops.',
+      ],
+      user_note: note || '',
+    };
+    if (MAPS_KEY) {
+      const text = JSON.stringify(bundle);
+      if (text.includes(MAPS_KEY)) return JSON.parse(text.split(MAPS_KEY).join('__MAPS_KEY__'));
+    }
+    return bundle;
+  }, [
+    mapRef, notes, selectedIds, stopById, job, strategy, intent, useGoogle, selectMode,
+    selectedTruckIds, lastRequest, stops, positioned, loading, stopsError, selectedDate,
+    google, viewportWidth, isMobile,
+  ]);
+  useRegisterDebugCapture(debugCaptureRef, buildRoutingBundle);
 
   // ── Shared loads (live) + "view a saved load" mode ──
   // Viewing a saved load NEVER touches the live build state (selectedIds /
@@ -10738,6 +11085,10 @@ function RoutingRouteCard({ rv, stopById, usedGoogle, readOnly, onReorder, onMov
 
 function Shell() {
   const [tab, setTab] = useState('map');
+  // Shared "Debug this view" capture: the active screen registers its bundle
+  // builder here; the chip menu / nav entry opens the sheet, which posts it.
+  const debugCaptureRef = useRef(null);
+  const [debugOpen, setDebugOpen] = useState(false);
   const viewportWidth = useViewportWidth();
   const { h: viewportHeight, w: visibleWidth, x: viewportLeft, y: viewportTop } = useViewportSize();
   const isMobile = viewportWidth < MOBILE_BREAKPOINT;
@@ -10770,6 +11121,7 @@ function Shell() {
 
   const onSelectMenu = (next) => {
     setChipMenuOpen(false);
+    if (next === 'debug') { setDebugOpen(true); return; }
     if (next === 'messages') { openMessages(); return; }
     setTab(next === 'diagnostics' ? 'diag' : next === 'routing' ? 'routing' : 'map');
   };
@@ -10814,16 +11166,20 @@ function Shell() {
             {ROUTING_FLAG && <TabBtn label="Routing (beta)" icon={<MapPinned size={14} />} active={tab === 'routing'} onClick={() => setTab('routing')} />}
             <TabBtn label="Messages" icon={<MessageSquare size={14} />} active={messagesOpen} onClick={openMessages} badge={smsUnread} />
             <TabBtn label="Diagnostics" icon={<Activity size={14} />} active={tab === 'diag'} onClick={() => setTab('diag')} />
+            <TabBtn label="Debug" icon={<Bug size={14} />} active={debugOpen} onClick={() => setDebugOpen(true)} />
           </nav>
           {/* Right side intentionally empty — no auth in v0.3.0 (matches Glory Bound / MarginIQ). */}
           <div />
         </header>
       )}
 
-      {tab === 'map' ? <MapScreen onOpenMessages={openMessages} smsUnread={smsUnread} /> : (tab === 'routing' && ROUTING_FLAG) ? <RoutingScreen /> : <DiagnosticsRoute />}
+      {tab === 'map' ? <MapScreen onOpenMessages={openMessages} smsUnread={smsUnread} debugCaptureRef={debugCaptureRef} /> : (tab === 'routing' && ROUTING_FLAG) ? <RoutingScreen debugCaptureRef={debugCaptureRef} /> : <DiagnosticsRoute />}
 
       {/* Messages floats OVER the current screen (you never leave the map). */}
       {messagesOpen && <MessagesPanel messages={inbound} seenAt={smsSeenAt} onClose={closeMessages} customerContacts={customerContacts} />}
+
+      {/* "Debug this view" — reachable from any tab; captures the active screen. */}
+      <DebugCaptureSheet open={debugOpen} onClose={() => setDebugOpen(false)} captureRef={debugCaptureRef} />
 
       {/* Footer is desktop/tablet only on mobile; the in-map version chip
           and the top-bar chip cover the same info on small screens. */}
