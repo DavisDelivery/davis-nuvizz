@@ -873,6 +873,18 @@ export async function readLoadRoster(tenant: string, dateStr: string): Promise<{
   return { at: doc.at || doc._updatedAt || null, loads };
 }
 
+// ── Driver roster (on-demand, long-lived; SHARED with the parent app) ─────────
+// One doc per tenant, NOT date-scoped. This is the SAME doc + shape the mobile app
+// (davis-nuvizz) reads/writes — a native `users` array, so either app can refresh it
+// and both read it back. Keep the shape in sync with the parent's writeDriverRoster.
+const DRIVER_ROSTER_COLLECTION = 'nuvizzRoster';
+export async function readDriverRoster(tenant: string): Promise<any | null> {
+  return await getDoc(`${DRIVER_ROSTER_COLLECTION}/${tenant}`);
+}
+export async function writeDriverRoster(tenant: string, roster: any): Promise<void> {
+  await setDoc(`${DRIVER_ROSTER_COLLECTION}/${tenant}`, { ...roster, _updatedAt: new Date().toISOString() });
+}
+
 // ── Live active-unplanned set (carry-over freshness guard) ──────────────────────
 // The set of stop numbers that are CURRENTLY unplanned across the scan's ±7d active pull,
 // snapshotted each scan. The read-time carry-over fold-in uses it to drop prior-day stops that

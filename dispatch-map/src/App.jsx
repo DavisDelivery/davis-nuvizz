@@ -9334,6 +9334,146 @@ function RoutingRoutesPanel({ groups, onPick }) {
   );
 }
 
+// Segmented Routes | Drivers toggle for the right panel (and the mobile sheet). The right
+// panel's "Routes / Drivers" mode used to show only routes; this splits it so you can flip
+// between today's route cards and the full driver roster.
+function RoutesDriversToggle({ subTab, setSubTab, routesCount, className = '' }) {
+  const btn = (key, label) =>
+    <button
+      onClick={() => setSubTab(key)}
+      className={`px-2.5 py-1 ${key !== 'routes' ? 'border-l border-slate-300' : ''} ${subTab === key ? 'text-white' : 'text-slate-600 hover:bg-slate-50'}`}
+      style={subTab === key ? { background: BRAND } : {}}
+      aria-pressed={subTab === key}
+    >{label}</button>;
+  return (
+    <div className={`flex rounded-md border border-slate-300 overflow-hidden text-[12px] font-semibold shrink-0 ${className}`}>
+      {btn('routes', `Routes${routesCount ? ` (${routesCount})` : ''}`)}
+      {btn('drivers', 'Drivers')}
+    </div>
+  );
+}
+
+// "updated 3h ago" / "updated Jun 12" stamp for the roster freshness line.
+function fmtRosterAge(iso) {
+  if (!iso) return null;
+  const then = new Date(iso).getTime();
+  if (Number.isNaN(then)) return null;
+  const mins = Math.round((Date.now() - then) / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.round(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  const days = Math.round(hrs / 24);
+  if (days < 30) return `${days}d ago`;
+  return new Date(iso).toLocaleDateString([], { month: 'short', day: 'numeric' });
+}
+
+// Right-panel Drivers view: the on-demand roster (from /.netlify/functions/nuvizz-driver-roster)
+// cross-referenced against today's routeGroups so each enabled driver shows active/idle with
+// today's stops + % delivered. "Update list" pulls a fresh roster (~1 NuVizz call). Clicking an
+// active driver frames all their stops on the map.
+function RoutingDriversPanel({ roster, routeGroups, onRefresh, onPickDriver }) {
+  const drivers = roster.drivers || [];
+  const enabled = useMemo(() => drivers.filter((d) => d.status === 'ENABLED'), [drivers]);
+
+  // Group today's routes by driver (name or userName, upper-cased) → route keys + tallies.
+  const byDriver = useMemo(() => {
+    const m = new Map();
+    for (const g of routeGroups) {
+      const k = String(g.driver || '').trim().toUpperCase();
+      if (!k) continue;
+      let e = m.get(k);
+      if (!e) { e = { routeKeys: [], routeNames: [], stops: 0, delivered: 0 }; m.set(k, e); }
+      e.routeKeys.push(g.key); e.routeNames.push(g.name); e.stops += g.count; e.delivered += g.delivered;
+    }
+    return m;
+  }, [routeGroups]);
+
+  const rows = useMemo(() => {
+    const matchToday = (d) =>
+      byDriver.get(String(d.name || '').trim().toUpperCase()) ||
+      byDriver.get(String(d.userName || '').trim().toUpperCase()) || null;
+    const list = enabled.map((d) => { const today = matchToday(d); return { ...d, today, active: !!today }; });
+    // Surface anyone dispatched today who isn't in the roster, so nobody active is hidden.
+    const matched = new Set();
+    for (const d of enabled) { matched.add(String(d.name || '').trim().toUpperCase()); matched.add(String(d.userName || '').trim().toUpperCase()); }
+    for (const [k, info] of byDriver.entries()) {
+      if (!matched.has(k)) list.push({ userName: k, name: k, status: 'ENABLED', today: info, active: true, _unlisted: true });
+    }
+    return list.sort((a, b) => (a.active !== b.active ? (a.active ? -1 : 1) : String(a.name || '').localeCompare(String(b.name || ''))));
+  }, [enabled, byDriver]);
+
+  const activeCount = rows.filter((r) => r.active).length;
+  const age = fmtRosterAge(roster.updatedAt);
+
+  return (
+    <div className="flex-1 min-h-0 overflow-y-auto">
+      <div className="px-3 py-1.5 border-b bg-slate-50 sticky top-0 z-10 flex items-center justify-between gap-2">
+        <span className="text-[11px] text-slate-500 truncate">
+          {enabled.length} enabled · {activeCount} active{age ? ` · updated ${age}` : ''}
+        </span>
+        <button
+          onClick={onRefresh}
+          disabled={roster.refreshing}
+          className="inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-1 rounded border border-slate-300 text-slate-700 hover:bg-white disabled:opacity-50 shrink-0"
+          title="Pull the latest driver list from NuVizz (~1 call). Only needed when drivers are added or removed."
+        >
+          <RefreshCw size={12} className={roster.refreshing ? 'animate-spin' : ''} />
+          {roster.refreshing ? 'Updating…' : 'Update list'}
+        </button>
+      </div>
+
+      {roster.error && <div className="px-3 py-1.5 text-[11px] text-red-600 break-words">{roster.error}</div>}
+
+      {roster.loading && !drivers.length ? (
+        <div className="p-4 text-[12px] text-slate-400 inline-flex items-center gap-1.5"><RefreshCw size={13} className="animate-spin" /> Loading drivers…</div>
+      ) : rows.length === 0 ? (
+        <div className="p-4 text-[12px] text-slate-400">
+          {roster.neverScanned ? 'No driver list yet — tap “Update list” to pull the roster from NuVizz (~1 call).' : 'No drivers to show.'}
+        </div>
+      ) : (
+        <div className="p-2 space-y-2">
+          {rows.map((d) => <RoutingDriverCard key={d.userName || d.name} d={d} onPick={onPickDriver} />)}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function RoutingDriverCard({ d, onPick }) {
+  const t = d.today;
+  const pct = t && t.stops ? Math.round((100 * t.delivered) / t.stops) : 0;
+  const done = pct === 100;
+  const clickable = !!(t && t.routeKeys && t.routeKeys.length);
+  return (
+    <button
+      onClick={() => clickable && onPick(t.routeKeys)}
+      disabled={!clickable}
+      className={`w-full text-left border rounded-lg p-2 focus:outline-none ${clickable ? 'hover:bg-slate-50 active:bg-slate-100 focus:ring-2 focus:ring-blue-300' : 'opacity-70 cursor-default'}`}
+    >
+      <div className="flex items-center justify-between gap-2">
+        <div className="font-semibold text-slate-800 truncate">{d.name || d.userName}{d._unlisted ? ' *' : ''}</div>
+        {d.active
+          ? <span className="text-[10px] font-semibold text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded-full shrink-0">Active</span>
+          : <span className="text-[10px] text-slate-400 shrink-0">Idle</span>}
+      </div>
+      <div className="text-[11px] text-slate-500 truncate">{d.userName}{d.mobileNumber ? ` · ${d.mobileNumber}` : ''}</div>
+      {d.active && t ? (
+        <>
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 mt-1 text-[11px] text-slate-600">
+            {t.routeNames.filter(Boolean).length > 0 && <span className="truncate">{t.routeNames.filter(Boolean).slice(0, 3).join(', ')}</span>}
+            <span>{t.stops} stop{t.stops === 1 ? '' : 's'}</span>
+            <span className="text-slate-400">{t.delivered}/{t.stops} delivered</span>
+          </div>
+          <div className="mt-1.5 h-1 rounded bg-slate-100 overflow-hidden"><div className="h-full rounded" style={{ width: `${pct}%`, background: done ? '#16a34a' : BRAND }} /></div>
+        </>
+      ) : (
+        <div className="text-[11px] text-slate-400 mt-0.5">No route today</div>
+      )}
+    </button>
+  );
+}
+
 // A little masked-ninja icon for Ninja mode — hooded head with side headband tails and a
 // white eye-slit. Uses currentColor so it inherits the button's text color.
 function NinjaIcon({ size = 14, className = '' }) {
@@ -9908,6 +10048,53 @@ function RoutingScreen({ debugCaptureRef }) {
   });
   useEffect(() => { try { localStorage.setItem('routing.rightPanel', rightPanelMode); } catch { /* ignore */ } }, [rightPanelMode]);
 
+  // Routes-mode sub-tab: today's route cards vs the driver roster. Driver roster is the
+  // on-demand list (shared with the mobile app); fetched lazily the first time Drivers opens.
+  const [routesSubTab, setRoutesSubTab] = useState('routes');
+  const [driverRoster, setDriverRoster] = useState({ drivers: null, updatedAt: null, neverScanned: false, loading: false, refreshing: false, error: null });
+
+  const loadDriverRoster = useCallback(async () => {
+    setDriverRoster((s) => ({ ...s, loading: true, error: null }));
+    try {
+      const r = await fetch('/.netlify/functions/nuvizz-driver-roster?tenant=davis', { cache: 'no-store' });
+      const d = await r.json();
+      setDriverRoster({
+        drivers: Array.isArray(d.drivers) ? d.drivers : [],
+        updatedAt: d.updatedAt || null,
+        neverScanned: !!d.neverScanned,
+        loading: false, refreshing: false,
+        error: (d && d.ok === false) ? (d.error || 'Failed to load roster') : null,
+      });
+    } catch (e) {
+      setDriverRoster((s) => ({ ...s, loading: false, error: e.message }));
+    }
+  }, []);
+
+  // Manual rebuild — the only path that hits NuVizz's /user/list (~1 call). Writes the shared roster.
+  const refreshDriverRoster = useCallback(async () => {
+    setDriverRoster((s) => ({ ...s, refreshing: true, error: null }));
+    try {
+      const r = await fetch('/.netlify/functions/nuvizz-driver-roster?tenant=davis&refresh=1', { method: 'POST', cache: 'no-store' });
+      const d = await r.json();
+      if (d && d.ok === false) { setDriverRoster((s) => ({ ...s, refreshing: false, error: d.error || 'Refresh failed — list left unchanged' })); return; }
+      setDriverRoster({
+        drivers: Array.isArray(d.drivers) ? d.drivers : [],
+        updatedAt: d.refreshedAt || null,
+        neverScanned: false,
+        loading: false, refreshing: false, error: null,
+      });
+    } catch (e) {
+      setDriverRoster((s) => ({ ...s, refreshing: false, error: e.message }));
+    }
+  }, []);
+
+  // Lazy-load the roster the first time the Drivers sub-view is opened.
+  useEffect(() => {
+    if (rightPanelMode === 'routes' && routesSubTab === 'drivers' && driverRoster.drivers === null && !driverRoster.loading) {
+      loadDriverRoster();
+    }
+  }, [rightPanelMode, routesSubTab, driverRoster.drivers, driverRoster.loading, loadDriverRoster]);
+
   // Part 6 — resizable left & right panels (the bottom grid already resizes via BottomStopsTable),
   // and a bottom-grid on/off toggle. All persisted; Routing-beta only.
   const leftPanel = useSidePanelWidth('left', 'routing.leftW', 340, 240, viewportWidth);
@@ -10462,6 +10649,18 @@ function RoutingScreen({ debugCaptureRef }) {
     pts.forEach((s) => b.extend({ lat: s.lat, lng: s.lng }));
     mapRef.current.fitBounds(b, 60);
   }, [openRouteInWorkbench, google, positioned]);
+
+  // Frame ALL of a driver's stops (they may run multiple routes). Lighter than onPickRoute —
+  // it only fits the map bounds, it doesn't open every route in the workbench.
+  const onPickDriver = useCallback((routeKeys) => {
+    const keys = new Set((routeKeys || []).map(String));
+    if (!keys.size || !google || !mapRef.current) return;
+    const pts = positioned.filter((s) => keys.has(String(s.routeName || s.loadNbr)) && s.lat != null && s.lng != null);
+    if (!pts.length) return;
+    const b = new google.maps.LatLngBounds();
+    pts.forEach((s) => b.extend({ lat: s.lat, lng: s.lng }));
+    mapRef.current.fitBounds(b, 60);
+  }, [google, positioned]);
 
   // The selected-stops list: persistent on desktop, collapsed by default on mobile.
   const [listOpen, setListOpen] = useState(!isMobile);
@@ -11217,7 +11416,16 @@ function RoutingScreen({ debugCaptureRef }) {
                     ? <RoutingWorkbench wbRoutes={wbRoutesColored} stopById={stopById} ninjaMode={ninjaMode} onToggleNinja={setNinjaMode} onArmNinja={armNinjaFromPanel} activeKey={effectiveActiveKey} onSetActive={setActiveRouteKey} onResequence={wbResequence} onCollapse={toggleWbCollapse} onClose={closeWbRoute} onCloseAll={closeAllWb} onMoveStop={wbMoveStop} onDropStop={wbDropStop} onOpenStop={openStop} onPrintManifest={printWbManifest} selectedCount={selectedStops.length} onSendSelection={sendSelectionToRoute} isMobile />
                     : controlsContent)
                 : mobilePanel === 'loads'
-                  ? (rightPanelMode === 'routes' ? <RoutingRoutesPanel groups={routeGroups} onPick={onPickRoute} /> : loadsContent)
+                  ? (rightPanelMode === 'routes'
+                      ? (
+                        <>
+                          <RoutesDriversToggle subTab={routesSubTab} setSubTab={setRoutesSubTab} routesCount={routeGroups.length} className="mb-2" />
+                          {routesSubTab === 'drivers'
+                            ? <RoutingDriversPanel roster={driverRoster} routeGroups={routeGroups} onRefresh={refreshDriverRoster} onPickDriver={onPickDriver} />
+                            : <RoutingRoutesPanel groups={routeGroups} onPick={onPickRoute} />}
+                        </>
+                      )
+                      : loadsContent)
                   : resultContent}
             </div>
           )}
@@ -11332,11 +11540,13 @@ function RoutingScreen({ debugCaptureRef }) {
       <div className="shrink-0 border-l bg-white flex flex-col min-h-0" style={{ width: rightPanel.width }}>
         {rightPanelMode === 'routes' ? (
           <>
-            <div className="flex items-center justify-between px-3 py-2 border-b shrink-0">
-              <span className="text-[13px] font-semibold" style={{ color: BRAND }}>Routes / Drivers{routeGroups.length ? ` (${routeGroups.length})` : ''}</span>
-              <span className="text-[10px] uppercase tracking-wide text-slate-400">{formatDateLong(selectedDate)}</span>
+            <div className="flex items-center justify-between px-3 py-2 border-b shrink-0 gap-2">
+              <RoutesDriversToggle subTab={routesSubTab} setSubTab={setRoutesSubTab} routesCount={routeGroups.length} />
+              <span className="text-[10px] uppercase tracking-wide text-slate-400 truncate">{formatDateLong(selectedDate)}</span>
             </div>
-            <RoutingRoutesPanel groups={routeGroups} onPick={onPickRoute} />
+            {routesSubTab === 'drivers'
+              ? <RoutingDriversPanel roster={driverRoster} routeGroups={routeGroups} onRefresh={refreshDriverRoster} onPickDriver={onPickDriver} />
+              : <RoutingRoutesPanel groups={routeGroups} onPick={onPickRoute} />}
           </>
         ) : (
         <>
