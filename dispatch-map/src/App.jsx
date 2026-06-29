@@ -50,7 +50,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.29.77';
+const APP_VERSION = '0.29.78';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -70,6 +70,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.29.78', 'Routing (beta) — the map pins now MATCH the dispatch Map again: same rich pins with status colour, priority flag, AM/PM window, restriction icons and DNS (the plain numbered circles from 0.29.73 dropped all that). Selected stops still pop orange and routed stops still show their sequence number in the route colour. Also: the right Stops panel no longer clips — each stop is a stacked card (name + PRO/remove on top, city · skids · loose · pcs · weight on a sub-line) that fits the panel, with sort chips up top. The Compare panel gets an Expand-all / Collapse-all stops button (#275) and drops the redundant per-stop window line (the same 8:00–8:00 on every stop) from the expanded detail (#276). And the Ninja toggle is removed from the Compare header — arm it from the on-map tool (the header button was redundant).'],
   ['0.29.77', 'HOTFIX: routing-map stops are back (#279/#282). The smaller circular pins shipped in 0.29.73 used a vector-marker style that silently failed to paint on the routing map\'s satellite/vector base, so the whole board went blank. The pins are now drawn as small numbered circle images, which render reliably — same look, stops visible again. Also: the bottom Stops/Loads grid now centers in the window when the left Setup panel is closed (instead of hugging the left edge); the Compare "Re-sequence" menu moves "Loop" to the bottom of the list (#280); and the Debug-capture box is focused the moment it opens so you can type right away (#280).'],
   ['0.29.76', 'Routing (beta) — new "Loop" re-sequence that stops the criss-crossing. On a Compare route card, Re-sequence → "Loop — down one side & back" runs the stops out along one side of the corridor and back the other (a U-shaped loop), instead of "Farthest first" zig-zagging across the highway. Under the hood it 2-opts the round trip back to the terminal, which un-crosses the route. Each card now also shows which logic is currently applied ("Sequenced: …").'],
   ['0.29.75', 'Print Manifest / Delivery Ticket viewer — the Print and close (✕) buttons now float at the top-right corner over the document (no more full-width header bar), so they sit right at the top of the manifest and stay reachable while you scroll.'],
@@ -9169,60 +9170,55 @@ function RoutingStopsPanel({ selectedStops, notes, onRemove, hoverId, setHoverId
   }, [hoverId]);
   // The active detail stop may have been removed from the selection.
   const detailRow = rows.find((r) => r.id === detailId) || null;
+  // Compact sort chip — the panel is narrow, so instead of a wide multi-column table (which clipped
+  // its right columns) each stop is a STACKED card: name + PRO/remove on top, freight on a sub-line.
+  // These chips keep the columns sortable without needing the width.
+  const SortBtn = ({ label, k }) => (
+    <button onClick={() => toggle(k)} className={`inline-flex items-center gap-0.5 hover:text-slate-700 ${sortKey === k ? 'text-slate-700 font-semibold' : ''}`}>
+      {label}{sortKey === k ? (sortDir === 'asc' ? <ChevronUp size={10} /> : <ChevronDown size={10} />) : null}
+    </button>
+  );
 
   if (rows.length === 0) {
     return <div className="p-4 text-[12px] text-slate-400">No stops selected yet. Click a stop on the map, drag a box, lasso, or use “Add stops in view”.</div>;
   }
   return (
     <div className="flex-1 min-h-0 flex flex-col">
-      <div className="flex-1 min-h-0 overflow-auto">
-        <table className="w-full text-[12px]">
-          <thead className="bg-slate-50 sticky top-0 z-10">
-            <tr>
-              <SortableTh label="Customer" k="customer" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />
-              <SortableTh label="City" k="city" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />
-              <SortableTh label="Skids" k="skids" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />
-              <SortableTh label="Loose" k="loose" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />
-              <SortableTh label="Pcs" k="pieces" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />
-              <SortableTh label="Wt" k="weight" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />
-              <th className="px-1" />
-            </tr>
-          </thead>
-          <tbody>
-            {sorted.map((r) => {
-              const active = detailId === r.id, hot = hoverId === r.id;
-              return (
-                <tr
-                  key={r.id}
-                  ref={(el) => { if (el) rowRefs.current.set(r.id, el); else rowRefs.current.delete(r.id); }}
-                  onMouseEnter={() => setHoverId(r.id)}
-                  onMouseLeave={() => setHoverId((h) => (h === r.id ? null : h))}
-                  onClick={() => setDetailId((d) => (d === r.id ? null : r.id))}
-                  className={`border-t cursor-pointer ${active ? 'bg-blue-50 ring-1 ring-inset ring-blue-300' : hot ? 'bg-amber-50' : 'hover:bg-slate-50'}`}
-                >
-                  <td className="px-2 py-1.5 max-w-[180px]">
-                    <div className="truncate font-medium" title={r.customer}>{r.customer}</div>
-                    {(r.keys.length > 0 || r.oversize) && (
-                      <div className="flex flex-wrap items-center gap-1 mt-0.5">
-                        {r.keys.map((k) => <RestrictionIcon key={k} kind={k} size={13} />)}
-                        {r.oversize && <span className="text-[9px] font-bold text-amber-700 border border-amber-400 rounded px-1" title="Oversize freight">OS</span>}
-                      </div>
-                    )}
-                  </td>
-                  <td className="px-2 py-1.5 text-slate-600 max-w-[110px] truncate" title={r.city}>{r.city}</td>
-                  <td className="px-2 py-1.5 tabular-nums">{r.skids}</td>
-                  <td className="px-2 py-1.5 tabular-nums">{r.loose}</td>
-                  <td className="px-2 py-1.5 tabular-nums">{r.pieces}</td>
-                  <td className="px-2 py-1.5 tabular-nums">{r.weight.toLocaleString()}</td>
-                  <td className="px-1 py-1.5 whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
-                    <ProLink stop={r.stop} onOpen={onOpenStop} className="text-[11px] mr-1" />
-                    <button onClick={(e) => { e.stopPropagation(); onRemove(r.id); }} aria-label={`Remove ${r.customer} from selection`} className="text-slate-400 hover:text-red-600 leading-none text-lg">×</button>
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+      <div className="flex items-center flex-wrap gap-x-3 gap-y-0.5 px-2 py-1 text-[10px] uppercase tracking-wide text-slate-500 border-b bg-slate-50 shrink-0">
+        <span className="text-slate-400">Sort:</span>
+        <SortBtn label="Customer" k="customer" /><SortBtn label="City" k="city" /><SortBtn label="Skids" k="skids" /><SortBtn label="Loose" k="loose" /><SortBtn label="Pcs" k="pieces" /><SortBtn label="Wt" k="weight" />
+      </div>
+      <div className="flex-1 min-h-0 overflow-y-auto divide-y">
+        {sorted.map((r) => {
+          const active = detailId === r.id, hot = hoverId === r.id;
+          return (
+            <div
+              key={r.id}
+              ref={(el) => { if (el) rowRefs.current.set(r.id, el); else rowRefs.current.delete(r.id); }}
+              onMouseEnter={() => setHoverId(r.id)}
+              onMouseLeave={() => setHoverId((h) => (h === r.id ? null : h))}
+              onClick={() => setDetailId((d) => (d === r.id ? null : r.id))}
+              className={`px-2 py-1.5 cursor-pointer ${active ? 'bg-blue-50 ring-1 ring-inset ring-blue-300' : hot ? 'bg-amber-50' : 'hover:bg-slate-50'}`}
+            >
+              <div className="flex items-start gap-2">
+                <div className="min-w-0 flex-1">
+                  <div className="truncate font-medium text-[12px]" title={r.customer}>{r.customer}</div>
+                  <div className="text-[11px] text-slate-500 truncate">{[r.city, `${r.skids} sk`, `${r.loose} loose`, `${r.pieces} pcs`, `${r.weight.toLocaleString()} lb`].filter(Boolean).join(' · ')}</div>
+                  {(r.keys.length > 0 || r.oversize) && (
+                    <div className="flex flex-wrap items-center gap-1 mt-0.5">
+                      {r.keys.map((k) => <RestrictionIcon key={k} kind={k} size={13} />)}
+                      {r.oversize && <span className="text-[9px] font-bold text-amber-700 border border-amber-400 rounded px-1" title="Oversize freight">OS</span>}
+                    </div>
+                  )}
+                </div>
+                <div className="shrink-0 flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
+                  <ProLink stop={r.stop} onOpen={onOpenStop} className="text-[11px]" />
+                  <button onClick={(e) => { e.stopPropagation(); onRemove(r.id); }} aria-label={`Remove ${r.customer} from selection`} className="text-slate-400 hover:text-red-600 leading-none text-lg">×</button>
+                </div>
+              </div>
+            </div>
+          );
+        })}
       </div>
       {detailRow && (
         <div className="shrink-0 border-t bg-white max-h-[42%] overflow-y-auto">
@@ -9333,6 +9329,9 @@ function RoutingWorkbenchCard({ route, stopById, otherKeys, ninjaMode, isActive,
   const [dragOverId, setDragOverId] = useState(null);
   const [expanded, setExpanded] = useState(() => new Set());   // per-stop detail expand (NuVizz-style)
   const toggleExpand = (id) => setExpanded((prev) => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  // Expand-all / collapse-all the per-stop detail in one click (#275).
+  const allExpanded = route.order.length > 0 && route.order.every((id) => expanded.has(String(id)));
+  const toggleAll = () => setExpanded(allExpanded ? new Set() : new Set(route.order.map(String)));
   const onRowDragStart = (e, id) => { try { e.dataTransfer.setData('text/plain', JSON.stringify({ fromKey: route.key, id: String(id) })); e.dataTransfer.effectAllowed = 'move'; } catch { /* ignore */ } };
   const readDrag = (e) => { try { return JSON.parse(e.dataTransfer.getData('text/plain')); } catch { return null; } };
   const onDrop = (e, beforeId) => {
@@ -9396,6 +9395,11 @@ function RoutingWorkbenchCard({ route, stopById, otherKeys, ninjaMode, isActive,
             <option value="loop">Loop — down one side &amp; back (no crossings)</option>
           </select>
         )}
+        {!route.collapsed && rows.length > 0 && (
+          <button onClick={toggleAll} className="mt-1 text-[10px] text-slate-500 hover:text-slate-700 underline">
+            {allExpanded ? 'Collapse all stops' : 'Expand all stops'}
+          </button>
+        )}
       </div>
       {!route.collapsed && (
         <ol
@@ -9407,7 +9411,6 @@ function RoutingWorkbenchCard({ route, stopById, otherKeys, ninjaMode, isActive,
           {rows.map((s, i) => {
             const id = String(s.stopNbr);
             const isExp = expanded.has(id);
-            const win = [fmtWin(s.scheduledFrom), fmtWin(s.scheduledTo)].filter(Boolean).join('–');
             const nextMi = nextMiById.get(id);
             return (
             <li
@@ -9442,7 +9445,7 @@ function RoutingWorkbenchCard({ route, stopById, otherKeys, ninjaMode, isActive,
               {isExp && (
                 <div className="px-2 pb-1.5 pl-[34px] text-[10px] text-slate-500 space-y-0.5">
                   <div className="text-slate-600">{[s.addr1, s.city, s.zip].filter(Boolean).join(', ') || '—'}</div>
-                  {win && <div className="inline-flex items-center gap-1"><Clock size={10} /> {win}</div>}
+                  {/* Window line dropped (#276) — it's the same default (e.g. 8:00–8:00) on every stop, so it just adds noise. */}
                   <div>{Math.round(Number(s.weight) || 0).toLocaleString()} lb · {Number(s.cartons) || 0} sk · {Number(s.pallets) || 0} pcs</div>
                   {nextMi != null && <div className="text-slate-400">Next stop: {nextMi.toFixed(1)} mi</div>}
                 </div>
@@ -9477,16 +9480,8 @@ function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmN
               <ArrowRight size={13} /> {r.key} ({selectedCount})
             </button>
           ))}
-          {/* Arm Ninja right here — the on-map tool is easy to miss, and on mobile this drops the
-              sheet so you can tap stops onto the active route. */}
-          <button
-            onClick={onArmNinja}
-            aria-pressed={ninjaMode}
-            title="Ninja — then tap stops on the map to add them to the active route"
-            className={`flex items-center gap-1 text-[11px] font-semibold px-2 py-1 rounded border ${ninjaMode ? 'bg-amber-500 border-amber-600 text-white' : 'bg-white border-slate-300 text-slate-700 hover:bg-slate-50'}`}
-          >
-            <NinjaIcon size={13} /> {ninjaMode ? 'Ninja on — tap stops' : 'Ninja: add stops'}
-          </button>
+          {/* Ninja is armed from the on-map tool (left edge), not here — the dispatcher asked to drop
+              the redundant header button. The active-state banner below still shows when it's on. */}
           <button onClick={onCloseAll} className="text-[11px] text-slate-500 hover:text-slate-800 underline">Back to Setup</button>
         </div>
       </div>
@@ -9571,34 +9566,6 @@ function RoutingSettingsMenu({ panels = [], views = [], actions = [], dropUp = f
       )}
     </div>
   );
-}
-
-// Routing-map stop marker — a small flat CIRCLE instead of the rich teardrop pin, so a dense board
-// doesn't have big pins covering each other (#262). Colour carries state: the route colour when the
-// stop is sequenced, orange when selected, mint/slate for unplanned/planned otherwise. A sequenced
-// stop shows its route order as a centred number label. Returns { icon, label } for google.maps.Marker.
-// Small circle as an SVG data-URL IMAGE — NOT a Symbol path. On the routing VECTOR map (mapId),
-// legacy google.maps.Marker renders IMAGE icons reliably but Symbol-path icons silently fail to
-// paint, which blanked the whole board (#279/#282). Image icons also match the rich-pin contract,
-// so the shared emphIcon() hover-scaler (its url/scaledSize branch) keeps working unchanged.
-function routingDotSvg(color, label, size) {
-  const c = size / 2;
-  const r = c - 2;
-  const txt = label
-    ? `<text x="${c}" y="${c}" text-anchor="middle" dominant-baseline="central" font-family="Arial,Helvetica,sans-serif" font-weight="700" font-size="${Math.round(size * 0.5)}" fill="#ffffff">${label}</text>`
-    : '';
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}"><circle cx="${c}" cy="${c}" r="${r}" fill="${color}" stroke="#ffffff" stroke-width="2"/>${txt}</svg>`;
-  return `data:image/svg+xml,${encodeURIComponent(svg)}`;
-}
-function routingStopIcon(google, { sel, ri, isUnplanned }) {
-  const numbered = !!ri;
-  const color = numbered ? (ri.color || '#2563eb') : (sel ? '#f59e0b' : (isUnplanned ? '#10b981' : '#64748b'));
-  const size = numbered ? 24 : (sel ? 18 : 14);
-  return {
-    url: routingDotSvg(color, numbered ? String(ri.seq) : '', size),
-    scaledSize: new google.maps.Size(size, size),
-    anchor: new google.maps.Point(size / 2, size / 2),
-  };
 }
 
 function RoutingSelectionFloatPanel({ selectedStops, onRemove, onClearAll, onOpenStop, onClose, isMobile }) {
@@ -10592,8 +10559,19 @@ function RoutingScreen({ debugCaptureRef }) {
       const sel = !viewing && selectedIds.has(id);
       const ri = effectiveRouteInfo.get(id);     // { color, seq } when on a route (Compare cards win)
       const numbered = !!ri;
+      const note = notes.get(s.matchKey) || null;
       const hovered = hoverIdRef.current === id;
-      const baseIcon = routingStopIcon(google, { sel, ri, isUnplanned: s.isUnplanned });
+      // Use the SAME rich pin as the dispatch Map (status colour, priority flag, AM/PM, restriction
+      // icons, DNS) so the two surfaces match. Image-URL icons render reliably on the vector map.
+      // Routing semantics layer on top: selected (not-yet-routed) → orange, routed → numbered pin in
+      // the route colour.
+      const baseIcon = stopMarkerIcon(google, s, note, {
+        selectedDayKey,
+        matched: sel,
+        inRoute: numbered,
+        seq: ri?.seq,
+        routeColor: ri?.color,
+      });
       const baseZ = numbered ? 30 : (sel ? 25 : 10);
       const marker = new google.maps.Marker({
         position: { lat: s.lat, lng: s.lng },
