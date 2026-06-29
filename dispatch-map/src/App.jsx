@@ -282,6 +282,16 @@ const RESTRICTION_TINT = '#7c3aed';        // has restriction notes but no prior
 const UNFLAGGED_TINT = '#4285F4';          // default delivery pin — bright blue, reads on satellite
 const DRIVER_TINT = '#0f172a';             // M4 Motive driver pins
 
+// Dispatcher-set vehicle eligibility (Routing). Green = a 53' tractor-trailer fits
+// this LOCATION; red = box truck only (never a tractor). Stored as
+// customer_notes.vehicle_eligibility ('tractor' | 'box_only'); unset → normal pin.
+const ELIG_TRACTOR_COLOR = '#16a34a';  // green — a 53' trailer fits
+const ELIG_BOX_COLOR = '#dc2626';      // red — box truck only, no tractor-trailer
+// Canonical restriction keys a 53' trailer can't satisfy. When a dispatcher marks a
+// stop tractor-friendly (green), these are suppressed on the pin AND ignored by the
+// router — an explicit green wins over an auto-detected restriction.
+const TRAILER_BLOCKER_KEYS = new Set(['no_tractor_trailer', 'box_truck_only', 'straight_truck_only', 'uline_straight_truck', 'no_53', '26ft_max', 'no_overhead_clearance']);
+
 // M5.1 — stop execution-status visuals. Status is a SEPARATE channel from the
 // note-flag pin colors (rule #3): SCHEDULED keeps the existing flag color, and
 // every other state carries a distinguishing shape/glyph so it reads even where
@@ -293,7 +303,7 @@ const STATUS_META = {
   OUT_FOR_DEL: { label: 'Out for delivery', color: '#2563eb', hollow: false, glyph: 'arrow', badge: '#2563eb' },
   ARRIVED:     { label: 'Arrived',          color: '#d97706', hollow: false, glyph: null,    badge: '#d97706' },
   DELIVERED:   { label: 'Delivered',        color: '#15803d', hollow: false, glyph: 'check', badge: '#15803d' },
-  EXCEPTION:   { label: 'Exception',        color: '#dc2626', hollow: false, glyph: 'bang',  badge: '#dc2626' },
+  EXCEPTION:   { label: 'Exception',        color: '#f97316', hollow: false, glyph: 'bang',  badge: '#f97316' },
 };
 
 // Mirrors classifyStopStatus() in netlify/functions/lib/nuvizz-scan.mts so the
@@ -1718,8 +1728,16 @@ function iconMarkerSvg(restrictions, tint) {
 //                         the Map colors by status); omit to keep status coloring.
 function stopMarkerIcon(google, s, note, opts = {}) {
   const { selectedDayKey, matched = false, inRoute = false, seq, routeColor } = opts;
-  const restrictions = getRestrictionBadgeKeys(note, { day: selectedDayKey });
+  let restrictions = getRestrictionBadgeKeys(note, { day: selectedDayKey });
   const flagHue = (note?.priority_flag && FLAG_COLORS[note.priority_flag]) ? FLAG_COLORS[note.priority_flag] : null;
+  // Dispatcher-set vehicle eligibility recolors the pin (green = trailer OK, red =
+  // box only). A green mark also suppresses any auto-detected trailer-blocking
+  // restriction badge so the pin never shows a contradictory "no tractor" icon.
+  const elig = note?.vehicle_eligibility;
+  const eligColor = elig === 'tractor' ? ELIG_TRACTOR_COLOR : (elig === 'box_only' ? ELIG_BOX_COLOR : null);
+  if (elig === 'tractor' && restrictions.length) {
+    restrictions = restrictions.filter((r) => !TRAILER_BLOCKER_KEYS.has(resolveRestrictionKey(r)));
+  }
   const dnsStop = !!note?.do_not_send;
   if (dnsStop) {
     // DNS — strong red pin with a white ✕, taking precedence over everything else.
@@ -1743,7 +1761,8 @@ function stopMarkerIcon(google, s, note, opts = {}) {
       && (statusKind === 'SCHEDULED' || statusKind === 'UNPLANNED')
       && addressLooksOff(s, note);
     const color = matched ? '#f59e0b'
-      : flagHue
+      : eligColor
+      || flagHue
       || (addressOff ? ADDRESS_OFF_TINT : (meta.color || flagColor(note)));
     let glyph = meta.glyph;
     if (!matched) {
@@ -1758,7 +1777,7 @@ function stopMarkerIcon(google, s, note, opts = {}) {
     };
   }
   // States B/C — restriction / receiving-hours icons; a priority flag recolors them.
-  const spec = iconMarkerSvg(restrictions, flagHue);
+  const spec = iconMarkerSvg(restrictions, eligColor || flagHue);
   return { url: spec.url, scaledSize: new google.maps.Size(spec.width, spec.height), anchor: new google.maps.Point(spec.anchor[0], spec.anchor[1]) };
 }
 
@@ -1912,6 +1931,7 @@ function emptyNote(stop) {
     contacts: [],
     dock_notes: '',
     priority_flag: null,
+    vehicle_eligibility: null,   // 'tractor' (green, 53' fits) | 'box_only' (red) | null — Routing marking
     delivery_window: null,   // 'AM' | 'PM' | null — shows an AM/PM tag on the map pin
     photo_urls: [],
     pro_history: [],
@@ -9936,12 +9956,20 @@ function RoutingScreen({ debugCaptureRef }) {
   const [activeRouteKey, setActiveRouteKey] = useState(null);
   const effectiveActiveKey = (activeRouteKey && wbRoutes.some((r) => r.key === activeRouteKey)) ? activeRouteKey : (wbRoutes[0]?.key || null);
   const ninjaActionRef = useRef(null);
+  // Vehicle-eligibility paint mode: null | 'tractor' | 'box'. Refs let the
+  // bound-once marker click listener read the live brush + handler.
+  const [eligPaint, setEligPaint] = useState(null);
+  const eligPaintRef = useRef(null);
+  const eligActionRef = useRef(null);
 
   const [selectedIds, setSelectedIds] = useState(() => new Set());
   const [selectedTruckIds, setSelectedTruckIds] = useState(() => new Set());
   const [intent, setIntent] = useState('');
   const [strategy, setStrategy] = useState('MIN_DISTANCE');
   const [useGoogle, setUseGoogle] = useState(false);
+  // When on, the auto-router puts ONLY green (tractor-friendly) stops on a 53'
+  // trailer; every other stop is held to a box truck. Per-build (not persisted).
+  const [trailerGreenOnly, setTrailerGreenOnly] = useState(false);
   const [job, setJob] = useState(null);     // { status, result, error }
   const [building, setBuilding] = useState(false);
   const [saveState, setSaveState] = useState(null); // null | 'saving' | 'saved' | error string
@@ -10110,6 +10138,51 @@ function RoutingScreen({ debugCaptureRef }) {
     }
     setNinjaMode((v) => !v);
   }, [wbRoutes.length, showMapToast]);
+
+  // ── Vehicle-eligibility marking (tractor-friendly green / box-truck-only red) ──
+  // A lightweight "paint" mode: arm a brush, then click stops to set whether a 53'
+  // tractor-trailer fits. The flag is a property of the LOCATION
+  // (customer_notes.vehicle_eligibility, keyed by matchKey) so it sticks for every
+  // future stop there. Clicking a stop already set to the armed brush clears it.
+  // Mutually exclusive with Box/Lasso/Ninja so a click only ever does one thing.
+  const markEligibility = useCallback(async (s) => {
+    if (!db || !s) return;
+    const brush = eligPaintRef.current;            // 'tractor' | 'box' | null
+    if (!brush) return;
+    const mk = s.matchKey;
+    if (!mk) { setLastAction(`${s.stopNbr}: no location key to mark`); return; }
+    const target = brush === 'box' ? 'box_only' : 'tractor';
+    const current = notes.get(mk)?.vehicle_eligibility || null;
+    const next = current === target ? null : target;   // click again on the same brush → unmark
+    const who = s.businessName || s.stopNbr;
+    try {
+      await setDoc(doc(db, 'customer_notes', mk), {
+        match_key: mk,
+        raw_name: s.businessName || '',
+        vehicle_eligibility: next,
+        vehicle_eligibility_at: serverTimestamp(),
+        vehicle_eligibility_by: 'dispatcher',
+        last_updated: serverTimestamp(),
+      }, { merge: true });
+      setLastAction(
+        next === 'tractor' ? `${who} → tractor-trailer OK (green)`
+        : next === 'box_only' ? `${who} → box truck only (red)`
+        : `${who} → eligibility cleared`,
+      );
+    } catch (e) {
+      setLastAction(`Couldn't mark ${s.stopNbr}: ${e.message}`);
+    }
+  }, [notes]);
+  // Arm/disarm a brush. Turning one on cancels Box/Lasso/Ninja (one gesture at a time).
+  const toggleEligPaint = useCallback((brush) => {
+    setEligPaint((cur) => {
+      const next = cur === brush ? null : brush;
+      if (next) { setNinjaMode(false); setSelectMode(null); selectModeRef.current = null; }
+      return next;
+    });
+  }, []);
+  useEffect(() => { eligPaintRef.current = eligPaint; }, [eligPaint]);
+  useEffect(() => { eligActionRef.current = eligPaint ? markEligibility : null; }, [eligPaint, markEligibility]);
 
   // Default trucks selected once profiles load.
   useEffect(() => {
@@ -10636,7 +10709,8 @@ function RoutingScreen({ debugCaptureRef }) {
       });
       marker.addListener('click', () => {
         if (viewing) return;                     // saved load is read-only
-        if (selectModeRef.current) handleSelectPointRef.current(marker.getPosition());
+        if (eligActionRef.current) eligActionRef.current(s);                   // eligibility paint → mark this stop
+        else if (selectModeRef.current) handleSelectPointRef.current(marker.getPosition());
         else if (ninjaActionRef.current) ninjaActionRef.current(s.stopNbr);   // ninja → add to active route
         else toggleStop(s.stopNbr);
       });
@@ -10740,6 +10814,7 @@ function RoutingScreen({ debugCaptureRef }) {
       truckSnapshots: selectedTrucks,
       intent: intent.trim(), strategy,
       matrixMode: useGoogle ? 'google' : 'haversine',
+      tractorOnlyGreen: trailerGreenOnly,
     };
     setLastRequest(request);
     try {
@@ -10755,7 +10830,7 @@ function RoutingScreen({ debugCaptureRef }) {
     } catch (e) {
       setJob({ status: 'error', error: e.message }); setBuilding(false);
     }
-  }, [selectedDate, selectedIds, selectedTrucks, intent, strategy, useGoogle]);
+  }, [selectedDate, selectedIds, selectedTrucks, intent, strategy, useGoogle, trailerGreenOnly]);
 
   // Save panel — a name (prefilled with a sensible auto-name per build) + optional
   // free-text initials. No native prompt(); no auth.
@@ -10997,6 +11072,28 @@ function RoutingScreen({ debugCaptureRef }) {
         {isMobile && <RoutingSelectedList selectedStops={selectedStops} notes={notes} onRemove={removeStop} open={listOpen} setOpen={setListOpen} onOpenStop={openStop} />}
       </div>
 
+      {/* Vehicle eligibility — tractor-friendly (green) / box-truck-only (red) paint mode. */}
+      <div className="border rounded p-2 space-y-2">
+        <div className="font-semibold text-slate-700">Mark vehicle eligibility</div>
+        <div className="flex gap-1">
+          <button
+            onClick={() => toggleEligPaint('tractor')}
+            className={`flex-1 px-2 py-2 text-xs rounded border-2 font-semibold ${eligPaint === 'tractor' ? 'text-white' : 'bg-white hover:bg-green-50 active:bg-green-100'}`}
+            style={eligPaint === 'tractor' ? { background: ELIG_TRACTOR_COLOR, borderColor: ELIG_TRACTOR_COLOR } : { borderColor: ELIG_TRACTOR_COLOR, color: ELIG_TRACTOR_COLOR }}
+          >● Tractor OK</button>
+          <button
+            onClick={() => toggleEligPaint('box')}
+            className={`flex-1 px-2 py-2 text-xs rounded border-2 font-semibold ${eligPaint === 'box' ? 'text-white' : 'bg-white hover:bg-red-50 active:bg-red-100'}`}
+            style={eligPaint === 'box' ? { background: ELIG_BOX_COLOR, borderColor: ELIG_BOX_COLOR } : { borderColor: ELIG_BOX_COLOR, color: ELIG_BOX_COLOR }}
+          >● Box only</button>
+        </div>
+        <div className="text-[11px] text-slate-600">
+          {eligPaint
+            ? <><b>{eligPaint === 'tractor' ? 'Tractor' : 'Box'} brush on</b> — {isMobile ? 'tap' : 'click'} stops to mark them {eligPaint === 'tractor' ? 'tractor-friendly (green)' : 'box-truck only (red)'}. Click a marked stop again to clear it. This sticks to the location for every future stop there.</>
+            : <>Turn on a brush, then {isMobile ? 'tap' : 'click'} each stop to set whether a 53′ trailer fits. <b style={{ color: ELIG_TRACTOR_COLOR }}>Green</b> = trailer OK · <b style={{ color: ELIG_BOX_COLOR }}>red</b> = box truck only · purple = not yet marked.</>}
+        </div>
+      </div>
+
       {/* Trucks */}
       <div className="border rounded p-2 space-y-2">
         <div className="font-semibold text-slate-700">2 · Trucks <span className="text-[11px] text-slate-400">({selectedTrucks.length} in play)</span></div>
@@ -11036,6 +11133,10 @@ function RoutingScreen({ debugCaptureRef }) {
         <label className={`flex items-start gap-2 text-[12px] rounded p-1.5 ${useGoogle ? 'bg-amber-50 border border-amber-300' : 'bg-slate-50'}`}>
           <input type="checkbox" checked={useGoogle} onChange={(e) => setUseGoogle(e.target.checked)} className="mt-0.5" />
           <span>Use live Google drive-times <b>(costs money)</b><br /><span className="text-[11px] text-slate-500">Default is a free straight-line estimate. {selectedIds.size > 0 && <>This build ≈ {wouldBeElements} elements ≈ <b>${wouldBeCost.toFixed(2)}</b>.</>}</span></span>
+        </label>
+        <label className="flex items-start gap-2 text-[12px] rounded p-1.5 bg-slate-50">
+          <input type="checkbox" checked={trailerGreenOnly} onChange={(e) => setTrailerGreenOnly(e.target.checked)} className="mt-0.5" />
+          <span>Only put <b style={{ color: ELIG_TRACTOR_COLOR }}>green</b> (tractor-OK) stops on a 53′ trailer<br /><span className="text-[11px] text-slate-500">Any stop not marked tractor-friendly is kept on a box truck. Red (box-only) stops are always kept off trailers.</span></span>
         </label>
         <button onClick={runBuild} disabled={!canBuild} className="w-full py-2 rounded text-white font-semibold disabled:opacity-40" style={{ background: BRAND }}>
           {building ? 'Building…' : useGoogle ? 'Build with Google drive-times' : 'Build (free estimate)'}
