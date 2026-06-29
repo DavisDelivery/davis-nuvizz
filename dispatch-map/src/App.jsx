@@ -4793,6 +4793,10 @@ function ReadOnlyNoteView({ note }) {
     items.push({ k: 'DNS', v: <span className="font-semibold" style={{ color: DNS_COLOR }}>Do not send{barred.length ? ` — not: ${barred.join(', ')}` : ''}</span> });
   }
   if (note.priority_flag) items.push({ k: 'Flag', v: <span style={{ color: FLAG_COLORS[note.priority_flag] }} className="font-semibold capitalize">{note.priority_flag}</span> });
+  if (note.vehicle_eligibility === 'tractor' || note.vehicle_eligibility === 'box_only') {
+    const tractorOk = note.vehicle_eligibility === 'tractor';
+    items.push({ k: 'Vehicle', v: <span className="font-semibold" style={{ color: tractorOk ? ELIG_TRACTOR_COLOR : ELIG_BOX_COLOR }}>{tractorOk ? 'Tractor-trailer OK' : 'Box truck only'}</span> });
+  }
   if (note.delivery_window === 'AM' || note.delivery_window === 'PM') items.push({ k: 'Window', v: <span className="font-semibold">{note.delivery_window}</span> });
   if (note.appointment_required) {
     items.push({
@@ -10137,6 +10141,7 @@ function RoutingScreen({ debugCaptureRef }) {
       showMapToast('Ninja needs a route — open one in the Routes list, then tap Ninja to drop stops onto it.');
       return;
     }
+    setEligPaint(null);   // arming Ninja cancels an eligibility brush (one gesture at a time)
     setNinjaMode((v) => !v);
   }, [wbRoutes.length, showMapToast]);
 
@@ -10174,16 +10179,22 @@ function RoutingScreen({ debugCaptureRef }) {
       setLastAction(`Couldn't mark ${s.stopNbr}: ${e.message}`);
     }
   }, [notes]);
-  // Arm/disarm a brush. Turning one on cancels Box/Lasso/Ninja (one gesture at a time).
-  const toggleEligPaint = useCallback((brush) => {
-    setEligPaint((cur) => {
-      const next = cur === brush ? null : brush;
-      if (next) { setNinjaMode(false); setSelectMode(null); selectModeRef.current = null; }
-      return next;
-    });
-  }, []);
+  // Arm/disarm a brush (null = off). Arming one cancels Box/Lasso/Ninja (one gesture at
+  // a time) and flashes an on-map reminder, since the control now lives in the ⚙ gear.
+  const setEligBrush = useCallback((brush) => {
+    setEligPaint(brush);
+    if (brush) {
+      setNinjaMode(false); setSelectMode(null); selectModeRef.current = null;
+      showMapToast(brush === 'tractor'
+        ? 'Tractor brush on — click stops a 53′ trailer fits (green). Set to Off in ⚙ to stop.'
+        : 'Box brush on — click stops that are box-truck only (red). Set to Off in ⚙ to stop.');
+    }
+  }, [showMapToast]);
   useEffect(() => { eligPaintRef.current = eligPaint; }, [eligPaint]);
   useEffect(() => { eligActionRef.current = eligPaint ? markEligibility : null; }, [eligPaint, markEligibility]);
+  // Disarm the brush when the day changes so a hidden, still-armed brush can't silently
+  // mark the new day's stops.
+  useEffect(() => { setEligPaint(null); }, [selectedDate]);
 
   // Default trucks selected once profiles load.
   useEffect(() => {
@@ -10500,6 +10511,7 @@ function RoutingScreen({ debugCaptureRef }) {
     clearTemp();
     boxCornersRef.current = []; lassoVtxRef.current = [];
     selectModeRef.current = mode;
+    setEligPaint(null);   // arming Box/Lasso cancels an eligibility brush
     setSelectMode(mode); setBoxStep(0); setLassoCount(0); setLastAction(null);
   }, [clearTemp]);
   const addEnclosed = useCallback((arr) => {
@@ -10991,7 +11003,23 @@ function RoutingScreen({ debugCaptureRef }) {
   // bottom data-grid header. The bottom gear is what stays reachable when the Setup panel is hidden,
   // so it carries every toggle EXCEPT "Bottom data grid" (turning that off from the bottom gear would
   // close the very header the gear lives in, leaving no way back).
-  const routingSettingsViews = [{ key: 'rightPanel', label: 'Right panel', value: rightPanelMode, setValue: setRightPanelMode, options: [{ value: 'tabs', label: 'Tabs (Stops / Loads / Result)' }, { value: 'routes', label: 'Routes / Drivers' }] }];
+  // Vehicle-eligibility brush lives in the gear: Off / Tractor OK (green) / Box only (red).
+  // Picking a brush arms the paint mode; click stops on the map to mark them.
+  const eligView = {
+    key: 'elig',
+    label: 'Mark vehicle eligibility',
+    value: eligPaint || 'off',
+    setValue: (v) => setEligBrush(v === 'off' ? null : v),
+    options: [
+      { value: 'off', label: 'Off' },
+      { value: 'tractor', label: <span className="font-semibold" style={{ color: ELIG_TRACTOR_COLOR }}>● Tractor OK (53′ fits)</span> },
+      { value: 'box', label: <span className="font-semibold" style={{ color: ELIG_BOX_COLOR }}>● Box truck only</span> },
+    ],
+  };
+  const routingSettingsViews = [
+    { key: 'rightPanel', label: 'Right panel', value: rightPanelMode, setValue: setRightPanelMode, options: [{ value: 'tabs', label: 'Tabs (Stops / Loads / Result)' }, { value: 'routes', label: 'Routes / Drivers' }] },
+    eligView,
+  ];
   const routingSettingsActions = [
     { key: 'versionLog', label: `ⓘ Version history (v${APP_VERSION})`, onClick: () => setVersionLogOpen(true) },
     { key: 'reset', label: '↺ Reset layout to defaults', onClick: resetRoutingLayout },
@@ -11073,27 +11101,22 @@ function RoutingScreen({ debugCaptureRef }) {
         {isMobile && <RoutingSelectedList selectedStops={selectedStops} notes={notes} onRemove={removeStop} open={listOpen} setOpen={setListOpen} onOpenStop={openStop} />}
       </div>
 
-      {/* Vehicle eligibility — tractor-friendly (green) / box-truck-only (red) paint mode. */}
-      <div className="border rounded p-2 space-y-2">
-        <div className="font-semibold text-slate-700">Mark vehicle eligibility</div>
-        <div className="flex gap-1">
-          <button
-            onClick={() => toggleEligPaint('tractor')}
-            className={`flex-1 px-2 py-2 text-xs rounded border-2 font-semibold ${eligPaint === 'tractor' ? 'text-white' : 'bg-white hover:bg-green-50 active:bg-green-100'}`}
-            style={eligPaint === 'tractor' ? { background: ELIG_TRACTOR_COLOR, borderColor: ELIG_TRACTOR_COLOR } : { borderColor: ELIG_TRACTOR_COLOR, color: ELIG_TRACTOR_COLOR }}
-          >● Tractor OK</button>
-          <button
-            onClick={() => toggleEligPaint('box')}
-            className={`flex-1 px-2 py-2 text-xs rounded border-2 font-semibold ${eligPaint === 'box' ? 'text-white' : 'bg-white hover:bg-red-50 active:bg-red-100'}`}
-            style={eligPaint === 'box' ? { background: ELIG_BOX_COLOR, borderColor: ELIG_BOX_COLOR } : { borderColor: ELIG_BOX_COLOR, color: ELIG_BOX_COLOR }}
-          >● Box only</button>
+      {/* Vehicle-eligibility marking lives in the ⚙ gear (Mark vehicle eligibility). When a
+          brush is armed, show a slim reminder + quick Stop so the mode is never silently on. */}
+      {eligPaint && (
+        <div
+          className="rounded border p-2 text-[12px] flex items-center justify-between gap-2"
+          style={{
+            borderColor: eligPaint === 'tractor' ? ELIG_TRACTOR_COLOR : ELIG_BOX_COLOR,
+            background: (eligPaint === 'tractor' ? ELIG_TRACTOR_COLOR : ELIG_BOX_COLOR) + '14',
+          }}
+        >
+          <span className="font-semibold" style={{ color: eligPaint === 'tractor' ? ELIG_TRACTOR_COLOR : ELIG_BOX_COLOR }}>
+            ● {eligPaint === 'tractor' ? 'Tractor' : 'Box'} brush on — {isMobile ? 'tap' : 'click'} stops to mark; again to clear.
+          </span>
+          <button onClick={() => setEligBrush(null)} className="px-2 py-1 text-[11px] rounded border bg-white hover:bg-slate-50 shrink-0">Stop</button>
         </div>
-        <div className="text-[11px] text-slate-600">
-          {eligPaint
-            ? <><b>{eligPaint === 'tractor' ? 'Tractor' : 'Box'} brush on</b> — {isMobile ? 'tap' : 'click'} stops to mark them {eligPaint === 'tractor' ? 'tractor-friendly (green)' : 'box-truck only (red)'}. Click a marked stop again to clear it. This sticks to the location for every future stop there.</>
-            : <>Turn on a brush, then {isMobile ? 'tap' : 'click'} each stop to set whether a 53′ trailer fits. <b style={{ color: ELIG_TRACTOR_COLOR }}>Green</b> = trailer OK · <b style={{ color: ELIG_BOX_COLOR }}>red</b> = box truck only · purple = not yet marked.</>}
-        </div>
-      </div>
+      )}
 
       {/* Trucks */}
       <div className="border rounded p-2 space-y-2">
