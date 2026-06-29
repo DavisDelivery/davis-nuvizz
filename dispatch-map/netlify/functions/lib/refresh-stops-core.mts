@@ -45,6 +45,13 @@ const TENANT = 'davis';
 // a Friday run covers Monday, not an empty Saturday. Volume stays modest because
 // the load-window self-calibrates to each day's actual span (see nuvizz-scan.mts).
 const DEFAULT_DAYS = 2; // today + next business day (was 1 = today only)
+// LIST-DISCOVERY write horizon: today + the next (N-1) BUSINESS days. The active saved-search
+// pull is ALREADY a ±7d window, so writing an extra planning day costs NO extra list call — only
+// that day's load roster + first-time enrichment of its new orders. 3 = today + next 2 business
+// days, so a SUNDAY scan already builds TUESDAY's board (Uline ships Sunday for Tuesday delivery)
+// instead of leaving it empty until Monday's scan reaches it (#251) — and the enrichment lands on
+// Sunday, the week's lowest call-volume day, not on busy Monday. Env-overridable; clamped 2..5.
+const LIST_HORIZON_DAYS = Math.max(2, Math.min(5, Number(process.env.NUVIZZ_LIST_HORIZON_DAYS) || 3));
 
 function addDaysUTC(dateStr: string, n: number): string {
   const d = new Date(dateStr + 'T00:00:00Z');
@@ -88,7 +95,10 @@ export async function runRefreshStops(req: Request): Promise<Response> {
   // made the Friday-evening run write FRIDAY's live board into the SATURDAY-keyed doc — and on a
   // weekend (no follow-up scan) that stale bleed sat on Saturday's board all weekend. ET-anchoring
   // files each day's board under its own ET date (the same fix attempts-core already uses).
-  const [today, tomorrow] = scanDatesFrom(etDayString(), 2);
+  // today + tomorrow drive the number-probe fallback; the LIST path writes the full planning
+  // horizon (today + next LIST_HORIZON_DAYS-1 business days) from its single ±7d pull.
+  const scanDates = scanDatesFrom(etDayString(), LIST_HORIZON_DAYS);
+  const [today, tomorrow] = scanDates;
   const fsOn = isFirestoreEnabled();
   let ceiling = Number(process.env.NUVIZZ_DAILY_CEILING) || 12000;
   // Phase 2 — lean load discovery (known-active + buffer + gap sweep). OFF by
@@ -480,7 +490,12 @@ export async function runRefreshStops(req: Request): Promise<Response> {
     try {
       const scannedAt = new Date().toISOString();
       const targets = [today];
-      if (decision.scanTomorrowLoads || decision.scanTomorrowUnplanned) targets.push(tomorrow);
+      // Tomorrow + further planning days (LIST_HORIZON_DAYS) — all sliced from the SAME ±7d pull,
+      // so e.g. Sunday writes Mon AND Tue. Gated by the same decision so far-day work only runs
+      // once the next-day window opens (loads/orders exist by then).
+      if (decision.scanTomorrowLoads || decision.scanTomorrowUnplanned) {
+        for (const d of scanDates.slice(1)) targets.push(d);
+      }
       // Two-scan mode pulls both saved searches ONCE up front (not per target day) and
       // buckets by date; a fetch failure throws → outer catch preserves the last-good board.
       const buckets = TWO_SCAN ? await twoScanBuckets() : null;

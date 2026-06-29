@@ -50,7 +50,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.29.66';
+const APP_VERSION = '0.29.67';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -70,6 +70,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.29.67', 'Planning horizon (#251) — the scheduled scan now builds the board for today + the next TWO business days (was today + one). So a Sunday scan already populates Tuesday (Uline ships Sunday for Tuesday delivery) instead of leaving it empty until Monday. The extra day is sliced from the ±7-day saved-search pull the scan already makes — no extra list calls — and its orders are enriched on the lower-volume day (Sunday) rather than piling onto a busy Monday. Tunable via NUVIZZ_LIST_HORIZON_DAYS.'],
   ['0.29.66', 'Refresh button cost fix (#244) — the refresh/Scan-now button beside the stops count now fires ONLY the cheap scheduled-scan path: the saved-search planned/unplanned (77128) + completed (77131) pulls + the load roster, for today and tomorrow (~4 NuVizz calls, plus one per genuinely-new order). It used to pass the viewed date, which flipped the scanner into the full number-probe — a ~3,000-call cold scan. Same button, ~4 calls instead of thousands.'],
   ['0.29.65', 'Carry-over clarity (#245) — the carry-over control now shows the actual window it’s covering, e.g. "since Jun 22 · 7d back", so it’s clear the calendar date and the presets are the SAME setting. Picking "since 6/22" on a 6/29 board IS the 7d preset (7 days back) — it was never overriding your date, just showing the same window two ways.'],
   ['0.29.64', 'Unplanned across multiple days (#239) — the "Carry-over unplanned" filter is now a configurable look-back instead of a fixed on/off. Pick a preset (Off / 3d / 7d / 14d) or a calendar "since" date, and the board folds in every still-unplanned order from that many prior days onto the day you’re viewing (each tagged amber, counted in the "· N c/o" badge). Default is today-only; your old on/off setting migrates to 7 days.'],
