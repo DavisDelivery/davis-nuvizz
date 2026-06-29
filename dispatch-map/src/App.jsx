@@ -50,7 +50,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.29.73';
+const APP_VERSION = '0.29.74';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -70,6 +70,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.29.74', 'Print Manifest now paginates correctly — each delivery ticket prints on its own page again, and the whole route prints (not just the first page). The page breaks were always right; the fix is printing from a real window instead of the on-screen iframe, which iOS Safari was collapsing to a single page. Also: the routing bottom-grid Loads "Status" column is spelled out (Planned, Un-Planned, In-Transit, Completed, Cancelled) instead of the terse "Pl / Un / Tr" abbreviations, to read like NuVizz (#266).'],
   ['0.29.73', 'Routing (beta) — smaller map pins (#262). Stops now render as small flat circles instead of the big teardrop pins, so a dense board no longer has markers covering each other. Colour still carries state — route colour when a stop is sequenced (with its stop number in the circle), orange when selected, mint for unplanned and slate for planned otherwise — and selected/hovered stops still pop larger. Click and hover behave exactly as before.'],
   ['0.29.72', 'Routing (beta) — Selected-stops window upgrades. It\'s now drag-to-resize (grab the bottom-left corner; width + height are remembered), has a "Clear all" button in the header to drop the whole selection at once (#261), and shows a Loose-pieces column alongside pallets and weight. The columns are reordered to put Pallets · Loose · Weight right after Location, before City/Zip (#260). And in the Compare panel, the per-stop "→ move to load" dropdown is now hidden on desktop (just drag a stop to another card) — it stays on touch where drag isn\'t available (#267).'],
   ['0.29.71', 'Routing (beta) — map filters, ported from the dispatch Map. A new "Filters" button in the map\'s top-right corner toggles: Unplanned only (hides planned stops so you see just what still needs routing), Satellite view (switch between satellite imagery and the plain roadmap base), and Show routes (overlays each load\'s stops connected in delivery sequence, one colour per load). All persisted. The build-version badge that used to sit in that corner is gone — version history now lives in the gear settings (ⓘ Version history), since the version already shows in the page footer.'],
@@ -3514,7 +3515,27 @@ function PrintDocModal({ title, html, pageW = 816, onClose }) {
   const onLoad = () => {
     try { const h = iframeRef.current?.contentWindow?.document?.body?.scrollHeight; if (h && h > 120) setPageH(h + 8); } catch { /* same-origin srcdoc — safe */ }
   };
-  const doPrint = () => { try { iframeRef.current?.contentWindow?.focus(); iframeRef.current?.contentWindow?.print(); } catch { /* popup/print blocked */ } };
+  // Print from a NEW WINDOW, not the iframe. Printing an iframe via
+  // contentWindow.print() collapses a multi-page doc (the manifest) onto a
+  // single page on iOS Safari — it prints the iframe's on-screen view and
+  // ignores the per-ticket page breaks (that's the "one page, orders not on
+  // separate pages" bug). A full document in its own window paginates reliably
+  // on iOS + desktop. Falls back to the iframe only if the window is blocked.
+  const doPrint = () => {
+    let w = null;
+    try { w = window.open('', '_blank'); } catch { w = null; }
+    if (!w) {
+      try { iframeRef.current?.contentWindow?.focus(); iframeRef.current?.contentWindow?.print(); } catch { /* popup/print blocked */ }
+      return;
+    }
+    w.document.open();
+    w.document.write(html);
+    w.document.close();
+    let fired = false;
+    const fire = () => { if (fired) return; fired = true; try { w.focus(); w.print(); } catch { /* print blocked */ } };
+    w.addEventListener('load', () => setTimeout(fire, 250)); // let the logo image paint first
+    setTimeout(fire, 1500); // fallback if 'load' already fired or stalls
+  };
   return (
     <div className="fixed inset-0 z-[1400] flex flex-col bg-slate-900/80" role="dialog" aria-modal="true"
       style={{ paddingTop: 'env(safe-area-inset-top)', paddingBottom: 'env(safe-area-inset-bottom)' }}>
@@ -7882,8 +7903,7 @@ function tableStatusBucket(stop) {
   const b = TABLE_STATUS_BUCKETS.find((x) => x.match.includes(st));
   return b ? b.k : 'planned';
 }
-// Compact per-status chips for the Loads view status breakdown.
-const LOAD_BUCKET_ABBR = { unplanned: 'Un', planned: 'Pl', in_transit: 'Tr', completed: 'Dn', cancelled: 'Ex' };
+// Per-status chips for the Loads view status breakdown.
 const LOAD_BUCKET_STYLE = {
   unplanned: 'bg-slate-100 text-slate-600',
   planned: 'bg-blue-100 text-blue-700',
@@ -8055,12 +8075,12 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
     { k: 'load', label: 'Load', w: 150, get: (g) => <span className="font-mono text-blue-700">{g.routeName || g.loadNbr}</span>, sortVal: (g) => g.routeName || g.loadNbr },
     { k: 'driver', label: 'Driver', w: 180, get: (g) => g.driverName || '—', sortVal: (g) => g.driverName },
     { k: 'count', label: 'Stops', w: 60, align: 'right', get: (g) => g.count, sortVal: (g) => g.count },
-    { k: 'status', label: 'Status', w: 210, get: (g) => (g.empty
+    { k: 'status', label: 'Status', w: 240, get: (g) => (g.empty
         ? <span className="inline-flex items-center gap-1 px-1.5 rounded text-[10px] font-medium bg-amber-50 text-amber-700 border border-amber-200" title={g.rosterStatus ? ('Load status: ' + g.rosterStatus) : 'No orders assigned yet'}>No orders yet{g.rosterStatus ? ' · ' + g.rosterStatus : ''}</span>
         : (
-        <span className="inline-flex gap-1">
+        <span className="inline-flex flex-wrap gap-1">
           {TABLE_STATUS_BUCKETS.map((b) => g.buckets[b.k]
-            ? <span key={b.k} className={'px-1 rounded text-[10px] font-medium ' + (LOAD_BUCKET_STYLE[b.k] || '')} title={b.label}>{(LOAD_BUCKET_ABBR[b.k] || b.k)} {g.buckets[b.k]}</span>
+            ? <span key={b.k} className={'px-1.5 rounded text-[10px] font-medium ' + (LOAD_BUCKET_STYLE[b.k] || '')} title={b.label}>{b.label} {g.buckets[b.k]}</span>
             : null)}
         </span>
       )), sortVal: (g) => (g.empty ? -1 : (g.count ? (g.buckets.completed || 0) / g.count : 0)) /* % delivered; empty loads sort first */ },
