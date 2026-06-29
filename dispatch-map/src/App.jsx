@@ -7882,8 +7882,7 @@ function tableStatusBucket(stop) {
   const b = TABLE_STATUS_BUCKETS.find((x) => x.match.includes(st));
   return b ? b.k : 'planned';
 }
-// Compact per-status chips for the Loads view status breakdown.
-const LOAD_BUCKET_ABBR = { unplanned: 'Un', planned: 'Pl', in_transit: 'Tr', completed: 'Dn', cancelled: 'Ex' };
+// Per-status chips for the Loads view status breakdown.
 const LOAD_BUCKET_STYLE = {
   unplanned: 'bg-slate-100 text-slate-600',
   planned: 'bg-blue-100 text-blue-700',
@@ -8055,12 +8054,12 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
     { k: 'load', label: 'Load', w: 150, get: (g) => <span className="font-mono text-blue-700">{g.routeName || g.loadNbr}</span>, sortVal: (g) => g.routeName || g.loadNbr },
     { k: 'driver', label: 'Driver', w: 180, get: (g) => g.driverName || '—', sortVal: (g) => g.driverName },
     { k: 'count', label: 'Stops', w: 60, align: 'right', get: (g) => g.count, sortVal: (g) => g.count },
-    { k: 'status', label: 'Status', w: 210, get: (g) => (g.empty
+    { k: 'status', label: 'Status', w: 240, get: (g) => (g.empty
         ? <span className="inline-flex items-center gap-1 px-1.5 rounded text-[10px] font-medium bg-amber-50 text-amber-700 border border-amber-200" title={g.rosterStatus ? ('Load status: ' + g.rosterStatus) : 'No orders assigned yet'}>No orders yet{g.rosterStatus ? ' · ' + g.rosterStatus : ''}</span>
         : (
-        <span className="inline-flex gap-1">
+        <span className="inline-flex flex-wrap gap-1">
           {TABLE_STATUS_BUCKETS.map((b) => g.buckets[b.k]
-            ? <span key={b.k} className={'px-1 rounded text-[10px] font-medium ' + (LOAD_BUCKET_STYLE[b.k] || '')} title={b.label}>{(LOAD_BUCKET_ABBR[b.k] || b.k)} {g.buckets[b.k]}</span>
+            ? <span key={b.k} className={'px-1.5 rounded text-[10px] font-medium ' + (LOAD_BUCKET_STYLE[b.k] || '')} title={b.label}>{b.label} {g.buckets[b.k]}</span>
             : null)}
         </span>
       )), sortVal: (g) => (g.empty ? -1 : (g.count ? (g.buckets.completed || 0) / g.count : 0)) /* % delivered; empty loads sort first */ },
