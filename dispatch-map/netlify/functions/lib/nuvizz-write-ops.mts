@@ -70,6 +70,11 @@ export interface BuiltRequest {
 
 const enc = (s: string) => encodeURIComponent(String(s ?? ''));
 
+// NuVizz driverId is a numeric userId; an HTML <select> hands its value back as a STRING, so a
+// quoted "11" would reach NuVizz and be rejected. Coerce a numeric string to a real number;
+// leave anything non-numeric untouched.
+const numericId = (v: any) => (typeof v === 'string' && /^\d+$/.test(v.trim()) ? Number(v.trim()) : v);
+
 function jsonHeaders(auth: string): Record<string, string> {
   return { Authorization: auth, 'Content-Type': 'application/json', Accept: 'application/json' };
 }
@@ -150,7 +155,9 @@ export function toEditHeader(loadHeader: any): any {
   const h = loadHeader || {};
   const out: any = { seqMode: 'None' };
   for (const k of EDIT_HEADER_PASSTHROUGH) {
-    if (h[k] !== undefined && h[k] !== null) out[k] = h[k];
+    // Full-header replace: echo a present-but-null field AS null rather than dropping the key,
+    // so load/edit can never reset it to a server default (strictly closer to "echo it back").
+    if (h[k] !== undefined) out[k] = h[k] ?? null;
   }
   // Schedule fields map from the load's earliest/latest start (doc §5).
   if (h.earliestStartDttm != null) out.scheduleStartDttm = h.earliestStartDttm;
@@ -209,6 +216,8 @@ function firstError(body: any): string | null {
   }
   if (body.error) return String(body.error);
   if (body.message) return String(body.message);
+  // Non-JSON NuVizz error body (safeJson wraps it as {_text}); surface it rather than dropping it.
+  if (body._text) { const t = String(body._text).trim(); if (t) return t.slice(0, 300); }
   return null;
 }
 
@@ -339,7 +348,7 @@ export function buildOpRequest(op: SingleOp, payload: any, creds: WriteCreds): B
 
     case 'assignDriver': {
       const routeId = req(payload?.routeId ?? payload?.loadId, 'assignDriver: routeId (the loadId)');
-      const driverId = req(payload?.driverId, 'assignDriver: driverId (roster userId)');
+      const driverId = numericId(req(payload?.driverId, 'assignDriver: driverId (roster userId)'));
       const body = { action: 'ASSIGN_DISPATCH', dispatchRoute: [{ routeId, assignDtls: { driverId } }] };
       return { url: `${base}/load/assignanddispatch/${enc(cc)}`, method: 'POST', headers: H, body: JSON.stringify(body), meta: { route: '/load/assignanddispatch(assign)', tenant: cc, source: 'live-write' } };
     }

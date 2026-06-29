@@ -9391,9 +9391,13 @@ function LiveDispatchBar({ route, liveMode, roster, rosterError, onToast }) {
   const driver = roster.find((d) => String(d.driverId) === String(driverId)) || null;
   const hasChange = driverId !== '' || dispatch;
 
-  const buildPayload = () => ({ loadNbr, driverId: driverId || undefined, driverName: driver?.name || undefined, dispatch });
+  // loadId: the board's same-day loadId (avoids name re-resolution to the wrong day's load).
+  // driverId: the roster's NUMERIC userId, not the <select>'s string value (NuVizz wants a number).
+  const buildPayload = () => ({ loadNbr, loadId: route.loadId || undefined, driverId: driver ? driver.driverId : undefined, driverName: driver?.name || undefined, dispatch });
 
-  // Save → server dry-run preview → confirm modal. The preview never touches NuVizz.
+  // Save → server dry-run preview → confirm modal. The preview never touches NuVizz. The
+  // clientOpId is minted ONCE here and reused on Confirm, so a double-click / retry of the SAME
+  // Save can't double-dispatch (the server dedups on it).
   const onSave = async () => {
     if (!hasChange) { onToast?.('Pick a driver or check Dispatch first.'); return; }
     setBusy(true);
@@ -9401,15 +9405,15 @@ function LiveDispatchBar({ route, liveMode, roster, rosterError, onToast }) {
     const res = await callWrite('commitLoad', payload, { dryRun: true });
     setBusy(false);
     if (!res.ok) { onToast?.(`Preview failed: ${res.error || 'error'}`); return; }
-    setConfirm({ plan: res.plan || [], tenant: res.tenant, payload });
+    setConfirm({ plan: res.plan || [], tenant: res.tenant, payload, clientOpId: newClientOpId() });
   };
 
-  // Confirm → in Beta, simulated only; in Live, the real commit (idempotent via clientOpId).
+  // Confirm → in Beta, simulated only; in Live, the real commit (idempotent via the Save's clientOpId).
   const onConfirm = async () => {
     const payload = confirm.payload;
     if (!liveMode) { setConfirm(null); onToast?.(`Beta — nothing sent (${loadDisplayName(loadNbr) || loadNbr} simulated).`); return; }
     setBusy(true);
-    const res = await callWrite('commitLoad', payload, { dryRun: false, clientOpId: newClientOpId(), createdBy: 'dispatcher' });
+    const res = await callWrite('commitLoad', payload, { dryRun: false, clientOpId: confirm.clientOpId, createdBy: 'dispatcher' });
     setBusy(false);
     setConfirm(null);
     if (res.ok) {
@@ -9665,10 +9669,13 @@ function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmN
   useEffect(() => {
     if (!LIVE_WRITE_FLAG || rosterLoaded.current) return;
     rosterLoaded.current = true;
+    let alive = true;
     callWrite('roster', {}).then((res) => {
+      if (!alive) return;
       if (res.ok && Array.isArray(res.result?.drivers)) setRoster(res.result.drivers);
       else setRosterError(res.error || 'roster unavailable');
-    }).catch((e) => setRosterError(e?.message || 'roster error'));
+    }).catch((e) => { if (alive) setRosterError(e?.message || 'roster error'); });
+    return () => { alive = false; };
   }, []);
   return (
     <div className="flex flex-col h-full min-h-0">
@@ -10167,8 +10174,12 @@ function RoutingScreen({ debugCaptureRef }) {
       if (prev.some((r) => r.key === key)) return prev;                 // already open
       if (prev.length >= WB_MAX) { setLastAction(`Workbench is full (${WB_MAX} routes) — close one first.`); return prev; }
       const routeStops = positionedRef.current.filter((s) => (s.routeName || s.loadNbr) === key);
+      // Capture the day's REAL loadId off the route's stops (recurring loads share a NAME across
+      // days but each day's instance has its own loadId). Sent with a live Save so the server
+      // assigns/dispatches THIS day's load instead of re-resolving the ambiguous name (#wrong-load).
+      const loadId = routeStops.map((s) => s.raw?.load?.loadId ?? s.loadId).find(Boolean) || null;
       const order = orderRouteStops(routeStops).map((s) => String(s.stopNbr));
-      return [...prev, { key, order, collapsed: false }];
+      return [...prev, { key, loadId, order, collapsed: false }];
     });
   }, []);
   const closeWbRoute = useCallback((key) => setWbRoutes((prev) => prev.filter((r) => r.key !== key)), []);

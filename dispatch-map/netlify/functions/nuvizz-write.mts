@@ -112,8 +112,13 @@ export default async (req: Request): Promise<Response> => {
   catch (e: any) { return J({ ok: false, op, tenant, error: e?.message || 'missing NuVizz creds', ops }, 500); }
   tenant = creds.companyCode;
 
-  // 4) Idempotency — a repeated Save returns the prior success without re-firing.
+  // 4) Idempotency — a repeated Save returns the prior success without re-firing. NOTE: the
+  // ledger lives in Firestore; when Firestore is off it silently no-ops, so a retry CAN re-fire.
+  // Warn loudly so an operator relying on dedup isn't unknowingly unprotected. (Truly-concurrent
+  // identical Saves are also not deduped — only sequential retries; the UI's busy-disable + a
+  // single clientOpId per Save cover the common case.)
   if (MUTATING_OPS.has(op) && clientOpId) {
+    if (!isFirestoreEnabled()) console.warn(`[nuvizz-write] clientOpId supplied but Firestore is off — idempotency unavailable; a retry of op=${op} can re-fire.`);
     const prior = await getOpRecord(tenant, clientOpId);
     if (prior?.status === 'succeeded') return J({ ok: true, op, tenant, live, dryRun: false, idempotent: true, result: prior.result, ops });
   }

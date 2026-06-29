@@ -53,20 +53,23 @@ async function fireSingle(requester: RequesterLike, op: SingleOp, payload: any, 
 /** GET load/info → normalized load (loadId, versionId, raw loadHeader, stops). */
 export async function fetchLoad(requester: RequesterLike, loadNbr: string, creds: WriteCreds): Promise<any> {
   const r = await fireSingle(requester, 'getLoad', { loadNbr }, creds);
-  return r.load || null;
+  // normalizeLoad ALWAYS returns an object (even for a 404/empty body), so "not found" must be
+  // detected by a non-2xx response or a missing loadId — never edit/dispatch a phantom load.
+  if (!r.ok || !r.load || r.load.loadId == null) return null;
+  return r.load;
 }
 
-/** removeStops (§3.5): resolve header+versionId via getLoad (unless supplied), then POST load/edit. */
+/**
+ * removeStops (§3.5): ALWAYS resolve the echoed header + versionId from a live getLoad —
+ * we never trust a caller-supplied editHeader/versionId. load/edit is a full-header replace,
+ * so echoing a hand-crafted/stale header could blank live load fields; server-resolving the
+ * header from NuVizz is the only safe contract.
+ */
 async function runRemoveStops(requester: RequesterLike, payload: any, creds: WriteCreds): Promise<any> {
-  let editHeader = payload?.editHeader;
-  let versionId = payload?.versionId;
-  if (!editHeader || !versionId) {
-    const load = await fetchLoad(requester, req(payload?.loadNbr, 'removeStops: loadNbr'), creds);
-    if (!load) return { ok: false, error: 'removeStops: load not found' };
-    editHeader = toEditHeader(load.loadHeader);
-    versionId = load.versionId;
-  }
-  return fireSingle(requester, 'removeStops', { removeStopIds: payload?.removeStopIds, editHeader, versionId }, creds);
+  const loadNbr = req(payload?.loadNbr, 'removeStops: loadNbr');
+  const load = await fetchLoad(requester, loadNbr, creds);
+  if (!load) return { ok: false, error: 'removeStops: load not found', loadNbr };
+  return fireSingle(requester, 'removeStops', { removeStopIds: payload?.removeStopIds, editHeader: toEditHeader(load.loadHeader), versionId: load.versionId }, creds);
 }
 
 /**
@@ -81,18 +84,26 @@ export async function runCommitLoad(requester: RequesterLike, payload: any, cred
   const insertStopIds: any[] = Array.isArray(payload?.insertStopIds) ? payload.insertStopIds : [];
   const driverId = payload?.driverId ?? null;
   const dispatch = Boolean(payload?.dispatch);
+  // driverId is a NuVizz numeric userId; treat null/blank/0 as "no driver" so a falsy-but-
+  // present 0 cannot half-fire an assign. The same predicate gates load resolution below.
+  const hasDriver = driverId != null && String(driverId).trim() !== '' && Number(driverId) !== 0;
 
+  // Prefer a loadId the CALLER already knows (the board's same-day loadId) over re-resolving
+  // by name: recurring loads share a NAME across days but have a distinct loadId per day, so
+  // name-resolution could otherwise hit the wrong day's instance. We still getLoad when a
+  // remove needs the header/versionId, or when no loadId was supplied.
   let loadId = payload?.loadId ?? null;
   let editHeader: any = null, versionId: any = null;
 
-  // One getLoad resolves everything we might need (loadId for insert/assign/dispatch,
-  // header+versionId for a remove). Only fetch when something actually needs it.
-  const needLoad = (!loadId && (insertStopIds.length || driverId || dispatch)) || removeStopIds.length;
+  const needLoad = (!loadId && (insertStopIds.length || hasDriver || dispatch)) || removeStopIds.length;
   if (needLoad) {
-    if (!loadNbr) return { ok: false, error: 'commitLoad: loadNbr required to resolve load', steps: [] };
+    if (!loadNbr) return { ok: false, error: 'commitLoad: loadNbr required to resolve load', loadNbr, loadId, steps: [] };
     const load = await fetchLoad(requester, loadNbr, creds);
-    if (!load) return { ok: false, error: 'commitLoad: load not found', steps: [] };
+    if (!load) return { ok: false, error: 'commitLoad: load not found', loadNbr, loadId, steps: [] };
     loadId = loadId || load.loadId;
+    // NOTE: versionId/editHeader are snapshotted from this single getLoad. Safe today because
+    // removeStops runs FIRST and is the only step that uses them; if a future step re-edits the
+    // header after a remove, re-fetch the load to refresh the (now-bumped) versionId.
     editHeader = toEditHeader(load.loadHeader);
     versionId = load.versionId;
   }
@@ -104,15 +115,15 @@ export async function runCommitLoad(requester: RequesterLike, payload: any, cred
     if (!push('removeStops', await fireSingle(requester, 'removeStops', { removeStopIds, editHeader, versionId }, creds))) return done(false);
   }
   if (insertStopIds.length) {
-    if (!loadId) return { ok: false, error: 'commitLoad: loadId unresolved for insertStops', steps };
+    if (!loadId) return { ok: false, error: 'commitLoad: loadId unresolved for insertStops', loadNbr, loadId, steps };
     if (!push('insertStops', await fireSingle(requester, 'insertStops', { insertStopIds, loadId }, creds))) return done(false);
   }
-  if (driverId != null && driverId !== '') {
-    if (!loadId) return { ok: false, error: 'commitLoad: loadId unresolved for assignDriver', steps };
+  if (hasDriver) {
+    if (!loadId) return { ok: false, error: 'commitLoad: loadId unresolved for assignDriver', loadNbr, loadId, steps };
     if (!push('assignDriver', await fireSingle(requester, 'assignDriver', { routeId: loadId, driverId }, creds))) return done(false);
   }
   if (dispatch) {
-    if (!loadId) return { ok: false, error: 'commitLoad: loadId unresolved for dispatch', steps };
+    if (!loadId) return { ok: false, error: 'commitLoad: loadId unresolved for dispatch', loadNbr, loadId, steps };
     if (!push('dispatchLoad', await fireSingle(requester, 'dispatchLoad', { routeId: loadId }, creds))) return done(false);
   }
   return done(true);

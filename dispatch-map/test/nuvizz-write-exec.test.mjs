@@ -122,3 +122,85 @@ test('runOp surfaces a malformed-payload throw (handler maps to 400)', async () 
   const { requester } = stub([{ json: {} }]);
   await assert.rejects(() => runOp(requester, 'insertStops', { insertStopIds: [] }, CREDS), /insertStopIds/);
 });
+
+test('runOp(removeStops): ALWAYS getLoad-resolves the header; a caller-supplied editHeader/versionId is ignored', async () => {
+  const { requester, calls } = stub([
+    { json: { Load: { loadHeader: { loadId: 'L1' }, versionId: 'vSERVER', loadExecutionInfo: {}, stops: [] } } },
+    { json: { status: 'SUCCESS' } },
+  ]);
+  // Hand-crafted (hostile) header + version — must be discarded in favor of the live getLoad.
+  const r = await runOp(requester, 'removeStops', { loadNbr: 'BEN 2', removeStopIds: ['x'], editHeader: { loadId: 'EVIL', routeName: 'WIPED' }, versionId: 'vBOGUS' }, CREDS);
+  assert.equal(calls.length, 2, 'always does getLoad first');
+  assert.equal(calls[0].method, 'GET');
+  assert.equal(calls[1].body.versionId, 'vSERVER', 'uses the server versionId, not the caller bogus one');
+  assert.equal(calls[1].body.loadHeader.loadId, 'L1', 'echoes the server-resolved header, not the hostile one');
+  assert.equal(r.ok, true);
+});
+
+test('runOp(removeStops): a 404/empty getLoad → load not found, only 1 call (no phantom edit)', async () => {
+  const { requester, calls } = stub([{ status: 404, json: {} }]);
+  const r = await runOp(requester, 'removeStops', { loadNbr: 'NOPE', removeStopIds: ['x'] }, CREDS);
+  assert.equal(r.ok, false);
+  assert.match(r.error, /not found/);
+  assert.equal(calls.length, 1, 'never fires load/edit when the load is missing');
+});
+
+test('runCommitLoad: a failed removeStops aborts before insert/assign/dispatch', async () => {
+  const { requester, calls } = stub([
+    { json: { Load: { loadHeader: { loadId: 'L1' }, versionId: 'v1', loadExecutionInfo: {}, stops: [] } } }, // getLoad
+    { json: { reasons: [{ description: 'version conflict' }] } },  // removeStops FAILS
+  ]);
+  const r = await runCommitLoad(requester, { loadNbr: 'BEN 2', removeStopIds: ['x'], insertStopIds: ['s1'], driverId: 7, dispatch: true }, CREDS);
+  assert.equal(r.ok, false);
+  assert.equal(calls.length, 2, 'getLoad + remove only — nothing after the failed remove');
+  assert.equal(r.steps.length, 1);
+  assert.equal(r.steps[0].op, 'removeStops');
+  assert.equal(r.steps[0].ok, false);
+});
+
+test('runCommitLoad: dispatch-only (no driver) resolves the load then fires only DISPATCH', async () => {
+  const { requester, calls } = stub([
+    { json: { Load: { loadHeader: { loadId: 'L1' }, versionId: 'v1', loadExecutionInfo: {}, stops: [] } } },
+    { json: { status: 'Success' } },
+  ]);
+  const r = await runCommitLoad(requester, { loadNbr: 'BEN 2', dispatch: true }, CREDS);
+  assert.equal(r.ok, true);
+  assert.deepEqual(calls.map((c) => c.method), ['GET', 'POST']);
+  assert.equal(calls[1].body.action, 'DISPATCH');
+  assert.equal(r.steps.length, 1);
+  assert.equal(r.steps[0].op, 'dispatchLoad');
+});
+
+test('runCommitLoad: driverId 0 is treated as NO driver (no assign fired)', async () => {
+  const { requester, calls } = stub([{ json: { status: 'Success' } }]);
+  // loadId known, dispatch only, driverId 0 → must NOT fire an assign with driverId 0.
+  const r = await runCommitLoad(requester, { loadNbr: 'BEN 2', loadId: 'L1', driverId: 0, dispatch: true }, CREDS);
+  assert.equal(r.ok, true);
+  assert.equal(calls.length, 1, 'only the dispatch fires; no getLoad, no assign');
+  assert.equal(calls[0].body.action, 'DISPATCH');
+});
+
+test('runCommitLoad: a known loadId skips the getLoad entirely (assign + dispatch direct)', async () => {
+  const { requester, calls } = stub([{ json: { status: 'Success' } }, { json: { status: 'Success' } }]);
+  const r = await runCommitLoad(requester, { loadNbr: 'BEN 2', loadId: 'L1', driverId: 9, dispatch: true }, CREDS);
+  assert.equal(r.ok, true);
+  assert.deepEqual(calls.map((c) => c.method), ['POST', 'POST'], 'no getLoad when loadId is supplied');
+  assert.match(calls[0].url, /assignanddispatch/);
+  assert.equal(calls[0].body.dispatchRoute[0].routeId, 'L1');
+});
+
+test('runCommitLoad: empty payload makes ZERO calls and returns ok:true (no-op)', async () => {
+  const { requester, calls } = stub([{ json: {} }]);
+  const r = await runCommitLoad(requester, { loadNbr: 'BEN 2' }, CREDS);
+  assert.equal(r.ok, true);
+  assert.equal(calls.length, 0, 'a no-change commit never touches NuVizz');
+  assert.equal(r.steps.length, 0);
+});
+
+test('runCommitLoad: insert with neither loadId nor loadNbr → ok:false, no calls', async () => {
+  const { requester, calls } = stub([{ json: {} }]);
+  const r = await runCommitLoad(requester, { insertStopIds: ['s1'] }, CREDS);
+  assert.equal(r.ok, false);
+  assert.match(r.error, /loadNbr required/);
+  assert.equal(calls.length, 0);
+});

@@ -142,6 +142,23 @@ test('toEditHeader: forces seqMode None, passes through known fields, maps sched
   assert.equal('junk' in h, false, 'unknown fields are not echoed');
 });
 
+test('toEditHeader: a present-but-null field is echoed AS null (not dropped) for the full-replace', () => {
+  const h = toEditHeader({ loadId: 'L1', routeName: 'BEN 2', masterBol: null, sealNbr: undefined });
+  assert.equal(h.loadId, 'L1');
+  assert.equal('masterBol' in h, true, 'present-but-null field is echoed');
+  assert.equal(h.masterBol, null);
+  assert.equal('sealNbr' in h, false, 'truly-absent field stays absent');
+});
+
+test('assignDriver: a numeric-STRING driverId (from an HTML select) is coerced to a number', () => {
+  const r = buildOpRequest('assignDriver', { loadId: 'L1', driverId: '4242' }, CREDS);
+  const did = bodyOf(r).dispatchRoute[0].assignDtls.driverId;
+  assert.equal(did, 4242);
+  assert.equal(typeof did, 'number', 'NuVizz wants a number, not a quoted string');
+  // a non-numeric id passes through untouched (defensive)
+  assert.equal(buildOpRequest('assignDriver', { loadId: 'L1', driverId: 'abc' }, CREDS) && bodyOf(buildOpRequest('assignDriver', { loadId: 'L1', driverId: 'abc' }, CREDS)).dispatchRoute[0].assignDtls.driverId, 'abc');
+});
+
 // ── §6 parsers ───────────────────────────────────────────────────────────────
 test('summarize: created+entityInfoList → ok with ids', () => {
   const s = summarize(true, { apiResult: { created: 1 }, entityInfoList: [{ entityId: '6a3f', entityNbr: '007139395' }] });
@@ -195,6 +212,19 @@ test('normalizeLoad: loadId/versionId/stops + raw header retained for the edit e
   assert.equal(l.stops[0].stopNbr, '7');
 });
 
+test('normalizeLoad: missing stops → [] and null ids (never throws)', () => {
+  const l = normalizeLoad({ Load: { loadHeader: {}, loadExecutionInfo: {} } });
+  assert.deepEqual(l.stops, []);
+  assert.equal(l.loadId, null);
+  assert.equal(l.versionId, null);
+});
+
+test('summarize/assignOk: surface a non-JSON NuVizz error body (_text) instead of dropping it', () => {
+  // safeJson wraps a non-JSON body as { _text }. The dispatcher must see the real message.
+  assert.match(summarize(false, { _text: 'Internal Server Error: bad load' }).error, /bad load/);
+  assert.match(assignOk({ _text: 'driver not on duty' }).error, /driver not on duty/);
+});
+
 test('parseRoster: keeps ENABLED DI_Driver, drops disabled + non-drivers; driverId = userId', () => {
   const j = { users: [
     { userId: 11, userName: 'denis', firstName: 'Denis', lastName: 'R', accountStatus: 'ENABLED', userRoles: [{ role: 'DI_Driver' }], mobileNumber: '555' },
@@ -206,6 +236,18 @@ test('parseRoster: keeps ENABLED DI_Driver, drops disabled + non-drivers; driver
   assert.equal(drivers[0].driverId, 11);
   assert.equal(drivers[0].name, 'Denis R');
   assert.equal(drivers[0].mobile, '555');
+});
+
+test('parseRoster: a mixed driver+office account still surfaces as a driver; name falls back to userName; missing userId → null', () => {
+  const j = { users: [
+    { userId: 44, userName: 'jdoe', accountStatus: 'ENABLED', userRoles: [{ role: 'DI_Dispatcher' }, { role: 'DI_Driver' }] }, // mixed → driver wins, name falls back
+    { userName: 'noid', accountStatus: 'ENABLED', userRoles: [{ role: 'DI_Driver' }] },                                          // missing userId
+    { userId: 55, userName: 'blankstatus', userRoles: [{ role: 'DI_Driver' }] },                                                  // missing accountStatus → dropped
+  ] };
+  const drivers = parseRoster(j);
+  assert.equal(drivers.length, 2, 'mixed account + missing-id driver kept; blank-status dropped');
+  assert.equal(drivers[0].name, 'jdoe', 'name falls back to userName when no first/last');
+  assert.equal(drivers[1].driverId, null, 'missing userId surfaces as null driverId');
 });
 
 // ── parseOpResponse dispatch ─────────────────────────────────────────────────
