@@ -200,3 +200,21 @@ test('resequence is a no-op for <2 stops and unknown strategy', () => {
   assert.deepEqual(ids(resequence([pts[0]], depot0, 'min')), ['C']);
   assert.deepEqual(ids(resequence(pts, depot0, 'bogus')), ['C', 'A', 'D', 'B']);
 });
+
+test("resequence 'loop' makes a U-shape — down one side of the corridor and back the other", () => {
+  const depot = { lat: 0, lng: 0 };
+  // Highway runs east-west; stops sit on the south (lat -1) and north (lat +1) sides,
+  // fed in a criss-crossing zigzag order (S,N,S,N,…) like the "Farthest first" complaint.
+  const corridor = [
+    { id: 'S1', lat: -1, lng: 1 }, { id: 'N1', lat: 1, lng: 1 },
+    { id: 'S2', lat: -1, lng: 2 }, { id: 'N2', lat: 1, lng: 2 },
+    { id: 'S3', lat: -1, lng: 3 }, { id: 'N3', lat: 1, lng: 3 },
+  ];
+  const out = resequence(corridor, depot, 'loop');
+  assert.deepEqual([...ids(out)].sort(), ['N1', 'N2', 'N3', 'S1', 'S2', 'S3']); // permutation
+  // U-shape signature: the order runs all the way out along one side, then back along the
+  // other — exactly ONE switch between the south and north sides (no zigzag crossings).
+  const sides = out.map((s) => (s.lat < 0 ? 'S' : 'N'));
+  const switches = sides.filter((v, i) => i > 0 && v !== sides[i - 1]).length;
+  assert.equal(switches, 1, `expected one side-switch (U-shape), got ${switches}: ${ids(out).join(',')}`);
+});
