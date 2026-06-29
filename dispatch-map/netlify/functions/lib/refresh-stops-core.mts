@@ -22,7 +22,7 @@
 
 import { scanDate, scansEnabled, deriveFleetSummary, estimateLoadRange, buildScanState, shadowWouldProbe, selectLoadProbeTargets, groupLoadMembers, estimateStopFrontier, unplannedFloor, FLOOR_MARGIN, loadNbrToInt, stopNbrToInt, shouldDeepSweep, deepSweepGate, lookupStopByPro } from './nuvizz-scan.mts';
 import { loadProbeParity, frontierParity, loadMembershipDelta, dateSliceMismatch } from './scan-parity.mts';
-import { isFirestoreEnabled, writeStops, writeFleetIndex, getDoc, markScanState, readCallStats, readCircuit, readScanState, writeScanState, readRecentFrontier, recordScanMetric, etDayString, readScanConfig, readStops, readEnrichedPros, writeEnrichedPros, writeLoadRoster, readLoadRoster } from './firestore.mts';
+import { isFirestoreEnabled, writeStops, writeFleetIndex, getDoc, markScanState, readCallStats, readCircuit, readScanState, writeScanState, readRecentFrontier, recordScanMetric, etDayString, readScanConfig, readStops, readEnrichedPros, writeEnrichedPros, writeLoadRoster, readLoadRoster, writeActiveUnplannedSet } from './firestore.mts';
 import { listScanForDate, mergeEnrich, twoScanBuckets, etDateForTargetUTC, boardDayFor } from './nuvizz-list.mts';
 import { loadIdsForDate, dropForeignLoadStops, loadRosterForDate } from './nuvizz-loads.mts';
 import { resolveCoords, addrKey } from './geocode.mts';
@@ -499,6 +499,19 @@ export async function runRefreshStops(req: Request): Promise<Response> {
       // Two-scan mode pulls both saved searches ONCE up front (not per target day) and
       // buckets by date; a fetch failure throws → outer catch preserves the last-good board.
       const buckets = TWO_SCAN ? await twoScanBuckets() : null;
+      // Snapshot the CURRENT live unplanned stop-number set (across the whole ±7d pull) so the
+      // read-time carry-over fold-in can drop prior-day stops that have since been delivered/
+      // planned (they vanish from the active search → not in this set). Zero extra calls. The
+      // window the active search reaches back is ~7 days (NUVIZZ_ACTIVE_ARRIVAL '+/-7d'), so
+      // carry-over only trusts the filter for days >= windowStart. Best-effort.
+      if (TWO_SCAN && buckets) {
+        try {
+          const live = new Set<string>();
+          for (const stops of buckets.values()) for (const s of stops) if (s.isUnplanned && s.stopNbr) live.add(String(s.stopNbr));
+          const windowStart = addDaysUTC(today, -7);
+          await writeActiveUnplannedSet(TENANT, { at: scannedAt, windowStart, stopNbrs: [...live] });
+        } catch (e: any) { console.warn(`[scan] active-set snapshot skipped: ${e?.message}`); }
+      }
       for (const date of targets) {
         // Two-scan: this day's slice of the merged active+completed pull (board keys are
         // UTC, the saved searches bucket by ET arrival date — map across the frames).

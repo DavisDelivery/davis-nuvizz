@@ -872,3 +872,25 @@ export async function readLoadRoster(tenant: string, dateStr: string): Promise<{
   try { loads = JSON.parse(doc.loadsJson || '[]'); } catch { loads = []; }
   return { at: doc.at || doc._updatedAt || null, loads };
 }
+
+// ── Live active-unplanned set (carry-over freshness guard) ──────────────────────
+// The set of stop numbers that are CURRENTLY unplanned across the scan's ±7d active pull,
+// snapshotted each scan. The read-time carry-over fold-in uses it to drop prior-day stops that
+// have since been delivered/planned — they vanish from the live active search, so they're no
+// longer in this set. `windowStart` is the oldest ET date the pull reliably covers; carry-over
+// only trusts the filter for days >= windowStart (older days fall back to the index snapshot).
+// One doc per tenant; stop numbers stored as a JSON array (codec-safe). Zero NuVizz cost.
+const ACTIVE_SET_COLLECTION = 'nuvizz_active_set';
+export async function writeActiveUnplannedSet(tenant: string, data: { at: string; windowStart: string; stopNbrs: string[] }): Promise<void> {
+  await setDoc(`${ACTIVE_SET_COLLECTION}/${tenant}`, {
+    tenant, at: data.at, windowStart: data.windowStart, count: (data.stopNbrs || []).length,
+    stopNbrsJson: JSON.stringify(data.stopNbrs || []),
+  } as any);
+}
+export async function readActiveUnplannedSet(tenant: string): Promise<{ at: string | null; windowStart: string | null; stopNbrs: Set<string> } | null> {
+  const doc = await getDoc(`${ACTIVE_SET_COLLECTION}/${tenant}`);
+  if (!doc) return null;
+  let arr: string[] = [];
+  try { arr = JSON.parse(doc.stopNbrsJson || '[]'); } catch { arr = []; }
+  return { at: doc.at || null, windowStart: doc.windowStart || null, stopNbrs: new Set(arr.map(String)) };
+}
