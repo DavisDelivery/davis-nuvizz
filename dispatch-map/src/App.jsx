@@ -9325,6 +9325,10 @@ function RoutingWorkbenchCard({ route, stopById, otherKeys, ninjaMode, isActive,
   // the dragged stop out of dataTransfer on drop. beforeId=null means "append to the end".
   const [dragOverId, setDragOverId] = useState(null);
   const [expanded, setExpanded] = useState(() => new Set());   // per-stop detail expand (NuVizz-style)
+  // Re-sequence dropdown reflects the chosen mode and HOLDS it until changed
+  // (resets only when this card switches to a different route).
+  const [seqMode, setSeqMode] = useState('');
+  useEffect(() => { setSeqMode(''); }, [route.key]);
   const toggleExpand = (id) => setExpanded((prev) => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
   const onRowDragStart = (e, id) => { try { e.dataTransfer.setData('text/plain', JSON.stringify({ fromKey: route.key, id: String(id) })); e.dataTransfer.effectAllowed = 'move'; } catch { /* ignore */ } };
   const readDrag = (e) => { try { return JSON.parse(e.dataTransfer.getData('text/plain')); } catch { return null; } };
@@ -9378,7 +9382,11 @@ function RoutingWorkbenchCard({ route, stopById, otherKeys, ninjaMode, isActive,
         <div className="text-[11px] text-slate-500 truncate">{driverLabel} · {rows.length} stop{rows.length === 1 ? '' : 's'} · {skids} sk · {Math.round(weight).toLocaleString()} lb · {rows.length ? Math.round((100 * delivered) / rows.length) : 0}%</div>
         {rc && <div className="text-[11px] font-semibold text-slate-700">{miles.toFixed(1)} mi · {fmtDur(driveMin)}<span className="font-normal text-slate-400"> · DH {dhMi.toFixed(1)} mi</span></div>}
         {!route.collapsed && (
-          <select onChange={(e) => { if (e.target.value) onResequence(e.target.value); e.target.value = ''; }} defaultValue="" className="mt-1 w-full border rounded px-1 py-1 text-[11px] bg-white">
+          <select
+            value={seqMode}
+            onChange={(e) => { const v = e.target.value; setSeqMode(v); if (v) onResequence(v); }}
+            className="mt-1 w-full border rounded px-1 py-1 text-[11px] bg-white"
+          >
             <option value="" disabled>Re-sequence…</option>
             <option value="min">Shortest distance</option>
             <option value="farthest">Farthest first</option>
@@ -11478,6 +11486,9 @@ function RoutingRouteCard({ rv, stopById, usedGoogle, readOnly, onReorder, onMov
 
   const dragFrom = useRef(null);
   const [overIdx, setOverIdx] = useState(null);
+  // Re-sequence dropdown holds the chosen mode until changed (per route).
+  const [seqMode, setSeqMode] = useState('');
+  useEffect(() => { setSeqMode(''); }, [rv.truckId]);
   const onDragStart = (i) => (e) => { dragFrom.current = i; e.dataTransfer.effectAllowed = 'move'; try { e.dataTransfer.setData('text/plain', String(i)); } catch { /* some browsers */ } };
   const onDragOver = (i) => (e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; if (overIdx !== i) setOverIdx(i); };
   const onDrop = (i) => (e) => { e.preventDefault(); const from = dragFrom.current; dragFrom.current = null; setOverIdx(null); if (from != null && from !== i) onReorder(rv.truckId, from, i); };
@@ -11491,12 +11502,12 @@ function RoutingRouteCard({ rv, stopById, usedGoogle, readOnly, onReorder, onMov
         {rv.reordered && <span className="text-[9px] font-bold uppercase tracking-wide bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded">Manual order</span>}
         {!readOnly && onResequence && rows.length > 1 && (
           <select
-            value=""
-            onChange={(e) => { const v = e.target.value; e.target.value = ''; if (v) onResequence(rv.truckId, v); }}
+            value={seqMode}
+            onChange={(e) => { const v = e.target.value; setSeqMode(v); if (v) onResequence(rv.truckId, v); }}
             title="Re-sequence this route"
             className="ml-auto text-[11px] border border-slate-300 rounded px-1 py-0.5 bg-white"
           >
-            <option value="">Re-sequence…</option>
+            <option value="" disabled>Re-sequence…</option>
             <option value="min">Min distance</option>
             <option value="closest">Closest first</option>
             <option value="farthest">Farthest first</option>
