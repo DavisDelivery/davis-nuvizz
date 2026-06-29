@@ -93,8 +93,22 @@ export const refreshLoad = (tenant, loadNbr, date) =>
 export const refreshFleet = (tenant, date) =>
   api(tenant, '__refreshFleet', { query: date ? { date } : {} });
 
-// --- Driver registry (baked in — discovered by probing /user/info/ with common names) ---
-// Refresh periodically by re-running the discovery probe. Source of truth: NuVizz user/info.
+// Driver roster (read) — the stored driver list, served from Firestore with ZERO NuVizz
+// calls. Pass { all: true } to also include office/admin users. Returns
+// { users, drivers, driverCount, totalUsers, updatedAt, neverScanned? }.
+export const fetchDriverRoster = (tenant, { all = false } = {}) =>
+  api(tenant, '__drivers', { query: all ? { all: '1' } : {} });
+
+// Driver roster (refresh) — ON-DEMAND scan of NuVizz's /user/list. Costs ~1 NuVizz call
+// (a single list pull, NOT the load-number probe) and rewrites the stored roster. Wire
+// this to a manual "Update driver list" button; drivers change rarely so it's never scheduled.
+export const refreshDriverRoster = (tenant) =>
+  api(tenant, '__refreshDrivers');
+
+// --- Driver registry (baked-in FALLBACK) ---
+// Used only until the first on-demand roster scan (__refreshDrivers) populates Firestore;
+// after that the live roster from fetchDriverRoster() supersedes this list. Originally
+// discovered by probing /user/info/ with common names.
 export const DAVIS_DRIVERS = [
   { userName: 'AARON',   name: 'Aaron Mitchell',       userId: 79957,  status: 'ENABLED' },
   { userName: 'ALLEN',   name: 'Allen Council',        userId: 80428,  status: 'ENABLED' },

@@ -700,6 +700,90 @@ function calibrateLoadRange(dateStr, loadsFound) {
   }
 }
 
+// ---- Driver roster: pull the full user list via cheap list-discovery (NOT a load probe) ----
+// NuVizz's POST /user/list returns EVERY portal user in a single call when maxResult is set
+// above the user count — the portal itself uses maxResult:200. We pull the whole roster, then
+// tag who is an actual delivery driver vs office/admin staff. (Every Davis user carries the
+// DI_Driver role, so the role alone doesn't separate them — the office accounts are the ones
+// that ALSO hold a staff/admin role like MemberAdmin / DI_Dispatcher / Account_CSR.)
+//
+// COST: ~1 NuVizz call per refresh (a single POST). Defensive pagination only adds a call if
+// NuVizz ever caps the page below what we ask for, and a hard 10-page guard means this can
+// never degrade into the ~3,000-call load-number probe. This is the on-demand replacement
+// for the hardcoded DAVIS_DRIVERS registry — drivers change rarely, so we refresh only on ask.
+const STAFF_ROLES = new Set([
+  'MemberAdmin', 'GroupAdmin', 'Account_CSR', 'ROUTE_ANALYST',
+  'DI_Integration', 'DI_Dispatcher', 'DI_Inquiry', 'DI_User', 'User',
+]);
+
+// Map a raw NuVizz user record to the slim shape we store + serve. `isDriver` is the
+// "real driver" flag the UI filters on; `name` matches the DAVIS_DRIVERS registry shape so
+// the roster is a drop-in replacement for it on the Drivers screen.
+function normalizeRosterUser(u) {
+  const roles = (u.userRoles || []).map(r => r && r.role).filter(Boolean);
+  const isDriver = roles.includes('DI_Driver') && !roles.some(r => STAFF_ROLES.has(r));
+  const name = `${(u.firstName || '').trim()} ${(u.lastName || '').trim()}`.trim() || u.userName;
+  const status = u.accountStatus || null;   // ENABLED / DISABLED — matches registry's `status`
+  return {
+    userName: u.userName,
+    userId: u.userId,
+    id: u.id,
+    name,
+    firstName: (u.firstName || '').trim(),
+    lastName: (u.lastName || '').trim(),
+    email: u.email || null,
+    mobileNumber: u.mobileNumber || null,
+    cdlNumber: u.cdlNumber || null,
+    licenseState: u.licenseState || null,
+    licenseExpirationDttm: u.licenseExpirationDttm || null,
+    status,
+    // A driver who isn't ENABLED in NuVizz is inactive — not part of the working roster.
+    // The UI shows enabled drivers and hides disabled ones; this flag makes that explicit.
+    isEnabled: status === 'ENABLED',
+    userType: u.userType || null,
+    roles,
+    isDriver,
+    startDate: u.startDate || null,
+    city: u.city || null,
+    state: u.state || null,
+    lastUpdateDTTM: u.lastUpdateDTTM || null,
+  };
+}
+
+async function fetchDriverRoster(tenant, { pageSize = 500 } = {}) {
+  const { companyCode } = getCreds(tenant);
+  const byUserName = new Map();   // dedup so we never inflate the roster with repeats
+  let totalRecords = null;
+  let pagesFetched = 0;
+  // One big page returns the whole roster in practice (Davis is ~82 users; the portal proved
+  // maxResult:200 works). The loop is belt-and-braces for a future >pageSize roster. We dedup
+  // by userName and stop as soon as a page adds nothing new, so even if NuVizz ignores the
+  // `page` param and re-serves the same records we burn one extra call, not ten — and never
+  // store duplicates. Hard 10-page ceiling = absolute worst case of 10 calls, never a probe.
+  for (let page = 1; page <= 10; page++) {
+    const body = {
+      pageInfo: { pageSize: 0, page, maxResult: pageSize },
+      searchCriteria: { name: '', groupNames: ['-1'], vendorId: ['-1'], email: '', userRoles: ['-1'], status: '-1', companyId: '' },
+    };
+    const data = await nvFetch(tenant, `/user/list/${encodeURIComponent(companyCode)}`, { method: 'POST', body });
+    pagesFetched++;
+    const batch = Array.isArray(data && data.users) ? data.users : [];
+    if (typeof (data && data.totalRecords) === 'number') totalRecords = data.totalRecords;
+    let added = 0;
+    for (const u of batch) {
+      const key = u && (u.userName || u.id || u.userId);
+      if (key == null || byUserName.has(key)) continue;
+      byUserName.set(key, u);
+      added++;
+    }
+    if (added === 0) break;                                  // page repeated / exhausted
+    if (batch.length < pageSize) break;                      // short page → last page
+    if (totalRecords != null && byUserName.size >= totalRecords) break; // got them all
+  }
+  const users = Array.from(byUserName.values()).map(normalizeRosterUser);
+  return { users, totalUsers: users.length, totalRecords, pagesFetched };
+}
+
 // ---- Handler ----
 exports.handler = async (event) => {
   const corsHeaders = {
@@ -1568,6 +1652,98 @@ exports.handler = async (event) => {
         statusCode: 200,
         headers: corsHeaders,
         body: JSON.stringify({ ok: true, summary, refreshedAt: new Date().toISOString() }),
+      };
+    }
+
+    // --- Driver roster (READ): serve the stored roster from Firestore. ZERO NuVizz calls. ---
+    //   ?tenant=davis&path=__drivers          → real drivers only (ENABLED + DISABLED)
+    //   ?tenant=davis&path=__drivers&all=1    → include office/admin users too
+    // This is the normal everyday read the app uses in place of the hardcoded registry.
+    if (apiPath === '__drivers') {
+      const includeAll = params.all === '1' || params.all === 'true';
+      let roster = null;
+      try { roster = await fs_db.readDriverRoster(fleetTenant); }
+      catch (e) { console.error('readDriverRoster failed:', e.message); }
+
+      if (!roster || !Array.isArray(roster.users)) {
+        // Never scanned yet (or Firestore disabled) — honest empty so the client can
+        // fall back to its baked-in registry and prompt for a first roster refresh.
+        return {
+          statusCode: 200,
+          headers: { ...corsHeaders, 'X-Roster': 'EMPTY' },
+          body: JSON.stringify({ tenant: fleetTenant, users: [], drivers: [], driverCount: 0, totalUsers: 0, updatedAt: null, neverScanned: true }),
+        };
+      }
+
+      const allUsers = roster.users;
+      const drivers = allUsers.filter(u => u && u.isDriver);
+      const enabledDrivers = drivers.filter(u => u.isEnabled);
+      return {
+        statusCode: 200,
+        headers: corsHeaders,
+        body: JSON.stringify({
+          tenant: fleetTenant,
+          users: includeAll ? allUsers : drivers,
+          drivers,
+          driverCount: drivers.length,
+          enabledDriverCount: enabledDrivers.length,             // the working roster size
+          disabledDriverCount: drivers.length - enabledDrivers.length,
+          totalUsers: allUsers.length,
+          updatedAt: roster._updatedAt || null,
+        }),
+      };
+    }
+
+    // --- Driver roster (REFRESH): ON-DEMAND scan of NuVizz /user/list. ~1 NuVizz call. ---
+    //   ?tenant=davis&path=__refreshDrivers
+    // MANUAL ONLY — deliberately not wired to any cron/scheduled function. Press this when
+    // the driver team changes. Cheap list-discovery (single POST), NOT the load-number probe.
+    if (apiPath === '__refreshDrivers') {
+      // Honor the global scan kill switch so an ops freeze blocks roster refreshes too.
+      if (!scansEnabled()) {
+        return {
+          statusCode: 503,
+          headers: corsHeaders,
+          body: JSON.stringify({ ok: false, error: 'NUVIZZ_SCANS_ENABLED=false — roster refresh disabled' }),
+        };
+      }
+
+      const { users, totalUsers, totalRecords, pagesFetched } = await fetchDriverRoster(fleetTenant);
+      const drivers = users.filter(u => u && u.isDriver);
+
+      // Clobber guard: a scan that comes back with zero users is almost certainly a transient
+      // NuVizz hiccup (HTTP 200 with an empty list, or degraded auth) — NOT a real empty roster.
+      // Don't overwrite the previously-good roster with nothing; keep it and report the miss.
+      if (totalUsers === 0) {
+        return {
+          statusCode: 200,
+          headers: corsHeaders,
+          body: JSON.stringify({ ok: false, error: 'NuVizz returned no users — roster left unchanged', tenant: fleetTenant, apiCalls: pagesFetched }),
+        };
+      }
+
+      const enabledDrivers = drivers.filter(u => u.isEnabled);
+      const roster = { users, totalUsers, totalRecords, driverCount: drivers.length };
+
+      if (fs_db.isFirestoreEnabled()) {
+        try { await fs_db.writeDriverRoster(fleetTenant, roster); }
+        catch (e) { console.error('writeDriverRoster failed:', e.message); }
+      }
+
+      return {
+        statusCode: 200,
+        headers: corsHeaders,
+        body: JSON.stringify({
+          ok: true,
+          tenant: fleetTenant,
+          driverCount: drivers.length,
+          enabledDriverCount: enabledDrivers.length,
+          disabledDriverCount: drivers.length - enabledDrivers.length,
+          totalUsers,
+          apiCalls: pagesFetched,   // how many NuVizz calls this refresh actually cost
+          drivers,
+          refreshedAt: new Date().toISOString(),
+        }),
       };
     }
 
