@@ -28,7 +28,10 @@ export function linkVal(x: any): any {
   }
   return x;
 }
-const numOrNull = (x: any) => { const n = Number(x); return Number.isFinite(n) ? n : null; };
+// Blank/whitespace → null, NOT 0: Number('') is 0, which would turn an empty cell
+// (a missing weight, or an unsequenced stop's blank ShipTo-Display-Seq) into a real 0 —
+// sorting a blank-seq stop to the FRONT of the route. Treat empty as "unknown" = null.
+const numOrNull = (x: any) => { if (x == null || String(x).trim() === '') return null; const n = Number(x); return Number.isFinite(n) ? n : null; };
 // Only allow the period grammar NuVizz uses (digits, d, +, -, /) so nothing odd is injected.
 export const cleanPeriod = (p: any) => { const s = String(p || '0d'); return /^[+\-/0-9d]{1,8}$/.test(s) ? s : '0d'; };
 

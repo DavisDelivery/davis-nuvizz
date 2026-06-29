@@ -388,6 +388,18 @@ test('normalize: finds the display-seq column by its DISPLAY NAME even when the 
   assert.equal(toBoardStop(r).routeSeq, 4);
 });
 
+test('normalize: a present-but-BLANK display-seq cell → routeSeq null, not 0 (no float-to-front)', () => {
+  // Number('') is 0, which would sort an unsequenced (blank) stop to the FRONT of the route.
+  // A blank cell means "no sequence" → null, so the stop sorts as unsequenced, not first.
+  const cols = ['KeyColumn', 'default_vizzonInfo.shipmentInfo.status', 'vizzonInfo.shipmentInfo.stopNbr', 'route.name', 'vizzonInfo.destination.shipToDisplaySeq'];
+  const filterData = [Object.fromEntries(cols.map((k) => [k, { columnName: k }]))];
+  const blank = normalize({ filterData, values: [['id', '20', '007100001', 'BEN 2', '']] });
+  assert.equal(blank[0].routeSeq, null, 'blank string cell → null');
+  const wrappedBlank = normalize({ filterData, values: [['id', '20', '007100002', 'BEN 2', '{"columnValue":""}']] });
+  assert.equal(wrappedBlank[0].routeSeq, null, 'wrapped-empty cell → null');
+  assert.equal(toBoardStop(blank[0]).routeSeq, null);
+});
+
 test('normalize: no display-seq column → routeSeq stays null (feeds without it are unchanged)', () => {
   const cols = ['KeyColumn', 'default_vizzonInfo.shipmentInfo.status', 'vizzonInfo.shipmentInfo.stopNbr', 'route.name'];
   const filterData = [Object.fromEntries(cols.map((k) => [k, { columnName: k }]))];
