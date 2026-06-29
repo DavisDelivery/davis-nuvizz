@@ -50,7 +50,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.29.78';
+const APP_VERSION = '0.29.79';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -70,6 +70,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.29.79', 'Routing (beta) — Selected window + stop→load. The Selected window now sizes to its contents (no more empty white space; it grows as you add stops), keeps 420px as the standard width (drag the LEFT edge to resize width), and the Type column moved to the end after Zip (#278). And when you open a stop, the detail now shows which LOAD it\'s on with an "Open in Compare" button that pulls that route up in the Compare panel — so a clicked stop is no longer a mystery (#281).'],
   ['0.29.78', 'Routing (beta) — the map pins now MATCH the dispatch Map again: same rich pins with status colour, priority flag, AM/PM window, restriction icons and DNS (the plain numbered circles from 0.29.73 dropped all that). Selected stops still pop orange and routed stops still show their sequence number in the route colour. Also: the right Stops panel no longer clips — each stop is a stacked card (name + PRO/remove on top, city · skids · loose · pcs · weight on a sub-line) that fits the panel, with sort chips up top. The Compare panel gets an Expand-all / Collapse-all stops button (#275) and drops the redundant per-stop window line (the same 8:00–8:00 on every stop) from the expanded detail (#276). And the Ninja toggle is removed from the Compare header — arm it from the on-map tool (the header button was redundant).'],
   ['0.29.77', 'HOTFIX: routing-map stops are back (#279/#282). The smaller circular pins shipped in 0.29.73 used a vector-marker style that silently failed to paint on the routing map\'s satellite/vector base, so the whole board went blank. The pins are now drawn as small numbered circle images, which render reliably — same look, stops visible again. Also: the bottom Stops/Loads grid now centers in the window when the left Setup panel is closed (instead of hugging the left edge); the Compare "Re-sequence" menu moves "Loop" to the bottom of the list (#280); and the Debug-capture box is focused the moment it opens so you can type right away (#280).'],
   ['0.29.76', 'Routing (beta) — new "Loop" re-sequence that stops the criss-crossing. On a Compare route card, Re-sequence → "Loop — down one side & back" runs the stops out along one side of the corridor and back the other (a U-shaped loop), instead of "Farthest first" zig-zagging across the highway. Under the hood it 2-opts the round trip back to the terminal, which un-crosses the route. Each card now also shows which logic is currently applied ("Sequenced: …").'],
@@ -9045,7 +9046,7 @@ function RoutingStopDetail({ stop, note, onOpen, windowViolated }) {
 // Full-detail popup for a stop, opened from any PRO/order-number link. Body reuses
 // RoutingStopDetail (the single detail view). Closes via X, backdrop, or Esc.
 // Never opens empty — guards a null stop.
-function RoutingStopModal({ stop, notes, onClose, windowViolatedSet }) {
+function RoutingStopModal({ stop, notes, onClose, onOpenLoad, windowViolatedSet }) {
   useEffect(() => {
     const onKey = (e) => { if (e.key === 'Escape') onClose(); };
     window.addEventListener('keydown', onKey);
@@ -9055,6 +9056,8 @@ function RoutingStopModal({ stop, notes, onClose, windowViolatedSet }) {
   const note = notes?.get?.(stop.matchKey) || null;
   const pro = stop.pro || stop.stopNbr || stop.primaryPro || '';
   const windowViolated = !!(windowViolatedSet && windowViolatedSet.has(String(stop.stopNbr || stop.pro)));
+  // Which load/route is this stop on (#281 — "no idea the load its on"). Open it in the Compare panel.
+  const loadKey = stop.routeName || stop.loadNbr || '';
   return (
     <div className="fixed inset-0 z-[1000] flex items-center justify-center p-4" role="dialog" aria-modal="true">
       <div className="absolute inset-0 bg-black/40" onClick={onClose} />
@@ -9065,6 +9068,17 @@ function RoutingStopModal({ stop, notes, onClose, windowViolatedSet }) {
             {pro && <div className="text-[11px] text-slate-500">Order / PRO #{pro}</div>}
           </div>
           <button onClick={onClose} aria-label="Close" className="text-slate-400 hover:text-slate-700 text-2xl leading-none px-1 shrink-0">×</button>
+        </div>
+        {/* What load this stop is on, + one-click open of that route in the Compare panel (#281). */}
+        <div className="flex items-center justify-between gap-2 px-3 py-1.5 border-b bg-slate-50 shrink-0">
+          <div className="text-[12px] text-slate-600 min-w-0 truncate">
+            {loadKey ? <>On load <span className="font-semibold text-slate-800">{loadKey}</span></> : <span className="text-slate-400">Not on a load yet (unplanned)</span>}
+          </div>
+          {loadKey && onOpenLoad && (
+            <button onClick={() => { onOpenLoad(loadKey); onClose(); }} className="shrink-0 inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-1 rounded text-white" style={{ background: BRAND }}>
+              Open in Compare
+            </button>
+          )}
         </div>
         <div className="flex-1 min-h-0 overflow-y-auto p-3">
           <RoutingStopDetail stop={stop} note={note} windowViolated={windowViolated} />
@@ -9594,21 +9608,15 @@ function RoutingSelectionFloatPanel({ selectedStops, onRemove, onClearAll, onOpe
   }), [selectedStops]);
   const tot = rows.reduce((a, r) => ({ wt: a.wt + r.weight, plt: a.plt + r.pallets, ls: a.ls + r.loose }), { wt: 0, plt: 0, ls: 0 });
   const { sorted, sortKey, sortDir, toggle } = useSortable(rows, null, 'asc');
-  // User-resizable window (#260) — width + height persisted; desktop only (mobile spans full width).
-  // Anchored top-right, so the resize grip lives at the bottom-LEFT corner: drag left = wider, down
-  // = taller. null height = auto (cap at 60vh) until the user sizes it.
+  // WIDTH-resizable window (drag the left edge); width persisted; desktop only. Height is always
+  // content-driven (capped at 60vh) so the window grows as stops are added and never shows empty
+  // white space (#278). 420px is the standard default width.
   const [panelW, setPanelW] = useState(() => { const v = Number(localStorage.getItem('routing.selPanelW')); return v >= 300 ? v : 420; });
-  const [panelH, setPanelH] = useState(() => { const v = Number(localStorage.getItem('routing.selPanelH')); return v >= 160 ? v : 0; });
-  const panelRef = useRef(null);
   useEffect(() => { try { localStorage.setItem('routing.selPanelW', String(panelW)); } catch { /* ignore */ } }, [panelW]);
-  useEffect(() => { try { if (panelH) localStorage.setItem('routing.selPanelH', String(panelH)); } catch { /* ignore */ } }, [panelH]);
   const onResizeDown = (e) => {
     e.preventDefault(); e.stopPropagation();
-    const startX = e.clientX, startY = e.clientY, w0 = panelW, h0 = panelH || (panelRef.current?.offsetHeight ?? 360);
-    const move = (ev) => {
-      setPanelW(Math.max(300, Math.min(window.innerWidth - 24, w0 + (startX - ev.clientX))));
-      setPanelH(Math.max(160, Math.min(window.innerHeight * 0.85, h0 + (ev.clientY - startY))));
-    };
+    const startX = e.clientX, w0 = panelW;
+    const move = (ev) => setPanelW(Math.max(300, Math.min(window.innerWidth - 24, w0 + (startX - ev.clientX))));
     const up = () => { document.removeEventListener('pointermove', move); document.removeEventListener('pointerup', up); };
     document.addEventListener('pointermove', move); document.addEventListener('pointerup', up);
   };
@@ -9620,9 +9628,8 @@ function RoutingSelectionFloatPanel({ selectedStops, onRemove, onClearAll, onOpe
   );
   return (
     <div
-      ref={panelRef}
-      className={`absolute z-20 bg-white border border-slate-300 rounded-lg shadow-xl flex flex-col ${isMobile ? 'left-2 right-2 top-12 max-h-[45vh]' : 'right-2 top-12 max-w-[calc(100%-1rem)]'}`}
-      style={isMobile ? undefined : { width: panelW, maxHeight: panelH ? undefined : '60vh', height: panelH || undefined }}
+      className={`absolute z-20 bg-white border border-slate-300 rounded-lg shadow-xl flex flex-col ${isMobile ? 'left-2 right-2 top-12 max-h-[45vh]' : 'right-2 top-12 max-w-[calc(100%-1rem)] max-h-[60vh]'}`}
+      style={isMobile ? undefined : { width: panelW }}
     >
       <div className="flex items-center justify-between gap-2 px-3 py-1.5 border-b bg-slate-50 rounded-t-lg shrink-0">
         <div className="font-semibold text-[13px] text-slate-800 min-w-0 truncate">
@@ -9644,13 +9651,13 @@ function RoutingSelectionFloatPanel({ selectedStops, onRemove, onClearAll, onOpe
             <thead className="bg-slate-50 sticky top-0 z-10">
               <tr className="text-[9px] uppercase tracking-wide text-slate-500">
                 <Th label="Stop#" k="pro" />
-                <Th label="Type" k="type" />
                 <Th label="Location" k="location" />
                 <Th label="Plt" k="pallets" align="right" />
                 <Th label="Loose" k="loose" align="right" />
                 <Th label="Wt" k="weight" align="right" />
                 <Th label="City" k="city" />
                 <Th label="Zip" k="zip" />
+                <Th label="Type" k="type" />
                 <th className="px-1 py-1" />
               </tr>
             </thead>
@@ -9658,13 +9665,13 @@ function RoutingSelectionFloatPanel({ selectedStops, onRemove, onClearAll, onOpe
               {sorted.map((r) => (
                 <tr key={r.id} className="border-t hover:bg-slate-50">
                   <td className="px-1.5 py-1 whitespace-nowrap"><button onClick={() => onOpenStop && onOpenStop(r.stop)} className="font-mono text-blue-700 hover:underline">{r.pro}</button></td>
-                  <td className="px-1 py-1"><span className={`text-[9px] font-bold px-1 rounded ${r.type === 'PU' ? 'bg-violet-100 text-violet-700' : 'bg-slate-100 text-slate-600'}`}>{r.type}</span></td>
                   <td className="px-1.5 py-1 max-w-[150px] truncate" title={r.location}>{r.location}</td>
                   <td className="px-1 py-1 text-right tabular-nums">{r.pallets}</td>
                   <td className="px-1 py-1 text-right tabular-nums">{r.loose}</td>
                   <td className="px-1 py-1 text-right tabular-nums">{r.weight.toLocaleString()}</td>
                   <td className="px-1.5 py-1 max-w-[90px] truncate" title={r.city}>{r.city}</td>
                   <td className="px-1 py-1 whitespace-nowrap text-slate-600">{r.zip}</td>
+                  <td className="px-1 py-1"><span className={`text-[9px] font-bold px-1 rounded ${r.type === 'PU' ? 'bg-violet-100 text-violet-700' : 'bg-slate-100 text-slate-600'}`}>{r.type}</span></td>
                   <td className="px-1 py-1"><button onClick={() => onRemove(r.id)} aria-label={`Remove ${r.location} from selection`} className="text-slate-400 hover:text-red-600 leading-none text-base">×</button></td>
                 </tr>
               ))}
@@ -9672,16 +9679,14 @@ function RoutingSelectionFloatPanel({ selectedStops, onRemove, onClearAll, onOpe
           </table>
         </div>
       )}
-      {/* Resize grip (desktop) — bottom-left corner; drag to size the window. */}
+      {/* Width-resize handle (desktop) — drag the LEFT edge; height stays content-driven (#278). */}
       {!isMobile && (
         <div
           onPointerDown={onResizeDown}
-          className="absolute bottom-0 left-0 w-4 h-4 cursor-nesw-resize text-slate-300 hover:text-slate-500"
-          title="Drag to resize"
+          className="absolute top-0 bottom-0 left-0 w-1.5 cursor-ew-resize hover:bg-slate-200/70 rounded-l-lg"
+          title="Drag to resize width"
           style={{ touchAction: 'none' }}
-        >
-          <svg viewBox="0 0 10 10" className="w-full h-full"><path d="M1 9 L9 1 M1 5 L5 1 M5 9 L9 5" stroke="currentColor" strokeWidth="1" fill="none" /></svg>
-        </div>
+        />
       )}
     </div>
   );
@@ -11065,7 +11070,7 @@ function RoutingScreen({ debugCaptureRef }) {
             </div>
           )}
         </div>
-        {detailModalStop && <RoutingStopModal stop={detailModalStop} notes={notes} windowViolatedSet={windowViolatedSet} onClose={() => setDetailModalStop(null)} />}
+        {detailModalStop && <RoutingStopModal stop={detailModalStop} notes={notes} windowViolatedSet={windowViolatedSet} onClose={() => setDetailModalStop(null)} onOpenLoad={(key) => openRouteInWorkbench(key)} />}
         {versionLogOpen && <VersionLogModal onClose={() => setVersionLogOpen(false)} />}
       </div>
     );
@@ -11200,7 +11205,7 @@ function RoutingScreen({ debugCaptureRef }) {
         </>
         )}
       </div>
-      {detailModalStop && <RoutingStopModal stop={detailModalStop} notes={notes} windowViolatedSet={windowViolatedSet} onClose={() => setDetailModalStop(null)} />}
+      {detailModalStop && <RoutingStopModal stop={detailModalStop} notes={notes} windowViolatedSet={windowViolatedSet} onClose={() => setDetailModalStop(null)} onOpenLoad={(key) => openRouteInWorkbench(key)} />}
         {versionLogOpen && <VersionLogModal onClose={() => setVersionLogOpen(false)} />}
     </div>
   );
