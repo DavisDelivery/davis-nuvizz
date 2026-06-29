@@ -50,7 +50,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.29.83';
+const APP_VERSION = '0.29.84';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -88,6 +88,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.29.84', 'Routing — the ShipTo - Display Seq delivery order now actually sticks after a re-scan (#292). The fresh order read from the list was being silently overwritten on every scan by the older, carried-forward sequence (the physical route seq that the Display-Seq column was meant to replace), so the route kept re-opening in the old order no matter how many times you refreshed. The list\'s Display-Seq is now authoritative and the carried-forward value can only fill in when the column is genuinely absent. Refresh and re-open the load to see the corrected order.'],
   ['0.29.83', 'Routing — make the ShipTo - Display Seq read robust (#290). The delivery-order column is now matched by its DISPLAY NAME ("ShipTo - Display Seq") as well as the internal key, so the scan can\'t miss it if NuVizz keys the column by an opaque path. (If your refresh did not change the order, it was on v0.29.81 — before the v0.29.82 column read shipped; once this is live, refresh and re-open the load.) When the column genuinely isn\'t present the scan logs it instead of silently falling back to the geographic guess.'],
   ['0.29.82', 'Routing — loads now sequence in the REAL delivery order. The scan now reads the new "ShipTo - Display Seq" column you added to the saved search and uses it as each stop\'s delivery order within its load, so opening a load in Compare (and its map polyline / route list) follows NuVizz\'s actual stop order instead of a geographic guess — no per-stop enrichment needed. Takes effect after the next scheduled scan repopulates the board (like the Estimated-Arrival column add).'],
   ['0.29.81', 'Routing (beta) — fixing a stop\'s address now moves its pin LIVE. After you correct an address, the routing map repositions the stop to the right spot immediately (it applies the same corrected-pin override the dispatch Map uses, and recomputes on the spot) — instead of the stop vanishing until you closed and reopened the map (#287).'],

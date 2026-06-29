@@ -28,7 +28,10 @@ export function linkVal(x: any): any {
   }
   return x;
 }
-const numOrNull = (x: any) => { const n = Number(x); return Number.isFinite(n) ? n : null; };
+// Blank/whitespace → null, NOT 0: Number('') is 0, which would turn an empty cell
+// (a missing weight, or an unsequenced stop's blank ShipTo-Display-Seq) into a real 0 —
+// sorting a blank-seq stop to the FRONT of the route. Treat empty as "unknown" = null.
+const numOrNull = (x: any) => { if (x == null || String(x).trim() === '') return null; const n = Number(x); return Number.isFinite(n) ? n : null; };
 // Only allow the period grammar NuVizz uses (digits, d, +, -, /) so nothing odd is injected.
 export const cleanPeriod = (p: any) => { const s = String(p || '0d'); return /^[+\-/0-9d]{1,8}$/.test(s) ? s : '0d'; };
 
@@ -567,11 +570,21 @@ export const LIVE_LIST_FIELDS = [
 // null/blank, so list-derived values survive when a detail field is sparse.
 export function mergeEnrich(target: any, src: any): any {
   if (!src || typeof src !== 'object') return target;
+  // The ShipTo-Display-Seq delivery order arrives FREE & authoritative on every list scan
+  // (toBoardStop → routeSeq). It must WIN over any carried-forward / enriched value: the
+  // enrichment path's routeSeq is the PHYSICAL stop.to.seq (nuvizz-scan: numOrNull(primary.seq))
+  // — a different number, and exactly the wrong order the Display-Seq column was added to
+  // replace. routeSeq is a non-live field, so without this guard mergeEnrich would copy the
+  // stale enriched seq over the fresh list value on every carry-forward, and a re-scan would
+  // never actually re-order the route (#292). We still let src BACKFILL when the list row
+  // carried no Display-Seq (target.routeSeq null).
+  const listRouteSeq = typeof target.routeSeq === 'number' ? target.routeSeq : null;
   for (const [k, v] of Object.entries(src)) {
     if (LIVE_LIST_FIELDS.includes(k) || k === 'enriched' || k === 'last_scanned_at' || k === '_id') continue;
     if (v === null || v === undefined || v === '' || (Array.isArray(v) && v.length === 0)) continue;
     target[k] = v;
   }
+  if (listRouteSeq != null) target.routeSeq = listRouteSeq;  // list Display-Seq is authoritative
   target.enriched = true;
   return target;
 }
