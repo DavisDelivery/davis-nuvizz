@@ -50,7 +50,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.29.66';
+const APP_VERSION = '0.29.68';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -70,6 +70,8 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.29.68', 'Routing (beta), Compare panel — more detail, to match NuVizz. Each route card now shows MILEAGE up top: total route miles + drive time + deadhead (depot → first stop), computed depot-anchored in the current order and updating live as you re-sequence/drag. And every stop now has its own expand/collapse chevron — open it to see the full address, delivery window, weight/skids/pieces, and the miles to the next stop (was just name + city before).'],
+  ['0.29.67', 'Planning horizon (#251) — the scheduled scan now builds the board for today + the next TWO business days (was today + one). So a Sunday scan already populates Tuesday (Uline ships Sunday for Tuesday delivery) instead of leaving it empty until Monday. The extra day is sliced from the ±7-day saved-search pull the scan already makes — no extra list calls — and its orders are enriched on the lower-volume day (Sunday) rather than piling onto a busy Monday. Tunable via NUVIZZ_LIST_HORIZON_DAYS.'],
   ['0.29.66', 'Refresh button cost fix (#244) — the refresh/Scan-now button beside the stops count now fires ONLY the cheap scheduled-scan path: the saved-search planned/unplanned (77128) + completed (77131) pulls + the load roster, for today and tomorrow (~4 NuVizz calls, plus one per genuinely-new order). It used to pass the viewed date, which flipped the scanner into the full number-probe — a ~3,000-call cold scan. Same button, ~4 calls instead of thousands.'],
   ['0.29.65', 'Carry-over clarity (#245) — the carry-over control now shows the actual window it’s covering, e.g. "since Jun 22 · 7d back", so it’s clear the calendar date and the presets are the SAME setting. Picking "since 6/22" on a 6/29 board IS the 7d preset (7 days back) — it was never overriding your date, just showing the same window two ways.'],
   ['0.29.64', 'Unplanned across multiple days (#239) — the "Carry-over unplanned" filter is now a configurable look-back instead of a fixed on/off. Pick a preset (Off / 3d / 7d / 14d) or a calendar "since" date, and the board folds in every still-unplanned order from that many prior days onto the day you’re viewing (each tagged amber, counted in the "· N c/o" badge). Default is today-only; your old on/off setting migrates to 7 days.'],
@@ -9289,6 +9291,8 @@ function RoutingWorkbenchCard({ route, stopById, otherKeys, ninjaMode, isActive,
   // Drag-and-drop (desktop): track which row we're hovering so we can show a drop line, and read
   // the dragged stop out of dataTransfer on drop. beforeId=null means "append to the end".
   const [dragOverId, setDragOverId] = useState(null);
+  const [expanded, setExpanded] = useState(() => new Set());   // per-stop detail expand (NuVizz-style)
+  const toggleExpand = (id) => setExpanded((prev) => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
   const onRowDragStart = (e, id) => { try { e.dataTransfer.setData('text/plain', JSON.stringify({ fromKey: route.key, id: String(id) })); e.dataTransfer.effectAllowed = 'move'; } catch { /* ignore */ } };
   const readDrag = (e) => { try { return JSON.parse(e.dataTransfer.getData('text/plain')); } catch { return null; } };
   const onDrop = (e, beforeId) => {
@@ -9304,6 +9308,19 @@ function RoutingWorkbenchCard({ route, stopById, otherKeys, ninjaMode, isActive,
     if (classifyStopStatus(s) === 'DELIVERED') delivered += 1;
     if (!driverName && (s.driverName || s.driverUserName)) driverName = s.driverName || s.driverUserName;
   }
+  // Route distance + drive time (depot-anchored, in the CURRENT order) via the same haversine
+  // recompute the map polyline uses — matches the NuVizz route card's mileage and updates live on
+  // re-sequence / drag. Per-stop "next leg" miles feed the expanded detail. All local, no API.
+  const pts = [];
+  for (const s of rows) if (s.lat != null && s.lng != null) pts.push({ id: String(s.stopNbr), lat: s.lat, lng: s.lng });
+  const rc = pts.length ? recomputeRoute(pts, ROUTING_DEPOT) : null;
+  const miles = rc ? rc.totalDistanceMeters / 1609.344 : 0;
+  const driveMin = rc ? Math.round(rc.totalDurationSec / 60) : 0;
+  const dhMi = rc && rc.legs[0] ? rc.legs[0].distanceMeters / 1609.344 : 0;   // deadhead: depot → first stop
+  const nextMiById = new Map();
+  if (rc) for (let k = 0; k < pts.length; k++) { const nl = rc.legs[k + 1]; if (nl) nextMiById.set(pts[k].id, nl.distanceMeters / 1609.344); }
+  const fmtDur = (m) => (m >= 60 ? `${Math.floor(m / 60)}h${String(m % 60).padStart(2, '0')}m` : `${m}m`);
+  const fmtWin = (iso) => { const m = String(iso || '').match(/[T ](\d{2}):(\d{2})/); if (!m) return ''; let h = +m[1]; const ap = h >= 12 ? 'p' : 'a'; h = h % 12 || 12; return `${h}:${m[2]}${ap}`; };
   return (
     <div className={`${isMobile ? 'w-full' : 'w-[300px]'} shrink-0 border rounded-lg bg-white flex flex-col min-h-0 ${isMobile ? '' : 'max-h-full'} ${ninjaMode && isActive ? 'ring-2 ring-amber-400 border-amber-300' : ''}`}>
       <div className={`px-2 py-1.5 border-b rounded-t-lg shrink-0 ${ninjaMode && isActive ? 'bg-amber-50' : 'bg-slate-50'}`}>
@@ -9324,6 +9341,7 @@ function RoutingWorkbenchCard({ route, stopById, otherKeys, ninjaMode, isActive,
           </div>
         </div>
         <div className="text-[11px] text-slate-500 truncate">{driverName || 'No driver'} · {rows.length} stop{rows.length === 1 ? '' : 's'} · {skids} sk · {Math.round(weight).toLocaleString()} lb · {rows.length ? Math.round((100 * delivered) / rows.length) : 0}%</div>
+        {rc && <div className="text-[11px] font-semibold text-slate-700">{miles.toFixed(1)} mi · {fmtDur(driveMin)}<span className="font-normal text-slate-400"> · DH {dhMi.toFixed(1)} mi</span></div>}
         {!route.collapsed && (
           <select onChange={(e) => { if (e.target.value) onResequence(e.target.value); e.target.value = ''; }} defaultValue="" className="mt-1 w-full border rounded px-1 py-1 text-[11px] bg-white">
             <option value="" disabled>Re-sequence…</option>
@@ -9341,31 +9359,49 @@ function RoutingWorkbenchCard({ route, stopById, otherKeys, ninjaMode, isActive,
           onDrop={isMobile ? undefined : (e) => onDrop(e, null)}
         >
           {rows.length === 0 && <li className="px-2 py-2 text-[11px] text-slate-400">{isMobile ? 'No stops on this route.' : 'No stops — drag one here.'}</li>}
-          {rows.map((s, i) => (
+          {rows.map((s, i) => {
+            const id = String(s.stopNbr);
+            const isExp = expanded.has(id);
+            const win = [fmtWin(s.scheduledFrom), fmtWin(s.scheduledTo)].filter(Boolean).join('–');
+            const nextMi = nextMiById.get(id);
+            return (
             <li
-              key={String(s.stopNbr)}
+              key={id}
               draggable={!isMobile}
               onDragStart={isMobile ? undefined : (e) => onRowDragStart(e, s.stopNbr)}
-              onDragOver={isMobile ? undefined : (e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; setDragOverId(String(s.stopNbr)); }}
-              onDragLeave={isMobile ? undefined : () => setDragOverId((d) => (d === String(s.stopNbr) ? null : d))}
+              onDragOver={isMobile ? undefined : (e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; setDragOverId(id); }}
+              onDragLeave={isMobile ? undefined : () => setDragOverId((d) => (d === id ? null : d))}
               onDrop={isMobile ? undefined : (e) => onDrop(e, s.stopNbr)}
-              className={`px-2 py-1 flex items-center gap-2 text-[11px] ${isMobile ? '' : 'cursor-grab active:cursor-grabbing'} ${dragOverId === String(s.stopNbr) ? 'border-t-2 border-t-blue-500 bg-blue-50/60' : ''}`}
+              className={`text-[11px] ${isMobile ? '' : 'cursor-grab active:cursor-grabbing'} ${dragOverId === id ? 'border-t-2 border-t-blue-500 bg-blue-50/60' : ''}`}
             >
-              {!isMobile && <GripVertical size={11} className="text-slate-300 shrink-0" />}
-              <span className="w-4 text-right text-slate-400 font-mono shrink-0">{i + 1}</span>
-              <div className="min-w-0 flex-1">
-                <div className="truncate font-medium text-slate-800">{s.businessName || String(s.stopNbr)}</div>
-                <div className="truncate text-slate-500">{[s.city, `${Number(s.cartons) || 0} sk`].filter(Boolean).join(' · ')}</div>
+              <div className="px-2 py-1 flex items-center gap-1.5">
+                {!isMobile && <GripVertical size={11} className="text-slate-300 shrink-0" />}
+                <span className="w-4 text-right text-slate-400 font-mono shrink-0">{i + 1}</span>
+                <button onClick={(e) => { e.stopPropagation(); toggleExpand(id); }} className="text-slate-400 hover:text-slate-700 shrink-0" aria-label={isExp ? 'Collapse stop detail' : 'Expand stop detail'} aria-expanded={isExp}>
+                  {isExp ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+                </button>
+                <div className="min-w-0 flex-1">
+                  <div className="truncate font-medium text-slate-800">{s.businessName || id}</div>
+                  {!isExp && <div className="truncate text-slate-500">{[s.city, `${Number(s.cartons) || 0} sk`].filter(Boolean).join(' · ')}</div>}
+                </div>
+                <button onClick={() => onOpenStop && onOpenStop(s)} className="font-mono text-blue-700 text-[10px] shrink-0" title="Open stop">{s.primaryPro || s.pro || s.stopNbr}</button>
+                {otherKeys.length > 0 && (
+                  <select onChange={(e) => { if (e.target.value) onMoveStop(id, e.target.value); e.target.value = ''; }} defaultValue="" className="border rounded text-[10px] px-0.5 py-0.5 bg-white shrink-0" title="Move to another route" aria-label={`Move ${s.businessName || id} to another route`}>
+                    <option value="">→</option>
+                    {otherKeys.map((k) => <option key={k} value={k}>{k}</option>)}
+                  </select>
+                )}
               </div>
-              <button onClick={() => onOpenStop && onOpenStop(s)} className="font-mono text-blue-700 text-[10px] shrink-0" title="Open stop">{s.primaryPro || s.pro || s.stopNbr}</button>
-              {otherKeys.length > 0 && (
-                <select onChange={(e) => { if (e.target.value) onMoveStop(String(s.stopNbr), e.target.value); e.target.value = ''; }} defaultValue="" className="border rounded text-[10px] px-0.5 py-0.5 bg-white shrink-0" title="Move to another route" aria-label={`Move ${s.businessName || s.stopNbr} to another route`}>
-                  <option value="">→</option>
-                  {otherKeys.map((k) => <option key={k} value={k}>{k}</option>)}
-                </select>
+              {isExp && (
+                <div className="px-2 pb-1.5 pl-[34px] text-[10px] text-slate-500 space-y-0.5">
+                  <div className="text-slate-600">{[s.addr1, s.city, s.zip].filter(Boolean).join(', ') || '—'}</div>
+                  {win && <div className="inline-flex items-center gap-1"><Clock size={10} /> {win}</div>}
+                  <div>{Math.round(Number(s.weight) || 0).toLocaleString()} lb · {Number(s.cartons) || 0} sk · {Number(s.pallets) || 0} pcs</div>
+                  {nextMi != null && <div className="text-slate-400">Next stop: {nextMi.toFixed(1)} mi</div>}
+                </div>
               )}
             </li>
-          ))}
+          ); })}
         </ol>
       )}
     </div>
