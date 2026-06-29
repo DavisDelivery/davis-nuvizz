@@ -50,7 +50,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.29.80';
+const APP_VERSION = '0.29.81';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -88,6 +88,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.29.81', 'Routing (beta) — fixing a stop\'s address now moves its pin LIVE. After you correct an address, the routing map repositions the stop to the right spot immediately (it applies the same corrected-pin override the dispatch Map uses, and recomputes on the spot) — instead of the stop vanishing until you closed and reopened the map (#287).'],
   ['0.29.80', 'Routing (beta) — load NAMES, not gibberish ids. A Compare card / load / send button / Routes panel / stop detail now ALWAYS shows the recurring-load name (e.g. "BEN 2") and never a raw NuVizz id — a hash-like value is suppressed everywhere (frontend guard) and the load roster now reads the human load number with the same guard the driver field got in #254. Also: the Re-sequence menu now keeps showing the applied logic (e.g. "Shortest distance") until you change it, manually dragging a stop marks the route "Manual order (edited)" so it never auto re-sorts your hand-tweaks, and every Compare card now has a Print-manifest button (#263/#280).'],
   ['0.29.79', 'Routing (beta) — Selected window + stop→load. The Selected window now sizes to its contents (no more empty white space; it grows as you add stops), keeps 420px as the standard width (drag the LEFT edge to resize width), and the Type column moved to the end after Zip (#278). And when you open a stop, the detail now shows which LOAD it\'s on with an "Open in Compare" button that pulls that route up in the Compare panel — so a clicked stop is no longer a mystery (#281).'],
   ['0.29.78', 'Routing (beta) — the map pins now MATCH the dispatch Map again: same rich pins with status colour, priority flag, AM/PM window, restriction icons and DNS (the plain numbered circles from 0.29.73 dropped all that). Selected stops still pop orange and routed stops still show their sequence number in the route colour. Also: the right Stops panel no longer clips — each stop is a stacked card (name + PRO/remove on top, city · skids · loose · pcs · weight on a sub-line) that fits the panel, with sort chips up top. The Compare panel gets an Expand-all / Collapse-all stops button (#275) and drops the redundant per-stop window line (the same 8:00–8:00 on every stop) from the expanded detail (#276). And the Ninja toggle is removed from the Compare header — arm it from the on-map tool (the header button was redundant).'],
@@ -9945,9 +9946,14 @@ function RoutingScreen({ debugCaptureRef }) {
   const [lastRequest, setLastRequest] = useState(null);
 
   const positioned = useMemo(() => {
-    const p = stops.filter((s) => s.lat != null && s.lng != null);
+    // Apply a customer's corrected pin (location_override from the "Edit address" fix) so the routing
+    // map moves the stop to the fixed spot — and recompute on `notes` so it happens LIVE, not only
+    // after closing/reopening the map (#287). Mirrors the dispatch Map's override handling.
+    const p = stops
+      .map((s) => { const ov = notes.get(s.matchKey)?.location_override; return (ov && typeof ov.lat === 'number' && typeof ov.lng === 'number') ? { ...s, lat: ov.lat, lng: ov.lng } : s; })
+      .filter((s) => s.lat != null && s.lng != null);
     return routeUnplannedOnly ? p.filter((s) => s.isUnplanned) : p;
-  }, [stops, routeUnplannedOnly]);
+  }, [stops, routeUnplannedOnly, notes]);
   const stopById = useMemo(() => new Map(positioned.map((s) => [String(s.stopNbr), s])), [positioned]);
   const positionedRef = useRef(positioned);
   useEffect(() => { positionedRef.current = positioned; }, [positioned]);
