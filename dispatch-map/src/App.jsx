@@ -15,7 +15,7 @@ import { MarkerClusterer } from '@googlemaps/markerclusterer';
 import {
   MapPin, RefreshCw, X, Filter, Truck, Save, Plus, Trash2,
   Activity, ChevronDown, ChevronUp, Eye, EyeOff,
-  Search, Tag, Tags, ArrowLeft, Gauge, Clock, MapPinned,
+  Search, Tag, Tags, ArrowLeft, ArrowRight, Gauge, Clock, MapPinned,
   Info, Settings, LayoutList, Sparkles, MessageSquare, Square, Lasso, AlertTriangle, Ban, Send, Package,
   FileCheck, ExternalLink, Image as ImageIcon, Printer, FileText, Bug,
   ChevronRight, GripVertical,
@@ -50,7 +50,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.29.68';
+const APP_VERSION = '0.29.69';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -70,6 +70,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.29.69', 'Routing (beta) + scan accuracy. Compare panel: SELECTED stops can now go straight into an open load — when you have stops selected, the Compare header shows a green "→ Load (N)" button for each open card, so you send the whole selection to either load in one click (#258). Driver names that came through as a hash/id are now shown as "Driver assigned" instead of the gibberish, and the real name shows when NuVizz gives us one (#254). Compare route line can hide the stem-out (depot → first stop) leg via the gear menu (#256). Debug capture sheet auto-closes after it saves (#255); the floating selected-stops panel is now solid white and dropped its redundant Window column (#257). Scan: carry-over no longer folds in stops that were unplanned at the last full scan but have since been delivered/planned — it cross-checks the latest live unplanned set and prunes the stale ones, so the day count stops drifting above what NuVizz shows (#253).'],
   ['0.29.68', 'Routing (beta), Compare panel — more detail, to match NuVizz. Each route card now shows MILEAGE up top: total route miles + drive time + deadhead (depot → first stop), computed depot-anchored in the current order and updating live as you re-sequence/drag. And every stop now has its own expand/collapse chevron — open it to see the full address, delivery window, weight/skids/pieces, and the miles to the next stop (was just name + city before).'],
   ['0.29.67', 'Planning horizon (#251) — the scheduled scan now builds the board for today + the next TWO business days (was today + one). So a Sunday scan already populates Tuesday (Uline ships Sunday for Tuesday delivery) instead of leaving it empty until Monday. The extra day is sliced from the ±7-day saved-search pull the scan already makes — no extra list calls — and its orders are enriched on the lower-volume day (Sunday) rather than piling onto a busy Monday. Tunable via NUVIZZ_LIST_HORIZON_DAYS.'],
   ['0.29.66', 'Refresh button cost fix (#244) — the refresh/Scan-now button beside the stops count now fires ONLY the cheap scheduled-scan path: the saved-search planned/unplanned (77128) + completed (77131) pulls + the load roster, for today and tomorrow (~4 NuVizz calls, plus one per genuinely-new order). It used to pass the viewed date, which flipped the scanner into the full number-probe — a ~3,000-call cold scan. Same button, ~4 calls instead of thousands.'],
@@ -6045,6 +6046,13 @@ function DebugCaptureSheet({ open, onClose, captureRef }) {
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
   }, [open, onClose]);
+  // Once the issue is opened, show its number briefly then auto-close (#255) — the dispatcher
+  // just needs to see the number, not dismiss the sheet by hand.
+  useEffect(() => {
+    if (!result) return undefined;
+    const t = setTimeout(() => { if (mountedRef.current) onClose(); }, 2800);
+    return () => clearTimeout(t);
+  }, [result, onClose]);
   if (!open) return null;
 
   const send = async () => {
@@ -6093,6 +6101,7 @@ function DebugCaptureSheet({ open, onClose, captureRef }) {
               <ExternalLink size={14} /> Opened issue{result.issueNumber ? ` #${result.issueNumber}` : ''} →
             </a>
           )}
+          {result && <div className="text-[11px] text-slate-400">Closing…</div>}
           {error && <div className="text-xs text-red-600 bg-red-50 border border-red-200 rounded px-2 py-1.5">{error}</div>}
         </div>
         <div className="border-t p-3">
@@ -9229,7 +9238,7 @@ function RoutingRoutesPanel({ groups, onPick }) {
                 <div className="font-semibold text-slate-800 truncate">{g.name}</div>
                 <div className="text-[12px] font-bold shrink-0" style={{ color: done ? '#16a34a' : BRAND }}>{pct}%</div>
               </div>
-              <div className="text-[11px] text-slate-500 truncate">{g.driver || 'No driver assigned'}</div>
+              <div className="text-[11px] text-slate-500 truncate">{g.driver || (g.driverId ? 'Driver assigned' : 'No driver assigned')}</div>
               <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 mt-1 text-[11px] text-slate-600">
                 <span>{g.count} stop{g.count === 1 ? '' : 's'}</span>
                 <span>{g.skids} skids</span>
@@ -9302,12 +9311,14 @@ function RoutingWorkbenchCard({ route, stopById, otherKeys, ninjaMode, isActive,
   };
   const color = route.color || '#64748b';
   let skids = 0, weight = 0, delivered = 0;
-  let driverName = '';
+  let driverName = '', driverId = '';
   for (const s of rows) {
     skids += Number(s.cartons) || 0; weight += Number(s.weight) || 0;
     if (classifyStopStatus(s) === 'DELIVERED') delivered += 1;
     if (!driverName && (s.driverName || s.driverUserName)) driverName = s.driverName || s.driverUserName;
+    if (!driverId && s.driverId) driverId = s.driverId;
   }
+  const driverLabel = driverName || (driverId ? 'Driver assigned' : 'No driver');
   // Route distance + drive time (depot-anchored, in the CURRENT order) via the same haversine
   // recompute the map polyline uses — matches the NuVizz route card's mileage and updates live on
   // re-sequence / drag. Per-stop "next leg" miles feed the expanded detail. All local, no API.
@@ -9340,7 +9351,7 @@ function RoutingWorkbenchCard({ route, stopById, otherKeys, ninjaMode, isActive,
             <button onClick={onClose} className="text-slate-400 hover:text-red-600 leading-none text-lg" aria-label={`Close route ${route.key}`}>×</button>
           </div>
         </div>
-        <div className="text-[11px] text-slate-500 truncate">{driverName || 'No driver'} · {rows.length} stop{rows.length === 1 ? '' : 's'} · {skids} sk · {Math.round(weight).toLocaleString()} lb · {rows.length ? Math.round((100 * delivered) / rows.length) : 0}%</div>
+        <div className="text-[11px] text-slate-500 truncate">{driverLabel} · {rows.length} stop{rows.length === 1 ? '' : 's'} · {skids} sk · {Math.round(weight).toLocaleString()} lb · {rows.length ? Math.round((100 * delivered) / rows.length) : 0}%</div>
         {rc && <div className="text-[11px] font-semibold text-slate-700">{miles.toFixed(1)} mi · {fmtDur(driveMin)}<span className="font-normal text-slate-400"> · DH {dhMi.toFixed(1)} mi</span></div>}
         {!route.collapsed && (
           <select onChange={(e) => { if (e.target.value) onResequence(e.target.value); e.target.value = ''; }} defaultValue="" className="mt-1 w-full border rounded px-1 py-1 text-[11px] bg-white">
@@ -9411,12 +9422,25 @@ function RoutingWorkbenchCard({ route, stopById, otherKeys, ninjaMode, isActive,
 // The route workbench (part 4): the 1–3 route cards opened from the right Routes panel, laid out
 // side by side (desktop) or stacked (mobile). Replaces the Setup stack on the left while routes
 // are open; "Back to Setup" closes them all.
-function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmNinja, activeKey, onSetActive, onResequence, onCollapse, onClose, onCloseAll, onMoveStop, onDropStop, onOpenStop, isMobile }) {
+function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmNinja, activeKey, onSetActive, onResequence, onCollapse, onClose, onCloseAll, onMoveStop, onDropStop, onOpenStop, selectedCount = 0, onSendSelection, isMobile }) {
   return (
     <div className="flex flex-col h-full min-h-0">
       <div className="flex items-center justify-between gap-2 px-2 py-1.5 border-b shrink-0 bg-white">
         <span className="font-semibold text-slate-800 text-[13px] shrink-0">Compare <span className="text-slate-400 text-[11px]">({wbRoutes.length}/3)</span></span>
-        <div className="flex items-center gap-2 shrink-0">
+        <div className="flex items-center gap-2 shrink-0 flex-wrap justify-end">
+          {/* One-click "send the current map selection into this load" per open route (#258).
+              Only shown when something is selected — otherwise the buttons would be dead. With two
+              loads open you get two buttons, so you can route the selection to either in one click. */}
+          {selectedCount > 0 && onSendSelection && wbRoutes.map((r) => (
+            <button
+              key={r.key}
+              onClick={() => onSendSelection(r.key)}
+              title={`Add the ${selectedCount} selected stop${selectedCount === 1 ? '' : 's'} to ${r.key}`}
+              className="flex items-center gap-1 text-[11px] font-semibold px-2 py-1 rounded border border-emerald-600 bg-emerald-600 text-white hover:bg-emerald-700"
+            >
+              <ArrowRight size={13} /> {r.key} ({selectedCount})
+            </button>
+          ))}
           {/* Arm Ninja right here — the on-map tool is easy to miss, and on mobile this drops the
               sheet so you can tap stops onto the active route. */}
           <button
@@ -9545,7 +9569,7 @@ function RoutingSelectionFloatPanel({ selectedStops, onRemove, onOpenStop, onClo
     </th>
   );
   return (
-    <div className={`absolute z-20 bg-white/97 backdrop-blur-sm border border-slate-300 rounded-lg shadow-xl flex flex-col ${isMobile ? 'left-2 right-2 top-12 max-h-[45vh]' : 'right-2 top-12 w-[480px] max-w-[calc(100%-1rem)] max-h-[60vh]'}`}>
+    <div className={`absolute z-20 bg-white border border-slate-300 rounded-lg shadow-xl flex flex-col ${isMobile ? 'left-2 right-2 top-12 max-h-[45vh]' : 'right-2 top-12 w-[420px] max-w-[calc(100%-1rem)] max-h-[60vh]'}`}>
       <div className="flex items-center justify-between gap-2 px-3 py-1.5 border-b bg-slate-50 rounded-t-lg shrink-0">
         <div className="font-semibold text-[13px] text-slate-800">
           Selected {rows.length}
@@ -9565,7 +9589,6 @@ function RoutingSelectionFloatPanel({ selectedStops, onRemove, onOpenStop, onClo
                 <Th label="Location" k="location" />
                 <Th label="City" k="city" />
                 <Th label="Zip" k="zip" />
-                <Th label="Window" k="winSort" />
                 <Th label="Wt" k="weight" align="right" />
                 <Th label="Plt" k="pallets" align="right" />
                 <th className="px-1 py-1" />
@@ -9579,7 +9602,6 @@ function RoutingSelectionFloatPanel({ selectedStops, onRemove, onOpenStop, onClo
                   <td className="px-1.5 py-1 max-w-[150px] truncate" title={r.location}>{r.location}</td>
                   <td className="px-1.5 py-1 max-w-[90px] truncate" title={r.city}>{r.city}</td>
                   <td className="px-1 py-1 whitespace-nowrap text-slate-600">{r.zip}</td>
-                  <td className="px-1 py-1 whitespace-nowrap text-slate-600">{r.win}</td>
                   <td className="px-1 py-1 text-right tabular-nums">{r.weight.toLocaleString()}</td>
                   <td className="px-1 py-1 text-right tabular-nums">{r.pallets}</td>
                   <td className="px-1 py-1"><button onClick={() => onRemove(r.id)} aria-label={`Remove ${r.location} from selection`} className="text-slate-400 hover:text-red-600 leading-none text-base">×</button></td>
@@ -9739,9 +9761,14 @@ function RoutingScreen({ debugCaptureRef }) {
   const rightPanel = useSidePanelWidth('right', 'routing.rightW', 380, 280, viewportWidth);
   const [bottomGridOn, setBottomGridOn] = useState(() => { try { return localStorage.getItem('routing.bottomGrid') !== 'off'; } catch { return true; } });
   useEffect(() => { try { localStorage.setItem('routing.bottomGrid', bottomGridOn ? 'on' : 'off'); } catch { /* ignore */ } }, [bottomGridOn]);
+  // Hide the "stem-out" leg — the line drawn from the terminal/depot to the first stop of each
+  // route (NuVizz's "hide stem out", #256). On = the polyline connects only the stops, no depot
+  // anchor line. Persisted; default OFF (show), matching NuVizz's default.
+  const [routeHideStem, setRouteHideStem] = useState(() => { try { return localStorage.getItem('routing.hideStem') === 'on'; } catch { return false; } });
+  useEffect(() => { try { localStorage.setItem('routing.hideStem', routeHideStem ? 'on' : 'off'); } catch { /* ignore */ } }, [routeHideStem]);
   const resetRoutingLayout = useCallback(() => {
     leftPanel.onDoubleClick(); rightPanel.onDoubleClick();
-    setSelPanelOpen(true); setRightPanelMode('tabs'); setBottomGridOn(true);
+    setSelPanelOpen(true); setRightPanelMode('tabs'); setBottomGridOn(true); setRouteHideStem(false);
   }, [leftPanel, rightPanel]);
   // Nudge Google Maps to re-render when a side panel resizes (the canvas changed width).
   useEffect(() => {
@@ -9783,8 +9810,9 @@ function RoutingScreen({ debugCaptureRef }) {
       const key = s.routeName || s.loadNbr;
       if (!key) continue;
       let g = m.get(key);
-      if (!g) { g = { key, name: s.routeName || key, loadNbr: s.loadNbr || key, driver: '', count: 0, delivered: 0, skids: 0, weight: 0 }; m.set(key, g); }
+      if (!g) { g = { key, name: s.routeName || key, loadNbr: s.loadNbr || key, driver: '', driverId: '', count: 0, delivered: 0, skids: 0, weight: 0 }; m.set(key, g); }
       if (!g.driver && (s.driverName || s.driverUserName)) g.driver = s.driverName || s.driverUserName;
+      if (!g.driverId && s.driverId) g.driverId = s.driverId;
       g.count += 1;
       if (classifyStopStatus(s) === 'DELIVERED') g.delivered += 1;
       g.skids += Number(s.cartons) || 0;          // NuVizz totalCartons = real skids
@@ -9868,6 +9896,26 @@ function RoutingScreen({ debugCaptureRef }) {
       });
     });
   }, [activeRouteKey]);
+  // Bulk "send the current selection onto an open Compare load" (#258) — one click moves every
+  // selected stop onto that route (deduped, and stripped from any other card so a stop sits on one
+  // route), then clears the selection. Header shows one button per open route.
+  const sendSelectionToRoute = useCallback((key) => {
+    const ids = [...selectedIds].map(String);
+    if (!key || !ids.length) return;
+    const idSet = new Set(ids);
+    setWbRoutes((prev) => {
+      if (!prev.some((r) => r.key === key)) return prev;
+      return prev.map((r) => {
+        if (r.key === key) {
+          const have = new Set(r.order);
+          return { ...r, order: [...r.order, ...ids.filter((id) => !have.has(id))] };
+        }
+        return r.order.some((id) => idSet.has(id)) ? { ...r, order: r.order.filter((id) => !idSet.has(id)) } : r;
+      });
+    });
+    setLastAction(`Sent ${ids.length} selected stop${ids.length === 1 ? '' : 's'} → ${key}`);
+    setSelectedIds(new Set());
+  }, [selectedIds]);
   // The marker click listener is bound once; route ninja clicks through a ref so toggling ninja
   // (or closing the panel) never re-creates the markers. Null = ninja off / nothing to add to.
   useEffect(() => { ninjaActionRef.current = (ninjaMode && wbRoutes.length > 0) ? ninjaAddStop : null; }, [ninjaMode, wbRoutes.length, ninjaAddStop]);
@@ -10453,13 +10501,16 @@ function RoutingScreen({ debugCaptureRef }) {
     const toDraw = wbRoutesColored.length ? wbRoutesColored : routesView;
     if (!toDraw.length) return;
     toDraw.forEach((rv) => {
-      const path = [{ lat: ROUTING_DEPOT.lat, lng: ROUTING_DEPOT.lng }];
+      // The leading depot point is the "stem-out" leg (terminal → first stop); omit it when the
+      // dispatcher has hidden the stem (#256) so the line connects only the stops.
+      const path = routeHideStem ? [] : [{ lat: ROUTING_DEPOT.lat, lng: ROUTING_DEPOT.lng }];
       for (const id of rv.order) { const s = vStopById.get(String(id)); if (s && s.lat != null && s.lng != null) path.push({ lat: s.lat, lng: s.lng }); }
+      if (path.length < 2) return;
       const pl = new google.maps.Polyline({ path, strokeColor: rv.color, strokeWeight: 3, strokeOpacity: 0.85, zIndex: 5 });
       pl.setMap(mapRef.current);
       polylinesRef.current.push(pl);
     });
-  }, [google, routesView, wbRoutesColored, vStopById, mapReady]);
+  }, [google, routesView, wbRoutesColored, vStopById, mapReady, routeHideStem]);
 
   const selectedTrucks = useMemo(() => profiles.filter((p) => selectedTruckIds.has(p.id)), [profiles, selectedTruckIds]);
   const canBuild = selectedIds.size >= 1 && selectedTrucks.length >= 1 && selectedIds.size <= ROUTING_MAX_SELECTION && !building;
@@ -10659,6 +10710,7 @@ function RoutingScreen({ debugCaptureRef }) {
             panels={[
               { key: 'selPanel', label: 'Floating selected-stops panel', on: selPanelOpen, setOn: setSelPanelOpen },
               { key: 'bottomGrid', label: 'Bottom data grid', on: bottomGridOn, setOn: setBottomGridOn },
+              { key: 'hideStem', label: 'Hide stem-out line (depot → first stop)', on: routeHideStem, setOn: setRouteHideStem },
             ]}
             actions={[{ key: 'reset', label: '↺ Reset layout to defaults', onClick: resetRoutingLayout }]}
           />
@@ -10828,7 +10880,7 @@ function RoutingScreen({ debugCaptureRef }) {
             <div className="flex-1 min-h-0 overflow-y-auto p-3 space-y-3 text-sm" style={{ paddingBottom: 'calc(12px + env(safe-area-inset-bottom))' }}>
               {mobilePanel === 'setup'
                 ? (wbRoutes.length > 0
-                    ? <RoutingWorkbench wbRoutes={wbRoutesColored} stopById={stopById} ninjaMode={ninjaMode} onToggleNinja={setNinjaMode} onArmNinja={armNinjaFromPanel} activeKey={effectiveActiveKey} onSetActive={setActiveRouteKey} onResequence={wbResequence} onCollapse={toggleWbCollapse} onClose={closeWbRoute} onCloseAll={closeAllWb} onMoveStop={wbMoveStop} onDropStop={wbDropStop} onOpenStop={openStop} isMobile />
+                    ? <RoutingWorkbench wbRoutes={wbRoutesColored} stopById={stopById} ninjaMode={ninjaMode} onToggleNinja={setNinjaMode} onArmNinja={armNinjaFromPanel} activeKey={effectiveActiveKey} onSetActive={setActiveRouteKey} onResequence={wbResequence} onCollapse={toggleWbCollapse} onClose={closeWbRoute} onCloseAll={closeAllWb} onMoveStop={wbMoveStop} onDropStop={wbDropStop} onOpenStop={openStop} selectedCount={selectedStops.length} onSendSelection={sendSelectionToRoute} isMobile />
                     : controlsContent)
                 : mobilePanel === 'loads'
                   ? (rightPanelMode === 'routes' ? <RoutingRoutesPanel groups={routeGroups} onPick={onPickRoute} /> : loadsContent)
@@ -10861,7 +10913,7 @@ function RoutingScreen({ debugCaptureRef }) {
       {/* Left: Setup stack (resizable) — OR the route workbench, which auto-sizes to its open cards. */}
       {wbRoutes.length > 0 ? (
         <div className="shrink-0 border-r bg-white min-h-0 overflow-x-auto" style={{ width: wbWidth }}>
-          <RoutingWorkbench wbRoutes={wbRoutesColored} stopById={stopById} ninjaMode={ninjaMode} onToggleNinja={setNinjaMode} onArmNinja={armNinjaFromPanel} activeKey={effectiveActiveKey} onSetActive={setActiveRouteKey} onResequence={wbResequence} onCollapse={toggleWbCollapse} onClose={closeWbRoute} onCloseAll={closeAllWb} onMoveStop={wbMoveStop} onDropStop={wbDropStop} onOpenStop={openStop} isMobile={false} />
+          <RoutingWorkbench wbRoutes={wbRoutesColored} stopById={stopById} ninjaMode={ninjaMode} onToggleNinja={setNinjaMode} onArmNinja={armNinjaFromPanel} activeKey={effectiveActiveKey} onSetActive={setActiveRouteKey} onResequence={wbResequence} onCollapse={toggleWbCollapse} onClose={closeWbRoute} onCloseAll={closeAllWb} onMoveStop={wbMoveStop} onDropStop={wbDropStop} onOpenStop={openStop} selectedCount={selectedStops.length} onSendSelection={sendSelectionToRoute} isMobile={false} />
         </div>
       ) : (
         <div className="shrink-0 border-r bg-white overflow-y-auto p-3 space-y-3 text-sm" style={{ width: leftPanel.width }}>

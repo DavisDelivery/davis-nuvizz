@@ -21,7 +21,7 @@
 
 import fixture from '../../test/fixtures/nuvizz-today-stops.json' with { type: 'json' };
 import { scanDate, normalizeStop } from './lib/nuvizz-scan.mts';
-import { isFirestoreEnabled, readStops, readCallStats, readCircuit, etDayString, readScanMetrics, readScanConfig } from './lib/firestore.mts';
+import { isFirestoreEnabled, readStops, readCallStats, readCircuit, etDayString, readScanMetrics, readScanConfig, readActiveUnplannedSet } from './lib/firestore.mts';
 import { summarizeScanMetrics } from './lib/scan-metrics.mts';
 import { filterFinishedPriorDay } from './lib/nuvizz-list.mts';
 import { breakerMode } from './lib/nuvizz-request.mts';
@@ -35,25 +35,45 @@ function addDaysUTC(dateStr: string, n: number): string {
 }
 
 // Fold still-unplanned stops from the prior `carryDays` days into `stops`,
-// deduped by stopNbr, flagged carryover + scheduledDate. Reads only existing
-// per-day indexes (cheap; possibly stale — they aren't re-scanned once past).
+// deduped by stopNbr, flagged carryover + scheduledDate. Reads only existing per-day indexes
+// (cheap). Those indexes are FROZEN snapshots from when each day was last scanned, so a stop that
+// was unplanned then but has since been DELIVERED/PLANNED still reads unplanned — which inflated
+// the carry-over (issue #253). Guard: cross-check each candidate against the scan's live
+// active-unplanned snapshot; if the day is within that snapshot's window and the stop is no longer
+// in it, it's been closed since — skip it. Best-effort: no snapshot ⇒ legacy behaviour.
 async function mergeCarryover(stops: any[], date: string, carryDays: number): Promise<number> {
   const seen = new Set(stops.map((s) => String(s.stopNbr)));
   const priorDates = Array.from({ length: carryDays }, (_, i) => addDaysUTC(date, -(i + 1)));
+  const live = await readActiveUnplannedSet(TENANT).catch(() => null);
+  // FRESHNESS GUARD: only prune against the live set when the snapshot is recent. A stale snapshot
+  // (after a weekend/breaker scan blackout, or one left behind if TWO_SCAN is turned off) no longer
+  // reflects what's open, so trusting it could prune stops that are STILL unplanned — under-counting
+  // the board, which for a dispatch app is worse than the over-count #253 set out to fix. When the
+  // snapshot is stale/missing we fall back to legacy behaviour (fold everything in, prune nothing).
+  const STALE_SNAPSHOT_MS = 18 * 60 * 60 * 1000;   // ~18h: survives an overnight gap, not a weekend
+  const snapshotAgeMs = live?.at ? (Date.now() - new Date(live.at).getTime()) : Infinity;
+  const fresh = Number.isFinite(snapshotAgeMs) && snapshotAgeMs >= 0 && snapshotAgeMs <= STALE_SNAPSHOT_MS;
+  const liveOk = !!(live && live.stopNbrs.size && live.windowStart && fresh);
+  if (live && live.stopNbrs.size && live.windowStart && !fresh) {
+    console.log(`[carryover] ${date}: live unplanned snapshot is stale (age ${Number.isFinite(snapshotAgeMs) ? Math.round(snapshotAgeMs / 3.6e6) + 'h' : 'n/a'}) — skipping prune, folding all carry-over`);
+  }
   const reads = await Promise.all(
     priorDates.map((d) => readStops(TENANT, d).then((r) => ({ d, stops: r.stops })).catch(() => ({ d, stops: [] as any[] }))),
   );
-  let added = 0;
+  let added = 0, pruned = 0;
   for (const { d, stops: prior } of reads) {
     for (const s of prior) {
       if (!s || s.isPlanned || s.isTerminal) continue;   // only carry-over UNPLANNED, real stops
       const key = String(s.stopNbr);
       if (!key || seen.has(key)) continue;
+      // Within the live window but no longer unplanned in the latest scan → delivered/planned since.
+      if (liveOk && d >= live!.windowStart! && !live!.stopNbrs.has(key)) { pruned++; continue; }
       seen.add(key);
       stops.push({ ...s, carryover: true, scheduledDate: d });
       added++;
     }
   }
+  if (pruned) console.log(`[carryover] ${date}: folded ${added}, pruned ${pruned} stale (delivered/planned since last full scan)`);
   return added;
 }
 

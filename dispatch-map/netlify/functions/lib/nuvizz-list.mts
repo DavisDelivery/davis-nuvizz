@@ -51,6 +51,25 @@ export function buildBody(period: string, statusCsv: string, page: number, pageS
 // attempts ever found). Module-level so it logs once per warm instance, not per row.
 let __warnedNoShipmentKey = false;
 
+// True for a bare DB identifier (Mongo ObjectId / long hex / 25+-char token) — i.e. NOT a human
+// name. Used to keep a driverId from ever being shown as a driver name (#254).
+export function isHashLikeId(v: any): boolean {
+  const s = String(v ?? '').trim();
+  if (!s || /\s/.test(s)) return false;                 // human names are short words or have spaces
+  if (/^[0-9a-f]{24}$/i.test(s)) return true;           // Mongo ObjectId
+  if (/^[0-9a-f]{16,}$/i.test(s)) return true;          // long hex token
+  if (/^[A-Za-z0-9_-]{20,}$/.test(s) && /\d/.test(s)) return true; // long id-ish token containing a digit
+  return false;
+}
+// First argument that is a real (non-blank, non-hash) human name; '' if none.
+function firstNonHashName(...vals: any[]): string {
+  for (const v of vals) {
+    const s = String(v ?? '').trim();
+    if (s && !isHashLikeId(s)) return s;
+  }
+  return '';
+}
+
 // Map the column-def order (filterData[0]) onto each values[] row, pulling fields BY
 // KEY (robust to column reordering) into an intermediate row object.
 export function normalize(j: any): any[] {
@@ -100,7 +119,14 @@ export function normalize(j: any): any[] {
     city: g(row, 'vizzonInfo.destination.address.city') ?? '',
     zip: g(row, 'vizzonInfo.destination.address.zipCode') ?? '',
     routeName: g(row, 'route.name') ?? '',
-    driverName: g(row, 'route.driver.driverId') ?? '',
+    // The driver column is unreliable: in some saved searches route.driver.driverId carries the
+    // human name ("DENIS"), in others it comes through as a bare ObjectId — which rendered as
+    // "jibberish" on the board (#254). So gather every likely name field (route.driver.name etc.)
+    // PLUS route.driver.driverId and take the first that doesn't look like a hash/id; a bare
+    // ObjectId is never treated as a name. Keep the raw id separately for grouping/fallback. This
+    // also means adding a real driver-name column to 77128 later lights up with no code change.
+    driverName: firstNonHashName(g(row, 'route.driver.name'), g(row, 'route.driver.driverName'), g(row, 'route.driver.fullName'), g(row, 'loadAssignment.driverName'), g(row, 'route.driver.driverId')),
+    driverId: String(g(row, 'route.driver.driverId') ?? '').trim(),
     cartons: numOrNull(g(row, 'vizzonInfo.shipmentInfo.cartons')),
     volume: numOrNull(g(row, 'vizzonInfo.shipmentInfo.volume')),   // loose-piece count
     weight: numOrNull(g(row, 'vizzonInfo.shipmentInfo.weight')),
@@ -198,8 +224,12 @@ export function toBoardStop(r: any): any {
     cartons: r.cartons,
     volume: r.volume,
     weight: r.weight,
+    // normalize() already resolves driverName via firstNonHashName — it is a REAL name or '' here,
+    // never an ObjectId (#254). So just pass it through (null when blank). driverId carries the raw
+    // id so the UI can still show "Driver assigned" when a load has a driver but no resolvable name.
     driverName: r.driverName || null,
     driverUserName: r.driverName || null,
+    driverId: r.driverId || null,
     isPlanned: planned,
     isUnplanned: !planned,
     normalizedStatus: status,
@@ -500,7 +530,7 @@ export function etDateForTargetUTC(targetDateUTC: string, todayUTC: string, etTo
 // timestamps, …) while the list keeps status/load/driver current.
 export const LIVE_LIST_FIELDS = [
   'status', 'normalizedStatus', 'isPlanned', 'isUnplanned',
-  'loadNbr', 'routeName', 'driverName', 'driverUserName',
+  'loadNbr', 'routeName', 'driverName', 'driverUserName', 'driverId',
   'scheduledDate', 'requestedDate', 'boardDate', 'listUpdatedDTTM', 'source',
   // Shipment number + its derived attempt flag are LIVE: the "ATT" marker appears DURING the
   // day, so it must refresh every scan from the list (never frozen by an earlier enrichment).
