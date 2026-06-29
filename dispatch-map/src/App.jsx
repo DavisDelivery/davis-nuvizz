@@ -50,7 +50,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.29.79';
+const APP_VERSION = '0.29.80';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -66,10 +66,29 @@ const BUILD_CONTEXT = typeof __BUILD_CONTEXT__ !== 'undefined' ? __BUILD_CONTEXT
 // 'local' in dev (the vite fallback is 'dev'). Never blank / 'undefined'.
 const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(0, 7) : 'local';
 
+// Mirror of the backend isHashLikeId (nuvizz-list.mts) — keeps a bare NuVizz ObjectId / internal
+// load-id from ever rendering as a human load/route NAME. A recurring load's real name is its
+// loadNbr ("BEN 2"); loadId is a 24-hex id. Defense-in-depth with the backend guard (#254-style).
+function isHashLikeId(v) {
+  const s = String(v ?? '').trim();
+  if (!s || /\s/.test(s)) return false;            // human names have spaces or are short words
+  if (/^[0-9a-f]{24}$/i.test(s)) return true;      // Mongo ObjectId
+  if (/^[0-9a-f]{16,}$/i.test(s)) return true;     // long hex token
+  return /^[A-Za-z0-9_-]{20,}$/.test(s) && /\d/.test(s); // long id-ish token with a digit
+}
+// First non-hash human label among the candidates; '' if none — NEVER a raw id. Callers that always
+// represent a real load (the Compare card title / send buttons) add their own 'Unnamed load' fallback;
+// cell renderers leave it blank when a stop simply has no load.
+function loadDisplayName(...vals) {
+  for (const v of vals) { const s = String(v ?? '').trim(); if (s && !isHashLikeId(s)) return s; }
+  return '';
+}
+
 // Beta version history — shown when the dispatcher taps the build badge, so it's
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.29.80', 'Routing (beta) — load NAMES, not gibberish ids. A Compare card / load / send button / Routes panel / stop detail now ALWAYS shows the recurring-load name (e.g. "BEN 2") and never a raw NuVizz id — a hash-like value is suppressed everywhere (frontend guard) and the load roster now reads the human load number with the same guard the driver field got in #254. Also: the Re-sequence menu now keeps showing the applied logic (e.g. "Shortest distance") until you change it, manually dragging a stop marks the route "Manual order (edited)" so it never auto re-sorts your hand-tweaks, and every Compare card now has a Print-manifest button (#263/#280).'],
   ['0.29.79', 'Routing (beta) — Selected window + stop→load. The Selected window now sizes to its contents (no more empty white space; it grows as you add stops), keeps 420px as the standard width (drag the LEFT edge to resize width), and the Type column moved to the end after Zip (#278). And when you open a stop, the detail now shows which LOAD it\'s on with an "Open in Compare" button that pulls that route up in the Compare panel — so a clicked stop is no longer a mystery (#281).'],
   ['0.29.78', 'Routing (beta) — the map pins now MATCH the dispatch Map again: same rich pins with status colour, priority flag, AM/PM window, restriction icons and DNS (the plain numbered circles from 0.29.73 dropped all that). Selected stops still pop orange and routed stops still show their sequence number in the route colour. Also: the right Stops panel no longer clips — each stop is a stacked card (name + PRO/remove on top, city · skids · loose · pcs · weight on a sub-line) that fits the panel, with sort chips up top. The Compare panel gets an Expand-all / Collapse-all stops button (#275) and drops the redundant per-stop window line (the same 8:00–8:00 on every stop) from the expanded detail (#276). And the Ninja toggle is removed from the Compare header — arm it from the on-map tool (the header button was redundant).'],
   ['0.29.77', 'HOTFIX: routing-map stops are back (#279/#282). The smaller circular pins shipped in 0.29.73 used a vector-marker style that silently failed to paint on the routing map\'s satellite/vector base, so the whole board went blank. The pins are now drawn as small numbered circle images, which render reliably — same look, stops visible again. Also: the bottom Stops/Loads grid now centers in the window when the left Setup panel is closed (instead of hugging the left edge); the Compare "Re-sequence" menu moves "Loop" to the bottom of the list (#280); and the Debug-capture box is focused the moment it opens so you can type right away (#280).'],
@@ -3755,7 +3774,7 @@ function manifestOrigin(stops) {
 }
 function buildManifestHtml(stops, logoUrl) {
   const ordered = orderRouteStops(stops);
-  const routeName = ordered.find((s) => s.routeName)?.routeName || ordered.find((s) => s.loadNbr)?.loadNbr || 'Route';
+  const routeName = loadDisplayName(ordered.find((s) => s.routeName)?.routeName, ordered.find((s) => s.loadNbr)?.loadNbr) || 'Route';
   const driver = ordered.find((s) => s.driverName)?.driverName || ordered.find((s) => s.driverUserName)?.driverUserName || '—';
   const origin = manifestOrigin(ordered);
   // Per-stop ticket data once, reused for the totals and the page bodies.
@@ -7971,7 +7990,7 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
         const keys = getRestrictionBadgeKeys(notes.get(s.matchKey) || null);
         return keys.length ? keys.map((k) => RESTRICTION_ICONS[k]?.short || k).join(', ') : '';
       }, sortVal: (s) => getRestrictionBadgeKeys(notes.get(s.matchKey) || null).map((k) => RESTRICTION_ICONS[k]?.short || k).join(', ') },
-    { k: 'load', label: 'Load', w: 150, get: (s) => s.routeName || s.loadNbr || '', sortVal: (s) => s.routeName || s.loadNbr || '' },
+    { k: 'load', label: 'Load', w: 150, get: (s) => loadDisplayName(s.routeName, s.loadNbr), sortVal: (s) => loadDisplayName(s.routeName, s.loadNbr) },
     { k: 'driver', label: 'Driver', w: 150, get: (s) => s.driverName || '', sortVal: (s) => s.driverName },
   ];
   // Board mode shows today's loaded stops; NuVizz mode shows the live-pulled set.
@@ -8076,7 +8095,7 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
     return arr;
   }, [loadSrc, q, roster, nvWindow]);
   const loadCols = [
-    { k: 'load', label: 'Load', w: 150, get: (g) => <span className="font-mono text-blue-700">{g.routeName || g.loadNbr}</span>, sortVal: (g) => g.routeName || g.loadNbr },
+    { k: 'load', label: 'Load', w: 150, get: (g) => <span className="font-mono text-blue-700">{loadDisplayName(g.routeName, g.loadNbr) || 'Unnamed load'}</span>, sortVal: (g) => g.routeName || g.loadNbr },
     { k: 'driver', label: 'Driver', w: 180, get: (g) => g.driverName || '—', sortVal: (g) => g.driverName },
     { k: 'count', label: 'Stops', w: 60, align: 'right', get: (g) => g.count, sortVal: (g) => g.count },
     { k: 'status', label: 'Status', w: 240, get: (g) => (g.empty
@@ -9057,7 +9076,7 @@ function RoutingStopModal({ stop, notes, onClose, onOpenLoad, windowViolatedSet 
   const pro = stop.pro || stop.stopNbr || stop.primaryPro || '';
   const windowViolated = !!(windowViolatedSet && windowViolatedSet.has(String(stop.stopNbr || stop.pro)));
   // Which load/route is this stop on (#281 — "no idea the load its on"). Open it in the Compare panel.
-  const loadKey = stop.routeName || stop.loadNbr || '';
+  const loadKey = loadDisplayName(stop.routeName, stop.loadNbr);
   return (
     <div className="fixed inset-0 z-[1000] flex items-center justify-center p-4" role="dialog" aria-modal="true">
       <div className="absolute inset-0 bg-black/40" onClick={onClose} />
@@ -9272,7 +9291,7 @@ function RoutingRoutesPanel({ groups, onPick }) {
           return (
             <button key={g.key} onClick={() => onPick(g.key)} className="w-full text-left border rounded-lg p-2 hover:bg-slate-50 active:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-300">
               <div className="flex items-center justify-between gap-2">
-                <div className="font-semibold text-slate-800 truncate">{g.name}</div>
+                <div className="font-semibold text-slate-800 truncate">{loadDisplayName(g.name, g.loadNbr) || 'Unnamed load'}</div>
                 <div className="text-[12px] font-bold shrink-0" style={{ color: done ? '#16a34a' : BRAND }}>{pct}%</div>
               </div>
               <div className="text-[11px] text-slate-500 truncate">{g.driver || (g.driverId ? 'Driver assigned' : 'No driver assigned')}</div>
@@ -9334,9 +9353,9 @@ function RoutingMapTools({ selectMode, onBox, onLasso, ninjaMode, onToggleNinja,
 // state; this is a planning overlay (it does not mutate the board).
 // Human labels for the re-sequence strategies (shared by the card's applied-strategy line and the
 // "Re-sequenced …" toast).
-const RESEQ_LABELS = { loop: 'Loop — down one side & back', min: 'Shortest distance', closest: 'Closest first', farthest: 'Farthest first', reverse: 'Reverse' };
+const RESEQ_LABELS = { loop: 'Loop — down one side & back', min: 'Shortest distance', closest: 'Closest first', farthest: 'Farthest first', reverse: 'Reverse', manual: 'Manual order' };
 
-function RoutingWorkbenchCard({ route, stopById, otherKeys, ninjaMode, isActive, onSetActive, onResequence, onCollapse, onClose, onMoveStop, onDropStop, onOpenStop, isMobile }) {
+function RoutingWorkbenchCard({ route, stopById, otherKeys, ninjaMode, isActive, onSetActive, onResequence, onCollapse, onClose, onMoveStop, onDropStop, onOpenStop, onPrintManifest, isMobile }) {
   const rows = route.order.map((id) => stopById.get(String(id))).filter(Boolean);
   // Drag-and-drop (desktop): track which row we're hovering so we can show a drop line, and read
   // the dragged stop out of dataTransfer on drop. beforeId=null means "append to the end".
@@ -9383,7 +9402,7 @@ function RoutingWorkbenchCard({ route, stopById, otherKeys, ninjaMode, isActive,
           <button onClick={onCollapse} className="flex items-center gap-1 min-w-0" aria-expanded={!route.collapsed}>
             {route.collapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
             <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: color }} title="Route colour on the map" />
-            <span className="font-semibold text-slate-800 truncate">{route.key}</span>
+            <span className="font-semibold text-slate-800 truncate" title={loadDisplayName(route.key) || 'Unnamed load'}>{loadDisplayName(route.key) || 'Unnamed load'}</span>
           </button>
           <div className="flex items-center gap-1.5 shrink-0">
             {ninjaMode && (
@@ -9392,16 +9411,18 @@ function RoutingWorkbenchCard({ route, stopById, otherKeys, ninjaMode, isActive,
                 <NinjaIcon size={13} /> {isActive ? 'target' : 'set'}
               </label>
             )}
-            <button onClick={onClose} className="text-slate-400 hover:text-red-600 leading-none text-lg" aria-label={`Close route ${route.key}`}>×</button>
+            <button onClick={onClose} className="text-slate-400 hover:text-red-600 leading-none text-lg" aria-label={`Close route ${loadDisplayName(route.key)}`}>×</button>
           </div>
         </div>
         <div className="text-[11px] text-slate-500 truncate">{driverLabel} · {rows.length} stop{rows.length === 1 ? '' : 's'} · {skids} sk · {Math.round(weight).toLocaleString()} lb · {rows.length ? Math.round((100 * delivered) / rows.length) : 0}%</div>
         {rc && <div className="text-[11px] font-semibold text-slate-700">{miles.toFixed(1)} mi · {fmtDur(driveMin)}<span className="font-normal text-slate-400"> · DH {dhMi.toFixed(1)} mi</span></div>}
-        {/* Show which sequencing logic is currently applied (remembered on the route). */}
-        {route.strategy && <div className="text-[10px] text-slate-500">Sequenced: <span className="font-medium text-slate-600">{RESEQ_LABELS[route.strategy] || route.strategy}</span></div>}
         {!route.collapsed && (
-          <select onChange={(e) => { if (e.target.value) onResequence(e.target.value); e.target.value = ''; }} value="" className="mt-1 w-full border rounded px-1 py-1 text-[11px] bg-white">
+          // The dropdown shows the APPLIED strategy and keeps showing it until you change it (#280/
+          // #263). A manual drag/move marks the route "Manual order (edited)" so it's clear the route
+          // won't re-sort — your hand-tweaks stick.
+          <select onChange={(e) => { if (e.target.value && e.target.value !== route.strategy) onResequence(e.target.value); }} value={route.strategy || ''} className="mt-1 w-full border rounded px-1 py-1 text-[11px] bg-white">
             <option value="" disabled>Re-sequence…</option>
+            {route.strategy === 'manual' && <option value="manual" disabled>Manual order (edited)</option>}
             <option value="min">Shortest distance</option>
             <option value="farthest">Farthest first</option>
             <option value="closest">Closest first</option>
@@ -9409,10 +9430,19 @@ function RoutingWorkbenchCard({ route, stopById, otherKeys, ninjaMode, isActive,
             <option value="loop">Loop — down one side &amp; back (no crossings)</option>
           </select>
         )}
-        {!route.collapsed && rows.length > 0 && (
-          <button onClick={toggleAll} className="mt-1 text-[10px] text-slate-500 hover:text-slate-700 underline">
-            {allExpanded ? 'Collapse all stops' : 'Expand all stops'}
-          </button>
+        {!route.collapsed && (
+          <div className="mt-1 flex items-center justify-between gap-2">
+            {rows.length > 0 ? (
+              <button onClick={toggleAll} className="text-[10px] text-slate-500 hover:text-slate-700 underline">
+                {allExpanded ? 'Collapse all stops' : 'Expand all stops'}
+              </button>
+            ) : <span />}
+            {rows.length > 0 && onPrintManifest && (
+              <button onClick={() => onPrintManifest(route.key)} className="inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded border border-slate-300 text-slate-600 hover:bg-slate-50" title="Print this load's driver manifest">
+                <Printer size={12} /> Print manifest
+              </button>
+            )}
+          </div>
         )}
       </div>
       {!route.collapsed && (
@@ -9475,7 +9505,7 @@ function RoutingWorkbenchCard({ route, stopById, otherKeys, ninjaMode, isActive,
 // The route workbench (part 4): the 1–3 route cards opened from the right Routes panel, laid out
 // side by side (desktop) or stacked (mobile). Replaces the Setup stack on the left while routes
 // are open; "Back to Setup" closes them all.
-function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmNinja, activeKey, onSetActive, onResequence, onCollapse, onClose, onCloseAll, onMoveStop, onDropStop, onOpenStop, selectedCount = 0, onSendSelection, isMobile }) {
+function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmNinja, activeKey, onSetActive, onResequence, onCollapse, onClose, onCloseAll, onMoveStop, onDropStop, onOpenStop, onPrintManifest, selectedCount = 0, onSendSelection, isMobile }) {
   return (
     <div className="flex flex-col h-full min-h-0">
       <div className="flex items-center justify-between gap-2 px-2 py-1.5 border-b shrink-0 bg-white">
@@ -9488,10 +9518,10 @@ function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmN
             <button
               key={r.key}
               onClick={() => onSendSelection(r.key)}
-              title={`Add the ${selectedCount} selected stop${selectedCount === 1 ? '' : 's'} to ${r.key}`}
+              title={`Add the ${selectedCount} selected stop${selectedCount === 1 ? '' : 's'} to ${loadDisplayName(r.key) || 'this load'}`}
               className="flex items-center gap-1 text-[11px] font-semibold px-2 py-1 rounded border border-emerald-600 bg-emerald-600 text-white hover:bg-emerald-700"
             >
-              <ArrowRight size={13} /> {r.key} ({selectedCount})
+              <ArrowRight size={13} /> {loadDisplayName(r.key) || 'Load'} ({selectedCount})
             </button>
           ))}
           {/* Ninja is armed from the on-map tool (left edge), not here — the dispatcher asked to drop
@@ -9518,6 +9548,7 @@ function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmN
             onMoveStop={(stopNbr, toKey) => onMoveStop(r.key, stopNbr, toKey)}
             onDropStop={onDropStop}
             onOpenStop={onOpenStop}
+            onPrintManifest={onPrintManifest}
             isMobile={isMobile}
           />
         ))}
@@ -9966,17 +9997,17 @@ function RoutingScreen({ debugCaptureRef }) {
       const tail = r.order.map(String).filter((id) => !resolved.has(id));   // never drop unresolvable ids
       return { ...r, order: [...newOrder, ...tail], strategy };   // remember + show the applied logic
     }));
-    setLastAction(`Re-sequenced ${key} · ${RESEQ_LABELS[strategy] || strategy}`);
+    setLastAction(`Re-sequenced ${loadDisplayName(key) || 'load'} · ${RESEQ_LABELS[strategy] || strategy}`);
   }, [stopById]);
   const wbMoveStop = useCallback((fromKey, stopNbr, toKey) => {
     if (!toKey || fromKey === toKey) return;
     const id = String(stopNbr);
     setWbRoutes((prev) => prev.map((r) => {
       if (r.key === fromKey) return { ...r, order: r.order.filter((x) => x !== id) };
-      if (r.key === toKey) return r.order.includes(id) ? r : { ...r, order: [...r.order, id] };
+      if (r.key === toKey) return r.order.includes(id) ? r : { ...r, order: [...r.order, id], strategy: 'manual' };
       return r;
     }));
-    setLastAction(`Moved ${stopNbr} → ${toKey}`);
+    setLastAction(`Moved ${stopNbr} → ${loadDisplayName(toKey)}`);
   }, []);
   // Drag-and-drop between/within Compare cards (desktop). Drops a stop into `toKey` at the slot
   // before `beforeId` (or the end when null), and strips it from every other card so a stop only
@@ -9993,12 +10024,23 @@ function RoutingScreen({ debugCaptureRef }) {
         let idx = before == null ? order.length : order.indexOf(before);
         if (idx < 0) idx = order.length;
         order.splice(idx, 0, id);
-        return { ...r, order };
+        return { ...r, order, strategy: 'manual' };   // hand-ordered now — never auto re-sort (#280)
       }
       return r.order.includes(id) ? { ...r, order: r.order.filter((x) => x !== id) } : r;
     }));
-    setLastAction(fromKey === toKey ? `Reordered ${stopNbr} in ${toKey}` : `Moved ${stopNbr} → ${toKey}`);
+    setLastAction(fromKey === toKey ? `Reordered ${stopNbr} in ${loadDisplayName(toKey)}` : `Moved ${stopNbr} → ${loadDisplayName(toKey)}`);
   }, []);
+  // Print the driver manifest for a Compare card's stops, in the card's CURRENT order (#263). Opens
+  // the shared PrintDocModal. No API — built from the stops we already hold.
+  const [wbManifest, setWbManifest] = useState(null);   // { title, html } | null
+  const printWbManifest = useCallback((key) => {
+    const route = wbRoutes.find((r) => r.key === key);
+    if (!route) return;
+    const stops = route.order.map((id) => stopById.get(String(id))).filter(Boolean);
+    if (!stops.length) { setLastAction(`${loadDisplayName(key)} has no stops to print`); return; }
+    const logo = (typeof window !== 'undefined' ? window.location.origin : '') + '/davis-logo.jpg';
+    setWbManifest({ title: `Driver Manifest · ${loadDisplayName(key)}`, html: buildManifestHtml(stops, logo) });
+  }, [wbRoutes, stopById]);
   // Ninja-add: append a clicked stop to the active route (in click order), removing it from any
   // OTHER open route so a stop only ever sits on one compare-panel card. No-op if it's already there.
   const ninjaAddStop = useCallback((stopNbr) => {
@@ -10032,7 +10074,7 @@ function RoutingScreen({ debugCaptureRef }) {
         return r.order.some((id) => idSet.has(id)) ? { ...r, order: r.order.filter((id) => !idSet.has(id)) } : r;
       });
     });
-    setLastAction(`Sent ${ids.length} selected stop${ids.length === 1 ? '' : 's'} → ${key}`);
+    setLastAction(`Sent ${ids.length} selected stop${ids.length === 1 ? '' : 's'} → ${loadDisplayName(key) || 'load'}`);
     setSelectedIds(new Set());
   }, [selectedIds]);
   // The marker click listener is bound once; route ninja clicks through a ref so toggling ninja
@@ -11062,7 +11104,7 @@ function RoutingScreen({ debugCaptureRef }) {
             <div className="flex-1 min-h-0 overflow-y-auto p-3 space-y-3 text-sm" style={{ paddingBottom: 'calc(12px + env(safe-area-inset-bottom))' }}>
               {mobilePanel === 'setup'
                 ? (wbRoutes.length > 0
-                    ? <RoutingWorkbench wbRoutes={wbRoutesColored} stopById={stopById} ninjaMode={ninjaMode} onToggleNinja={setNinjaMode} onArmNinja={armNinjaFromPanel} activeKey={effectiveActiveKey} onSetActive={setActiveRouteKey} onResequence={wbResequence} onCollapse={toggleWbCollapse} onClose={closeWbRoute} onCloseAll={closeAllWb} onMoveStop={wbMoveStop} onDropStop={wbDropStop} onOpenStop={openStop} selectedCount={selectedStops.length} onSendSelection={sendSelectionToRoute} isMobile />
+                    ? <RoutingWorkbench wbRoutes={wbRoutesColored} stopById={stopById} ninjaMode={ninjaMode} onToggleNinja={setNinjaMode} onArmNinja={armNinjaFromPanel} activeKey={effectiveActiveKey} onSetActive={setActiveRouteKey} onResequence={wbResequence} onCollapse={toggleWbCollapse} onClose={closeWbRoute} onCloseAll={closeAllWb} onMoveStop={wbMoveStop} onDropStop={wbDropStop} onOpenStop={openStop} onPrintManifest={printWbManifest} selectedCount={selectedStops.length} onSendSelection={sendSelectionToRoute} isMobile />
                     : controlsContent)
                 : mobilePanel === 'loads'
                   ? (rightPanelMode === 'routes' ? <RoutingRoutesPanel groups={routeGroups} onPick={onPickRoute} /> : loadsContent)
@@ -11071,6 +11113,7 @@ function RoutingScreen({ debugCaptureRef }) {
           )}
         </div>
         {detailModalStop && <RoutingStopModal stop={detailModalStop} notes={notes} windowViolatedSet={windowViolatedSet} onClose={() => setDetailModalStop(null)} onOpenLoad={(key) => openRouteInWorkbench(key)} />}
+        {wbManifest && <PrintDocModal title={wbManifest.title} html={wbManifest.html} onClose={() => setWbManifest(null)} />}
         {versionLogOpen && <VersionLogModal onClose={() => setVersionLogOpen(false)} />}
       </div>
     );
@@ -11097,7 +11140,7 @@ function RoutingScreen({ debugCaptureRef }) {
           routes are open. With the Setup panel off and no routes open, the map gets the full width. */}
       {wbRoutes.length > 0 ? (
         <div className="shrink-0 border-r bg-white min-h-0 overflow-x-auto" style={{ width: wbWidth }}>
-          <RoutingWorkbench wbRoutes={wbRoutesColored} stopById={stopById} ninjaMode={ninjaMode} onToggleNinja={setNinjaMode} onArmNinja={armNinjaFromPanel} activeKey={effectiveActiveKey} onSetActive={setActiveRouteKey} onResequence={wbResequence} onCollapse={toggleWbCollapse} onClose={closeWbRoute} onCloseAll={closeAllWb} onMoveStop={wbMoveStop} onDropStop={wbDropStop} onOpenStop={openStop} selectedCount={selectedStops.length} onSendSelection={sendSelectionToRoute} isMobile={false} />
+          <RoutingWorkbench wbRoutes={wbRoutesColored} stopById={stopById} ninjaMode={ninjaMode} onToggleNinja={setNinjaMode} onArmNinja={armNinjaFromPanel} activeKey={effectiveActiveKey} onSetActive={setActiveRouteKey} onResequence={wbResequence} onCollapse={toggleWbCollapse} onClose={closeWbRoute} onCloseAll={closeAllWb} onMoveStop={wbMoveStop} onDropStop={wbDropStop} onOpenStop={openStop} onPrintManifest={printWbManifest} selectedCount={selectedStops.length} onSendSelection={sendSelectionToRoute} isMobile={false} />
         </div>
       ) : leftPanelOn ? (
         <div className="shrink-0 border-r bg-white overflow-y-auto p-3 space-y-3 text-sm" style={{ width: leftPanel.width }}>
@@ -11206,6 +11249,7 @@ function RoutingScreen({ debugCaptureRef }) {
         )}
       </div>
       {detailModalStop && <RoutingStopModal stop={detailModalStop} notes={notes} windowViolatedSet={windowViolatedSet} onClose={() => setDetailModalStop(null)} onOpenLoad={(key) => openRouteInWorkbench(key)} />}
+        {wbManifest && <PrintDocModal title={wbManifest.title} html={wbManifest.html} onClose={() => setWbManifest(null)} />}
         {versionLogOpen && <VersionLogModal onClose={() => setVersionLogOpen(false)} />}
     </div>
   );
