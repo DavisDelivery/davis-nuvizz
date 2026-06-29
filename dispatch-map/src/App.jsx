@@ -50,7 +50,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.29.71';
+const APP_VERSION = '0.29.72';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -70,6 +70,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.29.72', 'Routing (beta) — Selected-stops window upgrades. It\'s now drag-to-resize (grab the bottom-left corner; width + height are remembered), has a "Clear all" button in the header to drop the whole selection at once (#261), and shows a Loose-pieces column alongside pallets and weight. The columns are reordered to put Pallets · Loose · Weight right after Location, before City/Zip (#260). And in the Compare panel, the per-stop "→ move to load" dropdown is now hidden on desktop (just drag a stop to another card) — it stays on touch where drag isn\'t available (#267).'],
   ['0.29.71', 'Routing (beta) — map filters, ported from the dispatch Map. A new "Filters" button in the map\'s top-right corner toggles: Unplanned only (hides planned stops so you see just what still needs routing), Satellite view (switch between satellite imagery and the plain roadmap base), and Show routes (overlays each load\'s stops connected in delivery sequence, one colour per load). All persisted. The build-version badge that used to sit in that corner is gone — version history now lives in the gear settings (ⓘ Version history), since the version already shows in the page footer.'],
   ['0.29.70', 'Routing (beta) — the left Setup panel can now be hidden. It\'s still under development, so by default it\'s OFF (the map gets the full width) and you flip it on only while working on it. The on/off toggle (plus the floating-panel, right-panel, and hide-stem settings) now also lives in a gear on the bottom data-grid header, so it stays reachable with the Setup panel hidden — and a compact date picker appears there too so you can still change the board date. Turning the Setup panel off can never hide the bottom grid as well (that would strip every settings gear). Desktop only.'],
   ['0.29.69', 'Routing (beta) + scan accuracy. Compare panel: SELECTED stops can now go straight into an open load — when you have stops selected, the Compare header shows a green "→ Load (N)" button for each open card, so you send the whole selection to either load in one click (#258). Driver names that came through as a hash/id are now shown as "Driver assigned" instead of the gibberish, and the real name shows when NuVizz gives us one (#254). Compare route line can hide the stem-out (depot → first stop) leg via the gear menu (#256). Debug capture sheet auto-closes after it saves (#255); the floating selected-stops panel is now solid white and dropped its redundant Window column (#257). Scan: carry-over no longer folds in stops that were unplanned at the last full scan but have since been delivered/planned — it cross-checks the latest live unplanned set and prunes the stale ones, so the day count stops drifting above what NuVizz shows (#253).'],
@@ -9399,7 +9400,9 @@ function RoutingWorkbenchCard({ route, stopById, otherKeys, ninjaMode, isActive,
                   {!isExp && <div className="truncate text-slate-500">{[s.city, `${Number(s.cartons) || 0} sk`].filter(Boolean).join(' · ')}</div>}
                 </div>
                 <button onClick={() => onOpenStop && onOpenStop(s)} className="font-mono text-blue-700 text-[10px] shrink-0" title="Open stop">{s.primaryPro || s.pro || s.stopNbr}</button>
-                {otherKeys.length > 0 && (
+                {/* Move-to-other-load picker — desktop drags between cards, so it's only needed on
+                    touch where drag isn't available (#267). */}
+                {isMobile && otherKeys.length > 0 && (
                   <select onChange={(e) => { if (e.target.value) onMoveStop(id, e.target.value); e.target.value = ''; }} defaultValue="" className="border rounded text-[10px] px-0.5 py-0.5 bg-white shrink-0" title="Move to another route" aria-label={`Move ${s.businessName || id} to another route`}>
                     <option value="">→</option>
                     {otherKeys.map((k) => <option key={k} value={k}>{k}</option>)}
@@ -9540,7 +9543,7 @@ function RoutingSettingsMenu({ panels = [], views = [], actions = [], dropUp = f
   );
 }
 
-function RoutingSelectionFloatPanel({ selectedStops, onRemove, onOpenStop, onClose, isMobile }) {
+function RoutingSelectionFloatPanel({ selectedStops, onRemove, onClearAll, onOpenStop, onClose, isMobile }) {
   // Compact window from the naive (zoneless) schedule ISO — parse the clock straight off the
   // string so there's no local-timezone drift. "8:00a", "8:00a–8:00p".
   const fmtWin = (iso) => {
@@ -9561,10 +9564,29 @@ function RoutingSelectionFloatPanel({ selectedStops, onRemove, onOpenStop, onClo
       winSort: s.scheduledFrom || '',    // sort the window by the real (zoneless) start time
       weight: Number(s.weight) || 0,
       pallets: Number(s.cartons) || 0,   // NuVizz totalCartons = real skids/pallets
+      loose: Number(s.volume) || 0,      // NuVizz volume = loose-piece count
     };
   }), [selectedStops]);
-  const tot = rows.reduce((a, r) => ({ wt: a.wt + r.weight, plt: a.plt + r.pallets }), { wt: 0, plt: 0 });
+  const tot = rows.reduce((a, r) => ({ wt: a.wt + r.weight, plt: a.plt + r.pallets, ls: a.ls + r.loose }), { wt: 0, plt: 0, ls: 0 });
   const { sorted, sortKey, sortDir, toggle } = useSortable(rows, null, 'asc');
+  // User-resizable window (#260) — width + height persisted; desktop only (mobile spans full width).
+  // Anchored top-right, so the resize grip lives at the bottom-LEFT corner: drag left = wider, down
+  // = taller. null height = auto (cap at 60vh) until the user sizes it.
+  const [panelW, setPanelW] = useState(() => { const v = Number(localStorage.getItem('routing.selPanelW')); return v >= 300 ? v : 420; });
+  const [panelH, setPanelH] = useState(() => { const v = Number(localStorage.getItem('routing.selPanelH')); return v >= 160 ? v : 0; });
+  const panelRef = useRef(null);
+  useEffect(() => { try { localStorage.setItem('routing.selPanelW', String(panelW)); } catch { /* ignore */ } }, [panelW]);
+  useEffect(() => { try { if (panelH) localStorage.setItem('routing.selPanelH', String(panelH)); } catch { /* ignore */ } }, [panelH]);
+  const onResizeDown = (e) => {
+    e.preventDefault(); e.stopPropagation();
+    const startX = e.clientX, startY = e.clientY, w0 = panelW, h0 = panelH || (panelRef.current?.offsetHeight ?? 360);
+    const move = (ev) => {
+      setPanelW(Math.max(300, Math.min(window.innerWidth - 24, w0 + (startX - ev.clientX))));
+      setPanelH(Math.max(160, Math.min(window.innerHeight * 0.85, h0 + (ev.clientY - startY))));
+    };
+    const up = () => { document.removeEventListener('pointermove', move); document.removeEventListener('pointerup', up); };
+    document.addEventListener('pointermove', move); document.addEventListener('pointerup', up);
+  };
   // Compact, click-to-sort header cell (the shared SortableTh is sized for the wider docked tables).
   const Th = ({ label, k, align }) => (
     <th onClick={() => toggle(k)} className={`px-1.5 py-1 cursor-pointer select-none hover:bg-slate-100 ${align === 'right' ? 'text-right' : 'text-left'}`}>
@@ -9572,28 +9594,38 @@ function RoutingSelectionFloatPanel({ selectedStops, onRemove, onOpenStop, onClo
     </th>
   );
   return (
-    <div className={`absolute z-20 bg-white border border-slate-300 rounded-lg shadow-xl flex flex-col ${isMobile ? 'left-2 right-2 top-12 max-h-[45vh]' : 'right-2 top-12 w-[420px] max-w-[calc(100%-1rem)] max-h-[60vh]'}`}>
+    <div
+      ref={panelRef}
+      className={`absolute z-20 bg-white border border-slate-300 rounded-lg shadow-xl flex flex-col ${isMobile ? 'left-2 right-2 top-12 max-h-[45vh]' : 'right-2 top-12 max-w-[calc(100%-1rem)]'}`}
+      style={isMobile ? undefined : { width: panelW, maxHeight: panelH ? undefined : '60vh', height: panelH || undefined }}
+    >
       <div className="flex items-center justify-between gap-2 px-3 py-1.5 border-b bg-slate-50 rounded-t-lg shrink-0">
-        <div className="font-semibold text-[13px] text-slate-800">
+        <div className="font-semibold text-[13px] text-slate-800 min-w-0 truncate">
           Selected {rows.length}
-          {rows.length > 0 && <span className="text-slate-500 font-normal"> · {tot.plt} plt · {tot.wt.toLocaleString()} lb</span>}
+          {rows.length > 0 && <span className="text-slate-500 font-normal"> · {tot.plt} plt · {tot.ls} loose · {tot.wt.toLocaleString()} lb</span>}
         </div>
-        <button onClick={onClose} className="text-slate-400 hover:text-slate-700 leading-none p-1" aria-label="Hide selected panel"><X size={16} /></button>
+        <div className="flex items-center gap-1 shrink-0">
+          {rows.length > 0 && onClearAll && (
+            <button onClick={onClearAll} className="text-[11px] font-medium text-slate-500 hover:text-red-600 px-1.5 py-0.5 rounded hover:bg-red-50" title="Clear all selected stops">Clear all</button>
+          )}
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-700 leading-none p-1" aria-label="Hide selected panel"><X size={16} /></button>
+        </div>
       </div>
       {rows.length === 0 ? (
         <div className="px-3 py-3 text-[11px] text-slate-400">No stops selected yet. Tap a stop on the map, or use Add in view / Box / Lasso.</div>
       ) : (
-        <div className="overflow-auto">
+        <div className="overflow-auto flex-1 min-h-0">
           <table className="w-full text-[11px]">
             <thead className="bg-slate-50 sticky top-0 z-10">
               <tr className="text-[9px] uppercase tracking-wide text-slate-500">
                 <Th label="Stop#" k="pro" />
                 <Th label="Type" k="type" />
                 <Th label="Location" k="location" />
+                <Th label="Plt" k="pallets" align="right" />
+                <Th label="Loose" k="loose" align="right" />
+                <Th label="Wt" k="weight" align="right" />
                 <Th label="City" k="city" />
                 <Th label="Zip" k="zip" />
-                <Th label="Wt" k="weight" align="right" />
-                <Th label="Plt" k="pallets" align="right" />
                 <th className="px-1 py-1" />
               </tr>
             </thead>
@@ -9603,15 +9635,27 @@ function RoutingSelectionFloatPanel({ selectedStops, onRemove, onOpenStop, onClo
                   <td className="px-1.5 py-1 whitespace-nowrap"><button onClick={() => onOpenStop && onOpenStop(r.stop)} className="font-mono text-blue-700 hover:underline">{r.pro}</button></td>
                   <td className="px-1 py-1"><span className={`text-[9px] font-bold px-1 rounded ${r.type === 'PU' ? 'bg-violet-100 text-violet-700' : 'bg-slate-100 text-slate-600'}`}>{r.type}</span></td>
                   <td className="px-1.5 py-1 max-w-[150px] truncate" title={r.location}>{r.location}</td>
+                  <td className="px-1 py-1 text-right tabular-nums">{r.pallets}</td>
+                  <td className="px-1 py-1 text-right tabular-nums">{r.loose}</td>
+                  <td className="px-1 py-1 text-right tabular-nums">{r.weight.toLocaleString()}</td>
                   <td className="px-1.5 py-1 max-w-[90px] truncate" title={r.city}>{r.city}</td>
                   <td className="px-1 py-1 whitespace-nowrap text-slate-600">{r.zip}</td>
-                  <td className="px-1 py-1 text-right tabular-nums">{r.weight.toLocaleString()}</td>
-                  <td className="px-1 py-1 text-right tabular-nums">{r.pallets}</td>
                   <td className="px-1 py-1"><button onClick={() => onRemove(r.id)} aria-label={`Remove ${r.location} from selection`} className="text-slate-400 hover:text-red-600 leading-none text-base">×</button></td>
                 </tr>
               ))}
             </tbody>
           </table>
+        </div>
+      )}
+      {/* Resize grip (desktop) — bottom-left corner; drag to size the window. */}
+      {!isMobile && (
+        <div
+          onPointerDown={onResizeDown}
+          className="absolute bottom-0 left-0 w-4 h-4 cursor-nesw-resize text-slate-300 hover:text-slate-500"
+          title="Drag to resize"
+          style={{ touchAction: 'none' }}
+        >
+          <svg viewBox="0 0 10 10" className="w-full h-full"><path d="M1 9 L9 1 M1 5 L5 1 M5 9 L9 5" stroke="currentColor" strokeWidth="1" fill="none" /></svg>
         </div>
       )}
     </div>
@@ -11044,7 +11088,7 @@ function RoutingScreen({ debugCaptureRef }) {
         )}
         {/* Floating "Selected N" panel (toggleable) — lists every selected stop over the map. */}
         {!viewing && selPanelOpen && selectedStops.length > 0 && (
-          <RoutingSelectionFloatPanel selectedStops={selectedStops} onRemove={removeStop} onOpenStop={openStop} onClose={() => setSelPanelOpen(false)} isMobile={false} />
+          <RoutingSelectionFloatPanel selectedStops={selectedStops} onRemove={removeStop} onClearAll={clearSelection} onOpenStop={openStop} onClose={() => setSelPanelOpen(false)} isMobile={false} />
         )}
         {/* Reopen chip when the panel is toggled off but stops are selected. */}
         {!viewing && !selPanelOpen && selectedStops.length > 0 && (
