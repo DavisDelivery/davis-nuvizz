@@ -22,7 +22,7 @@
 
 import { getNuvizzRequester } from './nuvizz-request.mts';
 import { getCreds, basicAuthHeader } from './nuvizz-scan.mts';
-import { OPENAPI_BASE, linkVal, periodForDate } from './nuvizz-list.mts';
+import { OPENAPI_BASE, linkVal, periodForDate, isHashLikeId } from './nuvizz-list.mts';
 
 // The saved load-list def the portal uses for the Loads grid (HAR-captured). Override
 // via env if Davis retunes it in the portal.
@@ -59,6 +59,9 @@ export function normalizeLoads(j: any): Array<{ loadId: string; name: string; st
   const find = (re: RegExp, avoid?: RegExp) => cols.find((k) => re.test(k) && (!avoid || !avoid.test(k)));
   const idIx = cols.indexOf('KeyColumn') >= 0 ? cols.indexOf('KeyColumn')
     : cols.indexOf(find(/loadid/i) ?? find(/(^|\.)key/i) ?? cols[0]);
+  // The human recurring-load name ("BEN 2") is the load NUMBER (loadNbr); prefer it, then the
+  // route-name column. loadId/KeyColumn is the internal hex id — never the display name.
+  const nbrIx = cols.indexOf(find(/load.?nbr|load.?(no|num|number)/i) ?? '');
   const nameIx = cols.indexOf(find(/route.*name|(^|\.)name$/i) ?? find(/name/i) ?? '');
   const statusIx = cols.indexOf(find(/status/i, /dttm|date|time/i) ?? '');
   const tripsIx = cols.indexOf(find(/trip|stop.?count|nooftrip/i) ?? '');
@@ -67,9 +70,17 @@ export function normalizeLoads(j: any): Array<{ loadId: string; name: string; st
     const loadId = String(linkVal(row[idIx]) ?? '').trim();
     if (!loadId) continue;
     const t = Number(linkVal(row[tripsIx]));
+    // First HUMAN (non-hash) name among the load-number and route-name columns; '' if none — a bare
+    // NuVizz ObjectId must never become the displayed load name (#254-style guard, was missing here).
+    let name = '';
+    for (const ix of [nbrIx, nameIx]) {
+      if (ix < 0) continue;
+      const v = String(linkVal(row[ix]) ?? '').trim();
+      if (v && !isHashLikeId(v)) { name = v; break; }
+    }
     out.push({
       loadId,
-      name: String(linkVal(row[nameIx]) ?? '').trim(),
+      name,
       status: String(linkVal(row[statusIx]) ?? '').trim(),
       trips: Number.isFinite(t) ? t : null,
     });
