@@ -444,6 +444,23 @@ test('mergeEnrich: adds static detail + enriched flag; never nukes list values w
   assert.equal(t.lat, 1); assert.equal(t.lng, 2); assert.ok(!('stopDetails' in t));
 });
 
+test('mergeEnrich: list ShipTo-Display-Seq (routeSeq) wins over a carried-forward enriched seq (#292)', () => {
+  // The fresh list stop carries the authoritative ShipTo-Display-Seq delivery order. A prior
+  // enriched index doc carries the OLD physical stop.to.seq under the same routeSeq field. The
+  // carry-forward must NOT clobber the fresh list value, or a re-scan never re-orders the route.
+  const fresh = toBoardStop({ stopNbr: '7', statusCode: '20', routeName: 'L1', routeSeq: 1 });
+  assert.equal(fresh.routeSeq, 1, 'list Display-Seq read into routeSeq');
+  mergeEnrich(fresh, { enriched: true, routeSeq: 8, lat: 33.9, lng: -83.8 }); // prior doc w/ stale physical seq
+  assert.equal(fresh.routeSeq, 1, 'list Display-Seq survives the carry-forward (not overwritten by 8)');
+  assert.equal(fresh.lat, 33.9, 'other enriched detail still merges');
+
+  // But when the list row carried NO Display-Seq (routeSeq null), enrichment may backfill it.
+  const noSeq = toBoardStop({ stopNbr: '8', statusCode: '20', routeName: 'L1' });
+  assert.equal(noSeq.routeSeq, null);
+  mergeEnrich(noSeq, { enriched: true, routeSeq: 5 });
+  assert.equal(noSeq.routeSeq, 5, 'enriched seq backfills only when the list had none');
+});
+
 test('addrKey: stable + case/space-insensitive; null without a street address', () => {
   const a = addrKey({ addr1: '1 Main St', city: 'Buford', state: 'GA', zip: '30518' });
   const b = addrKey({ addr1: '  1 MAIN ST ', city: 'buford', state: 'ga', zip: '30518' });

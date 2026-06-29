@@ -567,11 +567,20 @@ export const LIVE_LIST_FIELDS = [
 // null/blank, so list-derived values survive when a detail field is sparse.
 export function mergeEnrich(target: any, src: any): any {
   if (!src || typeof src !== 'object') return target;
+  // The ShipTo-Display-Seq delivery order arrives FREE & authoritative on every list scan
+  // (toBoardStop → routeSeq). It must WIN over any carried-forward / enriched value: the
+  // enrichment path's routeSeq is the PHYSICAL stop.to.seq — a different number, and exactly
+  // the wrong order the Display-Seq column was added to replace. routeSeq is a non-live field,
+  // so without this guard mergeEnrich would copy the stale enriched seq over the fresh list
+  // value on every carry-forward, and a re-scan would never actually re-order the route. We
+  // still let src BACKFILL when the list row carried no Display-Seq (target.routeSeq null).
+  const listRouteSeq = typeof target.routeSeq === 'number' ? target.routeSeq : null;
   for (const [k, v] of Object.entries(src)) {
     if (LIVE_LIST_FIELDS.includes(k) || k === 'enriched' || k === 'last_scanned_at' || k === '_id') continue;
     if (v === null || v === undefined || v === '' || (Array.isArray(v) && v.length === 0)) continue;
     target[k] = v;
   }
+  if (listRouteSeq != null) target.routeSeq = listRouteSeq;  // list Display-Seq is authoritative
   target.enriched = true;
   return target;
 }
