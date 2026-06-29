@@ -50,7 +50,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.29.72';
+const APP_VERSION = '0.29.73';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -70,6 +70,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.29.73', 'Routing (beta) — smaller map pins (#262). Stops now render as small flat circles instead of the big teardrop pins, so a dense board no longer has markers covering each other. Colour still carries state — route colour when a stop is sequenced (with its stop number in the circle), orange when selected, mint for unplanned and slate for planned otherwise — and selected/hovered stops still pop larger. Click and hover behave exactly as before.'],
   ['0.29.72', 'Routing (beta) — Selected-stops window upgrades. It\'s now drag-to-resize (grab the bottom-left corner; width + height are remembered), has a "Clear all" button in the header to drop the whole selection at once (#261), and shows a Loose-pieces column alongside pallets and weight. The columns are reordered to put Pallets · Loose · Weight right after Location, before City/Zip (#260). And in the Compare panel, the per-stop "→ move to load" dropdown is now hidden on desktop (just drag a stop to another card) — it stays on touch where drag isn\'t available (#267).'],
   ['0.29.71', 'Routing (beta) — map filters, ported from the dispatch Map. A new "Filters" button in the map\'s top-right corner toggles: Unplanned only (hides planned stops so you see just what still needs routing), Satellite view (switch between satellite imagery and the plain roadmap base), and Show routes (overlays each load\'s stops connected in delivery sequence, one colour per load). All persisted. The build-version badge that used to sit in that corner is gone — version history now lives in the gear settings (ⓘ Version history), since the version already shows in the page footer.'],
   ['0.29.70', 'Routing (beta) — the left Setup panel can now be hidden. It\'s still under development, so by default it\'s OFF (the map gets the full width) and you flip it on only while working on it. The on/off toggle (plus the floating-panel, right-panel, and hide-stem settings) now also lives in a gear on the bottom data-grid header, so it stays reachable with the Setup panel hidden — and a compact date picker appears there too so you can still change the board date. Turning the Setup panel off can never hide the bottom grid as well (that would strip every settings gear). Desktop only.'],
@@ -9543,6 +9544,22 @@ function RoutingSettingsMenu({ panels = [], views = [], actions = [], dropUp = f
   );
 }
 
+// Routing-map stop marker — a small flat CIRCLE instead of the rich teardrop pin, so a dense board
+// doesn't have big pins covering each other (#262). Colour carries state: the route colour when the
+// stop is sequenced, orange when selected, mint/slate for unplanned/planned otherwise. A sequenced
+// stop shows its route order as a centred number label. Returns { icon, label } for google.maps.Marker.
+function routingStopIcon(google, { sel, ri, isUnplanned }) {
+  const numbered = !!ri;
+  const color = numbered ? (ri.color || '#2563eb') : (sel ? '#f59e0b' : (isUnplanned ? '#10b981' : '#64748b'));
+  const icon = {
+    path: google.maps.SymbolPath.CIRCLE,
+    scale: numbered ? 9 : (sel ? 7 : 5.5),
+    fillColor: color, fillOpacity: 1, strokeColor: '#ffffff', strokeWeight: 1.5,
+  };
+  const label = numbered ? { text: String(ri.seq), color: '#ffffff', fontSize: '10px', fontWeight: '700' } : undefined;
+  return { icon, label };
+}
+
 function RoutingSelectionFloatPanel({ selectedStops, onRemove, onClearAll, onOpenStop, onClose, isMobile }) {
   // Compact window from the naive (zoneless) schedule ISO — parse the clock straight off the
   // string so there's no local-timezone drift. "8:00a", "8:00a–8:00p".
@@ -10534,20 +10551,14 @@ function RoutingScreen({ debugCaptureRef }) {
       const sel = !viewing && selectedIds.has(id);
       const ri = effectiveRouteInfo.get(id);     // { color, seq } when on a route (Compare cards win)
       const numbered = !!ri;
-      const note = notes.get(s.matchKey) || null;
       const hovered = hoverIdRef.current === id;
-      const baseIcon = stopMarkerIcon(google, s, note, {
-        selectedDayKey,
-        matched: sel,
-        inRoute: numbered,
-        seq: ri?.seq,
-        routeColor: ri?.color,
-      });
+      const { icon: baseIcon, label } = routingStopIcon(google, { sel, ri, isUnplanned: s.isUnplanned });
       const baseZ = numbered ? 30 : (sel ? 25 : 10);
       const marker = new google.maps.Marker({
         position: { lat: s.lat, lng: s.lng },
         title: s.businessName || s.stopNbr,
         icon: hovered ? emphIcon(baseIcon) : baseIcon,
+        label,
         zIndex: hovered ? 50 : baseZ,
       });
       marker.addListener('click', () => {
