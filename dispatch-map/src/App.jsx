@@ -50,7 +50,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.29.76';
+const APP_VERSION = '0.29.77';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -70,6 +70,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.29.77', 'HOTFIX: routing-map stops are back (#279/#282). The smaller circular pins shipped in 0.29.73 used a vector-marker style that silently failed to paint on the routing map\'s satellite/vector base, so the whole board went blank. The pins are now drawn as small numbered circle images, which render reliably — same look, stops visible again. Also: the bottom Stops/Loads grid now centers in the window when the left Setup panel is closed (instead of hugging the left edge); the Compare "Re-sequence" menu moves "Loop" to the bottom of the list (#280); and the Debug-capture box is focused the moment it opens so you can type right away (#280).'],
   ['0.29.76', 'Routing (beta) — new "Loop" re-sequence that stops the criss-crossing. On a Compare route card, Re-sequence → "Loop — down one side & back" runs the stops out along one side of the corridor and back the other (a U-shaped loop), instead of "Farthest first" zig-zagging across the highway. Under the hood it 2-opts the round trip back to the terminal, which un-crosses the route. Each card now also shows which logic is currently applied ("Sequenced: …").'],
   ['0.29.75', 'Print Manifest / Delivery Ticket viewer — the Print and close (✕) buttons now float at the top-right corner over the document (no more full-width header bar), so they sit right at the top of the manifest and stay reachable while you scroll.'],
   ['0.29.74', 'Print Manifest now paginates correctly — each delivery ticket prints on its own page again, and the whole route prints (not just the first page). The page breaks were always right; the fix is printing from a real window instead of the on-screen iframe, which iOS Safari was collapsing to a single page. Also: the routing bottom-grid Loads "Status" column is spelled out (Planned, Un-Planned, In-Transit, Completed, Cancelled) instead of the terse "Pl / Un / Tr" abbreviations, to read like NuVizz (#266).'],
@@ -6119,6 +6120,7 @@ function DebugCaptureSheet({ open, onClose, captureRef }) {
             value={note}
             onChange={(e) => setNote(e.target.value)}
             placeholder="What looked wrong? (optional)"
+            autoFocus
             className="w-full text-sm border border-slate-300 rounded-xl px-3 py-2 h-24 resize-y focus:outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-400"
           />
           {result && (
@@ -8205,7 +8207,7 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
       </div>
       {open && view === 'stops' && (
         <div className="overflow-auto flex-1 min-h-0">
-          <table className="text-[11px] border-collapse" style={{ minWidth: cols.reduce((a, c) => a + c.w, 0) }}>
+          <table className="text-[11px] border-collapse mx-auto" style={{ minWidth: cols.reduce((a, c) => a + c.w, 0) }}>
             <thead className="sticky top-0 bg-slate-50 z-10">
               <tr>
                 {cols.map((c) => (
@@ -8235,7 +8237,7 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
       )}
       {open && view === 'loads' && (
         <div className="overflow-auto flex-1 min-h-0">
-          <table className="text-[11px] border-collapse" style={{ minWidth: loadCols.reduce((a, c) => a + c.w, 0) }}>
+          <table className="text-[11px] border-collapse mx-auto" style={{ minWidth: loadCols.reduce((a, c) => a + c.w, 0) }}>
             <thead className="sticky top-0 bg-slate-50 z-10">
               <tr>
                 {loadCols.map((c) => (
@@ -9387,11 +9389,11 @@ function RoutingWorkbenchCard({ route, stopById, otherKeys, ninjaMode, isActive,
         {!route.collapsed && (
           <select onChange={(e) => { if (e.target.value) onResequence(e.target.value); e.target.value = ''; }} value="" className="mt-1 w-full border rounded px-1 py-1 text-[11px] bg-white">
             <option value="" disabled>Re-sequence…</option>
-            <option value="loop">Loop — down one side &amp; back (no crossings)</option>
             <option value="min">Shortest distance</option>
             <option value="farthest">Farthest first</option>
             <option value="closest">Closest first</option>
             <option value="reverse">Reverse</option>
+            <option value="loop">Loop — down one side &amp; back (no crossings)</option>
           </select>
         )}
       </div>
@@ -9575,16 +9577,28 @@ function RoutingSettingsMenu({ panels = [], views = [], actions = [], dropUp = f
 // doesn't have big pins covering each other (#262). Colour carries state: the route colour when the
 // stop is sequenced, orange when selected, mint/slate for unplanned/planned otherwise. A sequenced
 // stop shows its route order as a centred number label. Returns { icon, label } for google.maps.Marker.
+// Small circle as an SVG data-URL IMAGE — NOT a Symbol path. On the routing VECTOR map (mapId),
+// legacy google.maps.Marker renders IMAGE icons reliably but Symbol-path icons silently fail to
+// paint, which blanked the whole board (#279/#282). Image icons also match the rich-pin contract,
+// so the shared emphIcon() hover-scaler (its url/scaledSize branch) keeps working unchanged.
+function routingDotSvg(color, label, size) {
+  const c = size / 2;
+  const r = c - 2;
+  const txt = label
+    ? `<text x="${c}" y="${c}" text-anchor="middle" dominant-baseline="central" font-family="Arial,Helvetica,sans-serif" font-weight="700" font-size="${Math.round(size * 0.5)}" fill="#ffffff">${label}</text>`
+    : '';
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}"><circle cx="${c}" cy="${c}" r="${r}" fill="${color}" stroke="#ffffff" stroke-width="2"/>${txt}</svg>`;
+  return `data:image/svg+xml,${encodeURIComponent(svg)}`;
+}
 function routingStopIcon(google, { sel, ri, isUnplanned }) {
   const numbered = !!ri;
   const color = numbered ? (ri.color || '#2563eb') : (sel ? '#f59e0b' : (isUnplanned ? '#10b981' : '#64748b'));
-  const icon = {
-    path: google.maps.SymbolPath.CIRCLE,
-    scale: numbered ? 9 : (sel ? 7 : 5.5),
-    fillColor: color, fillOpacity: 1, strokeColor: '#ffffff', strokeWeight: 1.5,
+  const size = numbered ? 24 : (sel ? 18 : 14);
+  return {
+    url: routingDotSvg(color, numbered ? String(ri.seq) : '', size),
+    scaledSize: new google.maps.Size(size, size),
+    anchor: new google.maps.Point(size / 2, size / 2),
   };
-  const label = numbered ? { text: String(ri.seq), color: '#ffffff', fontSize: '10px', fontWeight: '700' } : undefined;
-  return { icon, label };
 }
 
 function RoutingSelectionFloatPanel({ selectedStops, onRemove, onClearAll, onOpenStop, onClose, isMobile }) {
@@ -10579,13 +10593,12 @@ function RoutingScreen({ debugCaptureRef }) {
       const ri = effectiveRouteInfo.get(id);     // { color, seq } when on a route (Compare cards win)
       const numbered = !!ri;
       const hovered = hoverIdRef.current === id;
-      const { icon: baseIcon, label } = routingStopIcon(google, { sel, ri, isUnplanned: s.isUnplanned });
+      const baseIcon = routingStopIcon(google, { sel, ri, isUnplanned: s.isUnplanned });
       const baseZ = numbered ? 30 : (sel ? 25 : 10);
       const marker = new google.maps.Marker({
         position: { lat: s.lat, lng: s.lng },
         title: s.businessName || s.stopNbr,
         icon: hovered ? emphIcon(baseIcon) : baseIcon,
-        label,
         zIndex: hovered ? 50 : baseZ,
       });
       marker.addListener('click', () => {
