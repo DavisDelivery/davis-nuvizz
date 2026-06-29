@@ -205,8 +205,45 @@ export function twoOpt(stops, depot, maxPasses = 6) {
   return best;
 }
 
+// Closed-LOOP length: depot → s1 → … → sn → back to depot. The return leg is what
+// makes 2-opt produce the "down one side, up the other" U-shape — an open path has
+// no reason to come back, so it can leave the route crossing itself; closing the
+// loop forces the optimizer to run out along one side of the corridor and return
+// along the other.
+function loopTotalMeters(orderedStops, depot) {
+  if (!orderedStops.length) return 0;
+  let total = 0;
+  let prev = depot;
+  for (const s of orderedStops) { total += haversineMeters(prev, s); prev = s; }
+  total += haversineMeters(prev, depot);   // close the loop back to the terminal
+  return total;
+}
+
+// 2-opt over the CLOSED loop (depot anchored at both ends). Same segment-reversal
+// move as twoOpt(), but scored on the round-trip so crossings get un-crossed into a
+// clean out-and-back loop. Returned in visiting order (depot start is implied).
+export function twoOptLoop(stops, depot, maxPasses = 8) {
+  let best = [...stops];
+  let bestLen = loopTotalMeters(best, depot);
+  for (let pass = 0; pass < maxPasses; pass++) {
+    let improved = false;
+    for (let i = 0; i < best.length - 1; i++) {
+      for (let k = i + 1; k < best.length; k++) {
+        const cand = best.slice(0, i).concat(best.slice(i, k + 1).reverse(), best.slice(k + 1));
+        const len = loopTotalMeters(cand, depot);
+        if (len + 1e-6 < bestLen) { best = cand; bestLen = len; improved = true; }
+      }
+    }
+    if (!improved) break;
+  }
+  return best;
+}
+
 // Re-sequence one route's stops by strategy. 'reverse' flips the current order;
 // the others are computed fresh from depot + positions.
+//   loop     — nearest-neighbour seed + closed-loop 2-opt → U-shape (down one side,
+//              back the other), the no-crisscross order for a highway corridor.
+//   min      — nearest-neighbour seed + open-path 2-opt → shortest one-way distance.
 export function resequence(stops, depot, strategy) {
   const arr = Array.isArray(stops) ? stops : [];
   if (arr.length < 2) return [...arr];
@@ -214,6 +251,7 @@ export function resequence(stops, depot, strategy) {
     case 'reverse': return [...arr].reverse();
     case 'closest': return depotSort(arr, depot, 'asc');
     case 'farthest': return depotSort(arr, depot, 'desc');
+    case 'loop': return twoOptLoop(nearestNeighbor(arr, depot), depot);
     case 'min': return twoOpt(nearestNeighbor(arr, depot), depot);
     default: return [...arr];
   }

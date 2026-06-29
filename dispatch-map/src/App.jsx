@@ -50,7 +50,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.29.75';
+const APP_VERSION = '0.29.76';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -70,6 +70,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.29.76', 'Routing (beta) — new "Loop" re-sequence that stops the criss-crossing. On a Compare route card, Re-sequence → "Loop — down one side & back" runs the stops out along one side of the corridor and back the other (a U-shaped loop), instead of "Farthest first" zig-zagging across the highway. Under the hood it 2-opts the round trip back to the terminal, which un-crosses the route. Each card now also shows which logic is currently applied ("Sequenced: …").'],
   ['0.29.75', 'Print Manifest / Delivery Ticket viewer — the Print and close (✕) buttons now float at the top-right corner over the document (no more full-width header bar), so they sit right at the top of the manifest and stay reachable while you scroll.'],
   ['0.29.74', 'Print Manifest now paginates correctly — each delivery ticket prints on its own page again, and the whole route prints (not just the first page). The page breaks were always right; the fix is printing from a real window instead of the on-screen iframe, which iOS Safari was collapsing to a single page. Also: the routing bottom-grid Loads "Status" column is spelled out (Planned, Un-Planned, In-Transit, Completed, Cancelled) instead of the terse "Pl / Un / Tr" abbreviations, to read like NuVizz (#266).'],
   ['0.29.73', 'Routing (beta) — smaller map pins (#262). Stops now render as small flat circles instead of the big teardrop pins, so a dense board no longer has markers covering each other. Colour still carries state — route colour when a stop is sequenced (with its stop number in the circle), orange when selected, mint for unplanned and slate for planned otherwise — and selected/hovered stops still pop larger. Click and hover behave exactly as before.'],
@@ -9319,6 +9320,10 @@ function RoutingMapTools({ selectMode, onBox, onLasso, ninjaMode, onToggleNinja,
 // Closest / Reverse), collapse/close, per-stop open, and — when other routes are open — a
 // "move to route" picker that reassigns a stop to another open card. The order lives in wbRoutes
 // state; this is a planning overlay (it does not mutate the board).
+// Human labels for the re-sequence strategies (shared by the card's applied-strategy line and the
+// "Re-sequenced …" toast).
+const RESEQ_LABELS = { loop: 'Loop — down one side & back', min: 'Shortest distance', closest: 'Closest first', farthest: 'Farthest first', reverse: 'Reverse' };
+
 function RoutingWorkbenchCard({ route, stopById, otherKeys, ninjaMode, isActive, onSetActive, onResequence, onCollapse, onClose, onMoveStop, onDropStop, onOpenStop, isMobile }) {
   const rows = route.order.map((id) => stopById.get(String(id))).filter(Boolean);
   // Drag-and-drop (desktop): track which row we're hovering so we can show a drop line, and read
@@ -9377,9 +9382,12 @@ function RoutingWorkbenchCard({ route, stopById, otherKeys, ninjaMode, isActive,
         </div>
         <div className="text-[11px] text-slate-500 truncate">{driverLabel} · {rows.length} stop{rows.length === 1 ? '' : 's'} · {skids} sk · {Math.round(weight).toLocaleString()} lb · {rows.length ? Math.round((100 * delivered) / rows.length) : 0}%</div>
         {rc && <div className="text-[11px] font-semibold text-slate-700">{miles.toFixed(1)} mi · {fmtDur(driveMin)}<span className="font-normal text-slate-400"> · DH {dhMi.toFixed(1)} mi</span></div>}
+        {/* Show which sequencing logic is currently applied (remembered on the route). */}
+        {route.strategy && <div className="text-[10px] text-slate-500">Sequenced: <span className="font-medium text-slate-600">{RESEQ_LABELS[route.strategy] || route.strategy}</span></div>}
         {!route.collapsed && (
-          <select onChange={(e) => { if (e.target.value) onResequence(e.target.value); e.target.value = ''; }} defaultValue="" className="mt-1 w-full border rounded px-1 py-1 text-[11px] bg-white">
+          <select onChange={(e) => { if (e.target.value) onResequence(e.target.value); e.target.value = ''; }} value="" className="mt-1 w-full border rounded px-1 py-1 text-[11px] bg-white">
             <option value="" disabled>Re-sequence…</option>
+            <option value="loop">Loop — down one side &amp; back (no crossings)</option>
             <option value="min">Shortest distance</option>
             <option value="farthest">Farthest first</option>
             <option value="closest">Closest first</option>
@@ -9970,9 +9978,9 @@ function RoutingScreen({ debugCaptureRef }) {
       const newOrder = resequence(pts, ROUTING_DEPOT, strategy).map((s) => s.id);
       const resolved = new Set(newOrder);
       const tail = r.order.map(String).filter((id) => !resolved.has(id));   // never drop unresolvable ids
-      return { ...r, order: [...newOrder, ...tail] };
+      return { ...r, order: [...newOrder, ...tail], strategy };   // remember + show the applied logic
     }));
-    setLastAction(`Re-sequenced ${key} · ${({ min: 'Shortest distance', closest: 'Closest first', farthest: 'Farthest first', reverse: 'Reverse' })[strategy] || strategy}`);
+    setLastAction(`Re-sequenced ${key} · ${RESEQ_LABELS[strategy] || strategy}`);
   }, [stopById]);
   const wbMoveStop = useCallback((fromKey, stopNbr, toKey) => {
     if (!toKey || fromKey === toKey) return;
