@@ -3514,7 +3514,27 @@ function PrintDocModal({ title, html, pageW = 816, onClose }) {
   const onLoad = () => {
     try { const h = iframeRef.current?.contentWindow?.document?.body?.scrollHeight; if (h && h > 120) setPageH(h + 8); } catch { /* same-origin srcdoc — safe */ }
   };
-  const doPrint = () => { try { iframeRef.current?.contentWindow?.focus(); iframeRef.current?.contentWindow?.print(); } catch { /* popup/print blocked */ } };
+  // Print from a NEW WINDOW, not the iframe. Printing an iframe via
+  // contentWindow.print() collapses a multi-page doc (the manifest) onto a
+  // single page on iOS Safari — it prints the iframe's on-screen view and
+  // ignores the per-ticket page breaks (that's the "one page, orders not on
+  // separate pages" bug). A full document in its own window paginates reliably
+  // on iOS + desktop. Falls back to the iframe only if the window is blocked.
+  const doPrint = () => {
+    let w = null;
+    try { w = window.open('', '_blank'); } catch { w = null; }
+    if (!w) {
+      try { iframeRef.current?.contentWindow?.focus(); iframeRef.current?.contentWindow?.print(); } catch { /* popup/print blocked */ }
+      return;
+    }
+    w.document.open();
+    w.document.write(html);
+    w.document.close();
+    let fired = false;
+    const fire = () => { if (fired) return; fired = true; try { w.focus(); w.print(); } catch { /* print blocked */ } };
+    w.addEventListener('load', () => setTimeout(fire, 250)); // let the logo image paint first
+    setTimeout(fire, 1500); // fallback if 'load' already fired or stalls
+  };
   return (
     <div className="fixed inset-0 z-[1400] flex flex-col bg-slate-900/80" role="dialog" aria-modal="true"
       style={{ paddingTop: 'env(safe-area-inset-top)', paddingBottom: 'env(safe-area-inset-bottom)' }}>
