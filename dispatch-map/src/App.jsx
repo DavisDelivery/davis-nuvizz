@@ -50,7 +50,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.29.82';
+const APP_VERSION = '0.29.83';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -88,6 +88,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.29.83', 'Routing — make the ShipTo - Display Seq read robust (#290). The delivery-order column is now matched by its DISPLAY NAME ("ShipTo - Display Seq") as well as the internal key, so the scan can\'t miss it if NuVizz keys the column by an opaque path. (If your refresh did not change the order, it was on v0.29.81 — before the v0.29.82 column read shipped; once this is live, refresh and re-open the load.) When the column genuinely isn\'t present the scan logs it instead of silently falling back to the geographic guess.'],
   ['0.29.82', 'Routing — loads now sequence in the REAL delivery order. The scan now reads the new "ShipTo - Display Seq" column you added to the saved search and uses it as each stop\'s delivery order within its load, so opening a load in Compare (and its map polyline / route list) follows NuVizz\'s actual stop order instead of a geographic guess — no per-stop enrichment needed. Takes effect after the next scheduled scan repopulates the board (like the Estimated-Arrival column add).'],
   ['0.29.81', 'Routing (beta) — fixing a stop\'s address now moves its pin LIVE. After you correct an address, the routing map repositions the stop to the right spot immediately (it applies the same corrected-pin override the dispatch Map uses, and recomputes on the spot) — instead of the stop vanishing until you closed and reopened the map (#287).'],
   ['0.29.80', 'Routing (beta) — load NAMES, not gibberish ids. A Compare card / load / send button / Routes panel / stop detail now ALWAYS shows the recurring-load name (e.g. "BEN 2") and never a raw NuVizz id — a hash-like value is suppressed everywhere (frontend guard) and the load roster now reads the human load number with the same guard the driver field got in #254. Also: the Re-sequence menu now keeps showing the applied logic (e.g. "Shortest distance") until you change it, manually dragging a stop marks the route "Manual order (edited)" so it never auto re-sorts your hand-tweaks, and every Compare card now has a Print-manifest button (#263/#280).'],

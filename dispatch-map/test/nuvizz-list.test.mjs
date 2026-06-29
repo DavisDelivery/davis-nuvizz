@@ -378,6 +378,16 @@ test('normalize: reads the "ShipTo - Display Seq" column into routeSeq (delivery
   assert.deepEqual(boards.map((b) => b.routeSeq).sort((a, b) => a - b), [1, 2, 3]);
 });
 
+test('normalize: finds the display-seq column by its DISPLAY NAME even when the key is opaque', () => {
+  // NuVizz may key the column by an internal path while only the human label reads "ShipTo - Display Seq".
+  const keys = ['KeyColumn', 'default_vizzonInfo.shipmentInfo.status', 'vizzonInfo.shipmentInfo.stopNbr', 'route.name', 'vizzonInfo.destination.custCol7'];
+  const names = { 'vizzonInfo.destination.custCol7': 'ShipTo - Display Seq' };
+  const filterData = [Object.fromEntries(keys.map((k) => [k, { columnName: names[k] || k }]))];
+  const [r] = normalize({ filterData, values: [['id', '20', '007100009', 'BEN 2', '4']] });
+  assert.equal(r.routeSeq, 4, 'matched the column via its columnName, not the key');
+  assert.equal(toBoardStop(r).routeSeq, 4);
+});
+
 test('normalize: no display-seq column → routeSeq stays null (feeds without it are unchanged)', () => {
   const cols = ['KeyColumn', 'default_vizzonInfo.shipmentInfo.status', 'vizzonInfo.shipmentInfo.stopNbr', 'route.name'];
   const filterData = [Object.fromEntries(cols.map((k) => [k, { columnName: k }]))];
