@@ -50,7 +50,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.29.74';
+const APP_VERSION = '0.29.75';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -70,6 +70,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.29.75', 'Print Manifest / Delivery Ticket viewer — the Print and close (✕) buttons now float at the top-right corner over the document (no more full-width header bar), so they sit right at the top of the manifest and stay reachable while you scroll.'],
   ['0.29.74', 'Print Manifest now paginates correctly — each delivery ticket prints on its own page again, and the whole route prints (not just the first page). The page breaks were always right; the fix is printing from a real window instead of the on-screen iframe, which iOS Safari was collapsing to a single page. Also: the routing bottom-grid Loads "Status" column is spelled out (Planned, Un-Planned, In-Transit, Completed, Cancelled) instead of the terse "Pl / Un / Tr" abbreviations, to read like NuVizz (#266).'],
   ['0.29.73', 'Routing (beta) — smaller map pins (#262). Stops now render as small flat circles instead of the big teardrop pins, so a dense board no longer has markers covering each other. Colour still carries state — route colour when a stop is sequenced (with its stop number in the circle), orange when selected, mint for unplanned and slate for planned otherwise — and selected/hovered stops still pop larger. Click and hover behave exactly as before.'],
   ['0.29.72', 'Routing (beta) — Selected-stops window upgrades. It\'s now drag-to-resize (grab the bottom-left corner; width + height are remembered), has a "Clear all" button in the header to drop the whole selection at once (#261), and shows a Loose-pieces column alongside pallets and weight. The columns are reordered to put Pallets · Loose · Weight right after Location, before City/Zip (#260). And in the Compare panel, the per-stop "→ move to load" dropdown is now hidden on desktop (just drag a stop to another card) — it stays on touch where drag isn\'t available (#267).'],
@@ -3537,22 +3538,20 @@ function PrintDocModal({ title, html, pageW = 816, onClose }) {
     setTimeout(fire, 1500); // fallback if 'load' already fired or stalls
   };
   return (
-    <div className="fixed inset-0 z-[1400] flex flex-col bg-slate-900/80" role="dialog" aria-modal="true"
+    <div className="fixed inset-0 z-[1400] bg-slate-900/80" role="dialog" aria-modal="true" aria-label={title || 'Document'}
       style={{ paddingTop: 'env(safe-area-inset-top)', paddingBottom: 'env(safe-area-inset-bottom)' }}>
-      <div className="flex items-center justify-between gap-2 px-4 py-3 text-white flex-shrink-0">
-        <div className="font-semibold truncate">{title}</div>
-        <div className="flex items-center gap-2 flex-shrink-0">
-          <button onClick={doPrint} className="px-3 py-2 rounded-lg bg-white text-slate-900 text-sm font-semibold inline-flex items-center gap-1.5"><Printer size={16} /> Print</button>
-          <button onClick={onClose} className="p-2 rounded-full hover:bg-white/15" aria-label="Close" style={{ minWidth: 44, minHeight: 44 }}><X size={22} /></button>
-        </div>
-      </div>
-      <div ref={wrapRef} className="flex-1 min-h-0 overflow-auto p-2 flex justify-center">
+      <div ref={wrapRef} className="absolute inset-0 overflow-auto p-2 pt-16 flex justify-center">
         <div style={{ width: PAGE_W * scale, height: pageH * scale }} className="flex-shrink-0">
           <iframe
             ref={iframeRef} title={title || 'Document'} srcDoc={html} onLoad={onLoad}
             style={{ width: PAGE_W, height: pageH, border: 0, background: 'white', transform: `scale(${scale})`, transformOrigin: 'top left', boxShadow: '0 2px 14px rgba(0,0,0,0.35)' }}
           />
         </div>
+      </div>
+      {/* Print + close, floated at the top-right over the manifest — always reachable while scrolling. */}
+      <div className="absolute right-3 z-10 flex items-center gap-2" style={{ top: 'calc(env(safe-area-inset-top) + 0.625rem)' }}>
+        <button onClick={doPrint} className="px-3 py-2 rounded-lg bg-white text-slate-900 text-sm font-semibold inline-flex items-center gap-1.5 shadow-lg border border-slate-200 hover:bg-slate-50"><Printer size={16} /> Print</button>
+        <button onClick={onClose} aria-label="Close" className="rounded-full bg-white text-slate-700 hover:bg-slate-100 shadow-lg border border-slate-200 inline-flex items-center justify-center" style={{ minWidth: 44, minHeight: 44 }}><X size={22} /></button>
       </div>
     </div>
   );
