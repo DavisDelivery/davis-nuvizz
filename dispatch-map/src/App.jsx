@@ -50,7 +50,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.29.70';
+const APP_VERSION = '0.29.71';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -70,6 +70,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.29.71', 'Routing (beta) — map filters, ported from the dispatch Map. A new "Filters" button in the map\'s top-right corner toggles: Unplanned only (hides planned stops so you see just what still needs routing), Satellite view (switch between satellite imagery and the plain roadmap base), and Show routes (overlays each load\'s stops connected in delivery sequence, one colour per load). All persisted. The build-version badge that used to sit in that corner is gone — version history now lives in the gear settings (ⓘ Version history), since the version already shows in the page footer.'],
   ['0.29.70', 'Routing (beta) — the left Setup panel can now be hidden. It\'s still under development, so by default it\'s OFF (the map gets the full width) and you flip it on only while working on it. The on/off toggle (plus the floating-panel, right-panel, and hide-stem settings) now also lives in a gear on the bottom data-grid header, so it stays reachable with the Setup panel hidden — and a compact date picker appears there too so you can still change the board date. Turning the Setup panel off can never hide the bottom grid as well (that would strip every settings gear). Desktop only.'],
   ['0.29.69', 'Routing (beta) + scan accuracy. Compare panel: SELECTED stops can now go straight into an open load — when you have stops selected, the Compare header shows a green "→ Load (N)" button for each open card, so you send the whole selection to either load in one click (#258). Driver names that came through as a hash/id are now shown as "Driver assigned" instead of the gibberish, and the real name shows when NuVizz gives us one (#254). Compare route line can hide the stem-out (depot → first stop) leg via the gear menu (#256). Debug capture sheet auto-closes after it saves (#255); the floating selected-stops panel is now solid white and dropped its redundant Window column (#257). Scan: carry-over no longer folds in stops that were unplanned at the last full scan but have since been delivered/planned — it cross-checks the latest live unplanned set and prunes the stale ones, so the day count stops drifting above what NuVizz shows (#253).'],
   ['0.29.68', 'Routing (beta), Compare panel — more detail, to match NuVizz. Each route card now shows MILEAGE up top: total route miles + drive time + deadhead (depot → first stop), computed depot-anchored in the current order and updating live as you re-sequence/drag. And every stop now has its own expand/collapse chevron — open it to see the full address, delivery window, weight/skids/pieces, and the miles to the next stop (was just name + city before).'],
@@ -9617,21 +9618,41 @@ function RoutingSelectionFloatPanel({ selectedStops, onRemove, onOpenStop, onClo
   );
 }
 
-// Persistent build badge for the Routing surface (the map-view chip + desktop
-// footer don't reach here). Sits in the map's top-right corner — visible on every
-// routing tab (Stops/Loads/Result) at both widths since the map is always shown.
-// pointer-events-none so it never blocks map drag/selection. Shows app version +
-// short commit + deploy context; degrades to "local · dev" with no Netlify env.
-function RoutingBuildBadge({ onClick }) {
-  const built = BUILD_TIME ? ` · built ${BUILD_TIME.slice(5, 16).replace('T', ' ')}Z` : '';
+// Routing-map view filters — a compact popover in the map's top-right corner that ports the
+// dispatch Map's controls to the routing beta: Unplanned-only (hides planned stops), Satellite
+// view (hybrid imagery vs the plain roadmap base), and Show routes (draws each load's stops
+// connected in delivery sequence). (The old build-version badge lived here; version history now
+// lives in the gear settings, since the dispatcher reads the version from the page footer.)
+function RoutingMapFilters({ unplannedOnly, setUnplannedOnly, satellite, setSatellite, showRoutes, setShowRoutes }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    const onKey = (e) => { if (e.key === 'Escape') setOpen(false); };
+    document.addEventListener('mousedown', onDoc);
+    window.addEventListener('keydown', onKey);
+    return () => { document.removeEventListener('mousedown', onDoc); window.removeEventListener('keydown', onKey); };
+  }, [open]);
+  const anyOn = unplannedOnly || showRoutes || !satellite;
   return (
-    <button
-      onClick={onClick}
-      className="absolute top-2 right-2 z-20 select-none bg-white/85 hover:bg-white border border-slate-200 rounded px-1.5 py-0.5 text-[10px] leading-none text-slate-500 shadow-sm"
-      title={`Dispatch Map v${APP_VERSION} · ${BUILD_SHORT} · ${BUILD_CONTEXT}${built} — tap for version history`}
-    >
-      v{APP_VERSION} · {BUILD_SHORT} · {BUILD_CONTEXT}
-    </button>
+    <div className="absolute top-2 right-2 z-20" ref={ref}>
+      <button
+        onClick={() => setOpen((o) => !o)}
+        className={`flex items-center gap-1 px-2 py-1 rounded border text-[11px] font-semibold shadow-sm ${open || anyOn ? 'border-slate-400 bg-white text-slate-800' : 'border-slate-200 bg-white/90 hover:bg-white text-slate-600'}`}
+        aria-expanded={open}
+        title="Map filters"
+      >
+        <Filter size={13} /> Filters
+      </button>
+      {open && (
+        <div className="absolute right-0 mt-1 w-52 bg-white border border-slate-300 rounded-lg shadow-xl px-3 py-1.5 text-[12px]">
+          <MapFilterToggle label="Unplanned only" checked={unplannedOnly} onChange={setUnplannedOnly} />
+          <MapFilterToggle label="Satellite view" checked={satellite} onChange={setSatellite} />
+          <MapFilterToggle label="Show routes" checked={showRoutes} onChange={setShowRoutes} />
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -9685,6 +9706,7 @@ function RoutingScreen({ debugCaptureRef }) {
   const mapRef = useRef(null);
   const markersRef = useRef([]);
   const polylinesRef = useRef([]);
+  const dayRoutePolylinesRef = useRef([]);   // "Show routes" overlay — one polyline per load
   const [mapReady, setMapReady] = useState(0);
 
   // Touch-native selection. No DrawingManager (its drag-to-draw never worked on
@@ -9772,6 +9794,15 @@ function RoutingScreen({ debugCaptureRef }) {
   const [leftPanelOn, setLeftPanelOn] = useState(() => { try { return localStorage.getItem('routing.leftPanel') === 'on'; } catch { return false; } });
   useEffect(() => { try { localStorage.setItem('routing.leftPanel', leftPanelOn ? 'on' : 'off'); } catch { /* ignore */ } }, [leftPanelOn]);
   const setLeftPanelVisible = useCallback((on) => { setLeftPanelOn(on); if (!on) setBottomGridOn(true); }, []);
+  // Routing-map view filters (port of the dispatch Map's). Persisted; defaults keep the current look
+  // (satellite base on, nothing hidden). unplannedOnly filters the rendered stops; satellite swaps
+  // the map base; showRoutes overlays each load's delivery-sequence polyline.
+  const [routeUnplannedOnly, setRouteUnplannedOnly] = useState(() => { try { return localStorage.getItem('routing.mapUnplannedOnly') === 'on'; } catch { return false; } });
+  const [routeSatellite, setRouteSatellite] = useState(() => { try { return localStorage.getItem('routing.mapSatellite') !== 'off'; } catch { return true; } });
+  const [routeShowRoutes, setRouteShowRoutes] = useState(() => { try { return localStorage.getItem('routing.mapShowRoutes') === 'on'; } catch { return false; } });
+  useEffect(() => { try { localStorage.setItem('routing.mapUnplannedOnly', routeUnplannedOnly ? 'on' : 'off'); } catch { /* ignore */ } }, [routeUnplannedOnly]);
+  useEffect(() => { try { localStorage.setItem('routing.mapSatellite', routeSatellite ? 'on' : 'off'); } catch { /* ignore */ } }, [routeSatellite]);
+  useEffect(() => { try { localStorage.setItem('routing.mapShowRoutes', routeShowRoutes ? 'on' : 'off'); } catch { /* ignore */ } }, [routeShowRoutes]);
   // Hide the "stem-out" leg — the line drawn from the terminal/depot to the first stop of each
   // route (NuVizz's "hide stem out", #256). On = the polyline connects only the stops, no depot
   // anchor line. Persisted; default OFF (show), matching NuVizz's default.
@@ -9808,7 +9839,10 @@ function RoutingScreen({ debugCaptureRef }) {
   const [saveState, setSaveState] = useState(null); // null | 'saving' | 'saved' | error string
   const [lastRequest, setLastRequest] = useState(null);
 
-  const positioned = useMemo(() => stops.filter((s) => s.lat != null && s.lng != null), [stops]);
+  const positioned = useMemo(() => {
+    const p = stops.filter((s) => s.lat != null && s.lng != null);
+    return routeUnplannedOnly ? p.filter((s) => s.isUnplanned) : p;
+  }, [stops, routeUnplannedOnly]);
   const stopById = useMemo(() => new Map(positioned.map((s) => [String(s.stopNbr), s])), [positioned]);
   const positionedRef = useRef(positioned);
   useEffect(() => { positionedRef.current = positioned; }, [positioned]);
@@ -10427,7 +10461,7 @@ function RoutingScreen({ debugCaptureRef }) {
       // Match the dispatch Map's look: the same vector map style (mapId) + satellite
       // imagery with road labels (hybrid), instead of the plain roadmap base.
       ...(MAP_ID ? { mapId: MAP_ID } : {}),
-      mapTypeId: 'hybrid',
+      mapTypeId: routeSatellite ? 'hybrid' : 'roadmap',
     });
     // Single click listener drives Box/Lasso. Empty-map taps place points; the
     // latest handler is read via a ref so the listener is bound only once per map.
@@ -10522,6 +10556,45 @@ function RoutingScreen({ debugCaptureRef }) {
       polylinesRef.current.push(pl);
     });
   }, [google, routesView, wbRoutesColored, vStopById, mapReady, routeHideStem]);
+
+  // Satellite-view toggle — swap the map base between hybrid imagery and the plain roadmap without
+  // re-initialising the map (which would drop markers/listeners). mapReady re-applies it after a
+  // mobile/desktop re-init.
+  useEffect(() => {
+    if (google && mapRef.current) { try { mapRef.current.setMapTypeId(routeSatellite ? 'hybrid' : 'roadmap'); } catch { /* ignore */ } }
+  }, [google, routeSatellite, mapReady]);
+
+  // "Show routes" overlay — group the day's positioned stops by load, order each by the same
+  // sequencing the panel uses, and draw a colored polyline per load (independent of the Compare /
+  // build polylines above). Mirrors the dispatch Map's Show-routes toggle.
+  const dayRoutes = useMemo(() => {
+    if (!routeShowRoutes) return [];
+    const groups = new Map();
+    for (const s of positioned) {
+      const key = s.routeName || s.loadNbr;
+      if (!key) continue;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(s);
+    }
+    const out = [];
+    let i = 0;
+    for (const [key, gs] of groups) {
+      const path = orderRouteStops(gs).filter((s) => s.lat != null && s.lng != null).map((s) => ({ lat: s.lat, lng: s.lng }));
+      if (path.length >= 2) out.push({ key, color: ROUTE_PALETTE[i % ROUTE_PALETTE.length], path });
+      i++;
+    }
+    return out;
+  }, [routeShowRoutes, positioned]);
+  useEffect(() => {
+    if (!google || !mapRef.current) return;
+    dayRoutePolylinesRef.current.forEach((p) => p.setMap(null));
+    dayRoutePolylinesRef.current = [];
+    dayRoutes.forEach((r) => {
+      const pl = new google.maps.Polyline({ path: r.path, strokeColor: r.color, strokeWeight: 2.5, strokeOpacity: 0.6, zIndex: 4 });
+      pl.setMap(mapRef.current);
+      dayRoutePolylinesRef.current.push(pl);
+    });
+  }, [google, dayRoutes, mapReady]);
 
   const selectedTrucks = useMemo(() => profiles.filter((p) => selectedTruckIds.has(p.id)), [profiles, selectedTruckIds]);
   const canBuild = selectedIds.size >= 1 && selectedTrucks.length >= 1 && selectedIds.size <= ROUTING_MAX_SELECTION && !building;
@@ -10715,7 +10788,10 @@ function RoutingScreen({ debugCaptureRef }) {
   // so it carries every toggle EXCEPT "Bottom data grid" (turning that off from the bottom gear would
   // close the very header the gear lives in, leaving no way back).
   const routingSettingsViews = [{ key: 'rightPanel', label: 'Right panel', value: rightPanelMode, setValue: setRightPanelMode, options: [{ value: 'tabs', label: 'Tabs (Stops / Loads / Result)' }, { value: 'routes', label: 'Routes / Drivers' }] }];
-  const routingSettingsActions = [{ key: 'reset', label: '↺ Reset layout to defaults', onClick: resetRoutingLayout }];
+  const routingSettingsActions = [
+    { key: 'versionLog', label: `ⓘ Version history (v${APP_VERSION})`, onClick: () => setVersionLogOpen(true) },
+    { key: 'reset', label: '↺ Reset layout to defaults', onClick: resetRoutingLayout },
+  ];
   const leftPanelToggle = { key: 'leftPanel', label: 'Setup panel (left controls)', on: leftPanelOn, setOn: setLeftPanelVisible };
   const selPanelToggle = { key: 'selPanel', label: 'Floating selected-stops panel', on: selPanelOpen, setOn: setSelPanelOpen };
   const bottomGridToggle = { key: 'bottomGrid', label: 'Bottom data grid', on: bottomGridOn, setOn: setBottomGridOn };
@@ -10865,7 +10941,7 @@ function RoutingScreen({ debugCaptureRef }) {
       <div className="flex-1 flex flex-col min-h-0">
         <div className="flex-1 relative min-w-0">
           <div ref={mapDiv} className="absolute inset-0" />
-          <RoutingBuildBadge onClick={() => setVersionLogOpen(true)} />
+          <RoutingMapFilters unplannedOnly={routeUnplannedOnly} setUnplannedOnly={setRouteUnplannedOnly} satellite={routeSatellite} setSatellite={setRouteSatellite} showRoutes={routeShowRoutes} setShowRoutes={setRouteShowRoutes} />
           {!viewing && <RoutingMapTools selectMode={selectMode} onBox={() => (selectMode === 'box' ? cancelMode() : beginMode('box'))} onLasso={() => (selectMode === 'lasso' ? cancelMode() : beginMode('lasso'))} ninjaMode={ninjaMode} onToggleNinja={onNinjaTool} ninjaAvailable={wbRoutes.length > 0} />}
           {mapsError && <div className="absolute top-2 left-1/2 -translate-x-1/2 bg-red-50 border border-red-300 text-red-700 text-[11px] rounded px-2 py-1">{mapsError}</div>}
           {mapToast && <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-30 max-w-[92%] bg-slate-900/90 text-white text-[11px] rounded-lg shadow-lg px-3 py-1.5 text-center"><NinjaIcon size={12} className="inline -mt-0.5 mr-1" />{mapToast}</div>}
@@ -10956,7 +11032,7 @@ function RoutingScreen({ debugCaptureRef }) {
       {/* Center: the map canvas */}
       <div className="flex-1 relative min-w-0">
         <div ref={mapDiv} className="absolute inset-0" />
-        <RoutingBuildBadge onClick={() => setVersionLogOpen(true)} />
+        <RoutingMapFilters unplannedOnly={routeUnplannedOnly} setUnplannedOnly={setRouteUnplannedOnly} satellite={routeSatellite} setSatellite={setRouteSatellite} showRoutes={routeShowRoutes} setShowRoutes={setRouteShowRoutes} />
         {!viewing && <RoutingMapTools selectMode={selectMode} onBox={() => (selectMode === 'box' ? cancelMode() : beginMode('box'))} onLasso={() => (selectMode === 'lasso' ? cancelMode() : beginMode('lasso'))} ninjaMode={ninjaMode} onToggleNinja={onNinjaTool} ninjaAvailable={wbRoutes.length > 0} />}
         {mapsError && <div className="absolute top-2 left-1/2 -translate-x-1/2 bg-red-50 border border-red-300 text-red-700 text-[11px] rounded px-2 py-1">{mapsError}</div>}
         {mapToast && <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-30 max-w-[80%] bg-slate-900/90 text-white text-[12px] rounded-lg shadow-lg px-3 py-1.5 text-center"><NinjaIcon size={13} className="inline -mt-0.5 mr-1" />{mapToast}</div>}
