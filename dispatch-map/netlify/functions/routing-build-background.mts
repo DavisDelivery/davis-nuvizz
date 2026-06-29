@@ -123,6 +123,11 @@ export default async function handler(req: Request): Promise<Response> {
     const tenant = r.tenant || 'davis';
     const date = r.date;
     const tractorOnlyGreen = r.tractorOnlyGreen === true;
+    // Eligibility rules (box_only / green override / tractorOnlyGreen) are applied in
+    // equipmentReqsFor, which runs via resolveStops. The direct r.stops path is a caching
+    // shortcut the client does not currently use (it always sends selectedStopIds); a
+    // future caller that pre-resolves r.stops must bake the eligibility reqs in itself,
+    // since this path bypasses equipmentReqsFor.
     const stops: PipelineStopInput[] = Array.isArray(r.stops) && r.stops.length
       ? r.stops
       : await resolveStops(tenant, date, r.selectedStopIds || [], { tractorOnlyGreen });
