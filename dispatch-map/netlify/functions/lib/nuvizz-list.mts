@@ -50,6 +50,7 @@ export function buildBody(period: string, statusCsv: string, page: number, pageS
 // would make the ATT attempt-marker detection silently inert (zero calls, but zero
 // attempts ever found). Module-level so it logs once per warm instance, not per row.
 let __warnedNoShipmentKey = false;
+let __warnedNoDisplaySeq = false;
 
 // True for a bare DB identifier (Mongo ObjectId / long hex / 25+-char token) — i.e. NOT a human
 // name. Used to keep a driverId from ever being shown as a driver name (#254).
@@ -109,12 +110,21 @@ export function normalize(j: any): any[] {
     console.warn(`[nuvizz-list] no shipment-number column in saved-search results — ATT attempt detection is INERT until a shipment column is present. cols=${JSON.stringify(cols).slice(0, 600)}`);
   }
   // The "ShipTo - Display Seq" column — NuVizz's authoritative delivery ORDER of each stop within
-  // its load (1..N). Found by PATTERN (the dotted key varies by saved list def). Surfaced as
-  // routeSeq so the board/Compare panel sequences stops in the real delivery order off the cheap
-  // list feed — no per-stop enrichment needed (mirrors the Estimated-Arrival column add).
+  // its load (1..N). Found by PATTERN against BOTH the dotted column key AND its display name
+  // (`columnName`), because NuVizz may key the column by an opaque internal path while only the
+  // human label reads "ShipTo - Display Seq". Surfaced as routeSeq so the board/Compare panel
+  // sequences stops in the real delivery order off the cheap list feed — no per-stop enrichment
+  // needed (mirrors the Estimated-Arrival column add).
+  const colDefs: Record<string, any> = (j && j.filterData && j.filterData[0]) || {};
+  const colHay = (k: string) => `${k} ${String(colDefs[k]?.columnName ?? '')}`.toLowerCase();
   const displaySeqKey =
-    cols.find((k) => /display/i.test(k) && /seq/i.test(k)) ||
-    cols.find((k) => /ship.?to/i.test(k) && /seq/i.test(k)) || null;
+    cols.find((k) => /display/.test(colHay(k)) && /seq/.test(colHay(k))) ||
+    cols.find((k) => /ship.?to/.test(colHay(k)) && /seq/.test(colHay(k))) ||
+    cols.find((k) => /(destination|deliver)/.test(colHay(k)) && /seq/.test(colHay(k))) || null;
+  if (!displaySeqKey && cols.length && !__warnedNoDisplaySeq) {
+    __warnedNoDisplaySeq = true;
+    console.warn(`[nuvizz-list] no ShipTo-Display-Seq column found — in-load delivery order falls back to a geographic guess. cols=${JSON.stringify(cols).slice(0, 800)}`);
+  }
   return ((j && j.values) || []).map((row: any[]) => ({
     stopNbr: String(g(row, 'vizzonInfo.shipmentInfo.stopNbr') ?? ''),
     shipmentNbr: shipmentKey ? String(g(row, shipmentKey) ?? '') : '',
