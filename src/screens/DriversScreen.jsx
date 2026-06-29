@@ -5,10 +5,25 @@
 // no native list endpoint). Includes both dispatched (assigned) and registered drivers.
 
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { User, Phone, RefreshCw, ChevronRight, Truck, Search, AlertTriangle, CheckCircle2, Clock } from 'lucide-react';
-import { fetchFleet, fetchDriver, DAVIS_DRIVERS, TENANTS } from '../lib/api';
+import { User, Phone, RefreshCw, ChevronRight, Truck, Search, AlertTriangle, CheckCircle2, Clock, UserCog } from 'lucide-react';
+import { fetchFleet, fetchDriver, fetchDriverRoster, refreshDriverRoster, DAVIS_DRIVERS, TENANTS } from '../lib/api';
 import { fmtTime } from '../lib/normalize';
 import { Loading, ErrorBox, ProgressBar, EmptyState, SectionHeader } from '../components/UI';
+
+// Short "updated 3h ago" / "updated Jun 12" stamp for the roster freshness line.
+function fmtRosterAge(iso) {
+  if (!iso) return null;
+  const then = new Date(iso).getTime();
+  if (Number.isNaN(then)) return null;
+  const mins = Math.round((Date.now() - then) / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.round(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  const days = Math.round(hrs / 24);
+  if (days < 30) return `${days}d ago`;
+  return new Date(iso).toLocaleDateString([], { month: 'short', day: 'numeric' });
+}
 
 const STATUS_LABEL = { '10': 'Created', '30': 'Scheduled', '40': 'In Transit', '50': 'Exception', '90': 'Delivered' };
 const STATUS_COLOR = { '10': '#64748b', '30': '#64748b', '40': '#f59e0b', '50': '#ef4444', '90': '#10b981' };
@@ -19,7 +34,52 @@ export default function DriversScreen({ tenant, viewDate, onOpenLoad, onOpenStop
   const [selectedDriver, setSelectedDriver] = useState(null);
   const [fleetState, setFleetState] = useState({ loading: true, error: null, data: null });
   const [driverState, setDriverState] = useState({ loading: false, error: null, data: null });
+  // Roster = the on-demand driver list (Firestore-backed). Refreshed only when the user
+  // taps "Update list"; falls back to the baked-in DAVIS_DRIVERS until first scan.
+  const [roster, setRoster] = useState({ drivers: null, updatedAt: null, neverScanned: false });
+  const [rosterRefreshing, setRosterRefreshing] = useState(false);
+  const [rosterError, setRosterError] = useState(null);
   const t = TENANTS[tenant];
+
+  const loadRoster = useCallback(async () => {
+    try {
+      const data = await fetchDriverRoster(tenant);
+      setRoster({
+        drivers: Array.isArray(data?.drivers) ? data.drivers : null,
+        updatedAt: data?.updatedAt || null,
+        neverScanned: !!data?.neverScanned,
+      });
+    } catch (e) {
+      // A roster read failure is non-fatal — the screen still works off DAVIS_DRIVERS.
+      setRoster({ drivers: null, updatedAt: null, neverScanned: false });
+    }
+  }, [tenant]);
+
+  // Manual, on-demand roster rebuild — the only path that hits NuVizz's /user/list (~1 call).
+  const refreshRoster = useCallback(async () => {
+    setRosterRefreshing(true);
+    setRosterError(null);
+    try {
+      const data = await refreshDriverRoster(tenant);
+      if (data && data.ok === false) {
+        // Backend left the existing roster intact (e.g. NuVizz returned no users) — surface
+        // the message and keep whatever we're already showing rather than blanking it out.
+        setRosterError(data.error || 'Roster refresh failed — list left unchanged');
+      } else {
+        setRoster({
+          drivers: Array.isArray(data?.drivers) ? data.drivers : null,
+          updatedAt: data?.refreshedAt || null,
+          neverScanned: false,
+        });
+      }
+    } catch (e) {
+      setRosterError(e.message);
+    } finally {
+      setRosterRefreshing(false);
+    }
+  }, [tenant]);
+
+  useEffect(() => { loadRoster(); }, [loadRoster]);
 
   const loadFleet = useCallback(async () => {
     setFleetState({ loading: true, error: null, data: null });
@@ -58,9 +118,16 @@ export default function DriversScreen({ tenant, viewDate, onOpenLoad, onOpenStop
       byUser[key].inProgress += l.inProgress;
     }
 
-    const enabled = DAVIS_DRIVERS.filter(d => d.status === 'ENABLED');
+    // Prefer the live on-demand roster, but only its ENABLED drivers — a driver who isn't
+    // enabled in NuVizz is inactive and shouldn't show. Fall back to the baked-in registry
+    // until the first scan (or if the roster has no enabled drivers).
+    const rosterEnabled = (roster.drivers || []).filter(d => d.status === 'ENABLED');
+    const enabled = rosterEnabled.length ? rosterEnabled : DAVIS_DRIVERS.filter(d => d.status === 'ENABLED');
     const list = enabled.map(d => {
-      const live = byUser[d.userName] || byUser[d.name.toUpperCase()] || null;
+      // Live roster names are data-controlled and can be empty — coalesce so string ops below
+      // (and in DriverCard) never throw on a nameless record.
+      const dn = (d.name || d.userName || '').toUpperCase();
+      const live = byUser[d.userName] || byUser[dn] || null;
       return {
         ...d,
         active: !!live,
@@ -89,14 +156,14 @@ export default function DriversScreen({ tenant, viewDate, onOpenLoad, onOpenStop
 
     const q = search.trim().toUpperCase();
     const filtered = q
-      ? list.filter(d => d.userName.includes(q) || d.name.toUpperCase().includes(q))
+      ? list.filter(d => (d.userName || '').includes(q) || (d.name || '').toUpperCase().includes(q))
       : list;
 
     return filtered.sort((a, b) => {
       if (a.active !== b.active) return a.active ? -1 : 1;
-      return a.name.localeCompare(b.name);
+      return (a.name || '').localeCompare(b.name || '');
     });
-  }, [fleetState.data, search]);
+  }, [fleetState.data, search, roster.drivers]);
 
   const openDriver = (d) => {
     setSelectedDriver(d);
@@ -120,6 +187,13 @@ export default function DriversScreen({ tenant, viewDate, onOpenLoad, onOpenStop
 
   const summary = fleetState.data?.summary;
   const activeCount = driverList.filter(d => d.active).length;
+  const rosterAge = fmtRosterAge(roster.updatedAt);
+  // Count enabled vs disabled so the card reflects the WORKING roster — a driver who isn't
+  // enabled in NuVizz is inactive. We treat "no enabled drivers" as still on the fallback.
+  const rosterDrivers = roster.drivers || [];
+  const enabledRosterCount = rosterDrivers.filter(d => d.status === 'ENABLED').length;
+  const disabledRosterCount = rosterDrivers.length - enabledRosterCount;
+  const usingFallback = enabledRosterCount === 0;
 
   return (
     <div className="p-4 space-y-3 pb-4">
@@ -163,6 +237,29 @@ export default function DriversScreen({ tenant, viewDate, onOpenLoad, onOpenStop
         </div>
       </div>
 
+      {/* Driver roster — on-demand list. Update only when the team changes (~1 NuVizz call). */}
+      <div className="bg-white rounded-xl p-3 border flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold flex items-center gap-1.5">
+            <UserCog size={11} /> Driver Roster
+          </div>
+          <div className="text-[11px] text-slate-500 mt-0.5">
+            {usingFallback
+              ? (roster.neverScanned ? 'Built-in list — tap Update to pull from NuVizz' : 'Using built-in list')
+              : `${enabledRosterCount} enabled${disabledRosterCount ? ` · ${disabledRosterCount} disabled` : ''} · updated ${rosterAge || 'recently'}`}
+          </div>
+          {rosterError && <div className="text-[11px] text-red-600 mt-0.5 break-words">{rosterError}</div>}
+        </div>
+        <button
+          onClick={refreshRoster}
+          disabled={rosterRefreshing}
+          className="flex items-center gap-1.5 text-xs font-semibold px-3 py-2 rounded-lg border text-slate-700 hover:bg-slate-50 disabled:opacity-50 flex-shrink-0"
+        >
+          <RefreshCw size={13} className={rosterRefreshing ? 'animate-spin' : ''} />
+          {rosterRefreshing ? 'Updating…' : 'Update list'}
+        </button>
+      </div>
+
       {fleetState.loading && (
         <div className="bg-white rounded-xl p-4 border text-center">
           <RefreshCw size={24} className="mx-auto text-slate-400 animate-spin mb-2" />
@@ -204,7 +301,7 @@ function DriverCard({ driver: d, tenant, onClick }) {
           className="w-10 h-10 rounded-full flex items-center justify-center font-bold text-white flex-shrink-0 text-sm"
           style={{ background: d.active ? t.color : '#cbd5e1' }}
         >
-          {d.name.split(/\s+/).filter(Boolean).map(n => n[0]).slice(0, 2).join('')}
+          {(d.name || d.userName || '?').split(/\s+/).filter(Boolean).map(n => n[0]).slice(0, 2).join('')}
         </div>
         <div className="flex-1 min-w-0">
           <div className="flex items-center justify-between gap-2">
@@ -276,7 +373,7 @@ function DriverDetailView({ driver, state, tenant, onBack, onRefresh, onOpenLoad
             className="w-14 h-14 rounded-full flex items-center justify-center font-bold text-white text-lg flex-shrink-0"
             style={{ background: t.color }}
           >
-            {driver.name.split(/\s+/).filter(Boolean).map(n => n[0]).slice(0, 2).join('')}
+            {(driver.name || driver.userName || '?').split(/\s+/).filter(Boolean).map(n => n[0]).slice(0, 2).join('')}
           </div>
           <div className="flex-1 min-w-0">
             <div className="text-lg font-bold">{driver.name}</div>

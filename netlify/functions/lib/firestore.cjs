@@ -272,6 +272,23 @@ async function writeDriverIndex(tenant, dateStr, indexMap) {
   );
 }
 
+// ── Driver roster (on-demand, long-lived; NOT date-scoped) ───────────────────
+// The driver roster changes rarely (hires / terminations), so we keep ONE doc per
+// tenant and refresh it only when explicitly asked — unlike the per-date fleet docs
+// above. This is the persistence layer behind __drivers / __refreshDrivers. Shape:
+//   nuvizzRoster/{tenant} → { users:[…], totalUsers, driverCount, _updatedAt }
+// ~80 slim user objects fit comfortably in one Firestore document (well under 1MB).
+async function readDriverRoster(tenant) {
+  return await getDoc(`nuvizzRoster/${tenant}`);
+}
+
+async function writeDriverRoster(tenant, roster) {
+  return await setDoc(
+    `nuvizzRoster/${tenant}`,
+    { ...roster, _updatedAt: new Date().toISOString() }
+  );
+}
+
 // ── Phase 4: shared call counter + circuit breaker (mirrors firestore.mts) ───
 const OPS_COLLECTION = 'nuvizz_ops';
 
@@ -345,6 +362,8 @@ module.exports = {
   writeSummary,
   readDriverIndex,
   writeDriverIndex,
+  readDriverRoster,
+  writeDriverRoster,
   listStopIndex,
   readStopIndexMeta,
   incrementCallCounter,
