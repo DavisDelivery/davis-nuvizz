@@ -50,7 +50,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.29.69';
+const APP_VERSION = '0.29.70';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -70,6 +70,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.29.70', 'Routing (beta) — the left Setup panel can now be hidden. It\'s still under development, so by default it\'s OFF (the map gets the full width) and you flip it on only while working on it. The on/off toggle (plus the floating-panel, right-panel, and hide-stem settings) now also lives in a gear on the bottom data-grid header, so it stays reachable with the Setup panel hidden — and a compact date picker appears there too so you can still change the board date. Turning the Setup panel off can never hide the bottom grid as well (that would strip every settings gear). Desktop only.'],
   ['0.29.69', 'Routing (beta) + scan accuracy. Compare panel: SELECTED stops can now go straight into an open load — when you have stops selected, the Compare header shows a green "→ Load (N)" button for each open card, so you send the whole selection to either load in one click (#258). Driver names that came through as a hash/id are now shown as "Driver assigned" instead of the gibberish, and the real name shows when NuVizz gives us one (#254). Compare route line can hide the stem-out (depot → first stop) leg via the gear menu (#256). Debug capture sheet auto-closes after it saves (#255); the floating selected-stops panel is now solid white and dropped its redundant Window column (#257). Scan: carry-over no longer folds in stops that were unplanned at the last full scan but have since been delivered/planned — it cross-checks the latest live unplanned set and prunes the stale ones, so the day count stops drifting above what NuVizz shows (#253).'],
   ['0.29.68', 'Routing (beta), Compare panel — more detail, to match NuVizz. Each route card now shows MILEAGE up top: total route miles + drive time + deadhead (depot → first stop), computed depot-anchored in the current order and updating live as you re-sequence/drag. And every stop now has its own expand/collapse chevron — open it to see the full address, delivery window, weight/skids/pieces, and the miles to the next stop (was just name + city before).'],
   ['0.29.67', 'Planning horizon (#251) — the scheduled scan now builds the board for today + the next TWO business days (was today + one). So a Sunday scan already populates Tuesday (Uline ships Sunday for Tuesday delivery) instead of leaving it empty until Monday. The extra day is sliced from the ±7-day saved-search pull the scan already makes — no extra list calls — and its orders are enriched on the lower-volume day (Sunday) rather than piling onto a busy Monday. Tunable via NUVIZZ_LIST_HORIZON_DAYS.'],
@@ -7888,7 +7889,7 @@ const LOAD_BUCKET_STYLE = {
   cancelled: 'bg-red-100 text-red-700',
 };
 
-function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open, setOpen, onPick, onPickLoad }) {
+function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open, setOpen, onPick, onPickLoad, headerRight }) {
   // Loads view groups the FULL board's loads (loadStops) so stop-level filters —
   // notably "Unplanned only" — don't empty it. Falls back to the visible stops.
   const loadSrc = loadStops || stops;
@@ -8177,6 +8178,7 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
             )}
           </>
         )}
+        {headerRight && <div className="ml-auto">{headerRight}</div>}
       </div>
       {open && view === 'stops' && (
         <div className="overflow-auto flex-1 min-h-0">
@@ -9484,7 +9486,7 @@ function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmN
 // Routing panel-settings menu — a gear button opening a small popover of panel on/off toggles
 // (`panels`: { key, label, on, setOn }) plus optional single-choice view switchers
 // (`views`: { key, label, value, setValue, options: [{ value, label }] }).
-function RoutingSettingsMenu({ panels = [], views = [], actions = [] }) {
+function RoutingSettingsMenu({ panels = [], views = [], actions = [], dropUp = false }) {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
   useEffect(() => {
@@ -9501,7 +9503,7 @@ function RoutingSettingsMenu({ panels = [], views = [], actions = [] }) {
         <Settings size={16} />
       </button>
       {open && (
-        <div className="absolute right-0 mt-1 z-30 w-60 bg-white border border-slate-300 rounded-lg shadow-xl p-2 text-[12px]">
+        <div className={`absolute right-0 z-30 w-60 bg-white border border-slate-300 rounded-lg shadow-xl p-2 text-[12px] ${dropUp ? 'bottom-full mb-1' : 'mt-1'}`}>
           {views.map((v) => (
             <div key={v.key} className="mb-1.5">
               <div className="font-semibold text-slate-700 px-1 pb-1 mb-1 border-b">{v.label}</div>
@@ -9761,6 +9763,15 @@ function RoutingScreen({ debugCaptureRef }) {
   const rightPanel = useSidePanelWidth('right', 'routing.rightW', 380, 280, viewportWidth);
   const [bottomGridOn, setBottomGridOn] = useState(() => { try { return localStorage.getItem('routing.bottomGrid') !== 'off'; } catch { return true; } });
   useEffect(() => { try { localStorage.setItem('routing.bottomGrid', bottomGridOn ? 'on' : 'off'); } catch { /* ignore */ } }, [bottomGridOn]);
+  // Setup panel (the left controls column) on/off. The dispatcher asked to keep it hidden while the
+  // routing beta's left-side controls are still under development, and flip it on only while working
+  // on them — so the toggle lives in the gear on the bottom data-grid header (reachable even when
+  // this panel is hidden). Default OFF (hidden); persisted. Invariant: never hide the Setup panel
+  // while the bottom grid is also off — that would strip away every settings gear — so turning it
+  // off force-shows the bottom grid, keeping the gear (and date picker) reachable.
+  const [leftPanelOn, setLeftPanelOn] = useState(() => { try { return localStorage.getItem('routing.leftPanel') === 'on'; } catch { return false; } });
+  useEffect(() => { try { localStorage.setItem('routing.leftPanel', leftPanelOn ? 'on' : 'off'); } catch { /* ignore */ } }, [leftPanelOn]);
+  const setLeftPanelVisible = useCallback((on) => { setLeftPanelOn(on); if (!on) setBottomGridOn(true); }, []);
   // Hide the "stem-out" leg — the line drawn from the terminal/depot to the first stop of each
   // route (NuVizz's "hide stem out", #256). On = the polyline connects only the stops, no depot
   // anchor line. Persisted; default OFF (show), matching NuVizz's default.
@@ -9768,7 +9779,7 @@ function RoutingScreen({ debugCaptureRef }) {
   useEffect(() => { try { localStorage.setItem('routing.hideStem', routeHideStem ? 'on' : 'off'); } catch { /* ignore */ } }, [routeHideStem]);
   const resetRoutingLayout = useCallback(() => {
     leftPanel.onDoubleClick(); rightPanel.onDoubleClick();
-    setSelPanelOpen(true); setRightPanelMode('tabs'); setBottomGridOn(true); setRouteHideStem(false);
+    setSelPanelOpen(true); setRightPanelMode('tabs'); setBottomGridOn(true); setRouteHideStem(false); setLeftPanelOn(false);
   }, [leftPanel, rightPanel]);
   // Nudge Google Maps to re-render when a side panel resizes (the canvas changed width).
   useEffect(() => {
@@ -10699,6 +10710,27 @@ function RoutingScreen({ debugCaptureRef }) {
     setMobilePanel('setup');
   }, []);
 
+  // Shared gear-settings config — rendered in two places: the left Setup-panel header and the
+  // bottom data-grid header. The bottom gear is what stays reachable when the Setup panel is hidden,
+  // so it carries every toggle EXCEPT "Bottom data grid" (turning that off from the bottom gear would
+  // close the very header the gear lives in, leaving no way back).
+  const routingSettingsViews = [{ key: 'rightPanel', label: 'Right panel', value: rightPanelMode, setValue: setRightPanelMode, options: [{ value: 'tabs', label: 'Tabs (Stops / Loads / Result)' }, { value: 'routes', label: 'Routes / Drivers' }] }];
+  const routingSettingsActions = [{ key: 'reset', label: '↺ Reset layout to defaults', onClick: resetRoutingLayout }];
+  const leftPanelToggle = { key: 'leftPanel', label: 'Setup panel (left controls)', on: leftPanelOn, setOn: setLeftPanelVisible };
+  const selPanelToggle = { key: 'selPanel', label: 'Floating selected-stops panel', on: selPanelOpen, setOn: setSelPanelOpen };
+  const bottomGridToggle = { key: 'bottomGrid', label: 'Bottom data grid', on: bottomGridOn, setOn: setBottomGridOn };
+  const hideStemToggle = { key: 'hideStem', label: 'Hide stem-out line (depot → first stop)', on: routeHideStem, setOn: setRouteHideStem };
+  const leftGearPanels = [leftPanelToggle, selPanelToggle, bottomGridToggle, hideStemToggle];
+  const bottomGearPanels = [leftPanelToggle, selPanelToggle, hideStemToggle];
+  // The settings gear (+ a compact date picker when the Setup panel is hidden) for the bottom
+  // data-grid header — keeps date selection and every panel toggle reachable with the left panel off.
+  const bottomGridHeaderRight = (
+    <div className="flex items-center gap-1.5 shrink-0">
+      {!leftPanelOn && <DatePicker selectedDate={selectedDate} onChange={setSelectedDate} onToday={() => setSelectedDate(todayInET())} compact />}
+      <RoutingSettingsMenu views={routingSettingsViews} panels={bottomGearPanels} actions={routingSettingsActions} dropUp />
+    </div>
+  );
+
   const controlsContent = (
     <>
       <div className="flex items-center justify-between gap-2">
@@ -10706,13 +10738,9 @@ function RoutingScreen({ debugCaptureRef }) {
         <div className="flex items-center gap-1.5">
           <DatePicker selectedDate={selectedDate} onChange={setSelectedDate} onToday={() => setSelectedDate(todayInET())} compact />
           <RoutingSettingsMenu
-            views={[{ key: 'rightPanel', label: 'Right panel', value: rightPanelMode, setValue: setRightPanelMode, options: [{ value: 'tabs', label: 'Tabs (Stops / Loads / Result)' }, { value: 'routes', label: 'Routes / Drivers' }] }]}
-            panels={[
-              { key: 'selPanel', label: 'Floating selected-stops panel', on: selPanelOpen, setOn: setSelPanelOpen },
-              { key: 'bottomGrid', label: 'Bottom data grid', on: bottomGridOn, setOn: setBottomGridOn },
-              { key: 'hideStem', label: 'Hide stem-out line (depot → first stop)', on: routeHideStem, setOn: setRouteHideStem },
-            ]}
-            actions={[{ key: 'reset', label: '↺ Reset layout to defaults', onClick: resetRoutingLayout }]}
+            views={routingSettingsViews}
+            panels={leftGearPanels}
+            actions={routingSettingsActions}
           />
         </div>
       </div>
@@ -10910,18 +10938,20 @@ function RoutingScreen({ debugCaptureRef }) {
   const wbWidth = Math.min(wbCols * 300 + Math.max(0, wbCols - 1) * 8 + 16, Math.round(viewportWidth * 0.72));
   return (
     <div className="flex-1 flex min-h-0">
-      {/* Left: Setup stack (resizable) — OR the route workbench, which auto-sizes to its open cards. */}
+      {/* Left: Setup stack (resizable) — OR the route workbench, which auto-sizes to its open cards.
+          The Setup stack is hideable (gear → "Setup panel"); the Compare workbench always shows when
+          routes are open. With the Setup panel off and no routes open, the map gets the full width. */}
       {wbRoutes.length > 0 ? (
         <div className="shrink-0 border-r bg-white min-h-0 overflow-x-auto" style={{ width: wbWidth }}>
           <RoutingWorkbench wbRoutes={wbRoutesColored} stopById={stopById} ninjaMode={ninjaMode} onToggleNinja={setNinjaMode} onArmNinja={armNinjaFromPanel} activeKey={effectiveActiveKey} onSetActive={setActiveRouteKey} onResequence={wbResequence} onCollapse={toggleWbCollapse} onClose={closeWbRoute} onCloseAll={closeAllWb} onMoveStop={wbMoveStop} onDropStop={wbDropStop} onOpenStop={openStop} selectedCount={selectedStops.length} onSendSelection={sendSelectionToRoute} isMobile={false} />
         </div>
-      ) : (
+      ) : leftPanelOn ? (
         <div className="shrink-0 border-r bg-white overflow-y-auto p-3 space-y-3 text-sm" style={{ width: leftPanel.width }}>
           {controlsContent}
         </div>
-      )}
+      ) : null}
       {/* Resize the Setup panel; the Compare panel auto-sizes to its cards, so no handle there. */}
-      {wbRoutes.length === 0 && <ResizeHandle onMouseDown={leftPanel.onMouseDown} onDoubleClick={leftPanel.onDoubleClick} />}
+      {wbRoutes.length === 0 && leftPanelOn && <ResizeHandle onMouseDown={leftPanel.onMouseDown} onDoubleClick={leftPanel.onDoubleClick} />}
 
       {/* Center: the map canvas */}
       <div className="flex-1 relative min-w-0">
@@ -10986,6 +11016,7 @@ function RoutingScreen({ debugCaptureRef }) {
           setOpen={setBottomTableOpen}
           onPick={pickStopFromTable}
           onPickLoad={pickLoadToCompare}
+          headerRight={bottomGridHeaderRight}
         />}
       </div>
 
