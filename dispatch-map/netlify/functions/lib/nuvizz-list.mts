@@ -108,6 +108,13 @@ export function normalize(j: any): any[] {
     __warnedNoShipmentKey = true;
     console.warn(`[nuvizz-list] no shipment-number column in saved-search results — ATT attempt detection is INERT until a shipment column is present. cols=${JSON.stringify(cols).slice(0, 600)}`);
   }
+  // The "ShipTo - Display Seq" column — NuVizz's authoritative delivery ORDER of each stop within
+  // its load (1..N). Found by PATTERN (the dotted key varies by saved list def). Surfaced as
+  // routeSeq so the board/Compare panel sequences stops in the real delivery order off the cheap
+  // list feed — no per-stop enrichment needed (mirrors the Estimated-Arrival column add).
+  const displaySeqKey =
+    cols.find((k) => /display/i.test(k) && /seq/i.test(k)) ||
+    cols.find((k) => /ship.?to/i.test(k) && /seq/i.test(k)) || null;
   return ((j && j.values) || []).map((row: any[]) => ({
     stopNbr: String(g(row, 'vizzonInfo.shipmentInfo.stopNbr') ?? ''),
     shipmentNbr: shipmentKey ? String(g(row, shipmentKey) ?? '') : '',
@@ -119,6 +126,7 @@ export function normalize(j: any): any[] {
     city: g(row, 'vizzonInfo.destination.address.city') ?? '',
     zip: g(row, 'vizzonInfo.destination.address.zipCode') ?? '',
     routeName: g(row, 'route.name') ?? '',
+    routeSeq: displaySeqKey ? numOrNull(g(row, displaySeqKey)) : null,   // ShipTo Display Seq = delivery order
     // The driver column is unreliable: in some saved searches route.driver.driverId carries the
     // human name ("DENIS"), in others it comes through as a bare ObjectId — which rendered as
     // "jibberish" on the board (#254). So gather every likely name field (route.driver.name etc.)
@@ -211,6 +219,7 @@ export function toBoardStop(r: any): any {
     primaryPro: r.stopNbr || null,
     loadNbr: hasRoute ? r.routeName : null,
     routeName: r.routeName || null,
+    routeSeq: typeof r.routeSeq === 'number' ? r.routeSeq : null,   // delivery order within the load (ShipTo Display Seq)
     stopType: 'DO',
     status: r.statusCode || null,
     businessName: r.businessName || null,

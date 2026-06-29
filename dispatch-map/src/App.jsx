@@ -50,7 +50,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.29.81';
+const APP_VERSION = '0.29.82';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -88,6 +88,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.29.82', 'Routing — loads now sequence in the REAL delivery order. The scan now reads the new "ShipTo - Display Seq" column you added to the saved search and uses it as each stop\'s delivery order within its load, so opening a load in Compare (and its map polyline / route list) follows NuVizz\'s actual stop order instead of a geographic guess — no per-stop enrichment needed. Takes effect after the next scheduled scan repopulates the board (like the Estimated-Arrival column add).'],
   ['0.29.81', 'Routing (beta) — fixing a stop\'s address now moves its pin LIVE. After you correct an address, the routing map repositions the stop to the right spot immediately (it applies the same corrected-pin override the dispatch Map uses, and recomputes on the spot) — instead of the stop vanishing until you closed and reopened the map (#287).'],
   ['0.29.80', 'Routing (beta) — load NAMES, not gibberish ids. A Compare card / load / send button / Routes panel / stop detail now ALWAYS shows the recurring-load name (e.g. "BEN 2") and never a raw NuVizz id — a hash-like value is suppressed everywhere (frontend guard) and the load roster now reads the human load number with the same guard the driver field got in #254. Also: the Re-sequence menu now keeps showing the applied logic (e.g. "Shortest distance") until you change it, manually dragging a stop marks the route "Manual order (edited)" so it never auto re-sorts your hand-tweaks, and every Compare card now has a Print-manifest button (#263/#280).'],
   ['0.29.79', 'Routing (beta) — Selected window + stop→load. The Selected window now sizes to its contents (no more empty white space; it grows as you add stops), keeps 420px as the standard width (drag the LEFT edge to resize width), and the Type column moved to the end after Zip (#278). And when you open a stop, the detail now shows which LOAD it\'s on with an "Open in Compare" button that pulls that route up in the Compare panel — so a clicked stop is no longer a mystery (#281).'],

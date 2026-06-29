@@ -362,6 +362,30 @@ test('normalize: unwraps "link object" columns (load, driver, PRO) — no raw JS
   assert.equal(b.proNbr, 'G6');
 });
 
+test('normalize: reads the "ShipTo - Display Seq" column into routeSeq (delivery order)', () => {
+  const cols = [
+    'KeyColumn', 'default_vizzonInfo.shipmentInfo.status', 'vizzonInfo.shipmentInfo.stopNbr',
+    'route.name', 'vizzonInfo.destination.shipToDisplaySeq',
+  ];
+  const filterData = [Object.fromEntries(cols.map((k) => [k, { columnName: k }]))];
+  const mk = (stop, seq) => ['id', '20', stop, '{"colmnLinkId":"x","columnValue":"BEN 2"}', seq];
+  const rows = normalize({ filterData, values: [mk('007100001', '3'), mk('007100002', '1'), mk('007100003', '2')] });
+  assert.equal(rows[0].routeSeq, 3);
+  assert.equal(rows[1].routeSeq, 1);
+  // toBoardStop surfaces it, and orderRouteStops would sort 1,2,3.
+  const boards = rows.map(toBoardStop);
+  assert.equal(boards[0].routeSeq, 3);
+  assert.deepEqual(boards.map((b) => b.routeSeq).sort((a, b) => a - b), [1, 2, 3]);
+});
+
+test('normalize: no display-seq column → routeSeq stays null (feeds without it are unchanged)', () => {
+  const cols = ['KeyColumn', 'default_vizzonInfo.shipmentInfo.status', 'vizzonInfo.shipmentInfo.stopNbr', 'route.name'];
+  const filterData = [Object.fromEntries(cols.map((k) => [k, { columnName: k }]))];
+  const [r] = normalize({ filterData, values: [['id', '20', '007100001', 'TRAILER 1']] });
+  assert.equal(r.routeSeq, null);
+  assert.equal(toBoardStop(r).routeSeq, null);
+});
+
 test('normalize: updated-column detection prefers a stop-scoped column over an unrelated updatedBy', () => {
   // Two candidate columns: an unrelated route audit field and the real stop update time.
   const cols = ['KeyColumn', 'route.updatedOn', 'vizzonInfo.shipmentInfo.stopUpdatedDttm', 'vizzonInfo.shipmentInfo.stopNbr'];
