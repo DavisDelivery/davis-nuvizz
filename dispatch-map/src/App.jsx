@@ -50,7 +50,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.29.73';
+const APP_VERSION = '0.29.74';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -70,6 +70,7 @@ const BUILD_SHORT = BUILD_COMMIT && BUILD_COMMIT !== 'dev' ? BUILD_COMMIT.slice(
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.29.74', 'Print Manifest now paginates correctly — each delivery ticket prints on its own page again, and the whole route prints (not just the first page). The page breaks were always right; the fix is printing from a real window instead of the on-screen iframe, which iOS Safari was collapsing to a single page. Also: the routing bottom-grid Loads "Status" column is spelled out (Planned, Un-Planned, In-Transit, Completed, Cancelled) instead of the terse "Pl / Un / Tr" abbreviations, to read like NuVizz (#266).'],
   ['0.29.73', 'Routing (beta) — smaller map pins (#262). Stops now render as small flat circles instead of the big teardrop pins, so a dense board no longer has markers covering each other. Colour still carries state — route colour when a stop is sequenced (with its stop number in the circle), orange when selected, mint for unplanned and slate for planned otherwise — and selected/hovered stops still pop larger. Click and hover behave exactly as before.'],
   ['0.29.72', 'Routing (beta) — Selected-stops window upgrades. It\'s now drag-to-resize (grab the bottom-left corner; width + height are remembered), has a "Clear all" button in the header to drop the whole selection at once (#261), and shows a Loose-pieces column alongside pallets and weight. The columns are reordered to put Pallets · Loose · Weight right after Location, before City/Zip (#260). And in the Compare panel, the per-stop "→ move to load" dropdown is now hidden on desktop (just drag a stop to another card) — it stays on touch where drag isn\'t available (#267).'],
   ['0.29.71', 'Routing (beta) — map filters, ported from the dispatch Map. A new "Filters" button in the map\'s top-right corner toggles: Unplanned only (hides planned stops so you see just what still needs routing), Satellite view (switch between satellite imagery and the plain roadmap base), and Show routes (overlays each load\'s stops connected in delivery sequence, one colour per load). All persisted. The build-version badge that used to sit in that corner is gone — version history now lives in the gear settings (ⓘ Version history), since the version already shows in the page footer.'],
