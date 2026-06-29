@@ -50,7 +50,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.29.84';
+const APP_VERSION = '0.29.85';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -88,6 +88,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.29.85', 'Loads tab — filter loads by status, and route pins no longer double up the same number (#294). New: a Status button on the Loads view shows only the loads you care about — the chips are built from whatever\'s actually on the board, so a fresh day of empty loads filters by their NuVizz status ("Draft", "Planned", …) while a working board filters by progress ("In progress", "Completed", "Has unplanned", "Planned"); pick any combination, Clear resets, independent of the Stops-view filter. Fixed: an open route could show the SAME number on two pins because a stop with no sequence fell back to its position (which collided with a real sequence number) — unsequenced stops are now parked above the highest real number so each pin reads a distinct order.'],
   ['0.29.84', 'Routing — the ShipTo - Display Seq delivery order now actually sticks after a re-scan (#292). The fresh order read from the list was being silently overwritten on every scan by the older, carried-forward sequence (the physical route seq that the Display-Seq column was meant to replace), so the route kept re-opening in the old order no matter how many times you refreshed. The list\'s Display-Seq is now authoritative and the carried-forward value can only fill in when the column is genuinely absent. Refresh and re-open the load to see the corrected order.'],
   ['0.29.83', 'Routing — make the ShipTo - Display Seq read robust (#290). The delivery-order column is now matched by its DISPLAY NAME ("ShipTo - Display Seq") as well as the internal key, so the scan can\'t miss it if NuVizz keys the column by an opaque path. (If your refresh did not change the order, it was on v0.29.81 — before the v0.29.82 column read shipped; once this is live, refresh and re-open the load.) When the column genuinely isn\'t present the scan logs it instead of silently falling back to the geographic guess.'],
   ['0.29.82', 'Routing — loads now sequence in the REAL delivery order. The scan now reads the new "ShipTo - Display Seq" column you added to the saved search and uses it as each stop\'s delivery order within its load, so opening a load in Compare (and its map polyline / route list) follows NuVizz\'s actual stop order instead of a geographic guess — no per-stop enrichment needed. Takes effect after the next scheduled scan repopulates the board (like the Estimated-Arrival column add).'],
@@ -5853,6 +5854,15 @@ function StatusBadge({ kind }) {
 // badge + delivery/arrival/ETA time. Tap a row → onPickStop closes route + opens stop.
 function RouteDetailBody({ stops, onPickStop }) {
   const sorted = orderRouteStops(stops);
+  // Collision-free sequence labels: real routeSeq when present (co-located orders share a
+  // number, matching the Route Workbench + the numbered map pins 1:1); any stop missing a
+  // routeSeq is parked ABOVE the highest real seq so its label can't duplicate a real one
+  // (a 1-based position fallback would collide and show the same number twice — #294).
+  const seqLabels = (() => {
+    const realSeqs = sorted.map(routeSeqOf).filter((x) => x != null);
+    let nextFallback = (realSeqs.length ? Math.max(...realSeqs) : 0) + 1;
+    return sorted.map((s) => { const rs = routeSeqOf(s); return rs != null ? rs : nextFallback++; });
+  })();
   const driverName = sorted[0]?.driverName || sorted[0]?.driverUserName || '—';
   const delivered = sorted.filter((s) => classifyStopStatus(s) === 'DELIVERED').length;
   const pct = sorted.length ? Math.round((100 * delivered) / sorted.length) : 0;
@@ -5899,9 +5909,9 @@ function RouteDetailBody({ stops, onPickStop }) {
                      : kind === 'ARRIVED' ? fmtClockShort(s.arrivalDTTM || execArrivalTs(exec))
                      : fmtClockShort(s.plannedEtaDTTM || exec.to?.plannedEtaDTTM);
           // Number by NuVizz's own sequence (routeSeq) so the list matches the Route
-          // Workbench and the numbered map pins 1:1; fall back to position if absent.
-          const rs = routeSeqOf(s);
-          const seqLabel = rs != null ? rs : i + 1;
+          // Workbench and the numbered map pins 1:1; unsequenced stops are parked above
+          // the highest real seq (see seqLabels) so no two rows share a number (#294).
+          const seqLabel = seqLabels[i];
           const addr = [s.addr1, s.city, s.state].filter(Boolean).join(', ');
           return (
             <li key={(s.stopNbr || '') + ':' + i}>
@@ -6931,12 +6941,18 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef }) {
     const routeSeqByStop = new Map();
     if (selectedRoute && selectedRouteStops.length) {
       // Number by NuVizz's own sequence value (routeSeq) so the pins read exactly
-      // like the Route Workbench — co-located orders share a number, and the order
-      // is correct even before a route starts. Fall back to dense position for any
-      // stop missing routeSeq (old cached doc).
-      orderRouteStops(selectedRouteStops).forEach((s, i) => {
+      // like the Route Workbench — co-located orders legitimately share a number, and
+      // the order is correct even before a route starts. A stop MISSING routeSeq (old
+      // cached doc / list row without the Display-Seq column) must NOT fall back to its
+      // 1-based position: that positional number collides with a real routeSeq on
+      // another stop and the route shows the SAME number on two pins (#294). Instead,
+      // park unsequenced stops ABOVE the highest real sequence so they never double up.
+      const ordered = orderRouteStops(selectedRouteStops);
+      const realSeqs = ordered.map(routeSeqOf).filter((x) => x != null);
+      let nextFallback = (realSeqs.length ? Math.max(...realSeqs) : 0) + 1;
+      ordered.forEach((s) => {
         const rs = routeSeqOf(s);
-        routeSeqByStop.set(s.stopNbr, rs != null ? rs : i + 1);
+        routeSeqByStop.set(s.stopNbr, rs != null ? rs : nextFallback++);
       });
     }
     const newMarkers = positioned.map((s) => {
@@ -7938,6 +7954,24 @@ const LOAD_BUCKET_STYLE = {
   completed: 'bg-green-100 text-green-700',
   cancelled: 'bg-red-100 text-red-700',
 };
+// ONE rollup status per LOAD row, for the Loads-view status filter. An empty/roster load
+// (no orders assigned yet) carries the NuVizz lifecycle status straight through ("Draft",
+// "Planned", …); a built load rolls its per-stop status buckets up into a single progress
+// state so a load filters as one thing rather than as a mix of five chips. Returns { key,
+// label } — key drives the filter set, label is what the chip shows.
+function loadStatusOf(g) {
+  if (g.empty || !g.count) {
+    const rs = String(g.rosterStatus || '').trim();
+    return rs ? { key: 'roster:' + rs.toLowerCase(), label: rs } : { key: 'no_orders', label: 'No orders yet' };
+  }
+  const b = g.buckets || {};
+  const done = b.completed || 0, transit = b.in_transit || 0, unpl = b.unplanned || 0, canc = b.cancelled || 0, planned = b.planned || 0;
+  if (done >= g.count) return { key: 'completed', label: 'Completed' };       // every stop delivered
+  if (transit > 0 || done > 0) return { key: 'in_progress', label: 'In progress' }; // some out/arrived/delivered
+  if (canc > 0 && planned === 0 && unpl === 0) return { key: 'cancelled', label: 'Cancelled' };
+  if (unpl > 0) return { key: 'unplanned', label: 'Has unplanned' };
+  return { key: 'planned', label: 'Planned' };                                // all scheduled, none started
+}
 
 function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open, setOpen, onPick, onPickLoad, headerRight }) {
   // Loads view groups the FULL board's loads (loadStops) so stop-level filters —
@@ -7951,6 +7985,9 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
   const [roster, setRoster] = useState([]);
   const [statusSel, setStatusSel] = useState(() => new Set()); // empty = all
   const [statusOpen, setStatusOpen] = useState(false);
+  // Loads-view status filter (independent of the Stops-view one). Empty = all loads.
+  const [loadStatusSel, setLoadStatusSel] = useState(() => new Set());
+  const [loadStatusOpen, setLoadStatusOpen] = useState(false);
   // NuVizz live pull (desktop toolbar): when nvWindow is set, the grid shows stops
   // fetched straight from NuVizz's stop list (any delivery-date window / status)
   // instead of today's board — e.g. "all unplanned ±7 days". Driver is a local
@@ -8061,7 +8098,7 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
   // aggregates driver, stop count, a per-status breakdown, and pallet/weight
   // totals. Click a row to open that load's route drawer + frame it on the map.
   // Empty loads (no orders assigned yet) are merged in from the roster below.
-  const loadRows = useMemo(() => {
+  const loadRowsAll = useMemo(() => {
     const m = new Map();
     for (const s of loadSrc) {
       if (!s.loadNbr) continue; // only real (built) loads
@@ -8098,6 +8135,19 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
     arr.sort((a, b) => String(a.driverName || '~').localeCompare(String(b.driverName || '~')) || String(a.routeName || a.loadNbr).localeCompare(String(b.routeName || b.loadNbr)));
     return arr;
   }, [loadSrc, q, roster, nvWindow]);
+  // Distinct load statuses actually on the board → the Loads-view filter chips (so today's
+  // all-Draft board shows just "Draft", a live board shows In progress / Completed / …).
+  const loadStatusOptions = useMemo(() => {
+    const seen = new Map();
+    for (const g of loadRowsAll) { const { key, label } = loadStatusOf(g); if (!seen.has(key)) seen.set(key, label); }
+    return [...seen.entries()].map(([key, label]) => ({ key, label })).sort((a, b) => a.label.localeCompare(b.label));
+  }, [loadRowsAll]);
+  // Apply the Loads-view status filter (empty selection = all). Kept separate from the base
+  // memo so the chip options reflect every load while the grid reflects the active filter.
+  const loadRows = useMemo(
+    () => (loadStatusSel.size ? loadRowsAll.filter((g) => loadStatusSel.has(loadStatusOf(g).key)) : loadRowsAll),
+    [loadRowsAll, loadStatusSel],
+  );
   const loadCols = [
     { k: 'load', label: 'Load', w: 150, get: (g) => <span className="font-mono text-blue-700">{loadDisplayName(g.routeName, g.loadNbr) || 'Unnamed load'}</span>, sortVal: (g) => g.routeName || g.loadNbr },
     { k: 'driver', label: 'Driver', w: 180, get: (g) => g.driverName || '—', sortVal: (g) => g.driverName },
@@ -8125,6 +8175,7 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
   const sortedRows = useMemo(() => sortRows(rows, cols, stopSort), [rows, stopSort]); // eslint-disable-line react-hooks/exhaustive-deps
   const sortedLoadRows = useMemo(() => sortRows(loadRows, loadCols, loadSort), [loadRows, loadSort]); // eslint-disable-line react-hooks/exhaustive-deps
   const toggleStatus = (k) => setStatusSel((prev) => { const n = new Set(prev); n.has(k) ? n.delete(k) : n.add(k); return n; });
+  const toggleLoadStatus = (k) => setLoadStatusSel((prev) => { const n = new Set(prev); n.has(k) ? n.delete(k) : n.add(k); return n; });
   return (
     <div className="absolute left-0 right-0 bottom-0 z-[12] bg-white border-t border-slate-200 shadow-[0_-2px_10px_rgba(0,0,0,0.10)] flex flex-col" style={{ height: open ? height : undefined }}>
       {open && (
@@ -8186,6 +8237,29 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
                     ))}
                     {statusSel.size > 0 && (
                       <button onClick={() => setStatusSel(new Set())} className="w-full text-left px-2 py-1.5 text-xs text-slate-500 hover:bg-slate-50 rounded border-t border-slate-100 mt-1">Clear</button>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+            {view === 'loads' && loadStatusOptions.length > 0 && (
+              <div className="relative">
+                <button
+                  onClick={() => setLoadStatusOpen((v) => !v)}
+                  className={'inline-flex items-center gap-1 px-2 py-1 rounded text-xs border ' + (loadStatusSel.size ? 'border-blue-400 text-blue-700 bg-blue-50' : 'border-slate-300 text-slate-600 hover:bg-slate-50')}
+                >
+                  <Filter size={12} /> Status{loadStatusSel.size ? ` (${loadStatusSel.size})` : ''}
+                </button>
+                {loadStatusOpen && (
+                  <div className="absolute left-0 bottom-full mb-1 w-48 bg-white border border-slate-200 rounded-lg shadow-lg z-20 p-1 max-h-64 overflow-auto">
+                    {loadStatusOptions.map((o) => (
+                      <label key={o.key} className="flex items-center gap-2 px-2 py-1.5 text-xs hover:bg-slate-50 rounded cursor-pointer">
+                        <input type="checkbox" checked={loadStatusSel.has(o.key)} onChange={() => toggleLoadStatus(o.key)} className="rounded border-slate-300" />
+                        {o.label}
+                      </label>
+                    ))}
+                    {loadStatusSel.size > 0 && (
+                      <button onClick={() => setLoadStatusSel(new Set())} className="w-full text-left px-2 py-1.5 text-xs text-slate-500 hover:bg-slate-50 rounded border-t border-slate-100 mt-1">Clear</button>
                     )}
                   </div>
                 )}
