@@ -51,7 +51,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.32.17';
+const APP_VERSION = '0.32.18';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -89,6 +89,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.32.18', 'Live dispatch (beta) — FIX: adding orders to a load opened from the Loads grid failed with "commitBoard: load not found." That load is known only by its internal id (hex loadId), which was being sent as the load NUMBER — but NuVizz\'s load lookup is keyed by the human load number (e.g. DAVIS000000123), so it 404\'d. The app no longer sends the hex id as a load number, and the server now plans the orders straight onto the loadId (the documented insert flow) when there\'s no human load number to look up. Add orders in ● LIVE → Save → they plan onto the load.'],
   ['0.32.17', 'Routing (mobile) — FIX: the Lasso selection wouldn\'t apply once you already had a route in the Compare panel. The "Done" button that finishes a lasso lived in the Setup panel\'s Select-stops section, which is replaced by the Compare workbench as soon as a route is built — so you could tap out the polygon but had no way to finish it, and nothing got selected. There\'s now a floating Done / Cancel control right on the map whenever Box or Lasso is armed, so you can close the lasso and select the stops inside it no matter what the bottom panel is showing.'],
   ['0.32.16', 'Routing — tomorrow\'s (next business day\'s) EMPTY loads are now ready first thing in the morning. The next-day load roster (the Draft/empty load shells, before any orders are on them) used to only get cached in the 8pm-midnight scan window — so during the day the Routes/Loads view showed tomorrow\'s stops but none of its empty loads. The roster is the cheap load-list call (not the expensive load-number probe), so it\'s now pulled once each morning, a day into the future, decoupled from that evening load scan — and it keeps trying through the day until tomorrow\'s loads actually show up, then settles. Empty loads for the next business day are ready to plan against in the morning.'],
   ['0.32.15', 'Live dispatch (beta) — driver-assign FIX (corrects 0.32.13). Two wiring problems: (1) the assign action was changed to plain "ASSIGN" in 0.32.13, but the verified NuVizz portal call is "ASSIGN_DISPATCH" — reverted, so the assign matches what actually works. (2) For an empty/Draft load (no orders yet) the app could send the load\'s ROSTER id as the assign target instead of the load\'s internal id; NuVizz answers "Success" but never persists it. The server now resolves the real internal load id (load/info) before assigning whenever the id it was handed isn\'t already the internal one. Note: the board can\'t SHOW a just-assigned driver until the next scheduled scan re-reads NuVizz (the load roster carries no driver field) — confirm an assignment took in the NuVizz portal\'s Loads grid, not by refreshing the map.'],
@@ -10156,9 +10157,11 @@ function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmN
     const loads = [], warnings = [];
     for (const r of dirtyRoutes) {
       const s = staged[r.key] || {};
-      // loadNbr = the REAL NuVizz number (load/info is keyed by it); routeName = the friendly
-      // display name (r.key) carried through for the dry-run plan label and result reconciliation.
-      const load = { loadNbr: r.loadNbr || r.key, routeName: r.name || r.key, loadId: r.loadId || undefined };
+      // loadNbr = the REAL NuVizz number (load/info is keyed by it) — NEVER the r.key, which for a
+      // load opened from the Loads grid is the hex loadId; sending that as loadNbr made load/info 404
+      // ("commitBoard: load not found"). When there's no real loadNbr we send only the loadId, and the
+      // server adds stops straight off it. routeName = the friendly display name for the plan label.
+      const load = { loadNbr: r.loadNbr || undefined, routeName: r.name || r.key, loadId: r.loadId || undefined };
       if (orderChanged(r)) {
         // EVERY stop must resolve to a NuVizz stopId — a partial order would make the server
         // DROP the unresolved stops. Refuse to sequence this load and warn instead.

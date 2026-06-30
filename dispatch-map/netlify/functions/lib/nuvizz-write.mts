@@ -210,6 +210,17 @@ export async function runCommitBoard(requester: RequesterLike, payload: any, cre
       planned.push({ L, loadId: L.loadId, hasLoad: true, plan: { ok: true, unchanged: true, removeStopIds: [], insertOrdered: [] }, result });
       continue;
     }
+    // Add stops to a load we know ONLY by its internal loadId — opened from the Loads grid / a Draft
+    // load, so there's no human loadNbr (load/info is keyed by the load NUMBER like DAVIS000000123,
+    // NOT the hex loadId, so a getLoad here just 404s → "load not found"). We can't read the current
+    // stops without getLoad, but the documented insert flow takes the loadId directly, so plan an
+    // INSERT-ONLY commit (insertstops in order, no anchor-remove). A load WITH a real human loadNbr
+    // still goes through fetchLoad below for full reorder/remove support.
+    const usableLoadNbr = loadNbr != null && String(loadNbr).trim() !== '' && !isHashLikeId(String(loadNbr));
+    if (desired.length && trustableLoadId(L?.loadId) && !usableLoadNbr) {
+      planned.push({ L, loadId: L.loadId, hasLoad: true, plan: { ok: true, removeStopIds: [], insertOrdered: desired.map((x) => String(x)) }, curIds: [], want: desired.map((x) => String(x)), result });
+      continue;
+    }
     const f = await fetchLoad(requester, loadNbr, creds);
     if (!f.load) { result.ok = false; result.error = `commitBoard: load not found (${loadMissDiag(loadNbr, f)})`; planned.push({ L, result }); continue; }
     const load = f.load;

@@ -99,6 +99,28 @@ test('commitBoard: assign/dispatch-only load with a known loadId skips getLoad e
   assert.equal(calls[1].body.action, 'DISPATCH');
 });
 
+test('commitBoard: add stops to a load known only by loadId (no human loadNbr) → insert-only, no getLoad', async () => {
+  // A load opened from the Loads grid has no human loadNbr — load/info is keyed by the load NUMBER,
+  // not the hex loadId, so a getLoad would 404. The executor must insertstops straight off the loadId.
+  const { requester, calls } = stub([ok(), ok()]);
+  const r = await runCommitBoard(requester, { loads: [{ loadId: HEXID, orderedStopIds: ['s1', 's2'] }] }, CREDS);
+  assert.equal(r.ok, true);
+  assert.equal(calls.every((c) => !/load\/info/.test(c.url)), true, 'no doomed load/info lookup');
+  assert.deepEqual(calls.map((c) => c.url.match(/insertstops/)?.[0]), ['insertstops', 'insertstops'], 'one insertstops per stop, in order');
+  assert.deepEqual(calls.map((c) => c.body.insertStopIds), [['s1'], ['s2']]);
+  assert.equal(calls[0].body.loadId, HEXID, 'inserts against the loadId');
+});
+
+test('commitBoard: a hash-like loadId leaked into loadNbr is NOT used for load/info', async () => {
+  // Defense in depth — even if the client sends the hex as loadNbr, the server must not try to
+  // resolve it via load/info (it would 404); it falls back to the insert-only loadId path.
+  const { requester, calls } = stub([ok()]);
+  const r = await runCommitBoard(requester, { loads: [{ loadNbr: HEXID, loadId: HEXID, orderedStopIds: ['s1'] }] }, CREDS);
+  assert.equal(r.ok, true);
+  assert.equal(calls.every((c) => !/load\/info/.test(c.url)), true, 'no load/info on a hex loadNbr');
+  assert.match(calls[0].url, /insertstops/);
+});
+
 test('commitBoard: assign-only with a NON-internal (roster) loadId → resolves the real loadId via getLoad first', async () => {
   // An empty/Draft load has no stops to carry its internal loadHeader.loadId, so the board can hand
   // us the PkgRoute roster id ("6a3560cb_ALPHA"). That is NOT the internal id NuVizz assigns against —
