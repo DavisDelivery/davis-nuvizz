@@ -142,6 +142,10 @@ test('runOp(removeStops): a 404/empty getLoad → load not found, only 1 call (n
   const r = await runOp(requester, 'removeStops', { loadNbr: 'NOPE', removeStopIds: ['x'] }, CREDS);
   assert.equal(r.ok, false);
   assert.match(r.error, /not found/);
+  // The miss is self-describing: it names the load number we queried and NuVizz's HTTP status,
+  // so a field "load not found" can be read back to us without DevTools.
+  assert.match(r.error, /loadNbr="NOPE"/, 'error names the load number we queried');
+  assert.match(r.error, /HTTP 404/, 'error surfaces the load/info HTTP status');
   assert.equal(calls.length, 1, 'never fires load/edit when the load is missing');
 });
 

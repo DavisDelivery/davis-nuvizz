@@ -51,7 +51,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.32.7';
+const APP_VERSION = '0.32.8';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -89,6 +89,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.32.8', 'Live dispatch (beta) — diagnostic for "load not found" on Save. When a Save still can\'t resolve a load, the error now names the EXACT load number it queried and NuVizz\'s response — e.g. "load not found (loadNbr=\\"DAVIS000…\\", load/info HTTP 404)" — and distinguishes a 404 (NuVizz doesn\'t recognize that load number) from a 200 with no loadId (unexpected response). The browser console also logs the full payload sent + per-load result, so the failing load number can be copied back verbatim. Pin-points whether production Saves are sending the wrong load number or hitting a load the write account can\'t see — no behavior change to the commit path.'],
   ['0.32.7', 'Loads grid — new "% Done" column. The bottom Stops/Loads grid (on both the dispatch Map and Routing screens) now shows each load\'s delivery progress as a percent (delivered ÷ stops), green at 100%, right after the Stops count. Sortable like every other column; empty "No orders yet" loads show "—".'],
   ['0.32.6', 'Routing (beta) — remove an order from a route in the Compare panel. Each stop now has an × button; click it and that order is dropped from the load and listed under "Removing N order(s)" with an Undo. Nothing happens until you Save — on Save the removed orders become UNPLANNED in NuVizz (back to the pool), and the Save preview now spells this out ("unplan N order(s)") before you confirm. Staged like every other Compare edit; Undo restores an order before Save.'],
   ['0.32.5', 'Routing (beta) — assign a driver straight from the Routes panel. With Live dispatch on (⚙ → Panels → "Live dispatch"), each route card gets a driver dropdown of your full roster; pick one and it assigns that driver to the load. A Beta/Live toggle sits next to the Status filter — in ○ Beta a pick only previews (nothing sent), in ● LIVE it assigns in NuVizz immediately (assign only — it does NOT dispatch/notify the driver; that\'s still the Compare panel\'s Dispatch step). The card shows the new driver right away. As always a real write also needs the server NUVIZZ_WRITE_ENABLED flag.'],
@@ -10120,6 +10121,10 @@ function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmN
     if (res.ok) showToast(`✓ ${loads.length} load(s) saved to NuVizz.${orphanMsg}`);
     else {
       const failed = resLoads.filter((l) => !l.ok);
+      // Full diagnostic to the console: the EXACT payload we sent (incl. each load's loadNbr) plus
+      // NuVizz's per-load result — so a "load not found" can be read/copied back verbatim.
+      // eslint-disable-next-line no-console
+      console.error('[commitBoard] save failed', { sent: loads, result: res.result, error: res.error });
       showToast(`✗ ${failed.map((l) => `${keyOf(l)}: ${l.error || (l.steps || []).filter((s) => !s.ok).map((s) => s.error).join('; ')}`).join(' | ') || res.error || 'write failed'}${orphanMsg}`);
     }
   };
