@@ -39,14 +39,14 @@ export const SINGLE_OPS = [
 ] as const;
 export type SingleOp = typeof SINGLE_OPS[number];
 
-// Ops the HTTP handler accepts (single ops + the Save batch).
-export const WRITE_OPS = [...SINGLE_OPS, 'commitLoad'] as const;
+// Ops the HTTP handler accepts (single ops + the per-load Save batch + the panel Save).
+export const WRITE_OPS = [...SINGLE_OPS, 'commitLoad', 'commitBoard'] as const;
 export type WriteOp = typeof WRITE_OPS[number];
 
 /** Ops that MUTATE NuVizz (everything except the two GET reads). Used by the
  *  handler to decide which ops need the write-enabled gate + idempotency. */
 export const MUTATING_OPS = new Set<WriteOp>([
-  'createStop', 'insertStops', 'removeStops', 'assignDriver', 'dispatchLoad', 'commitLoad',
+  'createStop', 'insertStops', 'removeStops', 'assignDriver', 'dispatchLoad', 'commitLoad', 'commitBoard',
 ]);
 
 export interface WriteCreds {

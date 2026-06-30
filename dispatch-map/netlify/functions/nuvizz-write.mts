@@ -47,6 +47,18 @@ async function opsSnapshot(): Promise<{ current: number; ceiling: number }> {
 // A human-readable plan of what a (non-dry) call WOULD fire — used for the dry-run echo
 // the Compare panel shows before you commit. Pure; no NuVizz calls.
 function planFor(op: WriteOp, payload: any): string[] {
+  if (op === 'commitBoard') {
+    const loads: any[] = Array.isArray(payload?.loads) ? payload.loads : [];
+    if (!loads.length) return ['(no loads to commit)'];
+    return loads.map((L) => {
+      const n = Array.isArray(L?.orderedStopIds) ? L.orderedStopIds.length : 0;
+      const bits: string[] = [];
+      if (n) bits.push(`set ${n} stop(s) in order (anchor remove + one-at-a-time insert)`);
+      if (L?.driverId != null && String(L?.driverId).trim() !== '') bits.push(`assign ${L?.driverName || L?.driverId}`);
+      if (L?.dispatch) bits.push('dispatch');
+      return `Load ${L?.loadNbr ?? L?.loadId ?? '?'}: ${bits.length ? bits.join(' · ') : '(no change)'}`;
+    });
+  }
   if (op === 'commitLoad') {
     const steps: string[] = [];
     const rm = Array.isArray(payload?.removeStopIds) ? payload.removeStopIds.length : 0;
@@ -71,6 +83,19 @@ async function journal(op: WriteOp, payload: any, result: any, tenant: string, c
     }
     if ((op === 'dispatchLoad' || (op === 'commitLoad' && payload?.dispatch)) && result?.ok) {
       await recordAssignment({ tenant, date, loadNbr: String(payload?.loadNbr ?? ''), loadId: payload?.loadId ?? result?.loadId ?? null, status: 'dispatched', dispatchedAt: new Date().toISOString() });
+    }
+    if (op === 'commitBoard') {
+      const reqLoads: any[] = Array.isArray(payload?.loads) ? payload.loads : [];
+      const resLoads: any[] = Array.isArray(result?.loads) ? result.loads : [];
+      for (const L of reqLoads) {
+        const res = resLoads.find((r) => String(r?.loadNbr ?? '') === String(L?.loadNbr ?? '')) || {};
+        if (L?.driverId != null && String(L?.driverId).trim() !== '') {
+          await recordAssignment({ tenant, date, loadNbr: String(L?.loadNbr ?? ''), loadId: L?.loadId ?? res?.loadId ?? null, driverId: L.driverId, driverName: L?.driverName ?? null, status: res?.ok ? 'assigned' : 'failed', assignedAt: new Date().toISOString() });
+        }
+        if (L?.dispatch && res?.ok) {
+          await recordAssignment({ tenant, date, loadNbr: String(L?.loadNbr ?? ''), loadId: L?.loadId ?? res?.loadId ?? null, status: 'dispatched', dispatchedAt: new Date().toISOString() });
+        }
+      }
     }
   } catch { /* journaling is best-effort */ }
 }

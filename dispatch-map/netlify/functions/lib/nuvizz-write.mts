@@ -19,9 +19,11 @@
 
 import { getCreds, basicAuthHeader } from './nuvizz-scan.mts';
 import {
-  buildOpRequest, parseOpResponse, toEditHeader, normalizeLoad,
+  buildOpRequest, parseOpResponse, toEditHeader, normalizeLoad, planSequence,
   type SingleOp, type WriteOp, type WriteCreds,
 } from './nuvizz-write-ops.mts';
+
+const hasDriverId = (v: any) => v != null && String(v).trim() !== '' && Number(v) !== 0;
 
 // v7 API base — same env var the read path uses (nuvizz-scan.mts). Host-agnostic so a
 // UAT base can be set without code changes. No raw network call in this file (every
@@ -131,6 +133,91 @@ export async function runCommitLoad(requester: RequesterLike, payload: any, cred
   function done(ok: boolean) { return { ok: ok && steps.every((s) => s.ok), loadNbr, loadId, steps }; }
 }
 
+// The delivery stopIds currently on a load, in visit order (the pickup, stopType!='DO',
+// is excluded so it stays as a natural anchor and is never removed/re-sequenced).
+function currentDeliveryStopIds(load: any): string[] {
+  return (load?.stops || [])
+    .filter((s: any) => String(s?.stopType || '').toUpperCase() === 'DO')
+    .slice()
+    .sort((a: any, b: any) => Number(a?.stopSeq ?? 0) - Number(b?.stopSeq ?? 0))
+    .map((s: any) => String(s?.stopId ?? ''))
+    .filter(Boolean);
+}
+
+/**
+ * commitBoard — the panel-level "Save" for the staged Compare board (handoff doc §10
+ * Draft→Save). TWO PHASES across ALL touched loads so a stop moved from load A to load B
+ * is removed from A BEFORE it is inserted onto B (a stop can be on only one load):
+ *   Phase 0  resolve+plan — getLoad each load (loadId, versionId, header, current deliveries),
+ *            then planSequence(current, desired) = the anchor method.
+ *   Phase 1  removes — load/edit each load's removeStopIds (keeping its anchor; never all).
+ *   Phase 2  rebuild — insertStops one-at-a-time in the desired order, then assignDriver,
+ *            then dispatch, per load.
+ * A load that fails a step aborts ITS remaining steps but never blocks other loads.
+ * payload: { loads: [{ loadNbr, loadId?, orderedStopIds:[stopId...], driverId?, dispatch? }] }
+ */
+export async function runCommitBoard(requester: RequesterLike, payload: any, creds: WriteCreds): Promise<any> {
+  const loadsIn: any[] = Array.isArray(payload?.loads) ? payload.loads : [];
+  if (!loadsIn.length) return { ok: true, loads: [] };
+
+  // ── Phase 0 — resolve + plan ──
+  const planned: any[] = [];
+  for (const L of loadsIn) {
+    const loadNbr = L?.loadNbr ?? null;
+    const result: any = { loadNbr, ok: true, steps: [], error: null };
+    const desired: any[] = Array.isArray(L?.orderedStopIds) ? L.orderedStopIds : [];
+    if (!loadNbr && !L?.loadId) { result.ok = false; result.error = 'commitBoard: loadNbr or loadId required'; planned.push({ L, result }); continue; }
+    // Assign/dispatch-only with a known loadId → no getLoad needed (saves a read).
+    if (!desired.length && L?.loadId) {
+      planned.push({ L, loadId: L.loadId, hasLoad: true, plan: { ok: true, unchanged: true, removeStopIds: [], insertOrdered: [] }, result });
+      continue;
+    }
+    const load = await fetchLoad(requester, loadNbr, creds);
+    if (!load) { result.ok = false; result.error = 'commitBoard: load not found'; planned.push({ L, result }); continue; }
+    const plan = desired.length
+      ? planSequence(currentDeliveryStopIds(load), desired)
+      : { ok: true, unchanged: true, removeStopIds: [], insertOrdered: [] };
+    if (!plan.ok) { result.ok = false; result.error = plan.reason; planned.push({ L, result }); continue; }
+    planned.push({ L, load, hasLoad: true, loadId: load.loadId, editHeader: toEditHeader(load.loadHeader), versionId: load.versionId, plan, result });
+  }
+
+  const live = planned.filter((p) => p.result.ok && p.hasLoad);
+
+  // ── Phase 1 — all removes first (frees moved stops before any re-insert) ──
+  for (const p of live) {
+    const ids = p.plan.removeStopIds || [];
+    if (!ids.length) continue;
+    const r = await fireSingle(requester, 'removeStops', { removeStopIds: ids, editHeader: p.editHeader, versionId: p.versionId }, creds);
+    p.result.steps.push({ op: 'removeStops', ok: !!r.ok, result: r, error: r.ok ? null : (r.error || 'failed') });
+    if (!r.ok) { p.result.ok = false; p.aborted = true; }
+  }
+
+  // ── Phase 2 — rebuild (ordered, one-at-a-time) + assign + dispatch ──
+  for (const p of live) {
+    if (p.aborted) continue;
+    let ok = true;
+    for (const id of (p.plan.insertOrdered || [])) {
+      const r = await fireSingle(requester, 'insertStops', { insertStopIds: [id], loadId: p.loadId }, creds);
+      p.result.steps.push({ op: 'insertStops', ok: !!r.ok, result: r, error: r.ok ? null : (r.error || 'failed') });
+      if (!r.ok) { ok = false; break; }
+    }
+    if (ok && hasDriverId(p.L?.driverId)) {
+      const r = await fireSingle(requester, 'assignDriver', { routeId: p.loadId, driverId: p.L.driverId }, creds);
+      p.result.steps.push({ op: 'assignDriver', ok: !!r.ok, result: r, error: r.ok ? null : (r.error || 'failed') });
+      if (!r.ok) ok = false;
+    }
+    if (ok && p.L?.dispatch) {
+      const r = await fireSingle(requester, 'dispatchLoad', { routeId: p.loadId }, creds);
+      p.result.steps.push({ op: 'dispatchLoad', ok: !!r.ok, result: r, error: r.ok ? null : (r.error || 'failed') });
+      if (!r.ok) ok = false;
+    }
+    if (!ok) p.result.ok = false;
+  }
+
+  const loads = planned.map((p) => ({ loadNbr: p.result.loadNbr, loadId: p.loadId ?? p.L?.loadId ?? null, ok: p.result.ok, error: p.result.error, steps: p.result.steps }));
+  return { ok: loads.every((l) => l.ok), loads };
+}
+
 /**
  * runOp — single entry for the handler. `op` is validated by the caller against the
  * allowlist. Returns a plain object (never throws for a *NuVizz* failure — those are
@@ -139,6 +226,7 @@ export async function runCommitLoad(requester: RequesterLike, payload: any, cred
  */
 export async function runOp(requester: RequesterLike, op: WriteOp, payload: any, creds: WriteCreds): Promise<any> {
   switch (op) {
+    case 'commitBoard': return runCommitBoard(requester, payload, creds);
     case 'commitLoad': return runCommitLoad(requester, payload, creds);
     case 'removeStops': return runRemoveStops(requester, payload, creds);
     default: return fireSingle(requester, op as SingleOp, payload, creds);
