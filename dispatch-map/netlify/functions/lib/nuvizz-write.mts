@@ -144,6 +144,13 @@ function currentDeliveryStopIds(load: any): string[] {
     .filter(Boolean);
 }
 
+// True when a load carries a non-pickup stop the DO-filter would skip: a stop whose type isn't
+// 'DO' but sits in a delivery slot (stopSeq > 1; doc §10 says seq 1 = origin pickup). Re-sequencing
+// such a load would leave that stop out of the rebuilt order — refuse rather than de-sequence it.
+function hasUnmodeledDelivery(load: any): boolean {
+  return (load?.stops || []).some((s: any) => String(s?.stopType || '').toUpperCase() !== 'DO' && Number(s?.stopSeq ?? 0) > 1);
+}
+
 /**
  * commitBoard — the panel-level "Save" for the staged Compare board (handoff doc §10
  * Draft→Save). TWO PHASES across ALL touched loads so a stop moved from load A to load B
@@ -174,14 +181,33 @@ export async function runCommitBoard(requester: RequesterLike, payload: any, cre
     }
     const load = await fetchLoad(requester, loadNbr, creds);
     if (!load) { result.ok = false; result.error = 'commitBoard: load not found'; planned.push({ L, result }); continue; }
+    // curIds is captured on EVERY fetched load (even refused ones) so holderOf below can see a
+    // cross-load arrival whose source load was refused — otherwise the target would insert a stop
+    // the refused source never freed.
+    const curIds = currentDeliveryStopIds(load);
+    // Wrong-load guard: a reorder resolves the load by NAME (for header + versionId) but inserts
+    // by loadId — if the caller's same-day loadId disagrees with what the name resolved to, the
+    // recurring name hit a different day's instance; refuse rather than split remove/insert.
+    if (desired.length && L?.loadId && load.loadId && String(load.loadId) !== String(L.loadId)) {
+      result.ok = false; result.error = `commitBoard: load identity mismatch (name resolved ${load.loadId}, expected ${L.loadId})`; planned.push({ L, curIds, result }); continue;
+    }
+    if (desired.length && hasUnmodeledDelivery(load)) {
+      result.ok = false; result.error = 'commitBoard: load has a non-DO stop in a delivery slot — reorder skipped (verify in portal)'; planned.push({ L, curIds, result }); continue;
+    }
     const plan = desired.length
-      ? planSequence(currentDeliveryStopIds(load), desired)
+      ? planSequence(curIds, desired)
       : { ok: true, unchanged: true, removeStopIds: [], insertOrdered: [] };
-    if (!plan.ok) { result.ok = false; result.error = plan.reason; planned.push({ L, result }); continue; }
-    planned.push({ L, load, hasLoad: true, loadId: load.loadId, editHeader: toEditHeader(load.loadHeader), versionId: load.versionId, plan, result });
+    if (!plan.ok) { result.ok = false; result.error = plan.reason; planned.push({ L, curIds, result }); continue; }
+    planned.push({ L, load, hasLoad: true, loadId: L.loadId || load.loadId, editHeader: toEditHeader(load.loadHeader), versionId: load.versionId, plan, curIds, want: desired.map((x) => String(x)), result });
   }
 
   const live = planned.filter((p) => p.result.ok && p.hasLoad);
+  // Every stopId currently on any FETCHED load — lets Phase 2 tell a cross-load ARRIVAL (must have
+  // been freed by a Phase-1 remove) from an unplanned/new stop (no current load → safe to insert).
+  const holderOf = new Set<string>();
+  for (const p of planned) for (const id of (p.curIds || [])) holderOf.add(String(id));
+  const actuallyFreed = new Set<string>();   // removed by a SUCCESSFUL Phase-1 remove
+  const inserted = new Set<string>();         // successfully (re)inserted in Phase 2
 
   // ── Phase 1 — all removes first (frees moved stops before any re-insert) ──
   for (const p of live) {
@@ -190,6 +216,7 @@ export async function runCommitBoard(requester: RequesterLike, payload: any, cre
     const r = await fireSingle(requester, 'removeStops', { removeStopIds: ids, editHeader: p.editHeader, versionId: p.versionId }, creds);
     p.result.steps.push({ op: 'removeStops', ok: !!r.ok, result: r, error: r.ok ? null : (r.error || 'failed') });
     if (!r.ok) { p.result.ok = false; p.aborted = true; }
+    else for (const id of ids) actuallyFreed.add(String(id));
   }
 
   // ── Phase 2 — rebuild (ordered, one-at-a-time) + assign + dispatch ──
@@ -197,9 +224,18 @@ export async function runCommitBoard(requester: RequesterLike, payload: any, cre
     if (p.aborted) continue;
     let ok = true;
     for (const id of (p.plan.insertOrdered || [])) {
-      const r = await fireSingle(requester, 'insertStops', { insertStopIds: [id], loadId: p.loadId }, creds);
+      const sid = String(id);
+      // A cross-load ARRIVAL (not originally on THIS load) is only safe to insert once its source
+      // load actually freed it. If the source failed Phase 0/1, skip rather than place a stop that
+      // is still on another load. (Unplanned/new stops aren't in holderOf, so they pass.)
+      if (!(p.curIds || []).includes(sid) && holderOf.has(sid) && !actuallyFreed.has(sid)) {
+        p.result.steps.push({ op: 'insertStops', ok: false, result: null, error: `source load not freed for stop ${sid} — a load this move depends on failed` });
+        ok = false; break;
+      }
+      const r = await fireSingle(requester, 'insertStops', { insertStopIds: [sid], loadId: p.loadId }, creds);
       p.result.steps.push({ op: 'insertStops', ok: !!r.ok, result: r, error: r.ok ? null : (r.error || 'failed') });
       if (!r.ok) { ok = false; break; }
+      inserted.add(sid);
     }
     if (ok && hasDriverId(p.L?.driverId)) {
       const r = await fireSingle(requester, 'assignDriver', { routeId: p.loadId, driverId: p.L.driverId }, creds);
@@ -214,8 +250,15 @@ export async function runCommitBoard(requester: RequesterLike, payload: any, cre
     if (!ok) p.result.ok = false;
   }
 
+  // Orphans: a stop that was FREED (removed from its source) and was meant to land on some load
+  // (in a desired order) but its insert never succeeded — it is now UNPLANNED in NuVizz. Surfaced
+  // so the dispatcher can re-Save. (A freed stop NOT in any desired order is an intended unplan.)
+  const intendedOnSomeLoad = new Set<string>();
+  for (const p of live) for (const id of (p.want || [])) intendedOnSomeLoad.add(String(id));
+  const orphaned = [...actuallyFreed].filter((id) => intendedOnSomeLoad.has(id) && !inserted.has(id));
+
   const loads = planned.map((p) => ({ loadNbr: p.result.loadNbr, loadId: p.loadId ?? p.L?.loadId ?? null, ok: p.result.ok, error: p.result.error, steps: p.result.steps }));
-  return { ok: loads.every((l) => l.ok), loads };
+  return { ok: loads.every((l) => l.ok) && orphaned.length === 0, loads, orphaned };
 }
 
 /**
