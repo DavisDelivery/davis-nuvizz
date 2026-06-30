@@ -51,7 +51,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.32.10';
+const APP_VERSION = '0.32.11';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -89,6 +89,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.32.11', 'HOTFIX — the Routing (beta) screen was crashing to a blank page (most visible on mobile, but it hit desktop too). The driver-assign code added in 0.32.5 sat ABOVE the toggles it reads (liveWrite / the on-map toast) in the component, so React threw "Cannot access \'liveWrite\' before initialization" the moment Routing opened. Moved the block below those declarations; Routing loads again. No feature changes.'],
   ['0.32.10', 'Dispatch Map — a "Routes" panel you can turn on. A new "Routes" button in the map\'s top-right toolbar opens a read-only route roster on the right (the same one the Routing screen has): one card per load with route name, driver, status (incl. Draft / Un-Planned from NuVizz\'s real load status), stops · skids · loose · weight, and a delivery-progress bar — plus the Status filter and quick-search. Click a card to frame that route on the map and open its detail. The toggle is remembered (off by default), and the panel pulls NuVizz\'s real load status from the cheap cached roster only while it\'s open.'],
   ['0.32.9', 'Live dispatch (beta) — the "Assign driver…" dropdowns (both the Compare panel and the Routes-panel assign picker) now list drivers in ALPHABETICAL order by name, instead of NuVizz\'s user/list order. Sorted at the roster source so every driver picker is A→Z.'],
   ['0.32.8', 'Live dispatch (beta) — diagnostic for "load not found" on Save. When a Save still can\'t resolve a load, the error now names the EXACT load number it queried and NuVizz\'s response — e.g. "load not found (loadNbr=\\"DAVIS000…\\", load/info HTTP 404)" — and distinguishes a 404 (NuVizz doesn\'t recognize that load number) from a 200 with no loadId (unexpected response). The browser console also logs the full payload sent + per-load result, so the failing load number can be copied back verbatim. Pin-points whether production Saves are sending the wrong load number or hitting a load the write account can\'t see — no behavior change to the commit path.'],
@@ -10721,50 +10722,6 @@ function RoutingScreen({ debugCaptureRef }) {
     return () => { cancelled = true; };
   }, [rightPanelMode, selectedDate]);
 
-  // ── Routes-panel driver assignment (live) ─────────────────────────────────────
-  // A driver dropdown on each Routes card assigns a driver to that load on pick. Gated behind the
-  // Live-dispatch gear toggle (liveWrite); a Beta/Live mode (default Beta) is the safety — in Beta a
-  // pick only previews, in Live it writes immediately via the assignDriver op (ASSIGN_DISPATCH with
-  // assignDtls only = assign, not release). The driver roster is the same source the Compare panel
-  // uses so driverIds line up. assignedOverride reflects the new driver on the card right away
-  // (the board's own driverName only updates on the next scan).
-  const [assignRoster, setAssignRoster] = useState([]);
-  const [assignRosterError, setAssignRosterError] = useState(null);
-  const assignRosterLoaded = useRef(false);
-  const [assignLive, setAssignLive] = useState(false);
-  const [assignedOverride, setAssignedOverride] = useState({});   // route key → driver name
-  const [assigningKey, setAssigningKey] = useState(null);
-  useEffect(() => { setAssignedOverride({}); }, [selectedDate]);   // don't carry a day's assignments onto another board
-  useEffect(() => {
-    if (!liveWrite || rightPanelMode !== 'routes' || assignRosterLoaded.current) return;
-    assignRosterLoaded.current = true;
-    let alive = true;
-    callWrite('roster', {}).then((res) => {
-      if (!alive) return;
-      if (res.ok && Array.isArray(res.result?.drivers)) setAssignRoster(res.result.drivers);
-      else setAssignRosterError(res.error || 'roster unavailable');
-    }).catch((e) => { if (alive) setAssignRosterError(e?.message || 'roster error'); });
-    return () => { alive = false; };
-  }, [liveWrite, rightPanelMode]);
-  const onAssignDriver = useCallback(async (g, driverId, driverName) => {
-    if (!driverId) return;
-    const label = loadDisplayName(g.name, g.loadNbr) || g.loadNbr;
-    if (!assignLive) { showMapToast(`Beta — would assign ${driverName} to ${label} (nothing sent). Flip to ● Live to assign.`); return; }
-    if (!g.loadId) { showMapToast(`Can't assign ${label} — its NuVizz load id hasn't loaded yet.`); return; }
-    setAssigningKey(g.key);
-    let res;
-    try {
-      res = await callWrite('assignDriver', { routeId: g.loadId, loadId: g.loadId, loadNbr: g.loadNbr, driverId, driverName, date: selectedDate },
-        { dryRun: false, clientOpId: newClientOpId(), createdBy: 'dispatcher' });
-    } catch (e) { res = { ok: false, error: e?.message || 'network error' }; }
-    setAssigningKey(null);
-    if (res.ok && res.result?.ok !== false) {
-      setAssignedOverride((p) => ({ ...p, [g.key]: driverName }));
-      showMapToast(`✓ ${driverName} assigned to ${label}.`);
-    } else {
-      showMapToast(`✗ Assign failed for ${label}: ${res.error || res.result?.error || 'write error'}`);
-    }
-  }, [assignLive, showMapToast, selectedDate]);
 
   // Part 6 — resizable left & right panels (the bottom grid already resizes via BottomStopsTable),
   // and a bottom-grid on/off toggle. All persisted; Routing-beta only.
@@ -10795,16 +10752,6 @@ function RoutingScreen({ debugCaptureRef }) {
   // anchor line. Persisted; default OFF (show), matching NuVizz's default.
   const [routeHideStem, setRouteHideStem] = useState(() => { try { return localStorage.getItem('routing.hideStem') === 'on'; } catch { return false; } });
   useEffect(() => { try { localStorage.setItem('routing.hideStem', routeHideStem ? 'on' : 'off'); } catch { /* ignore */ } }, [routeHideStem]);
-  // Live-dispatch (write) UI visibility — a persisted gear toggle so the dispatcher reveals the
-  // driver-assign + dispatch controls without the ?write=1 URL flag. Seeds from that flag/env the
-  // first time (so existing ?write=1 links still open it), then the toggle is the source of truth.
-  // A real write still needs the card's Live mode AND the server NUVIZZ_WRITE_ENABLED flag — this
-  // only shows/hides the UI, it can't make a write fire on its own.
-  const [liveWrite, setLiveWrite] = useState(() => {
-    try { const v = localStorage.getItem('routing.liveWrite'); if (v === 'on') return true; if (v === 'off') return false; } catch { /* ignore */ }
-    return LIVE_WRITE_FLAG;
-  });
-  useEffect(() => { try { localStorage.setItem('routing.liveWrite', liveWrite ? 'on' : 'off'); } catch { /* ignore */ } }, [liveWrite]);
   const resetRoutingLayout = useCallback(() => {
     leftPanel.onDoubleClick(); rightPanel.onDoubleClick();
     setSelPanelOpen(true); setRightPanelMode('tabs'); setBottomGridOn(true); setRouteHideStem(false); setLeftPanelOn(false);
@@ -11024,6 +10971,60 @@ function RoutingScreen({ debugCaptureRef }) {
     mapToastTimer.current = setTimeout(() => setMapToast(''), 4000);
   }, []);
   useEffect(() => () => { if (mapToastTimer.current) clearTimeout(mapToastTimer.current); }, []);
+
+  // Live-dispatch (write) UI visibility — a persisted gear toggle so the dispatcher reveals the
+  // driver-assign + dispatch controls without the ?write=1 URL flag. Seeds from that flag/env the
+  // first time, then the toggle is the source of truth. A real write still needs the card's Live mode
+  // AND the server NUVIZZ_WRITE_ENABLED flag — this only shows/hides the UI.
+  const [liveWrite, setLiveWrite] = useState(() => {
+    try { const v = localStorage.getItem('routing.liveWrite'); if (v === 'on') return true; if (v === 'off') return false; } catch { /* ignore */ }
+    return LIVE_WRITE_FLAG;
+  });
+  useEffect(() => { try { localStorage.setItem('routing.liveWrite', liveWrite ? 'on' : 'off'); } catch { /* ignore */ } }, [liveWrite]);
+
+  // ── Routes-panel driver assignment (live) ─────────────────────────────────────
+  // A driver dropdown on each Routes card assigns a driver to that load on pick. Gated behind the
+  // Live-dispatch gear toggle (liveWrite); a Beta/Live mode (default Beta) is the safety — in Beta a
+  // pick only previews, in Live it writes immediately via the assignDriver op (ASSIGN_DISPATCH with
+  // assignDtls only = assign, not release). Declared here, AFTER liveWrite + showMapToast, which it
+  // reads in its dependency arrays during render (TDZ guard).
+  const [assignRoster, setAssignRoster] = useState([]);
+  const [assignRosterError, setAssignRosterError] = useState(null);
+  const assignRosterLoaded = useRef(false);
+  const [assignLive, setAssignLive] = useState(false);
+  const [assignedOverride, setAssignedOverride] = useState({});   // route key → driver name
+  const [assigningKey, setAssigningKey] = useState(null);
+  useEffect(() => { setAssignedOverride({}); }, [selectedDate]);   // don't carry a day's assignments onto another board
+  useEffect(() => {
+    if (!liveWrite || rightPanelMode !== 'routes' || assignRosterLoaded.current) return;
+    assignRosterLoaded.current = true;
+    let alive = true;
+    callWrite('roster', {}).then((res) => {
+      if (!alive) return;
+      if (res.ok && Array.isArray(res.result?.drivers)) setAssignRoster(res.result.drivers);
+      else setAssignRosterError(res.error || 'roster unavailable');
+    }).catch((e) => { if (alive) setAssignRosterError(e?.message || 'roster error'); });
+    return () => { alive = false; };
+  }, [liveWrite, rightPanelMode]);
+  const onAssignDriver = useCallback(async (g, driverId, driverName) => {
+    if (!driverId) return;
+    const label = loadDisplayName(g.name, g.loadNbr) || g.loadNbr;
+    if (!assignLive) { showMapToast(`Beta — would assign ${driverName} to ${label} (nothing sent). Flip to ● Live to assign.`); return; }
+    if (!g.loadId) { showMapToast(`Can't assign ${label} — its NuVizz load id hasn't loaded yet.`); return; }
+    setAssigningKey(g.key);
+    let res;
+    try {
+      res = await callWrite('assignDriver', { routeId: g.loadId, loadId: g.loadId, loadNbr: g.loadNbr, driverId, driverName, date: selectedDate },
+        { dryRun: false, clientOpId: newClientOpId(), createdBy: 'dispatcher' });
+    } catch (e) { res = { ok: false, error: e?.message || 'network error' }; }
+    setAssigningKey(null);
+    if (res.ok && res.result?.ok !== false) {
+      setAssignedOverride((p) => ({ ...p, [g.key]: driverName }));
+      showMapToast(`✓ ${driverName} assigned to ${label}.`);
+    } else {
+      showMapToast(`✗ Assign failed for ${label}: ${res.error || res.result?.error || 'write error'}`);
+    }
+  }, [assignLive, showMapToast, selectedDate]);
   // Ninja toolbar tap: arm/disarm when a Compare route is open; otherwise coach the dispatcher to
   // open one first (the button stays tappable so the hint is reachable on mobile too).
   const onNinjaTool = useCallback(() => {
