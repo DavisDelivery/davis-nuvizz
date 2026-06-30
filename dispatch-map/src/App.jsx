@@ -51,7 +51,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.32.1';
+const APP_VERSION = '0.32.2';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -89,6 +89,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.32.2', 'Routing — the Routes-panel Status filter now reflects NuVizz\'s REAL load status, so a "Draft" option appears (plus Un-Planned, In-Transit, Cancelled) to match the NuVizz route grid. Until now the status was derived purely from each route\'s stop execution + driver assignment, so there was no way to see a Draft (or Un-Planned / Cancelled) load. The panel now reads each load\'s actual lifecycle status from the day\'s load roster (the cheap list path, served from the scan cache — no extra number-probe scan) and falls back to the derived status only when a load has no roster status yet. The filter always offers the full NuVizz lifecycle (even at count 0) and never hides a status that\'s actually on the board.'],
   ['0.32.1', 'Routing (beta) — the Live-dispatch (driver assign + dispatch) controls now have a gear toggle. Open the ⚙ gear → Panels → "Live dispatch (assign driver + dispatch)" to show/hide the Compare-panel driver picker, Dispatch checkbox, Save, and the Beta/Live toggle — no more ?write=1 URL flag needed (the flag still works and seeds the toggle the first time). The setting is remembered. As before, nothing is sent to NuVizz until you switch a card to Live and Save → Confirm, and a real write also needs the server NUVIZZ_WRITE_ENABLED flag.'],
   ['0.32.0', 'Routing — the right-panel Routes view is upgraded to read like NuVizz. Route cards are now sorted ALPHABETICALLY by route name (was grouped by driver), and there\'s a Status filter (Unassigned / Planned / In Progress / Completed / Exception, multi-select) plus a quick-search box at the top to match the NuVizz route grid. Each card now shows a colored status badge, the driver assignment, and the full freight breakdown — SKIDS (pallets) and LOOSE pieces, not just skids — alongside stops, weight, and delivered count. (The status is derived from each route\'s stop execution + driver assignment; capturing NuVizz\'s exact load-lifecycle code is a follow-up.)'],
   ['0.31.1', 'Mobile Loads tab — the per-load freight line now shows SKIDS and LOOSE pieces instead of one "plt" number. That "plt" count was actually NuVizz\'s total-pieces field (skids + loose) mislabeled as pallets; each load row now reads "X skids · Y loose · Z lb", matching the skids/loose breakdown the Stops list and data grids already use.'],
@@ -9337,16 +9338,55 @@ function deriveRouteStatus(g) {
   return 'Unassigned';                    // no driver assigned
 }
 
-const ROUTE_STATUSES = ['Unassigned', 'Planned', 'In Progress', 'Completed', 'Exception'];
+// NuVizz's REAL load-lifecycle status, normalized from the load roster's free-text status column.
+// We don't control its exact spelling/casing, so match by substring. Returns a clean canonical
+// label for the states NuVizz uses; the title-cased raw string for an unrecognized non-empty
+// status (so a state we didn't anticipate still shows as its own filter option instead of being
+// mis-bucketed); or null when there's no roster status at all (caller falls back to the
+// execution-derived status). The un-planned check runs before 'plan' since "unplanned" contains it.
+function nuvizzLoadStatus(raw) {
+  const s = String(raw || '').trim().toLowerCase();
+  if (!s) return null;
+  if (s.includes('draft')) return 'Draft';
+  if (s.includes('cancel')) return 'Cancelled';
+  if (s.includes('complet') || s.includes('deliver')) return 'Completed';
+  if (s.includes('transit') || s.includes('out for') || s.includes('en route') || s.includes('enroute')) return 'In-Transit';
+  if (s.includes('unplan') || s.includes('un-plan') || s.includes('un plan') || s.includes('not plan')) return 'Un-Planned';
+  if (s.includes('plan')) return 'Planned';
+  if (s.includes('except')) return 'Exception';
+  return String(raw).trim().replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+// Canonical order for the Routes Status filter. The NuVizz lifecycle states (always offered, even
+// at count 0, so the filter reads like the NuVizz route grid); the execution-derived fallback
+// states (Unassigned / In Progress, used only when a load has no roster status yet) slot in where
+// they fit and only show when present.
+const ROUTE_STATUS_ORDER = ['Draft', 'Un-Planned', 'Unassigned', 'Planned', 'In Progress', 'In-Transit', 'Completed', 'Cancelled', 'Exception'];
+// Always shown in the filter even at count 0 — the NuVizz lifecycle set.
+const ROUTE_STATUS_ALWAYS = ['Draft', 'Un-Planned', 'Planned', 'In-Transit', 'Completed', 'Cancelled', 'Exception'];
+const ROUTE_STATUS_DEFAULT_META = { color: '#475569', bg: '#f1f5f9' };
 const ROUTE_STATUS_META = {
+  'Draft':       { color: '#7c3aed', bg: '#f5f3ff' },
+  'Un-Planned':  { color: '#475569', bg: '#f1f5f9' },
   'Unassigned':  { color: '#475569', bg: '#f1f5f9' },
   'Planned':     { color: '#1d4ed8', bg: '#eff6ff' },
   'In Progress': { color: '#b45309', bg: '#fffbeb' },
+  'In-Transit':  { color: '#b45309', bg: '#fffbeb' },
   'Completed':   { color: '#15803d', bg: '#f0fdf4' },
+  'Cancelled':   { color: '#b91c1c', bg: '#fef2f2' },
   'Exception':   { color: '#b91c1c', bg: '#fef2f2' },
 };
+// The Status-filter option list for the routes on the board: the always-on NuVizz lifecycle states
+// plus any other status actually present (a derived fallback, or an unrecognized NuVizz label),
+// de-duped, in canonical order with unknowns last. Keeps "Draft" visible even at 0.
+function routeStatusOptions(groups) {
+  const present = new Set(groups.map((g) => g.status).filter(Boolean));
+  const ordered = ROUTE_STATUS_ORDER.filter((s) => ROUTE_STATUS_ALWAYS.includes(s) || present.has(s));
+  const extras = [...present].filter((s) => !ROUTE_STATUS_ORDER.includes(s)).sort();
+  return [...ordered, ...extras];
+}
 function RouteStatusBadge({ status }) {
-  const m = ROUTE_STATUS_META[status] || ROUTE_STATUS_META['Unassigned'];
+  const m = ROUTE_STATUS_META[status] || ROUTE_STATUS_DEFAULT_META;
   return (
     <span className="text-[9px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded-full shrink-0"
       style={{ color: m.color, background: m.bg }}>{status}</span>
@@ -9363,6 +9403,9 @@ function RoutingRoutesPanel({ groups, onPick }) {
     for (const g of groups) c[g.status] = (c[g.status] || 0) + 1;
     return c;
   }, [groups]);
+  // Status options reflect NuVizz's real load lifecycle (Draft / Un-Planned / … from the load
+  // roster), always offering the lifecycle set plus any other status present on the board.
+  const statusOptions = useMemo(() => routeStatusOptions(groups), [groups]);
 
   const filtered = useMemo(() => {
     const query = q.trim().toLowerCase();
@@ -9397,7 +9440,7 @@ function RoutingRoutesPanel({ groups, onPick }) {
                   <span>All</span><span className="text-slate-400">{groups.length}</span>
                 </button>
                 <div className="border-t my-1" />
-                {ROUTE_STATUSES.map((st) => (
+                {statusOptions.map((st) => (
                   <button key={st} onClick={() => toggle(st)}
                     className="w-full flex items-center justify-between px-2.5 py-1.5 hover:bg-slate-50">
                     <span className="flex items-center gap-1.5">
@@ -10485,6 +10528,31 @@ function RoutingScreen({ debugCaptureRef }) {
     }
   }, [rightPanelMode, routesSubTab, driverRoster.drivers, driverRoster.loading, loadDriverRoster]);
 
+  // NuVizz's REAL load status for the Routes panel filter. The day's load roster (the cheap
+  // list-discovery path, served from the scan cache) carries each load's lifecycle status —
+  // Draft / Un-Planned / Planned / In-Transit / Completed / Cancelled — which the execution-derived
+  // status can't see. Pulled only while the Routes panel is open, keyed by load name + id so
+  // routeGroups can join it. Cheap (no number-probe scan); failure just leaves the derived status.
+  const [loadStatusByName, setLoadStatusByName] = useState(() => new Map());
+  useEffect(() => {
+    if (rightPanelMode !== 'routes' || !selectedDate) return;
+    let cancelled = false;
+    fetch('/.netlify/functions/nuvizz-loads-roster?date=' + encodeURIComponent(selectedDate), { cache: 'no-store' })
+      .then((r) => r.json())
+      .then((j) => {
+        if (cancelled) return;
+        const m = new Map();
+        if (j && j.ok) for (const l of (j.loads || [])) {
+          const nm = String(l.name || '').trim().toLowerCase();
+          if (nm) m.set(nm, l.status || '');
+          if (l.loadId) m.set('#id:' + String(l.loadId), l.status || '');
+        }
+        setLoadStatusByName(m);
+      })
+      .catch(() => { if (!cancelled) setLoadStatusByName(new Map()); });
+    return () => { cancelled = true; };
+  }, [rightPanelMode, selectedDate]);
+
   // Part 6 — resizable left & right panels (the bottom grid already resizes via BottomStopsTable),
   // and a bottom-grid on/off toggle. All persisted; Routing-beta only.
   const leftPanel = useSidePanelWidth('left', 'routing.leftW', 340, 240, viewportWidth);
@@ -10597,12 +10665,19 @@ function RoutingScreen({ debugCaptureRef }) {
       g.weight += Number(s.weight) || 0;
     }
     const groups = [...m.values()];
-    for (const g of groups) g.status = deriveRouteStatus(g);
+    // Prefer NuVizz's real load status from the roster (joined by name, then loadId); fall back to
+    // the execution-derived status when this load has no roster status yet.
+    for (const g of groups) {
+      const raw = loadStatusByName.get(String(g.name || '').trim().toLowerCase())
+        ?? loadStatusByName.get('#id:' + String(g.loadNbr));
+      g.rosterStatus = raw || '';
+      g.status = nuvizzLoadStatus(raw) || deriveRouteStatus(g);
+    }
     // Alphabetical by the displayed route name (the card's bold title), case-insensitive.
     return groups.sort((a, b) =>
       String(loadDisplayName(a.name, a.loadNbr) || a.name).localeCompare(
         String(loadDisplayName(b.name, b.loadNbr) || b.name), undefined, { sensitivity: 'base' }));
-  }, [stops]);
+  }, [stops, loadStatusByName]);
 
   // Workbench handlers — open a route into the side-by-side cards, tune it, close it.
   const openRouteInWorkbench = useCallback((key) => {
