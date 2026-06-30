@@ -51,7 +51,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.31.1';
+const APP_VERSION = '0.32.0';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -89,6 +89,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.32.0', 'Routing — the right-panel Routes view is upgraded to read like NuVizz. Route cards are now sorted ALPHABETICALLY by route name (was grouped by driver), and there\'s a Status filter (Unassigned / Planned / In Progress / Completed / Exception, multi-select) plus a quick-search box at the top to match the NuVizz route grid. Each card now shows a colored status badge, the driver assignment, and the full freight breakdown — SKIDS (pallets) and LOOSE pieces, not just skids — alongside stops, weight, and delivered count. (The status is derived from each route\'s stop execution + driver assignment; capturing NuVizz\'s exact load-lifecycle code is a follow-up.)'],
   ['0.31.1', 'Mobile Loads tab — the per-load freight line now shows SKIDS and LOOSE pieces instead of one "plt" number. That "plt" count was actually NuVizz\'s total-pieces field (skids + loose) mislabeled as pallets; each load row now reads "X skids · Y loose · Z lb", matching the skids/loose breakdown the Stops list and data grids already use.'],
   ['0.31.0', 'Live dispatch (BETA) — staged Compare-panel Save with real re-ordering. The Compare panel is now a staged working copy: add/remove orders, move stops between routes, re-sequence, pick a driver, flag Dispatch — and NOTHING is sent to NuVizz until you hit the one Save in the Compare header. Save commits every changed load in a single batch (it removes a moved stop from its old load before adding it to the new one, and re-sequences via the verified anchor method — keep the first stop, re-insert the rest one-at-a-time in order). Beta still previews the exact calls; a real write needs Live + the server flag. Closing a load with unsaved changes now prompts you first. A re-order is only saved once every stop on the load has loaded its NuVizz id (you\'ll be warned otherwise).'],
   ['0.30.0', 'Live dispatch (BETA, opt-in) — the Compare panel can now assign a driver and dispatch a load to NuVizz. Each route card gets a driver picker, a Dispatch checkbox, and a Save button; a Beta/Live toggle sits in the Compare header. NOTHING is sent to NuVizz while you build or reorder a load — Save first PREVIEWS the exact NuVizz calls, and a real write only happens on Confirm in Live mode (and only when the server-side write flag is enabled). Hidden by default — turn it on with ?write=1 or the VITE_NUVIZZ_WRITE_BETA env. This is the first feature that writes to NuVizz; everything else stays read-only.'],
@@ -9324,38 +9325,132 @@ function RoutingStopsPanel({ selectedStops, notes, onRemove, hoverId, setHoverId
 // The Routing right-panel "Routes" view (workbench part 3): the day's routes/drivers as summary
 // cards — route name, driver, stop count, skids, weight, and delivery progress. Click a card to
 // select that route's stops and frame them on the map (reuses pickLoadFromTable via onPick).
+// Derived route/load status from the route's stops. NuVizz's exact load-lifecycle code isn't
+// captured in the scan yet, so this is computed from each stop's execution status + whether a
+// driver is assigned. Buckets the routes into the dispatcher-meaningful states we can filter on.
+function deriveRouteStatus(g) {
+  if (g.exceptions > 0) return 'Exception';
+  if (g.count > 0 && g.delivered === g.count) return 'Completed';
+  if (g.inProgress > 0 || g.delivered > 0) return 'In Progress';
+  if (g.driver) return 'Planned';        // has a driver, nothing started yet
+  return 'Unassigned';                    // no driver assigned
+}
+
+const ROUTE_STATUSES = ['Unassigned', 'Planned', 'In Progress', 'Completed', 'Exception'];
+const ROUTE_STATUS_META = {
+  'Unassigned':  { color: '#475569', bg: '#f1f5f9' },
+  'Planned':     { color: '#1d4ed8', bg: '#eff6ff' },
+  'In Progress': { color: '#b45309', bg: '#fffbeb' },
+  'Completed':   { color: '#15803d', bg: '#f0fdf4' },
+  'Exception':   { color: '#b91c1c', bg: '#fef2f2' },
+};
+function RouteStatusBadge({ status }) {
+  const m = ROUTE_STATUS_META[status] || ROUTE_STATUS_META['Unassigned'];
+  return (
+    <span className="text-[9px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded-full shrink-0"
+      style={{ color: m.color, background: m.bg }}>{status}</span>
+  );
+}
+
 function RoutingRoutesPanel({ groups, onPick }) {
-  if (!groups.length) {
-    return <div className="p-4 text-[12px] text-slate-400">No routes on this day's board yet. Routes appear here once orders are assigned to a load.</div>;
-  }
-  const tot = groups.reduce((a, g) => ({ stops: a.stops + g.count, skids: a.skids + g.skids, weight: a.weight + g.weight }), { stops: 0, skids: 0, weight: 0 });
+  const [selected, setSelected] = useState(() => new Set());   // empty = All
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [q, setQ] = useState('');
+
+  const counts = useMemo(() => {
+    const c = {};
+    for (const g of groups) c[g.status] = (c[g.status] || 0) + 1;
+    return c;
+  }, [groups]);
+
+  const filtered = useMemo(() => {
+    const query = q.trim().toLowerCase();
+    return groups.filter((g) => {
+      if (selected.size && !selected.has(g.status)) return false;
+      if (query) {
+        const name = String(loadDisplayName(g.name, g.loadNbr) || g.name).toLowerCase();
+        if (!name.includes(query) && !String(g.driver || '').toLowerCase().includes(query)) return false;
+      }
+      return true;
+    });
+  }, [groups, selected, q]);
+
+  const toggle = (st) => setSelected((prev) => { const n = new Set(prev); n.has(st) ? n.delete(st) : n.add(st); return n; });
+  const tot = filtered.reduce((a, g) => ({ stops: a.stops + g.count, skids: a.skids + g.skids, loose: a.loose + g.loose, weight: a.weight + g.weight }), { stops: 0, skids: 0, loose: 0, weight: 0 });
+
   return (
     <div className="flex-1 min-h-0 overflow-y-auto">
-      <div className="px-3 py-1.5 text-[11px] text-slate-500 border-b bg-slate-50 sticky top-0 z-10">
-        {groups.length} route{groups.length === 1 ? '' : 's'} · {tot.stops} stops · {tot.skids} skids · {Math.round(tot.weight).toLocaleString()} lb
-      </div>
-      <div className="p-2 space-y-2">
-        {groups.map((g) => {
-          const pct = g.count ? Math.round((100 * g.delivered) / g.count) : 0;
-          const done = pct === 100;
-          return (
-            <button key={g.key} onClick={() => onPick(g.key)} className="w-full text-left border rounded-lg p-2 hover:bg-slate-50 active:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-300">
-              <div className="flex items-center justify-between gap-2">
-                <div className="font-semibold text-slate-800 truncate">{loadDisplayName(g.name, g.loadNbr) || 'Unnamed load'}</div>
-                <div className="text-[12px] font-bold shrink-0" style={{ color: done ? '#16a34a' : BRAND }}>{pct}%</div>
+      {/* Filter bar — Status (multi-select) + quick search, mirroring the NuVizz route view. */}
+      <div className="sticky top-0 z-20 bg-white border-b px-2 py-1.5 flex items-center gap-1.5">
+        <div className="relative shrink-0">
+          <button onClick={() => setMenuOpen((o) => !o)}
+            className="inline-flex items-center gap-1 text-[11px] font-semibold border border-slate-300 rounded px-2 py-1 hover:bg-slate-50">
+            <Filter size={12} /> Status{selected.size ? ` (${selected.size})` : ''} <span className="text-slate-400">▾</span>
+          </button>
+          {menuOpen && (
+            <>
+              <div className="fixed inset-0 z-30" onClick={() => setMenuOpen(false)} />
+              <div className="absolute left-0 mt-1 z-40 w-48 bg-white border rounded-lg shadow-lg py-1 text-[12px]">
+                <button onClick={() => setSelected(new Set())}
+                  className={`w-full flex items-center justify-between px-2.5 py-1.5 hover:bg-slate-50 ${selected.size === 0 ? 'font-semibold' : ''}`}>
+                  <span>All</span><span className="text-slate-400">{groups.length}</span>
+                </button>
+                <div className="border-t my-1" />
+                {ROUTE_STATUSES.map((st) => (
+                  <button key={st} onClick={() => toggle(st)}
+                    className="w-full flex items-center justify-between px-2.5 py-1.5 hover:bg-slate-50">
+                    <span className="flex items-center gap-1.5">
+                      <input type="checkbox" readOnly checked={selected.has(st)} className="pointer-events-none" />
+                      <RouteStatusBadge status={st} />
+                    </span>
+                    <span className="text-slate-400">{counts[st] || 0}</span>
+                  </button>
+                ))}
               </div>
-              <div className="text-[11px] text-slate-500 truncate">{g.driver || (g.driverId ? 'Driver assigned' : 'No driver assigned')}</div>
-              <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 mt-1 text-[11px] text-slate-600">
-                <span>{g.count} stop{g.count === 1 ? '' : 's'}</span>
-                <span>{g.skids} skids</span>
-                <span>{Math.round(g.weight).toLocaleString()} lb</span>
-                <span className="text-slate-400">{g.delivered}/{g.count} delivered</span>
-              </div>
-              <div className="mt-1.5 h-1 rounded bg-slate-100 overflow-hidden"><div className="h-full rounded" style={{ width: `${pct}%`, background: done ? '#16a34a' : BRAND }} /></div>
-            </button>
-          );
-        })}
+            </>
+          )}
+        </div>
+        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Quick search route / driver"
+          className="flex-1 min-w-0 text-[12px] border border-slate-300 rounded px-2 py-1" />
+        {(q || selected.size > 0) && (
+          <button onClick={() => { setQ(''); setSelected(new Set()); }} className="text-[11px] text-slate-500 hover:text-slate-800 shrink-0">Clear</button>
+        )}
       </div>
+
+      <div className="px-3 py-1.5 text-[11px] text-slate-500 border-b bg-slate-50">
+        {filtered.length === groups.length ? `${groups.length} route${groups.length === 1 ? '' : 's'}` : `${filtered.length} of ${groups.length} routes`} · {tot.stops} stops · {tot.skids} skids · {tot.loose} loose · {Math.round(tot.weight).toLocaleString()} lb
+      </div>
+
+      {filtered.length === 0 ? (
+        <div className="p-4 text-[12px] text-slate-400">{groups.length === 0 ? "No routes on this day's board yet. Routes appear here once orders are assigned to a load." : 'No routes match the filter.'}</div>
+      ) : (
+        <div className="p-2 space-y-2">
+          {filtered.map((g) => {
+            const pct = g.count ? Math.round((100 * g.delivered) / g.count) : 0;
+            const done = pct === 100;
+            return (
+              <button key={g.key} onClick={() => onPick(g.key)} className="w-full text-left border rounded-lg p-2 hover:bg-slate-50 active:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-300">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="font-semibold text-slate-800 truncate">{loadDisplayName(g.name, g.loadNbr) || 'Unnamed load'}</div>
+                  <div className="text-[12px] font-bold shrink-0" style={{ color: done ? '#16a34a' : BRAND }}>{pct}%</div>
+                </div>
+                <div className="flex items-center gap-1.5 mt-0.5 min-w-0">
+                  <RouteStatusBadge status={g.status} />
+                  <span className={`text-[11px] truncate ${g.driver ? 'text-slate-600' : 'text-slate-400 italic'}`}>{g.driver || 'No driver assigned'}</span>
+                </div>
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 mt-1 text-[11px] text-slate-600">
+                  <span>{g.count} stop{g.count === 1 ? '' : 's'}</span>
+                  <span>{g.skids} skids</span>
+                  <span>{g.loose} loose</span>
+                  <span>{Math.round(g.weight).toLocaleString()} lb</span>
+                  <span className="text-slate-400">{g.delivered}/{g.count} delivered</span>
+                </div>
+                <div className="mt-1.5 h-1 rounded bg-slate-100 overflow-hidden"><div className="h-full rounded" style={{ width: `${pct}%`, background: done ? '#16a34a' : BRAND }} /></div>
+              </button>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
@@ -10471,16 +10566,24 @@ function RoutingScreen({ debugCaptureRef }) {
       const key = s.routeName || s.loadNbr;
       if (!key) continue;
       let g = m.get(key);
-      if (!g) { g = { key, name: s.routeName || key, loadNbr: s.loadNbr || key, driver: '', driverId: '', count: 0, delivered: 0, skids: 0, weight: 0 }; m.set(key, g); }
+      if (!g) { g = { key, name: s.routeName || key, loadNbr: s.loadNbr || key, driver: '', driverId: '', count: 0, delivered: 0, inProgress: 0, exceptions: 0, skids: 0, loose: 0, weight: 0 }; m.set(key, g); }
       if (!g.driver && (s.driverName || s.driverUserName)) g.driver = s.driverName || s.driverUserName;
       if (!g.driverId && s.driverId) g.driverId = s.driverId;
       g.count += 1;
-      if (classifyStopStatus(s) === 'DELIVERED') g.delivered += 1;
-      g.skids += Number(s.cartons) || 0;          // NuVizz totalCartons = real skids
+      const kind = classifyStopStatus(s);
+      if (kind === 'DELIVERED') g.delivered += 1;
+      else if (kind === 'OUT_FOR_DEL' || kind === 'ARRIVED') g.inProgress += 1;
+      if (kind === 'EXCEPTION') g.exceptions += 1;
+      g.skids += Number(s.cartons) || 0;          // NuVizz totalCartons = real skids (pallets)
+      g.loose += Number(s.volume) || 0;           // NuVizz volume = loose pieces
       g.weight += Number(s.weight) || 0;
     }
-    return [...m.values()].sort((a, b) =>
-      String(a.driver || '~').localeCompare(String(b.driver || '~')) || String(a.name).localeCompare(String(b.name)));
+    const groups = [...m.values()];
+    for (const g of groups) g.status = deriveRouteStatus(g);
+    // Alphabetical by the displayed route name (the card's bold title), case-insensitive.
+    return groups.sort((a, b) =>
+      String(loadDisplayName(a.name, a.loadNbr) || a.name).localeCompare(
+        String(loadDisplayName(b.name, b.loadNbr) || b.name), undefined, { sensitivity: 'base' }));
   }, [stops]);
 
   // Workbench handlers — open a route into the side-by-side cards, tune it, close it.
