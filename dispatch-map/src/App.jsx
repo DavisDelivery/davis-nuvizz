@@ -51,7 +51,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.32.0';
+const APP_VERSION = '0.32.1';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -89,6 +89,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.32.1', 'Routing (beta) — the Live-dispatch (driver assign + dispatch) controls now have a gear toggle. Open the ⚙ gear → Panels → "Live dispatch (assign driver + dispatch)" to show/hide the Compare-panel driver picker, Dispatch checkbox, Save, and the Beta/Live toggle — no more ?write=1 URL flag needed (the flag still works and seeds the toggle the first time). The setting is remembered. As before, nothing is sent to NuVizz until you switch a card to Live and Save → Confirm, and a real write also needs the server NUVIZZ_WRITE_ENABLED flag.'],
   ['0.32.0', 'Routing — the right-panel Routes view is upgraded to read like NuVizz. Route cards are now sorted ALPHABETICALLY by route name (was grouped by driver), and there\'s a Status filter (Unassigned / Planned / In Progress / Completed / Exception, multi-select) plus a quick-search box at the top to match the NuVizz route grid. Each card now shows a colored status badge, the driver assignment, and the full freight breakdown — SKIDS (pallets) and LOOSE pieces, not just skids — alongside stops, weight, and delivered count. (The status is derived from each route\'s stop execution + driver assignment; capturing NuVizz\'s exact load-lifecycle code is a follow-up.)'],
   ['0.31.1', 'Mobile Loads tab — the per-load freight line now shows SKIDS and LOOSE pieces instead of one "plt" number. That "plt" count was actually NuVizz\'s total-pieces field (skids + loose) mislabeled as pallets; each load row now reads "X skids · Y loose · Z lb", matching the skids/loose breakdown the Stops list and data grids already use.'],
   ['0.31.0', 'Live dispatch (BETA) — staged Compare-panel Save with real re-ordering. The Compare panel is now a staged working copy: add/remove orders, move stops between routes, re-sequence, pick a driver, flag Dispatch — and NOTHING is sent to NuVizz until you hit the one Save in the Compare header. Save commits every changed load in a single batch (it removes a moved stop from its old load before adding it to the new one, and re-sequences via the verified anchor method — keep the first stop, re-insert the rest one-at-a-time in order). Beta still previews the exact calls; a real write needs Live + the server flag. Closing a load with unsaved changes now prompts you first. A re-order is only saved once every stop on the load has loaded its NuVizz id (you\'ll be warned otherwise).'],
@@ -9724,7 +9725,10 @@ function LiveCommitConfirm({ confirm, liveMode, busy, title, onCancel, onConfirm
   );
 }
 
-function RoutingWorkbenchCard({ route, stopById, otherKeys, ninjaMode, isActive, onSetActive, onResequence, onCollapse, onClose, onMoveStop, onDropStop, onOpenStop, onPrintManifest, roster, rosterError, staged, onStage, dirty, isMobile }) {
+function RoutingWorkbenchCard({ route, stopById, otherKeys, ninjaMode, isActive, onSetActive, onResequence, onCollapse, onClose, onMoveStop, onDropStop, onOpenStop, onPrintManifest, roster, rosterError, staged, onStage, dirty, isMobile, liveWrite }) {
+  // The live-dispatch UI gate is now the gear toggle (prop) rather than the module-level
+  // ?write=1/env const. Aliased to the original name so the gate sites below are unchanged.
+  const LIVE_WRITE_FLAG = liveWrite;
   const rows = route.order.map((id) => stopById.get(String(id))).filter(Boolean);
   // Drag-and-drop (desktop): track which row we're hovering so we can show a drop line, and read
   // the dragged stop out of dataTransfer on drop. beforeId=null means "append to the end".
@@ -9877,7 +9881,10 @@ function RoutingWorkbenchCard({ route, stopById, otherKeys, ninjaMode, isActive,
 // The route workbench (part 4): the 1–3 route cards opened from the right Routes panel, laid out
 // side by side (desktop) or stacked (mobile). Replaces the Setup stack on the left while routes
 // are open; "Back to Setup" closes them all.
-function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmNinja, activeKey, onSetActive, onResequence, onCollapse, onClose, onCloseAll, onMoveStop, onDropStop, onOpenStop, onPrintManifest, selectedCount = 0, onSendSelection, isMobile }) {
+function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmNinja, activeKey, onSetActive, onResequence, onCollapse, onClose, onCloseAll, onMoveStop, onDropStop, onOpenStop, onPrintManifest, selectedCount = 0, onSendSelection, isMobile, liveWrite }) {
+  // Live-dispatch gate comes from the gear toggle (prop), aliased to the original name so the
+  // many gate sites in this component (Save, Beta/Live toggle, dirty guards, confirm) are unchanged.
+  const LIVE_WRITE_FLAG = liveWrite;
   // Live dispatch (beta) — Beta vs Live applies to EVERY card here. Always starts in Beta
   // on mount (Live is never sticky across reloads, for safety). The driver roster is pulled
   // once (one cheap user/list read) so each card's picker is populated; a failure degrades
@@ -9905,7 +9912,7 @@ function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmN
       else setRosterError(res.error || 'roster unavailable');
     }).catch((e) => { if (alive) setRosterError(e?.message || 'roster error'); });
     return () => { alive = false; };
-  }, []);
+  }, [LIVE_WRITE_FLAG]);
 
   // ── Staged commit (beta) — panel-level "Save" of the whole Compare board (§10) ──
   // Nothing is sent while you build / reorder / move stops or pick drivers; Save commits
@@ -10077,6 +10084,7 @@ function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmN
             onStage={(patch) => setStageFor(r.key, patch)}
             dirty={isDirty(r)}
             isMobile={isMobile}
+            liveWrite={liveWrite}
           />
         ))}
       </div>
@@ -10506,6 +10514,16 @@ function RoutingScreen({ debugCaptureRef }) {
   // anchor line. Persisted; default OFF (show), matching NuVizz's default.
   const [routeHideStem, setRouteHideStem] = useState(() => { try { return localStorage.getItem('routing.hideStem') === 'on'; } catch { return false; } });
   useEffect(() => { try { localStorage.setItem('routing.hideStem', routeHideStem ? 'on' : 'off'); } catch { /* ignore */ } }, [routeHideStem]);
+  // Live-dispatch (write) UI visibility — a persisted gear toggle so the dispatcher reveals the
+  // driver-assign + dispatch controls without the ?write=1 URL flag. Seeds from that flag/env the
+  // first time (so existing ?write=1 links still open it), then the toggle is the source of truth.
+  // A real write still needs the card's Live mode AND the server NUVIZZ_WRITE_ENABLED flag — this
+  // only shows/hides the UI, it can't make a write fire on its own.
+  const [liveWrite, setLiveWrite] = useState(() => {
+    try { const v = localStorage.getItem('routing.liveWrite'); if (v === 'on') return true; if (v === 'off') return false; } catch { /* ignore */ }
+    return LIVE_WRITE_FLAG;
+  });
+  useEffect(() => { try { localStorage.setItem('routing.liveWrite', liveWrite ? 'on' : 'off'); } catch { /* ignore */ } }, [liveWrite]);
   const resetRoutingLayout = useCallback(() => {
     leftPanel.onDoubleClick(); rightPanel.onDoubleClick();
     setSelPanelOpen(true); setRightPanelMode('tabs'); setBottomGridOn(true); setRouteHideStem(false); setLeftPanelOn(false);
@@ -11617,8 +11635,9 @@ function RoutingScreen({ debugCaptureRef }) {
   const selPanelToggle = { key: 'selPanel', label: 'Floating selected-stops panel', on: selPanelOpen, setOn: setSelPanelOpen };
   const bottomGridToggle = { key: 'bottomGrid', label: 'Bottom data grid', on: bottomGridOn, setOn: setBottomGridOn };
   const hideStemToggle = { key: 'hideStem', label: 'Hide stem-out line (depot → first stop)', on: routeHideStem, setOn: setRouteHideStem };
-  const leftGearPanels = [leftPanelToggle, selPanelToggle, bottomGridToggle, hideStemToggle];
-  const bottomGearPanels = [leftPanelToggle, selPanelToggle, hideStemToggle];
+  const liveWriteToggle = { key: 'liveWrite', label: 'Live dispatch (assign driver + dispatch)', on: liveWrite, setOn: setLiveWrite };
+  const leftGearPanels = [leftPanelToggle, selPanelToggle, bottomGridToggle, hideStemToggle, liveWriteToggle];
+  const bottomGearPanels = [leftPanelToggle, selPanelToggle, hideStemToggle, liveWriteToggle];
   // The settings gear (+ a compact date picker when the Setup panel is hidden) for the bottom
   // data-grid header — keeps date selection and every panel toggle reachable with the left panel off.
   const bottomGridHeaderRight = (
@@ -11826,7 +11845,7 @@ function RoutingScreen({ debugCaptureRef }) {
             <div className="flex-1 min-h-0 overflow-y-auto p-3 space-y-3 text-sm" style={{ paddingBottom: 'calc(12px + env(safe-area-inset-bottom))' }}>
               {mobilePanel === 'setup'
                 ? (wbRoutes.length > 0
-                    ? <RoutingWorkbench wbRoutes={wbRoutesColored} stopById={stopById} ninjaMode={ninjaMode} onToggleNinja={setNinjaMode} onArmNinja={armNinjaFromPanel} activeKey={effectiveActiveKey} onSetActive={setActiveRouteKey} onResequence={wbResequence} onCollapse={toggleWbCollapse} onClose={closeWbRoute} onCloseAll={closeAllWb} onMoveStop={wbMoveStop} onDropStop={wbDropStop} onOpenStop={openStop} onPrintManifest={printWbManifest} selectedCount={selectedStops.length} onSendSelection={sendSelectionToRoute} isMobile />
+                    ? <RoutingWorkbench wbRoutes={wbRoutesColored} stopById={stopById} ninjaMode={ninjaMode} onToggleNinja={setNinjaMode} onArmNinja={armNinjaFromPanel} activeKey={effectiveActiveKey} onSetActive={setActiveRouteKey} onResequence={wbResequence} onCollapse={toggleWbCollapse} onClose={closeWbRoute} onCloseAll={closeAllWb} onMoveStop={wbMoveStop} onDropStop={wbDropStop} onOpenStop={openStop} onPrintManifest={printWbManifest} selectedCount={selectedStops.length} onSendSelection={sendSelectionToRoute} isMobile liveWrite={liveWrite} />
                     : controlsContent)
                 : mobilePanel === 'loads'
                   ? (rightPanelMode === 'routes'
@@ -11871,7 +11890,7 @@ function RoutingScreen({ debugCaptureRef }) {
           routes are open. With the Setup panel off and no routes open, the map gets the full width. */}
       {wbRoutes.length > 0 ? (
         <div className="shrink-0 border-r bg-white min-h-0 overflow-x-auto" style={{ width: wbWidth }}>
-          <RoutingWorkbench wbRoutes={wbRoutesColored} stopById={stopById} ninjaMode={ninjaMode} onToggleNinja={setNinjaMode} onArmNinja={armNinjaFromPanel} activeKey={effectiveActiveKey} onSetActive={setActiveRouteKey} onResequence={wbResequence} onCollapse={toggleWbCollapse} onClose={closeWbRoute} onCloseAll={closeAllWb} onMoveStop={wbMoveStop} onDropStop={wbDropStop} onOpenStop={openStop} onPrintManifest={printWbManifest} selectedCount={selectedStops.length} onSendSelection={sendSelectionToRoute} isMobile={false} />
+          <RoutingWorkbench wbRoutes={wbRoutesColored} stopById={stopById} ninjaMode={ninjaMode} onToggleNinja={setNinjaMode} onArmNinja={armNinjaFromPanel} activeKey={effectiveActiveKey} onSetActive={setActiveRouteKey} onResequence={wbResequence} onCollapse={toggleWbCollapse} onClose={closeWbRoute} onCloseAll={closeAllWb} onMoveStop={wbMoveStop} onDropStop={wbDropStop} onOpenStop={openStop} onPrintManifest={printWbManifest} selectedCount={selectedStops.length} onSendSelection={sendSelectionToRoute} isMobile={false} liveWrite={liveWrite} />
         </div>
       ) : leftPanelOn ? (
         <div className="shrink-0 border-r bg-white overflow-y-auto p-3 space-y-3 text-sm" style={{ width: leftPanel.width }}>
