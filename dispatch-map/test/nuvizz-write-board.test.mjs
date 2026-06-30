@@ -6,6 +6,9 @@ import assert from 'node:assert/strict';
 import { runCommitBoard } from '../netlify/functions/lib/nuvizz-write.mts';
 
 const CREDS = { base: 'https://portal.nuvizz.com/deliverit/openapi/v7', companyCode: 'DAVIS', auth: 'Basic xyz' };
+// A realistic INTERNAL loadId (24-hex loadHeader.loadId) — the only kind the executor trusts as the
+// assign/dispatch routeId without re-resolving it via getLoad.
+const HEXID = '6a438e9d52ef82bd1ed4516b';
 
 function stub(scripts) {
   const calls = [];
@@ -87,13 +90,32 @@ test('commitBoard: cross-load move A→B removes from the SOURCE before insertin
 
 test('commitBoard: assign/dispatch-only load with a known loadId skips getLoad entirely', async () => {
   const { requester, calls } = stub([ok(), ok()]);
-  const r = await runCommitBoard(requester, { loads: [{ loadNbr: 'BEN 3', loadId: 'L9', driverId: 5, dispatch: true }] }, CREDS);
+  const r = await runCommitBoard(requester, { loads: [{ loadNbr: 'BEN 3', loadId: HEXID, driverId: 5, dispatch: true }] }, CREDS);
   assert.equal(r.ok, true);
   assert.deepEqual(calls.map((c) => c.method), ['POST', 'POST'], 'no getLoad');
   assert.match(calls[0].url, /assignanddispatch/);
-  assert.equal(calls[0].body.action, 'ASSIGN');
+  assert.equal(calls[0].body.action, 'ASSIGN_DISPATCH');
   assert.equal(calls[0].body.dispatchRoute[0].assignDtls.driverId, 5);
   assert.equal(calls[1].body.action, 'DISPATCH');
+});
+
+test('commitBoard: assign-only with a NON-internal (roster) loadId → resolves the real loadId via getLoad first', async () => {
+  // An empty/Draft load has no stops to carry its internal loadHeader.loadId, so the board can hand
+  // us the PkgRoute roster id ("6a3560cb_ALPHA"). That is NOT the internal id NuVizz assigns against —
+  // it answers "Success" yet never persists. The executor must getLoad to resolve the real id first.
+  const { requester, calls } = stub([
+    loadDoc(HEXID, 'v1', []),   // Phase 0 getLoad resolves the internal id (empty load → no stops)
+    ok(),                       // assign
+  ]);
+  const r = await runCommitBoard(requester, { loads: [{ loadNbr: 'ALPHA', loadId: '6a3560cb_ALPHA', driverId: 53037 }] }, CREDS);
+  assert.equal(r.ok, true);
+  assert.equal(calls.length, 2);
+  assert.match(calls[0].url, /\/load\/info\//, 'resolves the load before assigning');
+  assert.match(calls[1].url, /assignanddispatch/);
+  assert.equal(calls[1].body.action, 'ASSIGN_DISPATCH');
+  assert.equal(calls[1].body.dispatchRoute[0].routeId, HEXID, 'assigns against the INTERNAL loadId, not the roster id');
+  assert.equal(calls[1].body.dispatchRoute[0].assignDtls.driverId, 53037);
+  assert.equal(r.loads[0].loadId, HEXID);
 });
 
 test('commitBoard: a refused load (new stop first) is reported but does NOT block other loads', async () => {
@@ -229,7 +251,7 @@ test('commitBoard: combined reorder + driver + dispatch on one load fires in ord
 
 test('commitBoard: driverId 0 on a board load fires NO assign', async () => {
   const { requester, calls } = stub([ok()]);
-  const r = await runCommitBoard(requester, { loads: [{ loadNbr: 'BEN 1', loadId: 'L9', driverId: 0, dispatch: true }] }, CREDS);
+  const r = await runCommitBoard(requester, { loads: [{ loadNbr: 'BEN 1', loadId: HEXID, driverId: 0, dispatch: true }] }, CREDS);
   assert.equal(r.ok, true);
   assert.deepEqual(calls.map((c) => c.url.match(/(assignanddispatch)/)?.[1]).filter(Boolean), ['assignanddispatch']);
   assert.equal(calls[0].body.action, 'DISPATCH', 'only dispatch, no assign');
@@ -239,7 +261,7 @@ test('commitBoard: a load with neither loadNbr nor loadId → ok:false, no calls
   const { requester, calls } = stub([ok()]);
   const r = await runCommitBoard(requester, { loads: [
     { orderedStopIds: ['A'] },                       // invalid
-    { loadNbr: 'BEN 2', loadId: 'L2', driverId: 5 },  // valid assign-only
+    { loadNbr: 'BEN 2', loadId: HEXID, driverId: 5 },  // valid assign-only
   ] }, CREDS);
   const bad = r.loads[0], good = r.loads[1];
   assert.equal(bad.ok, false);

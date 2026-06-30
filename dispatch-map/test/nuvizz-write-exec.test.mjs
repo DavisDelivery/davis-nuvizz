@@ -9,6 +9,9 @@ import { runOp, runCommitLoad } from '../netlify/functions/lib/nuvizz-write.mts'
 import { createNuvizzRequester } from '../netlify/functions/lib/nuvizz-request.mts';
 
 const CREDS = { base: 'https://portal.nuvizz.com/deliverit/openapi/v7', companyCode: 'DAVIS', auth: 'Basic xyz' };
+// A realistic INTERNAL loadId (24-hex loadHeader.loadId) — the only kind commitLoad trusts as the
+// assign/dispatch routeId without re-resolving it via getLoad.
+const HEXID = '6a438e9d52ef82bd1ed4516b';
 
 // A stub requester that records each call and returns scripted JSON bodies in order.
 function stub(scripts) {
@@ -73,7 +76,7 @@ test('runCommitLoad: resolves load once, then insert → assign → dispatch in 
   assert.match(calls[0].url, /\/load\/info\//);
   assert.match(calls[1].url, /\/load\/insertstops\//);
   assert.match(calls[2].url, /\/load\/assignanddispatch\//);
-  assert.equal(calls[2].body.action, 'ASSIGN');
+  assert.equal(calls[2].body.action, 'ASSIGN_DISPATCH');
   assert.equal(calls[2].body.dispatchRoute[0].routeId, 'L1');
   assert.equal(calls[3].body.action, 'DISPATCH');
   assert.equal(r.steps.length, 3); // insert, assign, dispatch (getLoad is resolution, not a step)
@@ -96,7 +99,7 @@ test('runCommitLoad: aborts the batch on the first failing step (no dispatch aft
 
 test('runCommitLoad: assign-only needs no getLoad when loadId is already known', async () => {
   const { requester, calls } = stub([{ json: { status: 'Success' } }]);
-  const r = await runCommitLoad(requester, { loadNbr: 'BEN 2', loadId: 'L1', driverId: 5 }, CREDS);
+  const r = await runCommitLoad(requester, { loadNbr: 'BEN 2', loadId: HEXID, driverId: 5 }, CREDS);
   assert.equal(r.ok, true);
   assert.equal(calls.length, 1);
   assert.match(calls[0].url, /assignanddispatch/);
@@ -178,7 +181,7 @@ test('runCommitLoad: dispatch-only (no driver) resolves the load then fires only
 test('runCommitLoad: driverId 0 is treated as NO driver (no assign fired)', async () => {
   const { requester, calls } = stub([{ json: { status: 'Success' } }]);
   // loadId known, dispatch only, driverId 0 → must NOT fire an assign with driverId 0.
-  const r = await runCommitLoad(requester, { loadNbr: 'BEN 2', loadId: 'L1', driverId: 0, dispatch: true }, CREDS);
+  const r = await runCommitLoad(requester, { loadNbr: 'BEN 2', loadId: HEXID, driverId: 0, dispatch: true }, CREDS);
   assert.equal(r.ok, true);
   assert.equal(calls.length, 1, 'only the dispatch fires; no getLoad, no assign');
   assert.equal(calls[0].body.action, 'DISPATCH');
@@ -186,11 +189,11 @@ test('runCommitLoad: driverId 0 is treated as NO driver (no assign fired)', asyn
 
 test('runCommitLoad: a known loadId skips the getLoad entirely (assign + dispatch direct)', async () => {
   const { requester, calls } = stub([{ json: { status: 'Success' } }, { json: { status: 'Success' } }]);
-  const r = await runCommitLoad(requester, { loadNbr: 'BEN 2', loadId: 'L1', driverId: 9, dispatch: true }, CREDS);
+  const r = await runCommitLoad(requester, { loadNbr: 'BEN 2', loadId: HEXID, driverId: 9, dispatch: true }, CREDS);
   assert.equal(r.ok, true);
   assert.deepEqual(calls.map((c) => c.method), ['POST', 'POST'], 'no getLoad when loadId is supplied');
   assert.match(calls[0].url, /assignanddispatch/);
-  assert.equal(calls[0].body.dispatchRoute[0].routeId, 'L1');
+  assert.equal(calls[0].body.dispatchRoute[0].routeId, HEXID);
 });
 
 test('runCommitLoad: empty payload makes ZERO calls and returns ok:true (no-op)', async () => {
