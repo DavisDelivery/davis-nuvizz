@@ -51,7 +51,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.31.0';
+const APP_VERSION = '0.31.1';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -89,6 +89,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.31.1', 'Mobile Loads tab — the per-load freight line now shows SKIDS and LOOSE pieces instead of one "plt" number. That "plt" count was actually NuVizz\'s total-pieces field (skids + loose) mislabeled as pallets; each load row now reads "X skids · Y loose · Z lb", matching the skids/loose breakdown the Stops list and data grids already use.'],
   ['0.31.0', 'Live dispatch (BETA) — staged Compare-panel Save with real re-ordering. The Compare panel is now a staged working copy: add/remove orders, move stops between routes, re-sequence, pick a driver, flag Dispatch — and NOTHING is sent to NuVizz until you hit the one Save in the Compare header. Save commits every changed load in a single batch (it removes a moved stop from its old load before adding it to the new one, and re-sequences via the verified anchor method — keep the first stop, re-insert the rest one-at-a-time in order). Beta still previews the exact calls; a real write needs Live + the server flag. Closing a load with unsaved changes now prompts you first. A re-order is only saved once every stop on the load has loaded its NuVizz id (you\'ll be warned otherwise).'],
   ['0.30.0', 'Live dispatch (BETA, opt-in) — the Compare panel can now assign a driver and dispatch a load to NuVizz. Each route card gets a driver picker, a Dispatch checkbox, and a Save button; a Beta/Live toggle sits in the Compare header. NOTHING is sent to NuVizz while you build or reorder a load — Save first PREVIEWS the exact NuVizz calls, and a real write only happens on Confirm in Live mode (and only when the server-side write flag is enabled). Hidden by default — turn it on with ?write=1 or the VITE_NUVIZZ_WRITE_BETA env. This is the first feature that writes to NuVizz; everything else stays read-only.'],
   ['0.29.84', 'Routing — the ShipTo - Display Seq delivery order now actually sticks after a re-scan (#292). The fresh order read from the list was being silently overwritten on every scan by the older, carried-forward sequence (the physical route seq that the Display-Seq column was meant to replace), so the route kept re-opening in the old order no matter how many times you refreshed. The list\'s Display-Seq is now authoritative and the carried-forward value can only fill in when the column is genuinely absent. Refresh and re-open the load to see the corrected order.'],
@@ -5671,7 +5672,7 @@ function MobileDriversTab({ drivers, error, onPickDriver }) {
 
 // Loads tab content — the day's loads grouped from the board (one tap opens that
 // load's route detail). Shows route/load id, driver, delivered-of-total progress,
-// and pallet/weight totals.
+// and skids / loose-piece / weight totals.
 function MobileLoadsTab({ loads, onPickLoad }) {
   if (!loads || loads.length === 0) {
     return (
@@ -5699,7 +5700,8 @@ function MobileLoadsTab({ loads, onPickLoad }) {
             </div>
             <div className="text-[11px] text-slate-500 truncate">
               {l.delivered}/{l.stops} delivered
-              {l.pallets ? ` · ${l.pallets} plt` : ''}
+              {l.skids ? ` · ${l.skids} skid${l.skids === 1 ? '' : 's'}` : ''}
+              {l.loose ? ` · ${l.loose} loose` : ''}
               {l.weight ? ` · ${l.weight.toLocaleString()} lb` : ''}
             </div>
           </div>
@@ -6848,16 +6850,19 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef }) {
   }, [stops, selectedRoute]);
 
   // The day's loads, grouped from the board by loadNbr — powers the mobile Loads
-  // tab. Delivered count is tolerant of status casing; pallet/weight are summed.
+  // tab. Delivered count is tolerant of status casing; skids/loose/weight are summed.
+  // NuVizz mislabels freight: cartons = real skids, volume = loose pieces,
+  // pallets (totalPallets) = total pieces.
   const loads = useMemo(() => {
     const m = new Map();
     for (const s of stops) {
       if (!s.loadNbr) continue;
       let g = m.get(s.loadNbr);
-      if (!g) { g = { loadNbr: s.loadNbr, routeName: s.routeName || null, driverName: s.driverName || null, stops: 0, delivered: 0, pallets: 0, weight: 0 }; m.set(s.loadNbr, g); }
+      if (!g) { g = { loadNbr: s.loadNbr, routeName: s.routeName || null, driverName: s.driverName || null, stops: 0, delivered: 0, skids: 0, loose: 0, weight: 0 }; m.set(s.loadNbr, g); }
       g.stops++;
       if (/deliver/i.test(s.normalizedStatus || s.status || '')) g.delivered++;
-      g.pallets += Number(s.pallets) || 0;
+      g.skids += Number(s.cartons) || 0;
+      g.loose += Number(s.volume) || 0;
       g.weight += Number(s.weight) || 0;
       if (!g.driverName && s.driverName) g.driverName = s.driverName;
       if (!g.routeName && s.routeName) g.routeName = s.routeName;
