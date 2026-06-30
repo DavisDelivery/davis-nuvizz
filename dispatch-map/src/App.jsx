@@ -51,7 +51,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.32.6';
+const APP_VERSION = '0.32.7';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -89,6 +89,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.32.7', 'Loads grid — new "% Done" column. The bottom Stops/Loads grid (on both the dispatch Map and Routing screens) now shows each load\'s delivery progress as a percent (delivered ÷ stops), green at 100%, right after the Stops count. Sortable like every other column; empty "No orders yet" loads show "—".'],
   ['0.32.6', 'Routing (beta) — remove an order from a route in the Compare panel. Each stop now has an × button; click it and that order is dropped from the load and listed under "Removing N order(s)" with an Undo. Nothing happens until you Save — on Save the removed orders become UNPLANNED in NuVizz (back to the pool), and the Save preview now spells this out ("unplan N order(s)") before you confirm. Staged like every other Compare edit; Undo restores an order before Save.'],
   ['0.32.5', 'Routing (beta) — assign a driver straight from the Routes panel. With Live dispatch on (⚙ → Panels → "Live dispatch"), each route card gets a driver dropdown of your full roster; pick one and it assigns that driver to the load. A Beta/Live toggle sits next to the Status filter — in ○ Beta a pick only previews (nothing sent), in ● LIVE it assigns in NuVizz immediately (assign only — it does NOT dispatch/notify the driver; that\'s still the Compare panel\'s Dispatch step). The card shows the new driver right away. As always a real write also needs the server NUVIZZ_WRITE_ENABLED flag.'],
   ['0.32.4', 'Routing — the Routes-panel Status filter now reflects NuVizz\'s REAL load status, so a "Draft" option appears (plus Un-Planned, In-Transit, Cancelled) to match the NuVizz route grid. Until now the status was derived purely from each route\'s stop execution + driver assignment, so there was no way to see a Draft (or Un-Planned / Cancelled) load. The panel now reads each load\'s actual lifecycle status from the day\'s load roster (the cheap list path, served from the scan cache — no extra number-probe scan) and falls back to the derived status only when a load has no roster status yet. The filter always offers the full NuVizz lifecycle (even at count 0) and never hides a status that\'s actually on the board.'],
@@ -8141,6 +8142,9 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
     { k: 'load', label: 'Load', w: 150, get: (g) => <span className="font-mono text-blue-700">{loadDisplayName(g.routeName, g.loadNbr) || 'Unnamed load'}</span>, sortVal: (g) => g.routeName || g.loadNbr },
     { k: 'driver', label: 'Driver', w: 180, get: (g) => g.driverName || '—', sortVal: (g) => g.driverName },
     { k: 'count', label: 'Stops', w: 60, align: 'right', get: (g) => g.count, sortVal: (g) => g.count },
+    { k: 'pct', label: '% Done', w: 70, align: 'right',
+      get: (g) => g.empty ? '—' : (() => { const p = g.count ? Math.round(100 * (g.buckets.completed || 0) / g.count) : 0; return <span className="font-semibold tabular-nums" style={{ color: p === 100 ? '#16a34a' : BRAND }}>{p}%</span>; })(),
+      sortVal: (g) => (g.empty ? -1 : (g.count ? (g.buckets.completed || 0) / g.count : 0)) },
     { k: 'status', label: 'Status', w: 240, get: (g) => (g.empty
         ? <span className="inline-flex items-center gap-1 px-1.5 rounded text-[10px] font-medium bg-amber-50 text-amber-700 border border-amber-200" title={g.rosterStatus ? ('Load status: ' + g.rosterStatus) : 'No orders assigned yet'}>No orders yet{g.rosterStatus ? ' · ' + g.rosterStatus : ''}</span>
         : (
