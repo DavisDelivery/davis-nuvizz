@@ -291,6 +291,12 @@ export function parseRoster(j: any): Array<{ driverId: any; userName: string; na
       roles,
     });
   }
+  // Present the roster A→Z by display name (case-insensitive) so every driver picker — the
+  // Compare-panel "Assign driver…" and the Routes-panel assign dropdown — lists drivers in
+  // alphabetical order rather than NuVizz's user/list order. userName breaks ties.
+  out.sort((a, b) =>
+    a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }) ||
+    a.userName.localeCompare(b.userName, undefined, { sensitivity: 'base' }));
   return out;
 }
 // Exported only so a test/diagnostic can assert the office-role set is the doc's.
