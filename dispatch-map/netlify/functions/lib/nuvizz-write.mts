@@ -52,13 +52,26 @@ async function fireSingle(requester: RequesterLike, op: SingleOp, payload: any, 
   return { ...parseOpResponse(op, resp.ok, j), httpStatus: resp.status };
 }
 
-/** GET load/info → normalized load (loadId, versionId, raw loadHeader, stops). */
-export async function fetchLoad(requester: RequesterLike, loadNbr: string, creds: WriteCreds): Promise<any> {
+/** GET load/info → { load, httpStatus, hadLoadId }. `load` is the normalized load when the
+ * lookup resolved (2xx AND a real loadId), else null. The diagnostic fields let callers say WHY
+ * a load didn't resolve — a 404 (the load number isn't recognized by NuVizz) vs a 200 with no
+ * loadId (unexpected response shape) — so "load not found" is actionable in the field. */
+export async function fetchLoad(requester: RequesterLike, loadNbr: string, creds: WriteCreds): Promise<{ load: any; httpStatus: number | null; hadLoadId: boolean }> {
   const r = await fireSingle(requester, 'getLoad', { loadNbr }, creds);
   // normalizeLoad ALWAYS returns an object (even for a 404/empty body), so "not found" must be
   // detected by a non-2xx response or a missing loadId — never edit/dispatch a phantom load.
-  if (!r.ok || !r.load || r.load.loadId == null) return null;
-  return r.load;
+  const hadLoadId = !!(r.load && r.load.loadId != null);
+  const ok = !!r.ok && hadLoadId;
+  return { load: ok ? r.load : null, httpStatus: r.httpStatus ?? null, hadLoadId };
+}
+
+// Human "why didn't it resolve" suffix for a failed fetchLoad. Surfaces the exact load number we
+// queried and NuVizz's response so a wrong/blank load number (404) is distinguishable from a load
+// that resolved but parsed without an id (200/no loadId) — turns an opaque "load not found" into
+// something a dispatcher can read back to us verbatim.
+function loadMissDiag(loadNbr: any, f: { httpStatus: number | null; hadLoadId: boolean }): string {
+  const detail = f.httpStatus === 200 && !f.hadLoadId ? 'load/info 200 but no loadId in response' : `load/info HTTP ${f.httpStatus}`;
+  return `loadNbr="${loadNbr ?? ''}", ${detail}`;
 }
 
 /**
@@ -69,9 +82,9 @@ export async function fetchLoad(requester: RequesterLike, loadNbr: string, creds
  */
 async function runRemoveStops(requester: RequesterLike, payload: any, creds: WriteCreds): Promise<any> {
   const loadNbr = req(payload?.loadNbr, 'removeStops: loadNbr');
-  const load = await fetchLoad(requester, loadNbr, creds);
-  if (!load) return { ok: false, error: 'removeStops: load not found', loadNbr };
-  return fireSingle(requester, 'removeStops', { removeStopIds: payload?.removeStopIds, editHeader: toEditHeader(load.loadHeader), versionId: load.versionId }, creds);
+  const f = await fetchLoad(requester, loadNbr, creds);
+  if (!f.load) return { ok: false, error: `removeStops: load not found (${loadMissDiag(loadNbr, f)})`, loadNbr };
+  return fireSingle(requester, 'removeStops', { removeStopIds: payload?.removeStopIds, editHeader: toEditHeader(f.load.loadHeader), versionId: f.load.versionId }, creds);
 }
 
 /**
@@ -100,14 +113,14 @@ export async function runCommitLoad(requester: RequesterLike, payload: any, cred
   const needLoad = (!loadId && (insertStopIds.length || hasDriver || dispatch)) || removeStopIds.length;
   if (needLoad) {
     if (!loadNbr) return { ok: false, error: 'commitLoad: loadNbr required to resolve load', loadNbr, loadId, steps: [] };
-    const load = await fetchLoad(requester, loadNbr, creds);
-    if (!load) return { ok: false, error: 'commitLoad: load not found', loadNbr, loadId, steps: [] };
-    loadId = loadId || load.loadId;
+    const f = await fetchLoad(requester, loadNbr, creds);
+    if (!f.load) return { ok: false, error: `commitLoad: load not found (${loadMissDiag(loadNbr, f)})`, loadNbr, loadId, steps: [] };
+    loadId = loadId || f.load.loadId;
     // NOTE: versionId/editHeader are snapshotted from this single getLoad. Safe today because
     // removeStops runs FIRST and is the only step that uses them; if a future step re-edits the
     // header after a remove, re-fetch the load to refresh the (now-bumped) versionId.
-    editHeader = toEditHeader(load.loadHeader);
-    versionId = load.versionId;
+    editHeader = toEditHeader(f.load.loadHeader);
+    versionId = f.load.versionId;
   }
 
   const steps: Array<{ op: WriteOp; ok: boolean; result?: any; error?: string | null }> = [];
@@ -179,8 +192,9 @@ export async function runCommitBoard(requester: RequesterLike, payload: any, cre
       planned.push({ L, loadId: L.loadId, hasLoad: true, plan: { ok: true, unchanged: true, removeStopIds: [], insertOrdered: [] }, result });
       continue;
     }
-    const load = await fetchLoad(requester, loadNbr, creds);
-    if (!load) { result.ok = false; result.error = 'commitBoard: load not found'; planned.push({ L, result }); continue; }
+    const f = await fetchLoad(requester, loadNbr, creds);
+    if (!f.load) { result.ok = false; result.error = `commitBoard: load not found (${loadMissDiag(loadNbr, f)})`; planned.push({ L, result }); continue; }
+    const load = f.load;
     // curIds is captured on EVERY fetched load (even refused ones) so holderOf below can see a
     // cross-load arrival whose source load was refused — otherwise the target would insert a stop
     // the refused source never freed.

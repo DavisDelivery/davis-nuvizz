@@ -45,6 +45,24 @@ test('commitBoard: single-load reorder → getLoad, then anchor-remove, then ord
   assert.deepEqual(calls[3].body.insertStopIds, ['A'], 'one-at-a-time, in order → [C,B,A]');
 });
 
+test('commitBoard: a load that does not resolve → self-describing "load not found" (loadNbr + HTTP status)', async () => {
+  // The whole point of the field diagnostic: a dispatcher can read the toast back to us and we
+  // know immediately whether the load number is wrong (404) or the response shape is off.
+  const { requester } = stub([{ status: 404, json: {} }]);   // getLoad 404
+  const r = await runCommitBoard(requester, { loads: [{ loadNbr: 'DAVIS000197184', routeName: 'LVILLE', orderedStopIds: ['A', 'B'] }] }, CREDS);
+  assert.equal(r.loads[0].ok, false);
+  assert.match(r.loads[0].error, /load not found/);
+  assert.match(r.loads[0].error, /loadNbr="DAVIS000197184"/, 'names the exact load number queried');
+  assert.match(r.loads[0].error, /HTTP 404/, 'surfaces NuVizz response status');
+});
+
+test('commitBoard: load/info 200 but no loadId → diagnostic distinguishes it from a 404', async () => {
+  const { requester } = stub([{ status: 200, json: { Load: { loadHeader: {} } } }]);  // 200, no loadId
+  const r = await runCommitBoard(requester, { loads: [{ loadNbr: 'BEN 1', routeName: 'BEN 1', orderedStopIds: ['A'] }] }, CREDS);
+  assert.equal(r.loads[0].ok, false);
+  assert.match(r.loads[0].error, /200 but no loadId/, 'a resolved-but-unparseable load reads differently than a 404');
+});
+
 test('commitBoard: cross-load move A→B removes from the SOURCE before inserting to the TARGET', async () => {
   // Load1 [A,B] → [A] (B departs). Load2 [C] → [C,B] (B joins).
   const { requester, calls } = stub([
