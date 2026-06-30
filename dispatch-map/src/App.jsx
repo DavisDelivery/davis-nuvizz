@@ -51,7 +51,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.32.2';
+const APP_VERSION = '0.32.3';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -89,6 +89,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.32.3', 'Routing (beta) — assign a driver straight from the Routes panel. With Live dispatch on (⚙ → Panels → "Live dispatch"), each route card gets a driver dropdown of your full roster; pick one and it assigns that driver to the load. A Beta/Live toggle sits next to the Status filter — in ○ Beta a pick only previews (nothing sent), in ● LIVE it assigns in NuVizz immediately (assign only — it does NOT dispatch/notify the driver; that\'s still the Compare panel\'s Dispatch step). The card shows the new driver right away. As always a real write also needs the server NUVIZZ_WRITE_ENABLED flag.'],
   ['0.32.2', 'Routing — the Routes-panel Status filter now reflects NuVizz\'s REAL load status, so a "Draft" option appears (plus Un-Planned, In-Transit, Cancelled) to match the NuVizz route grid. Until now the status was derived purely from each route\'s stop execution + driver assignment, so there was no way to see a Draft (or Un-Planned / Cancelled) load. The panel now reads each load\'s actual lifecycle status from the day\'s load roster (the cheap list path, served from the scan cache — no extra number-probe scan) and falls back to the derived status only when a load has no roster status yet. The filter always offers the full NuVizz lifecycle (even at count 0) and never hides a status that\'s actually on the board.'],
   ['0.32.1', 'Routing (beta) — the Live-dispatch (driver assign + dispatch) controls now have a gear toggle. Open the ⚙ gear → Panels → "Live dispatch (assign driver + dispatch)" to show/hide the Compare-panel driver picker, Dispatch checkbox, Save, and the Beta/Live toggle — no more ?write=1 URL flag needed (the flag still works and seeds the toggle the first time). The setting is remembered. As before, nothing is sent to NuVizz until you switch a card to Live and Save → Confirm, and a real write also needs the server NUVIZZ_WRITE_ENABLED flag.'],
   ['0.32.0', 'Routing — the right-panel Routes view is upgraded to read like NuVizz. Route cards are now sorted ALPHABETICALLY by route name (was grouped by driver), and there\'s a Status filter (Unassigned / Planned / In Progress / Completed / Exception, multi-select) plus a quick-search box at the top to match the NuVizz route grid. Each card now shows a colored status badge, the driver assignment, and the full freight breakdown — SKIDS (pallets) and LOOSE pieces, not just skids — alongside stops, weight, and delivered count. (The status is derived from each route\'s stop execution + driver assignment; capturing NuVizz\'s exact load-lifecycle code is a follow-up.)'],
@@ -9393,7 +9394,7 @@ function RouteStatusBadge({ status }) {
   );
 }
 
-function RoutingRoutesPanel({ groups, onPick }) {
+function RoutingRoutesPanel({ groups, onPick, liveWrite = false, roster = [], rosterError = null, assignLive = false, setAssignLive, onAssignDriver, assignedOverride = {}, assigningKey = null }) {
   const [selected, setSelected] = useState(() => new Set());   // empty = All
   const [menuOpen, setMenuOpen] = useState(false);
   const [q, setQ] = useState('');
@@ -9459,6 +9460,15 @@ function RoutingRoutesPanel({ groups, onPick }) {
         {(q || selected.size > 0) && (
           <button onClick={() => { setQ(''); setSelected(new Set()); }} className="text-[11px] text-slate-500 hover:text-slate-800 shrink-0">Clear</button>
         )}
+        {/* Driver-assign mode (only when Live dispatch is enabled). Beta = a pick previews; Live =
+            a pick assigns the driver in NuVizz immediately. Mirrors the Compare panel's safety. */}
+        {liveWrite && setAssignLive && (
+          <button onClick={() => setAssignLive((v) => !v)}
+            title={assignLive ? 'LIVE — picking a driver assigns it in NuVizz immediately. Click for Beta (preview only).' : 'BETA — picking a driver only previews. Click to go Live and assign for real.'}
+            className={`inline-flex items-center gap-1 text-[11px] font-bold px-2 py-1 rounded border shrink-0 ${assignLive ? 'border-red-600 bg-red-600 text-white' : 'border-slate-300 bg-white text-slate-600 hover:bg-slate-50'}`}>
+            {assignLive ? '● LIVE' : '○ Beta'}
+          </button>
+        )}
       </div>
 
       <div className="px-3 py-1.5 text-[11px] text-slate-500 border-b bg-slate-50">
@@ -9472,25 +9482,50 @@ function RoutingRoutesPanel({ groups, onPick }) {
           {filtered.map((g) => {
             const pct = g.count ? Math.round((100 * g.delivered) / g.count) : 0;
             const done = pct === 100;
+            // Optimistic: show a just-assigned driver right away (the board's own driverName lags
+            // until the next scan). Preselect the dropdown to the current driver when it matches the roster.
+            const shownDriver = assignedOverride[g.key] || g.driver;
+            const curDriverId = roster.find((d) => String(d.name || '').trim().toLowerCase() === String(shownDriver || '').trim().toLowerCase())?.driverId;
+            const busy = assigningKey === g.key;
             return (
-              <button key={g.key} onClick={() => onPick(g.key)} className="w-full text-left border rounded-lg p-2 hover:bg-slate-50 active:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-300">
-                <div className="flex items-center justify-between gap-2">
-                  <div className="font-semibold text-slate-800 truncate">{loadDisplayName(g.name, g.loadNbr) || 'Unnamed load'}</div>
-                  <div className="text-[12px] font-bold shrink-0" style={{ color: done ? '#16a34a' : BRAND }}>{pct}%</div>
-                </div>
-                <div className="flex items-center gap-1.5 mt-0.5 min-w-0">
-                  <RouteStatusBadge status={g.status} />
-                  <span className={`text-[11px] truncate ${g.driver ? 'text-slate-600' : 'text-slate-400 italic'}`}>{g.driver || 'No driver assigned'}</span>
-                </div>
-                <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 mt-1 text-[11px] text-slate-600">
-                  <span>{g.count} stop{g.count === 1 ? '' : 's'}</span>
-                  <span>{g.skids} skids</span>
-                  <span>{g.loose} loose</span>
-                  <span>{Math.round(g.weight).toLocaleString()} lb</span>
-                  <span className="text-slate-400">{g.delivered}/{g.count} delivered</span>
-                </div>
-                <div className="mt-1.5 h-1 rounded bg-slate-100 overflow-hidden"><div className="h-full rounded" style={{ width: `${pct}%`, background: done ? '#16a34a' : BRAND }} /></div>
-              </button>
+              <div key={g.key} className="w-full border rounded-lg p-2 hover:bg-slate-50">
+                <button onClick={() => onPick(g.key)} className="w-full text-left active:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-300 rounded">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="font-semibold text-slate-800 truncate">{loadDisplayName(g.name, g.loadNbr) || 'Unnamed load'}</div>
+                    <div className="text-[12px] font-bold shrink-0" style={{ color: done ? '#16a34a' : BRAND }}>{pct}%</div>
+                  </div>
+                  <div className="flex items-center gap-1.5 mt-0.5 min-w-0">
+                    <RouteStatusBadge status={g.status} />
+                    <span className={`text-[11px] truncate ${shownDriver ? 'text-slate-600' : 'text-slate-400 italic'}`}>{shownDriver || 'No driver assigned'}</span>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 mt-1 text-[11px] text-slate-600">
+                    <span>{g.count} stop{g.count === 1 ? '' : 's'}</span>
+                    <span>{g.skids} skids</span>
+                    <span>{g.loose} loose</span>
+                    <span>{Math.round(g.weight).toLocaleString()} lb</span>
+                    <span className="text-slate-400">{g.delivered}/{g.count} delivered</span>
+                  </div>
+                  <div className="mt-1.5 h-1 rounded bg-slate-100 overflow-hidden"><div className="h-full rounded" style={{ width: `${pct}%`, background: done ? '#16a34a' : BRAND }} /></div>
+                </button>
+                {/* Driver assign dropdown — only when Live dispatch is on. Picks assign immediately in
+                    Live mode (preview-only in Beta). stopPropagation so it doesn't open the route. */}
+                {liveWrite && onAssignDriver && (
+                  <div className="mt-1.5 flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
+                    <Truck size={12} className="text-slate-400 shrink-0" />
+                    <select
+                      value={curDriverId != null ? String(curDriverId) : ''}
+                      disabled={!!rosterError || busy}
+                      onChange={(e) => { const d = roster.find((x) => String(x.driverId) === e.target.value); if (d) onAssignDriver(g, d.driverId, d.name); }}
+                      className="flex-1 min-w-0 border rounded px-1 py-1 text-[11px] bg-white"
+                      aria-label={`Assign driver to ${loadDisplayName(g.name, g.loadNbr) || g.loadNbr}`}
+                    >
+                      <option value="">{rosterError ? 'Driver roster unavailable' : (roster.length ? (assignLive ? 'Assign driver…' : 'Assign driver… (Beta)') : 'Loading drivers…')}</option>
+                      {roster.map((d) => <option key={String(d.driverId)} value={String(d.driverId)}>{d.name}{d.userName ? ` (${d.userName})` : ''}</option>)}
+                    </select>
+                    {busy && <span className="text-[10px] text-slate-400 shrink-0">…</span>}
+                  </div>
+                )}
+              </div>
             );
           })}
         </div>
@@ -10553,6 +10588,51 @@ function RoutingScreen({ debugCaptureRef }) {
     return () => { cancelled = true; };
   }, [rightPanelMode, selectedDate]);
 
+  // ── Routes-panel driver assignment (live) ─────────────────────────────────────
+  // A driver dropdown on each Routes card assigns a driver to that load on pick. Gated behind the
+  // Live-dispatch gear toggle (liveWrite); a Beta/Live mode (default Beta) is the safety — in Beta a
+  // pick only previews, in Live it writes immediately via the assignDriver op (ASSIGN_DISPATCH with
+  // assignDtls only = assign, not release). The driver roster is the same source the Compare panel
+  // uses so driverIds line up. assignedOverride reflects the new driver on the card right away
+  // (the board's own driverName only updates on the next scan).
+  const [assignRoster, setAssignRoster] = useState([]);
+  const [assignRosterError, setAssignRosterError] = useState(null);
+  const assignRosterLoaded = useRef(false);
+  const [assignLive, setAssignLive] = useState(false);
+  const [assignedOverride, setAssignedOverride] = useState({});   // route key → driver name
+  const [assigningKey, setAssigningKey] = useState(null);
+  useEffect(() => { setAssignedOverride({}); }, [selectedDate]);   // don't carry a day's assignments onto another board
+  useEffect(() => {
+    if (!liveWrite || rightPanelMode !== 'routes' || assignRosterLoaded.current) return;
+    assignRosterLoaded.current = true;
+    let alive = true;
+    callWrite('roster', {}).then((res) => {
+      if (!alive) return;
+      if (res.ok && Array.isArray(res.result?.drivers)) setAssignRoster(res.result.drivers);
+      else setAssignRosterError(res.error || 'roster unavailable');
+    }).catch((e) => { if (alive) setAssignRosterError(e?.message || 'roster error'); });
+    return () => { alive = false; };
+  }, [liveWrite, rightPanelMode]);
+  const onAssignDriver = useCallback(async (g, driverId, driverName) => {
+    if (!driverId) return;
+    const label = loadDisplayName(g.name, g.loadNbr) || g.loadNbr;
+    if (!assignLive) { showMapToast(`Beta — would assign ${driverName} to ${label} (nothing sent). Flip to ● Live to assign.`); return; }
+    if (!g.loadId) { showMapToast(`Can't assign ${label} — its NuVizz load id hasn't loaded yet.`); return; }
+    setAssigningKey(g.key);
+    let res;
+    try {
+      res = await callWrite('assignDriver', { routeId: g.loadId, loadId: g.loadId, loadNbr: g.loadNbr, driverId, driverName, date: selectedDate },
+        { dryRun: false, clientOpId: newClientOpId(), createdBy: 'dispatcher' });
+    } catch (e) { res = { ok: false, error: e?.message || 'network error' }; }
+    setAssigningKey(null);
+    if (res.ok && res.result?.ok !== false) {
+      setAssignedOverride((p) => ({ ...p, [g.key]: driverName }));
+      showMapToast(`✓ ${driverName} assigned to ${label}.`);
+    } else {
+      showMapToast(`✗ Assign failed for ${label}: ${res.error || res.result?.error || 'write error'}`);
+    }
+  }, [assignLive, showMapToast, selectedDate]);
+
   // Part 6 — resizable left & right panels (the bottom grid already resizes via BottomStopsTable),
   // and a bottom-grid on/off toggle. All persisted; Routing-beta only.
   const leftPanel = useSidePanelWidth('left', 'routing.leftW', 340, 240, viewportWidth);
@@ -10652,7 +10732,8 @@ function RoutingScreen({ debugCaptureRef }) {
       const key = s.routeName || s.loadNbr;
       if (!key) continue;
       let g = m.get(key);
-      if (!g) { g = { key, name: s.routeName || key, loadNbr: s.loadNbr || key, driver: '', driverId: '', count: 0, delivered: 0, inProgress: 0, exceptions: 0, skids: 0, loose: 0, weight: 0 }; m.set(key, g); }
+      if (!g) { g = { key, name: s.routeName || key, loadNbr: s.loadNbr || key, loadId: null, driver: '', driverId: '', count: 0, delivered: 0, inProgress: 0, exceptions: 0, skids: 0, loose: 0, weight: 0 }; m.set(key, g); }
+      if (!g.loadId) g.loadId = s.raw?.load?.loadId ?? s.loadId ?? null;   // NuVizz load id for assignDriver
       if (!g.driver && (s.driverName || s.driverUserName)) g.driver = s.driverName || s.driverUserName;
       if (!g.driverId && s.driverId) g.driverId = s.driverId;
       g.count += 1;
@@ -11929,7 +12010,7 @@ function RoutingScreen({ debugCaptureRef }) {
                           <RoutesDriversToggle subTab={routesSubTab} setSubTab={setRoutesSubTab} routesCount={routeGroups.length} className="mb-2" />
                           {routesSubTab === 'drivers'
                             ? <RoutingDriversPanel roster={driverRoster} routeGroups={routeGroups} onRefresh={refreshDriverRoster} onPickDriver={onPickDriver} />
-                            : <RoutingRoutesPanel groups={routeGroups} onPick={onPickRoute} />}
+                            : <RoutingRoutesPanel groups={routeGroups} onPick={onPickRoute} liveWrite={liveWrite} roster={assignRoster} rosterError={assignRosterError} assignLive={assignLive} setAssignLive={setAssignLive} onAssignDriver={onAssignDriver} assignedOverride={assignedOverride} assigningKey={assigningKey} />}
                         </>
                       )
                       : loadsContent)
@@ -12053,7 +12134,7 @@ function RoutingScreen({ debugCaptureRef }) {
             </div>
             {routesSubTab === 'drivers'
               ? <RoutingDriversPanel roster={driverRoster} routeGroups={routeGroups} onRefresh={refreshDriverRoster} onPickDriver={onPickDriver} />
-              : <RoutingRoutesPanel groups={routeGroups} onPick={onPickRoute} />}
+              : <RoutingRoutesPanel groups={routeGroups} onPick={onPickRoute} liveWrite={liveWrite} roster={assignRoster} rosterError={assignRosterError} assignLive={assignLive} setAssignLive={setAssignLive} onAssignDriver={onAssignDriver} assignedOverride={assignedOverride} assigningKey={assigningKey} />}
           </>
         ) : (
         <>
