@@ -51,7 +51,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.30.0';
+const APP_VERSION = '0.31.0';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -89,6 +89,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.31.0', 'Live dispatch (BETA) — staged Compare-panel Save with real re-ordering. The Compare panel is now a staged working copy: add/remove orders, move stops between routes, re-sequence, pick a driver, flag Dispatch — and NOTHING is sent to NuVizz until you hit the one Save in the Compare header. Save commits every changed load in a single batch (it removes a moved stop from its old load before adding it to the new one, and re-sequences via the verified anchor method — keep the first stop, re-insert the rest one-at-a-time in order). Beta still previews the exact calls; a real write needs Live + the server flag. Closing a load with unsaved changes now prompts you first. A re-order is only saved once every stop on the load has loaded its NuVizz id (you\'ll be warned otherwise).'],
   ['0.30.0', 'Live dispatch (BETA, opt-in) — the Compare panel can now assign a driver and dispatch a load to NuVizz. Each route card gets a driver picker, a Dispatch checkbox, and a Save button; a Beta/Live toggle sits in the Compare header. NOTHING is sent to NuVizz while you build or reorder a load — Save first PREVIEWS the exact NuVizz calls, and a real write only happens on Confirm in Live mode (and only when the server-side write flag is enabled). Hidden by default — turn it on with ?write=1 or the VITE_NUVIZZ_WRITE_BETA env. This is the first feature that writes to NuVizz; everything else stays read-only.'],
   ['0.29.84', 'Routing — the ShipTo - Display Seq delivery order now actually sticks after a re-scan (#292). The fresh order read from the list was being silently overwritten on every scan by the older, carried-forward sequence (the physical route seq that the Display-Seq column was meant to replace), so the route kept re-opening in the old order no matter how many times you refreshed. The list\'s Display-Seq is now authoritative and the carried-forward value can only fill in when the column is genuinely absent. Refresh and re-open the load to see the corrected order.'],
   ['0.29.83', 'Routing — make the ShipTo - Display Seq read robust (#290). The delivery-order column is now matched by its DISPLAY NAME ("ShipTo - Display Seq") as well as the internal key, so the scan can\'t miss it if NuVizz keys the column by an opaque path. (If your refresh did not change the order, it was on v0.29.81 — before the v0.29.82 column read shipped; once this is live, refresh and re-open the load.) When the column genuinely isn\'t present the scan logs it instead of silently falling back to the geographic guess.'],
@@ -9546,57 +9547,26 @@ const RESEQ_LABELS = { loop: 'Loop — down one side & back', min: 'Shortest dis
 // previews the exact NuVizz calls (server dry-run, zero calls); in Live mode Confirm
 // commits them. Hidden entirely unless LIVE_WRITE_FLAG is opted-in. route.key is the
 // load number (loadNbr); the server resolves it to the internal loadId.
-function LiveDispatchBar({ route, liveMode, roster, rosterError, onToast }) {
+// Per-card staging row (beta): pick a driver + flag dispatch for THIS load. PURE STAGING —
+// it only updates the panel's staged state; nothing is sent until the panel-level "Save".
+// The load's membership + order are staged in the card's stop list itself (drag / move /
+// re-sequence), so this row covers just driver + dispatch. `dirty` shows an edited marker.
+function LiveDispatchBar({ route, staged, onStage, roster, rosterError, dirty }) {
   const loadNbr = route.key;
-  const [driverId, setDriverId] = useState('');
-  const [dispatch, setDispatch] = useState(false);
-  const [confirm, setConfirm] = useState(null);   // { plan, tenant, payload } | null
-  const [busy, setBusy] = useState(false);
-  const driver = roster.find((d) => String(d.driverId) === String(driverId)) || null;
-  const hasChange = driverId !== '' || dispatch;
-
-  // loadId: the board's same-day loadId (avoids name re-resolution to the wrong day's load).
-  // driverId: the roster's NUMERIC userId, not the <select>'s string value (NuVizz wants a number).
-  const buildPayload = () => ({ loadNbr, loadId: route.loadId || undefined, driverId: driver ? driver.driverId : undefined, driverName: driver?.name || undefined, dispatch });
-
-  // Save → server dry-run preview → confirm modal. The preview never touches NuVizz. The
-  // clientOpId is minted ONCE here and reused on Confirm, so a double-click / retry of the SAME
-  // Save can't double-dispatch (the server dedups on it).
-  const onSave = async () => {
-    if (!hasChange) { onToast?.('Pick a driver or check Dispatch first.'); return; }
-    setBusy(true);
-    const payload = buildPayload();
-    const res = await callWrite('commitLoad', payload, { dryRun: true });
-    setBusy(false);
-    if (!res.ok) { onToast?.(`Preview failed: ${res.error || 'error'}`); return; }
-    setConfirm({ plan: res.plan || [], tenant: res.tenant, payload, clientOpId: newClientOpId() });
+  const driverId = staged?.driverId != null && staged?.driverId !== '' ? String(staged.driverId) : '';
+  const dispatch = !!staged?.dispatch;
+  const onDriver = (e) => {
+    const d = roster.find((x) => String(x.driverId) === String(e.target.value)) || null;
+    onStage({ driverId: d ? d.driverId : '', driverName: d ? d.name : '' });
   };
-
-  // Confirm → in Beta, simulated only; in Live, the real commit (idempotent via the Save's clientOpId).
-  const onConfirm = async () => {
-    const payload = confirm.payload;
-    if (!liveMode) { setConfirm(null); onToast?.(`Beta — nothing sent (${loadDisplayName(loadNbr) || loadNbr} simulated).`); return; }
-    setBusy(true);
-    const res = await callWrite('commitLoad', payload, { dryRun: false, clientOpId: confirm.clientOpId, createdBy: 'dispatcher' });
-    setBusy(false);
-    setConfirm(null);
-    if (res.ok) {
-      onToast?.(`✓ ${loadDisplayName(loadNbr) || loadNbr} sent${payload.dispatch ? ' & dispatched' : ''}.`);
-      setDriverId(''); setDispatch(false);
-    } else {
-      const stepErr = (res.result?.steps || []).filter((s) => !s.ok).map((s) => `${s.op}: ${s.error}`).join('; ');
-      onToast?.(`✗ ${loadDisplayName(loadNbr) || loadNbr}: ${res.error || stepErr || 'write failed'}`);
-    }
-  };
-
   return (
     <div className="px-2 py-1.5 border-t bg-slate-50/70 shrink-0 space-y-1">
       <div className="flex items-center gap-1.5">
         <Truck size={12} className="text-slate-400 shrink-0" />
         <select
           value={driverId}
-          onChange={(e) => setDriverId(e.target.value)}
-          disabled={busy || !!rosterError}
+          onChange={onDriver}
+          disabled={!!rosterError}
           className="flex-1 min-w-0 border rounded px-1 py-1 text-[11px] bg-white"
           aria-label={`Assign driver to ${loadNbr}`}
         >
@@ -9605,21 +9575,11 @@ function LiveDispatchBar({ route, liveMode, roster, rosterError, onToast }) {
         </select>
       </div>
       <div className="flex items-center justify-between gap-2">
-        <label className="flex items-center gap-1 text-[11px] text-slate-600 cursor-pointer" title="Also release the load to the assigned driver">
-          <input type="checkbox" checked={dispatch} onChange={(e) => setDispatch(e.target.checked)} disabled={busy} /> <Send size={11} /> Dispatch
+        <label className="flex items-center gap-1 text-[11px] text-slate-600 cursor-pointer" title="Also release the load to the assigned driver when you Save">
+          <input type="checkbox" checked={dispatch} onChange={(e) => onStage({ dispatch: e.target.checked })} /> <Send size={11} /> Dispatch
         </label>
-        <button
-          onClick={onSave}
-          disabled={busy || !hasChange}
-          title={liveMode ? 'Save & send to NuVizz' : 'Save (Beta — preview only, nothing sent)'}
-          className={`inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-1 rounded disabled:opacity-60 ${hasChange ? (liveMode ? 'bg-red-600 text-white hover:bg-red-700' : 'bg-blue-600 text-white hover:bg-blue-700') : 'bg-slate-200 text-slate-400'}`}
-        >
-          <Save size={12} /> {busy ? '…' : 'Save'}
-        </button>
+        {dirty && <span className="text-[10px] font-semibold text-amber-600" title="Unsaved staged changes — use Save in the Compare header">● edited</span>}
       </div>
-      {confirm && (
-        <LiveCommitConfirm confirm={confirm} liveMode={liveMode} busy={busy} loadNbr={loadNbr} onCancel={() => setConfirm(null)} onConfirm={onConfirm} />
-      )}
     </div>
   );
 }
@@ -9627,7 +9587,7 @@ function LiveDispatchBar({ route, liveMode, roster, rosterError, onToast }) {
 // Confirmation modal shown before any live commit — lists the EXACT NuVizz calls the
 // Save will fire (from the server dry-run plan) and, in Live mode against the prod
 // tenant, a hard production warning. This is the last gate before a real write.
-function LiveCommitConfirm({ confirm, liveMode, busy, loadNbr, onCancel, onConfirm }) {
+function LiveCommitConfirm({ confirm, liveMode, busy, title, onCancel, onConfirm }) {
   const isProd = confirm.tenant === 'DAVIS';
   return (
     <div className="fixed inset-0 z-[60] bg-black/40 flex items-center justify-center p-4" onMouseDown={(e) => { if (e.target === e.currentTarget) onCancel(); }}>
@@ -9637,7 +9597,12 @@ function LiveCommitConfirm({ confirm, liveMode, busy, loadNbr, onCancel, onConfi
           <button onClick={onCancel} className="text-slate-400 hover:text-slate-700" aria-label="Cancel"><X size={18} /></button>
         </div>
         <div className="px-4 py-3 overflow-y-auto text-sm">
-          <div className="text-slate-600 mb-2">Load <b>{loadDisplayName(loadNbr) || loadNbr}</b> · tenant <b className={isProd ? 'text-red-600' : 'text-slate-700'}>{confirm.tenant}{isProd ? ' (PROD)' : ''}</b></div>
+          <div className="text-slate-600 mb-2">{title} · tenant <b className={isProd ? 'text-red-600' : 'text-slate-700'}>{confirm.tenant}{isProd ? ' (PROD)' : ''}</b></div>
+          {confirm.warnings?.length > 0 && (
+            <div className="mb-2 text-[12px] text-amber-700 bg-amber-50 border border-amber-200 rounded p-2 space-y-0.5">
+              {confirm.warnings.map((w, i) => <div key={i}>⚠ {w}</div>)}
+            </div>
+          )}
           <div className="text-slate-500 mb-1">{liveMode ? 'This will fire:' : 'In Live mode this would fire:'}</div>
           <ul className="list-disc pl-5 space-y-0.5 text-slate-700">
             {(confirm.plan.length ? confirm.plan : ['(no changes)']).map((p, i) => <li key={i}>{p}</li>)}
@@ -9659,7 +9624,7 @@ function LiveCommitConfirm({ confirm, liveMode, busy, loadNbr, onCancel, onConfi
   );
 }
 
-function RoutingWorkbenchCard({ route, stopById, otherKeys, ninjaMode, isActive, onSetActive, onResequence, onCollapse, onClose, onMoveStop, onDropStop, onOpenStop, onPrintManifest, liveMode, roster, rosterError, onToast, isMobile }) {
+function RoutingWorkbenchCard({ route, stopById, otherKeys, ninjaMode, isActive, onSetActive, onResequence, onCollapse, onClose, onMoveStop, onDropStop, onOpenStop, onPrintManifest, roster, rosterError, staged, onStage, dirty, isMobile }) {
   const rows = route.order.map((id) => stopById.get(String(id))).filter(Boolean);
   // Drag-and-drop (desktop): track which row we're hovering so we can show a drop line, and read
   // the dragged stop out of dataTransfer on drop. beforeId=null means "append to the end".
@@ -9803,7 +9768,7 @@ function RoutingWorkbenchCard({ route, stopById, otherKeys, ninjaMode, isActive,
         </ol>
       )}
       {LIVE_WRITE_FLAG && !route.collapsed && (
-        <LiveDispatchBar route={route} liveMode={liveMode} roster={roster || []} rosterError={rosterError} onToast={onToast} />
+        <LiveDispatchBar route={route} staged={staged} onStage={onStage} roster={roster || []} rosterError={rosterError} dirty={dirty} />
       )}
     </div>
   );
@@ -9841,6 +9806,90 @@ function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmN
     }).catch((e) => { if (alive) setRosterError(e?.message || 'roster error'); });
     return () => { alive = false; };
   }, []);
+
+  // ── Staged commit (beta) — panel-level "Save" of the whole Compare board (§10) ──
+  // Nothing is sent while you build / reorder / move stops or pick drivers; Save commits
+  // every CHANGED load in one batch (commitBoard: removes-before-inserts across loads), after
+  // a dry-run preview + Confirm. Beta = preview only. baselines snapshots each load's NuVizz
+  // order at open, so "dirty" = the staged order/membership differs, or a driver/dispatch is set.
+  const [staged, setStaged] = useState({});        // key → { driverId, driverName, dispatch }
+  const [baselines, setBaselines] = useState({});  // key → stopNbr[] (order at open / last save)
+  const [confirm, setConfirm] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [closeGuard, setCloseGuard] = useState(null);
+  const setStageFor = useCallback((key, patch) => setStaged((p) => ({ ...p, [key]: { ...(p[key] || {}), ...patch } })), []);
+  useEffect(() => {
+    setBaselines((prev) => {
+      let next = prev, changed = false;
+      for (const r of wbRoutes) if (!(r.key in next)) { if (!changed) { next = { ...prev }; changed = true; } next[r.key] = r.order.slice(); }
+      return changed ? next : prev;
+    });
+  }, [wbRoutes]);
+  const orderChanged = useCallback((r) => {
+    const b = baselines[r.key];
+    return b ? (b.length !== r.order.length || b.some((id, i) => String(id) !== String(r.order[i]))) : false;
+  }, [baselines]);
+  const isDirty = useCallback((r) => {
+    const s = staged[r.key];
+    return orderChanged(r) || (!!s && ((s.driverId != null && s.driverId !== '') || s.dispatch));
+  }, [orderChanged, staged]);
+  const dirtyRoutes = wbRoutes.filter(isDirty);
+
+  const buildBoardPayload = () => {
+    const loads = [], warnings = [];
+    for (const r of dirtyRoutes) {
+      const s = staged[r.key] || {};
+      const load = { loadNbr: r.key, loadId: r.loadId || undefined };
+      if (orderChanged(r)) {
+        // EVERY stop must resolve to a NuVizz stopId — a partial order would make the server
+        // DROP the unresolved stops. Refuse to sequence this load and warn instead.
+        const ids = r.order.map((nbr) => stopById.get(String(nbr))?.stopId).filter(Boolean);
+        if (ids.length !== r.order.length) { warnings.push(`${loadDisplayName(r.key) || r.key}: ${r.order.length - ids.length} stop(s) not enriched yet — open them to save the new order`); continue; }
+        load.orderedStopIds = ids;
+      }
+      if (s.driverId != null && s.driverId !== '') { load.driverId = s.driverId; load.driverName = s.driverName; }
+      if (s.dispatch) load.dispatch = true;
+      if (load.orderedStopIds || load.driverId || load.dispatch) loads.push(load);
+    }
+    return { loads, warnings };
+  };
+
+  const onPanelSave = async () => {
+    const { loads, warnings } = buildBoardPayload();
+    if (!loads.length) { showToast(warnings[0] || 'No changes to save.'); return; }
+    setBusy(true);
+    const res = await callWrite('commitBoard', { loads }, { dryRun: true });
+    setBusy(false);
+    if (!res.ok) { showToast(`Preview failed: ${res.error || 'error'}`); return; }
+    setConfirm({ plan: res.plan || [], tenant: res.tenant, loads, warnings, clientOpId: newClientOpId() });
+  };
+
+  const markSaved = (keys) => setBaselines((prev) => {
+    const n = { ...prev };
+    for (const k of keys) { const r = wbRoutes.find((x) => x.key === k); if (r) n[k] = r.order.slice(); }
+    return n;
+  });
+
+  const onPanelConfirm = async () => {
+    const { loads, clientOpId } = confirm;
+    if (!liveMode) { setConfirm(null); showToast(`Beta — nothing sent (${loads.length} load(s) simulated).`); return; }
+    setBusy(true);
+    const res = await callWrite('commitBoard', { loads }, { dryRun: false, clientOpId, createdBy: 'dispatcher' });
+    setBusy(false); setConfirm(null);
+    const resLoads = res.result?.loads || [];
+    const okKeys = resLoads.filter((l) => l.ok).map((l) => l.loadNbr);
+    if (okKeys.length) { markSaved(okKeys); setStaged((p) => { const n = { ...p }; for (const k of okKeys) delete n[k]; return n; }); }
+    if (res.ok) showToast(`✓ ${loads.length} load(s) saved to NuVizz.`);
+    else {
+      const failed = resLoads.filter((l) => !l.ok);
+      showToast(`✗ ${failed.map((l) => `${loadDisplayName(l.loadNbr) || l.loadNbr}: ${l.error || (l.steps || []).filter((s) => !s.ok).map((s) => s.error).join('; ')}`).join(' | ') || res.error || 'write failed'}`);
+    }
+  };
+
+  const guardedClose = (key) => { const r = wbRoutes.find((x) => x.key === key); if (r && isDirty(r)) setCloseGuard({ kind: 'one', key }); else onClose(key); };
+  const guardedCloseAll = () => { if (dirtyRoutes.length) setCloseGuard({ kind: 'all' }); else onCloseAll(); };
+  const doClose = () => { if (closeGuard?.kind === 'all') onCloseAll(); else if (closeGuard?.key) onClose(closeGuard.key); setCloseGuard(null); };
+
   return (
     <div className="flex flex-col h-full min-h-0">
       <div className="flex items-center justify-between gap-2 px-2 py-1.5 border-b shrink-0 bg-white">
@@ -9861,6 +9910,16 @@ function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmN
           ))}
           {/* Ninja is armed from the on-map tool (left edge), not here — the dispatcher asked to drop
               the redundant header button. The active-state banner below still shows when it's on. */}
+          {LIVE_WRITE_FLAG && dirtyRoutes.length > 0 && (
+            <button
+              onClick={onPanelSave}
+              disabled={busy}
+              title={liveMode ? 'Save all staged changes to NuVizz' : 'Save (Beta — preview only, nothing sent)'}
+              className={`inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-1 rounded disabled:opacity-60 ${liveMode ? 'bg-red-600 text-white hover:bg-red-700' : 'bg-blue-600 text-white hover:bg-blue-700'}`}
+            >
+              <Save size={12} /> {busy ? '…' : `Save (${dirtyRoutes.length})`}
+            </button>
+          )}
           {LIVE_WRITE_FLAG && (
             <button
               onClick={() => setLiveMode((v) => !v)}
@@ -9870,7 +9929,7 @@ function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmN
               {liveMode ? '● LIVE' : '○ Beta'}
             </button>
           )}
-          <button onClick={onCloseAll} className="text-[11px] text-slate-500 hover:text-slate-800 underline">Back to Setup</button>
+          <button onClick={guardedCloseAll} className="text-[11px] text-slate-500 hover:text-slate-800 underline">Back to Setup</button>
         </div>
       </div>
       {LIVE_WRITE_FLAG && toast && (
@@ -9894,19 +9953,39 @@ function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmN
             onSetActive={() => onSetActive(r.key)}
             onResequence={(strat) => onResequence(r.key, strat)}
             onCollapse={() => onCollapse(r.key)}
-            onClose={() => onClose(r.key)}
+            onClose={() => guardedClose(r.key)}
             onMoveStop={(stopNbr, toKey) => onMoveStop(r.key, stopNbr, toKey)}
             onDropStop={onDropStop}
             onOpenStop={onOpenStop}
             onPrintManifest={onPrintManifest}
-            liveMode={liveMode}
             roster={roster}
             rosterError={rosterError}
-            onToast={showToast}
+            staged={staged[r.key]}
+            onStage={(patch) => setStageFor(r.key, patch)}
+            dirty={isDirty(r)}
             isMobile={isMobile}
           />
         ))}
       </div>
+      {LIVE_WRITE_FLAG && confirm && (
+        <LiveCommitConfirm
+          confirm={confirm} liveMode={liveMode} busy={busy}
+          title={`${confirm.loads.length} load${confirm.loads.length === 1 ? '' : 's'}`}
+          onCancel={() => setConfirm(null)} onConfirm={onPanelConfirm}
+        />
+      )}
+      {LIVE_WRITE_FLAG && closeGuard && (
+        <div className="fixed inset-0 z-[60] bg-black/40 flex items-center justify-center p-4" onMouseDown={(e) => { if (e.target === e.currentTarget) setCloseGuard(null); }}>
+          <div className="bg-white rounded-lg shadow-xl w-full max-w-sm">
+            <div className="px-4 py-3 border-b font-semibold text-slate-800 flex items-center gap-2"><AlertTriangle size={16} className="text-amber-500" /> Unsaved changes</div>
+            <div className="px-4 py-3 text-sm text-slate-600">{closeGuard.kind === 'all' ? `${dirtyRoutes.length} load(s) have` : 'This load has'} staged changes not yet saved to NuVizz. Close without saving?</div>
+            <div className="px-4 py-3 border-t flex items-center justify-end gap-2">
+              <button onClick={() => setCloseGuard(null)} className="px-3 py-1.5 text-sm rounded border border-slate-300 text-slate-600 hover:bg-slate-50">Keep editing</button>
+              <button onClick={doClose} className="px-3 py-1.5 text-sm rounded font-semibold text-white bg-slate-700 hover:bg-slate-800">Discard &amp; close</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
