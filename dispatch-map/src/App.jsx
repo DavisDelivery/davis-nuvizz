@@ -51,7 +51,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.32.15';
+const APP_VERSION = '0.32.16';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -89,6 +89,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.32.16', 'Routing — tomorrow\'s (next business day\'s) EMPTY loads are now ready first thing in the morning. The next-day load roster (the Draft/empty load shells, before any orders are on them) used to only get cached in the 8pm-midnight scan window — so during the day the Routes/Loads view showed tomorrow\'s stops but none of its empty loads. The roster is the cheap load-list call (not the expensive load-number probe), so it\'s now pulled once each morning, a day into the future, decoupled from that evening load scan — and it keeps trying through the day until tomorrow\'s loads actually show up, then settles. Empty loads for the next business day are ready to plan against in the morning.'],
   ['0.32.15', 'Live dispatch (beta) — driver-assign FIX (corrects 0.32.13). Two wiring problems: (1) the assign action was changed to plain "ASSIGN" in 0.32.13, but the verified NuVizz portal call is "ASSIGN_DISPATCH" — reverted, so the assign matches what actually works. (2) For an empty/Draft load (no orders yet) the app could send the load\'s ROSTER id as the assign target instead of the load\'s internal id; NuVizz answers "Success" but never persists it. The server now resolves the real internal load id (load/info) before assigning whenever the id it was handed isn\'t already the internal one. Note: the board can\'t SHOW a just-assigned driver until the next scheduled scan re-reads NuVizz (the load roster carries no driver field) — confirm an assignment took in the NuVizz portal\'s Loads grid, not by refreshing the map.'],
   ['0.32.14', 'Header — the top "Dispatch" bar is pinned on every screen. The desktop header can no longer be squeezed out by tall content (it never shrinks now), and both the mobile and desktop headers sit above the page content (z-index) so nothing can scroll over or cover them. The bar stays put on Map, Routing, and Diagnostics.'],
   ['0.32.13', 'Live dispatch (beta) — FIX: assigning a driver now actually STICKS. The assign call used NuVizz\'s "ASSIGN_DISPATCH" action, which assigns AND dispatches the route — but you can\'t dispatch an empty/Draft load (nothing to dispatch), so NuVizz accepted the call yet the assignment never persisted (and for any load it was silently dispatching when you only picked a driver). Switched the driver-assign to the plain "ASSIGN" action (assign carrier + driver only); dispatch stays the separate Dispatch checkbox. Pick a driver in ● LIVE → Save → the driver now holds after a refresh.'],
