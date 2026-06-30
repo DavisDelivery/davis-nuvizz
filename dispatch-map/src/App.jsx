@@ -32,6 +32,7 @@ import { haversineMiles, naiveEtaMinutes, formatEtaClockTime } from './lib/dista
 import { todayInET, isTodayET, formatDateForDisplay, formatDateLong } from './lib/date-util.js';
 import { pointInPolygon, latLngInBounds, boxFromCorners, formatReceivingHours, lineItemDims, moveItem, recomputeRoute, resequence, fmtTime12, DEFAULT_SERVICE_SEC } from './lib/routing-select.js';
 import { formatDateTime, tsToMillis, loadSummary, buildLoadAutoName } from './lib/routing-loads.js';
+import { callWrite, newClientOpId } from './lib/nuvizzWrite.js';
 import { scanStop, scanStopFull } from './lib/signal-scanner';
 import { applyScannerResults } from './lib/customer-notes-writer';
 import { aiParse, aiChat, applyFilterSpec, summarizeSpec, buildTrimmedStops } from './lib/ai-search.js';
@@ -50,7 +51,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.29.84';
+const APP_VERSION = '0.30.0';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -88,6 +89,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.30.0', 'Live dispatch (BETA, opt-in) — the Compare panel can now assign a driver and dispatch a load to NuVizz. Each route card gets a driver picker, a Dispatch checkbox, and a Save button; a Beta/Live toggle sits in the Compare header. NOTHING is sent to NuVizz while you build or reorder a load — Save first PREVIEWS the exact NuVizz calls, and a real write only happens on Confirm in Live mode (and only when the server-side write flag is enabled). Hidden by default — turn it on with ?write=1 or the VITE_NUVIZZ_WRITE_BETA env. This is the first feature that writes to NuVizz; everything else stays read-only.'],
   ['0.29.84', 'Routing — the ShipTo - Display Seq delivery order now actually sticks after a re-scan (#292). The fresh order read from the list was being silently overwritten on every scan by the older, carried-forward sequence (the physical route seq that the Display-Seq column was meant to replace), so the route kept re-opening in the old order no matter how many times you refreshed. The list\'s Display-Seq is now authoritative and the carried-forward value can only fill in when the column is genuinely absent. Refresh and re-open the load to see the corrected order.'],
   ['0.29.83', 'Routing — make the ShipTo - Display Seq read robust (#290). The delivery-order column is now matched by its DISPLAY NAME ("ShipTo - Display Seq") as well as the internal key, so the scan can\'t miss it if NuVizz keys the column by an opaque path. (If your refresh did not change the order, it was on v0.29.81 — before the v0.29.82 column read shipped; once this is live, refresh and re-open the load.) When the column genuinely isn\'t present the scan logs it instead of silently falling back to the geographic guess.'],
   ['0.29.82', 'Routing — loads now sequence in the REAL delivery order. The scan now reads the new "ShipTo - Display Seq" column you added to the saved search and uses it as each stop\'s delivery order within its load, so opening a load in Compare (and its map polyline / route list) follows NuVizz\'s actual stop order instead of a geographic guess — no per-stop enrichment needed. Takes effect after the next scheduled scan repopulates the board (like the Estimated-Arrival column add).'],
@@ -8878,6 +8880,20 @@ const ROUTING_FLAG = (() => {
   return true;
 })();
 
+// Live-write (beta) gate — the routes-panel driver-assign + dispatch UI. UNLIKE the
+// routing beta this defaults OFF (live writes are opt-in): enable with env
+// VITE_NUVIZZ_WRITE_BETA='true', or force per-session with ?write=1 (?write=0 hides it).
+// Even when the UI is shown, no real NuVizz write fires unless the dispatcher flips the
+// card's Beta→Live toggle AND the server-side NUVIZZ_WRITE_ENABLED flag is set.
+const LIVE_WRITE_FLAG = (() => {
+  try {
+    if (typeof window !== 'undefined' && /[?&]write=1\b/.test(window.location.search)) return true;
+    if (typeof window !== 'undefined' && /[?&]write=0\b/.test(window.location.search)) return false;
+    if (import.meta.env.VITE_NUVIZZ_WRITE_BETA === 'true') return true;
+  } catch { /* ignore */ }
+  return false;
+})();
+
 const ROUTING_DEPOT = { name: 'Buford Terminal', lat: 34.14838, lng: -83.95948 };
 const ROUTING_STRATEGIES = [
   ['MIN_DISTANCE', 'Min distance'],
@@ -9523,7 +9539,127 @@ function RoutingMapTools({ selectMode, onBox, onLasso, ninjaMode, onToggleNinja,
 // "Re-sequenced …" toast).
 const RESEQ_LABELS = { loop: 'Loop — down one side & back', min: 'Shortest distance', closest: 'Closest first', farthest: 'Farthest first', reverse: 'Reverse', manual: 'Manual order' };
 
-function RoutingWorkbenchCard({ route, stopById, otherKeys, ninjaMode, isActive, onSetActive, onResequence, onCollapse, onClose, onMoveStop, onDropStop, onOpenStop, onPrintManifest, isMobile }) {
+// ── Live dispatch (beta) ─────────────────────────────────────────────────────
+// The routes-panel write surface: assign a driver to a load + dispatch it to NuVizz.
+// NOTHING fires while you build/reorder a load — this bar only STAGES a driver choice +
+// dispatch intent, and a write happens only on Save → Confirm. In Beta mode Save just
+// previews the exact NuVizz calls (server dry-run, zero calls); in Live mode Confirm
+// commits them. Hidden entirely unless LIVE_WRITE_FLAG is opted-in. route.key is the
+// load number (loadNbr); the server resolves it to the internal loadId.
+function LiveDispatchBar({ route, liveMode, roster, rosterError, onToast }) {
+  const loadNbr = route.key;
+  const [driverId, setDriverId] = useState('');
+  const [dispatch, setDispatch] = useState(false);
+  const [confirm, setConfirm] = useState(null);   // { plan, tenant, payload } | null
+  const [busy, setBusy] = useState(false);
+  const driver = roster.find((d) => String(d.driverId) === String(driverId)) || null;
+  const hasChange = driverId !== '' || dispatch;
+
+  // loadId: the board's same-day loadId (avoids name re-resolution to the wrong day's load).
+  // driverId: the roster's NUMERIC userId, not the <select>'s string value (NuVizz wants a number).
+  const buildPayload = () => ({ loadNbr, loadId: route.loadId || undefined, driverId: driver ? driver.driverId : undefined, driverName: driver?.name || undefined, dispatch });
+
+  // Save → server dry-run preview → confirm modal. The preview never touches NuVizz. The
+  // clientOpId is minted ONCE here and reused on Confirm, so a double-click / retry of the SAME
+  // Save can't double-dispatch (the server dedups on it).
+  const onSave = async () => {
+    if (!hasChange) { onToast?.('Pick a driver or check Dispatch first.'); return; }
+    setBusy(true);
+    const payload = buildPayload();
+    const res = await callWrite('commitLoad', payload, { dryRun: true });
+    setBusy(false);
+    if (!res.ok) { onToast?.(`Preview failed: ${res.error || 'error'}`); return; }
+    setConfirm({ plan: res.plan || [], tenant: res.tenant, payload, clientOpId: newClientOpId() });
+  };
+
+  // Confirm → in Beta, simulated only; in Live, the real commit (idempotent via the Save's clientOpId).
+  const onConfirm = async () => {
+    const payload = confirm.payload;
+    if (!liveMode) { setConfirm(null); onToast?.(`Beta — nothing sent (${loadDisplayName(loadNbr) || loadNbr} simulated).`); return; }
+    setBusy(true);
+    const res = await callWrite('commitLoad', payload, { dryRun: false, clientOpId: confirm.clientOpId, createdBy: 'dispatcher' });
+    setBusy(false);
+    setConfirm(null);
+    if (res.ok) {
+      onToast?.(`✓ ${loadDisplayName(loadNbr) || loadNbr} sent${payload.dispatch ? ' & dispatched' : ''}.`);
+      setDriverId(''); setDispatch(false);
+    } else {
+      const stepErr = (res.result?.steps || []).filter((s) => !s.ok).map((s) => `${s.op}: ${s.error}`).join('; ');
+      onToast?.(`✗ ${loadDisplayName(loadNbr) || loadNbr}: ${res.error || stepErr || 'write failed'}`);
+    }
+  };
+
+  return (
+    <div className="px-2 py-1.5 border-t bg-slate-50/70 shrink-0 space-y-1">
+      <div className="flex items-center gap-1.5">
+        <Truck size={12} className="text-slate-400 shrink-0" />
+        <select
+          value={driverId}
+          onChange={(e) => setDriverId(e.target.value)}
+          disabled={busy || !!rosterError}
+          className="flex-1 min-w-0 border rounded px-1 py-1 text-[11px] bg-white"
+          aria-label={`Assign driver to ${loadNbr}`}
+        >
+          <option value="">{rosterError ? 'Driver roster unavailable' : (roster.length ? 'Assign driver…' : 'Loading drivers…')}</option>
+          {roster.map((d) => <option key={String(d.driverId)} value={String(d.driverId)}>{d.name}{d.userName ? ` (${d.userName})` : ''}</option>)}
+        </select>
+      </div>
+      <div className="flex items-center justify-between gap-2">
+        <label className="flex items-center gap-1 text-[11px] text-slate-600 cursor-pointer" title="Also release the load to the assigned driver">
+          <input type="checkbox" checked={dispatch} onChange={(e) => setDispatch(e.target.checked)} disabled={busy} /> <Send size={11} /> Dispatch
+        </label>
+        <button
+          onClick={onSave}
+          disabled={busy || !hasChange}
+          title={liveMode ? 'Save & send to NuVizz' : 'Save (Beta — preview only, nothing sent)'}
+          className={`inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-1 rounded disabled:opacity-60 ${hasChange ? (liveMode ? 'bg-red-600 text-white hover:bg-red-700' : 'bg-blue-600 text-white hover:bg-blue-700') : 'bg-slate-200 text-slate-400'}`}
+        >
+          <Save size={12} /> {busy ? '…' : 'Save'}
+        </button>
+      </div>
+      {confirm && (
+        <LiveCommitConfirm confirm={confirm} liveMode={liveMode} busy={busy} loadNbr={loadNbr} onCancel={() => setConfirm(null)} onConfirm={onConfirm} />
+      )}
+    </div>
+  );
+}
+
+// Confirmation modal shown before any live commit — lists the EXACT NuVizz calls the
+// Save will fire (from the server dry-run plan) and, in Live mode against the prod
+// tenant, a hard production warning. This is the last gate before a real write.
+function LiveCommitConfirm({ confirm, liveMode, busy, loadNbr, onCancel, onConfirm }) {
+  const isProd = confirm.tenant === 'DAVIS';
+  return (
+    <div className="fixed inset-0 z-[60] bg-black/40 flex items-center justify-center p-4" onMouseDown={(e) => { if (e.target === e.currentTarget) onCancel(); }}>
+      <div className="bg-white rounded-lg shadow-xl w-full max-w-md max-h-[80vh] flex flex-col">
+        <div className="px-4 py-3 border-b flex items-center justify-between">
+          <div className="font-semibold text-slate-800 flex items-center gap-2"><Send size={16} /> {liveMode ? 'Send to NuVizz' : 'Preview (Beta)'}</div>
+          <button onClick={onCancel} className="text-slate-400 hover:text-slate-700" aria-label="Cancel"><X size={18} /></button>
+        </div>
+        <div className="px-4 py-3 overflow-y-auto text-sm">
+          <div className="text-slate-600 mb-2">Load <b>{loadDisplayName(loadNbr) || loadNbr}</b> · tenant <b className={isProd ? 'text-red-600' : 'text-slate-700'}>{confirm.tenant}{isProd ? ' (PROD)' : ''}</b></div>
+          <div className="text-slate-500 mb-1">{liveMode ? 'This will fire:' : 'In Live mode this would fire:'}</div>
+          <ul className="list-disc pl-5 space-y-0.5 text-slate-700">
+            {(confirm.plan.length ? confirm.plan : ['(no changes)']).map((p, i) => <li key={i}>{p}</li>)}
+          </ul>
+          {liveMode && isProd && (
+            <div className="mt-3 flex items-start gap-1.5 text-[12px] text-red-700 bg-red-50 border border-red-200 rounded p-2">
+              <AlertTriangle size={14} className="shrink-0 mt-0.5" /> This writes to PRODUCTION dispatch — the driver will be assigned/notified in NuVizz.
+            </div>
+          )}
+        </div>
+        <div className="px-4 py-3 border-t flex items-center justify-end gap-2">
+          <button onClick={onCancel} className="px-3 py-1.5 text-sm rounded border border-slate-300 text-slate-600 hover:bg-slate-50">Cancel</button>
+          <button onClick={onConfirm} disabled={busy} className={`px-3 py-1.5 text-sm rounded font-semibold text-white disabled:opacity-60 ${liveMode ? 'bg-red-600 hover:bg-red-700' : 'bg-blue-600 hover:bg-blue-700'}`}>
+            {busy ? 'Sending…' : (liveMode ? 'Send' : 'OK (simulated)')}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function RoutingWorkbenchCard({ route, stopById, otherKeys, ninjaMode, isActive, onSetActive, onResequence, onCollapse, onClose, onMoveStop, onDropStop, onOpenStop, onPrintManifest, liveMode, roster, rosterError, onToast, isMobile }) {
   const rows = route.order.map((id) => stopById.get(String(id))).filter(Boolean);
   // Drag-and-drop (desktop): track which row we're hovering so we can show a drop line, and read
   // the dragged stop out of dataTransfer on drop. beforeId=null means "append to the end".
@@ -9666,6 +9802,9 @@ function RoutingWorkbenchCard({ route, stopById, otherKeys, ninjaMode, isActive,
           ); })}
         </ol>
       )}
+      {LIVE_WRITE_FLAG && !route.collapsed && (
+        <LiveDispatchBar route={route} liveMode={liveMode} roster={roster || []} rosterError={rosterError} onToast={onToast} />
+      )}
     </div>
   );
 }
@@ -9674,6 +9813,34 @@ function RoutingWorkbenchCard({ route, stopById, otherKeys, ninjaMode, isActive,
 // side by side (desktop) or stacked (mobile). Replaces the Setup stack on the left while routes
 // are open; "Back to Setup" closes them all.
 function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmNinja, activeKey, onSetActive, onResequence, onCollapse, onClose, onCloseAll, onMoveStop, onDropStop, onOpenStop, onPrintManifest, selectedCount = 0, onSendSelection, isMobile }) {
+  // Live dispatch (beta) — Beta vs Live applies to EVERY card here. Always starts in Beta
+  // on mount (Live is never sticky across reloads, for safety). The driver roster is pulled
+  // once (one cheap user/list read) so each card's picker is populated; a failure degrades
+  // to a disabled picker, never a crash. All hooks run unconditionally (the LIVE_WRITE_FLAG
+  // gate is inside the effect + the render), so hook order is stable when the flag is off.
+  const [liveMode, setLiveMode] = useState(false);
+  const [roster, setRoster] = useState([]);
+  const [rosterError, setRosterError] = useState(null);
+  const [toast, setToast] = useState(null);
+  const toastTimer = useRef(null);
+  const showToast = useCallback((msg) => {
+    setToast(msg);
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    toastTimer.current = setTimeout(() => setToast(null), 6000);
+  }, []);
+  useEffect(() => () => { if (toastTimer.current) clearTimeout(toastTimer.current); }, []);
+  const rosterLoaded = useRef(false);
+  useEffect(() => {
+    if (!LIVE_WRITE_FLAG || rosterLoaded.current) return;
+    rosterLoaded.current = true;
+    let alive = true;
+    callWrite('roster', {}).then((res) => {
+      if (!alive) return;
+      if (res.ok && Array.isArray(res.result?.drivers)) setRoster(res.result.drivers);
+      else setRosterError(res.error || 'roster unavailable');
+    }).catch((e) => { if (alive) setRosterError(e?.message || 'roster error'); });
+    return () => { alive = false; };
+  }, []);
   return (
     <div className="flex flex-col h-full min-h-0">
       <div className="flex items-center justify-between gap-2 px-2 py-1.5 border-b shrink-0 bg-white">
@@ -9694,9 +9861,24 @@ function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmN
           ))}
           {/* Ninja is armed from the on-map tool (left edge), not here — the dispatcher asked to drop
               the redundant header button. The active-state banner below still shows when it's on. */}
+          {LIVE_WRITE_FLAG && (
+            <button
+              onClick={() => setLiveMode((v) => !v)}
+              title={liveMode ? 'LIVE — Save sends writes to NuVizz. Click for Beta (preview only).' : 'BETA — Save only previews (nothing sent). Click to go Live.'}
+              className={`inline-flex items-center gap-1 text-[11px] font-bold px-2 py-1 rounded border ${liveMode ? 'border-red-600 bg-red-600 text-white' : 'border-slate-300 bg-white text-slate-600 hover:bg-slate-50'}`}
+            >
+              {liveMode ? '● LIVE' : '○ Beta'}
+            </button>
+          )}
           <button onClick={onCloseAll} className="text-[11px] text-slate-500 hover:text-slate-800 underline">Back to Setup</button>
         </div>
       </div>
+      {LIVE_WRITE_FLAG && toast && (
+        <div className="px-2 py-1 text-[11px] bg-slate-800 text-white shrink-0 flex items-center justify-between gap-2">
+          <span className="truncate">{toast}</span>
+          <button onClick={() => setToast(null)} className="text-slate-300 hover:text-white shrink-0" aria-label="Dismiss"><X size={12} /></button>
+        </div>
+      )}
       {ninjaMode && (
         <div className="px-2 py-1 text-[11px] bg-amber-50 border-b border-amber-200 text-amber-800 shrink-0 flex items-center gap-1"><NinjaIcon size={13} /><span>Ninja on — clicking a stop adds it to <b>{activeKey || '—'}</b>{wbRoutes.length > 1 ? ' (use the radio on a card to switch target)' : ''}.</span></div>
       )}
@@ -9717,6 +9899,10 @@ function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmN
             onDropStop={onDropStop}
             onOpenStop={onOpenStop}
             onPrintManifest={onPrintManifest}
+            liveMode={liveMode}
+            roster={roster}
+            rosterError={rosterError}
+            onToast={showToast}
             isMobile={isMobile}
           />
         ))}
@@ -10207,8 +10393,12 @@ function RoutingScreen({ debugCaptureRef }) {
       if (prev.some((r) => r.key === key)) return prev;                 // already open
       if (prev.length >= WB_MAX) { setLastAction(`Workbench is full (${WB_MAX} routes) — close one first.`); return prev; }
       const routeStops = positionedRef.current.filter((s) => (s.routeName || s.loadNbr) === key);
+      // Capture the day's REAL loadId off the route's stops (recurring loads share a NAME across
+      // days but each day's instance has its own loadId). Sent with a live Save so the server
+      // assigns/dispatches THIS day's load instead of re-resolving the ambiguous name (#wrong-load).
+      const loadId = routeStops.map((s) => s.raw?.load?.loadId ?? s.loadId).find(Boolean) || null;
       const order = orderRouteStops(routeStops).map((s) => String(s.stopNbr));
-      return [...prev, { key, order, collapsed: false }];
+      return [...prev, { key, loadId, order, collapsed: false }];
     });
   }, []);
   const closeWbRoute = useCallback((key) => setWbRoutes((prev) => prev.filter((r) => r.key !== key)), []);
