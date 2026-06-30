@@ -51,7 +51,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.32.11';
+const APP_VERSION = '0.32.12';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -89,6 +89,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.32.12', 'Live dispatch (beta) — FIX: assigning a driver to (or dispatching) a Draft/empty load now works. Opening an empty load (no orders yet) gave it no loadId, so Save hit "commitBoard: load not found" — NuVizz needs the load\'s ID to assign anything to it. The Compare panel now resolves the real loadId from the load itself (empty loads are opened BY their loadId) and the day\'s load roster, so Save assigns straight off the loadId with no load/info lookup. The card also shows the load\'s real name (e.g. "NOR") instead of "Unnamed load". Verified across the open → stage → Save → assignDriver path (and against the NuVizz API spec: the assign routeId IS the loadId).'],
   ['0.32.11', 'HOTFIX — the Routing (beta) screen was crashing to a blank page (most visible on mobile, but it hit desktop too). The driver-assign code added in 0.32.5 sat ABOVE the toggles it reads (liveWrite / the on-map toast) in the component, so React threw "Cannot access \'liveWrite\' before initialization" the moment Routing opened. Moved the block below those declarations; Routing loads again. No feature changes.'],
   ['0.32.10', 'Dispatch Map — a "Routes" panel you can turn on. A new "Routes" button in the map\'s top-right toolbar opens a read-only route roster on the right (the same one the Routing screen has): one card per load with route name, driver, status (incl. Draft / Un-Planned from NuVizz\'s real load status), stops · skids · loose · weight, and a delivery-progress bar — plus the Status filter and quick-search. Click a card to frame that route on the map and open its detail. The toggle is remembered (off by default), and the panel pulls NuVizz\'s real load status from the cheap cached roster only while it\'s open.'],
   ['0.32.9', 'Live dispatch (beta) — the "Assign driver…" dropdowns (both the Compare panel and the Routes-panel assign picker) now list drivers in ALPHABETICAL order by name, instead of NuVizz\'s user/list order. Sorted at the roster source so every driver picker is A→Z.'],
@@ -9950,7 +9951,7 @@ function RoutingWorkbenchCard({ route, stopById, otherKeys, ninjaMode, isActive,
           <button onClick={onCollapse} className="flex items-center gap-1 min-w-0" aria-expanded={!route.collapsed}>
             {route.collapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
             <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: color }} title="Route colour on the map" />
-            <span className="font-semibold text-slate-800 truncate" title={loadDisplayName(route.key) || 'Unnamed load'}>{loadDisplayName(route.key) || 'Unnamed load'}</span>
+            <span className="font-semibold text-slate-800 truncate" title={route.name || loadDisplayName(route.key) || 'Unnamed load'}>{route.name || loadDisplayName(route.key) || 'Unnamed load'}</span>
           </button>
           <div className="flex items-center gap-1.5 shrink-0">
             {ninjaMode && (
@@ -9959,7 +9960,7 @@ function RoutingWorkbenchCard({ route, stopById, otherKeys, ninjaMode, isActive,
                 <NinjaIcon size={13} /> {isActive ? 'target' : 'set'}
               </label>
             )}
-            <button onClick={onClose} className="text-slate-400 hover:text-red-600 leading-none text-lg" aria-label={`Close route ${loadDisplayName(route.key)}`}>×</button>
+            <button onClick={onClose} className="text-slate-400 hover:text-red-600 leading-none text-lg" aria-label={`Close route ${route.name || loadDisplayName(route.key) || ''}`}>×</button>
           </div>
         </div>
         <div className="text-[11px] text-slate-500 truncate">{driverLabel} · {rows.length} stop{rows.length === 1 ? '' : 's'} · {skids} sk · {Math.round(weight).toLocaleString()} lb · {rows.length ? Math.round((100 * delivered) / rows.length) : 0}%</div>
@@ -10152,7 +10153,7 @@ function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmN
       const s = staged[r.key] || {};
       // loadNbr = the REAL NuVizz number (load/info is keyed by it); routeName = the friendly
       // display name (r.key) carried through for the dry-run plan label and result reconciliation.
-      const load = { loadNbr: r.loadNbr || r.key, routeName: r.key, loadId: r.loadId || undefined };
+      const load = { loadNbr: r.loadNbr || r.key, routeName: r.name || r.key, loadId: r.loadId || undefined };
       if (orderChanged(r)) {
         // EVERY stop must resolve to a NuVizz stopId — a partial order would make the server
         // DROP the unresolved stops. Refuse to sequence this load and warn instead.
@@ -10697,28 +10698,36 @@ function RoutingScreen({ debugCaptureRef }) {
     }
   }, [rightPanelMode, routesSubTab, driverRoster.drivers, driverRoster.loading, loadDriverRoster]);
 
-  // NuVizz's REAL load status for the Routes panel filter. The day's load roster (the cheap
-  // list-discovery path, served from the scan cache) carries each load's lifecycle status —
-  // Draft / Un-Planned / Planned / In-Transit / Completed / Cancelled — which the execution-derived
-  // status can't see. Pulled only while the Routes panel is open, keyed by load name + id so
-  // routeGroups can join it. Cheap (no number-probe scan); failure just leaves the derived status.
+  // The day's load roster (the cheap list-discovery path, served from the scan cache — no number-probe
+  // scan) carries each load's lifecycle status (Draft / Un-Planned / … for the Routes filter) AND its
+  // loadId. Pulled whenever the routing screen has a board date — not just when the Routes panel is
+  // open — because opening ANY load in Compare needs its loadId to assign/dispatch, and Draft/empty
+  // loads have no stops to get it from. Failure just leaves the derived status + stop-only loadId.
   const [loadStatusByName, setLoadStatusByName] = useState(() => new Map());
+  // Load-resolution index from the same roster: route name (lc) and loadId → { loadId, name }. This is
+  // how a load that has NO stops on the board (a Draft/empty load) gets its real loadId — there are no
+  // stops to derive it from, and assignDriver needs the loadId. Kept in a ref so openRouteInWorkbench
+  // (deps []) always reads the latest without re-binding.
+  const loadRosterRef = useRef(new Map());
   useEffect(() => {
-    if (rightPanelMode !== 'routes' || !selectedDate) return;
+    if (!selectedDate) return;
     let cancelled = false;
     fetch('/.netlify/functions/nuvizz-loads-roster?date=' + encodeURIComponent(selectedDate), { cache: 'no-store' })
       .then((r) => r.json())
       .then((j) => {
         if (cancelled) return;
-        const m = new Map();
+        const status = new Map();
+        const index = new Map();
         if (j && j.ok) for (const l of (j.loads || [])) {
           const nm = String(l.name || '').trim().toLowerCase();
-          if (nm) m.set(nm, l.status || '');
-          if (l.loadId) m.set('#id:' + String(l.loadId), l.status || '');
+          const entry = { loadId: l.loadId ? String(l.loadId) : null, name: l.name || '' };
+          if (nm) { status.set(nm, l.status || ''); index.set(nm, entry); }
+          if (l.loadId) { status.set('#id:' + String(l.loadId), l.status || ''); index.set(String(l.loadId), entry); }
         }
-        setLoadStatusByName(m);
+        loadRosterRef.current = index;
+        setLoadStatusByName(status);
       })
-      .catch(() => { if (!cancelled) setLoadStatusByName(new Map()); });
+      .catch(() => { if (!cancelled) { loadRosterRef.current = new Map(); setLoadStatusByName(new Map()); } });
     return () => { cancelled = true; };
   }, [rightPanelMode, selectedDate]);
 
@@ -10829,16 +10838,27 @@ function RoutingScreen({ debugCaptureRef }) {
       if (prev.some((r) => r.key === key)) return prev;                 // already open
       if (prev.length >= WB_MAX) { setLastAction(`Workbench is full (${WB_MAX} routes) — close one first.`); return prev; }
       const routeStops = positionedAllRef.current.filter((s) => (s.routeName || s.loadNbr) === key);
-      // Capture the day's REAL loadId off the route's stops (recurring loads share a NAME across
-      // days but each day's instance has its own loadId). Sent with a live Save so the server
-      // assigns/dispatches THIS day's load instead of re-resolving the ambiguous name (#wrong-load).
-      const loadId = routeStops.map((s) => s.raw?.load?.loadId ?? s.loadId).find(Boolean) || null;
-      // The REAL NuVizz load number off the day's stops (e.g. "DAVIS000000123", from the daily
-      // load scan). load/info is keyed by loadNbr, NOT the human routeName ("LVILLE") we group and
-      // display by — sending the routeName as the loadNbr 404s ("commitBoard: load not found").
+      // Resolve the load's real loadId + name from the day's roster (the daily load scan, by name or
+      // loadId). REQUIRED for Draft/empty loads: they have no stops to derive a loadId from, and
+      // assignDriver/commitBoard need the loadId (without it the Save falls through to a load/info
+      // lookup with a bad key → "commitBoard: load not found"). For loads WITH stops, the stop-derived
+      // loadId still wins (it's the verified same-day instance); the roster only fills the gap.
+      const rosterEntry = loadRosterRef.current.get(String(key)) || loadRosterRef.current.get(String(key).toLowerCase()) || null;
+      // loadId: verified stop-derived id first; then the roster; then the key ITSELF when it's a load
+      // id hash — an empty load is opened from the Loads grid BY its loadId, so this resolves it even
+      // if the roster hasn't loaded yet (no race) and the roster only enriches the display name.
+      const loadId = routeStops.map((s) => s.raw?.load?.loadId ?? s.loadId).find(Boolean)
+        || rosterEntry?.loadId
+        || (isHashLikeId(String(key)) ? String(key) : null);
+      // The REAL NuVizz load number off the day's stops (e.g. "DAVIS000000123", from the daily load
+      // scan). load/info is keyed by loadNbr, NOT the human routeName — but a known loadId skips that
+      // lookup entirely (commitBoard assigns/dispatches straight off the loadId).
       const loadNbr = routeStops.map((s) => s.loadNbr).find(Boolean) || null;
+      // Display name — the human route/load name; from stops, else the roster (so an empty load shows
+      // "NOR" instead of "Unnamed load").
+      const name = routeStops.map((s) => s.routeName).find(Boolean) || rosterEntry?.name || null;
       const order = orderRouteStops(routeStops).map((s) => String(s.stopNbr));
-      return [...prev, { key, loadNbr, loadId, order, collapsed: false }];
+      return [...prev, { key, name, loadNbr, loadId, order, collapsed: false }];
     });
   }, []);
   const closeWbRoute = useCallback((key) => setWbRoutes((prev) => prev.filter((r) => r.key !== key)), []);
