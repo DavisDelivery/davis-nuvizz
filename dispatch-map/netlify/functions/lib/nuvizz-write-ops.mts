@@ -39,14 +39,14 @@ export const SINGLE_OPS = [
 ] as const;
 export type SingleOp = typeof SINGLE_OPS[number];
 
-// Ops the HTTP handler accepts (single ops + the Save batch).
-export const WRITE_OPS = [...SINGLE_OPS, 'commitLoad'] as const;
+// Ops the HTTP handler accepts (single ops + the per-load Save batch + the panel Save).
+export const WRITE_OPS = [...SINGLE_OPS, 'commitLoad', 'commitBoard'] as const;
 export type WriteOp = typeof WRITE_OPS[number];
 
 /** Ops that MUTATE NuVizz (everything except the two GET reads). Used by the
  *  handler to decide which ops need the write-enabled gate + idempotency. */
 export const MUTATING_OPS = new Set<WriteOp>([
-  'createStop', 'insertStops', 'removeStops', 'assignDriver', 'dispatchLoad', 'commitLoad',
+  'createStop', 'insertStops', 'removeStops', 'assignDriver', 'dispatchLoad', 'commitLoad', 'commitBoard',
 ]);
 
 export interface WriteCreds {
@@ -295,6 +295,47 @@ export function parseRoster(j: any): Array<{ driverId: any; userName: string; na
 }
 // Exported only so a test/diagnostic can assert the office-role set is the doc's.
 export const _OFFICE_ROLES = OFFICE_ROLES;
+
+// ── §10 manual sequencing — the Draft→Save "anchor method" (PURE) ────────────
+//
+// NuVizz can't set an arbitrary stop order in one call: a BULK insertStops auto-optimizes
+// (per seqMode) and one-at-a-time inserts APPEND to the end; load/edit's routeSeq is a
+// documented no-op. The verified way to realize an exact delivery order [d1..dN] on a load
+// (handoff doc §10) is the "anchor method": keep d1 (which must already be on the load) as
+// an anchor, removeStops every OTHER current delivery, then insertStops d2..dN one-at-a-time
+// in order. Removing ALL stops cancels the route, so we NEVER remove the anchor.
+//
+// This single recipe also folds in add + remove: a current delivery absent from the desired
+// order is simply removed and not re-inserted (a departure); a desired stop absent from the
+// load is inserted (an add). Cost ≈ 2 (the load/info+load/edit remove) + (N-1) inserts.
+//
+// PURE: given the load's current DELIVERY stopIds (in seq order, pickup excluded by the
+// caller) and the desired ordered stopIds, return the exact removeStopIds + ordered insert
+// list — or refuse the two unsafe cases (empty order → would cancel; first desired stop not
+// on the load → append-only can't place a new stop first; that needs the full-rebuild path
+// which is not enabled here).
+export interface SequencePlan {
+  ok: boolean;
+  unchanged?: boolean;
+  anchor?: string;
+  removeStopIds?: string[];
+  insertOrdered?: string[];   // inserted one-at-a-time, in this order, after the anchor
+  reason?: string;
+}
+export function planSequence(currentDeliveryStopIds: any[], desiredOrderedStopIds: any[]): SequencePlan {
+  const cur = (currentDeliveryStopIds || []).map((x) => String(x)).filter((x) => x && x !== 'null' && x !== 'undefined');
+  const want = (desiredOrderedStopIds || []).map((x) => String(x)).filter((x) => x && x !== 'null' && x !== 'undefined');
+  if (want.length === 0) return { ok: false, reason: 'empty-order: would remove every delivery and cancel the route' };
+  // Already in the desired order + membership → nothing to do (no NuVizz calls).
+  if (cur.length === want.length && cur.every((id, i) => id === want[i])) {
+    return { ok: true, unchanged: true, removeStopIds: [], insertOrdered: [] };
+  }
+  const anchor = want[0];
+  if (!cur.includes(anchor)) {
+    return { ok: false, reason: `anchor-not-on-load: the first desired stop (${anchor}) is not currently on the load; append-only inserts cannot place a new stop first (needs the full-rebuild path, not enabled)` };
+  }
+  return { ok: true, unchanged: false, anchor, removeStopIds: cur.filter((id) => id !== anchor), insertOrdered: want.slice(1) };
+}
 
 // ── Request builders (one per single op) ─────────────────────────────────────
 
