@@ -37,20 +37,39 @@ const KNOWN_REQS = new Set<EquipmentReq>([
   '26ft_max', 'no_53', 'no_overhead_clearance', 'liftgate_required',
 ]);
 
-async function equipmentReqsFor(stop: any): Promise<EquipmentReq[]> {
+// Equipment requirements a 53' tractor-trailer can't satisfy. A dispatcher's
+// explicit "tractor OK" (green) mark suppresses these — green wins over an
+// auto-detected restriction. Liftgate is orthogonal and is never suppressed.
+const TRAILER_BLOCKERS = new Set<EquipmentReq>([
+  'no_tractor_trailer', 'uline_straight_truck', 'straight_truck_only', 'box_truck_only',
+  '26ft_max', 'no_53', 'no_overhead_clearance',
+]);
+
+async function equipmentReqsFor(stop: any, opts?: { tractorOnlyGreen?: boolean }): Promise<EquipmentReq[]> {
   try {
     const key = normalizeMatchKey(stop.businessName, stop.addr1, stop.city, stop.zip);
     const note = await getDoc(`customer_notes/${key}`);
-    const reqs: EquipmentReq[] = [];
+    let reqs: EquipmentReq[] = [];
     const arr = note?.equipment_restrictions;
     if (Array.isArray(arr)) for (const r of arr) if (KNOWN_REQS.has(r)) reqs.push(r);
     if (note?.liftgate_required === true && !reqs.includes('liftgate_required')) reqs.push('liftgate_required');
+    // Dispatcher-set vehicle eligibility (the Routing green/red marking — a property
+    // of the LOCATION). Green ('tractor') = a 53' fits → drop any trailer-blocking
+    // restriction (green wins over an auto-detected one). Red ('box_only') → force a
+    // straight/box truck. And when the build opts into "trailer = green only", any
+    // stop NOT marked green is held to a box truck too, so only green rides a 53'.
+    const elig = note?.vehicle_eligibility;
+    if (elig === 'tractor') {
+      reqs = reqs.filter((r) => !TRAILER_BLOCKERS.has(r));
+    } else if (elig === 'box_only' || opts?.tractorOnlyGreen === true) {
+      if (!reqs.includes('box_truck_only')) reqs.push('box_truck_only');
+    }
     return reqs;
   } catch { return []; }
 }
 
 // Resolve the pipeline's stop inputs from selectedStopIds against the live cache.
-async function resolveStops(tenant: string, date: string, selectedStopIds: string[]): Promise<PipelineStopInput[]> {
+async function resolveStops(tenant: string, date: string, selectedStopIds: string[], opts?: { tractorOnlyGreen?: boolean }): Promise<PipelineStopInput[]> {
   const { stops } = await readStops(tenant, date);
   const byId = new Map(stops.map((s: any) => [String(s.stopNbr), s]));
   const want = new Set(selectedStopIds.map(String));
@@ -65,7 +84,7 @@ async function resolveStops(tenant: string, date: string, selectedStopIds: strin
       signalSources: s.signalSources || null, addr2: s.addr2 || null,
       scheduledFrom: s.scheduledFrom || null, scheduledTo: s.scheduledTo || null,
       timeConstraint: s.timeConstraint || null,
-      equipmentReqs: await equipmentReqsFor(s),
+      equipmentReqs: await equipmentReqsFor(s, opts),
       businessName: s.businessName || null,
     });
   }
@@ -103,9 +122,15 @@ export default async function handler(req: Request): Promise<Response> {
     const r = job.request || {};
     const tenant = r.tenant || 'davis';
     const date = r.date;
+    const tractorOnlyGreen = r.tractorOnlyGreen === true;
+    // Eligibility rules (box_only / green override / tractorOnlyGreen) are applied in
+    // equipmentReqsFor, which runs via resolveStops. The direct r.stops path is a caching
+    // shortcut the client does not currently use (it always sends selectedStopIds); a
+    // future caller that pre-resolves r.stops must bake the eligibility reqs in itself,
+    // since this path bypasses equipmentReqsFor.
     const stops: PipelineStopInput[] = Array.isArray(r.stops) && r.stops.length
       ? r.stops
-      : await resolveStops(tenant, date, r.selectedStopIds || []);
+      : await resolveStops(tenant, date, r.selectedStopIds || [], { tractorOnlyGreen });
     const trucks = Array.isArray(r.trucks) && r.trucks.length ? r.trucks : await resolveTrucks(r.truckProfileIds || []);
 
     if (!stops.length) { await updateJob(jobId, { status: 'error', error: 'no mappable stops selected', finished_at: new Date().toISOString() }); return json({ ok: true, jobId, accepted: true }); }
