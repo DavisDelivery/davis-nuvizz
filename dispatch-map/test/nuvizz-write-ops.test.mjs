@@ -250,6 +250,16 @@ test('parseRoster: a mixed driver+office account still surfaces as a driver; nam
   assert.equal(drivers[1].driverId, null, 'missing userId surfaces as null driverId');
 });
 
+test('parseRoster: drivers come back sorted A→Z by display name (every picker reads it sorted)', () => {
+  const j = { users: [
+    { userId: 1, userName: 'tyrese', firstName: 'Tyrese', lastName: 'Griffin', accountStatus: 'ENABLED', userRoles: [{ role: 'DI_Driver' }] },
+    { userId: 2, userName: 'alfred', firstName: 'Alfred', lastName: 'Morgan', accountStatus: 'ENABLED', userRoles: [{ role: 'DI_Driver' }] },
+    { userId: 3, userName: 'ken', firstName: 'Ken', lastName: 'Watkins', accountStatus: 'ENABLED', userRoles: [{ role: 'DI_Driver' }] },
+  ] };
+  const names = parseRoster(j).map((d) => d.name);
+  assert.deepEqual(names, ['Alfred Morgan', 'Ken Watkins', 'Tyrese Griffin'], 'roster is alphabetical regardless of NuVizz order');
+});
+
 // ── parseOpResponse dispatch ─────────────────────────────────────────────────
 test('parseOpResponse: routes each op to the right parser', () => {
   assert.equal(parseOpResponse('assignDriver', true, { status: 'Success' }).ok, true);
