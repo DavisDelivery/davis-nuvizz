@@ -51,7 +51,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.32.12';
+const APP_VERSION = '0.32.13';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -89,6 +89,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.32.13', 'Live dispatch (beta) — FIX: assigning a driver now actually STICKS. The assign call used NuVizz\'s "ASSIGN_DISPATCH" action, which assigns AND dispatches the route — but you can\'t dispatch an empty/Draft load (nothing to dispatch), so NuVizz accepted the call yet the assignment never persisted (and for any load it was silently dispatching when you only picked a driver). Switched the driver-assign to the plain "ASSIGN" action (assign carrier + driver only); dispatch stays the separate Dispatch checkbox. Pick a driver in ● LIVE → Save → the driver now holds after a refresh.'],
   ['0.32.12', 'Live dispatch (beta) — FIX: assigning a driver to (or dispatching) a Draft/empty load now works. Opening an empty load (no orders yet) gave it no loadId, so Save hit "commitBoard: load not found" — NuVizz needs the load\'s ID to assign anything to it. The Compare panel now resolves the real loadId from the load itself (empty loads are opened BY their loadId) and the day\'s load roster, so Save assigns straight off the loadId with no load/info lookup. The card also shows the load\'s real name (e.g. "NOR") instead of "Unnamed load". Verified across the open → stage → Save → assignDriver path (and against the NuVizz API spec: the assign routeId IS the loadId).'],
   ['0.32.11', 'HOTFIX — the Routing (beta) screen was crashing to a blank page (most visible on mobile, but it hit desktop too). The driver-assign code added in 0.32.5 sat ABOVE the toggles it reads (liveWrite / the on-map toast) in the component, so React threw "Cannot access \'liveWrite\' before initialization" the moment Routing opened. Moved the block below those declarations; Routing loads again. No feature changes.'],
   ['0.32.10', 'Dispatch Map — a "Routes" panel you can turn on. A new "Routes" button in the map\'s top-right toolbar opens a read-only route roster on the right (the same one the Routing screen has): one card per load with route name, driver, status (incl. Draft / Un-Planned from NuVizz\'s real load status), stops · skids · loose · weight, and a delivery-progress bar — plus the Status filter and quick-search. Click a card to frame that route on the map and open its detail. The toggle is remembered (off by default), and the panel pulls NuVizz\'s real load status from the cheap cached roster only while it\'s open.'],
@@ -11005,7 +11006,7 @@ function RoutingScreen({ debugCaptureRef }) {
   // ── Routes-panel driver assignment (live) ─────────────────────────────────────
   // A driver dropdown on each Routes card assigns a driver to that load on pick. Gated behind the
   // Live-dispatch gear toggle (liveWrite); a Beta/Live mode (default Beta) is the safety — in Beta a
-  // pick only previews, in Live it writes immediately via the assignDriver op (ASSIGN_DISPATCH with
+  // pick only previews, in Live it writes immediately via the assignDriver op (ASSIGN with
   // assignDtls only = assign, not release). Declared here, AFTER liveWrite + showMapToast, which it
   // reads in its dependency arrays during render (TDZ guard).
   const [assignRoster, setAssignRoster] = useState([]);

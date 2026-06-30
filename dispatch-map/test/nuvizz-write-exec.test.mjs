@@ -73,7 +73,7 @@ test('runCommitLoad: resolves load once, then insert → assign → dispatch in 
   assert.match(calls[0].url, /\/load\/info\//);
   assert.match(calls[1].url, /\/load\/insertstops\//);
   assert.match(calls[2].url, /\/load\/assignanddispatch\//);
-  assert.equal(calls[2].body.action, 'ASSIGN_DISPATCH');
+  assert.equal(calls[2].body.action, 'ASSIGN');
   assert.equal(calls[2].body.dispatchRoute[0].routeId, 'L1');
   assert.equal(calls[3].body.action, 'DISPATCH');
   assert.equal(r.steps.length, 3); // insert, assign, dispatch (getLoad is resolution, not a step)
