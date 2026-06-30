@@ -212,22 +212,36 @@ export async function runRefreshStops(req: Request): Promise<Response> {
   const results: any[] = [];
 
   // Capture a date's FULL load roster (incl. empty loads not yet filled with orders) into the
-  // cache the Loads view reads. For a FUTURE date it's pulled ONCE per scan-day — next-day loads
-  // are static, so there's no point re-pulling them every cycle (the dispatcher's explicit ask).
-  // Today's roster refreshes each load-scan since new loads appear through the day. Best-effort:
-  // a roster hiccup is logged and never affects the stop scan.
+  // cache the Loads view reads. For a FUTURE date a NON-EMPTY roster is pulled ONCE per scan-day —
+  // next-day loads are static once they exist, so there's no point re-pulling a populated roster
+  // every cycle (the dispatcher's explicit ask). But an EMPTY cached roster IS re-pulled (the day's
+  // loads may not have existed at the first morning pull), so tomorrow's loads appear as soon as
+  // they're created instead of freezing empty for the day. Today's roster refreshes each load-scan
+  // since new loads appear through the day. Best-effort: a hiccup is logged, never affects the scan.
   const persistLoadRoster = async (date: string, scannedAt: string) => {
     if (!fsOn) return;
     try {
       if (date !== today) {
         const cached = await readLoadRoster(TENANT, date).catch(() => null);
-        if (cached?.at && etDayString(new Date(cached.at)) === etDayString()) return; // already captured today
+        // Already have a NON-EMPTY roster captured today → done. Re-pull only while still empty.
+        if (cached?.at && etDayString(new Date(cached.at)) === etDayString() && (cached.loads?.length ?? 0) > 0) return;
       }
       const roster = await loadRosterForDate(date);
       await writeLoadRoster(TENANT, date, roster, scannedAt);
       console.log(`[scan] load-roster ${date}: cached ${roster.length} load(s)${date !== today ? ' (next-day, once/day)' : ''}`);
     } catch (e: any) { console.warn(`[scan] load-roster ${date} skipped: ${e?.message}`); }
   };
+
+  // Next-business-day empty-loads roster — pulled ONCE each morning (cheap: one PkgRoute list call
+  // per day, deduped per ET day above; re-pulled only while still empty). DECOUPLED from the next-
+  // day LOAD *scan*, which is 8pm-gated to avoid the expensive load-number probe — but the roster is
+  // the cheap list endpoint, so there's no reason to make the dispatcher wait until the evening
+  // before for tomorrow's empty/Draft loads. Runs on any acting morning scan (>=6am ET); a no-op
+  // once a non-empty roster is cached for the day, so it does not re-pull a populated roster.
+  if (decision.act && fsOn && decision.etHour >= 6) {
+    const rosterAt = new Date().toISOString();
+    for (const d of scanDates.slice(1)) await persistLoadRoster(d, rosterAt);
+  }
 
   // scanAndWrite — one date. includeUnplanned gates the order descent; `forced`
   // (manual/explicit) bypasses the per-date min-interval floor; manual caps the
