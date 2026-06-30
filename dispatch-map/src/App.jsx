@@ -51,7 +51,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.32.4';
+const APP_VERSION = '0.32.6';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -89,9 +89,11 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
-  ['0.32.4', 'Routing (beta) — remove an order from a route in the Compare panel. Each stop now has an × button; click it and that order is dropped from the load and listed under "Removing N order(s)" with an Undo. Nothing happens until you Save — on Save the removed orders become UNPLANNED in NuVizz (back to the pool), and the Save preview now spells this out ("unplan N order(s)") before you confirm. Staged like every other Compare edit; Undo restores an order before Save.'],
-  ['0.32.3', 'Routing (beta) — assign a driver straight from the Routes panel. With Live dispatch on (⚙ → Panels → "Live dispatch"), each route card gets a driver dropdown of your full roster; pick one and it assigns that driver to the load. A Beta/Live toggle sits next to the Status filter — in ○ Beta a pick only previews (nothing sent), in ● LIVE it assigns in NuVizz immediately (assign only — it does NOT dispatch/notify the driver; that\'s still the Compare panel\'s Dispatch step). The card shows the new driver right away. As always a real write also needs the server NUVIZZ_WRITE_ENABLED flag.'],
-  ['0.32.2', 'Routing — the Routes-panel Status filter now reflects NuVizz\'s REAL load status, so a "Draft" option appears (plus Un-Planned, In-Transit, Cancelled) to match the NuVizz route grid. Until now the status was derived purely from each route\'s stop execution + driver assignment, so there was no way to see a Draft (or Un-Planned / Cancelled) load. The panel now reads each load\'s actual lifecycle status from the day\'s load roster (the cheap list path, served from the scan cache — no extra number-probe scan) and falls back to the derived status only when a load has no roster status yet. The filter always offers the full NuVizz lifecycle (even at count 0) and never hides a status that\'s actually on the board.'],
+  ['0.32.6', 'Routing (beta) — remove an order from a route in the Compare panel. Each stop now has an × button; click it and that order is dropped from the load and listed under "Removing N order(s)" with an Undo. Nothing happens until you Save — on Save the removed orders become UNPLANNED in NuVizz (back to the pool), and the Save preview now spells this out ("unplan N order(s)") before you confirm. Staged like every other Compare edit; Undo restores an order before Save.'],
+  ['0.32.5', 'Routing (beta) — assign a driver straight from the Routes panel. With Live dispatch on (⚙ → Panels → "Live dispatch"), each route card gets a driver dropdown of your full roster; pick one and it assigns that driver to the load. A Beta/Live toggle sits next to the Status filter — in ○ Beta a pick only previews (nothing sent), in ● LIVE it assigns in NuVizz immediately (assign only — it does NOT dispatch/notify the driver; that\'s still the Compare panel\'s Dispatch step). The card shows the new driver right away. As always a real write also needs the server NUVIZZ_WRITE_ENABLED flag.'],
+  ['0.32.4', 'Routing — the Routes-panel Status filter now reflects NuVizz\'s REAL load status, so a "Draft" option appears (plus Un-Planned, In-Transit, Cancelled) to match the NuVizz route grid. Until now the status was derived purely from each route\'s stop execution + driver assignment, so there was no way to see a Draft (or Un-Planned / Cancelled) load. The panel now reads each load\'s actual lifecycle status from the day\'s load roster (the cheap list path, served from the scan cache — no extra number-probe scan) and falls back to the derived status only when a load has no roster status yet. The filter always offers the full NuVizz lifecycle (even at count 0) and never hides a status that\'s actually on the board.'],
+  ['0.32.3', 'Live dispatch (beta) — fixes "commitBoard: load not found" when saving a Compare-panel change (re-order, driver assign, or dispatch). The panel was sending the route\'s DISPLAY name (routeName, e.g. "LVILLE") to NuVizz as the load number, but NuVizz\'s load lookup is keyed by the REAL load number (e.g. "DAVIS0000…", from the daily load scan). The Compare panel now captures and sends each route\'s real load number, so Save resolves the live load and commits. The confirm preview still shows the friendly route name.'],
+  ['0.32.2', 'Routing (beta) — pulling up a route now always shows it on the map, even with "Unplanned only" on. Opening a route in the Compare panel (from the Routes list, a Loads-grid row, or a stop\'s "Open in Compare") draws that route\'s stops + sequence line in full regardless of the filter — the filter still hides every OTHER planned stop, so the pulled-up route reads clearly against just the unplanned board. Close the route and its planned stops hide again.'],
   ['0.32.1', 'Routing (beta) — the Live-dispatch (driver assign + dispatch) controls now have a gear toggle. Open the ⚙ gear → Panels → "Live dispatch (assign driver + dispatch)" to show/hide the Compare-panel driver picker, Dispatch checkbox, Save, and the Beta/Live toggle — no more ?write=1 URL flag needed (the flag still works and seeds the toggle the first time). The setting is remembered. As before, nothing is sent to NuVizz until you switch a card to Live and Save → Confirm, and a real write also needs the server NUVIZZ_WRITE_ENABLED flag.'],
   ['0.32.0', 'Routing — the right-panel Routes view is upgraded to read like NuVizz. Route cards are now sorted ALPHABETICALLY by route name (was grouped by driver), and there\'s a Status filter (Unassigned / Planned / In Progress / Completed / Exception, multi-select) plus a quick-search box at the top to match the NuVizz route grid. Each card now shows a colored status badge, the driver assignment, and the full freight breakdown — SKIDS (pallets) and LOOSE pieces, not just skids — alongside stops, weight, and delivered count. (The status is derived from each route\'s stop execution + driver assignment; capturing NuVizz\'s exact load-lifecycle code is a follow-up.)'],
   ['0.31.1', 'Mobile Loads tab — the per-load freight line now shows SKIDS and LOOSE pieces instead of one "plt" number. That "plt" count was actually NuVizz\'s total-pieces field (skids + loose) mislabeled as pallets; each load row now reads "X skids · Y loose · Z lb", matching the skids/loose breakdown the Stops list and data grids already use.'],
@@ -10058,7 +10060,9 @@ function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmN
     const loads = [], warnings = [];
     for (const r of dirtyRoutes) {
       const s = staged[r.key] || {};
-      const load = { loadNbr: r.key, loadId: r.loadId || undefined };
+      // loadNbr = the REAL NuVizz number (load/info is keyed by it); routeName = the friendly
+      // display name (r.key) carried through for the dry-run plan label and result reconciliation.
+      const load = { loadNbr: r.loadNbr || r.key, routeName: r.key, loadId: r.loadId || undefined };
       if (orderChanged(r)) {
         // EVERY stop must resolve to a NuVizz stopId — a partial order would make the server
         // DROP the unresolved stops. Refuse to sequence this load and warn instead.
@@ -10102,13 +10106,17 @@ function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmN
     setBusy(false); setConfirm(null);
     const resLoads = res.result?.loads || [];
     const orphaned = res.result?.orphaned || [];
-    const okKeys = resLoads.filter((l) => l.ok).map((l) => l.loadNbr);
+    // Results come back keyed by the REAL loadNbr we sent. Map each back to its Compare-card key
+    // (the routeName) so markSaved / staged-clear and the toast use the friendly name, not "DAVIS…".
+    const nbrToKey = new Map(loads.map((l) => [String(l.loadNbr), l.routeName ?? l.loadNbr]));
+    const keyOf = (l) => nbrToKey.get(String(l.loadNbr)) ?? l.loadNbr;
+    const okKeys = resLoads.filter((l) => l.ok).map(keyOf).filter(Boolean);
     if (okKeys.length) { markSaved(okKeys); setStaged((p) => { const n = { ...p }; for (const k of okKeys) delete n[k]; return n; }); }
     const orphanMsg = orphaned.length ? ` ⚠ ${orphaned.length} stop(s) now UNPLANNED — re-Save to reroute.` : '';
     if (res.ok) showToast(`✓ ${loads.length} load(s) saved to NuVizz.${orphanMsg}`);
     else {
       const failed = resLoads.filter((l) => !l.ok);
-      showToast(`✗ ${failed.map((l) => `${loadDisplayName(l.loadNbr) || l.loadNbr}: ${l.error || (l.steps || []).filter((s) => !s.ok).map((s) => s.error).join('; ')}`).join(' | ') || res.error || 'write failed'}${orphanMsg}`);
+      showToast(`✗ ${failed.map((l) => `${keyOf(l)}: ${l.error || (l.steps || []).filter((s) => !s.ok).map((s) => s.error).join('; ')}`).join(' | ') || res.error || 'write failed'}${orphanMsg}`);
     }
   };
 
@@ -10743,18 +10751,32 @@ function RoutingScreen({ debugCaptureRef }) {
   const [saveState, setSaveState] = useState(null); // null | 'saving' | 'saved' | error string
   const [lastRequest, setLastRequest] = useState(null);
 
-  const positioned = useMemo(() => {
+  // Every coord-bearing stop with any address fix applied — the UNFILTERED base. The "Unplanned only"
+  // view below filters this down; the workbench opens routes off this base so a planned route can
+  // still be pulled up (and captured in full) while the filter is on.
+  const positionedAll = useMemo(() => {
     // Apply a customer's corrected pin (location_override from the "Edit address" fix) so the routing
     // map moves the stop to the fixed spot — and recompute on `notes` so it happens LIVE, not only
     // after closing/reopening the map (#287). Mirrors the dispatch Map's override handling.
-    const p = stops
+    return stops
       .map((s) => { const ov = notes.get(s.matchKey)?.location_override; return (ov && typeof ov.lat === 'number' && typeof ov.lng === 'number') ? { ...s, lat: ov.lat, lng: ov.lng } : s; })
       .filter((s) => s.lat != null && s.lng != null);
-    return routeUnplannedOnly ? p.filter((s) => s.isUnplanned) : p;
-  }, [stops, routeUnplannedOnly, notes]);
+  }, [stops, notes]);
+  // Keys (routeName||loadNbr) of the routes open in the Compare workbench.
+  const openRouteKeys = useMemo(() => new Set(wbRoutes.map((r) => r.key)), [wbRoutes]);
+  // "Unplanned only" hides planned stops — but NEVER the stops of a route the dispatcher has pulled
+  // up (open in Compare). A pulled-up route always renders in full on the map regardless of the
+  // filter, so its planned stops + polyline stay visible while everything else stays hidden.
+  const positioned = useMemo(() => {
+    if (!routeUnplannedOnly) return positionedAll;
+    return positionedAll.filter((s) => s.isUnplanned || openRouteKeys.has(s.routeName || s.loadNbr));
+  }, [positionedAll, routeUnplannedOnly, openRouteKeys]);
   const stopById = useMemo(() => new Map(positioned.map((s) => [String(s.stopNbr), s])), [positioned]);
   const positionedRef = useRef(positioned);
   useEffect(() => { positionedRef.current = positioned; }, [positioned]);
+  // Unfiltered ref so opening a route captures ALL its stops even while "Unplanned only" is on.
+  const positionedAllRef = useRef(positionedAll);
+  useEffect(() => { positionedAllRef.current = positionedAll; }, [positionedAll]);
 
   // The day's routes/drivers roster — group the board by load (route name) for the right-panel
   // "Routes" view: stop count, driver, skids (cartons), weight, and delivery progress per route.
@@ -10798,13 +10820,17 @@ function RoutingScreen({ debugCaptureRef }) {
     setWbRoutes((prev) => {
       if (prev.some((r) => r.key === key)) return prev;                 // already open
       if (prev.length >= WB_MAX) { setLastAction(`Workbench is full (${WB_MAX} routes) — close one first.`); return prev; }
-      const routeStops = positionedRef.current.filter((s) => (s.routeName || s.loadNbr) === key);
+      const routeStops = positionedAllRef.current.filter((s) => (s.routeName || s.loadNbr) === key);
       // Capture the day's REAL loadId off the route's stops (recurring loads share a NAME across
       // days but each day's instance has its own loadId). Sent with a live Save so the server
       // assigns/dispatches THIS day's load instead of re-resolving the ambiguous name (#wrong-load).
       const loadId = routeStops.map((s) => s.raw?.load?.loadId ?? s.loadId).find(Boolean) || null;
+      // The REAL NuVizz load number off the day's stops (e.g. "DAVIS000000123", from the daily
+      // load scan). load/info is keyed by loadNbr, NOT the human routeName ("LVILLE") we group and
+      // display by — sending the routeName as the loadNbr 404s ("commitBoard: load not found").
+      const loadNbr = routeStops.map((s) => s.loadNbr).find(Boolean) || null;
       const order = orderRouteStops(routeStops).map((s) => String(s.stopNbr));
-      return [...prev, { key, loadId, order, collapsed: false }];
+      return [...prev, { key, loadNbr, loadId, order, collapsed: false }];
     });
   }, []);
   const closeWbRoute = useCallback((key) => setWbRoutes((prev) => prev.filter((r) => r.key !== key)), []);
@@ -11270,24 +11296,24 @@ function RoutingScreen({ debugCaptureRef }) {
   const onPickRoute = useCallback((key) => {
     openRouteInWorkbench(key);
     if (!google || !mapRef.current) return;
-    const pts = positioned.filter((s) => (s.routeName || s.loadNbr) === key && s.lat != null && s.lng != null);
+    const pts = positionedAll.filter((s) => (s.routeName || s.loadNbr) === key && s.lat != null && s.lng != null);
     if (!pts.length) return;
     const b = new google.maps.LatLngBounds();
     pts.forEach((s) => b.extend({ lat: s.lat, lng: s.lng }));
     mapRef.current.fitBounds(b, 60);
-  }, [openRouteInWorkbench, google, positioned]);
+  }, [openRouteInWorkbench, google, positionedAll]);
 
   // Frame ALL of a driver's stops (they may run multiple routes). Lighter than onPickRoute —
   // it only fits the map bounds, it doesn't open every route in the workbench.
   const onPickDriver = useCallback((routeKeys) => {
     const keys = new Set((routeKeys || []).map(String));
     if (!keys.size || !google || !mapRef.current) return;
-    const pts = positioned.filter((s) => keys.has(String(s.routeName || s.loadNbr)) && s.lat != null && s.lng != null);
+    const pts = positionedAll.filter((s) => keys.has(String(s.routeName || s.loadNbr)) && s.lat != null && s.lng != null);
     if (!pts.length) return;
     const b = new google.maps.LatLngBounds();
     pts.forEach((s) => b.extend({ lat: s.lat, lng: s.lng }));
     mapRef.current.fitBounds(b, 60);
-  }, [google, positioned]);
+  }, [google, positionedAll]);
 
   // The selected-stops list: persistent on desktop, collapsed by default on mobile.
   const [listOpen, setListOpen] = useState(!isMobile);
@@ -11773,17 +11799,17 @@ function RoutingScreen({ debugCaptureRef }) {
   // populated, while an empty load (no match) opens as a blank card ready to fill.
   const pickLoadToCompare = useCallback((loadNbr) => {
     if (viewing || !loadNbr) return;
-    const s = positioned.find((p) => p.loadNbr === loadNbr || (p.routeName || p.loadNbr) === loadNbr);
+    const s = positionedAll.find((p) => p.loadNbr === loadNbr || (p.routeName || p.loadNbr) === loadNbr);
     const key = s ? (s.routeName || s.loadNbr) : loadNbr;
     openRouteInWorkbench(key);
     if (isMobile) { setMobilePanel('setup'); setSheetOpen(true); }
-    const pts = positioned.filter((p) => (p.routeName || p.loadNbr) === key && p.lat != null && p.lng != null);
+    const pts = positionedAll.filter((p) => (p.routeName || p.loadNbr) === key && p.lat != null && p.lng != null);
     if (google && mapRef.current && pts.length) {
       const b = new google.maps.LatLngBounds();
       pts.forEach((p) => b.extend({ lat: p.lat, lng: p.lng }));
       mapRef.current.fitBounds(b, 60);
     }
-  }, [viewing, positioned, openRouteInWorkbench, google, isMobile]);
+  }, [viewing, positionedAll, openRouteInWorkbench, google, isMobile]);
   // Arm/disarm Ninja from the Compare panel button (the on-map tool is easy to miss). When arming
   // on mobile, drop the bottom sheet so the map — and the stops you're about to tap — are visible.
   const armNinjaFromPanel = useCallback(() => {

@@ -58,7 +58,7 @@ function planFor(op: WriteOp, payload: any): string[] {
       if (n) bits.push(`set ${n} stop(s) in order (anchor remove + one-at-a-time insert)`);
       if (L?.driverId != null && String(L?.driverId).trim() !== '') bits.push(`assign ${L?.driverName || L?.driverId}`);
       if (L?.dispatch) bits.push('dispatch');
-      return `Load ${L?.loadNbr ?? L?.loadId ?? '?'}: ${bits.length ? bits.join(' · ') : '(no change)'}`;
+      return `Load ${L?.routeName ?? L?.loadNbr ?? L?.loadId ?? '?'}: ${bits.length ? bits.join(' · ') : '(no change)'}`;
     });
   }
   if (op === 'commitLoad') {

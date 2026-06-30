@@ -51,6 +51,20 @@ test('dryRun commitLoad → ok with a human plan, ZERO NuVizz calls, never gated
   assert.equal(j.tenant, 'DAVIS');
 });
 
+test('dryRun commitBoard → plan labels the load by its friendly routeName, not the raw loadNbr', async () => {
+  // Regression for "commitBoard: load not found": the panel sends the REAL numeric loadNbr
+  // (load/info is keyed by it) but carries routeName for a readable confirm preview.
+  const res = await post({ op: 'commitBoard', dryRun: true, payload: { loads: [
+    { loadNbr: 'DAVIS000000123', routeName: 'LVILLE', orderedStopIds: ['s1', 's2', 's3'] },
+  ] } });
+  assert.equal(res.status, 200);
+  const j = await res.json();
+  assert.equal(j.ok, true);
+  assert.equal(j.dryRun, true);
+  assert.ok(j.plan.some((s) => /Load LVILLE:/.test(s)), 'plan shows the routeName');
+  assert.ok(!j.plan.some((s) => /DAVIS000000123/.test(s)), 'plan does not surface the raw loadNbr');
+});
+
 test('dryRun works for a non-mutating op too (getStop)', async () => {
   const res = await post({ op: 'getStop', dryRun: true, payload: { stopNbr: '7' } });
   const j = await res.json();
