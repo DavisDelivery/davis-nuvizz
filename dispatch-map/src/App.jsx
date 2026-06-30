@@ -51,7 +51,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.32.2';
+const APP_VERSION = '0.32.3';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -89,6 +89,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.32.3', 'Live dispatch (beta) — fixes "commitBoard: load not found" when saving a Compare-panel change (re-order, driver assign, or dispatch). The panel was sending the route\'s DISPLAY name (routeName, e.g. "LVILLE") to NuVizz as the load number, but NuVizz\'s load lookup is keyed by the REAL load number (e.g. "DAVIS0000…", from the daily load scan). The Compare panel now captures and sends each route\'s real load number, so Save resolves the live load and commits. The confirm preview still shows the friendly route name.'],
   ['0.32.2', 'Routing (beta) — pulling up a route now always shows it on the map, even with "Unplanned only" on. Opening a route in the Compare panel (from the Routes list, a Loads-grid row, or a stop\'s "Open in Compare") draws that route\'s stops + sequence line in full regardless of the filter — the filter still hides every OTHER planned stop, so the pulled-up route reads clearly against just the unplanned board. Close the route and its planned stops hide again.'],
   ['0.32.1', 'Routing (beta) — the Live-dispatch (driver assign + dispatch) controls now have a gear toggle. Open the ⚙ gear → Panels → "Live dispatch (assign driver + dispatch)" to show/hide the Compare-panel driver picker, Dispatch checkbox, Save, and the Beta/Live toggle — no more ?write=1 URL flag needed (the flag still works and seeds the toggle the first time). The setting is remembered. As before, nothing is sent to NuVizz until you switch a card to Live and Save → Confirm, and a real write also needs the server NUVIZZ_WRITE_ENABLED flag.'],
   ['0.32.0', 'Routing — the right-panel Routes view is upgraded to read like NuVizz. Route cards are now sorted ALPHABETICALLY by route name (was grouped by driver), and there\'s a Status filter (Unassigned / Planned / In Progress / Completed / Exception, multi-select) plus a quick-search box at the top to match the NuVizz route grid. Each card now shows a colored status badge, the driver assignment, and the full freight breakdown — SKIDS (pallets) and LOOSE pieces, not just skids — alongside stops, weight, and delivered count. (The status is derived from each route\'s stop execution + driver assignment; capturing NuVizz\'s exact load-lifecycle code is a follow-up.)'],
@@ -9956,7 +9957,9 @@ function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmN
     const loads = [], warnings = [];
     for (const r of dirtyRoutes) {
       const s = staged[r.key] || {};
-      const load = { loadNbr: r.key, loadId: r.loadId || undefined };
+      // loadNbr = the REAL NuVizz number (load/info is keyed by it); routeName = the friendly
+      // display name (r.key) carried through for the dry-run plan label and result reconciliation.
+      const load = { loadNbr: r.loadNbr || r.key, routeName: r.key, loadId: r.loadId || undefined };
       if (orderChanged(r)) {
         // EVERY stop must resolve to a NuVizz stopId — a partial order would make the server
         // DROP the unresolved stops. Refuse to sequence this load and warn instead.
@@ -9995,13 +9998,17 @@ function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmN
     setBusy(false); setConfirm(null);
     const resLoads = res.result?.loads || [];
     const orphaned = res.result?.orphaned || [];
-    const okKeys = resLoads.filter((l) => l.ok).map((l) => l.loadNbr);
+    // Results come back keyed by the REAL loadNbr we sent. Map each back to its Compare-card key
+    // (the routeName) so markSaved / staged-clear and the toast use the friendly name, not "DAVIS…".
+    const nbrToKey = new Map(loads.map((l) => [String(l.loadNbr), l.routeName ?? l.loadNbr]));
+    const keyOf = (l) => nbrToKey.get(String(l.loadNbr)) ?? l.loadNbr;
+    const okKeys = resLoads.filter((l) => l.ok).map(keyOf).filter(Boolean);
     if (okKeys.length) { markSaved(okKeys); setStaged((p) => { const n = { ...p }; for (const k of okKeys) delete n[k]; return n; }); }
     const orphanMsg = orphaned.length ? ` ⚠ ${orphaned.length} stop(s) now UNPLANNED — re-Save to reroute.` : '';
     if (res.ok) showToast(`✓ ${loads.length} load(s) saved to NuVizz.${orphanMsg}`);
     else {
       const failed = resLoads.filter((l) => !l.ok);
-      showToast(`✗ ${failed.map((l) => `${loadDisplayName(l.loadNbr) || l.loadNbr}: ${l.error || (l.steps || []).filter((s) => !s.ok).map((s) => s.error).join('; ')}`).join(' | ') || res.error || 'write failed'}${orphanMsg}`);
+      showToast(`✗ ${failed.map((l) => `${keyOf(l)}: ${l.error || (l.steps || []).filter((s) => !s.ok).map((s) => s.error).join('; ')}`).join(' | ') || res.error || 'write failed'}${orphanMsg}`);
     }
   };
 
@@ -10630,8 +10637,12 @@ function RoutingScreen({ debugCaptureRef }) {
       // days but each day's instance has its own loadId). Sent with a live Save so the server
       // assigns/dispatches THIS day's load instead of re-resolving the ambiguous name (#wrong-load).
       const loadId = routeStops.map((s) => s.raw?.load?.loadId ?? s.loadId).find(Boolean) || null;
+      // The REAL NuVizz load number off the day's stops (e.g. "DAVIS000000123", from the daily
+      // load scan). load/info is keyed by loadNbr, NOT the human routeName ("LVILLE") we group and
+      // display by — sending the routeName as the loadNbr 404s ("commitBoard: load not found").
+      const loadNbr = routeStops.map((s) => s.loadNbr).find(Boolean) || null;
       const order = orderRouteStops(routeStops).map((s) => String(s.stopNbr));
-      return [...prev, { key, loadId, order, collapsed: false }];
+      return [...prev, { key, loadNbr, loadId, order, collapsed: false }];
     });
   }, []);
   const closeWbRoute = useCallback((key) => setWbRoutes((prev) => prev.filter((r) => r.key !== key)), []);
