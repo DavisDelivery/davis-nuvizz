@@ -51,7 +51,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.32.16';
+const APP_VERSION = '0.32.17';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -89,6 +89,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.32.17', 'Routing (mobile) — FIX: the Lasso selection wouldn\'t apply once you already had a route in the Compare panel. The "Done" button that finishes a lasso lived in the Setup panel\'s Select-stops section, which is replaced by the Compare workbench as soon as a route is built — so you could tap out the polygon but had no way to finish it, and nothing got selected. There\'s now a floating Done / Cancel control right on the map whenever Box or Lasso is armed, so you can close the lasso and select the stops inside it no matter what the bottom panel is showing.'],
   ['0.32.16', 'Routing — tomorrow\'s (next business day\'s) EMPTY loads are now ready first thing in the morning. The next-day load roster (the Draft/empty load shells, before any orders are on them) used to only get cached in the 8pm-midnight scan window — so during the day the Routes/Loads view showed tomorrow\'s stops but none of its empty loads. The roster is the cheap load-list call (not the expensive load-number probe), so it\'s now pulled once each morning, a day into the future, decoupled from that evening load scan — and it keeps trying through the day until tomorrow\'s loads actually show up, then settles. Empty loads for the next business day are ready to plan against in the morning.'],
   ['0.32.15', 'Live dispatch (beta) — driver-assign FIX (corrects 0.32.13). Two wiring problems: (1) the assign action was changed to plain "ASSIGN" in 0.32.13, but the verified NuVizz portal call is "ASSIGN_DISPATCH" — reverted, so the assign matches what actually works. (2) For an empty/Draft load (no orders yet) the app could send the load\'s ROSTER id as the assign target instead of the load\'s internal id; NuVizz answers "Success" but never persists it. The server now resolves the real internal load id (load/info) before assigning whenever the id it was handed isn\'t already the internal one. Note: the board can\'t SHOW a just-assigned driver until the next scheduled scan re-reads NuVizz (the load roster carries no driver field) — confirm an assignment took in the NuVizz portal\'s Loads grid, not by refreshing the map.'],
   ['0.32.14', 'Header — the top "Dispatch" bar is pinned on every screen. The desktop header can no longer be squeezed out by tall content (it never shrinks now), and both the mobile and desktop headers sit above the page content (z-index) so nothing can scroll over or cover them. The bar stays put on Map, Routing, and Diagnostics.'],
@@ -12132,6 +12133,20 @@ function RoutingScreen({ debugCaptureRef }) {
             <div className="absolute top-12 left-1/2 -translate-x-1/2 z-30 max-w-[92%] bg-amber-500 text-white text-[11px] font-semibold rounded-full shadow-lg px-3 py-1 flex items-center gap-1.5">
               <NinjaIcon size={13} /><span>Ninja on — tap stops → <b>{effectiveActiveKey || '—'}</b></span>
               <button onClick={() => setNinjaMode(false)} className="ml-1 underline font-normal">done</button>
+            </div>
+          )}
+          {/* Floating Box/Lasso control — the Setup panel's Done button is hidden behind the
+              Compare workbench once a route is built, so finishing the lasso must not depend on
+              the bottom sheet. Shown on the map whenever a select tool is armed (mobile). */}
+          {!viewing && selectMode && isMobile && (
+            <div className="absolute top-12 left-1/2 -translate-x-1/2 z-30 max-w-[94%] bg-amber-500 text-white text-[11px] font-semibold rounded-full shadow-lg pl-3 pr-1.5 py-1 flex items-center gap-2">
+              {selectMode === 'lasso'
+                ? <span>⬠ Tap points · {lassoCount} placed{lassoCount < 3 ? ' (need ≥3)' : ''}</span>
+                : <span>📦 Tap two corners · {boxStep === 0 ? '1 of 2' : '2 of 2'}</span>}
+              {selectMode === 'lasso' && (
+                <button onClick={finishLasso} disabled={lassoCount < 3} className="rounded-full bg-white text-amber-700 px-2.5 py-0.5 font-bold disabled:opacity-50">Done</button>
+              )}
+              <button onClick={cancelMode} className="rounded-full bg-white/25 px-2 py-0.5 font-normal">Cancel</button>
             </div>
           )}
           {viewing
