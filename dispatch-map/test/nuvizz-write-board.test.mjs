@@ -91,7 +91,7 @@ test('commitBoard: assign/dispatch-only load with a known loadId skips getLoad e
   assert.equal(r.ok, true);
   assert.deepEqual(calls.map((c) => c.method), ['POST', 'POST'], 'no getLoad');
   assert.match(calls[0].url, /assignanddispatch/);
-  assert.equal(calls[0].body.action, 'ASSIGN_DISPATCH');
+  assert.equal(calls[0].body.action, 'ASSIGN');
   assert.equal(calls[0].body.dispatchRoute[0].assignDtls.driverId, 5);
   assert.equal(calls[1].body.action, 'DISPATCH');
 });
@@ -232,7 +232,7 @@ test('commitBoard: driverId 0 on a board load fires NO assign', async () => {
   const r = await runCommitBoard(requester, { loads: [{ loadNbr: 'BEN 1', loadId: 'L9', driverId: 0, dispatch: true }] }, CREDS);
   assert.equal(r.ok, true);
   assert.deepEqual(calls.map((c) => c.url.match(/(assignanddispatch)/)?.[1]).filter(Boolean), ['assignanddispatch']);
-  assert.equal(calls[0].body.action, 'DISPATCH', 'only dispatch, no ASSIGN_DISPATCH');
+  assert.equal(calls[0].body.action, 'DISPATCH', 'only dispatch, no assign');
 });
 
 test('commitBoard: a load with neither loadNbr nor loadId → ok:false, no calls, siblings still commit', async () => {

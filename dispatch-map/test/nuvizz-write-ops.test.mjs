@@ -94,10 +94,10 @@ test('removeStops: POST load/edit/{cc} with echoed header + routeSeq:[] + versio
   assert.equal(r.meta.route, '/load/edit');
 });
 
-test('assignDriver: POST load/assignanddispatch ASSIGN_DISPATCH with routeId=loadId + driverId', () => {
+test('assignDriver: POST load/assignanddispatch ASSIGN with routeId=loadId + driverId', () => {
   const r = buildOpRequest('assignDriver', { loadId: 'L1', driverId: 4242 }, CREDS);
   assert.equal(r.url, 'https://portal.nuvizz.com/deliverit/openapi/v7/load/assignanddispatch/DAVIS');
-  assert.deepEqual(bodyOf(r), { action: 'ASSIGN_DISPATCH', dispatchRoute: [{ routeId: 'L1', assignDtls: { driverId: 4242 } }] });
+  assert.deepEqual(bodyOf(r), { action: 'ASSIGN', dispatchRoute: [{ routeId: 'L1', assignDtls: { driverId: 4242 } }] });
   assert.match(r.meta.route, /assignanddispatch/);
 });
 

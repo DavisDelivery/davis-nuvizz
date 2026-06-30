@@ -67,7 +67,7 @@ function planFor(op: WriteOp, payload: any): string[] {
     const ins = Array.isArray(payload?.insertStopIds) ? payload.insertStopIds.length : 0;
     if (rm) steps.push(`remove ${rm} stop(s) from load ${payload?.loadNbr ?? '?'} (load/edit)`);
     if (ins) steps.push(`plan ${ins} stop(s) onto load ${payload?.loadNbr ?? '?'} (load/insertstops)`);
-    if (payload?.driverId != null && payload?.driverId !== '') steps.push(`assign driver ${payload?.driverName || payload?.driverId} (load/assignanddispatch ASSIGN_DISPATCH)`);
+    if (payload?.driverId != null && payload?.driverId !== '') steps.push(`assign driver ${payload?.driverName || payload?.driverId} (load/assignanddispatch ASSIGN)`);
     if (payload?.dispatch) steps.push(`dispatch load ${payload?.loadNbr ?? '?'} (load/assignanddispatch DISPATCH)`);
     return steps.length ? steps : ['(no changes to commit)'];
   }
