@@ -51,7 +51,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.32.14';
+const APP_VERSION = '0.32.15';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -89,6 +89,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.32.15', 'Live dispatch (beta) — driver-assign FIX (corrects 0.32.13). Two wiring problems: (1) the assign action was changed to plain "ASSIGN" in 0.32.13, but the verified NuVizz portal call is "ASSIGN_DISPATCH" — reverted, so the assign matches what actually works. (2) For an empty/Draft load (no orders yet) the app could send the load\'s ROSTER id as the assign target instead of the load\'s internal id; NuVizz answers "Success" but never persists it. The server now resolves the real internal load id (load/info) before assigning whenever the id it was handed isn\'t already the internal one. Note: the board can\'t SHOW a just-assigned driver until the next scheduled scan re-reads NuVizz (the load roster carries no driver field) — confirm an assignment took in the NuVizz portal\'s Loads grid, not by refreshing the map.'],
   ['0.32.14', 'Header — the top "Dispatch" bar is pinned on every screen. The desktop header can no longer be squeezed out by tall content (it never shrinks now), and both the mobile and desktop headers sit above the page content (z-index) so nothing can scroll over or cover them. The bar stays put on Map, Routing, and Diagnostics.'],
   ['0.32.13', 'Live dispatch (beta) — FIX: assigning a driver now actually STICKS. The assign call used NuVizz\'s "ASSIGN_DISPATCH" action, which assigns AND dispatches the route — but you can\'t dispatch an empty/Draft load (nothing to dispatch), so NuVizz accepted the call yet the assignment never persisted (and for any load it was silently dispatching when you only picked a driver). Switched the driver-assign to the plain "ASSIGN" action (assign carrier + driver only); dispatch stays the separate Dispatch checkbox. Pick a driver in ● LIVE → Save → the driver now holds after a refresh.'],
   ['0.32.12', 'Live dispatch (beta) — FIX: assigning a driver to (or dispatching) a Draft/empty load now works. Opening an empty load (no orders yet) gave it no loadId, so Save hit "commitBoard: load not found" — NuVizz needs the load\'s ID to assign anything to it. The Compare panel now resolves the real loadId from the load itself (empty loads are opened BY their loadId) and the day\'s load roster, so Save assigns straight off the loadId with no load/info lookup. The card also shows the load\'s real name (e.g. "NOR") instead of "Unnamed load". Verified across the open → stage → Save → assignDriver path (and against the NuVizz API spec: the assign routeId IS the loadId).'],
@@ -11007,7 +11008,7 @@ function RoutingScreen({ debugCaptureRef }) {
   // ── Routes-panel driver assignment (live) ─────────────────────────────────────
   // A driver dropdown on each Routes card assigns a driver to that load on pick. Gated behind the
   // Live-dispatch gear toggle (liveWrite); a Beta/Live mode (default Beta) is the safety — in Beta a
-  // pick only previews, in Live it writes immediately via the assignDriver op (ASSIGN with
+  // pick only previews, in Live it writes immediately via the assignDriver op (ASSIGN_DISPATCH with
   // assignDtls only = assign, not release). Declared here, AFTER liveWrite + showMapToast, which it
   // reads in its dependency arrays during render (TDZ guard).
   const [assignRoster, setAssignRoster] = useState([]);

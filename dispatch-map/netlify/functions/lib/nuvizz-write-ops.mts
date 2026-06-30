@@ -18,7 +18,7 @@
 //   getLoad      §3.3  GET  load/info/{loadNbr}/{cc}
 //   insertStops  §3.4  POST load/insertstops/{cc}
 //   removeStops  §3.5  POST load/edit/{cc}            (full-header echo — see toEditHeader §5)
-//   assignDriver §3.6  POST load/assignanddispatch/{cc} action ASSIGN
+//   assignDriver §3.6  POST load/assignanddispatch/{cc} action ASSIGN_DISPATCH
 //   dispatchLoad §3.7  POST load/assignanddispatch/{cc} action DISPATCH
 //   roster       §3.8  POST user/list/{cc}
 //   stop payload §4    buildStopPayload(row, settings)
@@ -400,13 +400,15 @@ export function buildOpRequest(op: SingleOp, payload: any, creds: WriteCreds): B
     }
 
     case 'assignDriver': {
+      // routeId = the load's INTERNAL loadId (hex, e.g. 6a438e9d52ef82bd1ed4516b), NOT the human
+      // loadNbr; driverId = numeric roster userId. action = ASSIGN_DISPATCH — this is the verified
+      // assign action the NuVizz portal itself uses (per the "NuVizz — Load (Driver) Assignment &
+      // Dispatch" handoff doc §2/§8, confirmed live against UAT). It assigns Carrier+Driver; releasing
+      // the load to the driver is the SEPARATE dispatchLoad op (action DISPATCH). (Do not switch this
+      // to action ASSIGN — the openapi prose is misleading; ASSIGN_DISPATCH is what actually works.)
       const routeId = req(payload?.routeId ?? payload?.loadId, 'assignDriver: routeId (the loadId)');
       const driverId = numericId(req(payload?.driverId, 'assignDriver: driverId (roster userId)'));
-      // action ASSIGN = assign Carrier + Driver ONLY (openapi DispatchRouteRequest.action). NOT
-      // ASSIGN_DISPATCH — that also DISPATCHES the route, which can't happen on an empty/Draft load
-      // (nothing to dispatch), so NuVizz accepts the call but the assignment never persists. Dispatch
-      // is the separate dispatchLoad op (action DISPATCH), driven by the Compare panel's Dispatch box.
-      const body = { action: 'ASSIGN', dispatchRoute: [{ routeId, assignDtls: { driverId } }] };
+      const body = { action: 'ASSIGN_DISPATCH', dispatchRoute: [{ routeId, assignDtls: { driverId } }] };
       return { url: `${base}/load/assignanddispatch/${enc(cc)}`, method: 'POST', headers: H, body: JSON.stringify(body), meta: { route: '/load/assignanddispatch(assign)', tenant: cc, source: 'live-write' } };
     }
 

@@ -22,8 +22,20 @@ import {
   buildOpRequest, parseOpResponse, toEditHeader, normalizeLoad, planSequence,
   type SingleOp, type WriteOp, type WriteCreds,
 } from './nuvizz-write-ops.mts';
+import { isHashLikeId } from './nuvizz-list.mts';
 
 const hasDriverId = (v: any) => v != null && String(v).trim() !== '' && Number(v) !== 0;
+
+// A caller-supplied loadId is only trustworthy AS the assign/dispatch routeId when it's a real
+// INTERNAL load id (the 24-hex loadHeader.loadId, e.g. 6a438e9d52ef82bd1ed4516b). A load that
+// carries stops gets that canonical id off its stops; but an EMPTY/Draft load (no stops) can only
+// fall back to the PkgRoute roster KeyColumn, which is NOT guaranteed to be that internal id. NuVizz
+// SILENTLY no-ops an assign whose routeId isn't the internal loadId — it returns "Success" while
+// persisting nothing (the exact "accepted but didn't take" symptom). So: trust a hash-like client
+// loadId (the proven path is untouched — those ids ARE hash-like); otherwise resolve the canonical
+// loadHeader.loadId from load/info before assigning. If the roster id already IS the internal id,
+// this guard is a no-op; if it isn't, this is what makes an empty-load assign actually persist.
+const trustableLoadId = (v: any) => v != null && isHashLikeId(String(v));
 
 // v7 API base — same env var the read path uses (nuvizz-scan.mts). Host-agnostic so a
 // UAT base can be set without code changes. No raw network call in this file (every
@@ -106,8 +118,11 @@ export async function runCommitLoad(requester: RequesterLike, payload: any, cred
   // Prefer a loadId the CALLER already knows (the board's same-day loadId) over re-resolving
   // by name: recurring loads share a NAME across days but have a distinct loadId per day, so
   // name-resolution could otherwise hit the wrong day's instance. We still getLoad when a
-  // remove needs the header/versionId, or when no loadId was supplied.
-  let loadId = payload?.loadId ?? null;
+  // remove needs the header/versionId, or when no loadId was supplied. Only trust a hash-like
+  // (internal) loadId, though — a non-canonical roster id (empty-load fallback) is dropped to
+  // null here so it is RE-RESOLVED to the real loadHeader.loadId below rather than sent as a
+  // routeId NuVizz silently ignores.
+  let loadId = trustableLoadId(payload?.loadId) ? payload.loadId : null;
   let editHeader: any = null, versionId: any = null;
 
   const needLoad = (!loadId && (insertStopIds.length || hasDriver || dispatch)) || removeStopIds.length;
@@ -187,8 +202,11 @@ export async function runCommitBoard(requester: RequesterLike, payload: any, cre
     const result: any = { loadNbr, ok: true, steps: [], error: null };
     const desired: any[] = Array.isArray(L?.orderedStopIds) ? L.orderedStopIds : [];
     if (!loadNbr && !L?.loadId) { result.ok = false; result.error = 'commitBoard: loadNbr or loadId required'; planned.push({ L, result }); continue; }
-    // Assign/dispatch-only with a known loadId → no getLoad needed (saves a read).
-    if (!desired.length && L?.loadId) {
+    // Assign/dispatch-only with a TRUSTWORTHY (internal/hash-like) loadId → no getLoad needed
+    // (saves a read). A non-canonical loadId (empty-load roster fallback) is NOT trusted here —
+    // it falls through to fetchLoad below so the real loadHeader.loadId is resolved, otherwise
+    // NuVizz returns Success on the assign but never persists it.
+    if (!desired.length && trustableLoadId(L?.loadId)) {
       planned.push({ L, loadId: L.loadId, hasLoad: true, plan: { ok: true, unchanged: true, removeStopIds: [], insertOrdered: [] }, result });
       continue;
     }
@@ -212,7 +230,9 @@ export async function runCommitBoard(requester: RequesterLike, payload: any, cre
       ? planSequence(curIds, desired)
       : { ok: true, unchanged: true, removeStopIds: [], insertOrdered: [] };
     if (!plan.ok) { result.ok = false; result.error = plan.reason; planned.push({ L, curIds, result }); continue; }
-    planned.push({ L, load, hasLoad: true, loadId: L.loadId || load.loadId, editHeader: toEditHeader(load.loadHeader), versionId: load.versionId, plan, curIds, want: desired.map((x) => String(x)), result });
+    // Prefer a hash-like caller loadId (the board's same-day internal id); otherwise use the
+    // loadHeader.loadId we just resolved — never let a non-canonical roster id become the routeId.
+    planned.push({ L, load, hasLoad: true, loadId: trustableLoadId(L?.loadId) ? L.loadId : (load.loadId || L.loadId), editHeader: toEditHeader(load.loadHeader), versionId: load.versionId, plan, curIds, want: desired.map((x) => String(x)), result });
   }
 
   const live = planned.filter((p) => p.result.ok && p.hasLoad);
