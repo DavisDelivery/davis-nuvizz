@@ -51,7 +51,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.32.7';
+const APP_VERSION = '0.32.8';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -89,6 +89,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.32.8', 'Dispatch Map — a "Routes" panel you can turn on. A new "Routes" button in the map\'s top-right toolbar opens a read-only route roster on the right (the same one the Routing screen has): one card per load with route name, driver, status (incl. Draft / Un-Planned from NuVizz\'s real load status), stops · skids · loose · weight, and a delivery-progress bar — plus the Status filter and quick-search. Click a card to frame that route on the map and open its detail. The toggle is remembered (off by default), and the panel pulls NuVizz\'s real load status from the cheap cached roster only while it\'s open.'],
   ['0.32.7', 'Loads grid — new "% Done" column. The bottom Stops/Loads grid (on both the dispatch Map and Routing screens) now shows each load\'s delivery progress as a percent (delivered ÷ stops), green at 100%, right after the Stops count. Sortable like every other column; empty "No orders yet" loads show "—".'],
   ['0.32.6', 'Routing (beta) — remove an order from a route in the Compare panel. Each stop now has an × button; click it and that order is dropped from the load and listed under "Removing N order(s)" with an Undo. Nothing happens until you Save — on Save the removed orders become UNPLANNED in NuVizz (back to the pool), and the Save preview now spells this out ("unplan N order(s)") before you confirm. Staged like every other Compare edit; Undo restores an order before Save.'],
   ['0.32.5', 'Routing (beta) — assign a driver straight from the Routes panel. With Live dispatch on (⚙ → Panels → "Live dispatch"), each route card gets a driver dropdown of your full roster; pick one and it assigns that driver to the load. A Beta/Live toggle sits next to the Status filter — in ○ Beta a pick only previews (nothing sent), in ● LIVE it assigns in NuVizz immediately (assign only — it does NOT dispatch/notify the driver; that\'s still the Compare panel\'s Dispatch step). The card shows the new driver right away. As always a real write also needs the server NUVIZZ_WRITE_ENABLED flag.'],
@@ -6277,6 +6278,33 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef }) {
   const [selectedStop, setSelectedStop] = useState(null);
   const [selectedDriver, setSelectedDriver] = useState(null);
   const [selectedRoute, setSelectedRoute] = useState(null); // M5.2 — loadNbr of opened route, or null
+  // Routes panel (read-only) on the dispatch Map — a togglable right-side route roster mirroring the
+  // Routing screen's Routes view. Persisted; off by default. Loads NuVizz's real load status (cheap
+  // cached roster) only while the panel is open.
+  const [routesPanelOn, setRoutesPanelOn] = useState(() => {
+    try { return localStorage.getItem('map.routesPanel') === 'on'; } catch { return false; }
+  });
+  useEffect(() => { try { localStorage.setItem('map.routesPanel', routesPanelOn ? 'on' : 'off'); } catch { /* ignore */ } }, [routesPanelOn]);
+  const [routesLoadStatus, setRoutesLoadStatus] = useState(() => new Map());
+  useEffect(() => {
+    if (!routesPanelOn || !selectedDate) return;
+    let cancelled = false;
+    fetch('/.netlify/functions/nuvizz-loads-roster?date=' + encodeURIComponent(selectedDate), { cache: 'no-store' })
+      .then((r) => r.json())
+      .then((j) => {
+        if (cancelled) return;
+        const m = new Map();
+        if (j && j.ok) for (const l of (j.loads || [])) {
+          const nm = String(l.name || '').trim().toLowerCase();
+          if (nm) m.set(nm, l.status || '');
+          if (l.loadId) m.set('#id:' + String(l.loadId), l.status || '');
+        }
+        setRoutesLoadStatus(m);
+      })
+      .catch(() => { if (!cancelled) setRoutesLoadStatus(new Map()); });
+    return () => { cancelled = true; };
+  }, [routesPanelOn, selectedDate]);
+  const routeGroups = useMemo(() => (routesPanelOn ? computeRouteGroups(stops, routesLoadStatus) : []), [routesPanelOn, stops, routesLoadStatus]);
   // M5 — Show Routes toggle (persisted). Polylines render only when ON.
   const [showRoutes, setShowRoutes] = useState(() => safeReadJSON(LS_SHOW_ROUTES, false));
   const [filters, setFilters] = useState({});
@@ -7756,6 +7784,15 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef }) {
               setShowRoutes={setShowRoutes}
               boardDate={selectedDate}
             />
+            {/* Routes panel toggle — opens the read-only route roster on the right (route name, driver,
+                status incl. Draft, stops/skids/loose/weight, % delivered; click to frame on the map). */}
+            <button
+              onClick={() => setRoutesPanelOn((v) => !v)}
+              title={routesPanelOn ? 'Hide the Routes panel' : 'Show the Routes panel (route roster + status)'}
+              className={`flex items-center justify-center gap-1 rounded-lg border shadow px-2 py-1.5 text-[11px] font-semibold pointer-events-auto ${routesPanelOn ? 'bg-blue-600 border-blue-600 text-white' : 'bg-white/95 border-slate-200 text-slate-700 hover:bg-slate-50'}`}
+            >
+              <MapPinned size={13} /> Routes
+            </button>
             {/* Launchers at the bottom of the right control column: texting
                 (message bubble) + AI assistant ("?"). */}
             {onOpenMessages && <MessagesLauncher onClick={onOpenMessages} unread={smsUnread} />}
@@ -7890,6 +7927,18 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef }) {
             handlePanToStop(s);   // saves the board view so closing zooms back out
           }}
         />
+      )}
+      {/* Read-only Routes panel — the default right panel when toggled on and nothing else is open.
+          Clicking a card frames that route on the map and drills into its RouteDetailSidebar; closing
+          it returns here. The roster + Status filter + search mirror the Routing screen's panel. */}
+      {routesPanelOn && !selectedDriver && !selectedRoute && !selectedStop && (
+        <div className="w-[320px] shrink-0 border-l bg-white flex flex-col min-h-0">
+          <div className="flex items-center justify-between px-2 py-1.5 border-b shrink-0">
+            <span className="font-semibold text-slate-800 text-[13px]">Routes <span className="text-slate-400 text-[11px]">({routeGroups.length})</span></span>
+            <button onClick={() => setRoutesPanelOn(false)} className="text-slate-400 hover:text-slate-700" aria-label="Close routes panel"><X size={16} /></button>
+          </div>
+          <RoutingRoutesPanel groups={routeGroups} onPick={(key) => { const g = routeGroups.find((x) => x.key === key); setSelectedStop(null); setSelectedDriver(null); setSelectedRoute(g?.loadNbr || key); }} />
+        </div>
       )}
     </div>
   );
@@ -9393,6 +9442,40 @@ function routeStatusOptions(groups) {
   const extras = [...present].filter((s) => !ROUTE_STATUS_ORDER.includes(s)).sort();
   return [...ordered, ...extras];
 }
+// Group the day's stops into route/load summary cards for the Routes panel — shared by the Routing
+// screen and the dispatch Map. Each group carries driver, loadId/loadNbr, counts, freight totals,
+// and a status that prefers NuVizz's REAL load status (from the loads roster, joined by name then
+// loadId) and falls back to the execution-derived status. Sorted alphabetically by display name.
+function computeRouteGroups(stops, loadStatusByName) {
+  const m = new Map();
+  for (const s of stops) {
+    const key = s.routeName || s.loadNbr;
+    if (!key) continue;
+    let g = m.get(key);
+    if (!g) { g = { key, name: s.routeName || key, loadNbr: s.loadNbr || key, loadId: null, driver: '', driverId: '', count: 0, delivered: 0, inProgress: 0, exceptions: 0, skids: 0, loose: 0, weight: 0 }; m.set(key, g); }
+    if (!g.loadId) g.loadId = s.raw?.load?.loadId ?? s.loadId ?? null;
+    if (!g.driver && (s.driverName || s.driverUserName)) g.driver = s.driverName || s.driverUserName;
+    if (!g.driverId && s.driverId) g.driverId = s.driverId;
+    g.count += 1;
+    const kind = classifyStopStatus(s);
+    if (kind === 'DELIVERED') g.delivered += 1;
+    else if (kind === 'OUT_FOR_DEL' || kind === 'ARRIVED') g.inProgress += 1;
+    if (kind === 'EXCEPTION') g.exceptions += 1;
+    g.skids += Number(s.cartons) || 0;
+    g.loose += Number(s.volume) || 0;
+    g.weight += Number(s.weight) || 0;
+  }
+  const groups = [...m.values()];
+  const byName = loadStatusByName || new Map();
+  for (const g of groups) {
+    const raw = byName.get(String(g.name || '').trim().toLowerCase()) ?? byName.get('#id:' + String(g.loadNbr));
+    g.rosterStatus = raw || '';
+    g.status = nuvizzLoadStatus(raw) || deriveRouteStatus(g);
+  }
+  return groups.sort((a, b) =>
+    String(loadDisplayName(a.name, a.loadNbr) || a.name).localeCompare(
+      String(loadDisplayName(b.name, b.loadNbr) || b.name), undefined, { sensitivity: 'base' }));
+}
 function RouteStatusBadge({ status }) {
   const m = ROUTE_STATUS_META[status] || ROUTE_STATUS_DEFAULT_META;
   return (
@@ -10784,39 +10867,7 @@ function RoutingScreen({ debugCaptureRef }) {
 
   // The day's routes/drivers roster — group the board by load (route name) for the right-panel
   // "Routes" view: stop count, driver, skids (cartons), weight, and delivery progress per route.
-  const routeGroups = useMemo(() => {
-    const m = new Map();
-    for (const s of stops) {
-      const key = s.routeName || s.loadNbr;
-      if (!key) continue;
-      let g = m.get(key);
-      if (!g) { g = { key, name: s.routeName || key, loadNbr: s.loadNbr || key, loadId: null, driver: '', driverId: '', count: 0, delivered: 0, inProgress: 0, exceptions: 0, skids: 0, loose: 0, weight: 0 }; m.set(key, g); }
-      if (!g.loadId) g.loadId = s.raw?.load?.loadId ?? s.loadId ?? null;   // NuVizz load id for assignDriver
-      if (!g.driver && (s.driverName || s.driverUserName)) g.driver = s.driverName || s.driverUserName;
-      if (!g.driverId && s.driverId) g.driverId = s.driverId;
-      g.count += 1;
-      const kind = classifyStopStatus(s);
-      if (kind === 'DELIVERED') g.delivered += 1;
-      else if (kind === 'OUT_FOR_DEL' || kind === 'ARRIVED') g.inProgress += 1;
-      if (kind === 'EXCEPTION') g.exceptions += 1;
-      g.skids += Number(s.cartons) || 0;          // NuVizz totalCartons = real skids (pallets)
-      g.loose += Number(s.volume) || 0;           // NuVizz volume = loose pieces
-      g.weight += Number(s.weight) || 0;
-    }
-    const groups = [...m.values()];
-    // Prefer NuVizz's real load status from the roster (joined by name, then loadId); fall back to
-    // the execution-derived status when this load has no roster status yet.
-    for (const g of groups) {
-      const raw = loadStatusByName.get(String(g.name || '').trim().toLowerCase())
-        ?? loadStatusByName.get('#id:' + String(g.loadNbr));
-      g.rosterStatus = raw || '';
-      g.status = nuvizzLoadStatus(raw) || deriveRouteStatus(g);
-    }
-    // Alphabetical by the displayed route name (the card's bold title), case-insensitive.
-    return groups.sort((a, b) =>
-      String(loadDisplayName(a.name, a.loadNbr) || a.name).localeCompare(
-        String(loadDisplayName(b.name, b.loadNbr) || b.name), undefined, { sensitivity: 'base' }));
-  }, [stops, loadStatusByName]);
+  const routeGroups = useMemo(() => computeRouteGroups(stops, loadStatusByName), [stops, loadStatusByName]);
 
   // Workbench handlers — open a route into the side-by-side cards, tune it, close it.
   const openRouteInWorkbench = useCallback((key) => {
