@@ -51,7 +51,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.32.13';
+const APP_VERSION = '0.32.14';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -89,6 +89,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.32.14', 'Header — the top "Dispatch" bar is pinned on every screen. The desktop header can no longer be squeezed out by tall content (it never shrinks now), and both the mobile and desktop headers sit above the page content (z-index) so nothing can scroll over or cover them. The bar stays put on Map, Routing, and Diagnostics.'],
   ['0.32.13', 'Live dispatch (beta) — FIX: assigning a driver now actually STICKS. The assign call used NuVizz\'s "ASSIGN_DISPATCH" action, which assigns AND dispatches the route — but you can\'t dispatch an empty/Draft load (nothing to dispatch), so NuVizz accepted the call yet the assignment never persisted (and for any load it was silently dispatching when you only picked a driver). Switched the driver-assign to the plain "ASSIGN" action (assign carrier + driver only); dispatch stays the separate Dispatch checkbox. Pick a driver in ● LIVE → Save → the driver now holds after a refresh.'],
   ['0.32.12', 'Live dispatch (beta) — FIX: assigning a driver to (or dispatching) a Draft/empty load now works. Opening an empty load (no orders yet) gave it no loadId, so Save hit "commitBoard: load not found" — NuVizz needs the load\'s ID to assign anything to it. The Compare panel now resolves the real loadId from the load itself (empty loads are opened BY their loadId) and the day\'s load roster, so Save assigns straight off the loadId with no load/info lookup. The card also shows the load\'s real name (e.g. "NOR") instead of "Unnamed load". Verified across the open → stage → Save → assignDriver path (and against the NuVizz API spec: the assign routeId IS the loadId).'],
   ['0.32.11', 'HOTFIX — the Routing (beta) screen was crashing to a blank page (most visible on mobile, but it hit desktop too). The driver-assign code added in 0.32.5 sat ABOVE the toggles it reads (liveWrite / the on-map toast) in the component, so React threw "Cannot access \'liveWrite\' before initialization" the moment Routing opened. Moved the block below those declarations; Routing loads again. No feature changes.'],
@@ -4995,7 +4996,7 @@ function makeDriverLabelOverlayClass(google) {
 function MobileAppBar({ version, onChipMenu, chipMenuOpen, onSelectMenu, smsUnread = 0 }) {
   return (
     <header
-      className="flex-shrink-0 flex items-center justify-between gap-2 px-3 text-white relative"
+      className="flex-shrink-0 z-30 flex items-center justify-between gap-2 px-3 text-white relative"
       style={{
         background: BRAND,
         // minHeight (not a fixed height) + the notch inset as padding so the bar
@@ -12742,7 +12743,7 @@ function Shell() {
           smsUnread={smsUnread}
         />
       ) : (
-        <header className="flex items-center justify-between px-4 py-2 border-b bg-white" style={{ paddingTop: 'env(safe-area-inset-top)' }}>
+        <header className="shrink-0 relative z-30 flex items-center justify-between px-4 py-2 border-b bg-white" style={{ paddingTop: 'env(safe-area-inset-top)' }}>
           <div className="flex items-center gap-3">
             <img src="/davis-logo.jpg" alt="Davis Delivery Service" className="h-9 w-auto" />
             <div className="font-bold leading-tight text-slate-800 border-l border-slate-200 pl-3">Dispatch Map</div>
