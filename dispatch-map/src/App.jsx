@@ -51,7 +51,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.32.3';
+const APP_VERSION = '0.32.6';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -89,6 +89,9 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.32.6', 'Routing (beta) — remove an order from a route in the Compare panel. Each stop now has an × button; click it and that order is dropped from the load and listed under "Removing N order(s)" with an Undo. Nothing happens until you Save — on Save the removed orders become UNPLANNED in NuVizz (back to the pool), and the Save preview now spells this out ("unplan N order(s)") before you confirm. Staged like every other Compare edit; Undo restores an order before Save.'],
+  ['0.32.5', 'Routing (beta) — assign a driver straight from the Routes panel. With Live dispatch on (⚙ → Panels → "Live dispatch"), each route card gets a driver dropdown of your full roster; pick one and it assigns that driver to the load. A Beta/Live toggle sits next to the Status filter — in ○ Beta a pick only previews (nothing sent), in ● LIVE it assigns in NuVizz immediately (assign only — it does NOT dispatch/notify the driver; that\'s still the Compare panel\'s Dispatch step). The card shows the new driver right away. As always a real write also needs the server NUVIZZ_WRITE_ENABLED flag.'],
+  ['0.32.4', 'Routing — the Routes-panel Status filter now reflects NuVizz\'s REAL load status, so a "Draft" option appears (plus Un-Planned, In-Transit, Cancelled) to match the NuVizz route grid. Until now the status was derived purely from each route\'s stop execution + driver assignment, so there was no way to see a Draft (or Un-Planned / Cancelled) load. The panel now reads each load\'s actual lifecycle status from the day\'s load roster (the cheap list path, served from the scan cache — no extra number-probe scan) and falls back to the derived status only when a load has no roster status yet. The filter always offers the full NuVizz lifecycle (even at count 0) and never hides a status that\'s actually on the board.'],
   ['0.32.3', 'Live dispatch (beta) — fixes "commitBoard: load not found" when saving a Compare-panel change (re-order, driver assign, or dispatch). The panel was sending the route\'s DISPLAY name (routeName, e.g. "LVILLE") to NuVizz as the load number, but NuVizz\'s load lookup is keyed by the REAL load number (e.g. "DAVIS0000…", from the daily load scan). The Compare panel now captures and sends each route\'s real load number, so Save resolves the live load and commits. The confirm preview still shows the friendly route name.'],
   ['0.32.2', 'Routing (beta) — pulling up a route now always shows it on the map, even with "Unplanned only" on. Opening a route in the Compare panel (from the Routes list, a Loads-grid row, or a stop\'s "Open in Compare") draws that route\'s stops + sequence line in full regardless of the filter — the filter still hides every OTHER planned stop, so the pulled-up route reads clearly against just the unplanned board. Close the route and its planned stops hide again.'],
   ['0.32.1', 'Routing (beta) — the Live-dispatch (driver assign + dispatch) controls now have a gear toggle. Open the ⚙ gear → Panels → "Live dispatch (assign driver + dispatch)" to show/hide the Compare-panel driver picker, Dispatch checkbox, Save, and the Beta/Live toggle — no more ?write=1 URL flag needed (the flag still works and seeds the toggle the first time). The setting is remembered. As before, nothing is sent to NuVizz until you switch a card to Live and Save → Confirm, and a real write also needs the server NUVIZZ_WRITE_ENABLED flag.'],
@@ -9339,23 +9342,62 @@ function deriveRouteStatus(g) {
   return 'Unassigned';                    // no driver assigned
 }
 
-const ROUTE_STATUSES = ['Unassigned', 'Planned', 'In Progress', 'Completed', 'Exception'];
+// NuVizz's REAL load-lifecycle status, normalized from the load roster's free-text status column.
+// We don't control its exact spelling/casing, so match by substring. Returns a clean canonical
+// label for the states NuVizz uses; the title-cased raw string for an unrecognized non-empty
+// status (so a state we didn't anticipate still shows as its own filter option instead of being
+// mis-bucketed); or null when there's no roster status at all (caller falls back to the
+// execution-derived status). The un-planned check runs before 'plan' since "unplanned" contains it.
+function nuvizzLoadStatus(raw) {
+  const s = String(raw || '').trim().toLowerCase();
+  if (!s) return null;
+  if (s.includes('draft')) return 'Draft';
+  if (s.includes('cancel')) return 'Cancelled';
+  if (s.includes('complet') || s.includes('deliver')) return 'Completed';
+  if (s.includes('transit') || s.includes('out for') || s.includes('en route') || s.includes('enroute')) return 'In-Transit';
+  if (s.includes('unplan') || s.includes('un-plan') || s.includes('un plan') || s.includes('not plan')) return 'Un-Planned';
+  if (s.includes('plan')) return 'Planned';
+  if (s.includes('except')) return 'Exception';
+  return String(raw).trim().replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+// Canonical order for the Routes Status filter. The NuVizz lifecycle states (always offered, even
+// at count 0, so the filter reads like the NuVizz route grid); the execution-derived fallback
+// states (Unassigned / In Progress, used only when a load has no roster status yet) slot in where
+// they fit and only show when present.
+const ROUTE_STATUS_ORDER = ['Draft', 'Un-Planned', 'Unassigned', 'Planned', 'In Progress', 'In-Transit', 'Completed', 'Cancelled', 'Exception'];
+// Always shown in the filter even at count 0 — the NuVizz lifecycle set.
+const ROUTE_STATUS_ALWAYS = ['Draft', 'Un-Planned', 'Planned', 'In-Transit', 'Completed', 'Cancelled', 'Exception'];
+const ROUTE_STATUS_DEFAULT_META = { color: '#475569', bg: '#f1f5f9' };
 const ROUTE_STATUS_META = {
+  'Draft':       { color: '#7c3aed', bg: '#f5f3ff' },
+  'Un-Planned':  { color: '#475569', bg: '#f1f5f9' },
   'Unassigned':  { color: '#475569', bg: '#f1f5f9' },
   'Planned':     { color: '#1d4ed8', bg: '#eff6ff' },
   'In Progress': { color: '#b45309', bg: '#fffbeb' },
+  'In-Transit':  { color: '#b45309', bg: '#fffbeb' },
   'Completed':   { color: '#15803d', bg: '#f0fdf4' },
+  'Cancelled':   { color: '#b91c1c', bg: '#fef2f2' },
   'Exception':   { color: '#b91c1c', bg: '#fef2f2' },
 };
+// The Status-filter option list for the routes on the board: the always-on NuVizz lifecycle states
+// plus any other status actually present (a derived fallback, or an unrecognized NuVizz label),
+// de-duped, in canonical order with unknowns last. Keeps "Draft" visible even at 0.
+function routeStatusOptions(groups) {
+  const present = new Set(groups.map((g) => g.status).filter(Boolean));
+  const ordered = ROUTE_STATUS_ORDER.filter((s) => ROUTE_STATUS_ALWAYS.includes(s) || present.has(s));
+  const extras = [...present].filter((s) => !ROUTE_STATUS_ORDER.includes(s)).sort();
+  return [...ordered, ...extras];
+}
 function RouteStatusBadge({ status }) {
-  const m = ROUTE_STATUS_META[status] || ROUTE_STATUS_META['Unassigned'];
+  const m = ROUTE_STATUS_META[status] || ROUTE_STATUS_DEFAULT_META;
   return (
     <span className="text-[9px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded-full shrink-0"
       style={{ color: m.color, background: m.bg }}>{status}</span>
   );
 }
 
-function RoutingRoutesPanel({ groups, onPick }) {
+function RoutingRoutesPanel({ groups, onPick, liveWrite = false, roster = [], rosterError = null, assignLive = false, setAssignLive, onAssignDriver, assignedOverride = {}, assigningKey = null }) {
   const [selected, setSelected] = useState(() => new Set());   // empty = All
   const [menuOpen, setMenuOpen] = useState(false);
   const [q, setQ] = useState('');
@@ -9365,6 +9407,9 @@ function RoutingRoutesPanel({ groups, onPick }) {
     for (const g of groups) c[g.status] = (c[g.status] || 0) + 1;
     return c;
   }, [groups]);
+  // Status options reflect NuVizz's real load lifecycle (Draft / Un-Planned / … from the load
+  // roster), always offering the lifecycle set plus any other status present on the board.
+  const statusOptions = useMemo(() => routeStatusOptions(groups), [groups]);
 
   const filtered = useMemo(() => {
     const query = q.trim().toLowerCase();
@@ -9399,7 +9444,7 @@ function RoutingRoutesPanel({ groups, onPick }) {
                   <span>All</span><span className="text-slate-400">{groups.length}</span>
                 </button>
                 <div className="border-t my-1" />
-                {ROUTE_STATUSES.map((st) => (
+                {statusOptions.map((st) => (
                   <button key={st} onClick={() => toggle(st)}
                     className="w-full flex items-center justify-between px-2.5 py-1.5 hover:bg-slate-50">
                     <span className="flex items-center gap-1.5">
@@ -9418,6 +9463,15 @@ function RoutingRoutesPanel({ groups, onPick }) {
         {(q || selected.size > 0) && (
           <button onClick={() => { setQ(''); setSelected(new Set()); }} className="text-[11px] text-slate-500 hover:text-slate-800 shrink-0">Clear</button>
         )}
+        {/* Driver-assign mode (only when Live dispatch is enabled). Beta = a pick previews; Live =
+            a pick assigns the driver in NuVizz immediately. Mirrors the Compare panel's safety. */}
+        {liveWrite && setAssignLive && (
+          <button onClick={() => setAssignLive((v) => !v)}
+            title={assignLive ? 'LIVE — picking a driver assigns it in NuVizz immediately. Click for Beta (preview only).' : 'BETA — picking a driver only previews. Click to go Live and assign for real.'}
+            className={`inline-flex items-center gap-1 text-[11px] font-bold px-2 py-1 rounded border shrink-0 ${assignLive ? 'border-red-600 bg-red-600 text-white' : 'border-slate-300 bg-white text-slate-600 hover:bg-slate-50'}`}>
+            {assignLive ? '● LIVE' : '○ Beta'}
+          </button>
+        )}
       </div>
 
       <div className="px-3 py-1.5 text-[11px] text-slate-500 border-b bg-slate-50">
@@ -9431,25 +9485,50 @@ function RoutingRoutesPanel({ groups, onPick }) {
           {filtered.map((g) => {
             const pct = g.count ? Math.round((100 * g.delivered) / g.count) : 0;
             const done = pct === 100;
+            // Optimistic: show a just-assigned driver right away (the board's own driverName lags
+            // until the next scan). Preselect the dropdown to the current driver when it matches the roster.
+            const shownDriver = assignedOverride[g.key] || g.driver;
+            const curDriverId = roster.find((d) => String(d.name || '').trim().toLowerCase() === String(shownDriver || '').trim().toLowerCase())?.driverId;
+            const busy = assigningKey === g.key;
             return (
-              <button key={g.key} onClick={() => onPick(g.key)} className="w-full text-left border rounded-lg p-2 hover:bg-slate-50 active:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-300">
-                <div className="flex items-center justify-between gap-2">
-                  <div className="font-semibold text-slate-800 truncate">{loadDisplayName(g.name, g.loadNbr) || 'Unnamed load'}</div>
-                  <div className="text-[12px] font-bold shrink-0" style={{ color: done ? '#16a34a' : BRAND }}>{pct}%</div>
-                </div>
-                <div className="flex items-center gap-1.5 mt-0.5 min-w-0">
-                  <RouteStatusBadge status={g.status} />
-                  <span className={`text-[11px] truncate ${g.driver ? 'text-slate-600' : 'text-slate-400 italic'}`}>{g.driver || 'No driver assigned'}</span>
-                </div>
-                <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 mt-1 text-[11px] text-slate-600">
-                  <span>{g.count} stop{g.count === 1 ? '' : 's'}</span>
-                  <span>{g.skids} skids</span>
-                  <span>{g.loose} loose</span>
-                  <span>{Math.round(g.weight).toLocaleString()} lb</span>
-                  <span className="text-slate-400">{g.delivered}/{g.count} delivered</span>
-                </div>
-                <div className="mt-1.5 h-1 rounded bg-slate-100 overflow-hidden"><div className="h-full rounded" style={{ width: `${pct}%`, background: done ? '#16a34a' : BRAND }} /></div>
-              </button>
+              <div key={g.key} className="w-full border rounded-lg p-2 hover:bg-slate-50">
+                <button onClick={() => onPick(g.key)} className="w-full text-left active:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-300 rounded">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="font-semibold text-slate-800 truncate">{loadDisplayName(g.name, g.loadNbr) || 'Unnamed load'}</div>
+                    <div className="text-[12px] font-bold shrink-0" style={{ color: done ? '#16a34a' : BRAND }}>{pct}%</div>
+                  </div>
+                  <div className="flex items-center gap-1.5 mt-0.5 min-w-0">
+                    <RouteStatusBadge status={g.status} />
+                    <span className={`text-[11px] truncate ${shownDriver ? 'text-slate-600' : 'text-slate-400 italic'}`}>{shownDriver || 'No driver assigned'}</span>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 mt-1 text-[11px] text-slate-600">
+                    <span>{g.count} stop{g.count === 1 ? '' : 's'}</span>
+                    <span>{g.skids} skids</span>
+                    <span>{g.loose} loose</span>
+                    <span>{Math.round(g.weight).toLocaleString()} lb</span>
+                    <span className="text-slate-400">{g.delivered}/{g.count} delivered</span>
+                  </div>
+                  <div className="mt-1.5 h-1 rounded bg-slate-100 overflow-hidden"><div className="h-full rounded" style={{ width: `${pct}%`, background: done ? '#16a34a' : BRAND }} /></div>
+                </button>
+                {/* Driver assign dropdown — only when Live dispatch is on. Picks assign immediately in
+                    Live mode (preview-only in Beta). stopPropagation so it doesn't open the route. */}
+                {liveWrite && onAssignDriver && (
+                  <div className="mt-1.5 flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
+                    <Truck size={12} className="text-slate-400 shrink-0" />
+                    <select
+                      value={curDriverId != null ? String(curDriverId) : ''}
+                      disabled={!!rosterError || busy}
+                      onChange={(e) => { const d = roster.find((x) => String(x.driverId) === e.target.value); if (d) onAssignDriver(g, d.driverId, d.name); }}
+                      className="flex-1 min-w-0 border rounded px-1 py-1 text-[11px] bg-white"
+                      aria-label={`Assign driver to ${loadDisplayName(g.name, g.loadNbr) || g.loadNbr}`}
+                    >
+                      <option value="">{rosterError ? 'Driver roster unavailable' : (roster.length ? (assignLive ? 'Assign driver…' : 'Assign driver… (Beta)') : 'Loading drivers…')}</option>
+                      {roster.map((d) => <option key={String(d.driverId)} value={String(d.driverId)}>{d.name}{d.userName ? ` (${d.userName})` : ''}</option>)}
+                    </select>
+                    {busy && <span className="text-[10px] text-slate-400 shrink-0">…</span>}
+                  </div>
+                )}
+              </div>
             );
           })}
         </div>
@@ -9727,11 +9806,15 @@ function LiveCommitConfirm({ confirm, liveMode, busy, title, onCancel, onConfirm
   );
 }
 
-function RoutingWorkbenchCard({ route, stopById, otherKeys, ninjaMode, isActive, onSetActive, onResequence, onCollapse, onClose, onMoveStop, onDropStop, onOpenStop, onPrintManifest, roster, rosterError, staged, onStage, dirty, isMobile, liveWrite }) {
+function RoutingWorkbenchCard({ route, stopById, otherKeys, ninjaMode, isActive, onSetActive, onResequence, onCollapse, onClose, onMoveStop, onDropStop, onRemoveStop, onUndoRemove, onOpenStop, onPrintManifest, roster, rosterError, staged, onStage, dirty, isMobile, liveWrite }) {
   // The live-dispatch UI gate is now the gear toggle (prop) rather than the module-level
   // ?write=1/env const. Aliased to the original name so the gate sites below are unchanged.
   const LIVE_WRITE_FLAG = liveWrite;
   const rows = route.order.map((id) => stopById.get(String(id))).filter(Boolean);
+  // Orders staged for removal (in `removed` but no longer in the live order) — shown in the footer.
+  const removedRows = (route.removed || [])
+    .filter((id) => !route.order.includes(String(id)))
+    .map((id) => stopById.get(String(id)) || { stopNbr: id, businessName: String(id) });
   // Drag-and-drop (desktop): track which row we're hovering so we can show a drop line, and read
   // the dragged stop out of dataTransfer on drop. beforeId=null means "append to the end".
   const [dragOverId, setDragOverId] = useState(null);
@@ -9860,6 +9943,14 @@ function RoutingWorkbenchCard({ route, stopById, otherKeys, ninjaMode, isActive,
                     {otherKeys.map((k) => <option key={k} value={k}>{k}</option>)}
                   </select>
                 )}
+                {/* Remove from route — drops the order off this load; it becomes Unplanned on Save.
+                    Hidden on the last remaining stop: NuVizz can't re-sequence a load to empty, so that
+                    one's a no-op (move it to another load or leave the load with at least one stop). */}
+                {onRemoveStop && rows.length > 1 && (
+                  <button onClick={(e) => { e.stopPropagation(); onRemoveStop(s.stopNbr); }} className="text-slate-300 hover:text-red-600 shrink-0" title="Remove from route (unplans on Save)" aria-label={`Remove ${s.businessName || id} from route`}>
+                    <X size={13} />
+                  </button>
+                )}
               </div>
               {isExp && (
                 <div className="px-2 pb-1.5 pl-[34px] text-[10px] text-slate-500 space-y-0.5">
@@ -9873,6 +9964,18 @@ function RoutingWorkbenchCard({ route, stopById, otherKeys, ninjaMode, isActive,
           ); })}
         </ol>
       )}
+      {/* Removed orders — staged to become Unplanned on Save, with Undo to put them back. */}
+      {!route.collapsed && removedRows.length > 0 && (
+        <div className="px-2 py-1.5 border-t bg-red-50/60 shrink-0 space-y-1">
+          <div className="text-[10px] font-semibold text-red-700">Removing {removedRows.length} order{removedRows.length === 1 ? '' : 's'} (Unplanned on Save):</div>
+          {removedRows.map((s) => (
+            <div key={String(s.stopNbr)} className="flex items-center gap-1.5 text-[11px] text-slate-600">
+              <span className="min-w-0 flex-1 truncate line-through">{s.businessName || s.stopNbr}</span>
+              {onUndoRemove && <button onClick={() => onUndoRemove(s.stopNbr)} className="text-blue-700 hover:underline shrink-0">Undo</button>}
+            </div>
+          ))}
+        </div>
+      )}
       {LIVE_WRITE_FLAG && !route.collapsed && (
         <LiveDispatchBar route={route} staged={staged} onStage={onStage} roster={roster || []} rosterError={rosterError} dirty={dirty} />
       )}
@@ -9883,7 +9986,7 @@ function RoutingWorkbenchCard({ route, stopById, otherKeys, ninjaMode, isActive,
 // The route workbench (part 4): the 1–3 route cards opened from the right Routes panel, laid out
 // side by side (desktop) or stacked (mobile). Replaces the Setup stack on the left while routes
 // are open; "Back to Setup" closes them all.
-function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmNinja, activeKey, onSetActive, onResequence, onCollapse, onClose, onCloseAll, onMoveStop, onDropStop, onOpenStop, onPrintManifest, selectedCount = 0, onSendSelection, isMobile, liveWrite }) {
+function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmNinja, activeKey, onSetActive, onResequence, onCollapse, onClose, onCloseAll, onMoveStop, onDropStop, onRemoveStop, onUndoRemove, onOpenStop, onPrintManifest, selectedCount = 0, onSendSelection, isMobile, liveWrite }) {
   // Live-dispatch gate comes from the gear toggle (prop), aliased to the original name so the
   // many gate sites in this component (Save, Beta/Live toggle, dirty guards, confirm) are unchanged.
   const LIVE_WRITE_FLAG = liveWrite;
@@ -9967,9 +10070,14 @@ function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmN
         if (ids.length !== r.order.length) { warnings.push(`${loadDisplayName(r.key) || r.key}: ${r.order.length - ids.length} stop(s) not enriched yet — open them to save the new order`); continue; }
         load.orderedStopIds = ids;
       }
+      // Orders removed from the route (staged) — surfaced in the Save preview as an explicit unplan.
+      // The server re-derives the actual removes from the order diff (planSequence); this is the hint
+      // that makes the Confirm modal say "unplan N stop(s)" rather than only "set N in order".
+      const removedIds = (r.removed || []).filter((nbr) => !r.order.includes(String(nbr))).map((nbr) => stopById.get(String(nbr))?.stopId).filter(Boolean);
+      if (removedIds.length) load.removeStopIds = removedIds;
       if (s.driverId != null && s.driverId !== '') { load.driverId = s.driverId; load.driverName = s.driverName; }
       if (s.dispatch) load.dispatch = true;
-      if (load.orderedStopIds || load.driverId || load.dispatch) loads.push(load);
+      if (load.orderedStopIds || load.removeStopIds || load.driverId || load.dispatch) loads.push(load);
     }
     return { loads, warnings };
   };
@@ -10084,6 +10192,8 @@ function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmN
             onClose={() => guardedClose(r.key)}
             onMoveStop={(stopNbr, toKey) => onMoveStop(r.key, stopNbr, toKey)}
             onDropStop={onDropStop}
+            onRemoveStop={(stopNbr) => onRemoveStop(r.key, stopNbr)}
+            onUndoRemove={(stopNbr) => onUndoRemove(r.key, stopNbr)}
             onOpenStop={onOpenStop}
             onPrintManifest={onPrintManifest}
             roster={roster}
@@ -10493,6 +10603,76 @@ function RoutingScreen({ debugCaptureRef }) {
     }
   }, [rightPanelMode, routesSubTab, driverRoster.drivers, driverRoster.loading, loadDriverRoster]);
 
+  // NuVizz's REAL load status for the Routes panel filter. The day's load roster (the cheap
+  // list-discovery path, served from the scan cache) carries each load's lifecycle status —
+  // Draft / Un-Planned / Planned / In-Transit / Completed / Cancelled — which the execution-derived
+  // status can't see. Pulled only while the Routes panel is open, keyed by load name + id so
+  // routeGroups can join it. Cheap (no number-probe scan); failure just leaves the derived status.
+  const [loadStatusByName, setLoadStatusByName] = useState(() => new Map());
+  useEffect(() => {
+    if (rightPanelMode !== 'routes' || !selectedDate) return;
+    let cancelled = false;
+    fetch('/.netlify/functions/nuvizz-loads-roster?date=' + encodeURIComponent(selectedDate), { cache: 'no-store' })
+      .then((r) => r.json())
+      .then((j) => {
+        if (cancelled) return;
+        const m = new Map();
+        if (j && j.ok) for (const l of (j.loads || [])) {
+          const nm = String(l.name || '').trim().toLowerCase();
+          if (nm) m.set(nm, l.status || '');
+          if (l.loadId) m.set('#id:' + String(l.loadId), l.status || '');
+        }
+        setLoadStatusByName(m);
+      })
+      .catch(() => { if (!cancelled) setLoadStatusByName(new Map()); });
+    return () => { cancelled = true; };
+  }, [rightPanelMode, selectedDate]);
+
+  // ── Routes-panel driver assignment (live) ─────────────────────────────────────
+  // A driver dropdown on each Routes card assigns a driver to that load on pick. Gated behind the
+  // Live-dispatch gear toggle (liveWrite); a Beta/Live mode (default Beta) is the safety — in Beta a
+  // pick only previews, in Live it writes immediately via the assignDriver op (ASSIGN_DISPATCH with
+  // assignDtls only = assign, not release). The driver roster is the same source the Compare panel
+  // uses so driverIds line up. assignedOverride reflects the new driver on the card right away
+  // (the board's own driverName only updates on the next scan).
+  const [assignRoster, setAssignRoster] = useState([]);
+  const [assignRosterError, setAssignRosterError] = useState(null);
+  const assignRosterLoaded = useRef(false);
+  const [assignLive, setAssignLive] = useState(false);
+  const [assignedOverride, setAssignedOverride] = useState({});   // route key → driver name
+  const [assigningKey, setAssigningKey] = useState(null);
+  useEffect(() => { setAssignedOverride({}); }, [selectedDate]);   // don't carry a day's assignments onto another board
+  useEffect(() => {
+    if (!liveWrite || rightPanelMode !== 'routes' || assignRosterLoaded.current) return;
+    assignRosterLoaded.current = true;
+    let alive = true;
+    callWrite('roster', {}).then((res) => {
+      if (!alive) return;
+      if (res.ok && Array.isArray(res.result?.drivers)) setAssignRoster(res.result.drivers);
+      else setAssignRosterError(res.error || 'roster unavailable');
+    }).catch((e) => { if (alive) setAssignRosterError(e?.message || 'roster error'); });
+    return () => { alive = false; };
+  }, [liveWrite, rightPanelMode]);
+  const onAssignDriver = useCallback(async (g, driverId, driverName) => {
+    if (!driverId) return;
+    const label = loadDisplayName(g.name, g.loadNbr) || g.loadNbr;
+    if (!assignLive) { showMapToast(`Beta — would assign ${driverName} to ${label} (nothing sent). Flip to ● Live to assign.`); return; }
+    if (!g.loadId) { showMapToast(`Can't assign ${label} — its NuVizz load id hasn't loaded yet.`); return; }
+    setAssigningKey(g.key);
+    let res;
+    try {
+      res = await callWrite('assignDriver', { routeId: g.loadId, loadId: g.loadId, loadNbr: g.loadNbr, driverId, driverName, date: selectedDate },
+        { dryRun: false, clientOpId: newClientOpId(), createdBy: 'dispatcher' });
+    } catch (e) { res = { ok: false, error: e?.message || 'network error' }; }
+    setAssigningKey(null);
+    if (res.ok && res.result?.ok !== false) {
+      setAssignedOverride((p) => ({ ...p, [g.key]: driverName }));
+      showMapToast(`✓ ${driverName} assigned to ${label}.`);
+    } else {
+      showMapToast(`✗ Assign failed for ${label}: ${res.error || res.result?.error || 'write error'}`);
+    }
+  }, [assignLive, showMapToast, selectedDate]);
+
   // Part 6 — resizable left & right panels (the bottom grid already resizes via BottomStopsTable),
   // and a bottom-grid on/off toggle. All persisted; Routing-beta only.
   const leftPanel = useSidePanelWidth('left', 'routing.leftW', 340, 240, viewportWidth);
@@ -10606,7 +10786,8 @@ function RoutingScreen({ debugCaptureRef }) {
       const key = s.routeName || s.loadNbr;
       if (!key) continue;
       let g = m.get(key);
-      if (!g) { g = { key, name: s.routeName || key, loadNbr: s.loadNbr || key, driver: '', driverId: '', count: 0, delivered: 0, inProgress: 0, exceptions: 0, skids: 0, loose: 0, weight: 0 }; m.set(key, g); }
+      if (!g) { g = { key, name: s.routeName || key, loadNbr: s.loadNbr || key, loadId: null, driver: '', driverId: '', count: 0, delivered: 0, inProgress: 0, exceptions: 0, skids: 0, loose: 0, weight: 0 }; m.set(key, g); }
+      if (!g.loadId) g.loadId = s.raw?.load?.loadId ?? s.loadId ?? null;   // NuVizz load id for assignDriver
       if (!g.driver && (s.driverName || s.driverUserName)) g.driver = s.driverName || s.driverUserName;
       if (!g.driverId && s.driverId) g.driverId = s.driverId;
       g.count += 1;
@@ -10619,12 +10800,19 @@ function RoutingScreen({ debugCaptureRef }) {
       g.weight += Number(s.weight) || 0;
     }
     const groups = [...m.values()];
-    for (const g of groups) g.status = deriveRouteStatus(g);
+    // Prefer NuVizz's real load status from the roster (joined by name, then loadId); fall back to
+    // the execution-derived status when this load has no roster status yet.
+    for (const g of groups) {
+      const raw = loadStatusByName.get(String(g.name || '').trim().toLowerCase())
+        ?? loadStatusByName.get('#id:' + String(g.loadNbr));
+      g.rosterStatus = raw || '';
+      g.status = nuvizzLoadStatus(raw) || deriveRouteStatus(g);
+    }
     // Alphabetical by the displayed route name (the card's bold title), case-insensitive.
     return groups.sort((a, b) =>
       String(loadDisplayName(a.name, a.loadNbr) || a.name).localeCompare(
         String(loadDisplayName(b.name, b.loadNbr) || b.name), undefined, { sensitivity: 'base' }));
-  }, [stops]);
+  }, [stops, loadStatusByName]);
 
   // Workbench handlers — open a route into the side-by-side cards, tune it, close it.
   const openRouteInWorkbench = useCallback((key) => {
@@ -10691,6 +10879,26 @@ function RoutingScreen({ debugCaptureRef }) {
       return r.order.includes(id) ? { ...r, order: r.order.filter((x) => x !== id) } : r;
     }));
     setLastAction(fromKey === toKey ? `Reordered ${stopNbr} in ${loadDisplayName(toKey)}` : `Moved ${stopNbr} → ${loadDisplayName(toKey)}`);
+  }, []);
+  // Remove an order FROM a route (it becomes Unplanned on Save). Staged like every other edit:
+  // dropped from the card's order and tracked in `removed` so the card + Save preview can show it,
+  // and Undo can restore it. The actual unplan happens server-side on Save (planSequence removes a
+  // stop that's no longer in the desired order); nothing is sent until Save → Confirm.
+  const wbRemoveStop = useCallback((key, stopNbr) => {
+    const id = String(stopNbr);
+    setWbRoutes((prev) => prev.map((r) => {
+      if (r.key !== key || !r.order.includes(id)) return r;
+      const removed = (r.removed || []).includes(id) ? r.removed : [...(r.removed || []), id];
+      return { ...r, order: r.order.filter((x) => x !== id), removed, strategy: 'manual' };
+    }));
+    setLastAction(`Removed ${stopNbr} from ${loadDisplayName(key) || 'load'} — unplans on Save`);
+  }, []);
+  const wbUndoRemove = useCallback((key, stopNbr) => {
+    const id = String(stopNbr);
+    setWbRoutes((prev) => prev.map((r) => {
+      if (r.key !== key) return r;
+      return { ...r, order: r.order.includes(id) ? r.order : [...r.order, id], removed: (r.removed || []).filter((x) => x !== id) };
+    }));
   }, []);
   // Print the driver manifest for a Compare card's stops, in the card's CURRENT order (#263). Opens
   // the shared PrintDocModal. No API — built from the stops we already hold.
@@ -11871,7 +12079,7 @@ function RoutingScreen({ debugCaptureRef }) {
             <div className="flex-1 min-h-0 overflow-y-auto p-3 space-y-3 text-sm" style={{ paddingBottom: 'calc(12px + env(safe-area-inset-bottom))' }}>
               {mobilePanel === 'setup'
                 ? (wbRoutes.length > 0
-                    ? <RoutingWorkbench wbRoutes={wbRoutesColored} stopById={stopById} ninjaMode={ninjaMode} onToggleNinja={setNinjaMode} onArmNinja={armNinjaFromPanel} activeKey={effectiveActiveKey} onSetActive={setActiveRouteKey} onResequence={wbResequence} onCollapse={toggleWbCollapse} onClose={closeWbRoute} onCloseAll={closeAllWb} onMoveStop={wbMoveStop} onDropStop={wbDropStop} onOpenStop={openStop} onPrintManifest={printWbManifest} selectedCount={selectedStops.length} onSendSelection={sendSelectionToRoute} isMobile liveWrite={liveWrite} />
+                    ? <RoutingWorkbench wbRoutes={wbRoutesColored} stopById={stopById} ninjaMode={ninjaMode} onToggleNinja={setNinjaMode} onArmNinja={armNinjaFromPanel} activeKey={effectiveActiveKey} onSetActive={setActiveRouteKey} onResequence={wbResequence} onCollapse={toggleWbCollapse} onClose={closeWbRoute} onCloseAll={closeAllWb} onMoveStop={wbMoveStop} onDropStop={wbDropStop} onRemoveStop={wbRemoveStop} onUndoRemove={wbUndoRemove} onOpenStop={openStop} onPrintManifest={printWbManifest} selectedCount={selectedStops.length} onSendSelection={sendSelectionToRoute} isMobile liveWrite={liveWrite} />
                     : controlsContent)
                 : mobilePanel === 'loads'
                   ? (rightPanelMode === 'routes'
@@ -11880,7 +12088,7 @@ function RoutingScreen({ debugCaptureRef }) {
                           <RoutesDriversToggle subTab={routesSubTab} setSubTab={setRoutesSubTab} routesCount={routeGroups.length} className="mb-2" />
                           {routesSubTab === 'drivers'
                             ? <RoutingDriversPanel roster={driverRoster} routeGroups={routeGroups} onRefresh={refreshDriverRoster} onPickDriver={onPickDriver} />
-                            : <RoutingRoutesPanel groups={routeGroups} onPick={onPickRoute} />}
+                            : <RoutingRoutesPanel groups={routeGroups} onPick={onPickRoute} liveWrite={liveWrite} roster={assignRoster} rosterError={assignRosterError} assignLive={assignLive} setAssignLive={setAssignLive} onAssignDriver={onAssignDriver} assignedOverride={assignedOverride} assigningKey={assigningKey} />}
                         </>
                       )
                       : loadsContent)
@@ -11916,7 +12124,7 @@ function RoutingScreen({ debugCaptureRef }) {
           routes are open. With the Setup panel off and no routes open, the map gets the full width. */}
       {wbRoutes.length > 0 ? (
         <div className="shrink-0 border-r bg-white min-h-0 overflow-x-auto" style={{ width: wbWidth }}>
-          <RoutingWorkbench wbRoutes={wbRoutesColored} stopById={stopById} ninjaMode={ninjaMode} onToggleNinja={setNinjaMode} onArmNinja={armNinjaFromPanel} activeKey={effectiveActiveKey} onSetActive={setActiveRouteKey} onResequence={wbResequence} onCollapse={toggleWbCollapse} onClose={closeWbRoute} onCloseAll={closeAllWb} onMoveStop={wbMoveStop} onDropStop={wbDropStop} onOpenStop={openStop} onPrintManifest={printWbManifest} selectedCount={selectedStops.length} onSendSelection={sendSelectionToRoute} isMobile={false} liveWrite={liveWrite} />
+          <RoutingWorkbench wbRoutes={wbRoutesColored} stopById={stopById} ninjaMode={ninjaMode} onToggleNinja={setNinjaMode} onArmNinja={armNinjaFromPanel} activeKey={effectiveActiveKey} onSetActive={setActiveRouteKey} onResequence={wbResequence} onCollapse={toggleWbCollapse} onClose={closeWbRoute} onCloseAll={closeAllWb} onMoveStop={wbMoveStop} onDropStop={wbDropStop} onRemoveStop={wbRemoveStop} onUndoRemove={wbUndoRemove} onOpenStop={openStop} onPrintManifest={printWbManifest} selectedCount={selectedStops.length} onSendSelection={sendSelectionToRoute} isMobile={false} liveWrite={liveWrite} />
         </div>
       ) : leftPanelOn ? (
         <div className="shrink-0 border-r bg-white overflow-y-auto p-3 space-y-3 text-sm" style={{ width: leftPanel.width }}>
@@ -12004,7 +12212,7 @@ function RoutingScreen({ debugCaptureRef }) {
             </div>
             {routesSubTab === 'drivers'
               ? <RoutingDriversPanel roster={driverRoster} routeGroups={routeGroups} onRefresh={refreshDriverRoster} onPickDriver={onPickDriver} />
-              : <RoutingRoutesPanel groups={routeGroups} onPick={onPickRoute} />}
+              : <RoutingRoutesPanel groups={routeGroups} onPick={onPickRoute} liveWrite={liveWrite} roster={assignRoster} rosterError={assignRosterError} assignLive={assignLive} setAssignLive={setAssignLive} onAssignDriver={onAssignDriver} assignedOverride={assignedOverride} assigningKey={assigningKey} />}
           </>
         ) : (
         <>

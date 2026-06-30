@@ -52,7 +52,9 @@ function planFor(op: WriteOp, payload: any): string[] {
     if (!loads.length) return ['(no loads to commit)'];
     return loads.map((L) => {
       const n = Array.isArray(L?.orderedStopIds) ? L.orderedStopIds.length : 0;
+      const rm = Array.isArray(L?.removeStopIds) ? L.removeStopIds.length : 0;
       const bits: string[] = [];
+      if (rm) bits.push(`unplan ${rm} order(s) (remove from route)`);
       if (n) bits.push(`set ${n} stop(s) in order (anchor remove + one-at-a-time insert)`);
       if (L?.driverId != null && String(L?.driverId).trim() !== '') bits.push(`assign ${L?.driverName || L?.driverId}`);
       if (L?.dispatch) bits.push('dispatch');
