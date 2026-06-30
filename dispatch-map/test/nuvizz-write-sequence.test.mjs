@@ -62,6 +62,15 @@ test('planSequence: REFUSE promoting a brand-new stop to first (append-only cann
   assert.match(p.reason, /anchor-not-on-load/);
 });
 
+test('planSequence: DEDUPES a duplicate in the desired order (no duplicate re-insert)', () => {
+  // ['C','A','A','B'] dedupes to ['C','A','B'] → anchor C, no double-insert of A.
+  const p = planSequence(['A', 'B', 'C'], ['C', 'A', 'A', 'B']);
+  assert.equal(p.ok, true);
+  assert.equal(p.anchor, 'C');
+  assert.deepEqual(p.removeStopIds, ['A', 'B']);
+  assert.deepEqual(p.insertOrdered, ['A', 'B'], 'duplicate A collapsed to one insert');
+});
+
 test('planSequence: tolerates null/blank ids and numeric ids', () => {
   const p = planSequence([1, 2, null, 3], [3, 1, 2]);
   assert.equal(p.ok, true);

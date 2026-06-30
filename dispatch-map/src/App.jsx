@@ -9819,9 +9819,18 @@ function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmN
   const [closeGuard, setCloseGuard] = useState(null);
   const setStageFor = useCallback((key, patch) => setStaged((p) => ({ ...p, [key]: { ...(p[key] || {}), ...patch } })), []);
   useEffect(() => {
+    const liveKeys = new Set(wbRoutes.map((r) => r.key));
+    // Prune closed routes (so a reopen re-seeds against the FRESH order, not a stale baseline),
+    // then seed any newly-opened route's baseline = its order at open.
     setBaselines((prev) => {
       let next = prev, changed = false;
-      for (const r of wbRoutes) if (!(r.key in next)) { if (!changed) { next = { ...prev }; changed = true; } next[r.key] = r.order.slice(); }
+      for (const k of Object.keys(prev)) if (!liveKeys.has(k)) { if (!changed) { next = { ...prev }; changed = true; } delete next[k]; }
+      for (const r of wbRoutes) if (!(r.key in next)) { if (!changed) { next = { ...next }; changed = true; } next[r.key] = r.order.slice(); }
+      return changed ? next : prev;
+    });
+    setStaged((prev) => {
+      let next = prev, changed = false;
+      for (const k of Object.keys(prev)) if (!liveKeys.has(k)) { if (!changed) { next = { ...prev }; changed = true; } delete next[k]; }
       return changed ? next : prev;
     });
   }, [wbRoutes]);
@@ -9877,17 +9886,21 @@ function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmN
     const res = await callWrite('commitBoard', { loads }, { dryRun: false, clientOpId, createdBy: 'dispatcher' });
     setBusy(false); setConfirm(null);
     const resLoads = res.result?.loads || [];
+    const orphaned = res.result?.orphaned || [];
     const okKeys = resLoads.filter((l) => l.ok).map((l) => l.loadNbr);
     if (okKeys.length) { markSaved(okKeys); setStaged((p) => { const n = { ...p }; for (const k of okKeys) delete n[k]; return n; }); }
-    if (res.ok) showToast(`✓ ${loads.length} load(s) saved to NuVizz.`);
+    const orphanMsg = orphaned.length ? ` ⚠ ${orphaned.length} stop(s) now UNPLANNED — re-Save to reroute.` : '';
+    if (res.ok) showToast(`✓ ${loads.length} load(s) saved to NuVizz.${orphanMsg}`);
     else {
       const failed = resLoads.filter((l) => !l.ok);
-      showToast(`✗ ${failed.map((l) => `${loadDisplayName(l.loadNbr) || l.loadNbr}: ${l.error || (l.steps || []).filter((s) => !s.ok).map((s) => s.error).join('; ')}`).join(' | ') || res.error || 'write failed'}`);
+      showToast(`✗ ${failed.map((l) => `${loadDisplayName(l.loadNbr) || l.loadNbr}: ${l.error || (l.steps || []).filter((s) => !s.ok).map((s) => s.error).join('; ')}`).join(' | ') || res.error || 'write failed'}${orphanMsg}`);
     }
   };
 
-  const guardedClose = (key) => { const r = wbRoutes.find((x) => x.key === key); if (r && isDirty(r)) setCloseGuard({ kind: 'one', key }); else onClose(key); };
-  const guardedCloseAll = () => { if (dirtyRoutes.length) setCloseGuard({ kind: 'all' }); else onCloseAll(); };
+  // Gate on LIVE_WRITE_FLAG: with the feature off, a dirty card must close normally (the guard
+  // modal is flag-gated, so without this an order-edited card would set unrenderable state = stuck).
+  const guardedClose = (key) => { const r = wbRoutes.find((x) => x.key === key); if (LIVE_WRITE_FLAG && r && isDirty(r)) setCloseGuard({ kind: 'one', key }); else onClose(key); };
+  const guardedCloseAll = () => { if (LIVE_WRITE_FLAG && dirtyRoutes.length) setCloseGuard({ kind: 'all' }); else onCloseAll(); };
   const doClose = () => { if (closeGuard?.kind === 'all') onCloseAll(); else if (closeGuard?.key) onClose(closeGuard.key); setCloseGuard(null); };
 
   return (

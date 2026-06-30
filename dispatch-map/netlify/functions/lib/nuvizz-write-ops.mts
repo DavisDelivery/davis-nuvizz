@@ -323,8 +323,14 @@ export interface SequencePlan {
   reason?: string;
 }
 export function planSequence(currentDeliveryStopIds: any[], desiredOrderedStopIds: any[]): SequencePlan {
-  const cur = (currentDeliveryStopIds || []).map((x) => String(x)).filter((x) => x && x !== 'null' && x !== 'undefined');
-  const want = (desiredOrderedStopIds || []).map((x) => String(x)).filter((x) => x && x !== 'null' && x !== 'undefined');
+  // Dedupe (first occurrence wins): a duplicate in the desired order would otherwise re-insert a
+  // stop that's still on the load (it's the anchor or already present) → a duplicate insertStops.
+  const clean = (a: any[]) => {
+    const seen = new Set<string>();
+    return (a || []).map((x) => String(x)).filter((x) => x && x !== 'null' && x !== 'undefined' && (seen.has(x) ? false : (seen.add(x), true)));
+  };
+  const cur = clean(currentDeliveryStopIds);
+  const want = clean(desiredOrderedStopIds);
   if (want.length === 0) return { ok: false, reason: 'empty-order: would remove every delivery and cancel the route' };
   // Already in the desired order + membership → nothing to do (no NuVizz calls).
   if (cur.length === want.length && cur.every((id, i) => id === want[i])) {
