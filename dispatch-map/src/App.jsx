@@ -51,7 +51,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.32.20';
+const APP_VERSION = '0.32.21';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -89,6 +89,7 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.32.21', 'Live dispatch (beta) — reorder path: three improvements. (1) Reoptimizing/reordering a load opened from the Loads grid now WORKS — the app looks up the load\'s real number from its internal id (load/static/info) and runs the proper unplan → replan, instead of failing with "Only unplanned stops can be planned" or telling you to open it from the board. (2) Fewer NuVizz calls per reorder — it keeps the part of the order that\'s already correct at the front and only moves the stops that actually changed (appending to an in-order load makes zero removals). (3) A brand-new order that becomes the FIRST delivery is now handled — it\'s put on the load first (so the load always keeps an anchor and never cancels), then the rest are removed and replanned in order.'],
   ['0.32.20', 'Live dispatch (beta) — FIX: unplanning orders from a load and saving in ● LIVE did nothing, and there was no way to take the last (anchor) order off a load. Two wiring bugs: (1) the removes were keyed by internal stop id, but board rows don\'t carry a stop id until you open each stop, so the anchor had none and the whole load got silently dropped from the Save — nothing fired. The panel now sends the always-present stop NUMBERS and the server resolves them to stop ids from the load itself, so unplanning works without opening every stop. (2) Taking the LAST order off a load now EMPTIES and CANCELS the route (the documented "remove all deliveries" flow) instead of silently succeeding with no change. Save now reports honestly — it tells you how many loads actually fired, how many cancelled, and if nothing changed it says so instead of a false "saved."'],
   ['0.32.19', 'Routing (mobile) — FIX: when both the Stops/Loads data grid AND the Setup/Compare sheet were open, the grid grew taller than the shrunken map area and its toolbar (the row with the collapse ⌄, the Stops/Loads tabs, and search) got pushed up behind the "selected/Filters" chips — so you could see the rows but had no way to collapse the grid (#327). The grid is now capped to the visible map height, so its toolbar (and collapse control) always stays put with both drawers open.'],
   ['0.32.18', 'Live dispatch (beta) — FIX: adding orders to a load opened from the Loads grid failed with "commitBoard: load not found." That load is known only by its internal id (hex loadId), which was being sent as the load NUMBER — but NuVizz\'s load lookup is keyed by the human load number (e.g. DAVIS000000123), so it 404\'d. The app no longer sends the hex id as a load number, and the server now plans the orders straight onto the loadId (the documented insert flow) when there\'s no human load number to look up. Add orders in ● LIVE → Save → they plan onto the load.'],
