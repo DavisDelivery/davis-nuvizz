@@ -50,37 +50,68 @@ export function buildLoadBody(period: string, pageSize: number = LOAD_MAX_RESULT
   };
 }
 
+// A NuVizz load NUMBER looks like the company code + zero-padded digits ("DAVIS000198197")
+// or (some tenants) a long bare number — NEVER the internal hex loadId (interspersed hex) and
+// NEVER a short human route name ("SUW"). Distinctive enough to VALIDATE a labelled column and,
+// if the column is mislabelled/absent, to FIND the number anywhere in the row — so "the loads
+// scan produces the number, just grab it" holds regardless of the saved-search column naming.
+export function looksLikeLoadNbr(v: any): boolean {
+  const s = String(v ?? '').trim();
+  return /^[A-Za-z]{2,}\d{5,}$/.test(s) || /^\d{6,}$/.test(s);
+}
+
 // PURE: map the load-list response (filterData column-defs + values rows) → load rows
-// { loadId, name, status, trips }. Columns are found BY PATTERN (robust to layout/key
-// differences between the portal grid and the openapi entity response). Exported for tests.
-export function normalizeLoads(j: any): Array<{ loadId: string; name: string; status: string; trips: number | null }> {
-  const cols: string[] = Object.keys((j && j.filterData && j.filterData[0]) || {});
+// { loadId, name, loadNbr, status, trips }. Columns are found BY PATTERN against BOTH the dotted
+// key AND the human column label (robust to layout/key differences between the portal grid and
+// the openapi entity response). Exported for tests.
+export function normalizeLoads(j: any): Array<{ loadId: string; name: string; loadNbr: string | null; status: string; trips: number | null }> {
+  const colDefs: Record<string, any> = (j && j.filterData && j.filterData[0]) || {};
+  const cols: string[] = Object.keys(colDefs);
   if (!cols.length) return [];
-  const find = (re: RegExp, avoid?: RegExp) => cols.find((k) => re.test(k) && (!avoid || !avoid.test(k)));
+  // Match on "key + column label" so a column keyed by an opaque path but LABELLED "Load Number"
+  // still resolves (the loads grid keys the number column differently from the stops grid).
+  const colHay = (k: string) => `${k} ${String(colDefs[k]?.columnName ?? '')}`.toLowerCase();
+  const find = (re: RegExp, avoid?: RegExp) => cols.find((k) => re.test(colHay(k)) && (!avoid || !avoid.test(colHay(k))));
   const idIx = cols.indexOf('KeyColumn') >= 0 ? cols.indexOf('KeyColumn')
-    : cols.indexOf(find(/loadid/i) ?? find(/(^|\.)key/i) ?? cols[0]);
-  // The human recurring-load name ("BEN 2") is the load NUMBER (loadNbr); prefer it, then the
-  // route-name column. loadId/KeyColumn is the internal hex id — never the display name.
-  const nbrIx = cols.indexOf(find(/load.?nbr|load.?(no|num|number)/i) ?? '');
-  const nameIx = cols.indexOf(find(/route.*name|(^|\.)name$/i) ?? find(/name/i) ?? '');
-  const statusIx = cols.indexOf(find(/status/i, /dttm|date|time/i) ?? '');
-  const tripsIx = cols.indexOf(find(/trip|stop.?count|nooftrip/i) ?? '');
-  const out: Array<{ loadId: string; name: string; status: string; trips: number | null }> = [];
+    : cols.indexOf(find(/loadid/) ?? find(/(^|\.|\s)key/) ?? cols[0]);
+  // The NUMERIC load number ("DAVIS000198197") is a DISTINCT column from the human route name
+  // ("SUW"). load/info is keyed by this number, so capture it separately — the old code conflated
+  // the two and dropped the number entirely, which broke reorder/unplan on any load the client
+  // knew only by name (#329 follow-up). Route NAME excludes any "number"/"no" token so the two
+  // never cross-match.
+  const nbrIx = cols.indexOf(find(/load.?(nbr|number|num\b)|(^|\s)load.?no(\.|\s|$)/) ?? '');
+  const nameIx = cols.indexOf(find(/route.?name|load.?name/, /(nbr|number|num\b)/) ?? find(/(^|\s|\.)name/, /(nbr|number|num\b)/) ?? '');
+  const statusIx = cols.indexOf(find(/status/, /dttm|date|time/) ?? '');
+  const tripsIx = cols.indexOf(find(/trip|stop.?count|nooftrip/) ?? '');
+  const out: Array<{ loadId: string; name: string; loadNbr: string | null; status: string; trips: number | null }> = [];
   for (const row of ((j && j.values) || [])) {
     const loadId = String(linkVal(row[idIx]) ?? '').trim();
     if (!loadId) continue;
     const t = Number(linkVal(row[tripsIx]));
-    // First HUMAN (non-hash) name among the load-number and route-name columns; '' if none — a bare
-    // NuVizz ObjectId must never become the displayed load name (#254-style guard, was missing here).
+    // Load NUMBER: the labelled column if its value looks like a load number; else scan the whole
+    // row for the unmistakable DAVIS000…-shaped value (never the loadId). Guarantees we grab the
+    // number whenever the scan returns it, no matter which column carries it.
+    let loadNbr = nbrIx >= 0 ? String(linkVal(row[nbrIx]) ?? '').trim() : '';
+    if (!looksLikeLoadNbr(loadNbr)) {
+      loadNbr = '';
+      for (let i = 0; i < row.length; i++) {
+        if (i === idIx) continue;
+        const v = String(linkVal(row[i]) ?? '').trim();
+        if (v !== loadId && looksLikeLoadNbr(v)) { loadNbr = v; break; }
+      }
+    }
+    // Display NAME: the human route name. Exclude the loadId (hash) AND the load-number value so
+    // the name never becomes a bare ObjectId (#254) or the raw number.
     let name = '';
-    for (const ix of [nbrIx, nameIx]) {
+    for (const ix of [nameIx, nbrIx]) {
       if (ix < 0) continue;
       const v = String(linkVal(row[ix]) ?? '').trim();
-      if (v && !isHashLikeId(v)) { name = v; break; }
+      if (v && !isHashLikeId(v) && !looksLikeLoadNbr(v)) { name = v; break; }
     }
     out.push({
       loadId,
       name,
+      loadNbr: loadNbr || null,
       status: String(linkVal(row[statusIx]) ?? '').trim(),
       trips: Number.isFinite(t) ? t : null,
     });
@@ -132,7 +163,7 @@ export async function loadIdsForDate(targetDateUTC: string): Promise<{ ids: Set<
 // Fetch the FULL load roster for a date (every load incl. empty ones, with status + trip
 // count) — used to surface loads that have NO orders assigned yet (a Monday load created
 // but unfilled never appears on the stop-grouped board). One deliberate call; best-effort.
-export async function loadRosterForDate(targetDateUTC: string): Promise<Array<{ loadId: string; name: string; status: string; trips: number | null }>> {
+export async function loadRosterForDate(targetDateUTC: string): Promise<Array<{ loadId: string; name: string; loadNbr: string | null; status: string; trips: number | null }>> {
   const { companyCode } = getCreds();
   const hdr = { Authorization: basicAuthHeader(), 'Content-Type': 'application/json', Accept: 'application/json' };
   const url = `${OPENAPI_BASE}/entity/filterdata/${LOAD_ENTITY}/${companyCode}`;
