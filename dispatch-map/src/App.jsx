@@ -51,7 +51,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.32.22';
+const APP_VERSION = '0.32.23';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -96,6 +96,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.32.23', 'Live dispatch (beta) — FIX: assigning a driver to a load from the Routes list failed with "Can\'t assign — its NuVizz load id hasn\'t loaded yet" for a Draft/empty load (one with no orders opened yet). The Routes row only learns a load\'s internal id once its stops are opened, so a Draft had none. It now pulls the load\'s internal id (and real Load Number) from the daily Loads scan — the same source the reorder path uses — so you can assign a driver straight from the Routes list without opening the load first.'],
   ['0.32.22', 'Live dispatch (beta) — FIX: resequencing/unplanning a load and saving in ● LIVE failed with "commitBoard: load not found (loadNbr=…)". The Compare panel was sending the load\'s NAME ("SUW") as its number, but NuVizz\'s load lookup is keyed by the real Load Number ("DAVIS000198197"). That number is right there in the daily Loads scan (the "Load Number" column) — the app was capturing the load NAME and throwing the number away. The scan now grabs the real Load Number for every load and uses it for the lookup, so resequencing and unplanning work with NO extra NuVizz calls (previously it took a bridge call to look the number up from the internal id). If a load\'s number hasn\'t been picked up from the scan yet, that bridge lookup still covers it, and Save gives a clear "needs the load number — refresh and retry" instead of the confusing "load not found."'],
   ['0.32.21', 'Live dispatch (beta) — reorder path: three improvements. (1) Reoptimizing/reordering a load opened from the Loads grid now WORKS — the app looks up the load\'s real number from its internal id (load/static/info) and runs the proper unplan → replan, instead of failing with "Only unplanned stops can be planned" or telling you to open it from the board. (2) Fewer NuVizz calls per reorder — it keeps the part of the order that\'s already correct at the front and only moves the stops that actually changed (appending to an in-order load makes zero removals). (3) A brand-new order that becomes the FIRST delivery is now handled — it\'s put on the load first (so the load always keeps an anchor and never cancels), then the rest are removed and replanned in order.'],
   ['0.32.20', 'Live dispatch (beta) — FIX: unplanning orders from a load and saving in ● LIVE did nothing, and there was no way to take the last (anchor) order off a load. Two wiring bugs: (1) the removes were keyed by internal stop id, but board rows don\'t carry a stop id until you open each stop, so the anchor had none and the whole load got silently dropped from the Save — nothing fired. The panel now sends the always-present stop NUMBERS and the server resolves them to stop ids from the load itself, so unplanning works without opening every stop. (2) Taking the LAST order off a load now EMPTIES and CANCELS the route (the documented "remove all deliveries" flow) instead of silently succeeding with no change. Save now reports honestly — it tells you how many loads actually fired, how many cancelled, and if nothing changed it says so instead of a false "saved."'],
@@ -11074,11 +11075,20 @@ function RoutingScreen({ debugCaptureRef }) {
     if (!driverId) return;
     const label = loadDisplayName(g.name, g.loadNbr) || g.loadNbr;
     if (!assignLive) { showMapToast(`Beta — would assign ${driverName} to ${label} (nothing sent). Flip to ● Live to assign.`); return; }
-    if (!g.loadId) { showMapToast(`Can't assign ${label} — its NuVizz load id hasn't loaded yet.`); return; }
+    // The route group carries loadId only once its stops are enriched; a DRAFT/empty load has none.
+    // Resolve the internal loadId (and the REAL load number) from the loads-roster scan, keyed by
+    // route name or by the loadId itself — the same source the Compare panel already uses.
+    const rosterEntry = loadRosterRef.current.get(String(g.name || '').trim().toLowerCase())
+      || loadRosterRef.current.get(String(g.key || '').trim().toLowerCase())
+      || (g.loadId ? loadRosterRef.current.get(String(g.loadId)) : null)
+      || null;
+    const loadId = g.loadId || rosterEntry?.loadId || null;
+    const loadNbr = (g.loadNbr && looksLikeLoadNbr(g.loadNbr)) ? g.loadNbr : (rosterEntry?.loadNbr || null);
+    if (!loadId) { showMapToast(`Can't assign ${label} — its NuVizz load id hasn't loaded yet.`); return; }
     setAssigningKey(g.key);
     let res;
     try {
-      res = await callWrite('assignDriver', { routeId: g.loadId, loadId: g.loadId, loadNbr: g.loadNbr, driverId, driverName, date: selectedDate },
+      res = await callWrite('assignDriver', { routeId: loadId, loadId, loadNbr, driverId, driverName, date: selectedDate },
         { dryRun: false, clientOpId: newClientOpId(), createdBy: 'dispatcher' });
     } catch (e) { res = { ok: false, error: e?.message || 'network error' }; }
     setAssigningKey(null);
