@@ -87,6 +87,19 @@ export async function resolveLoadNbrById(requester: RequesterLike, loadId: strin
   } catch { return null; }
 }
 
+/** Resolve a load's HUMAN loadNbr from a stop CURRENTLY ON it, via getStop → Stop.load.loadNbr
+ * (assignedLoadNbr). This is the RELIABLE bridge on the live tenant: the loads-roster saved search
+ * carries no load-number column, and load/static/info(routeId) returns HTTP 501 — so a stop's own
+ * load membership is the only place a Draft/grid load's real number (DAVIS000000123) is exposed.
+ * Verified live. Null if the stop isn't on a load. */
+export async function resolveLoadNbrByStopNbr(requester: RequesterLike, stopNbr: string, creds: WriteCreds): Promise<string | null> {
+  try {
+    const r = await fireSingle(requester, 'getStop', { stopNbr }, creds);
+    const nbr = r?.ok ? r.stop?.assignedLoadNbr : null;
+    return nbr != null && String(nbr).trim() !== '' && !isHashLikeId(String(nbr)) ? String(nbr) : null;
+  } catch { return null; }
+}
+
 // Human "why didn't it resolve" suffix for a failed fetchLoad. Surfaces the exact load number we
 // queried and NuVizz's response so a wrong/blank load number (404) is distinguishable from a load
 // that resolved but parsed without an id (200/no loadId) — turns an opaque "load not found" into
@@ -228,12 +241,19 @@ export async function runCommitBoard(requester: RequesterLike, payload: any, cre
     }
     // Resolve a USABLE human loadNbr. load/info (and the load/edit unplan step) is keyed by the human
     // number (DAVIS000000123), NOT the hex loadId. A load opened from the Loads grid / a Draft load has
-    // only its internal id, so bridge it to its loadNbr via load/static/info(routeId) — which is what
-    // lets a REORDER/UNPLAN of a grid-opened load run the real unplan(load/edit)→re-insert path
-    // instead of blind-inserting already-planned stops ("Only unplanned stops can be planned").
+    // only its internal id, so we must bridge to its real number before a REORDER/UNPLAN can run the
+    // real unplan(load/edit)→re-insert path (instead of blind-inserting already-planned stops).
     let loadNbrX = (loadNbr != null && String(loadNbr).trim() !== '' && !isHashLikeId(String(loadNbr))) ? String(loadNbr) : null;
-    if (!loadNbrX && trustableLoadId(L?.loadId)) {
-      loadNbrX = await resolveLoadNbrById(requester, L.loadId, creds);
+    if (!loadNbrX) {
+      // PREFER reading a stop CURRENTLY on the load (getStop → assignedLoadNbr) — the RELIABLE source
+      // on the live tenant, where the loads-roster saved search has no load-number column and
+      // load/static/info(routeId) is HTTP 501. A reorder/unplan/empty always carries stop NUMBERS the
+      // caller says are on the load (ordered ∪ removed), so probe the first of those. [verified live]
+      const probeNbr = (orderedNbrs && orderedNbrs[0])
+        || (Array.isArray(L?.removeStopNbrs) && L.removeStopNbrs.length ? String(L.removeStopNbrs[0]) : null);
+      if (probeNbr) loadNbrX = await resolveLoadNbrByStopNbr(requester, String(probeNbr), creds);
+      // Fallback: load/static/info(routeId) where that endpoint exists (some tenants).
+      if (!loadNbrX && trustableLoadId(L?.loadId)) loadNbrX = await resolveLoadNbrById(requester, L.loadId, creds);
       if (loadNbrX) result.loadNbr = loadNbrX;
     }
     // Add BRAND-NEW (unplanned) stops to a load we STILL only know by its id (static/info couldn't
