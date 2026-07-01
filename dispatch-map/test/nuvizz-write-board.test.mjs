@@ -31,6 +31,8 @@ const loadDoc = (loadId, versionId, deliveries) => ({ json: { Load: {
 const ok = () => ({ json: { status: 'SUCCESS' } });
 // load/static/info(routeId) response — resolves a load's HUMAN loadNbr (+ loadId echo) from its id.
 const staticInfo = (loadNbr, loadId) => ({ json: { Load: { loadHeader: { loadNbr, loadId: loadId ?? null } } } });
+// stop/info response — a stop's own load membership carries the load's real number (assignedLoadNbr).
+const stopInfo = (loadNbr) => ({ json: { Stop: { stop: {}, stopExecutionInfo: { stopStatus: '20' }, load: { loadNbr: loadNbr ?? null } } } });
 
 test('commitBoard: single-load reorder → getLoad, then anchor-remove, then ordered one-at-a-time inserts', async () => {
   const { requester, calls } = stub([
@@ -122,21 +124,32 @@ test('commitBoard: a "Cancelled" response is NOT swallowed for a normal (non-emp
   assert.equal(r.loads[0].ok, false, 'a reorder is not a cancel — the failure is real');
 });
 
-test('commitBoard: REORDER a load known only by loadId → resolve loadNbr via static/info, then remove', async () => {
-  // A grid-opened load has only its internal id. Bridge it to its human loadNbr via static/info,
-  // then run the REAL unplan(load/edit)→re-insert path. Keep A2, unplan A1 + A3.
+test('commitBoard: REORDER a load known only by loadId → resolve loadNbr from a stop on it (getStop), then remove', async () => {
+  // A grid-opened load has only its internal id. Bridge it to its human loadNbr by reading a stop
+  // that's ON it (stop/info → assignedLoadNbr) — the reliable source on the live tenant — then run
+  // the REAL unplan(load/edit)→re-insert path. Keep A2, unplan A1 + A3.
   const gl = loadDocNbr(HEXID, 'v1', [['A1', 'idA1'], ['A2', 'idA2'], ['A3', 'idA3']]);
-  const { requester, calls } = stub([staticInfo('DAVIS000000002', HEXID), gl, ok()]);
+  const { requester, calls } = stub([stopInfo('DAVIS000000002'), gl, ok()]);
   const r = await runCommitBoard(requester, { loads: [{ loadId: HEXID, orderedStopNbrs: ['A2'] }] }, CREDS);
   assert.equal(r.ok, true);
-  const ops = calls.map((c) => c.url.match(/\/(load\/static\/info|load\/info|load\/edit)/)[1]);
-  assert.deepEqual(ops, ['load/static/info', 'load/info', 'load/edit']);
-  assert.match(calls[0].url, /routeId=/);
+  const ops = calls.map((c) => c.url.match(/\/(stop\/info|load\/static\/info|load\/info|load\/edit)/)[1]);
+  assert.deepEqual(ops, ['stop/info', 'load/info', 'load/edit']);
+  assert.match(calls[0].url, /\/stop\/info\/A2\//, 'probes the anchor stop it says is on the load');
   assert.deepEqual([...calls[2].body.removeStopIds].sort(), ['idA1', 'idA3'], 'unplanned via the resolved number');
 });
 
-test('commitBoard: reorder loadId-only + static/info CAN\'T resolve a number → clear error, no doomed getLoad', async () => {
-  const { requester, calls } = stub([ok() /* static/info: no loadNbr */]);
+test('commitBoard: reorder loadId-only, getStop returns no membership → falls back to static/info', async () => {
+  // If the probe stop isn't on a load yet (assignedLoadNbr null), fall through to load/static/info.
+  const gl = loadDocNbr(HEXID, 'v1', [['A1', 'idA1'], ['A2', 'idA2'], ['A3', 'idA3']]);
+  const { requester, calls } = stub([stopInfo(null), staticInfo('DAVIS000000002', HEXID), gl, ok()]);
+  const r = await runCommitBoard(requester, { loads: [{ loadId: HEXID, orderedStopNbrs: ['A2'] }] }, CREDS);
+  assert.equal(r.ok, true);
+  const ops = calls.map((c) => c.url.match(/\/(stop\/info|load\/static\/info|load\/info|load\/edit)/)[1]);
+  assert.deepEqual(ops, ['stop/info', 'load/static/info', 'load/info', 'load/edit']);
+});
+
+test('commitBoard: reorder loadId-only + NEITHER getStop nor static/info resolves → clear error, no doomed getLoad', async () => {
+  const { requester, calls } = stub([stopInfo(null) /* not on a load */, ok() /* static/info: no loadNbr */]);
   const r = await runCommitBoard(requester, { loads: [{ loadId: HEXID, orderedStopNbrs: ['A2'] }] }, CREDS);
   assert.equal(r.loads[0].ok, false);
   assert.match(r.loads[0].error, /needs a load number/);
