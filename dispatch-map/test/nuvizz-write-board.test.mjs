@@ -66,6 +66,68 @@ test('commitBoard: load/info 200 but no loadId → diagnostic distinguishes it f
   assert.match(r.loads[0].error, /200 but no loadId/, 'a resolved-but-unparseable load reads differently than a 404');
 });
 
+// A load whose stops carry DISTINCT stopNbr vs stopId (real NuVizz), with the order in stop.to.seq.
+const loadDocNbr = (loadId, versionId, deliveries) => ({ json: { Load: {
+  loadHeader: { loadId, routeName: loadId }, versionId, loadExecutionInfo: { loadStatus: 'PLANNED' },
+  stops: deliveries.map(([nbr, id], k) => ({ stop: { stopId: id, stopNbr: nbr, to: { seq: k + 2 }, stopType: 'DO' } })),
+} } });
+
+test('commitBoard: resolves orderedStopNbrs → stopIds via the load — unplan works without client enrichment', async () => {
+  // Client only knows stop NUMBERS (board rows have no stopId). Keep A2, unplan A1 + A3.
+  const gl = loadDocNbr(HEXID, 'v1', [['A1', 'idA1'], ['A2', 'idA2'], ['A3', 'idA3']]);
+  const { requester, calls } = stub([gl, ok()]);   // getLoad + one load/edit remove
+  const r = await runCommitBoard(requester, { loads: [{ loadNbr: 'DAVIS000000002', loadId: HEXID, orderedStopNbrs: ['A2'] }] }, CREDS);
+  assert.equal(r.ok, true);
+  assert.match(calls[0].url, /\/load\/info\//);
+  assert.match(calls[1].url, /\/load\/edit\//);
+  assert.deepEqual([...calls[1].body.removeStopIds].sort(), ['idA1', 'idA3'], 'removed the non-anchor deliveries, resolved by stopNbr');
+});
+
+test('commitBoard: orderedStopNbrs that resolve to NOTHING → refused (stale board), never a silent cancel', async () => {
+  const gl = loadDocNbr(HEXID, 'v1', [['A1', 'idA1']]);
+  const { requester, calls } = stub([gl]);
+  const r = await runCommitBoard(requester, { loads: [{ loadNbr: 'DAVIS000000009', loadId: HEXID, orderedStopNbrs: ['GHOST'] }] }, CREDS);
+  assert.equal(r.loads[0].ok, false);
+  assert.match(r.loads[0].error, /not found on this load/);
+  assert.equal(calls.length, 1, 'getLoad only — no edit fired on a stale order');
+});
+
+test('commitBoard: emptyLoad removes ALL deliveries (cancel route) — not a false-success no-op', async () => {
+  const gl = loadDocNbr(HEXID, 'v1', [['A1', 'idA1'], ['A2', 'idA2']]);
+  const { requester, calls } = stub([gl, ok()]);
+  const r = await runCommitBoard(requester, { loads: [{ loadNbr: 'DAVIS000000002', loadId: HEXID, orderedStopNbrs: [], emptyLoad: true }] }, CREDS);
+  assert.equal(r.ok, true);
+  assert.equal(calls.length, 2, 'getLoad + load/edit — the empty-load actually fires (no shortcut no-op)');
+  assert.match(calls[1].url, /\/load\/edit\//);
+  assert.deepEqual([...calls[1].body.removeStopIds].sort(), ['idA1', 'idA2'], 'removes EVERY delivery');
+  assert.ok(r.loads[0].steps.some((s) => s.op === 'removeStops' && s.ok), 'a real remove step is recorded');
+});
+
+test('commitBoard: a "Cancelled route" response on an empty-load is treated as success', async () => {
+  const gl = loadDocNbr(HEXID, 'v1', [['A1', 'idA1']]);
+  const cancelResp = { json: { reasons: [{ description: 'Load has been Cancelled' }] } };
+  const { requester } = stub([gl, cancelResp]);
+  const r = await runCommitBoard(requester, { loads: [{ loadNbr: 'DAVIS000000002', loadId: HEXID, emptyLoad: true }] }, CREDS);
+  assert.equal(r.loads[0].ok, true, 'the cancellation IS the intended outcome for an empty-load');
+  assert.ok(r.loads[0].steps.some((s) => s.cancelledRoute), 'flagged as a route cancel');
+});
+
+test('commitBoard: a "Cancelled" response is NOT swallowed for a normal (non-empty) reorder', async () => {
+  const gl = loadDocNbr(HEXID, 'v1', [['A1', 'idA1'], ['A2', 'idA2']]);
+  const cancelResp = { json: { reasons: [{ description: 'Load has been Cancelled' }] } };
+  const { requester } = stub([gl, cancelResp]);
+  const r = await runCommitBoard(requester, { loads: [{ loadNbr: 'DAVIS000000002', loadId: HEXID, orderedStopNbrs: ['A2'] }] }, CREDS);
+  assert.equal(r.loads[0].ok, false, 'a reorder is not a cancel — the failure is real');
+});
+
+test('commitBoard: a reorder/unplan with only a loadId-only (no loadNbr) load → clear error, no doomed getLoad', async () => {
+  const { requester, calls } = stub([]);
+  const r = await runCommitBoard(requester, { loads: [{ loadId: HEXID, orderedStopNbrs: ['A2'] }] }, CREDS);
+  assert.equal(r.loads[0].ok, false);
+  assert.match(r.loads[0].error, /needs a load number/);
+  assert.equal(calls.length, 0, 'no NuVizz call — refused before a doomed load/info');
+});
+
 test('commitBoard: cross-load move A→B removes from the SOURCE before inserting to the TARGET', async () => {
   // Load1 [A,B] → [A] (B departs). Load2 [C] → [C,B] (B joins).
   const { requester, calls } = stub([

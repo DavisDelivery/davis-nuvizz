@@ -249,7 +249,10 @@ export function normalizeLoad(j: any): any {
   const exec = L.loadExecutionInfo || {};
   const stops = Array.isArray(L.stops) ? L.stops.map((s: any) => {
     const st = s?.stop || s || {};
-    return { stopId: st.stopId ?? null, stopNbr: st.stopNbr ?? null, stopSeq: st.stopSeq ?? null, stopType: st.stopType ?? null };
+    // Visit order is `stop.to.seq` (doc §10: "always sort by to.seq"; top-level stopSeq is
+    // unreliable/often absent on load/info). Fall back to from.seq (a pickup) then stopSeq.
+    const seq = st?.to?.seq ?? st?.from?.seq ?? st?.stopSeq ?? null;
+    return { stopId: st.stopId ?? null, stopNbr: st.stopNbr ?? null, stopSeq: seq, stopType: st.stopType ?? null };
   }) : [];
   return {
     loadId: hdr.loadId ?? null,
