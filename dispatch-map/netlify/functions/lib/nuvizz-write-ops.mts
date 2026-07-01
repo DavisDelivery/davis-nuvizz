@@ -171,6 +171,7 @@ export interface WriteSummary {
   ok: boolean;
   entityId?: string | null;   // createStop → stopId
   entityNbr?: string | null;  // createStop → stopNbr
+  updated?: boolean;          // createStop → the stop ALREADY EXISTED and was UPDATED (upsert), not created
   error?: string | null;
 }
 
@@ -195,6 +196,9 @@ export function summarize(httpOk: boolean, j: any): WriteSummary {
     ok,
     entityId: ent?.entityId ?? null,
     entityNbr: ent?.entityNbr ?? null,
+    // stop/sync/update is an UPSERT — surface "this UPDATED an existing record" distinctly so a
+    // createStop caller can warn instead of announcing a clean create that silently overwrote.
+    updated: Boolean(body?.apiResult?.updated) && !body?.apiResult?.created,
     error: ok ? null : (err || (httpOk ? null : 'request failed')),
   };
 }

@@ -220,6 +220,11 @@ export async function runCommitBoard(requester: RequesterLike, payload: any, cre
 
   // ── Phase 0 — resolve + plan ──
   const planned: any[] = [];
+  // Every load NUMBER that is part of THIS Save (declared up front + resolved as we go). Used to
+  // tell a legitimate cross-load move (source load in the batch → Phase 1 frees the stop) from a
+  // GRAB off a load that isn't in the payload at all (nothing would free it → double-plan).
+  const batchNbrs = new Set<string>();
+  for (const l of loadsIn) { const v = String(l?.loadNbr ?? '').trim(); if (v && !isHashLikeId(v)) batchNbrs.add(v); }
   for (const L of loadsIn) {
     const loadNbr = L?.loadNbr ?? null;
     const result: any = { loadNbr, ok: true, steps: [], error: null };
@@ -256,6 +261,7 @@ export async function runCommitBoard(requester: RequesterLike, payload: any, cre
       if (!loadNbrX && trustableLoadId(L?.loadId)) loadNbrX = await resolveLoadNbrById(requester, L.loadId, creds);
       if (loadNbrX) result.loadNbr = loadNbrX;
     }
+    if (loadNbrX) batchNbrs.add(loadNbrX);
     // Add BRAND-NEW (unplanned) stops to a load we STILL only know by its id (static/info couldn't
     // resolve a number): insert the stopIds straight onto the loadId, no anchor-remove. Only a pure ADD
     // by stopIds — a reorder-by-stopNbr / emptyLoad needs the load's current stops (getLoad, below). [#328]
@@ -285,6 +291,7 @@ export async function runCommitBoard(requester: RequesterLike, payload: any, cre
       for (const s of (load.stops || [])) { const n = String(s?.stopNbr ?? ''); const id = String(s?.stopId ?? ''); if (n && id) nbrToId.set(n, id); }
       const resolved: string[] = [];
       let anyOnLoad = false;
+      let refuse: string | null = null;
       for (const n of orderedNbrs) {
         let id = nbrToId.get(n);
         if (id) { anyOnLoad = true; }
@@ -293,28 +300,39 @@ export async function runCommitBoard(requester: RequesterLike, payload: any, cre
           // Phase 2 inserts it safely). null only if the stop number is genuinely unknown.
           const gs = await fireSingle(requester, 'getStop', { stopNbr: n }, creds);
           id = gs?.ok && gs.stop?.stopId ? String(gs.stop.stopId) : undefined;
+          // A stop still PLANNED on a load that is NOT part of this Save would be silently pulled
+          // off that load by the insert (holderOf only sees loads in the payload, so the Phase-2
+          // "still on another load" guard is blind here). Refuse — the source must be in the Save
+          // so the move is a staged remove+insert, never a grab.
+          const srcNbr = gs?.ok ? String(gs.stop?.assignedLoadNbr ?? '').trim() : '';
+          if (id && srcNbr && srcNbr !== String(loadNbrX ?? '') && !batchNbrs.has(srcNbr)) {
+            refuse = `commitBoard: stop ${n} is still planned on load ${srcNbr}, which is not part of this Save — open that load in Compare so the move is staged`;
+            break;
+          }
         }
         if (id) resolved.push(String(id));
       }
+      if (refuse) { result.ok = false; result.error = refuse; planned.push({ L, curIds, result }); continue; }
       // Refuse only when NOTHING resolved AND nothing was even on the load — a genuinely stale board.
       if (orderedNbrs.length && !resolved.length && !anyOnLoad) {
         result.ok = false; result.error = 'commitBoard: ordered stops not found (stale board — refresh and retry)'; planned.push({ L, curIds, result }); continue;
       }
       desired = resolved;
     }
-    // Wrong-load guard: a reorder resolves the load by NAME (for header + versionId) but inserts
-    // by loadId — if the caller's same-day loadId disagrees with what the name resolved to, the
-    // recurring name hit a different day's instance; refuse rather than split remove/insert.
-    if (desired.length && L?.loadId && load.loadId && String(load.loadId) !== String(L.loadId)) {
+    // EMPTY-LOAD intent (§10): the user removed EVERY order — removing all deliveries CANCELS the
+    // route. Computed BEFORE the wrong-load guard so a cancel is identity-checked too: an emptied
+    // load whose NAME resolved to a different day's instance must never cancel that other route.
+    const intendedEmpty = emptyLoad || (orderedNbrs !== null && orderedNbrs.length === 0);
+    // Wrong-load guard: a reorder (or cancel) resolves the load by NAME (for header + versionId)
+    // but targets the caller's loadId — if the caller's same-day loadId disagrees with what the
+    // name resolved to, the recurring name hit a different day's instance; refuse rather than
+    // split remove/insert (or cancel the wrong route).
+    if ((desired.length || intendedEmpty) && L?.loadId && load.loadId && String(load.loadId) !== String(L.loadId)) {
       result.ok = false; result.error = `commitBoard: load identity mismatch (name resolved ${load.loadId}, expected ${L.loadId})`; planned.push({ L, curIds, result }); continue;
     }
     if (desired.length && hasUnmodeledDelivery(load)) {
       result.ok = false; result.error = 'commitBoard: load has a non-DO stop in a delivery slot — reorder skipped (verify in portal)'; planned.push({ L, curIds, result }); continue;
     }
-    // EMPTY-LOAD (§10): the user removed EVERY order. There is no anchor to keep — removing all
-    // deliveries CANCELS the route, which is the intended outcome. Explicit + gated (emptyLoad flag
-    // or an explicitly-empty stopNbr order), NEVER a silent no-op that falsely reports success.
-    const intendedEmpty = emptyLoad || (orderedNbrs !== null && orderedNbrs.length === 0);
     let plan: any;
     if (!desired.length && intendedEmpty) {
       if (!curIds.length) { result.ok = false; result.error = 'commitBoard: load already has no deliveries to remove'; planned.push({ L, curIds, result }); continue; }

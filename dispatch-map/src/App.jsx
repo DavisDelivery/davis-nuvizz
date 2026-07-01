@@ -51,7 +51,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.32.29';
+const APP_VERSION = '0.32.30';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -96,6 +96,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.32.30', 'Bug-hunt wave 2 — eight fixes across live dispatch, the board scan, and New Order. (1) Ninja/selection can no longer pull a stop onto a card when its own load isn\'t open in Compare — that save would have DOUBLE-PLANNED the stop (it was never removed from its real load); the server refuses the same case as a backstop. (2) Changing the board DATE now closes the Compare cards — a surviving card could save today\'s edits onto YESTERDAY\'S load. (3) With "Unplanned only" on, stops staged onto a card no longer vanish from the card/printed manifest while still being saved — what you see is what commits. (4) A rolled-over order delivered today now actually turns delivered on the board (its completion was landing on yesterday\'s never-written board while today\'s kept the stale open copy). (5) CANCELLED orders now reach the board (as exceptions) instead of freezing as live work you could still route. (6) Two same-day loads sharing a name can\'t be opened as one card or cross-wire each other\'s identity on assign/save. (7) New Order: retrying after a network drop can\'t create a DUPLICATE order (same idempotency key until success), and (8) if a typed Order # already existed, it now warns loudly that NuVizz UPDATED that existing order instead of announcing a clean "created."'],
   ['0.32.29', 'HOTFIX (from a full-codebase bug hunt) — two regressions: (1) after a successful ● LIVE Save, the Compare panel crashed internally before showing the "✓ saved" toast (a 0.32.27 cleanup referenced state it couldn\'t reach) — the save itself went through, but you got NO confirmation, no orphaned-stops warning, and staged removals weren\'t cleared. Save feedback is back. (2) Clicking an EMPTY ("No orders yet") load in the Loads grid opened a card that couldn\'t save or assign — since 0.32.25 that row is keyed by the real Load Number, which the load lookup didn\'t recognize. Empty loads open properly again.'],
   ['0.32.28', 'New Order — create a delivery order without leaving Dispatch. A new "New Order" tab at the top opens a form: type the consignee name + address (+ optional order number, PRO, pallets/cartons/weight and service date) and Create. The ship-from origin is set once (saved on your device) and reused. Like the other live actions it has an ○ Beta / ● LIVE switch — in Beta a Create only previews, in ● LIVE it creates the order in NuVizz (also needs the server write flag). A new order lands UNPLANNED — plan it onto a load in Routing.'],
   ['0.32.27', 'Live dispatch (beta) — HARDENING pass (from a full write-path audit), several "reported success but didn\'t persist" and "silently dropped" bugs closed: (1) assigning a driver from the Routes list now resolves the load\'s real internal id first — a Draft load could otherwise get "Success" from NuVizz while nothing was actually assigned (re-confirm any recent Draft assigns in the portal). (2) Emptying/cancelling a load no longer tries to assign/dispatch the now-cancelled route. (3) Dragging a brand-new order to the FRONT of a load now refreshes the load version before removing the rest, so the remove can\'t be rejected and leave the load half-changed, and it won\'t pre-insert a stop still on another load. (4) A partial/failed NuVizz response is no longer read as success. (5) The panel no longer silently discards a staged driver/unplan when some stops aren\'t loaded yet, no longer re-sends an already-unplanned stop on the next Save, and reliably clears a saved load\'s dirty state.'],
@@ -10793,7 +10794,15 @@ function RoutingScreen({ debugCaptureRef }) {
         if (j && j.ok) for (const l of (j.loads || [])) {
           const nm = String(l.name || '').trim().toLowerCase();
           const entry = { loadId: l.loadId ? String(l.loadId) : null, name: l.name || '', loadNbr: l.loadNbr ? String(l.loadNbr) : null };
-          if (nm) { status.set(nm, l.status || ''); index.set(nm, entry); }
+          if (nm) {
+            status.set(nm, l.status || '');
+            // Two roster loads sharing a NAME → the name key is AMBIGUOUS: last-write-wins here
+            // could hand one load's number/id to the other's card. Mark it; identity consumers
+            // (openRouteInWorkbench / onAssignDriver) refuse ambiguous entries.
+            const prior = index.get(nm);
+            if (prior && String(prior.loadId) !== String(entry.loadId)) index.set(nm, { ...entry, ambiguous: true });
+            else index.set(nm, entry);
+          }
           if (l.loadId) { status.set('#id:' + String(l.loadId), l.status || ''); index.set(String(l.loadId), entry); }
           // Also key by the REAL load number: an empty load's Loads-grid row is keyed by it since
           // 0.32.25 (loadNbr || loadId), so opening one must resolve back to the entry — without
@@ -10896,7 +10905,12 @@ function RoutingScreen({ debugCaptureRef }) {
     if (!routeUnplannedOnly) return positionedAll;
     return positionedAll.filter((s) => s.isUnplanned || openRouteKeys.has(s.routeName || s.loadNbr));
   }, [positionedAll, routeUnplannedOnly, openRouteKeys]);
-  const stopById = useMemo(() => new Map(positioned.map((s) => [String(s.stopNbr), s])), [positioned]);
+  // Lookup map for cards / manifest / the Save payload — built from the UNFILTERED set, so a
+  // stop staged onto an open card never vanishes from the card rows, printed manifest, or
+  // re-sequencing while "Unplanned only" hides it on the MAP (markers use `positioned` below).
+  // With the filtered map, what you saw ≠ what Save sent (hidden stops were still committed,
+  // and a re-sequence shoved them to the end of the real order).
+  const stopById = useMemo(() => new Map(positionedAll.map((s) => [String(s.stopNbr), s])), [positionedAll]);
   const positionedRef = useRef(positioned);
   useEffect(() => { positionedRef.current = positioned; }, [positioned]);
   // Unfiltered ref so opening a route captures ALL its stops even while "Unplanned only" is on.
@@ -10914,30 +10928,46 @@ function RoutingScreen({ debugCaptureRef }) {
       if (prev.some((r) => r.key === key)) return prev;                 // already open
       if (prev.length >= WB_MAX) { setLastAction(`Workbench is full (${WB_MAX} routes) — close one first.`); return prev; }
       const routeStops = positionedAllRef.current.filter((s) => (s.routeName || s.loadNbr) === key);
+      // TWO same-day loads sharing this NAME would merge onto one card and a Save would reorder
+      // across loads (and could pair one load's id with the other's number). Refuse to open.
+      const distinctLoadIds = new Set(routeStops.map((s) => s.raw?.load?.loadId ?? s.loadId).filter(Boolean).map(String));
+      if (distinctLoadIds.size > 1) {
+        setLastAction(`Two loads share the name "${loadDisplayName(key) || key}" today — their stops can't be edited as one card. Rename one in the portal, or work stop-by-stop.`);
+        return prev;
+      }
       // Resolve the load's real loadId + name from the day's roster (the daily load scan, by name or
       // loadId). REQUIRED for Draft/empty loads: they have no stops to derive a loadId from, and
       // assignDriver/commitBoard need the loadId (without it the Save falls through to a load/info
       // lookup with a bad key → "commitBoard: load not found"). For loads WITH stops, the stop-derived
       // loadId still wins (it's the verified same-day instance); the roster only fills the gap.
-      const rosterEntry = loadRosterRef.current.get(String(key)) || loadRosterRef.current.get(String(key).toLowerCase()) || null;
+      // An AMBIGUOUS roster entry (two roster loads share the name) is never trusted for identity.
+      const rosterEntry0 = loadRosterRef.current.get(String(key)) || loadRosterRef.current.get(String(key).toLowerCase()) || null;
+      const rosterEntry = rosterEntry0 && !rosterEntry0.ambiguous ? rosterEntry0 : null;
+      const stopLoadIdV = routeStops.map((s) => s.raw?.load?.loadId ?? s.loadId).find(Boolean) || null;
+      // Only take the roster's loadNbr/loadId when it agrees with the stop-derived identity — a
+      // roster row for a DIFFERENT same-named load must not attach its number to this card.
+      const rosterMatches = !stopLoadIdV || !rosterEntry?.loadId || String(rosterEntry.loadId) === String(stopLoadIdV);
       // loadId: verified stop-derived id first; then the roster; then the key ITSELF when it's a load
       // id hash — an empty load is opened from the Loads grid BY its loadId, so this resolves it even
       // if the roster hasn't loaded yet (no race) and the roster only enriches the display name.
-      const loadId = routeStops.map((s) => s.raw?.load?.loadId ?? s.loadId).find(Boolean)
-        || rosterEntry?.loadId
+      const loadId = stopLoadIdV
+        || (rosterMatches ? rosterEntry?.loadId : null)
         || (isHashLikeId(String(key)) ? String(key) : null);
       // The REAL NuVizz load NUMBER (e.g. "DAVIS000198197") — load/info is keyed by it, NOT the human
       // route name. The stop rows carry only the route NAME in loadNbr (the stops grid has no number
       // column), so it 404s load/info; prefer the loads-roster's numeric number, and fall back to a
       // stop value ONLY if it actually looks like a load number — never the bare route name. (When
-      // neither is available the server bridges loadId→loadNbr via load/static/info.)
-      const loadNbr = rosterEntry?.loadNbr
+      // neither is available the server bridges loadId→loadNbr via getStop/static-info.)
+      const loadNbr = (rosterMatches ? rosterEntry?.loadNbr : null)
         || routeStops.map((s) => s.loadNbr).find((v) => looksLikeLoadNbr(v))
         || null;
       // Display name — the human route/load name; from stops, else the roster (so an empty load shows
       // "NOR" instead of "Unnamed load").
       const name = routeStops.map((s) => s.routeName).find(Boolean) || rosterEntry?.name || null;
-      const order = orderRouteStops(routeStops).map((s) => String(s.stopNbr));
+      // Ids already staged onto ANOTHER open card stay there (the staged move wins) — otherwise a
+      // freshly-opened card re-seeds them from the board and the stop sits in BOTH cards' orders.
+      const stagedElsewhere = new Set(prev.flatMap((r) => r.order));
+      const order = orderRouteStops(routeStops).map((s) => String(s.stopNbr)).filter((id) => !stagedElsewhere.has(id));
       return [...prev, { key, name, loadNbr, loadId, order, collapsed: false }];
     });
   }, []);
@@ -10950,6 +10980,10 @@ function RoutingScreen({ debugCaptureRef }) {
     const okSet = new Set(keys);
     setWbRoutes((prev) => prev.map((r) => (okSet.has(r.key) && (r.removed || []).length) ? { ...r, removed: [] } : r));
   }, []);
+  // Changing the board DATE closes all Compare cards. A card freezes its loadId/loadNbr at open;
+  // recurring loads share NAMES across days, so a card surviving a date flip looks like today's
+  // load but would Save edits onto YESTERDAY'S instance. (Mirrors the assignedOverride reset.)
+  useEffect(() => { setWbRoutes([]); }, [selectedDate]);
   const wbResequence = useCallback((key, strategy) => {
     if (!strategy) return;
     setWbRoutes((prev) => prev.map((r) => {
@@ -11029,6 +11063,15 @@ function RoutingScreen({ debugCaptureRef }) {
   // OTHER open route so a stop only ever sits on one compare-panel card. No-op if it's already there.
   const ninjaAddStop = useCallback((stopNbr) => {
     const id = String(stopNbr);
+    // A stop still PLANNED on a load that is NOT open in Compare must not be ninja'd onto a card:
+    // nothing would stage its removal from the holder load, so Save would double-plan it (the
+    // server can only see loads that are in the payload). Open the holder first = staged move.
+    const s = stopById.get(id);
+    const holder = s ? String(s.routeName || s.loadNbr || '') : '';
+    if (s && !s.isUnplanned && holder && !openRouteKeys.has(holder)) {
+      setLastAction(`${stopNbr} is planned on ${loadDisplayName(holder) || holder} — open that load in Compare first so the move is staged.`);
+      return;
+    }
     setWbRoutes((prev) => {
       if (!prev.length) return prev;
       const target = (activeRouteKey && prev.some((r) => r.key === activeRouteKey)) ? activeRouteKey : prev[0].key;
@@ -11040,13 +11083,25 @@ function RoutingScreen({ debugCaptureRef }) {
         return r.order.includes(id) ? { ...r, order: r.order.filter((x) => x !== id) } : r;
       });
     });
-  }, [activeRouteKey]);
+  }, [activeRouteKey, stopById, openRouteKeys]);
   // Bulk "send the current selection onto an open Compare load" (#258) — one click moves every
   // selected stop onto that route (deduped, and stripped from any other card so a stop sits on one
   // route), then clears the selection. Header shows one button per open route.
   const sendSelectionToRoute = useCallback((key) => {
-    const ids = [...selectedIds].map(String);
+    let ids = [...selectedIds].map(String);
     if (!key || !ids.length) return;
+    // Same guard as ninja-add: skip stops still planned on loads that are NOT open in Compare —
+    // nothing would stage their removal from the holder load, so Save would double-plan them.
+    const blocked = ids.filter((id) => {
+      const s = stopById.get(id);
+      const holder = s ? String(s.routeName || s.loadNbr || '') : '';
+      return s && !s.isUnplanned && holder && !openRouteKeys.has(holder);
+    });
+    if (blocked.length) {
+      ids = ids.filter((id) => !blocked.includes(id));
+      setLastAction(`${blocked.length} stop(s) skipped — still planned on loads not open in Compare (open those loads first so the move is staged).`);
+      if (!ids.length) return;
+    }
     const idSet = new Set(ids);
     setWbRoutes((prev) => {
       if (!prev.some((r) => r.key === key)) return prev;
@@ -11060,7 +11115,7 @@ function RoutingScreen({ debugCaptureRef }) {
     });
     setLastAction(`Sent ${ids.length} selected stop${ids.length === 1 ? '' : 's'} → ${loadDisplayName(key) || 'load'}`);
     setSelectedIds(new Set());
-  }, [selectedIds]);
+  }, [selectedIds, stopById, openRouteKeys]);
   // The marker click listener is bound once; route ninja clicks through a ref so toggling ninja
   // (or closing the panel) never re-creates the markers. Null = ninja off / nothing to add to.
   useEffect(() => { ninjaActionRef.current = (ninjaMode && wbRoutes.length > 0) ? ninjaAddStop : null; }, [ninjaMode, wbRoutes.length, ninjaAddStop]);
@@ -11119,10 +11174,13 @@ function RoutingScreen({ debugCaptureRef }) {
     // The route group carries loadId only once its stops are enriched; a DRAFT/empty load has none.
     // Resolve the internal loadId (and the REAL load number) from the loads-roster scan, keyed by
     // route name or by the loadId itself — the same source the Compare panel already uses.
-    const rosterEntry = loadRosterRef.current.get(String(g.name || '').trim().toLowerCase())
+    const rosterEntry0 = loadRosterRef.current.get(String(g.name || '').trim().toLowerCase())
       || loadRosterRef.current.get(String(g.key || '').trim().toLowerCase())
       || (g.loadId ? loadRosterRef.current.get(String(g.loadId)) : null)
       || null;
+    // Never take identity from an AMBIGUOUS name entry (two same-day loads share the name) —
+    // assigning against the wrong instance persists silently in NuVizz.
+    const rosterEntry = rosterEntry0 && !rosterEntry0.ambiguous ? rosterEntry0 : null;
     const loadId = g.loadId || rosterEntry?.loadId || null;
     const loadNbr = (g.loadNbr && looksLikeLoadNbr(g.loadNbr)) ? g.loadNbr : (rosterEntry?.loadNbr || null);
     if (!loadId) { showMapToast(`Can't assign ${label} — its NuVizz load id hasn't loaded yet.`); return; }
@@ -12940,10 +12998,20 @@ function OrderField({ label, req, value, onChange, placeholder, type = 'text', c
 
 function NewOrderScreen() {
   const [origin, setOrigin] = useState(() => {
-    try { const s = JSON.parse(localStorage.getItem(NEWORDER_ORIGIN_KEY) || 'null'); if (s) return { ...NEWORDER_ORIGIN_DEFAULT, ...s }; } catch { /* ignore */ }
+    // Coerce every saved field to a STRING — a hand-edited/corrupt saved origin (e.g. a numeric
+    // zip) would otherwise pass the gate and then throw on .trim() mid-submit, wedging the form.
+    try {
+      const s = JSON.parse(localStorage.getItem(NEWORDER_ORIGIN_KEY) || 'null');
+      if (s && typeof s === 'object') {
+        const o = { ...NEWORDER_ORIGIN_DEFAULT };
+        for (const k of Object.keys(o)) o[k] = String(s[k] ?? o[k] ?? '');
+        return o;
+      }
+    } catch { /* ignore */ }
     return NEWORDER_ORIGIN_DEFAULT;
   });
-  const originComplete = !!(origin.name && origin.addr1 && origin.city && origin.state && origin.zip);
+  // Trimmed like the delivery gate — a whitespace-only origin field must not enable Create.
+  const originComplete = !!(String(origin.name).trim() && String(origin.addr1).trim() && String(origin.city).trim() && String(origin.state).trim() && String(origin.zip).trim());
   const [showOrigin, setShowOrigin] = useState(!originComplete);
   const [row, setRow] = useState(EMPTY_ORDER_ROW);
   const [serviceDate, setServiceDate] = useState(todayLocalYMD());
@@ -12959,38 +13027,50 @@ function NewOrderScreen() {
 
   const persistOrigin = () => { try { localStorage.setItem(NEWORDER_ORIGIN_KEY, JSON.stringify(origin)); } catch { /* ignore */ } };
 
+  // The clientOpId is minted ONCE per ORDER (not per click): a retry after a lost response
+  // replays the same id, so the server's idempotency ledger returns the prior success instead
+  // of creating a DUPLICATE order. Regenerated only after a confirmed success.
+  const opIdRef = useRef(newClientOpId());
+
   const submit = async () => {
     if (!canSubmit) return;
     persistOrigin();
     setBusy(true); setResult(null);
-    const payloadRow = {
-      name: row.name.trim(), addr1: row.addr1.trim(), addr2: row.addr2.trim() || null,
-      city: row.city.trim(), state: row.state.trim(), zip: row.zip.trim(),
-      stopNbr: row.stopNbr.trim() || null, pro: row.pro.trim() || null,
-      pallets: row.pallets === '' ? null : Number(row.pallets),
-      cartons: row.cartons === '' ? null : Number(row.cartons),
-      weight: row.weight === '' ? null : Number(row.weight),
-    };
-    const settings = {
-      origin: { name: origin.name.trim(), addr1: origin.addr1.trim(), city: origin.city.trim(), state: origin.state.trim(), zip: origin.zip.trim() },
-      serviceDate, timeZone: 'America/New_York',
-    };
-    if (!live) {
-      setBusy(false);
-      setResult({ ok: true, beta: true, msg: `○ Beta — would create an order for ${payloadRow.name} (nothing sent). Flip to ● LIVE to create it in NuVizz.` });
-      return;
-    }
-    let res;
-    try { res = await callWrite('createStop', { row: payloadRow, settings }, { dryRun: false, clientOpId: newClientOpId(), createdBy: 'dispatcher' }); }
-    catch (e) { res = { ok: false, error: e?.message || 'network error' }; }
-    setBusy(false);
-    if (res.ok && res.result?.ok) {
-      const nbr = res.result.entityNbr || payloadRow.stopNbr || '(number assigned by NuVizz)';
-      setResult({ ok: true, msg: `✓ Order created — ${nbr}. It's now UNPLANNED; plan it onto a load in Routing.` });
-      setRow(EMPTY_ORDER_ROW);   // ready for the next order; keep origin + date
-    } else {
-      setResult({ ok: false, msg: `✗ Create failed: ${res.error || res.result?.error || 'write error'}` });
-    }
+    try {
+      const payloadRow = {
+        name: row.name.trim(), addr1: row.addr1.trim(), addr2: row.addr2.trim() || null,
+        city: row.city.trim(), state: row.state.trim(), zip: row.zip.trim(),
+        stopNbr: row.stopNbr.trim() || null, pro: row.pro.trim() || null,
+        pallets: row.pallets === '' ? null : Number(row.pallets),
+        cartons: row.cartons === '' ? null : Number(row.cartons),
+        weight: row.weight === '' ? null : Number(row.weight),
+      };
+      const settings = {
+        origin: { name: origin.name.trim(), addr1: origin.addr1.trim(), city: origin.city.trim(), state: origin.state.trim(), zip: origin.zip.trim() },
+        serviceDate, timeZone: 'America/New_York',
+      };
+      if (!live) {
+        setResult({ ok: true, beta: true, msg: `○ Beta — would create an order for ${payloadRow.name} (nothing sent). Flip to ● LIVE to create it in NuVizz.` });
+        return;
+      }
+      let res;
+      try { res = await callWrite('createStop', { row: payloadRow, settings }, { dryRun: false, clientOpId: opIdRef.current, createdBy: 'dispatcher' }); }
+      catch (e) { res = { ok: false, error: e?.message || 'network error' }; }
+      if (res.ok && res.result?.ok) {
+        const nbr = res.result.entityNbr || payloadRow.stopNbr || '(number assigned by NuVizz)';
+        opIdRef.current = newClientOpId();   // next order = new idempotency key
+        if (res.result.updated) {
+          // stop/sync/update is an UPSERT: the typed Order # already existed, and NuVizz
+          // REPLACED that order's details. Say so loudly; keep the form so it's reviewable.
+          setResult({ ok: true, updated: true, msg: `⚠ Order ${nbr} ALREADY EXISTED — NuVizz UPDATED it (its address/details were replaced with what you entered). Verify in the portal if that wasn't intended.` });
+        } else {
+          setResult({ ok: true, msg: `✓ Order created — ${nbr}. It's now UNPLANNED; plan it onto a load in Routing.` });
+          setRow(EMPTY_ORDER_ROW);   // ready for the next order; keep origin + date
+        }
+      } else {
+        setResult({ ok: false, msg: `✗ Create failed: ${res.error || res.result?.error || 'write error'}` });
+      }
+    } finally { setBusy(false); }   // a throw anywhere above can never wedge the form in "Creating…"
   };
 
   return (
@@ -13064,7 +13144,7 @@ function NewOrderScreen() {
 
         {/* Result + submit */}
         {result && (
-          <div className={`rounded-lg px-3 py-2 text-[13px] ${result.ok ? (result.beta ? 'bg-slate-100 text-slate-700 border border-slate-200' : 'bg-green-50 text-green-800 border border-green-200') : 'bg-red-50 text-red-800 border border-red-200'}`}>
+          <div className={`rounded-lg px-3 py-2 text-[13px] ${result.ok ? (result.beta ? 'bg-slate-100 text-slate-700 border border-slate-200' : result.updated ? 'bg-amber-50 text-amber-800 border border-amber-200' : 'bg-green-50 text-green-800 border border-green-200') : 'bg-red-50 text-red-800 border border-red-200'}`}>
             {result.msg}
           </div>
         )}

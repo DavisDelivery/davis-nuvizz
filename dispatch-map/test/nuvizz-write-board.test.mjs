@@ -449,3 +449,46 @@ test('commitBoard: anchor pre-insert FAILS → the remove is NOT fired (load nev
   assert.equal(r.ok, false);
   assert.equal(calls.some((c) => /load\/edit/.test(c.url)), false, 'no remove after a failed anchor pre-insert');
 });
+
+// stop/info for a stop that IS currently planned on a load — carries its load membership.
+const stopOnLoad = (stopId, stopNbr, loadNbr) => ({ json: { Stop: { stop: { stopId, stopNbr }, stopExecutionInfo: { stopStatus: '20' }, load: { loadNbr } } } });
+
+test('commitBoard: adding a stop still planned on a load NOT in this Save → refused (no silent grab)', async () => {
+  // Load DAVIS…002 currently [A1]; desired [A1, W] where W is planned on DAVIS…777 — a load that is
+  // NOT part of this Save. Nothing would free W (holderOf can't see un-fetched loads), so inserting
+  // it would double-plan. Must refuse with a message naming the holder.
+  const gl = loadDocNbr(HEXID, 'v1', [['A1', 'idA1']]);
+  const { requester, calls } = stub([gl, stopOnLoad('idW', 'W', 'DAVIS000000777')]);
+  const r = await runCommitBoard(requester, { loads: [{ loadNbr: 'DAVIS000000002', loadId: HEXID, orderedStopNbrs: ['A1', 'W'] }] }, CREDS);
+  assert.equal(r.loads[0].ok, false);
+  assert.match(r.loads[0].error, /still planned on load DAVIS000000777/);
+  assert.equal(calls.some((c) => /insertstops|load\/edit/.test(c.url)), false, 'nothing fired');
+});
+
+test('commitBoard: adding a stop whose source load IS in this Save → allowed (staged move)', async () => {
+  // Load 1 (DAVIS…001) [A1, X] → [A1] (X departs). Load 2 (DAVIS…002) [B1] → [B1, X] (X joins).
+  // getStop(X) shows it planned on DAVIS…001 — which IS in the batch, so the move is staged and allowed.
+  const HEX2 = '6a438e9d52ef82bd1ed45170';
+  const gl1 = loadDocNbr(HEXID, 'v1', [['A1', 'idA1'], ['X', 'idX']]);
+  const gl2 = loadDocNbr(HEX2, 'v2', [['B1', 'idB1']]);
+  const { requester, calls } = stub([gl1, gl2, stopOnLoad('idX', 'X', 'DAVIS000000001'), ok(), ok()]);
+  const r = await runCommitBoard(requester, { loads: [
+    { loadNbr: 'DAVIS000000001', loadId: HEXID, orderedStopNbrs: ['A1'] },
+    { loadNbr: 'DAVIS000000002', loadId: HEX2, orderedStopNbrs: ['B1', 'X'] },
+  ] }, CREDS);
+  assert.equal(r.ok, true);
+  const edit = calls.find((c) => /load\/edit/.test(c.url));
+  assert.deepEqual(edit.body.removeStopIds, ['idX'], 'X removed from its source load first');
+  const ins = calls.find((c) => /insertstops/.test(c.url));
+  assert.deepEqual(ins.body.insertStopIds, ['idX'], 'then inserted onto the target');
+  assert.equal(ins.body.loadId, HEX2);
+});
+
+test('commitBoard: emptyLoad whose NAME resolved a DIFFERENT loadId → identity mismatch refusal (never cancel the wrong route)', async () => {
+  const gl = loadDocNbr('6a999999999999999999beef', 'v1', [['A1', 'idA1'], ['A2', 'idA2']]);   // name resolves another instance
+  const { requester, calls } = stub([gl]);
+  const r = await runCommitBoard(requester, { loads: [{ loadNbr: 'DAVIS000000002', loadId: HEXID, emptyLoad: true }] }, CREDS);
+  assert.equal(r.loads[0].ok, false);
+  assert.match(r.loads[0].error, /identity mismatch/);
+  assert.equal(calls.some((c) => /load\/edit/.test(c.url)), false, 'no remove fired at the wrong instance');
+});

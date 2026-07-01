@@ -140,10 +140,12 @@ test('SAVED_SEARCHES: active + completed map to the portal saved searches (HAR-c
   assert.equal(a[2], '20,10');
   assert.equal(a[10], JSON.stringify({ period: '+/-7d' }));
   assert.equal(SAVED_SEARCHES.active.filterList.length, 12, 'active def has 12 sequences');
-  // COMPLETED = "Dispatch Map Completed": status 90,91,80 + arrival +/-7d (seq 10) + updated today (seq 11).
+  // COMPLETED = "Dispatch Map Completed": terminal statuses (incl. 99 = cancelled, so a
+  // cancellation reaches the board instead of freezing as open work) + arrival +/-7d (seq 10)
+  // + updated today (seq 11).
   assert.equal(SAVED_SEARCHES.completed.customListDefId, 77131);
   const c = Object.fromEntries(SAVED_SEARCHES.completed.filterList.map((f) => [f.sequence, f.value]));
-  assert.equal(c[2], '90,91,80');
+  assert.equal(c[2], '90,91,80,99');
   assert.equal(c[10], JSON.stringify({ period: '+/-7d' }));
   assert.equal(c[11], JSON.stringify({ period: '0d' }), 'Stop Detail Updated = today');
   assert.equal(SAVED_SEARCHES.completed.filterList.length, 11, 'completed def has 11 sequences');
