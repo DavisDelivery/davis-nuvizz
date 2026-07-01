@@ -188,5 +188,28 @@ export async function rawLoadListForDate(targetDateUTC: string, sampleN = 3): Pr
   const columns = cols.map((k) => ({ key: k, label: colDefs[k]?.columnName ?? null }));
   const values: any[] = Array.isArray(j?.values) ? j.values : [];
   const samples = values.slice(0, sampleN).map((row: any[]) => row.map((cell) => linkVal(cell)));
-  return { httpStatus: resp.status, listDefId: LOAD_LISTDEF, entity: LOAD_ENTITY, columnCount: cols.length, columns, rowCount: values.length, samples };
+
+  // PROBE: does the PORTAL /deliverit/filterdata endpoint (the one whose response includes the
+  // rteNbr = "Load Number" column, per the HAR) accept our server-side Basic auth? If so we can
+  // switch the scan to it and get the number for free. Multipart form, raw-object filter values.
+  let portal: any = null;
+  try {
+    const portalUrl = `${OPENAPI_BASE.replace(/\/openapi$/, '')}/filterdata`;
+    const b = buildLoadBody(periodForDate(targetDateUTC));
+    const bd = '----ddFormBoundary' + LOAD_LISTDEF;
+    const fields: Record<string, string> = {
+      filterList: JSON.stringify(b.filterList.map((f: any) => ({ sequence: f.sequence, value: f.sequence === 1 ? { period: periodForDate(targetDateUTC) } : -1 }))),
+      listDefId: '', customListDefId: String(LOAD_LISTDEF), userDefaultFilter: 'false',
+      currentPageSize: '0', canDelete: 'false', canEdit: 'false', canShow: 'false', canSelect: 'true',
+      page: '1', maxResult: '5', defaultSize: '5', filterArgsJson: '{}', filterValues: '[]',
+    };
+    const mp = Object.entries(fields).map(([k, v]) => `--${bd}\r\nContent-Disposition: form-data; name="${k}"\r\n\r\n${v}`).join('\r\n') + `\r\n--${bd}--\r\n`;
+    const pr = await getNuvizzRequester().request(portalUrl, { method: 'POST', headers: { Authorization: basicAuthHeader(), Accept: 'application/json', 'Content-Type': `multipart/form-data; boundary=${bd}` }, body: mp }, { route: '/filterdata(portal-probe)', tenant: companyCode });
+    const pj: any = await pr.json().catch(() => ({}));
+    const pdefs: Record<string, any> = (pj && pj.filterData && pj.filterData[0]) || {};
+    const pcols = Object.keys(pdefs);
+    portal = { url: portalUrl, httpStatus: pr.status, columnCount: pcols.length, columns: pcols.map((k) => ({ key: k, label: pdefs[k]?.columnName ?? null })), hasRteNbr: pcols.some((k) => /rtenbr|load.?(nbr|number)/i.test(`${k} ${pdefs[k]?.columnName ?? ''}`)) };
+  } catch (e: any) { portal = { error: e?.message || 'portal probe failed' }; }
+
+  return { openapi: { httpStatus: resp.status, listDefId: LOAD_LISTDEF, entity: LOAD_ENTITY, columnCount: cols.length, columns, rowCount: values.length, samples }, portal };
 }
