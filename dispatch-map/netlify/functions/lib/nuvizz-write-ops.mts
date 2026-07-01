@@ -185,8 +185,12 @@ export function summarize(httpOk: boolean, j: any): WriteSummary {
   const err = firstError(body);
   const created = body?.apiResult?.created || body?.apiResult?.updated;
   const ent = Array.isArray(body?.entityInfoList) && body.entityInfoList.length ? body.entityInfoList[0] : null;
-  const statusSuccess = String(body?.status ?? '').toUpperCase() === 'SUCCESS';
-  const ok = !err && (Boolean(created && ent) || statusSuccess || (httpOk && !hasReasons(body)));
+  const statusRaw = String(body?.status ?? '').toUpperCase();
+  const statusSuccess = statusRaw === 'SUCCESS';
+  // A present-but-non-SUCCESS status (PARTIALSUCCESS / FAILURE / REJECT / …) is NOT ok — never let
+  // the bare "2xx with no reasons[]" fallback below swallow a partial/failed apply as success.
+  const statusBad = statusRaw !== '' && !statusSuccess;
+  const ok = !err && !statusBad && (Boolean(created && ent) || statusSuccess || (httpOk && !hasReasons(body)));
   return {
     ok,
     entityId: ent?.entityId ?? null,

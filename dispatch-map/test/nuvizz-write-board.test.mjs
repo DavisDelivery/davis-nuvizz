@@ -3,7 +3,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { runCommitBoard } from '../netlify/functions/lib/nuvizz-write.mts';
+import { runCommitBoard, runOp } from '../netlify/functions/lib/nuvizz-write.mts';
 
 const CREDS = { base: 'https://portal.nuvizz.com/deliverit/openapi/v7', companyCode: 'DAVIS', auth: 'Basic xyz' };
 // A realistic INTERNAL loadId (24-hex loadHeader.loadId) — the only kind the executor trusts as the
@@ -190,6 +190,27 @@ test('commitBoard: cross-load move A→B removes from the SOURCE before insertin
   assert.match(calls[3].url, /\/load\/insertstops\//);
   assert.deepEqual(calls[3].body.insertStopIds, ['B']);
   assert.equal(calls[3].body.loadId, 'L2', 'B is inserted onto the target load');
+});
+
+test('runOp assignDriver: resolves the internal loadId via load/info before assigning (a roster id would silently no-op)', async () => {
+  // The Routes-panel dropdown can hand a roster KeyColumn id that ISN'T the internal loadHeader.loadId.
+  // NuVizz answers "Success" but persists nothing. Resolve the real id from the load number first.
+  const gl = loadDocNbr('6a3realinternalid0000000', 'v1', [['A1', 'idA1']]);
+  const { requester, calls } = stub([gl, ok()]);   // getLoad + assignanddispatch
+  const r = await runOp(requester, 'assignDriver', { routeId: '6a3rosterkeycolumn000000', loadNbr: 'DAVIS000197968', driverId: 5 }, CREDS);
+  assert.equal(r.ok, true);
+  assert.match(calls[0].url, /\/load\/info\//, 'resolves the internal id first');
+  assert.match(calls[1].url, /assignanddispatch/);
+  assert.equal(calls[1].body.dispatchRoute[0].routeId, '6a3realinternalid0000000', 'assigns against the RESOLVED internal loadId, not the roster id');
+});
+
+test('commitBoard: emptyLoad with a staged driver/dispatch → cancels the route, does NOT assign/dispatch the dead route', async () => {
+  const gl = loadDocNbr(HEXID, 'v1', [['A1', 'idA1']]);
+  const { requester, calls } = stub([gl, ok()]);   // getLoad + load/edit (cancel). NO assign/dispatch.
+  const r = await runCommitBoard(requester, { loads: [{ loadNbr: 'DAVIS000000002', loadId: HEXID, emptyLoad: true, driverId: 5, dispatch: true }] }, CREDS);
+  assert.equal(r.ok, true);
+  assert.equal(calls.some((c) => /assignanddispatch/.test(c.url)), false, 'no assign/dispatch against the cancelled route');
+  assert.equal(calls.length, 2, 'getLoad + load/edit only');
 });
 
 test('commitBoard: assign/dispatch-only load with a known loadId skips getLoad entirely', async () => {
@@ -401,6 +422,7 @@ test('commitBoard: a NEW stop as the first delivery → insert it BEFORE removin
   const { requester, calls } = stub([
     loadDocStops('L1', 'v1', [['A', 1, 'DO'], ['B', 2, 'DO']]),  // getLoad — load has A,B
     ok(),   // Phase 0.5 insert X (the new first delivery) — anchors the load
+    loadDocStops('L1', 'v2', [['X', 0, 'DO'], ['A', 1, 'DO'], ['B', 2, 'DO']]),  // Phase 0.5 re-fetch → fresh versionId
     ok(),   // Phase 1 remove A,B
     ok(),   // Phase 2 insert A
     ok(),   // Phase 2 insert B
@@ -408,8 +430,9 @@ test('commitBoard: a NEW stop as the first delivery → insert it BEFORE removin
   const r = await runCommitBoard(requester, { loads: [{ loadNbr: 'BEN 1', orderedStopIds: ['X', 'A', 'B'] }] }, CREDS);
   assert.equal(r.ok, true);
   const ops = calls.map((c) => c.url.match(/\/(load\/info|load\/edit|load\/insertstops)/)[1]);
-  assert.deepEqual(ops, ['load/info', 'load/insertstops', 'load/edit', 'load/insertstops', 'load/insertstops'],
-    'insert X, THEN remove, THEN re-insert — X is on the load before anything is stripped');
+  assert.deepEqual(ops, ['load/info', 'load/insertstops', 'load/info', 'load/edit', 'load/insertstops', 'load/insertstops'],
+    'insert X, re-fetch version, THEN remove, THEN re-insert — X is on the load before anything is stripped');
+  assert.equal(calls[3].body.versionId, 'v2', 'the remove echoes the REFRESHED versionId, not the stale pre-insert one');
   const xIdx = calls.findIndex((c) => /insertstops/.test(c.url));
   const editIdx = calls.findIndex((c) => /load\/edit/.test(c.url));
   assert.ok(xIdx < editIdx, 'X is inserted before the remove so the load never drops to zero stops');

@@ -325,7 +325,7 @@ export async function runCommitBoard(requester: RequesterLike, payload: any, cre
     if (!plan.ok) { result.ok = false; result.error = plan.reason; planned.push({ L, curIds, result }); continue; }
     // Prefer a hash-like caller loadId (the board's same-day internal id); otherwise use the
     // loadHeader.loadId we just resolved — never let a non-canonical roster id become the routeId.
-    planned.push({ L, load, hasLoad: true, loadId: trustableLoadId(L?.loadId) ? L.loadId : (load.loadId || L.loadId), editHeader: toEditHeader(load.loadHeader), versionId: load.versionId, plan, curIds, want: desired.map((x) => String(x)), result });
+    planned.push({ L, load, hasLoad: true, loadId: trustableLoadId(L?.loadId) ? L.loadId : (load.loadId || L.loadId), loadNbr: loadNbrX, editHeader: toEditHeader(load.loadHeader), versionId: load.versionId, plan, curIds, want: desired.map((x) => String(x)), result });
   }
 
   const live = planned.filter((p) => p.result.ok && p.hasLoad);
@@ -343,10 +343,26 @@ export async function runCommitBoard(requester: RequesterLike, payload: any, cre
   for (const p of live) {
     const anchorInsert = p.plan.anchorInsert ? String(p.plan.anchorInsert) : null;
     if (!anchorInsert) continue;
+    // A cross-load anchor (a stop still on ANOTHER load) cannot be pre-inserted here: its source
+    // frees it only in Phase 1, which runs AFTER this. Refuse rather than double-place it. (A truly
+    // new/unplanned first delivery isn't in holderOf, so it passes.)
+    if (!(p.curIds || []).includes(anchorInsert) && holderOf.has(anchorInsert)) {
+      p.result.steps.push({ op: 'insertStops', ok: false, result: null, error: `anchor ${anchorInsert} is still on another load — move it from there first` });
+      p.result.ok = false; p.aborted = true; continue;
+    }
     const r = await fireSingle(requester, 'insertStops', { insertStopIds: [anchorInsert], loadId: p.loadId }, creds);
     p.result.steps.push({ op: 'insertStops', ok: !!r.ok, result: r, error: r.ok ? null : (r.error || 'failed') });
     if (!r.ok) { p.result.ok = false; p.aborted = true; }
-    else inserted.add(anchorInsert);
+    else {
+      inserted.add(anchorInsert);
+      // The pre-insert bumped this load's versionId; Phase 1's removeStops echoes versionId (a
+      // version-checked full-header replace), so a STALE token would reject the remove and leave the
+      // load in a wrong state. Re-fetch to refresh editHeader/versionId before the remove.
+      if ((p.plan.removeStopIds || []).length && p.loadNbr) {
+        const f = await fetchLoad(requester, String(p.loadNbr), creds);
+        if (f.load) { p.editHeader = toEditHeader(f.load.loadHeader); p.versionId = f.load.versionId; }
+      }
+    }
   }
 
   // ── Phase 1 — all removes first (frees moved stops before any re-insert) ──
@@ -384,12 +400,14 @@ export async function runCommitBoard(requester: RequesterLike, payload: any, cre
       if (!r.ok) { ok = false; break; }
       inserted.add(sid);
     }
-    if (ok && hasDriverId(p.L?.driverId)) {
+    // Never assign/dispatch a route we just EMPTIED/CANCELLED — the load no longer exists to crew,
+    // and firing against it errors and flips the (successful) cancel to a reported failure.
+    if (ok && !p.plan.cancelRoute && hasDriverId(p.L?.driverId)) {
       const r = await fireSingle(requester, 'assignDriver', { routeId: p.loadId, driverId: p.L.driverId }, creds);
       p.result.steps.push({ op: 'assignDriver', ok: !!r.ok, result: r, error: r.ok ? null : (r.error || 'failed') });
       if (!r.ok) ok = false;
     }
-    if (ok && p.L?.dispatch) {
+    if (ok && !p.plan.cancelRoute && p.L?.dispatch) {
       const r = await fireSingle(requester, 'dispatchLoad', { routeId: p.loadId }, creds);
       p.result.steps.push({ op: 'dispatchLoad', ok: !!r.ok, result: r, error: r.ok ? null : (r.error || 'failed') });
       if (!r.ok) ok = false;
@@ -414,11 +432,34 @@ export async function runCommitBoard(requester: RequesterLike, payload: any, cre
  * reported as { ok:false, error }); a malformed-payload throw from a builder propagates
  * so the handler maps it to a 400.
  */
+/**
+ * Standalone assignDriver / dispatchLoad (the Routes-panel driver dropdown). NuVizz SILENTLY
+ * no-ops an assign/dispatch whose routeId isn't the INTERNAL loadHeader.loadId — it answers
+ * "Success" while persisting nothing. The Routes panel may hand us a roster KeyColumn id (for a
+ * Draft/empty load with no enriched stops) that is NOT guaranteed to be that internal id. So when
+ * we have the load NUMBER, resolve the canonical loadHeader.loadId via load/info first and assign
+ * against THAT — the same guard commitLoad/commitBoard already apply. (Enriched loads pass their
+ * real internal id and this getLoad simply re-confirms it.)
+ */
+async function runAssignDispatch(requester: RequesterLike, op: SingleOp, payload: any, creds: WriteCreds): Promise<any> {
+  let routeId = payload?.routeId ?? payload?.loadId ?? null;
+  const loadNbr = (payload?.loadNbr != null && String(payload.loadNbr).trim() !== '' && !isHashLikeId(String(payload.loadNbr))) ? String(payload.loadNbr) : null;
+  if (loadNbr) {
+    const f = await fetchLoad(requester, loadNbr, creds);
+    if (f.load?.loadId) routeId = f.load.loadId;
+    else if (!trustableLoadId(routeId)) return { ok: false, error: `${op}: could not resolve the load's internal id (${loadMissDiag(loadNbr, f)}) — assign would silently no-op` };
+  }
+  if (!routeId) return { ok: false, error: `${op}: no routeId — cannot ${op === 'assignDriver' ? 'assign' : 'dispatch'}` };
+  return fireSingle(requester, op, { ...payload, routeId }, creds);
+}
+
 export async function runOp(requester: RequesterLike, op: WriteOp, payload: any, creds: WriteCreds): Promise<any> {
   switch (op) {
     case 'commitBoard': return runCommitBoard(requester, payload, creds);
     case 'commitLoad': return runCommitLoad(requester, payload, creds);
     case 'removeStops': return runRemoveStops(requester, payload, creds);
+    case 'assignDriver':
+    case 'dispatchLoad': return runAssignDispatch(requester, op, payload, creds);
     default: return fireSingle(requester, op as SingleOp, payload, creds);
   }
 }
