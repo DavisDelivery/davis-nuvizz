@@ -172,3 +172,21 @@ export async function loadRosterForDate(targetDateUTC: string): Promise<Array<{ 
   if (!resp.ok) throw new Error(`load roster filterdata ${resp.status}`);
   return normalizeLoads(await resp.json());
 }
+
+// DIAGNOSTIC: the RAW openapi PkgRoute response — every column key + its human label, plus a few
+// sample rows (link-objects unwrapped). Lets us see EXACTLY which columns entity/filterdata returns
+// for our list-def (which differs from the portal's Export), so we can wire loadNbr correctly.
+export async function rawLoadListForDate(targetDateUTC: string, sampleN = 3): Promise<any> {
+  const { companyCode } = getCreds();
+  const hdr = { Authorization: basicAuthHeader(), 'Content-Type': 'application/json', Accept: 'application/json' };
+  const url = `${OPENAPI_BASE}/entity/filterdata/${LOAD_ENTITY}/${companyCode}`;
+  const body = JSON.stringify(buildLoadBody(periodForDate(targetDateUTC)));
+  const resp = await getNuvizzRequester().request(url, { method: 'POST', headers: hdr, body }, { route: '/entity/filterdata(rawdump)', tenant: companyCode });
+  const j: any = await resp.json().catch(() => ({}));
+  const colDefs: Record<string, any> = (j && j.filterData && j.filterData[0]) || {};
+  const cols = Object.keys(colDefs);
+  const columns = cols.map((k) => ({ key: k, label: colDefs[k]?.columnName ?? null }));
+  const values: any[] = Array.isArray(j?.values) ? j.values : [];
+  const samples = values.slice(0, sampleN).map((row: any[]) => row.map((cell) => linkVal(cell)));
+  return { httpStatus: resp.status, listDefId: LOAD_LISTDEF, entity: LOAD_ENTITY, columnCount: cols.length, columns, rowCount: values.length, samples };
+}
