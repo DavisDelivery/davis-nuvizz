@@ -51,7 +51,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.32.24';
+const APP_VERSION = '0.32.25';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -96,6 +96,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.32.25', 'Live dispatch (beta) — the daily Loads scan now captures each load\'s real Load Number (DAVIS0001…) once the "Load Number" column is present in the loads saved search — verified live, all 99 loads now carry their number. That means resequencing, unplanning, and driver-assign on a Draft load resolve the load DIRECTLY from the scan with ZERO extra NuVizz calls (the per-load stop-lookup bridge added in 0.32.24 is now just a fallback). Internal: removed the temporary column-diagnostic endpoint.'],
   ['0.32.24', 'Live dispatch (beta) — FIX (the real one): unplanning/resequencing a Draft load reported success but nothing changed in NuVizz. Root cause found by testing live: the app couldn\'t look up the load\'s real number (DAVIS0001…) for a Draft — the two lookups it tried are both dead on our tenant (the loads scan\'s saved search has no load-number column, and the load/static/info bridge returns "not implemented"). So the remove either errored or never got the number, and the removal never fired. The server now gets the real number the reliable way — by reading a stop that\'s already on the load (its own load membership carries the number) — then runs the remove. Confirmed live: the remove now actually comes off the load. (Once the load-number column is added to the loads saved search in the NuVizz portal, this needs zero extra lookups.)'],
   ['0.32.23', 'Live dispatch (beta) — FIX: assigning a driver to a load from the Routes list failed with "Can\'t assign — its NuVizz load id hasn\'t loaded yet" for a Draft/empty load (one with no orders opened yet). The Routes row only learns a load\'s internal id once its stops are opened, so a Draft had none. It now pulls the load\'s internal id (and real Load Number) from the daily Loads scan — the same source the reorder path uses — so you can assign a driver straight from the Routes list without opening the load first.'],
   ['0.32.22', 'Live dispatch (beta) — FIX: resequencing/unplanning a load and saving in ● LIVE failed with "commitBoard: load not found (loadNbr=…)". The Compare panel was sending the load\'s NAME ("SUW") as its number, but NuVizz\'s load lookup is keyed by the real Load Number ("DAVIS000198197"). That number is right there in the daily Loads scan (the "Load Number" column) — the app was capturing the load NAME and throwing the number away. The scan now grabs the real Load Number for every load and uses it for the lookup, so resequencing and unplanning work with NO extra NuVizz calls (previously it took a bridge call to look the number up from the internal id). If a load\'s number hasn\'t been picked up from the scan yet, that bridge lookup still covers it, and Save gives a clear "needs the load number — refresh and retry" instead of the confusing "load not found."'],

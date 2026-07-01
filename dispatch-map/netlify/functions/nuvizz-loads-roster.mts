@@ -16,7 +16,7 @@
 // already has. Creds stay server-side.
 //
 //   GET ?date=YYYY-MM-DD [&live=1]  → { ok, date, source, at, count, loads:[{loadId,name,status,trips}] }
-import { loadRosterForDate, rawLoadListForDate } from './lib/nuvizz-loads.mts';
+import { loadRosterForDate } from './lib/nuvizz-loads.mts';
 import { isFirestoreEnabled, readLoadRoster, writeLoadRoster } from './lib/firestore.mts';
 
 const TENANT = 'davis';
@@ -31,11 +31,6 @@ export default async (req: Request): Promise<Response> => {
     return new Response(JSON.stringify({ ok: false, reason: 'missing or bad date (YYYY-MM-DD)' }), { status: 400, headers: cors });
   }
   try {
-    // 0) DIAGNOSTIC — ?raw=1 dumps the RAW openapi PkgRoute columns + sample rows (one live call).
-    if (url.searchParams.get('raw') === '1') {
-      const raw = await rawLoadListForDate(date);
-      return new Response(JSON.stringify({ ok: true, date, raw }), { status: 200, headers: cors });
-    }
     // 1) Cached roster (scanner-persisted) — instant, no NuVizz call. Skipped on ?live=1.
     if (!live && isFirestoreEnabled()) {
       const cached = await readLoadRoster(TENANT, date).catch(() => null);
