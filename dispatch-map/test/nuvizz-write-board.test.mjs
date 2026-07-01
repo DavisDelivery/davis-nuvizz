@@ -87,13 +87,27 @@ test('commitBoard: resolves orderedStopNbrs → stopIds via the load — unplan 
   assert.deepEqual([...calls[1].body.removeStopIds].sort(), ['idA1', 'idA3'], 'removed the non-anchor deliveries, resolved by stopNbr');
 });
 
-test('commitBoard: orderedStopNbrs that resolve to NOTHING → refused (stale board), never a silent cancel', async () => {
+test('commitBoard: orderedStopNbrs that resolve to NOTHING (not on load, getStop 404) → refused (stale board)', async () => {
   const gl = loadDocNbr(HEXID, 'v1', [['A1', 'idA1']]);
-  const { requester, calls } = stub([gl]);
+  const { requester, calls } = stub([gl, { status: 404, json: {} }]);   // getLoad + getStop(GHOST) not found
   const r = await runCommitBoard(requester, { loads: [{ loadNbr: 'DAVIS000000009', loadId: HEXID, orderedStopNbrs: ['GHOST'] }] }, CREDS);
   assert.equal(r.loads[0].ok, false);
-  assert.match(r.loads[0].error, /not found on this load/);
-  assert.equal(calls.length, 1, 'getLoad only — no edit fired on a stale order');
+  assert.match(r.loads[0].error, /stale board/);
+  assert.equal(calls.every((c) => !/load\/edit/.test(c.url)), true, 'no edit fired on a stale order');
+});
+
+test('commitBoard: re-adding a stop NOT on the load → getStop resolves its id, then it is INSERTED (not a silent no-op)', async () => {
+  // Load is currently [A1]; desired [A1, W] where W was unplanned and is being planned back. W isn't
+  // on the load, so it must be resolved via getStop and inserted — the "nothing to send" re-add bug.
+  const gl = loadDocNbr(HEXID, 'v1', [['A1', 'idA1']]);
+  const wStop = { json: { Stop: { stop: { stopId: 'idW', stopNbr: 'W' }, stopExecutionInfo: { stopStatus: '10' }, load: {} } } };
+  const { requester, calls } = stub([gl, wStop, ok()]);   // getLoad + getStop(W) + insertStops
+  const r = await runCommitBoard(requester, { loads: [{ loadNbr: 'DAVIS000000002', loadId: HEXID, orderedStopNbrs: ['A1', 'W'] }] }, CREDS);
+  assert.equal(r.ok, true);
+  const ops = calls.map((c) => c.url.match(/\/(load\/info|stop\/info|load\/edit|load\/insertstops)/)[1]);
+  assert.deepEqual(ops, ['load/info', 'stop/info', 'load/insertstops']);
+  assert.match(calls[1].url, /\/stop\/info\/W\//, 'resolves the added stop via getStop');
+  assert.deepEqual(calls[2].body.insertStopIds, ['idW'], 'the re-added stop is actually inserted');
 });
 
 test('commitBoard: emptyLoad removes ALL deliveries (cancel route) — not a false-success no-op', async () => {
