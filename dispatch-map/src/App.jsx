@@ -51,7 +51,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.32.26';
+const APP_VERSION = '0.32.27';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -96,6 +96,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.32.27', 'Live dispatch (beta) — HARDENING pass (from a full write-path audit), several "reported success but didn\'t persist" and "silently dropped" bugs closed: (1) assigning a driver from the Routes list now resolves the load\'s real internal id first — a Draft load could otherwise get "Success" from NuVizz while nothing was actually assigned (re-confirm any recent Draft assigns in the portal). (2) Emptying/cancelling a load no longer tries to assign/dispatch the now-cancelled route. (3) Dragging a brand-new order to the FRONT of a load now refreshes the load version before removing the rest, so the remove can\'t be rejected and leave the load half-changed, and it won\'t pre-insert a stop still on another load. (4) A partial/failed NuVizz response is no longer read as success. (5) The panel no longer silently discards a staged driver/unplan when some stops aren\'t loaded yet, no longer re-sends an already-unplanned stop on the next Save, and reliably clears a saved load\'s dirty state.'],
   ['0.32.26', 'Live dispatch (beta) — FIX: after unplanning an order off a load, adding that SAME order back and saving did nothing ("Nothing to send"). The order was genuinely off the load and needed to be re-planned, but the server was only matching the desired stops against the load\'s CURRENT stops — so a stop being ADDED back (not currently on the load) was silently dropped instead of inserted. The server now resolves an added stop by its number and plans it back onto the load, so re-adding an order you just removed actually sends it to NuVizz.'],
   ['0.32.25', 'Live dispatch (beta) — the daily Loads scan now captures each load\'s real Load Number (DAVIS0001…) once the "Load Number" column is present in the loads saved search — verified live, all 99 loads now carry their number. That means resequencing, unplanning, and driver-assign on a Draft load resolve the load DIRECTLY from the scan with ZERO extra NuVizz calls (the per-load stop-lookup bridge added in 0.32.24 is now just a fallback). Internal: removed the temporary column-diagnostic endpoint.'],
   ['0.32.24', 'Live dispatch (beta) — FIX (the real one): unplanning/resequencing a Draft load reported success but nothing changed in NuVizz. Root cause found by testing live: the app couldn\'t look up the load\'s real number (DAVIS0001…) for a Draft — the two lookups it tried are both dead on our tenant (the loads scan\'s saved search has no load-number column, and the load/static/info bridge returns "not implemented"). So the remove either errored or never got the number, and the removal never fired. The server now gets the real number the reliable way — by reading a stop that\'s already on the load (its own load membership carries the number) — then runs the remove. Confirmed live: the remove now actually comes off the load. (Once the load-number column is added to the loads saved search in the NuVizz portal, this needs zero extra lookups.)'],
@@ -10176,7 +10177,9 @@ function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmN
       // load opened from the Loads grid is the hex loadId; sending that as loadNbr made load/info 404
       // ("commitBoard: load not found"). When there's no real loadNbr we send only the loadId, and the
       // server adds stops straight off it. routeName = the friendly display name for the plan label.
-      const load = { loadNbr: r.loadNbr || undefined, routeName: r.name || r.key, loadId: r.loadId || undefined };
+      // __key carries the Compare-card key so the result can be reconciled back to THIS card even when
+      // the server echoes a loadNbr/loadId that differs from what we sent (server ignores the field).
+      const load = { __key: r.key, loadNbr: r.loadNbr || undefined, routeName: r.name || r.key, loadId: r.loadId || undefined };
       if (orderChanged(r)) {
         // Send the desired order as stop NUMBERS (always present on a board stop). For a load with a
         // real loadNbr the server resolves them to stopIds against the load itself, so an unplan/reorder
@@ -10186,8 +10189,13 @@ function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmN
         // there's no loadNbr to resolve stopNbrs against.
         const ids = r.order.map((nbr) => stopById.get(String(nbr))?.stopId).filter(Boolean);
         if (ids.length) load.orderedStopIds = ids;
-        if (!r.loadNbr && ids.length !== r.order.length) { warnings.push(`${loadDisplayName(r.name || r.key) || r.key}: ${r.order.length - ids.length} stop(s) not loaded yet — open them, then Save`); continue; }
-        if (r.order.length === 0) {
+        if (!r.loadNbr && ids.length !== r.order.length) {
+          // Numberless load + unenriched stops → can't safely resolve the reorder. Drop the ORDER
+          // fields but DON'T drop the load: a staged driver/dispatch/unplan below must still be sent
+          // (never silently discard an assignment).
+          warnings.push(`${loadDisplayName(r.name || r.key) || r.key}: ${r.order.length - ids.length} stop(s) not loaded yet — the reorder was NOT sent (open them, then Save); any driver/unplan still applied.`);
+          delete load.orderedStopNbrs; delete load.orderedStopIds;
+        } else if (r.order.length === 0) {
           // Every order removed → empty the load. Removing all deliveries CANCELS the route (§10).
           load.emptyLoad = true;
           warnings.push(`${loadDisplayName(r.name || r.key) || r.key}: removing the LAST order EMPTIES the load and CANCELS the route in NuVizz.`);
@@ -10233,13 +10241,23 @@ function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmN
     // sent none), so loadId is the stable join on that fallback path.
     const toKey = new Map();
     for (const l of loads) {
-      const k = l.routeName ?? l.loadNbr ?? l.loadId;
+      const k = l.__key ?? l.routeName ?? l.loadNbr ?? l.loadId;   // the actual Compare-card key
       if (l.loadNbr != null) toKey.set('nbr:' + String(l.loadNbr), k);
       if (l.loadId != null) toKey.set('id:' + String(l.loadId), k);
     }
-    const keyOf = (l) => toKey.get('nbr:' + String(l.loadNbr)) ?? toKey.get('id:' + String(l.loadId)) ?? l.loadNbr;
+    // Resolve a result back to its card key by loadNbr OR loadId. If neither maps (server echoed an
+    // id we never sent), return null and DROP it — never markSaved a bare loadNbr that isn't a card
+    // key (that silently no-ops markSaved and leaves the card dirty forever / mislabels the toast).
+    const keyOf = (l) => toKey.get('nbr:' + String(l.loadNbr)) ?? toKey.get('id:' + String(l.loadId)) ?? null;
     const okKeys = resLoads.filter((l) => l.ok).map(keyOf).filter(Boolean);
-    if (okKeys.length) { markSaved(okKeys); setStaged((p) => { const n = { ...p }; for (const k of okKeys) delete n[k]; return n; }); }
+    if (okKeys.length) {
+      markSaved(okKeys);
+      setStaged((p) => { const n = { ...p }; for (const k of okKeys) delete n[k]; return n; });
+      // Clear each saved route's `removed` list — otherwise a later edit re-sends the already-unplanned
+      // stops (a stale removeStopNbrs) on the next Save.
+      const okSet = new Set(okKeys);
+      setWbRoutes((prev) => prev.map((r) => (okSet.has(r.key) && (r.removed || []).length) ? { ...r, removed: [] } : r));
+    }
     // Honest reporting: a load only "saved" if its result has a SUCCESSFUL step (an actual NuVizz
     // call). A load that returns ok:true with no steps was a no-op — never report it as saved.
     const fired = resLoads.filter((l) => l.ok && (l.steps || []).some((s) => s.ok)).length;
