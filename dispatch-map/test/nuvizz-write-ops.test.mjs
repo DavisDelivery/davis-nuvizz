@@ -68,6 +68,22 @@ test('getStop / getLoad: GET info routes with the id in the path and no body', (
   assert.equal(l.meta.route, '/load/info');
 });
 
+test('getLoadByRouteId: GET load/static/info/{cc}?routeId=<loadId>, parses loadHeader.loadNbr', () => {
+  const r = buildOpRequest('getLoadByRouteId', { routeId: '6a3d49dabc0011223344' }, CREDS);
+  assert.equal(r.method, 'GET');
+  assert.equal(r.url, 'https://portal.nuvizz.com/deliverit/openapi/v7/load/static/info/DAVIS?routeId=6a3d49dabc0011223344');
+  assert.equal(r.meta.route, '/load/static/info');
+  const parsed = parseOpResponse('getLoadByRouteId', true, { Load: { loadHeader: { loadId: '6a3d49dabc0011223344', loadNbr: 'DAVIS000197184' } } });
+  assert.equal(parsed.ok, true);
+  assert.equal(parsed.load.loadNbr, 'DAVIS000197184');
+  assert.equal(MUTATING_OPS.has('getLoadByRouteId'), false, 'it is a READ, not a mutating op');
+});
+
+test('removeStops: versionId is echoed as a STRING even when load/info returned a number', () => {
+  const r = buildOpRequest('removeStops', { removeStopIds: ['x'], editHeader: { loadId: 'L1', seqMode: 'None' }, versionId: 12345 }, CREDS);
+  assert.strictEqual(bodyOf(r).versionId, '12345', 'coerced to the string form load/edit expects');
+});
+
 test('getStop: throws without stopNbr', () => {
   assert.throws(() => buildOpRequest('getStop', {}, CREDS), /stopNbr/);
 });

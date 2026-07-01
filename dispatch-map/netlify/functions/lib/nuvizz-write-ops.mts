@@ -34,7 +34,7 @@
 // orchestration handled by the executor (a Save batch), not a single request, so it
 // is not in this builder allowlist.
 export const SINGLE_OPS = [
-  'createStop', 'getStop', 'getLoad', 'insertStops', 'removeStops',
+  'createStop', 'getStop', 'getLoad', 'getLoadByRouteId', 'insertStops', 'removeStops',
   'assignDriver', 'dispatchLoad', 'roster',
 ] as const;
 export type SingleOp = typeof SINGLE_OPS[number];
@@ -265,6 +265,20 @@ export function normalizeLoad(j: any): any {
   };
 }
 
+/** normalizeStaticLoad — load/static/info (StaticRouteView) → { loadId, loadNbr, routeName, stops }.
+ * Keyed by routeId, so its job is to hand back the HUMAN loadNbr for a load we only knew by its
+ * internal id. (No versionId — the caller does a load/info by the resolved loadNbr for the edit
+ * header/versionId the unplan step needs.) */
+export function normalizeStaticLoad(j: any): any {
+  const L = j?.Load || j || {};
+  const hdr = L.loadHeader || {};
+  const stops = Array.isArray(L.stops) ? L.stops.map((s: any) => {
+    const st = s?.stop || s || {};
+    return { stopId: st.stopId ?? null, stopNbr: st.stopNbr ?? null, stopSeq: st?.to?.seq ?? st?.stopSeq ?? null, stopType: st.stopType ?? null };
+  }) : [];
+  return { loadId: hdr.loadId ?? null, loadNbr: hdr.loadNbr ?? null, routeName: hdr.routeName ?? null, stops };
+}
+
 /**
  * parseRoster (§3.8) — user/list response → driver list. Keep ENABLED accounts that
  * carry a DI_Driver role, and (for the clean prod DAVIS roster) drop pure office
@@ -326,11 +340,26 @@ export const _OFFICE_ROLES = OFFICE_ROLES;
 export interface SequencePlan {
   ok: boolean;
   unchanged?: boolean;
-  anchor?: string;
+  anchor?: string;            // the stop kept as the anchor (the desired first delivery)
+  anchorInsert?: string;      // a NOT-yet-on-load first delivery to insert BEFORE any remove (see below)
   removeStopIds?: string[];
-  insertOrdered?: string[];   // inserted one-at-a-time, in this order, after the anchor
+  insertOrdered?: string[];   // inserted one-at-a-time, in this order, after the kept prefix
   reason?: string;
 }
+/**
+ * planSequence — realize an exact delivery order with the FEWEST NuVizz calls, honoring the anchor
+ * rule (a load can never be emptied → it cancels; the desired FIRST delivery must stay on it).
+ *
+ * Fewest calls: keep the LONGEST PREFIX of the desired order already on the load in that relative
+ * order — those stops cost nothing (no remove, no re-insert). removeStopIds = only what's out of
+ * place (one batch call); insertOrdered = the remaining desired stops, appended after the prefix.
+ * Appending to an in-order load = 0 removes; one out-of-place stop = 1 remove + 1 insert.
+ *
+ * New first delivery (advanced): if the desired FIRST stop is a NEW order not yet on the load,
+ * append-only inserts can't place it first. Return `anchorInsert` = that stop; the executor inserts
+ * it FIRST (the anchor that keeps the load non-empty), then removes the current deliveries and
+ * re-inserts the rest — sequenced so the load never drops to zero stops and cancels.
+ */
 export function planSequence(currentDeliveryStopIds: any[], desiredOrderedStopIds: any[]): SequencePlan {
   // Dedupe (first occurrence wins): a duplicate in the desired order would otherwise re-insert a
   // stop that's still on the load (it's the anchor or already present) → a duplicate insertStops.
@@ -343,13 +372,29 @@ export function planSequence(currentDeliveryStopIds: any[], desiredOrderedStopId
   if (want.length === 0) return { ok: false, reason: 'empty-order: would remove every delivery and cancel the route' };
   // Already in the desired order + membership → nothing to do (no NuVizz calls).
   if (cur.length === want.length && cur.every((id, i) => id === want[i])) {
-    return { ok: true, unchanged: true, removeStopIds: [], insertOrdered: [] };
+    return { ok: true, unchanged: true, anchor: want[0], removeStopIds: [], insertOrdered: [] };
   }
-  const anchor = want[0];
-  if (!cur.includes(anchor)) {
-    return { ok: false, reason: `anchor-not-on-load: the first desired stop (${anchor}) is not currently on the load; append-only inserts cannot place a new stop first (needs the full-rebuild path, not enabled)` };
+
+  const curSet = new Set(cur);
+
+  // ADVANCED: the desired first delivery is a NEW stop not on the load. Insert it first (anchor),
+  // then remove all current deliveries and re-insert the rest — sequenced by the executor so the
+  // load is never emptied. (Append-only inserts can't otherwise place a new stop at the front.)
+  if (!curSet.has(want[0])) {
+    return { ok: true, unchanged: false, anchor: want[0], anchorInsert: want[0], removeStopIds: cur.slice(), insertOrdered: want.slice(1) };
   }
-  return { ok: true, unchanged: false, anchor, removeStopIds: cur.filter((id) => id !== anchor), insertOrdered: want.slice(1) };
+
+  // FEWEST CALLS: keep the longest desired PREFIX that is an in-order subsequence of the load, so
+  // those stops need neither removal nor re-insertion. Greedy earliest-match gives the max prefix.
+  let k = 0, ci = 0;
+  while (k < want.length) {
+    let found = -1;
+    for (let j = ci; j < cur.length; j++) { if (cur[j] === want[k]) { found = j; break; } }
+    if (found === -1) break;
+    ci = found + 1; k++;
+  }
+  const keep = new Set(want.slice(0, k));            // k >= 1 (want[0] is on the load)
+  return { ok: true, unchanged: false, anchor: want[0], removeStopIds: cur.filter((id) => !keep.has(id)), insertOrdered: want.slice(k) };
 }
 
 // ── Request builders (one per single op) ─────────────────────────────────────
@@ -387,6 +432,14 @@ export function buildOpRequest(op: SingleOp, payload: any, creds: WriteCreds): B
       return { url: `${base}/load/info/${enc(loadNbr)}/${enc(cc)}`, method: 'GET', headers: H, meta: { route: '/load/info', tenant: cc, source: 'live-write' } };
     }
 
+    case 'getLoadByRouteId': {
+      // Resolve a load by its INTERNAL loadId (the hex routeId) — load/info (and the load/edit unplan
+      // step) is keyed by the human loadNbr, so static/info bridges a load we only know by its id
+      // (Draft / Loads-grid) to its human loadNbr, which lets a reorder/unplan actually run.
+      const routeId = req(payload?.routeId ?? payload?.loadId, 'getLoadByRouteId: routeId (the loadId)');
+      return { url: `${base}/load/static/info/${enc(cc)}?routeId=${encodeURIComponent(String(routeId))}`, method: 'GET', headers: H, meta: { route: '/load/static/info', tenant: cc, source: 'live-write' } };
+    }
+
     case 'insertStops': {
       const insertStopIds = reqArr(payload?.insertStopIds, 'insertStops: insertStopIds');
       const loadId = req(payload?.loadId, 'insertStops: loadId');
@@ -398,7 +451,9 @@ export function buildOpRequest(op: SingleOp, payload: any, creds: WriteCreds): B
       // build the second call given a prepared editHeader + versionId on the payload.
       const removeStopIds = reqArr(payload?.removeStopIds, 'removeStops: removeStopIds');
       const editHeader = req(payload?.editHeader, 'removeStops: editHeader (executor builds via toEditHeader)');
-      const versionId = req(payload?.versionId, 'removeStops: versionId');
+      // versionId is echoed as a STRING — load/info can return it as a number, and load/edit expects
+      // the string form (matches the verified unplan handoff: String(versionId)).
+      const versionId = String(req(payload?.versionId, 'removeStops: versionId'));
       return { url: `${base}/load/edit/${enc(cc)}`, method: 'POST', headers: H, body: JSON.stringify({ loadHeader: editHeader, removeStopIds, routeSeq: [], versionId }), meta: { route: '/load/edit', tenant: cc, source: 'live-write' } };
     }
 
@@ -434,6 +489,7 @@ export function parseOpResponse(op: SingleOp, httpOk: boolean, j: any): any {
     case 'roster': return { ok: httpOk, drivers: parseRoster(j) };
     case 'getStop': return { ok: httpOk, stop: normalizeStop(j) };
     case 'getLoad': return { ok: httpOk, load: normalizeLoad(j) };
+    case 'getLoadByRouteId': return { ok: httpOk, load: normalizeStaticLoad(j) };
     case 'createStop':
     case 'insertStops':
     case 'removeStops': return summarize(httpOk, j);

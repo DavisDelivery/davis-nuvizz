@@ -77,6 +77,16 @@ export async function fetchLoad(requester: RequesterLike, loadNbr: string, creds
   return { load: ok ? r.load : null, httpStatus: r.httpStatus ?? null, hadLoadId };
 }
 
+/** Resolve a load's HUMAN loadNbr from its INTERNAL loadId via load/static/info(routeId). load/info
+ * (and the load/edit unplan step) is keyed by the human number, so a load we only know by its id
+ * (Draft / Loads-grid) needs this bridge before it can be reordered/unplanned. Null if unresolved. */
+export async function resolveLoadNbrById(requester: RequesterLike, loadId: string, creds: WriteCreds): Promise<string | null> {
+  try {
+    const r = await fireSingle(requester, 'getLoadByRouteId', { routeId: loadId }, creds);
+    return r?.ok && r.load?.loadNbr != null && String(r.load.loadNbr).trim() !== '' ? String(r.load.loadNbr) : null;
+  } catch { return null; }
+}
+
 // Human "why didn't it resolve" suffix for a failed fetchLoad. Surfaces the exact load number we
 // queried and NuVizz's response so a wrong/blank load number (404) is distinguishable from a load
 // that resolved but parsed without an id (200/no loadId) — turns an opaque "load not found" into
@@ -216,22 +226,30 @@ export async function runCommitBoard(requester: RequesterLike, payload: any, cre
       planned.push({ L, loadId: L.loadId, hasLoad: true, plan: { ok: true, unchanged: true, removeStopIds: [], insertOrdered: [] }, result });
       continue;
     }
-    // Add stops to a load we know ONLY by its internal loadId — opened from the Loads grid / a Draft
-    // load, so there's no human loadNbr (load/info is keyed by the load NUMBER like DAVIS000000123,
-    // NOT the hex loadId, so a getLoad here just 404s). Insert the stopIds straight onto the loadId
-    // (no anchor-remove). A load WITH a real human loadNbr goes through fetchLoad for full support. [#328]
-    const usableLoadNbr = loadNbr != null && String(loadNbr).trim() !== '' && !isHashLikeId(String(loadNbr));
-    if (desired.length && trustableLoadId(L?.loadId) && !usableLoadNbr) {
+    // Resolve a USABLE human loadNbr. load/info (and the load/edit unplan step) is keyed by the human
+    // number (DAVIS000000123), NOT the hex loadId. A load opened from the Loads grid / a Draft load has
+    // only its internal id, so bridge it to its loadNbr via load/static/info(routeId) — which is what
+    // lets a REORDER/UNPLAN of a grid-opened load run the real unplan(load/edit)→re-insert path
+    // instead of blind-inserting already-planned stops ("Only unplanned stops can be planned").
+    let loadNbrX = (loadNbr != null && String(loadNbr).trim() !== '' && !isHashLikeId(String(loadNbr))) ? String(loadNbr) : null;
+    if (!loadNbrX && trustableLoadId(L?.loadId)) {
+      loadNbrX = await resolveLoadNbrById(requester, L.loadId, creds);
+      if (loadNbrX) result.loadNbr = loadNbrX;
+    }
+    // Add BRAND-NEW (unplanned) stops to a load we STILL only know by its id (static/info couldn't
+    // resolve a number): insert the stopIds straight onto the loadId, no anchor-remove. Only a pure ADD
+    // by stopIds — a reorder-by-stopNbr / emptyLoad needs the load's current stops (getLoad, below). [#328]
+    if (desired.length && orderedNbrs === null && !emptyLoad && trustableLoadId(L?.loadId) && !loadNbrX) {
       planned.push({ L, loadId: L.loadId, hasLoad: true, plan: { ok: true, removeStopIds: [], insertOrdered: desired.map((x) => String(x)) }, curIds: [], want: desired.map((x) => String(x)), result });
       continue;
     }
-    // Everything past here (reorder / unplan / empty) needs the load's CURRENT stops, i.e. a getLoad,
-    // which needs a real human loadNbr. A loadId-only Draft load can't be reordered/emptied here.
-    if (!usableLoadNbr) {
+    // Reorder / unplan / empty needs the load's CURRENT stops (a getLoad), which needs a real loadNbr.
+    // If static/info also couldn't resolve one, guide the dispatcher to open it from the board.
+    if (!loadNbrX) {
       result.ok = false; result.error = 'commitBoard: reorder/unplan needs a load number — open the route from the board (not the Loads grid)'; planned.push({ L, result }); continue;
     }
-    const f = await fetchLoad(requester, loadNbr, creds);
-    if (!f.load) { result.ok = false; result.error = `commitBoard: load not found (${loadMissDiag(loadNbr, f)})`; planned.push({ L, result }); continue; }
+    const f = await fetchLoad(requester, loadNbrX, creds);
+    if (!f.load) { result.ok = false; result.error = `commitBoard: load not found (${loadMissDiag(loadNbrX, f)})`; planned.push({ L, result }); continue; }
     const load = f.load;
     // curIds is captured on EVERY fetched load (even refused ones) so holderOf below can see a
     // cross-load arrival whose source load was refused — otherwise the target would insert a stop
@@ -285,8 +303,22 @@ export async function runCommitBoard(requester: RequesterLike, payload: any, cre
   const actuallyFreed = new Set<string>();   // removed by a SUCCESSFUL Phase-1 remove
   const inserted = new Set<string>();         // successfully (re)inserted in Phase 2
 
+  // ── Phase 0.5 — anchor pre-insert (advanced: a NEW stop is the desired first delivery) ──
+  // Insert that stop FIRST so it anchors the load, THEN Phase 1 can remove the current deliveries
+  // without ever emptying the load (which would cancel it). Sequenced before any remove. If the
+  // pre-insert fails we abort the load so Phase 1 does NOT strip it to zero stops.
+  for (const p of live) {
+    const anchorInsert = p.plan.anchorInsert ? String(p.plan.anchorInsert) : null;
+    if (!anchorInsert) continue;
+    const r = await fireSingle(requester, 'insertStops', { insertStopIds: [anchorInsert], loadId: p.loadId }, creds);
+    p.result.steps.push({ op: 'insertStops', ok: !!r.ok, result: r, error: r.ok ? null : (r.error || 'failed') });
+    if (!r.ok) { p.result.ok = false; p.aborted = true; }
+    else inserted.add(anchorInsert);
+  }
+
   // ── Phase 1 — all removes first (frees moved stops before any re-insert) ──
   for (const p of live) {
+    if (p.aborted) continue;                 // anchor pre-insert failed → never strip this load
     const ids = p.plan.removeStopIds || [];
     if (!ids.length) continue;
     const r = await fireSingle(requester, 'removeStops', { removeStopIds: ids, editHeader: p.editHeader, versionId: p.versionId }, creds);

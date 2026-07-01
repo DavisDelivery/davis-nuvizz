@@ -29,6 +29,8 @@ const loadDoc = (loadId, versionId, deliveries) => ({ json: { Load: {
   stops: deliveries.map((id, k) => ({ stop: { stopId: id, stopNbr: id, stopSeq: k + 1, stopType: 'DO' } })),
 } } });
 const ok = () => ({ json: { status: 'SUCCESS' } });
+// load/static/info(routeId) response — resolves a load's HUMAN loadNbr (+ loadId echo) from its id.
+const staticInfo = (loadNbr, loadId) => ({ json: { Load: { loadHeader: { loadNbr, loadId: loadId ?? null } } } });
 
 test('commitBoard: single-load reorder → getLoad, then anchor-remove, then ordered one-at-a-time inserts', async () => {
   const { requester, calls } = stub([
@@ -120,12 +122,25 @@ test('commitBoard: a "Cancelled" response is NOT swallowed for a normal (non-emp
   assert.equal(r.loads[0].ok, false, 'a reorder is not a cancel — the failure is real');
 });
 
-test('commitBoard: a reorder/unplan with only a loadId-only (no loadNbr) load → clear error, no doomed getLoad', async () => {
-  const { requester, calls } = stub([]);
+test('commitBoard: REORDER a load known only by loadId → resolve loadNbr via static/info, then remove', async () => {
+  // A grid-opened load has only its internal id. Bridge it to its human loadNbr via static/info,
+  // then run the REAL unplan(load/edit)→re-insert path. Keep A2, unplan A1 + A3.
+  const gl = loadDocNbr(HEXID, 'v1', [['A1', 'idA1'], ['A2', 'idA2'], ['A3', 'idA3']]);
+  const { requester, calls } = stub([staticInfo('DAVIS000000002', HEXID), gl, ok()]);
+  const r = await runCommitBoard(requester, { loads: [{ loadId: HEXID, orderedStopNbrs: ['A2'] }] }, CREDS);
+  assert.equal(r.ok, true);
+  const ops = calls.map((c) => c.url.match(/\/(load\/static\/info|load\/info|load\/edit)/)[1]);
+  assert.deepEqual(ops, ['load/static/info', 'load/info', 'load/edit']);
+  assert.match(calls[0].url, /routeId=/);
+  assert.deepEqual([...calls[2].body.removeStopIds].sort(), ['idA1', 'idA3'], 'unplanned via the resolved number');
+});
+
+test('commitBoard: reorder loadId-only + static/info CAN\'T resolve a number → clear error, no doomed getLoad', async () => {
+  const { requester, calls } = stub([ok() /* static/info: no loadNbr */]);
   const r = await runCommitBoard(requester, { loads: [{ loadId: HEXID, orderedStopNbrs: ['A2'] }] }, CREDS);
   assert.equal(r.loads[0].ok, false);
   assert.match(r.loads[0].error, /needs a load number/);
-  assert.equal(calls.length, 0, 'no NuVizz call — refused before a doomed load/info');
+  assert.equal(calls.every((c) => !/load\/info\//.test(c.url) && !/load\/edit/.test(c.url)), true, 'no doomed getLoad/edit');
 });
 
 test('commitBoard: cross-load move A→B removes from the SOURCE before inserting to the TARGET', async () => {
@@ -161,26 +176,26 @@ test('commitBoard: assign/dispatch-only load with a known loadId skips getLoad e
   assert.equal(calls[1].body.action, 'DISPATCH');
 });
 
-test('commitBoard: add stops to a load known only by loadId (no human loadNbr) → insert-only, no getLoad', async () => {
-  // A load opened from the Loads grid has no human loadNbr — load/info is keyed by the load NUMBER,
-  // not the hex loadId, so a getLoad would 404. The executor must insertstops straight off the loadId.
-  const { requester, calls } = stub([ok(), ok()]);
+test('commitBoard: add NEW stops to a loadId-only load, static/info can\'t resolve → insert-only', async () => {
+  // A brand-new/Draft load with no resolvable number: adding new (unplanned) stopIds inserts them
+  // straight onto the loadId (no reorder path). static/info is TRIED first (returns no number here).
+  const { requester, calls } = stub([ok() /* static/info: no loadNbr */, ok(), ok()]);
   const r = await runCommitBoard(requester, { loads: [{ loadId: HEXID, orderedStopIds: ['s1', 's2'] }] }, CREDS);
   assert.equal(r.ok, true);
-  assert.equal(calls.every((c) => !/load\/info/.test(c.url)), true, 'no doomed load/info lookup');
-  assert.deepEqual(calls.map((c) => c.url.match(/insertstops/)?.[0]), ['insertstops', 'insertstops'], 'one insertstops per stop, in order');
-  assert.deepEqual(calls.map((c) => c.body.insertStopIds), [['s1'], ['s2']]);
-  assert.equal(calls[0].body.loadId, HEXID, 'inserts against the loadId');
+  assert.match(calls[0].url, /static\/info/);
+  assert.equal(calls.every((c) => !/load\/info\//.test(c.url) && !/load\/edit/.test(c.url)), true, 'no load/info or remove — nothing to reorder');
+  assert.deepEqual(calls.slice(1).map((c) => c.body.insertStopIds), [['s1'], ['s2']]);
+  assert.equal(calls[1].body.loadId, HEXID, 'inserts against the loadId');
 });
 
 test('commitBoard: a hash-like loadId leaked into loadNbr is NOT used for load/info', async () => {
-  // Defense in depth — even if the client sends the hex as loadNbr, the server must not try to
-  // resolve it via load/info (it would 404); it falls back to the insert-only loadId path.
-  const { requester, calls } = stub([ok()]);
+  // Defense in depth — even if the client sends the hex as loadNbr, the server must not GET load/info
+  // with it (it would 404); it resolves via static/info (fails here) then insert-only off the loadId.
+  const { requester, calls } = stub([ok() /* static/info: no loadNbr */, ok()]);
   const r = await runCommitBoard(requester, { loads: [{ loadNbr: HEXID, loadId: HEXID, orderedStopIds: ['s1'] }] }, CREDS);
   assert.equal(r.ok, true);
-  assert.equal(calls.every((c) => !/load\/info/.test(c.url)), true, 'no load/info on a hex loadNbr');
-  assert.match(calls[0].url, /insertstops/);
+  assert.equal(calls.every((c) => !/load\/info\//.test(c.url)), true, 'no load/info on a hex loadNbr');
+  assert.match(calls[1].url, /insertstops/);
 });
 
 test('commitBoard: assign-only with a NON-internal (roster) loadId → resolves the real loadId via getLoad first', async () => {
@@ -202,21 +217,21 @@ test('commitBoard: assign-only with a NON-internal (roster) loadId → resolves 
   assert.equal(r.loads[0].loadId, HEXID);
 });
 
-test('commitBoard: a refused load (new stop first) is reported but does NOT block other loads', async () => {
+test('commitBoard: a refused load (not found) is reported but does NOT block other loads', async () => {
   const { requester, calls } = stub([
-    loadDoc('L1', 'v1', ['A', 'B']),  // getLoad for the bad load
+    { status: 404, json: {} },        // getLoad for the bad load → not found
     loadDoc('L2', 'v2', ['C']),       // getLoad for the good load
     ok(),                              // good load insert (D)
   ]);
   const r = await runCommitBoard(requester, { loads: [
-    { loadNbr: 'BAD', orderedStopIds: ['X', 'A'] },   // X not on load → refuse
+    { loadNbr: 'BAD', orderedStopIds: ['A', 'B'] },   // load not found → refuse
     { loadNbr: 'GOOD', orderedStopIds: ['C', 'D'] },  // add D
   ] }, CREDS);
   assert.equal(r.ok, false, 'overall not ok because one load failed');
   const bad = r.loads.find((l) => l.loadNbr === 'BAD');
   const good = r.loads.find((l) => l.loadNbr === 'GOOD');
   assert.equal(bad.ok, false);
-  assert.match(bad.error, /anchor-not-on-load/);
+  assert.match(bad.error, /load not found/);
   assert.equal(good.ok, true, 'the good load still committed');
   assert.deepEqual(good.steps.map((s) => s.op), ['insertStops']);
 });
@@ -247,14 +262,15 @@ const loadDocStops = (loadId, versionId, stops) => ({ json: { Load: {
   stops: stops.map(([id, seq, type]) => ({ stop: { stopId: id, stopNbr: id, stopSeq: seq, stopType: type || 'DO' } })),
 } } });
 
-test('commitBoard: cross-load move where the SOURCE load fails Phase 0 → target does NOT insert the un-freed stop', async () => {
-  // Load BAD desired [X,Y] but X not on it → refused (Phase 0). Load GOOD wants to receive B from BAD.
+test('commitBoard: cross-load move where the SOURCE load fails Phase 1 → target does NOT insert the un-freed stop', async () => {
+  // BAD is meant to free B (drop it), but its remove FAILS → B is never freed. GOOD wants B from BAD.
   const { requester, calls } = stub([
-    loadDocStops('LBAD', 'v1', [['A', 1], ['B', 2]]),   // getLoad BAD (desired [X,A] → anchor X not on load → refuse)
-    loadDocStops('LGOOD', 'v2', [['C', 1]]),            // getLoad GOOD (desired [C,B]; B is a cross-load arrival from BAD)
+    loadDocStops('LBAD', 'v1', [['A', 1], ['B', 2]]),   // getLoad BAD (desired [A] → remove B)
+    loadDocStops('LGOOD', 'v2', [['C', 1]]),            // getLoad GOOD (desired [C,B]; B is a cross-load arrival)
+    { json: { reasons: [{ description: 'version conflict' }] } }, // Phase 1 remove B from BAD FAILS
   ]);
   const r = await runCommitBoard(requester, { loads: [
-    { loadNbr: 'BAD', orderedStopIds: ['X', 'A'] },     // refused
+    { loadNbr: 'BAD', orderedStopIds: ['A'] },          // drop B — but the remove fails
     { loadNbr: 'GOOD', orderedStopIds: ['C', 'B'] },    // B was supposed to be freed by BAD
   ] }, CREDS);
   assert.equal(r.ok, false);
@@ -352,4 +368,34 @@ test('commitBoard: a load with neither loadNbr nor loadId → ok:false, no calls
   assert.match(bad.error, /loadNbr or loadId required/);
   assert.equal(good.ok, true);
   assert.equal(calls.length, 1, 'only the valid assign fired');
+});
+
+test('commitBoard: a NEW stop as the first delivery → insert it BEFORE removing the rest (no cancel)', async () => {
+  const { requester, calls } = stub([
+    loadDocStops('L1', 'v1', [['A', 1, 'DO'], ['B', 2, 'DO']]),  // getLoad — load has A,B
+    ok(),   // Phase 0.5 insert X (the new first delivery) — anchors the load
+    ok(),   // Phase 1 remove A,B
+    ok(),   // Phase 2 insert A
+    ok(),   // Phase 2 insert B
+  ]);
+  const r = await runCommitBoard(requester, { loads: [{ loadNbr: 'BEN 1', orderedStopIds: ['X', 'A', 'B'] }] }, CREDS);
+  assert.equal(r.ok, true);
+  const ops = calls.map((c) => c.url.match(/\/(load\/info|load\/edit|load\/insertstops)/)[1]);
+  assert.deepEqual(ops, ['load/info', 'load/insertstops', 'load/edit', 'load/insertstops', 'load/insertstops'],
+    'insert X, THEN remove, THEN re-insert — X is on the load before anything is stripped');
+  const xIdx = calls.findIndex((c) => /insertstops/.test(c.url));
+  const editIdx = calls.findIndex((c) => /load\/edit/.test(c.url));
+  assert.ok(xIdx < editIdx, 'X is inserted before the remove so the load never drops to zero stops');
+  assert.deepEqual(calls[xIdx].body.insertStopIds, ['X'], 'the pre-insert is the new first delivery X');
+  assert.deepEqual(calls[editIdx].body.removeStopIds, ['A', 'B']);
+});
+
+test('commitBoard: anchor pre-insert FAILS → the remove is NOT fired (load never emptied)', async () => {
+  const { requester, calls } = stub([
+    loadDocStops('L1', 'v1', [['A', 1, 'DO'], ['B', 2, 'DO']]),   // getLoad
+    { json: { reasons: [{ description: 'stop locked' }] } },       // insert X FAILS
+  ]);
+  const r = await runCommitBoard(requester, { loads: [{ loadNbr: 'BEN 1', orderedStopIds: ['X', 'A', 'B'] }] }, CREDS);
+  assert.equal(r.ok, false);
+  assert.equal(calls.some((c) => /load\/edit/.test(c.url)), false, 'no remove after a failed anchor pre-insert');
 });

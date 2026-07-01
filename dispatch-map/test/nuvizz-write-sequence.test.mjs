@@ -18,20 +18,29 @@ test('planSequence: the doc-verified reorder [M,C,K,Ca] → [Ca,K,C,M]', () => {
   assert.equal(p.insertOrdered.length, 3);
 });
 
-test('planSequence: add a new stop → appended into the order, others kept', () => {
+test('planSequence: add a new stop to an in-order load → ZERO removes, just append it', () => {
+  // Minimal calls: [A,B] is already the correct prefix of [A,B,C], so keep both and only insert C.
   const p = planSequence(['A', 'B'], ['A', 'B', 'C']);
   assert.equal(p.ok, true);
   assert.equal(p.anchor, 'A');
-  assert.deepEqual(p.removeStopIds, ['B']);
-  assert.deepEqual(p.insertOrdered, ['B', 'C']);  // B re-inserted then C — yields [A,B,C]
+  assert.deepEqual(p.removeStopIds, [], 'nothing removed — A,B already in order');
+  assert.deepEqual(p.insertOrdered, ['C'], 'only the new stop is inserted');
 });
 
-test('planSequence: remove a stop → departed stop is dropped, not re-inserted', () => {
+test('planSequence: remove a middle stop → 1 remove, 0 inserts (prefix [A,C] kept)', () => {
   const p = planSequence(['A', 'B', 'C'], ['A', 'C']);
   assert.equal(p.ok, true);
   assert.equal(p.anchor, 'A');
-  assert.deepEqual(p.removeStopIds, ['B', 'C']);
-  assert.deepEqual(p.insertOrdered, ['C'], 'B is removed and never re-inserted; result [A,C]');
+  assert.deepEqual(p.removeStopIds, ['B']);
+  assert.deepEqual(p.insertOrdered, [], 'B removed; A,C already correctly ordered → no inserts');
+});
+
+test('planSequence: minimal calls — one out-of-place stop is a single remove + single insert', () => {
+  // [A,B,C,D] → [A,B,D,C]: keep the prefix [A,B,D] (in-order on the load), move only C.
+  const p = planSequence(['A', 'B', 'C', 'D'], ['A', 'B', 'D', 'C']);
+  assert.equal(p.ok, true);
+  assert.deepEqual(p.removeStopIds, ['C']);
+  assert.deepEqual(p.insertOrdered, ['C']);
 });
 
 test('planSequence: combined move (swap first two existing) keeps the anchor on the load', () => {
@@ -56,10 +65,15 @@ test('planSequence: REFUSE an empty desired order (would cancel the route)', () 
   assert.match(p.reason, /empty-order|cancel/);
 });
 
-test('planSequence: REFUSE promoting a brand-new stop to first (append-only cannot)', () => {
-  const p = planSequence(['A', 'B'], ['X', 'A', 'B']);  // X is not on the load
-  assert.equal(p.ok, false);
-  assert.match(p.reason, /anchor-not-on-load/);
+test('planSequence: NEW stop as first delivery → anchorInsert it first, then rebuild', () => {
+  // X isn't on the load and must be first. Insert X first (anchor), then remove the current
+  // deliveries and re-insert them after X → [X,A,B]. Never empties the load.
+  const p = planSequence(['A', 'B'], ['X', 'A', 'B']);
+  assert.equal(p.ok, true);
+  assert.equal(p.anchor, 'X');
+  assert.equal(p.anchorInsert, 'X', 'X inserted BEFORE any remove so the load never empties');
+  assert.deepEqual(p.removeStopIds, ['A', 'B']);
+  assert.deepEqual(p.insertOrdered, ['A', 'B']);
 });
 
 test('planSequence: DEDUPES a duplicate in the desired order (no duplicate re-insert)', () => {
