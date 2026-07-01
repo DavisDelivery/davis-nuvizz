@@ -51,7 +51,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.32.27';
+const APP_VERSION = '0.32.28';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -96,6 +96,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.32.28', 'New Order — create a delivery order without leaving Dispatch. A new "New Order" tab at the top opens a form: type the consignee name + address (+ optional order number, PRO, pallets/cartons/weight and service date) and Create. The ship-from origin is set once (saved on your device) and reused. Like the other live actions it has an ○ Beta / ● LIVE switch — in Beta a Create only previews, in ● LIVE it creates the order in NuVizz (also needs the server write flag). A new order lands UNPLANNED — plan it onto a load in Routing.'],
   ['0.32.27', 'Live dispatch (beta) — HARDENING pass (from a full write-path audit), several "reported success but didn\'t persist" and "silently dropped" bugs closed: (1) assigning a driver from the Routes list now resolves the load\'s real internal id first — a Draft load could otherwise get "Success" from NuVizz while nothing was actually assigned (re-confirm any recent Draft assigns in the portal). (2) Emptying/cancelling a load no longer tries to assign/dispatch the now-cancelled route. (3) Dragging a brand-new order to the FRONT of a load now refreshes the load version before removing the rest, so the remove can\'t be rejected and leave the load half-changed, and it won\'t pre-insert a stop still on another load. (4) A partial/failed NuVizz response is no longer read as success. (5) The panel no longer silently discards a staged driver/unplan when some stops aren\'t loaded yet, no longer re-sends an already-unplanned stop on the next Save, and reliably clears a saved load\'s dirty state.'],
   ['0.32.26', 'Live dispatch (beta) — FIX: after unplanning an order off a load, adding that SAME order back and saving did nothing ("Nothing to send"). The order was genuinely off the load and needed to be re-planned, but the server was only matching the desired stops against the load\'s CURRENT stops — so a stop being ADDED back (not currently on the load) was silently dropped instead of inserted. The server now resolves an added stop by its number and plans it back onto the load, so re-adding an order you just removed actually sends it to NuVizz.'],
   ['0.32.25', 'Live dispatch (beta) — the daily Loads scan now captures each load\'s real Load Number (DAVIS0001…) once the "Load Number" column is present in the loads saved search — verified live, all 99 loads now carry their number. That means resequencing, unplanning, and driver-assign on a Draft load resolve the load DIRECTLY from the scan with ZERO extra NuVizz calls (the per-load stop-lookup bridge added in 0.32.24 is now just a fallback). Internal: removed the temporary column-diagnostic endpoint.'],
@@ -5059,6 +5060,13 @@ function MobileAppBar({ version, onChipMenu, chipMenuOpen, onSelectMenu, smsUnre
             )}
             <button
               className={`w-full text-left px-3 py-2 hover:bg-slate-50 inline-flex items-center gap-2${ROUTING_FLAG ? ' border-t border-slate-100' : ''}`}
+              onClick={() => onSelectMenu('neworder')}
+              role="menuitem"
+            >
+              <Package size={12} /> New Order
+            </button>
+            <button
+              className="w-full text-left px-3 py-2 hover:bg-slate-50 inline-flex items-center gap-2 border-t border-slate-100"
               onClick={() => onSelectMenu('messages')}
               role="menuitem"
             >
@@ -12797,7 +12805,7 @@ function Shell() {
     setChipMenuOpen(false);
     if (next === 'debug') { setDebugOpen(true); return; }
     if (next === 'messages') { openMessages(); return; }
-    setTab(next === 'diagnostics' ? 'diag' : next === 'routing' ? 'routing' : 'map');
+    setTab(next === 'diagnostics' ? 'diag' : next === 'routing' ? 'routing' : next === 'neworder' ? 'neworder' : 'map');
   };
 
   return (
@@ -12838,6 +12846,7 @@ function Shell() {
           <nav className="flex items-center gap-1 text-sm">
             <TabBtn label="Map" icon={<MapPin size={14} />} active={tab === 'map'} onClick={() => setTab('map')} />
             {ROUTING_FLAG && <TabBtn label="Routing (beta)" icon={<MapPinned size={14} />} active={tab === 'routing'} onClick={() => setTab('routing')} />}
+            <TabBtn label="New Order" icon={<Package size={14} />} active={tab === 'neworder'} onClick={() => setTab('neworder')} />
             <TabBtn label="Messages" icon={<MessageSquare size={14} />} active={messagesOpen} onClick={openMessages} badge={smsUnread} />
             <TabBtn label="Diagnostics" icon={<Activity size={14} />} active={tab === 'diag'} onClick={() => setTab('diag')} />
             <TabBtn label="Debug" icon={<Bug size={14} />} active={debugOpen} onClick={() => setDebugOpen(true)} />
@@ -12847,7 +12856,7 @@ function Shell() {
         </header>
       )}
 
-      {tab === 'map' ? <MapScreen onOpenMessages={openMessages} smsUnread={smsUnread} debugCaptureRef={debugCaptureRef} /> : (tab === 'routing' && ROUTING_FLAG) ? <RoutingScreen debugCaptureRef={debugCaptureRef} /> : <DiagnosticsRoute />}
+      {tab === 'map' ? <MapScreen onOpenMessages={openMessages} smsUnread={smsUnread} debugCaptureRef={debugCaptureRef} /> : (tab === 'routing' && ROUTING_FLAG) ? <RoutingScreen debugCaptureRef={debugCaptureRef} /> : tab === 'neworder' ? <NewOrderScreen /> : <DiagnosticsRoute />}
 
       {/* Messages floats OVER the current screen (you never leave the map). */}
       {messagesOpen && <MessagesPanel messages={inbound} seenAt={smsSeenAt} onClose={closeMessages} customerContacts={customerContacts} />}
@@ -12888,6 +12897,179 @@ function DiagnosticsRoute() {
 // Normalize a phone to 10 digits (drops a leading US country-code 1). Used by the
 // shell to derive customer contacts handed to the Messages panel.
 const normPhone = (p) => { const d = String(p || '').replace(/\D/g, ''); return d.length === 11 && d.startsWith('1') ? d.slice(1) : d; };
+
+// ── New Order — create a delivery stop (order) in NuVizz from a standalone tab. Fill the
+// delivery address + optional order details and Create. The origin ("from") + service date
+// default (origin is saved ONCE to localStorage, since ROUTING_DEPOT has no street address).
+// Gated by a Beta/Live toggle AND the server write flag: in ○ Beta a Create only previews
+// (nothing sent). New orders land UNPLANNED — plan them onto a load later in Routing.
+const NEWORDER_ORIGIN_KEY = 'dd_neworder_origin';
+const NEWORDER_ORIGIN_DEFAULT = { name: 'Buford Terminal', addr1: '', city: '', state: 'GA', zip: '' };
+const EMPTY_ORDER_ROW = { name: '', addr1: '', addr2: '', city: '', state: '', zip: '', stopNbr: '', pro: '', pallets: '', cartons: '', weight: '' };
+
+// Local calendar day (YYYY-MM-DD) — the default service date for a new order.
+function todayLocalYMD() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+// Module-level (NOT defined inside the screen) so typing never remounts the input and loses focus.
+function OrderField({ label, req, value, onChange, placeholder, type = 'text', className = '' }) {
+  return (
+    <label className={`block ${className}`}>
+      <span className="text-[11px] font-medium text-slate-500">{label}{req && <span className="text-red-500"> *</span>}</span>
+      <input
+        type={type} value={value} onChange={onChange} placeholder={placeholder}
+        className="mt-0.5 w-full border border-slate-300 rounded px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-300"
+      />
+    </label>
+  );
+}
+
+function NewOrderScreen() {
+  const [origin, setOrigin] = useState(() => {
+    try { const s = JSON.parse(localStorage.getItem(NEWORDER_ORIGIN_KEY) || 'null'); if (s) return { ...NEWORDER_ORIGIN_DEFAULT, ...s }; } catch { /* ignore */ }
+    return NEWORDER_ORIGIN_DEFAULT;
+  });
+  const originComplete = !!(origin.name && origin.addr1 && origin.city && origin.state && origin.zip);
+  const [showOrigin, setShowOrigin] = useState(!originComplete);
+  const [row, setRow] = useState(EMPTY_ORDER_ROW);
+  const [serviceDate, setServiceDate] = useState(todayLocalYMD());
+  const [live, setLive] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState(null); // { ok, beta?, msg }
+
+  const set = (k) => (e) => setRow((r) => ({ ...r, [k]: e.target.value }));
+  const setOrig = (k) => (e) => setOrigin((o) => ({ ...o, [k]: e.target.value }));
+
+  const deliveryComplete = !!(row.name.trim() && row.addr1.trim() && row.city.trim() && row.state.trim() && row.zip.trim());
+  const canSubmit = deliveryComplete && originComplete && !!serviceDate && !busy;
+
+  const persistOrigin = () => { try { localStorage.setItem(NEWORDER_ORIGIN_KEY, JSON.stringify(origin)); } catch { /* ignore */ } };
+
+  const submit = async () => {
+    if (!canSubmit) return;
+    persistOrigin();
+    setBusy(true); setResult(null);
+    const payloadRow = {
+      name: row.name.trim(), addr1: row.addr1.trim(), addr2: row.addr2.trim() || null,
+      city: row.city.trim(), state: row.state.trim(), zip: row.zip.trim(),
+      stopNbr: row.stopNbr.trim() || null, pro: row.pro.trim() || null,
+      pallets: row.pallets === '' ? null : Number(row.pallets),
+      cartons: row.cartons === '' ? null : Number(row.cartons),
+      weight: row.weight === '' ? null : Number(row.weight),
+    };
+    const settings = {
+      origin: { name: origin.name.trim(), addr1: origin.addr1.trim(), city: origin.city.trim(), state: origin.state.trim(), zip: origin.zip.trim() },
+      serviceDate, timeZone: 'America/New_York',
+    };
+    if (!live) {
+      setBusy(false);
+      setResult({ ok: true, beta: true, msg: `○ Beta — would create an order for ${payloadRow.name} (nothing sent). Flip to ● LIVE to create it in NuVizz.` });
+      return;
+    }
+    let res;
+    try { res = await callWrite('createStop', { row: payloadRow, settings }, { dryRun: false, clientOpId: newClientOpId(), createdBy: 'dispatcher' }); }
+    catch (e) { res = { ok: false, error: e?.message || 'network error' }; }
+    setBusy(false);
+    if (res.ok && res.result?.ok) {
+      const nbr = res.result.entityNbr || payloadRow.stopNbr || '(number assigned by NuVizz)';
+      setResult({ ok: true, msg: `✓ Order created — ${nbr}. It's now UNPLANNED; plan it onto a load in Routing.` });
+      setRow(EMPTY_ORDER_ROW);   // ready for the next order; keep origin + date
+    } else {
+      setResult({ ok: false, msg: `✗ Create failed: ${res.error || res.result?.error || 'write error'}` });
+    }
+  };
+
+  return (
+    <div className="flex-1 min-h-0 overflow-auto bg-slate-50">
+      <div className="max-w-2xl mx-auto p-4 space-y-4">
+        {/* Header + Beta/Live */}
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <h1 className="text-lg font-bold text-slate-800 flex items-center gap-2"><Package size={18} /> New Order</h1>
+            <p className="text-[12px] text-slate-500">Create a delivery order in NuVizz. It lands <b>unplanned</b> — plan it onto a load in Routing.</p>
+          </div>
+          <button
+            onClick={() => setLive((v) => !v)}
+            title={live ? 'LIVE — Create sends the order to NuVizz. Click for Beta (preview only).' : 'BETA — Create only previews (nothing sent). Click to go Live.'}
+            className={`inline-flex items-center gap-1 text-[12px] font-bold px-2.5 py-1.5 rounded border shrink-0 ${live ? 'border-red-600 bg-red-600 text-white' : 'border-slate-300 bg-white text-slate-600 hover:bg-slate-50'}`}
+          >
+            {live ? '● LIVE' : '○ Beta'}
+          </button>
+        </div>
+
+        {/* Origin (from) — saved once */}
+        <div className="bg-white border border-slate-200 rounded-lg p-3">
+          <button onClick={() => setShowOrigin((v) => !v)} className="w-full flex items-center justify-between text-left">
+            <span className="text-[13px] font-semibold text-slate-700">Origin (ship from){!originComplete && <span className="ml-2 text-[11px] font-normal text-amber-600">— set this once</span>}</span>
+            <span className="text-[12px] text-slate-500 inline-flex items-center gap-1">
+              {originComplete && !showOrigin ? `${origin.name} · ${origin.city}, ${origin.state}` : ''}
+              {showOrigin ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+            </span>
+          </button>
+          {showOrigin && (
+            <div className="mt-3 space-y-2">
+              <OrderField label="Origin name" req value={origin.name} onChange={setOrig('name')} placeholder="Buford Terminal" />
+              <OrderField label="Address" req value={origin.addr1} onChange={setOrig('addr1')} placeholder="123 Depot Rd" />
+              <div className="grid grid-cols-6 gap-2">
+                <OrderField className="col-span-3" label="City" req value={origin.city} onChange={setOrig('city')} placeholder="Buford" />
+                <OrderField className="col-span-1" label="State" req value={origin.state} onChange={setOrig('state')} placeholder="GA" />
+                <OrderField className="col-span-2" label="ZIP" req value={origin.zip} onChange={setOrig('zip')} placeholder="30518" />
+              </div>
+              <button onClick={persistOrigin} className="text-[12px] font-medium inline-flex items-center gap-1 px-2.5 py-1 rounded border border-slate-300 bg-white text-slate-700 hover:bg-slate-50"><Save size={13} /> Save as default origin</button>
+            </div>
+          )}
+        </div>
+
+        {/* Delivery (to) */}
+        <div className="bg-white border border-slate-200 rounded-lg p-3 space-y-2">
+          <div className="text-[13px] font-semibold text-slate-700">Deliver to</div>
+          <OrderField label="Business / consignee name" req value={row.name} onChange={set('name')} placeholder="Acme Distribution" />
+          <OrderField label="Address" req value={row.addr1} onChange={set('addr1')} placeholder="500 Main St" />
+          <OrderField label="Suite / unit (optional)" value={row.addr2} onChange={set('addr2')} placeholder="Ste 200" />
+          <div className="grid grid-cols-6 gap-2">
+            <OrderField className="col-span-3" label="City" req value={row.city} onChange={set('city')} placeholder="Lawrenceville" />
+            <OrderField className="col-span-1" label="State" req value={row.state} onChange={set('state')} placeholder="GA" />
+            <OrderField className="col-span-2" label="ZIP" req value={row.zip} onChange={set('zip')} placeholder="30046" />
+          </div>
+        </div>
+
+        {/* Order details */}
+        <div className="bg-white border border-slate-200 rounded-lg p-3 space-y-2">
+          <div className="text-[13px] font-semibold text-slate-700">Order details</div>
+          <div className="grid grid-cols-2 gap-2">
+            <OrderField label="Order # (optional)" value={row.stopNbr} onChange={set('stopNbr')} placeholder="auto if blank" />
+            <OrderField label="PRO / shipment # (optional)" value={row.pro} onChange={set('pro')} placeholder="e.g. 12345" />
+          </div>
+          <div className="grid grid-cols-3 gap-2">
+            <OrderField label="Pallets" type="number" value={row.pallets} onChange={set('pallets')} placeholder="1" />
+            <OrderField label="Cartons" type="number" value={row.cartons} onChange={set('cartons')} placeholder="" />
+            <OrderField label="Weight (lbs)" type="number" value={row.weight} onChange={set('weight')} placeholder="" />
+          </div>
+          <OrderField label="Service date" req type="date" value={serviceDate} onChange={(e) => setServiceDate(e.target.value)} className="max-w-[200px]" />
+        </div>
+
+        {/* Result + submit */}
+        {result && (
+          <div className={`rounded-lg px-3 py-2 text-[13px] ${result.ok ? (result.beta ? 'bg-slate-100 text-slate-700 border border-slate-200' : 'bg-green-50 text-green-800 border border-green-200') : 'bg-red-50 text-red-800 border border-red-200'}`}>
+            {result.msg}
+          </div>
+        )}
+        <div className="flex items-center justify-between gap-3 pb-6">
+          <span className="text-[12px] text-slate-500">{!originComplete ? 'Set the origin address first.' : !deliveryComplete ? 'Fill the required (*) delivery fields.' : live ? 'Ready — this WILL create the order in NuVizz.' : 'Beta — Create previews only.'}</span>
+          <button
+            onClick={submit} disabled={!canSubmit}
+            className={`inline-flex items-center gap-1.5 px-4 py-2 rounded font-semibold text-white text-sm shrink-0 ${canSubmit ? '' : 'opacity-40 cursor-not-allowed'}`}
+            style={{ background: live ? '#dc2626' : BRAND }}
+          >
+            <Plus size={16} /> {busy ? 'Creating…' : live ? 'Create order (LIVE)' : 'Preview (Beta)'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function TabBtn({ label, icon, active, onClick, badge = 0 }) {
   return (
