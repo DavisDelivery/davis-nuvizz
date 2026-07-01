@@ -51,7 +51,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.32.28';
+const APP_VERSION = '0.32.29';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -96,6 +96,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.32.29', 'HOTFIX (from a full-codebase bug hunt) — two regressions: (1) after a successful ● LIVE Save, the Compare panel crashed internally before showing the "✓ saved" toast (a 0.32.27 cleanup referenced state it couldn\'t reach) — the save itself went through, but you got NO confirmation, no orphaned-stops warning, and staged removals weren\'t cleared. Save feedback is back. (2) Clicking an EMPTY ("No orders yet") load in the Loads grid opened a card that couldn\'t save or assign — since 0.32.25 that row is keyed by the real Load Number, which the load lookup didn\'t recognize. Empty loads open properly again.'],
   ['0.32.28', 'New Order — create a delivery order without leaving Dispatch. A new "New Order" tab at the top opens a form: type the consignee name + address (+ optional order number, PRO, pallets/cartons/weight and service date) and Create. The ship-from origin is set once (saved on your device) and reused. Like the other live actions it has an ○ Beta / ● LIVE switch — in Beta a Create only previews, in ● LIVE it creates the order in NuVizz (also needs the server write flag). A new order lands UNPLANNED — plan it onto a load in Routing.'],
   ['0.32.27', 'Live dispatch (beta) — HARDENING pass (from a full write-path audit), several "reported success but didn\'t persist" and "silently dropped" bugs closed: (1) assigning a driver from the Routes list now resolves the load\'s real internal id first — a Draft load could otherwise get "Success" from NuVizz while nothing was actually assigned (re-confirm any recent Draft assigns in the portal). (2) Emptying/cancelling a load no longer tries to assign/dispatch the now-cancelled route. (3) Dragging a brand-new order to the FRONT of a load now refreshes the load version before removing the rest, so the remove can\'t be rejected and leave the load half-changed, and it won\'t pre-insert a stop still on another load. (4) A partial/failed NuVizz response is no longer read as success. (5) The panel no longer silently discards a staged driver/unplan when some stops aren\'t loaded yet, no longer re-sends an already-unplanned stop on the next Save, and reliably clears a saved load\'s dirty state.'],
   ['0.32.26', 'Live dispatch (beta) — FIX: after unplanning an order off a load, adding that SAME order back and saving did nothing ("Nothing to send"). The order was genuinely off the load and needed to be re-planned, but the server was only matching the desired stops against the load\'s CURRENT stops — so a stop being ADDED back (not currently on the load) was silently dropped instead of inserted. The server now resolves an added stop by its number and plans it back onto the load, so re-adding an order you just removed actually sends it to NuVizz.'],
@@ -10107,7 +10108,7 @@ function RoutingWorkbenchCard({ route, stopById, otherKeys, ninjaMode, isActive,
 // The route workbench (part 4): the 1–3 route cards opened from the right Routes panel, laid out
 // side by side (desktop) or stacked (mobile). Replaces the Setup stack on the left while routes
 // are open; "Back to Setup" closes them all.
-function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmNinja, activeKey, onSetActive, onResequence, onCollapse, onClose, onCloseAll, onMoveStop, onDropStop, onRemoveStop, onUndoRemove, onOpenStop, onPrintManifest, selectedCount = 0, onSendSelection, isMobile, liveWrite }) {
+function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmNinja, activeKey, onSetActive, onResequence, onCollapse, onClose, onCloseAll, onMoveStop, onDropStop, onRemoveStop, onUndoRemove, onClearRemoved, onOpenStop, onPrintManifest, selectedCount = 0, onSendSelection, isMobile, liveWrite }) {
   // Live-dispatch gate comes from the gear toggle (prop), aliased to the original name so the
   // many gate sites in this component (Save, Beta/Live toggle, dirty guards, confirm) are unchanged.
   const LIVE_WRITE_FLAG = liveWrite;
@@ -10262,9 +10263,10 @@ function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmN
       markSaved(okKeys);
       setStaged((p) => { const n = { ...p }; for (const k of okKeys) delete n[k]; return n; });
       // Clear each saved route's `removed` list — otherwise a later edit re-sends the already-unplanned
-      // stops (a stale removeStopNbrs) on the next Save.
-      const okSet = new Set(okKeys);
-      setWbRoutes((prev) => prev.map((r) => (okSet.has(r.key) && (r.removed || []).length) ? { ...r, removed: [] } : r));
+      // stops (a stale removeStopNbrs) on the next Save. Via a prop: wbRoutes' setter lives in
+      // RoutingScreen, NOT here — referencing it directly threw a ReferenceError that killed the
+      // rest of this handler (no toast/orphan warning) on every successful LIVE save.
+      if (onClearRemoved) onClearRemoved(okKeys);
     }
     // Honest reporting: a load only "saved" if its result has a SUCCESSFUL step (an actual NuVizz
     // call). A load that returns ok:true with no steps was a no-op — never report it as saved.
@@ -10793,6 +10795,10 @@ function RoutingScreen({ debugCaptureRef }) {
           const entry = { loadId: l.loadId ? String(l.loadId) : null, name: l.name || '', loadNbr: l.loadNbr ? String(l.loadNbr) : null };
           if (nm) { status.set(nm, l.status || ''); index.set(nm, entry); }
           if (l.loadId) { status.set('#id:' + String(l.loadId), l.status || ''); index.set(String(l.loadId), entry); }
+          // Also key by the REAL load number: an empty load's Loads-grid row is keyed by it since
+          // 0.32.25 (loadNbr || loadId), so opening one must resolve back to the entry — without
+          // this the card had no loadId/loadNbr and assign/save failed on every empty load.
+          if (l.loadNbr) index.set(String(l.loadNbr), entry);
         }
         loadRosterRef.current = index;
         setLoadStatusByName(status);
@@ -10938,6 +10944,12 @@ function RoutingScreen({ debugCaptureRef }) {
   const closeWbRoute = useCallback((key) => setWbRoutes((prev) => prev.filter((r) => r.key !== key)), []);
   const closeAllWb = useCallback(() => setWbRoutes([]), []);
   const toggleWbCollapse = useCallback((key) => setWbRoutes((prev) => prev.map((r) => (r.key === key ? { ...r, collapsed: !r.collapsed } : r))), []);
+  // After a successful LIVE save, clear the saved cards' staged-removal lists (the workbench calls
+  // this via prop — it has no access to setWbRoutes) so a later Save can't re-send stale removes.
+  const clearWbRemoved = useCallback((keys) => {
+    const okSet = new Set(keys);
+    setWbRoutes((prev) => prev.map((r) => (okSet.has(r.key) && (r.removed || []).length) ? { ...r, removed: [] } : r));
+  }, []);
   const wbResequence = useCallback((key, strategy) => {
     if (!strategy) return;
     setWbRoutes((prev) => prev.map((r) => {
@@ -12258,7 +12270,7 @@ function RoutingScreen({ debugCaptureRef }) {
             <div className="flex-1 min-h-0 overflow-y-auto p-3 space-y-3 text-sm" style={{ paddingBottom: 'calc(12px + env(safe-area-inset-bottom))' }}>
               {mobilePanel === 'setup'
                 ? (wbRoutes.length > 0
-                    ? <RoutingWorkbench wbRoutes={wbRoutesColored} stopById={stopById} ninjaMode={ninjaMode} onToggleNinja={setNinjaMode} onArmNinja={armNinjaFromPanel} activeKey={effectiveActiveKey} onSetActive={setActiveRouteKey} onResequence={wbResequence} onCollapse={toggleWbCollapse} onClose={closeWbRoute} onCloseAll={closeAllWb} onMoveStop={wbMoveStop} onDropStop={wbDropStop} onRemoveStop={wbRemoveStop} onUndoRemove={wbUndoRemove} onOpenStop={openStop} onPrintManifest={printWbManifest} selectedCount={selectedStops.length} onSendSelection={sendSelectionToRoute} isMobile liveWrite={liveWrite} />
+                    ? <RoutingWorkbench wbRoutes={wbRoutesColored} stopById={stopById} ninjaMode={ninjaMode} onToggleNinja={setNinjaMode} onArmNinja={armNinjaFromPanel} activeKey={effectiveActiveKey} onSetActive={setActiveRouteKey} onResequence={wbResequence} onCollapse={toggleWbCollapse} onClose={closeWbRoute} onCloseAll={closeAllWb} onMoveStop={wbMoveStop} onDropStop={wbDropStop} onRemoveStop={wbRemoveStop} onUndoRemove={wbUndoRemove} onClearRemoved={clearWbRemoved} onOpenStop={openStop} onPrintManifest={printWbManifest} selectedCount={selectedStops.length} onSendSelection={sendSelectionToRoute} isMobile liveWrite={liveWrite} />
                     : controlsContent)
                 : mobilePanel === 'loads'
                   ? (rightPanelMode === 'routes'
@@ -12303,7 +12315,7 @@ function RoutingScreen({ debugCaptureRef }) {
           routes are open. With the Setup panel off and no routes open, the map gets the full width. */}
       {wbRoutes.length > 0 ? (
         <div className="shrink-0 border-r bg-white min-h-0 overflow-x-auto" style={{ width: wbWidth }}>
-          <RoutingWorkbench wbRoutes={wbRoutesColored} stopById={stopById} ninjaMode={ninjaMode} onToggleNinja={setNinjaMode} onArmNinja={armNinjaFromPanel} activeKey={effectiveActiveKey} onSetActive={setActiveRouteKey} onResequence={wbResequence} onCollapse={toggleWbCollapse} onClose={closeWbRoute} onCloseAll={closeAllWb} onMoveStop={wbMoveStop} onDropStop={wbDropStop} onRemoveStop={wbRemoveStop} onUndoRemove={wbUndoRemove} onOpenStop={openStop} onPrintManifest={printWbManifest} selectedCount={selectedStops.length} onSendSelection={sendSelectionToRoute} isMobile={false} liveWrite={liveWrite} />
+          <RoutingWorkbench wbRoutes={wbRoutesColored} stopById={stopById} ninjaMode={ninjaMode} onToggleNinja={setNinjaMode} onArmNinja={armNinjaFromPanel} activeKey={effectiveActiveKey} onSetActive={setActiveRouteKey} onResequence={wbResequence} onCollapse={toggleWbCollapse} onClose={closeWbRoute} onCloseAll={closeAllWb} onMoveStop={wbMoveStop} onDropStop={wbDropStop} onRemoveStop={wbRemoveStop} onUndoRemove={wbUndoRemove} onClearRemoved={clearWbRemoved} onOpenStop={openStop} onPrintManifest={printWbManifest} selectedCount={selectedStops.length} onSendSelection={sendSelectionToRoute} isMobile={false} liveWrite={liveWrite} />
         </div>
       ) : leftPanelOn ? (
         <div className="shrink-0 border-r bg-white overflow-y-auto p-3 space-y-3 text-sm" style={{ width: leftPanel.width }}>
