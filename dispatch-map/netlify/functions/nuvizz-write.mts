@@ -75,6 +75,17 @@ function planFor(op: WriteOp, payload: any): string[] {
     if (payload?.dispatch) steps.push(`dispatch load ${payload?.loadNbr ?? '?'} (load/assignanddispatch DISPATCH)`);
     return steps.length ? steps : ['(no changes to commit)'];
   }
+  if (op === 'importLoad' || op === 'commitImport') {
+    const loads: any[] = op === 'importLoad'
+      ? (payload?.load ? [payload.load] : [])
+      : (Array.isArray(payload?.loads) ? payload.loads : []);
+    if (!loads.length) return ['(no loads to import)'];
+    const gate = 'NUVIZZ_LOAD_IMPORT'; // shown so the dry run tells you the path is double-gated
+    return loads.map((L) => {
+      const n = Array.isArray(L?.stops) ? L.stops.length : 0;
+      return `Load ${L?.loadHeader?.routeName ?? L?.loadHeader?.loadNbr ?? '?'}: IMPORT ${n} stop(s) in exact array order (async load/update/default + convergence read-backs; gated by ${gate})`;
+    });
+  }
   return [`${op} → 1 NuVizz call`];
 }
 

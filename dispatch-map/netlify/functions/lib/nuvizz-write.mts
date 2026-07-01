@@ -19,7 +19,7 @@
 
 import { getCreds, basicAuthHeader } from './nuvizz-scan.mts';
 import {
-  buildOpRequest, parseOpResponse, toEditHeader, normalizeLoad, planSequence,
+  buildOpRequest, parseOpResponse, toEditHeader, normalizeLoad, planSequence, deliveryOrder,
   type SingleOp, type WriteOp, type WriteCreds,
 } from './nuvizz-write-ops.mts';
 import { isHashLikeId } from './nuvizz-list.mts';
@@ -471,6 +471,158 @@ async function runAssignDispatch(requester: RequesterLike, op: SingleOp, payload
   return fireSingle(requester, op, { ...payload, routeId }, creds);
 }
 
+// ── §I  async LOAD IMPORT executor — one call per load + the convergence recipe ──
+//
+// The NEW sequencing path (see nuvizz-write-ops.mts §I for the full contract): one
+// POST load/update/default per touched load sets that load's complete stop list in exact
+// array order — no anchors, no removes, no one-at-a-time inserts. UAT-verified DAVISV5
+// Jul 1 2026. GATED OFF by default behind NUVIZZ_LOAD_IMPORT (separate from — and in
+// addition to — the handler's NUVIZZ_WRITE_ENABLED kill switch), because before it runs
+// against real routes the VERIFICATION CHECKLIST must pass on a throwaway prod load with
+// Chad's explicit sign-off. Until then the anchor engine above stays the active default.
+//
+// CONVERGENCE (mandatory after EVERY order-affecting import — a 200 ack is async and can
+// silently not land): poll GET load/info every ~pollMs up to a phase budget, comparing the
+// load's deliveryOrder() (sorted by to.seq) to the requested stopNbr order. Not converged →
+// re-send the SAME import (also what seats a newly-added stop, which APPENDS on its first
+// import). Still stuck → send the array REVERSED then the desired order (verified to unstick
+// the async worker's stale-state window). Never trust the 200 alone.
+//
+// Call cost (worst case, defaults): ≤4 imports + ≤18 polls ≈ 22 counted calls per load;
+// a clean first-poll converge is 1 import + 1 read. NB: the default budgets (~90s total)
+// exceed a synchronous Netlify function's ~26s window — enabling this path for real routes
+// includes moving the poll into a background function (or passing a tighter
+// payload.convergence budget); that wiring is part of the enable-with-sign-off step.
+
+/** Second kill switch for the new import path only. OFF unless NUVIZZ_LOAD_IMPORT is set
+ *  to 1/true/on/yes. Read at call time so tests (and an emergency unset) take effect
+ *  without a redeploy of anything else. */
+export function loadImportEnabled(): boolean {
+  return /^(1|true|on|yes)$/i.test(String(process.env.NUVIZZ_LOAD_IMPORT ?? '').trim());
+}
+
+/** Injectable pacing so the convergence loop is unit-testable with no real clock. */
+export interface ImportPacing {
+  pollMs?: number;        // delay between load/info polls (default 5000)
+  phaseWaitMs?: number;   // per-phase poll budget (default 30000 → 3 phases ≈ the ~90s recipe)
+  sleep?: (ms: number) => Promise<void>;
+}
+const realSleep = (ms: number) => new Promise<void>((res) => setTimeout(res, ms));
+
+// One poll phase: read load/info up to `polls` times, pollMs apart, until the load's
+// delivery order equals `want` (array equality = order AND membership — an omitted stop
+// that is still on the load means not-converged). A brand-new load 404s until the async
+// worker creates it; fetchLoad returns null then, which simply reads as not-yet-converged.
+async function pollUntilConverged(
+  requester: RequesterLike, loadNbr: string, want: string[], creds: WriteCreds,
+  pollMs: number, polls: number, sleep: (ms: number) => Promise<void>,
+): Promise<{ converged: boolean; seen: string[] | null; loadId: any; reads: number }> {
+  let seen: string[] | null = null, loadId: any = null, reads = 0;
+  for (let i = 0; i < polls; i++) {
+    await sleep(pollMs);
+    const f = await fetchLoad(requester, loadNbr, creds);
+    reads++;
+    if (f.load) {
+      loadId = f.load.loadId ?? loadId;
+      seen = deliveryOrder(f.load);
+      if (seen.length === want.length && seen.every((n, k) => n === want[k])) {
+        return { converged: true, seen, loadId, reads };
+      }
+    }
+  }
+  return { converged: false, seen, loadId, reads };
+}
+
+/**
+ * runImportLoad — fire ONE load's import and drive it to convergence.
+ * payload: { load: { loadHeader, stops }, convergence?: ImportPacing }
+ * Returns { ok, converged, loadNbr, loadId, requestedOrder, seenOrder, steps[], error }.
+ * ok=true ONLY when the read-back order matches the request — never on the async ack alone.
+ */
+export async function runImportLoad(requester: RequesterLike, payload: any, creds: WriteCreds, pacing?: ImportPacing): Promise<any> {
+  if (!loadImportEnabled()) {
+    return { ok: false, gated: true, error: 'load-import path disabled — set NUVIZZ_LOAD_IMPORT=on (requires the verification checklist + sign-off first)' };
+  }
+  const load = payload?.load;
+  const loadNbr = String(load?.loadHeader?.loadNbr ?? '').trim();
+  if (!loadNbr || !Array.isArray(load?.stops) || !load.stops.length) {
+    // buildImportBody re-validates in depth; this early check just yields a friendlier error
+    // before any pacing math. An empty stops[] is NEVER sent (use load/cancel to retire a load).
+    return { ok: false, error: 'importLoad: payload.load needs loadHeader.loadNbr and a non-empty stops[]' };
+  }
+  const p = { ...(pacing || {}), ...(payload?.convergence || {}) };
+  const pollMs = Math.max(250, Number(p.pollMs) || 5000);
+  const phaseWaitMs = Math.max(pollMs, Number(p.phaseWaitMs) || 30000);
+  const polls = Math.max(1, Math.ceil(phaseWaitMs / pollMs));
+  const sleep = p.sleep || realSleep;
+
+  // The requested visit order = the stops[] array order (deliveries; a PU never sorts in
+  // deliveryOrder, so exclude it from the comparator too).
+  const want = load.stops
+    .filter((s: any) => String(s?.stopType ?? 'DO').toUpperCase() !== 'PU')
+    .map((s: any) => String(s?.stopNbr ?? '')).filter(Boolean);
+
+  const steps: any[] = [];
+  let loadId: any = null;
+  const fire = async (stops: any[], label: string) => {
+    const r = await fireSingle(requester, 'importLoad', { load: { loadHeader: load.loadHeader, stops } }, creds);
+    steps.push({ op: 'importLoad', label, ok: !!r.ok, appMessageLogId: r.appMessageLogId ?? null, error: r.ok ? null : (r.error || 'failed') });
+    return r;
+  };
+  const poll = async (label: string) => {
+    const c = await pollUntilConverged(requester, loadNbr, want, creds, pollMs, polls, sleep);
+    steps.push({ op: 'converge', label, ok: c.converged, reads: c.reads, seen: c.seen });
+    loadId = c.loadId ?? loadId;
+    return c;
+  };
+  const done = (converged: boolean, seen: string[] | null) => ({
+    ok: converged, converged, loadNbr, loadId, requestedOrder: want, seenOrder: seen, steps,
+    error: converged ? null : `importLoad: order did not converge after re-send + reverse-unstick — verify load ${loadNbr} in the portal before retrying`,
+  });
+
+  // Phase 1 — the import, then poll.
+  let r = await fire(load.stops, 'import');
+  if (!r.ok) return { ok: false, converged: false, loadNbr, loadId, requestedOrder: want, seenOrder: null, steps, error: r.error || 'import rejected' };
+  let c = await poll('after-import');
+  if (c.converged) return done(true, c.seen);
+
+  // Phase 2 — re-send the SAME import (the recipe's first unstick; also the reorder pass
+  // that seats a newly-added stop, which appends on its first import).
+  r = await fire(load.stops, 'resend');
+  if (r.ok) { c = await poll('after-resend'); if (c.converged) return done(true, c.seen); }
+
+  // Phase 3 — REVERSED then desired (verified to unstick the async worker), then poll.
+  await fire([...load.stops].reverse(), 'reverse-unstick');
+  await sleep(pollMs); // give the worker one beat between the reversed and forward imports
+  r = await fire(load.stops, 'forward-after-reverse');
+  c = await poll('after-reverse-forward');
+  return done(c.converged, c.seen);
+}
+
+/**
+ * runCommitImport — the import-path Save: one import per touched load, applied strictly in
+ * the caller's array order. For a cross-load move (A → B) the caller MUST list the SOURCE
+ * load (without the stop) BEFORE the destination (with it) — a "steal" while the stop is
+ * still planned on A is untested and never relied on. A load that fails to converge stops
+ * the batch (later loads may depend on its unplans); already-imported loads are reported.
+ * payload: { loads: [{ loadHeader, stops }...], convergence?: ImportPacing }
+ */
+export async function runCommitImport(requester: RequesterLike, payload: any, creds: WriteCreds, pacing?: ImportPacing): Promise<any> {
+  if (!loadImportEnabled()) {
+    return { ok: false, gated: true, error: 'load-import path disabled — set NUVIZZ_LOAD_IMPORT=on (requires the verification checklist + sign-off first)' };
+  }
+  const loadsIn: any[] = Array.isArray(payload?.loads) ? payload.loads : [];
+  if (!loadsIn.length) return { ok: true, loads: [] };
+  const results: any[] = [];
+  for (const L of loadsIn) {
+    const r = await runImportLoad(requester, { load: L, convergence: payload?.convergence }, creds, pacing);
+    results.push(r);
+    if (!r.ok) break; // sources-before-destinations: a stuck source must not let a destination "steal"
+  }
+  const skipped = loadsIn.length - results.length;
+  return { ok: results.every((r) => r.ok) && skipped === 0, loads: results, skipped };
+}
+
 export async function runOp(requester: RequesterLike, op: WriteOp, payload: any, creds: WriteCreds): Promise<any> {
   switch (op) {
     case 'commitBoard': return runCommitBoard(requester, payload, creds);
@@ -478,6 +630,8 @@ export async function runOp(requester: RequesterLike, op: WriteOp, payload: any,
     case 'removeStops': return runRemoveStops(requester, payload, creds);
     case 'assignDriver':
     case 'dispatchLoad': return runAssignDispatch(requester, op, payload, creds);
+    case 'importLoad': return runImportLoad(requester, payload, creds);
+    case 'commitImport': return runCommitImport(requester, payload, creds);
     default: return fireSingle(requester, op as SingleOp, payload, creds);
   }
 }

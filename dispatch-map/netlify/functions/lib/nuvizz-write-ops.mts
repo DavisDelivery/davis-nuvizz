@@ -35,18 +35,20 @@
 // is not in this builder allowlist.
 export const SINGLE_OPS = [
   'createStop', 'getStop', 'getLoad', 'getLoadByRouteId', 'insertStops', 'removeStops',
-  'assignDriver', 'dispatchLoad', 'roster',
+  'assignDriver', 'dispatchLoad', 'roster', 'importLoad',
 ] as const;
 export type SingleOp = typeof SINGLE_OPS[number];
 
-// Ops the HTTP handler accepts (single ops + the per-load Save batch + the panel Save).
-export const WRITE_OPS = [...SINGLE_OPS, 'commitLoad', 'commitBoard'] as const;
+// Ops the HTTP handler accepts (single ops + the per-load Save batch + the panel Save +
+// the async load-import commit with its convergence recipe).
+export const WRITE_OPS = [...SINGLE_OPS, 'commitLoad', 'commitBoard', 'commitImport'] as const;
 export type WriteOp = typeof WRITE_OPS[number];
 
-/** Ops that MUTATE NuVizz (everything except the two GET reads). Used by the
+/** Ops that MUTATE NuVizz (everything except the GET reads). Used by the
  *  handler to decide which ops need the write-enabled gate + idempotency. */
 export const MUTATING_OPS = new Set<WriteOp>([
-  'createStop', 'insertStops', 'removeStops', 'assignDriver', 'dispatchLoad', 'commitLoad', 'commitBoard',
+  'createStop', 'insertStops', 'removeStops', 'assignDriver', 'dispatchLoad',
+  'importLoad', 'commitLoad', 'commitBoard', 'commitImport',
 ]);
 
 export interface WriteCreds {
@@ -405,6 +407,135 @@ export function planSequence(currentDeliveryStopIds: any[], desiredOrderedStopId
   return { ok: true, unchanged: false, anchor: want[0], removeStopIds: cur.filter((id) => !keep.has(id)), insertOrdered: want.slice(k) };
 }
 
+// ── §I  async LOAD IMPORT — declarative stop set + order in ONE call ─────────
+//
+// POST {base}/load/update/default/{cc} with { companyCode, loads:[{loadHeader, stops}] }.
+// Contract (proven by controlled live experiments on UAT DAVISV5, Jul 1 2026 — including a
+// 10-stop route: create-in-order, full reversal, optimized reorder, mid-route injection):
+//   • The stops[] ARRAY ORDER is the visit order. stopSeq numbers and the header
+//     stopSeqOrder flag are IGNORED. The optimizer does NOT rearrange imported loads.
+//   • New loadNbr → creates the load (Draft) with stops in array order. No loadId/versionId
+//     anywhere on this path.
+//   • Re-import same loadNbr → DECLARATIVE rebuild: stop set + order become exactly stops[].
+//     Omitted stops are UNPLANNED (the stop record survives, unassigned).
+//   • Existing stops plan BY REFERENCE: stopNbr + stopType + a "to" block (address+schedule).
+//     A bare stopNbr is rejected ("Either From or To information should be present").
+//   • A stop NEWLY ADDED to a load APPENDS to the end on that first import (its array position
+//     is ignored on the add); a follow-up reorder import seats it.
+//
+// THE SILENT-FAILURE TRAP: the import is async. A 200 "Async import is SUCCESS …
+// AppMessageLog Id-…" does NOT mean it landed — on worker failure NOTHING is created and the
+// reason is unreachable (no AppMessageLog endpoint on the open API). The loadHeader MUST carry
+// earliestStartDttm + latestStartDttm (NOT scheduleStartDttm) AND the flat origin fields
+// (origin, originName, originAddr1, originAddr2(opt), originCity, originState, originZip,
+// originCountry, loadTimeZone). Omit the origin fields = "SUCCESS" + nothing created, forever.
+// buildImportBody() therefore HARD-VALIDATES all of that and refuses to build a payload that
+// would vanish. Convergence (poll load/info, compare to.seq — see runImportLoad in
+// nuvizz-write.mts) is mandatory after every order-affecting import; never trust the 200.
+
+/** Flat load header for the import — see the trap note above for why so much is required. */
+export interface ImportLoadHeader {
+  loadNbr: string; routeName?: string | null;
+  earliestStartDttm: string; latestStartDttm: string;   // NOT scheduleStartDttm
+  origin: string; originName: string; originAddr1: string; originAddr2?: string | null;
+  originCity: string; originState: string; originZip: string;
+  originCountry?: string;                               // default USA
+  loadTimeZone?: string;                                // default EST
+}
+
+/** REFERENCE stop shape for the import — plans an EXISTING stop onto the load by stopNbr.
+ *  (A bare stopNbr is rejected by NuVizz; the "to" block is what makes the reference valid.)
+ *  For NEW stops, pass the FULL payload from buildStopPayload() instead — same stops[] slot. */
+export function buildImportStopRef(row: StopRow, settings: OriginSettings): any {
+  const tz = settings.timeZone || 'America/New_York';
+  const d = settings.serviceDate;
+  return {
+    stopNbr: String(req(row.stopNbr, 'importStopRef: stopNbr')),
+    stopType: 'DO',
+    to: {
+      address: {
+        addressType: 'COM', name: row.name, addr1: row.addr1, addr2: row.addr2 || undefined,
+        city: row.city, state: row.state, zip: row.zip, country: 'USA',
+      },
+      // The delivery window is the driver-visible appointment ONLY — it NEVER sets order
+      // (rigorously disproven). Echoed here because the reference needs a schedule block.
+      schedule: { timeFrom: `${d}T12:00:00`, timeTo: `${d}T17:00:00`, timeZone: tz, timeConstraint: 'PREFERRED' },
+    },
+  };
+}
+
+/**
+ * Validate + assemble the import body for ONE load. Throws (→ HTTP 400, no NuVizz call) on
+ * anything that would trip the silent-failure trap or an unsafe import:
+ *   • missing loadNbr / earliestStartDttm / latestStartDttm (or a scheduleStartDttm passed
+ *     in their place) / any required flat origin field;
+ *   • an EMPTY stops[] — never import an empty list to empty a load (untested, and the
+ *     analogous remove-all path CANCELS the route; use load/cancel instead);
+ *   • a stop without stopNbr or without a "to" block (NuVizz rejects bare references);
+ *   • "claude"/"anthropic" anywhere in loadNbr/routeName (naming rule — never in live data).
+ */
+export function buildImportBody(load: { loadHeader: any; stops: any[] }, cc: string): any {
+  const h = load?.loadHeader || {};
+  if ((h.scheduleStartDttm || h.scheduleEndDttm) && !(h.earliestStartDttm && h.latestStartDttm)) {
+    throw new Error('importLoad: use earliestStartDttm + latestStartDttm — scheduleStartDttm does NOT work on the import path (silent no-create)');
+  }
+  const loadNbr = String(req(h.loadNbr, 'importLoad: loadHeader.loadNbr'));
+  const routeName = h.routeName != null ? String(h.routeName) : undefined;
+  if (/claude|anthropic/i.test(`${loadNbr} ${routeName || ''}`)) {
+    throw new Error('importLoad: load/route names must never contain "claude" or "anthropic"');
+  }
+  const header: any = {
+    loadNbr,
+    routeName,
+    earliestStartDttm: req(h.earliestStartDttm, 'importLoad: loadHeader.earliestStartDttm'),
+    latestStartDttm: req(h.latestStartDttm, 'importLoad: loadHeader.latestStartDttm'),
+    origin: req(h.origin, 'importLoad: loadHeader.origin'),
+    originName: req(h.originName, 'importLoad: loadHeader.originName'),
+    originAddr1: req(h.originAddr1, 'importLoad: loadHeader.originAddr1'),
+    originAddr2: h.originAddr2 || undefined,
+    originCity: req(h.originCity, 'importLoad: loadHeader.originCity'),
+    originState: req(h.originState, 'importLoad: loadHeader.originState'),
+    originZip: req(h.originZip, 'importLoad: loadHeader.originZip'),
+    originCountry: h.originCountry || 'USA',
+    loadTimeZone: h.loadTimeZone || 'EST',
+  };
+  const stops = reqArr(load?.stops, 'importLoad: stops (never import an empty stops[] — use load/cancel to retire a load)');
+  for (const [i, s] of stops.entries()) {
+    req(s?.stopNbr, `importLoad: stops[${i}].stopNbr`);
+    if (!s?.to || !s.to.address) throw new Error(`importLoad: stops[${i}] needs a "to" block (address+schedule) — a bare stopNbr reference is rejected by NuVizz`);
+    if (!s.stopType) s.stopType = 'DO';
+  }
+  return { companyCode: cc, loads: [{ loadHeader: header, stops }] };
+}
+
+/**
+ * importOk (§I) — parse the ASYNC import acknowledgement. ok=true means the request was
+ * ACCEPTED ("Async import is SUCCESS … AppMessageLog Id-…"), NOT that it landed — the caller
+ * MUST run the convergence read-back (poll load/info, compare to.seq) before trusting it.
+ */
+export function importOk(httpOk: boolean, j: any): { ok: boolean; async: true; appMessageLogId: string | null; error: string | null } {
+  const body = j || {};
+  const text = [body.status, body.message, body._text].filter((x: any) => x != null).map(String).join(' ');
+  const accepted = /success/i.test(text);
+  const m = text.match(/AppMessageLog\s*Id\s*[-:\s]*([A-Za-z0-9._-]+)/i);
+  const ok = httpOk && accepted;
+  // NB: on success the ack text itself lives in body.message — only consult firstError() when
+  // NOT accepted, so the success message is never misread as an error string.
+  return { ok, async: true, appMessageLogId: m ? m[1] : null, error: ok ? null : (firstError(body) || `import status='${body?.status ?? ''}'`) };
+}
+
+/** deliveryOrder (§I) — normalized getLoad → the load's DELIVERY stopNbrs in visit order
+ *  (sorted by stopSeq = stop.to.seq; pickups excluded). This is the convergence comparator:
+ *  after an import, poll getLoad and compare deliveryOrder() to the requested stopNbr order. */
+export function deliveryOrder(load: any): string[] {
+  const stops = Array.isArray(load?.stops) ? load.stops : [];
+  return stops
+    .filter((s: any) => s && s.stopNbr != null && String(s.stopType ?? 'DO').toUpperCase() !== 'PU')
+    .slice()
+    .sort((a: any, b: any) => (Number(a.stopSeq ?? Number.MAX_SAFE_INTEGER)) - (Number(b.stopSeq ?? Number.MAX_SAFE_INTEGER)))
+    .map((s: any) => String(s.stopNbr));
+}
+
 // ── Request builders (one per single op) ─────────────────────────────────────
 
 export const ROSTER_BODY = {
@@ -484,6 +615,15 @@ export function buildOpRequest(op: SingleOp, payload: any, creds: WriteCreds): B
       return { url: `${base}/load/assignanddispatch/${enc(cc)}`, method: 'POST', headers: H, body: JSON.stringify(body), meta: { route: '/load/assignanddispatch(dispatch)', tenant: cc, source: 'live-write' } };
     }
 
+    case 'importLoad': {
+      // ONE async call sets a load's complete stop list in exact array order (§I above).
+      // buildImportBody hard-validates the header (silent-failure trap) + stops (no empty
+      // list, no bare references). payload: { load: { loadHeader, stops } }.
+      const load = req(payload?.load, 'importLoad: load ({loadHeader, stops})');
+      const body = buildImportBody(load, cc);
+      return { url: `${base}/load/update/default/${enc(cc)}`, method: 'POST', headers: H, body: JSON.stringify(body), meta: { route: '/load/update/default', tenant: cc, source: 'live-write' } };
+    }
+
     default: {
       const _exhaustive: never = op;
       throw new Error(`unknown write op: ${String(_exhaustive)}`);
@@ -503,6 +643,7 @@ export function parseOpResponse(op: SingleOp, httpOk: boolean, j: any): any {
     case 'removeStops': return summarize(httpOk, j);
     case 'assignDriver':
     case 'dispatchLoad': return assignOk(j);
+    case 'importLoad': return importOk(httpOk, j);
     default: return summarize(httpOk, j);
   }
 }
