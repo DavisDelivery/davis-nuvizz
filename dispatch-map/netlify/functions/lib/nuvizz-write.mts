@@ -200,26 +200,35 @@ export async function runCommitBoard(requester: RequesterLike, payload: any, cre
   for (const L of loadsIn) {
     const loadNbr = L?.loadNbr ?? null;
     const result: any = { loadNbr, ok: true, steps: [], error: null };
-    const desired: any[] = Array.isArray(L?.orderedStopIds) ? L.orderedStopIds : [];
+    // Desired order can arrive as stopIds (legacy + the loadId-only insert path) or as stopNbrs
+    // (resolved server-side from the load — robust to board stops that were never enriched and so
+    // carry no client stopId; the #symptom-A silent drop).
+    const orderedNbrs: string[] | null = Array.isArray(L?.orderedStopNbrs) ? L.orderedStopNbrs.map((x: any) => String(x)).filter(Boolean) : null;
+    const emptyLoad = L?.emptyLoad === true;
+    let desired: any[] = Array.isArray(L?.orderedStopIds) ? L.orderedStopIds.map((x: any) => String(x)) : [];
     if (!loadNbr && !L?.loadId) { result.ok = false; result.error = 'commitBoard: loadNbr or loadId required'; planned.push({ L, result }); continue; }
-    // Assign/dispatch-only with a TRUSTWORTHY (internal/hash-like) loadId → no getLoad needed
-    // (saves a read). A non-canonical loadId (empty-load roster fallback) is NOT trusted here —
-    // it falls through to fetchLoad below so the real loadHeader.loadId is resolved, otherwise
-    // NuVizz returns Success on the assign but never persists it.
-    if (!desired.length && trustableLoadId(L?.loadId)) {
+    // Does this load change its stop set (reorder / unplan / empty the load)? Assign/dispatch-only
+    // (no stop change) skips getLoad with a TRUSTWORTHY (internal/hash-like) loadId. A non-canonical
+    // loadId (empty-load roster fallback) is NOT trusted — it falls through to fetchLoad so the real
+    // loadHeader.loadId is resolved, else NuVizz returns Success on the assign but never persists it.
+    const changesStops = emptyLoad || orderedNbrs !== null || desired.length > 0;
+    if (!changesStops && trustableLoadId(L?.loadId)) {
       planned.push({ L, loadId: L.loadId, hasLoad: true, plan: { ok: true, unchanged: true, removeStopIds: [], insertOrdered: [] }, result });
       continue;
     }
     // Add stops to a load we know ONLY by its internal loadId — opened from the Loads grid / a Draft
     // load, so there's no human loadNbr (load/info is keyed by the load NUMBER like DAVIS000000123,
-    // NOT the hex loadId, so a getLoad here just 404s → "load not found"). We can't read the current
-    // stops without getLoad, but the documented insert flow takes the loadId directly, so plan an
-    // INSERT-ONLY commit (insertstops in order, no anchor-remove). A load WITH a real human loadNbr
-    // still goes through fetchLoad below for full reorder/remove support.
+    // NOT the hex loadId, so a getLoad here just 404s). Insert the stopIds straight onto the loadId
+    // (no anchor-remove). A load WITH a real human loadNbr goes through fetchLoad for full support. [#328]
     const usableLoadNbr = loadNbr != null && String(loadNbr).trim() !== '' && !isHashLikeId(String(loadNbr));
     if (desired.length && trustableLoadId(L?.loadId) && !usableLoadNbr) {
       planned.push({ L, loadId: L.loadId, hasLoad: true, plan: { ok: true, removeStopIds: [], insertOrdered: desired.map((x) => String(x)) }, curIds: [], want: desired.map((x) => String(x)), result });
       continue;
+    }
+    // Everything past here (reorder / unplan / empty) needs the load's CURRENT stops, i.e. a getLoad,
+    // which needs a real human loadNbr. A loadId-only Draft load can't be reordered/emptied here.
+    if (!usableLoadNbr) {
+      result.ok = false; result.error = 'commitBoard: reorder/unplan needs a load number — open the route from the board (not the Loads grid)'; planned.push({ L, result }); continue;
     }
     const f = await fetchLoad(requester, loadNbr, creds);
     if (!f.load) { result.ok = false; result.error = `commitBoard: load not found (${loadMissDiag(loadNbr, f)})`; planned.push({ L, result }); continue; }
@@ -228,6 +237,20 @@ export async function runCommitBoard(requester: RequesterLike, payload: any, cre
     // cross-load arrival whose source load was refused — otherwise the target would insert a stop
     // the refused source never freed.
     const curIds = currentDeliveryStopIds(load);
+    // Resolve a stopNbr-based desired order → stopIds using the load's OWN stops (each carries both
+    // stopNbr and stopId). THIS is what lets an unplan/reorder work even when the client never
+    // enriched its board stops to learn their stopIds.
+    if (orderedNbrs !== null) {
+      const nbrToId = new Map<string, string>();
+      for (const s of (load.stops || [])) { const n = String(s?.stopNbr ?? ''); const id = String(s?.stopId ?? ''); if (n && id) nbrToId.set(n, id); }
+      const resolved = orderedNbrs.map((n) => nbrToId.get(n)).filter(Boolean) as string[];
+      // A non-empty desired order that resolves to NOTHING on this load is a mismatch (stale board) —
+      // refuse rather than silently fall through and cancel the route.
+      if (orderedNbrs.length && !resolved.length) {
+        result.ok = false; result.error = 'commitBoard: ordered stops not found on this load (stale board — refresh and retry)'; planned.push({ L, curIds, result }); continue;
+      }
+      desired = resolved;
+    }
     // Wrong-load guard: a reorder resolves the load by NAME (for header + versionId) but inserts
     // by loadId — if the caller's same-day loadId disagrees with what the name resolved to, the
     // recurring name hit a different day's instance; refuse rather than split remove/insert.
@@ -237,9 +260,17 @@ export async function runCommitBoard(requester: RequesterLike, payload: any, cre
     if (desired.length && hasUnmodeledDelivery(load)) {
       result.ok = false; result.error = 'commitBoard: load has a non-DO stop in a delivery slot — reorder skipped (verify in portal)'; planned.push({ L, curIds, result }); continue;
     }
-    const plan = desired.length
-      ? planSequence(curIds, desired)
-      : { ok: true, unchanged: true, removeStopIds: [], insertOrdered: [] };
+    // EMPTY-LOAD (§10): the user removed EVERY order. There is no anchor to keep — removing all
+    // deliveries CANCELS the route, which is the intended outcome. Explicit + gated (emptyLoad flag
+    // or an explicitly-empty stopNbr order), NEVER a silent no-op that falsely reports success.
+    const intendedEmpty = emptyLoad || (orderedNbrs !== null && orderedNbrs.length === 0);
+    let plan: any;
+    if (!desired.length && intendedEmpty) {
+      if (!curIds.length) { result.ok = false; result.error = 'commitBoard: load already has no deliveries to remove'; planned.push({ L, curIds, result }); continue; }
+      plan = { ok: true, unchanged: false, removeStopIds: curIds, insertOrdered: [], cancelRoute: true };
+    } else {
+      plan = desired.length ? planSequence(curIds, desired) : { ok: true, unchanged: true, removeStopIds: [], insertOrdered: [] };
+    }
     if (!plan.ok) { result.ok = false; result.error = plan.reason; planned.push({ L, curIds, result }); continue; }
     // Prefer a hash-like caller loadId (the board's same-day internal id); otherwise use the
     // loadHeader.loadId we just resolved — never let a non-canonical roster id become the routeId.
@@ -259,8 +290,14 @@ export async function runCommitBoard(requester: RequesterLike, payload: any, cre
     const ids = p.plan.removeStopIds || [];
     if (!ids.length) continue;
     const r = await fireSingle(requester, 'removeStops', { removeStopIds: ids, editHeader: p.editHeader, versionId: p.versionId }, creds);
-    p.result.steps.push({ op: 'removeStops', ok: !!r.ok, result: r, error: r.ok ? null : (r.error || 'failed') });
-    if (!r.ok) { p.result.ok = false; p.aborted = true; }
+    // Removing ALL deliveries CANCELS the route; NuVizz may report that cancel as a non-OK body
+    // (a "Cancelled route" message). For an INTENTIONAL empty-load we treat a cancellation response
+    // as success. (Defensive: the exact cancel-response shape is pending a live confirm on a stable
+    // load — the raw result is kept in the step so the first real cancel is diagnosable.)
+    const cancelled = !!p.plan.cancelRoute && /cancel/i.test(String(r.error ?? ''));
+    const ok = !!r.ok || cancelled;
+    p.result.steps.push({ op: 'removeStops', ok, result: r, error: ok ? null : (r.error || 'failed'), cancelledRoute: (p.plan.cancelRoute && ok) || undefined });
+    if (!ok) { p.result.ok = false; p.aborted = true; }
     else for (const id of ids) actuallyFreed.add(String(id));
   }
 

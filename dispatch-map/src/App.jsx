@@ -51,7 +51,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.32.18';
+const APP_VERSION = '0.32.20';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -89,6 +89,8 @@ function loadDisplayName(...vals) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.32.20', 'Live dispatch (beta) — FIX: unplanning orders from a load and saving in ● LIVE did nothing, and there was no way to take the last (anchor) order off a load. Two wiring bugs: (1) the removes were keyed by internal stop id, but board rows don\'t carry a stop id until you open each stop, so the anchor had none and the whole load got silently dropped from the Save — nothing fired. The panel now sends the always-present stop NUMBERS and the server resolves them to stop ids from the load itself, so unplanning works without opening every stop. (2) Taking the LAST order off a load now EMPTIES and CANCELS the route (the documented "remove all deliveries" flow) instead of silently succeeding with no change. Save now reports honestly — it tells you how many loads actually fired, how many cancelled, and if nothing changed it says so instead of a false "saved."'],
+  ['0.32.19', 'Routing (mobile) — FIX: when both the Stops/Loads data grid AND the Setup/Compare sheet were open, the grid grew taller than the shrunken map area and its toolbar (the row with the collapse ⌄, the Stops/Loads tabs, and search) got pushed up behind the "selected/Filters" chips — so you could see the rows but had no way to collapse the grid (#327). The grid is now capped to the visible map height, so its toolbar (and collapse control) always stays put with both drawers open.'],
   ['0.32.18', 'Live dispatch (beta) — FIX: adding orders to a load opened from the Loads grid failed with "commitBoard: load not found." That load is known only by its internal id (hex loadId), which was being sent as the load NUMBER — but NuVizz\'s load lookup is keyed by the human load number (e.g. DAVIS000000123), so it 404\'d. The app no longer sends the hex id as a load number, and the server now plans the orders straight onto the loadId (the documented insert flow) when there\'s no human load number to look up. Add orders in ● LIVE → Save → they plan onto the load.'],
   ['0.32.17', 'Routing (mobile) — FIX: the Lasso selection wouldn\'t apply once you already had a route in the Compare panel. The "Done" button that finishes a lasso lived in the Setup panel\'s Select-stops section, which is replaced by the Compare workbench as soon as a route is built — so you could tap out the polygon but had no way to finish it, and nothing got selected. There\'s now a floating Done / Cancel control right on the map whenever Box or Lasso is armed, so you can close the lasso and select the stops inside it no matter what the bottom panel is showing.'],
   ['0.32.16', 'Routing — tomorrow\'s (next business day\'s) EMPTY loads are now ready first thing in the morning. The next-day load roster (the Draft/empty load shells, before any orders are on them) used to only get cached in the 8pm-midnight scan window — so during the day the Routes/Loads view showed tomorrow\'s stops but none of its empty loads. The roster is the cheap load-list call (not the expensive load-number probe), so it\'s now pulled once each morning, a day into the future, decoupled from that evening load scan — and it keeps trying through the day until tomorrow\'s loads actually show up, then settles. Empty loads for the next business day are ready to plan against in the morning.'],
@@ -8228,7 +8230,7 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
   const sortedLoadRows = useMemo(() => sortRows(loadRows, loadCols, loadSort), [loadRows, loadSort]); // eslint-disable-line react-hooks/exhaustive-deps
   const toggleStatus = (k) => setStatusSel((prev) => { const n = new Set(prev); n.has(k) ? n.delete(k) : n.add(k); return n; });
   return (
-    <div className="absolute left-0 right-0 bottom-0 z-[12] bg-white border-t border-slate-200 shadow-[0_-2px_10px_rgba(0,0,0,0.10)] flex flex-col" style={{ height: open ? height : undefined }}>
+    <div className="absolute left-0 right-0 bottom-0 z-[12] bg-white border-t border-slate-200 shadow-[0_-2px_10px_rgba(0,0,0,0.10)] flex flex-col" style={{ height: open ? height : undefined, maxHeight: open ? 'calc(100% - 4rem)' : undefined }}>
       {open && (
         <div
           onPointerDown={onResizeDown}
@@ -10163,20 +10165,27 @@ function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmN
       // server adds stops straight off it. routeName = the friendly display name for the plan label.
       const load = { loadNbr: r.loadNbr || undefined, routeName: r.name || r.key, loadId: r.loadId || undefined };
       if (orderChanged(r)) {
-        // EVERY stop must resolve to a NuVizz stopId — a partial order would make the server
-        // DROP the unresolved stops. Refuse to sequence this load and warn instead.
+        // Send the desired order as stop NUMBERS (always present on a board stop). For a load with a
+        // real loadNbr the server resolves them to stopIds against the load itself, so an unplan/reorder
+        // no longer silently drops a load whose stops were never opened/enriched.
+        load.orderedStopNbrs = r.order.map(String);
+        // Enriched stopIds when we have them — REQUIRED for the loadId-only insert path (#328), where
+        // there's no loadNbr to resolve stopNbrs against.
         const ids = r.order.map((nbr) => stopById.get(String(nbr))?.stopId).filter(Boolean);
-        if (ids.length !== r.order.length) { warnings.push(`${loadDisplayName(r.key) || r.key}: ${r.order.length - ids.length} stop(s) not enriched yet — open them to save the new order`); continue; }
-        load.orderedStopIds = ids;
+        if (ids.length) load.orderedStopIds = ids;
+        if (!r.loadNbr && ids.length !== r.order.length) { warnings.push(`${loadDisplayName(r.name || r.key) || r.key}: ${r.order.length - ids.length} stop(s) not loaded yet — open them, then Save`); continue; }
+        if (r.order.length === 0) {
+          // Every order removed → empty the load. Removing all deliveries CANCELS the route (§10).
+          load.emptyLoad = true;
+          warnings.push(`${loadDisplayName(r.name || r.key) || r.key}: removing the LAST order EMPTIES the load and CANCELS the route in NuVizz.`);
+        }
       }
-      // Orders removed from the route (staged) — surfaced in the Save preview as an explicit unplan.
-      // The server re-derives the actual removes from the order diff (planSequence); this is the hint
-      // that makes the Confirm modal say "unplan N stop(s)" rather than only "set N in order".
-      const removedIds = (r.removed || []).filter((nbr) => !r.order.includes(String(nbr))).map((nbr) => stopById.get(String(nbr))?.stopId).filter(Boolean);
-      if (removedIds.length) load.removeStopIds = removedIds;
+      // stopNbrs of removed orders — drives the "unplan N order(s)" Save-preview label.
+      const removedNbrs = (r.removed || []).map(String).filter((nbr) => !r.order.includes(nbr));
+      if (removedNbrs.length) load.removeStopNbrs = removedNbrs;
       if (s.driverId != null && s.driverId !== '') { load.driverId = s.driverId; load.driverName = s.driverName; }
       if (s.dispatch) load.dispatch = true;
-      if (load.orderedStopIds || load.removeStopIds || load.driverId || load.dispatch) loads.push(load);
+      if (load.orderedStopNbrs || load.orderedStopIds || load.emptyLoad || load.removeStopNbrs || load.driverId || load.dispatch) loads.push(load);
     }
     return { loads, warnings };
   };
@@ -10211,8 +10220,15 @@ function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmN
     const keyOf = (l) => nbrToKey.get(String(l.loadNbr)) ?? l.loadNbr;
     const okKeys = resLoads.filter((l) => l.ok).map(keyOf).filter(Boolean);
     if (okKeys.length) { markSaved(okKeys); setStaged((p) => { const n = { ...p }; for (const k of okKeys) delete n[k]; return n; }); }
+    // Honest reporting: a load only "saved" if its result has a SUCCESSFUL step (an actual NuVizz
+    // call). A load that returns ok:true with no steps was a no-op — never report it as saved.
+    const fired = resLoads.filter((l) => l.ok && (l.steps || []).some((s) => s.ok)).length;
+    const noop = resLoads.filter((l) => l.ok && !(l.steps || []).some((s) => s.ok)).length;
+    const cancelled = resLoads.filter((l) => (l.steps || []).some((s) => s.cancelledRoute)).length;
     const orphanMsg = orphaned.length ? ` ⚠ ${orphaned.length} stop(s) now UNPLANNED — re-Save to reroute.` : '';
-    if (res.ok) showToast(`✓ ${loads.length} load(s) saved to NuVizz.${orphanMsg}`);
+    const cancelMsg = cancelled ? ` · ${cancelled} route(s) emptied/cancelled` : '';
+    const noopMsg = noop ? ` · ${noop} no change` : '';
+    if (res.ok) showToast(fired || cancelled ? `✓ ${fired} load(s) saved to NuVizz${cancelMsg}${noopMsg}.${orphanMsg}` : `Nothing to send — no changes actually fired.${orphanMsg}`);
     else {
       const failed = resLoads.filter((l) => !l.ok);
       // Full diagnostic to the console: the EXACT payload we sent (incl. each load's loadNbr) plus
