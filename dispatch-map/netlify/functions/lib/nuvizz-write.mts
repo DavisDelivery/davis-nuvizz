@@ -275,17 +275,30 @@ export async function runCommitBoard(requester: RequesterLike, payload: any, cre
     // cross-load arrival whose source load was refused — otherwise the target would insert a stop
     // the refused source never freed.
     const curIds = currentDeliveryStopIds(load);
-    // Resolve a stopNbr-based desired order → stopIds using the load's OWN stops (each carries both
-    // stopNbr and stopId). THIS is what lets an unplan/reorder work even when the client never
-    // enriched its board stops to learn their stopIds.
+    // Resolve a stopNbr-based desired order → stopIds. Stops already ON the load carry their stopId
+    // in the getLoad response (nbrToId) — this is what lets an unplan/reorder work even when the
+    // client never enriched its board stops. A stopNbr NOT on the load is a stop being ADDED (e.g.
+    // re-planning an order that was just unplanned) — resolve its id via getStop so it gets INSERTED,
+    // instead of being silently dropped (which read as "nothing to send" on a re-add).
     if (orderedNbrs !== null) {
       const nbrToId = new Map<string, string>();
       for (const s of (load.stops || [])) { const n = String(s?.stopNbr ?? ''); const id = String(s?.stopId ?? ''); if (n && id) nbrToId.set(n, id); }
-      const resolved = orderedNbrs.map((n) => nbrToId.get(n)).filter(Boolean) as string[];
-      // A non-empty desired order that resolves to NOTHING on this load is a mismatch (stale board) —
-      // refuse rather than silently fall through and cancel the route.
-      if (orderedNbrs.length && !resolved.length) {
-        result.ok = false; result.error = 'commitBoard: ordered stops not found on this load (stale board — refresh and retry)'; planned.push({ L, curIds, result }); continue;
+      const resolved: string[] = [];
+      let anyOnLoad = false;
+      for (const n of orderedNbrs) {
+        let id = nbrToId.get(n);
+        if (id) { anyOnLoad = true; }
+        else {
+          // Not on this load → an add. getStop resolves its stopId (and it's not in holderOf, so
+          // Phase 2 inserts it safely). null only if the stop number is genuinely unknown.
+          const gs = await fireSingle(requester, 'getStop', { stopNbr: n }, creds);
+          id = gs?.ok && gs.stop?.stopId ? String(gs.stop.stopId) : undefined;
+        }
+        if (id) resolved.push(String(id));
+      }
+      // Refuse only when NOTHING resolved AND nothing was even on the load — a genuinely stale board.
+      if (orderedNbrs.length && !resolved.length && !anyOnLoad) {
+        result.ok = false; result.error = 'commitBoard: ordered stops not found (stale board — refresh and retry)'; planned.push({ L, curIds, result }); continue;
       }
       desired = resolved;
     }
