@@ -51,7 +51,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.32.21';
+const APP_VERSION = '0.32.22';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -84,11 +84,19 @@ function loadDisplayName(...vals) {
   for (const v of vals) { const s = String(v ?? '').trim(); if (s && !isHashLikeId(s)) return s; }
   return '';
 }
+// A NuVizz load NUMBER ("DAVIS000198197") — company code + zero-padded digits, or a long bare
+// number. Distinguishes the real number load/info needs from the human route name ("SUW") that
+// stops carry in loadNbr. Mirrors looksLikeLoadNbr in netlify/functions/lib/nuvizz-loads.mts.
+function looksLikeLoadNbr(v) {
+  const s = String(v ?? '').trim();
+  return /^[A-Za-z]{2,}\d{5,}$/.test(s) || /^\d{6,}$/.test(s);
+}
 
 // Beta version history — shown when the dispatcher taps the build badge, so it's
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.32.22', 'Live dispatch (beta) — FIX: resequencing/unplanning a load and saving in ● LIVE failed with "commitBoard: load not found (loadNbr=…)". The Compare panel was sending the load\'s NAME ("SUW") as its number, but NuVizz\'s load lookup is keyed by the real Load Number ("DAVIS000198197"). That number is right there in the daily Loads scan (the "Load Number" column) — the app was capturing the load NAME and throwing the number away. The scan now grabs the real Load Number for every load and uses it for the lookup, so resequencing and unplanning work with NO extra NuVizz calls (previously it took a bridge call to look the number up from the internal id). If a load\'s number hasn\'t been picked up from the scan yet, that bridge lookup still covers it, and Save gives a clear "needs the load number — refresh and retry" instead of the confusing "load not found."'],
   ['0.32.21', 'Live dispatch (beta) — reorder path: three improvements. (1) Reoptimizing/reordering a load opened from the Loads grid now WORKS — the app looks up the load\'s real number from its internal id (load/static/info) and runs the proper unplan → replan, instead of failing with "Only unplanned stops can be planned" or telling you to open it from the board. (2) Fewer NuVizz calls per reorder — it keeps the part of the order that\'s already correct at the front and only moves the stops that actually changed (appending to an in-order load makes zero removals). (3) A brand-new order that becomes the FIRST delivery is now handled — it\'s put on the load first (so the load always keeps an anchor and never cancels), then the rest are removed and replanned in order.'],
   ['0.32.20', 'Live dispatch (beta) — FIX: unplanning orders from a load and saving in ● LIVE did nothing, and there was no way to take the last (anchor) order off a load. Two wiring bugs: (1) the removes were keyed by internal stop id, but board rows don\'t carry a stop id until you open each stop, so the anchor had none and the whole load got silently dropped from the Save — nothing fired. The panel now sends the always-present stop NUMBERS and the server resolves them to stop ids from the load itself, so unplanning works without opening every stop. (2) Taking the LAST order off a load now EMPTIES and CANCELS the route (the documented "remove all deliveries" flow) instead of silently succeeding with no change. Save now reports honestly — it tells you how many loads actually fired, how many cancelled, and if nothing changed it says so instead of a false "saved."'],
   ['0.32.19', 'Routing (mobile) — FIX: when both the Stops/Loads data grid AND the Setup/Compare sheet were open, the grid grew taller than the shrunken map area and its toolbar (the row with the collapse ⌄, the Stops/Loads tabs, and search) got pushed up behind the "selected/Filters" chips — so you could see the rows but had no way to collapse the grid (#327). The grid is now capped to the visible map height, so its toolbar (and collapse control) always stays put with both drawers open.'],
@@ -8193,7 +8201,7 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
       for (const r of roster) {
         const nm = String(r.name || '').trim();
         if (!nm || haveNames.has(nm.toLowerCase())) continue;
-        arr.push({ loadNbr: r.loadId, routeName: nm, driverName: '', count: r.trips || 0, buckets: {}, pallets: 0, loose: 0, weight: 0, empty: true, rosterStatus: r.status });
+        arr.push({ loadNbr: r.loadNbr || r.loadId, routeName: nm, driverName: '', count: r.trips || 0, buckets: {}, pallets: 0, loose: 0, weight: 0, empty: true, rosterStatus: r.status });
       }
     }
     if (needle) arr = arr.filter((g) => [g.loadNbr, g.routeName, g.driverName].filter(Boolean).join(' ').toLowerCase().includes(needle));
@@ -10215,10 +10223,17 @@ function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmN
     setBusy(false); setConfirm(null);
     const resLoads = res.result?.loads || [];
     const orphaned = res.result?.orphaned || [];
-    // Results come back keyed by the REAL loadNbr we sent. Map each back to its Compare-card key
-    // (the routeName) so markSaved / staged-clear and the toast use the friendly name, not "DAVIS…".
-    const nbrToKey = new Map(loads.map((l) => [String(l.loadNbr), l.routeName ?? l.loadNbr]));
-    const keyOf = (l) => nbrToKey.get(String(l.loadNbr)) ?? l.loadNbr;
+    // Map each result back to its Compare-card key (the routeName) so markSaved / staged-clear and
+    // the toast use the friendly name, not "DAVIS…". Join by loadNbr OR loadId: the server may echo
+    // a loadNbr it resolved from the loadId (load/static/info) that differs from what we sent (or we
+    // sent none), so loadId is the stable join on that fallback path.
+    const toKey = new Map();
+    for (const l of loads) {
+      const k = l.routeName ?? l.loadNbr ?? l.loadId;
+      if (l.loadNbr != null) toKey.set('nbr:' + String(l.loadNbr), k);
+      if (l.loadId != null) toKey.set('id:' + String(l.loadId), k);
+    }
+    const keyOf = (l) => toKey.get('nbr:' + String(l.loadNbr)) ?? toKey.get('id:' + String(l.loadId)) ?? l.loadNbr;
     const okKeys = resLoads.filter((l) => l.ok).map(keyOf).filter(Boolean);
     if (okKeys.length) { markSaved(okKeys); setStaged((p) => { const n = { ...p }; for (const k of okKeys) delete n[k]; return n; }); }
     // Honest reporting: a load only "saved" if its result has a SUCCESSFUL step (an actual NuVizz
@@ -10745,7 +10760,7 @@ function RoutingScreen({ debugCaptureRef }) {
         const index = new Map();
         if (j && j.ok) for (const l of (j.loads || [])) {
           const nm = String(l.name || '').trim().toLowerCase();
-          const entry = { loadId: l.loadId ? String(l.loadId) : null, name: l.name || '' };
+          const entry = { loadId: l.loadId ? String(l.loadId) : null, name: l.name || '', loadNbr: l.loadNbr ? String(l.loadNbr) : null };
           if (nm) { status.set(nm, l.status || ''); index.set(nm, entry); }
           if (l.loadId) { status.set('#id:' + String(l.loadId), l.status || ''); index.set(String(l.loadId), entry); }
         }
@@ -10875,10 +10890,14 @@ function RoutingScreen({ debugCaptureRef }) {
       const loadId = routeStops.map((s) => s.raw?.load?.loadId ?? s.loadId).find(Boolean)
         || rosterEntry?.loadId
         || (isHashLikeId(String(key)) ? String(key) : null);
-      // The REAL NuVizz load number off the day's stops (e.g. "DAVIS000000123", from the daily load
-      // scan). load/info is keyed by loadNbr, NOT the human routeName — but a known loadId skips that
-      // lookup entirely (commitBoard assigns/dispatches straight off the loadId).
-      const loadNbr = routeStops.map((s) => s.loadNbr).find(Boolean) || null;
+      // The REAL NuVizz load NUMBER (e.g. "DAVIS000198197") — load/info is keyed by it, NOT the human
+      // route name. The stop rows carry only the route NAME in loadNbr (the stops grid has no number
+      // column), so it 404s load/info; prefer the loads-roster's numeric number, and fall back to a
+      // stop value ONLY if it actually looks like a load number — never the bare route name. (When
+      // neither is available the server bridges loadId→loadNbr via load/static/info.)
+      const loadNbr = rosterEntry?.loadNbr
+        || routeStops.map((s) => s.loadNbr).find((v) => looksLikeLoadNbr(v))
+        || null;
       // Display name — the human route/load name; from stops, else the roster (so an empty load shows
       // "NOR" instead of "Unnamed load").
       const name = routeStops.map((s) => s.routeName).find(Boolean) || rosterEntry?.name || null;
