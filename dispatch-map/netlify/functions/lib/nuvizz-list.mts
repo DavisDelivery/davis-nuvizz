@@ -428,7 +428,11 @@ function filterListOf(count: number, overrides: Record<number, any>): any[] {
   return arr;
 }
 const ACTIVE_STATUS = process.env.NUVIZZ_ACTIVE_STATUS || '20,10';
-const COMPLETED_STATUS = process.env.NUVIZZ_COMPLETED_STATUS || '90,91,80';
+// 99 = CANCELLED is included with the terminal statuses: a cancelled order matches NEITHER
+// saved search otherwise (active = 20,10), so it silently vanished from the pulls and the
+// carry-forward kept re-adding its last OPEN snapshot — the board froze it as live work a
+// dispatcher could still route. With 99 in the completed pull it flips to EXCEPTION.
+const COMPLETED_STATUS = process.env.NUVIZZ_COMPLETED_STATUS || '90,91,80,99';
 const ACTIVE_ARRIVAL = cleanPeriod(process.env.NUVIZZ_ACTIVE_ARRIVAL || '+/-7d');
 const COMPLETED_ARRIVAL = cleanPeriod(process.env.NUVIZZ_COMPLETED_ARRIVAL || '+/-7d');
 const COMPLETED_UPDATED = cleanPeriod(process.env.NUVIZZ_COMPLETED_UPDATED || '0d');

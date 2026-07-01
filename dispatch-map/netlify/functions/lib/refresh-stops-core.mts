@@ -526,6 +526,17 @@ export async function runRefreshStops(req: Request): Promise<Response> {
           await writeActiveUnplannedSet(TENANT, { at: scannedAt, windowStart, stopNbrs: [...live] });
         } catch (e: any) { console.warn(`[scan] active-set snapshot skipped: ${e?.message}`); }
       }
+      // FINISHED rows across the WHOLE pull, keyed by stopNbr regardless of bucket day. A stop
+      // delivered while running as rolled-over work buckets under its (stale) past arrival day —
+      // which is never a write target — while today's board (where the clamp had filed the OPEN
+      // stop) would re-carry the stale open snapshot forever. The carry-forward below consults
+      // this map so the terminal state lands on the board that was actually showing the stop.
+      const finishedByNbr = new Map<string, any>();
+      if (TWO_SCAN && buckets) {
+        for (const stops of buckets.values()) for (const s of stops) {
+          if (s.stopNbr && (s.normalizedStatus === 'DELIVERED' || s.normalizedStatus === 'EXCEPTION')) finishedByNbr.set(String(s.stopNbr), s);
+        }
+      }
       for (const date of targets) {
         // Two-scan: this day's slice of the merged active+completed pull (board keys are
         // UTC, the saved searches bucket by ET arrival date — map across the frames).
@@ -563,6 +574,12 @@ export async function runRefreshStops(req: Request): Promise<Response> {
           for (const [nbr, p] of prevByNbr) {
             if (have.has(nbr)) continue;
             if (boardDayFor(p) !== boardEtDate) { dropped++; continue; } // belongs to another day
+            // The stop lived on THIS board while open, and the pull now shows it FINISHED under a
+            // stale past arrival day (rolled-over work delivered today). File the finished row HERE
+            // — pinned to this board's day so it stays — instead of re-carrying the open snapshot,
+            // which froze such stops as open forever and lost the delivery entirely.
+            const fin = finishedByNbr.get(nbr);
+            if (fin) { dateStops.push({ ...fin, boardDate: boardEtDate, scheduledDate: date }); continue; }
             dateStops.push(p);
           }
           if (dropped) console.log(`[scan] ${date}: carry-forward dropped ${dropped} wrong-day stop(s) (board=${boardEtDate})`);
