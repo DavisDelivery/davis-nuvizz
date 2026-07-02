@@ -510,6 +510,12 @@ export interface ImportPacing {
   pollMs?: number;        // delay between load/info polls (default 5000)
   phaseWaitMs?: number;   // per-phase poll budget (default 30000 → 3 phases ≈ the ~90s recipe)
   sleep?: (ms: number) => Promise<void>;
+  /** QUICK mode (the board Save): fire the import + ONE short poll phase, then return
+   *  `pending: true` instead of burning the full resend/reverse recipe inside a single
+   *  function invocation (a sync Netlify function gets ~26s TOTAL). The CLIENT drives the
+   *  rest of the convergence: cheap getLoad polls + a re-Save resend until the read-back
+   *  matches. Never reports ok without a matching read-back, same as the full recipe. */
+  quick?: boolean;
 }
 const realSleep = (ms: number) => new Promise<void>((res) => setTimeout(res, ms));
 
@@ -589,6 +595,11 @@ export async function runImportLoad(requester: RequesterLike, payload: any, cred
   if (!r.ok) return { ok: false, converged: false, loadNbr, loadId, requestedOrder: want, seenOrder: null, steps, error: r.error || 'import rejected' };
   let c = await poll('after-import');
   if (c.converged) return done(true, c.seen);
+  if (p.quick === true) {
+    // QUICK mode: the import is fired and accepted, just not CONFIRMED yet. Hand convergence
+    // to the caller (the client polls getLoad + re-Saves) instead of blocking this invocation.
+    return { ok: false, pending: true, converged: false, loadNbr, loadId, requestedOrder: want, seenOrder: c.seen, steps, error: null };
+  }
 
   // Phase 2 — re-send the SAME import (the recipe's first unstick; also the reorder pass
   // that seats a newly-added stop, which appends on its first import).
@@ -650,9 +661,11 @@ export async function runCommitImport(requester: RequesterLike, payload: any, cr
 export async function runCommitBoardImport(requester: RequesterLike, payload: any, creds: WriteCreds, pacing?: ImportPacing): Promise<any> {
   const loadsIn: any[] = Array.isArray(payload?.loads) ? payload.loads : [];
   if (!loadsIn.length) return { ok: true, loads: [], orphaned: [] };
-  // Board pacing: tighter than the standalone default so a clean Save fits a synchronous
-  // function invocation (a stuck load can exceed it — the Save is declarative, re-Save recovers).
-  const boardPacing: ImportPacing = { pollMs: 4000, phaseWaitMs: 12000, ...(pacing || {}), ...(payload?.convergence || {}) };
+  // Board pacing: QUICK mode — fire the import + a short confirm poll, and hand unconfirmed
+  // loads back as `pending` for the CLIENT to verify (getLoad polls + re-Save resend). The full
+  // resend/reverse recipe cannot fit a sync function's budget (the 10s default killed the first
+  // live Save mid-flight); quick keeps a 1-2 load Save well inside the 26s window.
+  const boardPacing: ImportPacing = { pollMs: 3000, phaseWaitMs: 6000, quick: true, ...(pacing || {}), ...(payload?.convergence || {}) };
   const clientOrigin = payload?.origin ?? null;
 
   const legacy: any[] = [];   // loads the legacy engine keeps handling (see doc above)
@@ -686,7 +699,16 @@ export async function runCommitBoardImport(requester: RequesterLike, payload: an
 
     const rawByNbr = new Map<string, any>();
     for (const rs of (load.rawStops || [])) { const st = rs?.stop || rs || {}; if (st.stopNbr != null) rawByNbr.set(String(st.stopNbr), rs); }
+    // ADDs (stops not on this load — planning unplanned orders / cross-load arrivals) are read
+    // via stop/info IN PARALLEL: 6 sequential reads was most of what blew the first live Save's
+    // function budget. The stub-testability is unaffected (responses are consumed in start order).
+    const missing = orderedNbrs.filter((n) => !rawByNbr.has(n));
+    const fetched = new Map<string, any>(await Promise.all(missing.map(async (n): Promise<[string, any]> => {
+      try { return [n, await fireSingle(requester, 'getStop', { stopNbr: n }, creds)]; }
+      catch (e: any) { return [n, { ok: false, error: e?.message || 'getStop failed' }]; }
+    })));
     const refs: any[] = [];
+    const originDonors: any[] = [];   // "from" addresses off the added stops — origin for an EMPTY load
     let err: string | null = null;
     for (const nbr of orderedNbrs) {
       const raw = rawByNbr.get(nbr);
@@ -696,17 +718,17 @@ export async function runCommitBoardImport(requester: RequesterLike, payload: an
         refs.push(ref);
         continue;
       }
-      // Not on this load → an ADD (planning an unplanned order, or a cross-load arrival).
-      const gs = await fireSingle(requester, 'getStop', { stopNbr: nbr }, creds);
+      const gs = fetched.get(nbr);
       const srcNbr = gs?.ok ? String(gs.stop?.assignedLoadNbr ?? '').trim() : '';
       if (!gs?.ok || !gs.stop?.importRef) { err = `commitBoard(import): stop ${nbr} could not be read for planning (stale board — refresh and retry)`; break; }
       if (srcNbr && srcNbr !== loadNbrX && !batchNbrs.has(srcNbr)) {
         err = `commitBoard(import): stop ${nbr} is still planned on load ${srcNbr}, which is not part of this Save — open that load in Compare so the move is staged`; break;
       }
+      if (gs.stop.fromAddress) originDonors.push({ stop: { from: { address: gs.stop.fromAddress } } });
       refs.push({ ...gs.stop.importRef, __srcLoadNbr: srcNbr && srcNbr !== loadNbrX ? srcNbr : undefined });
     }
     if (err) { result.ok = false; result.error = err; imp.push({ L, loadNbr: loadNbrX, refs: [], curNbrs: new Set(), result }); continue; }
-    imp.push({ L, loadNbr: loadNbrX, load, refs, curNbrs: new Set(rawByNbr.keys()), result });
+    imp.push({ L, loadNbr: loadNbrX, load, refs, originDonors, curNbrs: new Set(rawByNbr.keys()), result });
   }
 
   // ── legacy subset (unchanged engine) ──
@@ -737,12 +759,21 @@ export async function runCommitBoardImport(requester: RequesterLike, payload: an
   for (const p of ordered) {
     let loadId: any = trustableLoadId(p.L?.loadId) ? p.L.loadId : (p.load?.loadId ?? null);
     try {
-      const header = assembleImportHeader(p.load?.loadHeader, p.load?.rawStops || [], clientOrigin,
+      // Origin trust order: the load's own header/stops, then the added stops' "from" addresses
+      // (an EMPTY Draft load has no stops of its own), then the client's saved ship-from.
+      const header = assembleImportHeader(p.load?.loadHeader, [...(p.load?.rawStops || []), ...(p.originDonors || [])], clientOrigin,
         // Service-date fallback: the first ref's delivery window date (echoed from NuVizz).
         String(p.refs[0]?.to?.schedule?.timeFrom || '').slice(0, 10) || null);
       const stops = p.refs.map(({ __srcLoadNbr, ...ref }: any) => ref);
       const r = await runImportLoad(requester, { load: { loadHeader: header, stops }, convergence: boardPacing }, creds, boardPacing);
       p.result.steps.push(...(r.steps || []));
+      p.result.requestedOrder = r.requestedOrder || null;
+      if (r.pending) {
+        // Import fired + accepted, not yet CONFIRMED. The client verifies (getLoad polls +
+        // re-Save resend) — assign/dispatch wait until the order is confirmed, so a driver is
+        // never dispatched onto an unverified route. Staged driver/dispatch survive on the card.
+        p.result.pending = true; p.result.ok = false; continue;
+      }
       if (!r.ok) { p.result.ok = false; p.result.error = r.error || 'import did not converge'; continue; }
       loadId = r.loadId ?? loadId;
     } catch (e: any) {
@@ -764,7 +795,12 @@ export async function runCommitBoardImport(requester: RequesterLike, payload: an
 
   const loads = [
     ...(legacyResult.loads || []),
-    ...imp.map((p) => ({ loadNbr: p.result.loadNbr ?? p.loadNbr, loadId: p.load?.loadId ?? p.L?.loadId ?? null, ok: p.result.ok, error: p.result.error, steps: p.result.steps })),
+    ...imp.map((p) => ({
+      loadNbr: p.result.loadNbr ?? p.loadNbr, loadId: p.load?.loadId ?? p.L?.loadId ?? null,
+      ok: p.result.ok, error: p.result.error, steps: p.result.steps,
+      // pending + requestedOrder drive the CLIENT's convergence verification (getLoad polls).
+      pending: p.result.pending || undefined, requestedOrder: p.result.requestedOrder || undefined,
+    })),
   ];
   return { ok: loads.every((l: any) => l.ok) && (legacyResult.orphaned || []).length === 0, loads, orphaned: legacyResult.orphaned || [] };
 }
