@@ -52,7 +52,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.35.2';
+const APP_VERSION = '0.35.3';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -97,6 +97,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.35.3', 'Bulk Add moved UNDER New Order — it\'s no longer its own top-level tab. Open "New Order" and you\'ll see a "Single order / Bulk add" toggle right at the top; Bulk add is the exact same grid + spreadsheet-import screen as before, just reached from inside New Order instead of a separate tab. The choice is remembered on your device. Nothing about either form changed — same pickup locations, same Beta/Live gating, same per-row Create behavior.'],
   ['0.35.2', 'FIX — the re-sequence dropdown could get STUCK on a strategy you\'d already used. Repro (reported live): apply "Farthest first", then hand-move an order to the middle — some edit paths (moving a stop off a card, ninja-add, "send selection", undo-remove) left the dropdown still claiming "Farthest first", and picking Farthest again did NOTHING (a dropdown fires no event when you pick the value it\'s already showing), so the route couldn\'t be re-optimized or saved. Now EVERY hand-edit flips the card to "Manual order (edited)", which keeps every strategy re-applicable — optimize, tweak by hand, re-optimize, as many times as you like. Bonus fix: re-sequencing a route whose stops haven\'t geocoded yet used to announce "Re-sequenced" while silently doing nothing — it now tells you plainly why it can\'t and to retry in a moment.'],
   ['0.35.1', 'FIX — "re-optimize failed" when NuVizz actually said YES. The live re-sequence Save fired the one-call import and PROD answered "Request for LOAD Async import is SUCCESS. Find more info in AppMessageLog with Id- …" — but prod words the ack differently than UAT (the whole sentence in the status field, and "AppMessageLog WITH Id"), so the stricter 0.33.7 parser read that SUCCESS as a rejection, aborted before the order-verification read-back, and showed a failure banner. The parser now accepts a status containing the standalone word SUCCESS (still rejecting PARTIALSUCCESS/FAILURE/…-with-errors wording) and extracts the AppMessageLog id through prod\'s phrasing. The exact journaled prod ack is a regression test. Re-Save the route — the import is declarative, so re-sending the same order is always safe, and the read-back now confirms it seats.'],
   ['0.35.0', 'Bulk Add — a new tab to create MANY orders at once. Two ways in: (1) fill an editable GRID of rows (Add row / Clear, each row shows ✓ ready or "need N" so you know what\'s missing before you send); (2) IMPORT a spreadsheet — drop a .xlsx or .csv, or paste rows straight from Excel/Google Sheets. The importer auto-detects your header row and maps the columns (consignee, address, city, state, zip, item, order#, PRO, pallets/cartons/weight); you confirm/fix the mapping once and it\'s remembered for that layout next time. Pickup location + service date are set ONCE for the whole batch (same saved-pickup picker as New Order). ○ Beta previews the count; ● LIVE creates them one at a time (each with its own idempotency key, so a mid-batch retry never duplicates). Successful rows drop off; any failures stay in the grid with the reason so you can fix and re-send. New orders land UNPLANNED — plan them onto loads in Routing.'],
@@ -5082,13 +5083,6 @@ function MobileAppBar({ version, onChipMenu, chipMenuOpen, onSelectMenu, smsUnre
               role="menuitem"
             >
               <Package size={12} /> New Order
-            </button>
-            <button
-              className="w-full text-left px-3 py-2 hover:bg-slate-50 inline-flex items-center gap-2 border-t border-slate-100"
-              onClick={() => onSelectMenu('bulk')}
-              role="menuitem"
-            >
-              <LayoutList size={12} /> Bulk Add
             </button>
             <button
               className="w-full text-left px-3 py-2 hover:bg-slate-50 inline-flex items-center gap-2 border-t border-slate-100"
@@ -13046,7 +13040,7 @@ function Shell() {
     setChipMenuOpen(false);
     if (next === 'debug') { setDebugOpen(true); return; }
     if (next === 'messages') { openMessages(); return; }
-    setTab(next === 'diagnostics' ? 'diag' : next === 'routing' ? 'routing' : next === 'neworder' ? 'neworder' : next === 'bulk' ? 'bulk' : 'map');
+    setTab(next === 'diagnostics' ? 'diag' : next === 'routing' ? 'routing' : next === 'neworder' ? 'neworder' : 'map');
   };
 
   return (
@@ -13088,7 +13082,6 @@ function Shell() {
             <TabBtn label="Map" icon={<MapPin size={14} />} active={tab === 'map'} onClick={() => setTab('map')} />
             {ROUTING_FLAG && <TabBtn label="Routing (beta)" icon={<MapPinned size={14} />} active={tab === 'routing'} onClick={() => setTab('routing')} />}
             <TabBtn label="New Order" icon={<Package size={14} />} active={tab === 'neworder'} onClick={() => setTab('neworder')} />
-            <TabBtn label="Bulk Add" icon={<LayoutList size={14} />} active={tab === 'bulk'} onClick={() => setTab('bulk')} />
             <TabBtn label="Messages" icon={<MessageSquare size={14} />} active={messagesOpen} onClick={openMessages} badge={smsUnread} />
             <TabBtn label="Diagnostics" icon={<Activity size={14} />} active={tab === 'diag'} onClick={() => setTab('diag')} />
             <TabBtn label="Debug" icon={<Bug size={14} />} active={debugOpen} onClick={() => setDebugOpen(true)} />
@@ -13098,7 +13091,7 @@ function Shell() {
         </header>
       )}
 
-      {tab === 'map' ? <MapScreen onOpenMessages={openMessages} smsUnread={smsUnread} debugCaptureRef={debugCaptureRef} /> : (tab === 'routing' && ROUTING_FLAG) ? <RoutingScreen debugCaptureRef={debugCaptureRef} /> : tab === 'neworder' ? <NewOrderScreen /> : tab === 'bulk' ? <BulkOrderScreen /> : <DiagnosticsRoute />}
+      {tab === 'map' ? <MapScreen onOpenMessages={openMessages} smsUnread={smsUnread} debugCaptureRef={debugCaptureRef} /> : (tab === 'routing' && ROUTING_FLAG) ? <RoutingScreen debugCaptureRef={debugCaptureRef} /> : tab === 'neworder' ? <NewOrderScreen /> : <DiagnosticsRoute />}
 
       {/* Messages floats OVER the current screen (you never leave the map). */}
       {messagesOpen && <MessagesPanel messages={inbound} seenAt={smsSeenAt} onClose={closeMessages} customerContacts={customerContacts} />}
@@ -13191,7 +13184,47 @@ function OrderField({ label, req, value, onChange, placeholder, type = 'text', c
   );
 }
 
+// New Order opens on a Single / Bulk toggle so both ways to create an order live under one
+// tab (per the "put the bulk add tab under new order" debug request — it previously had its
+// own top-level nav tab). Neither inner screen's logic is touched; this is a thin shell that
+// picks which one renders. The choice is remembered per device.
+const NEWORDER_MODE_KEY = 'dd_neworder_mode';
 function NewOrderScreen() {
+  const [mode, setMode] = useState(() => {
+    try { return localStorage.getItem(NEWORDER_MODE_KEY) === 'bulk' ? 'bulk' : 'single'; } catch { return 'single'; }
+  });
+  const setModeAndSave = (m) => { setMode(m); try { localStorage.setItem(NEWORDER_MODE_KEY, m); } catch { /* ignore */ } };
+  return (
+    <div className="flex-1 min-h-0 flex flex-col overflow-hidden bg-slate-50">
+      <div className="shrink-0 bg-white border-b border-slate-200 px-4 py-2 flex items-center gap-2">
+        <span className="text-[11px] font-medium text-slate-500 mr-1">Create:</span>
+        <div className="inline-flex rounded-lg border border-slate-300 overflow-hidden">
+          <button
+            onClick={() => setModeAndSave('single')}
+            title="One order at a time"
+            className={`px-3 py-1.5 text-[12px] font-semibold inline-flex items-center gap-1.5 ${mode === 'single' ? 'text-white' : 'text-slate-600 bg-white hover:bg-slate-50'}`}
+            style={mode === 'single' ? { background: BRAND } : {}}
+          >
+            <Package size={13} /> Single order
+          </button>
+          <button
+            onClick={() => setModeAndSave('bulk')}
+            title="Many orders at once — grid entry or spreadsheet import"
+            className={`px-3 py-1.5 text-[12px] font-semibold inline-flex items-center gap-1.5 border-l border-slate-300 ${mode === 'bulk' ? 'text-white' : 'text-slate-600 bg-white hover:bg-slate-50'}`}
+            style={mode === 'bulk' ? { background: BRAND } : {}}
+          >
+            <LayoutList size={13} /> Bulk add
+          </button>
+        </div>
+      </div>
+      <div className="flex-1 min-h-0 overflow-hidden">
+        {mode === 'single' ? <NewOrderSingleScreen /> : <BulkOrderScreen />}
+      </div>
+    </div>
+  );
+}
+
+function NewOrderSingleScreen() {
   // Saved pickup origins (multiple locations) + the currently-selected/edited one.
   const [origins, setOrigins] = useState(() => loadSavedOrigins());
   const [origin, setOrigin] = useState(() => {
