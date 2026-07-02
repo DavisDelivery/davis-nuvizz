@@ -411,6 +411,68 @@ export async function readStops(tenant: string, dateStr: string): Promise<StopIn
   return { meta: (meta as StopIndexMeta) || null, stops };
 }
 
+// ── Board write-through (issue #361) ─────────────────────────────────────────
+//
+// A CONFIRMED live Save (the import engine's order read-back, or a classic save whose steps
+// all succeeded) changes NuVizz immediately — but the board cache only learns about it at the
+// next scheduled scan, and NuVizz's own saved-search list can lag an async import by minutes.
+// So a dispatcher who just planned orders onto a load kept seeing them UNPLANNED ("fresh scan
+// … however they are planned on suw 2"). These helpers write the confirmed plan state
+// straight onto the day's per-stop cache docs, stamped `board_write_at`, so the board agrees
+// with NuVizz the moment a Save confirms. The scan's merge honors the stamp for a grace
+// window (see applyBoardWriteGrace in nuvizz-list.mts) so a lagging list can't revert it.
+//
+// PURE field builders (exported for tests) — mirror toBoardStop's shapes exactly:
+// planned open stop = status '20'/SCHEDULED, board loadNbr = the route NAME.
+export function boardWritePlannedFields(routeName: string, seq: number, driverName: string | null, at: string): any {
+  return {
+    status: '20', normalizedStatus: 'SCHEDULED', isPlanned: true, isUnplanned: false,
+    loadNbr: routeName, routeName, routeSeq: seq,
+    ...(driverName ? { driverName, driverUserName: driverName } : {}),
+    board_write_at: at, board_write_planned: true,
+  };
+}
+export function boardWriteUnplannedFields(at: string): any {
+  return {
+    status: '10', normalizedStatus: 'UNPLANNED', isPlanned: false, isUnplanned: true,
+    loadNbr: null, routeName: null, routeSeq: null, driverName: null, driverUserName: null,
+    board_write_at: at, board_write_planned: false,
+  };
+}
+
+/**
+ * Patch the day's board cache with a CONFIRMED plan: orderedStopNbrs are now ON routeName in
+ * that order (routeSeq 1..N); unplannedStopNbrs are now OFF it. Only patches stops the cache
+ * already holds (the scan owns row creation — a phantom row would lack address/coords).
+ * Firestore-only — ZERO NuVizz calls. No-op when Firestore is off.
+ */
+export async function patchBoardPlan(
+  tenant: string,
+  dateStr: string,
+  patch: { routeName: string; orderedStopNbrs: string[]; unplannedStopNbrs?: string[]; driverName?: string | null; at: string },
+): Promise<{ patched: number; missing: number }> {
+  if (!isFirestoreEnabled()) return { patched: 0, missing: 0 };
+  const base = `${COLLECTION}/${parentId(tenant, dateStr)}`;
+  const jobs: Array<{ nbr: string; fields: any }> = [];
+  patch.orderedStopNbrs.forEach((nbr, i) => jobs.push({ nbr: String(nbr), fields: boardWritePlannedFields(patch.routeName, i + 1, patch.driverName ?? null, patch.at) }));
+  for (const nbr of (patch.unplannedStopNbrs || [])) jobs.push({ nbr: String(nbr), fields: boardWriteUnplannedFields(patch.at) });
+  let patched = 0, missing = 0, i = 0;
+  const worker = async () => {
+    while (i < jobs.length) {
+      const j = jobs[i++];
+      try {
+        const cur = await getDoc(`${base}/stops/${encodeURIComponent(j.nbr)}`);
+        if (!cur) { missing++; continue; }
+        const { _id, ...rest } = cur as any;
+        await setDoc(`${base}/stops/${j.nbr}`, { ...rest, ...j.fields });
+        patched++;
+      } catch { missing++; }
+    }
+  };
+  await Promise.all(Array.from({ length: 8 }, worker));
+  return { patched, missing };
+}
+
 // ── Per-PRO enrichment registry (day-independent) ────────────────────────────
 // A running log of which PRO numbers have been enriched, keyed by stopNbr (NOT by date).
 // A PRO that's in here is never auto-enriched again by the scanner — it's re-pulled only by
