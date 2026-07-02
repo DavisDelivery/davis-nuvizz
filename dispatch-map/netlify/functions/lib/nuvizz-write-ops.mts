@@ -249,6 +249,10 @@ export function normalizeStop(j: any): any {
     toState: toAddr.state ?? null,
     latitude: toAddr.latitude ?? null,
     longitude: toAddr.longitude ?? null,
+    // The stop's own "to" block echoed as a ready-to-send import REFERENCE (§I) — this is how
+    // an UNPLANNED order gets planned by the import path without the client holding any address
+    // data: the reference is built from NuVizz's own record, so nothing can drift or regress.
+    importRef: importRefFromRaw(stop),
   };
 }
 
@@ -272,6 +276,9 @@ export function normalizeLoad(j: any): any {
     versionId: L.versionId ?? null,
     loadHeader: hdr,          // kept raw so removeStops can echo it via toEditHeader
     stops,
+    // Raw stop entries kept so the import path (§I) can build per-stop REFERENCES (to.address +
+    // to.schedule) from NuVizz's own load/info record — echo, never invent.
+    rawStops: Array.isArray(L.stops) ? L.stops : [],
   };
 }
 
@@ -522,6 +529,76 @@ export function importOk(httpOk: boolean, j: any): { ok: boolean; async: true; a
   // NB: on success the ack text itself lives in body.message — only consult firstError() when
   // NOT accepted, so the success message is never misread as an error string.
   return { ok, async: true, appMessageLogId: m ? m[1] : null, error: ok ? null : (firstError(body) || `import status='${body?.status ?? ''}'`) };
+}
+
+// Field whitelists for echoing a stop's "to" block back as an import reference. Echo only what
+// the import format knows — never raw junk like seq/lat/exec fields, which could confuse the
+// async worker or regress the stop record.
+const IMPORT_ADDR_FIELDS = ['addressType', 'name', 'addr1', 'addr2', 'city', 'state', 'zip', 'country'] as const;
+const IMPORT_SCHED_FIELDS = ['timeFrom', 'timeTo', 'timeZone', 'timeConstraint', 'estimatedDuration', 'estDuration'] as const;
+const pickFields = (src: any, keys: readonly string[]) => {
+  const out: any = {};
+  for (const k of keys) if (src?.[k] != null && src[k] !== '') out[k] = src[k];
+  return out;
+};
+
+/** importRefFromRaw (§I) — a RAW stop object (from load/info stops[] or stop/info) → the
+ *  reference shape that plans that EXISTING stop on an import (stopNbr + stopType + "to"
+ *  block echoed from NuVizz's own record). Null when the raw record can't yield a valid
+ *  reference (no stopNbr or no delivery address) — the caller must surface that, never
+ *  send a bare stopNbr (NuVizz rejects it). */
+export function importRefFromRaw(rawStop: any): any | null {
+  const st = rawStop?.stop || rawStop || {};
+  const to = st?.to || {};
+  const address = pickFields(to.address || {}, IMPORT_ADDR_FIELDS);
+  if (st.stopNbr == null || String(st.stopNbr).trim() === '' || !address.addr1) return null;
+  if (!address.country) address.country = 'USA';
+  const schedule = pickFields(to.schedule || {}, IMPORT_SCHED_FIELDS);
+  const ref: any = { stopNbr: String(st.stopNbr), stopType: st.stopType || 'DO', to: { address } };
+  if (Object.keys(schedule).length) ref.to.schedule = schedule;
+  return ref;
+}
+
+/**
+ * assembleImportHeader (§I) — build the import loadHeader for an EXISTING load from what we
+ * can ECHO, in trust order, throwing when the silent-failure trap can't be satisfied:
+ *   • loadNbr/routeName + earliestStartDttm/latestStartDttm from the raw load/info header
+ *     (falling back to `${fallbackDate}T06:00:00`–`T18:00:00` when the header lacks them);
+ *   • the flat origin block from (1) flat origin fields already on the raw header, else
+ *     (2) a raw stop's "from" address (buildStopPayload writes the warehouse there), else
+ *     (3) the client's saved ship-from (the New Order origin) — else throw.
+ */
+export function assembleImportHeader(rawHeader: any, rawStops: any[], clientOrigin: any | null, fallbackDate?: string | null): ImportLoadHeader {
+  const h = rawHeader || {};
+  const loadNbr = String(req(h.loadNbr, 'import header: loadNbr'));
+  const earliest = h.earliestStartDttm || (fallbackDate ? `${fallbackDate}T06:00:00` : null);
+  const latest = h.latestStartDttm || (fallbackDate ? `${fallbackDate}T18:00:00` : null);
+  if (!earliest || !latest) throw new Error(`import header: load ${loadNbr} has no earliest/latest start and no service date to derive one — cannot import safely`);
+
+  let origin: any = null;
+  const flat = pickFields(h, ['origin', 'originName', 'originAddr1', 'originAddr2', 'originCity', 'originState', 'originZip', 'originCountry']);
+  if (flat.originName && flat.originAddr1 && flat.originCity && flat.originZip) origin = flat;
+  if (!origin) {
+    for (const rs of (rawStops || [])) {
+      const from = (rs?.stop || rs || {})?.from?.address;
+      if (from?.name && from?.addr1 && from?.city && from?.zip) {
+        origin = { origin: h.rtOrigin || 'WHSE', originName: from.name, originAddr1: from.addr1, originAddr2: from.addr2 || undefined, originCity: from.city, originState: from.state, originZip: from.zip, originCountry: from.country || 'USA' };
+        break;
+      }
+    }
+  }
+  if (!origin && clientOrigin?.name && clientOrigin?.addr1 && clientOrigin?.city && clientOrigin?.zip) {
+    origin = { origin: 'WHSE', originName: clientOrigin.name, originAddr1: clientOrigin.addr1, originAddr2: clientOrigin.addr2 || undefined, originCity: clientOrigin.city, originState: clientOrigin.state, originZip: clientOrigin.zip, originCountry: 'USA' };
+  }
+  if (!origin) throw new Error(`import header: load ${loadNbr} — no origin block available (not on the load, no stops to echo it from, and no saved ship-from origin; set one in the New Order tab)`);
+
+  return {
+    loadNbr, routeName: h.routeName != null ? String(h.routeName) : undefined,
+    earliestStartDttm: earliest, latestStartDttm: latest,
+    origin: origin.origin || 'WHSE', originName: origin.originName, originAddr1: origin.originAddr1, originAddr2: origin.originAddr2 || undefined,
+    originCity: origin.originCity, originState: origin.originState, originZip: origin.originZip,
+    originCountry: origin.originCountry || 'USA', loadTimeZone: h.loadTimeZone || 'EST',
+  };
 }
 
 /** deliveryOrder (§I) — normalized getLoad → the load's DELIVERY stopNbrs in visit order

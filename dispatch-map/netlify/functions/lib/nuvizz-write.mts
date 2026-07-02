@@ -20,6 +20,7 @@
 import { getCreds, basicAuthHeader } from './nuvizz-scan.mts';
 import {
   buildOpRequest, parseOpResponse, toEditHeader, normalizeLoad, planSequence, deliveryOrder,
+  importRefFromRaw, assembleImportHeader,
   type SingleOp, type WriteOp, type WriteCreds,
 } from './nuvizz-write-ops.mts';
 import { isHashLikeId } from './nuvizz-list.mts';
@@ -623,9 +624,153 @@ export async function runCommitImport(requester: RequesterLike, payload: any, cr
   return { ok: results.every((r) => r.ok) && skipped === 0, loads: results, skipped };
 }
 
+/**
+ * runCommitBoardImport — the SAME board Save (identical payload + result shape as
+ * runCommitBoard) executed through the LOAD-IMPORT engine. This is what makes the Routing
+ * Compare panel's Beta/LIVE Save exercise the new path with ZERO client changes: runOp routes
+ * commitBoard here whenever NUVIZZ_LOAD_IMPORT=on.
+ *
+ * Per order-changing load: resolve the load, read it once (load/info — the raw stops carry
+ * each stop's "to" block), build the import stops[] in the DESIRED order by echoing NuVizz's
+ * own records (on-load stops from the load read; an added/unplanned stop via its stop/info —
+ * exactly the plan-unplanned-orders flow), then ONE import + the convergence recipe, then
+ * assign/dispatch. The header origin/dates are echoed from the load, its stops, or the
+ * client's saved ship-from (payload.origin).
+ *
+ * Loads the import path can't or shouldn't handle fall back to the UNCHANGED legacy engine
+ * in the same Save: emptyLoad (cancel — NEVER an empty import), assign/dispatch-only, a
+ * loadId-only add with no resolvable load number (#328), and any load whose number can't be
+ * resolved. Cross-load moves run sources-before-destinations; a genuine cycle (a swap) is
+ * refused — save it as two steps. The steal guard (stop still planned on a load outside this
+ * Save) matches the legacy engine's.
+ */
+export async function runCommitBoardImport(requester: RequesterLike, payload: any, creds: WriteCreds, pacing?: ImportPacing): Promise<any> {
+  const loadsIn: any[] = Array.isArray(payload?.loads) ? payload.loads : [];
+  if (!loadsIn.length) return { ok: true, loads: [], orphaned: [] };
+  // Board pacing: tighter than the standalone default so a clean Save fits a synchronous
+  // function invocation (a stuck load can exceed it — the Save is declarative, re-Save recovers).
+  const boardPacing: ImportPacing = { pollMs: 4000, phaseWaitMs: 12000, ...(pacing || {}), ...(payload?.convergence || {}) };
+  const clientOrigin = payload?.origin ?? null;
+
+  const legacy: any[] = [];   // loads the legacy engine keeps handling (see doc above)
+  const imp: any[] = [];      // { L, loadNbr, load(normalized), refs[], curNbrs:Set, result }
+  const batchNbrs = new Set<string>();
+  for (const l of loadsIn) { const v = String(l?.loadNbr ?? '').trim(); if (v && !isHashLikeId(v)) batchNbrs.add(v); }
+
+  // ── resolve + read + build refs per order-changing load ──
+  for (const L of loadsIn) {
+    const orderedNbrs: string[] | null = Array.isArray(L?.orderedStopNbrs) ? L.orderedStopNbrs.map((x: any) => String(x)).filter(Boolean) : null;
+    if (L?.emptyLoad === true || !orderedNbrs || orderedNbrs.length === 0) { legacy.push(L); continue; }
+    const result: any = { loadNbr: L?.loadNbr ?? null, ok: true, steps: [], error: null };
+
+    // Resolve the human load number (same ladder as the legacy engine).
+    let loadNbrX = (L?.loadNbr != null && String(L.loadNbr).trim() !== '' && !isHashLikeId(String(L.loadNbr))) ? String(L.loadNbr) : null;
+    if (!loadNbrX && orderedNbrs[0]) loadNbrX = await resolveLoadNbrByStopNbr(requester, orderedNbrs[0], creds);
+    if (!loadNbrX && trustableLoadId(L?.loadId)) loadNbrX = await resolveLoadNbrById(requester, L.loadId, creds);
+    if (!loadNbrX) { legacy.push(L); continue; }   // e.g. loadId-only pure add — the #328 legacy path still works
+    result.loadNbr = loadNbrX;
+    batchNbrs.add(loadNbrX);
+
+    const f = await fetchLoad(requester, loadNbrX, creds);
+    if (!f.load) { result.ok = false; result.error = `commitBoard(import): load not found (${loadMissDiag(loadNbrX, f)})`; imp.push({ L, loadNbr: loadNbrX, refs: [], curNbrs: new Set(), result }); continue; }
+    const load = f.load;
+    // Same wrong-instance guard as the legacy engine: a recurring NAME resolving to a different
+    // day's load must never be rebuilt.
+    if (L?.loadId && load.loadId && String(load.loadId) !== String(L.loadId)) {
+      result.ok = false; result.error = `commitBoard(import): load identity mismatch (name resolved ${load.loadId}, expected ${L.loadId})`;
+      imp.push({ L, loadNbr: loadNbrX, refs: [], curNbrs: new Set(), result }); continue;
+    }
+
+    const rawByNbr = new Map<string, any>();
+    for (const rs of (load.rawStops || [])) { const st = rs?.stop || rs || {}; if (st.stopNbr != null) rawByNbr.set(String(st.stopNbr), rs); }
+    const refs: any[] = [];
+    let err: string | null = null;
+    for (const nbr of orderedNbrs) {
+      const raw = rawByNbr.get(nbr);
+      if (raw) {
+        const ref = importRefFromRaw(raw);
+        if (!ref) { err = `commitBoard(import): stop ${nbr} on load ${loadNbrX} has no usable delivery address to reference — refresh and retry`; break; }
+        refs.push(ref);
+        continue;
+      }
+      // Not on this load → an ADD (planning an unplanned order, or a cross-load arrival).
+      const gs = await fireSingle(requester, 'getStop', { stopNbr: nbr }, creds);
+      const srcNbr = gs?.ok ? String(gs.stop?.assignedLoadNbr ?? '').trim() : '';
+      if (!gs?.ok || !gs.stop?.importRef) { err = `commitBoard(import): stop ${nbr} could not be read for planning (stale board — refresh and retry)`; break; }
+      if (srcNbr && srcNbr !== loadNbrX && !batchNbrs.has(srcNbr)) {
+        err = `commitBoard(import): stop ${nbr} is still planned on load ${srcNbr}, which is not part of this Save — open that load in Compare so the move is staged`; break;
+      }
+      refs.push({ ...gs.stop.importRef, __srcLoadNbr: srcNbr && srcNbr !== loadNbrX ? srcNbr : undefined });
+    }
+    if (err) { result.ok = false; result.error = err; imp.push({ L, loadNbr: loadNbrX, refs: [], curNbrs: new Set(), result }); continue; }
+    imp.push({ L, loadNbr: loadNbrX, load, refs, curNbrs: new Set(rawByNbr.keys()), result });
+  }
+
+  // ── legacy subset (unchanged engine) ──
+  const legacyResult = legacy.length
+    ? await runCommitBoard(requester, { ...payload, loads: legacy }, creds)
+    : { ok: true, loads: [], orphaned: [] };
+
+  // ── order the imports: sources before destinations (a destination's arrival must be freed
+  //    by its source's import first; a stop is never "stolen" while still planned elsewhere) ──
+  const live = imp.filter((p) => p.result.ok);
+  const ordered: any[] = [];
+  const pending = new Set(live);
+  while (pending.size) {
+    let emitted = false;
+    for (const p of [...pending]) {
+      const waitsOn = [...pending].some((q) => q !== p && p.refs.some((r: any) => r.__srcLoadNbr && String(q.loadNbr) === String(r.__srcLoadNbr))
+        // also: q currently HOLDS one of p's stops and q's own import runs in this batch
+        || (q !== p && p.refs.some((r: any) => !p.curNbrs.has(r.stopNbr) && q.curNbrs.has(r.stopNbr))));
+      if (!waitsOn) { ordered.push(p); pending.delete(p); emitted = true; }
+    }
+    if (!emitted) {   // a cycle (e.g. two loads swapping stops) — refuse those loads, keep the rest honest
+      for (const p of pending) { p.result.ok = false; p.result.error = 'commitBoard(import): circular cross-load move (a swap) — save it in two steps'; }
+      pending.clear();
+    }
+  }
+
+  // ── one import per load (+ convergence), then assign/dispatch ──
+  for (const p of ordered) {
+    let loadId: any = trustableLoadId(p.L?.loadId) ? p.L.loadId : (p.load?.loadId ?? null);
+    try {
+      const header = assembleImportHeader(p.load?.loadHeader, p.load?.rawStops || [], clientOrigin,
+        // Service-date fallback: the first ref's delivery window date (echoed from NuVizz).
+        String(p.refs[0]?.to?.schedule?.timeFrom || '').slice(0, 10) || null);
+      const stops = p.refs.map(({ __srcLoadNbr, ...ref }: any) => ref);
+      const r = await runImportLoad(requester, { load: { loadHeader: header, stops }, convergence: boardPacing }, creds, boardPacing);
+      p.result.steps.push(...(r.steps || []));
+      if (!r.ok) { p.result.ok = false; p.result.error = r.error || 'import did not converge'; continue; }
+      loadId = r.loadId ?? loadId;
+    } catch (e: any) {
+      p.result.ok = false; p.result.error = e?.message || 'import build failed'; continue;
+    }
+    if (hasDriverId(p.L?.driverId)) {
+      if (!loadId) { p.result.ok = false; p.result.error = 'commitBoard(import): loadId unresolved for assignDriver'; continue; }
+      const r = await fireSingle(requester, 'assignDriver', { routeId: loadId, driverId: p.L.driverId }, creds);
+      p.result.steps.push({ op: 'assignDriver', ok: !!r.ok, result: r, error: r.ok ? null : (r.error || 'failed') });
+      if (!r.ok) { p.result.ok = false; continue; }
+    }
+    if (p.L?.dispatch) {
+      if (!loadId) { p.result.ok = false; p.result.error = 'commitBoard(import): loadId unresolved for dispatch'; continue; }
+      const r = await fireSingle(requester, 'dispatchLoad', { routeId: loadId }, creds);
+      p.result.steps.push({ op: 'dispatchLoad', ok: !!r.ok, result: r, error: r.ok ? null : (r.error || 'failed') });
+      if (!r.ok) p.result.ok = false;
+    }
+  }
+
+  const loads = [
+    ...(legacyResult.loads || []),
+    ...imp.map((p) => ({ loadNbr: p.result.loadNbr ?? p.loadNbr, loadId: p.load?.loadId ?? p.L?.loadId ?? null, ok: p.result.ok, error: p.result.error, steps: p.result.steps })),
+  ];
+  return { ok: loads.every((l: any) => l.ok) && (legacyResult.orphaned || []).length === 0, loads, orphaned: legacyResult.orphaned || [] };
+}
+
 export async function runOp(requester: RequesterLike, op: WriteOp, payload: any, creds: WriteCreds): Promise<any> {
   switch (op) {
-    case 'commitBoard': return runCommitBoard(requester, payload, creds);
+    // The Compare panel's Save: same payload either way — the import engine takes over when
+    // its kill switch is on, so the UI's Beta/LIVE flow needs no changes to test the new path.
+    case 'commitBoard': return loadImportEnabled() ? runCommitBoardImport(requester, payload, creds) : runCommitBoard(requester, payload, creds);
     case 'commitLoad': return runCommitLoad(requester, payload, creds);
     case 'removeStops': return runRemoveStops(requester, payload, creds);
     case 'assignDriver':
