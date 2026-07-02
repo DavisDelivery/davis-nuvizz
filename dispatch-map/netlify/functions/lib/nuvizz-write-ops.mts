@@ -509,6 +509,12 @@ export function buildImportBody(load: { loadHeader: any; stops: any[] }, cc: str
     originCountry: h.originCountry || 'USA',
     loadTimeZone: h.loadTimeZone || 'EST',
   };
+  // HARD TYPE GUARD: every header scalar must be a plain string — live load/info has handed
+  // back an OBJECT under `origin`, which NuVizz 400s ("Cannot deserialize java.lang.String
+  // from Object"). Refuse here (client 400, zero NuVizz calls) rather than fire a doomed import.
+  for (const [k, v] of Object.entries(header)) {
+    if (v !== undefined && typeof v !== 'string') throw new Error(`importLoad: loadHeader.${k} must be a string (got ${Array.isArray(v) ? 'array' : typeof v}) — echoing raw load/info fields here is unsafe`);
+  }
   const stops = reqArr(load?.stops, 'importLoad: stops (never import an empty stops[] — use load/cancel to retire a load)');
   for (const [i, s] of stops.entries()) {
     req(s?.stopNbr, `importLoad: stops[${i}].stopNbr`);
@@ -541,10 +547,38 @@ export function importOk(httpOk: boolean, j: any): { ok: boolean; async: true; a
 // async worker or regress the stop record.
 const IMPORT_ADDR_FIELDS = ['addressType', 'name', 'addr1', 'addr2', 'city', 'state', 'zip', 'country'] as const;
 const IMPORT_SCHED_FIELDS = ['timeFrom', 'timeTo', 'timeZone', 'timeConstraint', 'estimatedDuration', 'estDuration'] as const;
+// PRIMITIVES ONLY: load/info can nest OBJECTS under scalar-looking keys (live DAVIS returns
+// loadHeader.origin as an ADDRESS OBJECT). Echoing an object where the import expects a string
+// is a hard NuVizz 400 ("Cannot deserialize value of type java.lang.String from Object value").
 const pickFields = (src: any, keys: readonly string[]) => {
   const out: any = {};
-  for (const k of keys) if (src?.[k] != null && src[k] !== '') out[k] = src[k];
+  for (const k of keys) if (src?.[k] != null && src[k] !== '' && typeof src[k] !== 'object') out[k] = src[k];
   return out;
+};
+
+// The import contract (UAT-verified) uses 2-letter states + 'USA' — live load/info hands back
+// long forms ("GEORGIA", "UNITED STATES"). Normalize so the header matches the proven shape
+// (a mismatch here is prime silent-discard material for the async worker).
+const US_STATE_CODES: Record<string, string> = {
+  ALABAMA: 'AL', ALASKA: 'AK', ARIZONA: 'AZ', ARKANSAS: 'AR', CALIFORNIA: 'CA', COLORADO: 'CO',
+  CONNECTICUT: 'CT', DELAWARE: 'DE', FLORIDA: 'FL', GEORGIA: 'GA', HAWAII: 'HI', IDAHO: 'ID',
+  ILLINOIS: 'IL', INDIANA: 'IN', IOWA: 'IA', KANSAS: 'KS', KENTUCKY: 'KY', LOUISIANA: 'LA',
+  MAINE: 'ME', MARYLAND: 'MD', MASSACHUSETTS: 'MA', MICHIGAN: 'MI', MINNESOTA: 'MN',
+  MISSISSIPPI: 'MS', MISSOURI: 'MO', MONTANA: 'MT', NEBRASKA: 'NE', NEVADA: 'NV',
+  'NEW HAMPSHIRE': 'NH', 'NEW JERSEY': 'NJ', 'NEW MEXICO': 'NM', 'NEW YORK': 'NY',
+  'NORTH CAROLINA': 'NC', 'NORTH DAKOTA': 'ND', OHIO: 'OH', OKLAHOMA: 'OK', OREGON: 'OR',
+  PENNSYLVANIA: 'PA', 'RHODE ISLAND': 'RI', 'SOUTH CAROLINA': 'SC', 'SOUTH DAKOTA': 'SD',
+  TENNESSEE: 'TN', TEXAS: 'TX', UTAH: 'UT', VERMONT: 'VT', VIRGINIA: 'VA', WASHINGTON: 'WA',
+  'WEST VIRGINIA': 'WV', WISCONSIN: 'WI', WYOMING: 'WY', 'DISTRICT OF COLUMBIA': 'DC',
+};
+const strField = (v: any): string => (typeof v === 'string' ? v.trim() : (typeof v === 'number' ? String(v) : ''));
+const stateCode = (v: any): string => {
+  const s = strField(v).toUpperCase();
+  return /^[A-Z]{2}$/.test(s) ? s : (US_STATE_CODES[s] || s);
+};
+const countryCode = (v: any): string => {
+  const s = strField(v).toUpperCase();
+  return (!s || s === 'USA' || s === 'US' || s === 'UNITED STATES' || s === 'UNITED STATES OF AMERICA') ? 'USA' : s;
 };
 
 /** importRefFromRaw (§I) — a RAW stop object (from load/info stops[] or stop/info) → the
@@ -585,29 +619,49 @@ export function assembleImportHeader(rawHeader: any, rawStops: any[], clientOrig
   const latest = iso(h.latestStartDttm) || (fallbackDate ? `${fallbackDate}T18:00:00` : null);
   if (!earliest || !latest) throw new Error(`import header: load ${loadNbr} has no earliest/latest start and no service date to derive one — cannot import safely`);
 
+  // EVERY origin field must be a plain STRING in the proven shape. Live load/info returns
+  // loadHeader.origin as an ADDRESS OBJECT (→ NuVizz 400 "Cannot deserialize java.lang.String
+  // from Object") and long-form state/country ("GEORGIA"/"UNITED STATES") — so each candidate
+  // source is string-coerced and normalized, never echoed raw.
   let origin: any = null;
-  const flat = pickFields(h, ['origin', 'originName', 'originAddr1', 'originAddr2', 'originCity', 'originState', 'originZip', 'originCountry']);
-  if (flat.originName && flat.originAddr1 && flat.originCity && flat.originZip) origin = flat;
+  if (strField(h.originName) && strField(h.originAddr1) && strField(h.originCity) && strField(h.originZip)) {
+    origin = {
+      origin: strField(h.origin) || strField(h.rtOrigin) || 'WHSE',   // the CODE — never the header's origin OBJECT
+      originName: strField(h.originName), originAddr1: strField(h.originAddr1), originAddr2: strField(h.originAddr2) || undefined,
+      originCity: strField(h.originCity), originState: stateCode(h.originState), originZip: strField(h.originZip),
+      originCountry: countryCode(h.originCountry),
+    };
+  }
   if (!origin) {
     for (const rs of (rawStops || [])) {
       const from = (rs?.stop || rs || {})?.from?.address;
-      if (from?.name && from?.addr1 && from?.city && from?.zip) {
-        origin = { origin: h.rtOrigin || 'WHSE', originName: from.name, originAddr1: from.addr1, originAddr2: from.addr2 || undefined, originCity: from.city, originState: from.state, originZip: from.zip, originCountry: from.country || 'USA' };
+      if (strField(from?.name) && strField(from?.addr1) && strField(from?.city) && strField(from?.zip)) {
+        origin = {
+          origin: strField(h.rtOrigin) || 'WHSE',
+          originName: strField(from.name), originAddr1: strField(from.addr1), originAddr2: strField(from.addr2) || undefined,
+          originCity: strField(from.city), originState: stateCode(from.state), originZip: strField(from.zip),
+          originCountry: countryCode(from.country),
+        };
         break;
       }
     }
   }
-  if (!origin && clientOrigin?.name && clientOrigin?.addr1 && clientOrigin?.city && clientOrigin?.zip) {
-    origin = { origin: 'WHSE', originName: clientOrigin.name, originAddr1: clientOrigin.addr1, originAddr2: clientOrigin.addr2 || undefined, originCity: clientOrigin.city, originState: clientOrigin.state, originZip: clientOrigin.zip, originCountry: 'USA' };
+  if (!origin && strField(clientOrigin?.name) && strField(clientOrigin?.addr1) && strField(clientOrigin?.city) && strField(clientOrigin?.zip)) {
+    origin = {
+      origin: 'WHSE',
+      originName: strField(clientOrigin.name), originAddr1: strField(clientOrigin.addr1), originAddr2: strField(clientOrigin.addr2) || undefined,
+      originCity: strField(clientOrigin.city), originState: stateCode(clientOrigin.state), originZip: strField(clientOrigin.zip),
+      originCountry: 'USA',
+    };
   }
   if (!origin) throw new Error(`import header: load ${loadNbr} — no origin block available (not on the load, no stops to echo it from, and no saved ship-from origin; set one in the New Order tab)`);
 
   return {
     loadNbr, routeName: h.routeName != null ? String(h.routeName) : undefined,
     earliestStartDttm: earliest, latestStartDttm: latest,
-    origin: origin.origin || 'WHSE', originName: origin.originName, originAddr1: origin.originAddr1, originAddr2: origin.originAddr2 || undefined,
+    origin: origin.origin, originName: origin.originName, originAddr1: origin.originAddr1, originAddr2: origin.originAddr2 || undefined,
     originCity: origin.originCity, originState: origin.originState, originZip: origin.originZip,
-    originCountry: origin.originCountry || 'USA', loadTimeZone: h.loadTimeZone || 'EST',
+    originCountry: origin.originCountry, loadTimeZone: strField(h.loadTimeZone) || 'EST',
   };
 }
 
