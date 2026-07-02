@@ -155,6 +155,23 @@ test('importOk: a non-success body or non-2xx is a failure with a readable error
   assert.equal(http.ok, false);
 });
 
+// REGRESSION (journaled live, prod DAVIS Jul 2 2026 — load DAVIS000198070): prod puts the whole
+// SENTENCE in `status` ("…is SUCCESS. Find more info in AppMessageLog with Id- …"), where UAT
+// sends the bare token. The strict `status === 'SUCCESS'` equality read this SUCCESS ack as a
+// rejection and aborted the Save before convergence ("re-optimize failed" with a success ack).
+test('importOk: PROD sentence-status SUCCESS ack is ACCEPTED, id extracted despite "with"', () => {
+  const r = importOk(true, { status: 'Request for LOAD Async import is SUCCESS. Find more info in AppMessageLog with Id- ef689668-7f11-47f9-9c36-ab7242432f53' });
+  assert.equal(r.ok, true);
+  assert.equal(r.appMessageLogId, 'ef689668-7f11-47f9-9c36-ab7242432f53');
+  assert.equal(r.error, null);
+});
+
+test('importOk: sentence-status guards still reject PARTIALSUCCESS / failure wording', () => {
+  assert.equal(importOk(true, { status: 'PARTIALSUCCESS' }).ok, false);
+  assert.equal(importOk(true, { status: 'Request for LOAD Async import is FAILED. See AppMessageLog with Id- abc' }).ok, false);
+  assert.equal(importOk(true, { status: 'SUCCESS with errors — 2 records rejected' }).ok, false);
+});
+
 test("parseOpResponse('importLoad') routes to importOk", () => {
   const r = parseOpResponse('importLoad', true, ACK.json);
   assert.equal(r.ok, true);

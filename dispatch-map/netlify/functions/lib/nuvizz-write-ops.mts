@@ -544,12 +544,21 @@ export function buildImportBody(load: { loadHeader: any; stops: any[] }, cc: str
 export function importOk(httpOk: boolean, j: any): { ok: boolean; async: true; appMessageLogId: string | null; ackText: string | null; error: string | null } {
   const body = j || {};
   const text = [body.status, body.message, body._text].filter((x: any) => x != null).map(String).join(' ');
-  // A present-but-non-SUCCESS status (PARTIALSUCCESS / FAILURE / …) is NEVER an accepted ack —
-  // mirror summarize()'s guard so a rejection can't read as "pending" via a stray 'success'
-  // substring. The free-text match remains only for bodies with no status field at all.
-  const statusRaw = String(body?.status ?? '').trim().toUpperCase();
-  const accepted = statusRaw !== '' ? statusRaw === 'SUCCESS' : /\bsuccess\b/i.test(text);
-  const m = text.match(/AppMessageLog\s*Id\s*[-:\s]*([A-Za-z0-9._-]+)/i);
+  // A non-SUCCESS status (PARTIALSUCCESS / FAILURE / …) is NEVER an accepted ack. But the status
+  // FIELD is not always the bare token: UAT sends status:'SUCCESS', while PROD DAVIS puts the
+  // whole SENTENCE in status — "Request for LOAD Async import is SUCCESS. Find more info in
+  // AppMessageLog with Id- …" (journaled live Jul 2 2026; the strict equality here read that
+  // SUCCESS ack as a REJECTION and aborted the Save before convergence). Accept a status that
+  // contains the STANDALONE word "success" with no failure word anywhere; \b keeps
+  // PARTIALSUCCESS from matching and the deny-list rejects "SUCCESS WITH ERRORS"-style acks.
+  const statusRaw = String(body?.status ?? '').trim();
+  const badWord = /\b(partial|fail|failure|error|reject|invalid|denied)/i;
+  const accepted = statusRaw !== ''
+    ? (/\bsuccess\b/i.test(statusRaw) && !badWord.test(statusRaw))
+    : (/\bsuccess\b/i.test(text) && !badWord.test(text));
+  // The AppMessageLog id: UAT says "AppMessageLog Id-…", prod says "AppMessageLog with Id- …" —
+  // allow a few words between, then the id token.
+  const m = text.match(/AppMessageLog(?:\s+\w+){0,3}?\s*\bId\b\s*[-:\s]*([A-Za-z0-9._-]+)/i);
   const ok = httpOk && accepted;
   // NB: on success the ack text itself lives in body.message — only consult firstError() when
   // NOT accepted, so the success message is never misread as an error string.
