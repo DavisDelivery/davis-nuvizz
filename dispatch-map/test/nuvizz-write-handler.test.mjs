@@ -65,6 +65,14 @@ test('dryRun commitBoard → plan labels the load by its friendly routeName, not
   assert.ok(!j.plan.some((s) => /DAVIS000000123/.test(s)), 'plan does not surface the raw loadNbr');
 });
 
+test('dryRun commitBoard with inline newStops → plan says the import CREATES them (no pre-creates)', async () => {
+  const res = await post({ op: 'commitBoard', dryRun: true, payload: { useImport: true, settings: { origin: { name: 'U', addr1: 'a', city: 'c', state: 'GA', zip: 'z' }, serviceDate: '2026-07-02' }, loads: [{ loadNbr: 'SQTLOADI', createNew: true, orderedStopNbrs: ['1', '2'], newStops: [{ stopNbr: '1' }, { stopNbr: '2' }] }] } });
+  assert.equal(res.status, 200);
+  const j = await res.json();
+  assert.ok(j.plan.some((s) => /create 2 NEW order\(s\) INLINE/.test(s)), 'plan surfaces the inline creation');
+  assert.ok(!j.plan.some((s) => /pre-create/i.test(s) && /stop\/sync/.test(s)), 'no pre-create step in the plan');
+});
+
 test('dryRun works for a non-mutating op too (getStop)', async () => {
   const res = await post({ op: 'getStop', dryRun: true, payload: { stopNbr: '7' } });
   const j = await res.json();
