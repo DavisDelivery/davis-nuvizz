@@ -75,6 +75,21 @@ export function scanDatesFrom(today: string, n: number): string[] {
   return dates;
 }
 
+// Is a FUTURE date's cached load roster still fresh enough to skip a re-pull? Fresh =
+// non-empty AND cached within NUVIZZ_ROSTER_FRESH_MIN (default 5 min; floor 1). The window
+// exists only to dedupe the multiple persistLoadRoster call sites within a single scan
+// invocation — every 15-min acting cycle re-pulls, so a load created in the portal for
+// tomorrow reaches the board (WITH its real load number, which Saves are keyed by) within
+// one interval. An empty or unparseable cache is never fresh. Exported for tests.
+export function futureRosterIsFresh(cached: { at?: string; loads?: any[] } | null | undefined, nowMs: number): boolean {
+  if (!cached?.at || (cached.loads?.length ?? 0) === 0) return false;
+  const atMs = new Date(cached.at).getTime();
+  if (!Number.isFinite(atMs)) return false;
+  const raw = Number(process.env.NUVIZZ_ROSTER_FRESH_MIN);
+  const freshMin = Math.max(1, Number.isFinite(raw) ? raw : 5); // unset/garbled → 5; explicit small → floor 1
+  return nowMs - atMs < freshMin * 60_000;
+}
+
 export async function runRefreshStops(req: Request): Promise<Response> {
   const startedAt = Date.now();
   const now = new Date();
@@ -212,32 +227,35 @@ export async function runRefreshStops(req: Request): Promise<Response> {
   const results: any[] = [];
 
   // Capture a date's FULL load roster (incl. empty loads not yet filled with orders) into the
-  // cache the Loads view reads. For a FUTURE date a NON-EMPTY roster is pulled ONCE per scan-day —
-  // next-day loads are static once they exist, so there's no point re-pulling a populated roster
-  // every cycle (the dispatcher's explicit ask). But an EMPTY cached roster IS re-pulled (the day's
-  // loads may not have existed at the first morning pull), so tomorrow's loads appear as soon as
-  // they're created instead of freezing empty for the day. Today's roster refreshes each load-scan
-  // since new loads appear through the day. Best-effort: a hiccup is logged, never affects the scan.
+  // cache the Loads view reads. A FUTURE date's roster is kept FRESH ALL DAY (re-pulled on any
+  // acting cycle once the cached copy is older than NUVIZZ_ROSTER_FRESH_MIN, default 5 min — the
+  // freshness window only dedupes the multiple call sites within one invocation). This REVERSES
+  // the earlier once-per-scan-day capture: "next-day loads are static once they exist" proved
+  // false — tomorrow's loads are created in the portal THROUGHOUT today (the ~99 auto shells
+  // early, custom loads like "2 M"/"SUW 5" any time), and the frozen morning snapshot reached
+  // the evening planner without their load NUMBERS, so every reorder/unplan Save was refused
+  // ("needs a load number", Jul 1 2026 night). Cost: one cheap PkgRoute list call per acting
+  // cycle (~60/day), nothing like the number-probe. Today's roster refreshes each load-scan as
+  // before. Best-effort: a hiccup is logged, never affects the scan.
   const persistLoadRoster = async (date: string, scannedAt: string) => {
     if (!fsOn) return;
     try {
       if (date !== today) {
         const cached = await readLoadRoster(TENANT, date).catch(() => null);
-        // Already have a NON-EMPTY roster captured today → done. Re-pull only while still empty.
-        if (cached?.at && etDayString(new Date(cached.at)) === etDayString() && (cached.loads?.length ?? 0) > 0) return;
+        if (futureRosterIsFresh(cached, Date.now())) return;
       }
       const roster = await loadRosterForDate(date);
       await writeLoadRoster(TENANT, date, roster, scannedAt);
-      console.log(`[scan] load-roster ${date}: cached ${roster.length} load(s)${date !== today ? ' (next-day, once/day)' : ''}`);
+      console.log(`[scan] load-roster ${date}: cached ${roster.length} load(s)${date !== today ? ' (next-day, kept fresh)' : ''}`);
     } catch (e: any) { console.warn(`[scan] load-roster ${date} skipped: ${e?.message}`); }
   };
 
-  // Next-business-day empty-loads roster — pulled ONCE each morning (cheap: one PkgRoute list call
-  // per day, deduped per ET day above; re-pulled only while still empty). DECOUPLED from the next-
-  // day LOAD *scan*, which is 8pm-gated to avoid the expensive load-number probe — but the roster is
-  // the cheap list endpoint, so there's no reason to make the dispatcher wait until the evening
-  // before for tomorrow's empty/Draft loads. Runs on any acting morning scan (>=6am ET); a no-op
-  // once a non-empty roster is cached for the day, so it does not re-pull a populated roster.
+  // Next-business-day empty-loads roster — kept fresh through the day (one cheap PkgRoute list
+  // call per acting cycle; see persistLoadRoster). DECOUPLED from the next-day LOAD *scan*,
+  // which is 8pm-gated to avoid the expensive load-number probe — the roster is the cheap list
+  // endpoint, so tomorrow's empty/Draft loads (and their real load NUMBERS, which Saves are
+  // keyed by) reach the board within one scan interval of being created in the portal. That is
+  // what lets the dispatcher build TOMORROW's routes TODAY. Runs on any acting scan >=6am ET.
   if (decision.act && fsOn && decision.etHour >= 6) {
     const rosterAt = new Date().toISOString();
     for (const d of scanDates.slice(1)) await persistLoadRoster(d, rosterAt);
