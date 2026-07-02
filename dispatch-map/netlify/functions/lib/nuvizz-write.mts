@@ -576,7 +576,16 @@ export async function runImportLoad(requester: RequesterLike, payload: any, cred
   let loadId: any = null;
   const fire = async (stops: any[], label: string) => {
     const r = await fireSingle(requester, 'importLoad', { load: { loadHeader: load.loadHeader, stops } }, creds);
-    steps.push({ op: 'importLoad', label, ok: !!r.ok, appMessageLogId: r.appMessageLogId ?? null, error: r.ok ? null : (r.error || 'failed') });
+    // FORENSICS: keep exactly what was sent (header + stop order) and exactly what NuVizz said
+    // (verbatim ack). An async import that "succeeds" and never lands is only diagnosable from
+    // this pair — it rides the op ledger into Firestore and the client console.
+    steps.push({
+      op: 'importLoad', label, ok: !!r.ok, appMessageLogId: r.appMessageLogId ?? null,
+      ackText: r.ackText ?? null, httpStatus: r.httpStatus ?? null,
+      sentHeader: load.loadHeader, sentStopNbrs: stops.map((s: any) => String(s?.stopNbr ?? '')),
+      error: r.ok ? null : (r.error || 'failed'),
+    });
+    try { console.log('[nuvizz-write] importLoad', label, JSON.stringify({ loadNbr, header: load.loadHeader, stopNbrs: stops.map((s: any) => s?.stopNbr), ack: r.ackText ?? r.error ?? null })); } catch { /* log only */ }
     return r;
   };
   const poll = async (label: string) => {

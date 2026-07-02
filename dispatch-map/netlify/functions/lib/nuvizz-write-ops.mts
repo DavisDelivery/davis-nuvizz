@@ -523,7 +523,7 @@ export function buildImportBody(load: { loadHeader: any; stops: any[] }, cc: str
  * ACCEPTED ("Async import is SUCCESS … AppMessageLog Id-…"), NOT that it landed — the caller
  * MUST run the convergence read-back (poll load/info, compare to.seq) before trusting it.
  */
-export function importOk(httpOk: boolean, j: any): { ok: boolean; async: true; appMessageLogId: string | null; error: string | null } {
+export function importOk(httpOk: boolean, j: any): { ok: boolean; async: true; appMessageLogId: string | null; ackText: string | null; error: string | null } {
   const body = j || {};
   const text = [body.status, body.message, body._text].filter((x: any) => x != null).map(String).join(' ');
   const accepted = /success/i.test(text);
@@ -531,7 +531,9 @@ export function importOk(httpOk: boolean, j: any): { ok: boolean; async: true; a
   const ok = httpOk && accepted;
   // NB: on success the ack text itself lives in body.message — only consult firstError() when
   // NOT accepted, so the success message is never misread as an error string.
-  return { ok, async: true, appMessageLogId: m ? m[1] : null, error: ok ? null : (firstError(body) || `import status='${body?.status ?? ''}'`) };
+  // ackText: NuVizz's verbatim ack, kept for forensics — a "SUCCESS" that never lands is only
+  // diagnosable from what was actually said + sent (see the write-log endpoint).
+  return { ok, async: true, appMessageLogId: m ? m[1] : null, ackText: text.trim().slice(0, 300) || null, error: ok ? null : (firstError(body) || `import status='${body?.status ?? ''}'`) };
 }
 
 // Field whitelists for echoing a stop's "to" block back as an import reference. Echo only what
