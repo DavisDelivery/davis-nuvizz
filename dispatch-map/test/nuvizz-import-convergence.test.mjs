@@ -5,10 +5,16 @@
 //    values — the requester stub records every POST);
 // 3. quick mode fires ONE import + ONE confirm poll (the backoff wait lives client-side);
 // 4. every result self-reports its call anatomy { updates, infos }.
-import test from 'node:test';
+import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { runImportLoad } from '../netlify/functions/lib/nuvizz-write.mts';
+
+// Since the Jul 2 incident the import engine needs the server's EXPLICIT enable —
+// these tests exercise the convergence machinery, so open the gate for the file.
+let prevGate;
+before(() => { prevGate = process.env.NUVIZZ_LOAD_IMPORT; process.env.NUVIZZ_LOAD_IMPORT = 'on'; });
+after(() => { if (prevGate === undefined) delete process.env.NUVIZZ_LOAD_IMPORT; else process.env.NUVIZZ_LOAD_IMPORT = prevGate; });
 import { normStopNbr, sameOrder } from '../netlify/functions/lib/nuvizz-write-ops.mts';
 
 const CREDS = { base: 'https://portal.nuvizz.com/deliverit/openapi/v7', companyCode: 'DAVIS', auth: 'Basic xyz' };

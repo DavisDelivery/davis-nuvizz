@@ -236,6 +236,28 @@ test('normalizeStop: pulls status + the load it is on now; absent load ⇒ unpla
   assert.equal(unplanned.assignedLoadNbr, null);
 });
 
+test('normalizeStop: surfaces freight + audit fields (incident forensics) — absent ⇒ null, never throws', () => {
+  const n = normalizeStop({ Stop: { stop: {
+    stopId: 's1', stopNbr: '007141834',
+    totalPallets: 1, totalCartons: 1, weight: 389, volume: 0, pronbr: 'PRO-834',
+    sourceType: 'CSV_IMPORT', insertedBy: 'davisadmin', insertedDttm: '2026-07-01 06:12:00', updatedDttm: '2026-07-02 10:33:00',
+  }, stopExecutionInfo: {}, load: {} } });
+  assert.equal(n.totalPallets, 1);
+  assert.equal(n.totalCartons, 1);     // Davis semantics: totalCartons = SKIDS
+  assert.equal(n.weight, 389);
+  assert.equal(n.volume, 0);           // Davis semantics: volume = LOOSE pieces
+  assert.equal(n.proNbr, 'PRO-834');
+  assert.equal(n.sourceType, 'CSV_IMPORT');
+  assert.equal(n.createdBy, 'davisadmin');
+  assert.equal(n.createdDttm, '2026-07-01 06:12:00');
+  assert.equal(n.updatedDttm, '2026-07-02 10:33:00');
+  const bare = normalizeStop({ Stop: { stop: { stopId: 's2' }, stopExecutionInfo: {}, load: {} } });
+  assert.equal(bare.totalCartons, null);
+  assert.equal(bare.weight, null);
+  assert.equal(bare.createdBy, null);
+  assert.equal(bare.sourceType, null);
+});
+
 test('normalizeLoad: loadId/versionId/stops + raw header retained for the edit echo', () => {
   const l = normalizeLoad({ Load: { loadHeader: { loadId: 'L1', loadNbr: 'BEN 2', routeName: 'BEN 2' }, loadExecutionInfo: { loadStatus: 'PLANNED' }, versionId: 'v9', stops: [{ stop: { stopId: 's1', stopNbr: '7', stopSeq: 1, stopType: 'DO' } }] } });
   assert.equal(l.loadId, 'L1');
