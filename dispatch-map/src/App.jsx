@@ -33,6 +33,7 @@ import { todayInET, isTodayET, formatDateForDisplay, formatDateLong } from './li
 import { pointInPolygon, latLngInBounds, boxFromCorners, formatReceivingHours, lineItemDims, moveItem, recomputeRoute, resequence, fmtTime12, DEFAULT_SERVICE_SEC } from './lib/routing-select.js';
 import { formatDateTime, tsToMillis, loadSummary, buildLoadAutoName } from './lib/routing-loads.js';
 import { callWrite, newClientOpId } from './lib/nuvizzWrite.js';
+import { BULK_FIELDS, parseDelimited, looksLikeHeader, autoMapColumns, mappedRowsToOrders, bulkRowMissing, bulkRowIsBlank, headerSignature } from './lib/bulk-orders.js';
 import { scanStop, scanStopFull } from './lib/signal-scanner';
 import { applyScannerResults } from './lib/customer-notes-writer';
 import { aiParse, aiChat, applyFilterSpec, summarizeSpec, buildTrimmedStops } from './lib/ai-search.js';
@@ -51,7 +52,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.34.0';
+const APP_VERSION = '0.35.0';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -96,6 +97,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.35.0', 'Bulk Add — a new tab to create MANY orders at once. Two ways in: (1) fill an editable GRID of rows (Add row / Clear, each row shows ✓ ready or "need N" so you know what\'s missing before you send); (2) IMPORT a spreadsheet — drop a .xlsx or .csv, or paste rows straight from Excel/Google Sheets. The importer auto-detects your header row and maps the columns (consignee, address, city, state, zip, item, order#, PRO, pallets/cartons/weight); you confirm/fix the mapping once and it\'s remembered for that layout next time. Pickup location + service date are set ONCE for the whole batch (same saved-pickup picker as New Order). ○ Beta previews the count; ● LIVE creates them one at a time (each with its own idempotency key, so a mid-batch retry never duplicates). Successful rows drop off; any failures stay in the grid with the reason so you can fix and re-send. New orders land UNPLANNED — plan them onto loads in Routing.'],
   ['0.34.0', 'New Order: item description + multiple pickup locations + the Save-origin fix. (1) New "Item description" field (what\'s being delivered) rides along on the order (stored on NuVizz reference2 — read back on the first live create to confirm it sticks). (2) Pickup (ship-from) is now a SAVED LIST, not a single default: pick a location from the dropdown, or type a new one and "Save pickup location" — for when you\'re picking up from other places. (3) FIX: "Save as default origin" appeared to do nothing — it was silently saving an INCOMPLETE origin with no feedback (the placeholders "Buford"/"30518" look like real values but the fields were empty). The Save button is now disabled until every pickup field is filled, flashes "✓ Saved" when it works, and says "fill all pickup fields to save" when it can\'t. (Bulk multi-row entry + spreadsheet import is coming next.)'],
   ['0.33.10', 'Loads grid — new "Load ID" column, right after "% Done" (dispatch Map + Routing bottom panel, per debug report #352). Shows NuVizz\'s real load number (e.g. DAVIS000198197) — the "Load" column shows the friendly route name, which is all the stops feed carries; this reads the real id from the day\'s loads roster instead, matched by route name. Sortable; "—" when the roster hasn\'t resolved a number for that load yet.'],
   ['0.33.9', 'Tomorrow\'s roster: back to ONCE a day — but the capture only counts when the NUMBERS came through. Chad\'s correction to 0.33.8: tomorrow\'s load set is fixed once it exists, so there\'s nothing to re-pull every 15 minutes — the real Jul 1 failure was that the morning capture ran with the old parser (before the Load-Number column fix in 0.32.25 deployed), wrote every row with NO number, and the "non-empty → done" rule froze that number-less snapshot for the whole day. Now the scan re-tries each cycle ONLY until a roster with real DAVIS000… numbers lands, then stops for the day — steady state one cheap loads-list call per day, self-healing if a capture ever comes back number-less again (bad column/parser/NuVizz hiccup). Manual Refresh stays the on-demand override.'],
@@ -5078,6 +5080,13 @@ function MobileAppBar({ version, onChipMenu, chipMenuOpen, onSelectMenu, smsUnre
               role="menuitem"
             >
               <Package size={12} /> New Order
+            </button>
+            <button
+              className="w-full text-left px-3 py-2 hover:bg-slate-50 inline-flex items-center gap-2 border-t border-slate-100"
+              onClick={() => onSelectMenu('bulk')}
+              role="menuitem"
+            >
+              <LayoutList size={12} /> Bulk Add
             </button>
             <button
               className="w-full text-left px-3 py-2 hover:bg-slate-50 inline-flex items-center gap-2 border-t border-slate-100"
@@ -13014,7 +13023,7 @@ function Shell() {
     setChipMenuOpen(false);
     if (next === 'debug') { setDebugOpen(true); return; }
     if (next === 'messages') { openMessages(); return; }
-    setTab(next === 'diagnostics' ? 'diag' : next === 'routing' ? 'routing' : next === 'neworder' ? 'neworder' : 'map');
+    setTab(next === 'diagnostics' ? 'diag' : next === 'routing' ? 'routing' : next === 'neworder' ? 'neworder' : next === 'bulk' ? 'bulk' : 'map');
   };
 
   return (
@@ -13056,6 +13065,7 @@ function Shell() {
             <TabBtn label="Map" icon={<MapPin size={14} />} active={tab === 'map'} onClick={() => setTab('map')} />
             {ROUTING_FLAG && <TabBtn label="Routing (beta)" icon={<MapPinned size={14} />} active={tab === 'routing'} onClick={() => setTab('routing')} />}
             <TabBtn label="New Order" icon={<Package size={14} />} active={tab === 'neworder'} onClick={() => setTab('neworder')} />
+            <TabBtn label="Bulk Add" icon={<LayoutList size={14} />} active={tab === 'bulk'} onClick={() => setTab('bulk')} />
             <TabBtn label="Messages" icon={<MessageSquare size={14} />} active={messagesOpen} onClick={openMessages} badge={smsUnread} />
             <TabBtn label="Diagnostics" icon={<Activity size={14} />} active={tab === 'diag'} onClick={() => setTab('diag')} />
             <TabBtn label="Debug" icon={<Bug size={14} />} active={debugOpen} onClick={() => setDebugOpen(true)} />
@@ -13065,7 +13075,7 @@ function Shell() {
         </header>
       )}
 
-      {tab === 'map' ? <MapScreen onOpenMessages={openMessages} smsUnread={smsUnread} debugCaptureRef={debugCaptureRef} /> : (tab === 'routing' && ROUTING_FLAG) ? <RoutingScreen debugCaptureRef={debugCaptureRef} /> : tab === 'neworder' ? <NewOrderScreen /> : <DiagnosticsRoute />}
+      {tab === 'map' ? <MapScreen onOpenMessages={openMessages} smsUnread={smsUnread} debugCaptureRef={debugCaptureRef} /> : (tab === 'routing' && ROUTING_FLAG) ? <RoutingScreen debugCaptureRef={debugCaptureRef} /> : tab === 'neworder' ? <NewOrderScreen /> : tab === 'bulk' ? <BulkOrderScreen /> : <DiagnosticsRoute />}
 
       {/* Messages floats OVER the current screen (you never leave the map). */}
       {messagesOpen && <MessagesPanel messages={inbound} seenAt={smsSeenAt} onClose={closeMessages} customerContacts={customerContacts} />}
@@ -13379,6 +13389,326 @@ function NewOrderScreen() {
             style={{ background: live ? '#dc2626' : BRAND }}
           >
             <Plus size={16} /> {busy ? 'Creating…' : live ? 'Create order (LIVE)' : 'Preview (Beta)'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Bulk Add — create MANY delivery orders at once: an editable grid of rows plus a
+// paste/drop importer (Excel/Sheets paste, .csv, .xlsx). Pickup + service date are set ONCE
+// for the whole batch (each order can still override its own delivery fields). Like New Order
+// it's gated by a Beta/Live toggle + the server write flag; each row creates an UNPLANNED order.
+const BULK_MAX_ROWS = 300;   // soft cap per batch (keeps one Save from hammering NuVizz)
+function bulkEmptyRow() { const o = {}; for (const f of BULK_FIELDS) o[f.key] = ''; return o; }
+const BULK_COLMAP_KEY = 'dd_bulk_colmap';
+
+function BulkOrderScreen() {
+  // Shared pickup for the batch (same saved-origins model as New Order).
+  const [origins, setOrigins] = useState(() => loadSavedOrigins());
+  const [origin, setOrigin] = useState(() => {
+    const list = loadSavedOrigins();
+    try { const d = coerceOrigin(JSON.parse(localStorage.getItem(NEWORDER_ORIGIN_KEY) || 'null')); if (originIsComplete(d)) return d; } catch { /* ignore */ }
+    return list[0] || NEWORDER_ORIGIN_DEFAULT;
+  });
+  const originComplete = originIsComplete(origin);
+  const originIsSaved = origins.some((o) => originKey(o) === originKey(origin));
+  const [showOrigin, setShowOrigin] = useState(!originComplete);
+  const [originSaved, setOriginSaved] = useState(false);
+  const [serviceDate, setServiceDate] = useState(todayLocalYMD());
+  const [live, setLive] = useState(false);
+  const [rows, setRows] = useState(() => [bulkEmptyRow(), bulkEmptyRow(), bulkEmptyRow()]);
+  const [pasteText, setPasteText] = useState('');
+  const [importer, setImporter] = useState(null);   // { columns, dataRows, mapping, sig }
+  const [importErr, setImportErr] = useState('');
+  const [dragOver, setDragOver] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [progress, setProgress] = useState(null);    // { done, total }
+  const [results, setResults] = useState(null);      // { beta?, created, updated, failed, rows:[…] }
+  const fileRef = useRef(null);
+
+  const setOrig = (k) => (e) => { setOriginSaved(false); setOrigin((o) => ({ ...o, [k]: e.target.value })); };
+  const pickOrigin = (e) => {
+    setOriginSaved(false);
+    const k = e.target.value;
+    if (!k) { setOrigin(coerceOrigin({ ...NEWORDER_ORIGIN_DEFAULT, name: '', state: 'GA' })); return; }
+    const found = origins.find((o) => originKey(o) === k);
+    if (found) setOrigin(coerceOrigin(found));
+  };
+  const persistOrigin = () => {
+    if (!originComplete) return;
+    const o = coerceOrigin(origin);
+    const next = [...origins.filter((x) => originKey(x) !== originKey(o)), o];
+    setOrigins(next);
+    try { localStorage.setItem(NEWORDER_ORIGINS_KEY, JSON.stringify(next)); localStorage.setItem(NEWORDER_ORIGIN_KEY, JSON.stringify(o)); } catch { /* ignore */ }
+    setOriginSaved(true);
+  };
+
+  const setCell = (i, key) => (e) => { const v = e.target.value; setRows((rs) => rs.map((r, idx) => (idx === i ? { ...r, [key]: v } : r))); };
+  const addRow = () => setRows((rs) => (rs.length >= BULK_MAX_ROWS ? rs : [...rs, bulkEmptyRow()]));
+  const removeRow = (i) => setRows((rs) => (rs.length > 1 ? rs.filter((_, idx) => idx !== i) : [bulkEmptyRow()]));
+  const clearRows = () => { setRows([bulkEmptyRow(), bulkEmptyRow(), bulkEmptyRow()]); setResults(null); };
+
+  const activeRows = rows.filter((r) => !bulkRowIsBlank(r));
+  const readyCount = activeRows.filter((r) => bulkRowMissing(r).length === 0).length;
+  const incompleteCount = activeRows.length - readyCount;
+  const canCreate = originComplete && !!serviceDate && readyCount > 0 && !busy;
+
+  // ── Importer (paste / file) ──
+  const recallMapping = (sig) => { if (!sig) return null; try { return (JSON.parse(localStorage.getItem(BULK_COLMAP_KEY) || '{}'))[sig] || null; } catch { return null; } };
+  const rememberMapping = (sig, mapping) => { if (!sig) return; try { const all = JSON.parse(localStorage.getItem(BULK_COLMAP_KEY) || '{}'); all[sig] = mapping; localStorage.setItem(BULK_COLMAP_KEY, JSON.stringify(all)); } catch { /* ignore */ } };
+
+  const finishIngest = (parsed) => {
+    setImportErr('');
+    if (!parsed || !parsed.length) { setImportErr('Nothing to import — the paste/file was empty.'); return; }
+    const hasHeader = looksLikeHeader(parsed[0]);
+    const headerCells = hasHeader ? parsed[0] : parsed[0].map((_, i) => `Column ${i + 1}`);
+    const dataRows = hasHeader ? parsed.slice(1) : parsed;
+    if (!dataRows.length) { setImportErr('Found a header but no data rows.'); return; }
+    const sig = hasHeader ? headerSignature(parsed[0]) : null;
+    const mapping = recallMapping(sig) || autoMapColumns(hasHeader ? parsed[0] : []);
+    setImporter({ columns: headerCells.map((h, i) => ({ idx: i, label: String(h || `Column ${i + 1}`) })), dataRows, mapping, sig, hasHeader });
+  };
+  const ingestText = (text) => finishIngest(parseDelimited(text));
+  const ingestAoa = (aoa) => {
+    const parsed = (aoa || []).map((r) => (Array.isArray(r) ? r.map((c) => (c == null ? '' : String(c))) : [String(r ?? '')]));
+    while (parsed.length && parsed[parsed.length - 1].every((x) => String(x).trim() === '')) parsed.pop();
+    finishIngest(parsed);
+  };
+  const onFile = async (file) => {
+    if (!file) return;
+    setImportErr('');
+    const name = (file.name || '').toLowerCase();
+    try {
+      if (name.endsWith('.xlsx') || name.endsWith('.xls')) {
+        const mod = await import('xlsx');   // lazy — the parser only loads when a spreadsheet is dropped
+        const XLSX = mod?.read ? mod : (mod?.default || mod);   // xlsx is CJS: named exports may sit on .default under Vite
+        const wb = XLSX.read(await file.arrayBuffer(), { type: 'array' });
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        ingestAoa(XLSX.utils.sheet_to_json(ws, { header: 1, blankrows: false, defval: '' }));
+      } else {
+        ingestText(await file.text());   // .csv / .tsv / .txt
+      }
+    } catch (err) { setImportErr(`Could not read "${file.name}": ${err?.message || 'unreadable file'}`); }
+  };
+  const applyImport = () => {
+    const orders = mappedRowsToOrders(importer.dataRows, importer.mapping).filter((o) => !bulkRowIsBlank(o));
+    if (!orders.length) { setImportErr('No rows to import with the current column mapping.'); return; }
+    const filled = orders.slice(0, BULK_MAX_ROWS).map((o) => ({ ...bulkEmptyRow(), ...o }));
+    setRows((rs) => { const keep = rs.filter((r) => !bulkRowIsBlank(r)); return [...keep, ...filled, bulkEmptyRow()].slice(0, BULK_MAX_ROWS + 1); });
+    rememberMapping(importer.sig, importer.mapping);
+    setImporter(null); setPasteText(''); setResults(null);
+  };
+
+  // ── Create all ready rows ──
+  const createAll = async () => {
+    if (!canCreate) return;
+    const targets = rows.map((r, idx) => ({ r, idx })).filter(({ r }) => !bulkRowIsBlank(r) && bulkRowMissing(r).length === 0);
+    if (!targets.length) return;
+    if (!live) { setResults({ beta: true, created: 0, updated: 0, failed: 0, rows: [], msg: `○ Beta — would create ${targets.length} order(s) (nothing sent). Flip to ● LIVE to create them in NuVizz.` }); return; }
+    persistOrigin();
+    const settings = { origin: { name: origin.name.trim(), addr1: origin.addr1.trim(), city: origin.city.trim(), state: origin.state.trim(), zip: origin.zip.trim() }, serviceDate, timeZone: 'America/New_York' };
+    setBusy(true); setResults(null); setProgress({ done: 0, total: targets.length });
+    const out = [];
+    // Sequential — one create at a time, each with its own idempotency key, to respect the
+    // NuVizz daily-call ceiling/breaker and never fire a duplicate on a mid-batch retry.
+    for (let k = 0; k < targets.length; k++) {
+      const { r, idx } = targets[k];
+      const payloadRow = {
+        name: r.name.trim(), addr1: r.addr1.trim(), addr2: r.addr2.trim() || null,
+        city: r.city.trim(), state: r.state.trim(), zip: r.zip.trim(),
+        stopNbr: r.stopNbr.trim() || null, pro: r.pro.trim() || null, itemDesc: r.itemDesc.trim() || null,
+        pallets: r.pallets.trim() || null, cartons: r.cartons.trim() || null, weight: r.weight.trim() || null,
+      };
+      let res;
+      try { res = await callWrite('createStop', { row: payloadRow, settings }, { dryRun: false, clientOpId: newClientOpId(), createdBy: 'dispatcher-bulk' }); }
+      catch (e) { res = { ok: false, error: e?.message || 'network error' }; }
+      const ok = !!(res.ok && res.result?.ok);
+      out.push({ idx, name: payloadRow.name, ok, updated: !!res.result?.updated, nbr: res.result?.entityNbr || payloadRow.stopNbr || '', error: ok ? null : (res.error || res.result?.error || 'write error') });
+      setProgress({ done: k + 1, total: targets.length });
+    }
+    setBusy(false); setProgress(null);
+    const okIdx = new Set(out.filter((o) => o.ok).map((o) => o.idx));
+    // Keep failed + incomplete rows for a retry; drop the ones that succeeded.
+    setRows((rs) => { const kept = rs.filter((r, idx) => !bulkRowIsBlank(r) && !okIdx.has(idx)); return kept.length ? kept : [bulkEmptyRow()]; });
+    setResults({ created: out.filter((o) => o.ok && !o.updated).length, updated: out.filter((o) => o.ok && o.updated).length, failed: out.filter((o) => !o.ok).length, rows: out });
+  };
+
+  const gridInput = 'w-full border border-slate-300 rounded px-1.5 py-1 text-[12px] focus:outline-none focus:ring-1 focus:ring-blue-300';
+
+  return (
+    <div className="flex-1 min-h-0 overflow-auto bg-slate-50">
+      <div className="max-w-6xl mx-auto p-4 space-y-4">
+        {/* Header + Beta/Live */}
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <h1 className="text-lg font-bold text-slate-800 flex items-center gap-2"><LayoutList size={18} /> Bulk Add</h1>
+            <p className="text-[12px] text-slate-500">Create many orders at once — fill the grid or paste/drop a spreadsheet. Each lands <b>unplanned</b>.</p>
+          </div>
+          <button
+            onClick={() => setLive((v) => !v)}
+            title={live ? 'LIVE — Create sends the orders to NuVizz. Click for Beta (preview only).' : 'BETA — Create only previews (nothing sent). Click to go Live.'}
+            className={`inline-flex items-center gap-1 text-[12px] font-bold px-2.5 py-1.5 rounded border shrink-0 ${live ? 'border-red-600 bg-red-600 text-white' : 'border-slate-300 bg-white text-slate-600 hover:bg-slate-50'}`}
+          >
+            {live ? '● LIVE' : '○ Beta'}
+          </button>
+        </div>
+
+        {/* Shared pickup + service date (applies to the whole batch) */}
+        <div className="bg-white border border-slate-200 rounded-lg p-3">
+          <button onClick={() => setShowOrigin((v) => !v)} className="w-full flex items-center justify-between text-left">
+            <span className="text-[13px] font-semibold text-slate-700">Pickup + date <span className="font-normal text-slate-400">(applies to all rows)</span>{!originComplete && <span className="ml-2 text-[11px] font-normal text-amber-600">— required</span>}</span>
+            <span className="text-[12px] text-slate-500 inline-flex items-center gap-1">
+              {originComplete && !showOrigin ? `${origin.name} · ${origin.city}, ${origin.state} · ${serviceDate}` : ''}
+              {showOrigin ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+            </span>
+          </button>
+          {showOrigin && (
+            <div className="mt-3 space-y-2">
+              {origins.length > 0 && (
+                <label className="block">
+                  <span className="text-[11px] font-medium text-slate-500">Pickup location</span>
+                  <select value={originIsSaved ? originKey(origin) : ''} onChange={pickOrigin} className="mt-0.5 w-full border border-slate-300 rounded px-2 py-1.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-300">
+                    {origins.map((o) => <option key={originKey(o)} value={originKey(o)}>{o.name} — {o.city}, {o.state}</option>)}
+                    <option value="">＋ New pickup location…</option>
+                  </select>
+                </label>
+              )}
+              <OrderField label="Pickup name" req value={origin.name} onChange={setOrig('name')} placeholder="Buford Terminal" />
+              <OrderField label="Address" req value={origin.addr1} onChange={setOrig('addr1')} placeholder="123 Depot Rd" />
+              <div className="grid grid-cols-6 gap-2">
+                <OrderField className="col-span-3" label="City" req value={origin.city} onChange={setOrig('city')} placeholder="Buford" />
+                <OrderField className="col-span-1" label="State" req value={origin.state} onChange={setOrig('state')} placeholder="GA" />
+                <OrderField className="col-span-2" label="ZIP" req value={origin.zip} onChange={setOrig('zip')} placeholder="30518" />
+              </div>
+              <div className="flex items-end gap-3 flex-wrap">
+                <OrderField label="Service date" req type="date" value={serviceDate} onChange={(e) => setServiceDate(e.target.value)} className="max-w-[200px]" />
+                <button onClick={persistOrigin} disabled={!originComplete} title={originComplete ? 'Save this pickup location for reuse' : 'Fill all pickup fields to save'} className={`text-[12px] font-medium inline-flex items-center gap-1 px-2.5 py-1 rounded border ${originComplete ? 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50' : 'border-slate-200 bg-slate-50 text-slate-400 cursor-not-allowed'}`}><Save size={13} /> {originIsSaved ? 'Update pickup location' : 'Save pickup location'}</button>
+                {originSaved && <span className="text-[12px] font-medium text-green-700 inline-flex items-center gap-1"><FileCheck size={13} /> Saved</span>}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Import: drop / choose / paste */}
+        <div className="bg-white border border-slate-200 rounded-lg p-3 space-y-2">
+          <div className="text-[13px] font-semibold text-slate-700">Import a spreadsheet <span className="font-normal text-slate-400">(optional)</span></div>
+          <div
+            onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+            onDragLeave={() => setDragOver(false)}
+            onDrop={(e) => { e.preventDefault(); setDragOver(false); onFile(e.dataTransfer?.files?.[0]); }}
+            className={`rounded-lg border-2 border-dashed px-3 py-4 text-center text-[12px] ${dragOver ? 'border-blue-400 bg-blue-50 text-blue-700' : 'border-slate-300 text-slate-500'}`}
+          >
+            <FileText size={18} className="inline mb-1" /><br />
+            Drop a <b>.xlsx</b> or <b>.csv</b> here, or <button onClick={() => fileRef.current?.click()} className="text-blue-600 underline font-medium">choose a file</button>.
+            <input ref={fileRef} type="file" accept=".csv,.tsv,.txt,.xlsx,.xls" className="hidden" onChange={(e) => { onFile(e.target.files?.[0]); e.target.value = ''; }} />
+          </div>
+          <div className="text-[11px] text-slate-500">…or paste rows copied from Excel / Google Sheets:</div>
+          <textarea
+            value={pasteText} onChange={(e) => setPasteText(e.target.value)}
+            placeholder={'Consignee\tAddress\tCity\tState\tZip\tItem\nACME\t500 Main St\tLawrenceville\tGA\t30046\tappliances'}
+            className="w-full h-20 border border-slate-300 rounded px-2 py-1.5 text-[12px] font-mono focus:outline-none focus:ring-2 focus:ring-blue-300"
+          />
+          <div className="flex items-center gap-2">
+            <button onClick={() => ingestText(pasteText)} disabled={!pasteText.trim()} className={`text-[12px] font-medium inline-flex items-center gap-1 px-2.5 py-1 rounded border ${pasteText.trim() ? 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50' : 'border-slate-200 bg-slate-50 text-slate-400 cursor-not-allowed'}`}>Load pasted rows</button>
+            {importErr && <span className="text-[12px] text-red-600 inline-flex items-center gap-1"><AlertTriangle size={13} /> {importErr}</span>}
+          </div>
+
+          {/* Column mapping confirm */}
+          {importer && (
+            <div className="mt-2 border border-blue-200 bg-blue-50/50 rounded-lg p-3 space-y-2">
+              <div className="text-[12px] font-semibold text-slate-700">Map columns <span className="font-normal text-slate-500">({importer.dataRows.length} row{importer.dataRows.length === 1 ? '' : 's'}{importer.hasHeader ? '' : ' — no header detected, map by position'})</span></div>
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                {importer.columns.map((c) => (
+                  <label key={c.idx} className="block">
+                    <span className="text-[11px] text-slate-500 truncate block" title={c.label}>{c.label}</span>
+                    <select
+                      value={importer.mapping[c.idx] || ''}
+                      onChange={(e) => setImporter((im) => ({ ...im, mapping: { ...im.mapping, [c.idx]: e.target.value } }))}
+                      className="mt-0.5 w-full border border-slate-300 rounded px-1.5 py-1 text-[12px] bg-white"
+                    >
+                      <option value="">— skip —</option>
+                      {BULK_FIELDS.map((f) => <option key={f.key} value={f.key}>{f.label}{f.required ? ' *' : ''}</option>)}
+                    </select>
+                  </label>
+                ))}
+              </div>
+              <div className="flex items-center gap-2">
+                <button onClick={applyImport} className="text-[12px] font-semibold inline-flex items-center gap-1 px-3 py-1 rounded text-white" style={{ background: BRAND }}><Plus size={13} /> Import {importer.dataRows.length} row{importer.dataRows.length === 1 ? '' : 's'}</button>
+                <button onClick={() => setImporter(null)} className="text-[12px] font-medium px-2.5 py-1 rounded border border-slate-300 bg-white text-slate-600 hover:bg-slate-50">Cancel</button>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* The grid */}
+        <div className="bg-white border border-slate-200 rounded-lg p-3 space-y-2">
+          <div className="flex items-center justify-between">
+            <div className="text-[13px] font-semibold text-slate-700">Orders <span className="font-normal text-slate-400">({activeRows.length} filled{incompleteCount ? ` · ${incompleteCount} incomplete` : ''})</span></div>
+            <div className="flex items-center gap-2">
+              <button onClick={addRow} className="text-[12px] font-medium inline-flex items-center gap-1 px-2.5 py-1 rounded border border-slate-300 bg-white text-slate-700 hover:bg-slate-50"><Plus size={13} /> Add row</button>
+              <button onClick={clearRows} className="text-[12px] font-medium inline-flex items-center gap-1 px-2.5 py-1 rounded border border-slate-300 bg-white text-slate-600 hover:bg-red-50 hover:text-red-700 hover:border-red-200"><Trash2 size={13} /> Clear</button>
+            </div>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="text-[12px] border-collapse">
+              <thead>
+                <tr className="text-left text-[11px] text-slate-500">
+                  <th className="pr-2 pb-1 font-medium w-6">#</th>
+                  {BULK_FIELDS.map((f) => <th key={f.key} className="px-1 pb-1 font-medium whitespace-nowrap">{f.label}{f.required && <span className="text-red-500"> *</span>}</th>)}
+                  <th className="px-1 pb-1 font-medium">Status</th>
+                  <th className="pb-1"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((r, i) => {
+                  const blank = bulkRowIsBlank(r);
+                  const missing = blank ? [] : bulkRowMissing(r);
+                  return (
+                    <tr key={i} className="align-top">
+                      <td className="pr-2 py-0.5 text-slate-400 tabular-nums">{i + 1}</td>
+                      {BULK_FIELDS.map((f) => (
+                        <td key={f.key} className="px-1 py-0.5">
+                          <input value={r[f.key]} onChange={setCell(i, f.key)} className={`${gridInput} ${f.key === 'name' || f.key === 'addr1' ? 'min-w-[150px]' : f.key === 'itemDesc' ? 'min-w-[140px]' : f.key === 'city' ? 'min-w-[110px]' : f.key === 'state' ? 'w-12' : f.key === 'zip' ? 'w-20' : 'w-16'} ${!blank && missing.includes(f.key) ? 'border-amber-400 bg-amber-50' : ''}`} />
+                        </td>
+                      ))}
+                      <td className="px-1 py-0.5 whitespace-nowrap">
+                        {blank ? <span className="text-slate-300">—</span> : missing.length ? <span className="text-amber-600 inline-flex items-center gap-1"><AlertTriangle size={12} /> need {missing.length}</span> : <span className="text-green-600 inline-flex items-center gap-1"><FileCheck size={12} /> ready</span>}
+                      </td>
+                      <td className="py-0.5"><button onClick={() => removeRow(i)} title="Remove row" className="text-slate-400 hover:text-red-600"><X size={14} /></button></td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        {/* Results */}
+        {results && (
+          <div className={`rounded-lg px-3 py-2 text-[13px] ${results.beta ? 'bg-slate-100 text-slate-700 border border-slate-200' : results.failed ? 'bg-amber-50 text-amber-800 border border-amber-200' : 'bg-green-50 text-green-800 border border-green-200'}`}>
+            {results.beta ? results.msg : (
+              <div className="space-y-1">
+                <div className="font-medium">{results.failed ? `⚠ ${results.created + results.updated} of ${results.created + results.updated + results.failed} created` : `✓ Created ${results.created}${results.updated ? ` (+${results.updated} updated existing)` : ''} order(s) — now UNPLANNED; plan them onto loads in Routing.`}</div>
+                {results.failed > 0 && (
+                  <ul className="list-disc ml-5 text-[12px]">
+                    {results.rows.filter((o) => !o.ok).slice(0, 12).map((o, k) => <li key={k}><b>{o.name || `Row ${o.idx + 1}`}</b>: {o.error}</li>)}
+                    {results.failed > 12 && <li>…and {results.failed - 12} more (still in the grid to retry).</li>}
+                  </ul>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Create */}
+        <div className="flex items-center justify-between gap-3 pb-6">
+          <span className="text-[12px] text-slate-500">
+            {!originComplete ? 'Set the pickup + service date first.' : readyCount === 0 ? 'Fill at least one row (required * fields).' : busy && progress ? `Creating ${progress.done}/${progress.total}…` : live ? `Ready — this WILL create ${readyCount} order(s) in NuVizz${incompleteCount ? ` (${incompleteCount} incomplete row(s) skipped)` : ''}.` : `Beta — Create previews only (${readyCount} ready).`}
+          </span>
+          <button onClick={createAll} disabled={!canCreate} className={`inline-flex items-center gap-1.5 px-4 py-2 rounded font-semibold text-white text-sm shrink-0 ${canCreate ? '' : 'opacity-40 cursor-not-allowed'}`} style={{ background: live ? '#dc2626' : BRAND }}>
+            <Plus size={16} /> {busy ? 'Creating…' : live ? `Create ${readyCount} order(s) (LIVE)` : `Preview ${readyCount} (Beta)`}
           </button>
         </div>
       </div>
