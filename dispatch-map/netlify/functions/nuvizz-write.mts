@@ -62,10 +62,10 @@ function planFor(op: WriteOp, payload: any): string[] {
         // The Confirm modal tells you WHICH engine will fire — the classic anchor engine, or (when
         // the panel's engine toggle sent useImport) the one-call async import + convergence reads.
         if (ordered.length) bits.push(payload?.useImport === true && !loadImportBlocked()
-          ? `set ${ordered.length} stop(s) in order (ONE async load import + convergence read-backs — IMPORT ENGINE)`
+          ? `set ${ordered.length} stop(s) in order (TWO-LEVER IMPORT ENGINE: not-yet-planned orders are first planned with insertStops — real records, never cloned — then ONE full-echo ordering import + convergence read-backs)`
           : `set ${ordered.length} stop(s) in order (anchor remove + one-at-a-time insert)`);
-        // Inline creation (item A): these orders don't exist yet — the import itself creates them.
-        if (inline) bits.push(`create ${inline} NEW order(s) INLINE in the import (no per-stop pre-creates)`);
+        // Inline creation (item A, existence-gated since Jul 2): the import itself creates them.
+        if (inline) bits.push(`create ${inline} NEW order(s) INLINE in the import (each order # first verified ABSENT in NuVizz — a collision is refused, never cloned)`);
       }
       if (L?.driverId != null && String(L?.driverId).trim() !== '') bits.push(`assign ${L?.driverName || L?.driverId}`);
       if (L?.dispatch) bits.push('dispatch');

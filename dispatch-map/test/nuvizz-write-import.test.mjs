@@ -471,13 +471,15 @@ test('board Save (import mode): reorder = ONE import echoing the load\'s own rec
   });
 });
 
-test('board Save (import mode): planning UNPLANNED orders — refs read via stop/info; empty load origin falls back to the client ship-from', async () => {
+test('board Save (import mode): planning UNPLANNED orders — LEVER 1 bulk-inserts the REAL records, LEVER 2 orders full echoes', async () => {
   await withGate(async () => {
     const { requester, calls } = stub([
-      rawLoadDoc(L1, L1ID, []),                 // fetchLoad: an EMPTY load (no stops to echo origin from)
-      stopDoc('X'),                             // getStop X (unplanned)
-      stopDoc('Y'),                             // getStop Y (unplanned)
-      ACK,                                      // import
+      rawLoadDoc(L1, L1ID, []),                 // fetchLoad: an EMPTY load
+      stopDoc('X'),                             // arrival resolution: X unplanned (stopId id-X)
+      stopDoc('Y'),                             // arrival resolution: Y unplanned (stopId id-Y)
+      { json: { status: 'SUCCESS' } },          // LEVER 1: ONE bulk insertStops — the REAL records
+      rawLoadDoc(L1, L1ID, ['X', 'Y']),         // re-read: the arrivals' actual on-load records
+      ACK,                                      // LEVER 2: the ordering import (full echoes)
       rawLoadDoc(L1, L1ID, ['X', 'Y']),         // poll: converged
     ]);
     const r = await runCommitBoardImport(requester, {
@@ -485,10 +487,18 @@ test('board Save (import mode): planning UNPLANNED orders — refs read via stop
       origin: { name: 'CLIENT WHSE', addr1: '9 Client Way', city: 'Buford', state: 'GA', zip: '30518' },
     }, CREDS, NOSLEEP);
     assert.equal(r.ok, true);
+    // Membership went through insertStops with the arrivals' stopIds — NEVER the import.
+    const ins = calls.find((c) => /insertstops/.test(c.url));
+    assert.deepEqual(ins.body.insertStopIds, ['id-X', 'id-Y']);
+    assert.equal(ins.body.loadId, L1ID);
+    assert.ok(calls.findIndex((c) => /insertstops/.test(c.url)) < calls.findIndex((c) => /load\/update\/default/.test(c.url)), 'insert BEFORE the ordering import');
     const imp = calls.find((c) => /load\/update\/default/.test(c.url));
     assert.deepEqual(imp.body.loads[0].stops.map((s) => s.stopNbr), ['X', 'Y']);
     assert.equal(imp.body.loads[0].stops[0].to.address.name, 'CONSIGNEE X');
-    assert.equal(imp.body.loads[0].loadHeader.originName, 'CLIENT WHSE');   // client fallback used
+    // Entries are echoed off the POST-INSERT re-read — from-block included (full echo).
+    assert.equal(imp.body.loads[0].stops[0].from.address.name, 'DAVIS WAREHOUSE');
+    // With the real records on the load, the header origin echoes their from-address.
+    assert.equal(imp.body.loads[0].loadHeader.originName, 'DAVIS WAREHOUSE');
   });
 });
 
@@ -634,14 +644,22 @@ test('board Save (import mode): unconfirmed import returns PENDING — no resend
   });
 });
 
-test('board Save (import mode): empty load takes its origin from the added stops\' FROM address (origin donor)', async () => {
+test('board Save (import mode): the added stops\' FROM address still donates the header origin when the re-read lacks from blocks', async () => {
   await withGate(async () => {
+    // A re-read whose raw stops carry NO from block (some tenants omit it) — the origin must
+    // then come from the arrival stopDocs' fromAddress donors captured at resolution time.
+    const reReadNoFrom = rawLoadDoc(L1, L1ID, ['X', 'Y']);
+    for (const s of reReadNoFrom.json.Load.stops) delete s.stop.from;
+    const convergedNoFrom = rawLoadDoc(L1, L1ID, ['X', 'Y']);
+    for (const s of convergedNoFrom.json.Load.stops) delete s.stop.from;
     const { requester, calls } = stub([
       rawLoadDoc(L1, L1ID, []),               // empty Draft load — nothing to echo origin from
       stopDoc('X', null, true),               // getStop X — carries the warehouse "from" address
       stopDoc('Y', null, true),               // getStop Y
+      { json: { status: 'SUCCESS' } },        // LEVER 1: bulk insert
+      reReadNoFrom,                           // re-read (no from blocks anywhere)
       ACK,
-      rawLoadDoc(L1, L1ID, ['X', 'Y']),       // converged
+      convergedNoFrom,                        // converged
     ]);
     // NO payload.origin — the donor must cover it.
     const r = await runCommitBoardImport(requester, { loads: [{ loadNbr: L1, loadId: L1ID, orderedStopNbrs: ['X', 'Y'] }] }, CREDS, NOSLEEP);
@@ -663,7 +681,7 @@ test('assembleImportHeader: a non-ISO (epoch) header date is never echoed — de
 
 const NOT_FOUND_501 = { status: 501, json: {} };   // load/static/info on the live tenant
 
-test('board Save (import mode): loadId-only EMPTY load — seed via insertstops, learn the number, then import', async () => {
+test('board Save (import mode): loadId-only EMPTY load — seed via insertstops, learn the number, then two-lever plan+order', async () => {
   _resetStaticInfoMemo();
   await withGate(async () => {
     const { requester, calls } = stub([
@@ -673,8 +691,10 @@ test('board Save (import mode): loadId-only EMPTY load — seed via insertstops,
       { json: { status: 'SUCCESS' } },         // SEED: insertstops(loadId, [id-X])
       stopDoc('X', L1),                        // read-back: X now on DAVIS…201 → the number!
       rawLoadDoc(L1, L1ID, ['X']),             // fetchLoad by the learned number (identity matches)
-      stopDoc('Y', null, true),                // ref for the second unplanned order
-      ACK,                                     // the ONE import (declarative — seats X and Y)
+      stopDoc('Y', null, true),                // arrival resolution for the second unplanned order
+      { json: { status: 'SUCCESS' } },         // LEVER 1: insertStops [id-Y] (the REAL record)
+      rawLoadDoc(L1, L1ID, ['X', 'Y']),        // re-read: both on the load
+      ACK,                                     // LEVER 2: the ordering import (full echoes)
       rawLoadDoc(L1, L1ID, ['X', 'Y']),        // converged
     ]);
     const r = await runCommitBoardImport(requester, { loads: [
@@ -682,9 +702,11 @@ test('board Save (import mode): loadId-only EMPTY load — seed via insertstops,
     ] }, CREDS, NOSLEEP);
     assert.equal(r.ok, true);
     assert.equal(r.loads[0].loadNbr, L1);
-    const seed = calls.find((c) => /insertstops/.test(c.url));
-    assert.deepEqual(seed.body.insertStopIds, ['id-X']);
-    assert.equal(seed.body.loadId, L1ID);
+    const inserts = calls.filter((c) => /insertstops/.test(c.url));
+    assert.equal(inserts.length, 2, 'the seed + the arrival plan — both real-record inserts');
+    assert.deepEqual(inserts[0].body.insertStopIds, ['id-X']);
+    assert.equal(inserts[0].body.loadId, L1ID);
+    assert.deepEqual(inserts[1].body.insertStopIds, ['id-Y']);
     const imp = calls.find((c) => /load\/update\/default/.test(c.url));
     assert.deepEqual(imp.body.loads[0].stops.map((s) => s.stopNbr), ['X', 'Y']);
     assert.ok(r.loads[0].steps.some((s) => s.op === 'seedLoad' && s.ok && s.loadNbr === L1));

@@ -13863,7 +13863,7 @@ function BulkOrderScreen() {
               <OrderField label="Load number" req value={loadNbr} onChange={(e) => setLoadNbr(e.target.value)} placeholder="e.g. an EMPTY Draft load's number, or a new one" />
               <OrderField label="Route name (shown on the board)" value={routeName} onChange={(e) => setRouteName(e.target.value)} placeholder="e.g. SUW 3" />
               <div className="sm:col-span-2 text-[11px] text-slate-500">
-                Point this at an <b>empty Draft load&apos;s number</b> to build onto it, or type a <b>new number</b> to create the load outright. If the number already carries stops, the create is refused (edit that load from the board instead).
+                Point this at an <b>empty Draft load&apos;s number</b> to build onto it, or type a <b>new number</b> to create the load outright. If the load number already carries stops, the create is refused (edit that load from the board instead) — and every Order&nbsp;# is first checked against NuVizz: a number that already exists is refused, never duplicated.
               </div>
             </div>
           )}
