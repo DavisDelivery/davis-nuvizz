@@ -20,7 +20,7 @@
 import { getCreds, basicAuthHeader } from './nuvizz-scan.mts';
 import {
   buildOpRequest, parseOpResponse, toEditHeader, normalizeLoad, planSequence, deliveryOrder,
-  importRefFromRaw, assembleImportHeader,
+  importRefFromRaw, assembleImportHeader, sameOrder,
   type SingleOp, type WriteOp, type WriteCreds,
 } from './nuvizz-write-ops.mts';
 import { isHashLikeId } from './nuvizz-list.mts';
@@ -574,6 +574,12 @@ export interface ImportPacing {
    *  Used when a Save carries MULTIPLE import loads: the fixed confirm budget doesn't scale,
    *  and the client verifier polls every load anyway. */
   skipConfirm?: boolean;
+  /** UNSTICK escalation (client ladder's last resort): fire the array REVERSED, one beat,
+   *  then the DESIRED order — the §10.1-verified cure for the async worker's stuck-append
+   *  state (same-direction re-sends demonstrably don't clear it: the Jul 2 2026 SUW session
+   *  appended the two membership-changed stops to the tail across 9 same-direction imports).
+   *  Skips the initial import (the desired order was already sent); 2 update calls + 1 poll. */
+  unstick?: boolean;
 }
 const realSleep = (ms: number) => new Promise<void>((res) => setTimeout(res, ms));
 
@@ -584,8 +590,9 @@ const realSleep = (ms: number) => new Promise<void>((res) => setTimeout(res, ms)
 async function pollUntilConverged(
   requester: RequesterLike, loadNbr: string, want: string[], creds: WriteCreds,
   pollMs: number, polls: number, sleep: (ms: number) => Promise<void>,
-): Promise<{ converged: boolean; seen: string[] | null; loadId: any; reads: number }> {
+): Promise<{ converged: boolean; seen: string[] | null; loadId: any; reads: number; seenHistory: Array<string[] | null> }> {
   let seen: string[] | null = null, loadId: any = null, reads = 0;
+  const seenHistory: Array<string[] | null> = [];   // EVERY poll's read-back, for the journal (directive #1)
   for (let i = 0; i < polls; i++) {
     await sleep(pollMs);
     const f = await fetchLoad(requester, loadNbr, creds);
@@ -593,6 +600,7 @@ async function pollUntilConverged(
     if (f.load) {
       loadId = f.load.loadId ?? loadId;
       seen = deliveryOrder(f.load);
+      seenHistory.push(seen);
       // STRICT: a mid-rebuild read can list all stops before the worker assigns their to.seq —
       // a missing seq degrades the sort to raw array order, which could read as a FALSE
       // convergence (and then assign/dispatch an order the worker may still change). Require a
@@ -600,12 +608,18 @@ async function pollUntilConverged(
       const seqsComplete = (f.load.stops || [])
         .filter((s: any) => String(s?.stopType ?? 'DO').toUpperCase() !== 'PU')
         .every((s: any) => s?.stopSeq != null && Number.isFinite(Number(s.stopSeq)));   // null coerces to 0 — check presence first
-      if (seqsComplete && seen.length === want.length && seen.every((n, k) => n === want[k])) {
-        return { converged: true, seen, loadId, reads };
+      // Comparison is NORMALIZED both sides (trim/case/zero-padding — sameOrder/normStopNbr):
+      // NuVizz's padding/typing must never read as "not converged". (Verified from the Jul 2
+      // journal that today's mismatches were REAL order differences, not padding — but the
+      // normalization guard costs nothing and closes that class for good.)
+      if (seqsComplete && sameOrder(seen, want)) {
+        return { converged: true, seen, loadId, reads, seenHistory };
       }
+    } else {
+      seenHistory.push(null);   // 404/no-load read (brand-new load not created yet)
     }
   }
-  return { converged: false, seen, loadId, reads };
+  return { converged: false, seen, loadId, reads, seenHistory };
 }
 
 /**
@@ -655,27 +669,52 @@ export async function runImportLoad(requester: RequesterLike, payload: any, cred
   };
   const poll = async (label: string) => {
     const c = await pollUntilConverged(requester, loadNbr, want, creds, pollMs, polls, sleep);
-    steps.push({ op: 'converge', label, ok: c.converged, reads: c.reads, seen: c.seen });
+    steps.push({ op: 'converge', label, ok: c.converged, reads: c.reads, seen: c.seen, seenHistory: c.seenHistory });
     loadId = c.loadId ?? loadId;
     return c;
   };
+  // Per-save call anatomy (directive #4): X load/update + Y load/info fired by THIS invocation.
+  // Rides the result into the journal + client console so every Save self-reports its cost.
+  const anatomy = () => ({
+    updates: steps.filter((s) => s.op === 'importLoad').length,
+    infos: steps.filter((s) => s.op === 'converge').reduce((n, s) => n + (s.reads || 0), 0),
+  });
   const done = (converged: boolean, seen: string[] | null) => ({
-    ok: converged, converged, loadNbr, loadId, requestedOrder: want, seenOrder: seen, steps,
+    ok: converged, converged, loadNbr, loadId, requestedOrder: want, seenOrder: seen, steps, calls: anatomy(),
     error: converged ? null : `importLoad: order did not converge after re-send + reverse-unstick — verify load ${loadNbr} in the portal before retrying`,
   });
 
+  // UNSTICK escalation (client ladder, quick): the desired order was ALREADY sent and the worker
+  // is in the stuck-append state — same-direction re-sends don't clear it (proven Jul 2 2026:
+  // nine same-direction imports, the two membership-changed stops appended every time). The
+  // §10.1-verified cure: REVERSED, one beat, then DESIRED. One invocation, 2 updates + 1 poll.
+  if (p.unstick === true) {
+    const rev = await fire([...load.stops].reverse(), 'reverse-unstick');
+    if (!rev.ok) return { ok: false, converged: false, loadNbr, loadId, requestedOrder: want, seenOrder: null, steps, calls: anatomy(), error: rev.error || 'reverse-unstick rejected' };
+    await sleep(pollMs); // one beat between the reversed and forward imports
+    const fwd = await fire(load.stops, 'forward-after-reverse');
+    if (!fwd.ok) return { ok: false, converged: false, loadNbr, loadId, requestedOrder: want, seenOrder: null, steps, calls: anatomy(), error: fwd.error || 'forward import rejected' };
+    if (p.skipConfirm === true) {   // multi-load unstick: the client polls; keep the invocation inside budget
+      return { ok: false, pending: true, converged: false, loadNbr, loadId, requestedOrder: want, seenOrder: null, steps, calls: anatomy(), error: null };
+    }
+    const cu = await poll('after-unstick');
+    if (cu.converged) return done(true, cu.seen);
+    return { ok: false, pending: true, converged: false, loadNbr, loadId, requestedOrder: want, seenOrder: cu.seen, steps, calls: anatomy(), error: null };
+  }
+
   // Phase 1 — the import, then poll.
   let r = await fire(load.stops, 'import');
-  if (!r.ok) return { ok: false, converged: false, loadNbr, loadId, requestedOrder: want, seenOrder: null, steps, error: r.error || 'import rejected' };
+  if (!r.ok) return { ok: false, converged: false, loadNbr, loadId, requestedOrder: want, seenOrder: null, steps, calls: anatomy(), error: r.error || 'import rejected' };
   if (p.skipConfirm === true) {
-    return { ok: false, pending: true, converged: false, loadNbr, loadId, requestedOrder: want, seenOrder: null, steps, error: null };
+    return { ok: false, pending: true, converged: false, loadNbr, loadId, requestedOrder: want, seenOrder: null, steps, calls: anatomy(), error: null };
   }
   let c = await poll('after-import');
   if (c.converged) return done(true, c.seen);
   if (p.quick === true) {
     // QUICK mode: the import is fired and accepted, just not CONFIRMED yet. Hand convergence
-    // to the caller (the client polls getLoad + re-Saves) instead of blocking this invocation.
-    return { ok: false, pending: true, converged: false, loadNbr, loadId, requestedOrder: want, seenOrder: c.seen, steps, error: null };
+    // to the caller (the client polls getLoad on a backoff + escalates) instead of blocking
+    // this invocation.
+    return { ok: false, pending: true, converged: false, loadNbr, loadId, requestedOrder: want, seenOrder: c.seen, steps, calls: anatomy(), error: null };
   }
 
   // Phase 2 — re-send the SAME import (the recipe's first unstick; also the reorder pass
@@ -742,7 +781,10 @@ export async function runCommitBoardImport(requester: RequesterLike, payload: an
   // loads back as `pending` for the CLIENT to verify (getLoad polls + re-Save resend). The full
   // resend/reverse recipe cannot fit a sync function's budget (the 10s default killed the first
   // live Save mid-flight); quick keeps a 1-2 load Save well inside the 26s window.
-  const boardPacing: ImportPacing = { pollMs: 3000, phaseWaitMs: 6000, quick: true, ...(pacing || {}), ...(payload?.convergence || {}) };
+  // ONE confirm poll at ~6s (was 2 polls at 3s): prod's async worker demonstrably takes 30-90s
+  // to seat an import, so a 3s poll never confirms and just spends a load/info. The client's
+  // backoff ladder (6/10/15/25s) owns the wait; this single poll only catches the fast case.
+  const boardPacing: ImportPacing = { pollMs: 6000, phaseWaitMs: 6000, quick: true, ...(pacing || {}), ...(payload?.convergence || {}) };
   const clientOrigin = payload?.origin ?? null;
 
   const legacy: any[] = [];   // loads the legacy engine keeps handling (see doc above)
@@ -835,7 +877,7 @@ export async function runCommitBoardImport(requester: RequesterLike, payload: an
       refs.push(ref);
     }
     if (err) { result.ok = false; result.error = err; imp.push({ L, loadNbr: loadNbrX, refs: [], curNbrs: new Set(), result }); continue; }
-    imp.push({ L, loadNbr: loadNbrX, load, refs, originDonors, curNbrs: new Set(rawByNbr.keys()), result });
+    imp.push({ L, loadNbr: loadNbrX, load, refs, originDonors, curNbrs: new Set(rawByNbr.keys()), result, addReads: missing.length });
   }
 
   // ── legacy subset (unchanged engine) ──
@@ -894,6 +936,9 @@ export async function runCommitBoardImport(requester: RequesterLike, payload: an
       const r = await runImportLoad(requester, { load: { loadHeader: header, stops }, convergence: perLoadPacing }, creds, perLoadPacing);
       p.result.steps.push(...(r.steps || []));
       p.result.requestedOrder = r.requestedOrder || null;
+      // Per-save call anatomy (directive #4): imports/polls from the executor + this load's own
+      // pre-read (fetchLoad) and any per-add stop/info reads, so the journal shows the full cost.
+      p.result.calls = { updates: r.calls?.updates ?? 0, infos: (r.calls?.infos ?? 0) + 1, stopInfos: p.addReads || 0 };
       outcome.set(String(p.loadNbr), r.pending ? 'pending' : (r.ok ? 'converged' : 'failed'));
       if (r.pending) {
         // Import fired + accepted, not yet CONFIRMED. The client verifies (getLoad polls +
