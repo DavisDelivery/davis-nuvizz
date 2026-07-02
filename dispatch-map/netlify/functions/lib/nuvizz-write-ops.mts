@@ -256,6 +256,21 @@ export function normalizeStop(j: any): any {
     itemDesc: stop.reference2 ?? null,       // commodity/description we wrote to reference2 (round-trip check)
     assignedLoadNbr: load.loadNbr ?? null,   // null/absent ⇒ unplanned
     routeName: load.routeName ?? null,
+    // FREIGHT (incident forensics + round-trip checks). Davis semantics on this tenant:
+    // totalCartons = SKID count, volume = LOOSE pieces, totalPallets = total pieces.
+    // Nulls mean NuVizz has no value — a freight-wiped stop reads as nulls/zeros here.
+    totalPallets: stop.totalPallets ?? null,
+    totalCartons: stop.totalCartons ?? null,
+    weight: stop.weight ?? null,
+    volume: stop.volume ?? null,
+    proNbr: stop.pronbr ?? stop.proNbr ?? null,
+    // AUDIT (who/when/how the record came to exist) — distinguishes an ORIGINAL order from a
+    // copy the async import worker created. Field names picked defensively across the shapes
+    // NuVizz has been seen to use; whichever is present wins, absent ⇒ null.
+    sourceType: stop.sourceType ?? stop.source ?? null,
+    createdBy: stop.createdBy ?? stop.insertedBy ?? S.createdBy ?? null,
+    createdDttm: stop.insertedDttm ?? stop.createdDttm ?? stop.creationDttm ?? S.insertedDttm ?? null,
+    updatedDttm: stop.updatedDttm ?? stop.lastUpdatedDttm ?? S.updatedDttm ?? null,
     toName: toAddr.name ?? null,
     toCity: toAddr.city ?? null,
     toState: toAddr.state ?? null,

@@ -550,13 +550,18 @@ async function runAssignDispatch(requester: RequesterLike, op: SingleOp, payload
 // includes moving the poll into a background function (or passing a tighter
 // payload.convergence budget); that wiring is part of the enable-with-sign-off step.
 
-/** EMERGENCY BRAKE for the import path only. The engine choice belongs to the APP (the
- *  dispatcher's in-panel toggle sends useImport on the Save payload — no server switch to
- *  manage); this env var exists solely to hard-DISABLE the import engine fleet-wide by
- *  setting NUVIZZ_LOAD_IMPORT to 0/false/off/no. Unset (the normal state) blocks nothing.
- *  Read at call time so flipping it takes effect without a code deploy. */
+/** SAFETY GATE for the import path. Since the Jul 2 2026 incident (production NuVizz treats
+ *  import REFERENCE stops as full replaces — freight wiped on 10 orders + 10 unplanned
+ *  duplicates created, violating the UAT-verified "referenced stops keep their other fields"
+ *  contract) the import engine is DISABLED unless the server explicitly re-enables it:
+ *  NUVIZZ_LOAD_IMPORT must be set to 1/true/on/yes. Unset (the normal state) now BLOCKS the
+ *  import path — the app's in-panel toggle still picks the engine, but only once the server
+ *  says imports are safe again. Read at call time so flipping it needs no code deploy. */
+export function importEngineEnabled(): boolean {
+  return /^(1|true|on|yes)$/i.test(String(process.env.NUVIZZ_LOAD_IMPORT ?? '').trim());
+}
 export function loadImportBlocked(): boolean {
-  return /^(0|false|off|no)$/i.test(String(process.env.NUVIZZ_LOAD_IMPORT ?? '').trim());
+  return !importEngineEnabled();
 }
 
 /** Injectable pacing so the convergence loop is unit-testable with no real clock. */
@@ -630,7 +635,7 @@ async function pollUntilConverged(
  */
 export async function runImportLoad(requester: RequesterLike, payload: any, creds: WriteCreds, pacing?: ImportPacing): Promise<any> {
   if (loadImportBlocked()) {
-    return { ok: false, gated: true, error: 'load-import engine is hard-disabled on the server (NUVIZZ_LOAD_IMPORT emergency brake) — use the classic engine' };
+    return { ok: false, gated: true, error: 'load-import engine is disabled on the server (emergency brake: prod imports wipe freight — NUVIZZ_LOAD_IMPORT must be explicitly re-enabled) — use the classic engine' };
   }
   const load = payload?.load;
   const loadNbr = String(load?.loadHeader?.loadNbr ?? '').trim();
@@ -740,7 +745,7 @@ export async function runImportLoad(requester: RequesterLike, payload: any, cred
  */
 export async function runCommitImport(requester: RequesterLike, payload: any, creds: WriteCreds, pacing?: ImportPacing): Promise<any> {
   if (loadImportBlocked()) {
-    return { ok: false, gated: true, error: 'load-import engine is hard-disabled on the server (NUVIZZ_LOAD_IMPORT emergency brake) — use the classic engine' };
+    return { ok: false, gated: true, error: 'load-import engine is disabled on the server (emergency brake: prod imports wipe freight — NUVIZZ_LOAD_IMPORT must be explicitly re-enabled) — use the classic engine' };
   }
   const loadsIn: any[] = Array.isArray(payload?.loads) ? payload.loads : [];
   if (!loadsIn.length) return { ok: true, loads: [] };
@@ -984,9 +989,9 @@ export async function runCommitBoardImport(requester: RequesterLike, payload: an
 
 export async function runOp(requester: RequesterLike, op: WriteOp, payload: any, creds: WriteCreds): Promise<any> {
   switch (op) {
-    // The Compare panel's Save: the ENGINE CHOICE IS THE APP'S — the in-panel toggle sends
-    // useImport on the payload and that alone picks the import engine (the env var is only an
-    // emergency hard-off). No flag = the classic anchor engine, byte-identical to before.
+    // The Compare panel's Save: the in-panel toggle sends useImport on the payload, but since
+    // the Jul 2 incident the import engine ALSO needs the server's explicit re-enable
+    // (NUVIZZ_LOAD_IMPORT=1) — otherwise every Save runs the classic anchor engine.
     case 'commitBoard': return (payload?.useImport === true && !loadImportBlocked())
       ? runCommitBoardImport(requester, payload, creds)
       : runCommitBoard(requester, payload, creds);

@@ -218,16 +218,29 @@ test('emergency brake: NUVIZZ_LOAD_IMPORT=off hard-disables the import ops with 
   } finally { if (prev === undefined) delete process.env.NUVIZZ_LOAD_IMPORT; else process.env.NUVIZZ_LOAD_IMPORT = prev; }
 });
 
-test('default env (unset): the explicit import ops run — the app, not the server, holds the switch', async () => {
+test('default env (unset): imports are BLOCKED — the server must explicitly re-enable (Jul 2 incident)', async () => {
   const prev = process.env.NUVIZZ_LOAD_IMPORT;
   delete process.env.NUVIZZ_LOAD_IMPORT;
+  try {
+    assert.equal(loadImportBlocked(), true);
+    const { requester, calls } = stub([ACK, loadDoc(['A'])]);
+    const r = await runImportLoad(requester, { load: { loadHeader: HDR, stops: [stopRef('A')] } }, CREDS, FAST);
+    assert.equal(r.ok, false);
+    assert.equal(r.gated, true);
+    assert.equal(calls.length, 0);   // ZERO NuVizz calls fire while the gate is shut
+  } finally { if (prev !== undefined) process.env.NUVIZZ_LOAD_IMPORT = prev; }
+});
+
+test('explicit enable (NUVIZZ_LOAD_IMPORT=1): the import ops run again', async () => {
+  const prev = process.env.NUVIZZ_LOAD_IMPORT;
+  process.env.NUVIZZ_LOAD_IMPORT = '1';
   try {
     assert.equal(loadImportBlocked(), false);
     const { requester, calls } = stub([ACK, loadDoc(['A'])]);
     const r = await runImportLoad(requester, { load: { loadHeader: HDR, stops: [stopRef('A')] } }, CREDS, FAST);
     assert.equal(r.ok, true);
     assert.equal(calls.length, 2);
-  } finally { if (prev !== undefined) process.env.NUVIZZ_LOAD_IMPORT = prev; }
+  } finally { if (prev === undefined) delete process.env.NUVIZZ_LOAD_IMPORT; else process.env.NUVIZZ_LOAD_IMPORT = prev; }
 });
 
 // ── IMPURE: convergence recipe (fake clock — injected sleep, no real waiting) ──
@@ -543,10 +556,8 @@ test('board Save (import mode): driver-only and emptyLoad loads still ride the l
   });
 });
 
-test('runOp(commitBoard): the APP toggle is the switch — useImport:true routes the import engine', async () => {
-  const prev = process.env.NUVIZZ_LOAD_IMPORT;
-  delete process.env.NUVIZZ_LOAD_IMPORT;   // no server switch involved
-  try {
+test('runOp(commitBoard): useImport:true + server enable routes the import engine', async () => {
+  await withGate(async () => {
     const { requester, calls } = stub([
       rawLoadDoc(L1, L1ID, ['A', 'B']),          // fetchLoad
       ACK,                                        // the ONE import
@@ -560,6 +571,25 @@ test('runOp(commitBoard): the APP toggle is the switch — useImport:true routes
     assert.equal(r.ok, true);
     assert.ok(calls.some((c) => /load\/update\/default/.test(c.url)));            // import engine ran
     assert.ok(!calls.some((c) => /load\/edit|insertstops/.test(c.url)));          // anchor engine never fired
+  });
+});
+
+test('runOp(commitBoard): useImport:true with the env UNSET falls back to the CLASSIC engine (Jul 2 gate)', async () => {
+  const prev = process.env.NUVIZZ_LOAD_IMPORT;
+  delete process.env.NUVIZZ_LOAD_IMPORT;   // server has not re-enabled imports
+  try {
+    const { requester, calls } = stub([
+      rawLoadDoc(L1, L1ID, ['A', 'B']),
+      { json: { status: 'SUCCESS' } },   // classic remove
+      { json: { status: 'SUCCESS' } },   // classic insert
+    ]);
+    const r = await runOp(requester, 'commitBoard', {
+      useImport: true,
+      loads: [{ loadNbr: L1, loadId: L1ID, orderedStopNbrs: ['B', 'A'] }],
+    }, CREDS);
+    assert.equal(r.ok, true);
+    assert.ok(calls.some((c) => /load\/edit/.test(c.url)));                       // anchor engine ran
+    assert.ok(!calls.some((c) => /load\/update\/default/.test(c.url)));           // import never fired
   } finally { if (prev !== undefined) process.env.NUVIZZ_LOAD_IMPORT = prev; }
 });
 
