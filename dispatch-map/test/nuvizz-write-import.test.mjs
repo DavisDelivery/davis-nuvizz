@@ -370,9 +370,12 @@ const rawLoadDoc = (loadNbr, loadId, nbrs) => ({
     } })),
   } },
 });
-const stopDoc = (n, onLoadNbr) => ({
+const stopDoc = (n, onLoadNbr, withFrom = false) => ({
   json: { Stop: {
-    stop: { stopId: `id-${n}`, stopNbr: String(n), stopType: 'DO', to: toBlock(n) },
+    stop: {
+      stopId: `id-${n}`, stopNbr: String(n), stopType: 'DO', to: toBlock(n),
+      ...(withFrom ? { from: { address: FROM_ADDR } } : {}),
+    },
     stopExecutionInfo: { stopStatus: 'OP' },
     ...(onLoadNbr ? { load: { loadNbr: onLoadNbr } } : {}),
   } },
@@ -551,4 +554,53 @@ test('runOp(commitBoard): no useImport flag = the classic engine, byte-identical
     assert.ok(calls.some((c) => /load\/edit/.test(c.url)));                       // anchor engine ran
     assert.ok(!calls.some((c) => /load\/update\/default/.test(c.url)));           // import never fired
   } finally { if (prev !== undefined) process.env.NUVIZZ_LOAD_IMPORT = prev; }
+});
+
+// ── quick mode + pending (the board Save's budget-safe convergence handoff) ──
+
+test('board Save (import mode): unconfirmed import returns PENDING — no resend/reverse/assign in-band', async () => {
+  await withGate(async () => {
+    const { requester, calls } = stub([
+      rawLoadDoc(L1, L1ID, ['A', 'B']),      // fetchLoad
+      ACK,                                    // the import
+      rawLoadDoc(L1, L1ID, ['A', 'B']),      // quick confirm poll: still the OLD order → pending
+    ]);
+    const r = await runCommitBoardImport(requester, { loads: [
+      { loadNbr: L1, loadId: L1ID, orderedStopNbrs: ['B', 'A'], driverId: 77, dispatch: true },
+    ] }, CREDS, NOSLEEP);
+    assert.equal(r.ok, false);
+    assert.equal(r.loads[0].pending, true);
+    assert.deepEqual(r.loads[0].requestedOrder, ['B', 'A']);
+    assert.equal(r.loads[0].error, null);                       // pending is NOT a failure
+    // Exactly fetchLoad + import + one confirm poll — the client drives the rest. And the
+    // driver/dispatch never fire against an unconfirmed order.
+    assert.equal(calls.length, 3);
+    assert.ok(!calls.some((c) => /assignanddispatch/.test(c.url)));
+    const imports = calls.filter((c) => /load\/update\/default/.test(c.url));
+    assert.equal(imports.length, 1);
+  });
+});
+
+test('board Save (import mode): empty load takes its origin from the added stops\' FROM address (origin donor)', async () => {
+  await withGate(async () => {
+    const { requester, calls } = stub([
+      rawLoadDoc(L1, L1ID, []),               // empty Draft load — nothing to echo origin from
+      stopDoc('X', null, true),               // getStop X — carries the warehouse "from" address
+      stopDoc('Y', null, true),               // getStop Y
+      ACK,
+      rawLoadDoc(L1, L1ID, ['X', 'Y']),       // converged
+    ]);
+    // NO payload.origin — the donor must cover it.
+    const r = await runCommitBoardImport(requester, { loads: [{ loadNbr: L1, loadId: L1ID, orderedStopNbrs: ['X', 'Y'] }] }, CREDS, NOSLEEP);
+    assert.equal(r.ok, true);
+    const imp = calls.find((c) => /load\/update\/default/.test(c.url));
+    assert.equal(imp.body.loads[0].loadHeader.originName, 'DAVIS WAREHOUSE');
+  });
+});
+
+test('assembleImportHeader: a non-ISO (epoch) header date is never echoed — derived from the service date', () => {
+  const h = { loadNbr: L1, earliestStartDttm: 1782813600000, latestStartDttm: 1782856800000 };
+  const out = assembleImportHeader(h, [{ stop: { from: { address: FROM_ADDR } } }], null, '2026-07-03');
+  assert.equal(out.earliestStartDttm, '2026-07-03T06:00:00');
+  assert.equal(out.latestStartDttm, '2026-07-03T18:00:00');
 });

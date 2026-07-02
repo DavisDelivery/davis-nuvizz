@@ -253,6 +253,9 @@ export function normalizeStop(j: any): any {
     // an UNPLANNED order gets planned by the import path without the client holding any address
     // data: the reference is built from NuVizz's own record, so nothing can drift or regress.
     importRef: importRefFromRaw(stop),
+    // The stop's "from" address (the warehouse the order ships from) — an ORIGIN DONOR for the
+    // import header when the target load is EMPTY (no stops of its own to echo the origin from).
+    fromAddress: stop?.from?.address ?? null,
   };
 }
 
@@ -571,8 +574,13 @@ export function importRefFromRaw(rawStop: any): any | null {
 export function assembleImportHeader(rawHeader: any, rawStops: any[], clientOrigin: any | null, fallbackDate?: string | null): ImportLoadHeader {
   const h = rawHeader || {};
   const loadNbr = String(req(h.loadNbr, 'import header: loadNbr'));
-  const earliest = h.earliestStartDttm || (fallbackDate ? `${fallbackDate}T06:00:00` : null);
-  const latest = h.latestStartDttm || (fallbackDate ? `${fallbackDate}T18:00:00` : null);
+  // The import format needs "yyyy-MM-ddTHH:mm:ss" strings. load/info can hand dates back in
+  // other shapes (epoch millis); echoing one of those is exactly the silent-failure trap
+  // (SUCCESS ack, nothing lands) — so only trust an ISO-looking string, else derive from the
+  // service date.
+  const iso = (v: any) => (typeof v === 'string' && /^\d{4}-\d{2}-\d{2}T/.test(v) ? v : null);
+  const earliest = iso(h.earliestStartDttm) || (fallbackDate ? `${fallbackDate}T06:00:00` : null);
+  const latest = iso(h.latestStartDttm) || (fallbackDate ? `${fallbackDate}T18:00:00` : null);
   if (!earliest || !latest) throw new Error(`import header: load ${loadNbr} has no earliest/latest start and no service date to derive one — cannot import safely`);
 
   let origin: any = null;

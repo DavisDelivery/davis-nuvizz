@@ -51,7 +51,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.33.2';
+const APP_VERSION = '0.33.3';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -96,6 +96,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.33.3', 'HOTFIX — the first live ⚡ Import Save died silently: nothing landed on the load. Root cause: the write endpoint ran on Netlify\'s DEFAULT 10-second budget, and the import Save (read the load + read each unplanned order + fire the import + verify the order landed) got killed mid-flight. Fixes: (1) the write endpoint now gets the full 26s; (2) the per-order reads run in parallel instead of one-by-one; (3) the order-verification no longer tries to fit inside one server call — the server fires the import, does a quick check, and the APP keeps verifying in the background (cheap load read-backs every ~6s, with an automatic re-send nudge if NuVizz is slow to seat it), toasting "✓ order confirmed" the moment the read-back matches — or telling you plainly if it never does. Driver/dispatch on an import Save now wait until the order is CONFIRMED (Save again after the ✓ to apply them). Also hardened: an empty load\'s import origin now comes from the orders\' own ship-from address in NuVizz (no dependence on the browser\'s saved origin), and a non-date value in the load header can no longer trip NuVizz\'s silent import failure.'],
   ['0.33.2', 'Routing — the LOAD IMPORT engine is now YOUR toggle, not a server switch. The Compare panel header has a new "⚙ Classic / ⚡ Import" button next to ○ Beta / ● LIVE: flip it to ⚡ Import and every Save (preview and LIVE alike) runs each changed load through the new one-call import + order-verification read-back; flip back to ⚙ Classic and the Save is exactly the old engine. The choice is remembered on your device, and the Save-preview names the engine ("IMPORT ENGINE") so you always know what will fire before you Confirm. No Netlify env var to set — the only server flag left is an emergency hard-off brake (and the master write switch, unchanged).'],
   ['0.33.1', 'Routing — your normal Compare-panel Save can now drive the new one-call LOAD IMPORT path (still OFF by default). Nothing changes in how you work: build loads from unplanned orders, stage them in Compare, order the stops, Save through the ○ Beta / ● LIVE toggle exactly as before. When the server\'s NUVIZZ_LOAD_IMPORT switch is ON, that same Save runs each changed load as ONE declarative import (echoing NuVizz\'s own address records — nothing is retyped) plus the convergence read-back, instead of the anchor remove + re-insert engine; the Save-preview tells you which engine will fire ("IMPORT MODE"). Planning unplanned orders, reorders, and cross-load moves (source before destination) all go through the import; emptying a load (cancel), driver-only saves, and anything the import can\'t resolve still use the proven legacy path. Your saved New Order ship-from rides along as the origin for empty loads. Flip the switch off and the Save is byte-identical to before.'],
   ['0.33.0', 'Live dispatch (server, OFF by default) — the new one-call LOAD IMPORT sequencing path. NuVizz\'s async load import (load/update/default) can set a load\'s COMPLETE stop list in exact order in ONE call per load: plan = import the full desired list, unplan = import without those stops, resequence = import the same set permuted — replacing the anchor + remove + one-at-a-time re-insert engine (which stays the active default for now). Because the import is async and can silently not land, every import is driven to CONVERGENCE: the server re-reads the load, compares the real delivery order (to.seq), re-sends if needed, and applies the verified reverse-then-forward unstick — a Save only reports success from the read-back, never from NuVizz\'s "SUCCESS" ack. Double-gated: needs BOTH the existing server write flag AND the new NUVIZZ_LOAD_IMPORT flag, which stays OFF until the verification checklist passes on a throwaway load with sign-off. No UI change yet.'],
@@ -10295,17 +10296,72 @@ function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmN
     const fired = resLoads.filter((l) => l.ok && (l.steps || []).some((s) => s.ok)).length;
     const noop = resLoads.filter((l) => l.ok && !(l.steps || []).some((s) => s.ok)).length;
     const cancelled = resLoads.filter((l) => (l.steps || []).some((s) => s.cancelledRoute)).length;
+    // IMPORT-engine loads the server fired but couldn't CONFIRM inside its window come back
+    // `pending` — not failures. We verify them below (getLoad read-backs + a re-Save nudge).
+    const pendings = resLoads.filter((l) => l.pending && l.loadNbr && Array.isArray(l.requestedOrder));
+    const failed = resLoads.filter((l) => !l.ok && !l.pending);
     const orphanMsg = orphaned.length ? ` ⚠ ${orphaned.length} stop(s) now UNPLANNED — re-Save to reroute.` : '';
     const cancelMsg = cancelled ? ` · ${cancelled} route(s) emptied/cancelled` : '';
     const noopMsg = noop ? ` · ${noop} no change` : '';
-    if (res.ok) showToast(fired || cancelled ? `✓ ${fired} load(s) saved to NuVizz${cancelMsg}${noopMsg}.${orphanMsg}` : `Nothing to send — no changes actually fired.${orphanMsg}`);
-    else {
-      const failed = resLoads.filter((l) => !l.ok);
+    if (failed.length) {
       // Full diagnostic to the console: the EXACT payload we sent (incl. each load's loadNbr) plus
       // NuVizz's per-load result — so a "load not found" can be read/copied back verbatim.
       // eslint-disable-next-line no-console
       console.error('[commitBoard] save failed', { sent: loads, result: res.result, error: res.error });
       showToast(`✗ ${failed.map((l) => `${keyOf(l)}: ${l.error || (l.steps || []).filter((s) => !s.ok).map((s) => s.error).join('; ')}`).join(' | ') || res.error || 'write failed'}${orphanMsg}`);
+    } else if (!pendings.length) {
+      if (res.ok) showToast(fired || cancelled ? `✓ ${fired} load(s) saved to NuVizz${cancelMsg}${noopMsg}.${orphanMsg}` : `Nothing to send — no changes actually fired.${orphanMsg}`);
+      else showToast(`✗ ${res.error || 'write failed'}${orphanMsg}`);
+    }
+    if (pendings.length) verifyPendingImports(pendings, loads, keyOf);
+  };
+
+  // ── IMPORT-engine convergence, client-side ────────────────────────────────────
+  // The import is ASYNC in NuVizz: the server fires it and does a quick confirm, but a sync
+  // function can't hold the whole ~90s recipe (the 10s default budget killed the first live
+  // Save). So the CLIENT finishes the job: poll the load back (getLoad — 1 cheap read) every
+  // ~6s and compare the REAL delivery order (to.seq) to what we sent. Matches → the card flips
+  // to saved. Not landing → re-send the same import once or twice (the verified "resend"
+  // unstick — declarative, so never a duplicate). Still stuck → say so, honestly.
+  const verifyPendingImports = async (pendings, sentLoads, keyOf) => {
+    const names = pendings.map((l) => loadDisplayName(keyOf(l)) || keyOf(l) || l.loadNbr).join(', ');
+    showToast(`⏳ Import sent for ${names} — verifying the stop order in NuVizz…`);
+    const remaining = new Map(pendings.map((l) => [String(l.loadNbr), l]));
+    for (let attempt = 1; attempt <= 12 && remaining.size; attempt++) {
+      await new Promise((r) => setTimeout(r, 6000));
+      for (const [nbr, l] of [...remaining]) {
+        try {
+          const res = await callWrite('getLoad', { loadNbr: nbr }, { dryRun: false });
+          const seen = (res.result?.load?.stops || [])
+            .filter((s) => String(s.stopType || 'DO').toUpperCase() !== 'PU')
+            .slice()
+            .sort((a, b) => (Number(a.stopSeq ?? 1e9)) - (Number(b.stopSeq ?? 1e9)))
+            .map((s) => String(s.stopNbr));
+          const want = l.requestedOrder.map(String);
+          if (seen.length === want.length && seen.every((n, i) => n === want[i])) {
+            remaining.delete(nbr);
+            const k = keyOf(l);
+            if (k) {
+              markSaved([k]);
+              if (onClearRemoved) onClearRemoved([k]);
+              const hasStaged = !!(staged[k] && ((staged[k].driverId != null && staged[k].driverId !== '') || staged[k].dispatch));
+              showToast(`✓ ${loadDisplayName(k) || k}: stop order confirmed in NuVizz.${hasStaged ? ' Save again to apply the driver/dispatch.' : ''}`);
+            }
+          }
+        } catch { /* transient read failure — keep polling */ }
+      }
+      // Not landing after a couple of read-backs → re-send the SAME import (the async worker's
+      // stale-state window can swallow one; the re-send is the documented unstick). Max twice.
+      if (remaining.size && (attempt === 3 || attempt === 7)) {
+        const again = sentLoads.filter((L) => [...remaining.values()].some((l) => keyOf(l) === (L.__key ?? L.routeName ?? L.loadNbr ?? L.loadId)));
+        if (again.length) {
+          try { await callWrite('commitBoard', { loads: again, origin: savedShipFrom(), useImport: true }, { dryRun: false, clientOpId: newClientOpId(), createdBy: 'dispatcher' }); } catch { /* next poll decides */ }
+        }
+      }
+    }
+    if (remaining.size) {
+      const stuck = [...remaining.values()].map((l) => loadDisplayName(keyOf(l)) || keyOf(l) || l.loadNbr).join(', ');
+      showToast(`✗ ${stuck}: NuVizz still isn't showing the sent order after ~75s — check the load in the portal, then Save again (safe to repeat).`);
     }
   };
 
