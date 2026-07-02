@@ -23,7 +23,7 @@
 import { scanDate, scansEnabled, deriveFleetSummary, estimateLoadRange, buildScanState, shadowWouldProbe, selectLoadProbeTargets, groupLoadMembers, estimateStopFrontier, unplannedFloor, FLOOR_MARGIN, loadNbrToInt, stopNbrToInt, shouldDeepSweep, deepSweepGate, lookupStopByPro } from './nuvizz-scan.mts';
 import { loadProbeParity, frontierParity, loadMembershipDelta, dateSliceMismatch } from './scan-parity.mts';
 import { isFirestoreEnabled, writeStops, writeFleetIndex, getDoc, markScanState, readCallStats, readCircuit, readScanState, writeScanState, readRecentFrontier, recordScanMetric, etDayString, readScanConfig, readStops, readEnrichedPros, writeEnrichedPros, writeLoadRoster, readLoadRoster, writeActiveUnplannedSet } from './firestore.mts';
-import { listScanForDate, mergeEnrich, twoScanBuckets, etDateForTargetUTC, boardDayFor } from './nuvizz-list.mts';
+import { listScanForDate, mergeEnrich, twoScanBuckets, etDateForTargetUTC, boardDayFor, applyBoardWriteGrace } from './nuvizz-list.mts';
 import { loadIdsForDate, dropForeignLoadStops, loadRosterForDate } from './nuvizz-loads.mts';
 import { resolveCoords, addrKey } from './geocode.mts';
 import { maxConsecutiveGap } from './scan-metrics.mts';
@@ -613,6 +613,9 @@ export async function runRefreshStops(req: Request): Promise<Response> {
           const p = prevByNbr.get(String(s.stopNbr));
           if (p) {
             if (p.enriched) mergeEnrich(s, p); // carry same-day enriched detail forward
+            // A recent CONFIRMED live Save (write-through, #361) outranks a lagging list row:
+            // hold the confirmed plan fields until the list agrees or the grace expires.
+            applyBoardWriteGrace(s, p, Date.now());
             if (typeof p.lat === 'number' && typeof p.lng === 'number') { const k = addrKey(p); if (k) seed.set(k, { lat: p.lat, lng: p.lng }); }
           }
           // Status AND the delivery time are FREE & live from the list every scan (see

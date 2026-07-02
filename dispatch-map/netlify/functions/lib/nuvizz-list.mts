@@ -593,6 +593,32 @@ export function mergeEnrich(target: any, src: any): any {
   return target;
 }
 
+// ── Board write-through grace (issue #361) ───────────────────────────────────
+//
+// After a CONFIRMED live Save, patchBoardPlan stamps the affected cache docs with
+// board_write_at + the confirmed plan fields. NuVizz's saved-search list can LAG that
+// confirmed reality by minutes (it's a reporting index over an async worker), so the very
+// next scan would read the stale rows and revert the board to "unplanned" — the exact
+// contradiction the write-through exists to kill. This PURE helper holds a recent confirmed
+// write over a DISAGREEING fresh list row, and releases the moment the list catches up
+// (agreement) or the grace expires (the write claim goes stale — list wins again).
+export const BOARD_WRITE_GRACE_MIN = 20;
+export function applyBoardWriteGrace(fresh: any, prior: any, nowMs: number, graceMin = BOARD_WRITE_GRACE_MIN): boolean {
+  const at = prior?.board_write_at ? Date.parse(prior.board_write_at) : NaN;
+  if (!Number.isFinite(at)) return false;
+  const withinGrace = nowMs - at < graceMin * 60_000;
+  const disagrees = fresh.isPlanned !== prior.isPlanned
+    // …or a cross-load move the list hasn't caught up on (both planned, different load).
+    || (prior.isPlanned === true && String(fresh.loadNbr ?? '') !== String(prior.loadNbr ?? ''));
+  if (!withinGrace || !disagrees) return false;   // stamp NOT carried forward → list authoritative again
+  for (const k of ['status', 'normalizedStatus', 'isPlanned', 'isUnplanned', 'loadNbr', 'routeName', 'routeSeq', 'driverName', 'driverUserName']) {
+    fresh[k] = prior[k] ?? null;
+  }
+  fresh.board_write_at = prior.board_write_at;           // keep holding within the window
+  fresh.board_write_planned = prior.board_write_planned;
+  return true;
+}
+
 // Exposed for tests: intermediate rows → board stops (dedup by stopNbr, last wins).
 export function fromRows(rows: any[]): any[] {
   const byNbr = new Map<string, any>();

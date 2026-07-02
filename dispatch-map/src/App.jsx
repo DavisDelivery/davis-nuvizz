@@ -53,7 +53,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.36.1';
+const APP_VERSION = '0.36.2';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -98,6 +98,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.36.2', 'Board write-through (#361) — planned orders no longer show UNPLANNED after a Save. Before: a confirmed Save changed NuVizz immediately, but the board only learned about it at the next scheduled scan — and NuVizz\'s own list feed can lag an async import by minutes, so even a fresh scan could re-assert the stale "unplanned". Now, the moment a Save is CONFIRMED (the import engine\'s order read-back matches, or a classic save\'s steps all succeed), the app patches the verified plan straight into the board cache (zero NuVizz calls — it\'s state the Save already verified) and re-reads it: the stops flip to planned on the right load, in the confirmed order, immediately. The next scans can\'t revert it either — a confirmed write outranks a lagging list row for 20 minutes, releasing as soon as the list catches up. Works for planning, unplanning (removed orders flip to unplanned), reorders, and cross-load moves.'],
   ['0.36.1', 'Print Manifest pagination FIXED for real — no more one mashed page. The Print button used to open a popup window to print from; when the browser silently blocked that popup, it fell back to printing the on-screen (scaled) preview, which collapses the whole manifest onto a single page — the "everything mashed together, only one page came out" report. Printing now uses a hidden print-only copy of the document rendered straight into the page: nothing to block, no popup, and the per-ticket page breaks paginate natively — page 1 is the route summary + delivery ticket 1, then exactly one ticket per page (verified in a real Chrome print render: 4 tickets → 4 pages). Bonus: pressing Cmd/Ctrl+P with the manifest viewer open now ALSO prints the paginated manifest instead of a screenshot of the app. Applies to the Delivery Ticket and Bill of Lading viewers too (same viewer).'],
   ['0.36.0', 'Save-cost overhaul for the ⚡ Import engine — a reorder Save was burning ~27 NuVizz calls chasing the async worker (measured live: 3 SUW reorganizations = 80 calls, 9 imports + ~64 read-backs) and STILL reporting failure for orders that landed. Three changes from the investigation: (1) VERDICT on the comparator — it was NOT broken (the journal proved the mismatches were real), but it\'s now normalized anyway (zero-padding/case/typing can never read as "not converged") and every poll\'s read-back is journaled. (2) The wait now matches the worker: prod takes ~30-90s to seat an import, so the client polls on a BACKOFF (6/10/15/25/25s — ~5 polls, NO writes) instead of re-Saving every 18/45s; then at most ONE same-order re-send; then at most ONE reverse+forward UNSTICK — the §10.1 cure for the stuck-append state we hit (two moved stops kept landing at the tail across nine same-direction re-sends; same-direction NEVER clears it). (3) Every Save now self-reports its call anatomy (X imports + Y read-backs) in the result, console, and write journal. Typical converging Save: 1 import + 2-4 reads. Worst case (full ladder): ~4 imports + ~12 reads over ~4 minutes — and it says so honestly.'],
   ['0.35.3', 'Bulk Add moved UNDER New Order — it\'s no longer its own top-level tab. Open "New Order" and you\'ll see a "Single order / Bulk add" toggle right at the top; Bulk add is the exact same grid + spreadsheet-import screen as before, just reached from inside New Order instead of a separate tab. The choice is remembered on your device. Nothing about either form changed — same pickup locations, same Beta/Live gating, same per-row Create behavior.'],
@@ -10163,7 +10164,7 @@ function RoutingWorkbenchCard({ route, stopById, otherKeys, ninjaMode, isActive,
 // The route workbench (part 4): the 1–3 route cards opened from the right Routes panel, laid out
 // side by side (desktop) or stacked (mobile). Replaces the Setup stack on the left while routes
 // are open; "Back to Setup" closes them all.
-function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmNinja, activeKey, onSetActive, onResequence, onCollapse, onClose, onCloseAll, onMoveStop, onDropStop, onRemoveStop, onUndoRemove, onClearRemoved, onOpenStop, onPrintManifest, selectedCount = 0, onSendSelection, isMobile, liveWrite }) {
+function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmNinja, activeKey, onSetActive, onResequence, onCollapse, onClose, onCloseAll, onMoveStop, onDropStop, onRemoveStop, onUndoRemove, onClearRemoved, onOpenStop, onPrintManifest, selectedCount = 0, onSendSelection, isMobile, liveWrite, onBoardSync }) {
   // Live-dispatch gate comes from the gear toggle (prop), aliased to the original name so the
   // many gate sites in this component (Save, Beta/Live toggle, dirty guards, confirm) are unchanged.
   const LIVE_WRITE_FLAG = liveWrite;
@@ -10345,6 +10346,24 @@ function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmN
       // RoutingScreen, NOT here — referencing it directly threw a ReferenceError that killed the
       // rest of this handler (no toast/orphan warning) on every successful LIVE save.
       if (onClearRemoved) onClearRemoved(okKeys);
+      // Board write-through (#361): each load CONFIRMED in-band gets its verified plan patched
+      // straight into the board cache (Firestore-only, zero NuVizz calls) — the board flips to
+      // planned immediately instead of waiting out the next scan.
+      if (onBoardSync) {
+        for (const l of resLoads) {
+          if (!l.ok) continue;
+          const k = keyOf(l);
+          const L = loads.find((x) => (x.__key ?? x.routeName ?? x.loadNbr ?? x.loadId) === k);
+          if (!L || !((L.orderedStopNbrs || []).length || (L.removeStopNbrs || []).length)) continue;
+          const driverApplied = (l.steps || []).some((s) => s.op === 'assignDriver' && s.ok);
+          onBoardSync({
+            routeName: L.routeName || loadDisplayName(k) || String(k || ''),
+            orderedStopNbrs: (L.orderedStopNbrs || []).map(String),
+            unplannedStopNbrs: (L.removeStopNbrs || []).map(String),
+            driverName: driverApplied ? (L.driverName || null) : null,
+          });
+        }
+      }
     }
     // Honest reporting: a load only "saved" if its result has a SUCCESSFUL step (an actual NuVizz
     // call). A load that returns ok:true with no steps was a no-op — never report it as saved.
@@ -10422,6 +10441,18 @@ function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmN
             if (k) {
               markSaved([k]);
               if (onClearRemoved) onClearRemoved([k]);
+              // Board write-through (#361): the read-back that just CONFIRMED this order is the
+              // truth — patch it into the board cache now (Firestore-only). Driver stays null:
+              // assignment is deferred on the pending path until the follow-up Save.
+              if (onBoardSync) {
+                const L = sentLoads.find((x) => (x.__key ?? x.routeName ?? x.loadNbr ?? x.loadId) === k);
+                onBoardSync({
+                  routeName: L?.routeName || loadDisplayName(k) || String(k),
+                  orderedStopNbrs: l.requestedOrder.map(String),
+                  unplannedStopNbrs: (L?.removeStopNbrs || []).map(String),
+                  driverName: null,
+                });
+              }
               const hasStaged = !!(staged[k] && ((staged[k].driverId != null && staged[k].driverId !== '') || staged[k].dispatch));
               showToast(`✓ ${loadDisplayName(k) || k}: stop order confirmed in NuVizz.${hasStaged ? ' Save again to apply the driver/dispatch.' : ''}`);
             }
@@ -10847,7 +10878,20 @@ function VersionLogModal({ onClose }) {
 
 function RoutingScreen({ debugCaptureRef }) {
   const [selectedDate, setSelectedDate] = useState(() => todayInET());
-  const { stops, loading, error: stopsError } = useStops(selectedDate);
+  const { stops, loading, error: stopsError, refresh: refreshStops } = useStops(selectedDate);
+  // Board write-through (#361): a CONFIRMED Save patches the day's board cache (Firestore-only
+  // endpoint — zero NuVizz calls) with the verified plan, then re-reads the cache — so planned
+  // orders flip to planned on the board immediately instead of waiting out the next scan (and
+  // NuVizz's own list feed, which can lag an async import by minutes).
+  const syncBoardAfterSave = useCallback(async (patch) => {
+    try {
+      await fetch('/.netlify/functions/nuvizz-board-sync', {
+        method: 'POST', cache: 'no-store', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ date: selectedDate, ...patch }),
+      });
+    } catch { /* best-effort — the next scan reconciles anyway */ }
+    try { refreshStops(); } catch { /* ignore */ }
+  }, [selectedDate, refreshStops]);
   const { notes } = useCustomerNotes();
   const { profiles, saveProfile } = useTruckProfiles();
   const { google, error: mapsError } = useGoogleMaps();
@@ -12553,7 +12597,7 @@ function RoutingScreen({ debugCaptureRef }) {
             <div className="flex-1 min-h-0 overflow-y-auto p-3 space-y-3 text-sm" style={{ paddingBottom: 'calc(12px + env(safe-area-inset-bottom))' }}>
               {mobilePanel === 'setup'
                 ? (wbRoutes.length > 0
-                    ? <RoutingWorkbench wbRoutes={wbRoutesColored} stopById={stopById} ninjaMode={ninjaMode} onToggleNinja={setNinjaMode} onArmNinja={armNinjaFromPanel} activeKey={effectiveActiveKey} onSetActive={setActiveRouteKey} onResequence={wbResequence} onCollapse={toggleWbCollapse} onClose={closeWbRoute} onCloseAll={closeAllWb} onMoveStop={wbMoveStop} onDropStop={wbDropStop} onRemoveStop={wbRemoveStop} onUndoRemove={wbUndoRemove} onClearRemoved={clearWbRemoved} onOpenStop={openStop} onPrintManifest={printWbManifest} selectedCount={selectedStops.length} onSendSelection={sendSelectionToRoute} isMobile liveWrite={liveWrite} />
+                    ? <RoutingWorkbench wbRoutes={wbRoutesColored} stopById={stopById} ninjaMode={ninjaMode} onToggleNinja={setNinjaMode} onArmNinja={armNinjaFromPanel} activeKey={effectiveActiveKey} onSetActive={setActiveRouteKey} onResequence={wbResequence} onCollapse={toggleWbCollapse} onClose={closeWbRoute} onCloseAll={closeAllWb} onMoveStop={wbMoveStop} onDropStop={wbDropStop} onRemoveStop={wbRemoveStop} onUndoRemove={wbUndoRemove} onClearRemoved={clearWbRemoved} onOpenStop={openStop} onPrintManifest={printWbManifest} selectedCount={selectedStops.length} onSendSelection={sendSelectionToRoute} isMobile liveWrite={liveWrite} onBoardSync={syncBoardAfterSave} />
                     : controlsContent)
                 : mobilePanel === 'loads'
                   ? (rightPanelMode === 'routes'
@@ -12598,7 +12642,7 @@ function RoutingScreen({ debugCaptureRef }) {
           routes are open. With the Setup panel off and no routes open, the map gets the full width. */}
       {wbRoutes.length > 0 ? (
         <div className="shrink-0 border-r bg-white min-h-0 overflow-x-auto" style={{ width: wbWidth }}>
-          <RoutingWorkbench wbRoutes={wbRoutesColored} stopById={stopById} ninjaMode={ninjaMode} onToggleNinja={setNinjaMode} onArmNinja={armNinjaFromPanel} activeKey={effectiveActiveKey} onSetActive={setActiveRouteKey} onResequence={wbResequence} onCollapse={toggleWbCollapse} onClose={closeWbRoute} onCloseAll={closeAllWb} onMoveStop={wbMoveStop} onDropStop={wbDropStop} onRemoveStop={wbRemoveStop} onUndoRemove={wbUndoRemove} onClearRemoved={clearWbRemoved} onOpenStop={openStop} onPrintManifest={printWbManifest} selectedCount={selectedStops.length} onSendSelection={sendSelectionToRoute} isMobile={false} liveWrite={liveWrite} />
+          <RoutingWorkbench wbRoutes={wbRoutesColored} stopById={stopById} ninjaMode={ninjaMode} onToggleNinja={setNinjaMode} onArmNinja={armNinjaFromPanel} activeKey={effectiveActiveKey} onSetActive={setActiveRouteKey} onResequence={wbResequence} onCollapse={toggleWbCollapse} onClose={closeWbRoute} onCloseAll={closeAllWb} onMoveStop={wbMoveStop} onDropStop={wbDropStop} onRemoveStop={wbRemoveStop} onUndoRemove={wbUndoRemove} onClearRemoved={clearWbRemoved} onOpenStop={openStop} onPrintManifest={printWbManifest} selectedCount={selectedStops.length} onSendSelection={sendSelectionToRoute} isMobile={false} liveWrite={liveWrite} onBoardSync={syncBoardAfterSave} />
         </div>
       ) : leftPanelOn ? (
         <div className="shrink-0 border-r bg-white overflow-y-auto p-3 space-y-3 text-sm" style={{ width: leftPanel.width }}>
