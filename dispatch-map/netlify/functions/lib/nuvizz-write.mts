@@ -550,13 +550,17 @@ async function runAssignDispatch(requester: RequesterLike, op: SingleOp, payload
 // includes moving the poll into a background function (or passing a tighter
 // payload.convergence budget); that wiring is part of the enable-with-sign-off step.
 
-/** EMERGENCY BRAKE for the import path only. The engine choice belongs to the APP (the
- *  dispatcher's in-panel toggle sends useImport on the Save payload — no server switch to
- *  manage); this env var exists solely to hard-DISABLE the import engine fleet-wide by
- *  setting NUVIZZ_LOAD_IMPORT to 0/false/off/no. Unset (the normal state) blocks nothing.
- *  Read at call time so flipping it takes effect without a code deploy. */
+/** HARD GATE for the import path — DEFAULT OFF since the Jul 2 2026 prod incident: import
+ *  saves on the live DAVIS tenant wiped freight fields (skids/loose/weight) off referenced
+ *  stops and left duplicate unplanned copies — the "referenced stops keep their other fields"
+ *  contract assumption does NOT hold there (root cause under UAT reproduction via
+ *  dispatch-beta2). Until that investigation clears it, the import engine refuses to fire
+ *  unless NUVIZZ_LOAD_IMPORT is EXPLICITLY set to 1/true/on/yes — an unset var, and any other
+ *  value, blocks. The dispatcher's ⚡ in-panel toggle silently falls back to the classic
+ *  anchor engine while blocked (runOp routes useImport to runCommitBoard). Read at call time
+ *  so flipping the env takes effect without a code deploy. */
 export function loadImportBlocked(): boolean {
-  return /^(0|false|off|no)$/i.test(String(process.env.NUVIZZ_LOAD_IMPORT ?? '').trim());
+  return !/^(1|true|on|yes)$/i.test(String(process.env.NUVIZZ_LOAD_IMPORT ?? '').trim());
 }
 
 /** Injectable pacing so the convergence loop is unit-testable with no real clock. */

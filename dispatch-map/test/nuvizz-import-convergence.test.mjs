@@ -11,6 +11,12 @@ import assert from 'node:assert/strict';
 import { runImportLoad } from '../netlify/functions/lib/nuvizz-write.mts';
 import { normStopNbr, sameOrder } from '../netlify/functions/lib/nuvizz-write-ops.mts';
 
+// The import engine is DEFAULT-OFF since the Jul 2 2026 prod incident — these tests exercise
+// the engine itself, so opt in for the whole file (and restore whatever was there after).
+const PREV_GATE = process.env.NUVIZZ_LOAD_IMPORT;
+test.before(() => { process.env.NUVIZZ_LOAD_IMPORT = 'on'; });
+test.after(() => { if (PREV_GATE === undefined) delete process.env.NUVIZZ_LOAD_IMPORT; else process.env.NUVIZZ_LOAD_IMPORT = PREV_GATE; });
+
 const CREDS = { base: 'https://portal.nuvizz.com/deliverit/openapi/v7', companyCode: 'DAVIS', auth: 'Basic xyz' };
 const noSleep = async () => {};
 
