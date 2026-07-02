@@ -1,53 +1,47 @@
-// test/roster-freshness.test.mjs — future-date load-roster freshness (the "plan
-// tomorrow today" fix). The old behavior captured tomorrow's roster ONCE per scan
-// day; loads created in the portal during the day (with the load NUMBERS every
-// Save is keyed by) never reached the board until the next morning, so evening
-// reorder/unplan Saves were refused ("needs a load number", Jul 1 2026 night).
-// futureRosterIsFresh is the gate: fresh (skip re-pull) ONLY within the short
-// dedupe window; anything older — and anything empty/garbled — re-pulls.
+// test/roster-freshness.test.mjs — future-date load-roster capture gate.
+// Tomorrow's load SET is fixed once it exists (per Chad), so the scheduled scan
+// captures it ONCE per scan day — but a capture only COUNTS when it carries real
+// load NUMBERS. The Jul 1 2026 regression this guards: the morning capture ran
+// before the Load-Number parser fix (#336), wrote 102 rows with ZERO numbers, and
+// the old "non-empty → done" dedup froze the number-less snapshot all day, so
+// every evening reorder/unplan Save was refused ("needs a load number").
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { futureRosterIsFresh } from '../netlify/functions/lib/refresh-stops-core.mts';
+import { futureRosterCaptured } from '../netlify/functions/lib/refresh-stops-core.mts';
 
-const NOW = Date.parse('2026-07-02T20:00:00Z');
-const atMinAgo = (m) => new Date(NOW - m * 60_000).toISOString();
-const LOADS = [{ loadId: 'a', name: '2 M', loadNbr: 'DAVIS000198000' }];
+// 2026-07-02T20:00Z = 4:00pm ET Jul 2 — the "now" of an afternoon acting cycle.
+const NOW = new Date('2026-07-02T20:00:00Z');
+const NUMBERED = [{ loadId: 'a', name: '2 M', loadNbr: 'DAVIS000198000' }];
+const NUMBERLESS = [{ loadId: 'a', name: '2 M', loadNbr: null }, { loadId: 'b', name: 'SUW 5', loadNbr: null }];
 
-test('within the dedupe window (default 5 min) a non-empty roster is fresh — skip re-pull', () => {
-  assert.equal(futureRosterIsFresh({ at: atMinAgo(2), loads: LOADS }, NOW), true);
+test('a same-ET-day NUMBERED capture counts — once a day is the whole job', () => {
+  // 12:00Z = 8:00am ET the same day (the normal morning capture).
+  assert.equal(futureRosterCaptured({ at: '2026-07-02T12:00:00Z', loads: NUMBERED }, NOW), true);
 });
 
-test('older than the window → stale, re-pull (this is the all-day refresh that pulls tomorrow in today)', () => {
-  assert.equal(futureRosterIsFresh({ at: atMinAgo(6), loads: LOADS }, NOW), false);
-  // The old once-per-day behavior would have called this "fresh" all day long — a
-  // same-scan-day morning capture must now read as STALE by the afternoon/evening.
-  assert.equal(futureRosterIsFresh({ at: atMinAgo(11 * 60), loads: LOADS }, NOW), false);
+test('a same-day capture with ZERO numbers never counts (the Jul 1 frozen-snapshot regression)', () => {
+  assert.equal(futureRosterCaptured({ at: '2026-07-02T12:00:00Z', loads: NUMBERLESS }, NOW), false);
 });
 
-test('an EMPTY roster is never fresh (tomorrow’s loads may simply not exist yet)', () => {
-  assert.equal(futureRosterIsFresh({ at: atMinAgo(1), loads: [] }, NOW), false);
-  assert.equal(futureRosterIsFresh({ at: atMinAgo(1) }, NOW), false);
+test('one numbered row is enough — partial numbers is NuVizz data, not a broken parser', () => {
+  assert.equal(futureRosterCaptured({ at: '2026-07-02T12:00:00Z', loads: [...NUMBERLESS, ...NUMBERED] }, NOW), true);
 });
 
-test('missing/garbled cache is never fresh', () => {
-  assert.equal(futureRosterIsFresh(null, NOW), false);
-  assert.equal(futureRosterIsFresh(undefined, NOW), false);
-  assert.equal(futureRosterIsFresh({ loads: LOADS }, NOW), false);
-  assert.equal(futureRosterIsFresh({ at: 'not-a-date', loads: LOADS }, NOW), false);
+test('a PRIOR scan-day capture never counts, even numbered — each day recaptures once', () => {
+  assert.equal(futureRosterCaptured({ at: '2026-07-01T12:00:00Z', loads: NUMBERED }, NOW), false);
 });
 
-test('NUVIZZ_ROSTER_FRESH_MIN widens the window; floor is 1 minute', () => {
-  const prev = process.env.NUVIZZ_ROSTER_FRESH_MIN;
-  try {
-    process.env.NUVIZZ_ROSTER_FRESH_MIN = '30';
-    assert.equal(futureRosterIsFresh({ at: atMinAgo(20), loads: LOADS }, NOW), true);
-    assert.equal(futureRosterIsFresh({ at: atMinAgo(31), loads: LOADS }, NOW), false);
-    process.env.NUVIZZ_ROSTER_FRESH_MIN = '0'; // nonsense → floored to 1, never "always stale-proof"
-    assert.equal(futureRosterIsFresh({ at: atMinAgo(0.5), loads: LOADS }, NOW), true);
-    assert.equal(futureRosterIsFresh({ at: atMinAgo(2), loads: LOADS }, NOW), false);
-  } finally {
-    if (prev === undefined) delete process.env.NUVIZZ_ROSTER_FRESH_MIN;
-    else process.env.NUVIZZ_ROSTER_FRESH_MIN = prev;
-  }
+test('the day boundary is the ET day, not UTC (mirrors the board anchor)', () => {
+  // 2026-07-02T02:00Z is 10:00pm ET Jul 1 — same UTC date as NOW, but the PRIOR ET day.
+  assert.equal(futureRosterCaptured({ at: '2026-07-02T02:00:00Z', loads: NUMBERED }, NOW), false);
+});
+
+test('empty / missing / garbled cache never counts', () => {
+  assert.equal(futureRosterCaptured({ at: '2026-07-02T12:00:00Z', loads: [] }, NOW), false);
+  assert.equal(futureRosterCaptured({ at: '2026-07-02T12:00:00Z' }, NOW), false);
+  assert.equal(futureRosterCaptured({ loads: NUMBERED }, NOW), false);
+  assert.equal(futureRosterCaptured({ at: 'not-a-date', loads: NUMBERED }, NOW), false);
+  assert.equal(futureRosterCaptured(null, NOW), false);
+  assert.equal(futureRosterCaptured(undefined, NOW), false);
 });
