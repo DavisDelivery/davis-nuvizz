@@ -18,4 +18,8 @@ const cfg = {
 export const firebaseConfigured = !!(cfg.apiKey && cfg.projectId);
 
 export const app = firebaseConfigured ? initializeApp(cfg) : null;
-export const db = app ? getFirestore(app) : null;
+// VITE_FIRESTORE_DATABASE selects a NAMED Firestore database (the UAT prod-mirror
+// sets uat-mirror so client-side writes — customer_notes etc. — never touch the
+// production default database). Unset = the default database, unchanged.
+const dbName = (import.meta.env.VITE_FIRESTORE_DATABASE || '').trim();
+export const db = app ? (dbName ? getFirestore(app, dbName) : getFirestore(app)) : null;

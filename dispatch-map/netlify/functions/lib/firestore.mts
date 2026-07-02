@@ -33,8 +33,32 @@ function loadServiceAccount(): any {
   return __saCache;
 }
 
+// ── Firestore DATABASE selection (prod-mirror isolation, Jul 2 2026) ──────────
+// FIRESTORE_DATABASE picks a NAMED Firestore database inside the same Firebase
+// project; unset = '(default)' (production, unchanged). The UAT prod-mirror site
+// sets FIRESTORE_DATABASE=uat-mirror so its scans/journals/counters land in a
+// fully separate database — same code, same service account, zero data mixing.
+export function firestoreDatabase(): string {
+  return String(process.env.FIRESTORE_DATABASE || '').trim() || '(default)';
+}
+/** SAFETY INVARIANT: a deploy pointed at UAT NuVizz must NEVER write the production
+ *  (default) Firestore — that would mix UAT scan/journal rows into the live board's
+ *  data. If NUVIZZ_BASE_URL is a uat host and no named database is set, Firestore is
+ *  treated as OFF (loudly) rather than corrupting prod data. */
+export function uatMisconfigured(): boolean {
+  return /uat\.nuvizz\.com/i.test(String(process.env.NUVIZZ_BASE_URL || '')) && firestoreDatabase() === '(default)';
+}
+let __warnedUatMisconfig = false;
 export function isFirestoreEnabled(): boolean {
-  return !!process.env.FIREBASE_SA;
+  if (!process.env.FIREBASE_SA) return false;
+  if (uatMisconfigured()) {
+    if (!__warnedUatMisconfig) {
+      __warnedUatMisconfig = true;
+      console.error('[firestore] REFUSING to use the (default) database from a UAT-pointed deploy — set FIRESTORE_DATABASE (e.g. uat-mirror). Firestore is OFF for this instance.');
+    }
+    return false;
+  }
+  return true;
 }
 
 // Traditional local-day (America/New_York) date string YYYY-MM-DD. The NuVizz
@@ -144,7 +168,7 @@ function objectToFields(obj: any): any {
 export async function getDoc(path: string): Promise<any | null> {
   const token = await getAccessToken();
   const sa = loadServiceAccount();
-  const url = `${FIRESTORE_BASE}/projects/${sa.project_id}/databases/(default)/documents/${path}`;
+  const url = `${FIRESTORE_BASE}/projects/${sa.project_id}/databases/${firestoreDatabase()}/documents/${path}`;
   const resp = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
   if (resp.status === 404) return null;
   if (!resp.ok) throw new Error(`getDoc ${path} failed: ${resp.status} ${(await resp.text()).slice(0, 200)}`);
@@ -154,7 +178,7 @@ export async function getDoc(path: string): Promise<any | null> {
 export async function setDoc(path: string, data: any): Promise<boolean> {
   const token = await getAccessToken();
   const sa = loadServiceAccount();
-  const url = `${FIRESTORE_BASE}/projects/${sa.project_id}/databases/(default)/documents/${path}`;
+  const url = `${FIRESTORE_BASE}/projects/${sa.project_id}/databases/${firestoreDatabase()}/documents/${path}`;
   const resp = await fetch(url, {
     method: 'PATCH',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
@@ -170,7 +194,7 @@ export async function listDocs(collectionPath: string): Promise<any[]> {
   const all: any[] = [];
   let pageToken: string | null = null;
   do {
-    const url = new URL(`${FIRESTORE_BASE}/projects/${sa.project_id}/databases/(default)/documents/${collectionPath}`);
+    const url = new URL(`${FIRESTORE_BASE}/projects/${sa.project_id}/databases/${firestoreDatabase()}/documents/${collectionPath}`);
     url.searchParams.set('pageSize', '300');
     if (pageToken) url.searchParams.set('pageToken', pageToken);
     const resp = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
@@ -194,7 +218,7 @@ export async function listDocs(collectionPath: string): Promise<any[]> {
 export async function runQuery(structuredQuery: any): Promise<any[]> {
   const token = await getAccessToken();
   const sa = loadServiceAccount();
-  const url = `${FIRESTORE_BASE}/projects/${sa.project_id}/databases/(default)/documents:runQuery`;
+  const url = `${FIRESTORE_BASE}/projects/${sa.project_id}/databases/${firestoreDatabase()}/documents:runQuery`;
   const resp = await fetch(url, {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
@@ -217,7 +241,7 @@ export async function runQuery(structuredQuery: any): Promise<any[]> {
 export async function listCollectionIds(docPath?: string): Promise<string[]> {
   const token = await getAccessToken();
   const sa = loadServiceAccount();
-  const base = `${FIRESTORE_BASE}/projects/${sa.project_id}/databases/(default)/documents`;
+  const base = `${FIRESTORE_BASE}/projects/${sa.project_id}/databases/${firestoreDatabase()}/documents`;
   const url = `${docPath ? `${base}/${docPath}` : base}:listCollectionIds`;
   const resp = await fetch(url, {
     method: 'POST',
@@ -235,7 +259,7 @@ export async function listCollectionIds(docPath?: string): Promise<string[]> {
 export async function deleteDoc(path: string): Promise<void> {
   const token = await getAccessToken();
   const sa = loadServiceAccount();
-  const url = `${FIRESTORE_BASE}/projects/${sa.project_id}/databases/(default)/documents/${path}`;
+  const url = `${FIRESTORE_BASE}/projects/${sa.project_id}/databases/${firestoreDatabase()}/documents/${path}`;
   const resp = await fetch(url, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } });
   if (!resp.ok && resp.status !== 404) {
     throw new Error(`deleteDoc ${path} failed: ${resp.status} ${(await resp.text()).slice(0, 200)}`);
@@ -622,8 +646,8 @@ export async function incrementCallCounter(dateStr: string, n: number, meta?: st
   const attr: CallAttribution = typeof meta === 'string' ? { route: meta } : (meta || {});
   const token = await getAccessToken();
   const sa = loadServiceAccount();
-  const docName = `projects/${sa.project_id}/databases/(default)/documents/${OPS_COLLECTION}/calls__${dateStr}`;
-  const url = `${FIRESTORE_BASE}/projects/${sa.project_id}/databases/(default)/documents:commit`;
+  const docName = `projects/${sa.project_id}/databases/${firestoreDatabase()}/documents/${OPS_COLLECTION}/calls__${dateStr}`;
+  const url = `${FIRESTORE_BASE}/projects/${sa.project_id}/databases/${firestoreDatabase()}/documents:commit`;
   // count is always transform[0] so transformResults[0] is the authoritative total.
   // Stamp the current ET hour so the same commit also grows that hour's bucket.
   const body = buildCounterCommitBody(docName, dateStr, n, attr.route ?? undefined, etHourString(), attr);
