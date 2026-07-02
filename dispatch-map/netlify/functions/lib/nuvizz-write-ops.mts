@@ -88,6 +88,7 @@ export interface StopRow {
   addr2?: string | null;
   stopNbr?: string | null;       // your order number
   pro?: string | null;           // PRO / shipment number (optional)
+  itemDesc?: string | null;      // what's being delivered (commodity) → reference2
   pallets?: number | null; cartons?: number | null; weight?: number | null;
 }
 export interface OriginSettings {
@@ -110,12 +111,17 @@ export function buildStopPayload(row: StopRow, settings: OriginSettings): any {
   const tz = settings.timeZone || 'America/New_York';
   const d = settings.serviceDate;
   const pro = row.pro ? String(row.pro) : '';
+  const itemDesc = row.itemDesc ? String(row.itemDesc).trim() : '';
   const pallets = numOrNull(row.pallets);
   return {
     stopNbr: row.stopNbr ? String(row.stopNbr) : undefined,
     stopType: 'DO', shipmentType: 'REG', stopExecution: 'APP', sourceType: 'INTG',
     shipmentNbr: pro || undefined, proNumber: pro || undefined,
     reference1: pro ? `PRO ${pro}` : undefined,
+    // Item/commodity description → reference2 (a plain string reference field on the stop).
+    // Surfaced back by normalizeStop so a live create can be read back to confirm it persisted
+    // on this tenant (NuVizz silently drops unknown fields — verify via getStop / write-log).
+    reference2: itemDesc || undefined,
     totalPallets: pallets ?? 1,
     totalCartons: numOrNull(row.cartons),
     weight: numOrNull(row.weight),
@@ -247,6 +253,7 @@ export function normalizeStop(j: any): any {
     stopId: stop.stopId ?? null,
     stopNbr: stop.stopNbr ?? null,
     status: exec.stopStatus ?? null,
+    itemDesc: stop.reference2 ?? null,       // commodity/description we wrote to reference2 (round-trip check)
     assignedLoadNbr: load.loadNbr ?? null,   // null/absent ⇒ unplanned
     routeName: load.routeName ?? null,
     toName: toAddr.name ?? null,

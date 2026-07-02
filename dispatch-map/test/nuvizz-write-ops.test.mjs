@@ -147,6 +147,23 @@ test('buildStopPayload: blank weight/cartons → null, not 0', () => {
   assert.equal(p.totalCartons, null);
 });
 
+test('buildStopPayload: item description → reference2 (trimmed); absent when blank', () => {
+  const origin = { name: 'D', addr1: '9', city: 'A', state: 'GA', zip: '30301' };
+  const withDesc = buildStopPayload({ name: 'A', addr1: '1', city: 'B', state: 'GA', zip: '30518', itemDesc: '  2 pallets appliances  ' },
+    { origin, serviceDate: '2026-06-29' });
+  assert.equal(withDesc.reference2, '2 pallets appliances');
+  const blank = buildStopPayload({ name: 'A', addr1: '1', city: 'B', state: 'GA', zip: '30518', itemDesc: '   ' },
+    { origin, serviceDate: '2026-06-29' });
+  assert.equal(blank.reference2, undefined, 'blank description must not emit reference2');
+  assert.equal('reference2' in JSON.parse(JSON.stringify(blank)), false, 'undefined reference2 is omitted from the wire payload');
+});
+
+test('normalizeStop: surfaces reference2 as itemDesc for read-back verification', () => {
+  const norm = normalizeStop({ Stop: { stop: { stopId: 's1', stopNbr: '007', reference2: '2 pallets appliances', to: { address: { name: 'ACME' } } }, stopExecutionInfo: {}, load: {} } });
+  assert.equal(norm.itemDesc, '2 pallets appliances');
+  assert.equal(normalizeStop({ Stop: { stop: { stopId: 's2' }, stopExecutionInfo: {}, load: {} } }).itemDesc, null);
+});
+
 // ── §5 edit header ───────────────────────────────────────────────────────────
 test('toEditHeader: forces seqMode None, passes through known fields, maps schedule from start dttms', () => {
   const h = toEditHeader({ loadId: 'L1', routeName: 'BEN 2', earliestStartDttm: '2026-06-29T08:00:00', latestStartDttm: '2026-06-29T12:00:00', junk: 'drop?' });

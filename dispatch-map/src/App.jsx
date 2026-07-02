@@ -51,7 +51,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.33.10';
+const APP_VERSION = '0.34.0';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -96,6 +96,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.34.0', 'New Order: item description + multiple pickup locations + the Save-origin fix. (1) New "Item description" field (what\'s being delivered) rides along on the order (stored on NuVizz reference2 — read back on the first live create to confirm it sticks). (2) Pickup (ship-from) is now a SAVED LIST, not a single default: pick a location from the dropdown, or type a new one and "Save pickup location" — for when you\'re picking up from other places. (3) FIX: "Save as default origin" appeared to do nothing — it was silently saving an INCOMPLETE origin with no feedback (the placeholders "Buford"/"30518" look like real values but the fields were empty). The Save button is now disabled until every pickup field is filled, flashes "✓ Saved" when it works, and says "fill all pickup fields to save" when it can\'t. (Bulk multi-row entry + spreadsheet import is coming next.)'],
   ['0.33.10', 'Loads grid — new "Load ID" column, right after "% Done" (dispatch Map + Routing bottom panel, per debug report #352). Shows NuVizz\'s real load number (e.g. DAVIS000198197) — the "Load" column shows the friendly route name, which is all the stops feed carries; this reads the real id from the day\'s loads roster instead, matched by route name. Sortable; "—" when the roster hasn\'t resolved a number for that load yet.'],
   ['0.33.9', 'Tomorrow\'s roster: back to ONCE a day — but the capture only counts when the NUMBERS came through. Chad\'s correction to 0.33.8: tomorrow\'s load set is fixed once it exists, so there\'s nothing to re-pull every 15 minutes — the real Jul 1 failure was that the morning capture ran with the old parser (before the Load-Number column fix in 0.32.25 deployed), wrote every row with NO number, and the "non-empty → done" rule froze that number-less snapshot for the whole day. Now the scan re-tries each cycle ONLY until a roster with real DAVIS000… numbers lands, then stops for the day — steady state one cheap loads-list call per day, self-healing if a capture ever comes back number-less again (bad column/parser/NuVizz hiccup). Manual Refresh stays the on-demand override.'],
   ['0.33.8', 'Plan TOMORROW\'s loads TODAY — the scheduled scan now keeps tomorrow\'s loads roster fresh ALL DAY instead of freezing it at the first morning snapshot. Verified against the live scan (Jul 2): every one of tomorrow\'s loads already carries its real DAVIS000… Load Number the moment it exists — the app just wasn\'t pulling them in until the next morning, which is why loads created during the day reached the evening board number-less. Now a portal-created load (and its number — the key every Save wants) reaches the board within one scan interval (~15 min), so resequencing/unplanning resolves directly; the 0.33.5 seed-then-build remains the fallback for a card that still lacks its number. Cost: one cheap loads-list call per scan cycle — never the number-probe.'],
@@ -13111,9 +13112,32 @@ const normPhone = (p) => { const d = String(p || '').replace(/\D/g, ''); return 
 // default (origin is saved ONCE to localStorage, since ROUTING_DEPOT has no street address).
 // Gated by a Beta/Live toggle AND the server write flag: in ○ Beta a Create only previews
 // (nothing sent). New orders land UNPLANNED — plan them onto a load later in Routing.
-const NEWORDER_ORIGIN_KEY = 'dd_neworder_origin';
+const NEWORDER_ORIGIN_KEY = 'dd_neworder_origin';    // the DEFAULT / last-used origin (also read by Routing's import header fallback)
+const NEWORDER_ORIGINS_KEY = 'dd_neworder_origins';  // the saved LIST of pickup origins (multiple pickup locations)
 const NEWORDER_ORIGIN_DEFAULT = { name: 'Buford Terminal', addr1: '', city: '', state: 'GA', zip: '' };
-const EMPTY_ORDER_ROW = { name: '', addr1: '', addr2: '', city: '', state: '', zip: '', stopNbr: '', pro: '', pallets: '', cartons: '', weight: '' };
+const EMPTY_ORDER_ROW = { name: '', addr1: '', addr2: '', city: '', state: '', zip: '', stopNbr: '', pro: '', itemDesc: '', pallets: '', cartons: '', weight: '' };
+
+// Coerce every field of a saved origin to a STRING — a hand-edited/corrupt entry (e.g. a numeric
+// zip) would otherwise pass the completeness gate and then throw on .trim() mid-submit.
+function coerceOrigin(s) {
+  const o = { ...NEWORDER_ORIGIN_DEFAULT };
+  if (s && typeof s === 'object') for (const k of Object.keys(o)) o[k] = String(s[k] ?? o[k] ?? '');
+  return o;
+}
+const originIsComplete = (o) => !!(String(o?.name).trim() && String(o?.addr1).trim() && String(o?.city).trim() && String(o?.state).trim() && String(o?.zip).trim());
+const originKey = (o) => `${String(o?.name).trim().toLowerCase()}|${String(o?.addr1).trim().toLowerCase()}`;
+// Load the saved pickup-origin LIST, seeding it from the legacy single default if the list is empty.
+function loadSavedOrigins() {
+  let list = [];
+  try { const a = JSON.parse(localStorage.getItem(NEWORDER_ORIGINS_KEY) || 'null'); if (Array.isArray(a)) list = a.map(coerceOrigin).filter(originIsComplete); } catch { /* ignore */ }
+  if (!list.length) {
+    try { const d = JSON.parse(localStorage.getItem(NEWORDER_ORIGIN_KEY) || 'null'); const o = coerceOrigin(d); if (originIsComplete(o)) list = [o]; } catch { /* ignore */ }
+  }
+  // De-dupe by name|addr1 (keep first).
+  const seen = new Set(); const out = [];
+  for (const o of list) { const k = originKey(o); if (!seen.has(k)) { seen.add(k); out.push(o); } }
+  return out;
+}
 
 // Local calendar day (YYYY-MM-DD) — the default service date for a new order.
 function todayLocalYMD() {
@@ -13135,22 +13159,17 @@ function OrderField({ label, req, value, onChange, placeholder, type = 'text', c
 }
 
 function NewOrderScreen() {
+  // Saved pickup origins (multiple locations) + the currently-selected/edited one.
+  const [origins, setOrigins] = useState(() => loadSavedOrigins());
   const [origin, setOrigin] = useState(() => {
-    // Coerce every saved field to a STRING — a hand-edited/corrupt saved origin (e.g. a numeric
-    // zip) would otherwise pass the gate and then throw on .trim() mid-submit, wedging the form.
-    try {
-      const s = JSON.parse(localStorage.getItem(NEWORDER_ORIGIN_KEY) || 'null');
-      if (s && typeof s === 'object') {
-        const o = { ...NEWORDER_ORIGIN_DEFAULT };
-        for (const k of Object.keys(o)) o[k] = String(s[k] ?? o[k] ?? '');
-        return o;
-      }
-    } catch { /* ignore */ }
-    return NEWORDER_ORIGIN_DEFAULT;
+    const list = loadSavedOrigins();
+    try { const d = coerceOrigin(JSON.parse(localStorage.getItem(NEWORDER_ORIGIN_KEY) || 'null')); if (originIsComplete(d)) return d; } catch { /* ignore */ }
+    return list[0] || NEWORDER_ORIGIN_DEFAULT;
   });
   // Trimmed like the delivery gate — a whitespace-only origin field must not enable Create.
-  const originComplete = !!(String(origin.name).trim() && String(origin.addr1).trim() && String(origin.city).trim() && String(origin.state).trim() && String(origin.zip).trim());
+  const originComplete = originIsComplete(origin);
   const [showOrigin, setShowOrigin] = useState(!originComplete);
+  const [originSaved, setOriginSaved] = useState(false);   // transient "✓ Saved" confirmation
   const [row, setRow] = useState(EMPTY_ORDER_ROW);
   const [serviceDate, setServiceDate] = useState(todayLocalYMD());
   const [live, setLive] = useState(false);
@@ -13158,12 +13177,49 @@ function NewOrderScreen() {
   const [result, setResult] = useState(null); // { ok, beta?, msg }
 
   const set = (k) => (e) => setRow((r) => ({ ...r, [k]: e.target.value }));
-  const setOrig = (k) => (e) => setOrigin((o) => ({ ...o, [k]: e.target.value }));
+  const setOrig = (k) => (e) => { setOriginSaved(false); setOrigin((o) => ({ ...o, [k]: e.target.value })); };
 
   const deliveryComplete = !!(row.name.trim() && row.addr1.trim() && row.city.trim() && row.state.trim() && row.zip.trim());
   const canSubmit = deliveryComplete && originComplete && !!serviceDate && !busy;
 
-  const persistOrigin = () => { try { localStorage.setItem(NEWORDER_ORIGIN_KEY, JSON.stringify(origin)); } catch { /* ignore */ } };
+  // Selecting a saved pickup location from the dropdown ('' = keep editing / new location).
+  const pickOrigin = (e) => {
+    setOriginSaved(false);
+    const k = e.target.value;
+    if (!k) { setOrigin(coerceOrigin({ ...NEWORDER_ORIGIN_DEFAULT, name: '', state: 'GA' })); return; }
+    const found = origins.find((o) => originKey(o) === k);
+    if (found) setOrigin(coerceOrigin(found));
+  };
+
+  // Save the current origin: upsert into the saved LIST (by name|addr1) AND set it as the default
+  // (NEWORDER_ORIGIN_KEY, which Routing's import-header fallback reads). Disabled until complete —
+  // the reported "save did nothing" was a silent save of an INCOMPLETE origin with no feedback.
+  const persistOrigin = () => {
+    if (!originComplete) return;
+    const o = coerceOrigin(origin);
+    const next = [...origins.filter((x) => originKey(x) !== originKey(o)), o];
+    setOrigins(next);
+    try {
+      localStorage.setItem(NEWORDER_ORIGINS_KEY, JSON.stringify(next));
+      localStorage.setItem(NEWORDER_ORIGIN_KEY, JSON.stringify(o));
+    } catch { /* ignore */ }
+    setOriginSaved(true);
+  };
+
+  // Remove the selected saved pickup location from the list (keeps the fields editable for this order).
+  const deleteOrigin = () => {
+    const o = coerceOrigin(origin);
+    const next = origins.filter((x) => originKey(x) !== originKey(o));
+    setOrigins(next);
+    try {
+      localStorage.setItem(NEWORDER_ORIGINS_KEY, JSON.stringify(next));
+      const def = coerceOrigin(JSON.parse(localStorage.getItem(NEWORDER_ORIGIN_KEY) || 'null'));
+      if (originKey(def) === originKey(o)) { if (next[0]) localStorage.setItem(NEWORDER_ORIGIN_KEY, JSON.stringify(next[0])); else localStorage.removeItem(NEWORDER_ORIGIN_KEY); }
+    } catch { /* ignore */ }
+    setOriginSaved(false);
+  };
+
+  const originIsSaved = origins.some((o) => originKey(o) === originKey(origin));
 
   // The clientOpId is minted ONCE per ORDER (not per click): a retry after a lost response
   // replays the same id, so the server's idempotency ledger returns the prior success instead
@@ -13179,6 +13235,7 @@ function NewOrderScreen() {
         name: row.name.trim(), addr1: row.addr1.trim(), addr2: row.addr2.trim() || null,
         city: row.city.trim(), state: row.state.trim(), zip: row.zip.trim(),
         stopNbr: row.stopNbr.trim() || null, pro: row.pro.trim() || null,
+        itemDesc: row.itemDesc.trim() || null,
         pallets: row.pallets === '' ? null : Number(row.pallets),
         cartons: row.cartons === '' ? null : Number(row.cartons),
         weight: row.weight === '' ? null : Number(row.weight),
@@ -13229,10 +13286,10 @@ function NewOrderScreen() {
           </button>
         </div>
 
-        {/* Origin (from) — saved once */}
+        {/* Origin (from) — pick a saved pickup location or edit for this order */}
         <div className="bg-white border border-slate-200 rounded-lg p-3">
           <button onClick={() => setShowOrigin((v) => !v)} className="w-full flex items-center justify-between text-left">
-            <span className="text-[13px] font-semibold text-slate-700">Origin (ship from){!originComplete && <span className="ml-2 text-[11px] font-normal text-amber-600">— set this once</span>}</span>
+            <span className="text-[13px] font-semibold text-slate-700">Pickup (ship from){!originComplete && <span className="ml-2 text-[11px] font-normal text-amber-600">— required</span>}</span>
             <span className="text-[12px] text-slate-500 inline-flex items-center gap-1">
               {originComplete && !showOrigin ? `${origin.name} · ${origin.city}, ${origin.state}` : ''}
               {showOrigin ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
@@ -13240,14 +13297,41 @@ function NewOrderScreen() {
           </button>
           {showOrigin && (
             <div className="mt-3 space-y-2">
-              <OrderField label="Origin name" req value={origin.name} onChange={setOrig('name')} placeholder="Buford Terminal" />
+              {/* Saved-location picker — only when there's more than one, or one that's saved */}
+              {origins.length > 0 && (
+                <label className="block">
+                  <span className="text-[11px] font-medium text-slate-500">Pickup location</span>
+                  <select
+                    value={originIsSaved ? originKey(origin) : ''}
+                    onChange={pickOrigin}
+                    className="mt-0.5 w-full border border-slate-300 rounded px-2 py-1.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-300"
+                  >
+                    {origins.map((o) => <option key={originKey(o)} value={originKey(o)}>{o.name} — {o.city}, {o.state}</option>)}
+                    <option value="">＋ New pickup location…</option>
+                  </select>
+                </label>
+              )}
+              <OrderField label="Pickup name" req value={origin.name} onChange={setOrig('name')} placeholder="Buford Terminal" />
               <OrderField label="Address" req value={origin.addr1} onChange={setOrig('addr1')} placeholder="123 Depot Rd" />
               <div className="grid grid-cols-6 gap-2">
                 <OrderField className="col-span-3" label="City" req value={origin.city} onChange={setOrig('city')} placeholder="Buford" />
                 <OrderField className="col-span-1" label="State" req value={origin.state} onChange={setOrig('state')} placeholder="GA" />
                 <OrderField className="col-span-2" label="ZIP" req value={origin.zip} onChange={setOrig('zip')} placeholder="30518" />
               </div>
-              <button onClick={persistOrigin} className="text-[12px] font-medium inline-flex items-center gap-1 px-2.5 py-1 rounded border border-slate-300 bg-white text-slate-700 hover:bg-slate-50"><Save size={13} /> Save as default origin</button>
+              <div className="flex items-center gap-2 flex-wrap">
+                <button
+                  onClick={persistOrigin} disabled={!originComplete}
+                  title={originComplete ? 'Save this pickup location for reuse' : 'Fill all pickup fields to save'}
+                  className={`text-[12px] font-medium inline-flex items-center gap-1 px-2.5 py-1 rounded border ${originComplete ? 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50' : 'border-slate-200 bg-slate-50 text-slate-400 cursor-not-allowed'}`}
+                >
+                  <Save size={13} /> {originIsSaved ? 'Update pickup location' : 'Save pickup location'}
+                </button>
+                {originIsSaved && origins.length > 0 && (
+                  <button onClick={deleteOrigin} className="text-[12px] font-medium inline-flex items-center gap-1 px-2.5 py-1 rounded border border-slate-300 bg-white text-slate-600 hover:bg-red-50 hover:text-red-700 hover:border-red-200"><Trash2 size={13} /> Remove</button>
+                )}
+                {originSaved && <span className="text-[12px] font-medium text-green-700 inline-flex items-center gap-1"><FileCheck size={13} /> Saved</span>}
+                {!originComplete && <span className="text-[11px] text-amber-600">Fill all pickup fields to save.</span>}
+              </div>
             </div>
           )}
         </div>
@@ -13268,6 +13352,7 @@ function NewOrderScreen() {
         {/* Order details */}
         <div className="bg-white border border-slate-200 rounded-lg p-3 space-y-2">
           <div className="text-[13px] font-semibold text-slate-700">Order details</div>
+          <OrderField label="Item description (optional)" value={row.itemDesc} onChange={set('itemDesc')} placeholder="e.g. 2 pallets appliances" />
           <div className="grid grid-cols-2 gap-2">
             <OrderField label="Order # (optional)" value={row.stopNbr} onChange={set('stopNbr')} placeholder="auto if blank" />
             <OrderField label="PRO / shipment # (optional)" value={row.pro} onChange={set('pro')} placeholder="e.g. 12345" />
