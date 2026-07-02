@@ -319,3 +319,192 @@ test('runCommitImport: one import per load, in payload order; a stuck SOURCE hal
     assert.ok(!stuck.calls.some((c) => c.method === 'POST' && c.body?.loads?.[0]?.loadHeader?.loadNbr === HDR2.loadNbr));
   });
 });
+
+// ── the Compare-panel Save through the import engine (runCommitBoardImport) ──
+//
+// Same commitBoard payload + result shape as the legacy engine — the Routing tab's
+// Beta/LIVE Save flips onto the import path purely via the NUVIZZ_LOAD_IMPORT switch.
+
+import { runCommitBoardImport } from '../netlify/functions/lib/nuvizz-write.mts';
+import { importRefFromRaw, assembleImportHeader } from '../netlify/functions/lib/nuvizz-write-ops.mts';
+
+const FROM_ADDR = { name: 'DAVIS WAREHOUSE', addr1: '1 Depot Rd', city: 'Atlanta', state: 'GA', zip: '30303', country: 'USA' };
+const toBlock = (n) => ({
+  address: { name: `CONSIGNEE ${n}`, addr1: `${n} Main St`, city: 'Macon', state: 'GA', zip: '31201', country: 'USA' },
+  schedule: { timeFrom: '2026-07-02T12:00:00', timeTo: '2026-07-02T17:00:00', timeZone: 'America/New_York' },
+});
+// A raw load/info doc: header WITHOUT flat origin fields (like a real load), stops carrying
+// full from/to blocks — what the import engine echoes back as references.
+const rawLoadDoc = (loadNbr, loadId, nbrs) => ({
+  json: { Load: {
+    loadHeader: { loadId, loadNbr, routeName: `RT ${loadNbr}`, earliestStartDttm: '2026-07-02T06:00:00', latestStartDttm: '2026-07-02T18:00:00' },
+    versionId: 'v1', loadExecutionInfo: { loadStatus: 'PLANNED' },
+    stops: nbrs.map((n, i) => ({ stop: {
+      stopId: `id-${n}`, stopNbr: String(n), stopType: 'DO',
+      from: { address: FROM_ADDR },
+      to: { seq: i + 2, ...toBlock(n) },
+    } })),
+  } },
+});
+const stopDoc = (n, onLoadNbr) => ({
+  json: { Stop: {
+    stop: { stopId: `id-${n}`, stopNbr: String(n), stopType: 'DO', to: toBlock(n) },
+    stopExecutionInfo: { stopStatus: 'OP' },
+    ...(onLoadNbr ? { load: { loadNbr: onLoadNbr } } : {}),
+  } },
+});
+const NOSLEEP = { pollMs: 5000, phaseWaitMs: 5000, sleep: async () => {} };
+const L1 = 'DAVIS000000201', L1ID = 'aaaaaaaaaaaaaaaaaaaaaaa1';
+const L2 = 'DAVIS000000202', L2ID = 'aaaaaaaaaaaaaaaaaaaaaaa2';
+
+test('importRefFromRaw: whitelisted echo of the raw "to" block; null without an address', () => {
+  const raw = { stop: { stopNbr: 'A', stopType: 'DO', to: { seq: 5, ...toBlock('A') } } };
+  const ref = importRefFromRaw(raw);
+  assert.equal(ref.stopNbr, 'A');
+  assert.equal(ref.to.address.addr1, 'A Main St');
+  assert.equal(ref.to.address.seq, undefined);          // junk fields never echoed
+  assert.equal(ref.to.schedule.timeFrom, '2026-07-02T12:00:00');
+  assert.equal(importRefFromRaw({ stop: { stopNbr: 'A' } }), null);   // bare reference = invalid
+});
+
+test('assembleImportHeader: origin trust order — flat header > stop from-address > client ship-from', () => {
+  const base = { loadNbr: L1, routeName: 'RT', earliestStartDttm: '2026-07-02T06:00:00', latestStartDttm: '2026-07-02T18:00:00' };
+  const rawStops = [{ stop: { from: { address: FROM_ADDR } } }];
+  const client = { name: 'CLIENT WHSE', addr1: '9 Client Way', city: 'Buford', state: 'GA', zip: '30518' };
+
+  const flat = assembleImportHeader({ ...base, origin: 'WHSE', originName: 'FLAT', originAddr1: 'F1', originCity: 'FC', originState: 'GA', originZip: '1' }, rawStops, client, null);
+  assert.equal(flat.originName, 'FLAT');
+  const fromStops = assembleImportHeader(base, rawStops, client, null);
+  assert.equal(fromStops.originName, 'DAVIS WAREHOUSE');
+  const fromClient = assembleImportHeader(base, [], client, null);
+  assert.equal(fromClient.originName, 'CLIENT WHSE');
+  assert.equal(fromClient.loadTimeZone, 'EST');
+  assert.throws(() => assembleImportHeader(base, [], null, null), /origin block/);
+  // Dates: header wins; else derived from the fallback service date; else refuse.
+  const derived = assembleImportHeader({ loadNbr: L1 }, rawStops, null, '2026-07-03');
+  assert.equal(derived.earliestStartDttm, '2026-07-03T06:00:00');
+  assert.throws(() => assembleImportHeader({ loadNbr: L1 }, rawStops, null, null), /earliest\/latest/);
+});
+
+test('board Save (import mode): reorder = ONE import echoing the load\'s own records + convergence + assign', async () => {
+  await withGate(async () => {
+    const { requester, calls } = stub([
+      rawLoadDoc(L1, L1ID, ['A', 'B', 'C']),   // fetchLoad (raw to blocks)
+      ACK,                                      // the ONE import
+      rawLoadDoc(L1, L1ID, ['C', 'A', 'B']),   // poll: converged to the requested order
+      { json: { status: 'Success' } },          // assignDriver
+    ]);
+    const r = await runCommitBoardImport(requester, { loads: [
+      { loadNbr: L1, loadId: L1ID, orderedStopNbrs: ['C', 'A', 'B'], driverId: 77 },
+    ] }, CREDS, NOSLEEP);
+    assert.equal(r.ok, true);
+    assert.equal(r.loads.length, 1);
+    assert.equal(r.loads[0].ok, true);
+    // The import body: stops[] in the DESIRED order, each a reference echoed from load/info,
+    // header origin echoed from the stops' from-address (no flat fields on the header).
+    const imp = calls.find((c) => /load\/update\/default/.test(c.url));
+    assert.deepEqual(imp.body.loads[0].stops.map((s) => s.stopNbr), ['C', 'A', 'B']);
+    assert.equal(imp.body.loads[0].stops[0].to.address.addr1, 'C Main St');
+    assert.equal(imp.body.loads[0].loadHeader.originName, 'DAVIS WAREHOUSE');
+    assert.equal(imp.body.loads[0].loadHeader.earliestStartDttm, '2026-07-02T06:00:00');
+    // Steps carry the import + converge trail, then the assign (client "fired" logic keys on ok steps).
+    assert.deepEqual(r.loads[0].steps.map((s) => s.op), ['importLoad', 'converge', 'assignDriver']);
+    // No anchor-engine calls anywhere: no load/edit, no insertstops.
+    assert.ok(!calls.some((c) => /load\/edit|insertstops/.test(c.url)));
+  });
+});
+
+test('board Save (import mode): planning UNPLANNED orders — refs read via stop/info; empty load origin falls back to the client ship-from', async () => {
+  await withGate(async () => {
+    const { requester, calls } = stub([
+      rawLoadDoc(L1, L1ID, []),                 // fetchLoad: an EMPTY load (no stops to echo origin from)
+      stopDoc('X'),                             // getStop X (unplanned)
+      stopDoc('Y'),                             // getStop Y (unplanned)
+      ACK,                                      // import
+      rawLoadDoc(L1, L1ID, ['X', 'Y']),         // poll: converged
+    ]);
+    const r = await runCommitBoardImport(requester, {
+      loads: [{ loadNbr: L1, loadId: L1ID, orderedStopNbrs: ['X', 'Y'] }],
+      origin: { name: 'CLIENT WHSE', addr1: '9 Client Way', city: 'Buford', state: 'GA', zip: '30518' },
+    }, CREDS, NOSLEEP);
+    assert.equal(r.ok, true);
+    const imp = calls.find((c) => /load\/update\/default/.test(c.url));
+    assert.deepEqual(imp.body.loads[0].stops.map((s) => s.stopNbr), ['X', 'Y']);
+    assert.equal(imp.body.loads[0].stops[0].to.address.name, 'CONSIGNEE X');
+    assert.equal(imp.body.loads[0].loadHeader.originName, 'CLIENT WHSE');   // client fallback used
+  });
+});
+
+test('board Save (import mode): steal guard — a stop still planned on a load OUTSIDE the Save is refused', async () => {
+  await withGate(async () => {
+    const { requester, calls } = stub([
+      rawLoadDoc(L1, L1ID, ['A']),
+      stopDoc('X', 'DAVIS000000999'),           // X is planned on a load not in this Save
+    ]);
+    const r = await runCommitBoardImport(requester, { loads: [
+      { loadNbr: L1, loadId: L1ID, orderedStopNbrs: ['A', 'X'] },
+    ] }, CREDS, NOSLEEP);
+    assert.equal(r.ok, false);
+    assert.match(r.loads[0].error, /not part of this Save/);
+    assert.ok(!calls.some((c) => /load\/update\/default/.test(c.url)));   // nothing imported
+  });
+});
+
+test('board Save (import mode): cross-load move runs the SOURCE import before the destination', async () => {
+  await withGate(async () => {
+    const { requester, calls } = stub([
+      // The resolve pass reads loads in PAYLOAD order (destination listed first below):
+      rawLoadDoc(L2, L2ID, ['B']),               // fetchLoad L2 (destination)
+      stopDoc('X', L1),                          // getStop X for L2's add (source IS in the batch)
+      rawLoadDoc(L1, L1ID, ['A', 'X']),          // fetchLoad L1 (source, holds X)
+      // …but the IMPORTS must run source-first:
+      ACK, rawLoadDoc(L1, L1ID, ['A']),          // L1 import (without X) + converge
+      ACK, rawLoadDoc(L2, L2ID, ['B', 'X']),     // L2 import (with X) + converge
+    ]);
+    const r = await runCommitBoardImport(requester, { loads: [
+      // Destination listed FIRST on purpose — the engine must still run the source first.
+      { loadNbr: L2, loadId: L2ID, orderedStopNbrs: ['B', 'X'] },
+      { loadNbr: L1, loadId: L1ID, orderedStopNbrs: ['A'] },
+    ] }, CREDS, NOSLEEP);
+    assert.equal(r.ok, true);
+    const imports = calls.filter((c) => /load\/update\/default/.test(c.url)).map((c) => c.body.loads[0].loadHeader.loadNbr);
+    assert.deepEqual(imports, [L1, L2]);
+  });
+});
+
+test('board Save (import mode): driver-only and emptyLoad loads still ride the legacy engine', async () => {
+  await withGate(async () => {
+    // Driver-only (no order change, trustable loadId): legacy assign — ONE call, no getLoad/import.
+    const a = stub([{ json: { status: 'Success' } }]);
+    const r1 = await runCommitBoardImport(a.requester, { loads: [{ loadNbr: L1, loadId: L1ID, driverId: 9 }] }, CREDS, NOSLEEP);
+    assert.equal(r1.ok, true);
+    assert.equal(a.calls.length, 1);
+    assert.match(a.calls[0].url, /assignanddispatch/);
+
+    // emptyLoad: the legacy cancel path (getLoad + removeStops), NEVER an empty import.
+    const b = stub([
+      rawLoadDoc(L1, L1ID, ['A']),
+      { json: { status: 'SUCCESS' } },           // load/edit removing the last delivery (cancels)
+    ]);
+    const r2 = await runCommitBoardImport(b.requester, { loads: [{ loadNbr: L1, loadId: L1ID, emptyLoad: true, orderedStopNbrs: [] }] }, CREDS, NOSLEEP);
+    assert.equal(r2.ok, true);
+    assert.ok(b.calls.some((c) => /load\/edit/.test(c.url)));
+    assert.ok(!b.calls.some((c) => /load\/update\/default/.test(c.url)));
+  });
+});
+
+test('runOp(commitBoard): the gate is the ONLY switch — off = legacy engine untouched', async () => {
+  const prev = process.env.NUVIZZ_LOAD_IMPORT;
+  delete process.env.NUVIZZ_LOAD_IMPORT;
+  try {
+    const { requester, calls } = stub([
+      rawLoadDoc(L1, L1ID, ['A', 'B']),
+      { json: { status: 'SUCCESS' } },   // legacy remove
+      { json: { status: 'SUCCESS' } },   // legacy insert
+    ]);
+    const r = await runOp(requester, 'commitBoard', { loads: [{ loadNbr: L1, loadId: L1ID, orderedStopNbrs: ['B', 'A'] }] }, CREDS);
+    assert.equal(r.ok, true);
+    assert.ok(calls.some((c) => /load\/edit/.test(c.url)));                       // anchor engine ran
+    assert.ok(!calls.some((c) => /load\/update\/default/.test(c.url)));           // import never fired
+  } finally { if (prev !== undefined) process.env.NUVIZZ_LOAD_IMPORT = prev; }
+});

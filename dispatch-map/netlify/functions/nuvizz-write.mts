@@ -26,7 +26,7 @@
 //     write-enabled state. No NuVizz creds ever reach the browser (this fn is the proxy).
 
 import { WRITE_OPS, MUTATING_OPS, type WriteOp } from './lib/nuvizz-write-ops.mts';
-import { runOp, resolveWriteCreds } from './lib/nuvizz-write.mts';
+import { runOp, resolveWriteCreds, loadImportEnabled } from './lib/nuvizz-write.mts';
 import { getNuvizzRequester, setCallTrigger, effectiveDailyCeiling, NuvizzCircuitOpenError } from './lib/nuvizz-request.mts';
 import { isFirestoreEnabled, getDoc, etDayString } from './lib/firestore.mts';
 import { getOpRecord, putOpRecord, recordCreatedOrder, recordAssignment } from './lib/write-registries.mts';
@@ -58,7 +58,11 @@ function planFor(op: WriteOp, payload: any): string[] {
         bits.push('EMPTY the load — remove ALL orders and CANCEL the route');
       } else {
         if (rm) bits.push(`unplan ${rm} order(s) (remove from route)`);
-        if (ordered.length) bits.push(`set ${ordered.length} stop(s) in order (anchor remove + one-at-a-time insert)`);
+        // The Confirm modal tells you WHICH engine will fire — the anchor engine, or (when the
+        // NUVIZZ_LOAD_IMPORT switch is on) the one-call async load import + convergence read-backs.
+        if (ordered.length) bits.push(loadImportEnabled()
+          ? `set ${ordered.length} stop(s) in order (ONE async load import + convergence read-backs — IMPORT MODE)`
+          : `set ${ordered.length} stop(s) in order (anchor remove + one-at-a-time insert)`);
       }
       if (L?.driverId != null && String(L?.driverId).trim() !== '') bits.push(`assign ${L?.driverName || L?.driverId}`);
       if (L?.dispatch) bits.push('dispatch');
