@@ -29,7 +29,7 @@ import { WRITE_OPS, MUTATING_OPS, type WriteOp } from './lib/nuvizz-write-ops.mt
 import { runOp, resolveWriteCreds, loadImportBlocked } from './lib/nuvizz-write.mts';
 import { getNuvizzRequester, setCallTrigger, effectiveDailyCeiling, NuvizzCircuitOpenError } from './lib/nuvizz-request.mts';
 import { isFirestoreEnabled, getDoc, etDayString } from './lib/firestore.mts';
-import { getOpRecord, putOpRecord, recordCreatedOrder, recordAssignment } from './lib/write-registries.mts';
+import { getOpRecord, putOpRecord, priorShortCircuits, recordCreatedOrder, recordAssignment } from './lib/write-registries.mts';
 
 function writeEnabled(): boolean {
   return String(process.env.NUVIZZ_WRITE_ENABLED ?? '').trim().toLowerCase() === 'true';
@@ -54,6 +54,7 @@ function planFor(op: WriteOp, payload: any): string[] {
       const ordered = Array.isArray(L?.orderedStopNbrs) ? L.orderedStopNbrs : (Array.isArray(L?.orderedStopIds) ? L.orderedStopIds : []);
       const rm = Array.isArray(L?.removeStopNbrs) ? L.removeStopNbrs.length : (Array.isArray(L?.removeStopIds) ? L.removeStopIds.length : 0);
       const bits: string[] = [];
+      const inline = Array.isArray(L?.newStops) ? L.newStops.length : 0;
       if (L?.emptyLoad || (ordered.length === 0 && rm > 0)) {
         bits.push('EMPTY the load — remove ALL orders and CANCEL the route');
       } else {
@@ -63,6 +64,8 @@ function planFor(op: WriteOp, payload: any): string[] {
         if (ordered.length) bits.push(payload?.useImport === true && !loadImportBlocked()
           ? `set ${ordered.length} stop(s) in order (ONE async load import + convergence read-backs — IMPORT ENGINE)`
           : `set ${ordered.length} stop(s) in order (anchor remove + one-at-a-time insert)`);
+        // Inline creation (item A): these orders don't exist yet — the import itself creates them.
+        if (inline) bits.push(`create ${inline} NEW order(s) INLINE in the import (no per-stop pre-creates)`);
       }
       if (L?.driverId != null && String(L?.driverId).trim() !== '') bits.push(`assign ${L?.driverName || L?.driverId}`);
       if (L?.dispatch) bits.push('dispatch');
@@ -169,7 +172,7 @@ export default async (req: Request): Promise<Response> => {
   if (MUTATING_OPS.has(op) && clientOpId) {
     if (!isFirestoreEnabled()) console.warn(`[nuvizz-write] clientOpId supplied but Firestore is off — idempotency unavailable; a retry of op=${op} can re-fire.`);
     const prior = await getOpRecord(tenant, clientOpId);
-    if (prior?.status === 'succeeded') return J({ ok: true, op, tenant, live, dryRun: false, idempotent: true, result: prior.result, ops });
+    if (priorShortCircuits(prior)) return J({ ok: true, op, tenant, live, dryRun: false, idempotent: true, result: prior!.result, ops });
   }
 
   // 5) Pre-flight budget — refuse to start at/over the ceiling (breaker is monitor by default).

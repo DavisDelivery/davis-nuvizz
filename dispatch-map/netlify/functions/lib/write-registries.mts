@@ -40,6 +40,15 @@ export async function getOpRecord(tenant: string, clientOpId: string): Promise<O
   catch { return null; }
 }
 
+/** The ONE dedup decision (convergence-audit directive): only a prior SUCCEEDED record
+ *  short-circuits a repeat. A 'failed' or 'pending' prior (e.g. an import Save handed to the
+ *  client verifier as pending) must NEVER swallow a re-send — the convergence recipe depends
+ *  on the repeat reaching the wire. (Escalation re-Saves also carry a FRESH clientOpId, and
+ *  in-invocation resends bypass the handler entirely — this guard is the last belt.) */
+export function priorShortCircuits(prior: OpRecord | null): boolean {
+  return prior?.status === 'succeeded';
+}
+
 /** Persist (create or update) a Save's outcome. No-op when Firestore is off. */
 export async function putOpRecord(rec: OpRecord): Promise<void> {
   if (!isFirestoreEnabled() || !rec.clientOpId) return;
