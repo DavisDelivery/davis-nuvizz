@@ -15,7 +15,7 @@ import assert from 'node:assert/strict';
 import {
   buildOpRequest, parseOpResponse, buildImportBody, buildImportStopRef, importOk, deliveryOrder, normalizeLoad,
 } from '../netlify/functions/lib/nuvizz-write-ops.mts';
-import { runOp, runImportLoad, runCommitImport, loadImportBlocked } from '../netlify/functions/lib/nuvizz-write.mts';
+import { runOp, runImportLoad, runCommitImport, loadImportBlocked, _resetStaticInfoMemo } from '../netlify/functions/lib/nuvizz-write.mts';
 
 const CREDS = { base: 'https://portal.nuvizz.com/deliverit/openapi/v7', companyCode: 'DAVIS', auth: 'Basic xyz' };
 const HEXID = '6a438e9d52ef82bd1ed4516b';
@@ -477,25 +477,31 @@ test('board Save (import mode): steal guard — a stop still planned on a load O
   });
 });
 
-test('board Save (import mode): cross-load move runs the SOURCE import before the destination', async () => {
+test('board Save (import mode): cross-load move — SOURCE fires first; the destination NEVER fires until the source CONFIRMS (no steal)', async () => {
   await withGate(async () => {
     const { requester, calls } = stub([
       // The resolve pass reads loads in PAYLOAD order (destination listed first below):
       rawLoadDoc(L2, L2ID, ['B']),               // fetchLoad L2 (destination)
       stopDoc('X', L1),                          // getStop X for L2's add (source IS in the batch)
       rawLoadDoc(L1, L1ID, ['A', 'X']),          // fetchLoad L1 (source, holds X)
-      // …but the IMPORTS must run source-first:
-      ACK, rawLoadDoc(L1, L1ID, ['A']),          // L1 import (without X) + converge
-      ACK, rawLoadDoc(L2, L2ID, ['B', 'X']),     // L2 import (with X) + converge
+      ACK,                                        // L1 import fires (multi-load ⇒ no in-band confirm)
     ]);
     const r = await runCommitBoardImport(requester, { loads: [
       // Destination listed FIRST on purpose — the engine must still run the source first.
       { loadNbr: L2, loadId: L2ID, orderedStopNbrs: ['B', 'X'] },
       { loadNbr: L1, loadId: L1ID, orderedStopNbrs: ['A'] },
     ] }, CREDS, NOSLEEP);
-    assert.equal(r.ok, true);
+    // Multi-load Saves return the source as PENDING immediately (the client verifier drives
+    // convergence); the destination is GATED — importing it now would be the untested cross-load
+    // steal (the stop is still planned on the source until the source's rebuild lands).
+    assert.equal(r.ok, false);
     const imports = calls.filter((c) => /load\/update\/default/.test(c.url)).map((c) => c.body.loads[0].loadHeader.loadNbr);
-    assert.deepEqual(imports, [L1, L2]);
+    assert.deepEqual(imports, [L1]);                                   // ONLY the source fired
+    const src = r.loads.find((l) => l.loadNbr === L1);
+    const dst = r.loads.find((l) => l.loadNbr === L2);
+    assert.equal(src.pending, true);
+    assert.equal(dst.ok, false);
+    assert.match(dst.error, /depends on has not confirmed/);
   });
 });
 
@@ -611,6 +617,7 @@ test('assembleImportHeader: a non-ISO (epoch) header date is never echoed — de
 const NOT_FOUND_501 = { status: 501, json: {} };   // load/static/info on the live tenant
 
 test('board Save (import mode): loadId-only EMPTY load — seed via insertstops, learn the number, then import', async () => {
+  _resetStaticInfoMemo();
   await withGate(async () => {
     const { requester, calls } = stub([
       stopDoc('X'),                            // resolveLoadNbrByStopNbr: X is unplanned
@@ -638,6 +645,7 @@ test('board Save (import mode): loadId-only EMPTY load — seed via insertstops,
 });
 
 test('board Save (classic engine): loadId-only EMPTY load — seed resolves the number, anchor plan proceeds', async () => {
+  _resetStaticInfoMemo();
   const prev = process.env.NUVIZZ_LOAD_IMPORT;
   delete process.env.NUVIZZ_LOAD_IMPORT;
   try {
@@ -675,22 +683,54 @@ test('seeding never fires for a load with NO ordered stops (nothing to seed with
 
 // ── the live-tenant header shapes that produced NuVizz's 400 (from the write journal) ──
 
-test('assembleImportHeader: live load/info header — origin OBJECT never echoed; GEORGIA/UNITED STATES normalized', () => {
-  // Verbatim shape from the journaled failing Save (SUW 5 / DAVIS000198073):
+test('assembleImportHeader: live load/info header — origin OBJECT never echoed; GEORGIA/UNITED STATES normalized; concatenated addr1 stripped', () => {
+  // TRULY verbatim shape from the journaled failing Save (SUW 5 / DAVIS000198073) — note the
+  // flat originAddr1 is NuVizz's whole one-line geocoder address, not a clean street line.
   const liveHeader = {
     loadNbr: 'DAVIS000198073', routeName: 'SUW 5', loadTimeZone: 'EST',
     earliestStartDttm: '2026-07-02T12:00:00', latestStartDttm: '2026-07-02T23:59:00',
     origin: { address: { city: 'BUFORD', addr1: '943 GAINESVILLE HWY, BUFORD, GA 30518, USA', addressType: 'COM', name: 'Not Available', state: 'GEORGIA', country: 'UNITED STATES', longitude: -83.95948, zip: '30518', latitude: 34.14838 } },
-    originName: 'ULINE', originAddr1: '943 GAINESVILLE HWY', originCity: 'BUFORD',
+    originName: 'ULINE', originAddr1: '943 GAINESVILLE HWY, BUFORD, GA 30518, USA', originCity: 'BUFORD',
     originState: 'GEORGIA', originZip: '30518', originCountry: 'UNITED STATES',
   };
   const out = assembleImportHeader(liveHeader, [], null, null);
   assert.equal(out.origin, 'WHSE');                    // the address OBJECT is never echoed as the code
   assert.equal(typeof out.origin, 'string');
   assert.equal(out.originName, 'ULINE');
+  assert.equal(out.originAddr1, '943 GAINESVILLE HWY'); // ", CITY, ST ZIP, COUNTRY" tail stripped
   assert.equal(out.originState, 'GA');                 // GEORGIA → GA (the proven contract shape)
   assert.equal(out.originCountry, 'USA');              // UNITED STATES → USA
   for (const [k, v] of Object.entries(out)) if (v !== undefined) assert.equal(typeof v, 'string', `${k} must be a string`);
+});
+
+test('assembleImportHeader: a millis/offset date is truncated to the proven 19-char shape', () => {
+  const out = assembleImportHeader({ loadNbr: L1, earliestStartDttm: '2026-07-02T12:00:00.000+0000', latestStartDttm: '2026-07-02T23:59:00Z', originName: 'W', originAddr1: '1 Depot Rd', originCity: 'A', originState: 'GA', originZip: '1' }, [], null, null);
+  assert.equal(out.earliestStartDttm, '2026-07-02T12:00:00');
+  assert.equal(out.latestStartDttm, '2026-07-02T23:59:00');
+});
+
+test('importOk: PARTIALSUCCESS (or any present non-SUCCESS status) is NEVER an accepted ack', () => {
+  assert.equal(importOk(true, { status: 'PARTIALSUCCESS', message: 'Async import is SUCCESS with AppMessageLog Id-1' }).ok, false);
+  assert.equal(importOk(true, { status: 'FAILURE', message: 'import was not successful' }).ok, false);
+  assert.equal(importOk(true, { message: 'Async import is SUCCESS with AppMessageLog Id-2' }).ok, true); // no status field → text match
+});
+
+test('firstError (via importOk): a bare "Bad Request" never buries the Spring message detail', () => {
+  const r = importOk(true, { status: 'ERROR', error: 'Bad Request', message: 'JSON parse error: Cannot deserialize value' });
+  assert.equal(r.ok, false);
+  assert.match(r.error, /JSON parse error/);
+});
+
+test('importRefFromRaw: long-form state/country normalized; epoch schedule dropped and synthesized from the service date', () => {
+  const raw = { stop: { stopNbr: 'A', stopType: 'DO', to: {
+    address: { name: 'C', addr1: '1 Elm', city: 'Macon', state: 'GEORGIA', zip: '31201', country: 'UNITED STATES' },
+    schedule: { timeFrom: 1782813600000, timeTo: 1782856800000, timeZone: 'America/New_York', estimatedDuration: 15 },
+  } } };
+  const ref = importRefFromRaw(raw, '2026-07-03');
+  assert.equal(ref.to.address.state, 'GA');
+  assert.equal(ref.to.address.country, 'USA');
+  assert.equal(ref.to.schedule.timeFrom, '2026-07-03T12:00:00');   // epoch dropped → synthesized window
+  assert.equal(ref.to.schedule.estimatedDuration, undefined);       // unproven field never echoed
 });
 
 test('buildImportBody: refuses a non-string header field (the exact Jackson-400 shape) with zero NuVizz calls', () => {
@@ -703,4 +743,38 @@ test('importRefFromRaw: an OBJECT nested under a scalar address key is dropped, 
   const ref = importRefFromRaw(raw);
   assert.equal(ref.to.address.addressType, undefined);   // object dropped by the primitives-only echo
   assert.equal(ref.to.address.addr1, 'A Main St');
+});
+
+test('multi-load Save: every import fires with NO in-band confirm poll — all pending for the client verifier', async () => {
+  await withGate(async () => {
+    const L3 = 'DAVIS000000203', L3ID = 'aaaaaaaaaaaaaaaaaaaaaaa3';
+    const { requester, calls } = stub([
+      rawLoadDoc(L1, L1ID, ['A', 'B']),          // fetchLoad L1
+      rawLoadDoc(L3, L3ID, ['C', 'D']),          // fetchLoad L3 (independent loads, no cross-dep)
+      ACK,                                        // L1 import
+      ACK,                                        // L3 import
+    ]);
+    const r = await runCommitBoardImport(requester, { loads: [
+      { loadNbr: L1, loadId: L1ID, orderedStopNbrs: ['B', 'A'] },
+      { loadNbr: L3, loadId: L3ID, orderedStopNbrs: ['D', 'C'] },
+    ] }, CREDS, NOSLEEP);
+    assert.equal(r.loads.filter((l) => l.pending).length, 2);
+    assert.equal(calls.filter((c) => c.method === 'GET').length, 2);   // ONLY the two fetchLoads — zero confirm polls
+    assert.equal(calls.filter((c) => /load\/update\/default/.test(c.url)).length, 2);
+  });
+});
+
+test('convergence is STRICT: a read-back with a missing to.seq never converges, even in the right array order', async () => {
+  await withGate(async () => {
+    const noSeqDoc = { json: { Load: {
+      loadHeader: { loadId: L1ID, loadNbr: L1 }, versionId: 'v1', loadExecutionInfo: {},
+      stops: [
+        { stop: { stopId: 'id-B', stopNbr: 'B', stopType: 'DO', to: { seq: 2 } } },
+        { stop: { stopId: 'id-A', stopNbr: 'A', stopType: 'DO', to: {} } },   // seq not assigned yet
+      ],
+    } } };
+    const { requester } = stub([rawLoadDoc(L1, L1ID, ['A', 'B']), ACK, noSeqDoc]);
+    const r = await runCommitBoardImport(requester, { loads: [{ loadNbr: L1, loadId: L1ID, orderedStopNbrs: ['B', 'A'] }] }, CREDS, NOSLEEP);
+    assert.equal(r.loads[0].pending, true);   // NOT converged — the seq isn't real yet
+  });
 });

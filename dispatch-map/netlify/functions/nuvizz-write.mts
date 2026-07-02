@@ -109,7 +109,10 @@ async function journal(op: WriteOp, payload: any, result: any, tenant: string, c
       const reqLoads: any[] = Array.isArray(payload?.loads) ? payload.loads : [];
       const resLoads: any[] = Array.isArray(result?.loads) ? result.loads : [];
       for (const L of reqLoads) {
-        const res = resLoads.find((r) => String(r?.loadNbr ?? '') === String(L?.loadNbr ?? '')) || {};
+        // Join by loadId FIRST: a loadId-only card sends no loadNbr while the result carries the
+        // server-resolved number, so a name-only join records every assignment as 'failed'.
+        const res = resLoads.find((r) => (L?.loadId != null && r?.loadId != null && String(r.loadId) === String(L.loadId))
+          || (L?.loadNbr != null && String(r?.loadNbr ?? '') === String(L.loadNbr))) || {};
         if (L?.driverId != null && String(L?.driverId).trim() !== '') {
           await recordAssignment({ tenant, date, loadNbr: String(L?.loadNbr ?? ''), loadId: L?.loadId ?? res?.loadId ?? null, driverId: L.driverId, driverName: L?.driverName ?? null, status: res?.ok ? 'assigned' : 'failed', assignedAt: new Date().toISOString() });
         }

@@ -50,7 +50,7 @@ export function resolveWriteCreds(): WriteCreds {
 
 // Minimal surface of the metered requester we depend on (lets tests pass a stub).
 export interface RequesterLike {
-  request(url: string, opts: { method?: string; headers?: Record<string, string>; body?: string | null }, meta: { route: string; tenant: string; source?: string }): Promise<Response>;
+  request(url: string, opts: { method?: string; headers?: Record<string, string>; body?: string | null; maxRetries?: number }, meta: { route: string; tenant: string; source?: string }): Promise<Response>;
 }
 
 async function safeJson(resp: Response): Promise<any> {
@@ -60,7 +60,11 @@ async function safeJson(resp: Response): Promise<any> {
 
 async function fireSingle(requester: RequesterLike, op: SingleOp, payload: any, creds: WriteCreds): Promise<any> {
   const br = buildOpRequest(op, payload, creds);
-  const resp = await requester.request(br.url, { method: br.method, headers: br.headers, body: br.body }, br.meta);
+  // NON-IDEMPOTENT writes are never transport-retried: an assign/dispatch whose first attempt
+  // APPLIED but answered 5xx would double-fire on retry (a duplicate DISPATCH to the driver).
+  // Reads and the DECLARATIVE import keep the default retry policy — re-sending those is safe.
+  const noRetry = op === 'assignDriver' || op === 'dispatchLoad' || op === 'insertStops' || op === 'removeStops' || op === 'createStop';
+  const resp = await requester.request(br.url, { method: br.method, headers: br.headers, body: br.body, ...(noRetry ? { maxRetries: 0 } : {}) }, br.meta);
   const j = await safeJson(resp);
   return { ...parseOpResponse(op, resp.ok, j), httpStatus: resp.status };
 }
@@ -81,9 +85,16 @@ export async function fetchLoad(requester: RequesterLike, loadNbr: string, creds
 /** Resolve a load's HUMAN loadNbr from its INTERNAL loadId via load/static/info(routeId). load/info
  * (and the load/edit unplan step) is keyed by the human number, so a load we only know by its id
  * (Draft / Loads-grid) needs this bridge before it can be reordered/unplanned. Null if unresolved. */
+// load/static/info is HTTP 501 (not implemented) on the live DAVIS tenant — remember the first
+// 501 per warm instance so every later resolution skips the guaranteed-wasted NuVizz call.
+let staticInfoUnavailable = false;
+/** Test hook: clears the per-instance 501 memo so scripted suites stay order-independent. */
+export function _resetStaticInfoMemo(): void { staticInfoUnavailable = false; }
 export async function resolveLoadNbrById(requester: RequesterLike, loadId: string, creds: WriteCreds): Promise<string | null> {
+  if (staticInfoUnavailable) return null;
   try {
     const r = await fireSingle(requester, 'getLoadByRouteId', { routeId: loadId }, creds);
+    if (r?.httpStatus === 501) { staticInfoUnavailable = true; return null; }
     return r?.ok && r.load?.loadNbr != null && String(r.load.loadNbr).trim() !== '' ? String(r.load.loadNbr) : null;
   } catch { return null; }
 }
@@ -559,6 +570,10 @@ export interface ImportPacing {
    *  rest of the convergence: cheap getLoad polls + a re-Save resend until the read-back
    *  matches. Never reports ok without a matching read-back, same as the full recipe. */
   quick?: boolean;
+  /** Skip even the quick confirm poll — fire the import and return pending immediately.
+   *  Used when a Save carries MULTIPLE import loads: the fixed confirm budget doesn't scale,
+   *  and the client verifier polls every load anyway. */
+  skipConfirm?: boolean;
 }
 const realSleep = (ms: number) => new Promise<void>((res) => setTimeout(res, ms));
 
@@ -578,7 +593,14 @@ async function pollUntilConverged(
     if (f.load) {
       loadId = f.load.loadId ?? loadId;
       seen = deliveryOrder(f.load);
-      if (seen.length === want.length && seen.every((n, k) => n === want[k])) {
+      // STRICT: a mid-rebuild read can list all stops before the worker assigns their to.seq —
+      // a missing seq degrades the sort to raw array order, which could read as a FALSE
+      // convergence (and then assign/dispatch an order the worker may still change). Require a
+      // real numeric seq on every delivery before trusting the comparison.
+      const seqsComplete = (f.load.stops || [])
+        .filter((s: any) => String(s?.stopType ?? 'DO').toUpperCase() !== 'PU')
+        .every((s: any) => s?.stopSeq != null && Number.isFinite(Number(s.stopSeq)));   // null coerces to 0 — check presence first
+      if (seqsComplete && seen.length === want.length && seen.every((n, k) => n === want[k])) {
         return { converged: true, seen, loadId, reads };
       }
     }
@@ -645,6 +667,9 @@ export async function runImportLoad(requester: RequesterLike, payload: any, cred
   // Phase 1 — the import, then poll.
   let r = await fire(load.stops, 'import');
   if (!r.ok) return { ok: false, converged: false, loadNbr, loadId, requestedOrder: want, seenOrder: null, steps, error: r.error || 'import rejected' };
+  if (p.skipConfirm === true) {
+    return { ok: false, pending: true, converged: false, loadNbr, loadId, requestedOrder: want, seenOrder: null, steps, error: null };
+  }
   let c = await poll('after-import');
   if (c.converged) return done(true, c.seen);
   if (p.quick === true) {
@@ -731,6 +756,13 @@ export async function runCommitBoardImport(requester: RequesterLike, payload: an
     if (L?.emptyLoad === true || !orderedNbrs || orderedNbrs.length === 0) { legacy.push(L); continue; }
     const result: any = { loadNbr: L?.loadNbr ?? null, ok: true, steps: [], error: null };
 
+    // A card with NEITHER identifier could probe-resolve a cross-load arrival's SOURCE load and
+    // then declaratively rebuild the WRONG load — refuse up front (same rule as the legacy engine).
+    if (!L?.loadNbr && !L?.loadId) {
+      result.ok = false; result.error = 'commitBoard(import): loadNbr or loadId required';
+      imp.push({ L, loadNbr: null, refs: [], curNbrs: new Set(), result }); continue;
+    }
+
     // Resolve the human load number (same ladder as the legacy engine).
     let loadNbrX = (L?.loadNbr != null && String(L.loadNbr).trim() !== '' && !isHashLikeId(String(L.loadNbr))) ? String(L.loadNbr) : null;
     if (!loadNbrX && orderedNbrs[0]) loadNbrX = await resolveLoadNbrByStopNbr(requester, orderedNbrs[0], creds);
@@ -742,12 +774,16 @@ export async function runCommitBoardImport(requester: RequesterLike, payload: an
       // follows seats the seeded stop in its proper slot.
       const seed = await resolveLoadNbrBySeeding(requester, L.loadId, orderedNbrs[0], creds);
       result.steps.push({ op: 'seedLoad', ok: !!seed.loadNbr, seeded: seed.seeded, loadNbr: seed.loadNbr, error: seed.error || null });
-      if (seed.loadNbr) loadNbrX = seed.loadNbr;
+      if (seed.loadNbr) {
+        loadNbrX = seed.loadNbr;
+        // Surface the physical side effect: even if a later step fails, the dispatcher must know
+        // this stop is now PLANNED on this load (re-Saving the SAME card self-heals).
+        result.seededStopNbr = orderedNbrs[0]; result.seededLoadNbr = seed.loadNbr;
+      }
       else { result.ok = false; result.error = `commitBoard(import): ${seed.error || 'could not resolve the load number'}`; imp.push({ L, loadNbr: null, refs: [], curNbrs: new Set(), result }); continue; }
     }
     if (!loadNbrX) { legacy.push(L); continue; }   // e.g. loadId-only pure add — the #328 legacy path still works
     result.loadNbr = loadNbrX;
-    batchNbrs.add(loadNbrX);
 
     const f = await fetchLoad(requester, loadNbrX, creds);
     if (!f.load) { result.ok = false; result.error = `commitBoard(import): load not found (${loadMissDiag(loadNbrX, f)})`; imp.push({ L, loadNbr: loadNbrX, refs: [], curNbrs: new Set(), result }); continue; }
@@ -758,6 +794,9 @@ export async function runCommitBoardImport(requester: RequesterLike, payload: an
       result.ok = false; result.error = `commitBoard(import): load identity mismatch (name resolved ${load.loadId}, expected ${L.loadId})`;
       imp.push({ L, loadNbr: loadNbrX, refs: [], curNbrs: new Set(), result }); continue;
     }
+    // Only an IDENTITY-VERIFIED number may vouch for the steal guard — adding it before the check
+    // above could let a mis-resolved number bless pulls off a load that isn't really in this Save.
+    batchNbrs.add(loadNbrX);
 
     const rawByNbr = new Map<string, any>();
     for (const rs of (load.rawStops || [])) { const st = rs?.stop || rs || {}; if (st.stopNbr != null) rawByNbr.set(String(st.stopNbr), rs); }
@@ -771,11 +810,13 @@ export async function runCommitBoardImport(requester: RequesterLike, payload: an
     })));
     const refs: any[] = [];
     const originDonors: any[] = [];   // "from" addresses off the added stops — origin for an EMPTY load
+    // Service date for synthesized reference windows (the contract's reference = address + schedule).
+    const svcDate = (String(load.loadHeader?.earliestStartDttm || '').match(/^\d{4}-\d{2}-\d{2}/) || [null])[0];
     let err: string | null = null;
     for (const nbr of orderedNbrs) {
       const raw = rawByNbr.get(nbr);
       if (raw) {
-        const ref = importRefFromRaw(raw);
+        const ref = importRefFromRaw(raw, svcDate);
         if (!ref) { err = `commitBoard(import): stop ${nbr} on load ${loadNbrX} has no usable delivery address to reference — refresh and retry`; break; }
         refs.push(ref);
         continue;
@@ -787,7 +828,11 @@ export async function runCommitBoardImport(requester: RequesterLike, payload: an
         err = `commitBoard(import): stop ${nbr} is still planned on load ${srcNbr}, which is not part of this Save — open that load in Compare so the move is staged`; break;
       }
       if (gs.stop.fromAddress) originDonors.push({ stop: { from: { address: gs.stop.fromAddress } } });
-      refs.push({ ...gs.stop.importRef, __srcLoadNbr: srcNbr && srcNbr !== loadNbrX ? srcNbr : undefined });
+      const ref = { ...gs.stop.importRef, __srcLoadNbr: srcNbr && srcNbr !== loadNbrX ? srcNbr : undefined };
+      // getStop-built refs had no service-date context — give a schedule-less ref the same
+      // synthesized window an on-load ref would get.
+      if (!ref.to?.schedule && svcDate) ref.to = { ...ref.to, schedule: { timeFrom: `${svcDate}T12:00:00`, timeTo: `${svcDate}T17:00:00`, timeZone: 'America/New_York', timeConstraint: 'PREFERRED' } };
+      refs.push(ref);
     }
     if (err) { result.ok = false; result.error = err; imp.push({ L, loadNbr: loadNbrX, refs: [], curNbrs: new Set(), result }); continue; }
     imp.push({ L, loadNbr: loadNbrX, load, refs, originDonors, curNbrs: new Set(rawByNbr.keys()), result });
@@ -818,7 +863,26 @@ export async function runCommitBoardImport(requester: RequesterLike, payload: an
   }
 
   // ── one import per load (+ convergence), then assign/dispatch ──
+  // With MULTIPLE import loads, the fixed confirm budget can't cover them inside one function
+  // window — fire each import and return them ALL as pending immediately; the client verifier
+  // polls every load anyway. (Single-load Saves keep the in-function quick confirm.)
+  const perLoadPacing: ImportPacing = ordered.length > 1 ? { ...boardPacing, skipConfirm: true } : boardPacing;
+  // Track per-load outcome so a DESTINATION never fires while a load it depends on hasn't
+  // CONFIRMED freeing its stop — a pending/failed/refused source must halt its destinations
+  // (the cross-load "steal" is untested and never relied on; matches runCommitImport's break).
+  const outcome = new Map<string, string>();   // loadNbr → 'converged' | 'pending' | 'failed'
+  for (const p of imp) if (!p.result.ok && p.loadNbr) outcome.set(String(p.loadNbr), 'failed');
+  const dependsOnUnconfirmed = (p: any) => imp.some((q) => q !== p && q.loadNbr
+    && (p.refs.some((r: any) => r.__srcLoadNbr && String(q.loadNbr) === String(r.__srcLoadNbr))
+      || p.refs.some((r: any) => !p.curNbrs.has(r.stopNbr) && q.curNbrs?.has?.(r.stopNbr)))
+    && outcome.get(String(q.loadNbr)) !== 'converged');
   for (const p of ordered) {
+    if (dependsOnUnconfirmed(p)) {
+      p.result.ok = false;
+      p.result.error = 'commitBoard(import): a load this move depends on has not confirmed yet — Save again once it lands';
+      outcome.set(String(p.loadNbr), 'failed');
+      continue;
+    }
     let loadId: any = trustableLoadId(p.L?.loadId) ? p.L.loadId : (p.load?.loadId ?? null);
     try {
       // Origin trust order: the load's own header/stops, then the added stops' "from" addresses
@@ -827,9 +891,10 @@ export async function runCommitBoardImport(requester: RequesterLike, payload: an
         // Service-date fallback: the first ref's delivery window date (echoed from NuVizz).
         String(p.refs[0]?.to?.schedule?.timeFrom || '').slice(0, 10) || null);
       const stops = p.refs.map(({ __srcLoadNbr, ...ref }: any) => ref);
-      const r = await runImportLoad(requester, { load: { loadHeader: header, stops }, convergence: boardPacing }, creds, boardPacing);
+      const r = await runImportLoad(requester, { load: { loadHeader: header, stops }, convergence: perLoadPacing }, creds, perLoadPacing);
       p.result.steps.push(...(r.steps || []));
       p.result.requestedOrder = r.requestedOrder || null;
+      outcome.set(String(p.loadNbr), r.pending ? 'pending' : (r.ok ? 'converged' : 'failed'));
       if (r.pending) {
         // Import fired + accepted, not yet CONFIRMED. The client verifies (getLoad polls +
         // re-Save resend) — assign/dispatch wait until the order is confirmed, so a driver is
@@ -839,7 +904,9 @@ export async function runCommitBoardImport(requester: RequesterLike, payload: an
       if (!r.ok) { p.result.ok = false; p.result.error = r.error || 'import did not converge'; continue; }
       loadId = r.loadId ?? loadId;
     } catch (e: any) {
-      p.result.ok = false; p.result.error = e?.message || 'import build failed'; continue;
+      p.result.ok = false; p.result.error = e?.message || 'import build failed';
+      outcome.set(String(p.loadNbr), 'failed');
+      continue;
     }
     if (hasDriverId(p.L?.driverId)) {
       if (!loadId) { p.result.ok = false; p.result.error = 'commitBoard(import): loadId unresolved for assignDriver'; continue; }
@@ -862,6 +929,9 @@ export async function runCommitBoardImport(requester: RequesterLike, payload: an
       ok: p.result.ok, error: p.result.error, steps: p.result.steps,
       // pending + requestedOrder drive the CLIENT's convergence verification (getLoad polls).
       pending: p.result.pending || undefined, requestedOrder: p.result.requestedOrder || undefined,
+      // A seed physically planned this stop on this load — surfaced so a failed Save can never
+      // read as "nothing happened" and the orders get re-staged elsewhere.
+      seededStopNbr: p.result.seededStopNbr || undefined, seededLoadNbr: p.result.seededLoadNbr || undefined,
     })),
   ];
   return { ok: loads.every((l: any) => l.ok) && (legacyResult.orphaned || []).length === 0, loads, orphaned: legacyResult.orphaned || [] };

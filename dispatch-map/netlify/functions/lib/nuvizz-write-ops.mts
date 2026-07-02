@@ -224,6 +224,11 @@ function firstError(body: any): string | null {
     const m = ae[0]?.msgs ?? ae[0]?.msg ?? ae[0];
     if (m) return Array.isArray(m) ? String(m[0]) : String(m);
   }
+  // Spring-style error bodies carry the USEFUL detail in `message` ("JSON parse error: …")
+  // while `error` is just the bare reason phrase ("Bad Request") — never bury the detail.
+  if (body.error && body.message && /^(bad request|internal server error|not found|forbidden|unauthorized|conflict)$/i.test(String(body.error).trim())) {
+    return `${String(body.error)}: ${String(body.message)}`.slice(0, 300);
+  }
   if (body.error) return String(body.error);
   if (body.message) return String(body.message);
   // Non-JSON NuVizz error body (safeJson wraps it as {_text}); surface it rather than dropping it.
@@ -532,7 +537,11 @@ export function buildImportBody(load: { loadHeader: any; stops: any[] }, cc: str
 export function importOk(httpOk: boolean, j: any): { ok: boolean; async: true; appMessageLogId: string | null; ackText: string | null; error: string | null } {
   const body = j || {};
   const text = [body.status, body.message, body._text].filter((x: any) => x != null).map(String).join(' ');
-  const accepted = /success/i.test(text);
+  // A present-but-non-SUCCESS status (PARTIALSUCCESS / FAILURE / …) is NEVER an accepted ack —
+  // mirror summarize()'s guard so a rejection can't read as "pending" via a stray 'success'
+  // substring. The free-text match remains only for bodies with no status field at all.
+  const statusRaw = String(body?.status ?? '').trim().toUpperCase();
+  const accepted = statusRaw !== '' ? statusRaw === 'SUCCESS' : /\bsuccess\b/i.test(text);
   const m = text.match(/AppMessageLog\s*Id\s*[-:\s]*([A-Za-z0-9._-]+)/i);
   const ok = httpOk && accepted;
   // NB: on success the ack text itself lives in body.message — only consult firstError() when
@@ -546,7 +555,9 @@ export function importOk(httpOk: boolean, j: any): { ok: boolean; async: true; a
 // the import format knows — never raw junk like seq/lat/exec fields, which could confuse the
 // async worker or regress the stop record.
 const IMPORT_ADDR_FIELDS = ['addressType', 'name', 'addr1', 'addr2', 'city', 'state', 'zip', 'country'] as const;
-const IMPORT_SCHED_FIELDS = ['timeFrom', 'timeTo', 'timeZone', 'timeConstraint', 'estimatedDuration', 'estDuration'] as const;
+// Exactly the UAT-proven schedule shape — estimatedDuration/estDuration are NOT part of the
+// proven reference and are never echoed (audit: unproven fields with no upside).
+const IMPORT_SCHED_FIELDS = ['timeFrom', 'timeTo', 'timeZone', 'timeConstraint'] as const;
 // PRIMITIVES ONLY: load/info can nest OBJECTS under scalar-looking keys (live DAVIS returns
 // loadHeader.origin as an ADDRESS OBJECT). Echoing an object where the import expects a string
 // is a hard NuVizz 400 ("Cannot deserialize value of type java.lang.String from Object value").
@@ -586,15 +597,29 @@ const countryCode = (v: any): string => {
  *  block echoed from NuVizz's own record). Null when the raw record can't yield a valid
  *  reference (no stopNbr or no delivery address) — the caller must surface that, never
  *  send a bare stopNbr (NuVizz rejects it). */
-export function importRefFromRaw(rawStop: any): any | null {
+export function importRefFromRaw(rawStop: any, fallbackDate?: string | null): any | null {
   const st = rawStop?.stop || rawStop || {};
   const to = st?.to || {};
   const address = pickFields(to.address || {}, IMPORT_ADDR_FIELDS);
   if (st.stopNbr == null || String(st.stopNbr).trim() === '' || !address.addr1) return null;
-  if (!address.country) address.country = 'USA';
+  // Normalize to the UAT-proven shape (live DAVIS echoes "GEORGIA"/"UNITED STATES" long forms —
+  // the same class of mismatch that had to be fixed on the header).
+  if (address.state != null) address.state = stateCode(address.state);
+  address.country = countryCode(address.country);
   const schedule = pickFields(to.schedule || {}, IMPORT_SCHED_FIELDS);
+  // Datetime fields must be the contract's "yyyy-MM-ddTHH:mm:ss" strings — an epoch number from
+  // a raw read must never be echoed (same distrust the header applies).
+  for (const k of ['timeFrom', 'timeTo']) {
+    if (schedule[k] != null && !(typeof schedule[k] === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(schedule[k]))) delete schedule[k];
+    else if (typeof schedule[k] === 'string') schedule[k] = schedule[k].slice(0, 19);
+  }
   const ref: any = { stopNbr: String(st.stopNbr), stopType: st.stopType || 'DO', to: { address } };
-  if (Object.keys(schedule).length) ref.to.schedule = schedule;
+  if (schedule.timeFrom && schedule.timeTo) ref.to.schedule = schedule;
+  else if (fallbackDate) {
+    // The contract's reference is address + SCHEDULE; when the echo lacks a usable window,
+    // synthesize the proven default from the service date rather than send an uncovered shape.
+    ref.to.schedule = { timeFrom: `${fallbackDate}T12:00:00`, timeTo: `${fallbackDate}T17:00:00`, timeZone: 'America/New_York', timeConstraint: 'PREFERRED' };
+  }
   return ref;
 }
 
@@ -614,7 +639,9 @@ export function assembleImportHeader(rawHeader: any, rawStops: any[], clientOrig
   // other shapes (epoch millis); echoing one of those is exactly the silent-failure trap
   // (SUCCESS ack, nothing lands) — so only trust an ISO-looking string, else derive from the
   // service date.
-  const iso = (v: any) => (typeof v === 'string' && /^\d{4}-\d{2}-\d{2}T/.test(v) ? v : null);
+  // Full seconds-form required; a millis/offset suffix ("…T12:00:00.000+0000") is truncated to
+  // the proven 19-char shape, anything else falls back to the derived service-day window.
+  const iso = (v: any) => (typeof v === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(v) ? v.slice(0, 19) : null);
   const earliest = iso(h.earliestStartDttm) || (fallbackDate ? `${fallbackDate}T06:00:00` : null);
   const latest = iso(h.latestStartDttm) || (fallbackDate ? `${fallbackDate}T18:00:00` : null);
   if (!earliest || !latest) throw new Error(`import header: load ${loadNbr} has no earliest/latest start and no service date to derive one — cannot import safely`);
@@ -623,11 +650,20 @@ export function assembleImportHeader(rawHeader: any, rawStops: any[], clientOrig
   // loadHeader.origin as an ADDRESS OBJECT (→ NuVizz 400 "Cannot deserialize java.lang.String
   // from Object") and long-form state/country ("GEORGIA"/"UNITED STATES") — so each candidate
   // source is string-coerced and normalized, never echoed raw.
+  // Live DAVIS synthesizes originAddr1 as the WHOLE one-line geocoder address
+  // ("943 GAINESVILLE HWY, BUFORD, GA 30518, USA") — strip the ", CITY, ST ZIP[, COUNTRY]"
+  // tail so the header carries a clean street line like the proven shape.
+  const streetOnly = (addr1: string, city: string, zip: string): string => {
+    const a = addr1.trim();
+    const ix = city ? a.toUpperCase().indexOf(`, ${city.toUpperCase()}`) : -1;
+    if (ix > 0 && (!zip || a.toUpperCase().includes(zip))) return a.slice(0, ix).trim();
+    return a;
+  };
   let origin: any = null;
   if (strField(h.originName) && strField(h.originAddr1) && strField(h.originCity) && strField(h.originZip)) {
     origin = {
       origin: strField(h.origin) || strField(h.rtOrigin) || 'WHSE',   // the CODE — never the header's origin OBJECT
-      originName: strField(h.originName), originAddr1: strField(h.originAddr1), originAddr2: strField(h.originAddr2) || undefined,
+      originName: strField(h.originName), originAddr1: streetOnly(strField(h.originAddr1), strField(h.originCity), strField(h.originZip)), originAddr2: strField(h.originAddr2) || undefined,
       originCity: strField(h.originCity), originState: stateCode(h.originState), originZip: strField(h.originZip),
       originCountry: countryCode(h.originCountry),
     };
