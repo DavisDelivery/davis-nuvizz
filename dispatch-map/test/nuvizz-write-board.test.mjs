@@ -162,12 +162,14 @@ test('commitBoard: reorder loadId-only, getStop returns no membership → falls 
   assert.deepEqual(ops, ['stop/info', 'load/static/info', 'load/info', 'load/edit']);
 });
 
-test('commitBoard: reorder loadId-only + NEITHER getStop nor static/info resolves → clear error, no doomed getLoad', async () => {
-  const { requester, calls } = stub([stopInfo(null) /* not on a load */, ok() /* static/info: no loadNbr */]);
+test('commitBoard: reorder loadId-only + nothing resolves → SEEDING is attempted, then a clear error, no doomed getLoad', async () => {
+  // getStop: unplanned AND carries no stopId → seeding can't run either; the error says exactly
+  // that (the old bare "needs a load number" refusal only remains for the truly unseedable cases).
+  const { requester, calls } = stub([stopInfo(null) /* not on a load */, ok() /* static/info: no loadNbr */, stopInfo(null) /* seeding read: still no stopId */]);
   const r = await runCommitBoard(requester, { loads: [{ loadId: HEXID, orderedStopNbrs: ['A2'] }] }, CREDS);
   assert.equal(r.loads[0].ok, false);
-  assert.match(r.loads[0].error, /needs a load number/);
-  assert.equal(calls.every((c) => !/load\/info\//.test(c.url) && !/load\/edit/.test(c.url)), true, 'no doomed getLoad/edit');
+  assert.match(r.loads[0].error, /no internal id to seed/);
+  assert.equal(calls.every((c) => !/load\/info\//.test(c.url) && !/load\/edit/.test(c.url) && !/insertstops/.test(c.url)), true, 'no doomed getLoad/edit and no blind insert');
 });
 
 test('commitBoard: cross-load move A→B removes from the SOURCE before inserting to the TARGET', async () => {
