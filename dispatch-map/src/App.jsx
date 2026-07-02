@@ -52,7 +52,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.35.3';
+const APP_VERSION = '0.36.0';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -97,6 +97,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.36.0', 'Save-cost overhaul for the ⚡ Import engine — a reorder Save was burning ~27 NuVizz calls chasing the async worker (measured live: 3 SUW reorganizations = 80 calls, 9 imports + ~64 read-backs) and STILL reporting failure for orders that landed. Three changes from the investigation: (1) VERDICT on the comparator — it was NOT broken (the journal proved the mismatches were real), but it\'s now normalized anyway (zero-padding/case/typing can never read as "not converged") and every poll\'s read-back is journaled. (2) The wait now matches the worker: prod takes ~30-90s to seat an import, so the client polls on a BACKOFF (6/10/15/25/25s — ~5 polls, NO writes) instead of re-Saving every 18/45s; then at most ONE same-order re-send; then at most ONE reverse+forward UNSTICK — the §10.1 cure for the stuck-append state we hit (two moved stops kept landing at the tail across nine same-direction re-sends; same-direction NEVER clears it). (3) Every Save now self-reports its call anatomy (X imports + Y read-backs) in the result, console, and write journal. Typical converging Save: 1 import + 2-4 reads. Worst case (full ladder): ~4 imports + ~12 reads over ~4 minutes — and it says so honestly.'],
   ['0.35.3', 'Bulk Add moved UNDER New Order — it\'s no longer its own top-level tab. Open "New Order" and you\'ll see a "Single order / Bulk add" toggle right at the top; Bulk add is the exact same grid + spreadsheet-import screen as before, just reached from inside New Order instead of a separate tab. The choice is remembered on your device. Nothing about either form changed — same pickup locations, same Beta/Live gating, same per-row Create behavior.'],
   ['0.35.2', 'FIX — the re-sequence dropdown could get STUCK on a strategy you\'d already used. Repro (reported live): apply "Farthest first", then hand-move an order to the middle — some edit paths (moving a stop off a card, ninja-add, "send selection", undo-remove) left the dropdown still claiming "Farthest first", and picking Farthest again did NOTHING (a dropdown fires no event when you pick the value it\'s already showing), so the route couldn\'t be re-optimized or saved. Now EVERY hand-edit flips the card to "Manual order (edited)", which keeps every strategy re-applicable — optimize, tweak by hand, re-optimize, as many times as you like. Bonus fix: re-sequencing a route whose stops haven\'t geocoded yet used to announce "Re-sequenced" while silently doing nothing — it now tells you plainly why it can\'t and to retry in a moment.'],
   ['0.35.1', 'FIX — "re-optimize failed" when NuVizz actually said YES. The live re-sequence Save fired the one-call import and PROD answered "Request for LOAD Async import is SUCCESS. Find more info in AppMessageLog with Id- …" — but prod words the ack differently than UAT (the whole sentence in the status field, and "AppMessageLog WITH Id"), so the stricter 0.33.7 parser read that SUCCESS as a rejection, aborted before the order-verification read-back, and showed a failure banner. The parser now accepts a status containing the standalone word SUCCESS (still rejecting PARTIALSUCCESS/FAILURE/…-with-errors wording) and extracts the AppMessageLog id through prod\'s phrasing. The exact journaled prod ack is a regression test. Re-Save the route — the import is declarative, so re-sending the same order is always safe, and the read-back now confirms it seats.'],
@@ -10351,12 +10352,19 @@ function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmN
   };
 
   // ── IMPORT-engine convergence, client-side ────────────────────────────────────
-  // The import is ASYNC in NuVizz: the server fires it and does a quick confirm, but a sync
-  // function can't hold the whole ~90s recipe (the 10s default budget killed the first live
-  // Save). So the CLIENT finishes the job: poll the load back (getLoad — 1 cheap read) every
-  // ~6s and compare the REAL delivery order (to.seq) to what we sent. Matches → the card flips
-  // to saved. Not landing → re-send the same import once or twice (the verified "resend"
-  // unstick — declarative, so never a duplicate). Still stuck → say so, honestly.
+  // The import is ASYNC in NuVizz and prod's worker takes ~30-90s to seat an order (measured
+  // live Jul 2 2026), so the CLIENT owns the wait: poll getLoad on a BACKOFF (6/10/15/25/25s —
+  // ~5 polls before any write) comparing the REAL delivery order (to.seq) to what we sent,
+  // NORMALIZED (trim/case/zero-padding) on both sides. Escalation only after the polls:
+  //   1. ONE same-order re-send (a lost import is rare but possible).
+  //   2. ONE reverse+forward UNSTICK (the §10.1 cure for the worker's stuck-append state —
+  //      the Jul 2 session proved same-direction re-sends do NOT clear it: 9 imports, the two
+  //      membership-changed stops appended to the tail every time).
+  // Every poll's read-back is console-logged; the old cadence (poll every 6s + re-Save at 18s
+  // and 45s) burned ~27 calls per Save chasing the worker's lag — this ladder is ~4-8 typical.
+  const IMPORT_POLL_SCHEDULE_MS = [6000, 10000, 15000, 25000, 25000];   // before the re-send
+  const IMPORT_POST_SEND_POLLS_MS = [10000, 20000, 30000];              // after re-send / unstick
+  const normNbr = (v) => { const s = String(v ?? '').trim().toUpperCase(); const t = s.replace(/^0+(?=.)/, ''); return t || s; };
   const verifyPendingImports = async (pendings, sentLoads, keyOf) => {
     const names = pendings.map((l) => loadDisplayName(keyOf(l)) || keyOf(l) || l.loadNbr).join(', ');
     showToast(`⏳ Import sent for ${names} — verifying the stop order in NuVizz…`);
@@ -10366,13 +10374,15 @@ function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmN
     const myGen = new Map();
     for (const l of pendings) { const k = keyOf(l); if (k) myGen.set(k, verifyGenRef.current.get(k)); }
     const superseded = (l) => { const k = keyOf(l); return k && verifyGenRef.current.get(k) !== myGen.get(k); };
-    const lastSeen = new Map();   // loadNbr → the most recent read-back order (forensics)
-    for (let attempt = 1; attempt <= 12 && remaining.size; attempt++) {
-      await new Promise((r) => setTimeout(r, 6000));
+    const seenLog = new Map();   // loadNbr → every read-back order (forensics, directive #1)
+    let infoReads = 0;           // per-save anatomy (directive #4): client-side load/info count
+
+    const pollOnce = async (label) => {
       for (const [nbr, l] of [...remaining]) {
         if (superseded(l)) { remaining.delete(nbr); continue; }   // a newer Save owns this card now
         try {
           const res = await callWrite('getLoad', { loadNbr: nbr }, { dryRun: false });
+          infoReads++;
           const stops = (res.result?.load?.stops || []).filter((s) => String(s.stopType || 'DO').toUpperCase() !== 'PU');
           // STRICT: a mid-rebuild read can list the stops before their to.seq is assigned —
           // never trust a comparison where any delivery lacks a real numeric seq.
@@ -10380,9 +10390,13 @@ function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmN
           const seen = stops.slice()
             .sort((a, b) => (Number(a.stopSeq ?? 1e9)) - (Number(b.stopSeq ?? 1e9)))
             .map((s) => String(s.stopNbr));
-          lastSeen.set(nbr, seen);
+          if (!seenLog.has(nbr)) seenLog.set(nbr, []);
+          seenLog.get(nbr).push(seen);
           const want = l.requestedOrder.map(String);
-          if (seqsOk && seen.length === want.length && seen.every((n, i) => n === want[i])) {
+          // eslint-disable-next-line no-console
+          console.log(`[import-verify] ${label} ${nbr}`, { requested: want, readBack: seen, seqsOk });
+          const match = seqsOk && seen.length === want.length && seen.every((n, i) => normNbr(n) === normNbr(want[i]));
+          if (match) {
             remaining.delete(nbr);
             const k = keyOf(l);
             if (k) {
@@ -10394,33 +10408,59 @@ function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmN
           }
         } catch { /* transient read failure — keep polling */ }
       }
-      // Not landing after a couple of read-backs → re-send the SAME import (the async worker's
-      // stale-state window can swallow one; the re-send is the documented unstick). Max twice.
-      // ORDER-ONLY: driver/dispatch are STRIPPED (they'd fire server-side on a converged re-send,
-      // then the "Save again" follow-up would DOUBLE-dispatch) and the server-resolved loadNbr is
-      // injected so the re-send can't wander back into the resolution ladder mid-rebuild.
-      if (remaining.size && (attempt === 3 || attempt === 7)) {
-        const again = sentLoads
-          .filter((L) => [...remaining.values()].some((l) => !superseded(l) && keyOf(l) === (L.__key ?? L.routeName ?? L.loadNbr ?? L.loadId)))
-          .map((L) => {
-            const { driverId, driverName, dispatch, ...orderOnly } = L;
-            const match = [...remaining.values()].find((l) => keyOf(l) === (L.__key ?? L.routeName ?? L.loadNbr ?? L.loadId));
-            return { ...orderOnly, loadNbr: match?.loadNbr || L.loadNbr };
-          });
-        if (again.length) {
-          try { await callWrite('commitBoard', { loads: again, origin: savedShipFrom(), useImport: true }, { dryRun: false, clientOpId: newClientOpId(), createdBy: 'dispatcher' }); } catch { /* next poll decides */ }
-        }
+    };
+    // ORDER-ONLY escalation Save: driver/dispatch STRIPPED (they'd fire server-side on a
+    // converged re-send, then the "Save again" follow-up would DOUBLE-dispatch) and the
+    // server-resolved loadNbr injected so it can't wander back into the resolution ladder.
+    const escalate = async (label, unstick) => {
+      const again = sentLoads
+        .filter((L) => [...remaining.values()].some((l) => !superseded(l) && keyOf(l) === (L.__key ?? L.routeName ?? L.loadNbr ?? L.loadId)))
+        .map((L) => {
+          const { driverId, driverName, dispatch, ...orderOnly } = L;
+          const match = [...remaining.values()].find((l) => keyOf(l) === (L.__key ?? L.routeName ?? L.loadNbr ?? L.loadId));
+          return { ...orderOnly, loadNbr: match?.loadNbr || L.loadNbr };
+        });
+      if (!again.length) return;
+      // eslint-disable-next-line no-console
+      console.log(`[import-verify] escalate: ${label}`, again.map((L) => L.loadNbr));
+      try { await callWrite('commitBoard', { loads: again, origin: savedShipFrom(), useImport: true, convergence: unstick ? { unstick: true } : undefined }, { dryRun: false, clientOpId: newClientOpId(), createdBy: 'dispatcher' }); } catch { /* next poll decides */ }
+    };
+
+    // Phase A — patient backoff polls (no writes).
+    for (const [i, ms] of IMPORT_POLL_SCHEDULE_MS.entries()) {
+      if (!remaining.size) break;
+      await new Promise((r) => setTimeout(r, ms));
+      await pollOnce(`poll ${i + 1}/${IMPORT_POLL_SCHEDULE_MS.length}`);
+    }
+    // Phase B — ONE same-order re-send, then more patient polls.
+    if (remaining.size) {
+      await escalate('re-send same order', false);
+      for (const [i, ms] of IMPORT_POST_SEND_POLLS_MS.entries()) {
+        if (!remaining.size) break;
+        await new Promise((r) => setTimeout(r, ms));
+        await pollOnce(`post-resend poll ${i + 1}/${IMPORT_POST_SEND_POLLS_MS.length}`);
       }
     }
+    // Phase C — ONE reverse+forward unstick (server does both imports in one invocation).
+    if (remaining.size) {
+      await escalate('reverse+forward unstick', true);
+      for (const [i, ms] of IMPORT_POST_SEND_POLLS_MS.entries()) {
+        if (!remaining.size) break;
+        await new Promise((r) => setTimeout(r, ms));
+        await pollOnce(`post-unstick poll ${i + 1}/${IMPORT_POST_SEND_POLLS_MS.length}`);
+      }
+    }
+    // eslint-disable-next-line no-console
+    console.log('[import-verify] anatomy: client load/info reads this save =', infoReads);
     if (remaining.size) {
       const stuck = [...remaining.values()].map((l) => loadDisplayName(keyOf(l)) || keyOf(l) || l.loadNbr).join(', ');
       // Forensic trail to the console: what we asked for, what the server's import steps said
-      // (incl. the exact sent header + NuVizz's verbatim ack), and every read-back we saw.
+      // (incl. the exact sent header + NuVizz's verbatim ack), and EVERY read-back we saw.
       // eslint-disable-next-line no-console
       console.error('[import-verify] never converged', {
-        pending: [...remaining.values()].map((l) => ({ loadNbr: l.loadNbr, requestedOrder: l.requestedOrder, serverSteps: l.steps, lastReadBack: lastSeen.get(String(l.loadNbr)) ?? null })),
+        pending: [...remaining.values()].map((l) => ({ loadNbr: l.loadNbr, requestedOrder: l.requestedOrder, serverSteps: l.steps, readBacks: seenLog.get(String(l.loadNbr)) ?? [] })),
       });
-      showToast(`✗ ${stuck}: NuVizz still isn't showing the sent order after ~75s — check the load in the portal, then Save again (safe to repeat).`);
+      showToast(`✗ ${stuck}: NuVizz still isn't showing the sent order after ~4 minutes (incl. one re-send + one reverse-unstick) — check the load in the portal, then Save again (safe to repeat).`);
     }
   };
 

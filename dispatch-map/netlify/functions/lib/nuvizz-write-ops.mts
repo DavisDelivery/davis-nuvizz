@@ -717,6 +717,23 @@ export function assembleImportHeader(rawHeader: any, rawStops: any[], clientOrig
   };
 }
 
+/** normStopNbr (§I) — canonical stopNbr for ORDER COMPARISON ONLY (display/journals keep raw):
+ *  trim, uppercase, strip leading zeros ("007141643" ≡ "7141643" ≡ 7141643). NuVizz isn't
+ *  consistent about zero-padding/typing across endpoints; a padding mismatch must never read
+ *  as "order not converged" (save-cost investigation directive, Jul 2 2026). */
+export function normStopNbr(v: any): string {
+  const s = String(v ?? '').trim().toUpperCase();
+  const stripped = s.replace(/^0+(?=.)/, '');
+  return stripped || s;
+}
+
+/** sameOrder (§I) — the ONE convergence comparator: both sides normalized via normStopNbr,
+ *  element-wise equality (order AND membership). Exported so client + server + tests share it. */
+export function sameOrder(seen: any[], want: any[]): boolean {
+  if (!Array.isArray(seen) || !Array.isArray(want) || seen.length !== want.length) return false;
+  return seen.every((n, i) => normStopNbr(n) === normStopNbr(want[i]));
+}
+
 /** deliveryOrder (§I) — normalized getLoad → the load's DELIVERY stopNbrs in visit order
  *  (sorted by stopSeq = stop.to.seq; pickups excluded). This is the convergence comparator:
  *  after an import, poll getLoad and compare deliveryOrder() to the requested stopNbr order. */
