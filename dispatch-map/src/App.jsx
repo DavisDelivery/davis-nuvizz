@@ -51,7 +51,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.33.6';
+const APP_VERSION = '0.33.7';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -96,6 +96,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.33.7', 'Import engine HARDENING — every confirmed finding from a four-agent adversarial audit of the import path, applied before the next live test. The big ones: (1) the background order-verification\'s automatic re-send now sends ORDER ONLY — it can no longer invisibly assign/dispatch and then have the follow-up Save dispatch the driver a SECOND time; it also reuses the already-resolved load number instead of re-resolving (no chance of a stray re-seed). (2) In a multi-card Save, a load receiving a stop from another card now WAITS until that source card\'s rebuild is confirmed — the untested "steal" can never fire. (3) Assign/dispatch (and other one-shot writes) are never transport-retried, so a flaky network can\'t double-dispatch a driver. (4) Order verification is stricter — a load read back mid-rebuild before NuVizz assigns real stop sequence numbers can\'t be mistaken for "confirmed". (5) Stop references are normalized to the proven shape (GA/USA, clean windows, no unproven fields), the origin street line is cleaned of NuVizz\'s duplicated city/state/zip tail, and real error details are never buried behind a bare "Bad Request". Plus: a newer Save now supersedes an older card\'s background verification; failed Saves report when an order was physically seeded onto a load; and one guaranteed-dead lookup call per Save is skipped.'],
   ['0.33.6', 'FIX (from the write journal — the import finally FIRED and NuVizz told us exactly what it hated): the seed worked and the load number resolved (DAVIS000198073), but NuVizz rejected the import with a 400 JSON parse error. Our tenant\'s load record carries an "origin" field that is an ADDRESS OBJECT (plus long-form "GEORGIA" / "UNITED STATES"), and the header echo sent it where NuVizz expects a plain string code. The header builder now string-coerces every origin field (the object can never be echoed; the code falls back to the proven WHSE), normalizes states to 2-letter and country to USA to match the verified import shape, drops any object that sneaks into an echoed address field, and the payload builder hard-refuses any non-string header value before a single NuVizz call. The exact journaled header that failed is now a regression test.'],
   ['0.33.5', 'FIX (found via the new forensics): building a load from unplanned orders NEVER reached NuVizz — every Save refused with "reorder/unplan needs a load number". Why: an EMPTY Draft load only exists in the app as its internal id — NuVizz\'s loads roster carries no real load number on our tenant, the id→number lookup endpoint is HTTP 501 here, and an empty load has no stops to read the number from. So the server could never key the load and refused before writing anything. Fix: SEED-THEN-BUILD — the Save now plants your FIRST order onto the load via the id-keyed insert (the proven path), reads that order back to learn the load\'s real number, then proceeds normally: ⚡ Import rebuilds the full list in your exact order (the seeded order gets seated too); ⚙ Classic runs its usual anchor plan with the seeded order as the anchor. Works for both engines, costs 3 extra calls, never touches an order that\'s planned on another load, and cancel-intent (emptying a load) never seeds anything.'],
   ['0.33.4', 'Import-engine FORENSICS — the ⚡ Import Save now leaves a complete audit trail so a "sent but nothing landed" is diagnosable instead of a mystery. Every import records exactly what was sent to NuVizz (the load header + the stop order) and exactly what NuVizz answered (the verbatim ack + AppMessageLog id), plus every order read-back — into the save result, the browser console, and the server\'s write journal. New read-only endpoint /.netlify/functions/nuvizz-write-log returns the last few Saves\' full trails straight from our own journal (zero NuVizz calls). If the background verification gives up, the console now logs the whole trail (what we asked for vs every read-back).'],
@@ -10132,6 +10133,9 @@ function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmN
   // server env var needed (the server keeps only an emergency hard-off brake).
   const [importEngine, setImportEngine] = useState(() => { try { return localStorage.getItem('dd_import_engine') === '1'; } catch { return false; } });
   const toggleImportEngine = () => setImportEngine((v) => { const n = !v; try { localStorage.setItem('dd_import_engine', n ? '1' : '0'); } catch { /* ignore */ } return n; });
+  // Per-card verification generation: each Save bumps its cards' generation so any OLDER
+  // background verification loop for those cards exits instead of re-imposing a stale order.
+  const verifyGenRef = useRef(new Map());
   const [roster, setRoster] = useState([]);
   const [rosterError, setRosterError] = useState(null);
   const [toast, setToast] = useState(null);
@@ -10265,6 +10269,8 @@ function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmN
   const onPanelConfirm = async () => {
     const { loads, clientOpId } = confirm;
     if (!liveMode) { setConfirm(null); showToast(`Beta — nothing sent (${loads.length} load(s) simulated).`); return; }
+    // This Save supersedes any in-flight verification loop for the same cards (see verifyGenRef).
+    for (const L of loads) { const k = L.__key ?? L.routeName ?? L.loadNbr ?? L.loadId; if (k) verifyGenRef.current.set(k, (verifyGenRef.current.get(k) || 0) + 1); }
     setBusy(true);
     const res = await callWrite('commitBoard', { loads, origin: savedShipFrom(), useImport: importEngine || undefined }, { dryRun: false, clientOpId, createdBy: 'dispatcher' });
     setBusy(false); setConfirm(null);
@@ -10330,20 +10336,28 @@ function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmN
     const names = pendings.map((l) => loadDisplayName(keyOf(l)) || keyOf(l) || l.loadNbr).join(', ');
     showToast(`⏳ Import sent for ${names} — verifying the stop order in NuVizz…`);
     const remaining = new Map(pendings.map((l) => [String(l.loadNbr), l]));
+    // Generation guard: a NEW Save for one of these cards supersedes this loop — a stale loop's
+    // re-send would otherwise re-impose the OLD order over the dispatcher's newer edit.
+    const myGen = new Map();
+    for (const l of pendings) { const k = keyOf(l); if (k) myGen.set(k, verifyGenRef.current.get(k)); }
+    const superseded = (l) => { const k = keyOf(l); return k && verifyGenRef.current.get(k) !== myGen.get(k); };
     const lastSeen = new Map();   // loadNbr → the most recent read-back order (forensics)
     for (let attempt = 1; attempt <= 12 && remaining.size; attempt++) {
       await new Promise((r) => setTimeout(r, 6000));
       for (const [nbr, l] of [...remaining]) {
+        if (superseded(l)) { remaining.delete(nbr); continue; }   // a newer Save owns this card now
         try {
           const res = await callWrite('getLoad', { loadNbr: nbr }, { dryRun: false });
-          const seen = (res.result?.load?.stops || [])
-            .filter((s) => String(s.stopType || 'DO').toUpperCase() !== 'PU')
-            .slice()
+          const stops = (res.result?.load?.stops || []).filter((s) => String(s.stopType || 'DO').toUpperCase() !== 'PU');
+          // STRICT: a mid-rebuild read can list the stops before their to.seq is assigned —
+          // never trust a comparison where any delivery lacks a real numeric seq.
+          const seqsOk = stops.every((s) => s.stopSeq != null && Number.isFinite(Number(s.stopSeq)));
+          const seen = stops.slice()
             .sort((a, b) => (Number(a.stopSeq ?? 1e9)) - (Number(b.stopSeq ?? 1e9)))
             .map((s) => String(s.stopNbr));
           lastSeen.set(nbr, seen);
           const want = l.requestedOrder.map(String);
-          if (seen.length === want.length && seen.every((n, i) => n === want[i])) {
+          if (seqsOk && seen.length === want.length && seen.every((n, i) => n === want[i])) {
             remaining.delete(nbr);
             const k = keyOf(l);
             if (k) {
@@ -10357,8 +10371,17 @@ function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmN
       }
       // Not landing after a couple of read-backs → re-send the SAME import (the async worker's
       // stale-state window can swallow one; the re-send is the documented unstick). Max twice.
+      // ORDER-ONLY: driver/dispatch are STRIPPED (they'd fire server-side on a converged re-send,
+      // then the "Save again" follow-up would DOUBLE-dispatch) and the server-resolved loadNbr is
+      // injected so the re-send can't wander back into the resolution ladder mid-rebuild.
       if (remaining.size && (attempt === 3 || attempt === 7)) {
-        const again = sentLoads.filter((L) => [...remaining.values()].some((l) => keyOf(l) === (L.__key ?? L.routeName ?? L.loadNbr ?? L.loadId)));
+        const again = sentLoads
+          .filter((L) => [...remaining.values()].some((l) => !superseded(l) && keyOf(l) === (L.__key ?? L.routeName ?? L.loadNbr ?? L.loadId)))
+          .map((L) => {
+            const { driverId, driverName, dispatch, ...orderOnly } = L;
+            const match = [...remaining.values()].find((l) => keyOf(l) === (L.__key ?? L.routeName ?? L.loadNbr ?? L.loadId));
+            return { ...orderOnly, loadNbr: match?.loadNbr || L.loadNbr };
+          });
         if (again.length) {
           try { await callWrite('commitBoard', { loads: again, origin: savedShipFrom(), useImport: true }, { dryRun: false, clientOpId: newClientOpId(), createdBy: 'dispatcher' }); } catch { /* next poll decides */ }
         }
