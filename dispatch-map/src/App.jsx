@@ -51,7 +51,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.33.3';
+const APP_VERSION = '0.33.4';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -96,6 +96,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.33.4', 'Import-engine FORENSICS — the ⚡ Import Save now leaves a complete audit trail so a "sent but nothing landed" is diagnosable instead of a mystery. Every import records exactly what was sent to NuVizz (the load header + the stop order) and exactly what NuVizz answered (the verbatim ack + AppMessageLog id), plus every order read-back — into the save result, the browser console, and the server\'s write journal. New read-only endpoint /.netlify/functions/nuvizz-write-log returns the last few Saves\' full trails straight from our own journal (zero NuVizz calls). If the background verification gives up, the console now logs the whole trail (what we asked for vs every read-back).'],
   ['0.33.3', 'HOTFIX — the first live ⚡ Import Save died silently: nothing landed on the load. Root cause: the write endpoint ran on Netlify\'s DEFAULT 10-second budget, and the import Save (read the load + read each unplanned order + fire the import + verify the order landed) got killed mid-flight. Fixes: (1) the write endpoint now gets the full 26s; (2) the per-order reads run in parallel instead of one-by-one; (3) the order-verification no longer tries to fit inside one server call — the server fires the import, does a quick check, and the APP keeps verifying in the background (cheap load read-backs every ~6s, with an automatic re-send nudge if NuVizz is slow to seat it), toasting "✓ order confirmed" the moment the read-back matches — or telling you plainly if it never does. Driver/dispatch on an import Save now wait until the order is CONFIRMED (Save again after the ✓ to apply them). Also hardened: an empty load\'s import origin now comes from the orders\' own ship-from address in NuVizz (no dependence on the browser\'s saved origin), and a non-date value in the load header can no longer trip NuVizz\'s silent import failure.'],
   ['0.33.2', 'Routing — the LOAD IMPORT engine is now YOUR toggle, not a server switch. The Compare panel header has a new "⚙ Classic / ⚡ Import" button next to ○ Beta / ● LIVE: flip it to ⚡ Import and every Save (preview and LIVE alike) runs each changed load through the new one-call import + order-verification read-back; flip back to ⚙ Classic and the Save is exactly the old engine. The choice is remembered on your device, and the Save-preview names the engine ("IMPORT ENGINE") so you always know what will fire before you Confirm. No Netlify env var to set — the only server flag left is an emergency hard-off brake (and the master write switch, unchanged).'],
   ['0.33.1', 'Routing — your normal Compare-panel Save can now drive the new one-call LOAD IMPORT path (still OFF by default). Nothing changes in how you work: build loads from unplanned orders, stage them in Compare, order the stops, Save through the ○ Beta / ● LIVE toggle exactly as before. When the server\'s NUVIZZ_LOAD_IMPORT switch is ON, that same Save runs each changed load as ONE declarative import (echoing NuVizz\'s own address records — nothing is retyped) plus the convergence read-back, instead of the anchor remove + re-insert engine; the Save-preview tells you which engine will fire ("IMPORT MODE"). Planning unplanned orders, reorders, and cross-load moves (source before destination) all go through the import; emptying a load (cancel), driver-only saves, and anything the import can\'t resolve still use the proven legacy path. Your saved New Order ship-from rides along as the origin for empty loads. Flip the switch off and the Save is byte-identical to before.'],
@@ -10327,6 +10328,7 @@ function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmN
     const names = pendings.map((l) => loadDisplayName(keyOf(l)) || keyOf(l) || l.loadNbr).join(', ');
     showToast(`⏳ Import sent for ${names} — verifying the stop order in NuVizz…`);
     const remaining = new Map(pendings.map((l) => [String(l.loadNbr), l]));
+    const lastSeen = new Map();   // loadNbr → the most recent read-back order (forensics)
     for (let attempt = 1; attempt <= 12 && remaining.size; attempt++) {
       await new Promise((r) => setTimeout(r, 6000));
       for (const [nbr, l] of [...remaining]) {
@@ -10337,6 +10339,7 @@ function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmN
             .slice()
             .sort((a, b) => (Number(a.stopSeq ?? 1e9)) - (Number(b.stopSeq ?? 1e9)))
             .map((s) => String(s.stopNbr));
+          lastSeen.set(nbr, seen);
           const want = l.requestedOrder.map(String);
           if (seen.length === want.length && seen.every((n, i) => n === want[i])) {
             remaining.delete(nbr);
@@ -10361,6 +10364,12 @@ function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmN
     }
     if (remaining.size) {
       const stuck = [...remaining.values()].map((l) => loadDisplayName(keyOf(l)) || keyOf(l) || l.loadNbr).join(', ');
+      // Forensic trail to the console: what we asked for, what the server's import steps said
+      // (incl. the exact sent header + NuVizz's verbatim ack), and every read-back we saw.
+      // eslint-disable-next-line no-console
+      console.error('[import-verify] never converged', {
+        pending: [...remaining.values()].map((l) => ({ loadNbr: l.loadNbr, requestedOrder: l.requestedOrder, serverSteps: l.steps, lastReadBack: lastSeen.get(String(l.loadNbr)) ?? null })),
+      });
       showToast(`✗ ${stuck}: NuVizz still isn't showing the sent order after ~75s — check the load in the portal, then Save again (safe to repeat).`);
     }
   };
