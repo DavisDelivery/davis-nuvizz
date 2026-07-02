@@ -51,7 +51,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.33.1';
+const APP_VERSION = '0.33.2';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -96,6 +96,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.33.2', 'Routing — the LOAD IMPORT engine is now YOUR toggle, not a server switch. The Compare panel header has a new "⚙ Classic / ⚡ Import" button next to ○ Beta / ● LIVE: flip it to ⚡ Import and every Save (preview and LIVE alike) runs each changed load through the new one-call import + order-verification read-back; flip back to ⚙ Classic and the Save is exactly the old engine. The choice is remembered on your device, and the Save-preview names the engine ("IMPORT ENGINE") so you always know what will fire before you Confirm. No Netlify env var to set — the only server flag left is an emergency hard-off brake (and the master write switch, unchanged).'],
   ['0.33.1', 'Routing — your normal Compare-panel Save can now drive the new one-call LOAD IMPORT path (still OFF by default). Nothing changes in how you work: build loads from unplanned orders, stage them in Compare, order the stops, Save through the ○ Beta / ● LIVE toggle exactly as before. When the server\'s NUVIZZ_LOAD_IMPORT switch is ON, that same Save runs each changed load as ONE declarative import (echoing NuVizz\'s own address records — nothing is retyped) plus the convergence read-back, instead of the anchor remove + re-insert engine; the Save-preview tells you which engine will fire ("IMPORT MODE"). Planning unplanned orders, reorders, and cross-load moves (source before destination) all go through the import; emptying a load (cancel), driver-only saves, and anything the import can\'t resolve still use the proven legacy path. Your saved New Order ship-from rides along as the origin for empty loads. Flip the switch off and the Save is byte-identical to before.'],
   ['0.33.0', 'Live dispatch (server, OFF by default) — the new one-call LOAD IMPORT sequencing path. NuVizz\'s async load import (load/update/default) can set a load\'s COMPLETE stop list in exact order in ONE call per load: plan = import the full desired list, unplan = import without those stops, resequence = import the same set permuted — replacing the anchor + remove + one-at-a-time re-insert engine (which stays the active default for now). Because the import is async and can silently not land, every import is driven to CONVERGENCE: the server re-reads the load, compares the real delivery order (to.seq), re-sends if needed, and applies the verified reverse-then-forward unstick — a Save only reports success from the read-back, never from NuVizz\'s "SUCCESS" ack. Double-gated: needs BOTH the existing server write flag AND the new NUVIZZ_LOAD_IMPORT flag, which stays OFF until the verification checklist passes on a throwaway load with sign-off. No UI change yet.'],
   ['0.32.30', 'Bug-hunt wave 2 — eight fixes across live dispatch, the board scan, and New Order. (1) Ninja/selection can no longer pull a stop onto a card when its own load isn\'t open in Compare — that save would have DOUBLE-PLANNED the stop (it was never removed from its real load); the server refuses the same case as a backstop. (2) Changing the board DATE now closes the Compare cards — a surviving card could save today\'s edits onto YESTERDAY\'S load. (3) With "Unplanned only" on, stops staged onto a card no longer vanish from the card/printed manifest while still being saved — what you see is what commits. (4) A rolled-over order delivered today now actually turns delivered on the board (its completion was landing on yesterday\'s never-written board while today\'s kept the stale open copy). (5) CANCELLED orders now reach the board (as exceptions) instead of freezing as live work you could still route. (6) Two same-day loads sharing a name can\'t be opened as one card or cross-wire each other\'s identity on assign/save. (7) New Order: retrying after a network drop can\'t create a DUPLICATE order (same idempotency key until success), and (8) if a typed Order # already existed, it now warns loudly that NuVizz UPDATED that existing order instead of announcing a clean "created."'],
@@ -10121,6 +10122,12 @@ function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmN
   // to a disabled picker, never a crash. All hooks run unconditionally (the LIVE_WRITE_FLAG
   // gate is inside the effect + the render), so hook order is stable when the flag is off.
   const [liveMode, setLiveMode] = useState(false);
+  // Engine toggle — YOUR switch for the new NuVizz one-call LOAD IMPORT path. On = every Save
+  // (Beta preview and ● LIVE alike) runs through the import engine; off = the classic anchor
+  // engine, byte-identical to before. Remembered on this device. This is the ONLY switch — no
+  // server env var needed (the server keeps only an emergency hard-off brake).
+  const [importEngine, setImportEngine] = useState(() => { try { return localStorage.getItem('dd_import_engine') === '1'; } catch { return false; } });
+  const toggleImportEngine = () => setImportEngine((v) => { const n = !v; try { localStorage.setItem('dd_import_engine', n ? '1' : '0'); } catch { /* ignore */ } return n; });
   const [roster, setRoster] = useState([]);
   const [rosterError, setRosterError] = useState(null);
   const [toast, setToast] = useState(null);
@@ -10239,7 +10246,7 @@ function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmN
     const { loads, warnings } = buildBoardPayload();
     if (!loads.length) { showToast(warnings[0] || 'No changes to save.'); return; }
     setBusy(true);
-    const res = await callWrite('commitBoard', { loads, origin: savedShipFrom() }, { dryRun: true });
+    const res = await callWrite('commitBoard', { loads, origin: savedShipFrom(), useImport: importEngine || undefined }, { dryRun: true });
     setBusy(false);
     if (!res.ok) { showToast(`Preview failed: ${res.error || 'error'}`); return; }
     setConfirm({ plan: res.plan || [], tenant: res.tenant, loads, warnings, clientOpId: newClientOpId() });
@@ -10255,7 +10262,7 @@ function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmN
     const { loads, clientOpId } = confirm;
     if (!liveMode) { setConfirm(null); showToast(`Beta — nothing sent (${loads.length} load(s) simulated).`); return; }
     setBusy(true);
-    const res = await callWrite('commitBoard', { loads, origin: savedShipFrom() }, { dryRun: false, clientOpId, createdBy: 'dispatcher' });
+    const res = await callWrite('commitBoard', { loads, origin: savedShipFrom(), useImport: importEngine || undefined }, { dryRun: false, clientOpId, createdBy: 'dispatcher' });
     setBusy(false); setConfirm(null);
     const resLoads = res.result?.loads || [];
     const orphaned = res.result?.orphaned || [];
@@ -10336,6 +10343,17 @@ function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmN
               className={`inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-1 rounded disabled:opacity-60 ${liveMode ? 'bg-red-600 text-white hover:bg-red-700' : 'bg-blue-600 text-white hover:bg-blue-700'}`}
             >
               <Save size={12} /> {busy ? '…' : `Save (${dirtyRoutes.length})`}
+            </button>
+          )}
+          {LIVE_WRITE_FLAG && (
+            <button
+              onClick={toggleImportEngine}
+              title={importEngine
+                ? 'IMPORT engine — Save sets each load\'s full stop list in exact order with ONE NuVizz call per load, then verifies the order landed (read-back). Click for the classic engine.'
+                : 'CLASSIC engine — Save uses the anchor remove + one-at-a-time re-insert path (as before). Click to use the new one-call IMPORT engine.'}
+              className={`inline-flex items-center gap-1 text-[11px] font-bold px-2 py-1 rounded border ${importEngine ? 'border-violet-600 bg-violet-600 text-white' : 'border-slate-300 bg-white text-slate-600 hover:bg-slate-50'}`}
+            >
+              {importEngine ? '⚡ Import' : '⚙ Classic'}
             </button>
           )}
           {LIVE_WRITE_FLAG && (

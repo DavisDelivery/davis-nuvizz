@@ -477,10 +477,11 @@ async function runAssignDispatch(requester: RequesterLike, op: SingleOp, payload
 // The NEW sequencing path (see nuvizz-write-ops.mts §I for the full contract): one
 // POST load/update/default per touched load sets that load's complete stop list in exact
 // array order — no anchors, no removes, no one-at-a-time inserts. UAT-verified DAVISV5
-// Jul 1 2026. GATED OFF by default behind NUVIZZ_LOAD_IMPORT (separate from — and in
-// addition to — the handler's NUVIZZ_WRITE_ENABLED kill switch), because before it runs
-// against real routes the VERIFICATION CHECKLIST must pass on a throwaway prod load with
-// Chad's explicit sign-off. Until then the anchor engine above stays the active default.
+// Jul 1 2026. The ENGINE CHOICE LIVES IN THE APP: the Compare panel's engine toggle sends
+// useImport on the Save payload, which is the only routing switch (plus the handler's
+// NUVIZZ_WRITE_ENABLED kill switch that gates ALL writes, exactly as before). The
+// NUVIZZ_LOAD_IMPORT env var survives only as an emergency hard-off brake. The classic
+// anchor engine remains the default whenever the toggle is off.
 //
 // CONVERGENCE (mandatory after EVERY order-affecting import — a 200 ack is async and can
 // silently not land): poll GET load/info every ~pollMs up to a phase budget, comparing the
@@ -495,11 +496,13 @@ async function runAssignDispatch(requester: RequesterLike, op: SingleOp, payload
 // includes moving the poll into a background function (or passing a tighter
 // payload.convergence budget); that wiring is part of the enable-with-sign-off step.
 
-/** Second kill switch for the new import path only. OFF unless NUVIZZ_LOAD_IMPORT is set
- *  to 1/true/on/yes. Read at call time so tests (and an emergency unset) take effect
- *  without a redeploy of anything else. */
-export function loadImportEnabled(): boolean {
-  return /^(1|true|on|yes)$/i.test(String(process.env.NUVIZZ_LOAD_IMPORT ?? '').trim());
+/** EMERGENCY BRAKE for the import path only. The engine choice belongs to the APP (the
+ *  dispatcher's in-panel toggle sends useImport on the Save payload — no server switch to
+ *  manage); this env var exists solely to hard-DISABLE the import engine fleet-wide by
+ *  setting NUVIZZ_LOAD_IMPORT to 0/false/off/no. Unset (the normal state) blocks nothing.
+ *  Read at call time so flipping it takes effect without a code deploy. */
+export function loadImportBlocked(): boolean {
+  return /^(0|false|off|no)$/i.test(String(process.env.NUVIZZ_LOAD_IMPORT ?? '').trim());
 }
 
 /** Injectable pacing so the convergence loop is unit-testable with no real clock. */
@@ -541,8 +544,8 @@ async function pollUntilConverged(
  * ok=true ONLY when the read-back order matches the request — never on the async ack alone.
  */
 export async function runImportLoad(requester: RequesterLike, payload: any, creds: WriteCreds, pacing?: ImportPacing): Promise<any> {
-  if (!loadImportEnabled()) {
-    return { ok: false, gated: true, error: 'load-import path disabled — set NUVIZZ_LOAD_IMPORT=on (requires the verification checklist + sign-off first)' };
+  if (loadImportBlocked()) {
+    return { ok: false, gated: true, error: 'load-import engine is hard-disabled on the server (NUVIZZ_LOAD_IMPORT emergency brake) — use the classic engine' };
   }
   const load = payload?.load;
   const loadNbr = String(load?.loadHeader?.loadNbr ?? '').trim();
@@ -609,8 +612,8 @@ export async function runImportLoad(requester: RequesterLike, payload: any, cred
  * payload: { loads: [{ loadHeader, stops }...], convergence?: ImportPacing }
  */
 export async function runCommitImport(requester: RequesterLike, payload: any, creds: WriteCreds, pacing?: ImportPacing): Promise<any> {
-  if (!loadImportEnabled()) {
-    return { ok: false, gated: true, error: 'load-import path disabled — set NUVIZZ_LOAD_IMPORT=on (requires the verification checklist + sign-off first)' };
+  if (loadImportBlocked()) {
+    return { ok: false, gated: true, error: 'load-import engine is hard-disabled on the server (NUVIZZ_LOAD_IMPORT emergency brake) — use the classic engine' };
   }
   const loadsIn: any[] = Array.isArray(payload?.loads) ? payload.loads : [];
   if (!loadsIn.length) return { ok: true, loads: [] };
@@ -768,9 +771,12 @@ export async function runCommitBoardImport(requester: RequesterLike, payload: an
 
 export async function runOp(requester: RequesterLike, op: WriteOp, payload: any, creds: WriteCreds): Promise<any> {
   switch (op) {
-    // The Compare panel's Save: same payload either way — the import engine takes over when
-    // its kill switch is on, so the UI's Beta/LIVE flow needs no changes to test the new path.
-    case 'commitBoard': return loadImportEnabled() ? runCommitBoardImport(requester, payload, creds) : runCommitBoard(requester, payload, creds);
+    // The Compare panel's Save: the ENGINE CHOICE IS THE APP'S — the in-panel toggle sends
+    // useImport on the payload and that alone picks the import engine (the env var is only an
+    // emergency hard-off). No flag = the classic anchor engine, byte-identical to before.
+    case 'commitBoard': return (payload?.useImport === true && !loadImportBlocked())
+      ? runCommitBoardImport(requester, payload, creds)
+      : runCommitBoard(requester, payload, creds);
     case 'commitLoad': return runCommitLoad(requester, payload, creds);
     case 'removeStops': return runRemoveStops(requester, payload, creds);
     case 'assignDriver':
