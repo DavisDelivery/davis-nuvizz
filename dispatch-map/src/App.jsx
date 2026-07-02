@@ -52,7 +52,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.35.1';
+const APP_VERSION = '0.35.2';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -97,6 +97,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.35.2', 'FIX — the re-sequence dropdown could get STUCK on a strategy you\'d already used. Repro (reported live): apply "Farthest first", then hand-move an order to the middle — some edit paths (moving a stop off a card, ninja-add, "send selection", undo-remove) left the dropdown still claiming "Farthest first", and picking Farthest again did NOTHING (a dropdown fires no event when you pick the value it\'s already showing), so the route couldn\'t be re-optimized or saved. Now EVERY hand-edit flips the card to "Manual order (edited)", which keeps every strategy re-applicable — optimize, tweak by hand, re-optimize, as many times as you like. Bonus fix: re-sequencing a route whose stops haven\'t geocoded yet used to announce "Re-sequenced" while silently doing nothing — it now tells you plainly why it can\'t and to retry in a moment.'],
   ['0.35.1', 'FIX — "re-optimize failed" when NuVizz actually said YES. The live re-sequence Save fired the one-call import and PROD answered "Request for LOAD Async import is SUCCESS. Find more info in AppMessageLog with Id- …" — but prod words the ack differently than UAT (the whole sentence in the status field, and "AppMessageLog WITH Id"), so the stricter 0.33.7 parser read that SUCCESS as a rejection, aborted before the order-verification read-back, and showed a failure banner. The parser now accepts a status containing the standalone word SUCCESS (still rejecting PARTIALSUCCESS/FAILURE/…-with-errors wording) and extracts the AppMessageLog id through prod\'s phrasing. The exact journaled prod ack is a regression test. Re-Save the route — the import is declarative, so re-sending the same order is always safe, and the read-back now confirms it seats.'],
   ['0.35.0', 'Bulk Add — a new tab to create MANY orders at once. Two ways in: (1) fill an editable GRID of rows (Add row / Clear, each row shows ✓ ready or "need N" so you know what\'s missing before you send); (2) IMPORT a spreadsheet — drop a .xlsx or .csv, or paste rows straight from Excel/Google Sheets. The importer auto-detects your header row and maps the columns (consignee, address, city, state, zip, item, order#, PRO, pallets/cartons/weight); you confirm/fix the mapping once and it\'s remembered for that layout next time. Pickup location + service date are set ONCE for the whole batch (same saved-pickup picker as New Order). ○ Beta previews the count; ● LIVE creates them one at a time (each with its own idempotency key, so a mid-batch retry never duplicates). Successful rows drop off; any failures stay in the grid with the reason so you can fix and re-send. New orders land UNPLANNED — plan them onto loads in Routing.'],
   ['0.34.0', 'New Order: item description + multiple pickup locations + the Save-origin fix. (1) New "Item description" field (what\'s being delivered) rides along on the order (stored on NuVizz reference2 — read back on the first live create to confirm it sticks). (2) Pickup (ship-from) is now a SAVED LIST, not a single default: pick a location from the dropdown, or type a new one and "Save pickup location" — for when you\'re picking up from other places. (3) FIX: "Save as default origin" appeared to do nothing — it was silently saving an INCOMPLETE origin with no feedback (the placeholders "Buford"/"30518" look like real values but the fields were empty). The Save button is now disabled until every pickup field is filled, flashes "✓ Saved" when it works, and says "fill all pickup fields to save" when it can\'t. (Bulk multi-row entry + spreadsheet import is coming next.)'],
@@ -10034,9 +10035,12 @@ function RoutingWorkbenchCard({ route, stopById, otherKeys, ninjaMode, isActive,
         {rc && <div className="text-[11px] font-semibold text-slate-700">{miles.toFixed(1)} mi · {fmtDur(driveMin)}<span className="font-normal text-slate-400"> · DH {dhMi.toFixed(1)} mi</span></div>}
         {!route.collapsed && (
           // The dropdown shows the APPLIED strategy and keeps showing it until you change it (#280/
-          // #263). A manual drag/move marks the route "Manual order (edited)" so it's clear the route
-          // won't re-sort — your hand-tweaks stick.
-          <select onChange={(e) => { if (e.target.value && e.target.value !== route.strategy) onResequence(e.target.value); }} value={route.strategy || ''} className="mt-1 w-full border rounded px-1 py-1 text-[11px] bg-white">
+          // #263). EVERY hand-edit (drag, move in/out, ninja, send-selection, remove, undo) flips the
+          // route to "Manual order (edited)" — that's what keeps a strategy re-APPLICABLE: a native
+          // select fires no change event when you pick its already-selected value, so if a stale
+          // "Farthest first" stayed shown after an edit, picking Farthest again did nothing (the
+          // reported bug). No same-value guard here either — any strategy pick re-applies.
+          <select onChange={(e) => { if (e.target.value && e.target.value !== 'manual') onResequence(e.target.value); }} value={route.strategy || ''} className="mt-1 w-full border rounded px-1 py-1 text-[11px] bg-white">
             <option value="" disabled>Re-sequence…</option>
             {route.strategy === 'manual' && <option value="manual" disabled>Manual order (edited)</option>}
             <option value="min">Shortest distance</option>
@@ -11134,23 +11138,35 @@ function RoutingScreen({ debugCaptureRef }) {
   // load but would Save edits onto YESTERDAY'S instance. (Mirrors the assignedOverride reset.)
   useEffect(() => { setWbRoutes([]); }, [selectedDate]);
   const wbResequence = useCallback((key, strategy) => {
-    if (!strategy) return;
-    setWbRoutes((prev) => prev.map((r) => {
-      if (r.key !== key) return r;
-      const pts = r.order.map((id) => { const s = stopById.get(String(id)); return s ? { id: String(id), lat: s.lat, lng: s.lng } : null; }).filter(Boolean);
-      if (pts.length < 2) return r;
-      const newOrder = resequence(pts, ROUTING_DEPOT, strategy).map((s) => s.id);
-      const resolved = new Set(newOrder);
-      const tail = r.order.map(String).filter((id) => !resolved.has(id));   // never drop unresolvable ids
-      return { ...r, order: [...newOrder, ...tail], strategy };   // remember + show the applied logic
+    if (!strategy || strategy === 'manual') return;
+    // Computed OUTSIDE the state updater so the feedback line can tell the truth: the old shape
+    // announced "Re-sequenced …" even when the updater silently bailed (stops not geocoded yet),
+    // which read as "it worked" while the order (and the shown strategy) never changed.
+    const r = wbRoutes.find((x) => x.key === key);
+    if (!r) return;
+    const pts = r.order.map((id) => { const s = stopById.get(String(id)); return s ? { id: String(id), lat: s.lat, lng: s.lng } : null; }).filter(Boolean);
+    if (pts.length < 2) {
+      const missing = r.order.length - pts.length;
+      setLastAction(`Can't re-sequence ${loadDisplayName(key) || 'load'} — ${missing > 0 ? `${missing} stop(s) have no map position yet (they geocode as the board loads); try again in a moment` : 'it needs at least 2 stops'}.`);
+      return;
+    }
+    const newOrder = resequence(pts, ROUTING_DEPOT, strategy).map((s) => s.id);
+    const resolved = new Set(newOrder);
+    setWbRoutes((prev) => prev.map((x) => {
+      if (x.key !== key) return x;
+      const tail = x.order.map(String).filter((id) => !resolved.has(id));   // never drop unresolvable ids
+      return { ...x, order: [...newOrder, ...tail], strategy };   // remember + show the applied logic
     }));
     setLastAction(`Re-sequenced ${loadDisplayName(key) || 'load'} · ${RESEQ_LABELS[strategy] || strategy}`);
-  }, [stopById]);
+  }, [wbRoutes, stopById]);
   const wbMoveStop = useCallback((fromKey, stopNbr, toKey) => {
     if (!toKey || fromKey === toKey) return;
     const id = String(stopNbr);
     setWbRoutes((prev) => prev.map((r) => {
-      if (r.key === fromKey) return { ...r, order: r.order.filter((x) => x !== id) };
+      // BOTH cards are hand-edited now — the source too. Leaving the source's applied strategy
+      // (e.g. "Farthest first") standing made the dropdown refuse to re-apply that same strategy
+      // later (same value ⇒ no change event), the reported "can't set it back to Farthest" bug.
+      if (r.key === fromKey) return { ...r, order: r.order.filter((x) => x !== id), strategy: 'manual' };
       if (r.key === toKey) return r.order.includes(id) ? r : { ...r, order: [...r.order, id], strategy: 'manual' };
       return r;
     }));
@@ -11173,7 +11189,7 @@ function RoutingScreen({ debugCaptureRef }) {
         order.splice(idx, 0, id);
         return { ...r, order, strategy: 'manual' };   // hand-ordered now — never auto re-sort (#280)
       }
-      return r.order.includes(id) ? { ...r, order: r.order.filter((x) => x !== id) } : r;
+      return r.order.includes(id) ? { ...r, order: r.order.filter((x) => x !== id), strategy: 'manual' } : r;
     }));
     setLastAction(fromKey === toKey ? `Reordered ${stopNbr} in ${loadDisplayName(toKey)}` : `Moved ${stopNbr} → ${loadDisplayName(toKey)}`);
   }, []);
@@ -11194,7 +11210,9 @@ function RoutingScreen({ debugCaptureRef }) {
     const id = String(stopNbr);
     setWbRoutes((prev) => prev.map((r) => {
       if (r.key !== key) return r;
-      return { ...r, order: r.order.includes(id) ? r.order : [...r.order, id], removed: (r.removed || []).filter((x) => x !== id) };
+      // Appending the restored stop is a hand-edit too — clear any applied strategy so the
+      // dropdown can re-apply it (see wbMoveStop note).
+      return { ...r, order: r.order.includes(id) ? r.order : [...r.order, id], removed: (r.removed || []).filter((x) => x !== id), strategy: r.order.includes(id) ? r.strategy : 'manual' };
     }));
   }, []);
   // Print the driver manifest for a Compare card's stops, in the card's CURRENT order (#263). Opens
@@ -11228,8 +11246,10 @@ function RoutingScreen({ debugCaptureRef }) {
       setLastAction(already ? `${stopNbr} already on ${target}` : `Ninja → ${stopNbr} onto ${target}`);
       if (already) return prev;
       return prev.map((r) => {
-        if (r.key === target) return { ...r, order: [...r.order, id] };
-        return r.order.includes(id) ? { ...r, order: r.order.filter((x) => x !== id) } : r;
+        // Any card whose order changes is hand-edited — clear its applied strategy so the
+        // re-sequence dropdown stays re-applicable (see wbMoveStop note).
+        if (r.key === target) return { ...r, order: [...r.order, id], strategy: 'manual' };
+        return r.order.includes(id) ? { ...r, order: r.order.filter((x) => x !== id), strategy: 'manual' } : r;
       });
     });
   }, [activeRouteKey, stopById, openRouteKeys]);
@@ -11255,11 +11275,13 @@ function RoutingScreen({ debugCaptureRef }) {
     setWbRoutes((prev) => {
       if (!prev.some((r) => r.key === key)) return prev;
       return prev.map((r) => {
+        // Hand-edit ⇒ clear the applied strategy on every touched card (see wbMoveStop note).
         if (r.key === key) {
           const have = new Set(r.order);
-          return { ...r, order: [...r.order, ...ids.filter((id) => !have.has(id))] };
+          const add = ids.filter((id) => !have.has(id));
+          return add.length ? { ...r, order: [...r.order, ...add], strategy: 'manual' } : r;
         }
-        return r.order.some((id) => idSet.has(id)) ? { ...r, order: r.order.filter((id) => !idSet.has(id)) } : r;
+        return r.order.some((id) => idSet.has(id)) ? { ...r, order: r.order.filter((id) => !idSet.has(id)), strategy: 'manual' } : r;
       });
     });
     setLastAction(`Sent ${ids.length} selected stop${ids.length === 1 ? '' : 's'} → ${loadDisplayName(key) || 'load'}`);
