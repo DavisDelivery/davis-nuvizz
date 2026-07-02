@@ -672,3 +672,35 @@ test('seeding never fires for a load with NO ordered stops (nothing to seed with
     assert.equal(r.ok, false);
   });
 });
+
+// ── the live-tenant header shapes that produced NuVizz's 400 (from the write journal) ──
+
+test('assembleImportHeader: live load/info header — origin OBJECT never echoed; GEORGIA/UNITED STATES normalized', () => {
+  // Verbatim shape from the journaled failing Save (SUW 5 / DAVIS000198073):
+  const liveHeader = {
+    loadNbr: 'DAVIS000198073', routeName: 'SUW 5', loadTimeZone: 'EST',
+    earliestStartDttm: '2026-07-02T12:00:00', latestStartDttm: '2026-07-02T23:59:00',
+    origin: { address: { city: 'BUFORD', addr1: '943 GAINESVILLE HWY, BUFORD, GA 30518, USA', addressType: 'COM', name: 'Not Available', state: 'GEORGIA', country: 'UNITED STATES', longitude: -83.95948, zip: '30518', latitude: 34.14838 } },
+    originName: 'ULINE', originAddr1: '943 GAINESVILLE HWY', originCity: 'BUFORD',
+    originState: 'GEORGIA', originZip: '30518', originCountry: 'UNITED STATES',
+  };
+  const out = assembleImportHeader(liveHeader, [], null, null);
+  assert.equal(out.origin, 'WHSE');                    // the address OBJECT is never echoed as the code
+  assert.equal(typeof out.origin, 'string');
+  assert.equal(out.originName, 'ULINE');
+  assert.equal(out.originState, 'GA');                 // GEORGIA → GA (the proven contract shape)
+  assert.equal(out.originCountry, 'USA');              // UNITED STATES → USA
+  for (const [k, v] of Object.entries(out)) if (v !== undefined) assert.equal(typeof v, 'string', `${k} must be a string`);
+});
+
+test('buildImportBody: refuses a non-string header field (the exact Jackson-400 shape) with zero NuVizz calls', () => {
+  const h = { ...HDR, origin: { address: { city: 'BUFORD' } } };
+  assert.throws(() => buildImportBody({ loadHeader: h, stops: [stopRef('A')] }, 'DAVIS'), /must be a string/);
+});
+
+test('importRefFromRaw: an OBJECT nested under a scalar address key is dropped, never echoed', () => {
+  const raw = { stop: { stopNbr: 'A', stopType: 'DO', to: { address: { ...toBlock('A').address, addressType: { code: 'COM' } }, schedule: toBlock('A').schedule } } };
+  const ref = importRefFromRaw(raw);
+  assert.equal(ref.to.address.addressType, undefined);   // object dropped by the primitives-only echo
+  assert.equal(ref.to.address.addr1, 'A Main St');
+});
