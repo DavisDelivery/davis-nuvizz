@@ -444,23 +444,33 @@ export function planSequence(currentDeliveryStopIds: any[], desiredOrderedStopId
   return { ok: true, unchanged: false, anchor: want[0], removeStopIds: cur.filter((id) => !keep.has(id)), insertOrdered: want.slice(k) };
 }
 
-// ── §I  async LOAD IMPORT — declarative stop set + order in ONE call ─────────
+// ── §I  async LOAD IMPORT — the ORDERING + CREATION lever (two-lever engine) ──
 //
 // POST {base}/load/update/default/{cc} with { companyCode, loads:[{loadHeader, stops}] }.
-// Contract (proven by controlled live experiments on UAT DAVISV5, Jul 1 2026 — including a
-// 10-stop route: create-in-order, full reversal, optimized reorder, mid-route injection):
-//   • The stops[] ARRAY ORDER is the visit order. stopSeq numbers and the header
-//     stopSeqOrder flag are IGNORED. The optimizer does NOT rearrange imported loads.
-//   • New loadNbr → creates the load (Draft) with stops in array order. No loadId/versionId
-//     anywhere on this path.
-//   • Re-import same loadNbr → DECLARATIVE rebuild: stop set + order become exactly stops[].
-//     Omitted stops are UNPLANNED (the stop record survives, unassigned).
-//   • Existing stops plan BY REFERENCE: stopNbr + stopType + a "to" block (address+schedule).
-//     A bare stopNbr is rejected ("Either From or To information should be present").
-//   • A stop NEWLY ADDED to a load APPENDS to the end on that first import (its array position
-//     is ignored on the add); a follow-up reorder import seats it.
 //
-// THE SILENT-FAILURE TRAP: the import is async. A 200 "Async import is SUCCESS …
+// ⚠️ CONTRACT CORRECTED Jul 2 2026 (prod incident + controlled UAT reproduction on DAVISV5 —
+// stopId-level evidence in dispatch-beta2 docs/NUVIZZ_API.md §10.1). The REAL semantics:
+//   • The stops[] ARRAY ORDER is the visit order. stopSeq numbers and the header
+//     stopSeqOrder flag are IGNORED. The optimizer does NOT rearrange imported loads. (True.)
+//   • An entry MATCHES an existing stop ONLY when that stopNbr is already ON THE TARGET LOAD
+//     (matched = same stopId; order applies). A matched stop is FULL-REPLACED by its entry —
+//     every field not sent is BLANKED. A to-only "reference" therefore WIPES freight
+//     (totalPallets/totalCartons/weight/proNumber/references). Entries for on-load stops MUST
+//     be FULL ECHOES of the load's own raw records — importEchoFromRaw(), never a bare ref.
+//   • An entry whose stopNbr is NOT on the target load — unplanned OR planned on another
+//     load — NEVER matches: NuVizz CREATES A NEW STOP RECORD (a clone) with only the entry's
+//     fields and plans the CLONE; the original is untouched. The old claim "existing stops
+//     plan by reference" is REFUTED — planning/moving existing stops is insertStops/
+//     removeStops territory (the REAL records, by stopId). An off-load stopNbr must NEVER
+//     appear in stops[]; creating a brand-new stop inline is allowed only after a per-number
+//     existence check proves the number exists nowhere (a collision would clone it).
+//   • New loadNbr + full payloads → creates the load AND its stops in array order (the safe
+//     create case). Re-import of the same load is DECLARATIVE over its ON-LOAD stops: omitted
+//     stops are UNPLANNED (the record survives, its data intact).
+//   • A stop newly added to a load APPENDS on its first import (array position ignored on the
+//     add); a follow-up full-echo reorder import seats it.
+//
+// THE SILENT-FAILURE TRAP (unchanged): the import is async. A 200 "Async import is SUCCESS …
 // AppMessageLog Id-…" does NOT mean it landed — on worker failure NOTHING is created and the
 // reason is unreachable (no AppMessageLog endpoint on the open API). The loadHeader MUST carry
 // earliestStartDttm + latestStartDttm (NOT scheduleStartDttm) AND the flat origin fields
@@ -650,6 +660,55 @@ export function importRefFromRaw(rawStop: any, fallbackDate?: string | null): an
     // The contract's reference is address + SCHEDULE; when the echo lacks a usable window,
     // synthesize the proven default from the service date rather than send an uncovered shape.
     ref.to.schedule = { timeFrom: `${fallbackDate}T12:00:00`, timeTo: `${fallbackDate}T17:00:00`, timeZone: 'America/New_York', timeConstraint: 'PREFERRED' };
+  }
+  return ref;
+}
+
+// Scalar fields a FULL ECHO carries beyond the to-block. Jul 2 rule 2: a matched (on-load)
+// stop is FULL-REPLACED by its import entry — anything unsent is BLANKED — so an on-load
+// entry must echo the record's whole proven field set, freight included. Freight fields are
+// NUMBERS (the string-only guard elsewhere is for the header): allow number|numeric-string,
+// refuse objects.
+const IMPORT_ECHO_NUMBERS = ['totalPallets', 'totalCartons', 'weight'] as const;
+const IMPORT_ECHO_STRINGS = [
+  'shipmentType', 'stopExecution', 'sourceType', 'shipmentNbr', 'proNumber',
+  'reference1', 'reference2', 'reference3', 'weightUOM',
+] as const;
+
+/** importEchoFromRaw (§I, Jul 2 correction) — a RAW stop object (from load/info stops[]) → the
+ *  FULL-ECHO import entry for a stop that is ON the target load: importRefFromRaw's
+ *  stopNbr/stopType/to-block PLUS every scalar the record carries (freight, PRO, references)
+ *  and the "from" block, so the full-replace can never blank a field. Null when no valid
+ *  entry can be built (same rule as importRefFromRaw). */
+export function importEchoFromRaw(rawStop: any, fallbackDate?: string | null): any | null {
+  const ref = importRefFromRaw(rawStop, fallbackDate);
+  if (!ref) return null;
+  const st = rawStop?.stop || rawStop || {};
+  for (const k of IMPORT_ECHO_NUMBERS) {
+    const v = (st as any)[k];
+    if (v == null || v === '' || typeof v === 'object') continue;
+    const n = Number(v);
+    if (Number.isFinite(n)) ref[k] = n;
+  }
+  for (const k of IMPORT_ECHO_STRINGS) {
+    const v = (st as any)[k];
+    if (v == null || v === '' || typeof v === 'object') continue;
+    if (typeof v === 'string' || typeof v === 'number') ref[k] = String(v);
+  }
+  // Echo the "from" block (warehouse address + pickup window) with the same whitelists +
+  // normalization as the to-block — never raw junk, never objects where strings belong.
+  const from = st?.from || {};
+  const fAddr = pickFields(from.address || {}, IMPORT_ADDR_FIELDS);
+  if (fAddr.addr1) {
+    if (fAddr.state != null) fAddr.state = stateCode(fAddr.state);
+    fAddr.country = countryCode(fAddr.country);
+    const fSched = pickFields(from.schedule || {}, IMPORT_SCHED_FIELDS);
+    for (const k of ['timeFrom', 'timeTo']) {
+      if (fSched[k] != null && !(typeof fSched[k] === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(fSched[k]))) delete fSched[k];
+      else if (typeof fSched[k] === 'string') fSched[k] = fSched[k].slice(0, 19);
+    }
+    ref.from = { address: fAddr };
+    if (fSched.timeFrom && fSched.timeTo) ref.from.schedule = fSched;
   }
   return ref;
 }

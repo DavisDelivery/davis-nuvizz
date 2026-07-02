@@ -53,7 +53,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.36.3';
+const APP_VERSION = '0.38.0';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -98,6 +98,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.38.0', 'The ⚡ Import engine is REBUILT on the two-lever design and Bulk Add gains "Create as → ⚡ A NEW load". After the Jul 2 incident (import "references" CLONED off-load orders and FULL-REPLACED matched ones — freight wiped), the real NuVizz semantics were pinned on UAT and the engine now makes both failure modes structurally impossible: MEMBERSHIP only ever moves your real orders (insertStops/removeStops by internal id — an off-load order number can never appear in an import), ORDER is one import whose entries are FULL ECHOES of the load\'s own records (freight + references included, so nothing can be blanked), and CREATE (the Bulk Add new-load mode) sends full payloads only after per-number existence checks (a colliding order number is refused, never cloned). Anatomy: plan-10-unplanned ~4-5 calls, inject-middle ~4-5, reorder ~3-4, full re-optimize ~3-4 — every save confirmed by read-back. STILL DARK: the server gate from v0.36.3 stays default-OFF; enabling on prod is an explicit env flip after a prod validation.'],
   ['0.36.3', '⚡ IMPORT ENGINE DISABLED server-side (Jul 2 incident). Production NuVizz treats import "reference" stops as full replaces — a Save through the import engine wiped the freight (skids/loose/weight) off 10 orders and created 10 empty unplanned copies, violating the UAT-verified contract that referenced stops keep their other fields. Until that\'s understood and re-verified, the server refuses ALL import saves regardless of the in-app toggle (Saves with ⚡ selected automatically fall back to the classic engine — nothing dead-ends) and it stays off unless explicitly re-enabled on the server. Also: stop reads now surface freight (skids/loose/weight/pieces) and audit (created-by/when) fields, so originals can be told apart from import-created copies during the repair.'],
   ['0.36.2', 'Board write-through (#361) — planned orders no longer show UNPLANNED after a Save. Before: a confirmed Save changed NuVizz immediately, but the board only learned about it at the next scheduled scan — and NuVizz\'s own list feed can lag an async import by minutes, so even a fresh scan could re-assert the stale "unplanned". Now, the moment a Save is CONFIRMED (the import engine\'s order read-back matches, or a classic save\'s steps all succeed), the app patches the verified plan straight into the board cache (zero NuVizz calls — it\'s state the Save already verified) and re-reads it: the stops flip to planned on the right load, in the confirmed order, immediately. The next scans can\'t revert it either — a confirmed write outranks a lagging list row for 20 minutes, releasing as soon as the list catches up. Works for planning, unplanning (removed orders flip to unplanned), reorders, and cross-load moves.'],
   ['0.36.1', 'Print Manifest pagination FIXED for real — no more one mashed page. The Print button used to open a popup window to print from; when the browser silently blocked that popup, it fell back to printing the on-screen (scaled) preview, which collapses the whole manifest onto a single page — the "everything mashed together, only one page came out" report. Printing now uses a hidden print-only copy of the document rendered straight into the page: nothing to block, no popup, and the per-ticket page breaks paginate natively — page 1 is the route summary + delivery ticket 1, then exactly one ticket per page (verified in a real Chrome print render: 4 tickets → 4 pages). Bonus: pressing Cmd/Ctrl+P with the manifest viewer open now ALSO prints the paginated manifest instead of a screenshot of the app. Applies to the Delivery Ticket and Bill of Lading viewers too (same viewer).'],
@@ -13586,7 +13587,13 @@ function BulkOrderScreen() {
   const [dragOver, setDragOver] = useState(false);
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState(null);    // { done, total }
-  const [results, setResults] = useState(null);      // { beta?, created, updated, failed, rows:[…] }
+  const [results, setResults] = useState(null);      // { beta?, created, updated, failed, rows:[…] } | { loadMode, ok, msg, detail? }
+  // "Create as a NEW load" mode (item A): ONE async import creates the load AND every order
+  // inline — no per-stop pre-creates. Rows top-to-bottom = the driver's visit order.
+  const [asLoad, setAsLoad] = useState(false);
+  const [loadNbr, setLoadNbr] = useState('');
+  const [routeName, setRouteName] = useState('');
+  const [verifyMsg, setVerifyMsg] = useState(null);   // live status while the import converges
   const fileRef = useRef(null);
 
   const setOrig = (k) => (e) => { setOriginSaved(false); setOrigin((o) => ({ ...o, [k]: e.target.value })); };
@@ -13611,10 +13618,20 @@ function BulkOrderScreen() {
   const removeRow = (i) => setRows((rs) => (rs.length > 1 ? rs.filter((_, idx) => idx !== i) : [bulkEmptyRow()]));
   const clearRows = () => { setRows([bulkEmptyRow(), bulkEmptyRow(), bulkEmptyRow()]); setResults(null); };
 
+  // In load mode every row ALSO needs its Order # (stopNbr) — it is the convergence key the
+  // import path verifies the seated order against; NuVizz cannot generate it for an inline create.
+  const missingFor = (r) => {
+    const m = bulkRowMissing(r);
+    if (asLoad && !String(r?.stopNbr ?? '').trim()) m.push('stopNbr');
+    return m;
+  };
   const activeRows = rows.filter((r) => !bulkRowIsBlank(r));
-  const readyCount = activeRows.filter((r) => bulkRowMissing(r).length === 0).length;
+  const readyCount = activeRows.filter((r) => missingFor(r).length === 0).length;
   const incompleteCount = activeRows.length - readyCount;
-  const canCreate = originComplete && !!serviceDate && readyCount > 0 && !busy;
+  const canCreate = originComplete && !!serviceDate && readyCount > 0 && !busy
+    // Load mode: ONE declarative import = the load's COMPLETE stop list — a half-ready grid
+    // must never fire (the incomplete rows would simply be missing from the created load).
+    && (!asLoad || (incompleteCount === 0 && !!loadNbr.trim()));
 
   // ── Importer (paste / file) ──
   const recallMapping = (sig) => { if (!sig) return null; try { return (JSON.parse(localStorage.getItem(BULK_COLMAP_KEY) || '{}'))[sig] || null; } catch { return null; } };
@@ -13696,6 +13713,80 @@ function BulkOrderScreen() {
     setResults({ created: out.filter((o) => o.ok && !o.updated).length, updated: out.filter((o) => o.ok && o.updated).length, failed: out.filter((o) => !o.ok).length, rows: out });
   };
 
+  // ── Create as a NEW load (item A): ONE async import creates the load + every order inline ──
+  // vs the per-row path's N stop/sync/update pre-creates (+ the Save's per-add stop/info echo
+  // reads). Target anatomy: 1 load/update + 1-2 load/info — any N. The import is ASYNC, so the
+  // same client-side convergence discipline as the Routing Save applies: backoff polls
+  // (6/10/15/25/25s), then ONE same-payload re-send, then report honestly. ok ONLY from the
+  // read-back; a 404 while NuVizz creates the brand-new load just reads as not-yet-converged.
+  const bulkNormNbr = (v) => { const s = String(v ?? '').trim().toUpperCase(); const t = s.replace(/^0+(?=.)/, ''); return t || s; };
+  const verifyLoadCreate = async (nbr, wantNbrs, resendBody) => {
+    const POLLS_MS = [6000, 10000, 15000, 25000, 25000];
+    let reads = 0, resent = false;
+    for (let pass = 0; pass < 2; pass++) {
+      for (const [i, ms] of POLLS_MS.entries()) {
+        setVerifyMsg(`Verifying load ${nbr} in NuVizz — ${resent ? 're-sent, ' : ''}read-back ${pass * POLLS_MS.length + i + 1}/${POLLS_MS.length * 2}…`);
+        await new Promise((r) => setTimeout(r, ms));
+        try {
+          const res = await callWrite('getLoad', { loadNbr: nbr }, { dryRun: false });
+          reads++;
+          const stops = (res.result?.load?.stops || []).filter((s) => String(s.stopType || 'DO').toUpperCase() !== 'PU');
+          const seqsOk = stops.length > 0 && stops.every((s) => s.stopSeq != null && Number.isFinite(Number(s.stopSeq)));
+          const seen = stops.slice().sort((a, b) => Number(a.stopSeq ?? 1e9) - Number(b.stopSeq ?? 1e9)).map((s) => String(s.stopNbr));
+          // eslint-disable-next-line no-console
+          console.log(`[bulk-load-verify] poll ${pass}/${i} ${nbr}`, { requested: wantNbrs, readBack: seen, seqsOk });
+          if (seqsOk && seen.length === wantNbrs.length && seen.every((n, k) => bulkNormNbr(n) === bulkNormNbr(wantNbrs[k]))) return { ok: true, reads, resent };
+        } catch { /* transient read failure / not created yet — keep polling */ }
+      }
+      if (pass === 0) {
+        // ONE re-send (a lost async import is rare but real). Fresh idempotency key so the
+        // ledger can never swallow it — and WITHOUT createNew: if the first import landed
+        // partially, the collision guard would refuse a "create" at an existing load, while a
+        // plain declarative rebuild echoes what landed and inlines what didn't (self-healing).
+        // A brand-new load has no membership history, so the Routing unstick ladder's
+        // stuck-append state does not apply here.
+        resent = true;
+        const rebuild = { ...resendBody, loads: resendBody.loads.map(({ createNew, ...L }) => L) };
+        try { await callWrite('commitBoard', rebuild, { dryRun: false, clientOpId: newClientOpId(), createdBy: 'dispatcher-bulk' }); } catch { /* the next polls decide */ }
+      }
+    }
+    return { ok: false, reads, resent };
+  };
+  const createAsLoad = async () => {
+    if (!canCreate) return;
+    const targets = rows.filter((r) => !bulkRowIsBlank(r));
+    const nbr = loadNbr.trim();
+    if (!live) { setResults({ loadMode: true, beta: true, msg: `○ Beta — would create load "${nbr}"${routeName.trim() ? ` (${routeName.trim()})` : ''} with ${targets.length} stop(s) in grid order via ONE async import (nothing sent). Flip to ● LIVE to create it.` }); return; }
+    persistOrigin();
+    const settings = { origin: { name: origin.name.trim(), addr1: origin.addr1.trim(), city: origin.city.trim(), state: origin.state.trim(), zip: origin.zip.trim() }, serviceDate, timeZone: 'America/New_York' };
+    const payloadRows = targets.map((r) => ({
+      name: r.name.trim(), addr1: r.addr1.trim(), addr2: r.addr2.trim() || null,
+      city: r.city.trim(), state: r.state.trim(), zip: r.zip.trim(),
+      stopNbr: r.stopNbr.trim(), pro: r.pro.trim() || null, itemDesc: r.itemDesc.trim() || null,
+      pallets: r.pallets.trim() || null, cartons: r.cartons.trim() || null, weight: r.weight.trim() || null,
+    }));
+    const body = {
+      loads: [{ loadNbr: nbr, routeName: routeName.trim() || undefined, createNew: true, orderedStopNbrs: payloadRows.map((r) => r.stopNbr), newStops: payloadRows }],
+      settings, origin: settings.origin, useImport: true,
+    };
+    setBusy(true); setResults(null); setVerifyMsg(`Sending ONE import for load ${nbr} (${payloadRows.length} stops)…`);
+    let res;
+    try { res = await callWrite('commitBoard', body, { dryRun: false, clientOpId: newClientOpId(), createdBy: 'dispatcher-bulk' }); }
+    catch (e) { res = { ok: false, error: e?.message || 'network error' }; }
+    const L0 = res?.result?.loads?.[0];
+    const finish = (ok, msg, detail) => { setVerifyMsg(null); setBusy(false); setResults({ loadMode: true, ok, msg, detail }); if (ok) setRows([bulkEmptyRow(), bulkEmptyRow(), bulkEmptyRow()]); };
+    if (res?.ok && L0?.ok) {
+      const c = L0?.steps?.filter?.((s) => s.op === 'converge').reduce?.((n, s) => n + (s.reads || 0), 0) ?? 0;
+      finish(true, `✓ Load "${nbr}" created with ${payloadRows.length} stop(s) in your grid order — confirmed by read-back.`, `Anatomy: 1 import + ${c || 1} read-back(s); zero per-stop pre-creates.`);
+    } else if (L0?.pending) {
+      const v = await verifyLoadCreate(nbr, L0.requestedOrder || body.loads[0].orderedStopNbrs, body);
+      if (v.ok) finish(true, `✓ Load "${nbr}" created with ${payloadRows.length} stop(s) in your grid order — confirmed by read-back.`, `Anatomy: ${v.resent ? 2 : 1} import(s) + ${v.reads + 1} read-back(s); zero per-stop pre-creates.`);
+      else finish(false, `✗ Load "${nbr}": NuVizz hasn't shown the created load in the sent order yet (after ${v.reads} read-backs${v.resent ? ' + one re-send' : ''}). Check the load in the portal — your rows are still in the grid; creating again with the SAME load number is safe (the import is declarative).`);
+    } else {
+      finish(false, `✗ Load "${nbr}" was not created: ${res?.error || L0?.error || res?.result?.error || 'write error'}. Your rows are still in the grid.`);
+    }
+  };
+
   const gridInput = 'w-full border border-slate-300 rounded px-1.5 py-1 text-[12px] focus:outline-none focus:ring-1 focus:ring-blue-300';
 
   return (
@@ -13747,6 +13838,32 @@ function BulkOrderScreen() {
                 <OrderField label="Service date" req type="date" value={serviceDate} onChange={(e) => setServiceDate(e.target.value)} className="max-w-[200px]" />
                 <button onClick={persistOrigin} disabled={!originComplete} title={originComplete ? 'Save this pickup location for reuse' : 'Fill all pickup fields to save'} className={`text-[12px] font-medium inline-flex items-center gap-1 px-2.5 py-1 rounded border ${originComplete ? 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50' : 'border-slate-200 bg-slate-50 text-slate-400 cursor-not-allowed'}`}><Save size={13} /> {originIsSaved ? 'Update pickup location' : 'Save pickup location'}</button>
                 {originSaved && <span className="text-[12px] font-medium text-green-700 inline-flex items-center gap-1"><FileCheck size={13} /> Saved</span>}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Destination: unplanned orders vs ONE new load (item A — inline import creation) */}
+        <div className="bg-white border border-slate-200 rounded-lg p-3 space-y-2">
+          <div className="text-[13px] font-semibold text-slate-700">Create as</div>
+          <div className="flex flex-col sm:flex-row gap-2">
+            <label className={`flex-1 border rounded-lg px-3 py-2 cursor-pointer ${!asLoad ? 'border-blue-400 bg-blue-50/60' : 'border-slate-200 hover:bg-slate-50'}`}>
+              <input type="radio" name="bulk-dest" checked={!asLoad} onChange={() => setAsLoad(false)} className="mr-1.5 align-middle" />
+              <span className="text-[12px] font-semibold text-slate-700 align-middle">Unplanned orders</span>
+              <div className="text-[11px] text-slate-500 mt-0.5">One create per row — plan them onto loads in Routing afterwards.</div>
+            </label>
+            <label className={`flex-1 border rounded-lg px-3 py-2 cursor-pointer ${asLoad ? 'border-blue-400 bg-blue-50/60' : 'border-slate-200 hover:bg-slate-50'}`}>
+              <input type="radio" name="bulk-dest" checked={asLoad} onChange={() => setAsLoad(true)} className="mr-1.5 align-middle" />
+              <span className="text-[12px] font-semibold text-slate-700 align-middle">⚡ A NEW load (one import)</span>
+              <div className="text-[11px] text-slate-500 mt-0.5">Rows top-to-bottom become the driver&apos;s stop order. ONE async import creates the load + every order — no per-row creates. Every row needs its Order&nbsp;#.</div>
+            </label>
+          </div>
+          {asLoad && (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
+              <OrderField label="Load number" req value={loadNbr} onChange={(e) => setLoadNbr(e.target.value)} placeholder="e.g. an EMPTY Draft load's number, or a new one" />
+              <OrderField label="Route name (shown on the board)" value={routeName} onChange={(e) => setRouteName(e.target.value)} placeholder="e.g. SUW 3" />
+              <div className="sm:col-span-2 text-[11px] text-slate-500">
+                Point this at an <b>empty Draft load&apos;s number</b> to build onto it, or type a <b>new number</b> to create the load outright. If the load number already carries stops, the create is refused (edit that load from the board instead) — and every Order&nbsp;# is first checked against NuVizz: a number that already exists is refused, never duplicated.
               </div>
             </div>
           )}
@@ -13817,7 +13934,7 @@ function BulkOrderScreen() {
               <thead>
                 <tr className="text-left text-[11px] text-slate-500">
                   <th className="pr-2 pb-1 font-medium w-6">#</th>
-                  {BULK_FIELDS.map((f) => <th key={f.key} className="px-1 pb-1 font-medium whitespace-nowrap">{f.label}{f.required && <span className="text-red-500"> *</span>}</th>)}
+                  {BULK_FIELDS.map((f) => <th key={f.key} className="px-1 pb-1 font-medium whitespace-nowrap">{f.label}{(f.required || (asLoad && f.key === 'stopNbr')) && <span className="text-red-500"> *</span>}</th>)}
                   <th className="px-1 pb-1 font-medium">Status</th>
                   <th className="pb-1"></th>
                 </tr>
@@ -13825,7 +13942,7 @@ function BulkOrderScreen() {
               <tbody>
                 {rows.map((r, i) => {
                   const blank = bulkRowIsBlank(r);
-                  const missing = blank ? [] : bulkRowMissing(r);
+                  const missing = blank ? [] : missingFor(r);
                   return (
                     <tr key={i} className="align-top">
                       <td className="pr-2 py-0.5 text-slate-400 tabular-nums">{i + 1}</td>
@@ -13846,8 +13963,19 @@ function BulkOrderScreen() {
           </div>
         </div>
 
+        {/* Live convergence status (load mode) */}
+        {verifyMsg && (
+          <div className="rounded-lg px-3 py-2 text-[13px] bg-blue-50 text-blue-800 border border-blue-200">⏳ {verifyMsg}</div>
+        )}
+
         {/* Results */}
-        {results && (
+        {results?.loadMode && (
+          <div className={`rounded-lg px-3 py-2 text-[13px] ${results.beta ? 'bg-slate-100 text-slate-700 border border-slate-200' : results.ok ? 'bg-green-50 text-green-800 border border-green-200' : 'bg-amber-50 text-amber-800 border border-amber-200'}`}>
+            <div className="font-medium">{results.msg}</div>
+            {results.detail && <div className="text-[12px] mt-0.5 opacity-80">{results.detail}</div>}
+          </div>
+        )}
+        {results && !results.loadMode && (
           <div className={`rounded-lg px-3 py-2 text-[13px] ${results.beta ? 'bg-slate-100 text-slate-700 border border-slate-200' : results.failed ? 'bg-amber-50 text-amber-800 border border-amber-200' : 'bg-green-50 text-green-800 border border-green-200'}`}>
             {results.beta ? results.msg : (
               <div className="space-y-1">
@@ -13866,10 +13994,19 @@ function BulkOrderScreen() {
         {/* Create */}
         <div className="flex items-center justify-between gap-3 pb-6">
           <span className="text-[12px] text-slate-500">
-            {!originComplete ? 'Set the pickup + service date first.' : readyCount === 0 ? 'Fill at least one row (required * fields).' : busy && progress ? `Creating ${progress.done}/${progress.total}…` : live ? `Ready — this WILL create ${readyCount} order(s) in NuVizz${incompleteCount ? ` (${incompleteCount} incomplete row(s) skipped)` : ''}.` : `Beta — Create previews only (${readyCount} ready).`}
+            {!originComplete ? 'Set the pickup + service date first.'
+              : readyCount === 0 ? `Fill at least one row (required * fields${asLoad ? ' — Order # too in load mode' : ''}).`
+              : asLoad && incompleteCount > 0 ? `Load mode sends the load's COMPLETE stop list — finish or remove the ${incompleteCount} incomplete row(s) first.`
+              : asLoad && !loadNbr.trim() ? 'Enter the load number (an empty Draft load, or a new one).'
+              : busy && progress ? `Creating ${progress.done}/${progress.total}…`
+              : busy ? 'Working…'
+              : asLoad ? (live ? `Ready — ONE import WILL create load "${loadNbr.trim()}" with ${readyCount} stop(s) in grid order.` : `Beta — previews the one-import load create (${readyCount} stops).`)
+              : live ? `Ready — this WILL create ${readyCount} order(s) in NuVizz${incompleteCount ? ` (${incompleteCount} incomplete row(s) skipped)` : ''}.` : `Beta — Create previews only (${readyCount} ready).`}
           </span>
-          <button onClick={createAll} disabled={!canCreate} className={`inline-flex items-center gap-1.5 px-4 py-2 rounded font-semibold text-white text-sm shrink-0 ${canCreate ? '' : 'opacity-40 cursor-not-allowed'}`} style={{ background: live ? '#dc2626' : BRAND }}>
-            <Plus size={16} /> {busy ? 'Creating…' : live ? `Create ${readyCount} order(s) (LIVE)` : `Preview ${readyCount} (Beta)`}
+          <button onClick={asLoad ? createAsLoad : createAll} disabled={!canCreate} className={`inline-flex items-center gap-1.5 px-4 py-2 rounded font-semibold text-white text-sm shrink-0 ${canCreate ? '' : 'opacity-40 cursor-not-allowed'}`} style={{ background: live ? '#dc2626' : BRAND }}>
+            <Plus size={16} /> {busy ? (asLoad ? 'Importing…' : 'Creating…')
+              : asLoad ? (live ? `Create load + ${readyCount} stop(s) (LIVE · 1 import)` : `Preview load (Beta)`)
+              : live ? `Create ${readyCount} order(s) (LIVE)` : `Preview ${readyCount} (Beta)`}
           </button>
         </div>
       </div>

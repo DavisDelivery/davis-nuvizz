@@ -20,7 +20,7 @@
 import { getCreds, basicAuthHeader } from './nuvizz-scan.mts';
 import {
   buildOpRequest, parseOpResponse, toEditHeader, normalizeLoad, planSequence, deliveryOrder,
-  importRefFromRaw, assembleImportHeader, sameOrder,
+  importEchoFromRaw, assembleImportHeader, sameOrder, buildStopPayload, normStopNbr,
   type SingleOp, type WriteOp, type WriteCreds,
 } from './nuvizz-write-ops.mts';
 import { isHashLikeId } from './nuvizz-list.mts';
@@ -595,8 +595,9 @@ const realSleep = (ms: number) => new Promise<void>((res) => setTimeout(res, ms)
 async function pollUntilConverged(
   requester: RequesterLike, loadNbr: string, want: string[], creds: WriteCreds,
   pollMs: number, polls: number, sleep: (ms: number) => Promise<void>,
-): Promise<{ converged: boolean; seen: string[] | null; loadId: any; reads: number; seenHistory: Array<string[] | null> }> {
+): Promise<{ converged: boolean; seen: string[] | null; loadId: any; reads: number; seenHistory: Array<string[] | null>; stopIds: Record<string, string> | null }> {
   let seen: string[] | null = null, loadId: any = null, reads = 0;
+  let stopIds: Record<string, string> | null = null;   // stopNbr → NuVizz stopId, harvested from the SAME read
   const seenHistory: Array<string[] | null> = [];   // EVERY poll's read-back, for the journal (directive #1)
   for (let i = 0; i < polls; i++) {
     await sleep(pollMs);
@@ -604,6 +605,12 @@ async function pollUntilConverged(
     reads++;
     if (f.load) {
       loadId = f.load.loadId ?? loadId;
+      // HARVEST stopIds off the convergence read (work item A): inline-created stops get their
+      // NuVizz internal id from the load/info we were reading anyway — zero extra calls. Keyed
+      // by the RAW stopNbr as NuVizz echoes it (callers normalize for comparison, not storage).
+      const ids: Record<string, string> = {};
+      for (const s of (f.load.stops || [])) if (s?.stopNbr != null && s?.stopId != null) ids[String(s.stopNbr)] = String(s.stopId);
+      if (Object.keys(ids).length) stopIds = ids;
       seen = deliveryOrder(f.load);
       seenHistory.push(seen);
       // STRICT: a mid-rebuild read can list all stops before the worker assigns their to.seq —
@@ -618,13 +625,13 @@ async function pollUntilConverged(
       // journal that today's mismatches were REAL order differences, not padding — but the
       // normalization guard costs nothing and closes that class for good.)
       if (seqsComplete && sameOrder(seen, want)) {
-        return { converged: true, seen, loadId, reads, seenHistory };
+        return { converged: true, seen, loadId, reads, seenHistory, stopIds };
       }
     } else {
       seenHistory.push(null);   // 404/no-load read (brand-new load not created yet)
     }
   }
-  return { converged: false, seen, loadId, reads, seenHistory };
+  return { converged: false, seen, loadId, reads, seenHistory, stopIds };
 }
 
 /**
@@ -658,6 +665,7 @@ export async function runImportLoad(requester: RequesterLike, payload: any, cred
 
   const steps: any[] = [];
   let loadId: any = null;
+  let stopIds: Record<string, string> | null = null;   // harvested from the convergence read (item A)
   const fire = async (stops: any[], label: string) => {
     const r = await fireSingle(requester, 'importLoad', { load: { loadHeader: load.loadHeader, stops } }, creds);
     // FORENSICS: keep exactly what was sent (header + stop order) and exactly what NuVizz said
@@ -676,6 +684,7 @@ export async function runImportLoad(requester: RequesterLike, payload: any, cred
     const c = await pollUntilConverged(requester, loadNbr, want, creds, pollMs, polls, sleep);
     steps.push({ op: 'converge', label, ok: c.converged, reads: c.reads, seen: c.seen, seenHistory: c.seenHistory });
     loadId = c.loadId ?? loadId;
+    stopIds = c.stopIds ?? stopIds;
     return c;
   };
   // Per-save call anatomy (directive #4): X load/update + Y load/info fired by THIS invocation.
@@ -686,6 +695,9 @@ export async function runImportLoad(requester: RequesterLike, payload: any, cred
   });
   const done = (converged: boolean, seen: string[] | null) => ({
     ok: converged, converged, loadNbr, loadId, requestedOrder: want, seenOrder: seen, steps, calls: anatomy(),
+    // stopIds (stopNbr → internal id) rides out ONLY from a converged read-back — the client
+    // enriches inline-created stops with their NuVizz ids at zero extra call cost (item A).
+    stopIds: converged ? stopIds : null,
     error: converged ? null : `importLoad: order did not converge after re-send + reverse-unstick — verify load ${loadNbr} in the portal before retrying`,
   });
 
@@ -761,23 +773,30 @@ export async function runCommitImport(requester: RequesterLike, payload: any, cr
 
 /**
  * runCommitBoardImport — the SAME board Save (identical payload + result shape as
- * runCommitBoard) executed through the LOAD-IMPORT engine. This is what makes the Routing
- * Compare panel's Beta/LIVE Save exercise the new path with ZERO client changes: runOp routes
- * commitBoard here whenever NUVIZZ_LOAD_IMPORT=on.
+ * runCommitBoard) executed through the TWO-LEVER import engine (rebuilt after the Jul 2
+ * incident — see the §I contract correction in nuvizz-write-ops.mts).
  *
- * Per order-changing load: resolve the load, read it once (load/info — the raw stops carry
- * each stop's "to" block), build the import stops[] in the DESIRED order by echoing NuVizz's
- * own records (on-load stops from the load read; an added/unplanned stop via its stop/info —
- * exactly the plan-unplanned-orders flow), then ONE import + the convergence recipe, then
- * assign/dispatch. The header origin/dates are echoed from the load, its stops, or the
- * client's saved ship-from (payload.origin).
+ * Per order-changing load:
+ *   LEVER 1 — MEMBERSHIP. Stops to ADD (unplanned orders / staged cross-load arrivals) are
+ *   planned with ONE bulk insertStops by stopId — the REAL records; an existing stop's number
+ *   NEVER rides the import (rule 3: the import would CLONE it). Unplans happen declaratively
+ *   by omission from lever 2 (the omitted on-load record survives, data intact). After an
+ *   insert the load is RE-READ so lever 2 echoes the arrivals' actual on-load records.
+ *   LEVER 2 — ORDER. One import whose stops[] are FULL ECHOES (importEchoFromRaw — freight +
+ *   references + from-block; rule 2: a matched stop is full-replaced, so a partial entry
+ *   blanks fields) in the exact desired order, then the convergence recipe, then
+ *   assign/dispatch. Brand-new orders (newStops rows) may ride the import as full payloads
+ *   ONLY after a per-number existence read proves the number absent (a collision would
+ *   clone). A STRUCTURAL GUARD refuses any entry whose number is not on the just-read load
+ *   (or proven-absent-new) — the clone case is unrepresentable, not just avoided.
  *
  * Loads the import path can't or shouldn't handle fall back to the UNCHANGED legacy engine
  * in the same Save: emptyLoad (cancel — NEVER an empty import), assign/dispatch-only, a
  * loadId-only add with no resolvable load number (#328), and any load whose number can't be
- * resolved. Cross-load moves run sources-before-destinations; a genuine cycle (a swap) is
- * refused — save it as two steps. The steal guard (stop still planned on a load outside this
- * Save) matches the legacy engine's.
+ * resolved. Cross-load moves run sources-before-destinations (the source's omission-unplan
+ * must CONVERGE before the destination inserts); a genuine cycle (a swap) is refused — save
+ * it as two steps. The steal guard (stop still planned on a load outside this Save) matches
+ * the legacy engine's.
  */
 export async function runCommitBoardImport(requester: RequesterLike, payload: any, creds: WriteCreds, pacing?: ImportPacing): Promise<any> {
   const loadsIn: any[] = Array.isArray(payload?.loads) ? payload.loads : [];
@@ -790,7 +809,14 @@ export async function runCommitBoardImport(requester: RequesterLike, payload: an
   // to seat an import, so a 3s poll never confirms and just spends a load/info. The client's
   // backoff ladder (6/10/15/25s) owns the wait; this single poll only catches the fast case.
   const boardPacing: ImportPacing = { pollMs: 6000, phaseWaitMs: 6000, quick: true, ...(pacing || {}), ...(payload?.convergence || {}) };
-  const clientOrigin = payload?.origin ?? null;
+  const clientOrigin = payload?.origin ?? payload?.settings?.origin ?? null;
+  // INLINE STOP CREATION (work item A): a Save may carry per-load `newStops` (StopRow-shaped
+  // rows for orders that do NOT exist in NuVizz yet). Those ride the import's stops[] as FULL
+  // payloads (buildStopPayload) — the §10.1 create-with-order contract makes ONE import create
+  // the load AND its stops. No per-stop stop/sync/update pre-creates, no stop/info echo reads.
+  // Building a full payload needs the batch's OriginSettings: payload.settings = { origin:
+  // {name,addr1,city,state,zip[,addr2]}, serviceDate:'YYYY-MM-DD'[, timeZone] }.
+  const stopSettings = (payload?.settings?.origin && payload?.settings?.serviceDate) ? payload.settings : null;
 
   const legacy: any[] = [];   // loads the legacy engine keeps handling (see doc above)
   const imp: any[] = [];      // { L, loadNbr, load(normalized), refs[], curNbrs:Set, result }
@@ -803,11 +829,23 @@ export async function runCommitBoardImport(requester: RequesterLike, payload: an
     if (L?.emptyLoad === true || !orderedNbrs || orderedNbrs.length === 0) { legacy.push(L); continue; }
     const result: any = { loadNbr: L?.loadNbr ?? null, ok: true, steps: [], error: null };
 
+    // Inline-new rows for THIS load, keyed by normalized stopNbr (item A). Each row is
+    // StopRow-shaped and MUST carry its stopNbr (the order number is the convergence key).
+    const newRows = new Map<string, any>();
+    for (const row of (Array.isArray(L?.newStops) ? L.newStops : [])) {
+      const n = row?.stopNbr != null && String(row.stopNbr).trim() !== '' ? normStopNbr(row.stopNbr) : '';
+      if (n) newRows.set(n, row);
+    }
+    if (newRows.size && !stopSettings) {
+      result.ok = false; result.error = 'commitBoard(import): newStops need payload.settings ({origin, serviceDate}) to build full stop payloads';
+      imp.push({ L, loadNbr: L?.loadNbr ?? null, arrivals: [], orderedNbrs: [], curNbrs: new Set(), result }); continue;
+    }
+
     // A card with NEITHER identifier could probe-resolve a cross-load arrival's SOURCE load and
     // then declaratively rebuild the WRONG load — refuse up front (same rule as the legacy engine).
     if (!L?.loadNbr && !L?.loadId) {
       result.ok = false; result.error = 'commitBoard(import): loadNbr or loadId required';
-      imp.push({ L, loadNbr: null, refs: [], curNbrs: new Set(), result }); continue;
+      imp.push({ L, loadNbr: null, arrivals: [], orderedNbrs: [], curNbrs: new Set(), result }); continue;
     }
 
     // Resolve the human load number (same ladder as the legacy engine).
@@ -827,62 +865,104 @@ export async function runCommitBoardImport(requester: RequesterLike, payload: an
         // this stop is now PLANNED on this load (re-Saving the SAME card self-heals).
         result.seededStopNbr = orderedNbrs[0]; result.seededLoadNbr = seed.loadNbr;
       }
-      else { result.ok = false; result.error = `commitBoard(import): ${seed.error || 'could not resolve the load number'}`; imp.push({ L, loadNbr: null, refs: [], curNbrs: new Set(), result }); continue; }
+      else { result.ok = false; result.error = `commitBoard(import): ${seed.error || 'could not resolve the load number'}`; imp.push({ L, loadNbr: null, arrivals: [], orderedNbrs: [], curNbrs: new Set(), result }); continue; }
     }
     if (!loadNbrX) { legacy.push(L); continue; }   // e.g. loadId-only pure add — the #328 legacy path still works
     result.loadNbr = loadNbrX;
 
     const f = await fetchLoad(requester, loadNbrX, creds);
-    if (!f.load) { result.ok = false; result.error = `commitBoard(import): load not found (${loadMissDiag(loadNbrX, f)})`; imp.push({ L, loadNbr: loadNbrX, refs: [], curNbrs: new Set(), result }); continue; }
-    const load = f.load;
+    const allInline = newRows.size > 0 && orderedNbrs.every((n) => newRows.has(normStopNbr(n)));
+    let load = f.load;
+    let createMode = false;
+    if (!load) {
+      // CREATE MODE (item A): a load number NuVizz doesn't know + EVERY ordered stop supplied
+      // inline = a brand-new load built by ONE import (§10.1 create-with-order: new loadNbr +
+      // full stop payloads creates the load AND its stops). Anything else unresolved is still
+      // an error — a rebuild needs the load's own record to echo from.
+      if (!allInline) {
+        result.ok = false; result.error = `commitBoard(import): load not found (${loadMissDiag(loadNbrX, f)})`;
+        imp.push({ L, loadNbr: loadNbrX, arrivals: [], orderedNbrs: [], curNbrs: new Set(), result }); continue;
+      }
+      createMode = true;
+    }
+    // A CREATE aimed at a load that already EXISTS with deliveries would declaratively REBUILD it
+    // (the import would replace its whole stop set) — refuse; that edit belongs on the board.
+    if (load && L?.createNew === true) {
+      const existing = (load.stops || []).filter((s: any) => s?.stopNbr != null && String(s?.stopType ?? 'DO').toUpperCase() !== 'PU');
+      if (existing.length) {
+        result.ok = false; result.error = `commitBoard(import): load ${loadNbrX} already carries ${existing.length} stop(s) — a new-load create would rebuild it; open it from the board to edit it instead`;
+        imp.push({ L, loadNbr: loadNbrX, arrivals: [], orderedNbrs: [], curNbrs: new Set(), result }); continue;
+      }
+    }
     // Same wrong-instance guard as the legacy engine: a recurring NAME resolving to a different
-    // day's load must never be rebuilt.
-    if (L?.loadId && load.loadId && String(load.loadId) !== String(L.loadId)) {
+    // day's load must never be rebuilt. (Create mode resolved nothing, so there is nothing to check.)
+    if (load && L?.loadId && load.loadId && String(load.loadId) !== String(L.loadId)) {
       result.ok = false; result.error = `commitBoard(import): load identity mismatch (name resolved ${load.loadId}, expected ${L.loadId})`;
-      imp.push({ L, loadNbr: loadNbrX, refs: [], curNbrs: new Set(), result }); continue;
+      imp.push({ L, loadNbr: loadNbrX, arrivals: [], orderedNbrs: [], curNbrs: new Set(), result }); continue;
     }
     // Only an IDENTITY-VERIFIED number may vouch for the steal guard — adding it before the check
     // above could let a mis-resolved number bless pulls off a load that isn't really in this Save.
     batchNbrs.add(loadNbrX);
 
     const rawByNbr = new Map<string, any>();
-    for (const rs of (load.rawStops || [])) { const st = rs?.stop || rs || {}; if (st.stopNbr != null) rawByNbr.set(String(st.stopNbr), rs); }
-    // ADDs (stops not on this load — planning unplanned orders / cross-load arrivals) are read
-    // via stop/info IN PARALLEL: 6 sequential reads was most of what blew the first live Save's
-    // function budget. The stub-testability is unaffected (responses are consumed in start order).
-    const missing = orderedNbrs.filter((n) => !rawByNbr.has(n));
-    const fetched = new Map<string, any>(await Promise.all(missing.map(async (n): Promise<[string, any]> => {
+    for (const rs of (load?.rawStops || [])) { const st = rs?.stop || rs || {}; if (st.stopNbr != null) rawByNbr.set(String(st.stopNbr), rs); }
+
+    // ── TWO-LEVER CLASSIFICATION (Jul 2 correction) ──
+    // Every ordered stop is exactly one of:
+    //   ON-LOAD  → an import entry, built later as a FULL ECHO of the (fresh) load read;
+    //   ARRIVAL  → an EXISTING stop not on this load. NEVER an import entry (rule 3: the
+    //              import would CLONE it) — it is planned with insertStops by stopId (the
+    //              REAL record) in the fire phase, then echoed off the post-insert re-read;
+    //   INLINE   → a brand-new order (newStops row) whose number is PROVEN ABSENT by a
+    //              per-number existence read — the import creates it (full payload).
+    // ARRIVAL reads run IN PARALLEL (getStop resolves stopId + the steal guard); INLINE
+    // existence gates run in the same sweep. Any other number refuses the load.
+    const inlineNbrs = orderedNbrs.filter((n) => !rawByNbr.has(n) && newRows.has(normStopNbr(n)));
+    const missing = orderedNbrs.filter((n) => !rawByNbr.has(n) && !newRows.has(normStopNbr(n)));
+    const fetched = new Map<string, any>(await Promise.all([...missing, ...inlineNbrs].map(async (n): Promise<[string, any]> => {
       try { return [n, await fireSingle(requester, 'getStop', { stopNbr: n }, creds)]; }
       catch (e: any) { return [n, { ok: false, error: e?.message || 'getStop failed' }]; }
     })));
-    const refs: any[] = [];
+    const arrivals: Array<{ nbr: string; stopId: string; srcLoadNbr?: string }> = [];
+    const newAbsent = new Set<string>();   // normalized inline numbers PROVEN absent (safe to create)
     const originDonors: any[] = [];   // "from" addresses off the added stops — origin for an EMPTY load
-    // Service date for synthesized reference windows (the contract's reference = address + schedule).
-    const svcDate = (String(load.loadHeader?.earliestStartDttm || '').match(/^\d{4}-\d{2}-\d{2}/) || [null])[0];
+    // Service date for synthesized echo windows (an echo entry is address + schedule at minimum).
+    const svcDate = (String(load?.loadHeader?.earliestStartDttm || '').match(/^\d{4}-\d{2}-\d{2}/) || [null])[0]
+      || (stopSettings ? String(stopSettings.serviceDate) : null);
     let err: string | null = null;
     for (const nbr of orderedNbrs) {
-      const raw = rawByNbr.get(nbr);
-      if (raw) {
-        const ref = importRefFromRaw(raw, svcDate);
-        if (!ref) { err = `commitBoard(import): stop ${nbr} on load ${loadNbrX} has no usable delivery address to reference — refresh and retry`; break; }
-        refs.push(ref);
+      if (rawByNbr.has(nbr)) continue;   // ON-LOAD — echoed in the fire phase
+      const rowNew = newRows.get(normStopNbr(nbr));
+      if (rowNew) {
+        // INLINE CREATION — allowed ONLY when the number exists nowhere. A colliding number
+        // would make the import CLONE the existing record (rule 3), so a found stop refuses
+        // the load; only an explicit 404 proves absence (a transient read failure must never
+        // be read as "absent" — that is exactly the clone hole).
+        const gs = fetched.get(nbr);
+        if (gs?.ok && gs.stop?.stopId) {
+          err = `commitBoard(import): order # ${nbr} already exists in NuVizz (stop id ${gs.stop.stopId}) — creating it inline would CLONE it; plan the existing order from the board instead`; break;
+        }
+        if (!(gs?.httpStatus === 404)) {
+          err = `commitBoard(import): could not verify order # ${nbr} is new (stop read ${gs?.httpStatus ?? 'failed'}) — refusing to create it (a collision would clone)`; break;
+        }
+        newAbsent.add(normStopNbr(nbr));
+        const full = buildStopPayload({ ...rowNew, stopNbr: String(rowNew.stopNbr) }, stopSettings);
+        if (full?.from?.address) originDonors.push({ stop: { from: { address: full.from.address } } });
         continue;
       }
+      // ARRIVAL — an existing stop to PLAN here (insertStops, the real record). Steal guard
+      // unchanged: its source must be this load or a load in this Save.
       const gs = fetched.get(nbr);
       const srcNbr = gs?.ok ? String(gs.stop?.assignedLoadNbr ?? '').trim() : '';
-      if (!gs?.ok || !gs.stop?.importRef) { err = `commitBoard(import): stop ${nbr} could not be read for planning (stale board — refresh and retry)`; break; }
+      if (!gs?.ok || !gs.stop?.stopId) { err = `commitBoard(import): stop ${nbr} could not be read for planning (stale board — refresh and retry)`; break; }
       if (srcNbr && srcNbr !== loadNbrX && !batchNbrs.has(srcNbr)) {
         err = `commitBoard(import): stop ${nbr} is still planned on load ${srcNbr}, which is not part of this Save — open that load in Compare so the move is staged`; break;
       }
       if (gs.stop.fromAddress) originDonors.push({ stop: { from: { address: gs.stop.fromAddress } } });
-      const ref = { ...gs.stop.importRef, __srcLoadNbr: srcNbr && srcNbr !== loadNbrX ? srcNbr : undefined };
-      // getStop-built refs had no service-date context — give a schedule-less ref the same
-      // synthesized window an on-load ref would get.
-      if (!ref.to?.schedule && svcDate) ref.to = { ...ref.to, schedule: { timeFrom: `${svcDate}T12:00:00`, timeTo: `${svcDate}T17:00:00`, timeZone: 'America/New_York', timeConstraint: 'PREFERRED' } };
-      refs.push(ref);
+      arrivals.push({ nbr, stopId: String(gs.stop.stopId), srcLoadNbr: srcNbr && srcNbr !== loadNbrX ? srcNbr : undefined });
     }
-    if (err) { result.ok = false; result.error = err; imp.push({ L, loadNbr: loadNbrX, refs: [], curNbrs: new Set(), result }); continue; }
-    imp.push({ L, loadNbr: loadNbrX, load, refs, originDonors, curNbrs: new Set(rawByNbr.keys()), result, addReads: missing.length });
+    if (err) { result.ok = false; result.error = err; imp.push({ L, loadNbr: loadNbrX, arrivals: [], orderedNbrs, curNbrs: new Set(), result }); continue; }
+    imp.push({ L, loadNbr: loadNbrX, load, createMode, orderedNbrs, arrivals, newAbsent, svcDate, originDonors, curNbrs: new Set(rawByNbr.keys()), result, addReads: missing.length + inlineNbrs.length });
   }
 
   // ── legacy subset (unchanged engine) ──
@@ -895,12 +975,15 @@ export async function runCommitBoardImport(requester: RequesterLike, payload: an
   const live = imp.filter((p) => p.result.ok);
   const ordered: any[] = [];
   const pending = new Set(live);
+  // A load p WAITS ON load q when one of p's ARRIVALS is coming off q (q must unplan it —
+  // via its own import's omission — before p may insertStops it; the real record can only
+  // be on one load).
+  const waitsOnQ = (p: any, q: any) => q !== p && p.arrivals.some((a: any) =>
+    (a.srcLoadNbr && String(q.loadNbr) === String(a.srcLoadNbr)) || q.curNbrs.has(a.nbr));
   while (pending.size) {
     let emitted = false;
     for (const p of [...pending]) {
-      const waitsOn = [...pending].some((q) => q !== p && p.refs.some((r: any) => r.__srcLoadNbr && String(q.loadNbr) === String(r.__srcLoadNbr))
-        // also: q currently HOLDS one of p's stops and q's own import runs in this batch
-        || (q !== p && p.refs.some((r: any) => !p.curNbrs.has(r.stopNbr) && q.curNbrs.has(r.stopNbr))));
+      const waitsOn = [...pending].some((q) => waitsOnQ(p, q));
       if (!waitsOn) { ordered.push(p); pending.delete(p); emitted = true; }
     }
     if (!emitted) {   // a cycle (e.g. two loads swapping stops) — refuse those loads, keep the rest honest
@@ -920,8 +1003,7 @@ export async function runCommitBoardImport(requester: RequesterLike, payload: an
   const outcome = new Map<string, string>();   // loadNbr → 'converged' | 'pending' | 'failed'
   for (const p of imp) if (!p.result.ok && p.loadNbr) outcome.set(String(p.loadNbr), 'failed');
   const dependsOnUnconfirmed = (p: any) => imp.some((q) => q !== p && q.loadNbr
-    && (p.refs.some((r: any) => r.__srcLoadNbr && String(q.loadNbr) === String(r.__srcLoadNbr))
-      || p.refs.some((r: any) => !p.curNbrs.has(r.stopNbr) && q.curNbrs?.has?.(r.stopNbr)))
+    && waitsOnQ(p, q)
     && outcome.get(String(q.loadNbr)) !== 'converged');
   for (const p of ordered) {
     if (dependsOnUnconfirmed(p)) {
@@ -931,19 +1013,64 @@ export async function runCommitBoardImport(requester: RequesterLike, payload: an
       continue;
     }
     let loadId: any = trustableLoadId(p.L?.loadId) ? p.L.loadId : (p.load?.loadId ?? null);
+    let inserts = 0, extraInfos = 0;
     try {
-      // Origin trust order: the load's own header/stops, then the added stops' "from" addresses
-      // (an EMPTY Draft load has no stops of its own), then the client's saved ship-from.
-      const header = assembleImportHeader(p.load?.loadHeader, [...(p.load?.rawStops || []), ...(p.originDonors || [])], clientOrigin,
-        // Service-date fallback: the first ref's delivery window date (echoed from NuVizz).
-        String(p.refs[0]?.to?.schedule?.timeFrom || '').slice(0, 10) || null);
-      const stops = p.refs.map(({ __srcLoadNbr, ...ref }: any) => ref);
+      // ── LEVER 1: MEMBERSHIP — plan the arrivals with ONE bulk insertStops (the REAL records,
+      // by stopId; bulk geo-scrambles the order but lever 2 owns ordering). Then RE-READ the
+      // load so the ordering entries echo the arrivals' actual on-load records. An arrival is
+      // NEVER an import entry (Jul 2 rule 3: the import would clone it).
+      let loadX = p.load;   // normalized load whose rawStops feed the echoes (null in create mode)
+      if (p.arrivals.length) {
+        if (!loadId) { p.result.ok = false; p.result.error = 'commitBoard(import): loadId unresolved for insertStops'; outcome.set(String(p.loadNbr), 'failed'); continue; }
+        const ins = await fireSingle(requester, 'insertStops', { insertStopIds: p.arrivals.map((a: any) => a.stopId), loadId }, creds);
+        inserts = 1;
+        p.result.steps.push({ op: 'insertStops', ok: !!ins.ok, stopIds: p.arrivals.map((a: any) => a.stopId), result: ins, error: ins.ok ? null : (ins.error || 'failed') });
+        if (!ins.ok) { p.result.ok = false; p.result.error = `commitBoard(import): planning ${p.arrivals.length} stop(s) failed: ${ins.error || 'insertStops failed'}`; outcome.set(String(p.loadNbr), 'failed'); continue; }
+        const f2 = await fetchLoad(requester, String(p.loadNbr), creds);
+        extraInfos = 1;
+        if (!f2.load) { p.result.ok = false; p.result.error = `commitBoard(import): load unreadable after planning (${loadMissDiag(p.loadNbr, f2)}) — the ${p.arrivals.length} stop(s) ARE planned; Save again to set the order`; outcome.set(String(p.loadNbr), 'failed'); continue; }
+        loadX = f2.load;
+      }
+
+      // ── LEVER 2: ORDER — one import whose entries are FULL ECHOES of the load's own records
+      // (freight + references included; a partial entry would blank fields on the matched stop),
+      // plus full payloads for the PROVEN-ABSENT inline creations. STRUCTURAL GUARD: any other
+      // number refuses the import — an off-load number in stops[] is exactly the clone bug.
+      const rawByNbr2 = new Map<string, any>();
+      for (const rs of (loadX?.rawStops || [])) { const st = rs?.stop || rs || {}; if (st.stopNbr != null) rawByNbr2.set(String(st.stopNbr), rs); }
+      const stops: any[] = [];
+      let entryErr: string | null = null;
+      for (const nbr of p.orderedNbrs) {
+        const raw = rawByNbr2.get(nbr);
+        if (raw) {
+          const echo = importEchoFromRaw(raw, p.svcDate);
+          if (!echo) { entryErr = `commitBoard(import): stop ${nbr} on load ${p.loadNbr} has no usable delivery address to echo — refresh and retry`; break; }
+          stops.push(echo);
+          continue;
+        }
+        const rowNew = p.newAbsent?.has(normStopNbr(nbr)) ? (Array.isArray(p.L?.newStops) ? p.L.newStops.find((r: any) => normStopNbr(r?.stopNbr) === normStopNbr(nbr)) : null) : null;
+        if (rowNew) { stops.push(buildStopPayload({ ...rowNew, stopNbr: String(rowNew.stopNbr) }, stopSettings)); continue; }
+        entryErr = `commitBoard(import): stop ${nbr} is not on load ${p.loadNbr} after planning — refusing to import it (an off-load number would be CLONED); Save again`;
+        break;
+      }
+      if (entryErr) { p.result.ok = false; p.result.error = entryErr; outcome.set(String(p.loadNbr), 'failed'); continue; }
+
+      // CREATE MODE: nothing to echo — synthesize the minimal raw header (loadNbr + routeName);
+      // dates derive from the service date, origin from the inline stops' "from" blocks (or the
+      // client ship-from) via assembleImportHeader's donor ladder.
+      const rawHeader = loadX?.loadHeader
+        ?? { loadNbr: p.loadNbr, routeName: p.L?.routeName != null && String(p.L.routeName).trim() !== '' ? String(p.L.routeName) : undefined };
+      const header = assembleImportHeader(rawHeader, [...(loadX?.rawStops || []), ...(p.originDonors || [])], clientOrigin,
+        // Service-date fallback: the first entry's delivery window date (echoed from NuVizz).
+        String(stops[0]?.to?.schedule?.timeFrom || '').slice(0, 10) || p.svcDate || null);
       const r = await runImportLoad(requester, { load: { loadHeader: header, stops }, convergence: perLoadPacing }, creds, perLoadPacing);
       p.result.steps.push(...(r.steps || []));
       p.result.requestedOrder = r.requestedOrder || null;
+      if (r.stopIds) p.result.stopIds = r.stopIds;   // stopNbr → internal id, harvested free (item A)
       // Per-save call anatomy (directive #4): imports/polls from the executor + this load's own
-      // pre-read (fetchLoad) and any per-add stop/info reads, so the journal shows the full cost.
-      p.result.calls = { updates: r.calls?.updates ?? 0, infos: (r.calls?.infos ?? 0) + 1, stopInfos: p.addReads || 0 };
+      // pre-read + the post-insert re-read + per-stop reads (arrival resolution / existence
+      // gates) + the membership insert, so the journal shows the full cost.
+      p.result.calls = { updates: r.calls?.updates ?? 0, infos: (r.calls?.infos ?? 0) + 1 + extraInfos, stopInfos: p.addReads || 0, inserts };
       outcome.set(String(p.loadNbr), r.pending ? 'pending' : (r.ok ? 'converged' : 'failed'));
       if (r.pending) {
         // Import fired + accepted, not yet CONFIRMED. The client verifies (getLoad polls +
@@ -979,6 +1106,10 @@ export async function runCommitBoardImport(requester: RequesterLike, payload: an
       ok: p.result.ok, error: p.result.error, steps: p.result.steps,
       // pending + requestedOrder drive the CLIENT's convergence verification (getLoad polls).
       pending: p.result.pending || undefined, requestedOrder: p.result.requestedOrder || undefined,
+      // stopNbr → NuVizz internal id, harvested from the converged read-back (item A).
+      stopIds: p.result.stopIds || undefined,
+      // Per-save anatomy (directive #4): updates/infos/stopInfos/inserts for THIS load.
+      calls: p.result.calls || undefined,
       // A seed physically planned this stop on this load — surfaced so a failed Save can never
       // read as "nothing happened" and the orders get re-staged elsewhere.
       seededStopNbr: p.result.seededStopNbr || undefined, seededLoadNbr: p.result.seededLoadNbr || undefined,
