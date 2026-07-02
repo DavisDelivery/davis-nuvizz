@@ -604,3 +604,71 @@ test('assembleImportHeader: a non-ISO (epoch) header date is never echoed — de
   assert.equal(out.earliestStartDttm, '2026-07-03T06:00:00');
   assert.equal(out.latestStartDttm, '2026-07-03T18:00:00');
 });
+
+// ── seeding: EMPTY Draft load known only by its internal loadId (the live-tenant
+//    state that refused every build-from-unplanned Save with "needs a load number") ──
+
+const NOT_FOUND_501 = { status: 501, json: {} };   // load/static/info on the live tenant
+
+test('board Save (import mode): loadId-only EMPTY load — seed via insertstops, learn the number, then import', async () => {
+  await withGate(async () => {
+    const { requester, calls } = stub([
+      stopDoc('X'),                            // resolveLoadNbrByStopNbr: X is unplanned
+      NOT_FOUND_501,                           // resolveLoadNbrById: static/info 501
+      stopDoc('X'),                            // seeding read: unplanned, has stopId
+      { json: { status: 'SUCCESS' } },         // SEED: insertstops(loadId, [id-X])
+      stopDoc('X', L1),                        // read-back: X now on DAVIS…201 → the number!
+      rawLoadDoc(L1, L1ID, ['X']),             // fetchLoad by the learned number (identity matches)
+      stopDoc('Y', null, true),                // ref for the second unplanned order
+      ACK,                                     // the ONE import (declarative — seats X and Y)
+      rawLoadDoc(L1, L1ID, ['X', 'Y']),        // converged
+    ]);
+    const r = await runCommitBoardImport(requester, { loads: [
+      { loadId: L1ID, routeName: 'SUW 5', orderedStopNbrs: ['X', 'Y'] },   // NO loadNbr — like the real card
+    ] }, CREDS, NOSLEEP);
+    assert.equal(r.ok, true);
+    assert.equal(r.loads[0].loadNbr, L1);
+    const seed = calls.find((c) => /insertstops/.test(c.url));
+    assert.deepEqual(seed.body.insertStopIds, ['id-X']);
+    assert.equal(seed.body.loadId, L1ID);
+    const imp = calls.find((c) => /load\/update\/default/.test(c.url));
+    assert.deepEqual(imp.body.loads[0].stops.map((s) => s.stopNbr), ['X', 'Y']);
+    assert.ok(r.loads[0].steps.some((s) => s.op === 'seedLoad' && s.ok && s.loadNbr === L1));
+  });
+});
+
+test('board Save (classic engine): loadId-only EMPTY load — seed resolves the number, anchor plan proceeds', async () => {
+  const prev = process.env.NUVIZZ_LOAD_IMPORT;
+  delete process.env.NUVIZZ_LOAD_IMPORT;
+  try {
+    const { requester, calls } = stub([
+      stopDoc('X'),                            // probe: X unplanned
+      NOT_FOUND_501,                           // static/info 501
+      stopDoc('X'),                            // seeding read
+      { json: { status: 'SUCCESS' } },         // SEED insert
+      stopDoc('X', L1),                        // read-back: the number
+      rawLoadDoc(L1, L1ID, ['X']),             // getLoad: X is on the load (the anchor)
+      stopDoc('Y'),                            // resolve Y's stopId (an add)
+      { json: { status: 'SUCCESS' } },         // Phase 2: insert Y
+    ]);
+    const r = await runOp(requester, 'commitBoard', { loads: [
+      { loadId: L1ID, routeName: 'SUW 5', orderedStopNbrs: ['X', 'Y'] },
+    ] }, CREDS);
+    assert.equal(r.ok, true);
+    // Two inserts total (the seed + Y), and never a load/edit — X anchors the load.
+    assert.equal(calls.filter((c) => /insertstops/.test(c.url)).length, 2);
+    assert.ok(!calls.some((c) => /load\/edit/.test(c.url)));
+  } finally { if (prev !== undefined) process.env.NUVIZZ_LOAD_IMPORT = prev; }
+});
+
+test('seeding never fires for a load with NO ordered stops (nothing to seed with)', async () => {
+  await withGate(async () => {
+    const { requester, calls } = stub([{ json: {} }]);
+    const r = await runCommitBoardImport(requester, { loads: [
+      { loadId: L1ID, routeName: 'SUW 5', emptyLoad: true, orderedStopNbrs: [] },   // cancel intent
+    ] }, CREDS, NOSLEEP);
+    // Goes to the legacy engine (which refuses an id-only cancel) — but never inserts anything.
+    assert.ok(!calls.some((c) => /insertstops/.test(c.url)));
+    assert.equal(r.ok, false);
+  });
+});

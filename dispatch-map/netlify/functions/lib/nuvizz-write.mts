@@ -101,6 +101,40 @@ export async function resolveLoadNbrByStopNbr(requester: RequesterLike, stopNbr:
   } catch { return null; }
 }
 
+/**
+ * resolveLoadNbrBySeeding — the LAST-RESORT loadNbr bridge for an EMPTY Draft load we only know
+ * by its internal loadId (the live tenant's loads roster has no load-number column, static/info
+ * is HTTP 501, and an empty load has no stops to read the number from — the exact state that
+ * refused every "build a load from unplanned orders" Save with "needs a load number").
+ *
+ * The trick: load/insertstops is keyed by the INTERNAL loadId (the proven add path), so SEED the
+ * load with the first desired stop (1 call), then read that stop back — Stop.load.loadNbr is the
+ * load's real human number (the verified live bridge). The seeded stop is part of the desired
+ * order anyway, so the follow-up (import rebuild or anchor plan) seats it — never an extra stop.
+ * Only ever seeds a stop that is genuinely UNPLANNED (a planned stop returns its current load's
+ * number directly, or is somebody else's — never stolen here).
+ */
+async function resolveLoadNbrBySeeding(
+  requester: RequesterLike, loadId: any, stopNbr: string, creds: WriteCreds, sleep: (ms: number) => Promise<void> = realSleep,
+): Promise<{ loadNbr: string | null; seeded: boolean; error?: string }> {
+  const g1 = await fireSingle(requester, 'getStop', { stopNbr }, creds);
+  if (!g1?.ok) return { loadNbr: null, seeded: false, error: `stop ${stopNbr} could not be read (stale board — refresh and retry)` };
+  const already = String(g1.stop?.assignedLoadNbr ?? '').trim();
+  if (already && !isHashLikeId(already)) return { loadNbr: already, seeded: false };
+  const stopId = g1.stop?.stopId ? String(g1.stop.stopId) : null;
+  if (!stopId) return { loadNbr: null, seeded: false, error: `stop ${stopNbr} has no internal id to seed the load with` };
+  const ins = await fireSingle(requester, 'insertStops', { insertStopIds: [stopId], loadId }, creds);
+  if (!ins?.ok) return { loadNbr: null, seeded: false, error: `seeding the load failed: ${ins?.error || 'insertStops failed'}` };
+  // Membership usually reflects immediately; retry briefly in case the read lags the insert.
+  for (let i = 0; i < 3; i++) {
+    if (i > 0) await sleep(1500);
+    const g2 = await fireSingle(requester, 'getStop', { stopNbr }, creds);
+    const nbr = g2?.ok ? String(g2.stop?.assignedLoadNbr ?? '').trim() : '';
+    if (nbr && !isHashLikeId(nbr)) return { loadNbr: nbr, seeded: true };
+  }
+  return { loadNbr: null, seeded: true, error: 'load seeded but its number is not visible yet — Save again in a moment (safe to repeat)' };
+}
+
 // Human "why didn't it resolve" suffix for a failed fetchLoad. Surfaces the exact load number we
 // queried and NuVizz's response so a wrong/blank load number (404) is distinguishable from a load
 // that resolved but parsed without an id (200/no loadId) — turns an opaque "load not found" into
@@ -270,8 +304,17 @@ export async function runCommitBoard(requester: RequesterLike, payload: any, cre
       planned.push({ L, loadId: L.loadId, hasLoad: true, plan: { ok: true, removeStopIds: [], insertOrdered: desired.map((x) => String(x)) }, curIds: [], want: desired.map((x) => String(x)), result });
       continue;
     }
+    // EMPTY Draft load known only by its internal id: SEED it with the first desired stop
+    // (loadId-keyed insertstops), then read that stop back for the real load number — the same
+    // bridge the import engine uses. Only for an order-building Save (never an empty/cancel).
+    if (!loadNbrX && !emptyLoad && trustableLoadId(L?.loadId) && orderedNbrs && orderedNbrs.length) {
+      const seed = await resolveLoadNbrBySeeding(requester, L.loadId, orderedNbrs[0], creds);
+      result.steps.push({ op: 'seedLoad', ok: !!seed.loadNbr, seeded: seed.seeded, loadNbr: seed.loadNbr, error: seed.error || null });
+      if (seed.loadNbr) { loadNbrX = seed.loadNbr; result.loadNbr = loadNbrX; batchNbrs.add(loadNbrX); }
+      else { result.ok = false; result.error = `commitBoard: ${seed.error || 'could not resolve the load number'}`; planned.push({ L, result }); continue; }
+    }
     // Reorder / unplan / empty needs the load's CURRENT stops (a getLoad), which needs a real loadNbr.
-    // If static/info also couldn't resolve one, guide the dispatcher to open it from the board.
+    // If seeding also couldn't resolve one, guide the dispatcher to open it from the board.
     if (!loadNbrX) {
       result.ok = false; result.error = 'commitBoard: reorder/unplan needs a load number — open the route from the board (not the Loads grid)'; planned.push({ L, result }); continue;
     }
@@ -692,6 +735,16 @@ export async function runCommitBoardImport(requester: RequesterLike, payload: an
     let loadNbrX = (L?.loadNbr != null && String(L.loadNbr).trim() !== '' && !isHashLikeId(String(L.loadNbr))) ? String(L.loadNbr) : null;
     if (!loadNbrX && orderedNbrs[0]) loadNbrX = await resolveLoadNbrByStopNbr(requester, orderedNbrs[0], creds);
     if (!loadNbrX && trustableLoadId(L?.loadId)) loadNbrX = await resolveLoadNbrById(requester, L.loadId, creds);
+    if (!loadNbrX && trustableLoadId(L?.loadId) && orderedNbrs[0]) {
+      // EMPTY Draft load known only by its internal id (the live-tenant state that refused every
+      // build-from-unplanned Save): SEED it with the first desired stop via loadId-keyed
+      // insertstops, then read the stop back for the load's real number. The import rebuild that
+      // follows seats the seeded stop in its proper slot.
+      const seed = await resolveLoadNbrBySeeding(requester, L.loadId, orderedNbrs[0], creds);
+      result.steps.push({ op: 'seedLoad', ok: !!seed.loadNbr, seeded: seed.seeded, loadNbr: seed.loadNbr, error: seed.error || null });
+      if (seed.loadNbr) loadNbrX = seed.loadNbr;
+      else { result.ok = false; result.error = `commitBoard(import): ${seed.error || 'could not resolve the load number'}`; imp.push({ L, loadNbr: null, refs: [], curNbrs: new Set(), result }); continue; }
+    }
     if (!loadNbrX) { legacy.push(L); continue; }   // e.g. loadId-only pure add — the #328 legacy path still works
     result.loadNbr = loadNbrX;
     batchNbrs.add(loadNbrX);
