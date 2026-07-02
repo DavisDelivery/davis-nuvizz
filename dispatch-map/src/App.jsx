@@ -51,7 +51,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.33.9';
+const APP_VERSION = '0.33.10';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -96,6 +96,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.33.10', 'Loads grid — new "Load ID" column, right after "% Done" (dispatch Map + Routing bottom panel, per debug report #352). Shows NuVizz\'s real load number (e.g. DAVIS000198197) — the "Load" column shows the friendly route name, which is all the stops feed carries; this reads the real id from the day\'s loads roster instead, matched by route name. Sortable; "—" when the roster hasn\'t resolved a number for that load yet.'],
   ['0.33.9', 'Tomorrow\'s roster: back to ONCE a day — but the capture only counts when the NUMBERS came through. Chad\'s correction to 0.33.8: tomorrow\'s load set is fixed once it exists, so there\'s nothing to re-pull every 15 minutes — the real Jul 1 failure was that the morning capture ran with the old parser (before the Load-Number column fix in 0.32.25 deployed), wrote every row with NO number, and the "non-empty → done" rule froze that number-less snapshot for the whole day. Now the scan re-tries each cycle ONLY until a roster with real DAVIS000… numbers lands, then stops for the day — steady state one cheap loads-list call per day, self-healing if a capture ever comes back number-less again (bad column/parser/NuVizz hiccup). Manual Refresh stays the on-demand override.'],
   ['0.33.8', 'Plan TOMORROW\'s loads TODAY — the scheduled scan now keeps tomorrow\'s loads roster fresh ALL DAY instead of freezing it at the first morning snapshot. Verified against the live scan (Jul 2): every one of tomorrow\'s loads already carries its real DAVIS000… Load Number the moment it exists — the app just wasn\'t pulling them in until the next morning, which is why loads created during the day reached the evening board number-less. Now a portal-created load (and its number — the key every Save wants) reaches the board within one scan interval (~15 min), so resequencing/unplanning resolves directly; the 0.33.5 seed-then-build remains the fallback for a card that still lacks its number. Cost: one cheap loads-list call per scan cycle — never the number-probe.'],
   ['0.33.7', 'Import engine HARDENING — every confirmed finding from a four-agent adversarial audit of the import path, applied before the next live test. The big ones: (1) the background order-verification\'s automatic re-send now sends ORDER ONLY — it can no longer invisibly assign/dispatch and then have the follow-up Save dispatch the driver a SECOND time; it also reuses the already-resolved load number instead of re-resolving (no chance of a stray re-seed). (2) In a multi-card Save, a load receiving a stop from another card now WAITS until that source card\'s rebuild is confirmed — the untested "steal" can never fire. (3) Assign/dispatch (and other one-shot writes) are never transport-retried, so a flaky network can\'t double-dispatch a driver. (4) Order verification is stricter — a load read back mid-rebuild before NuVizz assigns real stop sequence numbers can\'t be mistaken for "confirmed". (5) Stop references are normalized to the proven shape (GA/USA, clean windows, no unproven fields), the origin street line is cleaned of NuVizz\'s duplicated city/state/zip tail, and real error details are never buried behind a bare "Bad Request". Plus: a newer Save now supersedes an older card\'s background verification; failed Saves report when an order was physically seeded onto a load; and one guaranteed-dead lookup call per Save is skipped.'],
@@ -8196,6 +8197,14 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
   // aggregates driver, stop count, a per-status breakdown, and pallet/weight
   // totals. Click a row to open that load's route drawer + frame it on the map.
   // Empty loads (no orders assigned yet) are merged in from the roster below.
+  // Real NuVizz load NUMBER ("DAVIS000198197") by route name, from the day's roster — the
+  // per-stop `loadNbr` field is actually the route NAME (the stops feed has no number column;
+  // see nuvizz-write.mts), so this is the ONLY place the grid can source the real id from.
+  const rosterByName = useMemo(() => {
+    const m = new Map();
+    for (const r of roster) { const nm = String(r.name || '').trim().toLowerCase(); if (nm && !m.has(nm)) m.set(nm, r); }
+    return m;
+  }, [roster]);
   const loadRows = useMemo(() => {
     const m = new Map();
     for (const s of loadSrc) {
@@ -8216,7 +8225,9 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
         if (typeof s.volume === 'number') loose += s.volume;
         if (s.weight != null) weight += Number(s.weight) || 0;
       }
-      return { loadNbr: g.loadNbr, routeName: g.routeName, driverName: g.driverName, count: g.stops.length, buckets, pallets, loose, weight };
+      const rosterEntry = rosterByName.get(String(g.routeName || '').trim().toLowerCase());
+      const realId = rosterEntry?.loadNbr || rosterEntry?.loadId || null;
+      return { loadNbr: g.loadNbr, routeName: g.routeName, driverName: g.driverName, count: g.stops.length, buckets, pallets, loose, weight, realId };
     });
     // Merge in EMPTY loads from the day's roster — loads created but with no orders assigned
     // yet have no stops to group, so they never appear from stop-grouping. Match by route
@@ -8226,13 +8237,13 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
       for (const r of roster) {
         const nm = String(r.name || '').trim();
         if (!nm || haveNames.has(nm.toLowerCase())) continue;
-        arr.push({ loadNbr: r.loadNbr || r.loadId, routeName: nm, driverName: '', count: r.trips || 0, buckets: {}, pallets: 0, loose: 0, weight: 0, empty: true, rosterStatus: r.status });
+        arr.push({ loadNbr: r.loadNbr || r.loadId, routeName: nm, driverName: '', count: r.trips || 0, buckets: {}, pallets: 0, loose: 0, weight: 0, empty: true, rosterStatus: r.status, realId: r.loadNbr || r.loadId || null });
       }
     }
     if (needle) arr = arr.filter((g) => [g.loadNbr, g.routeName, g.driverName].filter(Boolean).join(' ').toLowerCase().includes(needle));
     arr.sort((a, b) => String(a.driverName || '~').localeCompare(String(b.driverName || '~')) || String(a.routeName || a.loadNbr).localeCompare(String(b.routeName || b.loadNbr)));
     return arr;
-  }, [loadSrc, q, roster, nvWindow]);
+  }, [loadSrc, q, roster, nvWindow, rosterByName]);
   const loadCols = [
     { k: 'load', label: 'Load', w: 150, get: (g) => <span className="font-mono text-blue-700">{loadDisplayName(g.routeName, g.loadNbr) || 'Unnamed load'}</span>, sortVal: (g) => g.routeName || g.loadNbr },
     { k: 'driver', label: 'Driver', w: 180, get: (g) => g.driverName || '—', sortVal: (g) => g.driverName },
@@ -8240,6 +8251,9 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
     { k: 'pct', label: '% Done', w: 70, align: 'right',
       get: (g) => g.empty ? '—' : (() => { const p = g.count ? Math.round(100 * (g.buckets.completed || 0) / g.count) : 0; return <span className="font-semibold tabular-nums" style={{ color: p === 100 ? '#16a34a' : BRAND }}>{p}%</span>; })(),
       sortVal: (g) => (g.empty ? -1 : (g.count ? (g.buckets.completed || 0) / g.count : 0)) },
+    { k: 'loadId', label: 'Load ID', w: 130,
+      get: (g) => g.realId ? <span className="font-mono text-[11px] text-slate-500" title={g.realId}>{g.realId}</span> : '—',
+      sortVal: (g) => g.realId || '' },
     { k: 'status', label: 'Status', w: 240, get: (g) => (g.empty
         ? <span className="inline-flex items-center gap-1 px-1.5 rounded text-[10px] font-medium bg-amber-50 text-amber-700 border border-amber-200" title={g.rosterStatus ? ('Load status: ' + g.rosterStatus) : 'No orders assigned yet'}>No orders yet{g.rosterStatus ? ' · ' + g.rosterStatus : ''}</span>
         : (
