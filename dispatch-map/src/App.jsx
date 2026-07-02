@@ -10,6 +10,7 @@
 //   M5: route polylines — not implemented this session, see HANDOFF.md
 
 import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import { Loader as GoogleMapsLoader } from '@googlemaps/js-api-loader';
 import { MarkerClusterer } from '@googlemaps/markerclusterer';
 import {
@@ -52,7 +53,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.36.0';
+const APP_VERSION = '0.36.1';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -97,6 +98,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.36.1', 'Print Manifest pagination FIXED for real — no more one mashed page. The Print button used to open a popup window to print from; when the browser silently blocked that popup, it fell back to printing the on-screen (scaled) preview, which collapses the whole manifest onto a single page — the "everything mashed together, only one page came out" report. Printing now uses a hidden print-only copy of the document rendered straight into the page: nothing to block, no popup, and the per-ticket page breaks paginate natively — page 1 is the route summary + delivery ticket 1, then exactly one ticket per page (verified in a real Chrome print render: 4 tickets → 4 pages). Bonus: pressing Cmd/Ctrl+P with the manifest viewer open now ALSO prints the paginated manifest instead of a screenshot of the app. Applies to the Delivery Ticket and Bill of Lading viewers too (same viewer).'],
   ['0.36.0', 'Save-cost overhaul for the ⚡ Import engine — a reorder Save was burning ~27 NuVizz calls chasing the async worker (measured live: 3 SUW reorganizations = 80 calls, 9 imports + ~64 read-backs) and STILL reporting failure for orders that landed. Three changes from the investigation: (1) VERDICT on the comparator — it was NOT broken (the journal proved the mismatches were real), but it\'s now normalized anyway (zero-padding/case/typing can never read as "not converged") and every poll\'s read-back is journaled. (2) The wait now matches the worker: prod takes ~30-90s to seat an import, so the client polls on a BACKOFF (6/10/15/25/25s — ~5 polls, NO writes) instead of re-Saving every 18/45s; then at most ONE same-order re-send; then at most ONE reverse+forward UNSTICK — the §10.1 cure for the stuck-append state we hit (two moved stops kept landing at the tail across nine same-direction re-sends; same-direction NEVER clears it). (3) Every Save now self-reports its call anatomy (X imports + Y read-backs) in the result, console, and write journal. Typical converging Save: 1 import + 2-4 reads. Worst case (full ladder): ~4 imports + ~12 reads over ~4 minutes — and it says so honestly.'],
   ['0.35.3', 'Bulk Add moved UNDER New Order — it\'s no longer its own top-level tab. Open "New Order" and you\'ll see a "Single order / Bulk add" toggle right at the top; Bulk add is the exact same grid + spreadsheet-import screen as before, just reached from inside New Order instead of a separate tab. The choice is remembered on your device. Nothing about either form changed — same pickup locations, same Beta/Live gating, same per-row Create behavior.'],
   ['0.35.2', 'FIX — the re-sequence dropdown could get STUCK on a strategy you\'d already used. Repro (reported live): apply "Farthest first", then hand-move an order to the middle — some edit paths (moving a stop off a card, ninja-add, "send selection", undo-remove) left the dropdown still claiming "Farthest first", and picking Farthest again did NOTHING (a dropdown fires no event when you pick the value it\'s already showing), so the route couldn\'t be re-optimized or saved. Now EVERY hand-edit flips the card to "Manual order (edited)", which keeps every strategy re-applicable — optimize, tweak by hand, re-optimize, as many times as you like. Bonus fix: re-sequencing a route whose stops haven\'t geocoded yet used to announce "Re-sequenced" while silently doing nothing — it now tells you plainly why it can\'t and to retry in a moment.'],
@@ -3623,27 +3625,27 @@ function PrintDocModal({ title, html, pageW = 816, onClose }) {
   const onLoad = () => {
     try { const h = iframeRef.current?.contentWindow?.document?.body?.scrollHeight; if (h && h > 120) setPageH(h + 8); } catch { /* same-origin srcdoc — safe */ }
   };
-  // Print from a NEW WINDOW, not the iframe. Printing an iframe via
-  // contentWindow.print() collapses a multi-page doc (the manifest) onto a
-  // single page on iOS Safari — it prints the iframe's on-screen view and
-  // ignores the per-ticket page breaks (that's the "one page, orders not on
-  // separate pages" bug). A full document in its own window paginates reliably
-  // on iOS + desktop. Falls back to the iframe only if the window is blocked.
-  const doPrint = () => {
-    let w = null;
-    try { w = window.open('', '_blank'); } catch { w = null; }
-    if (!w) {
-      try { iframeRef.current?.contentWindow?.focus(); iframeRef.current?.contentWindow?.print(); } catch { /* popup/print blocked */ }
-      return;
-    }
-    w.document.open();
-    w.document.write(html);
-    w.document.close();
-    let fired = false;
-    const fire = () => { if (fired) return; fired = true; try { w.focus(); w.print(); } catch { /* print blocked */ } };
-    w.addEventListener('load', () => setTimeout(fire, 250)); // let the logo image paint first
-    setTimeout(fire, 1500); // fallback if 'load' already fired or stalls
-  };
+  // Print via a PARENT-PAGE PRINT BRIDGE — no popup, no iframe print. History: printing
+  // the on-screen iframe collapsed the multi-page manifest to ONE page (iOS #272), so a
+  // window.open + document.write path replaced it — but that popup gets silently blocked
+  // (extensions / browser settings), which fell BACK to the collapsed iframe print: the
+  // "everything mashed together, only one page printed" report. So: the document's body
+  // + styles are also rendered into a hidden, print-only layer PORTALED to document.body
+  // (normal block flow → the per-ticket page breaks paginate natively). @media print
+  // hides every other body child and shows the bridge; window.print() — and even a plain
+  // Cmd+P with the viewer open — prints the paginated document. Nothing to block.
+  const printDoc = useMemo(() => {
+    const style = (html.match(/<style>([\s\S]*?)<\/style>/i) || [])[1] || '';
+    const body = (html.match(/<body[^>]*>([\s\S]*?)<\/body>/i) || [])[1] || html;
+    // The document styles target html/body (font, margins); the bridge is a DIV in the
+    // parent page, so re-scope those selectors onto it. Class rules pass through as-is —
+    // during print everything else is display:none, so they can't restyle the app.
+    const scoped = style
+      .replace(/html\s*,\s*body\s*\{/g, '.printdoc-bridge {')
+      .replace(/(^|\})(\s*)body\s*\{/g, '$1$2.printdoc-bridge {');
+    return { scoped, body };
+  }, [html]);
+  const doPrint = () => { try { window.print(); } catch { /* print blocked */ } };
   return (
     <div className="fixed inset-0 z-[1400] bg-slate-900/80" role="dialog" aria-modal="true" aria-label={title || 'Document'}
       style={{ paddingTop: 'env(safe-area-inset-top)', paddingBottom: 'env(safe-area-inset-bottom)' }}>
@@ -3660,6 +3662,24 @@ function PrintDocModal({ title, html, pageW = 816, onClose }) {
         <button onClick={doPrint} className="px-3 py-2 rounded-lg bg-white text-slate-900 text-sm font-semibold inline-flex items-center gap-1.5 shadow-lg border border-slate-200 hover:bg-slate-50"><Printer size={16} /> Print</button>
         <button onClick={onClose} aria-label="Close" className="rounded-full bg-white text-slate-700 hover:bg-slate-100 shadow-lg border border-slate-200 inline-flex items-center justify-center" style={{ minWidth: 44, minHeight: 44 }}><X size={22} /></button>
       </div>
+      {/* The print bridge: invisible on screen; on print it is the ONLY thing on the page.
+          A direct child of <body> (portal) so `body > *:not(.printdoc-bridge)` can hide the
+          whole app — including this modal's fixed overlay — without touching its layout. */}
+      {createPortal(
+        <div className="printdoc-bridge">
+          <style>{`
+            @media screen { .printdoc-bridge { display: none !important; } }
+            @media print {
+              body > *:not(.printdoc-bridge) { display: none !important; }
+              .printdoc-bridge { display: block !important; }
+            }
+            ${printDoc.scoped}
+          `}</style>
+          {/* eslint-disable-next-line react/no-danger */}
+          <div dangerouslySetInnerHTML={{ __html: printDoc.body }} />
+        </div>,
+        document.body,
+      )}
     </div>
   );
 }
