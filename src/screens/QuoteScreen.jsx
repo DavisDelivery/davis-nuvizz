@@ -3,7 +3,7 @@
 // package); this app renders it and optionally seeds it from a selected stop.
 
 import React from 'react';
-import { UlineQuoteConsole } from '../lib/quote-generator.js';
+import { UlineQuoteConsole } from '@davisdelivery/quote-generator';
 
 // Point at a live model JSON to get zero-redeploy fuel/zone/rate updates.
 // Leave undefined to use the model bundled in the package.
