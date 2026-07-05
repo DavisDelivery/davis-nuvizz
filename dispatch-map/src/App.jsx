@@ -19,8 +19,9 @@ import {
   Search, Tag, Tags, ArrowLeft, ArrowRight, Gauge, Clock, MapPinned,
   Info, Settings, LayoutList, Sparkles, MessageSquare, Square, Lasso, AlertTriangle, Ban, Send, Package,
   FileCheck, ExternalLink, Image as ImageIcon, Printer, FileText, Bug,
-  ChevronRight, GripVertical,
+  ChevronRight, GripVertical, Calculator,
 } from 'lucide-react';
+import { UlineQuoteConsole } from '@davisdelivery/quote-generator';
 import {
   collection, doc, getDoc, onSnapshot, setDoc, serverTimestamp,
   query, orderBy, limit, updateDoc, deleteDoc,
@@ -53,7 +54,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.38.1';
+const APP_VERSION = '0.38.2';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -98,6 +99,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.38.2', 'New "Quote" tab in the top bar (next to New Order) — the shared Uline rate console, the same pricing tool that lives in the quoting app, now embedded right here so you can price a shipment without leaving Dispatch. It reads live from the shared quote source (DavisDelivery/Quotes) at build time, so rate/fuel/zone changes there show up here on the next deploy — no re-copying. Enter a destination ZIP + weight (+ skids/loose) and it prices instantly; nothing here touches NuVizz.'],
   ['0.38.1', 'UAT PROD-MIRROR support: the Firestore DATABASE is now env-selectable (FIRESTORE_DATABASE server-side, VITE_FIRESTORE_DATABASE client-side; unset = the production default, unchanged). Lets the 1:1 UAT mirror of this app (deployed from dispatch-beta2/prod-mirror against uat.nuvizz.com DAVISV5) keep its scans/journals/counters/notes in a fully separate named database in the same Firebase project. SAFETY INVARIANT: a deploy pointed at UAT NuVizz with no named database REFUSES Firestore entirely (loud log) rather than ever mixing UAT rows into the production board data.'],
   ['0.38.0', 'The ⚡ Import engine is REBUILT on the two-lever design and Bulk Add gains "Create as → ⚡ A NEW load". After the Jul 2 incident (import "references" CLONED off-load orders and FULL-REPLACED matched ones — freight wiped), the real NuVizz semantics were pinned on UAT and the engine now makes both failure modes structurally impossible: MEMBERSHIP only ever moves your real orders (insertStops/removeStops by internal id — an off-load order number can never appear in an import), ORDER is one import whose entries are FULL ECHOES of the load\'s own records (freight + references included, so nothing can be blanked), and CREATE (the Bulk Add new-load mode) sends full payloads only after per-number existence checks (a colliding order number is refused, never cloned). Anatomy: plan-10-unplanned ~4-5 calls, inject-middle ~4-5, reorder ~3-4, full re-optimize ~3-4 — every save confirmed by read-back. STILL DARK: the server gate from v0.36.3 stays default-OFF; enabling on prod is an explicit env flip after a prod validation.'],
   ['0.36.3', '⚡ IMPORT ENGINE DISABLED server-side (Jul 2 incident). Production NuVizz treats import "reference" stops as full replaces — a Save through the import engine wiped the freight (skids/loose/weight) off 10 orders and created 10 empty unplanned copies, violating the UAT-verified contract that referenced stops keep their other fields. Until that\'s understood and re-verified, the server refuses ALL import saves regardless of the in-app toggle (Saves with ⚡ selected automatically fall back to the classic engine — nothing dead-ends) and it stays off unless explicitly re-enabled on the server. Also: stop reads now surface freight (skids/loose/weight/pieces) and audit (created-by/when) fields, so originals can be told apart from import-created copies during the repair.'],
@@ -5108,6 +5110,13 @@ function MobileAppBar({ version, onChipMenu, chipMenuOpen, onSelectMenu, smsUnre
               role="menuitem"
             >
               <Package size={12} /> New Order
+            </button>
+            <button
+              className="w-full text-left px-3 py-2 hover:bg-slate-50 inline-flex items-center gap-2 border-t border-slate-100"
+              onClick={() => onSelectMenu('quote')}
+              role="menuitem"
+            >
+              <Calculator size={12} /> Quote
             </button>
             <button
               className="w-full text-left px-3 py-2 hover:bg-slate-50 inline-flex items-center gap-2 border-t border-slate-100"
@@ -13105,6 +13114,18 @@ function RoutingRouteCard({ rv, stopById, usedGoogle, readOnly, onReorder, onMov
   );
 }
 
+// ── Quote — embeds the shared Uline rate console as a tab. The console is the single
+// source of truth (the @davisdelivery/quote-generator package, cloned from
+// DavisDelivery/Quotes at build time); this app just renders it. Its own model/fuel/zone
+// data ships inside the package, so no NuVizz calls and no props are required.
+function QuoteScreen() {
+  return (
+    <div className="flex-1 min-h-0 overflow-auto bg-slate-50">
+      <UlineQuoteConsole embedded />
+    </div>
+  );
+}
+
 // ---------- shell ----------
 
 function Shell() {
@@ -13147,7 +13168,7 @@ function Shell() {
     setChipMenuOpen(false);
     if (next === 'debug') { setDebugOpen(true); return; }
     if (next === 'messages') { openMessages(); return; }
-    setTab(next === 'diagnostics' ? 'diag' : next === 'routing' ? 'routing' : next === 'neworder' ? 'neworder' : 'map');
+    setTab(next === 'diagnostics' ? 'diag' : next === 'routing' ? 'routing' : next === 'neworder' ? 'neworder' : next === 'quote' ? 'quote' : 'map');
   };
 
   return (
@@ -13189,6 +13210,7 @@ function Shell() {
             <TabBtn label="Map" icon={<MapPin size={14} />} active={tab === 'map'} onClick={() => setTab('map')} />
             {ROUTING_FLAG && <TabBtn label="Routing (beta)" icon={<MapPinned size={14} />} active={tab === 'routing'} onClick={() => setTab('routing')} />}
             <TabBtn label="New Order" icon={<Package size={14} />} active={tab === 'neworder'} onClick={() => setTab('neworder')} />
+            <TabBtn label="Quote" icon={<Calculator size={14} />} active={tab === 'quote'} onClick={() => setTab('quote')} />
             <TabBtn label="Messages" icon={<MessageSquare size={14} />} active={messagesOpen} onClick={openMessages} badge={smsUnread} />
             <TabBtn label="Diagnostics" icon={<Activity size={14} />} active={tab === 'diag'} onClick={() => setTab('diag')} />
             <TabBtn label="Debug" icon={<Bug size={14} />} active={debugOpen} onClick={() => setDebugOpen(true)} />
@@ -13198,7 +13220,7 @@ function Shell() {
         </header>
       )}
 
-      {tab === 'map' ? <MapScreen onOpenMessages={openMessages} smsUnread={smsUnread} debugCaptureRef={debugCaptureRef} /> : (tab === 'routing' && ROUTING_FLAG) ? <RoutingScreen debugCaptureRef={debugCaptureRef} /> : tab === 'neworder' ? <NewOrderScreen /> : <DiagnosticsRoute />}
+      {tab === 'map' ? <MapScreen onOpenMessages={openMessages} smsUnread={smsUnread} debugCaptureRef={debugCaptureRef} /> : (tab === 'routing' && ROUTING_FLAG) ? <RoutingScreen debugCaptureRef={debugCaptureRef} /> : tab === 'neworder' ? <NewOrderScreen /> : tab === 'quote' ? <QuoteScreen /> : <DiagnosticsRoute />}
 
       {/* Messages floats OVER the current screen (you never leave the map). */}
       {messagesOpen && <MessagesPanel messages={inbound} seenAt={smsSeenAt} onClose={closeMessages} customerContacts={customerContacts} />}
