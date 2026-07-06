@@ -32,7 +32,7 @@ import {
   listStops, listRoutes, listDrivers,
   upsertStops, upsertRoutes, upsertDrivers, upsertDriverDayPointer,
 } from './history-store.mts';
-import { updateCustomerRollupsForDay } from './history-customers.mts';
+import { applyRollupForDay, sweepRollupBacklog } from './history-rollup-guard.mts';
 
 const TENANT = 'davis';
 // Keep in sync with src/App.jsx APP_VERSION. Stamped onto every manifest/capture
@@ -226,16 +226,16 @@ export async function captureDate(date: string): Promise<any> {
     absent_kept_count: absentFromThisCapture.length,
   });
 
-  // Best-effort: keep the per-customer history rollup current from this day's
-  // stops. Never let a rollup hiccup fail the warehouse capture (the warehouse
-  // is the source of truth; the rollup can always be rebuilt from it).
-  try {
-    await updateCustomerRollupsForDay(TENANT, date, stopRecords);
-  } catch (e: any) {
-    console.error(`customer-rollup update failed for ${date}:`, e?.message);
-  }
+  // Keep the per-customer history rollup current from this day's stops. GUARDED
+  // (lib/history-rollup-guard): retries, and on ultimate failure records the day in
+  // a durable backlog so the next run's self-healing sweep re-applies it from the
+  // warehouse. Never let a rollup hiccup fail the warehouse capture (the warehouse
+  // is the source of truth; the rollup is a rebuildable cache). See the 2026-07-06
+  // silent-drift incident that motivated this guard.
+  const rollup = await applyRollupForDay(TENANT, date, stopRecords);
+  if (!rollup.ok) console.error(`[history] rollup for ${date} deferred to backlog after ${rollup.attempts} attempts: ${rollup.error}`);
 
-  return { date, ok: true, verified: true, capture_version: version, counts, absent_kept: absentFromThisCapture.length };
+  return { date, ok: true, verified: true, capture_version: version, counts, absent_kept: absentFromThisCapture.length, rollup };
 }
 
 // ── HTTP / scheduled entrypoint ──────────────────────────────────────────────
@@ -251,10 +251,27 @@ export async function runHistorySnapshot(req: Request): Promise<Response> {
   }
 
   const dates = resolveDates(req);
+
+  // SELF-HEALING SWEEP — runs FIRST, on EVERY invocation (incl. weekend-skip runs,
+  // so a Friday rollup miss heals over the weekend). Reconciles the rollup backlog
+  // (days that failed to apply) plus a short trailing window of recent weekdays,
+  // re-applying each from the warehouse — zero NuVizz, idempotent. This is what
+  // makes a silent multi-week drift impossible: a single night's miss heals on the
+  // next run, and any lingering drift trips the health alert. Never fails the run.
+  let rollupSweep: any = null;
+  try {
+    rollupSweep = await sweepRollupBacklog(TENANT, etDateString(new Date()));
+    if (rollupSweep.pending_after.length) {
+      console.warn(`history-snapshot: rollup backlog after sweep = ${JSON.stringify(rollupSweep.pending_after)} (alert=${rollupSweep.alert})`);
+    }
+  } catch (e: any) {
+    console.error('history-snapshot: rollup sweep error:', e?.message);
+  }
+
   if (dates.length === 0) {
     // Scheduled weekend run — target day is Sat/Sun, which we don't archive.
     console.log('history-snapshot: weekend target day — skipped (no NuVizz calls).');
-    return new Response(JSON.stringify({ ok: true, skipped: 'weekend', days: 0 }), {
+    return new Response(JSON.stringify({ ok: true, skipped: 'weekend', days: 0, rollupSweep }), {
       status: 200, headers: { 'Content-Type': 'application/json' },
     });
   }
@@ -272,7 +289,7 @@ export async function runHistorySnapshot(req: Request): Promise<Response> {
   }
 
   const allOk = results.every((r) => r.ok && r.verified);
-  const summary = { ok: allOk, tenant: TENANT, totalMs: Date.now() - startedAt, dates: results };
+  const summary = { ok: allOk, tenant: TENANT, totalMs: Date.now() - startedAt, dates: results, rollupSweep };
   console.log('history-snapshot results:', JSON.stringify(summary));
   // Non-200 on any verify failure so a manual (synchronous) invocation fails loudly.
   // NOTE: the scheduled wrapper is a background function (returns 202); the true
