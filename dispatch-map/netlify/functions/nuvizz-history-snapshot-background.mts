@@ -36,6 +36,10 @@ import { runHistorySnapshot } from './lib/history-core.mts';
 
 export default runHistorySnapshot;
 
+// Scheduled scanning DISABLED (Chad, 2026-07-06) — this app runs on MANUAL scans
+// only. The nightly cron below no longer fires, so the immutable history warehouse
+// stops accruing new days until this is triggered by hand (POST to its HTTP
+// endpoint). Re-enable by restoring the schedule.
 export const config = {
-  schedule: '0 6 * * *',
+  // schedule: '0 6 * * *',   // was: nightly 06:00 UTC (history-warehouse snapshot)
 };

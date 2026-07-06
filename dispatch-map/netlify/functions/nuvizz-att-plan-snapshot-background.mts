@@ -20,6 +20,10 @@ import { runPlanSnapshot } from './lib/attempts-core.mts';
 
 export default runPlanSnapshot;
 
+// Scheduled scanning DISABLED (Chad, 2026-07-06) — this app runs on MANUAL scans
+// only. The cron below no longer fires, so the morning routed-plan freeze runs only
+// when triggered by hand (POST to its HTTP endpoint). Re-enable by restoring the
+// schedule.
 export const config = {
-  schedule: '30 12,13 * * *',
+  // schedule: '30 12,13 * * *',   // was: 12:30 & 13:30 UTC (morning ET plan freeze)
 };
