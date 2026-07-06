@@ -1,5 +1,10 @@
+# Build: pull the shared quote console from Quotes@main (single source of truth)
+# on every build, so dd-dispatch-map tracks the latest release instead of the
+# commit frozen in package-lock.json. Quotes is public, so github:#main resolves
+# over https (no deploy key needed); --no-save leaves package.json/lock untouched
+# and only refreshes node_modules for this build. See DavisDelivery/Quotes.
 [build]
-  command = "npm run build"
+  command = "npm i @davisdelivery/quote-generator@github:DavisDelivery/Quotes#main --no-save --no-audit --no-fund && npm run build"
   publish = "dist"
   functions = "netlify/functions"
 
