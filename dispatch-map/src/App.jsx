@@ -54,7 +54,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.38.3';
+const APP_VERSION = '0.38.4';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -99,6 +99,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.38.4', 'The stops status pill is now on Routing (beta) too — the same "N stops / total pallets / Loads+Orders feed freshness / NuVizz calls + by-hour chart" card from the dispatch Map now sits top-right on the routing map (below the ⚙ map filters), so you can see board freshness and the call meter without leaving the routing screen. Same collapse toggle (shared with the Map\'s pill) and the same refresh button firing the cheap ~4-call scan — never the expensive number-probe.'],
   ['0.38.3', 'Print Manifest pagination fix (round 2, from Chad\'s printed page photo): tickets were still mashing together — ticket 2 started on page 1 and only ONE page came out. The 0.36.1 print bridge was correct, but the app shell\'s "lock the app to the viewport" CSS (body position:fixed + overflow:hidden, for iOS scroll containment) still applied DURING printing — and inside a fixed, viewport-clipped body the browser can\'t paginate at all: the one-ticket-per-page breaks are ignored and everything past the first page is clipped. The bridge now lifts that lock for the duration of the print (static body, visible overflow, auto height — print only; the on-screen app is untouched), so page breaks paginate again: page 1 = route summary + ticket 1, then one ticket per page. Verified with a real headless-Chrome print-to-PDF: before the fix 3 tickets → 1 page, after → 3 pages. Applies to the Delivery Ticket and BOL viewers too (same viewer).'],
   ['0.38.2','New "Quote" tab in the top bar (next to New Order) — the shared Uline rate console, the same pricing tool that lives in the quoting app, now embedded right here so you can price a shipment without leaving Dispatch. It reads live from the shared quote source (DavisDelivery/Quotes) at build time, so rate/fuel/zone changes there show up here on the next deploy — no re-copying. Enter a destination ZIP + weight (+ skids/loose) and it prices instantly; nothing here touches NuVizz.'],
   ['0.38.1', 'UAT PROD-MIRROR support: the Firestore DATABASE is now env-selectable (FIRESTORE_DATABASE server-side, VITE_FIRESTORE_DATABASE client-side; unset = the production default, unchanged). Lets the 1:1 UAT mirror of this app (deployed from dispatch-beta2/prod-mirror against uat.nuvizz.com DAVISV5) keep its scans/journals/counters/notes in a fully separate named database in the same Firebase project. SAFETY INVARIANT: a deploy pointed at UAT NuVizz with no named database REFUSES Firestore entirely (loud log) rather than ever mixing UAT rows into the production board data.'],
@@ -1949,6 +1950,96 @@ function HourlyCalls({ byHour, className }) {
         ))}
       </div>
       <div>by hour (ET) · peak {hours[peak]}:00 = {max.toLocaleString()}</div>
+    </div>
+  );
+}
+
+// Manual "Scan now" — fires the SAME cheap scheduled scan path (NUVIZZ_LIST_DISCOVERY):
+// the saved-search planned/unplanned + completed pulls + the load roster, for today AND
+// tomorrow. ~4 NuVizz calls (plus one /stop/info per genuinely-new order). It must NOT
+// pass ?date= — that flips runRefreshStops into the EXPLICIT number-probe path, a
+// ~3,000-call cold scan. ?manual=1 bypasses the cadence gate and runs list-discovery
+// only. 60s cooldown so it can't be mashed. Shared by the Map and Routing status cards.
+function useManualScan(selectedDate, lastScannedAt, refresh) {
+  const [scanning, setScanning] = useState(false);
+  const [scanCooldown, setScanCooldown] = useState(false);
+  const [scanErr, setScanErr] = useState(null);
+  const manualScan = useCallback(async () => {
+    if (scanning || scanCooldown) return;
+    setScanning(true); setScanErr(null);
+    try {
+      // Fire the ASYNC background scanner (15-min budget) in list-discovery mode (manual=1, NO
+      // date), then poll the viewed date's index until it refreshes.
+      const before = lastScannedAt;
+      const pollUrl = `/.netlify/functions/nuvizz-pull-today-stops?date=${encodeURIComponent(selectedDate)}`;
+      const resp = await fetch(`/.netlify/functions/nuvizz-refresh-stops-background?manual=1`, { method: 'POST' });
+      if (!resp.ok && resp.status !== 202) throw new Error('Scan unavailable');
+      let updated = false;
+      for (let i = 0; i < 20 && !updated; i++) {          // poll up to ~60s
+        await new Promise((r) => setTimeout(r, 3000));
+        try {
+          const d = await fetchJsonWithRetry(pollUrl);
+          if (d && d.lastScannedAt && d.lastScannedAt !== before) updated = true;
+        } catch { /* keep polling */ }
+      }
+      await refresh({ silent: true });
+      if (!updated) { setScanErr('Scan running — the board will refresh automatically'); setTimeout(() => setScanErr(null), 6000); }
+      setScanCooldown(true);
+      setTimeout(() => setScanCooldown(false), 60000);
+    } catch (e) {
+      setScanErr(e?.message || 'Scan failed');
+      setTimeout(() => setScanErr(null), 5000);
+    } finally {
+      setScanning(false);
+    }
+  }, [scanning, scanCooldown, refresh, selectedDate, lastScannedAt]);
+  return { scanning, scanCooldown, scanErr, manualScan };
+}
+
+// The stops status card — the "N stops / total pallets / feed freshness / NuVizz call
+// meter + hourly sparkline" pill that lives top-right on the dispatch Map, reusable on
+// other screens (Routing renders it too). Collapsible to just the stops count; the
+// refresh icon fires the cheap manual scan (useManualScan). Pure presentation — all
+// state comes in as props so each screen wires its own useStops/useManualScan.
+function StopsStatusCard({ stopCount, carryoverCount = 0, totalPallets, loadAt, unplannedAt, isToday, ops, scanErr, scanning, scanCooldown, onRefresh, collapsed, onToggleCollapsed }) {
+  return (
+    <div className="bg-white/95 backdrop-blur border border-slate-200 rounded-lg shadow px-2.5 py-1.5 text-xs">
+      {/* Header row: stops count + collapse/refresh — always visible. */}
+      <div className="flex items-center gap-2">
+        <button
+          onClick={onToggleCollapsed}
+          className="flex items-center gap-1 font-semibold hover:text-slate-600"
+          title={collapsed ? 'Show details' : 'Collapse'}
+          aria-expanded={!collapsed}
+        >
+          {collapsed ? <ChevronDown size={13} className="text-slate-400" /> : <ChevronUp size={13} className="text-slate-400" />}
+          <span>{stopCount} stops{carryoverCount > 0 ? <span className="text-amber-700 font-normal"> · {carryoverCount} c/o</span> : null}</span>
+        </button>
+        <button
+          onClick={onRefresh}
+          disabled={scanning || scanCooldown}
+          className="ml-auto p-1 rounded hover:bg-slate-100 disabled:opacity-50"
+          title={scanCooldown ? 'Just scanned — try again shortly' : 'Refresh from NuVizz — planned/unplanned + completed + loads (~4 calls)'}
+        >
+          <RefreshCw size={13} className={scanning ? 'animate-spin' : ''} />
+        </button>
+      </div>
+      {/* Stacked details — hidden when collapsed. */}
+      {!collapsed && (
+        <div className="mt-0.5 leading-tight">
+          <div className="text-slate-600">{Number(totalPallets || 0).toLocaleString()} total pallets</div>
+          <FeedTimestamps loadAt={loadAt} unplannedAt={unplannedAt} isToday={isToday} className="text-slate-500" stacked />
+          {ops && typeof ops.dayCount === 'number' && (
+            <>
+              <div className="text-slate-500" title={`Today's NuVizz API calls (${ops.mode})${ops.byRoute && Object.keys(ops.byRoute).length ? ' · ' + Object.entries(ops.byRoute).map(([k, v]) => `${k}:${v}`).join(' ') : ''}`}>
+                NuVizz calls: {ops.dayCount.toLocaleString()}{ops.ceiling ? ` / ${ops.ceiling.toLocaleString()}` : ''} <span className="text-slate-400">({ops.mode}{ops.breaker ? ', halted' : ''})</span>
+              </div>
+              <HourlyCalls byHour={ops.byHour} className="text-slate-400 text-[10px] mt-0.5" />
+            </>
+          )}
+          {scanErr && <div className="text-[11px] text-red-600">{scanErr}</div>}
+        </div>
+      )}
     </div>
   );
 }
@@ -6324,44 +6415,9 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef }) {
 
   const { stops, loading, error, lastRefreshed, lastScannedAt, lastLoadScanAt, lastUnplannedScanAt, scanState, source, ops, refresh } = useStops(selectedDate, mapFilters.carryoverDays || 0);
 
-  // Manual "Scan now" — fires the SAME cheap scheduled scan path (NUVIZZ_LIST_DISCOVERY):
-  // the saved-search planned/unplanned (77128) + completed (77131) pulls + the load roster,
-  // for today AND tomorrow. ~4 NuVizz calls (plus one /stop/info per genuinely-new order).
-  // It must NOT pass ?date= — that flips runRefreshStops into the EXPLICIT number-probe path,
-  // a ~3,000-call cold scan. ?manual=1 bypasses the cadence gate and runs list-discovery only.
-  // 60s cooldown so it can't be mashed.
-  const [scanning, setScanning] = useState(false);
-  const [scanCooldown, setScanCooldown] = useState(false);
-  const [scanErr, setScanErr] = useState(null);
-  const manualScan = useCallback(async () => {
-    if (scanning || scanCooldown) return;
-    setScanning(true); setScanErr(null);
-    try {
-      // Fire the ASYNC background scanner (15-min budget) in list-discovery mode (manual=1, NO
-      // date), then poll the viewed date's index until it refreshes.
-      const before = lastScannedAt;
-      const pollUrl = `/.netlify/functions/nuvizz-pull-today-stops?date=${encodeURIComponent(selectedDate)}`;
-      const resp = await fetch(`/.netlify/functions/nuvizz-refresh-stops-background?manual=1`, { method: 'POST' });
-      if (!resp.ok && resp.status !== 202) throw new Error('Scan unavailable');
-      let updated = false;
-      for (let i = 0; i < 20 && !updated; i++) {          // poll up to ~60s
-        await new Promise((r) => setTimeout(r, 3000));
-        try {
-          const d = await fetchJsonWithRetry(pollUrl);
-          if (d && d.lastScannedAt && d.lastScannedAt !== before) updated = true;
-        } catch { /* keep polling */ }
-      }
-      await refresh({ silent: true });
-      if (!updated) { setScanErr('Scan running — the board will refresh automatically'); setTimeout(() => setScanErr(null), 6000); }
-      setScanCooldown(true);
-      setTimeout(() => setScanCooldown(false), 60000);
-    } catch (e) {
-      setScanErr(e?.message || 'Scan failed');
-      setTimeout(() => setScanErr(null), 5000);
-    } finally {
-      setScanning(false);
-    }
-  }, [scanning, scanCooldown, refresh, selectedDate, lastScannedAt]);
+  // Manual "Scan now" — the cheap list-discovery scan, shared logic in useManualScan
+  // (also used by the Routing tab's status card). See the hook for the cost notes.
+  const { scanning, scanCooldown, scanErr, manualScan } = useManualScan(selectedDate, lastScannedAt, refresh);
 
   const { notes, ready: notesReady } = useCustomerNotes();
   useAutoScanner(stops, notes, notesReady);
@@ -10897,7 +10953,31 @@ function VersionLogModal({ onClose }) {
 
 function RoutingScreen({ debugCaptureRef }) {
   const [selectedDate, setSelectedDate] = useState(() => todayInET());
-  const { stops, loading, error: stopsError, refresh: refreshStops } = useStops(selectedDate);
+  const { stops, loading, error: stopsError, refresh: refreshStops, lastScannedAt, lastLoadScanAt, lastUnplannedScanAt, ops } = useStops(selectedDate);
+  // Stops status card (same pill as the dispatch Map, top-right of the routing map):
+  // stops count + total pallets + feed freshness + NuVizz call meter. Shares the Map's
+  // collapse preference and the cheap manual-scan path (~4 calls, never the number-probe).
+  const { scanning, scanCooldown, scanErr, manualScan } = useManualScan(selectedDate, lastScannedAt, refreshStops);
+  const [statusCollapsed, setStatusCollapsed] = useState(() => safeReadJSON(LS_STATUS_PILL_COLLAPSED, false));
+  useEffect(() => { safeWriteJSON(LS_STATUS_PILL_COLLAPSED, statusCollapsed); }, [statusCollapsed]);
+  // NuVizz records the pallet count in its carton field (stop.cartons) — same sum/label as the Map.
+  const boardTotalPallets = useMemo(() => stops.reduce((sum, s) => sum + (Number(s.cartons) || 0), 0), [stops]);
+  const statusCard = (
+    <StopsStatusCard
+      stopCount={stops.length}
+      totalPallets={boardTotalPallets}
+      loadAt={lastLoadScanAt}
+      unplannedAt={lastUnplannedScanAt}
+      isToday={isTodayET(selectedDate)}
+      ops={ops}
+      scanErr={scanErr}
+      scanning={scanning}
+      scanCooldown={scanCooldown}
+      onRefresh={manualScan}
+      collapsed={statusCollapsed}
+      onToggleCollapsed={() => setStatusCollapsed((c) => !c)}
+    />
+  );
   // Board write-through (#361): a CONFIRMED Save patches the day's board cache (Firestore-only
   // endpoint — zero NuVizz calls) with the verified plan, then re-reads the cache — so planned
   // orders flip to planned on the board immediately instead of waiting out the next scan (and
@@ -12560,6 +12640,8 @@ function RoutingScreen({ debugCaptureRef }) {
         <div className="flex-1 relative min-w-0">
           <div ref={mapDiv} className="absolute inset-0" />
           <RoutingMapFilters unplannedOnly={routeUnplannedOnly} setUnplannedOnly={setRouteUnplannedOnly} satellite={routeSatellite} setSatellite={setRouteSatellite} showRoutes={routeShowRoutes} setShowRoutes={setRouteShowRoutes} />
+          {/* Stops status card — same pill as the dispatch Map (below the ⚙ filters button). */}
+          <div className="absolute top-12 right-2 z-[15] max-w-[230px]">{statusCard}</div>
           {!viewing && <RoutingMapTools selectMode={selectMode} onBox={() => (selectMode === 'box' ? cancelMode() : beginMode('box'))} onLasso={() => (selectMode === 'lasso' ? cancelMode() : beginMode('lasso'))} ninjaMode={ninjaMode} onToggleNinja={onNinjaTool} ninjaAvailable={wbRoutes.length > 0} />}
           {mapsError && <div className="absolute top-2 left-1/2 -translate-x-1/2 bg-red-50 border border-red-300 text-red-700 text-[11px] rounded px-2 py-1">{mapsError}</div>}
           {mapToast && <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-30 max-w-[92%] bg-slate-900/90 text-white text-[11px] rounded-lg shadow-lg px-3 py-1.5 text-center"><NinjaIcon size={12} className="inline -mt-0.5 mr-1" />{mapToast}</div>}
@@ -12675,6 +12757,8 @@ function RoutingScreen({ debugCaptureRef }) {
       <div className="flex-1 relative min-w-0">
         <div ref={mapDiv} className="absolute inset-0" />
         <RoutingMapFilters unplannedOnly={routeUnplannedOnly} setUnplannedOnly={setRouteUnplannedOnly} satellite={routeSatellite} setSatellite={setRouteSatellite} showRoutes={routeShowRoutes} setShowRoutes={setRouteShowRoutes} />
+        {/* Stops status card — same pill as the dispatch Map (below the ⚙ filters button). */}
+        <div className="absolute top-12 right-2 z-[15] max-w-[240px]">{statusCard}</div>
         {!viewing && <RoutingMapTools selectMode={selectMode} onBox={() => (selectMode === 'box' ? cancelMode() : beginMode('box'))} onLasso={() => (selectMode === 'lasso' ? cancelMode() : beginMode('lasso'))} ninjaMode={ninjaMode} onToggleNinja={onNinjaTool} ninjaAvailable={wbRoutes.length > 0} />}
         {mapsError && <div className="absolute top-2 left-1/2 -translate-x-1/2 bg-red-50 border border-red-300 text-red-700 text-[11px] rounded px-2 py-1">{mapsError}</div>}
         {mapToast && <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-30 max-w-[80%] bg-slate-900/90 text-white text-[12px] rounded-lg shadow-lg px-3 py-1.5 text-center"><NinjaIcon size={13} className="inline -mt-0.5 mr-1" />{mapToast}</div>}
