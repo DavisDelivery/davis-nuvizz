@@ -54,7 +54,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.38.2';
+const APP_VERSION = '0.38.3';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -99,7 +99,8 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
-  ['0.38.2', 'New "Quote" tab in the top bar (next to New Order) — the shared Uline rate console, the same pricing tool that lives in the quoting app, now embedded right here so you can price a shipment without leaving Dispatch. It reads live from the shared quote source (DavisDelivery/Quotes) at build time, so rate/fuel/zone changes there show up here on the next deploy — no re-copying. Enter a destination ZIP + weight (+ skids/loose) and it prices instantly; nothing here touches NuVizz.'],
+  ['0.38.3', 'Print Manifest pagination fix (round 2, from Chad\'s printed page photo): tickets were still mashing together — ticket 2 started on page 1 and only ONE page came out. The 0.36.1 print bridge was correct, but the app shell\'s "lock the app to the viewport" CSS (body position:fixed + overflow:hidden, for iOS scroll containment) still applied DURING printing — and inside a fixed, viewport-clipped body the browser can\'t paginate at all: the one-ticket-per-page breaks are ignored and everything past the first page is clipped. The bridge now lifts that lock for the duration of the print (static body, visible overflow, auto height — print only; the on-screen app is untouched), so page breaks paginate again: page 1 = route summary + ticket 1, then one ticket per page. Verified with a real headless-Chrome print-to-PDF: before the fix 3 tickets → 1 page, after → 3 pages. Applies to the Delivery Ticket and BOL viewers too (same viewer).'],
+  ['0.38.2','New "Quote" tab in the top bar (next to New Order) — the shared Uline rate console, the same pricing tool that lives in the quoting app, now embedded right here so you can price a shipment without leaving Dispatch. It reads live from the shared quote source (DavisDelivery/Quotes) at build time, so rate/fuel/zone changes there show up here on the next deploy — no re-copying. Enter a destination ZIP + weight (+ skids/loose) and it prices instantly; nothing here touches NuVizz.'],
   ['0.38.1', 'UAT PROD-MIRROR support: the Firestore DATABASE is now env-selectable (FIRESTORE_DATABASE server-side, VITE_FIRESTORE_DATABASE client-side; unset = the production default, unchanged). Lets the 1:1 UAT mirror of this app (deployed from dispatch-beta2/prod-mirror against uat.nuvizz.com DAVISV5) keep its scans/journals/counters/notes in a fully separate named database in the same Firebase project. SAFETY INVARIANT: a deploy pointed at UAT NuVizz with no named database REFUSES Firestore entirely (loud log) rather than ever mixing UAT rows into the production board data.'],
   ['0.38.0', 'The ⚡ Import engine is REBUILT on the two-lever design and Bulk Add gains "Create as → ⚡ A NEW load". After the Jul 2 incident (import "references" CLONED off-load orders and FULL-REPLACED matched ones — freight wiped), the real NuVizz semantics were pinned on UAT and the engine now makes both failure modes structurally impossible: MEMBERSHIP only ever moves your real orders (insertStops/removeStops by internal id — an off-load order number can never appear in an import), ORDER is one import whose entries are FULL ECHOES of the load\'s own records (freight + references included, so nothing can be blanked), and CREATE (the Bulk Add new-load mode) sends full payloads only after per-number existence checks (a colliding order number is refused, never cloned). Anatomy: plan-10-unplanned ~4-5 calls, inject-middle ~4-5, reorder ~3-4, full re-optimize ~3-4 — every save confirmed by read-back. STILL DARK: the server gate from v0.36.3 stays default-OFF; enabling on prod is an explicit env flip after a prod validation.'],
   ['0.36.3', '⚡ IMPORT ENGINE DISABLED server-side (Jul 2 incident). Production NuVizz treats import "reference" stops as full replaces — a Save through the import engine wiped the freight (skids/loose/weight) off 10 orders and created 10 empty unplanned copies, violating the UAT-verified contract that referenced stops keep their other fields. Until that\'s understood and re-verified, the server refuses ALL import saves regardless of the in-app toggle (Saves with ⚡ selected automatically fall back to the classic engine — nothing dead-ends) and it stays off unless explicitly re-enabled on the server. Also: stop reads now surface freight (skids/loose/weight/pieces) and audit (created-by/when) fields, so originals can be told apart from import-created copies during the repair.'],
@@ -3676,6 +3677,12 @@ function PrintDocModal({ title, html, pageW = 816, onClose }) {
           <style>{`
             @media screen { .printdoc-bridge { display: none !important; } }
             @media print {
+              /* Undo the app-shell viewport lock (index.css: html/body height:100%,
+                 overflow:hidden, body position:fixed inset:0). Inside a fixed,
+                 viewport-clipped body the print engine can't paginate: the per-ticket
+                 break-before rules are ignored and everything past one page is clipped
+                 — the "ticket 2 starts on page 1, only one page prints" report. */
+              html, body { position: static !important; overflow: visible !important; height: auto !important; width: auto !important; max-width: none !important; inset: auto !important; }
               body > *:not(.printdoc-bridge) { display: none !important; }
               .printdoc-bridge { display: block !important; }
             }
