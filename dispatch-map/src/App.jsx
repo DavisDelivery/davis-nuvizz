@@ -54,7 +54,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.38.6';
+const APP_VERSION = '0.38.5';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -99,7 +99,6 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
-  ['0.38.6', 'Scheduled scanning is OFF — the app now scans NuVizz on a MANUAL basis only. The board no longer auto-refreshes every 15 minutes; it updates when you press "Scan now" (the ⟳ button by the stops count). The feed timestamps in the status card show when the board was last scanned, so you can tell how fresh it is. The nightly history-warehouse snapshot and the delivery-attempts jobs were also taken off their schedules — they still run on demand, but "Search past PROs" and attempt reports won\'t gain new days until someone triggers them. Nothing else about the board changed; a manual scan is the same cheap list-discovery pull it always was (~4 NuVizz calls).'],
   ['0.38.5', 'Mark vehicle eligibility — one brush now sets BOTH colors. With the Tractor brush armed (⚙ → Mark vehicle eligibility → Tractor OK), clicking a stop marks it green (53′ fits); clicking the SAME stop again marks it red (box truck only); a third click clears it. Before, the second click just cleared the mark and you had to switch the brush to Box to mark red. The Box brush mirrors it (red → green → clear). No need to flip the radio to correct a stop — just click it again.'],
   ['0.38.4', 'The stops status pill is now on Routing (beta) too — the same "N stops / total pallets / Loads+Orders feed freshness / NuVizz calls + by-hour chart" card from the dispatch Map now sits top-right on the routing map (below the ⚙ map filters), so you can see board freshness and the call meter without leaving the routing screen. Same collapse toggle (shared with the Map\'s pill) and the same refresh button firing the cheap ~4-call scan — never the expensive number-probe.'],
   ['0.38.3', 'Print Manifest pagination fix (round 2, from Chad\'s printed page photo): tickets were still mashing together — ticket 2 started on page 1 and only ONE page came out. The 0.36.1 print bridge was correct, but the app shell\'s "lock the app to the viewport" CSS (body position:fixed + overflow:hidden, for iOS scroll containment) still applied DURING printing — and inside a fixed, viewport-clipped body the browser can\'t paginate at all: the one-ticket-per-page breaks are ignored and everything past the first page is clipped. The bridge now lifts that lock for the duration of the print (static body, visible overflow, auto height — print only; the on-screen app is untouched), so page breaks paginate again: page 1 = route summary + ticket 1, then one ticket per page. Verified with a real headless-Chrome print-to-PDF: before the fix 3 tickets → 1 page, after → 3 pages. Applies to the Delivery Ticket and BOL viewers too (same viewer).'],

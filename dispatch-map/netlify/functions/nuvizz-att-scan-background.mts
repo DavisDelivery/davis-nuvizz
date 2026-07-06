@@ -25,10 +25,6 @@ import { runAttemptsScan } from './lib/attempts-core.mts';
 
 export default runAttemptsScan;
 
-// Scheduled scanning DISABLED (Chad, 2026-07-06) — this app runs on MANUAL scans
-// only. The cron below no longer fires, so the evening delivery-attempts scan runs
-// only when triggered by hand (POST to its HTTP endpoint). Re-enable by restoring
-// the schedule.
 export const config = {
-  // schedule: '0 0,1,2,3 * * *',   // was: 00:00–03:00 UTC (evening ET attempts scan)
+  schedule: '0 0,1,2,3 * * *',
 };
