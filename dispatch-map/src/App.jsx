@@ -98,7 +98,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
-  ['0.38.2', 'FIX + GUARD — "Search past PROs" was missing recent real deliveries (e.g. 7/2 PROs to DECATUR ATLANTA PRINTING and BUCK JONES NURSERY returned nothing). Root cause: that search reads a per-customer rollup CACHE (history_customers), which is separate from the live board AND from the immutable warehouse (history_days). The warehouse had 7/2 fine, but the nightly job refreshed the cache as a fire-and-forget best-effort step — when it failed, the warehouse stayed correct while the cache silently drifted (a real ~3-week lag) with no signal. The cache is now GUARDED so this class of failure can\'t recur: (1) the capture-time refresh RETRIES; (2) on hard failure the day goes into a durable backlog instead of a log line; (3) every nightly run runs a SELF-HEALING SWEEP that re-applies the backlog + a trailing window of recent weekdays straight from the warehouse (zero NuVizz, idempotent) — so a single night\'s miss heals on the next run; (4) a new zero-NuVizz nuvizz-history-health endpoint returns 503 while any drift lingers, so it surfaces instead of hiding. The already-drifted days were rebuilt live. Single missing PRO right now → the in-app "Look up PRO in NuVizz (1 API call)" button still fetches it on demand.'],
+  ['0.38.2', 'FIX + GUARD — "Search past PROs" was missing recent real deliveries (e.g. 7/2 PROs to DECATUR ATLANTA PRINTING and BUCK JONES NURSERY returned nothing). Root cause: that search reads a per-customer rollup CACHE (history_customers), which is separate from the live board AND from the immutable warehouse (history_days). The warehouse had 7/2 fine, but the nightly job refreshed the cache as a fire-and-forget best-effort step — when it failed, the warehouse stayed correct while the cache silently drifted (a real ~3-week lag) with no signal. The cache is now GUARDED so this class of failure can\'t recur: (1) the capture-time refresh RETRIES; (2) on hard failure the day goes into a durable backlog instead of a log line; (3) every nightly run runs a SELF-HEALING SWEEP that re-applies the backlog + a trailing window of recent weekdays straight from the warehouse (zero NuVizz, idempotent) — so a single night\'s miss heals on the next run; (4) a new zero-NuVizz nuvizz-history-health endpoint returns 503 while any drift lingers, so it surfaces instead of hiding. The already-drifted days were rebuilt live. Single missing PRO right now → the in-app "Look up PRO in NuVizz (1 API call)" button still fetches it on demand. Also: tapping a customer in history search now lists their saved delivery history (last-20 PROs with dates) in the detail card, instead of showing "No PROs" — the card already had the PROs in hand and was discarding them. (Line items / route stay N/A for the customer-level view — those aren\'t kept in the history rollup; use the PRO lookup for a specific delivery.)'],
   ['0.38.1', 'UAT PROD-MIRROR support: the Firestore DATABASE is now env-selectable (FIRESTORE_DATABASE server-side, VITE_FIRESTORE_DATABASE client-side; unset = the production default, unchanged). Lets the 1:1 UAT mirror of this app (deployed from dispatch-beta2/prod-mirror against uat.nuvizz.com DAVISV5) keep its scans/journals/counters/notes in a fully separate named database in the same Firebase project. SAFETY INVARIANT: a deploy pointed at UAT NuVizz with no named database REFUSES Firestore entirely (loud log) rather than ever mixing UAT rows into the production board data.'],
   ['0.38.0', 'The ⚡ Import engine is REBUILT on the two-lever design and Bulk Add gains "Create as → ⚡ A NEW load". After the Jul 2 incident (import "references" CLONED off-load orders and FULL-REPLACED matched ones — freight wiped), the real NuVizz semantics were pinned on UAT and the engine now makes both failure modes structurally impossible: MEMBERSHIP only ever moves your real orders (insertStops/removeStops by internal id — an off-load order number can never appear in an import), ORDER is one import whose entries are FULL ECHOES of the load\'s own records (freight + references included, so nothing can be blanked), and CREATE (the Bulk Add new-load mode) sends full payloads only after per-number existence checks (a colliding order number is refused, never cloned). Anatomy: plan-10-unplanned ~4-5 calls, inject-middle ~4-5, reorder ~3-4, full re-optimize ~3-4 — every save confirmed by read-back. STILL DARK: the server gate from v0.36.3 stays default-OFF; enabling on prod is an explicit env flip after a prod validation.'],
   ['0.36.3', '⚡ IMPORT ENGINE DISABLED server-side (Jul 2 incident). Production NuVizz treats import "reference" stops as full replaces — a Save through the import engine wiped the freight (skids/loose/weight) off 10 orders and created 10 empty unplanned copies, violating the UAT-verified contract that referenced stops keep their other fields. Until that\'s understood and re-verified, the server refuses ALL import saves regardless of the in-app toggle (Saves with ⚡ selected automatically fall back to the classic engine — nothing dead-ends) and it stays off unless explicitly re-enabled on the server. Also: stop reads now surface freight (skids/loose/weight/pieces) and audit (created-by/when) fields, so originals can be told apart from import-created copies during the repair.'],
@@ -3218,7 +3218,12 @@ function applyFilters(stops, notesByKey, filters) {
 
 // Right-side sidebar showing stop + metadata + edit form.
 function ProsSection({ stop }) {
-  const pros = stop.pros || (stop.pro ? [stop.pro] : []);
+  // Live stops carry `pros` as bare strings; a historical customer card carries
+  // `proHistory` as {pro,date} (its saved last-20 deliveries) — show the date too
+  // and label the section as the customer's delivery history.
+  const history = (Array.isArray(stop.proHistory) && stop.proHistory.length)
+    ? stop.proHistory
+    : (stop.pros || (stop.pro ? [stop.pro] : [])).map((p) => ({ pro: p, date: null }));
   const [copied, setCopied] = useState(null);
   const copy = (pro) => {
     try {
@@ -3230,22 +3235,23 @@ function ProsSection({ stop }) {
   return (
     <div className="px-4 py-3 border-b">
       <div className="text-xs uppercase font-semibold text-slate-500 mb-1.5">
-        PROs ({pros.length})
+        {stop.__historical ? 'Delivery history' : 'PROs'} ({history.length})
       </div>
-      {pros.length === 0 ? (
+      {history.length === 0 ? (
         <div className="text-xs italic text-slate-400">— No PROs —</div>
       ) : (
         <div className="space-y-0.5">
-          {pros.map((p) => (
+          {history.map((h) => (
             <button
-              key={p}
+              key={h.pro}
               type="button"
-              onClick={() => copy(p)}
-              className="block w-full text-left font-mono text-xs text-slate-700 hover:bg-slate-100 px-1 py-0.5 rounded"
+              onClick={() => copy(h.pro)}
+              className="flex w-full items-center gap-2 text-left font-mono text-xs text-slate-700 hover:bg-slate-100 px-1 py-0.5 rounded"
               title="Click to copy"
             >
-              {p}
-              {copied === p && <span className="ml-2 text-[10px] text-emerald-600 font-sans">copied</span>}
+              <span>{h.pro}</span>
+              {h.date && <span className="text-slate-400">· {h.date}</span>}
+              {copied === h.pro && <span className="ml-1 text-[10px] text-emerald-600 font-sans">copied</span>}
             </button>
           ))}
         </div>
@@ -5356,7 +5362,13 @@ function PastProSearch({ notes, initialQuery, onPickCustomer, onClose }) {
     onPickCustomer({
       stopNbr: 'hist:' + matchKey,
       matchKey,
-      pro: null, pros: [], proCount: 0,
+      // Carry the customer's saved delivery history (last-20 {pro,date}) into the
+      // detail so it lists their PROs instead of "No PROs" — the search card
+      // already has it in hand (m.history); don't throw it away.
+      pro: null,
+      pros: (m.history || []).map((h) => h.pro),
+      proCount: (m.history || []).length,
+      proHistory: m.history || [],
       businessName: m.name || '',
       addr1: m.addr1 || null, addr2: null,
       city: m.city || null, state: m.state || null, zip: m.zip || null,
