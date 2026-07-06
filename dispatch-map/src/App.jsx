@@ -98,7 +98,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
-  ['0.38.2', 'FIX + GUARD — "Search past PROs" was missing recent real deliveries (e.g. 7/2 PROs to DECATUR ATLANTA PRINTING and BUCK JONES NURSERY returned nothing). Root cause: that search reads a per-customer rollup CACHE (history_customers), which is separate from the live board AND from the immutable warehouse (history_days). The warehouse had 7/2 fine, but the nightly job refreshed the cache as a fire-and-forget best-effort step — when it failed, the warehouse stayed correct while the cache silently drifted (a real ~3-week lag) with no signal. The cache is now GUARDED so this class of failure can\'t recur: (1) the capture-time refresh RETRIES; (2) on hard failure the day goes into a durable backlog instead of a log line; (3) every nightly run runs a SELF-HEALING SWEEP that re-applies the backlog + a trailing window of recent weekdays straight from the warehouse (zero NuVizz, idempotent) — so a single night\'s miss heals on the next run; (4) a new zero-NuVizz nuvizz-history-health endpoint returns 503 while any drift lingers, so it surfaces instead of hiding. The already-drifted days were rebuilt live. Single missing PRO right now → the in-app "Look up PRO in NuVizz (1 API call)" button still fetches it on demand. Also: tapping a customer in history search now lists their saved delivery history (last-20 PROs with dates) in the detail card, instead of showing "No PROs" — the card already had the PROs in hand and was discarding them. (Line items / route stay N/A for the customer-level view — those aren\'t kept in the history rollup; use the PRO lookup for a specific delivery.)'],
+  ['0.38.2', 'FIX + GUARD — "Search past PROs" was missing recent real deliveries (e.g. 7/2 PROs to DECATUR ATLANTA PRINTING and BUCK JONES NURSERY returned nothing). Root cause: that search reads a per-customer rollup CACHE (history_customers), which is separate from the live board AND from the immutable warehouse (history_days). The warehouse had 7/2 fine, but the nightly job refreshed the cache as a fire-and-forget best-effort step — when it failed, the warehouse stayed correct while the cache silently drifted (a real ~3-week lag) with no signal. The cache is now GUARDED so this class of failure can\'t recur: (1) the capture-time refresh RETRIES; (2) on hard failure the day goes into a durable backlog instead of a log line; (3) every nightly run runs a SELF-HEALING SWEEP that re-applies the backlog + a trailing window of recent weekdays straight from the warehouse (zero NuVizz, idempotent) — so a single night\'s miss heals on the next run; (4) a new zero-NuVizz nuvizz-history-health endpoint returns 503 while any drift lingers, so it surfaces instead of hiding. The already-drifted days were rebuilt live. Single missing PRO right now → the in-app "Look up PRO in NuVizz (1 API call)" button still fetches it on demand. Also: tapping a customer in history search now lists their saved delivery history (last-20 PROs with dates) in the detail card, instead of showing "No PROs" — the card already had the PROs in hand and was discarding them. (Line items / route stay N/A for the customer-level view — those aren\'t kept in the history rollup.) The card also gains a "Look up an older PRO in NuVizz (1 API call)" box — the escape hatch for a delivery older than the saved last-20: type a PRO, one deliberate call pulls its full detail.'],
   ['0.38.1', 'UAT PROD-MIRROR support: the Firestore DATABASE is now env-selectable (FIRESTORE_DATABASE server-side, VITE_FIRESTORE_DATABASE client-side; unset = the production default, unchanged). Lets the 1:1 UAT mirror of this app (deployed from dispatch-beta2/prod-mirror against uat.nuvizz.com DAVISV5) keep its scans/journals/counters/notes in a fully separate named database in the same Firebase project. SAFETY INVARIANT: a deploy pointed at UAT NuVizz with no named database REFUSES Firestore entirely (loud log) rather than ever mixing UAT rows into the production board data.'],
   ['0.38.0', 'The ⚡ Import engine is REBUILT on the two-lever design and Bulk Add gains "Create as → ⚡ A NEW load". After the Jul 2 incident (import "references" CLONED off-load orders and FULL-REPLACED matched ones — freight wiped), the real NuVizz semantics were pinned on UAT and the engine now makes both failure modes structurally impossible: MEMBERSHIP only ever moves your real orders (insertStops/removeStops by internal id — an off-load order number can never appear in an import), ORDER is one import whose entries are FULL ECHOES of the load\'s own records (freight + references included, so nothing can be blanked), and CREATE (the Bulk Add new-load mode) sends full payloads only after per-number existence checks (a colliding order number is refused, never cloned). Anatomy: plan-10-unplanned ~4-5 calls, inject-middle ~4-5, reorder ~3-4, full re-optimize ~3-4 — every save confirmed by read-back. STILL DARK: the server gate from v0.36.3 stays default-OFF; enabling on prod is an explicit env flip after a prod validation.'],
   ['0.36.3', '⚡ IMPORT ENGINE DISABLED server-side (Jul 2 incident). Production NuVizz treats import "reference" stops as full replaces — a Save through the import engine wiped the freight (skids/loose/weight) off 10 orders and created 10 empty unplanned copies, violating the UAT-verified contract that referenced stops keep their other fields. Until that\'s understood and re-verified, the server refuses ALL import saves regardless of the in-app toggle (Saves with ⚡ selected automatically fall back to the classic engine — nothing dead-ends) and it stays off unless explicitly re-enabled on the server. Also: stop reads now surface freight (skids/loose/weight/pieces) and audit (created-by/when) fields, so originals can be told apart from import-created copies during the repair.'],
@@ -3216,6 +3216,60 @@ function applyFilters(stops, notesByKey, filters) {
   });
 }
 
+// On the historical customer card, look up ANY (older) PRO in NuVizz on demand —
+// one deliberate /stop/info call (the same lookup the search screen offers). The
+// saved rollup only keeps each customer's last-20, so this is the escape hatch for
+// something far older than that. Reuses LookupStopModal (hoisted) for full detail.
+function HistoricalProLookup() {
+  const [pro, setPro] = useState('');
+  const [state, setState] = useState(null); // null | {loading} | {stop} | {error}
+  const [detail, setDetail] = useState(null);
+  const q = pro.trim();
+  const run = async () => {
+    if (!q || state?.loading) return;
+    setState({ loading: true });
+    try {
+      const r = await fetch('/.netlify/functions/nuvizz-pro-lookup?pro=' + encodeURIComponent(q));
+      const d = await r.json();
+      setState(d.ok && d.stop ? { stop: d.stop } : { error: d.reason || 'not found' });
+    } catch (e) { setState({ error: e.message }); }
+  };
+  return (
+    <div className="mt-3 pt-3 border-t border-slate-100">
+      <div className="text-[10px] uppercase font-semibold text-slate-500 mb-1.5">Look up an older PRO in NuVizz</div>
+      <div className="flex items-center gap-1.5">
+        <input
+          type="search" inputMode="numeric" autoComplete="off" autoCorrect="off" spellCheck={false}
+          value={pro}
+          onChange={(e) => { setPro(e.target.value); setState(null); }}
+          onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); run(); } }}
+          placeholder="PRO #"
+          className="flex-1 min-w-0 px-2 py-1.5 border border-slate-300 rounded-lg text-xs font-mono"
+        />
+        <button
+          type="button" onClick={run} disabled={!q || state?.loading}
+          className="px-2.5 py-1.5 text-xs text-white font-semibold rounded-lg disabled:opacity-40 whitespace-nowrap"
+          style={{ background: BRAND }}
+        >
+          {state?.loading ? 'Looking up…' : 'Look up (1 API call)'}
+        </button>
+      </div>
+      {state?.error && <div className="mt-1 text-[11px] text-red-600">PRO not found in NuVizz ({state.error}).</div>}
+      {state?.stop && (
+        <button
+          type="button" onClick={() => setDetail(state.stop)}
+          className="mt-2 w-full text-left border border-blue-200 bg-blue-50/40 rounded-lg p-2 hover:bg-blue-50 active:bg-blue-100"
+        >
+          <div className="text-[10px] uppercase tracking-wider text-slate-500">PRO {state.stop.pro || q} · from NuVizz</div>
+          <div className="text-sm font-bold text-slate-900 break-words">{state.stop.businessName || '(no name)'}</div>
+          <div className="text-[11px] font-semibold" style={{ color: BRAND }}>Tap for full details →</div>
+        </button>
+      )}
+      {detail && <LookupStopModal stop={detail} note={null} onClose={() => setDetail(null)} />}
+    </div>
+  );
+}
+
 // Right-side sidebar showing stop + metadata + edit form.
 function ProsSection({ stop }) {
   // Live stops carry `pros` as bare strings; a historical customer card carries
@@ -3256,6 +3310,7 @@ function ProsSection({ stop }) {
           ))}
         </div>
       )}
+      {stop.__historical && <HistoricalProLookup />}
     </div>
   );
 }
