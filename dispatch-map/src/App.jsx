@@ -54,7 +54,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.38.4';
+const APP_VERSION = '0.38.5';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -99,6 +99,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.38.5', 'Mark vehicle eligibility — one brush now sets BOTH colors. With the Tractor brush armed (⚙ → Mark vehicle eligibility → Tractor OK), clicking a stop marks it green (53′ fits); clicking the SAME stop again marks it red (box truck only); a third click clears it. Before, the second click just cleared the mark and you had to switch the brush to Box to mark red. The Box brush mirrors it (red → green → clear). No need to flip the radio to correct a stop — just click it again.'],
   ['0.38.4', 'The stops status pill is now on Routing (beta) too — the same "N stops / total pallets / Loads+Orders feed freshness / NuVizz calls + by-hour chart" card from the dispatch Map now sits top-right on the routing map (below the ⚙ map filters), so you can see board freshness and the call meter without leaving the routing screen. Same collapse toggle (shared with the Map\'s pill) and the same refresh button firing the cheap ~4-call scan — never the expensive number-probe.'],
   ['0.38.3', 'Print Manifest pagination fix (round 2, from Chad\'s printed page photo): tickets were still mashing together — ticket 2 started on page 1 and only ONE page came out. The 0.36.1 print bridge was correct, but the app shell\'s "lock the app to the viewport" CSS (body position:fixed + overflow:hidden, for iOS scroll containment) still applied DURING printing — and inside a fixed, viewport-clipped body the browser can\'t paginate at all: the one-ticket-per-page breaks are ignored and everything past the first page is clipped. The bridge now lifts that lock for the duration of the print (static body, visible overflow, auto height — print only; the on-screen app is untouched), so page breaks paginate again: page 1 = route summary + ticket 1, then one ticket per page. Verified with a real headless-Chrome print-to-PDF: before the fix 3 tickets → 1 page, after → 3 pages. Applies to the Delivery Ticket and BOL viewers too (same viewer).'],
   ['0.38.2','New "Quote" tab in the top bar (next to New Order) — the shared Uline rate console, the same pricing tool that lives in the quoting app, now embedded right here so you can price a shipment without leaving Dispatch. It reads live from the shared quote source (DavisDelivery/Quotes) at build time, so rate/fuel/zone changes there show up here on the next deploy — no re-copying. Enter a destination ZIP + weight (+ skids/loose) and it prices instantly; nothing here touches NuVizz.'],
@@ -11581,17 +11582,23 @@ function RoutingScreen({ debugCaptureRef }) {
   // A lightweight "paint" mode: arm a brush, then click stops to set whether a 53'
   // tractor-trailer fits. The flag is a property of the LOCATION
   // (customer_notes.vehicle_eligibility, keyed by matchKey) so it sticks for every
-  // future stop there. Clicking a stop already set to the armed brush clears it.
-  // Mutually exclusive with Box/Lasso/Ninja so a click only ever does one thing.
+  // future stop there. Repeated clicks on the SAME stop cycle through all three states
+  // without touching the ⚙ brush: with the Tractor brush armed a stop goes
+  // none → tractor (green) → box only (red) → cleared; the Box brush mirrors it
+  // (none → box only → tractor → cleared). So a single brush can set either color and
+  // still clear. Mutually exclusive with Box/Lasso/Ninja so a click only ever does one thing.
   const markEligibility = useCallback(async (s) => {
     if (!db || !s) return;
     const brush = eligPaintRef.current;            // 'tractor' | 'box' | null
     if (!brush) return;
     const mk = s.matchKey;
     if (!mk) { setLastAction(`${s.stopNbr}: no location key to mark`); return; }
-    const target = brush === 'box' ? 'box_only' : 'tractor';
+    // The armed brush's own color is the FIRST state; a second click on the same stop
+    // advances to the other color; a third clears — one brush, all three states.
+    const primary = brush === 'box' ? 'box_only' : 'tractor';
+    const secondary = brush === 'box' ? 'tractor' : 'box_only';
     const current = notes.get(mk)?.vehicle_eligibility || null;
-    const next = current === target ? null : target;   // click again on the same brush → unmark
+    const next = current === primary ? secondary : current === secondary ? null : primary;
     const who = s.businessName || s.stopNbr;
     try {
       await setDoc(doc(db, 'customer_notes', mk), {
@@ -11618,8 +11625,8 @@ function RoutingScreen({ debugCaptureRef }) {
     if (brush) {
       setNinjaMode(false); setSelectMode(null); selectModeRef.current = null;
       showMapToast(brush === 'tractor'
-        ? 'Tractor brush on — click stops a 53′ trailer fits (green). Set to Off in ⚙ to stop.'
-        : 'Box brush on — click stops that are box-truck only (red). Set to Off in ⚙ to stop.');
+        ? 'Tractor brush on — click a stop for green (53′ fits); click it again for red (box only), again to clear. Off in ⚙ to stop.'
+        : 'Box brush on — click a stop for red (box only); click it again for green (53′ fits), again to clear. Off in ⚙ to stop.');
     }
   }, [showMapToast]);
   useEffect(() => { eligPaintRef.current = eligPaint; }, [eligPaint]);
