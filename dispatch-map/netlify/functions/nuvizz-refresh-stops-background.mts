@@ -44,6 +44,10 @@ export default runRefreshStops;
 // 600→250), per-day scheduled NuVizz calls drop ~24× vs. the incident baseline.
 // A 15-minute index freshness is acceptable for a dispatch board; tighten again
 // only with real cost numbers in hand (see the runaway-calls incident report).
+// Scheduled scanning DISABLED (Chad, 2026-07-06) — this app runs on MANUAL scans
+// only. The cron below no longer fires, so the board is refreshed only when a
+// dispatcher hits "Scan now" (nuvizz-manual-scan). This function still runs on
+// demand via a POST to its HTTP endpoint. Re-enable by restoring the schedule.
 export const config = {
-  schedule: '*/15 * * * *',
+  // schedule: '*/15 * * * *',   // was: every 15 minutes, 24/7 (live board refresh)
 };
