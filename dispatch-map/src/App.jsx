@@ -54,7 +54,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.38.10';
+const APP_VERSION = '0.39.0';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -99,6 +99,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.39.0', '🔗 RWB engine (dark by default) — a THIRD Compare-panel Save engine alongside ⚙ Classic and ⚡ Import. RWB drives NuVizz\'s own Route Workbench portal to set a load\'s stop order in 2 SYNCHRONOUS calls (preview + save) — no async wait, no poll/re-send/reverse-unstick ladder, because the save either lands or errors in-band. Critically, it references stops BY ID ONLY and never re-sends the stop record, so freight/address/item data cannot be blanked or cloned by an incomplete echo (the exact failure class behind the Jul 2 Import incident) — proven byte-for-byte against UAT: before/after stop snapshots differed ONLY in seq/ETA/leg-distance/audit fields. MEMBERSHIP (planning arrivals onto the load) is unchanged — the same insertStops + steal-guard + sources-before-destinations ordering as the Import engine. Server gate NUVIZZ_RWB_ENABLED stays OFF by default; its own login (NUVIZZ_RWB_USER/PASS) defaults to the UAT portal regardless of which NuVizz tenant this deploy\'s v7 API writes to, so enabling it can never reach production without a deliberate separate env change (same bar as Import).'],
   ['0.38.10', 'Routing (beta) — the Routes panel now has a "Dispatch" button on each route card, next to the driver-assign dropdown. It calls the existing dispatchLoad op (NuVizz action DISPATCH) to move an already-assigned load out of Draft/Un-Planned. Same Beta/Live safety as driver-assign: a click only previews in Beta, and fires for real once you flip to ● Live. Disabled until a driver is assigned, and hidden once the route is already In-Transit/Completed/Cancelled.'],
   ['0.38.5', 'Mark vehicle eligibility — one brush now sets BOTH colors. With the Tractor brush armed (⚙ → Mark vehicle eligibility → Tractor OK), clicking a stop marks it green (53′ fits); clicking the SAME stop again marks it red (box truck only); a third click clears it. Before, the second click just cleared the mark and you had to switch the brush to Box to mark red. The Box brush mirrors it (red → green → clear). No need to flip the radio to correct a stop — just click it again.'],
   ['0.38.4', 'The stops status pill is now on Routing (beta) too — the same "N stops / total pallets / Loads+Orders feed freshness / NuVizz calls + by-hour chart" card from the dispatch Map now sits top-right on the routing map (below the ⚙ map filters), so you can see board freshness and the call meter without leaving the routing screen. Same collapse toggle (shared with the Map\'s pill) and the same refresh button firing the cheap ~4-call scan — never the expensive number-probe.'],
@@ -10274,12 +10275,25 @@ function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmN
   // to a disabled picker, never a crash. All hooks run unconditionally (the LIVE_WRITE_FLAG
   // gate is inside the effect + the render), so hook order is stable when the flag is off.
   const [liveMode, setLiveMode] = useState(false);
-  // Engine toggle — YOUR switch for the new NuVizz one-call LOAD IMPORT path. On = every Save
-  // (Beta preview and ● LIVE alike) runs through the import engine; off = the classic anchor
-  // engine, byte-identical to before. Remembered on this device. This is the ONLY switch — no
-  // server env var needed (the server keeps only an emergency hard-off brake).
-  const [importEngine, setImportEngine] = useState(() => { try { return localStorage.getItem('dd_import_engine') === '1'; } catch { return false; } });
-  const toggleImportEngine = () => setImportEngine((v) => { const n = !v; try { localStorage.setItem('dd_import_engine', n ? '1' : '0'); } catch { /* ignore */ } return n; });
+  // Engine toggle — YOUR switch for which stop-ORDER path a Save runs: 'classic' (anchor
+  // remove + one-at-a-time re-insert, as before), 'import' (the async one-call LOAD IMPORT +
+  // convergence poll), or 'rwb' (the 2-call SYNCHRONOUS Route Workbench sequence — no async
+  // wait, and it references stops by id only so freight/address data can't be blanked/cloned).
+  // Remembered on this device. This is the ONLY client-side switch — the server keeps its own
+  // emergency hard-off brake for each (NUVIZZ_LOAD_IMPORT / NUVIZZ_RWB_ENABLED) independent of
+  // what the client asks for.
+  const [engine, setEngine] = useState(() => {
+    try {
+      const v = localStorage.getItem('dd_write_engine');
+      if (v === 'rwb' || v === 'import' || v === 'classic') return v;
+      return localStorage.getItem('dd_import_engine') === '1' ? 'import' : 'classic'; // migrate the old boolean
+    } catch { return 'classic'; }
+  });
+  const cycleEngine = () => setEngine((v) => {
+    const n = v === 'classic' ? 'import' : v === 'import' ? 'rwb' : 'classic';
+    try { localStorage.setItem('dd_write_engine', n); } catch { /* ignore */ }
+    return n;
+  });
   // Per-card verification generation: each Save bumps its cards' generation so any OLDER
   // background verification loop for those cards exits instead of re-imposing a stale order.
   const verifyGenRef = useRef(new Map());
@@ -10401,7 +10415,7 @@ function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmN
     const { loads, warnings } = buildBoardPayload();
     if (!loads.length) { showToast(warnings[0] || 'No changes to save.'); return; }
     setBusy(true);
-    const res = await callWrite('commitBoard', { loads, origin: savedShipFrom(), useImport: importEngine || undefined }, { dryRun: true });
+    const res = await callWrite('commitBoard', { loads, origin: savedShipFrom(), useImport: engine === 'import' || undefined, useRwb: engine === 'rwb' || undefined }, { dryRun: true });
     setBusy(false);
     if (!res.ok) { showToast(`Preview failed: ${res.error || 'error'}`); return; }
     setConfirm({ plan: res.plan || [], tenant: res.tenant, loads, warnings, clientOpId: newClientOpId() });
@@ -10419,7 +10433,7 @@ function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmN
     // This Save supersedes any in-flight verification loop for the same cards (see verifyGenRef).
     for (const L of loads) { const k = L.__key ?? L.routeName ?? L.loadNbr ?? L.loadId; if (k) verifyGenRef.current.set(k, (verifyGenRef.current.get(k) || 0) + 1); }
     setBusy(true);
-    const res = await callWrite('commitBoard', { loads, origin: savedShipFrom(), useImport: importEngine || undefined }, { dryRun: false, clientOpId, createdBy: 'dispatcher' });
+    const res = await callWrite('commitBoard', { loads, origin: savedShipFrom(), useImport: engine === 'import' || undefined, useRwb: engine === 'rwb' || undefined }, { dryRun: false, clientOpId, createdBy: 'dispatcher' });
     setBusy(false); setConfirm(null);
     const resLoads = res.result?.loads || [];
     const orphaned = res.result?.orphaned || [];
@@ -10653,13 +10667,17 @@ function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmN
           )}
           {LIVE_WRITE_FLAG && (
             <button
-              onClick={toggleImportEngine}
-              title={importEngine
-                ? 'IMPORT engine — Save sets each load\'s full stop list in exact order with ONE NuVizz call per load, then verifies the order landed (read-back). Click for the classic engine.'
-                : 'CLASSIC engine — Save uses the anchor remove + one-at-a-time re-insert path (as before). Click to use the new one-call IMPORT engine.'}
-              className={`inline-flex items-center gap-1 text-[11px] font-bold px-2 py-1 rounded border ${importEngine ? 'border-violet-600 bg-violet-600 text-white' : 'border-slate-300 bg-white text-slate-600 hover:bg-slate-50'}`}
+              onClick={cycleEngine}
+              title={
+                engine === 'rwb'
+                  ? 'RWB engine — Save sets each load\'s stop order via the NuVizz Route Workbench portal: 2 SYNCHRONOUS calls per load (preview + save), no async wait, and it references stops BY ID ONLY so freight/address data can\'t be blanked or cloned. Click for the classic engine.'
+                  : engine === 'import'
+                    ? 'IMPORT engine — Save sets each load\'s full stop list in exact order with ONE NuVizz call per load, then verifies the order landed (read-back). Click for the RWB engine.'
+                    : 'CLASSIC engine — Save uses the anchor remove + one-at-a-time re-insert path (as before). Click to use the new one-call IMPORT engine.'
+              }
+              className={`inline-flex items-center gap-1 text-[11px] font-bold px-2 py-1 rounded border ${engine === 'rwb' ? 'border-teal-600 bg-teal-600 text-white' : engine === 'import' ? 'border-violet-600 bg-violet-600 text-white' : 'border-slate-300 bg-white text-slate-600 hover:bg-slate-50'}`}
             >
-              {importEngine ? '⚡ Import' : '⚙ Classic'}
+              {engine === 'rwb' ? '🔗 RWB' : engine === 'import' ? '⚡ Import' : '⚙ Classic'}
             </button>
           )}
           {LIVE_WRITE_FLAG && (
