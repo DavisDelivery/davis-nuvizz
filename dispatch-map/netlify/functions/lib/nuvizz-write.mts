@@ -1180,8 +1180,32 @@ export async function runCommitBoardRwb(requester: RequesterLike, payload: any, 
 
     const f = await fetchLoad(requester, loadNbrX, creds);
     if (!f.load) { result.ok = false; result.error = `commitBoard(rwb): load not found (${loadMissDiag(loadNbrX, f)})`; seq.push({ L, loadNbr: loadNbrX, orderedNbrs, arrivals: [], curNbrs: new Set(), result }); continue; }
-    const load = f.load;
-    if (L?.loadId && load.loadId && String(load.loadId) !== String(L.loadId)) {
+    let load = f.load;
+
+    // RECURRING-INSTANCE RETARGET. A recurring load NAME (e.g. "DARYL") can have TWO NuVizz
+    // instances on the same day — a fresh EMPTY one plus the prior one that still holds the stops.
+    // The board groups by name, so it can open the empty twin while showing the stops that actually
+    // live on the other instance. If we opened an empty load but the ordered stops sit on ONE other
+    // load with the SAME routeName, operate on THAT instance (what the board is showing) instead of
+    // refusing via the steal guard or rebuilding onto the empty twin. Costs +1 getStop +1 getLoad,
+    // and only when the opened load is empty.
+    let retargeted = false;
+    const openDOcount = (load.stops || []).filter((s: any) => String(s?.stopType ?? '').toUpperCase() === 'DO').length;
+    if (openDOcount === 0 && orderedNbrs.length) {
+      const probe = await fireSingle(requester, 'getStop', { stopNbr: orderedNbrs[0] }, creds);
+      const srcNbr = probe?.ok ? String(probe.stop?.assignedLoadNbr ?? '').trim() : '';
+      if (srcNbr && srcNbr !== loadNbrX && !isHashLikeId(srcNbr)) {
+        const sf = await fetchLoad(requester, srcNbr, creds);
+        const sameName = sf.load && String(sf.load.routeName ?? '').trim() !== ''
+          && String(sf.load.routeName).trim().toUpperCase() === String(load.routeName ?? '').trim().toUpperCase();
+        if (sameName) {
+          result.steps.push({ op: 'retargetInstance', from: loadNbrX, to: srcNbr, routeName: load.routeName });
+          loadNbrX = srcNbr; result.loadNbr = srcNbr; load = sf.load; retargeted = true;
+        }
+      }
+    }
+    // Identity check is skipped after a deliberate retarget (we intentionally switched instances).
+    if (!retargeted && L?.loadId && load.loadId && String(load.loadId) !== String(L.loadId)) {
       result.ok = false; result.error = `commitBoard(rwb): load identity mismatch (name resolved ${load.loadId}, expected ${L.loadId})`;
       seq.push({ L, loadNbr: loadNbrX, orderedNbrs, arrivals: [], curNbrs: new Set(), result }); continue;
     }
@@ -1235,7 +1259,7 @@ export async function runCommitBoardRwb(requester: RequesterLike, payload: any, 
       arrivals.push({ nbr, stopId: String(gs.stop.stopId), srcLoadNbr: srcNbr && srcNbr !== loadNbrX ? srcNbr : undefined });
     }
     if (err) { result.ok = false; result.error = err; seq.push({ L, loadNbr: loadNbrX, orderedNbrs, arrivals: [], curNbrs, result }); continue; }
-    seq.push({ L, loadNbr: loadNbrX, load, orderedNbrs, arrivals, curNbrs, result, addReads: missing.length });
+    seq.push({ L, loadNbr: loadNbrX, load, orderedNbrs, arrivals, curNbrs, result, addReads: missing.length, retargeted });
   }
 
   const legacyResult = legacy.length
@@ -1273,7 +1297,9 @@ export async function runCommitBoardRwb(requester: RequesterLike, payload: any, 
       outcome.set(String(p.loadNbr), 'failed');
       continue;
     }
-    let loadId: any = trustableLoadId(p.L?.loadId) ? p.L.loadId : (p.load?.loadId ?? null);
+    // After a recurring-instance retarget, the client's loadId points at the EMPTY twin — use the
+    // retargeted load's own id as the RWB routePlanId, never the stale client id.
+    let loadId: any = p.retargeted ? (p.load?.loadId ?? null) : (trustableLoadId(p.L?.loadId) ? p.L.loadId : (p.load?.loadId ?? null));
     let loadX = p.load;
     try {
       // Every desired stop's internal id — on-load stops (from the load read) + arrivals (from

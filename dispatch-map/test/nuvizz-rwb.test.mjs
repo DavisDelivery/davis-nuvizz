@@ -199,6 +199,44 @@ test('runCommitBoardRwb: an arrival is added via the RWB portal (not v7 insertSt
   });
 });
 
+test('runCommitBoardRwb: retargets to the same-named instance that holds the stops (duplicate recurring load)', async () => {
+  await withRwb({}, async () => {
+    // Two loads named DARYL: the opened one (EMPTY_ID) is empty; the twin (FULL) holds A,B.
+    // The board opened the empty twin; the save must retarget to FULL and reorder there.
+    const EMPTY_ID = '6a4778d0461cf601d983b6bf', FULL_ID = 'aa11bb22cc33dd44ee55ff66';
+    const calls = [];
+    const loadDoc = (id, name, stops) => ({ Load: {
+      loadHeader: { loadId: id, loadNbr: name === 'DARYL_EMPTY' ? 'LOAD113177' : 'LOAD112852', routeName: 'DARYL', rtOrigin: { address: { latitude: 34, longitude: -83 } } },
+      versionId: 'v1', loadExecutionInfo: { loadStatus: 'PLANNED' },
+      stops: stops.map((n, i) => ({ stop: { stopId: `id-${n}`, stopNbr: String(n), stopType: 'DO', to: { seq: i + 2 } } })),
+    } });
+    const requester = { async request(url, opts) {
+      const method = (opts.method || 'GET').toUpperCase(); calls.push({ url, method });
+      const J = (o, s = 200) => new Response(JSON.stringify(o), { status: s });
+      const T = (t) => new Response(t, { status: 200 });
+      if (url.includes('/loginreg/') && method === 'GET') return T('<meta name="_csrf" content="x"><meta name="_csrf_header" content="X-CSRF-TOKEN">');
+      if (url.includes('checkCompanyLogin')) return J({ ok: true });
+      if (url.includes('auth/userLogin')) return J({ data: { jwtToken: 'j' } });
+      if (url.includes('/authtoken/')) return J({ authToken: 't' });
+      if (url.includes('validateStopstoPerformAction')) return T('Success');
+      if (url.includes('addStopsToRouteAfterValidation')) return J({ responseCode: 200, message: 'SUCCESS' });
+      if (url.includes('fetchUpdatedJson')) return J([{ etaStopVOList: [{ timeZone: 'America/New_York' }], distance: 1, duration: 1, schStartTime: { dttm: 'Jul 2, 2026' } }]);
+      if (url.includes('saveComparedRouteData')) return J({ responseCode: 200, message: 'SUCCESS' });
+      if (url.includes('/load/info/LOAD113177')) return J(loadDoc(EMPTY_ID, 'DARYL_EMPTY', []));
+      if (url.includes('/load/info/LOAD112852')) return J(loadDoc(FULL_ID, 'DARYL_FULL', ['A', 'B']));
+      if (url.includes('/stop/info/')) { const n = url.split('/stop/info/')[1].split('/')[0]; return J({ Stop: { stop: { stopId: `id-${n}`, stopNbr: n, stopType: 'DO' }, load: { loadNbr: 'LOAD112852' } } }); }
+      return J({});
+    } };
+    const r = await runCommitBoardRwb(requester, { loads: [{ loadNbr: 'LOAD113177', loadId: EMPTY_ID, routeName: 'DARYL', orderedStopNbrs: ['B', 'A'] }] }, CREDS);
+    assert.equal(r.ok, true, `expected retarget+reorder to succeed, got: ${JSON.stringify(r.loads?.[0]?.error)}`);
+    // Retarget step recorded, and NO stops added the RWB way (they're already on the full twin).
+    const steps = r.loads[0].steps || [];
+    assert.ok(steps.some((s) => s.op === 'retargetInstance' && s.to === 'LOAD112852'), 'should record a retarget to the full instance');
+    assert.equal(calls.some((c) => c.url.includes('addStopsToRouteAfterValidation')), false, 'no arrivals — stops already on the retargeted load');
+    assert.equal(calls.some((c) => c.url.includes('saveComparedRouteData')), true);
+  });
+});
+
 test('runCommitBoardRwb: refuses when the load carries a stop the board is not showing (stale-board guard)', async () => {
   await withRwb({}, async () => {
     // Load actually carries [A,B,C]; the board only knows [A,B] and reorders to [B,A] without
