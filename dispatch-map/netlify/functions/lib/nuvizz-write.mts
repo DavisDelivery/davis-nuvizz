@@ -24,7 +24,7 @@ import {
   type SingleOp, type WriteOp, type WriteCreds,
 } from './nuvizz-write-ops.mts';
 import { isHashLikeId } from './nuvizz-list.mts';
-import { rwbEngineBlocked, rwbSequenceStops } from './nuvizz-rwb.mts';
+import { rwbEngineBlocked, rwbConfigReady, rwbAddStopsToRoute, rwbSequenceStops } from './nuvizz-rwb.mts';
 
 const hasDriverId = (v: any) => v != null && String(v).trim() !== '' && Number(v) !== 0;
 
@@ -1142,6 +1142,13 @@ export async function runCommitBoardRwb(requester: RequesterLike, payload: any, 
   if (rwbEngineBlocked()) {
     return { ok: false, gated: true, error: 'RWB engine is disabled on the server (NUVIZZ_RWB_ENABLED must be explicitly set) — use the classic or import engine' };
   }
+  // Refuse BEFORE any v7 membership write when the RWB portal creds are missing. Lever 2's
+  // own empty-creds guard fires only AFTER lever 1's insertStops/removeStops, which would
+  // leave a load's membership mutated with its order never set (an enabled-but-credentialless
+  // deploy). Gating up-front keeps the "refused before any network call" invariant true.
+  if (!rwbConfigReady()) {
+    return { ok: false, gated: true, error: 'RWB creds not configured (NUVIZZ_RWB_USER/PASS) — refused before any write' };
+  }
   const loadsIn: any[] = Array.isArray(payload?.loads) ? payload.loads : [];
   if (!loadsIn.length) return { ok: true, loads: [], orphaned: [] };
 
@@ -1192,6 +1199,15 @@ export async function runCommitBoardRwb(requester: RequesterLike, payload: any, 
       if (s?.stopId != null && String(s?.stopType ?? '').toUpperCase() === 'DO') stopIdByNbr.set(String(s.stopNbr), String(s.stopId));
     }
 
+    // DEPARTURES — stops leaving this load (unplanned, or the source side of a cross-load move).
+    // RWB's saveComparedRouteData only REORDERS the ids it is given; it is NOT trusted to unplan
+    // an omitted stop. So membership REDUCTION rides the proven v7 removeStops op (same as classic),
+    // not RWB omission — this is what actually frees a moved stop before the destination inserts it.
+    const removeNbrs: string[] = Array.isArray(L?.removeStopNbrs) ? L.removeStopNbrs.map((x: any) => String(x)).filter(Boolean) : [];
+    const departures = removeNbrs
+      .filter((n) => stopIdByNbr.has(n) && !orderedNbrs.includes(n))
+      .map((n) => ({ nbr: n, stopId: stopIdByNbr.get(n) as string }));
+
     // Same TWO-LEVER classification as the import engine: ON-LOAD (already have a stopId) vs
     // ARRIVAL (an existing stop elsewhere — resolved + steal-guarded via getStop, planned with
     // insertStops by stopId; NEVER an RWB entry for a stop not yet on this load).
@@ -1212,8 +1228,8 @@ export async function runCommitBoardRwb(requester: RequesterLike, payload: any, 
       }
       arrivals.push({ nbr, stopId: String(gs.stop.stopId), srcLoadNbr: srcNbr && srcNbr !== loadNbrX ? srcNbr : undefined });
     }
-    if (err) { result.ok = false; result.error = err; seq.push({ L, loadNbr: loadNbrX, orderedNbrs, arrivals: [], curNbrs, result }); continue; }
-    seq.push({ L, loadNbr: loadNbrX, load, orderedNbrs, arrivals, curNbrs, result, addReads: missing.length });
+    if (err) { result.ok = false; result.error = err; seq.push({ L, loadNbr: loadNbrX, orderedNbrs, arrivals: [], departures: [], curNbrs, result }); continue; }
+    seq.push({ L, loadNbr: loadNbrX, load, orderedNbrs, arrivals, departures, curNbrs, result, addReads: missing.length });
   }
 
   const legacyResult = legacy.length
@@ -1254,38 +1270,46 @@ export async function runCommitBoardRwb(requester: RequesterLike, payload: any, 
     let loadId: any = trustableLoadId(p.L?.loadId) ? p.L.loadId : (p.load?.loadId ?? null);
     let loadX = p.load;
     try {
-      // LEVER 1: MEMBERSHIP — plan the arrivals with ONE bulk insertStops (the REAL records, by
-      // stopId), then RE-READ the load so lever 2 has every ordered stop's up-to-date stopId.
-      if (p.arrivals.length) {
-        if (!loadId) { p.result.ok = false; p.result.error = 'commitBoard(rwb): loadId unresolved for insertStops'; outcome.set(String(p.loadNbr), 'failed'); continue; }
-        const ins = await fireSingle(requester, 'insertStops', { insertStopIds: p.arrivals.map((a: any) => a.stopId), loadId }, creds);
-        p.result.steps.push({ op: 'insertStops', ok: !!ins.ok, stopIds: p.arrivals.map((a: any) => a.stopId), error: ins.ok ? null : (ins.error || 'failed') });
-        if (!ins.ok) { p.result.ok = false; p.result.error = `commitBoard(rwb): planning ${p.arrivals.length} stop(s) failed: ${ins.error || 'insertStops failed'}`; outcome.set(String(p.loadNbr), 'failed'); continue; }
-        const f2 = await fetchLoad(requester, String(p.loadNbr), creds);
-        if (!f2.load) { p.result.ok = false; p.result.error = `commitBoard(rwb): load unreadable after planning (${loadMissDiag(p.loadNbr, f2)}) — the ${p.arrivals.length} stop(s) ARE planned; Save again to set the order`; outcome.set(String(p.loadNbr), 'failed'); continue; }
-        loadX = f2.load;
-      }
-
+      // Every desired stop's internal id — on-load stops (from the load read) + arrivals (from
+      // getStop). No load re-read is needed: we already hold every id the save references.
       const stopIdByNbr2 = new Map<string, string>();
       for (const s of (loadX?.stops || [])) if (s?.stopNbr != null && s?.stopId != null) stopIdByNbr2.set(String(s.stopNbr), String(s.stopId));
+      for (const a of (p.arrivals || [])) stopIdByNbr2.set(String(a.nbr), String(a.stopId));
+
+      if (!loadId) { p.result.ok = false; p.result.error = 'commitBoard(rwb): loadId (routePlanId) unresolved'; outcome.set(String(p.loadNbr), 'failed'); continue; }
+      const routePlanId = String(loadId);
+
+      // LEVER 1: MEMBERSHIP — the RWB-native way (verified from a live portal HAR). ADD each
+      // arrival to the route plan via validateStopstoPerformAction + addStopsToRouteAfterValidation
+      // (NOT v7 insertStops, which does not register the stop in RWB's route-plan structures).
+      // REMOVALS need no call here: the declarative save below omits any departing stop, which is
+      // exactly how the portal unplans (fetchUpdatedJson without it → save without it).
+      let rwbAddCalls = 0;
+      if (p.arrivals.length) {
+        const add = await rwbAddStopsToRoute(requester, routePlanId, p.arrivals.map((a: any) => a.stopId));
+        rwbAddCalls = add.calls;
+        p.result.steps.push(...add.steps.map((s: any) => ({ ...s, op: `rwb:${s.op}` })));
+        if (!add.ok) { p.result.ok = false; p.result.error = `commitBoard(rwb): ${add.message}`; outcome.set(String(p.loadNbr), 'failed'); continue; }
+      }
+
       const orderedIds: string[] = [];
       let entryErr: string | null = null;
       for (const nbr of p.orderedNbrs) {
         const id = stopIdByNbr2.get(nbr);
-        if (!id) { entryErr = `commitBoard(rwb): stop ${nbr} is not on load ${p.loadNbr} after planning — refusing to sequence it; Save again`; break; }
+        if (!id) { entryErr = `commitBoard(rwb): stop ${nbr} has no internal id to sequence (stale board — refresh and retry)`; break; }
         orderedIds.push(id);
       }
       if (entryErr) { p.result.ok = false; p.result.error = entryErr; outcome.set(String(p.loadNbr), 'failed'); continue; }
 
-      // LEVER 2: ORDER — the 2-call, SYNCHRONOUS RWB sequence. No convergence poll: the save
-      // either lands or errors in this same call.
+      // LEVER 2: ORDER + declarative MEMBERSHIP — fetchUpdatedJson (preview) + saveComparedRouteData
+      // (persist EXACTLY these stops in this order; omitted stops are removed). Handles 1+ stops.
       const rtOriginAddr = loadX?.loadHeader?.rtOrigin?.address;
       const origin = (rtOriginAddr?.latitude != null && rtOriginAddr?.longitude != null)
         ? { lat: Number(rtOriginAddr.latitude), lng: Number(rtOriginAddr.longitude) }
         : DAVIS_DEPOT;
-      const r = await rwbSequenceStops(requester, String(loadId), orderedIds, origin);
+      const r = await rwbSequenceStops(requester, routePlanId, orderedIds, origin);
       p.result.steps.push(...r.steps.map((s: any) => ({ ...s, op: `rwb:${s.op}` })));
-      p.result.calls = { rwb: r.calls, inserts: p.arrivals.length ? 1 : 0, infos: p.arrivals.length ? 1 : 0, stopInfos: p.addReads || 0 };
+      p.result.calls = { rwb: r.calls, rwbAdd: rwbAddCalls, stopInfos: p.addReads || 0 };
       if (!r.ok) { p.result.ok = false; p.result.error = r.message; outcome.set(String(p.loadNbr), 'failed'); continue; }
       outcome.set(String(p.loadNbr), 'converged');
       loadId = loadId ?? loadX?.loadId;

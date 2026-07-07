@@ -48,6 +48,15 @@ export function rwbEngineEnabled(): boolean {
 export function rwbEngineBlocked(): boolean {
   return !rwbEngineEnabled();
 }
+/** True only when the RWB portal login is fully configured (enabled AND creds present).
+ * Callers gate on this BEFORE issuing any v7 membership write (insertStops/removeStops),
+ * so an enabled-but-credentialless deploy can never leave a load half-mutated (order
+ * unset) — the empty-creds refusal happens before the first network call, not after. */
+export function rwbConfigReady(): boolean {
+  if (rwbEngineBlocked()) return false;
+  const c = rwbConfig();
+  return !!c.username && !!c.password;
+}
 
 interface RwbConfig {
   loginBase: string;
@@ -158,14 +167,16 @@ async function session(requester: RwbRequesterLike, cfg: RwbConfig): Promise<{ a
   return cachedSession;
 }
 
-async function rwbAuthedCall(requester: RwbRequesterLike, cfg: RwbConfig, method: string, path: string, form: Record<string, string>, retried = false): Promise<{ ok: boolean; status: number; body: any; error?: string }> {
+async function rwbAuthedCall(requester: RwbRequesterLike, cfg: RwbConfig, method: string, path: string, form: Record<string, string> | null, retried = false): Promise<{ ok: boolean; status: number; body: any; error?: string }> {
   const sess = await session(requester, cfg);
   if ('error' in sess) return { ok: false, status: 0, body: null, error: `RWB login failed: ${sess.error}` };
   const basic = 'Basic ' + Buffer.from(`JWT:${sess.authToken}`).toString('base64');
   const url = `${cfg.portalBase}/deliverit/${path}`;
-  const fd = new FormData();
-  for (const [k, v] of Object.entries(form)) fd.set(k, v);
-  const r = await go(requester, sess.jar, method, url, { headers: { authorization: basic, cookie: 'Instance=ndv2', referer: sess.ref, origin: cfg.portalBase }, body: fd, route: `/rwb/${path.split('/').pop()}`, tenant: cfg.company });
+  // GET calls (validate/check endpoints) carry no multipart body; POSTs send the form.
+  let body: any = null;
+  if (form && method.toUpperCase() !== 'GET') { const fd = new FormData(); for (const [k, v] of Object.entries(form)) fd.set(k, v); body = fd; }
+  const routeLabel = path.split('/').filter((s) => !/^[0-9a-f]{24}$/.test(s)).pop();
+  const r = await go(requester, sess.jar, method, url, { headers: { authorization: basic, cookie: 'Instance=ndv2', referer: sess.ref, origin: cfg.portalBase }, body, route: `/rwb/${routeLabel}`, tenant: cfg.company });
   if (r.status === 401 && !retried) {
     cachedSession = null; // token expired mid-instance-life — one retry with a fresh login
     return rwbAuthedCall(requester, cfg, method, path, form, true);
@@ -173,33 +184,95 @@ async function rwbAuthedCall(requester: RwbRequesterLike, cfg: RwbConfig, method
   return { ok: r.status >= 200 && r.status < 300, status: r.status, body: r.data ?? r.text?.slice(0, 2000) };
 }
 
+// True when a portal JSON body (or plain-text "Success") indicates application success. deliverit
+// answers 200 with either { responseCode:200, message:'SUCCESS' } or a bare "Success" string, and
+// signals failure with a non-200 responseCode / success:false — which MUST reject a 2xx.
+function rwbBodyOk(body: any): boolean {
+  if (body == null) return true;
+  if (typeof body === 'string') return /success/i.test(body);
+  if (typeof body === 'object') {
+    if (body.success === false) return false;
+    if (body.responseCode != null && Number(body.responseCode) !== 200) return false;
+    return true;
+  }
+  return true;
+}
+
+/**
+ * rwbAddStopsToRoute — attach EXISTING stops to a route plan the RWB-native way (matches the
+ * portal: per stop, GET stop/validateStopstoPerformAction/{id} then POST
+ * stop/addStopsToRouteAfterValidation {routePlanId, stopIds, isPlanningMode:true}). This is how
+ * RWB registers a stop on the route plan; the subsequent saveComparedRouteData can then order it.
+ * (Replaces the v7 insertStops shortcut, which does not set up the RWB route-plan structures.)
+ */
+export async function rwbAddStopsToRoute(requester: RwbRequesterLike, routePlanId: string, stopIds: string[]): Promise<{ ok: boolean; message: string; calls: number; steps: any[] }> {
+  const cfg = rwbConfig();
+  if (rwbEngineBlocked()) return { ok: false, message: 'RWB engine is disabled on the server', calls: 0, steps: [] };
+  if (!cfg.username || !cfg.password) return { ok: false, message: 'RWB creds not configured (NUVIZZ_RWB_USER/PASS)', calls: 0, steps: [] };
+  const ids = [...new Set(stopIds.map(String).filter(Boolean))];
+  const steps: any[] = [];
+  let calls = 0;
+  for (const id of ids) {
+    const v = await rwbAuthedCall(requester, cfg, 'GET', `dirouteworkbench/stop/validateStopstoPerformAction/${id}`, null);
+    calls++;
+    steps.push({ op: 'validateStop', stopId: id, ok: v.ok && rwbBodyOk(v.body), status: v.status });
+    if (!v.ok || !rwbBodyOk(v.body)) return { ok: false, message: `stop ${id} failed RWB add-validation (status ${v.status})`, calls, steps };
+    const a = await rwbAuthedCall(requester, cfg, 'POST', 'dirouteworkbench/stop/addStopsToRouteAfterValidation', { routePlanId, stopIds: id, isPlanningMode: 'true' });
+    calls++;
+    const ok = a.ok && rwbBodyOk(a.body);
+    steps.push({ op: 'addStopsToRoute', stopId: id, ok, status: a.status });
+    if (!ok) return { ok: false, message: a.error || `addStopsToRoute failed for stop ${id} (status ${a.status})`, calls, steps };
+  }
+  return { ok: true, message: `Added ${ids.length} stop(s) to the route via RWB.`, calls, steps };
+}
+
 const MONTHS: Record<string, string> = { Jan: '01', Feb: '02', Mar: '03', Apr: '04', May: '05', Jun: '06', Jul: '07', Aug: '08', Sep: '09', Oct: '10', Nov: '11', Dec: '12' };
-function routeWindow(dttm: string | undefined): { start: string; end: string } | null {
+
+// GMT offset (e.g. 'GMT-04:00') for a given calendar DATE in `timeZone`, computed from the
+// runtime's IANA database so it is DST-correct year-round (Eastern is -04:00 in summer,
+// -05:00 in winter). Falls back to EST (-05:00) if the zone can't be resolved. Netlify
+// functions run on real Node, so Intl + Date are available here.
+function gmtOffsetForDate(yyyy: string, mm: string, dd: string, timeZone: string): string {
+  try {
+    const at = new Date(Date.UTC(Number(yyyy), Number(mm) - 1, Number(dd), 12, 0, 0));
+    const part = new Intl.DateTimeFormat('en-US', { timeZone, timeZoneName: 'longOffset' })
+      .formatToParts(at).find((p) => p.type === 'timeZoneName');
+    const match = part && part.value.match(/GMT([+-]\d{2}:\d{2})/);
+    return match ? `GMT${match[1]}` : 'GMT-05:00';
+  } catch { return 'GMT-05:00'; }
+}
+
+function routeWindow(dttm: string | undefined, timeZone = 'America/New_York'): { start: string; end: string } | null {
   const m = String(dttm || '').match(/^(\w{3})\s+(\d{1,2}),\s+(\d{4})/);
   if (!m) return null;
   const mm = MONTHS[m[1]];
   if (!mm) return null;
   const dd = String(m[2]).padStart(2, '0');
   const date = `${mm}/${dd}/${m[3]}`;
-  return { start: `${date} 08:00:00 am GMT-04:00`, end: `${date} 11:59:00 pm GMT-04:00` };
+  const off = gmtOffsetForDate(m[3], mm, dd, timeZone);   // DST-correct, not a hardcoded EDT literal
+  return { start: `${date} 08:00:00 am ${off}`, end: `${date} 11:59:00 pm ${off}` };
 }
 
 /**
- * rwbSequenceStops — set a load's delivery order to EXACTLY `orderedStopIds` via the
+ * rwbSequenceStops — set a route's stop set AND order to EXACTLY `orderedStopIds` via the
  * portal's Route Workbench. 2 calls (flat, regardless of stop count): fetchUpdatedJson
- * (recompute the route in the desired order — read-only preview) then
- * saveComparedRouteData (PERSIST — full route-level replace; NEVER rewrites the stop
- * record itself, so cargo data cannot be lost — see the module doc above).
+ * (recompute the route in the desired order — read-only preview) then saveComparedRouteData
+ * (PERSIST). The save is DECLARATIVE (verified from a live portal HAR): the route ends up
+ * with exactly the stops in the payload, so a stop currently on the route but OMITTED here is
+ * REMOVED — this is how RWB unplans. It never rewrites the stop record itself, so cargo data
+ * cannot be lost. A stop NOT yet on the route must first be attached with rwbAddStopsToRoute
+ * (the save alone won't create membership for a brand-new stop).
  *
- * Depot-pickup model: every stop is picked up at `origin` then delivered in the given
- * order (matches how this app's loads run — one shared depot per route).
+ * Depot-pickup model: every stop is picked up at `origin` then delivered in the given order
+ * (matches how this app's loads run — one shared depot per route). 1+ stops (the portal
+ * accepts a single-stop route; 0 stops is an empty route → use load/cancel, not this).
  */
 export async function rwbSequenceStops(requester: RwbRequesterLike, routePlanId: string, orderedStopIds: string[], origin: { lat: number; lng: number }): Promise<{ ok: boolean; message: string; calls: number; steps: any[] }> {
   const cfg = rwbConfig();
   if (rwbEngineBlocked()) return { ok: false, message: 'RWB engine is disabled on the server (NUVIZZ_RWB_ENABLED must be explicitly set)', calls: 0, steps: [] };
   if (!cfg.username || !cfg.password) return { ok: false, message: 'RWB creds not configured (NUVIZZ_RWB_USER/PASS)', calls: 0, steps: [] };
   const ids = [...new Set(orderedStopIds.map(String).filter(Boolean))];
-  if (ids.length < 2) return { ok: false, message: 'RWB sequence needs 2+ stops', calls: 0, steps: [] };
+  if (ids.length < 1) return { ok: false, message: 'RWB sequence needs at least 1 stop', calls: 0, steps: [] };
   const steps: any[] = [];
 
   const stoplist = [...ids.map((id) => id + '_PU'), ...ids.map((id) => id + '_DO')].join(',');
@@ -212,7 +285,8 @@ export async function rwbSequenceStops(requester: RwbRequesterLike, routePlanId:
   const o = Array.isArray(d) ? d[0] : d;
   if (!o || !Array.isArray(o.etaStopVOList)) return { ok: false, message: 'fetchUpdatedJson returned no route preview', calls: 1, steps };
 
-  const win = routeWindow(o.schStartTime && o.schStartTime.dttm);
+  const routeTz = (o.etaStopVOList[0] && o.etaStopVOList[0].timeZone) || 'America/New_York';
+  const win = routeWindow(o.schStartTime && o.schStartTime.dttm, routeTz);
   const routeJson = [{
     routePlanId, originLat: origin.lat, originLong: origin.lng,
     routeEndTime: win ? win.end : '', routeStartTime: win ? win.start : '',
@@ -228,8 +302,16 @@ export async function rwbSequenceStops(requester: RwbRequesterLike, routePlanId:
   }];
   const sr = await rwbAuthedCall(requester, cfg, 'POST', 'dirouteworkbench/routePlan/saveComparedRouteData', { routeJsonData: JSON.stringify(routeJson), planningMode: 'true' });
   steps.push({ op: 'saveComparedRouteData', ok: sr.ok, status: sr.status, error: sr.error || null });
-  const okSave = sr.ok || (sr.body && sr.body.responseCode === 200);
-  if (!okSave) return { ok: false, message: sr.error || `saveComparedRouteData failed (status ${sr.status})`, calls: 2, steps };
+  // Success requires BOTH a 2xx transport status AND a non-error body (rwbBodyOk): deliverit
+  // answers 200 with { responseCode:500 } / { success:false } on an application failure, which
+  // must REJECT the save — never trust the HTTP status alone.
+  const bodyObj = sr.body && typeof sr.body === 'object' ? sr.body : null;
+  const bodyCode = bodyObj && bodyObj.responseCode != null ? Number(bodyObj.responseCode) : null;
+  const okSave = sr.ok && rwbBodyOk(sr.body);
+  if (!okSave) {
+    const why = sr.ok ? `application error (responseCode ${bodyCode ?? '?'}${bodyObj?.message ? `: ${bodyObj.message}` : ''})` : `status ${sr.status}`;
+    return { ok: false, message: sr.error || `saveComparedRouteData failed (${why})`, calls: 2, steps };
+  }
   return { ok: true, message: `Sequenced ${ids.length} stop(s) via RWB.`, calls: 2, steps };
 }
 
