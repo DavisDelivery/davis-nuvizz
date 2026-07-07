@@ -198,32 +198,52 @@ function rwbBodyOk(body: any): boolean {
   return true;
 }
 
-/**
- * rwbAddStopsToRoute — attach EXISTING stops to a route plan the RWB-native way (matches the
- * portal: per stop, GET stop/validateStopstoPerformAction/{id} then POST
- * stop/addStopsToRouteAfterValidation {routePlanId, stopIds, isPlanningMode:true}). This is how
- * RWB registers a stop on the route plan; the subsequent saveComparedRouteData can then order it.
- * (Replaces the v7 insertStops shortcut, which does not set up the RWB route-plan structures.)
- */
-export async function rwbAddStopsToRoute(requester: RwbRequesterLike, routePlanId: string, stopIds: string[]): Promise<{ ok: boolean; message: string; calls: number; steps: any[] }> {
-  const cfg = rwbConfig();
-  if (rwbEngineBlocked()) return { ok: false, message: 'RWB engine is disabled on the server', calls: 0, steps: [] };
-  if (!cfg.username || !cfg.password) return { ok: false, message: 'RWB creds not configured (NUVIZZ_RWB_USER/PASS)', calls: 0, steps: [] };
-  const ids = [...new Set(stopIds.map(String).filter(Boolean))];
-  const steps: any[] = [];
+// Per-stop add (the portal's proven shape from the HAR): validate GET then add POST, one at a
+// time. Used as the FALLBACK when the batch add is rejected. Returns ok + calls made.
+async function rwbAddStopsPerStop(requester: RwbRequesterLike, cfg: RwbConfig, routePlanId: string, ids: string[], steps: any[]): Promise<{ ok: boolean; message: string; calls: number }> {
   let calls = 0;
   for (const id of ids) {
     const v = await rwbAuthedCall(requester, cfg, 'GET', `dirouteworkbench/stop/validateStopstoPerformAction/${id}`, null);
     calls++;
     steps.push({ op: 'validateStop', stopId: id, ok: v.ok && rwbBodyOk(v.body), status: v.status });
-    if (!v.ok || !rwbBodyOk(v.body)) return { ok: false, message: `stop ${id} failed RWB add-validation (status ${v.status})`, calls, steps };
+    if (!v.ok || !rwbBodyOk(v.body)) return { ok: false, message: `stop ${id} failed RWB add-validation (status ${v.status})`, calls };
     const a = await rwbAuthedCall(requester, cfg, 'POST', 'dirouteworkbench/stop/addStopsToRouteAfterValidation', { routePlanId, stopIds: id, isPlanningMode: 'true' });
     calls++;
     const ok = a.ok && rwbBodyOk(a.body);
     steps.push({ op: 'addStopsToRoute', stopId: id, ok, status: a.status });
-    if (!ok) return { ok: false, message: a.error || `addStopsToRoute failed for stop ${id} (status ${a.status})`, calls, steps };
+    if (!ok) return { ok: false, message: a.error || `addStopsToRoute failed for stop ${id} (status ${a.status})`, calls };
   }
-  return { ok: true, message: `Added ${ids.length} stop(s) to the route via RWB.`, calls, steps };
+  return { ok: true, message: `Added ${ids.length} stop(s) per-stop.`, calls };
+}
+
+/**
+ * rwbAddStopsToRoute — attach EXISTING stops to a route plan. The portal's addStopsToRouteAfterValidation
+ * field is `stopIds` (plural), so we try ONE call with ALL ids comma-joined — critical at production
+ * scale (15-20 stops per route: 1 call instead of 2 per stop). The per-stop validate GET is SKIPPED on
+ * the batch path (the add enforces the same server-side check). If the batch is rejected, we FALL BACK
+ * to the proven per-stop validate+add so a save never fails just because the batch shape wasn't accepted.
+ */
+export async function rwbAddStopsToRoute(requester: RwbRequesterLike, routePlanId: string, stopIds: string[]): Promise<{ ok: boolean; message: string; calls: number; steps: any[]; mode?: string }> {
+  const cfg = rwbConfig();
+  if (rwbEngineBlocked()) return { ok: false, message: 'RWB engine is disabled on the server', calls: 0, steps: [] };
+  if (!cfg.username || !cfg.password) return { ok: false, message: 'RWB creds not configured (NUVIZZ_RWB_USER/PASS)', calls: 0, steps: [] };
+  const ids = [...new Set(stopIds.map(String).filter(Boolean))];
+  if (!ids.length) return { ok: true, message: 'no stops to add', calls: 0, steps: [] };
+  const steps: any[] = [];
+  // A single stop can't be cheaper than one add — go straight to per-stop (also its own smallest case).
+  if (ids.length === 1) {
+    const r = await rwbAddStopsPerStop(requester, cfg, routePlanId, ids, steps);
+    return { ok: r.ok, message: r.message, calls: r.calls, steps, mode: 'per-stop' };
+  }
+  // BATCH: one add with all ids.
+  const batch = await rwbAuthedCall(requester, cfg, 'POST', 'dirouteworkbench/stop/addStopsToRouteAfterValidation', { routePlanId, stopIds: ids.join(','), isPlanningMode: 'true' });
+  const batchOk = batch.ok && rwbBodyOk(batch.body);
+  steps.push({ op: 'addStopsToRoute(batch)', count: ids.length, ok: batchOk, status: batch.status });
+  if (batchOk) return { ok: true, message: `Added ${ids.length} stop(s) in one batch.`, calls: 1, steps, mode: 'batch' };
+  // FALLBACK: the batch shape was rejected — add per stop (proven).
+  steps.push({ op: 'batch-fallback', note: `batch add rejected (status ${batch.status}) — retrying per-stop` });
+  const r = await rwbAddStopsPerStop(requester, cfg, routePlanId, ids, steps);
+  return { ok: r.ok, message: r.ok ? `Added ${ids.length} stop(s) per-stop (batch fell back).` : r.message, calls: 1 + r.calls, steps, mode: 'batch-fallback' };
 }
 
 const MONTHS: Record<string, string> = { Jan: '01', Feb: '02', Mar: '03', Apr: '04', May: '05', Jun: '06', Jul: '07', Aug: '08', Sep: '09', Oct: '10', Nov: '11', Dec: '12' };

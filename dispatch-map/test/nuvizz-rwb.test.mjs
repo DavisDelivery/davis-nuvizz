@@ -124,13 +124,41 @@ test('rwbSequenceStops: allows a single-stop route (HAR-verified), refuses zero'
   });
 });
 
-test('rwbAddStopsToRoute: validates then adds each stop via the RWB portal', async () => {
+test('rwbAddStopsToRoute: adds MULTIPLE stops in ONE batch call (no per-stop validate)', async () => {
   await withRwb({}, async () => {
     const { requester, calls } = makeRequester();
-    const r = await rwbAddStopsToRoute(requester, HEXID, ['id-A', 'id-B']);
+    const r = await rwbAddStopsToRoute(requester, HEXID, ['id-A', 'id-B', 'id-C']);
     assert.equal(r.ok, true, r.message);
-    assert.equal(calls.filter((c) => c.url.includes('validateStopstoPerformAction')).length, 2);
-    assert.equal(calls.filter((c) => c.url.includes('addStopsToRouteAfterValidation')).length, 2);
+    assert.equal(r.mode, 'batch');
+    assert.equal(calls.filter((c) => c.url.includes('addStopsToRouteAfterValidation')).length, 1, 'one batch add for all 3');
+    assert.equal(calls.filter((c) => c.url.includes('validateStopstoPerformAction')).length, 0, 'batch path skips per-stop validate');
+  });
+});
+
+test('rwbAddStopsToRoute: falls back to per-stop when the batch add is rejected', async () => {
+  await withRwb({}, async () => {
+    // Batch add returns an application error → engine retries each stop with validate+add.
+    let firstAdd = true;
+    const base = makeRequester();
+    const real = base.requester.request;
+    base.requester.request = async (url, opts, meta) => {
+      if (url.includes('addStopsToRouteAfterValidation') && firstAdd) { firstAdd = false; return new Response(JSON.stringify({ responseCode: 500, message: 'batch not supported' }), { status: 200 }); }
+      return real(url, opts, meta);
+    };
+    const r = await rwbAddStopsToRoute(base.requester, HEXID, ['id-A', 'id-B']);
+    assert.equal(r.ok, true, r.message);
+    assert.equal(r.mode, 'batch-fallback');
+    assert.equal(base.calls.filter((c) => c.url.includes('validateStopstoPerformAction')).length, 2, 'fallback validates each');
+  });
+});
+
+test('rwbAddStopsToRoute: a single stop uses the per-stop path', async () => {
+  await withRwb({}, async () => {
+    const { requester, calls } = makeRequester();
+    const r = await rwbAddStopsToRoute(requester, HEXID, ['id-A']);
+    assert.equal(r.ok, true, r.message);
+    assert.equal(r.mode, 'per-stop');
+    assert.equal(calls.filter((c) => c.url.includes('validateStopstoPerformAction')).length, 1);
   });
 });
 
