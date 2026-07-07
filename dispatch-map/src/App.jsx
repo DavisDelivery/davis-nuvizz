@@ -54,7 +54,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.38.5';
+const APP_VERSION = '0.38.7';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -7195,6 +7195,16 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef }) {
 
   // Center/zoom the map to fit a route's stops when it's opened (per dispatcher
   // request — NuVizz frames the route on open). Restores the prior board view on close.
+  //
+  // The 380px RouteDetailSidebar mounts in the SAME commit that sets selectedRoute,
+  // shrinking the map's flex-1 container. Google caches its container pixel size and
+  // only re-reads it on a 'resize' event — and the only existing resize triggers fire
+  // on mount and on left-panel width changes, never on sidebar open. So a plain
+  // fitBounds here would frame the route against the OLD full-width viewport and the
+  // easternmost ~380px would hide behind the sidebar: compact routes still fit inside
+  // the padding, but spread-out routes silently lose their far stops. Fix: on the next
+  // frame (after the shrink has laid out) force Google to re-measure, THEN fit to the
+  // true visible area — so all stops land on-screen no matter how far the route spreads.
   const preRouteViewRef = useRef(null);
   useEffect(() => {
     if (!google || !mapRef.current) return;
@@ -7207,11 +7217,24 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef }) {
       }
       const b = new google.maps.LatLngBounds();
       pts.forEach((s) => b.extend({ lat: s.lat, lng: s.lng }));
-      mapRef.current.fitBounds(b, 80);
+      const raf = requestAnimationFrame(() => {
+        if (!mapRef.current) return;
+        google.maps.event.trigger(mapRef.current, 'resize');
+        mapRef.current.fitBounds(b, 60);
+      });
+      return () => cancelAnimationFrame(raf);
     } else if (preRouteViewRef.current) {
-      mapRef.current.panTo(preRouteViewRef.current.center);
-      mapRef.current.setZoom(preRouteViewRef.current.zoom);
+      // Restore the pre-route view. The sidebar just unmounted and the map grew
+      // back 380px, so re-measure first or the restore lands off-center too.
+      const view = preRouteViewRef.current;
       preRouteViewRef.current = null;
+      const raf = requestAnimationFrame(() => {
+        if (!mapRef.current) return;
+        google.maps.event.trigger(mapRef.current, 'resize');
+        mapRef.current.panTo(view.center);
+        mapRef.current.setZoom(view.zoom);
+      });
+      return () => cancelAnimationFrame(raf);
     }
   }, [google, selectedRoute, selectedRouteStops]);
 
@@ -8023,18 +8046,12 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef }) {
           onPick={(s) => { setSelectedDriver(null); setSelectedStop(s); handlePanToStop(s); }}
           onPickLoad={(loadNbr) => {
             // Open the load's route drawer (same surface as "View route" on a
-            // stop) and frame the map on that load's positioned stops.
+            // stop). Framing is handled by the selectedRoute effect, which fits
+            // AFTER the 380px sidebar shrinks the map — doing it here would fit
+            // against the old full width and clip the route's far stops.
             setSelectedDriver(null);
             setSelectedStop(null);
             setSelectedRoute(loadNbr);
-            if (google && mapRef.current) {
-              const pts = stops.filter((s) => s.loadNbr === loadNbr && s.lat != null && s.lng != null);
-              if (pts.length) {
-                const b = new google.maps.LatLngBounds();
-                pts.forEach((s) => b.extend({ lat: s.lat, lng: s.lng }));
-                mapRef.current.fitBounds(b, 60);
-              }
-            }
           }}
         />
       </div>
