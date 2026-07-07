@@ -54,7 +54,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.38.9';
+const APP_VERSION = '0.38.10';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -99,6 +99,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.38.10', 'Routing (beta) — the Routes panel now has a "Dispatch" button on each route card, next to the driver-assign dropdown. It calls the existing dispatchLoad op (NuVizz action DISPATCH) to move an already-assigned load out of Draft/Un-Planned. Same Beta/Live safety as driver-assign: a click only previews in Beta, and fires for real once you flip to ● Live. Disabled until a driver is assigned, and hidden once the route is already In-Transit/Completed/Cancelled.'],
   ['0.38.5', 'Mark vehicle eligibility — one brush now sets BOTH colors. With the Tractor brush armed (⚙ → Mark vehicle eligibility → Tractor OK), clicking a stop marks it green (53′ fits); clicking the SAME stop again marks it red (box truck only); a third click clears it. Before, the second click just cleared the mark and you had to switch the brush to Box to mark red. The Box brush mirrors it (red → green → clear). No need to flip the radio to correct a stop — just click it again.'],
   ['0.38.4', 'The stops status pill is now on Routing (beta) too — the same "N stops / total pallets / Loads+Orders feed freshness / NuVizz calls + by-hour chart" card from the dispatch Map now sits top-right on the routing map (below the ⚙ map filters), so you can see board freshness and the call meter without leaving the routing screen. Same collapse toggle (shared with the Map\'s pill) and the same refresh button firing the cheap ~4-call scan — never the expensive number-probe.'],
   ['0.38.3', 'Print Manifest pagination fix (round 2, from Chad\'s printed page photo): tickets were still mashing together — ticket 2 started on page 1 and only ONE page came out. The 0.36.1 print bridge was correct, but the app shell\'s "lock the app to the viewport" CSS (body position:fixed + overflow:hidden, for iOS scroll containment) still applied DURING printing — and inside a fixed, viewport-clipped body the browser can\'t paginate at all: the one-ticket-per-page breaks are ignored and everything past the first page is clipped. The bridge now lifts that lock for the duration of the print (static body, visible overflow, auto height — print only; the on-screen app is untouched), so page breaks paginate again: page 1 = route summary + ticket 1, then one ticket per page. Verified with a real headless-Chrome print-to-PDF: before the fix 3 tickets → 1 page, after → 3 pages. Applies to the Delivery Ticket and BOL viewers too (same viewer).'],
@@ -9654,7 +9655,7 @@ function RouteStatusBadge({ status }) {
   );
 }
 
-function RoutingRoutesPanel({ groups, onPick, liveWrite = false, roster = [], rosterError = null, assignLive = false, setAssignLive, onAssignDriver, assignedOverride = {}, assigningKey = null }) {
+function RoutingRoutesPanel({ groups, onPick, liveWrite = false, roster = [], rosterError = null, assignLive = false, setAssignLive, onAssignDriver, assignedOverride = {}, assigningKey = null, onDispatchLoad, dispatchingKey = null }) {
   const [selected, setSelected] = useState(() => new Set());   // empty = All
   const [menuOpen, setMenuOpen] = useState(false);
   const [q, setQ] = useState('');
@@ -9747,6 +9748,10 @@ function RoutingRoutesPanel({ groups, onPick, liveWrite = false, roster = [], ro
             const shownDriver = assignedOverride[g.key] || g.driver;
             const curDriverId = roster.find((d) => String(d.name || '').trim().toLowerCase() === String(shownDriver || '').trim().toLowerCase())?.driverId;
             const busy = assigningKey === g.key;
+            const dispatching = dispatchingKey === g.key;
+            // Dispatch only makes sense before the load is already underway — hide it once NuVizz
+            // has moved the route past the pre-dispatch lifecycle states.
+            const canDispatch = onDispatchLoad && ['Draft', 'Un-Planned', 'Unassigned', 'Planned'].includes(g.status);
             return (
               <div key={g.key} className="w-full border rounded-lg p-2 hover:bg-slate-50">
                 <button onClick={() => onPick(g.key)} className="w-full text-left active:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-300 rounded">
@@ -9767,22 +9772,35 @@ function RoutingRoutesPanel({ groups, onPick, liveWrite = false, roster = [], ro
                   </div>
                   <div className="mt-1.5 h-1 rounded bg-slate-100 overflow-hidden"><div className="h-full rounded" style={{ width: `${pct}%`, background: done ? '#16a34a' : BRAND }} /></div>
                 </button>
-                {/* Driver assign dropdown — only when Live dispatch is on. Picks assign immediately in
-                    Live mode (preview-only in Beta). stopPropagation so it doesn't open the route. */}
-                {liveWrite && onAssignDriver && (
+                {/* Driver assign dropdown + Dispatch button — only when Live dispatch is on. Picks/clicks
+                    act immediately in Live mode (preview-only in Beta). stopPropagation so this row
+                    doesn't open the route. */}
+                {liveWrite && (onAssignDriver || canDispatch) && (
                   <div className="mt-1.5 flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
                     <Truck size={12} className="text-slate-400 shrink-0" />
-                    <select
-                      value={curDriverId != null ? String(curDriverId) : ''}
-                      disabled={!!rosterError || busy}
-                      onChange={(e) => { const d = roster.find((x) => String(x.driverId) === e.target.value); if (d) onAssignDriver(g, d.driverId, d.name); }}
-                      className="flex-1 min-w-0 border rounded px-1 py-1 text-[11px] bg-white"
-                      aria-label={`Assign driver to ${loadDisplayName(g.name, g.loadNbr) || g.loadNbr}`}
-                    >
-                      <option value="">{rosterError ? 'Driver roster unavailable' : (roster.length ? (assignLive ? 'Assign driver…' : 'Assign driver… (Beta)') : 'Loading drivers…')}</option>
-                      {roster.map((d) => <option key={String(d.driverId)} value={String(d.driverId)}>{d.name}{d.userName ? ` (${d.userName})` : ''}</option>)}
-                    </select>
+                    {onAssignDriver && (
+                      <select
+                        value={curDriverId != null ? String(curDriverId) : ''}
+                        disabled={!!rosterError || busy}
+                        onChange={(e) => { const d = roster.find((x) => String(x.driverId) === e.target.value); if (d) onAssignDriver(g, d.driverId, d.name); }}
+                        className="flex-1 min-w-0 border rounded px-1 py-1 text-[11px] bg-white"
+                        aria-label={`Assign driver to ${loadDisplayName(g.name, g.loadNbr) || g.loadNbr}`}
+                      >
+                        <option value="">{rosterError ? 'Driver roster unavailable' : (roster.length ? (assignLive ? 'Assign driver…' : 'Assign driver… (Beta)') : 'Loading drivers…')}</option>
+                        {roster.map((d) => <option key={String(d.driverId)} value={String(d.driverId)}>{d.name}{d.userName ? ` (${d.userName})` : ''}</option>)}
+                      </select>
+                    )}
                     {busy && <span className="text-[10px] text-slate-400 shrink-0">…</span>}
+                    {canDispatch && (
+                      <button
+                        onClick={() => onDispatchLoad(g)}
+                        disabled={!shownDriver || dispatching || busy}
+                        title={!shownDriver ? 'Assign a driver before dispatching' : (assignLive ? `Dispatch ${loadDisplayName(g.name, g.loadNbr) || g.loadNbr} in NuVizz now` : 'Beta — preview only, flip to ● Live to dispatch for real')}
+                        className="shrink-0 text-[11px] font-semibold px-2 py-1 rounded border border-slate-300 bg-white text-slate-700 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed"
+                      >
+                        {dispatching ? '…' : 'Dispatch'}
+                      </button>
+                    )}
                   </div>
                 )}
               </div>
@@ -11573,6 +11591,35 @@ function RoutingScreen({ debugCaptureRef }) {
       showMapToast(`✗ Assign failed for ${label}: ${res.error || res.result?.error || 'write error'}`);
     }
   }, [assignLive, showMapToast, selectedDate]);
+  // Routes-panel "Dispatch" button — releases an already-assigned load in NuVizz (action DISPATCH,
+  // the dispatchLoad op). Same Beta/Live safety + loadId resolution as onAssignDriver above; a
+  // dispatched load's status won't flip in the board until the next scheduled scan, so this only
+  // toasts success/failure rather than optimistically rewriting g.status.
+  const [dispatchingKey, setDispatchingKey] = useState(null);
+  const onDispatchLoad = useCallback(async (g) => {
+    const label = loadDisplayName(g.name, g.loadNbr) || g.loadNbr;
+    if (!assignLive) { showMapToast(`Beta — would dispatch ${label} (nothing sent). Flip to ● Live to dispatch.`); return; }
+    const rosterEntry0 = loadRosterRef.current.get(String(g.name || '').trim().toLowerCase())
+      || loadRosterRef.current.get(String(g.key || '').trim().toLowerCase())
+      || (g.loadId ? loadRosterRef.current.get(String(g.loadId)) : null)
+      || null;
+    const rosterEntry = rosterEntry0 && !rosterEntry0.ambiguous ? rosterEntry0 : null;
+    const loadId = g.loadId || rosterEntry?.loadId || null;
+    const loadNbr = (g.loadNbr && looksLikeLoadNbr(g.loadNbr)) ? g.loadNbr : (rosterEntry?.loadNbr || null);
+    if (!loadId) { showMapToast(`Can't dispatch ${label} — its NuVizz load id hasn't loaded yet.`); return; }
+    setDispatchingKey(g.key);
+    let res;
+    try {
+      res = await callWrite('dispatchLoad', { routeId: loadId, loadId, loadNbr, date: selectedDate },
+        { dryRun: false, clientOpId: newClientOpId(), createdBy: 'dispatcher' });
+    } catch (e) { res = { ok: false, error: e?.message || 'network error' }; }
+    setDispatchingKey(null);
+    if (res.ok && res.result?.ok !== false) {
+      showMapToast(`✓ ${label} dispatched.`);
+    } else {
+      showMapToast(`✗ Dispatch failed for ${label}: ${res.error || res.result?.error || 'write error'}`);
+    }
+  }, [assignLive, showMapToast, selectedDate]);
   // Ninja toolbar tap: arm/disarm when a Compare route is open; otherwise coach the dispatcher to
   // open one first (the button stays tappable so the hint is reachable on mobile too).
   const onNinjaTool = useCallback(() => {
@@ -12720,7 +12767,7 @@ function RoutingScreen({ debugCaptureRef }) {
                           <RoutesDriversToggle subTab={routesSubTab} setSubTab={setRoutesSubTab} routesCount={routeGroups.length} className="mb-2" />
                           {routesSubTab === 'drivers'
                             ? <RoutingDriversPanel roster={driverRoster} routeGroups={routeGroups} onRefresh={refreshDriverRoster} onPickDriver={onPickDriver} />
-                            : <RoutingRoutesPanel groups={routeGroups} onPick={onPickRoute} liveWrite={liveWrite} roster={assignRoster} rosterError={assignRosterError} assignLive={assignLive} setAssignLive={setAssignLive} onAssignDriver={onAssignDriver} assignedOverride={assignedOverride} assigningKey={assigningKey} />}
+                            : <RoutingRoutesPanel groups={routeGroups} onPick={onPickRoute} liveWrite={liveWrite} roster={assignRoster} rosterError={assignRosterError} assignLive={assignLive} setAssignLive={setAssignLive} onAssignDriver={onAssignDriver} assignedOverride={assignedOverride} assigningKey={assigningKey} onDispatchLoad={onDispatchLoad} dispatchingKey={dispatchingKey} />}
                         </>
                       )
                       : loadsContent)
@@ -12846,7 +12893,7 @@ function RoutingScreen({ debugCaptureRef }) {
             </div>
             {routesSubTab === 'drivers'
               ? <RoutingDriversPanel roster={driverRoster} routeGroups={routeGroups} onRefresh={refreshDriverRoster} onPickDriver={onPickDriver} />
-              : <RoutingRoutesPanel groups={routeGroups} onPick={onPickRoute} liveWrite={liveWrite} roster={assignRoster} rosterError={assignRosterError} assignLive={assignLive} setAssignLive={setAssignLive} onAssignDriver={onAssignDriver} assignedOverride={assignedOverride} assigningKey={assigningKey} />}
+              : <RoutingRoutesPanel groups={routeGroups} onPick={onPickRoute} liveWrite={liveWrite} roster={assignRoster} rosterError={assignRosterError} assignLive={assignLive} setAssignLive={setAssignLive} onAssignDriver={onAssignDriver} assignedOverride={assignedOverride} assigningKey={assigningKey} onDispatchLoad={onDispatchLoad} dispatchingKey={dispatchingKey} />}
           </>
         ) : (
         <>
