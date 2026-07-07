@@ -1,0 +1,192 @@
+// test/nuvizz-rwb.test.mjs — the Route Workbench (RWB) engine.
+//
+// Covers the RWB module (lib/nuvizz-rwb.mts) + the board engine runCommitBoardRwb
+// (lib/nuvizz-write.mts), focused on the correctness fixes from the pre-prod review:
+//   • env gating: rwbEngineBlocked / rwbConfigReady (no creds → refused up-front)
+//   • rwbSequenceStops: 2-call happy path, <2-stop refusal, and — the key fix — a
+//     HTTP-200 response carrying an application error body is treated as a FAILURE
+//   • runCommitBoardRwb: a single-delivery load skips the sequence and SUCCEEDS
+//     (membership is the whole change); a departure rides the proven removeStops op.
+import test from 'node:test';
+import assert from 'node:assert/strict';
+
+import { rwbEngineBlocked, rwbConfigReady, rwbSequenceStops } from '../netlify/functions/lib/nuvizz-rwb.mts';
+import { runCommitBoardRwb } from '../netlify/functions/lib/nuvizz-write.mts';
+
+const CREDS = { base: 'https://portal.nuvizz.com/deliverit/openapi/v7', companyCode: 'DAVIS', auth: 'Basic xyz' };
+const HEXID = '6a438e9d52ef82bd1ed4516b';
+
+// Run `fn` with RWB fully configured (enabled + creds), restoring env afterward.
+async function withRwb(over, fn) {
+  const keys = ['NUVIZZ_RWB_ENABLED', 'NUVIZZ_RWB_USER', 'NUVIZZ_RWB_PASS', 'NUVIZZ_RWB_LOGIN_BASE', 'NUVIZZ_RWB_PORTAL_BASE'];
+  const prev = Object.fromEntries(keys.map((k) => [k, process.env[k]]));
+  Object.assign(process.env, {
+    NUVIZZ_RWB_ENABLED: 'true', NUVIZZ_RWB_USER: 'Chad', NUVIZZ_RWB_PASS: 'pw',
+    NUVIZZ_RWB_LOGIN_BASE: 'https://loginqa.nuvizz.com', NUVIZZ_RWB_PORTAL_BASE: 'https://uat.nuvizz.com',
+    ...over,
+  });
+  try { return await fn(); }
+  finally { for (const k of keys) { if (prev[k] === undefined) delete process.env[k]; else process.env[k] = prev[k]; } }
+}
+
+// A URL-routing requester that serves BOTH the v7 API and the RWB portal login/flow.
+// `saveBody` lets a test control what saveComparedRouteData returns. `loadStops` is a
+// mutable ref (array of stopNbrs) so a re-read after removeStops reflects the removal.
+function makeRequester({ saveBody = { responseCode: 200 }, saveStatus = 200, loadStops } = {}) {
+  const calls = [];
+  const stopDoc = (n) => ({ stop: { stopId: `id-${n}`, stopNbr: String(n), stopType: 'DO', to: { seq: 1 } } });
+  const loadJson = () => ({ Load: {
+    loadHeader: { loadId: HEXID, loadNbr: 'DAVIS000000123', routeName: 'TEST', rtOrigin: { address: { latitude: 34.04, longitude: -83.71 } } },
+    versionId: 'v1', loadExecutionInfo: { loadStatus: 'PLANNED' },
+    stops: (loadStops?.value ?? []).map((n, i) => ({ stop: { stopId: `id-${n}`, stopNbr: String(n), stopType: 'DO', to: { seq: i + 2 } } })),
+  } });
+  return {
+    calls,
+    requester: {
+      async request(url, opts, meta) {
+        const method = (opts.method || 'GET').toUpperCase();
+        calls.push({ url, method, route: meta?.route });
+        const J = (obj, status = 200) => new Response(JSON.stringify(obj), { status });
+        const T = (txt, status = 200) => new Response(txt, { status });
+        // ── RWB portal login + flow (different hosts) ──
+        if (url.includes('/loginreg/') && method === 'GET') {
+          return T('<html><head><meta name="_csrf" content="tok123"><meta name="_csrf_header" content="X-CSRF-TOKEN"></head></html>');
+        }
+        if (url.includes('checkCompanyLogin')) return J({ ok: true });
+        if (url.includes('auth/userLogin')) return J({ data: { jwtToken: 'jwt-abc' } });
+        if (url.includes('/authtoken/')) return J({ authToken: 'authtok-xyz' });
+        if (url.includes('fetchUpdatedJson')) {
+          return J([{ etaStopVOList: [{ timeZone: 'America/New_York' }], distance: 10, duration: 20, schStartTime: { dttm: 'Jul 2, 2026' } }]);
+        }
+        if (url.includes('saveComparedRouteData')) return J(saveBody, saveStatus);
+        // ── v7 API ──
+        if (url.includes('/load/info/')) return J(loadJson());
+        if (url.includes('/stop/info/')) {
+          const n = url.split('/stop/info/')[1].split('/')[0];
+          return J({ Stop: { ...stopDoc(n).stop, load: { loadNbr: '' } } });
+        }
+        if (url.includes('/load/edit/')) return J({ status: 'SUCCESS' });        // removeStops
+        if (url.includes('/load/insertstops/')) return J({ status: 'SUCCESS' });  // insertStops
+        if (url.includes('/load/assignanddispatch/')) return J({ status: 'SUCCESS' });
+        return J({});
+      },
+    },
+  };
+}
+
+// ── env gating ──────────────────────────────────────────────────────────────
+
+test('rwbEngineBlocked: true unless NUVIZZ_RWB_ENABLED is set truthy', async () => {
+  const prev = process.env.NUVIZZ_RWB_ENABLED;
+  delete process.env.NUVIZZ_RWB_ENABLED;
+  assert.equal(rwbEngineBlocked(), true);
+  process.env.NUVIZZ_RWB_ENABLED = 'true';
+  assert.equal(rwbEngineBlocked(), false);
+  if (prev === undefined) delete process.env.NUVIZZ_RWB_ENABLED; else process.env.NUVIZZ_RWB_ENABLED = prev;
+});
+
+test('rwbConfigReady: false when enabled but creds are missing', async () => {
+  await withRwb({ NUVIZZ_RWB_USER: '', NUVIZZ_RWB_PASS: '' }, () => {
+    assert.equal(rwbConfigReady(), false);
+  });
+  await withRwb({}, () => {
+    assert.equal(rwbConfigReady(), true);
+  });
+});
+
+// ── rwbSequenceStops ──────────────────────────────────────────────────────────
+
+test('rwbSequenceStops: 2-call happy path returns ok with 2 calls', async () => {
+  await withRwb({}, async () => {
+    const { requester, calls } = makeRequester();
+    const r = await rwbSequenceStops(requester, HEXID, ['id-A', 'id-B'], { lat: 34, lng: -83 });
+    assert.equal(r.ok, true);
+    assert.equal(r.calls, 2);
+    assert.ok(calls.some((c) => c.url.includes('fetchUpdatedJson')));
+    assert.ok(calls.some((c) => c.url.includes('saveComparedRouteData')));
+  });
+});
+
+test('rwbSequenceStops: refuses fewer than 2 stops (no HTTP call)', async () => {
+  await withRwb({}, async () => {
+    const { requester, calls } = makeRequester();
+    const r = await rwbSequenceStops(requester, HEXID, ['id-A'], { lat: 34, lng: -83 });
+    assert.equal(r.ok, false);
+    assert.match(r.message, /2\+ stops/);
+    assert.equal(calls.length, 0);
+  });
+});
+
+test('rwbSequenceStops: HTTP 200 with an application-error body is a FAILURE (okSave fix)', async () => {
+  await withRwb({}, async () => {
+    const { requester } = makeRequester({ saveStatus: 200, saveBody: { responseCode: 500, message: 'route locked' } });
+    const r = await rwbSequenceStops(requester, HEXID, ['id-A', 'id-B'], { lat: 34, lng: -83 });
+    assert.equal(r.ok, false);
+    assert.match(r.message, /application error|responseCode 500|route locked/);
+  });
+});
+
+test('rwbSequenceStops: refused when creds are unset (before any network call)', async () => {
+  await withRwb({ NUVIZZ_RWB_USER: '', NUVIZZ_RWB_PASS: '' }, async () => {
+    const { requester, calls } = makeRequester();
+    const r = await rwbSequenceStops(requester, HEXID, ['id-A', 'id-B'], { lat: 34, lng: -83 });
+    assert.equal(r.ok, false);
+    assert.equal(calls.length, 0);
+  });
+});
+
+// ── runCommitBoardRwb ─────────────────────────────────────────────────────────
+
+test('runCommitBoardRwb: gated off when RWB disabled', async () => {
+  const prev = process.env.NUVIZZ_RWB_ENABLED;
+  delete process.env.NUVIZZ_RWB_ENABLED;
+  const { requester, calls } = makeRequester();
+  const r = await runCommitBoardRwb(requester, { loads: [{ loadNbr: 'X', orderedStopNbrs: ['A', 'B'] }] }, CREDS);
+  assert.equal(r.ok, false);
+  assert.equal(r.gated, true);
+  assert.equal(calls.length, 0);  // nothing fired
+  if (prev === undefined) delete process.env.NUVIZZ_RWB_ENABLED; else process.env.NUVIZZ_RWB_ENABLED = prev;
+});
+
+test('runCommitBoardRwb: enabled but no creds → refused before any write', async () => {
+  await withRwb({ NUVIZZ_RWB_USER: '', NUVIZZ_RWB_PASS: '' }, async () => {
+    const { requester, calls } = makeRequester();
+    const r = await runCommitBoardRwb(requester, { loads: [{ loadNbr: 'DAVIS000000123', loadId: HEXID, orderedStopNbrs: ['A', 'B'] }] }, CREDS);
+    assert.equal(r.ok, false);
+    assert.equal(r.gated, true);
+    assert.equal(calls.length, 0);  // NOT a single v7 membership write fired
+  });
+});
+
+test('runCommitBoardRwb: single-delivery load skips the sequence and SUCCEEDS (no 2-stop failure)', async () => {
+  await withRwb({}, async () => {
+    // Load already carries [A]; the Save re-orders to [A] (one stop). No sequence call is possible.
+    const loadStops = { value: ['A'] };
+    const { requester, calls } = makeRequester({ loadStops });
+    const r = await runCommitBoardRwb(requester, { loads: [{ loadNbr: 'DAVIS000000123', loadId: HEXID, orderedStopNbrs: ['A'] }] }, CREDS);
+    assert.equal(r.ok, true, `expected success, got: ${JSON.stringify(r.loads?.[0]?.error)}`);
+    // The RWB portal sequence is NEVER called for a single stop.
+    assert.equal(calls.some((c) => c.url.includes('saveComparedRouteData')), false);
+  });
+});
+
+test('runCommitBoardRwb: a departure is unplanned via removeStops (load/edit), not RWB omission', async () => {
+  await withRwb({}, async () => {
+    // Load carries [A,B]; user drops B → orderedStopNbrs=[A], removeStopNbrs=[B]. After the
+    // removeStops the re-read reflects [A], so it reduces to a single-stop (sequence skipped),
+    // but the KEY assertion is that removeStops (load/edit) actually fired for the departure.
+    const loadStops = { value: ['A', 'B'] };
+    const { requester, calls } = makeRequester({ loadStops });
+    // Make the re-read after removeStops show only [A].
+    const realRequest = requester.request;
+    let removed = false;
+    requester.request = async (url, opts, meta) => {
+      if (url.includes('/load/edit/')) removed = true;
+      if (url.includes('/load/info/') && removed) loadStops.value = ['A'];
+      return realRequest(url, opts, meta);
+    };
+    const r = await runCommitBoardRwb(requester, { loads: [{ loadNbr: 'DAVIS000000123', loadId: HEXID, orderedStopNbrs: ['A'], removeStopNbrs: ['B'] }] }, CREDS);
+    assert.equal(calls.some((c) => c.url.includes('/load/edit/')), true, 'removeStops (load/edit) must fire for the departure');
+    assert.equal(r.ok, true, `expected success, got: ${JSON.stringify(r.loads?.[0]?.error)}`);
+  });
+});

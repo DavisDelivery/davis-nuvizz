@@ -48,6 +48,15 @@ export function rwbEngineEnabled(): boolean {
 export function rwbEngineBlocked(): boolean {
   return !rwbEngineEnabled();
 }
+/** True only when the RWB portal login is fully configured (enabled AND creds present).
+ * Callers gate on this BEFORE issuing any v7 membership write (insertStops/removeStops),
+ * so an enabled-but-credentialless deploy can never leave a load half-mutated (order
+ * unset) — the empty-creds refusal happens before the first network call, not after. */
+export function rwbConfigReady(): boolean {
+  if (rwbEngineBlocked()) return false;
+  const c = rwbConfig();
+  return !!c.username && !!c.password;
+}
 
 interface RwbConfig {
   loginBase: string;
@@ -174,14 +183,30 @@ async function rwbAuthedCall(requester: RwbRequesterLike, cfg: RwbConfig, method
 }
 
 const MONTHS: Record<string, string> = { Jan: '01', Feb: '02', Mar: '03', Apr: '04', May: '05', Jun: '06', Jul: '07', Aug: '08', Sep: '09', Oct: '10', Nov: '11', Dec: '12' };
-function routeWindow(dttm: string | undefined): { start: string; end: string } | null {
+
+// GMT offset (e.g. 'GMT-04:00') for a given calendar DATE in `timeZone`, computed from the
+// runtime's IANA database so it is DST-correct year-round (Eastern is -04:00 in summer,
+// -05:00 in winter). Falls back to EST (-05:00) if the zone can't be resolved. Netlify
+// functions run on real Node, so Intl + Date are available here.
+function gmtOffsetForDate(yyyy: string, mm: string, dd: string, timeZone: string): string {
+  try {
+    const at = new Date(Date.UTC(Number(yyyy), Number(mm) - 1, Number(dd), 12, 0, 0));
+    const part = new Intl.DateTimeFormat('en-US', { timeZone, timeZoneName: 'longOffset' })
+      .formatToParts(at).find((p) => p.type === 'timeZoneName');
+    const match = part && part.value.match(/GMT([+-]\d{2}:\d{2})/);
+    return match ? `GMT${match[1]}` : 'GMT-05:00';
+  } catch { return 'GMT-05:00'; }
+}
+
+function routeWindow(dttm: string | undefined, timeZone = 'America/New_York'): { start: string; end: string } | null {
   const m = String(dttm || '').match(/^(\w{3})\s+(\d{1,2}),\s+(\d{4})/);
   if (!m) return null;
   const mm = MONTHS[m[1]];
   if (!mm) return null;
   const dd = String(m[2]).padStart(2, '0');
   const date = `${mm}/${dd}/${m[3]}`;
-  return { start: `${date} 08:00:00 am GMT-04:00`, end: `${date} 11:59:00 pm GMT-04:00` };
+  const off = gmtOffsetForDate(m[3], mm, dd, timeZone);   // DST-correct, not a hardcoded EDT literal
+  return { start: `${date} 08:00:00 am ${off}`, end: `${date} 11:59:00 pm ${off}` };
 }
 
 /**
@@ -212,7 +237,8 @@ export async function rwbSequenceStops(requester: RwbRequesterLike, routePlanId:
   const o = Array.isArray(d) ? d[0] : d;
   if (!o || !Array.isArray(o.etaStopVOList)) return { ok: false, message: 'fetchUpdatedJson returned no route preview', calls: 1, steps };
 
-  const win = routeWindow(o.schStartTime && o.schStartTime.dttm);
+  const routeTz = (o.etaStopVOList[0] && o.etaStopVOList[0].timeZone) || 'America/New_York';
+  const win = routeWindow(o.schStartTime && o.schStartTime.dttm, routeTz);
   const routeJson = [{
     routePlanId, originLat: origin.lat, originLong: origin.lng,
     routeEndTime: win ? win.end : '', routeStartTime: win ? win.start : '',
@@ -228,8 +254,21 @@ export async function rwbSequenceStops(requester: RwbRequesterLike, routePlanId:
   }];
   const sr = await rwbAuthedCall(requester, cfg, 'POST', 'dirouteworkbench/routePlan/saveComparedRouteData', { routeJsonData: JSON.stringify(routeJson), planningMode: 'true' });
   steps.push({ op: 'saveComparedRouteData', ok: sr.ok, status: sr.status, error: sr.error || null });
-  const okSave = sr.ok || (sr.body && sr.body.responseCode === 200);
-  if (!okSave) return { ok: false, message: sr.error || `saveComparedRouteData failed (status ${sr.status})`, calls: 2, steps };
+  // Success requires BOTH a 2xx transport status AND — when the portal returns a JSON body
+  // carrying an application-level status — a non-error responseCode. The old
+  // `sr.ok || responseCode===200` was written backwards: an OR let the body only ADD success
+  // cases, so a HTTP-200-with-{responseCode:500} body read as success. A present responseCode
+  // (or a `success:false`) must be able to REJECT a 2xx, since deliverit endpoints routinely
+  // answer 200 with an error payload.
+  const body = sr.body;
+  const bodyObj = body && typeof body === 'object' ? body : null;
+  const bodyCode = bodyObj && bodyObj.responseCode != null ? Number(bodyObj.responseCode) : null;
+  const bodyRejects = (bodyCode != null && bodyCode !== 200) || (bodyObj && bodyObj.success === false);
+  const okSave = sr.ok && !bodyRejects;
+  if (!okSave) {
+    const why = bodyRejects ? `application error (responseCode ${bodyCode ?? '?'}${bodyObj?.message ? `: ${bodyObj.message}` : ''})` : `status ${sr.status}`;
+    return { ok: false, message: sr.error || `saveComparedRouteData failed (${why})`, calls: 2, steps };
+  }
   return { ok: true, message: `Sequenced ${ids.length} stop(s) via RWB.`, calls: 2, steps };
 }
 
