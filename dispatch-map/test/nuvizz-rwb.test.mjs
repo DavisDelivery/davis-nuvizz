@@ -199,6 +199,19 @@ test('runCommitBoardRwb: an arrival is added via the RWB portal (not v7 insertSt
   });
 });
 
+test('runCommitBoardRwb: refuses when the load carries a stop the board is not showing (stale-board guard)', async () => {
+  await withRwb({}, async () => {
+    // Load actually carries [A,B,C]; the board only knows [A,B] and reorders to [B,A] without
+    // removing C. A declarative save of [B,A] would silently unplan C — the guard must refuse.
+    const loadStops = { value: ['A', 'B', 'C'] };
+    const { requester, calls } = makeRequester({ loadStops });
+    const r = await runCommitBoardRwb(requester, { loads: [{ loadNbr: 'DAVIS000000123', loadId: HEXID, orderedStopNbrs: ['B', 'A'] }] }, CREDS);
+    assert.equal(r.ok, false);
+    assert.match(r.loads[0].error, /board isn't showing|unplan them|Refresh/i);
+    assert.equal(calls.some((c) => c.url.includes('saveComparedRouteData')), false, 'nothing should be saved when the guard trips');
+  });
+});
+
 test('runCommitBoardRwb: a departure is removed by save-omission (no v7 load/edit)', async () => {
   await withRwb({}, async () => {
     // Load carries [A,B]; user drops B → orderedStopNbrs=[A]. RWB removes B by OMITTING it from

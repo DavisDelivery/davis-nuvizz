@@ -1199,18 +1199,24 @@ export async function runCommitBoardRwb(requester: RequesterLike, payload: any, 
       if (s?.stopId != null && String(s?.stopType ?? '').toUpperCase() === 'DO') stopIdByNbr.set(String(s.stopNbr), String(s.stopId));
     }
 
-    // DEPARTURES — stops leaving this load (unplanned, or the source side of a cross-load move).
-    // RWB's saveComparedRouteData only REORDERS the ids it is given; it is NOT trusted to unplan
-    // an omitted stop. So membership REDUCTION rides the proven v7 removeStops op (same as classic),
-    // not RWB omission — this is what actually frees a moved stop before the destination inserts it.
+    // STALE-BOARD GUARD. The RWB save is DECLARATIVE: the route ends up with exactly the stops we
+    // send, so any DO stop currently on the load but NOT in the desired order is UNPLANNED. That is
+    // correct for a stop the dispatcher intentionally removed (it rides removeStopNbrs), but a stop
+    // the board simply never knew about (added elsewhere since the last refresh) would be silently
+    // dropped. Refuse rather than let the declarative save quietly unplan an unaccounted-for stop.
     const removeNbrs: string[] = Array.isArray(L?.removeStopNbrs) ? L.removeStopNbrs.map((x: any) => String(x)).filter(Boolean) : [];
-    const departures = removeNbrs
-      .filter((n) => stopIdByNbr.has(n) && !orderedNbrs.includes(n))
-      .map((n) => ({ nbr: n, stopId: stopIdByNbr.get(n) as string }));
+    const orderedSet = new Set(orderedNbrs);
+    const removeSet = new Set(removeNbrs);
+    const unaccounted = [...stopIdByNbr.keys()].filter((n) => !orderedSet.has(n) && !removeSet.has(n));
+    if (unaccounted.length) {
+      result.ok = false;
+      result.error = `commitBoard(rwb): load ${loadNbrX} has ${unaccounted.length} stop(s) the board isn't showing (${unaccounted.slice(0, 3).join(', ')}${unaccounted.length > 3 ? '…' : ''}) — a declarative RWB save would unplan them. Refresh and retry.`;
+      seq.push({ L, loadNbr: loadNbrX, orderedNbrs, arrivals: [], curNbrs, result }); continue;
+    }
 
-    // Same TWO-LEVER classification as the import engine: ON-LOAD (already have a stopId) vs
-    // ARRIVAL (an existing stop elsewhere — resolved + steal-guarded via getStop, planned with
-    // insertStops by stopId; NEVER an RWB entry for a stop not yet on this load).
+    // TWO-LEVER classification: ON-LOAD (already have a stopId, stays via the save) vs ARRIVAL (an
+    // existing stop elsewhere — resolved + steal-guarded via getStop, then ADDED to the route the
+    // RWB-native way in the fire phase; NEVER just an entry in the save, which can't create membership).
     const missing = orderedNbrs.filter((n) => !stopIdByNbr.has(n));
     const fetched = new Map<string, any>(await Promise.all(missing.map(async (n): Promise<[string, any]> => {
       try { return [n, await fireSingle(requester, 'getStop', { stopNbr: n }, creds)]; }
@@ -1228,8 +1234,8 @@ export async function runCommitBoardRwb(requester: RequesterLike, payload: any, 
       }
       arrivals.push({ nbr, stopId: String(gs.stop.stopId), srcLoadNbr: srcNbr && srcNbr !== loadNbrX ? srcNbr : undefined });
     }
-    if (err) { result.ok = false; result.error = err; seq.push({ L, loadNbr: loadNbrX, orderedNbrs, arrivals: [], departures: [], curNbrs, result }); continue; }
-    seq.push({ L, loadNbr: loadNbrX, load, orderedNbrs, arrivals, departures, curNbrs, result, addReads: missing.length });
+    if (err) { result.ok = false; result.error = err; seq.push({ L, loadNbr: loadNbrX, orderedNbrs, arrivals: [], curNbrs, result }); continue; }
+    seq.push({ L, loadNbr: loadNbrX, load, orderedNbrs, arrivals, curNbrs, result, addReads: missing.length });
   }
 
   const legacyResult = legacy.length

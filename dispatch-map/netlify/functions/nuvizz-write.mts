@@ -64,7 +64,7 @@ function planFor(op: WriteOp, payload: any): string[] {
         // async import + convergence reads, or (when the panel's engine toggle sent useRwb) the
         // 2-call SYNCHRONOUS Route Workbench sequence.
         if (ordered.length) bits.push(payload?.useRwb === true && !rwbEngineBlocked()
-          ? `set ${ordered.length} stop(s) in order (RWB ENGINE: not-yet-planned orders are first planned with insertStops — real records, never cloned — then a 2-call SYNCHRONOUS Route Workbench sequence, references stops by id only, no async wait)`
+          ? `set ${ordered.length} stop(s) in order (RWB ENGINE — the portal's own flow: new orders are ADDED via validateStop + addStopsToRoute, then a SYNCHRONOUS fetchUpdatedJson + saveComparedRouteData sets the exact stop set + order by id; an omitted stop is unplanned; no async wait)`
           : payload?.useImport === true && !loadImportBlocked()
             ? `set ${ordered.length} stop(s) in order (TWO-LEVER IMPORT ENGINE: not-yet-planned orders are first planned with insertStops — real records, never cloned — then ONE full-echo ordering import + convergence read-backs)`
             : `set ${ordered.length} stop(s) in order (anchor remove + one-at-a-time insert)`);
