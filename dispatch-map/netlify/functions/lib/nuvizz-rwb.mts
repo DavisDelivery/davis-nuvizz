@@ -167,19 +167,63 @@ async function session(requester: RwbRequesterLike, cfg: RwbConfig): Promise<{ a
   return cachedSession;
 }
 
-async function rwbAuthedCall(requester: RwbRequesterLike, cfg: RwbConfig, method: string, path: string, form: Record<string, string>, retried = false): Promise<{ ok: boolean; status: number; body: any; error?: string }> {
+async function rwbAuthedCall(requester: RwbRequesterLike, cfg: RwbConfig, method: string, path: string, form: Record<string, string> | null, retried = false): Promise<{ ok: boolean; status: number; body: any; error?: string }> {
   const sess = await session(requester, cfg);
   if ('error' in sess) return { ok: false, status: 0, body: null, error: `RWB login failed: ${sess.error}` };
   const basic = 'Basic ' + Buffer.from(`JWT:${sess.authToken}`).toString('base64');
   const url = `${cfg.portalBase}/deliverit/${path}`;
-  const fd = new FormData();
-  for (const [k, v] of Object.entries(form)) fd.set(k, v);
-  const r = await go(requester, sess.jar, method, url, { headers: { authorization: basic, cookie: 'Instance=ndv2', referer: sess.ref, origin: cfg.portalBase }, body: fd, route: `/rwb/${path.split('/').pop()}`, tenant: cfg.company });
+  // GET calls (validate/check endpoints) carry no multipart body; POSTs send the form.
+  let body: any = null;
+  if (form && method.toUpperCase() !== 'GET') { const fd = new FormData(); for (const [k, v] of Object.entries(form)) fd.set(k, v); body = fd; }
+  const routeLabel = path.split('/').filter((s) => !/^[0-9a-f]{24}$/.test(s)).pop();
+  const r = await go(requester, sess.jar, method, url, { headers: { authorization: basic, cookie: 'Instance=ndv2', referer: sess.ref, origin: cfg.portalBase }, body, route: `/rwb/${routeLabel}`, tenant: cfg.company });
   if (r.status === 401 && !retried) {
     cachedSession = null; // token expired mid-instance-life — one retry with a fresh login
     return rwbAuthedCall(requester, cfg, method, path, form, true);
   }
   return { ok: r.status >= 200 && r.status < 300, status: r.status, body: r.data ?? r.text?.slice(0, 2000) };
+}
+
+// True when a portal JSON body (or plain-text "Success") indicates application success. deliverit
+// answers 200 with either { responseCode:200, message:'SUCCESS' } or a bare "Success" string, and
+// signals failure with a non-200 responseCode / success:false — which MUST reject a 2xx.
+function rwbBodyOk(body: any): boolean {
+  if (body == null) return true;
+  if (typeof body === 'string') return /success/i.test(body);
+  if (typeof body === 'object') {
+    if (body.success === false) return false;
+    if (body.responseCode != null && Number(body.responseCode) !== 200) return false;
+    return true;
+  }
+  return true;
+}
+
+/**
+ * rwbAddStopsToRoute — attach EXISTING stops to a route plan the RWB-native way (matches the
+ * portal: per stop, GET stop/validateStopstoPerformAction/{id} then POST
+ * stop/addStopsToRouteAfterValidation {routePlanId, stopIds, isPlanningMode:true}). This is how
+ * RWB registers a stop on the route plan; the subsequent saveComparedRouteData can then order it.
+ * (Replaces the v7 insertStops shortcut, which does not set up the RWB route-plan structures.)
+ */
+export async function rwbAddStopsToRoute(requester: RwbRequesterLike, routePlanId: string, stopIds: string[]): Promise<{ ok: boolean; message: string; calls: number; steps: any[] }> {
+  const cfg = rwbConfig();
+  if (rwbEngineBlocked()) return { ok: false, message: 'RWB engine is disabled on the server', calls: 0, steps: [] };
+  if (!cfg.username || !cfg.password) return { ok: false, message: 'RWB creds not configured (NUVIZZ_RWB_USER/PASS)', calls: 0, steps: [] };
+  const ids = [...new Set(stopIds.map(String).filter(Boolean))];
+  const steps: any[] = [];
+  let calls = 0;
+  for (const id of ids) {
+    const v = await rwbAuthedCall(requester, cfg, 'GET', `dirouteworkbench/stop/validateStopstoPerformAction/${id}`, null);
+    calls++;
+    steps.push({ op: 'validateStop', stopId: id, ok: v.ok && rwbBodyOk(v.body), status: v.status });
+    if (!v.ok || !rwbBodyOk(v.body)) return { ok: false, message: `stop ${id} failed RWB add-validation (status ${v.status})`, calls, steps };
+    const a = await rwbAuthedCall(requester, cfg, 'POST', 'dirouteworkbench/stop/addStopsToRouteAfterValidation', { routePlanId, stopIds: id, isPlanningMode: 'true' });
+    calls++;
+    const ok = a.ok && rwbBodyOk(a.body);
+    steps.push({ op: 'addStopsToRoute', stopId: id, ok, status: a.status });
+    if (!ok) return { ok: false, message: a.error || `addStopsToRoute failed for stop ${id} (status ${a.status})`, calls, steps };
+  }
+  return { ok: true, message: `Added ${ids.length} stop(s) to the route via RWB.`, calls, steps };
 }
 
 const MONTHS: Record<string, string> = { Jan: '01', Feb: '02', Mar: '03', Apr: '04', May: '05', Jun: '06', Jul: '07', Aug: '08', Sep: '09', Oct: '10', Nov: '11', Dec: '12' };
@@ -210,21 +254,25 @@ function routeWindow(dttm: string | undefined, timeZone = 'America/New_York'): {
 }
 
 /**
- * rwbSequenceStops — set a load's delivery order to EXACTLY `orderedStopIds` via the
+ * rwbSequenceStops — set a route's stop set AND order to EXACTLY `orderedStopIds` via the
  * portal's Route Workbench. 2 calls (flat, regardless of stop count): fetchUpdatedJson
- * (recompute the route in the desired order — read-only preview) then
- * saveComparedRouteData (PERSIST — full route-level replace; NEVER rewrites the stop
- * record itself, so cargo data cannot be lost — see the module doc above).
+ * (recompute the route in the desired order — read-only preview) then saveComparedRouteData
+ * (PERSIST). The save is DECLARATIVE (verified from a live portal HAR): the route ends up
+ * with exactly the stops in the payload, so a stop currently on the route but OMITTED here is
+ * REMOVED — this is how RWB unplans. It never rewrites the stop record itself, so cargo data
+ * cannot be lost. A stop NOT yet on the route must first be attached with rwbAddStopsToRoute
+ * (the save alone won't create membership for a brand-new stop).
  *
- * Depot-pickup model: every stop is picked up at `origin` then delivered in the given
- * order (matches how this app's loads run — one shared depot per route).
+ * Depot-pickup model: every stop is picked up at `origin` then delivered in the given order
+ * (matches how this app's loads run — one shared depot per route). 1+ stops (the portal
+ * accepts a single-stop route; 0 stops is an empty route → use load/cancel, not this).
  */
 export async function rwbSequenceStops(requester: RwbRequesterLike, routePlanId: string, orderedStopIds: string[], origin: { lat: number; lng: number }): Promise<{ ok: boolean; message: string; calls: number; steps: any[] }> {
   const cfg = rwbConfig();
   if (rwbEngineBlocked()) return { ok: false, message: 'RWB engine is disabled on the server (NUVIZZ_RWB_ENABLED must be explicitly set)', calls: 0, steps: [] };
   if (!cfg.username || !cfg.password) return { ok: false, message: 'RWB creds not configured (NUVIZZ_RWB_USER/PASS)', calls: 0, steps: [] };
   const ids = [...new Set(orderedStopIds.map(String).filter(Boolean))];
-  if (ids.length < 2) return { ok: false, message: 'RWB sequence needs 2+ stops', calls: 0, steps: [] };
+  if (ids.length < 1) return { ok: false, message: 'RWB sequence needs at least 1 stop', calls: 0, steps: [] };
   const steps: any[] = [];
 
   const stoplist = [...ids.map((id) => id + '_PU'), ...ids.map((id) => id + '_DO')].join(',');
@@ -254,19 +302,14 @@ export async function rwbSequenceStops(requester: RwbRequesterLike, routePlanId:
   }];
   const sr = await rwbAuthedCall(requester, cfg, 'POST', 'dirouteworkbench/routePlan/saveComparedRouteData', { routeJsonData: JSON.stringify(routeJson), planningMode: 'true' });
   steps.push({ op: 'saveComparedRouteData', ok: sr.ok, status: sr.status, error: sr.error || null });
-  // Success requires BOTH a 2xx transport status AND — when the portal returns a JSON body
-  // carrying an application-level status — a non-error responseCode. The old
-  // `sr.ok || responseCode===200` was written backwards: an OR let the body only ADD success
-  // cases, so a HTTP-200-with-{responseCode:500} body read as success. A present responseCode
-  // (or a `success:false`) must be able to REJECT a 2xx, since deliverit endpoints routinely
-  // answer 200 with an error payload.
-  const body = sr.body;
-  const bodyObj = body && typeof body === 'object' ? body : null;
+  // Success requires BOTH a 2xx transport status AND a non-error body (rwbBodyOk): deliverit
+  // answers 200 with { responseCode:500 } / { success:false } on an application failure, which
+  // must REJECT the save — never trust the HTTP status alone.
+  const bodyObj = sr.body && typeof sr.body === 'object' ? sr.body : null;
   const bodyCode = bodyObj && bodyObj.responseCode != null ? Number(bodyObj.responseCode) : null;
-  const bodyRejects = (bodyCode != null && bodyCode !== 200) || (bodyObj && bodyObj.success === false);
-  const okSave = sr.ok && !bodyRejects;
+  const okSave = sr.ok && rwbBodyOk(sr.body);
   if (!okSave) {
-    const why = bodyRejects ? `application error (responseCode ${bodyCode ?? '?'}${bodyObj?.message ? `: ${bodyObj.message}` : ''})` : `status ${sr.status}`;
+    const why = sr.ok ? `application error (responseCode ${bodyCode ?? '?'}${bodyObj?.message ? `: ${bodyObj.message}` : ''})` : `status ${sr.status}`;
     return { ok: false, message: sr.error || `saveComparedRouteData failed (${why})`, calls: 2, steps };
   }
   return { ok: true, message: `Sequenced ${ids.length} stop(s) via RWB.`, calls: 2, steps };

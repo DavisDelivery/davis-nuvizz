@@ -10,7 +10,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { rwbEngineBlocked, rwbConfigReady, rwbSequenceStops } from '../netlify/functions/lib/nuvizz-rwb.mts';
+import { rwbEngineBlocked, rwbConfigReady, rwbAddStopsToRoute, rwbSequenceStops } from '../netlify/functions/lib/nuvizz-rwb.mts';
 import { runCommitBoardRwb } from '../netlify/functions/lib/nuvizz-write.mts';
 
 const CREDS = { base: 'https://portal.nuvizz.com/deliverit/openapi/v7', companyCode: 'DAVIS', auth: 'Basic xyz' };
@@ -55,6 +55,8 @@ function makeRequester({ saveBody = { responseCode: 200 }, saveStatus = 200, loa
         if (url.includes('checkCompanyLogin')) return J({ ok: true });
         if (url.includes('auth/userLogin')) return J({ data: { jwtToken: 'jwt-abc' } });
         if (url.includes('/authtoken/')) return J({ authToken: 'authtok-xyz' });
+        if (url.includes('validateStopstoPerformAction')) return T('Success');
+        if (url.includes('addStopsToRouteAfterValidation')) return J({ responseCode: 200, message: 'SUCCESS', stops: [] });
         if (url.includes('fetchUpdatedJson')) {
           return J([{ etaStopVOList: [{ timeZone: 'America/New_York' }], distance: 10, duration: 20, schStartTime: { dttm: 'Jul 2, 2026' } }]);
         }
@@ -63,7 +65,7 @@ function makeRequester({ saveBody = { responseCode: 200 }, saveStatus = 200, loa
         if (url.includes('/load/info/')) return J(loadJson());
         if (url.includes('/stop/info/')) {
           const n = url.split('/stop/info/')[1].split('/')[0];
-          return J({ Stop: { ...stopDoc(n).stop, load: { loadNbr: '' } } });
+          return J({ Stop: { stop: { stopId: `id-${n}`, stopNbr: String(n), stopType: 'DO' }, load: { loadNbr: '' } } });
         }
         if (url.includes('/load/edit/')) return J({ status: 'SUCCESS' });        // removeStops
         if (url.includes('/load/insertstops/')) return J({ status: 'SUCCESS' });  // insertStops
@@ -107,13 +109,28 @@ test('rwbSequenceStops: 2-call happy path returns ok with 2 calls', async () => 
   });
 });
 
-test('rwbSequenceStops: refuses fewer than 2 stops (no HTTP call)', async () => {
+test('rwbSequenceStops: allows a single-stop route (HAR-verified), refuses zero', async () => {
+  await withRwb({}, async () => {
+    const one = makeRequester();
+    const r1 = await rwbSequenceStops(one.requester, HEXID, ['id-A'], { lat: 34, lng: -83 });
+    assert.equal(r1.ok, true, `1-stop route should save: ${r1.message}`);
+    assert.ok(one.calls.some((c) => c.url.includes('saveComparedRouteData')));
+
+    const zero = makeRequester();
+    const r0 = await rwbSequenceStops(zero.requester, HEXID, [], { lat: 34, lng: -83 });
+    assert.equal(r0.ok, false);
+    assert.match(r0.message, /at least 1 stop/);
+    assert.equal(zero.calls.length, 0);
+  });
+});
+
+test('rwbAddStopsToRoute: validates then adds each stop via the RWB portal', async () => {
   await withRwb({}, async () => {
     const { requester, calls } = makeRequester();
-    const r = await rwbSequenceStops(requester, HEXID, ['id-A'], { lat: 34, lng: -83 });
-    assert.equal(r.ok, false);
-    assert.match(r.message, /2\+ stops/);
-    assert.equal(calls.length, 0);
+    const r = await rwbAddStopsToRoute(requester, HEXID, ['id-A', 'id-B']);
+    assert.equal(r.ok, true, r.message);
+    assert.equal(calls.filter((c) => c.url.includes('validateStopstoPerformAction')).length, 2);
+    assert.equal(calls.filter((c) => c.url.includes('addStopsToRouteAfterValidation')).length, 2);
   });
 });
 
@@ -158,35 +175,39 @@ test('runCommitBoardRwb: enabled but no creds → refused before any write', asy
   });
 });
 
-test('runCommitBoardRwb: single-delivery load skips the sequence and SUCCEEDS (no 2-stop failure)', async () => {
+test('runCommitBoardRwb: single-delivery load saves via RWB (1 stop is valid)', async () => {
   await withRwb({}, async () => {
-    // Load already carries [A]; the Save re-orders to [A] (one stop). No sequence call is possible.
+    // Load already carries [A]; the Save re-orders to [A] (one stop). RWB saves the 1-stop route.
     const loadStops = { value: ['A'] };
     const { requester, calls } = makeRequester({ loadStops });
     const r = await runCommitBoardRwb(requester, { loads: [{ loadNbr: 'DAVIS000000123', loadId: HEXID, orderedStopNbrs: ['A'] }] }, CREDS);
     assert.equal(r.ok, true, `expected success, got: ${JSON.stringify(r.loads?.[0]?.error)}`);
-    // The RWB portal sequence is NEVER called for a single stop.
-    assert.equal(calls.some((c) => c.url.includes('saveComparedRouteData')), false);
+    assert.equal(calls.some((c) => c.url.includes('saveComparedRouteData')), true);
   });
 });
 
-test('runCommitBoardRwb: a departure is unplanned via removeStops (load/edit), not RWB omission', async () => {
+test('runCommitBoardRwb: an arrival is added via the RWB portal (not v7 insertStops)', async () => {
   await withRwb({}, async () => {
-    // Load carries [A,B]; user drops B → orderedStopNbrs=[A], removeStopNbrs=[B]. After the
-    // removeStops the re-read reflects [A], so it reduces to a single-stop (sequence skipped),
-    // but the KEY assertion is that removeStops (load/edit) actually fired for the departure.
+    // Load carries [A]; user adds B (unplanned) → orderedStopNbrs=[A,B]. B is added the RWB way.
+    const loadStops = { value: ['A'] };
+    const { requester, calls } = makeRequester({ loadStops });
+    const r = await runCommitBoardRwb(requester, { loads: [{ loadNbr: 'DAVIS000000123', loadId: HEXID, orderedStopNbrs: ['A', 'B'] }] }, CREDS);
+    assert.equal(r.ok, true, `expected success, got: ${JSON.stringify(r.loads?.[0]?.error)}`);
+    assert.equal(calls.some((c) => c.url.includes('addStopsToRouteAfterValidation')), true, 'arrival must be added via RWB portal');
+    assert.equal(calls.some((c) => c.url.includes('/load/insertstops/')), false, 'must NOT use v7 insertStops');
+    assert.equal(calls.some((c) => c.url.includes('saveComparedRouteData')), true);
+  });
+});
+
+test('runCommitBoardRwb: a departure is removed by save-omission (no v7 load/edit)', async () => {
+  await withRwb({}, async () => {
+    // Load carries [A,B]; user drops B → orderedStopNbrs=[A]. RWB removes B by OMITTING it from
+    // the declarative save — no v7 removeStops (load/edit) call.
     const loadStops = { value: ['A', 'B'] };
     const { requester, calls } = makeRequester({ loadStops });
-    // Make the re-read after removeStops show only [A].
-    const realRequest = requester.request;
-    let removed = false;
-    requester.request = async (url, opts, meta) => {
-      if (url.includes('/load/edit/')) removed = true;
-      if (url.includes('/load/info/') && removed) loadStops.value = ['A'];
-      return realRequest(url, opts, meta);
-    };
     const r = await runCommitBoardRwb(requester, { loads: [{ loadNbr: 'DAVIS000000123', loadId: HEXID, orderedStopNbrs: ['A'], removeStopNbrs: ['B'] }] }, CREDS);
-    assert.equal(calls.some((c) => c.url.includes('/load/edit/')), true, 'removeStops (load/edit) must fire for the departure');
     assert.equal(r.ok, true, `expected success, got: ${JSON.stringify(r.loads?.[0]?.error)}`);
+    assert.equal(calls.some((c) => c.url.includes('/load/edit/')), false, 'must NOT use v7 removeStops');
+    assert.equal(calls.some((c) => c.url.includes('saveComparedRouteData')), true, 'removal is via the declarative save');
   });
 });
