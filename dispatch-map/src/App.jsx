@@ -54,7 +54,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.38.7';
+const APP_VERSION = '0.38.9';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -3113,6 +3113,11 @@ function FilterToolbar({ filters, setFilters, collapsed, setCollapsed, stopCount
       </button>
       {!collapsed && (
         <div className="px-3 pb-2 border-t">
+          <CarryoverControl
+            value={filters.carryoverDays}
+            onChange={(d) => setFilters((prev) => ({ ...prev, carryoverDays: d }))}
+            boardDate={boardDate}
+          />
           <MapFilterToggle
             label="Hide terminal markers"
             checked={filters.hideTerminal}
@@ -3127,11 +3132,6 @@ function FilterToolbar({ filters, setFilters, collapsed, setCollapsed, stopCount
             label="Unplanned only"
             checked={filters.unplannedOnly}
             onChange={set('unplannedOnly')}
-          />
-          <CarryoverControl
-            value={filters.carryoverDays}
-            onChange={(d) => setFilters((prev) => ({ ...prev, carryoverDays: d }))}
-            boardDate={boardDate}
           />
           <MapFilterToggle
             label="Show drivers (live)"
@@ -5777,6 +5777,11 @@ function MobileFiltersTab({
       <div className="border-t px-3 py-3">
         <div className="text-xs font-semibold text-slate-600 mb-2">Map display</div>
         <div className="space-y-1.5">
+          <CarryoverControl
+            value={mapFilters.carryoverDays}
+            onChange={(d) => setMapFilters((prev) => ({ ...prev, carryoverDays: d }))}
+            boardDate={boardDate}
+          />
           <MapFilterToggle
             label="Hide terminal markers"
             checked={mapFilters.hideTerminal}
@@ -5791,11 +5796,6 @@ function MobileFiltersTab({
             label="Unplanned only"
             checked={mapFilters.unplannedOnly}
             onChange={setMF('unplannedOnly')}
-          />
-          <CarryoverControl
-            value={mapFilters.carryoverDays}
-            onChange={(d) => setMapFilters((prev) => ({ ...prev, carryoverDays: d }))}
-            boardDate={boardDate}
           />
           <MapFilterToggle
             label="Show drivers (live)"
@@ -7196,45 +7196,34 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef }) {
   // Center/zoom the map to fit a route's stops when it's opened (per dispatcher
   // request — NuVizz frames the route on open). Restores the prior board view on close.
   //
-  // The 380px RouteDetailSidebar mounts in the SAME commit that sets selectedRoute,
-  // shrinking the map's flex-1 container. Google caches its container pixel size and
-  // only re-reads it on a 'resize' event — and the only existing resize triggers fire
-  // on mount and on left-panel width changes, never on sidebar open. So a plain
-  // fitBounds here would frame the route against the OLD full-width viewport and the
-  // easternmost ~380px would hide behind the sidebar: compact routes still fit inside
-  // the padding, but spread-out routes silently lose their far stops. Fix: on the next
-  // frame (after the shrink has laid out) force Google to re-measure, THEN fit to the
-  // true visible area — so all stops land on-screen no matter how far the route spreads.
+  // Fit SYNCHRONOUSLY. This effect is a passive effect, so it runs after React has
+  // committed the DOM (the 380px RouteDetailSidebar is mounted and laid out) and after
+  // the browser + Google's ResizeObserver have re-measured the now-narrower map — so a
+  // plain fitBounds here frames the true visible area with every stop in view, however
+  // far the route spreads. (Do NOT defer this into a requestAnimationFrame: rAF is
+  // paused on hidden/background tabs and its cleanup cancels the pending frame every
+  // time this effect re-runs on the 120s board refresh, so the deferred fit frequently
+  // never applied and the map appeared not to zoom. The recenter and search fits are
+  // synchronous for the same reason.)
   const preRouteViewRef = useRef(null);
   useEffect(() => {
     if (!google || !mapRef.current) return;
+    const map = mapRef.current;
     if (selectedRoute) {
       const pts = selectedRouteStops.filter((s) => s.lat != null && s.lng != null);
       if (!pts.length) return;
       if (!preRouteViewRef.current) {
-        const c = mapRef.current.getCenter();
-        if (c) preRouteViewRef.current = { center: c.toJSON(), zoom: mapRef.current.getZoom() || 10 };
+        const c = map.getCenter();
+        if (c) preRouteViewRef.current = { center: c.toJSON(), zoom: map.getZoom() || 10 };
       }
       const b = new google.maps.LatLngBounds();
       pts.forEach((s) => b.extend({ lat: s.lat, lng: s.lng }));
-      const raf = requestAnimationFrame(() => {
-        if (!mapRef.current) return;
-        google.maps.event.trigger(mapRef.current, 'resize');
-        mapRef.current.fitBounds(b, 60);
-      });
-      return () => cancelAnimationFrame(raf);
+      map.fitBounds(b, 60);
     } else if (preRouteViewRef.current) {
-      // Restore the pre-route view. The sidebar just unmounted and the map grew
-      // back 380px, so re-measure first or the restore lands off-center too.
-      const view = preRouteViewRef.current;
+      // Restore the pre-route board view when the route closes.
+      map.panTo(preRouteViewRef.current.center);
+      map.setZoom(preRouteViewRef.current.zoom);
       preRouteViewRef.current = null;
-      const raf = requestAnimationFrame(() => {
-        if (!mapRef.current) return;
-        google.maps.event.trigger(mapRef.current, 'resize');
-        mapRef.current.panTo(view.center);
-        mapRef.current.setZoom(view.zoom);
-      });
-      return () => cancelAnimationFrame(raf);
     }
   }, [google, selectedRoute, selectedRouteStops]);
 
