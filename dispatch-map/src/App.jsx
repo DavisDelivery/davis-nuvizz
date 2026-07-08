@@ -54,7 +54,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.39.11';
+const APP_VERSION = '0.40.0';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -99,6 +99,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.40.0', 'Map board — an open ORDER now sits on the LEFT and its ROUTE on the RIGHT, so you can read a stop and walk its route side by side. Opening a route from an order keeps the order open; clicking a stop inside the route opens that order on the left WITHOUT closing the route (the search / filter / stop-list rail returns when you close the order). Map framing is now context-aware and reliable: selecting an individual stop zooms to the BUILDING, while opening a route frames the WHOLE route — and the route frame now re-fits after the side panels finish resizing, so the far stops of a spread-out load are no longer clipped off-screen behind a panel. (#388, #380)'],
   ['0.39.11', 'Routing (beta) stop popup — the assigned DRIVER now shows right at the top, under the "On load" line, so who a stop is dispatched to is the first thing you see. The duplicate Route/Driver block at the bottom of the card is removed (it just repeated the load + driver). Everything else on the full card is unchanged — Delivery Ticket, full notes, Activity Timeline, POD.'],
   ['0.39.10', '🔗 RWB engine — cross-load moves now match the portal\'s exact call profile (from a live move HAR the dispatcher captured). The portal moves a stop between two open routes with ONE multi-route saveComparedRouteData — the moved stop is simply absent from the source\'s entry and present in the destination\'s; NO validate/add calls at all. The engine now does the same: an arrival held by another load in the same Save classifies as a MOVE (no getStop, no empty-load retarget probe, no add) and ALL touched loads persist in ONE atomic combined save (1 preview per load + 1 save). The 0.39.8 move that cost 10 calls now costs 6 (2 load reads for the guard + 2 previews + 1 save + 1 landed-verify); an A↔B SWAP — previously refused as "circular, save in two steps" — now commits atomically in the same one save. Genuinely-unplanned orders still ride the proven batched validate+add with the post-add verify, and if a portal ever fails to transfer a moved stop inside the save, a one-shot fallback attaches it the proven way and re-sequences — a move can never falsely succeed. Byte-for-byte freight preservation unchanged (stops ride BY ID ONLY).'],
   ['0.39.9', 'Routing (beta) — the stop popup is now a FULL stop card, matching the Map. Alongside the existing summary (PRO / load / appointment window / restrictions / line items) it now shows a printable Delivery Ticket, the on-demand full NuVizz notes + a collapsible Activity Timeline (Planned / Dispatched / Arrival / …), the driver\'s POD photos, and the assigned Route + driver — so you can see a stop\'s activity, print its ticket, and see who it\'s dispatched to without leaving Routing. Opening the card fires NO NuVizz call (the ticket builds from the already-loaded order; the timeline loads only when you expand it; POD and Refresh are opt-in buttons).'],
@@ -4617,7 +4618,7 @@ function StopNotesSection({ note, editing, setEditing, draft, setDraft, compact 
   );
 }
 
-function StopSidebar({ stop, note, onClose, onSave, saving, saveError, onOpenRoute, onMoveLocation, onEditAddress, onAutoFixAddress, onText, drivers = [], mobile = false }) {
+function StopSidebar({ stop, note, onClose, onSave, saving, saveError, onOpenRoute, onMoveLocation, onEditAddress, onAutoFixAddress, onText, drivers = [], mobile = false, side = 'right' }) {
   const [draft, setDraft] = useState(() => note || emptyNote(stop));
   const [editing, setEditing] = useState(!note);
   // True once the dispatcher edits the draft; cleared on stop-change and save.
@@ -4660,7 +4661,7 @@ function StopSidebar({ stop, note, onClose, onSave, saving, saveError, onOpenRou
     <aside
       className={mobile
         ? "absolute inset-0 bg-white shadow-lg flex flex-col overflow-hidden z-40"
-        : "w-[380px] flex-shrink-0 bg-white border-l shadow-lg flex flex-col h-full overflow-hidden"
+        : `w-[380px] flex-shrink-0 bg-white ${side === 'left' ? 'border-r' : 'border-l'} shadow-lg flex flex-col h-full overflow-hidden`
       }
       style={mobile ? { paddingBottom: 'env(safe-area-inset-bottom)' } : undefined}
     >
@@ -7219,24 +7220,46 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef }) {
   // never applied and the map appeared not to zoom. The recenter and search fits are
   // synchronous for the same reason.)
   const preRouteViewRef = useRef(null);
+  const framedRouteRef = useRef(null);
   useEffect(() => {
     if (!google || !mapRef.current) return;
     const map = mapRef.current;
     if (selectedRoute) {
       const pts = selectedRouteStops.filter((s) => s.lat != null && s.lng != null);
-      if (!pts.length) return;
+      if (!pts.length) return;                          // wait for this route's stops to load
+      // Frame the route ONCE per open (#380). Re-running on every selectedRouteStops
+      // identity change — the 120s board refresh, or drilling into one of its stops —
+      // would yank the map back to the whole-route frame while the dispatcher is
+      // reading a building. An individual stop click zooms to the building via
+      // handlePanToStop; opening a route frames the whole route. That's the split.
+      if (framedRouteRef.current === selectedRoute) return;
+      framedRouteRef.current = selectedRoute;
       if (!preRouteViewRef.current) {
         const c = map.getCenter();
         if (c) preRouteViewRef.current = { center: c.toJSON(), zoom: map.getZoom() || 10 };
       }
       const b = new google.maps.LatLngBounds();
       pts.forEach((s) => b.extend({ lat: s.lat, lng: s.lng }));
-      map.fitBounds(b, 60);
-    } else if (preRouteViewRef.current) {
-      // Restore the pre-route board view when the route closes.
-      map.panTo(preRouteViewRef.current.center);
-      map.setZoom(preRouteViewRef.current.zoom);
-      preRouteViewRef.current = null;
+      // Guard the deferred fit against a rapid route switch: if a different route was
+      // opened before this fit's idle fires, its bounds are stale — skip.
+      const routeAtFrame = selectedRoute;
+      const fit = () => { if (framedRouteRef.current === routeAtFrame) map.fitBounds(b, 60); };
+      fit();
+      // The order/route side panels (380px each) are flex siblings that shrink the
+      // map, but Google re-measures the canvas asynchronously (ResizeObserver) — so a
+      // synchronous fit can frame against the still-wide map and push the route's far
+      // stops under a panel ("stops missing I can't see", #380). Re-fit ONCE the map
+      // settles at its final width. addListenerOnce → exactly one corrective fit, no
+      // loop; not rAF (paused on background tabs — see the recenter effect note).
+      google.maps.event.addListenerOnce(map, 'idle', fit);
+    } else {
+      framedRouteRef.current = null;
+      if (preRouteViewRef.current) {
+        // Restore the pre-route board view when the route closes.
+        map.panTo(preRouteViewRef.current.center);
+        map.setZoom(preRouteViewRef.current.zoom);
+        preRouteViewRef.current = null;
+      }
     }
   }, [google, selectedRoute, selectedRouteStops]);
 
@@ -7431,11 +7454,15 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef }) {
   useEffect(() => {
     if (selectedStop) return;
     const v = preStopViewRef.current;
+    preStopViewRef.current = null;
+    // If a route is still open (order ↔ route side by side, #388), its framing owns
+    // the map — don't yank back to the pre-order board view and un-frame the route.
+    if (selectedRoute) return;
     if (v && mapRef.current) {
       mapRef.current.panTo(v.center);
       mapRef.current.setZoom(v.zoom);
     }
-    preStopViewRef.current = null;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedStop]);
 
   // On mobile we drop the resize handle and let the panel be a top-edge sheet.
@@ -7812,6 +7839,28 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef }) {
         </div>
       )}
       {smsTargets && <SmsComposeModal title={smsTargets.title} recipients={smsTargets.recipients} onClose={() => setSmsTargets(null)} />}
+      {/* LEFT column (#388) — an open ORDER takes the left so it sits beside its
+          route (which opens on the right). Otherwise the normal search / filter /
+          stop-list rail. Closing the order (X) restores the rail. A selected
+          driver keeps the rail (its snapshot lives on the right). */}
+      {!selectedDriver && selectedStop ? (
+        <StopSidebar
+          side="left"
+          stop={selectedStop}
+          note={notes.get(selectedStop.matchKey)}
+          drivers={notesDrivers}
+          onText={textCustomer}
+          onClose={() => setSelectedStop(null)}
+          onMoveLocation={startMoveLocation}
+          onEditAddress={openAddrEditor}
+          onAutoFixAddress={autoFixAddress}
+          onSave={handleSave}
+          saving={saving}
+          saveError={saveError}
+          onOpenRoute={(loadNbr) => { setSelectedRoute(loadNbr); }}
+        />
+      ) : (
+      <>
       {/* Left filter rail */}
       <div
         className="flex-shrink-0 bg-white border-r overflow-y-auto"
@@ -7884,6 +7933,8 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef }) {
 
       {/* Resize handle — desktop only */}
       <ResizeHandle onMouseDown={panel.onMouseDown} onDoubleClick={panel.onDoubleClick} />
+      </>
+      )}
 
       {/* Map */}
       <div className="flex-1 relative min-w-0">
@@ -8070,31 +8121,18 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef }) {
           onPanToStop={handlePanToStop}
         />
       )}
-      {!selectedDriver && !selectedRoute && selectedStop && (
-        <StopSidebar
-          stop={selectedStop}
-          note={notes.get(selectedStop.matchKey)}
-          drivers={notesDrivers}
-          onText={textCustomer}
-          onClose={() => setSelectedStop(null)}
-          onMoveLocation={startMoveLocation}
-          onEditAddress={openAddrEditor}
-          onAutoFixAddress={autoFixAddress}
-          onSave={handleSave}
-          saving={saving}
-          saveError={saveError}
-          onOpenRoute={(loadNbr) => { setSelectedStop(null); setSelectedRoute(loadNbr); }}
-        />
-      )}
+      {/* RIGHT column — the ROUTE detail (#388). The order sits on the LEFT, so
+          opening a route keeps the order open (order ↔ route side by side), and
+          picking a stop inside the route opens that order on the left WITHOUT
+          closing the route, so you can walk the route stop by stop. */}
       {!selectedDriver && selectedRoute && (
         <RouteDetailSidebar
           loadNbr={selectedRoute}
           stops={selectedRouteStops}
           onClose={() => setSelectedRoute(null)}
           onPickStop={(s) => {
-            setSelectedRoute(null);
             setSelectedStop(s);
-            handlePanToStop(s);   // saves the board view so closing zooms back out
+            handlePanToStop(s);   // building zoom; route stays framed/open on the right
           }}
         />
       )}
