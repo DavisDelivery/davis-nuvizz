@@ -311,44 +311,93 @@ function routeWindow(dttm: string | undefined, timeZone = 'America/New_York'): {
  * accepts a single-stop route; 0 stops is an empty route → use load/cancel, not this).
  */
 export async function rwbSequenceStops(requester: RwbRequesterLike, routePlanId: string, orderedStopIds: string[], origin: { lat: number; lng: number }): Promise<{ ok: boolean; message: string; calls: number; steps: any[] }> {
-  const cfg = rwbConfig();
-  if (rwbEngineBlocked()) return { ok: false, message: 'RWB engine is disabled on the server (NUVIZZ_RWB_ENABLED must be explicitly set)', calls: 0, steps: [] };
-  if (!cfg.username || !cfg.password) return { ok: false, message: 'RWB creds not configured (NUVIZZ_RWB_USER/PASS)', calls: 0, steps: [] };
+  const r = await rwbSequenceRoutes(requester, [{ routePlanId, orderedStopIds, origin }]);
   const ids = [...new Set(orderedStopIds.map(String).filter(Boolean))];
-  if (ids.length < 1) return { ok: false, message: 'RWB sequence needs at least 1 stop', calls: 0, steps: [] };
-  const steps: any[] = [];
+  return { ok: r.ok, message: r.ok ? `Sequenced ${ids.length} stop(s) via RWB.` : r.message, calls: r.calls, steps: r.steps };
+}
 
-  // Set the "don't auto re-sequence" preference once per session so our exact (dispatch-map-optimized)
-  // order is what persists — never NuVizz's re-optimization. Best-effort; not counted as a save step.
-  const prefCalls = await rwbEnsurePreference(requester, cfg);
-
+// Build ONE route's fetchUpdatedJson preview + its routeJsonData save entry. `listIdx` feeds the
+// portal's per-route `list` discriminator ("list1", "list2", …) seen in the multi-route move HAR.
+async function rwbPreviewRoute(
+  requester: RwbRequesterLike, cfg: RwbConfig,
+  route: { routePlanId: string; orderedStopIds: string[]; origin: { lat: number; lng: number } },
+  listIdx: number, steps: any[],
+): Promise<{ ok: boolean; entry?: any; message?: string }> {
+  const ids = [...new Set(route.orderedStopIds.map(String).filter(Boolean))];
+  const { routePlanId, origin } = route;
   const stoplist = [...ids.map((id) => id + '_PU'), ...ids.map((id) => id + '_DO')].join(',');
   const fujForm = { originLat: String(origin.lat), originLng: String(origin.lng), originOption: '02', stoplist, routePlanId, returnToDepot: 'NEVER', computeLatestEta: 'true' };
   const fr = await rwbAuthedCall(requester, cfg, 'POST', 'dirouteworkbench/routePlan/fetchUpdatedJson', fujForm);
-  steps.push({ op: 'fetchUpdatedJson', ok: fr.ok, status: fr.status, error: fr.error || null });
-  if (!fr.ok) return { ok: false, message: fr.error || `fetchUpdatedJson failed (status ${fr.status})`, calls: 1, steps };
+  steps.push({ op: 'fetchUpdatedJson', routePlanId, ok: fr.ok, status: fr.status, error: fr.error || null });
+  if (!fr.ok) return { ok: false, message: fr.error || `fetchUpdatedJson failed (status ${fr.status})` };
   let d: any = fr.body;
   if (typeof d === 'string') { try { d = JSON.parse(d); } catch { /* keep */ } }
   const o = Array.isArray(d) ? d[0] : d;
-  if (!o || !Array.isArray(o.etaStopVOList)) return { ok: false, message: 'fetchUpdatedJson returned no route preview', calls: 1, steps };
-
+  if (!o || !Array.isArray(o.etaStopVOList)) return { ok: false, message: 'fetchUpdatedJson returned no route preview' };
   const routeTz = (o.etaStopVOList[0] && o.etaStopVOList[0].timeZone) || 'America/New_York';
   const win = routeWindow(o.schStartTime && o.schStartTime.dttm, routeTz);
-  const routeJson = [{
+  return { ok: true, entry: {
     routePlanId, originLat: origin.lat, originLong: origin.lng,
     routeEndTime: win ? win.end : '', routeStartTime: win ? win.start : '',
     routeDistance: o.distance, transitTime: o.duration, totalTrips: ids.length,
     totalData: { totalP: 0, totalC: 0, totalW: 0, totalV: 0, weightUOM: 'Lbs', volumeUOM: 'Loose' },
     IdleTime: o.idleTime || 0, buildType: '02', isStandingRoute: false, seqMode: 'Manual',
     deadHeadMins: o.deadHeadMins, deadHeadMiles: o.deadHeadMiles,
-    tripDataJsonArray: ids, list: 'list1',
+    tripDataJsonArray: ids, list: `list${listIdx}`,
     stopDataJsonArray: [...ids, ...ids].map((id, i) => ({
       stopId: id + (i < ids.length ? '_PU' : '_DO'), plannedETA: '', routePlanId, etaCode: '', timeLapse: '',
-      tripId: id, timeZone: (o.etaStopVOList[0] && o.etaStopVOList[0].timeZone) || 'America/New_York',
+      tripId: id, timeZone: routeTz,
     })),
-  }];
-  const sr = await rwbAuthedCall(requester, cfg, 'POST', 'dirouteworkbench/routePlan/saveComparedRouteData', { routeJsonData: JSON.stringify(routeJson), planningMode: 'true' });
-  steps.push({ op: 'saveComparedRouteData', ok: sr.ok, status: sr.status, error: sr.error || null });
+  } };
+}
+
+/**
+ * rwbSequenceRoutes — set N routes' stop sets AND orders in ONE atomic saveComparedRouteData,
+ * exactly how the portal moves a stop between two open routes (verified from a live move HAR:
+ * routeJsonData is an ARRAY of route entries; the moved stop is simply absent from the source's
+ * stopDataJsonArray and present in the destination's — NO validate/addStopsToRoute calls at all).
+ * Cost: 1 fetchUpdatedJson per route + ONE save = N+1 calls. Because the save is one payload,
+ * a cross-load move (and even an A↔B swap) commits atomically — no source-before-destination
+ * ordering problem, no window where a stop is off both routes.
+ *
+ * ALL-OR-NOTHING: if ANY route's preview fails, the whole group is aborted with NO write — a
+ * half-saved move pair (destination gains the stop while the source save was dropped) would
+ * double-plan, so we never save a partial group. Transient preview failures just re-Save.
+ */
+export async function rwbSequenceRoutes(
+  requester: RwbRequesterLike,
+  routes: Array<{ routePlanId: string; orderedStopIds: string[]; origin: { lat: number; lng: number } }>,
+): Promise<{ ok: boolean; message: string; calls: number; steps: any[]; failedRoutePlanId?: string }> {
+  const cfg = rwbConfig();
+  if (rwbEngineBlocked()) return { ok: false, message: 'RWB engine is disabled on the server (NUVIZZ_RWB_ENABLED must be explicitly set)', calls: 0, steps: [] };
+  if (!cfg.username || !cfg.password) return { ok: false, message: 'RWB creds not configured (NUVIZZ_RWB_USER/PASS)', calls: 0, steps: [] };
+  if (!routes.length) return { ok: true, message: 'no routes to sequence', calls: 0, steps: [] };
+  for (const r of routes) {
+    if (![...new Set(r.orderedStopIds.map(String).filter(Boolean))].length) {
+      return { ok: false, message: `RWB sequence needs at least 1 stop (route ${r.routePlanId})`, calls: 0, steps: [], failedRoutePlanId: r.routePlanId };
+    }
+  }
+  const steps: any[] = [];
+
+  // Set the "don't auto re-sequence" preference once per session so our exact (dispatch-map-optimized)
+  // order is what persists — never NuVizz's re-optimization. Best-effort; not counted as a save step.
+  const prefCalls = await rwbEnsurePreference(requester, cfg);
+  void prefCalls;
+
+  // Previews run sequentially: the first call may perform the (cached) portal login, and racing
+  // two cold logins would double it. One preview per route, exactly like the portal.
+  const entries: any[] = [];
+  let calls = 0;
+  for (const [i, route] of routes.entries()) {
+    calls += 1;
+    const p = await rwbPreviewRoute(requester, cfg, route, i + 1, steps);
+    if (!p.ok) return { ok: false, message: p.message || 'route preview failed', calls, steps, failedRoutePlanId: route.routePlanId };
+    entries.push(p.entry);
+  }
+
+  const sr = await rwbAuthedCall(requester, cfg, 'POST', 'dirouteworkbench/routePlan/saveComparedRouteData', { routeJsonData: JSON.stringify(entries), planningMode: 'true' });
+  calls += 1;
+  steps.push({ op: 'saveComparedRouteData', routes: routes.length, ok: sr.ok, status: sr.status, error: sr.error || null });
   // Success requires BOTH a 2xx transport status AND a non-error body (rwbBodyOk): deliverit
   // answers 200 with { responseCode:500 } / { success:false } on an application failure, which
   // must REJECT the save — never trust the HTTP status alone.
@@ -357,11 +406,9 @@ export async function rwbSequenceStops(requester: RwbRequesterLike, routePlanId:
   const okSave = sr.ok && rwbBodyOk(sr.body);
   if (!okSave) {
     const why = sr.ok ? `application error (responseCode ${bodyCode ?? '?'}${bodyObj?.message ? `: ${bodyObj.message}` : ''})` : `status ${sr.status}`;
-    return { ok: false, message: sr.error || `saveComparedRouteData failed (${why})`, calls: 2, steps };
+    return { ok: false, message: sr.error || `saveComparedRouteData failed (${why})`, calls, steps };
   }
-  // prefCalls (0/1) is once-per-session setup, not counted in the per-save sequence cost.
-  void prefCalls;
-  return { ok: true, message: `Sequenced ${ids.length} stop(s) via RWB.`, calls: 2, steps };
+  return { ok: true, message: `Sequenced ${routes.length} route(s) in one save.`, calls, steps };
 }
 
 // ── PRODUCTION SWITCH CHECKLIST (mirrors the v7 DAVIS switch elsewhere in this repo) ──

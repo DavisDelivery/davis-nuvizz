@@ -338,8 +338,12 @@ test('runCommitBoardRwb: a departure is removed by save-omission (no v7 load/edi
 // a failure to the destination — the "moved one to the other route and it did not work" bug.
 
 // Two distinct loads, each with a MUTABLE stop list, routed by loadNbr (load/info) and by routePlanId
-// (the addStopsToRouteAfterValidation body) so a post-add re-read reflects the arrival.
-function makeMoveRequester(loads) {
+// (the addStopsToRouteAfterValidation body / the multi-route save entries) so re-reads reflect writes.
+// `applySave` (default true) makes saveComparedRouteData APPLY its declarative routeJsonData — set a
+// load's stops to exactly the ids in its entry, like the real portal — so the post-save verify sees
+// the move. Pass applySave:false to simulate a portal whose save does NOT transfer membership (the
+// fallback path must then attach + re-sequence).
+function makeMoveRequester(loads, { applySave = true } = {}) {
   const calls = [];
   const byId = {};
   for (const [nbr, v] of Object.entries(loads)) byId[v.loadId] = { nbr, v };
@@ -368,7 +372,18 @@ function makeMoveRequester(loads) {
       return J({ responseCode: 200, message: 'SUCCESS' });
     }
     if (url.includes('fetchUpdatedJson')) return J([{ etaStopVOList: [{ timeZone: 'America/New_York' }], distance: 1, duration: 1, schStartTime: { dttm: 'Jul 2, 2026' } }]);
-    if (url.includes('saveComparedRouteData')) return J({ responseCode: 200, message: 'SUCCESS' });
+    if (url.includes('saveComparedRouteData')) {
+      if (applySave) {
+        try {
+          const rj = opts.body?.get ? String(opts.body.get('routeJsonData') || '') : '';
+          for (const entry of JSON.parse(rj)) {
+            const tgt = byId[String(entry.routePlanId)];
+            if (tgt && Array.isArray(entry.tripDataJsonArray)) tgt.v.stops = entry.tripDataJsonArray.map((id) => String(id).replace(/^id-/, ''));
+          }
+        } catch { /* ignore */ }
+      }
+      return J({ responseCode: 200, message: 'SUCCESS' });
+    }
     const m = url.match(/\/load\/info\/([^/?]+)/);
     if (m) { const nbr = decodeURIComponent(m[1]); return loads[nbr] ? J(loadJson(nbr)) : J({}, 404); }
     if (url.includes('/stop/info/')) { const n = url.split('/stop/info/')[1].split('/')[0]; return J({ Stop: { stop: { stopId: `id-${n}`, stopNbr: n, stopType: 'DO' }, load: { loadNbr: '' } } }); }
@@ -376,11 +391,12 @@ function makeMoveRequester(loads) {
   } } };
 }
 
-test('runCommitBoardRwb: cross-load move is NOT falsely refused by the stale-board guard (batch-aware)', async () => {
+test('runCommitBoardRwb: cross-load move rides ONE atomic multi-route save (portal profile — no add, no probe)', async () => {
   await withRwb({}, async () => {
     // L1 holds [A,B]; L2 holds [C]. Move B from L1 → L2. The move reduces L1's ordered list but sends
-    // NO removeStopNbrs; B is still on L1 in NuVizz at classification time. The guard must recognize B
-    // as claimed by L2 (in-batch) — not an orphan — and must NOT refuse L1.
+    // NO removeStopNbrs; B is still on L1 in NuVizz at classification time. Expected (HAR-verified):
+    // B classifies as a MOVE arrival → NO validate/addStopsToRoute, NO getStop, NO retarget probe;
+    // ONE saveComparedRouteData carrying BOTH routes; a post-save verify read confirms B landed.
     const L1 = { loadId: '1111aaaa2222bbbb3333cccc', stops: ['A', 'B'] };
     const L2 = { loadId: '4444dddd5555eeee6666ffff', stops: ['C'] };
     const { requester, calls } = makeMoveRequester({ DAVISL1: L1, DAVISL2: L2 });
@@ -390,9 +406,53 @@ test('runCommitBoardRwb: cross-load move is NOT falsely refused by the stale-boa
     ] }, CREDS);
     assert.equal(r.ok, true, `move should not be refused; got: ${JSON.stringify(r.loads?.map((l) => l.error))}`);
     assert.ok(!r.loads.some((l) => /board isn't showing/i.test(l.error || '')), 'no false stale-board refusal on the source');
-    assert.ok(L2.stops.includes('B'), 'B moved onto L2 (added the RWB way)');
-    assert.equal(calls.some((c) => c.url.includes('saveComparedRouteData')), true, 'the move persists via the declarative save');
+    assert.deepEqual(L2.stops, ['C', 'B'], 'B moved onto L2 in the sent order');
+    assert.deepEqual(L1.stops, ['A'], 'B left L1 (declarative omission)');
+    // The portal profile: membership transfer happens INSIDE the one multi-route save.
+    assert.equal(calls.filter((c) => c.url.includes('saveComparedRouteData')).length, 1, 'exactly ONE combined save for both routes');
+    assert.equal(calls.filter((c) => c.url.includes('fetchUpdatedJson')).length, 2, 'one preview per route');
+    assert.equal(calls.some((c) => c.url.includes('addStopsToRouteAfterValidation')), false, 'a move fires NO add');
+    assert.equal(calls.some((c) => c.url.includes('validateStopstoPerformAction')), false, 'a move fires NO validate');
+    assert.equal(calls.some((c) => c.url.includes('/stop/info/')), false, 'no getStop probe (destination-empty retarget probe skipped for in-batch moves)');
     assert.equal(calls.some((c) => c.url.includes('/load/insertstops/')), false, 'no v7 insertStops');
+  });
+});
+
+test('runCommitBoardRwb: A↔B SWAP commits atomically in the one save (previously refused as circular)', async () => {
+  await withRwb({}, async () => {
+    const L1 = { loadId: '1111aaaa2222bbbb3333cccc', stops: ['A', 'X'] };
+    const L2 = { loadId: '4444dddd5555eeee6666ffff', stops: ['B', 'Y'] };
+    const { requester, calls } = makeMoveRequester({ DAVISL1: L1, DAVISL2: L2 });
+    // Swap X and Y between the loads in one Save.
+    const r = await runCommitBoardRwb(requester, { loads: [
+      { loadNbr: 'DAVISL1', loadId: L1.loadId, routeName: 'L1', orderedStopNbrs: ['A', 'Y'], orderedStopIds: ['id-A', 'id-Y'] },
+      { loadNbr: 'DAVISL2', loadId: L2.loadId, routeName: 'L2', orderedStopNbrs: ['B', 'X'], orderedStopIds: ['id-B', 'id-X'] },
+    ] }, CREDS);
+    assert.equal(r.ok, true, `swap should commit atomically; got: ${JSON.stringify(r.loads?.map((l) => l.error))}`);
+    assert.ok(!r.loads.some((l) => /circular/i.test(l.error || '')), 'no circular-move refusal');
+    assert.deepEqual(L1.stops, ['A', 'Y'], 'L1 ends with A,Y');
+    assert.deepEqual(L2.stops, ['B', 'X'], 'L2 ends with B,X');
+    assert.equal(calls.filter((c) => c.url.includes('saveComparedRouteData')).length, 1, 'one combined save');
+    assert.equal(calls.some((c) => c.url.includes('addStopsToRouteAfterValidation')), false, 'no adds for an in-batch swap');
+  });
+});
+
+test('runCommitBoardRwb: move FALLBACK — if the save does not transfer membership, attach via add + re-sequence (never a false success)', async () => {
+  await withRwb({}, async () => {
+    // Simulate a portal whose combined save does NOT move the stop (applySave:false — L2 never gains
+    // B from the save). The post-save verify must catch it, attach B via the proven add path, and
+    // re-sequence L2 — the Save still ends OK with B actually on L2, never a silent no-op.
+    const L1 = { loadId: '1111aaaa2222bbbb3333cccc', stops: ['A', 'B'] };
+    const L2 = { loadId: '4444dddd5555eeee6666ffff', stops: ['C'] };
+    const { requester, calls } = makeMoveRequester({ DAVISL1: L1, DAVISL2: L2 }, { applySave: false });
+    const r = await runCommitBoardRwb(requester, { loads: [
+      { loadNbr: 'DAVISL1', loadId: L1.loadId, routeName: 'L1', orderedStopNbrs: ['A'], orderedStopIds: ['id-A'] },
+      { loadNbr: 'DAVISL2', loadId: L2.loadId, routeName: 'L2', orderedStopNbrs: ['C', 'B'], orderedStopIds: ['id-C', 'id-B'] },
+    ] }, CREDS);
+    assert.equal(r.ok, true, `fallback should land the move; got: ${JSON.stringify(r.loads?.map((l) => l.error))}`);
+    assert.ok(L2.stops.includes('B'), 'B attached to L2 by the fallback add');
+    assert.equal(calls.some((c) => c.url.includes('addStopsToRouteAfterValidation')), true, 'fallback add fired');
+    assert.ok(calls.filter((c) => c.url.includes('saveComparedRouteData')).length >= 2, 'combined save + the fallback re-sequence save');
   });
 });
 
