@@ -16,7 +16,7 @@ export const BULK_FIELDS = [
   { key: 'stopNbr', label: 'Order #', required: false, aliases: ['order', 'order no', 'order number', 'ordernbr', 'po', 'po number', 'reference', 'ref'] },
   { key: 'pro', label: 'PRO / shipment #', required: false, aliases: ['pro', 'pro number', 'shipment', 'shipment number', 'bol', 'tracking'] },
   { key: 'pallets', label: 'Pallets', required: false, aliases: ['pallet', 'pallets', 'plt', 'plts', 'skids', 'skid'] },
-  { key: 'cartons', label: 'Cartons', required: false, aliases: ['carton', 'cartons', 'ctn', 'ctns', 'cases', 'pieces', 'pcs', 'qty', 'quantity'] },
+  { key: 'loose', label: 'Loose', required: false, aliases: ['loose', 'loose pieces', 'loose pcs', 'pieces', 'pcs', 'pc', 'cases', 'qty', 'quantity'] },
   { key: 'weight', label: 'Weight (lbs)', required: false, aliases: ['weight', 'wt', 'lbs', 'pounds'] },
 ];
 
