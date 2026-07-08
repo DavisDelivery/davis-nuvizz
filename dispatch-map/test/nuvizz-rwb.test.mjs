@@ -124,13 +124,34 @@ test('rwbSequenceStops: allows a single-stop route (HAR-verified), refuses zero'
   });
 });
 
-test('rwbAddStopsToRoute: validates then adds each stop via the RWB portal', async () => {
+test('rwbAddStopsToRoute: adds N stops in TWO batched calls (one validate?routeId + one add)', async () => {
   await withRwb({}, async () => {
     const { requester, calls } = makeRequester();
-    const r = await rwbAddStopsToRoute(requester, HEXID, ['id-A', 'id-B']);
+    const r = await rwbAddStopsToRoute(requester, HEXID, ['id-A', 'id-B', 'id-C']);
     assert.equal(r.ok, true, r.message);
-    assert.equal(calls.filter((c) => c.url.includes('validateStopstoPerformAction')).length, 2);
-    assert.equal(calls.filter((c) => c.url.includes('addStopsToRouteAfterValidation')).length, 2);
+    assert.equal(r.mode, 'batch');
+    assert.equal(r.calls, 2, 'batch = 1 validate + 1 add, regardless of stop count');
+    const val = calls.filter((c) => c.url.includes('validateStopstoPerformAction'));
+    assert.equal(val.length, 1, 'ONE batched validate for all 3');
+    assert.ok(val[0].url.includes('id-A,id-B,id-C') && val[0].url.includes('routeId='), 'validate carries all ids + routeId');
+    assert.equal(calls.filter((c) => c.url.includes('addStopsToRouteAfterValidation')).length, 1, 'one batch add');
+  });
+});
+
+test('rwbAddStopsToRoute: falls back to per-stop when the batched add is rejected', async () => {
+  await withRwb({}, async () => {
+    let firstAdd = true;
+    const base = makeRequester();
+    const real = base.requester.request;
+    base.requester.request = async (url, opts, meta) => {
+      if (url.includes('addStopsToRouteAfterValidation') && firstAdd) { firstAdd = false; return new Response(JSON.stringify({ responseCode: 500, message: 'batch not supported' }), { status: 200 }); }
+      return real(url, opts, meta);
+    };
+    const r = await rwbAddStopsToRoute(base.requester, HEXID, ['id-A', 'id-B']);
+    assert.equal(r.ok, true, r.message);
+    assert.equal(r.mode, 'batch-fallback');
+    // 1 batched validate + 1 (rejected) batched add, then per-stop validate+add ×2.
+    assert.equal(base.calls.filter((c) => c.url.includes('validateStopstoPerformAction')).length, 3, '1 batch + 2 per-stop validates');
   });
 });
 
@@ -196,6 +217,76 @@ test('runCommitBoardRwb: an arrival is added via the RWB portal (not v7 insertSt
     assert.equal(calls.some((c) => c.url.includes('addStopsToRouteAfterValidation')), true, 'arrival must be added via RWB portal');
     assert.equal(calls.some((c) => c.url.includes('/load/insertstops/')), false, 'must NOT use v7 insertStops');
     assert.equal(calls.some((c) => c.url.includes('saveComparedRouteData')), true);
+  });
+});
+
+test('runCommitBoardRwb: client-supplied orderedStopIds skip the per-stop getStop (portal-scale path)', async () => {
+  await withRwb({}, async () => {
+    // Load already has X; add A,B,C as arrivals passing their ids → engine resolves without any
+    // getStop (non-empty load, so no retarget probe either), and adds via the batched validate+add.
+    const loadStops = { value: ['X'] };
+    const { requester, calls } = makeRequester({ loadStops });
+    const r = await runCommitBoardRwb(requester, { loads: [{
+      loadNbr: 'DAVIS000000123', loadId: HEXID, routeName: 'R',
+      orderedStopNbrs: ['X', 'A', 'B', 'C'], orderedStopIds: ['id-X', 'id-A', 'id-B', 'id-C'],
+    }] }, CREDS);
+    assert.equal(r.ok, true, `expected success, got: ${JSON.stringify(r.loads?.[0]?.error)}`);
+    assert.equal(calls.some((c) => c.url.includes('/stop/info/')), false, 'no getStop when ids are supplied');
+    assert.equal(calls.filter((c) => c.url.includes('addStopsToRouteAfterValidation')).length, 1, 'one batched add');
+    const val = calls.filter((c) => c.url.includes('validateStopstoPerformAction'));
+    assert.equal(val.length, 1, 'one batched validate');
+    assert.ok(val[0].url.includes('routeId='), 'validate carries routeId');
+  });
+});
+
+test('runCommitBoardRwb: retargets to the same-named instance that holds the stops (duplicate recurring load)', async () => {
+  await withRwb({}, async () => {
+    // Two loads named DARYL: the opened one (EMPTY_ID) is empty; the twin (FULL) holds A,B.
+    // The board opened the empty twin; the save must retarget to FULL and reorder there.
+    const EMPTY_ID = '6a4778d0461cf601d983b6bf', FULL_ID = 'aa11bb22cc33dd44ee55ff66';
+    const calls = [];
+    const loadDoc = (id, name, stops) => ({ Load: {
+      loadHeader: { loadId: id, loadNbr: name === 'DARYL_EMPTY' ? 'LOAD113177' : 'LOAD112852', routeName: 'DARYL', rtOrigin: { address: { latitude: 34, longitude: -83 } } },
+      versionId: 'v1', loadExecutionInfo: { loadStatus: 'PLANNED' },
+      stops: stops.map((n, i) => ({ stop: { stopId: `id-${n}`, stopNbr: String(n), stopType: 'DO', to: { seq: i + 2 } } })),
+    } });
+    const requester = { async request(url, opts) {
+      const method = (opts.method || 'GET').toUpperCase(); calls.push({ url, method });
+      const J = (o, s = 200) => new Response(JSON.stringify(o), { status: s });
+      const T = (t) => new Response(t, { status: 200 });
+      if (url.includes('/loginreg/') && method === 'GET') return T('<meta name="_csrf" content="x"><meta name="_csrf_header" content="X-CSRF-TOKEN">');
+      if (url.includes('checkCompanyLogin')) return J({ ok: true });
+      if (url.includes('auth/userLogin')) return J({ data: { jwtToken: 'j' } });
+      if (url.includes('/authtoken/')) return J({ authToken: 't' });
+      if (url.includes('validateStopstoPerformAction')) return T('Success');
+      if (url.includes('addStopsToRouteAfterValidation')) return J({ responseCode: 200, message: 'SUCCESS' });
+      if (url.includes('fetchUpdatedJson')) return J([{ etaStopVOList: [{ timeZone: 'America/New_York' }], distance: 1, duration: 1, schStartTime: { dttm: 'Jul 2, 2026' } }]);
+      if (url.includes('saveComparedRouteData')) return J({ responseCode: 200, message: 'SUCCESS' });
+      if (url.includes('/load/info/LOAD113177')) return J(loadDoc(EMPTY_ID, 'DARYL_EMPTY', []));
+      if (url.includes('/load/info/LOAD112852')) return J(loadDoc(FULL_ID, 'DARYL_FULL', ['A', 'B']));
+      if (url.includes('/stop/info/')) { const n = url.split('/stop/info/')[1].split('/')[0]; return J({ Stop: { stop: { stopId: `id-${n}`, stopNbr: n, stopType: 'DO' }, load: { loadNbr: 'LOAD112852' } } }); }
+      return J({});
+    } };
+    const r = await runCommitBoardRwb(requester, { loads: [{ loadNbr: 'LOAD113177', loadId: EMPTY_ID, routeName: 'DARYL', orderedStopNbrs: ['B', 'A'] }] }, CREDS);
+    assert.equal(r.ok, true, `expected retarget+reorder to succeed, got: ${JSON.stringify(r.loads?.[0]?.error)}`);
+    // Retarget step recorded, and NO stops added the RWB way (they're already on the full twin).
+    const steps = r.loads[0].steps || [];
+    assert.ok(steps.some((s) => s.op === 'retargetInstance' && s.to === 'LOAD112852'), 'should record a retarget to the full instance');
+    assert.equal(calls.some((c) => c.url.includes('addStopsToRouteAfterValidation')), false, 'no arrivals — stops already on the retargeted load');
+    assert.equal(calls.some((c) => c.url.includes('saveComparedRouteData')), true);
+  });
+});
+
+test('runCommitBoardRwb: refuses when the load carries a stop the board is not showing (stale-board guard)', async () => {
+  await withRwb({}, async () => {
+    // Load actually carries [A,B,C]; the board only knows [A,B] and reorders to [B,A] without
+    // removing C. A declarative save of [B,A] would silently unplan C — the guard must refuse.
+    const loadStops = { value: ['A', 'B', 'C'] };
+    const { requester, calls } = makeRequester({ loadStops });
+    const r = await runCommitBoardRwb(requester, { loads: [{ loadNbr: 'DAVIS000000123', loadId: HEXID, orderedStopNbrs: ['B', 'A'] }] }, CREDS);
+    assert.equal(r.ok, false);
+    assert.match(r.loads[0].error, /board isn't showing|unplan them|Refresh/i);
+    assert.equal(calls.some((c) => c.url.includes('saveComparedRouteData')), false, 'nothing should be saved when the guard trips');
   });
 });
 

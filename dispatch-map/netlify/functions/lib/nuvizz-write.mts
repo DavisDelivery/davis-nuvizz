@@ -1180,8 +1180,32 @@ export async function runCommitBoardRwb(requester: RequesterLike, payload: any, 
 
     const f = await fetchLoad(requester, loadNbrX, creds);
     if (!f.load) { result.ok = false; result.error = `commitBoard(rwb): load not found (${loadMissDiag(loadNbrX, f)})`; seq.push({ L, loadNbr: loadNbrX, orderedNbrs, arrivals: [], curNbrs: new Set(), result }); continue; }
-    const load = f.load;
-    if (L?.loadId && load.loadId && String(load.loadId) !== String(L.loadId)) {
+    let load = f.load;
+
+    // RECURRING-INSTANCE RETARGET. A recurring load NAME (e.g. "DARYL") can have TWO NuVizz
+    // instances on the same day — a fresh EMPTY one plus the prior one that still holds the stops.
+    // The board groups by name, so it can open the empty twin while showing the stops that actually
+    // live on the other instance. If we opened an empty load but the ordered stops sit on ONE other
+    // load with the SAME routeName, operate on THAT instance (what the board is showing) instead of
+    // refusing via the steal guard or rebuilding onto the empty twin. Costs +1 getStop +1 getLoad,
+    // and only when the opened load is empty.
+    let retargeted = false;
+    const openDOcount = (load.stops || []).filter((s: any) => String(s?.stopType ?? '').toUpperCase() === 'DO').length;
+    if (openDOcount === 0 && orderedNbrs.length) {
+      const probe = await fireSingle(requester, 'getStop', { stopNbr: orderedNbrs[0] }, creds);
+      const srcNbr = probe?.ok ? String(probe.stop?.assignedLoadNbr ?? '').trim() : '';
+      if (srcNbr && srcNbr !== loadNbrX && !isHashLikeId(srcNbr)) {
+        const sf = await fetchLoad(requester, srcNbr, creds);
+        const sameName = sf.load && String(sf.load.routeName ?? '').trim() !== ''
+          && String(sf.load.routeName).trim().toUpperCase() === String(load.routeName ?? '').trim().toUpperCase();
+        if (sameName) {
+          result.steps.push({ op: 'retargetInstance', from: loadNbrX, to: srcNbr, routeName: load.routeName });
+          loadNbrX = srcNbr; result.loadNbr = srcNbr; load = sf.load; retargeted = true;
+        }
+      }
+    }
+    // Identity check is skipped after a deliberate retarget (we intentionally switched instances).
+    if (!retargeted && L?.loadId && load.loadId && String(load.loadId) !== String(L.loadId)) {
       result.ok = false; result.error = `commitBoard(rwb): load identity mismatch (name resolved ${load.loadId}, expected ${L.loadId})`;
       seq.push({ L, loadNbr: loadNbrX, orderedNbrs, arrivals: [], curNbrs: new Set(), result }); continue;
     }
@@ -1199,20 +1223,37 @@ export async function runCommitBoardRwb(requester: RequesterLike, payload: any, 
       if (s?.stopId != null && String(s?.stopType ?? '').toUpperCase() === 'DO') stopIdByNbr.set(String(s.stopNbr), String(s.stopId));
     }
 
-    // DEPARTURES — stops leaving this load (unplanned, or the source side of a cross-load move).
-    // RWB's saveComparedRouteData only REORDERS the ids it is given; it is NOT trusted to unplan
-    // an omitted stop. So membership REDUCTION rides the proven v7 removeStops op (same as classic),
-    // not RWB omission — this is what actually frees a moved stop before the destination inserts it.
+    // STALE-BOARD GUARD. The RWB save is DECLARATIVE: the route ends up with exactly the stops we
+    // send, so any DO stop currently on the load but NOT in the desired order is UNPLANNED. That is
+    // correct for a stop the dispatcher intentionally removed (it rides removeStopNbrs), but a stop
+    // the board simply never knew about (added elsewhere since the last refresh) would be silently
+    // dropped. Refuse rather than let the declarative save quietly unplan an unaccounted-for stop.
     const removeNbrs: string[] = Array.isArray(L?.removeStopNbrs) ? L.removeStopNbrs.map((x: any) => String(x)).filter(Boolean) : [];
-    const departures = removeNbrs
-      .filter((n) => stopIdByNbr.has(n) && !orderedNbrs.includes(n))
-      .map((n) => ({ nbr: n, stopId: stopIdByNbr.get(n) as string }));
+    const orderedSet = new Set(orderedNbrs);
+    const removeSet = new Set(removeNbrs);
+    const unaccounted = [...stopIdByNbr.keys()].filter((n) => !orderedSet.has(n) && !removeSet.has(n));
+    if (unaccounted.length) {
+      result.ok = false;
+      result.error = `commitBoard(rwb): load ${loadNbrX} has ${unaccounted.length} stop(s) the board isn't showing (${unaccounted.slice(0, 3).join(', ')}${unaccounted.length > 3 ? '…' : ''}) — a declarative RWB save would unplan them. Refresh and retry.`;
+      seq.push({ L, loadNbr: loadNbrX, orderedNbrs, arrivals: [], curNbrs, result }); continue;
+    }
 
-    // Same TWO-LEVER classification as the import engine: ON-LOAD (already have a stopId) vs
-    // ARRIVAL (an existing stop elsewhere — resolved + steal-guarded via getStop, planned with
-    // insertStops by stopId; NEVER an RWB entry for a stop not yet on this load).
+    // Client-supplied stop ids (the board already holds them) let us resolve ARRIVALS without a
+    // getStop each — the portal-scale path. Aligned by index with orderedStopNbrs. When a client id is
+    // present, the per-stop steal-guard is delegated to the batched validateStopstoPerformAction?routeId
+    // call in the add phase (the portal's own whole-set eligibility check). getStop is used ONLY for
+    // arrivals the client didn't enrich, and for the in-batch cross-load topo-sort (curNbrs) which
+    // needs no getStop (the source load's own read already tells us which stops it holds).
+    const clientIdByNbr = new Map<string, string>();
+    const cNbrs = Array.isArray(L?.orderedStopNbrs) ? L.orderedStopNbrs.map((x: any) => String(x)) : [];
+    const cIds = Array.isArray(L?.orderedStopIds) ? L.orderedStopIds.map((x: any) => String(x)) : [];
+    if (cIds.length && cIds.length === cNbrs.length) cNbrs.forEach((n, i) => { if (cIds[i]) clientIdByNbr.set(n, cIds[i]); });
+
+    // TWO-LEVER classification: ON-LOAD (already have a stopId, stays via the save) vs ARRIVAL (an
+    // existing stop elsewhere — added the RWB-native way in the fire phase; NEVER just a save entry).
     const missing = orderedNbrs.filter((n) => !stopIdByNbr.has(n));
-    const fetched = new Map<string, any>(await Promise.all(missing.map(async (n): Promise<[string, any]> => {
+    const needFetch = missing.filter((n) => !clientIdByNbr.has(n));   // only un-enriched arrivals need a read
+    const fetched = new Map<string, any>(await Promise.all(needFetch.map(async (n): Promise<[string, any]> => {
       try { return [n, await fireSingle(requester, 'getStop', { stopNbr: n }, creds)]; }
       catch (e: any) { return [n, { ok: false, error: e?.message || 'getStop failed' }]; }
     })));
@@ -1220,6 +1261,8 @@ export async function runCommitBoardRwb(requester: RequesterLike, payload: any, 
     let err: string | null = null;
     for (const nbr of orderedNbrs) {
       if (stopIdByNbr.has(nbr)) continue;
+      const cid = clientIdByNbr.get(nbr);
+      if (cid) { arrivals.push({ nbr, stopId: cid }); continue; }   // client id → no getStop; batch validate guards eligibility
       const gs = fetched.get(nbr);
       const srcNbr = gs?.ok ? String(gs.stop?.assignedLoadNbr ?? '').trim() : '';
       if (!gs?.ok || !gs.stop?.stopId) { err = `commitBoard(rwb): stop ${nbr} could not be read for planning (stale board — refresh and retry)`; break; }
@@ -1228,8 +1271,8 @@ export async function runCommitBoardRwb(requester: RequesterLike, payload: any, 
       }
       arrivals.push({ nbr, stopId: String(gs.stop.stopId), srcLoadNbr: srcNbr && srcNbr !== loadNbrX ? srcNbr : undefined });
     }
-    if (err) { result.ok = false; result.error = err; seq.push({ L, loadNbr: loadNbrX, orderedNbrs, arrivals: [], departures: [], curNbrs, result }); continue; }
-    seq.push({ L, loadNbr: loadNbrX, load, orderedNbrs, arrivals, departures, curNbrs, result, addReads: missing.length });
+    if (err) { result.ok = false; result.error = err; seq.push({ L, loadNbr: loadNbrX, orderedNbrs, arrivals: [], curNbrs, result }); continue; }
+    seq.push({ L, loadNbr: loadNbrX, load, orderedNbrs, arrivals, curNbrs, result, addReads: needFetch.length, retargeted });
   }
 
   const legacyResult = legacy.length
@@ -1267,7 +1310,9 @@ export async function runCommitBoardRwb(requester: RequesterLike, payload: any, 
       outcome.set(String(p.loadNbr), 'failed');
       continue;
     }
-    let loadId: any = trustableLoadId(p.L?.loadId) ? p.L.loadId : (p.load?.loadId ?? null);
+    // After a recurring-instance retarget, the client's loadId points at the EMPTY twin — use the
+    // retargeted load's own id as the RWB routePlanId, never the stale client id.
+    let loadId: any = p.retargeted ? (p.load?.loadId ?? null) : (trustableLoadId(p.L?.loadId) ? p.L.loadId : (p.load?.loadId ?? null));
     let loadX = p.load;
     try {
       // Every desired stop's internal id — on-load stops (from the load read) + arrivals (from
