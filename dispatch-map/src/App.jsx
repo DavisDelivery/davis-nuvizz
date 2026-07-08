@@ -54,7 +54,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.43.0';
+const APP_VERSION = '0.43.1';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -99,6 +99,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.43.1', 'Customer History (the stop-card button) is now strictly READ-ONLY from our saved Firestore history — it can never make a NuVizz call. The shared history overlay used to offer a one-off "Look up PRO in NuVizz" button when you typed an unknown PRO; that stays on the top "Search past PROs" search box, but the per-customer History view opened from a stop card suppresses it entirely (shows "Shows only our saved delivery history — no NuVizz calls").'],
   ['0.43.0', 'Customer history now shows WHO DELIVERED each PRO. A new "History" button on the stop card opens that customer\'s past PROs seeded by name — each PRO now lists its delivering driver alongside the date. The driver was already captured in the nightly history warehouse; it\'s now carried into the per-customer rollup the lookup reads (no new NuVizz calls — the lookup is still a single Firestore read). New deliveries fill the driver in going forward; existing history fills in after a one-time NuVizz-FREE rebuild of the customer rollup from the warehouse.'],
   ['0.42.0', 'Routing (beta) — clicking a stop now opens its FULL detail in the RIGHT PANEL instead of a center popup, so it sits beside the map/routes. In tractor/box PAINT mode the first click does BOTH: paints the stop (green = 53′ fits, red = box only) AND opens its detail on the right. And that detail now has "Edit address" + "Correct pin location" (drag the pin) right there — the same corrections the Map screen offers, writing the same saved override so the routing pin moves live. No NuVizz calls (Firestore + client geocode only).'],
   ['0.41.0', 'Mobile Map — a persistent search bar at the top (#382: "there should be a search bar here"). Before, search on a phone was only reachable via the Stops drawer; it now sits right on the map, same as desktop (customer / PRO / city / address, with the AI sparkle toggle when available). The other top overlays (date chip, status pill, selection tools, "no stops match", live-drivers note) shifted down to make room — nothing lost, just stacked below the new search row.'],
@@ -5485,7 +5486,11 @@ function MobileDrawer({ open, onClose, activeTab, setActiveTab, children }) {
 // zero API calls — by customer name (shows that customer's last 20 PROs) or by
 // PRO. ONLY when a typed PRO isn't in saved history does it offer a deliberate
 // NuVizz lookup (one call). Business-name searches never call the API.
-function PastProSearch({ notes, initialQuery, onPickCustomer, onClose }) {
+// noApi: when true this is a pure customer-history view (opened from a stop card's
+// "History" button) — it reads ONLY our Firestore saved history and never offers the
+// on-demand single-PRO NuVizz lookup. The top "Search past PROs" button leaves it
+// false, keeping that deliberate one-call lookup available there.
+function PastProSearch({ notes, initialQuery, onPickCustomer, onClose, noApi = false }) {
   const [q, setQ] = useState(initialQuery || '');
   const [api, setApi] = useState(null); // NuVizz single-PRO lookup: null | {loading} | {stop} | {error}
   const [detail, setDetail] = useState(null); // stop shown in the full-detail modal
@@ -5657,7 +5662,7 @@ function PastProSearch({ notes, initialQuery, onPickCustomer, onClose }) {
         {noResults && (
           <div className="px-4 py-4 text-center">
             <div className="text-xs text-slate-500 mb-2">Nothing in saved history for “{query}”.</div>
-            {isProLike ? (
+            {isProLike && !noApi ? (
               !api ? (
                 <button onClick={runApi} className="px-3 py-2 text-sm text-white font-semibold rounded-lg" style={{ background: BRAND, minHeight: 44 }}>Look up PRO in NuVizz (1 API call)</button>
               ) : api.loading ? (
@@ -5666,7 +5671,7 @@ function PastProSearch({ notes, initialQuery, onPickCustomer, onClose }) {
                 <div className="text-xs text-red-600">PRO not found in NuVizz ({api.error}).</div>
               ) : null
             ) : (
-              <div className="text-[11px] text-slate-400 italic">Tip: business-name search reads only our saved delivery history — try a different spelling, or search by PRO number.</div>
+              <div className="text-[11px] text-slate-400 italic">{noApi ? 'Shows only our saved delivery history (Firestore) — no NuVizz calls.' : 'Tip: business-name search reads only our saved delivery history — try a different spelling, or search by PRO number.'}</div>
             )}
           </div>
         )}
@@ -6605,7 +6610,10 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef }) {
   // button seeds it with the live search; a stop card's "History" button seeds it
   // with that customer's name so it opens straight to their past PROs + drivers.
   const [histSeed, setHistSeed] = useState('');
-  const openCustomerHistory = useCallback((s) => { setHistSeed((s?.businessName || '').trim()); setHistOpen(true); }, []);
+  // The card "History" button opens a Firestore-only view (noApi); the top "Search
+  // past PROs" button keeps the deliberate single-PRO NuVizz lookup available.
+  const [histNoApi, setHistNoApi] = useState(false);
+  const openCustomerHistory = useCallback((s) => { setHistSeed((s?.businessName || '').trim()); setHistNoApi(true); setHistOpen(true); }, []);
 
   // M6 — AI Order Search state. aiMode flips the search box into NL parse mode;
   // aiResult holds the AI-derived match set (from search OR chat) that overrides
@@ -7854,6 +7862,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef }) {
             <PastProSearch
               notes={notes}
               initialQuery={histSeed}
+              noApi={histNoApi}
               onPickCustomer={(s) => { setHistOpen(false); pickStopFromMobile(s); }}
               onClose={() => setHistOpen(false)}
             />
@@ -7969,6 +7978,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef }) {
             <PastProSearch
               notes={notes}
               initialQuery={histSeed}
+              noApi={histNoApi}
               onPickCustomer={(s) => { setHistOpen(false); setSelectedDriver(null); setSelectedStop(s); }}
               onClose={() => setHistOpen(false)}
             />
@@ -8002,7 +8012,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef }) {
         />
         <div className="px-3 pt-2 pb-2">
           <button
-            onClick={() => { setHistSeed(searchInput); setHistOpen(true); }}
+            onClick={() => { setHistSeed(searchInput); setHistNoApi(false); setHistOpen(true); }}
             className="w-full inline-flex items-center justify-center gap-1.5 text-xs font-semibold text-slate-700 border border-slate-300 rounded-lg py-2 hover:bg-slate-50 active:bg-slate-100"
           >
             <Clock size={13} /> Search past PROs / customer history
