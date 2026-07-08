@@ -54,7 +54,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.43.1';
+const APP_VERSION = '0.44.0';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -99,6 +99,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.44.0', 'Per-action NuVizz call counter on every Compare-panel Save — the success toast now shows how many NuVizz calls that action actually made (e.g. "✓ 1 load saved · 3 NuVizz calls (2 RWB portal)"). "RWB portal" = just the Route-Workbench portal writes (preview / save / validate / add) — the calls that show in the real RWB HAR, so you can reconcile each action against it; the total also counts any cold-start login + safety re-reads. Server-measured as an exact before/after delta on the metered requester, so it\'s the real billed count, not an estimate.'],
   ['0.43.1', 'Customer History (the stop-card button) is now strictly READ-ONLY from our saved Firestore history — it can never make a NuVizz call. The shared history overlay used to offer a one-off "Look up PRO in NuVizz" button when you typed an unknown PRO; that stays on the top "Search past PROs" search box, but the per-customer History view opened from a stop card suppresses it entirely (shows "Shows only our saved delivery history — no NuVizz calls").'],
   ['0.43.0', 'Customer history now shows WHO DELIVERED each PRO. A new "History" button on the stop card opens that customer\'s past PROs seeded by name — each PRO now lists its delivering driver alongside the date. The driver was already captured in the nightly history warehouse; it\'s now carried into the per-customer rollup the lookup reads (no new NuVizz calls — the lookup is still a single Firestore read). New deliveries fill the driver in going forward; existing history fills in after a one-time NuVizz-FREE rebuild of the customer rollup from the warehouse.'],
   ['0.42.0', 'Routing (beta) — clicking a stop now opens its FULL detail in the RIGHT PANEL instead of a center popup, so it sits beside the map/routes. In tractor/box PAINT mode the first click does BOTH: paints the stop (green = 53′ fits, red = box only) AND opens its detail on the right. And that detail now has "Edit address" + "Correct pin location" (drag the pin) right there — the same corrections the Map screen offers, writing the same saved override so the routing pin moves live. No NuVizz calls (Firestore + client geocode only).'],
@@ -10753,6 +10754,15 @@ function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmN
     const orphanMsg = orphaned.length ? ` ⚠ ${orphaned.length} stop(s) now UNPLANNED — re-Save to reroute.` : '';
     const cancelMsg = cancelled ? ` · ${cancelled} route(s) emptied/cancelled` : '';
     const noopMsg = noop ? ` · ${noop} no change` : '';
+    // Per-action NuVizz call count, so you can reconcile each action against the real
+    // Route Workbench HAR. totalCalls (res.callsUsed) = EXACT calls this save made
+    // (incl. any cold-instance login + safety re-reads); portalCalls = just the RWB
+    // portal writes (preview/save/validate/add) — the ones that show in the RWB HAR.
+    const portalCalls = resLoads.reduce((n, l) => n + ((l.calls?.rwb || 0) + (l.calls?.rwbAdd || 0)), 0);
+    const totalCalls = typeof res.callsUsed === 'number' ? res.callsUsed : null;
+    const callsMsg = totalCalls != null
+      ? ` · ${totalCalls} NuVizz call${totalCalls === 1 ? '' : 's'}${portalCalls ? ` (${portalCalls} RWB portal)` : ''}`
+      : (portalCalls ? ` · ${portalCalls} RWB-portal call${portalCalls === 1 ? '' : 's'}` : '');
     if (failed.length) {
       // Full diagnostic to the console: the EXACT payload we sent (incl. each load's loadNbr) plus
       // NuVizz's per-load result — so a "load not found" can be read/copied back verbatim.
@@ -10760,7 +10770,7 @@ function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmN
       console.error('[commitBoard] save failed', { sent: loads, result: res.result, error: res.error });
       showToast(`✗ ${failed.map((l) => `${keyOf(l)}: ${l.error || (l.steps || []).filter((s) => !s.ok).map((s) => s.error).join('; ')}`).join(' | ') || res.error || 'write failed'}${orphanMsg}`);
     } else if (!pendings.length) {
-      if (res.ok) showToast(fired || cancelled ? `✓ ${fired} load(s) saved to NuVizz${cancelMsg}${noopMsg}.${orphanMsg}` : `Nothing to send — no changes actually fired.${orphanMsg}`);
+      if (res.ok) showToast(fired || cancelled ? `✓ ${fired} load(s) saved to NuVizz${cancelMsg}${noopMsg}${callsMsg}.${orphanMsg}` : `Nothing to send — no changes actually fired.${orphanMsg}`);
       else showToast(`✗ ${res.error || 'write failed'}${orphanMsg}`);
     }
     if (pendings.length) verifyPendingImports(pendings, loads, keyOf);
