@@ -54,7 +54,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.40.0';
+const APP_VERSION = '0.40.1';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -99,6 +99,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.40.1', 'Map board — refinements to the order-left / route-right layout. (1) The search box and "Search past PROs / customer history" button now stay FIXED at the top of the left column, with the open order card sitting BELOW them — before, opening an order replaced the whole rail and hid the search. (2) Pulling up an order now AUTO-OPENS its route in the right panel for context (order ↔ route side by side) — you no longer have to click "View full route" to see it. The map still zooms to the BUILDING for an individual order (#380); the whole route is framed only when you explicitly open it (View full route, a route card, or a load row). Closing the order also closes the route it opened.'],
   ['0.40.0', 'Map board — an open ORDER now sits on the LEFT and its ROUTE on the RIGHT, so you can read a stop and walk its route side by side. Opening a route from an order keeps the order open; clicking a stop inside the route opens that order on the left WITHOUT closing the route (the search / filter / stop-list rail returns when you close the order). Map framing is now context-aware and reliable: selecting an individual stop zooms to the BUILDING, while opening a route frames the WHOLE route — and the route frame now re-fits after the side panels finish resizing, so the far stops of a spread-out load are no longer clipped off-screen behind a panel. (#388, #380)'],
   ['0.39.11', 'Routing (beta) stop popup — the assigned DRIVER now shows right at the top, under the "On load" line, so who a stop is dispatched to is the first thing you see. The duplicate Route/Driver block at the bottom of the card is removed (it just repeated the load + driver). Everything else on the full card is unchanged — Delivery Ticket, full notes, Activity Timeline, POD.'],
   ['0.39.10', '🔗 RWB engine — cross-load moves now match the portal\'s exact call profile (from a live move HAR the dispatcher captured). The portal moves a stop between two open routes with ONE multi-route saveComparedRouteData — the moved stop is simply absent from the source\'s entry and present in the destination\'s; NO validate/add calls at all. The engine now does the same: an arrival held by another load in the same Save classifies as a MOVE (no getStop, no empty-load retarget probe, no add) and ALL touched loads persist in ONE atomic combined save (1 preview per load + 1 save). The 0.39.8 move that cost 10 calls now costs 6 (2 load reads for the guard + 2 previews + 1 save + 1 landed-verify); an A↔B SWAP — previously refused as "circular, save in two steps" — now commits atomically in the same one save. Genuinely-unplanned orders still ride the proven batched validate+add with the post-add verify, and if a portal ever fails to transfer a moved stop inside the save, a one-shot fallback attaches it the proven way and re-sequences — a move can never falsely succeed. Byte-for-byte freight preservation unchanged (stops ride BY ID ONLY).'],
@@ -4618,7 +4619,7 @@ function StopNotesSection({ note, editing, setEditing, draft, setDraft, compact 
   );
 }
 
-function StopSidebar({ stop, note, onClose, onSave, saving, saveError, onOpenRoute, onMoveLocation, onEditAddress, onAutoFixAddress, onText, drivers = [], mobile = false, side = 'right' }) {
+function StopSidebar({ stop, note, onClose, onSave, saving, saveError, onOpenRoute, onMoveLocation, onEditAddress, onAutoFixAddress, onText, drivers = [], mobile = false, side = 'right', embedded = false }) {
   const [draft, setDraft] = useState(() => note || emptyNote(stop));
   const [editing, setEditing] = useState(!note);
   // True once the dispatcher edits the draft; cleared on stop-change and save.
@@ -4661,7 +4662,9 @@ function StopSidebar({ stop, note, onClose, onSave, saving, saveError, onOpenRou
     <aside
       className={mobile
         ? "absolute inset-0 bg-white shadow-lg flex flex-col overflow-hidden z-40"
-        : `w-[380px] flex-shrink-0 bg-white ${side === 'left' ? 'border-r' : 'border-l'} shadow-lg flex flex-col h-full overflow-hidden`
+        : embedded
+          ? "flex-1 min-h-0 w-full bg-white flex flex-col overflow-hidden"
+          : `w-[380px] flex-shrink-0 bg-white ${side === 'left' ? 'border-r' : 'border-l'} shadow-lg flex flex-col h-full overflow-hidden`
       }
       style={mobile ? { paddingBottom: 'env(safe-area-inset-bottom)' } : undefined}
     >
@@ -7219,49 +7222,76 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef }) {
   // time this effect re-runs on the 120s board refresh, so the deferred fit frequently
   // never applied and the map appeared not to zoom. The recenter and search fits are
   // synchronous for the same reason.)
-  const preRouteViewRef = useRef(null);
-  const framedRouteRef = useRef(null);
-  useEffect(() => {
-    if (!google || !mapRef.current) return;
+  // One shared "board view" (center+zoom) saved before the FIRST zoom-in of a
+  // selection — a stop building-zoom or a route frame — so clearing the whole
+  // selection restores it. saveBoardView no-ops if a view is already banked.
+  const boardViewRef = useRef(null);
+  const saveBoardView = () => {
+    if (boardViewRef.current || !mapRef.current) return;
+    const c = mapRef.current.getCenter();
+    if (c) boardViewRef.current = { center: c.toJSON(), zoom: mapRef.current.getZoom() || 10 };
+  };
+
+  // Imperatively frame a WHOLE route (#380: "opened a route → frame the route").
+  // Called ONLY by the explicit "see this route" actions (View full route, the
+  // Routes roster, a load row) — never by an order pull-up, which shows the route
+  // PANEL for context but keeps the building zoom. Re-fits once after the side
+  // panels settle: Google re-measures the canvas asynchronously, so a lone
+  // synchronous fit frames against the still-wide map and clips the far stops
+  // behind a panel. addListenerOnce → one corrective fit, no loop; not rAF
+  // (paused on background tabs).
+  const frameRoute = (loadNbr) => {
+    if (!google || !mapRef.current || !loadNbr) return;
     const map = mapRef.current;
-    if (selectedRoute) {
-      const pts = selectedRouteStops.filter((s) => s.lat != null && s.lng != null);
-      if (!pts.length) return;                          // wait for this route's stops to load
-      // Frame the route ONCE per open (#380). Re-running on every selectedRouteStops
-      // identity change — the 120s board refresh, or drilling into one of its stops —
-      // would yank the map back to the whole-route frame while the dispatcher is
-      // reading a building. An individual stop click zooms to the building via
-      // handlePanToStop; opening a route frames the whole route. That's the split.
-      if (framedRouteRef.current === selectedRoute) return;
-      framedRouteRef.current = selectedRoute;
-      if (!preRouteViewRef.current) {
-        const c = map.getCenter();
-        if (c) preRouteViewRef.current = { center: c.toJSON(), zoom: map.getZoom() || 10 };
+    const pts = stops.filter((s) => s.loadNbr === loadNbr && s.lat != null && s.lng != null);
+    if (!pts.length) return;
+    saveBoardView();
+    const b = new google.maps.LatLngBounds();
+    pts.forEach((s) => b.extend({ lat: s.lat, lng: s.lng }));
+    const fit = () => map.fitBounds(b, 60);
+    fit();
+    google.maps.event.addListenerOnce(map, 'idle', fit);
+  };
+
+  // Open a route as the EXPLICIT focus (roster / load row / the order card's "View
+  // full route"): show its panel AND frame it on the map. Clearing routeAutoRef
+  // marks it as NOT following an order, so it persists when the order card closes.
+  const routeAutoRef = useRef(null);
+  const openRouteExplicit = (loadNbr) => {
+    routeAutoRef.current = null;
+    setSelectedDriver(null);
+    setSelectedRoute(loadNbr);
+    frameRoute(loadNbr);
+  };
+
+  // #388 — pulling up an ORDER auto-opens ITS route in the right panel for context
+  // (order ↔ route side by side). Panel only: the map stays at the building zoom
+  // from the stop selection (#380). Picking an order on a different load switches
+  // the auto route; an EXPLICITLY opened route is left alone. routeAutoRef marks a
+  // route that follows the order, so closing the order also closes that route.
+  useEffect(() => {
+    if (isMobile) return;   // mobile shows one bottom-sheet at a time — no side-by-side
+    if (selectedStop) {
+      const load = selectedStop.loadNbr && !isHashLikeId(selectedStop.loadNbr) ? selectedStop.loadNbr : null;
+      if (!selectedRoute || routeAutoRef.current != null) {
+        routeAutoRef.current = load;
+        setSelectedRoute(load);
       }
-      const b = new google.maps.LatLngBounds();
-      pts.forEach((s) => b.extend({ lat: s.lat, lng: s.lng }));
-      // Guard the deferred fit against a rapid route switch: if a different route was
-      // opened before this fit's idle fires, its bounds are stale — skip.
-      const routeAtFrame = selectedRoute;
-      const fit = () => { if (framedRouteRef.current === routeAtFrame) map.fitBounds(b, 60); };
-      fit();
-      // The order/route side panels (380px each) are flex siblings that shrink the
-      // map, but Google re-measures the canvas asynchronously (ResizeObserver) — so a
-      // synchronous fit can frame against the still-wide map and push the route's far
-      // stops under a panel ("stops missing I can't see", #380). Re-fit ONCE the map
-      // settles at its final width. addListenerOnce → exactly one corrective fit, no
-      // loop; not rAF (paused on background tabs — see the recenter effect note).
-      google.maps.event.addListenerOnce(map, 'idle', fit);
-    } else {
-      framedRouteRef.current = null;
-      if (preRouteViewRef.current) {
-        // Restore the pre-route board view when the route closes.
-        map.panTo(preRouteViewRef.current.center);
-        map.setZoom(preRouteViewRef.current.zoom);
-        preRouteViewRef.current = null;
-      }
+    } else if (routeAutoRef.current != null) {
+      routeAutoRef.current = null;   // order closed → close the route it auto-opened
+      setSelectedRoute(null);
     }
-  }, [google, selectedRoute, selectedRouteStops]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedStop]);
+
+  // Restore the board view once EVERYTHING is deselected (no order, route, or
+  // driver). While any is open the current zoom belongs to that selection.
+  useEffect(() => {
+    if (selectedStop || selectedRoute || selectedDriver) return;
+    const v = boardViewRef.current;
+    boardViewRef.current = null;
+    if (v && mapRef.current) { mapRef.current.panTo(v.center); mapRef.current.setZoom(v.zoom); }
+  }, [selectedStop, selectedRoute, selectedDriver]);
 
   // M5 — route polylines. One straight-line Polyline per load, ordered by
   // loadStopSeq, colored by driver. zIndex 1 keeps them below markers so pins
@@ -7435,35 +7465,15 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef }) {
     }
   };
 
-  // Remembers the board view (center+zoom) from BEFORE we zoomed into a stop, so
-  // deselecting restores it (see the selectedStop effect below).
-  const preStopViewRef = useRef(null);
+  // Pan + building-zoom to a stop (#380: individual stop → building). Banks the
+  // board view first so clearing the whole selection zooms back out.
   const handlePanToStop = (stopFromSnapshot) => {
     if (!google || !mapRef.current) return;
     if (stopFromSnapshot.lat == null || stopFromSnapshot.lng == null) return;
-    // Save the current (board) view once, before the first stop zoom-in.
-    if (!preStopViewRef.current) {
-      const c = mapRef.current.getCenter();
-      if (c) preStopViewRef.current = { center: c.toJSON(), zoom: mapRef.current.getZoom() || 10 };
-    }
+    saveBoardView();
     mapRef.current.panTo({ lat: stopFromSnapshot.lat, lng: stopFromSnapshot.lng });
     mapRef.current.setZoom(Math.max(mapRef.current.getZoom() || 10, STOP_ZOOM));
   };
-
-  // When the selected stop is cleared, zoom/pan back out to the saved board view.
-  useEffect(() => {
-    if (selectedStop) return;
-    const v = preStopViewRef.current;
-    preStopViewRef.current = null;
-    // If a route is still open (order ↔ route side by side, #388), its framing owns
-    // the map — don't yank back to the pre-order board view and un-frame the route.
-    if (selectedRoute) return;
-    if (v && mapRef.current) {
-      mapRef.current.panTo(v.center);
-      mapRef.current.setZoom(v.zoom);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedStop]);
 
   // On mobile we drop the resize handle and let the panel be a top-edge sheet.
   // Stretch goal per brief — we ship the simple desktop-only resize and
@@ -7504,6 +7514,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef }) {
       setSelectedDriver(null);
       setMobileDrawerOpen(false);
       setSelectedRoute(loadNbr);
+      frameRoute(loadNbr);   // desktop frames via openRouteExplicit; mobile frames here
     };
     return (
       <div className="flex-1 flex flex-col min-h-0">
@@ -7736,7 +7747,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef }) {
             onMoveLocation={startMoveLocation}
             onEditAddress={openAddrEditor}
             onAutoFixAddress={autoFixAddress}
-            onOpenRoute={(loadNbr) => { setSelectedStop(null); setSelectedRoute(loadNbr); }}
+            onOpenRoute={(loadNbr) => { setSelectedStop(null); setSelectedRoute(loadNbr); frameRoute(loadNbr); }}
             onSave={async (draft) => {
               await handleSave(draft);
               // handleSave clears saveError on success; close the drawer if
@@ -7839,33 +7850,13 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef }) {
         </div>
       )}
       {smsTargets && <SmsComposeModal title={smsTargets.title} recipients={smsTargets.recipients} onClose={() => setSmsTargets(null)} />}
-      {/* LEFT column (#388) — an open ORDER takes the left so it sits beside its
-          route (which opens on the right). Otherwise the normal search / filter /
-          stop-list rail. Closing the order (X) restores the rail. A selected
-          driver keeps the rail (its snapshot lives on the right). */}
-      {!selectedDriver && selectedStop ? (
-        <StopSidebar
-          side="left"
-          stop={selectedStop}
-          note={notes.get(selectedStop.matchKey)}
-          drivers={notesDrivers}
-          onText={textCustomer}
-          onClose={() => setSelectedStop(null)}
-          onMoveLocation={startMoveLocation}
-          onEditAddress={openAddrEditor}
-          onAutoFixAddress={autoFixAddress}
-          onSave={handleSave}
-          saving={saving}
-          saveError={saveError}
-          onOpenRoute={(loadNbr) => { setSelectedRoute(loadNbr); }}
-        />
-      ) : (
-      <>
-      {/* Left filter rail */}
-      <div
-        className="flex-shrink-0 bg-white border-r overflow-y-auto"
-        style={panelStyle}
-      >
+      {/* LEFT column (#388) — the search box + "Search past PROs" button stay
+          FIXED at the top; below them sits either the OPEN ORDER card (read an
+          order on the left while its route opens on the right) or, when nothing is
+          open, the filters + stop list. Closing the order (X) brings the list
+          back; a selected driver keeps the list (its snapshot is on the right). */}
+      <div className="flex-shrink-0 bg-white border-r flex flex-col overflow-hidden" style={panelStyle}>
+        <div className="shrink-0 border-b border-slate-100">
         <SearchBar
           value={searchInput}
           onChange={setSearchInput}
@@ -7883,7 +7874,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef }) {
           aiError={aiError}
           onClearAi={clearAi}
         />
-        <div className="px-3 pt-2">
+        <div className="px-3 pt-2 pb-2">
           <button
             onClick={() => setHistOpen(true)}
             className="w-full inline-flex items-center justify-center gap-1.5 text-xs font-semibold text-slate-700 border border-slate-300 rounded-lg py-2 hover:bg-slate-50 active:bg-slate-100"
@@ -7891,6 +7882,25 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef }) {
             <Clock size={13} /> Search past PROs / customer history
           </button>
         </div>
+        </div>
+        {!selectedDriver && selectedStop ? (
+          <StopSidebar
+            embedded
+            stop={selectedStop}
+            note={notes.get(selectedStop.matchKey)}
+            drivers={notesDrivers}
+            onText={textCustomer}
+            onClose={() => setSelectedStop(null)}
+            onMoveLocation={startMoveLocation}
+            onEditAddress={openAddrEditor}
+            onAutoFixAddress={autoFixAddress}
+            onSave={handleSave}
+            saving={saving}
+            saveError={saveError}
+            onOpenRoute={(loadNbr) => { openRouteExplicit(loadNbr); }}
+          />
+        ) : (
+          <div className="flex-1 min-h-0 overflow-y-auto">
         <FilterPanel
           filters={filters}
           setFilters={setFilters}
@@ -7929,12 +7939,12 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef }) {
           searchQuery={debouncedSearch}
           truncateNames={!useExtendedNames}
         />
+          </div>
+        )}
       </div>
 
       {/* Resize handle — desktop only */}
       <ResizeHandle onMouseDown={panel.onMouseDown} onDoubleClick={panel.onDoubleClick} />
-      </>
-      )}
 
       {/* Map */}
       <div className="flex-1 relative min-w-0">
@@ -8098,13 +8108,10 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef }) {
           setOpen={setBottomTableOpen}
           onPick={(s) => { setSelectedDriver(null); setSelectedStop(s); handlePanToStop(s); }}
           onPickLoad={(loadNbr) => {
-            // Open the load's route drawer (same surface as "View route" on a
-            // stop). Framing is handled by the selectedRoute effect, which fits
-            // AFTER the 380px sidebar shrinks the map — doing it here would fit
-            // against the old full width and clip the route's far stops.
-            setSelectedDriver(null);
+            // Open the load's route as the explicit focus (panel + frame). Clear
+            // the stop first so the route — not an order — owns the layout.
             setSelectedStop(null);
-            setSelectedRoute(loadNbr);
+            openRouteExplicit(loadNbr);
           }}
         />
       </div>
@@ -8145,7 +8152,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef }) {
             <span className="font-semibold text-slate-800 text-[13px]">Routes <span className="text-slate-400 text-[11px]">({routeGroups.length})</span></span>
             <button onClick={() => setRoutesPanelOn(false)} className="text-slate-400 hover:text-slate-700" aria-label="Close routes panel"><X size={16} /></button>
           </div>
-          <RoutingRoutesPanel groups={routeGroups} onPick={(key) => { const g = routeGroups.find((x) => x.key === key); setSelectedStop(null); setSelectedDriver(null); setSelectedRoute(g?.loadNbr || key); }} />
+          <RoutingRoutesPanel groups={routeGroups} onPick={(key) => { const g = routeGroups.find((x) => x.key === key); setSelectedStop(null); openRouteExplicit(g?.loadNbr || key); }} />
         </div>
       )}
     </div>
@@ -13551,7 +13558,7 @@ const normPhone = (p) => { const d = String(p || '').replace(/\D/g, ''); return 
 const NEWORDER_ORIGIN_KEY = 'dd_neworder_origin';    // the DEFAULT / last-used origin (also read by Routing's import header fallback)
 const NEWORDER_ORIGINS_KEY = 'dd_neworder_origins';  // the saved LIST of pickup origins (multiple pickup locations)
 const NEWORDER_ORIGIN_DEFAULT = { name: 'Buford Terminal', addr1: '', city: '', state: 'GA', zip: '' };
-const EMPTY_ORDER_ROW = { name: '', addr1: '', addr2: '', city: '', state: '', zip: '', stopNbr: '', pro: '', itemDesc: '', pallets: '', cartons: '', weight: '' };
+const EMPTY_ORDER_ROW = { name: '', addr1: '', addr2: '', city: '', state: '', zip: '', stopNbr: '', pro: '', itemDesc: '', pallets: '', loose: '', weight: '' };
 
 // Coerce every field of a saved origin to a STRING — a hand-edited/corrupt entry (e.g. a numeric
 // zip) would otherwise pass the completeness gate and then throw on .trim() mid-submit.
@@ -13713,7 +13720,7 @@ function NewOrderSingleScreen() {
         stopNbr: row.stopNbr.trim() || null, pro: row.pro.trim() || null,
         itemDesc: row.itemDesc.trim() || null,
         pallets: row.pallets === '' ? null : Number(row.pallets),
-        cartons: row.cartons === '' ? null : Number(row.cartons),
+        loose: row.loose === '' ? null : Number(row.loose),
         weight: row.weight === '' ? null : Number(row.weight),
       };
       const settings = {
@@ -13835,7 +13842,7 @@ function NewOrderSingleScreen() {
           </div>
           <div className="grid grid-cols-3 gap-2">
             <OrderField label="Pallets" type="number" value={row.pallets} onChange={set('pallets')} placeholder="1" />
-            <OrderField label="Cartons" type="number" value={row.cartons} onChange={set('cartons')} placeholder="" />
+            <OrderField label="Loose" type="number" value={row.loose} onChange={set('loose')} placeholder="" />
             <OrderField label="Weight (lbs)" type="number" value={row.weight} onChange={set('weight')} placeholder="" />
           </div>
           <OrderField label="Service date" req type="date" value={serviceDate} onChange={(e) => setServiceDate(e.target.value)} className="max-w-[200px]" />
@@ -14001,7 +14008,7 @@ function BulkOrderScreen() {
         name: r.name.trim(), addr1: r.addr1.trim(), addr2: r.addr2.trim() || null,
         city: r.city.trim(), state: r.state.trim(), zip: r.zip.trim(),
         stopNbr: r.stopNbr.trim() || null, pro: r.pro.trim() || null, itemDesc: r.itemDesc.trim() || null,
-        pallets: r.pallets.trim() || null, cartons: r.cartons.trim() || null, weight: r.weight.trim() || null,
+        pallets: r.pallets.trim() || null, loose: r.loose.trim() || null, weight: r.weight.trim() || null,
       };
       let res;
       try { res = await callWrite('createStop', { row: payloadRow, settings }, { dryRun: false, clientOpId: newClientOpId(), createdBy: 'dispatcher-bulk' }); }
@@ -14067,7 +14074,7 @@ function BulkOrderScreen() {
       name: r.name.trim(), addr1: r.addr1.trim(), addr2: r.addr2.trim() || null,
       city: r.city.trim(), state: r.state.trim(), zip: r.zip.trim(),
       stopNbr: r.stopNbr.trim(), pro: r.pro.trim() || null, itemDesc: r.itemDesc.trim() || null,
-      pallets: r.pallets.trim() || null, cartons: r.cartons.trim() || null, weight: r.weight.trim() || null,
+      pallets: r.pallets.trim() || null, loose: r.loose.trim() || null, weight: r.weight.trim() || null,
     }));
     const body = {
       loads: [{ loadNbr: nbr, routeName: routeName.trim() || undefined, createNew: true, orderedStopNbrs: payloadRows.map((r) => r.stopNbr), newStops: payloadRows }],

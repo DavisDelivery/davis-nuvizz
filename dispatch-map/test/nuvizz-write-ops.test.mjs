@@ -140,11 +140,22 @@ test('buildStopPayload: never emits shipForBP/profile; carries zip; defaults pal
   assert.equal(p.to.schedule.timeZone, 'America/New_York');
 });
 
-test('buildStopPayload: blank weight/cartons → null, not 0', () => {
-  const p = buildStopPayload({ name: 'A', addr1: '1', city: 'B', state: 'GA', zip: '30518', weight: '', cartons: '  ' },
+test('buildStopPayload: blank freight → null (not 0); totalPallets defaults to 1', () => {
+  const p = buildStopPayload({ name: 'A', addr1: '1', city: 'B', state: 'GA', zip: '30518', weight: '', loose: '  ' },
     { origin: { name: 'D', addr1: '9', city: 'A', state: 'GA', zip: '30301' }, serviceDate: '2026-06-29' });
   assert.equal(p.weight, null);
-  assert.equal(p.totalCartons, null);
+  assert.equal(p.totalCartons, null);   // no pallets entered
+  assert.equal(p.volume, null);         // no loose entered
+  assert.equal(p.totalPallets, 1);      // default: 1 piece
+});
+
+test('buildStopPayload: Davis freight → NuVizz fields (pallets→totalCartons, loose→volume, totalPallets=sum)', () => {
+  const p = buildStopPayload({ name: 'A', addr1: '1', city: 'B', state: 'GA', zip: '30518', pallets: 2, loose: 3, weight: 445 },
+    { origin: { name: 'D', addr1: '9', city: 'A', state: 'GA', zip: '30301' }, serviceDate: '2026-06-29' });
+  assert.equal(p.totalCartons, 2);   // real pallets / skids
+  assert.equal(p.volume, 3);         // loose pieces
+  assert.equal(p.totalPallets, 5);   // total pieces = pallets + loose
+  assert.equal(p.weight, 445);
 });
 
 test('buildStopPayload: item description → reference2 (trimmed); absent when blank', () => {

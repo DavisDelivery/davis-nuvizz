@@ -89,7 +89,10 @@ export interface StopRow {
   stopNbr?: string | null;       // your order number
   pro?: string | null;           // PRO / shipment number (optional)
   itemDesc?: string | null;      // what's being delivered (commodity) → reference2
-  pallets?: number | null; cartons?: number | null; weight?: number | null;
+  // Freight in Davis business terms. buildStopPayload maps these onto NuVizz's
+  // (mislabeled) fields: pallets → totalCartons (NuVizz "cartons" = real skids/
+  // pallets), loose → volume, and totalPallets carries the TOTAL piece count.
+  pallets?: number | null; loose?: number | null; weight?: number | null;
 }
 export interface OriginSettings {
   origin: { name: string; addr1: string; city: string; state: string; zip: string };
@@ -112,7 +115,14 @@ export function buildStopPayload(row: StopRow, settings: OriginSettings): any {
   const d = settings.serviceDate;
   const pro = row.pro ? String(row.pro) : '';
   const itemDesc = row.itemDesc ? String(row.itemDesc).trim() : '';
+  // Davis freight semantics ↔ NuVizz's mislabeled fields (matches how the app READS
+  // every stop): pallets/skids ride NuVizz "totalCartons", loose pieces ride
+  // "volume", and NuVizz "totalPallets" is really the TOTAL piece count (pallets +
+  // loose). So the New Order form's Pallets/Loose write totalCartons/volume, and
+  // totalPallets carries their sum (falling back to 1 piece when nothing is entered).
   const pallets = numOrNull(row.pallets);
+  const loose = numOrNull(row.loose);
+  const totalPieces = pallets != null || loose != null ? (pallets ?? 0) + (loose ?? 0) : null;
   return {
     stopNbr: row.stopNbr ? String(row.stopNbr) : undefined,
     stopType: 'DO', shipmentType: 'REG', stopExecution: 'APP', sourceType: 'INTG',
@@ -122,8 +132,9 @@ export function buildStopPayload(row: StopRow, settings: OriginSettings): any {
     // Surfaced back by normalizeStop so a live create can be read back to confirm it persisted
     // on this tenant (NuVizz silently drops unknown fields — verify via getStop / write-log).
     reference2: itemDesc || undefined,
-    totalPallets: pallets ?? 1,
-    totalCartons: numOrNull(row.cartons),
+    totalCartons: pallets,          // NuVizz "cartons" = real PALLETS / skids
+    volume: loose,                  // NuVizz "volume"  = LOOSE pieces
+    totalPallets: totalPieces ?? 1, // NuVizz "pallets" = TOTAL pieces (pallets + loose)
     weight: numOrNull(row.weight),
     weightUOM: 'LBS',
     from: {
