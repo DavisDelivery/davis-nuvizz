@@ -54,7 +54,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.39.8';
+const APP_VERSION = '0.39.9';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -99,6 +99,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.39.9', 'Routing (beta) — the stop popup is now a FULL stop card, matching the Map. Alongside the existing summary (PRO / load / appointment window / restrictions / line items) it now shows a printable Delivery Ticket, the on-demand full NuVizz notes + a collapsible Activity Timeline (Planned / Dispatched / Arrival / …), the driver\'s POD photos, and the assigned Route + driver — so you can see a stop\'s activity, print its ticket, and see who it\'s dispatched to without leaving Routing. Opening the card fires NO NuVizz call (the ticket builds from the already-loaded order; the timeline loads only when you expand it; POD and Refresh are opt-in buttons).'],
   ['0.39.8', '🔗 RWB + Compare panel — FIX cross-load moves (both halves of one broken path). (1) SERVER: even with BOTH loads open, moving a stop between routes (drag / → LOAD / move menu) reduces the source load\'s stop list but sends no explicit removeStopNbrs, so the RWB stale-board guard flagged the still-on-source stop as an orphan and REFUSED the source ("has N stop(s) the board isn\'t showing"), cascading a failure to the destination — nothing moved. The guard now treats a stop that ANOTHER load in the same Save is planning as accounted-for (a staged move), while STILL refusing a stop the board truly never knew about. (2) CLIENT: selecting or ninja-clicking a stop that lives on a load NOT open in Compare used to silently do nothing (a faint status line, no staged move, no Save button — the "single route can\'t Save" report). Now the source load AUTO-OPENS into Compare with a prominent banner and the stops stay selected, so a second Send completes the cross-load move; at the 3-card cap the leftover loads are named so you can close one and retry. Cross-load moves under 🔗 RWB / ● LIVE now land.'],
   ['0.39.7', '🔗 RWB engine — FIX: a Save could report success while nothing landed on the load. NuVizz\'s addStopsToRouteAfterValidation silently NO-OPS a stop that is already planned on ANOTHER route (it returns OK but doesn\'t move it), and the 0.39.6 fast path had dropped the check that catches that — so moving a stop that lived on another load looked like it saved but placed nothing. The engine now RE-READS the load after adding and verifies every stop actually landed before it sequences/saves; if a stop couldn\'t be added it FAILS LOUDLY with "stop X is still planned on load Y — open that load in Compare to move it, or unplan it first" instead of a false success. (RWB, like the portal, can only pull a stop off a route that is part of the same Save — so cross-load moves need BOTH loads open.) Costs one extra load read per add.'],
   ['0.39.6', '🔗 RWB engine — matches the portal\'s exact call profile at scale + keeps YOUR order. Two changes: (1) the per-stop getStop that ran the steal-guard on each arrival is gone — the board already knows each stop\'s id, so the engine now uses those ids directly and runs ONE batched validateStopstoPerformAction/{id,id,…}?routeId (the portal\'s own whole-set eligibility check) instead of one getStop per stop; a 22-stop add drops from ~26 calls to ~5, right at the portal\'s number. (getStop is still used only for stops the board didn\'t enrich, and for the retarget probe on an empty load.) (2) The engine now sets the RWB_RTE_EXRTESEC=OFF preference once per session, so NuVizz never re-optimizes a saved route — dispatch-map does the optimization and the saved order is EXACTLY what you sent (seqMode Manual). Byte-for-byte preservation unchanged. If any batched call is rejected it falls back to the proven per-stop path.'],
@@ -9352,15 +9353,61 @@ function RoutingStopDetail({ stop, note, onOpen, windowViolated }) {
   );
 }
 
-// Full-detail popup for a stop, opened from any PRO/order-number link. Body reuses
-// RoutingStopDetail (the single detail view). Closes via X, backdrop, or Esc.
-// Never opens empty — guards a null stop.
+// The rich "live" extras that turn the Routing stop popup into a FULL stop card (matching the
+// Map's): a printable Delivery Ticket, on-demand full NuVizz notes + a collapsible Activity
+// Timeline (StopLiveDetail), the driver's POD photos, and the assigned route/driver. Opening it
+// costs NO NuVizz call — the ticket builds from the already-loaded order, the timeline fetches
+// only when expanded, and POD/Refresh are opt-in buttons (same lazy behavior as the Map card).
+function RoutingStopRichDetail({ stop, onRefreshed }) {
+  const [showTicket, setShowTicket] = useState(false);
+  const ticketHtml = useMemo(
+    () => (showTicket ? buildTicketHtml(stop, (typeof window !== 'undefined' ? window.location.origin : '') + '/davis-logo.jpg') : ''),
+    [showTicket, stop],
+  );
+  return (
+    <div className="mt-2 pt-2 border-t space-y-2">
+      <button
+        onClick={() => setShowTicket(true)}
+        className="w-full inline-flex items-center justify-center gap-1.5 text-xs font-semibold text-white rounded-md px-3 py-2"
+        style={{ background: BRAND }}
+      >
+        <FileText size={14} /> Delivery Ticket
+      </button>
+      {showTicket && (
+        <PrintDocModal
+          title={`Delivery Ticket · PRO ${stop.pro || stop.stopNbr || ''}`}
+          html={ticketHtml}
+          pageW={816}
+          onClose={() => setShowTicket(false)}
+        />
+      )}
+      <StopLiveDetail stop={stop} onRefreshed={onRefreshed} />
+      <PodDocsSection stop={stop} onRefreshed={onRefreshed} />
+      {(stop.loadNbr || stop.routeName || stop.driverName) && (
+        <div className="pt-2 mt-2 border-t">
+          <div className="text-xs uppercase font-semibold text-slate-500 mb-1">Route / driver</div>
+          <div className="text-sm">
+            <div className="font-semibold text-slate-900 truncate">{stop.routeName || stop.loadNbr || '—'}</div>
+            {stop.driverName ? <div className="text-xs text-slate-600 truncate">{stop.driverName}</div> : <div className="text-xs text-slate-400">No driver assigned</div>}
+            {stop.routeName && stop.loadNbr && <div className="text-[10px] text-slate-400 font-mono">{stop.loadNbr}</div>}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Full-detail popup for a stop, opened from a PRO/order-number link or a Routing stop click.
+// Shows the Routing summary (RoutingStopDetail) PLUS the full live card — Delivery Ticket,
+// notes + Activity Timeline, POD, route/driver (RoutingStopRichDetail). Closes via X, backdrop,
+// or Esc. Never opens empty — guards a null stop.
 function RoutingStopModal({ stop, notes, onClose, onOpenLoad, windowViolatedSet }) {
   useEffect(() => {
     const onKey = (e) => { if (e.key === 'Escape') onClose(); };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [onClose]);
+  const [live, onRefreshed] = useLiveStop(stop);
   if (!stop) return null;
   const note = notes?.get?.(stop.matchKey) || null;
   const pro = stop.pro || stop.stopNbr || stop.primaryPro || '';
@@ -9390,7 +9437,8 @@ function RoutingStopModal({ stop, notes, onClose, onOpenLoad, windowViolatedSet 
           )}
         </div>
         <div className="flex-1 min-h-0 overflow-y-auto p-3">
-          <RoutingStopDetail stop={stop} note={note} windowViolated={windowViolated} />
+          <RoutingStopDetail stop={live} note={note} windowViolated={windowViolated} />
+          <RoutingStopRichDetail stop={live} onRefreshed={onRefreshed} />
         </div>
       </div>
     </div>
