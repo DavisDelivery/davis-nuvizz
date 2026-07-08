@@ -54,7 +54,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.42.0';
+const APP_VERSION = '0.43.0';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -99,6 +99,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.43.0', 'Customer history now shows WHO DELIVERED each PRO. A new "History" button on the stop card opens that customer\'s past PROs seeded by name — each PRO now lists its delivering driver alongside the date. The driver was already captured in the nightly history warehouse; it\'s now carried into the per-customer rollup the lookup reads (no new NuVizz calls — the lookup is still a single Firestore read). New deliveries fill the driver in going forward; existing history fills in after a one-time NuVizz-FREE rebuild of the customer rollup from the warehouse.'],
   ['0.42.0', 'Routing (beta) — clicking a stop now opens its FULL detail in the RIGHT PANEL instead of a center popup, so it sits beside the map/routes. In tractor/box PAINT mode the first click does BOTH: paints the stop (green = 53′ fits, red = box only) AND opens its detail on the right. And that detail now has "Edit address" + "Correct pin location" (drag the pin) right there — the same corrections the Map screen offers, writing the same saved override so the routing pin moves live. No NuVizz calls (Firestore + client geocode only).'],
   ['0.41.0', 'Mobile Map — a persistent search bar at the top (#382: "there should be a search bar here"). Before, search on a phone was only reachable via the Stops drawer; it now sits right on the map, same as desktop (customer / PRO / city / address, with the AI sparkle toggle when available). The other top overlays (date chip, status pill, selection tools, "no stops match", live-drivers note) shifted down to make room — nothing lost, just stacked below the new search row.'],
   ['0.40.1', 'Map board — refinements to the order-left / route-right layout. (1) The search box and "Search past PROs / customer history" button now stay FIXED at the top of the left column, with the open order card sitting BELOW them — before, opening an order replaced the whole rail and hid the search. (2) Pulling up an order now AUTO-OPENS its route in the right panel for context (order ↔ route side by side) — you no longer have to click "View full route" to see it. The map still zooms to the BUILDING for an individual order (#380); the whole route is framed only when you explicitly open it (View full route, a route card, or a load row). Closing the order also closes the route it opened.'],
@@ -4285,7 +4286,7 @@ function useLiveStop(stop) {
   return [live, onRefreshed];
 }
 
-function StopDataSections({ stop, note, onRefreshed, onOpenRoute, onMoveLocation, onEditAddress, onAutoFixAddress, onText }) {
+function StopDataSections({ stop, note, onRefreshed, onOpenRoute, onMoveLocation, onEditAddress, onAutoFixAddress, onText, onOpenHistory }) {
   // `stop` is the already-merged "live" stop the PARENT owns (see useLiveStop). The parent
   // holds the refresh overlay so the header status badge updates too — not just this body.
   // `onRefreshed` bubbles a fresh /stop/info pull (Refresh button, timeline open, or the
@@ -4334,6 +4335,11 @@ function StopDataSections({ stop, note, onRefreshed, onOpenRoute, onMoveLocation
           {onText && (
             <button onClick={() => onText(live)} className="mt-1.5 inline-flex items-center gap-1 text-xs text-blue-700 hover:underline">
               <MessageSquare size={13} /> Text customer{textPhone ? '' : ' (add #)'}
+            </button>
+          )}
+          {onOpenHistory && (
+            <button onClick={() => onOpenHistory(live)} className="mt-1.5 inline-flex items-center gap-1 text-xs text-blue-700 hover:underline" title="This customer's past PROs and who delivered them">
+              <Clock size={13} /> History
             </button>
           )}
         </div>
@@ -4687,7 +4693,7 @@ function StopNotesSection({ note, editing, setEditing, draft, setDraft, compact 
           <div className="text-xs font-semibold text-slate-600 mb-1">Recent PROs at this customer</div>
           <div className="flex flex-wrap gap-1">
             {[...note.pro_history].reverse().slice(0, 10).map((h, i) => (
-              <span key={i} className="text-[10px] bg-slate-100 border border-slate-200 rounded px-1.5 py-0.5">{h.pro} · {h.date}</span>
+              <span key={i} className="text-[10px] bg-slate-100 border border-slate-200 rounded px-1.5 py-0.5">{h.pro} · {h.date}{h.driver ? <span className="text-slate-500"> · {h.driver}</span> : null}</span>
             ))}
           </div>
         </div>
@@ -4696,7 +4702,7 @@ function StopNotesSection({ note, editing, setEditing, draft, setDraft, compact 
   );
 }
 
-function StopSidebar({ stop, note, onClose, onSave, saving, saveError, onOpenRoute, onMoveLocation, onEditAddress, onAutoFixAddress, onText, drivers = [], mobile = false, side = 'right', embedded = false }) {
+function StopSidebar({ stop, note, onClose, onSave, saving, saveError, onOpenRoute, onMoveLocation, onEditAddress, onAutoFixAddress, onText, onOpenHistory, drivers = [], mobile = false, side = 'right', embedded = false }) {
   const [draft, setDraft] = useState(() => note || emptyNote(stop));
   const [editing, setEditing] = useState(!note);
   // True once the dispatcher edits the draft; cleared on stop-change and save.
@@ -4762,7 +4768,7 @@ function StopSidebar({ stop, note, onClose, onSave, saving, saveError, onOpenRou
       </div>
 
       <div className="overflow-y-auto flex-1">
-        <StopDataSections stop={live} note={note} onRefreshed={onRefreshed} onOpenRoute={onOpenRoute} onMoveLocation={onMoveLocation} onEditAddress={onEditAddress} onAutoFixAddress={onAutoFixAddress} onText={onText} />
+        <StopDataSections stop={live} note={note} onRefreshed={onRefreshed} onOpenRoute={onOpenRoute} onMoveLocation={onMoveLocation} onEditAddress={onEditAddress} onAutoFixAddress={onAutoFixAddress} onText={onText} onOpenHistory={onOpenHistory} />
         <ProsSection stop={live} />
         <StopNotesSection note={note} editing={editing} setEditing={setEditing} draft={D} setDraft={setD} compact drivers={drivers} />
       </div>
@@ -5622,7 +5628,9 @@ function PastProSearch({ notes, initialQuery, onPickCustomer, onClose }) {
                   {m.addr && <div className="text-[11px] text-slate-500 break-words">{m.addr}</div>}
                   <div className="mt-1 flex flex-wrap gap-1">
                     {m.history.map((h, j) => (
-                      <span key={j} className="text-[10px] font-mono bg-slate-100 border border-slate-200 rounded px-1.5 py-0.5">{h.pro} · {h.date}</span>
+                      <span key={j} className="text-[10px] font-mono bg-slate-100 border border-slate-200 rounded px-1.5 py-0.5">
+                        {h.pro} · {h.date}{h.driver ? <span className="text-slate-500"> · {h.driver}</span> : null}
+                      </span>
                     ))}
                   </div>
                 </button>
@@ -6010,7 +6018,7 @@ function MobileLoadsTab({ loads, onPickLoad }) {
 // stop components as the desktop sidebar (StopDataSections + ProsSection +
 // StopNotesSection) in a single scroll, so mobile has full desktop parity —
 // every edit option, one inline Edit, one Save.
-function MobileStopDetailDrawer({ stop, note, onClose, onSave, saving, saveError, onOpenRoute, onMoveLocation, onEditAddress, onAutoFixAddress, onText, drivers = [] }) {
+function MobileStopDetailDrawer({ stop, note, onClose, onSave, saving, saveError, onOpenRoute, onMoveLocation, onEditAddress, onAutoFixAddress, onText, onOpenHistory, drivers = [] }) {
   const [draft, setDraft] = useState(() => note || emptyNote(stop));
   const [editing, setEditing] = useState(false);
   const [confirmDiscard, setConfirmDiscard] = useState(false);
@@ -6084,7 +6092,7 @@ function MobileStopDetailDrawer({ stop, note, onClose, onSave, saving, saveError
           <StatusBadge kind={classifyStopStatus(live)} />
           <DnsBadge note={note} showDrivers />
         </div>
-        <StopDataSections stop={live} note={note} onRefreshed={onRefreshed} onOpenRoute={onOpenRoute} onMoveLocation={onMoveLocation} onEditAddress={onEditAddress} onAutoFixAddress={onAutoFixAddress} onText={onText} />
+        <StopDataSections stop={live} note={note} onRefreshed={onRefreshed} onOpenRoute={onOpenRoute} onMoveLocation={onMoveLocation} onEditAddress={onEditAddress} onAutoFixAddress={onAutoFixAddress} onText={onText} onOpenHistory={onOpenHistory} />
         <ProsSection stop={live} />
         <StopNotesSection note={note} editing={editing} setEditing={setEditing} draft={D} setDraft={setD} drivers={drivers} />
       </div>
@@ -6593,6 +6601,11 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef }) {
   // Desktop historical PRO / customer-history lookup (mobile has its own in
   // MobileStopsTab). Rendered as an overlay so the board stays mounted behind it.
   const [histOpen, setHistOpen] = useState(false);
+  // What the customer-history overlay opens seeded with. The top "Search past PROs"
+  // button seeds it with the live search; a stop card's "History" button seeds it
+  // with that customer's name so it opens straight to their past PROs + drivers.
+  const [histSeed, setHistSeed] = useState('');
+  const openCustomerHistory = useCallback((s) => { setHistSeed((s?.businessName || '').trim()); setHistOpen(true); }, []);
 
   // M6 — AI Order Search state. aiMode flips the search box into NL parse mode;
   // aiResult holds the AI-derived match set (from search OR chat) that overrides
@@ -7833,6 +7846,20 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef }) {
           )}
         </MobileDrawer>
 
+        {/* Customer-history overlay (mobile) — opened by a stop card's "History"
+            button, seeded with the customer name so it shows their past PROs +
+            who delivered each. Reuses the shared MapScreen histOpen/histSeed. */}
+        {histOpen && (
+          <div className="fixed inset-0 z-[1100] bg-white flex flex-col" style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}>
+            <PastProSearch
+              notes={notes}
+              initialQuery={histSeed}
+              onPickCustomer={(s) => { setHistOpen(false); pickStopFromMobile(s); }}
+              onClose={() => setHistOpen(false)}
+            />
+          </div>
+        )}
+
         {/* Stop detail drawer — slides up over the map. Tabs Info / Notes /
             Hours / PROs. Editing on Notes or Hours pins a sticky Save bar. */}
         {!selectedDriver && !selectedRoute && selectedStop && (
@@ -7841,6 +7868,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef }) {
             note={notes.get(selectedStop.matchKey)}
             drivers={notesDrivers}
             onText={textCustomer}
+            onOpenHistory={openCustomerHistory}
             onClose={() => setSelectedStop(null)}
             onMoveLocation={startMoveLocation}
             onEditAddress={openAddrEditor}
@@ -7940,7 +7968,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef }) {
           <div className="w-full max-w-lg max-h-[85vh] bg-white rounded-xl shadow-2xl flex flex-col overflow-hidden">
             <PastProSearch
               notes={notes}
-              initialQuery={searchInput}
+              initialQuery={histSeed}
               onPickCustomer={(s) => { setHistOpen(false); setSelectedDriver(null); setSelectedStop(s); }}
               onClose={() => setHistOpen(false)}
             />
@@ -7974,7 +8002,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef }) {
         />
         <div className="px-3 pt-2 pb-2">
           <button
-            onClick={() => setHistOpen(true)}
+            onClick={() => { setHistSeed(searchInput); setHistOpen(true); }}
             className="w-full inline-flex items-center justify-center gap-1.5 text-xs font-semibold text-slate-700 border border-slate-300 rounded-lg py-2 hover:bg-slate-50 active:bg-slate-100"
           >
             <Clock size={13} /> Search past PROs / customer history
@@ -7988,6 +8016,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef }) {
             note={notes.get(selectedStop.matchKey)}
             drivers={notesDrivers}
             onText={textCustomer}
+            onOpenHistory={openCustomerHistory}
             onClose={() => setSelectedStop(null)}
             onMoveLocation={startMoveLocation}
             onEditAddress={openAddrEditor}

@@ -58,7 +58,48 @@ test('mergeProEntries: caps at max (newest kept)', () => {
 
 test('mergeProEntries: ignores empty/malformed entries', () => {
   const out = mergeProEntries([{ pro: '', date: 'x' }, null], [{ pro: 'A' }]);
-  assert.deepEqual(out, [{ pro: 'A', date: '' }]);
+  assert.deepEqual(out, [{ pro: 'A', date: '', driver: null }]);
+});
+
+test('mergeProEntries: carries the driver (who delivered) through', () => {
+  const out = mergeProEntries(
+    [{ pro: 'A', date: '2026-06-01', driver: 'VINCENT SMITH' }],
+    [{ pro: 'B', date: '2026-06-03', driver: 'JEAN DELSOIN' }],
+  );
+  assert.equal(out.find((p) => p.pro === 'A').driver, 'VINCENT SMITH');
+  assert.equal(out.find((p) => p.pro === 'B').driver, 'JEAN DELSOIN');
+});
+
+test('mergeProEntries: same-date driver-bearing entry replaces a driverless one (backfill)', () => {
+  // A stored driverless entry + a warehouse re-derivation at the SAME date must
+  // take the driver — otherwise a backfill silently no-ops.
+  const out = mergeProEntries(
+    [{ pro: 'A', date: '2026-06-01', driver: null }],
+    [{ pro: 'A', date: '2026-06-01', driver: 'VINCENT SMITH' }],
+  );
+  assert.equal(out.length, 1);
+  assert.equal(out[0].driver, 'VINCENT SMITH');
+});
+
+test('mergeProEntries: an existing driver is NOT clobbered by a later driverless dupe at equal date', () => {
+  const out = mergeProEntries(
+    [{ pro: 'A', date: '2026-06-01', driver: 'VINCENT SMITH' }],
+    [{ pro: 'A', date: '2026-06-01', driver: null }],
+  );
+  assert.equal(out[0].driver, 'VINCENT SMITH');
+});
+
+test('buildRollupsFromStops: captures the delivering driver per PRO', () => {
+  const stops = [
+    { customerMatchKey: 'k1', businessName: 'ACME', pro: 'P1', date: '2026-06-19', driverName: 'JEAN DELSOIN' },
+    { customerMatchKey: 'k1', businessName: 'ACME', pro: 'P2', date: '2026-06-19', driverUserName: 'jdoe' },
+    { customerMatchKey: 'k1', businessName: 'ACME', pro: 'P3', date: '2026-06-19' },
+  ];
+  const k1 = buildRollupsFromStops(stops).get('k1');
+  const byPro = Object.fromEntries(k1.pros.map((p) => [p.pro, p.driver]));
+  assert.equal(byPro.P1, 'JEAN DELSOIN');      // driverName wins
+  assert.equal(byPro.P2, 'jdoe');              // falls back to driverUserName
+  assert.equal(byPro.P3, null);                // unplanned/no driver → null
 });
 
 test('buildRollupsFromStops: groups by customerMatchKey and collects pros', () => {
