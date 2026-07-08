@@ -54,7 +54,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.41.0';
+const APP_VERSION = '0.42.0';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -99,6 +99,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.42.0', 'Routing (beta) — clicking a stop now opens its FULL detail in the RIGHT PANEL instead of a center popup, so it sits beside the map/routes. In tractor/box PAINT mode the first click does BOTH: paints the stop (green = 53′ fits, red = box only) AND opens its detail on the right. And that detail now has "Edit address" + "Correct pin location" (drag the pin) right there — the same corrections the Map screen offers, writing the same saved override so the routing pin moves live. No NuVizz calls (Firestore + client geocode only).'],
   ['0.41.0', 'Mobile Map — a persistent search bar at the top (#382: "there should be a search bar here"). Before, search on a phone was only reachable via the Stops drawer; it now sits right on the map, same as desktop (customer / PRO / city / address, with the AI sparkle toggle when available). The other top overlays (date chip, status pill, selection tools, "no stops match", live-drivers note) shifted down to make room — nothing lost, just stacked below the new search row.'],
   ['0.40.1', 'Map board — refinements to the order-left / route-right layout. (1) The search box and "Search past PROs / customer history" button now stay FIXED at the top of the left column, with the open order card sitting BELOW them — before, opening an order replaced the whole rail and hid the search. (2) Pulling up an order now AUTO-OPENS its route in the right panel for context (order ↔ route side by side) — you no longer have to click "View full route" to see it. The map still zooms to the BUILDING for an individual order (#380); the whole route is framed only when you explicitly open it (View full route, a route card, or a load row). Closing the order also closes the route it opened.'],
   ['0.40.0', 'Map board — an open ORDER now sits on the LEFT and its ROUTE on the RIGHT, so you can read a stop and walk its route side by side. Opening a route from an order keeps the order open; clicking a stop inside the route opens that order on the left WITHOUT closing the route (the search / filter / stop-list rail returns when you close the order). Map framing is now context-aware and reliable: selecting an individual stop zooms to the BUILDING, while opening a route frames the WHOLE route — and the route frame now re-fits after the side panels finish resizing, so the far stops of a spread-out load are no longer clipped off-screen behind a panel. (#388, #380)'],
@@ -9411,12 +9412,18 @@ function apptWindowLabel(stop) {
   return `${from ? fmtTime12(from) : '?'}–${to ? fmtTime12(to) : '?'}`;
 }
 
-function RoutingStopDetail({ stop, note, onOpen, windowViolated }) {
+function RoutingStopDetail({ stop, note, onOpen, windowViolated, onMoveLocation, onEditAddress, onAutoFixAddress }) {
   const keys = getRestrictionBadgeKeys(note);
   const oversize = stopLooksOversize(stop);
   const hoursStr = formatReceivingHours(note);
   const lines = Array.isArray(stop.stopDetails) ? stop.stopDetails : [];
-  const addr = [stop.addr1, [stop.city, stop.state].filter(Boolean).join(', '), stop.zip].filter(Boolean).join(' · ');
+  // Prefer a saved address_override (same as the Map card), so a corrected address
+  // shows here too — with a "corrected" chip. Falls back to the raw NuVizz address.
+  const aAddr1 = note?.address_override?.addr1 || stop.addr1;
+  const aCity = note?.address_override?.city ?? stop.city;
+  const aState = note?.address_override?.state ?? stop.state;
+  const aZip = note?.address_override?.zip ?? stop.zip;
+  const addr = [aAddr1, [aCity, aState].filter(Boolean).join(', '), aZip].filter(Boolean).join(' · ');
   const contact = (stop.contact && (stop.contact.name || stop.contact.phone)) ? stop.contact
     : (note?.contacts && note.contacts[0]) || null;
   const Cap = ({ children }) => <div className="text-[9px] uppercase font-semibold text-slate-500 tracking-wide">{children}</div>;
@@ -9430,7 +9437,25 @@ function RoutingStopDetail({ stop, note, onOpen, windowViolated }) {
         {stop.customerAccount && <div><Cap>Account</Cap><div className="text-slate-800">{stop.customerAccount}</div></div>}
       </div>
       <div><Cap>Business</Cap><div className="text-slate-800 font-medium">{stop.businessName || '—'}</div></div>
-      <div><Cap>Address</Cap><div className="text-slate-800">{addr || '—'}</div></div>
+      <div>
+        <Cap>Address {note?.address_override && <span className="px-1 rounded bg-blue-100 text-blue-700 text-[8px] font-semibold normal-case align-middle">corrected</span>}</Cap>
+        <div className="text-slate-800">{addr || '—'}</div>
+        {onAutoFixAddress && onEditAddress && <AddressFixBanner stop={stop} note={note} onAutoFix={onAutoFixAddress} onEdit={onEditAddress} />}
+        {(onEditAddress || onMoveLocation) && (
+          <div className="flex items-center gap-x-4 gap-y-1 flex-wrap mt-1">
+            {onEditAddress && (
+              <button onClick={() => onEditAddress(stop)} className="inline-flex items-center gap-1 text-[11px] text-blue-700 hover:underline">
+                <MapPin size={12} /> Edit address
+              </button>
+            )}
+            {onMoveLocation && (
+              <button onClick={() => onMoveLocation(stop)} className="inline-flex items-center gap-1 text-[11px] text-blue-700 hover:underline">
+                <MapPin size={12} /> Correct pin location{note?.location_override ? ' · custom saved' : ''}
+              </button>
+            )}
+          </div>
+        )}
+      </div>
       {contact && (
         <div><Cap>Contact</Cap><div className="text-slate-800">{[contact.name, contact.phone].filter(Boolean).join(' · ') || '—'}</div></div>
       )}
@@ -9532,11 +9557,14 @@ function RoutingStopRichDetail({ stop, onRefreshed }) {
   );
 }
 
-// Full-detail popup for a stop, opened from a PRO/order-number link or a Routing stop click.
-// Shows the Routing summary (RoutingStopDetail) PLUS the full live card — Delivery Ticket,
-// notes + Activity Timeline, POD, route/driver (RoutingStopRichDetail). Closes via X, backdrop,
-// or Esc. Never opens empty — guards a null stop.
-function RoutingStopModal({ stop, notes, onClose, onOpenLoad, windowViolatedSet }) {
+// Full-detail card for a stop, shown in the RIGHT PANEL (takeover overlay), opened
+// from a map-marker click, a PRO/order-number link, or any panel row. Shows the
+// Routing summary (RoutingStopDetail — now with Edit address / Correct pin location)
+// PLUS the full live card (Delivery Ticket, notes + Activity Timeline, POD,
+// route/driver via RoutingStopRichDetail). Fills the rail column; closes via X or Esc.
+// Never renders empty — guards a null stop. (Replaces the old center-popup modal so a
+// clicked stop's detail always lives in the right panel — dispatcher request.)
+function RoutingStopPanel({ stop, notes, onClose, onOpenLoad, windowViolatedSet, onMoveLocation, onEditAddress, onAutoFixAddress }) {
   useEffect(() => {
     const onKey = (e) => { if (e.key === 'Escape') onClose(); };
     window.addEventListener('keydown', onKey);
@@ -9550,38 +9578,35 @@ function RoutingStopModal({ stop, notes, onClose, onOpenLoad, windowViolatedSet 
   // Which load/route is this stop on (#281 — "no idea the load its on"). Open it in the Compare panel.
   const loadKey = loadDisplayName(stop.routeName, stop.loadNbr);
   return (
-    <div className="fixed inset-0 z-[1000] flex items-center justify-center p-4" role="dialog" aria-modal="true">
-      <div className="absolute inset-0 bg-black/40" onClick={onClose} />
-      <div className="relative bg-white rounded-lg shadow-xl w-full max-w-md max-h-[85dvh] flex flex-col" style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}>
-        <div className="flex items-center justify-between px-3 py-2 border-b shrink-0">
-          <div className="min-w-0">
-            <div className="font-bold text-slate-800 truncate">{stop.businessName || `Stop ${pro}`}</div>
-            {pro && <div className="text-[11px] text-slate-500">Order / PRO #{pro}</div>}
-          </div>
-          <button onClick={onClose} aria-label="Close" className="text-slate-400 hover:text-slate-700 text-2xl leading-none px-1 shrink-0">×</button>
+    <div className="flex-1 min-h-0 flex flex-col bg-white">
+      <div className="flex items-center justify-between px-3 py-2 border-b shrink-0">
+        <div className="min-w-0">
+          <div className="font-bold text-slate-800 truncate">{stop.businessName || `Stop ${pro}`}</div>
+          {pro && <div className="text-[11px] text-slate-500">Order / PRO #{pro}</div>}
         </div>
-        {/* What load this stop is on, + one-click open of that route in the Compare panel (#281). */}
-        <div className="flex items-start justify-between gap-2 px-3 py-1.5 border-b bg-slate-50 shrink-0">
-          <div className="text-[12px] text-slate-600 min-w-0">
-            <div className="truncate">
-              {loadKey ? <>On load <span className="font-semibold text-slate-800">{loadKey}</span></> : <span className="text-slate-400">Not on a load yet (unplanned)</span>}
-            </div>
-            {loadKey && (
-              <div className="truncate text-[11px] text-slate-500">
-                Driver: <span className={live.driverName ? 'font-medium text-slate-700' : 'text-slate-400 italic'}>{live.driverName || 'Not assigned'}</span>
-              </div>
-            )}
+        <button onClick={onClose} aria-label="Close stop detail" className="text-slate-400 hover:text-slate-700 text-2xl leading-none px-1 shrink-0">×</button>
+      </div>
+      {/* What load this stop is on, + one-click open of that route in the Compare panel (#281). */}
+      <div className="flex items-start justify-between gap-2 px-3 py-1.5 border-b bg-slate-50 shrink-0">
+        <div className="text-[12px] text-slate-600 min-w-0">
+          <div className="truncate">
+            {loadKey ? <>On load <span className="font-semibold text-slate-800">{loadKey}</span></> : <span className="text-slate-400">Not on a load yet (unplanned)</span>}
           </div>
-          {loadKey && onOpenLoad && (
-            <button onClick={() => { onOpenLoad(loadKey); onClose(); }} className="shrink-0 inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-1 rounded text-white" style={{ background: BRAND }}>
-              Open in Compare
-            </button>
+          {loadKey && (
+            <div className="truncate text-[11px] text-slate-500">
+              Driver: <span className={live.driverName ? 'font-medium text-slate-700' : 'text-slate-400 italic'}>{live.driverName || 'Not assigned'}</span>
+            </div>
           )}
         </div>
-        <div className="flex-1 min-h-0 overflow-y-auto p-3">
-          <RoutingStopDetail stop={live} note={note} windowViolated={windowViolated} />
-          <RoutingStopRichDetail stop={live} onRefreshed={onRefreshed} />
-        </div>
+        {loadKey && onOpenLoad && (
+          <button onClick={() => onOpenLoad(loadKey)} className="shrink-0 inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-1 rounded text-white" style={{ background: BRAND }}>
+            Open in Compare
+          </button>
+        )}
+      </div>
+      <div className="flex-1 min-h-0 overflow-y-auto p-3">
+        <RoutingStopDetail stop={live} note={note} windowViolated={windowViolated} onMoveLocation={onMoveLocation} onEditAddress={onEditAddress} onAutoFixAddress={onAutoFixAddress} />
+        <RoutingStopRichDetail stop={live} onRefreshed={onRefreshed} />
       </div>
     </div>
   );
@@ -11286,10 +11311,25 @@ function RoutingScreen({ debugCaptureRef }) {
   const lassoPxRef = useRef([]);
   const [lassoPath, setLassoPath] = useState([]);
 
-  // PRO-number detail popup — the stop being shown, or null.
-  const [detailModalStop, setDetailModalStop] = useState(null);
+  // Stop detail — shown in the RIGHT PANEL (takeover overlay), not a center popup.
+  // A map-marker click, a ProLink #pro, or any panel row's onOpenStop sets this;
+  // the right rail then renders RoutingStopPanel over whatever tab/mode is active.
+  const [panelStop, setPanelStop] = useState(null);
   const [versionLogOpen, setVersionLogOpen] = useState(false);
-  const openStop = useCallback((s) => setDetailModalStop(s || null), []);
+  const openStop = useCallback((s) => setPanelStop(s || null), []);
+
+  // ── Edit-address + Correct-pin-location (ported from MapScreen) ──────────────
+  // Both write customer_notes overrides (address_override / location_override);
+  // RoutingScreen's positionedAll already applies location_override live (via the
+  // notes onSnapshot), so a corrected pin relocates the routing marker with no
+  // extra plumbing. No NuVizz calls — Firestore + client-side geocode only.
+  const [movingStop, setMovingStop] = useState(null);
+  const [movedTo, setMovedTo] = useState(null);
+  const [savingLoc, setSavingLoc] = useState(false);
+  const [editAddrStop, setEditAddrStop] = useState(null);
+  const [editAddrSeed, setEditAddrSeed] = useState(null);
+  const openAddrEditor = useCallback((stop, seed = null) => { setEditAddrSeed(seed || null); setEditAddrStop(stop); }, []);
+  const movingMarkerRef = useRef(null);
 
   // The NuVizz-style bottom data grid (same spreadsheet as the dispatch Map) —
   // collapsed by default so it doesn't cover the map until opened.
@@ -12257,6 +12297,88 @@ function RoutingScreen({ debugCaptureRef }) {
     setSelectedIds((prev) => { const n = new Set(prev); for (const s of arr) n.add(String(s.stopNbr)); return n; });
     setLastAction(`Added ${arr.length} stop${arr.length === 1 ? '' : 's'}`);
   }, []);
+
+  // ── Pin relocation + address edit handlers (ported from MapScreen 6826-6909) ──
+  // startMoveLocation disarms Routing's own map tools (Box/Lasso + eligibility
+  // brush) so a click during the drag can't fight it. The rest are verbatim except
+  // refresh→refreshStops (the cheap Firestore board re-read — NOT a NuVizz scan).
+  const startMoveLocation = useCallback((stop) => {
+    cancelMode();
+    setEligPaint(null);
+    setMovedTo(null);
+    setMovingStop(stop);
+  }, [cancelMode]);
+  const autoFixAddress = useCallback(async (stop, suggestion) => {
+    if (!db || !stop || !suggestion) return;
+    const fields = {
+      addr1: (suggestion.addr1 || '').trim(),
+      addr2: (suggestion.addr2 || '').trim(),
+      city: stop.city || '', state: stop.state || '', zip: stop.zip || '',
+    };
+    const q = [fields.addr1, fields.city, fields.state, fields.zip].filter(Boolean).join(', ');
+    let geo = null, geoErr = null;
+    try { geo = await geocodeAddress(google, q); } catch (e) { geoErr = e; }
+    const payload = {
+      match_key: stop.matchKey,
+      raw_name: stop.businessName || '',
+      address_override: fields,
+      address_override_at: serverTimestamp(),
+      last_updated: serverTimestamp(),
+    };
+    if (geo) { payload.location_override = { lat: geo.lat, lng: geo.lng }; payload.location_override_at = serverTimestamp(); }
+    await setDoc(doc(db, 'customer_notes', stop.matchKey), payload, { merge: true });
+    refreshStops({ silent: true });
+    if (geoErr) throw new Error(`Address saved, but the pin couldn’t be moved — ${geoErr.message}. Enable the Geocoding API or use “Correct pin location” to drag it.`);
+  }, [google, refreshStops]);
+  const cancelMoveLocation = useCallback(() => { setMovingStop(null); setMovedTo(null); }, []);
+  const saveStopLocation = useCallback(async () => {
+    if (!db || !movingStop || !movedTo) return;
+    setSavingLoc(true);
+    try {
+      await setDoc(doc(db, 'customer_notes', movingStop.matchKey), {
+        match_key: movingStop.matchKey,
+        raw_name: movingStop.businessName || '',
+        location_override: { lat: movedTo.lat, lng: movedTo.lng },
+        location_override_at: serverTimestamp(),
+        last_updated: serverTimestamp(),
+      }, { merge: true });
+      setMovingStop(null); setMovedTo(null);
+    } catch (e) { console.error('save location override', e); }
+    finally { setSavingLoc(false); }
+  }, [movingStop, movedTo]);
+  const resetStopLocation = useCallback(async () => {
+    if (!db || !movingStop) return;
+    setSavingLoc(true);
+    try {
+      await setDoc(doc(db, 'customer_notes', movingStop.matchKey), {
+        match_key: movingStop.matchKey, location_override: null, last_updated: serverTimestamp(),
+      }, { merge: true });
+      setMovingStop(null); setMovedTo(null);
+    } catch (e) { console.error('reset location override', e); }
+    finally { setSavingLoc(false); }
+  }, [movingStop]);
+  useEffect(() => {
+    if (movingMarkerRef.current) { movingMarkerRef.current.setMap(null); movingMarkerRef.current = null; }
+    if (!google || !mapRef.current || !movingStop) return;
+    const ov = notes.get(movingStop.matchKey)?.location_override;
+    const start = {
+      lat: (ov && typeof ov.lat === 'number') ? ov.lat : movingStop.lat,
+      lng: (ov && typeof ov.lng === 'number') ? ov.lng : movingStop.lng,
+    };
+    if (start.lat == null || start.lng == null) return;
+    setMovedTo(start);
+    const m = new google.maps.Marker({
+      position: start, map: mapRef.current, draggable: true, zIndex: 99999,
+      icon: { url: pinSvgStatus('#1e5b92', {}), scaledSize: new google.maps.Size(34, 44), anchor: new google.maps.Point(17, 42) },
+      title: 'Drag to the correct location',
+      animation: google.maps.Animation.DROP,
+    });
+    m.addListener('dragend', () => { const p = m.getPosition(); if (p) setMovedTo({ lat: p.lat(), lng: p.lng() }); });
+    movingMarkerRef.current = m;
+    mapRef.current.panTo(start);
+    if ((mapRef.current.getZoom() || 0) < 16) mapRef.current.setZoom(18);
+    return () => { m.setMap(null); };
+  }, [google, movingStop]); // eslint-disable-line react-hooks/exhaustive-deps
   const addInView = useCallback(() => {
     if (!google || !mapRef.current) { setLastAction('Map not ready'); return; }
     const b = mapRef.current.getBounds();
@@ -12460,7 +12582,10 @@ function RoutingScreen({ debugCaptureRef }) {
       });
       marker.addListener('click', () => {
         if (viewing) return;                     // saved load is read-only
-        if (eligActionRef.current) eligActionRef.current(s);                   // eligibility paint → mark this stop
+        // Paint mode: mark the stop (green/red) AND open its full detail in the right
+        // panel — dispatcher request, "first click does both". setPanelStop is a stable
+        // useState setter so the marker-build effect's deps (12476) don't change.
+        if (eligActionRef.current) { eligActionRef.current(s); setPanelStop(s); }
         else if (selectModeRef.current) handleSelectPointRef.current(marker.getPosition());
         else if (ninjaActionRef.current) ninjaActionRef.current(s.stopNbr);   // ninja → add to active route
         else toggleStop(s.stopNbr);
@@ -12689,6 +12814,8 @@ function RoutingScreen({ debugCaptureRef }) {
   const [mobilePanel, setMobilePanel] = useState('setup');
   const [sheetOpen, setSheetOpen] = useState(true);
   useEffect(() => { if (job?.status === 'done') { setMobilePanel('result'); setSheetOpen(true); } }, [job?.status]);
+  // Opening a stop's detail (map click, incl. paint mode) reveals the bottom sheet if collapsed.
+  useEffect(() => { if (panelStop) setSheetOpen(true); }, [panelStop]);
   // Tap a load in the bottom Loads grid → OPEN IT IN COMPARE (so you can ninja stops onto it),
   // including EMPTY loads with no orders yet (issue #237 — "add stops to one of the available
   // loads... can't figure out how"). The grid clicks with the raw loadNbr; resolve it to the
@@ -12983,12 +13110,24 @@ function RoutingScreen({ debugCaptureRef }) {
           <div className="flex items-center gap-2 px-2 py-1.5 border-b">
             <button onClick={() => setSheetOpen((o) => !o)} className="text-xs px-2 py-1 rounded border border-slate-300" aria-label={sheetOpen ? 'Collapse' : 'Expand'}>{sheetOpen ? '▾' : '▴'}</button>
             <div className="flex-1 flex gap-1">
-              <button onClick={() => { setMobilePanel('setup'); setSheetOpen(true); }} className={tabCls(mobilePanel === 'setup')} style={mobilePanel === 'setup' ? { background: BRAND } : {}}>Setup{tally.count ? ` (${tally.count})` : ''}</button>
-              <button onClick={() => { setMobilePanel('loads'); setSheetOpen(true); }} className={tabCls(mobilePanel === 'loads')} style={mobilePanel === 'loads' ? { background: BRAND } : {}}>{rightPanelMode === 'routes' ? `Routes${routeGroups.length ? ` (${routeGroups.length})` : ''}` : `Loads${loads.length ? ` (${loads.length})` : ''}`}</button>
-              <button onClick={() => { setMobilePanel('result'); setSheetOpen(true); }} className={tabCls(mobilePanel === 'result')} style={mobilePanel === 'result' ? { background: BRAND } : {}}>Result{baseResult ? ` (${baseResult.routes.length})` : job?.status === 'running' || job?.status === 'queued' ? ' …' : ''}</button>
+              <button onClick={() => { setPanelStop(null); setMobilePanel('setup'); setSheetOpen(true); }} className={tabCls(mobilePanel === 'setup')} style={mobilePanel === 'setup' ? { background: BRAND } : {}}>Setup{tally.count ? ` (${tally.count})` : ''}</button>
+              <button onClick={() => { setPanelStop(null); setMobilePanel('loads'); setSheetOpen(true); }} className={tabCls(mobilePanel === 'loads')} style={mobilePanel === 'loads' ? { background: BRAND } : {}}>{rightPanelMode === 'routes' ? `Routes${routeGroups.length ? ` (${routeGroups.length})` : ''}` : `Loads${loads.length ? ` (${loads.length})` : ''}`}</button>
+              <button onClick={() => { setPanelStop(null); setMobilePanel('result'); setSheetOpen(true); }} className={tabCls(mobilePanel === 'result')} style={mobilePanel === 'result' ? { background: BRAND } : {}}>Result{baseResult ? ` (${baseResult.routes.length})` : job?.status === 'running' || job?.status === 'queued' ? ' …' : ''}</button>
             </div>
           </div>
           {sheetOpen && (
+            panelStop ? (
+              <RoutingStopPanel
+                stop={panelStop}
+                notes={notes}
+                windowViolatedSet={windowViolatedSet}
+                onClose={() => setPanelStop(null)}
+                onOpenLoad={(key) => { openRouteInWorkbench(key); setPanelStop(null); }}
+                onMoveLocation={startMoveLocation}
+                onEditAddress={openAddrEditor}
+                onAutoFixAddress={autoFixAddress}
+              />
+            ) : (
             <div className="flex-1 min-h-0 overflow-y-auto p-3 space-y-3 text-sm" style={{ paddingBottom: 'calc(12px + env(safe-area-inset-bottom))' }}>
               {mobilePanel === 'setup'
                 ? (wbRoutes.length > 0
@@ -13007,9 +13146,11 @@ function RoutingScreen({ debugCaptureRef }) {
                       : loadsContent)
                   : resultContent}
             </div>
+            )
           )}
         </div>
-        {detailModalStop && <RoutingStopModal stop={detailModalStop} notes={notes} windowViolatedSet={windowViolatedSet} onClose={() => setDetailModalStop(null)} onOpenLoad={(key) => openRouteInWorkbench(key)} />}
+        {movingStop && <MoveLocationBar stop={movingStop} saving={savingLoc} onSave={saveStopLocation} onCancel={cancelMoveLocation} onReset={resetStopLocation} />}
+        {editAddrStop && <AddressEditModal stop={editAddrStop} note={notes.get(editAddrStop.matchKey)} google={google} seed={editAddrSeed} onClose={() => { setEditAddrStop(null); setEditAddrSeed(null); }} onSaved={() => refreshStops({ silent: true })} />}
         {wbManifest && <PrintDocModal title={wbManifest.title} html={wbManifest.html} onClose={() => setWbManifest(null)} />}
         {versionLogOpen && <VersionLogModal onClose={() => setVersionLogOpen(false)} />}
       </div>
@@ -13119,7 +13260,18 @@ function RoutingScreen({ debugCaptureRef }) {
       {/* Right: Stops | Result (or the Routes/Drivers view) — resizable, like the left. */}
       <ResizeHandle onMouseDown={rightPanel.onMouseDown} onDoubleClick={rightPanel.onDoubleClick} />
       <div className="shrink-0 border-l bg-white flex flex-col min-h-0" style={{ width: rightPanel.width }}>
-        {rightPanelMode === 'routes' ? (
+        {panelStop ? (
+          <RoutingStopPanel
+            stop={panelStop}
+            notes={notes}
+            windowViolatedSet={windowViolatedSet}
+            onClose={() => setPanelStop(null)}
+            onOpenLoad={(key) => { openRouteInWorkbench(key); setPanelStop(null); }}
+            onMoveLocation={startMoveLocation}
+            onEditAddress={openAddrEditor}
+            onAutoFixAddress={autoFixAddress}
+          />
+        ) : rightPanelMode === 'routes' ? (
           <>
             <div className="flex items-center justify-between px-3 py-2 border-b shrink-0 gap-2">
               <RoutesDriversToggle subTab={routesSubTab} setSubTab={setRoutesSubTab} routesCount={routeGroups.length} />
@@ -13149,7 +13301,8 @@ function RoutingScreen({ debugCaptureRef }) {
         </>
         )}
       </div>
-      {detailModalStop && <RoutingStopModal stop={detailModalStop} notes={notes} windowViolatedSet={windowViolatedSet} onClose={() => setDetailModalStop(null)} onOpenLoad={(key) => openRouteInWorkbench(key)} />}
+      {movingStop && <MoveLocationBar stop={movingStop} saving={savingLoc} onSave={saveStopLocation} onCancel={cancelMoveLocation} onReset={resetStopLocation} />}
+      {editAddrStop && <AddressEditModal stop={editAddrStop} note={notes.get(editAddrStop.matchKey)} google={google} seed={editAddrSeed} onClose={() => { setEditAddrStop(null); setEditAddrSeed(null); }} onSaved={() => refreshStops({ silent: true })} />}
         {wbManifest && <PrintDocModal title={wbManifest.title} html={wbManifest.html} onClose={() => setWbManifest(null)} />}
         {versionLogOpen && <VersionLogModal onClose={() => setVersionLogOpen(false)} />}
     </div>
