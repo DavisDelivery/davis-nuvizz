@@ -56,7 +56,14 @@ function makeRequester({ saveBody = { responseCode: 200 }, saveStatus = 200, loa
         if (url.includes('auth/userLogin')) return J({ data: { jwtToken: 'jwt-abc' } });
         if (url.includes('/authtoken/')) return J({ authToken: 'authtok-xyz' });
         if (url.includes('validateStopstoPerformAction')) return T('Success');
-        if (url.includes('addStopsToRouteAfterValidation')) return J({ responseCode: 200, message: 'SUCCESS', stops: [] });
+        if (url.includes('addStopsToRouteAfterValidation')) {
+          // Simulate the portal actually attaching the stops so the post-add verify re-read sees them.
+          try {
+            const sids = opts.body && opts.body.get ? String(opts.body.get('stopIds') || '') : '';
+            for (const sid of sids.split(',').filter(Boolean)) { const n = sid.replace(/^id-/, ''); if (loadStops && !loadStops.value.includes(n)) loadStops.value.push(n); }
+          } catch { /* no loadStops in unit tests */ }
+          return J({ responseCode: 200, message: 'SUCCESS', stops: [] });
+        }
         if (url.includes('fetchUpdatedJson')) {
           return J([{ etaStopVOList: [{ timeZone: 'America/New_York' }], distance: 10, duration: 20, schStartTime: { dttm: 'Jul 2, 2026' } }]);
         }
@@ -236,6 +243,27 @@ test('runCommitBoardRwb: client-supplied orderedStopIds skip the per-stop getSto
     const val = calls.filter((c) => c.url.includes('validateStopstoPerformAction'));
     assert.equal(val.length, 1, 'one batched validate');
     assert.ok(val[0].url.includes('routeId='), 'validate carries routeId');
+  });
+});
+
+test('runCommitBoardRwb: fails loudly when an add silently no-ops (stop planned elsewhere, never lands)', async () => {
+  await withRwb({}, async () => {
+    // addStopsToRouteAfterValidation returns SUCCESS but the stop never appears on the load (the
+    // portal no-ops a stop already planned on another route). The post-add verify must catch it.
+    const loadStops = { value: ['X'] };
+    const base = makeRequester({ loadStops });
+    const real = base.requester.request;
+    base.requester.request = async (url, opts, meta) => {
+      if (url.includes('addStopsToRouteAfterValidation')) return new Response(JSON.stringify({ responseCode: 200, message: 'SUCCESS' }), { status: 200 }); // ok, but does NOT add
+      return real(url, opts, meta);
+    };
+    const r = await runCommitBoardRwb(base.requester, { loads: [{
+      loadNbr: 'DAVIS000000123', loadId: HEXID, routeName: 'R',
+      orderedStopNbrs: ['X', 'A'], orderedStopIds: ['id-X', 'id-A'],
+    }] }, CREDS);
+    assert.equal(r.ok, false, 'must NOT report success when the stop never landed');
+    assert.match(r.loads[0].error, /still planned on another load|couldn't be added|unplan it/i);
+    assert.equal(base.calls.some((c) => c.url.includes('saveComparedRouteData')), false, 'must not persist a route missing the stop');
   });
 });
 
