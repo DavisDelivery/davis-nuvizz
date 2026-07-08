@@ -54,7 +54,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.39.7';
+const APP_VERSION = '0.39.8';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -99,6 +99,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.39.8', '🔗 RWB + Compare panel — FIX cross-load moves (both halves of one broken path). (1) SERVER: even with BOTH loads open, moving a stop between routes (drag / → LOAD / move menu) reduces the source load\'s stop list but sends no explicit removeStopNbrs, so the RWB stale-board guard flagged the still-on-source stop as an orphan and REFUSED the source ("has N stop(s) the board isn\'t showing"), cascading a failure to the destination — nothing moved. The guard now treats a stop that ANOTHER load in the same Save is planning as accounted-for (a staged move), while STILL refusing a stop the board truly never knew about. (2) CLIENT: selecting or ninja-clicking a stop that lives on a load NOT open in Compare used to silently do nothing (a faint status line, no staged move, no Save button — the "single route can\'t Save" report). Now the source load AUTO-OPENS into Compare with a prominent banner and the stops stay selected, so a second Send completes the cross-load move; at the 3-card cap the leftover loads are named so you can close one and retry. Cross-load moves under 🔗 RWB / ● LIVE now land.'],
   ['0.39.7', '🔗 RWB engine — FIX: a Save could report success while nothing landed on the load. NuVizz\'s addStopsToRouteAfterValidation silently NO-OPS a stop that is already planned on ANOTHER route (it returns OK but doesn\'t move it), and the 0.39.6 fast path had dropped the check that catches that — so moving a stop that lived on another load looked like it saved but placed nothing. The engine now RE-READS the load after adding and verifies every stop actually landed before it sequences/saves; if a stop couldn\'t be added it FAILS LOUDLY with "stop X is still planned on load Y — open that load in Compare to move it, or unplan it first" instead of a false success. (RWB, like the portal, can only pull a stop off a route that is part of the same Save — so cross-load moves need BOTH loads open.) Costs one extra load read per add.'],
   ['0.39.6', '🔗 RWB engine — matches the portal\'s exact call profile at scale + keeps YOUR order. Two changes: (1) the per-stop getStop that ran the steal-guard on each arrival is gone — the board already knows each stop\'s id, so the engine now uses those ids directly and runs ONE batched validateStopstoPerformAction/{id,id,…}?routeId (the portal\'s own whole-set eligibility check) instead of one getStop per stop; a 22-stop add drops from ~26 calls to ~5, right at the portal\'s number. (getStop is still used only for stops the board didn\'t enrich, and for the retarget probe on an empty load.) (2) The engine now sets the RWB_RTE_EXRTESEC=OFF preference once per session, so NuVizz never re-optimizes a saved route — dispatch-map does the optimization and the saved order is EXACTLY what you sent (seqMode Manual). Byte-for-byte preservation unchanged. If any batched call is rejected it falls back to the proven per-stop path.'],
   ['0.39.5', '🔗 RWB engine — BATCHED stop adds (production scale). Building/adding to a route used to add each order with its own validate+add call pair, so a 6-order build cost ~12 membership calls and a real 15-20 stop route would cost 30-40. Now all new orders are added in ONE addStopsToRouteAfterValidation call (the field is stopIds, plural), with the per-stop validate skipped (the add enforces it server-side). If the portal rejects the batch shape, it FALLS BACK to the proven per-stop path so a save never fails over it. Net: a warm build drops from ~22 calls toward ~6-8, and adding 15-20 stops is a couple of calls instead of dozens. Byte-for-byte preservation and the 2-call reorder are unchanged.'],
@@ -11483,7 +11484,14 @@ function RoutingScreen({ debugCaptureRef }) {
     const s = stopById.get(id);
     const holder = s ? String(s.routeName || s.loadNbr || '') : '';
     if (s && !s.isUnplanned && holder && !openRouteKeys.has(holder)) {
-      setLastAction(`${stopNbr} is planned on ${loadDisplayName(holder) || holder} — open that load in Compare first so the move is staged.`);
+      // Bring the SOURCE load into Compare so the move stages on both loads (a declarative Save can
+      // only pull a stop off a route that is part of the Save). Then click the stop again to move it.
+      if (openRouteKeys.size >= WB_MAX) {
+        showMapToast(`${stopNbr} is on ${loadDisplayName(holder) || holder} — Compare is full (${WB_MAX}/${WB_MAX}). Close a card, then click it again to move it.`);
+      } else {
+        openRouteInWorkbench(holder);
+        showMapToast(`Opened ${loadDisplayName(holder) || holder} in Compare — click ${stopNbr} again to move it.`);
+      }
       return;
     }
     setWbRoutes((prev) => {
@@ -11506,17 +11514,28 @@ function RoutingScreen({ debugCaptureRef }) {
   const sendSelectionToRoute = useCallback((key) => {
     let ids = [...selectedIds].map(String);
     if (!key || !ids.length) return;
-    // Same guard as ninja-add: skip stops still planned on loads that are NOT open in Compare —
-    // nothing would stage their removal from the holder load, so Save would double-plan them.
-    const blocked = ids.filter((id) => {
-      const s = stopById.get(id);
-      const holder = s ? String(s.routeName || s.loadNbr || '') : '';
-      return s && !s.isUnplanned && holder && !openRouteKeys.has(holder);
-    });
+    // A stop planned on a load NOT open in Compare can't just be added to the target: the Save is
+    // DECLARATIVE over the loads in the payload, so without the SOURCE load in the Save the stop would
+    // double-plan. Instead of silently skipping it, AUTO-OPEN each such source load into Compare
+    // (respecting the 3-card cap) and keep the stops selected — once the source is open a second Send
+    // stages the real cross-load move (source releases the stop, target gains it, both loads Saved).
+    const holderOf = (id) => { const s = stopById.get(id); return s && !s.isUnplanned ? String(s.routeName || s.loadNbr || '') : ''; };
+    const blocked = ids.filter((id) => { const h = holderOf(id); return h && !openRouteKeys.has(h); });
+    let keepSelected = [];
     if (blocked.length) {
-      ids = ids.filter((id) => !blocked.includes(id));
-      setLastAction(`${blocked.length} stop(s) skipped — still planned on loads not open in Compare (open those loads first so the move is staged).`);
-      if (!ids.length) return;
+      const blockedHolders = [...new Set(blocked.map(holderOf).filter(Boolean))];
+      const slots = Math.max(0, WB_MAX - openRouteKeys.size);
+      const toOpen = new Set(blockedHolders.slice(0, slots));
+      toOpen.forEach((h) => openRouteInWorkbench(h));   // opens the source card(s) so the move can stage
+      keepSelected = blocked;                            // keep every blocked stop selected for the next Send
+      ids = ids.filter((id) => !blocked.includes(id));   // this pass only stages the already-stageable stops
+      const openedNames = [...toOpen].map((h) => loadDisplayName(h) || h);
+      const heldNames = blockedHolders.filter((h) => !toOpen.has(h)).map((h) => loadDisplayName(h) || h);
+      const parts = [];
+      if (openedNames.length) parts.push(`Opened ${openedNames.join(', ')} in Compare — Send again to move ${blocked.filter((id) => toOpen.has(holderOf(id))).length} stop(s).`);
+      if (heldNames.length) parts.push(`${heldNames.join(', ')} need a free card (Compare full ${WB_MAX}/${WB_MAX}) — close one, then Send.`);
+      showMapToast(parts.join(' '));
+      if (!ids.length) { setSelectedIds(new Set(keepSelected)); return; }
     }
     const idSet = new Set(ids);
     setWbRoutes((prev) => {
@@ -11532,7 +11551,7 @@ function RoutingScreen({ debugCaptureRef }) {
       });
     });
     setLastAction(`Sent ${ids.length} selected stop${ids.length === 1 ? '' : 's'} → ${loadDisplayName(key) || 'load'}`);
-    setSelectedIds(new Set());
+    setSelectedIds(new Set(keepSelected));   // cleared when nothing was blocked; keeps cap/holder-pending stops for the next Send
   }, [selectedIds, stopById, openRouteKeys]);
   // The marker click listener is bound once; route ninja clicks through a ref so toggling ninja
   // (or closing the panel) never re-creates the markers. Null = ninja off / nothing to add to.

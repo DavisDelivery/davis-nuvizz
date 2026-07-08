@@ -1156,6 +1156,14 @@ export async function runCommitBoardRwb(requester: RequesterLike, payload: any, 
   const seq: any[] = []; // { L, loadNbr, load, orderedNbrs, arrivals, curNbrs, result, addReads }
   const batchNbrs = new Set<string>();
   for (const l of loadsIn) { const v = String(l?.loadNbr ?? '').trim(); if (v && !isHashLikeId(v)) batchNbrs.add(v); }
+  // Stops that ANOTHER load in this same Save is planning (a staged cross-load MOVE): the board IS
+  // accounting for them, just on a different card. A drag / move-menu / "→ LOAD" move reduces the
+  // SOURCE load's orderedStopNbrs but does NOT populate removeStopNbrs, so without this the
+  // stale-board guard below would flag the still-on-source moved stop as an orphan and falsely
+  // refuse the source load (cascading a failure to the destination). A stop the board truly never
+  // knew about is in NO load's orderedStopNbrs, so it is still caught.
+  const batchOrderedNbrs = new Set<string>();
+  for (const l of loadsIn) for (const n of (Array.isArray(l?.orderedStopNbrs) ? l.orderedStopNbrs : [])) { const s = String(n); if (s) batchOrderedNbrs.add(s); }
 
   for (const L of loadsIn) {
     const orderedNbrs: string[] | null = Array.isArray(L?.orderedStopNbrs) ? L.orderedStopNbrs.map((x: any) => String(x)).filter(Boolean) : null;
@@ -1231,7 +1239,7 @@ export async function runCommitBoardRwb(requester: RequesterLike, payload: any, 
     const removeNbrs: string[] = Array.isArray(L?.removeStopNbrs) ? L.removeStopNbrs.map((x: any) => String(x)).filter(Boolean) : [];
     const orderedSet = new Set(orderedNbrs);
     const removeSet = new Set(removeNbrs);
-    const unaccounted = [...stopIdByNbr.keys()].filter((n) => !orderedSet.has(n) && !removeSet.has(n));
+    const unaccounted = [...stopIdByNbr.keys()].filter((n) => !orderedSet.has(n) && !removeSet.has(n) && !batchOrderedNbrs.has(n));
     if (unaccounted.length) {
       result.ok = false;
       result.error = `commitBoard(rwb): load ${loadNbrX} has ${unaccounted.length} stop(s) the board isn't showing (${unaccounted.slice(0, 3).join(', ')}${unaccounted.length > 3 ? '…' : ''}) — a declarative RWB save would unplan them. Refresh and retry.`;
