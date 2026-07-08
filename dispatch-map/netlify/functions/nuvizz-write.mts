@@ -186,13 +186,21 @@ export default async (req: Request): Promise<Response> => {
 
   // 6) Fire. Attribute the spike distinctly so Diagnostics shows live-write volume.
   setCallTrigger('live-write');
+  // Per-action call accounting: totalThisInstance is a monotonic per-instance
+  // counter bumped on every NuVizz round-trip, so a before/after delta around runOp
+  // is the EXACT number of NuVizz calls THIS action made (login handshake on a cold
+  // instance + preview + save + validate/add + every verify read). Returned as
+  // `callsUsed` so the UI can show it per-action and reconcile against the RWB HAR.
+  const reqr = getNuvizzRequester();
+  const callsBefore = reqr.getStats().totalThisInstance;
+  const callsSince = () => reqr.getStats().totalThisInstance - callsBefore;
   let result: any;
   try {
-    result = await runOp(getNuvizzRequester(), op, payload, creds);
+    result = await runOp(reqr, op, payload, creds);
   } catch (e: any) {
-    if (e instanceof NuvizzCircuitOpenError) return J({ ok: false, op, tenant, live, error: 'NuVizz circuit breaker open — write refused', ops: await opsSnapshot() }, 503);
+    if (e instanceof NuvizzCircuitOpenError) return J({ ok: false, op, tenant, live, callsUsed: callsSince(), error: 'NuVizz circuit breaker open — write refused', ops: await opsSnapshot() }, 503);
     // A builder threw → malformed payload (missing required field) → 400.
-    return J({ ok: false, op, tenant, live, error: e?.message || 'write failed', ops: await opsSnapshot() }, 400);
+    return J({ ok: false, op, tenant, live, callsUsed: callsSince(), error: e?.message || 'write failed', ops: await opsSnapshot() }, 400);
   }
 
   // 7) Journal (best-effort) + idempotency ledger.
@@ -201,5 +209,5 @@ export default async (req: Request): Promise<Response> => {
     if (clientOpId) await putOpRecord({ clientOpId, op, status: result?.ok ? 'succeeded' : 'failed', result, tenant, at: new Date().toISOString() });
   }
 
-  return J({ ok: !!result?.ok, op, tenant, live, dryRun: false, result, ops: await opsSnapshot() }, result?.ok ? 200 : 502);
+  return J({ ok: !!result?.ok, op, tenant, live, dryRun: false, result, callsUsed: callsSince(), ops: await opsSnapshot() }, result?.ok ? 200 : 502);
 };
