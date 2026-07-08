@@ -1156,6 +1156,14 @@ export async function runCommitBoardRwb(requester: RequesterLike, payload: any, 
   const seq: any[] = []; // { L, loadNbr, load, orderedNbrs, arrivals, curNbrs, result, addReads }
   const batchNbrs = new Set<string>();
   for (const l of loadsIn) { const v = String(l?.loadNbr ?? '').trim(); if (v && !isHashLikeId(v)) batchNbrs.add(v); }
+  // Stops that ANOTHER load in this same Save is planning (a staged cross-load MOVE): the board IS
+  // accounting for them, just on a different card. A drag / move-menu / "→ LOAD" move reduces the
+  // SOURCE load's orderedStopNbrs but does NOT populate removeStopNbrs, so without this the
+  // stale-board guard below would flag the still-on-source moved stop as an orphan and falsely
+  // refuse the source load (cascading a failure to the destination). A stop the board truly never
+  // knew about is in NO load's orderedStopNbrs, so it is still caught.
+  const batchOrderedNbrs = new Set<string>();
+  for (const l of loadsIn) for (const n of (Array.isArray(l?.orderedStopNbrs) ? l.orderedStopNbrs : [])) { const s = String(n); if (s) batchOrderedNbrs.add(s); }
 
   for (const L of loadsIn) {
     const orderedNbrs: string[] | null = Array.isArray(L?.orderedStopNbrs) ? L.orderedStopNbrs.map((x: any) => String(x)).filter(Boolean) : null;
@@ -1231,7 +1239,7 @@ export async function runCommitBoardRwb(requester: RequesterLike, payload: any, 
     const removeNbrs: string[] = Array.isArray(L?.removeStopNbrs) ? L.removeStopNbrs.map((x: any) => String(x)).filter(Boolean) : [];
     const orderedSet = new Set(orderedNbrs);
     const removeSet = new Set(removeNbrs);
-    const unaccounted = [...stopIdByNbr.keys()].filter((n) => !orderedSet.has(n) && !removeSet.has(n));
+    const unaccounted = [...stopIdByNbr.keys()].filter((n) => !orderedSet.has(n) && !removeSet.has(n) && !batchOrderedNbrs.has(n));
     if (unaccounted.length) {
       result.ok = false;
       result.error = `commitBoard(rwb): load ${loadNbrX} has ${unaccounted.length} stop(s) the board isn't showing (${unaccounted.slice(0, 3).join(', ')}${unaccounted.length > 3 ? '…' : ''}) — a declarative RWB save would unplan them. Refresh and retry.`;
@@ -1315,33 +1323,44 @@ export async function runCommitBoardRwb(requester: RequesterLike, payload: any, 
     let loadId: any = p.retargeted ? (p.load?.loadId ?? null) : (trustableLoadId(p.L?.loadId) ? p.L.loadId : (p.load?.loadId ?? null));
     let loadX = p.load;
     try {
-      // Every desired stop's internal id — on-load stops (from the load read) + arrivals (from
-      // getStop). No load re-read is needed: we already hold every id the save references.
-      const stopIdByNbr2 = new Map<string, string>();
-      for (const s of (loadX?.stops || [])) if (s?.stopNbr != null && s?.stopId != null) stopIdByNbr2.set(String(s.stopNbr), String(s.stopId));
-      for (const a of (p.arrivals || [])) stopIdByNbr2.set(String(a.nbr), String(a.stopId));
-
       if (!loadId) { p.result.ok = false; p.result.error = 'commitBoard(rwb): loadId (routePlanId) unresolved'; outcome.set(String(p.loadNbr), 'failed'); continue; }
       const routePlanId = String(loadId);
 
       // LEVER 1: MEMBERSHIP — the RWB-native way (verified from a live portal HAR). ADD each
-      // arrival to the route plan via validateStopstoPerformAction + addStopsToRouteAfterValidation
-      // (NOT v7 insertStops, which does not register the stop in RWB's route-plan structures).
-      // REMOVALS need no call here: the declarative save below omits any departing stop, which is
-      // exactly how the portal unplans (fetchUpdatedJson without it → save without it).
-      let rwbAddCalls = 0;
+      // arrival to the route plan via the batched validate + addStopsToRouteAfterValidation
+      // (NOT v7 insertStops). REMOVALS need no call: the declarative save below omits departing stops.
+      let rwbAddCalls = 0, verifyReads = 0;
       if (p.arrivals.length) {
         const add = await rwbAddStopsToRoute(requester, routePlanId, p.arrivals.map((a: any) => a.stopId));
         rwbAddCalls = add.calls;
         p.result.steps.push(...add.steps.map((s: any) => ({ ...s, op: `rwb:${s.op}` })));
         if (!add.ok) { p.result.ok = false; p.result.error = `commitBoard(rwb): ${add.message}`; outcome.set(String(p.loadNbr), 'failed'); continue; }
+        // VERIFY the arrivals LANDED. addStopsToRouteAfterValidation silently NO-OPS a stop already
+        // planned on ANOTHER route (it returns ok but doesn't move it — that portal quirk caused a
+        // false-success where the save reported ok but placed nothing). Re-read and confirm membership
+        // BEFORE sequencing, so a move that couldn't happen fails loudly instead of silently.
+        const f2 = await fetchLoad(requester, String(p.loadNbr), creds);
+        verifyReads = 1;
+        if (!f2.load) { p.result.ok = false; p.result.error = `commitBoard(rwb): load unreadable after add (${loadMissDiag(p.loadNbr, f2)}) — Save again`; outcome.set(String(p.loadNbr), 'failed'); continue; }
+        loadX = f2.load;
       }
+
+      // Every ordered stop's id, from the (re-read, post-add) load — the source of truth for what is
+      // ACTUALLY on the route now. A stop missing here after we tried to add it never landed.
+      const stopIdByNbr2 = new Map<string, string>();
+      for (const s of (loadX?.stops || [])) if (s?.stopNbr != null && s?.stopId != null) stopIdByNbr2.set(String(s.stopNbr), String(s.stopId));
+      const arrivalNbrs = new Set((p.arrivals || []).map((a: any) => String(a.nbr)));
 
       const orderedIds: string[] = [];
       let entryErr: string | null = null;
       for (const nbr of p.orderedNbrs) {
         const id = stopIdByNbr2.get(nbr);
-        if (!id) { entryErr = `commitBoard(rwb): stop ${nbr} has no internal id to sequence (stale board — refresh and retry)`; break; }
+        if (!id) {
+          entryErr = arrivalNbrs.has(nbr)
+            ? `commitBoard(rwb): stop ${nbr} couldn't be added to ${p.loadNbr} — it's still planned on another load. Open that load in Compare to move it, or unplan it first (RWB can't pull a stop off a route that isn't part of the Save).`
+            : `commitBoard(rwb): stop ${nbr} has no internal id to sequence (stale board — refresh and retry)`;
+          break;
+        }
         orderedIds.push(id);
       }
       if (entryErr) { p.result.ok = false; p.result.error = entryErr; outcome.set(String(p.loadNbr), 'failed'); continue; }
@@ -1354,7 +1373,7 @@ export async function runCommitBoardRwb(requester: RequesterLike, payload: any, 
         : DAVIS_DEPOT;
       const r = await rwbSequenceStops(requester, routePlanId, orderedIds, origin);
       p.result.steps.push(...r.steps.map((s: any) => ({ ...s, op: `rwb:${s.op}` })));
-      p.result.calls = { rwb: r.calls, rwbAdd: rwbAddCalls, stopInfos: p.addReads || 0 };
+      p.result.calls = { rwb: r.calls, rwbAdd: rwbAddCalls, infos: verifyReads, stopInfos: p.addReads || 0 };
       if (!r.ok) { p.result.ok = false; p.result.error = r.message; outcome.set(String(p.loadNbr), 'failed'); continue; }
       outcome.set(String(p.loadNbr), 'converged');
       loadId = loadId ?? loadX?.loadId;

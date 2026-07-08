@@ -56,7 +56,14 @@ function makeRequester({ saveBody = { responseCode: 200 }, saveStatus = 200, loa
         if (url.includes('auth/userLogin')) return J({ data: { jwtToken: 'jwt-abc' } });
         if (url.includes('/authtoken/')) return J({ authToken: 'authtok-xyz' });
         if (url.includes('validateStopstoPerformAction')) return T('Success');
-        if (url.includes('addStopsToRouteAfterValidation')) return J({ responseCode: 200, message: 'SUCCESS', stops: [] });
+        if (url.includes('addStopsToRouteAfterValidation')) {
+          // Simulate the portal actually attaching the stops so the post-add verify re-read sees them.
+          try {
+            const sids = opts.body && opts.body.get ? String(opts.body.get('stopIds') || '') : '';
+            for (const sid of sids.split(',').filter(Boolean)) { const n = sid.replace(/^id-/, ''); if (loadStops && !loadStops.value.includes(n)) loadStops.value.push(n); }
+          } catch { /* no loadStops in unit tests */ }
+          return J({ responseCode: 200, message: 'SUCCESS', stops: [] });
+        }
         if (url.includes('fetchUpdatedJson')) {
           return J([{ etaStopVOList: [{ timeZone: 'America/New_York' }], distance: 10, duration: 20, schStartTime: { dttm: 'Jul 2, 2026' } }]);
         }
@@ -239,6 +246,27 @@ test('runCommitBoardRwb: client-supplied orderedStopIds skip the per-stop getSto
   });
 });
 
+test('runCommitBoardRwb: fails loudly when an add silently no-ops (stop planned elsewhere, never lands)', async () => {
+  await withRwb({}, async () => {
+    // addStopsToRouteAfterValidation returns SUCCESS but the stop never appears on the load (the
+    // portal no-ops a stop already planned on another route). The post-add verify must catch it.
+    const loadStops = { value: ['X'] };
+    const base = makeRequester({ loadStops });
+    const real = base.requester.request;
+    base.requester.request = async (url, opts, meta) => {
+      if (url.includes('addStopsToRouteAfterValidation')) return new Response(JSON.stringify({ responseCode: 200, message: 'SUCCESS' }), { status: 200 }); // ok, but does NOT add
+      return real(url, opts, meta);
+    };
+    const r = await runCommitBoardRwb(base.requester, { loads: [{
+      loadNbr: 'DAVIS000000123', loadId: HEXID, routeName: 'R',
+      orderedStopNbrs: ['X', 'A'], orderedStopIds: ['id-X', 'id-A'],
+    }] }, CREDS);
+    assert.equal(r.ok, false, 'must NOT report success when the stop never landed');
+    assert.match(r.loads[0].error, /still planned on another load|couldn't be added|unplan it/i);
+    assert.equal(base.calls.some((c) => c.url.includes('saveComparedRouteData')), false, 'must not persist a route missing the stop');
+  });
+});
+
 test('runCommitBoardRwb: retargets to the same-named instance that holds the stops (duplicate recurring load)', async () => {
   await withRwb({}, async () => {
     // Two loads named DARYL: the opened one (EMPTY_ID) is empty; the twin (FULL) holds A,B.
@@ -300,5 +328,88 @@ test('runCommitBoardRwb: a departure is removed by save-omission (no v7 load/edi
     assert.equal(r.ok, true, `expected success, got: ${JSON.stringify(r.loads?.[0]?.error)}`);
     assert.equal(calls.some((c) => c.url.includes('/load/edit/')), false, 'must NOT use v7 removeStops');
     assert.equal(calls.some((c) => c.url.includes('saveComparedRouteData')), true, 'removal is via the declarative save');
+  });
+});
+
+// ── cross-load move: the stale-board guard must be BATCH-AWARE ─────────────────
+// A move (drag / move-menu / "→ LOAD") reduces the SOURCE load's orderedStopNbrs but does NOT
+// populate removeStopNbrs, so the moved stop is still physically on the source at classification
+// time. Without batch-awareness the guard flagged it as an orphan and refused the source, cascading
+// a failure to the destination — the "moved one to the other route and it did not work" bug.
+
+// Two distinct loads, each with a MUTABLE stop list, routed by loadNbr (load/info) and by routePlanId
+// (the addStopsToRouteAfterValidation body) so a post-add re-read reflects the arrival.
+function makeMoveRequester(loads) {
+  const calls = [];
+  const byId = {};
+  for (const [nbr, v] of Object.entries(loads)) byId[v.loadId] = { nbr, v };
+  const loadJson = (nbr) => { const v = loads[nbr]; return { Load: {
+    loadHeader: { loadId: v.loadId, loadNbr: nbr, routeName: nbr, rtOrigin: { address: { latitude: 34.04, longitude: -83.71 } } },
+    versionId: 'v1', loadExecutionInfo: { loadStatus: 'PLANNED' },
+    stops: v.stops.map((n, i) => ({ stop: { stopId: `id-${n}`, stopNbr: String(n), stopType: 'DO', to: { seq: i + 2 } } })),
+  } }; };
+  return { calls, requester: { async request(url, opts, meta) {
+    const method = (opts.method || 'GET').toUpperCase();
+    calls.push({ url, method, route: meta?.route });
+    const J = (o, s = 200) => new Response(JSON.stringify(o), { status: s });
+    const T = (t) => new Response(t, { status: 200 });
+    if (url.includes('/loginreg/') && method === 'GET') return T('<meta name="_csrf" content="x"><meta name="_csrf_header" content="X-CSRF-TOKEN">');
+    if (url.includes('checkCompanyLogin')) return J({ ok: true });
+    if (url.includes('auth/userLogin')) return J({ data: { jwtToken: 'j' } });
+    if (url.includes('/authtoken/')) return J({ authToken: 't' });
+    if (url.includes('validateStopstoPerformAction')) return T('Success');
+    if (url.includes('addStopsToRouteAfterValidation')) {
+      try {
+        const rp = opts.body?.get ? String(opts.body.get('routePlanId') || '') : '';
+        const sids = opts.body?.get ? String(opts.body.get('stopIds') || '') : '';
+        const tgt = byId[rp];
+        if (tgt) for (const sid of sids.split(',').filter(Boolean)) { const n = sid.replace(/^id-/, ''); if (!tgt.v.stops.includes(n)) tgt.v.stops.push(n); }
+      } catch { /* ignore */ }
+      return J({ responseCode: 200, message: 'SUCCESS' });
+    }
+    if (url.includes('fetchUpdatedJson')) return J([{ etaStopVOList: [{ timeZone: 'America/New_York' }], distance: 1, duration: 1, schStartTime: { dttm: 'Jul 2, 2026' } }]);
+    if (url.includes('saveComparedRouteData')) return J({ responseCode: 200, message: 'SUCCESS' });
+    const m = url.match(/\/load\/info\/([^/?]+)/);
+    if (m) { const nbr = decodeURIComponent(m[1]); return loads[nbr] ? J(loadJson(nbr)) : J({}, 404); }
+    if (url.includes('/stop/info/')) { const n = url.split('/stop/info/')[1].split('/')[0]; return J({ Stop: { stop: { stopId: `id-${n}`, stopNbr: n, stopType: 'DO' }, load: { loadNbr: '' } } }); }
+    return J({});
+  } } };
+}
+
+test('runCommitBoardRwb: cross-load move is NOT falsely refused by the stale-board guard (batch-aware)', async () => {
+  await withRwb({}, async () => {
+    // L1 holds [A,B]; L2 holds [C]. Move B from L1 → L2. The move reduces L1's ordered list but sends
+    // NO removeStopNbrs; B is still on L1 in NuVizz at classification time. The guard must recognize B
+    // as claimed by L2 (in-batch) — not an orphan — and must NOT refuse L1.
+    const L1 = { loadId: '1111aaaa2222bbbb3333cccc', stops: ['A', 'B'] };
+    const L2 = { loadId: '4444dddd5555eeee6666ffff', stops: ['C'] };
+    const { requester, calls } = makeMoveRequester({ DAVISL1: L1, DAVISL2: L2 });
+    const r = await runCommitBoardRwb(requester, { loads: [
+      { loadNbr: 'DAVISL1', loadId: L1.loadId, routeName: 'L1', orderedStopNbrs: ['A'], orderedStopIds: ['id-A'] },
+      { loadNbr: 'DAVISL2', loadId: L2.loadId, routeName: 'L2', orderedStopNbrs: ['C', 'B'], orderedStopIds: ['id-C', 'id-B'] },
+    ] }, CREDS);
+    assert.equal(r.ok, true, `move should not be refused; got: ${JSON.stringify(r.loads?.map((l) => l.error))}`);
+    assert.ok(!r.loads.some((l) => /board isn't showing/i.test(l.error || '')), 'no false stale-board refusal on the source');
+    assert.ok(L2.stops.includes('B'), 'B moved onto L2 (added the RWB way)');
+    assert.equal(calls.some((c) => c.url.includes('saveComparedRouteData')), true, 'the move persists via the declarative save');
+    assert.equal(calls.some((c) => c.url.includes('/load/insertstops/')), false, 'no v7 insertStops');
+  });
+});
+
+test('runCommitBoardRwb: batch-aware guard STILL refuses a true orphan (not claimed by any in-batch load)', async () => {
+  await withRwb({}, async () => {
+    // L1 actually holds [A,B,X]; the board reorders L1 to [B,A] and L2 (independent) plans [C]. X is on
+    // NO load's ordered list — a genuine orphan a declarative save would silently unplan. Must refuse L1.
+    const L1 = { loadId: '1111aaaa2222bbbb3333cccc', stops: ['A', 'B', 'X'] };
+    const L2 = { loadId: '4444dddd5555eeee6666ffff', stops: ['C'] };
+    const { requester } = makeMoveRequester({ DAVISL1: L1, DAVISL2: L2 });
+    const r = await runCommitBoardRwb(requester, { loads: [
+      { loadNbr: 'DAVISL1', loadId: L1.loadId, routeName: 'L1', orderedStopNbrs: ['B', 'A'], orderedStopIds: ['id-B', 'id-A'] },
+      { loadNbr: 'DAVISL2', loadId: L2.loadId, routeName: 'L2', orderedStopNbrs: ['C'], orderedStopIds: ['id-C'] },
+    ] }, CREDS);
+    const l1 = r.loads.find((l) => l.loadNbr === 'DAVISL1');
+    assert.equal(r.ok, false, 'overall save fails when the source carries a true orphan');
+    assert.equal(l1.ok, false, 'the source with a true orphan (X) must still be refused');
+    assert.match(l1.error, /board isn't showing|unplan them|Refresh/i);
   });
 });
