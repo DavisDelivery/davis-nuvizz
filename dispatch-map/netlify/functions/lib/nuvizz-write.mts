@@ -1238,11 +1238,22 @@ export async function runCommitBoardRwb(requester: RequesterLike, payload: any, 
       seq.push({ L, loadNbr: loadNbrX, orderedNbrs, arrivals: [], curNbrs, result }); continue;
     }
 
+    // Client-supplied stop ids (the board already holds them) let us resolve ARRIVALS without a
+    // getStop each — the portal-scale path. Aligned by index with orderedStopNbrs. When a client id is
+    // present, the per-stop steal-guard is delegated to the batched validateStopstoPerformAction?routeId
+    // call in the add phase (the portal's own whole-set eligibility check). getStop is used ONLY for
+    // arrivals the client didn't enrich, and for the in-batch cross-load topo-sort (curNbrs) which
+    // needs no getStop (the source load's own read already tells us which stops it holds).
+    const clientIdByNbr = new Map<string, string>();
+    const cNbrs = Array.isArray(L?.orderedStopNbrs) ? L.orderedStopNbrs.map((x: any) => String(x)) : [];
+    const cIds = Array.isArray(L?.orderedStopIds) ? L.orderedStopIds.map((x: any) => String(x)) : [];
+    if (cIds.length && cIds.length === cNbrs.length) cNbrs.forEach((n, i) => { if (cIds[i]) clientIdByNbr.set(n, cIds[i]); });
+
     // TWO-LEVER classification: ON-LOAD (already have a stopId, stays via the save) vs ARRIVAL (an
-    // existing stop elsewhere — resolved + steal-guarded via getStop, then ADDED to the route the
-    // RWB-native way in the fire phase; NEVER just an entry in the save, which can't create membership).
+    // existing stop elsewhere — added the RWB-native way in the fire phase; NEVER just a save entry).
     const missing = orderedNbrs.filter((n) => !stopIdByNbr.has(n));
-    const fetched = new Map<string, any>(await Promise.all(missing.map(async (n): Promise<[string, any]> => {
+    const needFetch = missing.filter((n) => !clientIdByNbr.has(n));   // only un-enriched arrivals need a read
+    const fetched = new Map<string, any>(await Promise.all(needFetch.map(async (n): Promise<[string, any]> => {
       try { return [n, await fireSingle(requester, 'getStop', { stopNbr: n }, creds)]; }
       catch (e: any) { return [n, { ok: false, error: e?.message || 'getStop failed' }]; }
     })));
@@ -1250,6 +1261,8 @@ export async function runCommitBoardRwb(requester: RequesterLike, payload: any, 
     let err: string | null = null;
     for (const nbr of orderedNbrs) {
       if (stopIdByNbr.has(nbr)) continue;
+      const cid = clientIdByNbr.get(nbr);
+      if (cid) { arrivals.push({ nbr, stopId: cid }); continue; }   // client id → no getStop; batch validate guards eligibility
       const gs = fetched.get(nbr);
       const srcNbr = gs?.ok ? String(gs.stop?.assignedLoadNbr ?? '').trim() : '';
       if (!gs?.ok || !gs.stop?.stopId) { err = `commitBoard(rwb): stop ${nbr} could not be read for planning (stale board — refresh and retry)`; break; }
@@ -1259,7 +1272,7 @@ export async function runCommitBoardRwb(requester: RequesterLike, payload: any, 
       arrivals.push({ nbr, stopId: String(gs.stop.stopId), srcLoadNbr: srcNbr && srcNbr !== loadNbrX ? srcNbr : undefined });
     }
     if (err) { result.ok = false; result.error = err; seq.push({ L, loadNbr: loadNbrX, orderedNbrs, arrivals: [], curNbrs, result }); continue; }
-    seq.push({ L, loadNbr: loadNbrX, load, orderedNbrs, arrivals, curNbrs, result, addReads: missing.length, retargeted });
+    seq.push({ L, loadNbr: loadNbrX, load, orderedNbrs, arrivals, curNbrs, result, addReads: needFetch.length, retargeted });
   }
 
   const legacyResult = legacy.length

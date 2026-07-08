@@ -124,20 +124,22 @@ test('rwbSequenceStops: allows a single-stop route (HAR-verified), refuses zero'
   });
 });
 
-test('rwbAddStopsToRoute: adds MULTIPLE stops in ONE batch call (no per-stop validate)', async () => {
+test('rwbAddStopsToRoute: adds N stops in TWO batched calls (one validate?routeId + one add)', async () => {
   await withRwb({}, async () => {
     const { requester, calls } = makeRequester();
     const r = await rwbAddStopsToRoute(requester, HEXID, ['id-A', 'id-B', 'id-C']);
     assert.equal(r.ok, true, r.message);
     assert.equal(r.mode, 'batch');
-    assert.equal(calls.filter((c) => c.url.includes('addStopsToRouteAfterValidation')).length, 1, 'one batch add for all 3');
-    assert.equal(calls.filter((c) => c.url.includes('validateStopstoPerformAction')).length, 0, 'batch path skips per-stop validate');
+    assert.equal(r.calls, 2, 'batch = 1 validate + 1 add, regardless of stop count');
+    const val = calls.filter((c) => c.url.includes('validateStopstoPerformAction'));
+    assert.equal(val.length, 1, 'ONE batched validate for all 3');
+    assert.ok(val[0].url.includes('id-A,id-B,id-C') && val[0].url.includes('routeId='), 'validate carries all ids + routeId');
+    assert.equal(calls.filter((c) => c.url.includes('addStopsToRouteAfterValidation')).length, 1, 'one batch add');
   });
 });
 
-test('rwbAddStopsToRoute: falls back to per-stop when the batch add is rejected', async () => {
+test('rwbAddStopsToRoute: falls back to per-stop when the batched add is rejected', async () => {
   await withRwb({}, async () => {
-    // Batch add returns an application error → engine retries each stop with validate+add.
     let firstAdd = true;
     const base = makeRequester();
     const real = base.requester.request;
@@ -148,17 +150,8 @@ test('rwbAddStopsToRoute: falls back to per-stop when the batch add is rejected'
     const r = await rwbAddStopsToRoute(base.requester, HEXID, ['id-A', 'id-B']);
     assert.equal(r.ok, true, r.message);
     assert.equal(r.mode, 'batch-fallback');
-    assert.equal(base.calls.filter((c) => c.url.includes('validateStopstoPerformAction')).length, 2, 'fallback validates each');
-  });
-});
-
-test('rwbAddStopsToRoute: a single stop uses the per-stop path', async () => {
-  await withRwb({}, async () => {
-    const { requester, calls } = makeRequester();
-    const r = await rwbAddStopsToRoute(requester, HEXID, ['id-A']);
-    assert.equal(r.ok, true, r.message);
-    assert.equal(r.mode, 'per-stop');
-    assert.equal(calls.filter((c) => c.url.includes('validateStopstoPerformAction')).length, 1);
+    // 1 batched validate + 1 (rejected) batched add, then per-stop validate+add ×2.
+    assert.equal(base.calls.filter((c) => c.url.includes('validateStopstoPerformAction')).length, 3, '1 batch + 2 per-stop validates');
   });
 });
 
@@ -224,6 +217,25 @@ test('runCommitBoardRwb: an arrival is added via the RWB portal (not v7 insertSt
     assert.equal(calls.some((c) => c.url.includes('addStopsToRouteAfterValidation')), true, 'arrival must be added via RWB portal');
     assert.equal(calls.some((c) => c.url.includes('/load/insertstops/')), false, 'must NOT use v7 insertStops');
     assert.equal(calls.some((c) => c.url.includes('saveComparedRouteData')), true);
+  });
+});
+
+test('runCommitBoardRwb: client-supplied orderedStopIds skip the per-stop getStop (portal-scale path)', async () => {
+  await withRwb({}, async () => {
+    // Load already has X; add A,B,C as arrivals passing their ids → engine resolves without any
+    // getStop (non-empty load, so no retarget probe either), and adds via the batched validate+add.
+    const loadStops = { value: ['X'] };
+    const { requester, calls } = makeRequester({ loadStops });
+    const r = await runCommitBoardRwb(requester, { loads: [{
+      loadNbr: 'DAVIS000000123', loadId: HEXID, routeName: 'R',
+      orderedStopNbrs: ['X', 'A', 'B', 'C'], orderedStopIds: ['id-X', 'id-A', 'id-B', 'id-C'],
+    }] }, CREDS);
+    assert.equal(r.ok, true, `expected success, got: ${JSON.stringify(r.loads?.[0]?.error)}`);
+    assert.equal(calls.some((c) => c.url.includes('/stop/info/')), false, 'no getStop when ids are supplied');
+    assert.equal(calls.filter((c) => c.url.includes('addStopsToRouteAfterValidation')).length, 1, 'one batched add');
+    const val = calls.filter((c) => c.url.includes('validateStopstoPerformAction'));
+    assert.equal(val.length, 1, 'one batched validate');
+    assert.ok(val[0].url.includes('routeId='), 'validate carries routeId');
   });
 });
 

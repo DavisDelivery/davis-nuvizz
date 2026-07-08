@@ -216,12 +216,30 @@ async function rwbAddStopsPerStop(requester: RwbRequesterLike, cfg: RwbConfig, r
   return { ok: true, message: `Added ${ids.length} stop(s) per-stop.`, calls };
 }
 
+// ── Session preference: keep OUR order (no server-side re-optimization) ──────
+// The portal fires saveRwbPreference?preference=RWB_RTE_EXRTESEC&value=OFF before building a route,
+// which disables the workbench's auto re-sequence. We do our OWN optimization in dispatch-map and
+// send seqMode:'Manual', so we set this once per warm instance to guarantee the saved order is
+// exactly what we sent. Best-effort: a failure here never fails the actual save.
+let rwbPrefSet = false;
+/** Test hook: clears the once-per-instance preference flag. */
+export function _resetRwbPref(): void { rwbPrefSet = false; }
+export async function rwbEnsurePreference(requester: RwbRequesterLike, cfg: RwbConfig): Promise<number> {
+  if (rwbPrefSet) return 0;
+  try {
+    const r = await rwbAuthedCall(requester, cfg, 'POST', 'dirouteworkbench/routePlan/saveRwbPreference?preference=RWB_RTE_EXRTESEC&value=OFF', null);
+    if (r.ok) rwbPrefSet = true;  // only latch on success so a transient failure retries next save
+    return 1;
+  } catch { return 1; }
+}
+
 /**
- * rwbAddStopsToRoute — attach EXISTING stops to a route plan. The portal's addStopsToRouteAfterValidation
- * field is `stopIds` (plural), so we try ONE call with ALL ids comma-joined — critical at production
- * scale (15-20 stops per route: 1 call instead of 2 per stop). The per-stop validate GET is SKIPPED on
- * the batch path (the add enforces the same server-side check). If the batch is rejected, we FALL BACK
- * to the proven per-stop validate+add so a save never fails just because the batch shape wasn't accepted.
+ * rwbAddStopsToRoute — attach EXISTING stops to a route plan the way the portal does at scale
+ * (verified from a 22-stop HAR): ONE batched validateStopstoPerformAction/{id,id,…}?routeId=… (the
+ * server-side steal/eligibility check for the whole set) then ONE batched addStopsToRouteAfterValidation
+ * with all ids comma-joined. So adding N stops is 2 calls, not 2·N — a 20-stop route is 2 calls instead
+ * of 40. If either batched call is rejected, we FALL BACK to the proven per-stop validate+add so a save
+ * never fails just because the batched shape wasn't accepted.
  */
 export async function rwbAddStopsToRoute(requester: RwbRequesterLike, routePlanId: string, stopIds: string[]): Promise<{ ok: boolean; message: string; calls: number; steps: any[]; mode?: string }> {
   const cfg = rwbConfig();
@@ -230,20 +248,25 @@ export async function rwbAddStopsToRoute(requester: RwbRequesterLike, routePlanI
   const ids = [...new Set(stopIds.map(String).filter(Boolean))];
   if (!ids.length) return { ok: true, message: 'no stops to add', calls: 0, steps: [] };
   const steps: any[] = [];
-  // A single stop can't be cheaper than one add — go straight to per-stop (also its own smallest case).
-  if (ids.length === 1) {
+  // BATCH VALIDATE — all ids + routeId in one call (the portal's whole-set eligibility check).
+  const vurl = `dirouteworkbench/stop/validateStopstoPerformAction/${ids.join(',')}?routeId=${encodeURIComponent(routePlanId)}`;
+  const v = await rwbAuthedCall(requester, cfg, 'GET', vurl, null);
+  const vok = v.ok && rwbBodyOk(v.body);
+  steps.push({ op: 'validateStops(batch)', count: ids.length, ok: vok, status: v.status });
+  if (vok) {
+    // BATCH ADD — all ids in one call.
+    const a = await rwbAuthedCall(requester, cfg, 'POST', 'dirouteworkbench/stop/addStopsToRouteAfterValidation', { routePlanId, stopIds: ids.join(','), isPlanningMode: 'true' });
+    const aok = a.ok && rwbBodyOk(a.body);
+    steps.push({ op: 'addStopsToRoute(batch)', count: ids.length, ok: aok, status: a.status });
+    if (aok) return { ok: true, message: `Added ${ids.length} stop(s) in one batch.`, calls: 2, steps, mode: 'batch' };
+    steps.push({ op: 'batch-fallback', note: `batch add rejected (status ${a.status}) — retrying per-stop` });
     const r = await rwbAddStopsPerStop(requester, cfg, routePlanId, ids, steps);
-    return { ok: r.ok, message: r.message, calls: r.calls, steps, mode: 'per-stop' };
+    return { ok: r.ok, message: r.ok ? `Added ${ids.length} stop(s) per-stop (batch fell back).` : r.message, calls: 2 + r.calls, steps, mode: 'batch-fallback' };
   }
-  // BATCH: one add with all ids.
-  const batch = await rwbAuthedCall(requester, cfg, 'POST', 'dirouteworkbench/stop/addStopsToRouteAfterValidation', { routePlanId, stopIds: ids.join(','), isPlanningMode: 'true' });
-  const batchOk = batch.ok && rwbBodyOk(batch.body);
-  steps.push({ op: 'addStopsToRoute(batch)', count: ids.length, ok: batchOk, status: batch.status });
-  if (batchOk) return { ok: true, message: `Added ${ids.length} stop(s) in one batch.`, calls: 1, steps, mode: 'batch' };
-  // FALLBACK: the batch shape was rejected — add per stop (proven).
-  steps.push({ op: 'batch-fallback', note: `batch add rejected (status ${batch.status}) — retrying per-stop` });
+  // Batched validate rejected — fall back to the proven per-stop validate+add.
+  steps.push({ op: 'batch-fallback', note: `batch validate rejected (status ${v.status}) — retrying per-stop` });
   const r = await rwbAddStopsPerStop(requester, cfg, routePlanId, ids, steps);
-  return { ok: r.ok, message: r.ok ? `Added ${ids.length} stop(s) per-stop (batch fell back).` : r.message, calls: 1 + r.calls, steps, mode: 'batch-fallback' };
+  return { ok: r.ok, message: r.ok ? `Added ${ids.length} stop(s) per-stop (batch fell back).` : r.message, calls: 1 + r.calls, steps, mode: 'validate-fallback' };
 }
 
 const MONTHS: Record<string, string> = { Jan: '01', Feb: '02', Mar: '03', Apr: '04', May: '05', Jun: '06', Jul: '07', Aug: '08', Sep: '09', Oct: '10', Nov: '11', Dec: '12' };
@@ -295,6 +318,10 @@ export async function rwbSequenceStops(requester: RwbRequesterLike, routePlanId:
   if (ids.length < 1) return { ok: false, message: 'RWB sequence needs at least 1 stop', calls: 0, steps: [] };
   const steps: any[] = [];
 
+  // Set the "don't auto re-sequence" preference once per session so our exact (dispatch-map-optimized)
+  // order is what persists — never NuVizz's re-optimization. Best-effort; not counted as a save step.
+  const prefCalls = await rwbEnsurePreference(requester, cfg);
+
   const stoplist = [...ids.map((id) => id + '_PU'), ...ids.map((id) => id + '_DO')].join(',');
   const fujForm = { originLat: String(origin.lat), originLng: String(origin.lng), originOption: '02', stoplist, routePlanId, returnToDepot: 'NEVER', computeLatestEta: 'true' };
   const fr = await rwbAuthedCall(requester, cfg, 'POST', 'dirouteworkbench/routePlan/fetchUpdatedJson', fujForm);
@@ -332,6 +359,8 @@ export async function rwbSequenceStops(requester: RwbRequesterLike, routePlanId:
     const why = sr.ok ? `application error (responseCode ${bodyCode ?? '?'}${bodyObj?.message ? `: ${bodyObj.message}` : ''})` : `status ${sr.status}`;
     return { ok: false, message: sr.error || `saveComparedRouteData failed (${why})`, calls: 2, steps };
   }
+  // prefCalls (0/1) is once-per-session setup, not counted in the per-save sequence cost.
+  void prefCalls;
   return { ok: true, message: `Sequenced ${ids.length} stop(s) via RWB.`, calls: 2, steps };
 }
 
