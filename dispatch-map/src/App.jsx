@@ -54,7 +54,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.39.10';
+const APP_VERSION = '0.39.11';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -99,6 +99,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.39.11', 'Routing (beta) stop popup — the assigned DRIVER now shows right at the top, under the "On load" line, so who a stop is dispatched to is the first thing you see. The duplicate Route/Driver block at the bottom of the card is removed (it just repeated the load + driver). Everything else on the full card is unchanged — Delivery Ticket, full notes, Activity Timeline, POD.'],
   ['0.39.10', '🔗 RWB engine — cross-load moves now match the portal\'s exact call profile (from a live move HAR the dispatcher captured). The portal moves a stop between two open routes with ONE multi-route saveComparedRouteData — the moved stop is simply absent from the source\'s entry and present in the destination\'s; NO validate/add calls at all. The engine now does the same: an arrival held by another load in the same Save classifies as a MOVE (no getStop, no empty-load retarget probe, no add) and ALL touched loads persist in ONE atomic combined save (1 preview per load + 1 save). The 0.39.8 move that cost 10 calls now costs 6 (2 load reads for the guard + 2 previews + 1 save + 1 landed-verify); an A↔B SWAP — previously refused as "circular, save in two steps" — now commits atomically in the same one save. Genuinely-unplanned orders still ride the proven batched validate+add with the post-add verify, and if a portal ever fails to transfer a moved stop inside the save, a one-shot fallback attaches it the proven way and re-sequences — a move can never falsely succeed. Byte-for-byte freight preservation unchanged (stops ride BY ID ONLY).'],
   ['0.39.9', 'Routing (beta) — the stop popup is now a FULL stop card, matching the Map. Alongside the existing summary (PRO / load / appointment window / restrictions / line items) it now shows a printable Delivery Ticket, the on-demand full NuVizz notes + a collapsible Activity Timeline (Planned / Dispatched / Arrival / …), the driver\'s POD photos, and the assigned Route + driver — so you can see a stop\'s activity, print its ticket, and see who it\'s dispatched to without leaving Routing. Opening the card fires NO NuVizz call (the ticket builds from the already-loaded order; the timeline loads only when you expand it; POD and Refresh are opt-in buttons).'],
   ['0.39.8', '🔗 RWB + Compare panel — FIX cross-load moves (both halves of one broken path). (1) SERVER: even with BOTH loads open, moving a stop between routes (drag / → LOAD / move menu) reduces the source load\'s stop list but sends no explicit removeStopNbrs, so the RWB stale-board guard flagged the still-on-source stop as an orphan and REFUSED the source ("has N stop(s) the board isn\'t showing"), cascading a failure to the destination — nothing moved. The guard now treats a stop that ANOTHER load in the same Save is planning as accounted-for (a staged move), while STILL refusing a stop the board truly never knew about. (2) CLIENT: selecting or ninja-clicking a stop that lives on a load NOT open in Compare used to silently do nothing (a faint status line, no staged move, no Save button — the "single route can\'t Save" report). Now the source load AUTO-OPENS into Compare with a prominent banner and the stops stay selected, so a second Send completes the cross-load move; at the 3-card cap the leftover loads are named so you can close one and retry. Cross-load moves under 🔗 RWB / ● LIVE now land.'],
@@ -9356,7 +9357,8 @@ function RoutingStopDetail({ stop, note, onOpen, windowViolated }) {
 
 // The rich "live" extras that turn the Routing stop popup into a FULL stop card (matching the
 // Map's): a printable Delivery Ticket, on-demand full NuVizz notes + a collapsible Activity
-// Timeline (StopLiveDetail), the driver's POD photos, and the assigned route/driver. Opening it
+// Timeline (StopLiveDetail), and the driver's POD photos (the load + assigned driver show at the
+// top of the popup, under "On load"). Opening it
 // costs NO NuVizz call — the ticket builds from the already-loaded order, the timeline fetches
 // only when expanded, and POD/Refresh are opt-in buttons (same lazy behavior as the Map card).
 function RoutingStopRichDetail({ stop, onRefreshed }) {
@@ -9384,16 +9386,6 @@ function RoutingStopRichDetail({ stop, onRefreshed }) {
       )}
       <StopLiveDetail stop={stop} onRefreshed={onRefreshed} />
       <PodDocsSection stop={stop} onRefreshed={onRefreshed} />
-      {(stop.loadNbr || stop.routeName || stop.driverName) && (
-        <div className="pt-2 mt-2 border-t">
-          <div className="text-xs uppercase font-semibold text-slate-500 mb-1">Route / driver</div>
-          <div className="text-sm">
-            <div className="font-semibold text-slate-900 truncate">{stop.routeName || stop.loadNbr || '—'}</div>
-            {stop.driverName ? <div className="text-xs text-slate-600 truncate">{stop.driverName}</div> : <div className="text-xs text-slate-400">No driver assigned</div>}
-            {stop.routeName && stop.loadNbr && <div className="text-[10px] text-slate-400 font-mono">{stop.loadNbr}</div>}
-          </div>
-        </div>
-      )}
     </div>
   );
 }
@@ -9427,9 +9419,16 @@ function RoutingStopModal({ stop, notes, onClose, onOpenLoad, windowViolatedSet 
           <button onClick={onClose} aria-label="Close" className="text-slate-400 hover:text-slate-700 text-2xl leading-none px-1 shrink-0">×</button>
         </div>
         {/* What load this stop is on, + one-click open of that route in the Compare panel (#281). */}
-        <div className="flex items-center justify-between gap-2 px-3 py-1.5 border-b bg-slate-50 shrink-0">
-          <div className="text-[12px] text-slate-600 min-w-0 truncate">
-            {loadKey ? <>On load <span className="font-semibold text-slate-800">{loadKey}</span></> : <span className="text-slate-400">Not on a load yet (unplanned)</span>}
+        <div className="flex items-start justify-between gap-2 px-3 py-1.5 border-b bg-slate-50 shrink-0">
+          <div className="text-[12px] text-slate-600 min-w-0">
+            <div className="truncate">
+              {loadKey ? <>On load <span className="font-semibold text-slate-800">{loadKey}</span></> : <span className="text-slate-400">Not on a load yet (unplanned)</span>}
+            </div>
+            {loadKey && (
+              <div className="truncate text-[11px] text-slate-500">
+                Driver: <span className={live.driverName ? 'font-medium text-slate-700' : 'text-slate-400 italic'}>{live.driverName || 'Not assigned'}</span>
+              </div>
+            )}
           </div>
           {loadKey && onOpenLoad && (
             <button onClick={() => { onOpenLoad(loadKey); onClose(); }} className="shrink-0 inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-1 rounded text-white" style={{ background: BRAND }}>
