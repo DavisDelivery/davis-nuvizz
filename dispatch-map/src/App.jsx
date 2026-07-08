@@ -54,7 +54,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.44.0';
+const APP_VERSION = '0.44.1';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -99,6 +99,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.44.1', '🔗 RWB engine — the portal calls now carry a real browser identity instead of the Node/undici default: User-Agent, Accept, Accept-Language, and the Chrome client hints (sec-ch-ua*, sec-fetch-*), all matched to the dispatcher\'s actual macOS Chrome from a live Route Workbench HAR. (Content-Type stays multipart/form-data — the HAR confirmed the real portal uses that too. X-Requested-With is intentionally NOT sent — the real portal doesn\'t.) Override the UA with NUVIZZ_RWB_USER_AGENT. This closes the header-level fingerprint gap; the request bodies/ids were already HAR-matched.'],
   ['0.44.0', 'Per-action NuVizz call counter on every Compare-panel Save — the success toast now shows how many NuVizz calls that action actually made (e.g. "✓ 1 load saved · 3 NuVizz calls (2 RWB portal)"). "RWB portal" = just the Route-Workbench portal writes (preview / save / validate / add) — the calls that show in the real RWB HAR, so you can reconcile each action against it; the total also counts any cold-start login + safety re-reads. Server-measured as an exact before/after delta on the metered requester, so it\'s the real billed count, not an estimate.'],
   ['0.43.1', 'Customer History (the stop-card button) is now strictly READ-ONLY from our saved Firestore history — it can never make a NuVizz call. The shared history overlay used to offer a one-off "Look up PRO in NuVizz" button when you typed an unknown PRO; that stays on the top "Search past PROs" search box, but the per-customer History view opened from a stop card suppresses it entirely (shows "Shows only our saved delivery history — no NuVizz calls").'],
   ['0.43.0', 'Customer history now shows WHO DELIVERED each PRO. A new "History" button on the stop card opens that customer\'s past PROs seeded by name — each PRO now lists its delivering driver alongside the date. The driver was already captured in the nightly history warehouse; it\'s now carried into the per-customer rollup the lookup reads (no new NuVizz calls — the lookup is still a single Firestore read). New deliveries fill the driver in going forward; existing history fills in after a one-time NuVizz-FREE rebuild of the customer rollup from the warehouse.'],
