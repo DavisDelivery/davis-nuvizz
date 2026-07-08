@@ -70,22 +70,28 @@ export function rollupPath(tenant: string, matchKey: string): string {
   return `${CUSTOMERS_COLLECTION}/${rollupId(tenant, matchKey)}`;
 }
 
-// PURE: merge two {pro,date} lists into one, de-duped by pro (keeping the most
-// recent date for a repeated pro), sorted newest-date first, capped at `max`.
-// Stable for equal dates (first-seen wins position among equal dates). Exported
-// for tests.
+// PURE: merge two {pro,date,driver?} lists into one, de-duped by pro (keeping the
+// most recent date for a repeated pro), sorted newest-date first, capped at `max`.
+// The `driver` (who delivered) rides along. On an EQUAL date a driver-bearing entry
+// replaces a driverless one — this is what lets a warehouse backfill fill in the
+// driver on already-stored driverless entries (same date → without this the
+// first-seen driverless entry would win and the backfill would silently no-op).
+// Exported for tests.
 export function mergeProEntries(
-  existing: Array<{ pro: string; date: string }> = [],
-  incoming: Array<{ pro: string; date: string }> = [],
+  existing: Array<{ pro: string; date: string; driver?: string | null }> = [],
+  incoming: Array<{ pro: string; date: string; driver?: string | null }> = [],
   max: number = MAX_PROS,
-): Array<{ pro: string; date: string }> {
-  const byPro = new Map<string, { pro: string; date: string }>();
+): Array<{ pro: string; date: string; driver: string | null }> {
+  const byPro = new Map<string, { pro: string; date: string; driver: string | null }>();
   for (const e of [...existing, ...incoming]) {
     if (!e || !e.pro) continue;
     const pro = String(e.pro);
     const date = String(e.date || '');
+    const driver = e.driver ?? null;
     const prev = byPro.get(pro);
-    if (!prev || date > (prev.date || '')) byPro.set(pro, { pro, date });
+    if (!prev || date > (prev.date || '') || (date === prev.date && !prev.driver && driver)) {
+      byPro.set(pro, { pro, date, driver });
+    }
   }
   return [...byPro.values()]
     .sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0))
@@ -116,7 +122,10 @@ export function buildRollupsFromStops(stops: any[]): Map<string, any> {
       cur.zip = s?.zip ?? cur.zip ?? null;
       cur.last_date = date;
     }
-    if (s?.pro) cur.pros.push({ pro: String(s.pro), date });
+    // Capture WHO DELIVERED this PRO. The warehouse stop carries the load's assigned
+    // driver (driverName, human-readable; driverUserName is the stable id fallback).
+    // Unplanned/no-driver stops store null — the UI shows a dash.
+    if (s?.pro) cur.pros.push({ pro: String(s.pro), date, driver: s?.driverName ?? s?.driverUserName ?? null });
   }
   // Collapse same-day duplicate pros up front.
   for (const cur of out.values()) cur.pros = mergeProEntries([], cur.pros);
