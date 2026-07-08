@@ -45,7 +45,7 @@ function makeRequester({ saveBody = { responseCode: 200 }, saveStatus = 200, loa
     requester: {
       async request(url, opts, meta) {
         const method = (opts.method || 'GET').toUpperCase();
-        calls.push({ url, method, route: meta?.route });
+        calls.push({ url, method, route: meta?.route, headers: opts.headers || {} });
         const J = (obj, status = 200) => new Response(JSON.stringify(obj), { status });
         const T = (txt, status = 200) => new Response(txt, { status });
         // ── RWB portal login + flow (different hosts) ──
@@ -113,6 +113,23 @@ test('rwbSequenceStops: 2-call happy path returns ok with 2 calls', async () => 
     assert.equal(r.calls, 2);
     assert.ok(calls.some((c) => c.url.includes('fetchUpdatedJson')));
     assert.ok(calls.some((c) => c.url.includes('saveComparedRouteData')));
+  });
+});
+
+test('rwbSequenceStops: portal calls carry browser-identity headers matching the HAR', async () => {
+  await withRwb({}, async () => {
+    const { requester, calls } = makeRequester();
+    await rwbSequenceStops(requester, HEXID, ['id-A', 'id-B'], { lat: 34, lng: -83 });
+    const save = calls.find((c) => c.url.includes('saveComparedRouteData'));
+    assert.ok(save, 'save call captured');
+    // Real macOS Chrome identity (not a Node/undici default) — verified vs the HAR.
+    assert.match(save.headers['user-agent'] || '', /Mozilla\/5\.0 .*Chrome\//);
+    assert.equal(save.headers['accept-language'], 'en-US,en;q=0.9');
+    assert.match(save.headers['accept'] || '', /application\/json/);
+    assert.match(save.headers['sec-ch-ua'] || '', /Chrome/);
+    assert.equal(save.headers['sec-fetch-mode'], 'cors');
+    // The real portal does NOT send X-Requested-With — neither should we.
+    assert.equal(save.headers['x-requested-with'], undefined);
   });
 });
 

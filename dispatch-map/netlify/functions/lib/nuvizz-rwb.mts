@@ -101,10 +101,32 @@ const hostOf = (u: string) => new URL(u).host;
 // saveComparedRouteData on a transient 5xx must not double-fire the full-route replace).
 // No `redirect` override is passed (defaults to 'follow') — proven fine live: the login
 // bootstrap GET returns its HTML body (+ Set-Cookie) directly, never a redirect.
+// Browser-identity headers so the engine's portal calls match a real Route Workbench
+// browser session (not a Node/undici fetch) — the request profile is already
+// HAR-matched; these close the header-fingerprint gap. RWB_BROWSER_UA is the
+// dispatcher's ACTUAL Chrome, captured from the app's debug bundles (same
+// machine/browser used for the NuVizz portal); bump it when their browser updates,
+// or override via NUVIZZ_RWB_USER_AGENT. Set on EVERY portal request via go(); the
+// authed XHR calls additionally send Accept + X-Requested-With (see rwbAuthedCall).
+// Values verified against the dispatcher's real Route Workbench HAR
+// (Route_Sequencing.har): a macOS Chrome 147 session. The client hints are
+// version-coupled — bump alongside the UA (or override the UA via
+// NUVIZZ_RWB_USER_AGENT). The real portal does NOT send X-Requested-With, so we
+// don't either. accept-encoding/connection are managed by undici, not set here.
+const RWB_BROWSER_UA = (typeof process !== 'undefined' && process.env && process.env.NUVIZZ_RWB_USER_AGENT)
+  || 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36';
+const RWB_BASE_BROWSER_HEADERS = {
+  'user-agent': RWB_BROWSER_UA,
+  'accept-language': 'en-US,en;q=0.9',
+  'sec-ch-ua': '"Google Chrome";v="147", "Not.A/Brand";v="8", "Chromium";v="147"',
+  'sec-ch-ua-mobile': '?0',
+  'sec-ch-ua-platform': '"macOS"',
+};
+
 async function go(requester: RwbRequesterLike, jar: ReturnType<typeof makeJar>, method: string, url: string, opts: { headers?: Record<string, string>; body?: any; route: string; tenant: string } = { route: 'rwb', tenant: '' }): Promise<{ status: number; text: string; data: any }> {
   const host = hostOf(url);
   const cookie = jar.header(host);
-  const res = await requester.request(url, { method, headers: { ...(cookie ? { cookie } : {}), ...(opts.headers || {}) }, body: opts.body, maxRetries: 0 }, { route: opts.route, tenant: opts.tenant, source: 'rwb' });
+  const res = await requester.request(url, { method, headers: { ...RWB_BASE_BROWSER_HEADERS, ...(cookie ? { cookie } : {}), ...(opts.headers || {}) }, body: opts.body, maxRetries: 0 }, { route: opts.route, tenant: opts.tenant, source: 'rwb' });
   jar.store(host, res);
   const text = await res.text().catch(() => '');
   let data: any = null;
@@ -176,7 +198,7 @@ async function rwbAuthedCall(requester: RwbRequesterLike, cfg: RwbConfig, method
   let body: any = null;
   if (form && method.toUpperCase() !== 'GET') { const fd = new FormData(); for (const [k, v] of Object.entries(form)) fd.set(k, v); body = fd; }
   const routeLabel = path.split('/').filter((s) => !/^[0-9a-f]{24}$/.test(s)).pop();
-  const r = await go(requester, sess.jar, method, url, { headers: { authorization: basic, cookie: 'Instance=ndv2', referer: sess.ref, origin: cfg.portalBase }, body, route: `/rwb/${routeLabel}`, tenant: cfg.company });
+  const r = await go(requester, sess.jar, method, url, { headers: { authorization: basic, cookie: 'Instance=ndv2', referer: sess.ref, origin: cfg.portalBase, accept: 'application/json, text/plain, */*', 'sec-fetch-site': 'same-origin', 'sec-fetch-mode': 'cors', 'sec-fetch-dest': 'empty' }, body, route: `/rwb/${routeLabel}`, tenant: cfg.company });
   if (r.status === 401 && !retried) {
     cachedSession = null; // token expired mid-instance-life — one retry with a fresh login
     return rwbAuthedCall(requester, cfg, method, path, form, true);
