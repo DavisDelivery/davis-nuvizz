@@ -54,7 +54,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.40.1';
+const APP_VERSION = '0.41.0';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -99,6 +99,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.41.0', 'Mobile Map — a persistent search bar at the top (#382: "there should be a search bar here"). Before, search on a phone was only reachable via the Stops drawer; it now sits right on the map, same as desktop (customer / PRO / city / address, with the AI sparkle toggle when available). The other top overlays (date chip, status pill, selection tools, "no stops match", live-drivers note) shifted down to make room — nothing lost, just stacked below the new search row.'],
   ['0.40.1', 'Map board — refinements to the order-left / route-right layout. (1) The search box and "Search past PROs / customer history" button now stay FIXED at the top of the left column, with the open order card sitting BELOW them — before, opening an order replaced the whole rail and hid the search. (2) Pulling up an order now AUTO-OPENS its route in the right panel for context (order ↔ route side by side) — you no longer have to click "View full route" to see it. The map still zooms to the BUILDING for an individual order (#380); the whole route is framed only when you explicitly open it (View full route, a route card, or a load row). Closing the order also closes the route it opened.'],
   ['0.40.0', 'Map board — an open ORDER now sits on the LEFT and its ROUTE on the RIGHT, so you can read a stop and walk its route side by side. Opening a route from an order keeps the order open; clicking a stop inside the route opens that order on the left WITHOUT closing the route (the search / filter / stop-list rail returns when you close the order). Map framing is now context-aware and reliable: selecting an individual stop zooms to the BUILDING, while opening a route frames the WHOLE route — and the route frame now re-fits after the side panels finish resizing, so the far stops of a spread-out load are no longer clipped off-screen behind a panel. (#388, #380)'],
   ['0.39.11', 'Routing (beta) stop popup — the assigned DRIVER now shows right at the top, under the "On load" line, so who a stop is dispatched to is the first thing you see. The duplicate Route/Driver block at the bottom of the card is removed (it just repeated the load + driver). Everything else on the full card is unchanged — Delivery Ticket, full notes, Activity Timeline, POD.'],
@@ -2325,6 +2326,81 @@ function SearchBar({
               key={i}
               onMouseDown={(e) => { e.preventDefault(); onChange(h); onSubmit(h); }}
               className="block w-full text-left px-2 py-1 text-xs hover:bg-blue-50"
+            >
+              {h}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// #382 — persistent search bar for the MOBILE map (was: search only reachable via
+// the Stops drawer). A trimmed sibling of SearchBar rather than a reuse: it
+// deliberately has NO "Showing N of M stops" / AI-summary subtext, so its height
+// never changes with the query — every other absolutely-positioned overlay on the
+// mobile map sits at a fixed offset beneath it (see the layout comment at its call
+// site) and a variable-height box would silently drift into them. Same
+// searchInput/aiMode state as desktop, so matching/auto-zoom behave identically.
+function MobileMapSearchBar({ value, onChange, onSubmit, history, aiAvailable, aiMode, setAiMode, onAskAi, aiBusy }) {
+  const [focused, setFocused] = useState(false);
+  const showHistory = focused && !value && history.length > 0;
+  return (
+    <div className="relative">
+      <div className="flex items-center gap-1.5 bg-white/95 backdrop-blur border border-slate-200 rounded-lg shadow px-2.5 py-2">
+        {aiMode
+          ? <Sparkles size={14} className="flex-shrink-0" style={{ color: '#1e5b92' }} />
+          : <Search size={14} className="flex-shrink-0 text-slate-400" />}
+        <input
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          onFocus={() => setFocused(true)}
+          onBlur={() => setTimeout(() => setFocused(false), 120)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              if (aiMode && value.trim()) onAskAi(value);
+              else onSubmit(value);
+              e.currentTarget.blur();
+            }
+            if (e.key === 'Escape') { onChange(''); e.currentTarget.blur(); }
+          }}
+          placeholder={aiMode ? 'Ask AI to filter…' : 'Search customer, PRO, city, address...'}
+          className="flex-1 min-w-0 text-[13px] border-0 p-0 focus:outline-none bg-transparent"
+          aria-label="Search stops"
+        />
+        {aiBusy && <Sparkles size={13} className="flex-shrink-0 text-slate-400 animate-pulse" />}
+        {value && (
+          <button
+            onClick={() => onChange('')}
+            className="p-0.5 rounded hover:bg-slate-100 active:bg-slate-200 text-slate-400 flex-shrink-0"
+            aria-label="Clear search"
+            tabIndex={-1}
+          >
+            <X size={14} />
+          </button>
+        )}
+        {aiAvailable && (
+          <button
+            onClick={() => setAiMode(!aiMode)}
+            className={'px-1.5 py-0.5 rounded text-[10px] font-semibold inline-flex items-center gap-1 flex-shrink-0 ' +
+              (aiMode ? 'text-white' : 'text-slate-500 hover:bg-slate-100 active:bg-slate-200')}
+            style={aiMode ? { background: '#1e5b92' } : undefined}
+            title="Toggle natural-language AI search"
+            aria-pressed={aiMode}
+          >
+            <Sparkles size={11} /> AI
+          </button>
+        )}
+      </div>
+      {showHistory && (
+        <div className="absolute left-0 right-0 top-full mt-1 bg-white border border-slate-200 rounded shadow-md z-10 max-h-56 overflow-y-auto">
+          <div className="px-2 py-1 text-[9px] uppercase tracking-wide text-slate-400 border-b">Recent searches</div>
+          {history.map((h, i) => (
+            <button
+              key={i}
+              onMouseDown={(e) => { e.preventDefault(); onChange(h); onSubmit(h); }}
+              className="block w-full text-left px-2 py-1.5 text-xs hover:bg-blue-50 active:bg-blue-100"
             >
               {h}
             </button>
@@ -7530,7 +7606,28 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef }) {
             onLasso={(pts) => { selectByLasso(pts); setSelectMode(null); }}
           />
         )}
-        <div className="absolute top-12 left-2 z-[16] flex flex-col items-start gap-1">
+        {/* Persistent search bar (#382 — "there should be a search bar here").
+            Fixed, single-line height (no "Showing N of M" subtext / AI-summary chip
+            like the desktop SearchBar — those grow the box and would collide with
+            the date/status row below) so every other top overlay can sit at a FIXED
+            offset beneath it without a runtime height measurement. Shares the same
+            searchInput/aiMode state as desktop, so results/auto-zoom behave
+            identically; "Recent searches" renders as an absolutely-positioned
+            dropdown (doesn't push this row's height). */}
+        <div className="absolute top-2 left-2 right-2 z-[17]">
+          <MobileMapSearchBar
+            value={searchInput}
+            onChange={setSearchInput}
+            onSubmit={(v) => { if (v.trim()) remember(v.trim()); }}
+            history={history}
+            aiAvailable={aiAvailable}
+            aiMode={aiMode}
+            setAiMode={(v) => { setAiMode(v); if (!v) clearAi(); }}
+            onAskAi={runAiSearch}
+            aiBusy={aiBusy}
+          />
+        </div>
+        <div className="absolute top-28 left-2 z-[16] flex flex-col items-start gap-1">
           <SelectionControls mode={selectMode} setMode={setSelectMode} count={selectionSet?.size || 0} onClear={clearSelection} onText={textSelected} onTextDrivers={textSelectedDrivers} />
           {selectNote && <div className="text-[10px] bg-white/95 border border-slate-200 rounded px-1.5 py-0.5 shadow text-slate-700">{selectNote}</div>}
         </div>
@@ -7539,7 +7636,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef }) {
             side-by-side and can NEVER overlap (the old separate top-2 left/right
             absolutes collided in the middle). The wrapper passes map gestures
             through the gap (pointer-events-none) while each control stays tappable. */}
-        <div className="absolute top-2 left-2 right-2 z-10 flex items-start justify-between gap-2 pointer-events-none">
+        <div className="absolute top-14 left-2 right-2 z-10 flex items-start justify-between gap-2 pointer-events-none">
           {/* date chip (P2.7): core control, visible without opening the drawer. */}
           <div className="flex items-center gap-1 bg-white/95 backdrop-blur border border-slate-200 rounded-lg shadow px-1.5 py-1 pointer-events-auto flex-shrink-0">
             <input
@@ -7619,18 +7716,18 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef }) {
           </div>
         </div>
         {driverGateNote && (
-          <div className="absolute top-12 left-1/2 -translate-x-1/2 z-20 bg-amber-50 border border-amber-300 rounded shadow px-2 py-1 text-[10px] text-amber-800">
+          <div className="absolute top-28 left-1/2 -translate-x-1/2 z-20 bg-amber-50 border border-amber-300 rounded shadow px-2 py-1 text-[10px] text-amber-800">
             Live drivers only available for today.
           </div>
         )}
         {mapsError && (
-          <div className="absolute top-2 left-2 right-2 bg-red-50 border border-red-200 rounded p-2 text-xs text-red-800 z-10">
+          <div className="absolute top-14 left-2 right-2 bg-red-50 border border-red-200 rounded p-2 text-xs text-red-800 z-10">
             <div className="font-semibold">Google Maps failed to load</div>
             <div className="mt-0.5">{mapsError}</div>
           </div>
         )}
         {!visibleStops.length && !loading && !mapsError && (
-          <div className="absolute top-3 left-1/2 -translate-x-1/2 bg-white border border-slate-200 rounded shadow px-3 py-1 text-[11px] text-slate-600 z-10">
+          <div className="absolute top-14 left-1/2 -translate-x-1/2 bg-white border border-slate-200 rounded shadow px-3 py-1 text-[11px] text-slate-600 z-10">
             {debouncedSearch ? `No stops match "${debouncedSearch}"` : 'No stops match filters'}
           </div>
         )}
