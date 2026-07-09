@@ -54,7 +54,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.45.1';
+const APP_VERSION = '0.45.2';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -99,6 +99,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.45.2', 'SAVED WORK CAN NO LONGER LOOK UNBUILT — a confirmed Save now paints the plan onto the board INSTANTLY on this device (a local overlay held until our scan agrees or 45 min, whichever first), fully independent of the server cache — so "closed the compare panel and it looks like I never planned it" (MONE/Denis) is dead even if every other layer misbehaves. The board write-through itself is also now DECLARATIVE (sends the card\'s full final stop order on every confirmed save, not just the delta) and no longer skippable by a result-to-card join miss; every sync logs its result to the console for forensics. FIX: the ±7-day pull "timed out" — NuVizz\'s own ad-hoc wide query is simply too slow, so wide windows (±7/±14/±30 and Custom range) now read OUR board day-docs instead: instant, includes confirmed saves, ZERO NuVizz calls (the status line says "Board · N stops"); Today and ±3 days stay live from NuVizz. NEW: routing a stop now AUTO-INCLUDES any co-located UNPLANNED order the selection missed (two orders at one address = stacked pins; clicking grabs only the top one — how QAE\'s second order got left behind). It says so in a toast and is removable from the card. NEW: the Routing right panel fully COLLAPSES to a thin strip (chevron in its header; clicking a stop auto-expands it). NEW: the stop panel has a HISTORY button — every past delivery to that location with PRO · date · driver, from saved history only (separate from the per-order Activity timeline; zero NuVizz calls). FIX: Compare-panel header buttons (🔗 engine, ● LIVE, Save, Back to Setup) could silently overflow out of view with a narrow card open — the header now wraps so every button stays visible.'],
   ['0.45.1', 'FIX: a Save of CARRY-OVER orders (yesterday-dated stops routed from today\'s board — the Uline/Denis case) landed in NuVizz but the board still showed the route unbuilt. The write-through only patched the SELECTED day\'s cache doc, and carry-over stops live on their own (prior) day\'s doc — so the patch silently missed every stop and the board kept serving the stale unplanned rows until a scan caught up. The write-through now finds each stop up to 14 days back, patches it in place AND copies the confirmed plan onto today\'s board doc, so the route shows immediately; if any stop still can\'t be patched the Save toast now SAYS so ("board didn\'t update for N stop(s) — NuVizz HAS the save") instead of failing silently. Also hardened the new Custom range from review: pulls are debounced 600ms + aborted when superseded (typing a date can no longer fire a NuVizz call per keystroke), entering Custom no longer auto-pulls, an incomplete/partial covering pull is labeled "≥ N stops (partial — narrow the range)" instead of posing as exact, stale rows can\'t linger under "pick a date range", and an inverted From/To is normalized. Zero new NuVizz calls anywhere (board fix is Firestore-only).'],
   ['0.45.0', 'Bottom grid "pull from NuVizz" — MORE date windows + a settable RANGE, and a fix for the ±7-day error. The window dropdown now offers Today, ±3, ±7, ±14, ±30 days, plus "Custom range…" — pick a From and To calendar date and the grid pulls exactly those delivery days. (NuVizz only understands relative windows, so a custom range pulls the smallest covering window in ONE cheap list call and filters to your exact dates server-side — still ~2 NuVizz calls, never a re-scan.) FIX: selecting ±7 days (or any wide window) could fail with "NuVizz: Unexpected token \'<\'… is not valid JSON" — a large pull was overrunning the function\'s 10s limit and coming back as an HTML error page. The explorer now has 26s of headroom, aborts cleanly at 22s, doesn\'t burn the budget on retries, and turns any non-JSON upstream reply into a plain "window may be too large — try a narrower range" message instead of a raw parse error.'],
   ['0.44.1', '🔗 RWB engine — the portal calls now carry a real browser identity instead of the Node/undici default: User-Agent, Accept, Accept-Language, and the Chrome client hints (sec-ch-ua*, sec-fetch-*), all matched to the dispatcher\'s actual macOS Chrome from a live Route Workbench HAR. (Content-Type stays multipart/form-data — the HAR confirmed the real portal uses that too. X-Requested-With is intentionally NOT sent — the real portal doesn\'t.) Override the UA with NUVIZZ_RWB_USER_AGENT. This closes the header-level fingerprint gap; the request bodies/ids were already HAR-matched.'],
@@ -1035,6 +1036,65 @@ async function fetchJsonWithRetry(url, { retries = 1, backoffMs = 1500 } = {}) {
 }
 
 // Pull stops for a given date (YYYY-MM-DD) from the proxy function.
+// ── Confirmed-save plan overlay (the "looks like I never built it" killer) ────
+// The moment a Save is CONFIRMED against NuVizz, the plan is recorded LOCALLY per stop
+// (which load, what order, which driver) and painted over every board read on this
+// device until the scan/cache row AGREES or the entry expires. This is deliberately
+// independent of the Firestore write-through: no cache keying, sync failure, or scan
+// lag can make a save the dispatcher just watched confirm LOOK unbuilt again.
+const LS_PLAN_OVERLAY = 'dispatchMap.planOverlay';
+const PLAN_OVERLAY_TTL_MS = 45 * 60 * 1000; // scans run ~10 min apart; 45 min covers a bad stretch
+
+function readPlanOverlay() {
+  const m = safeReadJSON(LS_PLAN_OVERLAY, {});
+  return (m && typeof m === 'object' && !Array.isArray(m)) ? m : {};
+}
+
+// Record a confirmed patch: planned stops carry {load, seq, driver}; removed stops carry unplanned.
+function recordPlanOverlay(patch) {
+  try {
+    const now = Date.now();
+    const m = readPlanOverlay();
+    (patch.orderedStopNbrs || []).forEach((nbr, i) => {
+      m[String(nbr)] = { at: now, isPlanned: true, loadNbr: patch.routeName, routeSeq: i + 1, driverName: patch.driverName || null };
+    });
+    (patch.unplannedStopNbrs || []).forEach((nbr) => { m[String(nbr)] = { at: now, isPlanned: false }; });
+    safeWriteJSON(LS_PLAN_OVERLAY, m);
+  } catch { /* overlay is best-effort — never let it break a save */ }
+}
+
+// Paint live overlay entries over a fetched board. Self-cleaning: an entry is dropped the
+// moment the fetched row already agrees (the scan caught up — authoritative again) or when
+// it expires; disagreeing rows within the TTL take the confirmed plan fields instead.
+function applyPlanOverlay(stops) {
+  try {
+    const m = readPlanOverlay();
+    if (!Object.keys(m).length) return stops;
+    const now = Date.now();
+    let dirty = false;
+    for (const k of Object.keys(m)) {
+      if (!m[k] || !(now - Number(m[k].at) < PLAN_OVERLAY_TTL_MS)) { delete m[k]; dirty = true; }
+    }
+    let out = stops;
+    if (Object.keys(m).length) {
+      out = stops.map((s) => {
+        const key = String(s.stopNbr ?? '');
+        const e = m[key];
+        if (!e) return s;
+        const agrees = e.isPlanned
+          ? (s.isPlanned && String(s.loadNbr || s.routeName || '') === String(e.loadNbr))
+          : !!s.isUnplanned;
+        if (agrees) { delete m[key]; dirty = true; return s; }
+        return e.isPlanned
+          ? { ...s, isPlanned: true, isUnplanned: false, status: '20', normalizedStatus: 'SCHEDULED', loadNbr: e.loadNbr, routeName: e.loadNbr, routeSeq: e.routeSeq, driverName: e.driverName ?? s.driverName, driverUserName: e.driverName ?? s.driverUserName, planOverlay: true }
+          : { ...s, isPlanned: false, isUnplanned: true, status: '10', normalizedStatus: 'UNPLANNED', loadNbr: null, routeName: null, routeSeq: null, planOverlay: true };
+      });
+    }
+    if (dirty) safeWriteJSON(LS_PLAN_OVERLAY, m);
+    return out;
+  } catch { return stops; }
+}
+
 function useStops(date, carryDays = 0) {
   const [stops, setStops] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -1063,7 +1123,9 @@ function useStops(date, carryDays = 0) {
         ...s,
         matchKey: normalizeMatchKey(s.businessName || '', s.addr1 || '', s.city || '', s.zip || ''),
       }));
-      setStops(decorated);
+      // Confirmed-save overlay: a just-saved plan paints over stale cache/scan rows
+      // until the feed agrees (entries self-clean on agreement/expiry).
+      setStops(applyPlanOverlay(decorated));
       setSource(data.source || 'nuvizz');
       setLastScannedAt(data.lastScannedAt || null);
       setLastLoadScanAt(data.lastLoadScanAt || null);
@@ -8408,6 +8470,7 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
   const [nvRows, setNvRows] = useState([]);
   const [nvTotal, setNvTotal] = useState(0);
   const [nvPartial, setNvPartial] = useState(false); // server pulled an incomplete covering window → count is "≥ N"
+  const [nvSource, setNvSource] = useState('live'); // 'live' = straight from NuVizz; 'cache' = our board day-docs (wide windows)
   const [nvLoading, setNvLoading] = useState(false);
   const [nvErr, setNvErr] = useState(null);
   const [driverSel, setDriverSel] = useState('');
@@ -8491,7 +8554,7 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
             matchKey: normalizeMatchKey(s.businessName || '', s.addr1 || '', s.city || '', s.zip || ''),
             loadNbr: s.routeName || '',
           }));
-          setNvRows(decorated); setNvTotal(j.total ?? decorated.length); setNvPartial(!!j.partial);
+          setNvRows(decorated); setNvTotal(j.total ?? decorated.length); setNvPartial(!!j.partial); setNvSource(j.source === 'cache' ? 'cache' : 'live');
         })
         .catch((e) => { if (!cancelled) { setNvErr(e.message); setNvRows([]); setNvTotal(0); setNvPartial(false); } })
         .finally(() => { if (!cancelled) setNvLoading(false); });
@@ -8694,10 +8757,10 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
                   <option value="">Board (today)</option>
                   <option value="0d">NuVizz · Today</option>
                   <option value="+/-3d">NuVizz · ±3 days</option>
-                  <option value="+/-7d">NuVizz · ±7 days</option>
-                  <option value="+/-14d">NuVizz · ±14 days</option>
-                  <option value="+/-30d">NuVizz · ±30 days</option>
-                  <option value="custom">NuVizz · Custom range…</option>
+                  <option value="+/-7d">Board · ±7 days</option>
+                  <option value="+/-14d">Board · ±14 days</option>
+                  <option value="+/-30d">Board · ±30 days</option>
+                  <option value="custom">Board · Custom range…</option>
                 </select>
                 {nvWindow === 'custom' && (
                   <span className="hidden sm:inline-flex items-center gap-1">
@@ -8733,7 +8796,9 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
                           ? <span className="text-red-600">NuVizz: {nvErr}</span>
                           : nvPartial
                             ? <span className="text-amber-600" title="The date window was too large for one pull — some stops in it may be missing. Narrow the range for an exact result.">NuVizz · ≥{nvTotal.toLocaleString()} stops (partial — narrow the range)</span>
-                            : <>NuVizz · {nvTotal.toLocaleString()} stops</>}
+                            : nvSource === 'cache'
+                              ? <span title="Served from our board cache (every scanned day in the window; confirmed Saves are patched in). Freshness = the last scan — no NuVizz calls.">Board · {nvTotal.toLocaleString()} stops</span>
+                              : <>NuVizz · {nvTotal.toLocaleString()} stops</>}
                   </span>
                 )}
               </>
@@ -9658,7 +9723,7 @@ function RoutingStopRichDetail({ stop, onRefreshed }) {
 // route/driver via RoutingStopRichDetail). Fills the rail column; closes via X or Esc.
 // Never renders empty — guards a null stop. (Replaces the old center-popup modal so a
 // clicked stop's detail always lives in the right panel — dispatcher request.)
-function RoutingStopPanel({ stop, notes, onClose, onOpenLoad, windowViolatedSet, onMoveLocation, onEditAddress, onAutoFixAddress }) {
+function RoutingStopPanel({ stop, notes, onClose, onOpenLoad, windowViolatedSet, onMoveLocation, onEditAddress, onAutoFixAddress, onOpenHistory }) {
   useEffect(() => {
     const onKey = (e) => { if (e.key === 'Escape') onClose(); };
     window.addEventListener('keydown', onKey);
@@ -9700,6 +9765,18 @@ function RoutingStopPanel({ stop, notes, onClose, onOpenLoad, windowViolatedSet,
       </div>
       <div className="flex-1 min-h-0 overflow-y-auto p-3">
         <RoutingStopDetail stop={live} note={note} windowViolated={windowViolated} onMoveLocation={onMoveLocation} onEditAddress={onEditAddress} onAutoFixAddress={onAutoFixAddress} />
+        {/* Customer HISTORY — every past delivery to this location (PRO · date · driver).
+            NOT the per-order Activity timeline below; this reads our saved Firestore
+            history only and never costs a NuVizz call. */}
+        {onOpenHistory && (
+          <button
+            onClick={() => onOpenHistory(live)}
+            className="mt-2 w-full inline-flex items-center justify-center gap-1.5 text-xs font-semibold text-slate-700 border border-slate-300 rounded-md px-3 py-2 hover:bg-slate-50 active:bg-slate-100"
+            title="All past deliveries to this location — PRO, date, and who delivered each (saved history, no NuVizz call)"
+          >
+            <Clock size={14} /> History — past deliveries here
+          </button>
+        )}
         <RoutingStopRichDetail stop={live} onRefreshed={onRefreshed} />
       </div>
     </div>
@@ -10778,30 +10855,44 @@ function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmN
       // RoutingScreen, NOT here — referencing it directly threw a ReferenceError that killed the
       // rest of this handler (no toast/orphan warning) on every successful LIVE save.
       if (onClearRemoved) onClearRemoved(okKeys);
-      // Board write-through (#361): each load CONFIRMED in-band gets its verified plan patched
-      // straight into the board cache (Firestore-only, zero NuVizz calls) — the board flips to
-      // planned immediately instead of waiting out the next scan.
-      if (onBoardSync) {
-        const syncPromises = [];
-        for (const l of resLoads) {
-          if (!l.ok) continue;
-          const k = keyOf(l);
-          const L = loads.find((x) => (x.__key ?? x.routeName ?? x.loadNbr ?? x.loadId) === k);
-          if (!L || !((L.orderedStopNbrs || []).length || (L.removeStopNbrs || []).length)) continue;
-          const driverApplied = (l.steps || []).some((s) => s.op === 'assignDriver' && s.ok);
-          syncPromises.push(onBoardSync({
-            routeName: L.routeName || loadDisplayName(k) || String(k || ''),
-            orderedStopNbrs: (L.orderedStopNbrs || []).map(String),
-            unplannedStopNbrs: (L.removeStopNbrs || []).map(String),
-            driverName: driverApplied ? (L.driverName || null) : null,
-          }));
+    }
+    // Board write-through (#361): each load CONFIRMED in-band gets its verified plan patched
+    // straight into the board cache (Firestore-only, zero NuVizz calls) + the local overlay —
+    // the board flips to planned immediately instead of waiting out the next scan.
+    // DELIBERATELY OUTSIDE the okKeys gate and DECLARATIVE over the card's full current order:
+    // the old delta-only version silently skipped a save whenever the result couldn't be joined
+    // back to a card key or the payload carried no order change (driver-only re-save) — and a
+    // skipped sync is exactly how a saved route kept LOOKING unbuilt (Denis/MONE). The RWB save
+    // is declarative over the card's order, so on a confirmed save card.order IS the truth.
+    if (onBoardSync) {
+      const syncPromises = [];
+      for (const l of resLoads) {
+        if (!l.ok || l.pending) continue; // pending imports sync on their verified read-back below
+        const k = keyOf(l);
+        const L = loads.find((x) => (x.__key ?? x.routeName ?? x.loadNbr ?? x.loadId) === k)
+          ?? (loads.length === 1 ? loads[0] : null); // single-load save: echo mismatch can't mislead
+        const cardKey = k ?? L?.__key ?? null;
+        const card = cardKey != null ? wbRoutes.find((x) => x.key === cardKey) : null;
+        const ordered = ((L?.orderedStopNbrs?.length ? L.orderedStopNbrs : null) ?? card?.order ?? []).map(String);
+        const removed = (L?.removeStopNbrs || []).map(String);
+        if (!ordered.length && !removed.length) {
+          // eslint-disable-next-line no-console
+          console.warn('[board-sync] skipped — could not resolve any stops for a confirmed load', { loadNbr: l?.loadNbr ?? null, loadId: l?.loadId ?? null, cardKey });
+          continue;
         }
-        // Surface a write-through miss instead of discarding the result — a silent
-        // {patched:0, missing:N} is how a saved route could LOOK unbuilt on the board
-        // even though NuVizz took it (the "built Denis's route, closed it, gone" case).
-        const syncs = (await Promise.all(syncPromises)).filter(Boolean);
-        boardSyncMissing = syncs.reduce((n, r) => n + (Number(r?.missing) || 0), 0);
+        const driverApplied = (l.steps || []).some((s) => s.op === 'assignDriver' && s.ok);
+        syncPromises.push(onBoardSync({
+          routeName: L?.routeName || card?.name || loadDisplayName(cardKey) || String(cardKey || ''),
+          orderedStopNbrs: ordered,
+          unplannedStopNbrs: removed,
+          driverName: driverApplied ? (L?.driverName || null) : null,
+        }));
       }
+      // Surface a write-through miss instead of discarding the result — a silent
+      // {patched:0, missing:N} is how a saved route could LOOK unbuilt on the board
+      // even though NuVizz took it (the "built Denis's route, closed it, gone" case).
+      const syncs = (await Promise.all(syncPromises)).filter(Boolean);
+      boardSyncMissing = syncs.reduce((n, r) => n + (Number(r?.missing) || 0), 0);
     }
     // Honest reporting: a load only "saved" if its result has a SUCCESSFUL step (an actual NuVizz
     // call). A load that returns ok:true with no steps was a no-op — never report it as saved.
@@ -10971,9 +11062,13 @@ function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmN
 
   return (
     <div className="flex flex-col h-full min-h-0">
-      <div className="flex items-center justify-between gap-2 px-2 py-1.5 border-b shrink-0 bg-white">
+      {/* Header WRAPS instead of clipping: the button group used to be shrink-0, so flex
+          never squeezed it, flex-wrap never triggered, and with one narrow card open the
+          engine/LIVE/Save/Back buttons silently overflowed past the panel edge — they
+          looked MISSING. min-w-0 + wrap keeps every control visible at any panel width. */}
+      <div className="flex items-center justify-between gap-2 px-2 py-1.5 border-b shrink-0 bg-white flex-wrap">
         <span className="font-semibold text-slate-800 text-[13px] shrink-0">Compare <span className="text-slate-400 text-[11px]">({wbRoutes.length}/3)</span></span>
-        <div className="flex items-center gap-2 shrink-0 flex-wrap justify-end">
+        <div className="flex items-center gap-1.5 min-w-0 flex-wrap justify-end">
           {/* One-click "send the current map selection into this load" per open route (#258).
               Only shown when something is selected — otherwise the buttons would be dead. With two
               loads open you get two buttons, so you can route the selection to either in one click. */}
@@ -10982,9 +11077,9 @@ function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmN
               key={r.key}
               onClick={() => onSendSelection(r.key)}
               title={`Add the ${selectedCount} selected stop${selectedCount === 1 ? '' : 's'} to ${loadDisplayName(r.key) || 'this load'}`}
-              className="flex items-center gap-1 text-[11px] font-semibold px-2 py-1 rounded border border-emerald-600 bg-emerald-600 text-white hover:bg-emerald-700"
+              className="flex items-center gap-1 text-[11px] font-semibold px-2 py-1 rounded border border-emerald-600 bg-emerald-600 text-white hover:bg-emerald-700 min-w-0"
             >
-              <ArrowRight size={13} /> {loadDisplayName(r.key) || 'Load'} ({selectedCount})
+              <ArrowRight size={13} className="shrink-0" /> <span className="truncate max-w-[130px]">{loadDisplayName(r.key) || 'Load'}</span> ({selectedCount})
             </button>
           ))}
           {/* Ninja is armed from the on-map tool (left edge), not here — the dispatcher asked to drop
@@ -11360,8 +11455,13 @@ function RoutingScreen({ debugCaptureRef }) {
   // orders flip to planned on the board immediately instead of waiting out the next scan (and
   // NuVizz's own list feed, which can lag an async import by minutes).
   const syncBoardAfterSave = useCallback(async (patch) => {
-    // Returns the sync result ({patched, missing, rescued}) so the Save toast can surface a
-    // miss — a discarded {patched:0} was how a saved route could silently look unbuilt.
+    // 1) LOCAL overlay first — the confirmed plan paints over every board read on THIS
+    //    device immediately (and across reloads) until a scan agrees or it expires. It
+    //    doesn't depend on the server at all, so no cache keying or sync failure can
+    //    make a confirmed save look unbuilt here again.
+    recordPlanOverlay(patch);
+    // 2) Server write-through (+ carry-over rescue) so other devices/tabs agree too.
+    //    Returns {patched, missing, rescued} so the Save toast can surface a miss.
     let out = null;
     try {
       const r = await fetch('/.netlify/functions/nuvizz-board-sync', {
@@ -11369,7 +11469,11 @@ function RoutingScreen({ debugCaptureRef }) {
         body: JSON.stringify({ date: selectedDate, ...patch }),
       });
       out = await r.json().catch(() => null);
-    } catch { /* best-effort — the next scan reconciles anyway */ }
+    } catch { /* best-effort — the overlay + next scan cover it */ }
+    // Always visible in the console for forensics — which stops were synced, what the
+    // server found (patched/rescued/missing), or that the endpoint call itself failed.
+    // eslint-disable-next-line no-console
+    console.log('[board-sync]', { date: selectedDate, sent: patch, result: out });
     try { refreshStops(); } catch { /* ignore */ }
     return out;
   }, [selectedDate, refreshStops]);
@@ -11431,6 +11535,12 @@ function RoutingScreen({ debugCaptureRef }) {
   // A map-marker click, a ProLink #pro, or any panel row's onOpenStop sets this;
   // the right rail then renders RoutingStopPanel over whatever tab/mode is active.
   const [panelStop, setPanelStop] = useState(null);
+  // Customer-history overlay (the stop panel's "History" button) — the same Firestore-only
+  // lookup as the Map screen: this location's past PROs + date + who delivered each.
+  // Distinct from the per-order Activity timeline; never makes a NuVizz call.
+  const [histOpen, setHistOpen] = useState(false);
+  const [histSeed, setHistSeed] = useState('');
+  const openCustomerHistory = useCallback((s) => { setHistSeed((s?.businessName || '').trim()); setHistOpen(true); }, []);
   const [versionLogOpen, setVersionLogOpen] = useState(false);
   const openStop = useCallback((s) => setPanelStop(s || null), []);
 
@@ -11568,6 +11678,12 @@ function RoutingScreen({ debugCaptureRef }) {
   // and a bottom-grid on/off toggle. All persisted; Routing-beta only.
   const leftPanel = useSidePanelWidth('left', 'routing.leftW', 340, 240, viewportWidth);
   const rightPanel = useSidePanelWidth('right', 'routing.rightW', 380, 280, viewportWidth);
+  // Full right-rail collapse (dispatcher request): hide the rail entirely; a thin strip
+  // stays as the re-open affordance. Opening a stop auto-expands so a clicked stop's
+  // detail can never land in a hidden panel. Persisted per device.
+  const [rightCollapsed, setRightCollapsed] = useState(() => safeReadJSON('routing.rightCollapsed', false) === true);
+  useEffect(() => { safeWriteJSON('routing.rightCollapsed', rightCollapsed); }, [rightCollapsed]);
+  useEffect(() => { if (panelStop) setRightCollapsed(false); }, [panelStop]);
   const [bottomGridOn, setBottomGridOn] = useState(() => { try { return localStorage.getItem('routing.bottomGrid') !== 'off'; } catch { return true; } });
   useEffect(() => { try { localStorage.setItem('routing.bottomGrid', bottomGridOn ? 'on' : 'off'); } catch { /* ignore */ } }, [bottomGridOn]);
   // Setup panel (the left controls column) on/off. The dispatcher asked to keep it hidden while the
@@ -11595,12 +11711,12 @@ function RoutingScreen({ debugCaptureRef }) {
   useEffect(() => { try { localStorage.setItem('routing.hideStem', routeHideStem ? 'on' : 'off'); } catch { /* ignore */ } }, [routeHideStem]);
   const resetRoutingLayout = useCallback(() => {
     leftPanel.onDoubleClick(); rightPanel.onDoubleClick();
-    setSelPanelOpen(true); setRightPanelMode('tabs'); setBottomGridOn(true); setRouteHideStem(false); setLeftPanelOn(false);
+    setSelPanelOpen(true); setRightPanelMode('tabs'); setBottomGridOn(true); setRouteHideStem(false); setLeftPanelOn(false); setRightCollapsed(false);
   }, [leftPanel, rightPanel]);
   // Nudge Google Maps to re-render when a side panel resizes (the canvas changed width).
   useEffect(() => {
     if (google && mapRef.current) { try { google.maps.event.trigger(mapRef.current, 'resize'); } catch { /* ignore */ } }
-  }, [leftPanel.width, rightPanel.width, google]);
+  }, [leftPanel.width, rightPanel.width, rightCollapsed, google]);
 
   // Route workbench (part 4): routes opened from the right Routes panel become side-by-side
   // cards you tune. Each entry { key, order:[stopNbr...], collapsed }; capped at 3. Planning
@@ -11883,6 +11999,30 @@ function RoutingScreen({ debugCaptureRef }) {
       showMapToast(parts.join(' '));
       if (!ids.length) { setSelectedIds(new Set(keepSelected)); return; }
     }
+    // Same-address twin guard: two ORDERS at one location render as pins stacked exactly on
+    // top of each other, so a click-selection grabs only the top one and the second order
+    // silently stays behind (the "missed one of these orders" case — 007144652 routed,
+    // co-located 007144651 left unplanned). Same-address freight rides together, so every
+    // UNPLANNED order sharing a selected stop's location is auto-included — loudly, and
+    // removable from the card if the split was intentional.
+    const twinNames = [];
+    {
+      const inIds = new Set(ids);
+      const byMatchKey = new Map();
+      for (const t of stops) {
+        if (!t?.matchKey || !t.isUnplanned) continue;
+        if (!byMatchKey.has(t.matchKey)) byMatchKey.set(t.matchKey, []);
+        byMatchKey.get(t.matchKey).push(t);
+      }
+      for (const id of [...inIds]) {
+        const s = stopById.get(id);
+        for (const t of (s?.matchKey ? byMatchKey.get(s.matchKey) : null) || []) {
+          const tn = String(t.stopNbr);
+          if (!inIds.has(tn)) { inIds.add(tn); twinNames.push(`${t.stopNbr} (${t.businessName || 'same address'})`); }
+        }
+      }
+      if (twinNames.length) ids = [...inIds];
+    }
     const idSet = new Set(ids);
     setWbRoutes((prev) => {
       if (!prev.some((r) => r.key === key)) return prev;
@@ -11896,9 +12036,12 @@ function RoutingScreen({ debugCaptureRef }) {
         return r.order.some((id) => idSet.has(id)) ? { ...r, order: r.order.filter((id) => !idSet.has(id)), strategy: 'manual' } : r;
       });
     });
+    if (twinNames.length) {
+      showMapToast(`⚠ Also added ${twinNames.length} co-located order${twinNames.length === 1 ? '' : 's'} the selection missed: ${twinNames.slice(0, 3).join(', ')}${twinNames.length > 3 ? '…' : ''} — remove from the card if you meant to split.`);
+    }
     setLastAction(`Sent ${ids.length} selected stop${ids.length === 1 ? '' : 's'} → ${loadDisplayName(key) || 'load'}`);
     setSelectedIds(new Set(keepSelected));   // cleared when nothing was blocked; keeps cap/holder-pending stops for the next Send
-  }, [selectedIds, stopById, openRouteKeys]);
+  }, [selectedIds, stopById, openRouteKeys, stops]); // showMapToast is stable and declared later — including it in deps would TDZ at render
   // The marker click listener is bound once; route ninja clicks through a ref so toggling ninja
   // (or closing the panel) never re-creates the markers. Null = ninja off / nothing to add to.
   useEffect(() => { ninjaActionRef.current = (ninjaMode && wbRoutes.length > 0) ? ninjaAddStop : null; }, [ninjaMode, wbRoutes.length, ninjaAddStop]);
@@ -13242,6 +13385,7 @@ function RoutingScreen({ debugCaptureRef }) {
                 onMoveLocation={startMoveLocation}
                 onEditAddress={openAddrEditor}
                 onAutoFixAddress={autoFixAddress}
+                onOpenHistory={openCustomerHistory}
               />
             ) : (
             <div className="flex-1 min-h-0 overflow-y-auto p-3 space-y-3 text-sm" style={{ paddingBottom: 'calc(12px + env(safe-area-inset-bottom))' }}>
@@ -13269,6 +13413,12 @@ function RoutingScreen({ debugCaptureRef }) {
         {editAddrStop && <AddressEditModal stop={editAddrStop} note={notes.get(editAddrStop.matchKey)} google={google} seed={editAddrSeed} onClose={() => { setEditAddrStop(null); setEditAddrSeed(null); }} onSaved={() => refreshStops({ silent: true })} />}
         {wbManifest && <PrintDocModal title={wbManifest.title} html={wbManifest.html} onClose={() => setWbManifest(null)} />}
         {versionLogOpen && <VersionLogModal onClose={() => setVersionLogOpen(false)} />}
+        {/* Customer-history overlay (History button on the stop panel) — Firestore-only. */}
+        {histOpen && (
+          <div className="fixed inset-0 z-[1100] bg-white flex flex-col" style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}>
+            <PastProSearch notes={notes} initialQuery={histSeed} noApi onPickCustomer={(s) => { setHistOpen(false); setPanelStop(s); setSheetOpen(true); }} onClose={() => setHistOpen(false)} />
+          </div>
+        )}
       </div>
     );
   }
@@ -13373,7 +13523,21 @@ function RoutingScreen({ debugCaptureRef }) {
         />}
       </div>
 
-      {/* Right: Stops | Result (or the Routes/Drivers view) — resizable, like the left. */}
+      {/* Right: Stops | Result (or the Routes/Drivers view) — resizable, like the left,
+          and fully collapsible to a thin re-open strip (dispatcher request). */}
+      {rightCollapsed ? (
+        <button
+          onClick={() => setRightCollapsed(false)}
+          className="shrink-0 border-l bg-white w-7 min-h-0 flex flex-col items-center gap-1.5 pt-2 text-slate-500 hover:bg-slate-50 hover:text-slate-700"
+          title="Expand right panel"
+        >
+          <ChevronRight size={15} className="rotate-180" />
+          <span className="text-[10px] font-semibold uppercase tracking-wide" style={{ writingMode: 'vertical-rl' }}>
+            {rightPanelMode === 'routes' ? `Routes (${routeGroups.length})` : 'Panel'}
+          </span>
+        </button>
+      ) : (
+      <>
       <ResizeHandle onMouseDown={rightPanel.onMouseDown} onDoubleClick={rightPanel.onDoubleClick} />
       <div className="shrink-0 border-l bg-white flex flex-col min-h-0" style={{ width: rightPanel.width }}>
         {panelStop ? (
@@ -13386,12 +13550,14 @@ function RoutingScreen({ debugCaptureRef }) {
             onMoveLocation={startMoveLocation}
             onEditAddress={openAddrEditor}
             onAutoFixAddress={autoFixAddress}
+            onOpenHistory={openCustomerHistory}
           />
         ) : rightPanelMode === 'routes' ? (
           <>
             <div className="flex items-center justify-between px-3 py-2 border-b shrink-0 gap-2">
               <RoutesDriversToggle subTab={routesSubTab} setSubTab={setRoutesSubTab} routesCount={routeGroups.length} />
               <span className="text-[10px] uppercase tracking-wide text-slate-400 truncate">{formatDateLong(selectedDate)}</span>
+              <button onClick={() => setRightCollapsed(true)} className="shrink-0 text-slate-400 hover:text-slate-700" title="Collapse panel"><ChevronRight size={15} /></button>
             </div>
             {routesSubTab === 'drivers'
               ? <RoutingDriversPanel roster={driverRoster} routeGroups={routeGroups} onRefresh={refreshDriverRoster} onPickDriver={onPickDriver} />
@@ -13403,6 +13569,7 @@ function RoutingScreen({ debugCaptureRef }) {
           {railTab('stops', `Stops${tally.count ? ` (${tally.count})` : ''}`)}
           {railTab('loads', `Loads${loads.length ? ` (${loads.length})` : ''}`)}
           {railTab('result', `Result${baseResult ? ` (${baseResult.routes.length})` : (job?.status === 'running' || job?.status === 'queued') ? ' …' : ''}`)}
+          <button onClick={() => setRightCollapsed(true)} className="shrink-0 px-1.5 text-slate-400 hover:text-slate-700 border-l" title="Collapse panel"><ChevronRight size={15} /></button>
         </div>
         {desktopRail === 'stops' ? (
           <RoutingStopsPanel selectedStops={selectedStops} notes={notes} onRemove={removeStop} hoverId={hoverId} setHoverId={setHoverId} onOpenStop={openStop} />
@@ -13417,10 +13584,24 @@ function RoutingScreen({ debugCaptureRef }) {
         </>
         )}
       </div>
+      </>
+      )}
       {movingStop && <MoveLocationBar stop={movingStop} saving={savingLoc} onSave={saveStopLocation} onCancel={cancelMoveLocation} onReset={resetStopLocation} />}
       {editAddrStop && <AddressEditModal stop={editAddrStop} note={notes.get(editAddrStop.matchKey)} google={google} seed={editAddrSeed} onClose={() => { setEditAddrStop(null); setEditAddrSeed(null); }} onSaved={() => refreshStops({ silent: true })} />}
         {wbManifest && <PrintDocModal title={wbManifest.title} html={wbManifest.html} onClose={() => setWbManifest(null)} />}
         {versionLogOpen && <VersionLogModal onClose={() => setVersionLogOpen(false)} />}
+        {/* Customer-history overlay (History button on the stop panel) — this location's past
+            PROs + date + delivering driver, from saved Firestore history only (no NuVizz). */}
+        {histOpen && (
+          <div
+            className="fixed inset-0 z-[1100] bg-slate-900/40 flex items-start justify-center p-4 sm:p-8"
+            onMouseDown={(e) => { if (e.target === e.currentTarget) setHistOpen(false); }}
+          >
+            <div className="w-full max-w-lg max-h-[85vh] bg-white rounded-xl shadow-2xl flex flex-col overflow-hidden">
+              <PastProSearch notes={notes} initialQuery={histSeed} noApi onPickCustomer={(s) => { setHistOpen(false); setPanelStop(s); }} onClose={() => setHistOpen(false)} />
+            </div>
+          </div>
+        )}
     </div>
   );
 }
