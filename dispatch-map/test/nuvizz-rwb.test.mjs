@@ -32,7 +32,7 @@ async function withRwb(over, fn) {
 // A URL-routing requester that serves BOTH the v7 API and the RWB portal login/flow.
 // `saveBody` lets a test control what saveComparedRouteData returns. `loadStops` is a
 // mutable ref (array of stopNbrs) so a re-read after removeStops reflects the removal.
-function makeRequester({ saveBody = { responseCode: 200 }, saveStatus = 200, loadStops } = {}) {
+function makeRequester({ saveBody = { responseCode: 200 }, saveStatus = 200, loadStops, stopHolders = {} } = {}) {
   const calls = [];
   const stopDoc = (n) => ({ stop: { stopId: `id-${n}`, stopNbr: String(n), stopType: 'DO', to: { seq: 1 } } });
   const loadJson = () => ({ Load: {
@@ -72,7 +72,9 @@ function makeRequester({ saveBody = { responseCode: 200 }, saveStatus = 200, loa
         if (url.includes('/load/info/')) return J(loadJson());
         if (url.includes('/stop/info/')) {
           const n = url.split('/stop/info/')[1].split('/')[0];
-          return J({ Stop: { stop: { stopId: `id-${n}`, stopNbr: String(n), stopType: 'DO' }, load: { loadNbr: '' } } });
+          // stopHolders lets a test declare a stop as ALREADY PLANNED on another load — the
+          // pre-add verification reads assignedLoadNbr from here.
+          return J({ Stop: { stop: { stopId: `id-${n}`, stopNbr: String(n), stopType: 'DO' }, load: { loadNbr: stopHolders[n] || '' } } });
         }
         if (url.includes('/load/edit/')) return J({ status: 'SUCCESS' });        // removeStops
         if (url.includes('/load/insertstops/')) return J({ status: 'SUCCESS' });  // insertStops
@@ -280,10 +282,13 @@ test('runCommitBoardRwb: an arrival is added via the RWB portal (not v7 insertSt
   });
 });
 
-test('runCommitBoardRwb: client-supplied orderedStopIds skip the per-stop getStop (portal-scale path)', async () => {
+test('runCommitBoardRwb: every ADD is verified via getStop even when client ids are supplied (no fast path)', async () => {
   await withRwb({}, async () => {
-    // Load already has X; add A,B,C as arrivals passing their ids → engine resolves without any
-    // getStop (non-empty load, so no retarget probe either), and adds via the batched validate+add.
+    // The old "portal-scale" fast path skipped the per-stop getStop when the client supplied
+    // stopIds — trusting the BOARD's "unplanned". A stale board (overlay lapse on a paused-scan
+    // night) let a stop already planned on ANOTHER route be "added": NuVizz no-ops/rejects it
+    // downstream of us reporting success (the WIEDMANN→KOBE false save). Now every add arrival
+    // is read from NuVizz first, so the already-planned refusal fires BEFORE anything writes.
     const loadStops = { value: ['X'] };
     const { requester, calls } = makeRequester({ loadStops });
     const r = await runCommitBoardRwb(requester, { loads: [{
@@ -291,11 +296,27 @@ test('runCommitBoardRwb: client-supplied orderedStopIds skip the per-stop getSto
       orderedStopNbrs: ['X', 'A', 'B', 'C'], orderedStopIds: ['id-X', 'id-A', 'id-B', 'id-C'],
     }] }, CREDS);
     assert.equal(r.ok, true, `expected success, got: ${JSON.stringify(r.loads?.[0]?.error)}`);
-    assert.equal(calls.some((c) => c.url.includes('/stop/info/')), false, 'no getStop when ids are supplied');
+    // A, B, C are adds → one pre-add verification read EACH, ids supplied or not.
+    assert.equal(calls.filter((c) => c.url.includes('/stop/info/')).length, 3, 'one getStop per ADD arrival');
     assert.equal(calls.filter((c) => c.url.includes('addStopsToRouteAfterValidation')).length, 1, 'one batched add');
     const val = calls.filter((c) => c.url.includes('validateStopstoPerformAction'));
     assert.equal(val.length, 1, 'one batched validate');
     assert.ok(val[0].url.includes('routeId='), 'validate carries routeId');
+  });
+});
+
+test('runCommitBoardRwb: REFUSES an add whose stop NuVizz says is planned on a load outside the Save', async () => {
+  await withRwb({}, async () => {
+    // Board says unplanned (stale); NuVizz's stop read says it's on OTHER-LOAD. The save must
+    // refuse up-front with the actionable move error — never report success.
+    const loadStops = { value: ['X'] };
+    const { requester } = makeRequester({ loadStops, stopHolders: { A: 'DAVIS000OTHER' } });
+    const r = await runCommitBoardRwb(requester, { loads: [{
+      loadNbr: 'DAVIS000000123', loadId: HEXID, routeName: 'R',
+      orderedStopNbrs: ['X', 'A'], orderedStopIds: ['id-X', 'id-A'],
+    }] }, CREDS);
+    assert.equal(r.loads[0].ok, false, 'save refused');
+    assert.match(String(r.loads[0].error || ''), /ALREADY PLANNED on load DAVIS000OTHER/i);
   });
 });
 

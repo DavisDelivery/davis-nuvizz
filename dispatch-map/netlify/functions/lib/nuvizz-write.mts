@@ -1274,24 +1274,22 @@ export async function runCommitBoardRwb(requester: RequesterLike, payload: any, 
       continue;
     }
 
-    // Client-supplied stop ids (the board already holds them) resolve ADD arrivals without a
-    // getStop each — the portal-scale path. Aligned by index with orderedStopNbrs.
-    const clientIdByNbr = new Map<string, string>();
-    const cNbrs = Array.isArray(p.L?.orderedStopNbrs) ? p.L.orderedStopNbrs.map((x: any) => String(x)) : [];
-    const cIds = Array.isArray(p.L?.orderedStopIds) ? p.L.orderedStopIds.map((x: any) => String(x)) : [];
-    if (cIds.length && cIds.length === cNbrs.length) cNbrs.forEach((n: string, i: number) => { if (cIds[i]) clientIdByNbr.set(n, cIds[i]); });
-
     // An arrival held by ANOTHER load in this Save is a MOVE — the combined declarative save below
     // transfers it atomically (portal-verified: the move HAR fires NO validate/add at all). Its id
-    // comes off the holder load's own read (authoritative). Everything else is an ADD (genuinely
-    // unplanned / off-board) and rides the proven batched validate+add path.
+    // comes off the holder load's own read (authoritative). Everything else is an ADD and is
+    // verified against NuVizz ITSELF (one /stop/info each) BEFORE anything fires.
+    //
+    // The old "portal-scale" fast path trusted a client-supplied stopId and SKIPPED that read —
+    // which trusted the BOARD's idea of "unplanned". The board can be stale (overlay lapse during
+    // a paused-scan night: WIEDMANN read unplanned while actually planned on GEORGE L), and NuVizz
+    // silently no-ops/rejects a cross-route steal DOWNSTREAM of us reporting success — the false
+    // "saved" Chad caught. One read per newly-added stop is the price of never lying about a save;
+    // it also turns the mistake into the actionable pre-add refusal below.
     const missing = p.orderedNbrs.filter((n: string) => !p.stopIdByNbr.has(n));
     const needFetch: string[] = [];
     for (const nbr of missing) {
       const holder = seq.find((q: any) => q !== p && q.result.ok && q.stopIdByNbr.has(nbr));
       if (holder) { p.moveArrivals.push({ nbr, stopId: holder.stopIdByNbr.get(nbr), fromLoadNbr: holder.loadNbr }); continue; }
-      const cid = clientIdByNbr.get(nbr);
-      if (cid) { p.addArrivals.push({ nbr, stopId: cid }); continue; }   // client id → no getStop; batch validate + post-add verify guard eligibility
       needFetch.push(nbr);
     }
     const fetched = new Map<string, any>(await Promise.all(needFetch.map(async (n): Promise<[string, any]> => {
@@ -1304,7 +1302,7 @@ export async function runCommitBoardRwb(requester: RequesterLike, payload: any, 
       const srcNbr = gs?.ok ? String(gs.stop?.assignedLoadNbr ?? '').trim() : '';
       if (!gs?.ok || !gs.stop?.stopId) { err = `commitBoard(rwb): stop ${nbr} could not be read for planning (stale board — refresh and retry)`; break; }
       if (srcNbr && srcNbr !== p.loadNbr && !batchNbrs.has(srcNbr)) {
-        err = `commitBoard(rwb): stop ${nbr} is still planned on load ${srcNbr}, which is not part of this Save — open that load in Compare so the move is staged`; break;
+        err = `commitBoard(rwb): stop ${nbr} is ALREADY PLANNED on load ${srcNbr} (our board may be showing it stale-unplanned) — open ${srcNbr} in Compare to stage the move, or refresh and re-check`; break;
       }
       p.addArrivals.push({ nbr, stopId: String(gs.stop.stopId) });
     }

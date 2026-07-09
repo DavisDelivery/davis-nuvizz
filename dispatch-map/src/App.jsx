@@ -54,7 +54,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.45.13';
+const APP_VERSION = '0.45.14';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -99,6 +99,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.45.14', 'FALSE "SAVED" KILLED: adding a stop that NuVizz already has planned on ANOTHER route (possible when our board shows it stale-unplanned — the WIEDMANN→KOBE accident) used to slip past the save and report success while NuVizz quietly rejected it. Every ADDED stop is now verified against NuVizz itself BEFORE anything writes — if it\'s already planned elsewhere the Save REFUSES up front with "ALREADY PLANNED on load X — open X in Compare to stage the move". Costs one stop-read per newly added stop (a 10-stop build ≈ +10 calls) — the price of never lying about a save.'],
   ['0.45.13', 'FIX: a saved stop could silently DROP OFF a route on our side hours later (WIEDMANN BROS / GEORGE L — NuVizz kept it, our card lost it on re-open). The confirmed-save hold expired after 45 minutes expecting a scan to take over — but overnight the scanner is PAUSED, so a stop the server-side cache patch happened to miss reverted to unplanned with nothing to catch it. The hold now lasts up to 12 hours (it still releases the moment a scan confirms the save — the cap only matters when scans aren\'t running), and the board-sync now reports exactly WHICH stop numbers it couldn\'t patch (console + toast) so a miss is diagnosable instead of silent. Our board also self-corrects at the next scan since NuVizz has the route.'],
   ['0.45.12', 'NEW: Routing map → Filters → "Hide place labels" turns off Google\'s own business/place name labels (the clutter that overlaps your stop pins) on the satellite view. Persisted per device. (It cleans the satellite imagery; the roadmap base keeps its labels.)'],
   ['0.45.11', 'FIX: the bottom grid\'s date-window view now reflects a just-saved build IMMEDIATELY, same as the map — the confirmed-save overlay was painted onto the board/map but the window grid kept its already-fetched rows until a re-pull or scan (Chad: "the map reflects the work I\'ve done, the bottom panel does not"). Every confirmed Save now re-paints the grid in place. FIX: the printed Driver Manifest header now shows the ROUTE NAME (e.g. "TRAILER 3") — a freshly built card\'s stops don\'t carry the route name yet, so it printed a generic "Route".'],
