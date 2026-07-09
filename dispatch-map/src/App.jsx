@@ -54,7 +54,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.45.11';
+const APP_VERSION = '0.45.16';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -99,6 +99,10 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.45.15', 'Three dispatcher fixes: (1) the map selection tools (click / box / lasso / add-in-view) can NO LONGER grab a stop that\'s already staged on an open Compare card — it tells you which card holds it ("use Ninja to move it"), and area-selects report how many they skipped, so a stop can\'t be double-planned from the selection. (2) Route headers now count PHYSICAL stops — multiple orders to the same address are ONE truck stop (like NuVizz\'s own card): a card reads "7 stops · 9 orders" instead of "9 stops". Applies to the Compare card header and the Routes panel cards. (3) Clicking DISPATCH now flips the route\'s status immediately — it stayed "Draft" until a scan (paused overnight) because the status came from the cached roster; a confirmed dispatch now overrides that until the roster catches up.'],
+  ['0.45.14', 'FALSE "SAVED" KILLED: adding a stop that NuVizz already has planned on ANOTHER route (possible when our board shows it stale-unplanned — the WIEDMANN→KOBE accident) used to slip past the save and report success while NuVizz quietly rejected it. Every ADDED stop is now verified against NuVizz itself BEFORE anything writes — if it\'s already planned elsewhere the Save REFUSES up front with "ALREADY PLANNED on load X — open X in Compare to stage the move". Costs one stop-read per newly added stop (a 10-stop build ≈ +10 calls) — the price of never lying about a save.'],
+  ['0.45.13', 'FIX: a saved stop could silently DROP OFF a route on our side hours later (WIEDMANN BROS / GEORGE L — NuVizz kept it, our card lost it on re-open). The confirmed-save hold expired after 45 minutes expecting a scan to take over — but overnight the scanner is PAUSED, so a stop the server-side cache patch happened to miss reverted to unplanned with nothing to catch it. The hold now lasts up to 12 hours (it still releases the moment a scan confirms the save — the cap only matters when scans aren\'t running), and the board-sync now reports exactly WHICH stop numbers it couldn\'t patch (console + toast) so a miss is diagnosable instead of silent. Our board also self-corrects at the next scan since NuVizz has the route.'],
+  ['0.45.12', 'NEW: Routing map → Filters → "Hide place labels" turns off Google\'s own business/place name labels (the clutter that overlaps your stop pins) on the satellite view. Persisted per device. (It cleans the satellite imagery; the roadmap base keeps its labels.)'],
   ['0.45.11', 'FIX: the bottom grid\'s date-window view now reflects a just-saved build IMMEDIATELY, same as the map — the confirmed-save overlay was painted onto the board/map but the window grid kept its already-fetched rows until a re-pull or scan (Chad: "the map reflects the work I\'ve done, the bottom panel does not"). Every confirmed Save now re-paints the grid in place. FIX: the printed Driver Manifest header now shows the ROUTE NAME (e.g. "TRAILER 3") — a freshly built card\'s stops don\'t carry the route name yet, so it printed a generic "Route".'],
   ['0.45.10', 'The bottom grid\'s ±7-day window now shows a DAY column — the "drift" between the map selection and the grid count was the window quietly mixing three different days\' work in one list: past carry-over (amber ◂), TODAY (blue), and FUTURE-day orders (violet ▸, e.g. tomorrow\'s appointments that are SUPPOSED to be unplanned tonight). The column only appears in a window pull; the normal Board (today) view is unchanged. Sort by it to split today\'s backlog from future work at a glance.'],
   ['0.45.9', 'FIX (route order in production): a PICKUP-type order — a return / RA — placed in the MIDDLE of a route was landing at delivery #1 in NuVizz no matter where you sequenced it. The RWB save loads every stop at the depot up front and delivers the rest in your order; a pickup\'s real customer visit is its "pickup" leg, but that leg was being emitted in the front depot block, so the driver hit it first. Pickups now ride their customer visit at the exact position you put them in, and return to the depot at the end. Pure delivery routes are byte-for-byte unchanged. NOTE: correct a route you already saved with an RA out of place by re-sequencing it once more and Saving (or drag it in the NuVizz portal for tonight).'],
@@ -1052,7 +1056,13 @@ async function fetchJsonWithRetry(url, { retries = 1, backoffMs = 1500 } = {}) {
 // independent of the Firestore write-through: no cache keying, sync failure, or scan
 // lag can make a save the dispatcher just watched confirm LOOK unbuilt again.
 const LS_PLAN_OVERLAY = 'dispatchMap.planOverlay';
-const PLAN_OVERLAY_TTL_MS = 45 * 60 * 1000; // scans run ~10 min apart; 45 min covers a bad stretch
+// AGREEMENT is the real release (an entry self-cleans the moment a fetched row matches the
+// confirmed plan); the TTL is only a runaway cap. It was 45 min — tuned for daytime scans
+// every ~10 min — but overnight the scanner is PAUSED (e.g. "orders paused until 10 AM"), so
+// a stop the server-side patch happened to miss (WIEDMANN/GEORGE L: a confirmed carry-over
+// save) silently reverted to unplanned when the overlay lapsed with no scan to take over.
+// 12 h always spans the pause window; the first agreeing scan still cleans immediately.
+const PLAN_OVERLAY_TTL_MS = 12 * 60 * 60 * 1000;
 
 function readPlanOverlay() {
   const m = safeReadJSON(LS_PLAN_OVERLAY, {});
@@ -10074,11 +10084,14 @@ function computeRouteGroups(stops, loadStatusByName) {
     const key = s.routeName || s.loadNbr;
     if (!key) continue;
     let g = m.get(key);
-    if (!g) { g = { key, name: s.routeName || key, loadNbr: s.loadNbr || key, loadId: null, driver: '', driverId: '', count: 0, delivered: 0, inProgress: 0, exceptions: 0, skids: 0, loose: 0, weight: 0 }; m.set(key, g); }
+    if (!g) { g = { key, name: s.routeName || key, loadNbr: s.loadNbr || key, loadId: null, driver: '', driverId: '', count: 0, delivered: 0, inProgress: 0, exceptions: 0, skids: 0, loose: 0, weight: 0, locs: new Set() }; m.set(key, g); }
     if (!g.loadId) g.loadId = s.raw?.load?.loadId ?? s.loadId ?? null;
     if (!g.driver && (s.driverName || s.driverUserName)) g.driver = s.driverName || s.driverUserName;
     if (!g.driverId && s.driverId) g.driverId = s.driverId;
     g.count += 1;
+    // PHYSICAL stops: multiple orders to the same customer/address are ONE truck stop —
+    // NuVizz's own route card groups them (Total Stops) — so headers count locations.
+    g.locs.add(s.matchKey || String(s.stopNbr));
     const kind = classifyStopStatus(s);
     if (kind === 'DELIVERED') g.delivered += 1;
     else if (kind === 'OUT_FOR_DEL' || kind === 'ARRIVED') g.inProgress += 1;
@@ -10093,6 +10106,7 @@ function computeRouteGroups(stops, loadStatusByName) {
     const raw = byName.get(String(g.name || '').trim().toLowerCase()) ?? byName.get('#id:' + String(g.loadNbr));
     g.rosterStatus = raw || '';
     g.status = nuvizzLoadStatus(raw) || deriveRouteStatus(g);
+    g.locCount = g.locs.size; delete g.locs;   // physical stops (orders sharing an address = one stop)
   }
   return groups.sort((a, b) =>
     String(loadDisplayName(a.name, a.loadNbr) || a.name).localeCompare(
@@ -10215,7 +10229,9 @@ function RoutingRoutesPanel({ groups, onPick, liveWrite = false, roster = [], ro
                     <span className={`text-[11px] truncate ${shownDriver ? 'text-slate-600' : 'text-slate-400 italic'}`}>{shownDriver || 'No driver assigned'}</span>
                   </div>
                   <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 mt-1 text-[11px] text-slate-600">
-                    <span>{g.count} stop{g.count === 1 ? '' : 's'}</span>
+                    <span title={g.locCount != null && g.locCount !== g.count ? `${g.count} orders across ${g.locCount} physical stops (same-address orders ride together)` : undefined}>
+                      {(g.locCount ?? g.count)} stop{(g.locCount ?? g.count) === 1 ? '' : 's'}{g.locCount != null && g.locCount !== g.count ? ` · ${g.count} orders` : ''}
+                    </span>
                     <span>{g.skids} skids</span>
                     <span>{g.loose} loose</span>
                     <span>{Math.round(g.weight).toLocaleString()} lb</span>
@@ -10598,7 +10614,11 @@ function RoutingWorkbenchCard({ route, stopById, otherKeys, ninjaMode, isActive,
             <button onClick={onClose} className="text-slate-400 hover:text-red-600 leading-none text-lg" aria-label={`Close route ${route.name || loadDisplayName(route.key) || ''}`}>×</button>
           </div>
         </div>
-        <div className="text-[11px] text-slate-500 truncate">{driverLabel} · {rows.length} stop{rows.length === 1 ? '' : 's'} · {skids} sk · {Math.round(weight).toLocaleString()} lb · {rows.length ? Math.round((100 * delivered) / rows.length) : 0}%</div>
+        {/* Header counts PHYSICAL stops (same-address orders = one truck stop, like NuVizz's own
+            card); when orders > stops it shows both so nothing is hidden. */}
+        {(() => { const locs = new Set(rows.map((s) => s.matchKey || String(s.stopNbr))).size; return (
+        <div className="text-[11px] text-slate-500 truncate">{driverLabel} · {locs} stop{locs === 1 ? '' : 's'}{locs !== rows.length ? ` · ${rows.length} orders` : ''} · {skids} sk · {Math.round(weight).toLocaleString()} lb · {rows.length ? Math.round((100 * delivered) / rows.length) : 0}%</div>
+        ); })()}
         {rc && <div className="text-[11px] font-semibold text-slate-700">{miles.toFixed(1)} mi · {fmtDur(driveMin)}<span className="font-normal text-slate-400"> · DH {dhMi.toFixed(1)} mi</span></div>}
         {!route.collapsed && (
           // The dropdown shows the APPLIED strategy and keeps showing it until you change it (#280/
@@ -11409,7 +11429,7 @@ function RoutingSelectionFloatPanel({ selectedStops, onRemove, onClearAll, onOpe
 // view (hybrid imagery vs the plain roadmap base), and Show routes (draws each load's stops
 // connected in delivery sequence). (The old build-version badge lived here; version history now
 // lives in the gear settings, since the dispatcher reads the version from the page footer.)
-function RoutingMapFilters({ unplannedOnly, setUnplannedOnly, satellite, setSatellite, showRoutes, setShowRoutes }) {
+function RoutingMapFilters({ unplannedOnly, setUnplannedOnly, satellite, setSatellite, showRoutes, setShowRoutes, hideLabels, setHideLabels }) {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
   useEffect(() => {
@@ -11420,7 +11440,7 @@ function RoutingMapFilters({ unplannedOnly, setUnplannedOnly, satellite, setSate
     window.addEventListener('keydown', onKey);
     return () => { document.removeEventListener('mousedown', onDoc); window.removeEventListener('keydown', onKey); };
   }, [open]);
-  const anyOn = unplannedOnly || showRoutes || !satellite;
+  const anyOn = unplannedOnly || showRoutes || !satellite || hideLabels;
   return (
     <div className="absolute top-2 right-2 z-20" ref={ref}>
       <button
@@ -11435,6 +11455,7 @@ function RoutingMapFilters({ unplannedOnly, setUnplannedOnly, satellite, setSate
         <div className="absolute right-0 mt-1 w-52 bg-white border border-slate-300 rounded-lg shadow-xl px-3 py-1.5 text-[12px]">
           <MapFilterToggle label="Unplanned only" checked={unplannedOnly} onChange={setUnplannedOnly} />
           <MapFilterToggle label="Satellite view" checked={satellite} onChange={setSatellite} />
+          <MapFilterToggle label="Hide place labels" checked={hideLabels} onChange={setHideLabels} />
           <MapFilterToggle label="Show routes" checked={showRoutes} onChange={setShowRoutes} />
         </div>
       )}
@@ -11704,6 +11725,11 @@ function RoutingScreen({ debugCaptureRef }) {
   // stops to derive it from, and assignDriver needs the loadId. Kept in a ref so openRouteInWorkbench
   // (deps []) always reads the latest without re-binding.
   const loadRosterRef = useRef(new Map());
+  // Confirmed-dispatch status overrides (load name lc / '#id:loadNbr' → 'Dispatched'). The roster
+  // is a cached snapshot that only refreshes with scans — paused overnight — so a successful
+  // production dispatch kept reading Draft here. An override wins over the stale roster and is
+  // DROPPED the moment the roster itself reports a non-Draft status (agreement — scans caught up).
+  const dispatchOverrideRef = useRef(new Map());
   useEffect(() => {
     if (!selectedDate) return;
     let cancelled = false;
@@ -11730,6 +11756,12 @@ function RoutingScreen({ debugCaptureRef }) {
           // 0.32.25 (loadNbr || loadId), so opening one must resolve back to the entry — without
           // this the card had no loadId/loadNbr and assign/save failed on every empty load.
           if (l.loadNbr) index.set(String(l.loadNbr), entry);
+        }
+        // Confirmed-dispatch overrides beat the stale snapshot; agreement retires them.
+        for (const [k, v] of dispatchOverrideRef.current) {
+          const raw = String(status.get(k) || '').toLowerCase();
+          if (raw && !raw.includes('draft')) dispatchOverrideRef.current.delete(k); // roster caught up
+          else status.set(k, v);
         }
         loadRosterRef.current = index;
         setLoadStatusByName(status);
@@ -11774,6 +11806,11 @@ function RoutingScreen({ debugCaptureRef }) {
   // anchor line. Persisted; default OFF (show), matching NuVizz's default.
   const [routeHideStem, setRouteHideStem] = useState(() => { try { return localStorage.getItem('routing.hideStem') === 'on'; } catch { return false; } });
   useEffect(() => { try { localStorage.setItem('routing.hideStem', routeHideStem ? 'on' : 'off'); } catch { /* ignore */ } }, [routeHideStem]);
+  // Hide Google's own place/business labels (the POI clutter that overlaps stop pins). On the
+  // vector mapId map JS styles are ignored, so the mapId-safe lever is the TYPE: satellite has
+  // no labels, hybrid does. Persisted.
+  const [routeHideLabels, setRouteHideLabels] = useState(() => { try { return localStorage.getItem('routing.hideLabels') === 'on'; } catch { return false; } });
+  useEffect(() => { try { localStorage.setItem('routing.hideLabels', routeHideLabels ? 'on' : 'off'); } catch { /* ignore */ } }, [routeHideLabels]);
   const resetRoutingLayout = useCallback(() => {
     leftPanel.onDoubleClick(); rightPanel.onDoubleClick();
     setSelPanelOpen(true); setRightPanelMode('tabs'); setBottomGridOn(true); setRouteHideStem(false); setLeftPanelOn(false); setRightCollapsed(false);
@@ -11788,6 +11825,16 @@ function RoutingScreen({ debugCaptureRef }) {
   // overlay only — reorders/moves live here, they don't mutate the board.
   const WB_MAX = 3;
   const [wbRoutes, setWbRoutes] = useState([]);
+  // Every stop id currently STAGED on an open Compare card, mapped to its card key. The map
+  // selection tools must not grab these — selecting a staged stop and sending it to another
+  // load double-plans it (the save-level guard now refuses, but the selection shouldn't
+  // invite the mistake at all). A ref so guards in stable callbacks read the latest.
+  const wbStagedRef = useRef(new Map());
+  useEffect(() => {
+    const m = new Map();
+    for (const r of wbRoutes) for (const id of r.order) m.set(String(id), r.key);
+    wbStagedRef.current = m;
+  }, [wbRoutes]);
   // Ninja mode (part 5): while on, each stop clicked on the map is appended (in click order) to
   // the ACTIVE compare-panel route. activeRouteKey picks the target; defaults to the leftmost card.
   const [ninjaMode, setNinjaMode] = useState(false);
@@ -12232,6 +12279,19 @@ function RoutingScreen({ debugCaptureRef }) {
     setDispatchingKey(null);
     if (res.ok && res.result?.ok !== false) {
       showMapToast(`✓ ${label} dispatched.`);
+      // Reflect the confirmed dispatch IMMEDIATELY: the Routes card status comes from the
+      // cached roster, which only refreshes with scans (paused overnight) — without this the
+      // card kept reading Draft after a successful production dispatch. The override also
+      // survives a stale roster refetch (see the roster effect's merge).
+      const nm = String(g.name || '').trim().toLowerCase();
+      dispatchOverrideRef.current.set(nm, 'Dispatched');
+      if (g.loadNbr) dispatchOverrideRef.current.set('#id:' + String(g.loadNbr), 'Dispatched');
+      setLoadStatusByName((prev) => {
+        const n = new Map(prev);
+        n.set(nm, 'Dispatched');
+        if (g.loadNbr) n.set('#id:' + String(g.loadNbr), 'Dispatched');
+        return n;
+      });
     } else {
       showMapToast(`✗ Dispatch failed for ${label}: ${res.error || res.result?.error || 'write error'}`);
     }
@@ -12548,7 +12608,13 @@ function RoutingScreen({ debugCaptureRef }) {
   );
 
   const toggleStop = useCallback((id) => {
-    setSelectedIds((prev) => { const n = new Set(prev); const k = String(id); n.has(k) ? n.delete(k) : n.add(k); return n; });
+    const k = String(id);
+    // Already staged on an open Compare card → don't let the selection grab it (Ninja is the
+    // move tool). setLastAction is used (not a toast dep) so this callback stays stable and
+    // the marker layer doesn't rebuild on every staging edit.
+    const holder = wbStagedRef.current.get(k);
+    if (holder) { setLastAction(`${k} is already on ${loadDisplayName(holder) || holder} — remove it there or use Ninja to move it`); return; }
+    setSelectedIds((prev) => { const n = new Set(prev); n.has(k) ? n.delete(k) : n.add(k); return n; });
   }, []);
   const removeStop = useCallback((id) => {
     setSelectedIds((prev) => { const n = new Set(prev); n.delete(String(id)); return n; });
@@ -12636,8 +12702,14 @@ function RoutingScreen({ debugCaptureRef }) {
   }, [clearTemp]);
   const addEnclosed = useCallback((arr) => {
     if (!arr.length) { setLastAction('No stops in that area'); return; }
-    setSelectedIds((prev) => { const n = new Set(prev); for (const s of arr) n.add(String(s.stopNbr)); return n; });
-    setLastAction(`Added ${arr.length} stop${arr.length === 1 ? '' : 's'}`);
+    // Skip stops already staged on an open Compare card (see wbStagedRef) — a box/lasso over
+    // an area with an open route must not re-grab its stops onto the selection.
+    const staged = wbStagedRef.current;
+    const take = arr.filter((s) => !staged.has(String(s.stopNbr)));
+    const skipped = arr.length - take.length;
+    if (!take.length) { setLastAction(`All ${arr.length} stop${arr.length === 1 ? ' is' : 's are'} already on open Compare cards`); return; }
+    setSelectedIds((prev) => { const n = new Set(prev); for (const s of take) n.add(String(s.stopNbr)); return n; });
+    setLastAction(`Added ${take.length} stop${take.length === 1 ? '' : 's'}${skipped ? ` · skipped ${skipped} already on open cards` : ''}`);
   }, []);
 
   // ── Pin relocation + address edit handlers (ported from MapScreen 6826-6909) ──
@@ -12981,8 +13053,22 @@ function RoutingScreen({ debugCaptureRef }) {
   // re-initialising the map (which would drop markers/listeners). mapReady re-applies it after a
   // mobile/desktop re-init.
   useEffect(() => {
-    if (google && mapRef.current) { try { mapRef.current.setMapTypeId(routeSatellite ? 'hybrid' : 'roadmap'); } catch { /* ignore */ } }
-  }, [google, routeSatellite, mapReady]);
+    if (!google || !mapRef.current) return;
+    // Satellite: 'satellite' drops ALL of Google's labels; 'hybrid' keeps them. Roadmap always
+    // carries labels — with a cloud mapId JS styles can't strip them, so "Hide place labels"
+    // primarily cleans the satellite view (where the POI clutter overlaps the pins). When there's
+    // NO mapId, also apply a POI/transit-off style so roadmap honors it too.
+    const type = routeSatellite ? (routeHideLabels ? 'satellite' : 'hybrid') : 'roadmap';
+    try { mapRef.current.setMapTypeId(type); } catch { /* ignore */ }
+    if (!MAP_ID) {
+      try {
+        mapRef.current.setOptions({ styles: routeHideLabels
+          ? [{ featureType: 'poi', elementType: 'labels', stylers: [{ visibility: 'off' }] },
+             { featureType: 'transit', elementType: 'labels', stylers: [{ visibility: 'off' }] }]
+          : [] });
+      } catch { /* ignore */ }
+    }
+  }, [google, routeSatellite, routeHideLabels, mapReady]);
 
   // "Show routes" overlay — group the day's positioned stops by load, order each by the same
   // sequencing the panel uses, and draw a colored polyline per load (independent of the Compare /
@@ -13402,7 +13488,7 @@ function RoutingScreen({ debugCaptureRef }) {
       <div className="flex-1 flex flex-col min-h-0">
         <div className="flex-1 relative min-w-0">
           <div ref={mapDiv} className="absolute inset-0" />
-          <RoutingMapFilters unplannedOnly={routeUnplannedOnly} setUnplannedOnly={setRouteUnplannedOnly} satellite={routeSatellite} setSatellite={setRouteSatellite} showRoutes={routeShowRoutes} setShowRoutes={setRouteShowRoutes} />
+          <RoutingMapFilters unplannedOnly={routeUnplannedOnly} setUnplannedOnly={setRouteUnplannedOnly} satellite={routeSatellite} setSatellite={setRouteSatellite} showRoutes={routeShowRoutes} setShowRoutes={setRouteShowRoutes} hideLabels={routeHideLabels} setHideLabels={setRouteHideLabels} />
           {/* Stops status card — same pill as the dispatch Map (below the ⚙ filters button). */}
           <div className="absolute top-12 right-2 z-[15] max-w-[230px]">{statusCard}</div>
           {!viewing && <RoutingMapTools selectMode={selectMode} onBox={() => (selectMode === 'box' ? cancelMode() : beginMode('box'))} onLasso={() => (selectMode === 'lasso' ? cancelMode() : beginMode('lasso'))} ninjaMode={ninjaMode} onToggleNinja={onNinjaTool} ninjaAvailable={wbRoutes.length > 0} />}
@@ -13542,7 +13628,7 @@ function RoutingScreen({ debugCaptureRef }) {
       {/* Center: the map canvas */}
       <div className="flex-1 relative min-w-0">
         <div ref={mapDiv} className="absolute inset-0" />
-        <RoutingMapFilters unplannedOnly={routeUnplannedOnly} setUnplannedOnly={setRouteUnplannedOnly} satellite={routeSatellite} setSatellite={setRouteSatellite} showRoutes={routeShowRoutes} setShowRoutes={setRouteShowRoutes} />
+        <RoutingMapFilters unplannedOnly={routeUnplannedOnly} setUnplannedOnly={setRouteUnplannedOnly} satellite={routeSatellite} setSatellite={setRouteSatellite} showRoutes={routeShowRoutes} setShowRoutes={setRouteShowRoutes} hideLabels={routeHideLabels} setHideLabels={setRouteHideLabels} />
         {/* Stops status card — same pill as the dispatch Map (below the ⚙ filters button). */}
         <div className="absolute top-12 right-2 z-[15] max-w-[240px]">{statusCard}</div>
         {!viewing && <RoutingMapTools selectMode={selectMode} onBox={() => (selectMode === 'box' ? cancelMode() : beginMode('box'))} onLasso={() => (selectMode === 'lasso' ? cancelMode() : beginMode('lasso'))} ninjaMode={ninjaMode} onToggleNinja={onNinjaTool} ninjaAvailable={wbRoutes.length > 0} />}

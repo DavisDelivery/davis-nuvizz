@@ -475,8 +475,8 @@ export async function patchBoardPlan(
   tenant: string,
   dateStr: string,
   patch: { routeName: string; orderedStopNbrs: string[]; unplannedStopNbrs?: string[]; driverName?: string | null; at: string },
-): Promise<{ patched: number; missing: number; rescued: number }> {
-  if (!isFirestoreEnabled()) return { patched: 0, missing: 0, rescued: 0 };
+): Promise<{ patched: number; missing: number; rescued: number; missingNbrs: string[] }> {
+  if (!isFirestoreEnabled()) return { patched: 0, missing: 0, rescued: 0, missingNbrs: [] };
   const base = `${COLLECTION}/${parentId(tenant, dateStr)}`;
   const jobs: Array<{ nbr: string; fields: any }> = [];
   patch.orderedStopNbrs.forEach((nbr, i) => jobs.push({ nbr: String(nbr), fields: boardWritePlannedFields(patch.routeName, i + 1, patch.driverName ?? null, patch.at) }));
@@ -537,7 +537,9 @@ export async function patchBoardPlan(
       stillMissing = next;
     }
   }
-  return { patched, missing: stillMissing.length, rescued };
+  // missingNbrs: WHICH stops couldn't be patched anywhere (bounded) — surfaced through the
+  // sync response so a miss is diagnosable from the client console, not just a count.
+  return { patched, missing: stillMissing.length, rescued, missingNbrs: stillMissing.slice(0, 20).map((j) => j.nbr) };
 }
 
 // ── Per-PRO enrichment registry (day-independent) ────────────────────────────
