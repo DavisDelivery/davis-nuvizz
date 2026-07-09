@@ -10,7 +10,7 @@
 
 import { getNuvizzRequester, setCallTrigger } from './lib/nuvizz-request.mts';
 import { getCreds, basicAuthHeader } from './lib/nuvizz-scan.mts';
-import { buildBody, normalize, cleanPeriod, coveringPeriodForRange, rowInRange, OPENAPI_BASE, SAVED_SEARCHES, fetchSavedSearchRaw, fetchSavedSearchRows, toBoardStop, boardDayFor } from './lib/nuvizz-list.mts';
+import { buildBody, normalize, cleanPeriod, coveringWindowForRange, rowInRange, LIST_MAX_RESULT, OPENAPI_BASE, SAVED_SEARCHES, fetchSavedSearchRaw, fetchSavedSearchRows, toBoardStop, boardDayFor } from './lib/nuvizz-list.mts';
 
 // Re-exported so the existing test (test/stop-explorer.test.mjs) keeps importing them here.
 export { buildBody, normalize, cleanPeriod } from './lib/nuvizz-list.mts';
@@ -74,34 +74,45 @@ export default async (req: Request): Promise<Response> => {
     (isDay(body.fromDate) && isDay(body.toDate))
       ? (body.fromDate <= body.toDate ? { from: body.fromDate, to: body.toDate } : { from: body.toDate, to: body.fromDate })
       : null;
-  const period = range ? coveringPeriodForRange(range.from, range.to) : cleanPeriod(body.arrivalPeriod);
+  const win = range ? coveringWindowForRange(range.from, range.to) : null;
+  const period = win ? win.period : cleanPeriod(body.arrivalPeriod);
   const codes = Array.isArray(body.statusCodes) ? body.statusCodes.filter((c: any) => /^\d{1,2}$/.test(String(c))).map(String) : [];
   const statusCsv = codes.length ? codes.join(',') : '-1';
   const page = Math.max(1, parseInt(body.page, 10) || 1);
   // A wider window / custom range needs a higher row cap to actually return the stops in
   // it — still ONE filterdata call (maxResult is rows-per-call, not extra NuVizz calls).
   const pageSize = Math.max(1, Math.min(2000, parseInt(body.pageSize, 10) || 100));
+  // A range pull filters the covering window down to the exact days, so it must pull the
+  // window as COMPLETELY as one call allows (the scanner's proven whole-day size) — a
+  // truncated covering pull would silently drop in-range stops. Flagged `partial` below.
+  const pullSize = range ? Math.max(pageSize, LIST_MAX_RESULT) : pageSize;
 
   // Hard time budget: a slow/large window must return a clean JSON error rather than
   // overrun the function — Netlify would otherwise serve an HTML 502 the client's r.json()
   // can't parse (the "Unexpected token '<'" symptom). The abort fires safely under this
-  // function's timeout (netlify.toml → 26s).
-  const TIMEOUT_MS = Number(process.env.NUVIZZ_EXPLORER_TIMEOUT_MS) || 22_000;
+  // function's timeout (netlify.toml → 26s); the env override is clamped so a stray value
+  // can't defeat that ordering.
+  const TIMEOUT_MS = Math.min(24_000, Math.max(1_000, Number(process.env.NUVIZZ_EXPLORER_TIMEOUT_MS) || 22_000));
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(), TIMEOUT_MS);
   try {
     const { companyCode } = getCreds();
     const hdr = { Authorization: basicAuthHeader(), 'Content-Type': 'application/json', Accept: 'application/json' };
-    const payload = JSON.stringify(buildBody(period, statusCsv, page, pageSize));
+    const payload = JSON.stringify(buildBody(period, statusCsv, page, pullSize));
     const base = `${OPENAPI_BASE}/entity`;
     const reqr = getNuvizzRequester();
     // Data + total in parallel; the stops filterdata response omits totalRecords, so the
     // count endpoint supplies it (only meaningful on page 1). maxRetries:1 keeps this
     // user-facing pull snappy — the scanner's 4× / 20s backoff would blow the time budget.
+    // The count is AUXILIARY: an 8s race means a stalled count can never hold the data
+    // response hostage until the abort kills both.
     const [dataResp, countResp] = await Promise.all([
       reqr.request(`${base}/filterdata/VizzonStop/${companyCode}`, { method: 'POST', headers: hdr, body: payload, signal: ac.signal, maxRetries: 1 }, { route: '/entity/filterdata', tenant: companyCode }),
       (page === 1 && !range)
-        ? reqr.request(`${base}/filterdatatotalcount/VizzonStop/${companyCode}`, { method: 'POST', headers: hdr, body: payload, signal: ac.signal, maxRetries: 1 }, { route: '/entity/filtercount', tenant: companyCode }).catch(() => null)
+        ? Promise.race([
+            reqr.request(`${base}/filterdatatotalcount/VizzonStop/${companyCode}`, { method: 'POST', headers: hdr, body: payload, signal: ac.signal, maxRetries: 1 }, { route: '/entity/filtercount', tenant: companyCode }).catch(() => null),
+            new Promise<null>((resolve) => setTimeout(() => resolve(null), 8_000)),
+          ])
         : Promise.resolve(null),
     ]);
     if (!dataResp.ok) {
@@ -119,20 +130,29 @@ export default async (req: Request): Promise<Response> => {
     }
     let rows = normalize(j);
     let total: number | null = null;
-    if (range) {
+    let partial = false;
+    if (range && win) {
       // Filter the covering-window rows to the exact calendar range; the count endpoint
       // counts the WHOLE covering window, so report the exact in-range count instead.
-      rows = rows.filter((r: any) => rowInRange(r, range.from, range.to));
+      // That count is only EXACT when the covering pull was complete — flag it `partial`
+      // when the pull hit the row cap (more rows existed than one call returned) or the
+      // requested range ran past the clamped covering window. The client must present a
+      // partial count as "≥ N", never as exact.
+      const pulled = rows;
+      rows = pulled.filter((r: any) => rowInRange(r, range.from, range.to));
       total = rows.length;
+      partial = pulled.length >= pullSize || win.clamped;
     } else {
       total = j?.totalRecords ?? null;
       if (total == null && countResp && countResp.ok) {
         try { total = JSON.parse(await countResp.text()).totalRecords; } catch { /* ignore */ }
       }
     }
-    return new Response(JSON.stringify({ ok: true, period, range, statusCodes: codes, page, pageSize, total: total ?? rows.length, rows }), { status: 200, headers: cors });
+    return new Response(JSON.stringify({ ok: true, period, range, partial, covered: win ? { from: win.from, to: win.to } : null, statusCodes: codes, page, pageSize, total: total ?? rows.length, rows }), { status: 200, headers: cors });
   } catch (e: any) {
-    const aborted = e?.name === 'AbortError' || /abort/i.test(String(e?.message || ''));
+    // ac.signal.aborted is the authoritative "our timer fired" signal — never label an
+    // upstream error a timeout just because its message happens to contain "abort".
+    const aborted = ac.signal.aborted || e?.name === 'AbortError';
     return new Response(JSON.stringify({ ok: false, error: aborted ? 'NuVizz timed out — the date window may be too large. Try a narrower range.' : (e?.message || 'stop-explorer failed') }), { status: aborted ? 504 : 500, headers: cors });
   } finally {
     clearTimeout(timer);

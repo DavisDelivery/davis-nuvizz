@@ -54,7 +54,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.45.0';
+const APP_VERSION = '0.45.1';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -99,6 +99,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.45.1', 'FIX: a Save of CARRY-OVER orders (yesterday-dated stops routed from today\'s board — the Uline/Denis case) landed in NuVizz but the board still showed the route unbuilt. The write-through only patched the SELECTED day\'s cache doc, and carry-over stops live on their own (prior) day\'s doc — so the patch silently missed every stop and the board kept serving the stale unplanned rows until a scan caught up. The write-through now finds each stop up to 14 days back, patches it in place AND copies the confirmed plan onto today\'s board doc, so the route shows immediately; if any stop still can\'t be patched the Save toast now SAYS so ("board didn\'t update for N stop(s) — NuVizz HAS the save") instead of failing silently. Also hardened the new Custom range from review: pulls are debounced 600ms + aborted when superseded (typing a date can no longer fire a NuVizz call per keystroke), entering Custom no longer auto-pulls, an incomplete/partial covering pull is labeled "≥ N stops (partial — narrow the range)" instead of posing as exact, stale rows can\'t linger under "pick a date range", and an inverted From/To is normalized. Zero new NuVizz calls anywhere (board fix is Firestore-only).'],
   ['0.45.0', 'Bottom grid "pull from NuVizz" — MORE date windows + a settable RANGE, and a fix for the ±7-day error. The window dropdown now offers Today, ±3, ±7, ±14, ±30 days, plus "Custom range…" — pick a From and To calendar date and the grid pulls exactly those delivery days. (NuVizz only understands relative windows, so a custom range pulls the smallest covering window in ONE cheap list call and filters to your exact dates server-side — still ~2 NuVizz calls, never a re-scan.) FIX: selecting ±7 days (or any wide window) could fail with "NuVizz: Unexpected token \'<\'… is not valid JSON" — a large pull was overrunning the function\'s 10s limit and coming back as an HTML error page. The explorer now has 26s of headroom, aborts cleanly at 22s, doesn\'t burn the budget on retries, and turns any non-JSON upstream reply into a plain "window may be too large — try a narrower range" message instead of a raw parse error.'],
   ['0.44.1', '🔗 RWB engine — the portal calls now carry a real browser identity instead of the Node/undici default: User-Agent, Accept, Accept-Language, and the Chrome client hints (sec-ch-ua*, sec-fetch-*), all matched to the dispatcher\'s actual macOS Chrome from a live Route Workbench HAR. (Content-Type stays multipart/form-data — the HAR confirmed the real portal uses that too. X-Requested-With is intentionally NOT sent — the real portal doesn\'t.) Override the UA with NUVIZZ_RWB_USER_AGENT. This closes the header-level fingerprint gap; the request bodies/ids were already HAR-matched.'],
   ['0.44.0', 'Per-action NuVizz call counter on every Compare-panel Save — the success toast now shows how many NuVizz calls that action actually made (e.g. "✓ 1 load saved · 3 NuVizz calls (2 RWB portal)"). "RWB portal" = just the Route-Workbench portal writes (preview / save / validate / add) — the calls that show in the real RWB HAR, so you can reconcile each action against it; the total also counts any cold-start login + safety re-reads. Server-measured as an exact before/after delta on the metered requester, so it\'s the real billed count, not an estimate.'],
@@ -8406,6 +8407,7 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
   const [nvTo, setNvTo] = useState('');
   const [nvRows, setNvRows] = useState([]);
   const [nvTotal, setNvTotal] = useState(0);
+  const [nvPartial, setNvPartial] = useState(false); // server pulled an incomplete covering window → count is "≥ N"
   const [nvLoading, setNvLoading] = useState(false);
   const [nvErr, setNvErr] = useState(null);
   const [driverSel, setDriverSel] = useState('');
@@ -8450,36 +8452,51 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
   // Pull from NuVizz whenever a date window is selected (re-pull when the status
   // selection changes so status filters server-side, not just on the loaded page).
   useEffect(() => {
-    if (!nvWindow) { setNvErr(null); return; }
-    // Custom range needs both endpoints before it can pull.
+    if (!nvWindow) { setNvErr(null); setNvLoading(false); return; }
+    // Custom range needs both endpoints before it can pull. Clear any previous window's
+    // rows too — stale data must not sit under a "pick a date range" prompt.
     const custom = nvWindow === 'custom';
-    if (custom && (!nvFrom || !nvTo)) { setNvErr(null); setNvLoading(false); return; }
+    if (custom && (!nvFrom || !nvTo)) { setNvErr(null); setNvLoading(false); setNvRows([]); setNvTotal(0); setNvPartial(false); return; }
     let cancelled = false;
+    const ctrl = new AbortController();
     const codes = TABLE_STATUS_BUCKETS.filter((b) => statusSel.has(b.k)).flatMap((b) => b.codes);
+    // Normalize a keyboard-typed inverted range (min/max only constrain the picker popup);
+    // the server swaps too, but the request should say what the grid will show.
+    const [lo, hi] = custom ? (nvFrom <= nvTo ? [nvFrom, nvTo] : [nvTo, nvFrom]) : ['', ''];
     // A wider window / range needs a higher row cap to return the stops in it — still ONE
     // cheap NuVizz list call (maxResult is rows-per-call, not extra calls).
     const req = custom
-      ? { fromDate: nvFrom, toDate: nvTo, statusCodes: codes, page: 1, pageSize: 1000 }
+      ? { fromDate: lo, toDate: hi, statusCodes: codes, page: 1, pageSize: 1000 }
       : { arrivalPeriod: nvWindow, statusCodes: codes, page: 1, pageSize: 1000 };
     setNvLoading(true); setNvErr(null);
-    fetch('/.netlify/functions/nuvizz-stop-explorer', {
-      method: 'POST', cache: 'no-store', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(req),
-    })
-      .then((r) => r.json())
-      .then((j) => {
-        if (cancelled) return;
-        if (!j.ok) throw new Error(j.error || 'pull failed');
-        const decorated = (j.rows || []).map((s) => ({
-          ...s,
-          matchKey: normalizeMatchKey(s.businessName || '', s.addr1 || '', s.city || '', s.zip || ''),
-          loadNbr: s.routeName || '',
-        }));
-        setNvRows(decorated); setNvTotal(j.total ?? decorated.length);
+    // DEBOUNCE custom-range pulls: a native date input fires onChange per SEGMENT edit
+    // (typing a year = up to 4 valid intermediate dates), and every pull costs real NuVizz
+    // calls — un-debounced, keyboard-typing one date could fire ~8 maximal-window pulls.
+    // Waiting 600ms after the last keystroke collapses that storm into ONE call. Preset
+    // window changes are single discrete events, so they fire immediately.
+    const timer = setTimeout(() => {
+      fetch('/.netlify/functions/nuvizz-stop-explorer', {
+        method: 'POST', cache: 'no-store', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(req), signal: ctrl.signal,
       })
-      .catch((e) => { if (!cancelled) { setNvErr(e.message); setNvRows([]); setNvTotal(0); } })
-      .finally(() => { if (!cancelled) setNvLoading(false); });
-    return () => { cancelled = true; };
+        .then((r) => r.json())
+        .then((j) => {
+          if (cancelled) return;
+          if (!j.ok) throw new Error(j.error || 'pull failed');
+          // Deploy-skew guard: a server that predates custom ranges ignores fromDate/toDate
+          // and answers with TODAY's stops — never render those as the picked range.
+          if (custom && !j.range) throw new Error('server doesn’t support date ranges yet — hard-refresh the app and retry');
+          const decorated = (j.rows || []).map((s) => ({
+            ...s,
+            matchKey: normalizeMatchKey(s.businessName || '', s.addr1 || '', s.city || '', s.zip || ''),
+            loadNbr: s.routeName || '',
+          }));
+          setNvRows(decorated); setNvTotal(j.total ?? decorated.length); setNvPartial(!!j.partial);
+        })
+        .catch((e) => { if (!cancelled) { setNvErr(e.message); setNvRows([]); setNvTotal(0); setNvPartial(false); } })
+        .finally(() => { if (!cancelled) setNvLoading(false); });
+    }, custom ? 600 : 0);
+    return () => { cancelled = true; clearTimeout(timer); ctrl.abort(); };
   }, [nvWindow, nvFrom, nvTo, statusSel]);
   const driverOptions = useMemo(() => {
     const set = new Set();
@@ -8670,12 +8687,7 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
               <>
                 <select
                   value={nvWindow}
-                  onChange={(e) => {
-                    const v = e.target.value;
-                    // Seed the custom pickers to the board day so they open somewhere sensible.
-                    if (v === 'custom' && !nvFrom && !nvTo) { setNvFrom(boardDate || ''); setNvTo(boardDate || ''); }
-                    setNvWindow(v);
-                  }}
+                  onChange={(e) => setNvWindow(e.target.value)}
                   title="Data source / delivery-date window"
                   className="hidden sm:inline-block border border-slate-300 rounded px-1.5 py-1 text-xs text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-400"
                 >
@@ -8719,7 +8731,9 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
                         ? <span className="inline-flex items-center gap-1"><RefreshCw size={11} className="animate-spin" /> pulling…</span>
                         : nvErr
                           ? <span className="text-red-600">NuVizz: {nvErr}</span>
-                          : <>NuVizz · {nvTotal.toLocaleString()} stops</>}
+                          : nvPartial
+                            ? <span className="text-amber-600" title="The date window was too large for one pull — some stops in it may be missing. Narrow the range for an exact result.">NuVizz · ≥{nvTotal.toLocaleString()} stops (partial — narrow the range)</span>
+                            : <>NuVizz · {nvTotal.toLocaleString()} stops</>}
                   </span>
                 )}
               </>
@@ -10755,6 +10769,7 @@ function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmN
     // key (that silently no-ops markSaved and leaves the card dirty forever / mislabels the toast).
     const keyOf = (l) => toKey.get('nbr:' + String(l.loadNbr)) ?? toKey.get('id:' + String(l.loadId)) ?? null;
     const okKeys = resLoads.filter((l) => l.ok).map(keyOf).filter(Boolean);
+    let boardSyncMissing = 0; // stops the board write-through couldn't find on ANY recent day's cache
     if (okKeys.length) {
       markSaved(okKeys);
       setStaged((p) => { const n = { ...p }; for (const k of okKeys) delete n[k]; return n; });
@@ -10767,19 +10782,25 @@ function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmN
       // straight into the board cache (Firestore-only, zero NuVizz calls) — the board flips to
       // planned immediately instead of waiting out the next scan.
       if (onBoardSync) {
+        const syncPromises = [];
         for (const l of resLoads) {
           if (!l.ok) continue;
           const k = keyOf(l);
           const L = loads.find((x) => (x.__key ?? x.routeName ?? x.loadNbr ?? x.loadId) === k);
           if (!L || !((L.orderedStopNbrs || []).length || (L.removeStopNbrs || []).length)) continue;
           const driverApplied = (l.steps || []).some((s) => s.op === 'assignDriver' && s.ok);
-          onBoardSync({
+          syncPromises.push(onBoardSync({
             routeName: L.routeName || loadDisplayName(k) || String(k || ''),
             orderedStopNbrs: (L.orderedStopNbrs || []).map(String),
             unplannedStopNbrs: (L.removeStopNbrs || []).map(String),
             driverName: driverApplied ? (L.driverName || null) : null,
-          });
+          }));
         }
+        // Surface a write-through miss instead of discarding the result — a silent
+        // {patched:0, missing:N} is how a saved route could LOOK unbuilt on the board
+        // even though NuVizz took it (the "built Denis's route, closed it, gone" case).
+        const syncs = (await Promise.all(syncPromises)).filter(Boolean);
+        boardSyncMissing = syncs.reduce((n, r) => n + (Number(r?.missing) || 0), 0);
       }
     }
     // Honest reporting: a load only "saved" if its result has a SUCCESSFUL step (an actual NuVizz
@@ -10792,6 +10813,7 @@ function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmN
     const pendings = resLoads.filter((l) => l.pending && l.loadNbr && Array.isArray(l.requestedOrder));
     const failed = resLoads.filter((l) => !l.ok && !l.pending);
     const orphanMsg = orphaned.length ? ` ⚠ ${orphaned.length} stop(s) now UNPLANNED — re-Save to reroute.` : '';
+    const syncMsg = boardSyncMissing ? ` ⚠ board didn't update for ${boardSyncMissing} stop(s) (NuVizz HAS the save) — it catches up on the next scan.` : '';
     const cancelMsg = cancelled ? ` · ${cancelled} route(s) emptied/cancelled` : '';
     const noopMsg = noop ? ` · ${noop} no change` : '';
     // Per-action NuVizz call count, so you can reconcile each action against the real
@@ -10810,7 +10832,7 @@ function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmN
       console.error('[commitBoard] save failed', { sent: loads, result: res.result, error: res.error });
       showToast(`✗ ${failed.map((l) => `${keyOf(l)}: ${l.error || (l.steps || []).filter((s) => !s.ok).map((s) => s.error).join('; ')}`).join(' | ') || res.error || 'write failed'}${orphanMsg}`);
     } else if (!pendings.length) {
-      if (res.ok) showToast(fired || cancelled ? `✓ ${fired} load(s) saved to NuVizz${cancelMsg}${noopMsg}${callsMsg}.${orphanMsg}` : `Nothing to send — no changes actually fired.${orphanMsg}`);
+      if (res.ok) showToast(fired || cancelled ? `✓ ${fired} load(s) saved to NuVizz${cancelMsg}${noopMsg}${callsMsg}.${orphanMsg}${syncMsg}` : `Nothing to send — no changes actually fired.${orphanMsg}`);
       else showToast(`✗ ${res.error || 'write failed'}${orphanMsg}`);
     }
     if (pendings.length) verifyPendingImports(pendings, loads, keyOf);
@@ -11338,13 +11360,18 @@ function RoutingScreen({ debugCaptureRef }) {
   // orders flip to planned on the board immediately instead of waiting out the next scan (and
   // NuVizz's own list feed, which can lag an async import by minutes).
   const syncBoardAfterSave = useCallback(async (patch) => {
+    // Returns the sync result ({patched, missing, rescued}) so the Save toast can surface a
+    // miss — a discarded {patched:0} was how a saved route could silently look unbuilt.
+    let out = null;
     try {
-      await fetch('/.netlify/functions/nuvizz-board-sync', {
+      const r = await fetch('/.netlify/functions/nuvizz-board-sync', {
         method: 'POST', cache: 'no-store', headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ date: selectedDate, ...patch }),
       });
+      out = await r.json().catch(() => null);
     } catch { /* best-effort — the next scan reconciles anyway */ }
     try { refreshStops(); } catch { /* ignore */ }
+    return out;
   }, [selectedDate, refreshStops]);
   const { notes } = useCustomerNotes();
   const { profiles, saveProfile } = useTruckProfiles();

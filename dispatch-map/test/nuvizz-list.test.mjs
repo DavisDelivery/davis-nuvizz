@@ -4,7 +4,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { statusFromCode, parseSchedDate, parseReqDate, toBoardStop, bucketByDate, boardDayFor, fromRows, normalize, periodForDate, mergeEnrich, mergeTwoScan, etDateForTargetUTC, SAVED_SEARCHES, keepForBoardDate, filterFinishedPriorDay, coveringPeriodForRange, rowDay, rowInRange } from '../netlify/functions/lib/nuvizz-list.mts';
+import { statusFromCode, parseSchedDate, parseReqDate, toBoardStop, bucketByDate, boardDayFor, fromRows, normalize, periodForDate, mergeEnrich, mergeTwoScan, etDateForTargetUTC, SAVED_SEARCHES, keepForBoardDate, filterFinishedPriorDay, coveringPeriodForRange, coveringWindowForRange, rowDay, rowInRange } from '../netlify/functions/lib/nuvizz-list.mts';
 import { addrKey } from '../netlify/functions/lib/geocode.mts';
 
 // ── boardDayFor: the ONE day-resolution authority (bucketing + carry-forward guard) ──
@@ -496,6 +496,24 @@ test('coveringPeriodForRange: order-insensitive and capped so a stray range neve
   const today = '2026-07-09';
   assert.equal(coveringPeriodForRange('2026-07-16', '2026-07-02', today), '+/-8d', 'from>to same window (server also normalizes order)');
   assert.equal(coveringPeriodForRange('2020-01-01', '2026-07-09', today, 60), '+/-60d', 'huge range clamps to maxDays');
+});
+
+test('coveringWindowForRange: reports the covered calendar span and honest clamping', () => {
+  const today = '2026-07-09';
+  const w = coveringWindowForRange('2026-07-02', '2026-07-16', today);
+  assert.equal(w.period, '+/-8d');
+  assert.equal(w.from, '2026-07-01', 'covered span left edge = today - 8');
+  assert.equal(w.to, '2026-07-17', 'covered span right edge = today + 8');
+  assert.equal(w.clamped, false, 'range + pad fits → not clamped');
+
+  const big = coveringWindowForRange('2020-01-01', today, today, 60);
+  assert.equal(big.period, '+/-60d');
+  assert.equal(big.clamped, true, 'requested days beyond the cap → CLAMPED (caller must mark partial)');
+
+  // Boundary: a range whose far edge sits EXACTLY maxDays out still needs the +1 drift pad,
+  // which the cap eats — that loss must read as clamped, not as a clean cover.
+  assert.equal(coveringWindowForRange('2026-05-10', today, today, 60).clamped, true, 'spread 60: pad clamped away');
+  assert.equal(coveringWindowForRange('2026-05-11', today, today, 60).clamped, false, 'spread 59: pad intact');
 });
 
 test('rowDay: Estimated Arrival wins, else Requested Date, else null', () => {

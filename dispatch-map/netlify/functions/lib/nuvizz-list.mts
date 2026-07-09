@@ -350,13 +350,25 @@ export function periodForDate(targetDateUTC: string, etToday: string = etDayStri
 
 // Smallest "+/-Nd" that covers [from,to] around NuVizz's ET "today". Padded by one day so
 // an ET/local off-by-one at the client can't clip an edge day, and capped at maxDays so a
-// stray/huge range can't request an enormous window. PURE — unit-tested.
-export function coveringPeriodForRange(from: string, to: string, etToday: string = etDayString(), maxDays = 60): string {
+// stray/huge range can't request an enormous window. Returns the period PLUS the calendar
+// span it actually covers and whether the cap CLAMPED it (requested days — or the drift
+// pad — fall outside the window): the caller must surface a clamped pull as PARTIAL, never
+// as an exact result. PURE — unit-tested.
+export function coveringWindowForRange(
+  from: string, to: string, etToday: string = etDayString(), maxDays = 60,
+): { period: string; from: string; to: string; clamped: boolean } {
   const dayMs = (s: string) => Date.parse(String(s) + 'T00:00:00Z');
+  const addDays = (iso: string, d: number) => new Date(dayMs(iso) + d * 86400000).toISOString().slice(0, 10);
   const t = dayMs(etToday);
   const spread = [from, to].map((d) => Math.abs(Math.round((dayMs(d) - t) / 86400000))).filter((n) => Number.isFinite(n));
-  const n = Math.min(maxDays, Math.max(1, (spread.length ? Math.max(...spread) : 1) + 1)); // +1 day pad
-  return `+/-${n}d`;
+  const want = Math.max(1, (spread.length ? Math.max(...spread) : 1) + 1); // spread + 1 day pad
+  const n = Math.min(maxDays, want);
+  return { period: `+/-${n}d`, from: addDays(etToday, -n), to: addDays(etToday, n), clamped: n < want };
+}
+
+// Back-compat convenience: just the period string.
+export function coveringPeriodForRange(from: string, to: string, etToday: string = etDayString(), maxDays = 60): string {
+  return coveringWindowForRange(from, to, etToday, maxDays).period;
 }
 
 // The delivery day (YYYY-MM-DD) of an intermediate list row — Estimated Arrival, then

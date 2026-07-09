@@ -467,34 +467,77 @@ export function boardWriteUnplannedFields(at: string): any {
 /**
  * Patch the day's board cache with a CONFIRMED plan: orderedStopNbrs are now ON routeName in
  * that order (routeSeq 1..N); unplannedStopNbrs are now OFF it. Only patches stops the cache
- * already holds (the scan owns row creation — a phantom row would lack address/coords).
- * Firestore-only — ZERO NuVizz calls. No-op when Firestore is off.
+ * already holds (the scan owns row creation — a phantom row would lack address/coords), with
+ * ONE deliberate exception: the carry-over rescue below copies an EXISTING prior-day row
+ * forward, so it never fabricates a row either. Firestore-only — ZERO NuVizz calls.
  */
 export async function patchBoardPlan(
   tenant: string,
   dateStr: string,
   patch: { routeName: string; orderedStopNbrs: string[]; unplannedStopNbrs?: string[]; driverName?: string | null; at: string },
-): Promise<{ patched: number; missing: number }> {
-  if (!isFirestoreEnabled()) return { patched: 0, missing: 0 };
+): Promise<{ patched: number; missing: number; rescued: number }> {
+  if (!isFirestoreEnabled()) return { patched: 0, missing: 0, rescued: 0 };
   const base = `${COLLECTION}/${parentId(tenant, dateStr)}`;
   const jobs: Array<{ nbr: string; fields: any }> = [];
   patch.orderedStopNbrs.forEach((nbr, i) => jobs.push({ nbr: String(nbr), fields: boardWritePlannedFields(patch.routeName, i + 1, patch.driverName ?? null, patch.at) }));
   for (const nbr of (patch.unplannedStopNbrs || [])) jobs.push({ nbr: String(nbr), fields: boardWriteUnplannedFields(patch.at) });
-  let patched = 0, missing = 0, i = 0;
+  let patched = 0, i = 0;
+  const missed: Array<{ nbr: string; fields: any }> = [];
   const worker = async () => {
     while (i < jobs.length) {
       const j = jobs[i++];
       try {
         const cur = await getDoc(`${base}/stops/${encodeURIComponent(j.nbr)}`);
-        if (!cur) { missing++; continue; }
+        if (!cur) { missed.push(j); continue; }
         const { _id, ...rest } = cur as any;
         await setDoc(`${base}/stops/${j.nbr}`, { ...rest, ...j.fields });
         patched++;
-      } catch { missing++; }
+      } catch { missed.push(j); }
     }
   };
   await Promise.all(Array.from({ length: 8 }, worker));
-  return { patched, missing };
+
+  // ── Carry-over rescue ─────────────────────────────────────────────────────
+  // A stop routed FROM the board can live on a PRIOR day's doc: an unplanned order dated
+  // yesterday is filed on yesterday's doc and reaches today's board only through the
+  // carry-over fold (nuvizz-pull-today-stops mergeCarryover). Patching only dateStr's doc
+  // silently no-opped for those (patched:0, missing:N) — the Save landed in NuVizz but the
+  // board kept serving the stale unplanned carry-over row until a scan caught up: the
+  // "built Denis's route, closed it, looks like I never built it" failure. For each missing
+  // stop, walk back up to 14 days (the fold's max carryDays) and, where found:
+  //   (a) patch the prior-day copy IN PLACE — the fold stops serving it stale (it skips
+  //       planned rows) and the scan-merge grace has its board_write_at stamp to hold; and
+  //   (b) upsert the patched copy onto dateStr's doc with boardDate=dateStr + carryover —
+  //       boardDayFor files an open on-route stop onto today anyway, so this is exactly
+  //       where the next scan will keep it, and the board shows the plan IMMEDIATELY.
+  // The fold dedupes by stopNbr against the day's own rows, so the pair can't double-show.
+  let rescued = 0;
+  let stillMissing = missed;
+  if (missed.length) {
+    const RESCUE_DAYS = 14;
+    const dayBack = (n: number) => { const d = new Date(dateStr + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() - n); return d.toISOString().slice(0, 10); };
+    for (let back = 1; back <= RESCUE_DAYS && stillMissing.length; back++) {
+      const priorBase = `${COLLECTION}/${parentId(tenant, dayBack(back))}`;
+      const next: Array<{ nbr: string; fields: any }> = [];
+      let k = 0;
+      const rescueWorker = async () => {
+        while (k < stillMissing.length) {
+          const j = stillMissing[k++];
+          try {
+            const cur = await getDoc(`${priorBase}/stops/${encodeURIComponent(j.nbr)}`);
+            if (!cur) { next.push(j); continue; }
+            const { _id, ...rest } = cur as any;
+            await setDoc(`${priorBase}/stops/${j.nbr}`, { ...rest, ...j.fields });
+            await setDoc(`${base}/stops/${j.nbr}`, { ...rest, ...j.fields, boardDate: dateStr, carryover: true });
+            rescued++;
+          } catch { next.push(j); }
+        }
+      };
+      await Promise.all(Array.from({ length: 8 }, rescueWorker));
+      stillMissing = next;
+    }
+  }
+  return { patched, missing: stillMissing.length, rescued };
 }
 
 // ── Per-PRO enrichment registry (day-independent) ────────────────────────────
