@@ -54,7 +54,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.45.7';
+const APP_VERSION = '0.45.8';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -99,6 +99,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.45.8', 'Reverted the bottom-grid date-window selector back to its original three choices — Board (today) / NuVizz · Today / NuVizz · ±7 days — on both the Map and Routing screens (per request). The extra ±3/±14/±30 presets and the Custom From/To range are gone; the toolbar reads exactly as before. Under the hood ±7 days still reads our board cache so it can\'t time out, and selecting ±7 days still puts that week\'s orders on the routing map to select/plan — only the picker UI changed back.'],
   ['0.45.7', 'FIX: fixing an address or moving the pin for an order pulled in via a Board date window/range made its pin VANISH until a full map refresh. The map added other-day window orders only if they ALREADY had a location, so a just-corrected order (its new pin lives in customer overrides) wasn\'t in the map\'s set for the override to apply to — it stayed invisible until the next scan re-geocoded it. The map now keeps those orders in its set so a corrected address/pin shows LIVE, the moment you save. FIX: "Debug this view" could fail with a GitHub "bad request" — the issue text was truncated with a plain cut that could split an emoji/special character and leave a broken byte GitHub rejects; truncation is now character-safe, and the error now shows GitHub\'s real reason (and says to rotate the token on a 401).'],
   ['0.45.6', 'FIX: the bottom Stops grid could show "No stops match" even with hundreds of stops in the window — a leftover term in the shared Search box (it\'s used by both Stops and Loads) was filtering everything out, and with the Compare panel open the box shrank to just an icon so you couldn\'t SEE the stray text. The search box now keeps a minimum width and shows a clear-✕ (and highlights) whenever it holds text, and the empty grid now says exactly what\'s hiding the rows ("None of the N stops match — hidden by search “…” / status / driver / no-location") with a one-click Clear filters button. No stray filter can silently blank the grid again.'],
   ['0.45.5', 'FIX: setting a date window/range on the bottom Stops grid was wiping the empty loads out of the Loads view — it dropped from all ~100 of the day\'s loads down to just the built routes. The Loads view is board-day scoped and shouldn\'t be touched by the Stops-view date filter at all, but the day\'s load roster (the empty "No orders yet · Draft" loads) was gated off whenever a window was set. The Loads view now always shows the full board-day roster — every empty load, filled route, and its driver — regardless of what date window the Stops grid is on.'],
@@ -8467,15 +8468,10 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
   // fetched straight from NuVizz's stop list (any delivery-date window / status)
   // instead of today's board — e.g. "all unplanned ±7 days". Driver is a local
   // refinement applied to whatever rows are shown.
-  const [nvWindow, setNvWindow] = useState(''); // '' = board; else arrival period ('0d','+/-7d','+/-30d','custom')
-  // Custom calendar range for the "Custom range…" window. NuVizz has no absolute from/to,
-  // so the server pulls the covering relative window once and filters rows to [from,to].
-  const [nvFrom, setNvFrom] = useState('');
-  const [nvTo, setNvTo] = useState('');
+  const [nvWindow, setNvWindow] = useState(''); // '' = board; else arrival period ('0d','+/-7d')
   const [nvRows, setNvRows] = useState([]);
   const [nvTotal, setNvTotal] = useState(0);
-  const [nvPartial, setNvPartial] = useState(false); // server pulled an incomplete covering window → count is "≥ N"
-  const [nvSource, setNvSource] = useState('live'); // 'live' = straight from NuVizz; 'cache' = our board day-docs (wide windows)
+  const [nvSource, setNvSource] = useState('live'); // 'live' = straight from NuVizz; 'cache' = our board day-docs (±7d)
   const [nvLoading, setNvLoading] = useState(false);
   const [nvErr, setNvErr] = useState(null);
   const [driverSel, setDriverSel] = useState('');
@@ -8522,51 +8518,32 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
   // selection changes so status filters server-side, not just on the loaded page).
   useEffect(() => {
     if (!nvWindow) { setNvErr(null); setNvLoading(false); return; }
-    // Custom range needs both endpoints before it can pull. Clear any previous window's
-    // rows too — stale data must not sit under a "pick a date range" prompt.
-    const custom = nvWindow === 'custom';
-    if (custom && (!nvFrom || !nvTo)) { setNvErr(null); setNvLoading(false); setNvRows([]); setNvTotal(0); setNvPartial(false); return; }
     let cancelled = false;
     const ctrl = new AbortController();
     const codes = TABLE_STATUS_BUCKETS.filter((b) => statusSel.has(b.k)).flatMap((b) => b.codes);
-    // Normalize a keyboard-typed inverted range (min/max only constrain the picker popup);
-    // the server swaps too, but the request should say what the grid will show.
-    const [lo, hi] = custom ? (nvFrom <= nvTo ? [nvFrom, nvTo] : [nvTo, nvFrom]) : ['', ''];
-    // A wider window / range needs a higher row cap to return the stops in it — still ONE
-    // cheap NuVizz list call (maxResult is rows-per-call, not extra calls).
-    const req = custom
-      ? { fromDate: lo, toDate: hi, statusCodes: codes, page: 1, pageSize: 1000 }
-      : { arrivalPeriod: nvWindow, statusCodes: codes, page: 1, pageSize: 1000 };
+    const req = { arrivalPeriod: nvWindow, statusCodes: codes, page: 1, pageSize: 1000 };
     setNvLoading(true); setNvErr(null);
-    // DEBOUNCE custom-range pulls: a native date input fires onChange per SEGMENT edit
-    // (typing a year = up to 4 valid intermediate dates), and every pull costs real NuVizz
-    // calls — un-debounced, keyboard-typing one date could fire ~8 maximal-window pulls.
-    // Waiting 600ms after the last keystroke collapses that storm into ONE call. Preset
-    // window changes are single discrete events, so they fire immediately.
-    const timer = setTimeout(() => {
-      fetch('/.netlify/functions/nuvizz-stop-explorer', {
-        method: 'POST', cache: 'no-store', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(req), signal: ctrl.signal,
+    fetch('/.netlify/functions/nuvizz-stop-explorer', {
+      method: 'POST', cache: 'no-store', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(req), signal: ctrl.signal,
+    })
+      .then((r) => r.json())
+      .then((j) => {
+        if (cancelled) return;
+        if (!j.ok) throw new Error(j.error || 'pull failed');
+        const decorated = (j.rows || []).map((s) => ({
+          ...s,
+          matchKey: normalizeMatchKey(s.businessName || '', s.addr1 || '', s.city || '', s.zip || ''),
+          loadNbr: s.routeName || '',
+        }));
+        // nvSource is still tracked so the routing map knows a ±7d pull is cache-backed
+        // (coord-bearing) and can render those orders for selection (v0.45.4).
+        setNvRows(decorated); setNvTotal(j.total ?? decorated.length); setNvSource(j.source === 'cache' ? 'cache' : 'live');
       })
-        .then((r) => r.json())
-        .then((j) => {
-          if (cancelled) return;
-          if (!j.ok) throw new Error(j.error || 'pull failed');
-          // Deploy-skew guard: a server that predates custom ranges ignores fromDate/toDate
-          // and answers with TODAY's stops — never render those as the picked range.
-          if (custom && !j.range) throw new Error('server doesn’t support date ranges yet — hard-refresh the app and retry');
-          const decorated = (j.rows || []).map((s) => ({
-            ...s,
-            matchKey: normalizeMatchKey(s.businessName || '', s.addr1 || '', s.city || '', s.zip || ''),
-            loadNbr: s.routeName || '',
-          }));
-          setNvRows(decorated); setNvTotal(j.total ?? decorated.length); setNvPartial(!!j.partial); setNvSource(j.source === 'cache' ? 'cache' : 'live');
-        })
-        .catch((e) => { if (!cancelled) { setNvErr(e.message); setNvRows([]); setNvTotal(0); setNvPartial(false); } })
-        .finally(() => { if (!cancelled) setNvLoading(false); });
-    }, custom ? 600 : 0);
-    return () => { cancelled = true; clearTimeout(timer); ctrl.abort(); };
-  }, [nvWindow, nvFrom, nvTo, statusSel]);
+      .catch((e) => { if (!cancelled) { setNvErr(e.message); setNvRows([]); setNvTotal(0); } })
+      .finally(() => { if (!cancelled) setNvLoading(false); });
+    return () => { cancelled = true; ctrl.abort(); };
+  }, [nvWindow, statusSel]);
   // Report the active window's coord-bearing rows UP so the routing map can render them for
   // selection/planning. Only the CACHE path carries coordinates (the live small-window list feed
   // has none); a live window or board mode reports null → the map stays on the single board day.
@@ -8816,27 +8793,8 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
                 >
                   <option value="">Board (today)</option>
                   <option value="0d">NuVizz · Today</option>
-                  <option value="+/-3d">NuVizz · ±3 days</option>
-                  <option value="+/-7d">Board · ±7 days</option>
-                  <option value="+/-14d">Board · ±14 days</option>
-                  <option value="+/-30d">Board · ±30 days</option>
-                  <option value="custom">Board · Custom range…</option>
+                  <option value="+/-7d">NuVizz · ±7 days</option>
                 </select>
-                {nvWindow === 'custom' && (
-                  <span className="hidden sm:inline-flex items-center gap-1">
-                    <input
-                      type="date" value={nvFrom} max={nvTo || undefined}
-                      onChange={(e) => setNvFrom(e.target.value)} title="From delivery date"
-                      className="border border-slate-300 rounded px-1 py-1 text-xs text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-400"
-                    />
-                    <span className="text-slate-400">–</span>
-                    <input
-                      type="date" value={nvTo} min={nvFrom || undefined}
-                      onChange={(e) => setNvTo(e.target.value)} title="To delivery date"
-                      className="border border-slate-300 rounded px-1 py-1 text-xs text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-400"
-                    />
-                  </span>
-                )}
                 <select
                   value={driverSel}
                   onChange={(e) => setDriverSel(e.target.value)}
@@ -8848,17 +8806,11 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
                 </select>
                 {nvWindow && (
                   <span className="hidden sm:inline text-[11px] text-slate-500 whitespace-nowrap">
-                    {nvWindow === 'custom' && (!nvFrom || !nvTo)
-                      ? <span className="text-slate-400">pick a date range</span>
-                      : nvLoading
-                        ? <span className="inline-flex items-center gap-1"><RefreshCw size={11} className="animate-spin" /> pulling…</span>
-                        : nvErr
-                          ? <span className="text-red-600">NuVizz: {nvErr}</span>
-                          : nvPartial
-                            ? <span className="text-amber-600" title="The date window was too large for one pull — some stops in it may be missing. Narrow the range for an exact result.">NuVizz · ≥{nvTotal.toLocaleString()} stops (partial — narrow the range)</span>
-                            : nvSource === 'cache'
-                              ? <span title="Served from our board cache (every scanned day in the window; confirmed Saves are patched in). Freshness = the last scan — no NuVizz calls.">Board · {nvTotal.toLocaleString()} stops</span>
-                              : <>NuVizz · {nvTotal.toLocaleString()} stops</>}
+                    {nvLoading
+                      ? <span className="inline-flex items-center gap-1"><RefreshCw size={11} className="animate-spin" /> pulling…</span>
+                      : nvErr
+                        ? <span className="text-red-600">NuVizz: {nvErr}</span>
+                        : <>NuVizz · {nvTotal.toLocaleString()} stops</>}
                   </span>
                 )}
               </>
