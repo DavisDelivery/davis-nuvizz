@@ -54,7 +54,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.45.20';
+const APP_VERSION = '0.45.21';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -99,6 +99,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.45.21', 'Looking up a PRO in NuVizz now opens the SAME full stop panel as clicking a stop on the map — so you get the Receiving hours / Priority flag / Delivery window editor plus Edit address, Correct pin location, Text customer and History, and a Save. Before, a PRO you searched for ("Look up PRO in NuVizz") opened a read-only window with none of those route/customer options — you could see the order but not set the customer\'s receiving rules. Now it\'s fully editable, exactly like a stop opened from the board or by customer name. (Note: this only changes how the panel opens — the separate issue of some delivered customers showing few past PROs in the history search is the server history warehouse needing a backfill, tracked separately.)'],
   ['0.45.15', 'Three dispatcher fixes: (1) the map selection tools (click / box / lasso / add-in-view) can NO LONGER grab a stop that\'s already staged on an open Compare card — it tells you which card holds it ("use Ninja to move it"), and area-selects report how many they skipped, so a stop can\'t be double-planned from the selection. (2) Route headers now count PHYSICAL stops — multiple orders to the same address are ONE truck stop (like NuVizz\'s own card): a card reads "7 stops · 9 orders" instead of "9 stops". Applies to the Compare card header and the Routes panel cards. (3) Clicking DISPATCH now flips the route\'s status immediately — it stayed "Draft" until a scan (paused overnight) because the status came from the cached roster; a confirmed dispatch now overrides that until the roster catches up.'],
   ['0.45.14', 'FALSE "SAVED" KILLED: adding a stop that NuVizz already has planned on ANOTHER route (possible when our board shows it stale-unplanned — the WIEDMANN→KOBE accident) used to slip past the save and report success while NuVizz quietly rejected it. Every ADDED stop is now verified against NuVizz itself BEFORE anything writes — if it\'s already planned elsewhere the Save REFUSES up front with "ALREADY PLANNED on load X — open X in Compare to stage the move". Costs one stop-read per newly added stop (a 10-stop build ≈ +10 calls) — the price of never lying about a save.'],
   ['0.45.13', 'FIX: a saved stop could silently DROP OFF a route on our side hours later (WIEDMANN BROS / GEORGE L — NuVizz kept it, our card lost it on re-open). The confirmed-save hold expired after 45 minutes expecting a scan to take over — but overnight the scanner is PAUSED, so a stop the server-side cache patch happened to miss reverted to unplanned with nothing to catch it. The hold now lasts up to 12 hours (it still releases the moment a scan confirms the save — the cap only matters when scans aren\'t running), and the board-sync now reports exactly WHICH stop numbers it couldn\'t patch (console + toast) so a miss is diagnosable instead of silent. Our board also self-corrects at the next scan since NuVizz has the route.'],
@@ -5768,7 +5769,16 @@ function PastProSearch({ notes, initialQuery, onPickCustomer, onClose, noApi = f
           <div className="px-3 pb-3">
             <div className="text-[10px] uppercase font-semibold text-slate-500 mb-1">From NuVizz</div>
             <button
-              onClick={() => setDetail(api.stop)}
+              onClick={() => {
+                // Open the looked-up PRO in the SAME full stop panel a map-click or a
+                // by-name history pick uses (StopSidebar — with the receiving-hours /
+                // priority / Edit-address / Text-customer editor), instead of the old
+                // read-only LookupStopModal. Ensure a matchKey so its customer_notes load.
+                const mk = api.stop.matchKey
+                  || normalizeMatchKey(api.stop.businessName || '', api.stop.addr1 || '', api.stop.city || '', api.stop.zip || '');
+                if (onPickCustomer) onPickCustomer({ ...api.stop, matchKey: mk });
+                else setDetail({ ...api.stop, matchKey: mk });   // fallback if no parent handler wired
+              }}
               className="w-full text-left border border-blue-200 bg-blue-50/40 rounded-lg p-3 text-sm hover:bg-blue-50 active:bg-blue-100"
             >
               <div className="flex items-start gap-2">
