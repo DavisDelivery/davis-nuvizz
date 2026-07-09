@@ -23,7 +23,7 @@
 import { scanDate, scansEnabled, deriveFleetSummary, estimateLoadRange, buildScanState, shadowWouldProbe, selectLoadProbeTargets, groupLoadMembers, estimateStopFrontier, unplannedFloor, FLOOR_MARGIN, loadNbrToInt, stopNbrToInt, shouldDeepSweep, deepSweepGate, lookupStopByPro } from './nuvizz-scan.mts';
 import { loadProbeParity, frontierParity, loadMembershipDelta, dateSliceMismatch } from './scan-parity.mts';
 import { isFirestoreEnabled, writeStops, writeFleetIndex, getDoc, markScanState, readCallStats, readCircuit, readScanState, writeScanState, readRecentFrontier, recordScanMetric, etDayString, readScanConfig, readStops, readEnrichedPros, writeEnrichedPros, writeLoadRoster, readLoadRoster, writeActiveUnplannedSet } from './firestore.mts';
-import { listScanForDate, mergeEnrich, twoScanBuckets, etDateForTargetUTC, boardDayFor, applyBoardWriteGrace, applyDemotionVerify } from './nuvizz-list.mts';
+import { listScanForDate, mergeEnrich, twoScanBuckets, etDateForTargetUTC, boardDayFor, applyBoardWriteGrace, applyDemotionVerify, demotionLookupVerdict } from './nuvizz-list.mts';
 import { loadIdsForDate, dropForeignLoadStops, loadRosterForDate } from './nuvizz-loads.mts';
 import { resolveCoords, addrKey } from './geocode.mts';
 import { maxConsecutiveGap } from './scan-metrics.mts';
@@ -654,19 +654,9 @@ export async function runRefreshStops(req: Request): Promise<Response> {
         const dv = await applyDemotionVerify(demoteChecks, {
           max: DEMOTE_VERIFY_MAX,
           scannedAt,
-          lookup: async (nbr) => {
-            const r = await lookupStopByPro(nbr);
-            // not_found/404 = the stop is GONE in NuVizz: a CONFIRMED drop, never a hold —
-            // holding it re-queues the zombie every scan and starves the per-scan cap for
-            // real verifications. Other failures (429/5xx/network) stay null = hold one tick.
-            if (!r.ok) return (r.reason === 'not_found' || r.reason === 'http_404') ? false : null;
-            const s2: any = r.stop || {};
-            // Cancel-while-routed keeps assignedLoad on the record but must NOT be resurrected
-            // as live SCHEDULED work (keepPlan would overwrite the fresh 99/EXCEPTION status).
-            const st = String(s2.normalizedStatus ?? '').toUpperCase();
-            if (st === 'EXCEPTION' || st === 'CANCELLED') return false;
-            return !!(s2.isPlanned && s2.loadNbr);
-          },
+          // Verdict policy (404 holds, terminal statuses drop) lives in demotionLookupVerdict —
+          // pure + unit-tested; this closure only supplies the metered read.
+          lookup: async (nbr) => demotionLookupVerdict(await lookupStopByPro(nbr)),
         });
         if (dv.kept || dv.held) console.warn(`[scan] ${date}: list tried to unplan ${demoteChecks.length} routed stop(s) — kept ${dv.kept} (NuVizz stop record says assigned), held ${dv.held} (unverified this scan), dropped ${dv.dropped} (confirmed unplanned) — sample ${JSON.stringify(demoteChecks.slice(0, 5).map((c) => String(c.s.stopNbr)))}`);
 

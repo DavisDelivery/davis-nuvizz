@@ -36,16 +36,16 @@ async function withRwb(over, fn) {
 // set the load's stops to exactly the entry's trip order, like the real portal — so the
 // post-save membership+ORDER verify sees the save. Pass applySave:false to simulate the
 // Jul 9 DAWSONVILLE portal behavior: SUCCESS answered, nothing applied.
-function makeRequester({ saveBody = { responseCode: 200 }, saveStatus = 200, loadStops, stopHolders = {}, applySave = true, seqless = false } = {}) {
+function makeRequester({ saveBody = { responseCode: 200 }, saveStatus = 200, loadStops, stopHolders = {}, applySave = true, seqless = false, stopTypes = {} } = {}) {
   const calls = [];
-  const stopDoc = (n) => ({ stop: { stopId: `id-${n}`, stopNbr: String(n), stopType: 'DO', to: { seq: 1 } } });
+  const stopDoc = (n) => ({ stop: { stopId: `id-${n}`, stopNbr: String(n), stopType: stopTypes[n] || 'DO', to: { seq: 1 } } });
   const loadJson = () => ({ Load: {
     loadHeader: { loadId: HEXID, loadNbr: 'DAVIS000000123', routeName: 'TEST', rtOrigin: { address: { latitude: 34.04, longitude: -83.71 } } },
     versionId: 'v1', loadExecutionInfo: { loadStatus: 'PLANNED' },
     // weight/totalPallets/totalCartons/volume ride the RAW stop record (normalizeLoad.rawStops)
     // — the save entry's totalData sums them (Jul 9 manual-reorder HAR fidelity). `seqless`
     // simulates a read that lands before NuVizz stamps to.seq (the settling window).
-    stops: (loadStops?.value ?? []).map((n, i) => ({ stop: { stopId: `id-${n}`, stopNbr: String(n), stopType: 'DO', to: seqless ? {} : { seq: i + 2 }, weight: 100, totalPallets: 2, totalCartons: 1, volume: 3 } })),
+    stops: (loadStops?.value ?? []).map((n, i) => ({ stop: { stopId: `id-${n}`, stopNbr: String(n), stopType: stopTypes[n] || 'DO', to: seqless ? {} : { seq: i + 2 }, weight: 100, totalPallets: 2, totalCartons: 1, volume: 3 } })),
   } });
   return {
     calls,
@@ -286,6 +286,62 @@ test('runCommitBoardRwb: save entry carries the route\'s REAL window + freight t
     // HAR's loose-free route: totalV 0 → '').
     assert.deepEqual(entry.totalData, { totalP: 4, totalC: 2, totalW: 200, totalV: 6, weightUOM: 'Lbs', volumeUOM: 'Loose' });
     assert.equal(entry.isStandingRoute, true, 'standing defaults ON — true on all 3 captured portal saves');
+  });
+});
+
+// ── cross-card strand guard + pickup/RA edit support (Jul 9 pre-go-live audit) ──
+
+test('runCommitBoardRwb: a SOURCE may not save while its move DESTINATION failed — no silent unplan (strand guard)', async () => {
+  await withRwb({}, async () => {
+    // P holds [A,B]; Q holds [C,Z]. The board moves B onto Q — but Q also carries Z, which the
+    // (stale) board never listed, so Q trips the stale-board guard and drops out of the Save.
+    // Without the strand guard, P still saved [A] declaratively → NuVizz removed B from P while
+    // Q was never written → B silently UNPLANNED with P reporting ok. P must FAIL, loudly, with
+    // NO save fired.
+    const P = { loadId: '1111aaaa2222bbbb3333cccc', stops: ['A', 'B'] };
+    const Q = { loadId: '4444dddd5555eeee6666ffff', stops: ['C', 'Z'] };
+    const { requester, calls } = makeMoveRequester({ DAVISP: P, DAVISQ: Q });
+    const r = await runCommitBoardRwb(requester, { loads: [
+      { loadNbr: 'DAVISP', loadId: P.loadId, routeName: 'P', orderedStopNbrs: ['A'], orderedStopIds: ['id-A'] },
+      { loadNbr: 'DAVISQ', loadId: Q.loadId, routeName: 'Q', orderedStopNbrs: ['C', 'B'], orderedStopIds: ['id-C', 'id-B'] },
+    ] }, CREDS);
+    assert.equal(r.ok, false);
+    const rp = r.loads.find((l) => l.loadNbr === 'DAVISP');
+    const rq = r.loads.find((l) => l.loadNbr === 'DAVISQ');
+    assert.equal(rq.ok, false, 'Q fails its stale-board guard');
+    assert.match(String(rq.error || ''), /board isn't showing/i);
+    assert.equal(rp.ok, false, 'P must NOT save while its claimer is dead');
+    assert.match(String(rp.error || ''), /would UNPLAN it/i);
+    assert.equal(calls.some((c) => c.url.includes('saveComparedRouteData')), false, 'nothing written');
+    assert.deepEqual(P.stops, ['A', 'B'], 'B untouched on P');
+  });
+});
+
+test('runCommitBoardRwb: an on-load PICKUP/RA reorders WITHOUT being re-added or refused', async () => {
+  await withRwb({}, async () => {
+    // Load holds A(DO), R(PU, mid-route seq>1), B(DO). Reorder to [B,R,A]. The old engine (a)
+    // refused the load outright (hasUnmodeledDelivery saw a non-DO at seq>1) and (b) when it
+    // didn't, classified R as an ARRIVAL (DO-only index) and re-added a stop already on the
+    // route. Now: no refusal, no adds, no getStop — R rides pickupLegIds at its position.
+    const loadStops = { value: ['A', 'R', 'B'] };
+    const { requester, calls } = makeRequester({ loadStops, stopTypes: { R: 'PU' } });
+    const r = await runCommitBoardRwb(requester, { loads: [{ loadNbr: 'DAVIS000000123', loadId: HEXID, orderedStopNbrs: ['B', 'R', 'A'] }] }, CREDS);
+    assert.equal(r.ok, true, JSON.stringify(r.loads?.[0]?.error));
+    assert.equal(calls.some((c) => c.url.includes('addStopsToRouteAfterValidation')), false, 'no re-add of an on-load stop');
+    assert.equal(calls.some((c) => c.url.includes('/stop/info/')), false, 'no arrival getStop for an on-load pickup');
+    const fuj = calls.find((c) => c.url.includes('fetchUpdatedJson'));
+    assert.equal(String(fuj.body.get('stoplist')), 'id-B_PU,id-A_PU,id-B_DO,id-R_PU,id-A_DO,id-R_DO', 'R visits at its requested position; its return rides the tail');
+  });
+});
+
+test('runCommitBoardRwb: a non-DO stop the card is NOT sequencing still refuses (unmodeled pin)', async () => {
+  await withRwb({}, async () => {
+    const loadStops = { value: ['A', 'X'] };
+    const { requester, calls } = makeRequester({ loadStops, stopTypes: { X: 'PU' } });
+    const r = await runCommitBoardRwb(requester, { loads: [{ loadNbr: 'DAVIS000000123', loadId: HEXID, orderedStopNbrs: ['A'] }] }, CREDS);
+    assert.equal(r.loads[0].ok, false);
+    assert.match(String(r.loads[0].error || ''), /not sequencing/i);
+    assert.equal(calls.some((c) => c.url.includes('saveComparedRouteData')), false);
   });
 });
 
