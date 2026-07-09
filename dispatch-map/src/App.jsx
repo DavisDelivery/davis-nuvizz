@@ -54,7 +54,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.45.14';
+const APP_VERSION = '0.45.15';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -99,6 +99,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.45.15', 'Three dispatcher fixes: (1) the map selection tools (click / box / lasso / add-in-view) can NO LONGER grab a stop that\'s already staged on an open Compare card — it tells you which card holds it ("use Ninja to move it"), and area-selects report how many they skipped, so a stop can\'t be double-planned from the selection. (2) Route headers now count PHYSICAL stops — multiple orders to the same address are ONE truck stop (like NuVizz\'s own card): a card reads "7 stops · 9 orders" instead of "9 stops". Applies to the Compare card header and the Routes panel cards. (3) Clicking DISPATCH now flips the route\'s status immediately — it stayed "Draft" until a scan (paused overnight) because the status came from the cached roster; a confirmed dispatch now overrides that until the roster catches up.'],
   ['0.45.14', 'FALSE "SAVED" KILLED: adding a stop that NuVizz already has planned on ANOTHER route (possible when our board shows it stale-unplanned — the WIEDMANN→KOBE accident) used to slip past the save and report success while NuVizz quietly rejected it. Every ADDED stop is now verified against NuVizz itself BEFORE anything writes — if it\'s already planned elsewhere the Save REFUSES up front with "ALREADY PLANNED on load X — open X in Compare to stage the move". Costs one stop-read per newly added stop (a 10-stop build ≈ +10 calls) — the price of never lying about a save.'],
   ['0.45.13', 'FIX: a saved stop could silently DROP OFF a route on our side hours later (WIEDMANN BROS / GEORGE L — NuVizz kept it, our card lost it on re-open). The confirmed-save hold expired after 45 minutes expecting a scan to take over — but overnight the scanner is PAUSED, so a stop the server-side cache patch happened to miss reverted to unplanned with nothing to catch it. The hold now lasts up to 12 hours (it still releases the moment a scan confirms the save — the cap only matters when scans aren\'t running), and the board-sync now reports exactly WHICH stop numbers it couldn\'t patch (console + toast) so a miss is diagnosable instead of silent. Our board also self-corrects at the next scan since NuVizz has the route.'],
   ['0.45.12', 'NEW: Routing map → Filters → "Hide place labels" turns off Google\'s own business/place name labels (the clutter that overlaps your stop pins) on the satellite view. Persisted per device. (It cleans the satellite imagery; the roadmap base keeps its labels.)'],
@@ -10083,11 +10084,14 @@ function computeRouteGroups(stops, loadStatusByName) {
     const key = s.routeName || s.loadNbr;
     if (!key) continue;
     let g = m.get(key);
-    if (!g) { g = { key, name: s.routeName || key, loadNbr: s.loadNbr || key, loadId: null, driver: '', driverId: '', count: 0, delivered: 0, inProgress: 0, exceptions: 0, skids: 0, loose: 0, weight: 0 }; m.set(key, g); }
+    if (!g) { g = { key, name: s.routeName || key, loadNbr: s.loadNbr || key, loadId: null, driver: '', driverId: '', count: 0, delivered: 0, inProgress: 0, exceptions: 0, skids: 0, loose: 0, weight: 0, locs: new Set() }; m.set(key, g); }
     if (!g.loadId) g.loadId = s.raw?.load?.loadId ?? s.loadId ?? null;
     if (!g.driver && (s.driverName || s.driverUserName)) g.driver = s.driverName || s.driverUserName;
     if (!g.driverId && s.driverId) g.driverId = s.driverId;
     g.count += 1;
+    // PHYSICAL stops: multiple orders to the same customer/address are ONE truck stop —
+    // NuVizz's own route card groups them (Total Stops) — so headers count locations.
+    g.locs.add(s.matchKey || String(s.stopNbr));
     const kind = classifyStopStatus(s);
     if (kind === 'DELIVERED') g.delivered += 1;
     else if (kind === 'OUT_FOR_DEL' || kind === 'ARRIVED') g.inProgress += 1;
@@ -10102,6 +10106,7 @@ function computeRouteGroups(stops, loadStatusByName) {
     const raw = byName.get(String(g.name || '').trim().toLowerCase()) ?? byName.get('#id:' + String(g.loadNbr));
     g.rosterStatus = raw || '';
     g.status = nuvizzLoadStatus(raw) || deriveRouteStatus(g);
+    g.locCount = g.locs.size; delete g.locs;   // physical stops (orders sharing an address = one stop)
   }
   return groups.sort((a, b) =>
     String(loadDisplayName(a.name, a.loadNbr) || a.name).localeCompare(
@@ -10224,7 +10229,9 @@ function RoutingRoutesPanel({ groups, onPick, liveWrite = false, roster = [], ro
                     <span className={`text-[11px] truncate ${shownDriver ? 'text-slate-600' : 'text-slate-400 italic'}`}>{shownDriver || 'No driver assigned'}</span>
                   </div>
                   <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 mt-1 text-[11px] text-slate-600">
-                    <span>{g.count} stop{g.count === 1 ? '' : 's'}</span>
+                    <span title={g.locCount != null && g.locCount !== g.count ? `${g.count} orders across ${g.locCount} physical stops (same-address orders ride together)` : undefined}>
+                      {(g.locCount ?? g.count)} stop{(g.locCount ?? g.count) === 1 ? '' : 's'}{g.locCount != null && g.locCount !== g.count ? ` · ${g.count} orders` : ''}
+                    </span>
                     <span>{g.skids} skids</span>
                     <span>{g.loose} loose</span>
                     <span>{Math.round(g.weight).toLocaleString()} lb</span>
@@ -10607,7 +10614,11 @@ function RoutingWorkbenchCard({ route, stopById, otherKeys, ninjaMode, isActive,
             <button onClick={onClose} className="text-slate-400 hover:text-red-600 leading-none text-lg" aria-label={`Close route ${route.name || loadDisplayName(route.key) || ''}`}>×</button>
           </div>
         </div>
-        <div className="text-[11px] text-slate-500 truncate">{driverLabel} · {rows.length} stop{rows.length === 1 ? '' : 's'} · {skids} sk · {Math.round(weight).toLocaleString()} lb · {rows.length ? Math.round((100 * delivered) / rows.length) : 0}%</div>
+        {/* Header counts PHYSICAL stops (same-address orders = one truck stop, like NuVizz's own
+            card); when orders > stops it shows both so nothing is hidden. */}
+        {(() => { const locs = new Set(rows.map((s) => s.matchKey || String(s.stopNbr))).size; return (
+        <div className="text-[11px] text-slate-500 truncate">{driverLabel} · {locs} stop{locs === 1 ? '' : 's'}{locs !== rows.length ? ` · ${rows.length} orders` : ''} · {skids} sk · {Math.round(weight).toLocaleString()} lb · {rows.length ? Math.round((100 * delivered) / rows.length) : 0}%</div>
+        ); })()}
         {rc && <div className="text-[11px] font-semibold text-slate-700">{miles.toFixed(1)} mi · {fmtDur(driveMin)}<span className="font-normal text-slate-400"> · DH {dhMi.toFixed(1)} mi</span></div>}
         {!route.collapsed && (
           // The dropdown shows the APPLIED strategy and keeps showing it until you change it (#280/
@@ -11714,6 +11725,11 @@ function RoutingScreen({ debugCaptureRef }) {
   // stops to derive it from, and assignDriver needs the loadId. Kept in a ref so openRouteInWorkbench
   // (deps []) always reads the latest without re-binding.
   const loadRosterRef = useRef(new Map());
+  // Confirmed-dispatch status overrides (load name lc / '#id:loadNbr' → 'Dispatched'). The roster
+  // is a cached snapshot that only refreshes with scans — paused overnight — so a successful
+  // production dispatch kept reading Draft here. An override wins over the stale roster and is
+  // DROPPED the moment the roster itself reports a non-Draft status (agreement — scans caught up).
+  const dispatchOverrideRef = useRef(new Map());
   useEffect(() => {
     if (!selectedDate) return;
     let cancelled = false;
@@ -11740,6 +11756,12 @@ function RoutingScreen({ debugCaptureRef }) {
           // 0.32.25 (loadNbr || loadId), so opening one must resolve back to the entry — without
           // this the card had no loadId/loadNbr and assign/save failed on every empty load.
           if (l.loadNbr) index.set(String(l.loadNbr), entry);
+        }
+        // Confirmed-dispatch overrides beat the stale snapshot; agreement retires them.
+        for (const [k, v] of dispatchOverrideRef.current) {
+          const raw = String(status.get(k) || '').toLowerCase();
+          if (raw && !raw.includes('draft')) dispatchOverrideRef.current.delete(k); // roster caught up
+          else status.set(k, v);
         }
         loadRosterRef.current = index;
         setLoadStatusByName(status);
@@ -11803,6 +11825,16 @@ function RoutingScreen({ debugCaptureRef }) {
   // overlay only — reorders/moves live here, they don't mutate the board.
   const WB_MAX = 3;
   const [wbRoutes, setWbRoutes] = useState([]);
+  // Every stop id currently STAGED on an open Compare card, mapped to its card key. The map
+  // selection tools must not grab these — selecting a staged stop and sending it to another
+  // load double-plans it (the save-level guard now refuses, but the selection shouldn't
+  // invite the mistake at all). A ref so guards in stable callbacks read the latest.
+  const wbStagedRef = useRef(new Map());
+  useEffect(() => {
+    const m = new Map();
+    for (const r of wbRoutes) for (const id of r.order) m.set(String(id), r.key);
+    wbStagedRef.current = m;
+  }, [wbRoutes]);
   // Ninja mode (part 5): while on, each stop clicked on the map is appended (in click order) to
   // the ACTIVE compare-panel route. activeRouteKey picks the target; defaults to the leftmost card.
   const [ninjaMode, setNinjaMode] = useState(false);
@@ -12247,6 +12279,19 @@ function RoutingScreen({ debugCaptureRef }) {
     setDispatchingKey(null);
     if (res.ok && res.result?.ok !== false) {
       showMapToast(`✓ ${label} dispatched.`);
+      // Reflect the confirmed dispatch IMMEDIATELY: the Routes card status comes from the
+      // cached roster, which only refreshes with scans (paused overnight) — without this the
+      // card kept reading Draft after a successful production dispatch. The override also
+      // survives a stale roster refetch (see the roster effect's merge).
+      const nm = String(g.name || '').trim().toLowerCase();
+      dispatchOverrideRef.current.set(nm, 'Dispatched');
+      if (g.loadNbr) dispatchOverrideRef.current.set('#id:' + String(g.loadNbr), 'Dispatched');
+      setLoadStatusByName((prev) => {
+        const n = new Map(prev);
+        n.set(nm, 'Dispatched');
+        if (g.loadNbr) n.set('#id:' + String(g.loadNbr), 'Dispatched');
+        return n;
+      });
     } else {
       showMapToast(`✗ Dispatch failed for ${label}: ${res.error || res.result?.error || 'write error'}`);
     }
@@ -12563,7 +12608,13 @@ function RoutingScreen({ debugCaptureRef }) {
   );
 
   const toggleStop = useCallback((id) => {
-    setSelectedIds((prev) => { const n = new Set(prev); const k = String(id); n.has(k) ? n.delete(k) : n.add(k); return n; });
+    const k = String(id);
+    // Already staged on an open Compare card → don't let the selection grab it (Ninja is the
+    // move tool). setLastAction is used (not a toast dep) so this callback stays stable and
+    // the marker layer doesn't rebuild on every staging edit.
+    const holder = wbStagedRef.current.get(k);
+    if (holder) { setLastAction(`${k} is already on ${loadDisplayName(holder) || holder} — remove it there or use Ninja to move it`); return; }
+    setSelectedIds((prev) => { const n = new Set(prev); n.has(k) ? n.delete(k) : n.add(k); return n; });
   }, []);
   const removeStop = useCallback((id) => {
     setSelectedIds((prev) => { const n = new Set(prev); n.delete(String(id)); return n; });
@@ -12651,8 +12702,14 @@ function RoutingScreen({ debugCaptureRef }) {
   }, [clearTemp]);
   const addEnclosed = useCallback((arr) => {
     if (!arr.length) { setLastAction('No stops in that area'); return; }
-    setSelectedIds((prev) => { const n = new Set(prev); for (const s of arr) n.add(String(s.stopNbr)); return n; });
-    setLastAction(`Added ${arr.length} stop${arr.length === 1 ? '' : 's'}`);
+    // Skip stops already staged on an open Compare card (see wbStagedRef) — a box/lasso over
+    // an area with an open route must not re-grab its stops onto the selection.
+    const staged = wbStagedRef.current;
+    const take = arr.filter((s) => !staged.has(String(s.stopNbr)));
+    const skipped = arr.length - take.length;
+    if (!take.length) { setLastAction(`All ${arr.length} stop${arr.length === 1 ? ' is' : 's are'} already on open Compare cards`); return; }
+    setSelectedIds((prev) => { const n = new Set(prev); for (const s of take) n.add(String(s.stopNbr)); return n; });
+    setLastAction(`Added ${take.length} stop${take.length === 1 ? '' : 's'}${skipped ? ` · skipped ${skipped} already on open cards` : ''}`);
   }, []);
 
   // ── Pin relocation + address edit handlers (ported from MapScreen 6826-6909) ──
