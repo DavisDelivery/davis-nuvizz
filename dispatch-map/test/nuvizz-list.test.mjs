@@ -4,7 +4,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { statusFromCode, parseSchedDate, parseReqDate, toBoardStop, bucketByDate, boardDayFor, fromRows, normalize, periodForDate, mergeEnrich, mergeTwoScan, etDateForTargetUTC, SAVED_SEARCHES, keepForBoardDate, filterFinishedPriorDay, coveringPeriodForRange, coveringWindowForRange, rowDay, rowInRange, applyDemotionVerify } from '../netlify/functions/lib/nuvizz-list.mts';
+import { statusFromCode, parseSchedDate, parseReqDate, toBoardStop, bucketByDate, boardDayFor, fromRows, normalize, periodForDate, mergeEnrich, mergeTwoScan, etDateForTargetUTC, SAVED_SEARCHES, keepForBoardDate, filterFinishedPriorDay, coveringPeriodForRange, coveringWindowForRange, rowDay, rowInRange, applyDemotionVerify, demotionLookupVerdict } from '../netlify/functions/lib/nuvizz-list.mts';
 import { addrKey } from '../netlify/functions/lib/geocode.mts';
 
 // ── boardDayFor: the ONE day-resolution authority (bucketing + carry-forward guard) ──
@@ -595,4 +595,25 @@ test('applyDemotionVerify: max=0 disables → legacy list-wins (all dropped, no 
   assert.deepEqual(r, { kept: 0, held: 0, dropped: 1 });
   assert.equal(reads, 0);
   assert.equal(s.isPlanned, false);
+});
+
+// ── demotionLookupVerdict: the real /stop/info → keep/drop/hold policy (Jul 9 audit) ──
+
+test('demotionLookupVerdict: failed reads — INCLUDING 404/not_found — hold (never drop on one bad read)', () => {
+  assert.equal(demotionLookupVerdict({ ok: false, reason: 'http_500' }), null);
+  assert.equal(demotionLookupVerdict({ ok: false, reason: 'not_found' }), null, 'a 404 against a still-listed stop is a vendor inconsistency — hold');
+  assert.equal(demotionLookupVerdict({ ok: false, reason: 'http_404' }), null);
+  assert.equal(demotionLookupVerdict(null), null);
+});
+
+test('demotionLookupVerdict: terminal records are NEVER resurrected as live work', () => {
+  for (const st of ['DELIVERED', 'EXCEPTION', 'CANCELLED']) {
+    assert.equal(demotionLookupVerdict({ ok: true, stop: { normalizedStatus: st, isPlanned: true, loadNbr: 'L1' } }), false, st);
+  }
+});
+
+test('demotionLookupVerdict: assigned keeps, unassigned drops', () => {
+  assert.equal(demotionLookupVerdict({ ok: true, stop: { normalizedStatus: 'SCHEDULED', isPlanned: true, loadNbr: 'DAVIS000198531' } }), true);
+  assert.equal(demotionLookupVerdict({ ok: true, stop: { normalizedStatus: 'UNPLANNED', isPlanned: false, loadNbr: null } }), false);
+  assert.equal(demotionLookupVerdict({ ok: true, stop: { isPlanned: true, loadNbr: '' } }), false, 'planned flag without a load is not assigned');
 });

@@ -245,8 +245,13 @@ function currentDeliveryStopIds(load: any): string[] {
 // True when a load carries a non-pickup stop the DO-filter would skip: a stop whose type isn't
 // 'DO' but sits in a delivery slot (stopSeq > 1; doc §10 says seq 1 = origin pickup). Re-sequencing
 // such a load would leave that stop out of the rebuilt order — refuse rather than de-sequence it.
-function hasUnmodeledDelivery(load: any): boolean {
-  return (load?.stops || []).some((s: any) => String(s?.stopType || '').toUpperCase() !== 'DO' && Number(s?.stopSeq ?? 0) > 1);
+// `modeledNbrs` (RWB path): a non-DO stop the board IS sequencing (an RA/return in the card's
+// order — pickupLegIds places its customer _PU leg) is NOT unmodeled; without this exclusion the
+// guard refused every edit of a load carrying a mid-route pickup, contradicting the pickup-leg
+// support it sits in front of. Omitted (classic engine) → original behavior.
+function hasUnmodeledDelivery(load: any, modeledNbrs?: Set<string>): boolean {
+  return (load?.stops || []).some((s: any) => String(s?.stopType || '').toUpperCase() !== 'DO' && Number(s?.stopSeq ?? 0) > 1
+    && !(modeledNbrs && s?.stopNbr != null && modeledNbrs.has(String(s.stopNbr))));
 }
 
 /**
@@ -1307,8 +1312,8 @@ export async function runCommitBoardRwb(requester: RequesterLike, payload: any, 
       p.result.ok = false; p.result.error = `commitBoard(rwb): load identity mismatch (name resolved ${load.loadId}, expected ${p.L.loadId})`;
       continue;
     }
-    if (hasUnmodeledDelivery(load)) {
-      p.result.ok = false; p.result.error = 'commitBoard(rwb): load has a non-DO stop in a delivery slot — reorder skipped (verify in portal)';
+    if (hasUnmodeledDelivery(load, new Set(p.orderedNbrs))) {
+      p.result.ok = false; p.result.error = 'commitBoard(rwb): load has a non-DO stop in a delivery slot that this card is not sequencing — reorder skipped (verify in portal)';
       continue;
     }
     batchNbrs.add(p.loadNbr);
@@ -1343,7 +1348,11 @@ export async function runCommitBoardRwb(requester: RequesterLike, payload: any, 
     // silently no-ops/rejects a cross-route steal DOWNSTREAM of us reporting success — the false
     // "saved" Chad caught. One read per newly-added stop is the price of never lying about a save;
     // it also turns the mistake into the actionable pre-add refusal below.
-    const missing = p.orderedNbrs.filter((n: string) => !p.stopIdByNbr.has(n));
+    // "Missing" = not on the load AT ALL (curNbrs — every on-load stop record). The old check
+    // used the DO-only stopIdByNbr, so an on-load PICKUP/RA (or blank-typed) stop read as an
+    // arrival: a wasted getStop+validate+add per reorder at best, a false failure at worst when
+    // the portal rejects re-adding a stop it already holds.
+    const missing = p.orderedNbrs.filter((n: string) => !p.curNbrs.has(n));
     const needFetch: string[] = [];
     for (const nbr of missing) {
       const holder = seq.find((q: any) => q !== p && q.result.ok && q.stopIdByNbr.has(nbr));
@@ -1448,6 +1457,30 @@ export async function runCommitBoardRwb(requester: RequesterLike, payload: any, 
   // open routes — the moved stop is simply absent from the source's entry and present in the
   // destination's. Cost: 1 fetchUpdatedJson per load + ONE save (a 2-load move = 3 calls here).
   const group = live.filter((p: any) => p.result.ok);
+  // ── CROSS-CARD STRAND GUARD (pre-save). A card may RELEASE a delivery (omit it from its
+  // entry, letting another card take it — that's the only way the stale-board guard admitted
+  // it) ONLY while the claiming card is still part of this Save. `group` silently drops cards
+  // that failed PASS A/B or LEVER 1, and a source that saves while its claimer died would
+  // UNPLAN the moved stop: removed from the source's declarative entry, never added anywhere,
+  // and no orphan surfaced (the atomic-save assumption replaced the old topo-sort's orphan
+  // net). Claims from failed RWB cards are REVOKED here; legacy-path claims stand — the legacy
+  // engine carries its own orphan detection.
+  {
+    const claimedNbrs = new Set<string>();
+    for (const p of group) for (const n of p.orderedNbrs) claimedNbrs.add(n);
+    for (const l of legacy) for (const n of (Array.isArray(l?.orderedStopNbrs) ? l.orderedStopNbrs : [])) claimedNbrs.add(String(n));
+    for (const p of group) {
+      const orderedSet = new Set(p.orderedNbrs);
+      const removeSet = new Set((Array.isArray(p.L?.removeStopNbrs) ? p.L.removeStopNbrs : []).map(String));
+      // Same iteration set as the stale-board guard: the load's DELIVERY stops (origin PU exempt).
+      const stranded = [...p.stopIdByNbr.keys()].filter((n: string) => !orderedSet.has(n) && !removeSet.has(n) && !claimedNbrs.has(n));
+      if (stranded.length) {
+        p.result.ok = false;
+        p.result.error = `commitBoard(rwb): stop ${stranded[0]} is being moved to a card that FAILED this Save — saving ${p.loadNbr} now would UNPLAN it. Fix the failed card (see its error), then re-Save; nothing was written for ${p.loadNbr}.`;
+      }
+    }
+  }
+  const saveGroup = group.filter((p: any) => p.result.ok);
   const originOf = (p: any) => {
     const rtOriginAddr = p.load?.loadHeader?.rtOrigin?.address;
     return (rtOriginAddr?.latitude != null && rtOriginAddr?.longitude != null)
@@ -1492,11 +1525,11 @@ export async function runCommitBoardRwb(requester: RequesterLike, payload: any, 
   // the portal never does is exactly how the Jul 9 half-apply happened.
   const RWB_RESEQ = envFlag('NUVIZZ_RWB_RESEQUENCE', false);
   const needsReseq = (p: any) => RWB_RESEQ && rwbOrderMismatch(p.load, p.orderedNbrs) != null;
-  if (group.length) {
+  if (saveGroup.length) {
     try {
-      for (const p of group) p.reseqRequested = needsReseq(p);
-      const r = await rwbSequenceRoutes(requester, group.map((p: any) => ({ routePlanId: p.routePlanId, orderedStopIds: p.orderedIds, origin: originOf(p), pickupLegIds: p.pickupLegIds || [], resequence: p.reseqRequested, ...extrasOf(p) })));
-      for (const [i, p] of group.entries()) {
+      for (const p of saveGroup) p.reseqRequested = needsReseq(p);
+      const r = await rwbSequenceRoutes(requester, saveGroup.map((p: any) => ({ routePlanId: p.routePlanId, orderedStopIds: p.orderedIds, origin: originOf(p), pickupLegIds: p.pickupLegIds || [], resequence: p.reseqRequested, ...extrasOf(p) })));
+      for (const [i, p] of saveGroup.entries()) {
         const mySteps = r.steps.filter((s: any) => !s.routePlanId || String(s.routePlanId) === p.routePlanId);
         p.result.steps.push(...mySteps.map((s: any) => ({ ...s, op: `rwb:${s.op}` })));
         // Truthful sums across loads: each load owns its own preview (+ its resequence when the
@@ -1515,7 +1548,7 @@ export async function runCommitBoardRwb(requester: RequesterLike, payload: any, 
       // the fallback add releases the stop from its source vendor-side, so a source verified
       // earlier would false-fail on a stop its destination was about to claim.
       if (r.ok) {
-        for (const p of group) {
+        for (const p of saveGroup) {
           if (!p.result.ok || !p.moveArrivals.length) continue;
           const f3 = await fetchLoad(requester, String(p.loadNbr), creds);
           p.result.calls.infos += 1;
@@ -1539,7 +1572,7 @@ export async function runCommitBoardRwb(requester: RequesterLike, payload: any, 
         // ONE repair round for a hard order mismatch; a SOFT seq-pending read (positions not
         // stamped yet) retries with a plain re-read — never a repair write into the vendor's
         // settling window.
-        for (const p of group) {
+        for (const p of saveGroup) {
           if (!p.result.ok) continue;
           const removeNbrs: string[] = Array.isArray(p.L?.removeStopNbrs) ? p.L.removeStopNbrs.map((x: any) => String(x)).filter(Boolean) : [];
           const movedAway: string[] = seq.flatMap((q: any) => (q !== p && q.result.ok)
@@ -1588,7 +1621,7 @@ export async function runCommitBoardRwb(requester: RequesterLike, payload: any, 
         }
       }
     } catch (e: any) {
-      for (const p of group) if (p.result.ok) { p.result.ok = false; p.result.error = e?.message || 'RWB sequence failed'; }
+      for (const p of saveGroup) if (p.result.ok) { p.result.ok = false; p.result.error = e?.message || 'RWB sequence failed'; }
     }
   }
 

@@ -681,6 +681,25 @@ export function applyBoardWriteGrace(fresh: any, prior: any, nowMs: number, grac
 // tick is cheaper than wiping live routes. max<=0 disables (legacy list-wins). Checks mutate the
 // fresh rows in place, exactly like applyBoardWriteGrace.
 export const PLAN_FIELDS = ['status', 'normalizedStatus', 'isPlanned', 'isUnplanned', 'loadNbr', 'routeName', 'routeSeq', 'driverName', 'driverUserName'] as const;
+// Verdict for one demotion-verify /stop/info read: true = record still assigned (keep the
+// plan), false = confirmed off-route/terminal (the demotion stands), null = unknown (hold one
+// cycle). PURE — unit-tested; refresh-stops wires lookupStopByPro into it.
+//  • ANY failed read (429/5xx/network — and 404/not_found too) → null. A 404 here means the
+//    LIST still names a stop whose record read failed: an inconsistent/transient vendor state,
+//    and dropping a live-route stop on one bad read re-opens a narrower SEAAGRI hole. A truly
+//    deleted stop leaves the saved-search list as well, so it never re-enters demoteChecks —
+//    holding cannot pin a zombie.
+//  • terminal record (DELIVERED / EXCEPTION / CANCELLED) → false: finished work must never be
+//    resurrected as live SCHEDULED (keepPlan would overwrite the fresh terminal status).
+//  • else → assigned iff the record shows isPlanned + a load.
+export function demotionLookupVerdict(r: { ok: boolean; reason?: string; stop?: any } | null | undefined): boolean | null {
+  if (!r?.ok) return null;
+  const s: any = r.stop || {};
+  const st = String(s.normalizedStatus ?? '').toUpperCase();
+  if (st === 'DELIVERED' || st === 'EXCEPTION' || st === 'CANCELLED') return false;
+  return !!(s.isPlanned && s.loadNbr);
+}
+
 export async function applyDemotionVerify(
   checks: Array<{ s: any; p: any }>,
   opts: { max: number; scannedAt: string; lookup: (stopNbr: string) => Promise<boolean | null> },
