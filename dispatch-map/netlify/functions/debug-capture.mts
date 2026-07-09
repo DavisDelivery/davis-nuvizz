@@ -37,16 +37,29 @@ function getToken(): string | undefined {
   return process.env.DEBUG_CAPTURE_GH_TOKEN || process.env.GH_TOKEN || process.env.GITHUB_TOKEN;
 }
 
+// Slice a string to at most `n` UTF-16 units WITHOUT splitting a surrogate pair. A plain
+// s.slice() can cut an emoji / non-BMP char in half, leaving a LONE SURROGATE — which serializes
+// to invalid UTF-8 and makes GitHub reject the whole request with "400 Bad Request / Problems
+// parsing JSON" (the debug-capture failure). Dropping the dangling high surrogate keeps the body
+// valid. Exported-ish via module scope; used by every truncation below and the final body clamp.
+function safeSlice(s: string, n: number): string {
+  if (n >= s.length) return s;
+  let end = Math.max(0, n);
+  const last = s.charCodeAt(end - 1);
+  if (last >= 0xd800 && last <= 0xdbff) end -= 1; // don't end on a high surrogate
+  return s.slice(0, end);
+}
+
 // Truncate so the RETURNED string — including the truncation notice — is <= max.
 function truncate(s: string, max: number): string {
   if (s.length <= max) return s;
   const notice = `\n…[truncated ${s.length} chars]`;
-  return s.slice(0, Math.max(0, max - notice.length)) + notice;
+  return safeSlice(s, Math.max(0, max - notice.length)) + notice;
 }
 
 function firstLine(s: unknown, max = 80): string {
   const line = String(s || '').split('\n')[0].trim();
-  return line.length > max ? `${line.slice(0, max - 1)}…` : line;
+  return line.length > max ? `${safeSlice(line, max - 1)}…` : line;
 }
 
 function buildIssueBody(bundle: any): string {
@@ -102,7 +115,7 @@ function buildIssueBody(bundle: any): string {
   }
   const json = truncate(JSON.stringify(bundle, null, 2), Math.max(0, MAX_BODY_CHARS - overhead - header.length));
   const body = wrap(header, json);
-  return body.length <= MAX_BODY_CHARS ? body : body.slice(0, MAX_BODY_CHARS);
+  return body.length <= MAX_BODY_CHARS ? body : safeSlice(body, MAX_BODY_CHARS);
 }
 
 export default async (req: Request): Promise<Response> => {
@@ -154,10 +167,19 @@ export default async (req: Request): Promise<Response> => {
       },
       body: JSON.stringify(labels.length ? { title, body, labels } : { title, body }),
     });
-    const data: any = await resp.json();
+    const data: any = await resp.json().catch(() => ({}));
     if (!resp.ok) {
+      // GitHub buries the real reason for a 400/422 in errors[] (message is generic like
+      // "Validation Failed"/"Bad Request"); surface it so the toast is actionable instead of
+      // just "bad request". Common 401 = token expired/revoked → rotate DEBUG_CAPTURE_GH_TOKEN.
+      const detail = Array.isArray(data?.errors) && data.errors.length
+        ? ' — ' + data.errors.map((e: any) => e?.message || [e?.resource, e?.field, e?.code].filter(Boolean).join(' ')).filter(Boolean).join('; ')
+        : '';
+      const hint = resp.status === 401 ? ' (token expired/revoked — rotate DEBUG_CAPTURE_GH_TOKEN)'
+        : resp.status === 403 || resp.status === 404 ? ' (token lacks Issues:write on this repo)'
+        : '';
       return new Response(
-        JSON.stringify({ ok: false, error: `GitHub ${resp.status}: ${data?.message || 'issue create failed'}` }),
+        JSON.stringify({ ok: false, error: `GitHub ${resp.status}: ${data?.message || 'issue create failed'}${detail}${hint}` }),
         { status: 502, headers: CORS },
       );
     }
