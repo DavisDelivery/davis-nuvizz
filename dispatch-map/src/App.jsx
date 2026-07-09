@@ -54,7 +54,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.45.9';
+const APP_VERSION = '0.45.10';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -99,6 +99,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.45.10', 'The bottom grid\'s ±7-day window now shows a DAY column — the "drift" between the map selection and the grid count was the window quietly mixing three different days\' work in one list: past carry-over (amber ◂), TODAY (blue), and FUTURE-day orders (violet ▸, e.g. tomorrow\'s appointments that are SUPPOSED to be unplanned tonight). The column only appears in a window pull; the normal Board (today) view is unchanged. Sort by it to split today\'s backlog from future work at a glance.'],
   ['0.45.9', 'FIX (route order in production): a PICKUP-type order — a return / RA — placed in the MIDDLE of a route was landing at delivery #1 in NuVizz no matter where you sequenced it. The RWB save loads every stop at the depot up front and delivers the rest in your order; a pickup\'s real customer visit is its "pickup" leg, but that leg was being emitted in the front depot block, so the driver hit it first. Pickups now ride their customer visit at the exact position you put them in, and return to the depot at the end. Pure delivery routes are byte-for-byte unchanged. NOTE: correct a route you already saved with an RA out of place by re-sequencing it once more and Saving (or drag it in the NuVizz portal for tonight).'],
   ['0.45.8', 'Reverted the bottom-grid date-window selector back to its original three choices — Board (today) / NuVizz · Today / NuVizz · ±7 days — on both the Map and Routing screens (per request). The extra ±3/±14/±30 presets and the Custom From/To range are gone; the toolbar reads exactly as before. Under the hood ±7 days still reads our board cache so it can\'t time out, and selecting ±7 days still puts that week\'s orders on the routing map to select/plan — only the picker UI changed back.'],
   ['0.45.7', 'FIX: fixing an address or moving the pin for an order pulled in via a Board date window/range made its pin VANISH until a full map refresh. The map added other-day window orders only if they ALREADY had a location, so a just-corrected order (its new pin lives in customer overrides) wasn\'t in the map\'s set for the override to apply to — it stayed invisible until the next scan re-geocoded it. The map now keeps those orders in its set so a corrected address/pin shows LIVE, the moment you save. FIX: "Debug this view" could fail with a GitHub "bad request" — the issue text was truncated with a plain cut that could split an emoji/special character and leave a broken byte GitHub rejects; truncation is now character-safe, and the error now shows GitHub\'s real reason (and says to rotate the token on a 401).'],
@@ -8496,8 +8497,28 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
     document.addEventListener('pointermove', move);
     document.addEventListener('pointerup', up);
   };
+  // A stop's calendar day for the multi-day window view. Board mode never shows it.
+  const rowDayOf = (s) => s.boardDate || s.scheduledDate || s.requestedDate || '';
+  const todayET = todayInET();
   const cols = [
     { k: 'stop', label: 'Stop #', w: 96, get: (s) => <span className="font-mono text-blue-700">{s.stopNbr}</span>, sortVal: (s) => (Number.isFinite(Number(s.stopNbr)) ? Number(s.stopNbr) : s.stopNbr) },
+    // DAY — only in a date-window pull. A ±7-day list mixes past carry-over, today, and
+    // FUTURE-day orders (tomorrow's appointments legitimately sit unplanned tonight); without
+    // this column those read as one big backlog and the counts look "drifted" vs the board.
+    ...(nvWindow ? [{
+      k: 'day', label: 'Day', w: 92,
+      get: (s) => {
+        const d = rowDayOf(s);
+        if (!d) return <span className="text-slate-400">—</span>;
+        const label = d.slice(5).replace('-', '/');
+        return d === todayET
+          ? <span className="font-semibold text-blue-700">today</span>
+          : d < todayET
+            ? <span className="text-amber-700" title={`Carry-over from ${d}`}>{label} ◂</span>
+            : <span className="text-violet-700" title={`Future delivery day ${d}`}>{label} ▸</span>;
+      },
+      sortVal: (s) => rowDayOf(s) || '~',
+    }] : []),
     { k: 'name', label: 'Ship To Name', w: 220, get: (s) => s.businessName || '—', sortVal: (s) => s.businessName },
     { k: 'addr1', label: 'Address 1', w: 200, get: (s) => s.addr1 || '—', sortVal: (s) => s.addr1 },
     { k: 'addr2', label: 'Address 2', w: 150, get: (s) => s.addr2 || '', sortVal: (s) => s.addr2 },
