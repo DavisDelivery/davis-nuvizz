@@ -308,14 +308,22 @@ function gmtOffsetForDate(yyyy: string, mm: string, dd: string, timeZone: string
 }
 
 function routeWindow(dttm: string | undefined, timeZone = 'America/New_York'): { start: string; end: string } | null {
-  const m = String(dttm || '').match(/^(\w{3})\s+(\d{1,2}),\s+(\d{4})/);
+  // schStartTime.dttm carries the route's REAL start time ("Jul 9, 2026, 12:00:00 PM" — Jul 9
+  // portal HAR), and the portal's save echoes exactly that as routeStartTime ("07/09/2026
+  // 12:00:00 pm GMT-04:00"). We used to fabricate 08:00 am regardless — a wrong window on every
+  // load that doesn't start at 8 (BEN 2 was a 12 PM route) and a stale one on carry-over edits.
+  // Older responses carry a bare date; those keep the 08:00 fallback.
+  const m = String(dttm || '').match(/^(\w{3})\s+(\d{1,2}),\s+(\d{4})(?:,?\s+(\d{1,2}):(\d{2}):(\d{2})\s*(AM|PM))?/i);
   if (!m) return null;
   const mm = MONTHS[m[1]];
   if (!mm) return null;
   const dd = String(m[2]).padStart(2, '0');
   const date = `${mm}/${dd}/${m[3]}`;
   const off = gmtOffsetForDate(m[3], mm, dd, timeZone);   // DST-correct, not a hardcoded EDT literal
-  return { start: `${date} 08:00:00 am ${off}`, end: `${date} 11:59:00 pm ${off}` };
+  const start = m[4] != null
+    ? `${String(m[4]).padStart(2, '0')}:${m[5]}:${m[6]} ${String(m[7]).toLowerCase()}`
+    : '08:00:00 am';
+  return { start: `${date} ${start} ${off}`, end: `${date} 11:59:00 pm ${off}` };
 }
 
 /**
@@ -340,32 +348,58 @@ function routeWindow(dttm: string | undefined, timeZone = 'America/New_York'): {
  * in the visit sequence, and its _DO (the return to depot) at the tail. Routes with no pickup
  * orders produce a byte-identical payload to before.
  */
-export async function rwbSequenceStops(requester: RwbRequesterLike, routePlanId: string, orderedStopIds: string[], origin: { lat: number; lng: number }, pickupLegIds: string[] = []): Promise<{ ok: boolean; message: string; calls: number; steps: any[] }> {
-  const r = await rwbSequenceRoutes(requester, [{ routePlanId, orderedStopIds, origin, pickupLegIds }]);
+export async function rwbSequenceStops(requester: RwbRequesterLike, routePlanId: string, orderedStopIds: string[], origin: { lat: number; lng: number }, pickupLegIds: string[] = [], extras: { totals?: any; isStandingRoute?: boolean; resequence?: boolean } = {}): Promise<{ ok: boolean; message: string; calls: number; steps: any[] }> {
+  const r = await rwbSequenceRoutes(requester, [{ routePlanId, orderedStopIds, origin, pickupLegIds, ...extras }]);
   const ids = [...new Set(orderedStopIds.map(String).filter(Boolean))];
   return { ok: r.ok, message: r.ok ? `Sequenced ${ids.length} stop(s) via RWB.` : r.message, calls: r.calls, steps: r.steps };
+}
+
+// The shared leg sequence (see rwbSequenceStops doc): delivery orders → depot _PU up front +
+// customer _DO at the requested position; PICKUP orders (returns/RAs) → customer _PU at the
+// requested position + return _DO at the tail.
+function legsFor(ids: string[], pickupLegIds?: string[]): Array<{ id: string; leg: string }> {
+  const pu = new Set((pickupLegIds || []).map(String));
+  const isPickup = (id: string) => pu.has(id);
+  return [
+    ...ids.filter((id) => !isPickup(id)).map((id) => ({ id, leg: '_PU' })),          // depot loading (deliveries)
+    ...ids.map((id) => ({ id, leg: isPickup(id) ? '_PU' : '_DO' })),                 // CUSTOMER visits, requested order
+    ...ids.filter(isPickup).map((id) => ({ id, leg: '_DO' })),                       // pickups' return-to-depot legs
+  ];
+}
+
+// rwbResequenceRoute — the portal's ORDER-persisting call (Jul 9 optimize HAR: fetchUpdatedJson →
+// opt-job/routeopt/resequenceRoute → saveComparedRouteData). Every flow where stops ALREADY ON a
+// route change position goes through this endpoint; a flow that only ADDS stops never fires it
+// (order comes from the adds). We never called it — which is why an edit's reorder was accepted
+// by the save yet no stop's seq ever moved (the DAWSONVILLE 1,2,2,6…13 state). seqMode 'Manual'
+// = persist EXACTLY the given leg order (the portal's optimizer uses 'None' to let the server
+// pick); reqSource RWB_CP is the workbench's own discriminator, verbatim from the HAR.
+async function rwbResequenceRoute(
+  requester: RwbRequesterLike, cfg: RwbConfig,
+  routePlanId: string, orderedStopIds: string[], pickupLegIds: string[] | undefined, steps: any[],
+): Promise<{ ok: boolean; message?: string }> {
+  const ids = [...new Set(orderedStopIds.map(String).filter(Boolean))];
+  const stopIdsStr = legsFor(ids, pickupLegIds).map(({ id, leg }) => id + leg).join(',');
+  const r = await rwbAuthedCall(requester, cfg, 'POST', 'opt-job/routeopt/resequenceRoute', {
+    routePlanId, stopIdsStr, returnToDepot: 'NEVER', seqMode: 'Manual', reqSource: 'RWB_CP',
+  });
+  const ok = r.ok && rwbBodyOk(r.body);
+  steps.push({ op: 'resequenceRoute', routePlanId, ok, status: r.status, error: ok ? null : (r.error || null) });
+  return ok ? { ok } : { ok, message: r.error || `resequenceRoute failed (status ${r.status})` };
 }
 
 // Build ONE route's fetchUpdatedJson preview + its routeJsonData save entry. `listIdx` feeds the
 // portal's per-route `list` discriminator ("list1", "list2", …) seen in the multi-route move HAR.
 async function rwbPreviewRoute(
   requester: RwbRequesterLike, cfg: RwbConfig,
-  route: { routePlanId: string; orderedStopIds: string[]; origin: { lat: number; lng: number }; pickupLegIds?: string[] },
+  route: { routePlanId: string; orderedStopIds: string[]; origin: { lat: number; lng: number }; pickupLegIds?: string[]; totals?: any; isStandingRoute?: boolean },
   listIdx: number, steps: any[],
 ): Promise<{ ok: boolean; entry?: any; message?: string }> {
   const ids = [...new Set(route.orderedStopIds.map(String).filter(Boolean))];
   const { routePlanId, origin } = route;
-  // Leg sequence (see rwbSequenceStops doc): delivery orders → depot _PU up front + customer
-  // _DO at the requested position; PICKUP orders (returns/RAs) → customer _PU at the requested
-  // position + return _DO at the tail. No pickups ⇒ identical to the original
-  // [all _PU..., all _DO...] shape.
-  const pu = new Set((route.pickupLegIds || []).map(String));
-  const isPickup = (id: string) => pu.has(id);
-  const legs = [
-    ...ids.filter((id) => !isPickup(id)).map((id) => ({ id, leg: '_PU' })),          // depot loading (deliveries)
-    ...ids.map((id) => ({ id, leg: isPickup(id) ? '_PU' : '_DO' })),                 // CUSTOMER visits, requested order
-    ...ids.filter(isPickup).map((id) => ({ id, leg: '_DO' })),                       // pickups' return-to-depot legs
-  ];
+  // Leg sequence via legsFor (shared with resequenceRoute). No pickups ⇒ identical to the
+  // original [all _PU..., all _DO...] shape.
+  const legs = legsFor(ids, route.pickupLegIds);
   const stoplist = legs.map(({ id, leg }) => id + leg).join(',');
   const fujForm = { originLat: String(origin.lat), originLng: String(origin.lng), originOption: '02', stoplist, routePlanId, returnToDepot: 'NEVER', computeLatestEta: 'true' };
   const fr = await rwbAuthedCall(requester, cfg, 'POST', 'dirouteworkbench/routePlan/fetchUpdatedJson', fujForm);
@@ -381,8 +415,12 @@ async function rwbPreviewRoute(
     routePlanId, originLat: origin.lat, originLong: origin.lng,
     routeEndTime: win ? win.end : '', routeStartTime: win ? win.start : '',
     routeDistance: o.distance, transitTime: o.duration, totalTrips: ids.length,
-    totalData: { totalP: 0, totalC: 0, totalW: 0, totalV: 0, weightUOM: 'Lbs', volumeUOM: 'Loose' },
-    IdleTime: o.idleTime || 0, buildType: '02', isStandingRoute: false, seqMode: 'Manual',
+    // The Jul 9 portal HAR populates totalData with the route's REAL freight sums (and
+    // volumeUOM "") and sends isStandingRoute:true on a recurring DAVIS route. Callers thread
+    // both when they can derive them; the legacy zeros/'Loose' + false stay the byte-exact
+    // fallback (the shape every successful build has used).
+    totalData: route.totals ?? { totalP: 0, totalC: 0, totalW: 0, totalV: 0, weightUOM: 'Lbs', volumeUOM: 'Loose' },
+    IdleTime: o.idleTime || 0, buildType: '02', isStandingRoute: route.isStandingRoute === true, seqMode: 'Manual',
     deadHeadMins: o.deadHeadMins, deadHeadMiles: o.deadHeadMiles,
     tripDataJsonArray: ids, list: `list${listIdx}`,
     // Mirrors the stoplist's leg sequence exactly (delivery-only routes: unchanged shape).
@@ -415,7 +453,7 @@ async function rwbPreviewRoute(
  */
 export async function rwbSequenceRoutes(
   requester: RwbRequesterLike,
-  routes: Array<{ routePlanId: string; orderedStopIds: string[]; origin: { lat: number; lng: number }; pickupLegIds?: string[] }>,
+  routes: Array<{ routePlanId: string; orderedStopIds: string[]; origin: { lat: number; lng: number }; pickupLegIds?: string[]; totals?: any; isStandingRoute?: boolean; resequence?: boolean }>,
 ): Promise<{ ok: boolean; message: string; calls: number; steps: any[]; failedRoutePlanId?: string }> {
   const cfg = rwbConfig();
   if (rwbEngineBlocked()) return { ok: false, message: 'RWB engine is disabled on the server (NUVIZZ_RWB_ENABLED must be explicitly set)', calls: 0, steps: [] };
@@ -442,6 +480,19 @@ export async function rwbSequenceRoutes(
     const p = await rwbPreviewRoute(requester, cfg, route, i + 1, steps);
     if (!p.ok) return { ok: false, message: p.message || 'route preview failed', calls, steps, failedRoutePlanId: route.routePlanId };
     entries.push(p.entry);
+  }
+
+  // Order persist for routes whose EXISTING stops changed position (route.resequence): the
+  // portal's own flow is preview → resequenceRoute → save (Jul 9 optimize HAR). A pure
+  // build/add save never fires it (order comes from the adds), keeping that proven path
+  // byte-identical. Same all-or-nothing rule as the previews: a failed resequence aborts the
+  // whole group with NO save (a save without its resequence is exactly the accepted-but-
+  // ignored reorder this exists to fix).
+  for (const route of routes) {
+    if (route.resequence !== true) continue;
+    calls += 1;
+    const rs = await rwbResequenceRoute(requester, cfg, route.routePlanId, route.orderedStopIds, route.pickupLegIds, steps);
+    if (!rs.ok) return { ok: false, message: rs.message || 'resequenceRoute failed', calls, steps, failedRoutePlanId: route.routePlanId };
   }
 
   const sr = await rwbAuthedCall(requester, cfg, 'POST', 'dirouteworkbench/routePlan/saveComparedRouteData', { routeJsonData: JSON.stringify(entries), planningMode: 'true' });
