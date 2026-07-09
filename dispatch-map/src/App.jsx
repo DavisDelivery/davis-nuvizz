@@ -54,7 +54,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.45.26';
+const APP_VERSION = '0.45.27';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -8886,16 +8886,19 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
         {/* No-location chip — these rows have no map pin, so they can't be selected on the map
             or routed until their address is fixed. This reconciles the "grid count > map
             selection" gap AND surfaces silently-unroutable orders. Click to isolate them. */}
-        {open && view === 'stops' && unmappedCount > 0 && (
+        {view === 'stops' && unmappedCount > 0 && (
           <button
-            onClick={() => setUnmappedOnly((v) => !v)}
+            onClick={() => { setUnmappedOnly((v) => !v); setOpen(true); }}
             title="These stops have no map location — they can't be selected on the map or routed until you fix the address (Edit address / Correct pin). Click to show only them."
             className={'inline-flex items-center gap-1 px-2 py-1 rounded text-xs border whitespace-nowrap ' + (unmappedOnly ? 'border-amber-500 bg-amber-500 text-white' : 'border-amber-400 text-amber-700 bg-amber-50 hover:bg-amber-100')}
           >
             <MapPin size={12} /> {unmappedCount} no location{unmappedOnly ? ' · showing' : ''}
           </button>
         )}
-        {open && (
+        {/* Toolbar controls stay in the bar whether the grid is open OR collapsed (Chad: the
+            collapsed bar must be identical). Only the TABLE below hides when collapsed; using any
+            control auto-opens the grid so its effect is visible. */}
+        {true && (
           <>
             {/* min-w so the box never shrinks to an icon (hiding a stray term that blanks the grid);
                 a clear-× so leftover search text is always dismissable and highlighted when present. */}
@@ -8903,7 +8906,8 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
               <Search size={13} className="absolute left-2 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
               <input
                 value={q}
-                onChange={(e) => setQ(e.target.value)}
+                onChange={(e) => { setQ(e.target.value); setOpen(true); }}
+                onFocus={() => setOpen(true)}
                 placeholder={view === 'loads' ? 'Search loads…' : 'Search table…'}
                 className={'w-full border rounded pl-7 pr-6 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-400 ' + (q ? 'border-blue-400 bg-blue-50' : 'border-slate-300')}
               />
@@ -8916,7 +8920,7 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
             {view === 'stops' && (
               <div className="relative">
                 <button
-                  onClick={() => setStatusOpen((v) => !v)}
+                  onClick={() => { setStatusOpen((v) => !v); setOpen(true); }}
                   className={'inline-flex items-center gap-1 px-2 py-1 rounded text-xs border ' + (statusSel.size ? 'border-blue-400 text-blue-700 bg-blue-50' : 'border-slate-300 text-slate-600 hover:bg-slate-50')}
                 >
                   <Filter size={12} /> Status{statusSel.size ? ` (${statusSel.size})` : ''}
@@ -8943,7 +8947,7 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
               <>
                 <select
                   value={nvWindow}
-                  onChange={(e) => setNvWindow(e.target.value)}
+                  onChange={(e) => { setNvWindow(e.target.value); setOpen(true); }}
                   title="Data source / delivery-date window"
                   className="hidden sm:inline-block border border-slate-300 rounded px-1.5 py-1 text-xs text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-400"
                 >
@@ -8953,7 +8957,7 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
                 </select>
                 <select
                   value={driverSel}
-                  onChange={(e) => setDriverSel(e.target.value)}
+                  onChange={(e) => { setDriverSel(e.target.value); setOpen(true); }}
                   title="Filter by driver"
                   className="hidden sm:inline-block border border-slate-300 rounded px-1.5 py-1 text-xs text-slate-700 max-w-[150px] focus:outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-400"
                 >
