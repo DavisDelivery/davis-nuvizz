@@ -54,7 +54,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.45.4';
+const APP_VERSION = '0.45.5';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -99,6 +99,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.45.5', 'FIX: setting a date window/range on the bottom Stops grid was wiping the empty loads out of the Loads view — it dropped from all ~100 of the day\'s loads down to just the built routes. The Loads view is board-day scoped and shouldn\'t be touched by the Stops-view date filter at all, but the day\'s load roster (the empty "No orders yet · Draft" loads) was gated off whenever a window was set. The Loads view now always shows the full board-day roster — every empty load, filled route, and its driver — regardless of what date window the Stops grid is on.'],
   ['0.45.4', 'EVERY ORDER IN THE BOTTOM GRID IS NOW ON THE MAP TO SELECT + PLAN. Before, the routing map only showed the single board day you\'d picked, so when the grid was set to a Board window/range (±7/±14/±30 or a Custom range) the earlier-day unplanned orders it listed had no pin — you couldn\'t box/lasso them onto a load. Now the map ADDS every coord-bearing order from the grid\'s active window (deduped against the day board, which keeps its live status), so select-all on the map matches the grid and you can plan the whole backlog of unplanned orders in one pass. (Orders with no location still can\'t be pinned — the amber "N no location" chip from v0.45.3 flags those to fix first.)'],
   ['0.45.3', 'WHY THE MAP SELECTION AND THE BOTTOM GRID DIDN\'T MATCH — the grid lists every order, but the MAP only shows orders that have a geocoded location, so a stop with a bad/unrecognized address appears in the grid yet has NO pin: it can\'t be box/lasso-selected and, more importantly, can\'t be routed — that\'s how one gets silently missed. The bottom grid now shows an amber "N no location" chip whenever any listed stop has no map pin; click it to isolate exactly those orders and fix each address (Edit address / Correct pin) so they land on the map and become routable. (The other reason the two counts differ: a Board window/range like "±7 days" or a Custom range shows MULTIPLE days, while the map always shows just the one board day you\'ve picked — set the grid to "Board (today)" to mirror the map.)'],
   ['0.45.2', 'SAVED WORK CAN NO LONGER LOOK UNBUILT — a confirmed Save now paints the plan onto the board INSTANTLY on this device (a local overlay held until our scan agrees or 45 min, whichever first), fully independent of the server cache — so "closed the compare panel and it looks like I never planned it" (MONE/Denis) is dead even if every other layer misbehaves. The board write-through itself is also now DECLARATIVE (sends the card\'s full final stop order on every confirmed save, not just the delta) and no longer skippable by a result-to-card join miss; every sync logs its result to the console for forensics. FIX: the ±7-day pull "timed out" — NuVizz\'s own ad-hoc wide query is simply too slow, so wide windows (±7/±14/±30 and Custom range) now read OUR board day-docs instead: instant, includes confirmed saves, ZERO NuVizz calls (the status line says "Board · N stops"); Today and ±3 days stay live from NuVizz. NEW: routing a stop now AUTO-INCLUDES any co-located UNPLANNED order the selection missed (two orders at one address = stacked pins; clicking grabs only the top one — how QAE\'s second order got left behind). It says so in a toast and is removable from the card. NEW: the Routing right panel fully COLLAPSES to a thin strip (chevron in its header; clicking a stop auto-expands it). NEW: the stop panel has a HISTORY button — every past delivery to that location with PRO · date · driver, from saved history only (separate from the per-order Activity timeline; zero NuVizz calls). FIX: Compare-panel header buttons (🔗 engine, ● LIVE, Save, Back to Setup) could silently overflow out of view with a narrow card open — the header now wraps so every button stays visible.'],
@@ -8603,17 +8604,20 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
   // Never strand the "no location" filter on when there's nothing to show (its chip hides at 0,
   // so the user couldn't turn it back off) — e.g. after switching windows or fixing every address.
   useEffect(() => { if (unmappedOnly && unmappedCount === 0) setUnmappedOnly(false); }, [unmappedOnly, unmappedCount]);
-  // Pull the day's full load ROSTER (incl. empty loads) when the Loads view is open in
-  // board mode — empty loads have no stops to group, so this is the only way to see them.
+  // Pull the day's full load ROSTER (incl. empty loads) whenever the Loads view is open —
+  // empty loads have no stops to group, so this is the only way to see them. The Loads view
+  // is ALWAYS board-day-scoped (its grouped loads come from `stops`, the board day), so the
+  // Stops-view date window (nvWindow) must NOT gate it — gating it here made every empty
+  // draft load vanish from Loads the moment a day range was set on the Stops grid.
   useEffect(() => {
-    if (view !== 'loads' || nvWindow || !boardDate) return;
+    if (view !== 'loads' || !boardDate) return;
     let cancelled = false;
     fetch('/.netlify/functions/nuvizz-loads-roster?date=' + encodeURIComponent(boardDate), { cache: 'no-store' })
       .then((r) => r.json())
       .then((j) => { if (!cancelled) setRoster(j.ok ? (j.loads || []) : []); })
       .catch(() => { if (!cancelled) setRoster([]); });
     return () => { cancelled = true; };
-  }, [view, nvWindow, boardDate]);
+  }, [view, boardDate]);
 
   // Loads view — group the same board (the `stops` we're handed) by loadNbr so
   // dispatchers can browse current loads instead of individual stops. Each row
@@ -8654,8 +8658,10 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
     });
     // Merge in EMPTY loads from the day's roster — loads created but with no orders assigned
     // yet have no stops to group, so they never appear from stop-grouping. Match by route
-    // name to avoid duplicating loads we already built from stops.
-    if (!nvWindow && roster.length) {
+    // name to avoid duplicating loads we already built from stops. NOT gated on nvWindow: the
+    // Loads view is board-day-scoped, so the Stops-view date window must never hide the day's
+    // empty loads here (that dropped Loads from ~100 down to just the built routes).
+    if (roster.length) {
       const haveNames = new Set(arr.map((g) => String(g.routeName || '').trim().toLowerCase()).filter(Boolean));
       for (const r of roster) {
         const nm = String(r.name || '').trim();
@@ -8666,7 +8672,7 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
     if (needle) arr = arr.filter((g) => [g.loadNbr, g.routeName, g.driverName].filter(Boolean).join(' ').toLowerCase().includes(needle));
     arr.sort((a, b) => String(a.driverName || '~').localeCompare(String(b.driverName || '~')) || String(a.routeName || a.loadNbr).localeCompare(String(b.routeName || b.loadNbr)));
     return arr;
-  }, [loadSrc, q, roster, nvWindow, rosterByName]);
+  }, [loadSrc, q, roster, rosterByName]);
   const loadCols = [
     { k: 'load', label: 'Load', w: 150, get: (g) => <span className="font-mono text-blue-700">{loadDisplayName(g.routeName, g.loadNbr) || 'Unnamed load'}</span>, sortVal: (g) => g.routeName || g.loadNbr },
     { k: 'driver', label: 'Driver', w: 180, get: (g) => g.driverName || '—', sortVal: (g) => g.driverName },
