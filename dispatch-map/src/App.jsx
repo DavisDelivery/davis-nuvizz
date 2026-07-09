@@ -54,7 +54,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.45.11';
+const APP_VERSION = '0.45.12';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -99,6 +99,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.45.12', 'NEW: Routing map → Filters → "Hide place labels" turns off Google\'s own business/place name labels (the clutter that overlaps your stop pins) on the satellite view. Persisted per device. (It cleans the satellite imagery; the roadmap base keeps its labels.)'],
   ['0.45.11', 'FIX: the bottom grid\'s date-window view now reflects a just-saved build IMMEDIATELY, same as the map — the confirmed-save overlay was painted onto the board/map but the window grid kept its already-fetched rows until a re-pull or scan (Chad: "the map reflects the work I\'ve done, the bottom panel does not"). Every confirmed Save now re-paints the grid in place. FIX: the printed Driver Manifest header now shows the ROUTE NAME (e.g. "TRAILER 3") — a freshly built card\'s stops don\'t carry the route name yet, so it printed a generic "Route".'],
   ['0.45.10', 'The bottom grid\'s ±7-day window now shows a DAY column — the "drift" between the map selection and the grid count was the window quietly mixing three different days\' work in one list: past carry-over (amber ◂), TODAY (blue), and FUTURE-day orders (violet ▸, e.g. tomorrow\'s appointments that are SUPPOSED to be unplanned tonight). The column only appears in a window pull; the normal Board (today) view is unchanged. Sort by it to split today\'s backlog from future work at a glance.'],
   ['0.45.9', 'FIX (route order in production): a PICKUP-type order — a return / RA — placed in the MIDDLE of a route was landing at delivery #1 in NuVizz no matter where you sequenced it. The RWB save loads every stop at the depot up front and delivers the rest in your order; a pickup\'s real customer visit is its "pickup" leg, but that leg was being emitted in the front depot block, so the driver hit it first. Pickups now ride their customer visit at the exact position you put them in, and return to the depot at the end. Pure delivery routes are byte-for-byte unchanged. NOTE: correct a route you already saved with an RA out of place by re-sequencing it once more and Saving (or drag it in the NuVizz portal for tonight).'],
@@ -11409,7 +11410,7 @@ function RoutingSelectionFloatPanel({ selectedStops, onRemove, onClearAll, onOpe
 // view (hybrid imagery vs the plain roadmap base), and Show routes (draws each load's stops
 // connected in delivery sequence). (The old build-version badge lived here; version history now
 // lives in the gear settings, since the dispatcher reads the version from the page footer.)
-function RoutingMapFilters({ unplannedOnly, setUnplannedOnly, satellite, setSatellite, showRoutes, setShowRoutes }) {
+function RoutingMapFilters({ unplannedOnly, setUnplannedOnly, satellite, setSatellite, showRoutes, setShowRoutes, hideLabels, setHideLabels }) {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
   useEffect(() => {
@@ -11420,7 +11421,7 @@ function RoutingMapFilters({ unplannedOnly, setUnplannedOnly, satellite, setSate
     window.addEventListener('keydown', onKey);
     return () => { document.removeEventListener('mousedown', onDoc); window.removeEventListener('keydown', onKey); };
   }, [open]);
-  const anyOn = unplannedOnly || showRoutes || !satellite;
+  const anyOn = unplannedOnly || showRoutes || !satellite || hideLabels;
   return (
     <div className="absolute top-2 right-2 z-20" ref={ref}>
       <button
@@ -11435,6 +11436,7 @@ function RoutingMapFilters({ unplannedOnly, setUnplannedOnly, satellite, setSate
         <div className="absolute right-0 mt-1 w-52 bg-white border border-slate-300 rounded-lg shadow-xl px-3 py-1.5 text-[12px]">
           <MapFilterToggle label="Unplanned only" checked={unplannedOnly} onChange={setUnplannedOnly} />
           <MapFilterToggle label="Satellite view" checked={satellite} onChange={setSatellite} />
+          <MapFilterToggle label="Hide place labels" checked={hideLabels} onChange={setHideLabels} />
           <MapFilterToggle label="Show routes" checked={showRoutes} onChange={setShowRoutes} />
         </div>
       )}
@@ -11774,6 +11776,11 @@ function RoutingScreen({ debugCaptureRef }) {
   // anchor line. Persisted; default OFF (show), matching NuVizz's default.
   const [routeHideStem, setRouteHideStem] = useState(() => { try { return localStorage.getItem('routing.hideStem') === 'on'; } catch { return false; } });
   useEffect(() => { try { localStorage.setItem('routing.hideStem', routeHideStem ? 'on' : 'off'); } catch { /* ignore */ } }, [routeHideStem]);
+  // Hide Google's own place/business labels (the POI clutter that overlaps stop pins). On the
+  // vector mapId map JS styles are ignored, so the mapId-safe lever is the TYPE: satellite has
+  // no labels, hybrid does. Persisted.
+  const [routeHideLabels, setRouteHideLabels] = useState(() => { try { return localStorage.getItem('routing.hideLabels') === 'on'; } catch { return false; } });
+  useEffect(() => { try { localStorage.setItem('routing.hideLabels', routeHideLabels ? 'on' : 'off'); } catch { /* ignore */ } }, [routeHideLabels]);
   const resetRoutingLayout = useCallback(() => {
     leftPanel.onDoubleClick(); rightPanel.onDoubleClick();
     setSelPanelOpen(true); setRightPanelMode('tabs'); setBottomGridOn(true); setRouteHideStem(false); setLeftPanelOn(false); setRightCollapsed(false);
@@ -12981,8 +12988,22 @@ function RoutingScreen({ debugCaptureRef }) {
   // re-initialising the map (which would drop markers/listeners). mapReady re-applies it after a
   // mobile/desktop re-init.
   useEffect(() => {
-    if (google && mapRef.current) { try { mapRef.current.setMapTypeId(routeSatellite ? 'hybrid' : 'roadmap'); } catch { /* ignore */ } }
-  }, [google, routeSatellite, mapReady]);
+    if (!google || !mapRef.current) return;
+    // Satellite: 'satellite' drops ALL of Google's labels; 'hybrid' keeps them. Roadmap always
+    // carries labels — with a cloud mapId JS styles can't strip them, so "Hide place labels"
+    // primarily cleans the satellite view (where the POI clutter overlaps the pins). When there's
+    // NO mapId, also apply a POI/transit-off style so roadmap honors it too.
+    const type = routeSatellite ? (routeHideLabels ? 'satellite' : 'hybrid') : 'roadmap';
+    try { mapRef.current.setMapTypeId(type); } catch { /* ignore */ }
+    if (!MAP_ID) {
+      try {
+        mapRef.current.setOptions({ styles: routeHideLabels
+          ? [{ featureType: 'poi', elementType: 'labels', stylers: [{ visibility: 'off' }] },
+             { featureType: 'transit', elementType: 'labels', stylers: [{ visibility: 'off' }] }]
+          : [] });
+      } catch { /* ignore */ }
+    }
+  }, [google, routeSatellite, routeHideLabels, mapReady]);
 
   // "Show routes" overlay — group the day's positioned stops by load, order each by the same
   // sequencing the panel uses, and draw a colored polyline per load (independent of the Compare /
@@ -13402,7 +13423,7 @@ function RoutingScreen({ debugCaptureRef }) {
       <div className="flex-1 flex flex-col min-h-0">
         <div className="flex-1 relative min-w-0">
           <div ref={mapDiv} className="absolute inset-0" />
-          <RoutingMapFilters unplannedOnly={routeUnplannedOnly} setUnplannedOnly={setRouteUnplannedOnly} satellite={routeSatellite} setSatellite={setRouteSatellite} showRoutes={routeShowRoutes} setShowRoutes={setRouteShowRoutes} />
+          <RoutingMapFilters unplannedOnly={routeUnplannedOnly} setUnplannedOnly={setRouteUnplannedOnly} satellite={routeSatellite} setSatellite={setRouteSatellite} showRoutes={routeShowRoutes} setShowRoutes={setRouteShowRoutes} hideLabels={routeHideLabels} setHideLabels={setRouteHideLabels} />
           {/* Stops status card — same pill as the dispatch Map (below the ⚙ filters button). */}
           <div className="absolute top-12 right-2 z-[15] max-w-[230px]">{statusCard}</div>
           {!viewing && <RoutingMapTools selectMode={selectMode} onBox={() => (selectMode === 'box' ? cancelMode() : beginMode('box'))} onLasso={() => (selectMode === 'lasso' ? cancelMode() : beginMode('lasso'))} ninjaMode={ninjaMode} onToggleNinja={onNinjaTool} ninjaAvailable={wbRoutes.length > 0} />}
@@ -13542,7 +13563,7 @@ function RoutingScreen({ debugCaptureRef }) {
       {/* Center: the map canvas */}
       <div className="flex-1 relative min-w-0">
         <div ref={mapDiv} className="absolute inset-0" />
-        <RoutingMapFilters unplannedOnly={routeUnplannedOnly} setUnplannedOnly={setRouteUnplannedOnly} satellite={routeSatellite} setSatellite={setRouteSatellite} showRoutes={routeShowRoutes} setShowRoutes={setRouteShowRoutes} />
+        <RoutingMapFilters unplannedOnly={routeUnplannedOnly} setUnplannedOnly={setRouteUnplannedOnly} satellite={routeSatellite} setSatellite={setRouteSatellite} showRoutes={routeShowRoutes} setShowRoutes={setRouteShowRoutes} hideLabels={routeHideLabels} setHideLabels={setRouteHideLabels} />
         {/* Stops status card — same pill as the dispatch Map (below the ⚙ filters button). */}
         <div className="absolute top-12 right-2 z-[15] max-w-[240px]">{statusCard}</div>
         {!viewing && <RoutingMapTools selectMode={selectMode} onBox={() => (selectMode === 'box' ? cancelMode() : beginMode('box'))} onLasso={() => (selectMode === 'lasso' ? cancelMode() : beginMode('lasso'))} ninjaMode={ninjaMode} onToggleNinja={onNinjaTool} ninjaAvailable={wbRoutes.length > 0} />}
