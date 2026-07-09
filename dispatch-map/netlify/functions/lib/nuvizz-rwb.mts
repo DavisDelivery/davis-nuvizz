@@ -377,17 +377,6 @@ async function rwbPreviewRoute(
   if (!o || !Array.isArray(o.etaStopVOList)) return { ok: false, message: 'fetchUpdatedJson returned no route preview' };
   const routeTz = (o.etaStopVOList[0] && o.etaStopVOList[0].timeZone) || 'America/New_York';
   const win = routeWindow(o.schStartTime && o.schStartTime.dttm, routeTz);
-  // The portal builds each save row FROM the preview's own etaStopVOList row (real plannedETA /
-  // etaCode / timeLapse — the workbench UI state IS the preview response). Our fabricated blank
-  // rows were the one divergence on the ordering path, and the Jul 9 DAWSONVILLE edit proved a
-  // blank-row save persists MEMBERSHIP but leaves every existing stop's seq untouched (NuVizz
-  // answered SUCCESS, kept order 1,2,2,6…13). Echo the preview row for each leg when the preview
-  // identifies it; keep the legacy blank row when it doesn't (older tenants / test fixtures).
-  const rowByLeg = new Map<string, any>();
-  for (const row of o.etaStopVOList) {
-    const key = String((row && (row.stopId ?? row.stopID ?? row.id)) ?? '');
-    if (key && !rowByLeg.has(key)) rowByLeg.set(key, row);
-  }
   return { ok: true, entry: {
     routePlanId, originLat: origin.lat, originLong: origin.lng,
     routeEndTime: win ? win.end : '', routeStartTime: win ? win.start : '',
@@ -397,12 +386,17 @@ async function rwbPreviewRoute(
     deadHeadMins: o.deadHeadMins, deadHeadMiles: o.deadHeadMiles,
     tripDataJsonArray: ids, list: `list${listIdx}`,
     // Mirrors the stoplist's leg sequence exactly (delivery-only routes: unchanged shape).
-    stopDataJsonArray: legs.map(({ id, leg }) => {
-      const row = rowByLeg.get(id + leg);
-      return row
-        ? { ...row, stopId: id + leg, routePlanId, tripId: id, timeZone: row.timeZone || routeTz }
-        : { stopId: id + leg, plannedETA: '', routePlanId, etaCode: '', timeLapse: '', tripId: id, timeZone: routeTz };
-    }),
+    // BLANK rows, verbatim — DO NOT "enrich" these from the preview response. v0.45.16 echoed
+    // each preview etaStopVOList row into its save row (chasing the DAWSONVILLE reorder-ignored
+    // bug) and deliverit began HALF-APPLYING every save: SUCCESS answered, but only the first
+    // customer stop kept membership (BEN 2 kept 1 of 11, MITCHELL 1 of 7, Jul 9 ~11:00-12:00Z)
+    // and the ejected stops' records were left claiming the load while the load disowned them.
+    // The blank shape is the HAR-verified portal shape; the reorder bug is NOT fixable from
+    // here — the post-save verify reports it honestly instead.
+    stopDataJsonArray: legs.map(({ id, leg }) => ({
+      stopId: id + leg, plannedETA: '', routePlanId, etaCode: '', timeLapse: '',
+      tripId: id, timeZone: routeTz,
+    })),
   } };
 }
 

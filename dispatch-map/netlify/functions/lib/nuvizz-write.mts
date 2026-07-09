@@ -1146,6 +1146,17 @@ function rwbOrderMismatch(load: any, orderedNbrs: string[]): string | null {
   return `NuVizz ACCEPTED the save but KEPT its own stop order on this load (wanted ${fmt(want)}; NuVizz still runs ${fmt(got)}${dupes.length ? `; duplicate position${dupes.length > 1 ? 's' : ''} ${dupes.slice(0, 3).join(', ')}` : ''}) — fix the order in the NuVizz portal or re-Save`;
 }
 
+// Which load does NuVizz's own stop record say holds this stop? One getStop, used only on
+// failure paths to turn "planned on another load" into an actionable load number. Empty string
+// when the stop reads unplanned OR the read fails — callers phrase both as "holder unknown".
+async function rwbStopHolder(requester: RequesterLike, stopNbr: string, creds: WriteCreds): Promise<string> {
+  try {
+    const gs = await fireSingle(requester, 'getStop', { stopNbr }, creds);
+    const nbr = String(gs?.stop?.assignedLoadNbr ?? '').trim();
+    return isHashLikeId(nbr) ? '' : nbr;
+  } catch { return ''; }
+}
+
 /**
  * runCommitBoardRwb — the SAME board Save (identical payload + result shape as
  * runCommitBoard / runCommitBoardImport) executed through the Route Workbench engine
@@ -1374,7 +1385,10 @@ export async function runCommitBoardRwb(requester: RequesterLike, payload: any, 
       const miss = p.addArrivals.find((a: any) => !landed.has(String(a.nbr)));
       if (miss) {
         p.result.ok = false;
-        p.result.error = `commitBoard(rwb): stop ${miss.nbr} couldn't be added to ${p.loadNbr} — it's still planned on another load. Open that load in Compare to move it, or unplan it first (RWB can't pull a stop off a route that isn't part of the Save).`;
+        // Name the holder (one getStop, failure path only): "another load" made the BEN 2 refusal
+        // a dead end — the dispatcher had to hunt the portal for WHICH route was holding the stop.
+        const holder = await rwbStopHolder(requester, String(miss.nbr), creds);
+        p.result.error = `commitBoard(rwb): stop ${miss.nbr} couldn't be added to ${p.loadNbr} — ${holder && holder !== String(p.loadNbr) ? `NuVizz still holds it on load ${holder}. Open ${holder} in Compare to move it, or unplan it there in the portal` : `it's still planned on another load (NuVizz's stop record doesn't name it). Open that load in Compare to move it, or unplan it first`} (RWB can't pull a stop off a route that isn't part of the Save).`;
         continue;
       }
     } catch (e: any) {
@@ -1460,8 +1474,18 @@ export async function runCommitBoardRwb(requester: RequesterLike, payload: any, 
             const orderErr = (!missingMoves.length && !missingOrdered.length) ? rwbOrderMismatch(f3.load, p.orderedNbrs) : null;
             if (!missingMoves.length && !missingOrdered.length && !lingering.length && !orderErr) { verdict = null; break; }
             // A stop that was ON the load when we saved but is gone now is not repairable here —
-            // something else owns it; surface it rather than re-adding blind.
-            if (missingOrdered.length) { verdict = `stop ${missingOrdered[0]} fell OFF ${p.loadNbr} during the save — refresh and re-Save`; break; }
+            // something else owns it; surface it WITH the holder's name (one getStop) rather than
+            // re-adding blind. The BEN 2 save had NuVizz eject 007144356 from its own SUCCESS
+            // response because a ghost route still claimed it — "fell OFF, refresh" gave the
+            // dispatcher nothing to act on.
+            if (missingOrdered.length) {
+              const nbr = String(missingOrdered[0]);
+              const holder = await rwbStopHolder(requester, nbr, creds);
+              verdict = holder && holder !== String(p.loadNbr)
+                ? `NuVizz dropped stop ${nbr} from the save — its stop record says it's planned on load ${holder}. Open ${holder} in Compare to stage the move, or unplan it there in the portal, then re-Save.`
+                : `NuVizz dropped stop ${nbr} from the save — its stop record reads ${holder ? 'ON this load' : 'UNPLANNED'}, so NuVizz's route index and stop record disagree about it; unplan/re-plan it in the portal, then re-Save.`;
+              break;
+            }
             if (attempt === 1) {
               verdict = missingMoves.length
                 ? `stop ${missingMoves[0].nbr} did not land on ${p.loadNbr} after the move — check both loads in the portal, then refresh and re-Save.`

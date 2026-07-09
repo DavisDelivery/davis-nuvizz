@@ -187,11 +187,12 @@ test('rwbSequenceStops: a PICKUP order (RA/return) rides its _PU leg at the REQU
   });
 });
 
-test('rwbSequenceStops: save rows ECHO the preview\'s own etaStopVOList rows (portal fidelity)', async () => {
-  // The portal builds each save row from the preview row it displays (real plannedETA/etaCode) —
-  // fabricated blank rows were our one divergence on the ordering path (the Jul 9 DAWSONVILLE
-  // edit: SUCCESS answered, membership applied, every kept stop left at its old seq). When the
-  // preview identifies its rows (stopId), the save must carry them through at our leg positions.
+test('rwbSequenceStops: save rows stay BLANK even when the preview offers rich identified rows (Jul 9 half-apply pin)', async () => {
+  // v0.45.16 echoed each preview etaStopVOList row into its save row (chasing the DAWSONVILLE
+  // reorder-ignored bug) and deliverit began HALF-APPLYING every save: SUCCESS answered, but
+  // only the FIRST customer stop kept membership (BEN 2 kept 1 of 11, MITCHELL 1 of 7) and the
+  // ejected stops' records were left claiming the load while the load disowned them. The blank
+  // shape is the HAR-verified portal shape — pin it against exactly the tempting rich preview.
   await withRwb({}, async () => {
     const base = makeRequester();
     const real = base.requester.request;
@@ -212,30 +213,16 @@ test('rwbSequenceStops: save rows ECHO the preview\'s own etaStopVOList rows (po
     const r = await rwbSequenceStops(base.requester, HEXID, ['id-A', 'id-B'], { lat: 34, lng: -83 });
     assert.equal(r.ok, true, r.message);
     const save = base.calls.find((c) => c.url.includes('saveComparedRouteData'));
-    const entries = JSON.parse(String(save.body.get('routeJsonData')));
-    const rows = entries[0].stopDataJsonArray;
-    assert.deepEqual(rows.map((s) => s.stopId), ['id-A_PU', 'id-B_PU', 'id-A_DO', 'id-B_DO'], 'leg order unchanged');
-    assert.equal(rows[2].plannedETA, 'Jul 9, 2026 09:12 AM', 'the preview row rides the save');
-    assert.equal(rows[2].etaCode, 'G');
-    assert.equal(rows[2].tripId, 'id-A', 'required identity fields still forced');
-    assert.equal(rows[3].timeLapse, '104');
-  });
-});
-
-test('rwbSequenceStops: unidentified preview rows keep the legacy blank save rows (regression pin)', async () => {
-  // Fixture rows carry no stopId (like older tenants): the save must fall back to the exact
-  // pre-fidelity blank shape — never drop a leg, never invent fields.
-  await withRwb({}, async () => {
-    const { requester, calls } = makeRequester();
-    const r = await rwbSequenceStops(requester, HEXID, ['id-A', 'id-B'], { lat: 34, lng: -83 });
-    assert.equal(r.ok, true, r.message);
-    const save = calls.find((c) => c.url.includes('saveComparedRouteData'));
     const rows = JSON.parse(String(save.body.get('routeJsonData')))[0].stopDataJsonArray;
-    assert.deepEqual(rows.map((s) => s.stopId), ['id-A_PU', 'id-B_PU', 'id-A_DO', 'id-B_DO']);
+    assert.deepEqual(rows.map((s) => s.stopId), ['id-A_PU', 'id-B_PU', 'id-A_DO', 'id-B_DO'], 'leg order preserved');
     for (const row of rows) {
-      assert.equal(row.plannedETA, '');
+      assert.deepEqual(
+        Object.keys(row).sort(),
+        ['etaCode', 'plannedETA', 'routePlanId', 'stopId', 'timeLapse', 'timeZone', 'tripId'],
+        'EXACTLY the HAR row fields — nothing echoed from the preview',
+      );
+      assert.equal(row.plannedETA, '', 'ETA stays blank');
       assert.equal(row.etaCode, '');
-      assert.equal(row.timeZone, 'America/New_York');
     }
   });
 });
@@ -682,6 +669,31 @@ test('runCommitBoardRwb: the one repair save rescues an order the first save dro
     assert.equal(r.ok, true, `repair should land the order; got: ${JSON.stringify(r.loads?.[0]?.error)}`);
     assert.deepEqual(loadStops.value, ['B', 'A']);
     assert.equal(saves, 2, 'original + one repair');
+  });
+});
+
+test('runCommitBoardRwb: names the load NuVizz says holds a stop the save silently DROPPED (BEN 2)', async () => {
+  await withRwb({}, async () => {
+    // The BEN 2 failure (Jul 9, 11:16Z): every call 200-SUCCESSes but the save EJECTS a stop a
+    // ghost route still claims. The post-save verify must fail AND name the holding load from
+    // NuVizz's own stop record — "fell off, refresh" gave the dispatcher nothing to act on.
+    const loadStops = { value: ['A', 'B'] };
+    const base = makeRequester({ loadStops, stopHolders: { B: 'DAVIS000GHOST' }, applySave: false });
+    const real = base.requester.request;
+    base.requester.request = async (url, opts, meta) => {
+      if (url.includes('saveComparedRouteData')) {
+        try {
+          const e = JSON.parse(String(opts.body.get('routeJsonData') || ''))[0];
+          loadStops.value = e.tripDataJsonArray.map((id) => String(id).replace(/^id-/, '')).filter((n) => n !== 'B');
+        } catch { /* keep */ }
+        return new Response(JSON.stringify({ responseCode: 200, message: 'SUCCESS' }), { status: 200 });
+      }
+      return real(url, opts, meta);
+    };
+    const r = await runCommitBoardRwb(base.requester, { loads: [{ loadNbr: 'DAVIS000000123', loadId: HEXID, orderedStopNbrs: ['A', 'B'] }] }, CREDS);
+    assert.equal(r.ok, false, 'must NOT report saved when NuVizz ejected a stop');
+    assert.match(String(r.loads[0].error || ''), /dropped stop B/i);
+    assert.match(String(r.loads[0].error || ''), /DAVIS000GHOST/, 'the holding load is named');
   });
 });
 

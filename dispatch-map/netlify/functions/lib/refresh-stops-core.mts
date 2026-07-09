@@ -23,7 +23,7 @@
 import { scanDate, scansEnabled, deriveFleetSummary, estimateLoadRange, buildScanState, shadowWouldProbe, selectLoadProbeTargets, groupLoadMembers, estimateStopFrontier, unplannedFloor, FLOOR_MARGIN, loadNbrToInt, stopNbrToInt, shouldDeepSweep, deepSweepGate, lookupStopByPro } from './nuvizz-scan.mts';
 import { loadProbeParity, frontierParity, loadMembershipDelta, dateSliceMismatch } from './scan-parity.mts';
 import { isFirestoreEnabled, writeStops, writeFleetIndex, getDoc, markScanState, readCallStats, readCircuit, readScanState, writeScanState, readRecentFrontier, recordScanMetric, etDayString, readScanConfig, readStops, readEnrichedPros, writeEnrichedPros, writeLoadRoster, readLoadRoster, writeActiveUnplannedSet } from './firestore.mts';
-import { listScanForDate, mergeEnrich, twoScanBuckets, etDateForTargetUTC, boardDayFor, applyBoardWriteGrace } from './nuvizz-list.mts';
+import { listScanForDate, mergeEnrich, twoScanBuckets, etDateForTargetUTC, boardDayFor, applyBoardWriteGrace, applyDemotionVerify } from './nuvizz-list.mts';
 import { loadIdsForDate, dropForeignLoadStops, loadRosterForDate } from './nuvizz-loads.mts';
 import { resolveCoords, addrKey } from './geocode.mts';
 import { maxConsecutiveGap } from './scan-metrics.mts';
@@ -162,6 +162,9 @@ export async function runRefreshStops(req: Request): Promise<Response> {
   // 10000 (effectively unbounded), which let the registry cold-start spike to ~1,400.
   const ENRICH_MAX = Number(process.env.NUVIZZ_ENRICH_MAX_PER_SCAN) || 250;
   const ENRICH_CONC = Number(process.env.NUVIZZ_ENRICH_CONC) || 8;
+  // Demotion verify (Jul 9 SEAAGRI): max planned→unplanned flips VERIFIED per scan via one
+  // /stop/info each before the board is allowed to drop a stop off its route. 0 disables.
+  const DEMOTE_VERIFY_MAX = process.env.NUVIZZ_DEMOTE_VERIFY_MAX != null ? Number(process.env.NUVIZZ_DEMOTE_VERIFY_MAX) : 8;
 
   // Read today's last LOAD scan time — this is what drives the elapsed-time
   // cadence (Fix 1). Also read the shared call counter + breaker for the log line.
@@ -609,13 +612,23 @@ export async function runRefreshStops(req: Request): Promise<Response> {
         }
         const seed = new Map<string, { lat: number; lng: number }>();
         const toEnrich: any[] = [];
+        const demoteChecks: Array<{ s: any; p: any }> = [];
         for (const s of dateStops) {
           const p = prevByNbr.get(String(s.stopNbr));
           if (p) {
             if (p.enriched) mergeEnrich(s, p); // carry same-day enriched detail forward
             // A recent CONFIRMED live Save (write-through, #361) outranks a lagging list row:
             // hold the confirmed plan fields until the list agrees or the grace expires.
-            applyBoardWriteGrace(s, p, Date.now());
+            const held = applyBoardWriteGrace(s, p, Date.now());
+            // Demotion verify (Jul 9 SEAAGRI, #408 follow-up): past the grace window the list
+            // used to win UNCONDITIONALLY — but NuVizz's saved-search index can stay wrong for
+            // HOURS about a stop the portal itself shows planned (the half-applied DAWSONVILLE
+            // edit left 007144188 listed un-planned while the load held it, so the board dropped
+            // it off Leroy's route with the truck already rolling, and every rescan re-dropped
+            // it). A fresh list row may NOT flip a previously-PLANNED row to unplanned on the
+            // list's word alone: queue it for a one-call /stop/info check below and let NuVizz's
+            // own stop record decide.
+            if (!held && p.isPlanned === true && p.loadNbr && s.isPlanned !== true) demoteChecks.push({ s, p });
             if (typeof p.lat === 'number' && typeof p.lng === 'number') { const k = addrKey(p); if (k) seed.set(k, { lat: p.lat, lng: p.lng }); }
           }
           // Status AND the delivery time are FREE & live from the list every scan (see
@@ -631,6 +644,16 @@ export async function runRefreshStops(req: Request): Promise<Response> {
           // the fields on their first (and only) enrichment.
           if (!s.enriched) toEnrich.push(s);
         }
+
+        // ── Demotion verify (see collection above) ────────────────────────────
+        // One /stop/info per flip, capped at DEMOTE_VERIFY_MAX per scan (0 disables → legacy
+        // list-wins). Full policy in applyDemotionVerify (nuvizz-list.mts).
+        const dv = await applyDemotionVerify(demoteChecks, {
+          max: DEMOTE_VERIFY_MAX,
+          scannedAt,
+          lookup: async (nbr) => { const r = await lookupStopByPro(nbr); return r.ok ? !!(r.stop?.isPlanned && r.stop?.loadNbr) : null; },
+        });
+        if (dv.kept || dv.held) console.warn(`[scan] ${date}: list tried to unplan ${demoteChecks.length} routed stop(s) — kept ${dv.kept} (NuVizz stop record says assigned), held ${dv.held} (unverified this scan), dropped ${dv.dropped} (confirmed unplanned) — sample ${JSON.stringify(demoteChecks.slice(0, 5).map((c) => String(c.s.stopNbr)))}`);
 
         // Per-PRO enrichment registry (day-independent): before spending a /stop/info, check
         // the registry for any PRO not already enriched via a recent day-board. A PRO ever

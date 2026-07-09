@@ -4,7 +4,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { statusFromCode, parseSchedDate, parseReqDate, toBoardStop, bucketByDate, boardDayFor, fromRows, normalize, periodForDate, mergeEnrich, mergeTwoScan, etDateForTargetUTC, SAVED_SEARCHES, keepForBoardDate, filterFinishedPriorDay, coveringPeriodForRange, coveringWindowForRange, rowDay, rowInRange } from '../netlify/functions/lib/nuvizz-list.mts';
+import { statusFromCode, parseSchedDate, parseReqDate, toBoardStop, bucketByDate, boardDayFor, fromRows, normalize, periodForDate, mergeEnrich, mergeTwoScan, etDateForTargetUTC, SAVED_SEARCHES, keepForBoardDate, filterFinishedPriorDay, coveringPeriodForRange, coveringWindowForRange, rowDay, rowInRange, applyDemotionVerify } from '../netlify/functions/lib/nuvizz-list.mts';
 import { addrKey } from '../netlify/functions/lib/geocode.mts';
 
 // ── boardDayFor: the ONE day-resolution authority (bucketing + carry-forward guard) ──
@@ -531,4 +531,68 @@ test('rowInRange: inclusive on both ends; undated rows excluded', () => {
   assert.equal(rowInRange({ scheduledArrival: '7/11/26 8:00 AM' }, from, to), false, 'after range');
   assert.equal(rowInRange({ requestedArrival: '7/9/26' }, from, to), true, 'requested-date fallback lands in range');
   assert.equal(rowInRange({}, from, to), false, 'undated → excluded (can’t be placed on a calendar)');
+});
+
+// ── applyDemotionVerify (Jul 9 SEAAGRI): the list may not unplan a routed stop on its word alone ──
+
+const demoPrior = () => ({
+  stopNbr: '007144188', isPlanned: true, isUnplanned: false, status: '20', normalizedStatus: 'SCHEDULED',
+  loadNbr: 'DAWSONVILLE', routeName: 'DAWSONVILLE', routeSeq: 12, driverName: 'Leroy Smith', driverUserName: 'Leroy Smith',
+  board_write_at: '2026-07-09T10:09:23.000Z', board_write_planned: true,
+});
+const demoFresh = () => ({
+  stopNbr: '007144188', isPlanned: false, isUnplanned: true, status: '10', normalizedStatus: 'UNPLANNED',
+  loadNbr: null, routeName: null, routeSeq: null,
+});
+
+test('applyDemotionVerify: NuVizz stop record says ASSIGNED → the list is wrong, plan kept + verified stamp', async () => {
+  const s = demoFresh(), p = demoPrior();
+  const asked = [];
+  const r = await applyDemotionVerify([{ s, p }], { max: 8, scannedAt: 'T1', lookup: async (nbr) => { asked.push(nbr); return true; } });
+  assert.deepEqual(r, { kept: 1, held: 0, dropped: 0 });
+  assert.deepEqual(asked, ['007144188'], 'exactly one /stop/info per flip');
+  assert.equal(s.isPlanned, true);
+  assert.equal(s.loadNbr, 'DAWSONVILLE');
+  assert.equal(s.routeSeq, 12);
+  assert.equal(s.board_write_at, p.board_write_at, 'write stamp carried so the hold survives');
+  assert.equal(s.plan_verified_at, 'T1');
+});
+
+test('applyDemotionVerify: NuVizz stop record says UNASSIGNED → a real portal unplan stands', async () => {
+  const s = demoFresh(), p = demoPrior();
+  const r = await applyDemotionVerify([{ s, p }], { max: 8, scannedAt: 'T1', lookup: async () => false });
+  assert.deepEqual(r, { kept: 0, held: 0, dropped: 1 });
+  assert.equal(s.isPlanned, false, 'fresh unplanned row untouched');
+  assert.equal(s.loadNbr, null);
+});
+
+test('applyDemotionVerify: read failed → HOLD the plan this cycle (never unplan on a failed read)', async () => {
+  const bad = { s: demoFresh(), p: demoPrior() };
+  const thrown = { s: demoFresh(), p: demoPrior() };
+  const r = await applyDemotionVerify(
+    [bad, thrown],
+    { max: 8, scannedAt: 'T1', lookup: async (nbr) => { if (nbr === bad.s.stopNbr) return null; throw new Error('boom'); } },
+  );
+  assert.equal(r.held, 2);
+  assert.equal(bad.s.isPlanned, true, 'held row keeps the route');
+  assert.equal(bad.s.plan_verified_at, undefined, 'held ≠ verified');
+  assert.equal(thrown.s.isPlanned, true);
+});
+
+test('applyDemotionVerify: flips beyond the cap are HELD without spending reads (feed-hiccup guard)', async () => {
+  const checks = Array.from({ length: 5 }, () => ({ s: demoFresh(), p: demoPrior() }));
+  let reads = 0;
+  const r = await applyDemotionVerify(checks, { max: 2, scannedAt: 'T1', lookup: async () => { reads++; return true; } });
+  assert.equal(reads, 2, 'only the cap is verified');
+  assert.deepEqual(r, { kept: 2, held: 3, dropped: 0 });
+  for (const { s } of checks) assert.equal(s.isPlanned, true, 'every flip is kept planned this cycle');
+});
+
+test('applyDemotionVerify: max=0 disables → legacy list-wins (all dropped, no reads, rows untouched)', async () => {
+  const s = demoFresh(), p = demoPrior();
+  let reads = 0;
+  const r = await applyDemotionVerify([{ s, p }], { max: 0, scannedAt: 'T1', lookup: async () => { reads++; return true; } });
+  assert.deepEqual(r, { kept: 0, held: 0, dropped: 1 });
+  assert.equal(reads, 0);
+  assert.equal(s.isPlanned, false);
 });
