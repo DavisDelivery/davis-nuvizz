@@ -54,7 +54,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.45.2';
+const APP_VERSION = '0.45.3';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -99,6 +99,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.45.3', 'WHY THE MAP SELECTION AND THE BOTTOM GRID DIDN\'T MATCH — the grid lists every order, but the MAP only shows orders that have a geocoded location, so a stop with a bad/unrecognized address appears in the grid yet has NO pin: it can\'t be box/lasso-selected and, more importantly, can\'t be routed — that\'s how one gets silently missed. The bottom grid now shows an amber "N no location" chip whenever any listed stop has no map pin; click it to isolate exactly those orders and fix each address (Edit address / Correct pin) so they land on the map and become routable. (The other reason the two counts differ: a Board window/range like "±7 days" or a Custom range shows MULTIPLE days, while the map always shows just the one board day you\'ve picked — set the grid to "Board (today)" to mirror the map.)'],
   ['0.45.2', 'SAVED WORK CAN NO LONGER LOOK UNBUILT — a confirmed Save now paints the plan onto the board INSTANTLY on this device (a local overlay held until our scan agrees or 45 min, whichever first), fully independent of the server cache — so "closed the compare panel and it looks like I never planned it" (MONE/Denis) is dead even if every other layer misbehaves. The board write-through itself is also now DECLARATIVE (sends the card\'s full final stop order on every confirmed save, not just the delta) and no longer skippable by a result-to-card join miss; every sync logs its result to the console for forensics. FIX: the ±7-day pull "timed out" — NuVizz\'s own ad-hoc wide query is simply too slow, so wide windows (±7/±14/±30 and Custom range) now read OUR board day-docs instead: instant, includes confirmed saves, ZERO NuVizz calls (the status line says "Board · N stops"); Today and ±3 days stay live from NuVizz. NEW: routing a stop now AUTO-INCLUDES any co-located UNPLANNED order the selection missed (two orders at one address = stacked pins; clicking grabs only the top one — how QAE\'s second order got left behind). It says so in a toast and is removable from the card. NEW: the Routing right panel fully COLLAPSES to a thin strip (chevron in its header; clicking a stop auto-expands it). NEW: the stop panel has a HISTORY button — every past delivery to that location with PRO · date · driver, from saved history only (separate from the per-order Activity timeline; zero NuVizz calls). FIX: Compare-panel header buttons (🔗 engine, ● LIVE, Save, Back to Setup) could silently overflow out of view with a narrow card open — the header now wraps so every button stays visible.'],
   ['0.45.1', 'FIX: a Save of CARRY-OVER orders (yesterday-dated stops routed from today\'s board — the Uline/Denis case) landed in NuVizz but the board still showed the route unbuilt. The write-through only patched the SELECTED day\'s cache doc, and carry-over stops live on their own (prior) day\'s doc — so the patch silently missed every stop and the board kept serving the stale unplanned rows until a scan caught up. The write-through now finds each stop up to 14 days back, patches it in place AND copies the confirmed plan onto today\'s board doc, so the route shows immediately; if any stop still can\'t be patched the Save toast now SAYS so ("board didn\'t update for N stop(s) — NuVizz HAS the save") instead of failing silently. Also hardened the new Custom range from review: pulls are debounced 600ms + aborted when superseded (typing a date can no longer fire a NuVizz call per keystroke), entering Custom no longer auto-pulls, an incomplete/partial covering pull is labeled "≥ N stops (partial — narrow the range)" instead of posing as exact, stale rows can\'t linger under "pick a date range", and an inverted From/To is normalized. Zero new NuVizz calls anywhere (board fix is Firestore-only).'],
   ['0.45.0', 'Bottom grid "pull from NuVizz" — MORE date windows + a settable RANGE, and a fix for the ±7-day error. The window dropdown now offers Today, ±3, ±7, ±14, ±30 days, plus "Custom range…" — pick a From and To calendar date and the grid pulls exactly those delivery days. (NuVizz only understands relative windows, so a custom range pulls the smallest covering window in ONE cheap list call and filters to your exact dates server-side — still ~2 NuVizz calls, never a re-scan.) FIX: selecting ±7 days (or any wide window) could fail with "NuVizz: Unexpected token \'<\'… is not valid JSON" — a large pull was overrunning the function\'s 10s limit and coming back as an HTML error page. The explorer now has 26s of headroom, aborts cleanly at 22s, doesn\'t burn the budget on retries, and turns any non-JSON upstream reply into a plain "window may be too large — try a narrower range" message instead of a raw parse error.'],
@@ -8474,6 +8475,7 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
   const [nvLoading, setNvLoading] = useState(false);
   const [nvErr, setNvErr] = useState(null);
   const [driverSel, setDriverSel] = useState('');
+  const [unmappedOnly, setUnmappedOnly] = useState(false); // show only stops with no map location (unroutable until fixed)
   // Drag-resizable height (px), persisted. Drag the top handle up/down.
   const [height, setHeight] = useState(() => {
     const v = safeReadJSON(LS_BOTTOM_TABLE_HEIGHT, 300);
@@ -8566,7 +8568,7 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
     for (const s of baseStops) if (s.driverName) set.add(s.driverName);
     return [...set].sort();
   }, [baseStops]);
-  const rows = useMemo(() => {
+  const filteredRows = useMemo(() => {
     const needle = q.trim().toLowerCase();
     return baseStops.filter((s) => {
       // Status: client-side in board mode; server-side (already filtered) in NuVizz mode.
@@ -8580,6 +8582,17 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
       return true;
     });
   }, [baseStops, q, statusSel, driverSel, nvWindow]);
+  // Stops with NO geocoded location. They list here but have no map marker, so they can't be
+  // box/lasso-selected OR routed (the map's stopById is coord-only) — this is how an order gets
+  // silently MISSED. Surfaced as a count + one-click filter so they're findable and fixable.
+  const unmappedCount = useMemo(() => filteredRows.filter((s) => s.lat == null || s.lng == null).length, [filteredRows]);
+  const rows = useMemo(
+    () => (unmappedOnly ? filteredRows.filter((s) => s.lat == null || s.lng == null) : filteredRows),
+    [filteredRows, unmappedOnly],
+  );
+  // Never strand the "no location" filter on when there's nothing to show (its chip hides at 0,
+  // so the user couldn't turn it back off) — e.g. after switching windows or fixing every address.
+  useEffect(() => { if (unmappedOnly && unmappedCount === 0) setUnmappedOnly(false); }, [unmappedOnly, unmappedCount]);
   // Pull the day's full load ROSTER (incl. empty loads) when the Loads view is open in
   // board mode — empty loads have no stops to group, so this is the only way to see them.
   useEffect(() => {
@@ -8709,6 +8722,18 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
             <span className="font-normal opacity-60">{loadRows.length}</span>
           </button>
         </div>
+        {/* No-location chip — these rows have no map pin, so they can't be selected on the map
+            or routed until their address is fixed. This reconciles the "grid count > map
+            selection" gap AND surfaces silently-unroutable orders. Click to isolate them. */}
+        {open && view === 'stops' && unmappedCount > 0 && (
+          <button
+            onClick={() => setUnmappedOnly((v) => !v)}
+            title="These stops have no map location — they can't be selected on the map or routed until you fix the address (Edit address / Correct pin). Click to show only them."
+            className={'inline-flex items-center gap-1 px-2 py-1 rounded text-xs border whitespace-nowrap ' + (unmappedOnly ? 'border-amber-500 bg-amber-500 text-white' : 'border-amber-400 text-amber-700 bg-amber-50 hover:bg-amber-100')}
+          >
+            <MapPin size={12} /> {unmappedCount} no location{unmappedOnly ? ' · showing' : ''}
+          </button>
+        )}
         {open && (
           <>
             <div className="relative flex-1 max-w-xs">
