@@ -1372,6 +1372,16 @@ export async function runCommitBoardRwb(requester: RequesterLike, payload: any, 
       if (!id) { p.result.ok = false; p.result.error = `commitBoard(rwb): stop ${nbr} has no internal id to sequence (stale board — refresh and retry)`; break; }
       p.orderedIds.push(id);
     }
+    // PICKUP-type ordered stops (returns / RAs): their CUSTOMER visit is the _PU leg, so the
+    // sequence save must place that leg at the dispatcher's requested position (an RA emitted
+    // in the default front _PU block ran as DELIVERY #1 in production regardless of where it
+    // was sequenced). Typed from the authoritative (re-read) load — the board's own stopType
+    // is hardcoded 'DO' and can't be trusted for this.
+    const orderedSet2 = new Set(p.orderedNbrs);
+    p.pickupLegIds = (p.load?.stops || [])
+      .filter((s: any) => s?.stopNbr != null && s?.stopId != null
+        && String(s?.stopType ?? 'DO').toUpperCase() !== 'DO' && orderedSet2.has(String(s.stopNbr)))
+      .map((s: any) => String(s.stopId));
   }
 
   // ── LEVER 2: ONE atomic saveComparedRouteData for EVERY load in this Save. Portal-verified:
@@ -1387,7 +1397,7 @@ export async function runCommitBoardRwb(requester: RequesterLike, payload: any, 
   };
   if (group.length) {
     try {
-      const r = await rwbSequenceRoutes(requester, group.map((p: any) => ({ routePlanId: p.routePlanId, orderedStopIds: p.orderedIds, origin: originOf(p) })));
+      const r = await rwbSequenceRoutes(requester, group.map((p: any) => ({ routePlanId: p.routePlanId, orderedStopIds: p.orderedIds, origin: originOf(p), pickupLegIds: p.pickupLegIds || [] })));
       for (const [i, p] of group.entries()) {
         const mySteps = r.steps.filter((s: any) => !s.routePlanId || String(s.routePlanId) === p.routePlanId);
         p.result.steps.push(...mySteps.map((s: any) => ({ ...s, op: `rwb:${s.op}` })));
@@ -1426,7 +1436,7 @@ export async function runCommitBoardRwb(requester: RequesterLike, payload: any, 
               p.result.error = `commitBoard(rwb): stop ${missing[0].nbr} did not land on ${p.loadNbr} after the move — check both loads in the portal, then refresh and re-Save.`;
               continue;
             }
-            const r2 = await rwbSequenceStops(requester, p.routePlanId, p.orderedIds, originOf(p));
+            const r2 = await rwbSequenceStops(requester, p.routePlanId, p.orderedIds, originOf(p), p.pickupLegIds || []);
             p.result.steps.push(...r2.steps.map((s: any) => ({ ...s, op: `rwb:${s.op}(move-fallback)` })));
             p.result.calls.rwb += r2.calls;
             if (!r2.ok) { p.result.ok = false; p.result.error = `commitBoard(rwb): ${r2.message}`; continue; }

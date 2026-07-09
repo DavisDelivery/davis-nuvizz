@@ -328,12 +328,20 @@ function routeWindow(dttm: string | undefined, timeZone = 'America/New_York'): {
  * cannot be lost. A stop NOT yet on the route must first be attached with rwbAddStopsToRoute
  * (the save alone won't create membership for a brand-new stop).
  *
- * Depot-pickup model: every stop is picked up at `origin` then delivered in the given order
- * (matches how this app's loads run — one shared depot per route). 1+ stops (the portal
+ * Depot-pickup model: every DELIVERY stop is picked up at `origin` then delivered in the given
+ * order (matches how this app's loads run — one shared depot per route). 1+ stops (the portal
  * accepts a single-stop route; 0 stops is an empty route → use load/cancel, not this).
+ *
+ * PICKUP orders (returns / RAs — pickupLegIds): the CUSTOMER-side visit is the _PU leg, not
+ * the _DO. The old payload put every _PU leg in one block at the FRONT, which is only correct
+ * when each _PU is the depot loading of a delivery — a customer pickup emitted there landed at
+ * DELIVERY #1 in production no matter where the dispatcher sequenced it (the "RA placed 11th,
+ * ran 1st" bug). A pickup order now contributes its _PU at the dispatcher's REQUESTED position
+ * in the visit sequence, and its _DO (the return to depot) at the tail. Routes with no pickup
+ * orders produce a byte-identical payload to before.
  */
-export async function rwbSequenceStops(requester: RwbRequesterLike, routePlanId: string, orderedStopIds: string[], origin: { lat: number; lng: number }): Promise<{ ok: boolean; message: string; calls: number; steps: any[] }> {
-  const r = await rwbSequenceRoutes(requester, [{ routePlanId, orderedStopIds, origin }]);
+export async function rwbSequenceStops(requester: RwbRequesterLike, routePlanId: string, orderedStopIds: string[], origin: { lat: number; lng: number }, pickupLegIds: string[] = []): Promise<{ ok: boolean; message: string; calls: number; steps: any[] }> {
+  const r = await rwbSequenceRoutes(requester, [{ routePlanId, orderedStopIds, origin, pickupLegIds }]);
   const ids = [...new Set(orderedStopIds.map(String).filter(Boolean))];
   return { ok: r.ok, message: r.ok ? `Sequenced ${ids.length} stop(s) via RWB.` : r.message, calls: r.calls, steps: r.steps };
 }
@@ -342,12 +350,23 @@ export async function rwbSequenceStops(requester: RwbRequesterLike, routePlanId:
 // portal's per-route `list` discriminator ("list1", "list2", …) seen in the multi-route move HAR.
 async function rwbPreviewRoute(
   requester: RwbRequesterLike, cfg: RwbConfig,
-  route: { routePlanId: string; orderedStopIds: string[]; origin: { lat: number; lng: number } },
+  route: { routePlanId: string; orderedStopIds: string[]; origin: { lat: number; lng: number }; pickupLegIds?: string[] },
   listIdx: number, steps: any[],
 ): Promise<{ ok: boolean; entry?: any; message?: string }> {
   const ids = [...new Set(route.orderedStopIds.map(String).filter(Boolean))];
   const { routePlanId, origin } = route;
-  const stoplist = [...ids.map((id) => id + '_PU'), ...ids.map((id) => id + '_DO')].join(',');
+  // Leg sequence (see rwbSequenceStops doc): delivery orders → depot _PU up front + customer
+  // _DO at the requested position; PICKUP orders (returns/RAs) → customer _PU at the requested
+  // position + return _DO at the tail. No pickups ⇒ identical to the original
+  // [all _PU..., all _DO...] shape.
+  const pu = new Set((route.pickupLegIds || []).map(String));
+  const isPickup = (id: string) => pu.has(id);
+  const legs = [
+    ...ids.filter((id) => !isPickup(id)).map((id) => ({ id, leg: '_PU' })),          // depot loading (deliveries)
+    ...ids.map((id) => ({ id, leg: isPickup(id) ? '_PU' : '_DO' })),                 // CUSTOMER visits, requested order
+    ...ids.filter(isPickup).map((id) => ({ id, leg: '_DO' })),                       // pickups' return-to-depot legs
+  ];
+  const stoplist = legs.map(({ id, leg }) => id + leg).join(',');
   const fujForm = { originLat: String(origin.lat), originLng: String(origin.lng), originOption: '02', stoplist, routePlanId, returnToDepot: 'NEVER', computeLatestEta: 'true' };
   const fr = await rwbAuthedCall(requester, cfg, 'POST', 'dirouteworkbench/routePlan/fetchUpdatedJson', fujForm);
   steps.push({ op: 'fetchUpdatedJson', routePlanId, ok: fr.ok, status: fr.status, error: fr.error || null });
@@ -366,8 +385,9 @@ async function rwbPreviewRoute(
     IdleTime: o.idleTime || 0, buildType: '02', isStandingRoute: false, seqMode: 'Manual',
     deadHeadMins: o.deadHeadMins, deadHeadMiles: o.deadHeadMiles,
     tripDataJsonArray: ids, list: `list${listIdx}`,
-    stopDataJsonArray: [...ids, ...ids].map((id, i) => ({
-      stopId: id + (i < ids.length ? '_PU' : '_DO'), plannedETA: '', routePlanId, etaCode: '', timeLapse: '',
+    // Mirrors the stoplist's leg sequence exactly (delivery-only routes: unchanged shape).
+    stopDataJsonArray: legs.map(({ id, leg }) => ({
+      stopId: id + leg, plannedETA: '', routePlanId, etaCode: '', timeLapse: '',
       tripId: id, timeZone: routeTz,
     })),
   } };
@@ -388,7 +408,7 @@ async function rwbPreviewRoute(
  */
 export async function rwbSequenceRoutes(
   requester: RwbRequesterLike,
-  routes: Array<{ routePlanId: string; orderedStopIds: string[]; origin: { lat: number; lng: number } }>,
+  routes: Array<{ routePlanId: string; orderedStopIds: string[]; origin: { lat: number; lng: number }; pickupLegIds?: string[] }>,
 ): Promise<{ ok: boolean; message: string; calls: number; steps: any[]; failedRoutePlanId?: string }> {
   const cfg = rwbConfig();
   if (rwbEngineBlocked()) return { ok: false, message: 'RWB engine is disabled on the server (NUVIZZ_RWB_ENABLED must be explicitly set)', calls: 0, steps: [] };
