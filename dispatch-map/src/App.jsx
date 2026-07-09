@@ -54,7 +54,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.45.24';
+const APP_VERSION = '0.45.25';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -1772,8 +1772,55 @@ function readableTextColor(hex) {
   return L > 0.6 ? '#1f2937' : '#ffffff';
 }
 
+// Small corner count badge (top-right of the pin head) — the number of deliveries going to the
+// SAME place, so a dispatcher sees "3 orders here" at a glance. Dark disc + white number + white
+// ring reads on any pin color and on the satellite base. Only drawn for count >= 2. Lives inside
+// the 28×36 viewBox top-right corner, so it never enlarges the marker's scaledSize.
+function countBadgeSvg(count) {
+  const n = Number(count) || 0;
+  if (n < 2) return '';
+  const txt = n > 99 ? '99+' : String(n);
+  const fs = txt.length >= 3 ? 6 : (txt.length === 2 ? 7.5 : 9);
+  return `<g><circle cx="21.5" cy="7" r="6.5" fill="#0f172a" stroke="#ffffff" stroke-width="1.4"/>`
+    + `<text x="21.5" y="10.1" font-family="system-ui, sans-serif" font-size="${fs}" font-weight="800" fill="#ffffff" text-anchor="middle" letter-spacing="-0.5">${txt}</text></g>`;
+}
+
+// White-ringed dot for UNPLANNED stops — the classic teardrop washes out against the satellite
+// base, so an unplanned order becomes a colored disc wrapped in a white circle (Chad's ask). It's
+// rendered at the SAME on-screen size as the old small pin (≤16px, see stopMarkerIcon), so the
+// wrap never makes the icon bigger. When 2+ deliveries share the place the count sits INSIDE the
+// dot (that's the "number on the delivery icon" for unplanned); otherwise a status glyph/AM-PM tag
+// or a plain core. Anchor is the dot CENTER (returned by the caller).
+function unplannedDotSvg(color, opts = {}) {
+  const { glyph = null, tag = null, count = 0 } = opts;
+  const txtColor = readableTextColor(color);
+  let core;
+  if (Number(count) >= 2) {
+    const txt = Number(count) > 99 ? '99+' : String(count);
+    const fs = txt.length >= 3 ? 8 : (txt.length === 2 ? 9.5 : 12);
+    core = `<text x="12" y="${txt.length >= 2 ? 15.4 : 16}" font-family="system-ui, sans-serif" font-size="${fs}" font-weight="800" fill="${txtColor}" text-anchor="middle" letter-spacing="-0.5">${txt}</text>`;
+  } else if (tag === 'AM' || tag === 'PM') {
+    core = `<text x="12" y="15.2" font-family="system-ui, sans-serif" font-size="8.5" font-weight="800" fill="${txtColor}" text-anchor="middle" letter-spacing="-0.5">${tag}</text>`;
+  } else if (glyph === 'bang') {
+    core = `<text x="12" y="16.5" font-family="system-ui, sans-serif" font-size="12" font-weight="800" fill="${txtColor}" text-anchor="middle">!</text>`;
+  } else if (glyph === 'question') {
+    core = `<text x="12" y="16.7" font-family="system-ui, sans-serif" font-size="13" font-weight="800" fill="${txtColor}" text-anchor="middle">?</text>`;
+  } else {
+    core = '';
+  }
+  // r=11 white wrap + r=8 colored core, viewBox 24×24. The subtle drop stroke keeps the white
+  // ring visible even over bright/white satellite patches (parking lots, rooftops).
+  const svg = `
+    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
+      <circle cx="12" cy="12" r="11" fill="#ffffff" stroke="#0f172a" stroke-opacity="0.28" stroke-width="1"/>
+      <circle cx="12" cy="12" r="8" fill="${color}"/>
+      ${core}
+    </svg>`;
+  return 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent(svg);
+}
+
 function pinSvgStatus(color, opts = {}) {
-  const { hollow = false, glyph = null, tag = null, label = null } = opts;
+  const { hollow = false, glyph = null, tag = null, label = null, count = 0 } = opts;
   const bodyFill = hollow ? '#ffffff' : color;
   const bodyStroke = hollow ? color : '#ffffff';
   const strokeW = hollow ? 2.5 : 2;
@@ -1807,6 +1854,7 @@ function pinSvgStatus(color, opts = {}) {
       <path d="M14 1c-7 0-13 5.4-13 12 0 9 13 22 13 22s13-13 13-22c0-6.6-6-12-13-12z"
         fill="${bodyFill}" stroke="${bodyStroke}" stroke-width="${strokeW}"/>
       ${center}
+      ${countBadgeSvg(count)}
     </svg>`;
   return 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent(svg);
 }
@@ -1904,8 +1952,23 @@ function iconMarkerSvg(restrictions, tint) {
 //   opts.seq            — the route sequence number drawn in the numbered pin
 //   opts.routeColor     — overrides the numbered pin's color (Routing colors by route,
 //                         the Map colors by status); omit to keep status coloring.
+// The "same place" key for co-location counting — the address identity (matchKey), same key the
+// route header uses to count physical stops vs orders. Falls back to stopNbr so a keyless stop is
+// its own singleton.
+const stopLocKey = (s) => s?.matchKey || String(s?.stopNbr ?? '');
+// Map each stop's location → how many of the given stops share it (≥1). Used to badge co-located
+// delivery markers with the count.
+function buildLocCounts(stops) {
+  const m = new Map();
+  for (const s of (stops || [])) { const k = stopLocKey(s); m.set(k, (m.get(k) || 0) + 1); }
+  return m;
+}
+
 function stopMarkerIcon(google, s, note, opts = {}) {
-  const { selectedDayKey, matched = false, inRoute = false, seq, routeColor } = opts;
+  const { selectedDayKey, matched = false, inRoute = false, seq, routeColor, sameLocCount = 1 } = opts;
+  // count badge only when 2+ deliveries share the place (Chad: "put the number on the delivery
+  // icon"). 0 = no badge.
+  const count = sameLocCount > 1 ? sameLocCount : 0;
   let restrictions = getRestrictionBadgeKeys(note, { day: selectedDayKey });
   const flagHue = (note?.priority_flag && FLAG_COLORS[note.priority_flag]) ? FLAG_COLORS[note.priority_flag] : null;
   // Dispatcher-set vehicle eligibility recolors the pin (green = trailer OK, red =
@@ -1927,7 +1990,7 @@ function stopMarkerIcon(google, s, note, opts = {}) {
     const statusKind = classifyStopStatus(s);
     const meta = STATUS_META[statusKind] || STATUS_META.SCHEDULED;
     const color = routeColor || meta.color || flagColor(note);
-    return { url: pinSvgStatus(color, { label: String(seq) }), scaledSize: new google.maps.Size(30, 39), anchor: new google.maps.Point(15, 37) };
+    return { url: pinSvgStatus(color, { label: String(seq), count }), scaledSize: new google.maps.Size(30, 39), anchor: new google.maps.Point(15, 37) };
   }
   if (restrictions.length === 0) {
     // State A — status drives the pin; matched stops pop orange; a priority flag,
@@ -1947,9 +2010,19 @@ function stopMarkerIcon(google, s, note, opts = {}) {
       if (note?.priority_flag === 'question' && !glyph) glyph = 'question';
       else if (addressOff) glyph = 'bang';
     }
+    // UNPLANNED resting pins (not a search-matched selection, no AM/PM tag) render as a white-
+    // circle-wrapped DOT instead of the washed-out small teardrop — same ≤16px footprint, so it
+    // never grows. A co-located count sits inside the dot. Tagged/matched unplanned keep the pin.
+    if (statusKind === 'UNPLANNED' && !matched && !tag) {
+      return {
+        url: unplannedDotSvg(color, { glyph, count }),
+        scaledSize: new google.maps.Size(16, 16),
+        anchor: new google.maps.Point(8, 8),
+      };
+    }
     const big = matched || !!tag;
     return {
-      url: pinSvgStatus(color, { hollow: matched ? false : meta.hollow, glyph, tag }),
+      url: pinSvgStatus(color, { hollow: matched ? false : meta.hollow, glyph, tag, count }),
       scaledSize: big ? new google.maps.Size(28, 36) : new google.maps.Size(16, 21),
       anchor: big ? new google.maps.Point(14, 34) : new google.maps.Point(8, 20),
     };
@@ -7400,6 +7473,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef }) {
         routeSeqByStop.set(s.stopNbr, rs != null ? rs : i + 1);
       });
     }
+    const locCounts = buildLocCounts(positioned);   // co-located delivery tally for the badge
     const newMarkers = positioned.map((s) => {
       const note = notes.get(s.matchKey);
       const seq = routeSeqByStop.get(s.stopNbr);
@@ -7409,7 +7483,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef }) {
       // The rich per-stop icon (DNS / numbered route / status-flag-window /
       // restriction) is built by the shared stopMarkerIcon helper so the Map and
       // Routing screens stay pixel-identical.
-      const icon = stopMarkerIcon(google, s, note, { selectedDayKey, matched, inRoute, seq });
+      const icon = stopMarkerIcon(google, s, note, { selectedDayKey, matched, inRoute, seq, sameLocCount: locCounts.get(stopLocKey(s)) || 1 });
       const marker = new google.maps.Marker({
         position: { lat: s.lat, lng: s.lng },
         icon,
@@ -13046,6 +13120,7 @@ function RoutingScreen({ debugCaptureRef }) {
     if (!google || !mapRef.current) return;
     markersRef.current.forEach((m) => m.setMap(null));
     const byId = new Map();
+    const locCounts = buildLocCounts(vPositioned);   // co-located delivery tally for the badge
     markersRef.current = vPositioned.map((s) => {
       const id = String(s.stopNbr);
       const sel = !viewing && selectedIds.has(id);
@@ -13063,6 +13138,7 @@ function RoutingScreen({ debugCaptureRef }) {
         inRoute: numbered,
         seq: ri?.seq,
         routeColor: ri?.color,
+        sameLocCount: locCounts.get(stopLocKey(s)) || 1,
       });
       const baseZ = numbered ? 30 : (sel ? 25 : 10);
       const marker = new google.maps.Marker({
