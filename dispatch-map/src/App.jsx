@@ -54,7 +54,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.45.21';
+const APP_VERSION = '0.45.22';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -99,6 +99,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.45.22', 'A stop opened in Routing (beta) now has the SAME full detail panel as the Map — it IS the Map panel now. Clicking a stop in Routing gives you Street View / Google Maps / Find business, Edit address, Correct pin location, Text customer, History, the Delivery Ticket, live notes + Activity Timeline, POD photos, AND the full customer-notes editor: Priority flag, Delivery window, and the Receiving-hours editor with Save. Before, the Routing stop panel showed receiving hours as read-only text and only offered Edit address / Correct pin — no way to set a customer\'s receiving rules or text them without switching to the Map. Opening a route still works the same (the panel\'s "View full route" opens it in Compare), and an appointment-window warning still shows on top. No NuVizz calls — notes save to Firestore, exactly like the Map.'],
   ['0.45.21', 'Looking up a PRO in NuVizz now opens the SAME full stop panel as clicking a stop on the map — so you get the Receiving hours / Priority flag / Delivery window editor plus Edit address, Correct pin location, Text customer and History, and a Save. Before, a PRO you searched for ("Look up PRO in NuVizz") opened a read-only window with none of those route/customer options — you could see the order but not set the customer\'s receiving rules. Now it\'s fully editable, exactly like a stop opened from the board or by customer name. (Note: this only changes how the panel opens — the separate issue of some delivered customers showing few past PROs in the history search is the server history warehouse needing a backfill, tracked separately.)'],
   ['0.45.15', 'Three dispatcher fixes: (1) the map selection tools (click / box / lasso / add-in-view) can NO LONGER grab a stop that\'s already staged on an open Compare card — it tells you which card holds it ("use Ninja to move it"), and area-selects report how many they skipped, so a stop can\'t be double-planned from the selection. (2) Route headers now count PHYSICAL stops — multiple orders to the same address are ONE truck stop (like NuVizz\'s own card): a card reads "7 stops · 9 orders" instead of "9 stops". Applies to the Compare card header and the Routes panel cards. (3) Clicking DISPATCH now flips the route\'s status immediately — it stayed "Draft" until a scan (paused overnight) because the status came from the cached roster; a confirmed dispatch now overrides that until the roster catches up.'],
   ['0.45.14', 'FALSE "SAVED" KILLED: adding a stop that NuVizz already has planned on ANOTHER route (possible when our board shows it stale-unplanned — the WIEDMANN→KOBE accident) used to slip past the save and report success while NuVizz quietly rejected it. Every ADDED stop is now verified against NuVizz itself BEFORE anything writes — if it\'s already planned elsewhere the Save REFUSES up front with "ALREADY PLANNED on load X — open X in Compare to stage the move". Costs one stop-read per newly added stop (a 10-stop build ≈ +10 calls) — the price of never lying about a save.'],
@@ -9799,62 +9800,46 @@ function RoutingStopRichDetail({ stop, onRefreshed }) {
 // route/driver via RoutingStopRichDetail). Fills the rail column; closes via X or Esc.
 // Never renders empty — guards a null stop. (Replaces the old center-popup modal so a
 // clicked stop's detail always lives in the right panel — dispatcher request.)
-function RoutingStopPanel({ stop, notes, onClose, onOpenLoad, windowViolatedSet, onMoveLocation, onEditAddress, onAutoFixAddress, onOpenHistory }) {
+function RoutingStopPanel({ stop, notes, onClose, onOpenLoad, windowViolatedSet, onMoveLocation, onEditAddress, onAutoFixAddress, onOpenHistory, onText, onSave, saving, saveError, drivers = [] }) {
   useEffect(() => {
     const onKey = (e) => { if (e.key === 'Escape') onClose(); };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [onClose]);
-  const [live, onRefreshed] = useLiveStop(stop);
   if (!stop) return null;
   const note = notes?.get?.(stop.matchKey) || null;
-  const pro = stop.pro || stop.stopNbr || stop.primaryPro || '';
   const windowViolated = !!(windowViolatedSet && windowViolatedSet.has(String(stop.stopNbr || stop.pro)));
-  // Which load/route is this stop on (#281 — "no idea the load its on"). Open it in the Compare panel.
+  // Which load/route is this stop on (#281). loadKey opens it in the Compare panel via the
+  // sidebar's "View full route" affordance (onOpenRoute → onOpenLoad).
   const loadKey = loadDisplayName(stop.routeName, stop.loadNbr);
+  // Routing now renders the SAME full stop panel as the Map (StopSidebar) — Street View /
+  // Google Maps / Find business, Edit address, Correct pin, Text customer, History, AND the
+  // customer-notes editor (priority / delivery window / receiving hours + Save). Delivery
+  // Ticket, live notes/timeline and POD come along inside StopDataSections. The routing-only
+  // extra (an appointment-window warning) sits as a banner on top.
   return (
     <div className="flex-1 min-h-0 flex flex-col bg-white">
-      <div className="flex items-center justify-between px-3 py-2 border-b shrink-0">
-        <div className="min-w-0">
-          <div className="font-bold text-slate-800 truncate">{stop.businessName || `Stop ${pro}`}</div>
-          {pro && <div className="text-[11px] text-slate-500">Order / PRO #{pro}</div>}
+      {windowViolated && (
+        <div className="shrink-0 px-3 py-1.5 bg-amber-50 border-b border-amber-200 text-[12px] font-semibold text-amber-800">
+          ⚠ Outside appointment window
         </div>
-        <button onClick={onClose} aria-label="Close stop detail" className="text-slate-400 hover:text-slate-700 text-2xl leading-none px-1 shrink-0">×</button>
-      </div>
-      {/* What load this stop is on, + one-click open of that route in the Compare panel (#281). */}
-      <div className="flex items-start justify-between gap-2 px-3 py-1.5 border-b bg-slate-50 shrink-0">
-        <div className="text-[12px] text-slate-600 min-w-0">
-          <div className="truncate">
-            {loadKey ? <>On load <span className="font-semibold text-slate-800">{loadKey}</span></> : <span className="text-slate-400">Not on a load yet (unplanned)</span>}
-          </div>
-          {loadKey && (
-            <div className="truncate text-[11px] text-slate-500">
-              Driver: <span className={live.driverName ? 'font-medium text-slate-700' : 'text-slate-400 italic'}>{live.driverName || 'Not assigned'}</span>
-            </div>
-          )}
-        </div>
-        {loadKey && onOpenLoad && (
-          <button onClick={() => onOpenLoad(loadKey)} className="shrink-0 inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-1 rounded text-white" style={{ background: BRAND }}>
-            Open in Compare
-          </button>
-        )}
-      </div>
-      <div className="flex-1 min-h-0 overflow-y-auto p-3">
-        <RoutingStopDetail stop={live} note={note} windowViolated={windowViolated} onMoveLocation={onMoveLocation} onEditAddress={onEditAddress} onAutoFixAddress={onAutoFixAddress} />
-        {/* Customer HISTORY — every past delivery to this location (PRO · date · driver).
-            NOT the per-order Activity timeline below; this reads our saved Firestore
-            history only and never costs a NuVizz call. */}
-        {onOpenHistory && (
-          <button
-            onClick={() => onOpenHistory(live)}
-            className="mt-2 w-full inline-flex items-center justify-center gap-1.5 text-xs font-semibold text-slate-700 border border-slate-300 rounded-md px-3 py-2 hover:bg-slate-50 active:bg-slate-100"
-            title="All past deliveries to this location — PRO, date, and who delivered each (saved history, no NuVizz call)"
-          >
-            <Clock size={14} /> History — past deliveries here
-          </button>
-        )}
-        <RoutingStopRichDetail stop={live} onRefreshed={onRefreshed} />
-      </div>
+      )}
+      <StopSidebar
+        embedded
+        stop={stop}
+        note={note}
+        onClose={onClose}
+        onSave={onSave}
+        saving={saving}
+        saveError={saveError}
+        onMoveLocation={onMoveLocation}
+        onEditAddress={onEditAddress}
+        onAutoFixAddress={onAutoFixAddress}
+        onText={onText}
+        onOpenHistory={onOpenHistory}
+        onOpenRoute={loadKey && onOpenLoad ? () => onOpenLoad(loadKey) : undefined}
+        drivers={drivers}
+      />
     </div>
   );
 }
@@ -12759,6 +12744,45 @@ function RoutingScreen({ debugCaptureRef }) {
     refreshStops({ silent: true });
     if (geoErr) throw new Error(`Address saved, but the pin couldn’t be moved — ${geoErr.message}. Enable the Geocoding API or use “Correct pin location” to drag it.`);
   }, [google, refreshStops]);
+  // Text customer + save customer note — parity with the Map stop panel (ported), so a
+  // Routing stop's detail has the SAME editor/actions. resolveStopPhone / SmsComposeModal /
+  // bumpProHistory are the shared helpers the Map path uses; saves write customer_notes by
+  // matchKey (zero NuVizz calls) then re-read the board.
+  const [routingSmsTargets, setRoutingSmsTargets] = useState(null);
+  const textCustomer = useCallback((stop) => {
+    if (!stop) return;
+    const phone = resolveStopPhone(stop, notes.get(stop.matchKey));
+    setRoutingSmsTargets({ title: `Text ${stop.businessName || 'customer'}`, recipients: [{ to: phone, label: stop.businessName || stop.stopNbr }] });
+  }, [notes]);
+  const notesDrivers = useMemo(() => {
+    const seen = new Set(); const out = [];
+    const add = (name) => { const nm = (name || '').trim(); const k = nm.toLowerCase(); if (!nm || seen.has(k)) return; seen.add(k); out.push({ driverName: nm }); };
+    (stops || []).forEach((s) => add(s.driverName));
+    (driverRoster?.drivers || []).forEach((d) => add(d?.name));
+    return out.sort((a, b) => a.driverName.localeCompare(b.driverName));
+  }, [stops, driverRoster]);
+  const [savingNote, setSavingNote] = useState(false);
+  const [saveNoteError, setSaveNoteError] = useState(null);
+  const saveStopNote = useCallback(async (draft) => {
+    if (!db || !panelStop) return;
+    setSavingNote(true); setSaveNoteError(null);
+    try {
+      const key = panelStop.matchKey;
+      const existing = notes.get(key);
+      const pro = panelStop.pro;
+      const proHistory = pro ? bumpProHistory(existing?.pro_history, pro) : (existing?.pro_history || []);
+      await setDoc(doc(db, 'customer_notes', key), {
+        ...draft,
+        match_key: key,
+        raw_name: draft.raw_name || panelStop.businessName || '',
+        raw_address: draft.raw_address || [panelStop.addr1, panelStop.city, panelStop.state, panelStop.zip].filter(Boolean).join(', '),
+        pro_history: proHistory,
+        last_updated: serverTimestamp(),
+        updated_by: NOTES_UPDATED_BY,
+      }, { merge: true });
+      refreshStops({ silent: true });
+    } catch (e) { setSaveNoteError(e.message); } finally { setSavingNote(false); }
+  }, [notes, panelStop, refreshStops]);
   const cancelMoveLocation = useCallback(() => { setMovingStop(null); setMovedTo(null); }, []);
   const saveStopLocation = useCallback(async () => {
     if (!db || !movingStop || !movedTo) return;
@@ -13572,6 +13596,11 @@ function RoutingScreen({ debugCaptureRef }) {
                 onEditAddress={openAddrEditor}
                 onAutoFixAddress={autoFixAddress}
                 onOpenHistory={openCustomerHistory}
+                onText={textCustomer}
+                onSave={saveStopNote}
+                saving={savingNote}
+                saveError={saveNoteError}
+                drivers={notesDrivers}
               />
             ) : (
             <div className="flex-1 min-h-0 overflow-y-auto p-3 space-y-3 text-sm" style={{ paddingBottom: 'calc(12px + env(safe-area-inset-bottom))' }}>
@@ -13597,6 +13626,7 @@ function RoutingScreen({ debugCaptureRef }) {
         </div>
         {movingStop && <MoveLocationBar stop={movingStop} saving={savingLoc} onSave={saveStopLocation} onCancel={cancelMoveLocation} onReset={resetStopLocation} />}
         {editAddrStop && <AddressEditModal stop={editAddrStop} note={notes.get(editAddrStop.matchKey)} google={google} seed={editAddrSeed} onClose={() => { setEditAddrStop(null); setEditAddrSeed(null); }} onSaved={() => refreshStops({ silent: true })} />}
+        {routingSmsTargets && <SmsComposeModal title={routingSmsTargets.title} recipients={routingSmsTargets.recipients} onClose={() => setRoutingSmsTargets(null)} />}
         {wbManifest && <PrintDocModal title={wbManifest.title} html={wbManifest.html} onClose={() => setWbManifest(null)} />}
         {versionLogOpen && <VersionLogModal onClose={() => setVersionLogOpen(false)} />}
         {/* Customer-history overlay (History button on the stop panel) — Firestore-only. */}
@@ -13739,6 +13769,11 @@ function RoutingScreen({ debugCaptureRef }) {
             onEditAddress={openAddrEditor}
             onAutoFixAddress={autoFixAddress}
             onOpenHistory={openCustomerHistory}
+            onText={textCustomer}
+            onSave={saveStopNote}
+            saving={savingNote}
+            saveError={saveNoteError}
+            drivers={notesDrivers}
           />
         ) : rightPanelMode === 'routes' ? (
           <>
@@ -13776,6 +13811,7 @@ function RoutingScreen({ debugCaptureRef }) {
       )}
       {movingStop && <MoveLocationBar stop={movingStop} saving={savingLoc} onSave={saveStopLocation} onCancel={cancelMoveLocation} onReset={resetStopLocation} />}
       {editAddrStop && <AddressEditModal stop={editAddrStop} note={notes.get(editAddrStop.matchKey)} google={google} seed={editAddrSeed} onClose={() => { setEditAddrStop(null); setEditAddrSeed(null); }} onSaved={() => refreshStops({ silent: true })} />}
+      {routingSmsTargets && <SmsComposeModal title={routingSmsTargets.title} recipients={routingSmsTargets.recipients} onClose={() => setRoutingSmsTargets(null)} />}
         {wbManifest && <PrintDocModal title={wbManifest.title} html={wbManifest.html} onClose={() => setWbManifest(null)} />}
         {versionLogOpen && <VersionLogModal onClose={() => setVersionLogOpen(false)} />}
         {/* Customer-history overlay (History button on the stop panel) — this location's past
