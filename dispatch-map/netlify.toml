@@ -19,6 +19,13 @@
   # first live import Save mid-flight before anything landed.
   [functions."nuvizz-write"]
     timeout = 26
+  # The bottom-grid "pull from NuVizz" explorer: a wide window (±14/±30 days, or a custom
+  # range) can take NuVizz several seconds to answer. The 10s DEFAULT let a large ±7d pull
+  # overrun and get killed with an HTML 502 the client couldn't parse ("Unexpected token
+  # '<'"). Give it the same 26s headroom as the other NuVizz functions; the handler aborts
+  # at 22s and returns a clean JSON error. Still the cheap 2-call list path (no re-scan).
+  [functions."nuvizz-stop-explorer"]
+    timeout = 26
   [functions."motive-driver-positions"]
     timeout = 10
 

@@ -4,7 +4,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { statusFromCode, parseSchedDate, parseReqDate, toBoardStop, bucketByDate, boardDayFor, fromRows, normalize, periodForDate, mergeEnrich, mergeTwoScan, etDateForTargetUTC, SAVED_SEARCHES, keepForBoardDate, filterFinishedPriorDay } from '../netlify/functions/lib/nuvizz-list.mts';
+import { statusFromCode, parseSchedDate, parseReqDate, toBoardStop, bucketByDate, boardDayFor, fromRows, normalize, periodForDate, mergeEnrich, mergeTwoScan, etDateForTargetUTC, SAVED_SEARCHES, keepForBoardDate, filterFinishedPriorDay, coveringPeriodForRange, rowDay, rowInRange } from '../netlify/functions/lib/nuvizz-list.mts';
 import { addrKey } from '../netlify/functions/lib/geocode.mts';
 
 // ── boardDayFor: the ONE day-resolution authority (bucketing + carry-forward guard) ──
@@ -481,4 +481,36 @@ test('addrKey: stable + case/space-insensitive; null without a street address', 
   assert.equal(a, b, 'normalized identically');
   assert.equal(addrKey({ city: 'Buford', zip: '30518' }), null, 'no street → null (never geocode a bare city)');
   assert.equal(addrKey({ addr1: '' }), null);
+});
+
+// ── Custom calendar range → covering relative period + exact row filter ───────
+test('coveringPeriodForRange: smallest symmetric +/-Nd covering [from,to], +1 day pad', () => {
+  const today = '2026-07-09';
+  assert.equal(coveringPeriodForRange('2026-07-09', '2026-07-09', today), '+/-1d', 'single day today → ±1 (pad)');
+  assert.equal(coveringPeriodForRange('2026-07-09', '2026-07-12', today), '+/-4d', 'today..+3 → max 3, +1 pad');
+  assert.equal(coveringPeriodForRange('2026-07-02', '2026-07-16', today), '+/-8d', 'past+future spread 7 → ±8');
+  assert.equal(coveringPeriodForRange('2026-06-09', '2026-06-19', today), '+/-31d', 'both in the past → covers the far edge (30) +1');
+});
+
+test('coveringPeriodForRange: order-insensitive and capped so a stray range never over-pulls', () => {
+  const today = '2026-07-09';
+  assert.equal(coveringPeriodForRange('2026-07-16', '2026-07-02', today), '+/-8d', 'from>to same window (server also normalizes order)');
+  assert.equal(coveringPeriodForRange('2020-01-01', '2026-07-09', today, 60), '+/-60d', 'huge range clamps to maxDays');
+});
+
+test('rowDay: Estimated Arrival wins, else Requested Date, else null', () => {
+  assert.equal(rowDay({ scheduledArrival: '7/9/26 10:30 AM' }), '2026-07-09');
+  assert.equal(rowDay({ requestedArrival: '7/8/26' }), '2026-07-08', 'falls back to requested when no arrival');
+  assert.equal(rowDay({ scheduledArrival: '7/9/26 10:30 AM', requestedArrival: '7/1/26' }), '2026-07-09', 'arrival preferred over requested');
+  assert.equal(rowDay({}), null, 'undated row → null');
+});
+
+test('rowInRange: inclusive on both ends; undated rows excluded', () => {
+  const from = '2026-07-08', to = '2026-07-10';
+  assert.equal(rowInRange({ scheduledArrival: '7/8/26 6:00 AM' }, from, to), true, 'from edge included');
+  assert.equal(rowInRange({ scheduledArrival: '7/10/26 8:00 PM' }, from, to), true, 'to edge included');
+  assert.equal(rowInRange({ scheduledArrival: '7/7/26 8:00 AM' }, from, to), false, 'before range');
+  assert.equal(rowInRange({ scheduledArrival: '7/11/26 8:00 AM' }, from, to), false, 'after range');
+  assert.equal(rowInRange({ requestedArrival: '7/9/26' }, from, to), true, 'requested-date fallback lands in range');
+  assert.equal(rowInRange({}, from, to), false, 'undated → excluded (can’t be placed on a calendar)');
 });

@@ -10,7 +10,7 @@
 
 import { getNuvizzRequester, setCallTrigger } from './lib/nuvizz-request.mts';
 import { getCreds, basicAuthHeader } from './lib/nuvizz-scan.mts';
-import { buildBody, normalize, cleanPeriod, OPENAPI_BASE, SAVED_SEARCHES, fetchSavedSearchRaw, fetchSavedSearchRows, toBoardStop, boardDayFor } from './lib/nuvizz-list.mts';
+import { buildBody, normalize, cleanPeriod, coveringPeriodForRange, rowInRange, OPENAPI_BASE, SAVED_SEARCHES, fetchSavedSearchRaw, fetchSavedSearchRows, toBoardStop, boardDayFor } from './lib/nuvizz-list.mts';
 
 // Re-exported so the existing test (test/stop-explorer.test.mjs) keeps importing them here.
 export { buildBody, normalize, cleanPeriod } from './lib/nuvizz-list.mts';
@@ -66,35 +66,75 @@ export default async (req: Request): Promise<Response> => {
     }
   }
 
-  const period = cleanPeriod(body.arrivalPeriod);
+  // Optional explicit calendar range (the bottom grid's "Custom range"). NuVizz has no
+  // absolute from/to, so pull the smallest covering symmetric window and filter rows to
+  // the exact range below — one cheap list pull regardless of range width.
+  const isDay = (v: any) => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v);
+  const range: { from: string; to: string } | null =
+    (isDay(body.fromDate) && isDay(body.toDate))
+      ? (body.fromDate <= body.toDate ? { from: body.fromDate, to: body.toDate } : { from: body.toDate, to: body.fromDate })
+      : null;
+  const period = range ? coveringPeriodForRange(range.from, range.to) : cleanPeriod(body.arrivalPeriod);
   const codes = Array.isArray(body.statusCodes) ? body.statusCodes.filter((c: any) => /^\d{1,2}$/.test(String(c))).map(String) : [];
   const statusCsv = codes.length ? codes.join(',') : '-1';
   const page = Math.max(1, parseInt(body.page, 10) || 1);
-  const pageSize = Math.max(1, Math.min(200, parseInt(body.pageSize, 10) || 100));
+  // A wider window / custom range needs a higher row cap to actually return the stops in
+  // it — still ONE filterdata call (maxResult is rows-per-call, not extra NuVizz calls).
+  const pageSize = Math.max(1, Math.min(2000, parseInt(body.pageSize, 10) || 100));
 
+  // Hard time budget: a slow/large window must return a clean JSON error rather than
+  // overrun the function — Netlify would otherwise serve an HTML 502 the client's r.json()
+  // can't parse (the "Unexpected token '<'" symptom). The abort fires safely under this
+  // function's timeout (netlify.toml → 26s).
+  const TIMEOUT_MS = Number(process.env.NUVIZZ_EXPLORER_TIMEOUT_MS) || 22_000;
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), TIMEOUT_MS);
   try {
     const { companyCode } = getCreds();
     const hdr = { Authorization: basicAuthHeader(), 'Content-Type': 'application/json', Accept: 'application/json' };
     const payload = JSON.stringify(buildBody(period, statusCsv, page, pageSize));
     const base = `${OPENAPI_BASE}/entity`;
     const reqr = getNuvizzRequester();
-    // Data + total in parallel; the stops filterdata response omits totalRecords,
-    // so the count endpoint supplies it (only meaningful on page 1).
+    // Data + total in parallel; the stops filterdata response omits totalRecords, so the
+    // count endpoint supplies it (only meaningful on page 1). maxRetries:1 keeps this
+    // user-facing pull snappy — the scanner's 4× / 20s backoff would blow the time budget.
     const [dataResp, countResp] = await Promise.all([
-      reqr.request(`${base}/filterdata/VizzonStop/${companyCode}`, { method: 'POST', headers: hdr, body: payload }, { route: '/entity/filterdata', tenant: companyCode }),
-      page === 1
-        ? reqr.request(`${base}/filterdatatotalcount/VizzonStop/${companyCode}`, { method: 'POST', headers: hdr, body: payload }, { route: '/entity/filtercount', tenant: companyCode }).catch(() => null)
+      reqr.request(`${base}/filterdata/VizzonStop/${companyCode}`, { method: 'POST', headers: hdr, body: payload, signal: ac.signal, maxRetries: 1 }, { route: '/entity/filterdata', tenant: companyCode }),
+      (page === 1 && !range)
+        ? reqr.request(`${base}/filterdatatotalcount/VizzonStop/${companyCode}`, { method: 'POST', headers: hdr, body: payload, signal: ac.signal, maxRetries: 1 }, { route: '/entity/filtercount', tenant: companyCode }).catch(() => null)
         : Promise.resolve(null),
     ]);
     if (!dataResp.ok) {
       return new Response(JSON.stringify({ ok: false, error: `NuVizz returned ${dataResp.status}` }), { status: 502, headers: cors });
     }
-    const j = await dataResp.json();
-    const rows = normalize(j);
-    let total = j?.totalRecords ?? null;
-    if (total == null && countResp && countResp.ok) { try { total = (await countResp.json()).totalRecords; } catch { /* ignore */ } }
-    return new Response(JSON.stringify({ ok: true, period, statusCodes: codes, page, pageSize, total: total ?? rows.length, rows }), { status: 200, headers: cors });
+    // Parse defensively: NuVizz (or an upstream gateway) can answer a too-large window with
+    // an HTML error PAGE at HTTP 200. Calling .json() straight would throw the raw
+    // "Unexpected token '<'" parse error at the user; detect non-JSON and return a short,
+    // actionable message instead.
+    const text = await dataResp.text();
+    let j: any;
+    try { j = JSON.parse(text); }
+    catch {
+      return new Response(JSON.stringify({ ok: false, error: 'NuVizz returned a non-JSON response — the date window may be too large. Try a narrower range.' }), { status: 502, headers: cors });
+    }
+    let rows = normalize(j);
+    let total: number | null = null;
+    if (range) {
+      // Filter the covering-window rows to the exact calendar range; the count endpoint
+      // counts the WHOLE covering window, so report the exact in-range count instead.
+      rows = rows.filter((r: any) => rowInRange(r, range.from, range.to));
+      total = rows.length;
+    } else {
+      total = j?.totalRecords ?? null;
+      if (total == null && countResp && countResp.ok) {
+        try { total = JSON.parse(await countResp.text()).totalRecords; } catch { /* ignore */ }
+      }
+    }
+    return new Response(JSON.stringify({ ok: true, period, range, statusCodes: codes, page, pageSize, total: total ?? rows.length, rows }), { status: 200, headers: cors });
   } catch (e: any) {
-    return new Response(JSON.stringify({ ok: false, error: e?.message || 'stop-explorer failed' }), { status: 500, headers: cors });
+    const aborted = e?.name === 'AbortError' || /abort/i.test(String(e?.message || ''));
+    return new Response(JSON.stringify({ ok: false, error: aborted ? 'NuVizz timed out — the date window may be too large. Try a narrower range.' : (e?.message || 'stop-explorer failed') }), { status: aborted ? 504 : 500, headers: cors });
+  } finally {
+    clearTimeout(timer);
   }
 };
