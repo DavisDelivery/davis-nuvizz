@@ -1131,14 +1131,36 @@ const DAVIS_DEPOT = { lat: 34.04446, lng: -83.71669 };
 // ALWAYS a mismatch: the portal and the driver app run stops by seq, so a duplicate leaves the
 // run order undefined (the Jul 9 DAWSONVILLE edit left NuVizz at 1,2,2,6…13 — two stops sharing
 // #2, two sharing #12 — while the save had answered SUCCESS).
+// One shared, trimmed, tolerant boolean-env parser for the RWB levers: "1/true/on/yes" and
+// "0/false/off/no" both work (any case, stray whitespace ignored); anything else → the default.
+// The levers used to demand the exact literals 'on'/'off', so NUVIZZ_RWB_RESEQUENCE=true or
+// NUVIZZ_RWB_STANDING_ROUTE=false silently did nothing.
+function envFlag(name: string, def: boolean): boolean {
+  const v = String(process.env[name] ?? '').trim().toLowerCase();
+  if (/^(1|true|on|yes)$/.test(v)) return true;
+  if (/^(0|false|off|no)$/.test(v)) return false;
+  return def;
+}
+
+// Sentinel prefix for "the read landed before NuVizz assigned positions" — a SOFT state the
+// verify retries with a plain re-read (never a repair write into the vendor's settling window).
+export const RWB_SEQ_PENDING = 'NuVizz has not assigned stop positions yet';
 function rwbOrderMismatch(load: any, orderedNbrs: string[]): string | null {
   const dos = (load?.stops || []).filter((s: any) => s?.stopNbr != null && String(s?.stopType ?? 'DO').toUpperCase() === 'DO');
   const want = orderedNbrs.filter((n) => dos.some((s: any) => String(s.stopNbr) === n));
+  // A null/absent stopSeq is NOT position 0: load/info can list stops before the seq is stamped
+  // (the import poller documents the same trap). Two unseq'd stops used to read as "duplicate
+  // position 0" → a false KEPT-order failure + a pointless repair save while the vendor was
+  // still settling. Report seq-pending instead and let the caller re-read.
+  const wantSet = new Set(want);
+  if (dos.some((s: any) => wantSet.has(String(s.stopNbr)) && (s?.stopSeq == null || !Number.isFinite(Number(s.stopSeq))))) {
+    return `${RWB_SEQ_PENDING} for this load (the save may still be settling) — re-Save in a moment to verify the order`;
+  }
   const got = dos.slice()
-    .sort((a: any, b: any) => Number(a?.stopSeq ?? Number.MAX_SAFE_INTEGER) - Number(b?.stopSeq ?? Number.MAX_SAFE_INTEGER))
+    .sort((a: any, b: any) => Number(a.stopSeq) - Number(b.stopSeq))
     .map((s: any) => String(s.stopNbr))
-    .filter((n: string) => want.includes(n));
-  const seqs = dos.map((s: any) => Number(s?.stopSeq)).filter((v: number) => Number.isFinite(v));
+    .filter((n: string) => wantSet.has(n));
+  const seqs = dos.filter((s: any) => s?.stopSeq != null).map((s: any) => Number(s.stopSeq)).filter((v: number) => Number.isFinite(v));
   const dupes = [...new Set(seqs.filter((v: number, i: number) => seqs.indexOf(v) !== i))];
   const misplaced = want.filter((n, i) => got[i] !== n);
   if (!dupes.length && !misplaced.length) return null;
@@ -1440,7 +1462,14 @@ export async function runCommitBoardRwb(requester: RequesterLike, payload: any, 
   // weight sums out — otherwise the save keeps the byte-exact legacy zeros fallback.
   const totalsOf = (p: any) => {
     const n = (v: any) => { const x = Number(v); return Number.isFinite(x) ? x : 0; };
-    const rows = (p.load?.rawStops || []).map((s: any) => s?.stop || s || {});
+    // Sum ONLY the stops this entry actually saves: p.load is the PRE-save read, so an unfiltered
+    // sum counted removed/moving-away stops and missed move arrivals — a totalData that
+    // contradicts the entry's own trip list (payload-semantics deviation of the v0.45.16 class).
+    // A move DESTINATION can't be summed from this load's read at all (the arrival's freight
+    // isn't in rawStops) → byte-exact legacy zeros fallback rather than a wrong number.
+    const orderedSet = new Set(p.orderedNbrs.map(String));
+    const rows = (p.load?.rawStops || []).map((s: any) => s?.stop || s || {}).filter((s: any) => orderedSet.has(String(s?.stopNbr)));
+    if (rows.length !== p.orderedNbrs.length) return undefined;   // move arrivals unsummable here
     const totalW = rows.reduce((a: number, s: any) => a + n(s.weight), 0);
     if (!(totalW > 0)) return undefined;
     const totalV = rows.reduce((a: number, s: any) => a + n(s.volume), 0);
@@ -1454,45 +1483,68 @@ export async function runCommitBoardRwb(requester: RequesterLike, payload: any, 
   // HAR — 3 for 3 on this tenant's recurring routes), and the manual-reorder save is the one
   // flow that persists a reorder with NO extra call — so a stray here is the live suspect for
   // "reorder accepted, seq never moved". Default ON; NUVIZZ_RWB_STANDING_ROUTE=off reverts.
-  const RWB_STANDING = String(process.env.NUVIZZ_RWB_STANDING_ROUTE || '').toLowerCase() !== 'off';
+  const RWB_STANDING = envFlag('NUVIZZ_RWB_STANDING_ROUTE', true);
   const extrasOf = (p: any) => ({ totals: totalsOf(p), isStandingRoute: RWB_STANDING });
   // resequenceRoute is the OPTIMIZER's persist (Jul 9 opti HAR) — the manual-reorder HAR proves
   // the portal never fires it for a manual sequence (the save alone persists it). Kept as an
   // escape lever ONLY: NUVIZZ_RWB_RESEQUENCE=on fires it for loads whose freshest-read delivery
   // order differs from the requested order. OFF by default — calling a portal endpoint in a way
   // the portal never does is exactly how the Jul 9 half-apply happened.
-  const RWB_RESEQ = String(process.env.NUVIZZ_RWB_RESEQUENCE || '').toLowerCase() === 'on';
+  const RWB_RESEQ = envFlag('NUVIZZ_RWB_RESEQUENCE', false);
   const needsReseq = (p: any) => RWB_RESEQ && rwbOrderMismatch(p.load, p.orderedNbrs) != null;
   if (group.length) {
     try {
-      const r = await rwbSequenceRoutes(requester, group.map((p: any) => ({ routePlanId: p.routePlanId, orderedStopIds: p.orderedIds, origin: originOf(p), pickupLegIds: p.pickupLegIds || [], resequence: needsReseq(p), ...extrasOf(p) })));
+      for (const p of group) p.reseqRequested = needsReseq(p);
+      const r = await rwbSequenceRoutes(requester, group.map((p: any) => ({ routePlanId: p.routePlanId, orderedStopIds: p.orderedIds, origin: originOf(p), pickupLegIds: p.pickupLegIds || [], resequence: p.reseqRequested, ...extrasOf(p) })));
       for (const [i, p] of group.entries()) {
         const mySteps = r.steps.filter((s: any) => !s.routePlanId || String(s.routePlanId) === p.routePlanId);
         p.result.steps.push(...mySteps.map((s: any) => ({ ...s, op: `rwb:${s.op}` })));
-        // Truthful sums across loads: each load owns its own preview; the ONE shared save is booked
-        // on the first load in the group.
-        p.result.calls = { rwb: 1 + (i === 0 ? 1 : 0), rwbAdd: p.rwbAddCalls, infos: p.verifyReads, stopInfos: p.addReads || 0 };
+        // Truthful sums across loads: each load owns its own preview (+ its resequence when the
+        // lever requested one); the ONE shared save is booked on the first load in the group.
+        p.result.calls = { rwb: 1 + (p.reseqRequested ? 1 : 0) + (i === 0 ? 1 : 0), rwbAdd: p.rwbAddCalls, infos: p.verifyReads, stopInfos: p.addReads || 0 };
         if (!r.ok) {
           p.result.ok = false;
           p.result.error = (r.failedRoutePlanId && String(r.failedRoutePlanId) !== p.routePlanId)
-            ? `commitBoard(rwb): aborted — another load in this Save failed its preview (${r.message}). The multi-load save is all-or-nothing, so nothing was written; re-Save.`
+            ? `commitBoard(rwb): aborted — another load in this Save failed (${r.message}).${(r as any).wroteBefore ? ' A resequence step had ALREADY persisted for an earlier load — check the loads in the portal, then re-Save.' : ' The multi-load save is all-or-nothing, so nothing was written; re-Save.'}`
             : `commitBoard(rwb): ${r.message}`;
         }
       }
-      // ── POST-SAVE VERIFY for EVERY saved load (no false success — ORDER included). One re-read
-      // per load confirms everything the declarative save promised: every ordered stop is ON the
-      // load (MOVE stragglers get the proven add fallback), every removeStopNbrs stop is OFF it,
-      // and the deliveries' stopSeq actually runs in the requested order. The order check exists
-      // because NuVizz can answer SUCCESS and keep its own sequence: the Jul 9 DAWSONVILLE edit
-      // applied the removals but left every kept stop at its old seq (1,2,2,6…13, duplicates and
-      // all) while we reported "saved" — a new build never showed it because the one-at-a-time
-      // adds seat stops in order anyway; a pure reorder has no adds, so nothing caught it. ONE
-      // automatic repair (re-attach stragglers + a fresh single-route preview+save) runs before
-      // the load fails loudly with NuVizz's kept order spelled out.
+      // ── POST-SAVE VERIFY, TWO PASSES (no false success — ORDER included) ──
+      // PASS 1 lands MOVE arrivals: if the combined save didn't transfer a stop, attach it via
+      // the proven add path + a portal-shaped re-save. This runs BEFORE any source is judged —
+      // the fallback add releases the stop from its source vendor-side, so a source verified
+      // earlier would false-fail on a stop its destination was about to claim.
       if (r.ok) {
+        for (const p of group) {
+          if (!p.result.ok || !p.moveArrivals.length) continue;
+          const f3 = await fetchLoad(requester, String(p.loadNbr), creds);
+          p.result.calls.infos += 1;
+          if (!f3.load) { p.result.ok = false; p.result.error = `commitBoard(rwb): load unreadable after save (${loadMissDiag(p.loadNbr, f3)}) — verify in the portal, then refresh`; continue; }
+          const onNow = new Set((f3.load.stops || []).map((s: any) => String(s?.stopNbr)));
+          const missingMoves = p.moveArrivals.filter((a: any) => !onNow.has(String(a.nbr)));
+          if (!missingMoves.length) continue;
+          const add = await rwbAddStopsToRoute(requester, p.routePlanId, missingMoves.map((a: any) => a.stopId));
+          p.result.calls.rwbAdd += add.calls;
+          p.result.steps.push(...add.steps.map((s: any) => ({ ...s, op: `rwb:${s.op}(move-fallback)` })));
+          const r2 = await rwbSequenceStops(requester, p.routePlanId, p.orderedIds, originOf(p), p.pickupLegIds || [], { ...extrasOf(p), resequence: RWB_RESEQ });
+          p.result.steps.push(...r2.steps.map((s: any) => ({ ...s, op: `rwb:${s.op}(move-fallback)` })));
+          p.result.calls.rwb += r2.calls;
+          if (!r2.ok) { p.result.ok = false; p.result.error = `commitBoard(rwb): ${r2.message}`; }
+        }
+        // PASS 2 judges EVERY load against everything the declarative save promised: ordered
+        // stops ON it (moves already had pass 1's shot), removeStopNbrs AND moved-away stops OFF
+        // it — a source that keeps a stop another card took is a half-applied move, the inverse
+        // of the BEN 2 ejection — and the deliveries' stopSeq in the requested order (the Jul 9
+        // DAWSONVILLE edit: SUCCESS answered, membership applied, every seq kept — 1,2,2,6…13).
+        // ONE repair round for a hard order mismatch; a SOFT seq-pending read (positions not
+        // stamped yet) retries with a plain re-read — never a repair write into the vendor's
+        // settling window.
         for (const p of group) {
           if (!p.result.ok) continue;
           const removeNbrs: string[] = Array.isArray(p.L?.removeStopNbrs) ? p.L.removeStopNbrs.map((x: any) => String(x)).filter(Boolean) : [];
+          const movedAway: string[] = seq.flatMap((q: any) => (q !== p && q.result.ok)
+            ? q.moveArrivals.filter((a: any) => String(a.fromLoadNbr) === String(p.loadNbr)).map((a: any) => String(a.nbr))
+            : []);
           let verdict: string | null = 'post-save verification did not run';
           for (let attempt = 0; attempt < 2; attempt++) {
             const f3 = await fetchLoad(requester, String(p.loadNbr), creds);
@@ -1500,15 +1552,18 @@ export async function runCommitBoardRwb(requester: RequesterLike, payload: any, 
             if (!f3.load) { verdict = `load unreadable after save (${loadMissDiag(p.loadNbr, f3)}) — verify in the portal, then refresh`; break; }
             const onNow = new Set((f3.load.stops || []).map((s: any) => String(s?.stopNbr)));
             const missingMoves = p.moveArrivals.filter((a: any) => !onNow.has(String(a.nbr)));
+            if (missingMoves.length) {
+              verdict = `stop ${missingMoves[0].nbr} did not land on ${p.loadNbr} after the move — check both loads in the portal, then refresh and re-Save.`;
+              break;
+            }
             const missingOrdered = p.orderedNbrs.filter((n: string) => !onNow.has(n) && !p.moveArrivals.some((a: any) => String(a.nbr) === n));
-            const lingering = removeNbrs.filter((n) => onNow.has(n) && !p.orderedNbrs.includes(n));
-            const orderErr = (!missingMoves.length && !missingOrdered.length) ? rwbOrderMismatch(f3.load, p.orderedNbrs) : null;
-            if (!missingMoves.length && !missingOrdered.length && !lingering.length && !orderErr) { verdict = null; break; }
+            const lingering = [...removeNbrs, ...movedAway].filter((n) => onNow.has(n) && !p.orderedNbrs.includes(n));
+            const orderErr = !missingOrdered.length ? rwbOrderMismatch(f3.load, p.orderedNbrs) : null;
+            const seqPending = !!orderErr && orderErr.startsWith(RWB_SEQ_PENDING);
+            if (!missingOrdered.length && !lingering.length && !orderErr) { verdict = null; break; }
             // A stop that was ON the load when we saved but is gone now is not repairable here —
             // something else owns it; surface it WITH the holder's name (one getStop) rather than
-            // re-adding blind. The BEN 2 save had NuVizz eject 007144356 from its own SUCCESS
-            // response because a ghost route still claimed it — "fell OFF, refresh" gave the
-            // dispatcher nothing to act on.
+            // re-adding blind (the BEN 2 ejection).
             if (missingOrdered.length) {
               const nbr = String(missingOrdered[0]);
               const holder = await rwbStopHolder(requester, nbr, creds);
@@ -1518,20 +1573,12 @@ export async function runCommitBoardRwb(requester: RequesterLike, payload: any, 
               break;
             }
             if (attempt === 1) {
-              verdict = missingMoves.length
-                ? `stop ${missingMoves[0].nbr} did not land on ${p.loadNbr} after the move — check both loads in the portal, then refresh and re-Save.`
-                : (lingering.length
-                  ? `NuVizz KEPT stop ${lingering[0]} on ${p.loadNbr} — the removal was accepted but not applied; unplan it in the portal, then refresh.`
-                  : orderErr);
+              verdict = lingering.length
+                ? `NuVizz KEPT stop ${lingering[0]} on ${p.loadNbr} — the ${movedAway.includes(lingering[0]) ? 'move to its new load' : 'removal'} was accepted but the stop never left; unplan it in the portal, then refresh.`
+                : orderErr;
               break;
             }
-            // ONE repair round: re-attach move stragglers via the proven add path, then force the
-            // membership+order with a fresh single-route preview+save; loop to re-read and re-verify.
-            if (missingMoves.length) {
-              const add = await rwbAddStopsToRoute(requester, p.routePlanId, missingMoves.map((a: any) => a.stopId));
-              p.result.calls.rwbAdd += add.calls;
-              p.result.steps.push(...add.steps.map((s: any) => ({ ...s, op: `rwb:${s.op}(move-fallback)` })));
-            }
+            if (seqPending && !lingering.length) continue;   // soft retry: plain re-read, no write
             const r2 = await rwbSequenceStops(requester, p.routePlanId, p.orderedIds, originOf(p), p.pickupLegIds || [], { ...extrasOf(p), resequence: RWB_RESEQ });
             p.result.steps.push(...r2.steps.map((s: any) => ({ ...s, op: `rwb:${s.op}(repair)` })));
             p.result.calls.rwb += r2.calls;
