@@ -54,7 +54,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.45.6';
+const APP_VERSION = '0.45.7';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -99,6 +99,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.45.7', 'FIX: fixing an address or moving the pin for an order pulled in via a Board date window/range made its pin VANISH until a full map refresh. The map added other-day window orders only if they ALREADY had a location, so a just-corrected order (its new pin lives in customer overrides) wasn\'t in the map\'s set for the override to apply to — it stayed invisible until the next scan re-geocoded it. The map now keeps those orders in its set so a corrected address/pin shows LIVE, the moment you save. FIX: "Debug this view" could fail with a GitHub "bad request" — the issue text was truncated with a plain cut that could split an emoji/special character and leave a broken byte GitHub rejects; truncation is now character-safe, and the error now shows GitHub\'s real reason (and says to rotate the token on a 401).'],
   ['0.45.6', 'FIX: the bottom Stops grid could show "No stops match" even with hundreds of stops in the window — a leftover term in the shared Search box (it\'s used by both Stops and Loads) was filtering everything out, and with the Compare panel open the box shrank to just an icon so you couldn\'t SEE the stray text. The search box now keeps a minimum width and shows a clear-✕ (and highlights) whenever it holds text, and the empty grid now says exactly what\'s hiding the rows ("None of the N stops match — hidden by search “…” / status / driver / no-location") with a one-click Clear filters button. No stray filter can silently blank the grid again.'],
   ['0.45.5', 'FIX: setting a date window/range on the bottom Stops grid was wiping the empty loads out of the Loads view — it dropped from all ~100 of the day\'s loads down to just the built routes. The Loads view is board-day scoped and shouldn\'t be touched by the Stops-view date filter at all, but the day\'s load roster (the empty "No orders yet · Draft" loads) was gated off whenever a window was set. The Loads view now always shows the full board-day roster — every empty load, filled route, and its driver — regardless of what date window the Stops grid is on.'],
   ['0.45.4', 'EVERY ORDER IN THE BOTTOM GRID IS NOW ON THE MAP TO SELECT + PLAN. Before, the routing map only showed the single board day you\'d picked, so when the grid was set to a Board window/range (±7/±14/±30 or a Custom range) the earlier-day unplanned orders it listed had no pin — you couldn\'t box/lasso them onto a load. Now the map ADDS every coord-bearing order from the grid\'s active window (deduped against the day board, which keeps its live status), so select-all on the map matches the grid and you can plan the whole backlog of unplanned orders in one pass. (Orders with no location still can\'t be pinned — the amber "N no location" chip from v0.45.3 flags those to fix first.)'],
@@ -11836,8 +11837,14 @@ function RoutingScreen({ debugCaptureRef }) {
   const mapBaseStops = useMemo(() => {
     if (!gridWindowStops || !gridWindowStops.length) return stops;
     const seen = new Set(stops.map((s) => String(s.stopNbr)));
-    // Other-day orders the day board doesn't already carry, that have a location to pin.
-    const extra = gridWindowStops.filter((s) => s && s.stopNbr && !seen.has(String(s.stopNbr)) && s.lat != null && s.lng != null);
+    // Other-day orders the day board doesn't already carry. Do NOT pre-filter to coord-bearing
+    // here — a stop that has no NuVizz location but was just given one via "Edit address" /
+    // "Correct pin" (a location_override in notes) must stay in the base set so positionedAll
+    // below can apply that override and pin it LIVE. Dropping coordless extras here meant a
+    // freshly-fixed order stayed invisible until the next scan re-geocoded it (#pin-live). The
+    // coord filter still runs in positionedAll, AFTER overrides — so genuinely locationless
+    // extras are excluded there, exactly as before.
+    const extra = gridWindowStops.filter((s) => s && s.stopNbr && !seen.has(String(s.stopNbr)));
     return extra.length ? [...stops, ...extra] : stops;
   }, [stops, gridWindowStops]);
   const positionedAll = useMemo(() => {
