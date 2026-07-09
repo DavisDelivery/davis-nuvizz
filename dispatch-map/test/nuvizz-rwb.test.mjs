@@ -42,9 +42,9 @@ function makeRequester({ saveBody = { responseCode: 200 }, saveStatus = 200, loa
   const loadJson = () => ({ Load: {
     loadHeader: { loadId: HEXID, loadNbr: 'DAVIS000000123', routeName: 'TEST', rtOrigin: { address: { latitude: 34.04, longitude: -83.71 } } },
     versionId: 'v1', loadExecutionInfo: { loadStatus: 'PLANNED' },
-    // weight/totalPallets/totalCartons ride the RAW stop record (normalizeLoad.rawStops) — the
-    // save entry's totalData sums them (Jul 9 HAR fidelity).
-    stops: (loadStops?.value ?? []).map((n, i) => ({ stop: { stopId: `id-${n}`, stopNbr: String(n), stopType: 'DO', to: { seq: i + 2 }, weight: 100, totalPallets: 2, totalCartons: 1 } })),
+    // weight/totalPallets/totalCartons/volume ride the RAW stop record (normalizeLoad.rawStops)
+    // — the save entry's totalData sums them (Jul 9 manual-reorder HAR fidelity).
+    stops: (loadStops?.value ?? []).map((n, i) => ({ stop: { stopId: `id-${n}`, stopNbr: String(n), stopType: 'DO', to: { seq: i + 2 }, weight: 100, totalPallets: 2, totalCartons: 1, volume: 3 } })),
   } });
   return {
     calls,
@@ -255,20 +255,39 @@ test('runCommitBoardRwb: save entry carries the route\'s REAL window + freight t
     const entry = JSON.parse(String(base.calls.find((c) => c.url.includes('saveComparedRouteData')).body.get('routeJsonData')))[0];
     assert.equal(entry.routeStartTime, '07/09/2026 12:00:00 pm GMT-04:00', 'real start time echoed');
     assert.equal(entry.routeEndTime, '07/09/2026 11:59:00 pm GMT-04:00');
-    // Summed from the load's raw stop records: 2 stops × {2 pieces, 1 skid, 100 lbs}.
-    assert.deepEqual(entry.totalData, { totalP: 4, totalC: 2, totalW: 200, totalV: 0, weightUOM: 'Lbs', volumeUOM: '' });
-    assert.equal(entry.isStandingRoute, false, 'standing flag ships OFF (env-gated)');
+    // Summed from the load's raw stop records: 2 stops × {2 pieces, 1 skid, 3 loose, 100 lbs}.
+    // volumeUOM 'Loose' only when loose exist (manual-reorder HAR: totalV 4 → 'Loose'; opti
+    // HAR's loose-free route: totalV 0 → '').
+    assert.deepEqual(entry.totalData, { totalP: 4, totalC: 2, totalW: 200, totalV: 6, weightUOM: 'Lbs', volumeUOM: 'Loose' });
+    assert.equal(entry.isStandingRoute, true, 'standing defaults ON — true on all 3 captured portal saves');
   });
 });
 
-// ── resequenceRoute (Jul 9 optimize HAR): the portal's ORDER-persisting call ───
-// Every portal flow where stops ALREADY ON a route change position fires
-// opt-job/routeopt/resequenceRoute between the preview and the save; a flow that only ADDS
-// stops never does (order comes from the adds). We never called it — the root of the
-// "reorder accepted, no seq ever moved" bug.
+// ── resequenceRoute: the OPTIMIZER's persist, env-gated escape lever only ──────
+// The Jul 9 manual-reorder HAR proves the portal does NOT fire it for a manual sequence — the
+// save alone persists a manual reorder. NUVIZZ_RWB_RESEQUENCE=on enables it as a lever for
+// loads whose freshest-read delivery order differs from the requested order.
 
-test('runCommitBoardRwb: an EDIT reorder fires resequenceRoute (portal flow) before the save', async () => {
+const withReseq = async (fn) => {
+  const prev = process.env.NUVIZZ_RWB_RESEQUENCE;
+  process.env.NUVIZZ_RWB_RESEQUENCE = 'on';
+  try { return await fn(); }
+  finally { if (prev === undefined) delete process.env.NUVIZZ_RWB_RESEQUENCE; else process.env.NUVIZZ_RWB_RESEQUENCE = prev; }
+};
+
+test('runCommitBoardRwb: a manual reorder does NOT fire resequenceRoute by default (manual-reorder HAR parity)', async () => {
   await withRwb({}, async () => {
+    const loadStops = { value: ['A', 'B', 'C'] };
+    const { requester, calls } = makeRequester({ loadStops });
+    const r = await runCommitBoardRwb(requester, { loads: [{ loadNbr: 'DAVIS000000123', loadId: HEXID, orderedStopNbrs: ['C', 'A', 'B'] }] }, CREDS);
+    assert.equal(r.ok, true, JSON.stringify(r.loads?.[0]?.error));
+    assert.equal(calls.some((c) => c.url.includes('resequenceRoute')), false, 'the portal persists a manual reorder via the save alone');
+    assert.equal(calls.some((c) => c.url.includes('saveComparedRouteData')), true);
+  });
+});
+
+test('runCommitBoardRwb: NUVIZZ_RWB_RESEQUENCE=on fires resequenceRoute (exact form) between preview and save', async () => {
+  await withRwb({}, () => withReseq(async () => {
     const loadStops = { value: ['A', 'B', 'C'] };
     const { requester, calls } = makeRequester({ loadStops });
     const r = await runCommitBoardRwb(requester, { loads: [{ loadNbr: 'DAVIS000000123', loadId: HEXID, orderedStopNbrs: ['C', 'A', 'B'] }] }, CREDS);
@@ -279,26 +298,25 @@ test('runCommitBoardRwb: an EDIT reorder fires resequenceRoute (portal flow) bef
     assert.equal(String(rs.body.get('seqMode')), 'Manual');
     assert.equal(String(rs.body.get('reqSource')), 'RWB_CP');
     assert.equal(String(rs.body.get('returnToDepot')), 'NEVER');
-    // Portal order: preview → resequenceRoute → save.
     const iRs = calls.findIndex((c) => c.url.includes('resequenceRoute'));
     const iSave = calls.findIndex((c) => c.url.includes('saveComparedRouteData'));
     const iPrev = calls.findIndex((c) => c.url.includes('fetchUpdatedJson'));
     assert.ok(iPrev < iRs && iRs < iSave, 'resequenceRoute sits between the preview and the save');
-  });
+  }));
 });
 
-test('runCommitBoardRwb: a pure ADD/build save does NOT fire resequenceRoute (proven path untouched)', async () => {
-  await withRwb({}, async () => {
+test('runCommitBoardRwb: with the lever ON, a pure ADD/build save still never fires resequenceRoute', async () => {
+  await withRwb({}, () => withReseq(async () => {
     const loadStops = { value: ['A'] };
     const { requester, calls } = makeRequester({ loadStops });
     const r = await runCommitBoardRwb(requester, { loads: [{ loadNbr: 'DAVIS000000123', loadId: HEXID, orderedStopNbrs: ['A', 'B'] }] }, CREDS);
     assert.equal(r.ok, true, JSON.stringify(r.loads?.[0]?.error));
     assert.equal(calls.some((c) => c.url.includes('resequenceRoute')), false, 'adds seat stops in order — no resequence call');
-  });
+  }));
 });
 
-test('runCommitBoardRwb: a FAILED resequenceRoute aborts the group with NO save', async () => {
-  await withRwb({}, async () => {
+test('runCommitBoardRwb: with the lever ON, a FAILED resequenceRoute aborts the group with NO save', async () => {
+  await withRwb({}, () => withReseq(async () => {
     const loadStops = { value: ['A', 'B'] };
     const base = makeRequester({ loadStops });
     const real = base.requester.request;
@@ -307,23 +325,23 @@ test('runCommitBoardRwb: a FAILED resequenceRoute aborts the group with NO save'
       return real(url, opts, meta);
     };
     const r = await runCommitBoardRwb(base.requester, { loads: [{ loadNbr: 'DAVIS000000123', loadId: HEXID, orderedStopNbrs: ['B', 'A'] }] }, CREDS);
-    assert.equal(r.ok, false, 'a save without its resequence is the accepted-but-ignored reorder — abort');
+    assert.equal(r.ok, false, 'a save without its requested resequence would be the accepted-but-ignored reorder — abort');
     assert.equal(base.calls.some((c) => c.url.includes('saveComparedRouteData')), false, 'no save after a failed resequence');
     assert.match(String(r.loads[0].error || ''), /resequenceRoute failed/i);
-  });
+  }));
 });
 
-test('runCommitBoardRwb: NUVIZZ_RWB_STANDING_ROUTE=on flips isStandingRoute in the save entry', async () => {
+test('runCommitBoardRwb: NUVIZZ_RWB_STANDING_ROUTE=off reverts isStandingRoute to false', async () => {
   await withRwb({}, async () => {
     const prev = process.env.NUVIZZ_RWB_STANDING_ROUTE;
-    process.env.NUVIZZ_RWB_STANDING_ROUTE = 'on';
+    process.env.NUVIZZ_RWB_STANDING_ROUTE = 'off';
     try {
       const loadStops = { value: ['A'] };
       const { requester, calls } = makeRequester({ loadStops });
       const r = await runCommitBoardRwb(requester, { loads: [{ loadNbr: 'DAVIS000000123', loadId: HEXID, orderedStopNbrs: ['A'] }] }, CREDS);
       assert.equal(r.ok, true, JSON.stringify(r.loads?.[0]?.error));
       const entry = JSON.parse(String(calls.find((c) => c.url.includes('saveComparedRouteData')).body.get('routeJsonData')))[0];
-      assert.equal(entry.isStandingRoute, true);
+      assert.equal(entry.isStandingRoute, false);
     } finally { if (prev === undefined) delete process.env.NUVIZZ_RWB_STANDING_ROUTE; else process.env.NUVIZZ_RWB_STANDING_ROUTE = prev; }
   });
 });

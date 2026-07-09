@@ -367,13 +367,12 @@ function legsFor(ids: string[], pickupLegIds?: string[]): Array<{ id: string; le
   ];
 }
 
-// rwbResequenceRoute — the portal's ORDER-persisting call (Jul 9 optimize HAR: fetchUpdatedJson →
-// opt-job/routeopt/resequenceRoute → saveComparedRouteData). Every flow where stops ALREADY ON a
-// route change position goes through this endpoint; a flow that only ADDS stops never fires it
-// (order comes from the adds). We never called it — which is why an edit's reorder was accepted
-// by the save yet no stop's seq ever moved (the DAWSONVILLE 1,2,2,6…13 state). seqMode 'Manual'
-// = persist EXACTLY the given leg order (the portal's optimizer uses 'None' to let the server
-// pick); reqSource RWB_CP is the workbench's own discriminator, verbatim from the HAR.
+// rwbResequenceRoute — the OPTIMIZER's persist call (Jul 9 opti HAR: fetchUpdatedJson →
+// opt-job/routeopt/resequenceRoute(seqMode None) → saveComparedRouteData). The Jul 9
+// MANUAL-reorder HAR proves the portal does NOT fire this for a manual sequence — the save
+// alone persists it (seqMode 'Manual', isStandingRoute true, real window/totals). Kept as an
+// env-gated escape lever (NUVIZZ_RWB_RESEQUENCE=on) in case a field-faithful save still fails
+// to move seqs; reqSource RWB_CP verbatim from the HAR.
 async function rwbResequenceRoute(
   requester: RwbRequesterLike, cfg: RwbConfig,
   routePlanId: string, orderedStopIds: string[], pickupLegIds: string[] | undefined, steps: any[],
@@ -482,12 +481,10 @@ export async function rwbSequenceRoutes(
     entries.push(p.entry);
   }
 
-  // Order persist for routes whose EXISTING stops changed position (route.resequence): the
-  // portal's own flow is preview → resequenceRoute → save (Jul 9 optimize HAR). A pure
-  // build/add save never fires it (order comes from the adds), keeping that proven path
-  // byte-identical. Same all-or-nothing rule as the previews: a failed resequence aborts the
-  // whole group with NO save (a save without its resequence is exactly the accepted-but-
-  // ignored reorder this exists to fix).
+  // Optional order-persist lever (route.resequence — env-gated by the caller; the portal's
+  // MANUAL reorder flow does NOT use it, only the optimizer does): preview → resequenceRoute →
+  // save. Same all-or-nothing rule as the previews: a failed resequence aborts the whole group
+  // with NO save.
   for (const route of routes) {
     if (route.resequence !== true) continue;
     calls += 1;

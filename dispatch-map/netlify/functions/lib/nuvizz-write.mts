@@ -1432,33 +1432,37 @@ export async function runCommitBoardRwb(requester: RequesterLike, payload: any, 
       ? { lat: Number(rtOriginAddr.latitude), lng: Number(rtOriginAddr.longitude) }
       : DAVIS_DEPOT;
   };
-  // Route totals for the save entry, summed from the load's own raw stop records (the Jul 9
-  // portal HAR populates totalData — totalP 13 / totalC 13 / totalW 3924 / volumeUOM "" — where
-  // we sent zeros). NuVizz-native names on the stop record: totalPallets = pieces,
-  // totalCartons = skids, weight. Attached only when a real weight sums out — otherwise the
-  // save keeps the byte-exact legacy zeros fallback every successful build has used.
+  // Route totals for the save entry, summed from the load's own raw stop records. Portal-pinned
+  // by the Jul 9 manual-reorder HAR (8 orders → totalP 14 / totalC 10 / totalW 2515 / totalV 4 /
+  // volumeUOM 'Loose'), which also confirms the DAVIS field semantics: totalP = Σ totalPallets
+  // (pieces), totalC = Σ totalCartons (skids), totalV = Σ volume (loose; volumeUOM 'Loose' only
+  // when any exist — the opti HAR's loose-free route sent 0/''). Attached only when a real
+  // weight sums out — otherwise the save keeps the byte-exact legacy zeros fallback.
   const totalsOf = (p: any) => {
     const n = (v: any) => { const x = Number(v); return Number.isFinite(x) ? x : 0; };
     const rows = (p.load?.rawStops || []).map((s: any) => s?.stop || s || {});
     const totalW = rows.reduce((a: number, s: any) => a + n(s.weight), 0);
     if (!(totalW > 0)) return undefined;
+    const totalV = rows.reduce((a: number, s: any) => a + n(s.volume), 0);
     return {
       totalP: rows.reduce((a: number, s: any) => a + n(s.totalPallets), 0),
       totalC: rows.reduce((a: number, s: any) => a + n(s.totalCartons), 0),
-      totalW, totalV: 0, weightUOM: 'Lbs', volumeUOM: '',
+      totalW, totalV, weightUOM: 'Lbs', volumeUOM: totalV > 0 ? 'Loose' : '',
     };
   };
-  // isStandingRoute: the Jul 9 HAR shows the portal sending TRUE on a recurring DAVIS route, but
-  // the v7 API exposes no field to derive it from — and flipping payload semantics blind is how
-  // the Jul 9 half-apply happened. Ships OFF until NUVIZZ_RWB_STANDING_ROUTE=on.
-  const RWB_STANDING = String(process.env.NUVIZZ_RWB_STANDING_ROUTE || '').toLowerCase() === 'on';
-  const extrasOf = (p: any) => ({ totals: totalsOf(p), isStandingRoute: RWB_STANDING || undefined });
-  // resequenceRoute fires ONLY when the load's stops — as NuVizz holds them right now (the
-  // freshest read: post-add for build loads, PASS A for pure edits) — already run in a
-  // DIFFERENT order than requested. A build's adds seat stops in order, so builds keep the
-  // proven no-resequence path byte-identical; an edit reorder finally gets the portal's own
-  // order-persisting call (Jul 9 optimize HAR) instead of relying on the save alone.
-  const needsReseq = (p: any) => rwbOrderMismatch(p.load, p.orderedNbrs) != null;
+  // isStandingRoute: TRUE on every captured portal save (build, optimize, and the manual-reorder
+  // HAR — 3 for 3 on this tenant's recurring routes), and the manual-reorder save is the one
+  // flow that persists a reorder with NO extra call — so a stray here is the live suspect for
+  // "reorder accepted, seq never moved". Default ON; NUVIZZ_RWB_STANDING_ROUTE=off reverts.
+  const RWB_STANDING = String(process.env.NUVIZZ_RWB_STANDING_ROUTE || '').toLowerCase() !== 'off';
+  const extrasOf = (p: any) => ({ totals: totalsOf(p), isStandingRoute: RWB_STANDING });
+  // resequenceRoute is the OPTIMIZER's persist (Jul 9 opti HAR) — the manual-reorder HAR proves
+  // the portal never fires it for a manual sequence (the save alone persists it). Kept as an
+  // escape lever ONLY: NUVIZZ_RWB_RESEQUENCE=on fires it for loads whose freshest-read delivery
+  // order differs from the requested order. OFF by default — calling a portal endpoint in a way
+  // the portal never does is exactly how the Jul 9 half-apply happened.
+  const RWB_RESEQ = String(process.env.NUVIZZ_RWB_RESEQUENCE || '').toLowerCase() === 'on';
+  const needsReseq = (p: any) => RWB_RESEQ && rwbOrderMismatch(p.load, p.orderedNbrs) != null;
   if (group.length) {
     try {
       const r = await rwbSequenceRoutes(requester, group.map((p: any) => ({ routePlanId: p.routePlanId, orderedStopIds: p.orderedIds, origin: originOf(p), pickupLegIds: p.pickupLegIds || [], resequence: needsReseq(p), ...extrasOf(p) })));
@@ -1528,7 +1532,7 @@ export async function runCommitBoardRwb(requester: RequesterLike, payload: any, 
               p.result.calls.rwbAdd += add.calls;
               p.result.steps.push(...add.steps.map((s: any) => ({ ...s, op: `rwb:${s.op}(move-fallback)` })));
             }
-            const r2 = await rwbSequenceStops(requester, p.routePlanId, p.orderedIds, originOf(p), p.pickupLegIds || [], { ...extrasOf(p), resequence: true });
+            const r2 = await rwbSequenceStops(requester, p.routePlanId, p.orderedIds, originOf(p), p.pickupLegIds || [], { ...extrasOf(p), resequence: RWB_RESEQ });
             p.result.steps.push(...r2.steps.map((s: any) => ({ ...s, op: `rwb:${s.op}(repair)` })));
             p.result.calls.rwb += r2.calls;
             if (!r2.ok) { verdict = r2.message; break; }
