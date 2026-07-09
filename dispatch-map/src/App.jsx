@@ -54,7 +54,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.45.3';
+const APP_VERSION = '0.45.4';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -99,6 +99,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.45.4', 'EVERY ORDER IN THE BOTTOM GRID IS NOW ON THE MAP TO SELECT + PLAN. Before, the routing map only showed the single board day you\'d picked, so when the grid was set to a Board window/range (±7/±14/±30 or a Custom range) the earlier-day unplanned orders it listed had no pin — you couldn\'t box/lasso them onto a load. Now the map ADDS every coord-bearing order from the grid\'s active window (deduped against the day board, which keeps its live status), so select-all on the map matches the grid and you can plan the whole backlog of unplanned orders in one pass. (Orders with no location still can\'t be pinned — the amber "N no location" chip from v0.45.3 flags those to fix first.)'],
   ['0.45.3', 'WHY THE MAP SELECTION AND THE BOTTOM GRID DIDN\'T MATCH — the grid lists every order, but the MAP only shows orders that have a geocoded location, so a stop with a bad/unrecognized address appears in the grid yet has NO pin: it can\'t be box/lasso-selected and, more importantly, can\'t be routed — that\'s how one gets silently missed. The bottom grid now shows an amber "N no location" chip whenever any listed stop has no map pin; click it to isolate exactly those orders and fix each address (Edit address / Correct pin) so they land on the map and become routable. (The other reason the two counts differ: a Board window/range like "±7 days" or a Custom range shows MULTIPLE days, while the map always shows just the one board day you\'ve picked — set the grid to "Board (today)" to mirror the map.)'],
   ['0.45.2', 'SAVED WORK CAN NO LONGER LOOK UNBUILT — a confirmed Save now paints the plan onto the board INSTANTLY on this device (a local overlay held until our scan agrees or 45 min, whichever first), fully independent of the server cache — so "closed the compare panel and it looks like I never planned it" (MONE/Denis) is dead even if every other layer misbehaves. The board write-through itself is also now DECLARATIVE (sends the card\'s full final stop order on every confirmed save, not just the delta) and no longer skippable by a result-to-card join miss; every sync logs its result to the console for forensics. FIX: the ±7-day pull "timed out" — NuVizz\'s own ad-hoc wide query is simply too slow, so wide windows (±7/±14/±30 and Custom range) now read OUR board day-docs instead: instant, includes confirmed saves, ZERO NuVizz calls (the status line says "Board · N stops"); Today and ±3 days stay live from NuVizz. NEW: routing a stop now AUTO-INCLUDES any co-located UNPLANNED order the selection missed (two orders at one address = stacked pins; clicking grabs only the top one — how QAE\'s second order got left behind). It says so in a toast and is removable from the card. NEW: the Routing right panel fully COLLAPSES to a thin strip (chevron in its header; clicking a stop auto-expands it). NEW: the stop panel has a HISTORY button — every past delivery to that location with PRO · date · driver, from saved history only (separate from the per-order Activity timeline; zero NuVizz calls). FIX: Compare-panel header buttons (🔗 engine, ● LIVE, Save, Back to Setup) could silently overflow out of view with a narrow card open — the header now wraps so every button stays visible.'],
   ['0.45.1', 'FIX: a Save of CARRY-OVER orders (yesterday-dated stops routed from today\'s board — the Uline/Denis case) landed in NuVizz but the board still showed the route unbuilt. The write-through only patched the SELECTED day\'s cache doc, and carry-over stops live on their own (prior) day\'s doc — so the patch silently missed every stop and the board kept serving the stale unplanned rows until a scan caught up. The write-through now finds each stop up to 14 days back, patches it in place AND copies the confirmed plan onto today\'s board doc, so the route shows immediately; if any stop still can\'t be patched the Save toast now SAYS so ("board didn\'t update for N stop(s) — NuVizz HAS the save") instead of failing silently. Also hardened the new Custom range from review: pulls are debounced 600ms + aborted when superseded (typing a date can no longer fire a NuVizz call per keystroke), entering Custom no longer auto-pulls, an incomplete/partial covering pull is labeled "≥ N stops (partial — narrow the range)" instead of posing as exact, stale rows can\'t linger under "pick a date range", and an inverted From/To is normalized. Zero new NuVizz calls anywhere (board fix is Firestore-only).'],
@@ -8447,7 +8448,7 @@ const LOAD_BUCKET_STYLE = {
   cancelled: 'bg-red-100 text-red-700',
 };
 
-function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open, setOpen, onPick, onPickLoad, headerRight }) {
+function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open, setOpen, onPick, onPickLoad, headerRight, onWindowRowsChange }) {
   // Loads view groups the FULL board's loads (loadStops) so stop-level filters —
   // notably "Unplanned only" — don't empty it. Falls back to the visible stops.
   const loadSrc = loadStops || stops;
@@ -8563,6 +8564,15 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
     }, custom ? 600 : 0);
     return () => { cancelled = true; clearTimeout(timer); ctrl.abort(); };
   }, [nvWindow, nvFrom, nvTo, statusSel]);
+  // Report the active window's coord-bearing rows UP so the routing map can render them for
+  // selection/planning. Only the CACHE path carries coordinates (the live small-window list feed
+  // has none); a live window or board mode reports null → the map stays on the single board day.
+  useEffect(() => {
+    if (!onWindowRowsChange) return;
+    onWindowRowsChange(nvWindow && nvSource === 'cache' && nvRows.length ? nvRows : null);
+  }, [nvWindow, nvSource, nvRows, onWindowRowsChange]);
+  // On unmount, release the window rows so the map reverts to the day board.
+  useEffect(() => () => { if (onWindowRowsChange) onWindowRowsChange(null); }, [onWindowRowsChange]);
   const driverOptions = useMemo(() => {
     const set = new Set();
     for (const s of baseStops) if (s.driverName) set.add(s.driverName);
@@ -11514,6 +11524,11 @@ function RoutingScreen({ debugCaptureRef }) {
   const polylinesRef = useRef([]);
   const dayRoutePolylinesRef = useRef([]);   // "Show routes" overlay — one polyline per load
   const [mapReady, setMapReady] = useState(0);
+  // Coord-bearing orders from the bottom grid's active Board window/range (cache-backed).
+  // When set, the map ADDS the other-day orders in it so every order the grid lists can be
+  // selected + planned (dispatcher: "all these unplanned orders should be on the map"). null
+  // = grid is on the single board day (or a live window with no coords) → map is day-only.
+  const [gridWindowStops, setGridWindowStops] = useState(null);
 
   // Touch-native selection. No DrawingManager (its drag-to-draw never worked on
   // a phone and its async load could silently no-op): Box = tap two corners,
@@ -11776,14 +11791,26 @@ function RoutingScreen({ debugCaptureRef }) {
   // Every coord-bearing stop with any address fix applied — the UNFILTERED base. The "Unplanned only"
   // view below filters this down; the workbench opens routes off this base so a planned route can
   // still be pulled up (and captured in full) while the filter is on.
+  // The map's base set: the board day's stops, PLUS any other-day orders the bottom grid's
+  // window/range surfaced (deduped by stopNbr — the day board's copy wins so its live status /
+  // plan-overlay is kept). The extra orders get the same plan-overlay pass so a just-saved one
+  // flips planned on the map too. This is what makes "every order the grid lists is on the map
+  // to select and plan" true even across days.
+  const mapBaseStops = useMemo(() => {
+    if (!gridWindowStops || !gridWindowStops.length) return stops;
+    const seen = new Set(stops.map((s) => String(s.stopNbr)));
+    // Other-day orders the day board doesn't already carry, that have a location to pin.
+    const extra = gridWindowStops.filter((s) => s && s.stopNbr && !seen.has(String(s.stopNbr)) && s.lat != null && s.lng != null);
+    return extra.length ? [...stops, ...extra] : stops;
+  }, [stops, gridWindowStops]);
   const positionedAll = useMemo(() => {
     // Apply a customer's corrected pin (location_override from the "Edit address" fix) so the routing
     // map moves the stop to the fixed spot — and recompute on `notes` so it happens LIVE, not only
     // after closing/reopening the map (#287). Mirrors the dispatch Map's override handling.
-    return stops
+    return mapBaseStops
       .map((s) => { const ov = notes.get(s.matchKey)?.location_override; return (ov && typeof ov.lat === 'number' && typeof ov.lng === 'number') ? { ...s, lat: ov.lat, lng: ov.lng } : s; })
       .filter((s) => s.lat != null && s.lng != null);
-  }, [stops, notes]);
+  }, [mapBaseStops, notes]);
   // Keys (routeName||loadNbr) of the routes open in the Compare workbench.
   const openRouteKeys = useMemo(() => new Set(wbRoutes.map((r) => r.key)), [wbRoutes]);
   // "Unplanned only" hides planned stops — but NEVER the stops of a route the dispatcher has pulled
@@ -13388,6 +13415,7 @@ function RoutingScreen({ debugCaptureRef }) {
             setOpen={setBottomTableOpen}
             onPick={pickStopFromTable}
             onPickLoad={pickLoadToCompare}
+            onWindowRowsChange={setGridWindowStops}
           />}
         </div>
         <div className="border-t bg-white flex flex-col shrink-0" style={{ height: sheetOpen ? '50%' : 'auto' }}>
@@ -13545,6 +13573,7 @@ function RoutingScreen({ debugCaptureRef }) {
           onPick={pickStopFromTable}
           onPickLoad={pickLoadToCompare}
           headerRight={bottomGridHeaderRight}
+          onWindowRowsChange={setGridWindowStops}
         />}
       </div>
 
