@@ -32,7 +32,11 @@ async function withRwb(over, fn) {
 // A URL-routing requester that serves BOTH the v7 API and the RWB portal login/flow.
 // `saveBody` lets a test control what saveComparedRouteData returns. `loadStops` is a
 // mutable ref (array of stopNbrs) so a re-read after removeStops reflects the removal.
-function makeRequester({ saveBody = { responseCode: 200 }, saveStatus = 200, loadStops, stopHolders = {} } = {}) {
+// `applySave` (default true) makes saveComparedRouteData APPLY its declarative routeJsonData —
+// set the load's stops to exactly the entry's trip order, like the real portal — so the
+// post-save membership+ORDER verify sees the save. Pass applySave:false to simulate the
+// Jul 9 DAWSONVILLE portal behavior: SUCCESS answered, nothing applied.
+function makeRequester({ saveBody = { responseCode: 200 }, saveStatus = 200, loadStops, stopHolders = {}, applySave = true } = {}) {
   const calls = [];
   const stopDoc = (n) => ({ stop: { stopId: `id-${n}`, stopNbr: String(n), stopType: 'DO', to: { seq: 1 } } });
   const loadJson = () => ({ Load: {
@@ -67,7 +71,19 @@ function makeRequester({ saveBody = { responseCode: 200 }, saveStatus = 200, loa
         if (url.includes('fetchUpdatedJson')) {
           return J([{ etaStopVOList: [{ timeZone: 'America/New_York' }], distance: 10, duration: 20, schStartTime: { dttm: 'Jul 2, 2026' } }]);
         }
-        if (url.includes('saveComparedRouteData')) return J(saveBody, saveStatus);
+        if (url.includes('saveComparedRouteData')) {
+          if (applySave && loadStops) {
+            try {
+              const rj = opts.body && opts.body.get ? String(opts.body.get('routeJsonData') || '') : '';
+              for (const entry of JSON.parse(rj)) {
+                if (String(entry.routePlanId) === HEXID && Array.isArray(entry.tripDataJsonArray)) {
+                  loadStops.value = entry.tripDataJsonArray.map((id) => String(id).replace(/^id-/, ''));
+                }
+              }
+            } catch { /* no routeJsonData in unit tests */ }
+          }
+          return J(saveBody, saveStatus);
+        }
         // ── v7 API ──
         if (url.includes('/load/info/')) return J(loadJson());
         if (url.includes('/stop/info/')) {
@@ -168,6 +184,59 @@ test('rwbSequenceStops: a PICKUP order (RA/return) rides its _PU leg at the REQU
       entries[0].stopDataJsonArray.map((s) => s.stopId),
       ['id-A_PU', 'id-B_PU', 'id-A_DO', 'id-RA_PU', 'id-B_DO', 'id-RA_DO'],
     );
+  });
+});
+
+test('rwbSequenceStops: save rows ECHO the preview\'s own etaStopVOList rows (portal fidelity)', async () => {
+  // The portal builds each save row from the preview row it displays (real plannedETA/etaCode) —
+  // fabricated blank rows were our one divergence on the ordering path (the Jul 9 DAWSONVILLE
+  // edit: SUCCESS answered, membership applied, every kept stop left at its old seq). When the
+  // preview identifies its rows (stopId), the save must carry them through at our leg positions.
+  await withRwb({}, async () => {
+    const base = makeRequester();
+    const real = base.requester.request;
+    base.requester.request = async (url, opts, meta) => {
+      if (url.includes('fetchUpdatedJson')) {
+        return new Response(JSON.stringify([{
+          etaStopVOList: [
+            { stopId: 'id-A_PU', plannedETA: 'Jul 9, 2026 08:05 AM', etaCode: 'G', timeLapse: '5', timeZone: 'America/New_York' },
+            { stopId: 'id-B_PU', plannedETA: 'Jul 9, 2026 08:06 AM', etaCode: 'G', timeLapse: '6', timeZone: 'America/New_York' },
+            { stopId: 'id-A_DO', plannedETA: 'Jul 9, 2026 09:12 AM', etaCode: 'G', timeLapse: '72', timeZone: 'America/New_York' },
+            { stopId: 'id-B_DO', plannedETA: 'Jul 9, 2026 09:44 AM', etaCode: 'G', timeLapse: '104', timeZone: 'America/New_York' },
+          ],
+          distance: 10, duration: 20, schStartTime: { dttm: 'Jul 9, 2026' },
+        }]), { status: 200 });
+      }
+      return real(url, opts, meta);
+    };
+    const r = await rwbSequenceStops(base.requester, HEXID, ['id-A', 'id-B'], { lat: 34, lng: -83 });
+    assert.equal(r.ok, true, r.message);
+    const save = base.calls.find((c) => c.url.includes('saveComparedRouteData'));
+    const entries = JSON.parse(String(save.body.get('routeJsonData')));
+    const rows = entries[0].stopDataJsonArray;
+    assert.deepEqual(rows.map((s) => s.stopId), ['id-A_PU', 'id-B_PU', 'id-A_DO', 'id-B_DO'], 'leg order unchanged');
+    assert.equal(rows[2].plannedETA, 'Jul 9, 2026 09:12 AM', 'the preview row rides the save');
+    assert.equal(rows[2].etaCode, 'G');
+    assert.equal(rows[2].tripId, 'id-A', 'required identity fields still forced');
+    assert.equal(rows[3].timeLapse, '104');
+  });
+});
+
+test('rwbSequenceStops: unidentified preview rows keep the legacy blank save rows (regression pin)', async () => {
+  // Fixture rows carry no stopId (like older tenants): the save must fall back to the exact
+  // pre-fidelity blank shape — never drop a leg, never invent fields.
+  await withRwb({}, async () => {
+    const { requester, calls } = makeRequester();
+    const r = await rwbSequenceStops(requester, HEXID, ['id-A', 'id-B'], { lat: 34, lng: -83 });
+    assert.equal(r.ok, true, r.message);
+    const save = calls.find((c) => c.url.includes('saveComparedRouteData'));
+    const rows = JSON.parse(String(save.body.get('routeJsonData')))[0].stopDataJsonArray;
+    assert.deepEqual(rows.map((s) => s.stopId), ['id-A_PU', 'id-B_PU', 'id-A_DO', 'id-B_DO']);
+    for (const row of rows) {
+      assert.equal(row.plannedETA, '');
+      assert.equal(row.etaCode, '');
+      assert.equal(row.timeZone, 'America/New_York');
+    }
   });
 });
 
@@ -347,6 +416,7 @@ test('runCommitBoardRwb: retargets to the same-named instance that holds the sto
     // The board opened the empty twin; the save must retarget to FULL and reorder there.
     const EMPTY_ID = '6a4778d0461cf601d983b6bf', FULL_ID = 'aa11bb22cc33dd44ee55ff66';
     const calls = [];
+    const fullStops = ['A', 'B'];   // MUTABLE — the save applies its declarative order here
     const loadDoc = (id, name, stops) => ({ Load: {
       loadHeader: { loadId: id, loadNbr: name === 'DARYL_EMPTY' ? 'LOAD113177' : 'LOAD112852', routeName: 'DARYL', rtOrigin: { address: { latitude: 34, longitude: -83 } } },
       versionId: 'v1', loadExecutionInfo: { loadStatus: 'PLANNED' },
@@ -363,9 +433,18 @@ test('runCommitBoardRwb: retargets to the same-named instance that holds the sto
       if (url.includes('validateStopstoPerformAction')) return T('Success');
       if (url.includes('addStopsToRouteAfterValidation')) return J({ responseCode: 200, message: 'SUCCESS' });
       if (url.includes('fetchUpdatedJson')) return J([{ etaStopVOList: [{ timeZone: 'America/New_York' }], distance: 1, duration: 1, schStartTime: { dttm: 'Jul 2, 2026' } }]);
-      if (url.includes('saveComparedRouteData')) return J({ responseCode: 200, message: 'SUCCESS' });
+      if (url.includes('saveComparedRouteData')) {
+        // Apply the declarative order to the retargeted FULL twin (like the real portal), so the
+        // post-save order verify sees the reorder land.
+        try {
+          for (const e of JSON.parse(String(opts.body.get('routeJsonData') || ''))) {
+            if (String(e.routePlanId) === FULL_ID && Array.isArray(e.tripDataJsonArray)) { fullStops.length = 0; fullStops.push(...e.tripDataJsonArray.map((id) => String(id).replace(/^id-/, ''))); }
+          }
+        } catch { /* keep */ }
+        return J({ responseCode: 200, message: 'SUCCESS' });
+      }
       if (url.includes('/load/info/LOAD113177')) return J(loadDoc(EMPTY_ID, 'DARYL_EMPTY', []));
-      if (url.includes('/load/info/LOAD112852')) return J(loadDoc(FULL_ID, 'DARYL_FULL', ['A', 'B']));
+      if (url.includes('/load/info/LOAD112852')) return J(loadDoc(FULL_ID, 'DARYL_FULL', fullStops));
       if (url.includes('/stop/info/')) { const n = url.split('/stop/info/')[1].split('/')[0]; return J({ Stop: { stop: { stopId: `id-${n}`, stopNbr: n, stopType: 'DO' }, load: { loadNbr: 'LOAD112852' } } }); }
       return J({});
     } };
@@ -545,5 +624,74 @@ test('runCommitBoardRwb: batch-aware guard STILL refuses a true orphan (not clai
     assert.equal(r.ok, false, 'overall save fails when the source carries a true orphan');
     assert.equal(l1.ok, false, 'the source with a true orphan (X) must still be refused');
     assert.match(l1.error, /board isn't showing|unplan them|Refresh/i);
+  });
+});
+
+// ── post-save ORDER verification (the Jul 9 DAWSONVILLE false "saved") ─────────
+// A pure reorder/removal edit has NO adds, so nothing used to check the order after the save:
+// NuVizz answered SUCCESS, applied the MEMBERSHIP changes, kept every stop's OLD seq (1,2,2,6…13,
+// duplicates included) — and we reported "saved" while the driver would have run the old route.
+
+test('runCommitBoardRwb: pure REORDER verifies the new order actually landed (one extra read)', async () => {
+  await withRwb({}, async () => {
+    const loadStops = { value: ['A', 'B', 'C'] };
+    const { requester, calls } = makeRequester({ loadStops });
+    const r = await runCommitBoardRwb(requester, { loads: [{ loadNbr: 'DAVIS000000123', loadId: HEXID, orderedStopNbrs: ['C', 'A', 'B'] }] }, CREDS);
+    assert.equal(r.ok, true, `expected verified success, got: ${JSON.stringify(r.loads?.[0]?.error)}`);
+    assert.deepEqual(loadStops.value, ['C', 'A', 'B'], 'the save applied the declarative order');
+    assert.equal(calls.filter((c) => c.url.includes('saveComparedRouteData')).length, 1, 'no repair needed');
+    assert.equal(calls.filter((c) => c.url.includes('/load/info/')).length, 2, 'PASS A read + exactly ONE post-save verify read');
+  });
+});
+
+test('runCommitBoardRwb: FAILS LOUDLY when NuVizz answers SUCCESS but keeps its own order', async () => {
+  await withRwb({}, async () => {
+    // applySave:false = the DAWSONVILLE portal behavior: 200 SUCCESS, nothing applied. The verify
+    // must catch it, try ONE repair save, then fail with the kept order spelled out.
+    const loadStops = { value: ['A', 'B', 'C'] };
+    const { requester, calls } = makeRequester({ loadStops, applySave: false });
+    const r = await runCommitBoardRwb(requester, { loads: [{ loadNbr: 'DAVIS000000123', loadId: HEXID, orderedStopNbrs: ['C', 'A', 'B'] }] }, CREDS);
+    assert.equal(r.ok, false, 'must NOT report saved when the order never landed');
+    assert.match(String(r.loads[0].error || ''), /KEPT its own stop order/i);
+    assert.match(String(r.loads[0].error || ''), /wanted C → A → B/i, 'the error names the wanted order');
+    assert.equal(calls.filter((c) => c.url.includes('saveComparedRouteData')).length, 2, 'original save + the one repair save');
+    assert.ok((r.loads[0].steps || []).some((s) => String(s.op || '').includes('(repair)')), 'repair round recorded in steps');
+  });
+});
+
+test('runCommitBoardRwb: the one repair save rescues an order the first save dropped', async () => {
+  await withRwb({}, async () => {
+    const loadStops = { value: ['A', 'B'] };
+    let saves = 0;
+    const base = makeRequester({ loadStops, applySave: false });
+    const real = base.requester.request;
+    base.requester.request = async (url, opts, meta) => {
+      if (url.includes('saveComparedRouteData')) {
+        saves++;
+        if (saves >= 2) {   // only the SECOND (repair) save is honored by the portal
+          try {
+            const e = JSON.parse(String(opts.body.get('routeJsonData') || ''))[0];
+            loadStops.value = e.tripDataJsonArray.map((id) => String(id).replace(/^id-/, ''));
+          } catch { /* keep */ }
+        }
+        return new Response(JSON.stringify({ responseCode: 200, message: 'SUCCESS' }), { status: 200 });
+      }
+      return real(url, opts, meta);
+    };
+    const r = await runCommitBoardRwb(base.requester, { loads: [{ loadNbr: 'DAVIS000000123', loadId: HEXID, orderedStopNbrs: ['B', 'A'] }] }, CREDS);
+    assert.equal(r.ok, true, `repair should land the order; got: ${JSON.stringify(r.loads?.[0]?.error)}`);
+    assert.deepEqual(loadStops.value, ['B', 'A']);
+    assert.equal(saves, 2, 'original + one repair');
+  });
+});
+
+test('runCommitBoardRwb: FAILS LOUDLY when a removal is accepted but never applied', async () => {
+  await withRwb({}, async () => {
+    const loadStops = { value: ['A', 'B'] };
+    const { requester } = makeRequester({ loadStops, applySave: false });
+    const r = await runCommitBoardRwb(requester, { loads: [{ loadNbr: 'DAVIS000000123', loadId: HEXID, orderedStopNbrs: ['A'], removeStopNbrs: ['B'] }] }, CREDS);
+    assert.equal(r.ok, false, 'must NOT report saved when the removal never landed');
+    assert.match(String(r.loads[0].error || ''), /KEPT stop B/i);
+    assert.match(String(r.loads[0].error || ''), /removal was accepted but not applied/i);
   });
 });
