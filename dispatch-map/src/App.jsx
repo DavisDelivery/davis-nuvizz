@@ -54,7 +54,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.45.12';
+const APP_VERSION = '0.45.13';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -99,6 +99,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.45.13', 'FIX: a saved stop could silently DROP OFF a route on our side hours later (WIEDMANN BROS / GEORGE L — NuVizz kept it, our card lost it on re-open). The confirmed-save hold expired after 45 minutes expecting a scan to take over — but overnight the scanner is PAUSED, so a stop the server-side cache patch happened to miss reverted to unplanned with nothing to catch it. The hold now lasts up to 12 hours (it still releases the moment a scan confirms the save — the cap only matters when scans aren\'t running), and the board-sync now reports exactly WHICH stop numbers it couldn\'t patch (console + toast) so a miss is diagnosable instead of silent. Our board also self-corrects at the next scan since NuVizz has the route.'],
   ['0.45.12', 'NEW: Routing map → Filters → "Hide place labels" turns off Google\'s own business/place name labels (the clutter that overlaps your stop pins) on the satellite view. Persisted per device. (It cleans the satellite imagery; the roadmap base keeps its labels.)'],
   ['0.45.11', 'FIX: the bottom grid\'s date-window view now reflects a just-saved build IMMEDIATELY, same as the map — the confirmed-save overlay was painted onto the board/map but the window grid kept its already-fetched rows until a re-pull or scan (Chad: "the map reflects the work I\'ve done, the bottom panel does not"). Every confirmed Save now re-paints the grid in place. FIX: the printed Driver Manifest header now shows the ROUTE NAME (e.g. "TRAILER 3") — a freshly built card\'s stops don\'t carry the route name yet, so it printed a generic "Route".'],
   ['0.45.10', 'The bottom grid\'s ±7-day window now shows a DAY column — the "drift" between the map selection and the grid count was the window quietly mixing three different days\' work in one list: past carry-over (amber ◂), TODAY (blue), and FUTURE-day orders (violet ▸, e.g. tomorrow\'s appointments that are SUPPOSED to be unplanned tonight). The column only appears in a window pull; the normal Board (today) view is unchanged. Sort by it to split today\'s backlog from future work at a glance.'],
@@ -1053,7 +1054,13 @@ async function fetchJsonWithRetry(url, { retries = 1, backoffMs = 1500 } = {}) {
 // independent of the Firestore write-through: no cache keying, sync failure, or scan
 // lag can make a save the dispatcher just watched confirm LOOK unbuilt again.
 const LS_PLAN_OVERLAY = 'dispatchMap.planOverlay';
-const PLAN_OVERLAY_TTL_MS = 45 * 60 * 1000; // scans run ~10 min apart; 45 min covers a bad stretch
+// AGREEMENT is the real release (an entry self-cleans the moment a fetched row matches the
+// confirmed plan); the TTL is only a runaway cap. It was 45 min — tuned for daytime scans
+// every ~10 min — but overnight the scanner is PAUSED (e.g. "orders paused until 10 AM"), so
+// a stop the server-side patch happened to miss (WIEDMANN/GEORGE L: a confirmed carry-over
+// save) silently reverted to unplanned when the overlay lapsed with no scan to take over.
+// 12 h always spans the pause window; the first agreeing scan still cleans immediately.
+const PLAN_OVERLAY_TTL_MS = 12 * 60 * 60 * 1000;
 
 function readPlanOverlay() {
   const m = safeReadJSON(LS_PLAN_OVERLAY, {});
