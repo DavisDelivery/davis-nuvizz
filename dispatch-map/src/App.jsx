@@ -54,7 +54,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.45.22';
+const APP_VERSION = '0.45.23';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -10886,7 +10886,7 @@ function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmN
     setBusy(true);
     const res = await callWrite('commitBoard', { loads, origin: savedShipFrom(), useImport: engine === 'import' || undefined, useRwb: engine === 'rwb' || undefined }, { dryRun: true });
     setBusy(false);
-    if (!res.ok) { showToast(`Preview failed: ${res.error || 'error'}`); return; }
+    if (!res.ok) { showToast(`✗ Preview failed: ${res.error || 'error'}`); return; }
     setConfirm({ plan: res.plan || [], tenant: res.tenant, loads, warnings, clientOpId: newClientOpId() });
   };
 

@@ -225,7 +225,9 @@ function rwbBodyOk(body: any): boolean {
 async function rwbAddStopsPerStop(requester: RwbRequesterLike, cfg: RwbConfig, routePlanId: string, ids: string[], steps: any[]): Promise<{ ok: boolean; message: string; calls: number }> {
   let calls = 0;
   for (const id of ids) {
-    const v = await rwbAuthedCall(requester, cfg, 'GET', `dirouteworkbench/stop/validateStopstoPerformAction/${id}`, null);
+    // ?routeId= rides EVERY portal validate — 10/10 in the Jul 9 HARs, single-stop included
+    // (it scopes the server-side eligibility check); the fallback used to drop it.
+    const v = await rwbAuthedCall(requester, cfg, 'GET', `dirouteworkbench/stop/validateStopstoPerformAction/${id}?routeId=${encodeURIComponent(routePlanId)}`, null);
     calls++;
     steps.push({ op: 'validateStop', stopId: id, ok: v.ok && rwbBodyOk(v.body), status: v.status });
     if (!v.ok || !rwbBodyOk(v.body)) return { ok: false, message: `stop ${id} failed RWB add-validation (status ${v.status})`, calls };
@@ -410,30 +412,49 @@ async function rwbPreviewRoute(
   if (!o || !Array.isArray(o.etaStopVOList)) return { ok: false, message: 'fetchUpdatedJson returned no route preview' };
   const routeTz = (o.etaStopVOList[0] && o.etaStopVOList[0].timeZone) || 'America/New_York';
   const win = routeWindow(o.schStartTime && o.schStartTime.dttm, routeTz);
+  // Preview rows by leg id — the portal populates each _DO save row from its OWN preview row
+  // (byte-verified, Jul 9 manual-reorder HAR): plannedETA = stopETADTTM, etaCode = etaCode,
+  // timeLapse = idleTime (NUMBER), deadHeadMins/Miles = duration/distance and OMITTED when both
+  // are 0. _PU rows stay blank ("" strings). NOTE the v0.45.16 incident: echoing the FULL
+  // preview row (stopNbr/stopSeq/lat/…, a shape the portal never sends) made deliverit
+  // half-apply saves — populate EXACTLY these fields and nothing more.
+  const rowByLeg = new Map<string, any>();
+  for (const row of o.etaStopVOList) { const k = String((row && row.stopId) ?? ''); if (k && !rowByLeg.has(k)) rowByLeg.set(k, row); }
+  const num = (v: any) => { const x = Number(v); return Number.isFinite(x) ? x : 0; };
   return { ok: true, entry: {
     routePlanId, originLat: origin.lat, originLong: origin.lng,
     routeEndTime: win ? win.end : '', routeStartTime: win ? win.start : '',
     routeDistance: o.distance, transitTime: o.duration, totalTrips: ids.length,
-    // The Jul 9 portal HAR populates totalData with the route's REAL freight sums (and
-    // volumeUOM "") and sends isStandingRoute:true on a recurring DAVIS route. Callers thread
-    // both when they can derive them; the legacy zeros/'Loose' + false stay the byte-exact
-    // fallback (the shape every successful build has used).
+    // The Jul 9 portal HARs populate totalData with the route's REAL freight sums and send
+    // isStandingRoute:true on every captured save. Callers thread both when they can derive
+    // them; the legacy zeros/'Loose' + false stay the byte-exact fallback.
     totalData: route.totals ?? { totalP: 0, totalC: 0, totalW: 0, totalV: 0, weightUOM: 'Lbs', volumeUOM: 'Loose' },
     IdleTime: o.idleTime || 0, buildType: '02', isStandingRoute: route.isStandingRoute === true, seqMode: 'Manual',
-    deadHeadMins: o.deadHeadMins, deadHeadMiles: o.deadHeadMiles,
-    tripDataJsonArray: ids, list: `list${listIdx}`,
-    // Mirrors the stoplist's leg sequence exactly (delivery-only routes: unchanged shape).
-    // BLANK rows, verbatim — DO NOT "enrich" these from the preview response. v0.45.16 echoed
-    // each preview etaStopVOList row into its save row (chasing the DAWSONVILLE reorder-ignored
-    // bug) and deliverit began HALF-APPLYING every save: SUCCESS answered, but only the first
-    // customer stop kept membership (BEN 2 kept 1 of 11, MITCHELL 1 of 7, Jul 9 ~11:00-12:00Z)
-    // and the ejected stops' records were left claiming the load while the load disowned them.
-    // The blank shape is the HAR-verified portal shape; the reorder bug is NOT fixable from
-    // here — the post-save verify reports it honestly instead.
-    stopDataJsonArray: legs.map(({ id, leg }) => ({
-      stopId: id + leg, plannedETA: '', routePlanId, etaCode: '', timeLapse: '',
-      tripId: id, timeZone: routeTz,
-    })),
+    // Portal omits the top-level deadhead keys when the preview reports zero (manual-reorder HAR).
+    ...(num(o.deadHeadMins) || num(o.deadHeadMiles) ? { deadHeadMins: o.deadHeadMins, deadHeadMiles: o.deadHeadMiles } : {}),
+    // ONE tripId per LEG — duplicates included, exactly stopDataJsonArray's stopIds with the leg
+    // suffix stripped (byte-verified across all three captured portal saves; we used to send N
+    // unique ids, the top remaining stray inside the order-persisting payload).
+    tripDataJsonArray: legs.map(({ id }) => id), list: `list${listIdx}`,
+    // Mirrors the stoplist's leg sequence exactly. _PU rows are the blank 7-key shape; _DO rows
+    // carry the preview's ETA fields (see rowByLeg above) exactly as the portal writes them —
+    // and NOTHING more (the v0.45.16 full-row echo is how the half-apply happened). A _DO leg
+    // whose preview row is missing/unidentified falls back to the blank shape. A pickup order's
+    // CUSTOMER _PU leg stays blank: no capture shows a populated _PU, and blank is the
+    // long-accepted shape.
+    stopDataJsonArray: legs.map(({ id, leg }) => {
+      const row = leg === '_DO' ? rowByLeg.get(id + leg) : null;
+      if (!row || !row.stopETADTTM) {
+        return { stopId: id + leg, plannedETA: '', routePlanId, etaCode: '', timeLapse: '', tripId: id, timeZone: routeTz };
+      }
+      const dhMins = num(row.duration), dhMiles = num(row.distance);
+      return {
+        stopId: id + leg, plannedETA: String(row.stopETADTTM), routePlanId,
+        etaCode: String(row.etaCode ?? ''), timeLapse: num(row.idleTime),
+        ...(dhMins || dhMiles ? { deadHeadMins: dhMins, deadHeadMiles: dhMiles } : {}),
+        tripId: id, timeZone: row.timeZone || routeTz,
+      };
+    }),
   } };
 }
 
@@ -453,7 +474,7 @@ async function rwbPreviewRoute(
 export async function rwbSequenceRoutes(
   requester: RwbRequesterLike,
   routes: Array<{ routePlanId: string; orderedStopIds: string[]; origin: { lat: number; lng: number }; pickupLegIds?: string[]; totals?: any; isStandingRoute?: boolean; resequence?: boolean }>,
-): Promise<{ ok: boolean; message: string; calls: number; steps: any[]; failedRoutePlanId?: string }> {
+): Promise<{ ok: boolean; message: string; calls: number; steps: any[]; failedRoutePlanId?: string; wroteBefore?: boolean }> {
   const cfg = rwbConfig();
   if (rwbEngineBlocked()) return { ok: false, message: 'RWB engine is disabled on the server (NUVIZZ_RWB_ENABLED must be explicitly set)', calls: 0, steps: [] };
   if (!cfg.username || !cfg.password) return { ok: false, message: 'RWB creds not configured (NUVIZZ_RWB_USER/PASS)', calls: 0, steps: [] };
@@ -483,13 +504,16 @@ export async function rwbSequenceRoutes(
 
   // Optional order-persist lever (route.resequence — env-gated by the caller; the portal's
   // MANUAL reorder flow does NOT use it, only the optimizer does): preview → resequenceRoute →
-  // save. Same all-or-nothing rule as the previews: a failed resequence aborts the whole group
-  // with NO save.
+  // save. A failed resequence aborts the group with NO save — but resequenceRoute is itself a
+  // PERSIST, so `wroteBefore` tells the caller when an earlier route's resequence already
+  // landed (the "nothing was written" claim would be false then).
+  let resequenced = 0;
   for (const route of routes) {
     if (route.resequence !== true) continue;
     calls += 1;
     const rs = await rwbResequenceRoute(requester, cfg, route.routePlanId, route.orderedStopIds, route.pickupLegIds, steps);
-    if (!rs.ok) return { ok: false, message: rs.message || 'resequenceRoute failed', calls, steps, failedRoutePlanId: route.routePlanId };
+    if (!rs.ok) return { ok: false, message: rs.message || 'resequenceRoute failed', calls, steps, failedRoutePlanId: route.routePlanId, wroteBefore: resequenced > 0 };
+    resequenced++;
   }
 
   const sr = await rwbAuthedCall(requester, cfg, 'POST', 'dirouteworkbench/routePlan/saveComparedRouteData', { routeJsonData: JSON.stringify(entries), planningMode: 'true' });

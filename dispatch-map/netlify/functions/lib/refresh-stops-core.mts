@@ -164,7 +164,10 @@ export async function runRefreshStops(req: Request): Promise<Response> {
   const ENRICH_CONC = Number(process.env.NUVIZZ_ENRICH_CONC) || 8;
   // Demotion verify (Jul 9 SEAAGRI): max planned→unplanned flips VERIFIED per scan via one
   // /stop/info each before the board is allowed to drop a stop off its route. 0 disables.
-  const DEMOTE_VERIFY_MAX = process.env.NUVIZZ_DEMOTE_VERIFY_MAX != null ? Number(process.env.NUVIZZ_DEMOTE_VERIFY_MAX) : 8;
+  // Trimmed, NaN-safe: an empty/garbage value keeps the default (Number('') is 0, which would
+  // silently disable the SEAAGRI protection). 0 explicitly disables.
+  const demoteRaw = String(process.env.NUVIZZ_DEMOTE_VERIFY_MAX ?? '').trim();
+  const DEMOTE_VERIFY_MAX = demoteRaw !== '' && Number.isFinite(Number(demoteRaw)) ? Number(demoteRaw) : 8;
 
   // Read today's last LOAD scan time — this is what drives the elapsed-time
   // cadence (Fix 1). Also read the shared call counter + breaker for the log line.
@@ -651,7 +654,19 @@ export async function runRefreshStops(req: Request): Promise<Response> {
         const dv = await applyDemotionVerify(demoteChecks, {
           max: DEMOTE_VERIFY_MAX,
           scannedAt,
-          lookup: async (nbr) => { const r = await lookupStopByPro(nbr); return r.ok ? !!(r.stop?.isPlanned && r.stop?.loadNbr) : null; },
+          lookup: async (nbr) => {
+            const r = await lookupStopByPro(nbr);
+            // not_found/404 = the stop is GONE in NuVizz: a CONFIRMED drop, never a hold —
+            // holding it re-queues the zombie every scan and starves the per-scan cap for
+            // real verifications. Other failures (429/5xx/network) stay null = hold one tick.
+            if (!r.ok) return (r.reason === 'not_found' || r.reason === 'http_404') ? false : null;
+            const s2: any = r.stop || {};
+            // Cancel-while-routed keeps assignedLoad on the record but must NOT be resurrected
+            // as live SCHEDULED work (keepPlan would overwrite the fresh 99/EXCEPTION status).
+            const st = String(s2.normalizedStatus ?? '').toUpperCase();
+            if (st === 'EXCEPTION' || st === 'CANCELLED') return false;
+            return !!(s2.isPlanned && s2.loadNbr);
+          },
         });
         if (dv.kept || dv.held) console.warn(`[scan] ${date}: list tried to unplan ${demoteChecks.length} routed stop(s) — kept ${dv.kept} (NuVizz stop record says assigned), held ${dv.held} (unverified this scan), dropped ${dv.dropped} (confirmed unplanned) — sample ${JSON.stringify(demoteChecks.slice(0, 5).map((c) => String(c.s.stopNbr)))}`);
 

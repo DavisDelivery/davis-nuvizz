@@ -36,15 +36,16 @@ async function withRwb(over, fn) {
 // set the load's stops to exactly the entry's trip order, like the real portal — so the
 // post-save membership+ORDER verify sees the save. Pass applySave:false to simulate the
 // Jul 9 DAWSONVILLE portal behavior: SUCCESS answered, nothing applied.
-function makeRequester({ saveBody = { responseCode: 200 }, saveStatus = 200, loadStops, stopHolders = {}, applySave = true } = {}) {
+function makeRequester({ saveBody = { responseCode: 200 }, saveStatus = 200, loadStops, stopHolders = {}, applySave = true, seqless = false } = {}) {
   const calls = [];
   const stopDoc = (n) => ({ stop: { stopId: `id-${n}`, stopNbr: String(n), stopType: 'DO', to: { seq: 1 } } });
   const loadJson = () => ({ Load: {
     loadHeader: { loadId: HEXID, loadNbr: 'DAVIS000000123', routeName: 'TEST', rtOrigin: { address: { latitude: 34.04, longitude: -83.71 } } },
     versionId: 'v1', loadExecutionInfo: { loadStatus: 'PLANNED' },
     // weight/totalPallets/totalCartons/volume ride the RAW stop record (normalizeLoad.rawStops)
-    // — the save entry's totalData sums them (Jul 9 manual-reorder HAR fidelity).
-    stops: (loadStops?.value ?? []).map((n, i) => ({ stop: { stopId: `id-${n}`, stopNbr: String(n), stopType: 'DO', to: { seq: i + 2 }, weight: 100, totalPallets: 2, totalCartons: 1, volume: 3 } })),
+    // — the save entry's totalData sums them (Jul 9 manual-reorder HAR fidelity). `seqless`
+    // simulates a read that lands before NuVizz stamps to.seq (the settling window).
+    stops: (loadStops?.value ?? []).map((n, i) => ({ stop: { stopId: `id-${n}`, stopNbr: String(n), stopType: 'DO', to: seqless ? {} : { seq: i + 2 }, weight: 100, totalPallets: 2, totalCartons: 1, volume: 3 } })),
   } });
   return {
     calls,
@@ -80,7 +81,7 @@ function makeRequester({ saveBody = { responseCode: 200 }, saveStatus = 200, loa
               const rj = opts.body && opts.body.get ? String(opts.body.get('routeJsonData') || '') : '';
               for (const entry of JSON.parse(rj)) {
                 if (String(entry.routePlanId) === HEXID && Array.isArray(entry.tripDataJsonArray)) {
-                  loadStops.value = entry.tripDataJsonArray.map((id) => String(id).replace(/^id-/, ''));
+                  loadStops.value = [...new Set(entry.tripDataJsonArray.map((id) => String(id).replace(/^id-/, '')))];
                 }
               }
             } catch { /* no routeJsonData in unit tests */ }
@@ -190,12 +191,13 @@ test('rwbSequenceStops: a PICKUP order (RA/return) rides its _PU leg at the REQU
   });
 });
 
-test('rwbSequenceStops: save rows stay BLANK even when the preview offers rich identified rows (Jul 9 half-apply pin)', async () => {
-  // v0.45.16 echoed each preview etaStopVOList row into its save row (chasing the DAWSONVILLE
-  // reorder-ignored bug) and deliverit began HALF-APPLYING every save: SUCCESS answered, but
-  // only the FIRST customer stop kept membership (BEN 2 kept 1 of 11, MITCHELL 1 of 7) and the
-  // ejected stops' records were left claiming the load while the load disowned them. The blank
-  // shape is the HAR-verified portal shape — pin it against exactly the tempting rich preview.
+test('rwbSequenceStops: _PU rows blank, _DO rows carry EXACTLY the preview ETA fields, trips per-leg (manual-reorder HAR)', async () => {
+  // Byte-verified from the Jul 9 manual-reorder HAR: _PU save rows are the blank 7-key shape;
+  // _DO rows add the preview's stopETADTTM→plannedETA, etaCode, idleTime→timeLapse (NUMBER),
+  // and duration/distance→deadHeadMins/Miles OMITTED when both are 0. tripDataJsonArray is one
+  // tripId per LEG (duplicates included). NOTHING else may ride the rows — v0.45.16 echoed the
+  // FULL preview row (stopNbr/stopSeq/lat/…, a shape the portal never sends) and deliverit
+  // half-applied every save.
   await withRwb({}, async () => {
     const base = makeRequester();
     const real = base.requester.request;
@@ -203,10 +205,10 @@ test('rwbSequenceStops: save rows stay BLANK even when the preview offers rich i
       if (url.includes('fetchUpdatedJson')) {
         return new Response(JSON.stringify([{
           etaStopVOList: [
-            { stopId: 'id-A_PU', plannedETA: 'Jul 9, 2026 08:05 AM', etaCode: 'G', timeLapse: '5', timeZone: 'America/New_York' },
-            { stopId: 'id-B_PU', plannedETA: 'Jul 9, 2026 08:06 AM', etaCode: 'G', timeLapse: '6', timeZone: 'America/New_York' },
-            { stopId: 'id-A_DO', plannedETA: 'Jul 9, 2026 09:12 AM', etaCode: 'G', timeLapse: '72', timeZone: 'America/New_York' },
-            { stopId: 'id-B_DO', plannedETA: 'Jul 9, 2026 09:44 AM', etaCode: 'G', timeLapse: '104', timeZone: 'America/New_York' },
+            { stopId: 'id-A_PU', stopETADTTM: 'Jul 9, 2026, 8:05:00 AM', etaCode: 'ONTIME', idleTime: 0, duration: 0, distance: 0, stopSeq: 1, stopNbr: 'A', latitude: 34, timeZone: 'America/New_York' },
+            { stopId: 'id-B_PU', stopETADTTM: 'Jul 9, 2026, 8:06:00 AM', etaCode: 'ONTIME', idleTime: 0, duration: 0, distance: 0, stopSeq: 2, stopNbr: 'B', latitude: 34, timeZone: 'America/New_York' },
+            { stopId: 'id-A_DO', stopETADTTM: 'Jul 9, 2026, 9:12:00 AM', etaCode: 'ONTIME', idleTime: 0, duration: 0, distance: 0, stopSeq: 3, stopNbr: 'A', latitude: 34, timeZone: 'America/New_York' },
+            { stopId: 'id-B_DO', stopETADTTM: 'Jul 9, 2026, 9:44:00 AM', etaCode: 'LATE', idleTime: 5, duration: 3.26, distance: 0.68, stopSeq: 4, stopNbr: 'B', latitude: 34, timeZone: 'America/New_York' },
           ],
           distance: 10, duration: 20, schStartTime: { dttm: 'Jul 9, 2026' },
         }]), { status: 200 });
@@ -219,20 +221,44 @@ test('rwbSequenceStops: save rows stay BLANK even when the preview offers rich i
     const entry = JSON.parse(String(save.body.get('routeJsonData')))[0];
     const rows = entry.stopDataJsonArray;
     assert.deepEqual(rows.map((s) => s.stopId), ['id-A_PU', 'id-B_PU', 'id-A_DO', 'id-B_DO'], 'leg order preserved');
-    for (const row of rows) {
-      assert.deepEqual(
-        Object.keys(row).sort(),
-        ['etaCode', 'plannedETA', 'routePlanId', 'stopId', 'timeLapse', 'timeZone', 'tripId'],
-        'EXACTLY the HAR row fields — nothing echoed from the preview',
-      );
-      assert.equal(row.plannedETA, '', 'ETA stays blank');
-      assert.equal(row.etaCode, '');
+    // _PU rows: blank 7-key shape, string blanks — even though the preview identifies them.
+    for (const row of rows.slice(0, 2)) {
+      assert.deepEqual(Object.keys(row).sort(), ['etaCode', 'plannedETA', 'routePlanId', 'stopId', 'timeLapse', 'timeZone', 'tripId']);
+      assert.equal(row.plannedETA, '');
+      assert.equal(row.timeLapse, '');
     }
-    // Date-only schStartTime (this fixture) keeps the legacy 08:00 fallback window.
+    // _DO with zero deadhead: 7 keys, populated, deadhead OMITTED.
+    assert.deepEqual(rows[2], {
+      stopId: 'id-A_DO', plannedETA: 'Jul 9, 2026, 9:12:00 AM', routePlanId: HEXID,
+      etaCode: 'ONTIME', timeLapse: 0, tripId: 'id-A', timeZone: 'America/New_York',
+    });
+    // _DO with real deadhead: the two extra keys, numbers throughout.
+    assert.deepEqual(rows[3], {
+      stopId: 'id-B_DO', plannedETA: 'Jul 9, 2026, 9:44:00 AM', routePlanId: HEXID,
+      etaCode: 'LATE', timeLapse: 5, deadHeadMins: 3.26, deadHeadMiles: 0.68,
+      tripId: 'id-B', timeZone: 'America/New_York',
+    });
+    // ONE tripId per LEG, duplicates included — stopIds with the leg suffix stripped.
+    assert.deepEqual(entry.tripDataJsonArray, ['id-A', 'id-B', 'id-A', 'id-B']);
+    // Date-only schStartTime keeps the 08:00 fallback window; unit level keeps legacy zeros.
     assert.equal(entry.routeStartTime, '07/09/2026 08:00:00 am GMT-04:00');
-    // No totals threaded at the unit level → byte-exact legacy zeros.
     assert.deepEqual(entry.totalData, { totalP: 0, totalC: 0, totalW: 0, totalV: 0, weightUOM: 'Lbs', volumeUOM: 'Loose' });
     assert.equal(entry.isStandingRoute, false);
+  });
+});
+
+test('rwbSequenceStops: unidentified preview rows keep every save row blank (fallback pin)', async () => {
+  await withRwb({}, async () => {
+    const { requester, calls } = makeRequester();   // fixture rows carry no stopId
+    const r = await rwbSequenceStops(requester, HEXID, ['id-A', 'id-B'], { lat: 34, lng: -83 });
+    assert.equal(r.ok, true, r.message);
+    const entry = JSON.parse(String(calls.find((c) => c.url.includes('saveComparedRouteData')).body.get('routeJsonData')))[0];
+    for (const row of entry.stopDataJsonArray) {
+      assert.equal(row.plannedETA, '');
+      assert.equal(row.etaCode, '');
+      assert.equal(row.timeLapse, '');
+    }
+    assert.deepEqual(entry.tripDataJsonArray, ['id-A', 'id-B', 'id-A', 'id-B'], 'per-leg trips even on the fallback');
   });
 });
 
@@ -545,7 +571,7 @@ test('runCommitBoardRwb: retargets to the same-named instance that holds the sto
         // post-save order verify sees the reorder land.
         try {
           for (const e of JSON.parse(String(opts.body.get('routeJsonData') || ''))) {
-            if (String(e.routePlanId) === FULL_ID && Array.isArray(e.tripDataJsonArray)) { fullStops.length = 0; fullStops.push(...e.tripDataJsonArray.map((id) => String(id).replace(/^id-/, ''))); }
+            if (String(e.routePlanId) === FULL_ID && Array.isArray(e.tripDataJsonArray)) { fullStops.length = 0; fullStops.push(...new Set(e.tripDataJsonArray.map((id) => String(id).replace(/^id-/, '')))); }
           }
         } catch { /* keep */ }
         return J({ responseCode: 200, message: 'SUCCESS' });
@@ -627,7 +653,13 @@ function makeMoveRequester(loads, { applySave = true } = {}) {
         const rp = opts.body?.get ? String(opts.body.get('routePlanId') || '') : '';
         const sids = opts.body?.get ? String(opts.body.get('stopIds') || '') : '';
         const tgt = byId[rp];
-        if (tgt) for (const sid of sids.split(',').filter(Boolean)) { const n = sid.replace(/^id-/, ''); if (!tgt.v.stops.includes(n)) tgt.v.stops.push(n); }
+        if (tgt) for (const sid of sids.split(',').filter(Boolean)) {
+          const n = sid.replace(/^id-/, '');
+          // Physical accuracy: a stop lives on ONE load — attaching it releases it everywhere
+          // else (as the real vendor does), so the source-side verify sees the departure.
+          for (const other of Object.values(loads)) if (other !== tgt.v) other.stops = other.stops.filter((x) => x !== n);
+          if (!tgt.v.stops.includes(n)) tgt.v.stops.push(n);
+        }
       } catch { /* ignore */ }
       return J({ responseCode: 200, message: 'SUCCESS' });
     }
@@ -639,7 +671,7 @@ function makeMoveRequester(loads, { applySave = true } = {}) {
           const rj = opts.body?.get ? String(opts.body.get('routeJsonData') || '') : '';
           for (const entry of JSON.parse(rj)) {
             const tgt = byId[String(entry.routePlanId)];
-            if (tgt && Array.isArray(entry.tripDataJsonArray)) tgt.v.stops = entry.tripDataJsonArray.map((id) => String(id).replace(/^id-/, ''));
+            if (tgt && Array.isArray(entry.tripDataJsonArray)) tgt.v.stops = [...new Set(entry.tripDataJsonArray.map((id) => String(id).replace(/^id-/, '')))];
           }
         } catch { /* ignore */ }
       }
@@ -779,7 +811,7 @@ test('runCommitBoardRwb: the one repair save rescues an order the first save dro
         if (saves >= 2) {   // only the SECOND (repair) save is honored by the portal
           try {
             const e = JSON.parse(String(opts.body.get('routeJsonData') || ''))[0];
-            loadStops.value = e.tripDataJsonArray.map((id) => String(id).replace(/^id-/, ''));
+            loadStops.value = [...new Set(e.tripDataJsonArray.map((id) => String(id).replace(/^id-/, '')))];
           } catch { /* keep */ }
         }
         return new Response(JSON.stringify({ responseCode: 200, message: 'SUCCESS' }), { status: 200 });
@@ -818,6 +850,60 @@ test('runCommitBoardRwb: names the load NuVizz says holds a stop the save silent
   });
 });
 
+test('runCommitBoardRwb: null stopSeq is SEQ-PENDING, not "duplicate position 0" — soft retry, no repair write', async () => {
+  await withRwb({}, async () => {
+    // The verify read can land before NuVizz stamps to.seq. Two unseq'd stops used to read as
+    // duplicate position 0 → a false KEPT-order failure + a pointless repair save into the
+    // vendor's settling window. Now: plain re-read, then an honest seq-pending failure.
+    const loadStops = { value: ['A', 'B'] };
+    const base = makeRequester({ loadStops, seqless: true });
+    const r = await runCommitBoardRwb(base.requester, { loads: [{ loadNbr: 'DAVIS000000123', loadId: HEXID, orderedStopNbrs: ['B', 'A'] }] }, CREDS);
+    assert.equal(r.ok, false, 'cannot claim verified without positions');
+    assert.match(String(r.loads[0].error || ''), /has not assigned stop positions/i);
+    assert.doesNotMatch(String(r.loads[0].error || ''), /duplicate position/i, 'no phantom dupe-0');
+    assert.equal(base.calls.filter((c) => c.url.includes('saveComparedRouteData')).length, 1, 'NO repair write during the settling window');
+  });
+});
+
+test('runCommitBoardRwb: a SOURCE that keeps a moved-away stop FAILS (half-applied move, source side)', async () => {
+  await withRwb({}, async () => {
+    // Vendor index-skew: the destination gains the stop but the source never releases it.
+    // The source's verify must catch the lingering stop — the inverse of the BEN 2 ejection.
+    const L1 = { loadId: '1111aaaa2222bbbb3333cccc', stops: ['A', 'B'] };
+    const L2 = { loadId: '4444dddd5555eeee6666ffff', stops: ['C'] };
+    const base = makeMoveRequester({ DAVISL1: L1, DAVISL2: L2 });
+    const real = base.requester.request;
+    base.requester.request = async (url, opts, meta) => {
+      const res = await real(url, opts, meta);
+      // After every save/add, force the skew: B stays on L1 no matter what.
+      if ((url.includes('saveComparedRouteData') || url.includes('addStopsToRouteAfterValidation')) && !L1.stops.includes('B')) L1.stops.push('B');
+      return res;
+    };
+    const r = await runCommitBoardRwb(base.requester, { loads: [
+      { loadNbr: 'DAVISL1', loadId: L1.loadId, routeName: 'L1', orderedStopNbrs: ['A'], orderedStopIds: ['id-A'] },
+      { loadNbr: 'DAVISL2', loadId: L2.loadId, routeName: 'L2', orderedStopNbrs: ['C', 'B'], orderedStopIds: ['id-C', 'id-B'] },
+    ] }, CREDS);
+    const l1 = r.loads.find((l) => l.loadNbr === 'DAVISL1');
+    const l2 = r.loads.find((l) => l.loadNbr === 'DAVISL2');
+    assert.equal(l2.ok, true, `destination landed: ${JSON.stringify(l2.error)}`);
+    assert.equal(l1.ok, false, 'source keeping the moved-away stop must FAIL, never report saved');
+    assert.match(String(l1.error || ''), /KEPT stop B/i);
+    assert.match(String(l1.error || ''), /move to its new load/i);
+  });
+});
+
+test('runCommitBoardRwb: totalData sums ONLY the stops being saved (removals excluded)', async () => {
+  await withRwb({}, async () => {
+    const loadStops = { value: ['A', 'B'] };
+    const { requester, calls } = makeRequester({ loadStops });
+    const r = await runCommitBoardRwb(requester, { loads: [{ loadNbr: 'DAVIS000000123', loadId: HEXID, orderedStopNbrs: ['A'], removeStopNbrs: ['B'] }] }, CREDS);
+    assert.equal(r.ok, true, JSON.stringify(r.loads?.[0]?.error));
+    const entry = JSON.parse(String(calls.find((c) => c.url.includes('saveComparedRouteData')).body.get('routeJsonData')))[0];
+    // One kept stop × {2 pieces, 1 skid, 3 loose, 100 lbs} — the removed stop must NOT count.
+    assert.deepEqual(entry.totalData, { totalP: 2, totalC: 1, totalW: 100, totalV: 3, weightUOM: 'Lbs', volumeUOM: 'Loose' });
+  });
+});
+
 test('runCommitBoardRwb: FAILS LOUDLY when a removal is accepted but never applied', async () => {
   await withRwb({}, async () => {
     const loadStops = { value: ['A', 'B'] };
@@ -825,6 +911,6 @@ test('runCommitBoardRwb: FAILS LOUDLY when a removal is accepted but never appli
     const r = await runCommitBoardRwb(requester, { loads: [{ loadNbr: 'DAVIS000000123', loadId: HEXID, orderedStopNbrs: ['A'], removeStopNbrs: ['B'] }] }, CREDS);
     assert.equal(r.ok, false, 'must NOT report saved when the removal never landed');
     assert.match(String(r.loads[0].error || ''), /KEPT stop B/i);
-    assert.match(String(r.loads[0].error || ''), /removal was accepted but not applied/i);
+    assert.match(String(r.loads[0].error || ''), /removal was accepted but the stop never left/i);
   });
 });
