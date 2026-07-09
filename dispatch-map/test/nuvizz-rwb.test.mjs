@@ -42,7 +42,9 @@ function makeRequester({ saveBody = { responseCode: 200 }, saveStatus = 200, loa
   const loadJson = () => ({ Load: {
     loadHeader: { loadId: HEXID, loadNbr: 'DAVIS000000123', routeName: 'TEST', rtOrigin: { address: { latitude: 34.04, longitude: -83.71 } } },
     versionId: 'v1', loadExecutionInfo: { loadStatus: 'PLANNED' },
-    stops: (loadStops?.value ?? []).map((n, i) => ({ stop: { stopId: `id-${n}`, stopNbr: String(n), stopType: 'DO', to: { seq: i + 2 } } })),
+    // weight/totalPallets/totalCartons ride the RAW stop record (normalizeLoad.rawStops) — the
+    // save entry's totalData sums them (Jul 9 HAR fidelity).
+    stops: (loadStops?.value ?? []).map((n, i) => ({ stop: { stopId: `id-${n}`, stopNbr: String(n), stopType: 'DO', to: { seq: i + 2 }, weight: 100, totalPallets: 2, totalCartons: 1 } })),
   } });
   return {
     calls,
@@ -71,6 +73,7 @@ function makeRequester({ saveBody = { responseCode: 200 }, saveStatus = 200, loa
         if (url.includes('fetchUpdatedJson')) {
           return J([{ etaStopVOList: [{ timeZone: 'America/New_York' }], distance: 10, duration: 20, schStartTime: { dttm: 'Jul 2, 2026' } }]);
         }
+        if (url.includes('resequenceRoute')) return J({ responseCode: 200, message: 'SUCCESS' });
         if (url.includes('saveComparedRouteData')) {
           if (applySave && loadStops) {
             try {
@@ -213,7 +216,8 @@ test('rwbSequenceStops: save rows stay BLANK even when the preview offers rich i
     const r = await rwbSequenceStops(base.requester, HEXID, ['id-A', 'id-B'], { lat: 34, lng: -83 });
     assert.equal(r.ok, true, r.message);
     const save = base.calls.find((c) => c.url.includes('saveComparedRouteData'));
-    const rows = JSON.parse(String(save.body.get('routeJsonData')))[0].stopDataJsonArray;
+    const entry = JSON.parse(String(save.body.get('routeJsonData')))[0];
+    const rows = entry.stopDataJsonArray;
     assert.deepEqual(rows.map((s) => s.stopId), ['id-A_PU', 'id-B_PU', 'id-A_DO', 'id-B_DO'], 'leg order preserved');
     for (const row of rows) {
       assert.deepEqual(
@@ -224,6 +228,103 @@ test('rwbSequenceStops: save rows stay BLANK even when the preview offers rich i
       assert.equal(row.plannedETA, '', 'ETA stays blank');
       assert.equal(row.etaCode, '');
     }
+    // Date-only schStartTime (this fixture) keeps the legacy 08:00 fallback window.
+    assert.equal(entry.routeStartTime, '07/09/2026 08:00:00 am GMT-04:00');
+    // No totals threaded at the unit level → byte-exact legacy zeros.
+    assert.deepEqual(entry.totalData, { totalP: 0, totalC: 0, totalW: 0, totalV: 0, weightUOM: 'Lbs', volumeUOM: 'Loose' });
+    assert.equal(entry.isStandingRoute, false);
+  });
+});
+
+test('runCommitBoardRwb: save entry carries the route\'s REAL window + freight totals (Jul 9 HAR)', async () => {
+  await withRwb({}, async () => {
+    // The portal echoes schStartTime's FULL time into routeStartTime ("Jul 9, 2026, 12:00:00 PM"
+    // → "07/09/2026 12:00:00 pm GMT-04:00") and populates totalData from the route's freight —
+    // we fabricated 08:00 am and zeros. BEN 2 was a 12 PM route.
+    const loadStops = { value: ['A', 'B'] };
+    const base = makeRequester({ loadStops });
+    const real = base.requester.request;
+    base.requester.request = async (url, opts, meta) => {
+      if (url.includes('fetchUpdatedJson')) {
+        return new Response(JSON.stringify([{ etaStopVOList: [{ timeZone: 'America/New_York' }], distance: 1, duration: 1, schStartTime: { dttm: 'Jul 9, 2026, 12:00:00 PM' } }]), { status: 200 });
+      }
+      return real(url, opts, meta);
+    };
+    const r = await runCommitBoardRwb(base.requester, { loads: [{ loadNbr: 'DAVIS000000123', loadId: HEXID, orderedStopNbrs: ['B', 'A'] }] }, CREDS);
+    assert.equal(r.ok, true, JSON.stringify(r.loads?.[0]?.error));
+    const entry = JSON.parse(String(base.calls.find((c) => c.url.includes('saveComparedRouteData')).body.get('routeJsonData')))[0];
+    assert.equal(entry.routeStartTime, '07/09/2026 12:00:00 pm GMT-04:00', 'real start time echoed');
+    assert.equal(entry.routeEndTime, '07/09/2026 11:59:00 pm GMT-04:00');
+    // Summed from the load's raw stop records: 2 stops × {2 pieces, 1 skid, 100 lbs}.
+    assert.deepEqual(entry.totalData, { totalP: 4, totalC: 2, totalW: 200, totalV: 0, weightUOM: 'Lbs', volumeUOM: '' });
+    assert.equal(entry.isStandingRoute, false, 'standing flag ships OFF (env-gated)');
+  });
+});
+
+// ── resequenceRoute (Jul 9 optimize HAR): the portal's ORDER-persisting call ───
+// Every portal flow where stops ALREADY ON a route change position fires
+// opt-job/routeopt/resequenceRoute between the preview and the save; a flow that only ADDS
+// stops never does (order comes from the adds). We never called it — the root of the
+// "reorder accepted, no seq ever moved" bug.
+
+test('runCommitBoardRwb: an EDIT reorder fires resequenceRoute (portal flow) before the save', async () => {
+  await withRwb({}, async () => {
+    const loadStops = { value: ['A', 'B', 'C'] };
+    const { requester, calls } = makeRequester({ loadStops });
+    const r = await runCommitBoardRwb(requester, { loads: [{ loadNbr: 'DAVIS000000123', loadId: HEXID, orderedStopNbrs: ['C', 'A', 'B'] }] }, CREDS);
+    assert.equal(r.ok, true, JSON.stringify(r.loads?.[0]?.error));
+    const rs = calls.find((c) => c.url.includes('resequenceRoute'));
+    assert.ok(rs, 'resequenceRoute fired for a reorder of existing stops');
+    assert.equal(String(rs.body.get('stopIdsStr')), 'id-C_PU,id-A_PU,id-B_PU,id-C_DO,id-A_DO,id-B_DO', 'leg list in the requested order');
+    assert.equal(String(rs.body.get('seqMode')), 'Manual');
+    assert.equal(String(rs.body.get('reqSource')), 'RWB_CP');
+    assert.equal(String(rs.body.get('returnToDepot')), 'NEVER');
+    // Portal order: preview → resequenceRoute → save.
+    const iRs = calls.findIndex((c) => c.url.includes('resequenceRoute'));
+    const iSave = calls.findIndex((c) => c.url.includes('saveComparedRouteData'));
+    const iPrev = calls.findIndex((c) => c.url.includes('fetchUpdatedJson'));
+    assert.ok(iPrev < iRs && iRs < iSave, 'resequenceRoute sits between the preview and the save');
+  });
+});
+
+test('runCommitBoardRwb: a pure ADD/build save does NOT fire resequenceRoute (proven path untouched)', async () => {
+  await withRwb({}, async () => {
+    const loadStops = { value: ['A'] };
+    const { requester, calls } = makeRequester({ loadStops });
+    const r = await runCommitBoardRwb(requester, { loads: [{ loadNbr: 'DAVIS000000123', loadId: HEXID, orderedStopNbrs: ['A', 'B'] }] }, CREDS);
+    assert.equal(r.ok, true, JSON.stringify(r.loads?.[0]?.error));
+    assert.equal(calls.some((c) => c.url.includes('resequenceRoute')), false, 'adds seat stops in order — no resequence call');
+  });
+});
+
+test('runCommitBoardRwb: a FAILED resequenceRoute aborts the group with NO save', async () => {
+  await withRwb({}, async () => {
+    const loadStops = { value: ['A', 'B'] };
+    const base = makeRequester({ loadStops });
+    const real = base.requester.request;
+    base.requester.request = async (url, opts, meta) => {
+      if (url.includes('resequenceRoute')) return new Response(JSON.stringify({ responseCode: 500, message: 'opt engine down' }), { status: 200 });
+      return real(url, opts, meta);
+    };
+    const r = await runCommitBoardRwb(base.requester, { loads: [{ loadNbr: 'DAVIS000000123', loadId: HEXID, orderedStopNbrs: ['B', 'A'] }] }, CREDS);
+    assert.equal(r.ok, false, 'a save without its resequence is the accepted-but-ignored reorder — abort');
+    assert.equal(base.calls.some((c) => c.url.includes('saveComparedRouteData')), false, 'no save after a failed resequence');
+    assert.match(String(r.loads[0].error || ''), /resequenceRoute failed/i);
+  });
+});
+
+test('runCommitBoardRwb: NUVIZZ_RWB_STANDING_ROUTE=on flips isStandingRoute in the save entry', async () => {
+  await withRwb({}, async () => {
+    const prev = process.env.NUVIZZ_RWB_STANDING_ROUTE;
+    process.env.NUVIZZ_RWB_STANDING_ROUTE = 'on';
+    try {
+      const loadStops = { value: ['A'] };
+      const { requester, calls } = makeRequester({ loadStops });
+      const r = await runCommitBoardRwb(requester, { loads: [{ loadNbr: 'DAVIS000000123', loadId: HEXID, orderedStopNbrs: ['A'] }] }, CREDS);
+      assert.equal(r.ok, true, JSON.stringify(r.loads?.[0]?.error));
+      const entry = JSON.parse(String(calls.find((c) => c.url.includes('saveComparedRouteData')).body.get('routeJsonData')))[0];
+      assert.equal(entry.isStandingRoute, true);
+    } finally { if (prev === undefined) delete process.env.NUVIZZ_RWB_STANDING_ROUTE; else process.env.NUVIZZ_RWB_STANDING_ROUTE = prev; }
   });
 });
 
@@ -420,6 +521,7 @@ test('runCommitBoardRwb: retargets to the same-named instance that holds the sto
       if (url.includes('validateStopstoPerformAction')) return T('Success');
       if (url.includes('addStopsToRouteAfterValidation')) return J({ responseCode: 200, message: 'SUCCESS' });
       if (url.includes('fetchUpdatedJson')) return J([{ etaStopVOList: [{ timeZone: 'America/New_York' }], distance: 1, duration: 1, schStartTime: { dttm: 'Jul 2, 2026' } }]);
+      if (url.includes('resequenceRoute')) return J({ responseCode: 200, message: 'SUCCESS' });
       if (url.includes('saveComparedRouteData')) {
         // Apply the declarative order to the retargeted FULL twin (like the real portal), so the
         // post-save order verify sees the reorder land.
@@ -512,6 +614,7 @@ function makeMoveRequester(loads, { applySave = true } = {}) {
       return J({ responseCode: 200, message: 'SUCCESS' });
     }
     if (url.includes('fetchUpdatedJson')) return J([{ etaStopVOList: [{ timeZone: 'America/New_York' }], distance: 1, duration: 1, schStartTime: { dttm: 'Jul 2, 2026' } }]);
+    if (url.includes('resequenceRoute')) return J({ responseCode: 200, message: 'SUCCESS' });
     if (url.includes('saveComparedRouteData')) {
       if (applySave) {
         try {
