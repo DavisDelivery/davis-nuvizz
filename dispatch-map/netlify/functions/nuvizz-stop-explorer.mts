@@ -11,6 +11,7 @@
 import { getNuvizzRequester, setCallTrigger } from './lib/nuvizz-request.mts';
 import { getCreds, basicAuthHeader } from './lib/nuvizz-scan.mts';
 import { buildBody, normalize, cleanPeriod, coveringWindowForRange, rowInRange, LIST_MAX_RESULT, OPENAPI_BASE, SAVED_SEARCHES, fetchSavedSearchRaw, fetchSavedSearchRows, toBoardStop, boardDayFor } from './lib/nuvizz-list.mts';
+import { isFirestoreEnabled, readStops, etDayString } from './lib/firestore.mts';
 
 // Re-exported so the existing test (test/stop-explorer.test.mjs) keeps importing them here.
 export { buildBody, normalize, cleanPeriod } from './lib/nuvizz-list.mts';
@@ -79,6 +80,48 @@ export default async (req: Request): Promise<Response> => {
   const codes = Array.isArray(body.statusCodes) ? body.statusCodes.filter((c: any) => /^\d{1,2}$/.test(String(c))).map(String) : [];
   const statusCsv = codes.length ? codes.join(',') : '-1';
   const page = Math.max(1, parseInt(body.page, 10) || 1);
+
+  // ── WIDE windows are served from OUR board cache, not live NuVizz ───────────
+  // NuVizz's ad-hoc all-status filterdata is verifiably slow on wide windows (an
+  // unfiltered ±7d ran past our whole 22s budget → the "timed out" the dispatcher hit),
+  // and no client-side knob fixes their query time. But the scan already maintains a
+  // per-day board doc for every day it touches — patched by confirmed Saves — so a wide
+  // window reads INSTANTLY from Firestore with ZERO NuVizz calls. Live NuVizz stays for
+  // the narrow, proven-fast windows (today / ±3d); everything wider (±7/14/30, custom
+  // ranges) reads the cache. Freshness = last scan (~10 min), same as the board itself.
+  const LIVE_PERIODS = new Set(['0d', '+/-1d', '+/-2d', '+/-3d']);
+  const wantCache = (range || !LIVE_PERIODS.has(period)) && isFirestoreEnabled() && body.live !== true;
+  if (wantCache) {
+    try {
+      const today = etDayString();
+      const dayMs = 86400000;
+      const dayAt = (base: string, off: number) => new Date(Date.parse(base + 'T00:00:00Z') + off * dayMs).toISOString().slice(0, 10);
+      let from: string, to: string;
+      if (range) { from = range.from; to = range.to; }
+      else {
+        const m = period.match(/^\+\/-(\d{1,2})d$/);
+        const n = m ? Math.min(60, Math.max(1, Number(m[1]))) : 7;
+        from = dayAt(today, -n); to = dayAt(today, n);
+      }
+      const nDays = Math.min(62, Math.round((Date.parse(to + 'T00:00:00Z') - Date.parse(from + 'T00:00:00Z')) / dayMs) + 1);
+      const days = Array.from({ length: nDays }, (_, i) => dayAt(from, i));
+      const reads = await Promise.all(days.map((d) => readStops('davis', d).then((r) => ({ d, stops: r.stops || [] })).catch(() => ({ d, stops: [] as any[] }))));
+      // Dedupe by stopNbr, LATER day wins — a carry-over rescue writes the same stop onto
+      // its home day AND today's doc; the later (clamped-forward) copy is the current one.
+      const byNbr = new Map<string, any>();
+      let coveredDays = 0;
+      for (const { stops } of reads) {
+        if (stops.length) coveredDays++;
+        for (const s of stops) { const k = String(s?.stopNbr ?? ''); if (k) byNbr.set(k, s); }
+      }
+      let rows = [...byNbr.values()];
+      if (codes.length) rows = rows.filter((s: any) => codes.includes(String(s.status ?? '')));
+      return new Response(JSON.stringify({
+        ok: true, source: 'cache', period, range, partial: false, covered: { from, to },
+        coveredDays, statusCodes: codes, page: 1, pageSize: rows.length, total: rows.length, rows,
+      }), { status: 200, headers: cors });
+    } catch { /* cache read failed — fall through to the live pull below */ }
+  }
   // A wider window / custom range needs a higher row cap to actually return the stops in
   // it — still ONE filterdata call (maxResult is rows-per-call, not extra NuVizz calls).
   const pageSize = Math.max(1, Math.min(2000, parseInt(body.pageSize, 10) || 100));
