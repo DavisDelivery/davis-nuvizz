@@ -54,7 +54,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.45.23';
+const APP_VERSION = '0.45.24';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -2859,10 +2859,25 @@ async function postSendSms(payload) {
 // `driverName` recipient is sent by name — the server resolves the phone from the
 // MarginIQ roster (number never reaches the browser). A single `to` recipient
 // (customer) gets an editable phone field. Used by Text customer / selected / driver.
-function SmsComposeModal({ title, recipients, onClose }) {
+// Seed text for "Text driver" on a pulled-up order: the PRO number + customer name so the
+// driver can cross-reference the delivery on their manifest, then the dispatcher types the
+// actual message after it. Trailing ": " keeps the caret continuing the line. Either field
+// missing → whatever's present (never a stray dash / empty "PRO").
+function driverStopPrefill(stop) {
+  if (!stop) return '';
+  const pro = stop.pro || stop.stopNbr || '';
+  const cust = (stop.businessName || '').trim();
+  const ref = [pro ? `PRO ${pro}` : '', cust].filter(Boolean).join(' — ');
+  return ref ? `${ref}: ` : '';
+}
+
+function SmsComposeModal({ title, recipients, onClose, initialText = '' }) {
   const driverMode = recipients.some((r) => r.driverName);
   const editable = recipients.length === 1 && !driverMode; // customer single → editable phone
-  const [text, setText] = useState('');
+  // initialText prefills the box (the "Text driver about this order" button seeds the PRO +
+  // customer so the dispatcher just adds the message). The caret lands at the END so typing
+  // continues the line; the reference stays editable/removable.
+  const [text, setText] = useState(initialText);
   const [phone, setPhone] = useState(editable ? (recipients[0].to || '') : '');
   const [sending, setSending] = useState(false);
   const [result, setResult] = useState(null);
@@ -2916,6 +2931,7 @@ function SmsComposeModal({ title, recipients, onClose }) {
             <>
               <textarea
                 value={text} onChange={(e) => setText(e.target.value)} rows={4} autoFocus
+                onFocus={(e) => { const n = e.target.value.length; e.target.setSelectionRange(n, n); }}
                 placeholder="Type your message…"
                 className="w-full border border-slate-300 rounded-lg p-2 text-sm resize-y"
               />
@@ -4377,7 +4393,7 @@ function useLiveStop(stop) {
   return [live, onRefreshed];
 }
 
-function StopDataSections({ stop, note, onRefreshed, onOpenRoute, onMoveLocation, onEditAddress, onAutoFixAddress, onText, onOpenHistory }) {
+function StopDataSections({ stop, note, onRefreshed, onOpenRoute, onMoveLocation, onEditAddress, onAutoFixAddress, onText, onTextDriver, onOpenHistory }) {
   // `stop` is the already-merged "live" stop the PARENT owns (see useLiveStop). The parent
   // holds the refresh overlay so the header status badge updates too — not just this body.
   // `onRefreshed` bubbles a fresh /stop/info pull (Refresh button, timeline open, or the
@@ -4426,6 +4442,11 @@ function StopDataSections({ stop, note, onRefreshed, onOpenRoute, onMoveLocation
           {onText && (
             <button onClick={() => onText(live)} className="mt-1.5 inline-flex items-center gap-1 text-xs text-blue-700 hover:underline">
               <MessageSquare size={13} /> Text customer{textPhone ? '' : ' (add #)'}
+            </button>
+          )}
+          {onTextDriver && live.driverName && (
+            <button onClick={() => onTextDriver(live)} className="mt-1.5 inline-flex items-center gap-1 text-xs text-blue-700 hover:underline" title={`Text ${live.driverName} — prefilled with this order's PRO and customer`}>
+              <MessageSquare size={13} /> Text driver ({live.driverName})
             </button>
           )}
           {onOpenHistory && (
@@ -4793,7 +4814,7 @@ function StopNotesSection({ note, editing, setEditing, draft, setDraft, compact 
   );
 }
 
-function StopSidebar({ stop, note, onClose, onSave, saving, saveError, onOpenRoute, onMoveLocation, onEditAddress, onAutoFixAddress, onText, onOpenHistory, drivers = [], mobile = false, side = 'right', embedded = false }) {
+function StopSidebar({ stop, note, onClose, onSave, saving, saveError, onOpenRoute, onMoveLocation, onEditAddress, onAutoFixAddress, onText, onTextDriver, onOpenHistory, drivers = [], mobile = false, side = 'right', embedded = false }) {
   const [draft, setDraft] = useState(() => note || emptyNote(stop));
   const [editing, setEditing] = useState(!note);
   // True once the dispatcher edits the draft; cleared on stop-change and save.
@@ -4859,7 +4880,7 @@ function StopSidebar({ stop, note, onClose, onSave, saving, saveError, onOpenRou
       </div>
 
       <div className="overflow-y-auto flex-1">
-        <StopDataSections stop={live} note={note} onRefreshed={onRefreshed} onOpenRoute={onOpenRoute} onMoveLocation={onMoveLocation} onEditAddress={onEditAddress} onAutoFixAddress={onAutoFixAddress} onText={onText} onOpenHistory={onOpenHistory} />
+        <StopDataSections stop={live} note={note} onRefreshed={onRefreshed} onOpenRoute={onOpenRoute} onMoveLocation={onMoveLocation} onEditAddress={onEditAddress} onAutoFixAddress={onAutoFixAddress} onText={onText} onTextDriver={onTextDriver} onOpenHistory={onOpenHistory} />
         <ProsSection stop={live} />
         <StopNotesSection note={note} editing={editing} setEditing={setEditing} draft={D} setDraft={setD} compact drivers={drivers} />
       </div>
@@ -6122,7 +6143,7 @@ function MobileLoadsTab({ loads, onPickLoad }) {
 // stop components as the desktop sidebar (StopDataSections + ProsSection +
 // StopNotesSection) in a single scroll, so mobile has full desktop parity —
 // every edit option, one inline Edit, one Save.
-function MobileStopDetailDrawer({ stop, note, onClose, onSave, saving, saveError, onOpenRoute, onMoveLocation, onEditAddress, onAutoFixAddress, onText, onOpenHistory, drivers = [] }) {
+function MobileStopDetailDrawer({ stop, note, onClose, onSave, saving, saveError, onOpenRoute, onMoveLocation, onEditAddress, onAutoFixAddress, onText, onTextDriver, onOpenHistory, drivers = [] }) {
   const [draft, setDraft] = useState(() => note || emptyNote(stop));
   const [editing, setEditing] = useState(false);
   const [confirmDiscard, setConfirmDiscard] = useState(false);
@@ -6196,7 +6217,7 @@ function MobileStopDetailDrawer({ stop, note, onClose, onSave, saving, saveError
           <StatusBadge kind={classifyStopStatus(live)} />
           <DnsBadge note={note} showDrivers />
         </div>
-        <StopDataSections stop={live} note={note} onRefreshed={onRefreshed} onOpenRoute={onOpenRoute} onMoveLocation={onMoveLocation} onEditAddress={onEditAddress} onAutoFixAddress={onAutoFixAddress} onText={onText} onOpenHistory={onOpenHistory} />
+        <StopDataSections stop={live} note={note} onRefreshed={onRefreshed} onOpenRoute={onOpenRoute} onMoveLocation={onMoveLocation} onEditAddress={onEditAddress} onAutoFixAddress={onAutoFixAddress} onText={onText} onTextDriver={onTextDriver} onOpenHistory={onOpenHistory} />
         <ProsSection stop={live} />
         <StopNotesSection note={note} editing={editing} setEditing={setEditing} draft={D} setDraft={setD} drivers={drivers} />
       </div>
@@ -6934,6 +6955,13 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef }) {
   const textDriver = useCallback((driverName) => {
     if (!driverName) return;
     setSmsTargets({ title: `Text ${driverName}`, recipients: [{ driverName, label: driverName }] });
+  }, []);
+  // Text the driver ASSIGNED TO THIS ORDER, prefilled with the order's PRO + customer so the
+  // driver knows which delivery it's about. Number resolves server-side from the roster.
+  const textDriverForStop = useCallback((stop) => {
+    const driverName = stop?.driverName;
+    if (!driverName) return;
+    setSmsTargets({ title: `Text ${driverName}`, recipients: [{ driverName, label: driverName }], initialText: driverStopPrefill(stop) });
   }, []);
   // Bulk: text the DISTINCT drivers of the selected stops (one text per driver).
   const textSelectedDrivers = useCallback(() => {
@@ -7715,7 +7743,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef }) {
     };
     return (
       <div className="flex-1 flex flex-col min-h-0">
-        {smsTargets && <SmsComposeModal title={smsTargets.title} recipients={smsTargets.recipients} onClose={() => setSmsTargets(null)} />}
+        {smsTargets && <SmsComposeModal title={smsTargets.title} recipients={smsTargets.recipients} initialText={smsTargets.initialText} onClose={() => setSmsTargets(null)} />}
         <div className="flex-1 relative min-w-0 overflow-hidden">
         <div ref={mapDiv} className="absolute inset-0" />
         {/* Box/lasso multi-select: capture overlay (while a tool is armed) + the
@@ -7976,6 +8004,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef }) {
             note={notes.get(selectedStop.matchKey)}
             drivers={notesDrivers}
             onText={textCustomer}
+            onTextDriver={textDriverForStop}
             onOpenHistory={openCustomerHistory}
             onClose={() => setSelectedStop(null)}
             onMoveLocation={startMoveLocation}
@@ -8084,7 +8113,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef }) {
           </div>
         </div>
       )}
-      {smsTargets && <SmsComposeModal title={smsTargets.title} recipients={smsTargets.recipients} onClose={() => setSmsTargets(null)} />}
+      {smsTargets && <SmsComposeModal title={smsTargets.title} recipients={smsTargets.recipients} initialText={smsTargets.initialText} onClose={() => setSmsTargets(null)} />}
       {/* LEFT column (#388) — the search box + "Search past PROs" button stay
           FIXED at the top; below them sits either the OPEN ORDER card (read an
           order on the left while its route opens on the right) or, when nothing is
@@ -8125,6 +8154,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef }) {
             note={notes.get(selectedStop.matchKey)}
             drivers={notesDrivers}
             onText={textCustomer}
+            onTextDriver={textDriverForStop}
             onOpenHistory={openCustomerHistory}
             onClose={() => setSelectedStop(null)}
             onMoveLocation={startMoveLocation}
@@ -9800,7 +9830,7 @@ function RoutingStopRichDetail({ stop, onRefreshed }) {
 // route/driver via RoutingStopRichDetail). Fills the rail column; closes via X or Esc.
 // Never renders empty — guards a null stop. (Replaces the old center-popup modal so a
 // clicked stop's detail always lives in the right panel — dispatcher request.)
-function RoutingStopPanel({ stop, notes, onClose, onOpenLoad, windowViolatedSet, onMoveLocation, onEditAddress, onAutoFixAddress, onOpenHistory, onText, onSave, saving, saveError, drivers = [] }) {
+function RoutingStopPanel({ stop, notes, onClose, onOpenLoad, windowViolatedSet, onMoveLocation, onEditAddress, onAutoFixAddress, onOpenHistory, onText, onTextDriver, onSave, saving, saveError, drivers = [] }) {
   useEffect(() => {
     const onKey = (e) => { if (e.key === 'Escape') onClose(); };
     window.addEventListener('keydown', onKey);
@@ -9836,6 +9866,7 @@ function RoutingStopPanel({ stop, notes, onClose, onOpenLoad, windowViolatedSet,
         onEditAddress={onEditAddress}
         onAutoFixAddress={onAutoFixAddress}
         onText={onText}
+        onTextDriver={onTextDriver}
         onOpenHistory={onOpenHistory}
         onOpenRoute={loadKey && onOpenLoad ? () => onOpenLoad(loadKey) : undefined}
         drivers={drivers}
@@ -12754,6 +12785,13 @@ function RoutingScreen({ debugCaptureRef }) {
     const phone = resolveStopPhone(stop, notes.get(stop.matchKey));
     setRoutingSmsTargets({ title: `Text ${stop.businessName || 'customer'}`, recipients: [{ to: phone, label: stop.businessName || stop.stopNbr }] });
   }, [notes]);
+  // Text the driver assigned to THIS order, prefilled with PRO + customer (parity with the Map
+  // stop panel). Number resolves server-side from the roster; zero NuVizz calls.
+  const textDriverForStop = useCallback((stop) => {
+    const driverName = stop?.driverName;
+    if (!driverName) return;
+    setRoutingSmsTargets({ title: `Text ${driverName}`, recipients: [{ driverName, label: driverName }], initialText: driverStopPrefill(stop) });
+  }, []);
   const notesDrivers = useMemo(() => {
     const seen = new Set(); const out = [];
     const add = (name) => { const nm = (name || '').trim(); const k = nm.toLowerCase(); if (!nm || seen.has(k)) return; seen.add(k); out.push({ driverName: nm }); };
@@ -13597,6 +13635,7 @@ function RoutingScreen({ debugCaptureRef }) {
                 onAutoFixAddress={autoFixAddress}
                 onOpenHistory={openCustomerHistory}
                 onText={textCustomer}
+                onTextDriver={textDriverForStop}
                 onSave={saveStopNote}
                 saving={savingNote}
                 saveError={saveNoteError}
@@ -13626,7 +13665,7 @@ function RoutingScreen({ debugCaptureRef }) {
         </div>
         {movingStop && <MoveLocationBar stop={movingStop} saving={savingLoc} onSave={saveStopLocation} onCancel={cancelMoveLocation} onReset={resetStopLocation} />}
         {editAddrStop && <AddressEditModal stop={editAddrStop} note={notes.get(editAddrStop.matchKey)} google={google} seed={editAddrSeed} onClose={() => { setEditAddrStop(null); setEditAddrSeed(null); }} onSaved={() => refreshStops({ silent: true })} />}
-        {routingSmsTargets && <SmsComposeModal title={routingSmsTargets.title} recipients={routingSmsTargets.recipients} onClose={() => setRoutingSmsTargets(null)} />}
+        {routingSmsTargets && <SmsComposeModal title={routingSmsTargets.title} recipients={routingSmsTargets.recipients} initialText={routingSmsTargets.initialText} onClose={() => setRoutingSmsTargets(null)} />}
         {wbManifest && <PrintDocModal title={wbManifest.title} html={wbManifest.html} onClose={() => setWbManifest(null)} />}
         {versionLogOpen && <VersionLogModal onClose={() => setVersionLogOpen(false)} />}
         {/* Customer-history overlay (History button on the stop panel) — Firestore-only. */}
@@ -13770,6 +13809,7 @@ function RoutingScreen({ debugCaptureRef }) {
             onAutoFixAddress={autoFixAddress}
             onOpenHistory={openCustomerHistory}
             onText={textCustomer}
+            onTextDriver={textDriverForStop}
             onSave={saveStopNote}
             saving={savingNote}
             saveError={saveNoteError}
@@ -13811,7 +13851,7 @@ function RoutingScreen({ debugCaptureRef }) {
       )}
       {movingStop && <MoveLocationBar stop={movingStop} saving={savingLoc} onSave={saveStopLocation} onCancel={cancelMoveLocation} onReset={resetStopLocation} />}
       {editAddrStop && <AddressEditModal stop={editAddrStop} note={notes.get(editAddrStop.matchKey)} google={google} seed={editAddrSeed} onClose={() => { setEditAddrStop(null); setEditAddrSeed(null); }} onSaved={() => refreshStops({ silent: true })} />}
-      {routingSmsTargets && <SmsComposeModal title={routingSmsTargets.title} recipients={routingSmsTargets.recipients} onClose={() => setRoutingSmsTargets(null)} />}
+      {routingSmsTargets && <SmsComposeModal title={routingSmsTargets.title} recipients={routingSmsTargets.recipients} initialText={routingSmsTargets.initialText} onClose={() => setRoutingSmsTargets(null)} />}
         {wbManifest && <PrintDocModal title={wbManifest.title} html={wbManifest.html} onClose={() => setWbManifest(null)} />}
         {versionLogOpen && <VersionLogModal onClose={() => setVersionLogOpen(false)} />}
         {/* Customer-history overlay (History button on the stop panel) — this location's past
