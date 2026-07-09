@@ -23,7 +23,7 @@ import {
 } from 'lucide-react';
 import { UlineQuoteConsole } from '@davisdelivery/quote-generator';
 import {
-  collection, doc, getDoc, onSnapshot, setDoc, serverTimestamp,
+  collection, doc, getDoc, getDocs, onSnapshot, setDoc, serverTimestamp,
   query, orderBy, limit, updateDoc, deleteDoc,
 } from 'firebase/firestore';
 
@@ -54,7 +54,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.45.24';
+const APP_VERSION = '0.46.0';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -99,6 +99,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.46.0', 'TRACTOR-DELIVERED LOCATIONS now paint LIME GREEN on the map. Any stop at a location where a tractor driver has EVER completed a delivery gets a lime pin with a white border — a permanent, automatic "a 53′ trailer has physically been here" signal, separate from the dispatcher-set green/red eligibility paint. Who counts as a tractor driver comes straight from the MarginIQ Employees tab (the Tractor tag + the NUVIZZ alias on the card) — tag a driver there and re-run the rebuild, and every location they ever delivered lights up, past included. The stop panel shows "Tractor has delivered here — last <date>", and the Legend explains the lime pin. Data lives in tractor_locations, derived from the saved history warehouse + roster: one Firestore fetch on map load, ZERO NuVizz calls anywhere.'],
   ['0.45.22', 'A stop opened in Routing (beta) now has the SAME full detail panel as the Map — it IS the Map panel now. Clicking a stop in Routing gives you Street View / Google Maps / Find business, Edit address, Correct pin location, Text customer, History, the Delivery Ticket, live notes + Activity Timeline, POD photos, AND the full customer-notes editor: Priority flag, Delivery window, and the Receiving-hours editor with Save. Before, the Routing stop panel showed receiving hours as read-only text and only offered Edit address / Correct pin — no way to set a customer\'s receiving rules or text them without switching to the Map. Opening a route still works the same (the panel\'s "View full route" opens it in Compare), and an appointment-window warning still shows on top. No NuVizz calls — notes save to Firestore, exactly like the Map.'],
   ['0.45.21', 'Looking up a PRO in NuVizz now opens the SAME full stop panel as clicking a stop on the map — so you get the Receiving hours / Priority flag / Delivery window editor plus Edit address, Correct pin location, Text customer and History, and a Save. Before, a PRO you searched for ("Look up PRO in NuVizz") opened a read-only window with none of those route/customer options — you could see the order but not set the customer\'s receiving rules. Now it\'s fully editable, exactly like a stop opened from the board or by customer name. (Note: this only changes how the panel opens — the separate issue of some delivered customers showing few past PROs in the history search is the server history warehouse needing a backfill, tracked separately.)'],
   ['0.45.15', 'Three dispatcher fixes: (1) the map selection tools (click / box / lasso / add-in-view) can NO LONGER grab a stop that\'s already staged on an open Compare card — it tells you which card holds it ("use Ninja to move it"), and area-selects report how many they skipped, so a stop can\'t be double-planned from the selection. (2) Route headers now count PHYSICAL stops — multiple orders to the same address are ONE truck stop (like NuVizz\'s own card): a card reads "7 stops · 9 orders" instead of "9 stops". Applies to the Compare card header and the Routes panel cards. (3) Clicking DISPATCH now flips the route\'s status immediately — it stayed "Draft" until a scan (paused overnight) because the status came from the cached roster; a confirmed dispatch now overrides that until the roster catches up.'],
@@ -398,6 +399,22 @@ const DRIVER_TINT = '#0f172a';             // M4 Motive driver pins
 // customer_notes.vehicle_eligibility ('tractor' | 'box_only'); unset → normal pin.
 const ELIG_TRACTOR_COLOR = '#16a34a';  // green — a 53' trailer fits
 const ELIG_BOX_COLOR = '#dc2626';      // red — box truck only, no tractor-trailer
+
+// PROVEN tractor service (distinct from the dispatcher-SET eligibility above):
+// a location where a tractor driver has ever COMPLETED a delivery, per the
+// tractor_locations collection (derived server-side from the history warehouse
+// + the MarginIQ employee roster). Lime green + white border, sticky forever.
+const TRACTOR_DELIVERED_COLOR = '#32CD32';
+
+// "Jul 9, 2026" from a YYYY-MM-DD string. Local-noon construction so a timezone
+// offset can never shift the calendar day (same trick as formatDateLong).
+function fmtTractorDate(dateString) {
+  if (!dateString) return '';
+  const [y, m, d] = String(dateString).split('-').map(Number);
+  if (!y || !m || !d) return String(dateString);
+  return new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+    .format(new Date(y, m - 1, d, 12, 0, 0));
+}
 // Canonical restriction keys a 53' trailer can't satisfy. When a dispatcher marks a
 // stop tractor-friendly (green), these are suppressed on the pin AND ignored by the
 // router — an explicit green wins over an auto-detected restriction.
@@ -1231,6 +1248,59 @@ function useAutoScanner(stops, notes, notesReady) {
   }, [stops, notes, notesReady]);
 }
 
+// Tractor-delivered locations — fetched ONCE per page load (the collection only
+// changes on the nightly capture / a manual rebuild, so live subscription would
+// be waste). Module-level cache so every component shares the single fetch:
+// Map<matchKey, { last, first, drivers, count }>. Never fetched per stop.
+const TRACTOR_TENANT_PREFIX = 'davis__';
+let __tractorLocsCache = null;          // resolved Map once loaded
+let __tractorLocsPromise = null;        // in-flight fetch (dedup)
+const __tractorLocsWaiters = new Set();
+function fetchTractorLocationsOnce() {
+  if (__tractorLocsCache) return Promise.resolve(__tractorLocsCache);
+  if (!__tractorLocsPromise) {
+    __tractorLocsPromise = (async () => {
+      const map = new Map();
+      if (db) {
+        try {
+          const snap = await getDocs(collection(db, 'tractor_locations'));
+          snap.forEach((d) => {
+            if (!d.id.startsWith(TRACTOR_TENANT_PREFIX)) return;
+            const v = d.data() || {};
+            const mk = v.match_key || d.id.slice(TRACTOR_TENANT_PREFIX.length);
+            map.set(mk, {
+              last: v.last_tractor_date || null,
+              first: v.first_tractor_date || null,
+              drivers: Array.isArray(v.tractor_drivers) ? v.tractor_drivers : [],
+              count: Number(v.delivery_count) || 0,
+            });
+          });
+        } catch (err) {
+          console.error('tractor_locations fetch error', err);
+        }
+      }
+      __tractorLocsCache = map;
+      for (const cb of __tractorLocsWaiters) cb(map);
+      __tractorLocsWaiters.clear();
+      return map;
+    })();
+  }
+  return __tractorLocsPromise;
+}
+const EMPTY_TRACTOR_MAP = new Map();
+function useTractorLocations() {
+  const [locs, setLocs] = useState(__tractorLocsCache);
+  useEffect(() => {
+    if (__tractorLocsCache) { setLocs(__tractorLocsCache); return undefined; }
+    let alive = true;
+    const cb = (m) => { if (alive) setLocs(m); };
+    __tractorLocsWaiters.add(cb);
+    fetchTractorLocationsOnce();
+    return () => { alive = false; __tractorLocsWaiters.delete(cb); };
+  }, []);
+  return locs || EMPTY_TRACTOR_MAP;
+}
+
 // Subscribe to ALL customer_notes docs and expose as a Map<match_key, note>.
 // Two-step: live subscribe so edits in another tab/dispatcher appear instantly.
 function useCustomerNotes() {
@@ -1905,7 +1975,13 @@ function iconMarkerSvg(restrictions, tint) {
 //   opts.routeColor     — overrides the numbered pin's color (Routing colors by route,
 //                         the Map colors by status); omit to keep status coloring.
 function stopMarkerIcon(google, s, note, opts = {}) {
-  const { selectedDayKey, matched = false, inRoute = false, seq, routeColor } = opts;
+  //   opts.tractorDelivered — a tractor driver has completed a delivery at this
+  //   location (tractor_locations): full repaint to lime green + white border,
+  //   overriding the normal status/flag/eligibility color. Size, shape, anchor,
+  //   and tap behavior stay identical. DNS and search-match orange keep
+  //   precedence (safety / active-search visibility), as does an explicit
+  //   Routing routeColor on numbered pins.
+  const { selectedDayKey, matched = false, inRoute = false, seq, routeColor, tractorDelivered = false } = opts;
   let restrictions = getRestrictionBadgeKeys(note, { day: selectedDayKey });
   const flagHue = (note?.priority_flag && FLAG_COLORS[note.priority_flag]) ? FLAG_COLORS[note.priority_flag] : null;
   // Dispatcher-set vehicle eligibility recolors the pin (green = trailer OK, red =
@@ -1926,7 +2002,7 @@ function stopMarkerIcon(google, s, note, opts = {}) {
     // given (Routing), else by status (Map): green=delivered / blue=scheduled.
     const statusKind = classifyStopStatus(s);
     const meta = STATUS_META[statusKind] || STATUS_META.SCHEDULED;
-    const color = routeColor || meta.color || flagColor(note);
+    const color = routeColor || (tractorDelivered ? TRACTOR_DELIVERED_COLOR : (meta.color || flagColor(note)));
     return { url: pinSvgStatus(color, { label: String(seq) }), scaledSize: new google.maps.Size(30, 39), anchor: new google.maps.Point(15, 37) };
   }
   if (restrictions.length === 0) {
@@ -1939,6 +2015,7 @@ function stopMarkerIcon(google, s, note, opts = {}) {
       && (statusKind === 'SCHEDULED' || statusKind === 'UNPLANNED')
       && addressLooksOff(s, note);
     const color = matched ? '#f59e0b'
+      : tractorDelivered ? TRACTOR_DELIVERED_COLOR
       : eligColor
       || flagHue
       || (addressOff ? ADDRESS_OFF_TINT : (meta.color || flagColor(note)));
@@ -1955,7 +2032,7 @@ function stopMarkerIcon(google, s, note, opts = {}) {
     };
   }
   // States B/C — restriction / receiving-hours icons; a priority flag recolors them.
-  const spec = iconMarkerSvg(restrictions, eligColor || flagHue);
+  const spec = iconMarkerSvg(restrictions, tractorDelivered ? TRACTOR_DELIVERED_COLOR : (eligColor || flagHue));
   return { url: spec.url, scaledSize: new google.maps.Size(spec.width, spec.height), anchor: new google.maps.Point(spec.anchor[0], spec.anchor[1]) };
 }
 
@@ -2556,6 +2633,13 @@ function Legend({ expanded, setExpanded }) {
                 <span className="w-2.5 h-2.5 rounded-full" style={{ background: UNFLAGGED_TINT }} />
                 <span>No notes</span>
               </div>
+            </div>
+          </div>
+          <div>
+            <div className="text-[10px] uppercase font-semibold text-slate-500 mb-1">Tractor delivered</div>
+            <div className="flex items-center gap-2">
+              <span className="w-3 h-3 rounded-full border-2 border-white shadow" style={{ background: TRACTOR_DELIVERED_COLOR, boxShadow: '0 0 0 1px rgba(0,0,0,0.15)' }} />
+              <span>Tractor delivered — a tractor driver has completed a delivery here (automatic, from saved history)</span>
             </div>
           </div>
           <div>
@@ -4400,6 +4484,13 @@ function StopDataSections({ stop, note, onRefreshed, onOpenRoute, onMoveLocation
   // "View delivery photo" button) back up to that parent.
   const live = stop;
   const stopKey = stop.stopNbr || stop.pro;
+  // Sticky tractor-delivered flag for this location (fetched once per page load,
+  // shared app-wide). Stops opened via PRO lookup may lack a precomputed
+  // matchKey — derive it the same way the map does.
+  const tractorLocs = useTractorLocations();
+  const tractorInfo = tractorLocs.get(
+    stop.matchKey || normalizeMatchKey(stop.businessName || '', stop.addr1 || '', stop.city || '', stop.zip || ''),
+  );
   const [showTicket, setShowTicket] = useState(false);
   const ticketHtml = useMemo(
     () => (showTicket ? buildTicketHtml(live, (typeof window !== 'undefined' ? window.location.origin : '') + '/davis-logo.jpg') : ''),
@@ -4408,6 +4499,13 @@ function StopDataSections({ stop, note, onRefreshed, onOpenRoute, onMoveLocation
   const textPhone = resolveStopPhone(live, note);
   return (
     <div className="px-4 py-3 border-b text-sm space-y-1">
+      {tractorInfo && (
+        <div className="flex items-center gap-1.5 text-xs font-semibold rounded px-2 py-1 -mx-0.5 mb-1"
+             style={{ color: '#3f6212', background: 'rgba(50,205,50,0.14)', border: `1px solid ${TRACTOR_DELIVERED_COLOR}` }}>
+          <span className="w-2.5 h-2.5 rounded-full border border-white flex-shrink-0" style={{ background: TRACTOR_DELIVERED_COLOR }} />
+          Tractor has delivered here{tractorInfo.last ? ` — last ${fmtTractorDate(tractorInfo.last)}` : ''}
+        </div>
+      )}
       <div>
         <div className="text-xs uppercase font-semibold text-slate-500 flex items-center gap-1.5">
           Address
@@ -6648,6 +6746,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef }) {
   const { scanning, scanCooldown, scanErr, manualScan } = useManualScan(selectedDate, lastScannedAt, refresh);
 
   const { notes, ready: notesReady } = useCustomerNotes();
+  const tractorLocs = useTractorLocations();
   useAutoScanner(stops, notes, notesReady);
   const { google, error: mapsError } = useGoogleMaps();
   const viewportWidth = useViewportWidth();
@@ -7409,7 +7508,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef }) {
       // The rich per-stop icon (DNS / numbered route / status-flag-window /
       // restriction) is built by the shared stopMarkerIcon helper so the Map and
       // Routing screens stay pixel-identical.
-      const icon = stopMarkerIcon(google, s, note, { selectedDayKey, matched, inRoute, seq });
+      const icon = stopMarkerIcon(google, s, note, { selectedDayKey, matched, inRoute, seq, tractorDelivered: tractorLocs.has(s.matchKey) });
       const marker = new google.maps.Marker({
         position: { lat: s.lat, lng: s.lng },
         icon,
@@ -7433,7 +7532,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef }) {
     } else {
       newMarkers.forEach((m) => m.setMap(mapRef.current));
     }
-  }, [google, filteredStops, notes, effectiveMatchSet, mapFilters.showClustered, selectedDate, selectedRoute, selectedRouteStops]);
+  }, [google, filteredStops, notes, tractorLocs, effectiveMatchSet, mapFilters.showClustered, selectedDate, selectedRoute, selectedRouteStops]);
 
   // Center/zoom the map to fit a route's stops when it's opened (per dispatcher
   // request — NuVizz frames the route on open). Restores the prior board view on close.
@@ -11587,6 +11686,7 @@ function RoutingScreen({ debugCaptureRef }) {
     return out;
   }, [selectedDate, refreshStops]);
   const { notes } = useCustomerNotes();
+  const tractorLocs = useTractorLocations();
   const { profiles, saveProfile } = useTruckProfiles();
   const { google, error: mapsError } = useGoogleMaps();
   const viewportWidth = useViewportWidth();
@@ -13063,6 +13163,7 @@ function RoutingScreen({ debugCaptureRef }) {
         inRoute: numbered,
         seq: ri?.seq,
         routeColor: ri?.color,
+        tractorDelivered: tractorLocs.has(s.matchKey),
       });
       const baseZ = numbered ? 30 : (sel ? 25 : 10);
       const marker = new google.maps.Marker({
@@ -13089,7 +13190,7 @@ function RoutingScreen({ debugCaptureRef }) {
     });
     markerByIdRef.current = byId;
     lastEmphRef.current = hoverIdRef.current; // markers were built already-emphasized
-  }, [google, vPositioned, viewing, selectedIds, effectiveRouteInfo, notes, toggleStop, mapReady, selectedDayKey, emphIcon]);
+  }, [google, vPositioned, viewing, selectedIds, effectiveRouteInfo, notes, tractorLocs, toggleStop, mapReady, selectedDayKey, emphIcon]);
 
   // Hover emphasis — touch only the two affected markers, not all of them. Keeps
   // the sequence label intact (only the icon scale/ring change).
