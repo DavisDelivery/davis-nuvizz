@@ -54,7 +54,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.45.9';
+const APP_VERSION = '0.45.11';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -99,6 +99,8 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.45.11', 'FIX: the bottom grid\'s date-window view now reflects a just-saved build IMMEDIATELY, same as the map — the confirmed-save overlay was painted onto the board/map but the window grid kept its already-fetched rows until a re-pull or scan (Chad: "the map reflects the work I\'ve done, the bottom panel does not"). Every confirmed Save now re-paints the grid in place. FIX: the printed Driver Manifest header now shows the ROUTE NAME (e.g. "TRAILER 3") — a freshly built card\'s stops don\'t carry the route name yet, so it printed a generic "Route".'],
+  ['0.45.10', 'The bottom grid\'s ±7-day window now shows a DAY column — the "drift" between the map selection and the grid count was the window quietly mixing three different days\' work in one list: past carry-over (amber ◂), TODAY (blue), and FUTURE-day orders (violet ▸, e.g. tomorrow\'s appointments that are SUPPOSED to be unplanned tonight). The column only appears in a window pull; the normal Board (today) view is unchanged. Sort by it to split today\'s backlog from future work at a glance.'],
   ['0.45.9', 'FIX (route order in production): a PICKUP-type order — a return / RA — placed in the MIDDLE of a route was landing at delivery #1 in NuVizz no matter where you sequenced it. The RWB save loads every stop at the depot up front and delivers the rest in your order; a pickup\'s real customer visit is its "pickup" leg, but that leg was being emitted in the front depot block, so the driver hit it first. Pickups now ride their customer visit at the exact position you put them in, and return to the depot at the end. Pure delivery routes are byte-for-byte unchanged. NOTE: correct a route you already saved with an RA out of place by re-sequencing it once more and Saving (or drag it in the NuVizz portal for tonight).'],
   ['0.45.8', 'Reverted the bottom-grid date-window selector back to its original three choices — Board (today) / NuVizz · Today / NuVizz · ±7 days — on both the Map and Routing screens (per request). The extra ±3/±14/±30 presets and the Custom From/To range are gone; the toolbar reads exactly as before. Under the hood ±7 days still reads our board cache so it can\'t time out, and selecting ±7 days still puts that week\'s orders on the routing map to select/plan — only the picker UI changed back.'],
   ['0.45.7', 'FIX: fixing an address or moving the pin for an order pulled in via a Board date window/range made its pin VANISH until a full map refresh. The map added other-day window orders only if they ALREADY had a location, so a just-corrected order (its new pin lives in customer overrides) wasn\'t in the map\'s set for the override to apply to — it stayed invisible until the next scan re-geocoded it. The map now keeps those orders in its set so a corrected address/pin shows LIVE, the moment you save. FIX: "Debug this view" could fail with a GitHub "bad request" — the issue text was truncated with a plain cut that could split an emoji/special character and leave a broken byte GitHub rejects; truncation is now character-safe, and the error now shows GitHub\'s real reason (and says to rotate the token on a 401).'],
@@ -4148,9 +4150,12 @@ function manifestOrigin(stops) {
   }
   return '';
 }
-function buildManifestHtml(stops, logoUrl) {
+function buildManifestHtml(stops, logoUrl, routeNameOverride = null) {
   const ordered = orderRouteStops(stops);
-  const routeName = loadDisplayName(ordered.find((s) => s.routeName)?.routeName, ordered.find((s) => s.loadNbr)?.loadNbr) || 'Route';
+  // Prefer the CALLER's route name (the Compare card's) — a freshly built card's stops don't
+  // carry routeName yet (the plan lives on the card until a scan), which printed plain "Route".
+  const routeName = routeNameOverride
+    || loadDisplayName(ordered.find((s) => s.routeName)?.routeName, ordered.find((s) => s.loadNbr)?.loadNbr) || 'Route';
   const driver = ordered.find((s) => s.driverName)?.driverName || ordered.find((s) => s.driverUserName)?.driverUserName || '—';
   const origin = manifestOrigin(ordered);
   // Per-stop ticket data once, reused for the totals and the page bodies.
@@ -8453,7 +8458,7 @@ const LOAD_BUCKET_STYLE = {
   cancelled: 'bg-red-100 text-red-700',
 };
 
-function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open, setOpen, onPick, onPickLoad, headerRight, onWindowRowsChange }) {
+function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open, setOpen, onPick, onPickLoad, headerRight, onWindowRowsChange, planVersion = 0 }) {
   // Loads view groups the FULL board's loads (loadStops) so stop-level filters —
   // notably "Unplanned only" — don't empty it. Falls back to the visible stops.
   const loadSrc = loadStops || stops;
@@ -8496,8 +8501,28 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
     document.addEventListener('pointermove', move);
     document.addEventListener('pointerup', up);
   };
+  // A stop's calendar day for the multi-day window view. Board mode never shows it.
+  const rowDayOf = (s) => s.boardDate || s.scheduledDate || s.requestedDate || '';
+  const todayET = todayInET();
   const cols = [
     { k: 'stop', label: 'Stop #', w: 96, get: (s) => <span className="font-mono text-blue-700">{s.stopNbr}</span>, sortVal: (s) => (Number.isFinite(Number(s.stopNbr)) ? Number(s.stopNbr) : s.stopNbr) },
+    // DAY — only in a date-window pull. A ±7-day list mixes past carry-over, today, and
+    // FUTURE-day orders (tomorrow's appointments legitimately sit unplanned tonight); without
+    // this column those read as one big backlog and the counts look "drifted" vs the board.
+    ...(nvWindow ? [{
+      k: 'day', label: 'Day', w: 92,
+      get: (s) => {
+        const d = rowDayOf(s);
+        if (!d) return <span className="text-slate-400">—</span>;
+        const label = d.slice(5).replace('-', '/');
+        return d === todayET
+          ? <span className="font-semibold text-blue-700">today</span>
+          : d < todayET
+            ? <span className="text-amber-700" title={`Carry-over from ${d}`}>{label} ◂</span>
+            : <span className="text-violet-700" title={`Future delivery day ${d}`}>{label} ▸</span>;
+      },
+      sortVal: (s) => rowDayOf(s) || '~',
+    }] : []),
     { k: 'name', label: 'Ship To Name', w: 220, get: (s) => s.businessName || '—', sortVal: (s) => s.businessName },
     { k: 'addr1', label: 'Address 1', w: 200, get: (s) => s.addr1 || '—', sortVal: (s) => s.addr1 },
     { k: 'addr2', label: 'Address 2', w: 150, get: (s) => s.addr2 || '', sortVal: (s) => s.addr2 },
@@ -8514,7 +8539,12 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
     { k: 'driver', label: 'Driver', w: 150, get: (s) => s.driverName || '', sortVal: (s) => s.driverName },
   ];
   // Board mode shows today's loaded stops; NuVizz mode shows the live-pulled set.
-  const baseStops = nvWindow ? nvRows : stops;
+  // The confirmed-save plan overlay is applied to WINDOW rows too (board-mode `stops`
+  // already carry it via useStops) and re-applied on every save (planVersion bump) — the
+  // map reflected a just-built load immediately but this grid kept the pre-save rows
+  // until a refetch/scan (Chad's "the map reflects my work, the bottom panel does not").
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const baseStops = useMemo(() => (nvWindow ? applyPlanOverlay(nvRows) : stops), [nvWindow, nvRows, stops, planVersion]);
   // Pull from NuVizz whenever a date window is selected (re-pull when the status
   // selection changes so status filters server-side, not just on the loaded page).
   useEffect(() => {
@@ -11486,6 +11516,7 @@ function RoutingScreen({ debugCaptureRef }) {
     //    doesn't depend on the server at all, so no cache keying or sync failure can
     //    make a confirmed save look unbuilt here again.
     recordPlanOverlay(patch);
+    setPlanVersion((v) => v + 1); // re-paint consumers that hold already-fetched rows (bottom grid window mode)
     // 2) Server write-through (+ carry-over rescue) so other devices/tabs agree too.
     //    Returns {patched, missing, rescued} so the Save toast can surface a miss.
     let out = null;
@@ -11566,6 +11597,9 @@ function RoutingScreen({ debugCaptureRef }) {
   // A map-marker click, a ProLink #pro, or any panel row's onOpenStop sets this;
   // the right rail then renders RoutingStopPanel over whatever tab/mode is active.
   const [panelStop, setPanelStop] = useState(null);
+  // Bumped on every confirmed Save so components holding already-fetched rows (the bottom
+  // grid's window mode) re-apply the plan overlay immediately instead of waiting for a scan.
+  const [planVersion, setPlanVersion] = useState(0);
   // Customer-history overlay (the stop panel's "History" button) — the same Firestore-only
   // lookup as the Map screen: this location's past PROs + date + who delivered each.
   // Distinct from the per-order Activity timeline; never makes a NuVizz call.
@@ -11983,7 +12017,7 @@ function RoutingScreen({ debugCaptureRef }) {
     const stops = route.order.map((id) => stopById.get(String(id))).filter(Boolean);
     if (!stops.length) { setLastAction(`${loadDisplayName(key)} has no stops to print`); return; }
     const logo = (typeof window !== 'undefined' ? window.location.origin : '') + '/davis-logo.jpg';
-    setWbManifest({ title: `Driver Manifest · ${loadDisplayName(key)}`, html: buildManifestHtml(stops, logo) });
+    setWbManifest({ title: `Driver Manifest · ${loadDisplayName(key)}`, html: buildManifestHtml(stops, logo, loadDisplayName(key) || String(key)) });
   }, [wbRoutes, stopById]);
   // Ninja-add: append a clicked stop to the active route (in click order), removing it from any
   // OTHER open route so a stop only ever sits on one compare-panel card. No-op if it's already there.
@@ -13413,6 +13447,7 @@ function RoutingScreen({ debugCaptureRef }) {
             onPick={pickStopFromTable}
             onPickLoad={pickLoadToCompare}
             onWindowRowsChange={setGridWindowStops}
+            planVersion={planVersion}
           />}
         </div>
         <div className="border-t bg-white flex flex-col shrink-0" style={{ height: sheetOpen ? '50%' : 'auto' }}>
@@ -13571,6 +13606,7 @@ function RoutingScreen({ debugCaptureRef }) {
           onPickLoad={pickLoadToCompare}
           headerRight={bottomGridHeaderRight}
           onWindowRowsChange={setGridWindowStops}
+          planVersion={planVersion}
         />}
       </div>
 
