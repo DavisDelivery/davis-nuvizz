@@ -54,7 +54,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.45.8';
+const APP_VERSION = '0.45.9';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -99,6 +99,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.45.9', 'FIX (route order in production): a PICKUP-type order — a return / RA — placed in the MIDDLE of a route was landing at delivery #1 in NuVizz no matter where you sequenced it. The RWB save loads every stop at the depot up front and delivers the rest in your order; a pickup\'s real customer visit is its "pickup" leg, but that leg was being emitted in the front depot block, so the driver hit it first. Pickups now ride their customer visit at the exact position you put them in, and return to the depot at the end. Pure delivery routes are byte-for-byte unchanged. NOTE: correct a route you already saved with an RA out of place by re-sequencing it once more and Saving (or drag it in the NuVizz portal for tonight).'],
   ['0.45.8', 'Reverted the bottom-grid date-window selector back to its original three choices — Board (today) / NuVizz · Today / NuVizz · ±7 days — on both the Map and Routing screens (per request). The extra ±3/±14/±30 presets and the Custom From/To range are gone; the toolbar reads exactly as before. Under the hood ±7 days still reads our board cache so it can\'t time out, and selecting ±7 days still puts that week\'s orders on the routing map to select/plan — only the picker UI changed back.'],
   ['0.45.7', 'FIX: fixing an address or moving the pin for an order pulled in via a Board date window/range made its pin VANISH until a full map refresh. The map added other-day window orders only if they ALREADY had a location, so a just-corrected order (its new pin lives in customer overrides) wasn\'t in the map\'s set for the override to apply to — it stayed invisible until the next scan re-geocoded it. The map now keeps those orders in its set so a corrected address/pin shows LIVE, the moment you save. FIX: "Debug this view" could fail with a GitHub "bad request" — the issue text was truncated with a plain cut that could split an emoji/special character and leave a broken byte GitHub rejects; truncation is now character-safe, and the error now shows GitHub\'s real reason (and says to rotate the token on a 401).'],
   ['0.45.6', 'FIX: the bottom Stops grid could show "No stops match" even with hundreds of stops in the window — a leftover term in the shared Search box (it\'s used by both Stops and Loads) was filtering everything out, and with the Compare panel open the box shrank to just an icon so you couldn\'t SEE the stray text. The search box now keeps a minimum width and shows a clear-✕ (and highlights) whenever it holds text, and the empty grid now says exactly what\'s hiding the rows ("None of the N stops match — hidden by search “…” / status / driver / no-location") with a one-click Clear filters button. No stray filter can silently blank the grid again.'],

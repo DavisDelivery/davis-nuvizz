@@ -45,7 +45,7 @@ function makeRequester({ saveBody = { responseCode: 200 }, saveStatus = 200, loa
     requester: {
       async request(url, opts, meta) {
         const method = (opts.method || 'GET').toUpperCase();
-        calls.push({ url, method, route: meta?.route, headers: opts.headers || {} });
+        calls.push({ url, method, route: meta?.route, headers: opts.headers || {}, body: opts.body });
         const J = (obj, status = 200) => new Response(JSON.stringify(obj), { status });
         const T = (txt, status = 200) => new Response(txt, { status });
         // ── RWB portal login + flow (different hosts) ──
@@ -130,6 +130,42 @@ test('rwbSequenceStops: portal calls carry browser-identity headers matching the
     assert.equal(save.headers['sec-fetch-mode'], 'cors');
     // The real portal does NOT send X-Requested-With — neither should we.
     assert.equal(save.headers['x-requested-with'], undefined);
+  });
+});
+
+test('rwbSequenceStops: delivery-only stoplist keeps the original [all _PU..., all _DO...] shape', async () => {
+  // REGRESSION PIN for the pickup-leg fix: with no pickupLegIds the payload must be
+  // byte-identical to the pre-fix shape — depot _PU block up front, customer _DO block after.
+  await withRwb({}, async () => {
+    const { requester, calls } = makeRequester();
+    const r = await rwbSequenceStops(requester, HEXID, ['id-A', 'id-B', 'id-C'], { lat: 34, lng: -83 });
+    assert.equal(r.ok, true);
+    const fuj = calls.find((c) => c.url.includes('fetchUpdatedJson'));
+    assert.equal(String(fuj.body.get('stoplist')), 'id-A_PU,id-B_PU,id-C_PU,id-A_DO,id-B_DO,id-C_DO');
+  });
+});
+
+test('rwbSequenceStops: a PICKUP order (RA/return) rides its _PU leg at the REQUESTED position', async () => {
+  // The "RA placed 11th, ran 1st" bug: a pickup order's customer visit is the _PU leg, so it
+  // must sit at the dispatcher's position in the visit sequence — never in the front depot
+  // block — and its _DO (return to depot) goes to the tail.
+  await withRwb({}, async () => {
+    const { requester, calls } = makeRequester();
+    const r = await rwbSequenceStops(requester, HEXID, ['id-A', 'id-RA', 'id-B'], { lat: 34, lng: -83 }, ['id-RA']);
+    assert.equal(r.ok, true);
+    const fuj = calls.find((c) => c.url.includes('fetchUpdatedJson'));
+    assert.equal(
+      String(fuj.body.get('stoplist')),
+      'id-A_PU,id-B_PU,id-A_DO,id-RA_PU,id-B_DO,id-RA_DO',
+      'deliveries load at the depot up front; the RA is VISITED second (its _PU), returns at the tail',
+    );
+    // The persisted save must mirror the same leg sequence.
+    const save = calls.find((c) => c.url.includes('saveComparedRouteData'));
+    const entries = JSON.parse(String(save.body.get('routeJsonData')));
+    assert.deepEqual(
+      entries[0].stopDataJsonArray.map((s) => s.stopId),
+      ['id-A_PU', 'id-B_PU', 'id-A_DO', 'id-RA_PU', 'id-B_DO', 'id-RA_DO'],
+    );
   });
 });
 
