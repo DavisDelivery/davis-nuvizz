@@ -54,7 +54,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.45.5';
+const APP_VERSION = '0.45.6';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -99,6 +99,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.45.6', 'FIX: the bottom Stops grid could show "No stops match" even with hundreds of stops in the window — a leftover term in the shared Search box (it\'s used by both Stops and Loads) was filtering everything out, and with the Compare panel open the box shrank to just an icon so you couldn\'t SEE the stray text. The search box now keeps a minimum width and shows a clear-✕ (and highlights) whenever it holds text, and the empty grid now says exactly what\'s hiding the rows ("None of the N stops match — hidden by search “…” / status / driver / no-location") with a one-click Clear filters button. No stray filter can silently blank the grid again.'],
   ['0.45.5', 'FIX: setting a date window/range on the bottom Stops grid was wiping the empty loads out of the Loads view — it dropped from all ~100 of the day\'s loads down to just the built routes. The Loads view is board-day scoped and shouldn\'t be touched by the Stops-view date filter at all, but the day\'s load roster (the empty "No orders yet · Draft" loads) was gated off whenever a window was set. The Loads view now always shows the full board-day roster — every empty load, filled route, and its driver — regardless of what date window the Stops grid is on.'],
   ['0.45.4', 'EVERY ORDER IN THE BOTTOM GRID IS NOW ON THE MAP TO SELECT + PLAN. Before, the routing map only showed the single board day you\'d picked, so when the grid was set to a Board window/range (±7/±14/±30 or a Custom range) the earlier-day unplanned orders it listed had no pin — you couldn\'t box/lasso them onto a load. Now the map ADDS every coord-bearing order from the grid\'s active window (deduped against the day board, which keeps its live status), so select-all on the map matches the grid and you can plan the whole backlog of unplanned orders in one pass. (Orders with no location still can\'t be pinned — the amber "N no location" chip from v0.45.3 flags those to fix first.)'],
   ['0.45.3', 'WHY THE MAP SELECTION AND THE BOTTOM GRID DIDN\'T MATCH — the grid lists every order, but the MAP only shows orders that have a geocoded location, so a stop with a bad/unrecognized address appears in the grid yet has NO pin: it can\'t be box/lasso-selected and, more importantly, can\'t be routed — that\'s how one gets silently missed. The bottom grid now shows an amber "N no location" chip whenever any listed stop has no map pin; click it to isolate exactly those orders and fix each address (Edit address / Correct pin) so they land on the map and become routable. (The other reason the two counts differ: a Board window/range like "±7 days" or a Custom range shows MULTIPLE days, while the map always shows just the one board day you\'ve picked — set the grid to "Board (today)" to mirror the map.)'],
@@ -8706,6 +8707,16 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
   const sortedRows = useMemo(() => sortRows(rows, cols, stopSort), [rows, stopSort]); // eslint-disable-line react-hooks/exhaustive-deps
   const sortedLoadRows = useMemo(() => sortRows(loadRows, loadCols, loadSort), [loadRows, loadSort]); // eslint-disable-line react-hooks/exhaustive-deps
   const toggleStatus = (k) => setStatusSel((prev) => { const n = new Set(prev); n.has(k) ? n.delete(k) : n.add(k); return n; });
+  const anyFilterActive = !!(q.trim() || statusSel.size || driverSel || unmappedOnly);
+  const clearAllFilters = () => { setQ(''); setStatusSel(new Set()); setDriverSel(''); setUnmappedOnly(false); };
+  // Human list of what's currently hiding rows — powers the "0 shown but N exist" empty state so a
+  // stray (and, with the panel narrow, invisible) search term can never silently blank the grid.
+  const activeFilterLabels = [
+    q.trim() && `search “${q.trim()}”`,
+    !nvWindow && statusSel.size && `status (${statusSel.size})`,
+    driverSel && `driver “${driverSel}”`,
+    unmappedOnly && 'no-location filter',
+  ].filter(Boolean);
   return (
     <div className="absolute left-0 right-0 bottom-0 z-[12] bg-white border-t border-slate-200 shadow-[0_-2px_10px_rgba(0,0,0,0.10)] flex flex-col" style={{ height: open ? height : undefined, maxHeight: open ? 'calc(100% - 4rem)' : undefined }}>
       {open && (
@@ -8752,14 +8763,21 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
         )}
         {open && (
           <>
-            <div className="relative flex-1 max-w-xs">
+            {/* min-w so the box never shrinks to an icon (hiding a stray term that blanks the grid);
+                a clear-× so leftover search text is always dismissable and highlighted when present. */}
+            <div className="relative flex-1 max-w-xs min-w-[130px]">
               <Search size={13} className="absolute left-2 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
               <input
                 value={q}
                 onChange={(e) => setQ(e.target.value)}
                 placeholder={view === 'loads' ? 'Search loads…' : 'Search table…'}
-                className="w-full border border-slate-300 rounded pl-7 pr-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-400"
+                className={'w-full border rounded pl-7 pr-6 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-400 ' + (q ? 'border-blue-400 bg-blue-50' : 'border-slate-300')}
               />
+              {q && (
+                <button onClick={() => setQ('')} title="Clear search" className="absolute right-1.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700">
+                  <X size={12} />
+                </button>
+              )}
             </div>
             {view === 'stops' && (
               <div className="relative">
@@ -8860,7 +8878,20 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
             </thead>
             <tbody>
               {sortedRows.length === 0 && (
-                <tr><td colSpan={cols.length} className="px-3 py-4 text-slate-400 italic text-center">No stops match.</td></tr>
+                <tr><td colSpan={cols.length} className="px-3 py-5 text-center">
+                  {baseStops.length > 0 && activeFilterLabels.length ? (
+                    // There ARE stops in this window/board — a filter is hiding them. Say which, and
+                    // give a one-click clear (the invisible-search-term trap that blanked the grid).
+                    <div className="text-xs text-slate-500 space-y-2">
+                      <div>None of the <span className="font-semibold">{baseStops.length.toLocaleString()}</span> stops in this {nvWindow ? 'window' : 'board'} match — hidden by {activeFilterLabels.join(', ')}.</div>
+                      <button onClick={clearAllFilters} className="inline-flex items-center gap-1 px-2.5 py-1 rounded border border-blue-400 text-blue-700 bg-blue-50 hover:bg-blue-100 text-xs font-semibold">
+                        <X size={12} /> Clear filters
+                      </button>
+                    </div>
+                  ) : (
+                    <span className="text-slate-400 italic">No stops match.</span>
+                  )}
+                </td></tr>
               )}
               {sortedRows.map((s) => (
                 <tr
