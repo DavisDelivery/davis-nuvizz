@@ -340,6 +340,40 @@ export function periodForDate(targetDateUTC: string, etToday: string = etDayStri
   return off === 0 ? '0d' : (off > 0 ? `+${off}d` : `${off}d`);
 }
 
+// ── Explicit calendar range → relative period (+ exact row filter) ───────────
+//
+// NuVizz's list filter only speaks RELATIVE periods ("0d", "+/-7d", "+Nd"); it has no
+// absolute from/to. So a user-picked calendar range (the bottom grid's "Custom range")
+// is served by pulling the smallest SYMMETRIC "+/-Nd" window that covers both endpoints
+// and then filtering the returned rows to the exact range (rowInRange). One cheap list
+// pull regardless of range width — same 2-call cost as any window.
+
+// Smallest "+/-Nd" that covers [from,to] around NuVizz's ET "today". Padded by one day so
+// an ET/local off-by-one at the client can't clip an edge day, and capped at maxDays so a
+// stray/huge range can't request an enormous window. PURE — unit-tested.
+export function coveringPeriodForRange(from: string, to: string, etToday: string = etDayString(), maxDays = 60): string {
+  const dayMs = (s: string) => Date.parse(String(s) + 'T00:00:00Z');
+  const t = dayMs(etToday);
+  const spread = [from, to].map((d) => Math.abs(Math.round((dayMs(d) - t) / 86400000))).filter((n) => Number.isFinite(n));
+  const n = Math.min(maxDays, Math.max(1, (spread.length ? Math.max(...spread) : 1) + 1)); // +1 day pad
+  return `+/-${n}d`;
+}
+
+// The delivery day (YYYY-MM-DD) of an intermediate list row — Estimated Arrival, then
+// Requested Date (mirrors toBoardStop's boardDate, WITHOUT the live-route clamp so the
+// explorer shows a stop on its real scheduled day). Null when neither is parseable.
+export function rowDay(r: any): string | null {
+  const s = parseSchedDate(r?.scheduledArrival);
+  return (s ? s.date : null) || parseReqDate(r?.requestedArrival) || null;
+}
+
+// PURE: is an intermediate row's delivery day within [from,to] (inclusive)? Undated rows
+// are excluded (they can't be placed in a calendar range). Exported for tests.
+export function rowInRange(r: any, from: string, to: string): boolean {
+  const d = rowDay(r);
+  return !!d && d >= from && d <= to;
+}
+
 // Pull all stops for a single Estimated-Arrival day (one request). Rides the shared
 // requester so calls count in the dashboard + honor the breaker.
 export async function fetchListRows(period: string, statusCsv: string = LIST_STATUS): Promise<any[]> {

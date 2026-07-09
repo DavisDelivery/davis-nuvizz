@@ -54,7 +54,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.44.1';
+const APP_VERSION = '0.45.0';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -99,6 +99,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.45.0', 'Bottom grid "pull from NuVizz" — MORE date windows + a settable RANGE, and a fix for the ±7-day error. The window dropdown now offers Today, ±3, ±7, ±14, ±30 days, plus "Custom range…" — pick a From and To calendar date and the grid pulls exactly those delivery days. (NuVizz only understands relative windows, so a custom range pulls the smallest covering window in ONE cheap list call and filters to your exact dates server-side — still ~2 NuVizz calls, never a re-scan.) FIX: selecting ±7 days (or any wide window) could fail with "NuVizz: Unexpected token \'<\'… is not valid JSON" — a large pull was overrunning the function\'s 10s limit and coming back as an HTML error page. The explorer now has 26s of headroom, aborts cleanly at 22s, doesn\'t burn the budget on retries, and turns any non-JSON upstream reply into a plain "window may be too large — try a narrower range" message instead of a raw parse error.'],
   ['0.44.1', '🔗 RWB engine — the portal calls now carry a real browser identity instead of the Node/undici default: User-Agent, Accept, Accept-Language, and the Chrome client hints (sec-ch-ua*, sec-fetch-*), all matched to the dispatcher\'s actual macOS Chrome from a live Route Workbench HAR. (Content-Type stays multipart/form-data — the HAR confirmed the real portal uses that too. X-Requested-With is intentionally NOT sent — the real portal doesn\'t.) Override the UA with NUVIZZ_RWB_USER_AGENT. This closes the header-level fingerprint gap; the request bodies/ids were already HAR-matched.'],
   ['0.44.0', 'Per-action NuVizz call counter on every Compare-panel Save — the success toast now shows how many NuVizz calls that action actually made (e.g. "✓ 1 load saved · 3 NuVizz calls (2 RWB portal)"). "RWB portal" = just the Route-Workbench portal writes (preview / save / validate / add) — the calls that show in the real RWB HAR, so you can reconcile each action against it; the total also counts any cold-start login + safety re-reads. Server-measured as an exact before/after delta on the metered requester, so it\'s the real billed count, not an estimate.'],
   ['0.43.1', 'Customer History (the stop-card button) is now strictly READ-ONLY from our saved Firestore history — it can never make a NuVizz call. The shared history overlay used to offer a one-off "Look up PRO in NuVizz" button when you typed an unknown PRO; that stays on the top "Search past PROs" search box, but the per-customer History view opened from a stop card suppresses it entirely (shows "Shows only our saved delivery history — no NuVizz calls").'],
@@ -8398,7 +8399,11 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
   // fetched straight from NuVizz's stop list (any delivery-date window / status)
   // instead of today's board — e.g. "all unplanned ±7 days". Driver is a local
   // refinement applied to whatever rows are shown.
-  const [nvWindow, setNvWindow] = useState(''); // '' = board; else arrival period ('0d','+/-7d')
+  const [nvWindow, setNvWindow] = useState(''); // '' = board; else arrival period ('0d','+/-7d','+/-30d','custom')
+  // Custom calendar range for the "Custom range…" window. NuVizz has no absolute from/to,
+  // so the server pulls the covering relative window once and filters rows to [from,to].
+  const [nvFrom, setNvFrom] = useState('');
+  const [nvTo, setNvTo] = useState('');
   const [nvRows, setNvRows] = useState([]);
   const [nvTotal, setNvTotal] = useState(0);
   const [nvLoading, setNvLoading] = useState(false);
@@ -8446,12 +8451,20 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
   // selection changes so status filters server-side, not just on the loaded page).
   useEffect(() => {
     if (!nvWindow) { setNvErr(null); return; }
+    // Custom range needs both endpoints before it can pull.
+    const custom = nvWindow === 'custom';
+    if (custom && (!nvFrom || !nvTo)) { setNvErr(null); setNvLoading(false); return; }
     let cancelled = false;
     const codes = TABLE_STATUS_BUCKETS.filter((b) => statusSel.has(b.k)).flatMap((b) => b.codes);
+    // A wider window / range needs a higher row cap to return the stops in it — still ONE
+    // cheap NuVizz list call (maxResult is rows-per-call, not extra calls).
+    const req = custom
+      ? { fromDate: nvFrom, toDate: nvTo, statusCodes: codes, page: 1, pageSize: 1000 }
+      : { arrivalPeriod: nvWindow, statusCodes: codes, page: 1, pageSize: 1000 };
     setNvLoading(true); setNvErr(null);
     fetch('/.netlify/functions/nuvizz-stop-explorer', {
       method: 'POST', cache: 'no-store', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ arrivalPeriod: nvWindow, statusCodes: codes, page: 1, pageSize: 200 }),
+      body: JSON.stringify(req),
     })
       .then((r) => r.json())
       .then((j) => {
@@ -8467,7 +8480,7 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
       .catch((e) => { if (!cancelled) { setNvErr(e.message); setNvRows([]); setNvTotal(0); } })
       .finally(() => { if (!cancelled) setNvLoading(false); });
     return () => { cancelled = true; };
-  }, [nvWindow, statusSel]);
+  }, [nvWindow, nvFrom, nvTo, statusSel]);
   const driverOptions = useMemo(() => {
     const set = new Set();
     for (const s of baseStops) if (s.driverName) set.add(s.driverName);
@@ -8657,14 +8670,38 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
               <>
                 <select
                   value={nvWindow}
-                  onChange={(e) => setNvWindow(e.target.value)}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    // Seed the custom pickers to the board day so they open somewhere sensible.
+                    if (v === 'custom' && !nvFrom && !nvTo) { setNvFrom(boardDate || ''); setNvTo(boardDate || ''); }
+                    setNvWindow(v);
+                  }}
                   title="Data source / delivery-date window"
                   className="hidden sm:inline-block border border-slate-300 rounded px-1.5 py-1 text-xs text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-400"
                 >
                   <option value="">Board (today)</option>
                   <option value="0d">NuVizz · Today</option>
+                  <option value="+/-3d">NuVizz · ±3 days</option>
                   <option value="+/-7d">NuVizz · ±7 days</option>
+                  <option value="+/-14d">NuVizz · ±14 days</option>
+                  <option value="+/-30d">NuVizz · ±30 days</option>
+                  <option value="custom">NuVizz · Custom range…</option>
                 </select>
+                {nvWindow === 'custom' && (
+                  <span className="hidden sm:inline-flex items-center gap-1">
+                    <input
+                      type="date" value={nvFrom} max={nvTo || undefined}
+                      onChange={(e) => setNvFrom(e.target.value)} title="From delivery date"
+                      className="border border-slate-300 rounded px-1 py-1 text-xs text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-400"
+                    />
+                    <span className="text-slate-400">–</span>
+                    <input
+                      type="date" value={nvTo} min={nvFrom || undefined}
+                      onChange={(e) => setNvTo(e.target.value)} title="To delivery date"
+                      className="border border-slate-300 rounded px-1 py-1 text-xs text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-400"
+                    />
+                  </span>
+                )}
                 <select
                   value={driverSel}
                   onChange={(e) => setDriverSel(e.target.value)}
@@ -8676,11 +8713,13 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
                 </select>
                 {nvWindow && (
                   <span className="hidden sm:inline text-[11px] text-slate-500 whitespace-nowrap">
-                    {nvLoading
-                      ? <span className="inline-flex items-center gap-1"><RefreshCw size={11} className="animate-spin" /> pulling…</span>
-                      : nvErr
-                        ? <span className="text-red-600">NuVizz: {nvErr}</span>
-                        : <>NuVizz · {nvTotal.toLocaleString()} stops</>}
+                    {nvWindow === 'custom' && (!nvFrom || !nvTo)
+                      ? <span className="text-slate-400">pick a date range</span>
+                      : nvLoading
+                        ? <span className="inline-flex items-center gap-1"><RefreshCw size={11} className="animate-spin" /> pulling…</span>
+                        : nvErr
+                          ? <span className="text-red-600">NuVizz: {nvErr}</span>
+                          : <>NuVizz · {nvTotal.toLocaleString()} stops</>}
                   </span>
                 )}
               </>
