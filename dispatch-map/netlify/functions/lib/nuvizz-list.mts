@@ -665,6 +665,46 @@ export function applyBoardWriteGrace(fresh: any, prior: any, nowMs: number, grac
   return true;
 }
 
+// ── Demotion verify (Jul 9 SEAAGRI) ──────────────────────────────────────────
+//
+// Past the write-grace window the list used to win UNCONDITIONALLY — but NuVizz's saved-search
+// index can stay wrong for HOURS about a stop the portal itself shows planned (the half-applied
+// DAWSONVILLE edit left 007144188 listed un-planned while the load held it, so the board dropped
+// it off Leroy's route with the truck already rolling, and every rescan re-dropped it). So a
+// fresh list row may NOT flip a previously-PLANNED row to unplanned on the list's word alone:
+// `lookup` asks NuVizz's own stop record (one /stop/info) whether the stop is still assigned.
+//   lookup → true   the list is WRONG → keep the prior plan fields (re-check next scan)
+//   lookup → false  a real portal unplan → the demotion stands
+//   lookup → null   read failed → HOLD the prior plan this cycle (never drop a stop off a live
+//                   route on a failed read); the next scan retries
+// Flips beyond `max` are HELD unverified — a mass flip looks like a feed hiccup, and holding one
+// tick is cheaper than wiping live routes. max<=0 disables (legacy list-wins). Checks mutate the
+// fresh rows in place, exactly like applyBoardWriteGrace.
+export const PLAN_FIELDS = ['status', 'normalizedStatus', 'isPlanned', 'isUnplanned', 'loadNbr', 'routeName', 'routeSeq', 'driverName', 'driverUserName'] as const;
+export async function applyDemotionVerify(
+  checks: Array<{ s: any; p: any }>,
+  opts: { max: number; scannedAt: string; lookup: (stopNbr: string) => Promise<boolean | null> },
+): Promise<{ kept: number; held: number; dropped: number }> {
+  let kept = 0, held = 0, dropped = 0;
+  if (!checks.length) return { kept, held, dropped };
+  if (!(opts.max > 0)) return { kept, held, dropped: checks.length };   // disabled → list wins
+  const keepPlan = (s: any, p: any) => {
+    for (const k of PLAN_FIELDS) s[k] = p[k] ?? null;
+    if (p.board_write_at) { s.board_write_at = p.board_write_at; s.board_write_planned = p.board_write_planned; }
+  };
+  const cap = Math.min(checks.length, opts.max);
+  for (const { s, p } of checks.slice(0, cap)) {
+    let stillPlanned: boolean | null = null;
+    try { stillPlanned = await opts.lookup(String(s.stopNbr)); } catch { /* read failed → hold */ }
+    if (stillPlanned === false) { dropped++; continue; }               // real unplan — list wins
+    keepPlan(s, p);
+    if (stillPlanned === true) { s.plan_verified_at = opts.scannedAt; kept++; }
+    else held++;
+  }
+  for (const { s, p } of checks.slice(cap)) { keepPlan(s, p); held++; }
+  return { kept, held, dropped };
+}
+
 // Exposed for tests: intermediate rows → board stops (dedup by stopNbr, last wins).
 export function fromRows(rows: any[]): any[] {
   const byNbr = new Map<string, any>();

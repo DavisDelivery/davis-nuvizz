@@ -54,7 +54,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.45.16';
+const APP_VERSION = '0.45.17';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -10774,6 +10774,10 @@ function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmN
   const showToast = useCallback((msg) => {
     setToast(msg);
     if (toastTimer.current) clearTimeout(toastTimer.current);
+    // A FAILURE message stays until dismissed — the BEN 2 refusal ("stop 007144371 couldn't be
+    // added — NuVizz still holds it on …") auto-vanished in 6s and truncated to "stop 0071…",
+    // leaving nothing to act on. Success/info toasts keep the quick auto-dismiss.
+    if (String(msg).trimStart().startsWith('✗')) return;
     toastTimer.current = setTimeout(() => setToast(null), 6000);
   }, []);
   useEffect(() => () => { if (toastTimer.current) clearTimeout(toastTimer.current); }, []);
@@ -11198,8 +11202,9 @@ function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmN
         </div>
       </div>
       {LIVE_WRITE_FLAG && toast && (
-        <div className="px-2 py-1 text-[11px] bg-slate-800 text-white shrink-0 flex items-center justify-between gap-2">
-          <span className="truncate">{toast}</span>
+        <div className="px-2 py-1 text-[11px] bg-slate-800 text-white shrink-0 flex items-start justify-between gap-2">
+          {/* Wrap, never truncate: a Save refusal must be readable in full (which stop, which load holds it, what to do). */}
+          <span className="whitespace-pre-wrap break-words min-w-0">{toast}</span>
           <button onClick={() => setToast(null)} className="text-slate-300 hover:text-white shrink-0" aria-label="Dismiss"><X size={12} /></button>
         </div>
       )}

@@ -685,6 +685,31 @@ test('runCommitBoardRwb: the one repair save rescues an order the first save dro
   });
 });
 
+test('runCommitBoardRwb: names the load NuVizz says holds a stop the save silently DROPPED (BEN 2)', async () => {
+  await withRwb({}, async () => {
+    // The BEN 2 failure (Jul 9, 11:16Z): every call 200-SUCCESSes but the save EJECTS a stop a
+    // ghost route still claims. The post-save verify must fail AND name the holding load from
+    // NuVizz's own stop record — "fell off, refresh" gave the dispatcher nothing to act on.
+    const loadStops = { value: ['A', 'B'] };
+    const base = makeRequester({ loadStops, stopHolders: { B: 'DAVIS000GHOST' }, applySave: false });
+    const real = base.requester.request;
+    base.requester.request = async (url, opts, meta) => {
+      if (url.includes('saveComparedRouteData')) {
+        try {
+          const e = JSON.parse(String(opts.body.get('routeJsonData') || ''))[0];
+          loadStops.value = e.tripDataJsonArray.map((id) => String(id).replace(/^id-/, '')).filter((n) => n !== 'B');
+        } catch { /* keep */ }
+        return new Response(JSON.stringify({ responseCode: 200, message: 'SUCCESS' }), { status: 200 });
+      }
+      return real(url, opts, meta);
+    };
+    const r = await runCommitBoardRwb(base.requester, { loads: [{ loadNbr: 'DAVIS000000123', loadId: HEXID, orderedStopNbrs: ['A', 'B'] }] }, CREDS);
+    assert.equal(r.ok, false, 'must NOT report saved when NuVizz ejected a stop');
+    assert.match(String(r.loads[0].error || ''), /dropped stop B/i);
+    assert.match(String(r.loads[0].error || ''), /DAVIS000GHOST/, 'the holding load is named');
+  });
+});
+
 test('runCommitBoardRwb: FAILS LOUDLY when a removal is accepted but never applied', async () => {
   await withRwb({}, async () => {
     const loadStops = { value: ['A', 'B'] };
