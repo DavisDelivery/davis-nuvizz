@@ -54,7 +54,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.45.27';
+const APP_VERSION = '0.45.28';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -4857,9 +4857,45 @@ function StopNotesEditor({ draft, setDraft, compact = false, drivers = [] }) {
   );
 }
 
+// Compact month/day/year for the recent-PRO chips (YYYY-MM-DD → MM/DD/YY). Non-ISO input passes
+// through unchanged.
+function fmtMdy(ymd) {
+  const m = String(ymd || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  return m ? `${m[2]}/${m[3]}/${m[1].slice(2)}` : (ymd || '');
+}
+
+// Session cache: customer name → Map(pro → driver) from the Firestore history rollup, so a
+// re-opened stop panel doesn't re-fetch. pro_history stores only {pro,date}; the rollup
+// (nuvizz-customer-history, zero NuVizz calls) carries the driver who ran each PRO.
+const _proDriverCache = new Map();
+function useProDrivers(name, historyLen) {
+  const [map, setMap] = useState(() => _proDriverCache.get(name || '') || null);
+  useEffect(() => {
+    const nm = (name || '').trim();
+    if (!nm || !historyLen) { setMap(null); return; }
+    if (_proDriverCache.has(nm)) { setMap(_proDriverCache.get(nm)); return; }
+    let alive = true;
+    fetch(`/.netlify/functions/nuvizz-customer-history?name=${encodeURIComponent(nm)}`)
+      .then((r) => r.json())
+      .then((j) => {
+        const m = new Map();
+        // Each customer's rollup lists its PROs under `pros` = [{pro,date,driver}] (shapeCustomer).
+        if (j?.ok) for (const c of (j.customers || [])) for (const h of (c.pros || [])) {
+          if (h?.pro && h?.driver && !m.has(String(h.pro))) m.set(String(h.pro), h.driver);
+        }
+        _proDriverCache.set(nm, m);
+        if (alive) setMap(m);
+      })
+      .catch(() => { /* best-effort — chips just omit the driver */ });
+    return () => { alive = false; };
+  }, [name, historyLen]);
+  return map;
+}
+
 // Customer-notes section wrapper: the Edit toggle, the read-only view, the full
 // editor, and recent-PRO history. Shared by desktop + mobile.
 function StopNotesSection({ note, editing, setEditing, draft, setDraft, compact = false, drivers = [] }) {
+  const proDrivers = useProDrivers(note?.raw_name, note?.pro_history?.length || 0);
   return (
     <div className="px-4 py-3 space-y-3">
       <div className="flex items-center justify-between">
@@ -4877,9 +4913,16 @@ function StopNotesSection({ note, editing, setEditing, draft, setDraft, compact 
         <div className="pt-2 border-t">
           <div className="text-xs font-semibold text-slate-600 mb-1">Recent PROs at this customer</div>
           <div className="flex flex-wrap gap-1">
-            {[...note.pro_history].reverse().slice(0, 10).map((h, i) => (
-              <span key={i} className="text-[10px] bg-slate-100 border border-slate-200 rounded px-1.5 py-0.5">{h.pro} · {h.date}{h.driver ? <span className="text-slate-500"> · {h.driver}</span> : null}</span>
-            ))}
+            {[...note.pro_history].reverse().slice(0, 10).map((h, i) => {
+              const drv = h.driver || proDrivers?.get(String(h.pro)) || '';
+              return (
+                <span key={i} className="text-[10px] bg-slate-100 border border-slate-200 rounded px-1.5 py-0.5 whitespace-nowrap">
+                  <span className="font-mono">{h.pro}</span>
+                  {drv && <span className="text-slate-700"> · {drv}</span>}
+                  <span className="text-slate-400"> · {fmtMdy(h.date)}</span>
+                </span>
+              );
+            })}
           </div>
         </div>
       )}
@@ -8599,10 +8642,13 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
   // fetched straight from NuVizz's stop list (any delivery-date window / status)
   // instead of today's board — e.g. "all unplanned ±7 days". Driver is a local
   // refinement applied to whatever rows are shown.
-  const [nvWindow, setNvWindow] = useState(''); // '' = board; else arrival period ('0d','+/-7d')
+  const [nvWindow, setNvWindow] = useState(''); // '' = board; else '0d' | '+/-7d' | 'custom'
+  const [nvFrom, setNvFrom] = useState(''); // 'custom' range endpoints (YYYY-MM-DD)
+  const [nvTo, setNvTo] = useState('');
   const [nvRows, setNvRows] = useState([]);
   const [nvTotal, setNvTotal] = useState(0);
-  const [nvSource, setNvSource] = useState('live'); // 'live' = straight from NuVizz; 'cache' = our board day-docs (±7d)
+  const [nvPartial, setNvPartial] = useState(false); // covering pull was incomplete → count is "≥ N"
+  const [nvSource, setNvSource] = useState('live'); // 'live' = straight from NuVizz; 'cache' = our board day-docs (±7d / wide custom ranges)
   const [nvLoading, setNvLoading] = useState(false);
   const [nvErr, setNvErr] = useState(null);
   const [driverSel, setDriverSel] = useState('');
@@ -8674,32 +8720,45 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
   // selection changes so status filters server-side, not just on the loaded page).
   useEffect(() => {
     if (!nvWindow) { setNvErr(null); setNvLoading(false); return; }
+    const custom = nvWindow === 'custom';
+    // Custom range needs BOTH endpoints before it can pull — clear any previous window's rows.
+    if (custom && (!nvFrom || !nvTo)) { setNvErr(null); setNvLoading(false); setNvRows([]); setNvTotal(0); setNvPartial(false); return; }
     let cancelled = false;
     const ctrl = new AbortController();
     const codes = TABLE_STATUS_BUCKETS.filter((b) => statusSel.has(b.k)).flatMap((b) => b.codes);
-    const req = { arrivalPeriod: nvWindow, statusCodes: codes, page: 1, pageSize: 1000 };
+    const [lo, hi] = custom ? (nvFrom <= nvTo ? [nvFrom, nvTo] : [nvTo, nvFrom]) : ['', ''];
+    const req = custom
+      ? { fromDate: lo, toDate: hi, statusCodes: codes, page: 1, pageSize: 1000 }
+      : { arrivalPeriod: nvWindow, statusCodes: codes, page: 1, pageSize: 1000 };
     setNvLoading(true); setNvErr(null);
-    fetch('/.netlify/functions/nuvizz-stop-explorer', {
-      method: 'POST', cache: 'no-store', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(req), signal: ctrl.signal,
-    })
-      .then((r) => r.json())
-      .then((j) => {
-        if (cancelled) return;
-        if (!j.ok) throw new Error(j.error || 'pull failed');
-        const decorated = (j.rows || []).map((s) => ({
-          ...s,
-          matchKey: normalizeMatchKey(s.businessName || '', s.addr1 || '', s.city || '', s.zip || ''),
-          loadNbr: s.routeName || '',
-        }));
-        // nvSource is still tracked so the routing map knows a ±7d pull is cache-backed
-        // (coord-bearing) and can render those orders for selection (v0.45.4).
-        setNvRows(decorated); setNvTotal(j.total ?? decorated.length); setNvSource(j.source === 'cache' ? 'cache' : 'live');
+    // DEBOUNCE custom-range pulls: a native date input fires onChange per SEGMENT edit, so a
+    // straight fetch would fire a pull on each keystroke. A window preset needs no debounce.
+    const timer = setTimeout(() => {
+      fetch('/.netlify/functions/nuvizz-stop-explorer', {
+        method: 'POST', cache: 'no-store', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(req), signal: ctrl.signal,
       })
-      .catch((e) => { if (!cancelled) { setNvErr(e.message); setNvRows([]); setNvTotal(0); } })
-      .finally(() => { if (!cancelled) setNvLoading(false); });
-    return () => { cancelled = true; ctrl.abort(); };
-  }, [nvWindow, statusSel]);
+        .then((r) => r.json())
+        .then((j) => {
+          if (cancelled) return;
+          if (!j.ok) throw new Error(j.error || 'pull failed');
+          // Deploy-skew guard: a server that predates custom ranges ignores fromDate/toDate and
+          // would silently return the wrong window — the echoed `range` proves it honored them.
+          if (custom && !j.range) throw new Error('server doesn’t support date ranges yet — hard-refresh the app and retry');
+          const decorated = (j.rows || []).map((s) => ({
+            ...s,
+            matchKey: normalizeMatchKey(s.businessName || '', s.addr1 || '', s.city || '', s.zip || ''),
+            loadNbr: s.routeName || '',
+          }));
+          // nvSource is tracked so the routing map knows a cache-backed pull is coord-bearing
+          // (±7d / a wide custom range) and can render those orders for selection (v0.45.4).
+          setNvRows(decorated); setNvTotal(j.total ?? decorated.length); setNvPartial(!!j.partial); setNvSource(j.source === 'cache' ? 'cache' : 'live');
+        })
+        .catch((e) => { if (!cancelled) { setNvErr(e.message); setNvRows([]); setNvTotal(0); setNvPartial(false); } })
+        .finally(() => { if (!cancelled) setNvLoading(false); });
+    }, custom ? 600 : 0);
+    return () => { cancelled = true; ctrl.abort(); clearTimeout(timer); };
+  }, [nvWindow, nvFrom, nvTo, statusSel]);
   // Report the active window's coord-bearing rows UP so the routing map can render them for
   // selection/planning. Only the CACHE path carries coordinates (the live small-window list feed
   // has none); a live window or board mode reports null → the map stays on the single board day.
@@ -8954,7 +9013,23 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
                   <option value="">Board (today)</option>
                   <option value="0d">NuVizz · Today</option>
                   <option value="+/-7d">NuVizz · ±7 days</option>
+                  <option value="custom">Custom range…</option>
                 </select>
+                {nvWindow === 'custom' && (
+                  <span className="hidden sm:inline-flex items-center gap-1">
+                    <input
+                      type="date" value={nvFrom} max={nvTo || undefined}
+                      onChange={(e) => { setNvFrom(e.target.value); setOpen(true); }} title="From delivery date"
+                      className="border border-slate-300 rounded px-1.5 py-1 text-xs text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-400"
+                    />
+                    <span className="text-slate-400 text-xs">→</span>
+                    <input
+                      type="date" value={nvTo} min={nvFrom || undefined}
+                      onChange={(e) => { setNvTo(e.target.value); setOpen(true); }} title="To delivery date"
+                      className="border border-slate-300 rounded px-1.5 py-1 text-xs text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-400"
+                    />
+                  </span>
+                )}
                 <select
                   value={driverSel}
                   onChange={(e) => { setDriverSel(e.target.value); setOpen(true); }}
@@ -8966,11 +9041,17 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
                 </select>
                 {nvWindow && (
                   <span className="hidden sm:inline text-[11px] text-slate-500 whitespace-nowrap">
-                    {nvLoading
-                      ? <span className="inline-flex items-center gap-1"><RefreshCw size={11} className="animate-spin" /> pulling…</span>
-                      : nvErr
-                        ? <span className="text-red-600">NuVizz: {nvErr}</span>
-                        : <>NuVizz · {nvTotal.toLocaleString()} stops</>}
+                    {nvWindow === 'custom' && (!nvFrom || !nvTo)
+                      ? <span className="text-slate-400">pick From + To dates</span>
+                      : nvLoading
+                        ? <span className="inline-flex items-center gap-1"><RefreshCw size={11} className="animate-spin" /> pulling…</span>
+                        : nvErr
+                          ? <span className="text-red-600">NuVizz: {nvErr}</span>
+                          : nvPartial
+                            ? <span className="text-amber-600" title="The date window was too large for one pull — some stops in it may be missing. Narrow the range for an exact result.">NuVizz · ≥{nvTotal.toLocaleString()} stops (partial — narrow the range)</span>
+                            : nvSource === 'cache'
+                              ? <span title="Served from our board cache (every scanned day in the window; confirmed Saves are patched in). Freshness = the last scan — no NuVizz calls.">Board · {nvTotal.toLocaleString()} stops</span>
+                              : <>NuVizz · {nvTotal.toLocaleString()} stops</>}
                   </span>
                 )}
               </>
