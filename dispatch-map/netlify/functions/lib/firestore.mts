@@ -269,7 +269,15 @@ export async function deleteDoc(path: string): Promise<void> {
 // ── nuvizz_stop_index helpers ────────────────────────────────────────────────
 const COLLECTION = 'nuvizz_stop_index';
 function parentId(tenant: string, dateStr: string): string {
-  return `${tenant}__${dateStr}`;
+  // Tenant is CASE-NORMALIZED here because callers disagree: the scanner writes with
+  // TENANT='davis' while getCreds().companyCode is always 'DAVIS' — and Firestore doc paths
+  // are case-sensitive. Every patchBoardPlan / roster read that arrived through an uppercase
+  // caller (nuvizz-board-sync since v0.36.2, the reconcile, the server write-through) landed
+  // on a phantom 'DAVIS__' tree while the live board lives under 'davis__' — which is why NO
+  // board write-through stamp has ever existed on a real row (Jul 10 forensics: a green
+  // 15-stop save, zero stamps). One normalization point converges every caller, past and
+  // future; lowercase callers are unchanged.
+  return `${String(tenant || '').toLowerCase()}__${dateStr}`;
 }
 
 export interface StopIndexMeta {
@@ -514,7 +522,10 @@ export async function patchBoardPlan(
   let rescued = 0;
   let stillMissing = missed;
   if (missed.length) {
-    const RESCUE_DAYS = 14;
+    // 62, not 14 (audit F8): the window grid serves plannable orders from cache up to 60 days
+    // back, so a save of one must be rescuable from that far. Cost is bounded: getDocs fire
+    // only for stops the direct patch MISSED, and the walk stops as soon as all are found.
+    const RESCUE_DAYS = 62;
     const dayBack = (n: number) => { const d = new Date(dateStr + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() - n); return d.toISOString().slice(0, 10); };
     for (let back = 1; back <= RESCUE_DAYS && stillMissing.length; back++) {
       const priorBase = `${COLLECTION}/${parentId(tenant, dayBack(back))}`;
