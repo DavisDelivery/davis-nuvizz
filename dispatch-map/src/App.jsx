@@ -54,7 +54,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.46.12';
+const APP_VERSION = '0.46.13';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -99,6 +99,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.46.13', 'Two Compare/Save tweaks. (1) Save now SENDS TO NUVIZZ DIRECTLY — the "Send to NuVizz / This will fire… / Send" confirmation popup is gone. Click Save and it commits (in ● LIVE against prod); Beta still just simulates. The server still validates every write and a save NuVizz accepts-but-doesn\'t-apply still fails loudly, so nothing is silently lost; a destructive action (emptying a load, which cancels the route) now shows a quick toast instead of a blocking dialog. (2) On the printed Driver Manifest, the Print and ✕ buttons moved to the TOP-RIGHT CORNER OF THE MANIFEST itself (they used to float at the top-right of the whole screen, away from the page).'],
   ['0.46.12', 'FIVE-AGENT AUDIT SWEEP — every fix from yesterday\'s firefight re-audited by five independent agents (cost, tests, board state, client UI, write path), and everything they caught is closed in this one release. SAVE ENGINE: a network hiccup during the post-save verify of ONE load can no longer fail the whole batch (each load verifies in its own guard now — the others keep their green); an assign/dispatch failure after a green save no longer suppresses the board stamp (the plan verified — it stamps); two cards saved together can no longer stamp each other\'s stops unplanned (the removal filter now knows everything the batch planned); a raw hex load id can never become the route name on a board stamp; and save results echo the load you ASKED for so the browser matches them up even when NuVizz renames. BOARD: the scanner\'s full rewrite of a day can no longer clobber a fresh save\'s 60-minute protection stamp mid-scan (the stamp survives the rewrite — this was the last standing way a saved route could revert); demotion double-checks now hit loads in random order so the same few routes can\'t hog the per-scan budget every time; a delivered/cancelled order can\'t carry over onto today; carry-over rows pin to the board day you\'re viewing. SCAN COST: a letters-in-it stop number can no longer rocket the number-probe frontier, and every load read caps at one retry. UI: three caches no longer memorize an error response forever (customer history, driver list, tractor locations — an early blip used to blank those until reload); an explicit box-only mark now beats the lime "tractor delivered" paint; clicking a multi-order location fully selects or fully clears it (mixed state selects the rest first); a staged twin order won\'t re-add itself after you strike it; changing the board date drops stale dispatch overrides; and just-saved stops flip planned on the map immediately in every window mode.'],
   ['0.46.11', 'Server write-through anchors on YOUR board date. Building tomorrow\'s board late at night, the server-side stamp targeted the current calendar day while your rows live on the day you\'re planning — the journal\'s new boardSync field caught it on the first post-fix saves (server patched 1, browser covered the rest). The Save now carries the board date you\'re working on and the server stamps THAT day\'s board; older browsers without the field fall back exactly as before, with their own sync still covering.'],
   ['0.46.10', 'THE AUDIT CAUGHT IT: every board patch since the write-through was BORN has been writing to a phantom copy of the board. Firestore paths are case-sensitive, the scanner files the board under "davis__" but every save-side patch used "DAVIS__" — so write-through stamps, carry-over rescues, and the reconcile all landed in a tree nothing reads. One normalization now converges every caller onto the real board: saves stamp rows that actually exist, the reconcile actually heals, the 60-minute hold actually holds. Also hardened from the same audit: two same-named loads can never demote each other\'s stops (ambiguous names fall back to the stop record, and "not on that load" alone no longer demotes — only the record can); a cancelled/delivered order can\'t be resurrected as live; number padding differences can\'t fake a "not on load"; a stale-unplanned leftover row can\'t hide a confirmed save; and old orders up to 62 days back (the full window range) now rescue onto today\'s board when saved.'],
@@ -4183,8 +4184,12 @@ function PrintDocModal({ title, html, pageW = 816, onClose }) {
           />
         </div>
       </div>
-      {/* Print + close, floated at the top-right over the manifest — always reachable while scrolling. */}
-      <div className="absolute right-3 z-10 flex items-center gap-2" style={{ top: 'calc(env(safe-area-inset-top) + 0.625rem)' }}>
+      {/* Print + close, anchored to the manifest PAGE's top-right corner (not the screen's) so
+          they sit on the popup itself. Horizontally pinned to the centered page's right edge
+          via its on-screen width (PAGE_W*scale); kept fixed vertically near the page top so
+          they stay reachable while the manifest scrolls. */}
+      <div className="absolute z-10 flex items-center gap-2"
+        style={{ top: 'calc(env(safe-area-inset-top) + 4.25rem)', left: `calc(50% + ${(PAGE_W * scale) / 2}px)`, transform: 'translateX(calc(-100% - 0.5rem))' }}>
         <button onClick={doPrint} className="px-3 py-2 rounded-lg bg-white text-slate-900 text-sm font-semibold inline-flex items-center gap-1.5 shadow-lg border border-slate-200 hover:bg-slate-50"><Printer size={16} /> Print</button>
         <button onClick={onClose} aria-label="Close" className="rounded-full bg-white text-slate-700 hover:bg-slate-100 shadow-lg border border-slate-200 inline-flex items-center justify-center" style={{ minWidth: 44, minHeight: 44 }}><X size={22} /></button>
       </div>
@@ -11326,14 +11331,17 @@ function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmN
     } catch { return undefined; }
   };
 
+  // Save sends to NuVizz DIRECTLY — no confirmation popup (dispatcher's call). The per-load
+  // dry-run preview + the LiveCommitConfirm "Send to NuVizz" gate were removed. The server
+  // still validates every write and a save NuVizz accepts-but-doesn't-apply still fails
+  // loudly, so nothing is silently lost. Beta mode still simulates; any destructive notice
+  // (e.g. emptying a load CANCELS the route) surfaces as a non-blocking toast, not a modal.
   const onPanelSave = async () => {
     const { loads, warnings } = buildBoardPayload();
     if (!loads.length) { showToast(warnings[0] || 'No changes to save.'); return; }
-    setBusy(true);
-    const res = await callWrite('commitBoard', { loads, date: boardDate || undefined, origin: savedShipFrom(), useImport: engine === 'import' || undefined, useRwb: engine === 'rwb' || undefined }, { dryRun: true });
-    setBusy(false);
-    if (!res.ok) { showToast(`✗ Preview failed: ${res.error || 'error'}`); return; }
-    setConfirm({ plan: res.plan || [], tenant: res.tenant, loads, warnings, clientOpId: newClientOpId() });
+    if (!liveMode) { showToast(`Beta — nothing sent (${loads.length} load(s) simulated).`); return; }
+    if (warnings.length) showToast(`⚠ ${warnings[0]}`);
+    await onPanelConfirm({ loads, clientOpId: newClientOpId() });
   };
 
   const markSaved = (keys) => setBaselines((prev) => {
@@ -11342,8 +11350,11 @@ function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmN
     return n;
   });
 
-  const onPanelConfirm = async () => {
-    const { loads, clientOpId } = confirm;
+  // Runs the real write. Called directly by onPanelSave with { loads, clientOpId } now that
+  // the confirm popup is gone (falls back to the `confirm` state if ever called without args).
+  const onPanelConfirm = async (commitArg) => {
+    const { loads, clientOpId } = commitArg || confirm || {};
+    if (!loads) return;
     if (!liveMode) { setConfirm(null); showToast(`Beta — nothing sent (${loads.length} load(s) simulated).`); return; }
     // This Save supersedes any in-flight verification loop for the same cards (see verifyGenRef).
     for (const L of loads) { const k = L.__key ?? L.routeName ?? L.loadNbr ?? L.loadId; if (k) verifyGenRef.current.set(k, (verifyGenRef.current.get(k) || 0) + 1); }
@@ -11719,13 +11730,7 @@ function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmN
           />
         ))}
       </div>
-      {LIVE_WRITE_FLAG && confirm && (
-        <LiveCommitConfirm
-          confirm={confirm} liveMode={liveMode} busy={busy}
-          title={`${confirm.loads.length} load${confirm.loads.length === 1 ? '' : 's'}`}
-          onCancel={() => setConfirm(null)} onConfirm={onPanelConfirm}
-        />
-      )}
+      {/* The "Send to NuVizz" confirmation popup was removed — Save commits directly (onPanelSave). */}
       {LIVE_WRITE_FLAG && closeGuard && (
         <div className="fixed inset-0 z-[60] bg-black/40 flex items-center justify-center p-4" onMouseDown={(e) => { if (e.target === e.currentTarget) setCloseGuard(null); }}>
           <div className="bg-white rounded-lg shadow-xl w-full max-w-sm">
