@@ -54,7 +54,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.46.13';
+const APP_VERSION = '0.46.14';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -99,6 +99,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.46.14', 'Print Manifest polish. (1) The big blue title at the top is now the route NAME (e.g. the driver\'s route), never the raw DAVIS load number — a load opened from the Loads grid used to print "DAVIS000198611" up top; it now prints the load\'s name. (2) On each Delivery Ticket the "Ship To" business name is now bold and a touch larger so the destination stands out at a glance.'],
   ['0.46.13', 'Two Compare/Save tweaks. (1) Save now SENDS TO NUVIZZ DIRECTLY — the "Send to NuVizz / This will fire… / Send" confirmation popup is gone. Click Save and it commits (in ● LIVE against prod); Beta still just simulates. The server still validates every write and a save NuVizz accepts-but-doesn\'t-apply still fails loudly, so nothing is silently lost; a destructive action (emptying a load, which cancels the route) now shows a quick toast instead of a blocking dialog. (2) On the printed Driver Manifest, the Print and ✕ buttons moved to the TOP-RIGHT CORNER OF THE MANIFEST itself (they used to float at the top-right of the whole screen, away from the page).'],
   ['0.46.12', 'FIVE-AGENT AUDIT SWEEP — every fix from yesterday\'s firefight re-audited by five independent agents (cost, tests, board state, client UI, write path), and everything they caught is closed in this one release. SAVE ENGINE: a network hiccup during the post-save verify of ONE load can no longer fail the whole batch (each load verifies in its own guard now — the others keep their green); an assign/dispatch failure after a green save no longer suppresses the board stamp (the plan verified — it stamps); two cards saved together can no longer stamp each other\'s stops unplanned (the removal filter now knows everything the batch planned); a raw hex load id can never become the route name on a board stamp; and save results echo the load you ASKED for so the browser matches them up even when NuVizz renames. BOARD: the scanner\'s full rewrite of a day can no longer clobber a fresh save\'s 60-minute protection stamp mid-scan (the stamp survives the rewrite — this was the last standing way a saved route could revert); demotion double-checks now hit loads in random order so the same few routes can\'t hog the per-scan budget every time; a delivered/cancelled order can\'t carry over onto today; carry-over rows pin to the board day you\'re viewing. SCAN COST: a letters-in-it stop number can no longer rocket the number-probe frontier, and every load read caps at one retry. UI: three caches no longer memorize an error response forever (customer history, driver list, tractor locations — an early blip used to blank those until reload); an explicit box-only mark now beats the lime "tractor delivered" paint; clicking a multi-order location fully selects or fully clears it (mixed state selects the rest first); a staged twin order won\'t re-add itself after you strike it; changing the board date drops stale dispatch overrides; and just-saved stops flip planned on the map immediately in every window mode.'],
   ['0.46.11', 'Server write-through anchors on YOUR board date. Building tomorrow\'s board late at night, the server-side stamp targeted the current calendar day while your rows live on the day you\'re planning — the journal\'s new boardSync field caught it on the first post-fix saves (server patched 1, browser covered the rest). The Save now carries the board date you\'re working on and the server stamps THAT day\'s board; older browsers without the field fall back exactly as before, with their own sync still covering.'],
@@ -4311,6 +4312,7 @@ const TICKET_STYLE = `
   .lbl { font-weight:bold; }
   .ship { text-align:right; }
   .ship .h { font-weight:bold; }
+  .ship .ship-name { font-weight:bold; font-size:13px; }
   .meta { margin-top:4px; }
   .summary { display:flex; border:1px solid #ccc; border-radius:4px; margin:8px 0; background:#f6f7f9; }
   .summary > div { flex:1; text-align:center; padding:6px 4px; border-right:1px solid #e2e5ea; font-weight:bold; }
@@ -4368,7 +4370,7 @@ function ticketBody(stop, logoUrl, brandTitle = 'Delivery Ticket') {
     </div>
     <div class="ship">
       <div class="h">Ship To:</div>
-      ${bolEsc(d.shipName)}<br/>
+      <span class="ship-name">${bolEsc(d.shipName)}</span><br/>
       ${d.shipAddr1 ? bolEsc(d.shipAddr1) + ',<br/>' : ''}${d.shipAddr2 ? bolEsc(d.shipAddr2) + ',<br/>' : ''}${bolEsc(cityLine)}<br/>
       <span class="lbl">Call:</span> ${bolEsc(d.phone)}
     </div>
@@ -4415,10 +4417,18 @@ function manifestOrigin(stops) {
 }
 function buildManifestHtml(stops, logoUrl, routeNameOverride = null) {
   const ordered = orderRouteStops(stops);
-  // Prefer the CALLER's route name (the Compare card's) — a freshly built card's stops don't
-  // carry routeName yet (the plan lives on the card until a scan), which printed plain "Route".
-  const routeName = routeNameOverride
-    || loadDisplayName(ordered.find((s) => s.routeName)?.routeName, ordered.find((s) => s.loadNbr)?.loadNbr) || 'Route';
+  // Header shows the human ROUTE NAME, never the DAVIS load NUMBER (dispatcher request). Prefer,
+  // in order: the caller's override (Compare card's name), then a stop's routeName, then a stop's
+  // loadNbr — but each only if it's a real NAME (not a DAVIS load number or a hash id). Only if
+  // NO human name exists anywhere do we fall back to whatever we were given, so the header still
+  // identifies the load rather than printing a bare "Route".
+  const humanName = (v) => { const s = String(v ?? '').trim(); return s && !isHashLikeId(s) && !looksLikeLoadNbr(s) ? s : ''; };
+  const routeName = humanName(routeNameOverride)
+    || humanName(ordered.find((s) => s.routeName)?.routeName)
+    || humanName(ordered.find((s) => s.loadNbr)?.loadNbr)
+    || String(routeNameOverride ?? '').trim()
+    || loadDisplayName(ordered.find((s) => s.routeName)?.routeName, ordered.find((s) => s.loadNbr)?.loadNbr)
+    || 'Route';
   const driver = ordered.find((s) => s.driverName)?.driverName || ordered.find((s) => s.driverUserName)?.driverUserName || '—';
   const origin = manifestOrigin(ordered);
   // Per-stop ticket data once, reused for the totals and the page bodies.
@@ -12599,7 +12609,10 @@ function RoutingScreen({ debugCaptureRef }) {
     const stops = route.order.map((id) => stopById.get(String(id))).filter(Boolean);
     if (!stops.length) { setLastAction(`${loadDisplayName(key)} has no stops to print`); return; }
     const logo = (typeof window !== 'undefined' ? window.location.origin : '') + '/davis-logo.jpg';
-    setWbManifest({ title: `Driver Manifest · ${loadDisplayName(key)}`, html: buildManifestHtml(stops, logo, loadDisplayName(key) || String(key)) });
+    // Pass the card's human route NAME (not the DAVIS load number a Loads-grid-opened card is
+    // keyed by) as the manifest header name.
+    const displayName = route.name || loadDisplayName(key) || String(key);
+    setWbManifest({ title: `Driver Manifest · ${displayName}`, html: buildManifestHtml(stops, logo, displayName) });
   }, [wbRoutes, stopById]);
   // Ninja-add: append a clicked stop to the active route (in click order), removing it from any
   // OTHER open route so a stop only ever sits on one compare-panel card. No-op if it's already there.
