@@ -638,9 +638,11 @@ test('runCommitBoardRwb: scan-fed stopIdsByNbr skips the per-ADD getStop (the 24
     const { requester, calls } = makeRequester({ loadStops, idAlias: { [A]: 'A', [B]: 'B', [C]: 'C' } });
     const r = await runCommitBoardRwb(requester, { loads: [{
       loadNbr: 'DAVIS000000123', loadId: HEXID, routeName: 'R',
-      orderedStopNbrs: ['X', 'A', 'B', 'C'], stopIdsByNbr: { A, B, C },
+      orderedStopNbrs: ['X', 'A', 'B', 'C'], stopIdsByNbr: { A, B, C, X: '007000111' },
     }] }, CREDS);
     assert.equal(r.ok, true, `expected success, got: ${JSON.stringify(r.loads?.[0]?.error)}`);
+    // X is on-load (no read needed) and its junk digits value must be REFUSED by the hash
+    // guard either way — zero reads proves both the skip AND the map-branch guard.
     assert.equal(calls.filter((c) => c.url.includes('/stop/info/')).length, 0, 'no per-ADD getStop when scan-fed ids are supplied');
     const add = calls.find((c) => c.url.includes('addStopsToRouteAfterValidation'));
     assert.equal(String(add.body.get('stopIds')), [A, B, C].join(','), 'the supplied ids ride the batched add');
@@ -737,6 +739,33 @@ test('runCommitBoardRwb: a STALE supplied id self-heals — re-read by number, r
   });
 });
 
+test('runCommitBoardRwb: co-located ties verify green even when the vendor reads them back in a DIFFERENT record order', async () => {
+  await withRwb({}, async () => {
+    // Vendor record order A,C,B ≠ requested A,B,C; B and C share seq 3 at the SAME place.
+    // Without the wantIdx tie-break the sorted read-back is A,C,B → false "KEPT its own stop
+    // order". This is the pin the original tie-break test missed (its fixture's read order
+    // happened to equal the requested order, so the comparator was a no-op).
+    const loadStops = { value: ['A', 'C', 'B'] };
+    const { requester, calls } = makeRequester({ loadStops, applySave: false,
+      stopSeqs: { A: 2, B: 3, C: 3 }, stopAddrs: { B: 'USDA FOREST SERVICE', C: 'USDA FOREST SERVICE' } });
+    const r = await runCommitBoardRwb(requester, { loads: [{ loadNbr: 'DAVIS000000123', loadId: HEXID, orderedStopNbrs: ['A', 'B', 'C'] }] }, CREDS);
+    assert.equal(r.ok, true, `tie-break must hold: ${JSON.stringify(r.loads?.[0]?.error)}`);
+    assert.equal(calls.filter((c) => c.url.includes('saveComparedRouteData')).length, 1, 'no repair save');
+  });
+});
+
+test('runCommitBoardRwb: unknown-address co-located dupes stay benign when the order matches', async () => {
+  await withRwb({}, async () => {
+    // Same shared seq, NO addresses on the raw stops (rawStops lack address blocks on some
+    // tenants) — the dupe must still read as co-location, not corruption, when the order is
+    // exactly what we asked for.
+    const loadStops = { value: ['A', 'B', 'C'] };
+    const { requester } = makeRequester({ loadStops, applySave: false, stopSeqs: { A: 2, B: 3, C: 3 } });
+    const r = await runCommitBoardRwb(requester, { loads: [{ loadNbr: 'DAVIS000000123', loadId: HEXID, orderedStopNbrs: ['A', 'B', 'C'] }] }, CREDS);
+    assert.equal(r.ok, true, `unknown-address dupe must be benign: ${JSON.stringify(r.loads?.[0]?.error)}`);
+  });
+});
+
 test('runCommitBoardRwb: REFUSES an add whose stop NuVizz says is planned on a load outside the Save', async () => {
   await withRwb({}, async () => {
     // Board says unplanned (stale); NuVizz's stop read says it's on OTHER-LOAD. The save must
@@ -768,7 +797,9 @@ test('runCommitBoardRwb: fails loudly when an add silently no-ops (stop planned 
       orderedStopNbrs: ['X', 'A'], orderedStopIds: ['id-X', 'id-A'],
     }] }, CREDS);
     assert.equal(r.ok, false, 'must NOT report success when the stop never landed');
-    assert.match(r.loads[0].error, /did not appear|NuVizz still holds|couldn't be added/i);
+    assert.match(r.loads[0].error, /did not appear/i);
+    assert.match(r.loads[0].error, /reads UNPLANNED right now|still processing|reads ON this load/i, 'the truthful state, never the guess');
+    assert.doesNotMatch(r.loads[0].error, /planned on another load/i, 'the pre-fix lie must never return');
     assert.equal(base.calls.some((c) => c.url.includes('saveComparedRouteData')), false, 'must not persist a route missing the stop');
   });
 });

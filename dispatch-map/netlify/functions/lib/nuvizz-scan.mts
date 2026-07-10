@@ -634,7 +634,7 @@ async function probeLoad(n: number, dateStr: string, authHeader: string, company
   const loadNbr = `${companyCode}${String(n).padStart(9, '0')}`;
   const url = `${NUVIZZ_BASE}/load/info/${encodeURIComponent(loadNbr)}/${encodeURIComponent(companyCode)}`;
   try {
-    const resp = await getNuvizzRequester().request(url, { headers: { Authorization: authHeader, Accept: 'application/json' } }, { route: '/load/info', tenant: companyCode });
+    const resp = await getNuvizzRequester().request(url, { headers: { Authorization: authHeader, Accept: 'application/json' }, maxRetries: 1 }, { route: '/load/info', tenant: companyCode });
     if (!resp.ok) return null;
     const d: any = await resp.json();
     const h = d?.Load?.loadHeader || {};
@@ -684,7 +684,7 @@ export async function lookupLoadPlan(loadNbr: string): Promise<{ routeName: stri
     const { companyCode } = getCreds();
     const authHeader = basicAuthHeader();
     const url = `${NUVIZZ_BASE}/load/info/${encodeURIComponent(loadNbr)}/${encodeURIComponent(companyCode)}`;
-    const resp = await getNuvizzRequester().request(url, { headers: { Authorization: authHeader, Accept: 'application/json' } }, { route: '/load/info', tenant: companyCode });
+    const resp = await getNuvizzRequester().request(url, { headers: { Authorization: authHeader, Accept: 'application/json' }, maxRetries: 1 }, { route: '/load/info', tenant: companyCode });
     if (!resp.ok) return null;
     const d: any = await resp.json();
     return {
@@ -705,7 +705,7 @@ export async function lookupLoadStopNbrs(loadNbr: string): Promise<Set<string> |
     const { companyCode } = getCreds();
     const authHeader = basicAuthHeader();
     const url = `${NUVIZZ_BASE}/load/info/${encodeURIComponent(loadNbr)}/${encodeURIComponent(companyCode)}`;
-    const resp = await getNuvizzRequester().request(url, { headers: { Authorization: authHeader, Accept: 'application/json' } }, { route: '/load/info', tenant: companyCode });
+    const resp = await getNuvizzRequester().request(url, { headers: { Authorization: authHeader, Accept: 'application/json' }, maxRetries: 1 }, { route: '/load/info', tenant: companyCode });
     if (!resp.ok) return null;
     const d: any = await resp.json();
     const out = new Set<string>();
@@ -1403,7 +1403,11 @@ export function buildScanState(
   // order cluster must not ratchet the floor past genuine new unplanned orders.
   let highWaterUnplanned = prev?.highWaterUnplannedStopNbr ?? null;
   for (const s of stops) {
-    const sn = stopNbrToInt(s.stopNbr);
+    // Only PURE-DIGIT stop numbers may advance the frontier: an alphanumeric reference
+    // (RA53027250-2 → digit run 53,027,250) would ratchet the high-water ~46M above the
+    // real order cluster and freeze a cold number-probe resumption above every genuine
+    // order. Reference-numbered stops still flow through the board normally.
+    const sn = /^\d+$/.test(String(s.stopNbr ?? '').trim()) ? stopNbrToInt(s.stopNbr) : null;
     if (sn != null) {
       highWater = highWater == null ? sn : Math.max(highWater, sn);
       if (s.isPlanned === false && !descentTruncated) highWaterUnplanned = highWaterUnplanned == null ? sn : Math.max(highWaterUnplanned, sn);

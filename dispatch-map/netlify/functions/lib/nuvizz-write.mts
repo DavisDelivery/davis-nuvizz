@@ -1490,7 +1490,10 @@ export async function runCommitBoardRwb(requester: RequesterLike, payload: any, 
       // That race got reported as "still planned on another load" for a stop whose record read
       // UNPLANNED (Chad checked) — find() just named the first arrival of a not-yet-visible
       // batch. Give NuVizz a beat (env-tunable) and re-read before judging anything.
-      const settleMs = Math.max(0, Number(process.env.NUVIZZ_RWB_SETTLE_MS ?? 1200));
+      // Clamped to ≤5s: the settle wait shares the function's 26s budget with the whole save —
+      // an oversized env value would burn the timeout mid-save (audit), and past ~5s NuVizz's
+      // attach has either landed or the straggler pass should take over.
+      const settleMs = Math.min(5000, Math.max(0, Number(process.env.NUVIZZ_RWB_SETTLE_MS ?? 1200) || 0));
       for (let settle = 0; missingAdds.length && settle < 2; settle++) {
         await realSleep(settleMs);
         const fS = await fetchLoad(requester, String(p.loadNbr), creds);
@@ -1537,9 +1540,13 @@ export async function runCommitBoardRwb(requester: RequesterLike, payload: any, 
         // for exactly this case and sent Chad hunting a load that doesn't exist.)
         const holder = await rwbStopHolder(requester, String(miss.nbr), creds);
         const selfLbl = loadLabel(p.L?.routeName, p.loadNbr);
+        // Three truthful cases (audit C6): a REAL other holder → the move error; the record
+        // already says ON THIS LOAD (route index lagging the record) → settling, not unplanned;
+        // no holder at all → the record itself reads UNPLANNED and is still processing.
+        const recordState = holder && holder.nbr === String(p.loadNbr) ? 'reads ON this load already (NuVizz’s route view is still settling)' : 'reads UNPLANNED right now, so NuVizz is likely still processing';
         p.result.error = holder && holder.nbr !== String(p.loadNbr)
           ? `commitBoard(rwb): stop ${miss.nbr} couldn't be added to ${selfLbl} — NuVizz still holds it on ${holder.label}. Open ${holder.label} in Compare to move it, or unplan it there in the portal (RWB can't pull a stop off a route that isn't part of the Save).`
-          : `commitBoard(rwb): ${missingAdds.length > 1 ? `${missingAdds.length} stops (${missingAdds.slice(0, 3).map((a: any) => a.nbr).join(', ')}${missingAdds.length > 3 ? '…' : ''})` : `stop ${miss.nbr}`} did not appear on ${selfLbl} after the add — the stop record reads UNPLANNED right now, so NuVizz is likely still processing (nothing was double-planned). Wait a few seconds and Save again.`;
+          : `commitBoard(rwb): ${missingAdds.length > 1 ? `${missingAdds.length} stops (${missingAdds.slice(0, 3).map((a: any) => a.nbr).join(', ')}${missingAdds.length > 3 ? '…' : ''})` : `stop ${miss.nbr}`} did not appear on ${selfLbl} after the add — the stop record ${recordState} (nothing was double-planned). Wait a few seconds and Save again.`;
         continue;
       }
     } catch (e: any) {
@@ -1699,6 +1706,11 @@ export async function runCommitBoardRwb(requester: RequesterLike, payload: any, 
             ? q.moveArrivals.filter((a: any) => String(a.fromLoadNbr) === String(p.loadNbr)).map((a: any) => String(a.nbr))
             : []);
           let verdict: string | null = 'post-save verification did not run';
+          // Per-load verify isolation (audit C2): a thrown read here used to bubble to the
+          // batch-wide catch and flip EVERY load — including ones already verified green — to
+          // a generic ✗ with no observedOrder, blinding the board on plans that physically
+          // landed. One load's read failure is now that load's verdict alone.
+          try {
           for (let attempt = 0; attempt < 2; attempt++) {
             const f3 = await fetchLoad(requester, String(p.loadNbr), creds);
             p.result.calls.infos += 1;
@@ -1747,13 +1759,24 @@ export async function runCommitBoardRwb(requester: RequesterLike, payload: any, 
             p.result.calls.rwb += r2.calls;
             if (!r2.ok) { verdict = r2.message; break; }
           }
+          } catch (e: any) {
+            verdict = `post-save verify read failed (${e?.message || 'network error'}) — NuVizz took the save; refresh and re-Save to confirm`;
+          }
           if (verdict) { p.result.ok = false; p.result.error = `commitBoard(rwb): ${verdict}`; }
+          p.verifyDone = true;
         }
       }
     } catch (e: any) {
-      for (const p of saveGroup) if (p.result.ok) { p.result.ok = false; p.result.error = e?.message || 'RWB sequence failed'; }
+      // Batch-wide failures (the combined save itself) fail everything still pending — but a
+      // load whose verify already COMPLETED green keeps its verdict (audit C2): its plan is
+      // confirmed in NuVizz and must stay stampable/board-visible.
+      for (const p of saveGroup) if (p.result.ok && !p.verifyDone) { p.result.ok = false; p.result.error = e?.message || 'RWB sequence failed'; }
     }
   }
+
+  // PLAN verdict frozen here (audit C3): assign/dispatch failures below must not suppress the
+  // board stamp for a plan that verified green — the stops ARE on the route in NuVizz.
+  for (const p of live) p.planOk = p.result.ok === true && Array.isArray(p.orderedNbrs) && p.orderedNbrs.length > 0;
 
   // ── driver assign / dispatch per load (after the save, as before) ──
   for (const p of live) {
@@ -1786,17 +1809,30 @@ export async function runCommitBoardRwb(requester: RequesterLike, payload: any, 
     // missing:13 per save while the client's date-correct sync patched all 13). Old clients
     // that don't send a date fall back to the ET day; their own sync remains the belt.
     const boardDay = /^\d{4}-\d{2}-\d{2}$/.test(String(payload?.date ?? '')) ? String(payload.date) : etDayString();
+    // Cross-card move ordering (audit C4): a stop removed from card A and added to card B in
+    // the SAME Save must never end the loop stamped unplanned because A's patch ran after
+    // B's. Any stop planned by ANY green load in this batch is excluded from every unplanned
+    // stamp — planned wins, order-independent.
+    const batchPlanned = new Set<string>();
+    for (const p of seq) if (p.planOk) for (const n of p.orderedNbrs) batchPlanned.add(String(n));
     for (const p of seq) {
-      if (!p.result?.ok || !Array.isArray(p.orderedNbrs) || !p.orderedNbrs.length) continue;
+      if (!p.planOk) continue;   // plan verified green — stamp even if assign/dispatch failed after
       try {
         // Ghost-guard at the SOURCE: only removals of stops the load actually HELD (curNbrs,
         // the load's own read) may stamp board-unplanned — a ghost the dispatcher pulled onto
         // the card and struck off was never unplanned by this save.
         const removeNbrs = (Array.isArray(p.L?.removeStopNbrs) ? p.L.removeStopNbrs : [])
-          .map((n: any) => String(n)).filter((n: string) => p.curNbrs?.has?.(n));
+          .map((n: any) => String(n)).filter((n: string) => p.curNbrs?.has?.(n) && !batchPlanned.has(n));
         const driverApplied = (p.result.steps || []).some((s: any) => s.op === 'assignDriver' && s.ok);
+        // Route name for the board: the SERVER-read name first (the truth just fetched from
+        // NuVizz), the client's name second, and never a hash — a Loads-grid card is keyed by
+        // its 24-hex loadId, and stamping that as routeName grouped board rows under a hex
+        // "route" the write grace then defended (audit C5).
+        const routeName = [p.load?.routeName, p.L?.routeName]
+          .map((v: any) => String(v ?? '').trim())
+          .find((v: string) => v && !isHashLikeId(v)) || String(p.loadNbr || '');
         const r = await patchBoardPlan(tenantET, boardDay, {
-          routeName: String(p.L?.routeName || p.load?.routeName || p.loadNbr || ''),
+          routeName,
           orderedStopNbrs: p.orderedNbrs.map(String),
           unplannedStopNbrs: removeNbrs,
           driverName: driverApplied ? (p.L?.driverName || null) : null,
@@ -1813,6 +1849,11 @@ export async function runCommitBoardRwb(requester: RequesterLike, payload: any, 
     ...(legacyResult.loads || []),
     ...seq.map((p) => ({
       loadNbr: p.result.loadNbr ?? p.loadNbr, loadId: p.load?.loadId ?? p.L?.loadId ?? null,
+      // Echo the identity the CLIENT sent (audit C8): after a recurring-instance retarget the
+      // result's loadNbr/loadId are the twin's, so the client's key join failed — the card
+      // stayed dirty, staged driver re-sent, and the belt sync skipped. These echoes give the
+      // client an unambiguous join back to its own card.
+      requestedLoadNbr: p.L?.loadNbr ?? null, requestedLoadId: p.L?.loadId ?? null,
       ok: p.result.ok, error: p.result.error, steps: p.result.steps,
       calls: p.result.calls || undefined,
       // Server-side board write-through outcome — journaled with the op, so "the board never

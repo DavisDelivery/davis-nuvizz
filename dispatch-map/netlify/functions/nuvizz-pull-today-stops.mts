@@ -68,6 +68,12 @@ async function mergeCarryover(stops: any[], date: string, carryDays: number): Pr
   for (const { d, stops: prior } of reads) {
     for (const s of prior) {
       if (!s || s.isTerminal) continue;                  // real, unfinished stops only
+      // Belt on top of isTerminal (audit P4/P7a): the flag is enrichment-set and can be absent
+      // on list-only rows — a cancelled order (status 99, no route) read as plain UNPLANNED and
+      // folded back as workable whenever the live snapshot was stale, and a DELIVERED row that
+      // kept its write stamp would qualify for the confirmed-planned fold. Status is the truth.
+      const stTerm = String(s.normalizedStatus ?? '').toUpperCase();
+      if (stTerm === 'DELIVERED' || stTerm === 'EXCEPTION' || stTerm === 'CANCELLED') continue;
       // UNPLANNED prior-day rows fold as always. ONE planned exception (NOLAN, OWUSU 1,
       // Jul 10): a prior-day order a CONFIRMED live Save routed onto a load that runs
       // today (board_write_planned — the write-through/rescue stamp) must keep folding,
@@ -98,7 +104,9 @@ async function mergeCarryover(stops: any[], date: string, carryDays: number): Pr
       // absent from the unplanned snapshot (it just got planned; that's not "closed since").
       if (!confirmedPlanned && liveOk && d >= live!.windowStart! && !live!.stopNbrs.has(key)) { pruned++; continue; }
       seen.add(key);
-      stops.push({ ...s, carryover: true, scheduledDate: d });
+      // boardDate pinned to the served day (consistency with the replace path): downstream
+      // day-bucketing must file this row under the board it is being served on.
+      stops.push({ ...s, carryover: true, scheduledDate: d, boardDate: date });
       added++;
     }
   }

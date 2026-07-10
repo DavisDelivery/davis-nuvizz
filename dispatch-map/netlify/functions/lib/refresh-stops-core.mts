@@ -415,7 +415,7 @@ export async function runRefreshStops(req: Request): Promise<Response> {
       // (never prune). Only a COMPLETE full descent / deep sweep prunes.
       const partialUnplanned = (leanUnplanned && !deepSweep) || !!forwardUnplanned || truncatedDescent;
       const partialLoads = !!loadTargets || !!forwardLoad;
-      const meta = await writeStops(TENANT, date, scan.stops, scan.scannedAt, { includeUnplanned, includeLoads, partialLoads, partialUnplanned, rescannedLoads: loadTargets || undefined });
+      const meta = await writeStops(TENANT, date, scan.stops, scan.scannedAt, { includeUnplanned, includeLoads, partialLoads, partialUnplanned, rescannedLoads: loadTargets || undefined, graceFn: (fresh, ex) => { applyBoardWriteGrace(fresh, ex, Date.now()); } });
       // Only rebuild the fleet (load) index when we actually scanned loads — an
       // unplanned-only run would otherwise wipe the load index with an empty scan.
       if (includeLoads) {
@@ -663,6 +663,11 @@ export async function runRefreshStops(req: Request): Promise<Response> {
         // covers every check on that load. The per-stop record read remains the fallback
         // when there's no roster match or the load read fails; over-budget lookups return
         // null → held one tick (never demoted on a missing read).
+        // Budget fairness (audit P1): the check list arrives in stable pull order, so under a
+        // mass dispute the same first loads consumed the whole budget every scan and a
+        // genuinely-removed stop on load #5 was held forever. Shuffle so every disputed load
+        // gets verified within a few ticks.
+        for (let fy = demoteChecks.length - 1; fy > 0; fy--) { const k = Math.floor(Math.random() * (fy + 1)); [demoteChecks[fy], demoteChecks[k]] = [demoteChecks[k], demoteChecks[fy]]; }
         const demoteByNbr = new Map(demoteChecks.map((c) => [String(c.s.stopNbr), c]));
         const normNbr = (v: any) => String(v ?? '').trim().toUpperCase().replace(/^0+(?=\d)/, '');
         let rosterNameToNbr: Map<string, string> | null = null;
@@ -794,7 +799,7 @@ export async function runRefreshStops(req: Request): Promise<Response> {
           } catch (e: any) { console.warn(`[scan] load-anchor ${date} skipped: ${e?.message}`); }
         }
 
-        const meta = await writeStops(TENANT, date, dateStops, scannedAt, { includeUnplanned: true, includeLoads: true });
+        const meta = await writeStops(TENANT, date, dateStops, scannedAt, { includeUnplanned: true, includeLoads: true, graceFn: (fresh, ex) => { applyBoardWriteGrace(fresh, ex, Date.now()); } });
         // Cache the date's empty-loads roster (once/day for a future date) so the Loads view can
         // show e.g. Monday's empty loads without a per-request live fetch.
         await persistLoadRoster(date, scannedAt);

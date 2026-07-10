@@ -54,7 +54,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.46.11';
+const APP_VERSION = '0.46.12';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -99,6 +99,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.46.12', 'FIVE-AGENT AUDIT SWEEP — every fix from yesterday\'s firefight re-audited by five independent agents (cost, tests, board state, client UI, write path), and everything they caught is closed in this one release. SAVE ENGINE: a network hiccup during the post-save verify of ONE load can no longer fail the whole batch (each load verifies in its own guard now — the others keep their green); an assign/dispatch failure after a green save no longer suppresses the board stamp (the plan verified — it stamps); two cards saved together can no longer stamp each other\'s stops unplanned (the removal filter now knows everything the batch planned); a raw hex load id can never become the route name on a board stamp; and save results echo the load you ASKED for so the browser matches them up even when NuVizz renames. BOARD: the scanner\'s full rewrite of a day can no longer clobber a fresh save\'s 60-minute protection stamp mid-scan (the stamp survives the rewrite — this was the last standing way a saved route could revert); demotion double-checks now hit loads in random order so the same few routes can\'t hog the per-scan budget every time; a delivered/cancelled order can\'t carry over onto today; carry-over rows pin to the board day you\'re viewing. SCAN COST: a letters-in-it stop number can no longer rocket the number-probe frontier, and every load read caps at one retry. UI: three caches no longer memorize an error response forever (customer history, driver list, tractor locations — an early blip used to blank those until reload); an explicit box-only mark now beats the lime "tractor delivered" paint; clicking a multi-order location fully selects or fully clears it (mixed state selects the rest first); a staged twin order won\'t re-add itself after you strike it; changing the board date drops stale dispatch overrides; and just-saved stops flip planned on the map immediately in every window mode.'],
   ['0.46.11', 'Server write-through anchors on YOUR board date. Building tomorrow\'s board late at night, the server-side stamp targeted the current calendar day while your rows live on the day you\'re planning — the journal\'s new boardSync field caught it on the first post-fix saves (server patched 1, browser covered the rest). The Save now carries the board date you\'re working on and the server stamps THAT day\'s board; older browsers without the field fall back exactly as before, with their own sync still covering.'],
   ['0.46.10', 'THE AUDIT CAUGHT IT: every board patch since the write-through was BORN has been writing to a phantom copy of the board. Firestore paths are case-sensitive, the scanner files the board under "davis__" but every save-side patch used "DAVIS__" — so write-through stamps, carry-over rescues, and the reconcile all landed in a tree nothing reads. One normalization now converges every caller onto the real board: saves stamp rows that actually exist, the reconcile actually heals, the 60-minute hold actually holds. Also hardened from the same audit: two same-named loads can never demote each other\'s stops (ambiguous names fall back to the stop record, and "not on that load" alone no longer demotes — only the record can); a cancelled/delivered order can\'t be resurrected as live; number padding differences can\'t fake a "not on load"; a stale-unplanned leftover row can\'t hide a confirmed save; and old orders up to 62 days back (the full window range) now rescue onto today\'s board when saved.'],
   ['0.46.9', 'ROOT CAUSE OF EVERY DROP, FOUND AND CLOSED. Forensics on tonight\'s MONE save showed the board write-through NEVER landed — a green 15-stop save left ZERO stamps because the browser\'s sync call was dying silently. The write-through now happens ON THE SERVER, inside the Save itself: the moment a save verifies green against NuVizz, the server stamps our board directly, and the outcome is recorded in the write journal per load — a sync can never fail invisibly again (the browser\'s sync stays as backup). Also: every board-sync call is journaled; the "-1" re-delivery duplicate orders NuVizz creates (007143917-1 style, no dates on them) used to be INVISIBLE on every day\'s board — a dateless open order now files to today; and a window-picked stop that just got saved now flips planned on the map immediately instead of reading stale-unplanned.'],
@@ -1125,6 +1126,8 @@ function applyPlanOverlay(stops) {
       if (!m[k] || !(now - Number(m[k].at) < PLAN_OVERLAY_TTL_MS)) { delete m[k]; dirty = true; }
     }
     let out = stops;
+    let touched = false;   // ref-stability: unchanged input returns the SAME array, or every
+                           // 2-min board poll cascaded a full marker teardown/rebuild (audit)
     if (Object.keys(m).length) {
       out = stops.map((s) => {
         const key = String(s.stopNbr ?? '');
@@ -1134,13 +1137,14 @@ function applyPlanOverlay(stops) {
           ? (s.isPlanned && String(s.loadNbr || s.routeName || '') === String(e.loadNbr))
           : !!s.isUnplanned;
         if (agrees) { delete m[key]; dirty = true; return s; }
+        touched = true;
         return e.isPlanned
           ? { ...s, isPlanned: true, isUnplanned: false, status: '20', normalizedStatus: 'SCHEDULED', loadNbr: e.loadNbr, routeName: e.loadNbr, routeSeq: e.routeSeq, driverName: e.driverName ?? s.driverName, driverUserName: e.driverName ?? s.driverUserName, planOverlay: true }
           : { ...s, isPlanned: false, isUnplanned: true, status: '10', normalizedStatus: 'UNPLANNED', loadNbr: null, routeName: null, routeSeq: null, planOverlay: true };
       });
     }
     if (dirty) safeWriteJSON(LS_PLAN_OVERLAY, m);
-    return out;
+    return touched ? out : stops;
   } catch { return stops; }
 }
 
@@ -1313,6 +1317,12 @@ function fetchTractorLocationsOnce() {
           });
         } catch (err) {
           console.error('tractor_locations fetch error', err);
+          // Do NOT cache the empty result of a failed fetch — one transient error at page
+          // load blanked every lime pin + panel line + green row for the whole session.
+          __tractorLocsPromise = null;
+          for (const cb of __tractorLocsWaiters) cb(map);
+          __tractorLocsWaiters.clear();
+          return map;
         }
       }
       __tractorLocsCache = map;
@@ -2116,6 +2126,9 @@ function stopMarkerIcon(google, s, note, opts = {}) {
       && (statusKind === 'SCHEDULED' || statusKind === 'UNPLANNED')
       && addressLooksOff(s, note);
     const color = matched ? '#f59e0b'
+      // Dispatcher-set BOX-ONLY wins over the proven lime (same rule as the Selected window):
+      // "a tractor once delivered here" must never visually override an explicit off-limits mark.
+      : elig === 'box_only' ? ELIG_BOX_COLOR
       : tractorDelivered ? TRACTOR_DELIVERED_COLOR
       : eligColor
       || flagHue
@@ -5049,7 +5062,7 @@ function useProDrivers(name, historyLen) {
         if (j?.ok) for (const c of (j.customers || [])) for (const h of (c.pros || [])) {
           if (h?.pro && h?.driver && !m.has(String(h.pro))) m.set(String(h.pro), h.driver);
         }
-        _proDriverCache.set(nm, m);
+        if (j?.ok) _proDriverCache.set(nm, m);       // never cache a failure as "no drivers"
         if (alive) setMap(m);
       })
       .catch(() => { /* best-effort — chips just omit the driver */ });
@@ -5078,7 +5091,7 @@ function useCustomerRecent(name) {
       .then((j) => {
         const c = j?.ok ? (j.customers || [])[0] : null;
         const list = (c?.pros || []).map((h) => ({ pro: String(h?.pro || ''), date: h?.date || '', driver: h?.driver || '' })).filter((h) => h.pro);
-        _custRecentCache.set(nm, list);
+        if (j?.ok) _custRecentCache.set(nm, list);   // a failed lookup must not blank the section all session
         if (alive) setRows(list);
       })
       .catch(() => { if (alive) setRows([]); });
@@ -11352,7 +11365,10 @@ function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmN
     // Resolve a result back to its card key by loadNbr OR loadId. If neither maps (server echoed an
     // id we never sent), return null and DROP it — never markSaved a bare loadNbr that isn't a card
     // key (that silently no-ops markSaved and leaves the card dirty forever / mislabels the toast).
-    const keyOf = (l) => toKey.get('nbr:' + String(l.loadNbr)) ?? toKey.get('id:' + String(l.loadId)) ?? null;
+    const keyOf = (l) => toKey.get('nbr:' + String(l.loadNbr)) ?? toKey.get('id:' + String(l.loadId))
+      // Retarget-proof join (audit C8): after a recurring-instance retarget the result carries
+      // the TWIN's identity — the server now echoes what we SENT, which always joins.
+      ?? toKey.get('nbr:' + String(l.requestedLoadNbr)) ?? toKey.get('id:' + String(l.requestedLoadId)) ?? null;
     const okKeys = resLoads.filter((l) => l.ok).map(keyOf).filter(Boolean);
     let boardSyncMissing = 0; // stops the board write-through couldn't find on ANY recent day's cache
     if (okKeys.length) {
@@ -11384,7 +11400,9 @@ function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmN
           const Lf = loads.find((x) => (x.__key ?? x.routeName ?? x.loadNbr ?? x.loadId) === kf)
             ?? (loads.length === 1 ? loads[0] : null);
           const nameF = Lf?.routeName || loadDisplayName(kf) || String(kf || l.loadNbr || '');
-          if (nameF) syncPromises.push(onBoardSync({ routeName: nameF, orderedStopNbrs: l.observedOrder.map(String), unplannedStopNbrs: [], driverName: null }));
+          // Only a HUMAN route name may stamp the board — a hex key / load number as routeName
+          // grouped rows under an identity nothing else matches (audit C5-class).
+          if (nameF && !isHashLikeId(nameF)) syncPromises.push(onBoardSync({ routeName: nameF, orderedStopNbrs: l.observedOrder.map(String), unplannedStopNbrs: [], driverName: null }));
           continue;
         }
         if (!l.ok || l.pending) continue; // pending imports sync on their verified read-back below
@@ -11401,7 +11419,15 @@ function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmN
         // state that a rescan then defended (SHP29343/UNITE MEDICAL: planned on TRAILER 1 all
         // along, but staged-removed from a FRYE card → cemented unplanned on our board).
         const base = new Set((baselines[cardKey] || []).map(String));
-        const removed = (L?.removeStopNbrs || []).map(String).filter((nbr) => base.has(nbr));
+        // Cross-card move race (audit C4): the per-load syncs fire concurrently, so a stop
+        // removed from card A and planned onto card B in the SAME Save could land in either
+        // order. Planned wins — exclude anything any green load in this batch planned.
+        const batchPlanned = new Set(resLoads.filter((x) => x.ok).flatMap((x) => {
+          const kx = keyOf(x);
+          const Lx = loads.find((y) => (y.__key ?? y.routeName ?? y.loadNbr ?? y.loadId) === kx);
+          return (Lx?.orderedStopNbrs || []).map(String);
+        }));
+        const removed = (L?.removeStopNbrs || []).map(String).filter((nbr) => base.has(nbr) && !batchPlanned.has(nbr));
         if (!ordered.length && !removed.length) {
           // eslint-disable-next-line no-console
           console.warn('[board-sync] skipped — could not resolve any stops for a confirmed load', { loadNbr: l?.loadNbr ?? null, loadId: l?.loadId ?? null, cardKey });
@@ -11541,7 +11567,7 @@ function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmN
         .map((L) => {
           const { driverId, driverName, dispatch, ...orderOnly } = L;
           const match = [...remaining.values()].find((l) => keyOf(l) === (L.__key ?? L.routeName ?? L.loadNbr ?? L.loadId));
-          return { ...orderOnly, loadNbr: match?.loadNbr || L.loadNbr };
+          return { ...orderOnly, date: boardDate || undefined, loadNbr: match?.loadNbr || L.loadNbr };
         });
       if (!again.length) return;
       // eslint-disable-next-line no-console
@@ -12359,7 +12385,11 @@ function RoutingScreen({ debugCaptureRef }) {
     // Tagged windowExtra so route-card seeding below can refuse them outright.
     const extra = gridWindowStops
       .filter((s) => s && s.stopNbr && !seen.has(String(s.stopNbr))
-        && !(s.isPlanned === true || s.routeName || s.loadNbr))
+        // Frozen-history planned rows stay OFF (the TAYLOR bleed rule) — but a row OUR OWN
+        // confirmed save just planned (planOverlay stamp) stays ON: excluding it made a
+        // just-saved window stop vanish from map + open card until the rescue's board-day
+        // copy landed (a blink when healthy, hours if the sync missed).
+        && (s.planOverlay === true || !(s.isPlanned === true || s.routeName || s.loadNbr)))
       .map((s) => ({ ...s, windowExtra: true }));
     return extra.length ? [...stops, ...extra] : stops;
   }, [stops, gridWindowStops]);
@@ -12473,6 +12503,10 @@ function RoutingScreen({ debugCaptureRef }) {
   // recurring loads share NAMES across days, so a card surviving a date flip looks like today's
   // load but would Save edits onto YESTERDAY'S instance. (Mirrors the assignedOverride reset.)
   useEffect(() => { setWbRoutes([]); }, [selectedDate]);
+  // The optimistic Dispatch checkmark is keyed by route NAME — recurring names mean tomorrow's
+  // Draft load would inherit today's "Dispatched" once the date flips (audit). Clear on flip,
+  // like assignedOverride and the cards themselves.
+  useEffect(() => { dispatchOverrideRef.current.clear(); }, [selectedDate]);
   const wbResequence = useCallback((key, strategy) => {
     if (!strategy || strategy === 'manual') return;
     // Computed OUTSIDE the state updater so the feedback line can tell the truth: the old shape
@@ -12645,6 +12679,7 @@ function RoutingScreen({ debugCaptureRef }) {
         const s = stopById.get(id);
         for (const t of (s?.matchKey ? byMatchKey.get(s.matchKey) : null) || []) {
           const tn = String(t.stopNbr);
+          if (wbStagedRef.current.get(tn)) continue;   // deliberately staged on another card — same guard as click/box select
           if (!inIds.has(tn)) { inIds.add(tn); twinNames.push(`${t.stopNbr} (${t.businessName || 'same address'})`); }
         }
       }
@@ -13110,7 +13145,15 @@ function RoutingScreen({ debugCaptureRef }) {
     // move tool). setLastAction is used (not a toast dep) so this callback stays stable and
     // the marker layer doesn't rebuild on every staging edit.
     const holder = wbStagedRef.current.get(k);
-    if (holder) { setLastAction(`${k} is already on ${loadDisplayName(holder) || holder} — remove it there or use Ninja to move it`); return; }
+    // De-selecting is always allowed (a stop can be selected AND staged via the keep-selected
+    // Send flow — the guard used to lock it in the selection forever); only ADDING a staged
+    // stop to the selection is blocked.
+    if (holder) {
+      let removed = false;
+      setSelectedIds((prev) => { if (!prev.has(k)) return prev; removed = true; const n = new Set(prev); n.delete(k); return n; });
+      if (!removed) setLastAction(`${k} is already on ${loadDisplayName(holder) || holder} — remove it there or use Ninja to move it`);
+      return;
+    }
     setSelectedIds((prev) => { const n = new Set(prev); n.has(k) ? n.delete(k) : n.add(k); return n; });
   }, []);
   const removeStop = useCallback((id) => {
@@ -13133,7 +13176,11 @@ function RoutingScreen({ debugCaptureRef }) {
     }
     setSelectedIds((prev) => {
       const n = new Set(prev);
-      const on = !n.has(k);
+      // Direction from the GROUP, not the clicked stop: at a stacked location the click often
+      // lands on a staged/numbered pin that can never be in the selection, which froze `on`
+      // at true and made map de-selection impossible. Any free mate unselected → select all;
+      // all free mates selected → clear all.
+      const on = free.some((x) => !n.has(x));
       for (const x of free) { if (on) n.add(x); else n.delete(x); }
       return n;
     });

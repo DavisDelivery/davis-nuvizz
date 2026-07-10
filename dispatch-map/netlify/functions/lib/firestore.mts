@@ -344,7 +344,14 @@ export async function writeStops(
   dateStr: string,
   stops: any[],
   scannedAt: string,
-  opts: { includeUnplanned?: boolean; includeLoads?: boolean; partialLoads?: boolean; partialUnplanned?: boolean; rescannedLoads?: number[] } = {},
+  opts: { includeUnplanned?: boolean; includeLoads?: boolean; partialLoads?: boolean; partialUnplanned?: boolean; rescannedLoads?: number[];
+    // Scan-race stamp preservation (audit C2): the scan snapshots the board MINUTES before this
+    // write (vendor pulls + enrichment + geocoding sit in between), so a save's write-through
+    // stamp landing in that window was clobbered by the full-row rewrite — grace and demotion
+    // never engaged because the stamp was gone. graceFn re-applies the CURRENT doc's confirmed
+    // write (read fresh at this function's entry) onto each outgoing row, shrinking the race
+    // window from ~a minute to milliseconds. The caller supplies the policy (applyBoardWriteGrace).
+    graceFn?: (freshRow: any, existingDoc: any) => void } = {},
 ): Promise<StopIndexMeta> {
   const includeUnplanned = opts.includeUnplanned !== false; // default true (full scan)
   const includeLoads = opts.includeLoads !== false;         // default true
@@ -376,11 +383,16 @@ export async function writeStops(
   );
 
   // Upsert each freshly-scanned stop (bounded concurrency to stay polite).
+  const existingByNbr = new Map<string, any>(existing.map((d: any) => [String(d._id), d]));
   const conc = 12;
   let i = 0;
   const writeOne = async () => {
     while (i < withNbr.length) {
       const s = withNbr[i++];
+      // Re-apply any confirmed write stamped AFTER the scan's earlier snapshot (see graceFn
+      // note in the signature) — `existing` was listed at THIS function's entry, so it sees
+      // stamps the scan's own merge pass could not.
+      if (opts.graceFn) { const ex = existingByNbr.get(String(s.stopNbr)); if (ex) { try { opts.graceFn(s, ex); } catch { /* hold is best-effort */ } } }
       await setDoc(`${base}/stops/${s.stopNbr}`, { ...s, last_scanned_at: scannedAt });
     }
   };
