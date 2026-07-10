@@ -54,7 +54,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.46.17';
+const APP_VERSION = '0.46.18';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -99,6 +99,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.46.18', 'FIX: setting an AM/PM Delivery window on a customer that ALSO has receiving hours no longer hides the window on the map. The receiving-hours clock icon was taking over the pin and dropping the AM/PM tag entirely, so a "PM" window you set never showed. Now an AM/PM window overrides that clock — the pin shows the AM/PM tag (the window IS the receiving-time statement). Any other restriction icon (liftgate, no-tractor, appointment, closed-day) still shows as before. Applies to both the Map and Routing pins.'],
   ['0.46.17', 'TEST ARMOR (no behavior change). The three heavy test rigs promised in the v0.46.12 audit release are in — 23 new tests, suite now 706. (1) The server-side board write-through now runs END-TO-END in tests against a fake Firestore: pinned forever are the lowercase board tree (the v0.46.10 phantom-tree fix), stamping YOUR board date (v0.46.11), ghost removals never stamping, a batch-planned stop never being stamped unplanned by its own save, the hex-id-never-a-route-name guard, the 62-day carry-over rescue healing old rows in place, boardSync reporting every miss by name, and an unverified save never touching the board. (2) The scan\'s demotion policy (the "list says unplanned but the load still holds it" defense) is extracted into a factory and unit-tested: terminal rows always demote, one memoized load read covers a whole route, ambiguous same-named loads can\'t demote each other\'s stops, a roster failure holds rather than guesses, zero-padding can\'t fake a removal, and over-budget checks hold instead of demoting. (3) The carry-over fold is unit-tested with an injected clock: unplanned orders fold with their home day remembered, delivered/cancelled work never folds, a fresh confirmed Save folds (and replaces a stale-unplanned row in place) while stamps older than 48h age out, the live-set prune only trusts a fresh snapshot, and duplicates dedupe to the nearest day.'],
   ['0.46.16', 'Compare route-card header re-laid-out. The mileage + drive time (e.g. "119.2 mi · 3h59m · DH 45.9 mi") is now the light header line, and the load details drop to their OWN line BELOW it and WRAP instead of getting cut off ("17 sk…"). The freight counts stand out — orders, skids, and loose are now BOLD — and LOOSE is shown too (it was missing before): "ANDERSON FRIMPONG · 13 stops · 14 orders · 17 sk · 3 loose · 17,933 lb · 0%". (If a printed manifest still shows the DAVIS load number instead of the route name, hard-refresh — that fix is already live and your browser is holding an old copy.)'],
   ['0.46.15', 'Bottom-panel PROFILES — save your bar settings and switch between them. Set the grid the way you want (Stops/Loads, Status filter, date window + range, driver, no-location filter, and the sort), then open the new "Profiles" dropdown (top-left of the bar, next to Stops/Loads), type a name, and Save. Pick a saved profile any time to snap the whole bar back to it; "Update" overwrites the active one with the current settings, and the trash icon deletes. Profiles are remembered on your device and work wherever the grid appears (Map + Routing). Your search text is NOT part of a profile (it stays a quick one-off filter).'],
@@ -2103,6 +2104,14 @@ function stopMarkerIcon(google, s, note, opts = {}) {
   // icon"). 0 = no badge.
   const count = sameLocCount > 1 ? sameLocCount : 0;
   let restrictions = getRestrictionBadgeKeys(note, { day: selectedDayKey });
+  // An AM/PM Delivery window IS the receiving-time statement, so it TAKES OVER the pin from the
+  // generic receiving-hours clock: without this, setting hours pushed the pin into the icon
+  // branch (below), which never draws the AM/PM tag — so the window silently vanished from the
+  // map behind a clock (Chad). Dropping the clock here lets the AM/PM tag show (State A); any
+  // OTHER restriction icon (liftgate, no-tractor, appointment, closed-day) still stands.
+  if (note?.delivery_window === 'AM' || note?.delivery_window === 'PM') {
+    restrictions = restrictions.filter((r) => r !== 'receiving_hours');
+  }
   const flagHue = (note?.priority_flag && FLAG_COLORS[note.priority_flag]) ? FLAG_COLORS[note.priority_flag] : null;
   // Dispatcher-set vehicle eligibility recolors the pin (green = trailer OK, red =
   // box only). A green mark also suppresses any auto-detected trailer-blocking
