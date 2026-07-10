@@ -54,7 +54,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.46.18';
+const APP_VERSION = '0.46.19';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -99,6 +99,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.46.19', 'PLAN ONTO MY LOADS — the Routing (beta) build now plans straight onto the REAL loads you created in NuVizz. The left panel\'s step 2 is now "Plan onto" with two modes: "My loads" (new, the default) lists the day\'s roster — your ALPHA / ALPHA 2 / ATL / SUW / SUW 2 drafts, empties first with a search box — and you check off the loads to fill; Build then spreads your selected stops across EXACTLY those loads, one route per load, using each load\'s vehicle (a per-load Box/Trailer picker appears when checked; names with "trailer/53" default to the 53′ profile, and the green-only trailer rule still applies). The result shows each route under its LOAD NAME, and one tap — "Stage onto Compare cards" — opens every load\'s card with its planned stops staged (real load number attached, board stops kept, hand-reorders honored). Nothing touches NuVizz until you hit the cards\' normal Save — the same verified, journaled write path as always. The old truck-profile build is one tap away under "Trucks". Also: the Compare workbench now holds up to 6 cards (was 3) so a five-load build stages in one shot; loads with a duplicate name on the roster are shown but not pickable (identity is ambiguous — rename one in the portal), and a load that already holds stops can be picked to ADD to it.'],
   ['0.46.18', 'FIX: setting an AM/PM Delivery window on a customer that ALSO has receiving hours no longer hides the window on the map. The receiving-hours clock icon was taking over the pin and dropping the AM/PM tag entirely, so a "PM" window you set never showed. Now an AM/PM window overrides that clock — the pin shows the AM/PM tag (the window IS the receiving-time statement). Any other restriction icon (liftgate, no-tractor, appointment, closed-day) still shows as before. Applies to both the Map and Routing pins.'],
   ['0.46.17', 'TEST ARMOR (no behavior change). The three heavy test rigs promised in the v0.46.12 audit release are in — 23 new tests, suite now 706. (1) The server-side board write-through now runs END-TO-END in tests against a fake Firestore: pinned forever are the lowercase board tree (the v0.46.10 phantom-tree fix), stamping YOUR board date (v0.46.11), ghost removals never stamping, a batch-planned stop never being stamped unplanned by its own save, the hex-id-never-a-route-name guard, the 62-day carry-over rescue healing old rows in place, boardSync reporting every miss by name, and an unverified save never touching the board. (2) The scan\'s demotion policy (the "list says unplanned but the load still holds it" defense) is extracted into a factory and unit-tested: terminal rows always demote, one memoized load read covers a whole route, ambiguous same-named loads can\'t demote each other\'s stops, a roster failure holds rather than guesses, zero-padding can\'t fake a removal, and over-budget checks hold instead of demoting. (3) The carry-over fold is unit-tested with an injected clock: unplanned orders fold with their home day remembered, delivered/cancelled work never folds, a fresh confirmed Save folds (and replaces a stale-unplanned row in place) while stamps older than 48h age out, the live-set prune only trusts a fresh snapshot, and duplicates dedupe to the nearest day.'],
   ['0.46.16', 'Compare route-card header re-laid-out. The mileage + drive time (e.g. "119.2 mi · 3h59m · DH 45.9 mi") is now the light header line, and the load details drop to their OWN line BELOW it and WRAP instead of getting cut off ("17 sk…"). The freight counts stand out — orders, skids, and loose are now BOLD — and LOOSE is shown too (it was missing before): "ANDERSON FRIMPONG · 13 stops · 14 orders · 17 sk · 3 loose · 17,933 lb · 0%". (If a printed manifest still shows the DAVIS load number instead of the route name, hard-refresh — that fix is already live and your browser is holding an old copy.)'],
@@ -11374,7 +11375,10 @@ function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmN
     setBaselines((prev) => {
       let next = prev, changed = false;
       for (const k of Object.keys(prev)) if (!liveKeys.has(k)) { if (!changed) { next = { ...prev }; changed = true; } delete next[k]; }
-      for (const r of wbRoutes) if (!(r.key in next)) { if (!changed) { next = { ...next }; changed = true; } next[r.key] = r.order.slice(); }
+      // Baseline = what NuVizz actually holds. A card opened from the board seeds from its
+      // order-at-open as always; a card STAGED from a built plan carries an explicit `baseline`
+      // (the load's board stops only) so the plan's added stops read as dirty and Save sends them.
+      for (const r of wbRoutes) if (!(r.key in next)) { if (!changed) { next = { ...next }; changed = true; } next[r.key] = (r.baseline || r.order).slice(); }
       return changed ? next : prev;
     });
     setStaged((prev) => {
@@ -12347,6 +12351,10 @@ function RoutingScreen({ debugCaptureRef }) {
   // open — because opening ANY load in Compare needs its loadId to assign/dispatch, and Draft/empty
   // loads have no stops to get it from. Failure just leaves the derived status + stop-only loadId.
   const [loadStatusByName, setLoadStatusByName] = useState(() => new Map());
+  // The day's FULL load roster (every load created for the date, empty Drafts included) — the
+  // pick list for "Plan onto my loads" in the left panel. Same fetch as the identity index
+  // below; kept as plain rows {name, loadNbr, loadId, status, trips}.
+  const [loadRosterList, setLoadRosterList] = useState([]);
   // Load-resolution index from the same roster: route name (lc) and loadId → { loadId, name }. This is
   // how a load that has NO stops on the board (a Draft/empty load) gets its real loadId — there are no
   // stops to derive it from, and assignDriver needs the loadId. Kept in a ref so openRouteInWorkbench
@@ -12392,8 +12400,9 @@ function RoutingScreen({ debugCaptureRef }) {
         }
         loadRosterRef.current = index;
         setLoadStatusByName(status);
+        setLoadRosterList(j && j.ok ? (j.loads || []) : []);
       })
-      .catch(() => { if (!cancelled) { loadRosterRef.current = new Map(); setLoadStatusByName(new Map()); } });
+      .catch(() => { if (!cancelled) { loadRosterRef.current = new Map(); setLoadStatusByName(new Map()); setLoadRosterList([]); } });
     return () => { cancelled = true; };
   }, [rightPanelMode, selectedDate]);
 
@@ -12448,9 +12457,11 @@ function RoutingScreen({ debugCaptureRef }) {
   }, [leftPanel.width, rightPanel.width, rightCollapsed, google]);
 
   // Route workbench (part 4): routes opened from the right Routes panel become side-by-side
-  // cards you tune. Each entry { key, order:[stopNbr...], collapsed }; capped at 3. Planning
-  // overlay only — reorders/moves live here, they don't mutate the board.
-  const WB_MAX = 3;
+  // cards you tune. Each entry { key, order:[stopNbr...], collapsed, baseline? }; capped at 6
+  // (raised from 3 for "plan onto my loads" — staging a 5-load build needs 5 cards; the card
+  // row scrolls horizontally). Planning overlay only — reorders/moves live here, they don't
+  // mutate the board.
+  const WB_MAX = 6;
   const [wbRoutes, setWbRoutes] = useState([]);
   // Every stop id currently STAGED on an open Compare card, mapped to its card key. The map
   // selection tools must not grab these — selecting a staged stop and sending it to another
@@ -12476,6 +12487,18 @@ function RoutingScreen({ debugCaptureRef }) {
 
   const [selectedIds, setSelectedIds] = useState(() => new Set());
   const [selectedTruckIds, setSelectedTruckIds] = useState(() => new Set());
+  // "Plan onto": 'loads' spreads the selection across REAL NuVizz loads picked from the day's
+  // roster (one built route per picked load, staged onto Compare cards → the normal Save);
+  // 'trucks' is the original abstract truck-profile build. Persisted; loads-first is the
+  // dispatcher flow ("select alpha, alpha 2, atl, suw, suw 2 then plan my selection onto them").
+  const [planMode, setPlanMode] = useState(() => { try { return localStorage.getItem('routing.planMode') === 'trucks' ? 'trucks' : 'loads'; } catch { return 'loads'; } });
+  useEffect(() => { try { localStorage.setItem('routing.planMode', planMode); } catch { /* ignore */ } }, [planMode]);
+  // Picked roster loads (row keys) + a per-load truck-profile override for capacity/eligibility.
+  const [planTargetKeys, setPlanTargetKeys] = useState(() => new Set());
+  const [planTargetProfileById, setPlanTargetProfileById] = useState(() => new Map());
+  const [planLoadFilter, setPlanLoadFilter] = useState('');
+  // A different day = a different roster — stale picks must never carry across dates.
+  useEffect(() => { setPlanTargetKeys(new Set()); setPlanTargetProfileById(new Map()); setPlanLoadFilter(''); }, [selectedDate]);
   const [intent, setIntent] = useState('');
   const [strategy, setStrategy] = useState('MIN_DISTANCE');
   const [useGoogle, setUseGoogle] = useState(false);
@@ -13853,7 +13876,55 @@ function RoutingScreen({ debugCaptureRef }) {
   }, [google, dayRoutes, mapReady]);
 
   const selectedTrucks = useMemo(() => profiles.filter((p) => selectedTruckIds.has(p.id)), [profiles, selectedTruckIds]);
-  const canBuild = selectedIds.size >= 1 && selectedTrucks.length >= 1 && selectedIds.size <= ROUTING_MAX_SELECTION && !building;
+
+  // ── "Plan onto my loads" pick list ────────────────────────────────────────
+  // The day's roster as pickable build targets. Empty loads (nothing on the board yet — the
+  // ones you create in NuVizz to fill) sort first; loads that already hold stops are still
+  // pickable (the build ADDS to them via the card merge). Loads whose NAME is duplicated on
+  // the roster are shown but not pickable — identity is ambiguous, the same rule the Compare
+  // card open enforces — and the solver needs unique route keys anyway.
+  const boardCountByName = useMemo(() => {
+    const m = new Map();
+    for (const g of routeGroups) { const nm = String(g.name || g.key || '').trim().toLowerCase(); if (nm) m.set(nm, g.count); }
+    return m;
+  }, [routeGroups]);
+  const planPickRows = useMemo(() => {
+    const nameCounts = new Map();
+    for (const l of loadRosterList) { const nm = String(l.name || '').trim().toLowerCase(); if (nm) nameCounts.set(nm, (nameCounts.get(nm) || 0) + 1); }
+    const rows = loadRosterList.map((l) => {
+      const name = String(l.name || '').trim();
+      const rowKey = String(l.loadId || l.loadNbr || name);
+      const boardCount = boardCountByName.get(name.toLowerCase()) || 0;
+      return {
+        rowKey, name, loadNbr: l.loadNbr ? String(l.loadNbr) : null, loadId: l.loadId ? String(l.loadId) : null,
+        status: l.status || '', boardCount,
+        ambiguous: name ? (nameCounts.get(name.toLowerCase()) || 0) > 1 : false,
+        display: name || (l.loadNbr ? String(l.loadNbr) : String(l.loadId || 'Unnamed load')),
+      };
+    });
+    rows.sort((a, b) => (Number(a.boardCount > 0) - Number(b.boardCount > 0)) || a.display.localeCompare(b.display));
+    return rows;
+  }, [loadRosterList, boardCountByName]);
+  // Default vehicle per load: the name says trailer → the tractor profile, else the box
+  // profile. The per-load chip in the panel overrides it.
+  const guessProfileFor = useCallback((name) => {
+    const tractor = profiles.find((p) => p.capabilities?.tractor) || profiles.find((p) => /53|trailer|tractor/i.test(p.label || p.id));
+    const box = profiles.find((p) => !p.capabilities?.tractor) || profiles[0];
+    return (/(^|\W)(trailer|trl|53)(\W|$)/i.test(String(name || '')) && tractor) ? tractor : (box || tractor || profiles[0]);
+  }, [profiles]);
+  const planTargets = useMemo(() => {
+    const out = [];
+    for (const r of planPickRows) {
+      if (!planTargetKeys.has(r.rowKey) || r.ambiguous) continue;
+      const p = profiles.find((x) => x.id === planTargetProfileById.get(r.rowKey)) || guessProfileFor(r.display);
+      if (p) out.push({ ...r, profile: p });
+    }
+    return out;
+  }, [planPickRows, planTargetKeys, planTargetProfileById, profiles, guessProfileFor]);
+
+  const canBuild = selectedIds.size >= 1
+    && (planMode === 'loads' ? planTargets.length >= 1 : selectedTrucks.length >= 1)
+    && selectedIds.size <= ROUTING_MAX_SELECTION && !building;
   const wouldBeElements = (selectedIds.size + 1) ** 2;
   const wouldBeCost = Math.round((wouldBeElements / 1000) * BASIC_RATE_PER_1K_USD * 100) / 100;
 
@@ -13861,11 +13932,25 @@ function RoutingScreen({ debugCaptureRef }) {
     if (!db) { setJob({ status: 'error', error: 'Firestore not configured' }); return; }
     setBuilding(true); setJob({ status: 'queued' }); setSaveState(null);
     const jobId = `job_${(crypto.randomUUID ? crypto.randomUUID() : String(Date.now()))}`;
+    // "Plan onto my loads": ONE solver truck per picked roster load, keyed by the load's
+    // display name — the solver builds exactly one route per key, so route cards, reorder
+    // state, and the map all speak the load's name ("SUW 2"), and the result routes bind
+    // back to real loadNbr/loadId for staging. Capacity/eligibility come from the load's
+    // chosen truck profile. The server honors request.trucks as-is (routing-build's
+    // pre-resolved-trucks path) — zero server changes, zero NuVizz calls.
+    const loadsBound = planMode === 'loads';
+    const plannedLoads = loadsBound
+      ? planTargets.map((t) => ({ key: t.display, name: t.name || null, loadNbr: t.loadNbr, loadId: t.loadId, profileId: t.profile.id }))
+      : null;
+    const solverTrucks = loadsBound
+      ? planTargets.map((t) => ({ id: t.display, label: t.display, maxSkids: t.profile.maxSkids, maxWeightLbs: t.profile.maxWeightLbs, deckLengthIn: t.profile.deckLengthIn, capabilities: { ...t.profile.capabilities } }))
+      : null;
     const request = {
       tenant: 'davis', date: selectedDate,
       selectedStopIds: [...selectedIds],
-      truckProfileIds: selectedTrucks.map((t) => t.id),
-      truckSnapshots: selectedTrucks,
+      truckProfileIds: loadsBound ? [] : selectedTrucks.map((t) => t.id),
+      truckSnapshots: loadsBound ? solverTrucks : selectedTrucks,
+      ...(loadsBound ? { trucks: solverTrucks, plannedLoads } : {}),
       intent: intent.trim(), strategy,
       matrixMode: useGoogle ? 'google' : 'haversine',
       tractorOnlyGreen: trailerGreenOnly,
@@ -13884,7 +13969,7 @@ function RoutingScreen({ debugCaptureRef }) {
     } catch (e) {
       setJob({ status: 'error', error: e.message }); setBuilding(false);
     }
-  }, [selectedDate, selectedIds, selectedTrucks, intent, strategy, useGoogle, trailerGreenOnly]);
+  }, [selectedDate, selectedIds, selectedTrucks, intent, strategy, useGoogle, trailerGreenOnly, planMode, planTargets]);
 
   // Save panel — a name (prefilled with a sensible auto-name per build) + optional
   // free-text initials. No native prompt(); no auth.
@@ -14042,6 +14127,59 @@ function RoutingScreen({ debugCaptureRef }) {
     setMobilePanel('setup');
   }, []);
 
+  // ── Stage a loads-bound build onto Compare cards ───────────────────────────
+  // Each built route (keyed by the picked load's name) becomes/merges into a Compare card
+  // carrying the load's REAL identity (loadNbr/loadId from the roster) with the built stop
+  // order staged — in the CURRENT panel order, so a hand-reorder before staging is honored.
+  // The card's `baseline` stays the load's board stops only, so every added stop reads dirty
+  // and the normal Save (the verified multi-route commitBoard) writes it to NuVizz. Nothing
+  // is sent here — staging is local; Save remains the single write path.
+  const plannedLoadsBound = (!viewing && job?.status === 'done' && Array.isArray(lastRequest?.plannedLoads) && lastRequest.plannedLoads.length) ? lastRequest.plannedLoads : null;
+  const stagePlanOntoLoads = useCallback(() => {
+    const bound = lastRequest?.plannedLoads || [];
+    if (!bound.length || !routesView.length) return;
+    const byKey = new Map(bound.map((b) => [String(b.key), b]));
+    let added = 0, skippedHeld = 0, fullSkipped = [];
+    let next = [...wbRoutes];
+    const heldBy = () => { const m = new Map(); for (const r of next) for (const id of r.order) m.set(String(id), r.key); return m; };
+    for (const rv of routesView) {
+      const b = byKey.get(String(rv.truckId));
+      if (!b) continue;
+      const ids = rv.order.map(String).filter((id) => stopById.has(id));
+      if (!ids.length) continue;
+      const held = heldBy();
+      const idx = next.findIndex((r) => r.key === b.key || (b.loadId && String(r.loadId || '') === String(b.loadId)));
+      if (idx >= 0) {
+        const cur = next[idx];
+        const have = new Set(cur.order.map(String));
+        const add = ids.filter((id) => !have.has(id) && (!held.has(id) || held.get(id) === cur.key));
+        skippedHeld += ids.filter((id) => !have.has(id) && held.has(id) && held.get(id) !== cur.key).length;
+        if (add.length) { next[idx] = { ...cur, order: [...cur.order, ...add] }; added += add.length; }
+      } else {
+        if (next.length >= WB_MAX) { fullSkipped.push(b.key); continue; }
+        // Seed with the load's existing same-day board stops (identical rule to opening the
+        // card), then append the built stops; anything staged on another open card stays there.
+        const boardStops = positionedAllRef.current.filter((s) => !s.windowExtra && (s.routeName || s.loadNbr) === b.key);
+        const baseline = orderRouteStops(boardStops).map((s) => String(s.stopNbr)).filter((id) => !held.has(id));
+        const seen = new Set(baseline);
+        const adds = [];
+        for (const id of ids) {
+          if (seen.has(id)) continue;
+          if (held.has(id)) { skippedHeld++; continue; }
+          seen.add(id); adds.push(id);
+        }
+        next.push({ key: b.key, name: b.name || b.key, loadNbr: b.loadNbr || null, loadId: b.loadId || null, order: [...baseline, ...adds], baseline, collapsed: false });
+        added += adds.length;
+      }
+    }
+    setWbRoutes(next);
+    const bits = [`Staged ${added} stop${added === 1 ? '' : 's'} onto ${Math.min(bound.length, next.length)} card${bound.length === 1 ? '' : 's'} — review, then Save to send to NuVizz`];
+    if (skippedHeld) bits.push(`${skippedHeld} already staged on another open card (left there)`);
+    if (fullSkipped.length) bits.push(`workbench full — couldn't open: ${fullSkipped.join(', ')}`);
+    setLastAction(bits.join(' · '));
+    if (isMobile) { setMobilePanel('setup'); setSheetOpen(true); }
+  }, [lastRequest, routesView, wbRoutes, stopById, isMobile]);
+
   // Shared gear-settings config — rendered in two places: the left Setup-panel header and the
   // bottom data-grid header. The bottom gear is what stays reachable when the Setup panel is hidden,
   // so it carries every toggle EXCEPT "Bottom data grid" (turning that off from the bottom gear would
@@ -14162,31 +14300,89 @@ function RoutingScreen({ debugCaptureRef }) {
         </div>
       )}
 
-      {/* Trucks */}
+      {/* Plan targets — REAL NuVizz loads from the day's roster (default), or the abstract
+          truck profiles (the original build). Loads mode: one built route per picked load,
+          staged onto Compare cards → the normal verified Save writes NuVizz. */}
       <div className="border rounded p-2 space-y-2">
-        <div className="font-semibold text-slate-700">2 · Trucks <span className="text-[11px] text-slate-400">({selectedTrucks.length} in play)</span></div>
-        {profiles.map((p) => (
-          <div key={p.id} className="border rounded p-1.5">
-            <label className="flex items-center gap-2">
-              <input type="checkbox" checked={selectedTruckIds.has(p.id)} onChange={() => setSelectedTruckIds((prev) => { const n = new Set(prev); n.has(p.id) ? n.delete(p.id) : n.add(p.id); return n; })} />
-              <span className="font-medium">{p.label}</span>
-            </label>
-            <div className="grid grid-cols-3 gap-1 mt-1 text-[10px] text-slate-500">
-              <label className="flex flex-col">Skids
-                <input type="number" defaultValue={p.maxSkids} onBlur={(e) => saveProfile({ ...p, maxSkids: Number(e.target.value) })} className="border rounded px-1 py-0.5 text-slate-800" />
-              </label>
-              <label className="flex flex-col">Weight
-                <input type="number" defaultValue={p.maxWeightLbs} onBlur={(e) => saveProfile({ ...p, maxWeightLbs: Number(e.target.value) })} className="border rounded px-1 py-0.5 text-slate-800" />
-              </label>
-              <label className="flex flex-col">Deck in
-                <input type="number" defaultValue={p.deckLengthIn} onBlur={(e) => saveProfile({ ...p, deckLengthIn: Number(e.target.value) })} className="border rounded px-1 py-0.5 text-slate-800" />
-              </label>
-            </div>
-            <label className="flex items-center gap-1 text-[11px] mt-1">
-              <input type="checkbox" defaultChecked={!!p.capabilities?.liftgate} onChange={(e) => saveProfile({ ...p, capabilities: { ...p.capabilities, liftgate: e.target.checked } })} /> liftgate
-            </label>
+        <div className="flex items-center justify-between gap-2">
+          <div className="font-semibold text-slate-700">2 · Plan onto</div>
+          <div className="flex rounded border border-slate-300 overflow-hidden text-[11px] shrink-0">
+            <button onClick={() => setPlanMode('loads')} className={`px-2 py-1 font-semibold ${planMode === 'loads' ? 'text-white' : 'bg-white text-slate-600 hover:bg-slate-50'}`} style={planMode === 'loads' ? { background: BRAND } : undefined}>My loads</button>
+            <button onClick={() => setPlanMode('trucks')} className={`px-2 py-1 font-semibold border-l border-slate-300 ${planMode === 'trucks' ? 'text-white' : 'bg-white text-slate-600 hover:bg-slate-50'}`} style={planMode === 'trucks' ? { background: BRAND } : undefined}>Trucks</button>
           </div>
-        ))}
+        </div>
+        {planMode === 'loads' ? (
+          <>
+            <div className="text-[11px] text-slate-600">Pick the loads to fill (e.g. ALPHA, ALPHA 2, ATL, SUW, SUW 2). Build spreads the selected stops across them — <b>one route per load</b> — then stage the plan onto Compare cards and Save.</div>
+            {planPickRows.length === 0 ? (
+              <div className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded p-1.5">No loads on this day's roster yet — create them in NuVizz first, or switch to <b>Trucks</b>.</div>
+            ) : (
+              <>
+                {planPickRows.length > 6 && (
+                  <input value={planLoadFilter} onChange={(e) => setPlanLoadFilter(e.target.value)} placeholder="Filter loads…" className="w-full border rounded px-2 py-1 text-[12px]" />
+                )}
+                <div className="max-h-56 overflow-y-auto border rounded divide-y divide-slate-100">
+                  {planPickRows
+                    .filter((r) => { const n = planLoadFilter.trim().toLowerCase(); return !n || r.display.toLowerCase().includes(n); })
+                    .map((r) => {
+                      const on = planTargetKeys.has(r.rowKey) && !r.ambiguous;
+                      const prof = profiles.find((x) => x.id === planTargetProfileById.get(r.rowKey)) || guessProfileFor(r.display);
+                      return (
+                        <div key={r.rowKey} className={`px-1.5 py-1 text-[12px] flex items-center gap-1.5 ${r.ambiguous ? 'opacity-50' : ''}`}>
+                          <label className={`flex items-center gap-1.5 flex-1 min-w-0 ${r.ambiguous ? '' : 'cursor-pointer'}`} title={r.ambiguous ? 'Two loads share this name today — rename one in the portal to plan onto it.' : undefined}>
+                            <input type="checkbox" disabled={r.ambiguous} checked={on}
+                              onChange={() => setPlanTargetKeys((prev) => { const n = new Set(prev); n.has(r.rowKey) ? n.delete(r.rowKey) : n.add(r.rowKey); return n; })} />
+                            <span className="font-medium truncate">{r.display}</span>
+                            {r.ambiguous
+                              ? <span className="px-1 rounded text-[10px] bg-red-50 text-red-600 border border-red-200 shrink-0">duplicate name</span>
+                              : r.boardCount > 0
+                                ? <span className="px-1 rounded text-[10px] bg-slate-100 text-slate-600 border border-slate-200 shrink-0" title="This load already holds stops — the build ADDS to it.">{r.boardCount} on board</span>
+                                : <span className="px-1 rounded text-[10px] bg-amber-50 text-amber-700 border border-amber-200 shrink-0">empty</span>}
+                          </label>
+                          {on && (
+                            <select value={prof?.id || ''} title="Vehicle for this load — sets its capacity + what's allowed on it"
+                              onChange={(e) => setPlanTargetProfileById((prev) => { const m = new Map(prev); m.set(r.rowKey, e.target.value); return m; })}
+                              className="border rounded px-1 py-0.5 text-[10px] text-slate-700 shrink-0">
+                              {profiles.map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
+                            </select>
+                          )}
+                        </div>
+                      );
+                    })}
+                </div>
+                {planTargets.length > 0 && (
+                  <div className="text-[11px] text-slate-600 bg-slate-50 rounded p-1.5"><b>{planTargets.length}</b> route{planTargets.length === 1 ? '' : 's'} to build: {planTargets.map((t) => t.display).join(', ')}</div>
+                )}
+              </>
+            )}
+          </>
+        ) : (
+          <>
+            <div className="text-[11px] text-slate-400">({selectedTrucks.length} in play)</div>
+            {profiles.map((p) => (
+              <div key={p.id} className="border rounded p-1.5">
+                <label className="flex items-center gap-2">
+                  <input type="checkbox" checked={selectedTruckIds.has(p.id)} onChange={() => setSelectedTruckIds((prev) => { const n = new Set(prev); n.has(p.id) ? n.delete(p.id) : n.add(p.id); return n; })} />
+                  <span className="font-medium">{p.label}</span>
+                </label>
+                <div className="grid grid-cols-3 gap-1 mt-1 text-[10px] text-slate-500">
+                  <label className="flex flex-col">Skids
+                    <input type="number" defaultValue={p.maxSkids} onBlur={(e) => saveProfile({ ...p, maxSkids: Number(e.target.value) })} className="border rounded px-1 py-0.5 text-slate-800" />
+                  </label>
+                  <label className="flex flex-col">Weight
+                    <input type="number" defaultValue={p.maxWeightLbs} onBlur={(e) => saveProfile({ ...p, maxWeightLbs: Number(e.target.value) })} className="border rounded px-1 py-0.5 text-slate-800" />
+                  </label>
+                  <label className="flex flex-col">Deck in
+                    <input type="number" defaultValue={p.deckLengthIn} onBlur={(e) => saveProfile({ ...p, deckLengthIn: Number(e.target.value) })} className="border rounded px-1 py-0.5 text-slate-800" />
+                  </label>
+                </div>
+                <label className="flex items-center gap-1 text-[11px] mt-1">
+                  <input type="checkbox" defaultChecked={!!p.capabilities?.liftgate} onChange={(e) => saveProfile({ ...p, capabilities: { ...p.capabilities, liftgate: e.target.checked } })} /> liftgate
+                </label>
+              </div>
+            ))}
+          </>
+        )}
       </div>
 
       {/* Controls */}
@@ -14207,15 +14403,18 @@ function RoutingScreen({ debugCaptureRef }) {
           <span>Only put <b style={{ color: ELIG_TRACTOR_COLOR }}>green</b> (tractor-OK) stops on a 53′ trailer<br /><span className="text-[11px] text-slate-500">Any stop not marked tractor-friendly is kept on a box truck. Red (box-only) stops are always kept off trailers.</span></span>
         </label>
         <button onClick={runBuild} disabled={!canBuild} className="w-full py-2 rounded text-white font-semibold disabled:opacity-40" style={{ background: BRAND }}>
-          {building ? 'Building…' : useGoogle ? 'Build with Google drive-times' : 'Build (free estimate)'}
+          {building ? 'Building…'
+            : planMode === 'loads' && planTargets.length > 0 ? `Build onto ${planTargets.length} load${planTargets.length === 1 ? '' : 's'}${useGoogle ? ' · Google drive-times' : ''}`
+            : useGoogle ? 'Build with Google drive-times' : 'Build (free estimate)'}
         </button>
-        {!canBuild && !building && <div className="text-[11px] text-slate-400">Select ≥1 stop and ≥1 truck to build.</div>}
+        {!canBuild && !building && <div className="text-[11px] text-slate-400">{planMode === 'loads' ? 'Select ≥1 stop and pick ≥1 load to build.' : 'Select ≥1 stop and ≥1 truck to build.'}</div>}
       </div>
     </>
   );
 
   const resultContent = (
     <RoutingResultPanel job={job} result={baseResult} meta={meta} usedGoogle={usedGoogle} stopById={vStopById}
+      plannedLoads={plannedLoadsBound} onStagePlan={stagePlanOntoLoads}
       onSave={savePlan} saveState={saveState} saveName={saveName} setSaveName={setSaveName} savedBy={savedBy} setSavedBy={setSavedBy}
       onDiscard={discardPlan} planEdited={planEdited}
       routesView={routesView} onReorder={reorderStop} onMove={moveStop} onResequence={onResequence} readOnly={viewing}
@@ -14553,7 +14752,7 @@ function RoutingScreen({ debugCaptureRef }) {
   );
 }
 
-function RoutingResultPanel({ job, result, meta, usedGoogle, stopById, onSave, saveState, saveName, setSaveName, savedBy, setSavedBy, onDiscard, planEdited, routesView, onReorder, onMove, onResequence, readOnly, hoverId, setHoverId, onOpenStop, savedLoad, onCloseLoad, onRename, onToggleDispatch, onDelete, manageError }) {
+function RoutingResultPanel({ job, result, meta, usedGoogle, stopById, plannedLoads, onStagePlan, onSave, saveState, saveName, setSaveName, savedBy, setSavedBy, onDiscard, planEdited, routesView, onReorder, onMove, onResequence, readOnly, hoverId, setHoverId, onOpenStop, savedLoad, onCloseLoad, onRename, onToggleDispatch, onDelete, manageError }) {
   const [confirmDiscard, setConfirmDiscard] = useState(false);
   const [riskOpen, setRiskOpen] = useState(false); // risk flags are a collapsed disclosure; never auto-expand
   useEffect(() => { setConfirmDiscard(false); setRiskOpen(false); }, [job, savedLoad]);
@@ -14582,6 +14781,16 @@ function RoutingResultPanel({ job, result, meta, usedGoogle, stopById, onSave, s
       ) : (
         <div className="rounded border border-slate-300 bg-slate-50 p-2 text-[11px] text-slate-600">
           This is a <b>plan saved in our system only</b>. It has <b>NOT</b> been sent to NuVizz or dispatched to any driver.
+        </div>
+      )}
+
+      {/* Loads-bound build: the primary next step. Staging is LOCAL — each built route lands on
+          its load's Compare card (real loadNbr/loadId); the card Save is the one write path. */}
+      {!savedLoad && plannedLoads && plannedLoads.length > 0 && onStagePlan && (
+        <div className="rounded border-2 p-2 text-[12px] space-y-1.5" style={{ borderColor: BRAND }}>
+          <div className="font-semibold text-slate-800">Bound to your NuVizz loads</div>
+          <div className="text-[11px] text-slate-600">One route per picked load: <b>{plannedLoads.map((b) => b.key).join(', ')}</b>. Stage them onto Compare cards, tweak anything (drag / ninja / driver), then hit <b>Save</b> on the cards — that's what writes NuVizz, with the full post-save verify.</div>
+          <button onClick={onStagePlan} className="w-full py-2 rounded text-white font-semibold" style={{ background: BRAND }}>Stage onto Compare cards →</button>
         </div>
       )}
 
