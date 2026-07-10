@@ -709,9 +709,17 @@ export async function lookupLoadStopNbrs(loadNbr: string): Promise<Set<string> |
     if (!resp.ok) return null;
     const d: any = await resp.json();
     const out = new Set<string>();
+    // Membership carries BOTH the raw and the NORMALIZED (trim/upper/zero-strip) form of each
+    // number — /load/info and the list feed can disagree on leading zeros/case for the same
+    // stop (that variance is why the convergence comparator normalizes), and a padding
+    // mismatch here read a genuinely-held stop as "not a member" → wrongly demoted.
     for (const row of (d?.Load?.stops || [])) {
       const nbr = row?.stop?.stopNbr ?? row?.stopNbr;
-      if (nbr != null && String(nbr).trim()) out.add(String(nbr).trim());
+      const raw = String(nbr ?? '').trim();
+      if (!raw) continue;
+      out.add(raw);
+      const n = raw.toUpperCase().replace(/^0+(?=\d)/, '');
+      if (n) out.add(n);
     }
     return out;
   } catch { return null; }

@@ -60,7 +60,11 @@ async function mergeCarryover(stops: any[], date: string, carryDays: number): Pr
   const reads = await Promise.all(
     priorDates.map((d) => readStops(TENANT, d).then((r) => ({ d, stops: r.stops })).catch(() => ({ d, stops: [] as any[] }))),
   );
-  let added = 0, pruned = 0;
+  let added = 0, pruned = 0, replaced = 0;
+  // A confirmed-planned stamp folds only while FRESH (48h): the home-day stamp is frozen
+  // forever (prior days are never rescanned), so without the cap a long-DELIVERED old-dated
+  // order kept folding back as live SCHEDULED for the full carry window (audit F6).
+  const STAMP_FRESH_MS = 48 * 3600 * 1000;
   for (const { d, stops: prior } of reads) {
     for (const s of prior) {
       if (!s || s.isTerminal) continue;                  // real, unfinished stops only
@@ -70,10 +74,25 @@ async function mergeCarryover(stops: any[], date: string, carryDays: number): Pr
       // or the order vanishes from the board entirely the moment its Compare card closes
       // — while NuVizz's load holds it. Other planned prior-day rows still never fold
       // (they're that day's own live routes, not today's work).
-      const confirmedPlanned = s.isPlanned && s.board_write_planned === true;
+      const confirmedPlanned = s.isPlanned && s.board_write_planned === true
+        && s.board_write_at && (Date.now() - Date.parse(s.board_write_at)) <= STAMP_FRESH_MS;
       if (s.isPlanned && !confirmedPlanned) continue;
       const key = String(s.stopNbr);
-      if (!key || seen.has(key)) continue;
+      if (!key) continue;
+      if (seen.has(key)) {
+        // SHADOW FIX (audit F2): a stale-UNPLANNED today row (pre-fix revert residue) must not
+        // hide the confirmed plan — replace it in place. A today row that is planned, or that
+        // carries its own write stamp, always wins.
+        if (confirmedPlanned) {
+          const idx = stops.findIndex((t: any) => String(t?.stopNbr) === key);
+          const cur = idx >= 0 ? stops[idx] : null;
+          if (cur && cur.isPlanned !== true && !cur.board_write_at) {
+            stops[idx] = { ...s, carryover: true, scheduledDate: d, boardDate: date };
+            replaced++;
+          }
+        }
+        continue;
+      }
       // Within the live window but no longer unplanned in the latest scan → delivered/planned
       // since. Applies to the UNPLANNED fold only — a confirmed-planned row is EXPECTED to be
       // absent from the unplanned snapshot (it just got planned; that's not "closed since").
@@ -83,6 +102,7 @@ async function mergeCarryover(stops: any[], date: string, carryDays: number): Pr
       added++;
     }
   }
+  if (replaced) console.log(`[carryover] ${date}: replaced ${replaced} stale-unplanned row(s) with their confirmed plans`);
   if (pruned) console.log(`[carryover] ${date}: folded ${added}, pruned ${pruned} stale (delivered/planned since last full scan)`);
   return added;
 }

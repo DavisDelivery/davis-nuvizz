@@ -664,15 +664,25 @@ export async function runRefreshStops(req: Request): Promise<Response> {
         // when there's no roster match or the load read fails; over-budget lookups return
         // null → held one tick (never demoted on a missing read).
         const demoteByNbr = new Map(demoteChecks.map((c) => [String(c.s.stopNbr), c]));
+        const normNbr = (v: any) => String(v ?? '').trim().toUpperCase().replace(/^0+(?=\d)/, '');
         let rosterNameToNbr: Map<string, string> | null = null;
+        let rosterFailed = false;
         const rosterNbrFor = async (routeName: string): Promise<string | null> => {
           if (!rosterNameToNbr) {
             rosterNameToNbr = new Map();
-            const ros = await readLoadRoster(TENANT, date).catch(() => null);
+            const ros = await readLoadRoster(TENANT, date).catch(() => { rosterFailed = true; return null; });
+            // AMBIGUOUS names never resolve (audit F3): two roster loads sharing a name meant
+            // first-wins picked one arbitrarily and the OTHER load's freshly-saved stops read
+            // "not a member" → actively demoted. Ambiguity falls through to the stop record.
+            const counts = new Map<string, number>();
+            for (const l of (ros?.loads || [])) {
+              const nm = String(l?.name ?? l?.routeName ?? '').trim().toLowerCase();
+              if (nm) counts.set(nm, (counts.get(nm) || 0) + 1);
+            }
             for (const l of (ros?.loads || [])) {
               const nm = String(l?.name ?? l?.routeName ?? '').trim().toLowerCase();
               const nbr = String(l?.loadNbr ?? '').trim();
-              if (nm && nbr && !rosterNameToNbr.has(nm)) rosterNameToNbr.set(nm, nbr);
+              if (nm && nbr && counts.get(nm) === 1) rosterNameToNbr.set(nm, nbr);
             }
           }
           return rosterNameToNbr.get(routeName.trim().toLowerCase()) ?? null;
@@ -686,10 +696,17 @@ export async function runRefreshStops(req: Request): Promise<Response> {
           max: DEMOTE_VERIFY_MAX > 0 ? Math.max(64, demoteChecks.length) : 0,
           scannedAt,
           lookup: async (nbr) => {
-            const p = demoteByNbr.get(String(nbr))?.p;
+            const chk = demoteByNbr.get(String(nbr));
+            const p = chk?.p;
+            // Fresh TERMINAL rows never resurrect (audit F5): a CANCELLED/DELIVERED/EXCEPTION
+            // list row stands even if the load still lists the stop — the membership path must
+            // not lose the record verdict's finished-work rule.
+            const stFresh = String(chk?.s?.normalizedStatus ?? '').toUpperCase();
+            if (stFresh === 'DELIVERED' || stFresh === 'EXCEPTION' || stFresh === 'CANCELLED') return false;
             const routeName = String(p?.loadNbr ?? p?.routeName ?? '').trim();
             if (routeName) {
               const realNbr = await rosterNbrFor(routeName);
+              if (rosterFailed) return null;   // roster unreadable this scan → hold, never guess (F9)
               if (realNbr) {
                 if (!loadMembers.has(realNbr)) {
                   if (demoteLoadReads >= DEMOTE_VERIFY_LOAD_MAX) return null;   // over budget → hold
@@ -697,8 +714,12 @@ export async function runRefreshStops(req: Request): Promise<Response> {
                   loadMembers.set(realNbr, await lookupLoadStopNbrs(realNbr));
                 }
                 const members = loadMembers.get(realNbr);
-                if (members) return members.has(String(nbr));                   // the load decides
-                // load unreadable → fall through to the stop record
+                // Only a POSITIVE membership short-circuits. "Not a member" falls through to
+                // the stop record: the resolved load can be the WRONG same-named instance
+                // (tomorrow's recurring build — audit F3b) and demoting on its word alone
+                // un-plans a saved route. The record's verdict (404 holds, terminal drops)
+                // decides within its own budget; over budget → held one tick.
+                if (members && (members.has(String(nbr)) || members.has(normNbr(nbr)))) return true;
               }
             }
             if (demoteStopReads >= DEMOTE_VERIFY_MAX) return null;              // hold
