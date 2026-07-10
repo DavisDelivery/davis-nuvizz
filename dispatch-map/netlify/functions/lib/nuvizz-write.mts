@@ -1161,13 +1161,48 @@ function rwbOrderMismatch(load: any, orderedNbrs: string[]): string | null {
   if (dos.some((s: any) => wantSet.has(String(s.stopNbr)) && (s?.stopSeq == null || !Number.isFinite(Number(s.stopSeq))))) {
     return `${RWB_SEQ_PENDING} for this load (the save may still be settling) — re-Save in a moment to verify the order`;
   }
+  // Equal-seq TIE-BREAK by requested position: NuVizz gives CO-LOCATED orders (one physical
+  // stop, several PROs — the two USDA FOREST SERVICE orders on SCOTT) the SAME stopSeq, so a
+  // raw sort's tie order is arbitrary and used to flip against `want` at random.
+  const wantIdx = new Map(want.map((n, i) => [n, i]));
   const got = dos.slice()
-    .sort((a: any, b: any) => Number(a.stopSeq) - Number(b.stopSeq))
+    .sort((a: any, b: any) => (Number(a.stopSeq) - Number(b.stopSeq))
+      || ((wantIdx.get(String(a.stopNbr)) ?? 1e9) - (wantIdx.get(String(b.stopNbr)) ?? 1e9)))
     .map((s: any) => String(s.stopNbr))
     .filter((n: string) => wantSet.has(n));
-  const seqs = dos.filter((s: any) => s?.stopSeq != null).map((s: any) => Number(s.stopSeq)).filter((v: number) => Number.isFinite(v));
-  const dupes = [...new Set(seqs.filter((v: number, i: number) => seqs.indexOf(v) !== i))];
+  // Duplicate positions are CORRUPTION only across DIFFERENT places (the DAWSONVILLE 1,2,2,6…13
+  // state). Same-address orders legitimately share one NuVizz position — flagging those blocked
+  // every close of a load carrying co-located PROs ("acting like it didn't save"). Location key
+  // comes from the RAW stop record's to.address; a group with unknown addresses is treated as
+  // corrupt only when the order ALSO mismatches (real corruption has both, SCOTT had neither).
+  const locOf = new Map<string, string | null>();
+  for (const r of (load?.rawStops || [])) {
+    const st: any = r?.stop || r || {};
+    if (st?.stopNbr == null) continue;
+    const a = st?.to?.address || {};
+    const key = [a.name, a.addressLine1 ?? a.address1 ?? a.addrLine1, a.city]
+      .map((x: any) => String(x ?? '').trim().toLowerCase()).filter(Boolean).join('|');
+    locOf.set(String(st.stopNbr), key || null);
+  }
+  const bySeq = new Map<number, string[]>();
+  for (const s of dos) {
+    const v = Number(s.stopSeq);
+    if (!Number.isFinite(v)) continue;
+    bySeq.set(v, [...(bySeq.get(v) || []), String(s.stopNbr)]);
+  }
   const misplaced = want.filter((n, i) => got[i] !== n);
+  const dupes: number[] = [];
+  for (const [v, nbrs] of bySeq) {
+    if (nbrs.length < 2) continue;
+    const keys = nbrs.map((n) => locOf.get(n) ?? null);
+    const known = [...new Set(keys.filter(Boolean))];
+    const sameKnownPlace = known.length === 1 && keys.every(Boolean);
+    const unknown = keys.some((k) => !k);
+    if (sameKnownPlace) continue;                       // co-located orders — benign
+    if (unknown && !misplaced.length) continue;         // order matches + address unknown — benign
+    dupes.push(v);
+  }
+  dupes.sort((a, b) => a - b);
   if (!dupes.length && !misplaced.length) return null;
   const fmt = (a: string[]) => a.slice(0, 4).join(' → ') + (a.length > 4 ? ' → …' : '');
   return `NuVizz ACCEPTED the save but KEPT its own stop order on this load (wanted ${fmt(want)}; NuVizz still runs ${fmt(got)}${dupes.length ? `; duplicate position${dupes.length > 1 ? 's' : ''} ${dupes.slice(0, 3).join(', ')}` : ''}) — fix the order in the NuVizz portal or re-Save`;
