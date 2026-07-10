@@ -36,7 +36,7 @@ async function withRwb(over, fn) {
 // set the load's stops to exactly the entry's trip order, like the real portal — so the
 // post-save membership+ORDER verify sees the save. Pass applySave:false to simulate the
 // Jul 9 DAWSONVILLE portal behavior: SUCCESS answered, nothing applied.
-function makeRequester({ saveBody = { responseCode: 200 }, saveStatus = 200, loadStops, stopHolders = {}, applySave = true, seqless = false, stopTypes = {}, stopSeqs = {}, stopAddrs = {} } = {}) {
+function makeRequester({ saveBody = { responseCode: 200 }, saveStatus = 200, loadStops, stopHolders = {}, applySave = true, seqless = false, stopTypes = {}, stopSeqs = {}, stopAddrs = {}, idAlias = {} } = {}) {
   const calls = [];
   const stopDoc = (n) => ({ stop: { stopId: `id-${n}`, stopNbr: String(n), stopType: stopTypes[n] || 'DO', to: { seq: 1 } } });
   const loadJson = () => ({ Load: {
@@ -67,7 +67,7 @@ function makeRequester({ saveBody = { responseCode: 200 }, saveStatus = 200, loa
           // Simulate the portal actually attaching the stops so the post-add verify re-read sees them.
           try {
             const sids = opts.body && opts.body.get ? String(opts.body.get('stopIds') || '') : '';
-            for (const sid of sids.split(',').filter(Boolean)) { const n = sid.replace(/^id-/, ''); if (loadStops && !loadStops.value.includes(n)) loadStops.value.push(n); }
+            for (const sid of sids.split(',').filter(Boolean)) { const n = idAlias[sid] ?? sid.replace(/^id-/, ''); if (loadStops && !loadStops.value.includes(n)) loadStops.value.push(n); }
           } catch { /* no loadStops in unit tests */ }
           return J({ responseCode: 200, message: 'SUCCESS', stops: [] });
         }
@@ -602,13 +602,13 @@ test('runCommitBoardRwb: an arrival is added via the RWB portal (not v7 insertSt
   });
 });
 
-test('runCommitBoardRwb: every ADD is verified via getStop even when client ids are supplied (no fast path)', async () => {
+test('runCommitBoardRwb: supplied ids that do NOT look like NuVizz ids never skip the per-ADD getStop', async () => {
   await withRwb({}, async () => {
-    // The old "portal-scale" fast path skipped the per-stop getStop when the client supplied
-    // stopIds — trusting the BOARD's "unplanned". A stale board (overlay lapse on a paused-scan
-    // night) let a stop already planned on ANOTHER route be "added": NuVizz no-ops/rejects it
-    // downstream of us reporting success (the WIEDMANN→KOBE false save). Now every add arrival
-    // is read from NuVizz first, so the already-planned refusal fires BEFORE anything writes.
+    // Scan-fed ids (stopIdsByNbr / paired orderedStopIds) may skip the pre-add read — but ONLY
+    // when each value is id-SHAPED (isHashLikeId). Anything else (these 'id-A' style strings,
+    // a stop NUMBER, junk) is refused by the guard and the engine reads every ADD from NuVizz
+    // first, exactly the WIEDMANN→KOBE-era behavior: the already-planned refusal fires BEFORE
+    // anything writes.
     const loadStops = { value: ['X'] };
     const { requester, calls } = makeRequester({ loadStops });
     const r = await runCommitBoardRwb(requester, { loads: [{
@@ -622,6 +622,68 @@ test('runCommitBoardRwb: every ADD is verified via getStop even when client ids 
     const val = calls.filter((c) => c.url.includes('validateStopstoPerformAction'));
     assert.equal(val.length, 1, 'one batched validate');
     assert.ok(val[0].url.includes('routeId='), 'validate carries routeId');
+  });
+});
+
+test('runCommitBoardRwb: scan-fed stopIdsByNbr skips the per-ADD getStop (the 24-call build fix)', async () => {
+  await withRwb({}, async () => {
+    // Board rows carry the internal stop id off the cheap list scan (Stop-Id column) or
+    // enrichment; the client sends them as stopIdsByNbr. An id-SHAPED supplied id goes straight
+    // into the batched validate+add — NO pre-add /stop/info read — which is what drops a
+    // 14-stop build from ~24 NuVizz calls to the portal's own ~7. Safety is unchanged: the
+    // post-add membership re-read still catches a silent no-op (next test).
+    const A = 'a'.repeat(24), B = 'b'.repeat(24), C = 'c'.repeat(24);
+    const loadStops = { value: ['X'] };
+    const { requester, calls } = makeRequester({ loadStops, idAlias: { [A]: 'A', [B]: 'B', [C]: 'C' } });
+    const r = await runCommitBoardRwb(requester, { loads: [{
+      loadNbr: 'DAVIS000000123', loadId: HEXID, routeName: 'R',
+      orderedStopNbrs: ['X', 'A', 'B', 'C'], stopIdsByNbr: { A, B, C },
+    }] }, CREDS);
+    assert.equal(r.ok, true, `expected success, got: ${JSON.stringify(r.loads?.[0]?.error)}`);
+    assert.equal(calls.filter((c) => c.url.includes('/stop/info/')).length, 0, 'no per-ADD getStop when scan-fed ids are supplied');
+    const add = calls.find((c) => c.url.includes('addStopsToRouteAfterValidation'));
+    assert.equal(String(add.body.get('stopIds')), [A, B, C].join(','), 'the supplied ids ride the batched add');
+    assert.equal(calls.some((c) => c.url.includes('saveComparedRouteData')), true);
+  });
+});
+
+test('runCommitBoardRwb: the silent-no-op guard HOLDS on the scan-fed id path (no false success)', async () => {
+  await withRwb({}, async () => {
+    // The WIEDMANN protection did not move: with supplied ids the pre-add read is skipped, so
+    // the post-add membership re-read is the guard — an add that returns SUCCESS without the
+    // stop landing still fails loudly and still NAMES the holding load. Never a false "saved".
+    const A = 'a'.repeat(24);
+    const loadStops = { value: ['X'] };
+    const base = makeRequester({ loadStops, stopHolders: { A: 'DAVIS000OTHER' } });
+    const real = base.requester.request;
+    base.requester.request = async (url, opts, meta) => {
+      if (url.includes('addStopsToRouteAfterValidation')) return new Response(JSON.stringify({ responseCode: 200, message: 'SUCCESS' }), { status: 200 }); // ok, but does NOT add
+      return real(url, opts, meta);
+    };
+    const r = await runCommitBoardRwb(base.requester, { loads: [{
+      loadNbr: 'DAVIS000000123', loadId: HEXID, routeName: 'R',
+      orderedStopNbrs: ['X', 'A'], stopIdsByNbr: { A },
+    }] }, CREDS);
+    assert.equal(r.ok, false, 'must NOT report success when the stop never landed');
+    assert.match(String(r.loads[0].error || ''), /DAVIS000OTHER/, 'failure names the holding load');
+    assert.equal(base.calls.some((c) => c.url.includes('saveComparedRouteData')), false, 'must not persist a route missing the stop');
+  });
+});
+
+test('runCommitBoardRwb: positional orderedStopIds pair only 1:1 — a partial array falls back to getStop', async () => {
+  await withRwb({}, async () => {
+    // The client filters unknown ids out of orderedStopIds, so a partial array has LOST its
+    // pairing with orderedStopNbrs — gluing ids to nbrs by position would seat the wrong stop.
+    // Mismatched lengths are ignored and every ADD reads from NuVizz, exactly as before.
+    const A = 'a'.repeat(24), B = 'b'.repeat(24);
+    const loadStops = { value: ['X'] };
+    const { requester, calls } = makeRequester({ loadStops });
+    const r = await runCommitBoardRwb(requester, { loads: [{
+      loadNbr: 'DAVIS000000123', loadId: HEXID, routeName: 'R',
+      orderedStopNbrs: ['X', 'A', 'B'], orderedStopIds: [A, B].slice(0, 1).concat(),
+    }] }, CREDS);
+    assert.equal(r.ok, true, `expected success, got: ${JSON.stringify(r.loads?.[0]?.error)}`);
+    assert.equal(calls.filter((c) => c.url.includes('/stop/info/')).length, 2, 'both ADDs read the old way (no positional guessing)');
   });
 });
 

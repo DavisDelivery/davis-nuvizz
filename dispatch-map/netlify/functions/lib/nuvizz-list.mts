@@ -124,6 +124,15 @@ export function normalize(j: any): any[] {
     cols.find((k) => /display/.test(colHay(k)) && /seq/.test(colHay(k))) ||
     cols.find((k) => /ship.?to/.test(colHay(k)) && /seq/.test(colHay(k))) ||
     cols.find((k) => /(destination|deliver)/.test(colHay(k)) && /seq/.test(colHay(k))) || null;
+  // The stop's internal NuVizz id (the RWB validate/add/leg id) — found by PATTERN like the
+  // columns above, so adding a "Stop Id" column to the saved search lights this up with no
+  // code change. This is what lets a Save skip the one-/stop/info-per-added-stop id lookup
+  // (24 calls for a 14-stop build) and run at the portal's own ~7-call cost: the id rides the
+  // cheap list scan instead. Guarded downstream by isHashLikeId so a column that actually
+  // carries the stop NUMBER (digits) can never masquerade as an id.
+  const stopIdKey =
+    cols.find((k) => /(^|\.)stopid$/i.test(k)) ||
+    cols.find((k) => /stop.?id\b/.test(colHay(k)) && !/(nbr|number|seq|load|route|driver)/.test(colHay(k))) || null;
   if (!displaySeqKey && cols.length && !__warnedNoDisplaySeq) {
     __warnedNoDisplaySeq = true;
     console.warn(`[nuvizz-list] no ShipTo-Display-Seq column found — in-load delivery order falls back to a geographic guess. cols=${JSON.stringify(cols).slice(0, 800)}`);
@@ -140,6 +149,7 @@ export function normalize(j: any): any[] {
     zip: g(row, 'vizzonInfo.destination.address.zipCode') ?? '',
     routeName: g(row, 'route.name') ?? '',
     routeSeq: displaySeqKey ? numOrNull(g(row, displaySeqKey)) : null,   // ShipTo Display Seq = delivery order
+    nvStopId: stopIdKey ? String(g(row, stopIdKey) ?? '').trim() : '',   // internal stop id (RWB planning id)
     // The driver column is unreliable: in some saved searches route.driver.driverId carries the
     // human name ("DENIS"), in others it comes through as a bare ObjectId — which rendered as
     // "jibberish" on the board (#254). So gather every likely name field (route.driver.name etc.)
@@ -217,6 +227,11 @@ export function toBoardStop(r: any): any {
   const listUpdatedDTTM = upd ? upd.iso : (r.updatedTime || null);
   return {
     stopNbr: r.stopNbr || null,
+    // The internal NuVizz stop id (RWB planning id), free from the list when the saved search
+    // exposes a Stop-Id column. isHashLikeId guards against a mislabeled column carrying the
+    // stop NUMBER — only an id-shaped value ever lands here. This is the same field enrichment
+    // fills, so the client's Save payload picks it up board-wide with no other change.
+    stopId: isHashLikeId(r.nvStopId) ? String(r.nvStopId) : null,
     // Shipment number (usually equals stopNbr). Customer service prepends "ATT" to a failed
     // delivery's shipment number, so this carries the re-delivery-attempt marker; surfaced
     // FREE from the list every scan so the attempts feature reads it from the board index
@@ -629,12 +644,18 @@ export function mergeEnrich(target: any, src: any): any {
   // never actually re-order the route (#292). We still let src BACKFILL when the list row
   // carried no Display-Seq (target.routeSeq null).
   const listRouteSeq = typeof target.routeSeq === 'number' ? target.routeSeq : null;
+  // Same list-wins rule for the stop id: the list's Stop-Id column (when present) is the
+  // CURRENT instance's id refreshed every scan; a carried-forward enrichment id could be a
+  // stale instance of a recurring reference PRO. Not a LIVE field though — when the saved
+  // search has no id column the list value is null and the enriched id must survive.
+  const listStopId = (typeof target.stopId === 'string' && target.stopId) ? target.stopId : null;
   for (const [k, v] of Object.entries(src)) {
     if (LIVE_LIST_FIELDS.includes(k) || k === 'enriched' || k === 'last_scanned_at' || k === '_id') continue;
     if (v === null || v === undefined || v === '' || (Array.isArray(v) && v.length === 0)) continue;
     target[k] = v;
   }
   if (listRouteSeq != null) target.routeSeq = listRouteSeq;  // list Display-Seq is authoritative
+  if (listStopId) target.stopId = listStopId;                // list stop id is authoritative
   target.enriched = true;
   return target;
 }

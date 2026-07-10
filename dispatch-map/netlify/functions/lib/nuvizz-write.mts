@@ -1388,10 +1388,33 @@ export async function runCommitBoardRwb(requester: RequesterLike, payload: any, 
     // arrival: a wasted getStop+validate+add per reorder at best, a false failure at worst when
     // the portal rejects re-adding a stop it already holds.
     const missing = p.orderedNbrs.filter((n: string) => !p.curNbrs.has(n));
+    // Scan-fed stop ids from the client's board rows (stopIdsByNbr map; legacy positional
+    // orderedStopIds accepted only when it pairs 1:1 with orderedStopNbrs). A supplied id
+    // skips the one-getStop-per-added-stop lookup that made a 14-stop build cost ~24 calls
+    // (journal: stopInfos=N) — the id already came off NuVizz's own list/enrichment. Only
+    // hash-shaped values are trusted (a stop NUMBER can never pass as an id). Safety is NOT
+    // relaxed: validate/add rejects a dead or already-planned instance, and the post-add
+    // membership re-read below still catches a silent no-op and NAMES the holding load —
+    // the supplied id only skips the pre-add read, never the post-add verify.
+    const suppliedIds = new Map<string, string>();
+    {
+      const byNbr = p.L?.stopIdsByNbr;
+      if (byNbr && typeof byNbr === 'object' && !Array.isArray(byNbr)) {
+        for (const [nbr, id] of Object.entries(byNbr)) if (isHashLikeId(id)) suppliedIds.set(String(nbr), String(id));
+      } else {
+        const nbrs = Array.isArray(p.L?.orderedStopNbrs) ? p.L.orderedStopNbrs : [];
+        const ids = Array.isArray(p.L?.orderedStopIds) ? p.L.orderedStopIds : [];
+        if (nbrs.length && ids.length === nbrs.length) {
+          nbrs.forEach((n: any, i: number) => { if (isHashLikeId(ids[i])) suppliedIds.set(String(n), String(ids[i])); });
+        }
+      }
+    }
     const needFetch: string[] = [];
     for (const nbr of missing) {
       const holder = seq.find((q: any) => q !== p && q.result.ok && q.stopIdByNbr.has(nbr));
       if (holder) { p.moveArrivals.push({ nbr, stopId: holder.stopIdByNbr.get(nbr), fromLoadNbr: holder.loadNbr }); continue; }
+      const sid = suppliedIds.get(nbr);
+      if (sid) { p.addArrivals.push({ nbr, stopId: sid }); continue; }
       needFetch.push(nbr);
     }
     const fetched = new Map<string, any>(await Promise.all(needFetch.map(async (n): Promise<[string, any]> => {
