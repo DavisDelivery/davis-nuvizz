@@ -58,3 +58,29 @@ test('carryover load still excludes older-dated stops (no regression)', () => {
   // load started 6/19 (carryover) → only today-dated stops kept
   assert.deepEqual(loadStopsForDate(stops, '2026-06-23', '2026-06-19').map((x) => x.s.stop.stopNbr), ['A']);
 });
+
+// ── orderedStopNbrsFromLoad (board reconcile) ────────────────────────────────
+// The reconcile endpoint rewrites board rows from a load read; the order it writes is
+// NuVizz's own running order — to.seq when stamped, array position in the settling window.
+import { orderedStopNbrsFromLoad } from '../netlify/functions/lib/nuvizz-scan.mts';
+
+test('orderedStopNbrsFromLoad: DO stops by to.seq, array-order fallback, pickups excluded', () => {
+  const load = { Load: { stops: [
+    { stop: { stopNbr: 'C', stopType: 'DO', to: { seq: 4 } } },
+    { stop: { stopNbr: 'ORIGIN', stopType: 'PU', to: { seq: 1 } } },   // origin pickup — not a board row
+    { stop: { stopNbr: 'A', stopType: 'DO', to: { seq: 2 } } },
+    { stop: { stopNbr: 'B', stopType: 'DO', to: { seq: 3 } } },
+  ] } };
+  assert.deepEqual(orderedStopNbrsFromLoad(load), ['A', 'B', 'C']);
+
+  // Settling window: no seq stamped yet → array order holds; stamped stops sort first.
+  const settling = { Load: { stops: [
+    { stop: { stopNbr: 'X', stopType: 'DO', to: {} } },
+    { stop: { stopNbr: 'Y', stopType: 'DO', to: { seq: 2 } } },
+    { stop: { stopNbr: 'Z', stopType: 'DO', to: {} } },
+  ] } };
+  assert.deepEqual(orderedStopNbrsFromLoad(settling), ['Y', 'X', 'Z']);
+
+  assert.deepEqual(orderedStopNbrsFromLoad(null), []);
+  assert.deepEqual(orderedStopNbrsFromLoad({ Load: { stops: [] } }), []);
+});
