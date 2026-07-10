@@ -17,6 +17,7 @@
 // board cache with state the Save already verified against NuVizz.
 
 import { patchBoardPlan, isFirestoreEnabled } from './lib/firestore.mts';
+import { putOpRecord } from './lib/write-registries.mts';
 import { getCreds } from './lib/nuvizz-scan.mts';
 
 export default async (req: Request): Promise<Response> => {
@@ -39,14 +40,25 @@ export default async (req: Request): Promise<Response> => {
 
   let tenant = 'DAVIS';
   try { tenant = getCreds().companyCode; } catch { /* default tenant */ }
+  // Every call — success or failure — lands in the write-op ledger (nuvizz-write-log reads
+  // it), because the CLIENT swallows a failed sync silently (MONE, Jul 10: a green save left
+  // zero board stamps and nothing anywhere said why). Best-effort; never blocks the patch.
+  const logIt = (status: 'succeeded' | 'failed', result: any) => putOpRecord({
+    clientOpId: `bsync_${Date.now()}_${routeName.replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 40) || 'unnamed'}`,
+    op: 'boardSync', status, tenant,
+    result: { date, routeName, ordered: ordered.length, unplanned: unplanned.length, ...result },
+    at: new Date().toISOString(),
+  }).catch(() => { /* ledger is best-effort */ });
   try {
     const r = await patchBoardPlan(tenant, date, {
       routeName, orderedStopNbrs: ordered, unplannedStopNbrs: unplanned,
       driverName: body?.driverName ? String(body.driverName) : null,
       at: new Date().toISOString(),
     });
+    await logIt(r.missing > 0 ? 'failed' : 'succeeded', r);
     return J({ ok: true, ...r });
   } catch (e: any) {
+    await logIt('failed', { error: e?.message || 'board sync failed' });
     return J({ ok: false, error: e?.message || 'board sync failed' }, 500);
   }
 };

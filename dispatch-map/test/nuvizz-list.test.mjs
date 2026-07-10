@@ -8,11 +8,15 @@ import { statusFromCode, parseSchedDate, parseReqDate, toBoardStop, bucketByDate
 import { addrKey } from '../netlify/functions/lib/geocode.mts';
 
 // ── boardDayFor: the ONE day-resolution authority (bucketing + carry-forward guard) ──
-test('boardDayFor: resolves boardDate → requested → scheduled; null when none', () => {
+test('boardDayFor: resolves boardDate → requested → scheduled; a dateless OPEN row files to today', () => {
   assert.equal(boardDayFor({ boardDate: '2026-06-26' }, '2026-06-25'), '2026-06-26');
   assert.equal(boardDayFor({ requestedDate: '2026-06-26' }, '2026-06-25'), '2026-06-26');
   assert.equal(boardDayFor({ scheduledDate: '2026-06-26' }, '2026-06-25'), '2026-06-26');
-  assert.equal(boardDayFor({}, '2026-06-25'), null);
+  // The old "null when none" contract is exactly how NuVizz's dateless "-1" re-delivery
+  // duplicates went invisible (bucketByDate drops null days). A dateless OPEN order is live
+  // work → today. Only FINISHED dateless rows still resolve null (nothing to run).
+  assert.equal(boardDayFor({}, '2026-06-25'), '2026-06-25');
+  assert.equal(boardDayFor({ normalizedStatus: 'DELIVERED' }, '2026-06-25'), null);
 });
 
 test('boardDayFor: open ON-ROUTE stop with a stale/missing day clamps forward to today', () => {
@@ -473,6 +477,16 @@ test('mergeEnrich: list ShipTo-Display-Seq (routeSeq) wins over a carried-forwar
   assert.equal(noSeq.routeSeq, null);
   mergeEnrich(noSeq, { enriched: true, routeSeq: 5 });
   assert.equal(noSeq.routeSeq, 5, 'enriched seq backfills only when the list had none');
+});
+
+test('boardDayFor: a DATELESS open order files to today; finished dateless stays dropped', () => {
+  // NuVizz's "-1" re-delivery duplicates arrive with no Estimated Arrival and no Requested
+  // Date; returning null dropped them from every day's board (007143917-1 / 007143998-1 were
+  // in the portal's unplanned view but invisible in ours).
+  const today = '2026-07-10';
+  assert.equal(boardDayFor({ normalizedStatus: 'UNPLANNED' }, today), today, 'dateless open order lands on today');
+  assert.equal(boardDayFor({ normalizedStatus: 'DELIVERED' }, today), null, 'finished dateless rows still drop');
+  assert.equal(boardDayFor({ normalizedStatus: 'UNPLANNED', boardDate: '2026-07-05' }, today), '2026-07-05', 'dated unplanned keeps its own day (the carry-over fold serves it)');
 });
 
 test('normalize + toBoardStop: a Stop-Id column rides the list into board stopId (id-shaped values only)', () => {
