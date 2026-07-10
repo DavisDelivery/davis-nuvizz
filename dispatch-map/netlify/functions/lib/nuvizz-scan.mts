@@ -665,6 +665,28 @@ async function probeLoad(n: number, dateStr: string, authHeader: string, company
   }
 }
 
+// One /load/info read → the set of stop NUMBERS the load currently holds (no date filter),
+// null on ANY failure (auth, 404, network). Demotion corroboration (refresh-stops-core):
+// the LOAD is the same truth the post-save verify checked, and one read covers every
+// demote-check on that load — where the per-stop record can lag an accepted planning-mode
+// save by 30+ minutes (OWUSU 1, Jul 10).
+export async function lookupLoadStopNbrs(loadNbr: string): Promise<Set<string> | null> {
+  try {
+    const { companyCode } = getCreds();
+    const authHeader = basicAuthHeader();
+    const url = `${NUVIZZ_BASE}/load/info/${encodeURIComponent(loadNbr)}/${encodeURIComponent(companyCode)}`;
+    const resp = await getNuvizzRequester().request(url, { headers: { Authorization: authHeader, Accept: 'application/json' } }, { route: '/load/info', tenant: companyCode });
+    if (!resp.ok) return null;
+    const d: any = await resp.json();
+    const out = new Set<string>();
+    for (const row of (d?.Load?.stops || [])) {
+      const nbr = row?.stop?.stopNbr ?? row?.stopNbr;
+      if (nbr != null && String(nbr).trim()) out.add(String(nbr).trim());
+    }
+    return out;
+  } catch { return null; }
+}
+
 // Probe an EXPLICIT list of load numbers (Phase 2 lean discovery: known-active +
 // forward buffer + gap sweep). Same per-load /load/info call + date-filter as the
 // range scan — just an arbitrary set instead of a contiguous window.

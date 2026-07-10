@@ -20,7 +20,7 @@
 // Friday-evening live board under Saturday's doc key — which, with no weekend scan to
 // re-derive it, left Friday's deliveries sitting on Saturday's board all weekend.
 
-import { scanDate, scansEnabled, deriveFleetSummary, estimateLoadRange, buildScanState, shadowWouldProbe, selectLoadProbeTargets, groupLoadMembers, estimateStopFrontier, unplannedFloor, FLOOR_MARGIN, loadNbrToInt, stopNbrToInt, shouldDeepSweep, deepSweepGate, lookupStopByPro } from './nuvizz-scan.mts';
+import { scanDate, scansEnabled, deriveFleetSummary, estimateLoadRange, buildScanState, shadowWouldProbe, selectLoadProbeTargets, groupLoadMembers, estimateStopFrontier, unplannedFloor, FLOOR_MARGIN, loadNbrToInt, stopNbrToInt, shouldDeepSweep, deepSweepGate, lookupStopByPro, lookupLoadStopNbrs } from './nuvizz-scan.mts';
 import { loadProbeParity, frontierParity, loadMembershipDelta, dateSliceMismatch } from './scan-parity.mts';
 import { isFirestoreEnabled, writeStops, writeFleetIndex, getDoc, markScanState, readCallStats, readCircuit, readScanState, writeScanState, readRecentFrontier, recordScanMetric, etDayString, readScanConfig, readStops, readEnrichedPros, writeEnrichedPros, writeLoadRoster, readLoadRoster, writeActiveUnplannedSet } from './firestore.mts';
 import { listScanForDate, mergeEnrich, twoScanBuckets, etDateForTargetUTC, boardDayFor, applyBoardWriteGrace, applyDemotionVerify, demotionLookupVerdict } from './nuvizz-list.mts';
@@ -168,6 +168,10 @@ export async function runRefreshStops(req: Request): Promise<Response> {
   // silently disable the SEAAGRI protection). 0 explicitly disables.
   const demoteRaw = String(process.env.NUVIZZ_DEMOTE_VERIFY_MAX ?? '').trim();
   const DEMOTE_VERIFY_MAX = demoteRaw !== '' && Number.isFinite(Number(demoteRaw)) ? Number(demoteRaw) : 8;
+  // Load-corroboration budget: one memoized /load/info covers EVERY demote-check on that
+  // load, so a whole just-saved route (16 flips) verifies in a single call.
+  const demoteLoadRaw = String(process.env.NUVIZZ_DEMOTE_VERIFY_LOAD_MAX ?? '').trim();
+  const DEMOTE_VERIFY_LOAD_MAX = demoteLoadRaw !== '' && Number.isFinite(Number(demoteLoadRaw)) ? Number(demoteLoadRaw) : 4;
 
   // Read today's last LOAD scan time — this is what drives the elapsed-time
   // cadence (Fix 1). Also read the shared call counter + breaker for the log line.
@@ -649,14 +653,60 @@ export async function runRefreshStops(req: Request): Promise<Response> {
         }
 
         // ── Demotion verify (see collection above) ────────────────────────────
-        // One /stop/info per flip, capped at DEMOTE_VERIFY_MAX per scan (0 disables → legacy
-        // list-wins). Full policy in applyDemotionVerify (nuvizz-list.mts).
+        // LOAD-CORROBORATED FIRST (OWUSU 1, Jul 10): NuVizz's per-stop record can read
+        // un-planned for 30+ minutes after an ACCEPTED planning-mode save on an undispatched
+        // load — long past the write grace — so the record-based verdict demoted a whole
+        // just-saved route while the portal showed the load holding every stop. The LOAD
+        // (route plan) is the same truth the post-save verify checked, so membership there
+        // decides: board rows carry the route NAME in loadNbr, the day's cached roster
+        // (Firestore, free) resolves name → real load number, and ONE memoized /load/info
+        // covers every check on that load. The per-stop record read remains the fallback
+        // when there's no roster match or the load read fails; over-budget lookups return
+        // null → held one tick (never demoted on a missing read).
+        const demoteByNbr = new Map(demoteChecks.map((c) => [String(c.s.stopNbr), c]));
+        let rosterNameToNbr: Map<string, string> | null = null;
+        const rosterNbrFor = async (routeName: string): Promise<string | null> => {
+          if (!rosterNameToNbr) {
+            rosterNameToNbr = new Map();
+            const ros = await readLoadRoster(TENANT, date).catch(() => null);
+            for (const l of (ros?.loads || [])) {
+              const nm = String(l?.name ?? l?.routeName ?? '').trim().toLowerCase();
+              const nbr = String(l?.loadNbr ?? '').trim();
+              if (nm && nbr && !rosterNameToNbr.has(nm)) rosterNameToNbr.set(nm, nbr);
+            }
+          }
+          return rosterNameToNbr.get(routeName.trim().toLowerCase()) ?? null;
+        };
+        const loadMembers = new Map<string, Set<string> | null>();
+        let demoteLoadReads = 0, demoteStopReads = 0;
         const dv = await applyDemotionVerify(demoteChecks, {
-          max: DEMOTE_VERIFY_MAX,
+          // Check-count cap is wide open — the CALL budget is enforced inside the closure
+          // (loads ≤ DEMOTE_VERIFY_LOAD_MAX, stop records ≤ DEMOTE_VERIFY_MAX); anything
+          // past budget verdicts null → held. max<=0 still disables entirely (list wins).
+          max: DEMOTE_VERIFY_MAX > 0 ? Math.max(64, demoteChecks.length) : 0,
           scannedAt,
-          // Verdict policy (404 holds, terminal statuses drop) lives in demotionLookupVerdict —
-          // pure + unit-tested; this closure only supplies the metered read.
-          lookup: async (nbr) => demotionLookupVerdict(await lookupStopByPro(nbr)),
+          lookup: async (nbr) => {
+            const p = demoteByNbr.get(String(nbr))?.p;
+            const routeName = String(p?.loadNbr ?? p?.routeName ?? '').trim();
+            if (routeName) {
+              const realNbr = await rosterNbrFor(routeName);
+              if (realNbr) {
+                if (!loadMembers.has(realNbr)) {
+                  if (demoteLoadReads >= DEMOTE_VERIFY_LOAD_MAX) return null;   // over budget → hold
+                  demoteLoadReads++;
+                  loadMembers.set(realNbr, await lookupLoadStopNbrs(realNbr));
+                }
+                const members = loadMembers.get(realNbr);
+                if (members) return members.has(String(nbr));                   // the load decides
+                // load unreadable → fall through to the stop record
+              }
+            }
+            if (demoteStopReads >= DEMOTE_VERIFY_MAX) return null;              // hold
+            demoteStopReads++;
+            // Verdict policy (404 holds, terminal statuses drop) lives in demotionLookupVerdict —
+            // pure + unit-tested; this closure only supplies the metered read.
+            return demotionLookupVerdict(await lookupStopByPro(nbr));
+          },
         });
         if (dv.kept || dv.held) console.warn(`[scan] ${date}: list tried to unplan ${demoteChecks.length} routed stop(s) — kept ${dv.kept} (NuVizz stop record says assigned), held ${dv.held} (unverified this scan), dropped ${dv.dropped} (confirmed unplanned) — sample ${JSON.stringify(demoteChecks.slice(0, 5).map((c) => String(c.s.stopNbr)))}`);
 

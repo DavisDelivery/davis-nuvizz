@@ -54,7 +54,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.46.4';
+const APP_VERSION = '0.46.5';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -99,6 +99,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.46.5', 'THE BIG ONE: the board can no longer un-plan a route you saved. NuVizz\'s list feed lagged tonight\'s OWUSU 1 save by 30+ minutes, and once the 20-minute hold expired the scans "corrected" the board back to unplanned — dropping the route on our side while production NuVizz held every stop (NOLAN vanished entirely because its old-day row stopped folding onto today once it read planned). Three-part fix: (1) when the list disagrees with a saved plan, the scan now asks the LOAD itself — one call verifies a whole route — and keeps every stop the load holds, instead of trusting the per-stop record that lags right along with the list; (2) the post-save hold is 60 minutes; (3) an old-dated order a Save routed onto today\'s load keeps showing on today\'s board. Also: markers no longer vanish right after a green save with "Unplanned only" on (the freshly-saved route stayed exempt only under the name it was opened with — now every identity of an open card counts); NEW window presets "Last 7/14 days · board day" that follow the board date; the bottom grid highlights rows of stops in the map selection; and tractor-friendly (green) stops paint green in the Selected window.'],
   ['0.46.4', 'Fixed the FALSE "planned on another load" save failure (OWUSU 1). After a batched add, NuVizz attaches the stops ASYNC — our immediate re-read could catch the load before any arrival showed and then blamed the first stop as "still planned on another load" even though its record read UNPLANNED (as checked in the portal). The verify now gives NuVizz a beat and re-reads before judging; a straggler is re-read BY NUMBER — if NuVizz names a real holding load you get the actionable move error (that check is back even on the new low-call path), if our stored id was stale the save re-adds with the fresh id automatically, and if NuVizz is simply still processing the error now says THAT (wait a few seconds, Save again) instead of inventing a phantom load. Also: with a date window set, the bottom grid\'s status filter now re-applies AFTER the recent-save overlay — a just-planned stop no longer shows under "Un-Planned".'],
   ['0.46.3', 'Four in one. (1) BUILD CALL COST: a 14-stop build was ~24 NuVizz calls because the engine paid one /stop/info per added stop to resolve its internal id. Saves now ride ids the board already has (scan + enrichment) and read only the stops missing one — with ids on hand a build runs at the portal\'s own ~7 calls. To light ids up board-wide, add a "Stop Id" column to the planned/unplanned saved searches in the portal (same as the ShipTo-Display-Seq add) — the scan picks it up automatically, no code change. Every safety stays: the post-save verify still re-reads the load and still names a holding route. (2) MARKERS AFTER PRINT: printing a manifest hid the app for the print engine, which made Google Maps drop the numbered route pins — closing the manifest now rebuilds them exactly as they were. (3) ONE CLICK = THE WHOLE PLACE: clicking a marker that carries a count badge now selects (or clears) ALL of that location\'s orders at once — no more clicking twice for 2, three times for 3. (4) HISTORY ON THE STOP CARD: every stop panel now ends with "Recent deliveries here" — this customer\'s recent PROs with the driver who ran each and the date, straight from our saved history (zero NuVizz calls), no History search needed.'],
   ['0.46.2', 'Fixed OLD ROUTES BLEEDING INTO TODAY\'S COMPARE CARD. With a date range set on the bottom grid, pulling up a route matched every cached day\'s rows that ever carried that route name — last week\'s TAYLOR loads (old driver included) merged into today\'s TAYLOR card as one 26-stop / 951-mi monster, while the Routes rail and Loads grid showed the real 12-order load. Delivered stops leave the scan feeds, so their old-day rows stay frozen as "planned on TAYLOR" forever — the window merge was dragging that history in. Now a Compare card seeds from the SELECTED DAY\'s board only, and the grid\'s other-day rows join the map only while UNPLANNED (the carry-over case the window exists for: grab a missed order and plan it today). Planned rows from other days stay off the map, off cards, and out of Saves. Display-only bug — NuVizz and the board were never touched, and today\'s real loads were always intact.'],
@@ -5008,6 +5009,14 @@ function StopNotesEditor({ draft, setDraft, compact = false, drivers = [] }) {
   );
 }
 
+// 'YYYY-MM-DD' shifted ±n calendar days (UTC math); '' on non-ISO input. Drives the
+// board-anchored "last 7 / last 14 days" auto ranges.
+function ymdShift(ymd, delta) {
+  const m = String(ymd || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return '';
+  return new Date(Date.UTC(+m[1], +m[2] - 1, +m[3] + delta)).toISOString().slice(0, 10);
+}
+
 // Compact month/day/year for the recent-PRO chips (YYYY-MM-DD → MM/DD/YY). Non-ISO input passes
 // through unchanged.
 function fmtMdy(ymd) {
@@ -8827,7 +8836,7 @@ const LOAD_BUCKET_STYLE = {
   cancelled: 'bg-red-100 text-red-700',
 };
 
-function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open, setOpen, onPick, onPickLoad, headerRight, onWindowRowsChange, planVersion = 0 }) {
+function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open, setOpen, onPick, onPickLoad, headerRight, onWindowRowsChange, planVersion = 0, highlightIds = null }) {
   // Loads view groups the FULL board's loads (loadStops) so stop-level filters —
   // notably "Unplanned only" — don't empty it. Falls back to the visible stops.
   const loadSrc = loadStops || stops;
@@ -8921,13 +8930,20 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
   // selection changes so status filters server-side, not just on the loaded page).
   useEffect(() => {
     if (!nvWindow) { setNvErr(null); setNvLoading(false); return; }
-    const custom = nvWindow === 'custom';
+    // '-7d' / '-14d' are AUTO ranges: board day back N days, tracking the board-date input —
+    // "takes the day the board is set to and goes back". They ride the same fromDate/toDate
+    // cache path as a hand-picked custom range (scanned days → cache-served, zero NuVizz).
+    const autoBack = nvWindow === '-7d' ? 7 : nvWindow === '-14d' ? 14 : 0;
+    const custom = nvWindow === 'custom' || autoBack > 0;
     // Custom range needs BOTH endpoints before it can pull — clear any previous window's rows.
-    if (custom && (!nvFrom || !nvTo)) { setNvErr(null); setNvLoading(false); setNvRows([]); setNvTotal(0); setNvPartial(false); return; }
+    // An auto range needs a valid board date (always present in practice).
+    if ((nvWindow === 'custom' && (!nvFrom || !nvTo)) || (autoBack > 0 && !ymdShift(boardDate, 0))) { setNvErr(null); setNvLoading(false); setNvRows([]); setNvTotal(0); setNvPartial(false); return; }
     let cancelled = false;
     const ctrl = new AbortController();
     const codes = TABLE_STATUS_BUCKETS.filter((b) => statusSel.has(b.k)).flatMap((b) => b.codes);
-    const [lo, hi] = custom ? (nvFrom <= nvTo ? [nvFrom, nvTo] : [nvTo, nvFrom]) : ['', ''];
+    const [lo, hi] = nvWindow === 'custom'
+      ? (nvFrom <= nvTo ? [nvFrom, nvTo] : [nvTo, nvFrom])
+      : autoBack > 0 ? [ymdShift(boardDate, -autoBack), boardDate] : ['', ''];
     const req = custom
       ? { fromDate: lo, toDate: hi, statusCodes: codes, page: 1, pageSize: 1000 }
       : { arrivalPeriod: nvWindow, statusCodes: codes, page: 1, pageSize: 1000 };
@@ -8957,9 +8973,9 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
         })
         .catch((e) => { if (!cancelled) { setNvErr(e.message); setNvRows([]); setNvTotal(0); setNvPartial(false); } })
         .finally(() => { if (!cancelled) setNvLoading(false); });
-    }, custom ? 600 : 0);
+    }, nvWindow === 'custom' ? 600 : 0);   // only hand-typed dates need the debounce
     return () => { cancelled = true; ctrl.abort(); clearTimeout(timer); };
-  }, [nvWindow, nvFrom, nvTo, statusSel]);
+  }, [nvWindow, nvFrom, nvTo, statusSel, boardDate]);
   // Report the active window's coord-bearing rows UP so the routing map can render them for
   // selection/planning. Only the CACHE path carries coordinates (the live small-window list feed
   // has none); a live window or board mode reports null → the map stays on the single board day.
@@ -9217,6 +9233,8 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
                   <option value="">Board (today)</option>
                   <option value="0d">NuVizz · Today</option>
                   <option value="+/-7d">NuVizz · ±7 days</option>
+                  <option value="-7d">Last 7 days · board day</option>
+                  <option value="-14d">Last 14 days · board day</option>
                   <option value="custom">Custom range…</option>
                 </select>
                 {nvWindow === 'custom' && (
@@ -9295,7 +9313,9 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
                 <tr
                   key={s.stopNbr}
                   onClick={() => onPick(s)}
-                  className={'cursor-pointer hover:bg-blue-50 ' + (s.carryover ? 'bg-amber-50/60' : '')}
+                  // Selected-on-the-map rows highlight (Routing passes the live selection) so the
+                  // grid and the selection tool read as one; selection tint wins over carry-over.
+                  className={'cursor-pointer hover:bg-blue-50 ' + (highlightIds?.has(String(s.stopNbr)) ? 'bg-blue-100 hover:bg-blue-200/70' : s.carryover ? 'bg-amber-50/60' : '')}
                   title={s.carryover ? `Carry-over from ${s.scheduledDate}` : undefined}
                 >
                   {cols.map((c) => (
@@ -11728,7 +11748,7 @@ function RoutingSettingsMenu({ panels = [], views = [], actions = [], dropUp = f
   );
 }
 
-function RoutingSelectionFloatPanel({ selectedStops, onRemove, onClearAll, onOpenStop, onClose, isMobile }) {
+function RoutingSelectionFloatPanel({ selectedStops, notes, onRemove, onClearAll, onOpenStop, onClose, isMobile }) {
   // Compact window from the naive (zoneless) schedule ISO — parse the clock straight off the
   // string so there's no local-timezone drift. "8:00a", "8:00a–8:00p".
   const fmtWin = (iso) => {
@@ -11750,8 +11770,11 @@ function RoutingSelectionFloatPanel({ selectedStops, onRemove, onClearAll, onOpe
       weight: Number(s.weight) || 0,
       pallets: Number(s.cartons) || 0,   // NuVizz totalCartons = real skids/pallets
       loose: Number(s.volume) || 0,      // NuVizz volume = loose-piece count
+      // Dispatcher-set GREEN eligibility (53' trailer fits this location) — the row paints
+      // green so a trailer-friendly selection reads at a glance, same signal as the map pin.
+      tractorOk: notes?.get?.(s.matchKey)?.vehicle_eligibility === 'tractor',
     };
-  }), [selectedStops]);
+  }), [selectedStops, notes]);
   const tot = rows.reduce((a, r) => ({ wt: a.wt + r.weight, plt: a.plt + r.pallets, ls: a.ls + r.loose }), { wt: 0, plt: 0, ls: 0 });
   const { sorted, sortKey, sortDir, toggle } = useSortable(rows, null, 'asc');
   // WIDTH-resizable window (drag the left edge); width persisted; desktop only. Height is always
@@ -11809,7 +11832,7 @@ function RoutingSelectionFloatPanel({ selectedStops, onRemove, onClearAll, onOpe
             </thead>
             <tbody>
               {sorted.map((r) => (
-                <tr key={r.id} className="border-t hover:bg-slate-50">
+                <tr key={r.id} className={`border-t ${r.tractorOk ? 'bg-green-100 hover:bg-green-200/70' : 'hover:bg-slate-50'}`}>
                   <td className="px-1.5 py-1 whitespace-nowrap"><button onClick={() => onOpenStop && onOpenStop(r.stop)} className="font-mono text-blue-700 hover:underline">{r.pro}</button></td>
                   <td className="px-1.5 py-1 max-w-[150px] truncate" title={r.location}>{r.location}</td>
                   <td className="px-1 py-1 text-right tabular-nums">{r.pallets}</td>
@@ -12314,14 +12337,24 @@ function RoutingScreen({ debugCaptureRef }) {
       .map((s) => { const ov = notes.get(s.matchKey)?.location_override; return (ov && typeof ov.lat === 'number' && typeof ov.lng === 'number') ? { ...s, lat: ov.lat, lng: ov.lng } : s; })
       .filter((s) => s.lat != null && s.lng != null);
   }, [mapBaseStops, notes]);
-  // Keys (routeName||loadNbr) of the routes open in the Compare workbench.
-  const openRouteKeys = useMemo(() => new Set(wbRoutes.map((r) => r.key)), [wbRoutes]);
+  // EVERY identity of each open Compare card — key AND display name AND load number. A card
+  // opened from an empty Draft load is keyed by its load NUMBER (DAVIS000198668), but the
+  // save's board write-through stamps rows with the route NAME (OWUSU 1): matching on the key
+  // alone hid the whole freshly-saved route the moment the success toast fired ("dropped my
+  // markers") while "Unplanned only" was on. Any identity match keeps the route on the map.
+  const openRouteKeys = useMemo(() => {
+    const set = new Set();
+    for (const r of wbRoutes) for (const v of [r.key, r.name, r.loadNbr]) if (v) set.add(String(v));
+    return set;
+  }, [wbRoutes]);
   // "Unplanned only" hides planned stops — but NEVER the stops of a route the dispatcher has pulled
   // up (open in Compare). A pulled-up route always renders in full on the map regardless of the
   // filter, so its planned stops + polyline stay visible while everything else stays hidden.
   const positioned = useMemo(() => {
     if (!routeUnplannedOnly) return positionedAll;
-    return positionedAll.filter((s) => s.isUnplanned || openRouteKeys.has(s.routeName || s.loadNbr));
+    return positionedAll.filter((s) => s.isUnplanned
+      || (s.routeName != null && openRouteKeys.has(String(s.routeName)))
+      || (s.loadNbr != null && openRouteKeys.has(String(s.loadNbr))));
   }, [positionedAll, routeUnplannedOnly, openRouteKeys]);
   // Lookup map for cards / manifest / the Save payload — built from the UNFILTERED set, so a
   // stop staged onto an open card never vanishes from the card rows, printed manifest, or
@@ -12507,7 +12540,8 @@ function RoutingScreen({ debugCaptureRef }) {
     if (s && !s.isUnplanned && holder && !openRouteKeys.has(holder)) {
       // Bring the SOURCE load into Compare so the move stages on both loads (a declarative Save can
       // only pull a stop off a route that is part of the Save). Then click the stop again to move it.
-      if (openRouteKeys.size >= WB_MAX) {
+      // Card COUNT comes from wbRoutes — openRouteKeys is an identity set (key+name+loadNbr per card).
+      if (wbRoutes.length >= WB_MAX) {
         showMapToast(`${stopNbr} is on ${loadDisplayName(holder) || holder} — Compare is full (${WB_MAX}/${WB_MAX}). Close a card, then click it again to move it.`);
       } else {
         openRouteInWorkbench(holder);
@@ -12528,7 +12562,7 @@ function RoutingScreen({ debugCaptureRef }) {
         return r.order.includes(id) ? { ...r, order: r.order.filter((x) => x !== id), strategy: 'manual' } : r;
       });
     });
-  }, [activeRouteKey, stopById, openRouteKeys]);
+  }, [activeRouteKey, stopById, openRouteKeys, wbRoutes.length]);
   // Bulk "send the current selection onto an open Compare load" (#258) — one click moves every
   // selected stop onto that route (deduped, and stripped from any other card so a stop sits on one
   // route), then clears the selection. Header shows one button per open route.
@@ -12545,7 +12579,7 @@ function RoutingScreen({ debugCaptureRef }) {
     let keepSelected = [];
     if (blocked.length) {
       const blockedHolders = [...new Set(blocked.map(holderOf).filter(Boolean))];
-      const slots = Math.max(0, WB_MAX - openRouteKeys.size);
+      const slots = Math.max(0, WB_MAX - wbRoutes.length);   // cards, not identity-set entries
       const toOpen = new Set(blockedHolders.slice(0, slots));
       toOpen.forEach((h) => openRouteInWorkbench(h));   // opens the source card(s) so the move can stage
       keepSelected = blocked;                            // keep every blocked stop selected for the next Send
@@ -12600,7 +12634,7 @@ function RoutingScreen({ debugCaptureRef }) {
     }
     setLastAction(`Sent ${ids.length} selected stop${ids.length === 1 ? '' : 's'} → ${loadDisplayName(key) || 'load'}`);
     setSelectedIds(new Set(keepSelected));   // cleared when nothing was blocked; keeps cap/holder-pending stops for the next Send
-  }, [selectedIds, stopById, openRouteKeys, stops]); // showMapToast is stable and declared later — including it in deps would TDZ at render
+  }, [selectedIds, stopById, openRouteKeys, stops, wbRoutes.length]); // showMapToast is stable and declared later — including it in deps would TDZ at render
   // The marker click listener is bound once; route ninja clicks through a ref so toggling ninja
   // (or closing the panel) never re-creates the markers. Null = ninja off / nothing to add to.
   useEffect(() => { ninjaActionRef.current = (ninjaMode && wbRoutes.length > 0) ? ninjaAddStop : null; }, [ninjaMode, wbRoutes.length, ninjaAddStop]);
@@ -14036,6 +14070,7 @@ function RoutingScreen({ debugCaptureRef }) {
             onPick={pickStopFromTable}
             onPickLoad={pickLoadToCompare}
             onWindowRowsChange={setGridWindowStops}
+            highlightIds={selectedIds}
             planVersion={planVersion}
           />}
         </div>
@@ -14156,7 +14191,7 @@ function RoutingScreen({ debugCaptureRef }) {
         )}
         {/* Floating "Selected N" panel (toggleable) — lists every selected stop over the map. */}
         {!viewing && selPanelOpen && selectedStops.length > 0 && (
-          <RoutingSelectionFloatPanel selectedStops={selectedStops} onRemove={removeStop} onClearAll={clearSelection} onOpenStop={openStop} onClose={() => setSelPanelOpen(false)} isMobile={false} />
+          <RoutingSelectionFloatPanel selectedStops={selectedStops} notes={notes} onRemove={removeStop} onClearAll={clearSelection} onOpenStop={openStop} onClose={() => setSelPanelOpen(false)} isMobile={false} />
         )}
         {/* Reopen chip when the panel is toggled off but stops are selected. */}
         {!viewing && !selPanelOpen && selectedStops.length > 0 && (
@@ -14206,6 +14241,7 @@ function RoutingScreen({ debugCaptureRef }) {
           onPickLoad={pickLoadToCompare}
           headerRight={bottomGridHeaderRight}
           onWindowRowsChange={setGridWindowStops}
+          highlightIds={selectedIds}
           planVersion={planVersion}
         />}
       </div>

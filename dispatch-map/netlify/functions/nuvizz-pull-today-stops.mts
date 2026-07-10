@@ -63,11 +63,21 @@ async function mergeCarryover(stops: any[], date: string, carryDays: number): Pr
   let added = 0, pruned = 0;
   for (const { d, stops: prior } of reads) {
     for (const s of prior) {
-      if (!s || s.isPlanned || s.isTerminal) continue;   // only carry-over UNPLANNED, real stops
+      if (!s || s.isTerminal) continue;                  // real, unfinished stops only
+      // UNPLANNED prior-day rows fold as always. ONE planned exception (NOLAN, OWUSU 1,
+      // Jul 10): a prior-day order a CONFIRMED live Save routed onto a load that runs
+      // today (board_write_planned — the write-through/rescue stamp) must keep folding,
+      // or the order vanishes from the board entirely the moment its Compare card closes
+      // — while NuVizz's load holds it. Other planned prior-day rows still never fold
+      // (they're that day's own live routes, not today's work).
+      const confirmedPlanned = s.isPlanned && s.board_write_planned === true;
+      if (s.isPlanned && !confirmedPlanned) continue;
       const key = String(s.stopNbr);
       if (!key || seen.has(key)) continue;
-      // Within the live window but no longer unplanned in the latest scan → delivered/planned since.
-      if (liveOk && d >= live!.windowStart! && !live!.stopNbrs.has(key)) { pruned++; continue; }
+      // Within the live window but no longer unplanned in the latest scan → delivered/planned
+      // since. Applies to the UNPLANNED fold only — a confirmed-planned row is EXPECTED to be
+      // absent from the unplanned snapshot (it just got planned; that's not "closed since").
+      if (!confirmedPlanned && liveOk && d >= live!.windowStart! && !live!.stopNbrs.has(key)) { pruned++; continue; }
       seen.add(key);
       stops.push({ ...s, carryover: true, scheduledDate: d });
       added++;
