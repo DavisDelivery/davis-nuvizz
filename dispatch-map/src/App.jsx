@@ -54,7 +54,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.46.14';
+const APP_VERSION = '0.46.15';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -99,6 +99,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.46.15', 'Bottom-panel PROFILES — save your bar settings and switch between them. Set the grid the way you want (Stops/Loads, Status filter, date window + range, driver, no-location filter, and the sort), then open the new "Profiles" dropdown (top-left of the bar, next to Stops/Loads), type a name, and Save. Pick a saved profile any time to snap the whole bar back to it; "Update" overwrites the active one with the current settings, and the trash icon deletes. Profiles are remembered on your device and work wherever the grid appears (Map + Routing). Your search text is NOT part of a profile (it stays a quick one-off filter).'],
   ['0.46.14', 'Print Manifest polish. (1) The big blue title at the top is now the route NAME (e.g. the driver\'s route), never the raw DAVIS load number — a load opened from the Loads grid used to print "DAVIS000198611" up top; it now prints the load\'s name. (2) On each Delivery Ticket the "Ship To" business name is now bold and a touch larger so the destination stands out at a glance.'],
   ['0.46.13', 'Two Compare/Save tweaks. (1) Save now SENDS TO NUVIZZ DIRECTLY — the "Send to NuVizz / This will fire… / Send" confirmation popup is gone. Click Save and it commits (in ● LIVE against prod); Beta still just simulates. The server still validates every write and a save NuVizz accepts-but-doesn\'t-apply still fails loudly, so nothing is silently lost; a destructive action (emptying a load, which cancels the route) now shows a quick toast instead of a blocking dialog. (2) On the printed Driver Manifest, the Print and ✕ buttons moved to the TOP-RIGHT CORNER OF THE MANIFEST itself (they used to float at the top-right of the whole screen, away from the page).'],
   ['0.46.12', 'FIVE-AGENT AUDIT SWEEP — every fix from yesterday\'s firefight re-audited by five independent agents (cost, tests, board state, client UI, write path), and everything they caught is closed in this one release. SAVE ENGINE: a network hiccup during the post-save verify of ONE load can no longer fail the whole batch (each load verifies in its own guard now — the others keep their green); an assign/dispatch failure after a green save no longer suppresses the board stamp (the plan verified — it stamps); two cards saved together can no longer stamp each other\'s stops unplanned (the removal filter now knows everything the batch planned); a raw hex load id can never become the route name on a board stamp; and save results echo the load you ASKED for so the browser matches them up even when NuVizz renames. BOARD: the scanner\'s full rewrite of a day can no longer clobber a fresh save\'s 60-minute protection stamp mid-scan (the stamp survives the rewrite — this was the last standing way a saved route could revert); demotion double-checks now hit loads in random order so the same few routes can\'t hog the per-scan budget every time; a delivered/cancelled order can\'t carry over onto today; carry-over rows pin to the board day you\'re viewing. SCAN COST: a letters-in-it stop number can no longer rocket the number-probe frontier, and every load read caps at one retry. UI: three caches no longer memorize an error response forever (customer history, driver list, tractor locations — an early blip used to blank those until reload); an explicit box-only mark now beats the lime "tractor delivered" paint; clicking a multi-order location fully selects or fully clears it (mixed state selects the rest first); a staged twin order won\'t re-add itself after you strike it; changing the board date drops stale dispatch overrides; and just-saved stops flip planned on the map immediately in every window mode.'],
@@ -592,6 +593,10 @@ const LS_DRIVER_LABELS = 'dispatchMap.driverLabelsVisible';
 const LS_SEARCH_HISTORY = 'dispatchMap.searchHistory';
 const LS_LEGEND_EXPANDED = 'dispatchMap.legendExpanded';
 const LS_TABLE_COLUMNS = 'dispatchMap.tableColumns';
+// Saved bottom-panel PROFILES — named snapshots of the grid's bar settings (view,
+// status filter, date window + range, driver, no-location filter, sort). Shared across
+// the grid instances. { list: [{name, s}], active: name|null }.
+const LS_BOTTOM_PROFILES = 'dispatchMap.bottomPanelProfiles';
 // M4.4 — Filter toolbar persistence. mapFilters is the full toggle state object;
 // toolbarCollapsed is just the open/closed UI state of the toolbar itself.
 const LS_MAP_FILTERS = 'dispatchMap.mapFilters';
@@ -9169,6 +9174,54 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
     driverSel && `driver “${driverSel}”`,
     unmappedOnly && 'no-location filter',
   ].filter(Boolean);
+
+  // ── Bottom-panel PROFILES ─────────────────────────────────────────────────
+  // Save the current bar settings under a name and switch between saved profiles.
+  // A profile snapshots view / status / date-window + range / driver / no-location /
+  // sort — everything on the bar EXCEPT the transient search text. Persisted to
+  // localStorage (shared across the grid's instances), keyed by profile name.
+  const [profiles, setProfiles] = useState(() => {
+    const p = safeReadJSON(LS_BOTTOM_PROFILES, null);
+    return (p && Array.isArray(p.list)) ? p : { list: [], active: null };
+  });
+  useEffect(() => { safeWriteJSON(LS_BOTTOM_PROFILES, profiles); }, [profiles]);
+  const [profilesOpen, setProfilesOpen] = useState(false);
+  const [newProfileName, setNewProfileName] = useState('');
+  const barSnapshot = () => ({ view, status: [...statusSel], nvWindow, nvFrom, nvTo, driverSel, unmappedOnly, stopSort, loadSort });
+  const applyBarSettings = (s) => {
+    if (!s) return;
+    setView(s.view === 'loads' ? 'loads' : 'stops');
+    setStatusSel(new Set(Array.isArray(s.status) ? s.status : []));
+    setNvWindow(s.nvWindow || '');
+    setNvFrom(s.nvFrom || '');
+    setNvTo(s.nvTo || '');
+    setDriverSel(s.driverSel || '');
+    setUnmappedOnly(!!s.unmappedOnly);
+    setStopSort(s.stopSort && 'key' in s.stopSort ? s.stopSort : { key: null, dir: 'asc' });
+    setLoadSort(s.loadSort && 'key' in s.loadSort ? s.loadSort : { key: null, dir: 'asc' });
+    setOpen(true);
+  };
+  const activeProfile = profiles.list.find((p) => p.name === profiles.active) || null;
+  const selectProfile = (name) => {
+    const p = profiles.list.find((x) => x.name === name);
+    if (!p) return;
+    applyBarSettings(p.s);
+    setProfiles((v) => ({ ...v, active: name }));
+    setProfilesOpen(false);
+  };
+  const saveNewProfile = () => {
+    const name = newProfileName.trim();
+    if (!name) return;
+    const prof = { name, s: barSnapshot() };   // same name overwrites (no dupes)
+    setProfiles((v) => ({ list: [...v.list.filter((x) => x.name !== name), prof].sort((a, b) => a.name.localeCompare(b.name)), active: name }));
+    setNewProfileName('');
+  };
+  const updateActiveProfile = () => {
+    if (!activeProfile) return;
+    setProfiles((v) => ({ ...v, list: v.list.map((p) => (p.name === v.active ? { ...p, s: barSnapshot() } : p)) }));
+  };
+  const deleteProfile = (name) => setProfiles((v) => ({ list: v.list.filter((p) => p.name !== name), active: v.active === name ? null : v.active }));
+
   return (
     <div className="absolute left-0 right-0 bottom-0 z-[12] bg-white border-t border-slate-200 shadow-[0_-2px_10px_rgba(0,0,0,0.10)] flex flex-col" style={{ height: open ? height : undefined, maxHeight: open ? 'calc(100% - 4rem)' : undefined }}>
       {open && (
@@ -9200,6 +9253,48 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
             <Truck size={13} /> Loads
             <span className="font-normal opacity-60">{loadRows.length}</span>
           </button>
+        </div>
+        {/* PROFILES — save/switch the bar settings (view · status · window · driver · sort). */}
+        <div className="relative">
+          <button
+            onClick={() => setProfilesOpen((v) => !v)}
+            title="Saved views — save the current bar settings as a profile and switch between them"
+            className={'inline-flex items-center gap-1 px-2 py-1 rounded text-xs border whitespace-nowrap ' + (activeProfile ? 'border-blue-400 text-blue-700 bg-blue-50' : 'border-slate-300 text-slate-600 hover:bg-slate-50')}
+          >
+            <Save size={12} /> <span className="max-w-[110px] truncate">{activeProfile ? activeProfile.name : 'Profiles'}</span>
+            <ChevronDown size={11} className="opacity-60" />
+          </button>
+          {profilesOpen && (
+            <>
+              <div className="fixed inset-0 z-10" onClick={() => setProfilesOpen(false)} />
+              <div className="absolute left-0 bottom-full mb-1 w-64 bg-white border border-slate-200 rounded-lg shadow-lg z-20 p-1 text-xs">
+                {profiles.list.length === 0 && <div className="px-2 py-1.5 text-slate-400 italic">No saved profiles yet — set the bar how you like it, name it below, and Save.</div>}
+                {profiles.list.map((p) => (
+                  <div key={p.name} className={'flex items-center gap-1 rounded ' + (p.name === profiles.active ? 'bg-blue-50' : 'hover:bg-slate-50')}>
+                    <button onClick={() => selectProfile(p.name)} className="flex-1 min-w-0 text-left px-2 py-1.5 truncate" title={`Apply “${p.name}”`}>
+                      {p.name === profiles.active ? '● ' : ''}{p.name}
+                    </button>
+                    <button onClick={() => deleteProfile(p.name)} title={`Delete “${p.name}”`} className="px-1.5 py-1 text-slate-400 hover:text-red-600 shrink-0"><Trash2 size={12} /></button>
+                  </div>
+                ))}
+                {activeProfile && (
+                  <button onClick={updateActiveProfile} className="w-full text-left px-2 py-1.5 mt-1 rounded text-slate-600 hover:bg-slate-50 border-t border-slate-100" title="Overwrite this profile with the current bar settings">
+                    ⤓ Update “{activeProfile.name}” to current
+                  </button>
+                )}
+                <div className="flex items-center gap-1 mt-1 pt-1 border-t border-slate-100">
+                  <input
+                    value={newProfileName}
+                    onChange={(e) => setNewProfileName(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter') saveNewProfile(); }}
+                    placeholder="Save current as…"
+                    className="flex-1 min-w-0 border border-slate-300 rounded px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-400"
+                  />
+                  <button onClick={saveNewProfile} disabled={!newProfileName.trim()} className="px-2 py-1 rounded bg-blue-600 text-white font-semibold disabled:opacity-40 shrink-0">Save</button>
+                </div>
+              </div>
+            </>
+          )}
         </div>
         {/* No-location chip — these rows have no map pin, so they can't be selected on the map
             or routed until their address is fixed. This reconciles the "grid count > map
