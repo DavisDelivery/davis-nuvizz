@@ -33,6 +33,7 @@ import {
   upsertStops, upsertRoutes, upsertDrivers, upsertDriverDayPointer,
 } from './history-store.mts';
 import { updateCustomerRollupsForDay } from './history-customers.mts';
+import { updateTractorFlagsForDay } from './tractor-flags.mts';
 
 const TENANT = 'davis';
 // Keep in sync with src/App.jsx APP_VERSION. Stamped onto every manifest/capture
@@ -233,6 +234,16 @@ export async function captureDate(date: string): Promise<any> {
     await updateCustomerRollupsForDay(TENANT, date, stopRecords);
   } catch (e: any) {
     console.error(`customer-rollup update failed for ${date}:`, e?.message);
+  }
+
+  // Best-effort: sticky tractor-delivered flags from the same in-memory stops
+  // (pure Firestore join against the MarginIQ roster — zero NuVizz calls).
+  // Same failure policy as the customer rollup: never fail the capture, the
+  // rebuild function re-derives everything from the warehouse.
+  try {
+    await updateTractorFlagsForDay(TENANT, date, stopRecords);
+  } catch (e: any) {
+    console.error(`tractor-flags update failed for ${date}:`, e?.message);
   }
 
   return { date, ok: true, verified: true, capture_version: version, counts, absent_kept: absentFromThisCapture.length };
