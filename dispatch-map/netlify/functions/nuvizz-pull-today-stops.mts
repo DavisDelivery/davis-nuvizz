@@ -41,24 +41,33 @@ function addDaysUTC(dateStr: string, n: number): string {
 // the carry-over (issue #253). Guard: cross-check each candidate against the scan's live
 // active-unplanned snapshot; if the day is within that snapshot's window and the stop is no longer
 // in it, it's been closed since — skip it. Best-effort: no snapshot ⇒ legacy behaviour.
-async function mergeCarryover(stops: any[], date: string, carryDays: number): Promise<number> {
+// Exported for tests with the reads + clock injectable (io defaults to the real Firestore
+// readers and Date.now, so the handler's call is byte-identical in behavior).
+export async function mergeCarryover(stops: any[], date: string, carryDays: number, io?: {
+  readStops?: (tenant: string, dateStr: string) => Promise<{ stops: any[] }>;
+  readActiveUnplannedSet?: (tenant: string) => Promise<{ at: string | null; windowStart: string | null; stopNbrs: Set<string> } | null>;
+  now?: () => number;
+}): Promise<number> {
+  const readStopsFn = io?.readStops ?? readStops;
+  const readActiveFn = io?.readActiveUnplannedSet ?? readActiveUnplannedSet;
+  const now = io?.now ?? Date.now;
   const seen = new Set(stops.map((s) => String(s.stopNbr)));
   const priorDates = Array.from({ length: carryDays }, (_, i) => addDaysUTC(date, -(i + 1)));
-  const live = await readActiveUnplannedSet(TENANT).catch(() => null);
+  const live = await readActiveFn(TENANT).catch(() => null);
   // FRESHNESS GUARD: only prune against the live set when the snapshot is recent. A stale snapshot
   // (after a weekend/breaker scan blackout, or one left behind if TWO_SCAN is turned off) no longer
   // reflects what's open, so trusting it could prune stops that are STILL unplanned — under-counting
   // the board, which for a dispatch app is worse than the over-count #253 set out to fix. When the
   // snapshot is stale/missing we fall back to legacy behaviour (fold everything in, prune nothing).
   const STALE_SNAPSHOT_MS = 18 * 60 * 60 * 1000;   // ~18h: survives an overnight gap, not a weekend
-  const snapshotAgeMs = live?.at ? (Date.now() - new Date(live.at).getTime()) : Infinity;
+  const snapshotAgeMs = live?.at ? (now() - new Date(live.at).getTime()) : Infinity;
   const fresh = Number.isFinite(snapshotAgeMs) && snapshotAgeMs >= 0 && snapshotAgeMs <= STALE_SNAPSHOT_MS;
   const liveOk = !!(live && live.stopNbrs.size && live.windowStart && fresh);
   if (live && live.stopNbrs.size && live.windowStart && !fresh) {
     console.log(`[carryover] ${date}: live unplanned snapshot is stale (age ${Number.isFinite(snapshotAgeMs) ? Math.round(snapshotAgeMs / 3.6e6) + 'h' : 'n/a'}) — skipping prune, folding all carry-over`);
   }
   const reads = await Promise.all(
-    priorDates.map((d) => readStops(TENANT, d).then((r) => ({ d, stops: r.stops })).catch(() => ({ d, stops: [] as any[] }))),
+    priorDates.map((d) => readStopsFn(TENANT, d).then((r) => ({ d, stops: r.stops })).catch(() => ({ d, stops: [] as any[] }))),
   );
   let added = 0, pruned = 0, replaced = 0;
   // A confirmed-planned stamp folds only while FRESH (48h): the home-day stamp is frozen
@@ -81,7 +90,7 @@ async function mergeCarryover(stops: any[], date: string, carryDays: number): Pr
       // — while NuVizz's load holds it. Other planned prior-day rows still never fold
       // (they're that day's own live routes, not today's work).
       const confirmedPlanned = s.isPlanned && s.board_write_planned === true
-        && s.board_write_at && (Date.now() - Date.parse(s.board_write_at)) <= STAMP_FRESH_MS;
+        && s.board_write_at && (now() - Date.parse(s.board_write_at)) <= STAMP_FRESH_MS;
       if (s.isPlanned && !confirmedPlanned) continue;
       const key = String(s.stopNbr);
       if (!key) continue;

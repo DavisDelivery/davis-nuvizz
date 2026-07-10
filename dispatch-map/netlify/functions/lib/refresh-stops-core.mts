@@ -59,6 +59,90 @@ function addDaysUTC(dateStr: string, n: number): string {
   return d.toISOString().slice(0, 10);
 }
 
+// ── Demotion lookup (factory; exported for tests) ─────────────────────────────
+// The EXACT policy runRefreshStops hands applyDemotionVerify when the list tries to un-plan a
+// previously-planned row, with every effectful read injected so the rules are unit-testable:
+//  • a fresh TERMINAL row (DELIVERED/EXCEPTION/CANCELLED) never resurrects — demote stands (F5);
+//  • the LOAD corroborates first: the board row's route NAME resolves to a load number through
+//    the day's cached roster (AMBIGUOUS names never resolve — two same-named loads must not
+//    demote each other's stops, F3), one memoized load read covers every check on that load,
+//    and only a POSITIVE membership short-circuits (a "not a member" can be the wrong
+//    same-named instance — the stop record decides, F3b);
+//  • a roster read FAILURE holds every name-resolved check this scan (never guess, F9) — a
+//    roster that's merely absent falls through to the stop record;
+//  • budgets: at most `loadReadBudget` load reads and `stopReadBudget` stop-record reads per
+//    scan; anything past budget verdicts null → held one tick, never demoted on a missing read.
+// Verdict semantics match applyDemotionVerify: true = keep plan, false = demote, null = hold.
+export function makeDemotionLookup(deps: {
+  demoteByNbr: Map<string, { s: any; p: any }>;
+  readRoster: () => Promise<{ loads: any[] } | null>;
+  readLoadStopNbrs: (loadNbr: string) => Promise<Set<string> | null>;
+  readStopRecord: (nbr: string) => Promise<any>;
+  verdictFromRecord: (rec: any) => boolean | null;
+  loadReadBudget: number;
+  stopReadBudget: number;
+}): { lookup: (nbr: string) => Promise<boolean | null>; reads: () => { loadReads: number; stopReads: number } } {
+  const normNbr = (v: any) => String(v ?? '').trim().toUpperCase().replace(/^0+(?=\d)/, '');
+  let rosterNameToNbr: Map<string, string> | null = null;
+  let rosterFailed = false;
+  const rosterNbrFor = async (routeName: string): Promise<string | null> => {
+    if (!rosterNameToNbr) {
+      rosterNameToNbr = new Map();
+      const ros = await deps.readRoster().catch(() => { rosterFailed = true; return null; });
+      // AMBIGUOUS names never resolve (audit F3): two roster loads sharing a name meant
+      // first-wins picked one arbitrarily and the OTHER load's freshly-saved stops read
+      // "not a member" → actively demoted. Ambiguity falls through to the stop record.
+      const counts = new Map<string, number>();
+      for (const l of (ros?.loads || [])) {
+        const nm = String(l?.name ?? l?.routeName ?? '').trim().toLowerCase();
+        if (nm) counts.set(nm, (counts.get(nm) || 0) + 1);
+      }
+      for (const l of (ros?.loads || [])) {
+        const nm = String(l?.name ?? l?.routeName ?? '').trim().toLowerCase();
+        const nbr = String(l?.loadNbr ?? '').trim();
+        if (nm && nbr && counts.get(nm) === 1) rosterNameToNbr.set(nm, nbr);
+      }
+    }
+    return rosterNameToNbr.get(routeName.trim().toLowerCase()) ?? null;
+  };
+  const loadMembers = new Map<string, Set<string> | null>();
+  let demoteLoadReads = 0, demoteStopReads = 0;
+  const lookup = async (nbr: string): Promise<boolean | null> => {
+    const chk = deps.demoteByNbr.get(String(nbr));
+    const p = chk?.p;
+    // Fresh TERMINAL rows never resurrect (audit F5): a CANCELLED/DELIVERED/EXCEPTION
+    // list row stands even if the load still lists the stop — the membership path must
+    // not lose the record verdict's finished-work rule.
+    const stFresh = String(chk?.s?.normalizedStatus ?? '').toUpperCase();
+    if (stFresh === 'DELIVERED' || stFresh === 'EXCEPTION' || stFresh === 'CANCELLED') return false;
+    const routeName = String(p?.loadNbr ?? p?.routeName ?? '').trim();
+    if (routeName) {
+      const realNbr = await rosterNbrFor(routeName);
+      if (rosterFailed) return null;   // roster unreadable this scan → hold, never guess (F9)
+      if (realNbr) {
+        if (!loadMembers.has(realNbr)) {
+          if (demoteLoadReads >= deps.loadReadBudget) return null;   // over budget → hold
+          demoteLoadReads++;
+          loadMembers.set(realNbr, await deps.readLoadStopNbrs(realNbr));
+        }
+        const members = loadMembers.get(realNbr);
+        // Only a POSITIVE membership short-circuits. "Not a member" falls through to
+        // the stop record: the resolved load can be the WRONG same-named instance
+        // (tomorrow's recurring build — audit F3b) and demoting on its word alone
+        // un-plans a saved route. The record's verdict (404 holds, terminal drops)
+        // decides within its own budget; over budget → held one tick.
+        if (members && (members.has(String(nbr)) || members.has(normNbr(nbr)))) return true;
+      }
+    }
+    if (demoteStopReads >= deps.stopReadBudget) return null;              // hold
+    demoteStopReads++;
+    // Verdict policy (404 holds, terminal statuses drop) lives in demotionLookupVerdict —
+    // pure + unit-tested; this closure only supplies the metered read.
+    return deps.verdictFromRecord(await deps.readStopRecord(nbr));
+  };
+  return { lookup, reads: () => ({ loadReads: demoteLoadReads, stopReads: demoteStopReads }) };
+}
+
 // The next Mon–Fri date strictly after dateStr (skips Sat/Sun).
 export function nextBusinessDayUTC(dateStr: string): string {
   let d = addDaysUTC(dateStr, 1);
@@ -669,70 +753,24 @@ export async function runRefreshStops(req: Request): Promise<Response> {
         // gets verified within a few ticks.
         for (let fy = demoteChecks.length - 1; fy > 0; fy--) { const k = Math.floor(Math.random() * (fy + 1)); [demoteChecks[fy], demoteChecks[k]] = [demoteChecks[k], demoteChecks[fy]]; }
         const demoteByNbr = new Map(demoteChecks.map((c) => [String(c.s.stopNbr), c]));
-        const normNbr = (v: any) => String(v ?? '').trim().toUpperCase().replace(/^0+(?=\d)/, '');
-        let rosterNameToNbr: Map<string, string> | null = null;
-        let rosterFailed = false;
-        const rosterNbrFor = async (routeName: string): Promise<string | null> => {
-          if (!rosterNameToNbr) {
-            rosterNameToNbr = new Map();
-            const ros = await readLoadRoster(TENANT, date).catch(() => { rosterFailed = true; return null; });
-            // AMBIGUOUS names never resolve (audit F3): two roster loads sharing a name meant
-            // first-wins picked one arbitrarily and the OTHER load's freshly-saved stops read
-            // "not a member" → actively demoted. Ambiguity falls through to the stop record.
-            const counts = new Map<string, number>();
-            for (const l of (ros?.loads || [])) {
-              const nm = String(l?.name ?? l?.routeName ?? '').trim().toLowerCase();
-              if (nm) counts.set(nm, (counts.get(nm) || 0) + 1);
-            }
-            for (const l of (ros?.loads || [])) {
-              const nm = String(l?.name ?? l?.routeName ?? '').trim().toLowerCase();
-              const nbr = String(l?.loadNbr ?? '').trim();
-              if (nm && nbr && counts.get(nm) === 1) rosterNameToNbr.set(nm, nbr);
-            }
-          }
-          return rosterNameToNbr.get(routeName.trim().toLowerCase()) ?? null;
-        };
-        const loadMembers = new Map<string, Set<string> | null>();
-        let demoteLoadReads = 0, demoteStopReads = 0;
+        // Policy + budgets live in makeDemotionLookup (exported, unit-tested); this site only
+        // binds the real readers (roster, /load/info membership, /stop/info record).
+        const demotion = makeDemotionLookup({
+          demoteByNbr,
+          readRoster: () => readLoadRoster(TENANT, date),
+          readLoadStopNbrs: lookupLoadStopNbrs,
+          readStopRecord: lookupStopByPro,
+          verdictFromRecord: demotionLookupVerdict,
+          loadReadBudget: DEMOTE_VERIFY_LOAD_MAX,
+          stopReadBudget: DEMOTE_VERIFY_MAX,
+        });
         const dv = await applyDemotionVerify(demoteChecks, {
           // Check-count cap is wide open — the CALL budget is enforced inside the closure
           // (loads ≤ DEMOTE_VERIFY_LOAD_MAX, stop records ≤ DEMOTE_VERIFY_MAX); anything
           // past budget verdicts null → held. max<=0 still disables entirely (list wins).
           max: DEMOTE_VERIFY_MAX > 0 ? Math.max(64, demoteChecks.length) : 0,
           scannedAt,
-          lookup: async (nbr) => {
-            const chk = demoteByNbr.get(String(nbr));
-            const p = chk?.p;
-            // Fresh TERMINAL rows never resurrect (audit F5): a CANCELLED/DELIVERED/EXCEPTION
-            // list row stands even if the load still lists the stop — the membership path must
-            // not lose the record verdict's finished-work rule.
-            const stFresh = String(chk?.s?.normalizedStatus ?? '').toUpperCase();
-            if (stFresh === 'DELIVERED' || stFresh === 'EXCEPTION' || stFresh === 'CANCELLED') return false;
-            const routeName = String(p?.loadNbr ?? p?.routeName ?? '').trim();
-            if (routeName) {
-              const realNbr = await rosterNbrFor(routeName);
-              if (rosterFailed) return null;   // roster unreadable this scan → hold, never guess (F9)
-              if (realNbr) {
-                if (!loadMembers.has(realNbr)) {
-                  if (demoteLoadReads >= DEMOTE_VERIFY_LOAD_MAX) return null;   // over budget → hold
-                  demoteLoadReads++;
-                  loadMembers.set(realNbr, await lookupLoadStopNbrs(realNbr));
-                }
-                const members = loadMembers.get(realNbr);
-                // Only a POSITIVE membership short-circuits. "Not a member" falls through to
-                // the stop record: the resolved load can be the WRONG same-named instance
-                // (tomorrow's recurring build — audit F3b) and demoting on its word alone
-                // un-plans a saved route. The record's verdict (404 holds, terminal drops)
-                // decides within its own budget; over budget → held one tick.
-                if (members && (members.has(String(nbr)) || members.has(normNbr(nbr)))) return true;
-              }
-            }
-            if (demoteStopReads >= DEMOTE_VERIFY_MAX) return null;              // hold
-            demoteStopReads++;
-            // Verdict policy (404 holds, terminal statuses drop) lives in demotionLookupVerdict —
-            // pure + unit-tested; this closure only supplies the metered read.
-            return demotionLookupVerdict(await lookupStopByPro(nbr));
-          },
+          lookup: demotion.lookup,
         });
         if (dv.kept || dv.held) console.warn(`[scan] ${date}: list tried to unplan ${demoteChecks.length} routed stop(s) — kept ${dv.kept} (NuVizz stop record says assigned), held ${dv.held} (unverified this scan), dropped ${dv.dropped} (confirmed unplanned) — sample ${JSON.stringify(demoteChecks.slice(0, 5).map((c) => String(c.s.stopNbr)))}`);
 
