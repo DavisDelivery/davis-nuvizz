@@ -54,7 +54,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.45.29';
+const APP_VERSION = '0.45.30';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -11132,6 +11132,18 @@ function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmN
     if (onBoardSync) {
       const syncPromises = [];
       for (const l of resLoads) {
+        // A FAILED verify that still confirmed MEMBERSHIP carries NuVizz's observedOrder — write
+        // the board through with that TRUTH so the board can't keep showing a landed stop as
+        // unplanned once the card closes (SCOTT/SHP29379: the false ✗ skipped the sync entirely
+        // and the stop read unplanned-but-actually-planned until the next healthy scan).
+        if (!l.ok && !l.pending && Array.isArray(l.observedOrder) && l.observedOrder.length) {
+          const kf = keyOf(l);
+          const Lf = loads.find((x) => (x.__key ?? x.routeName ?? x.loadNbr ?? x.loadId) === kf)
+            ?? (loads.length === 1 ? loads[0] : null);
+          const nameF = Lf?.routeName || loadDisplayName(kf) || String(kf || l.loadNbr || '');
+          if (nameF) syncPromises.push(onBoardSync({ routeName: nameF, orderedStopNbrs: l.observedOrder.map(String), unplannedStopNbrs: [], driverName: null }));
+          continue;
+        }
         if (!l.ok || l.pending) continue; // pending imports sync on their verified read-back below
         const k = keyOf(l);
         const L = loads.find((x) => (x.__key ?? x.routeName ?? x.loadNbr ?? x.loadId) === k)
