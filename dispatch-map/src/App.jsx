@@ -54,7 +54,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.46.7';
+const APP_VERSION = '0.46.8';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -99,6 +99,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.46.8', 'Selected-window green rows now match EVERYTHING the map paints green: the dispatcher-set tractor paint, the "Tractor trailer friendly" badge, AND the lime proven "a tractor has delivered here" locations — not just the manual paint (4 of 6 green-painted stops weren\'t highlighting). An explicit box-only mark still wins: that row never greens.'],
   ['0.46.7', 'Ghost removals can no longer cement a wrong "unplanned" on the board. Removing a stop from a card that the load never actually held (a stale ghost you pulled on, then struck off — the "Removing N orders (Unplanned on Save)" footer) used to stamp that stop CONFIRMED-unplanned on our board after the green save, protected by the post-save hold — so a rescan then DEFENDED the wrong state (why SHP29343 / UNITE MEDICAL kept reading unplanned while TRAILER 1 held them). Now only removals of stops the card started with — stops genuinely on that load — write through as unplanned; ghosts just drop off the card. Run the board reconcile once (v0.46.6) to clear any already-cemented rows.'],
   ['0.46.6', 'BOARD RECONCILE + route names in errors. Tonight\'s pre-fix drops left already-planned stops showing unplanned on our board — so they were grabbable on the map, Saves refused them ("NuVizz holds it on…"), and the holding load\'s card opened empty so the move couldn\'t even be staged. New one-shot repair: the board-reconcile run reads each load on today\'s roster ONCE from NuVizz and rewrites our board to match production truth (same write a green Save does, old-dated orders included). It never runs on its own — you fire it, and the preview shows the exact call cost first (~1 call per route). Also, per Chad: save errors now name loads THE WAY THE CARDS DO — "NuVizz holds it on TRAILER 1 (DAVIS000198690)" instead of a bare number — on both the holding load and your own, and the banner leads with the card\'s route name.'],
   ['0.46.5', 'THE BIG ONE: the board can no longer un-plan a route you saved. NuVizz\'s list feed lagged tonight\'s OWUSU 1 save by 30+ minutes, and once the 20-minute hold expired the scans "corrected" the board back to unplanned — dropping the route on our side while production NuVizz held every stop (NOLAN vanished entirely because its old-day row stopped folding onto today once it read planned). Three-part fix: (1) when the list disagrees with a saved plan, the scan now asks the LOAD itself — one call verifies a whole route — and keeps every stop the load holds, instead of trusting the per-stop record that lags right along with the list; (2) the post-save hold is 60 minutes; (3) an old-dated order a Save routed onto today\'s load keeps showing on today\'s board. Also: markers no longer vanish right after a green save with "Unplanned only" on (the freshly-saved route stayed exempt only under the name it was opened with — now every identity of an open card counts); NEW window presets "Last 7/14 days · board day" that follow the board date; the bottom grid highlights rows of stops in the map selection; and tractor-friendly (green) stops paint green in the Selected window.'],
@@ -11763,7 +11764,7 @@ function RoutingSettingsMenu({ panels = [], views = [], actions = [], dropUp = f
   );
 }
 
-function RoutingSelectionFloatPanel({ selectedStops, notes, onRemove, onClearAll, onOpenStop, onClose, isMobile }) {
+function RoutingSelectionFloatPanel({ selectedStops, notes, tractorLocs, onRemove, onClearAll, onOpenStop, onClose, isMobile }) {
   // Compact window from the naive (zoneless) schedule ISO — parse the clock straight off the
   // string so there's no local-timezone drift. "8:00a", "8:00a–8:00p".
   const fmtWin = (iso) => {
@@ -11785,11 +11786,21 @@ function RoutingSelectionFloatPanel({ selectedStops, notes, onRemove, onClearAll
       weight: Number(s.weight) || 0,
       pallets: Number(s.cartons) || 0,   // NuVizz totalCartons = real skids/pallets
       loose: Number(s.volume) || 0,      // NuVizz volume = loose-piece count
-      // Dispatcher-set GREEN eligibility (53' trailer fits this location) — the row paints
-      // green so a trailer-friendly selection reads at a glance, same signal as the map pin.
-      tractorOk: notes?.get?.(s.matchKey)?.vehicle_eligibility === 'tractor',
+      // Green = EVERY signal the map paints green for, not just the dispatcher-set
+      // eligibility: the manual green paint, the "Tractor trailer friendly" badge, and the
+      // proven lime "a tractor has delivered here" (tractor_locations). Only checking the
+      // manual paint left badge/proven-green stops un-highlighted (Chad: "4 of these are
+      // painted... rows are not highlighted"). An explicit box-only mark still wins as red
+      // — never green a stop the dispatcher marked off-limits.
+      tractorOk: (() => {
+        const note = notes?.get?.(s.matchKey) || null;
+        if (note?.vehicle_eligibility === 'box_only') return false;
+        return note?.vehicle_eligibility === 'tractor'
+          || getRestrictionBadgeKeys(note).includes('tractor_trailer_friendly')
+          || !!(tractorLocs && tractorLocs.has(s.matchKey));
+      })(),
     };
-  }), [selectedStops, notes]);
+  }), [selectedStops, notes, tractorLocs]);
   const tot = rows.reduce((a, r) => ({ wt: a.wt + r.weight, plt: a.plt + r.pallets, ls: a.ls + r.loose }), { wt: 0, plt: 0, ls: 0 });
   const { sorted, sortKey, sortDir, toggle } = useSortable(rows, null, 'asc');
   // WIDTH-resizable window (drag the left edge); width persisted; desktop only. Height is always
@@ -14206,7 +14217,7 @@ function RoutingScreen({ debugCaptureRef }) {
         )}
         {/* Floating "Selected N" panel (toggleable) — lists every selected stop over the map. */}
         {!viewing && selPanelOpen && selectedStops.length > 0 && (
-          <RoutingSelectionFloatPanel selectedStops={selectedStops} notes={notes} onRemove={removeStop} onClearAll={clearSelection} onOpenStop={openStop} onClose={() => setSelPanelOpen(false)} isMobile={false} />
+          <RoutingSelectionFloatPanel selectedStops={selectedStops} notes={notes} tractorLocs={tractorLocs} onRemove={removeStop} onClearAll={clearSelection} onOpenStop={openStop} onClose={() => setSelPanelOpen(false)} isMobile={false} />
         )}
         {/* Reopen chip when the panel is toggled off but stops are selected. */}
         {!viewing && !selPanelOpen && selectedStops.length > 0 && (
