@@ -54,7 +54,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.46.3';
+const APP_VERSION = '0.46.4';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -99,6 +99,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.46.4', 'Fixed the FALSE "planned on another load" save failure (OWUSU 1). After a batched add, NuVizz attaches the stops ASYNC — our immediate re-read could catch the load before any arrival showed and then blamed the first stop as "still planned on another load" even though its record read UNPLANNED (as checked in the portal). The verify now gives NuVizz a beat and re-reads before judging; a straggler is re-read BY NUMBER — if NuVizz names a real holding load you get the actionable move error (that check is back even on the new low-call path), if our stored id was stale the save re-adds with the fresh id automatically, and if NuVizz is simply still processing the error now says THAT (wait a few seconds, Save again) instead of inventing a phantom load. Also: with a date window set, the bottom grid\'s status filter now re-applies AFTER the recent-save overlay — a just-planned stop no longer shows under "Un-Planned".'],
   ['0.46.3', 'Four in one. (1) BUILD CALL COST: a 14-stop build was ~24 NuVizz calls because the engine paid one /stop/info per added stop to resolve its internal id. Saves now ride ids the board already has (scan + enrichment) and read only the stops missing one — with ids on hand a build runs at the portal\'s own ~7 calls. To light ids up board-wide, add a "Stop Id" column to the planned/unplanned saved searches in the portal (same as the ShipTo-Display-Seq add) — the scan picks it up automatically, no code change. Every safety stays: the post-save verify still re-reads the load and still names a holding route. (2) MARKERS AFTER PRINT: printing a manifest hid the app for the print engine, which made Google Maps drop the numbered route pins — closing the manifest now rebuilds them exactly as they were. (3) ONE CLICK = THE WHOLE PLACE: clicking a marker that carries a count badge now selects (or clears) ALL of that location\'s orders at once — no more clicking twice for 2, three times for 3. (4) HISTORY ON THE STOP CARD: every stop panel now ends with "Recent deliveries here" — this customer\'s recent PROs with the driver who ran each and the date, straight from our saved history (zero NuVizz calls), no History search needed.'],
   ['0.46.2', 'Fixed OLD ROUTES BLEEDING INTO TODAY\'S COMPARE CARD. With a date range set on the bottom grid, pulling up a route matched every cached day\'s rows that ever carried that route name — last week\'s TAYLOR loads (old driver included) merged into today\'s TAYLOR card as one 26-stop / 951-mi monster, while the Routes rail and Loads grid showed the real 12-order load. Delivered stops leave the scan feeds, so their old-day rows stay frozen as "planned on TAYLOR" forever — the window merge was dragging that history in. Now a Compare card seeds from the SELECTED DAY\'s board only, and the grid\'s other-day rows join the map only while UNPLANNED (the carry-over case the window exists for: grab a missed order and plan it today). Planned rows from other days stay off the map, off cards, and out of Saves. Display-only bug — NuVizz and the board were never touched, and today\'s real loads were always intact.'],
   ['0.46.1', 'Kill switches for the tractor-delivered paint. (1) Legend → "Tractor delivered" now has an On/Off toggle — flipping it off instantly blanks the lime pins AND the stop-panel line on this device (persisted; the data keeps accumulating server-side, so turning it back on loses nothing). (2) Site env var TRACTOR_FLAGS=off stops the nightly server-side flag writes without a code change (existing flags stay). The manual rebuild function ignores the env switch — running it by hand is the intent.'],
@@ -8976,8 +8977,11 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
   const filteredRows = useMemo(() => {
     const needle = q.trim().toLowerCase();
     return baseStops.filter((s) => {
-      // Status: client-side in board mode; server-side (already filtered) in NuVizz mode.
-      if (!nvWindow && statusSel.size && !statusSel.has(tableStatusBucket(s))) return false;
+      // Status: client-side in board mode; in a NuVizz window the server pre-filters, but the
+      // check re-runs here anyway because the plan OVERLAY runs after that server filter — a
+      // cached-unplanned row a recent Save flipped to planned (Load "RASKO") was showing under
+      // the Un-Planned filter. Re-checking post-overlay keeps the filter honest either way.
+      if (statusSel.size && !statusSel.has(tableStatusBucket(s))) return false;
       if (driverSel && (s.driverName || '') !== driverSel) return false;
       if (needle) {
         const hay = [s.stopNbr, s.businessName, s.addr1, s.addr2, s.city, s.zip, s.routeName, s.loadNbr, s.driverName]
@@ -9106,7 +9110,7 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
   // stray (and, with the panel narrow, invisible) search term can never silently blank the grid.
   const activeFilterLabels = [
     q.trim() && `search “${q.trim()}”`,
-    !nvWindow && statusSel.size && `status (${statusSel.size})`,
+    statusSel.size && `status (${statusSel.size})`,
     driverSel && `driver “${driverSel}”`,
     unmappedOnly && 'no-location filter',
   ].filter(Boolean);
