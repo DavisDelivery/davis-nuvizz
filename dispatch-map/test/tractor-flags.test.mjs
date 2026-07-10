@@ -136,3 +136,26 @@ test('matchKey: stable across the naming variants NuVizz produces for one locati
   assert.equal(a, b);
   assert.equal(tractorLocId('davis', a), `davis__${a}`);
 });
+
+// ── kill switch ──────────────────────────────────────────────────────────────
+
+test('TRACTOR_FLAGS=off disables the daily pass; default/on enables it', async () => {
+  const { tractorFlagsDisabled, updateTractorFlagsForDay } = await import('../netlify/functions/lib/tractor-flags.mts');
+  const prev = process.env.TRACTOR_FLAGS;
+  try {
+    delete process.env.TRACTOR_FLAGS;
+    assert.equal(tractorFlagsDisabled(), false);
+    process.env.TRACTOR_FLAGS = 'on';
+    assert.equal(tractorFlagsDisabled(), false);
+    process.env.TRACTOR_FLAGS = 'OFF';
+    assert.equal(tractorFlagsDisabled(), true);
+    // With the switch off the day pass returns zeros WITHOUT touching the
+    // roster or Firestore (no listDocs call is reachable).
+    const r = await updateTractorFlagsForDay('davis', '2026-07-09', [
+      { normalizedStatus: 'DELIVERED', driverName: 'Brent Boyd', customerMatchKey: 'x__y__z__1', date: '2026-07-09' },
+    ]);
+    assert.deepEqual(r, { matched: 0, locations: 0, written: 0, disabled: true });
+  } finally {
+    if (prev === undefined) delete process.env.TRACTOR_FLAGS; else process.env.TRACTOR_FLAGS = prev;
+  }
+});

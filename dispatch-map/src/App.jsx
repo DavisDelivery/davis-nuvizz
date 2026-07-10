@@ -54,7 +54,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.46.0';
+const APP_VERSION = '0.46.1';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -99,6 +99,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.46.1', 'Kill switches for the tractor-delivered paint. (1) Legend → "Tractor delivered" now has an On/Off toggle — flipping it off instantly blanks the lime pins AND the stop-panel line on this device (persisted; the data keeps accumulating server-side, so turning it back on loses nothing). (2) Site env var TRACTOR_FLAGS=off stops the nightly server-side flag writes without a code change (existing flags stay). The manual rebuild function ignores the env switch — running it by hand is the intent.'],
   ['0.46.0', 'TRACTOR-DELIVERED LOCATIONS now paint LIME GREEN on the map. Any stop at a location where a tractor driver has EVER completed a delivery gets a lime pin with a white border — a permanent, automatic "a 53′ trailer has physically been here" signal, separate from the dispatcher-set green/red eligibility paint. Who counts as a tractor driver comes straight from the MarginIQ Employees tab (the Tractor tag + the NUVIZZ alias on the card) — tag a driver there and re-run the rebuild, and every location they ever delivered lights up, past included. The stop panel shows "Tractor has delivered here — last <date>", and the Legend explains the lime pin. Data lives in tractor_locations, derived from the saved history warehouse + roster: one Firestore fetch on map load, ZERO NuVizz calls anywhere.'],
   ['0.45.22', 'A stop opened in Routing (beta) now has the SAME full detail panel as the Map — it IS the Map panel now. Clicking a stop in Routing gives you Street View / Google Maps / Find business, Edit address, Correct pin location, Text customer, History, the Delivery Ticket, live notes + Activity Timeline, POD photos, AND the full customer-notes editor: Priority flag, Delivery window, and the Receiving-hours editor with Save. Before, the Routing stop panel showed receiving hours as read-only text and only offered Edit address / Correct pin — no way to set a customer\'s receiving rules or text them without switching to the Map. Opening a route still works the same (the panel\'s "View full route" opens it in Compare), and an appointment-window warning still shows on top. No NuVizz calls — notes save to Firestore, exactly like the Map.'],
   ['0.45.21', 'Looking up a PRO in NuVizz now opens the SAME full stop panel as clicking a stop on the map — so you get the Receiving hours / Priority flag / Delivery window editor plus Edit address, Correct pin location, Text customer and History, and a Save. Before, a PRO you searched for ("Look up PRO in NuVizz") opened a read-only window with none of those route/customer options — you could see the order but not set the customer\'s receiving rules. Now it\'s fully editable, exactly like a stop opened from the board or by customer name. (Note: this only changes how the panel opens — the separate issue of some delivered customers showing few past PROs in the history search is the server history warehouse needing a backfill, tracked separately.)'],
@@ -1253,6 +1254,31 @@ function useAutoScanner(stops, notes, notesReady) {
 // be waste). Module-level cache so every component shares the single fetch:
 // Map<matchKey, { last, first, drivers, count }>. Never fetched per stop.
 const TRACTOR_TENANT_PREFIX = 'davis__';
+// Dispatcher kill switch for the whole feature surface (pins, panel line) —
+// persisted per device, default ON, flippable live from the Legend. When off,
+// useTractorLocations serves an empty map, so every consumer goes dark at once
+// with no per-call-site logic. Server-side writes have their own independent
+// switch (TRACTOR_FLAGS env — see lib/tractor-flags.mts).
+const LS_TRACTOR_PAINT = 'dispatchMap.tractorPaintOn';
+let __tractorPaintOn = (() => {
+  try { const v = localStorage.getItem(LS_TRACTOR_PAINT); return v == null ? true : v === 'true'; }
+  catch { return true; }
+})();
+const __tractorPaintListeners = new Set();
+function setTractorPaintOn(v) {
+  __tractorPaintOn = !!v;
+  try { localStorage.setItem(LS_TRACTOR_PAINT, String(__tractorPaintOn)); } catch { /* private mode */ }
+  for (const cb of __tractorPaintListeners) cb(__tractorPaintOn);
+}
+function useTractorPaintToggle() {
+  const [on, setOn] = useState(__tractorPaintOn);
+  useEffect(() => {
+    const cb = (v) => setOn(v);
+    __tractorPaintListeners.add(cb);
+    return () => __tractorPaintListeners.delete(cb);
+  }, []);
+  return [on, setTractorPaintOn];
+}
 let __tractorLocsCache = null;          // resolved Map once loaded
 let __tractorLocsPromise = null;        // in-flight fetch (dedup)
 const __tractorLocsWaiters = new Set();
@@ -1290,6 +1316,7 @@ function fetchTractorLocationsOnce() {
 const EMPTY_TRACTOR_MAP = new Map();
 function useTractorLocations() {
   const [locs, setLocs] = useState(__tractorLocsCache);
+  const [paintOn] = useTractorPaintToggle();
   useEffect(() => {
     if (__tractorLocsCache) { setLocs(__tractorLocsCache); return undefined; }
     let alive = true;
@@ -1298,6 +1325,7 @@ function useTractorLocations() {
     fetchTractorLocationsOnce();
     return () => { alive = false; __tractorLocsWaiters.delete(cb); };
   }, []);
+  if (!paintOn) return EMPTY_TRACTOR_MAP;
   return locs || EMPTY_TRACTOR_MAP;
 }
 
@@ -2601,6 +2629,34 @@ function LegendMarkerExample({ restrictions, label }) {
 // Part 9: collapsible legend that explains both the priority-flag color
 // language and the restriction icons. Default collapsed; expanded state
 // persists to localStorage. Lives directly under <FilterPanel/>.
+// Legend block for the tractor-delivered paint, with its live on/off switch.
+// Flipping it off blanks the lime pins AND the stop-panel line everywhere,
+// instantly, on this device (persisted) — the data keeps accumulating
+// server-side either way, so flipping back on loses nothing.
+function TractorLegendEntry() {
+  const [on, setOn] = useTractorPaintToggle();
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-1">
+        <span className="text-[10px] uppercase font-semibold text-slate-500">Tractor delivered</span>
+        <label className="inline-flex items-center gap-1.5 cursor-pointer select-none text-[10px] font-semibold text-slate-600">
+          <input
+            type="checkbox"
+            checked={on}
+            onChange={(e) => setOn(e.target.checked)}
+            className="w-3 h-3 accent-green-600"
+          />
+          {on ? 'On' : 'Off'}
+        </label>
+      </div>
+      <div className="flex items-center gap-2" style={{ opacity: on ? 1 : 0.45 }}>
+        <span className="w-3 h-3 rounded-full border-2 border-white shadow flex-shrink-0" style={{ background: TRACTOR_DELIVERED_COLOR, boxShadow: '0 0 0 1px rgba(0,0,0,0.15)' }} />
+        <span>Tractor delivered — a tractor driver has completed a delivery here (automatic, from saved history)</span>
+      </div>
+    </div>
+  );
+}
+
 function Legend({ expanded, setExpanded }) {
   return (
     <div className="border-t">
@@ -2635,13 +2691,7 @@ function Legend({ expanded, setExpanded }) {
               </div>
             </div>
           </div>
-          <div>
-            <div className="text-[10px] uppercase font-semibold text-slate-500 mb-1">Tractor delivered</div>
-            <div className="flex items-center gap-2">
-              <span className="w-3 h-3 rounded-full border-2 border-white shadow" style={{ background: TRACTOR_DELIVERED_COLOR, boxShadow: '0 0 0 1px rgba(0,0,0,0.15)' }} />
-              <span>Tractor delivered — a tractor driver has completed a delivery here (automatic, from saved history)</span>
-            </div>
-          </div>
+          <TractorLegendEntry />
           <div>
             <div className="text-[10px] uppercase font-semibold text-slate-500 mb-1">Restricted stops</div>
             <p className="text-slate-600 mb-2 leading-snug">

@@ -191,9 +191,21 @@ export async function writeTractorLocationsFresh(
 // NEWER than what the doc has seen (date > last_tractor_date), so a same-day
 // recapture can't double-count. Any drift this approximation leaves gets
 // corrected by the rebuild, which recomputes counts from scratch.
+// Kill switch for the nightly writes: set TRACTOR_FLAGS=off on the site to
+// stop the daily pass without a code change (flags already written stay put and
+// keep painting; they just stop advancing). The manual rebuild function ignores
+// this switch — invoking it by hand IS the intent.
+export function tractorFlagsDisabled(): boolean {
+  return String(process.env.TRACTOR_FLAGS || 'on').toLowerCase() === 'off';
+}
+
 export async function updateTractorFlagsForDay(
   tenant: string, date: string, stops: any[],
-): Promise<{ matched: number; locations: number; written: number }> {
+): Promise<{ matched: number; locations: number; written: number; disabled?: boolean }> {
+  if (tractorFlagsDisabled()) {
+    console.log('[tractor-flags] TRACTOR_FLAGS=off — daily pass skipped');
+    return { matched: 0, locations: 0, written: 0, disabled: true };
+  }
   const roster = await loadTractorRoster();
   if (!roster.aliasSet.size) return { matched: 0, locations: 0, written: 0 };
   const dayAggs = aggregateTractorStops(stops, roster);
