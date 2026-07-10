@@ -669,7 +669,11 @@ export function mergeEnrich(target: any, src: any): any {
 // contradiction the write-through exists to kill. This PURE helper holds a recent confirmed
 // write over a DISAGREEING fresh list row, and releases the moment the list catches up
 // (agreement) or the grace expires (the write claim goes stale — list wins again).
-export const BOARD_WRITE_GRACE_MIN = 20;
+// 20 → 60 (Jul 10): NuVizz's saved-search index lagged an ACCEPTED planning-mode save by
+// 30+ minutes on an undispatched load (OWUSU 1) — the 20-min grace expired mid-lag and the
+// stale list wiped the confirmed plan. The demotion verify's load corroboration is the real
+// guard past expiry; the longer grace just avoids burning verify reads on ordinary lag.
+export const BOARD_WRITE_GRACE_MIN = 60;
 export function applyBoardWriteGrace(fresh: any, prior: any, nowMs: number, graceMin = BOARD_WRITE_GRACE_MIN): boolean {
   const at = prior?.board_write_at ? Date.parse(prior.board_write_at) : NaN;
   if (!Number.isFinite(at)) return false;
