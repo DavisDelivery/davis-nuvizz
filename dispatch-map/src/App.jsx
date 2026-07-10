@@ -54,7 +54,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.46.2';
+const APP_VERSION = '0.46.3';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -99,6 +99,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.46.3', 'Four in one. (1) BUILD CALL COST: a 14-stop build was ~24 NuVizz calls because the engine paid one /stop/info per added stop to resolve its internal id. Saves now ride ids the board already has (scan + enrichment) and read only the stops missing one — with ids on hand a build runs at the portal\'s own ~7 calls. To light ids up board-wide, add a "Stop Id" column to the planned/unplanned saved searches in the portal (same as the ShipTo-Display-Seq add) — the scan picks it up automatically, no code change. Every safety stays: the post-save verify still re-reads the load and still names a holding route. (2) MARKERS AFTER PRINT: printing a manifest hid the app for the print engine, which made Google Maps drop the numbered route pins — closing the manifest now rebuilds them exactly as they were. (3) ONE CLICK = THE WHOLE PLACE: clicking a marker that carries a count badge now selects (or clears) ALL of that location\'s orders at once — no more clicking twice for 2, three times for 3. (4) HISTORY ON THE STOP CARD: every stop panel now ends with "Recent deliveries here" — this customer\'s recent PROs with the driver who ran each and the date, straight from our saved history (zero NuVizz calls), no History search needed.'],
   ['0.46.2', 'Fixed OLD ROUTES BLEEDING INTO TODAY\'S COMPARE CARD. With a date range set on the bottom grid, pulling up a route matched every cached day\'s rows that ever carried that route name — last week\'s TAYLOR loads (old driver included) merged into today\'s TAYLOR card as one 26-stop / 951-mi monster, while the Routes rail and Loads grid showed the real 12-order load. Delivered stops leave the scan feeds, so their old-day rows stay frozen as "planned on TAYLOR" forever — the window merge was dragging that history in. Now a Compare card seeds from the SELECTED DAY\'s board only, and the grid\'s other-day rows join the map only while UNPLANNED (the carry-over case the window exists for: grab a missed order and plan it today). Planned rows from other days stay off the map, off cards, and out of Saves. Display-only bug — NuVizz and the board were never touched, and today\'s real loads were always intact.'],
   ['0.46.1', 'Kill switches for the tractor-delivered paint. (1) Legend → "Tractor delivered" now has an On/Off toggle — flipping it off instantly blanks the lime pins AND the stop-panel line on this device (persisted; the data keeps accumulating server-side, so turning it back on loses nothing). (2) Site env var TRACTOR_FLAGS=off stops the nightly server-side flag writes without a code change (existing flags stay). The manual rebuild function ignores the env switch — running it by hand is the intent.'],
   ['0.46.0', 'TRACTOR-DELIVERED LOCATIONS now paint LIME GREEN on the map. Any stop at a location where a tractor driver has EVER completed a delivery gets a lime pin with a white border — a permanent, automatic "a 53′ trailer has physically been here" signal, separate from the dispatcher-set green/red eligibility paint. Who counts as a tractor driver comes straight from the MarginIQ Employees tab (the Tractor tag + the NUVIZZ alias on the card) — tag a driver there and re-run the rebuild, and every location they ever delivered lights up, past included. The stop panel shows "Tractor has delivered here — last <date>", and the Legend explains the lime pin. Data lives in tractor_locations, derived from the saved history warehouse + roster: one Firestore fetch on map load, ZERO NuVizz calls anywhere.'],
@@ -5041,6 +5042,53 @@ function useProDrivers(name, historyLen) {
   return map;
 }
 
+// Always-on history footer for the stop card ("history at the bottom of the stop card when it
+// comes up") — this customer's recent deliveries straight from the saved history warehouse
+// (nuvizz-customer-history: Firestore-only, ZERO NuVizz calls), one chip per PRO with the
+// driver who ran it and the day, exactly like the History search results. Unlike the chips
+// inside Customer notes (which need a saved note with pro_history), this works for EVERY
+// customer with saved history — no note required. Renders nothing while loading or when the
+// customer has no history, so it never adds blank chrome. Session-cached per customer name.
+const _custRecentCache = new Map();
+function useCustomerRecent(name) {
+  const [rows, setRows] = useState(() => _custRecentCache.get((name || '').trim()) || null);
+  useEffect(() => {
+    const nm = (name || '').trim();
+    if (!nm) { setRows(null); return; }
+    if (_custRecentCache.has(nm)) { setRows(_custRecentCache.get(nm)); return; }
+    let alive = true;
+    fetch(`/.netlify/functions/nuvizz-customer-history?name=${encodeURIComponent(nm)}`)
+      .then((r) => r.json())
+      .then((j) => {
+        const c = j?.ok ? (j.customers || [])[0] : null;
+        const list = (c?.pros || []).map((h) => ({ pro: String(h?.pro || ''), date: h?.date || '', driver: h?.driver || '' })).filter((h) => h.pro);
+        _custRecentCache.set(nm, list);
+        if (alive) setRows(list);
+      })
+      .catch(() => { if (alive) setRows([]); });
+    return () => { alive = false; };
+  }, [name]);
+  return rows;
+}
+function StopRecentDeliveries({ stop }) {
+  const rows = useCustomerRecent(stop?.businessName);
+  if (!rows || !rows.length) return null;
+  return (
+    <div className="px-4 py-3 border-t">
+      <div className="text-xs uppercase font-semibold text-slate-500 mb-1.5">Recent deliveries here</div>
+      <div className="flex flex-wrap gap-1">
+        {rows.slice(0, 8).map((h, i) => (
+          <span key={i} className="text-[10px] bg-slate-100 border border-slate-200 rounded px-1.5 py-0.5 whitespace-nowrap">
+            <span className="font-mono">{h.pro}</span>
+            {h.driver && <span className="text-slate-700"> · {h.driver}</span>}
+            {h.date && <span className="text-slate-400"> · {fmtMdy(h.date)}</span>}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // Customer-notes section wrapper: the Edit toggle, the read-only view, the full
 // editor, and recent-PRO history. Shared by desktop + mobile.
 function StopNotesSection({ note, editing, setEditing, draft, setDraft, compact = false, drivers = [] }) {
@@ -5148,6 +5196,7 @@ function StopSidebar({ stop, note, onClose, onSave, saving, saveError, onOpenRou
         <StopDataSections stop={live} note={note} onRefreshed={onRefreshed} onOpenRoute={onOpenRoute} onMoveLocation={onMoveLocation} onEditAddress={onEditAddress} onAutoFixAddress={onAutoFixAddress} onText={onText} onTextDriver={onTextDriver} onOpenHistory={onOpenHistory} />
         <ProsSection stop={live} />
         <StopNotesSection note={note} editing={editing} setEditing={setEditing} draft={D} setDraft={setD} compact drivers={drivers} />
+        <StopRecentDeliveries stop={stop} />
       </div>
 
       {editing && (
@@ -6485,6 +6534,7 @@ function MobileStopDetailDrawer({ stop, note, onClose, onSave, saving, saveError
         <StopDataSections stop={live} note={note} onRefreshed={onRefreshed} onOpenRoute={onOpenRoute} onMoveLocation={onMoveLocation} onEditAddress={onEditAddress} onAutoFixAddress={onAutoFixAddress} onText={onText} onTextDriver={onTextDriver} onOpenHistory={onOpenHistory} />
         <ProsSection stop={live} />
         <StopNotesSection note={note} editing={editing} setEditing={setEditing} draft={D} setDraft={setD} drivers={drivers} />
+        <StopRecentDeliveries stop={stop} />
       </div>
       {/* Sticky save bar — visible while editing */}
       {editing && (
@@ -11186,6 +11236,14 @@ function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmN
         // there's no loadNbr to resolve stopNbrs against.
         const ids = r.order.map((nbr) => stopById.get(String(nbr))?.stopId).filter(Boolean);
         if (ids.length) load.orderedStopIds = ids;
+        // Same ids as an EXPLICIT nbr→id map (orderedStopIds is positional and only safe when
+        // complete). The RWB engine uses these to skip its one-getStop-per-added-stop id lookup —
+        // a 14-stop build drops from ~24 NuVizz calls to the portal's own ~7. Board rows carry
+        // stopId from the scan's Stop-Id column and from enrichment; rows without one simply
+        // aren't in the map and the server reads those the old way.
+        const idByNbr = {};
+        for (const nbr of r.order) { const sid = stopById.get(String(nbr))?.stopId; if (sid) idByNbr[String(nbr)] = String(sid); }
+        if (Object.keys(idByNbr).length) load.stopIdsByNbr = idByNbr;
         if (!r.loadNbr && ids.length !== r.order.length) {
           // Numberless load + unenriched stops → can't safely resolve the reorder. Drop the ORDER
           // fields but DON'T drop the load: a staged driver/dispatch/unplan below must still be sent
@@ -12986,6 +13044,28 @@ function RoutingScreen({ debugCaptureRef }) {
   const removeStop = useCallback((id) => {
     setSelectedIds((prev) => { const n = new Set(prev); n.delete(String(id)); return n; });
   }, []);
+  // One click takes the WHOLE place: a marker with N co-located orders (the count badge)
+  // toggles ALL of them in/out of the selection together — two orders at one stop used to
+  // take two clicks, three took three. Direction follows the clicked stop (unselected →
+  // select all; selected → clear all). mateIds come from the marker build (the same set the
+  // badge counts), and ids staged on a Compare card stay put — same rule as toggleStop.
+  const toggleStopGroup = useCallback((id, mateIds) => {
+    const k = String(id);
+    const ids = (Array.isArray(mateIds) && mateIds.length ? mateIds : [k]).map(String);
+    const held = ids.filter((x) => wbStagedRef.current.get(x));
+    const free = ids.filter((x) => !wbStagedRef.current.get(x));
+    if (!free.length) {
+      const h = wbStagedRef.current.get(k) || wbStagedRef.current.get(held[0]);
+      setLastAction(`${held.length > 1 ? `These ${held.length} orders are` : `${k} is`} already on ${loadDisplayName(h) || h} — remove there or use Ninja to move`);
+      return;
+    }
+    setSelectedIds((prev) => {
+      const n = new Set(prev);
+      const on = !n.has(k);
+      for (const x of free) { if (on) n.add(x); else n.delete(x); }
+      return n;
+    });
+  }, []);
   const clearSelection = useCallback(() => { setSelectedIds(new Set()); setLastAction('Cleared selection'); }, []);
 
   // ── Bottom-table pick handlers (the dispatch-Map grid, made route-able) ──
@@ -13382,7 +13462,10 @@ function RoutingScreen({ debugCaptureRef }) {
     if (!google || !mapRef.current) return;
     markersRef.current.forEach((m) => m.setMap(null));
     const byId = new Map();
-    const locCounts = buildLocCounts(vPositioned);   // co-located delivery tally for the badge
+    // Location → its member stopNbrs. Length feeds the count badge; the member list feeds the
+    // one-click group select (clicking a multi-order marker toggles every order at the place).
+    const locMates = new Map();
+    for (const s of vPositioned) { const k = stopLocKey(s); const a = locMates.get(k); a ? a.push(String(s.stopNbr)) : locMates.set(k, [String(s.stopNbr)]); }
     markersRef.current = vPositioned.map((s) => {
       const id = String(s.stopNbr);
       const sel = !viewing && selectedIds.has(id);
@@ -13400,7 +13483,7 @@ function RoutingScreen({ debugCaptureRef }) {
         inRoute: numbered,
         seq: ri?.seq,
         routeColor: ri?.color,
-        sameLocCount: locCounts.get(stopLocKey(s)) || 1,
+        sameLocCount: (locMates.get(stopLocKey(s)) || []).length || 1,
         tractorDelivered: tractorLocs.has(s.matchKey),
       });
       const baseZ = numbered ? 30 : (sel ? 25 : 10);
@@ -13418,7 +13501,7 @@ function RoutingScreen({ debugCaptureRef }) {
         if (eligActionRef.current) { eligActionRef.current(s); setPanelStop(s); }
         else if (selectModeRef.current) handleSelectPointRef.current(marker.getPosition());
         else if (ninjaActionRef.current) ninjaActionRef.current(s.stopNbr);   // ninja → add to active route
-        else toggleStop(s.stopNbr);
+        else toggleStopGroup(s.stopNbr, locMates.get(stopLocKey(s)));         // whole place in one click
       });
       marker.addListener('mouseover', () => setHoverId(id));
       marker.addListener('mouseout', () => setHoverId((h) => (h === id ? null : h)));
@@ -13428,7 +13511,7 @@ function RoutingScreen({ debugCaptureRef }) {
     });
     markerByIdRef.current = byId;
     lastEmphRef.current = hoverIdRef.current; // markers were built already-emphasized
-  }, [google, vPositioned, viewing, selectedIds, effectiveRouteInfo, notes, tractorLocs, toggleStop, mapReady, selectedDayKey, emphIcon]);
+  }, [google, vPositioned, viewing, selectedIds, effectiveRouteInfo, notes, tractorLocs, toggleStopGroup, mapReady, selectedDayKey, emphIcon]);
 
   // Hover emphasis — touch only the two affected markers, not all of them. Keeps
   // the sequence label intact (only the icon scale/ring change).
@@ -14005,7 +14088,11 @@ function RoutingScreen({ debugCaptureRef }) {
         {movingStop && <MoveLocationBar stop={movingStop} saving={savingLoc} onSave={saveStopLocation} onCancel={cancelMoveLocation} onReset={resetStopLocation} />}
         {editAddrStop && <AddressEditModal stop={editAddrStop} note={notes.get(editAddrStop.matchKey)} google={google} seed={editAddrSeed} onClose={() => { setEditAddrStop(null); setEditAddrSeed(null); }} onSaved={() => refreshStops({ silent: true })} />}
         {routingSmsTargets && <SmsComposeModal title={routingSmsTargets.title} recipients={routingSmsTargets.recipients} initialText={routingSmsTargets.initialText} onClose={() => setRoutingSmsTargets(null)} />}
-        {wbManifest && <PrintDocModal title={wbManifest.title} html={wbManifest.html} onClose={() => setWbManifest(null)} />}
+        {/* Closing the manifest bumps mapReady: the print bridge display:none's the whole app during
+            window.print(), which makes Google Maps drop its rendered markers — the numbered route
+            pins were GONE after printing until something else rebuilt them. The bump re-runs the
+            marker/polyline effects so the map comes back exactly as it was. */}
+        {wbManifest && <PrintDocModal title={wbManifest.title} html={wbManifest.html} onClose={() => { setWbManifest(null); setMapReady((n) => n + 1); }} />}
         {versionLogOpen && <VersionLogModal onClose={() => setVersionLogOpen(false)} />}
         {/* Customer-history overlay (History button on the stop panel) — Firestore-only. */}
         {histOpen && (
@@ -14191,7 +14278,11 @@ function RoutingScreen({ debugCaptureRef }) {
       {movingStop && <MoveLocationBar stop={movingStop} saving={savingLoc} onSave={saveStopLocation} onCancel={cancelMoveLocation} onReset={resetStopLocation} />}
       {editAddrStop && <AddressEditModal stop={editAddrStop} note={notes.get(editAddrStop.matchKey)} google={google} seed={editAddrSeed} onClose={() => { setEditAddrStop(null); setEditAddrSeed(null); }} onSaved={() => refreshStops({ silent: true })} />}
       {routingSmsTargets && <SmsComposeModal title={routingSmsTargets.title} recipients={routingSmsTargets.recipients} initialText={routingSmsTargets.initialText} onClose={() => setRoutingSmsTargets(null)} />}
-        {wbManifest && <PrintDocModal title={wbManifest.title} html={wbManifest.html} onClose={() => setWbManifest(null)} />}
+        {/* Closing the manifest bumps mapReady: the print bridge display:none's the whole app during
+            window.print(), which makes Google Maps drop its rendered markers — the numbered route
+            pins were GONE after printing until something else rebuilt them. The bump re-runs the
+            marker/polyline effects so the map comes back exactly as it was. */}
+        {wbManifest && <PrintDocModal title={wbManifest.title} html={wbManifest.html} onClose={() => { setWbManifest(null); setMapReady((n) => n + 1); }} />}
         {versionLogOpen && <VersionLogModal onClose={() => setVersionLogOpen(false)} />}
         {/* Customer-history overlay (History button on the stop panel) — this location's past
             PROs + date + delivering driver, from saved Firestore history only (no NuVizz). */}

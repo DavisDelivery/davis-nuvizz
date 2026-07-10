@@ -475,6 +475,48 @@ test('mergeEnrich: list ShipTo-Display-Seq (routeSeq) wins over a carried-forwar
   assert.equal(noSeq.routeSeq, 5, 'enriched seq backfills only when the list had none');
 });
 
+test('normalize + toBoardStop: a Stop-Id column rides the list into board stopId (id-shaped values only)', () => {
+  // Pattern-found like ShipTo-Display-Seq: adding a "Stop Id" column to the saved search lights
+  // this up with no code change. It is what lets a Save send scan-fed ids instead of paying one
+  // /stop/info per added stop. The value must LOOK like a NuVizz internal id — a column that
+  // actually carries the stop NUMBER (digits) must never land as an id.
+  const cols = ['vizzonInfo.shipmentInfo.stopNbr', 'default_vizzonInfo.shipmentInfo.status', 'route.name', 'vizzonInfo.shipmentInfo.stopId'];
+  const filterData = [Object.fromEntries(cols.map((k) => [k, { columnName: k }]))];
+  const [r] = normalize({ filterData, values: [['007100001', '20', 'BEN 2', '6a4ed7ad14218645b90a5185']] });
+  assert.equal(r.nvStopId, '6a4ed7ad14218645b90a5185', 'dotted .stopId key found');
+  assert.equal(toBoardStop(r).stopId, '6a4ed7ad14218645b90a5185', 'board stop carries the id');
+
+  // Opaque key + human label "Stop Id" (how portal-configured columns usually arrive).
+  const fd2 = [{ 'vizzonInfo.shipmentInfo.stopNbr': { columnName: 'Stop #' }, 'x.opaque.key1': { columnName: 'Stop Id' } }];
+  const [r2] = normalize({ filterData: fd2, values: [['007100002', '6a4ed7ad14218645b90a5186']] });
+  assert.equal(r2.nvStopId, '6a4ed7ad14218645b90a5186', 'columnName-labelled Stop Id found');
+
+  // A digits value (stop NUMBER mislabeled as an id) is refused by the hash guard.
+  const [r3] = normalize({ filterData, values: [['007100003', '20', 'BEN 2', '007100003']] });
+  assert.equal(toBoardStop(r3).stopId, null, 'a stop NUMBER never lands as stopId');
+
+  // No id column at all → nvStopId blank, stopId null (today's saved search).
+  const fdNone = [Object.fromEntries(cols.slice(0, 3).map((k) => [k, { columnName: k }]))];
+  const [r4] = normalize({ filterData: fdNone, values: [['007100004', '20', 'BEN 2']] });
+  assert.equal(r4.nvStopId, '');
+  assert.equal(toBoardStop(r4).stopId, null);
+});
+
+test('mergeEnrich: the list Stop-Id (current instance) wins over a carried-forward enrichment id; backfills when absent', () => {
+  // A recurring reference PRO can be re-created as a NEW stop instance; the scan's id is the
+  // CURRENT one and must survive the carry-forward. But when the saved search has no id column
+  // the list value is null and the enriched id must NOT be wiped.
+  const fresh = toBoardStop({ stopNbr: '7', statusCode: '20', routeName: 'L1', nvStopId: '6a4ed7ad14218645b90a5185' });
+  mergeEnrich(fresh, { enriched: true, stopId: '6a49000000000000000000ad', lat: 33.9 });
+  assert.equal(fresh.stopId, '6a4ed7ad14218645b90a5185', 'scan id survives the carry-forward');
+  assert.equal(fresh.lat, 33.9, 'other enriched detail still merges');
+
+  const noId = toBoardStop({ stopNbr: '8', statusCode: '20', routeName: 'L1' });
+  assert.equal(noId.stopId, null);
+  mergeEnrich(noId, { enriched: true, stopId: '6a49000000000000000000ab' });
+  assert.equal(noId.stopId, '6a49000000000000000000ab', 'enrichment id backfills when the list had none');
+});
+
 test('addrKey: stable + case/space-insensitive; null without a street address', () => {
   const a = addrKey({ addr1: '1 Main St', city: 'Buford', state: 'GA', zip: '30518' });
   const b = addrKey({ addr1: '  1 MAIN ST ', city: 'buford', state: 'ga', zip: '30518' });
