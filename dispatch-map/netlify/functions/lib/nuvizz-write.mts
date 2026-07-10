@@ -1644,6 +1644,16 @@ export async function runCommitBoardRwb(requester: RequesterLike, payload: any, 
               verdict = lingering.length
                 ? `NuVizz KEPT stop ${lingering[0]} on ${p.loadNbr} — the ${movedAway.includes(lingering[0]) ? 'move to its new load' : 'removal'} was accepted but the stop never left; unplan it in the portal, then refresh.`
                 : orderErr;
+              // MEMBERSHIP is confirmed on this branch (missingMoves/missingOrdered were empty) —
+              // only the order/removal verdict failed. Surface NuVizz's OBSERVED delivery state so
+              // the client can still write the board through with the TRUTH: the SCOTT false-fail
+              // (Jul 10) skipped the write-through entirely, so a stop that had physically landed
+              // (SHP29379) kept showing unplanned once the card closed, inviting a double-plan.
+              p.result.observedOrder = (f3.load.stops || [])
+                .filter((s: any) => s?.stopNbr != null && String(s?.stopType ?? 'DO').toUpperCase() === 'DO')
+                .slice()
+                .sort((a: any, b: any) => Number(a?.stopSeq ?? Number.MAX_SAFE_INTEGER) - Number(b?.stopSeq ?? Number.MAX_SAFE_INTEGER))
+                .map((s: any) => String(s.stopNbr));
               break;
             }
             if (seqPending && !lingering.length) continue;   // soft retry: plain re-read, no write
@@ -1681,6 +1691,9 @@ export async function runCommitBoardRwb(requester: RequesterLike, payload: any, 
       loadNbr: p.result.loadNbr ?? p.loadNbr, loadId: p.load?.loadId ?? p.L?.loadId ?? null,
       ok: p.result.ok, error: p.result.error, steps: p.result.steps,
       calls: p.result.calls || undefined,
+      // Membership-confirmed order/removal failures carry NuVizz's OBSERVED delivery order so the
+      // client can write the board through with the truth despite the ✗ (SCOTT SHP29379, Jul 10).
+      observedOrder: p.result.observedOrder || undefined,
       seededStopNbr: p.result.seededStopNbr || undefined, seededLoadNbr: p.result.seededLoadNbr || undefined,
     })),
   ];

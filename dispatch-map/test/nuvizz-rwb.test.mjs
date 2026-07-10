@@ -289,6 +289,36 @@ test('runCommitBoardRwb: save entry carries the route\'s REAL window + freight t
   });
 });
 
+// ── observedOrder rides a membership-confirmed verify failure (SCOTT/SHP29379) ──
+
+test('runCommitBoardRwb: a kept-order failure still reports NuVizz\'s OBSERVED order for the board', async () => {
+  await withRwb({}, async () => {
+    // Save is ignored (applySave:false) → order verify fails — but membership is confirmed, so
+    // the result must carry the load\'s ACTUAL delivery order for the client write-through.
+    const loadStops = { value: ['A', 'B', 'C'] };
+    const { requester } = makeRequester({ loadStops, applySave: false });
+    const r = await runCommitBoardRwb(requester, { loads: [{ loadNbr: 'DAVIS000000123', loadId: HEXID, orderedStopNbrs: ['C', 'A', 'B'] }] }, CREDS);
+    assert.equal(r.ok, false);
+    assert.match(String(r.loads[0].error || ''), /KEPT its own stop order/i);
+    assert.deepEqual(r.loads[0].observedOrder, ['A', 'B', 'C'], 'the truth NuVizz kept, in its seq order');
+  });
+});
+
+test('runCommitBoardRwb: a MEMBERSHIP failure carries NO observedOrder (nothing safe to paint)', async () => {
+  await withRwb({}, async () => {
+    const loadStops = { value: ['X'] };
+    const base = makeRequester({ loadStops });
+    const real = base.requester.request;
+    base.requester.request = async (url, opts, meta) => {
+      if (url.includes('addStopsToRouteAfterValidation')) return new Response(JSON.stringify({ responseCode: 200, message: 'SUCCESS' }), { status: 200 }); // ok, but does NOT add
+      return real(url, opts, meta);
+    };
+    const r = await runCommitBoardRwb(base.requester, { loads: [{ loadNbr: 'DAVIS000000123', loadId: HEXID, orderedStopNbrs: ['X', 'A'] }] }, CREDS);
+    assert.equal(r.ok, false);
+    assert.equal(r.loads[0].observedOrder, undefined);
+  });
+});
+
 // ── co-located orders share a NuVizz position (SCOTT false failure, Jul 10) ────
 // NuVizz gives same-address orders ONE stopSeq (11 stops / 12 orders). The dupe-corruption
 // check must not flag that — it blocked closing a correctly-saved load ("acting like it
