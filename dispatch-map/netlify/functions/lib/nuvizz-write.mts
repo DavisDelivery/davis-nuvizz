@@ -1208,15 +1208,26 @@ function rwbOrderMismatch(load: any, orderedNbrs: string[]): string | null {
   return `NuVizz ACCEPTED the save but KEPT its own stop order on this load (wanted ${fmt(want)}; NuVizz still runs ${fmt(got)}${dupes.length ? `; duplicate position${dupes.length > 1 ? 's' : ''} ${dupes.slice(0, 3).join(', ')}` : ''}) — fix the order in the NuVizz portal or re-Save`;
 }
 
+// Route NAME + load number as one display string — errors name the load the way the
+// dispatcher's cards do ("TRAILER 1 (DAVIS000198690)"), not by bare number (Chad: "give me
+// the route name like the ones listed on these cards"). Name-less falls back to the number.
+function loadLabel(routeName: any, loadNbr: any): string {
+  const nbr = String(loadNbr ?? '').trim();
+  const name = String(routeName ?? '').trim();
+  return name && !isHashLikeId(name) && name !== nbr ? `${name} (${nbr})` : nbr;
+}
+
 // Which load does NuVizz's own stop record say holds this stop? One getStop, used only on
-// failure paths to turn "planned on another load" into an actionable load number. Empty string
-// when the stop reads unplanned OR the read fails — callers phrase both as "holder unknown".
-async function rwbStopHolder(requester: RequesterLike, stopNbr: string, creds: WriteCreds): Promise<string> {
+// failure paths to turn "planned on another load" into an actionable load. `nbr` drives the
+// same-load comparison; `label` is the card-style display name. Null when the stop reads
+// unplanned OR the read fails — callers phrase both as "holder unknown".
+async function rwbStopHolder(requester: RequesterLike, stopNbr: string, creds: WriteCreds): Promise<{ nbr: string; label: string } | null> {
   try {
     const gs = await fireSingle(requester, 'getStop', { stopNbr }, creds);
     const nbr = String(gs?.stop?.assignedLoadNbr ?? '').trim();
-    return isHashLikeId(nbr) ? '' : nbr;
-  } catch { return ''; }
+    if (!nbr || isHashLikeId(nbr)) return null;
+    return { nbr, label: loadLabel(gs?.stop?.routeName, nbr) };
+  } catch { return null; }
 }
 
 /**
@@ -1427,7 +1438,8 @@ export async function runCommitBoardRwb(requester: RequesterLike, payload: any, 
       const srcNbr = gs?.ok ? String(gs.stop?.assignedLoadNbr ?? '').trim() : '';
       if (!gs?.ok || !gs.stop?.stopId) { err = `commitBoard(rwb): stop ${nbr} could not be read for planning (stale board — refresh and retry)`; break; }
       if (srcNbr && srcNbr !== p.loadNbr && !batchNbrs.has(srcNbr)) {
-        err = `commitBoard(rwb): stop ${nbr} is ALREADY PLANNED on load ${srcNbr} (our board may be showing it stale-unplanned) — open ${srcNbr} in Compare to stage the move, or refresh and re-check`; break;
+        const src = loadLabel(gs.stop?.routeName, srcNbr);
+        err = `commitBoard(rwb): stop ${nbr} is ALREADY PLANNED on ${src} (our board may be showing it stale-unplanned) — open ${src} in Compare to stage the move, or refresh and re-check`; break;
       }
       p.addArrivals.push({ nbr, stopId: String(gs.stop.stopId) });
     }
@@ -1498,7 +1510,7 @@ export async function runCommitBoardRwb(requester: RequesterLike, payload: any, 
           p.addReads = (p.addReads || 0) + 1;
           const srcNbr = gs?.ok ? String(gs.stop?.assignedLoadNbr ?? '').trim() : '';
           if (gs?.ok && srcNbr && srcNbr !== String(p.loadNbr) && !batchNbrs.has(srcNbr)) {
-            holdErr = `commitBoard(rwb): stop ${a.nbr} couldn't be added to ${p.loadNbr} — NuVizz holds it on load ${srcNbr}. Open ${srcNbr} in Compare to move it, or unplan it there in the portal (RWB can't pull a stop off a route that isn't part of the Save).`;
+            holdErr = (() => { const src = loadLabel(gs?.stop?.routeName, srcNbr); const self = loadLabel(p.L?.routeName, p.loadNbr); return `commitBoard(rwb): stop ${a.nbr} couldn't be added to ${self} — NuVizz holds it on ${src}. Open ${src} in Compare to move it, or unplan it there in the portal (RWB can't pull a stop off a route that isn't part of the Save).`; })();
             break;
           }
           if (gs?.ok && gs.stop?.stopId && String(gs.stop.stopId) !== String(a.stopId)) fresh.push({ nbr: String(a.nbr), stopId: String(gs.stop.stopId) });
@@ -1523,9 +1535,10 @@ export async function runCommitBoardRwb(requester: RequesterLike, payload: any, 
         // NOT a stop planned elsewhere. (The old wording asserted "planned on another load"
         // for exactly this case and sent Chad hunting a load that doesn't exist.)
         const holder = await rwbStopHolder(requester, String(miss.nbr), creds);
-        p.result.error = holder && holder !== String(p.loadNbr)
-          ? `commitBoard(rwb): stop ${miss.nbr} couldn't be added to ${p.loadNbr} — NuVizz still holds it on load ${holder}. Open ${holder} in Compare to move it, or unplan it there in the portal (RWB can't pull a stop off a route that isn't part of the Save).`
-          : `commitBoard(rwb): ${missingAdds.length > 1 ? `${missingAdds.length} stops (${missingAdds.slice(0, 3).map((a: any) => a.nbr).join(', ')}${missingAdds.length > 3 ? '…' : ''})` : `stop ${miss.nbr}`} did not appear on ${p.loadNbr} after the add — the stop record reads UNPLANNED right now, so NuVizz is likely still processing (nothing was double-planned). Wait a few seconds and Save again.`;
+        const selfLbl = loadLabel(p.L?.routeName, p.loadNbr);
+        p.result.error = holder && holder.nbr !== String(p.loadNbr)
+          ? `commitBoard(rwb): stop ${miss.nbr} couldn't be added to ${selfLbl} — NuVizz still holds it on ${holder.label}. Open ${holder.label} in Compare to move it, or unplan it there in the portal (RWB can't pull a stop off a route that isn't part of the Save).`
+          : `commitBoard(rwb): ${missingAdds.length > 1 ? `${missingAdds.length} stops (${missingAdds.slice(0, 3).map((a: any) => a.nbr).join(', ')}${missingAdds.length > 3 ? '…' : ''})` : `stop ${miss.nbr}`} did not appear on ${selfLbl} after the add — the stop record reads UNPLANNED right now, so NuVizz is likely still processing (nothing was double-planned). Wait a few seconds and Save again.`;
         continue;
       }
     } catch (e: any) {
@@ -1706,8 +1719,8 @@ export async function runCommitBoardRwb(requester: RequesterLike, payload: any, 
             if (missingOrdered.length) {
               const nbr = String(missingOrdered[0]);
               const holder = await rwbStopHolder(requester, nbr, creds);
-              verdict = holder && holder !== String(p.loadNbr)
-                ? `NuVizz dropped stop ${nbr} from the save — its stop record says it's planned on load ${holder}. Open ${holder} in Compare to stage the move, or unplan it there in the portal, then re-Save.`
+              verdict = holder && holder.nbr !== String(p.loadNbr)
+                ? `NuVizz dropped stop ${nbr} from the save — its stop record says it's planned on ${holder.label}. Open ${holder.label} in Compare to stage the move, or unplan it there in the portal, then re-Save.`
                 : `NuVizz dropped stop ${nbr} from the save — its stop record reads ${holder ? 'ON this load' : 'UNPLANNED'}, so NuVizz's route index and stop record disagree about it; unplan/re-plan it in the portal, then re-Save.`;
               break;
             }

@@ -665,6 +665,36 @@ async function probeLoad(n: number, dateStr: string, authHeader: string, company
   }
 }
 
+// The load's DELIVERY stops in NuVizz's own running order — to.seq when stamped, array
+// position as tie-break/fallback (the settling window before NuVizz assigns positions).
+// PURE (unit-tested); exactly the shape patchBoardPlan wants for a board reconcile.
+export function orderedStopNbrsFromLoad(d: any): string[] {
+  const rows = (d?.Load?.stops || [])
+    .map((row: any, i: number) => ({ s: row?.stop ?? row, i }))
+    .filter(({ s }: any) => s && s.stopNbr != null && String(s.stopType ?? 'DO').toUpperCase() === 'DO');
+  rows.sort((a: any, b: any) =>
+    (Number(a.s?.to?.seq ?? Number.MAX_SAFE_INTEGER) - Number(b.s?.to?.seq ?? Number.MAX_SAFE_INTEGER)) || (a.i - b.i));
+  return rows.map(({ s }: any) => String(s.stopNbr));
+}
+
+// One /load/info → the reconcile view of a load: route name, driver, and the DO stops in
+// running order. Null on any failure (auth, 404, network).
+export async function lookupLoadPlan(loadNbr: string): Promise<{ routeName: string | null; driverName: string | null; orderedStopNbrs: string[] } | null> {
+  try {
+    const { companyCode } = getCreds();
+    const authHeader = basicAuthHeader();
+    const url = `${NUVIZZ_BASE}/load/info/${encodeURIComponent(loadNbr)}/${encodeURIComponent(companyCode)}`;
+    const resp = await getNuvizzRequester().request(url, { headers: { Authorization: authHeader, Accept: 'application/json' } }, { route: '/load/info', tenant: companyCode });
+    if (!resp.ok) return null;
+    const d: any = await resp.json();
+    return {
+      routeName: d?.Load?.loadHeader?.routeName ?? null,
+      driverName: d?.Load?.loadAssignment?.driverName ?? null,
+      orderedStopNbrs: orderedStopNbrsFromLoad(d),
+    };
+  } catch { return null; }
+}
+
 // One /load/info read → the set of stop NUMBERS the load currently holds (no date filter),
 // null on ANY failure (auth, 404, network). Demotion corroboration (refresh-stops-core):
 // the LOAD is the same truth the post-save verify checked, and one read covers every

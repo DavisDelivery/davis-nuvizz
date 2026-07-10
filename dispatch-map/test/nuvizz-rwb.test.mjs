@@ -748,7 +748,7 @@ test('runCommitBoardRwb: REFUSES an add whose stop NuVizz says is planned on a l
       orderedStopNbrs: ['X', 'A'], orderedStopIds: ['id-X', 'id-A'],
     }] }, CREDS);
     assert.equal(r.loads[0].ok, false, 'save refused');
-    assert.match(String(r.loads[0].error || ''), /ALREADY PLANNED on load DAVIS000OTHER/i);
+    assert.match(String(r.loads[0].error || ''), /ALREADY PLANNED on (load )?DAVIS000OTHER/i);
   });
 });
 
