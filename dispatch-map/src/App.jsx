@@ -54,7 +54,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.46.1';
+const APP_VERSION = '0.46.2';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -99,6 +99,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.46.2', 'Fixed OLD ROUTES BLEEDING INTO TODAY\'S COMPARE CARD. With a date range set on the bottom grid, pulling up a route matched every cached day\'s rows that ever carried that route name — last week\'s TAYLOR loads (old driver included) merged into today\'s TAYLOR card as one 26-stop / 951-mi monster, while the Routes rail and Loads grid showed the real 12-order load. Delivered stops leave the scan feeds, so their old-day rows stay frozen as "planned on TAYLOR" forever — the window merge was dragging that history in. Now a Compare card seeds from the SELECTED DAY\'s board only, and the grid\'s other-day rows join the map only while UNPLANNED (the carry-over case the window exists for: grab a missed order and plan it today). Planned rows from other days stay off the map, off cards, and out of Saves. Display-only bug — NuVizz and the board were never touched, and today\'s real loads were always intact.'],
   ['0.46.1', 'Kill switches for the tractor-delivered paint. (1) Legend → "Tractor delivered" now has an On/Off toggle — flipping it off instantly blanks the lime pins AND the stop-panel line on this device (persisted; the data keeps accumulating server-side, so turning it back on loses nothing). (2) Site env var TRACTOR_FLAGS=off stops the nightly server-side flag writes without a code change (existing flags stay). The manual rebuild function ignores the env switch — running it by hand is the intent.'],
   ['0.46.0', 'TRACTOR-DELIVERED LOCATIONS now paint LIME GREEN on the map. Any stop at a location where a tractor driver has EVER completed a delivery gets a lime pin with a white border — a permanent, automatic "a 53′ trailer has physically been here" signal, separate from the dispatcher-set green/red eligibility paint. Who counts as a tractor driver comes straight from the MarginIQ Employees tab (the Tractor tag + the NUVIZZ alias on the card) — tag a driver there and re-run the rebuild, and every location they ever delivered lights up, past included. The stop panel shows "Tractor has delivered here — last <date>", and the Legend explains the lime pin. Data lives in tractor_locations, derived from the saved history warehouse + roster: one Firestore fetch on map load, ZERO NuVizz calls anywhere.'],
   ['0.45.22', 'A stop opened in Routing (beta) now has the SAME full detail panel as the Map — it IS the Map panel now. Clicking a stop in Routing gives you Street View / Google Maps / Find business, Edit address, Correct pin location, Text customer, History, the Delivery Ticket, live notes + Activity Timeline, POD photos, AND the full customer-notes editor: Priority flag, Delivery window, and the Receiving-hours editor with Save. Before, the Routing stop panel showed receiving hours as read-only text and only offered Edit address / Correct pin — no way to set a customer\'s receiving rules or text them without switching to the Map. Opening a route still works the same (the panel\'s "View full route" opens it in Compare), and an appointment-window warning still shows on top. No NuVizz calls — notes save to Firestore, exactly like the Map.'],
@@ -12230,7 +12231,17 @@ function RoutingScreen({ debugCaptureRef }) {
     // freshly-fixed order stayed invisible until the next scan re-geocoded it (#pin-live). The
     // coord filter still runs in positionedAll, AFTER overrides — so genuinely locationless
     // extras are excluded there, exactly as before.
-    const extra = gridWindowStops.filter((s) => s && s.stopNbr && !seen.has(String(s.stopNbr)));
+    // ONLY UNPLANNED extras join. An other-day row that's planned on a load is a FROZEN
+    // SNAPSHOT of that day's board (delivered stops leave the scan feeds, so their rows keep
+    // "planned on TAYLOR" + the old driver forever) — merging those painted ghost pins and,
+    // worse, name-merged last week's loads into today's same-named Compare card (26-stop /
+    // 951-mi TAYLOR). The carry-over case the window merge exists for — grab an old MISSED
+    // order and plan it today — is exactly the unplanned rows, which still flow through.
+    // Tagged windowExtra so route-card seeding below can refuse them outright.
+    const extra = gridWindowStops
+      .filter((s) => s && s.stopNbr && !seen.has(String(s.stopNbr))
+        && !(s.isPlanned === true || s.routeName || s.loadNbr))
+      .map((s) => ({ ...s, windowExtra: true }));
     return extra.length ? [...stops, ...extra] : stops;
   }, [stops, gridWindowStops]);
   const positionedAll = useMemo(() => {
@@ -12272,7 +12283,11 @@ function RoutingScreen({ debugCaptureRef }) {
     setWbRoutes((prev) => {
       if (prev.some((r) => r.key === key)) return prev;                 // already open
       if (prev.length >= WB_MAX) { setLastAction(`Workbench is full (${WB_MAX} routes) — close one first.`); return prev; }
-      const routeStops = positionedAllRef.current.filter((s) => (s.routeName || s.loadNbr) === key);
+      // BOARD-DAY ROWS ONLY. windowExtra rows come from OTHER days' cached boards (the bottom
+      // grid's date range) — seeding by bare name match across them merged every historical
+      // load that ever used this route name into one card. A card is always the selected
+      // day's load instance; other-day orders reach a card only by explicit staging.
+      const routeStops = positionedAllRef.current.filter((s) => !s.windowExtra && (s.routeName || s.loadNbr) === key);
       // TWO same-day loads sharing this NAME would merge onto one card and a Save would reorder
       // across loads (and could pair one load's id with the other's number). Refuse to open.
       const distinctLoadIds = new Set(routeStops.map((s) => s.raw?.load?.loadId ?? s.loadId).filter(Boolean).map(String));
