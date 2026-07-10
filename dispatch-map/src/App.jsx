@@ -54,7 +54,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.46.10';
+const APP_VERSION = '0.46.11';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -99,6 +99,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.46.11', 'Server write-through anchors on YOUR board date. Building tomorrow\'s board late at night, the server-side stamp targeted the current calendar day while your rows live on the day you\'re planning — the journal\'s new boardSync field caught it on the first post-fix saves (server patched 1, browser covered the rest). The Save now carries the board date you\'re working on and the server stamps THAT day\'s board; older browsers without the field fall back exactly as before, with their own sync still covering.'],
   ['0.46.10', 'THE AUDIT CAUGHT IT: every board patch since the write-through was BORN has been writing to a phantom copy of the board. Firestore paths are case-sensitive, the scanner files the board under "davis__" but every save-side patch used "DAVIS__" — so write-through stamps, carry-over rescues, and the reconcile all landed in a tree nothing reads. One normalization now converges every caller onto the real board: saves stamp rows that actually exist, the reconcile actually heals, the 60-minute hold actually holds. Also hardened from the same audit: two same-named loads can never demote each other\'s stops (ambiguous names fall back to the stop record, and "not on that load" alone no longer demotes — only the record can); a cancelled/delivered order can\'t be resurrected as live; number padding differences can\'t fake a "not on load"; a stale-unplanned leftover row can\'t hide a confirmed save; and old orders up to 62 days back (the full window range) now rescue onto today\'s board when saved.'],
   ['0.46.9', 'ROOT CAUSE OF EVERY DROP, FOUND AND CLOSED. Forensics on tonight\'s MONE save showed the board write-through NEVER landed — a green 15-stop save left ZERO stamps because the browser\'s sync call was dying silently. The write-through now happens ON THE SERVER, inside the Save itself: the moment a save verifies green against NuVizz, the server stamps our board directly, and the outcome is recorded in the write journal per load — a sync can never fail invisibly again (the browser\'s sync stays as backup). Also: every board-sync call is journaled; the "-1" re-delivery duplicate orders NuVizz creates (007143917-1 style, no dates on them) used to be INVISIBLE on every day\'s board — a dateless open order now files to today; and a window-picked stop that just got saved now flips planned on the map immediately instead of reading stale-unplanned.'],
   ['0.46.8', 'Selected-window green rows now match EVERYTHING the map paints green: the dispatcher-set tractor paint, the "Tractor trailer friendly" badge, AND the lime proven "a tractor has delivered here" locations — not just the manual paint (4 of 6 green-painted stops weren\'t highlighting). An explicit box-only mark still wins: that row never greens.'],
@@ -11154,7 +11155,7 @@ function RoutingWorkbenchCard({ route, stopById, otherKeys, ninjaMode, isActive,
 // The route workbench (part 4): the 1–3 route cards opened from the right Routes panel, laid out
 // side by side (desktop) or stacked (mobile). Replaces the Setup stack on the left while routes
 // are open; "Back to Setup" closes them all.
-function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmNinja, activeKey, onSetActive, onResequence, onCollapse, onClose, onCloseAll, onMoveStop, onDropStop, onRemoveStop, onUndoRemove, onClearRemoved, onOpenStop, onPrintManifest, selectedCount = 0, onSendSelection, isMobile, liveWrite, onBoardSync }) {
+function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmNinja, activeKey, onSetActive, onResequence, onCollapse, onClose, onCloseAll, onMoveStop, onDropStop, onRemoveStop, onUndoRemove, onClearRemoved, onOpenStop, onPrintManifest, selectedCount = 0, onSendSelection, isMobile, liveWrite, onBoardSync, boardDate }) {
   // Live-dispatch gate comes from the gear toggle (prop), aliased to the original name so the
   // many gate sites in this component (Save, Beta/Live toggle, dirty guards, confirm) are unchanged.
   const LIVE_WRITE_FLAG = liveWrite;
@@ -11316,7 +11317,7 @@ function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmN
     const { loads, warnings } = buildBoardPayload();
     if (!loads.length) { showToast(warnings[0] || 'No changes to save.'); return; }
     setBusy(true);
-    const res = await callWrite('commitBoard', { loads, origin: savedShipFrom(), useImport: engine === 'import' || undefined, useRwb: engine === 'rwb' || undefined }, { dryRun: true });
+    const res = await callWrite('commitBoard', { loads, date: boardDate || undefined, origin: savedShipFrom(), useImport: engine === 'import' || undefined, useRwb: engine === 'rwb' || undefined }, { dryRun: true });
     setBusy(false);
     if (!res.ok) { showToast(`✗ Preview failed: ${res.error || 'error'}`); return; }
     setConfirm({ plan: res.plan || [], tenant: res.tenant, loads, warnings, clientOpId: newClientOpId() });
@@ -11334,7 +11335,7 @@ function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmN
     // This Save supersedes any in-flight verification loop for the same cards (see verifyGenRef).
     for (const L of loads) { const k = L.__key ?? L.routeName ?? L.loadNbr ?? L.loadId; if (k) verifyGenRef.current.set(k, (verifyGenRef.current.get(k) || 0) + 1); }
     setBusy(true);
-    const res = await callWrite('commitBoard', { loads, origin: savedShipFrom(), useImport: engine === 'import' || undefined, useRwb: engine === 'rwb' || undefined }, { dryRun: false, clientOpId, createdBy: 'dispatcher' });
+    const res = await callWrite('commitBoard', { loads, date: boardDate || undefined, origin: savedShipFrom(), useImport: engine === 'import' || undefined, useRwb: engine === 'rwb' || undefined }, { dryRun: false, clientOpId, createdBy: 'dispatcher' });
     setBusy(false); setConfirm(null);
     const resLoads = res.result?.loads || [];
     const orphaned = res.result?.orphaned || [];
@@ -14139,7 +14140,7 @@ function RoutingScreen({ debugCaptureRef }) {
             <div className="flex-1 min-h-0 overflow-y-auto p-3 space-y-3 text-sm" style={{ paddingBottom: 'calc(12px + env(safe-area-inset-bottom))' }}>
               {mobilePanel === 'setup'
                 ? (wbRoutes.length > 0
-                    ? <RoutingWorkbench wbRoutes={wbRoutesColored} stopById={stopById} ninjaMode={ninjaMode} onToggleNinja={setNinjaMode} onArmNinja={armNinjaFromPanel} activeKey={effectiveActiveKey} onSetActive={setActiveRouteKey} onResequence={wbResequence} onCollapse={toggleWbCollapse} onClose={closeWbRoute} onCloseAll={closeAllWb} onMoveStop={wbMoveStop} onDropStop={wbDropStop} onRemoveStop={wbRemoveStop} onUndoRemove={wbUndoRemove} onClearRemoved={clearWbRemoved} onOpenStop={openStop} onPrintManifest={printWbManifest} selectedCount={selectedStops.length} onSendSelection={sendSelectionToRoute} isMobile liveWrite={liveWrite} onBoardSync={syncBoardAfterSave} />
+                    ? <RoutingWorkbench wbRoutes={wbRoutesColored} stopById={stopById} ninjaMode={ninjaMode} onToggleNinja={setNinjaMode} onArmNinja={armNinjaFromPanel} activeKey={effectiveActiveKey} onSetActive={setActiveRouteKey} onResequence={wbResequence} onCollapse={toggleWbCollapse} onClose={closeWbRoute} onCloseAll={closeAllWb} onMoveStop={wbMoveStop} onDropStop={wbDropStop} onRemoveStop={wbRemoveStop} onUndoRemove={wbUndoRemove} onClearRemoved={clearWbRemoved} onOpenStop={openStop} onPrintManifest={printWbManifest} selectedCount={selectedStops.length} onSendSelection={sendSelectionToRoute} isMobile liveWrite={liveWrite} onBoardSync={syncBoardAfterSave} boardDate={selectedDate} />
                     : controlsContent)
                 : mobilePanel === 'loads'
                   ? (rightPanelMode === 'routes'
@@ -14197,7 +14198,7 @@ function RoutingScreen({ debugCaptureRef }) {
           routes are open. With the Setup panel off and no routes open, the map gets the full width. */}
       {wbRoutes.length > 0 ? (
         <div className="shrink-0 border-r bg-white min-h-0 overflow-x-auto" style={{ width: wbWidth }}>
-          <RoutingWorkbench wbRoutes={wbRoutesColored} stopById={stopById} ninjaMode={ninjaMode} onToggleNinja={setNinjaMode} onArmNinja={armNinjaFromPanel} activeKey={effectiveActiveKey} onSetActive={setActiveRouteKey} onResequence={wbResequence} onCollapse={toggleWbCollapse} onClose={closeWbRoute} onCloseAll={closeAllWb} onMoveStop={wbMoveStop} onDropStop={wbDropStop} onRemoveStop={wbRemoveStop} onUndoRemove={wbUndoRemove} onClearRemoved={clearWbRemoved} onOpenStop={openStop} onPrintManifest={printWbManifest} selectedCount={selectedStops.length} onSendSelection={sendSelectionToRoute} isMobile={false} liveWrite={liveWrite} onBoardSync={syncBoardAfterSave} />
+          <RoutingWorkbench wbRoutes={wbRoutesColored} stopById={stopById} ninjaMode={ninjaMode} onToggleNinja={setNinjaMode} onArmNinja={armNinjaFromPanel} activeKey={effectiveActiveKey} onSetActive={setActiveRouteKey} onResequence={wbResequence} onCollapse={toggleWbCollapse} onClose={closeWbRoute} onCloseAll={closeAllWb} onMoveStop={wbMoveStop} onDropStop={wbDropStop} onRemoveStop={wbRemoveStop} onUndoRemove={wbUndoRemove} onClearRemoved={clearWbRemoved} onOpenStop={openStop} onPrintManifest={printWbManifest} selectedCount={selectedStops.length} onSendSelection={sendSelectionToRoute} isMobile={false} liveWrite={liveWrite} onBoardSync={syncBoardAfterSave} boardDate={selectedDate} />
         </div>
       ) : leftPanelOn ? (
         <div className="shrink-0 border-r bg-white overflow-y-auto p-3 space-y-3 text-sm" style={{ width: leftPanel.width }}>

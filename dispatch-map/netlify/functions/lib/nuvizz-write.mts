@@ -1780,7 +1780,12 @@ export async function runCommitBoardRwb(requester: RequesterLike, payload: any, 
   // (patchBoardPlan is idempotent). Best-effort: a board hiccup never fails the Save.
   if (isFirestoreEnabled()) {
     const tenantET = String((creds as any)?.companyCode || 'DAVIS').toUpperCase();
-    const boardDay = etDayString();
+    // Anchor on the CLIENT's board date when it rides the payload — at 11pm ET the dispatcher
+    // is building TOMORROW's board, and etDayString() (the current ET day) patched yesterday's
+    // doc while the rows live on tomorrow's (journal, Jul 10 03:08Z: server patched:1/
+    // missing:13 per save while the client's date-correct sync patched all 13). Old clients
+    // that don't send a date fall back to the ET day; their own sync remains the belt.
+    const boardDay = /^\d{4}-\d{2}-\d{2}$/.test(String(payload?.date ?? '')) ? String(payload.date) : etDayString();
     for (const p of seq) {
       if (!p.result?.ok || !Array.isArray(p.orderedNbrs) || !p.orderedNbrs.length) continue;
       try {
