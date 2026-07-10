@@ -54,7 +54,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.46.6';
+const APP_VERSION = '0.46.7';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -99,6 +99,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.46.7', 'Ghost removals can no longer cement a wrong "unplanned" on the board. Removing a stop from a card that the load never actually held (a stale ghost you pulled on, then struck off — the "Removing N orders (Unplanned on Save)" footer) used to stamp that stop CONFIRMED-unplanned on our board after the green save, protected by the post-save hold — so a rescan then DEFENDED the wrong state (why SHP29343 / UNITE MEDICAL kept reading unplanned while TRAILER 1 held them). Now only removals of stops the card started with — stops genuinely on that load — write through as unplanned; ghosts just drop off the card. Run the board reconcile once (v0.46.6) to clear any already-cemented rows.'],
   ['0.46.6', 'BOARD RECONCILE + route names in errors. Tonight\'s pre-fix drops left already-planned stops showing unplanned on our board — so they were grabbable on the map, Saves refused them ("NuVizz holds it on…"), and the holding load\'s card opened empty so the move couldn\'t even be staged. New one-shot repair: the board-reconcile run reads each load on today\'s roster ONCE from NuVizz and rewrites our board to match production truth (same write a green Save does, old-dated orders included). It never runs on its own — you fire it, and the preview shows the exact call cost first (~1 call per route). Also, per Chad: save errors now name loads THE WAY THE CARDS DO — "NuVizz holds it on TRAILER 1 (DAVIS000198690)" instead of a bare number — on both the holding load and your own, and the banner leads with the card\'s route name.'],
   ['0.46.5', 'THE BIG ONE: the board can no longer un-plan a route you saved. NuVizz\'s list feed lagged tonight\'s OWUSU 1 save by 30+ minutes, and once the 20-minute hold expired the scans "corrected" the board back to unplanned — dropping the route on our side while production NuVizz held every stop (NOLAN vanished entirely because its old-day row stopped folding onto today once it read planned). Three-part fix: (1) when the list disagrees with a saved plan, the scan now asks the LOAD itself — one call verifies a whole route — and keeps every stop the load holds, instead of trusting the per-stop record that lags right along with the list; (2) the post-save hold is 60 minutes; (3) an old-dated order a Save routed onto today\'s load keeps showing on today\'s board. Also: markers no longer vanish right after a green save with "Unplanned only" on (the freshly-saved route stayed exempt only under the name it was opened with — now every identity of an open card counts); NEW window presets "Last 7/14 days · board day" that follow the board date; the bottom grid highlights rows of stops in the map selection; and tractor-friendly (green) stops paint green in the Selected window.'],
   ['0.46.4', 'Fixed the FALSE "planned on another load" save failure (OWUSU 1). After a batched add, NuVizz attaches the stops ASYNC — our immediate re-read could catch the load before any arrival showed and then blamed the first stop as "still planned on another load" even though its record read UNPLANNED (as checked in the portal). The verify now gives NuVizz a beat and re-reads before judging; a straggler is re-read BY NUMBER — if NuVizz names a real holding load you get the actionable move error (that check is back even on the new low-call path), if our stored id was stale the save re-adds with the fresh id automatically, and if NuVizz is simply still processing the error now says THAT (wait a few seconds, Save again) instead of inventing a phantom load. Also: with a date window set, the bottom grid\'s status filter now re-applies AFTER the recent-save overlay — a just-planned stop no longer shows under "Un-Planned".'],
@@ -11384,7 +11385,14 @@ function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmN
         const cardKey = k ?? L?.__key ?? null;
         const card = cardKey != null ? wbRoutes.find((x) => x.key === cardKey) : null;
         const ordered = ((L?.orderedStopNbrs?.length ? L.orderedStopNbrs : null) ?? card?.order ?? []).map(String);
-        const removed = (L?.removeStopNbrs || []).map(String);
+        // Sync-unplan ONLY removals of stops this card STARTED with (the baseline = what the
+        // load actually held at open). A GHOST — a stale-unplanned stop the dispatcher pulled
+        // onto the card and then removed — was never on this load, so the save never unplanned
+        // it in NuVizz; stamping it board-unplanned here wrote a write-grace-protected WRONG
+        // state that a rescan then defended (SHP29343/UNITE MEDICAL: planned on TRAILER 1 all
+        // along, but staged-removed from a FRYE card → cemented unplanned on our board).
+        const base = new Set((baselines[cardKey] || []).map(String));
+        const removed = (L?.removeStopNbrs || []).map(String).filter((nbr) => base.has(nbr));
         if (!ordered.length && !removed.length) {
           // eslint-disable-next-line no-console
           console.warn('[board-sync] skipped — could not resolve any stops for a confirmed load', { loadNbr: l?.loadNbr ?? null, loadId: l?.loadId ?? null, cardKey });
@@ -11498,10 +11506,13 @@ function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmN
               // assignment is deferred on the pending path until the follow-up Save.
               if (onBoardSync) {
                 const L = sentLoads.find((x) => (x.__key ?? x.routeName ?? x.loadNbr ?? x.loadId) === k);
+                // Ghost guard (same rule as the main sync): only removals of stops the card
+                // STARTED with may stamp board-unplanned — see the baseline filter above.
+                const base2 = new Set((baselines[k] || []).map(String));
                 onBoardSync({
                   routeName: L?.routeName || loadDisplayName(k) || String(k),
                   orderedStopNbrs: l.requestedOrder.map(String),
-                  unplannedStopNbrs: (L?.removeStopNbrs || []).map(String),
+                  unplannedStopNbrs: (L?.removeStopNbrs || []).map(String).filter((nbr) => base2.has(nbr)),
                   driverName: null,
                 });
               }
