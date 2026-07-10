@@ -54,7 +54,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.46.15';
+const APP_VERSION = '0.46.16';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -99,6 +99,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.46.16', 'Compare route-card header re-laid-out. The mileage + drive time (e.g. "119.2 mi · 3h59m · DH 45.9 mi") is now the light header line, and the load details drop to their OWN line BELOW it and WRAP instead of getting cut off ("17 sk…"). The freight counts stand out — orders, skids, and loose are now BOLD — and LOOSE is shown too (it was missing before): "ANDERSON FRIMPONG · 13 stops · 14 orders · 17 sk · 3 loose · 17,933 lb · 0%". (If a printed manifest still shows the DAVIS load number instead of the route name, hard-refresh — that fix is already live and your browser is holding an old copy.)'],
   ['0.46.15', 'Bottom-panel PROFILES — save your bar settings and switch between them. Set the grid the way you want (Stops/Loads, Status filter, date window + range, driver, no-location filter, and the sort), then open the new "Profiles" dropdown (top-left of the bar, next to Stops/Loads), type a name, and Save. Pick a saved profile any time to snap the whole bar back to it; "Update" overwrites the active one with the current settings, and the trash icon deletes. Profiles are remembered on your device and work wherever the grid appears (Map + Routing). Your search text is NOT part of a profile (it stays a quick one-off filter).'],
   ['0.46.14', 'Print Manifest polish. (1) The big blue title at the top is now the route NAME (e.g. the driver\'s route), never the raw DAVIS load number — a load opened from the Loads grid used to print "DAVIS000198611" up top; it now prints the load\'s name. (2) On each Delivery Ticket the "Ship To" business name is now bold and a touch larger so the destination stands out at a glance.'],
   ['0.46.13', 'Two Compare/Save tweaks. (1) Save now SENDS TO NUVIZZ DIRECTLY — the "Send to NuVizz / This will fire… / Send" confirmation popup is gone. Click Save and it commits (in ● LIVE against prod); Beta still just simulates. The server still validates every write and a save NuVizz accepts-but-doesn\'t-apply still fails loudly, so nothing is silently lost; a destructive action (emptying a load, which cancels the route) now shows a quick toast instead of a blocking dialog. (2) On the printed Driver Manifest, the Print and ✕ buttons moved to the TOP-RIGHT CORNER OF THE MANIFEST itself (they used to float at the top-right of the whole screen, away from the page).'],
@@ -11116,10 +11117,10 @@ function RoutingWorkbenchCard({ route, stopById, otherKeys, ninjaMode, isActive,
     if (d && d.id) onDropStop(d.fromKey, d.id, route.key, beforeId);
   };
   const color = route.color || '#64748b';
-  let skids = 0, weight = 0, delivered = 0;
+  let skids = 0, loose = 0, weight = 0, delivered = 0;
   let driverName = '', driverId = '';
   for (const s of rows) {
-    skids += Number(s.cartons) || 0; weight += Number(s.weight) || 0;
+    skids += Number(s.cartons) || 0; loose += Number(s.volume) || 0; weight += Number(s.weight) || 0;
     if (classifyStopStatus(s) === 'DELIVERED') delivered += 1;
     if (!driverName && (s.driverName || s.driverUserName)) driverName = s.driverName || s.driverUserName;
     if (!driverId && s.driverId) driverId = s.driverId;
@@ -11157,12 +11158,20 @@ function RoutingWorkbenchCard({ route, stopById, otherKeys, ninjaMode, isActive,
             <button onClick={onClose} className="text-slate-400 hover:text-red-600 leading-none text-lg" aria-label={`Close route ${route.name || loadDisplayName(route.key) || ''}`}>×</button>
           </div>
         </div>
-        {/* Header counts PHYSICAL stops (same-address orders = one truck stop, like NuVizz's own
-            card); when orders > stops it shows both so nothing is hidden. */}
+        {/* Mileage + drive time is the light header line; the load details drop BELOW it and wrap
+            (no truncation — nothing gets cut off), with the freight counts (orders · skids · loose)
+            bolded so they stand out. Physical stops = one truck stop per address (like NuVizz's
+            card); orders shown alongside when it differs so nothing is hidden. */}
+        {rc && <div className="text-[11px] text-slate-500">{miles.toFixed(1)} mi · {fmtDur(driveMin)} · DH {dhMi.toFixed(1)} mi</div>}
         {(() => { const locs = new Set(rows.map((s) => s.matchKey || String(s.stopNbr))).size; return (
-        <div className="text-[11px] text-slate-500 truncate">{driverLabel} · {locs} stop{locs === 1 ? '' : 's'}{locs !== rows.length ? ` · ${rows.length} orders` : ''} · {skids} sk · {Math.round(weight).toLocaleString()} lb · {rows.length ? Math.round((100 * delivered) / rows.length) : 0}%</div>
+        <div className="text-[11px] text-slate-500 leading-tight">
+          {driverLabel} · {locs} stop{locs === 1 ? '' : 's'}
+          {locs !== rows.length ? <> · <span className="font-bold text-slate-700">{rows.length} orders</span></> : null}
+          {' · '}<span className="font-bold text-slate-700">{skids} sk</span>
+          {' · '}<span className="font-bold text-slate-700">{loose} loose</span>
+          {' · '}{Math.round(weight).toLocaleString()} lb · {rows.length ? Math.round((100 * delivered) / rows.length) : 0}%
+        </div>
         ); })()}
-        {rc && <div className="text-[11px] font-semibold text-slate-700">{miles.toFixed(1)} mi · {fmtDur(driveMin)}<span className="font-normal text-slate-400"> · DH {dhMi.toFixed(1)} mi</span></div>}
         {!route.collapsed && (
           // The dropdown shows the APPLIED strategy and keeps showing it until you change it (#280/
           // #263). EVERY hand-edit (drag, move in/out, ninja, send-selection, remove, undo) flips the
