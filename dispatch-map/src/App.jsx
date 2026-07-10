@@ -54,7 +54,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.46.8';
+const APP_VERSION = '0.46.9';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -99,6 +99,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.46.9', 'ROOT CAUSE OF EVERY DROP, FOUND AND CLOSED. Forensics on tonight\'s MONE save showed the board write-through NEVER landed — a green 15-stop save left ZERO stamps because the browser\'s sync call was dying silently. The write-through now happens ON THE SERVER, inside the Save itself: the moment a save verifies green against NuVizz, the server stamps our board directly, and the outcome is recorded in the write journal per load — a sync can never fail invisibly again (the browser\'s sync stays as backup). Also: every board-sync call is journaled; the "-1" re-delivery duplicate orders NuVizz creates (007143917-1 style, no dates on them) used to be INVISIBLE on every day\'s board — a dateless open order now files to today; and a window-picked stop that just got saved now flips planned on the map immediately instead of reading stale-unplanned.'],
   ['0.46.8', 'Selected-window green rows now match EVERYTHING the map paints green: the dispatcher-set tractor paint, the "Tractor trailer friendly" badge, AND the lime proven "a tractor has delivered here" locations — not just the manual paint (4 of 6 green-painted stops weren\'t highlighting). An explicit box-only mark still wins: that row never greens.'],
   ['0.46.7', 'Ghost removals can no longer cement a wrong "unplanned" on the board. Removing a stop from a card that the load never actually held (a stale ghost you pulled on, then struck off — the "Removing N orders (Unplanned on Save)" footer) used to stamp that stop CONFIRMED-unplanned on our board after the green save, protected by the post-save hold — so a rescan then DEFENDED the wrong state (why SHP29343 / UNITE MEDICAL kept reading unplanned while TRAILER 1 held them). Now only removals of stops the card started with — stops genuinely on that load — write through as unplanned; ghosts just drop off the card. Run the board reconcile once (v0.46.6) to clear any already-cemented rows.'],
   ['0.46.6', 'BOARD RECONCILE + route names in errors. Tonight\'s pre-fix drops left already-planned stops showing unplanned on our board — so they were grabbable on the map, Saves refused them ("NuVizz holds it on…"), and the holding load\'s card opened empty so the move couldn\'t even be staged. New one-shot repair: the board-reconcile run reads each load on today\'s roster ONCE from NuVizz and rewrites our board to match production truth (same write a green Save does, old-dated orders included). It never runs on its own — you fire it, and the preview shows the exact call cost first (~1 call per route). Also, per Chad: save errors now name loads THE WAY THE CARDS DO — "NuVizz holds it on TRAILER 1 (DAVIS000198690)" instead of a bare number — on both the holding load and your own, and the banner leads with the card\'s route name.'],
@@ -8982,10 +8983,15 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
   // Report the active window's coord-bearing rows UP so the routing map can render them for
   // selection/planning. Only the CACHE path carries coordinates (the live small-window list feed
   // has none); a live window or board mode reports null → the map stays on the single board day.
+  // Pass the OVERLAY-APPLIED rows (baseStops), not raw nvRows: a window-picked stop that was
+  // just saved onto a route must flip planned on the MAP too — raw rows kept it reading
+  // stale-unplanned there (the mapBaseStops comment claimed the overlay applied; it did not),
+  // which is how a saved old-dated order looked grabbable/unplanned the moment its card closed.
+  // baseStops recomputes on planVersion, so every confirmed save re-pushes fresh rows.
   useEffect(() => {
     if (!onWindowRowsChange) return;
-    onWindowRowsChange(nvWindow && nvSource === 'cache' && nvRows.length ? nvRows : null);
-  }, [nvWindow, nvSource, nvRows, onWindowRowsChange]);
+    onWindowRowsChange(nvWindow && nvSource === 'cache' && nvRows.length ? baseStops : null);
+  }, [nvWindow, nvSource, nvRows, baseStops, onWindowRowsChange]);
   // On unmount, release the window rows so the map reverts to the day board.
   useEffect(() => () => { if (onWindowRowsChange) onWindowRowsChange(null); }, [onWindowRowsChange]);
   const driverOptions = useMemo(() => {

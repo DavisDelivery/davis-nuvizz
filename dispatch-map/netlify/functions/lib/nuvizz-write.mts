@@ -24,6 +24,7 @@ import {
   type SingleOp, type WriteOp, type WriteCreds,
 } from './nuvizz-write-ops.mts';
 import { isHashLikeId } from './nuvizz-list.mts';
+import { patchBoardPlan, isFirestoreEnabled, etDayString } from './firestore.mts';
 import { rwbEngineBlocked, rwbConfigReady, rwbAddStopsToRoute, rwbSequenceStops, rwbSequenceRoutes } from './nuvizz-rwb.mts';
 
 const hasDriverId = (v: any) => v != null && String(v).trim() !== '' && Number(v) !== 0;
@@ -1769,12 +1770,49 @@ export async function runCommitBoardRwb(requester: RequesterLike, payload: any, 
     }
   }
 
+  // ── SERVER-SIDE BOARD WRITE-THROUGH (Jul 10, MONE) ─────────────────────────
+  // The client's post-save sync proved fragile: a green 15-stop MONE save left ZERO board
+  // stamps (a silently-dropped fetch — the client nulls a failed sync and moves on), which
+  // is the whole night's "stop dropped off the route when I closed the card" class. The
+  // server just VERIFIED this plan against NuVizz, so it stamps the board itself: no client
+  // fetch, no date/state coupling, and the outcome rides the result into the WRITE JOURNAL —
+  // a sync miss can never be invisible again. The client's own sync stays as belt
+  // (patchBoardPlan is idempotent). Best-effort: a board hiccup never fails the Save.
+  if (isFirestoreEnabled()) {
+    const tenantET = String((creds as any)?.companyCode || 'DAVIS').toUpperCase();
+    const boardDay = etDayString();
+    for (const p of seq) {
+      if (!p.result?.ok || !Array.isArray(p.orderedNbrs) || !p.orderedNbrs.length) continue;
+      try {
+        // Ghost-guard at the SOURCE: only removals of stops the load actually HELD (curNbrs,
+        // the load's own read) may stamp board-unplanned — a ghost the dispatcher pulled onto
+        // the card and struck off was never unplanned by this save.
+        const removeNbrs = (Array.isArray(p.L?.removeStopNbrs) ? p.L.removeStopNbrs : [])
+          .map((n: any) => String(n)).filter((n: string) => p.curNbrs?.has?.(n));
+        const driverApplied = (p.result.steps || []).some((s: any) => s.op === 'assignDriver' && s.ok);
+        const r = await patchBoardPlan(tenantET, boardDay, {
+          routeName: String(p.L?.routeName || p.load?.routeName || p.loadNbr || ''),
+          orderedStopNbrs: p.orderedNbrs.map(String),
+          unplannedStopNbrs: removeNbrs,
+          driverName: driverApplied ? (p.L?.driverName || null) : null,
+          at: new Date().toISOString(),
+        });
+        p.result.boardSync = { patched: r.patched, rescued: r.rescued, missing: r.missing, ...(r.missingNbrs?.length ? { missingNbrs: r.missingNbrs } : {}) };
+      } catch (e: any) {
+        p.result.boardSync = { error: e?.message || 'board write-through failed' };
+      }
+    }
+  }
+
   const loads = [
     ...(legacyResult.loads || []),
     ...seq.map((p) => ({
       loadNbr: p.result.loadNbr ?? p.loadNbr, loadId: p.load?.loadId ?? p.L?.loadId ?? null,
       ok: p.result.ok, error: p.result.error, steps: p.result.steps,
       calls: p.result.calls || undefined,
+      // Server-side board write-through outcome — journaled with the op, so "the board never
+      // heard about this save" is diagnosable from nuvizz-write-log alone.
+      boardSync: p.result.boardSync || undefined,
       // Membership-confirmed order/removal failures carry NuVizz's OBSERVED delivery order so the
       // client can write the board through with the truth despite the ✗ (SCOTT SHP29379, Jul 10).
       observedOrder: p.result.observedOrder || undefined,

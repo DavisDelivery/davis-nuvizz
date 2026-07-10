@@ -321,6 +321,11 @@ export function boardDayFor(s: any, today: string = etDayString()): string | nul
   const finished = s.normalizedStatus === 'DELIVERED' || s.normalizedStatus === 'EXCEPTION';
   const onRoute = !!s.loadNbr;
   if (!finished && onRoute && (!d || d < today)) d = today; // live route work → today, not the past
+  // A DATELESS open order is live work too — NuVizz's "-1" re-delivery duplicates arrive with
+  // no Estimated Arrival and no Requested Date, and returning null here made bucketByDate drop
+  // them from EVERY day's board (007143917-1 / 007143998-1: sitting in the portal's unplanned
+  // view, invisible in ours). File them on today; only finished dateless rows stay dropped.
+  if (!finished && !d) d = today;
   return d || null;
 }
 
