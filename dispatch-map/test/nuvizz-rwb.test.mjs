@@ -36,7 +36,7 @@ async function withRwb(over, fn) {
 // set the load's stops to exactly the entry's trip order, like the real portal — so the
 // post-save membership+ORDER verify sees the save. Pass applySave:false to simulate the
 // Jul 9 DAWSONVILLE portal behavior: SUCCESS answered, nothing applied.
-function makeRequester({ saveBody = { responseCode: 200 }, saveStatus = 200, loadStops, stopHolders = {}, applySave = true, seqless = false, stopTypes = {} } = {}) {
+function makeRequester({ saveBody = { responseCode: 200 }, saveStatus = 200, loadStops, stopHolders = {}, applySave = true, seqless = false, stopTypes = {}, stopSeqs = {}, stopAddrs = {} } = {}) {
   const calls = [];
   const stopDoc = (n) => ({ stop: { stopId: `id-${n}`, stopNbr: String(n), stopType: stopTypes[n] || 'DO', to: { seq: 1 } } });
   const loadJson = () => ({ Load: {
@@ -45,7 +45,7 @@ function makeRequester({ saveBody = { responseCode: 200 }, saveStatus = 200, loa
     // weight/totalPallets/totalCartons/volume ride the RAW stop record (normalizeLoad.rawStops)
     // — the save entry's totalData sums them (Jul 9 manual-reorder HAR fidelity). `seqless`
     // simulates a read that lands before NuVizz stamps to.seq (the settling window).
-    stops: (loadStops?.value ?? []).map((n, i) => ({ stop: { stopId: `id-${n}`, stopNbr: String(n), stopType: stopTypes[n] || 'DO', to: seqless ? {} : { seq: i + 2 }, weight: 100, totalPallets: 2, totalCartons: 1, volume: 3 } })),
+    stops: (loadStops?.value ?? []).map((n, i) => ({ stop: { stopId: `id-${n}`, stopNbr: String(n), stopType: stopTypes[n] || 'DO', to: seqless ? {} : { seq: stopSeqs[n] ?? (i + 2), ...(stopAddrs[n] ? { address: { name: stopAddrs[n], addressLine1: '1 Main St', city: 'Dalton' } } : {}) }, weight: 100, totalPallets: 2, totalCartons: 1, volume: 3 } })),
   } });
   return {
     calls,
@@ -286,6 +286,39 @@ test('runCommitBoardRwb: save entry carries the route\'s REAL window + freight t
     // HAR's loose-free route: totalV 0 → '').
     assert.deepEqual(entry.totalData, { totalP: 4, totalC: 2, totalW: 200, totalV: 6, weightUOM: 'Lbs', volumeUOM: 'Loose' });
     assert.equal(entry.isStandingRoute, true, 'standing defaults ON — true on all 3 captured portal saves');
+  });
+});
+
+// ── co-located orders share a NuVizz position (SCOTT false failure, Jul 10) ────
+// NuVizz gives same-address orders ONE stopSeq (11 stops / 12 orders). The dupe-corruption
+// check must not flag that — it blocked closing a correctly-saved load ("acting like it
+// didn't save"). Corruption = DIFFERENT places sharing a position (DAWSONVILLE 1,2,2,6…13).
+
+test('runCommitBoardRwb: co-located orders sharing one position VERIFY green (SCOTT)', async () => {
+  await withRwb({}, async () => {
+    const loadStops = { value: ['A', 'B', 'C'] };
+    const { requester } = makeRequester({ loadStops, stopSeqs: { B: 3, C: 3 }, stopAddrs: { B: 'USDA FOREST SERVICE', C: 'USDA FOREST SERVICE' } });
+    const r = await runCommitBoardRwb(requester, { loads: [{ loadNbr: 'DAVIS000000123', loadId: HEXID, orderedStopNbrs: ['A', 'B', 'C'] }] }, CREDS);
+    assert.equal(r.ok, true, JSON.stringify(r.loads?.[0]?.error));
+  });
+});
+
+test('runCommitBoardRwb: equal-seq tie order never false-flags (tie-break by requested position)', async () => {
+  await withRwb({}, async () => {
+    const loadStops = { value: ['A', 'C', 'B'] };
+    const { requester } = makeRequester({ loadStops, stopSeqs: { B: 3, C: 3 }, stopAddrs: { B: 'USDA FOREST SERVICE', C: 'USDA FOREST SERVICE' } });
+    const r = await runCommitBoardRwb(requester, { loads: [{ loadNbr: 'DAVIS000000123', loadId: HEXID, orderedStopNbrs: ['A', 'C', 'B'] }] }, CREDS);
+    assert.equal(r.ok, true, JSON.stringify(r.loads?.[0]?.error));
+  });
+});
+
+test('runCommitBoardRwb: DIFFERENT places sharing a position still fail (DAWSONVILLE corruption pin)', async () => {
+  await withRwb({}, async () => {
+    const loadStops = { value: ['A', 'B', 'C'] };
+    const { requester } = makeRequester({ loadStops, applySave: false, stopSeqs: { B: 3, C: 3 }, stopAddrs: { B: 'USDA FOREST SERVICE', C: 'SOME OTHER CUSTOMER' } });
+    const r = await runCommitBoardRwb(requester, { loads: [{ loadNbr: 'DAVIS000000123', loadId: HEXID, orderedStopNbrs: ['A', 'B', 'C'] }] }, CREDS);
+    assert.equal(r.ok, false, 'cross-address dupe is real corruption');
+    assert.match(String(r.loads[0].error || ''), /duplicate position/i);
   });
 });
 
