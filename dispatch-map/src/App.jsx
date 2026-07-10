@@ -1870,8 +1870,55 @@ function readableTextColor(hex) {
   return L > 0.6 ? '#1f2937' : '#ffffff';
 }
 
+// Small corner count badge (top-right of the pin head) — the number of deliveries going to the
+// SAME place, so a dispatcher sees "3 orders here" at a glance. Dark disc + white number + white
+// ring reads on any pin color and on the satellite base. Only drawn for count >= 2. Lives inside
+// the 28×36 viewBox top-right corner, so it never enlarges the marker's scaledSize.
+function countBadgeSvg(count) {
+  const n = Number(count) || 0;
+  if (n < 2) return '';
+  const txt = n > 99 ? '99+' : String(n);
+  const fs = txt.length >= 3 ? 6 : (txt.length === 2 ? 7.5 : 9);
+  return `<g><circle cx="21.5" cy="7" r="6.5" fill="#0f172a" stroke="#ffffff" stroke-width="1.4"/>`
+    + `<text x="21.5" y="10.1" font-family="system-ui, sans-serif" font-size="${fs}" font-weight="800" fill="#ffffff" text-anchor="middle" letter-spacing="-0.5">${txt}</text></g>`;
+}
+
+// White-ringed dot for UNPLANNED stops — the classic teardrop washes out against the satellite
+// base, so an unplanned order becomes a colored disc wrapped in a white circle (Chad's ask). It's
+// rendered at the SAME on-screen size as the old small pin (≤16px, see stopMarkerIcon), so the
+// wrap never makes the icon bigger. When 2+ deliveries share the place the count sits INSIDE the
+// dot (that's the "number on the delivery icon" for unplanned); otherwise a status glyph/AM-PM tag
+// or a plain core. Anchor is the dot CENTER (returned by the caller).
+function unplannedDotSvg(color, opts = {}) {
+  const { glyph = null, tag = null, count = 0 } = opts;
+  const txtColor = readableTextColor(color);
+  let core;
+  if (Number(count) >= 2) {
+    const txt = Number(count) > 99 ? '99+' : String(count);
+    const fs = txt.length >= 3 ? 8 : (txt.length === 2 ? 9.5 : 12);
+    core = `<text x="12" y="${txt.length >= 2 ? 15.4 : 16}" font-family="system-ui, sans-serif" font-size="${fs}" font-weight="800" fill="${txtColor}" text-anchor="middle" letter-spacing="-0.5">${txt}</text>`;
+  } else if (tag === 'AM' || tag === 'PM') {
+    core = `<text x="12" y="15.2" font-family="system-ui, sans-serif" font-size="8.5" font-weight="800" fill="${txtColor}" text-anchor="middle" letter-spacing="-0.5">${tag}</text>`;
+  } else if (glyph === 'bang') {
+    core = `<text x="12" y="16.5" font-family="system-ui, sans-serif" font-size="12" font-weight="800" fill="${txtColor}" text-anchor="middle">!</text>`;
+  } else if (glyph === 'question') {
+    core = `<text x="12" y="16.7" font-family="system-ui, sans-serif" font-size="13" font-weight="800" fill="${txtColor}" text-anchor="middle">?</text>`;
+  } else {
+    core = '';
+  }
+  // r=11 white wrap + r=8 colored core, viewBox 24×24. The subtle drop stroke keeps the white
+  // ring visible even over bright/white satellite patches (parking lots, rooftops).
+  const svg = `
+    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
+      <circle cx="12" cy="12" r="11" fill="#ffffff" stroke="#0f172a" stroke-opacity="0.28" stroke-width="1"/>
+      <circle cx="12" cy="12" r="8" fill="${color}"/>
+      ${core}
+    </svg>`;
+  return 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent(svg);
+}
+
 function pinSvgStatus(color, opts = {}) {
-  const { hollow = false, glyph = null, tag = null, label = null } = opts;
+  const { hollow = false, glyph = null, tag = null, label = null, count = 0 } = opts;
   const bodyFill = hollow ? '#ffffff' : color;
   const bodyStroke = hollow ? color : '#ffffff';
   const strokeW = hollow ? 2.5 : 2;
@@ -1905,6 +1952,7 @@ function pinSvgStatus(color, opts = {}) {
       <path d="M14 1c-7 0-13 5.4-13 12 0 9 13 22 13 22s13-13 13-22c0-6.6-6-12-13-12z"
         fill="${bodyFill}" stroke="${bodyStroke}" stroke-width="${strokeW}"/>
       ${center}
+      ${countBadgeSvg(count)}
     </svg>`;
   return 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent(svg);
 }
@@ -2002,6 +2050,18 @@ function iconMarkerSvg(restrictions, tint) {
 //   opts.seq            — the route sequence number drawn in the numbered pin
 //   opts.routeColor     — overrides the numbered pin's color (Routing colors by route,
 //                         the Map colors by status); omit to keep status coloring.
+// The "same place" key for co-location counting — the address identity (matchKey), same key the
+// route header uses to count physical stops vs orders. Falls back to stopNbr so a keyless stop is
+// its own singleton.
+const stopLocKey = (s) => s?.matchKey || String(s?.stopNbr ?? '');
+// Map each stop's location → how many of the given stops share it (≥1). Used to badge co-located
+// delivery markers with the count.
+function buildLocCounts(stops) {
+  const m = new Map();
+  for (const s of (stops || [])) { const k = stopLocKey(s); m.set(k, (m.get(k) || 0) + 1); }
+  return m;
+}
+
 function stopMarkerIcon(google, s, note, opts = {}) {
   //   opts.tractorDelivered — a tractor driver has completed a delivery at this
   //   location (tractor_locations): full repaint to lime green + white border,
@@ -2009,7 +2069,10 @@ function stopMarkerIcon(google, s, note, opts = {}) {
   //   and tap behavior stay identical. DNS and search-match orange keep
   //   precedence (safety / active-search visibility), as does an explicit
   //   Routing routeColor on numbered pins.
-  const { selectedDayKey, matched = false, inRoute = false, seq, routeColor, tractorDelivered = false } = opts;
+  const { selectedDayKey, matched = false, inRoute = false, seq, routeColor, sameLocCount = 1, tractorDelivered = false } = opts;
+  // count badge only when 2+ deliveries share the place (Chad: "put the number on the delivery
+  // icon"). 0 = no badge.
+  const count = sameLocCount > 1 ? sameLocCount : 0;
   let restrictions = getRestrictionBadgeKeys(note, { day: selectedDayKey });
   const flagHue = (note?.priority_flag && FLAG_COLORS[note.priority_flag]) ? FLAG_COLORS[note.priority_flag] : null;
   // Dispatcher-set vehicle eligibility recolors the pin (green = trailer OK, red =
@@ -2031,7 +2094,7 @@ function stopMarkerIcon(google, s, note, opts = {}) {
     const statusKind = classifyStopStatus(s);
     const meta = STATUS_META[statusKind] || STATUS_META.SCHEDULED;
     const color = routeColor || (tractorDelivered ? TRACTOR_DELIVERED_COLOR : (meta.color || flagColor(note)));
-    return { url: pinSvgStatus(color, { label: String(seq) }), scaledSize: new google.maps.Size(30, 39), anchor: new google.maps.Point(15, 37) };
+    return { url: pinSvgStatus(color, { label: String(seq), count }), scaledSize: new google.maps.Size(30, 39), anchor: new google.maps.Point(15, 37) };
   }
   if (restrictions.length === 0) {
     // State A — status drives the pin; matched stops pop orange; a priority flag,
@@ -2052,9 +2115,19 @@ function stopMarkerIcon(google, s, note, opts = {}) {
       if (note?.priority_flag === 'question' && !glyph) glyph = 'question';
       else if (addressOff) glyph = 'bang';
     }
+    // UNPLANNED resting pins (not a search-matched selection, no AM/PM tag) render as a white-
+    // circle-wrapped DOT instead of the washed-out small teardrop — same ≤16px footprint, so it
+    // never grows. A co-located count sits inside the dot. Tagged/matched unplanned keep the pin.
+    if (statusKind === 'UNPLANNED' && !matched && !tag) {
+      return {
+        url: unplannedDotSvg(color, { glyph, count }),
+        scaledSize: new google.maps.Size(16, 16),
+        anchor: new google.maps.Point(8, 8),
+      };
+    }
     const big = matched || !!tag;
     return {
-      url: pinSvgStatus(color, { hollow: matched ? false : meta.hollow, glyph, tag }),
+      url: pinSvgStatus(color, { hollow: matched ? false : meta.hollow, glyph, tag, count }),
       scaledSize: big ? new google.maps.Size(28, 36) : new google.maps.Size(16, 21),
       anchor: big ? new google.maps.Point(14, 34) : new google.maps.Point(8, 20),
     };
@@ -4932,9 +5005,45 @@ function StopNotesEditor({ draft, setDraft, compact = false, drivers = [] }) {
   );
 }
 
+// Compact month/day/year for the recent-PRO chips (YYYY-MM-DD → MM/DD/YY). Non-ISO input passes
+// through unchanged.
+function fmtMdy(ymd) {
+  const m = String(ymd || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  return m ? `${m[2]}/${m[3]}/${m[1].slice(2)}` : (ymd || '');
+}
+
+// Session cache: customer name → Map(pro → driver) from the Firestore history rollup, so a
+// re-opened stop panel doesn't re-fetch. pro_history stores only {pro,date}; the rollup
+// (nuvizz-customer-history, zero NuVizz calls) carries the driver who ran each PRO.
+const _proDriverCache = new Map();
+function useProDrivers(name, historyLen) {
+  const [map, setMap] = useState(() => _proDriverCache.get(name || '') || null);
+  useEffect(() => {
+    const nm = (name || '').trim();
+    if (!nm || !historyLen) { setMap(null); return; }
+    if (_proDriverCache.has(nm)) { setMap(_proDriverCache.get(nm)); return; }
+    let alive = true;
+    fetch(`/.netlify/functions/nuvizz-customer-history?name=${encodeURIComponent(nm)}`)
+      .then((r) => r.json())
+      .then((j) => {
+        const m = new Map();
+        // Each customer's rollup lists its PROs under `pros` = [{pro,date,driver}] (shapeCustomer).
+        if (j?.ok) for (const c of (j.customers || [])) for (const h of (c.pros || [])) {
+          if (h?.pro && h?.driver && !m.has(String(h.pro))) m.set(String(h.pro), h.driver);
+        }
+        _proDriverCache.set(nm, m);
+        if (alive) setMap(m);
+      })
+      .catch(() => { /* best-effort — chips just omit the driver */ });
+    return () => { alive = false; };
+  }, [name, historyLen]);
+  return map;
+}
+
 // Customer-notes section wrapper: the Edit toggle, the read-only view, the full
 // editor, and recent-PRO history. Shared by desktop + mobile.
 function StopNotesSection({ note, editing, setEditing, draft, setDraft, compact = false, drivers = [] }) {
+  const proDrivers = useProDrivers(note?.raw_name, note?.pro_history?.length || 0);
   return (
     <div className="px-4 py-3 space-y-3">
       <div className="flex items-center justify-between">
@@ -4952,9 +5061,16 @@ function StopNotesSection({ note, editing, setEditing, draft, setDraft, compact 
         <div className="pt-2 border-t">
           <div className="text-xs font-semibold text-slate-600 mb-1">Recent PROs at this customer</div>
           <div className="flex flex-wrap gap-1">
-            {[...note.pro_history].reverse().slice(0, 10).map((h, i) => (
-              <span key={i} className="text-[10px] bg-slate-100 border border-slate-200 rounded px-1.5 py-0.5">{h.pro} · {h.date}{h.driver ? <span className="text-slate-500"> · {h.driver}</span> : null}</span>
-            ))}
+            {[...note.pro_history].reverse().slice(0, 10).map((h, i) => {
+              const drv = h.driver || proDrivers?.get(String(h.pro)) || '';
+              return (
+                <span key={i} className="text-[10px] bg-slate-100 border border-slate-200 rounded px-1.5 py-0.5 whitespace-nowrap">
+                  <span className="font-mono">{h.pro}</span>
+                  {drv && <span className="text-slate-700"> · {drv}</span>}
+                  <span className="text-slate-400"> · {fmtMdy(h.date)}</span>
+                </span>
+              );
+            })}
           </div>
         </div>
       )}
@@ -7549,6 +7665,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef }) {
         routeSeqByStop.set(s.stopNbr, rs != null ? rs : i + 1);
       });
     }
+    const locCounts = buildLocCounts(positioned);   // co-located delivery tally for the badge
     const newMarkers = positioned.map((s) => {
       const note = notes.get(s.matchKey);
       const seq = routeSeqByStop.get(s.stopNbr);
@@ -7558,7 +7675,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef }) {
       // The rich per-stop icon (DNS / numbered route / status-flag-window /
       // restriction) is built by the shared stopMarkerIcon helper so the Map and
       // Routing screens stay pixel-identical.
-      const icon = stopMarkerIcon(google, s, note, { selectedDayKey, matched, inRoute, seq, tractorDelivered: tractorLocs.has(s.matchKey) });
+      const icon = stopMarkerIcon(google, s, note, { selectedDayKey, matched, inRoute, seq, sameLocCount: locCounts.get(stopLocKey(s)) || 1, tractorDelivered: tractorLocs.has(s.matchKey) });
       const marker = new google.maps.Marker({
         position: { lat: s.lat, lng: s.lng },
         icon,
@@ -8674,10 +8791,13 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
   // fetched straight from NuVizz's stop list (any delivery-date window / status)
   // instead of today's board — e.g. "all unplanned ±7 days". Driver is a local
   // refinement applied to whatever rows are shown.
-  const [nvWindow, setNvWindow] = useState(''); // '' = board; else arrival period ('0d','+/-7d')
+  const [nvWindow, setNvWindow] = useState(''); // '' = board; else '0d' | '+/-7d' | 'custom'
+  const [nvFrom, setNvFrom] = useState(''); // 'custom' range endpoints (YYYY-MM-DD)
+  const [nvTo, setNvTo] = useState('');
   const [nvRows, setNvRows] = useState([]);
   const [nvTotal, setNvTotal] = useState(0);
-  const [nvSource, setNvSource] = useState('live'); // 'live' = straight from NuVizz; 'cache' = our board day-docs (±7d)
+  const [nvPartial, setNvPartial] = useState(false); // covering pull was incomplete → count is "≥ N"
+  const [nvSource, setNvSource] = useState('live'); // 'live' = straight from NuVizz; 'cache' = our board day-docs (±7d / wide custom ranges)
   const [nvLoading, setNvLoading] = useState(false);
   const [nvErr, setNvErr] = useState(null);
   const [driverSel, setDriverSel] = useState('');
@@ -8749,32 +8869,45 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
   // selection changes so status filters server-side, not just on the loaded page).
   useEffect(() => {
     if (!nvWindow) { setNvErr(null); setNvLoading(false); return; }
+    const custom = nvWindow === 'custom';
+    // Custom range needs BOTH endpoints before it can pull — clear any previous window's rows.
+    if (custom && (!nvFrom || !nvTo)) { setNvErr(null); setNvLoading(false); setNvRows([]); setNvTotal(0); setNvPartial(false); return; }
     let cancelled = false;
     const ctrl = new AbortController();
     const codes = TABLE_STATUS_BUCKETS.filter((b) => statusSel.has(b.k)).flatMap((b) => b.codes);
-    const req = { arrivalPeriod: nvWindow, statusCodes: codes, page: 1, pageSize: 1000 };
+    const [lo, hi] = custom ? (nvFrom <= nvTo ? [nvFrom, nvTo] : [nvTo, nvFrom]) : ['', ''];
+    const req = custom
+      ? { fromDate: lo, toDate: hi, statusCodes: codes, page: 1, pageSize: 1000 }
+      : { arrivalPeriod: nvWindow, statusCodes: codes, page: 1, pageSize: 1000 };
     setNvLoading(true); setNvErr(null);
-    fetch('/.netlify/functions/nuvizz-stop-explorer', {
-      method: 'POST', cache: 'no-store', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(req), signal: ctrl.signal,
-    })
-      .then((r) => r.json())
-      .then((j) => {
-        if (cancelled) return;
-        if (!j.ok) throw new Error(j.error || 'pull failed');
-        const decorated = (j.rows || []).map((s) => ({
-          ...s,
-          matchKey: normalizeMatchKey(s.businessName || '', s.addr1 || '', s.city || '', s.zip || ''),
-          loadNbr: s.routeName || '',
-        }));
-        // nvSource is still tracked so the routing map knows a ±7d pull is cache-backed
-        // (coord-bearing) and can render those orders for selection (v0.45.4).
-        setNvRows(decorated); setNvTotal(j.total ?? decorated.length); setNvSource(j.source === 'cache' ? 'cache' : 'live');
+    // DEBOUNCE custom-range pulls: a native date input fires onChange per SEGMENT edit, so a
+    // straight fetch would fire a pull on each keystroke. A window preset needs no debounce.
+    const timer = setTimeout(() => {
+      fetch('/.netlify/functions/nuvizz-stop-explorer', {
+        method: 'POST', cache: 'no-store', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(req), signal: ctrl.signal,
       })
-      .catch((e) => { if (!cancelled) { setNvErr(e.message); setNvRows([]); setNvTotal(0); } })
-      .finally(() => { if (!cancelled) setNvLoading(false); });
-    return () => { cancelled = true; ctrl.abort(); };
-  }, [nvWindow, statusSel]);
+        .then((r) => r.json())
+        .then((j) => {
+          if (cancelled) return;
+          if (!j.ok) throw new Error(j.error || 'pull failed');
+          // Deploy-skew guard: a server that predates custom ranges ignores fromDate/toDate and
+          // would silently return the wrong window — the echoed `range` proves it honored them.
+          if (custom && !j.range) throw new Error('server doesn’t support date ranges yet — hard-refresh the app and retry');
+          const decorated = (j.rows || []).map((s) => ({
+            ...s,
+            matchKey: normalizeMatchKey(s.businessName || '', s.addr1 || '', s.city || '', s.zip || ''),
+            loadNbr: s.routeName || '',
+          }));
+          // nvSource is tracked so the routing map knows a cache-backed pull is coord-bearing
+          // (±7d / a wide custom range) and can render those orders for selection (v0.45.4).
+          setNvRows(decorated); setNvTotal(j.total ?? decorated.length); setNvPartial(!!j.partial); setNvSource(j.source === 'cache' ? 'cache' : 'live');
+        })
+        .catch((e) => { if (!cancelled) { setNvErr(e.message); setNvRows([]); setNvTotal(0); setNvPartial(false); } })
+        .finally(() => { if (!cancelled) setNvLoading(false); });
+    }, custom ? 600 : 0);
+    return () => { cancelled = true; ctrl.abort(); clearTimeout(timer); };
+  }, [nvWindow, nvFrom, nvTo, statusSel]);
   // Report the active window's coord-bearing rows UP so the routing map can render them for
   // selection/planning. Only the CACHE path carries coordinates (the live small-window list feed
   // has none); a live window or board mode reports null → the map stays on the single board day.
@@ -8961,16 +9094,19 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
         {/* No-location chip — these rows have no map pin, so they can't be selected on the map
             or routed until their address is fixed. This reconciles the "grid count > map
             selection" gap AND surfaces silently-unroutable orders. Click to isolate them. */}
-        {open && view === 'stops' && unmappedCount > 0 && (
+        {view === 'stops' && unmappedCount > 0 && (
           <button
-            onClick={() => setUnmappedOnly((v) => !v)}
+            onClick={() => { setUnmappedOnly((v) => !v); setOpen(true); }}
             title="These stops have no map location — they can't be selected on the map or routed until you fix the address (Edit address / Correct pin). Click to show only them."
             className={'inline-flex items-center gap-1 px-2 py-1 rounded text-xs border whitespace-nowrap ' + (unmappedOnly ? 'border-amber-500 bg-amber-500 text-white' : 'border-amber-400 text-amber-700 bg-amber-50 hover:bg-amber-100')}
           >
             <MapPin size={12} /> {unmappedCount} no location{unmappedOnly ? ' · showing' : ''}
           </button>
         )}
-        {open && (
+        {/* Toolbar controls stay in the bar whether the grid is open OR collapsed (Chad: the
+            collapsed bar must be identical). Only the TABLE below hides when collapsed; using any
+            control auto-opens the grid so its effect is visible. */}
+        {true && (
           <>
             {/* min-w so the box never shrinks to an icon (hiding a stray term that blanks the grid);
                 a clear-× so leftover search text is always dismissable and highlighted when present. */}
@@ -8978,7 +9114,8 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
               <Search size={13} className="absolute left-2 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
               <input
                 value={q}
-                onChange={(e) => setQ(e.target.value)}
+                onChange={(e) => { setQ(e.target.value); setOpen(true); }}
+                onFocus={() => setOpen(true)}
                 placeholder={view === 'loads' ? 'Search loads…' : 'Search table…'}
                 className={'w-full border rounded pl-7 pr-6 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-400 ' + (q ? 'border-blue-400 bg-blue-50' : 'border-slate-300')}
               />
@@ -8991,7 +9128,7 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
             {view === 'stops' && (
               <div className="relative">
                 <button
-                  onClick={() => setStatusOpen((v) => !v)}
+                  onClick={() => { setStatusOpen((v) => !v); setOpen(true); }}
                   className={'inline-flex items-center gap-1 px-2 py-1 rounded text-xs border ' + (statusSel.size ? 'border-blue-400 text-blue-700 bg-blue-50' : 'border-slate-300 text-slate-600 hover:bg-slate-50')}
                 >
                   <Filter size={12} /> Status{statusSel.size ? ` (${statusSel.size})` : ''}
@@ -9018,17 +9155,33 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
               <>
                 <select
                   value={nvWindow}
-                  onChange={(e) => setNvWindow(e.target.value)}
+                  onChange={(e) => { setNvWindow(e.target.value); setOpen(true); }}
                   title="Data source / delivery-date window"
                   className="hidden sm:inline-block border border-slate-300 rounded px-1.5 py-1 text-xs text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-400"
                 >
                   <option value="">Board (today)</option>
                   <option value="0d">NuVizz · Today</option>
                   <option value="+/-7d">NuVizz · ±7 days</option>
+                  <option value="custom">Custom range…</option>
                 </select>
+                {nvWindow === 'custom' && (
+                  <span className="hidden sm:inline-flex items-center gap-1">
+                    <input
+                      type="date" value={nvFrom} max={nvTo || undefined}
+                      onChange={(e) => { setNvFrom(e.target.value); setOpen(true); }} title="From delivery date"
+                      className="border border-slate-300 rounded px-1.5 py-1 text-xs text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-400"
+                    />
+                    <span className="text-slate-400 text-xs">→</span>
+                    <input
+                      type="date" value={nvTo} min={nvFrom || undefined}
+                      onChange={(e) => { setNvTo(e.target.value); setOpen(true); }} title="To delivery date"
+                      className="border border-slate-300 rounded px-1.5 py-1 text-xs text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-400"
+                    />
+                  </span>
+                )}
                 <select
                   value={driverSel}
-                  onChange={(e) => setDriverSel(e.target.value)}
+                  onChange={(e) => { setDriverSel(e.target.value); setOpen(true); }}
                   title="Filter by driver"
                   className="hidden sm:inline-block border border-slate-300 rounded px-1.5 py-1 text-xs text-slate-700 max-w-[150px] focus:outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-400"
                 >
@@ -9037,11 +9190,17 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
                 </select>
                 {nvWindow && (
                   <span className="hidden sm:inline text-[11px] text-slate-500 whitespace-nowrap">
-                    {nvLoading
-                      ? <span className="inline-flex items-center gap-1"><RefreshCw size={11} className="animate-spin" /> pulling…</span>
-                      : nvErr
-                        ? <span className="text-red-600">NuVizz: {nvErr}</span>
-                        : <>NuVizz · {nvTotal.toLocaleString()} stops</>}
+                    {nvWindow === 'custom' && (!nvFrom || !nvTo)
+                      ? <span className="text-slate-400">pick From + To dates</span>
+                      : nvLoading
+                        ? <span className="inline-flex items-center gap-1"><RefreshCw size={11} className="animate-spin" /> pulling…</span>
+                        : nvErr
+                          ? <span className="text-red-600">NuVizz: {nvErr}</span>
+                          : nvPartial
+                            ? <span className="text-amber-600" title="The date window was too large for one pull — some stops in it may be missing. Narrow the range for an exact result.">NuVizz · ≥{nvTotal.toLocaleString()} stops (partial — narrow the range)</span>
+                            : nvSource === 'cache'
+                              ? <span title="Served from our board cache (every scanned day in the window; confirmed Saves are patched in). Freshness = the last scan — no NuVizz calls.">Board · {nvTotal.toLocaleString()} stops</span>
+                              : <>NuVizz · {nvTotal.toLocaleString()} stops</>}
                   </span>
                 )}
               </>
@@ -11122,6 +11281,18 @@ function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmN
     if (onBoardSync) {
       const syncPromises = [];
       for (const l of resLoads) {
+        // A FAILED verify that still confirmed MEMBERSHIP carries NuVizz's observedOrder — write
+        // the board through with that TRUTH so the board can't keep showing a landed stop as
+        // unplanned once the card closes (SCOTT/SHP29379: the false ✗ skipped the sync entirely
+        // and the stop read unplanned-but-actually-planned until the next healthy scan).
+        if (!l.ok && !l.pending && Array.isArray(l.observedOrder) && l.observedOrder.length) {
+          const kf = keyOf(l);
+          const Lf = loads.find((x) => (x.__key ?? x.routeName ?? x.loadNbr ?? x.loadId) === kf)
+            ?? (loads.length === 1 ? loads[0] : null);
+          const nameF = Lf?.routeName || loadDisplayName(kf) || String(kf || l.loadNbr || '');
+          if (nameF) syncPromises.push(onBoardSync({ routeName: nameF, orderedStopNbrs: l.observedOrder.map(String), unplannedStopNbrs: [], driverName: null }));
+          continue;
+        }
         if (!l.ok || l.pending) continue; // pending imports sync on their verified read-back below
         const k = keyOf(l);
         const L = loads.find((x) => (x.__key ?? x.routeName ?? x.loadNbr ?? x.loadId) === k)
@@ -13196,6 +13367,7 @@ function RoutingScreen({ debugCaptureRef }) {
     if (!google || !mapRef.current) return;
     markersRef.current.forEach((m) => m.setMap(null));
     const byId = new Map();
+    const locCounts = buildLocCounts(vPositioned);   // co-located delivery tally for the badge
     markersRef.current = vPositioned.map((s) => {
       const id = String(s.stopNbr);
       const sel = !viewing && selectedIds.has(id);
@@ -13213,6 +13385,7 @@ function RoutingScreen({ debugCaptureRef }) {
         inRoute: numbered,
         seq: ri?.seq,
         routeColor: ri?.color,
+        sameLocCount: locCounts.get(stopLocKey(s)) || 1,
         tractorDelivered: tractorLocs.has(s.matchKey),
       });
       const baseZ = numbered ? 30 : (sel ? 25 : 10);
