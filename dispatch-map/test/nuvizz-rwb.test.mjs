@@ -18,11 +18,12 @@ const HEXID = '6a438e9d52ef82bd1ed4516b';
 
 // Run `fn` with RWB fully configured (enabled + creds), restoring env afterward.
 async function withRwb(over, fn) {
-  const keys = ['NUVIZZ_RWB_ENABLED', 'NUVIZZ_RWB_USER', 'NUVIZZ_RWB_PASS', 'NUVIZZ_RWB_LOGIN_BASE', 'NUVIZZ_RWB_PORTAL_BASE'];
+  const keys = ['NUVIZZ_RWB_ENABLED', 'NUVIZZ_RWB_USER', 'NUVIZZ_RWB_PASS', 'NUVIZZ_RWB_LOGIN_BASE', 'NUVIZZ_RWB_PORTAL_BASE', 'NUVIZZ_RWB_SETTLE_MS'];
   const prev = Object.fromEntries(keys.map((k) => [k, process.env[k]]));
   Object.assign(process.env, {
     NUVIZZ_RWB_ENABLED: 'true', NUVIZZ_RWB_USER: 'Chad', NUVIZZ_RWB_PASS: 'pw',
     NUVIZZ_RWB_LOGIN_BASE: 'https://loginqa.nuvizz.com', NUVIZZ_RWB_PORTAL_BASE: 'https://uat.nuvizz.com',
+    NUVIZZ_RWB_SETTLE_MS: '15',   // post-add settle beat — real default 1200ms; fast for tests
     ...over,
   });
   try { return await fn(); }
@@ -67,7 +68,7 @@ function makeRequester({ saveBody = { responseCode: 200 }, saveStatus = 200, loa
           // Simulate the portal actually attaching the stops so the post-add verify re-read sees them.
           try {
             const sids = opts.body && opts.body.get ? String(opts.body.get('stopIds') || '') : '';
-            for (const sid of sids.split(',').filter(Boolean)) { const n = idAlias[sid] ?? sid.replace(/^id-/, ''); if (loadStops && !loadStops.value.includes(n)) loadStops.value.push(n); }
+            for (const sid of sids.split(',').filter(Boolean)) { const n = idAlias[sid] ?? (sid.startsWith('id-') ? sid.slice(3) : null); if (n && loadStops && !loadStops.value.includes(n)) loadStops.value.push(n); }
           } catch { /* no loadStops in unit tests */ }
           return J({ responseCode: 200, message: 'SUCCESS', stops: [] });
         }
@@ -687,6 +688,55 @@ test('runCommitBoardRwb: positional orderedStopIds pair only 1:1 — a partial a
   });
 });
 
+test('runCommitBoardRwb: a LAGGING post-add read settles instead of failing (no false "planned elsewhere")', async () => {
+  await withRwb({}, async () => {
+    // OWUSU 1 (Jul 10): add accepted 200 but NuVizz attaches async — the immediate re-read
+    // showed none of the arrivals, and the save failed claiming the first stop was "planned
+    // on another load" while its record read UNPLANNED. The verify must give NuVizz a beat
+    // and re-read before judging.
+    const loadStops = { value: ['X'] };
+    const base = makeRequester({ loadStops });
+    const real = base.requester.request;
+    let addDone = false, lagged = 0;
+    const staleLoad = JSON.stringify({ Load: {
+      loadHeader: { loadId: HEXID, loadNbr: 'DAVIS000000123', routeName: 'TEST', rtOrigin: { address: { latitude: 34.04, longitude: -83.71 } } },
+      versionId: 'v1', loadExecutionInfo: { loadStatus: 'PLANNED' },
+      stops: [{ stop: { stopId: 'id-X', stopNbr: 'X', stopType: 'DO', to: { seq: 2 }, weight: 100, totalPallets: 2, totalCartons: 1, volume: 3 } }],
+    } });
+    base.requester.request = async (url, opts, meta) => {
+      if (url.includes('addStopsToRouteAfterValidation')) { const r = await real(url, opts, meta); addDone = true; return r; }
+      if (addDone && lagged < 1 && url.includes('/load/info/')) { lagged++; return new Response(staleLoad, { status: 200 }); } // first post-add read: not attached yet
+      return real(url, opts, meta);
+    };
+    const r = await runCommitBoardRwb(base.requester, { loads: [{
+      loadNbr: 'DAVIS000000123', loadId: HEXID, routeName: 'R', orderedStopNbrs: ['X', 'A'],
+    }] }, CREDS);
+    assert.equal(r.ok, true, `lag must settle, got: ${JSON.stringify(r.loads?.[0]?.error)}`);
+    assert.equal(base.calls.some((c) => c.url.includes('saveComparedRouteData')), true, 'save proceeds once the add is visible');
+  });
+});
+
+test('runCommitBoardRwb: a STALE supplied id self-heals — re-read by number, re-add with the fresh id', async () => {
+  await withRwb({}, async () => {
+    // The scan/enrichment id can be a dead instance of a recurring PRO: NuVizz no-ops adding a
+    // dead id. The straggler pass reads the stop BY NUMBER, sees a different current id, and
+    // re-adds with the fresh one — one extra read + one extra add for that stop, then green.
+    const DEAD = 'f'.repeat(24);
+    const loadStops = { value: ['X'] };
+    const { requester, calls } = makeRequester({ loadStops });   // DEAD has no alias → attaches nothing
+    const r = await runCommitBoardRwb(requester, { loads: [{
+      loadNbr: 'DAVIS000000123', loadId: HEXID, routeName: 'R',
+      orderedStopNbrs: ['X', 'A'], stopIdsByNbr: { A: DEAD },
+    }] }, CREDS);
+    assert.equal(r.ok, true, `stale id must self-heal, got: ${JSON.stringify(r.loads?.[0]?.error)}`);
+    const adds = calls.filter((c) => c.url.includes('addStopsToRouteAfterValidation'));
+    assert.equal(adds.length, 2, 'dead-id add, then the fresh-id re-add');
+    assert.equal(String(adds[1].body.get('stopIds')), 'id-A', 'the re-add carries the CURRENT id read by number');
+    assert.equal(calls.filter((c) => c.url.includes('/stop/info/')).length, 1, 'exactly one straggler re-resolution read');
+    assert.equal(calls.some((c) => c.url.includes('saveComparedRouteData')), true);
+  });
+});
+
 test('runCommitBoardRwb: REFUSES an add whose stop NuVizz says is planned on a load outside the Save', async () => {
   await withRwb({}, async () => {
     // Board says unplanned (stale); NuVizz's stop read says it's on OTHER-LOAD. The save must
@@ -718,7 +768,7 @@ test('runCommitBoardRwb: fails loudly when an add silently no-ops (stop planned 
       orderedStopNbrs: ['X', 'A'], orderedStopIds: ['id-X', 'id-A'],
     }] }, CREDS);
     assert.equal(r.ok, false, 'must NOT report success when the stop never landed');
-    assert.match(r.loads[0].error, /still planned on another load|couldn't be added|unplan it/i);
+    assert.match(r.loads[0].error, /did not appear|NuVizz still holds|couldn't be added/i);
     assert.equal(base.calls.some((c) => c.url.includes('saveComparedRouteData')), false, 'must not persist a route missing the stop');
   });
 });

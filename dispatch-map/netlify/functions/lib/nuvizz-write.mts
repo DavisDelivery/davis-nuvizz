@@ -1470,14 +1470,62 @@ export async function runCommitBoardRwb(requester: RequesterLike, payload: any, 
       if (!f2.load) { p.result.ok = false; p.result.error = `commitBoard(rwb): load unreadable after add (${loadMissDiag(p.loadNbr, f2)}) — Save again`; continue; }
       p.load = f2.load;
       indexLoad(p);
-      const landed = new Set((p.load?.stops || []).filter((s: any) => s?.stopNbr != null && s?.stopId != null).map((s: any) => String(s.stopNbr)));
-      const miss = p.addArrivals.find((a: any) => !landed.has(String(a.nbr)));
-      if (miss) {
+      const landedSet = () => new Set((p.load?.stops || []).filter((s: any) => s?.stopNbr != null && s?.stopId != null).map((s: any) => String(s.stopNbr)));
+      let missingAdds = p.addArrivals.filter((a: any) => !landedSet().has(String(a.nbr)));
+      // ── SETTLE RETRY (OWUSU 1, Jul 10). The add returns 200 but NuVizz attaches ASYNC — an
+      // immediate re-read can catch the load mid-attach and show none/few of the arrivals yet.
+      // That race got reported as "still planned on another load" for a stop whose record read
+      // UNPLANNED (Chad checked) — find() just named the first arrival of a not-yet-visible
+      // batch. Give NuVizz a beat (env-tunable) and re-read before judging anything.
+      const settleMs = Math.max(0, Number(process.env.NUVIZZ_RWB_SETTLE_MS ?? 1200));
+      for (let settle = 0; missingAdds.length && settle < 2; settle++) {
+        await realSleep(settleMs);
+        const fS = await fetchLoad(requester, String(p.loadNbr), creds);
+        p.verifyReads++;
+        if (fS.load) { p.load = fS.load; indexLoad(p); missingAdds = p.addArrivals.filter((a: any) => !landedSet().has(String(a.nbr))); }
+      }
+      // ── STRAGGLER RE-RESOLUTION. A supplied (scan/enrichment) id can be a STALE instance of
+      // the PRO — NuVizz silently no-ops adding a dead id. Read each straggler BY NUMBER (the
+      // current instance): a holder outside the Save fails with the actionable move error
+      // (this restores, on the failure path, the pre-add holder check the supplied-id path
+      // skips); a DIFFERENT current id means our id was stale — re-validate+add just those
+      // with the fresh id, then re-read once more.
+      if (missingAdds.length) {
+        const fresh: Array<{ nbr: string; stopId: string }> = [];
+        let holdErr: string | null = null;
+        for (const a of missingAdds) {
+          const gs = await fireSingle(requester, 'getStop', { stopNbr: String(a.nbr) }, creds).catch((e: any) => ({ ok: false, error: e?.message }));
+          p.addReads = (p.addReads || 0) + 1;
+          const srcNbr = gs?.ok ? String(gs.stop?.assignedLoadNbr ?? '').trim() : '';
+          if (gs?.ok && srcNbr && srcNbr !== String(p.loadNbr) && !batchNbrs.has(srcNbr)) {
+            holdErr = `commitBoard(rwb): stop ${a.nbr} couldn't be added to ${p.loadNbr} — NuVizz holds it on load ${srcNbr}. Open ${srcNbr} in Compare to move it, or unplan it there in the portal (RWB can't pull a stop off a route that isn't part of the Save).`;
+            break;
+          }
+          if (gs?.ok && gs.stop?.stopId && String(gs.stop.stopId) !== String(a.stopId)) fresh.push({ nbr: String(a.nbr), stopId: String(gs.stop.stopId) });
+        }
+        if (holdErr) { p.result.ok = false; p.result.error = holdErr; continue; }
+        if (fresh.length) {
+          const add2 = await rwbAddStopsToRoute(requester, p.routePlanId, fresh.map((f) => f.stopId));
+          p.rwbAddCalls += add2.calls;
+          p.result.steps.push(...add2.steps.map((s: any) => ({ ...s, op: `rwb:${s.op}(refresh-id)` })));
+          for (const f of fresh) { const a = p.addArrivals.find((x: any) => String(x.nbr) === f.nbr); if (a) a.stopId = f.stopId; }
+          await realSleep(settleMs);
+          const fR = await fetchLoad(requester, String(p.loadNbr), creds);
+          p.verifyReads++;
+          if (fR.load) { p.load = fR.load; indexLoad(p); missingAdds = p.addArrivals.filter((a: any) => !landedSet().has(String(a.nbr))); }
+        }
+      }
+      if (missingAdds.length) {
         p.result.ok = false;
-        // Name the holder (one getStop, failure path only): "another load" made the BEN 2 refusal
-        // a dead end — the dispatcher had to hunt the portal for WHICH route was holding the stop.
+        const miss = missingAdds[0];
+        // Name the holder (one getStop, failure path only) — and when NuVizz names NO holder,
+        // tell the truth: the stop reads UNPLANNED, so this is NuVizz still processing the add,
+        // NOT a stop planned elsewhere. (The old wording asserted "planned on another load"
+        // for exactly this case and sent Chad hunting a load that doesn't exist.)
         const holder = await rwbStopHolder(requester, String(miss.nbr), creds);
-        p.result.error = `commitBoard(rwb): stop ${miss.nbr} couldn't be added to ${p.loadNbr} — ${holder && holder !== String(p.loadNbr) ? `NuVizz still holds it on load ${holder}. Open ${holder} in Compare to move it, or unplan it there in the portal` : `it's still planned on another load (NuVizz's stop record doesn't name it). Open that load in Compare to move it, or unplan it first`} (RWB can't pull a stop off a route that isn't part of the Save).`;
+        p.result.error = holder && holder !== String(p.loadNbr)
+          ? `commitBoard(rwb): stop ${miss.nbr} couldn't be added to ${p.loadNbr} — NuVizz still holds it on load ${holder}. Open ${holder} in Compare to move it, or unplan it there in the portal (RWB can't pull a stop off a route that isn't part of the Save).`
+          : `commitBoard(rwb): ${missingAdds.length > 1 ? `${missingAdds.length} stops (${missingAdds.slice(0, 3).map((a: any) => a.nbr).join(', ')}${missingAdds.length > 3 ? '…' : ''})` : `stop ${miss.nbr}`} did not appear on ${p.loadNbr} after the add — the stop record reads UNPLANNED right now, so NuVizz is likely still processing (nothing was double-planned). Wait a few seconds and Save again.`;
         continue;
       }
     } catch (e: any) {
