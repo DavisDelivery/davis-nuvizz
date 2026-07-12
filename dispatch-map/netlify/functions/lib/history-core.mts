@@ -34,6 +34,8 @@ import { updateCustomerRollupsForDay } from './history-customers.mts';
 import { updateTractorFlagsForDay } from './tractor-flags.mts';
 import { updateRoutingReferencesForDay } from './routing-reference.mts';
 import { finalizeCaptureSeal, recordCaptureFailure, type CaptureStage } from './history-seal.mts';
+import { updateDriverDaysForDay } from './routing-driver-days.mts';
+import { updateServiceTimesForDay } from './routing-service-times.mts';
 
 const TENANT = 'davis';
 // Keep in sync with src/App.jsx APP_VERSION. Stamped onto every manifest/capture
@@ -249,6 +251,21 @@ export async function captureDate(date: string): Promise<any> {
     await updateRoutingReferencesForDay(TENANT, date, stopRecords);
   } catch (e: any) {
     console.error(`routing-reference update failed for ${date}:`, e?.message);
+  }
+
+  // Best-effort: Phase 2 driver-day observations (the shift shape the assignment
+  // engine learns from) + per-customer service times. Same in-memory stops, same
+  // failure policy (never fail the capture; backfills re-derive from the
+  // warehouse). Both honor ROUTING_ENGINE=off.
+  try {
+    await updateDriverDaysForDay(TENANT, date, stopRecords);
+  } catch (e: any) {
+    console.error(`driver-days update failed for ${date}:`, e?.message);
+  }
+  try {
+    await updateServiceTimesForDay(TENANT, date, stopRecords);
+  } catch (e: any) {
+    console.error(`service-times update failed for ${date}:`, e?.message);
   }
 
   return { date, ok: true, verified: true, sealed: true, capture_version: version, counts, absent_kept: absentFromThisCapture.length };

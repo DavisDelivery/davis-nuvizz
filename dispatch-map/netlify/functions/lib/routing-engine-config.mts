@@ -18,7 +18,7 @@
 
 import { getDoc, setDoc } from './firestore.mts';
 
-export const ENGINE_VERSION = '1.0.0';
+export const ENGINE_VERSION = '2.0.0';
 
 export const ENGINE_CONFIG_COLLECTION = 'routing_engine_config';
 
@@ -59,6 +59,26 @@ export interface EngineConfig {
   // Reference selection / replay.
   min_reference_zone_overlap: number;  // shared zones required to be GUIDED
   min_prior_reference_days: number;    // replay: prior reference days required before scoring
+
+  // ── Phase 2: assignment layer ──────────────────────────────────────────────
+  service_min_clamp: number;           // service-time observations clamped to this band (min)
+  service_max_clamp: number;           // …and this (max), before aggregating
+  min_observation_days: number;        // driver envelope needs ≥ this many observed days, else class fallback
+  hard_cap_factor: number;             // per-trip envelope p85 × this = the physical ceiling (hard)
+  assignment_ms_cap: number;           // per-day assignment-solver wall-clock cap
+  reload_gap_min: number;              // fleet reload-turn seed (median last-touch trip1 → first-touch trip2)
+  typical_shift_hours: number;         // fallback shift length when a driver's history is thin
+  far_first_adherence: number;         // fleet far-first seed (trip1 farther than trip2)
+  trip2_radius_mi: number;             // fleet trip-2 close-in radius seed
+  // soft-cost weights (assignment objective = Σ weight × normalized term)
+  w_overload: number;
+  w_underload: number;
+  w_affinity: number;
+  w_trips: number;
+  w_shift_overflow: number;
+  w_far_first: number;
+  w_strict_window: number;
+  w_compactness: number;
 }
 
 const NUMERIC_KEYS: Array<keyof EngineConfig> = [
@@ -69,6 +89,11 @@ const NUMERIC_KEYS: Array<keyof EngineConfig> = [
   'restarts', 'solver_ms_cap',
   'min_route_stops', 'max_missing_coord_frac', 'executed_fallback_min_frac',
   'min_reference_zone_overlap', 'min_prior_reference_days',
+  'service_min_clamp', 'service_max_clamp', 'min_observation_days', 'hard_cap_factor',
+  'assignment_ms_cap', 'reload_gap_min', 'typical_shift_hours', 'far_first_adherence',
+  'trip2_radius_mi',
+  'w_overload', 'w_underload', 'w_affinity', 'w_trips', 'w_shift_overflow',
+  'w_far_first', 'w_strict_window', 'w_compactness',
 ];
 
 export const ENGINE_CONFIG_BOUNDS: Record<keyof EngineConfig, [number, number]> = {
@@ -92,6 +117,23 @@ export const ENGINE_CONFIG_BOUNDS: Record<keyof EngineConfig, [number, number]> 
   executed_fallback_min_frac: [0, 1],
   min_reference_zone_overlap: [1, 20],
   min_prior_reference_days: [0, 365],
+  service_min_clamp: [0, 60],
+  service_max_clamp: [10, 480],
+  min_observation_days: [1, 120],
+  hard_cap_factor: [1, 2],
+  assignment_ms_cap: [1000, 300_000],
+  reload_gap_min: [15, 480],
+  typical_shift_hours: [4, 16],
+  far_first_adherence: [0, 1],
+  trip2_radius_mi: [1, 200],
+  w_overload: [0, 1000],
+  w_underload: [0, 1000],
+  w_affinity: [0, 1000],
+  w_trips: [0, 1000],
+  w_shift_overflow: [0, 1000],
+  w_far_first: [0, 1000],
+  w_strict_window: [0, 1000],
+  w_compactness: [0, 1000],
 };
 
 // PURE: defaults, each overridable by env (ROUTING_ENGINE_<UPPER_SNAKE>).
@@ -121,6 +163,24 @@ export function engineConfigDefaults(env: Record<string, string | undefined> = p
     executed_fallback_min_frac: num('EXECUTED_FALLBACK_MIN_FRAC', 0.5),
     min_reference_zone_overlap: num('MIN_REFERENCE_ZONE_OVERLAP', 2),
     min_prior_reference_days: num('MIN_PRIOR_REFERENCE_DAYS', 14),
+    // Phase 2 — defaults seeded from the verified OPERATING FACTS.
+    service_min_clamp: num('SERVICE_MIN_CLAMP', 2),
+    service_max_clamp: num('SERVICE_MAX_CLAMP', 120),
+    min_observation_days: num('MIN_OBSERVATION_DAYS', 10),
+    hard_cap_factor: num('HARD_CAP_FACTOR', 1.15),
+    assignment_ms_cap: num('ASSIGNMENT_MS_CAP', 90_000),
+    reload_gap_min: num('RELOAD_GAP_MIN', 132),
+    typical_shift_hours: num('TYPICAL_SHIFT_HOURS', 10),
+    far_first_adherence: num('FAR_FIRST_ADHERENCE', 0.82),
+    trip2_radius_mi: num('TRIP2_RADIUS_MI', 20),
+    w_overload: num('W_OVERLOAD', 3),
+    w_underload: num('W_UNDERLOAD', 1),
+    w_affinity: num('W_AFFINITY', 2),
+    w_trips: num('W_TRIPS', 1.5),
+    w_shift_overflow: num('W_SHIFT_OVERFLOW', 4),
+    w_far_first: num('W_FAR_FIRST', 1),
+    w_strict_window: num('W_STRICT_WINDOW', 2),
+    w_compactness: num('W_COMPACTNESS', 1),
   };
 }
 

@@ -213,7 +213,7 @@ test('shadowScoreRoute: proposal doc shape, exact-match score 0, engine version 
   assert.deepEqual([...p.proposed_seq].sort(), [...p.actual_seq].sort());
   assert.equal(typeof p.score, 'number');
   assert.ok(p.travel_min_actual_est > 0 && p.travel_min_proposed_est > 0);
-  assert.equal(p.engine_version, '1.0.0');
+  assert.equal(p.engine_version, '2.0.0'); // bumped in Phase 2 (stamped on all proposal docs)
   assert.equal(p.computed_at, '2026-07-11T07:30:00Z');
   assert.equal(p.stops[0].actual_pos, 1);
   assert.ok(p.stops.every((s) => Number.isInteger(s.proposed_pos)));

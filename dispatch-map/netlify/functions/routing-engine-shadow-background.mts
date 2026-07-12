@@ -30,6 +30,7 @@ import { isFirestoreEnabled } from './lib/firestore.mts';
 import { etYesterday } from './lib/history-core.mts';
 import { routingEngineDisabled, ENGINE_VERSION } from './lib/routing-engine-config.mts';
 import { runShadowForDate } from './lib/routing-engine-core.mts';
+import { runPlanForDate } from './lib/routing-plan-core.mts';
 
 const TENANT = 'davis';
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -51,9 +52,22 @@ export default async (req: Request): Promise<Response> => {
   const force = url.searchParams.get('force') === '1';
 
   console.log(`[engine-shadow] v${ENGINE_VERSION} scoring ${date}${force ? ' (force)' : ''}`);
-  const summary = await runShadowForDate(TENANT, date, { force });
-  console.log('[engine-shadow] done:', JSON.stringify(summary));
-  return new Response(JSON.stringify({ engine_version: ENGINE_VERSION, ...summary }), { status: 200, headers });
+  // Phase 1 — sequence scoring (re-sequence each dispatched load, score vs actual).
+  const seq = await runShadowForDate(TENANT, date, { force });
+  console.log('[engine-shadow] sequence done:', JSON.stringify(seq));
+
+  // Phase 2 — assignment scoring (build the whole day plan, score vs dispatch).
+  // Best-effort: a plan failure must not lose the sequence result.
+  let plan: any = null;
+  try {
+    plan = await runPlanForDate(TENANT, date, { force });
+    console.log('[engine-shadow] plan done:', JSON.stringify(plan));
+  } catch (e: any) {
+    console.error(`[engine-shadow] plan scoring failed for ${date}:`, e?.message);
+    plan = { ok: false, error: e?.message };
+  }
+
+  return new Response(JSON.stringify({ engine_version: ENGINE_VERSION, sequence: seq, plan }), { status: 200, headers });
 };
 
 export const config = {
