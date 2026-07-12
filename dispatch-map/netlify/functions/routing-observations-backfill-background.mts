@@ -18,6 +18,7 @@ import { HISTORY_COLLECTION, listStops } from './lib/history-store.mts';
 import { loadEngineConfig } from './lib/routing-engine-config.mts';
 import { extractDriverDays, writeDriverDays } from './lib/routing-driver-days.mts';
 import { serviceObservationsForDay, writeServiceTimesFresh, type PalletBucket } from './lib/routing-service-times.mts';
+import { habitObservationsForDay, writeCustomerDriversFresh, type HabitOb } from './lib/routing-customer-drivers.mts';
 import { loadVehicleRoster, vehicleTypeForStop } from './lib/tractor-flags.mts';
 
 const TENANT = 'davis';
@@ -57,9 +58,12 @@ export default async (req: Request): Promise<Response> => {
     ddDates = allDates.filter((d) => d >= lo && d <= hi);
   }
 
-  // service-time reservoirs (dated) folded over ALL dates
+  // service-time + driver-habit reservoirs (dated) folded over ALL dates —
+  // like service times, a dated reservoir can't be rebuilt from a subset, so
+  // habits always recompute over every captured date too.
   const byCustomer = new Map<string, Array<{ d: string; m: number }>>();
   const byBucket = new Map<PalletBucket, Array<{ d: string; m: number }>>();
+  const habitByCustomer = new Map<string, HabitOb[]>();
 
   let driverDaysWritten = 0, driverDayDocs = 0, stopsScanned = 0;
   const perDate: Array<{ date: string; drivers: number }> = [];
@@ -79,6 +83,12 @@ export default async (req: Request): Promise<Response> => {
       for (const m of mins) arr.push({ d: date, m });
     }
 
+    // driver-habit obs (always, every date)
+    for (const [mk, obs] of habitObservationsForDay(stops, date)) {
+      const arr = habitByCustomer.get(mk) ?? habitByCustomer.set(mk, []).get(mk)!;
+      arr.push(...obs);
+    }
+
     // driver-days (only for the requested window)
     if (ddDates.includes(date)) {
       const docs = extractDriverDays(stops, { tenant: TENANT, date, truckClassOf });
@@ -89,6 +99,7 @@ export default async (req: Request): Promise<Response> => {
   }
 
   const serviceDocsWritten = await writeServiceTimesFresh(TENANT, byCustomer, byBucket);
+  const habitDocsWritten = await writeCustomerDriversFresh(TENANT, habitByCustomer);
 
   const summary = {
     ok: true, tenant: TENANT,
@@ -98,6 +109,8 @@ export default async (req: Request): Promise<Response> => {
     driver_days_written: driverDaysWritten,
     service_customers: byCustomer.size,
     service_docs_written: serviceDocsWritten,
+    habit_customers: habitByCustomer.size,
+    habit_docs_written: habitDocsWritten,
     stops_scanned: stopsScanned,
     perDate,
     ms: Date.now() - t0,

@@ -274,6 +274,63 @@ export function pickReference(
   return best;
 }
 
+// ── Phase 2.1: top-k reference selection (audit finding 2) ────────────────────
+// The winners aggregated zone-order evidence across MANY historical routes,
+// weighted by Amazon's route-quality labels. We have no quality labels; the
+// stand-ins are RECENCY (half-life decay) and the SAME-DRIVER multiplier —
+// which doubles as the mechanism that encodes each driver's own habitual
+// ordering (see routing-customer-drivers.mts for the WHO; this is the IN WHAT
+// ORDER half of the driver-habit ask).
+//
+// weight = sharedZones × 0.5^(ageDays / half_life) × (sameDriver ? multiplier : 1)
+//
+// Candidates: same warehouse, date STRICTLY < target (leakage guard re-applied
+// here), sharing ≥ minOverlap distinct zones. Deterministic: ties broken by
+// date desc then load_key asc.
+
+export interface RankedReference {
+  ref: ReferenceRouteDoc & { _id?: string };
+  shared: number;
+  weight: number;
+}
+
+function ageDays(candidateDate: string, targetDate: string): number {
+  const a = Date.parse(candidateDate + 'T00:00:00Z');
+  const b = Date.parse(targetDate + 'T00:00:00Z');
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return 3650;
+  return Math.max(0, (b - a) / 86_400_000);
+}
+
+export function pickReferences(
+  candidates: Array<ReferenceRouteDoc & { _id?: string }>,
+  target: {
+    date: string;
+    zones: Set<string>;
+    driverUserName: string | null;
+    truckClass: string | null;
+    warehouse: string | null;
+    minOverlap: number;
+  },
+  opts: { topK: number; halfLifeDays: number; sameDriverMultiplier: number },
+): RankedReference[] {
+  const ranked: RankedReference[] = [];
+  for (const c of candidates || []) {
+    if (!c || String(c.date) >= target.date) continue; // STRICTLY before — the leakage guard
+    if (String(c.warehouse ?? '') !== String(target.warehouse ?? '')) continue;
+    const shared = new Set((c.zone_seq || []).filter((z) => target.zones.has(z))).size;
+    if (shared < target.minOverlap) continue;
+    const decay = Math.pow(0.5, ageDays(String(c.date), target.date) / Math.max(1, opts.halfLifeDays));
+    const driverBoost = target.driverUserName && c.driver_user_name === target.driverUserName
+      ? opts.sameDriverMultiplier : 1;
+    ranked.push({ ref: c, shared, weight: shared * decay * driverBoost });
+  }
+  ranked.sort((x, y) =>
+    (y.weight - x.weight) ||
+    String(y.ref.date).localeCompare(String(x.ref.date)) ||
+    String(x.ref.load_key ?? '').localeCompare(String(y.ref.load_key ?? '')));
+  return ranked.slice(0, Math.max(1, opts.topK));
+}
+
 // Write mined reference docs — full recompute per route doc, so OVERWRITE is
 // the idempotency story (same inputs → same doc). Bounded concurrency.
 export async function writeReferenceRoutes(docs: ReferenceRouteDoc[], conc = 8): Promise<number> {

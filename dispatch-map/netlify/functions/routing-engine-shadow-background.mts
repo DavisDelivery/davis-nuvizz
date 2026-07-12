@@ -26,10 +26,28 @@
 // ── Schedule: 07:30 UTC nightly ──────────────────────────────────────────────
 // The history capture runs at 06:00 UTC and this feeds off its output, so run
 // ~90 minutes later; the capture (one day) finishes well inside that window.
+//
+// ROUTING CALENDAR PROOF (why this timing is CORRECT and needs no re-timing):
+// dispatch builds routes OVERNIGHT, ~20:00 ET → ~07:00 ET (Sunday night builds
+// Monday; Thursday night builds Friday; no Sat/Sun boards, no Fri/Sat-night
+// routing — routing_engine_config.routing_calendar). So board date D is FINAL
+// by ~07:00 ET on D and fully executed by D evening. This job targets D-1 at
+// 07:30 UTC = 02:30/03:30 ET — many hours after D-1 closed. Always final.
+//
+// ET ANCHORING / DST DRIFT: the cron fires at a fixed UTC instant, so its ET
+// wall time drifts one hour across DST flips (03:30 EDT ↔ 02:30 EST). Both
+// instants sit safely inside the "D-1 is closed, D is still being built"
+// window, so the drift is harmless — do NOT re-time the cron for DST.
+//
+// FUTURE PHASES (Assist): any job reading the CURRENT day's plan must gate on
+// assertCurrentDayReadAllowed (>= 07:30 ET on D), and proposal generation must
+// eventually run INSIDE the 20:00–07:00 build window. Encoded in
+// routing-engine-config.mts; inherit it, don't re-derive it.
 import { isFirestoreEnabled } from './lib/firestore.mts';
 import { etYesterday } from './lib/history-core.mts';
-import { routingEngineDisabled, ENGINE_VERSION } from './lib/routing-engine-config.mts';
-import { runShadowForDate } from './lib/routing-engine-core.mts';
+import { getManifest } from './lib/history-store.mts';
+import { routingEngineDisabled, loadEngineConfig, isBoardDay, ENGINE_VERSION } from './lib/routing-engine-config.mts';
+import { runShadowForDate, listReferencesBefore } from './lib/routing-engine-core.mts';
 import { runPlanForDate } from './lib/routing-plan-core.mts';
 
 const TENANT = 'davis';
@@ -51,9 +69,38 @@ export default async (req: Request): Promise<Response> => {
   const date = qDate && DATE_RE.test(qDate) ? qDate : etYesterday();
   const force = url.searchParams.get('force') === '1';
 
+  const cfg = await loadEngineConfig(TENANT);
+
+  // ROUTING CALENDAR (Phase 2.1): weekend / no-board dates are EXPECTED IDLE,
+  // not failures. A non-board-day target exits as a distinct idle state — no
+  // failure record, no empty rollup polluting the trend. Same for a date the
+  // warehouse tombstoned (holiday: manifest no_board:true).
+  if (!isBoardDay(date, cfg.routing_calendar)) {
+    console.log(`[engine-shadow] ${date} is not a board day (routing_calendar) — idle`);
+    return new Response(JSON.stringify({ ok: true, idle: 'not_a_board_day', date }), { status: 200, headers });
+  }
+  const manifest = await getManifest(TENANT, date);
+  if (manifest && manifest.no_board) {
+    console.log(`[engine-shadow] ${date} is tombstoned (no board) — idle`);
+    return new Response(JSON.stringify({ ok: true, idle: 'tombstoned_no_board', date }), { status: 200, headers });
+  }
+
+  // TRAIN-BEFORE-JUDGE gate (audit finding 5): the replays skip dates with
+  // fewer than min_prior_reference_days of reference history; the nightly job
+  // now behaves identically on thin history instead of emitting low, mostly-
+  // unguided scores that dilute the gated trend. Distinct state, no rollup.
+  const references = await listReferencesBefore(TENANT, date);
+  const priorRefDays = new Set(references.map((r: any) => String(r.date))).size;
+  if (priorRefDays < cfg.min_prior_reference_days && !force) {
+    console.log(`[engine-shadow] ${date}: only ${priorRefDays} prior reference day(s) (< ${cfg.min_prior_reference_days}) — skipped, not scored`);
+    return new Response(JSON.stringify({ ok: true, idle: 'insufficient_reference_history', date, prior_reference_days: priorRefDays }), { status: 200, headers });
+  }
+
   console.log(`[engine-shadow] v${ENGINE_VERSION} scoring ${date}${force ? ' (force)' : ''}`);
   // Phase 1 — sequence scoring (re-sequence each dispatched load, score vs actual).
-  const seq = await runShadowForDate(TENANT, date, { force });
+  // The reference library is already loaded for the gate above; hand it down
+  // (runShadowForDate re-applies the strict < date filter internally regardless).
+  const seq = await runShadowForDate(TENANT, date, { force, cfg, references });
   console.log('[engine-shadow] sequence done:', JSON.stringify(seq));
 
   // Phase 2 — assignment scoring (build the whole day plan, score vs dispatch).

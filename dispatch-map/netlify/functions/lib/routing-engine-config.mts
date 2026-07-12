@@ -18,7 +18,7 @@
 
 import { getDoc, setDoc } from './firestore.mts';
 
-export const ENGINE_VERSION = '2.0.0';
+export const ENGINE_VERSION = '2.1.0';
 
 export const ENGINE_CONFIG_COLLECTION = 'routing_engine_config';
 
@@ -79,6 +79,36 @@ export interface EngineConfig {
   w_far_first: number;
   w_strict_window: number;
   w_compactness: number;
+
+  // ── Phase 2.1: top-k weighted reference graph (audit finding 2) ────────────
+  reference_top_k: number;          // aggregate this many references into the zone digraph
+  reference_half_life_days: number; // recency decay half-life for candidate ranking
+  same_driver_multiplier: number;   // rank boost for the SAME driver's own history — the
+                                    // stand-in for the challenge's quality labels, and how
+                                    // each driver's habitual ORDER is encoded (see Phase 4 note)
+  reference_edge_floor: number;     // drop aggregate edges below this fraction of total ref weight
+  // ── Phase 2.1: customer driver-habit soft cost ──────────────────────────────
+  w_habit: number;                  // weight for "this stop's habitual driver" in the plan solver
+  habit_shrink_n: number;           // strength = top_share × n/(n+shrink) — small n = weak signal
+
+  // ── Phase 2.1: THE ROUTING CALENDAR ─────────────────────────────────────────
+  // Encoded operating fact, not lore: dispatch builds routes OVERNIGHT
+  // (~20:00 ET → ~07:00 ET next morning; Sunday night builds Monday, Thursday
+  // night builds Friday). No Saturday/Sunday boards, no Friday- or
+  // Saturday-night routing. Therefore board date D is FINAL by ~07:00 ET on D
+  // and fully executed by D evening — which is why the 02:00 ET capture and
+  // 03:30 ET engine run on D+1 always read a final, executed board.
+  // DERIVED LAW for future phases (Assist): any job reading the CURRENT day's
+  // plan must never run before 07:30 ET on D (see planReadEarliestOkET), and
+  // Assist proposal generation must eventually run INSIDE 20:00–07:00.
+  routing_calendar: RoutingCalendar;
+}
+
+export interface RoutingCalendar {
+  board_days: number[];          // ISO weekday numbers with Sunday=0 … Saturday=6; default Mon–Fri
+  window_start_local: string;    // "HH:MM" — overnight build window start (evening before D)
+  window_end_local: string;      // "HH:MM" — build window end (morning of D; board final after this)
+  timezone: string;              // IANA zone the window is anchored to
 }
 
 const NUMERIC_KEYS: Array<keyof EngineConfig> = [
@@ -94,9 +124,11 @@ const NUMERIC_KEYS: Array<keyof EngineConfig> = [
   'trip2_radius_mi',
   'w_overload', 'w_underload', 'w_affinity', 'w_trips', 'w_shift_overflow',
   'w_far_first', 'w_strict_window', 'w_compactness',
+  'reference_top_k', 'reference_half_life_days', 'same_driver_multiplier', 'reference_edge_floor',
+  'w_habit', 'habit_shrink_n',
 ];
 
-export const ENGINE_CONFIG_BOUNDS: Record<keyof EngineConfig, [number, number]> = {
+export const ENGINE_CONFIG_BOUNDS: Record<Exclude<keyof EngineConfig, 'routing_calendar'>, [number, number]> = {
   zone_precision: [4, 8],
   super_precision: [3, 7],
   top_precision: [2, 6],
@@ -134,7 +166,16 @@ export const ENGINE_CONFIG_BOUNDS: Record<keyof EngineConfig, [number, number]> 
   w_far_first: [0, 1000],
   w_strict_window: [0, 1000],
   w_compactness: [0, 1000],
+  reference_top_k: [1, 10],
+  reference_half_life_days: [5, 365],
+  same_driver_multiplier: [1, 10],
+  reference_edge_floor: [0, 1],
+  w_habit: [0, 1000],
+  habit_shrink_n: [0, 50],
 };
+
+// NOTE: routing_calendar is NOT in ENGINE_CONFIG_BOUNDS — it is structured, not
+// numeric, and is validated by clampRoutingCalendar below.
 
 // PURE: defaults, each overridable by env (ROUTING_ENGINE_<UPPER_SNAKE>).
 export function engineConfigDefaults(env: Record<string, string | undefined> = process.env): EngineConfig {
@@ -153,6 +194,12 @@ export function engineConfigDefaults(env: Record<string, string | undefined> = p
     short_break_mi: num('SHORT_BREAK_MI', 3),
     long_break_mi: num('LONG_BREAK_MI', 10),
     big_m_min: num('BIG_M_MIN', 100_000),
+    // TUNING MEMORY (audit finding 6): 1500 / 10 / 1 are the winners' exact
+    // constants — but they tuned 1500 against a travel term in SECONDS, and
+    // ours is in MINUTES, so the penalty here is ~60× more order-dominant than
+    // in LKH-AMZ. That is INTENTIONAL for a shadow-similarity objective (obey
+    // the learned order; travel is the tie-breaker). If you ever retune,
+    // convert units first or you will be comparing apples to seconds.
     precedence_penalty: num('PRECEDENCE_PENALTY', 1),
     hierarchy_penalty: num('HIERARCHY_PENALTY', 10),
     penalty_multiplier: num('PENALTY_MULTIPLIER', 1500),
@@ -181,18 +228,94 @@ export function engineConfigDefaults(env: Record<string, string | undefined> = p
     w_far_first: num('W_FAR_FIRST', 1),
     w_strict_window: num('W_STRICT_WINDOW', 2),
     w_compactness: num('W_COMPACTNESS', 1),
+    // Phase 2.1
+    reference_top_k: num('REFERENCE_TOP_K', 5),
+    reference_half_life_days: num('REFERENCE_HALF_LIFE_DAYS', 45),
+    same_driver_multiplier: num('SAME_DRIVER_MULTIPLIER', 2.0),
+    reference_edge_floor: num('REFERENCE_EDGE_FLOOR', 0.2),
+    // w_habit > w_affinity by default: a strong CUSTOMER-level habit signal
+    // outranks the ZONE-level affinity signal (the brief's ordering).
+    w_habit: num('W_HABIT', 3),
+    habit_shrink_n: num('HABIT_SHRINK_N', 4),
+    routing_calendar: routingCalendarDefaults(env),
   };
 }
 
+// ── routing calendar (structured config) ─────────────────────────────────────
+
+export const DEFAULT_ROUTING_CALENDAR: RoutingCalendar = Object.freeze({
+  board_days: [1, 2, 3, 4, 5],        // Mon–Fri (Sunday=0)
+  window_start_local: '20:00',
+  window_end_local: '07:00',
+  timezone: 'America/New_York',
+});
+
+function routingCalendarDefaults(env: Record<string, string | undefined> = process.env): RoutingCalendar {
+  // Env override is a JSON blob (rarely used; the Firestore doc is the normal path).
+  try {
+    const raw = env.ROUTING_ENGINE_CALENDAR;
+    if (raw) return clampRoutingCalendar(JSON.parse(raw));
+  } catch { /* fall through to defaults */ }
+  return { ...DEFAULT_ROUTING_CALENDAR, board_days: [...DEFAULT_ROUTING_CALENDAR.board_days] };
+}
+
+const HHMM_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
+
+// PURE: validate/clamp a stored calendar fragment; anything invalid falls back
+// to the default field-by-field (same never-persist-garbage property as the
+// numeric clamp).
+export function clampRoutingCalendar(input: any): RoutingCalendar {
+  const d = DEFAULT_ROUTING_CALENDAR;
+  const out: RoutingCalendar = { board_days: [...d.board_days], window_start_local: d.window_start_local, window_end_local: d.window_end_local, timezone: d.timezone };
+  if (!input || typeof input !== 'object') return out;
+  if (Array.isArray(input.board_days)) {
+    const days = [...new Set(input.board_days.map((v: any) => Number(v)).filter((v: number) => Number.isInteger(v) && v >= 0 && v <= 6))].sort();
+    if (days.length) out.board_days = days as number[];
+  }
+  if (HHMM_RE.test(String(input.window_start_local ?? ''))) out.window_start_local = String(input.window_start_local);
+  if (HHMM_RE.test(String(input.window_end_local ?? ''))) out.window_end_local = String(input.window_end_local);
+  if (typeof input.timezone === 'string' && input.timezone.includes('/')) out.timezone = input.timezone;
+  return out;
+}
+
+// PURE: is `dateStr` (YYYY-MM-DD) a board day? Weekday of a calendar date is
+// timezone-independent (noon-UTC trick avoids DST edges). Sunday=0.
+export function isBoardDay(dateStr: string, calendar: RoutingCalendar = DEFAULT_ROUTING_CALENDAR): boolean {
+  const day = new Date(dateStr + 'T12:00:00Z').getUTCDay();
+  return calendar.board_days.includes(day);
+}
+
+// DERIVED LAW for future phases — see the routing_calendar comment above.
+// A job that reads the CURRENT day's plan (Assist proposal runs, plan
+// snapshots) must never run before the board is final: window_end_local
+// (07:00) plus a 30-minute settle = 07:30 ET on D. Nothing calls this today —
+// the nightly shadow reads D-1, which the calendar proves is always final —
+// but Phase 3 Assist MUST route current-day reads through this gate.
+export function planReadEarliestOkET(calendar: RoutingCalendar = DEFAULT_ROUTING_CALENDAR): string {
+  const [h, m] = calendar.window_end_local.split(':').map(Number);
+  const settled = h * 60 + m + 30;
+  return `${String(Math.floor(settled / 60)).padStart(2, '0')}:${String(settled % 60).padStart(2, '0')}`;
+}
+export function assertCurrentDayReadAllowed(nowLocalHHMM: string, calendar: RoutingCalendar = DEFAULT_ROUTING_CALENDAR): void {
+  const min = planReadEarliestOkET(calendar);
+  if (nowLocalHHMM < min) {
+    throw new Error(`current-day plan read before ${min} ${calendar.timezone} — the board is not final until ${calendar.window_end_local} (routing_calendar)`);
+  }
+}
+
 // PURE: clamp a stored/user config fragment to bounds; drop unknown/NaN keys.
+// routing_calendar (the one structured field) gets its own validator.
 export function clampEngineConfig(input: any): Partial<EngineConfig> {
   const out: Partial<EngineConfig> = {};
   if (!input || typeof input !== 'object') return out;
   for (const key of NUMERIC_KEYS) {
     const v = Number((input as any)[key]);
     if (!Number.isFinite(v)) continue;
-    const [lo, hi] = ENGINE_CONFIG_BOUNDS[key];
+    const [lo, hi] = ENGINE_CONFIG_BOUNDS[key as keyof typeof ENGINE_CONFIG_BOUNDS];
     (out as any)[key] = Math.min(hi, Math.max(lo, v));
+  }
+  if ((input as any).routing_calendar !== undefined) {
+    out.routing_calendar = clampRoutingCalendar((input as any).routing_calendar);
   }
   return out;
 }

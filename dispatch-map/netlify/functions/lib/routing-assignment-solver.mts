@@ -12,7 +12,9 @@
 //     equipment_restrictions ∩ the trailer-blocker set) may not go to a tractor
 //     driver. tractor_locations is POSITIVE capability and never restricts.
 //   • per-trip ceiling — a trip's weight may not exceed the driver's per-trip
-//     envelope p85 × hard_cap_factor (the physical ceiling proxy). Unknown
+//     envelope p85 × hard_cap_factor (the LEARNED BEHAVIORAL ceiling — the
+//     soft-max of the driver's observed practice, NOT truck GVWR/physics; a
+//     driver who never loaded heavy simply hasn't shown us more). Unknown
 //     envelope → no ceiling (can't enforce what we haven't observed).
 // SOFT costs (config-weighted): envelope over/under-load, zone-affinity misfit,
 // trips-count vs propensity, shift-hours overflow, far-first violation,
@@ -58,6 +60,16 @@ export interface AssignStop {
   strict: boolean;      // STRICT delivery window
   miles: number;        // distance-from-origin estimate
   blocksTractor: boolean;
+  // Phase 2.1: the customer's habitual driver as-of the plan date (< D), from
+  // routing_customer_drivers. Null when the customer has no delivered history.
+  habit?: { topDriver: string; topShare: number; n: number } | null;
+}
+
+// Habit signal strength: top_share shrunk toward 0 for thin history —
+// n/(n + habit_shrink_n), so 2 deliveries whisper and 20 speak plainly.
+export function habitStrength(habit: { topShare: number; n: number } | null | undefined, shrinkN: number): number {
+  if (!habit || !(habit.n > 0)) return 0;
+  return habit.topShare * (habit.n / (habit.n + Math.max(0, shrinkN)));
 }
 
 export interface AssignDriver {
@@ -159,6 +171,19 @@ export function shiftCost(
     for (const s of t.stops) misfit += 1 - (shift.driver.affinity.get(s.gh5) || 0);
     cost += cfg.w_affinity * (misfit / t.stops.length);
 
+    // Phase 2.1: customer-habit term. A stop whose HABITUAL driver (as-of < D)
+    // is someone else charges w_habit × strength per stop — customer-level
+    // signal, so it is NOT averaged like the zone-level affinity: one strongly
+    // habitual customer on the wrong truck outranks a mild zone misfit
+    // (w_habit ≥ w_affinity by default). Assigning to the habitual driver
+    // charges nothing (the "bonus" is the absence of this cost — keeps the
+    // objective non-negative for the local search).
+    for (const s of t.stops) {
+      if (!s.habit?.topDriver) continue;
+      if (shift.driver.driver_user_name && s.habit.topDriver === String(shift.driver.driver_user_name).toUpperCase()) continue;
+      cost += cfg.w_habit * habitStrength(s.habit, cfg.habit_shrink_n);
+    }
+
     const travel = tripTravelMin(t, depot, cfg, matrixCache);
     const service = tripServiceMin(t, serviceMedianFor);
     shiftActiveMin += travel + service;
@@ -236,16 +261,21 @@ export function solveAssignment(input: AssignInput): AssignResult {
   // headroom proxy: driver's day weight p85 minus current bag weight
   const bagWeight = (k: string) => (bag.get(k) || []).reduce((a, s) => a + s.weight, 0);
 
-  // greedy seed — weight-desc, best feasible driver by affinity + headroom
+  // greedy seed — weight-desc, best feasible driver by habit + affinity + headroom
   const seedStops = [...stops].sort((a, b) => (b.weight - a.weight) || a.id.localeCompare(b.id));
   for (const s of seedStops) {
     let best: AssignDriver | null = null, bestScore = -Infinity;
     for (const d of drivers) {
       if (!driverCanServe(d, s)) continue;
       const affinity = d.affinity.get(s.gh5) || 0;
+      // Phase 2.1: seed agrees with the search — the customer's habitual driver
+      // gets a head start proportional to the habit strength.
+      const habit = s.habit?.topDriver && d.driver_user_name &&
+        s.habit.topDriver === String(d.driver_user_name).toUpperCase()
+        ? habitStrength(s.habit, cfg.habit_shrink_n) : 0;
       const cap = d.envelope.day_weight_p85 ?? d.envelope.per_trip.weight_p85 ?? Infinity;
       const headroom = cap === Infinity ? 1 : Math.max(0, (cap - bagWeight(d.driver_key)) / (cap || 1));
-      const score = affinity * 2 + headroom + rand() * 1e-6; // deterministic jitter breaks ties
+      const score = habit * 3 + affinity * 2 + headroom + rand() * 1e-6; // deterministic jitter breaks ties
       if (score > bestScore) { bestScore = score; best = d; }
     }
     if (!best) { unassigned.push(s); continue; }

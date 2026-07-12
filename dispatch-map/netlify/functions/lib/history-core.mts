@@ -36,6 +36,7 @@ import { updateRoutingReferencesForDay } from './routing-reference.mts';
 import { finalizeCaptureSeal, recordCaptureFailure, type CaptureStage } from './history-seal.mts';
 import { updateDriverDaysForDay } from './routing-driver-days.mts';
 import { updateServiceTimesForDay } from './routing-service-times.mts';
+import { updateCustomerDriversForDay } from './routing-customer-drivers.mts';
 
 const TENANT = 'davis';
 // Keep in sync with src/App.jsx APP_VERSION. Stamped onto every manifest/capture
@@ -266,6 +267,11 @@ export async function captureDate(date: string): Promise<any> {
     await updateServiceTimesForDay(TENANT, date, stopRecords);
   } catch (e: any) {
     console.error(`service-times update failed for ${date}:`, e?.message);
+  }
+  try {
+    await updateCustomerDriversForDay(TENANT, date, stopRecords);
+  } catch (e: any) {
+    console.error(`customer-drivers update failed for ${date}:`, e?.message);
   }
 
   return { date, ok: true, verified: true, sealed: true, capture_version: version, counts, absent_kept: absentFromThisCapture.length };

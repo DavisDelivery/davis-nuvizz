@@ -54,7 +54,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.49.0';
+const APP_VERSION = '0.50.0';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -99,6 +99,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.50.0', 'ROUTING ENGINE 2.1 — audit fixes, the routing calendar, and driver habits. (1) The five-agent audit\'s accepted findings are in: the engine now learns each route\'s zone order from a WEIGHTED CONSENSUS of its top-5 most similar past routes (recency-decayed, a driver\'s own history counted double) instead of a single best neighbor — one weird old route can no longer mislead it, and a lone dissenter gets outvoted; the assignment shadow now uses each driver\'s TYPICAL start time (learned from history) instead of the day\'s actual clock-in, so it only knows what a planner would know; nightly scoring now waits for 14 days of reference history exactly like the replay; and the Engine tab\'s headline numbers are split guided vs unguided (sequencing) and known-driver vs fallback (assignment) so an untaught route never dilutes the real signal. (2) The REAL routing calendar is now config, not lore: dispatch builds overnight 20:00–07:00 ET, Sunday night builds Monday, no weekend boards — the engine idles cleanly on non-board days and holiday tombstones, and future Assist runs inherit the "never read today\'s plan before 07:30 ET" rule. (3) DRIVER HABITS: a new nightly miner tracks which driver usually delivers each customer; the stop panel now shows "Usually delivered by <name> — X of N deliveries" when the pattern is real, and the assignment engine prefers the habitual driver (customer-level signal outranks zone-level). Engine v2.1.0; still 100% shadow.'],
   ['0.49.0', 'ROUTING ENGINE — Phase 2, the ASSIGNMENT layer (still shadow). Phase 1 re-sequenced the loads dispatch built; Phase 2 builds the whole DAY PLAN. Given a board date\'s planned stops and the drivers who actually worked it, the engine assigns every stop to a driver-shift — a chain of 1..N trips through a Buford reload, split far-first (the bigger, farther load first, the close-in load second, the way our double-trippers actually run) — using capacity envelopes and zone affinities it learns per driver from our own history. It scores its plan against what dispatch actually built with the same crew: "stop agreement" (did the engine give the stop to the same driver?) and "co-load agreement" (of the stops dispatch put on one truck, how many did the engine keep together?) — reported separately so a miss is either a load-shape difference or a driver choice. The Engine tab gains a Sequencing | Assignment toggle; Assignment shows the agreement scoreboard, a learning-curve trend, a per-driver table (engine vs actual trips/stops/lbs), and a day map with Dispatch / Engine / Diff (one color per driver, trip 1 solid and later trips dashed, moved stops called out). SHADOW ONLY — it proposes and scores, changes nothing; Assist/Auto stay locked for Phase 3. Zero NuVizz calls, zero route-matrix calls; it reads only our warehouse + roster.'],
   ['0.48.0', 'WAREHOUSE HOLES — SEALED. The nightly history capture was intermittently writing a full day of stops but never the manifest that marks the day complete, so six fully-captured days (Jun 24, Jun 25, Jul 1, Jul 2, Jul 7, Jul 10) went invisible to everything that lists dates — the reference miner, the replay, the nightly engine all skipped them. Root cause: the capture\'s final "verify-by-readback then seal" step could withhold the manifest silently (a transient under-read of the just-written docs, or a seal write that failed) with no retry and no alarm, so the day sat orphaned forever. Fix: the seal is now RETRIED, and every capture run must end in exactly one of three visible states — a sealed manifest, a tombstone (a day with genuinely no board), or a LOUD failure record — never silence. New Diagnostics "Capture health" strip shows the trailing 21 days at a glance: sealed, healed, tombstoned, did-not-seal (with the reason), or a scheduled weekday that went missing. Recovery tools reseal the orphaned days from their stored stops (nothing fabricated — the same real checks must pass) and re-scan the truly-missing days, tombstoning the ones with no board. No customer-facing behavior change; this is warehouse integrity.'],
   ['0.47.0', 'THE LEARNED ROUTING ENGINE — Phase 1, shadow mode. Routing now has two tabs: Build (the existing beta) and the new ENGINE tab. Every night, the engine takes the routes dispatch actually built, re-sequences each one using constraints learned from our own route history (stops cluster into zones that stay together; the zone ORDER comes from the most similar past route; a penalty search keeps neighborhoods contiguous), and scores its sequence against the dispatcher\'s with the official Amazon/MIT routing-challenge metric — 0 means "routed it exactly like dispatch". The tab shows the scoreboard (routes scored, mean/median similarity, estimated travel delta, unguided count), a daily trend chart to watch it learn, a sortable per-route table, and a Dispatch / Engine / Diff map with a "what the engine moved" list. SHADOW ONLY: it proposes and scores, it changes NOTHING — no NuVizz calls anywhere in the engine (it feeds off the history warehouse), no Google route-matrix calls (distances are estimated), and Assist/Auto stay locked until Phase 2. Kill switch: ROUTING_ENGINE=off.'],
@@ -5191,6 +5192,39 @@ function StopNotesSection({ note, editing, setEditing, draft, setDraft, compact 
   );
 }
 
+// ── Driver habit line (routing engine Phase 2.1) ────────────────────────────
+// "Usually delivered by <name> — <count> of <n> deliveries", mined nightly into
+// routing_customer_drivers by the engine's habit miner from DELIVERED history.
+// One-shot Firestore read per opened stop (no snapshot — the collection is
+// large and this is a detail-panel nicety). Shown only when the habit is REAL:
+// top_share ≥ 0.5 and n ≥ 4.
+function useDriverHabit(matchKey) {
+  const [habit, setHabit] = useState(null);
+  useEffect(() => {
+    setHabit(null);
+    if (!db || !matchKey) return;
+    let alive = true;
+    const id = `davis__${String(matchKey).replace(/[^A-Za-z0-9_.-]/g, '_')}`;
+    getDoc(doc(db, 'routing_customer_drivers', id))
+      .then((snap) => { if (alive && snap.exists()) setHabit(snap.data()); })
+      .catch(() => { /* habit line is best-effort */ });
+    return () => { alive = false; };
+  }, [matchKey]);
+  return habit;
+}
+
+function UsualDriverLine({ matchKey }) {
+  const habit = useDriverHabit(matchKey);
+  if (!habit || !habit.top_driver || (habit.top_share ?? 0) < 0.5 || (habit.n_delivered ?? 0) < 4) return null;
+  const top = (habit.drivers || [])[0] || {};
+  const name = habit.top_driver_name || habit.top_driver;
+  return (
+    <span className="text-[11px] text-slate-600" title="From the routing engine's delivered-stop history (nightly habit miner)">
+      Usually delivered by <span className="font-semibold">{name}</span> — {top.count ?? '?'} of {habit.n_delivered} deliveries
+    </span>
+  );
+}
+
 function StopSidebar({ stop, note, onClose, onSave, saving, saveError, onOpenRoute, onMoveLocation, onEditAddress, onAutoFixAddress, onText, onTextDriver, onOpenHistory, drivers = [], mobile = false, side = 'right', embedded = false }) {
   const [draft, setDraft] = useState(() => note || emptyNote(stop));
   const [editing, setEditing] = useState(!note);
@@ -5254,6 +5288,7 @@ function StopSidebar({ stop, note, onClose, onSave, saving, saveError, onOpenRou
         <DnsBadge note={note} showDrivers />
         {sidebarDeliveredAt && <span className="text-[11px] text-slate-500">Delivered {sidebarDeliveredAt}</span>}
         {sidebarArrivedAt && <span className="text-[11px] text-slate-500">Arrived {sidebarArrivedAt}</span>}
+        <UsualDriverLine matchKey={stop.matchKey} />
       </div>
 
       <div className="overflow-y-auto flex-1">
@@ -15241,7 +15276,7 @@ function QuoteScreen() {
 // polling, and it changes NOTHING about live plan data (write-back is
 // Phase 2+, which is why Assist and Auto are visible but locked).
 
-const ENGINE_VERSION_FALLBACK = '1.0.0'; // display fallback until data loads (server stamps the real one)
+const ENGINE_VERSION_FALLBACK = '2.1.0'; // display fallback until data loads (server stamps the real one)
 
 const ENGINE_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 function engineMonthLabel(date) {
@@ -15555,10 +15590,12 @@ function EngineScreen() {
         {rollup && (
           <div className="flex gap-2 flex-wrap">
             <EngineStatTile label="Routes scored" value={rollup.routes_scored ?? '—'} hint={`${rollup.routes_skipped ?? 0} skipped by the miner rules`} />
-            <EngineStatTile label="Mean similarity" value={engineScoreFmt(rollup.mean_score)} hint="Official challenge score — 0 means the engine routed it exactly like dispatch" />
-            <EngineStatTile label="Median similarity" value={engineScoreFmt(rollup.median_score)} />
+            <EngineStatTile label="Guided mean" value={engineScoreFmt(rollup.mean_score_guided ?? null)} hint="Routes with a learned reference — the headline: 0 means the engine routed it exactly like dispatch" />
+            <EngineStatTile label="Unguided mean" value={engineScoreFmt(rollup.mean_score_unguided ?? null)} hint="Routes with NO similar historical reference (clustering + hierarchy only) — the engine had no teacher; read separately, never blended" />
+            <EngineStatTile label="Mean (all)" value={engineScoreFmt(rollup.mean_score)} hint="Blended mean across guided + unguided — kept for continuity with older scored days" />
+            <EngineStatTile label="Median (all)" value={engineScoreFmt(rollup.median_score)} />
             <EngineStatTile label="Travel Δ (engine − dispatch)" value={engineDeltaFmt(rollup.mean_travel_delta_min)} hint="Estimated minutes, same haversine model for both sequences — negative means the engine's order is shorter" />
-            <EngineStatTile label="Unguided" value={rollup.unguided_count ?? 0} hint="Routes with no similar historical reference (scored with clustering + hierarchy only)" />
+            <EngineStatTile label="Unguided" value={rollup.unguided_count ?? 0} hint="Count of routes with no similar historical reference" />
           </div>
         )}
 
@@ -15788,6 +15825,8 @@ function EngineAssignmentView({ google, mapsError }) {
       {rollup && (
         <div className="flex gap-2 flex-wrap">
           <EngineStatTile label="Stop agreement" value={rollup.stop_agreement_pct == null ? '—' : `${rollup.stop_agreement_pct}%`} hint="Share of stops the engine gave the SAME driver dispatch did (driver choice)" />
+          <EngineStatTile label="Agreement · known drivers" value={rollup.stop_agreement_known_pct == null ? '—' : `${rollup.stop_agreement_known_pct}%`} hint="Stops belonging to drivers the engine knows (envelope from their OWN history) — the headline segment" />
+          <EngineStatTile label="Agreement · fallback" value={rollup.stop_agreement_fallback_pct == null ? '—' : `${rollup.stop_agreement_fallback_pct}%`} hint="Stops of drivers scored on a class-level fallback envelope — the engine was guessing; read separately" />
           <EngineStatTile label="Co-load agreement" value={rollup.coload_agreement_pct == null ? '—' : `${rollup.coload_agreement_pct}%`} hint="Of the stop pairs dispatch co-loaded, the share the engine also co-loaded (load shape; label-symmetric)" />
           <EngineStatTile label="Co-load precision" value={rollup.coload_precision_pct == null ? '—' : `${rollup.coload_precision_pct}%`} hint="Of the engine's co-loads, the share dispatch also co-loaded" />
           <EngineStatTile label="Trips engine / actual" value={`${rollup.trips_engine ?? '—'} / ${rollup.trips_actual ?? '—'}`} />
