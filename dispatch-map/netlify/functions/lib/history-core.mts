@@ -24,17 +24,16 @@ import { scanDate } from './nuvizz-scan.mts';
 import { setCallTrigger } from './nuvizz-request.mts';
 import { isFirestoreEnabled, readStops } from './firestore.mts';
 import {
-  buildStopRecord, deriveRoutes, deriveDrivers, computeStopChecksum,
-  manifestCountsFromReadback, type CaptureMeta, type DeriveCtx,
+  buildStopRecord, deriveRoutes, deriveDrivers, type CaptureMeta, type DeriveCtx,
 } from './history-derive.mts';
 import {
-  getManifest, setManifest, listCaptures, appendCapture,
-  listStops, listRoutes, listDrivers,
+  listCaptures, appendCapture, listStops,
   upsertStops, upsertRoutes, upsertDrivers, upsertDriverDayPointer,
 } from './history-store.mts';
 import { updateCustomerRollupsForDay } from './history-customers.mts';
 import { updateTractorFlagsForDay } from './tractor-flags.mts';
 import { updateRoutingReferencesForDay } from './routing-reference.mts';
+import { finalizeCaptureSeal, recordCaptureFailure, type CaptureStage } from './history-seal.mts';
 
 const TENANT = 'davis';
 // Keep in sync with src/App.jsx APP_VERSION. Stamped onto every manifest/capture
@@ -110,6 +109,11 @@ export function resolveDates(req: Request): string[] {
 const LEAN_HISTORY = (process.env.NUVIZZ_LEAN_DISCOVERY || '').toLowerCase() === 'on';
 
 export async function captureDate(date: string): Promise<any> {
+  // Track how far we got so an unexpected throw lands a LOUD, correctly-staged
+  // failure record instead of a silent swallow by the background wrapper.
+  let stage: CaptureStage = 'scan';
+  let countsSoFar: any = null;
+  try {
   let stops: any[];
   let sourceScannedAt: string;
   let source: 'firestore-index' | 'scan' = 'scan';
@@ -141,8 +145,8 @@ export async function captureDate(date: string): Promise<any> {
   const plannedCount = stops.length - unplannedCount;
   const nonTerminal = stops.filter((s) => s && s.isPlanned && s.normalizedStatus !== 'DELIVERED').length;
   console.log(`[history] date=${date} source=${source} stops=${stops.length} planned=${plannedCount} nonTerminal=${nonTerminal} sourceScannedAt=${sourceScannedAt}`);
-  const checksum = computeStopChecksum(stops);
 
+  stage = 'derive';
   // capture_version increments per date.
   const existingCaptures = await listCaptures(TENANT, date);
   const version = existingCaptures.reduce((m, c) => Math.max(m, Number(c.capture_version) || 0), 0) + 1;
@@ -168,6 +172,7 @@ export async function captureDate(date: string): Promise<any> {
     .filter((id) => !newIds.has(id));
 
   // UPSERT — never prune.
+  stage = 'upsert';
   await upsertStops(TENANT, date, stopRecords);
   await upsertRoutes(TENANT, date, routeRecords);
   await upsertDrivers(TENANT, date, driverRecords);
@@ -178,55 +183,43 @@ export async function captureDate(date: string): Promise<any> {
       capture_version: version, captured_at: capture.captured_at,
     })));
 
-  // VERIFY-BY-READBACK — assert every intended doc is present (a re-capture may
-  // legitimately leave a superset behind, since the past is never pruned).
-  const [rbStops, rbRoutes, rbDrivers] = await Promise.all([
-    listStops(TENANT, date), listRoutes(TENANT, date), listDrivers(TENANT, date),
-  ]);
-  const present = (docs: any[], ids: Set<string>) => {
-    const have = new Set(docs.map((d) => String(d._id)));
-    return [...ids].every((id) => have.has(id));
-  };
-  const stopsOk = present(rbStops, newIds);
-  const routesOk = present(rbRoutes, new Set(routeRecords.map((r) => String(r.loadNbr))));
-  const driversOk = present(rbDrivers, new Set(driverRecords.map((r) => String(r.driverKey))));
-  const verified = stopsOk && routesOk && driversOk;
-
-  const counts = manifestCountsFromReadback(rbStops, rbRoutes, rbDrivers);
   const intended = {
     stops: stopRecords.length, planned: plannedCount, unplanned: unplannedCount,
     routes: routeRecords.length, drivers: driverRecords.length,
   };
+  countsSoFar = { intended };
 
-  // Append-only lineage — recorded for EVERY run, including failures.
+  // VERIFY-BY-READBACK + SEAL — the ONE shared terminal step (history-seal). It
+  // retries the readback (the historical orphan cause was a transient under-read,
+  // not a lost write), then EITHER seals the manifest + clears any prior failure
+  // record, OR writes a LOUD failure record. Never a silent no-manifest limbo.
+  stage = 'verify';
+  const sealRes = await finalizeCaptureSeal({
+    tenant: TENANT, date,
+    stopsForChecksum: stops,
+    stopRecords, routeRecords, driverRecords,
+    capture, absentKeptCount: absentFromThisCapture.length,
+  });
+  const { verified, sealed, counts, checksum } = sealRes;
+
+  // Append-only lineage — recorded for EVERY run, including failures. Written
+  // after the seal step so it carries the verified/sealed outcome + attempt count.
   await appendCapture(TENANT, date, version, {
     tenant: TENANT, date, capture_version: version,
     captured_at: capture.captured_at, app_version: APP_VERSION, source_scanned_at: sourceScannedAt,
-    checksum, intended, persisted: counts, verified,
-    verify_detail: { stopsOk, routesOk, driversOk },
+    checksum, intended, persisted: counts, verified, sealed,
+    verify_detail: sealRes.detail,
     absent_from_this_capture: absentFromThisCapture,
     absent_kept_count: absentFromThisCapture.length,
   });
 
-  if (!verified) {
-    console.error(`history capture VERIFY FAILED ${date} v${version}: ` +
-      JSON.stringify({ stopsOk, routesOk, driversOk, intended, persisted: counts }));
-    return { date, ok: false, verified: false, capture_version: version, intended, persisted: counts };
+  if (!verified || !sealed) {
+    // The failure record was already written by finalizeCaptureSeal (stage
+    // 'verify' or 'seal'); surface it in the run result too.
+    console.error(`history capture DID NOT SEAL ${date} v${version}: ` +
+      JSON.stringify({ verified, sealed, detail: sealRes.detail, persisted: counts }));
+    return { date, ok: false, verified, sealed, capture_version: version, intended, persisted: counts };
   }
-
-  // MANIFEST LAST — verified counts only.
-  await setManifest(TENANT, date, {
-    tenant: TENANT, date,
-    captured_at: capture.captured_at,
-    capture_version: version,
-    source_scanned_at: sourceScannedAt,
-    app_version: APP_VERSION,
-    counts,
-    checksum,
-    verified: true,
-    complete: true,
-    absent_kept_count: absentFromThisCapture.length,
-  });
 
   // Best-effort: keep the per-customer history rollup current from this day's
   // stops. Never let a rollup hiccup fail the warehouse capture (the warehouse
@@ -258,7 +251,14 @@ export async function captureDate(date: string): Promise<any> {
     console.error(`routing-reference update failed for ${date}:`, e?.message);
   }
 
-  return { date, ok: true, verified: true, capture_version: version, counts, absent_kept: absentFromThisCapture.length };
+  return { date, ok: true, verified: true, sealed: true, capture_version: version, counts, absent_kept: absentFromThisCapture.length };
+  } catch (e: any) {
+    // Any unexpected throw (scan/derive/upsert/append) — the day did NOT seal, so
+    // leave a LOUD, correctly-staged failure record before propagating. The seal
+    // step (stage 'verify'/'seal') records its own; this covers everything before it.
+    await recordCaptureFailure(TENANT, date, stage, e?.message || 'capture threw', countsSoFar);
+    throw e;
+  }
 }
 
 // ── HTTP / scheduled entrypoint ──────────────────────────────────────────────

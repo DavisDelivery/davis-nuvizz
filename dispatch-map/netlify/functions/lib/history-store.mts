@@ -22,6 +22,22 @@ export const DRIVER_DAYS_COLLECTION = 'history_driver_days';
 export function dayId(tenant: string, date: string): string {
   return `${tenant}__${date}`;
 }
+
+const MANIFEST_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+// PURE: the captured dates a manifest listing exposes — the exact set every
+// date-lister (reference miner, replay, nightly engine) keys off. A day is
+// "captured" iff its manifest doc exists at history_days/{tenant}__{date}; a
+// healed manifest is an ordinary manifest doc, so healing a day makes it appear
+// here automatically. Exported so that contract is unit-testable.
+export function capturedDatesFromManifests(manifestDocs: any[], tenant: string): string[] {
+  return (manifestDocs || [])
+    .map((m) => String(m?._id || ''))
+    .filter((id) => id.startsWith(`${tenant}__`))
+    .map((id) => id.slice(tenant.length + 2))
+    .filter((d) => MANIFEST_DATE_RE.test(d))
+    .sort();
+}
 export function dayPath(tenant: string, date: string): string {
   return `${HISTORY_COLLECTION}/${dayId(tenant, date)}`;
 }

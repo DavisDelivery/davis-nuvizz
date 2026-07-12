@@ -54,7 +54,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.47.0';
+const APP_VERSION = '0.48.0';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -99,6 +99,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.48.0', 'WAREHOUSE HOLES — SEALED. The nightly history capture was intermittently writing a full day of stops but never the manifest that marks the day complete, so six fully-captured days (Jun 24, Jun 25, Jul 1, Jul 2, Jul 7, Jul 10) went invisible to everything that lists dates — the reference miner, the replay, the nightly engine all skipped them. Root cause: the capture\'s final "verify-by-readback then seal" step could withhold the manifest silently (a transient under-read of the just-written docs, or a seal write that failed) with no retry and no alarm, so the day sat orphaned forever. Fix: the seal is now RETRIED, and every capture run must end in exactly one of three visible states — a sealed manifest, a tombstone (a day with genuinely no board), or a LOUD failure record — never silence. New Diagnostics "Capture health" strip shows the trailing 21 days at a glance: sealed, healed, tombstoned, did-not-seal (with the reason), or a scheduled weekday that went missing. Recovery tools reseal the orphaned days from their stored stops (nothing fabricated — the same real checks must pass) and re-scan the truly-missing days, tombstoning the ones with no board. No customer-facing behavior change; this is warehouse integrity.'],
   ['0.47.0', 'THE LEARNED ROUTING ENGINE — Phase 1, shadow mode. Routing now has two tabs: Build (the existing beta) and the new ENGINE tab. Every night, the engine takes the routes dispatch actually built, re-sequences each one using constraints learned from our own route history (stops cluster into zones that stay together; the zone ORDER comes from the most similar past route; a penalty search keeps neighborhoods contiguous), and scores its sequence against the dispatcher\'s with the official Amazon/MIT routing-challenge metric — 0 means "routed it exactly like dispatch". The tab shows the scoreboard (routes scored, mean/median similarity, estimated travel delta, unguided count), a daily trend chart to watch it learn, a sortable per-route table, and a Dispatch / Engine / Diff map with a "what the engine moved" list. SHADOW ONLY: it proposes and scores, it changes NOTHING — no NuVizz calls anywhere in the engine (it feeds off the history warehouse), no Google route-matrix calls (distances are estimated), and Assist/Auto stay locked until Phase 2. Kill switch: ROUTING_ENGINE=off.'],
   ['0.46.19', 'PLAN ONTO MY LOADS — the Routing (beta) build now plans straight onto the REAL loads you created in NuVizz. The left panel\'s step 2 is now "Plan onto" with two modes: "My loads" (new, the default) lists the day\'s roster — your ALPHA / ALPHA 2 / ATL / SUW / SUW 2 drafts, empties first with a search box — and you check off the loads to fill; Build then spreads your selected stops across EXACTLY those loads, one route per load, using each load\'s vehicle (a per-load Box/Trailer picker appears when checked; names with "trailer/53" default to the 53′ profile, and the green-only trailer rule still applies). The result shows each route under its LOAD NAME, and one tap — "Stage onto Compare cards" — opens every load\'s card with its planned stops staged (real load number attached, board stops kept, hand-reorders honored). Nothing touches NuVizz until you hit the cards\' normal Save — the same verified, journaled write path as always. The old truck-profile build is one tap away under "Trucks". Also: the Compare workbench now holds up to 6 cards (was 3) so a five-load build stages in one shot; loads with a duplicate name on the roster are shown but not pickable (identity is ambiguous — rename one in the portal), and a load that already holds stops can be picked to ADD to it.'],
   ['0.46.18', 'FIX: setting an AM/PM Delivery window on a customer that ALSO has receiving hours no longer hides the window on the map. The receiving-hours clock icon was taking over the pin and dropping the AM/PM tag entirely, so a "PM" window you set never showed. Now an AM/PM window overrides that clock — the pin shows the AM/PM tag (the window IS the receiving-time statement). Any other restriction icon (liftgate, no-tractor, appointment, closed-day) still shows as before. Applies to both the Map and Routing pins.'],
@@ -9606,6 +9607,7 @@ function DiagnosticsScreen({ stops, notes, ops, lastLoadScanAt, lastUnplannedSca
       </div>
 
       <ApiCallsPanel ops={ops} lastLoadScanAt={lastLoadScanAt} lastUnplannedScanAt={lastUnplannedScanAt} onRefresh={onRefresh} refreshing={refreshing} onScanNow={scanNow} scanning={scanning} />
+      <CaptureHealthPanel />
       <SchedulePanel onScanNow={scanNow} scanning={scanning} onSaved={onRefresh} />
 
       <details className="group">
@@ -9671,6 +9673,114 @@ function Placeholder({ count, hint }) {
       <Activity size={16} />
       <span>{count} {hint} · not implemented (see TODO)</span>
     </div>
+  );
+}
+
+// Capture health — trailing-21-day view of the nightly history warehouse seal.
+// Reads /.netlify/functions/history-capture-health (cheap: manifest list +
+// failure list, no stop scans). Surfaces holes the moment they happen: a day
+// whose stops captured but never sealed leaves a failure record (red), a
+// scheduled weekday with nothing at all reads as missing (amber), weekends Davis
+// doesn't run are idle (muted), and recovered days show as healed/tombstone.
+const CAPTURE_HEALTH_URL = '/.netlify/functions/history-capture-health';
+
+const CAPTURE_STATE_STYLE = {
+  sealed: { tone: 'green', cell: 'bg-emerald-500', label: 'Sealed' },
+  healed: { tone: 'green', cell: 'bg-teal-500', label: 'Healed' },
+  tombstone: { tone: 'slate', cell: 'bg-slate-400', label: 'Tombstone (no board)' },
+  failed: { tone: 'red', cell: 'bg-red-500', label: 'Did not seal' },
+  missing: { tone: 'amber', cell: 'bg-amber-400', label: 'Missing (scheduled, absent)' },
+  idle_weekend: { tone: 'slate', cell: 'bg-slate-200', label: 'Weekend (idle)' },
+};
+
+function CaptureHealthPanel() {
+  const [data, setData] = useState(null);
+  const [err, setErr] = useState('');
+  const [loading, setLoading] = useState(true);
+
+  const load = useCallback(() => {
+    setLoading(true); setErr('');
+    fetch(CAPTURE_HEALTH_URL, { cache: 'no-store' })
+      .then((r) => r.json())
+      .then((d) => { if (!d?.ok) throw new Error(d?.error || 'unavailable'); setData(d); })
+      .catch((e) => setErr(String(e?.message || e)))
+      .finally(() => setLoading(false));
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  const days = data?.days || [];
+  const attention = days.filter((d) => d.state === 'failed' || d.state === 'missing');
+  const recovered = days.filter((d) => d.state === 'healed' || d.state === 'tombstone');
+  const s = data?.summary || {};
+
+  return (
+    <Panel
+      title="Capture health"
+      action={
+        <button onClick={load} disabled={loading}
+          className="text-[11px] font-semibold px-2 py-1 rounded border border-slate-300 text-slate-600 bg-white hover:bg-slate-50 disabled:opacity-50">
+          {loading ? 'Loading…' : 'Refresh'}
+        </button>
+      }
+    >
+      {err && <div className="text-xs text-red-600">⚠ {err}</div>}
+      {!err && !data && <div className="text-xs text-slate-500">Loading capture health…</div>}
+      {data && (
+        <div className="space-y-3">
+          <div className="text-[11px] text-slate-500">
+            Nightly warehouse seal · {data.window?.from ? `${engineDateFmt(data.window.from)} – ${engineDateFmt(data.window.to)}` : `${data.window?.days || 21} days`}
+          </div>
+
+          {/* one cell per day — a compact heatmap strip */}
+          <div className="flex flex-wrap gap-1" role="img" aria-label="Capture seal state per day">
+            {days.map((d) => {
+              const st = CAPTURE_STATE_STYLE[d.state] || CAPTURE_STATE_STYLE.idle_weekend;
+              const extra = d.detail?.stage ? ` · ${d.detail.stage}` : d.detail?.counts?.stops != null ? ` · ${d.detail.counts.stops} stops` : d.detail?.reason ? ` · ${d.detail.reason}` : '';
+              return (
+                <div key={d.date} title={`${engineDateFmt(d.date)} — ${st.label}${extra}`}
+                  className={`h-5 w-5 rounded-sm ${st.cell}`} />
+              );
+            })}
+          </div>
+
+          {/* summary badges */}
+          <div className="flex flex-wrap gap-1.5">
+            {s.sealed ? <MiniBadge tone="green">{s.sealed} sealed</MiniBadge> : null}
+            {s.healed ? <MiniBadge tone="green">{s.healed} healed</MiniBadge> : null}
+            {s.tombstone ? <MiniBadge tone="slate">{s.tombstone} tombstone</MiniBadge> : null}
+            {s.failed ? <MiniBadge tone="red">{s.failed} did not seal</MiniBadge> : null}
+            {s.missing ? <MiniBadge tone="amber">{s.missing} missing</MiniBadge> : null}
+            {s.idle_weekend ? <MiniBadge tone="slate">{s.idle_weekend} weekend</MiniBadge> : null}
+          </div>
+
+          {/* the holes that need attention */}
+          {attention.length > 0 ? (
+            <div className="space-y-1">
+              {attention.map((d) => (
+                <div key={d.date} className="flex items-start gap-2 text-[12px]">
+                  <span className={`mt-1 h-2 w-2 rounded-full shrink-0 ${d.state === 'failed' ? 'bg-red-500' : 'bg-amber-400'}`} />
+                  <span className="text-slate-700">
+                    <span className="font-semibold">{engineDateFmt(d.date)}</span>
+                    {' — '}
+                    {d.state === 'failed'
+                      ? <>did not seal{d.detail?.stage ? ` at ${d.detail.stage}` : ''}{d.detail?.error ? `: ${d.detail.error}` : ''}</>
+                      : <>scheduled weekday with no capture</>}
+                  </span>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="text-[12px] text-emerald-700">No holes — every scheduled day in the window is sealed.</div>
+          )}
+
+          {recovered.length > 0 && (
+            <div className="text-[11px] text-slate-500">
+              Recovered: {recovered.map((d) => `${engineDateFmt(d.date)} (${d.state})`).join(' · ')}
+            </div>
+          )}
+        </div>
+      )}
+    </Panel>
   );
 }
 

@@ -14,7 +14,7 @@
 //     ?date=YYYY-MM-DD                → single day
 //     ?from=YYYY-MM-DD&to=YYYY-MM-DD  → inclusive range
 import { isFirestoreEnabled, listDocs } from './lib/firestore.mts';
-import { HISTORY_COLLECTION, listStops } from './lib/history-store.mts';
+import { HISTORY_COLLECTION, listStops, capturedDatesFromManifests } from './lib/history-store.mts';
 import { loadEngineConfig } from './lib/routing-engine-config.mts';
 import { extractReferenceRoutes, writeReferenceRoutes } from './lib/routing-reference.mts';
 import { loadVehicleRoster, vehicleTypeForStop } from './lib/tractor-flags.mts';
@@ -23,15 +23,9 @@ const TENANT = 'davis';
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 // Every captured date = the day partitions present in history_days (manifest
-// doc ids are `{tenant}__{date}`). Firestore-only enumeration, no NuVizz.
+// doc ids are `{tenant}__{date}`), including healed days. Firestore-only, no NuVizz.
 async function listCapturedDates(): Promise<string[]> {
-  const manifests = await listDocs(HISTORY_COLLECTION);
-  return manifests
-    .map((m) => String(m?._id || ''))
-    .filter((id) => id.startsWith(`${TENANT}__`))
-    .map((id) => id.slice(TENANT.length + 2))
-    .filter((d) => DATE_RE.test(d))
-    .sort();
+  return capturedDatesFromManifests(await listDocs(HISTORY_COLLECTION), TENANT);
 }
 
 export default async (req: Request): Promise<Response> => {

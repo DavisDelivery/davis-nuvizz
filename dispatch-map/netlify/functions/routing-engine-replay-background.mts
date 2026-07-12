@@ -24,7 +24,7 @@
 //     ?from=YYYY-MM-DD&to=YYYY-MM-DD  → inclusive range
 //     ?force=1                        → rescore even at the current version
 import { isFirestoreEnabled, listDocs } from './lib/firestore.mts';
-import { HISTORY_COLLECTION } from './lib/history-store.mts';
+import { HISTORY_COLLECTION, capturedDatesFromManifests } from './lib/history-store.mts';
 import { ENGINE_VERSION, loadEngineConfig } from './lib/routing-engine-config.mts';
 import { REFERENCE_ROUTES_COLLECTION, type ReferenceRouteDoc } from './lib/routing-reference.mts';
 import { runShadowForDate } from './lib/routing-engine-core.mts';
@@ -36,13 +36,7 @@ const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const TIME_BUDGET_MS = 12 * 60 * 1000;
 
 async function listCapturedDates(): Promise<string[]> {
-  const manifests = await listDocs(HISTORY_COLLECTION);
-  return manifests
-    .map((m) => String(m?._id || ''))
-    .filter((id) => id.startsWith(`${TENANT}__`))
-    .map((id) => id.slice(TENANT.length + 2))
-    .filter((d) => DATE_RE.test(d))
-    .sort();
+  return capturedDatesFromManifests(await listDocs(HISTORY_COLLECTION), TENANT);
 }
 
 export default async (req: Request): Promise<Response> => {
