@@ -54,7 +54,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.46.19';
+const APP_VERSION = '0.47.0';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -99,6 +99,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.47.0', 'THE LEARNED ROUTING ENGINE — Phase 1, shadow mode. Routing now has two tabs: Build (the existing beta) and the new ENGINE tab. Every night, the engine takes the routes dispatch actually built, re-sequences each one using constraints learned from our own route history (stops cluster into zones that stay together; the zone ORDER comes from the most similar past route; a penalty search keeps neighborhoods contiguous), and scores its sequence against the dispatcher\'s with the official Amazon/MIT routing-challenge metric — 0 means "routed it exactly like dispatch". The tab shows the scoreboard (routes scored, mean/median similarity, estimated travel delta, unguided count), a daily trend chart to watch it learn, a sortable per-route table, and a Dispatch / Engine / Diff map with a "what the engine moved" list. SHADOW ONLY: it proposes and scores, it changes NOTHING — no NuVizz calls anywhere in the engine (it feeds off the history warehouse), no Google route-matrix calls (distances are estimated), and Assist/Auto stay locked until Phase 2. Kill switch: ROUTING_ENGINE=off.'],
   ['0.46.19', 'PLAN ONTO MY LOADS — the Routing (beta) build now plans straight onto the REAL loads you created in NuVizz. The left panel\'s step 2 is now "Plan onto" with two modes: "My loads" (new, the default) lists the day\'s roster — your ALPHA / ALPHA 2 / ATL / SUW / SUW 2 drafts, empties first with a search box — and you check off the loads to fill; Build then spreads your selected stops across EXACTLY those loads, one route per load, using each load\'s vehicle (a per-load Box/Trailer picker appears when checked; names with "trailer/53" default to the 53′ profile, and the green-only trailer rule still applies). The result shows each route under its LOAD NAME, and one tap — "Stage onto Compare cards" — opens every load\'s card with its planned stops staged (real load number attached, board stops kept, hand-reorders honored). Nothing touches NuVizz until you hit the cards\' normal Save — the same verified, journaled write path as always. The old truck-profile build is one tap away under "Trucks". Also: the Compare workbench now holds up to 6 cards (was 3) so a five-load build stages in one shot; loads with a duplicate name on the roster are shown but not pickable (identity is ambiguous — rename one in the portal), and a load that already holds stops can be picked to ADD to it.'],
   ['0.46.18', 'FIX: setting an AM/PM Delivery window on a customer that ALSO has receiving hours no longer hides the window on the map. The receiving-hours clock icon was taking over the pin and dropping the AM/PM tag entirely, so a "PM" window you set never showed. Now an AM/PM window overrides that clock — the pin shows the AM/PM tag (the window IS the receiving-time statement). Any other restriction icon (liftgate, no-tractor, appointment, closed-day) still shows as before. Applies to both the Map and Routing pins.'],
   ['0.46.17', 'TEST ARMOR (no behavior change). The three heavy test rigs promised in the v0.46.12 audit release are in — 23 new tests, suite now 706. (1) The server-side board write-through now runs END-TO-END in tests against a fake Firestore: pinned forever are the lowercase board tree (the v0.46.10 phantom-tree fix), stamping YOUR board date (v0.46.11), ghost removals never stamping, a batch-planned stop never being stamped unplanned by its own save, the hex-id-never-a-route-name guard, the 62-day carry-over rescue healing old rows in place, boardSync reporting every miss by name, and an unverified save never touching the board. (2) The scan\'s demotion policy (the "list says unplanned but the load still holds it" defense) is extracted into a factory and unit-tested: terminal rows always demote, one memoized load read covers a whole route, ambiguous same-named loads can\'t demote each other\'s stops, a roster failure holds rather than guesses, zero-padding can\'t fake a removal, and over-budget checks hold instead of demoting. (3) The carry-over fold is unit-tested with an injected clock: unplanned orders fold with their home day remembered, delivered/cancelled work never folds, a fresh confirmed Save folds (and replaces a stale-unplanned row in place) while stamps older than 48h age out, the live-set prune only trusts a fresh snapshot, and duplicates dedupe to the nearest day.'],
@@ -15117,6 +15118,432 @@ function QuoteScreen() {
   );
 }
 
+// ---------- Routing → Engine tab (learned routing engine, Phase 1 shadow) ----------
+//
+// SHADOW ONLY. Every night the engine re-sequences the routes dispatch
+// actually built (constraints learned from our own route history), scores its
+// sequence against the dispatcher's with the official Amazon/MIT challenge
+// metric (0 = routed it exactly like dispatch), and this tab shows the
+// results: scoreboard, learning-curve trend, per-route table, and a
+// Dispatch / Engine / Diff map. It reads route_proposals +
+// route_proposals_daily through one read-only endpoint — no NuVizz calls, no
+// polling, and it changes NOTHING about live plan data (write-back is
+// Phase 2+, which is why Assist and Auto are visible but locked).
+
+const ENGINE_VERSION_FALLBACK = '1.0.0'; // display fallback until data loads (server stamps the real one)
+
+const ENGINE_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+function engineMonthLabel(date) {
+  // 'YYYY-MM-DD' → "Jul '26" — pure string math, no Date parsing (no TZ shift).
+  return `${ENGINE_MONTHS[Number(date.slice(5, 7)) - 1]} '${date.slice(2, 4)}`;
+}
+function engineScoreFmt(v) {
+  return v == null || Number.isNaN(Number(v)) ? '—' : Number(v).toFixed(3);
+}
+function engineDeltaFmt(v) {
+  if (v == null || Number.isNaN(Number(v))) return '—';
+  const n = Number(v);
+  return `${n > 0 ? '+' : ''}${n.toFixed(1)}m`;
+}
+function engineDateFmt(date) {
+  // 'YYYY-MM-DD' → "Jul 10, 2026" (house rule: month-name dates, no TZ parsing)
+  if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return date || '—';
+  return `${ENGINE_MONTHS[Number(date.slice(5, 7)) - 1]} ${Number(date.slice(8, 10))}, ${date.slice(0, 4)}`;
+}
+
+// Daily mean + median trend — the watch-it-learn instrument. Hand-rolled SVG
+// (house style: no chart lib), evenly spaced by scored day, month labels on
+// the axis, dots carry the exact values as tooltips.
+function EngineTrendChart({ days }) {
+  const W = 640, H = 170, PAD_L = 34, PAD_R = 8, PAD_T = 10, PAD_B = 22;
+  const pts = (days || []).filter((d) => d.mean_score != null);
+  if (pts.length < 2) {
+    return <div className="h-[120px] flex items-center justify-center text-xs text-slate-400">Not enough scored days yet — the trend appears after the historical replay runs.</div>;
+  }
+  const maxY = Math.max(0.05, ...pts.map((d) => Math.max(d.mean_score ?? 0, d.median_score ?? 0))) * 1.1;
+  const x = (i) => PAD_L + (i * (W - PAD_L - PAD_R)) / (pts.length - 1);
+  const y = (v) => PAD_T + (H - PAD_T - PAD_B) * (1 - v / maxY);
+  const line = (key) => pts.map((d, i) => `${x(i).toFixed(1)},${y(d[key] ?? 0).toFixed(1)}`).join(' ');
+  // one axis label per month, at that month's first scored day
+  const monthTicks = [];
+  let lastMonth = '';
+  pts.forEach((d, i) => {
+    const m = d.date.slice(0, 7);
+    if (m !== lastMonth) { monthTicks.push({ i, label: engineMonthLabel(d.date) }); lastMonth = m; }
+  });
+  const gridVals = [0, maxY / 2, maxY];
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-auto" role="img" aria-label="Daily engine score trend">
+      {gridVals.map((v, k) => (
+        <g key={k}>
+          <line x1={PAD_L} y1={y(v)} x2={W - PAD_R} y2={y(v)} stroke="#e2e8f0" strokeWidth="1" />
+          <text x={PAD_L - 4} y={y(v) + 3} fontSize="9" fill="#94a3b8" textAnchor="end">{v.toFixed(2)}</text>
+        </g>
+      ))}
+      {monthTicks.map((t) => (
+        <text key={t.i} x={x(t.i)} y={H - 6} fontSize="9" fill="#64748b" textAnchor={t.i === 0 ? 'start' : x(t.i) > W - 30 ? 'end' : 'middle'}>{t.label}</text>
+      ))}
+      <polyline points={line('median_score')} fill="none" stroke="#94a3b8" strokeWidth="1.5" strokeDasharray="4 3" />
+      <polyline points={line('mean_score')} fill="none" stroke={BRAND} strokeWidth="2" />
+      {pts.map((d, i) => (
+        <circle key={d.date} cx={x(i)} cy={y(d.mean_score ?? 0)} r="2.4" fill={BRAND}>
+          <title>{`${d.date} — mean ${engineScoreFmt(d.mean_score)}, median ${engineScoreFmt(d.median_score)}, ${d.routes_scored} routes`}</title>
+        </circle>
+      ))}
+      <g fontSize="9">
+        <line x1={W - 150} y1={12} x2={W - 132} y2={12} stroke={BRAND} strokeWidth="2" />
+        <text x={W - 128} y={15} fill="#475569">mean</text>
+        <line x1={W - 92} y1={12} x2={W - 74} y2={12} stroke="#94a3b8" strokeWidth="1.5" strokeDasharray="4 3" />
+        <text x={W - 70} y={15} fill="#475569">median</text>
+      </g>
+    </svg>
+  );
+}
+
+// The three-way mode switch. Shadow is live; Assist and Auto ship with
+// Phase 2 (assignment layer + write-back) and are rendered but locked.
+function EngineModeSwitch() {
+  const modes = [
+    { id: 'shadow', label: 'Shadow', enabled: true },
+    { id: 'assist', label: 'Assist', enabled: false },
+    { id: 'auto', label: 'Auto', enabled: false },
+  ];
+  return (
+    <div className="flex items-center rounded-lg border border-slate-200 overflow-hidden text-[11px] font-semibold">
+      {modes.map((m) => m.enabled ? (
+        <button key={m.id} className="px-2.5 py-1 text-white" style={{ background: BRAND }} title="Shadow mode — the engine proposes and scores; it changes nothing.">
+          {m.label}
+        </button>
+      ) : (
+        <button key={m.id} disabled className="px-2.5 py-1 text-slate-400 bg-slate-50 cursor-not-allowed inline-flex items-center gap-1" title={`${m.label} arrives with Phase 2 (write-back). Shadow only for now.`}>
+          {m.label}
+          <span className="text-[8px] uppercase tracking-wide bg-slate-200 text-slate-500 px-1 rounded">P2</span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function EngineStatTile({ label, value, hint }) {
+  return (
+    <div className="border rounded-lg bg-white px-3 py-2 min-w-[108px]" title={hint || ''}>
+      <div className="text-[10px] uppercase tracking-wide text-slate-500">{label}</div>
+      <div className="text-lg font-bold text-slate-800 tabular-nums">{value}</div>
+    </div>
+  );
+}
+
+function EngineScreen() {
+  const { google, error: mapsError } = useGoogleMaps();
+  const [daily, setDaily] = useState(null);
+  const [dailyErr, setDailyErr] = useState('');
+  const [date, setDate] = useState('');
+  const [day, setDay] = useState(null);
+  const [dayLoading, setDayLoading] = useState(false);
+  const [dayErr, setDayErr] = useState('');
+  const [selectedKey, setSelectedKey] = useState(null);
+  const [mapMode, setMapMode] = useState('diff'); // 'dispatch' | 'engine' | 'diff'
+
+  const days = daily?.days || [];
+  const latestDate = days.length ? days[days.length - 1].date : '';
+  const engineVersion = daily?.engine_version || ENGINE_VERSION_FALLBACK;
+
+  useEffect(() => {
+    fetchJsonWithRetry('/.netlify/functions/routing-engine-data?view=daily')
+      .then((d) => {
+        if (!d?.ok) throw new Error(d?.error || 'engine data unavailable');
+        setDaily(d);
+        const ds = d.days || [];
+        if (ds.length) setDate(ds[ds.length - 1].date);
+      })
+      .catch((e) => setDailyErr(String(e?.message || e)));
+  }, []);
+
+  useEffect(() => {
+    if (!date) return;
+    let alive = true;
+    setDayLoading(true); setDayErr(''); setDay(null); setSelectedKey(null);
+    fetchJsonWithRetry(`/.netlify/functions/routing-engine-data?view=day&date=${date}`)
+      .then((d) => {
+        if (!alive) return;
+        if (!d?.ok) throw new Error(d?.error || 'day load failed');
+        setDay(d);
+        if (d.routes?.length) setSelectedKey(d.routes[0].load_key);
+      })
+      .catch((e) => { if (alive) setDayErr(String(e?.message || e)); })
+      .finally(() => { if (alive) setDayLoading(false); });
+    return () => { alive = false; };
+  }, [date]);
+
+  const rollup = day?.rollup || null;
+  const routes = day?.routes || [];
+  const selected = routes.find((r) => r.load_key === selectedKey) || null;
+
+  // sortable routes table
+  const tableRows = useMemo(() => routes.map((r) => ({
+    load_key: r.load_key,
+    driver: r.driver_name || r.driver_user_name || '—',
+    truck_class: r.truck_class || '—',
+    stops: r.stop_count,
+    zones: r.zones_count,
+    score: r.score,
+    delta: Math.round(((r.travel_min_proposed_est ?? 0) - (r.travel_min_actual_est ?? 0)) * 10) / 10,
+    guided: r.unguided ? 'Unguided' : 'Guided',
+    reference_date: r.reference_date || '—',
+  })), [routes]);
+  const { sorted: sortedRows, sortKey, sortDir, toggle } = useSortable(tableRows, 'score', 'desc');
+
+  // moved stops for the Diff side list (position shifted by more than 2)
+  const movedStops = useMemo(() => {
+    if (!selected) return [];
+    return (selected.stops || [])
+      .filter((s) => s.proposed_pos != null && Math.abs(s.actual_pos - s.proposed_pos) > 2)
+      .sort((a, b) => Math.abs(b.actual_pos - b.proposed_pos) - Math.abs(a.actual_pos - a.proposed_pos));
+  }, [selected]);
+  const movedSet = useMemo(() => new Set(movedStops.map((s) => s.pro)), [movedStops]);
+
+  // ── map ──
+  const mapDiv = useRef(null);
+  const mapRef = useRef(null);
+  const [mapReady, setMapReady] = useState(0);
+  const markersRef = useRef([]);
+  const linesRef = useRef([]);
+
+  useEffect(() => {
+    if (!google || !mapDiv.current || mapRef.current) return;
+    mapRef.current = new google.maps.Map(mapDiv.current, {
+      center: ROUTING_DEPOT, zoom: 9, mapTypeControl: false, streetViewControl: false, fullscreenControl: false,
+      gestureHandling: 'greedy',
+      ...(MAP_ID ? { mapId: MAP_ID } : {}),
+    });
+    setMapReady((n) => n + 1);
+  }, [google]);
+
+  useEffect(() => {
+    if (!google || !mapRef.current) return;
+    markersRef.current.forEach((m) => m.setMap(null));
+    linesRef.current.forEach((l) => l.setMap(null));
+    markersRef.current = []; linesRef.current = [];
+    if (!selected) return;
+
+    const stops = (selected.stops || []).filter((s) => s.lat != null && s.lng != null);
+    if (!stops.length) return;
+    const byActual = [...stops].sort((a, b) => a.actual_pos - b.actual_pos);
+    const byProposed = [...stops].filter((s) => s.proposed_pos != null).sort((a, b) => a.proposed_pos - b.proposed_pos);
+    const depotPt = { lat: ROUTING_DEPOT.lat, lng: ROUTING_DEPOT.lng };
+    const path = (ordered) => [depotPt, ...ordered.map((s) => ({ lat: s.lat, lng: s.lng }))];
+
+    const DISPATCH_COLOR = '#64748b';
+    const ENGINE_COLOR = BRAND;
+    const MOVED_COLOR = '#d97706';
+
+    const addLine = (ordered, color, weight, opacity, z) => {
+      const pl = new google.maps.Polyline({ path: path(ordered), strokeColor: color, strokeWeight: weight, strokeOpacity: opacity, zIndex: z });
+      pl.setMap(mapRef.current);
+      linesRef.current.push(pl);
+    };
+    const addPins = (ordered, posOf, colorOf) => {
+      for (const s of ordered) {
+        const mk = new google.maps.Marker({
+          position: { lat: s.lat, lng: s.lng },
+          map: mapRef.current,
+          icon: {
+            url: pinSvgStatus(colorOf(s), { label: String(posOf(s)) }),
+            scaledSize: new google.maps.Size(30, 39),
+            anchor: new google.maps.Point(15, 37),
+          },
+          title: `${s.businessName || s.pro} — dispatch #${s.actual_pos}${s.proposed_pos != null ? `, engine #${s.proposed_pos}` : ''}`,
+          zIndex: 20,
+        });
+        markersRef.current.push(mk);
+      }
+    };
+
+    if (mapMode === 'dispatch') {
+      addLine(byActual, DISPATCH_COLOR, 3, 0.9, 5);
+      addPins(byActual, (s) => s.actual_pos, () => DISPATCH_COLOR);
+    } else if (mapMode === 'engine') {
+      addLine(byProposed, ENGINE_COLOR, 3, 0.9, 5);
+      addPins(byProposed, (s) => s.proposed_pos, () => ENGINE_COLOR);
+    } else {
+      // Diff: dispatch muted underneath, engine bold on top; pins numbered by the
+      // ENGINE order, stops the engine moved by >2 positions in amber.
+      addLine(byActual, DISPATCH_COLOR, 2.5, 0.45, 4);
+      addLine(byProposed, ENGINE_COLOR, 4, 0.9, 6);
+      addPins(byProposed, (s) => s.proposed_pos, (s) => (movedSet.has(s.pro) ? MOVED_COLOR : ENGINE_COLOR));
+    }
+
+    const bounds = new google.maps.LatLngBounds();
+    bounds.extend(depotPt);
+    for (const s of stops) bounds.extend({ lat: s.lat, lng: s.lng });
+    mapRef.current.fitBounds(bounds, 40);
+  }, [google, mapReady, selected, mapMode, movedSet]);
+
+  const mapModeBtn = (id, label) => (
+    <button
+      key={id}
+      onClick={() => setMapMode(id)}
+      className={`px-2 py-1 text-[11px] font-semibold rounded ${mapMode === id ? 'text-white' : 'text-slate-600 bg-white border border-slate-200 hover:bg-slate-50'}`}
+      style={mapMode === id ? { background: BRAND } : {}}
+    >{label}</button>
+  );
+
+  return (
+    <div className="flex-1 min-h-0 overflow-y-auto bg-slate-50">
+      <div className="max-w-[1400px] mx-auto p-3 space-y-3 text-sm">
+        {/* header */}
+        <div className="flex items-center justify-between gap-2 flex-wrap">
+          <div className="flex items-center gap-2 flex-wrap">
+            <div className="font-bold text-slate-800">Engine <span className="text-[10px] uppercase tracking-wide bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded">shadow</span></div>
+            <EngineModeSwitch />
+          </div>
+          <div className="flex items-center gap-2 flex-wrap">
+            <input
+              type="date"
+              value={date}
+              onChange={(e) => { if (e.target.value) setDate(e.target.value); }}
+              className="text-xs border border-slate-300 rounded px-1.5 py-1 focus:outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-400"
+              aria-label="Select scored date"
+            />
+            {date !== latestDate && latestDate && (
+              <button
+                onClick={() => setDate(latestDate)}
+                className="text-[10px] font-semibold py-1 px-2 rounded border border-blue-300 text-blue-700 bg-white hover:bg-blue-50 whitespace-nowrap"
+                title="Jump to the most recent scored date"
+              >Latest</button>
+            )}
+            <span className="text-[10px] text-slate-500 whitespace-nowrap">Engine v{engineVersion} · App v{APP_VERSION}</span>
+          </div>
+        </div>
+
+        {dailyErr && <div className="text-xs text-red-600 border border-red-200 bg-red-50 rounded p-2">⚠ {dailyErr}</div>}
+        {!daily && !dailyErr && <div className="text-xs text-slate-500">Loading engine history…</div>}
+        {daily && !days.length && (
+          <div className="text-xs text-slate-600 border rounded bg-white p-3">
+            No scored dates yet. Run the reference backfill, then the historical replay (routing-engine-replay-background) — the trend fills in from there and the nightly shadow keeps it current.
+          </div>
+        )}
+
+        {/* scoreboard for the selected date */}
+        {rollup && (
+          <div className="flex gap-2 flex-wrap">
+            <EngineStatTile label="Routes scored" value={rollup.routes_scored ?? '—'} hint={`${rollup.routes_skipped ?? 0} skipped by the miner rules`} />
+            <EngineStatTile label="Mean similarity" value={engineScoreFmt(rollup.mean_score)} hint="Official challenge score — 0 means the engine routed it exactly like dispatch" />
+            <EngineStatTile label="Median similarity" value={engineScoreFmt(rollup.median_score)} />
+            <EngineStatTile label="Travel Δ (engine − dispatch)" value={engineDeltaFmt(rollup.mean_travel_delta_min)} hint="Estimated minutes, same haversine model for both sequences — negative means the engine's order is shorter" />
+            <EngineStatTile label="Unguided" value={rollup.unguided_count ?? 0} hint="Routes with no similar historical reference (scored with clustering + hierarchy only)" />
+          </div>
+        )}
+
+        {/* trend */}
+        <div className="border rounded-lg bg-white p-2">
+          <div className="text-[11px] font-semibold text-slate-600 px-1 pb-1">Daily similarity — watching the engine learn (lower is closer to dispatch)</div>
+          <EngineTrendChart days={days} />
+        </div>
+
+        {/* routes table + map */}
+        <div className="flex flex-col xl:flex-row gap-3 items-stretch">
+          <div className="xl:w-[54%] border rounded-lg bg-white overflow-hidden flex flex-col">
+            <div className="text-[11px] font-semibold text-slate-600 px-3 pt-2 pb-1">
+              Routes {date ? `— ${formatDateLong(date)}` : ''}{dayLoading ? ' · loading…' : ''}{dayErr ? ` · ⚠ ${dayErr}` : ''}
+            </div>
+            <div className="overflow-x-auto overflow-y-auto max-h-[420px]">
+              <table className="w-full text-xs">
+                <thead className="bg-slate-50 sticky top-0">
+                  <tr>
+                    <SortableTh label="Route / load" k="load_key" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />
+                    <SortableTh label="Driver" k="driver" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />
+                    <SortableTh label="Class" k="truck_class" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />
+                    <SortableTh label="Stops" k="stops" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />
+                    <SortableTh label="Zones" k="zones" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />
+                    <SortableTh label="Score" k="score" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />
+                    <SortableTh label="Travel Δ" k="delta" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />
+                    <SortableTh label="Guided" k="guided" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />
+                    <SortableTh label="Ref date" k="reference_date" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />
+                  </tr>
+                </thead>
+                <tbody>
+                  {sortedRows.map((r) => (
+                    <tr
+                      key={r.load_key}
+                      onClick={() => setSelectedKey(r.load_key)}
+                      className={`cursor-pointer border-t ${selectedKey === r.load_key ? 'bg-blue-50' : 'hover:bg-slate-50'}`}
+                    >
+                      <td className="px-2 py-1 font-semibold text-slate-800">{r.load_key}</td>
+                      <td className="px-2 py-1">{r.driver}</td>
+                      <td className="px-2 py-1">{r.truck_class}</td>
+                      <td className="px-2 py-1 tabular-nums">{r.stops}</td>
+                      <td className="px-2 py-1 tabular-nums">{r.zones}</td>
+                      <td className="px-2 py-1 tabular-nums font-semibold">{engineScoreFmt(r.score)}</td>
+                      <td className={`px-2 py-1 tabular-nums ${r.delta < 0 ? 'text-emerald-700' : r.delta > 0 ? 'text-amber-700' : ''}`}>{engineDeltaFmt(r.delta)}</td>
+                      <td className="px-2 py-1">
+                        <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${r.guided === 'Guided' ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-500'}`}>{r.guided}</span>
+                      </td>
+                      <td className="px-2 py-1 text-slate-500">{r.reference_date === '—' ? '—' : engineDateFmt(r.reference_date)}</td>
+                    </tr>
+                  ))}
+                  {!sortedRows.length && !dayLoading && (
+                    <tr><td colSpan="9" className="px-3 py-4 text-center text-slate-400">No scored routes for this date.</td></tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div className="xl:w-[46%] border rounded-lg bg-white overflow-hidden flex flex-col">
+            <div className="flex items-center justify-between gap-2 px-3 pt-2 pb-1">
+              <div className="text-[11px] font-semibold text-slate-600 truncate">
+                {selected ? `${selected.load_key} — ${selected.driver_name || selected.driver_user_name || ''}` : 'Pick a route'}
+              </div>
+              <div className="flex gap-1">{mapModeBtn('dispatch', 'Dispatch')}{mapModeBtn('engine', 'Engine')}{mapModeBtn('diff', 'Diff')}</div>
+            </div>
+            <div ref={mapDiv} className="w-full h-[320px] bg-slate-100" />
+            {mapsError && <div className="text-[11px] text-red-600 px-3 py-1">⚠ map failed to load: {String(mapsError)}</div>}
+            {mapMode === 'diff' && selected && (
+              <div className="px-3 py-2 border-t max-h-[130px] overflow-y-auto">
+                <div className="text-[10px] uppercase tracking-wide text-slate-500 pb-1">Engine moved (by more than 2 positions)</div>
+                {movedStops.length ? movedStops.map((s) => (
+                  <div key={s.pro} className="text-[11px] text-slate-700 py-0.5">
+                    <span className="inline-block w-2 h-2 rounded-full mr-1.5 align-middle" style={{ background: '#d97706' }} />
+                    engine moved <span className="font-semibold">{s.businessName || s.pro}</span> from #{s.actual_pos} to #{s.proposed_pos}
+                  </div>
+                )) : <div className="text-[11px] text-slate-400">No stop moved more than 2 positions — the engine broadly agrees with dispatch here.</div>}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Routing section = the beta Build screen + the Engine (shadow) tab.
+function RoutingSection({ debugCaptureRef }) {
+  const [routingTab, setRoutingTab] = useState(() => {
+    try { return localStorage.getItem('routing.tab') === 'engine' ? 'engine' : 'build'; } catch { return 'build'; }
+  });
+  useEffect(() => { try { localStorage.setItem('routing.tab', routingTab); } catch {} }, [routingTab]);
+  const subTab = (id, label) => (
+    <button
+      key={id}
+      onClick={() => setRoutingTab(id)}
+      className={`px-3 py-1.5 text-[12px] font-semibold border-b-2 ${routingTab === id ? '' : 'text-slate-500 border-transparent hover:text-slate-700'}`}
+      style={routingTab === id ? { borderColor: BRAND, color: BRAND } : {}}
+    >{label}</button>
+  );
+  return (
+    <div className="flex-1 flex flex-col min-h-0">
+      <div className="flex items-center border-b bg-white px-2 shrink-0">
+        {subTab('build', 'Build')}
+        {subTab('engine', 'Engine')}
+      </div>
+      {routingTab === 'build'
+        ? <RoutingScreen debugCaptureRef={debugCaptureRef} />
+        : <EngineScreen />}
+    </div>
+  );
+}
+
 // ---------- shell ----------
 
 function Shell() {
@@ -15211,7 +15638,7 @@ function Shell() {
         </header>
       )}
 
-      {tab === 'map' ? <MapScreen onOpenMessages={openMessages} smsUnread={smsUnread} debugCaptureRef={debugCaptureRef} /> : (tab === 'routing' && ROUTING_FLAG) ? <RoutingScreen debugCaptureRef={debugCaptureRef} /> : tab === 'neworder' ? <NewOrderScreen /> : tab === 'quote' ? <QuoteScreen /> : <DiagnosticsRoute />}
+      {tab === 'map' ? <MapScreen onOpenMessages={openMessages} smsUnread={smsUnread} debugCaptureRef={debugCaptureRef} /> : (tab === 'routing' && ROUTING_FLAG) ? <RoutingSection debugCaptureRef={debugCaptureRef} /> : tab === 'neworder' ? <NewOrderScreen /> : tab === 'quote' ? <QuoteScreen /> : <DiagnosticsRoute />}
 
       {/* Messages floats OVER the current screen (you never leave the map). */}
       {messagesOpen && <MessagesPanel messages={inbound} seenAt={smsSeenAt} onClose={closeMessages} customerContacts={customerContacts} />}

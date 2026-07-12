@@ -34,6 +34,7 @@ import {
 } from './history-store.mts';
 import { updateCustomerRollupsForDay } from './history-customers.mts';
 import { updateTractorFlagsForDay } from './tractor-flags.mts';
+import { updateRoutingReferencesForDay } from './routing-reference.mts';
 
 const TENANT = 'davis';
 // Keep in sync with src/App.jsx APP_VERSION. Stamped onto every manifest/capture
@@ -244,6 +245,17 @@ export async function captureDate(date: string): Promise<any> {
     await updateTractorFlagsForDay(TENANT, date, stopRecords);
   } catch (e: any) {
     console.error(`tractor-flags update failed for ${date}:`, e?.message);
+  }
+
+  // Best-effort: mine the day's reference routes ("route DNA") for the learned
+  // routing engine from the same in-memory stops — pure derivation writing to
+  // routing_reference_routes only, zero NuVizz calls. Same failure policy as
+  // the passes above: never fail the capture; the backfill function re-derives
+  // everything from the warehouse. Honors ROUTING_ENGINE=off.
+  try {
+    await updateRoutingReferencesForDay(TENANT, date, stopRecords);
+  } catch (e: any) {
+    console.error(`routing-reference update failed for ${date}:`, e?.message);
   }
 
   return { date, ok: true, verified: true, capture_version: version, counts, absent_kept: absentFromThisCapture.length };

@@ -47,36 +47,82 @@ export interface TractorRoster {
   skippedNoAlias: string[];                    // tractor-tagged employees with no NuVizz alias
 }
 
-// PURE: build the tractor alias set from raw employee docs. Exported for tests.
-export function buildTractorRoster(employees: any[]): TractorRoster {
-  const aliasSet = new Set<string>();
-  const aliasToName = new Map<string, string>();
-  const skippedNoAlias: string[] = [];
-  let tractorCount = 0;
-  for (const e of employees || []) {
-    if (String(e?.vehicleType ?? '') !== 'tractor') continue;
-    tractorCount++;
-    const alias = normalizeDriverAlias(e?.externalIds?.nuvizz);
-    const name = String(e?.fullName || '').trim() || '(unnamed)';
-    if (!alias) { skippedNoAlias.push(name); continue; }
-    aliasSet.add(alias);
-    aliasToName.set(alias, name);
-  }
-  return { aliasSet, aliasToName, tractorCount, skippedNoAlias };
+// ── Generalized vehicle roster ───────────────────────────────────────────────
+// driver alias → vehicleType (truck class) for EVERY employee, not just
+// tractors. The routing engine joins warehouse routes to a truck class through
+// this; the tractor roster below is the vehicleType==='tractor' slice of it.
+
+export interface VehicleRoster {
+  aliasToVehicle: Map<string, { vehicleType: string; name: string }>; // normalized alias → class + display name
+  employeeCount: number;                                              // employees with any vehicleType
+  skippedNoAlias: Array<{ name: string; vehicleType: string }>;       // typed employees with no NuVizz alias
 }
 
-// Load the tractor roster from the shared MarginIQ employees collection.
-// Cached briefly per function instance — the roster changes rarely.
+// PURE: build the full driver → vehicleType roster from raw employee docs.
+export function buildVehicleRoster(employees: any[]): VehicleRoster {
+  const aliasToVehicle = new Map<string, { vehicleType: string; name: string }>();
+  const skippedNoAlias: Array<{ name: string; vehicleType: string }> = [];
+  let employeeCount = 0;
+  for (const e of employees || []) {
+    const vehicleType = String(e?.vehicleType ?? '').trim();
+    if (!vehicleType) continue;
+    employeeCount++;
+    const alias = normalizeDriverAlias(e?.externalIds?.nuvizz);
+    const name = String(e?.fullName || '').trim() || '(unnamed)';
+    if (!alias) { skippedNoAlias.push({ name, vehicleType }); continue; }
+    aliasToVehicle.set(alias, { vehicleType, name });
+  }
+  return { aliasToVehicle, employeeCount, skippedNoAlias };
+}
+
+// PURE: truck class for a warehouse stop's driver — matches BOTH driverName and
+// driverUserName, same rule as stopIsTractorDelivery. Null when unknown.
+export function vehicleTypeForStop(stop: any, roster: VehicleRoster): string | null {
+  if (!roster || !roster.aliasToVehicle.size) return null;
+  const byName = normalizeDriverAlias(stop?.driverName);
+  if (byName && roster.aliasToVehicle.has(byName)) return roster.aliasToVehicle.get(byName)!.vehicleType;
+  const byUser = normalizeDriverAlias(stop?.driverUserName);
+  if (byUser && roster.aliasToVehicle.has(byUser)) return roster.aliasToVehicle.get(byUser)!.vehicleType;
+  return null;
+}
+
+// PURE: the tractor slice of a vehicle roster (behavior identical to the
+// original tractor-only builder).
+function tractorSlice(full: VehicleRoster): TractorRoster {
+  const aliasSet = new Set<string>();
+  const aliasToName = new Map<string, string>();
+  for (const [alias, v] of full.aliasToVehicle) {
+    if (v.vehicleType !== 'tractor') continue;
+    aliasSet.add(alias);
+    aliasToName.set(alias, v.name);
+  }
+  const skippedNoAlias = full.skippedNoAlias.filter((s) => s.vehicleType === 'tractor').map((s) => s.name);
+  return { aliasSet, aliasToName, tractorCount: aliasSet.size + skippedNoAlias.length, skippedNoAlias };
+}
+
+// PURE: build the tractor alias set from raw employee docs. Exported for tests.
+export function buildTractorRoster(employees: any[]): TractorRoster {
+  return tractorSlice(buildVehicleRoster(employees));
+}
+
+// Load rosters from the shared MarginIQ employees collection. Cached briefly
+// per function instance — the roster changes rarely. One Firestore list feeds
+// both the full vehicle roster and its tractor slice.
 const ROSTER_TTL_MS = 10 * 60 * 1000;
-let __roster: { at: number; roster: TractorRoster } | null = null;
-export async function loadTractorRoster(force = false): Promise<TractorRoster> {
-  if (!force && __roster && Date.now() - __roster.at < ROSTER_TTL_MS) return __roster.roster;
+let __vehicleRoster: { at: number; roster: VehicleRoster } | null = null;
+export async function loadVehicleRoster(force = false): Promise<VehicleRoster> {
+  if (!force && __vehicleRoster && Date.now() - __vehicleRoster.at < ROSTER_TTL_MS) return __vehicleRoster.roster;
   const rows = await listDocs(EMPLOYEES_COLLECTION);
-  const roster = buildTractorRoster(rows);
+  const roster = buildVehicleRoster(rows);
+  __vehicleRoster = { at: Date.now(), roster };
+  return roster;
+}
+
+export async function loadTractorRoster(force = false): Promise<TractorRoster> {
+  const roster = tractorSlice(await loadVehicleRoster(force));
   if (roster.skippedNoAlias.length) {
     console.log(`[tractor-flags] ${roster.skippedNoAlias.length} tractor employee(s) skipped — no NuVizz alias: ${roster.skippedNoAlias.join(', ')}`);
   }
-  __roster = { at: Date.now(), roster };
   return roster;
 }
 
