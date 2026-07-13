@@ -31,17 +31,34 @@ const MAX_TOKENS = 80;      // cap tokens per customer (bounds doc size)
 // the name — e.g. "locksmith" or "lock" both find "SOLID LOCKSMITH". Exported for
 // tests.
 export function nameSearchTokens(name: string): string[] {
+  // Keep ALL non-empty words (including single letters) so an INITIALISM written with
+  // spaces or periods — "E R SNELL", "E.R. SNELL" — can be re-joined below. The old
+  // filter dropped single letters here, so "E.R." produced no "er" token and a search
+  // for "er snell" found nothing though the customer (E R SNELL CONTRACTOR) was stored.
   const words = String(name || '')
     .toLowerCase()
     .replace(/[^\w\s]/g, ' ')
     .split(/\s+/)
-    .filter((w) => w.length >= 2);
+    .filter(Boolean);
   const set = new Set<string>();
-  for (const w of words) {
+  const addPrefixes = (w: string) => {
     const cap = Math.min(w.length, MAX_TOKEN_LEN);
     for (let n = 2; n <= cap; n++) set.add(w.slice(0, n));
+  };
+  for (const w of words) {
+    if (w.length >= 2) addPrefixes(w);
     if (set.size >= MAX_TOKENS) break;
   }
+  // Collapse runs of consecutive single-letter words (initialisms) into one joined
+  // token + its prefixes, so "E R SNELL" → "er"/"ersnell"-prefixes and a spaceless
+  // "er" query matches. Periods already became spaces above, so "E.R." rides here too.
+  let run: string[] = [];
+  const flushRun = () => { if (run.length >= 2) addPrefixes(run.join('')); run = []; };
+  for (const w of words) {
+    if (w.length === 1) run.push(w); else flushRun();
+    if (set.size >= MAX_TOKENS) break;
+  }
+  flushRun();
   return [...set].slice(0, MAX_TOKENS);
 }
 
@@ -201,8 +218,13 @@ export async function queryCustomersByName(qLower: string, limit = 25): Promise<
     where: { fieldFilter: { field: { fieldPath: 'name_tokens' }, op: 'ARRAY_CONTAINS', value: { stringValue: anchor } } },
     limit: Math.max(limit * 4, 60),
   });
+  // AND-filter each candidate against tokens RECOMPUTED from its stored name (not the
+  // stored name_tokens): docs written before the initialism fix lack the joined "er"
+  // token, so "er snell" would still drop "E R SNELL CONTRACTOR" until a rebuild. The
+  // anchor (longest query word, e.g. "snell") already matched the stored tokens above,
+  // so recomputing here recovers the abbreviation word with no rebuild required.
   return rows
-    .filter((r) => matchesAllWords(r.name_tokens || [], words))
+    .filter((r) => matchesAllWords(nameSearchTokens(r.name || ''), words))
     .slice(0, limit)
     .map(shapeCustomer);
 }
