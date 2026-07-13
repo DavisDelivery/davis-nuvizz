@@ -49,13 +49,13 @@ test('haversine sanity: ~69 miles per degree of latitude', () => {
   assert.ok(mi > 68 && mi < 70, String(mi));
 });
 
-test('precedence extraction: simple path → one pair per edge', () => {
+test('precedence extraction: simple path → one pair per edge (w=1)', () => {
   const prec = referencePrecedence(['z1', 'z2', 'z3']);
   assert.equal(prec.compSeq.length, 3);
   assert.equal(prec.pairs.length, 2);
-  // all three zones in distinct components, ordered
+  // all three zones in distinct components, ordered; single-ref pairs carry w=1
   const c1 = prec.compOf.get('z1'), c2 = prec.compOf.get('z2'), c3 = prec.compOf.get('z3');
-  assert.deepEqual(prec.pairs, [[c1, c2], [c2, c3]]);
+  assert.deepEqual(prec.pairs, [{ a: c1, b: c2, w: 1 }, { a: c2, b: c3, w: 1 }]);
 });
 
 test('precedence extraction: a zone ping-pong collapses into one SCC (Tarjan contraction)', () => {
@@ -64,7 +64,7 @@ test('precedence extraction: a zone ping-pong collapses into one SCC (Tarjan con
   assert.equal(prec.compOf.get('z1'), prec.compOf.get('z2'));
   assert.notEqual(prec.compOf.get('z1'), prec.compOf.get('z3'));
   assert.equal(prec.compSeq.length, 2);
-  assert.deepEqual(prec.pairs, [[prec.compOf.get('z1'), prec.compOf.get('z3')]]);
+  assert.deepEqual(prec.pairs, [{ a: prec.compOf.get('z1'), b: prec.compOf.get('z3'), w: 1 }]);
 });
 
 test('penalty math: precedence violations count 1 per out-of-order pair', () => {

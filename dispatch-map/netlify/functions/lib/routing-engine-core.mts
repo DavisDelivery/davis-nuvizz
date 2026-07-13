@@ -29,7 +29,7 @@ import { listStops } from './history-store.mts';
 import { DEPOT } from './history-derive.mts';
 import { ENGINE_VERSION, loadEngineConfig, type EngineConfig } from './routing-engine-config.mts';
 import {
-  REFERENCE_ROUTES_COLLECTION, extractReferenceRoutes, pickReference,
+  REFERENCE_ROUTES_COLLECTION, extractReferenceRoutes, pickReferences,
   referenceRouteId, type ReferenceRouteDoc,
 } from './routing-reference.mts';
 import { loadVehicleRoster, vehicleTypeForStop } from './tractor-flags.mts';
@@ -92,7 +92,10 @@ export function shadowScoreRoute(
   nowIso?: string,
 ): ShadowRouteResult {
   const zones = new Set(route.stops.map((s) => s.zone));
-  const picked = pickReference(
+  // Phase 2.1: TOP-K weighted references (audit finding 2) — precedence is
+  // learned from an aggregate consensus graph, not a single best neighbor. The
+  // strict < date leakage filter is applied both here and inside pickReferences.
+  const picked = pickReferences(
     references.filter((r) => String(r.date) < String(route.date)),
     {
       date: route.date,
@@ -102,6 +105,11 @@ export function shadowScoreRoute(
       warehouse: route.warehouse,
       minOverlap: cfg.min_reference_zone_overlap,
     },
+    {
+      topK: cfg.reference_top_k,
+      halfLifeDays: cfg.reference_half_life_days,
+      sameDriverMultiplier: cfg.same_driver_multiplier,
+    },
   );
 
   const engineStops: EngineStop[] = route.stops.map((s) => ({ id: s.pro, lat: s.lat, lng: s.lng, zone: s.zone }));
@@ -109,7 +117,10 @@ export function shadowScoreRoute(
     loadKey: route.load_key,
     stops: engineStops,
     depot: { lat: DEPOT.lat, lng: DEPOT.lng },
-    referenceZoneSeq: picked ? picked.ref.zone_seq : null,
+    referenceZoneSeq: null,
+    references: picked.length
+      ? picked.map((p) => ({ zone_seq: p.ref.zone_seq, weight: p.weight }))
+      : null,
     cfg,
   });
 
@@ -126,7 +137,8 @@ export function shadowScoreRoute(
   const proposedPos = new Map<string, number>();
   proposedIds.forEach((id, i) => proposedPos.set(id, i + 1));
 
-  const refDoc = picked ? (picked.ref as any) : null;
+  const top = picked.length ? picked[0] : null;
+  const refDoc = top ? (top.ref as any) : null;
   const proposal = {
     tenant: route.tenant,
     date: route.date,
@@ -137,12 +149,16 @@ export function shadowScoreRoute(
     warehouse: route.warehouse,
     stop_count: route.stop_count,
     zones_count: zones.size,
-    unguided: !picked,
+    unguided: !top,
+    // Top-weighted reference kept in the legacy fields (UI/back-compat); the
+    // full consensus set is summarized alongside.
     reference_route_id: refDoc
       ? (refDoc._id || referenceRouteId(route.tenant, refDoc.date, refDoc.load_key))
       : null,
     reference_date: refDoc ? refDoc.date : null,
-    reference_shared_zones: picked ? picked.shared : 0,
+    reference_shared_zones: top ? top.shared : 0,
+    references_used: picked.length,
+    reference_ids: picked.map((p) => (p.ref as any)._id || referenceRouteId(route.tenant, p.ref.date, p.ref.load_key)),
     actual_seq: actualIds,
     proposed_seq: proposedIds,
     stops: route.stops.map((s, i) => ({
@@ -161,7 +177,7 @@ export function shadowScoreRoute(
     engine_version: ENGINE_VERSION,
     computed_at: nowIso || new Date().toISOString(),
   };
-  return { proposal, unguided: !picked, score };
+  return { proposal, unguided: !top, score };
 }
 
 export interface ShadowDaySummary {
@@ -236,6 +252,11 @@ export async function runShadowForDate(
   const meanScore = scores.length ? scores.reduce((a, b) => a + b, 0) / scores.length : null;
   const meanDelta = deltas.length ? deltas.reduce((a, b) => a + b, 0) / deltas.length : null;
   const unguidedCount = results.filter((r) => r.unguided).length;
+  // Segmented means (audit finding 4): an unguided route had no teacher, so its
+  // score measures a different thing — never let it dilute the guided headline.
+  const guidedScores = results.filter((r) => !r.unguided).map((r) => r.score);
+  const unguidedScores = results.filter((r) => r.unguided).map((r) => r.score);
+  const mean = (xs: number[]) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null);
 
   await setDoc(dailyRollupPath(tenant, date), {
     tenant,
@@ -245,6 +266,9 @@ export async function runShadowForDate(
     unguided_count: unguidedCount,
     mean_score: meanScore,
     median_score: median(scores),
+    mean_score_guided: mean(guidedScores),
+    median_score_guided: median(guidedScores),
+    mean_score_unguided: mean(unguidedScores),
     mean_travel_delta_min: meanDelta === null ? null : Math.round(meanDelta * 10) / 10,
     engine_version: ENGINE_VERSION,
     computed_at: nowIso,

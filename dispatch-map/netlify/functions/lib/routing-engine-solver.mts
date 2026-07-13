@@ -83,10 +83,12 @@ export function buildTravelMatrix(points: EnginePoint[], cfg: EngineConfig): Cos
 
 // ── Reference precedence (zone graph → Tarjan SCC → component path) ─────────
 
+export interface PrecedencePair { a: number; b: number; w: number } // visit(a)<visit(b), weight 0..1
+
 export interface ReferencePrecedence {
   compOf: Map<string, number>;      // reference zone → component index
-  compSeq: number[];                // components in reference visit order (a path)
-  pairs: Array<[number, number]>;   // visit(a) < visit(b) for each edge of the path
+  compSeq: number[];                // components in visit order (single-ref path; empty for aggregates)
+  pairs: PrecedencePair[];          // weighted precedence pairs (single-ref pairs carry w=1)
 }
 
 // Tarjan strongly connected components over a small digraph.
@@ -148,9 +150,76 @@ export function referencePrecedence(refZoneSeq: string[]): ReferencePrecedence {
     const c = compOf.get(z)!;
     if (compSeq.length === 0 || compSeq[compSeq.length - 1] !== c) compSeq.push(c);
   }
-  const pairs: Array<[number, number]> = [];
-  for (let i = 1; i < compSeq.length; i++) pairs.push([compSeq[i - 1], compSeq[i]]);
+  const pairs: PrecedencePair[] = [];
+  for (let i = 1; i < compSeq.length; i++) pairs.push({ a: compSeq[i - 1], b: compSeq[i], w: 1 });
   return { compOf, compSeq, pairs };
+}
+
+// ── Phase 2.1: TOP-K WEIGHTED AGGREGATE PRECEDENCE (audit finding 2) ─────────
+// The winners learned zone order from a weighted transition graph over MANY
+// historical routes; the single-reference path above is the k=1 special case.
+// Here the top-k references (weights from pickReferences: overlap × recency
+// decay × same-driver boost) pour their zone walks into ONE weighted digraph;
+// edges supported by less than edge_floor × total-reference-weight are dropped
+// (a lone atypical route can't inject order the consensus doesn't back — the
+// "outvoting" property); Tarjan contracts what remains, and each surviving
+// inter-component edge becomes a precedence pair whose violation cost scales
+// with min(1, edgeWeight / totalWeight) — unanimous order costs full
+// precedence_penalty, weakly-supported order proportionally less.
+//
+// k=1 REGRESSION GUARANTEE (tested): with a single reference every edge weight
+// equals the total weight, so no edge is floored, the graph and Tarjan input
+// are identical to referencePrecedence's, and every pair normalizes to w=1 —
+// bit-identical penalties to the legacy single-reference path.
+
+export interface WeightedReference { zone_seq: string[]; weight: number }
+
+export function aggregateReferencePrecedence(
+  refs: WeightedReference[],
+  edgeFloorFrac: number,
+): ReferencePrecedence {
+  const usable = (refs || []).filter((r) => r && Number(r.weight) > 0 && Array.isArray(r.zone_seq));
+  const nodeOrder: string[] = [];
+  const seen = new Set<string>();
+  const edgeW = new Map<string, { a: string; b: string; w: number }>();
+  let totalW = 0;
+  for (const r of usable) {
+    totalW += r.weight;
+    const seq = collapseConsecutive(r.zone_seq);
+    for (const z of seq) if (!seen.has(z)) { seen.add(z); nodeOrder.push(z); }
+    for (let i = 1; i < seq.length; i++) {
+      if (seq[i - 1] === seq[i]) continue;
+      const key = `${seq[i - 1]} ${seq[i]}`;
+      const e = edgeW.get(key);
+      if (e) e.w += r.weight;
+      else edgeW.set(key, { a: seq[i - 1], b: seq[i], w: r.weight });
+    }
+  }
+  if (!totalW) return { compOf: new Map(), compSeq: [], pairs: [] };
+
+  // Weight floor: consensus must back an edge for it to constrain.
+  const floor = edgeFloorFrac * totalW;
+  const kept = [...edgeW.values()].filter((e) => e.w >= floor || floor === 0);
+
+  const edges = new Map<string, Set<string>>();
+  for (const n of nodeOrder) edges.set(n, new Set());
+  for (const e of kept) edges.get(e.a)!.add(e.b);
+  const compOf = tarjanScc(nodeOrder, edges);
+
+  // Inter-component pairs, weight-accumulated then normalized (capped at 1).
+  const pairW = new Map<string, PrecedencePair>();
+  for (const e of kept) {
+    const ca = compOf.get(e.a)!, cb = compOf.get(e.b)!;
+    if (ca === cb) continue;
+    const key = `${ca} ${cb}`;
+    const p = pairW.get(key);
+    if (p) p.w += e.w;
+    else pairW.set(key, { a: ca, b: cb, w: e.w });
+  }
+  const pairs = [...pairW.values()]
+    .map((p) => ({ a: p.a, b: p.b, w: Math.min(1, p.w / totalW) }))
+    .sort((x, y) => (x.a - y.a) || (x.b - y.b));
+  return { compOf, compSeq: [], pairs };
 }
 
 // ── Penalty model ────────────────────────────────────────────────────────────
@@ -187,11 +256,13 @@ export function sequencePenalty(
       const c = prec.compOf.get(zoneSeq[i]);
       if (c !== undefined && !firstVisitOfComp.has(c)) firstVisitOfComp.set(c, i);
     }
-    for (const [a, b] of prec.pairs) {
+    for (const { a, b, w } of prec.pairs) {
       const pa = firstVisitOfComp.get(a);
       const pb = firstVisitOfComp.get(b);
       if (pa === undefined || pb === undefined) continue; // pair not fully present in this route
-      if (pb < pa) penalty += cfg.precedence_penalty;
+      // Violation cost scales with the pair's normalized consensus weight
+      // (single-reference pairs carry w=1 → identical to legacy behavior).
+      if (pb < pa) penalty += cfg.precedence_penalty * w;
     }
   }
   return penalty;
@@ -250,7 +321,12 @@ export interface SolveInput {
   loadKey: string;
   stops: EngineStop[];              // zone already computed per stop
   depot: { lat: number; lng: number };
-  referenceZoneSeq: string[] | null; // null → UNGUIDED (clustering + hierarchy only)
+  referenceZoneSeq: string[] | null; // legacy single reference (k=1); null → UNGUIDED
+  // Phase 2.1: top-k weighted references (from pickReferences). When present
+  // (non-empty) this supersedes referenceZoneSeq: precedence comes from the
+  // weighted aggregate graph, the SEED zone order from the top-weighted
+  // reference. A single entry reproduces the legacy path exactly (tested).
+  references?: WeightedReference[] | null;
   cfg: EngineConfig;
   now?: () => number;               // injectable clock for tests
 }
@@ -354,8 +430,15 @@ export function solveRoute(input: SolveInput): SolveResult {
   const { loadKey, stops, depot, referenceZoneSeq, cfg } = input;
   const now = input.now || Date.now;
   const deadline = now() + cfg.solver_ms_cap;
-  const unguided = !referenceZoneSeq || referenceZoneSeq.length === 0;
-  const prec = unguided ? null : referencePrecedence(referenceZoneSeq!);
+  // Phase 2.1: prefer the top-k weighted reference set; fall back to the legacy
+  // single reference. Seed zone order always comes from the strongest teacher.
+  const weightedRefs: WeightedReference[] | null =
+    input.references && input.references.length
+      ? input.references
+      : (referenceZoneSeq && referenceZoneSeq.length ? [{ zone_seq: referenceZoneSeq, weight: 1 }] : null);
+  const unguided = !weightedRefs;
+  const prec = unguided ? null : aggregateReferencePrecedence(weightedRefs!, cfg.reference_edge_floor);
+  const seedZoneSeq = weightedRefs ? weightedRefs[0].zone_seq : null;
 
   const groups = groupZones(stops);
   const points: EnginePoint[] = [{ id: DEPOT_ID, lat: depot.lat, lng: depot.lng }, ...stops];
@@ -488,7 +571,7 @@ export function solveRoute(input: SolveInput): SolveResult {
 
   const baseSeed = unguided
     ? nnSeedZoneOrder(groups, depot)
-    : guidedSeedZoneOrder(groups, referenceZoneSeq!, depot);
+    : guidedSeedZoneOrder(groups, seedZoneSeq!, depot);
 
   let best: { order: EngineStop[]; zoneOrder: string[]; travelMin: number; penalty: number; objective: number } | null = null;
   let restartsRun = 0;

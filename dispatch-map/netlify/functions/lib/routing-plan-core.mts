@@ -31,8 +31,9 @@ import {
 import {
   SERVICE_TIMES_COLLECTION, serviceTimePath, fleetServicePath, serviceTimeAsOf,
 } from './routing-service-times.mts';
+import { customerDriversPath, habitAsOf } from './routing-customer-drivers.mts';
 import {
-  driverEnvelope, driverZoneAffinity, fleetTripChain, wallMinuteOfDay,
+  driverEnvelope, driverZoneAffinity, fleetTripChain,
 } from './routing-envelope.mts';
 import {
   solveAssignment, restrictionsBlockTractor, type AssignStop, type AssignDriver, type AssignedShift,
@@ -111,6 +112,7 @@ export interface PlanInputs {
   referencesBefore: ReferenceRouteDoc[]; // < D
   serviceDocByKey: Map<string, any>;   // customer service-time docs (obs dated)
   fleetServiceDoc: any | null;
+  habitDocByKey: Map<string, any>;     // customer driver-habit docs (obs dated; habitAsOf applies < D)
   notesRestrictions: Map<string, any[]>; // matchKey → equipment_restrictions
   tractorCapable: Set<string>;         // matchKey → served by a tractor before (positive; carried, not a restriction)
 }
@@ -186,15 +188,27 @@ export async function runPlanForDate(
   // ── as-of inputs (< D only) ──
   const inputs = opts.inputs || await loadPlanInputs(tenant, date, planned);
 
-  const activeDrivers: AssignDriver[] = actualDriverDays.map((dd) => ({
-    driver_key: dd.driver_key,
-    driver_user_name: dd.driver_user_name,
-    driver_name: dd.driver_name,
-    truck_class: dd.truck_class,
-    start_minute: wallMinuteOfDay(dd.start_time),
-    envelope: driverEnvelope(dd.driver_key, inputs.driverDaysBefore, date, cfg),
-    affinity: driverZoneAffinity(dd.driver_user_name, inputs.referencesBefore, date, precisions),
-  }));
+  const activeDrivers: AssignDriver[] = actualDriverDays.map((dd) => {
+    const envelope = driverEnvelope(dd.driver_key, inputs.driverDaysBefore, date, cfg);
+    return {
+      driver_key: dd.driver_key,
+      driver_user_name: dd.driver_user_name,
+      driver_name: dd.driver_name,
+      truck_class: dd.truck_class,
+      // AS-OF START (Phase 2.1, audit finding 3): the shadow must only use what
+      // Assist would know at PLANNING time. The driver's executed first touch
+      // on day D is settlement data — a driver who happened to clock in early
+      // would leak that knowledge into the STRICT-window cost. Use the as-of
+      // TYPICAL start mined from days < D instead; a driver below
+      // min_observation_days inherits the class-level typical via the envelope
+      // fallback, and the solver's own default covers a fully unknown driver.
+      // (WHO worked D is still the declared staffing input; WHEN they actually
+      // clocked in is not.)
+      start_minute: envelope.start_minute_typical,
+      envelope,
+      affinity: driverZoneAffinity(dd.driver_user_name, inputs.referencesBefore, date, precisions),
+    };
+  });
 
   // ── the engine's planned stop set ──
   const assignStops: AssignStop[] = planned.map((s) => {
@@ -212,6 +226,8 @@ export async function runPlanForDate(
       strict: String(s.timeConstraint || '').toUpperCase() === 'STRICT',
       miles: sd != null ? sd : Math.hypot(lat - DEPOT.lat, lng - DEPOT.lng) * 69, // rough fallback
       blocksTractor: mk ? restrictionsBlockTractor(inputs.notesRestrictions.get(mk) || []) : false,
+      // Phase 2.1: the customer's habitual driver, as-of < D (leakage-safe reader).
+      habit: mk ? habitAsOf(inputs.habitDocByKey.get(mk) ?? null, date) : null,
     };
   });
 
@@ -270,14 +286,24 @@ export async function runPlanForDate(
     for (const t of sh.trips) for (const s of t.stops) { stopsN++; lbs += s.weight; }
     engineByDriver.set(sh.driver.driver_key, { trips: sh.trips.length, stops: stopsN, lbs: Math.round(lbs) });
   }
+  // Segmentation (audit finding 4, plan-view analog of guided/unguided): a
+  // driver whose envelope came from their OWN history ('driver') is one the
+  // engine actually knows; a 'class'/'none' fallback driver is being guessed
+  // at. Report agreement per segment so guesses never dilute the headline.
+  const envSourceByKey = new Map(activeDrivers.map((d) => [d.driver_key, d.envelope.source] as const));
+  let knownAgree = 0, knownTotal = 0, fallbackAgree = 0, fallbackTotal = 0;
   for (const dd of actualDriverDays) {
     const actualStops = [...stopToActualDriver.entries()].filter(([, drv]) => drv === dd.driver_key).map(([id]) => id);
     const agree = actualStops.filter((id) => stopToEngineDriver.get(id) === dd.driver_key).length;
     const eng = engineByDriver.get(dd.driver_key) || { trips: 0, stops: 0, lbs: 0 };
+    const envelopeSource = envSourceByKey.get(dd.driver_key) ?? 'none';
+    if (envelopeSource === 'driver') { knownAgree += agree; knownTotal += actualStops.length; }
+    else { fallbackAgree += agree; fallbackTotal += actualStops.length; }
     perDriver.push({
       driver: dd.driver_name || dd.driver_user_name || dd.driver_key,
       driver_key: dd.driver_key,
       class: dd.truck_class,
+      envelope_source: envelopeSource,
       trips_engine: eng.trips, trips_actual: dd.trips.filter((t) => t.stops.length).length,
       stops_engine: eng.stops, stops_actual: actualStops.length,
       lbs_engine: eng.lbs, lbs_actual: Math.round(dd.day_totals?.weight || 0),
@@ -316,6 +342,8 @@ export async function runPlanForDate(
     stop_agreement_pct: agreement.stop_agreement_pct,
     coload_agreement_pct: agreement.coload_agreement_pct,
     coload_precision_pct: agreement.coload_precision_pct,
+    stop_agreement_known_pct: pct(knownAgree, knownTotal),      // drivers w/ own-history envelopes
+    stop_agreement_fallback_pct: pct(fallbackAgree, fallbackTotal), // class/none fallback drivers
     est_travel_engine_min: Math.round(est_travel_engine * 10) / 10,
     est_travel_actual_min: Math.round(est_travel_actual * 10) / 10,
     matched_load_sequence_score: matchedSeqScore,
@@ -335,6 +363,8 @@ export async function runPlanForDate(
     unassigned_count: result.unassigned.length,
     stop_agreement_pct: proposal.stop_agreement_pct, coload_agreement_pct: proposal.coload_agreement_pct,
     coload_precision_pct: proposal.coload_precision_pct,
+    stop_agreement_known_pct: proposal.stop_agreement_known_pct,
+    stop_agreement_fallback_pct: proposal.stop_agreement_fallback_pct,
     est_travel_engine_min: proposal.est_travel_engine_min, est_travel_actual_min: proposal.est_travel_actual_min,
     matched_load_sequence_score: matchedSeqScore,
   });
@@ -371,18 +401,24 @@ export async function loadPlanInputs(tenant: string, date: string, plannedStops:
   const tractorCapable = new Set<string>();
   for (const t of tractorRows) { const mk = t?.match_key || t?._id; if (mk) tractorCapable.add(String(mk)); }
 
-  // customer service docs only for the matchKeys present that day (bounded reads)
+  // customer service-time + driver-habit docs only for the matchKeys present
+  // that day (bounded reads)
   const wantKeys = [...new Set(plannedStops.map((s) => s?.customerMatchKey).filter(Boolean))] as string[];
   const serviceDocByKey = new Map<string, any>();
+  const habitDocByKey = new Map<string, any>();
   let i = 0;
   const worker = async () => {
     while (i < wantKeys.length) {
       const mk = wantKeys[i++];
-      const doc = await getDoc(serviceTimePath(tenant, mk));
-      if (doc) serviceDocByKey.set(mk, doc);
+      const [svc, habit] = await Promise.all([
+        getDoc(serviceTimePath(tenant, mk)),
+        getDoc(customerDriversPath(tenant, mk)),
+      ]);
+      if (svc) serviceDocByKey.set(mk, svc);
+      if (habit) habitDocByKey.set(mk, habit);
     }
   };
   await Promise.all(Array.from({ length: Math.min(8, wantKeys.length || 1) }, worker));
 
-  return { driverDaysBefore, referencesBefore, serviceDocByKey, fleetServiceDoc: fleetDoc, notesRestrictions, tractorCapable };
+  return { driverDaysBefore, referencesBefore, serviceDocByKey, fleetServiceDoc: fleetDoc, habitDocByKey, notesRestrictions, tractorCapable };
 }

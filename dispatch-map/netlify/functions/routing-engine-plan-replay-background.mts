@@ -23,6 +23,7 @@ import { ENGINE_VERSION, loadEngineConfig } from './lib/routing-engine-config.mt
 import { REFERENCE_ROUTES_COLLECTION, type ReferenceRouteDoc } from './lib/routing-reference.mts';
 import { DRIVER_DAYS_COLLECTION, type DriverDayDoc } from './lib/routing-driver-days.mts';
 import { SERVICE_TIMES_COLLECTION, fleetServicePath } from './lib/routing-service-times.mts';
+import { CUSTOMER_DRIVERS_COLLECTION } from './lib/routing-customer-drivers.mts';
 import { runPlanForDate, type PlanInputs } from './lib/routing-plan-core.mts';
 
 const TENANT = 'davis';
@@ -58,11 +59,12 @@ export default async (req: Request): Promise<Response> => {
 
   // Load the WHOLE observation set once. The Phase-3 pure functions filter each
   // to dates < D internally, so passing everything is leakage-safe.
-  const [ddRows, refRows, svcRows, fleetDoc] = await Promise.all([
+  const [ddRows, refRows, svcRows, fleetDoc, habitRows] = await Promise.all([
     listDocs(DRIVER_DAYS_COLLECTION),
     listDocs(REFERENCE_ROUTES_COLLECTION),
     listDocs(SERVICE_TIMES_COLLECTION),
     getDoc(fleetServicePath(TENANT)),
+    listDocs(CUSTOMER_DRIVERS_COLLECTION),
   ]);
   const allDriverDays = (ddRows as any[]).filter((r) => r?.tenant === TENANT) as DriverDayDoc[];
   const allRefs = (refRows as any[]).filter((r) => r?.tenant === TENANT) as ReferenceRouteDoc[];
@@ -70,6 +72,11 @@ export default async (req: Request): Promise<Response> => {
   for (const s of svcRows as any[]) {
     if (s?.tenant !== TENANT || s?.is_fleet) continue;
     if (s?.match_key) serviceDocByKey.set(String(s.match_key), s);
+  }
+  const habitDocByKey = new Map<string, any>();
+  for (const h of habitRows as any[]) {
+    if (h?.tenant !== TENANT) continue;
+    if (h?.match_key) habitDocByKey.set(String(h.match_key), h); // habitAsOf re-filters < D per date
   }
   const [notesRows, tractorRows] = await Promise.all([
     listDocs('customer_notes'), listDocs('tractor_locations'),
@@ -82,7 +89,7 @@ export default async (req: Request): Promise<Response> => {
   const refDates = [...new Set(allRefs.map((r) => String(r.date)))].sort();
   const ddDates = new Set(allDriverDays.map((d) => String(d.date)));
 
-  const inputs: PlanInputs = { driverDaysBefore: allDriverDays, referencesBefore: allRefs, serviceDocByKey, fleetServiceDoc: fleetDoc, notesRestrictions, tractorCapable };
+  const inputs: PlanInputs = { driverDaysBefore: allDriverDays, referencesBefore: allRefs, serviceDocByKey, fleetServiceDoc: fleetDoc, habitDocByKey, notesRestrictions, tractorCapable };
 
   const scored: Array<{ date: string; stop_agreement_pct: number | null; coload_agreement_pct: number | null }> = [];
   const skippedTooEarly: string[] = [];
