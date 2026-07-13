@@ -54,7 +54,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.48.1';
+const APP_VERSION = '0.48.2';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -99,6 +99,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.48.2', 'Build / Engine toggle moved to the top nav row. On the Routing (beta) screen, the Build ⇄ Engine switch now sits at the FAR RIGHT of the same row as the main tabs (Map · Routing · New Order · …) instead of on its own strip below — and it only appears while you\'re actually on the Routing tab, so it never clutters the Map, New Order, Quote, or Diagnostics screens. Same two-tap behavior, one less row of chrome above the workbench. (On phones, where the top bar is a menu button, the toggle stays inside the Routing screen as before.)'],
   ['0.48.1', 'ROUTE FRAMING FIXED — no more deliveries hiding under the bottom grid. Pulling up a route (a load row, the Routes panel, View full route, a saved plan, or a search zoom) fit the stops to the FULL map canvas — but the bottom data grid floats ON TOP of the map, so the canvas keeps going underneath it and the southern end of the frame landed behind the grid (BUFORD: deliveries 4–7 invisible until you panned). Every map fit on BOTH screens (Map + Routing) now pads its bottom edge by the grid\'s actual current height — open, resized, or collapsed — measured at the moment of the fit, so the whole route always lands in the part of the map you can actually see. Recenter and multi-match search zooms get the same treatment.'],
   ['0.48.0', 'WAREHOUSE HOLES — SEALED. The nightly history capture was intermittently writing a full day of stops but never the manifest that marks the day complete, so six fully-captured days (Jun 24, Jun 25, Jul 1, Jul 2, Jul 7, Jul 10) went invisible to everything that lists dates — the reference miner, the replay, the nightly engine all skipped them. Root cause: the capture\'s final "verify-by-readback then seal" step could withhold the manifest silently (a transient under-read of the just-written docs, or a seal write that failed) with no retry and no alarm, so the day sat orphaned forever. Fix: the seal is now RETRIED, and every capture run must end in exactly one of three visible states — a sealed manifest, a tombstone (a day with genuinely no board), or a LOUD failure record — never silence. New Diagnostics "Capture health" strip shows the trailing 21 days at a glance: sealed, healed, tombstoned, did-not-seal (with the reason), or a scheduled weekday that went missing. Recovery tools reseal the orphaned days from their stored stops (nothing fabricated — the same real checks must pass) and re-scan the truly-missing days, tombstoning the ones with no board. No customer-facing behavior change; this is warehouse integrity.'],
   ['0.47.0', 'THE LEARNED ROUTING ENGINE — Phase 1, shadow mode. Routing now has two tabs: Build (the existing beta) and the new ENGINE tab. Every night, the engine takes the routes dispatch actually built, re-sequences each one using constraints learned from our own route history (stops cluster into zones that stay together; the zone ORDER comes from the most similar past route; a penalty search keeps neighborhoods contiguous), and scores its sequence against the dispatcher\'s with the official Amazon/MIT routing-challenge metric — 0 means "routed it exactly like dispatch". The tab shows the scoreboard (routes scored, mean/median similarity, estimated travel delta, unguided count), a daily trend chart to watch it learn, a sortable per-route table, and a Dispatch / Engine / Diff map with a "what the engine moved" list. SHADOW ONLY: it proposes and scores, it changes NOTHING — no NuVizz calls anywhere in the engine (it feeds off the history warehouse), no Google route-matrix calls (distances are estimated), and Assist/Auto stay locked until Phase 2. Kill switch: ROUTING_ENGINE=off.'],
@@ -15646,26 +15647,37 @@ function EngineScreen() {
   );
 }
 
-// Routing section = the beta Build screen + the Engine (shadow) tab.
-function RoutingSection({ debugCaptureRef }) {
-  const [routingTab, setRoutingTab] = useState(() => {
-    try { return localStorage.getItem('routing.tab') === 'engine' ? 'engine' : 'build'; } catch { return 'build'; }
-  });
-  useEffect(() => { try { localStorage.setItem('routing.tab', routingTab); } catch {} }, [routingTab]);
-  const subTab = (id, label) => (
+// Build ⇄ Engine toggle. A segmented control (the app's standard two-way sub-mode pattern).
+// Rendered at the far RIGHT of the top nav row on desktop (only while on Routing), and inside
+// the Routing screen on mobile (whose app bar is a chip menu with no persistent tab row).
+function RoutingSubTabs({ tab, onChange }) {
+  const btn = (id, label) => (
     <button
       key={id}
-      onClick={() => setRoutingTab(id)}
-      className={`px-3 py-1.5 text-[12px] font-semibold border-b-2 ${routingTab === id ? '' : 'text-slate-500 border-transparent hover:text-slate-700'}`}
-      style={routingTab === id ? { borderColor: BRAND, color: BRAND } : {}}
+      onClick={() => onChange(id)}
+      className={`px-3 py-1 text-[12px] font-semibold ${tab === id ? 'text-white' : 'bg-white text-slate-600 hover:bg-slate-50'} ${id === 'engine' ? 'border-l border-slate-300' : ''}`}
+      style={tab === id ? { background: BRAND } : undefined}
     >{label}</button>
   );
   return (
+    <div className="flex rounded-md border border-slate-300 overflow-hidden shrink-0">
+      {btn('build', 'Build')}
+      {btn('engine', 'Engine')}
+    </div>
+  );
+}
+
+// Routing section = the beta Build screen + the Engine (shadow) tab. `routingTab`/`setRoutingTab`
+// are LIFTED to the shell so the Build/Engine toggle can live in the top nav row on desktop; the
+// in-screen sub-tab bar renders only on mobile (`showSubTabs`).
+function RoutingSection({ debugCaptureRef, routingTab, setRoutingTab, showSubTabs }) {
+  return (
     <div className="flex-1 flex flex-col min-h-0">
-      <div className="flex items-center border-b bg-white px-2 shrink-0">
-        {subTab('build', 'Build')}
-        {subTab('engine', 'Engine')}
-      </div>
+      {showSubTabs && (
+        <div className="flex items-center border-b bg-white px-2 py-1.5 shrink-0">
+          <RoutingSubTabs tab={routingTab} onChange={setRoutingTab} />
+        </div>
+      )}
       {routingTab === 'build'
         ? <RoutingScreen debugCaptureRef={debugCaptureRef} />
         : <EngineScreen />}
@@ -15685,6 +15697,13 @@ function Shell() {
   const { h: viewportHeight, w: visibleWidth, x: viewportLeft, y: viewportTop } = useViewportSize();
   const isMobile = viewportWidth < MOBILE_BREAKPOINT;
   const [chipMenuOpen, setChipMenuOpen] = useState(false);
+
+  // Routing Build ⇄ Engine sub-tab, lifted here so the toggle can render in the top nav row
+  // (far right) on desktop while the Routing screen consumes the same state.
+  const [routingTab, setRoutingTab] = useState(() => {
+    try { return localStorage.getItem('routing.tab') === 'engine' ? 'engine' : 'build'; } catch { return 'build'; }
+  });
+  useEffect(() => { try { localStorage.setItem('routing.tab', routingTab); } catch {} }, [routingTab]);
 
   // SMS messages + unread badge. Messages is a WINDOW over the current screen
   // (it doesn't navigate away), so it's a toggle, not a tab.
@@ -15762,12 +15781,15 @@ function Shell() {
             <TabBtn label="Diagnostics" icon={<Activity size={14} />} active={tab === 'diag'} onClick={() => setTab('diag')} />
             <TabBtn label="Debug" icon={<Bug size={14} />} active={debugOpen} onClick={() => setDebugOpen(true)} />
           </nav>
-          {/* Right side intentionally empty — no auth in v0.3.0 (matches Glory Bound / MarginIQ). */}
-          <div />
+          {/* Far right of the nav row: the Routing Build/Engine toggle — shown ONLY on the
+              Routing screen (empty otherwise so the row keeps its spacing). */}
+          {tab === 'routing' && ROUTING_FLAG
+            ? <RoutingSubTabs tab={routingTab} onChange={setRoutingTab} />
+            : <div />}
         </header>
       )}
 
-      {tab === 'map' ? <MapScreen onOpenMessages={openMessages} smsUnread={smsUnread} debugCaptureRef={debugCaptureRef} /> : (tab === 'routing' && ROUTING_FLAG) ? <RoutingSection debugCaptureRef={debugCaptureRef} /> : tab === 'neworder' ? <NewOrderScreen /> : tab === 'quote' ? <QuoteScreen /> : <DiagnosticsRoute />}
+      {tab === 'map' ? <MapScreen onOpenMessages={openMessages} smsUnread={smsUnread} debugCaptureRef={debugCaptureRef} /> : (tab === 'routing' && ROUTING_FLAG) ? <RoutingSection debugCaptureRef={debugCaptureRef} routingTab={routingTab} setRoutingTab={setRoutingTab} showSubTabs={isMobile} /> : tab === 'neworder' ? <NewOrderScreen /> : tab === 'quote' ? <QuoteScreen /> : <DiagnosticsRoute />}
 
       {/* Messages floats OVER the current screen (you never leave the map). */}
       {messagesOpen && <MessagesPanel messages={inbound} seenAt={smsSeenAt} onClose={closeMessages} customerContacts={customerContacts} />}
