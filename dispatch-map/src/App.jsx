@@ -54,7 +54,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.48.0';
+const APP_VERSION = '0.48.1';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -99,6 +99,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.48.1', 'ROUTE FRAMING FIXED — no more deliveries hiding under the bottom grid. Pulling up a route (a load row, the Routes panel, View full route, a saved plan, or a search zoom) fit the stops to the FULL map canvas — but the bottom data grid floats ON TOP of the map, so the canvas keeps going underneath it and the southern end of the frame landed behind the grid (BUFORD: deliveries 4–7 invisible until you panned). Every map fit on BOTH screens (Map + Routing) now pads its bottom edge by the grid\'s actual current height — open, resized, or collapsed — measured at the moment of the fit, so the whole route always lands in the part of the map you can actually see. Recenter and multi-match search zooms get the same treatment.'],
   ['0.48.0', 'WAREHOUSE HOLES — SEALED. The nightly history capture was intermittently writing a full day of stops but never the manifest that marks the day complete, so six fully-captured days (Jun 24, Jun 25, Jul 1, Jul 2, Jul 7, Jul 10) went invisible to everything that lists dates — the reference miner, the replay, the nightly engine all skipped them. Root cause: the capture\'s final "verify-by-readback then seal" step could withhold the manifest silently (a transient under-read of the just-written docs, or a seal write that failed) with no retry and no alarm, so the day sat orphaned forever. Fix: the seal is now RETRIED, and every capture run must end in exactly one of three visible states — a sealed manifest, a tombstone (a day with genuinely no board), or a LOUD failure record — never silence. New Diagnostics "Capture health" strip shows the trailing 21 days at a glance: sealed, healed, tombstoned, did-not-seal (with the reason), or a scheduled weekday that went missing. Recovery tools reseal the orphaned days from their stored stops (nothing fabricated — the same real checks must pass) and re-scan the truly-missing days, tombstoning the ones with no board. No customer-facing behavior change; this is warehouse integrity.'],
   ['0.47.0', 'THE LEARNED ROUTING ENGINE — Phase 1, shadow mode. Routing now has two tabs: Build (the existing beta) and the new ENGINE tab. Every night, the engine takes the routes dispatch actually built, re-sequences each one using constraints learned from our own route history (stops cluster into zones that stay together; the zone ORDER comes from the most similar past route; a penalty search keeps neighborhoods contiguous), and scores its sequence against the dispatcher\'s with the official Amazon/MIT routing-challenge metric — 0 means "routed it exactly like dispatch". The tab shows the scoreboard (routes scored, mean/median similarity, estimated travel delta, unguided count), a daily trend chart to watch it learn, a sortable per-route table, and a Dispatch / Engine / Diff map with a "what the engine moved" list. SHADOW ONLY: it proposes and scores, it changes NOTHING — no NuVizz calls anywhere in the engine (it feeds off the history warehouse), no Google route-matrix calls (distances are estimated), and Assist/Auto stay locked until Phase 2. Kill switch: ROUTING_ENGINE=off.'],
   ['0.46.19', 'PLAN ONTO MY LOADS — the Routing (beta) build now plans straight onto the REAL loads you created in NuVizz. The left panel\'s step 2 is now "Plan onto" with two modes: "My loads" (new, the default) lists the day\'s roster — your ALPHA / ALPHA 2 / ATL / SUW / SUW 2 drafts, empties first with a search box — and you check off the loads to fill; Build then spreads your selected stops across EXACTLY those loads, one route per load, using each load\'s vehicle (a per-load Box/Trailer picker appears when checked; names with "trailer/53" default to the 53′ profile, and the green-only trailer rule still applies). The result shows each route under its LOAD NAME, and one tap — "Stage onto Compare cards" — opens every load\'s card with its planned stops staged (real load number attached, board stops kept, hand-reorders honored). Nothing touches NuVizz until you hit the cards\' normal Save — the same verified, journaled write path as always. The old truck-profile build is one tap away under "Trucks". Also: the Compare workbench now holds up to 6 cards (was 3) so a five-load build stages in one shot; loads with a duplicate name on the roster are shown but not pickable (identity is ambiguous — rename one in the portal), and a load that already holds stops can be picked to ADD to it.'],
@@ -7723,6 +7724,14 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef }) {
     selectionOverlayRef.current = projOv;
   }, [google]);
 
+  // The bottom data grid is an ABSOLUTE OVERLAY inside the map container, so Google's canvas
+  // extends UNDERNEATH it — a flat 60px fitBounds pad framed a route's southern stops behind
+  // the grid (BUFORD Jul 13: deliveries 4–7 hidden; the idle re-fit can't help because the
+  // canvas size never changes). Every fit pads the bottom by the grid's LIVE rendered height
+  // (open/resized/collapsed alike), measured at call time through a ref on the grid's root.
+  const bottomGridRef = useRef(null);
+  const fitPad = useCallback(() => ({ top: 60, right: 60, left: 60, bottom: 60 + (bottomGridRef.current?.offsetHeight || 0) }), []);
+
   // Keep the Recenter button's action pointed at the current board: fit to all
   // currently-shown stops (or fall back to the default center when none).
   useEffect(() => {
@@ -7732,9 +7741,9 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef }) {
       if (!pts.length) { mapRef.current.panTo(BUFORD); mapRef.current.setZoom(10); return; }
       const b = new google.maps.LatLngBounds();
       pts.forEach((s) => b.extend({ lat: s.lat, lng: s.lng }));
-      mapRef.current.fitBounds(b, 60);
+      mapRef.current.fitBounds(b, fitPad());
     };
-  }, [google, filteredStops]);
+  }, [google, filteredStops, fitPad]);
 
   // M4.4 — satellite/roadmap toggle. 'hybrid' = satellite imagery + road labels,
   // which is most useful for spotting docks/yards while keeping street names.
@@ -7853,7 +7862,8 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef }) {
     saveBoardView();
     const b = new google.maps.LatLngBounds();
     pts.forEach((s) => b.extend({ lat: s.lat, lng: s.lng }));
-    const fit = () => map.fitBounds(b, 60);
+    // fitPad() re-measured on each fit: the corrective idle fit sees the grid's settled size.
+    const fit = () => map.fitBounds(b, fitPad());
     fit();
     google.maps.event.addListenerOnce(map, 'idle', fit);
   };
@@ -7944,7 +7954,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef }) {
     } else if (matched.length >= 2 && matched.length <= 10) {
       const bounds = new google.maps.LatLngBounds();
       matched.forEach((s) => bounds.extend({ lat: s.lat, lng: s.lng }));
-      mapRef.current.fitBounds(bounds, 60);
+      mapRef.current.fitBounds(bounds, fitPad());
     }
   }, [google, effectiveMatchSet]);  // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -8745,6 +8755,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef }) {
 
         {/* NuVizz-style bottom data grid — collapsible spreadsheet of the board. */}
         <BottomStopsTable
+          rootRef={bottomGridRef}
           stops={visibleStops}
           loadStops={stops}
           boardDate={selectedDate}
@@ -8889,7 +8900,7 @@ const LOAD_BUCKET_STYLE = {
   cancelled: 'bg-red-100 text-red-700',
 };
 
-function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open, setOpen, onPick, onPickLoad, headerRight, onWindowRowsChange, planVersion = 0, highlightIds = null }) {
+function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open, setOpen, onPick, onPickLoad, headerRight, onWindowRowsChange, planVersion = 0, highlightIds = null, rootRef = null }) {
   // Loads view groups the FULL board's loads (loadStops) so stop-level filters —
   // notably "Unplanned only" — don't empty it. Falls back to the visible stops.
   const loadSrc = loadStops || stops;
@@ -9237,7 +9248,7 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
   const deleteProfile = (name) => setProfiles((v) => ({ list: v.list.filter((p) => p.name !== name), active: v.active === name ? null : v.active }));
 
   return (
-    <div className="absolute left-0 right-0 bottom-0 z-[12] bg-white border-t border-slate-200 shadow-[0_-2px_10px_rgba(0,0,0,0.10)] flex flex-col" style={{ height: open ? height : undefined, maxHeight: open ? 'calc(100% - 4rem)' : undefined }}>
+    <div ref={rootRef} className="absolute left-0 right-0 bottom-0 z-[12] bg-white border-t border-slate-200 shadow-[0_-2px_10px_rgba(0,0,0,0.10)] flex flex-col" style={{ height: open ? height : undefined, maxHeight: open ? 'calc(100% - 4rem)' : undefined }}>
       {open && (
         <div
           onPointerDown={onResizeDown}
@@ -13468,6 +13479,12 @@ function RoutingScreen({ debugCaptureRef }) {
     if (viewing) return;                       // saved-load view is read-only
     toggleStop(s.stopNbr);
   }, [panToStop, viewing, toggleStop]);
+  // Same overlay-aware fit as the dispatch Map: the bottom data grid floats INSIDE the map
+  // container, so Google's canvas runs underneath it and a flat 60px pad frames a route's
+  // southern stops behind the grid. Pad the bottom by the grid's live height at call time.
+  const bottomGridRef = useRef(null);
+  const fitPad = useCallback(() => ({ top: 60, right: 60, left: 60, bottom: 60 + (bottomGridRef.current?.offsetHeight || 0) }), []);
+
   // Right Routes-panel click → open that route into the workbench (cards) and frame it on the
   // map. Unlike pickLoadFromTable it does NOT add the stops to the selection set.
   const onPickRoute = useCallback((key) => {
@@ -13477,8 +13494,8 @@ function RoutingScreen({ debugCaptureRef }) {
     if (!pts.length) return;
     const b = new google.maps.LatLngBounds();
     pts.forEach((s) => b.extend({ lat: s.lat, lng: s.lng }));
-    mapRef.current.fitBounds(b, 60);
-  }, [openRouteInWorkbench, google, positionedAll]);
+    mapRef.current.fitBounds(b, fitPad());
+  }, [openRouteInWorkbench, google, positionedAll, fitPad]);
 
   // Frame ALL of a driver's stops (they may run multiple routes). Lighter than onPickRoute —
   // it only fits the map bounds, it doesn't open every route in the workbench.
@@ -13489,8 +13506,8 @@ function RoutingScreen({ debugCaptureRef }) {
     if (!pts.length) return;
     const b = new google.maps.LatLngBounds();
     pts.forEach((s) => b.extend({ lat: s.lat, lng: s.lng }));
-    mapRef.current.fitBounds(b, 60);
-  }, [google, positionedAll]);
+    mapRef.current.fitBounds(b, fitPad());
+  }, [google, positionedAll, fitPad]);
 
   // The selected-stops list: persistent on desktop, collapsed by default on mobile.
   const [listOpen, setListOpen] = useState(!isMobile);
@@ -14169,7 +14186,7 @@ function RoutingScreen({ debugCaptureRef }) {
     const b = new google.maps.LatLngBounds();
     pts.forEach((s) => b.extend({ lat: s.lat, lng: s.lng }));
     b.extend(ROUTING_DEPOT);
-    mapRef.current.fitBounds(b, 60);
+    mapRef.current.fitBounds(b, fitPad());
   }, [viewing, viewedLoad?.id, mapReady, google]); // eslint-disable-line
 
   // Stops kept on a route but outside their appointment window (advisory flag from
@@ -14205,9 +14222,9 @@ function RoutingScreen({ debugCaptureRef }) {
     if (google && mapRef.current && pts.length) {
       const b = new google.maps.LatLngBounds();
       pts.forEach((p) => b.extend({ lat: p.lat, lng: p.lng }));
-      mapRef.current.fitBounds(b, 60);
+      mapRef.current.fitBounds(b, fitPad());
     }
-  }, [viewing, positionedAll, openRouteInWorkbench, google, isMobile]);
+  }, [viewing, positionedAll, openRouteInWorkbench, google, isMobile, fitPad]);
   // Arm/disarm Ninja from the Compare panel button (the on-map tool is easy to miss). When arming
   // on mobile, drop the bottom sheet so the map — and the stops you're about to tap — are visible.
   const armNinjaFromPanel = useCallback(() => {
@@ -14583,6 +14600,7 @@ function RoutingScreen({ debugCaptureRef }) {
               overlay here covered the stops and tool rail (issue #232), so it's desktop-only now. */}
           {/* The dispatch-Map data grid — Stops/Loads spreadsheet, route-able. Toggleable (gear). */}
           {bottomGridOn && <BottomStopsTable
+            rootRef={bottomGridRef}
             stops={stops}
             loadStops={stops}
             boardDate={selectedDate}
@@ -14753,6 +14771,7 @@ function RoutingScreen({ debugCaptureRef }) {
         )}
         {/* The dispatch-Map data grid — Stops/Loads spreadsheet, route-able. Toggleable (gear). */}
         {bottomGridOn && <BottomStopsTable
+          rootRef={bottomGridRef}
           stops={stops}
           loadStops={stops}
           boardDate={selectedDate}
