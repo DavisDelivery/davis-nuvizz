@@ -23,7 +23,7 @@ import {
   upsertRoutes, upsertDrivers, upsertDriverDayPointer,
 } from './lib/history-store.mts';
 import { deriveRoutes, deriveDrivers, type CaptureMeta, type DeriveCtx } from './lib/history-derive.mts';
-import { finalizeCaptureSeal, getCaptureFailure, classifyHealTarget } from './lib/history-seal.mts';
+import { finalizeCaptureSeal, getCaptureFailure, classifyHealTarget, recordCaptureFailure } from './lib/history-seal.mts';
 
 const TENANT = 'davis';
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -133,6 +133,10 @@ export default async (req: Request): Promise<Response> => {
       results.push(await healDate(date));
     } catch (e: any) {
       console.error(`[manifest-heal] ${date} threw:`, e?.message);
+      // NEVER a silent throw (the same principle the seal step follows): a heal that
+      // dies in derive/upsert (e.g. the old slashed-route-id break) must leave a LOUD
+      // failure record so the day reads 'failed', not 'missing'. Best-effort.
+      try { await recordCaptureFailure(TENANT, date, 'derive', e?.message || 'heal threw', null); } catch { /* ignore */ }
       results.push({ date, healed: false, error: e?.message || 'heal threw' });
     }
   }

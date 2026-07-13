@@ -23,6 +23,23 @@ export function dayId(tenant: string, date: string): string {
   return `${tenant}__${date}`;
 }
 
+// PURE: make a human string safe as a Firestore document id. Firestore ids cannot
+// contain '/' or '\', cannot be '.' or '..', cannot be empty, and cannot match the
+// reserved __…__ pattern. Route names are human strings — a co-driver load is named
+// with a slash ("COLIN/DJ 1", two drivers on one truck), which made the routes doc
+// path an INVALID reference, so upsertRoutes threw and the whole day's capture aborted
+// AFTER the stops were written but BEFORE routes/rollup/seal — silently orphaning every
+// day that load ran (the COLIN/DJ 1 missing-day family: 2026-06-24/25, 07-01/02/07/10).
+// The raw name is preserved as a field ON the doc; only the KEY is sanitized. Idempotent
+// for already-safe ids, so existing clean route/driver docs keep their exact key.
+// Exported + unit-tested.
+export function histDocId(raw: string): string {
+  let s = String(raw ?? '').replace(/[/\\]/g, '_');   // path separators → underscore
+  if (s === '' || s === '.' || s === '..') return `id_${s.length}`; // → id_0 / id_1 / id_2
+  if (/^__.*__$/.test(s)) s = `x${s}`;                // dodge Firestore's reserved __…__ ids
+  return s.length > 1400 ? s.slice(0, 1400) : s;      // stay well under the 1500-byte cap
+}
+
 const MANIFEST_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 // PURE: the captured dates a manifest listing exposes — the exact set every
@@ -87,18 +104,21 @@ export async function upsertStops(tenant: string, date: string, records: any[]):
 }
 export async function upsertRoutes(tenant: string, date: string, records: any[]): Promise<void> {
   const base = dayPath(tenant, date);
-  await upsertAll(records, (r) => `${base}/routes/${r.loadNbr}`);
+  await upsertAll(records, (r) => `${base}/routes/${histDocId(r.loadNbr)}`);
 }
 export async function upsertDrivers(tenant: string, date: string, records: any[]): Promise<void> {
   const base = dayPath(tenant, date);
-  await upsertAll(records, (r) => `${base}/drivers/${r.driverKey}`);
+  await upsertAll(records, (r) => `${base}/drivers/${histDocId(r.driverKey)}`);
 }
 
 // Cross-day driver index — listing history_driver_days/{tenant}__{driverKey}/days
 // yields a driver's whole history cheaply (loads-by-driver without scanning days).
+// driverKey rides a PATH SEGMENT here, so it gets the same sanitization (a userName
+// with a '/' would break this doc path exactly like the route ids). Write + read use
+// histDocId so they stay consistent.
 export async function upsertDriverDayPointer(tenant: string, driverKey: string, date: string, ptr: any): Promise<void> {
-  await setDoc(`${DRIVER_DAYS_COLLECTION}/${tenant}__${driverKey}/days/${date}`, ptr);
+  await setDoc(`${DRIVER_DAYS_COLLECTION}/${tenant}__${histDocId(driverKey)}/days/${date}`, ptr);
 }
 export async function listDriverDays(tenant: string, driverKey: string): Promise<any[]> {
-  return listDocs(`${DRIVER_DAYS_COLLECTION}/${tenant}__${driverKey}/days`);
+  return listDocs(`${DRIVER_DAYS_COLLECTION}/${tenant}__${histDocId(driverKey)}/days`);
 }
