@@ -1,0 +1,388 @@
+// lib/routing-plan-core.mts
+//
+// PHASE 2 — PLAN SCORING. For one board date, build the engine's DAY PLAN with
+// the assignment solver, sequence each trip with the Phase 1 solver, and score
+// the plan against what dispatch actually built with the SAME crew. Shadow only:
+// writes plan_proposals / plan_proposals_daily; never touches live plan data.
+//
+//   plan_proposals/{tenant}__{date}
+//     engine_version, computed_at, drivers, trips_engine, trips_actual,
+//     stop_agreement_pct, coload_agreement_pct (+ coload_precision_pct),
+//     est_travel_engine_min, est_travel_actual_min,
+//     per_driver: [{driver, class, trips_engine, trips_actual, stops_engine,
+//                   stops_actual, lbs_engine, lbs_actual, agreement_pct}...],
+//     matched_load_sequence_score, unassigned_count, planned_stops
+//   plan_proposals_daily/{tenant}__{date}  (mirrors Phase 1's daily doc shape)
+//
+// Leakage guard: the ENGINE's inputs (envelopes, affinity, service times, fleet
+// chain) derive ONLY from dates strictly < D. The ANSWER KEY (what dispatch did
+// on D) is date D itself — that is the target, not an input. ZERO NuVizz calls.
+
+import { getDoc, setDoc, listDocs, runQuery } from './firestore.mts';
+import { listStops } from './history-store.mts';
+import { DEPOT, driverKeyFor } from './history-derive.mts';
+import { ENGINE_VERSION, loadEngineConfig, type EngineConfig } from './routing-engine-config.mts';
+import { zoneId, superOfZone, type ZonePrecisions } from './zones.mts';
+import { loadVehicleRoster, vehicleTypeForStop, type VehicleRoster } from './tractor-flags.mts';
+import { loadKeyForStop, REFERENCE_ROUTES_COLLECTION, type ReferenceRouteDoc } from './routing-reference.mts';
+import {
+  DRIVER_DAYS_COLLECTION, extractDriverDays, type DriverDayDoc,
+} from './routing-driver-days.mts';
+import {
+  SERVICE_TIMES_COLLECTION, serviceTimePath, fleetServicePath, serviceTimeAsOf,
+} from './routing-service-times.mts';
+import {
+  driverEnvelope, driverZoneAffinity, fleetTripChain, wallMinuteOfDay,
+} from './routing-envelope.mts';
+import {
+  solveAssignment, restrictionsBlockTractor, type AssignStop, type AssignDriver, type AssignedShift,
+} from './routing-assignment-solver.mts';
+import {
+  DEPOT_ID, buildTravelMatrix, solveRoute, travelMinutesForOrder, type EngineStop,
+} from './routing-engine-solver.mts';
+import { scoreRoute, toScoreList } from './score.mts';
+
+export const PLAN_PROPOSALS_COLLECTION = 'plan_proposals';
+export const PLAN_PROPOSALS_DAILY_COLLECTION = 'plan_proposals_daily';
+const TRACTOR_LOCATIONS_COLLECTION = 'tractor_locations';
+const CUSTOMER_NOTES_COLLECTION = 'customer_notes';
+
+export function planProposalPath(tenant: string, date: string): string {
+  return `${PLAN_PROPOSALS_COLLECTION}/${tenant}__${date}`;
+}
+export function planDailyPath(tenant: string, date: string): string {
+  return `${PLAN_PROPOSALS_DAILY_COLLECTION}/${tenant}__${date}`;
+}
+
+function finiteNum(v: any): number | null {
+  if (v === null || v === undefined || v === '') return null;
+  const n = Number(v); return Number.isFinite(n) ? n : null;
+}
+function routeEligible(s: any): boolean {
+  return !!s && s.isPlanned === true && s.isTerminal !== true && s.isUnplanned !== true && s.isAttempt !== true;
+}
+function pct(n: number, d: number): number | null { return d > 0 ? Math.round((n / d) * 1000) / 10 : null; }
+
+// unordered pair key
+function pairKey(a: string, b: string): string { return a < b ? `${a}|${b}` : `${b}|${a}`; }
+
+// PURE: the set of stop pairs that share a container (load or trip). Exported so
+// the agreement math is unit-testable, including the label-swap case.
+export function coloadPairs(groups: Map<string, string[]>): Set<string> {
+  const pairs = new Set<string>();
+  for (const ids of groups.values()) {
+    for (let i = 0; i < ids.length; i++) for (let j = i + 1; j < ids.length; j++) pairs.add(pairKey(ids[i], ids[j]));
+  }
+  return pairs;
+}
+
+// PURE: the two agreement families. stop_agreement is driver-CHOICE (did the
+// engine give this stop to the same driver dispatch did?); coload_agreement is
+// load-SHAPE and label-SYMMETRIC (of the stop pairs dispatch co-loaded, how many
+// did the engine also co-load — independent of which driver). Reporting both
+// decomposes a miss into "wrong shape" vs "wrong driver": a pure driver swap
+// scores coload 100% but stop_agreement < 100%.
+export function computePlanAgreement(
+  stopToActualDriver: Map<string, string>, stopToEngineDriver: Map<string, string>,
+  actualGroups: Map<string, string[]>, engineGroups: Map<string, string[]>,
+): { stop_agreement_pct: number | null; coload_agreement_pct: number | null; coload_precision_pct: number | null } {
+  let stopAgree = 0;
+  for (const [id, drv] of stopToActualDriver) if (stopToEngineDriver.get(id) === drv) stopAgree++;
+  const actualPairs = coloadPairs(actualGroups);
+  const enginePairs = coloadPairs(engineGroups);
+  let both = 0;
+  for (const p of actualPairs) if (enginePairs.has(p)) both++;
+  return {
+    stop_agreement_pct: pct(stopAgree, stopToActualDriver.size),
+    coload_agreement_pct: pct(both, actualPairs.size),   // recall over dispatch's co-loads
+    coload_precision_pct: pct(both, enginePairs.size),   // precision over engine's co-loads
+  };
+}
+
+// travel minutes for an ordered stop list (depot-anchored), Phase 1 estimator.
+function travelForOrder(orderedStops: EngineStop[], depot: { lat: number; lng: number }, cfg: EngineConfig): number {
+  if (!orderedStops.length) return 0;
+  const matrix = buildTravelMatrix([{ id: DEPOT_ID, lat: depot.lat, lng: depot.lng }, ...orderedStops], cfg);
+  return travelMinutesForOrder(orderedStops, matrix);
+}
+
+export interface PlanInputs {
+  driverDaysBefore: DriverDayDoc[];    // < D
+  referencesBefore: ReferenceRouteDoc[]; // < D
+  serviceDocByKey: Map<string, any>;   // customer service-time docs (obs dated)
+  fleetServiceDoc: any | null;
+  notesRestrictions: Map<string, any[]>; // matchKey → equipment_restrictions
+  tractorCapable: Set<string>;         // matchKey → served by a tractor before (positive; carried, not a restriction)
+}
+
+export interface PlanDaySummary {
+  ok: boolean; tenant: string; date: string; skipped_existing?: boolean;
+  drivers: number; trips_engine: number; trips_actual: number;
+  planned_stops: number; unassigned_count: number;
+  stop_agreement_pct: number | null; coload_agreement_pct: number | null; coload_precision_pct: number | null;
+  est_travel_engine_min: number | null; est_travel_actual_min: number | null;
+  matched_load_sequence_score: number | null;
+  ms: number;
+}
+
+// PURE-ish core (I/O only for the loaders it calls when inputs aren't preloaded).
+export async function runPlanForDate(
+  tenant: string, date: string,
+  opts: { cfg?: EngineConfig; force?: boolean; inputs?: PlanInputs } = {},
+): Promise<PlanDaySummary> {
+  const t0 = Date.now();
+  const cfg = opts.cfg || await loadEngineConfig(tenant);
+  const precisions: ZonePrecisions = { zone_precision: cfg.zone_precision, super_precision: cfg.super_precision, top_precision: cfg.top_precision };
+
+  if (!opts.force) {
+    const existing = await getDoc(planDailyPath(tenant, date));
+    if (existing && existing.engine_version === ENGINE_VERSION) {
+      return {
+        ok: true, tenant, date, skipped_existing: true,
+        drivers: existing.drivers ?? 0, trips_engine: existing.trips_engine ?? 0, trips_actual: existing.trips_actual ?? 0,
+        planned_stops: existing.planned_stops ?? 0, unassigned_count: existing.unassigned_count ?? 0,
+        stop_agreement_pct: existing.stop_agreement_pct ?? null, coload_agreement_pct: existing.coload_agreement_pct ?? null,
+        coload_precision_pct: existing.coload_precision_pct ?? null,
+        est_travel_engine_min: existing.est_travel_engine_min ?? null, est_travel_actual_min: existing.est_travel_actual_min ?? null,
+        matched_load_sequence_score: existing.matched_load_sequence_score ?? null, ms: Date.now() - t0,
+      };
+    }
+  }
+
+  const dateStops = await listStops(tenant, date);
+  let roster: VehicleRoster | null = null;
+  try { roster = await loadVehicleRoster(); } catch (e: any) { console.error('[plan] roster load failed:', e?.message); }
+  const truckClassOf = (s: any) => (roster ? vehicleTypeForStop(s, roster) : null);
+
+  // ── the ANSWER KEY: what dispatch did on D (all eligible planned stops) ──
+  const planned = (dateStops || []).filter((s) => routeEligible(s) && loadKeyForStop(s) && finiteNum(s.lat) != null && finiteNum(s.lng) != null);
+  const stopId = (s: any) => String(s.stopNbr);
+  const rawById = new Map(planned.map((s) => [stopId(s), s] as const));
+
+  const stopToActualDriver = new Map<string, string>();
+  const actualLoadGroups = new Map<string, string[]>();       // loadKey → stopIds (co-load)
+  const actualLoadOrdered = new Map<string, { driverKey: string; ids: string[] }>();
+  for (const s of planned) {
+    const id = stopId(s);
+    stopToActualDriver.set(id, driverKeyFor(s));
+    const lk = loadKeyForStop(s)!;
+    (actualLoadGroups.get(lk) ?? actualLoadGroups.set(lk, []).get(lk)!).push(id);
+  }
+  for (const [lk, ids] of actualLoadGroups) {
+    const ordered = [...ids].sort((a, b) => {
+      const ra = finiteNum(rawById.get(a)?.routeSeq), rb = finiteNum(rawById.get(b)?.routeSeq);
+      if (ra != null && rb != null && ra !== rb) return ra - rb;
+      const ea = String(rawById.get(a)?.deliveredDTTM ?? rawById.get(a)?.plannedEtaDTTM ?? '');
+      const eb = String(rawById.get(b)?.deliveredDTTM ?? rawById.get(b)?.plannedEtaDTTM ?? '');
+      return ea < eb ? -1 : ea > eb ? 1 : a.localeCompare(b);
+    });
+    actualLoadOrdered.set(lk, { driverKey: driverKeyFor(rawById.get(ids[0])), ids: ordered });
+  }
+
+  // ── the crew (staffing = dispatch's INPUT): active drivers + start times ──
+  const actualDriverDays = extractDriverDays(dateStops, { tenant, date, truckClassOf });
+  const trips_actual = actualDriverDays.reduce((a, d) => a + d.trips.filter((t) => t.stops.length).length, 0);
+
+  // ── as-of inputs (< D only) ──
+  const inputs = opts.inputs || await loadPlanInputs(tenant, date, planned);
+
+  const activeDrivers: AssignDriver[] = actualDriverDays.map((dd) => ({
+    driver_key: dd.driver_key,
+    driver_user_name: dd.driver_user_name,
+    driver_name: dd.driver_name,
+    truck_class: dd.truck_class,
+    start_minute: wallMinuteOfDay(dd.start_time),
+    envelope: driverEnvelope(dd.driver_key, inputs.driverDaysBefore, date, cfg),
+    affinity: driverZoneAffinity(dd.driver_user_name, inputs.referencesBefore, date, precisions),
+  }));
+
+  // ── the engine's planned stop set ──
+  const assignStops: AssignStop[] = planned.map((s) => {
+    const id = stopId(s);
+    const lat = Number(s.lat), lng = Number(s.lng);
+    const mk = s.customerMatchKey ?? null;
+    const sd = finiteNum(s.stopDistance);
+    return {
+      id, lat, lng,
+      zone: zoneId(lat, lng, precisions),
+      gh5: superOfZone(zoneId(lat, lng, precisions), precisions),
+      pallets: finiteNum(s.pallets) || 0,
+      weight: finiteNum(s.weight) || 0,
+      matchKey: mk,
+      strict: String(s.timeConstraint || '').toUpperCase() === 'STRICT',
+      miles: sd != null ? sd : Math.hypot(lat - DEPOT.lat, lng - DEPOT.lng) * 69, // rough fallback
+      blocksTractor: mk ? restrictionsBlockTractor(inputs.notesRestrictions.get(mk) || []) : false,
+    };
+  });
+
+  const fleet = fleetTripChain(inputs.driverDaysBefore, date, cfg);
+  const svcMedianCache = new Map<string, number>();
+  const serviceMedianFor = (s: AssignStop): number => {
+    const key = `${s.matchKey}__${s.pallets}`;
+    let v = svcMedianCache.get(key);
+    if (v == null) {
+      const doc = s.matchKey ? inputs.serviceDocByKey.get(s.matchKey) : null;
+      v = serviceTimeAsOf(doc, inputs.fleetServiceDoc, s.pallets, date, cfg).median_min;
+      svcMedianCache.set(key, v);
+    }
+    return v;
+  };
+
+  const result = solveAssignment({
+    date, stops: assignStops, drivers: activeDrivers, fleetChain: fleet, cfg,
+    depot: { lat: DEPOT.lat, lng: DEPOT.lng }, serviceMedianFor,
+  });
+
+  // ── sequence engine trips + build engine co-load / driver maps ──
+  const stopToEngineDriver = new Map<string, string>();
+  const engineTripGroups = new Map<string, string[]>();   // tripKey → stopIds (co-load)
+  const engineTrips: Array<{ driverKey: string; seq: number; orderedIds: string[]; travelMin: number }> = [];
+  let est_travel_engine = 0;
+  const assignById = new Map(assignStops.map((s) => [s.id, s] as const));
+  for (const sh of result.shifts) {
+    sh.trips.forEach((trip, ti) => {
+      const tripKey = `${sh.driver.driver_key}__${ti + 1}`;
+      const ids = trip.stops.map((s) => s.id);
+      engineTripGroups.set(tripKey, ids);
+      for (const id of ids) stopToEngineDriver.set(id, sh.driver.driver_key);
+      const engineStops: EngineStop[] = trip.stops.map((s) => ({ id: s.id, lat: s.lat, lng: s.lng, zone: s.zone }));
+      const solved = solveRoute({ loadKey: tripKey, stops: engineStops, depot: { lat: DEPOT.lat, lng: DEPOT.lng }, referenceZoneSeq: null, cfg });
+      est_travel_engine += solved.travelMin;
+      engineTrips.push({ driverKey: sh.driver.driver_key, seq: ti + 1, orderedIds: solved.order.map((o) => o.id), travelMin: solved.travelMin });
+    });
+  }
+
+  // ── actual travel estimate (actual load order) ──
+  let est_travel_actual = 0;
+  for (const { ids } of actualLoadOrdered.values()) {
+    const ordered: EngineStop[] = ids.map((id) => { const s = assignById.get(id)!; return { id, lat: s.lat, lng: s.lng, zone: s.zone }; }).filter((s) => s);
+    est_travel_actual += travelForOrder(ordered, { lat: DEPOT.lat, lng: DEPOT.lng }, cfg);
+  }
+
+  // ── agreement metrics (pure, tested incl. the label-swap case) ──
+  const agreement = computePlanAgreement(stopToActualDriver, stopToEngineDriver, actualLoadGroups, engineTripGroups);
+
+  // ── per-driver breakdown ──
+  const perDriver: any[] = [];
+  const engineByDriver = new Map<string, { trips: number; stops: number; lbs: number }>();
+  for (const sh of result.shifts) {
+    let stopsN = 0, lbs = 0;
+    for (const t of sh.trips) for (const s of t.stops) { stopsN++; lbs += s.weight; }
+    engineByDriver.set(sh.driver.driver_key, { trips: sh.trips.length, stops: stopsN, lbs: Math.round(lbs) });
+  }
+  for (const dd of actualDriverDays) {
+    const actualStops = [...stopToActualDriver.entries()].filter(([, drv]) => drv === dd.driver_key).map(([id]) => id);
+    const agree = actualStops.filter((id) => stopToEngineDriver.get(id) === dd.driver_key).length;
+    const eng = engineByDriver.get(dd.driver_key) || { trips: 0, stops: 0, lbs: 0 };
+    perDriver.push({
+      driver: dd.driver_name || dd.driver_user_name || dd.driver_key,
+      driver_key: dd.driver_key,
+      class: dd.truck_class,
+      trips_engine: eng.trips, trips_actual: dd.trips.filter((t) => t.stops.length).length,
+      stops_engine: eng.stops, stops_actual: actualStops.length,
+      lbs_engine: eng.lbs, lbs_actual: Math.round(dd.day_totals?.weight || 0),
+      agreement_pct: pct(agree, actualStops.length),
+    });
+  }
+
+  // ── matched-load sequence score (engine trips overlapping an actual load ≥60%) ──
+  const seqScores: number[] = [];
+  for (const et of engineTrips) {
+    const etSet = new Set(et.orderedIds);
+    let bestLk: string | null = null, bestOv = 0;
+    for (const [lk, g] of actualLoadOrdered) {
+      const ov = g.ids.filter((id) => etSet.has(id)).length;
+      if (ov > bestOv) { bestOv = ov; bestLk = lk; }
+    }
+    if (!bestLk || bestOv / et.orderedIds.length < 0.6) continue;
+    const shared = new Set(actualLoadOrdered.get(bestLk)!.ids.filter((id) => etSet.has(id)));
+    if (shared.size < 2) continue;
+    const actualSeq = actualLoadOrdered.get(bestLk)!.ids.filter((id) => shared.has(id));
+    const engineSeq = et.orderedIds.filter((id) => shared.has(id));
+    const pts: EngineStop[] = [...shared].map((id) => { const s = assignById.get(id)!; return { id, lat: s.lat, lng: s.lng, zone: s.zone }; });
+    const matrix = buildTravelMatrix([{ id: DEPOT_ID, lat: DEPOT.lat, lng: DEPOT.lng }, ...pts], cfg);
+    seqScores.push(scoreRoute(toScoreList(DEPOT_ID, actualSeq), toScoreList(DEPOT_ID, engineSeq), matrix));
+  }
+  const matchedSeqScore = seqScores.length ? Math.round((seqScores.reduce((a, b) => a + b, 0) / seqScores.length) * 10000) / 10000 : null;
+
+  const trips_engine = engineTrips.length;
+  const nowIso = new Date().toISOString();
+  const proposal = {
+    tenant, date, engine_version: ENGINE_VERSION, computed_at: nowIso,
+    drivers: activeDrivers.length,
+    trips_engine, trips_actual,
+    planned_stops: planned.length,
+    unassigned_count: result.unassigned.length,
+    stop_agreement_pct: agreement.stop_agreement_pct,
+    coload_agreement_pct: agreement.coload_agreement_pct,
+    coload_precision_pct: agreement.coload_precision_pct,
+    est_travel_engine_min: Math.round(est_travel_engine * 10) / 10,
+    est_travel_actual_min: Math.round(est_travel_actual * 10) / 10,
+    matched_load_sequence_score: matchedSeqScore,
+    per_driver: perDriver.sort((a, b) => (b.stops_actual - a.stops_actual)),
+    stops: assignStops.map((s) => ({
+      id: s.id, businessName: rawById.get(s.id)?.businessName ?? null, lat: s.lat, lng: s.lng,
+      actual_driver: stopToActualDriver.get(s.id) ?? null,
+      engine_driver: stopToEngineDriver.get(s.id) ?? null,
+    })),
+    engine_trips: engineTrips.map((t) => ({ driver_key: t.driverKey, seq: t.seq, stop_ids: t.orderedIds, travel_min: Math.round(t.travelMin * 10) / 10 })),
+    fleet_chain: { far_first_rate: fleet.far_first_rate, reload_gap_median_min: fleet.reload_gap_median_min, source: fleet.source },
+  };
+  await setDoc(planProposalPath(tenant, date), proposal);
+  await setDoc(planDailyPath(tenant, date), {
+    tenant, date, engine_version: ENGINE_VERSION, computed_at: nowIso,
+    drivers: activeDrivers.length, trips_engine, trips_actual, planned_stops: planned.length,
+    unassigned_count: result.unassigned.length,
+    stop_agreement_pct: proposal.stop_agreement_pct, coload_agreement_pct: proposal.coload_agreement_pct,
+    coload_precision_pct: proposal.coload_precision_pct,
+    est_travel_engine_min: proposal.est_travel_engine_min, est_travel_actual_min: proposal.est_travel_actual_min,
+    matched_load_sequence_score: matchedSeqScore,
+  });
+
+  return {
+    ok: true, tenant, date,
+    drivers: activeDrivers.length, trips_engine, trips_actual,
+    planned_stops: planned.length, unassigned_count: result.unassigned.length,
+    stop_agreement_pct: proposal.stop_agreement_pct, coload_agreement_pct: proposal.coload_agreement_pct,
+    coload_precision_pct: proposal.coload_precision_pct,
+    est_travel_engine_min: proposal.est_travel_engine_min, est_travel_actual_min: proposal.est_travel_actual_min,
+    matched_load_sequence_score: matchedSeqScore, ms: Date.now() - t0,
+  };
+}
+
+// Load the as-of inputs for one date (< D where the guard applies). The replay
+// preloads these once and passes them in.
+export async function loadPlanInputs(tenant: string, date: string, plannedStops: any[]): Promise<PlanInputs> {
+  const [ddRows, refRows, fleetDoc, notesRows, tractorRows] = await Promise.all([
+    runQuery({ from: [{ collectionId: DRIVER_DAYS_COLLECTION }], where: { fieldFilter: { field: { fieldPath: 'date' }, op: 'LESS_THAN', value: { stringValue: date } } } }),
+    runQuery({ from: [{ collectionId: REFERENCE_ROUTES_COLLECTION }], where: { fieldFilter: { field: { fieldPath: 'date' }, op: 'LESS_THAN', value: { stringValue: date } } } }),
+    getDoc(fleetServicePath(tenant)),
+    listDocs(CUSTOMER_NOTES_COLLECTION),
+    listDocs(TRACTOR_LOCATIONS_COLLECTION),
+  ]);
+  const driverDaysBefore = (ddRows as any[]).filter((r) => r?.tenant === tenant) as DriverDayDoc[];
+  const referencesBefore = (refRows as any[]).filter((r) => r?.tenant === tenant) as ReferenceRouteDoc[];
+
+  const notesRestrictions = new Map<string, any[]>();
+  for (const n of notesRows) {
+    const mk = n?.match_key || n?._id;
+    if (mk) notesRestrictions.set(String(mk), n?.equipment_restrictions || []);
+  }
+  const tractorCapable = new Set<string>();
+  for (const t of tractorRows) { const mk = t?.match_key || t?._id; if (mk) tractorCapable.add(String(mk)); }
+
+  // customer service docs only for the matchKeys present that day (bounded reads)
+  const wantKeys = [...new Set(plannedStops.map((s) => s?.customerMatchKey).filter(Boolean))] as string[];
+  const serviceDocByKey = new Map<string, any>();
+  let i = 0;
+  const worker = async () => {
+    while (i < wantKeys.length) {
+      const mk = wantKeys[i++];
+      const doc = await getDoc(serviceTimePath(tenant, mk));
+      if (doc) serviceDocByKey.set(mk, doc);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(8, wantKeys.length || 1) }, worker));
+
+  return { driverDaysBefore, referencesBefore, serviceDocByKey, fleetServiceDoc: fleetDoc, notesRestrictions, tractorCapable };
+}
