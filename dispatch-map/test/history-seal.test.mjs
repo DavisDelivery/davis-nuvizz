@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import {
   allPresent, finalizeCaptureSeal, classifyHealTarget, classifyCaptureDay,
 } from '../netlify/functions/lib/history-seal.mts';
-import { capturedDatesFromManifests } from '../netlify/functions/lib/history-store.mts';
+import { capturedDatesFromManifests, histDocId } from '../netlify/functions/lib/history-store.mts';
 
 const CAP = { capture_version: 1, captured_at: '2026-07-08T06:00:00Z', source_scanned_at: '2026-07-08T05:00:00Z', app_version: '0.12.0' };
 
@@ -43,6 +43,49 @@ test('allPresent: every intended id must appear in the readback', () => {
   assert.equal(allPresent(stopDocs([1, 2, 3]), new Set(['1', '2', '3'])), true);
   assert.equal(allPresent(stopDocs([1, 2]), new Set(['1', '2', '3'])), false);
   assert.equal(allPresent(stopDocs([]), new Set()), true);
+});
+
+// ── histDocId — the COLIN/DJ 1 capture-hole fix ──────────────────────────────
+test('histDocId: a slash (co-driver load) is neutralized so the doc path stays valid', () => {
+  assert.equal(histDocId('COLIN/DJ 1'), 'COLIN_DJ 1'); // the load that orphaned 6 days
+  assert.equal(histDocId('A\\B'), 'A_B');              // backslash too
+  assert.ok(!histDocId('COLIN/DJ 1').includes('/'), 'never leaves a slash in the id');
+});
+test('histDocId: leaves already-safe ids untouched (existing docs keep their key)', () => {
+  assert.equal(histDocId('JIM 1'), 'JIM 1');
+  assert.equal(histDocId('OWUSU 1'), 'OWUSU 1');
+  assert.equal(histDocId('DAVIS000198727'), 'DAVIS000198727');
+});
+test('histDocId: guards empty / dot / dot-dot / reserved __…__ and caps length', () => {
+  assert.equal(histDocId(''), 'id_0');
+  assert.equal(histDocId('.'), 'id_1');
+  assert.equal(histDocId('..'), 'id_2');
+  assert.equal(histDocId('__foo__'), 'x__foo__');
+  assert.equal(histDocId('x'.repeat(2000)).length, 1400);
+});
+
+test('seal: a SLASHED route name (COLIN/DJ 1) now verifies + seals — the capture-hole fix', () => {
+  // Pre-fix, routes were keyed by the raw name → an invalid Firestore path threw in
+  // upsertRoutes and the whole capture died before the seal (the orphaned-day family).
+  // finalizeCaptureSeal now builds the verify id-set with histDocId, matching the
+  // sanitized readback _id the write produces.
+  const stops = stopDocs([1, 2, 3]);
+  // readback route doc carries the SANITIZED id (what the real upsert would store).
+  const { io, state } = fakeIO({
+    stops, drivers: [{ _id: 'D1', driverKey: 'D1' }],
+    routes: [{ _id: histDocId('COLIN/DJ 1'), loadNbr: 'COLIN/DJ 1' }, { _id: 'JIM 1', loadNbr: 'JIM 1' }],
+  });
+  return finalizeCaptureSeal({
+    tenant: 'davis', date: '2026-07-10', stopsForChecksum: stops,
+    stopRecords: stops,
+    routeRecords: recs(['COLIN/DJ 1', 'JIM 1'], 'loadNbr'),
+    driverRecords: recs(['D1'], 'driverKey'),
+    capture: CAP, absentKeptCount: 0,
+  }, io).then((res) => {
+    assert.equal(res.verified, true, 'the slashed route matches its sanitized doc — verify passes');
+    assert.equal(res.sealed, true);
+    assert.equal(state.failures.length, 0);
+  });
 });
 
 test('seal: clean verify → manifest sealed, failure cleared, nothing recorded', async () => {

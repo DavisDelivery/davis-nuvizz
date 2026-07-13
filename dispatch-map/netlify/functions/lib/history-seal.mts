@@ -28,7 +28,7 @@ import {
   computeStopChecksum, manifestCountsFromReadback, type CaptureMeta,
 } from './history-derive.mts';
 import {
-  dayPath, setManifest, listStops, listRoutes, listDrivers,
+  dayPath, setManifest, listStops, listRoutes, listDrivers, histDocId,
 } from './history-store.mts';
 
 export const CAPTURE_FAILURES_COLLECTION = 'history_capture_failures';
@@ -133,9 +133,13 @@ export async function finalizeCaptureSeal(input: FinalizeInput, io: Partial<Seal
   } = input;
   const $ = { ...DEFAULT_IO, ...io };
 
+  // IDs must equal the readback doc _ids (the sanitized path segments). routes/drivers
+  // go through histDocId on write, so the verify set uses it too — otherwise a slashed
+  // route ("COLIN/DJ 1" → "COLIN_DJ 1") would never "match" its own doc and the seal
+  // would be withheld. Stops are keyed by numeric stopNbr (already path-safe).
   const stopIds = new Set(stopRecords.map((r) => String(r.stopNbr)));
-  const routeIds = new Set(routeRecords.map((r) => String(r.loadNbr)));
-  const driverIds = new Set(driverRecords.map((r) => String(r.driverKey)));
+  const routeIds = new Set(routeRecords.map((r) => histDocId(String(r.loadNbr))));
+  const driverIds = new Set(driverRecords.map((r) => histDocId(String(r.driverKey))));
   const checksum = computeStopChecksum(stopsForChecksum);
 
   let stopsOk = false, routesOk = false, driversOk = false, attempts = 0;
