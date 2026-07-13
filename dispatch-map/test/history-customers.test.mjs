@@ -39,6 +39,42 @@ test('matchesAllWords: ANDs every query word against stored tokens', () => {
   assert.equal(matchesAllWords(tokens, []), false);
 });
 
+// ── Initialism search (BUFORD Jul 13: "E R SNELL CONTRACTOR" invisible for "er snell") ──
+test('nameSearchTokens: joins a run of single-letter words into a searchable token', () => {
+  // The customer is stored as "E R SNELL CONTRACTOR" — the "E.R." abbreviation. The old
+  // tokenizer dropped the single letters, so no "er" token existed and "er snell" found nothing.
+  const t = nameSearchTokens('E R SNELL CONTRACTOR');
+  assert.ok(t.includes('er'), 'the initialism E R yields a joined "er" token');
+  assert.ok(t.includes('snell') && t.includes('sn'));
+  assert.ok(t.includes('contractor'));
+});
+
+test('nameSearchTokens: periods in an initialism also yield the joined token', () => {
+  const t = nameSearchTokens('E.R. SNELL CONTRACTOR, INC');
+  assert.ok(t.includes('er'), 'E.R. → er (periods become spaces, then the run joins)');
+  assert.ok(t.includes('snell'));
+});
+
+test('nameSearchTokens: a 3-letter initialism yields prefixes (abc → ab, abc)', () => {
+  const t = nameSearchTokens('A B C HOLDINGS');
+  assert.ok(t.includes('ab') && t.includes('abc'));
+  assert.ok(t.includes('holdings'));
+});
+
+test('nameSearchTokens: an isolated single letter is still not a token (no false run)', () => {
+  const t = nameSearchTokens('J CREW');   // one single letter, no run to join
+  assert.ok(!t.includes('j'));
+  assert.ok(t.includes('crew') && t.includes('cr'));
+});
+
+test('matchesAllWords: "er snell" now matches E R SNELL CONTRACTOR (the reported case)', () => {
+  const tokens = nameSearchTokens('E R SNELL CONTRACTOR');
+  assert.equal(matchesAllWords(tokens, queryWords('er snell')), true);
+  assert.equal(matchesAllWords(tokens, queryWords('snell')), true);       // single word already worked
+  assert.equal(matchesAllWords(tokens, queryWords('er contractor')), true);
+  assert.equal(matchesAllWords(tokens, queryWords('er publix')), false);  // publix not present
+});
+
 test('mergeProEntries: de-dupes by pro keeping the latest date, newest first', () => {
   const out = mergeProEntries(
     [{ pro: 'A', date: '2026-06-01' }, { pro: 'B', date: '2026-06-03' }],
