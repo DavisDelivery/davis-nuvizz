@@ -59,7 +59,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.50.5';
+const APP_VERSION = '0.50.6';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -104,6 +104,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.50.6', '% DELIVERED on the stops count. The "Showing N of M stops" line — on the mobile Stops tab and in the desktop filter panel — now ends with how much of the day is done, e.g. "Showing 849 of 849 stops · 34% delivered". It counts delivered stops against the WHOLE day\'s board, so it\'s a steady progress read: it stays put while you search or filter the list (it always reflects the full day, not just the rows currently shown).'],
   ['0.50.5', 'FASTER MAP LOAD + clustering off by default. (1) Marker clustering is now OFF by default — you told me you\'ve never liked it, so the map shows every pin individually (flip "Show clustered" back on any time in Filters; that sticks). (2) The map used to rebuild every one of your 500–1500 pins about THREE times on each cold load — once when stops arrive, again when customer notes land, again when tractor locations land — regenerating every pin\'s icon from scratch each pass, plus a full rebuild on every 2-minute refresh. Pin icons are now cached and reused, and the map keeps one clusterer instead of building a new one each time, so those repeats are near-free. (3) The Uline quote calculator (~345 KB) no longer loads with the map — it loads the first time you open the Quote tab, trimming the app\'s cold-start download. No change to what any pin looks like, and zero effect on NuVizz calls or scans.'],
   ['0.50.4', 'ROUND DELIVERY PINS + a "Hide map labels" switch. (1) Delivery stops are now CIRCLES, not teardrops — the map, the routing screen, and the Compare/Engine view all render each stop as a round marker centered exactly on the location (a teardrop pointed from above the spot; a circle sits ON it). Everything the old pin carried carries over unchanged: the status color, the route sequence number, the co-located count badge, AM/PM tags, the DNS ✕, hollow "unset" styling, and search-match orange. The only pins that stay teardrops are the draggable "move this stop to the right spot" markers, where the point is the whole point. (2) NEW Map filter "Hide map labels" (Filters panel + the mobile filter drawer) turns off Google\'s own business/place-name labels — the clutter that overlaps your stop pins — the same switch the Routing map has had. It cleans the satellite view; because the map uses a cloud style, the plain roadmap base keeps its labels, so flip on Satellite view to see the labels drop. Also: this deploy points the CS-email recipient at customerservice@davisdelivery.com.'],
   ['0.50.3', 'CS EMAIL IS LIVE. The "Email customer service when scheduled" toggle now actually sends: the Resend email keys are configured on the site, sending as Davis Dispatch from the verified davisdelivery.com domain, to whatever address is set in NOTIFY_CS_TO (start it on yourself, then point it at the CS inbox when ready). Turn the toggle on for a customer and CS gets one email the first time that customer hits a day\'s board. To send a one-off check any time: /.netlify/functions/cs-notify-test?pro=<PRO> (add &dryRun=1 to preview without sending, or &to=you@example.com to redirect). This deploy is also what makes the keys take effect — env changes only reach the functions on a fresh deploy.'],
@@ -3799,6 +3800,7 @@ function FilterPanel({ filters, setFilters, counts }) {
 
       <div className="text-xs text-slate-500 pt-2 border-t">
         Showing <span className="font-semibold text-slate-800">{counts.visible}</span> of {counts.total} stops
+        {counts.pct != null && <> · <span className="font-semibold text-green-700">{counts.pct}% delivered</span></>}
       </div>
     </div>
   );
@@ -6373,7 +6375,7 @@ function LookupStopModal({ stop, note, onClose }) {
 
 function MobileStopsTab({
   stops, notes, drivers, searchInput, setSearchInput,
-  resultCount, totalCount, onPickStop,
+  resultCount, totalCount, completedPct, onPickStop,
   aiAvailable, onAskAi, aiBusy, aiSummary, aiError, onClearAi,
 }) {
   const [histOpen, setHistOpen] = useState(false);
@@ -6424,6 +6426,7 @@ function MobileStopsTab({
         ) : (
           <div className="text-[11px] text-slate-500 mt-1.5 px-0.5">
             Showing <span className="font-semibold text-slate-700">{resultCount}</span> of {totalCount} stops
+            {completedPct != null && <> · <span className="font-semibold text-green-700">{completedPct}% delivered</span></>}
           </div>
         )}
         {aiError && <div className="mt-1 text-[11px] text-amber-700">{aiError}</div>}
@@ -7600,6 +7603,18 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef }) {
     return filteredStops.filter((s) => effectiveMatchSet.has(s.stopNbr));
   }, [filteredStops, effectiveMatchSet]);
 
+  // Board completion for the stops-count header (Chad: "% completed"). Delivered ÷ the whole
+  // day's board — deliberately independent of the search box AND the map filters, so it reads
+  // as "how much of today is done" and doesn't jump around while you filter. Null on an empty
+  // board (nothing to show a % for).
+  const boardCompletion = useMemo(() => {
+    const total = stops.length;
+    if (!total) return null;
+    let delivered = 0;
+    for (const s of stops) if (classifyStopStatus(s) === 'DELIVERED') delivered += 1;
+    return { delivered, total, pct: Math.round((delivered / total) * 100) };
+  }, [stops]);
+
   // M6 — AI search/chat handlers. runAiSearch parses the NL query and applies the
   // returned spec locally; runChat builds the trimmed context and asks the model.
   const runAiSearch = useCallback(async (q) => {
@@ -8502,6 +8517,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef }) {
               setSearchInput={setSearchInput}
               resultCount={visibleStops.length}
               totalCount={filteredStops.length}
+              completedPct={boardCompletion?.pct ?? null}
               onPickStop={pickStopFromMobile}
               aiAvailable={aiAvailable}
               onAskAi={runAiSearch}
@@ -8515,7 +8531,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef }) {
             <MobileFiltersTab
               filters={filters}
               setFilters={setFilters}
-              counts={{ visible: visibleStops.length, total: stops.length }}
+              counts={{ visible: visibleStops.length, total: stops.length, pct: boardCompletion?.pct ?? null }}
               mapFilters={mapFilters}
               setMapFilters={setMapFilters}
               showRoutes={showRoutes}
@@ -8721,7 +8737,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef }) {
         <FilterPanel
           filters={filters}
           setFilters={setFilters}
-          counts={{ visible: visibleStops.length, total: stops.length }}
+          counts={{ visible: visibleStops.length, total: stops.length, pct: boardCompletion?.pct ?? null }}
         />
         <Legend expanded={legendExpanded} setExpanded={setLegendExpanded} />
         {showRoutes && (
