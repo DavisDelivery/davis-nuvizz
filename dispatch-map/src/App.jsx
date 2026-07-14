@@ -59,7 +59,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.50.6';
+const APP_VERSION = '0.50.7';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -104,6 +104,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.50.7', 'SEARCH HITS: on top + a size smaller. When you search (e.g. "estes-"), the orange matched dots now render ABOVE every other marker, so a hit is never hidden under a nearby unmatched dot — Google used to stack markers by latitude, which could bury a northern hit behind a southern non-match. They\'re also a size smaller now (22px — between the big AM/PM-tagged pin and the small resting dot) so a big result set doesn\'t blanket the map, and the dimmed non-matches sink below the board. No change to the dots\' color or what they mean.'],
   ['0.50.6', '% DELIVERED on the stops count. The "Showing N of M stops" line — on the mobile Stops tab and in the desktop filter panel — now ends with how much of the day is done, e.g. "Showing 849 of 849 stops · 34% delivered". It counts delivered stops against the WHOLE day\'s board, so it\'s a steady progress read: it stays put while you search or filter the list (it always reflects the full day, not just the rows currently shown).'],
   ['0.50.5', 'FASTER MAP LOAD + clustering off by default. (1) Marker clustering is now OFF by default — you told me you\'ve never liked it, so the map shows every pin individually (flip "Show clustered" back on any time in Filters; that sticks). (2) The map used to rebuild every one of your 500–1500 pins about THREE times on each cold load — once when stops arrive, again when customer notes land, again when tractor locations land — regenerating every pin\'s icon from scratch each pass, plus a full rebuild on every 2-minute refresh. Pin icons are now cached and reused, and the map keeps one clusterer instead of building a new one each time, so those repeats are near-free. (3) The Uline quote calculator (~345 KB) no longer loads with the map — it loads the first time you open the Quote tab, trimming the app\'s cold-start download. No change to what any pin looks like, and zero effect on NuVizz calls or scans.'],
   ['0.50.4', 'ROUND DELIVERY PINS + a "Hide map labels" switch. (1) Delivery stops are now CIRCLES, not teardrops — the map, the routing screen, and the Compare/Engine view all render each stop as a round marker centered exactly on the location (a teardrop pointed from above the spot; a circle sits ON it). Everything the old pin carried carries over unchanged: the status color, the route sequence number, the co-located count badge, AM/PM tags, the DNS ✕, hollow "unset" styling, and search-match orange. The only pins that stay teardrops are the draggable "move this stop to the right spot" markers, where the point is the whole point. (2) NEW Map filter "Hide map labels" (Filters panel + the mobile filter drawer) turns off Google\'s own business/place-name labels — the clutter that overlaps your stop pins — the same switch the Routing map has had. It cleans the satellite view; because the map uses a cloud style, the plain roadmap base keeps its labels, so flip on Satellite view to see the labels drop. Also: this deploy points the CS-email recipient at customerservice@davisdelivery.com.'],
@@ -2248,11 +2249,16 @@ function stopMarkerIcon(google, s, note, opts = {}) {
         anchor: new google.maps.Point(8, 8),
       };
     } else {
-      const big = matched || !!tag;
+      // Size tiers: a matched (search-hit) dot sits BETWEEN the big AM/PM-tagged pin and the
+      // small resting dot — 22px — so a whole result set doesn't blanket the map, while still
+      // standing out (matched also renders on the TOP layer via the marker's zIndex, set in the
+      // marker effect). An AM/PM-tagged non-match stays the big 28; everything else is the 16.
+      const size = matched ? 22 : (tag ? 28 : 16);
+      const half = size / 2;
       result = {
         url: circleMarkerSvg(color, { hollow: matched ? false : meta.hollow, glyph, tag, count }),
-        scaledSize: big ? new google.maps.Size(28, 28) : new google.maps.Size(16, 16),
-        anchor: big ? new google.maps.Point(14, 14) : new google.maps.Point(8, 8),
+        scaledSize: new google.maps.Size(size, size),
+        anchor: new google.maps.Point(half, half),
       };
     }
   } else {
@@ -7973,6 +7979,10 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef }) {
         icon,
         title: s.businessName || '',
         opacity: dim ? 0.3 : 1,
+        // Search-matched dots ride the TOP layer, above everything (Chad) — above even Google's
+        // latitude-based auto stacking (≤ MAX_ZINDEX), so a northern hit never hides beneath a
+        // southern non-match. Dimmed non-matches sink below the normal board.
+        zIndex: matched ? ((google.maps.Marker?.MAX_ZINDEX ?? 1e6) + 1) : (dim ? 0 : undefined),
       });
       marker.addListener('click', () => {
         setSelectedDriver(null);
