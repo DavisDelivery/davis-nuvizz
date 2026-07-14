@@ -54,7 +54,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.50.1';
+const APP_VERSION = '0.50.2';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -99,6 +99,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.50.2', 'Engine → Sequencing: the Routes table now has a search box. Type any part of a route/load number, a driver name, or a truck class to filter the day\'s scored routes (case-insensitive) — the header shows "N of M" while a filter is active, and sorting still works on the filtered set. Purely a client-side view filter; no data or scoring change.'],
   ['0.50.1', 'Stop-card notes fixes + a way to TEST the CS email. (1) Saving a customer note (e.g. turning on "Email customer service when scheduled") now returns you to the note view instead of staying stuck in edit mode — before, tapping Save left the card looking dirty, so closing it popped a "you have unsaved edits" warning right after you saved, which read as "it won\'t save." (2) The collapsed note now SHOWS "Email CS when scheduled" (and every other set flag) so you can actually see the toggle took. (3) The mobile stop card no longer wastes a big band of white space: the sheet now hugs its content instead of stretching to full-screen when the note is short, and a double-counted safe-area gap under the Save bar is gone. (4) NEW test tool: hit /.netlify/functions/cs-notify-test?pro=<PRO> to send yourself/CS one clearly-marked [TEST] copy of the exact scheduled-customer email — it reports if the email keys (RESEND/NOTIFY_CS_TO) aren\'t configured yet, so you know whether the feature can send at all. Zero vendor calls. NOTE: if a customer\'s toggle still reverts after this, it\'s the customer key drifting when NuVizz returns a slightly different name/address on a later pull — flag it and we\'ll pin the key.'],
   ['0.50.0', 'ROUTING ENGINE 2.1 — audit fixes, the routing calendar, and driver habits. (1) The five-agent audit\'s accepted findings are in: the engine now learns each route\'s zone order from a WEIGHTED CONSENSUS of its top-5 most similar past routes (recency-decayed, a driver\'s own history counted double) instead of a single best neighbor — one weird old route can no longer mislead it, and a lone dissenter gets outvoted; the assignment shadow now uses each driver\'s TYPICAL start time (learned from history) instead of the day\'s actual clock-in, so it only knows what a planner would know; nightly scoring now waits for 14 days of reference history exactly like the replay; and the Engine tab\'s headline numbers are split guided vs unguided (sequencing) and known-driver vs fallback (assignment) so an untaught route never dilutes the real signal. (2) The REAL routing calendar is now config, not lore: dispatch builds overnight 20:00–07:00 ET, Sunday night builds Monday, no weekend boards — the engine idles cleanly on non-board days and holiday tombstones, and future Assist runs inherit the "never read today\'s plan before 07:30 ET" rule. (3) DRIVER HABITS: a new nightly miner tracks which driver usually delivers each customer; the stop panel now shows "Usually delivered by <name> — X of N deliveries" when the pattern is real, and the assignment engine prefers the habitual driver (customer-level signal outranks zone-level). Engine v2.1.0; still 100% shadow.'],
   ['0.49.0', 'ROUTING ENGINE — Phase 2, the ASSIGNMENT layer (still shadow). Phase 1 re-sequenced the loads dispatch built; Phase 2 builds the whole DAY PLAN. Given a board date\'s planned stops and the drivers who actually worked it, the engine assigns every stop to a driver-shift — a chain of 1..N trips through a Buford reload, split far-first (the bigger, farther load first, the close-in load second, the way our double-trippers actually run) — using capacity envelopes and zone affinities it learns per driver from our own history. It scores its plan against what dispatch actually built with the same crew: "stop agreement" (did the engine give the stop to the same driver?) and "co-load agreement" (of the stops dispatch put on one truck, how many did the engine keep together?) — reported separately so a miss is either a load-shape difference or a driver choice. The Engine tab gains a Sequencing | Assignment toggle; Assignment shows the agreement scoreboard, a learning-curve trend, a per-driver table (engine vs actual trips/stops/lbs), and a day map with Dispatch / Engine / Diff (one color per driver, trip 1 solid and later trips dashed, moved stops called out). SHADOW ONLY — it proposes and scores, changes nothing; Assist/Auto stay locked for Phase 3. Zero NuVizz calls, zero route-matrix calls; it reads only our warehouse + roster.'],
@@ -15458,6 +15459,7 @@ function EngineScreen() {
   const selected = routes.find((r) => r.load_key === selectedKey) || null;
 
   // sortable routes table
+  const [routeQuery, setRouteQuery] = useState('');
   const tableRows = useMemo(() => routes.map((r) => ({
     load_key: r.load_key,
     driver: r.driver_name || r.driver_user_name || '—',
@@ -15469,7 +15471,17 @@ function EngineScreen() {
     guided: r.unguided ? 'Unguided' : 'Guided',
     reference_date: r.reference_date || '—',
   })), [routes]);
-  const { sorted: sortedRows, sortKey, sortDir, toggle } = useSortable(tableRows, 'score', 'desc');
+  // free-text filter over route/load id, driver, and truck class (case-insensitive)
+  const filteredRows = useMemo(() => {
+    const q = routeQuery.trim().toLowerCase();
+    if (!q) return tableRows;
+    return tableRows.filter((r) =>
+      String(r.load_key).toLowerCase().includes(q) ||
+      String(r.driver).toLowerCase().includes(q) ||
+      String(r.truck_class).toLowerCase().includes(q)
+    );
+  }, [tableRows, routeQuery]);
+  const { sorted: sortedRows, sortKey, sortDir, toggle } = useSortable(filteredRows, 'score', 'desc');
 
   // moved stops for the Diff side list (position shifted by more than 2)
   const movedStops = useMemo(() => {
@@ -15639,8 +15651,18 @@ function EngineScreen() {
         {/* routes table + map */}
         <div className="flex flex-col xl:flex-row gap-3 items-stretch">
           <div className="xl:w-[54%] border rounded-lg bg-white overflow-hidden flex flex-col">
-            <div className="text-[11px] font-semibold text-slate-600 px-3 pt-2 pb-1">
-              Routes {date ? `— ${formatDateLong(date)}` : ''}{dayLoading ? ' · loading…' : ''}{dayErr ? ` · ⚠ ${dayErr}` : ''}
+            <div className="flex items-center justify-between gap-2 px-3 pt-2 pb-1">
+              <div className="text-[11px] font-semibold text-slate-600 min-w-0 truncate">
+                Routes {date ? `— ${formatDateLong(date)}` : ''}{dayLoading ? ' · loading…' : ''}{dayErr ? ` · ⚠ ${dayErr}` : ''}{routeQuery.trim() ? ` · ${filteredRows.length} of ${tableRows.length}` : ''}
+              </div>
+              <input
+                type="search"
+                value={routeQuery}
+                onChange={(e) => setRouteQuery(e.target.value)}
+                placeholder="Filter route / driver…"
+                aria-label="Filter routes by route, load, or driver"
+                className="shrink-0 w-40 text-[11px] border border-slate-300 rounded px-2 py-1 focus:outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-400"
+              />
             </div>
             <div className="overflow-x-auto overflow-y-auto max-h-[420px]">
               <table className="w-full text-xs">
@@ -15678,7 +15700,7 @@ function EngineScreen() {
                     </tr>
                   ))}
                   {!sortedRows.length && !dayLoading && (
-                    <tr><td colSpan="9" className="px-3 py-4 text-center text-slate-400">No scored routes for this date.</td></tr>
+                    <tr><td colSpan="9" className="px-3 py-4 text-center text-slate-400">{routeQuery.trim() ? `No routes match “${routeQuery.trim()}”.` : 'No scored routes for this date.'}</td></tr>
                   )}
                 </tbody>
               </table>
