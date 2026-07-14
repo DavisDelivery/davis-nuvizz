@@ -42,7 +42,7 @@ function recipients(): string[] {
     .split(',').map((s) => s.trim()).filter(Boolean);
 }
 
-function buildEmail(stop: any, date: string): { subject: string; text: string; html: string } {
+export function buildEmail(stop: any, date: string): { subject: string; text: string; html: string } {
   const name = stop.businessName || '(unknown customer)';
   const addr = [stop.addr1, stop.addr2, stop.city, stop.state, stop.zip].filter(Boolean).join(', ');
   const pro = stop.primaryPro || stop.pro || (Array.isArray(stop.pros) ? stop.pros[0] : null) || '—';
