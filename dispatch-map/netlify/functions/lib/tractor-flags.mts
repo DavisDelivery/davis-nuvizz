@@ -23,12 +23,18 @@
 // gains the Tractor tag later); the daily incremental pass only ever adds.
 
 import { getDoc, setDoc, listDocs } from './firestore.mts';
+import { histDocId } from './history-store.mts';
 
 export const TRACTOR_LOCATIONS_COLLECTION = 'tractor_locations';
 const EMPLOYEES_COLLECTION = process.env.MARGINIQ_EMPLOYEES_COLLECTION || 'employees';
 
+// matchKey rides a Firestore doc-id path segment here. It is sanitized at the
+// source (normalizeMatchKey), but sanitize the segment too so a bad key can never
+// throw and silently drop a day's tractor paint — histDocId is a no-op for
+// already-safe keys, so clean docs keep their exact id. The raw match_key is
+// preserved as a field on the doc (toDoc), so reads by field are unaffected.
 export function tractorLocId(tenant: string, matchKey: string): string {
-  return `${tenant}__${matchKey}`;
+  return `${tenant}__${histDocId(String(matchKey))}`;
 }
 export function tractorLocPath(tenant: string, matchKey: string): string {
   return `${TRACTOR_LOCATIONS_COLLECTION}/${tractorLocId(tenant, matchKey)}`;

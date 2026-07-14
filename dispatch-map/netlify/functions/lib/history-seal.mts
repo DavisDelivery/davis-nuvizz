@@ -133,11 +133,11 @@ export async function finalizeCaptureSeal(input: FinalizeInput, io: Partial<Seal
   } = input;
   const $ = { ...DEFAULT_IO, ...io };
 
-  // IDs must equal the readback doc _ids (the sanitized path segments). routes/drivers
-  // go through histDocId on write, so the verify set uses it too — otherwise a slashed
-  // route ("COLIN/DJ 1" → "COLIN_DJ 1") would never "match" its own doc and the seal
-  // would be withheld. Stops are keyed by numeric stopNbr (already path-safe).
-  const stopIds = new Set(stopRecords.map((r) => String(r.stopNbr)));
+  // IDs must equal the readback doc _ids (the sanitized path segments). stops,
+  // routes, and drivers all go through histDocId on write, so the verify set uses
+  // it too — otherwise a slashed key ("COLIN/DJ 1" → "COLIN_DJ 1") would never
+  // "match" its own doc and the seal would be withheld.
+  const stopIds = new Set(stopRecords.map((r) => histDocId(String(r.stopNbr))));
   const routeIds = new Set(routeRecords.map((r) => histDocId(String(r.loadNbr))));
   const driverIds = new Set(driverRecords.map((r) => histDocId(String(r.driverKey))));
   const checksum = computeStopChecksum(stopsForChecksum);

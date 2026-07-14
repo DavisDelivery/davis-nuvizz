@@ -30,13 +30,8 @@ import {
   listCaptures, appendCapture, listStops,
   upsertStops, upsertRoutes, upsertDrivers, upsertDriverDayPointer,
 } from './history-store.mts';
-import { updateCustomerRollupsForDay } from './history-customers.mts';
-import { updateTractorFlagsForDay } from './tractor-flags.mts';
-import { updateRoutingReferencesForDay } from './routing-reference.mts';
 import { finalizeCaptureSeal, recordCaptureFailure, type CaptureStage } from './history-seal.mts';
-import { updateDriverDaysForDay } from './routing-driver-days.mts';
-import { updateServiceTimesForDay } from './routing-service-times.mts';
-import { updateCustomerDriversForDay } from './routing-customer-drivers.mts';
+import { runPostSealHooks } from './history-postseal.mts';
 
 const TENANT = 'davis';
 // Keep in sync with src/App.jsx APP_VERSION. Stamped onto every manifest/capture
@@ -207,14 +202,21 @@ export async function captureDate(date: string): Promise<any> {
 
   // Append-only lineage — recorded for EVERY run, including failures. Written
   // after the seal step so it carries the verified/sealed outcome + attempt count.
-  await appendCapture(TENANT, date, version, {
-    tenant: TENANT, date, capture_version: version,
-    captured_at: capture.captured_at, app_version: APP_VERSION, source_scanned_at: sourceScannedAt,
-    checksum, intended, persisted: counts, verified, sealed,
-    verify_detail: sealRes.detail,
-    absent_from_this_capture: absentFromThisCapture,
-    absent_kept_count: absentFromThisCapture.length,
-  });
+  // GUARDED: this is audit lineage, not the source of truth. If it throws it must
+  // NOT fall through to the outer catch, which would recordCaptureFailure and mark
+  // an already-SEALED night as failed (and skip the paint/miner hooks below).
+  try {
+    await appendCapture(TENANT, date, version, {
+      tenant: TENANT, date, capture_version: version,
+      captured_at: capture.captured_at, app_version: APP_VERSION, source_scanned_at: sourceScannedAt,
+      checksum, intended, persisted: counts, verified, sealed,
+      verify_detail: sealRes.detail,
+      absent_from_this_capture: absentFromThisCapture,
+      absent_kept_count: absentFromThisCapture.length,
+    });
+  } catch (e: any) {
+    console.error(`appendCapture (lineage) failed for ${date} v${version}:`, e?.message);
+  }
 
   if (!verified || !sealed) {
     // The failure record was already written by finalizeCaptureSeal (stage
@@ -224,57 +226,14 @@ export async function captureDate(date: string): Promise<any> {
     return { date, ok: false, verified, sealed, capture_version: version, intended, persisted: counts };
   }
 
-  // Best-effort: keep the per-customer history rollup current from this day's
-  // stops. Never let a rollup hiccup fail the warehouse capture (the warehouse
-  // is the source of truth; the rollup can always be rebuilt from it).
-  try {
-    await updateCustomerRollupsForDay(TENANT, date, stopRecords);
-  } catch (e: any) {
-    console.error(`customer-rollup update failed for ${date}:`, e?.message);
-  }
+  // Post-seal derivations: per-customer rollup, tractor PAINT, and the routing
+  // miners. Shared with the heal path (history-postseal.runPostSealHooks) so a
+  // healed day is painted/mined identically to a cleanly-captured one. Each hook
+  // is independently guarded and re-derivable from the warehouse; a hook failure
+  // never fails the (already-sealed) capture. Zero NuVizz calls.
+  const postSeal = await runPostSealHooks(TENANT, date, stopRecords);
 
-  // Best-effort: sticky tractor-delivered flags from the same in-memory stops
-  // (pure Firestore join against the MarginIQ roster — zero NuVizz calls).
-  // Same failure policy as the customer rollup: never fail the capture, the
-  // rebuild function re-derives everything from the warehouse.
-  try {
-    await updateTractorFlagsForDay(TENANT, date, stopRecords);
-  } catch (e: any) {
-    console.error(`tractor-flags update failed for ${date}:`, e?.message);
-  }
-
-  // Best-effort: mine the day's reference routes ("route DNA") for the learned
-  // routing engine from the same in-memory stops — pure derivation writing to
-  // routing_reference_routes only, zero NuVizz calls. Same failure policy as
-  // the passes above: never fail the capture; the backfill function re-derives
-  // everything from the warehouse. Honors ROUTING_ENGINE=off.
-  try {
-    await updateRoutingReferencesForDay(TENANT, date, stopRecords);
-  } catch (e: any) {
-    console.error(`routing-reference update failed for ${date}:`, e?.message);
-  }
-
-  // Best-effort: Phase 2 driver-day observations (the shift shape the assignment
-  // engine learns from) + per-customer service times. Same in-memory stops, same
-  // failure policy (never fail the capture; backfills re-derive from the
-  // warehouse). Both honor ROUTING_ENGINE=off.
-  try {
-    await updateDriverDaysForDay(TENANT, date, stopRecords);
-  } catch (e: any) {
-    console.error(`driver-days update failed for ${date}:`, e?.message);
-  }
-  try {
-    await updateServiceTimesForDay(TENANT, date, stopRecords);
-  } catch (e: any) {
-    console.error(`service-times update failed for ${date}:`, e?.message);
-  }
-  try {
-    await updateCustomerDriversForDay(TENANT, date, stopRecords);
-  } catch (e: any) {
-    console.error(`customer-drivers update failed for ${date}:`, e?.message);
-  }
-
-  return { date, ok: true, verified: true, sealed: true, capture_version: version, counts, absent_kept: absentFromThisCapture.length };
+  return { date, ok: true, verified: true, sealed: true, capture_version: version, counts, absent_kept: absentFromThisCapture.length, post_seal: postSeal.hooks };
   } catch (e: any) {
     // Any unexpected throw (scan/derive/upsert/append) — the day did NOT seal, so
     // leave a LOUD, correctly-staged failure record before propagating. The seal

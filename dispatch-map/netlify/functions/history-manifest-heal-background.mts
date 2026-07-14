@@ -24,6 +24,7 @@ import {
 } from './lib/history-store.mts';
 import { deriveRoutes, deriveDrivers, type CaptureMeta, type DeriveCtx } from './lib/history-derive.mts';
 import { finalizeCaptureSeal, getCaptureFailure, classifyHealTarget, recordCaptureFailure } from './lib/history-seal.mts';
+import { runPostSealHooks } from './lib/history-postseal.mts';
 
 const TENANT = 'davis';
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -91,12 +92,25 @@ async function healDate(date: string): Promise<any> {
     healed: true,
   });
 
-  await appendCapture(TENANT, date, version, {
-    tenant: TENANT, date, capture_version: version, healed: true,
-    captured_at: capture.captured_at, app_version: appVersion, source_scanned_at: sourceScannedAt,
-    checksum: sealRes.checksum, persisted: sealRes.counts,
-    verified: sealRes.verified, sealed: sealRes.sealed, verify_detail: sealRes.detail,
-  });
+  try {
+    await appendCapture(TENANT, date, version, {
+      tenant: TENANT, date, capture_version: version, healed: true,
+      captured_at: capture.captured_at, app_version: appVersion, source_scanned_at: sourceScannedAt,
+      checksum: sealRes.checksum, persisted: sealRes.counts,
+      verified: sealRes.verified, sealed: sealRes.sealed, verify_detail: sealRes.detail,
+    });
+  } catch (e: any) {
+    console.error(`[manifest-heal] appendCapture (lineage) failed for ${date}:`, e?.message);
+  }
+
+  // A healed day must be PAINTED + MINED like a fresh capture — the original bug
+  // was that heal resealed the manifest but never re-ran these, so recovered days
+  // got a manifest yet their tractor_locations / routing_* were never written.
+  // Same shared hook block the nightly capture uses; only after a real seal.
+  let postSeal: any = null;
+  if (sealRes.sealed) {
+    postSeal = (await runPostSealHooks(TENANT, date, storedStops)).hooks;
+  }
 
   return {
     date,
@@ -104,6 +118,7 @@ async function healDate(date: string): Promise<any> {
     verified: sealRes.verified,
     counts: sealRes.counts,
     checksum: sealRes.checksum,
+    post_seal: postSeal,
     original_diagnosis: {
       prior_audit_verified: priorVerified,
       had_failure_record: !!priorFailure,
