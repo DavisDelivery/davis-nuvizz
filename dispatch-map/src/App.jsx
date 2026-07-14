@@ -21,7 +21,6 @@ import {
   FileCheck, ExternalLink, Image as ImageIcon, Printer, FileText, Bug,
   ChevronRight, GripVertical, Calculator,
 } from 'lucide-react';
-import { UlineQuoteConsole } from '@davisdelivery/quote-generator';
 import {
   collection, doc, getDoc, getDocs, onSnapshot, setDoc, serverTimestamp,
   query, orderBy, limit, updateDoc, deleteDoc,
@@ -42,6 +41,12 @@ import { aiParse, aiChat, applyFilterSpec, summarizeSpec, buildTrimmedStops } fr
 import ChatPanel, { ChatLauncher, MessagesLauncher } from './components/ChatPanel.jsx';
 import MessagesPanel from './components/MessagesPanel.jsx';
 
+// Quote console — lazy so its ~345 KB (the @davisdelivery/quote-generator code plus its
+// geo/model JSON) loads only when the Quote tab is first opened, instead of riding in the
+// cold Map bundle where it's never used. Rendered behind a <Suspense> in QuoteScreen.
+const UlineQuoteConsole = React.lazy(() =>
+  import('@davisdelivery/quote-generator').then((m) => ({ default: m.UlineQuoteConsole })));
+
 // Vite's tree-shaker considers function-only imports from .ts files to be
 // pure; it eliminates them even though they're called from useAutoScanner's
 // useEffect (which only fires after notesReady + stops load). Exposing the
@@ -54,7 +59,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.50.4';
+const APP_VERSION = '0.50.5';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -99,6 +104,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.50.5', 'FASTER MAP LOAD + clustering off by default. (1) Marker clustering is now OFF by default — you told me you\'ve never liked it, so the map shows every pin individually (flip "Show clustered" back on any time in Filters; that sticks). (2) The map used to rebuild every one of your 500–1500 pins about THREE times on each cold load — once when stops arrive, again when customer notes land, again when tractor locations land — regenerating every pin\'s icon from scratch each pass, plus a full rebuild on every 2-minute refresh. Pin icons are now cached and reused, and the map keeps one clusterer instead of building a new one each time, so those repeats are near-free. (3) The Uline quote calculator (~345 KB) no longer loads with the map — it loads the first time you open the Quote tab, trimming the app\'s cold-start download. No change to what any pin looks like, and zero effect on NuVizz calls or scans.'],
   ['0.50.4', 'ROUND DELIVERY PINS + a "Hide map labels" switch. (1) Delivery stops are now CIRCLES, not teardrops — the map, the routing screen, and the Compare/Engine view all render each stop as a round marker centered exactly on the location (a teardrop pointed from above the spot; a circle sits ON it). Everything the old pin carried carries over unchanged: the status color, the route sequence number, the co-located count badge, AM/PM tags, the DNS ✕, hollow "unset" styling, and search-match orange. The only pins that stay teardrops are the draggable "move this stop to the right spot" markers, where the point is the whole point. (2) NEW Map filter "Hide map labels" (Filters panel + the mobile filter drawer) turns off Google\'s own business/place-name labels — the clutter that overlaps your stop pins — the same switch the Routing map has had. It cleans the satellite view; because the map uses a cloud style, the plain roadmap base keeps its labels, so flip on Satellite view to see the labels drop. Also: this deploy points the CS-email recipient at customerservice@davisdelivery.com.'],
   ['0.50.3', 'CS EMAIL IS LIVE. The "Email customer service when scheduled" toggle now actually sends: the Resend email keys are configured on the site, sending as Davis Dispatch from the verified davisdelivery.com domain, to whatever address is set in NOTIFY_CS_TO (start it on yourself, then point it at the CS inbox when ready). Turn the toggle on for a customer and CS gets one email the first time that customer hits a day\'s board. To send a one-off check any time: /.netlify/functions/cs-notify-test?pro=<PRO> (add &dryRun=1 to preview without sending, or &to=you@example.com to redirect). This deploy is also what makes the keys take effect — env changes only reach the functions on a fresh deploy.'],
   ['0.50.2', 'Engine → Sequencing: the Routes table now has a search box. Type any part of a route/load number, a driver name, or a truck class to filter the day\'s scored routes (case-insensitive) — the header shows "N of M" while a filter is active, and sorting still works on the filtered set. Purely a client-side view filter; no data or scoring change.'],
@@ -700,7 +706,7 @@ const DEFAULT_MAP_FILTERS = {
   unplannedOnly: false,
   carryoverDays: 0, // 0 = today only (default); N folds in still-unplanned from the prior N days
   showVehicleLocation: true,
-  showClustered: true,
+  showClustered: false, // dispatcher preference (Chad) — clustering off by default
   hideLabels: false, // hide Google's own place/business labels (declutter under the pins)
 };
 const TABLE_COLUMN_DEFS = [
@@ -2146,6 +2152,16 @@ function buildLocCounts(stops) {
   return m;
 }
 
+// Per-icon memo — stopMarkerIcon builds a ~600-char SVG data-URI (+ Size/Point objects)
+// for EVERY stop, and the marker layer rebuilds ~3× on a cold load (stops, then notes,
+// then tractor locations each arrive on their own timeline) plus on every 2-min board
+// poll. Almost all stops share the exact same visual inputs, so we cache the built icon
+// under a signature of those inputs and reuse it. The cached {url,scaledSize,anchor} is
+// only ever READ by google.maps, so sharing one object across many markers is safe.
+// Cleared wholesale past a generous cap (distinct combos are few — this is just a
+// runaway backstop, never hit in practice).
+const __stopIconCache = new Map();
+
 function stopMarkerIcon(google, s, note, opts = {}) {
   //   opts.tractorDelivered — a tractor driver has completed a delivery at this
   //   location (tractor_locations): full repaint to lime green + white border,
@@ -2176,27 +2192,38 @@ function stopMarkerIcon(google, s, note, opts = {}) {
     restrictions = restrictions.filter((r) => !TRAILER_BLOCKER_KEYS.has(resolveRestrictionKey(r)));
   }
   const dnsStop = !!note?.do_not_send;
+  const statusKind = classifyStopStatus(s);
+  const addrOff = addressLooksOff(s, note);
+  // Signature of EVERY input that changes the rendered icon (restrictions already folds in
+  // selectedDayKey plus the AM/PM + tractor filters applied above). This MUST track the
+  // branches below exactly — miss an input and a stop could paint a stale icon. \x1f = an
+  // unprintable field separator so a value can never collide across fields.
+  const cacheKey = (dnsStop ? 'D' : '') + '\x1f' + (inRoute ? 'R' + (seq ?? '') : '') + '\x1f'
+    + statusKind + '\x1f' + restrictions.join(',') + '\x1f' + (matched ? 'M' : '') + '\x1f'
+    + (note?.priority_flag || '') + '\x1f' + (elig || '') + '\x1f' + (tractorDelivered ? 'T' : '')
+    + '\x1f' + (addrOff ? 'A' : '') + '\x1f' + (note?.delivery_window || '') + '\x1f' + count
+    + '\x1f' + (routeColor || '');
+  const cached = __stopIconCache.get(cacheKey);
+  if (cached) return cached;
+
+  let result;
   if (dnsStop) {
     // DNS — strong red circle with a white ✕, taking precedence over everything else.
-    return { url: circleMarkerSvg(DNS_COLOR, { glyph: 'dns' }), scaledSize: new google.maps.Size(28, 28), anchor: new google.maps.Point(14, 14) };
-  }
-  if (inRoute) {
+    result = { url: circleMarkerSvg(DNS_COLOR, { glyph: 'dns' }), scaledSize: new google.maps.Size(28, 28), anchor: new google.maps.Point(14, 14) };
+  } else if (inRoute) {
     // Numbered route pin (delivery sequence). Colored by route when a routeColor is
     // given (Routing), else by status (Map): green=delivered / blue=scheduled.
-    const statusKind = classifyStopStatus(s);
     const meta = STATUS_META[statusKind] || STATUS_META.SCHEDULED;
     const color = routeColor || (tractorDelivered ? TRACTOR_DELIVERED_COLOR : (meta.color || flagColor(note)));
-    return { url: circleMarkerSvg(color, { label: String(seq), count }), scaledSize: new google.maps.Size(30, 30), anchor: new google.maps.Point(15, 15) };
-  }
-  if (restrictions.length === 0) {
+    result = { url: circleMarkerSvg(color, { label: String(seq), count }), scaledSize: new google.maps.Size(30, 30), anchor: new google.maps.Point(15, 15) };
+  } else if (restrictions.length === 0) {
     // State A — status drives the pin; matched stops pop orange; a priority flag,
     // AM/PM window, or "address looks off" signal recolor/reglyph as appropriate.
-    const statusKind = classifyStopStatus(s);
     const meta = STATUS_META[statusKind] || STATUS_META.SCHEDULED;
     const tag = (note?.delivery_window === 'AM' || note?.delivery_window === 'PM') ? note.delivery_window : null;
     const addressOff = !matched && !flagHue
       && (statusKind === 'SCHEDULED' || statusKind === 'UNPLANNED')
-      && addressLooksOff(s, note);
+      && addrOff;
     const color = matched ? '#f59e0b'
       // Dispatcher-set BOX-ONLY wins over the proven lime (same rule as the Selected window):
       // "a tractor once delivered here" must never visually override an explicit off-limits mark.
@@ -2214,22 +2241,27 @@ function stopMarkerIcon(google, s, note, opts = {}) {
     // circle-wrapped DOT instead of the washed-out small teardrop — same ≤16px footprint, so it
     // never grows. A co-located count sits inside the dot. Tagged/matched unplanned keep the pin.
     if (statusKind === 'UNPLANNED' && !matched && !tag) {
-      return {
+      result = {
         url: unplannedDotSvg(color, { glyph, count }),
         scaledSize: new google.maps.Size(16, 16),
         anchor: new google.maps.Point(8, 8),
       };
+    } else {
+      const big = matched || !!tag;
+      result = {
+        url: circleMarkerSvg(color, { hollow: matched ? false : meta.hollow, glyph, tag, count }),
+        scaledSize: big ? new google.maps.Size(28, 28) : new google.maps.Size(16, 16),
+        anchor: big ? new google.maps.Point(14, 14) : new google.maps.Point(8, 8),
+      };
     }
-    const big = matched || !!tag;
-    return {
-      url: circleMarkerSvg(color, { hollow: matched ? false : meta.hollow, glyph, tag, count }),
-      scaledSize: big ? new google.maps.Size(28, 28) : new google.maps.Size(16, 16),
-      anchor: big ? new google.maps.Point(14, 14) : new google.maps.Point(8, 8),
-    };
+  } else {
+    // States B/C — restriction / receiving-hours icons; a priority flag recolors them.
+    const spec = iconMarkerSvg(restrictions, tractorDelivered ? TRACTOR_DELIVERED_COLOR : (eligColor || flagHue));
+    result = { url: spec.url, scaledSize: new google.maps.Size(spec.width, spec.height), anchor: new google.maps.Point(spec.anchor[0], spec.anchor[1]) };
   }
-  // States B/C — restriction / receiving-hours icons; a priority flag recolors them.
-  const spec = iconMarkerSvg(restrictions, tractorDelivered ? TRACTOR_DELIVERED_COLOR : (eligColor || flagHue));
-  return { url: spec.url, scaledSize: new google.maps.Size(spec.width, spec.height), anchor: new google.maps.Point(spec.anchor[0], spec.anchor[1]) };
+  __stopIconCache.set(cacheKey, result);
+  if (__stopIconCache.size > 8000) __stopIconCache.clear();
+  return result;
 }
 
 function truckSvg(color) {
@@ -3592,8 +3624,10 @@ function CarryoverControl({ value = 0, onChange, boardDate }) {
 
 function FilterToolbar({ filters, setFilters, collapsed, setCollapsed, stopCount, vehicleDisabled, showRoutes, setShowRoutes, boardDate }) {
   const set = (key) => (v) => setFilters((prev) => ({ ...prev, [key]: v }));
-  const clusterWarning = !filters.showClustered && stopCount > 200
-    ? `Rendering ${stopCount} markers individually may be slow`
+  // Clustering is off by default now; with icons memoized, unclustered rendering is far
+  // cheaper, so only warn on genuinely huge boards rather than nagging every busy day.
+  const clusterWarning = !filters.showClustered && stopCount > 800
+    ? `Rendering ${stopCount} markers individually may be slow — turn on clustering if the map lags`
     : null;
   return (
     <div
@@ -7119,6 +7153,12 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef }) {
       stored.carryoverDays = stored.carryover ? CARRYOVER_DAYS : 0;
       delete stored.carryover;
     }
+    // One-time: clustering now defaults OFF (Chad's preference). Flip any device still
+    // carrying the old ON default exactly once, then respect the toggle from then on.
+    if (!stored.clusterDefaultOffApplied) {
+      stored.showClustered = false;
+      stored.clusterDefaultOffApplied = true;
+    }
     return { ...DEFAULT_MAP_FILTERS, ...stored };
   });
 
@@ -7932,7 +7972,14 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef }) {
     // instead of routing through MarkerClusterer. Skipping clustering on 600+
     // pins is intentionally slow at zoom-out; the toolbar surfaces a warning.
     if (mapFilters.showClustered) {
-      clustererRef.current = new MarkerClusterer({ map: mapRef.current, markers: newMarkers });
+      // Reuse ONE clusterer across rebuilds (clear at the top of the effect, then re-add)
+      // instead of constructing a fresh MarkerClusterer every time stops/notes/tractors/
+      // filters change — a new instance re-runs the whole clustering pass and orphans the old.
+      if (!clustererRef.current) {
+        clustererRef.current = new MarkerClusterer({ map: mapRef.current, markers: newMarkers });
+      } else {
+        clustererRef.current.addMarkers(newMarkers);
+      }
     } else {
       newMarkers.forEach((m) => m.setMap(mapRef.current));
     }
@@ -15356,7 +15403,9 @@ function RoutingRouteCard({ rv, stopById, usedGoogle, readOnly, onReorder, onMov
 function QuoteScreen() {
   return (
     <div className="flex-1 min-h-0 overflow-auto bg-slate-50">
-      <UlineQuoteConsole embedded />
+      <React.Suspense fallback={<div className="p-6 text-sm text-slate-500">Loading quote console…</div>}>
+        <UlineQuoteConsole embedded />
+      </React.Suspense>
     </div>
   );
 }
