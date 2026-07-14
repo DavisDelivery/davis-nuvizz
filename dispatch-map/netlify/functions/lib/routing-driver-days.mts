@@ -24,6 +24,7 @@
 // the intent).
 
 import { getDoc, setDoc } from './firestore.mts';
+import { histDocId } from './history-store.mts';
 import { loadKeyForStop } from './routing-reference.mts';
 import { driverKeyFor, DEPOT } from './history-derive.mts';
 import { haversineMiles } from './routing-engine-solver.mts';
@@ -33,7 +34,10 @@ import { loadVehicleRoster, vehicleTypeForStop, type VehicleRoster } from './tra
 export const DRIVER_DAYS_COLLECTION = 'routing_driver_days';
 
 export function driverDayId(tenant: string, date: string, driverKey: string): string {
-  return `${tenant}__${date}__${driverKey}`;
+  // driverKey rides a Firestore doc-id path segment. A co-driver userName ("COLIN/DJ 1")
+  // carries a slash, so sanitize it (histDocId is a no-op for clean keys) — the same
+  // guard upsertDriverDayPointer already applies to the cross-day pointer path.
+  return `${tenant}__${date}__${histDocId(String(driverKey))}`;
 }
 export function driverDayPath(tenant: string, date: string, driverKey: string): string {
   return `${DRIVER_DAYS_COLLECTION}/${driverDayId(tenant, date, driverKey)}`;

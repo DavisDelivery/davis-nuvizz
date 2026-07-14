@@ -6,9 +6,11 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { normalizeMatchKey } from '../src/lib/matchKey.js';
+import { normalizeMatchKey as normalizeMatchKeyServer } from '../netlify/functions/lib/match-key.mts';
 import { histDocId } from '../netlify/functions/lib/history-store.mts';
 import { tractorLocId } from '../netlify/functions/lib/tractor-flags.mts';
 import { rollupId } from '../netlify/functions/lib/history-customers.mts';
+import { driverDayId } from '../netlify/functions/lib/routing-driver-days.mts';
 
 test('histDocId: no-op for clean ids (existing docs keep their exact key)', () => {
   assert.equal(histDocId('12345'), '12345');           // numeric stopNbr
@@ -49,4 +51,27 @@ test('rollupId (customer history): same slash safety + clean-key no-op', () => {
   const id = rollupId('davis', 'a/b__c__d__e');
   assert.ok(!id.includes('/'), `rollup id must not contain a slash: ${id}`);
   assert.equal(rollupId('davis', 'acme__st__city__30301'), 'davis__acme__st__city__30301');
+});
+
+test('driverDayId: a slash-bearing co-driver key yields a legal single-segment id', () => {
+  const id = driverDayId('davis', '2026-07-10', 'COLIN/DJ 1');
+  assert.ok(!id.includes('/'), `driver-day id must not contain a slash: ${id}`);
+  // clean driverKey unchanged (no doc-id churn)
+  assert.equal(driverDayId('davis', '2026-07-10', 'SCOTT_HART'), 'davis__2026-07-10__SCOTT_HART');
+});
+
+test('match key: client and server normalizers agree, and neither smuggles a slash', () => {
+  // Parity: the browser copy (src/lib/matchKey.js) and the server copy
+  // (netlify/functions/lib/match-key.mts) must compute the SAME key — else a
+  // malformed zip would make the frontend look up a doc the capture never wrote.
+  const args = ['ACME CO', '123 MAIN ST', 'ATLANTA', '3/456'];
+  const c = normalizeMatchKey(...args);
+  const s = normalizeMatchKeyServer(...args);
+  assert.equal(c, s, `client/server match keys must match: ${c} vs ${s}`);
+  assert.ok(!s.includes('/'), `server match key must not contain a slash: ${s}`);
+  // normal zip parity unchanged
+  assert.equal(
+    normalizeMatchKey('ACME CO', '123 MAIN ST', 'ATLANTA', '30301-1234'),
+    normalizeMatchKeyServer('ACME CO', '123 MAIN ST', 'ATLANTA', '30301-1234'),
+  );
 });
