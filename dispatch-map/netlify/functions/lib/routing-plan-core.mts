@@ -183,7 +183,10 @@ export async function runPlanForDate(
 
   // ── the crew (staffing = dispatch's INPUT): active drivers + start times ──
   const actualDriverDays = extractDriverDays(dateStops, { tenant, date, truckClassOf });
-  const trips_actual = actualDriverDays.reduce((a, d) => a + d.trips.filter((t) => t.stops.length).length, 0);
+  // DriverTrip.stops is a COUNT (a number), not an array — `.length` on it is
+  // undefined, which silently filtered out EVERY trip and reported trips_actual=0
+  // on all scored days. Filter on the count itself.
+  const trips_actual = actualDriverDays.reduce((a, d) => a + d.trips.filter((t) => t.stops > 0).length, 0);
 
   // ── as-of inputs (< D only) ──
   const inputs = opts.inputs || await loadPlanInputs(tenant, date, planned);
@@ -304,7 +307,7 @@ export async function runPlanForDate(
       driver_key: dd.driver_key,
       class: dd.truck_class,
       envelope_source: envelopeSource,
-      trips_engine: eng.trips, trips_actual: dd.trips.filter((t) => t.stops.length).length,
+      trips_engine: eng.trips, trips_actual: dd.trips.filter((t) => t.stops > 0).length,
       stops_engine: eng.stops, stops_actual: actualStops.length,
       lbs_engine: eng.lbs, lbs_actual: Math.round(dd.day_totals?.weight || 0),
       agreement_pct: pct(agree, actualStops.length),
