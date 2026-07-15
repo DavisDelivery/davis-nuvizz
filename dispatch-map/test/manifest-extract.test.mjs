@@ -5,7 +5,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { extractJsonBlock, normalizeManifestRows } from '../netlify/functions/lib/manifest-extract.mts';
-import { manifestRowsToAoa, autoMapColumns, mappedRowsToOrders, bulkRowMissing, BULK_FIELDS } from '../src/lib/bulk-orders.js';
+import { manifestRowsToAoa, manifestRowsToIntake, autoMapColumns, mappedRowsToOrders, bulkRowMissing, bulkRowIsBlank, BULK_FIELDS } from '../src/lib/bulk-orders.js';
 
 const ROW = (over = {}) => ({
   name: 'JASMINE LEWIS', addr1: '306 GWINNETT SQUARE CIR', addr2: null,
@@ -61,6 +61,22 @@ test('normalizeManifestRows: never throws on junk; missing ZIP warns', () => {
   const { rows, warnings } = normalizeManifestRows({ rows: [ROW({ zip: '' }), { name: 'X ONLY' }] });
   assert.equal(rows.length, 2);
   assert.ok(warnings.some((w) => w.includes('ZIP')));
+});
+
+test('manifestRowsToIntake: intake rows carry the grid field keys + intake bookkeeping, start unchecked/held, and validate ready', () => {
+  const [row] = manifestRowsToIntake([ROW()], { prefix: 'ESTES-' });
+  assert.equal(row.stopNbr, 'ESTES-0288347656');       // the board's existing convention
+  assert.equal(row.pro, '0288347656');
+  assert.equal(row.pallets, '1');                      // manifest Units → Pallets
+  assert.equal(row.weight, '566');
+  assert.equal(row.itemDesc, '1 BX GNT4632-C (86X30X26); STC 3 BOXES');
+  assert.equal(row.phone, '');                         // entered at review time
+  assert.equal(row.dispatchNotes, '');
+  assert.equal(row._checked, false);                   // mockup: rows start unchecked ("check rows to push")
+  assert.equal(row._status, 'held');
+  assert.ok(row.id, 'stable row id for tab moves / edits');
+  assert.deepEqual(bulkRowMissing(row), [], 'a clean manifest row lands push-ready');
+  assert.equal(bulkRowIsBlank(row), false);
 });
 
 test('manifestRowsToAoa → autoMap → orders: full round-trip into StopRow shape', () => {

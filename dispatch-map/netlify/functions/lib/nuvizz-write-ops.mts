@@ -95,6 +95,12 @@ export interface StopRow {
   pallets?: number | null; loose?: number | null; weight?: number | null;
   // Davis records the shipment PRICE in NuVizz's Seal # field → sealNbr (string, maxLen 20).
   price?: string | number | null;
+  // Consignee contact phone → to.contact.phone (read back by the scan as contact.phone —
+  // resolveStopPhone / the card's Contact row / "Text customer"). Digits/string, optional.
+  phone?: string | null;
+  // Dispatch notes (driver instructions) → comments[] cmtType ORD_IN (read back by
+  // extractOrderInstructions → signalSources.orderInstructions + allComments on the card).
+  dispatchNotes?: string | null;
 }
 export interface OriginSettings {
   origin: { name: string; addr1: string; city: string; state: string; zip: string };
@@ -117,6 +123,8 @@ export function buildStopPayload(row: StopRow, settings: OriginSettings): any {
   const d = settings.serviceDate;
   const pro = row.pro ? String(row.pro) : '';
   const itemDesc = row.itemDesc ? String(row.itemDesc).trim() : '';
+  const phone = row.phone ? String(row.phone).trim() : '';
+  const notes = row.dispatchNotes ? String(row.dispatchNotes).trim() : '';
   // Davis freight semantics ↔ NuVizz's mislabeled fields (matches how the app READS
   // every stop): pallets/skids ride NuVizz "totalCartons", loose pieces ride
   // "volume", and NuVizz "totalPallets" is really the TOTAL piece count (pallets +
@@ -141,6 +149,16 @@ export function buildStopPayload(row: StopRow, settings: OriginSettings): any {
     weightUOM: 'LBS',
     // Davis convention: the shipment PRICE rides in NuVizz's Seal # field (sealNbr, string ≤20 chars).
     sealNbr: row.price != null && String(row.price).trim() !== '' ? String(row.price).trim().slice(0, 20) : undefined,
+    // Dispatch notes → a Stop Instructions comment. Per the v7 spec only commentType
+    // '00'/'01'/'02' are accepted on create/update; cmtType 'ORD_IN' = Stop Instructions —
+    // the exact shape Uline's integration writes (no SPL-INSTR-TEXT prefix needed: the
+    // scanner keys on cmtType alone). Read back: extractOrderInstructions →
+    // signalSources.orderInstructions, extractAllComments → the card's notes panel.
+    comments: notes ? [{
+      commentType: '01', cmtType: 'ORD_IN',
+      accessLevels: ['DISPATCHER', 'DRIVER'],
+      commentDescription: notes.slice(0, 500),
+    }] : undefined,
     from: {
       address: {
         addressType: 'COM', name: settings.origin.name, addr1: settings.origin.addr1,
@@ -154,6 +172,10 @@ export function buildStopPayload(row: StopRow, settings: OriginSettings): any {
         city: row.city, state: row.state, zip: row.zip, country: 'USA',
       },
       schedule: { timeFrom: `${d}T12:00:00`, timeTo: `${d}T17:00:00`, timeZone: tz, timeConstraint: 'PREFERRED' },
+      // Consignee phone → the v7 to.contact block ({contactName, phone, phone2, sms, fax,
+      // email}). Read back by normalizeStop as contact.phone (resolveStopPhone / Contact
+      // row / "Text customer").
+      contact: phone ? { contactName: row.name, phone } : undefined,
     },
   };
 }
@@ -689,6 +711,12 @@ const IMPORT_ECHO_STRINGS = [
   'shipmentType', 'stopExecution', 'sourceType', 'shipmentNbr', 'proNumber',
   'reference1', 'reference2', 'reference3', 'weightUOM',
 ] as const;
+// to.contact fields the full echo preserves — a phone written at create time (Manifest Intake /
+// Bulk Add) must survive the full-replace, or the first route reorder through the import path
+// silently blanks it. Same whitelist discipline as the address (scalars only via pickFields).
+// NOTE: comments[] are deliberately NOT echoed — whether the full-replace blanks them is
+// unproven on this tenant, and echoing could duplicate them (repo rule: unproven, no upside).
+const IMPORT_CONTACT_FIELDS = ['contactName', 'name', 'email', 'phone', 'phone2', 'sms', 'fax'] as const;
 
 /** importEchoFromRaw (§I, Jul 2 correction) — a RAW stop object (from load/info stops[]) → the
  *  FULL-ECHO import entry for a stop that is ON the target load: importRefFromRaw's
@@ -710,6 +738,10 @@ export function importEchoFromRaw(rawStop: any, fallbackDate?: string | null): a
     if (v == null || v === '' || typeof v === 'object') continue;
     if (typeof v === 'string' || typeof v === 'number') ref[k] = String(v);
   }
+  // Echo the consignee contact (whitelisted scalars) so a full-replace can't blank a phone
+  // written at create time. pickFields drops objects/empties, so junk can never ride along.
+  const contact = pickFields(st?.to?.contact || {}, IMPORT_CONTACT_FIELDS);
+  if (Object.keys(contact).length) ref.to.contact = contact;
   // Echo the "from" block (warehouse address + pickup window) with the same whitelists +
   // normalization as the to-block — never raw junk, never objects where strings belong.
   const from = st?.from || {};

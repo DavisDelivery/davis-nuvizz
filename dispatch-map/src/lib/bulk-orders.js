@@ -20,6 +20,10 @@ export const BULK_FIELDS = [
   { key: 'weight', label: 'Weight (lbs)', required: false, aliases: ['weight', 'wt', 'lbs', 'pounds'] },
   // Davis records the shipment PRICE in NuVizz's "Seal #" field; buildStopPayload maps price → sealNbr.
   { key: 'price', label: 'Price', required: false, aliases: ['price', 'seal', 'seal #', 'seal number', 'sealnbr', 'seal nbr', 'rate', 'charge', 'amount', 'linehaul', 'revenue'] },
+  // Consignee phone → NuVizz to.contact.phone; dispatch notes → a Stop Instructions comment
+  // (cmtType ORD_IN). Both read back onto the board card (Contact row / notes panel).
+  { key: 'phone', label: 'Phone', required: false, aliases: ['phone', 'phone number', 'contact phone', 'telephone', 'tel', 'cell', 'mobile', 'contact number', 'consignee phone'] },
+  { key: 'dispatchNotes', label: 'Dispatch notes', required: false, aliases: ['notes', 'note', 'dispatch notes', 'driver notes', 'instructions', 'special instructions', 'delivery instructions', 'delivery notes', 'remarks'] },
 ];
 
 export const BULK_FIELD_KEYS = BULK_FIELDS.map((f) => f.key);
@@ -177,6 +181,25 @@ export function manifestRowsToAoa(rows, { prefix = 'ESTES-' } = {}) {
     }
   }));
   return [header, ...body];
+}
+
+// Turn OCR'd manifest rows into MANIFEST INTAKE rows — the dedicated review screen's row
+// model (a superset of the grid's field keys, so bulkRowMissing/bulkRowIsBlank work as-is,
+// plus intake bookkeeping: _checked = push on next "Push to NuVizz", _status held|pushed).
+// Same Davis conventions as manifestRowsToAoa: Order # = "<CARRIER>-<PRO digits>", PRO =
+// barcode digits, manifest Units → Pallets.
+export function manifestRowsToIntake(rows, { prefix = 'ESTES-' } = {}) {
+  return (rows || []).map((r, i) => ({
+    id: `m${i}_${r.proDigits || i}`,
+    name: r.name || '', addr1: r.addr1 || '', addr2: r.addr2 || '',
+    city: r.city || '', state: r.state || '', zip: r.zip || '',
+    itemDesc: r.description || '',
+    stopNbr: r.proDigits ? `${prefix}${r.proDigits}` : '', pro: r.proDigits || '',
+    pallets: r.units != null ? String(r.units) : '', loose: '',
+    weight: r.weight != null ? String(r.weight) : '', price: '',
+    phone: '', dispatchNotes: '',
+    _checked: false, _status: 'held',
+  }));
 }
 
 // Which REQUIRED fields (name, addr1, city, state, zip) are missing from an order row.

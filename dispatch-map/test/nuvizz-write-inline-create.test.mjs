@@ -90,6 +90,17 @@ test('importEchoFromRaw: echoes freight (NUMBERS), references, PRO and the from 
   assert.equal(e.to.address.addr1, '2001 A St');
 });
 
+test('importEchoFromRaw: echoes to.contact scalars (a create-time phone must survive the full-replace); comments never ride', () => {
+  const raw = rawStop('2003', 'c1', 2);
+  raw.stop.to.contact = { contactName: 'C2003', phone: '7705550123', sms: '7705550123', junkObj: { nested: true } };
+  raw.stop.comments = [{ commentType: '01', cmtType: 'ORD_IN', commentDescription: 'dock 4' }];
+  const e = importEchoFromRaw(raw, '2026-07-02');
+  assert.deepEqual(e.to.contact, { contactName: 'C2003', phone: '7705550123', sms: '7705550123' }, 'whitelisted scalars echo; objects dropped');
+  assert.equal(e.comments, undefined, 'comments are unproven on full-replace — never echoed (dup risk)');
+  const bare = importEchoFromRaw(rawStop('2004', 'd1', 3), '2026-07-02');
+  assert.equal(bare.to.contact, undefined, 'no contact on the record → none invented');
+});
+
 test('importEchoFromRaw: numeric strings coerce, objects are refused, junk fields never ride', () => {
   const raw = rawStop('2002', 'b1', 3);
   raw.stop.totalPallets = '3';                 // numeric string → number

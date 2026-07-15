@@ -169,6 +169,32 @@ test('buildStopPayload: item description → reference2 (trimmed); absent when b
   assert.equal('reference2' in JSON.parse(JSON.stringify(blank)), false, 'undefined reference2 is omitted from the wire payload');
 });
 
+test('buildStopPayload: phone → to.contact (contactName + phone); absent when blank', () => {
+  const origin = { name: 'D', addr1: '9', city: 'A', state: 'GA', zip: '30301' };
+  const withPhone = buildStopPayload({ name: 'JASMINE LEWIS', addr1: '1', city: 'B', state: 'GA', zip: '30518', phone: ' 770-555-0123 ' },
+    { origin, serviceDate: '2026-07-16' });
+  assert.deepEqual(withPhone.to.contact, { contactName: 'JASMINE LEWIS', phone: '770-555-0123' });
+  const blank = buildStopPayload({ name: 'A', addr1: '1', city: 'B', state: 'GA', zip: '30518', phone: '   ' },
+    { origin, serviceDate: '2026-07-16' });
+  assert.equal(blank.to.contact, undefined, 'blank phone must not emit a contact block');
+});
+
+test('buildStopPayload: dispatchNotes → ONE ORD_IN comment (commentType 01, ≤500 chars); absent when blank', () => {
+  const origin = { name: 'D', addr1: '9', city: 'A', state: 'GA', zip: '30301' };
+  const withNotes = buildStopPayload({ name: 'A', addr1: '1', city: 'B', state: 'GA', zip: '30518', dispatchNotes: '  dock 4, call on arrival  ' },
+    { origin, serviceDate: '2026-07-16' });
+  assert.equal(withNotes.comments.length, 1);
+  assert.equal(withNotes.comments[0].commentType, '01');
+  assert.equal(withNotes.comments[0].cmtType, 'ORD_IN');
+  assert.equal(withNotes.comments[0].commentDescription, 'dock 4, call on arrival');
+  const long = buildStopPayload({ name: 'A', addr1: '1', city: 'B', state: 'GA', zip: '30518', dispatchNotes: 'x'.repeat(600) },
+    { origin, serviceDate: '2026-07-16' });
+  assert.equal(long.comments[0].commentDescription.length, 500, 'spec maxLength 500 enforced');
+  const blank = buildStopPayload({ name: 'A', addr1: '1', city: 'B', state: 'GA', zip: '30518', dispatchNotes: '' },
+    { origin, serviceDate: '2026-07-16' });
+  assert.equal(blank.comments, undefined, 'no notes → no comments array');
+});
+
 test('normalizeStop: surfaces reference2 as itemDesc for read-back verification', () => {
   const norm = normalizeStop({ Stop: { stop: { stopId: 's1', stopNbr: '007', reference2: '2 pallets appliances', to: { address: { name: 'ACME' } } }, stopExecutionInfo: {}, load: {} } });
   assert.equal(norm.itemDesc, '2 pallets appliances');
