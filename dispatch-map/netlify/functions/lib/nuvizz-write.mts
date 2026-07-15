@@ -1359,7 +1359,11 @@ export async function runCommitBoardRwb(requester: RequesterLike, payload: any, 
       p.result.ok = false; p.result.error = `commitBoard(rwb): load identity mismatch (name resolved ${load.loadId}, expected ${p.L.loadId})`;
       continue;
     }
-    if (hasUnmodeledDelivery(load, new Set(p.orderedNbrs))) {
+    // Count the stops STAGED FOR REMOVAL as modeled too: unplanning a non-DO stop
+    // (a pickup like MUGELE, a return) is a legitimate save, but without this the
+    // removed stop still read as an unmodeled non-DO stop and the guard refused it.
+    const removeNbrsGuard = Array.isArray(p.L?.removeStopNbrs) ? p.L.removeStopNbrs.map((x: any) => String(x)).filter(Boolean) : [];
+    if (hasUnmodeledDelivery(load, new Set([...p.orderedNbrs, ...removeNbrsGuard]))) {
       p.result.ok = false; p.result.error = 'commitBoard(rwb): load has a non-DO stop in a delivery slot that this card is not sequencing — reorder skipped (verify in portal)';
       continue;
     }

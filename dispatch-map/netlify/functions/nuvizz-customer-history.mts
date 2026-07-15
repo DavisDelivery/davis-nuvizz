@@ -11,6 +11,10 @@
 //                                 (numeric PROs are matched zero-padded to 9 too)
 import { isFirestoreEnabled } from './lib/firestore.mts';
 import { queryCustomersByName, queryCustomersByPro } from './lib/history-customers.mts';
+import { getStop } from './lib/history-store.mts';
+
+const TENANT = 'davis';
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 export default async (req: Request): Promise<Response> => {
   const cors = { 'Access-Control-Allow-Origin': '*', 'Content-Type': 'application/json' };
@@ -21,7 +25,20 @@ export default async (req: Request): Promise<Response> => {
   const url = new URL(req.url);
   const name = (url.searchParams.get('name') || '').trim();
   const pro = (url.searchParams.get('pro') || '').trim();
+  const stop = (url.searchParams.get('stop') || '').trim();
+  const date = (url.searchParams.get('date') || '').trim();
   try {
+    // Single archived delivery by pro + day — powers "tap a historical PRO to see the
+    // FULL delivery" (route, driver, delivery ticket, line items). Reads the immutable
+    // warehouse only; ZERO NuVizz calls. The date is regex-guarded so a malformed value
+    // can never build a bad Firestore path.
+    if (stop && DATE_RE.test(date)) {
+      const doc = await getStop(TENANT, date, stop);
+      return new Response(
+        JSON.stringify(doc ? { ok: true, mode: 'stop', stop: doc } : { ok: false, mode: 'stop', reason: 'not_found', stop: null }),
+        { status: 200, headers: cors },
+      );
+    }
     if (name) {
       const customers = await queryCustomersByName(name, 25);
       return new Response(JSON.stringify({ ok: true, mode: 'name', customers }), { status: 200, headers: cors });

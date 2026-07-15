@@ -409,6 +409,19 @@ test('runCommitBoardRwb: a non-DO stop the card is NOT sequencing still refuses 
   });
 });
 
+test('runCommitBoardRwb: UNPLANNING a non-DO pickup (removeStopNbrs) is ALLOWED — the guard counts removals', async () => {
+  await withRwb({}, async () => {
+    // Same load as the refuse case (A DO + X PU), but now the card STAGES X for removal
+    // (unplan the MUGELE pickup). The guard must count removeStopNbrs as modeled, so the
+    // save goes through and the declarative saveComparedRouteData fires (NuVizz unplans X).
+    const loadStops = { value: ['A', 'X'] };
+    const { requester, calls } = makeRequester({ loadStops, stopTypes: { X: 'PU' } });
+    const r = await runCommitBoardRwb(requester, { loads: [{ loadNbr: 'DAVIS000000123', loadId: HEXID, orderedStopNbrs: ['A'], removeStopNbrs: ['X'] }] }, CREDS);
+    assert.equal(r.loads[0].ok, true, JSON.stringify(r.loads?.[0]?.error));
+    assert.equal(calls.some((c) => c.url.includes('saveComparedRouteData')), true);
+  });
+});
+
 // ── resequenceRoute: the OPTIMIZER's persist, env-gated escape lever only ──────
 // The Jul 9 manual-reorder HAR proves the portal does NOT fire it for a manual sequence — the
 // save alone persists a manual reorder. NUVIZZ_RWB_RESEQUENCE=on enables it as a lever for

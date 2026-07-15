@@ -79,6 +79,35 @@ export async function appendCapture(tenant: string, date: string, version: numbe
 export async function listStops(tenant: string, date: string): Promise<any[]> {
   return listDocs(`${dayPath(tenant, date)}/stops`);
 }
+// PURE: the ordered doc-id candidates to try for a stop/pro number. The stop doc id is
+// histDocId(stopNbr); numeric ids are stored as-is, but a padded/unpadded mismatch is
+// possible across captures, so we try the raw id first and then the zero-padded-to-9
+// form NuVizz uses for numeric PROs (skipped when it equals the raw id, e.g. an already
+// 9-digit PRO). Empty/whitespace → no candidates. Exported + unit-tested.
+export function stopDocIdCandidates(stopNbr: string): string[] {
+  const raw = String(stopNbr ?? '').trim();
+  if (!raw) return [];
+  const ids = [histDocId(raw)];
+  if (/^[0-9]+$/.test(raw)) { const padded = histDocId(raw.padStart(9, '0')); if (padded !== ids[0]) ids.push(padded); }
+  return ids;
+}
+
+// Single archived stop by pro/stop number — the full immutable NormalizedStop the
+// customer-history lookup renders (route, driver, delivery ticket, line items). getDoc
+// returns null on 404, so a miss (uncaptured / older-than-retention day / id drift) is a
+// clean null the caller falls back on — never a throw. Firestore only: ZERO NuVizz calls.
+// getDoc is injectable so the raw-then-padded fallback is unit-testable without Firestore.
+export async function getStop(
+  tenant: string, date: string, stopNbr: string,
+  io: { getDoc: (path: string) => Promise<any | null> } = { getDoc },
+): Promise<any | null> {
+  const base = dayPath(tenant, date);
+  for (const id of stopDocIdCandidates(stopNbr)) {
+    const doc = await io.getDoc(`${base}/stops/${id}`);
+    if (doc) return doc;
+  }
+  return null;
+}
 export async function listRoutes(tenant: string, date: string): Promise<any[]> {
   return listDocs(`${dayPath(tenant, date)}/routes`);
 }

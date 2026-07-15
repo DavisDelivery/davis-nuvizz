@@ -59,7 +59,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.50.10';
+const APP_VERSION = '0.50.13';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -104,6 +104,9 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.50.13', 'FIX: the printed Driver Manifest no longer prints a PICKUP location as the route "Origin". On a route with a pickup (e.g. CTL70926 at TSY AMERICA sitting correctly at stop 5), the manifest cover page was reading "Origin: TSY AMERICA" — making it look like the pickup got pushed to the front, even though its own ticket was in the right spot. The header now skips pickup stops when choosing the origin (a pickup\'s from-address IS the pickup location, not the depot the route starts from), so the Origin line shows the real starting point and the pickup only appears at its own stop in the route.'],
+  ['0.50.12', 'FIX: you can now UNPLAN a pickup / return / non-delivery stop off a route. Removing a stop like MUGELE (a pickup, not a normal delivery) from a route and saving used to bounce with "load has a non-DO stop in a delivery slot — reorder skipped (verify in portal)", so the stop stayed stuck on the route. The save guard that protects a card from silently resequencing a non-delivery stop it can\'t model now counts the stops you\'re REMOVING as accounted-for — so striking one off and saving goes through and NuVizz unplans it. Planning a card that still leaves an unmodeled non-delivery stop behind is still protected exactly as before.'],
+  ['0.50.11', 'HISTORICAL LOOKUP now shows the WHOLE delivery, not an empty shell. "Search past PROs / customer history" → tap a customer used to open a blank card: status Unplanned, ITEMS —, ROUTE "Not yet assigned", PROS (0), and a Delivery Ticket titled "hist:…" with 0 weight/pallets and no line items — because the lookup only ever carried the name + address. Now tapping a customer (or a specific PRO chip — the chips are individually tappable now) pulls that delivery\'s FULL archived record from our own history warehouse: the real route + who delivered it, the PROs, the line items, weight/pallets, and a printable Delivery Ticket. It reads only our saved history — ZERO NuVizz calls — and if a day is too old to be in the warehouse it falls back to the old name+address card so the receiving-hours/notes editor still opens. Tapping the customer name opens the most recent delivery; tap an older PRO chip to open that one.'],
   ['0.50.10', 'ROUTING GRID: search lights up the map + just-planned stops stop lingering. (1) Searching the Routing bottom grid (e.g. "estes") now highlights the matching stops on the Routing map — it only ever did that on the dispatch Map before. The hits render in BURNT ORANGE, a deliberately different color from the amber "selected" highlight, so when both are on the map at once you can tell what you searched for from what you\'ve selected. They ride the top layer (never hidden under another dot) at the same compact size as the Map screen\'s hits, and clearing the search clears the highlight. Debounced so a busy board doesn\'t stutter while you type. (2) FIXED: stops you\'d already planned onto a route (e.g. LVILLE) kept showing as available in the grid\'s date-window view until a scan caught up. The window rows now mirror the live board — which your Save already stamps the moment it verifies — so a just-planned stop flips to its route immediately (and an Un-Planned filter drops it), no scan needed. Zero extra NuVizz calls.'],
   ['0.50.9', 'NIGHTLY WAREHOUSE — the last two path-safety gaps (a 4-agent verification pass found them). (1) One more database key still carried a raw name: the routing engine\'s per-driver day record keyed off the raw driver name, so a co-driver like "COLIN/DJ 1" could throw when that record was written — now path-safe like every other key (this never affected sealing or the tractor paint; it only dropped that one engine record). (2) The ZIP-cleanup shipped in 0.50.8 only landed in the browser copy of the address-key builder; the SERVER copy the nightly capture actually uses still had the old code, so a malformed ZIP could make the app and the server compute different keys for the same customer. Both copies now match exactly. Warehouse-integrity only — zero customer-facing change, zero NuVizz calls.'],
   ['0.50.8', 'NIGHTLY WAREHOUSE: finished sealing the "slash in a name" hole (v0.48.4 fixed it for routes/drivers; this closes it everywhere else) and made the nightly PAINT self-heal. Root cause of a night that captured stops but never sealed — or sealed but never painted the lime "tractor delivered" pins — was a customer/load/stop key containing a character that isn\'t legal in a database path (a co-driver load like "COLIN/DJ 1", or a malformed ZIP with a slash): the write threw and took the rest of the night down with it. Now EVERY key that becomes a database path is made path-safe (stops, the tractor-paint locations, and the per-customer history rollup — routes/drivers were already safe), and the ZIP is cleaned at the source so it can never carry a slash into the key. Two more hardenings: an audit-log hiccup can no longer flip an already-sealed night to "failed" and skip the paint; and the recovery/heal that reseals an orphaned day now RE-PAINTS and re-mines it too (before, healed days got a manifest but their tractor pins and engine data were never written). Warehouse-integrity only — zero customer-facing change, zero NuVizz calls.'],
@@ -4572,6 +4575,13 @@ function buildTicketHtml(stop, logoUrl) {
 // from the enriched stops we already hold.
 function manifestOrigin(stops) {
   for (const s of stops) {
+    // A PICKUP's from-address IS the pickup location, not the route's origin. Walking
+    // stops blindly meant a route whose delivery stops lacked a from-address would land
+    // on the pickup and print e.g. "Origin: TSY AMERICA" — making it look like the pickup
+    // was pushed to the front, even though its ticket correctly sits later in the route.
+    // Only a DELIVERY's from = the depot origin, so skip pickups here.
+    const type = String(s?.stopType || s?.raw?.stopType || 'DO').toUpperCase();
+    if (type === 'PU') continue;
     const f = s?.raw?.stop?.from?.address;
     if (f && (f.addr1 || f.name || f.city)) {
       const cityLine = [f.city, [f.state, f.zip].filter(Boolean).join(' ')].filter(Boolean).join(', ');
@@ -6171,6 +6181,7 @@ function PastProSearch({ notes, initialQuery, onPickCustomer, onClose, noApi = f
   const [api, setApi] = useState(null); // NuVizz single-PRO lookup: null | {loading} | {stop} | {error}
   const [detail, setDetail] = useState(null); // stop shown in the full-detail modal
   const [remote, setRemote] = useState({ loading: false, customers: [], error: null }); // our delivery-history warehouse
+  const [opening, setOpening] = useState(null); // key of the customer whose warehouse stop is being fetched
   const query = q.trim();
   const lc = query.toLowerCase();
   // PRO-like = contains digits and is a single token (no spaces) — names have spaces.
@@ -6235,13 +6246,16 @@ function PastProSearch({ notes, initialQuery, onPickCustomer, onClose, noApi = f
     return [...map.values()].slice(0, 40);
   })();
 
-  // Open a historical customer in the full stop detail (synthetic stop — no live
-  // route/items, but the customer notes editor incl. DNS works and reads/writes
-  // customer_notes by matchKey).
-  const openCustomer = (m) => {
+  // Open a historical delivery in the full stop detail. When we have a specific
+  // {pro,date} — a tapped PRO chip, or the customer's most-recent PRO — fetch the FULL
+  // archived stop from our own history warehouse (route, driver, delivery ticket, line
+  // items, weight). Firestore only, ZERO NuVizz calls. If the warehouse has no record
+  // for that day (older-than-retention / uncaptured / id drift) we fall back to the
+  // name+address-only synthetic card so the customer-notes/DNS editor still opens.
+  const openCustomer = async (m, pick) => {
     if (!onPickCustomer) return;
     const matchKey = m.matchKey || normalizeMatchKey(m.name || '', m.addr1 || '', m.city || '', m.zip || '');
-    onPickCustomer({
+    const synthetic = {
       stopNbr: 'hist:' + matchKey,
       matchKey,
       pro: null, pros: [], proCount: 0,
@@ -6254,7 +6268,25 @@ function PastProSearch({ notes, initialQuery, onPickCustomer, onClose, noApi = f
       status: null, isPlanned: false, isUnplanned: true,
       signalSources: {}, stopDetails: [], raw: {},
       __historical: true,
-    });
+    };
+    // Specific chip if tapped; otherwise the newest PRO (m.history is newest-first).
+    const hit = pick || (Array.isArray(m.history) && m.history.length ? m.history[0] : null);
+    if (hit?.pro && hit?.date) {
+      setOpening(m.key);
+      try {
+        const r = await fetch('/.netlify/functions/nuvizz-customer-history?stop=' + encodeURIComponent(hit.pro) + '&date=' + encodeURIComponent(hit.date));
+        const d = await r.json();
+        if (d?.ok && d.stop) {
+          // The warehouse stores the customer key as customerMatchKey; reattach matchKey
+          // (the same normalized value) so the customer-notes / DNS editor keys correctly.
+          onPickCustomer({ ...d.stop, matchKey, __historical: true });
+          setOpening(null);
+          return;
+        }
+      } catch { /* fall through to the synthetic card */ }
+      setOpening(null);
+    }
+    onPickCustomer(synthetic);
   };
 
   const noResults = query && !remote.loading && customers.length === 0 && proMatches.length === 0;
@@ -6295,26 +6327,44 @@ function PastProSearch({ notes, initialQuery, onPickCustomer, onClose, noApi = f
             <div className="text-[10px] uppercase font-semibold text-slate-500 mb-1">Customers ({customers.length})</div>
             {customers.map((m, i) => {
               const cNote = m.matchKey ? notes.get(m.matchKey) : null;
+              const isOpening = opening === m.key;
               return (
-                <button
+                <div
                   key={m.key || i}
-                  onClick={() => openCustomer(m)}
-                  className="w-full text-left mb-2 border border-slate-200 rounded-lg p-2 active:bg-slate-50"
+                  className="w-full mb-2 border border-slate-200 rounded-lg p-2"
                 >
-                  <div className="flex items-center gap-2">
-                    <div className="text-sm font-semibold text-slate-900 break-words flex-1 min-w-0">{m.name}</div>
-                    <DnsBadge note={cNote} />
-                    <ChevronDown size={16} className="-rotate-90 text-slate-400 flex-shrink-0" />
-                  </div>
-                  {m.addr && <div className="text-[11px] text-slate-500 break-words">{m.addr}</div>}
-                  <div className="mt-1 flex flex-wrap gap-1">
-                    {m.history.map((h, j) => (
-                      <span key={j} className="text-[10px] font-mono bg-slate-100 border border-slate-200 rounded px-1.5 py-0.5">
-                        {h.pro} · {h.date}{h.driver ? <span className="text-slate-500"> · {h.driver}</span> : null}
-                      </span>
-                    ))}
-                  </div>
-                </button>
+                  <button
+                    type="button"
+                    onClick={() => openCustomer(m)}
+                    disabled={isOpening}
+                    title="Open the most recent delivery"
+                    className="w-full text-left rounded active:bg-slate-50 disabled:opacity-60"
+                  >
+                    <div className="flex items-center gap-2">
+                      <div className="text-sm font-semibold text-slate-900 break-words flex-1 min-w-0">{m.name}</div>
+                      {isOpening && <RefreshCw size={13} className="animate-spin text-slate-400 flex-shrink-0" />}
+                      <DnsBadge note={cNote} />
+                      <ChevronDown size={16} className="-rotate-90 text-slate-400 flex-shrink-0" />
+                    </div>
+                    {m.addr && <div className="text-[11px] text-slate-500 break-words">{m.addr}</div>}
+                  </button>
+                  {Array.isArray(m.history) && m.history.length > 0 && (
+                    <div className="mt-1 flex flex-wrap gap-1">
+                      {m.history.map((h, j) => (
+                        <button
+                          type="button"
+                          key={j}
+                          onClick={() => openCustomer(m, h)}
+                          disabled={isOpening}
+                          title="Open this delivery"
+                          className="text-[10px] font-mono bg-slate-100 border border-slate-200 rounded px-1.5 py-0.5 text-left hover:bg-slate-200 active:bg-slate-300 disabled:opacity-60"
+                        >
+                          {h.pro} · {h.date}{h.driver ? <span className="text-slate-500"> · {h.driver}</span> : null}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
               );
             })}
           </div>
