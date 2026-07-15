@@ -59,7 +59,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.50.20';
+const APP_VERSION = '0.50.21';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -104,6 +104,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.50.21', 'BULK ADD: manifest reading FIXED (no more timeout) + pick which rows push now vs queue for later. (1) The manifest reader timed out on your first real drop — reading a multi-page scan takes 20–40s and the server was capped at 26. It now runs in the background with the page checking in every few seconds (spinner shows elapsed time), so even long manifests finish. (2) NEW: every row in the Orders grid has a checkbox — checked rows get pushed to NuVizz on Create; UNCHECKED rows stay QUEUED in the grid (marked "queued", dimmed) and are skipped by every push, including load mode. The grid now SAVES ITSELF on your device, so queued rows are still there tomorrow — or after a reload — for a later push. Check/uncheck-all in the header; the footer counts what pushes vs what queues.'],
   ['0.50.20', 'ENGINE TREND now tracks the REAL learning curve. The Engine → Sequencing "watching the engine learn" chart used to plot the BLENDED daily mean, which rises and falls with how many UNGUIDED routes (no similar past route to learn from) happened to run that day — so a day could look worse just because more untaught routes ran, not because the engine got worse. The bold line is now the GUIDED mean (routes the engine actually had a learned reference for — the real performance signal, and the same number as the "Guided mean" tile), with the blended "all" mean kept as a faint dashed line for context. Days scored before this metric existed simply don\'t draw a guided point. Shadow-only, no data or scoring change.'],
   ['0.50.19', 'FIX: saving your bottom-panel PROFILE was confusing — the blue "Save" button was greyed out unless you typed a NEW name, so when you tweaked your active profile (e.g. set the window to "Last 7 days") and hit Save, nothing happened and there was no way to tell it apart from the smaller "Update … to current" link. Now, when you have a profile active and the name box is empty, that button reads "Update" and overwrites your active profile with the current bar setup in one click; type a name and it reads "Save" and makes a new one. Either way it flashes "✓ Saved" so you know it took. (The separate "Update ‹name› to current" link still works too.)'],
   ['0.50.18', 'BULK ADD reads SCANNED MANIFEST PDFs. Your Estes delivery manifests arrive as fax-style scans — pictures of a table, with no text inside the file at all (that\'s why the drop came in as one garbled column; no spreadsheet parser can ever read them). Now: drop the manifest .pdf on Bulk Add and an AI reader (the same one behind AI search — a few cents per manifest, ZERO NuVizz calls) reads every page and fills the review grid: consignee, address, city/state/ZIP, PRO, units → pallets, weight, description. Order # is prefilled the way your board already names these (ESTES-0288347656 style). Built-in cross-checks: each PRO is read from BOTH the printed number and the barcode digits (a mismatch is flagged, barcode wins), and the row count is checked against the manifest\'s own "Total Pros" header — any discrepancy shows in a banner. NOTHING is created automatically: the rows land in the same editable grid as a spreadsheet, you review against the paper, then hit Create as usual.'],
@@ -16783,6 +16784,7 @@ function NewOrderSingleScreen() {
 const BULK_MAX_ROWS = 300;   // soft cap per batch (keeps one Save from hammering NuVizz)
 function bulkEmptyRow() { const o = {}; for (const f of BULK_FIELDS) o[f.key] = ''; return o; }
 const BULK_COLMAP_KEY = 'dd_bulk_colmap';
+const BULK_DRAFT_KEY = 'dd_bulk_draft';   // the grid autosaves here — unchecked rows queue across days
 
 function BulkOrderScreen() {
   // Shared pickup for the batch (same saved-origins model as New Order).
@@ -16798,7 +16800,20 @@ function BulkOrderScreen() {
   const [originSaved, setOriginSaved] = useState(false);
   const [serviceDate, setServiceDate] = useState(todayLocalYMD());
   const [live, setLive] = useState(false);
-  const [rows, setRows] = useState(() => [bulkEmptyRow(), bulkEmptyRow(), bulkEmptyRow()]);
+  // The grid is a PERSISTED DRAFT (Chad: push some rows now, leave the rest queued for a
+  // later day's push). Rows autosave to this device; a row's _push flag (default true)
+  // marks whether Create sends it — unchecked rows stay in the grid, surviving reloads,
+  // until they're pushed or removed. _push is UI state, not an order field (never sent).
+  const [rows, setRows] = useState(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem(BULK_DRAFT_KEY) || 'null');
+      if (Array.isArray(saved) && saved.length) {
+        return saved.slice(0, BULK_MAX_ROWS + 1).map((r) => ({ ...bulkEmptyRow(), ...r, _push: r?._push !== false }));
+      }
+    } catch { /* corrupt draft — start fresh */ }
+    return [bulkEmptyRow(), bulkEmptyRow(), bulkEmptyRow()];
+  });
+  useEffect(() => { try { localStorage.setItem(BULK_DRAFT_KEY, JSON.stringify(rows)); } catch { /* ignore */ } }, [rows]);
   const [pasteText, setPasteText] = useState('');
   const [importer, setImporter] = useState(null);   // { columns, dataRows, mapping, sig }
   const [importErr, setImportErr] = useState('');
@@ -16846,8 +16861,16 @@ function BulkOrderScreen() {
     return m;
   };
   const activeRows = rows.filter((r) => !bulkRowIsBlank(r));
-  const readyCount = activeRows.filter((r) => missingFor(r).length === 0).length;
-  const incompleteCount = activeRows.length - readyCount;
+  // Selection: only _push rows count toward Create; unchecked rows are QUEUED (they stay
+  // in the autosaved grid for a later push and never gate or join this batch).
+  const isPush = (r) => r._push !== false;
+  const pushRows = activeRows.filter(isPush);
+  const queuedCount = activeRows.length - pushRows.length;
+  const togglePush = (i) => setRows((rs) => rs.map((r, idx) => (idx === i ? { ...r, _push: !isPush(r) } : r)));
+  const allPushed = activeRows.length > 0 && activeRows.every(isPush);
+  const toggleAllPush = () => setRows((rs) => rs.map((r) => (bulkRowIsBlank(r) ? r : { ...r, _push: !allPushed })));
+  const readyCount = pushRows.filter((r) => missingFor(r).length === 0).length;
+  const incompleteCount = pushRows.length - readyCount;
   const canCreate = originComplete && !!serviceDate && readyCount > 0 && !busy
     // Load mode: ONE declarative import = the load's COMPLETE stop list — a half-ready grid
     // must never fire (the incomplete rows would simply be missing from the created load).
@@ -16894,20 +16917,36 @@ function BulkOrderScreen() {
         ingestAoa(XLSX.utils.sheet_to_json(ws, { header: 1, blankrows: false, defval: '' }));
       } else if (name.endsWith('.pdf')) {
         // Scanned carrier manifest (Estes-style). These PDFs are pure fax IMAGES — zero
-        // embedded text — so no parser can read them; a server function has Claude vision
-        // read the pages into rows, which land in the same review grid as a spreadsheet.
-        // One AI call per drop (a few cents); ZERO NuVizz calls.
-        setImportBusy(`Reading "${file.name}" — OCR on a scanned manifest takes ~10–20s…`);
+        // embedded text — so no parser can read them; the AI reader runs as a BACKGROUND
+        // function (vision over a multi-page scan takes 20-40s, past the 26s request cap
+        // that timed out the first version) and we poll for the result. One AI call per
+        // drop (a few cents); ZERO NuVizz calls.
+        setImportBusy(`Reading "${file.name}" — a scanned manifest takes ~20–40s…`);
         try {
           const buf = new Uint8Array(await file.arrayBuffer());
           let bin = '';
           for (let i = 0; i < buf.length; i += 0x8000) bin += String.fromCharCode.apply(null, buf.subarray(i, i + 0x8000));
-          const resp = await fetch('/.netlify/functions/manifest-ocr', {
+          const b64 = btoa(bin);
+          if (b64.length > 240000) { setImportErr('That PDF is too large for the manifest reader — split it (print-to-PDF a page range) and drop the halves.'); return; }
+          const jobId = (crypto?.randomUUID?.() || `j${Date.now()}${Math.random().toString(36).slice(2, 10)}`).toLowerCase();
+          const kick = await fetch('/.netlify/functions/manifest-ocr-background', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ pdfBase64: btoa(bin), filename: file.name }),
+            body: JSON.stringify({ jobId, pdfBase64: b64, filename: file.name }),
           });
-          const data = await resp.json();
-          if (!data.ok) { setImportErr(data.error || 'manifest read failed'); return; }
+          if (!kick.ok && kick.status !== 202) { setImportErr(`manifest reader unavailable (HTTP ${kick.status})`); return; }
+          const t0 = Date.now();
+          let data = null;
+          while (Date.now() - t0 < 150000) {   // poll up to 2.5 min; the reader itself caps at 110s
+            await new Promise((r) => setTimeout(r, 3000));
+            setImportBusy(`Reading "${file.name}" — ${Math.round((Date.now() - t0) / 1000)}s (a scanned manifest takes ~20–40s)…`);
+            try {
+              const pr = await fetch(`/.netlify/functions/manifest-ocr-result?job=${jobId}`);
+              const pd = await pr.json();
+              if (pd.status === 'done') { data = pd; break; }
+              if (pd.status === 'error') { setImportErr(pd.error || 'manifest read failed'); return; }
+            } catch { /* transient poll failure — keep waiting */ }
+          }
+          if (!data) { setImportErr('The manifest reader did not answer in time — drop the file again.'); return; }
           // Carrier → the Order # prefix (matches the board's existing ESTES-<digits> convention).
           const carrierWord = String(data.manifest?.carrier || 'ESTES').trim().split(/\s+/)[0].toUpperCase().replace(/[^A-Z0-9]/g, '') || 'ESTES';
           finishIngest(manifestRowsToAoa(data.rows, { prefix: `${carrierWord}-` }));
@@ -16933,7 +16972,7 @@ function BulkOrderScreen() {
   // ── Create all ready rows ──
   const createAll = async () => {
     if (!canCreate) return;
-    const targets = rows.map((r, idx) => ({ r, idx })).filter(({ r }) => !bulkRowIsBlank(r) && bulkRowMissing(r).length === 0);
+    const targets = rows.map((r, idx) => ({ r, idx })).filter(({ r }) => !bulkRowIsBlank(r) && isPush(r) && bulkRowMissing(r).length === 0);
     if (!targets.length) return;
     if (!live) { setResults({ beta: true, created: 0, updated: 0, failed: 0, rows: [], msg: `○ Beta — would create ${targets.length} order(s) (nothing sent). Flip to ● LIVE to create them in NuVizz.` }); return; }
     persistOrigin();
@@ -17006,7 +17045,7 @@ function BulkOrderScreen() {
   };
   const createAsLoad = async () => {
     if (!canCreate) return;
-    const targets = rows.filter((r) => !bulkRowIsBlank(r));
+    const targets = rows.filter((r) => !bulkRowIsBlank(r) && isPush(r));   // queued (unchecked) rows never join the load
     const nbr = loadNbr.trim();
     if (!live) { setResults({ loadMode: true, beta: true, msg: `○ Beta — would create load "${nbr}"${routeName.trim() ? ` (${routeName.trim()})` : ''} with ${targets.length} stop(s) in grid order via ONE async import (nothing sent). Flip to ● LIVE to create it.` }); return; }
     persistOrigin();
@@ -17027,7 +17066,11 @@ function BulkOrderScreen() {
     try { res = await callWrite('commitBoard', body, { dryRun: false, clientOpId: newClientOpId(), createdBy: 'dispatcher-bulk' }); }
     catch (e) { res = { ok: false, error: e?.message || 'network error' }; }
     const L0 = res?.result?.loads?.[0];
-    const finish = (ok, msg, detail) => { setVerifyMsg(null); setBusy(false); setResults({ loadMode: true, ok, msg, detail }); if (ok) setRows([bulkEmptyRow(), bulkEmptyRow(), bulkEmptyRow()]); };
+    // On success, only the PUSHED rows leave the grid — queued (unchecked) rows stay for a later push.
+    const finish = (ok, msg, detail) => {
+      setVerifyMsg(null); setBusy(false); setResults({ loadMode: true, ok, msg, detail });
+      if (ok) setRows((rs) => { const kept = rs.filter((r) => !bulkRowIsBlank(r) && !isPush(r)); return kept.length ? [...kept, bulkEmptyRow()] : [bulkEmptyRow(), bulkEmptyRow(), bulkEmptyRow()]; });
+    };
     if (res?.ok && L0?.ok) {
       const c = L0?.steps?.filter?.((s) => s.op === 'converge').reduce?.((n, s) => n + (s.reads || 0), 0) ?? 0;
       finish(true, `✓ Load "${nbr}" created with ${payloadRows.length} stop(s) in your grid order — confirmed by read-back.`, `Anatomy: 1 import + ${c || 1} read-back(s); zero per-stop pre-creates.`);
@@ -17179,7 +17222,7 @@ function BulkOrderScreen() {
         {/* The grid */}
         <div className="bg-white border border-slate-200 rounded-lg p-3 space-y-2">
           <div className="flex items-center justify-between">
-            <div className="text-[13px] font-semibold text-slate-700">Orders <span className="font-normal text-slate-400">({activeRows.length} filled{incompleteCount ? ` · ${incompleteCount} incomplete` : ''})</span></div>
+            <div className="text-[13px] font-semibold text-slate-700">Orders <span className="font-normal text-slate-400">({activeRows.length} filled{incompleteCount ? ` · ${incompleteCount} incomplete` : ''}{queuedCount ? ` · ${queuedCount} queued for later` : ''})</span></div>
             <div className="flex items-center gap-2">
               <button onClick={addRow} className="text-[12px] font-medium inline-flex items-center gap-1 px-2.5 py-1 rounded border border-slate-300 bg-white text-slate-700 hover:bg-slate-50"><Plus size={13} /> Add row</button>
               <button onClick={clearRows} className="text-[12px] font-medium inline-flex items-center gap-1 px-2.5 py-1 rounded border border-slate-300 bg-white text-slate-600 hover:bg-red-50 hover:text-red-700 hover:border-red-200"><Trash2 size={13} /> Clear</button>
@@ -17189,6 +17232,9 @@ function BulkOrderScreen() {
             <table className="text-[12px] border-collapse">
               <thead>
                 <tr className="text-left text-[11px] text-slate-500">
+                  <th className="pr-1 pb-1 w-7" title="Push to NuVizz on Create — unchecked rows stay QUEUED in the grid (saved on this device) for a later push">
+                    <input type="checkbox" checked={allPushed} onChange={toggleAllPush} disabled={!activeRows.length} className="align-middle accent-blue-600" title="Check/uncheck all filled rows" />
+                  </th>
                   <th className="pr-2 pb-1 font-medium w-6">#</th>
                   {BULK_FIELDS.map((f) => <th key={f.key} className="px-1 pb-1 font-medium whitespace-nowrap">{f.label}{(f.required || (asLoad && f.key === 'stopNbr')) && <span className="text-red-500"> *</span>}</th>)}
                   <th className="px-1 pb-1 font-medium">Status</th>
@@ -17199,16 +17245,20 @@ function BulkOrderScreen() {
                 {rows.map((r, i) => {
                   const blank = bulkRowIsBlank(r);
                   const missing = blank ? [] : missingFor(r);
+                  const queued = !blank && !isPush(r);
                   return (
-                    <tr key={i} className="align-top">
+                    <tr key={i} className={`align-top ${queued ? 'opacity-60' : ''}`}>
+                      <td className="pr-1 py-0.5">
+                        {!blank && <input type="checkbox" checked={isPush(r)} onChange={() => togglePush(i)} className="align-middle accent-blue-600" title={queued ? 'Queued — will NOT be pushed; stays in the grid for later' : 'Will be pushed on Create'} />}
+                      </td>
                       <td className="pr-2 py-0.5 text-slate-400 tabular-nums">{i + 1}</td>
                       {BULK_FIELDS.map((f) => (
                         <td key={f.key} className="px-1 py-0.5">
-                          <input value={r[f.key]} onChange={setCell(i, f.key)} className={`${gridInput} ${f.key === 'name' || f.key === 'addr1' ? 'min-w-[150px]' : f.key === 'itemDesc' ? 'min-w-[140px]' : f.key === 'city' ? 'min-w-[110px]' : f.key === 'state' ? 'w-12' : f.key === 'zip' ? 'w-20' : 'w-16'} ${!blank && missing.includes(f.key) ? 'border-amber-400 bg-amber-50' : ''}`} />
+                          <input value={r[f.key]} onChange={setCell(i, f.key)} className={`${gridInput} ${f.key === 'name' || f.key === 'addr1' ? 'min-w-[150px]' : f.key === 'itemDesc' ? 'min-w-[140px]' : f.key === 'city' ? 'min-w-[110px]' : f.key === 'state' ? 'w-12' : f.key === 'zip' ? 'w-20' : 'w-16'} ${!blank && !queued && missing.includes(f.key) ? 'border-amber-400 bg-amber-50' : ''}`} />
                         </td>
                       ))}
                       <td className="px-1 py-0.5 whitespace-nowrap">
-                        {blank ? <span className="text-slate-300">—</span> : missing.length ? <span className="text-amber-600 inline-flex items-center gap-1"><AlertTriangle size={12} /> need {missing.length}</span> : <span className="text-green-600 inline-flex items-center gap-1"><FileCheck size={12} /> ready</span>}
+                        {blank ? <span className="text-slate-300">—</span> : queued ? <span className="text-slate-500 inline-flex items-center gap-1"><Clock size={12} /> queued</span> : missing.length ? <span className="text-amber-600 inline-flex items-center gap-1"><AlertTriangle size={12} /> need {missing.length}</span> : <span className="text-green-600 inline-flex items-center gap-1"><FileCheck size={12} /> ready</span>}
                       </td>
                       <td className="py-0.5"><button onClick={() => removeRow(i)} title="Remove row" className="text-slate-400 hover:text-red-600"><X size={14} /></button></td>
                     </tr>
@@ -17251,13 +17301,14 @@ function BulkOrderScreen() {
         <div className="flex items-center justify-between gap-3 pb-6">
           <span className="text-[12px] text-slate-500">
             {!originComplete ? 'Set the pickup + service date first.'
+              : readyCount === 0 && activeRows.length > 0 && pushRows.length === 0 ? `All ${activeRows.length} row(s) are queued — check ☑ at least one row to push it.`
               : readyCount === 0 ? `Fill at least one row (required * fields${asLoad ? ' — Order # too in load mode' : ''}).`
               : asLoad && incompleteCount > 0 ? `Load mode sends the load's COMPLETE stop list — finish or remove the ${incompleteCount} incomplete row(s) first.`
               : asLoad && !loadNbr.trim() ? 'Enter the load number (an empty Draft load, or a new one).'
               : busy && progress ? `Creating ${progress.done}/${progress.total}…`
               : busy ? 'Working…'
-              : asLoad ? (live ? `Ready — ONE import WILL create load "${loadNbr.trim()}" with ${readyCount} stop(s) in grid order.` : `Beta — previews the one-import load create (${readyCount} stops).`)
-              : live ? `Ready — this WILL create ${readyCount} order(s) in NuVizz${incompleteCount ? ` (${incompleteCount} incomplete row(s) skipped)` : ''}.` : `Beta — Create previews only (${readyCount} ready).`}
+              : asLoad ? (live ? `Ready — ONE import WILL create load "${loadNbr.trim()}" with ${readyCount} stop(s) in grid order.${queuedCount ? ` ${queuedCount} queued row(s) stay in the grid.` : ''}` : `Beta — previews the one-import load create (${readyCount} stops).`)
+              : live ? `Ready — this WILL create ${readyCount} order(s) in NuVizz${incompleteCount ? ` (${incompleteCount} incomplete row(s) skipped)` : ''}${queuedCount ? ` · ${queuedCount} queued row(s) stay in the grid for a later push` : ''}.` : `Beta — Create previews only (${readyCount} ready${queuedCount ? ` · ${queuedCount} queued` : ''}).`}
           </span>
           <button onClick={asLoad ? createAsLoad : createAll} disabled={!canCreate} className={`inline-flex items-center gap-1.5 px-4 py-2 rounded font-semibold text-white text-sm shrink-0 ${canCreate ? '' : 'opacity-40 cursor-not-allowed'}`} style={{ background: live ? '#dc2626' : BRAND }}>
             <Plus size={16} /> {busy ? (asLoad ? 'Importing…' : 'Creating…')
