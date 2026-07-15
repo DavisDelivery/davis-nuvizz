@@ -188,7 +188,11 @@ export async function setDoc(path: string, data: any): Promise<boolean> {
   return true;
 }
 
-export async function listDocs(collectionPath: string): Promise<any[]> {
+// opts.mask — Firestore `list` field mask (mask.fieldPaths). When given, Firestore returns
+// ONLY those field paths per doc (dot notation for nested, e.g. 'raw.load'), which cuts the
+// bytes streamed out of Firestore — the lever for the map feed's lean projection. Read COUNT
+// (billing) is unchanged; this only trims the payload/latency. Omit for the full doc.
+export async function listDocs(collectionPath: string, opts?: { mask?: string[] }): Promise<any[]> {
   const token = await getAccessToken();
   const sa = loadServiceAccount();
   const all: any[] = [];
@@ -196,6 +200,7 @@ export async function listDocs(collectionPath: string): Promise<any[]> {
   do {
     const url = new URL(`${FIRESTORE_BASE}/projects/${sa.project_id}/databases/${firestoreDatabase()}/documents/${collectionPath}`);
     url.searchParams.set('pageSize', '300');
+    if (opts?.mask && opts.mask.length) for (const f of opts.mask) url.searchParams.append('mask.fieldPaths', f);
     if (pageToken) url.searchParams.set('pageToken', pageToken);
     const resp = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
     if (resp.status === 404) return [];
@@ -447,9 +452,13 @@ export interface StopIndexRead {
   stops: any[];
 }
 
-export async function readStops(tenant: string, dateStr: string): Promise<StopIndexRead> {
+// opts.mask — restrict the per-stop docs to these field paths (see listDocs). Used by the
+// map feed to serve a LEAN projection (drops ~55% of the bytes: the raw NuVizz object bulk +
+// a few unread fields) without changing what's STORED. Omit for the full stop docs, which
+// every other caller (history capture, engine, freight) needs.
+export async function readStops(tenant: string, dateStr: string, opts?: { mask?: string[] }): Promise<StopIndexRead> {
   const base = `${COLLECTION}/${parentId(tenant, dateStr)}`;
-  const [meta, docs] = await Promise.all([getDoc(base), listDocs(`${base}/stops`)]);
+  const [meta, docs] = await Promise.all([getDoc(base), listDocs(`${base}/stops`, opts?.mask ? { mask: opts.mask } : undefined)]);
   // Strip the internal _id and last_scanned_at off each stop before returning.
   const stops = docs.map(({ _id, last_scanned_at, ...rest }) => rest);
   return { meta: (meta as StopIndexMeta) || null, stops };
