@@ -100,7 +100,11 @@ async function upsertAll<T>(items: T[], pathFn: (item: T) => string, conc = 12):
 
 export async function upsertStops(tenant: string, date: string, records: any[]): Promise<void> {
   const base = dayPath(tenant, date);
-  await upsertAll(records, (r) => `${base}/stops/${r.stopNbr}`);
+  // stopNbr is normally numeric (path-safe), but it flows straight from the vendor
+  // payload — a non-numeric/slashed value would throw here and abort the WHOLE
+  // night before the seal (the last pre-seal id #450 left raw). histDocId is a
+  // no-op for numeric ids, so existing stop docs keep their exact key.
+  await upsertAll(records, (r) => `${base}/stops/${histDocId(String(r.stopNbr))}`);
 }
 export async function upsertRoutes(tenant: string, date: string, records: any[]): Promise<void> {
   const base = dayPath(tenant, date);

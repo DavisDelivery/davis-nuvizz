@@ -42,7 +42,10 @@ export function normalizeMatchKey(businessName: any, addressLine1: any, city: an
     .trim();
 
   const normCity = safe(city).toLowerCase().replace(/[^\w]/g, '');
-  const zip5 = safe(zip).substring(0, 5);
+  // Strip non-word chars BEFORE slicing (mirrors the browser copy src/lib/matchKey.js):
+  // a malformed zip like "3/456" must not smuggle a '/' into the key. No-op for normal
+  // 5-digit / ZIP+4 values, so client and server compute byte-identical keys.
+  const zip5 = safe(zip).replace(/[^\w]/g, '').substring(0, 5);
 
   return `${normName}__${normStreet}__${normCity}__${zip5}`;
 }

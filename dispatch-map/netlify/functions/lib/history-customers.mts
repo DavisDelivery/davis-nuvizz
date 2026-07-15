@@ -19,6 +19,7 @@
 //       last_date, updated_at }
 
 import { getDoc, setDoc, runQuery } from './firestore.mts';
+import { histDocId } from './history-store.mts';
 
 export const CUSTOMERS_COLLECTION = 'history_customers';
 export const MAX_PROS = 20;
@@ -80,8 +81,11 @@ export function matchesAllWords(nameTokens: string[], words: string[]): boolean 
   return words.every((w) => set.has(w));
 }
 
+// matchKey rides a Firestore doc-id path segment. Sanitize it (no-op for clean
+// keys) so a slash/oversized key can never throw and silently drop a day's
+// customer-history rollup. The raw match_key is kept as a field on the doc.
 export function rollupId(tenant: string, matchKey: string): string {
-  return `${tenant}__${matchKey}`;
+  return `${tenant}__${histDocId(String(matchKey))}`;
 }
 export function rollupPath(tenant: string, matchKey: string): string {
   return `${CUSTOMERS_COLLECTION}/${rollupId(tenant, matchKey)}`;
