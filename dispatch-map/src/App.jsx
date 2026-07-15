@@ -1187,6 +1187,41 @@ function applyPlanOverlay(stops) {
   } catch { return stops; }
 }
 
+// Reflect the authoritative BOARD plan state onto date-window rows (the bottom grid's NuVizz
+// window pull). The overlay above can't keep window rows honest on its own: it's a shared
+// ONE-SHOT map, and the board consumer self-cleans each entry the moment the patched board
+// agrees with a save — usually seconds after the Save, while the window's snapshot (pulled at
+// window-open, never re-pulled on save) still needs the paint. That's how a stop just planned
+// onto a route kept showing "available" in the grid until a scan (Chad: the LVILLE plans).
+// The board rows ARE the truth — the Save's server write-through stamps them, board-sync +
+// refresh re-read them, the scan defends them — so any window row whose stopNbr is on the
+// board takes the board's plan state, both directions: a board-planned row takes the load/
+// driver/sequence; a row the board holds unplanned drops its stale plan. Can't invent a plan
+// (only confirmed saves patch the board), self-heals as the board updates, zero NuVizz.
+// Ref-stable: returns the input array when nothing needed reflecting (see overlay note above).
+function reflectBoardPlan(rows, boardByNbr) {
+  if (!boardByNbr || !boardByNbr.size || !rows || !rows.length) return rows;
+  let touched = false;
+  const out = rows.map((r) => {
+    const b = boardByNbr.get(String(r?.stopNbr ?? ''));
+    if (!b) return r;
+    if (b.isPlanned) {
+      const agrees = r.isPlanned && String(r.loadNbr || r.routeName || '') === String(b.loadNbr || b.routeName || '');
+      if (agrees) return r;
+      touched = true;
+      // normalizedStatus copies as-is (null when the board didn't set one) so a delivered
+      // board row ('90') still classifies DELIVERED via its code instead of a forced label.
+      return { ...r, isPlanned: true, isUnplanned: false, status: b.status ?? '20', normalizedStatus: b.normalizedStatus ?? null, loadNbr: b.loadNbr ?? b.routeName ?? null, routeName: b.routeName ?? b.loadNbr ?? null, routeSeq: b.routeSeq ?? null, driverName: b.driverName ?? r.driverName, driverUserName: b.driverUserName ?? b.driverName ?? r.driverUserName, boardReflected: true };
+    }
+    if (b.isUnplanned && r.isPlanned) {
+      touched = true;
+      return { ...r, isPlanned: false, isUnplanned: true, status: b.status ?? '10', normalizedStatus: b.normalizedStatus ?? null, loadNbr: null, routeName: null, routeSeq: null, boardReflected: true };
+    }
+    return r;
+  });
+  return touched ? out : rows;
+}
+
 function useStops(date, carryDays = 0) {
   const [stops, setStops] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -9184,12 +9219,20 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
     { k: 'driver', label: 'Driver', w: 150, get: (s) => s.driverName || '', sortVal: (s) => s.driverName },
   ];
   // Board mode shows today's loaded stops; NuVizz mode shows the live-pulled set.
-  // The confirmed-save plan overlay is applied to WINDOW rows too (board-mode `stops`
-  // already carry it via useStops) and re-applied on every save (planVersion bump) — the
-  // map reflected a just-built load immediately but this grid kept the pre-save rows
-  // until a refetch/scan (Chad's "the map reflects my work, the bottom panel does not").
+  // WINDOW rows get two layers of plan truth (board-mode `stops` already carry both via
+  // useStops + the board itself): (1) the confirmed-save overlay, re-applied on every save
+  // (planVersion bump) — covers the seconds between a Save and the board refresh; then
+  // (2) reflectBoardPlan mirrors the authoritative BOARD row onto each matching window row.
+  // The overlay alone wasn't enough: it's a shared one-shot map that the board consumer
+  // self-cleans the moment the patched board agrees — usually before this window repaints —
+  // so a just-planned stop reverted to "available" here until a scan (the LVILLE lingering).
+  const boardByNbr = useMemo(() => {
+    const m = new Map();
+    for (const s of stops || []) if (s && s.stopNbr != null) m.set(String(s.stopNbr), s);
+    return m;
+  }, [stops]);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  const baseStops = useMemo(() => (nvWindow ? applyPlanOverlay(nvRows) : stops), [nvWindow, nvRows, stops, planVersion]);
+  const baseStops = useMemo(() => (nvWindow ? reflectBoardPlan(applyPlanOverlay(nvRows), boardByNbr) : stops), [nvWindow, nvRows, stops, boardByNbr, planVersion]);
   // Pull from NuVizz whenever a date window is selected (re-pull when the status
   // selection changes so status filters server-side, not just on the loaded page).
   useEffect(() => {
