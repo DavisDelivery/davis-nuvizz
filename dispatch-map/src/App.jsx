@@ -59,7 +59,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.50.22';
+const APP_VERSION = '0.50.23';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -104,6 +104,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.50.23', 'ENGINE ASSIGNMENT — more room to actually read the routes. The day-plan map now has an ⤢ Expand button that hides the drivers table and blows the map up to full width (⤡ Collapse to bring the table back). The daily-agreement chart is shorter and collapses to a one-line header (▾ hide) so it stops eating the screen. And a new \u201cOnly moved\u201d toggle focuses everything — the drivers table AND the map (routes + pins) — on just the drivers the engine moved a stop to or from, so you can see the disagreements without the rest of the day in the way. Shadow-only view controls; no data or scoring change.'],
   ['0.50.22', 'MANIFEST INTAKE — the review screen you asked for, plus THE SCROLL FIX. (1) Dropping a manifest PDF now opens a dedicated intake panel instead of the generic column-mapper: header with the manifest # / date / trailer, tiles for ORDERS · MNF UNITS · WEIGHT · PICKUP, and two tabs — "Bulk Add — Held" and "Pushed to NuVizz". Every order shows its ESTES- order ref, consignee, and editable Pallets / Loose pcs / Wt / Phone / Dispatch notes / Price boxes; expand a row (▸) to fix its address. Check the rows you want and hit PUSH TO NUVIZZ — the live tally shows exactly what\'s going (count · plt · loose · lb · $). Unchecked orders stay HELD (saved on this device, still there tomorrow); pushed orders move to the Pushed tab with NuVizz\'s number. Same ○ Beta / ● LIVE gate as everything else — Beta shows "PREVIEW MODE — nothing sent". (2) NEW on every create path: PHONE writes to the NuVizz consignee contact (the stop card\'s Contact row / Text customer) and DISPATCH NOTES write as driver instructions (the card\'s notes panel) — on the intake, the Bulk grid, and the single New Order form. (3) FIXED: New Order / Bulk Add wouldn\'t scroll — anything below the first screenful was unreachable (a layout wrapper regression; it looked like the manifest import broke scrolling, but the page could never scroll). One-line fix; both screens scroll properly now.'],
   ['0.50.21', 'BULK ADD: manifest reading FIXED (no more timeout) + pick which rows push now vs queue for later. (1) The manifest reader timed out on your first real drop — reading a multi-page scan takes 20–40s and the server was capped at 26. It now runs in the background with the page checking in every few seconds (spinner shows elapsed time), so even long manifests finish. (2) NEW: every row in the Orders grid has a checkbox — checked rows get pushed to NuVizz on Create; UNCHECKED rows stay QUEUED in the grid (marked "queued", dimmed) and are skipped by every push, including load mode. The grid now SAVES ITSELF on your device, so queued rows are still there tomorrow — or after a reload — for a later push. Check/uncheck-all in the header; the footer counts what pushes vs what queues.'],
   ['0.50.20', 'ENGINE TREND now tracks the REAL learning curve. The Engine → Sequencing "watching the engine learn" chart used to plot the BLENDED daily mean, which rises and falls with how many UNGUIDED routes (no similar past route to learn from) happened to run that day — so a day could look worse just because more untaught routes ran, not because the engine got worse. The bold line is now the GUIDED mean (routes the engine actually had a learned reference for — the real performance signal, and the same number as the "Guided mean" tile), with the blended "all" mean kept as a faint dashed line for context. Days scored before this metric existed simply don\'t draw a guided point. Shadow-only, no data or scoring change.'],
@@ -16083,6 +16084,17 @@ function EngineAssignmentView({ google, mapsError }) {
 
   // moved stops: engine driver differs from dispatch
   const moved = useMemo(() => (plan?.stops || []).filter((s) => s.engine_driver && s.actual_driver && s.engine_driver !== s.actual_driver), [plan]);
+  // the drivers involved in a move (gained OR lost a stop) — powers the "Only moved" filter
+  const movedDrivers = useMemo(() => {
+    const set = new Set();
+    moved.forEach((m) => { if (m.actual_driver) set.add(m.actual_driver); if (m.engine_driver) set.add(m.engine_driver); });
+    return set;
+  }, [moved]);
+  // view controls: collapse the trend chart, expand the map, focus only on moved routes
+  const [chartOpen, setChartOpen] = useState(true);
+  const [mapExpanded, setMapExpanded] = useState(false);
+  const [movedOnly, setMovedOnly] = useState(false);
+  const shownRows = movedOnly ? sorted.filter((r) => movedDrivers.has(r.driver_key) || movedDrivers.has(r.driver)) : sorted;
   const driverColor = useMemo(() => {
     const keys = [...new Set((plan?.stops || []).flatMap((s) => [s.actual_driver, s.engine_driver]).filter(Boolean))].sort();
     const m = new Map();
@@ -16112,6 +16124,7 @@ function EngineAssignmentView({ google, mapsError }) {
     // engine polylines: one per trip, colored by driver, trip1 solid / trip2+ dashed
     const drawEngine = () => {
       for (const t of engineTrips) {
+        if (movedOnly && !movedDrivers.has(t.driver_key)) continue;
         const path = [depotPt];
         for (const id of t.stop_ids) { const s = byId.get(id); if (s) path.push({ lat: s.lat, lng: s.lng }); }
         if (path.length < 2) continue;
@@ -16127,6 +16140,7 @@ function EngineAssignmentView({ google, mapsError }) {
       const byDriver = new Map();
       for (const s of stops) { if (!s.actual_driver) continue; (byDriver.get(s.actual_driver) ?? byDriver.set(s.actual_driver, []).get(s.actual_driver)).push(s); }
       for (const [drv, ds] of byDriver) {
+        if (movedOnly && !movedDrivers.has(drv)) continue;
         const path = [depotPt, ...ds.map((s) => ({ lat: s.lat, lng: s.lng }))];
         if (path.length < 2) continue;
         const pl = new google.maps.Polyline({ path, strokeColor: driverColor.get(drv) || '#64748b', strokeOpacity: muted ? 0.35 : 0.9, strokeWeight: muted ? 2.5 : 3, zIndex: muted ? 3 : 5 });
@@ -16139,6 +16153,7 @@ function EngineAssignmentView({ google, mapsError }) {
 
     const movedSet = new Set(moved.map((s) => s.id));
     for (const s of stops) {
+      if (movedOnly && !movedSet.has(s.id)) continue;
       const drv = mapMode === 'dispatch' ? s.actual_driver : s.engine_driver;
       const isMoved = mapMode === 'diff' && movedSet.has(s.id);
       const color = isMoved ? '#d97706' : (driverColor.get(drv) || '#64748b');
@@ -16148,9 +16163,16 @@ function EngineAssignmentView({ google, mapsError }) {
       markersRef.current.push(mk);
     }
     const bounds = new google.maps.LatLngBounds(); bounds.extend(depotPt);
-    for (const s of stops) bounds.extend({ lat: s.lat, lng: s.lng });
+    for (const s of stops) { if (movedOnly && !movedSet.has(s.id)) continue; bounds.extend({ lat: s.lat, lng: s.lng }); }
     mapRef.current.fitBounds(bounds, 40);
-  }, [google, mapReady, plan, mapMode, moved, driverColor]);
+  }, [google, mapReady, plan, mapMode, moved, movedOnly, movedDrivers, driverColor]);
+
+  // Google Maps needs a nudge when its container resizes (expand map / collapse chart).
+  useEffect(() => {
+    if (!google || !mapRef.current) return;
+    const t = setTimeout(() => google.maps.event.trigger(mapRef.current, 'resize'), 60);
+    return () => clearTimeout(t);
+  }, [google, mapExpanded, chartOpen]);
 
   const modeBtn = (id, label) => (
     <button key={id} onClick={() => setMapMode(id)}
@@ -16191,13 +16213,22 @@ function EngineAssignmentView({ google, mapsError }) {
       )}
 
       <div className="border rounded-lg bg-white p-2">
-        <div className="text-[11px] font-semibold text-slate-600 px-1 pb-1">Daily agreement — stop (driver) vs co-load (shape), higher is closer to dispatch</div>
-        <EngineAgreementChart days={days} />
+        <button onClick={() => setChartOpen((v) => !v)} title={chartOpen ? 'Hide chart' : 'Show chart'}
+          className="w-full flex items-center justify-between text-[11px] font-semibold text-slate-600 px-1 pb-1">
+          <span>Daily agreement — stop (driver) vs co-load (shape), higher is closer to dispatch</span>
+          <span className="text-slate-400 ml-2 shrink-0">{chartOpen ? '▾ hide' : '▸ show'}</span>
+        </button>
+        {chartOpen && <EngineAgreementChart days={days} />}
       </div>
 
       <div className="flex flex-col xl:flex-row gap-3 items-stretch">
-        <div className="xl:w-[54%] border rounded-lg bg-white overflow-hidden flex flex-col">
-          <div className="text-[11px] font-semibold text-slate-600 px-3 pt-2 pb-1">Drivers{dayLoading ? ' · loading…' : ''}{dayErr ? ` · ⚠ ${dayErr}` : ''}</div>
+        <div className={`${mapExpanded ? 'hidden' : 'xl:w-[54%]'} border rounded-lg bg-white overflow-hidden flex flex-col`}>
+          <div className="flex items-center justify-between gap-2 px-3 pt-2 pb-1">
+            <div className="text-[11px] font-semibold text-slate-600 truncate">Drivers{movedOnly ? ` · moved only (${movedDrivers.size})` : ''}{dayLoading ? ' · loading…' : ''}{dayErr ? ` · ⚠ ${dayErr}` : ''}</div>
+            <button onClick={() => setMovedOnly((v) => !v)} title="Show only the drivers/routes the engine moved a stop to or from — on the table AND the map"
+              className={`text-[10px] font-semibold px-2 py-0.5 rounded border shrink-0 ${movedOnly ? 'text-white' : 'text-slate-600 bg-white border-slate-200 hover:bg-slate-50'}`}
+              style={movedOnly ? { background: BRAND, borderColor: BRAND } : {}}>Only moved</button>
+          </div>
           <div className="overflow-x-auto overflow-y-auto max-h-[420px]">
             <table className="w-full text-xs">
               <thead className="bg-slate-50 sticky top-0"><tr>
@@ -16209,7 +16240,7 @@ function EngineAssignmentView({ google, mapsError }) {
                 <SortableTh label="Agree %" k="agreement_pct" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />
               </tr></thead>
               <tbody>
-                {sorted.map((r) => (
+                {shownRows.map((r) => (
                   <tr key={r.driver_key} className="border-t hover:bg-slate-50">
                     <td className="px-2 py-1 font-semibold text-slate-800">
                       <span className="inline-block w-2 h-2 rounded-full mr-1.5 align-middle" style={{ background: driverColor.get(r.driver_key) || '#94a3b8' }} />{r.driver}
@@ -16221,18 +16252,22 @@ function EngineAssignmentView({ google, mapsError }) {
                     <td className="px-2 py-1 tabular-nums font-semibold">{r.agreement_pct < 0 ? '—' : `${r.agreement_pct}%`}</td>
                   </tr>
                 ))}
-                {!sorted.length && !dayLoading && <tr><td colSpan="6" className="px-3 py-4 text-center text-slate-400">No plan for this date.</td></tr>}
+                {!shownRows.length && !dayLoading && <tr><td colSpan="6" className="px-3 py-4 text-center text-slate-400">{movedOnly ? 'No moved routes on this date — the engine matched dispatch on every driver.' : 'No plan for this date.'}</td></tr>}
               </tbody>
             </table>
           </div>
         </div>
 
-        <div className="xl:w-[46%] border rounded-lg bg-white overflow-hidden flex flex-col">
+        <div className={`${mapExpanded ? 'xl:w-full' : 'xl:w-[46%]'} border rounded-lg bg-white overflow-hidden flex flex-col`}>
           <div className="flex items-center justify-between gap-2 px-3 pt-2 pb-1">
-            <div className="text-[11px] font-semibold text-slate-600 truncate">Day plan · trip 1 solid, later trips dashed</div>
-            <div className="flex gap-1">{modeBtn('dispatch', 'Dispatch')}{modeBtn('engine', 'Engine')}{modeBtn('diff', 'Diff')}</div>
+            <div className="text-[11px] font-semibold text-slate-600 truncate">Day plan · trip 1 solid, later trips dashed{movedOnly ? ' · moved only' : ''}</div>
+            <div className="flex gap-1 shrink-0">
+              {modeBtn('dispatch', 'Dispatch')}{modeBtn('engine', 'Engine')}{modeBtn('diff', 'Diff')}
+              <button onClick={() => setMapExpanded((v) => !v)} title={mapExpanded ? 'Collapse map (show the drivers table)' : 'Expand map full width'}
+                className="px-2 py-1 text-[11px] font-semibold rounded text-slate-600 bg-white border border-slate-200 hover:bg-slate-50">{mapExpanded ? '⤡ Collapse' : '⤢ Expand'}</button>
+            </div>
           </div>
-          <div ref={mapDiv} className="w-full h-[320px] bg-slate-100" />
+          <div ref={mapDiv} className={`w-full ${mapExpanded ? 'h-[600px]' : 'h-[320px]'} bg-slate-100`} />
           {mapsError && <div className="text-[11px] text-red-600 px-3 py-1">⚠ map failed to load: {String(mapsError)}</div>}
           {mapMode === 'diff' && plan && (
             <div className="px-3 py-2 border-t max-h-[130px] overflow-y-auto">
@@ -16253,7 +16288,7 @@ function EngineAssignmentView({ google, mapsError }) {
 
 // Daily agreement trend — stop % (solid) + co-load % (dashed). Higher = closer.
 function EngineAgreementChart({ days }) {
-  const W = 640, H = 170, PAD_L = 30, PAD_R = 8, PAD_T = 10, PAD_B = 22;
+  const W = 640, H = 120, PAD_L = 30, PAD_R = 8, PAD_T = 10, PAD_B = 22;
   const pts = (days || []).filter((d) => d.stop_agreement_pct != null);
   if (pts.length < 2) return <div className="h-[120px] flex items-center justify-center text-xs text-slate-400">Not enough scored days yet — the trend appears after the plan replay runs.</div>;
   const x = (i) => PAD_L + (i * (W - PAD_L - PAD_R)) / (pts.length - 1);
