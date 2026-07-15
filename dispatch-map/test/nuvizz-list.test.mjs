@@ -138,10 +138,11 @@ test('statusFromCode: NuVizz codes → board status + planned flag', () => {
 });
 
 test('SAVED_SEARCHES: active + completed map to the portal saved searches (HAR-captured)', () => {
-  // ACTIVE = "Dispatch Map Planned Unplanned": status 20,10 + Estimated Arrival +/-7d (seq 10).
+  // ACTIVE = "Dispatch Map Planned Unplanned": status 20,10 + in-flight 40,50 (so an
+  // out-for-delivery/arrived stop stays on the board) + Estimated Arrival +/-7d (seq 10).
   assert.equal(SAVED_SEARCHES.active.customListDefId, 77128);
   const a = Object.fromEntries(SAVED_SEARCHES.active.filterList.map((f) => [f.sequence, f.value]));
-  assert.equal(a[2], '20,10');
+  assert.equal(a[2], '20,10,40,50');
   assert.equal(a[10], JSON.stringify({ period: '+/-7d' }));
   assert.equal(SAVED_SEARCHES.active.filterList.length, 12, 'active def has 12 sequences');
   // COMPLETED = "Dispatch Map Completed": terminal statuses (incl. 99 = cancelled, so a
