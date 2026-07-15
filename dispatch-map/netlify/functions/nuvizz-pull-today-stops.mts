@@ -28,6 +28,35 @@ import { breakerMode } from './lib/nuvizz-request.mts';
 
 const TENANT = 'davis';
 
+// LEAN MAP FEED (issue: cold load blocked ~5-6s on a 6.9 MB payload; 747 stops × 67 fields).
+// The map + bottom grid only read ~15-20 fields; ~55% of the payload is the raw NuVizz object
+// (`raw`, 3.8 MB) plus a few fields nothing in the client reads (markfor/origin/billTo/the
+// top-level orderInstructions dup). We serve ONLY the field paths below (a Firestore field
+// mask on the read — so the bytes never leave Firestore), which halves the payload and the
+// server time with ZERO client change: everything the markers, status, grid, selection,
+// detail panel, print, texting, and auto-scanner touch is kept. The three `raw.*` slices
+// preserve the only load-bearing bits of `raw` (status fallback, route/load id, print origin).
+// The stored docs are untouched — history/engine/freight still read every field directly.
+// KILL SWITCH: `?full=1` on the request OR env MAP_FEED_FULL=1 returns the ORIGINAL full
+// payload (no mask), so this is instantly reversible without a code change.
+// Derived from normalizeStop's schema (nuvizz-scan.mts) ∪ the enrichment/list-path fields, so
+// a field that's null/absent on a given day is still served on days it appears. Keep in sync
+// if the stored stop shape gains a NEW field the client needs (or just flip the kill switch).
+const LEAN_STOP_FIELDS = [
+  'addr1', 'addr2', 'allComments', 'boardDate', 'board_write_at', 'board_write_planned',
+  'bol', 'businessName', 'carryover', 'cartons', 'city', 'contact',
+  'custRef', 'customerAccount', 'deliveredDTTM', 'driverId', 'driverName', 'driverUserName',
+  'enriched', 'enriched_at', 'estimatedDurationMin', 'isAttempt', 'isPlanned', 'isTerminal',
+  'isUnplanned', 'itemsSummary', 'lat', 'listUpdatedDTTM', 'lng', 'loadId',
+  'loadNbr', 'loadStopSeq', 'normalizedStatus', 'orderNbr', 'pallets', 'plannedDistanceToNextStop',
+  'plannedDurationToNextStop', 'plannedEtaDTTM', 'poRef', 'podDocs', 'primaryPro', 'pro',
+  'proCount', 'proNbr', 'pros', 'requestedDate', 'routeName', 'routeSeq',
+  'scheduledDate', 'scheduledFrom', 'scheduledTo', 'shipmentNbr', 'signalSources', 'source',
+  'state', 'status', 'stopDetails', 'stopDistance', 'stopId', 'stopNbr',
+  'stopType', 'terms', 'timeConstraint', 'volume', 'warehouse', 'weight',
+  'zip', 'raw.stopExecutionInfo', 'raw.load', 'raw.stop.from',
+];
+
 function addDaysUTC(dateStr: string, n: number): string {
   const d = new Date(dateStr + 'T00:00:00Z');
   d.setUTCDate(d.getUTCDate() + n);
@@ -44,10 +73,10 @@ function addDaysUTC(dateStr: string, n: number): string {
 // Exported for tests with the reads + clock injectable (io defaults to the real Firestore
 // readers and Date.now, so the handler's call is byte-identical in behavior).
 export async function mergeCarryover(stops: any[], date: string, carryDays: number, io?: {
-  readStops?: (tenant: string, dateStr: string) => Promise<{ stops: any[] }>;
+  readStops?: (tenant: string, dateStr: string, opts?: { mask?: string[] }) => Promise<{ stops: any[] }>;
   readActiveUnplannedSet?: (tenant: string) => Promise<{ at: string | null; windowStart: string | null; stopNbrs: Set<string> } | null>;
   now?: () => number;
-}): Promise<number> {
+}, mask?: string[]): Promise<number> {
   const readStopsFn = io?.readStops ?? readStops;
   const readActiveFn = io?.readActiveUnplannedSet ?? readActiveUnplannedSet;
   const now = io?.now ?? Date.now;
@@ -67,7 +96,7 @@ export async function mergeCarryover(stops: any[], date: string, carryDays: numb
     console.log(`[carryover] ${date}: live unplanned snapshot is stale (age ${Number.isFinite(snapshotAgeMs) ? Math.round(snapshotAgeMs / 3.6e6) + 'h' : 'n/a'}) — skipping prune, folding all carry-over`);
   }
   const reads = await Promise.all(
-    priorDates.map((d) => readStopsFn(TENANT, d).then((r) => ({ d, stops: r.stops })).catch(() => ({ d, stops: [] as any[] }))),
+    priorDates.map((d) => readStopsFn(TENANT, d, mask ? { mask } : undefined).then((r) => ({ d, stops: r.stops })).catch(() => ({ d, stops: [] as any[] }))),
   );
   let added = 0, pruned = 0, replaced = 0;
   // A confirmed-planned stamp folds only while FRESH (48h): the home-day stamp is frozen
@@ -133,6 +162,9 @@ export default async (req: Request): Promise<Response> => {
   const useMock = url.searchParams.get('mock') === '1';
   const live = url.searchParams.get('live') === '1';
   const carryDays = Math.max(0, Math.min(14, parseInt(url.searchParams.get('carryDays') || '0', 10) || 0));
+  // Lean map projection by default; kill switch → full payload (see LEAN_STOP_FIELDS).
+  const full = url.searchParams.get('full') === '1' || process.env.MAP_FEED_FULL === '1';
+  const stopMask = full ? undefined : LEAN_STOP_FIELDS;
   const cors = { 'Access-Control-Allow-Origin': '*', 'Content-Type': 'application/json', 'Cache-Control': 'no-store' };
 
   if (req.method === 'OPTIONS') return new Response('', { status: 200, headers: cors });
@@ -157,7 +189,7 @@ export default async (req: Request): Promise<Response> => {
       lastUnplannedScanAt = scan.scannedAt;
       source = 'live-scan';
     } else if (isFirestoreEnabled()) {
-      const { meta, stops: indexed } = await readStops(TENANT, date);
+      const { meta, stops: indexed } = await readStops(TENANT, date, stopMask ? { mask: stopMask } : undefined);
       // READ-time board-day guard: never SHOW a prior-day FINISHED stop on this date's board.
       // The scanner keys boards by ET day so this is normally a no-op, but a board written under
       // the old UTC anchor (which filed Friday's deliveries onto Saturday's doc) sits in a weekend
@@ -180,7 +212,7 @@ export default async (req: Request): Promise<Response> => {
     // Fold in prior-day carry-over (Firestore-backed reads only).
     let carryoverCount = 0;
     if (carryDays > 0 && !useMock && !live && isFirestoreEnabled()) {
-      try { carryoverCount = await mergeCarryover(stops, date, carryDays); } catch { /* keep base stops */ }
+      try { carryoverCount = await mergeCarryover(stops, date, carryDays, undefined, stopMask); } catch { /* keep base stops */ }
     }
 
     const unplannedCount = stops.filter((s) => s.isUnplanned).length;
@@ -226,6 +258,7 @@ export default async (req: Request): Promise<Response> => {
       unplannedCount,
       carryoverCount,
       carryDays,
+      lean: !full,   // true = lean projection served (see LEAN_STOP_FIELDS); false = ?full=1 / MAP_FEED_FULL
       ops,
       stops,
     }), { status: 200, headers: cors });
