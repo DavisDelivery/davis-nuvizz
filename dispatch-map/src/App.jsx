@@ -59,7 +59,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.50.9';
+const APP_VERSION = '0.50.10';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -104,6 +104,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.50.10', 'ROUTING GRID: search lights up the map + just-planned stops stop lingering. (1) Searching the Routing bottom grid (e.g. "estes") now highlights the matching stops on the Routing map — it only ever did that on the dispatch Map before. The hits render in BURNT ORANGE, a deliberately different color from the amber "selected" highlight, so when both are on the map at once you can tell what you searched for from what you\'ve selected. They ride the top layer (never hidden under another dot) at the same compact size as the Map screen\'s hits, and clearing the search clears the highlight. Debounced so a busy board doesn\'t stutter while you type. (2) FIXED: stops you\'d already planned onto a route (e.g. LVILLE) kept showing as available in the grid\'s date-window view until a scan caught up. The window rows now mirror the live board — which your Save already stamps the moment it verifies — so a just-planned stop flips to its route immediately (and an Un-Planned filter drops it), no scan needed. Zero extra NuVizz calls.'],
   ['0.50.9', 'NIGHTLY WAREHOUSE — the last two path-safety gaps (a 4-agent verification pass found them). (1) One more database key still carried a raw name: the routing engine\'s per-driver day record keyed off the raw driver name, so a co-driver like "COLIN/DJ 1" could throw when that record was written — now path-safe like every other key (this never affected sealing or the tractor paint; it only dropped that one engine record). (2) The ZIP-cleanup shipped in 0.50.8 only landed in the browser copy of the address-key builder; the SERVER copy the nightly capture actually uses still had the old code, so a malformed ZIP could make the app and the server compute different keys for the same customer. Both copies now match exactly. Warehouse-integrity only — zero customer-facing change, zero NuVizz calls.'],
   ['0.50.8', 'NIGHTLY WAREHOUSE: finished sealing the "slash in a name" hole (v0.48.4 fixed it for routes/drivers; this closes it everywhere else) and made the nightly PAINT self-heal. Root cause of a night that captured stops but never sealed — or sealed but never painted the lime "tractor delivered" pins — was a customer/load/stop key containing a character that isn\'t legal in a database path (a co-driver load like "COLIN/DJ 1", or a malformed ZIP with a slash): the write threw and took the rest of the night down with it. Now EVERY key that becomes a database path is made path-safe (stops, the tractor-paint locations, and the per-customer history rollup — routes/drivers were already safe), and the ZIP is cleaned at the source so it can never carry a slash into the key. Two more hardenings: an audit-log hiccup can no longer flip an already-sealed night to "failed" and skip the paint; and the recovery/heal that reseals an orphaned day now RE-PAINTS and re-mines it too (before, healed days got a manifest but their tractor pins and engine data were never written). Warehouse-integrity only — zero customer-facing change, zero NuVizz calls.'],
   ['0.50.7', 'SEARCH HITS: on top + a size smaller. When you search (e.g. "estes-"), the orange matched dots now render ABOVE every other marker, so a hit is never hidden under a nearby unmatched dot — Google used to stack markers by latitude, which could bury a northern hit behind a southern non-match. They\'re also a size smaller now (22px — between the big AM/PM-tagged pin and the small resting dot) so a big result set doesn\'t blanket the map, and the dimmed non-matches sink below the board. No change to the dots\' color or what they mean.'],
@@ -446,6 +447,10 @@ const ELIG_BOX_COLOR = '#dc2626';      // red — box truck only, no tractor-tra
 // tractor_locations collection (derived server-side from the history warehouse
 // + the MarginIQ employee roster). Lime green + white border, sticky forever.
 const TRACTOR_DELIVERED_COLOR = '#32CD32';
+// Burnt orange for a SEARCH hit on the Routing screen — deliberately distinct from the amber
+// selection color (#f59e0b) so a searched stop and a selected stop read differently when both
+// are on the map at once (Chad).
+const SEARCH_MATCH_COLOR = '#c2410c';
 
 // "Jul 9, 2026" from a YYYY-MM-DD string. Local-noon construction so a timezone
 // offset can never shift the calendar day (same trick as formatDateLong).
@@ -1180,6 +1185,41 @@ function applyPlanOverlay(stops) {
     if (dirty) safeWriteJSON(LS_PLAN_OVERLAY, m);
     return touched ? out : stops;
   } catch { return stops; }
+}
+
+// Reflect the authoritative BOARD plan state onto date-window rows (the bottom grid's NuVizz
+// window pull). The overlay above can't keep window rows honest on its own: it's a shared
+// ONE-SHOT map, and the board consumer self-cleans each entry the moment the patched board
+// agrees with a save — usually seconds after the Save, while the window's snapshot (pulled at
+// window-open, never re-pulled on save) still needs the paint. That's how a stop just planned
+// onto a route kept showing "available" in the grid until a scan (Chad: the LVILLE plans).
+// The board rows ARE the truth — the Save's server write-through stamps them, board-sync +
+// refresh re-read them, the scan defends them — so any window row whose stopNbr is on the
+// board takes the board's plan state, both directions: a board-planned row takes the load/
+// driver/sequence; a row the board holds unplanned drops its stale plan. Can't invent a plan
+// (only confirmed saves patch the board), self-heals as the board updates, zero NuVizz.
+// Ref-stable: returns the input array when nothing needed reflecting (see overlay note above).
+function reflectBoardPlan(rows, boardByNbr) {
+  if (!boardByNbr || !boardByNbr.size || !rows || !rows.length) return rows;
+  let touched = false;
+  const out = rows.map((r) => {
+    const b = boardByNbr.get(String(r?.stopNbr ?? ''));
+    if (!b) return r;
+    if (b.isPlanned) {
+      const agrees = r.isPlanned && String(r.loadNbr || r.routeName || '') === String(b.loadNbr || b.routeName || '');
+      if (agrees) return r;
+      touched = true;
+      // normalizedStatus copies as-is (null when the board didn't set one) so a delivered
+      // board row ('90') still classifies DELIVERED via its code instead of a forced label.
+      return { ...r, isPlanned: true, isUnplanned: false, status: b.status ?? '20', normalizedStatus: b.normalizedStatus ?? null, loadNbr: b.loadNbr ?? b.routeName ?? null, routeName: b.routeName ?? b.loadNbr ?? null, routeSeq: b.routeSeq ?? null, driverName: b.driverName ?? r.driverName, driverUserName: b.driverUserName ?? b.driverName ?? r.driverUserName, boardReflected: true };
+    }
+    if (b.isUnplanned && r.isPlanned) {
+      touched = true;
+      return { ...r, isPlanned: false, isUnplanned: true, status: b.status ?? '10', normalizedStatus: b.normalizedStatus ?? null, loadNbr: null, routeName: null, routeSeq: null, boardReflected: true };
+    }
+    return r;
+  });
+  return touched ? out : rows;
 }
 
 function useStops(date, carryDays = 0) {
@@ -2173,7 +2213,7 @@ function stopMarkerIcon(google, s, note, opts = {}) {
   //   and tap behavior stay identical. DNS and search-match orange keep
   //   precedence (safety / active-search visibility), as does an explicit
   //   Routing routeColor on numbered pins.
-  const { selectedDayKey, matched = false, inRoute = false, seq, routeColor, sameLocCount = 1, tractorDelivered = false } = opts;
+  const { selectedDayKey, matched = false, inRoute = false, seq, routeColor, sameLocCount = 1, tractorDelivered = false, searchMatched = false } = opts;
   // count badge only when 2+ deliveries share the place (Chad: "put the number on the delivery
   // icon"). 0 = no badge.
   const count = sameLocCount > 1 ? sameLocCount : 0;
@@ -2206,7 +2246,7 @@ function stopMarkerIcon(google, s, note, opts = {}) {
     + statusKind + '\x1f' + restrictions.join(',') + '\x1f' + (matched ? 'M' : '') + '\x1f'
     + (note?.priority_flag || '') + '\x1f' + (elig || '') + '\x1f' + (tractorDelivered ? 'T' : '')
     + '\x1f' + (addrOff ? 'A' : '') + '\x1f' + (note?.delivery_window || '') + '\x1f' + count
-    + '\x1f' + (routeColor || '');
+    + '\x1f' + (routeColor || '') + '\x1f' + (searchMatched ? 'S' : '');
   const cached = __stopIconCache.get(cacheKey);
   if (cached) return cached;
 
@@ -2225,10 +2265,16 @@ function stopMarkerIcon(google, s, note, opts = {}) {
     // AM/PM window, or "address looks off" signal recolor/reglyph as appropriate.
     const meta = STATUS_META[statusKind] || STATUS_META.SCHEDULED;
     const tag = (note?.delivery_window === 'AM' || note?.delivery_window === 'PM') ? note.delivery_window : null;
-    const addressOff = !matched && !flagHue
+    // A "highlighted" pop dot = selection (matched → amber) OR a Routing search hit
+    // (searchMatched → burnt orange). Both share the 22px pop size, solid fill, and top-glyph
+    // handling; only the COLOR differs, so a selected stop and a searched stop read distinctly
+    // when both are on the map at once (Chad). Selection wins the color if a stop is somehow both.
+    const hi = matched || searchMatched;
+    const addressOff = !hi && !flagHue
       && (statusKind === 'SCHEDULED' || statusKind === 'UNPLANNED')
       && addrOff;
     const color = matched ? '#f59e0b'
+      : searchMatched ? SEARCH_MATCH_COLOR
       // Dispatcher-set BOX-ONLY wins over the proven lime (same rule as the Selected window):
       // "a tractor once delivered here" must never visually override an explicit off-limits mark.
       : elig === 'box_only' ? ELIG_BOX_COLOR
@@ -2237,28 +2283,28 @@ function stopMarkerIcon(google, s, note, opts = {}) {
       || flagHue
       || (addressOff ? ADDRESS_OFF_TINT : (meta.color || flagColor(note)));
     let glyph = meta.glyph;
-    if (!matched) {
+    if (!hi) {
       if (note?.priority_flag === 'question' && !glyph) glyph = 'question';
       else if (addressOff) glyph = 'bang';
     }
-    // UNPLANNED resting pins (not a search-matched selection, no AM/PM tag) render as a white-
-    // circle-wrapped DOT instead of the washed-out small teardrop — same ≤16px footprint, so it
-    // never grows. A co-located count sits inside the dot. Tagged/matched unplanned keep the pin.
-    if (statusKind === 'UNPLANNED' && !matched && !tag) {
+    // UNPLANNED resting pins (not highlighted, no AM/PM tag) render as a white-circle-wrapped DOT
+    // instead of the washed-out small teardrop — same ≤16px footprint, so it never grows. A
+    // co-located count sits inside the dot. Highlighted/tagged unplanned keep the pop pin.
+    if (statusKind === 'UNPLANNED' && !hi && !tag) {
       result = {
         url: unplannedDotSvg(color, { glyph, count }),
         scaledSize: new google.maps.Size(16, 16),
         anchor: new google.maps.Point(8, 8),
       };
     } else {
-      // Size tiers: a matched (search-hit) dot sits BETWEEN the big AM/PM-tagged pin and the
-      // small resting dot — 22px — so a whole result set doesn't blanket the map, while still
-      // standing out (matched also renders on the TOP layer via the marker's zIndex, set in the
-      // marker effect). An AM/PM-tagged non-match stays the big 28; everything else is the 16.
-      const size = matched ? 22 : (tag ? 28 : 16);
+      // Size tiers: a highlighted (selected or search-hit) dot sits BETWEEN the big AM/PM-tagged
+      // pin and the small resting dot — 22px — so a whole result set doesn't blanket the map,
+      // while still standing out (matched/search hits also ride the TOP layer via the marker's
+      // zIndex, set in the marker effect). An AM/PM-tagged non-match stays the big 28; else 16.
+      const size = hi ? 22 : (tag ? 28 : 16);
       const half = size / 2;
       result = {
-        url: circleMarkerSvg(color, { hollow: matched ? false : meta.hollow, glyph, tag, count }),
+        url: circleMarkerSvg(color, { hollow: hi ? false : meta.hollow, glyph, tag, count }),
         scaledSize: new google.maps.Size(size, size),
         anchor: new google.maps.Point(half, half),
       };
@@ -9089,7 +9135,7 @@ const LOAD_BUCKET_STYLE = {
   cancelled: 'bg-red-100 text-red-700',
 };
 
-function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open, setOpen, onPick, onPickLoad, headerRight, onWindowRowsChange, planVersion = 0, highlightIds = null, rootRef = null }) {
+function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open, setOpen, onPick, onPickLoad, headerRight, onWindowRowsChange, onSearchMatchChange = null, planVersion = 0, highlightIds = null, rootRef = null }) {
   // Loads view groups the FULL board's loads (loadStops) so stop-level filters —
   // notably "Unplanned only" — don't empty it. Falls back to the visible stops.
   const loadSrc = loadStops || stops;
@@ -9173,12 +9219,20 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
     { k: 'driver', label: 'Driver', w: 150, get: (s) => s.driverName || '', sortVal: (s) => s.driverName },
   ];
   // Board mode shows today's loaded stops; NuVizz mode shows the live-pulled set.
-  // The confirmed-save plan overlay is applied to WINDOW rows too (board-mode `stops`
-  // already carry it via useStops) and re-applied on every save (planVersion bump) — the
-  // map reflected a just-built load immediately but this grid kept the pre-save rows
-  // until a refetch/scan (Chad's "the map reflects my work, the bottom panel does not").
+  // WINDOW rows get two layers of plan truth (board-mode `stops` already carry both via
+  // useStops + the board itself): (1) the confirmed-save overlay, re-applied on every save
+  // (planVersion bump) — covers the seconds between a Save and the board refresh; then
+  // (2) reflectBoardPlan mirrors the authoritative BOARD row onto each matching window row.
+  // The overlay alone wasn't enough: it's a shared one-shot map that the board consumer
+  // self-cleans the moment the patched board agrees — usually before this window repaints —
+  // so a just-planned stop reverted to "available" here until a scan (the LVILLE lingering).
+  const boardByNbr = useMemo(() => {
+    const m = new Map();
+    for (const s of stops || []) if (s && s.stopNbr != null) m.set(String(s.stopNbr), s);
+    return m;
+  }, [stops]);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  const baseStops = useMemo(() => (nvWindow ? applyPlanOverlay(nvRows) : stops), [nvWindow, nvRows, stops, planVersion]);
+  const baseStops = useMemo(() => (nvWindow ? reflectBoardPlan(applyPlanOverlay(nvRows), boardByNbr) : stops), [nvWindow, nvRows, stops, boardByNbr, planVersion]);
   // Pull from NuVizz whenever a date window is selected (re-pull when the status
   // selection changes so status filters server-side, not just on the loaded page).
   useEffect(() => {
@@ -9265,6 +9319,20 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
       return true;
     });
   }, [baseStops, q, statusSel, driverSel, nvWindow]);
+  // Report the CURRENT SEARCH matches UP (stopNbr set) so the Routing map can highlight them
+  // (burnt orange, top layer) — parity with the Map screen's search highlight, which the Routing
+  // screen never had. Exactly the rows the grid is showing (WYSIWYG: search + status + driver),
+  // but ONLY when a search needle is active (no needle → null → no highlight). Debounced so a
+  // per-keystroke rebuild of every map marker doesn't jank. No-op when the parent doesn't pass a
+  // handler (the dispatch Map, which has its own search). Keyed String() to match the map's ids.
+  const searchActive = q.trim().length > 0;
+  const searchMatchIds = useMemo(
+    () => (searchActive ? new Set(filteredRows.map((s) => String(s.stopNbr))) : null),
+    [searchActive, filteredRows],
+  );
+  const debouncedMatchIds = useDebouncedValue(searchMatchIds, 180);
+  useEffect(() => { onSearchMatchChange?.(debouncedMatchIds); }, [debouncedMatchIds, onSearchMatchChange]);
+  useEffect(() => () => onSearchMatchChange?.(null), [onSearchMatchChange]);
   // Stops with NO geocoded location. They list here but have no map marker, so they can't be
   // box/lasso-selected OR routed (the map's stopById is coord-only) — this is how an order gets
   // silently MISSED. Surfaced as a count + one-click filter so they're findable and fixable.
@@ -12514,6 +12582,9 @@ function RoutingScreen({ debugCaptureRef }) {
   // selected + planned (dispatcher: "all these unplanned orders should be on the map"). null
   // = grid is on the single board day (or a live window with no coords) → map is day-only.
   const [gridWindowStops, setGridWindowStops] = useState(null);
+  // Bottom-grid SEARCH matches (stopNbr Set, or null) reported up by BottomStopsTable, so the
+  // Routing map can highlight them in burnt orange on the top layer — parity with the Map screen.
+  const [searchMatchIds, setSearchMatchIds] = useState(null);
 
   // Touch-native selection. No DrawingManager (its drag-to-draw never worked on
   // a phone and its async load could silently no-op): Box = tap two corners,
@@ -14060,6 +14131,10 @@ function RoutingScreen({ debugCaptureRef }) {
     markersRef.current = vPositioned.map((s) => {
       const id = String(s.stopNbr);
       const sel = !viewing && selectedIds.has(id);
+      // A bottom-grid SEARCH hit — highlighted BURNT ORANGE (distinct from the amber selection
+      // color, since both can be on the map at once) and pushed to the very top layer. Selection
+      // still wins the color if a stop is both (stopMarkerIcon precedence).
+      const searchMatched = !!searchMatchIds && searchMatchIds.has(id);
       const ri = effectiveRouteInfo.get(id);     // { color, seq } when on a route (Compare cards win)
       const numbered = !!ri;
       const note = notes.get(s.matchKey) || null;
@@ -14071,13 +14146,16 @@ function RoutingScreen({ debugCaptureRef }) {
       const baseIcon = stopMarkerIcon(google, s, note, {
         selectedDayKey,
         matched: sel,
+        searchMatched,
         inRoute: numbered,
         seq: ri?.seq,
         routeColor: ri?.color,
         sameLocCount: (locMates.get(stopLocKey(s)) || []).length || 1,
         tractorDelivered: tractorLocs.has(s.matchKey),
       });
-      const baseZ = numbered ? 30 : (sel ? 25 : 10);
+      // Search hits ride the TOP layer above everything (Chad), even above numbered route pins,
+      // so a hit is never hidden; otherwise numbered > selected > resting.
+      const baseZ = searchMatched ? ((google.maps.Marker?.MAX_ZINDEX ?? 1e6) + 1) : (numbered ? 30 : (sel ? 25 : 10));
       const marker = new google.maps.Marker({
         position: { lat: s.lat, lng: s.lng },
         title: s.businessName || s.stopNbr,
@@ -14102,7 +14180,7 @@ function RoutingScreen({ debugCaptureRef }) {
     });
     markerByIdRef.current = byId;
     lastEmphRef.current = hoverIdRef.current; // markers were built already-emphasized
-  }, [google, vPositioned, viewing, selectedIds, effectiveRouteInfo, notes, tractorLocs, toggleStopGroup, mapReady, selectedDayKey, emphIcon]);
+  }, [google, vPositioned, viewing, selectedIds, searchMatchIds, effectiveRouteInfo, notes, tractorLocs, toggleStopGroup, mapReady, selectedDayKey, emphIcon]);
 
   // Hover emphasis — touch only the two affected markers, not all of them. Keeps
   // the sequence label intact (only the icon scale/ring change).
@@ -14800,6 +14878,7 @@ function RoutingScreen({ debugCaptureRef }) {
             onPick={pickStopFromTable}
             onPickLoad={pickLoadToCompare}
             onWindowRowsChange={setGridWindowStops}
+            onSearchMatchChange={setSearchMatchIds}
             highlightIds={selectedIds}
             planVersion={planVersion}
           />}
@@ -14972,6 +15051,7 @@ function RoutingScreen({ debugCaptureRef }) {
           onPickLoad={pickLoadToCompare}
           headerRight={bottomGridHeaderRight}
           onWindowRowsChange={setGridWindowStops}
+          onSearchMatchChange={setSearchMatchIds}
           highlightIds={selectedIds}
           planVersion={planVersion}
         />}
