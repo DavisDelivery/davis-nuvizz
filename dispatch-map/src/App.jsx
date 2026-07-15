@@ -59,7 +59,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.50.12';
+const APP_VERSION = '0.50.13';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -104,6 +104,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.50.13', 'FIX: the printed Driver Manifest no longer prints a PICKUP location as the route "Origin". On a route with a pickup (e.g. CTL70926 at TSY AMERICA sitting correctly at stop 5), the manifest cover page was reading "Origin: TSY AMERICA" — making it look like the pickup got pushed to the front, even though its own ticket was in the right spot. The header now skips pickup stops when choosing the origin (a pickup\'s from-address IS the pickup location, not the depot the route starts from), so the Origin line shows the real starting point and the pickup only appears at its own stop in the route.'],
   ['0.50.12', 'FIX: you can now UNPLAN a pickup / return / non-delivery stop off a route. Removing a stop like MUGELE (a pickup, not a normal delivery) from a route and saving used to bounce with "load has a non-DO stop in a delivery slot — reorder skipped (verify in portal)", so the stop stayed stuck on the route. The save guard that protects a card from silently resequencing a non-delivery stop it can\'t model now counts the stops you\'re REMOVING as accounted-for — so striking one off and saving goes through and NuVizz unplans it. Planning a card that still leaves an unmodeled non-delivery stop behind is still protected exactly as before.'],
   ['0.50.11', 'HISTORICAL LOOKUP now shows the WHOLE delivery, not an empty shell. "Search past PROs / customer history" → tap a customer used to open a blank card: status Unplanned, ITEMS —, ROUTE "Not yet assigned", PROS (0), and a Delivery Ticket titled "hist:…" with 0 weight/pallets and no line items — because the lookup only ever carried the name + address. Now tapping a customer (or a specific PRO chip — the chips are individually tappable now) pulls that delivery\'s FULL archived record from our own history warehouse: the real route + who delivered it, the PROs, the line items, weight/pallets, and a printable Delivery Ticket. It reads only our saved history — ZERO NuVizz calls — and if a day is too old to be in the warehouse it falls back to the old name+address card so the receiving-hours/notes editor still opens. Tapping the customer name opens the most recent delivery; tap an older PRO chip to open that one.'],
   ['0.50.10', 'ROUTING GRID: search lights up the map + just-planned stops stop lingering. (1) Searching the Routing bottom grid (e.g. "estes") now highlights the matching stops on the Routing map — it only ever did that on the dispatch Map before. The hits render in BURNT ORANGE, a deliberately different color from the amber "selected" highlight, so when both are on the map at once you can tell what you searched for from what you\'ve selected. They ride the top layer (never hidden under another dot) at the same compact size as the Map screen\'s hits, and clearing the search clears the highlight. Debounced so a busy board doesn\'t stutter while you type. (2) FIXED: stops you\'d already planned onto a route (e.g. LVILLE) kept showing as available in the grid\'s date-window view until a scan caught up. The window rows now mirror the live board — which your Save already stamps the moment it verifies — so a just-planned stop flips to its route immediately (and an Un-Planned filter drops it), no scan needed. Zero extra NuVizz calls.'],
@@ -4574,6 +4575,13 @@ function buildTicketHtml(stop, logoUrl) {
 // from the enriched stops we already hold.
 function manifestOrigin(stops) {
   for (const s of stops) {
+    // A PICKUP's from-address IS the pickup location, not the route's origin. Walking
+    // stops blindly meant a route whose delivery stops lacked a from-address would land
+    // on the pickup and print e.g. "Origin: TSY AMERICA" — making it look like the pickup
+    // was pushed to the front, even though its ticket correctly sits later in the route.
+    // Only a DELIVERY's from = the depot origin, so skip pickups here.
+    const type = String(s?.stopType || s?.raw?.stopType || 'DO').toUpperCase();
+    if (type === 'PU') continue;
     const f = s?.raw?.stop?.from?.address;
     if (f && (f.addr1 || f.name || f.city)) {
       const cityLine = [f.city, [f.state, f.zip].filter(Boolean).join(' ')].filter(Boolean).join(', ');
