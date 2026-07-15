@@ -59,7 +59,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.50.18';
+const APP_VERSION = '0.50.19';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -104,6 +104,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.50.19', 'FIX: saving your bottom-panel PROFILE was confusing — the blue "Save" button was greyed out unless you typed a NEW name, so when you tweaked your active profile (e.g. set the window to "Last 7 days") and hit Save, nothing happened and there was no way to tell it apart from the smaller "Update … to current" link. Now, when you have a profile active and the name box is empty, that button reads "Update" and overwrites your active profile with the current bar setup in one click; type a name and it reads "Save" and makes a new one. Either way it flashes "✓ Saved" so you know it took. (The separate "Update ‹name› to current" link still works too.)'],
   ['0.50.18', 'BULK ADD reads SCANNED MANIFEST PDFs. Your Estes delivery manifests arrive as fax-style scans — pictures of a table, with no text inside the file at all (that\'s why the drop came in as one garbled column; no spreadsheet parser can ever read them). Now: drop the manifest .pdf on Bulk Add and an AI reader (the same one behind AI search — a few cents per manifest, ZERO NuVizz calls) reads every page and fills the review grid: consignee, address, city/state/ZIP, PRO, units → pallets, weight, description. Order # is prefilled the way your board already names these (ESTES-0288347656 style). Built-in cross-checks: each PRO is read from BOTH the printed number and the barcode digits (a mismatch is flagged, barcode wins), and the row count is checked against the manifest\'s own "Total Pros" header — any discrepancy shows in a banner. NOTHING is created automatically: the rows land in the same editable grid as a spreadsheet, you review against the paper, then hit Create as usual.'],
   ['0.50.17', 'BULK ADD — spreadsheet import + a wider grid. (1) A dropped file that came in as a single "Column 1" (with "no header detected") is fixed: the importer was guessing the wrong column separator on some files — a comma CSV with one stray tab in a cell, or a semicolon/pipe export — and jamming every row into one cell. It now picks whichever separator actually splits your rows into the most columns (tab, comma, semicolon, or pipe), and it sizes the column mapping to your WIDEST row so a short first/title row no longer hides the rest of the columns. (2) The Orders grid now uses the empty gray space on the sides — it was capped narrow, cutting off the right-hand columns; it\'s much wider now so more fields fit without side-scrolling. (If a dropped file STILL shows one column, tell me whether it\'s .xlsx or .csv and paste the first two rows — that pins the exact format.)'],
   ['0.50.16', 'NEW ORDER + BULK ADD now take a PRICE. Davis records a shipment\'s price in NuVizz\'s "Seal #" field, so there\'s a new Price box on the single New Order form ("Price ($ → Seal #)") and a Price column in Bulk Add that auto-maps from a pasted "price / seal / rate / amount / linehaul / revenue…" header. Whatever you enter rides into NuVizz\'s Seal # (sealNbr) on create — capped at 20 characters — across every create path: the single order, the row-by-row bulk Add, AND the "send as ONE import for load" bulk flow.'],
@@ -9524,6 +9525,8 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
   useEffect(() => { safeWriteJSON(LS_BOTTOM_PROFILES, profiles); }, [profiles]);
   const [profilesOpen, setProfilesOpen] = useState(false);
   const [newProfileName, setNewProfileName] = useState('');
+  const [savedFlash, setSavedFlash] = useState(false); // brief "✓ Saved" confirmation
+  const flashSaved = () => { setSavedFlash(true); setTimeout(() => setSavedFlash(false), 1400); };
   const barSnapshot = () => ({ view, status: [...statusSel], nvWindow, nvFrom, nvTo, driverSel, unmappedOnly, stopSort, loadSort });
   const applyBarSettings = (s) => {
     if (!s) return;
@@ -9552,10 +9555,12 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
     const prof = { name, s: barSnapshot() };   // same name overwrites (no dupes)
     setProfiles((v) => ({ list: [...v.list.filter((x) => x.name !== name), prof].sort((a, b) => a.name.localeCompare(b.name)), active: name }));
     setNewProfileName('');
+    flashSaved();
   };
   const updateActiveProfile = () => {
     if (!activeProfile) return;
     setProfiles((v) => ({ ...v, list: v.list.map((p) => (p.name === v.active ? { ...p, s: barSnapshot() } : p)) }));
+    flashSaved();
   };
   const deleteProfile = (name) => setProfiles((v) => ({ list: v.list.filter((p) => p.name !== name), active: v.active === name ? null : v.active }));
 
@@ -9627,7 +9632,14 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
                     placeholder="Save current as…"
                     className="flex-1 min-w-0 border border-slate-300 rounded px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-400"
                   />
-                  <button onClick={saveNewProfile} disabled={!newProfileName.trim()} className="px-2 py-1 rounded bg-blue-600 text-white font-semibold disabled:opacity-40 shrink-0">Save</button>
+                  <button
+                    onClick={() => { if (newProfileName.trim()) saveNewProfile(); else if (activeProfile) updateActiveProfile(); }}
+                    disabled={!newProfileName.trim() && !activeProfile}
+                    title={newProfileName.trim() ? 'Save as a new profile' : (activeProfile ? `Overwrite “${activeProfile.name}” with the current bar settings` : 'Type a name to save a profile')}
+                    className="px-2 py-1 rounded bg-blue-600 text-white font-semibold disabled:opacity-40 shrink-0 whitespace-nowrap"
+                  >
+                    {savedFlash ? '✓ Saved' : (newProfileName.trim() || !activeProfile ? 'Save' : 'Update')}
+                  </button>
                 </div>
               </div>
             </>
