@@ -59,7 +59,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.50.7';
+const APP_VERSION = '0.50.8';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -104,6 +104,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.50.8', 'SEARCH HITS light up the ROUTING map too. Searching the Routing bottom grid (e.g. "estes") now highlights the matching stops on the Routing map — it only ever did that on the dispatch Map before. The search hits render in BURNT ORANGE, a deliberately different color from the amber "selected" highlight, so when both are on the map at once you can tell what you searched for from what you\'ve selected. They ride the top layer (never hidden under another dot) at the same compact size as the Map screen\'s hits, and clearing the search clears the highlight. Debounced so a busy board doesn\'t stutter while you type.'],
   ['0.50.7', 'SEARCH HITS: on top + a size smaller. When you search (e.g. "estes-"), the orange matched dots now render ABOVE every other marker, so a hit is never hidden under a nearby unmatched dot — Google used to stack markers by latitude, which could bury a northern hit behind a southern non-match. They\'re also a size smaller now (22px — between the big AM/PM-tagged pin and the small resting dot) so a big result set doesn\'t blanket the map, and the dimmed non-matches sink below the board. No change to the dots\' color or what they mean.'],
   ['0.50.6', '% DELIVERED on the stops count. The "Showing N of M stops" line — on the mobile Stops tab and in the desktop filter panel — now ends with how much of the day is done, e.g. "Showing 849 of 849 stops · 34% delivered". It counts delivered stops against the WHOLE day\'s board, so it\'s a steady progress read: it stays put while you search or filter the list (it always reflects the full day, not just the rows currently shown).'],
   ['0.50.5', 'FASTER MAP LOAD + clustering off by default. (1) Marker clustering is now OFF by default — you told me you\'ve never liked it, so the map shows every pin individually (flip "Show clustered" back on any time in Filters; that sticks). (2) The map used to rebuild every one of your 500–1500 pins about THREE times on each cold load — once when stops arrive, again when customer notes land, again when tractor locations land — regenerating every pin\'s icon from scratch each pass, plus a full rebuild on every 2-minute refresh. Pin icons are now cached and reused, and the map keeps one clusterer instead of building a new one each time, so those repeats are near-free. (3) The Uline quote calculator (~345 KB) no longer loads with the map — it loads the first time you open the Quote tab, trimming the app\'s cold-start download. No change to what any pin looks like, and zero effect on NuVizz calls or scans.'],
@@ -444,6 +445,10 @@ const ELIG_BOX_COLOR = '#dc2626';      // red — box truck only, no tractor-tra
 // tractor_locations collection (derived server-side from the history warehouse
 // + the MarginIQ employee roster). Lime green + white border, sticky forever.
 const TRACTOR_DELIVERED_COLOR = '#32CD32';
+// Burnt orange for a SEARCH hit on the Routing screen — deliberately distinct from the amber
+// selection color (#f59e0b) so a searched stop and a selected stop read differently when both
+// are on the map at once (Chad).
+const SEARCH_MATCH_COLOR = '#c2410c';
 
 // "Jul 9, 2026" from a YYYY-MM-DD string. Local-noon construction so a timezone
 // offset can never shift the calendar day (same trick as formatDateLong).
@@ -2171,7 +2176,7 @@ function stopMarkerIcon(google, s, note, opts = {}) {
   //   and tap behavior stay identical. DNS and search-match orange keep
   //   precedence (safety / active-search visibility), as does an explicit
   //   Routing routeColor on numbered pins.
-  const { selectedDayKey, matched = false, inRoute = false, seq, routeColor, sameLocCount = 1, tractorDelivered = false } = opts;
+  const { selectedDayKey, matched = false, inRoute = false, seq, routeColor, sameLocCount = 1, tractorDelivered = false, searchMatched = false } = opts;
   // count badge only when 2+ deliveries share the place (Chad: "put the number on the delivery
   // icon"). 0 = no badge.
   const count = sameLocCount > 1 ? sameLocCount : 0;
@@ -2204,7 +2209,7 @@ function stopMarkerIcon(google, s, note, opts = {}) {
     + statusKind + '\x1f' + restrictions.join(',') + '\x1f' + (matched ? 'M' : '') + '\x1f'
     + (note?.priority_flag || '') + '\x1f' + (elig || '') + '\x1f' + (tractorDelivered ? 'T' : '')
     + '\x1f' + (addrOff ? 'A' : '') + '\x1f' + (note?.delivery_window || '') + '\x1f' + count
-    + '\x1f' + (routeColor || '');
+    + '\x1f' + (routeColor || '') + '\x1f' + (searchMatched ? 'S' : '');
   const cached = __stopIconCache.get(cacheKey);
   if (cached) return cached;
 
@@ -2223,10 +2228,16 @@ function stopMarkerIcon(google, s, note, opts = {}) {
     // AM/PM window, or "address looks off" signal recolor/reglyph as appropriate.
     const meta = STATUS_META[statusKind] || STATUS_META.SCHEDULED;
     const tag = (note?.delivery_window === 'AM' || note?.delivery_window === 'PM') ? note.delivery_window : null;
-    const addressOff = !matched && !flagHue
+    // A "highlighted" pop dot = selection (matched → amber) OR a Routing search hit
+    // (searchMatched → burnt orange). Both share the 22px pop size, solid fill, and top-glyph
+    // handling; only the COLOR differs, so a selected stop and a searched stop read distinctly
+    // when both are on the map at once (Chad). Selection wins the color if a stop is somehow both.
+    const hi = matched || searchMatched;
+    const addressOff = !hi && !flagHue
       && (statusKind === 'SCHEDULED' || statusKind === 'UNPLANNED')
       && addrOff;
     const color = matched ? '#f59e0b'
+      : searchMatched ? SEARCH_MATCH_COLOR
       // Dispatcher-set BOX-ONLY wins over the proven lime (same rule as the Selected window):
       // "a tractor once delivered here" must never visually override an explicit off-limits mark.
       : elig === 'box_only' ? ELIG_BOX_COLOR
@@ -2235,28 +2246,28 @@ function stopMarkerIcon(google, s, note, opts = {}) {
       || flagHue
       || (addressOff ? ADDRESS_OFF_TINT : (meta.color || flagColor(note)));
     let glyph = meta.glyph;
-    if (!matched) {
+    if (!hi) {
       if (note?.priority_flag === 'question' && !glyph) glyph = 'question';
       else if (addressOff) glyph = 'bang';
     }
-    // UNPLANNED resting pins (not a search-matched selection, no AM/PM tag) render as a white-
-    // circle-wrapped DOT instead of the washed-out small teardrop — same ≤16px footprint, so it
-    // never grows. A co-located count sits inside the dot. Tagged/matched unplanned keep the pin.
-    if (statusKind === 'UNPLANNED' && !matched && !tag) {
+    // UNPLANNED resting pins (not highlighted, no AM/PM tag) render as a white-circle-wrapped DOT
+    // instead of the washed-out small teardrop — same ≤16px footprint, so it never grows. A
+    // co-located count sits inside the dot. Highlighted/tagged unplanned keep the pop pin.
+    if (statusKind === 'UNPLANNED' && !hi && !tag) {
       result = {
         url: unplannedDotSvg(color, { glyph, count }),
         scaledSize: new google.maps.Size(16, 16),
         anchor: new google.maps.Point(8, 8),
       };
     } else {
-      // Size tiers: a matched (search-hit) dot sits BETWEEN the big AM/PM-tagged pin and the
-      // small resting dot — 22px — so a whole result set doesn't blanket the map, while still
-      // standing out (matched also renders on the TOP layer via the marker's zIndex, set in the
-      // marker effect). An AM/PM-tagged non-match stays the big 28; everything else is the 16.
-      const size = matched ? 22 : (tag ? 28 : 16);
+      // Size tiers: a highlighted (selected or search-hit) dot sits BETWEEN the big AM/PM-tagged
+      // pin and the small resting dot — 22px — so a whole result set doesn't blanket the map,
+      // while still standing out (matched/search hits also ride the TOP layer via the marker's
+      // zIndex, set in the marker effect). An AM/PM-tagged non-match stays the big 28; else 16.
+      const size = hi ? 22 : (tag ? 28 : 16);
       const half = size / 2;
       result = {
-        url: circleMarkerSvg(color, { hollow: matched ? false : meta.hollow, glyph, tag, count }),
+        url: circleMarkerSvg(color, { hollow: hi ? false : meta.hollow, glyph, tag, count }),
         scaledSize: new google.maps.Size(size, size),
         anchor: new google.maps.Point(half, half),
       };
@@ -9087,7 +9098,7 @@ const LOAD_BUCKET_STYLE = {
   cancelled: 'bg-red-100 text-red-700',
 };
 
-function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open, setOpen, onPick, onPickLoad, headerRight, onWindowRowsChange, planVersion = 0, highlightIds = null, rootRef = null }) {
+function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open, setOpen, onPick, onPickLoad, headerRight, onWindowRowsChange, onSearchMatchChange = null, planVersion = 0, highlightIds = null, rootRef = null }) {
   // Loads view groups the FULL board's loads (loadStops) so stop-level filters —
   // notably "Unplanned only" — don't empty it. Falls back to the visible stops.
   const loadSrc = loadStops || stops;
@@ -9263,6 +9274,20 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
       return true;
     });
   }, [baseStops, q, statusSel, driverSel, nvWindow]);
+  // Report the CURRENT SEARCH matches UP (stopNbr set) so the Routing map can highlight them
+  // (burnt orange, top layer) — parity with the Map screen's search highlight, which the Routing
+  // screen never had. Exactly the rows the grid is showing (WYSIWYG: search + status + driver),
+  // but ONLY when a search needle is active (no needle → null → no highlight). Debounced so a
+  // per-keystroke rebuild of every map marker doesn't jank. No-op when the parent doesn't pass a
+  // handler (the dispatch Map, which has its own search). Keyed String() to match the map's ids.
+  const searchActive = q.trim().length > 0;
+  const searchMatchIds = useMemo(
+    () => (searchActive ? new Set(filteredRows.map((s) => String(s.stopNbr))) : null),
+    [searchActive, filteredRows],
+  );
+  const debouncedMatchIds = useDebouncedValue(searchMatchIds, 180);
+  useEffect(() => { onSearchMatchChange?.(debouncedMatchIds); }, [debouncedMatchIds, onSearchMatchChange]);
+  useEffect(() => () => onSearchMatchChange?.(null), [onSearchMatchChange]);
   // Stops with NO geocoded location. They list here but have no map marker, so they can't be
   // box/lasso-selected OR routed (the map's stopById is coord-only) — this is how an order gets
   // silently MISSED. Surfaced as a count + one-click filter so they're findable and fixable.
@@ -12512,6 +12537,9 @@ function RoutingScreen({ debugCaptureRef }) {
   // selected + planned (dispatcher: "all these unplanned orders should be on the map"). null
   // = grid is on the single board day (or a live window with no coords) → map is day-only.
   const [gridWindowStops, setGridWindowStops] = useState(null);
+  // Bottom-grid SEARCH matches (stopNbr Set, or null) reported up by BottomStopsTable, so the
+  // Routing map can highlight them in burnt orange on the top layer — parity with the Map screen.
+  const [searchMatchIds, setSearchMatchIds] = useState(null);
 
   // Touch-native selection. No DrawingManager (its drag-to-draw never worked on
   // a phone and its async load could silently no-op): Box = tap two corners,
@@ -14058,6 +14086,10 @@ function RoutingScreen({ debugCaptureRef }) {
     markersRef.current = vPositioned.map((s) => {
       const id = String(s.stopNbr);
       const sel = !viewing && selectedIds.has(id);
+      // A bottom-grid SEARCH hit — highlighted BURNT ORANGE (distinct from the amber selection
+      // color, since both can be on the map at once) and pushed to the very top layer. Selection
+      // still wins the color if a stop is both (stopMarkerIcon precedence).
+      const searchMatched = !!searchMatchIds && searchMatchIds.has(id);
       const ri = effectiveRouteInfo.get(id);     // { color, seq } when on a route (Compare cards win)
       const numbered = !!ri;
       const note = notes.get(s.matchKey) || null;
@@ -14069,13 +14101,16 @@ function RoutingScreen({ debugCaptureRef }) {
       const baseIcon = stopMarkerIcon(google, s, note, {
         selectedDayKey,
         matched: sel,
+        searchMatched,
         inRoute: numbered,
         seq: ri?.seq,
         routeColor: ri?.color,
         sameLocCount: (locMates.get(stopLocKey(s)) || []).length || 1,
         tractorDelivered: tractorLocs.has(s.matchKey),
       });
-      const baseZ = numbered ? 30 : (sel ? 25 : 10);
+      // Search hits ride the TOP layer above everything (Chad), even above numbered route pins,
+      // so a hit is never hidden; otherwise numbered > selected > resting.
+      const baseZ = searchMatched ? ((google.maps.Marker?.MAX_ZINDEX ?? 1e6) + 1) : (numbered ? 30 : (sel ? 25 : 10));
       const marker = new google.maps.Marker({
         position: { lat: s.lat, lng: s.lng },
         title: s.businessName || s.stopNbr,
@@ -14100,7 +14135,7 @@ function RoutingScreen({ debugCaptureRef }) {
     });
     markerByIdRef.current = byId;
     lastEmphRef.current = hoverIdRef.current; // markers were built already-emphasized
-  }, [google, vPositioned, viewing, selectedIds, effectiveRouteInfo, notes, tractorLocs, toggleStopGroup, mapReady, selectedDayKey, emphIcon]);
+  }, [google, vPositioned, viewing, selectedIds, searchMatchIds, effectiveRouteInfo, notes, tractorLocs, toggleStopGroup, mapReady, selectedDayKey, emphIcon]);
 
   // Hover emphasis — touch only the two affected markers, not all of them. Keeps
   // the sequence label intact (only the icon scale/ring change).
@@ -14798,6 +14833,7 @@ function RoutingScreen({ debugCaptureRef }) {
             onPick={pickStopFromTable}
             onPickLoad={pickLoadToCompare}
             onWindowRowsChange={setGridWindowStops}
+            onSearchMatchChange={setSearchMatchIds}
             highlightIds={selectedIds}
             planVersion={planVersion}
           />}
@@ -14970,6 +15006,7 @@ function RoutingScreen({ debugCaptureRef }) {
           onPickLoad={pickLoadToCompare}
           headerRight={bottomGridHeaderRight}
           onWindowRowsChange={setGridWindowStops}
+          onSearchMatchChange={setSearchMatchIds}
           highlightIds={selectedIds}
           planVersion={planVersion}
         />}
