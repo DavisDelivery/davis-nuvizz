@@ -12,6 +12,16 @@ test('detectDelimiter: tab for Excel/Sheets copy, comma for CSV', () => {
   assert.equal(detectDelimiter('a,b,c\n1,2,3'), ',');
 });
 
+test('looksLikeHeader: needs a REQUIRED-field hit — generic phone/notes tokens in a data row cannot fake a header', () => {
+  // Real headers name a required column (consignee/address/city/state/zip):
+  assert.equal(looksLikeHeader(['Consignee', 'Phone', 'Notes']), true);
+  // A DATA row whose cells happen to contain optional-field tokens must NOT sniff as a header
+  // (it would silently drop that order from the import):
+  assert.equal(looksLikeHeader(['MOBILE HOME SUPPLY', '500 Main St', 'CALL: SEE NOTES']), false);
+  // A header of purely optional columns maps by position — the safe failure mode:
+  assert.equal(looksLikeHeader(['Phone', 'Notes', 'Weight']), false);
+});
+
 test('detectDelimiter: robust — semicolon, pipe, and a comma CSV with a stray tab', () => {
   // European CSV / pipe exports must split, not collapse to one column.
   assert.equal(detectDelimiter('name;city;zip\nACME;Buford;30518'), ';');

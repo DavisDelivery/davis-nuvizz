@@ -291,6 +291,12 @@ export function normalizeStop(j: any): any {
     stopNbr: stop.stopNbr ?? null,
     status: exec.stopStatus ?? null,
     itemDesc: stop.reference2 ?? null,       // commodity/description we wrote to reference2 (round-trip check)
+    // Round-trip checks for the create-time contact + dispatch notes (NuVizz silently drops
+    // fields it rejects — a live create should be verified once via getStop/write-log):
+    contactPhone: stop?.to?.contact?.phone ?? null,
+    ordInNotes: Array.isArray(stop.comments)
+      ? stop.comments.filter((c: any) => c?.cmtType === 'ORD_IN').map((c: any) => c?.commentDescription).filter(Boolean).join('\n') || null
+      : null,
     assignedLoadNbr: load.loadNbr ?? null,   // null/absent ⇒ unplanned
     routeName: load.routeName ?? null,
     // FREIGHT (incident forensics + round-trip checks). Davis semantics on this tenant:
@@ -714,9 +720,13 @@ const IMPORT_ECHO_STRINGS = [
 // to.contact fields the full echo preserves — a phone written at create time (Manifest Intake /
 // Bulk Add) must survive the full-replace, or the first route reorder through the import path
 // silently blanks it. Same whitelist discipline as the address (scalars only via pickFields).
+// STRICTLY the v7 ContactInfo schema fields (additionalProperties:false on the import paths) —
+// notably NOT 'name': live records can carry it (the scan reads contactRaw.name as a fallback)
+// but the write schema doesn't know it, and one unknown property can silently no-op the whole
+// async import. A record-level 'name' is remapped to contactName below instead.
 // NOTE: comments[] are deliberately NOT echoed — whether the full-replace blanks them is
 // unproven on this tenant, and echoing could duplicate them (repo rule: unproven, no upside).
-const IMPORT_CONTACT_FIELDS = ['contactName', 'name', 'email', 'phone', 'phone2', 'sms', 'fax'] as const;
+const IMPORT_CONTACT_FIELDS = ['contactName', 'email', 'phone', 'phone2', 'sms', 'fax'] as const;
 
 /** importEchoFromRaw (§I, Jul 2 correction) — a RAW stop object (from load/info stops[]) → the
  *  FULL-ECHO import entry for a stop that is ON the target load: importRefFromRaw's
@@ -741,6 +751,10 @@ export function importEchoFromRaw(rawStop: any, fallbackDate?: string | null): a
   // Echo the consignee contact (whitelisted scalars) so a full-replace can't blank a phone
   // written at create time. pickFields drops objects/empties, so junk can never ride along.
   const contact = pickFields(st?.to?.contact || {}, IMPORT_CONTACT_FIELDS);
+  // Live records sometimes carry the person under 'name' (the scan's own fallback read) —
+  // remap it into the schema-legal contactName rather than sending an unknown property.
+  const legacyName = (st?.to?.contact as any)?.name;
+  if (!contact.contactName && legacyName != null && legacyName !== '' && typeof legacyName !== 'object') contact.contactName = legacyName;
   if (Object.keys(contact).length) ref.to.contact = contact;
   // Echo the "from" block (warehouse address + pickup window) with the same whitelists +
   // normalization as the to-block — never raw junk, never objects where strings belong.

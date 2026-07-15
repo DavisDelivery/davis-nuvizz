@@ -16947,6 +16947,12 @@ function BulkOrderScreen() {
         // function (vision over a multi-page scan takes 20-40s, past the 26s request cap
         // that timed out the first version) and we poll for the result. One AI call per
         // drop (a few cents); ZERO NuVizz calls.
+        // GUARD (review blocker): a new drop REPLACES the intake — never silently destroy
+        // HELD orders ("saved on this device" is the feature's promise). Confirm BEFORE the
+        // OCR runs, so a Cancel also costs nothing.
+        const heldNow = (intake?.rows || []).filter((x) => x._status !== 'pushed').length;
+        if (heldNow && !window.confirm(`A manifest intake is already open with ${heldNow} HELD order(s) that were NOT sent to NuVizz. Reading "${file.name}" will REPLACE it and drop those held orders.\n\nOK = replace it · Cancel = keep the current intake`)) return;
+        if (intakeBusy) { setImportErr('A push is in progress — wait for it to finish before reading a new manifest.'); return; }
         setImportBusy(`Reading "${file.name}" — a scanned manifest takes ~20–40s…`);
         try {
           const buf = new Uint8Array(await file.arrayBuffer());
@@ -17125,18 +17131,28 @@ function BulkOrderScreen() {
     plt: a.plt + (Number(r.pallets) || 0), loose: a.loose + (Number(r.loose) || 0),
     lb: a.lb + (Number(r.weight) || 0), usd: a.usd + (Number(r.price) || 0),
   }), { plt: 0, loose: 0, lb: 0, usd: 0 });
+  // ALL intake mutations no-op while a push is in flight (review finding): pushChecked works
+  // from its click-time snapshot, so a mid-push edit/uncheck/remove would silently diverge from
+  // what's actually being sent to NuVizz — and a mid-push discard nulled the state under the
+  // in-flight loop. The row inputs/buttons are also disabled while intakeBusy (belt).
   const setIntakeCell = (id, key) => (e) => {
     const v = e.target.value;
-    setIntake((it) => ({ ...it, rows: it.rows.map((r) => (r.id === id ? { ...r, [key]: v } : r)) }));
+    if (intakeBusy) return;
+    setIntake((it) => (it ? { ...it, rows: it.rows.map((r) => (r.id === id ? { ...r, [key]: v } : r)) } : it));
   };
-  const toggleIntakeRow = (id) => setIntake((it) => ({ ...it, rows: it.rows.map((r) => (r.id === id ? { ...r, _checked: r._checked !== true } : r)) }));
+  const toggleIntakeRow = (id) => { if (intakeBusy) return; setIntake((it) => (it ? { ...it, rows: it.rows.map((r) => (r.id === id ? { ...r, _checked: r._checked !== true } : r)) } : it)); };
   const allHeldChecked = heldRows.length > 0 && heldRows.every((r) => r._checked === true);
-  const toggleIntakeAll = () => setIntake((it) => ({ ...it, rows: it.rows.map((r) => (r._status === 'pushed' ? r : { ...r, _checked: !allHeldChecked })) }));
-  const removeIntakeRow = (id) => setIntake((it) => {
-    const rows = it.rows.filter((r) => r.id !== id);
-    return rows.length ? { ...it, rows } : null;   // last row gone → close the panel
-  });
+  const toggleIntakeAll = () => { if (intakeBusy) return; setIntake((it) => (it ? { ...it, rows: it.rows.map((r) => (r._status === 'pushed' ? r : { ...r, _checked: !allHeldChecked })) } : it)); };
+  const removeIntakeRow = (id) => {
+    if (intakeBusy) return;
+    setIntake((it) => {
+      if (!it) return it;
+      const rows = it.rows.filter((r) => r.id !== id);
+      return rows.length ? { ...it, rows } : null;   // last row gone → close the panel
+    });
+  };
   const discardIntake = () => {
+    if (intakeBusy) return;   // never yank the state from under an in-flight push
     const held = heldRows.length;
     if (held && !window.confirm(`Discard this manifest? ${held} held order(s) will be dropped (they have NOT been sent to NuVizz).`)) return;
     setIntake(null); setIntakeResults(null); setIntakeOpen(null);
@@ -17169,9 +17185,11 @@ function BulkOrderScreen() {
       catch (e) { res = { ok: false, error: e?.message || 'network error' }; }
       const ok = !!(res.ok && res.result?.ok);
       if (ok) { sent++; if (res.result?.updated) updated++; } else failed++;
-      setIntake((it) => ({ ...it, rows: it.rows.map((x) => (x.id !== r.id ? x
+      // Null-guarded: mutations are frozen during a push, but never trust that with LIVE
+      // writes in flight — a missing intake must degrade to a no-op, not a render crash.
+      setIntake((it) => (it ? { ...it, rows: it.rows.map((x) => (x.id !== r.id ? x
         : ok ? { ...x, _status: 'pushed', _checked: false, _pushedNbr: res.result?.entityNbr || x.stopNbr, _updated: !!res.result?.updated, _error: null }
-        : { ...x, _error: res.error || res.result?.error || 'write error' })) }));
+        : { ...x, _error: res.error || res.result?.error || 'write error' })) } : it));
       setIntakeProgress({ done: k + 1, total: targets.length });
     }
     setIntakeBusy(false); setIntakeProgress(null);
@@ -17326,6 +17344,7 @@ function BulkOrderScreen() {
           const m = intake.manifest || {};
           const carrierWord = String(m.carrier || 'Estes').trim().split(/\s+/)[0];
           const rowsShown = intakeTab === 'held' ? heldRows : pushedRows;
+          const intakeCols = intakeTab === 'held' ? 11 : 10;   // the checkbox column exists only on Held
           const unitSum = intakeRows.reduce((a, r) => a + (Number(r.pallets) || 0), 0);
           const wgtSum = intakeRows.reduce((a, r) => a + (Number(r.weight) || 0), 0);
           return (
@@ -17339,7 +17358,7 @@ function BulkOrderScreen() {
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
                   {!live && <span className="text-[10px] font-bold uppercase tracking-wide bg-slate-800 text-white rounded-full px-2.5 py-1">● Preview mode — nothing sent</span>}
-                  <button onClick={discardIntake} title="Discard this manifest (held rows are dropped)" className="text-slate-400 hover:text-red-600"><X size={16} /></button>
+                  <button onClick={discardIntake} disabled={intakeBusy} title={intakeBusy ? 'Wait for the push to finish' : 'Discard this manifest (held rows are dropped)'} className={`text-slate-400 ${intakeBusy ? 'opacity-40 cursor-not-allowed' : 'hover:text-red-600'}`}><X size={16} /></button>
                 </div>
               </div>
               <div className="flex gap-2 flex-wrap">
@@ -17363,7 +17382,7 @@ function BulkOrderScreen() {
               {intakeTab === 'held' && (
                 <div className="flex items-center justify-between text-[12px] text-slate-600 border-b border-slate-100 pb-2">
                   <label className="inline-flex items-center gap-2">
-                    <input type="checkbox" checked={allHeldChecked} onChange={toggleIntakeAll} disabled={!heldRows.length} className="align-middle accent-blue-600" />
+                    <input type="checkbox" checked={allHeldChecked} onChange={toggleIntakeAll} disabled={!heldRows.length || intakeBusy} className="align-middle accent-blue-600" />
                     <span className="font-medium">Select all</span> <span className="text-slate-400">check rows to push</span>
                   </label>
                   <span className="tabular-nums font-medium">{checkedHeld.length} checked · {intakeTally.plt} plt · {intakeTally.loose} loose · {intakeTally.lb.toLocaleString()} lb · ${intakeTally.usd.toFixed(2)}</span>
@@ -17388,7 +17407,7 @@ function BulkOrderScreen() {
                   </thead>
                   <tbody>
                     {rowsShown.length === 0 && (
-                      <tr><td colSpan={11} className="py-3 text-center text-slate-400">{intakeTab === 'held' ? 'Nothing held — every order has been pushed.' : 'Nothing pushed yet.'}</td></tr>
+                      <tr><td colSpan={intakeCols} className="py-3 text-center text-slate-400">{intakeTab === 'held' ? 'Nothing held — every order has been pushed.' : 'Nothing pushed yet.'}</td></tr>
                     )}
                     {rowsShown.map((r, i) => {
                       const missing = bulkRowMissing(r);
@@ -17398,7 +17417,7 @@ function BulkOrderScreen() {
                         <React.Fragment key={r.id}>
                           <tr className="align-middle border-t border-slate-100">
                             {intakeTab === 'held' && (
-                              <td className="pr-1 py-1"><input type="checkbox" checked={r._checked === true} onChange={() => toggleIntakeRow(r.id)} className="align-middle accent-blue-600" /></td>
+                              <td className="pr-1 py-1"><input type="checkbox" checked={r._checked === true} onChange={() => toggleIntakeRow(r.id)} disabled={intakeBusy} className="align-middle accent-blue-600" /></td>
                             )}
                             <td className="pr-2 py-1 text-slate-400 tabular-nums">{i + 1}</td>
                             <td className="px-1 py-1">
@@ -17425,29 +17444,29 @@ function BulkOrderScreen() {
                               </>
                             ) : (
                               <>
-                                <td className="px-1 py-1"><input value={r.pallets} onChange={setIntakeCell(r.id, 'pallets')} className={`${gridInput} w-14 text-right`} /></td>
-                                <td className="px-1 py-1"><input value={r.loose} onChange={setIntakeCell(r.id, 'loose')} className={`${gridInput} w-14 text-right`} /></td>
-                                <td className="px-1 py-1"><input value={r.weight} onChange={setIntakeCell(r.id, 'weight')} className={`${gridInput} w-16 text-right`} /></td>
-                                <td className="px-1 py-1"><input value={r.phone} onChange={setIntakeCell(r.id, 'phone')} placeholder="add phone" className={`${gridInput} w-28`} /></td>
-                                <td className="px-1 py-1"><input value={r.dispatchNotes} onChange={setIntakeCell(r.id, 'dispatchNotes')} placeholder="dispatch notes" className={`${gridInput} min-w-[150px]`} /></td>
-                                <td className="px-1 py-1"><input value={r.price} onChange={setIntakeCell(r.id, 'price')} placeholder="$" className={`${gridInput} w-16 text-right`} /></td>
-                                <td className="py-1"><button onClick={() => removeIntakeRow(r.id)} title="Remove this order from the manifest intake" className="text-slate-400 hover:text-red-600"><X size={13} /></button></td>
+                                <td className="px-1 py-1"><input value={r.pallets} onChange={setIntakeCell(r.id, 'pallets')} disabled={intakeBusy} className={`${gridInput} w-14 text-right`} /></td>
+                                <td className="px-1 py-1"><input value={r.loose} onChange={setIntakeCell(r.id, 'loose')} disabled={intakeBusy} className={`${gridInput} w-14 text-right`} /></td>
+                                <td className="px-1 py-1"><input value={r.weight} onChange={setIntakeCell(r.id, 'weight')} disabled={intakeBusy} className={`${gridInput} w-16 text-right`} /></td>
+                                <td className="px-1 py-1"><input value={r.phone} onChange={setIntakeCell(r.id, 'phone')} disabled={intakeBusy} placeholder="add phone" className={`${gridInput} w-28`} /></td>
+                                <td className="px-1 py-1"><input value={r.dispatchNotes} onChange={setIntakeCell(r.id, 'dispatchNotes')} disabled={intakeBusy} placeholder="dispatch notes" className={`${gridInput} min-w-[150px]`} /></td>
+                                <td className="px-1 py-1"><input value={r.price} onChange={setIntakeCell(r.id, 'price')} disabled={intakeBusy} placeholder="$" className={`${gridInput} w-16 text-right`} /></td>
+                                <td className="py-1"><button onClick={() => removeIntakeRow(r.id)} disabled={intakeBusy} title="Remove this order from the manifest intake" className={`text-slate-400 ${intakeBusy ? 'opacity-40 cursor-not-allowed' : 'hover:text-red-600'}`}><X size={13} /></button></td>
                               </>
                             )}
                           </tr>
                           {open && (
                             <tr className="border-t border-slate-50">
-                              <td colSpan={11} className="px-6 py-2 bg-slate-50/70">
+                              <td colSpan={intakeCols} className="px-6 py-2 bg-slate-50/70">
                                 <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 max-w-[900px]">
-                                  <OrderField label="Consignee / business" value={r.name} onChange={setIntakeCell(r.id, 'name')} disabled={pushed} />
-                                  <OrderField label="Address" value={r.addr1} onChange={setIntakeCell(r.id, 'addr1')} disabled={pushed} />
-                                  <OrderField label="Suite / unit" value={r.addr2} onChange={setIntakeCell(r.id, 'addr2')} disabled={pushed} />
-                                  <OrderField label="City" value={r.city} onChange={setIntakeCell(r.id, 'city')} disabled={pushed} />
-                                  <OrderField label="State" value={r.state} onChange={setIntakeCell(r.id, 'state')} disabled={pushed} />
-                                  <OrderField label="ZIP" value={r.zip} onChange={setIntakeCell(r.id, 'zip')} disabled={pushed} />
-                                  <OrderField label="Item description" value={r.itemDesc} onChange={setIntakeCell(r.id, 'itemDesc')} disabled={pushed} />
-                                  <OrderField label="Order # (ref)" value={r.stopNbr} onChange={setIntakeCell(r.id, 'stopNbr')} disabled={pushed} />
-                                  <OrderField label="PRO (barcode digits)" value={r.pro} onChange={setIntakeCell(r.id, 'pro')} disabled={pushed} />
+                                  <OrderField label="Consignee / business" value={r.name} onChange={setIntakeCell(r.id, 'name')} disabled={pushed || intakeBusy} />
+                                  <OrderField label="Address" value={r.addr1} onChange={setIntakeCell(r.id, 'addr1')} disabled={pushed || intakeBusy} />
+                                  <OrderField label="Suite / unit" value={r.addr2} onChange={setIntakeCell(r.id, 'addr2')} disabled={pushed || intakeBusy} />
+                                  <OrderField label="City" value={r.city} onChange={setIntakeCell(r.id, 'city')} disabled={pushed || intakeBusy} />
+                                  <OrderField label="State" value={r.state} onChange={setIntakeCell(r.id, 'state')} disabled={pushed || intakeBusy} />
+                                  <OrderField label="ZIP" value={r.zip} onChange={setIntakeCell(r.id, 'zip')} disabled={pushed || intakeBusy} />
+                                  <OrderField label="Item description" value={r.itemDesc} onChange={setIntakeCell(r.id, 'itemDesc')} disabled={pushed || intakeBusy} />
+                                  <OrderField label="Order # (ref)" value={r.stopNbr} onChange={setIntakeCell(r.id, 'stopNbr')} disabled={pushed || intakeBusy} />
+                                  <OrderField label="PRO (barcode digits)" value={r.pro} onChange={setIntakeCell(r.id, 'pro')} disabled={pushed || intakeBusy} />
                                 </div>
                               </td>
                             </tr>

@@ -104,9 +104,16 @@ export function looksLikeHeader(row) {
   if (!Array.isArray(row)) return false;
   const cells = row.map(norm).filter(Boolean);
   if (cells.length < 2) return false;
-  let hits = 0;
-  for (const cell of cells) if (BULK_FIELDS.some((f) => aliasHit(f, cell, 3))) hits++;
-  return hits >= 2;
+  let hits = 0, requiredHit = false;
+  for (const cell of cells) {
+    const f = BULK_FIELDS.find((x) => aliasHit(x, cell, 3));
+    if (f) { hits++; if (f.required) requiredHit = true; }
+  }
+  // ≥2 alias hits AND at least one REQUIRED-field hit (consignee/address/city/state/zip).
+  // The generic phone/notes aliases (tel, cell, note, remarks…) made data rows sniffable as
+  // headers — a real header practically always names a required column, a data row rarely does
+  // (and a header of purely-optional columns maps by position, which is the safe failure).
+  return hits >= 2 && requiredHit;
 }
 
 // Auto-map header cells → field keys. Returns { [colIndex]: fieldKey }. Exact alias matches are

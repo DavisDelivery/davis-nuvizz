@@ -99,6 +99,12 @@ test('importEchoFromRaw: echoes to.contact scalars (a create-time phone must sur
   assert.equal(e.comments, undefined, 'comments are unproven on full-replace — never echoed (dup risk)');
   const bare = importEchoFromRaw(rawStop('2004', 'd1', 3), '2026-07-02');
   assert.equal(bare.to.contact, undefined, 'no contact on the record → none invented');
+  // A live record's non-schema 'name' remaps to contactName (v7 ContactInfo is
+  // additionalProperties:false — an unknown property could no-op the whole import).
+  const legacy = rawStop('2005', 'e1', 4);
+  legacy.stop.to.contact = { name: 'FRONT DESK', phone: '4045550100' };
+  const le = importEchoFromRaw(legacy, '2026-07-02');
+  assert.deepEqual(le.to.contact, { contactName: 'FRONT DESK', phone: '4045550100' }, "'name' never rides; it becomes contactName");
 });
 
 test('importEchoFromRaw: numeric strings coerce, objects are refused, junk fields never ride', () => {
