@@ -59,7 +59,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.50.16';
+const APP_VERSION = '0.50.17';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -104,6 +104,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.50.17', 'BULK ADD — spreadsheet import + a wider grid. (1) A dropped file that came in as a single "Column 1" (with "no header detected") is fixed: the importer was guessing the wrong column separator on some files — a comma CSV with one stray tab in a cell, or a semicolon/pipe export — and jamming every row into one cell. It now picks whichever separator actually splits your rows into the most columns (tab, comma, semicolon, or pipe), and it sizes the column mapping to your WIDEST row so a short first/title row no longer hides the rest of the columns. (2) The Orders grid now uses the empty gray space on the sides — it was capped narrow, cutting off the right-hand columns; it\'s much wider now so more fields fit without side-scrolling. (If a dropped file STILL shows one column, tell me whether it\'s .xlsx or .csv and paste the first two rows — that pins the exact format.)'],
   ['0.50.16', 'NEW ORDER + BULK ADD now take a PRICE. Davis records a shipment\'s price in NuVizz\'s "Seal #" field, so there\'s a new Price box on the single New Order form ("Price ($ → Seal #)") and a Price column in Bulk Add that auto-maps from a pasted "price / seal / rate / amount / linehaul / revenue…" header. Whatever you enter rides into NuVizz\'s Seal # (sealNbr) on create — capped at 20 characters — across every create path: the single order, the row-by-row bulk Add, AND the "send as ONE import for load" bulk flow.'],
   ['0.50.15', 'FASTER MAP + ROUTING LOAD — for real this time. The board feed was shipping ~6.9 MB every load: 747 stops each carrying the ENTIRE raw NuVizz object (3.8 MB by itself) plus a stack of fields the map never reads — and the page sat blank for 5–6 seconds waiting on it. That, not the app, was the wait (measured it: the fetch was ~5 s of the load). The feed now serves ONLY the ~70 fields the map, grid, stop card, print, texting, and scanner actually use — via a database field-mask, so the dead weight never even leaves storage — cutting the payload ~55% and the server time with it. Nothing you see changes: opening a stop still shows every comment and document. If anything ever looks off, the old full feed is one flip away — add ?full=1 to the URL, or set MAP_FEED_FULL=1 on the site. (This is the real fix behind v0.50.5\'s attempt, which only trimmed the bundle + pin drawing — 3% of the problem.)'],
   ['0.50.14', 'FIX: an OUT-FOR-DELIVERY stop could vanish from the board — searching its PRO returned "no stops match" even though the driver had it. Our board is fed by two NuVizz saved searches: "open work" (Planned + Un-Planned) and "finished" (Delivered + Unable + Cancelled). A stop that is on the truck but not delivered yet — status Out for Delivery or Arrived — is in the middle and matched NEITHER, so it fell off every pull the moment the driver rolled and only stayed on the board if an earlier scan had already caught it (a stop planned + dispatched between scans slipped through). The "open work" pull now also grabs Out-for-Delivery and Arrived stops directly, so an in-flight delivery stays searchable on the board through the whole run. Zero extra NuVizz calls — it\'s the same single pull, just a wider status filter (the same fix that stopped cancelled orders from vanishing). Takes effect on the next scan.'],
@@ -16833,13 +16834,20 @@ function BulkOrderScreen() {
   const finishIngest = (parsed) => {
     setImportErr('');
     if (!parsed || !parsed.length) { setImportErr('Nothing to import — the paste/file was empty.'); return; }
+    // Column count = the WIDEST row, not just the first. A short/merged title first row (or a
+    // header with trailing blanks) must not collapse the mapping to "Column 1" and hide the rest.
+    const width = parsed.reduce((m, r) => Math.max(m, Array.isArray(r) ? r.length : 0), 0);
     const hasHeader = looksLikeHeader(parsed[0]);
-    const headerCells = hasHeader ? parsed[0] : parsed[0].map((_, i) => `Column ${i + 1}`);
+    const header = parsed[0] || [];
+    const columns = Array.from({ length: Math.max(width, 1) }, (_, i) => ({
+      idx: i,
+      label: hasHeader ? String(header[i] || `Column ${i + 1}`) : `Column ${i + 1}`,
+    }));
     const dataRows = hasHeader ? parsed.slice(1) : parsed;
     if (!dataRows.length) { setImportErr('Found a header but no data rows.'); return; }
     const sig = hasHeader ? headerSignature(parsed[0]) : null;
     const mapping = recallMapping(sig) || autoMapColumns(hasHeader ? parsed[0] : []);
-    setImporter({ columns: headerCells.map((h, i) => ({ idx: i, label: String(h || `Column ${i + 1}`) })), dataRows, mapping, sig, hasHeader });
+    setImporter({ columns, dataRows, mapping, sig, hasHeader });
   };
   const ingestText = (text) => finishIngest(parseDelimited(text));
   const ingestAoa = (aoa) => {
@@ -16986,7 +16994,7 @@ function BulkOrderScreen() {
 
   return (
     <div className="flex-1 min-h-0 overflow-auto bg-slate-50">
-      <div className="max-w-6xl mx-auto p-4 space-y-4">
+      <div className="max-w-[1600px] mx-auto p-4 space-y-4">
         {/* Header + Beta/Live */}
         <div className="flex items-center justify-between gap-3">
           <div>

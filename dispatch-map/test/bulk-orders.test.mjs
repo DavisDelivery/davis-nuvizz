@@ -12,6 +12,17 @@ test('detectDelimiter: tab for Excel/Sheets copy, comma for CSV', () => {
   assert.equal(detectDelimiter('a,b,c\n1,2,3'), ',');
 });
 
+test('detectDelimiter: robust — semicolon, pipe, and a comma CSV with a stray tab', () => {
+  // European CSV / pipe exports must split, not collapse to one column.
+  assert.equal(detectDelimiter('name;city;zip\nACME;Buford;30518'), ';');
+  assert.equal(detectDelimiter('name|city|zip\nACME|Buford|30518'), '|');
+  // The old rule picked tab the moment ANY tab appeared, mis-splitting a comma CSV that had one
+  // stray tab in a cell → whole line became a single cell ("Column 1" only). Comma must win now.
+  assert.equal(detectDelimiter('name,addr,city\nACME,"500 Main\tSt",Buford\nBeta,10 Oak Rd,Atlanta'), ',');
+  // Truly single-column input has no delimiter to find → comma default (honestly one column).
+  assert.equal(detectDelimiter('ACME\nBeta\nGamma'), ',');
+});
+
 test('parseDelimited: TSV paste → rows of cells', () => {
   const rows = parseDelimited('Name\tCity\nACME\tBuford\nBeta\tAtlanta');
   assert.deepEqual(rows, [['Name', 'City'], ['ACME', 'Buford'], ['Beta', 'Atlanta']]);

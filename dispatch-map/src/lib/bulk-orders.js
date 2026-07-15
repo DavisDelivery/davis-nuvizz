@@ -44,11 +44,25 @@ function aliasHit(field, cellNorm, minToken) {
 }
 const aliasExact = (field, cellNorm) => field.aliases.some((a) => norm(a) === cellNorm);
 
-// Detect the delimiter of a pasted/CSV block. A copy from Excel/Google Sheets is TAB-separated;
-// a CSV export is comma-separated. Tab wins if present in the first few lines.
+// Detect the delimiter of a pasted/CSV block. Picks whichever candidate splits the sample into
+// the MOST columns, most consistently across lines — Excel/Sheets copy is TAB, a CSV is comma, a
+// European export is semicolon, some exports are pipe. The old rule ("any tab in the first 5 lines
+// ⇒ tab, else comma") mis-split a comma CSV that carried a single stray tab: the whole line became
+// one cell, so the importer showed only "Column 1" (and, with no splittable cells, "no header").
 export function detectDelimiter(text) {
-  const head = String(text ?? '').split(/\r?\n/).slice(0, 5).join('\n');
-  return head.includes('\t') ? '\t' : ',';
+  const lines = String(text ?? '').split(/\r?\n/).filter((l) => l.trim() !== '').slice(0, 10);
+  if (!lines.length) return ',';
+  const candidates = ['\t', ',', ';', '|'];
+  let best = ',', bestScore = -1;
+  for (const d of candidates) {
+    const counts = lines.map((l) => l.split(d).length);
+    const maxCols = Math.max(...counts);
+    if (maxCols <= 1) continue;                              // this delimiter splits nothing here
+    const consistent = counts.filter((c) => c === maxCols).length;
+    const score = maxCols * 1000 + consistent;              // more columns first, then more consistency
+    if (score > bestScore) { bestScore = score; best = d; }
+  }
+  return best;                                               // comma default when nothing splits (truly 1-column)
 }
 
 // Parse a delimited block into an array of string-cell rows. Handles RFC-4180-ish quoted CSV
