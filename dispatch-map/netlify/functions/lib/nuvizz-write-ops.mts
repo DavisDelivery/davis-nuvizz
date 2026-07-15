@@ -93,6 +93,8 @@ export interface StopRow {
   // (mislabeled) fields: pallets → totalCartons (NuVizz "cartons" = real skids/
   // pallets), loose → volume, and totalPallets carries the TOTAL piece count.
   pallets?: number | null; loose?: number | null; weight?: number | null;
+  // Davis records the shipment PRICE in NuVizz's Seal # field → sealNbr (string, maxLen 20).
+  price?: string | number | null;
 }
 export interface OriginSettings {
   origin: { name: string; addr1: string; city: string; state: string; zip: string };
@@ -137,6 +139,8 @@ export function buildStopPayload(row: StopRow, settings: OriginSettings): any {
     totalPallets: totalPieces ?? 1, // NuVizz "pallets" = TOTAL pieces (pallets + loose)
     weight: numOrNull(row.weight),
     weightUOM: 'LBS',
+    // Davis convention: the shipment PRICE rides in NuVizz's Seal # field (sealNbr, string ≤20 chars).
+    sealNbr: row.price != null && String(row.price).trim() !== '' ? String(row.price).trim().slice(0, 20) : undefined,
     from: {
       address: {
         addressType: 'COM', name: settings.origin.name, addr1: settings.origin.addr1,

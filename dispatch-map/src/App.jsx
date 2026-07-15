@@ -59,7 +59,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.50.15';
+const APP_VERSION = '0.50.16';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -104,6 +104,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.50.16', 'NEW ORDER + BULK ADD now take a PRICE. Davis records a shipment\'s price in NuVizz\'s "Seal #" field, so there\'s a new Price box on the single New Order form ("Price ($ → Seal #)") and a Price column in Bulk Add that auto-maps from a pasted "price / seal / rate / amount / linehaul / revenue…" header. Whatever you enter rides into NuVizz\'s Seal # (sealNbr) on create — capped at 20 characters — across every create path: the single order, the row-by-row bulk Add, AND the "send as ONE import for load" bulk flow.'],
   ['0.50.15', 'FASTER MAP + ROUTING LOAD — for real this time. The board feed was shipping ~6.9 MB every load: 747 stops each carrying the ENTIRE raw NuVizz object (3.8 MB by itself) plus a stack of fields the map never reads — and the page sat blank for 5–6 seconds waiting on it. That, not the app, was the wait (measured it: the fetch was ~5 s of the load). The feed now serves ONLY the ~70 fields the map, grid, stop card, print, texting, and scanner actually use — via a database field-mask, so the dead weight never even leaves storage — cutting the payload ~55% and the server time with it. Nothing you see changes: opening a stop still shows every comment and document. If anything ever looks off, the old full feed is one flip away — add ?full=1 to the URL, or set MAP_FEED_FULL=1 on the site. (This is the real fix behind v0.50.5\'s attempt, which only trimmed the bundle + pin drawing — 3% of the problem.)'],
   ['0.50.14', 'FIX: an OUT-FOR-DELIVERY stop could vanish from the board — searching its PRO returned "no stops match" even though the driver had it. Our board is fed by two NuVizz saved searches: "open work" (Planned + Un-Planned) and "finished" (Delivered + Unable + Cancelled). A stop that is on the truck but not delivered yet — status Out for Delivery or Arrived — is in the middle and matched NEITHER, so it fell off every pull the moment the driver rolled and only stayed on the board if an earlier scan had already caught it (a stop planned + dispatched between scans slipped through). The "open work" pull now also grabs Out-for-Delivery and Arrived stops directly, so an in-flight delivery stays searchable on the board through the whole run. Zero extra NuVizz calls — it\'s the same single pull, just a wider status filter (the same fix that stopped cancelled orders from vanishing). Takes effect on the next scan.'],
   ['0.50.13', 'FIX: the printed Driver Manifest no longer prints a PICKUP location as the route "Origin". On a route with a pickup (e.g. CTL70926 at TSY AMERICA sitting correctly at stop 5), the manifest cover page was reading "Origin: TSY AMERICA" — making it look like the pickup got pushed to the front, even though its own ticket was in the right spot. The header now skips pickup stops when choosing the origin (a pickup\'s from-address IS the pickup location, not the depot the route starts from), so the Origin line shows the real starting point and the pickup only appears at its own stop in the route.'],
@@ -16437,7 +16438,7 @@ const normPhone = (p) => { const d = String(p || '').replace(/\D/g, ''); return 
 const NEWORDER_ORIGIN_KEY = 'dd_neworder_origin';    // the DEFAULT / last-used origin (also read by Routing's import header fallback)
 const NEWORDER_ORIGINS_KEY = 'dd_neworder_origins';  // the saved LIST of pickup origins (multiple pickup locations)
 const NEWORDER_ORIGIN_DEFAULT = { name: 'Buford Terminal', addr1: '', city: '', state: 'GA', zip: '' };
-const EMPTY_ORDER_ROW = { name: '', addr1: '', addr2: '', city: '', state: '', zip: '', stopNbr: '', pro: '', itemDesc: '', pallets: '', loose: '', weight: '' };
+const EMPTY_ORDER_ROW = { name: '', addr1: '', addr2: '', city: '', state: '', zip: '', stopNbr: '', pro: '', itemDesc: '', pallets: '', loose: '', weight: '', price: '' };
 
 // Coerce every field of a saved origin to a STRING — a hand-edited/corrupt entry (e.g. a numeric
 // zip) would otherwise pass the completeness gate and then throw on .trim() mid-submit.
@@ -16601,6 +16602,7 @@ function NewOrderSingleScreen() {
         pallets: row.pallets === '' ? null : Number(row.pallets),
         loose: row.loose === '' ? null : Number(row.loose),
         weight: row.weight === '' ? null : Number(row.weight),
+        price: row.price.trim() || null,   // → NuVizz Seal # (sealNbr)
       };
       const settings = {
         origin: { name: origin.name.trim(), addr1: origin.addr1.trim(), city: origin.city.trim(), state: origin.state.trim(), zip: origin.zip.trim() },
@@ -16724,6 +16726,7 @@ function NewOrderSingleScreen() {
             <OrderField label="Loose" type="number" value={row.loose} onChange={set('loose')} placeholder="" />
             <OrderField label="Weight (lbs)" type="number" value={row.weight} onChange={set('weight')} placeholder="" />
           </div>
+          <OrderField label="Price ($ → Seal #)" type="number" value={row.price} onChange={set('price')} placeholder="e.g. 185.00" className="max-w-[200px]" />
           <OrderField label="Service date" req type="date" value={serviceDate} onChange={(e) => setServiceDate(e.target.value)} className="max-w-[200px]" />
         </div>
 
@@ -16888,6 +16891,7 @@ function BulkOrderScreen() {
         city: r.city.trim(), state: r.state.trim(), zip: r.zip.trim(),
         stopNbr: r.stopNbr.trim() || null, pro: r.pro.trim() || null, itemDesc: r.itemDesc.trim() || null,
         pallets: r.pallets.trim() || null, loose: r.loose.trim() || null, weight: r.weight.trim() || null,
+        price: (r.price || '').trim() || null,   // → NuVizz Seal # (sealNbr)
       };
       let res;
       try { res = await callWrite('createStop', { row: payloadRow, settings }, { dryRun: false, clientOpId: newClientOpId(), createdBy: 'dispatcher-bulk' }); }
@@ -16954,6 +16958,7 @@ function BulkOrderScreen() {
       city: r.city.trim(), state: r.state.trim(), zip: r.zip.trim(),
       stopNbr: r.stopNbr.trim(), pro: r.pro.trim() || null, itemDesc: r.itemDesc.trim() || null,
       pallets: r.pallets.trim() || null, loose: r.loose.trim() || null, weight: r.weight.trim() || null,
+      price: (r.price || '').trim() || null,   // → NuVizz Seal # (sealNbr) via buildStopPayload on the server
     }));
     const body = {
       loads: [{ loadNbr: nbr, routeName: routeName.trim() || undefined, createNew: true, orderedStopNbrs: payloadRows.map((r) => r.stopNbr), newStops: payloadRows }],

@@ -18,6 +18,8 @@ export const BULK_FIELDS = [
   { key: 'pallets', label: 'Pallets', required: false, aliases: ['pallet', 'pallets', 'plt', 'plts', 'skids', 'skid'] },
   { key: 'loose', label: 'Loose', required: false, aliases: ['loose', 'loose pieces', 'loose pcs', 'pieces', 'pcs', 'pc', 'cases', 'qty', 'quantity'] },
   { key: 'weight', label: 'Weight (lbs)', required: false, aliases: ['weight', 'wt', 'lbs', 'pounds'] },
+  // Davis records the shipment PRICE in NuVizz's "Seal #" field; buildStopPayload maps price → sealNbr.
+  { key: 'price', label: 'Price', required: false, aliases: ['price', 'seal', 'seal #', 'seal number', 'sealnbr', 'seal nbr', 'rate', 'charge', 'amount', 'linehaul', 'revenue'] },
 ];
 
 export const BULK_FIELD_KEYS = BULK_FIELDS.map((f) => f.key);
