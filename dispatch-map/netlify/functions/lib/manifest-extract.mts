@@ -39,7 +39,11 @@ Return EXACTLY this shape:
   "carrier": string|null,          // e.g. "Estes Express Lines" (from the page header)
   "manifestNumber": string|null,   // e.g. "047-52228"
   "manifestDate": string|null,     // as printed, e.g. "7/14/26"
+  "manifestTime": string|null,     // as printed under the date, e.g. "9:14:26"
+  "trailer": string|null,          // the Trailer band's number (often under a barcode), e.g. "521104"
   "totalPros": number|null,        // the header's "Total Pros" count
+  "totalUnits": number|null,       // the header's "Units" count
+  "totalWeight": number|null,      // the header's "Wgt" total, pounds
   "rows": [
     {
       "name": string,              // consignee/business name. The name may wrap across lines around the street — reconstruct the full name; never include the street or city in it.
@@ -84,7 +88,11 @@ const strOrNull = (v: any) => { const s = String(v ?? '').trim(); return s ? s :
 // EDITABLE review grid (the dispatcher is the final gate), and a hard failure on row 17
 // must not cost the 16 clean ones.
 export function normalizeManifestRows(parsed: any): {
-  manifest: { carrier: string | null; manifestNumber: string | null; manifestDate: string | null; totalPros: number | null };
+  manifest: {
+    carrier: string | null; manifestNumber: string | null; manifestDate: string | null;
+    manifestTime: string | null; trailer: string | null;
+    totalPros: number | null; totalUnits: number | null; totalWeight: number | null;
+  };
   rows: ManifestRow[];
   warnings: string[];
 } {
@@ -93,7 +101,11 @@ export function normalizeManifestRows(parsed: any): {
     carrier: strOrNull(parsed?.carrier),
     manifestNumber: strOrNull(parsed?.manifestNumber),
     manifestDate: strOrNull(parsed?.manifestDate),
+    manifestTime: strOrNull(parsed?.manifestTime),
+    trailer: strOrNull(parsed?.trailer),
     totalPros: intOrNull(parsed?.totalPros),
+    totalUnits: intOrNull(parsed?.totalUnits),
+    totalWeight: intOrNull(parsed?.totalWeight),
   };
   const rawRows = Array.isArray(parsed?.rows) ? parsed.rows : [];
   const rows: ManifestRow[] = [];
@@ -133,6 +145,15 @@ export function normalizeManifestRows(parsed: any): {
   });
   if (manifest.totalPros != null && rows.length !== manifest.totalPros) {
     warnings.push(`Manifest header says ${manifest.totalPros} PROs but ${rows.length} row(s) were read — compare against the paper before importing`);
+  }
+  // The header also totals Units and Wgt — free checksums over every row's numbers.
+  const unitSum = rows.reduce((a, r) => a + (r.units ?? 0), 0);
+  const wgtSum = rows.reduce((a, r) => a + (r.weight ?? 0), 0);
+  if (manifest.totalUnits != null && unitSum !== manifest.totalUnits) {
+    warnings.push(`Units add up to ${unitSum} but the header says ${manifest.totalUnits} — a Units cell may be misread`);
+  }
+  if (manifest.totalWeight != null && wgtSum !== manifest.totalWeight) {
+    warnings.push(`Weights add up to ${wgtSum} lb but the header says ${manifest.totalWeight} — a Wgt cell may be misread`);
   }
   return { manifest, rows, warnings };
 }
