@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 
 import {
   parseDelimited, detectDelimiter, looksLikeHeader, autoMapColumns,
-  mappedRowsToOrders, bulkRowMissing, bulkRowIsBlank, headerSignature,
+  mappedRowsToOrders, bulkRowMissing, bulkRowIsBlank, headerSignature, BULK_FIELDS,
 } from '../src/lib/bulk-orders.js';
 
 test('detectDelimiter: tab for Excel/Sheets copy, comma for CSV', () => {
@@ -21,6 +21,14 @@ test('detectDelimiter: robust — semicolon, pipe, and a comma CSV with a stray 
   assert.equal(detectDelimiter('name,addr,city\nACME,"500 Main\tSt",Buford\nBeta,10 Oak Rd,Atlanta'), ',');
   // Truly single-column input has no delimiter to find → comma default (honestly one column).
   assert.equal(detectDelimiter('ACME\nBeta\nGamma'), ',');
+});
+
+test('_push UI flag is invisible to order semantics (blank/missing ignore it)', () => {
+  // The Bulk Add grid stores a per-row "push now vs queue for later" flag as _push —
+  // it must never make a row read as filled, nor count as an order field.
+  assert.equal(bulkRowIsBlank({ _push: false }), true);
+  assert.equal(bulkRowIsBlank({ _push: true, name: 'ACME' }), false);
+  assert.ok(!BULK_FIELDS.some((f) => f.key === '_push'));
 });
 
 test('parseDelimited: TSV paste → rows of cells', () => {

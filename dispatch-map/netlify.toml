@@ -28,10 +28,9 @@
     timeout = 26
   [functions."motive-driver-positions"]
     timeout = 10
-  # Scanned-manifest OCR (Claude vision over a multi-page fax PDF) can run 10-20s; the
-  # handler aborts at 22s and returns clean JSON. Same headroom as the NuVizz functions.
-  [functions."manifest-ocr"]
-    timeout = 26
+  # Scanned-manifest OCR runs as manifest-ocr-BACKGROUND (vision over a multi-page fax
+  # PDF takes 20-40s — over the 26s request cap that killed the synchronous version).
+  # Background functions get Netlify's 15-min allowance; no timeout override needed.
 
 [[redirects]]
   from = "/*"
