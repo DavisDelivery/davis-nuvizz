@@ -59,7 +59,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.50.20';
+const APP_VERSION = '0.50.21';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -104,7 +104,8 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
-  ['0.50.20', 'BULK ADD: manifest reading FIXED (no more timeout) + pick which rows push now vs queue for later. (1) The manifest reader timed out on your first real drop — reading a multi-page scan takes 20–40s and the server was capped at 26. It now runs in the background with the page checking in every few seconds (spinner shows elapsed time), so even long manifests finish. (2) NEW: every row in the Orders grid has a checkbox — checked rows get pushed to NuVizz on Create; UNCHECKED rows stay QUEUED in the grid (marked "queued", dimmed) and are skipped by every push, including load mode. The grid now SAVES ITSELF on your device, so queued rows are still there tomorrow — or after a reload — for a later push. Check/uncheck-all in the header; the footer counts what pushes vs what queues.'],
+  ['0.50.21', 'BULK ADD: manifest reading FIXED (no more timeout) + pick which rows push now vs queue for later. (1) The manifest reader timed out on your first real drop — reading a multi-page scan takes 20–40s and the server was capped at 26. It now runs in the background with the page checking in every few seconds (spinner shows elapsed time), so even long manifests finish. (2) NEW: every row in the Orders grid has a checkbox — checked rows get pushed to NuVizz on Create; UNCHECKED rows stay QUEUED in the grid (marked "queued", dimmed) and are skipped by every push, including load mode. The grid now SAVES ITSELF on your device, so queued rows are still there tomorrow — or after a reload — for a later push. Check/uncheck-all in the header; the footer counts what pushes vs what queues.'],
+  ['0.50.20', 'ENGINE TREND now tracks the REAL learning curve. The Engine → Sequencing "watching the engine learn" chart used to plot the BLENDED daily mean, which rises and falls with how many UNGUIDED routes (no similar past route to learn from) happened to run that day — so a day could look worse just because more untaught routes ran, not because the engine got worse. The bold line is now the GUIDED mean (routes the engine actually had a learned reference for — the real performance signal, and the same number as the "Guided mean" tile), with the blended "all" mean kept as a faint dashed line for context. Days scored before this metric existed simply don\'t draw a guided point. Shadow-only, no data or scoring change.'],
   ['0.50.19', 'FIX: saving your bottom-panel PROFILE was confusing — the blue "Save" button was greyed out unless you typed a NEW name, so when you tweaked your active profile (e.g. set the window to "Last 7 days") and hit Save, nothing happened and there was no way to tell it apart from the smaller "Update … to current" link. Now, when you have a profile active and the name box is empty, that button reads "Update" and overwrites your active profile with the current bar setup in one click; type a name and it reads "Save" and makes a new one. Either way it flashes "✓ Saved" so you know it took. (The separate "Update ‹name› to current" link still works too.)'],
   ['0.50.18', 'BULK ADD reads SCANNED MANIFEST PDFs. Your Estes delivery manifests arrive as fax-style scans — pictures of a table, with no text inside the file at all (that\'s why the drop came in as one garbled column; no spreadsheet parser can ever read them). Now: drop the manifest .pdf on Bulk Add and an AI reader (the same one behind AI search — a few cents per manifest, ZERO NuVizz calls) reads every page and fills the review grid: consignee, address, city/state/ZIP, PRO, units → pallets, weight, description. Order # is prefilled the way your board already names these (ESTES-0288347656 style). Built-in cross-checks: each PRO is read from BOTH the printed number and the barcode digits (a mismatch is flagged, barcode wins), and the row count is checked against the manifest\'s own "Total Pros" header — any discrepancy shows in a banner. NOTHING is created automatically: the rows land in the same editable grid as a spreadsheet, you review against the paper, then hit Create as usual.'],
   ['0.50.17', 'BULK ADD — spreadsheet import + a wider grid. (1) A dropped file that came in as a single "Column 1" (with "no header detected") is fixed: the importer was guessing the wrong column separator on some files — a comma CSV with one stray tab in a cell, or a semicolon/pipe export — and jamming every row into one cell. It now picks whichever separator actually splits your rows into the most columns (tab, comma, semicolon, or pipe), and it sizes the column mapping to your WIDEST row so a short first/title row no longer hides the rest of the columns. (2) The Orders grid now uses the empty gray space on the sides — it was capped narrow, cutting off the right-hand columns; it\'s much wider now so more fields fit without side-scrolling. (If a dropped file STILL shows one column, tell me whether it\'s .xlsx or .csv and paste the first two rows — that pins the exact format.)'],
@@ -15628,10 +15629,18 @@ function EngineTrendChart({ days }) {
   if (pts.length < 2) {
     return <div className="h-[120px] flex items-center justify-center text-xs text-slate-400">Not enough scored days yet — the trend appears after the historical replay runs.</div>;
   }
-  const maxY = Math.max(0.05, ...pts.map((d) => Math.max(d.mean_score ?? 0, d.median_score ?? 0))) * 1.1;
+  // The GUIDED mean is the real learning curve (routes the engine had a learned
+  // reference for); the blended "all" mean rides up and down with how many
+  // UNGUIDED routes ran that day, so it isn't a clean performance read. Plot
+  // guided as the headline line and keep "all" as faint context.
+  const maxY = Math.max(0.05, ...pts.map((d) => Math.max(d.mean_score ?? 0, d.mean_score_guided ?? 0))) * 1.1;
   const x = (i) => PAD_L + (i * (W - PAD_L - PAD_R)) / (pts.length - 1);
   const y = (v) => PAD_T + (H - PAD_T - PAD_B) * (1 - v / maxY);
   const line = (key) => pts.map((d, i) => `${x(i).toFixed(1)},${y(d[key] ?? 0).toFixed(1)}`).join(' ');
+  // guided line: only the days that actually carry a guided mean, so pre-2.1
+  // scored days (no guided field) don't drop the line to zero.
+  const guidedPts = pts.map((d, i) => ({ i, d, v: d.mean_score_guided })).filter((p) => p.v != null);
+  const guidedLine = guidedPts.map((p) => `${x(p.i).toFixed(1)},${y(p.v).toFixed(1)}`).join(' ');
   // one axis label per month, at that month's first scored day
   const monthTicks = [];
   let lastMonth = '';
@@ -15641,7 +15650,7 @@ function EngineTrendChart({ days }) {
   });
   const gridVals = [0, maxY / 2, maxY];
   return (
-    <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-auto" role="img" aria-label="Daily engine score trend">
+    <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-auto" role="img" aria-label="Daily engine guided-score trend">
       {gridVals.map((v, k) => (
         <g key={k}>
           <line x1={PAD_L} y1={y(v)} x2={W - PAD_R} y2={y(v)} stroke="#e2e8f0" strokeWidth="1" />
@@ -15651,18 +15660,20 @@ function EngineTrendChart({ days }) {
       {monthTicks.map((t) => (
         <text key={t.i} x={x(t.i)} y={H - 6} fontSize="9" fill="#64748b" textAnchor={t.i === 0 ? 'start' : x(t.i) > W - 30 ? 'end' : 'middle'}>{t.label}</text>
       ))}
-      <polyline points={line('median_score')} fill="none" stroke="#94a3b8" strokeWidth="1.5" strokeDasharray="4 3" />
-      <polyline points={line('mean_score')} fill="none" stroke={BRAND} strokeWidth="2" />
-      {pts.map((d, i) => (
-        <circle key={d.date} cx={x(i)} cy={y(d.mean_score ?? 0)} r="2.4" fill={BRAND}>
-          <title>{`${d.date} — mean ${engineScoreFmt(d.mean_score)}, median ${engineScoreFmt(d.median_score)}, ${d.routes_scored} routes`}</title>
+      {/* blended "all" mean — faint context (dilutes with unguided mix) */}
+      <polyline points={line('mean_score')} fill="none" stroke="#94a3b8" strokeWidth="1.5" strokeDasharray="4 3" />
+      {/* guided mean — the headline learning curve */}
+      {guidedPts.length >= 2 && <polyline points={guidedLine} fill="none" stroke={BRAND} strokeWidth="2.25" />}
+      {guidedPts.map((p) => (
+        <circle key={p.d.date} cx={x(p.i)} cy={y(p.v)} r="2.4" fill={BRAND}>
+          <title>{`${p.d.date} — guided ${engineScoreFmt(p.d.mean_score_guided)} · all ${engineScoreFmt(p.d.mean_score)} · median ${engineScoreFmt(p.d.median_score)} · ${p.d.routes_scored} routes${p.d.unguided_count ? ` (${p.d.unguided_count} unguided)` : ''}`}</title>
         </circle>
       ))}
       <g fontSize="9">
-        <line x1={W - 150} y1={12} x2={W - 132} y2={12} stroke={BRAND} strokeWidth="2" />
-        <text x={W - 128} y={15} fill="#475569">mean</text>
-        <line x1={W - 92} y1={12} x2={W - 74} y2={12} stroke="#94a3b8" strokeWidth="1.5" strokeDasharray="4 3" />
-        <text x={W - 70} y={15} fill="#475569">median</text>
+        <line x1={W - 150} y1={12} x2={W - 132} y2={12} stroke={BRAND} strokeWidth="2.25" />
+        <text x={W - 128} y={15} fill="#475569">guided</text>
+        <line x1={W - 84} y1={12} x2={W - 66} y2={12} stroke="#94a3b8" strokeWidth="1.5" strokeDasharray="4 3" />
+        <text x={W - 62} y={15} fill="#475569">all</text>
       </g>
     </svg>
   );
@@ -15934,7 +15945,7 @@ function EngineScreen() {
 
         {/* trend */}
         <div className="border rounded-lg bg-white p-2">
-          <div className="text-[11px] font-semibold text-slate-600 px-1 pb-1">Daily similarity — watching the engine learn (lower is closer to dispatch)</div>
+          <div className="text-[11px] font-semibold text-slate-600 px-1 pb-1">Daily similarity — watching the engine learn · <span style={{ color: BRAND }}>guided</span> = routes with a learned reference (the real learning curve); lower is closer to dispatch</div>
           <EngineTrendChart days={days} />
         </div>
 
