@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Davis Delivery">
+  <rect width="64" height="64" rx="14" fill="#1e5b92"/>
+  <g fill="#ffffff">
+    <rect x="10" y="19" width="26" height="21" rx="2"/>
+    <path d="M36 24h9l7 7v9H36z"/>
+  </g>
+  <circle cx="18" cy="44" r="5" fill="#ffffff"/>
+  <circle cx="46" cy="44" r="5" fill="#ffffff"/>
+  <circle cx="18" cy="44" r="2" fill="#1e5b92"/>
+  <circle cx="46" cy="44" r="2" fill="#1e5b92"/>
+</svg>
