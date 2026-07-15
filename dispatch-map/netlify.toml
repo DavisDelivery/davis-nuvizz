@@ -28,6 +28,10 @@
     timeout = 26
   [functions."motive-driver-positions"]
     timeout = 10
+  # Scanned-manifest OCR (Claude vision over a multi-page fax PDF) can run 10-20s; the
+  # handler aborts at 22s and returns clean JSON. Same headroom as the NuVizz functions.
+  [functions."manifest-ocr"]
+    timeout = 26
 
 [[redirects]]
   from = "/*"

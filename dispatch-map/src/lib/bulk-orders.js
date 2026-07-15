@@ -153,6 +153,32 @@ export function mappedRowsToOrders(dataRows, mapping) {
   });
 }
 
+// Turn OCR'd manifest rows (manifest-ocr.mts → ManifestRow) into an array-of-arrays with a
+// BULK_FIELDS-labelled header, so the rows ride the EXACT same ingest → auto-map → review-grid
+// path as a dropped spreadsheet (the labels are their own aliases, so autoMapColumns maps 1:1).
+// Davis convention (matches the orders already on the board): Order # = "<CARRIER>-<PRO digits>"
+// (e.g. ESTES-0288347656), PRO = the barcode digit string, Units → Pallets.
+export function manifestRowsToAoa(rows, { prefix = 'ESTES-' } = {}) {
+  const header = BULK_FIELDS.map((f) => f.label);
+  const body = (rows || []).map((r) => BULK_FIELDS.map((f) => {
+    switch (f.key) {
+      case 'name': return r.name || '';
+      case 'addr1': return r.addr1 || '';
+      case 'addr2': return r.addr2 || '';
+      case 'city': return r.city || '';
+      case 'state': return r.state || '';
+      case 'zip': return r.zip || '';
+      case 'itemDesc': return r.description || '';
+      case 'stopNbr': return r.proDigits ? `${prefix}${r.proDigits}` : '';
+      case 'pro': return r.proDigits || '';
+      case 'pallets': return r.units != null ? String(r.units) : '';
+      case 'weight': return r.weight != null ? String(r.weight) : '';
+      default: return '';   // loose, price — not on the manifest
+    }
+  }));
+  return [header, ...body];
+}
+
 // Which REQUIRED fields (name, addr1, city, state, zip) are missing from an order row.
 export function bulkRowMissing(o) {
   return BULK_FIELDS.filter((f) => f.required && !String(o?.[f.key] ?? '').trim()).map((f) => f.key);

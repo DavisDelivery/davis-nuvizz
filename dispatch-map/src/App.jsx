@@ -34,7 +34,7 @@ import { todayInET, isTodayET, formatDateForDisplay, formatDateLong } from './li
 import { pointInPolygon, latLngInBounds, boxFromCorners, formatReceivingHours, lineItemDims, moveItem, recomputeRoute, resequence, fmtTime12, DEFAULT_SERVICE_SEC } from './lib/routing-select.js';
 import { formatDateTime, tsToMillis, loadSummary, buildLoadAutoName } from './lib/routing-loads.js';
 import { callWrite, newClientOpId } from './lib/nuvizzWrite.js';
-import { BULK_FIELDS, parseDelimited, looksLikeHeader, autoMapColumns, mappedRowsToOrders, bulkRowMissing, bulkRowIsBlank, headerSignature } from './lib/bulk-orders.js';
+import { BULK_FIELDS, parseDelimited, looksLikeHeader, autoMapColumns, mappedRowsToOrders, bulkRowMissing, bulkRowIsBlank, headerSignature, manifestRowsToAoa } from './lib/bulk-orders.js';
 import { scanStop, scanStopFull } from './lib/signal-scanner';
 import { applyScannerResults } from './lib/customer-notes-writer';
 import { aiParse, aiChat, applyFilterSpec, summarizeSpec, buildTrimmedStops } from './lib/ai-search.js';
@@ -59,7 +59,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.50.17';
+const APP_VERSION = '0.50.18';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -104,6 +104,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.50.18', 'BULK ADD reads SCANNED MANIFEST PDFs. Your Estes delivery manifests arrive as fax-style scans — pictures of a table, with no text inside the file at all (that\'s why the drop came in as one garbled column; no spreadsheet parser can ever read them). Now: drop the manifest .pdf on Bulk Add and an AI reader (the same one behind AI search — a few cents per manifest, ZERO NuVizz calls) reads every page and fills the review grid: consignee, address, city/state/ZIP, PRO, units → pallets, weight, description. Order # is prefilled the way your board already names these (ESTES-0288347656 style). Built-in cross-checks: each PRO is read from BOTH the printed number and the barcode digits (a mismatch is flagged, barcode wins), and the row count is checked against the manifest\'s own "Total Pros" header — any discrepancy shows in a banner. NOTHING is created automatically: the rows land in the same editable grid as a spreadsheet, you review against the paper, then hit Create as usual.'],
   ['0.50.17', 'BULK ADD — spreadsheet import + a wider grid. (1) A dropped file that came in as a single "Column 1" (with "no header detected") is fixed: the importer was guessing the wrong column separator on some files — a comma CSV with one stray tab in a cell, or a semicolon/pipe export — and jamming every row into one cell. It now picks whichever separator actually splits your rows into the most columns (tab, comma, semicolon, or pipe), and it sizes the column mapping to your WIDEST row so a short first/title row no longer hides the rest of the columns. (2) The Orders grid now uses the empty gray space on the sides — it was capped narrow, cutting off the right-hand columns; it\'s much wider now so more fields fit without side-scrolling. (If a dropped file STILL shows one column, tell me whether it\'s .xlsx or .csv and paste the first two rows — that pins the exact format.)'],
   ['0.50.16', 'NEW ORDER + BULK ADD now take a PRICE. Davis records a shipment\'s price in NuVizz\'s "Seal #" field, so there\'s a new Price box on the single New Order form ("Price ($ → Seal #)") and a Price column in Bulk Add that auto-maps from a pasted "price / seal / rate / amount / linehaul / revenue…" header. Whatever you enter rides into NuVizz\'s Seal # (sealNbr) on create — capped at 20 characters — across every create path: the single order, the row-by-row bulk Add, AND the "send as ONE import for load" bulk flow.'],
   ['0.50.15', 'FASTER MAP + ROUTING LOAD — for real this time. The board feed was shipping ~6.9 MB every load: 747 stops each carrying the ENTIRE raw NuVizz object (3.8 MB by itself) plus a stack of fields the map never reads — and the page sat blank for 5–6 seconds waiting on it. That, not the app, was the wait (measured it: the fetch was ~5 s of the load). The feed now serves ONLY the ~70 fields the map, grid, stop card, print, texting, and scanner actually use — via a database field-mask, so the dead weight never even leaves storage — cutting the payload ~55% and the server time with it. Nothing you see changes: opening a stop still shows every comment and document. If anything ever looks off, the old full feed is one flip away — add ?full=1 to the URL, or set MAP_FEED_FULL=1 on the site. (This is the real fix behind v0.50.5\'s attempt, which only trimmed the bundle + pin drawing — 3% of the problem.)'],
@@ -16778,6 +16779,8 @@ function BulkOrderScreen() {
   const [pasteText, setPasteText] = useState('');
   const [importer, setImporter] = useState(null);   // { columns, dataRows, mapping, sig }
   const [importErr, setImportErr] = useState('');
+  const [importBusy, setImportBusy] = useState('');  // OCR in flight — the drop zone shows this instead of the hint
+  const [importInfo, setImportInfo] = useState('');  // manifest read summary + integrity warnings (review nudge)
   const [dragOver, setDragOver] = useState(false);
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState(null);    // { done, total }
@@ -16857,7 +16860,7 @@ function BulkOrderScreen() {
   };
   const onFile = async (file) => {
     if (!file) return;
-    setImportErr('');
+    setImportErr(''); setImportInfo('');
     const name = (file.name || '').toLowerCase();
     try {
       if (name.endsWith('.xlsx') || name.endsWith('.xls')) {
@@ -16866,10 +16869,34 @@ function BulkOrderScreen() {
         const wb = XLSX.read(await file.arrayBuffer(), { type: 'array' });
         const ws = wb.Sheets[wb.SheetNames[0]];
         ingestAoa(XLSX.utils.sheet_to_json(ws, { header: 1, blankrows: false, defval: '' }));
+      } else if (name.endsWith('.pdf')) {
+        // Scanned carrier manifest (Estes-style). These PDFs are pure fax IMAGES — zero
+        // embedded text — so no parser can read them; a server function has Claude vision
+        // read the pages into rows, which land in the same review grid as a spreadsheet.
+        // One AI call per drop (a few cents); ZERO NuVizz calls.
+        setImportBusy(`Reading "${file.name}" — OCR on a scanned manifest takes ~10–20s…`);
+        try {
+          const buf = new Uint8Array(await file.arrayBuffer());
+          let bin = '';
+          for (let i = 0; i < buf.length; i += 0x8000) bin += String.fromCharCode.apply(null, buf.subarray(i, i + 0x8000));
+          const resp = await fetch('/.netlify/functions/manifest-ocr', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ pdfBase64: btoa(bin), filename: file.name }),
+          });
+          const data = await resp.json();
+          if (!data.ok) { setImportErr(data.error || 'manifest read failed'); return; }
+          // Carrier → the Order # prefix (matches the board's existing ESTES-<digits> convention).
+          const carrierWord = String(data.manifest?.carrier || 'ESTES').trim().split(/\s+/)[0].toUpperCase().replace(/[^A-Z0-9]/g, '') || 'ESTES';
+          finishIngest(manifestRowsToAoa(data.rows, { prefix: `${carrierWord}-` }));
+          const m = data.manifest || {};
+          const bits = [`Read ${data.rows.length} order(s) from manifest ${m.manifestNumber || file.name}${m.totalPros != null ? ` (header says ${m.totalPros})` : ''} — REVIEW the rows below against the paper before importing.`];
+          if (data.warnings?.length) bits.push(`⚠ ${data.warnings.join(' · ')}`);
+          setImportInfo(bits.join(' '));
+        } finally { setImportBusy(''); }
       } else {
         ingestText(await file.text());   // .csv / .tsv / .txt
       }
-    } catch (err) { setImportErr(`Could not read "${file.name}": ${err?.message || 'unreadable file'}`); }
+    } catch (err) { setImportErr(`Could not read "${file.name}": ${err?.message || 'unreadable file'}`); setImportBusy(''); }
   };
   const applyImport = () => {
     const orders = mappedRowsToOrders(importer.dataRows, importer.mapping).filter((o) => !bulkRowIsBlank(o));
@@ -17082,8 +17109,10 @@ function BulkOrderScreen() {
             className={`rounded-lg border-2 border-dashed px-3 py-4 text-center text-[12px] ${dragOver ? 'border-blue-400 bg-blue-50 text-blue-700' : 'border-slate-300 text-slate-500'}`}
           >
             <FileText size={18} className="inline mb-1" /><br />
-            Drop a <b>.xlsx</b> or <b>.csv</b> here, or <button onClick={() => fileRef.current?.click()} className="text-blue-600 underline font-medium">choose a file</button>.
-            <input ref={fileRef} type="file" accept=".csv,.tsv,.txt,.xlsx,.xls" className="hidden" onChange={(e) => { onFile(e.target.files?.[0]); e.target.value = ''; }} />
+            {importBusy
+              ? <span className="text-blue-700 font-medium inline-flex items-center gap-1.5"><RefreshCw size={13} className="animate-spin" /> {importBusy}</span>
+              : <>Drop a <b>.xlsx</b>, <b>.csv</b>, or a scanned <b>manifest .pdf</b> (Estes-style) here, or <button onClick={() => fileRef.current?.click()} className="text-blue-600 underline font-medium">choose a file</button>.</>}
+            <input ref={fileRef} type="file" accept=".csv,.tsv,.txt,.xlsx,.xls,.pdf" className="hidden" onChange={(e) => { onFile(e.target.files?.[0]); e.target.value = ''; }} />
           </div>
           <div className="text-[11px] text-slate-500">…or paste rows copied from Excel / Google Sheets:</div>
           <textarea
@@ -17095,6 +17124,7 @@ function BulkOrderScreen() {
             <button onClick={() => ingestText(pasteText)} disabled={!pasteText.trim()} className={`text-[12px] font-medium inline-flex items-center gap-1 px-2.5 py-1 rounded border ${pasteText.trim() ? 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50' : 'border-slate-200 bg-slate-50 text-slate-400 cursor-not-allowed'}`}>Load pasted rows</button>
             {importErr && <span className="text-[12px] text-red-600 inline-flex items-center gap-1"><AlertTriangle size={13} /> {importErr}</span>}
           </div>
+          {importInfo && <div className="text-[12px] text-emerald-800 bg-emerald-50 border border-emerald-200 rounded px-2 py-1">{importInfo}</div>}
 
           {/* Column mapping confirm */}
           {importer && (
