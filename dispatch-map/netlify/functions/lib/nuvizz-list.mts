@@ -474,7 +474,8 @@ export async function listScanForDate(targetDateUTC: string): Promise<any[]> {
 // Davis drives the board off TWO of the portal's saved searches (captured in the
 // "Nuvizz_New_Filters" HAR) instead of one ad-hoc query:
 //   • ACTIVE    (customListDefId 77128, "Dispatch Map Planned Unplanned") — status
-//     20,10, Estimated-Arrival within +/-7d. The open work.
+//     20,10,40,50, Estimated-Arrival within +/-7d. The open work + in-flight
+//     (out-for-delivery / arrived) stops so they never fall off the board mid-run.
 //   • COMPLETED (customListDefId 77131, "Dispatch Map Completed") — status 90,91,80
 //     (delivered + unable-to-deliver), Estimated-Arrival +/-7d, AND Stop-Detail-Updated
 //     = today (period "0d"). Just-finished stops, kept small by the "updated today" clamp.
@@ -493,7 +494,16 @@ function filterListOf(count: number, overrides: Record<number, any>): any[] {
   for (const [s, v] of Object.entries(overrides)) arr[Number(s) - 1] = seq(Number(s), v);
   return arr;
 }
-const ACTIVE_STATUS = process.env.NUVIZZ_ACTIVE_STATUS || '20,10';
+// 40 = OUT_FOR_DELIVERY and 50 = ARRIVED are MID-FLIGHT: a stop that has left the
+// depot but isn't delivered yet matched NEITHER saved search (active was 20,10;
+// completed is 90,91,80,99), so it vanished from every pull the moment the driver
+// rolled and only survived on the board via the two-scan carry-forward — which drops it
+// if it was never captured earlier as 20 or its board-day drifted (why an out-for-
+// delivery PRO could be missing from search). Pulling 40,50 in the ACTIVE search keeps
+// them on the board directly, same as adding 99 fixed cancelled orders below. No extra
+// NuVizz cost — the active search is ONE pull regardless of status count, and these PROs
+// were already enriched as 20 so they never re-enrich.
+const ACTIVE_STATUS = process.env.NUVIZZ_ACTIVE_STATUS || '20,10,40,50';
 // 99 = CANCELLED is included with the terminal statuses: a cancelled order matches NEITHER
 // saved search otherwise (active = 20,10), so it silently vanished from the pulls and the
 // carry-forward kept re-adding its last OPEN snapshot — the board froze it as live work a
