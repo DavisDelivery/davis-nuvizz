@@ -16906,23 +16906,15 @@ function BulkOrderScreen() {
         ingestAoa(XLSX.utils.sheet_to_json(ws, { header: 1, blankrows: false, defval: '' }));
       } else if (name.endsWith('.pdf')) {
         // Scanned carrier manifest (Estes-style). These PDFs are pure fax IMAGES — zero
-<<<<<<< HEAD
         // embedded text — so no parser can read them; the AI reader runs as a BACKGROUND
         // function (vision over a multi-page scan takes 20-40s, past the 26s request cap
         // that timed out the first version) and we poll for the result. One AI call per
         // drop (a few cents); ZERO NuVizz calls.
         setImportBusy(`Reading "${file.name}" — a scanned manifest takes ~20–40s…`);
-=======
-        // embedded text — so no parser can read them; a server function has Claude vision
-        // read the pages into rows, which land in the same review grid as a spreadsheet.
-        // One AI call per drop (a few cents); ZERO NuVizz calls.
-        setImportBusy(`Reading "${file.name}" — OCR on a scanned manifest takes ~10–20s…`);
->>>>>>> origin/claude/load-dispatch-8u2511
         try {
           const buf = new Uint8Array(await file.arrayBuffer());
           let bin = '';
           for (let i = 0; i < buf.length; i += 0x8000) bin += String.fromCharCode.apply(null, buf.subarray(i, i + 0x8000));
-<<<<<<< HEAD
           const b64 = btoa(bin);
           if (b64.length > 240000) { setImportErr('That PDF is too large for the manifest reader — split it (print-to-PDF a page range) and drop the halves.'); return; }
           const jobId = (crypto?.randomUUID?.() || `j${Date.now()}${Math.random().toString(36).slice(2, 10)}`).toLowerCase();
@@ -16944,14 +16936,6 @@ function BulkOrderScreen() {
             } catch { /* transient poll failure — keep waiting */ }
           }
           if (!data) { setImportErr('The manifest reader did not answer in time — drop the file again.'); return; }
-=======
-          const resp = await fetch('/.netlify/functions/manifest-ocr', {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ pdfBase64: btoa(bin), filename: file.name }),
-          });
-          const data = await resp.json();
-          if (!data.ok) { setImportErr(data.error || 'manifest read failed'); return; }
->>>>>>> origin/claude/load-dispatch-8u2511
           // Carrier → the Order # prefix (matches the board's existing ESTES-<digits> convention).
           const carrierWord = String(data.manifest?.carrier || 'ESTES').trim().split(/\s+/)[0].toUpperCase().replace(/[^A-Z0-9]/g, '') || 'ESTES';
           finishIngest(manifestRowsToAoa(data.rows, { prefix: `${carrierWord}-` }));
