@@ -34,7 +34,7 @@ import { todayInET, isTodayET, formatDateForDisplay, formatDateLong } from './li
 import { pointInPolygon, latLngInBounds, boxFromCorners, formatReceivingHours, lineItemDims, moveItem, recomputeRoute, resequence, fmtTime12, DEFAULT_SERVICE_SEC } from './lib/routing-select.js';
 import { formatDateTime, tsToMillis, loadSummary, buildLoadAutoName } from './lib/routing-loads.js';
 import { callWrite, newClientOpId } from './lib/nuvizzWrite.js';
-import { BULK_FIELDS, parseDelimited, looksLikeHeader, autoMapColumns, mappedRowsToOrders, bulkRowMissing, bulkRowIsBlank, headerSignature, manifestRowsToAoa } from './lib/bulk-orders.js';
+import { BULK_FIELDS, parseDelimited, looksLikeHeader, autoMapColumns, mappedRowsToOrders, bulkRowMissing, bulkRowIsBlank, headerSignature, manifestRowsToIntake } from './lib/bulk-orders.js';
 import { scanStop, scanStopFull } from './lib/signal-scanner';
 import { applyScannerResults } from './lib/customer-notes-writer';
 import { aiParse, aiChat, applyFilterSpec, summarizeSpec, buildTrimmedStops } from './lib/ai-search.js';
@@ -59,7 +59,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.50.21';
+const APP_VERSION = '0.50.22';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -104,6 +104,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.50.22', 'MANIFEST INTAKE — the review screen you asked for, plus THE SCROLL FIX. (1) Dropping a manifest PDF now opens a dedicated intake panel instead of the generic column-mapper: header with the manifest # / date / trailer, tiles for ORDERS · MNF UNITS · WEIGHT · PICKUP, and two tabs — "Bulk Add — Held" and "Pushed to NuVizz". Every order shows its ESTES- order ref, consignee, and editable Pallets / Loose pcs / Wt / Phone / Dispatch notes / Price boxes; expand a row (▸) to fix its address. Check the rows you want and hit PUSH TO NUVIZZ — the live tally shows exactly what\'s going (count · plt · loose · lb · $). Unchecked orders stay HELD (saved on this device, still there tomorrow); pushed orders move to the Pushed tab with NuVizz\'s number. Same ○ Beta / ● LIVE gate as everything else — Beta shows "PREVIEW MODE — nothing sent". (2) NEW on every create path: PHONE writes to the NuVizz consignee contact (the stop card\'s Contact row / Text customer) and DISPATCH NOTES write as driver instructions (the card\'s notes panel) — on the intake, the Bulk grid, and the single New Order form. (3) FIXED: New Order / Bulk Add wouldn\'t scroll — anything below the first screenful was unreachable (a layout wrapper regression; it looked like the manifest import broke scrolling, but the page could never scroll). One-line fix; both screens scroll properly now.'],
   ['0.50.21', 'BULK ADD: manifest reading FIXED (no more timeout) + pick which rows push now vs queue for later. (1) The manifest reader timed out on your first real drop — reading a multi-page scan takes 20–40s and the server was capped at 26. It now runs in the background with the page checking in every few seconds (spinner shows elapsed time), so even long manifests finish. (2) NEW: every row in the Orders grid has a checkbox — checked rows get pushed to NuVizz on Create; UNCHECKED rows stay QUEUED in the grid (marked "queued", dimmed) and are skipped by every push, including load mode. The grid now SAVES ITSELF on your device, so queued rows are still there tomorrow — or after a reload — for a later push. Check/uncheck-all in the header; the footer counts what pushes vs what queues.'],
   ['0.50.20', 'ENGINE TREND now tracks the REAL learning curve. The Engine → Sequencing "watching the engine learn" chart used to plot the BLENDED daily mean, which rises and falls with how many UNGUIDED routes (no similar past route to learn from) happened to run that day — so a day could look worse just because more untaught routes ran, not because the engine got worse. The bold line is now the GUIDED mean (routes the engine actually had a learned reference for — the real performance signal, and the same number as the "Guided mean" tile), with the blended "all" mean kept as a faint dashed line for context. Days scored before this metric existed simply don\'t draw a guided point. Shadow-only, no data or scoring change.'],
   ['0.50.19', 'FIX: saving your bottom-panel PROFILE was confusing — the blue "Save" button was greyed out unless you typed a NEW name, so when you tweaked your active profile (e.g. set the window to "Last 7 days") and hit Save, nothing happened and there was no way to tell it apart from the smaller "Update … to current" link. Now, when you have a profile active and the name box is empty, that button reads "Update" and overwrites your active profile with the current bar setup in one click; type a name and it reads "Save" and makes a new one. Either way it flashes "✓ Saved" so you know it took. (The separate "Update ‹name› to current" link still works too.)'],
@@ -16464,7 +16465,7 @@ const normPhone = (p) => { const d = String(p || '').replace(/\D/g, ''); return 
 const NEWORDER_ORIGIN_KEY = 'dd_neworder_origin';    // the DEFAULT / last-used origin (also read by Routing's import header fallback)
 const NEWORDER_ORIGINS_KEY = 'dd_neworder_origins';  // the saved LIST of pickup origins (multiple pickup locations)
 const NEWORDER_ORIGIN_DEFAULT = { name: 'Buford Terminal', addr1: '', city: '', state: 'GA', zip: '' };
-const EMPTY_ORDER_ROW = { name: '', addr1: '', addr2: '', city: '', state: '', zip: '', stopNbr: '', pro: '', itemDesc: '', pallets: '', loose: '', weight: '', price: '' };
+const EMPTY_ORDER_ROW = { name: '', addr1: '', addr2: '', city: '', state: '', zip: '', stopNbr: '', pro: '', itemDesc: '', pallets: '', loose: '', weight: '', price: '', phone: '', dispatchNotes: '' };
 
 // Coerce every field of a saved origin to a STRING — a hand-edited/corrupt entry (e.g. a numeric
 // zip) would otherwise pass the completeness gate and then throw on .trim() mid-submit.
@@ -16495,13 +16496,13 @@ function todayLocalYMD() {
 }
 
 // Module-level (NOT defined inside the screen) so typing never remounts the input and loses focus.
-function OrderField({ label, req, value, onChange, placeholder, type = 'text', className = '' }) {
+function OrderField({ label, req, value, onChange, placeholder, type = 'text', className = '', disabled = false }) {
   return (
     <label className={`block ${className}`}>
       <span className="text-[11px] font-medium text-slate-500">{label}{req && <span className="text-red-500"> *</span>}</span>
       <input
-        type={type} value={value} onChange={onChange} placeholder={placeholder}
-        className="mt-0.5 w-full border border-slate-300 rounded px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-300"
+        type={type} value={value} onChange={onChange} placeholder={placeholder} disabled={disabled}
+        className={`mt-0.5 w-full border border-slate-300 rounded px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-300 ${disabled ? 'bg-slate-50 text-slate-500' : ''}`}
       />
     </label>
   );
@@ -16540,7 +16541,12 @@ function NewOrderScreen() {
           </button>
         </div>
       </div>
-      <div className="flex-1 min-h-0 overflow-hidden">
+      {/* MUST be a flex column: the inner screens' roots are `flex-1 min-h-0 overflow-auto`,
+          which only constrains height on a flex ITEM. As a plain block this wrapper let the
+          screen grow to content height and clipped it (`overflow-hidden`) — and the app shell
+          permanently locks body scroll (index.css), so everything below the fold was simply
+          unreachable ("Bulk Add won't let me scroll" the moment the manifest panel mounted). */}
+      <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
         {mode === 'single' ? <NewOrderSingleScreen /> : <BulkOrderScreen />}
       </div>
     </div>
@@ -16628,7 +16634,9 @@ function NewOrderSingleScreen() {
         pallets: row.pallets === '' ? null : Number(row.pallets),
         loose: row.loose === '' ? null : Number(row.loose),
         weight: row.weight === '' ? null : Number(row.weight),
-        price: row.price.trim() || null,   // → NuVizz Seal # (sealNbr)
+        price: row.price.trim() || null,                             // → NuVizz Seal # (sealNbr)
+        phone: (row.phone || '').trim() || null,                     // → to.contact.phone
+        dispatchNotes: (row.dispatchNotes || '').trim() || null,     // → comments[] ORD_IN (driver instructions)
       };
       const settings = {
         origin: { name: origin.name.trim(), addr1: origin.addr1.trim(), city: origin.city.trim(), state: origin.state.trim(), zip: origin.zip.trim() },
@@ -16753,6 +16761,10 @@ function NewOrderSingleScreen() {
             <OrderField label="Weight (lbs)" type="number" value={row.weight} onChange={set('weight')} placeholder="" />
           </div>
           <OrderField label="Price ($ → Seal #)" type="number" value={row.price} onChange={set('price')} placeholder="e.g. 185.00" className="max-w-[200px]" />
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <OrderField label="Consignee phone (optional)" value={row.phone} onChange={set('phone')} placeholder="770-555-0123" />
+            <OrderField label="Dispatch notes for the driver (optional)" value={row.dispatchNotes} onChange={set('dispatchNotes')} placeholder="e.g. dock 4, call on arrival" />
+          </div>
           <OrderField label="Service date" req type="date" value={serviceDate} onChange={(e) => setServiceDate(e.target.value)} className="max-w-[200px]" />
         </div>
 
@@ -16785,6 +16797,7 @@ const BULK_MAX_ROWS = 300;   // soft cap per batch (keeps one Save from hammerin
 function bulkEmptyRow() { const o = {}; for (const f of BULK_FIELDS) o[f.key] = ''; return o; }
 const BULK_COLMAP_KEY = 'dd_bulk_colmap';
 const BULK_DRAFT_KEY = 'dd_bulk_draft';   // the grid autosaves here — unchecked rows queue across days
+const MANIFEST_DRAFT_KEY = 'dd_manifest_intake';   // the Manifest Intake panel autosaves here — held rows survive reloads
 
 function BulkOrderScreen() {
   // Shared pickup for the batch (same saved-origins model as New Order).
@@ -16830,6 +16843,19 @@ function BulkOrderScreen() {
   const [routeName, setRouteName] = useState('');
   const [verifyMsg, setVerifyMsg] = useState(null);   // live status while the import converges
   const fileRef = useRef(null);
+
+  // ── Manifest Intake (Chad's mockup): a dedicated review panel for OCR'd manifests ──
+  // { manifest: {...data.manifest, fileName}, warnings: [], rows: [intakeRow] } | null.
+  // Persisted so HELD rows survive reloads / next-day sessions until pushed or discarded.
+  // Its own busy/progress/results cluster — the grid's footer keys off busy/progress, and
+  // the two flows must never cross.
+  const [intake, setIntake] = useState(() => safeReadJSON(MANIFEST_DRAFT_KEY, null));
+  useEffect(() => { safeWriteJSON(MANIFEST_DRAFT_KEY, intake); }, [intake]);
+  const [intakeTab, setIntakeTab] = useState('held');
+  const [intakeOpen, setIntakeOpen] = useState(null);        // expanded row id (address/details editor)
+  const [intakeBusy, setIntakeBusy] = useState(false);
+  const [intakeProgress, setIntakeProgress] = useState(null);
+  const [intakeResults, setIntakeResults] = useState(null);
 
   const setOrig = (k) => (e) => { setOriginSaved(false); setOrigin((o) => ({ ...o, [k]: e.target.value })); };
   const pickOrigin = (e) => {
@@ -16921,6 +16947,12 @@ function BulkOrderScreen() {
         // function (vision over a multi-page scan takes 20-40s, past the 26s request cap
         // that timed out the first version) and we poll for the result. One AI call per
         // drop (a few cents); ZERO NuVizz calls.
+        // GUARD (review blocker): a new drop REPLACES the intake — never silently destroy
+        // HELD orders ("saved on this device" is the feature's promise). Confirm BEFORE the
+        // OCR runs, so a Cancel also costs nothing.
+        const heldNow = (intake?.rows || []).filter((x) => x._status !== 'pushed').length;
+        if (heldNow && !window.confirm(`A manifest intake is already open with ${heldNow} HELD order(s) that were NOT sent to NuVizz. Reading "${file.name}" will REPLACE it and drop those held orders.\n\nOK = replace it · Cancel = keep the current intake`)) return;
+        if (intakeBusy) { setImportErr('A push is in progress — wait for it to finish before reading a new manifest.'); return; }
         setImportBusy(`Reading "${file.name}" — a scanned manifest takes ~20–40s…`);
         try {
           const buf = new Uint8Array(await file.arrayBuffer());
@@ -16949,11 +16981,14 @@ function BulkOrderScreen() {
           if (!data) { setImportErr('The manifest reader did not answer in time — drop the file again.'); return; }
           // Carrier → the Order # prefix (matches the board's existing ESTES-<digits> convention).
           const carrierWord = String(data.manifest?.carrier || 'ESTES').trim().split(/\s+/)[0].toUpperCase().replace(/[^A-Z0-9]/g, '') || 'ESTES';
-          finishIngest(manifestRowsToAoa(data.rows, { prefix: `${carrierWord}-` }));
-          const m = data.manifest || {};
-          const bits = [`Read ${data.rows.length} order(s) from manifest ${m.manifestNumber || file.name}${m.totalPros != null ? ` (header says ${m.totalPros})` : ''} — REVIEW the rows below against the paper before importing.`];
-          if (data.warnings?.length) bits.push(`⚠ ${data.warnings.join(' · ')}`);
-          setImportInfo(bits.join(' '));
+          // Manifest rows open the dedicated INTAKE panel (review → check → Push to NuVizz),
+          // not the generic spreadsheet column-mapper.
+          setIntake({
+            manifest: { ...(data.manifest || {}), fileName: file.name },
+            warnings: data.warnings || [],
+            rows: manifestRowsToIntake(data.rows, { prefix: `${carrierWord}-` }),
+          });
+          setIntakeTab('held'); setIntakeResults(null); setIntakeOpen(null);
         } finally { setImportBusy(''); }
       } else {
         ingestText(await file.text());   // .csv / .tsv / .txt
@@ -16988,7 +17023,9 @@ function BulkOrderScreen() {
         city: r.city.trim(), state: r.state.trim(), zip: r.zip.trim(),
         stopNbr: r.stopNbr.trim() || null, pro: r.pro.trim() || null, itemDesc: r.itemDesc.trim() || null,
         pallets: r.pallets.trim() || null, loose: r.loose.trim() || null, weight: r.weight.trim() || null,
-        price: (r.price || '').trim() || null,   // → NuVizz Seal # (sealNbr)
+        price: (r.price || '').trim() || null,                    // → NuVizz Seal # (sealNbr)
+        phone: (r.phone || '').trim() || null,                    // → to.contact.phone
+        dispatchNotes: (r.dispatchNotes || '').trim() || null,    // → comments[] ORD_IN (driver instructions)
       };
       let res;
       try { res = await callWrite('createStop', { row: payloadRow, settings }, { dryRun: false, clientOpId: newClientOpId(), createdBy: 'dispatcher-bulk' }); }
@@ -17055,7 +17092,9 @@ function BulkOrderScreen() {
       city: r.city.trim(), state: r.state.trim(), zip: r.zip.trim(),
       stopNbr: r.stopNbr.trim(), pro: r.pro.trim() || null, itemDesc: r.itemDesc.trim() || null,
       pallets: r.pallets.trim() || null, loose: r.loose.trim() || null, weight: r.weight.trim() || null,
-      price: (r.price || '').trim() || null,   // → NuVizz Seal # (sealNbr) via buildStopPayload on the server
+      price: (r.price || '').trim() || null,                    // → NuVizz Seal # (sealNbr) via buildStopPayload on the server
+      phone: (r.phone || '').trim() || null,                    // → to.contact.phone
+      dispatchNotes: (r.dispatchNotes || '').trim() || null,    // → comments[] ORD_IN (driver instructions)
     }));
     const body = {
       loads: [{ loadNbr: nbr, routeName: routeName.trim() || undefined, createNew: true, orderedStopNbrs: payloadRows.map((r) => r.stopNbr), newStops: payloadRows }],
@@ -17082,6 +17121,85 @@ function BulkOrderScreen() {
       finish(false, `✗ Load "${nbr}" was not created: ${res?.error || L0?.error || res?.result?.error || 'write error'}. Your rows are still in the grid.`);
     }
   };
+
+  // ── Manifest Intake helpers ──
+  const intakeRows = intake?.rows || [];
+  const heldRows = intakeRows.filter((r) => r._status !== 'pushed');
+  const pushedRows = intakeRows.filter((r) => r._status === 'pushed');
+  const checkedHeld = heldRows.filter((r) => r._checked === true);
+  const intakeTally = checkedHeld.reduce((a, r) => ({
+    plt: a.plt + (Number(r.pallets) || 0), loose: a.loose + (Number(r.loose) || 0),
+    lb: a.lb + (Number(r.weight) || 0), usd: a.usd + (Number(r.price) || 0),
+  }), { plt: 0, loose: 0, lb: 0, usd: 0 });
+  // ALL intake mutations no-op while a push is in flight (review finding): pushChecked works
+  // from its click-time snapshot, so a mid-push edit/uncheck/remove would silently diverge from
+  // what's actually being sent to NuVizz — and a mid-push discard nulled the state under the
+  // in-flight loop. The row inputs/buttons are also disabled while intakeBusy (belt).
+  const setIntakeCell = (id, key) => (e) => {
+    const v = e.target.value;
+    if (intakeBusy) return;
+    setIntake((it) => (it ? { ...it, rows: it.rows.map((r) => (r.id === id ? { ...r, [key]: v } : r)) } : it));
+  };
+  const toggleIntakeRow = (id) => { if (intakeBusy) return; setIntake((it) => (it ? { ...it, rows: it.rows.map((r) => (r.id === id ? { ...r, _checked: r._checked !== true } : r)) } : it)); };
+  const allHeldChecked = heldRows.length > 0 && heldRows.every((r) => r._checked === true);
+  const toggleIntakeAll = () => { if (intakeBusy) return; setIntake((it) => (it ? { ...it, rows: it.rows.map((r) => (r._status === 'pushed' ? r : { ...r, _checked: !allHeldChecked })) } : it)); };
+  const removeIntakeRow = (id) => {
+    if (intakeBusy) return;
+    setIntake((it) => {
+      if (!it) return it;
+      const rows = it.rows.filter((r) => r.id !== id);
+      return rows.length ? { ...it, rows } : null;   // last row gone → close the panel
+    });
+  };
+  const discardIntake = () => {
+    if (intakeBusy) return;   // never yank the state from under an in-flight push
+    const held = heldRows.length;
+    if (held && !window.confirm(`Discard this manifest? ${held} held order(s) will be dropped (they have NOT been sent to NuVizz).`)) return;
+    setIntake(null); setIntakeResults(null); setIntakeOpen(null);
+  };
+  // Push the CHECKED held rows — a structural clone of createAll: same live/beta gate, same
+  // settings shape, sequential createStop writes each under its own idempotency key. On green
+  // the row moves to the Pushed tab (keeping NuVizz's number); on failure it stays Held with
+  // the error inline. Queued (unchecked) rows are untouched.
+  const pushChecked = async () => {
+    const targets = checkedHeld.filter((r) => bulkRowMissing(r).length === 0);
+    if (!targets.length || intakeBusy) return;
+    if (!live) { setIntakeResults({ beta: true, msg: `○ Beta — would push ${targets.length} order(s) to NuVizz (nothing sent). Flip to ● LIVE to push.` }); return; }
+    persistOrigin();
+    const settings = { origin: { name: origin.name.trim(), addr1: origin.addr1.trim(), city: origin.city.trim(), state: origin.state.trim(), zip: origin.zip.trim() }, serviceDate, timeZone: 'America/New_York' };
+    setIntakeBusy(true); setIntakeResults(null); setIntakeProgress({ done: 0, total: targets.length });
+    let sent = 0, updated = 0, failed = 0;
+    for (let k = 0; k < targets.length; k++) {
+      const r = targets[k];
+      const payloadRow = {
+        name: r.name.trim(), addr1: r.addr1.trim(), addr2: (r.addr2 || '').trim() || null,
+        city: r.city.trim(), state: r.state.trim(), zip: r.zip.trim(),
+        stopNbr: (r.stopNbr || '').trim() || null, pro: (r.pro || '').trim() || null, itemDesc: (r.itemDesc || '').trim() || null,
+        pallets: (r.pallets || '').trim() || null, loose: (r.loose || '').trim() || null, weight: (r.weight || '').trim() || null,
+        price: (r.price || '').trim() || null,                    // → NuVizz Seal # (sealNbr)
+        phone: (r.phone || '').trim() || null,                    // → to.contact.phone
+        dispatchNotes: (r.dispatchNotes || '').trim() || null,    // → comments[] ORD_IN (driver instructions)
+      };
+      let res;
+      try { res = await callWrite('createStop', { row: payloadRow, settings }, { dryRun: false, clientOpId: newClientOpId(), createdBy: 'dispatcher-manifest' }); }
+      catch (e) { res = { ok: false, error: e?.message || 'network error' }; }
+      const ok = !!(res.ok && res.result?.ok);
+      if (ok) { sent++; if (res.result?.updated) updated++; } else failed++;
+      // Null-guarded: mutations are frozen during a push, but never trust that with LIVE
+      // writes in flight — a missing intake must degrade to a no-op, not a render crash.
+      setIntake((it) => (it ? { ...it, rows: it.rows.map((x) => (x.id !== r.id ? x
+        : ok ? { ...x, _status: 'pushed', _checked: false, _pushedNbr: res.result?.entityNbr || x.stopNbr, _updated: !!res.result?.updated, _error: null }
+        : { ...x, _error: res.error || res.result?.error || 'write error' })) } : it));
+      setIntakeProgress({ done: k + 1, total: targets.length });
+    }
+    setIntakeBusy(false); setIntakeProgress(null);
+    setIntakeResults({ ok: failed === 0, msg: failed
+      ? `⚠ Pushed ${sent} of ${targets.length} — ${failed} failed (kept in Held with the reason).`
+      : `✓ Pushed ${sent} order(s) to NuVizz${updated ? ` (${updated} updated existing)` : ''} — they land UNPLANNED; plan them in Routing.` });
+    if (failed === 0) setIntakeTab('pushed');
+  };
+  const canPushIntake = originComplete && !!serviceDate && !intakeBusy
+    && checkedHeld.length > 0 && checkedHeld.every((r) => bulkRowMissing(r).length === 0);
 
   const gridInput = 'w-full border border-slate-300 rounded px-1.5 py-1 text-[12px] focus:outline-none focus:ring-1 focus:ring-blue-300';
 
@@ -17218,6 +17336,170 @@ function BulkOrderScreen() {
             </div>
           )}
         </div>
+
+        {/* ── Manifest Intake — the dedicated review panel for OCR'd manifests (Chad's mockup):
+            stat tiles, Held/Pushed tabs, check-to-push with a live tally, per-order phone/notes/
+            price, expandable address editor, and Push to NuVizz through the same guarded path. ── */}
+        {intake && (() => {
+          const m = intake.manifest || {};
+          const carrierWord = String(m.carrier || 'Estes').trim().split(/\s+/)[0];
+          const rowsShown = intakeTab === 'held' ? heldRows : pushedRows;
+          const intakeCols = intakeTab === 'held' ? 11 : 10;   // the checkbox column exists only on Held
+          const unitSum = intakeRows.reduce((a, r) => a + (Number(r.pallets) || 0), 0);
+          const wgtSum = intakeRows.reduce((a, r) => a + (Number(r.weight) || 0), 0);
+          return (
+            <div className="bg-white border border-slate-200 rounded-lg p-3 space-y-3">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className="text-[14px] font-bold text-slate-800">{carrierWord} Manifest {m.manifestNumber ? `#${m.manifestNumber}` : (m.fileName || '')} — Bulk Add</div>
+                  <div className="text-[11px] text-slate-500 mt-0.5">
+                    Pickup: {origin.name || '—'} · Source: {m.carrier || 'manifest'} {m.manifestDate || ''}{m.manifestTime ? ` ${m.manifestTime}` : ''}{m.trailer ? ` · Trailer ${m.trailer}` : ''}
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  {!live && <span className="text-[10px] font-bold uppercase tracking-wide bg-slate-800 text-white rounded-full px-2.5 py-1">● Preview mode — nothing sent</span>}
+                  <button onClick={discardIntake} disabled={intakeBusy} title={intakeBusy ? 'Wait for the push to finish' : 'Discard this manifest (held rows are dropped)'} className={`text-slate-400 ${intakeBusy ? 'opacity-40 cursor-not-allowed' : 'hover:text-red-600'}`}><X size={16} /></button>
+                </div>
+              </div>
+              <div className="flex gap-2 flex-wrap">
+                <EngineStatTile label="Orders" value={intakeRows.length} hint={m.totalPros != null ? `Manifest header says ${m.totalPros} PROs` : ''} />
+                <EngineStatTile label="Mnf units" value={m.totalUnits ?? unitSum} hint="Manifest handling units (→ Pallets)" />
+                <EngineStatTile label="Weight" value={`${(m.totalWeight ?? wgtSum).toLocaleString()} lb`} />
+                <EngineStatTile label="Pickup" value={origin.name || '—'} hint="Set in the Pickup + date card above" />
+              </div>
+              <div className="text-[12px] text-blue-900 bg-blue-50 border border-blue-200 rounded-lg px-3 py-2">
+                Enter <b>Pallets</b>, <b>Loose pcs</b>, <b>Phone</b>, <b>Dispatch notes</b> and <b>Price</b> per order (Price → NuVizz Seal #), then <b>check the rows to push</b> and hit <b>Push to NuVizz</b>. Unchecked orders stay in the <b>Held</b> queue (saved on this device). Pickup = <b>{origin.name || 'your pickup'}</b> for every order — set it in the Pickup + date card above. Expand a row (▸) to edit its address.
+              </div>
+              {(intake.warnings || []).length > 0 && (
+                <div className="text-[12px] text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                  ⚠ {intake.warnings.join(' · ')}
+                </div>
+              )}
+              <div className="flex items-center gap-2">
+                <TabBtn label="Bulk Add — Held" badge={heldRows.length} active={intakeTab === 'held'} onClick={() => setIntakeTab('held')} icon={<Clock size={13} />} />
+                <TabBtn label="Pushed to NuVizz" badge={pushedRows.length} active={intakeTab === 'pushed'} onClick={() => setIntakeTab('pushed')} icon={<FileCheck size={13} />} />
+              </div>
+              {intakeTab === 'held' && (
+                <div className="flex items-center justify-between text-[12px] text-slate-600 border-b border-slate-100 pb-2">
+                  <label className="inline-flex items-center gap-2">
+                    <input type="checkbox" checked={allHeldChecked} onChange={toggleIntakeAll} disabled={!heldRows.length || intakeBusy} className="align-middle accent-blue-600" />
+                    <span className="font-medium">Select all</span> <span className="text-slate-400">check rows to push</span>
+                  </label>
+                  <span className="tabular-nums font-medium">{checkedHeld.length} checked · {intakeTally.plt} plt · {intakeTally.loose} loose · {intakeTally.lb.toLocaleString()} lb · ${intakeTally.usd.toFixed(2)}</span>
+                </div>
+              )}
+              <div className="overflow-x-auto">
+                <table className="text-[12px] border-collapse w-full">
+                  <thead>
+                    <tr className="text-left text-[10px] uppercase tracking-wide text-slate-500">
+                      {intakeTab === 'held' && <th className="pr-1 pb-1 w-7"></th>}
+                      <th className="pr-2 pb-1 w-6">#</th>
+                      <th className="px-1 pb-1">Order ref</th>
+                      <th className="px-1 pb-1">Consignee (delivery)</th>
+                      <th className="px-1 pb-1">Pallets</th>
+                      <th className="px-1 pb-1">Loose pcs</th>
+                      <th className="px-1 pb-1">Wt</th>
+                      <th className="px-1 pb-1">Phone</th>
+                      <th className="px-1 pb-1">Dispatch notes</th>
+                      <th className="px-1 pb-1">Price</th>
+                      <th className="pb-1"></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rowsShown.length === 0 && (
+                      <tr><td colSpan={intakeCols} className="py-3 text-center text-slate-400">{intakeTab === 'held' ? 'Nothing held — every order has been pushed.' : 'Nothing pushed yet.'}</td></tr>
+                    )}
+                    {rowsShown.map((r, i) => {
+                      const missing = bulkRowMissing(r);
+                      const open = intakeOpen === r.id;
+                      const pushed = r._status === 'pushed';
+                      return (
+                        <React.Fragment key={r.id}>
+                          <tr className="align-middle border-t border-slate-100">
+                            {intakeTab === 'held' && (
+                              <td className="pr-1 py-1"><input type="checkbox" checked={r._checked === true} onChange={() => toggleIntakeRow(r.id)} disabled={intakeBusy} className="align-middle accent-blue-600" /></td>
+                            )}
+                            <td className="pr-2 py-1 text-slate-400 tabular-nums">{i + 1}</td>
+                            <td className="px-1 py-1">
+                              <button onClick={() => setIntakeOpen(open ? null : r.id)} title={open ? 'Collapse' : 'Expand — edit address / details'} className="inline-flex items-center gap-1">
+                                <ChevronRight size={12} className={`text-slate-400 transition-transform ${open ? 'rotate-90' : ''}`} />
+                                <span className="font-mono text-[10px] text-slate-600 bg-slate-100 border border-slate-200 rounded px-1.5 py-0.5">{pushed ? (r._pushedNbr || r.stopNbr) : (r.stopNbr || '—')}</span>
+                              </button>
+                            </td>
+                            <td className="px-1 py-1 min-w-[170px]">
+                              <div className="font-semibold text-slate-800 leading-tight">{r.name || <span className="text-amber-600">name missing</span>}{pushed && r._updated && <span className="ml-1 text-[9px] font-bold text-amber-600 uppercase">updated</span>}</div>
+                              <div className="text-[10px] text-slate-500">{[r.city, r.state].filter(Boolean).join(', ')} {r.zip}</div>
+                              {r._error && <div className="text-[10px] text-red-600 mt-0.5"><AlertTriangle size={10} className="inline -mt-0.5" /> {r._error}</div>}
+                              {!pushed && !r._error && missing.length > 0 && <div className="text-[10px] text-amber-600 mt-0.5">need {missing.length} field(s) — expand ▸</div>}
+                            </td>
+                            {pushed ? (
+                              <>
+                                <td className="px-1 py-1 tabular-nums">{r.pallets || '—'}</td>
+                                <td className="px-1 py-1 tabular-nums">{r.loose || '—'}</td>
+                                <td className="px-1 py-1 tabular-nums">{r.weight || '—'}</td>
+                                <td className="px-1 py-1">{r.phone || '—'}</td>
+                                <td className="px-1 py-1 max-w-[160px] truncate" title={r.dispatchNotes}>{r.dispatchNotes || '—'}</td>
+                                <td className="px-1 py-1 tabular-nums">{r.price ? `$${r.price}` : '—'}</td>
+                                <td className="py-1 text-green-600"><FileCheck size={14} /></td>
+                              </>
+                            ) : (
+                              <>
+                                <td className="px-1 py-1"><input value={r.pallets} onChange={setIntakeCell(r.id, 'pallets')} disabled={intakeBusy} className={`${gridInput} w-14 text-right`} /></td>
+                                <td className="px-1 py-1"><input value={r.loose} onChange={setIntakeCell(r.id, 'loose')} disabled={intakeBusy} className={`${gridInput} w-14 text-right`} /></td>
+                                <td className="px-1 py-1"><input value={r.weight} onChange={setIntakeCell(r.id, 'weight')} disabled={intakeBusy} className={`${gridInput} w-16 text-right`} /></td>
+                                <td className="px-1 py-1"><input value={r.phone} onChange={setIntakeCell(r.id, 'phone')} disabled={intakeBusy} placeholder="add phone" className={`${gridInput} w-28`} /></td>
+                                <td className="px-1 py-1"><input value={r.dispatchNotes} onChange={setIntakeCell(r.id, 'dispatchNotes')} disabled={intakeBusy} placeholder="dispatch notes" className={`${gridInput} min-w-[150px]`} /></td>
+                                <td className="px-1 py-1"><input value={r.price} onChange={setIntakeCell(r.id, 'price')} disabled={intakeBusy} placeholder="$" className={`${gridInput} w-16 text-right`} /></td>
+                                <td className="py-1"><button onClick={() => removeIntakeRow(r.id)} disabled={intakeBusy} title="Remove this order from the manifest intake" className={`text-slate-400 ${intakeBusy ? 'opacity-40 cursor-not-allowed' : 'hover:text-red-600'}`}><X size={13} /></button></td>
+                              </>
+                            )}
+                          </tr>
+                          {open && (
+                            <tr className="border-t border-slate-50">
+                              <td colSpan={intakeCols} className="px-6 py-2 bg-slate-50/70">
+                                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 max-w-[900px]">
+                                  <OrderField label="Consignee / business" value={r.name} onChange={setIntakeCell(r.id, 'name')} disabled={pushed || intakeBusy} />
+                                  <OrderField label="Address" value={r.addr1} onChange={setIntakeCell(r.id, 'addr1')} disabled={pushed || intakeBusy} />
+                                  <OrderField label="Suite / unit" value={r.addr2} onChange={setIntakeCell(r.id, 'addr2')} disabled={pushed || intakeBusy} />
+                                  <OrderField label="City" value={r.city} onChange={setIntakeCell(r.id, 'city')} disabled={pushed || intakeBusy} />
+                                  <OrderField label="State" value={r.state} onChange={setIntakeCell(r.id, 'state')} disabled={pushed || intakeBusy} />
+                                  <OrderField label="ZIP" value={r.zip} onChange={setIntakeCell(r.id, 'zip')} disabled={pushed || intakeBusy} />
+                                  <OrderField label="Item description" value={r.itemDesc} onChange={setIntakeCell(r.id, 'itemDesc')} disabled={pushed || intakeBusy} />
+                                  <OrderField label="Order # (ref)" value={r.stopNbr} onChange={setIntakeCell(r.id, 'stopNbr')} disabled={pushed || intakeBusy} />
+                                  <OrderField label="PRO (barcode digits)" value={r.pro} onChange={setIntakeCell(r.id, 'pro')} disabled={pushed || intakeBusy} />
+                                </div>
+                              </td>
+                            </tr>
+                          )}
+                        </React.Fragment>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+              {intakeProgress && (
+                <div className="rounded-lg px-3 py-2 text-[13px] bg-blue-50 text-blue-800 border border-blue-200">⏳ Pushing {intakeProgress.done}/{intakeProgress.total}…</div>
+              )}
+              {intakeResults && (
+                <div className={`rounded-lg px-3 py-2 text-[13px] ${intakeResults.beta ? 'bg-slate-100 text-slate-700 border border-slate-200' : intakeResults.ok ? 'bg-green-50 text-green-800 border border-green-200' : 'bg-amber-50 text-amber-800 border border-amber-200'}`}>{intakeResults.msg}</div>
+              )}
+              {intakeTab === 'held' && (
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-[12px] text-slate-500">
+                    {!originComplete ? 'Set the pickup + service date first.'
+                      : checkedHeld.length === 0 ? 'Check ☑ the rows to push — unchecked rows stay Held for a later push.'
+                      : !canPushIntake ? 'A checked row is missing required fields — expand it (▸) and fill them.'
+                      : live ? `Ready — this WILL create ${checkedHeld.length} order(s) in NuVizz. ${heldRows.length - checkedHeld.length} stay held.`
+                      : `Beta — previews the push (${checkedHeld.length} checked).`}
+                  </span>
+                  <button onClick={pushChecked} disabled={!canPushIntake} className={`inline-flex items-center gap-1.5 px-4 py-2 rounded font-semibold text-white text-sm shrink-0 ${canPushIntake ? '' : 'opacity-40 cursor-not-allowed'}`} style={{ background: live ? '#dc2626' : BRAND }}>
+                    <Send size={14} /> {intakeBusy ? 'Pushing…' : live ? `Push ${checkedHeld.length || ''} to NuVizz (LIVE)` : 'Preview push (Beta)'}
+                  </button>
+                </div>
+              )}
+            </div>
+          );
+        })()}
 
         {/* The grid */}
         <div className="bg-white border border-slate-200 rounded-lg p-3 space-y-2">
