@@ -167,6 +167,38 @@ test('buildStopPayload: item description → reference2 (trimmed); absent when b
     { origin, serviceDate: '2026-06-29' });
   assert.equal(blank.reference2, undefined, 'blank description must not emit reference2');
   assert.equal('reference2' in JSON.parse(JSON.stringify(blank)), false, 'undefined reference2 is omitted from the wire payload');
+  // reference2 is maxLength 50 in the v7 schema — an unsliced long description would 400 the write.
+  const long = buildStopPayload({ name: 'A', addr1: '1', city: 'B', state: 'GA', zip: '30518', itemDesc: 'x'.repeat(80) },
+    { origin, serviceDate: '2026-06-29' });
+  assert.equal(long.reference2.length, 50);
+});
+
+test('buildStopPayload: item description → ONE stopDetails line item (populates the NuVizz "Items" table)', () => {
+  const origin = { name: 'D', addr1: '9', city: 'A', state: 'GA', zip: '30301' };
+  // The Items(N) table in NuVizz Stop Details is fed from stopDetails[] ONLY — reference2 never
+  // shows there (the Items(0) bug). One line, mirroring the stop totals so a recompute is a no-op.
+  const p = buildStopPayload({ name: 'JASMINE LEWIS', addr1: '1', city: 'B', state: 'GA', zip: '30518',
+    itemDesc: '1 BX GNT4632-C (86X30X26); STC 3 BOXES', pro: '0288347656', pallets: 1, weight: 566 },
+    { origin, serviceDate: '2026-07-16' });
+  assert.equal(p.stopDetails.length, 1);
+  const d = p.stopDetails[0];
+  assert.equal(d.product, '1 BX GNT4632-C (86X30X26); STC 3 BOXES');
+  assert.equal(d.productIdentifier, '0288347656', 'no SKU → PRO is the unique shipment id');
+  assert.equal(d.quantity, 1);            // mirrors total pieces
+  assert.equal(d.quantityUOM, 'PCS');
+  assert.equal(d.stopDetailSeq, 1);       // required, must be > 0
+  assert.equal(d.lineType, '01');         // 01 = Product
+  assert.equal(d.weight, 566);
+  assert.equal(d.weightUOM, 'LBS');
+  // Required quantity must be > 0 even when no pieces were entered (exclusiveMinimum:0 → 400 on 0).
+  const zero = buildStopPayload({ name: 'A', addr1: '1', city: 'B', state: 'GA', zip: '30518', itemDesc: 'thing', pallets: 0, loose: 0 },
+    { origin, serviceDate: '2026-07-16' });
+  assert.equal(zero.stopDetails[0].quantity, 1);
+  // No description → no stopDetails at all (absent from the wire).
+  const none = buildStopPayload({ name: 'A', addr1: '1', city: 'B', state: 'GA', zip: '30518' },
+    { origin, serviceDate: '2026-07-16' });
+  assert.equal(none.stopDetails, undefined);
+  assert.equal('stopDetails' in JSON.parse(JSON.stringify(none)), false);
 });
 
 test('buildStopPayload: phone → to.contact with CLEAN DIGITS (UI dashes/parens stripped; leading + kept); absent when blank', () => {
