@@ -25,6 +25,7 @@ import { loadProbeParity, frontierParity, loadMembershipDelta, dateSliceMismatch
 import { isFirestoreEnabled, writeStops, writeFleetIndex, getDoc, markScanState, readCallStats, readCircuit, readScanState, writeScanState, readRecentFrontier, recordScanMetric, etDayString, readScanConfig, readStops, readEnrichedPros, writeEnrichedPros, writeLoadRoster, readLoadRoster, writeActiveUnplannedSet } from './firestore.mts';
 import { listScanForDate, mergeEnrich, twoScanBuckets, etDateForTargetUTC, boardDayFor, applyBoardWriteGrace, applyDemotionVerify, demotionLookupVerdict } from './nuvizz-list.mts';
 import { loadIdsForDate, dropForeignLoadStops, loadRosterForDate } from './nuvizz-loads.mts';
+import { getStop } from './history-store.mts';
 import { resolveCoords, addrKey } from './geocode.mts';
 import { maxConsecutiveGap } from './scan-metrics.mts';
 import { notifyMarkedCustomers } from './cs-notify.mts';
@@ -57,6 +58,56 @@ function addDaysUTC(dateStr: string, n: number): string {
   const d = new Date(dateStr + 'T00:00:00Z');
   d.setUTCDate(d.getUTCDate() + n);
   return d.toISOString().slice(0, 10);
+}
+
+// ── History-terminal cross-check (fixes the stale-Scheduled appointment stop) ──
+// A stop delivered a day or two ago is in NEITHER saved-search pull (out of ACTIVE
+// once status 90; out of COMPLETED once it wasn't "updated today"), so the two-scan
+// carry-forward re-adds its last OPEN snapshot and it sits Scheduled on the board
+// forever (e.g. a ULINE APPT order that delivered early on another route). Before
+// re-carrying such an absent-from-pull open row, we consult the IMMUTABLE history
+// warehouse: if a recent prior day sealed it DELIVERED/EXCEPTION/CANCELLED, it's
+// genuinely finished and we drop the stale open row. Firestore only — ZERO NuVizz.
+
+// PURE: is a warehouse stop record a sealed terminal (finished) state? Exported for tests.
+export function isTerminalHistoryStatus(rec: any): boolean {
+  const s = String(rec?.normalizedStatus ?? '').toUpperCase();
+  return s === 'DELIVERED' || s === 'EXCEPTION' || s === 'CANCELLED';
+}
+
+// PURE: the bounded prior-day window to search for a sealed terminal record (yesterday
+// back n days from the scan's ET today). Exported for tests.
+export function historyLookbackDates(today: string, n: number): string[] {
+  const out: string[] = [];
+  for (let i = 1; i <= Math.max(0, n); i++) out.push(addDaysUTC(today, -i));
+  return out;
+}
+
+// Factory: memoized (per-scan), read-capped lookup of a stop's most-recent sealed
+// terminal history record. readStop is injected (getStop over history_days) so the
+// window / cap / memoization are unit-testable without Firestore. Returns the terminal
+// record or null; caches per stopNbr so a repeated candidate costs no extra reads.
+export function makeHistoryTerminalLookup(deps: {
+  readStop: (date: string, nbr: string) => Promise<any>;
+  dates: string[];
+  isTerminal: (rec: any) => boolean;
+  readCap: number;
+}): { lookup: (nbr: string) => Promise<any | null>; reads: () => number } {
+  const cache = new Map<string, any>();
+  let reads = 0;
+  const lookup = async (nbr: string): Promise<any | null> => {
+    if (cache.has(nbr)) return cache.get(nbr);
+    let found: any = null;
+    for (const d of deps.dates) {
+      if (reads >= deps.readCap) break;   // backstop; the miss is held (never a false drop)
+      reads++;
+      const rec = await deps.readStop(d, nbr).catch(() => null);
+      if (rec && deps.isTerminal(rec)) { found = rec; break; }
+    }
+    cache.set(nbr, found);
+    return found;
+  };
+  return { lookup, reads: () => reads };
 }
 
 // ── Demotion lookup (factory; exported for tests) ─────────────────────────────
@@ -654,6 +705,18 @@ export async function runRefreshStops(req: Request): Promise<Response> {
           if (s.stopNbr && (s.normalizedStatus === 'DELIVERED' || s.normalizedStatus === 'EXCEPTION')) finishedByNbr.set(String(s.stopNbr), s);
         }
       }
+      // History-terminal cross-check, memoized across all target dates this scan. Window =
+      // yesterday back N days from the scan's ET today (the history warehouse seals ET-
+      // yesterday nightly, so a 1–2-day-old delivery is present). Bounded read cap is a
+      // backstop; a capped miss just HOLDS (re-carries) rather than false-dropping.
+      const HISTORY_TERMINAL_LOOKBACK = Math.max(1, Math.min(7, Number(process.env.NUVIZZ_HISTORY_TERMINAL_LOOKBACK) || 4));
+      const HISTORY_TERMINAL_READ_CAP = Math.max(0, Number(process.env.NUVIZZ_HISTORY_TERMINAL_READ_CAP) || 400);
+      const histTerminal = makeHistoryTerminalLookup({
+        readStop: (d, nbr) => getStop(TENANT, d, nbr),
+        dates: historyLookbackDates(today, HISTORY_TERMINAL_LOOKBACK),
+        isTerminal: isTerminalHistoryStatus,
+        readCap: HISTORY_TERMINAL_READ_CAP,
+      });
       for (const date of targets) {
         // Two-scan: this day's slice of the merged active+completed pull (board keys are
         // UTC, the saved searches bucket by ET arrival date — map across the frames).
@@ -687,7 +750,7 @@ export async function runRefreshStops(req: Request): Promise<Response> {
         const boardEtDate = TWO_SCAN ? etDateForTargetUTC(date, today) : date;
         if (TWO_SCAN) {
           const have = new Set(dateStops.map((s) => String(s.stopNbr)));
-          let dropped = 0;
+          let dropped = 0, healedDelivered = 0;
           for (const [nbr, p] of prevByNbr) {
             if (have.has(nbr)) continue;
             if (boardDayFor(p) !== boardEtDate) { dropped++; continue; } // belongs to another day
@@ -697,9 +760,20 @@ export async function runRefreshStops(req: Request): Promise<Response> {
             // which froze such stops as open forever and lost the delivery entirely.
             const fin = finishedByNbr.get(nbr);
             if (fin) { dateStops.push({ ...fin, boardDate: boardEtDate, scheduledDate: date }); continue; }
+            // Would re-carry the stale OPEN snapshot (absent from BOTH pulls, this-pull finished
+            // map missed it). If it's still shown OPEN but our sealed history warehouse recorded it
+            // DELIVERED/EXCEPTION on a recent prior day, it's a delivery that aged out of the
+            // "updated today" completed window — drop it instead of freezing it Scheduled forever
+            // (the ULINE APPT case). Only NON-terminal rows are checked; a genuinely-open order
+            // NuVizz still returns is in `have` and never reaches here, so this can't hide live work.
+            if (!isTerminalHistoryStatus(p)) {
+              const histFin = await histTerminal.lookup(nbr);
+              if (histFin) { healedDelivered++; continue; }
+            }
             dateStops.push(p);
           }
           if (dropped) console.log(`[scan] ${date}: carry-forward dropped ${dropped} wrong-day stop(s) (board=${boardEtDate})`);
+          if (healedDelivered) console.log(`[scan] ${date}: dropped ${healedDelivered} stale-Scheduled stop(s) sealed DELIVERED in recent history (histReads=${histTerminal.reads()})`);
         }
         const seed = new Map<string, { lat: number; lng: number }>();
         const toEnrich: any[] = [];

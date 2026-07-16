@@ -59,7 +59,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.50.35';
+const APP_VERSION = '0.50.36';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -104,6 +104,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.50.36', 'Three fixes. (1) MOBILE LOADS TAB now has a SEARCH BAR — filter the loads list by route name or driver as you type (with a "showing N of M loads" count), same as the Stops tab. (2) STALE "Scheduled" APPOINTMENT STOPS — an order that sat on an appointment route and then DELIVERED a day or two later kept showing Scheduled on that route forever (e.g. a ULINE APPT stop that delivered early on another driver\'s load). Our board pulls "open work" + "just-completed-today" from NuVizz, so a delivery from 1–2 days ago is in neither pull and the board re-carried the pre-delivery snapshot. Now, before re-carrying a stop that\'s vanished from both pulls, we check our own sealed delivery history and drop it if it was delivered/closed recently — ZERO NuVizz calls, and it can never hide genuinely-open work. (3) MAP "Routes" BUTTON turned blue but sometimes showed nothing on the right (an open order/route was suppressing the roster); opening it now closes whatever detail was open so the roster always appears.'],
   ['0.50.35', 'PICKUP IS PRE-SET TO DAVIS. New Order and Bulk Add now come with “Davis Delivery Service — 943 Gainesville Hwy 200-4000, Buford, GA 30518” built in: the Pickup location dropdown always exists (even on a fresh browser with nothing saved), Davis is auto-selected, and the pickup card starts satisfied — no more typing the terminal address or “Set the pickup + service date first” just to push a manifest. Your own saved pickup locations still appear in the dropdown and win as the default. Picking “＋ New pickup location…” now starts a truly blank form (it used to pre-fill pieces of the default address).'],
   ['0.50.34', 'ITEMS NOW LAND IN NUVIZZ. The item description was being sent as a text reference on the stop, which NuVizz never shows in the Stop Details “Items” table — that’s why it read Items(0) even though the order went through. Every create now ALSO sends the description as a real line item: product = your Items text, ID = the PRO (or order #), quantity = total pieces, weight = the order weight — so it shows up in NuVizz’s Items table like any other shipment line. Applies to all entry paths (manifest intake, Bulk grid, single New Order). Re-pushing an already-pushed order updates it in place and fills in its Items line.'],
   ['0.50.33', 'FIX (the REAL one): manifest pushes that ACTUALLY SUCCEEDED were being reported as failures. NuVizz confirms a stop upsert with the status “STOP UPDATED SUCCESSFULLY” (not the bare word “SUCCESS”), and the app only recognized the exact word “SUCCESS” — so it flagged a successful write as failed and kept the order in the Held queue even though NuVizz already had it. The success check now accepts any “…SUCCESS/SUCCESSFULLY” status (while still failing on PARTIAL / FAIL / REJECT / ERROR), and the same fix is applied to the assign/dispatch path (the async-import path already handled it). Your earlier “failed” pushes DID go through — those orders are in NuVizz; re-pushing just UPDATES the same stop (no duplicates). (The v0.50.32 phone-format change was a red herring but is kept — clean digits are the right thing to send.)'],
@@ -6737,18 +6738,54 @@ function MobileDriversTab({ drivers, error, onPickDriver }) {
 // load's route detail). Shows route/load id, driver, delivered-of-total progress,
 // and skids / loose-piece / weight totals.
 function MobileLoadsTab({ loads, onPickLoad }) {
-  if (!loads || loads.length === 0) {
-    return (
-      <div className="px-4 py-6 text-xs text-slate-400 italic text-center">
-        No loads on the board for this date.
-      </div>
-    );
-  }
+  const [q, setQ] = useState('');
+  const query = q.trim().toLowerCase();
+  const hasLoads = !!(loads && loads.length);
+  // Quick local filter by route name, load number, or driver — mirrors the Stops tab search.
+  const filtered = !query ? (loads || []) : (loads || []).filter((l) =>
+    String(l.routeName || '').toLowerCase().includes(query)
+    || String(l.loadNbr || '').toLowerCase().includes(query)
+    || String(l.driverName || '').toLowerCase().includes(query));
   return (
-    <div className="divide-y divide-slate-100">
-      {loads.map((l) => {
-        const pct = l.stops ? Math.round((100 * l.delivered) / l.stops) : 0;
-        return (
+    <div className="flex flex-col">
+      {hasLoads && (
+        <div className="p-3 border-b border-slate-100">
+          <div className="relative">
+            <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+            <input
+              type="search"
+              inputMode="search"
+              enterKeyHint="search"
+              autoComplete="off"
+              autoCorrect="off"
+              autoCapitalize="none"
+              spellCheck={false}
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); e.currentTarget.blur(); } }}
+              placeholder="Route or driver…"
+              className="w-full pl-8 pr-3 border border-slate-300 rounded-lg text-sm"
+              style={{ minHeight: 44 }}
+            />
+          </div>
+          <div className="text-[11px] text-slate-500 mt-1.5 px-0.5">
+            Showing <span className="font-semibold text-slate-700">{filtered.length}</span> of {loads.length} loads
+          </div>
+        </div>
+      )}
+      {!hasLoads ? (
+        <div className="px-4 py-6 text-xs text-slate-400 italic text-center">
+          No loads on the board for this date.
+        </div>
+      ) : filtered.length === 0 ? (
+        <div className="px-4 py-6 text-xs text-slate-400 italic text-center">
+          No loads match “{q.trim()}”.
+        </div>
+      ) : (
+        <div className="divide-y divide-slate-100">
+          {filtered.map((l) => {
+            const pct = l.stops ? Math.round((100 * l.delivered) / l.stops) : 0;
+            return (
         <button
           key={l.loadNbr}
           onClick={() => onPickLoad(l.loadNbr)}
@@ -6773,7 +6810,9 @@ function MobileLoadsTab({ loads, onPickLoad }) {
             <div className="text-[10px] text-slate-400">{l.stops} stop{l.stops === 1 ? '' : 's'}</div>
           </div>
         </button>
-      ); })}
+          ); })}
+        </div>
+      )}
     </div>
   );
 }
@@ -8985,7 +9024,15 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef }) {
             {/* Routes panel toggle — opens the read-only route roster on the right (route name, driver,
                 status incl. Draft, stops/skids/loose/weight, % delivered; click to frame on the map). */}
             <button
-              onClick={() => setRoutesPanelOn((v) => !v)}
+              onClick={() => {
+                const turningOn = !routesPanelOn;
+                setRoutesPanelOn(turningOn);
+                // The Routes roster is the DEFAULT right panel and only renders when no stop/route/
+                // driver detail is open. Opening it therefore clears any open detail so the roster
+                // actually shows — otherwise the button just turned blue with nothing on the right
+                // (a lingering open order/route left the panel suppressed).
+                if (turningOn) { setSelectedStop(null); setSelectedRoute(null); setSelectedDriver(null); }
+              }}
               title={routesPanelOn ? 'Hide the Routes panel' : 'Show the Routes panel (route roster + status)'}
               className={`flex items-center justify-center gap-1 rounded-lg border shadow px-2 py-1.5 text-[11px] font-semibold pointer-events-auto ${routesPanelOn ? 'bg-blue-600 border-blue-600 text-white' : 'bg-white/95 border-slate-200 text-slate-700 hover:bg-slate-50'}`}
             >
