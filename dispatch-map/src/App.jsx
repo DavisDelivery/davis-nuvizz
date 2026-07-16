@@ -59,7 +59,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.50.36';
+const APP_VERSION = '0.50.37';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -104,6 +104,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.50.37', 'The Routing (beta) screen now opens on the ENGINE tab by default. Every time you go to Routing it lands on Engine instead of Build; switch to Build any time while you\'re there, and it stays on Build until you leave and come back to Routing.'],
   ['0.50.36', 'Three fixes. (1) MOBILE LOADS TAB now has a SEARCH BAR — filter the loads list by route name or driver as you type (with a "showing N of M loads" count), same as the Stops tab. (2) STALE "Scheduled" APPOINTMENT STOPS — an order that sat on an appointment route and then DELIVERED a day or two later kept showing Scheduled on that route forever (e.g. a ULINE APPT stop that delivered early on another driver\'s load). Our board pulls "open work" + "just-completed-today" from NuVizz, so a delivery from 1–2 days ago is in neither pull and the board re-carried the pre-delivery snapshot. Now, before re-carrying a stop that\'s vanished from both pulls, we check our own sealed delivery history and drop it if it was delivered/closed recently — ZERO NuVizz calls, and it can never hide genuinely-open work. (3) MAP "Routes" BUTTON turned blue but sometimes showed nothing on the right (an open order/route was suppressing the roster); opening it now closes whatever detail was open so the roster always appears.'],
   ['0.50.35', 'PICKUP IS PRE-SET TO DAVIS. New Order and Bulk Add now come with “Davis Delivery Service — 943 Gainesville Hwy 200-4000, Buford, GA 30518” built in: the Pickup location dropdown always exists (even on a fresh browser with nothing saved), Davis is auto-selected, and the pickup card starts satisfied — no more typing the terminal address or “Set the pickup + service date first” just to push a manifest. Your own saved pickup locations still appear in the dropdown and win as the default. Picking “＋ New pickup location…” now starts a truly blank form (it used to pre-fill pieces of the default address).'],
   ['0.50.34', 'ITEMS NOW LAND IN NUVIZZ. The item description was being sent as a text reference on the stop, which NuVizz never shows in the Stop Details “Items” table — that’s why it read Items(0) even though the order went through. Every create now ALSO sends the description as a real line item: product = your Items text, ID = the PRO (or order #), quantity = total pieces, weight = the order weight — so it shows up in NuVizz’s Items table like any other shipment line. Applies to all entry paths (manifest intake, Bulk grid, single New Order). Re-pushing an already-pushed order updates it in place and fills in its Items line.'],
@@ -16434,6 +16435,9 @@ function Shell() {
     try { return localStorage.getItem('routing.tab') === 'engine' ? 'engine' : 'build'; } catch { return 'build'; }
   });
   useEffect(() => { try { localStorage.setItem('routing.tab', routingTab); } catch {} }, [routingTab]);
+  // Opening the Routing screen defaults to the ENGINE tab (Chad's preference). Switching to
+  // Build while you're on the screen stays put; navigating back to Routing lands on Engine again.
+  useEffect(() => { if (tab === 'routing') setRoutingTab('engine'); }, [tab]);
 
   // SMS messages + unread badge. Messages is a WINDOW over the current screen
   // (it doesn't navigate away), so it's a toggle, not a tab.
