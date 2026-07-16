@@ -59,7 +59,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.50.43';
+const APP_VERSION = '0.50.44';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -104,6 +104,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.50.44', 'MAP — the receiving-hours "clock" pin now pops up a real hover card. Hovering one of these pins on desktop instantly shows a little card with the business name AND its receiving hours (e.g. "ACME WAREHOUSE · Receiving hours: Mon–Fri 8:00a–3:00p · Sat Closed") — no more waiting on the slow grey OS tooltip, and no need to click in. Only the clock pins get the card; plain pins are unchanged. (Replaces the 0.50.43 approach, which relied on the browser\'s built-in tooltip that was easy to miss.)'],
   ['0.50.43', 'MAP — hovering a receiving-hours "clock" pin now shows its hours. On desktop, hovering any map pin has always popped up the platform/business name; now, for the pins that carry a receiving-hours restriction (the clock icon), the hover tooltip also shows the window — e.g. "ACME WAREHOUSE · Receiving hours: Mon–Fri 8:00a–3:00p · Sat Closed" — so when you\'re hunting for a time-restricted stop you can read its hours without clicking in. Only clock pins get the extra line; pins with no hours set are unchanged.'],
   ['0.50.42', 'CS EMAIL ACTUALLY SENDS NOW. The “Email CS when scheduled” toggle was on, the customer matched, the email built — but the scheduled scan had NO recipient wired up (the NOTIFY_CS_TO address was never set on the live site), so it silently sent nothing. Every real send since the feature launched was a no-op; the only one that ever “worked” was a manual test redirected to a personal inbox. Fix: CS emails now default to customerservice@davisdelivery.com (the same inbox the daily Forgotten-Freight log already uses) whenever no address is configured, so a missing setting can’t disable the feature. Also added a per-day status record so this can never be an invisible no-op again — it shows how many customers are opted in, how many matched on the board, and how many emailed. Marked customers will get their email on the next scan.'],
   ['0.50.41', 'HOME-SCREEN ICON now matches the browser tab. Adding Dispatch Map to your iPhone/iPad home screen used to show a plain grey "N" — iOS uses a separate app-icon image (not the tab favicon), and there wasn\'t one. It now uses the same folded-map icon as the browser tab. NOTE: iOS caches the home-screen icon hard — if you already added it and still see the grey "N", REMOVE the app from your home screen and re-add it (Share → Add to Home Screen) to pick up the new icon.'],
@@ -7507,6 +7508,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef }) {
   const driverMarkersRef = useRef([]);
   const driverLabelsRef = useRef([]);
   const labelOverlayClassRef = useRef(null);
+  const hoverTipRef = useRef(null); // {marker, tip} — the receiving-hours hover tooltip currently shown
   const routePolylinesRef = useRef([]);
 
   // Persist label-toggle preference whenever it changes.
@@ -8109,6 +8111,10 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef }) {
     if (clustererRef.current) clustererRef.current.clearMarkers();
     markersRef.current.forEach((m) => m.setMap(null));
     markersRef.current = [];
+    // Drop any receiving-hours hover tooltip left over from the prior render.
+    if (hoverTipRef.current) { hoverTipRef.current.tip.setMap(null); hoverTipRef.current = null; }
+    // Reusable overlay class for the desktop hover tooltip (same styling as driver labels).
+    const HoverTip = makeDriverLabelOverlayClass(google);
 
     // Day-aware receiving-hours clock: only light the clock on the weekday the
     // map is showing. A Friday-only customer's clock appears on Fridays only.
@@ -8138,19 +8144,11 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef }) {
       // restriction) is built by the shared stopMarkerIcon helper so the Map and
       // Routing screens stay pixel-identical.
       const icon = stopMarkerIcon(google, s, note, { selectedDayKey, matched, inRoute, seq, sameLocCount: locCounts.get(stopLocKey(s)) || 1, tractorDelivered: tractorLocs.has(s.matchKey) });
-      // Desktop hover tooltip: the platform/business name has always popped up on
-      // hover (native Marker `title`). For the receiving-hours "clock" pins, append
-      // the hours so hunting for a time-restricted stop surfaces its window too —
-      // formatReceivingHours returns null for stops with no hours, so only the clock
-      // pins get the extra line, and it never shows a false window. (#receiving-hours-hover)
-      const hoursStr = formatReceivingHours(note);
-      const markerTitle = hoursStr
-        ? `${s.businessName || 'Stop'}\nReceiving hours: ${hoursStr}`
-        : (s.businessName || '');
+      // The native Marker `title` still carries the business name (OS hover fallback).
       const marker = new google.maps.Marker({
         position: { lat: s.lat, lng: s.lng },
         icon,
-        title: markerTitle,
+        title: s.businessName || '',
         opacity: dim ? 0.3 : 1,
         // Search-matched dots ride the TOP layer, above everything (Chad) — above even Google's
         // latitude-based auto stacking (≤ MAX_ZINDEX), so a northern hit never hides beneath a
@@ -8162,6 +8160,28 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef }) {
         setSelectedStop(s);
         handlePanToStop(s);   // match list/search behavior: recenter + zoom to STOP_ZOOM
       });
+      // Desktop hover tooltip for the receiving-hours "clock" pins: pop up the
+      // business name + the hours window immediately on hover, so hunting for a
+      // time-restricted stop surfaces its window without clicking in. Only clock
+      // pins get this — formatReceivingHours returns null when no hours are set,
+      // so a plain pin never shows a (false) window. (#receiving-hours-hover)
+      const hoursStr = formatReceivingHours(note);
+      if (hoursStr) {
+        marker.addListener('mouseover', () => {
+          if (hoverTipRef.current) hoverTipRef.current.tip.setMap(null);
+          const tip = new HoverTip(new google.maps.LatLng(s.lat, s.lng), s.businessName || 'Stop', `Receiving hours: ${hoursStr}`);
+          tip.setMap(mapRef.current);
+          hoverTipRef.current = { marker, tip };
+        });
+        marker.addListener('mouseout', () => {
+          // Only clear if THIS marker's tip is the one showing (co-located pins can
+          // fire mouseover-next before mouseout-prev; don't yank the new tooltip).
+          if (hoverTipRef.current && hoverTipRef.current.marker === marker) {
+            hoverTipRef.current.tip.setMap(null);
+            hoverTipRef.current = null;
+          }
+        });
+      }
       return marker;
     });
 
