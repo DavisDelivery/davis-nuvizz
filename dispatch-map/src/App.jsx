@@ -59,7 +59,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.50.30';
+const APP_VERSION = '0.50.31';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -104,6 +104,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.50.31', 'ROUTING + intake fixes. (1) Click a PLANNED stop — on the map OR in the bottom Stops grid — and its route now opens in the Compare panel, just like clicking a load does (it was only toggling the selection before). Pool / unplanned stops still toggle into your selection for route-building. (2) The manifest intake number columns are actually narrow now: Pallets / Loose / Weight / Price were stretching to full width because of a CSS conflict (a w-full override) — they now fit their digits, which gives the Items and Dispatch-notes columns the room. (3) Phone auto-format no longer mangles a number with an extension (“x45”) or an international “+” — those pass through exactly as typed; plain US numbers still snap to xxx-xxx-xxxx.'],
   ['0.50.30', 'MANIFEST INTAKE / order entry — a proper ITEMS column and a cleaner grid. (1) The manifest review table now shows an ITEMS column (what’s actually shipping, read straight off the manifest’s Description) — it was already being read, just never displayed. (2) The number columns are tighter (Pallets / Loose / Weight — “Wt” is now spelled out “Weight”) and Price is slimmer, freeing room so the Dispatch notes and Items columns are now wide enough to actually read. (3) The whole Bulk Add page is wider, reclaiming the gray side margins. (4) PHONE fields on every entry path — single New Order, the Bulk grid, and the manifest intake — now auto-format to xxx-xxx-xxxx as you type. All three paths already share the same column set (Items, Pallets, Loose, Weight, Phone, Dispatch notes, Price).'],
   ['0.50.29', 'FIX: the new full-bleed favicon (v0.50.28) was already live but browsers cache the tab icon so aggressively that even a hard-refresh kept showing the old blue-framed one. The favicon link now carries a version tag (favicon.svg?v=2), which forces every browser to re-fetch it — so the updated map icon actually shows. If a tab STILL shows the old icon, fully close that tab (or the browser) once and reopen; pinned tabs are the stickiest.'],
   ['0.50.28', 'Two small polish items. (1) The browser-tab icon (favicon) is now the map filling the whole tile — the blue frame around it is gone, so the little map reads bigger and clearer in the tab. (2) In "Search past PROs / customer history", when you search by a PRO number the matching chip in that customer\'s list is now highlighted blue, so you can instantly see which of their past deliveries you searched for instead of scanning the row.'],
@@ -12937,6 +12938,7 @@ function RoutingScreen({ debugCaptureRef }) {
   const [activeRouteKey, setActiveRouteKey] = useState(null);
   const effectiveActiveKey = (activeRouteKey && wbRoutes.some((r) => r.key === activeRouteKey)) ? activeRouteKey : (wbRoutes[0]?.key || null);
   const ninjaActionRef = useRef(null);
+  const openRouteRef = useRef(null);   // planned-stop click → open its route in Compare (kept current below)
   // Vehicle-eligibility paint mode: null | 'tractor' | 'box'. Refs let the
   // bound-once marker click listener read the live brush + handler.
   const [eligPaint, setEligPaint] = useState(null);
@@ -13320,6 +13322,7 @@ function RoutingScreen({ debugCaptureRef }) {
   // The marker click listener is bound once; route ninja clicks through a ref so toggling ninja
   // (or closing the panel) never re-creates the markers. Null = ninja off / nothing to add to.
   useEffect(() => { ninjaActionRef.current = (ninjaMode && wbRoutes.length > 0) ? ninjaAddStop : null; }, [ninjaMode, wbRoutes.length, ninjaAddStop]);
+  useEffect(() => { openRouteRef.current = openRouteInWorkbench; }, [openRouteInWorkbench]);
   // Ninja needs an open route; drop it when the panel empties so the map returns to normal toggling.
   useEffect(() => { if (!wbRoutes.length && ninjaMode) setNinjaMode(false); }, [wbRoutes.length, ninjaMode]);
 
@@ -13813,8 +13816,12 @@ function RoutingScreen({ debugCaptureRef }) {
     if (!s) return;
     panToStop(s);
     if (viewing) return;                       // saved-load view is read-only
+    // A PLANNED stop → pull its route up in the Compare panel ("click a stop, see its route").
+    // Unplanned/pool stops keep the selection toggle so route-building from the pool is unaffected.
+    const routeKey = !s.isUnplanned ? (s.routeName || s.loadNbr) : null;
+    if (routeKey) { openRouteInWorkbench(routeKey); return; }
     toggleStop(s.stopNbr);
-  }, [panToStop, viewing, toggleStop]);
+  }, [panToStop, viewing, toggleStop, openRouteInWorkbench]);
   // Same overlay-aware fit as the dispatch Map: the bottom data grid floats INSIDE the map
   // container, so Google's canvas runs underneath it and a flat 60px pad frames a route's
   // southern stops behind the grid. Pad the bottom by the grid's live height at call time.
@@ -14246,7 +14253,13 @@ function RoutingScreen({ debugCaptureRef }) {
         if (eligActionRef.current) { eligActionRef.current(s); setPanelStop(s); }
         else if (selectModeRef.current) handleSelectPointRef.current(marker.getPosition());
         else if (ninjaActionRef.current) ninjaActionRef.current(s.stopNbr);   // ninja → add to active route
-        else toggleStopGroup(s.stopNbr, locMates.get(stopLocKey(s)));         // whole place in one click
+        else {
+          // A PLANNED stop → open its route in the Compare panel (via ref so this effect's deps
+          // below don't change and rebuild every marker). Pool/unplanned stops keep the select-the-place toggle.
+          const routeKey = !s.isUnplanned ? (s.routeName || s.loadNbr) : null;
+          if (routeKey && openRouteRef.current) openRouteRef.current(routeKey);
+          else toggleStopGroup(s.stopNbr, locMates.get(stopLocKey(s)));         // whole place in one click
+        }
       });
       marker.addListener('mouseover', () => setHoverId(id));
       marker.addListener('mouseout', () => setHoverId((h) => (h === id ? null : h)));
@@ -16498,7 +16511,19 @@ function DiagnosticsRoute() {
 const normPhone = (p) => { const d = String(p || '').replace(/\D/g, ''); return d.length === 11 && d.startsWith('1') ? d.slice(1) : d; };
 // Progressive phone mask → xxx-xxx-xxxx as the user types (keeps only digits, US 10-digit; a leading
 // "1" on an 11-digit entry is trimmed by normPhone). Every order-entry phone field runs through this.
-const fmtPhone = (v) => { const d = normPhone(v).slice(0, 10); if (d.length > 6) return `${d.slice(0, 3)}-${d.slice(3, 6)}-${d.slice(6)}`; if (d.length > 3) return `${d.slice(0, 3)}-${d.slice(3)}`; return d; };
+const fmtPhone = (v) => {
+  const raw = String(v ?? '');
+  const digits = raw.replace(/\D/g, '');
+  // Mask ONLY a plain US 10/11-digit number. Anything with letters or a "+" (an extension like
+  // "x45", or an international number) or more than 11 digits passes through verbatim — never
+  // silently truncate a real number the field used to accept.
+  if (/[a-z+]/i.test(raw) || digits.length > 11) return raw;
+  const d = digits.length === 11 && digits.startsWith('1') ? digits.slice(1) : digits;
+  if (d.length > 10) return raw;                    // 11-digit non-US number → leave as typed, don't mis-group
+  if (d.length > 6) return `${d.slice(0, 3)}-${d.slice(3, 6)}-${d.slice(6)}`;
+  if (d.length > 3) return `${d.slice(0, 3)}-${d.slice(3)}`;
+  return d;
+};
 
 // ── New Order — create a delivery stop (order) in NuVizz from a standalone tab. Fill the
 // delivery address + optional order details and Create. The origin ("from") + service date
@@ -17245,6 +17270,9 @@ function BulkOrderScreen() {
     && checkedHeld.length > 0 && checkedHeld.every((r) => bulkRowMissing(r).length === 0);
 
   const gridInput = 'w-full border border-slate-300 rounded px-1.5 py-1 text-[12px] focus:outline-none focus:ring-1 focus:ring-blue-300';
+  // Same as gridInput but WITHOUT w-full, so a fixed width (w-12 / w-16 …) actually applies. Tailwind
+  // lets w-full win over a w-12 when both are on the element, which stretched the number/phone columns.
+  const numInput = 'border border-slate-300 rounded px-1.5 py-1 text-[12px] focus:outline-none focus:ring-1 focus:ring-blue-300';
 
   return (
     <div className="flex-1 min-h-0 overflow-auto bg-slate-50">
@@ -17490,12 +17518,12 @@ function BulkOrderScreen() {
                             ) : (
                               <>
                                 <td className="px-1 py-1"><input value={r.itemDesc} onChange={setIntakeCell(r.id, 'itemDesc')} disabled={intakeBusy} placeholder="what's shipping" className={`${gridInput} min-w-[200px]`} /></td>
-                                <td className="px-1 py-1"><input value={r.pallets} onChange={setIntakeCell(r.id, 'pallets')} disabled={intakeBusy} className={`${gridInput} w-12 text-right`} /></td>
-                                <td className="px-1 py-1"><input value={r.loose} onChange={setIntakeCell(r.id, 'loose')} disabled={intakeBusy} className={`${gridInput} w-12 text-right`} /></td>
-                                <td className="px-1 py-1"><input value={r.weight} onChange={setIntakeCell(r.id, 'weight')} disabled={intakeBusy} className={`${gridInput} w-14 text-right`} /></td>
-                                <td className="px-1 py-1"><input value={r.phone} onChange={setIntakeCell(r.id, 'phone')} disabled={intakeBusy} placeholder="add phone" className={`${gridInput} w-32`} /></td>
+                                <td className="px-1 py-1"><input value={r.pallets} onChange={setIntakeCell(r.id, 'pallets')} disabled={intakeBusy} className={`${numInput} w-12 text-right`} /></td>
+                                <td className="px-1 py-1"><input value={r.loose} onChange={setIntakeCell(r.id, 'loose')} disabled={intakeBusy} className={`${numInput} w-12 text-right`} /></td>
+                                <td className="px-1 py-1"><input value={r.weight} onChange={setIntakeCell(r.id, 'weight')} disabled={intakeBusy} className={`${numInput} w-16 text-right`} /></td>
+                                <td className="px-1 py-1"><input value={r.phone} onChange={setIntakeCell(r.id, 'phone')} disabled={intakeBusy} placeholder="add phone" className={`${numInput} w-32`} /></td>
                                 <td className="px-1 py-1"><input value={r.dispatchNotes} onChange={setIntakeCell(r.id, 'dispatchNotes')} disabled={intakeBusy} placeholder="dispatch notes" className={`${gridInput} min-w-[220px]`} /></td>
-                                <td className="px-1 py-1"><input value={r.price} onChange={setIntakeCell(r.id, 'price')} disabled={intakeBusy} placeholder="$" className={`${gridInput} w-14 text-right`} /></td>
+                                <td className="px-1 py-1"><input value={r.price} onChange={setIntakeCell(r.id, 'price')} disabled={intakeBusy} placeholder="$" className={`${numInput} w-16 text-right`} /></td>
                                 <td className="py-1"><button onClick={() => removeIntakeRow(r.id)} disabled={intakeBusy} title="Remove this order from the manifest intake" className={`text-slate-400 ${intakeBusy ? 'opacity-40 cursor-not-allowed' : 'hover:text-red-600'}`}><X size={13} /></button></td>
                               </>
                             )}
