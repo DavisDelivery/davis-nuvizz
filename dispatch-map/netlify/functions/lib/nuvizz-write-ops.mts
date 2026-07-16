@@ -123,7 +123,10 @@ export function buildStopPayload(row: StopRow, settings: OriginSettings): any {
   const d = settings.serviceDate;
   const pro = row.pro ? String(row.pro) : '';
   const itemDesc = row.itemDesc ? String(row.itemDesc).trim() : '';
-  const phone = row.phone ? String(row.phone).trim() : '';
+  // Send NuVizz clean digits — strip the UI's dash/space/paren formatting (the v0.50.29 phone mask
+  // put "678-226-2099" on the wire; NuVizz server-side-validates this number, which feeds its
+  // driver→customer SMS, and rejects the punctuation). Keep a leading "+" for international.
+  const phone = row.phone ? String(row.phone).trim().replace(/(?!^\+)\D/g, '').slice(0, 200) : '';
   const notes = row.dispatchNotes ? String(row.dispatchNotes).trim() : '';
   // Davis freight semantics ↔ NuVizz's mislabeled fields (matches how the app READS
   // every stop): pallets/skids ride NuVizz "totalCartons", loose pieces ride
@@ -244,7 +247,7 @@ export function summarize(httpOk: boolean, j: any): WriteSummary {
     // stop/sync/update is an UPSERT — surface "this UPDATED an existing record" distinctly so a
     // createStop caller can warn instead of announcing a clean create that silently overwrote.
     updated: Boolean(body?.apiResult?.updated) && !body?.apiResult?.created,
-    error: ok ? null : (err || (httpOk ? null : 'request failed')),
+    error: ok ? null : (err || `NuVizz rejected the write (status='${statusRaw || (httpOk ? 'no-status/200' : 'http-error')}')`),
   };
 }
 
@@ -256,16 +259,26 @@ export function assignOk(j: any): { ok: boolean; error: string | null } {
 }
 
 function hasReasons(body: any): boolean {
-  return Array.isArray(body?.reasons) && body.reasons.length > 0;
+  return (Array.isArray(body?.reasons) && body.reasons.length > 0) || (Array.isArray(body?.Reasons) && body.Reasons.length > 0);
 }
 function firstError(body: any): string | null {
   if (!body || typeof body !== 'object') return null;
-  const r = Array.isArray(body.reasons) && body.reasons.length ? body.reasons[0] : null;
-  if (r && (r.description || r.msg || r.message)) return String(r.description || r.msg || r.message);
+  // NuVizz v7 uses BOTH lowercase `reasons` (CommonImportResponse) and capital `Reasons`
+  // (ImportFailureReason). A reason carries its text under description/msg/message/errorLiteral and a
+  // code under reasonCode/errorCode — read all of them so a rejected write is never left blank.
+  const reasons = (Array.isArray(body.reasons) && body.reasons) || (Array.isArray(body.Reasons) && body.Reasons) || null;
+  const r = reasons && reasons.length ? reasons[0] : null;
+  if (r) {
+    const t = r.description || r.msg || r.message || r.errorLiteral || r.reasonDesc;
+    const code = r.reasonCode ?? r.errorCode;
+    if (t) return code != null ? `${String(t)} (code ${code})` : String(t);
+    if (code != null) return `NuVizz reason code ${code}`;
+  }
   const ae = body?.apiResult?.errors;
   if (Array.isArray(ae) && ae.length) {
-    const m = ae[0]?.msgs ?? ae[0]?.msg ?? ae[0];
-    if (m) return Array.isArray(m) ? String(m[0]) : String(m);
+    const e = ae[0];
+    const m = e?.msgs ?? e?.msg ?? e?.description ?? null;
+    if (m) return `${e?.key ? e.key + ': ' : ''}${Array.isArray(m) ? m.join('; ') : String(m)}`;
   }
   // Spring-style error bodies carry the USEFUL detail in `message` ("JSON parse error: …")
   // while `error` is just the bare reason phrase ("Bad Request") — never bury the detail.
