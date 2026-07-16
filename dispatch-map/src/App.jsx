@@ -59,7 +59,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.50.26';
+const APP_VERSION = '0.50.27';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -104,6 +104,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.50.27', 'EQUIPMENT ICONS got the cleaner truck. The map markers and sidebar badges for “Tractor trailer friendly” (green ✓), “No tractor trailer” (red 🚫), and “Uline: straight-truck only” (amber) now draw the same crisp semi as the browser-tab favicon — trailer + sloped cab + two wheels — instead of the old blocky three-wheel drawing. Shows up on the Routing map pins, the stop-card equipment chips, and the legend. Cosmetic only — the flags, colors, and meanings are unchanged.'],
   ['0.50.26', 'BROWSER TAB ICON is now a little treasure map — a folded parchment map with a dotted trail leading to a red X, on the brand-blue tile — swapped in for the truck badge. It stays legible even on a pinned tab (icon only). The truck itself isn’t gone: it’s moving into the app’s equipment markers. Cosmetic only.'],
   ['0.50.25', 'ENGINE FIX: "Trips engine / actual" no longer reads N / 0. The Assignment view\'s ACTUAL trip count — how many runs each driver really made — was computed with a one-character type bug (asking a NUMBER for its .length), which silently zeroed the actual side on every scored day: the scoreboard read "71 / 0", every driver row read "1/0", and the travel comparison had nothing real to compare against. Both the day total and the per-driver counts now count trips correctly. Display/metric fix only — the engine\'s plan itself was never affected. (Note: agreement numbers stay cold-start-low until the driver-history backfill runs; that\'s data, not this bug.)'],
   ['0.50.24', 'BROWSER TAB ICON — the Chrome tab now shows a Davis Delivery truck badge (blue tile, white semi) instead of the blank default page icon, so the Dispatch Map tab is easy to pick out in a crowded window. It’s a crisp SVG, so it stays sharp on any screen. Cosmetic only — nothing else changed.'],
@@ -758,17 +759,15 @@ const RESTRICTION_ICONS = {
     short: 'No T/T',
     bg: '#dc2626',
     accent: '#dc2626',
-    glyph: '<rect x="2" y="6.5" width="7" height="3.5" fill="white"/><rect x="9" y="5" width="3" height="5" fill="white"/><circle cx="4" cy="10.5" r="1" fill="#dc2626"/><circle cx="10.5" cy="10.5" r="1" fill="#dc2626"/>',
-    // 22x22: tractor (right) + trailer (left), 3 wheels. currentColor.
+    glyph: '<rect x="1.4" y="4.6" width="7" height="5.4" rx="0.5" fill="white"/><path d="M8.4 6.2h2.5l2 2v1.8H8.4z" fill="white"/><circle cx="4" cy="10.2" r="1.1" fill="#dc2626"/><circle cx="9.7" cy="10.2" r="1.1" fill="#dc2626"/>',
+    // 22x22: trailer (left) + sloped-cab tractor (right), 2 wheels — matches the app favicon truck. currentColor.
     markerGlyph: `
-      <rect x="2" y="9" width="11" height="6.5" rx="0.5" fill="currentColor"/>
-      <rect x="13" y="7" width="6" height="8.5" rx="0.5" fill="currentColor"/>
-      <circle cx="5" cy="17" r="1.7" fill="white"/>
-      <circle cx="10" cy="17" r="1.7" fill="white"/>
-      <circle cx="16" cy="17" r="1.7" fill="white"/>
-      <circle cx="5" cy="17" r="1.7" fill="none" stroke="currentColor" stroke-width="0.7"/>
-      <circle cx="10" cy="17" r="1.7" fill="none" stroke="currentColor" stroke-width="0.7"/>
-      <circle cx="16" cy="17" r="1.7" fill="none" stroke="currentColor" stroke-width="0.7"/>
+      <rect x="2" y="7" width="11" height="9" rx="0.6" fill="currentColor"/>
+      <path d="M13 10h4l3 3v3H13z" fill="currentColor"/>
+      <circle cx="6" cy="17.6" r="1.9" fill="white"/>
+      <circle cx="15.5" cy="17.6" r="1.9" fill="white"/>
+      <circle cx="6" cy="17.6" r="1.9" fill="none" stroke="currentColor" stroke-width="0.7"/>
+      <circle cx="15.5" cy="17.6" r="1.9" fill="none" stroke="currentColor" stroke-width="0.7"/>
     `,
     prohibition: true,
   },
@@ -780,18 +779,16 @@ const RESTRICTION_ICONS = {
     short: 'T/T OK',
     bg: '#16a34a',
     accent: '#16a34a',
-    glyph: '<rect x="1.5" y="6.5" width="6.5" height="3.5" fill="white"/><rect x="8" y="5" width="2.8" height="5" fill="white"/><circle cx="3.5" cy="10.5" r="0.9" fill="#16a34a"/><circle cx="9.5" cy="10.5" r="0.9" fill="#16a34a"/><path d="M9.3 4 L10.8 5.6 L13.2 2.6" stroke="white" stroke-width="1.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/>',
-    // 22×22: tractor + trailer (currentColor) with a check mark above. No slash.
+    glyph: '<rect x="1.2" y="5.4" width="6.6" height="4.6" rx="0.4" fill="white"/><path d="M7.8 6.6h2.3l1.9 1.9v1.5H7.8z" fill="white"/><circle cx="3.6" cy="10.2" r="0.95" fill="#16a34a"/><circle cx="9" cy="10.2" r="0.95" fill="#16a34a"/><path d="M9.3 4 L10.8 5.6 L13.2 2.6" stroke="white" stroke-width="1.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/>',
+    // 22×22: trailer + sloped-cab tractor (currentColor) with a check above — matches the app favicon truck. No slash.
     markerGlyph: `
-      <rect x="1" y="9" width="10" height="6.5" rx="0.5" fill="currentColor"/>
-      <rect x="11" y="7" width="6" height="8.5" rx="0.5" fill="currentColor"/>
-      <circle cx="4" cy="17" r="1.6" fill="white"/>
-      <circle cx="8.5" cy="17" r="1.6" fill="white"/>
-      <circle cx="14" cy="17" r="1.6" fill="white"/>
-      <circle cx="4" cy="17" r="1.6" fill="none" stroke="currentColor" stroke-width="0.7"/>
-      <circle cx="8.5" cy="17" r="1.6" fill="none" stroke="currentColor" stroke-width="0.7"/>
-      <circle cx="14" cy="17" r="1.6" fill="none" stroke="currentColor" stroke-width="0.7"/>
-      <path d="M14 5.5 L16.5 8 L21 3" stroke="currentColor" stroke-width="2.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+      <rect x="1" y="8" width="10.5" height="8" rx="0.6" fill="currentColor"/>
+      <path d="M11.5 10.5h3.5l2.7 2.7V16H11.5z" fill="currentColor"/>
+      <circle cx="5" cy="17.6" r="1.7" fill="white"/>
+      <circle cx="14" cy="17.6" r="1.7" fill="white"/>
+      <circle cx="5" cy="17.6" r="1.7" fill="none" stroke="currentColor" stroke-width="0.7"/>
+      <circle cx="14" cy="17.6" r="1.7" fill="none" stroke="currentColor" stroke-width="0.7"/>
+      <path d="M14 5 L16.5 7.5 L21 2.5" stroke="currentColor" stroke-width="2.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
     `,
   },
   // M2.1 — Uline SPL-INSTR-TEXT advisory: "STRAIGHT TRUCK ONLY" etc. detected
@@ -802,16 +799,14 @@ const RESTRICTION_ICONS = {
     short: 'ST only',
     bg: '#f59e0b',
     accent: '#f59e0b',
-    glyph: '<rect x="2" y="6.5" width="7" height="3.5" fill="white"/><rect x="9" y="5" width="3" height="5" fill="white"/><circle cx="4" cy="10.5" r="1" fill="#f59e0b"/><circle cx="10.5" cy="10.5" r="1" fill="#f59e0b"/>',
+    glyph: '<rect x="1.4" y="4.6" width="7" height="5.4" rx="0.5" fill="white"/><path d="M8.4 6.2h2.5l2 2v1.8H8.4z" fill="white"/><circle cx="4" cy="10.2" r="1.1" fill="#f59e0b"/><circle cx="9.7" cy="10.2" r="1.1" fill="#f59e0b"/>',
     markerGlyph: `
-      <rect x="2" y="9" width="11" height="6.5" rx="0.5" fill="currentColor"/>
-      <rect x="13" y="7" width="6" height="8.5" rx="0.5" fill="currentColor"/>
-      <circle cx="5" cy="17" r="1.7" fill="white"/>
-      <circle cx="10" cy="17" r="1.7" fill="white"/>
-      <circle cx="16" cy="17" r="1.7" fill="white"/>
-      <circle cx="5" cy="17" r="1.7" fill="none" stroke="currentColor" stroke-width="0.7"/>
-      <circle cx="10" cy="17" r="1.7" fill="none" stroke="currentColor" stroke-width="0.7"/>
-      <circle cx="16" cy="17" r="1.7" fill="none" stroke="currentColor" stroke-width="0.7"/>
+      <rect x="2" y="7" width="11" height="9" rx="0.6" fill="currentColor"/>
+      <path d="M13 10h4l3 3v3H13z" fill="currentColor"/>
+      <circle cx="6" cy="17.6" r="1.9" fill="white"/>
+      <circle cx="15.5" cy="17.6" r="1.9" fill="white"/>
+      <circle cx="6" cy="17.6" r="1.9" fill="none" stroke="currentColor" stroke-width="0.7"/>
+      <circle cx="15.5" cy="17.6" r="1.9" fill="none" stroke="currentColor" stroke-width="0.7"/>
     `,
     prohibition: true,
   },
