@@ -1,11 +1,12 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Davis Delivery">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Dispatch Map — Davis Delivery">
   <rect width="64" height="64" rx="14" fill="#1e5b92"/>
-  <g fill="#ffffff">
-    <rect x="10" y="19" width="26" height="21" rx="2"/>
-    <path d="M36 24h9l7 7v9H36z"/>
+  <rect x="13" y="16" width="38" height="32" rx="3" fill="#f3e7c8" stroke="#cbb277" stroke-width="1.5"/>
+  <path d="M25 16V48M39 16V48" stroke="#d9c48f" stroke-width="1.5"/>
+  <g fill="#9a7b45">
+    <circle cx="19" cy="41" r="1.9"/>
+    <circle cx="25" cy="37" r="1.9"/>
+    <circle cx="31" cy="34" r="1.9"/>
+    <circle cx="36" cy="30" r="1.9"/>
   </g>
-  <circle cx="18" cy="44" r="5" fill="#ffffff"/>
-  <circle cx="46" cy="44" r="5" fill="#ffffff"/>
-  <circle cx="18" cy="44" r="2" fill="#1e5b92"/>
-  <circle cx="46" cy="44" r="2" fill="#1e5b92"/>
+  <path d="M39 22l7 7M46 22l-7 7" stroke="#d1342f" stroke-width="3.4" stroke-linecap="round"/>
 </svg>
