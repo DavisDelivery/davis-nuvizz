@@ -30,7 +30,10 @@ const PREC = { zone_precision: 6, super_precision: 5, top_precision: 4 };
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 test('engine version bumped for the 2.1 trend segment', () => {
-  assert.equal(ENGINE_VERSION, '2.1.0');
+  // churn-proof: 2.1.x or later, never below (exact literal broke on every patch bump)
+  const [maj, min] = ENGINE_VERSION.split('.').map(Number);
+  assert.ok(maj > 2 || (maj === 2 && min >= 1), `ENGINE_VERSION ${ENGINE_VERSION} must be >= 2.1`);
+  assert.match(ENGINE_VERSION, /^\d+\.\d+\.\d+$/);
 });
 
 // ── routing calendar ─────────────────────────────────────────────────────────

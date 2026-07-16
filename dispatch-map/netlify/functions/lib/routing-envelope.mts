@@ -51,6 +51,7 @@ export interface DriverEnvelope {
     stops_median: number | null; stops_p85: number | null;
     pallets_median: number | null; pallets_p85: number | null;
     weight_median: number | null; weight_p85: number | null;
+    weight_max: number | null;   // heaviest single trip ever observed — the never-split floor
   };
   trips_per_day_propensity: number;      // share of observed days with 2+ trips
   start_minute_typical: number | null;   // median first-touch minute-of-day
@@ -73,6 +74,11 @@ function envelopeFromDays(days: DriverDayDoc[]): Omit<DriverEnvelope, 'driver_ke
       stops_median: median(stops), stops_p85: quantile(stops, 0.85),
       pallets_median: median(pallets), pallets_p85: quantile(pallets, 0.85),
       weight_median: median(weight), weight_p85: quantile(weight, 0.85),
+      // The heaviest single trip this driver (or class) has ACTUALLY run. Dispatch
+      // has proven this weight fits on one truck, so the solver must never be
+      // forced to split below it — p85×factor alone chops the real top-15% tail
+      // and manufactures phantom trips.
+      weight_max: weight.length ? Math.max(...weight) : null,
     },
     trips_per_day_propensity: days.length ? multiTripDays / days.length : 0,
     start_minute_typical: median(starts),
@@ -102,7 +108,7 @@ export function driverEnvelope(
   }
   return {
     driver_key: driverKey, source: 'none', truck_class: truckClass, observed_days: 0,
-    per_trip: { stops_median: null, stops_p85: null, pallets_median: null, pallets_p85: null, weight_median: null, weight_p85: null },
+    per_trip: { stops_median: null, stops_p85: null, pallets_median: null, pallets_p85: null, weight_median: null, weight_p85: null, weight_max: null },
     trips_per_day_propensity: 0, start_minute_typical: null, shift_hours_typical: null, day_weight_p85: null,
   };
 }

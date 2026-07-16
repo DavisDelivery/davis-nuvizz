@@ -110,8 +110,18 @@ export function driverCanServe(driver: AssignDriver, stop: AssignStop): boolean 
   return true;
 }
 function tripCeiling(driver: AssignDriver, cfg: EngineConfig): number {
-  const p85 = driver.envelope?.per_trip?.weight_p85;
-  return p85 != null && p85 > 0 ? p85 * cfg.hard_cap_factor : Infinity;
+  // LEARNED BEHAVIORAL ceiling, tightened to real practice: p85 × factor chops
+  // the top-15% tail of trips dispatch ACTUALLY ran (by definition of p85) and
+  // manufactures phantom splits the crew can't cover. The observed per-trip MAX
+  // is proof the weight fits on one truck, so the ceiling is whichever is
+  // higher — never split what a driver has already carried in one trip.
+  const pt = driver.envelope?.per_trip;
+  const p85 = pt?.weight_p85;
+  const seen = pt?.weight_max;
+  const capP85 = p85 != null && p85 > 0 ? p85 * cfg.hard_cap_factor : null;
+  const capSeen = seen != null && seen > 0 ? seen : null;
+  if (capP85 == null && capSeen == null) return Infinity;
+  return Math.max(capP85 ?? 0, capSeen ?? 0);
 }
 function tripWeight(t: AssignedTrip): number { return t.stops.reduce((a, s) => a + (s.weight || 0), 0); }
 

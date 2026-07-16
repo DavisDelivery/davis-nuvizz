@@ -18,7 +18,7 @@
 
 import { getDoc, setDoc } from './firestore.mts';
 
-export const ENGINE_VERSION = '2.1.0';
+export const ENGINE_VERSION = '2.1.1';
 
 export const ENGINE_CONFIG_COLLECTION = 'routing_engine_config';
 
@@ -223,7 +223,7 @@ export function engineConfigDefaults(env: Record<string, string | undefined> = p
     w_overload: num('W_OVERLOAD', 3),
     w_underload: num('W_UNDERLOAD', 1),
     w_affinity: num('W_AFFINITY', 2),
-    w_trips: num('W_TRIPS', 1.5),
+    w_trips: num('W_TRIPS', 12),  // strong vote: trip count must track the driver's real double-trip propensity (was 1.5, too weak to matter)
     w_shift_overflow: num('W_SHIFT_OVERFLOW', 4),
     w_far_first: num('W_FAR_FIRST', 1),
     w_strict_window: num('W_STRICT_WINDOW', 2),
