@@ -253,6 +253,21 @@ test('summarize: 2xx with empty body → ok; non-2xx → not ok', () => {
   assert.equal(summarize(false, {}).ok, false);
 });
 
+test('summarize: NuVizz free-text success ("STOP UPDATED/CREATED SUCCESSFULLY") counts as ok; UPDATED flags an upsert', () => {
+  // The real cause of the manifest "write error": NuVizz confirms a stop/sync/update UPSERT with
+  // status "STOP UPDATED SUCCESSFULLY" — NOT the bare enum "SUCCESS". The old exact-match read that
+  // successful write as a failure and kept the (already-written) order in Held.
+  const upd = summarize(true, { status: 'STOP UPDATED SUCCESSFULLY' });
+  assert.equal(upd.ok, true);
+  assert.equal(upd.updated, true, 'an UPDATED status means the order already existed');
+  const cre = summarize(true, { status: 'STOP CREATED SUCCESSFULLY' });
+  assert.equal(cre.ok, true);
+  assert.equal(cre.updated, false);
+  // Ambiguous / partial / failed statuses still fail.
+  assert.equal(summarize(true, { status: 'PARTIALSUCCESS' }).ok, false);
+  assert.equal(summarize(true, { status: 'STOP UPDATE FAILED' }).ok, false);
+});
+
 test('summarize: a 200 LOGICAL failure always surfaces a reason — capital Reasons, errorLiteral+code, or a never-blank fallback', () => {
   // NuVizz v7 returns some rejects as HTTP 200 with a FAIL/REJECT status. The reason can live under a
   // capital `Reasons` (ImportFailureReason) or lowercase `reasons` carrying only errorLiteral/errorCode —
@@ -283,6 +298,12 @@ test('assignOk: capital-S Success and lowercase both pass; Failed does not', () 
   const f = assignOk({ status: 'Failed', reasons: [{ description: 'driver busy' }] });
   assert.equal(f.ok, false);
   assert.equal(f.error, 'driver busy');
+});
+
+test('assignOk: free-text "…ASSIGNED/Dispatched SUCCESSFULLY" passes; PARTIAL does not', () => {
+  assert.equal(assignOk({ status: 'LOAD ASSIGNED SUCCESSFULLY' }).ok, true);
+  assert.equal(assignOk({ status: 'Dispatched Successfully' }).ok, true);
+  assert.equal(assignOk({ status: 'PARTIALSUCCESS' }).ok, false);
 });
 
 test('normalizeStop: pulls status + the load it is on now; absent load ⇒ unplanned (null)', () => {
