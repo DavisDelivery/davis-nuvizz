@@ -59,7 +59,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.50.34';
+const APP_VERSION = '0.50.35';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -104,6 +104,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.50.35', 'PICKUP IS PRE-SET TO DAVIS. New Order and Bulk Add now come with “Davis Delivery Service — 943 Gainesville Hwy 200-4000, Buford, GA 30518” built in: the Pickup location dropdown always exists (even on a fresh browser with nothing saved), Davis is auto-selected, and the pickup card starts satisfied — no more typing the terminal address or “Set the pickup + service date first” just to push a manifest. Your own saved pickup locations still appear in the dropdown and win as the default. Picking “＋ New pickup location…” now starts a truly blank form (it used to pre-fill pieces of the default address).'],
   ['0.50.34', 'ITEMS NOW LAND IN NUVIZZ. The item description was being sent as a text reference on the stop, which NuVizz never shows in the Stop Details “Items” table — that’s why it read Items(0) even though the order went through. Every create now ALSO sends the description as a real line item: product = your Items text, ID = the PRO (or order #), quantity = total pieces, weight = the order weight — so it shows up in NuVizz’s Items table like any other shipment line. Applies to all entry paths (manifest intake, Bulk grid, single New Order). Re-pushing an already-pushed order updates it in place and fills in its Items line.'],
   ['0.50.33', 'FIX (the REAL one): manifest pushes that ACTUALLY SUCCEEDED were being reported as failures. NuVizz confirms a stop upsert with the status “STOP UPDATED SUCCESSFULLY” (not the bare word “SUCCESS”), and the app only recognized the exact word “SUCCESS” — so it flagged a successful write as failed and kept the order in the Held queue even though NuVizz already had it. The success check now accepts any “…SUCCESS/SUCCESSFULLY” status (while still failing on PARTIAL / FAIL / REJECT / ERROR), and the same fix is applied to the assign/dispatch path (the async-import path already handled it). Your earlier “failed” pushes DID go through — those orders are in NuVizz; re-pushing just UPDATES the same stop (no duplicates). (The v0.50.32 phone-format change was a red herring but is kept — clean digits are the right thing to send.)'],
   ['0.50.32', 'FIX: pushing a manifest order to NuVizz could fail with an unhelpful “write error.” Two problems, both fixed. (1) When NuVizz rejected a write it returned the reason in a message shape the app wasn’t reading, so you got the generic “write error” instead of WHY — the real reason is now surfaced on the row. (2) The likely cause: the on-screen phone auto-format (xxx-xxx-xxxx) was being sent to NuVizz WITH the dashes, and NuVizz validates that number (it drives the customer text-message) and rejected the punctuation. Phone now goes to NuVizz as clean digits (a leading “+” for international is kept) while still showing formatted on screen. Re-check ● LIVE and retry the push.'],
@@ -16535,7 +16536,11 @@ const fmtPhone = (v) => {
 // (nothing sent). New orders land UNPLANNED — plan them onto a load later in Routing.
 const NEWORDER_ORIGIN_KEY = 'dd_neworder_origin';    // the DEFAULT / last-used origin (also read by Routing's import header fallback)
 const NEWORDER_ORIGINS_KEY = 'dd_neworder_origins';  // the saved LIST of pickup origins (multiple pickup locations)
-const NEWORDER_ORIGIN_DEFAULT = { name: 'Buford Terminal', addr1: '', city: '', state: 'GA', zip: '' };
+// The company's own terminal — a COMPLETE address, so it's usable as-is: it seeds the pickup
+// dropdown on every device (no manual save needed) and is the selection when nothing else is saved.
+const NEWORDER_ORIGIN_DEFAULT = { name: 'Davis Delivery Service', addr1: '943 Gainesville Hwy 200-4000', city: 'Buford', state: 'GA', zip: '30518' };
+// A blank origin for the "＋ New pickup location…" reset (state pre-filled; NOT the Davis address).
+const NEWORDER_ORIGIN_BLANK = { name: '', addr1: '', city: '', state: 'GA', zip: '' };
 const EMPTY_ORDER_ROW = { name: '', addr1: '', addr2: '', city: '', state: '', zip: '', stopNbr: '', pro: '', itemDesc: '', pallets: '', loose: '', weight: '', price: '', phone: '', dispatchNotes: '' };
 
 // Coerce every field of a saved origin to a STRING — a hand-edited/corrupt entry (e.g. a numeric
@@ -16557,6 +16562,9 @@ function loadSavedOrigins() {
   // De-dupe by name|addr1 (keep first).
   const seen = new Set(); const out = [];
   for (const o of list) { const k = originKey(o); if (!seen.has(k)) { seen.add(k); out.push(o); } }
+  // Always seed the Davis terminal so the pickup dropdown exists (and is pre-selected) on a fresh
+  // device with nothing saved. User-saved locations stay first (they win the default pick).
+  if (!seen.has(originKey(NEWORDER_ORIGIN_DEFAULT))) out.push({ ...NEWORDER_ORIGIN_DEFAULT });
   return out;
 }
 
@@ -16652,7 +16660,7 @@ function NewOrderSingleScreen() {
   const pickOrigin = (e) => {
     setOriginSaved(false);
     const k = e.target.value;
-    if (!k) { setOrigin(coerceOrigin({ ...NEWORDER_ORIGIN_DEFAULT, name: '', state: 'GA' })); return; }
+    if (!k) { setOrigin(coerceOrigin({ ...NEWORDER_ORIGIN_BLANK })); return; }
     const found = origins.find((o) => originKey(o) === k);
     if (found) setOrigin(coerceOrigin(found));
   };
@@ -16932,7 +16940,7 @@ function BulkOrderScreen() {
   const pickOrigin = (e) => {
     setOriginSaved(false);
     const k = e.target.value;
-    if (!k) { setOrigin(coerceOrigin({ ...NEWORDER_ORIGIN_DEFAULT, name: '', state: 'GA' })); return; }
+    if (!k) { setOrigin(coerceOrigin({ ...NEWORDER_ORIGIN_BLANK })); return; }
     const found = origins.find((o) => originKey(o) === k);
     if (found) setOrigin(coerceOrigin(found));
   };
