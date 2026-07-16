@@ -121,7 +121,14 @@ const numOrNull = (x: any): number | null => {
 export function buildStopPayload(row: StopRow, settings: OriginSettings): any {
   const tz = settings.timeZone || 'America/New_York';
   const d = settings.serviceDate;
-  const pro = row.pro ? String(row.pro) : '';
+  // NuVizz hard-caps proNumber at 10 chars — anything longer rejects the WHOLE write ("size must
+  // be between 0 and 10", code 1401). Dispatchers type carrier-prefixed refs ("estes-2258732686"),
+  // so apply the manifest path's lesson everywhere: proNumber carries the PRO DIGITS (first 10, so
+  // a "-1" copy suffix can't shift the number), while the full typed ref rides shipmentNbr (≤20)
+  // and reference1 (≤50).
+  const proRaw = row.pro ? String(row.pro).trim() : '';
+  const proDigits = proRaw.replace(/\D/g, '').slice(0, 10);
+  const pro = proDigits || proRaw.slice(0, 10);
   const itemDesc = row.itemDesc ? String(row.itemDesc).trim() : '';
   // Send NuVizz clean digits — strip the UI's dash/space/paren formatting (the v0.50.29 phone mask
   // put "678-226-2099" on the wire; NuVizz server-side-validates this number, which feeds its
@@ -145,7 +152,7 @@ export function buildStopPayload(row: StopRow, settings: OriginSettings): any {
   const lineWeight = numOrNull(row.weight);
   const stopDetails = itemDesc ? [{
     product: itemDesc.slice(0, 100),
-    productIdentifier: String(pro || row.stopNbr || 'ITEM').slice(0, 50),
+    productIdentifier: String(proRaw || row.stopNbr || 'ITEM').slice(0, 50),
     quantity: totalPieces && totalPieces > 0 ? totalPieces : 1,
     quantityUOM: 'PCS',
     stopDetailSeq: 1,
@@ -156,8 +163,8 @@ export function buildStopPayload(row: StopRow, settings: OriginSettings): any {
   return {
     stopNbr: row.stopNbr ? String(row.stopNbr) : undefined,
     stopType: 'DO', shipmentType: 'REG', stopExecution: 'APP', sourceType: 'INTG',
-    shipmentNbr: pro || undefined, proNumber: pro || undefined,
-    reference1: pro ? `PRO ${pro}` : undefined,
+    shipmentNbr: proRaw ? proRaw.slice(0, 20) : undefined, proNumber: proRaw ? pro : undefined,
+    reference1: proRaw ? `PRO ${proRaw}`.slice(0, 50) : undefined,
     // Item/commodity description → reference2 (a plain string reference field on the stop,
     // maxLength 50 — slice or NuVizz 400s). Kept alongside stopDetails below for round-trip
     // compatibility (normalizeStop reads it back to confirm persistence on this tenant).

@@ -173,6 +173,27 @@ test('buildStopPayload: item description → reference2 (trimmed); absent when b
   assert.equal(long.reference2.length, 50);
 });
 
+test('buildStopPayload: carrier-prefixed PRO → digits in proNumber (≤10), full ref on shipmentNbr/reference1', () => {
+  const origin = { name: 'D', addr1: '9', city: 'A', state: 'GA', zip: '30301' };
+  const build = (pro) => buildStopPayload({ name: 'A', addr1: '1', city: 'B', state: 'GA', zip: '30518', pro },
+    { origin, serviceDate: '2026-07-16' });
+  // The single New Order form's real failure: "estes-2258732686" (16 chars) into proNumber →
+  // NuVizz rejects the whole write ("stop.proNumber size must be between 0 and 10", code 1401).
+  const prefixed = build('estes-2258732686');
+  assert.equal(prefixed.proNumber, '2258732686', 'proNumber carries the PRO digits only');
+  assert.equal(prefixed.shipmentNbr, 'estes-2258732686', 'full typed ref rides shipmentNbr (≤20)');
+  assert.equal(prefixed.reference1, 'PRO estes-2258732686');
+  // Dashed manifest PRO → digits; a "-1" copy suffix can't shift the number (first 10 wins).
+  assert.equal(build('028-8347656').proNumber, '0288347656');
+  assert.equal(build('ESTES-0288347656-1').proNumber, '0288347656');
+  // Plain 10-digit PRO passes through; blank emits nothing.
+  assert.equal(build('0288347656').proNumber, '0288347656');
+  const none = build('');
+  assert.equal(none.proNumber, undefined);
+  assert.equal(none.shipmentNbr, undefined);
+  assert.equal(none.reference1, undefined);
+});
+
 test('buildStopPayload: item description → ONE stopDetails line item (populates the NuVizz "Items" table)', () => {
   const origin = { name: 'D', addr1: '9', city: 'A', state: 'GA', zip: '30301' };
   // The Items(N) table in NuVizz Stop Details is fed from stopDetails[] ONLY — reference2 never
