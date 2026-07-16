@@ -229,13 +229,24 @@ export interface WriteSummary {
  * 2xx with no reasons/error. Pulls entityId/entityNbr. Error text is drawn from the
  * first available of reasons[0].description / apiResult.errors[0].msgs / error / message.
  */
+// NuVizz write acks are NOT the bare enum "SUCCESS": a stop upsert answers "STOP UPDATED
+// SUCCESSFULLY", an async import "…is SUCCESS. Find more info…", an assign "…Success". Accept any
+// status carrying success/successful/successfully UNLESS a failure word is present (so
+// PARTIALSUCCESS / "SUCCESS WITH ERRORS" / FAIL / REJECT stay failures).
+const STATUS_SUCCESS_WORD = /\bsuccess(ful(ly)?)?\b/i;
+const STATUS_FAIL_WORD = /\b(partial|fail|failure|error|reject|invalid|denied)/i;
+function statusAccepted(s: any): boolean {
+  const t = String(s ?? '').trim();
+  return t !== '' && STATUS_SUCCESS_WORD.test(t) && !STATUS_FAIL_WORD.test(t);
+}
+
 export function summarize(httpOk: boolean, j: any): WriteSummary {
   const body = j || {};
   const err = firstError(body);
   const created = body?.apiResult?.created || body?.apiResult?.updated;
   const ent = Array.isArray(body?.entityInfoList) && body.entityInfoList.length ? body.entityInfoList[0] : null;
   const statusRaw = String(body?.status ?? '').toUpperCase();
-  const statusSuccess = statusRaw === 'SUCCESS';
+  const statusSuccess = statusAccepted(statusRaw);
   // A present-but-non-SUCCESS status (PARTIALSUCCESS / FAILURE / REJECT / …) is NOT ok — never let
   // the bare "2xx with no reasons[]" fallback below swallow a partial/failed apply as success.
   const statusBad = statusRaw !== '' && !statusSuccess;
@@ -246,15 +257,16 @@ export function summarize(httpOk: boolean, j: any): WriteSummary {
     entityNbr: ent?.entityNbr ?? null,
     // stop/sync/update is an UPSERT — surface "this UPDATED an existing record" distinctly so a
     // createStop caller can warn instead of announcing a clean create that silently overwrote.
-    updated: Boolean(body?.apiResult?.updated) && !body?.apiResult?.created,
+    updated: (Boolean(body?.apiResult?.updated) && !body?.apiResult?.created)
+      || (/\bUPDATED\b/.test(statusRaw) && !/\b(CREATED|INSERTED|ADDED)\b/.test(statusRaw)),
     error: ok ? null : (err || `NuVizz rejected the write (status='${statusRaw || (httpOk ? 'no-status/200' : 'http-error')}')`),
   };
 }
 
 /** assignOk (§6) — for assign/dispatch. ok when status (case-insensitive) === 'success'. */
 export function assignOk(j: any): { ok: boolean; error: string | null } {
-  const status = String(j?.status ?? '').trim().toLowerCase();
-  if (status === 'success') return { ok: true, error: null };
+  // Same free-text acks as summarize: assign/dispatch replies "…Success" or "… ASSIGNED SUCCESSFULLY".
+  if (statusAccepted(j?.status)) return { ok: true, error: null };
   return { ok: false, error: firstError(j) || `assign/dispatch status='${j?.status ?? ''}'` };
 }
 
@@ -633,10 +645,9 @@ export function importOk(httpOk: boolean, j: any): { ok: boolean; async: true; a
   // contains the STANDALONE word "success" with no failure word anywhere; \b keeps
   // PARTIALSUCCESS from matching and the deny-list rejects "SUCCESS WITH ERRORS"-style acks.
   const statusRaw = String(body?.status ?? '').trim();
-  const badWord = /\b(partial|fail|failure|error|reject|invalid|denied)/i;
   const accepted = statusRaw !== ''
-    ? (/\bsuccess\b/i.test(statusRaw) && !badWord.test(statusRaw))
-    : (/\bsuccess\b/i.test(text) && !badWord.test(text));
+    ? (STATUS_SUCCESS_WORD.test(statusRaw) && !STATUS_FAIL_WORD.test(statusRaw))
+    : (STATUS_SUCCESS_WORD.test(text) && !STATUS_FAIL_WORD.test(text));
   // The AppMessageLog id: UAT says "AppMessageLog Id-…", prod says "AppMessageLog with Id- …" —
   // allow a few words between, then the id token.
   const m = text.match(/AppMessageLog(?:\s+\w+){0,3}?\s*\bId\b\s*[-:\s]*([A-Za-z0-9._-]+)/i);
