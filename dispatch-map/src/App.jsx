@@ -59,7 +59,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.50.29';
+const APP_VERSION = '0.50.30';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -104,6 +104,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.50.30', 'MANIFEST INTAKE / order entry — a proper ITEMS column and a cleaner grid. (1) The manifest review table now shows an ITEMS column (what’s actually shipping, read straight off the manifest’s Description) — it was already being read, just never displayed. (2) The number columns are tighter (Pallets / Loose / Weight — “Wt” is now spelled out “Weight”) and Price is slimmer, freeing room so the Dispatch notes and Items columns are now wide enough to actually read. (3) The whole Bulk Add page is wider, reclaiming the gray side margins. (4) PHONE fields on every entry path — single New Order, the Bulk grid, and the manifest intake — now auto-format to xxx-xxx-xxxx as you type. All three paths already share the same column set (Items, Pallets, Loose, Weight, Phone, Dispatch notes, Price).'],
   ['0.50.29', 'FIX: the new full-bleed favicon (v0.50.28) was already live but browsers cache the tab icon so aggressively that even a hard-refresh kept showing the old blue-framed one. The favicon link now carries a version tag (favicon.svg?v=2), which forces every browser to re-fetch it — so the updated map icon actually shows. If a tab STILL shows the old icon, fully close that tab (or the browser) once and reopen; pinned tabs are the stickiest.'],
   ['0.50.28', 'Two small polish items. (1) The browser-tab icon (favicon) is now the map filling the whole tile — the blue frame around it is gone, so the little map reads bigger and clearer in the tab. (2) In "Search past PROs / customer history", when you search by a PRO number the matching chip in that customer\'s list is now highlighted blue, so you can instantly see which of their past deliveries you searched for instead of scanning the row.'],
   ['0.50.27', 'EQUIPMENT ICONS got the cleaner truck. The map markers and sidebar badges for “Tractor trailer friendly” (green ✓), “No tractor trailer” (red 🚫), and “Uline: straight-truck only” (amber) now draw the same crisp semi as the browser-tab favicon — trailer + sloped cab + two wheels — instead of the old blocky three-wheel drawing. Shows up on the Routing map pins, the stop-card equipment chips, and the legend. Cosmetic only — the flags, colors, and meanings are unchanged.'],
@@ -16495,6 +16496,9 @@ function DiagnosticsRoute() {
 // Normalize a phone to 10 digits (drops a leading US country-code 1). Used by the
 // shell to derive customer contacts handed to the Messages panel.
 const normPhone = (p) => { const d = String(p || '').replace(/\D/g, ''); return d.length === 11 && d.startsWith('1') ? d.slice(1) : d; };
+// Progressive phone mask → xxx-xxx-xxxx as the user types (keeps only digits, US 10-digit; a leading
+// "1" on an 11-digit entry is trimmed by normPhone). Every order-entry phone field runs through this.
+const fmtPhone = (v) => { const d = normPhone(v).slice(0, 10); if (d.length > 6) return `${d.slice(0, 3)}-${d.slice(3, 6)}-${d.slice(6)}`; if (d.length > 3) return `${d.slice(0, 3)}-${d.slice(3)}`; return d; };
 
 // ── New Order — create a delivery stop (order) in NuVizz from a standalone tab. Fill the
 // delivery address + optional order details and Create. The origin ("from") + service date
@@ -16610,7 +16614,7 @@ function NewOrderSingleScreen() {
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState(null); // { ok, beta?, msg }
 
-  const set = (k) => (e) => setRow((r) => ({ ...r, [k]: e.target.value }));
+  const set = (k) => (e) => setRow((r) => ({ ...r, [k]: k === 'phone' ? fmtPhone(e.target.value) : e.target.value }));
   const setOrig = (k) => (e) => { setOriginSaved(false); setOrigin((o) => ({ ...o, [k]: e.target.value })); };
 
   const deliveryComplete = !!(row.name.trim() && row.addr1.trim() && row.city.trim() && row.state.trim() && row.zip.trim());
@@ -16913,7 +16917,7 @@ function BulkOrderScreen() {
     setOriginSaved(true);
   };
 
-  const setCell = (i, key) => (e) => { const v = e.target.value; setRows((rs) => rs.map((r, idx) => (idx === i ? { ...r, [key]: v } : r))); };
+  const setCell = (i, key) => (e) => { const v = key === 'phone' ? fmtPhone(e.target.value) : e.target.value; setRows((rs) => rs.map((r, idx) => (idx === i ? { ...r, [key]: v } : r))); };
   const addRow = () => setRows((rs) => (rs.length >= BULK_MAX_ROWS ? rs : [...rs, bulkEmptyRow()]));
   const removeRow = (i) => setRows((rs) => (rs.length > 1 ? rs.filter((_, idx) => idx !== i) : [bulkEmptyRow()]));
   const clearRows = () => { setRows([bulkEmptyRow(), bulkEmptyRow(), bulkEmptyRow()]); setResults(null); };
@@ -17175,7 +17179,7 @@ function BulkOrderScreen() {
   // what's actually being sent to NuVizz — and a mid-push discard nulled the state under the
   // in-flight loop. The row inputs/buttons are also disabled while intakeBusy (belt).
   const setIntakeCell = (id, key) => (e) => {
-    const v = e.target.value;
+    const v = key === 'phone' ? fmtPhone(e.target.value) : e.target.value;
     if (intakeBusy) return;
     setIntake((it) => (it ? { ...it, rows: it.rows.map((r) => (r.id === id ? { ...r, [key]: v } : r)) } : it));
   };
@@ -17244,7 +17248,7 @@ function BulkOrderScreen() {
 
   return (
     <div className="flex-1 min-h-0 overflow-auto bg-slate-50">
-      <div className="max-w-[1600px] mx-auto p-4 space-y-4">
+      <div className="max-w-[1850px] mx-auto p-4 space-y-4">
         {/* Header + Beta/Live */}
         <div className="flex items-center justify-between gap-3">
           <div>
@@ -17383,7 +17387,7 @@ function BulkOrderScreen() {
           const m = intake.manifest || {};
           const carrierWord = String(m.carrier || 'Estes').trim().split(/\s+/)[0];
           const rowsShown = intakeTab === 'held' ? heldRows : pushedRows;
-          const intakeCols = intakeTab === 'held' ? 11 : 10;   // the checkbox column exists only on Held
+          const intakeCols = intakeTab === 'held' ? 12 : 11;   // the checkbox column exists only on Held
           const unitSum = intakeRows.reduce((a, r) => a + (Number(r.pallets) || 0), 0);
           const wgtSum = intakeRows.reduce((a, r) => a + (Number(r.weight) || 0), 0);
           return (
@@ -17435,9 +17439,10 @@ function BulkOrderScreen() {
                       <th className="pr-2 pb-1 w-6">#</th>
                       <th className="px-1 pb-1">Order ref</th>
                       <th className="px-1 pb-1">Consignee (delivery)</th>
+                      <th className="px-1 pb-1">Items</th>
                       <th className="px-1 pb-1">Pallets</th>
-                      <th className="px-1 pb-1">Loose pcs</th>
-                      <th className="px-1 pb-1">Wt</th>
+                      <th className="px-1 pb-1">Loose</th>
+                      <th className="px-1 pb-1">Weight</th>
                       <th className="px-1 pb-1">Phone</th>
                       <th className="px-1 pb-1">Dispatch notes</th>
                       <th className="px-1 pb-1">Price</th>
@@ -17473,22 +17478,24 @@ function BulkOrderScreen() {
                             </td>
                             {pushed ? (
                               <>
+                                <td className="px-1 py-1 max-w-[240px] truncate text-slate-600" title={r.itemDesc}>{r.itemDesc || '—'}</td>
                                 <td className="px-1 py-1 tabular-nums">{r.pallets || '—'}</td>
                                 <td className="px-1 py-1 tabular-nums">{r.loose || '—'}</td>
                                 <td className="px-1 py-1 tabular-nums">{r.weight || '—'}</td>
                                 <td className="px-1 py-1">{r.phone || '—'}</td>
-                                <td className="px-1 py-1 max-w-[160px] truncate" title={r.dispatchNotes}>{r.dispatchNotes || '—'}</td>
+                                <td className="px-1 py-1 max-w-[240px] truncate" title={r.dispatchNotes}>{r.dispatchNotes || '—'}</td>
                                 <td className="px-1 py-1 tabular-nums">{r.price ? `$${r.price}` : '—'}</td>
                                 <td className="py-1 text-green-600"><FileCheck size={14} /></td>
                               </>
                             ) : (
                               <>
-                                <td className="px-1 py-1"><input value={r.pallets} onChange={setIntakeCell(r.id, 'pallets')} disabled={intakeBusy} className={`${gridInput} w-14 text-right`} /></td>
-                                <td className="px-1 py-1"><input value={r.loose} onChange={setIntakeCell(r.id, 'loose')} disabled={intakeBusy} className={`${gridInput} w-14 text-right`} /></td>
-                                <td className="px-1 py-1"><input value={r.weight} onChange={setIntakeCell(r.id, 'weight')} disabled={intakeBusy} className={`${gridInput} w-16 text-right`} /></td>
-                                <td className="px-1 py-1"><input value={r.phone} onChange={setIntakeCell(r.id, 'phone')} disabled={intakeBusy} placeholder="add phone" className={`${gridInput} w-28`} /></td>
-                                <td className="px-1 py-1"><input value={r.dispatchNotes} onChange={setIntakeCell(r.id, 'dispatchNotes')} disabled={intakeBusy} placeholder="dispatch notes" className={`${gridInput} min-w-[150px]`} /></td>
-                                <td className="px-1 py-1"><input value={r.price} onChange={setIntakeCell(r.id, 'price')} disabled={intakeBusy} placeholder="$" className={`${gridInput} w-16 text-right`} /></td>
+                                <td className="px-1 py-1"><input value={r.itemDesc} onChange={setIntakeCell(r.id, 'itemDesc')} disabled={intakeBusy} placeholder="what's shipping" className={`${gridInput} min-w-[200px]`} /></td>
+                                <td className="px-1 py-1"><input value={r.pallets} onChange={setIntakeCell(r.id, 'pallets')} disabled={intakeBusy} className={`${gridInput} w-12 text-right`} /></td>
+                                <td className="px-1 py-1"><input value={r.loose} onChange={setIntakeCell(r.id, 'loose')} disabled={intakeBusy} className={`${gridInput} w-12 text-right`} /></td>
+                                <td className="px-1 py-1"><input value={r.weight} onChange={setIntakeCell(r.id, 'weight')} disabled={intakeBusy} className={`${gridInput} w-14 text-right`} /></td>
+                                <td className="px-1 py-1"><input value={r.phone} onChange={setIntakeCell(r.id, 'phone')} disabled={intakeBusy} placeholder="add phone" className={`${gridInput} w-32`} /></td>
+                                <td className="px-1 py-1"><input value={r.dispatchNotes} onChange={setIntakeCell(r.id, 'dispatchNotes')} disabled={intakeBusy} placeholder="dispatch notes" className={`${gridInput} min-w-[220px]`} /></td>
+                                <td className="px-1 py-1"><input value={r.price} onChange={setIntakeCell(r.id, 'price')} disabled={intakeBusy} placeholder="$" className={`${gridInput} w-14 text-right`} /></td>
                                 <td className="py-1"><button onClick={() => removeIntakeRow(r.id)} disabled={intakeBusy} title="Remove this order from the manifest intake" className={`text-slate-400 ${intakeBusy ? 'opacity-40 cursor-not-allowed' : 'hover:text-red-600'}`}><X size={13} /></button></td>
                               </>
                             )}
