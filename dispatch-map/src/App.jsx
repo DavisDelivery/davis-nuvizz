@@ -59,7 +59,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.50.28';
+const APP_VERSION = '0.50.29';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -104,6 +104,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.50.29', 'FIX: the new full-bleed favicon (v0.50.28) was already live but browsers cache the tab icon so aggressively that even a hard-refresh kept showing the old blue-framed one. The favicon link now carries a version tag (favicon.svg?v=2), which forces every browser to re-fetch it — so the updated map icon actually shows. If a tab STILL shows the old icon, fully close that tab (or the browser) once and reopen; pinned tabs are the stickiest.'],
   ['0.50.28', 'Two small polish items. (1) The browser-tab icon (favicon) is now the map filling the whole tile — the blue frame around it is gone, so the little map reads bigger and clearer in the tab. (2) In "Search past PROs / customer history", when you search by a PRO number the matching chip in that customer\'s list is now highlighted blue, so you can instantly see which of their past deliveries you searched for instead of scanning the row.'],
   ['0.50.27', 'EQUIPMENT ICONS got the cleaner truck. The map markers and sidebar badges for “Tractor trailer friendly” (green ✓), “No tractor trailer” (red 🚫), and “Uline: straight-truck only” (amber) now draw the same crisp semi as the browser-tab favicon — trailer + sloped cab + two wheels — instead of the old blocky three-wheel drawing. Shows up on the Routing map pins, the stop-card equipment chips, and the legend. Cosmetic only — the flags, colors, and meanings are unchanged.'],
   ['0.50.26', 'BROWSER TAB ICON is now a little treasure map — a folded parchment map with a dotted trail leading to a red X, on the brand-blue tile — swapped in for the truck badge. It stays legible even on a pinned tab (icon only). The truck itself isn’t gone: it’s moving into the app’s equipment markers. Cosmetic only.'],
