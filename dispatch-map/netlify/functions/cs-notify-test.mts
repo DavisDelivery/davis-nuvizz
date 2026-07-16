@@ -22,7 +22,7 @@
 
 import { isFirestoreEnabled, readStops, etDayString } from './lib/firestore.mts';
 import { emailEnabled, sendEmail } from './lib/email.mts';
-import { buildEmail } from './lib/cs-notify.mts';
+import { buildEmail, csRecipients } from './lib/cs-notify.mts';
 import { normalizeMatchKey } from './lib/match-key.mts';
 
 const TENANT = 'davis';
@@ -44,16 +44,12 @@ export default async (req: Request): Promise<Response> => {
   const dryRun = url.searchParams.get('dryRun') === '1';
 
   // Configuration check FIRST — the #1 reason a "test" would silently do nothing.
-  const recipients = toOverride
-    ? [toOverride]
-    : String(process.env.NOTIFY_CS_TO || '').split(',').map((s) => s.trim()).filter(Boolean);
+  // NOTIFY_CS_TO wins; else csRecipients() falls back to the company CS inbox (the send path does
+  // the same, so this test reflects exactly where a real scheduled email would go).
+  const recipients = toOverride ? [toOverride] : csRecipients();
   if (!emailEnabled()) {
     return J({ ok: false, configured: false, reason: 'email_disabled',
       detail: 'RESEND_API_KEY and/or RESEND_FROM are not set on this site — the CS-email feature is a no-op until they are.' });
-  }
-  if (!recipients.length) {
-    return J({ ok: false, configured: false, reason: 'no_recipients',
-      detail: 'NOTIFY_CS_TO is not set (and no ?to= override was given) — nowhere to send. Set NOTIFY_CS_TO to the CS address(es), comma-separated.' });
   }
 
   // Find the sample stop on the day's board (our cache — zero NuVizz).
