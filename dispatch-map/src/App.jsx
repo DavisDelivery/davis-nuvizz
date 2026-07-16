@@ -59,7 +59,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.50.25';
+const APP_VERSION = '0.50.26';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -104,6 +104,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.50.26', 'BROWSER TAB ICON is now a little treasure map — a folded parchment map with a dotted trail leading to a red X, on the brand-blue tile — swapped in for the truck badge. It stays legible even on a pinned tab (icon only). The truck itself isn’t gone: it’s moving into the app’s equipment markers. Cosmetic only.'],
   ['0.50.25', 'ENGINE FIX: "Trips engine / actual" no longer reads N / 0. The Assignment view\'s ACTUAL trip count — how many runs each driver really made — was computed with a one-character type bug (asking a NUMBER for its .length), which silently zeroed the actual side on every scored day: the scoreboard read "71 / 0", every driver row read "1/0", and the travel comparison had nothing real to compare against. Both the day total and the per-driver counts now count trips correctly. Display/metric fix only — the engine\'s plan itself was never affected. (Note: agreement numbers stay cold-start-low until the driver-history backfill runs; that\'s data, not this bug.)'],
   ['0.50.24', 'BROWSER TAB ICON — the Chrome tab now shows a Davis Delivery truck badge (blue tile, white semi) instead of the blank default page icon, so the Dispatch Map tab is easy to pick out in a crowded window. It’s a crisp SVG, so it stays sharp on any screen. Cosmetic only — nothing else changed.'],
   ['0.50.23', 'ENGINE ASSIGNMENT — more room to actually read the routes. The day-plan map now has an ⤢ Expand button that hides the drivers table and blows the map up to full width (⤡ Collapse to bring the table back). The daily-agreement chart is shorter and collapses to a one-line header (▾ hide) so it stops eating the screen. And a new \u201cOnly moved\u201d toggle focuses everything — the drivers table AND the map (routes + pins) — on just the drivers the engine moved a stop to or from, so you can see the disagreements without the rest of the day in the way. Shadow-only view controls; no data or scoring change.'],
