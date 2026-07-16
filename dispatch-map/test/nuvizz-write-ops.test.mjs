@@ -169,11 +169,15 @@ test('buildStopPayload: item description → reference2 (trimmed); absent when b
   assert.equal('reference2' in JSON.parse(JSON.stringify(blank)), false, 'undefined reference2 is omitted from the wire payload');
 });
 
-test('buildStopPayload: phone → to.contact (contactName + phone); absent when blank', () => {
+test('buildStopPayload: phone → to.contact with CLEAN DIGITS (UI dashes/parens stripped; leading + kept); absent when blank', () => {
   const origin = { name: 'D', addr1: '9', city: 'A', state: 'GA', zip: '30301' };
-  const withPhone = buildStopPayload({ name: 'JASMINE LEWIS', addr1: '1', city: 'B', state: 'GA', zip: '30518', phone: ' 770-555-0123 ' },
-    { origin, serviceDate: '2026-07-16' });
-  assert.deepEqual(withPhone.to.contact, { contactName: 'JASMINE LEWIS', phone: '770-555-0123' });
+  const contactFor = (phone) => buildStopPayload({ name: 'JASMINE LEWIS', addr1: '1', city: 'B', state: 'GA', zip: '30518', phone },
+    { origin, serviceDate: '2026-07-16' }).to.contact;
+  // The intake grid stores a dash-formatted phone ("678-226-2099"); NuVizz server-side-validates the
+  // number (it feeds the driver→customer SMS) and rejects the punctuation, so the WIRE must be digits.
+  assert.deepEqual(contactFor(' 770-555-0123 '), { contactName: 'JASMINE LEWIS', phone: '7705550123' });
+  assert.deepEqual(contactFor('(770) 555-0123'), { contactName: 'JASMINE LEWIS', phone: '7705550123' });
+  assert.deepEqual(contactFor('+44 20 7946 0958'), { contactName: 'JASMINE LEWIS', phone: '+442079460958' });
   const blank = buildStopPayload({ name: 'A', addr1: '1', city: 'B', state: 'GA', zip: '30518', phone: '   ' },
     { origin, serviceDate: '2026-07-16' });
   assert.equal(blank.to.contact, undefined, 'blank phone must not emit a contact block');
@@ -247,6 +251,24 @@ test('summarize: status SUCCESS → ok; reasons present → not ok with descript
 test('summarize: 2xx with empty body → ok; non-2xx → not ok', () => {
   assert.equal(summarize(true, {}).ok, true);
   assert.equal(summarize(false, {}).ok, false);
+});
+
+test('summarize: a 200 LOGICAL failure always surfaces a reason — capital Reasons, errorLiteral+code, or a never-blank fallback', () => {
+  // NuVizz v7 returns some rejects as HTTP 200 with a FAIL/REJECT status. The reason can live under a
+  // capital `Reasons` (ImportFailureReason) or lowercase `reasons` carrying only errorLiteral/errorCode —
+  // shapes the old firstError ignored, leaving the client to show the useless generic "write error".
+  const cap = summarize(true, { status: 'FAIL', Reasons: [{ description: 'Invalid phone number', reasonCode: 812 }] });
+  assert.equal(cap.ok, false);
+  assert.match(cap.error, /Invalid phone number/);
+  assert.match(cap.error, /812/);
+  const lit = summarize(true, { status: 'REJECT', reasons: [{ errorLiteral: 'PHONE_INVALID', errorCode: 'E42' }] });
+  assert.equal(lit.ok, false);
+  assert.match(lit.error, /PHONE_INVALID/);
+  // A failure with NO parseable reason must STILL carry text (the old code returned null → "write error").
+  const bare = summarize(true, { status: 'FAIL' });
+  assert.equal(bare.ok, false);
+  assert.ok(bare.error && bare.error.length > 0, 'a failed write must never carry a null/blank error');
+  assert.match(bare.error, /FAIL/);
 });
 
 test('summarize: apiResult.errors[0].msgs surfaces as error', () => {
