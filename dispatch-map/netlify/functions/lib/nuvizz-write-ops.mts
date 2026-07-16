@@ -136,15 +136,34 @@ export function buildStopPayload(row: StopRow, settings: OriginSettings): any {
   const pallets = numOrNull(row.pallets);
   const loose = numOrNull(row.loose);
   const totalPieces = pallets != null || loose != null ? (pallets ?? 0) + (loose ?? 0) : null;
+  // Emit the order as ONE NuVizz line item (StopDetail) so it shows in the Stop's "Items"
+  // table — NuVizz populates that table from stopDetails[] ONLY; the header totals above are
+  // separate fields and stay authoritative (the line mirrors them, so a recompute is a no-op).
+  // Required StopDetail fields (v7, additionalProperties:false): product, productIdentifier,
+  // quantity(>0), quantityUOM, stopDetailSeq(>0). No SKU on a manifest row → productIdentifier
+  // falls back to the PRO / order number (the spec's "unique ID for the shipment").
+  const lineWeight = numOrNull(row.weight);
+  const stopDetails = itemDesc ? [{
+    product: itemDesc.slice(0, 100),
+    productIdentifier: String(pro || row.stopNbr || 'ITEM').slice(0, 50),
+    quantity: totalPieces && totalPieces > 0 ? totalPieces : 1,
+    quantityUOM: 'PCS',
+    stopDetailSeq: 1,
+    lineType: '01',                                  // 01 = Product
+    weight: lineWeight ?? undefined,
+    weightUOM: lineWeight != null ? 'LBS' : undefined,
+  }] : undefined;
   return {
     stopNbr: row.stopNbr ? String(row.stopNbr) : undefined,
     stopType: 'DO', shipmentType: 'REG', stopExecution: 'APP', sourceType: 'INTG',
     shipmentNbr: pro || undefined, proNumber: pro || undefined,
     reference1: pro ? `PRO ${pro}` : undefined,
-    // Item/commodity description → reference2 (a plain string reference field on the stop).
-    // Surfaced back by normalizeStop so a live create can be read back to confirm it persisted
-    // on this tenant (NuVizz silently drops unknown fields — verify via getStop / write-log).
-    reference2: itemDesc || undefined,
+    // Item/commodity description → reference2 (a plain string reference field on the stop,
+    // maxLength 50 — slice or NuVizz 400s). Kept alongside stopDetails below for round-trip
+    // compatibility (normalizeStop reads it back to confirm persistence on this tenant).
+    reference2: itemDesc ? itemDesc.slice(0, 50) : undefined,
+    // Item/commodity as a real line item → populates the Stop Details "Items" table.
+    stopDetails,
     totalCartons: pallets,          // NuVizz "cartons" = real PALLETS / skids
     volume: loose,                  // NuVizz "volume"  = LOOSE pieces
     totalPallets: totalPieces ?? 1, // NuVizz "pallets" = TOTAL pieces (pallets + loose)
