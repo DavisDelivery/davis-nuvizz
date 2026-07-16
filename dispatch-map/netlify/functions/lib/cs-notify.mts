@@ -37,9 +37,13 @@ async function loadMarkedCustomers(): Promise<Map<string, string>> {
   return set;
 }
 
-function recipients(): string[] {
-  return String(process.env.NOTIFY_CS_TO || '')
-    .split(',').map((s) => s.trim()).filter(Boolean);
+// If NOTIFY_CS_TO is unset, fall back to the company CS inbox instead of silently disabling the
+// whole feature — a missing env var used to make every scheduled scan a no-op (nowhere to send).
+// The env var still WINS when set (comma-separated for multiple recipients).
+export const CS_DEFAULT_TO = 'customerservice@davisdelivery.com';
+export function csRecipients(): string[] {
+  const raw = String(process.env.NOTIFY_CS_TO || '').split(',').map((s) => s.trim()).filter(Boolean);
+  return raw.length ? raw : [CS_DEFAULT_TO];
 }
 
 export function buildEmail(stop: any, date: string): { subject: string; text: string; html: string } {
@@ -82,11 +86,8 @@ export async function notifyMarkedCustomers(
   date: string,
   stops: any[],
 ): Promise<{ skipped?: string; matched: number; sent: number; failed: number }> {
-  const to = recipients();
-  if (!emailEnabled() || !to.length) return { skipped: 'disabled', matched: 0, sent: 0, failed: 0 };
-
+  const to = csRecipients();
   const marked = await loadMarkedCustomers();
-  if (!marked.size) return { matched: 0, sent: 0, failed: 0 };
 
   // First scanned stop per opted-in match_key (dedupe within this batch).
   const hits = new Map<string, any>();
@@ -95,30 +96,40 @@ export async function notifyMarkedCustomers(
     const key = normalizeMatchKey(s.businessName, s.addr1, s.city, s.zip);
     if (marked.has(key) && !hits.has(key)) hits.set(key, s);
   }
-  if (!hits.size) return { matched: 0, sent: 0, failed: 0 };
 
-  // Dedup doc: which match_keys have already been emailed for THIS delivery date.
-  const docPath = `${OPS_COLLECTION}/cs_notify__${date}`;
-  const doc = (await getDoc(docPath)) as any;
-  const notified: Record<string, string> = (doc && typeof doc.notified === 'object' && doc.notified) || {};
-
-  let sent = 0, failed = 0, changed = false;
-  for (const [key, stop] of hits) {
-    if (notified[key]) continue; // already emailed today
-    const { subject, text, html } = buildEmail(stop, date);
-    const res = await sendEmail({ to, subject, text, html });
-    if (res.ok) {
-      notified[key] = new Date().toISOString();
-      changed = true;
-      sent++;
-    } else {
-      failed++;
-      console.warn(`[cs-notify] send failed for ${key}: ${res.error}`);
+  let sent = 0, failed = 0;
+  let skipped: string | undefined;
+  if (!emailEnabled()) {
+    skipped = 'email_disabled';   // RESEND_API_KEY / RESEND_FROM not set — nothing can send
+  } else if (hits.size) {
+    // Dedup doc: which match_keys have already been emailed for THIS delivery date.
+    const docPath = `${OPS_COLLECTION}/cs_notify__${date}`;
+    const doc = (await getDoc(docPath)) as any;
+    const notified: Record<string, string> = (doc && typeof doc.notified === 'object' && doc.notified) || {};
+    let changed = false;
+    for (const [key, stop] of hits) {
+      if (notified[key]) continue; // already emailed today
+      const { subject, text, html } = buildEmail(stop, date);
+      const res = await sendEmail({ to, subject, text, html });
+      if (res.ok) { notified[key] = new Date().toISOString(); changed = true; sent++; }
+      else { failed++; console.warn(`[cs-notify] send failed for ${key}: ${res.error}`); }
+    }
+    if (changed) {
+      try { await setDoc(docPath, { notified, updated_at: new Date().toISOString(), date }); }
+      catch (e: any) { console.warn(`[cs-notify] dedup write failed: ${e?.message}`); }
     }
   }
-  if (changed) {
-    try { await setDoc(docPath, { notified, updated_at: new Date().toISOString(), date }); }
-    catch (e: any) { console.warn(`[cs-notify] dedup write failed: ${e?.message}`); }
-  }
-  return { matched: hits.size, sent, failed };
+
+  // Status snapshot so the feature can never be an INVISIBLE no-op again. Read
+  // nuvizz_ops/cs_notify_status__<date> to diagnose: marked=0 → nobody has the flag on;
+  // matched=0 while marked>0 → the customer's match-key drifted (NuVizz returned a slightly
+  // different name/address than when the flag was set); sent>0 → it's working. Best-effort.
+  try {
+    await setDoc(`${OPS_COLLECTION}/cs_notify_status__${date}`, {
+      date, at: new Date().toISOString(), recipients: to,
+      marked: marked.size, matched: hits.size, sent, failed, skipped: skipped || null,
+    });
+  } catch (e: any) { console.warn(`[cs-notify] status write failed: ${e?.message}`); }
+
+  return { skipped, matched: hits.size, sent, failed };
 }
