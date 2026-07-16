@@ -59,7 +59,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.50.27';
+const APP_VERSION = '0.50.28';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -104,6 +104,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.50.28', 'Two small polish items. (1) The browser-tab icon (favicon) is now the map filling the whole tile — the blue frame around it is gone, so the little map reads bigger and clearer in the tab. (2) In "Search past PROs / customer history", when you search by a PRO number the matching chip in that customer\'s list is now highlighted blue, so you can instantly see which of their past deliveries you searched for instead of scanning the row.'],
   ['0.50.27', 'EQUIPMENT ICONS got the cleaner truck. The map markers and sidebar badges for “Tractor trailer friendly” (green ✓), “No tractor trailer” (red 🚫), and “Uline: straight-truck only” (amber) now draw the same crisp semi as the browser-tab favicon — trailer + sloped cab + two wheels — instead of the old blocky three-wheel drawing. Shows up on the Routing map pins, the stop-card equipment chips, and the legend. Cosmetic only — the flags, colors, and meanings are unchanged.'],
   ['0.50.26', 'BROWSER TAB ICON is now a little treasure map — a folded parchment map with a dotted trail leading to a red X, on the brand-blue tile — swapped in for the truck badge. It stays legible even on a pinned tab (icon only). The truck itself isn’t gone: it’s moving into the app’s equipment markers. Cosmetic only.'],
   ['0.50.25', 'ENGINE FIX: "Trips engine / actual" no longer reads N / 0. The Assignment view\'s ACTUAL trip count — how many runs each driver really made — was computed with a one-character type bug (asking a NUMBER for its .length), which silently zeroed the actual side on every scored day: the scoreboard read "71 / 0", every driver row read "1/0", and the travel comparison had nothing real to compare against. Both the day total and the per-driver counts now count trips correctly. Display/metric fix only — the engine\'s plan itself was never affected. (Note: agreement numbers stay cold-start-low until the driver-history backfill runs; that\'s data, not this bug.)'],
@@ -6358,18 +6359,22 @@ function PastProSearch({ notes, initialQuery, onPickCustomer, onClose, noApi = f
                   </button>
                   {Array.isArray(m.history) && m.history.length > 0 && (
                     <div className="mt-1 flex flex-wrap gap-1">
-                      {m.history.map((h, j) => (
-                        <button
-                          type="button"
-                          key={j}
-                          onClick={() => openCustomer(m, h)}
-                          disabled={isOpening}
-                          title="Open this delivery"
-                          className="text-[10px] font-mono bg-slate-100 border border-slate-200 rounded px-1.5 py-0.5 text-left hover:bg-slate-200 active:bg-slate-300 disabled:opacity-60"
-                        >
-                          {h.pro} · {h.date}{h.driver ? <span className="text-slate-500"> · {h.driver}</span> : null}
-                        </button>
-                      ))}
+                      {m.history.map((h, j) => {
+                        // Highlight the PRO you searched for so it stands out among the customer's other deliveries.
+                        const matched = !!lc && String(h.pro).toLowerCase().includes(lc);
+                        return (
+                          <button
+                            type="button"
+                            key={j}
+                            onClick={() => openCustomer(m, h)}
+                            disabled={isOpening}
+                            title={matched ? 'Open this delivery (matches your search)' : 'Open this delivery'}
+                            className={'text-[10px] font-mono border rounded px-1.5 py-0.5 text-left disabled:opacity-60 ' + (matched ? 'bg-blue-100 border-blue-400 text-blue-900 font-semibold ring-1 ring-blue-300 hover:bg-blue-200' : 'bg-slate-100 border-slate-200 hover:bg-slate-200 active:bg-slate-300')}
+                          >
+                            {h.pro} · {h.date}{h.driver ? <span className={matched ? 'text-blue-700' : 'text-slate-500'}> · {h.driver}</span> : null}
+                          </button>
+                        );
+                      })}
                     </div>
                   )}
                 </div>
