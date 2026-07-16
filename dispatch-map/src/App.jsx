@@ -59,7 +59,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.50.37';
+const APP_VERSION = '0.50.38';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -104,6 +104,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.50.38', 'MANIFEST INTAKE — stack manifests + a real pushed-to-NuVizz history. (1) Dropping a SECOND (or third) manifest PDF now ADDS its orders to the ones you already have instead of replacing them — held orders are kept, the new ones append below (deduped by order ref so re-dropping the same file won\'t double it), and the header shows "…+ N more · N manifests merged". So you can build up several manifests and push them together. (2) The "Pushed to NuVizz" tab now has a DATE PICKER and a saved history: every push is logged to the cloud (order ref, NuVizz #, consignee, freight, time), so you can pick a day — e.g. yesterday — and see exactly what was pushed, from any device. Today\'s view refreshes the moment a push finishes. Reads/writes only our own log — ZERO NuVizz calls.'],
   ['0.50.37', 'The Routing (beta) screen now opens on the ENGINE tab by default. Every time you go to Routing it lands on Engine instead of Build; switch to Build any time while you\'re there, and it stays on Build until you leave and come back to Routing.'],
   ['0.50.36', 'Three fixes. (1) MOBILE LOADS TAB now has a SEARCH BAR — filter the loads list by route name or driver as you type (with a "showing N of M loads" count), same as the Stops tab. (2) STALE "Scheduled" APPOINTMENT STOPS — an order that sat on an appointment route and then DELIVERED a day or two later kept showing Scheduled on that route forever (e.g. a ULINE APPT stop that delivered early on another driver\'s load). Our board pulls "open work" + "just-completed-today" from NuVizz, so a delivery from 1–2 days ago is in neither pull and the board re-carried the pre-delivery snapshot. Now, before re-carrying a stop that\'s vanished from both pulls, we check our own sealed delivery history and drop it if it was delivered/closed recently — ZERO NuVizz calls, and it can never hide genuinely-open work. (3) MAP "Routes" BUTTON turned blue but sometimes showed nothing on the right (an open order/route was suppressing the roster); opening it now closes whatever detail was open so the roster always appears.'],
   ['0.50.35', 'PICKUP IS PRE-SET TO DAVIS. New Order and Bulk Add now come with “Davis Delivery Service — 943 Gainesville Hwy 200-4000, Buford, GA 30518” built in: the Pickup location dropdown always exists (even on a fresh browser with nothing saved), Davis is auto-selected, and the pickup card starts satisfied — no more typing the terminal address or “Set the pickup + service date first” just to push a manifest. Your own saved pickup locations still appear in the dropdown and win as the default. Picking “＋ New pickup location…” now starts a truly blank form (it used to pre-fill pieces of the default address).'],
@@ -16986,6 +16987,21 @@ function BulkOrderScreen() {
   const [intakeBusy, setIntakeBusy] = useState(false);
   const [intakeProgress, setIntakeProgress] = useState(null);
   const [intakeResults, setIntakeResults] = useState(null);
+  // Pushed-to-NuVizz history: the Pushed tab shows the DURABLE cloud log for a chosen day
+  // (default today), so you can look back at what was pushed yesterday from any device.
+  const etTodayStr = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' }).format(new Date());
+  const [pushedDate, setPushedDate] = useState(etTodayStr);
+  const [pushedLog, setPushedLog] = useState({ loading: false, records: [], error: null, date: null });
+  const fetchPushedLog = useCallback(async (date) => {
+    if (!date) return;
+    setPushedLog((s) => ({ ...s, loading: true, error: null }));
+    try {
+      const r = await fetch(`/.netlify/functions/manifest-push-log?date=${encodeURIComponent(date)}`);
+      const d = await r.json();
+      setPushedLog({ loading: false, records: Array.isArray(d.records) ? d.records : [], error: d.ok ? null : (d.reason || 'load failed'), date });
+    } catch (e) { setPushedLog({ loading: false, records: [], error: e.message, date }); }
+  }, []);
+  useEffect(() => { if (intakeTab === 'pushed') fetchPushedLog(pushedDate); }, [intakeTab, pushedDate, fetchPushedLog]);
 
   const setOrig = (k) => (e) => { setOriginSaved(false); setOrigin((o) => ({ ...o, [k]: e.target.value })); };
   const pickOrigin = (e) => {
@@ -17080,8 +17096,9 @@ function BulkOrderScreen() {
         // GUARD (review blocker): a new drop REPLACES the intake — never silently destroy
         // HELD orders ("saved on this device" is the feature's promise). Confirm BEFORE the
         // OCR runs, so a Cancel also costs nothing.
-        const heldNow = (intake?.rows || []).filter((x) => x._status !== 'pushed').length;
-        if (heldNow && !window.confirm(`A manifest intake is already open with ${heldNow} HELD order(s) that were NOT sent to NuVizz. Reading "${file.name}" will REPLACE it and drop those held orders.\n\nOK = replace it · Cancel = keep the current intake`)) return;
+        // A new manifest ADDS to the current intake — held orders are kept and the new orders
+        // are appended below them, so you can stack several manifests before pushing (no more
+        // "replace and drop held"). Only a push in flight blocks a read.
         if (intakeBusy) { setImportErr('A push is in progress — wait for it to finish before reading a new manifest.'); return; }
         setImportBusy(`Reading "${file.name}" — a scanned manifest takes ~20–40s…`);
         try {
@@ -17113,10 +17130,31 @@ function BulkOrderScreen() {
           const carrierWord = String(data.manifest?.carrier || 'ESTES').trim().split(/\s+/)[0].toUpperCase().replace(/[^A-Z0-9]/g, '') || 'ESTES';
           // Manifest rows open the dedicated INTAKE panel (review → check → Push to NuVizz),
           // not the generic spreadsheet column-mapper.
-          setIntake({
-            manifest: { ...(data.manifest || {}), fileName: file.name },
-            warnings: data.warnings || [],
-            rows: manifestRowsToIntake(data.rows, { prefix: `${carrierWord}-` }),
+          const incoming = manifestRowsToIntake(data.rows, { prefix: `${carrierWord}-` });
+          const manifestMeta = { ...(data.manifest || {}), fileName: file.name };
+          setIntake((prev) => {
+            if (!prev || !(prev.rows || []).length) {
+              return { manifest: manifestMeta, mergedManifests: [manifestMeta], warnings: data.warnings || [], rows: incoming };
+            }
+            // APPEND: keep existing held + pushed rows, add the new manifest's orders below them,
+            // deduped by order ref (re-dropping the same manifest won't double it) with fresh,
+            // collision-free ids.
+            const existingRefs = new Set(prev.rows.map((r) => String(r.stopNbr || '').toUpperCase()).filter(Boolean));
+            const existingIds = new Set(prev.rows.map((r) => r.id));
+            const added = [];
+            for (const r of incoming) {
+              const ref = String(r.stopNbr || '').toUpperCase();
+              if (ref && existingRefs.has(ref)) continue;
+              let id = r.id; while (existingIds.has(id)) id = `${id}_x`;
+              existingIds.add(id); if (ref) existingRefs.add(ref);
+              added.push({ ...r, id });
+            }
+            return {
+              ...prev,
+              mergedManifests: [...(prev.mergedManifests || [prev.manifest]), manifestMeta],
+              warnings: [...(prev.warnings || []), ...(data.warnings || [])],
+              rows: [...prev.rows, ...added],
+            };
           });
           setIntakeTab('held'); setIntakeResults(null); setIntakeOpen(null);
         } finally { setImportBusy(''); }
@@ -17256,6 +17294,16 @@ function BulkOrderScreen() {
   const intakeRows = intake?.rows || [];
   const heldRows = intakeRows.filter((r) => r._status !== 'pushed');
   const pushedRows = intakeRows.filter((r) => r._status === 'pushed');
+  // The Pushed tab renders the cloud push-log for the selected day, mapped onto the row shape
+  // the table already knows. (Today's log includes this session's pushes once they're written.)
+  const cloudPushedRows = (pushedLog.records || []).map((r, i) => ({
+    id: `log_${i}_${r.orderRef || r.nuvizzNbr || i}`,
+    _status: 'pushed', _pushedNbr: r.nuvizzNbr || r.orderRef, _updated: !!r.updated,
+    stopNbr: r.orderRef || '', name: r.name || '', addr1: r.addr1 || '', addr2: r.addr2 || '',
+    city: r.city || '', state: r.state || '', zip: r.zip || '', itemDesc: r.itemDesc || '',
+    pallets: r.pallets || '', loose: r.loose || '', weight: r.weight || '', phone: r.phone || '',
+    dispatchNotes: r.dispatchNotes || '', price: r.price || '',
+  }));
   const checkedHeld = heldRows.filter((r) => r._checked === true);
   const intakeTally = checkedHeld.reduce((a, r) => ({
     plt: a.plt + (Number(r.pallets) || 0), loose: a.loose + (Number(r.loose) || 0),
@@ -17299,6 +17347,7 @@ function BulkOrderScreen() {
     const settings = { origin: { name: origin.name.trim(), addr1: origin.addr1.trim(), city: origin.city.trim(), state: origin.state.trim(), zip: origin.zip.trim() }, serviceDate, timeZone: 'America/New_York' };
     setIntakeBusy(true); setIntakeResults(null); setIntakeProgress({ done: 0, total: targets.length });
     let sent = 0, updated = 0, failed = 0;
+    const pushedLogRecords = [];   // durable cloud push-history (written after the loop)
     for (let k = 0; k < targets.length; k++) {
       const r = targets[k];
       const payloadRow = {
@@ -17314,13 +17363,34 @@ function BulkOrderScreen() {
       try { res = await callWrite('createStop', { row: payloadRow, settings }, { dryRun: false, clientOpId: newClientOpId(), createdBy: 'dispatcher-manifest' }); }
       catch (e) { res = { ok: false, error: e?.message || 'network error' }; }
       const ok = !!(res.ok && res.result?.ok);
-      if (ok) { sent++; if (res.result?.updated) updated++; } else failed++;
+      if (ok) {
+        sent++; if (res.result?.updated) updated++;
+        pushedLogRecords.push({
+          orderRef: (r.stopNbr || '').trim() || null, nuvizzNbr: res.result?.entityNbr || (r.stopNbr || '').trim() || null,
+          name: r.name || '', addr1: r.addr1 || '', addr2: r.addr2 || '', city: r.city || '', state: r.state || '', zip: r.zip || '',
+          itemDesc: r.itemDesc || '', pallets: r.pallets || '', loose: r.loose || '', weight: r.weight || '', price: r.price || '',
+          phone: r.phone || '', dispatchNotes: r.dispatchNotes || '', updated: !!res.result?.updated,
+          manifestNumber: intake?.manifest?.manifestNumber || null, serviceDate, pushedAt: new Date().toISOString(),
+        });
+      } else failed++;
       // Null-guarded: mutations are frozen during a push, but never trust that with LIVE
       // writes in flight — a missing intake must degrade to a no-op, not a render crash.
       setIntake((it) => (it ? { ...it, rows: it.rows.map((x) => (x.id !== r.id ? x
         : ok ? { ...x, _status: 'pushed', _checked: false, _pushedNbr: res.result?.entityNbr || x.stopNbr, _updated: !!res.result?.updated, _error: null }
         : { ...x, _error: res.error || res.result?.error || 'write error' })) } : it));
       setIntakeProgress({ done: k + 1, total: targets.length });
+    }
+    // Durably log what was pushed so the Pushed tab can show it by date, from any device
+    // (best-effort, Firestore only — a log hiccup never fails the push).
+    if (pushedLogRecords.length) {
+      try {
+        await fetch('/.netlify/functions/manifest-push-log', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ records: pushedLogRecords }),
+        });
+      } catch { /* history is best-effort */ }
+      const today = etTodayStr();
+      if (pushedDate !== today) setPushedDate(today); else fetchPushedLog(today);
     }
     setIntakeBusy(false); setIntakeProgress(null);
     setIntakeResults({ ok: failed === 0, msg: failed
@@ -17476,17 +17546,23 @@ function BulkOrderScreen() {
         {intake && (() => {
           const m = intake.manifest || {};
           const carrierWord = String(m.carrier || 'Estes').trim().split(/\s+/)[0];
-          const rowsShown = intakeTab === 'held' ? heldRows : pushedRows;
+          const merged = intake.mergedManifests || [m];
+          const multiManifest = merged.length > 1;
+          const rowsShown = intakeTab === 'held' ? heldRows : cloudPushedRows;
           const intakeCols = intakeTab === 'held' ? 12 : 11;   // the checkbox column exists only on Held
           const unitSum = intakeRows.reduce((a, r) => a + (Number(r.pallets) || 0), 0);
           const wgtSum = intakeRows.reduce((a, r) => a + (Number(r.weight) || 0), 0);
+          // Merged manifests: sum the declared header totals across all of them (fall back to the
+          // per-row sums). A single manifest keeps its own header value exactly as before.
+          const mnfUnits = multiManifest ? merged.reduce((a, mm) => a + (Number(mm?.totalUnits) || 0), 0) || unitSum : (m.totalUnits ?? unitSum);
+          const mnfWeight = multiManifest ? merged.reduce((a, mm) => a + (Number(mm?.totalWeight) || 0), 0) || wgtSum : (m.totalWeight ?? wgtSum);
           return (
             <div className="bg-white border border-slate-200 rounded-lg p-3 space-y-3">
               <div className="flex items-start justify-between gap-3">
                 <div>
-                  <div className="text-[14px] font-bold text-slate-800">{carrierWord} Manifest {m.manifestNumber ? `#${m.manifestNumber}` : (m.fileName || '')} — Bulk Add</div>
+                  <div className="text-[14px] font-bold text-slate-800">{carrierWord} Manifest {m.manifestNumber ? `#${m.manifestNumber}` : (m.fileName || '')}{multiManifest ? ` + ${merged.length - 1} more` : ''} — Bulk Add</div>
                   <div className="text-[11px] text-slate-500 mt-0.5">
-                    Pickup: {origin.name || '—'} · Source: {m.carrier || 'manifest'} {m.manifestDate || ''}{m.manifestTime ? ` ${m.manifestTime}` : ''}{m.trailer ? ` · Trailer ${m.trailer}` : ''}
+                    Pickup: {origin.name || '—'} · Source: {m.carrier || 'manifest'} {m.manifestDate || ''}{m.manifestTime ? ` ${m.manifestTime}` : ''}{m.trailer ? ` · Trailer ${m.trailer}` : ''}{multiManifest ? ` · ${merged.length} manifests merged` : ''}
                   </div>
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
@@ -17495,9 +17571,9 @@ function BulkOrderScreen() {
                 </div>
               </div>
               <div className="flex gap-2 flex-wrap">
-                <EngineStatTile label="Orders" value={intakeRows.length} hint={m.totalPros != null ? `Manifest header says ${m.totalPros} PROs` : ''} />
-                <EngineStatTile label="Mnf units" value={m.totalUnits ?? unitSum} hint="Manifest handling units (→ Pallets)" />
-                <EngineStatTile label="Weight" value={`${(m.totalWeight ?? wgtSum).toLocaleString()} lb`} />
+                <EngineStatTile label="Orders" value={intakeRows.length} hint={!multiManifest && m.totalPros != null ? `Manifest header says ${m.totalPros} PROs` : (multiManifest ? `${merged.length} manifests` : '')} />
+                <EngineStatTile label="Mnf units" value={mnfUnits} hint="Manifest handling units (→ Pallets)" />
+                <EngineStatTile label="Weight" value={`${Number(mnfWeight || 0).toLocaleString()} lb`} />
                 <EngineStatTile label="Pickup" value={origin.name || '—'} hint="Set in the Pickup + date card above" />
               </div>
               <div className="text-[12px] text-blue-900 bg-blue-50 border border-blue-200 rounded-lg px-3 py-2">
@@ -17521,6 +17597,27 @@ function BulkOrderScreen() {
                   <span className="tabular-nums font-medium">{checkedHeld.length} checked · {intakeTally.plt} plt · {intakeTally.loose} loose · {intakeTally.lb.toLocaleString()} lb · ${intakeTally.usd.toFixed(2)}</span>
                 </div>
               )}
+              {intakeTab === 'pushed' && (
+                <div className="flex items-center flex-wrap gap-2 text-[12px] text-slate-600 border-b border-slate-100 pb-2">
+                  <span className="font-medium">Pushed on</span>
+                  <input
+                    type="date"
+                    value={pushedDate}
+                    max={etTodayStr()}
+                    onChange={(e) => setPushedDate(e.target.value || etTodayStr())}
+                    className="border border-slate-300 rounded px-2 py-1 text-[12px]"
+                  />
+                  {pushedDate !== etTodayStr() && (
+                    <button onClick={() => setPushedDate(etTodayStr())} className="text-[11px] text-blue-700 hover:underline">Today</button>
+                  )}
+                  <button onClick={() => fetchPushedLog(pushedDate)} title="Refresh" className="text-slate-400 hover:text-slate-700"><RefreshCw size={13} className={pushedLog.loading ? 'animate-spin' : ''} /></button>
+                  <span className="ml-auto tabular-nums font-medium">
+                    {pushedLog.loading ? 'loading…' : `${cloudPushedRows.length} pushed`}
+                    {pushedDate === etTodayStr() ? ' today' : ''}
+                  </span>
+                  {pushedLog.error && <span className="text-[11px] text-amber-700 w-full">History unavailable: {pushedLog.error}</span>}
+                </div>
+              )}
               <div className="overflow-x-auto">
                 <table className="text-[12px] border-collapse w-full">
                   <thead>
@@ -17541,7 +17638,7 @@ function BulkOrderScreen() {
                   </thead>
                   <tbody>
                     {rowsShown.length === 0 && (
-                      <tr><td colSpan={intakeCols} className="py-3 text-center text-slate-400">{intakeTab === 'held' ? 'Nothing held — every order has been pushed.' : 'Nothing pushed yet.'}</td></tr>
+                      <tr><td colSpan={intakeCols} className="py-3 text-center text-slate-400">{intakeTab === 'held' ? 'Nothing held — every order has been pushed.' : (pushedLog.loading ? 'Loading…' : `Nothing pushed on ${pushedDate}.`)}</td></tr>
                     )}
                     {rowsShown.map((r, i) => {
                       const missing = bulkRowMissing(r);
