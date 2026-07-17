@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 
 import {
   parseDelimited, detectDelimiter, looksLikeHeader, autoMapColumns,
-  mappedRowsToOrders, bulkRowMissing, bulkRowIsBlank, bulkRowIsGhost, mappingCoversRequired, headerSignature, BULK_FIELDS,
+  mappedRowsToOrders, bulkRowMissing, bulkRowIsBlank, bulkRowIsGhost, mappingCoversRequired, headerSignature, BULK_FIELDS, normalizePhone,
 } from '../src/lib/bulk-orders.js';
 
 test('detectDelimiter: tab for Excel/Sheets copy, comma for CSV', () => {
@@ -221,4 +221,26 @@ test('mappingCoversRequired: complete required coverage → auto-import; anythin
   assert.equal(mappingCoversRequired({ 17: 'addr1', 19: 'city', 20: 'state', 21: 'zip' }), false, 'no name');
   assert.equal(mappingCoversRequired({}), false);
   assert.equal(mappingCoversRequired(null), false);
+});
+
+test('normalizePhone: masks plain US numbers to xxx-xxx-xxxx, passes anything unusual through untouched', () => {
+  // Plain 10-digit runs (however delimited) → the dash mask, so a dropped/pasted spreadsheet
+  // lands formatted the same as typing.
+  assert.equal(normalizePhone('4048148100'), '404-814-8100', 'raw digit run');
+  assert.equal(normalizePhone(4048148100), '404-814-8100', 'numeric cell from xlsx');
+  assert.equal(normalizePhone('(404) 814-8100'), '404-814-8100', 're-masks a pre-formatted number');
+  assert.equal(normalizePhone('404.814.8100'), '404-814-8100', 'dot-separated');
+  assert.equal(normalizePhone('1-404-814-8100'), '404-814-8100', 'leading US country code dropped');
+  // Partial input formats progressively (matches the typed mask).
+  assert.equal(normalizePhone('404'), '404');
+  assert.equal(normalizePhone('4048'), '404-8');
+  assert.equal(normalizePhone('404814'), '404-814');
+  // Never truncate a real number the field used to accept: extensions, "+" intl, >11 digits pass through.
+  assert.equal(normalizePhone('404-814-8100 x45'), '404-814-8100 x45', 'extension preserved');
+  assert.equal(normalizePhone('+44 20 7946 0958'), '+44 20 7946 0958', 'international passes through');
+  assert.equal(normalizePhone('123456789012'), '123456789012', '12 digits → left as-is, not mis-grouped');
+  // Empty / nullish → empty string (no crash, no "undefined").
+  assert.equal(normalizePhone(''), '');
+  assert.equal(normalizePhone(null), '');
+  assert.equal(normalizePhone(undefined), '');
 });
