@@ -83,6 +83,32 @@ export function historyLookbackDates(today: string, n: number): string[] {
   return out;
 }
 
+// ── Reconsignment detection ───────────────────────────────────────────────────
+//
+// A stop is enriched (full /stop/info incl. address + geocoded pin) ONCE, when it first
+// appears; later scans keep only status/plan live and mergeEnrich carries the old address
+// forward. So when NuVizz RECONSIGNS an order (changes the delivery address) after that
+// first enrichment, the board froze the OLD address forever. The cheap saved-search list
+// DOES carry the current addr1/city/zip every scan, so we compare it against the address we
+// carried: if it differs, the order was reconsigned and we re-enrich the stop (fresh address
+// + re-geocoded pin + line items) instead of merging the stale detail over it.
+//
+// Compare only the format-stable parts — the 5-digit ZIP and the street NUMBER — so ordinary
+// formatting drift ("St" vs "Street", casing) can NEVER trigger a spurious re-enrich (which
+// would leak a /stop/info call every scan). A real reconsignment to a new address changes the
+// ZIP or the house number virtually always. PURE / exported for tests.
+export function listAddressChanged(listStop: any, prior: any): boolean {
+  if (!listStop || !prior) return false;
+  const zip5 = (v: any) => String(v ?? '').replace(/\D/g, '').slice(0, 5);
+  const streetNum = (v: any) => (String(v ?? '').match(/\d+/)?.[0] || '');
+  const lz = zip5(listStop.zip), lsn = streetNum(listStop.addr1);
+  if (!lz && !lsn) return false;                 // the list carried no usable address this scan
+  const pz = zip5(prior.zip), psn = streetNum(prior.addr1);
+  if (lz && pz && lz !== pz) return true;        // ZIP changed → reconsigned
+  if (lsn && psn && lsn !== psn) return true;    // street number changed → reconsigned
+  return false;
+}
+
 // Factory: memoized (per-scan), read-capped lookup of a stop's most-recent sealed
 // terminal history record. readStop is injected (getStop over history_days) so the
 // window / cap / memoization are unit-testable without Firestore. Returns the terminal
@@ -778,10 +804,20 @@ export async function runRefreshStops(req: Request): Promise<Response> {
         const seed = new Map<string, { lat: number; lng: number }>();
         const toEnrich: any[] = [];
         const demoteChecks: Array<{ s: any; p: any }> = [];
+        let reconsigned = 0;
+        const reconsignedNbrs = new Set<string>();
         for (const s of dateStops) {
           const p = prevByNbr.get(String(s.stopNbr));
           if (p) {
-            if (p.enriched) mergeEnrich(s, p); // carry same-day enriched detail forward
+            // Reconsignment: the fresh list row carries a DIFFERENT delivery address (new ZIP or
+            // street number) than the enriched detail we carried. Do NOT merge the stale address/
+            // coords/line-items over it — leave s as the raw list row (which already holds the new
+            // addr1/city/zip) so the `!s.enriched` check below re-enriches it: fresh address,
+            // re-geocoded pin, and refreshed detail. Skip seeding the OLD coords too. Rare event,
+            // so the extra /stop/info is negligible (never a full scan).
+            const wasReconsigned = p.enriched && listAddressChanged(s, p);
+            if (p.enriched && !wasReconsigned) mergeEnrich(s, p); // carry same-day enriched detail forward
+            if (wasReconsigned) { reconsigned++; reconsignedNbrs.add(String(s.stopNbr)); }
             // A recent CONFIRMED live Save (write-through, #361) outranks a lagging list row:
             // hold the confirmed plan fields until the list agrees or the grace expires.
             const held = applyBoardWriteGrace(s, p, Date.now());
@@ -794,7 +830,8 @@ export async function runRefreshStops(req: Request): Promise<Response> {
             // list's word alone: queue it for a one-call /stop/info check below and let NuVizz's
             // own stop record decide.
             if (!held && p.isPlanned === true && p.loadNbr && s.isPlanned !== true) demoteChecks.push({ s, p });
-            if (typeof p.lat === 'number' && typeof p.lng === 'number') { const k = addrKey(p); if (k) seed.set(k, { lat: p.lat, lng: p.lng }); }
+            // Don't seed a reconsigned stop's OLD coords — they belong to the previous address.
+            if (!wasReconsigned && typeof p.lat === 'number' && typeof p.lng === 'number') { const k = addrKey(p); if (k) seed.set(k, { lat: p.lat, lng: p.lng }); }
           }
           // Status AND the delivery time are FREE & live from the list every scan (see
           // LIVE_LIST_FIELDS + toBoardStop's deliveredDTTM), so we do NOT spend a /stop/info
@@ -809,6 +846,7 @@ export async function runRefreshStops(req: Request): Promise<Response> {
           // the fields on their first (and only) enrichment.
           if (!s.enriched) toEnrich.push(s);
         }
+        if (reconsigned) console.log(`[scan] ${date}: ${reconsigned} reconsigned stop(s) — address changed, re-enriching for the new address + pin`);
 
         // ── Demotion verify (see collection above) ────────────────────────────
         // LOAD-CORROBORATED FIRST (OWUSU 1, Jul 10): NuVizz's per-stop record can read
@@ -863,7 +901,11 @@ export async function runRefreshStops(req: Request): Promise<Response> {
           try {
             const reg = await readEnrichedPros(TENANT, toEnrich.map((s) => String(s.stopNbr)));
             regUnresolved = reg.unresolved;
-            if (reg.found.size) for (const s of toEnrich) { const r = reg.found.get(String(s.stopNbr)); if (r) mergeEnrich(s, r); }
+            // Skip the registry re-merge for a RECONSIGNED stop — its cached record holds the OLD
+            // address and would re-clobber the new one. Left un-enriched, it flows to the live
+            // /stop/info below (fresh address + coords), or, if that's capped, its new list address
+            // is geocoded in the coords fallback — either way the pin follows the move.
+            if (reg.found.size) for (const s of toEnrich) { if (reconsignedNbrs.has(String(s.stopNbr))) continue; const r = reg.found.get(String(s.stopNbr)); if (r) mergeEnrich(s, r); }
             if (regUnresolved.size) console.warn(`[scan] ${date}: registry read could not resolve ${regUnresolved.size} PRO(s) after retries; SKIPPING those this cycle (retry next scan, never re-enrich on a read error)`);
           } catch (e: any) { regOk = false; console.warn(`[scan] ${date}: enrichment registry read failed (${e?.message}); SKIPPING enrichment this cycle to avoid a burst`); }
         }
