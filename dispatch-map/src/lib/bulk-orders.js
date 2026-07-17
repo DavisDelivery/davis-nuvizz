@@ -7,14 +7,18 @@
 // drive header auto-mapping (matched case/space/punctuation-insensitively).
 export const BULK_FIELDS = [
   { key: 'name', label: 'Consignee / business', required: true, aliases: ['name', 'consignee', 'business', 'customer', 'company', 'shipto', 'ship to', 'deliver to', 'destination', 'account'] },
-  { key: 'addr1', label: 'Address', required: true, aliases: ['addr', 'addr1', 'address', 'address1', 'street', 'ship to address', 'delivery address'] },
-  { key: 'addr2', label: 'Suite / unit', required: false, aliases: ['addr2', 'address2', 'suite', 'unit', 'apt', 'ste', 'line2'] },
+  { key: 'addr1', label: 'Address', required: true, aliases: ['addr', 'addr1', 'address', 'address1', 'street', 'ship to address', 'ship to address line 1', 'address line 1', 'delivery address'] },
+  { key: 'addr2', label: 'Suite / unit', required: false, aliases: ['addr2', 'address2', 'suite', 'unit', 'apt', 'ste', 'line2', 'ship to address line 2', 'address line 2'] },
   { key: 'city', label: 'City', required: true, aliases: ['city', 'town'] },
   { key: 'state', label: 'State', required: true, aliases: ['state', 'st', 'province', 'region'] },
   { key: 'zip', label: 'ZIP', required: true, aliases: ['zip', 'zipcode', 'postal', 'postalcode', 'zip postal'] },
   { key: 'itemDesc', label: 'Item description', required: false, aliases: ['item', 'items', 'description', 'desc', 'commodity', 'product', 'goods', 'contents', 'item description'] },
-  { key: 'stopNbr', label: 'Order #', required: false, aliases: ['order', 'order no', 'order number', 'ordernbr', 'po', 'po number', 'reference', 'ref'] },
-  { key: 'pro', label: 'PRO / shipment #', required: false, aliases: ['pro', 'pro number', 'shipment', 'shipment number', 'bol', 'tracking'] },
+  // Davis convention (confirmed by Chad for the NuVizz route export): the "Shipment Number"
+  // (SO#) is the ORDER number, and the "Stop Number" (SHP#) is the PRO/shipment ref. A bare
+  // "shipment" column still means PRO (unchanged) — only the specific "shipment number" /
+  // "sales order" headers route to the Order # field.
+  { key: 'stopNbr', label: 'Order #', required: false, aliases: ['order', 'order no', 'order number', 'ordernbr', 'po', 'po number', 'reference', 'ref', 'shipment number', 'sales order'] },
+  { key: 'pro', label: 'PRO / shipment #', required: false, aliases: ['pro', 'pro number', 'shipment', 'bol', 'tracking', 'stop number'] },
   { key: 'pallets', label: 'Pallets', required: false, aliases: ['pallet', 'pallets', 'plt', 'plts', 'skids', 'skid'] },
   { key: 'loose', label: 'Loose', required: false, aliases: ['loose', 'loose pieces', 'loose pcs', 'pieces', 'pcs', 'pc', 'cases', 'qty', 'quantity'] },
   { key: 'weight', label: 'Weight (lbs)', required: false, aliases: ['weight', 'wt', 'lbs', 'pounds'] },
@@ -22,8 +26,12 @@ export const BULK_FIELDS = [
   { key: 'price', label: 'Price', required: false, aliases: ['price', 'seal', 'seal #', 'seal number', 'sealnbr', 'seal nbr', 'rate', 'charge', 'amount', 'linehaul', 'revenue'] },
   // Consignee phone → NuVizz to.contact.phone; dispatch notes → a Stop Instructions comment
   // (cmtType ORD_IN). Both read back onto the board card (Contact row / notes panel).
-  { key: 'phone', label: 'Phone', required: false, aliases: ['phone', 'phone number', 'contact phone', 'telephone', 'tel', 'cell', 'mobile', 'contact number', 'consignee phone'] },
-  { key: 'dispatchNotes', label: 'Dispatch notes', required: false, aliases: ['notes', 'note', 'dispatch notes', 'driver notes', 'instructions', 'special instructions', 'delivery instructions', 'delivery notes', 'remarks'] },
+  // "Customer Number" on the Davis NuVizz export is the consignee's 10-digit phone (Chad),
+  // so it feeds the phone field like the other phone aliases.
+  { key: 'phone', label: 'Phone', required: false, aliases: ['phone', 'phone number', 'contact phone', 'telephone', 'tel', 'cell', 'mobile', 'contact number', 'consignee phone', 'customer number', 'customer no', 'customer nbr'] },
+  // Consignee email → to.contact.email on the create (buildStopPayload).
+  { key: 'email', label: 'Email', required: false, aliases: ['email', 'e mail', 'email address', 'consignee email', 'contact email', 'ship to email'] },
+  { key: 'dispatchNotes', label: 'Dispatch notes', required: false, aliases: ['notes', 'note', 'dispatch notes', 'driver notes', 'instructions', 'special instructions', 'delivery instructions', 'delivery notes', 'remarks', 'comments', 'comment'] },
 ];
 
 export const BULK_FIELD_KEYS = BULK_FIELDS.map((f) => f.key);
@@ -47,6 +55,22 @@ function aliasHit(field, cellNorm, minToken) {
   });
 }
 const aliasExact = (field, cellNorm) => field.aliases.some((a) => norm(a) === cellNorm);
+
+// Some headers must NEVER map to certain field groups, no matter which alias they hit — the
+// alias words alone are ambiguous across the pickup/delivery sides and value/unit columns:
+//   • the DELIVERY fields (consignee name + address) must ignore a "Ship From / Pickup / Origin"
+//     column — that's the WAREHOUSE side. Without this, a NuVizz route export mapped its
+//     "Ship From - Address Line 1" (the depot) onto the delivery address and every order went
+//     to the wrong place.
+//   • the numeric VALUE fields must ignore a "…Uom" column — that's a unit LABEL ("pounds"),
+//     not a number. Without this, "Stop Weight Uom" won the weight slot over "Stop Weight".
+const DELIVERY_KEYS = new Set(['name', 'addr1', 'addr2', 'city', 'state', 'zip']);
+const VALUE_KEYS = new Set(['pallets', 'loose', 'weight', 'price']);
+function disqualified(fieldKey, cellNorm) {
+  if (DELIVERY_KEYS.has(fieldKey) && /(^|\s)(from|pickup|origin)(\s|$)/.test(cellNorm)) return true;
+  if (VALUE_KEYS.has(fieldKey) && /(^|\s)uom(\s|$)/.test(cellNorm)) return true;
+  return false;
+}
 
 // Detect the delimiter of a pasted/CSV block. Picks whichever candidate splits the sample into
 // the MOST columns, most consistently across lines — Excel/Sheets copy is TAB, a CSV is comma, a
@@ -130,6 +154,7 @@ export function autoMapColumns(headerRow) {
     if (!cell || map[idx] != null) return;
     for (const f of BULK_FIELDS) {
       if (usedFields.has(f.key)) continue;
+      if (disqualified(f.key, cell)) continue;
       if (aliasExact(f, cell)) { assign(idx, f.key); break; }
     }
   });
@@ -139,6 +164,7 @@ export function autoMapColumns(headerRow) {
     if (!cell || map[idx] != null) return;
     for (const f of BULK_FIELDS) {
       if (usedFields.has(f.key)) continue;
+      if (disqualified(f.key, cell)) continue;
       if (aliasHit(f, cell, 2)) { assign(idx, f.key); break; }
     }
   });

@@ -59,7 +59,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.50.46';
+const APP_VERSION = '0.50.47';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -104,6 +104,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.50.47', 'BULK ADD reads the NuVizz route export correctly + EMAIL is now a field. (1) Dropping a NuVizz "Ship To/Ship From" route spreadsheet used to grab the wrong columns — it mapped the Buford WAREHOUSE ("Ship From") as the delivery address and the unit label ("Stop Weight Uom" = "pounds") as the weight, so every order would have gone out to the wrong place with no weight. The importer now ignores the pickup/"Ship From" side for delivery fields and never treats a "…Uom" column as a value, and it maps the real Ship To address/city/state/zip, the Stop Weight number, Skids→pallets, Comments→dispatch notes, and the Customer Number (a phone on this export)→phone. Davis convention: the Shipment Number (SO#) is the Order # and the Stop Number (SHP#) is the PRO. (2) EMAIL: added a consignee Email field to the New Order page and the Bulk Add grid; it maps to the NuVizz order contact (to.contact.email) on create, so the customer email rides along with the order.'],
   ['0.50.46', 'ENGINE TAB — the shadow-engine day maps now actually draw. On both the Sequencing and Assignment views the right-hand map could come up solid grey (blank) even with a route/driver picked and the "engine moved" list populated — Google Maps was never told its panel had a real size, so the tiles never painted. The map now redraws and re-fits the moment its panel is sized (and on any resize), so it fills in reliably. Assignment view also got three asks: the daily-agreement trend now shows real DATES on the x-axis (a single-month window used to collapse to one lonely month label); clicking a driver row focuses the map on just that driver — dispatch route vs the engine\'s, fit to their stops, with a Clear button; and the map is bigger (wider + taller) while the chart is shorter, so there\'s far less grey space.'],
   ['0.50.45', 'Three fixes. (1) CORRECT PIN LOCATION no longer closes the order or throws the map across the state. Clicking "Correct pin location" used to close the order card and — because nothing was selected anymore — snap the map back out to the whole board (looked like it jumped "3 cities away"). Now the order stays open and the map holds its place; the draggable blue pin drops right where the stop already is. It only recenters if the pin happens to be off-screen, so you can always grab it. (2) MAP NO LONGER DRIFTS ON ITS OWN. With a search active (e.g. "floor"), every 120-second board refresh was re-framing the map to fit all the far-apart matches — so if you left an order open it slowly zoomed out and lost focus on its own. The map now only re-fits when you actually change the search, not on the background refresh. (3) ROUTING (beta) now opens on the BUILD tab by default instead of Engine (switch to Engine anytime; coming back to Routing lands on Build again).'],
   ['0.50.44', 'MAP — the receiving-hours "clock" pin now pops up a real hover card. Hovering one of these pins on desktop instantly shows a little card with the business name AND its receiving hours (e.g. "ACME WAREHOUSE · Receiving hours: Mon–Fri 8:00a–3:00p · Sat Closed") — no more waiting on the slow grey OS tooltip, and no need to click in. Only the clock pins get the card; plain pins are unchanged. (Replaces the 0.50.43 approach, which relied on the browser\'s built-in tooltip that was easy to miss.)'],
@@ -16740,7 +16741,7 @@ const NEWORDER_ORIGINS_KEY = 'dd_neworder_origins';  // the saved LIST of pickup
 const NEWORDER_ORIGIN_DEFAULT = { name: 'Davis Delivery Service', addr1: '943 Gainesville Hwy 200-4000', city: 'Buford', state: 'GA', zip: '30518' };
 // A blank origin for the "＋ New pickup location…" reset (state pre-filled; NOT the Davis address).
 const NEWORDER_ORIGIN_BLANK = { name: '', addr1: '', city: '', state: 'GA', zip: '' };
-const EMPTY_ORDER_ROW = { name: '', addr1: '', addr2: '', city: '', state: '', zip: '', stopNbr: '', pro: '', itemDesc: '', pallets: '', loose: '', weight: '', price: '', phone: '', dispatchNotes: '' };
+const EMPTY_ORDER_ROW = { name: '', addr1: '', addr2: '', city: '', state: '', zip: '', stopNbr: '', pro: '', itemDesc: '', pallets: '', loose: '', weight: '', price: '', phone: '', email: '', dispatchNotes: '' };
 
 // Coerce every field of a saved origin to a STRING — a hand-edited/corrupt entry (e.g. a numeric
 // zip) would otherwise pass the completeness gate and then throw on .trim() mid-submit.
@@ -16914,6 +16915,7 @@ function NewOrderSingleScreen() {
         weight: row.weight === '' ? null : Number(row.weight),
         price: row.price.trim() || null,                             // → NuVizz Seal # (sealNbr)
         phone: (row.phone || '').trim() || null,                     // → to.contact.phone
+        email: (row.email || '').trim() || null,                     // → to.contact.email
         dispatchNotes: (row.dispatchNotes || '').trim() || null,     // → comments[] ORD_IN (driver instructions)
       };
       const settings = {
@@ -17041,8 +17043,9 @@ function NewOrderSingleScreen() {
           <OrderField label="Price ($ → Seal #)" type="number" value={row.price} onChange={set('price')} placeholder="e.g. 185.00" className="max-w-[200px]" />
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <OrderField label="Consignee phone (optional)" value={row.phone} onChange={set('phone')} placeholder="770-555-0123" />
-            <OrderField label="Dispatch notes for the driver (optional)" value={row.dispatchNotes} onChange={set('dispatchNotes')} placeholder="e.g. dock 4, call on arrival" />
+            <OrderField label="Consignee email (optional)" type="email" value={row.email} onChange={set('email')} placeholder="name@company.com" />
           </div>
+          <OrderField label="Dispatch notes for the driver (optional)" value={row.dispatchNotes} onChange={set('dispatchNotes')} placeholder="e.g. dock 4, call on arrival" />
           <OrderField label="Service date" req type="date" value={serviceDate} onChange={(e) => setServiceDate(e.target.value)} className="max-w-[200px]" />
         </div>
 
@@ -17340,6 +17343,7 @@ function BulkOrderScreen() {
         pallets: r.pallets.trim() || null, loose: r.loose.trim() || null, weight: r.weight.trim() || null,
         price: (r.price || '').trim() || null,                    // → NuVizz Seal # (sealNbr)
         phone: (r.phone || '').trim() || null,                    // → to.contact.phone
+        email: (r.email || '').trim() || null,                    // → to.contact.email
         dispatchNotes: (r.dispatchNotes || '').trim() || null,    // → comments[] ORD_IN (driver instructions)
       };
       let res;
@@ -17504,6 +17508,7 @@ function BulkOrderScreen() {
         pallets: (r.pallets || '').trim() || null, loose: (r.loose || '').trim() || null, weight: (r.weight || '').trim() || null,
         price: (r.price || '').trim() || null,                    // → NuVizz Seal # (sealNbr)
         phone: (r.phone || '').trim() || null,                    // → to.contact.phone
+        email: (r.email || '').trim() || null,                    // → to.contact.email
         dispatchNotes: (r.dispatchNotes || '').trim() || null,    // → comments[] ORD_IN (driver instructions)
       };
       let res;
