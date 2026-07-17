@@ -265,3 +265,20 @@ export function mappingCoversRequired(mapping) {
   const mapped = new Set(Object.values(mapping || {}));
   return BULK_FIELDS.filter((f) => f.required).every((f) => mapped.has(f.key));
 }
+
+// Normalize a phone value to the US mask xxx-xxx-xxxx as it's IMPORTED, so a dropped/pasted
+// spreadsheet lands with the same formatting the field applies while you type (App.jsx's fmtPhone
+// delegates here, so the typed path and the import path can't drift). Anything that isn't a plain
+// US 10/11-digit number — an extension ("x45"), a "+" international number, or more than 11 digits —
+// passes through verbatim, so a real number is never silently truncated. NuVizz gets the digits
+// stripped later at write time (buildStopPayload), so the dash mask is display-only.
+export function normalizePhone(v) {
+  const raw = String(v ?? '');
+  const digits = raw.replace(/\D/g, '');
+  if (/[a-z+]/i.test(raw) || digits.length > 11) return raw;
+  const d = digits.length === 11 && digits.startsWith('1') ? digits.slice(1) : digits;
+  if (d.length > 10) return raw;
+  if (d.length > 6) return `${d.slice(0, 3)}-${d.slice(3, 6)}-${d.slice(6)}`;
+  if (d.length > 3) return `${d.slice(0, 3)}-${d.slice(3)}`;
+  return d;
+}

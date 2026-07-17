@@ -34,7 +34,7 @@ import { todayInET, isTodayET, formatDateForDisplay, formatDateLong } from './li
 import { pointInPolygon, latLngInBounds, boxFromCorners, formatReceivingHours, lineItemDims, moveItem, recomputeRoute, resequence, fmtTime12, DEFAULT_SERVICE_SEC } from './lib/routing-select.js';
 import { formatDateTime, tsToMillis, loadSummary, buildLoadAutoName } from './lib/routing-loads.js';
 import { callWrite, newClientOpId } from './lib/nuvizzWrite.js';
-import { BULK_FIELDS, parseDelimited, looksLikeHeader, autoMapColumns, mappedRowsToOrders, bulkRowMissing, bulkRowIsBlank, bulkRowIsGhost, mappingCoversRequired, headerSignature, manifestRowsToIntake } from './lib/bulk-orders.js';
+import { BULK_FIELDS, parseDelimited, looksLikeHeader, autoMapColumns, mappedRowsToOrders, bulkRowMissing, bulkRowIsBlank, bulkRowIsGhost, mappingCoversRequired, headerSignature, manifestRowsToIntake, normalizePhone } from './lib/bulk-orders.js';
 import { scanStop, scanStopFull } from './lib/signal-scanner';
 import { applyScannerResults } from './lib/customer-notes-writer';
 import { aiParse, aiChat, applyFilterSpec, summarizeSpec, buildTrimmedStops } from './lib/ai-search.js';
@@ -59,7 +59,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.50.50';
+const APP_VERSION = '0.50.51';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -104,6 +104,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.50.51', 'BULK ADD — phone numbers import already formatted, wider columns, and the page uses the full width. (1) A phone dropped or pasted in from a spreadsheet now normalizes to xxx-xxx-xxxx the moment it lands in the grid — the same mask you get while typing — instead of arriving as a raw digit run like “4048148100”. (When the order is actually pushed, NuVizz still gets the plain digits.) Extensions (“x45”), “+” international, and unusual longer numbers pass through untouched so nothing gets truncated. (2) The Phone, Email, and Dispatch notes columns are wider now, so you can read the whole value instead of a cut-off “40481481…”. (3) The Bulk Add page is full-width — no more grey margins on the sides — so the table gets all the room.'],
   ['0.50.50', 'BULK ADD is now ONE STEP: drop the file → orders in the grid. When the file’s header reads clean (consignee, address, city, state, ZIP all recognized — like your NuVizz export does), the app imports it immediately: no “Map columns” screen, no Import button, just “Read the columns automatically and imported 4 order(s) — skipped 8 residue row(s)…” with a “Wrong columns? Undo & map manually” link if it ever guesses wrong. The 30-dropdown mapping screen only appears when the app genuinely can’t tell what a column is. And when the mapper DOES open, its button now tells the truth — “Import 4 orders (8 skipped)” instead of “Import 12 rows.” Verified on the real 7/20 file: drop → 4 complete orders, one step.'],
   ['0.50.49', 'BULK ADD — residue rows can’t junk up the import anymore. Your 7/20 spreadsheet had 4 real orders followed by 8 leftover template rows (just “AIR FILTERS · qty 1”, some with a dragged-down “GA” — no consignee, no address, no order #). The importer counted those as orders, so the grid filled with junk rows demanding 5 missing fields each. Now a row with NO identity — no consignee name, no street, no Order #, no PRO — is recognized as template residue and skipped, and the import tells you exactly what it did (“Imported 4 order(s) — skipped 8 residue row(s)…”). Verified against that exact 7/20 file end-to-end: all 4 real orders import complete — consignee, address, pallets, weight, Order # (SO…), PRO (SHP…), phone, and the full dispatch notes.'],
   ['0.50.48', 'RECONSIGNMENTS NOW SHOW UP. When an order was reconsigned in NuVizz (its delivery address changed after it was already on the board), Dispatch Map kept showing the OLD address — and the pin stayed at the old spot — because the address was captured once when the order first appeared and never refreshed. The background scan now watches the (free) saved-search list for a changed delivery address on any order it already has: if the ZIP or the street number changes, it treats it as a reconsignment and re-pulls that one order so the new address, the map pin, and the details all update. Costs at most one lookup for an order that actually moved (never a full scan), and ordinary formatting differences can\'t trigger it.'],
@@ -16718,19 +16719,11 @@ function DiagnosticsRoute() {
 const normPhone = (p) => { const d = String(p || '').replace(/\D/g, ''); return d.length === 11 && d.startsWith('1') ? d.slice(1) : d; };
 // Progressive phone mask → xxx-xxx-xxxx as the user types (keeps only digits, US 10-digit; a leading
 // "1" on an 11-digit entry is trimmed by normPhone). Every order-entry phone field runs through this.
-const fmtPhone = (v) => {
-  const raw = String(v ?? '');
-  const digits = raw.replace(/\D/g, '');
-  // Mask ONLY a plain US 10/11-digit number. Anything with letters or a "+" (an extension like
-  // "x45", or an international number) or more than 11 digits passes through verbatim — never
-  // silently truncate a real number the field used to accept.
-  if (/[a-z+]/i.test(raw) || digits.length > 11) return raw;
-  const d = digits.length === 11 && digits.startsWith('1') ? digits.slice(1) : digits;
-  if (d.length > 10) return raw;                    // 11-digit non-US number → leave as typed, don't mis-group
-  if (d.length > 6) return `${d.slice(0, 3)}-${d.slice(3, 6)}-${d.slice(6)}`;
-  if (d.length > 3) return `${d.slice(0, 3)}-${d.slice(3)}`;
-  return d;
-};
+// Mask a phone to xxx-xxx-xxxx. Delegates to the pure normalizePhone in bulk-orders.js so the
+// interactive typed path (set/setCell/setIntakeCell) and the spreadsheet-import path share ONE
+// implementation and can't drift — an extension / "+" intl / >11-digit number passes through
+// verbatim, and NuVizz gets the digits stripped later at write time.
+const fmtPhone = (v) => normalizePhone(v);
 
 // ── New Order — create a delivery stop (order) in NuVizz from a standalone tab. Fill the
 // delivery address + optional order details and Create. The origin ("from") + service date
@@ -17333,7 +17326,9 @@ function BulkOrderScreen() {
     const orders = mapped.filter((o) => !bulkRowIsGhost(o));
     const ghosts = mapped.length - orders.length;
     if (!orders.length) { setImportErr(ghosts ? `All ${ghosts} row(s) were residue — no consignee/address/order # anywhere. Check the column mapping.` : 'No rows to import with the current column mapping.'); return false; }
-    const filled = orders.slice(0, BULK_MAX_ROWS).map((o) => ({ ...bulkEmptyRow(), ...o }));
+    // Normalize the imported phone to xxx-xxx-xxxx (same mask as typing) so a dropped/pasted
+    // spreadsheet lands formatted — NuVizz gets the digits stripped later at write time.
+    const filled = orders.slice(0, BULK_MAX_ROWS).map((o) => ({ ...bulkEmptyRow(), ...o, phone: normalizePhone(o.phone) }));
     setAutoImportUndo(auto && stash ? { prevRows: rows, stash } : null);
     setRows((rs) => { const keep = rs.filter((r) => !bulkRowIsBlank(r)); return [...keep, ...filled, bulkEmptyRow()].slice(0, BULK_MAX_ROWS + 1); });
     rememberMapping(sig, mapping);
@@ -17590,7 +17585,7 @@ function BulkOrderScreen() {
 
   return (
     <div className="flex-1 min-h-0 overflow-auto bg-slate-50">
-      <div className="max-w-[1850px] mx-auto p-4 space-y-4">
+      <div className="w-full p-4 space-y-4">
         {/* Header + Beta/Live */}
         <div className="flex items-center justify-between gap-3">
           <div>
@@ -17966,7 +17961,7 @@ function BulkOrderScreen() {
                       <td className="pr-2 py-0.5 text-slate-400 tabular-nums">{i + 1}</td>
                       {BULK_FIELDS.map((f) => (
                         <td key={f.key} className="px-1 py-0.5">
-                          <input value={r[f.key]} onChange={setCell(i, f.key)} className={`${gridInput} ${f.key === 'name' || f.key === 'addr1' ? 'min-w-[150px]' : f.key === 'itemDesc' ? 'min-w-[140px]' : f.key === 'city' ? 'min-w-[110px]' : f.key === 'state' ? 'w-12' : f.key === 'zip' ? 'w-20' : 'w-16'} ${!blank && !queued && missing.includes(f.key) ? 'border-amber-400 bg-amber-50' : ''}`} />
+                          <input value={r[f.key]} onChange={setCell(i, f.key)} className={`${gridInput} ${f.key === 'name' || f.key === 'addr1' ? 'min-w-[150px]' : f.key === 'dispatchNotes' || f.key === 'email' ? 'min-w-[180px]' : f.key === 'itemDesc' ? 'min-w-[140px]' : f.key === 'phone' ? 'min-w-[130px]' : f.key === 'city' ? 'min-w-[110px]' : f.key === 'state' ? 'w-12' : f.key === 'zip' ? 'w-20' : 'w-16'} ${!blank && !queued && missing.includes(f.key) ? 'border-amber-400 bg-amber-50' : ''}`} />
                         </td>
                       ))}
                       <td className="px-1 py-0.5 whitespace-nowrap">
