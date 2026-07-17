@@ -34,7 +34,7 @@ import { todayInET, isTodayET, formatDateForDisplay, formatDateLong } from './li
 import { pointInPolygon, latLngInBounds, boxFromCorners, formatReceivingHours, lineItemDims, moveItem, recomputeRoute, resequence, fmtTime12, DEFAULT_SERVICE_SEC } from './lib/routing-select.js';
 import { formatDateTime, tsToMillis, loadSummary, buildLoadAutoName } from './lib/routing-loads.js';
 import { callWrite, newClientOpId } from './lib/nuvizzWrite.js';
-import { BULK_FIELDS, parseDelimited, looksLikeHeader, autoMapColumns, mappedRowsToOrders, bulkRowMissing, bulkRowIsBlank, bulkRowIsGhost, mappingCoversRequired, headerSignature, manifestRowsToIntake, normalizePhone } from './lib/bulk-orders.js';
+import { BULK_FIELDS, parseDelimited, looksLikeHeader, autoMapColumns, mappedRowsToOrders, bulkRowMissing, bulkRowIsBlank, bulkRowIsGhost, mappingCoversRequired, headerSignature, manifestRowsToIntake, normalizePhone, bulkRowNuvizzRefs } from './lib/bulk-orders.js';
 import { scanStop, scanStopFull } from './lib/signal-scanner';
 import { applyScannerResults } from './lib/customer-notes-writer';
 import { aiParse, aiChat, applyFilterSpec, summarizeSpec, buildTrimmedStops } from './lib/ai-search.js';
@@ -59,7 +59,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.50.53';
+const APP_VERSION = '0.50.54';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -104,6 +104,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.50.54', 'BULK ADD — the Stop # and Shipment # now land on the RIGHT NuVizz fields. When you imported your NuVizz route export and pushed, orders came out with NuVizz’s Stop Number = the SO series and Shipment Number = the SHP series — backwards from your live board, where the Stop Number IS your PRO (the SHP). The export’s column headers are labeled opposite to how NuVizz actually stores them, and the push trusted the labels. Now a Bulk Add push crosses them correctly: the PRO (SHP) → NuVizz Stop Number, and the Order # (SO) → NuVizz Shipment Number. The grid is unchanged (your PRO still shows in the PRO column); only what gets written to NuVizz changed. Verified against your 720 file: all four orders now write Stop # = SHP, Shipment # = SO. (New Order and scanned-manifest pushes are untouched.)'],
   ['0.50.53', 'BULK ADD — a “Pushed to NuVizz” tab, so a spreadsheet push leaves a receipt. Before, when you imported a spreadsheet and hit Create, the rows just cleared with a green “Created N” banner and there was no list to look back at — the “Pushed to NuVizz” history only existed for scanned-manifest PDFs. Now the spreadsheet Bulk Add screen has two tabs — Orders and Pushed to NuVizz — and every order you push is logged (consignee, Order #, NuVizz #, pallets/loose/weight, price, time). Pick a day to see exactly what went out, from any device; a clean push jumps you straight to the receipt. It reads/writes only our own log — ZERO NuVizz calls — and shares the same history as the manifest flow, so everything pushed that day shows in one place.'],
   ['0.50.52', 'BULK ADD — phone numbers that were already sitting in the grid now format too. v0.50.51 masked phones to xxx-xxx-xxxx as they’re typed or imported, but rows that were already in the grid from before the update (saved on this device) kept showing the raw digit run until you re-imported. Now the grid normalizes those phones the moment it reloads, so every row reads xxx-xxx-xxxx no matter how it got there. (NuVizz still gets the plain digits at push time.)'],
   ['0.50.51', 'BULK ADD — phone numbers import already formatted, wider columns, and the page uses the full width. (1) A phone dropped or pasted in from a spreadsheet now normalizes to xxx-xxx-xxxx the moment it lands in the grid — the same mask you get while typing — instead of arriving as a raw digit run like “4048148100”. (When the order is actually pushed, NuVizz still gets the plain digits.) Extensions (“x45”), “+” international, and unusual longer numbers pass through untouched so nothing gets truncated. (2) The Phone, Email, and Dispatch notes columns are wider now, so you can read the whole value instead of a cut-off “40481481…”. (3) The Bulk Add page is full-width — no more grey margins on the sides — so the table gets all the room.'],
@@ -17371,10 +17372,11 @@ function BulkOrderScreen() {
     // NuVizz daily-call ceiling/breaker and never fire a duplicate on a mid-batch retry.
     for (let k = 0; k < targets.length; k++) {
       const { r, idx } = targets[k];
+      const refs = bulkRowNuvizzRefs(r);   // PRO (SHP) → NuVizz Stop Number; Order # (SO) → NuVizz Shipment Number
       const payloadRow = {
         name: r.name.trim(), addr1: r.addr1.trim(), addr2: r.addr2.trim() || null,
         city: r.city.trim(), state: r.state.trim(), zip: r.zip.trim(),
-        stopNbr: r.stopNbr.trim() || null, pro: r.pro.trim() || null, itemDesc: r.itemDesc.trim() || null,
+        stopNbr: refs.stopNbr, pro: refs.pro, itemDesc: r.itemDesc.trim() || null,
         pallets: r.pallets.trim() || null, loose: r.loose.trim() || null, weight: r.weight.trim() || null,
         price: (r.price || '').trim() || null,                    // → NuVizz Seal # (sealNbr)
         phone: (r.phone || '').trim() || null,                    // → to.contact.phone
@@ -17388,7 +17390,8 @@ function BulkOrderScreen() {
       out.push({ idx, name: payloadRow.name, ok, updated: !!res.result?.updated, nbr: res.result?.entityNbr || payloadRow.stopNbr || '', error: ok ? null : (res.error || res.result?.error || 'write error') });
       if (ok) {
         pushedLogRecords.push({
-          orderRef: (r.stopNbr || '').trim() || null, nuvizzNbr: res.result?.entityNbr || (r.stopNbr || '').trim() || null,
+          // Log the PRO (SHP) as the order ref — that's what NuVizz now shows as this order's Stop Number.
+          orderRef: refs.stopNbr, nuvizzNbr: res.result?.entityNbr || refs.stopNbr,
           name: r.name || '', addr1: r.addr1 || '', addr2: r.addr2 || '', city: r.city || '', state: r.state || '', zip: r.zip || '',
           itemDesc: r.itemDesc || '', pallets: r.pallets || '', loose: r.loose || '', weight: r.weight || '', price: r.price || '',
           phone: r.phone || '', dispatchNotes: r.dispatchNotes || '', updated: !!res.result?.updated,
@@ -17466,7 +17469,9 @@ function BulkOrderScreen() {
     const payloadRows = targets.map((r) => ({
       name: r.name.trim(), addr1: r.addr1.trim(), addr2: r.addr2.trim() || null,
       city: r.city.trim(), state: r.state.trim(), zip: r.zip.trim(),
-      stopNbr: r.stopNbr.trim(), pro: r.pro.trim() || null, itemDesc: r.itemDesc.trim() || null,
+      // PRO (SHP) → NuVizz Stop Number; Order # (SO) → NuVizz Shipment Number. The load then
+      // references its stops by that Stop Number (orderedStopNbrs = the PRO series), so it stays consistent.
+      stopNbr: bulkRowNuvizzRefs(r).stopNbr || '', pro: bulkRowNuvizzRefs(r).pro, itemDesc: r.itemDesc.trim() || null,
       pallets: r.pallets.trim() || null, loose: r.loose.trim() || null, weight: r.weight.trim() || null,
       price: (r.price || '').trim() || null,                    // → NuVizz Seal # (sealNbr) via buildStopPayload on the server
       phone: (r.phone || '').trim() || null,                    // → to.contact.phone
