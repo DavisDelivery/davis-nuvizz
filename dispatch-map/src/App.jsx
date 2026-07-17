@@ -34,7 +34,7 @@ import { todayInET, isTodayET, formatDateForDisplay, formatDateLong } from './li
 import { pointInPolygon, latLngInBounds, boxFromCorners, formatReceivingHours, lineItemDims, moveItem, recomputeRoute, resequence, fmtTime12, DEFAULT_SERVICE_SEC } from './lib/routing-select.js';
 import { formatDateTime, tsToMillis, loadSummary, buildLoadAutoName } from './lib/routing-loads.js';
 import { callWrite, newClientOpId } from './lib/nuvizzWrite.js';
-import { BULK_FIELDS, parseDelimited, looksLikeHeader, autoMapColumns, mappedRowsToOrders, bulkRowMissing, bulkRowIsBlank, headerSignature, manifestRowsToIntake } from './lib/bulk-orders.js';
+import { BULK_FIELDS, parseDelimited, looksLikeHeader, autoMapColumns, mappedRowsToOrders, bulkRowMissing, bulkRowIsBlank, bulkRowIsGhost, headerSignature, manifestRowsToIntake } from './lib/bulk-orders.js';
 import { scanStop, scanStopFull } from './lib/signal-scanner';
 import { applyScannerResults } from './lib/customer-notes-writer';
 import { aiParse, aiChat, applyFilterSpec, summarizeSpec, buildTrimmedStops } from './lib/ai-search.js';
@@ -59,7 +59,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.50.47';
+const APP_VERSION = '0.50.48';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -104,6 +104,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.50.48', 'BULK ADD — residue rows can’t junk up the import anymore. Your 7/20 spreadsheet had 4 real orders followed by 8 leftover template rows (just “AIR FILTERS · qty 1”, some with a dragged-down “GA” — no consignee, no address, no order #). The importer counted those as orders, so the grid filled with junk rows demanding 5 missing fields each. Now a row with NO identity — no consignee name, no street, no Order #, no PRO — is recognized as template residue and skipped, and the import tells you exactly what it did (“Imported 4 order(s) — skipped 8 residue row(s)…”). Verified against that exact 7/20 file end-to-end: all 4 real orders import complete — consignee, address, pallets, weight, Order # (SO…), PRO (SHP…), phone, and the full dispatch notes.'],
   ['0.50.47', 'BULK ADD reads the NuVizz route export correctly + EMAIL is now a field. (1) Dropping a NuVizz "Ship To/Ship From" route spreadsheet used to grab the wrong columns — it mapped the Buford WAREHOUSE ("Ship From") as the delivery address and the unit label ("Stop Weight Uom" = "pounds") as the weight, so every order would have gone out to the wrong place with no weight. The importer now ignores the pickup/"Ship From" side for delivery fields and never treats a "…Uom" column as a value, and it maps the real Ship To address/city/state/zip, the Stop Weight number, Skids→pallets, Comments→dispatch notes, and the Customer Number (a phone on this export)→phone. Davis convention: the Shipment Number (SO#) is the Order # and the Stop Number (SHP#) is the PRO. (2) EMAIL: added a consignee Email field to the New Order page and the Bulk Add grid; it maps to the NuVizz order contact (to.contact.email) on create, so the customer email rides along with the order.'],
   ['0.50.46', 'ENGINE TAB — the shadow-engine day maps now actually draw. On both the Sequencing and Assignment views the right-hand map could come up solid grey (blank) even with a route/driver picked and the "engine moved" list populated — Google Maps was never told its panel had a real size, so the tiles never painted. The map now redraws and re-fits the moment its panel is sized (and on any resize), so it fills in reliably. Assignment view also got three asks: the daily-agreement trend now shows real DATES on the x-axis (a single-month window used to collapse to one lonely month label); clicking a driver row focuses the map on just that driver — dispatch route vs the engine\'s, fit to their stops, with a Clear button; and the map is bigger (wider + taller) while the chart is shorter, so there\'s far less grey space.'],
   ['0.50.45', 'Three fixes. (1) CORRECT PIN LOCATION no longer closes the order or throws the map across the state. Clicking "Correct pin location" used to close the order card and — because nothing was selected anymore — snap the map back out to the whole board (looked like it jumped "3 cities away"). Now the order stays open and the map holds its place; the draggable blue pin drops right where the stop already is. It only recenters if the pin happens to be off-screen, so you can always grab it. (2) MAP NO LONGER DRIFTS ON ITS OWN. With a search active (e.g. "floor"), every 120-second board refresh was re-framing the map to fit all the far-apart matches — so if you left an order open it slowly zoomed out and lost focus on its own. The map now only re-fits when you actually change the search, not on the background refresh. (3) ROUTING (beta) now opens on the BUILD tab by default instead of Engine (switch to Engine anytime; coming back to Routing lands on Build again).'],
@@ -17314,12 +17315,17 @@ function BulkOrderScreen() {
     } catch (err) { setImportErr(`Could not read "${file.name}": ${err?.message || 'unreadable file'}`); setImportBusy(''); }
   };
   const applyImport = () => {
-    const orders = mappedRowsToOrders(importer.dataRows, importer.mapping).filter((o) => !bulkRowIsBlank(o));
-    if (!orders.length) { setImportErr('No rows to import with the current column mapping.'); return; }
+    const mapped = mappedRowsToOrders(importer.dataRows, importer.mapping).filter((o) => !bulkRowIsBlank(o));
+    // Drop GHOST rows — template residue with no consignee/address/order#/PRO (a column dragged
+    // down past the last real order). They'd land as junk rows demanding 5 fields each.
+    const orders = mapped.filter((o) => !bulkRowIsGhost(o));
+    const ghosts = mapped.length - orders.length;
+    if (!orders.length) { setImportErr(ghosts ? `All ${ghosts} row(s) were residue — no consignee/address/order # anywhere. Check the column mapping.` : 'No rows to import with the current column mapping.'); return; }
     const filled = orders.slice(0, BULK_MAX_ROWS).map((o) => ({ ...bulkEmptyRow(), ...o }));
     setRows((rs) => { const keep = rs.filter((r) => !bulkRowIsBlank(r)); return [...keep, ...filled, bulkEmptyRow()].slice(0, BULK_MAX_ROWS + 1); });
     rememberMapping(importer.sig, importer.mapping);
     setImporter(null); setPasteText(''); setResults(null);
+    setImportInfo(`Imported ${filled.length} order(s)${ghosts ? ` — skipped ${ghosts} residue row(s) that had no consignee, address, or order # (template leftovers)` : ''}.`);
   };
 
   // ── Create all ready rows ──
