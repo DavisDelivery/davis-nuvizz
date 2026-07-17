@@ -256,3 +256,12 @@ export function bulkRowIsGhost(o) {
   const has = (k) => !!String(o?.[k] ?? '').trim();
   return !has('name') && !has('addr1') && !has('stopNbr') && !has('pro');
 }
+
+// Does a column mapping cover every REQUIRED order field (consignee/address/city/state/zip)?
+// When a dropped file's header auto-maps this completely, the importer applies it directly —
+// drop → orders in the grid — instead of parking the dispatcher on a 30-dropdown mapping
+// screen. Anything less confident still opens the mapper for manual review.
+export function mappingCoversRequired(mapping) {
+  const mapped = new Set(Object.values(mapping || {}));
+  return BULK_FIELDS.filter((f) => f.required).every((f) => mapped.has(f.key));
+}

@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 
 import {
   parseDelimited, detectDelimiter, looksLikeHeader, autoMapColumns,
-  mappedRowsToOrders, bulkRowMissing, bulkRowIsBlank, bulkRowIsGhost, headerSignature, BULK_FIELDS,
+  mappedRowsToOrders, bulkRowMissing, bulkRowIsBlank, bulkRowIsGhost, mappingCoversRequired, headerSignature, BULK_FIELDS,
 } from '../src/lib/bulk-orders.js';
 
 test('detectDelimiter: tab for Excel/Sheets copy, comma for CSV', () => {
@@ -211,4 +211,14 @@ test('end-to-end: NuVizz 33-column template (Davis 7/20 shape) → real orders i
   assert.equal(orders[0].pallets, '5');
   assert.equal(orders[0].stopNbr, 'SO1');
   assert.equal(orders[0].pro, 'SHP1');
+});
+
+test('mappingCoversRequired: complete required coverage → auto-import; anything less opens the mapper', () => {
+  // The NuVizz template auto-map (name/addr1/city/state/zip all present) qualifies:
+  assert.equal(mappingCoversRequired({ 0: 'pro', 4: 'stopNbr', 16: 'name', 17: 'addr1', 19: 'city', 20: 'state', 21: 'zip' }), true);
+  // Missing any required field → NOT confident (mapper must open):
+  assert.equal(mappingCoversRequired({ 16: 'name', 17: 'addr1', 19: 'city', 20: 'state' }), false, 'no zip');
+  assert.equal(mappingCoversRequired({ 17: 'addr1', 19: 'city', 20: 'state', 21: 'zip' }), false, 'no name');
+  assert.equal(mappingCoversRequired({}), false);
+  assert.equal(mappingCoversRequired(null), false);
 });
