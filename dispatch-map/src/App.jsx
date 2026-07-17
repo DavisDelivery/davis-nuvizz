@@ -34,7 +34,7 @@ import { todayInET, isTodayET, formatDateForDisplay, formatDateLong } from './li
 import { pointInPolygon, latLngInBounds, boxFromCorners, formatReceivingHours, lineItemDims, moveItem, recomputeRoute, resequence, fmtTime12, DEFAULT_SERVICE_SEC } from './lib/routing-select.js';
 import { formatDateTime, tsToMillis, loadSummary, buildLoadAutoName } from './lib/routing-loads.js';
 import { callWrite, newClientOpId } from './lib/nuvizzWrite.js';
-import { BULK_FIELDS, parseDelimited, looksLikeHeader, autoMapColumns, mappedRowsToOrders, bulkRowMissing, bulkRowIsBlank, bulkRowIsGhost, headerSignature, manifestRowsToIntake } from './lib/bulk-orders.js';
+import { BULK_FIELDS, parseDelimited, looksLikeHeader, autoMapColumns, mappedRowsToOrders, bulkRowMissing, bulkRowIsBlank, bulkRowIsGhost, mappingCoversRequired, headerSignature, manifestRowsToIntake } from './lib/bulk-orders.js';
 import { scanStop, scanStopFull } from './lib/signal-scanner';
 import { applyScannerResults } from './lib/customer-notes-writer';
 import { aiParse, aiChat, applyFilterSpec, summarizeSpec, buildTrimmedStops } from './lib/ai-search.js';
@@ -59,7 +59,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.50.49';
+const APP_VERSION = '0.50.50';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -104,6 +104,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.50.50', 'BULK ADD is now ONE STEP: drop the file → orders in the grid. When the file’s header reads clean (consignee, address, city, state, ZIP all recognized — like your NuVizz export does), the app imports it immediately: no “Map columns” screen, no Import button, just “Read the columns automatically and imported 4 order(s) — skipped 8 residue row(s)…” with a “Wrong columns? Undo & map manually” link if it ever guesses wrong. The 30-dropdown mapping screen only appears when the app genuinely can’t tell what a column is. And when the mapper DOES open, its button now tells the truth — “Import 4 orders (8 skipped)” instead of “Import 12 rows.” Verified on the real 7/20 file: drop → 4 complete orders, one step.'],
   ['0.50.49', 'BULK ADD — residue rows can’t junk up the import anymore. Your 7/20 spreadsheet had 4 real orders followed by 8 leftover template rows (just “AIR FILTERS · qty 1”, some with a dragged-down “GA” — no consignee, no address, no order #). The importer counted those as orders, so the grid filled with junk rows demanding 5 missing fields each. Now a row with NO identity — no consignee name, no street, no Order #, no PRO — is recognized as template residue and skipped, and the import tells you exactly what it did (“Imported 4 order(s) — skipped 8 residue row(s)…”). Verified against that exact 7/20 file end-to-end: all 4 real orders import complete — consignee, address, pallets, weight, Order # (SO…), PRO (SHP…), phone, and the full dispatch notes.'],
   ['0.50.48', 'RECONSIGNMENTS NOW SHOW UP. When an order was reconsigned in NuVizz (its delivery address changed after it was already on the board), Dispatch Map kept showing the OLD address — and the pin stayed at the old spot — because the address was captured once when the order first appeared and never refreshed. The background scan now watches the (free) saved-search list for a changed delivery address on any order it already has: if the ZIP or the street number changes, it treats it as a reconsignment and re-pulls that one order so the new address, the map pin, and the details all update. Costs at most one lookup for an order that actually moved (never a full scan), and ordinary formatting differences can\'t trigger it.'],
   ['0.50.47', 'BULK ADD reads the NuVizz route export correctly + EMAIL is now a field. (1) Dropping a NuVizz "Ship To/Ship From" route spreadsheet used to grab the wrong columns — it mapped the Buford WAREHOUSE ("Ship From") as the delivery address and the unit label ("Stop Weight Uom" = "pounds") as the weight, so every order would have gone out to the wrong place with no weight. The importer now ignores the pickup/"Ship From" side for delivery fields and never treats a "…Uom" column as a value, and it maps the real Ship To address/city/state/zip, the Stop Weight number, Skids→pallets, Comments→dispatch notes, and the Customer Number (a phone on this export)→phone. Davis convention: the Shipment Number (SO#) is the Order # and the Stop Number (SHP#) is the PRO. (2) EMAIL: added a consignee Email field to the New Order page and the Bulk Add grid; it maps to the NuVizz order contact (to.contact.email) on create, so the customer email rides along with the order.'],
@@ -17115,6 +17116,9 @@ function BulkOrderScreen() {
   const [importErr, setImportErr] = useState('');
   const [importBusy, setImportBusy] = useState('');  // OCR in flight — the drop zone shows this instead of the hint
   const [importInfo, setImportInfo] = useState('');  // manifest read summary + integrity warnings (review nudge)
+  // Set by a confident-header AUTO import: {prevRows, stash} — "Undo & map manually" restores the
+  // grid to prevRows and reopens the mapper with the same parse, so auto never traps a bad mapping.
+  const [autoImportUndo, setAutoImportUndo] = useState(null);
   const [dragOver, setDragOver] = useState(false);
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState(null);    // { done, total }
@@ -17220,7 +17224,12 @@ function BulkOrderScreen() {
     if (!dataRows.length) { setImportErr('Found a header but no data rows.'); return; }
     const sig = hasHeader ? headerSignature(parsed[0]) : null;
     const mapping = recallMapping(sig) || autoMapColumns(hasHeader ? parsed[0] : []);
-    setImporter({ columns, dataRows, mapping, sig, hasHeader });
+    const stash = { columns, dataRows, mapping, sig, hasHeader };
+    // CONFIDENT header — every required field auto-mapped → apply it straight away: drop → orders
+    // in the grid, no 30-dropdown mapping screen. "Undo & map manually" on the info line reopens
+    // the mapper with this same parse. Anything less confident still opens the mapper.
+    if (hasHeader && mappingCoversRequired(mapping) && commitImport(dataRows, mapping, sig, { auto: true, stash })) return;
+    setImporter(stash);
   };
   const ingestText = (text) => finishIngest(parseDelimited(text));
   const ingestAoa = (aoa) => {
@@ -17315,18 +17324,32 @@ function BulkOrderScreen() {
       }
     } catch (err) { setImportErr(`Could not read "${file.name}": ${err?.message || 'unreadable file'}`); setImportBusy(''); }
   };
-  const applyImport = () => {
-    const mapped = mappedRowsToOrders(importer.dataRows, importer.mapping).filter((o) => !bulkRowIsBlank(o));
+  // Shared by the mapper's Import button and the confident-header AUTO path: land the mapped
+  // orders in the grid (ghost residue dropped), remember the header mapping, report what happened.
+  const commitImport = (dataRows, mapping, sig, { auto = false, stash = null } = {}) => {
+    const mapped = mappedRowsToOrders(dataRows, mapping).filter((o) => !bulkRowIsBlank(o));
     // Drop GHOST rows — template residue with no consignee/address/order#/PRO (a column dragged
     // down past the last real order). They'd land as junk rows demanding 5 fields each.
     const orders = mapped.filter((o) => !bulkRowIsGhost(o));
     const ghosts = mapped.length - orders.length;
-    if (!orders.length) { setImportErr(ghosts ? `All ${ghosts} row(s) were residue — no consignee/address/order # anywhere. Check the column mapping.` : 'No rows to import with the current column mapping.'); return; }
+    if (!orders.length) { setImportErr(ghosts ? `All ${ghosts} row(s) were residue — no consignee/address/order # anywhere. Check the column mapping.` : 'No rows to import with the current column mapping.'); return false; }
     const filled = orders.slice(0, BULK_MAX_ROWS).map((o) => ({ ...bulkEmptyRow(), ...o }));
+    setAutoImportUndo(auto && stash ? { prevRows: rows, stash } : null);
     setRows((rs) => { const keep = rs.filter((r) => !bulkRowIsBlank(r)); return [...keep, ...filled, bulkEmptyRow()].slice(0, BULK_MAX_ROWS + 1); });
-    rememberMapping(importer.sig, importer.mapping);
+    rememberMapping(sig, mapping);
     setImporter(null); setPasteText(''); setResults(null);
-    setImportInfo(`Imported ${filled.length} order(s)${ghosts ? ` — skipped ${ghosts} residue row(s) that had no consignee, address, or order # (template leftovers)` : ''}.`);
+    setImportInfo(`${auto ? 'Read the columns automatically and imported' : 'Imported'} ${filled.length} order(s)${ghosts ? ` — skipped ${ghosts} residue row(s) that had no consignee, address, or order # (template leftovers)` : ''}.`);
+    return true;
+  };
+  const applyImport = () => { if (importer) commitImport(importer.dataRows, importer.mapping, importer.sig); };
+  const undoAutoImport = () => {
+    setAutoImportUndo((u) => {
+      if (!u) return null;
+      setRows(u.prevRows && u.prevRows.length ? u.prevRows : [bulkEmptyRow(), bulkEmptyRow(), bulkEmptyRow()]);
+      setImportInfo('');
+      setImporter(u.stash);   // reopen the mapper on the same parse for manual mapping
+      return null;
+    });
   };
 
   // ── Create all ready rows ──
@@ -17670,7 +17693,12 @@ function BulkOrderScreen() {
             <button onClick={() => ingestText(pasteText)} disabled={!pasteText.trim()} className={`text-[12px] font-medium inline-flex items-center gap-1 px-2.5 py-1 rounded border ${pasteText.trim() ? 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50' : 'border-slate-200 bg-slate-50 text-slate-400 cursor-not-allowed'}`}>Load pasted rows</button>
             {importErr && <span className="text-[12px] text-red-600 inline-flex items-center gap-1"><AlertTriangle size={13} /> {importErr}</span>}
           </div>
-          {importInfo && <div className="text-[12px] text-emerald-800 bg-emerald-50 border border-emerald-200 rounded px-2 py-1">{importInfo}</div>}
+          {importInfo && (
+            <div className="text-[12px] text-emerald-800 bg-emerald-50 border border-emerald-200 rounded px-2 py-1">
+              {importInfo}
+              {autoImportUndo && <button onClick={undoAutoImport} className="ml-2 underline font-medium hover:text-emerald-950">Wrong columns? Undo &amp; map manually</button>}
+            </div>
+          )}
 
           {/* Column mapping confirm */}
           {importer && (
@@ -17692,7 +17720,17 @@ function BulkOrderScreen() {
                 ))}
               </div>
               <div className="flex items-center gap-2">
-                <button onClick={applyImport} className="text-[12px] font-semibold inline-flex items-center gap-1 px-3 py-1 rounded text-white" style={{ background: BRAND }}><Plus size={13} /> Import {importer.dataRows.length} row{importer.dataRows.length === 1 ? '' : 's'}</button>
+                {(() => {
+                  // Honest count: what WILL land (blank + residue rows excluded), not the raw row count.
+                  const mapped = mappedRowsToOrders(importer.dataRows, importer.mapping).filter((o) => !bulkRowIsBlank(o));
+                  const n = mapped.filter((o) => !bulkRowIsGhost(o)).length;
+                  const skip = importer.dataRows.length - n;
+                  return (
+                    <button onClick={applyImport} disabled={!n} className={`text-[12px] font-semibold inline-flex items-center gap-1 px-3 py-1 rounded text-white ${n ? '' : 'opacity-40 cursor-not-allowed'}`} style={{ background: BRAND }}>
+                      <Plus size={13} /> Import {n} order{n === 1 ? '' : 's'}{skip > 0 ? ` (${skip} skipped)` : ''}
+                    </button>
+                  );
+                })()}
                 <button onClick={() => setImporter(null)} className="text-[12px] font-medium px-2.5 py-1 rounded border border-slate-300 bg-white text-slate-600 hover:bg-slate-50">Cancel</button>
               </div>
             </div>
