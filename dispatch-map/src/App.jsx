@@ -59,7 +59,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.50.52';
+const APP_VERSION = '0.50.53';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -104,6 +104,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.50.53', 'BULK ADD — a “Pushed to NuVizz” tab, so a spreadsheet push leaves a receipt. Before, when you imported a spreadsheet and hit Create, the rows just cleared with a green “Created N” banner and there was no list to look back at — the “Pushed to NuVizz” history only existed for scanned-manifest PDFs. Now the spreadsheet Bulk Add screen has two tabs — Orders and Pushed to NuVizz — and every order you push is logged (consignee, Order #, NuVizz #, pallets/loose/weight, price, time). Pick a day to see exactly what went out, from any device; a clean push jumps you straight to the receipt. It reads/writes only our own log — ZERO NuVizz calls — and shares the same history as the manifest flow, so everything pushed that day shows in one place.'],
   ['0.50.52', 'BULK ADD — phone numbers that were already sitting in the grid now format too. v0.50.51 masked phones to xxx-xxx-xxxx as they’re typed or imported, but rows that were already in the grid from before the update (saved on this device) kept showing the raw digit run until you re-imported. Now the grid normalizes those phones the moment it reloads, so every row reads xxx-xxx-xxxx no matter how it got there. (NuVizz still gets the plain digits at push time.)'],
   ['0.50.51', 'BULK ADD — phone numbers import already formatted, wider columns, and the page uses the full width. (1) A phone dropped or pasted in from a spreadsheet now normalizes to xxx-xxx-xxxx the moment it lands in the grid — the same mask you get while typing — instead of arriving as a raw digit run like “4048148100”. (When the order is actually pushed, NuVizz still gets the plain digits.) Extensions (“x45”), “+” international, and unusual longer numbers pass through untouched so nothing gets truncated. (2) The Phone, Email, and Dispatch notes columns are wider now, so you can read the whole value instead of a cut-off “40481481…”. (3) The Bulk Add page is full-width — no more grey margins on the sides — so the table gets all the room.'],
   ['0.50.50', 'BULK ADD is now ONE STEP: drop the file → orders in the grid. When the file’s header reads clean (consignee, address, city, state, ZIP all recognized — like your NuVizz export does), the app imports it immediately: no “Map columns” screen, no Import button, just “Read the columns automatically and imported 4 order(s) — skipped 8 residue row(s)…” with a “Wrong columns? Undo & map manually” link if it ever guesses wrong. The 30-dropdown mapping screen only appears when the app genuinely can’t tell what a column is. And when the mapper DOES open, its button now tells the truth — “Import 4 orders (8 skipped)” instead of “Import 12 rows.” Verified on the real 7/20 file: drop → 4 complete orders, one step.'],
@@ -17125,6 +17126,9 @@ function BulkOrderScreen() {
   const [asLoad, setAsLoad] = useState(false);
   const [loadNbr, setLoadNbr] = useState('');
   const [routeName, setRouteName] = useState('');
+  // Bulk Add screen view: the order-building grid, or the durable "Pushed to NuVizz" history
+  // (same cloud log the manifest flow writes — a receipt of what a spreadsheet push sent).
+  const [bulkView, setBulkView] = useState('orders');   // 'orders' | 'pushed'
   const [verifyMsg, setVerifyMsg] = useState(null);   // live status while the import converges
   const fileRef = useRef(null);
 
@@ -17154,7 +17158,7 @@ function BulkOrderScreen() {
       setPushedLog({ loading: false, records: Array.isArray(d.records) ? d.records : [], error: d.ok ? null : (d.reason || 'load failed'), date });
     } catch (e) { setPushedLog({ loading: false, records: [], error: e.message, date }); }
   }, []);
-  useEffect(() => { if (intakeTab === 'pushed') fetchPushedLog(pushedDate); }, [intakeTab, pushedDate, fetchPushedLog]);
+  useEffect(() => { if (intakeTab === 'pushed' || bulkView === 'pushed') fetchPushedLog(pushedDate); }, [intakeTab, bulkView, pushedDate, fetchPushedLog]);
 
   const setOrig = (k) => (e) => { setOriginSaved(false); setOrigin((o) => ({ ...o, [k]: e.target.value })); };
   const pickOrigin = (e) => {
@@ -17314,7 +17318,7 @@ function BulkOrderScreen() {
               rows: [...prev.rows, ...added],
             };
           });
-          setIntakeTab('held'); setIntakeResults(null); setIntakeOpen(null);
+          setIntakeTab('held'); setIntakeResults(null); setIntakeOpen(null); setBulkView('orders');
         } finally { setImportBusy(''); }
       } else {
         ingestText(await file.text());   // .csv / .tsv / .txt
@@ -17334,6 +17338,7 @@ function BulkOrderScreen() {
     // spreadsheet lands formatted — NuVizz gets the digits stripped later at write time.
     const filled = orders.slice(0, BULK_MAX_ROWS).map((o) => ({ ...bulkEmptyRow(), ...o, phone: normalizePhone(o.phone) }));
     setAutoImportUndo(auto && stash ? { prevRows: rows, stash } : null);
+    setBulkView('orders');   // a fresh import always lands you back on the grid, not the Pushed tab
     setRows((rs) => { const keep = rs.filter((r) => !bulkRowIsBlank(r)); return [...keep, ...filled, bulkEmptyRow()].slice(0, BULK_MAX_ROWS + 1); });
     rememberMapping(sig, mapping);
     setImporter(null); setPasteText(''); setResults(null);
@@ -17361,6 +17366,7 @@ function BulkOrderScreen() {
     const settings = { origin: { name: origin.name.trim(), addr1: origin.addr1.trim(), city: origin.city.trim(), state: origin.state.trim(), zip: origin.zip.trim() }, serviceDate, timeZone: 'America/New_York' };
     setBusy(true); setResults(null); setProgress({ done: 0, total: targets.length });
     const out = [];
+    const pushedLogRecords = [];   // durable cloud push-history — feeds the "Pushed to NuVizz" tab
     // Sequential — one create at a time, each with its own idempotency key, to respect the
     // NuVizz daily-call ceiling/breaker and never fire a duplicate on a mid-batch retry.
     for (let k = 0; k < targets.length; k++) {
@@ -17380,6 +17386,15 @@ function BulkOrderScreen() {
       catch (e) { res = { ok: false, error: e?.message || 'network error' }; }
       const ok = !!(res.ok && res.result?.ok);
       out.push({ idx, name: payloadRow.name, ok, updated: !!res.result?.updated, nbr: res.result?.entityNbr || payloadRow.stopNbr || '', error: ok ? null : (res.error || res.result?.error || 'write error') });
+      if (ok) {
+        pushedLogRecords.push({
+          orderRef: (r.stopNbr || '').trim() || null, nuvizzNbr: res.result?.entityNbr || (r.stopNbr || '').trim() || null,
+          name: r.name || '', addr1: r.addr1 || '', addr2: r.addr2 || '', city: r.city || '', state: r.state || '', zip: r.zip || '',
+          itemDesc: r.itemDesc || '', pallets: r.pallets || '', loose: r.loose || '', weight: r.weight || '', price: r.price || '',
+          phone: r.phone || '', dispatchNotes: r.dispatchNotes || '', updated: !!res.result?.updated,
+          manifestNumber: null, serviceDate, pushedAt: new Date().toISOString(),
+        });
+      }
       setProgress({ done: k + 1, total: targets.length });
     }
     setBusy(false); setProgress(null);
@@ -17387,6 +17402,19 @@ function BulkOrderScreen() {
     // Keep failed + incomplete rows for a retry; drop the ones that succeeded.
     setRows((rs) => { const kept = rs.filter((r, idx) => !bulkRowIsBlank(r) && !okIdx.has(idx)); return kept.length ? kept : [bulkEmptyRow()]; });
     setResults({ created: out.filter((o) => o.ok && !o.updated).length, updated: out.filter((o) => o.ok && o.updated).length, failed: out.filter((o) => !o.ok).length, rows: out });
+    // Durably log what was pushed so the Pushed tab shows it by date, from any device (best-effort,
+    // our own Firestore log — a hiccup never fails the create). On a clean run, jump to the receipt.
+    if (pushedLogRecords.length) {
+      try {
+        await fetch('/.netlify/functions/manifest-push-log', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ records: pushedLogRecords }),
+        });
+      } catch { /* history is best-effort */ }
+      const today = etTodayStr();
+      if (pushedDate !== today) setPushedDate(today); else fetchPushedLog(today);
+      if (!out.some((o) => !o.ok)) setBulkView('pushed');
+    }
   };
 
   // ── Create as a NEW load (item A): ONE async import creates the load + every order inline ──
@@ -17605,6 +17633,13 @@ function BulkOrderScreen() {
           </button>
         </div>
 
+        {/* Orders grid vs the durable Pushed-to-NuVizz receipt (same cloud log the manifest flow writes) */}
+        <div className="flex items-center gap-2 border-b border-slate-200 pb-1">
+          <TabBtn label="Orders" active={bulkView === 'orders'} onClick={() => setBulkView('orders')} icon={<LayoutList size={13} />} />
+          <TabBtn label="Pushed to NuVizz" active={bulkView === 'pushed'} onClick={() => { setBulkView('pushed'); fetchPushedLog(pushedDate); }} icon={<FileCheck size={13} />} />
+        </div>
+
+        {bulkView === 'orders' && (<>
         {/* Shared pickup + service date (applies to the whole batch) */}
         <div className="bg-white border border-slate-200 rounded-lg p-3">
           <button onClick={() => setShowOrigin((v) => !v)} className="w-full flex items-center justify-between text-left">
@@ -18027,6 +18062,61 @@ function BulkOrderScreen() {
               : live ? `Create ${readyCount} order(s) (LIVE)` : `Preview ${readyCount} (Beta)`}
           </button>
         </div>
+        </>)}
+
+        {/* ── Pushed to NuVizz — the durable receipt of what Bulk Add sent, by day, from any
+            device. Same cloud log the manifest flow writes; reads our own store only (0 NuVizz). ── */}
+        {bulkView === 'pushed' && (() => {
+          const recs = pushedLog.records || [];
+          const isToday = pushedDate === etTodayStr();
+          const fmtTime = (iso) => { try { return new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit' }).format(new Date(iso)); } catch { return ''; } };
+          return (
+            <div className="bg-white border border-slate-200 rounded-lg p-3 space-y-3">
+              <div className="flex items-center flex-wrap gap-2">
+                <div className="text-[13px] font-semibold text-slate-700 inline-flex items-center gap-1.5"><FileCheck size={14} /> Pushed to NuVizz</div>
+                <span className="text-slate-300">·</span>
+                <input type="date" value={pushedDate} max={etTodayStr()} onChange={(e) => setPushedDate(e.target.value)} className="border border-slate-300 rounded px-2 py-1 text-[12px] bg-white focus:outline-none focus:ring-1 focus:ring-blue-300" />
+                {!isToday && <button onClick={() => setPushedDate(etTodayStr())} className="text-[11px] text-blue-600 hover:underline">Today</button>}
+                <button onClick={() => fetchPushedLog(pushedDate)} title="Refresh" className="text-slate-400 hover:text-slate-700"><RefreshCw size={13} className={pushedLog.loading ? 'animate-spin' : ''} /></button>
+                <span className="text-[12px] text-slate-500">{pushedLog.loading ? 'loading…' : `${recs.length} pushed`}{isToday ? ' today' : ''}</span>
+                {pushedLog.error && <span className="text-[11px] text-amber-700">History unavailable: {pushedLog.error}</span>}
+                <span className="text-[11px] text-slate-400 w-full">Every order you push from Bulk Add is logged here — pick a day to see exactly what was sent. Reads our own log only (zero NuVizz calls).</span>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="text-[12px] border-collapse w-full">
+                  <thead>
+                    <tr className="text-left text-[11px] text-slate-500 border-b border-slate-200">
+                      <th className="px-2 pb-1 font-medium">Consignee</th>
+                      <th className="px-2 pb-1 font-medium">Order #</th>
+                      <th className="px-2 pb-1 font-medium">NuVizz #</th>
+                      <th className="px-2 pb-1 font-medium text-right">Plt</th>
+                      <th className="px-2 pb-1 font-medium text-right">Loose</th>
+                      <th className="px-2 pb-1 font-medium text-right">Wt</th>
+                      <th className="px-2 pb-1 font-medium text-right">Price</th>
+                      <th className="px-2 pb-1 font-medium whitespace-nowrap">Pushed</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {recs.length === 0 ? (
+                      <tr><td colSpan={8} className="py-4 text-center text-slate-400">{pushedLog.loading ? 'Loading…' : `Nothing pushed on ${pushedDate}.`}</td></tr>
+                    ) : recs.map((r, i) => (
+                      <tr key={`${r.orderRef || r.nuvizzNbr || i}_${i}`} className="border-b border-slate-100 align-top">
+                        <td className="px-2 py-1"><div className="font-medium text-slate-700">{r.name || '—'}</div>{(r.city || r.state) && <div className="text-[11px] text-slate-400">{[r.city, r.state].filter(Boolean).join(', ')}</div>}</td>
+                        <td className="px-2 py-1 text-slate-600 tabular-nums">{r.orderRef || '—'}</td>
+                        <td className="px-2 py-1 tabular-nums">{r.nuvizzNbr || '—'}{r.updated && <span className="ml-1 text-[10px] px-1 py-0.5 rounded bg-amber-100 text-amber-700 align-middle">updated</span>}</td>
+                        <td className="px-2 py-1 text-right tabular-nums">{r.pallets || ''}</td>
+                        <td className="px-2 py-1 text-right tabular-nums">{r.loose || ''}</td>
+                        <td className="px-2 py-1 text-right tabular-nums">{r.weight || ''}</td>
+                        <td className="px-2 py-1 text-right tabular-nums">{r.price ? `$${r.price}` : ''}</td>
+                        <td className="px-2 py-1 text-slate-500 whitespace-nowrap">{fmtTime(r.pushedAt)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          );
+        })()}
       </div>
     </div>
   );
