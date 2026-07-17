@@ -236,6 +236,20 @@ test('buildStopPayload: phone → to.contact with CLEAN DIGITS (UI dashes/parens
   assert.equal(blank.to.contact, undefined, 'blank phone must not emit a contact block');
 });
 
+test('buildStopPayload: email → to.contact.email; combines with phone; blank email is omitted', () => {
+  const origin = { name: 'D', addr1: '9', city: 'A', state: 'GA', zip: '30301' };
+  const build = (row) => buildStopPayload({ name: 'JASMINE LEWIS', addr1: '1', city: 'B', state: 'GA', zip: '30518', ...row },
+    { origin, serviceDate: '2026-07-16' }).to.contact;
+  // Email alone still emits a contact block.
+  assert.deepEqual(build({ email: '  name@company.com  ' }), { contactName: 'JASMINE LEWIS', email: 'name@company.com' });
+  // Phone + email ride together in the v7 contact block.
+  assert.deepEqual(build({ phone: '770-555-0123', email: 'name@company.com' }),
+    { contactName: 'JASMINE LEWIS', phone: '7705550123', email: 'name@company.com' });
+  // A blank email adds nothing (and with no phone, no contact block at all).
+  assert.equal(build({ email: '   ' }), undefined, 'blank email + no phone → no contact block');
+  assert.deepEqual(build({ phone: '7705550123', email: '   ' }), { contactName: 'JASMINE LEWIS', phone: '7705550123' });
+});
+
 test('buildStopPayload: dispatchNotes → ONE ORD_IN comment (commentType 01, ≤500 chars); absent when blank', () => {
   const origin = { name: 'D', addr1: '9', city: 'A', state: 'GA', zip: '30301' };
   const withNotes = buildStopPayload({ name: 'A', addr1: '1', city: 'B', state: 'GA', zip: '30518', dispatchNotes: '  dock 4, call on arrival  ' },

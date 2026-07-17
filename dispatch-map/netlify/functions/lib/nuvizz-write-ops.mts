@@ -98,6 +98,8 @@ export interface StopRow {
   // Consignee contact phone → to.contact.phone (read back by the scan as contact.phone —
   // resolveStopPhone / the card's Contact row / "Text customer"). Digits/string, optional.
   phone?: string | null;
+  // Consignee contact email → to.contact.email (v7 contact block). Optional.
+  email?: string | null;
   // Dispatch notes (driver instructions) → comments[] cmtType ORD_IN (read back by
   // extractOrderInstructions → signalSources.orderInstructions + allComments on the card).
   dispatchNotes?: string | null;
@@ -134,6 +136,8 @@ export function buildStopPayload(row: StopRow, settings: OriginSettings): any {
   // put "678-226-2099" on the wire; NuVizz server-side-validates this number, which feeds its
   // driver→customer SMS, and rejects the punctuation). Keep a leading "+" for international.
   const phone = row.phone ? String(row.phone).trim().replace(/(?!^\+)\D/g, '').slice(0, 200) : '';
+  // Consignee email → to.contact.email. Trim only (NuVizz validates); bound the length.
+  const email = row.email ? String(row.email).trim().slice(0, 200) : '';
   const notes = row.dispatchNotes ? String(row.dispatchNotes).trim() : '';
   // Davis freight semantics ↔ NuVizz's mislabeled fields (matches how the app READS
   // every stop): pallets/skids ride NuVizz "totalCartons", loose pieces ride
@@ -201,10 +205,12 @@ export function buildStopPayload(row: StopRow, settings: OriginSettings): any {
         city: row.city, state: row.state, zip: row.zip, country: 'USA',
       },
       schedule: { timeFrom: `${d}T12:00:00`, timeTo: `${d}T17:00:00`, timeZone: tz, timeConstraint: 'PREFERRED' },
-      // Consignee phone → the v7 to.contact block ({contactName, phone, phone2, sms, fax,
-      // email}). Read back by normalizeStop as contact.phone (resolveStopPhone / Contact
-      // row / "Text customer").
-      contact: phone ? { contactName: row.name, phone } : undefined,
+      // Consignee phone + email → the v7 to.contact block ({contactName, phone, phone2, sms,
+      // fax, email}). Read back by normalizeStop as contact.phone / contact.email
+      // (resolveStopPhone / Contact row / "Text customer").
+      contact: (phone || email)
+        ? { contactName: row.name, ...(phone ? { phone } : {}), ...(email ? { email } : {}) }
+        : undefined,
     },
   };
 }

@@ -112,3 +112,40 @@ test('end-to-end: pasted TSV with header → mapped, validated orders', () => {
   assert.deepEqual(orders[0], { name: 'ACME', addr1: '500 Main St', city: 'Lawrenceville', state: 'GA', zip: '30046', itemDesc: 'appliances' });
   assert.deepEqual(bulkRowMissing(orders[1]), []);
 });
+
+test('autoMapColumns: NuVizz route export — delivery (Ship To) wins over pickup (Ship From), Uom never steals a value', () => {
+  const header = [
+    'Stop Number', 'Shipment Number', 'Skids', 'Total Pieces', 'Loose',
+    'Stop Weight Uom', 'Stop Weight', 'Ship From - Address Line 1',
+    'Ship To Name', 'Ship To - Address Line 1', 'Ship To - Address Line 2',
+    'Ship To - City', 'Ship To - State', 'Zip Code', 'Product', 'Price',
+    'Comments', 'Customer Number', 'Email',
+  ];
+  const m = autoMapColumns(header);
+  // The warehouse side is ignored; the real delivery address maps.
+  assert.equal(m[7], undefined, 'Ship From must NOT map to the delivery address');
+  assert.equal(m[9], 'addr1', 'Ship To Address Line 1 → addr1');
+  assert.equal(m[10], 'addr2', 'Ship To Address Line 2 → addr2');
+  assert.equal(m[11], 'city');
+  assert.equal(m[12], 'state');
+  assert.equal(m[13], 'zip');
+  assert.equal(m[8], 'name', 'Ship To Name → name');
+  // The unit label is ignored; the numeric weight wins.
+  assert.equal(m[5], undefined, 'Stop Weight Uom must NOT map to weight');
+  assert.equal(m[6], 'weight', 'Stop Weight (the number) → weight');
+  // Davis convention: Shipment Number (SO#) is the Order #, Stop Number (SHP#) is the PRO.
+  assert.equal(m[1], 'stopNbr', 'Shipment Number → Order #');
+  assert.equal(m[0], 'pro', 'Stop Number → PRO');
+  assert.equal(m[2], 'pallets', 'Skids → pallets');
+  assert.equal(m[4], 'loose');
+  assert.equal(m[14], 'itemDesc');
+  assert.equal(m[15], 'price');
+  assert.equal(m[16], 'dispatchNotes', 'Comments → dispatch notes');
+  assert.equal(m[17], 'phone', 'Customer Number (a phone) → phone');
+  assert.equal(m[18], 'email', 'Email → email');
+});
+
+test('autoMapColumns: a bare "Shipment" column still maps to PRO (only "Shipment Number"/"Sales Order" route to Order #)', () => {
+  const m = autoMapColumns(['Consignee', 'Address', 'City', 'State', 'Zip', 'Shipment']);
+  assert.equal(m[5], 'pro');
+});
