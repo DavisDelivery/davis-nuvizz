@@ -59,7 +59,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.50.51';
+const APP_VERSION = '0.50.52';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -104,6 +104,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.50.52', 'BULK ADD — phone numbers that were already sitting in the grid now format too. v0.50.51 masked phones to xxx-xxx-xxxx as they’re typed or imported, but rows that were already in the grid from before the update (saved on this device) kept showing the raw digit run until you re-imported. Now the grid normalizes those phones the moment it reloads, so every row reads xxx-xxx-xxxx no matter how it got there. (NuVizz still gets the plain digits at push time.)'],
   ['0.50.51', 'BULK ADD — phone numbers import already formatted, wider columns, and the page uses the full width. (1) A phone dropped or pasted in from a spreadsheet now normalizes to xxx-xxx-xxxx the moment it lands in the grid — the same mask you get while typing — instead of arriving as a raw digit run like “4048148100”. (When the order is actually pushed, NuVizz still gets the plain digits.) Extensions (“x45”), “+” international, and unusual longer numbers pass through untouched so nothing gets truncated. (2) The Phone, Email, and Dispatch notes columns are wider now, so you can read the whole value instead of a cut-off “40481481…”. (3) The Bulk Add page is full-width — no more grey margins on the sides — so the table gets all the room.'],
   ['0.50.50', 'BULK ADD is now ONE STEP: drop the file → orders in the grid. When the file’s header reads clean (consignee, address, city, state, ZIP all recognized — like your NuVizz export does), the app imports it immediately: no “Map columns” screen, no Import button, just “Read the columns automatically and imported 4 order(s) — skipped 8 residue row(s)…” with a “Wrong columns? Undo & map manually” link if it ever guesses wrong. The 30-dropdown mapping screen only appears when the app genuinely can’t tell what a column is. And when the mapper DOES open, its button now tells the truth — “Import 4 orders (8 skipped)” instead of “Import 12 rows.” Verified on the real 7/20 file: drop → 4 complete orders, one step.'],
   ['0.50.49', 'BULK ADD — residue rows can’t junk up the import anymore. Your 7/20 spreadsheet had 4 real orders followed by 8 leftover template rows (just “AIR FILTERS · qty 1”, some with a dragged-down “GA” — no consignee, no address, no order #). The importer counted those as orders, so the grid filled with junk rows demanding 5 missing fields each. Now a row with NO identity — no consignee name, no street, no Order #, no PRO — is recognized as template residue and skipped, and the import tells you exactly what it did (“Imported 4 order(s) — skipped 8 residue row(s)…”). Verified against that exact 7/20 file end-to-end: all 4 real orders import complete — consignee, address, pallets, weight, Order # (SO…), PRO (SHP…), phone, and the full dispatch notes.'],
@@ -17098,7 +17099,10 @@ function BulkOrderScreen() {
     try {
       const saved = JSON.parse(localStorage.getItem(BULK_DRAFT_KEY) || 'null');
       if (Array.isArray(saved) && saved.length) {
-        return saved.slice(0, BULK_MAX_ROWS + 1).map((r) => ({ ...bulkEmptyRow(), ...r, _push: r?._push !== false }));
+        // Normalize the phone as the draft rehydrates too — not just at import/typing — so rows
+        // saved by an OLDER build (raw digit runs like "4048148100") show as xxx-xxx-xxxx the
+        // moment the grid reloads, without the dispatcher having to re-import.
+        return saved.slice(0, BULK_MAX_ROWS + 1).map((r) => ({ ...bulkEmptyRow(), ...r, phone: normalizePhone(r?.phone), _push: r?._push !== false }));
       }
     } catch { /* corrupt draft — start fresh */ }
     return [bulkEmptyRow(), bulkEmptyRow(), bulkEmptyRow()];
