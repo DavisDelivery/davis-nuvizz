@@ -59,7 +59,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.50.45';
+const APP_VERSION = '0.50.46';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -104,6 +104,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.50.46', 'ENGINE TAB — the shadow-engine day maps now actually draw. On both the Sequencing and Assignment views the right-hand map could come up solid grey (blank) even with a route/driver picked and the "engine moved" list populated — Google Maps was never told its panel had a real size, so the tiles never painted. The map now redraws and re-fits the moment its panel is sized (and on any resize), so it fills in reliably. Assignment view also got three asks: the daily-agreement trend now shows real DATES on the x-axis (a single-month window used to collapse to one lonely month label); clicking a driver row focuses the map on just that driver — dispatch route vs the engine\'s, fit to their stops, with a Clear button; and the map is bigger (wider + taller) while the chart is shorter, so there\'s far less grey space.'],
   ['0.50.45', 'Three fixes. (1) CORRECT PIN LOCATION no longer closes the order or throws the map across the state. Clicking "Correct pin location" used to close the order card and — because nothing was selected anymore — snap the map back out to the whole board (looked like it jumped "3 cities away"). Now the order stays open and the map holds its place; the draggable blue pin drops right where the stop already is. It only recenters if the pin happens to be off-screen, so you can always grab it. (2) MAP NO LONGER DRIFTS ON ITS OWN. With a search active (e.g. "floor"), every 120-second board refresh was re-framing the map to fit all the far-apart matches — so if you left an order open it slowly zoomed out and lost focus on its own. The map now only re-fits when you actually change the search, not on the background refresh. (3) ROUTING (beta) now opens on the BUILD tab by default instead of Engine (switch to Engine anytime; coming back to Routing lands on Build again).'],
   ['0.50.44', 'MAP — the receiving-hours "clock" pin now pops up a real hover card. Hovering one of these pins on desktop instantly shows a little card with the business name AND its receiving hours (e.g. "ACME WAREHOUSE · Receiving hours: Mon–Fri 8:00a–3:00p · Sat Closed") — no more waiting on the slow grey OS tooltip, and no need to click in. Only the clock pins get the card; plain pins are unchanged. (Replaces the 0.50.43 approach, which relied on the browser\'s built-in tooltip that was easy to miss.)'],
   ['0.50.43', 'MAP — hovering a receiving-hours "clock" pin now shows its hours. On desktop, hovering any map pin has always popped up the platform/business name; now, for the pins that carry a receiving-hours restriction (the clock icon), the hover tooltip also shows the window — e.g. "ACME WAREHOUSE · Receiving hours: Mon–Fri 8:00a–3:00p · Sat Closed" — so when you\'re hunting for a time-restricted stop you can read its hours without clicking in. Only clock pins get the extra line; pins with no hours set are unchanged.'],
@@ -15749,6 +15750,36 @@ function engineDateFmt(date) {
   if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return date || '—';
   return `${ENGINE_MONTHS[Number(date.slice(5, 7)) - 1]} ${Number(date.slice(8, 10))}, ${date.slice(0, 4)}`;
 }
+function engineDayShort(date) {
+  // 'YYYY-MM-DD' → "Jul 3" (no Date parse, no TZ shift)
+  if (!date || date.length < 10) return date || '';
+  return `${ENGINE_MONTHS[Number(date.slice(5, 7)) - 1]} ${Number(date.slice(8, 10))}`;
+}
+// Readable x-axis for the daily trend charts. A month-boundary axis (one tick
+// per month) is only legible once the data spans several months; early on every
+// scored day lands in ONE month, so that logic collapses to a single lonely
+// label — which reads as "no dates on the axis". This falls back to evenly
+// spaced "Mon D" day labels (≤6, so they never collide) whenever the window is
+// one or two months, and only switches to month labels for longer spans.
+function engineAxisTicks(pts) {
+  if (!pts.length) return [];
+  const months = new Set(pts.map((d) => d.date.slice(0, 7)));
+  if (months.size >= 3) {
+    const ticks = []; let last = '';
+    pts.forEach((d, i) => { const m = d.date.slice(0, 7); if (m !== last) { ticks.push({ i, label: engineMonthLabel(d.date) }); last = m; } });
+    return ticks;
+  }
+  const n = pts.length;
+  const count = Math.min(6, n);
+  const ticks = []; const seen = new Set();
+  for (let k = 0; k < count; k += 1) {
+    const i = count <= 1 ? 0 : Math.round((k * (n - 1)) / (count - 1));
+    if (seen.has(i)) continue;
+    seen.add(i);
+    ticks.push({ i, label: engineDayShort(pts[i].date) });
+  }
+  return ticks;
+}
 
 // Daily mean + median trend — the watch-it-learn instrument. Hand-rolled SVG
 // (house style: no chart lib), evenly spaced by scored day, month labels on
@@ -15771,13 +15802,9 @@ function EngineTrendChart({ days }) {
   // scored days (no guided field) don't drop the line to zero.
   const guidedPts = pts.map((d, i) => ({ i, d, v: d.mean_score_guided })).filter((p) => p.v != null);
   const guidedLine = guidedPts.map((p) => `${x(p.i).toFixed(1)},${y(p.v).toFixed(1)}`).join(' ');
-  // one axis label per month, at that month's first scored day
-  const monthTicks = [];
-  let lastMonth = '';
-  pts.forEach((d, i) => {
-    const m = d.date.slice(0, 7);
-    if (m !== lastMonth) { monthTicks.push({ i, label: engineMonthLabel(d.date) }); lastMonth = m; }
-  });
+  // month labels for a multi-month span, else evenly spaced day labels so a
+  // single-month window still shows real dates on the axis.
+  const monthTicks = engineAxisTicks(pts);
   const gridVals = [0, maxY / 2, maxY];
   return (
     <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-auto" role="img" aria-label="Daily engine guided-score trend">
@@ -15929,6 +15956,7 @@ function EngineScreen() {
   const [mapReady, setMapReady] = useState(0);
   const markersRef = useRef([]);
   const linesRef = useRef([]);
+  const lastBoundsRef = useRef(null); // last fitted bounds, so a resize can refit
 
   useEffect(() => {
     if (!google || !mapDiv.current || mapRef.current) return;
@@ -15997,8 +16025,29 @@ function EngineScreen() {
     const bounds = new google.maps.LatLngBounds();
     bounds.extend(depotPt);
     for (const s of stops) bounds.extend({ lat: s.lat, lng: s.lng });
+    lastBoundsRef.current = bounds;
     mapRef.current.fitBounds(bounds, 40);
   }, [google, mapReady, selected, mapMode, movedSet]);
+
+  // Google Maps paints solid gray until it's told its container has a real size.
+  // This map is created inside a tab/flex layout whose final size can settle a
+  // frame AFTER the map exists, and it has no other resize trigger — so a
+  // ResizeObserver refires a resize + refit the moment the container gets a
+  // non-zero size (and on every later resize), which is what stops the tiles
+  // from staying blank.
+  useEffect(() => {
+    if (!google || !mapDiv.current) return undefined;
+    const el = mapDiv.current;
+    const kick = () => {
+      if (!mapRef.current || !el.offsetWidth || !el.offsetHeight) return;
+      google.maps.event.trigger(mapRef.current, 'resize');
+      const b = lastBoundsRef.current;
+      if (b && !b.isEmpty()) mapRef.current.fitBounds(b, 40);
+    };
+    const ro = new ResizeObserver(kick);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [google, mapReady]);
 
   const mapModeBtn = (id, label) => (
     <button
@@ -16190,7 +16239,7 @@ function EngineAssignmentView({ google, mapsError }) {
   useEffect(() => {
     if (!date) return;
     let alive = true;
-    setDayLoading(true); setDayErr(''); setDay(null);
+    setDayLoading(true); setDayErr(''); setDay(null); setSelectedDriver(null);
     fetchJsonWithRetry(`/.netlify/functions/routing-engine-data?view=plan-day&date=${date}`)
       .then((d) => { if (!alive) return; if (!d?.ok) throw new Error(d?.error || 'day load failed'); setDay(d); })
       .catch((e) => { if (alive) setDayErr(String(e?.message || e)); })
@@ -16222,7 +16271,13 @@ function EngineAssignmentView({ google, mapsError }) {
   const [chartOpen, setChartOpen] = useState(true);
   const [mapExpanded, setMapExpanded] = useState(false);
   const [movedOnly, setMovedOnly] = useState(false);
+  // click a driver row → isolate that driver's dispatch vs engine on the map
+  const [selectedDriver, setSelectedDriver] = useState(null); // { key, name } | null
   const shownRows = movedOnly ? sorted.filter((r) => movedDrivers.has(r.driver_key) || movedDrivers.has(r.driver)) : sorted;
+  // moves involving the focused driver (for the Diff side list when one is picked)
+  const focusMoved = selectedDriver
+    ? moved.filter((s) => [s.actual_driver, s.engine_driver].some((d) => d && (d === selectedDriver.key || d === selectedDriver.name)))
+    : moved;
   const driverColor = useMemo(() => {
     const keys = [...new Set((plan?.stops || []).flatMap((s) => [s.actual_driver, s.engine_driver]).filter(Boolean))].sort();
     const m = new Map();
@@ -16233,6 +16288,7 @@ function EngineAssignmentView({ google, mapsError }) {
   // map
   const mapDiv = useRef(null); const mapRef = useRef(null); const [mapReady, setMapReady] = useState(0);
   const markersRef = useRef([]); const linesRef = useRef([]);
+  const lastBoundsRef = useRef(null); // last fitted bounds, so a resize can refit
   useEffect(() => {
     if (!google || !mapDiv.current || mapRef.current) return;
     mapRef.current = new google.maps.Map(mapDiv.current, { center: ROUTING_DEPOT, zoom: 9, mapTypeControl: false, streetViewControl: false, fullscreenControl: false, gestureHandling: 'greedy', ...(MAP_ID ? { mapId: MAP_ID } : {}) });
@@ -16248,11 +16304,16 @@ function EngineAssignmentView({ google, mapsError }) {
     const depotPt = { lat: ROUTING_DEPOT.lat, lng: ROUTING_DEPOT.lng };
     const engineTrips = plan.engine_trips || [];
     const byId = new Map(stops.map((s) => [s.id, s]));
+    // driver focus: a clicked row isolates one driver (matched on key OR name,
+    // since stop/trip driver ids can be either). No selection ⇒ everything shows.
+    const isSel = (id) => !selectedDriver || id === selectedDriver.key || id === selectedDriver.name;
+    const stopInSel = (s) => !selectedDriver || isSel(s.actual_driver) || isSel(s.engine_driver);
 
     // engine polylines: one per trip, colored by driver, trip1 solid / trip2+ dashed
     const drawEngine = () => {
       for (const t of engineTrips) {
         if (movedOnly && !movedDrivers.has(t.driver_key)) continue;
+        if (!isSel(t.driver_key)) continue;
         const path = [depotPt];
         for (const id of t.stop_ids) { const s = byId.get(id); if (s) path.push({ lat: s.lat, lng: s.lng }); }
         if (path.length < 2) continue;
@@ -16269,6 +16330,7 @@ function EngineAssignmentView({ google, mapsError }) {
       for (const s of stops) { if (!s.actual_driver) continue; (byDriver.get(s.actual_driver) ?? byDriver.set(s.actual_driver, []).get(s.actual_driver)).push(s); }
       for (const [drv, ds] of byDriver) {
         if (movedOnly && !movedDrivers.has(drv)) continue;
+        if (!isSel(drv)) continue;
         const path = [depotPt, ...ds.map((s) => ({ lat: s.lat, lng: s.lng }))];
         if (path.length < 2) continue;
         const pl = new google.maps.Polyline({ path, strokeColor: driverColor.get(drv) || '#64748b', strokeOpacity: muted ? 0.35 : 0.9, strokeWeight: muted ? 2.5 : 3, zIndex: muted ? 3 : 5 });
@@ -16282,6 +16344,7 @@ function EngineAssignmentView({ google, mapsError }) {
     const movedSet = new Set(moved.map((s) => s.id));
     for (const s of stops) {
       if (movedOnly && !movedSet.has(s.id)) continue;
+      if (!stopInSel(s)) continue;
       const drv = mapMode === 'dispatch' ? s.actual_driver : s.engine_driver;
       const isMoved = mapMode === 'diff' && movedSet.has(s.id);
       const color = isMoved ? '#d97706' : (driverColor.get(drv) || '#64748b');
@@ -16291,16 +16354,29 @@ function EngineAssignmentView({ google, mapsError }) {
       markersRef.current.push(mk);
     }
     const bounds = new google.maps.LatLngBounds(); bounds.extend(depotPt);
-    for (const s of stops) { if (movedOnly && !movedSet.has(s.id)) continue; bounds.extend({ lat: s.lat, lng: s.lng }); }
+    for (const s of stops) { if (movedOnly && !movedSet.has(s.id)) continue; if (!stopInSel(s)) continue; bounds.extend({ lat: s.lat, lng: s.lng }); }
+    if (bounds.isEmpty()) bounds.extend(depotPt);
+    lastBoundsRef.current = bounds;
     mapRef.current.fitBounds(bounds, 40);
-  }, [google, mapReady, plan, mapMode, moved, movedOnly, movedDrivers, driverColor]);
+  }, [google, mapReady, plan, mapMode, moved, movedOnly, movedDrivers, driverColor, selectedDriver]);
 
-  // Google Maps needs a nudge when its container resizes (expand map / collapse chart).
+  // Google Maps paints solid gray until it's told its container has a real size.
+  // A ResizeObserver fires a resize + refit the moment the container gets a
+  // non-zero size and on every later change (expand map, collapse chart, tab
+  // settle) — this is what keeps the tiles from staying blank.
   useEffect(() => {
-    if (!google || !mapRef.current) return;
-    const t = setTimeout(() => google.maps.event.trigger(mapRef.current, 'resize'), 60);
-    return () => clearTimeout(t);
-  }, [google, mapExpanded, chartOpen]);
+    if (!google || !mapDiv.current) return undefined;
+    const el = mapDiv.current;
+    const kick = () => {
+      if (!mapRef.current || !el.offsetWidth || !el.offsetHeight) return;
+      google.maps.event.trigger(mapRef.current, 'resize');
+      const b = lastBoundsRef.current;
+      if (b && !b.isEmpty()) mapRef.current.fitBounds(b, 40);
+    };
+    const ro = new ResizeObserver(kick);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [google, mapReady]);
 
   const modeBtn = (id, label) => (
     <button key={id} onClick={() => setMapMode(id)}
@@ -16350,9 +16426,9 @@ function EngineAssignmentView({ google, mapsError }) {
       </div>
 
       <div className="flex flex-col xl:flex-row gap-3 items-stretch">
-        <div className={`${mapExpanded ? 'hidden' : 'xl:w-[54%]'} border rounded-lg bg-white overflow-hidden flex flex-col`}>
+        <div className={`${mapExpanded ? 'hidden' : 'xl:w-[42%]'} border rounded-lg bg-white overflow-hidden flex flex-col`}>
           <div className="flex items-center justify-between gap-2 px-3 pt-2 pb-1">
-            <div className="text-[11px] font-semibold text-slate-600 truncate">Drivers{movedOnly ? ` · moved only (${movedDrivers.size})` : ''}{dayLoading ? ' · loading…' : ''}{dayErr ? ` · ⚠ ${dayErr}` : ''}</div>
+            <div className="text-[11px] font-semibold text-slate-600 truncate">Drivers{movedOnly ? ` · moved only (${movedDrivers.size})` : ''}{dayLoading ? ' · loading…' : ''}{dayErr ? ` · ⚠ ${dayErr}` : ''}<span className="font-normal text-slate-400"> · tap a row to focus the map</span></div>
             <button onClick={() => setMovedOnly((v) => !v)} title="Show only the drivers/routes the engine moved a stop to or from — on the table AND the map"
               className={`text-[10px] font-semibold px-2 py-0.5 rounded border shrink-0 ${movedOnly ? 'text-white' : 'text-slate-600 bg-white border-slate-200 hover:bg-slate-50'}`}
               style={movedOnly ? { background: BRAND, borderColor: BRAND } : {}}>Only moved</button>
@@ -16369,7 +16445,9 @@ function EngineAssignmentView({ google, mapsError }) {
               </tr></thead>
               <tbody>
                 {shownRows.map((r) => (
-                  <tr key={r.driver_key} className="border-t hover:bg-slate-50">
+                  <tr key={r.driver_key}
+                    onClick={() => setSelectedDriver((cur) => (cur && cur.key === r.driver_key ? null : { key: r.driver_key, name: r.driver }))}
+                    className={`border-t cursor-pointer ${selectedDriver && selectedDriver.key === r.driver_key ? 'bg-blue-50' : 'hover:bg-slate-50'}`}>
                     <td className="px-2 py-1 font-semibold text-slate-800">
                       <span className="inline-block w-2 h-2 rounded-full mr-1.5 align-middle" style={{ background: driverColor.get(r.driver_key) || '#94a3b8' }} />{r.driver}
                     </td>
@@ -16386,26 +16464,34 @@ function EngineAssignmentView({ google, mapsError }) {
           </div>
         </div>
 
-        <div className={`${mapExpanded ? 'xl:w-full' : 'xl:w-[46%]'} border rounded-lg bg-white overflow-hidden flex flex-col`}>
+        <div className={`${mapExpanded ? 'xl:w-full' : 'xl:w-[58%]'} border rounded-lg bg-white overflow-hidden flex flex-col`}>
           <div className="flex items-center justify-between gap-2 px-3 pt-2 pb-1">
-            <div className="text-[11px] font-semibold text-slate-600 truncate">Day plan · trip 1 solid, later trips dashed{movedOnly ? ' · moved only' : ''}</div>
+            <div className="text-[11px] font-semibold text-slate-600 truncate">
+              {selectedDriver
+                ? <>Focused · <span style={{ color: BRAND }}>{selectedDriver.name}</span> — dispatch vs engine</>
+                : <>Day plan · trip 1 solid, later trips dashed{movedOnly ? ' · moved only' : ''}</>}
+            </div>
             <div className="flex gap-1 shrink-0">
+              {selectedDriver && (
+                <button onClick={() => setSelectedDriver(null)} title="Show every driver again"
+                  className="px-2 py-1 text-[11px] font-semibold rounded text-slate-600 bg-white border border-slate-200 hover:bg-slate-50">✕ Clear</button>
+              )}
               {modeBtn('dispatch', 'Dispatch')}{modeBtn('engine', 'Engine')}{modeBtn('diff', 'Diff')}
               <button onClick={() => setMapExpanded((v) => !v)} title={mapExpanded ? 'Collapse map (show the drivers table)' : 'Expand map full width'}
                 className="px-2 py-1 text-[11px] font-semibold rounded text-slate-600 bg-white border border-slate-200 hover:bg-slate-50">{mapExpanded ? '⤡ Collapse' : '⤢ Expand'}</button>
             </div>
           </div>
-          <div ref={mapDiv} className={`w-full ${mapExpanded ? 'h-[600px]' : 'h-[320px]'} bg-slate-100`} />
+          <div ref={mapDiv} className={`w-full ${mapExpanded ? 'h-[640px]' : 'h-[460px]'} bg-slate-100`} />
           {mapsError && <div className="text-[11px] text-red-600 px-3 py-1">⚠ map failed to load: {String(mapsError)}</div>}
           {mapMode === 'diff' && plan && (
             <div className="px-3 py-2 border-t max-h-[130px] overflow-y-auto">
-              <div className="text-[10px] uppercase tracking-wide text-slate-500 pb-1">Engine moved to a different driver ({moved.length})</div>
-              {moved.length ? moved.slice(0, 50).map((s) => (
+              <div className="text-[10px] uppercase tracking-wide text-slate-500 pb-1">Engine moved to a different driver ({focusMoved.length}{selectedDriver ? ` · ${selectedDriver.name}` : ''})</div>
+              {focusMoved.length ? focusMoved.slice(0, 50).map((s) => (
                 <div key={s.id} className="text-[11px] text-slate-700 py-0.5">
                   <span className="inline-block w-2 h-2 rounded-full mr-1.5 align-middle" style={{ background: '#d97706' }} />
                   <span className="font-semibold">{s.businessName || s.id}</span>: {s.actual_driver} → {s.engine_driver}
                 </div>
-              )) : <div className="text-[11px] text-slate-400">Every stop went to the same driver dispatch used.</div>}
+              )) : <div className="text-[11px] text-slate-400">{selectedDriver ? 'No stop moved to or from this driver — the engine kept their board.' : 'Every stop went to the same driver dispatch used.'}</div>}
             </div>
           )}
         </div>
@@ -16416,14 +16502,18 @@ function EngineAssignmentView({ google, mapsError }) {
 
 // Daily agreement trend — stop % (solid) + co-load % (dashed). Higher = closer.
 function EngineAgreementChart({ days }) {
-  const W = 640, H = 120, PAD_L = 30, PAD_R = 8, PAD_T = 10, PAD_B = 22;
+  // Deliberately short aspect (760×86, vs the sequencing trend's 640×170): this
+  // sits directly above the map, which Chad wants bigger — so the chart gives
+  // back vertical room instead of eating it.
+  const W = 760, H = 86, PAD_L = 30, PAD_R = 8, PAD_T = 10, PAD_B = 20;
   const pts = (days || []).filter((d) => d.stop_agreement_pct != null);
-  if (pts.length < 2) return <div className="h-[120px] flex items-center justify-center text-xs text-slate-400">Not enough scored days yet — the trend appears after the plan replay runs.</div>;
+  if (pts.length < 2) return <div className="h-[86px] flex items-center justify-center text-xs text-slate-400">Not enough scored days yet — the trend appears after the plan replay runs.</div>;
   const x = (i) => PAD_L + (i * (W - PAD_L - PAD_R)) / (pts.length - 1);
   const y = (v) => PAD_T + (H - PAD_T - PAD_B) * (1 - v / 100);
   const line = (key) => pts.map((d, i) => `${x(i).toFixed(1)},${y(d[key] ?? 0).toFixed(1)}`).join(' ');
-  const monthTicks = []; let lastMonth = '';
-  pts.forEach((d, i) => { const m = d.date.slice(0, 7); if (m !== lastMonth) { monthTicks.push({ i, label: engineMonthLabel(d.date) }); lastMonth = m; } });
+  // month labels for a multi-month span, else evenly spaced day labels so a
+  // single-month plan window still shows real dates on the axis.
+  const monthTicks = engineAxisTicks(pts);
   return (
     <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-auto" role="img" aria-label="Daily plan agreement trend">
       {[0, 50, 100].map((v, k) => (<g key={k}><line x1={PAD_L} y1={y(v)} x2={W - PAD_R} y2={y(v)} stroke="#e2e8f0" strokeWidth="1" /><text x={PAD_L - 4} y={y(v) + 3} fontSize="9" fill="#94a3b8" textAnchor="end">{v}</text></g>))}
