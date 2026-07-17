@@ -244,3 +244,15 @@ export function bulkRowMissing(o) {
 export function bulkRowIsBlank(o) {
   return BULK_FIELD_KEYS.every((k) => !String(o?.[k] ?? '').trim());
 }
+
+// A GHOST row: not blank, but carrying NO IDENTITY — no consignee name, no street address, and
+// no order # / PRO. Real exports produce these as template residue: columns dragged down past the
+// last real order (trailing rows of just "AIR FILTERS · qty 1 · GA" in a NuVizz template), UOM
+// defaults, flag cells. City/state/zip alone do NOT count as identity — they're the most commonly
+// dragged-down cells and mean nothing without a name or street. Importing ghosts fills the grid
+// with junk rows demanding 5 fields each, so the importer drops them (Davis 7/20 manifest:
+// 12 rows → 4 real orders + 8 ghosts, three of which carried a stray "GA").
+export function bulkRowIsGhost(o) {
+  const has = (k) => !!String(o?.[k] ?? '').trim();
+  return !has('name') && !has('addr1') && !has('stopNbr') && !has('pro');
+}
