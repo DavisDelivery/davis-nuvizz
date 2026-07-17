@@ -59,7 +59,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.50.44';
+const APP_VERSION = '0.50.45';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -104,6 +104,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.50.45', 'Three fixes. (1) CORRECT PIN LOCATION no longer closes the order or throws the map across the state. Clicking "Correct pin location" used to close the order card and — because nothing was selected anymore — snap the map back out to the whole board (looked like it jumped "3 cities away"). Now the order stays open and the map holds its place; the draggable blue pin drops right where the stop already is. It only recenters if the pin happens to be off-screen, so you can always grab it. (2) MAP NO LONGER DRIFTS ON ITS OWN. With a search active (e.g. "floor"), every 120-second board refresh was re-framing the map to fit all the far-apart matches — so if you left an order open it slowly zoomed out and lost focus on its own. The map now only re-fits when you actually change the search, not on the background refresh. (3) ROUTING (beta) now opens on the BUILD tab by default instead of Engine (switch to Engine anytime; coming back to Routing lands on Build again).'],
   ['0.50.44', 'MAP — the receiving-hours "clock" pin now pops up a real hover card. Hovering one of these pins on desktop instantly shows a little card with the business name AND its receiving hours (e.g. "ACME WAREHOUSE · Receiving hours: Mon–Fri 8:00a–3:00p · Sat Closed") — no more waiting on the slow grey OS tooltip, and no need to click in. Only the clock pins get the card; plain pins are unchanged. (Replaces the 0.50.43 approach, which relied on the browser\'s built-in tooltip that was easy to miss.)'],
   ['0.50.43', 'MAP — hovering a receiving-hours "clock" pin now shows its hours. On desktop, hovering any map pin has always popped up the platform/business name; now, for the pins that carry a receiving-hours restriction (the clock icon), the hover tooltip also shows the window — e.g. "ACME WAREHOUSE · Receiving hours: Mon–Fri 8:00a–3:00p · Sat Closed" — so when you\'re hunting for a time-restricted stop you can read its hours without clicking in. Only clock pins get the extra line; pins with no hours set are unchanged.'],
   ['0.50.42', 'CS EMAIL ACTUALLY SENDS NOW. The “Email CS when scheduled” toggle was on, the customer matched, the email built — but the scheduled scan had NO recipient wired up (the NOTIFY_CS_TO address was never set on the live site), so it silently sent nothing. Every real send since the feature launched was a no-op; the only one that ever “worked” was a manual test redirected to a personal inbox. Fix: CS emails now default to customerservice@davisdelivery.com (the same inbox the daily Forgotten-Freight log already uses) whenever no address is configured, so a missing setting can’t disable the feature. Also added a per-day status record so this can never be an invisible no-op again — it shows how many customers are opted in, how many matched on the board, and how many emailed. Marked customers will get their email on the next scan.'],
@@ -7670,7 +7671,11 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef }) {
 
   // Pin relocation handlers + the draggable marker that the dispatcher drags.
   const startMoveLocation = useCallback((stop) => {
-    setSelectedStop(null); setSelectedDriver(null);
+    // Keep the order card OPEN (Chad). Clearing selectedStop here used to close the
+    // card and — because it left nothing selected — trip the "everything deselected"
+    // board-view restore below, which panned/zoomed the map back out ("3 cities away").
+    // Leaving the selection keeps the map framed on the pin where it already is.
+    setSelectedDriver(null);
     setMovedTo(null); setMovingStop(stop);
   }, []);
   // One-click address fix: apply the suggested split, re-geocode the clean street
@@ -7749,8 +7754,14 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef }) {
     });
     m.addListener('dragend', () => { const p = m.getPosition(); if (p) setMovedTo({ lat: p.lat(), lng: p.lng() }); });
     movingMarkerRef.current = m;
-    mapRef.current.panTo(start);
-    if ((mapRef.current.getZoom() || 0) < 16) mapRef.current.setZoom(18);
+    // Don't move the map if the pin is already on screen (Chad: "the map shouldn't
+    // have moved at all"). Only recenter when the stop sits outside the current view,
+    // so the draggable pin can never drop off-screen where you can't grab it.
+    const b = mapRef.current.getBounds();
+    if (!b || !b.contains(new google.maps.LatLng(start.lat, start.lng))) {
+      mapRef.current.panTo(start);
+      if ((mapRef.current.getZoom() || 0) < 16) mapRef.current.setZoom(18);
+    }
     return () => { m.setMap(null); };
   }, [google, movingStop]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -8335,7 +8346,13 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef }) {
       matched.forEach((s) => bounds.extend({ lat: s.lat, lng: s.lng }));
       mapRef.current.fitBounds(bounds, fitPad());
     }
-  }, [google, effectiveMatchSet]);  // eslint-disable-line react-hooks/exhaustive-deps
+    // Re-fit ONLY when the SEARCH ITSELF changes — NOT on every 120s board refresh.
+    // effectiveMatchSet is a brand-new Set after each refresh (searchMatchSet re-memoizes
+    // on the new stops), so keying the effect on it re-ran this fit every refresh and
+    // drifted the map out to frame far-apart matches while the dispatcher sat idle
+    // (e.g. "floor" spanning Dalton→Conyers→Marietta). Keying on the stable search
+    // inputs fixes that; filteredStops is read live from the closure.
+  }, [google, debouncedSearch, aiResult, selectionSet]);  // eslint-disable-line react-hooks/exhaustive-deps
 
   // Build the driver-status line2 text. Route assignment is managed in NuVizz,
   // not Motive, so we do NOT show a "No route assigned" line on the Motive driver
@@ -14114,8 +14131,14 @@ function RoutingScreen({ debugCaptureRef }) {
     });
     m.addListener('dragend', () => { const p = m.getPosition(); if (p) setMovedTo({ lat: p.lat(), lng: p.lng() }); });
     movingMarkerRef.current = m;
-    mapRef.current.panTo(start);
-    if ((mapRef.current.getZoom() || 0) < 16) mapRef.current.setZoom(18);
+    // Don't move the map if the pin is already on screen (Chad: "the map shouldn't
+    // have moved at all"). Only recenter when the stop sits outside the current view,
+    // so the draggable pin can never drop off-screen where you can't grab it.
+    const b = mapRef.current.getBounds();
+    if (!b || !b.contains(new google.maps.LatLng(start.lat, start.lng))) {
+      mapRef.current.panTo(start);
+      if ((mapRef.current.getZoom() || 0) < 16) mapRef.current.setZoom(18);
+    }
     return () => { m.setMap(null); };
   }, [google, movingStop]); // eslint-disable-line react-hooks/exhaustive-deps
   const addInView = useCallback(() => {
@@ -16470,9 +16493,9 @@ function Shell() {
     try { return localStorage.getItem('routing.tab') === 'engine' ? 'engine' : 'build'; } catch { return 'build'; }
   });
   useEffect(() => { try { localStorage.setItem('routing.tab', routingTab); } catch {} }, [routingTab]);
-  // Opening the Routing screen defaults to the ENGINE tab (Chad's preference). Switching to
-  // Build while you're on the screen stays put; navigating back to Routing lands on Engine again.
-  useEffect(() => { if (tab === 'routing') setRoutingTab('engine'); }, [tab]);
+  // Opening the Routing screen defaults to the BUILD tab (Chad's preference). Switching to
+  // Engine while you're on the screen stays put; navigating back to Routing lands on Build again.
+  useEffect(() => { if (tab === 'routing') setRoutingTab('build'); }, [tab]);
 
   // SMS messages + unread badge. Messages is a WINDOW over the current screen
   // (it doesn't navigate away), so it's a toggle, not a tab.
