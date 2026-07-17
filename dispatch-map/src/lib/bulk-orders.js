@@ -266,6 +266,20 @@ export function mappingCoversRequired(mapping) {
   return BULK_FIELDS.filter((f) => f.required).every((f) => mapped.has(f.key));
 }
 
+// Cross the two order refs for a NuVizz WRITE (Chad's confirmed convention, from the live NuVizz
+// stop list): what the dispatcher tracks as the PRO — the grid's "PRO / shipment #" column, the
+// SHP series on the NuVizz route export — is what NuVizz stores as its STOP NUMBER; and the grid's
+// "Order #" (the SO series) is NuVizz's SHIPMENT NUMBER. buildStopPayload maps a payload's stopNbr →
+// NuVizz stopNbr and its pro → NuVizz shipmentNbr, so a bulk-grid row must swap them on the way out:
+// the PRO fills the stopNbr slot, the Order # fills the pro slot. (The GRID display is unchanged —
+// the PRO column still shows the SHP; only the push crosses them. Single New Order and the Estes
+// manifest build their own payloads and keep their own ref conventions.)
+export function bulkRowNuvizzRefs(r) {
+  const pro = String(r?.pro ?? '').trim();          // grid "PRO / shipment #" = SHP → NuVizz Stop Number
+  const order = String(r?.stopNbr ?? '').trim();    // grid "Order #"          = SO  → NuVizz Shipment Number
+  return { stopNbr: pro || null, pro: order || null };
+}
+
 // Normalize a phone value to the US mask xxx-xxx-xxxx as it's IMPORTED, so a dropped/pasted
 // spreadsheet lands with the same formatting the field applies while you type (App.jsx's fmtPhone
 // delegates here, so the typed path and the import path can't drift). Anything that isn't a plain

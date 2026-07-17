@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 
 import {
   parseDelimited, detectDelimiter, looksLikeHeader, autoMapColumns,
-  mappedRowsToOrders, bulkRowMissing, bulkRowIsBlank, bulkRowIsGhost, mappingCoversRequired, headerSignature, BULK_FIELDS, normalizePhone,
+  mappedRowsToOrders, bulkRowMissing, bulkRowIsBlank, bulkRowIsGhost, mappingCoversRequired, headerSignature, BULK_FIELDS, normalizePhone, bulkRowNuvizzRefs,
 } from '../src/lib/bulk-orders.js';
 
 test('detectDelimiter: tab for Excel/Sheets copy, comma for CSV', () => {
@@ -243,4 +243,18 @@ test('normalizePhone: masks plain US numbers to xxx-xxx-xxxx, passes anything un
   assert.equal(normalizePhone(''), '');
   assert.equal(normalizePhone(null), '');
   assert.equal(normalizePhone(undefined), '');
+});
+
+test('bulkRowNuvizzRefs: PRO (SHP) → NuVizz Stop Number, Order # (SO) → NuVizz Shipment Number', () => {
+  // Grid row as imported from the NuVizz route export: "Stop Number" col (SHP) landed in the PRO
+  // field, "Shipment Number" col (SO) landed in the Order # field. On push, they must cross so
+  // NuVizz's Stop Number = the SHP and its Shipment Number = the SO.
+  assert.deepEqual(bulkRowNuvizzRefs({ stopNbr: 'SO45630', pro: 'SHP29555' }), { stopNbr: 'SHP29555', pro: 'SO45630' });
+  assert.deepEqual(bulkRowNuvizzRefs({ stopNbr: 'SO45386', pro: 'SHP29544' }), { stopNbr: 'SHP29544', pro: 'SO45386' });
+  // Trims and nulls empties (buildStopPayload treats null/undefined as "omit the field").
+  assert.deepEqual(bulkRowNuvizzRefs({ stopNbr: '  SO1  ', pro: '  SHP1 ' }), { stopNbr: 'SHP1', pro: 'SO1' });
+  assert.deepEqual(bulkRowNuvizzRefs({ stopNbr: 'SO1', pro: '' }), { stopNbr: null, pro: 'SO1' });
+  assert.deepEqual(bulkRowNuvizzRefs({ stopNbr: '', pro: 'SHP1' }), { stopNbr: 'SHP1', pro: null });
+  assert.deepEqual(bulkRowNuvizzRefs({}), { stopNbr: null, pro: null });
+  assert.deepEqual(bulkRowNuvizzRefs(null), { stopNbr: null, pro: null });
 });
