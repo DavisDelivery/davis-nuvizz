@@ -18,6 +18,17 @@ html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
    containers (sheets, lists) scroll. */
 html, body, #root { width: 100%; max-width: 100%; overflow: hidden; overscroll-behavior: none; }
 body { position: fixed; inset: 0; font-family: system-ui, -apple-system, sans-serif; background: #f8fafc; color: #0f172a; }
+/* iOS Safari AUTO-ZOOMS the page whenever a focused form control's computed
+   font-size is under 16px — and nearly every input here is 12-14px, so on a
+   phone every tap into a field lurched the viewport ~33% in and the user had
+   to pinch back out. On touch phones, render form controls at 16px instead:
+   the zoom never triggers and pinch-zoom stays available (we deliberately do
+   NOT set maximum-scale=1, which would kill accessibility zoom). Checkboxes
+   also get a bigger box here — the grid's 13px squares were sub-fingertip. */
+@media (max-width: 767px) and (pointer: coarse) {
+  input, select, textarea { font-size: 16px !important; }
+  input[type="checkbox"] { width: 18px; height: 18px; }
+}
 
 /* Google Maps InfoWindow restyling — match the brand */
 .gm-style .gm-style-iw-c { padding: 0 !important; }
