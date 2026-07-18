@@ -19,7 +19,7 @@ import {
   Search, Tag, Tags, ArrowLeft, ArrowRight, Gauge, Clock, MapPinned,
   Info, Settings, LayoutList, Sparkles, MessageSquare, Square, Lasso, AlertTriangle, Ban, Send, Package,
   FileCheck, ExternalLink, Image as ImageIcon, Printer, FileText, Bug,
-  ChevronRight, GripVertical, Calculator,
+  ChevronRight, GripVertical, Calculator, Menu,
 } from 'lucide-react';
 import {
   collection, doc, getDoc, getDocs, onSnapshot, setDoc, serverTimestamp,
@@ -59,7 +59,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.50.54';
+const APP_VERSION = '0.50.55';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -104,6 +104,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.50.55', 'FORMATTING SWEEP — six fixes from a full desktop + iPhone audit. (1) iPHONE: tapping a field no longer ZOOMS THE PAGE IN. Nearly every box in the app used small type, which makes iOS Safari auto-zoom ~33% on focus — on phones, form fields now render at 16px so the lurch-in/pinch-out dance is gone (pinch-zoom still works). (2) BULK ADD GRID: the Consignee column now stays PINNED on the left while you scroll the grid sideways — out at Phone/Notes/Status you can finally tell which order each row is. (3) The Order # and PRO columns are wide enough to show a full SO/SHP number instead of clipping ("SO456…"). (4) BIGGER TAP TARGETS on phone: the menu chip in the top bar (now with a ☰ icon so it reads as the menu), the status-pill scan/collapse buttons, the Filters "Reset", the bottom-grid collapse caret, and all grid checkboxes. (5) Error banners on the Map and Routing screens moved to the BOTTOM of the map area so they can\'t lay over the status pill / selection tally. (6) Cosmetics: "Scan now" no longer wraps to two lines on phone Diagnostics, and the duplicate floating version chip on the phone Map is gone (the top-bar chip stays).'],
   ['0.50.54', 'BULK ADD — the Stop # and Shipment # now land on the RIGHT NuVizz fields. When you imported your NuVizz route export and pushed, orders came out with NuVizz’s Stop Number = the SO series and Shipment Number = the SHP series — backwards from your live board, where the Stop Number IS your PRO (the SHP). The export’s column headers are labeled opposite to how NuVizz actually stores them, and the push trusted the labels. Now a Bulk Add push crosses them correctly: the PRO (SHP) → NuVizz Stop Number, and the Order # (SO) → NuVizz Shipment Number. The grid is unchanged (your PRO still shows in the PRO column); only what gets written to NuVizz changed. Verified against your 720 file: all four orders now write Stop # = SHP, Shipment # = SO. (New Order and scanned-manifest pushes are untouched.)'],
   ['0.50.53', 'BULK ADD — a “Pushed to NuVizz” tab, so a spreadsheet push leaves a receipt. Before, when you imported a spreadsheet and hit Create, the rows just cleared with a green “Created N” banner and there was no list to look back at — the “Pushed to NuVizz” history only existed for scanned-manifest PDFs. Now the spreadsheet Bulk Add screen has two tabs — Orders and Pushed to NuVizz — and every order you push is logged (consignee, Order #, NuVizz #, pallets/loose/weight, price, time). Pick a day to see exactly what went out, from any device; a clean push jumps you straight to the receipt. It reads/writes only our own log — ZERO NuVizz calls — and shares the same history as the manifest flow, so everything pushed that day shows in one place.'],
   ['0.50.52', 'BULK ADD — phone numbers that were already sitting in the grid now format too. v0.50.51 masked phones to xxx-xxx-xxxx as they’re typed or imported, but rows that were already in the grid from before the update (saved on this device) kept showing the raw digit run until you re-imported. Now the grid normalizes those phones the moment it reloads, so every row reads xxx-xxx-xxxx no matter how it got there. (NuVizz still gets the plain digits at push time.)'],
@@ -2523,7 +2524,7 @@ function StopsStatusCard({ stopCount, carryoverCount = 0, totalPallets, loadAt, 
         <button
           onClick={onRefresh}
           disabled={scanning || scanCooldown}
-          className="ml-auto p-1 rounded hover:bg-slate-100 disabled:opacity-50"
+          className="ml-auto p-1 rounded hover:bg-slate-100 disabled:opacity-50 min-w-[30px] min-h-[30px] inline-flex items-center justify-center"
           title={scanCooldown ? 'Just scanned — try again shortly' : 'Refresh from NuVizz — planned/unplanned + completed + loads (~4 calls)'}
         >
           <RefreshCw size={13} className={scanning ? 'animate-spin' : ''} />
@@ -3808,7 +3809,7 @@ function FilterPanel({ filters, setFilters, counts }) {
         <div className="font-semibold flex items-center gap-2"><Filter size={14} /> Filters</div>
         <button
           onClick={() => setFilters({})}
-          className="text-xs text-slate-500 hover:text-slate-800"
+          className="text-xs text-slate-500 hover:text-slate-800 px-2 py-1.5 min-h-[34px] rounded hover:bg-slate-100"
         >
           Reset
         </button>
@@ -5999,12 +6000,12 @@ function MobileAppBar({ version, onChipMenu, chipMenuOpen, onSelectMenu, smsUnre
       <div className="relative">
         <button
           onClick={onChipMenu}
-          className="text-[10px] px-1.5 py-1 rounded bg-white/15 text-white/80 active:bg-white/25"
+          className="text-[12px] px-2.5 py-1.5 min-h-[36px] rounded bg-white/15 text-white/90 active:bg-white/25 inline-flex items-center gap-1.5"
           aria-haspopup="menu"
           aria-expanded={chipMenuOpen}
           title="Version menu"
         >
-          v{version}
+          <Menu size={14} /> v{version}
         </button>
         {chipMenuOpen && (
           <div
@@ -8619,7 +8620,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef }) {
               <button
                 onClick={manualScan}
                 disabled={scanning || scanCooldown}
-                className="ml-auto p-1 rounded hover:bg-slate-100 active:bg-slate-200 disabled:opacity-50 flex-shrink-0"
+                className="ml-auto p-1 rounded hover:bg-slate-100 active:bg-slate-200 disabled:opacity-50 flex-shrink-0 min-w-[34px] min-h-[34px] inline-flex items-center justify-center"
                 aria-label="Scan now"
                 title={scanCooldown ? 'Just scanned — try again shortly' : 'Refresh from NuVizz — planned/unplanned + completed + loads (~4 calls)'}
               >
@@ -8665,7 +8666,10 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef }) {
           </div>
         )}
         {mapsError && (
-          <div className="absolute top-14 left-2 right-2 bg-red-50 border border-red-200 rounded p-2 text-xs text-red-800 z-10">
+          // Anchored to the BOTTOM of the map area — the top strip belongs to the date chip +
+          // status pill, and a full-width banner up there laid OVER the pill (audit finding).
+          // bottom-36 also clears the fetch-error banner that lives at bottom-24.
+          <div className="absolute bottom-36 left-2 right-2 bg-red-50 border border-red-200 rounded p-2 text-xs text-red-800 z-10">
             <div className="font-semibold">Google Maps failed to load</div>
             <div className="mt-0.5">{mapsError}</div>
           </div>
@@ -8682,14 +8686,8 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef }) {
           </div>
         )}
 
-        {/* APP_VERSION chip — above the FAB so they don't overlap.
-            Brief P3.5: 11px gray, white background. */}
-        <div
-          className="absolute right-3 text-[11px] text-slate-500 bg-white/95 rounded px-1.5 py-0.5 z-10 border border-slate-200"
-          style={{ bottom: `calc(80px + env(safe-area-inset-bottom))` }}
-        >
-          v{APP_VERSION}
-        </div>
+        {/* (The floating APP_VERSION chip that sat above the FAB is gone — the app-bar's
+            menu chip already shows the version, and two chips on a phone was clutter.) */}
 
         {/* Navigation is the persistent bottom tab bar (below the map area). */}
 
@@ -9049,7 +9047,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef }) {
                 <button
                   onClick={manualScan}
                   disabled={scanning || scanCooldown}
-                  className="ml-auto p-1 rounded hover:bg-slate-100 disabled:opacity-50"
+                  className="ml-auto p-1 rounded hover:bg-slate-100 disabled:opacity-50 min-w-[30px] min-h-[30px] inline-flex items-center justify-center"
                   title={scanCooldown ? 'Just scanned — try again shortly' : 'Refresh from NuVizz — planned/unplanned + completed + loads (~4 calls)'}
                 >
                   <RefreshCw size={13} className={scanning ? 'animate-spin' : ''} />
@@ -9145,7 +9143,9 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef }) {
           </div>
         )}
         {mapsError && (
-          <div className="absolute top-4 left-4 right-4 bg-red-50 border border-red-200 rounded p-3 text-sm text-red-800 z-[8]">
+          // Bottom of the map area — the top strip holds the selection tally (left) and the
+          // Filters button + status pill (right); a full-width banner there overlapped them.
+          <div className="absolute bottom-4 left-4 right-4 bg-red-50 border border-red-200 rounded p-3 text-sm text-red-800 z-[8]">
             <div className="font-semibold">Google Maps failed to load</div>
             <div className="text-xs mt-1">{mapsError}</div>
             <div className="text-xs mt-1 text-red-600">Set VITE_GOOGLE_MAPS_API_KEY in your .env / Netlify env.</div>
@@ -9700,7 +9700,7 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
         </div>
       )}
       <div className="flex items-center gap-2 px-3 py-1.5 border-b border-slate-100">
-        <button onClick={() => setOpen(!open)} className="inline-flex items-center text-slate-600 hover:text-slate-900" aria-expanded={open} title={open ? 'Collapse' : 'Expand'}>
+        <button onClick={() => setOpen(!open)} className="inline-flex items-center justify-center min-w-[34px] min-h-[34px] rounded text-slate-600 hover:text-slate-900 hover:bg-slate-100" aria-expanded={open} title={open ? 'Collapse' : 'Expand'}>
           {open ? <ChevronDown size={14} /> : <ChevronUp size={14} />}
         </button>
         <div className="inline-flex rounded-md border border-slate-200 overflow-hidden text-xs font-semibold whitespace-nowrap">
@@ -10348,7 +10348,7 @@ function ApiCallsPanel({ ops, lastLoadScanAt, lastUnplannedScanAt, onRefresh, re
   const headerBtns = (
     <div className="flex items-center gap-2">
       <button onClick={onScanNow} disabled={scanning}
-        className="inline-flex items-center gap-1 rounded-md border border-slate-300 px-2 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50">
+        className="inline-flex items-center gap-1 rounded-md border border-slate-300 px-2 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50 whitespace-nowrap">
         <RefreshCw size={12} className={scanning ? 'animate-spin' : ''} /> Scan now
       </button>
       <button onClick={onRefresh} disabled={refreshing} aria-label="Refresh stats"
@@ -10548,7 +10548,7 @@ function SchedulePanel({ onScanNow, scanning, onSaved }) {
       {!persistent && <MiniBadge tone="amber"><AlertTriangle size={11} /> read-only</MiniBadge>}
       {status === 'saved' && <MiniBadge tone="green">saved</MiniBadge>}
       <button onClick={onScanNow} disabled={scanning}
-        className="inline-flex items-center gap-1 rounded-md border border-slate-300 px-2 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50">
+        className="inline-flex items-center gap-1 rounded-md border border-slate-300 px-2 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50 whitespace-nowrap">
         <RefreshCw size={12} className={scanning ? 'animate-spin' : ''} /> Scan now
       </button>
     </div>
@@ -17987,7 +17987,7 @@ function BulkOrderScreen() {
                     <input type="checkbox" checked={allPushed} onChange={toggleAllPush} disabled={!activeRows.length} className="align-middle accent-blue-600" title="Check/uncheck all filled rows" />
                   </th>
                   <th className="pr-2 pb-1 font-medium w-6">#</th>
-                  {BULK_FIELDS.map((f) => <th key={f.key} className="px-1 pb-1 font-medium whitespace-nowrap">{f.label}{(f.required || (asLoad && f.key === 'stopNbr')) && <span className="text-red-500"> *</span>}</th>)}
+                  {BULK_FIELDS.map((f) => <th key={f.key} className={`px-1 pb-1 font-medium whitespace-nowrap ${f.key === 'name' ? 'sticky left-0 z-20 bg-white border-r border-slate-200' : ''}`}>{f.label}{(f.required || (asLoad && f.key === 'stopNbr')) && <span className="text-red-500"> *</span>}</th>)}
                   <th className="px-1 pb-1 font-medium">Status</th>
                   <th className="pb-1"></th>
                 </tr>
@@ -18004,8 +18004,11 @@ function BulkOrderScreen() {
                       </td>
                       <td className="pr-2 py-0.5 text-slate-400 tabular-nums">{i + 1}</td>
                       {BULK_FIELDS.map((f) => (
-                        <td key={f.key} className="px-1 py-0.5">
-                          <input value={r[f.key]} onChange={setCell(i, f.key)} className={`${gridInput} ${f.key === 'name' || f.key === 'addr1' ? 'min-w-[150px]' : f.key === 'dispatchNotes' || f.key === 'email' ? 'min-w-[180px]' : f.key === 'itemDesc' ? 'min-w-[140px]' : f.key === 'phone' ? 'min-w-[130px]' : f.key === 'city' ? 'min-w-[110px]' : f.key === 'state' ? 'w-12' : f.key === 'zip' ? 'w-20' : 'w-16'} ${!blank && !queued && missing.includes(f.key) ? 'border-amber-400 bg-amber-50' : ''}`} />
+                        // Consignee is STICKY-LEFT: sliding the grid out to Phone/Notes/Status
+                        // (phones especially) kept the values but lost WHICH ORDER each row was —
+                        // the identity column now stays pinned while the rest scrolls under it.
+                        <td key={f.key} className={`px-1 py-0.5 ${f.key === 'name' ? 'sticky left-0 z-10 bg-white border-r border-slate-200' : ''}`}>
+                          <input value={r[f.key]} onChange={setCell(i, f.key)} className={`${gridInput} ${f.key === 'name' || f.key === 'addr1' ? 'min-w-[150px]' : f.key === 'dispatchNotes' || f.key === 'email' ? 'min-w-[180px]' : f.key === 'itemDesc' ? 'min-w-[140px]' : f.key === 'phone' ? 'min-w-[130px]' : f.key === 'city' ? 'min-w-[110px]' : f.key === 'stopNbr' || f.key === 'pro' ? 'min-w-[96px]' : f.key === 'state' ? 'w-12' : f.key === 'zip' ? 'w-20' : 'w-16'} ${!blank && !queued && missing.includes(f.key) ? 'border-amber-400 bg-amber-50' : ''}`} />
                         </td>
                       ))}
                       <td className="px-1 py-0.5 whitespace-nowrap">
