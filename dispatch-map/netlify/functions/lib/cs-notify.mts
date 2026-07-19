@@ -109,10 +109,25 @@ export async function notifyMarkedCustomers(
     let changed = false;
     for (const [key, stop] of hits) {
       if (notified[key]) continue; // already emailed today
+      // Re-check the ledger right before each send: a manual "Scan now" overlapping the
+      // scheduled scan used to read the doc once up front, so both invocations saw an
+      // empty ledger and CS got the same email twice. A fresh read narrows that window
+      // to a single in-flight send, and the per-send write below closes it for the rest
+      // of the batch (before: the ledger was only written after ALL sends, so a mid-loop
+      // crash also re-sent everything on the next scan).
+      try {
+        const liveDoc = (await getDoc(docPath)) as any;
+        const liveNotified = (liveDoc && typeof liveDoc.notified === 'object' && liveDoc.notified) || {};
+        Object.assign(notified, liveNotified);
+        if (notified[key]) continue;
+      } catch { /* ledger read is best-effort — proceed on the snapshot */ }
       const { subject, text, html } = buildEmail(stop, date);
       const res = await sendEmail({ to, subject, text, html });
-      if (res.ok) { notified[key] = new Date().toISOString(); changed = true; sent++; }
-      else { failed++; console.warn(`[cs-notify] send failed for ${key}: ${res.error}`); }
+      if (res.ok) {
+        notified[key] = new Date().toISOString(); changed = true; sent++;
+        try { await setDoc(docPath, { notified, updated_at: new Date().toISOString(), date }); }
+        catch (e: any) { console.warn(`[cs-notify] dedup write failed after ${key}: ${e?.message}`); }
+      } else { failed++; console.warn(`[cs-notify] send failed for ${key}: ${res.error}`); }
     }
     if (changed) {
       try { await setDoc(docPath, { notified, updated_at: new Date().toISOString(), date }); }

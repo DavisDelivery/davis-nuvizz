@@ -258,3 +258,14 @@ test('bulkRowNuvizzRefs: PRO (SHP) → NuVizz Stop Number, Order # (SO) → NuVi
   assert.deepEqual(bulkRowNuvizzRefs({}), { stopNbr: null, pro: null });
   assert.deepEqual(bulkRowNuvizzRefs(null), { stopNbr: null, pro: null });
 });
+
+test('headerSignature: POSITIONAL — an unlabeled middle column changes the signature (no shifted-mapping recall)', () => {
+  // These two layouts previously collided ('consignee|address|city'), so a remembered
+  // index-based mapping auto-applied one column shifted. They must differ now.
+  assert.notEqual(headerSignature(['Consignee', '', 'Address', 'City']), headerSignature(['Consignee', 'Address', 'City']));
+  // Same layout still matches itself (mapping recall keeps working)…
+  assert.equal(headerSignature(['Consignee', '', 'Address']), headerSignature(['consignee', ' ', 'ADDRESS']));
+  // …and trailing empties don't fork the signature (padded exports are the same layout).
+  assert.equal(headerSignature(['Consignee', 'Address', '', '']), headerSignature(['Consignee', 'Address']));
+  assert.equal(headerSignature(['', '', '']), null);
+});
