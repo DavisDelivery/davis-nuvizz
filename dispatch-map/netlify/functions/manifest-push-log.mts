@@ -50,15 +50,28 @@ export default async (req: Request): Promise<Response> => {
       const date = DATE_RE.test(String(body?.date || '')) ? String(body.date) : etDayString();
       const incoming = Array.isArray(body?.records) ? body.records.slice(0, MAX_RECORDS_PER_POST).map(shapeRecord) : [];
       if (!incoming.length) return new Response(JSON.stringify({ ok: true, added: 0 }), { status: 200, headers: cors });
-      const existing = (await getDoc(docPath(date))) || {};
-      const prior = Array.isArray(existing.records) ? existing.records : [];
-      // UPSERT by orderRef (fall back to nuvizzNbr) so a re-push updates in place, no dupes.
-      const byKey = new Map<string, any>();
-      for (const r of prior) { const k = String(r?.orderRef || r?.nuvizzNbr || ''); if (k) byKey.set(k, r); }
-      for (const r of incoming) { const k = String(r.orderRef || r.nuvizzNbr || ''); if (k) byKey.set(k, r); }
-      const merged = [...byKey.values()].sort((a, b) => String(b.pushedAt || '').localeCompare(String(a.pushedAt || '')));
-      await setDoc(docPath(date), { tenant: TENANT, date, records: merged, updated_at: new Date().toISOString() });
-      return new Response(JSON.stringify({ ok: true, added: incoming.length, total: merged.length, date }), { status: 200, headers: cors });
+      // UPSERT by orderRef (fall back to nuvizzNbr; a record with NEITHER gets a synthetic
+      // key so it still lands in the audit log instead of being silently dropped).
+      const keyOf = (r: any) => String(r?.orderRef || r?.nuvizzNbr || '') || `anon:${r?.name || ''}|${r?.pushedAt || ''}`;
+      const truncated = Array.isArray(body?.records) ? Math.max(0, body.records.length - incoming.length) : 0;
+      // Read-merge-write with a post-write verify: two near-simultaneous pushes (Bulk Add +
+      // Manifest Intake, or two dispatchers) used to clobber each other — the second full-doc
+      // setDoc erased the first's records while both got {ok:true}. A plain re-read after the
+      // write catches the common interleave and re-merges; bounded retries, best-effort.
+      let merged: any[] = [];
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const existing = (await getDoc(docPath(date))) || {};
+        const prior = Array.isArray(existing.records) ? existing.records : [];
+        const byKey = new Map<string, any>();
+        for (const r of prior) byKey.set(keyOf(r), r);
+        for (const r of incoming) byKey.set(keyOf(r), r);
+        merged = [...byKey.values()].sort((a, b) => String(b.pushedAt || '').localeCompare(String(a.pushedAt || '')));
+        await setDoc(docPath(date), { tenant: TENANT, date, records: merged, updated_at: new Date().toISOString() });
+        const check = (await getDoc(docPath(date))) || {};
+        const have = new Set((Array.isArray(check.records) ? check.records : []).map(keyOf));
+        if (incoming.every((r: any) => have.has(keyOf(r)))) break;   // our records survived
+      }
+      return new Response(JSON.stringify({ ok: true, added: incoming.length, truncated, total: merged.length, date }), { status: 200, headers: cors });
     }
 
     if (url.searchParams.get('list')) {

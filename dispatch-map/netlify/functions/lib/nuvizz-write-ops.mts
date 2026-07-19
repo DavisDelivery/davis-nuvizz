@@ -120,6 +120,15 @@ const numOrNull = (x: any): number | null => {
  * GOTCHAS baked in (learned live, §4): never send shipForBP or profile on an open
  * import; include a real zip (NuVizz geocodes from the address).
  */
+// Length-cap a string on CODE POINTS, not UTF-16 units. A plain .slice(n) can cut an
+// emoji/astral char in half, leaving an unpaired surrogate that JSON.stringify emits as
+// a lone \ud8xx — which NuVizz's Java-side JSON parse can reject (400s the whole write)
+// or store mangled. Spreading iterates code points, so the cut is always at a char boundary.
+function safeSlice(v: string, n: number): string {
+  const s = String(v);
+  return s.length <= n ? s : [...s].slice(0, n).join('');
+}
+
 export function buildStopPayload(row: StopRow, settings: OriginSettings): any {
   const tz = settings.timeZone || 'America/New_York';
   const d = settings.serviceDate;
@@ -137,7 +146,7 @@ export function buildStopPayload(row: StopRow, settings: OriginSettings): any {
   // driver→customer SMS, and rejects the punctuation). Keep a leading "+" for international.
   const phone = row.phone ? String(row.phone).trim().replace(/(?!^\+)\D/g, '').slice(0, 200) : '';
   // Consignee email → to.contact.email. Trim only (NuVizz validates); bound the length.
-  const email = row.email ? String(row.email).trim().slice(0, 200) : '';
+  const email = row.email ? safeSlice(String(row.email).trim(), 200) : '';
   const notes = row.dispatchNotes ? String(row.dispatchNotes).trim() : '';
   // Davis freight semantics ↔ NuVizz's mislabeled fields (matches how the app READS
   // every stop): pallets/skids ride NuVizz "totalCartons", loose pieces ride
@@ -155,8 +164,8 @@ export function buildStopPayload(row: StopRow, settings: OriginSettings): any {
   // falls back to the PRO / order number (the spec's "unique ID for the shipment").
   const lineWeight = numOrNull(row.weight);
   const stopDetails = itemDesc ? [{
-    product: itemDesc.slice(0, 100),
-    productIdentifier: String(proRaw || row.stopNbr || 'ITEM').slice(0, 50),
+    product: safeSlice(itemDesc, 100),
+    productIdentifier: safeSlice(String(proRaw || row.stopNbr || 'ITEM'), 50),
     quantity: totalPieces && totalPieces > 0 ? totalPieces : 1,
     quantityUOM: 'PCS',
     stopDetailSeq: 1,
@@ -167,12 +176,12 @@ export function buildStopPayload(row: StopRow, settings: OriginSettings): any {
   return {
     stopNbr: row.stopNbr ? String(row.stopNbr) : undefined,
     stopType: 'DO', shipmentType: 'REG', stopExecution: 'APP', sourceType: 'INTG',
-    shipmentNbr: proRaw ? proRaw.slice(0, 20) : undefined, proNumber: proRaw ? pro : undefined,
-    reference1: proRaw ? `PRO ${proRaw}`.slice(0, 50) : undefined,
+    shipmentNbr: proRaw ? safeSlice(proRaw, 20) : undefined, proNumber: proRaw ? pro : undefined,
+    reference1: proRaw ? safeSlice(`PRO ${proRaw}`, 50) : undefined,
     // Item/commodity description → reference2 (a plain string reference field on the stop,
     // maxLength 50 — slice or NuVizz 400s). Kept alongside stopDetails below for round-trip
     // compatibility (normalizeStop reads it back to confirm persistence on this tenant).
-    reference2: itemDesc ? itemDesc.slice(0, 50) : undefined,
+    reference2: itemDesc ? safeSlice(itemDesc, 50) : undefined,
     // Item/commodity as a real line item → populates the Stop Details "Items" table.
     stopDetails,
     totalCartons: pallets,          // NuVizz "cartons" = real PALLETS / skids
@@ -190,7 +199,7 @@ export function buildStopPayload(row: StopRow, settings: OriginSettings): any {
     comments: notes ? [{
       commentType: '01', cmtType: 'ORD_IN',
       accessLevels: ['DISPATCHER', 'DRIVER'],
-      commentDescription: notes.slice(0, 500),
+      commentDescription: safeSlice(notes, 500),
     }] : undefined,
     from: {
       address: {

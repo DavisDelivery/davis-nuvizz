@@ -173,9 +173,14 @@ export function autoMapColumns(headerRow) {
 
 // A stable signature for a header row, so a remembered mapping can be re-applied to the same sheet
 // layout next time (persisted by the screen in localStorage). Null when there's no usable header.
+// POSITIONAL: empty header cells stay in the signature as empty tokens. Filtering them out made
+// ['Consignee','','Address',…] collide with ['Consignee','Address',…], so a remembered INDEX-based
+// mapping from one layout was recalled for the other and auto-committed with every column shifted —
+// address in the city field, city in state, etc. Trailing empties are trimmed (they carry no data).
 export function headerSignature(headerRow) {
-  const cells = (headerRow || []).map(norm).filter(Boolean);
-  return cells.length ? cells.join('|') : null;
+  const cells = (headerRow || []).map(norm);
+  while (cells.length && !cells[cells.length - 1]) cells.pop();
+  return cells.some(Boolean) ? cells.join('|') : null;
 }
 
 // Turn data rows + a column→field mapping into order-row objects (StopRow-shaped, all strings).

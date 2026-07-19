@@ -59,7 +59,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.50.55';
+const APP_VERSION = '0.50.56';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -104,6 +104,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.50.56', 'FULL-APP DEBUG SWEEP — 19 verified fixes from a three-way audit of the client, the server functions, and the board/routing state. The big ones: (1) CS-NOTIFY EMAILS NOW ACTUALLY SEND — the notify hook only existed in the legacy scan engine, which the normal cheap scan never runs, so a notify_cs-flagged customer produced NO email on any production scan; the cheap scan now fires it (deduped, best-effort). (2) COST GUARDS: the ~3,000-call probe scan was reachable through an unauthenticated debug URL (?live=1) and through a mistyped env flag silently flipping scheduled scans onto the expensive engine — the URL now requires an explicit env opt-in and the cheap list scan is the DEFAULT with a loud log if the probe ever runs on a schedule. (3) LOAD MODE: after the Stop#/PRO swap, "Create as NEW load" still gated on Order # while the load is really keyed by PRO — a PRO-less row could silently vanish from the created load; the gate/asterisk now sits on PRO, and load mode also sends the consignee email it used to drop. (4) NO MORE RETRY DUPLICATES: bulk + manifest pushes now reuse a stable per-row idempotency id, so a lost response + a retry can\'t create the same order twice; and the grid freezes structural edits during a push so finishing rows can\'t delete the wrong line. (5) Pushed-to-NuVizz log: concurrent pushes can\'t clobber each other\'s records, ref-less rows aren\'t silently dropped, and switching days fast can\'t show one day\'s orders under another\'s label. Plus: customer-note history no longer stamps tomorrow\'s date after 8pm, Routes cards read the real NuVizz status when joined by load id (and a confirmed Dispatch override now retires properly), "View full route" respects corrected pins instead of framing the old wrong city, searching during a cold load frames results once they land, the carry-over picker can\'t claim more days than the server folds (14), the mobile Loads delivered count matches the board\'s, imports can\'t silently overflow the 300-row grid cap, a remembered column mapping can\'t be recalled one-column-shifted, and long notes with emoji can\'t corrupt the NuVizz write.'],
   ['0.50.55', 'FORMATTING SWEEP — six fixes from a full desktop + iPhone audit. (1) iPHONE: tapping a field no longer ZOOMS THE PAGE IN. Nearly every box in the app used small type, which makes iOS Safari auto-zoom ~33% on focus — on phones, form fields now render at 16px so the lurch-in/pinch-out dance is gone (pinch-zoom still works). (2) BULK ADD GRID: the Consignee column now stays PINNED on the left while you scroll the grid sideways — out at Phone/Notes/Status you can finally tell which order each row is. (3) The Order # and PRO columns are wide enough to show a full SO/SHP number instead of clipping ("SO456…"). (4) BIGGER TAP TARGETS on phone: the menu chip in the top bar (now with a ☰ icon so it reads as the menu), the status-pill scan/collapse buttons, the Filters "Reset", the bottom-grid collapse caret, and all grid checkboxes. (5) Error banners on the Map and Routing screens moved to the BOTTOM of the map area so they can\'t lay over the status pill / selection tally. (6) Cosmetics: "Scan now" no longer wraps to two lines on phone Diagnostics, and the duplicate floating version chip on the phone Map is gone (the top-bar chip stays).'],
   ['0.50.54', 'BULK ADD — the Stop # and Shipment # now land on the RIGHT NuVizz fields. When you imported your NuVizz route export and pushed, orders came out with NuVizz’s Stop Number = the SO series and Shipment Number = the SHP series — backwards from your live board, where the Stop Number IS your PRO (the SHP). The export’s column headers are labeled opposite to how NuVizz actually stores them, and the push trusted the labels. Now a Bulk Add push crosses them correctly: the PRO (SHP) → NuVizz Stop Number, and the Order # (SO) → NuVizz Shipment Number. The grid is unchanged (your PRO still shows in the PRO column); only what gets written to NuVizz changed. Verified against your 720 file: all four orders now write Stop # = SHP, Shipment # = SO. (New Order and scanned-manifest pushes are untouched.)'],
   ['0.50.53', 'BULK ADD — a “Pushed to NuVizz” tab, so a spreadsheet push leaves a receipt. Before, when you imported a spreadsheet and hit Create, the rows just cleared with a green “Created N” banner and there was no list to look back at — the “Pushed to NuVizz” history only existed for scanned-manifest PDFs. Now the spreadsheet Bulk Add screen has two tabs — Orders and Pushed to NuVizz — and every order you push is logged (consignee, Order #, NuVizz #, pallets/loose/weight, price, time). Pick a day to see exactly what went out, from any device; a clean push jumps you straight to the receipt. It reads/writes only our own log — ZERO NuVizz calls — and shares the same history as the manifest flow, so everything pushed that day shows in one place.'],
@@ -2568,7 +2569,9 @@ function fmtStopFreshness(source, lastScannedAt) {
 }
 
 function todayYmd() {
-  return new Date().toISOString().slice(0, 10);
+  // ET, not UTC: after ~8pm ET toISOString() is already TOMORROW, which stamped
+  // pro_history entries with a future date and broke evening history lookups.
+  return todayInET();
 }
 
 // Empty/default note template — used when opening a stop that has no Firestore doc yet.
@@ -3674,7 +3677,9 @@ function CarryoverControl({ value = 0, onChange, boardDate }) {
     const v = e.target.value;
     if (!v || Number.isNaN(boardMs)) { onChange(0); return; }
     const days = Math.round((boardMs - Date.parse(`${v}T00:00:00Z`)) / dayMs);
-    onChange(Math.max(0, days));
+    // The server folds at most 14 days (nuvizz-pull-today-stops clamps carryDays) — an
+    // unclamped picker showed "45d back" while the board silently folded only 14.
+    onChange(Math.max(0, Math.min(14, days)));
   };
   // "2026-06-22" → "Jun 22" (parse the parts so there's no timezone drift).
   const fmtSince = (iso) => {
@@ -3705,6 +3710,7 @@ function CarryoverControl({ value = 0, onChange, boardDate }) {
         <input
           type="date"
           value={sinceForValue}
+          min={Number.isNaN(boardMs) ? undefined : new Date(boardMs - 14 * dayMs).toISOString().slice(0, 10)}
           max={maxSince}
           onChange={onSince}
           title="Fold in still-unplanned orders since this date — the same look-back window as the presets (e.g. 7 days back = the 7d button)"
@@ -8019,7 +8025,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef }) {
       let g = m.get(s.loadNbr);
       if (!g) { g = { loadNbr: s.loadNbr, routeName: s.routeName || null, driverName: s.driverName || null, stops: 0, delivered: 0, skids: 0, loose: 0, weight: 0 }; m.set(s.loadNbr, g); }
       g.stops++;
-      if (/deliver/i.test(s.normalizedStatus || s.status || '')) g.delivered++;
+      if (classifyStopStatus(s) === 'DELIVERED') g.delivered++;   // shared classifier — the regex missed code-only '90' rows
       g.skids += Number(s.cartons) || 0;
       g.loose += Number(s.volume) || 0;
       g.weight += Number(s.weight) || 0;
@@ -8257,7 +8263,12 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef }) {
   const frameRoute = (loadNbr) => {
     if (!google || !mapRef.current || !loadNbr) return;
     const map = mapRef.current;
-    const pts = stops.filter((s) => s.loadNbr === loadNbr && s.lat != null && s.lng != null);
+    // Apply location_override like the markers do — framing on the raw geocode zoomed the
+    // map out to span a corrected pin's OLD wrong city (the "thrown across the state" look).
+    const pts = stops
+      .filter((s) => s.loadNbr === loadNbr)
+      .map((s) => { const ov = notes.get(s.matchKey)?.location_override; return (ov && typeof ov.lat === 'number' && typeof ov.lng === 'number') ? { ...s, lat: ov.lat, lng: ov.lng } : s; })
+      .filter((s) => s.lat != null && s.lng != null);
     if (!pts.length) return;
     saveBoardView();
     const b = new google.maps.LatLngBounds();
@@ -8342,10 +8353,12 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef }) {
   }, [google, showRoutes, routeData, selectedRoute]);
 
   // Auto-zoom on search results: 1 match → center + open sidebar, 2-10 → fit bounds.
+  const pendingSearchFitRef = useRef(false);   // search settled before the board had rows — fit once when they land
   useEffect(() => {
     if (!google || !mapRef.current) return;
     if (!effectiveMatchSet) return;
     const matched = filteredStops.filter((s) => effectiveMatchSet.has(s.stopNbr) && s.lat != null && s.lng != null);
+    pendingSearchFitRef.current = matched.length === 0;
     if (matched.length === 1) {
       const s = matched[0];
       // Don't auto-open if user already navigated away from search results.
@@ -8363,6 +8376,24 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef }) {
     // (e.g. "floor" spanning Dalton→Conyers→Marietta). Keying on the stable search
     // inputs fixes that; filteredStops is read live from the closure.
   }, [google, debouncedSearch, aiResult, selectionSet]);  // eslint-disable-line react-hooks/exhaustive-deps
+  // One-shot deferred fit: typing during a cold load / date flip used to find zero rows and
+  // never re-fit (the effect above deliberately doesn't key on the board). Runs at most once
+  // per pending search, then disarms — the 120s-refresh drift fix stays intact.
+  useEffect(() => {
+    if (!pendingSearchFitRef.current || !google || !mapRef.current || !effectiveMatchSet) return;
+    const matched = filteredStops.filter((s) => effectiveMatchSet.has(s.stopNbr) && s.lat != null && s.lng != null);
+    if (!matched.length) return;
+    pendingSearchFitRef.current = false;
+    if (matched.length === 1) {
+      const s = matched[0];
+      if (!selectedDriver) { setSelectedStop(s); handlePanToStop(s); }
+      else { mapRef.current.panTo({ lat: s.lat, lng: s.lng }); mapRef.current.setZoom(Math.max(mapRef.current.getZoom() || 10, STOP_ZOOM)); }
+    } else if (matched.length <= 10) {
+      const bounds = new google.maps.LatLngBounds();
+      matched.forEach((s) => bounds.extend({ lat: s.lat, lng: s.lng }));
+      mapRef.current.fitBounds(bounds, fitPad());
+    }
+  }, [filteredStops]);  // eslint-disable-line react-hooks/exhaustive-deps
 
   // Build the driver-status line2 text. Route assignment is managed in NuVizz,
   // not Motive, so we do NOT show a "No route assigned" line on the Motive driver
@@ -11227,7 +11258,8 @@ function computeRouteGroups(stops, loadStatusByName) {
   const groups = [...m.values()];
   const byName = loadStatusByName || new Map();
   for (const g of groups) {
-    const raw = byName.get(String(g.name || '').trim().toLowerCase()) ?? byName.get('#id:' + String(g.loadNbr));
+    // The roster writes '#id:' + loadId — keying the fallback by loadNbr never matched.
+    const raw = byName.get(String(g.name || '').trim().toLowerCase()) ?? byName.get('#id:' + String(g.loadId ?? '')) ?? byName.get('#id:' + String(g.loadNbr));
     g.rosterStatus = raw || '';
     g.status = nuvizzLoadStatus(raw) || deriveRouteStatus(g);
     g.locCount = g.locs.size; delete g.locs;   // physical stops (orders sharing an address = one stop)
@@ -13545,12 +13577,15 @@ function RoutingScreen({ debugCaptureRef }) {
       // card kept reading Draft after a successful production dispatch. The override also
       // survives a stale roster refetch (see the roster effect's merge).
       const nm = String(g.name || '').trim().toLowerCase();
+      // Key the '#id:' twin by loadId — the roster map's actual key — so the retire loop can
+      // see agreement and drop it (a loadNbr-keyed twin never matched and re-applied forever).
+      const idKey = g.loadId ?? g.loadNbr;
       dispatchOverrideRef.current.set(nm, 'Dispatched');
-      if (g.loadNbr) dispatchOverrideRef.current.set('#id:' + String(g.loadNbr), 'Dispatched');
+      if (idKey) dispatchOverrideRef.current.set('#id:' + String(idKey), 'Dispatched');
       setLoadStatusByName((prev) => {
         const n = new Map(prev);
         n.set(nm, 'Dispatched');
-        if (g.loadNbr) n.set('#id:' + String(g.loadNbr), 'Dispatched');
+        if (idKey) n.set('#id:' + String(idKey), 'Dispatched');
         return n;
       });
     } else {
@@ -17150,14 +17185,17 @@ function BulkOrderScreen() {
   const etTodayStr = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' }).format(new Date());
   const [pushedDate, setPushedDate] = useState(etTodayStr);
   const [pushedLog, setPushedLog] = useState({ loading: false, records: [], error: null, date: null });
+  const pushedReqRef = useRef(null);   // latest requested date — stale responses must not render under a newer label
   const fetchPushedLog = useCallback(async (date) => {
     if (!date) return;
+    pushedReqRef.current = date;
     setPushedLog((s) => ({ ...s, loading: true, error: null }));
     try {
       const r = await fetch(`/.netlify/functions/manifest-push-log?date=${encodeURIComponent(date)}`);
       const d = await r.json();
+      if (pushedReqRef.current !== date) return;   // a newer day was requested — drop this response
       setPushedLog({ loading: false, records: Array.isArray(d.records) ? d.records : [], error: d.ok ? null : (d.reason || 'load failed'), date });
-    } catch (e) { setPushedLog({ loading: false, records: [], error: e.message, date }); }
+    } catch (e) { if (pushedReqRef.current === date) setPushedLog({ loading: false, records: [], error: e.message, date }); }
   }, []);
   useEffect(() => { if (intakeTab === 'pushed' || bulkView === 'pushed') fetchPushedLog(pushedDate); }, [intakeTab, bulkView, pushedDate, fetchPushedLog]);
 
@@ -17179,15 +17217,22 @@ function BulkOrderScreen() {
   };
 
   const setCell = (i, key) => (e) => { const v = key === 'phone' ? fmtPhone(e.target.value) : e.target.value; setRows((rs) => rs.map((r, idx) => (idx === i ? { ...r, [key]: v } : r))); };
-  const addRow = () => setRows((rs) => (rs.length >= BULK_MAX_ROWS ? rs : [...rs, bulkEmptyRow()]));
-  const removeRow = (i) => setRows((rs) => (rs.length > 1 ? rs.filter((_, idx) => idx !== i) : [bulkEmptyRow()]));
-  const clearRows = () => { setRows([bulkEmptyRow(), bulkEmptyRow(), bulkEmptyRow()]); setResults(null); };
+  // Structural mutations are FROZEN while a push is in flight: createAll deletes finished
+  // rows by click-time index, so adding/removing/importing mid-push shifted indexes and
+  // could destroy a queued row that was never sent (or keep a sent one for a double-push).
+  const addRow = () => { if (busy) return; setAutoImportUndo(null); setRows((rs) => (rs.length >= BULK_MAX_ROWS ? rs : [...rs, bulkEmptyRow()])); };
+  const removeRow = (i) => { if (busy) return; setAutoImportUndo(null); setRows((rs) => (rs.length > 1 ? rs.filter((_, idx) => idx !== i) : [bulkEmptyRow()])); };
+  const clearRows = () => { if (busy) return; setAutoImportUndo(null); setRows([bulkEmptyRow(), bulkEmptyRow(), bulkEmptyRow()]); setResults(null); };
 
   // In load mode every row ALSO needs its Order # (stopNbr) — it is the convergence key the
   // import path verifies the seated order against; NuVizz cannot generate it for an inline create.
   const missingFor = (r) => {
     const m = bulkRowMissing(r);
-    if (asLoad && !String(r?.stopNbr ?? '').trim()) m.push('stopNbr');
+    // Load mode references its stops by NuVizz Stop Number, which after the v0.50.54 ref
+    // cross is the grid's PRO column (bulkRowNuvizzRefs) — requiring Order # here let a
+    // PRO-less row pass the gate and then silently VANISH from the created load (the
+    // server filters the empty stopNbr out of orderedStopNbrs).
+    if (asLoad && !bulkRowNuvizzRefs(r).stopNbr) m.push('pro');
     return m;
   };
   const activeRows = rows.filter((r) => !bulkRowIsBlank(r));
@@ -17196,9 +17241,9 @@ function BulkOrderScreen() {
   const isPush = (r) => r._push !== false;
   const pushRows = activeRows.filter(isPush);
   const queuedCount = activeRows.length - pushRows.length;
-  const togglePush = (i) => setRows((rs) => rs.map((r, idx) => (idx === i ? { ...r, _push: !isPush(r) } : r)));
+  const togglePush = (i) => { if (busy) return; setRows((rs) => rs.map((r, idx) => (idx === i ? { ...r, _push: !isPush(r) } : r))); };
   const allPushed = activeRows.length > 0 && activeRows.every(isPush);
-  const toggleAllPush = () => setRows((rs) => rs.map((r) => (bulkRowIsBlank(r) ? r : { ...r, _push: !allPushed })));
+  const toggleAllPush = () => { if (busy) return; setRows((rs) => rs.map((r) => (bulkRowIsBlank(r) ? r : { ...r, _push: !allPushed }))); };
   const readyCount = pushRows.filter((r) => missingFor(r).length === 0).length;
   const incompleteCount = pushRows.length - readyCount;
   const canCreate = originComplete && !!serviceDate && readyCount > 0 && !busy
@@ -17337,13 +17382,21 @@ function BulkOrderScreen() {
     if (!orders.length) { setImportErr(ghosts ? `All ${ghosts} row(s) were residue — no consignee/address/order # anywhere. Check the column mapping.` : 'No rows to import with the current column mapping.'); return false; }
     // Normalize the imported phone to xxx-xxx-xxxx (same mask as typing) so a dropped/pasted
     // spreadsheet lands formatted — NuVizz gets the digits stripped later at write time.
-    const filled = orders.slice(0, BULK_MAX_ROWS).map((o) => ({ ...bulkEmptyRow(), ...o, phone: normalizePhone(o.phone) }));
+    if (busy) { setImportErr('A push is running — import again when it finishes.'); return false; }
+    // Cap against REMAINING capacity: slicing to BULK_MAX_ROWS alone let existing rows push
+    // imported orders past the grid cap — they silently vanished while the banner still
+    // claimed the full count. Count what actually lands and say what was dropped.
+    const keepCount = rows.filter((r) => !bulkRowIsBlank(r)).length;
+    const capacity = Math.max(0, BULK_MAX_ROWS - keepCount);
+    const overCap = Math.max(0, orders.length - capacity);
+    const filled = orders.slice(0, capacity).map((o) => ({ ...bulkEmptyRow(), ...o, phone: normalizePhone(o.phone) }));
+    if (!filled.length) { setImportErr(`The grid is full (${BULK_MAX_ROWS} rows) — push or clear rows, then import again.`); return false; }
     setAutoImportUndo(auto && stash ? { prevRows: rows, stash } : null);
     setBulkView('orders');   // a fresh import always lands you back on the grid, not the Pushed tab
     setRows((rs) => { const keep = rs.filter((r) => !bulkRowIsBlank(r)); return [...keep, ...filled, bulkEmptyRow()].slice(0, BULK_MAX_ROWS + 1); });
     rememberMapping(sig, mapping);
     setImporter(null); setPasteText(''); setResults(null);
-    setImportInfo(`${auto ? 'Read the columns automatically and imported' : 'Imported'} ${filled.length} order(s)${ghosts ? ` — skipped ${ghosts} residue row(s) that had no consignee, address, or order # (template leftovers)` : ''}.`);
+    setImportInfo(`${auto ? 'Read the columns automatically and imported' : 'Imported'} ${filled.length} order(s)${ghosts ? ` — skipped ${ghosts} residue row(s) that had no consignee, address, or order # (template leftovers)` : ''}${overCap ? ` — ⚠ ${overCap} row(s) did NOT fit (grid cap ${BULK_MAX_ROWS}); push or clear rows and re-import for the rest` : ''}.`);
     return true;
   };
   const applyImport = () => { if (importer) commitImport(importer.dataRows, importer.mapping, importer.sig); };
@@ -17383,10 +17436,15 @@ function BulkOrderScreen() {
         email: (r.email || '').trim() || null,                    // → to.contact.email
         dispatchNotes: (r.dispatchNotes || '').trim() || null,    // → comments[] ORD_IN (driver instructions)
       };
+      // STABLE per-row op id: a fresh id per attempt made the server's idempotency ledger
+      // useless — a lost response + a retry click double-created the order. The id lives on
+      // the row (UI-only field like _push, autosaved with the draft) and is only minted once.
+      const opId = r._opId || newClientOpId();
       let res;
-      try { res = await callWrite('createStop', { row: payloadRow, settings }, { dryRun: false, clientOpId: newClientOpId(), createdBy: 'dispatcher-bulk' }); }
+      try { res = await callWrite('createStop', { row: payloadRow, settings }, { dryRun: false, clientOpId: opId, createdBy: 'dispatcher-bulk' }); }
       catch (e) { res = { ok: false, error: e?.message || 'network error' }; }
       const ok = !!(res.ok && res.result?.ok);
+      if (!ok && !r._opId) setRows((rs) => rs.map((x) => (x === r ? { ...x, _opId: opId } : x)));
       out.push({ idx, name: payloadRow.name, ok, updated: !!res.result?.updated, nbr: res.result?.entityNbr || payloadRow.stopNbr || '', error: ok ? null : (res.error || res.result?.error || 'write error') });
       if (ok) {
         pushedLogRecords.push({
@@ -17472,6 +17530,7 @@ function BulkOrderScreen() {
       // PRO (SHP) → NuVizz Stop Number; Order # (SO) → NuVizz Shipment Number. The load then
       // references its stops by that Stop Number (orderedStopNbrs = the PRO series), so it stays consistent.
       stopNbr: bulkRowNuvizzRefs(r).stopNbr || '', pro: bulkRowNuvizzRefs(r).pro, itemDesc: r.itemDesc.trim() || null,
+      email: (r.email || '').trim() || null,                    // → to.contact.email (was silently dropped in load mode)
       pallets: r.pallets.trim() || null, loose: r.loose.trim() || null, weight: r.weight.trim() || null,
       price: (r.price || '').trim() || null,                    // → NuVizz Seal # (sealNbr) via buildStopPayload on the server
       phone: (r.phone || '').trim() || null,                    // → to.contact.phone
@@ -17573,9 +17632,11 @@ function BulkOrderScreen() {
         email: (r.email || '').trim() || null,                    // → to.contact.email
         dispatchNotes: (r.dispatchNotes || '').trim() || null,    // → comments[] ORD_IN (driver instructions)
       };
+      const opId = r._opId || newClientOpId();
       let res;
-      try { res = await callWrite('createStop', { row: payloadRow, settings }, { dryRun: false, clientOpId: newClientOpId(), createdBy: 'dispatcher-manifest' }); }
+      try { res = await callWrite('createStop', { row: payloadRow, settings }, { dryRun: false, clientOpId: opId, createdBy: 'dispatcher-manifest' }); }
       catch (e) { res = { ok: false, error: e?.message || 'network error' }; }
+      if (!(res.ok && res.result?.ok) && !r._opId) setIntake((it) => (it ? { ...it, rows: it.rows.map((x) => (x.id === r.id ? { ...x, _opId: opId } : x)) } : it));
       const ok = !!(res.ok && res.result?.ok);
       if (ok) {
         sent++; if (res.result?.updated) updated++;
@@ -17987,7 +18048,7 @@ function BulkOrderScreen() {
                     <input type="checkbox" checked={allPushed} onChange={toggleAllPush} disabled={!activeRows.length} className="align-middle accent-blue-600" title="Check/uncheck all filled rows" />
                   </th>
                   <th className="pr-2 pb-1 font-medium w-6">#</th>
-                  {BULK_FIELDS.map((f) => <th key={f.key} className={`px-1 pb-1 font-medium whitespace-nowrap ${f.key === 'name' ? 'sticky left-0 z-20 bg-white border-r border-slate-200' : ''}`}>{f.label}{(f.required || (asLoad && f.key === 'stopNbr')) && <span className="text-red-500"> *</span>}</th>)}
+                  {BULK_FIELDS.map((f) => <th key={f.key} className={`px-1 pb-1 font-medium whitespace-nowrap ${f.key === 'name' ? 'sticky left-0 z-20 bg-white border-r border-slate-200' : ''}`}>{f.label}{(f.required || (asLoad && f.key === 'pro')) && <span className="text-red-500"> *</span>}</th>)}
                   <th className="px-1 pb-1 font-medium">Status</th>
                   <th className="pb-1"></th>
                 </tr>
@@ -18056,7 +18117,7 @@ function BulkOrderScreen() {
           <span className="text-[12px] text-slate-500">
             {!originComplete ? 'Set the pickup + service date first.'
               : readyCount === 0 && activeRows.length > 0 && pushRows.length === 0 ? `All ${activeRows.length} row(s) are queued — check ☑ at least one row to push it.`
-              : readyCount === 0 ? `Fill at least one row (required * fields${asLoad ? ' — Order # too in load mode' : ''}).`
+              : readyCount === 0 ? `Fill at least one row (required * fields${asLoad ? ' — PRO / shipment # too in load mode' : ''}).`
               : asLoad && incompleteCount > 0 ? `Load mode sends the load's COMPLETE stop list — finish or remove the ${incompleteCount} incomplete row(s) first.`
               : asLoad && !loadNbr.trim() ? 'Enter the load number (an empty Draft load, or a new one).'
               : busy && progress ? `Creating ${progress.done}/${progress.total}…`

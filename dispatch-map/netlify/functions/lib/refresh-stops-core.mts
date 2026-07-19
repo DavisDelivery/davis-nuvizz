@@ -299,7 +299,12 @@ export async function runRefreshStops(req: Request): Promise<Response> {
   // stop LIST in one windowed pull instead of number-probing /load/info & /stop/info.
   // Coordinates are carried forward from the existing index + geocoded for new
   // addresses. The number-probe below remains the automatic FALLBACK.
-  const LIST_DISCOVERY = (process.env.NUVIZZ_LIST_DISCOVERY || '').toLowerCase() === 'on';
+  // DEFAULT ON, tolerant parse. This flag used to be opt-IN via the exact string 'on',
+  // so an unset/mistyped env value ('true', '1', a typo) silently dropped every scheduled
+  // tick into the ~3,000-call number-probe engine — inverting the cost invariant that the
+  // probe is reachable only via explicit manual triggers. The cheap list path is now the
+  // default; the probe engine on a schedule requires an explicit 'off'.
+  const LIST_DISCOVERY = !['off', '0', 'false', 'no'].includes((process.env.NUVIZZ_LIST_DISCOVERY || 'on').toLowerCase());
   // Two-saved-search source (see nuvizz-list SAVED_SEARCHES): one ACTIVE pull
   // (planned+unplanned) + one COMPLETED pull (delivered/unable-to-deliver, updated
   // today), merged and bucketed by date. OFF = the legacy per-day single query.
@@ -957,6 +962,14 @@ export async function runRefreshStops(req: Request): Promise<Response> {
         // Cache the date's empty-loads roster (once/day for a future date) so the Loads view can
         // show e.g. Monday's empty loads without a per-request live fetch.
         await persistLoadRoster(date, scannedAt);
+        // CS notify — this hook only lived in the legacy probe path (scanAndWrite), which the
+        // list-discovery config never runs, so a notify_cs-flagged customer produced NO email
+        // and no status doc on any production scan. Fire it here too: best-effort, deduped
+        // per delivery date inside notifyMarkedCustomers, a mail failure never affects the scan.
+        try {
+          const n = await notifyMarkedCustomers(date, dateStops);
+          if (n.matched) console.log(`[cs-notify] date=${date} matched=${n.matched} sent=${n.sent} failed=${n.failed}${n.skipped ? ` skipped=${n.skipped}` : ''}`);
+        } catch (e: any) { console.warn(`[cs-notify] ${date} failed: ${e?.message}`); }
         results.push({ date, ok: true, source: 'list', count: meta.count, planned: meta.plannedCount, unplanned: meta.unplannedCount, enriched, newPros: stillNeed.length });
       }
     } catch (e: any) {
@@ -970,6 +983,9 @@ export async function runRefreshStops(req: Request): Promise<Response> {
   }
 
   // Today: loads always; orders inside the 10am-midnight window.
+  // Reaching here on a schedule means the EXPENSIVE probe engine is about to run without an
+  // explicit trigger — only possible when NUVIZZ_LIST_DISCOVERY is explicitly 'off'. Say so loudly.
+  console.warn(`[scan] ⚠ NUMBER-PROBE ENGINE on a ${isManual ? 'manual' : 'scheduled'} tick (NUVIZZ_LIST_DISCOVERY=off) — this is the ~3,000-call path`);
   await scanAndWrite(today, decision.scanTodayUnplanned, isManual, true);
   // Tomorrow (Fix 2): descend orders 10am-midnight, but only scan tomorrow's LOADS
   // 8pm-midnight (they don't exist earlier) — avoids ~13 empty load scans/day.

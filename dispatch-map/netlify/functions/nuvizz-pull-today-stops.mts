@@ -182,6 +182,13 @@ export default async (req: Request): Promise<Response> => {
       source = 'fixture';
     } else if (live) {
       // DEBUG path — scan NuVizz directly. May time out on the unplanned scan.
+      // GATED: this is a cold full number-probe (~3,000 metered calls) on an
+      // unauthenticated GET, bypassing the cadence/breaker guards — a stray hit
+      // must not be able to burn the day's call budget. Requires an explicit env
+      // opt-in; use the in-app "Scan now" (cheap list path) for fresh data.
+      if ((process.env.NUVIZZ_LIVE_READ_ENABLED || '').toLowerCase() !== 'on') {
+        return new Response(JSON.stringify({ ok: false, reason: 'live_read_disabled — ?live=1 runs a ~3,000-call probe scan; set NUVIZZ_LIVE_READ_ENABLED=on to allow it, or use the in-app Scan now (cheap list pull)' }), { status: 403, headers: cors });
+      }
       const scan = await scanDate(date);
       stops = scan.stops;
       lastScannedAt = scan.scannedAt;
