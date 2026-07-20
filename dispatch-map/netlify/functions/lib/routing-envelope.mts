@@ -16,7 +16,7 @@
 // trip-2 radius) are mined when history is thick enough, else seeded from the
 // verified OPERATING FACTS via config.
 
-import { superOfZone, type ZonePrecisions } from './zones.mts';
+import { superOfZone, topOfZone, type ZonePrecisions } from './zones.mts';
 import { quantile, median } from './routing-service-times.mts';
 import type { EngineConfig } from './routing-engine-config.mts';
 import type { DriverDayDoc, DriverTrip } from './routing-driver-days.mts';
@@ -133,6 +133,47 @@ export function driverZoneAffinity(
   }
   if (total > 0) for (const [k, v] of freq) freq.set(k, v / total);
   return freq;
+}
+
+// ── Phase 2.3: learned territory ownership ───────────────────────────────────
+// zoneOwnersAsOf: for each TOP zone (gh4, ~a named area like "Dalton"), the set
+// of drivers who historically carry a real share of its stops — mined from the
+// reference routes strictly < D. This is dispatch's territory knowledge made
+// explicit ("Dalton is Scott and Victor's, period"): a zone whose history shows
+// near-exclusive owners gets a learned owner set; a zone served by everybody
+// (Atlanta) never concentrates past the share floor and stays open. The solver
+// only consults this for FAR stops, so the depot's own mega-zone is never
+// affected. Thin history (< min_obs stops) yields no entry — no lock-in from
+// noise.
+export interface ZoneOwners {
+  owners: Set<string>;   // driver_user_name (UPPERCASED) with share ≥ zone_owner_min_share
+  n: number;             // observed stops in this top zone (< D)
+}
+export function zoneOwnersAsOf(
+  references: ReferenceRouteDoc[], asOfDate: string, precisions: ZonePrecisions, cfg: EngineConfig,
+): Map<string, ZoneOwners> {
+  const byZone = new Map<string, Map<string, number>>();
+  for (const r of references || []) {
+    if (String(r.date) >= asOfDate) continue;
+    const drv = r.driver_user_name ? String(r.driver_user_name).toUpperCase() : null;
+    if (!drv) continue;
+    for (const s of r.stops || []) {
+      const top = topOfZone(String(s.zone || ''), precisions);
+      if (!top) continue;
+      let m = byZone.get(top);
+      if (!m) { m = new Map(); byZone.set(top, m); }
+      m.set(drv, (m.get(drv) || 0) + 1);
+    }
+  }
+  const out = new Map<string, ZoneOwners>();
+  for (const [top, m] of byZone) {
+    const n = [...m.values()].reduce((a, b) => a + b, 0);
+    if (n < cfg.zone_owner_min_obs) continue;
+    const owners = new Set<string>();
+    for (const [drv, c] of m) if (c / n >= cfg.zone_owner_min_share) owners.add(drv);
+    if (owners.size) out.set(top, { owners, n });
+  }
+  return out;
 }
 
 export interface FleetTripChain {

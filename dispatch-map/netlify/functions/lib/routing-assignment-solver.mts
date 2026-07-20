@@ -31,7 +31,7 @@
 
 import type { EngineConfig } from './routing-engine-config.mts';
 import type { DriverEnvelope } from './routing-envelope.mts';
-import type { FleetTripChain } from './routing-envelope.mts';
+import type { FleetTripChain, ZoneOwners } from './routing-envelope.mts';
 import {
   DEPOT_ID, haversineMiles, buildTravelMatrix, travelMinutesForOrder,
   travelMinutesForMiles, seedFromKey, mulberry32, type EngineStop,
@@ -90,7 +90,23 @@ export interface AssignInput {
   cfg: EngineConfig;
   depot: { lat: number; lng: number };
   serviceMedianFor: (stop: AssignStop) => number; // as-of median service minutes
+  // Phase 2.3: learned territory owners per TOP zone (as-of < D). Consulted for
+  // FAR stops only — a Dalton stop outside Dalton's owner set is charged hard.
+  zoneOwners?: Map<string, ZoneOwners>;
   now?: () => number;
+}
+
+// TOP zone of a stop — the geohash prefix property makes it a plain slice.
+function topZoneOf(s: AssignStop, cfg: EngineConfig): string {
+  return String(s.zone || '').slice(0, cfg.top_precision);
+}
+// Is this driver in the stop's learned owner set? Returns null when the zone has
+// no learned owners (open territory) — callers treat that as "no signal".
+function ownedBy(s: AssignStop, driverUserName: string | null, input: AssignInput): boolean | null {
+  if (!input.zoneOwners || s.miles <= input.cfg.far_deadhead_mi) return null;
+  const zo = input.zoneOwners.get(topZoneOf(s, input.cfg));
+  if (!zo) return null;
+  return driverUserName != null && zo.owners.has(String(driverUserName).toUpperCase());
 }
 
 export interface AssignedTrip { stops: AssignStop[] }
@@ -234,6 +250,17 @@ export function shiftCost(
   const shiftReach = Math.max(0, ...trips.flatMap((t) => t.stops.map((s) => s.miles)));
   if (shiftReach > cfg.far_deadhead_mi) cost += cfg.w_far_deadhead * ((shiftReach - cfg.far_deadhead_mi) / 10);
 
+  // Phase 2.3 — learned territory ownership: a FAR stop whose top zone has
+  // established owners (mined from < D history) charges hard when this shift's
+  // driver isn't one of them. This is what keeps a Dalton stop on Dalton's
+  // drivers even when some other driver has habit or headroom pull; zones with
+  // no concentrated history (Atlanta) carry no owner set and cost nothing.
+  for (const t of trips) {
+    for (const s of t.stops) {
+      if (ownedBy(s, shift.driver.driver_user_name, input) === false) cost += cfg.w_zone_owner;
+    }
+  }
+
   return cost;
 }
 
@@ -326,7 +353,11 @@ export function solveAssignment(input: AssignInput): AssignResult {
       // Phase 2.2: for a FAR stop, favor a driver already committed to the far
       // field (consolidation) over one whose bag is near/empty (a fresh deep leg).
       const consolidation = isFar && (bag.get(d.driver_key) || []).some((x) => x.miles > cfg.far_deadhead_mi) ? 1 : 0;
-      const score = habit * 3 + affinity * 2 + headroom + consolidation + rand() * 1e-6; // deterministic jitter breaks ties
+      // Phase 2.3: learned territory owners dominate the seed for far stops —
+      // a Dalton stop starts on a Dalton owner, not on whoever has headroom.
+      const owned = ownedBy(s, d.driver_user_name, input);
+      const ownerBoost = owned === true ? 4 : owned === false ? -4 : 0;
+      const score = habit * 3 + affinity * 2 + headroom + consolidation + ownerBoost + rand() * 1e-6; // deterministic jitter breaks ties
       if (score > bestScore) { bestScore = score; best = d; }
     }
     if (!best) { unassigned.push(s); continue; }

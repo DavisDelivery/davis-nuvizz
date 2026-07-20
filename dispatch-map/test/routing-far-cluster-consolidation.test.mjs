@@ -11,7 +11,7 @@ import assert from 'node:assert/strict';
 import {
   solveAssignment, shiftCost, planCost,
 } from '../netlify/functions/lib/routing-assignment-solver.mts';
-import { fleetTripChain } from '../netlify/functions/lib/routing-envelope.mts';
+import { fleetTripChain, zoneOwnersAsOf } from '../netlify/functions/lib/routing-envelope.mts';
 import { engineConfigDefaults } from '../netlify/functions/lib/routing-engine-config.mts';
 
 const CFG = engineConfigDefaults({});
@@ -54,11 +54,11 @@ function scenario() {
   for (let i = 0; i < 10; i++) stops.push(farStop(`f${i}`, DRIVERS[i % 4], i));
   return { drivers, stops };
 }
-function solve(cfg) {
+function solve(cfg, zoneOwners) {
   const { drivers, stops } = scenario();
   return solveAssignment({
     date: '2026-07-16', stops, drivers, fleetChain: fleetTripChain([], '2026-07-16', cfg),
-    cfg, depot: DEPOT, serviceMedianFor: () => 12,
+    cfg, depot: DEPOT, serviceMedianFor: () => 12, zoneOwners,
   });
 }
 // how many distinct drivers the plan sends into the far cluster
@@ -107,6 +107,59 @@ test('far-zone cohesion charges each extra driver in the same far zone', () => {
   const withCohesion = planCost(split, mkInput({ ...CFG, w_zone_cohesion: 4 }), cache);
   const noCohesion = planCost(split, mkInput({ ...CFG, w_zone_cohesion: 0 }), cache);
   assert.ok(Math.abs((withCohesion - noCohesion) - 4) < 1e-9, `2 drivers in one far zone should cost +4 of cohesion (got ${withCohesion - noCohesion})`);
+});
+
+// ── Phase 2.3: learned territory ownership ───────────────────────────────────
+// The real case: Dalton/Chatsworth is 97% SCOTT_HART + VICTOR_FERNANDEZ +
+// CHE_ROBERTS in dispatch history, yet the engine handed its stops to drivers
+// with ZERO presence there. Ownership is mined from references (< D) and a far
+// stop outside its zone's owner set is charged w_zone_owner.
+
+function refRoute(date, driver, zone, stops = 10) {
+  return {
+    tenant: 'davis', date, load_key: `L_${driver}_${date}`, driver_name: driver, driver_user_name: driver,
+    truck_class: 'box_truck', warehouse: 'G6', stop_count: stops, source_seq: 'planned',
+    zone_seq: [zone], stops: Array.from({ length: stops }, (_, i) => ({ zone: `${zone}${i % 3}` })), updated_at: '',
+  };
+}
+const PREC = { zone_precision: 6, super_precision: 5, top_precision: 4 };
+
+test('zoneOwnersAsOf: mines owners by share, honors min_obs/min_share, never leaks >= D', () => {
+  const cfg = { ...CFG, zone_owner_min_obs: 25, zone_owner_min_share: 0.10 };
+  const refs = [
+    // FARZ zone: D1 60 stops, D2 30, D3 5 (5%: below the share floor)
+    ...['2026-07-01', '2026-07-02', '2026-07-03'].flatMap((d) => [
+      refRoute(d, 'D1', 'FARZ', 20), refRoute(d, 'D2', 'FARZ', 10),
+    ]),
+    refRoute('2026-07-05', 'D3', 'FARZ', 5),
+    // THINZ zone: only 10 stops total — below min_obs, no owner set forms
+    refRoute('2026-07-05', 'D4', 'THIN', 10),
+    // a HUGE future route by D4 into FARZ that must NOT leak into ownership
+    refRoute('2026-07-16', 'D4', 'FARZ', 500),
+  ];
+  const owners = zoneOwnersAsOf(refs, '2026-07-16', PREC, cfg);
+  const farz = owners.get('FARZ');
+  assert.ok(farz, 'FARZ has an owner set');
+  assert.deepEqual([...farz.owners].sort(), ['D1', 'D2'], 'owners are the drivers with >=10% share; D3 (5%) excluded');
+  assert.equal(farz.n, 95, 'only < D stops counted (the future 500 never leak)');
+  assert.ok(!owners.has('THIN'), 'a thin zone below min_obs stays open');
+});
+
+test('territory ownership: far stops land ONLY on the learned owners, even against habit', () => {
+  // habit points each far stop at a different driver (D1..D4), but the zone's
+  // learned owners are D1+D2 — the engine must keep all far stops on them.
+  const owners = new Map([['FARZ', { owners: new Set(['D1', 'D2']), n: 95 }]]);
+  const res = solve(CFG, owners);
+  const farDrv = new Set();
+  for (const sh of res.shifts) for (const t of sh.trips) for (const s of t.stops) if (s.miles > 45) farDrv.add(sh.driver.driver_key);
+  assert.ok([...farDrv].every((d) => d === 'D1' || d === 'D2'), `far stops must stay on the owners, got ${[...farDrv]}`);
+});
+
+test('open territory (no owner set) behaves exactly as before — Atlanta stays flexible', () => {
+  const withEmpty = solve(CFG, new Map());
+  const without = solve(CFG, undefined);
+  const sig = (r) => r.shifts.map((sh) => `${sh.driver.driver_key}:${sh.trips.map((t) => t.stops.map((s) => s.id).sort().join(',')).join('|')}`).sort().join(';');
+  assert.equal(sig(withEmpty), sig(without), 'an empty owner map must not change the plan');
 });
 
 test('near-depot assignments are untouched by the far terms (no regression on normal work)', () => {

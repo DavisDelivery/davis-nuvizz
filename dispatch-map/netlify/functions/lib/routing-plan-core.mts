@@ -33,7 +33,7 @@ import {
 } from './routing-service-times.mts';
 import { customerDriversPath, habitAsOf } from './routing-customer-drivers.mts';
 import {
-  driverEnvelope, driverZoneAffinity, fleetTripChain,
+  driverEnvelope, driverZoneAffinity, fleetTripChain, zoneOwnersAsOf,
 } from './routing-envelope.mts';
 import {
   solveAssignment, restrictionsBlockTractor, type AssignStop, type AssignDriver, type AssignedShift,
@@ -250,6 +250,8 @@ export async function runPlanForDate(
   const result = solveAssignment({
     date, stops: assignStops, drivers: activeDrivers, fleetChain: fleet, cfg,
     depot: { lat: DEPOT.lat, lng: DEPOT.lng }, serviceMedianFor,
+    // Phase 2.3: learned territory owners per top zone, strictly < D.
+    zoneOwners: zoneOwnersAsOf(inputs.referencesBefore, date, precisions, cfg),
   });
 
   // ── sequence engine trips + build engine co-load / driver maps ──

@@ -18,7 +18,7 @@
 
 import { getDoc, setDoc } from './firestore.mts';
 
-export const ENGINE_VERSION = '2.2.0';
+export const ENGINE_VERSION = '2.3.0';
 
 export const ENGINE_CONFIG_COLLECTION = 'routing_engine_config';
 
@@ -101,6 +101,16 @@ export interface EngineConfig {
   habit_far_discount: number; // FAR stops count habit at this fraction — geography should win out there (0..1)
   w_zone_cohesion: number;    // per EXTRA distinct driver serving the same far gh5 zone (reward one owner)
 
+  // ── Phase 2.3: learned territory ownership (Dalton belongs to its owners) ──
+  // A far TOP zone (gh4 area) whose reference history shows drivers carrying a
+  // real share becomes THEIRS: giving one of its stops to anyone else is charged
+  // hard. Areas served by everybody (Atlanta) never concentrate past the share
+  // floor, so no owner set forms and they stay open — the distinction is
+  // learned, never hardcoded.
+  w_zone_owner: number;        // per FAR stop assigned outside its zone's learned owner set
+  zone_owner_min_share: number; // a driver owns a zone at ≥ this share of its historical stops (0..1)
+  zone_owner_min_obs: number;   // a zone needs ≥ this many observed stops before ownership applies
+
   // ── Phase 2.1: THE ROUTING CALENDAR ─────────────────────────────────────────
   // Encoded operating fact, not lore: dispatch builds routes OVERNIGHT
   // (~20:00 ET → ~07:00 ET next morning; Sunday night builds Monday, Thursday
@@ -137,6 +147,7 @@ const NUMERIC_KEYS: Array<keyof EngineConfig> = [
   'reference_top_k', 'reference_half_life_days', 'same_driver_multiplier', 'reference_edge_floor',
   'w_habit', 'habit_shrink_n',
   'far_deadhead_mi', 'w_far_deadhead', 'habit_far_discount', 'w_zone_cohesion',
+  'w_zone_owner', 'zone_owner_min_share', 'zone_owner_min_obs',
 ];
 
 export const ENGINE_CONFIG_BOUNDS: Record<Exclude<keyof EngineConfig, 'routing_calendar'>, [number, number]> = {
@@ -187,6 +198,9 @@ export const ENGINE_CONFIG_BOUNDS: Record<Exclude<keyof EngineConfig, 'routing_c
   w_far_deadhead: [0, 1000],
   habit_far_discount: [0, 1],
   w_zone_cohesion: [0, 1000],
+  w_zone_owner: [0, 1000],
+  zone_owner_min_share: [0.01, 1],
+  zone_owner_min_obs: [1, 10_000],
 };
 
 // NOTE: routing_calendar is NOT in ENGINE_CONFIG_BOUNDS — it is structured, not
@@ -261,6 +275,15 @@ export function engineConfigDefaults(env: Record<string, string | undefined> = p
     w_far_deadhead: num('W_FAR_DEADHEAD', 6),
     habit_far_discount: num('HABIT_FAR_DISCOUNT', 0.35),
     w_zone_cohesion: num('W_ZONE_COHESION', 4),
+    // Phase 2.3 — territory ownership. w_zone_owner=10 per misplaced far stop is
+    // the strongest per-stop vote in the objective: it must beat the sum of habit
+    // (≤3) + headroom pulls so a Dalton stop can never profitably land outside
+    // Dalton's learned owners. min_share=0.10 admits real co-owners (Victor at
+    // 28%, Che at 15%) while excluding one-off fill-ins; min_obs=25 stops keeps
+    // noise zones from locking in.
+    w_zone_owner: num('W_ZONE_OWNER', 10),
+    zone_owner_min_share: num('ZONE_OWNER_MIN_SHARE', 0.10),
+    zone_owner_min_obs: num('ZONE_OWNER_MIN_OBS', 25),
     routing_calendar: routingCalendarDefaults(env),
   };
 }
