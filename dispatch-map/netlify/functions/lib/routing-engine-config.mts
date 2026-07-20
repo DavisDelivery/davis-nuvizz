@@ -18,7 +18,7 @@
 
 import { getDoc, setDoc } from './firestore.mts';
 
-export const ENGINE_VERSION = '2.3.1';
+export const ENGINE_VERSION = '2.4.0';
 
 export const ENGINE_CONFIG_COLLECTION = 'routing_engine_config';
 
@@ -274,7 +274,10 @@ export function engineConfigDefaults(env: Record<string, string | undefined> = p
     far_deadhead_mi: num('FAR_DEADHEAD_MI', 45),
     w_far_deadhead: num('W_FAR_DEADHEAD', 6),
     habit_far_discount: num('HABIT_FAR_DISCOUNT', 0.35),
-    w_zone_cohesion: num('W_ZONE_COHESION', 4),
+    // 2.4.0: raised 4→8 and distance-scaled in planCost (× maxMiles/threshold):
+    // a straggler truck 60 mi out now pays ~11, decisively losing to the ~12-15
+    // cost of folding its stop onto the zone's owner — one-stop far trucks die.
+    w_zone_cohesion: num('W_ZONE_COHESION', 8),
     // Phase 2.3 — territory ownership. w_zone_owner=10 per misplaced far stop is
     // the strongest per-stop vote in the objective: it must beat the sum of habit
     // (≤3) + headroom pulls so a Dalton stop can never profitably land outside

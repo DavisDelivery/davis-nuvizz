@@ -272,23 +272,29 @@ export function planCost(shifts: AssignedShift[], input: AssignInput, matrixCach
   }
   cost += input.cfg.w_compactness * (totalTravel / 60); // hours of total driving
 
-  // Phase 2.2 — far-zone cohesion: reward ONE driver owning a contiguous FAR gh5
-  // cluster. Each EXTRA distinct driver serving the same far zone is charged, so
-  // the plan stops splitting a distant corner (that dispatch covers with 1 truck)
-  // across several. Cross-shift, so it lives here in planCost, not shiftCost.
-  const farZoneDrivers = new Map<string, Set<string>>();
+  // Phase 2.2/2.4 — far-zone cohesion: reward ONE driver owning a contiguous FAR
+  // gh5 cluster. Each EXTRA distinct driver serving the same far zone is charged,
+  // and the charge GROWS with how far out the zone is (Chad's rule: the ends of
+  // the roads get the fewest trucks possible — a second truck 60 mi out must
+  // cost more than a second truck 46 mi out, or a one-stop straggler ties the
+  // trade and survives). Cross-shift, so it lives in planCost, not shiftCost.
+  const farZones = new Map<string, { drivers: Set<string>; maxMiles: number }>();
   for (const sh of shifts) {
     for (const t of sh.trips) {
       for (const s of t.stops) {
         if (s.miles <= input.cfg.far_deadhead_mi) continue;
-        let set = farZoneDrivers.get(s.gh5);
-        if (!set) { set = new Set(); farZoneDrivers.set(s.gh5, set); }
-        set.add(sh.driver.driver_key);
+        let e = farZones.get(s.gh5);
+        if (!e) { e = { drivers: new Set(), maxMiles: 0 }; farZones.set(s.gh5, e); }
+        e.drivers.add(sh.driver.driver_key);
+        if (s.miles > e.maxMiles) e.maxMiles = s.miles;
       }
     }
   }
   let cohesion = 0;
-  for (const set of farZoneDrivers.values()) cohesion += Math.max(0, set.size - 1);
+  for (const e of farZones.values()) {
+    const distanceFactor = Math.max(1, e.maxMiles / input.cfg.far_deadhead_mi);
+    cohesion += Math.max(0, e.drivers.size - 1) * distanceFactor;
+  }
   cost += input.cfg.w_zone_cohesion * cohesion;
 
   return cost;
