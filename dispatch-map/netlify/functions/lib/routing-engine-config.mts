@@ -18,7 +18,7 @@
 
 import { getDoc, setDoc } from './firestore.mts';
 
-export const ENGINE_VERSION = '2.4.0';
+export const ENGINE_VERSION = '2.4.1';
 
 export const ENGINE_CONFIG_COLLECTION = 'routing_engine_config';
 
