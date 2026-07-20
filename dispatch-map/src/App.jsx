@@ -59,7 +59,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.50.61';
+const APP_VERSION = '0.50.62';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -104,6 +104,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.50.62', 'ENGINE TAB \u2014 live tuning, no more deploys. New \u2699 Tuning button on the Engine tab opens the engine\'s live settings: the far-route/territory knobs (far threshold, extra-truck-in-a-far-area cost, territory ownership, usual-driver pull out far, ownership floors) each with a plain-English explanation, plus every other engine setting under Advanced. Edits save to the cloud, are clamped to safe ranges (a bad value can\'t stick), show a \u201ccustomized\u201d badge with one-tap reset to default, and take effect on tonight\'s run automatically. A \u201cRe-score history\u201d button re-runs all past days with the current settings in the background (zero NuVizz) so you can see the effect on the charts in minutes instead of waiting for nights to accumulate.'],
   ['0.50.61', 'ENGINE (shadow \u00b7 Assignment) \u2014 Chad\'s rule, encoded: THE ENDS OF THE ROADS GET THE FEWEST TRUCKS POSSIBLE. The last stragglers were single-stop trucks tagging along to the far corners (one extra truck carrying ONE Dalton-area stop that Scott should have taken) \u2014 they survived because the flat penalty for a spare far truck roughly tied with the cost of folding its stop onto the owner. The penalty for an extra truck in a far zone now GROWS with how far out the zone is (a second truck 60 miles out costs more than one 46 miles out, and 90 miles out costs more still), and its base weight doubled \u2014 so the trade always resolves toward fewer trucks at the edge. Verified: the one-stop straggler case now folds onto the zone owner even when it pushes the owner\'s load past their usual single-trip weight. Engine 2.4.0; full history re-scored. Shadow only, zero NuVizz.'],
   ['0.50.60', 'ENGINE (shadow · Assignment) — the territory rules now actually fire. The v0.50.59 re-score came back suspiciously unchanged in the NW corner, and honest digging found why: the engine classified a stop as "far" using NuVizz\'s stopDistance field, which turns out to be the distance from the PREVIOUS stop — a Dalton stop is 3 miles from the previous Dalton stop, not 60 from Buford — so nearly every far stop failed the "is this far?" test and the territory-ownership, far-habit-discount, and zone-cohesion rules silently skipped exactly the stops they were built for. The engine now computes true distance-from-depot itself for every stop (with a test pinning it so this can never quietly regress). Engine 2.3.1; full history re-scored with the Dalton/Chatsworth ownership rules genuinely active for the first time.'],
   ['0.50.59', 'ENGINE (shadow · Assignment) — the engine now KNOWS whose territory Dalton is. v0.50.58 taught it that extra trucks to a far corner are expensive; this release teaches it the thing Chad actually said: "Scott and Victor handle Dalton and Chatsworth almost exclusively — it should never be split 4 ways." Verified in the history first (Scott 54% + Victor 28% + Che 15% = 97% of every NW-corner stop ever), then made it a learned rule: the engine mines each far area\'s OWNERS from route history (any driver carrying ≥10% of that area\'s stops, min 25 observed) and giving one of its stops to anyone else now costs more than any other single pull in the objective. Areas served by everybody (metro Atlanta) never concentrate enough to form an owner set, so they stay flexible — the Dalton-vs-Atlanta distinction is learned from data, not hardcoded. Engine 2.3.0; the whole history was re-scored. Shadow only, zero NuVizz, all thresholds live-tunable.'],
@@ -15917,6 +15918,136 @@ function EngineStatTile({ label, value, hint }) {
   );
 }
 
+// Live engine tuning — reads/writes routing_engine_config through the
+// routing-engine-tuning function (clamped server-side by the same pure helpers
+// the solver uses, so a bad value can never persist). Edits take effect on the
+// NEXT nightly run automatically; "Re-score history" force-replays the scored
+// days with the current settings (Firestore-only, zero NuVizz).
+const ENGINE_TUNING_FIELDS = [
+  ['far_deadhead_mi', 'Far threshold (miles from Buford)', 'Stops beyond this distance count as "far" — every rule below applies only out there.'],
+  ['w_zone_cohesion', 'Extra truck in a far area', 'Charged per ADDITIONAL truck serving one far area, and it grows with distance — the ends of the roads get the fewest trucks possible. Raise to consolidate harder.'],
+  ['w_zone_owner', 'Territory ownership', 'Cost of giving a far stop to a driver who does not own that area (owners are learned from route history — e.g. Dalton = Scott + Victor).'],
+  ['w_far_deadhead', 'Reaching-out penalty', 'One-time charge for a truck reaching past the far threshold, growing with depth — makes a second truck out far expensive while more stops on the first are ~free.'],
+  ['habit_far_discount', 'Usual-driver pull on far stops (0–1)', 'How much a customer’s usual driver counts OUT FAR. 1 = full pull (scatters far loops), lower lets geography win. Near-Buford stops always keep the full pull.'],
+  ['zone_owner_min_share', 'Ownership share floor (0–1)', 'A driver owns an area once they carry at least this share of its historical stops.'],
+  ['zone_owner_min_obs', 'Ownership history minimum', 'An area needs this many observed stops before ownership locks in — keeps thin data from claiming territory.'],
+];
+function EngineTuningPanel({ onClose }) {
+  const [data, setData] = useState(null);
+  const [err, setErr] = useState('');
+  const [edits, setEdits] = useState({});     // key → string (input value)
+  const [resets, setResets] = useState([]);   // keys being reset to default
+  const [saving, setSaving] = useState(false);
+  const [note, setNote] = useState('');
+
+  const load = () => fetchJsonWithRetry('/.netlify/functions/routing-engine-tuning')
+    .then((d) => { if (!d?.ok) throw new Error(d?.error || 'tuning load failed'); setData(d); setEdits({}); setResets([]); })
+    .catch((e) => setErr(String(e?.message || e)));
+  useEffect(() => { load(); }, []);
+
+  const numericKeys = data ? Object.keys(data.bounds || {}) : [];
+  const advancedKeys = numericKeys.filter((k) => !ENGINE_TUNING_FIELDS.some(([key]) => key === k)).sort();
+  const effVal = (k) => (resets.includes(k) ? data.defaults[k] : (edits[k] !== undefined ? edits[k] : data.config[k]));
+  const isOverridden = (k) => data.stored && data.stored[k] !== undefined && !resets.includes(k);
+  const dirty = Object.keys(edits).length > 0 || resets.length > 0;
+
+  const save = async () => {
+    setSaving(true); setErr(''); setNote('');
+    try {
+      const body = { updatedBy: 'engine-tab', reset: resets };
+      for (const [k, v] of Object.entries(edits)) { const n = Number(v); if (Number.isFinite(n)) body[k] = n; }
+      const resp = await fetch('/.netlify/functions/routing-engine-tuning', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+      });
+      const d = await resp.json();
+      if (!d?.ok) throw new Error(d?.error || 'save failed');
+      setData(d); setEdits({}); setResets([]);
+      setNote('Saved. Tonight’s run uses these automatically — tap “Re-score history” to re-run the past days with them now.');
+    } catch (e) { setErr(String(e?.message || e)); }
+    setSaving(false);
+  };
+
+  const rescore = async () => {
+    if (!window.confirm('Re-score all scored history with the CURRENT settings? Runs in the background (~15 min, zero NuVizz). The charts refresh as days finish; if the newest days lag, tap again.')) return;
+    setNote('');
+    try {
+      await fetch('/.netlify/functions/routing-engine-plan-replay-background?force=1', { method: 'POST' });
+      setNote('Re-score started in the background. Give it ~15 minutes, then refresh the Assignment view.');
+    } catch (e) { setErr(String(e?.message || e)); }
+  };
+
+  const row = (k, label, hint) => {
+    const [lo, hi] = data.bounds[k] || [null, null];
+    return (
+      <div key={k} className="py-1.5 border-b border-slate-100 last:border-b-0">
+        <div className="flex items-center justify-between gap-2">
+          <div className="min-w-0">
+            <span className="text-[12px] font-semibold text-slate-700">{label || k}</span>
+            {isOverridden(k) && <span className="ml-1.5 text-[9px] font-semibold uppercase tracking-wide bg-amber-100 text-amber-700 px-1 py-0.5 rounded align-middle">customized</span>}
+          </div>
+          <div className="flex items-center gap-1 shrink-0">
+            <input
+              type="number" step="any" min={lo ?? undefined} max={hi ?? undefined}
+              value={effVal(k)}
+              onChange={(e) => { setResets((r) => r.filter((x) => x !== k)); setEdits((m) => ({ ...m, [k]: e.target.value })); }}
+              className="w-24 text-right text-[12px] border border-slate-300 rounded px-1.5 py-0.5 tabular-nums focus:outline-none focus:ring-2 focus:ring-blue-200"
+              aria-label={label || k}
+            />
+            {(isOverridden(k) || edits[k] !== undefined) && (
+              <button onClick={() => { setEdits((m) => { const n = { ...m }; delete n[k]; return n; }); if (data.stored[k] !== undefined) setResets((r) => (r.includes(k) ? r : [...r, k])); }}
+                className="text-[10px] text-slate-400 hover:text-slate-600" title={`Back to the default (${data.defaults[k]})`}>↺</button>
+            )}
+          </div>
+        </div>
+        {hint && <div className="text-[10px] text-slate-500 pr-8">{hint} <span className="text-slate-400">default {data.defaults[k]}{lo != null ? ` · range ${lo}–${hi}` : ''}</span></div>}
+      </div>
+    );
+  };
+
+  return (
+    <div className="fixed inset-0 z-[70] bg-black/40 flex items-start justify-center p-3 overflow-y-auto" onClick={onClose}>
+      <div className="bg-white rounded-xl shadow-xl w-full max-w-xl mt-6 mb-10" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between px-4 pt-3 pb-2 border-b">
+          <div>
+            <div className="font-bold text-slate-800 text-sm">Engine tuning <span className="text-[10px] uppercase tracking-wide bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded ml-1">live</span></div>
+            <div className="text-[10px] text-slate-500">Saved values apply from tonight’s run — no deploy. Everything is clamped to a safe range; “customized” marks values changed from the default.</div>
+          </div>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-600 text-lg leading-none px-1" aria-label="Close">×</button>
+        </div>
+        <div className="px-4 py-2 max-h-[60vh] overflow-y-auto">
+          {err && <div className="text-xs text-red-600 border border-red-200 bg-red-50 rounded p-2 mb-2">⚠ {err}</div>}
+          {!data && !err && <div className="text-xs text-slate-500 py-4">Loading current settings…</div>}
+          {data && (
+            <>
+              {!data.persistent && <div className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded p-2 mb-2">Preview environment — edits here won’t persist.</div>}
+              <div className="text-[10px] uppercase tracking-wide text-slate-500 pt-1">Far routes &amp; territory</div>
+              {ENGINE_TUNING_FIELDS.map(([k, label, hint]) => row(k, label, hint))}
+              <details className="mt-2">
+                <summary className="text-[11px] font-semibold text-slate-500 cursor-pointer select-none">Advanced ({advancedKeys.length} more settings)</summary>
+                {advancedKeys.map((k) => row(k, k, null))}
+              </details>
+              {data.stored?.updated_at && (
+                <div className="text-[10px] text-slate-400 pt-2">Last saved {data.stored.updated_at.slice(0, 16).replace('T', ' ')} by {data.stored.updated_by || '—'}</div>
+              )}
+            </>
+          )}
+        </div>
+        <div className="flex items-center justify-between gap-2 px-4 py-3 border-t flex-wrap">
+          <button onClick={rescore} disabled={!data}
+            className="text-[11px] font-semibold py-1.5 px-2.5 rounded border border-slate-300 text-slate-600 bg-white hover:bg-slate-50"
+            title="Force-replay all scored days with the current settings (background, zero NuVizz)">↻ Re-score history</button>
+          <div className="flex items-center gap-2">
+            {note && <span className="text-[10px] text-emerald-700 max-w-[220px]">{note}</span>}
+            <button onClick={save} disabled={!dirty || saving}
+              className={`text-[11px] font-semibold py-1.5 px-3 rounded text-white ${dirty && !saving ? '' : 'opacity-40'}`}
+              style={{ background: BRAND }}>{saving ? 'Saving…' : 'Save'}</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function EngineScreen() {
   const { google, error: mapsError } = useGoogleMaps();
   const [daily, setDaily] = useState(null);
@@ -15928,6 +16059,7 @@ function EngineScreen() {
   const [selectedKey, setSelectedKey] = useState(null);
   const [mapMode, setMapMode] = useState('diff'); // 'dispatch' | 'engine' | 'diff'
   const [engineView, setEngineView] = useState('sequencing'); // 'sequencing' | 'assignment'
+  const [tuningOpen, setTuningOpen] = useState(false);
 
   const days = daily?.days || [];
   const latestDate = days.length ? days[days.length - 1].date : '';
@@ -16142,9 +16274,16 @@ function EngineScreen() {
                 )}
               </>
             )}
+            <button
+              onClick={() => setTuningOpen(true)}
+              className="text-[10px] font-semibold py-1 px-2 rounded border border-slate-300 text-slate-600 bg-white hover:bg-slate-50 whitespace-nowrap"
+              title="Tune the engine's live settings — takes effect on the next nightly run, no deploy"
+            >⚙ Tuning</button>
             <span className="text-[10px] text-slate-500 whitespace-nowrap">Engine v{engineVersion} · App v{APP_VERSION}</span>
           </div>
         </div>
+
+        {tuningOpen && <EngineTuningPanel onClose={() => setTuningOpen(false)} />}
 
         {engineView === 'assignment' && <EngineAssignmentView google={google} mapsError={mapsError} />}
         {engineView === 'sequencing' && (<div className="space-y-3">
