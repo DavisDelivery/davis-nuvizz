@@ -377,6 +377,18 @@ export function effectiveEngineConfig(
   return { ...engineConfigDefaults(env), ...clampEngineConfig(stored) };
 }
 
+// PURE: merge a live edit into the stored overrides — clamped updates overlay
+// the prior doc, reset keys drop back to the default (removed from the doc),
+// and unknown/NaN keys never persist. This is the engine-tuning endpoint's
+// write path; the solver re-clamps on read so nothing bad can stick either way.
+export function mergeEngineConfigUpdate(
+  prior: any, updates: any, resets: string[] = [],
+): Partial<EngineConfig> {
+  const base: any = { ...clampEngineConfig(prior) }; // includes routing_calendar when present
+  for (const key of resets || []) delete base[String(key)];
+  return { ...base, ...clampEngineConfig(updates) };
+}
+
 // I/O: read the effective config for a tenant (missing doc → pure defaults).
 export async function loadEngineConfig(tenant: string): Promise<EngineConfig> {
   let stored: any = null;
