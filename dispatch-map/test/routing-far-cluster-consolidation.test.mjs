@@ -7,6 +7,7 @@
 // a habit discount for far stops, and a far-zone cohesion penalty.
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 
 import {
   solveAssignment, shiftCost, planCost,
@@ -160,6 +161,20 @@ test('open territory (no owner set) behaves exactly as before — Atlanta stays 
   const without = solve(CFG, undefined);
   const sig = (r) => r.shifts.map((sh) => `${sh.driver.driver_key}:${sh.trips.map((t) => t.stops.map((s) => s.id).sort().join(',')).join('|')}`).sort().join(';');
   assert.equal(sig(withEmpty), sig(without), 'an empty owner map must not change the plan');
+});
+
+// Regression (found in production, engine 2.3.0 no-op): AssignStop.miles was
+// seeded from NuVizz stopDistance — the LEG distance from the previous stop, a
+// few miles even in Dalton — so `miles > far_deadhead_mi` was false for nearly
+// every far-cluster stop and EVERY per-stop far test (territory ownership, the
+// far-habit discount, zone cohesion) silently no-opped. The 2.3.0 replay came
+// back byte-identical in the NW corner because of this. miles must be the
+// computed DEPOT distance, never stopDistance.
+test('plan-core computes miles as depot distance, never from NuVizz stopDistance', () => {
+  const src = readFileSync(new URL('../netlify/functions/lib/routing-plan-core.mts', import.meta.url), 'utf8');
+  const assignBlock = src.slice(src.indexOf('const assignStops'), src.indexOf('const fleet ='));
+  assert.doesNotMatch(assignBlock, /\bs\.stopDistance\b/, 'assign-stop miles must not read s.stopDistance (a leg distance)');
+  assert.match(assignBlock, /miles:\s*haversineMiles\(DEPOT\.lat,\s*DEPOT\.lng,\s*lat,\s*lng\)/, 'miles is the computed depot distance');
 });
 
 test('near-depot assignments are untouched by the far terms (no regression on normal work)', () => {

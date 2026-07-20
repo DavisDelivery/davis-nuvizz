@@ -39,7 +39,7 @@ import {
   solveAssignment, restrictionsBlockTractor, type AssignStop, type AssignDriver, type AssignedShift,
 } from './routing-assignment-solver.mts';
 import {
-  DEPOT_ID, buildTravelMatrix, solveRoute, travelMinutesForOrder, type EngineStop,
+  DEPOT_ID, buildTravelMatrix, solveRoute, travelMinutesForOrder, haversineMiles, type EngineStop,
 } from './routing-engine-solver.mts';
 import { scoreRoute, toScoreList } from './score.mts';
 
@@ -218,7 +218,6 @@ export async function runPlanForDate(
     const id = stopId(s);
     const lat = Number(s.lat), lng = Number(s.lng);
     const mk = s.customerMatchKey ?? null;
-    const sd = finiteNum(s.stopDistance);
     return {
       id, lat, lng,
       zone: zoneId(lat, lng, precisions),
@@ -227,7 +226,13 @@ export async function runPlanForDate(
       weight: finiteNum(s.weight) || 0,
       matchKey: mk,
       strict: String(s.timeConstraint || '').toUpperCase() === 'STRICT',
-      miles: sd != null ? sd : Math.hypot(lat - DEPOT.lat, lng - DEPOT.lng) * 69, // rough fallback
+      // DEPOT distance, computed — NEVER NuVizz stopDistance. That field is the
+      // LEG distance from the previous stop (a Dalton stop is 3 mi from the
+      // previous Dalton stop, not 60 from Buford), which silently disarmed every
+      // per-stop far test: territory ownership, the far-habit discount, and
+      // zone cohesion all no-opped on exactly the far clusters they were built
+      // for. The far/territory terms need distance-from-depot, unambiguously.
+      miles: haversineMiles(DEPOT.lat, DEPOT.lng, lat, lng),
       blocksTractor: mk ? restrictionsBlockTractor(inputs.notesRestrictions.get(mk) || []) : false,
       // Phase 2.1: the customer's habitual driver, as-of < D (leakage-safe reader).
       habit: mk ? habitAsOf(inputs.habitDocByKey.get(mk) ?? null, date) : null,
