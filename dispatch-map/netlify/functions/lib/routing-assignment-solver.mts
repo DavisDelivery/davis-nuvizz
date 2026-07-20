@@ -272,19 +272,23 @@ export function planCost(shifts: AssignedShift[], input: AssignInput, matrixCach
   }
   cost += input.cfg.w_compactness * (totalTravel / 60); // hours of total driving
 
-  // Phase 2.2/2.4 — far-zone cohesion: reward ONE driver owning a contiguous FAR
-  // gh5 cluster. Each EXTRA distinct driver serving the same far zone is charged,
-  // and the charge GROWS with how far out the zone is (Chad's rule: the ends of
-  // the roads get the fewest trucks possible — a second truck 60 mi out must
-  // cost more than a second truck 46 mi out, or a one-stop straggler ties the
-  // trade and survives). Cross-shift, so it lives in planCost, not shiftCost.
+  // Phase 2.2/2.4 — far-AREA cohesion: reward ONE driver owning a contiguous FAR
+  // area. Each EXTRA distinct driver serving the same far area is charged, and
+  // the charge GROWS with how far out the area is (Chad's rule: the ends of the
+  // roads get the fewest trucks possible — a second truck 60 mi out must cost
+  // more than one 46 mi out, or a one-stop straggler ties the trade and
+  // survives). Keyed on the TOP zone (gh4, the same "Dalton"-sized grain the
+  // ownership rules use) — NOT gh5: at gh5 (~5 km) an isolated far stop sits
+  // alone in its own cell, reads as "one driver, perfectly cohesive", and the
+  // straggler truck carrying it never gets charged. Cross-shift → planCost.
   const farZones = new Map<string, { drivers: Set<string>; maxMiles: number }>();
   for (const sh of shifts) {
     for (const t of sh.trips) {
       for (const s of t.stops) {
         if (s.miles <= input.cfg.far_deadhead_mi) continue;
-        let e = farZones.get(s.gh5);
-        if (!e) { e = { drivers: new Set(), maxMiles: 0 }; farZones.set(s.gh5, e); }
+        const area = String(s.zone || '').slice(0, input.cfg.top_precision);
+        let e = farZones.get(area);
+        if (!e) { e = { drivers: new Set(), maxMiles: 0 }; farZones.set(area, e); }
         e.drivers.add(sh.driver.driver_key);
         if (s.miles > e.maxMiles) e.maxMiles = s.miles;
       }

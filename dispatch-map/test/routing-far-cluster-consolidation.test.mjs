@@ -197,6 +197,31 @@ test('open territory (no owner set) behaves exactly as before — Atlanta stays 
   assert.equal(sig(withEmpty), sig(without), 'an empty owner map must not change the plan');
 });
 
+test('an ISOLATED far stop (own gh5 cell, same area) still folds — cohesion is area-level', () => {
+  // The production NW straggler that survived 2.4.0: its stop sat alone in its
+  // own gh5 cell, so gh5-keyed cohesion saw "one driver in this cell" and never
+  // charged the extra truck. Cohesion now keys on the TOP zone (area), so a
+  // lone stop 3 cells over from the owner's loop still counts as the same far
+  // area and the straggler truck pays for entering it.
+  const owners = new Map([['FARZ', { owners: new Set(['OWN']), n: 300 }]]);
+  const mkEnv = (p85, day) => ({ driver_key: '', source: 'driver', truck_class: 'box_truck', observed_days: 20,
+    per_trip: { stops_median: 10, stops_p85: 14, pallets_median: 8, pallets_p85: 12, weight_median: 5000, weight_p85: p85, weight_max: p85 },
+    trips_per_day_propensity: 0, start_minute_typical: 240, shift_hours_typical: 10, day_weight_p85: day });
+  const mkDriver = (key, p85, day) => ({ driver_key: key, driver_user_name: key, driver_name: key, truck_class: 'box_truck', start_minute: 240, envelope: { ...mkEnv(p85, day), driver_key: key }, affinity: new Map() });
+  const drivers = [mkDriver('OWN', 6000, 12000), mkDriver('OTHER', 9000, 20000), mkDriver('N2', 9000, 20000)];
+  const stops = [
+    // the owner's loop: all in gh5 'FARZA'
+    ...Array.from({ length: 5 }, (_, i) => ({ id: `f${i}`, lat: 34.60, lng: -84.95, zone: 'FARZA', gh5: 'FARZA', pallets: 2, weight: 1200, matchKey: `f${i}`, strict: false, miles: 62, blocksTractor: false, habit: { topDriver: 'OWN', topShare: 0.9, n: 30 } })),
+    // the isolated stop: DIFFERENT gh5 ('FARZQ'), same top-4 area ('FARZ'), habit pulls elsewhere
+    { id: 'isolated', lat: 34.47, lng: -84.70, zone: 'FARZQ', gh5: 'FARZQ', pallets: 2, weight: 1200, matchKey: 'isolated', strict: false, miles: 55, blocksTractor: false, habit: { topDriver: 'OTHER', topShare: 0.9, n: 30 } },
+    ...Array.from({ length: 6 }, (_, i) => ({ id: `n${i}`, lat: 34.16, lng: -83.98, zone: `NEARZ${i}`, gh5: 'NEAR', pallets: 2, weight: 1000, matchKey: `n${i}`, strict: false, miles: 9, blocksTractor: false, habit: null })),
+  ];
+  const res = solveAssignment({ date: '2026-07-16', stops, drivers, fleetChain: fleetTripChain([], '2026-07-16', CFG), cfg: CFG, depot: DEPOT, serviceMedianFor: () => 12, zoneOwners: owners });
+  const farDrv = new Set();
+  for (const sh of res.shifts) for (const t of sh.trips) for (const s of t.stops) if (s.miles > 45) farDrv.add(sh.driver.driver_key);
+  assert.deepEqual([...farDrv], ['OWN'], `the isolated stop must fold onto the area owner, got ${[...farDrv]}`);
+});
+
 // Regression (found in production, engine 2.3.0 no-op): AssignStop.miles was
 // seeded from NuVizz stopDistance — the LEG distance from the previous stop, a
 // few miles even in Dalton — so `miles > far_deadhead_mi` was false for nearly
