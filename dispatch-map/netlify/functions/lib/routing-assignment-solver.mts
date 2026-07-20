@@ -191,7 +191,12 @@ export function shiftCost(
     for (const s of t.stops) {
       if (!s.habit?.topDriver) continue;
       if (shift.driver.driver_user_name && s.habit.topDriver === String(shift.driver.driver_user_name).toUpperCase()) continue;
-      cost += cfg.w_habit * habitStrength(s.habit, cfg.habit_shrink_n);
+      // Phase 2.2: FAR stops discount the habit pull. Out at the edge, geography
+      // and consolidation must outweigh "the usual driver" — honoring per-customer
+      // habit for a distant loop is exactly what scattered it across every driver
+      // who happens to "own" one of those customers.
+      const habitScale = s.miles > cfg.far_deadhead_mi ? cfg.habit_far_discount : 1;
+      cost += cfg.w_habit * habitStrength(s.habit, cfg.habit_shrink_n) * habitScale;
     }
 
     const travel = tripTravelMin(t, depot, cfg, matrixCache);
@@ -220,6 +225,15 @@ export function shiftCost(
   const shiftBudgetMin = (env.shift_hours_typical ?? cfg.typical_shift_hours) * 60;
   if (shiftActiveMin > shiftBudgetMin) cost += cfg.w_shift_overflow * ((shiftActiveMin - shiftBudgetMin) / 60);
 
+  // Phase 2.2 — far-deadhead reach. A driver reaching past far_deadhead_mi pays a
+  // per-shift charge for the deep leg, charged ONCE on their farthest stop. So
+  // once a driver is already out at the edge, adding MORE far stops to them is
+  // ~free, while sending a fresh near-depot truck out there pays a NEW charge —
+  // which is precisely what makes a distant loop coalesce onto one truck instead
+  // of dragging several trucks 60 mi out for a few stops each.
+  const shiftReach = Math.max(0, ...trips.flatMap((t) => t.stops.map((s) => s.miles)));
+  if (shiftReach > cfg.far_deadhead_mi) cost += cfg.w_far_deadhead * ((shiftReach - cfg.far_deadhead_mi) / 10);
+
   return cost;
 }
 
@@ -230,6 +244,26 @@ export function planCost(shifts: AssignedShift[], input: AssignInput, matrixCach
     for (const t of sh.trips) totalTravel += tripTravelMin(t, input.depot, input.cfg, matrixCache);
   }
   cost += input.cfg.w_compactness * (totalTravel / 60); // hours of total driving
+
+  // Phase 2.2 — far-zone cohesion: reward ONE driver owning a contiguous FAR gh5
+  // cluster. Each EXTRA distinct driver serving the same far zone is charged, so
+  // the plan stops splitting a distant corner (that dispatch covers with 1 truck)
+  // across several. Cross-shift, so it lives here in planCost, not shiftCost.
+  const farZoneDrivers = new Map<string, Set<string>>();
+  for (const sh of shifts) {
+    for (const t of sh.trips) {
+      for (const s of t.stops) {
+        if (s.miles <= input.cfg.far_deadhead_mi) continue;
+        let set = farZoneDrivers.get(s.gh5);
+        if (!set) { set = new Set(); farZoneDrivers.set(s.gh5, set); }
+        set.add(sh.driver.driver_key);
+      }
+    }
+  }
+  let cohesion = 0;
+  for (const set of farZoneDrivers.values()) cohesion += Math.max(0, set.size - 1);
+  cost += input.cfg.w_zone_cohesion * cohesion;
+
   return cost;
 }
 
@@ -278,14 +312,21 @@ export function solveAssignment(input: AssignInput): AssignResult {
     for (const d of drivers) {
       if (!driverCanServe(d, s)) continue;
       const affinity = d.affinity.get(s.gh5) || 0;
+      const isFar = s.miles > cfg.far_deadhead_mi;
       // Phase 2.1: seed agrees with the search — the customer's habitual driver
-      // gets a head start proportional to the habit strength.
-      const habit = s.habit?.topDriver && d.driver_user_name &&
+      // gets a head start proportional to the habit strength. Phase 2.2: that
+      // head start is discounted for FAR stops so the seed doesn't scatter a
+      // distant loop across each customer's usual driver before the search runs.
+      const habitRaw = s.habit?.topDriver && d.driver_user_name &&
         s.habit.topDriver === String(d.driver_user_name).toUpperCase()
         ? habitStrength(s.habit, cfg.habit_shrink_n) : 0;
+      const habit = isFar ? habitRaw * cfg.habit_far_discount : habitRaw;
       const cap = d.envelope.day_weight_p85 ?? d.envelope.per_trip.weight_p85 ?? Infinity;
       const headroom = cap === Infinity ? 1 : Math.max(0, (cap - bagWeight(d.driver_key)) / (cap || 1));
-      const score = habit * 3 + affinity * 2 + headroom + rand() * 1e-6; // deterministic jitter breaks ties
+      // Phase 2.2: for a FAR stop, favor a driver already committed to the far
+      // field (consolidation) over one whose bag is near/empty (a fresh deep leg).
+      const consolidation = isFar && (bag.get(d.driver_key) || []).some((x) => x.miles > cfg.far_deadhead_mi) ? 1 : 0;
+      const score = habit * 3 + affinity * 2 + headroom + consolidation + rand() * 1e-6; // deterministic jitter breaks ties
       if (score > bestScore) { bestScore = score; best = d; }
     }
     if (!best) { unassigned.push(s); continue; }

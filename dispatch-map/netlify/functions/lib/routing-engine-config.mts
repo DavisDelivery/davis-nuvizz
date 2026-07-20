@@ -18,7 +18,7 @@
 
 import { getDoc, setDoc } from './firestore.mts';
 
-export const ENGINE_VERSION = '2.1.1';
+export const ENGINE_VERSION = '2.2.0';
 
 export const ENGINE_CONFIG_COLLECTION = 'routing_engine_config';
 
@@ -91,6 +91,16 @@ export interface EngineConfig {
   w_habit: number;                  // weight for "this stop's habitual driver" in the plan solver
   habit_shrink_n: number;           // strength = top_share × n/(n+shrink) — small n = weak signal
 
+  // ── Phase 2.2: far-cluster consolidation (stop dragging spare trucks to a distant corner) ──
+  // Dispatch prices a distant loop intuitively ("it's 60 mi out — give the whole
+  // thing to one truck"); the per-stop assignment never did. These four give the
+  // objective the missing concept of the marginal cost of an EXTRA truck reaching
+  // a far cluster, all keyed on the already-computed stop.miles (no new data).
+  far_deadhead_mi: number;    // stops beyond this depot-distance are "far"
+  w_far_deadhead: number;     // per-shift charge for a driver reaching past far_deadhead_mi (per 10 mi beyond)
+  habit_far_discount: number; // FAR stops count habit at this fraction — geography should win out there (0..1)
+  w_zone_cohesion: number;    // per EXTRA distinct driver serving the same far gh5 zone (reward one owner)
+
   // ── Phase 2.1: THE ROUTING CALENDAR ─────────────────────────────────────────
   // Encoded operating fact, not lore: dispatch builds routes OVERNIGHT
   // (~20:00 ET → ~07:00 ET next morning; Sunday night builds Monday, Thursday
@@ -126,6 +136,7 @@ const NUMERIC_KEYS: Array<keyof EngineConfig> = [
   'w_far_first', 'w_strict_window', 'w_compactness',
   'reference_top_k', 'reference_half_life_days', 'same_driver_multiplier', 'reference_edge_floor',
   'w_habit', 'habit_shrink_n',
+  'far_deadhead_mi', 'w_far_deadhead', 'habit_far_discount', 'w_zone_cohesion',
 ];
 
 export const ENGINE_CONFIG_BOUNDS: Record<Exclude<keyof EngineConfig, 'routing_calendar'>, [number, number]> = {
@@ -172,6 +183,10 @@ export const ENGINE_CONFIG_BOUNDS: Record<Exclude<keyof EngineConfig, 'routing_c
   reference_edge_floor: [0, 1],
   w_habit: [0, 1000],
   habit_shrink_n: [0, 50],
+  far_deadhead_mi: [10, 200],
+  w_far_deadhead: [0, 1000],
+  habit_far_discount: [0, 1],
+  w_zone_cohesion: [0, 1000],
 };
 
 // NOTE: routing_calendar is NOT in ENGINE_CONFIG_BOUNDS — it is structured, not
@@ -237,6 +252,15 @@ export function engineConfigDefaults(env: Record<string, string | undefined> = p
     // outranks the ZONE-level affinity signal (the brief's ordering).
     w_habit: num('W_HABIT', 3),
     habit_shrink_n: num('HABIT_SHRINK_N', 4),
+    // Phase 2.2 — far-cluster consolidation. 45 mi is comfortably past the mid
+    // ring most drivers work; beyond it, dragging a fresh truck out is the thing
+    // dispatch avoids. w_far_deadhead=6 makes a second truck's ~20-mi-past reach
+    // (6 × 2 = 12) dwarf a single stop's habit pull (~w_habit × strength ≈ 1.5),
+    // so the far loop coalesces onto whoever is already out there.
+    far_deadhead_mi: num('FAR_DEADHEAD_MI', 45),
+    w_far_deadhead: num('W_FAR_DEADHEAD', 6),
+    habit_far_discount: num('HABIT_FAR_DISCOUNT', 0.35),
+    w_zone_cohesion: num('W_ZONE_COHESION', 4),
     routing_calendar: routingCalendarDefaults(env),
   };
 }
