@@ -120,3 +120,25 @@ test('a single over-cap stop still rides (alone) — the cap never strands freig
   assert.equal(res.unassigned.length, 0);
   assert.equal(tripsOf(res, 'D1').length, 1);
 });
+
+test('overflow sheds the WEAKEST-claim stops — the habitual core stays on the owner (2.8.2)', () => {
+  // 22 core stops (strong D1 habit) + 3 fringe stops (thin D1 habit) = 50 eq,
+  // over D1's two-load budget by exactly the fringe. Dispatch keeps the core on
+  // the owner and flexes the fringe to the cast — so D2 must receive precisely
+  // the 3 weak-claim stops, never a core customer. (2.8.1 shed by seeding
+  // order — arbitrary — and paid for it in the replay: agreement 25.3 vs 27.9.)
+  const drivers = [driver('D1', { aff: 1.0 }), driver('D2')];
+  const core = Array.from({ length: 22 }, (_, i) => stop(`core${i}`, {
+    skids: 2, candidates: ['D1', 'D2'], habit: { topDriver: 'D1', topShare: 0.9, n: 30 },
+  }));
+  const fringe = Array.from({ length: 3 }, (_, i) => stop(`fringe${i}`, {
+    skids: 2, candidates: ['D1', 'D2'], habit: { topDriver: 'D1', topShare: 0.3, n: 4 },
+  }));
+  const res = solve([...core, ...fringe], drivers);
+  assert.equal(res.unassigned.length, 0);
+  const d2Ids = tripsOf(res, 'D2').flatMap((t) => t.stops.map((s) => s.id)).sort();
+  assert.deepEqual(d2Ids, ['fringe0', 'fringe1', 'fringe2'], `the cast #2 takes only the fringe, got ${d2Ids}`);
+  const d1 = tripsOf(res, 'D1');
+  assert.equal(d1.length, 2, 'the owner runs the core as a two-load reload day');
+  for (const t of d1) assert.ok(eqOf(t) <= 22 + 1e-9);
+});
