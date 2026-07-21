@@ -291,7 +291,9 @@ export async function runPlanForDate(
       id, lat, lng,
       zone: zoneId(lat, lng, precisions),
       gh5: superOfZone(zoneId(lat, lng, precisions), precisions),
-      pallets: finiteNum(s.pallets) || 0,
+      pallets: finiteNum(s.pallets) || 0,   // TOTAL pieces (NuVizz mislabel)
+      skids: finiteNum(s.cartons) || 0,     // real skids (NuVizz "cartons")
+      loose: finiteNum(s.volume) || 0,      // real loose pieces (NuVizz "volume")
       weight: finiteNum(s.weight) || 0,
       matchKey: mk,
       strict: String(s.timeConstraint || '').toUpperCase() === 'STRICT',

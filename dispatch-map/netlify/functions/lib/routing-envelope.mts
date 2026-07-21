@@ -57,6 +57,13 @@ export interface DriverEnvelope {
   start_minute_typical: number | null;   // median first-touch minute-of-day
   shift_hours_typical: number | null;    // median (end - start) hours
   day_weight_p85: number | null;
+  // DAILY CAPACITY by the real freight dimensions (skids = NuVizz "cartons",
+  // loose = NuVizz "volume") — what actually fills a truck-day. p85 of the driver's
+  // observed day totals: the "you're getting full" threshold the seed repels past.
+  // Null until skid/loose history exists (post-capture / backfill); the seed then
+  // falls back to day_weight_p85 so behavior degrades gracefully.
+  day_skids_p85: number | null;
+  day_loose_p85: number | null;
 }
 
 function envelopeFromDays(days: DriverDayDoc[]): Omit<DriverEnvelope, 'driver_key' | 'source' | 'truck_class'> {
@@ -67,6 +74,12 @@ function envelopeFromDays(days: DriverDayDoc[]): Omit<DriverEnvelope, 'driver_ke
   const starts = days.map((d) => wallMinuteOfDay(d.start_time)).filter((v): v is number => v != null);
   const shiftHours = days.map((d) => minutesBetween(d.start_time, d.end_time)).filter((v): v is number => v != null && v > 0).map((m) => m / 60);
   const dayWeights = days.map((d) => d.day_totals?.weight ?? 0);
+  const daySkids = days.map((d) => d.day_totals?.skids ?? 0);
+  const dayLoose = days.map((d) => d.day_totals?.loose ?? 0);
+  // A dimension is only "learned" if SOME day carried it — an all-zero column
+  // (skids/loose not captured for these days yet) yields null, not a false 0 cap.
+  const anySkids = daySkids.some((v) => v > 0);
+  const anyLoose = dayLoose.some((v) => v > 0);
   const multiTripDays = days.filter((d) => orderedTrips(d).length >= 2).length;
   return {
     observed_days: days.length,
@@ -84,6 +97,8 @@ function envelopeFromDays(days: DriverDayDoc[]): Omit<DriverEnvelope, 'driver_ke
     start_minute_typical: median(starts),
     shift_hours_typical: median(shiftHours),
     day_weight_p85: quantile(dayWeights, 0.85),
+    day_skids_p85: anySkids ? quantile(daySkids, 0.85) : null,
+    day_loose_p85: anyLoose ? quantile(dayLoose, 0.85) : null,
   };
 }
 
@@ -110,6 +125,7 @@ export function driverEnvelope(
     driver_key: driverKey, source: 'none', truck_class: truckClass, observed_days: 0,
     per_trip: { stops_median: null, stops_p85: null, pallets_median: null, pallets_p85: null, weight_median: null, weight_p85: null, weight_max: null },
     trips_per_day_propensity: 0, start_minute_typical: null, shift_hours_typical: null, day_weight_p85: null,
+    day_skids_p85: null, day_loose_p85: null,
   };
 }
 
