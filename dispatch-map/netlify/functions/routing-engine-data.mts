@@ -8,10 +8,21 @@
 //   GET ?view=day&date=…         → that date's sequence rollup + full route proposals
 //   GET ?view=plan-daily         → every assignment daily rollup (agreement trend)
 //   GET ?view=plan-day&date=…    → that date's assignment rollup + full plan proposal
+//   GET ?view=version-rollups    → one aggregate per engine version (cross-version progress)
 import { isFirestoreEnabled, getDoc, listDocs, runQuery } from './lib/firestore.mts';
 import { ENGINE_VERSION, loadEngineConfig } from './lib/routing-engine-config.mts';
 import { PROPOSALS_COLLECTION, PROPOSALS_DAILY_COLLECTION, dailyRollupPath } from './lib/routing-engine-core.mts';
-import { PLAN_PROPOSALS_DAILY_COLLECTION, planProposalPath, planDailyPath } from './lib/routing-plan-core.mts';
+import { PLAN_PROPOSALS_DAILY_COLLECTION, PLAN_VERSION_ROLLUPS_COLLECTION, planProposalPath, planDailyPath } from './lib/routing-plan-core.mts';
+
+// Sort engine version strings numerically ("2.10.0" after "2.9.1", not before).
+function cmpVersion(a: string, b: string): number {
+  const pa = String(a).split('.').map((n) => parseInt(n, 10) || 0);
+  const pb = String(b).split('.').map((n) => parseInt(n, 10) || 0);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) - (pb[i] || 0);
+  }
+  return 0;
+}
 
 const TENANT = 'davis';
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -60,6 +71,14 @@ export default async (req: Request): Promise<Response> => {
       .sort((a: any, b: any) => String(a.date).localeCompare(String(b.date)));
     const cfg = await loadEngineConfig(TENANT);
     return new Response(JSON.stringify({ ok: true, engine_version: ENGINE_VERSION, days, config: cfg }), { status: 200, headers });
+  }
+
+  if (view === 'version-rollups') {
+    const rows = await listDocs(PLAN_VERSION_ROLLUPS_COLLECTION);
+    const versions = rows
+      .filter((r: any) => r?.tenant === TENANT && r?.engine_version)
+      .sort((a: any, b: any) => cmpVersion(a.engine_version, b.engine_version));
+    return new Response(JSON.stringify({ ok: true, engine_version: ENGINE_VERSION, versions }), { status: 200, headers });
   }
 
   if (view === 'plan-day') {

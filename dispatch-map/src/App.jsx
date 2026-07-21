@@ -59,7 +59,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.50.67';
+const APP_VERSION = '0.50.68';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -16485,6 +16485,7 @@ function EngineAssignmentView({ google, mapsError }) {
   const [dayLoading, setDayLoading] = useState(false);
   const [dayErr, setDayErr] = useState('');
   const [mapMode, setMapMode] = useState('diff'); // dispatch | engine | diff
+  const [versions, setVersions] = useState(null); // cross-version progress rollups
 
   const days = daily?.days || [];
   const latestDate = days.length ? days[days.length - 1].date : '';
@@ -16493,6 +16494,10 @@ function EngineAssignmentView({ google, mapsError }) {
     fetchJsonWithRetry('/.netlify/functions/routing-engine-data?view=plan-daily')
       .then((d) => { if (!d?.ok) throw new Error(d?.error || 'plan data unavailable'); setDaily(d); const ds = d.days || []; if (ds.length) setDate(ds[ds.length - 1].date); })
       .catch((e) => setDailyErr(String(e?.message || e)));
+    // Cross-version progress (separate, non-blocking — its own collection).
+    fetchJsonWithRetry('/.netlify/functions/routing-engine-data?view=version-rollups')
+      .then((d) => { if (d?.ok) setVersions(d.versions || []); })
+      .catch(() => {});
   }, []);
   useEffect(() => {
     if (!date) return;
@@ -16698,6 +16703,8 @@ function EngineAssignmentView({ google, mapsError }) {
         </div>
       )}
 
+      <EngineVersionProgress versions={versions} current={daily?.engine_version} />
+
       <div className="border rounded-lg bg-white p-2">
         <button onClick={() => setChartOpen((v) => !v)} title={chartOpen ? 'Hide chart' : 'Show chart'}
           className="w-full flex items-center justify-between text-[11px] font-semibold text-slate-600 px-1 pb-1">
@@ -16794,6 +16801,59 @@ function EngineAssignmentView({ google, mapsError }) {
             </div>
           )}
         </div>
+      </div>
+    </div>
+  );
+}
+
+// Cross-version progress — one row per engine version (stop-weighted over the
+// whole window). This is the "is it actually getting better?" readout: the daily
+// chart can't show it because a rescoring pass overwrites every day doc in place,
+// so all its points always share ONE version. Each version snapshot is preserved
+// in its own doc; here we line them up oldest→newest with the change in agreement
+// and the trips/travel over-split gap called out.
+function EngineVersionProgress({ versions, current }) {
+  if (versions == null) return null; // still loading — stay quiet
+  if (!versions.length) {
+    return (
+      <div className="border rounded-lg bg-white px-3 py-2 text-[11px] text-slate-500">
+        <span className="font-semibold text-slate-600">Progress across engine versions</span> — appears here once the next replay or nightly writes the first snapshot. Each engine version keeps its own scorecard, so you can see whether a change actually moved the needle.
+      </div>
+    );
+  }
+  const fmtPct = (v) => (v == null ? '—' : `${v}%`);
+  const fmtDelta = (v) => (v == null ? '—' : `${v > 0 ? '+' : ''}${v}%`);
+  return (
+    <div className="border rounded-lg bg-white p-2">
+      <div className="text-[11px] font-semibold text-slate-600 px-1 pb-1.5">
+        Progress across engine versions <span className="font-normal text-slate-400">— stop agreement is stop-weighted over the whole window; trips/travel Δ are engine vs dispatch (lower is better)</span>
+      </div>
+      <div className="flex gap-2 overflow-x-auto pb-1">
+        {versions.map((v, i) => {
+          const prev = i > 0 ? versions[i - 1] : null;
+          const agree = v.stop_agreement_wmean;
+          const chg = prev && prev.stop_agreement_wmean != null && agree != null ? Math.round((agree - prev.stop_agreement_wmean) * 10) / 10 : null;
+          const isCur = v.engine_version === current;
+          return (
+            <div key={v.engine_version} className={`shrink-0 rounded-lg border px-2.5 py-1.5 min-w-[132px] ${isCur ? 'border-blue-300 bg-blue-50' : 'border-slate-200 bg-slate-50'}`}>
+              <div className="flex items-center justify-between gap-1.5">
+                <span className="text-[11px] font-bold text-slate-800">v{v.engine_version}</span>
+                {isCur && <span className="text-[8px] uppercase tracking-wide bg-blue-600 text-white px-1 py-0.5 rounded">current</span>}
+              </div>
+              <div className="mt-0.5 flex items-baseline gap-1">
+                <span className="text-lg font-bold tabular-nums" style={{ color: BRAND }}>{fmtPct(agree)}</span>
+                {chg != null && chg !== 0 && (
+                  <span className={`text-[10px] font-semibold ${chg > 0 ? 'text-emerald-600' : 'text-red-500'}`}>{chg > 0 ? '▲' : '▼'} {Math.abs(chg)}</span>
+                )}
+              </div>
+              <div className="text-[9px] text-slate-500 leading-tight">stop agreement</div>
+              <div className="mt-1 text-[9.5px] text-slate-500 tabular-nums leading-snug">
+                trips Δ <span className="font-semibold text-slate-700">{fmtDelta(v.trips_delta_pct)}</span> · travel Δ <span className="font-semibold text-slate-700">{fmtDelta(v.travel_delta_pct)}</span>
+              </div>
+              <div className="text-[9px] text-slate-400 tabular-nums">{v.days_scored} days{v.window_from ? ` · ${String(v.window_from).slice(5)}–${String(v.window_to).slice(5)}` : ''}</div>
+            </div>
+          );
+        })}
       </div>
     </div>
   );

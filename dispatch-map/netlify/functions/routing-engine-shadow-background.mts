@@ -43,12 +43,12 @@
 // assertCurrentDayReadAllowed (>= 07:30 ET on D), and proposal generation must
 // eventually run INSIDE the 20:00–07:00 build window. Encoded in
 // routing-engine-config.mts; inherit it, don't re-derive it.
-import { isFirestoreEnabled } from './lib/firestore.mts';
+import { isFirestoreEnabled, listDocs, setDoc } from './lib/firestore.mts';
 import { etYesterday } from './lib/history-core.mts';
 import { getManifest } from './lib/history-store.mts';
 import { routingEngineDisabled, loadEngineConfig, isBoardDay, ENGINE_VERSION } from './lib/routing-engine-config.mts';
 import { runShadowForDate, listReferencesBefore } from './lib/routing-engine-core.mts';
-import { runPlanForDate } from './lib/routing-plan-core.mts';
+import { runPlanForDate, summarizePlanVersion, planVersionRollupPath, PLAN_PROPOSALS_DAILY_COLLECTION } from './lib/routing-plan-core.mts';
 
 const TENANT = 'davis';
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -113,6 +113,15 @@ export default async (req: Request): Promise<Response> => {
     console.error(`[engine-shadow] plan scoring failed for ${date}:`, e?.message);
     plan = { ok: false, error: e?.message };
   }
+
+  // Refresh THIS version's cross-version progress snapshot as the new day accrues
+  // (see summarizePlanVersion). Best-effort — the day docs above are already durable.
+  try {
+    const dailyDocs = await listDocs(PLAN_PROPOSALS_DAILY_COLLECTION);
+    const rollup = summarizePlanVersion(dailyDocs.filter((d: any) => d?.tenant === TENANT), ENGINE_VERSION, TENANT);
+    await setDoc(planVersionRollupPath(TENANT, ENGINE_VERSION), rollup);
+    console.log('[engine-shadow] version rollup:', JSON.stringify(rollup));
+  } catch (e: any) { console.warn(`[engine-shadow] version rollup failed:`, e?.message); }
 
   return new Response(JSON.stringify({ engine_version: ENGINE_VERSION, sequence: seq, plan }), { status: 200, headers });
 };
