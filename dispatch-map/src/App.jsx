@@ -59,7 +59,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.50.63';
+const APP_VERSION = '0.50.64';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -104,6 +104,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.50.64', 'MOBILE \u2014 "View on map" from an open route. When you open a route on your phone (Loads \u2192 a route), the stop list is a full-screen sheet that covers the map, so you couldn\'t see the route laid out. There\'s now a blue "View on map" button at the top of that route sheet: tap it and the sheet minimizes to a slim bar at the bottom, revealing the map framed on that route with its stops numbered in delivery order. Tap any pin to open that stop; tap "Stops" on the bar to bring the full list back, or \u2715 to close the route. Desktop is unchanged (the route list already sits beside the map there).'],
   ['0.50.63', 'ENGINE (shadow \u00b7 Assignment) \u2014 the LAST far-corner straggler dies. After v0.50.61 the engine used barely half the far trucks dispatch does (11.6 vs 20.3 a day) \u2014 but one 1-stop truck still tagged along to the NW corner, because the \u201cextra truck in a far area\u201d charge grouped stops by tiny ~5-km cells: a lone stop sat in its own cell, looked \u201cperfectly cohesive\u201d, and its truck was never charged. The charge now works at the AREA level \u2014 the same \u201cDalton\u201d-sized grain the territory-ownership rules use \u2014 so an isolated stop a few miles from the owner\'s loop belongs to that area\'s math and folds onto the owner\'s truck. Engine 2.4.1; full history re-scored.'],
   ['0.50.62', 'ENGINE TAB \u2014 live tuning, no more deploys. New \u2699 Tuning button on the Engine tab opens the engine\'s live settings: the far-route/territory knobs (far threshold, extra-truck-in-a-far-area cost, territory ownership, usual-driver pull out far, ownership floors) each with a plain-English explanation, plus every other engine setting under Advanced. Edits save to the cloud, are clamped to safe ranges (a bad value can\'t stick), show a \u201ccustomized\u201d badge with one-tap reset to default, and take effect on tonight\'s run automatically. A \u201cRe-score history\u201d button re-runs all past days with the current settings in the background (zero NuVizz) so you can see the effect on the charts in minutes instead of waiting for nights to accumulate.'],
   ['0.50.61', 'ENGINE (shadow \u00b7 Assignment) \u2014 Chad\'s rule, encoded: THE ENDS OF THE ROADS GET THE FEWEST TRUCKS POSSIBLE. The last stragglers were single-stop trucks tagging along to the far corners (one extra truck carrying ONE Dalton-area stop that Scott should have taken) \u2014 they survived because the flat penalty for a spare far truck roughly tied with the cost of folding its stop onto the owner. The penalty for an extra truck in a far zone now GROWS with how far out the zone is (a second truck 60 miles out costs more than one 46 miles out, and 90 miles out costs more still), and its base weight doubled \u2014 so the trade always resolves toward fewer trucks at the edge. Verified: the one-stop straggler case now folds onto the zone owner even when it pushes the owner\'s load past their usual single-trip weight. Engine 2.4.0; full history re-scored. Shadow only, zero NuVizz.'],
@@ -7015,7 +7016,7 @@ function StatusBadge({ kind }) {
 // M5.2 — Route detail body, shared between the desktop sidebar and mobile drawer.
 // Shows the load's stops in compareByPlannedEta order (== polyline order) with status
 // badge + delivery/arrival/ETA time. Tap a row → onPickStop closes route + opens stop.
-function RouteDetailBody({ stops, onPickStop }) {
+function RouteDetailBody({ stops, onPickStop, onViewOnMap }) {
   const sorted = orderRouteStops(stops);
   const driverName = sorted[0]?.driverName || sorted[0]?.driverUserName || '—';
   const delivered = sorted.filter((s) => classifyStopStatus(s) === 'DELIVERED').length;
@@ -7038,7 +7039,19 @@ function RouteDetailBody({ stops, onPickStop }) {
           <div className="text-[11px] text-slate-500 mt-0.5">{delivered}/{sorted.length} delivered</div>
         </div>
       </div>
-      <div className="px-4 py-2 border-b">
+      <div className="px-4 py-2 border-b space-y-2">
+        {/* Mobile only: reveal the map with this route framed (numbered pins). The route
+            detail is a full-screen sheet over the map, so this minimizes it to a slim bar. */}
+        {onViewOnMap && (
+          <button
+            onClick={onViewOnMap}
+            disabled={!sorted.length}
+            className="w-full inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-sm font-semibold text-white disabled:opacity-40 disabled:cursor-not-allowed"
+            style={{ background: BRAND }}
+          >
+            <MapPin size={15} /> View on map
+          </button>
+        )}
         <button
           onClick={() => setShowManifest(true)}
           disabled={!sorted.length}
@@ -7120,7 +7133,7 @@ function RouteDetailSidebar({ loadNbr, stops, onClose, onPickStop, mobile = fals
   );
 }
 
-function MobileRouteDetailDrawer({ loadNbr, stops, onClose, onPickStop }) {
+function MobileRouteDetailDrawer({ loadNbr, stops, onClose, onPickStop, onViewOnMap }) {
   const routeName = stops.find((s) => s.routeName)?.routeName || null;
   return (
     <BottomSheet open onClose={onClose} heights={SHEET_HEIGHTS} ariaLabel={`Route ${routeName || loadNbr}`}>
@@ -7133,9 +7146,35 @@ function MobileRouteDetailDrawer({ loadNbr, stops, onClose, onPickStop }) {
         <button onClick={onClose} className="p-2 -mr-2" aria-label="Close route"><X size={20} /></button>
       </div>
       <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain" data-sheet-scroll>
-        <RouteDetailBody stops={stops} onPickStop={onPickStop} />
+        <RouteDetailBody stops={stops} onPickStop={onPickStop} onViewOnMap={onViewOnMap} />
       </div>
     </BottomSheet>
+  );
+}
+
+// Slim bar shown after "View on map": the route detail sheet is minimized so the
+// map (framed on this route, with numbered pins) is visible. Tap a pin to open a
+// stop; "Stops" reopens the full list; ✕ closes the route.
+function RouteMapViewBar({ routeName, count, onShowStops, onClose }) {
+  return (
+    <div
+      className="absolute inset-x-3 z-[30] flex items-center gap-2 rounded-xl bg-white shadow-[0_2px_16px_rgba(0,0,0,0.22)] border border-slate-200 px-3 py-2"
+      style={{ bottom: `calc(12px + env(safe-area-inset-bottom))` }}
+    >
+      <MapPin size={18} style={{ color: BRAND }} className="flex-shrink-0" />
+      <div className="min-w-0 flex-1">
+        <div className="text-[10px] uppercase tracking-wider text-slate-500 leading-none">Route on map</div>
+        <div className="font-bold text-slate-900 truncate leading-tight">{routeName}</div>
+      </div>
+      <button
+        onClick={onShowStops}
+        className="flex-shrink-0 inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-sm font-semibold text-white"
+        style={{ background: BRAND, minHeight: 40 }}
+      >
+        <LayoutList size={15} /> Stops{count ? ` (${count})` : ''}
+      </button>
+      <button onClick={onClose} className="flex-shrink-0 p-2 -mr-1 text-slate-500" aria-label="Close route"><X size={20} /></button>
+    </div>
   );
 }
 
@@ -7376,6 +7415,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef }) {
   const [selectedStop, setSelectedStop] = useState(null);
   const [selectedDriver, setSelectedDriver] = useState(null);
   const [selectedRoute, setSelectedRoute] = useState(null); // M5.2 — loadNbr of opened route, or null
+  const [routeMapView, setRouteMapView] = useState(false);  // mobile: route sheet minimized to view the framed route on the map
   // Routes panel (read-only) on the dispatch Map — a togglable right-side route roster mirroring the
   // Routing screen's Routes view. Persisted; off by default. Loads NuVizz's real load status (cheap
   // cached roster) only while the panel is open.
@@ -8572,6 +8612,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef }) {
       setSelectedStop(null);
       setSelectedDriver(null);
       setMobileDrawerOpen(false);
+      setRouteMapView(false);   // always open on the stop LIST; "View on map" minimizes it
       setSelectedRoute(loadNbr);
       frameRoute(loadNbr);   // desktop frames via openRouteExplicit; mobile frames here
     };
@@ -8830,7 +8871,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef }) {
 
         {/* Stop detail drawer — slides up over the map. Tabs Info / Notes /
             Hours / PROs. Editing on Notes or Hours pins a sticky Save bar. */}
-        {!selectedDriver && !selectedRoute && selectedStop && (
+        {!selectedDriver && selectedStop && (!selectedRoute || routeMapView) && (
           <MobileStopDetailDrawer
             stop={selectedStop}
             note={notes.get(selectedStop.matchKey)}
@@ -8842,7 +8883,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef }) {
             onMoveLocation={startMoveLocation}
             onEditAddress={openAddrEditor}
             onAutoFixAddress={autoFixAddress}
-            onOpenRoute={(loadNbr) => { setSelectedStop(null); setSelectedRoute(loadNbr); frameRoute(loadNbr); }}
+            onOpenRoute={(loadNbr) => { setSelectedStop(null); setRouteMapView(false); setSelectedRoute(loadNbr); frameRoute(loadNbr); }}
             onSave={async (draft) => {
               await handleSave(draft);
               // handleSave clears saveError on success; close the drawer if
@@ -8858,16 +8899,28 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef }) {
 
         {/* M5.2 — route detail drawer (mobile). Same bottom-sheet pattern as the
             stop detail; opened from the stop detail's "View full route" button. */}
-        {!selectedDriver && selectedRoute && (
+        {!selectedDriver && selectedRoute && !routeMapView && !selectedStop && (
           <MobileRouteDetailDrawer
             loadNbr={selectedRoute}
             stops={selectedRouteStops}
-            onClose={() => setSelectedRoute(null)}
+            onClose={() => { setSelectedRoute(null); setRouteMapView(false); }}
+            onViewOnMap={() => { setRouteMapView(true); frameRoute(selectedRoute); }}
             onPickStop={(s) => {
               setSelectedRoute(null);
+              setRouteMapView(false);
               setSelectedStop(s);
               handlePanToStop(s);   // saves the board view so closing zooms back out
             }}
+          />
+        )}
+        {/* "View on map" minimizes the route sheet to this slim bar so the framed
+            route (numbered pins) is visible; taps on a pin open the stop over it. */}
+        {!selectedDriver && selectedRoute && routeMapView && !selectedStop && (
+          <RouteMapViewBar
+            routeName={selectedRouteStops.find((s) => s.routeName)?.routeName || selectedRoute}
+            count={selectedRouteStops.length}
+            onShowStops={() => setRouteMapView(false)}
+            onClose={() => { setSelectedRoute(null); setRouteMapView(false); }}
           />
         )}
 
