@@ -18,7 +18,7 @@
 
 import { getDoc, setDoc } from './firestore.mts';
 
-export const ENGINE_VERSION = '2.5.0';
+export const ENGINE_VERSION = '2.6.0';
 
 export const ENGINE_CONFIG_COLLECTION = 'routing_engine_config';
 
@@ -79,10 +79,6 @@ export interface EngineConfig {
   w_far_first: number;
   w_strict_window: number;
   w_compactness: number;
-  // Phase 2.5: daily-capacity balance. The seed rewards a driver with skid/loose
-  // headroom and REPELS one already past their learned daily capacity — the missing
-  // force that let a broad-territory driver vacuum 90 stops (a day they'd never run).
-  w_day_capacity: number;
 
   // ── Phase 2.1: top-k weighted reference graph (audit finding 2) ────────────
   reference_top_k: number;          // aggregate this many references into the zone digraph
@@ -147,7 +143,7 @@ const NUMERIC_KEYS: Array<keyof EngineConfig> = [
   'assignment_ms_cap', 'reload_gap_min', 'typical_shift_hours', 'far_first_adherence',
   'trip2_radius_mi',
   'w_overload', 'w_underload', 'w_affinity', 'w_trips', 'w_shift_overflow',
-  'w_far_first', 'w_strict_window', 'w_compactness', 'w_day_capacity',
+  'w_far_first', 'w_strict_window', 'w_compactness',
   'reference_top_k', 'reference_half_life_days', 'same_driver_multiplier', 'reference_edge_floor',
   'w_habit', 'habit_shrink_n',
   'far_deadhead_mi', 'w_far_deadhead', 'habit_far_discount', 'w_zone_cohesion',
@@ -190,7 +186,6 @@ export const ENGINE_CONFIG_BOUNDS: Record<Exclude<keyof EngineConfig, 'routing_c
   w_trips: [0, 1000],
   w_shift_overflow: [0, 1000],
   w_far_first: [0, 1000],
-  w_day_capacity: [0, 1000],
   w_strict_window: [0, 1000],
   w_compactness: [0, 1000],
   reference_top_k: [1, 10],
@@ -262,9 +257,6 @@ export function engineConfigDefaults(env: Record<string, string | undefined> = p
     w_far_first: num('W_FAR_FIRST', 1),
     w_strict_window: num('W_STRICT_WINDOW', 2),
     w_compactness: num('W_COMPACTNESS', 1),
-    // Strong: must overcome ownerBoost(4)+habit(3) so a full driver is actually
-    // repelled, not merely un-rewarded. 0 disables (pure back-compat).
-    w_day_capacity: num('W_DAY_CAPACITY', 6),
     // Phase 2.1
     reference_top_k: num('REFERENCE_TOP_K', 5),
     reference_half_life_days: num('REFERENCE_HALF_LIFE_DAYS', 45),
