@@ -17,14 +17,14 @@
 //   POST /.netlify/functions/routing-engine-plan-replay-background   → ALL days
 //     ?from=YYYY-MM-DD&to=YYYY-MM-DD  → inclusive range
 //     ?force=1                        → rescore even at the current engine version
-import { isFirestoreEnabled, listDocs, getDoc } from './lib/firestore.mts';
+import { isFirestoreEnabled, listDocs, getDoc, setDoc } from './lib/firestore.mts';
 import { HISTORY_COLLECTION } from './lib/history-store.mts';
 import { ENGINE_VERSION, loadEngineConfig } from './lib/routing-engine-config.mts';
 import { REFERENCE_ROUTES_COLLECTION, type ReferenceRouteDoc } from './lib/routing-reference.mts';
 import { DRIVER_DAYS_COLLECTION, type DriverDayDoc } from './lib/routing-driver-days.mts';
 import { SERVICE_TIMES_COLLECTION, fleetServicePath } from './lib/routing-service-times.mts';
 import { CUSTOMER_DRIVERS_COLLECTION } from './lib/routing-customer-drivers.mts';
-import { runPlanForDate, type PlanInputs } from './lib/routing-plan-core.mts';
+import { runPlanForDate, summarizePlanVersion, planVersionRollupPath, PLAN_PROPOSALS_DAILY_COLLECTION, type PlanInputs } from './lib/routing-plan-core.mts';
 
 const TENANT = 'davis';
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -106,12 +106,24 @@ export default async (req: Request): Promise<Response> => {
     console.log(`[plan-replay] ${date}: stop ${s.stop_agreement_pct ?? '—'}% coload ${s.coload_agreement_pct ?? '—'}% (${s.drivers} drivers, ${s.trips_engine}v${s.trips_actual} trips)`);
   }
 
+  // Snapshot THIS engine version's window aggregate into its own (version-keyed)
+  // doc, so the cross-version progress series survives the next rescoring pass
+  // overwriting the per-day docs. Read the daily docs fresh (the loop above just
+  // rewrote them to ENGINE_VERSION). Best-effort — the day docs are already durable.
+  let versionRollup: any = null;
+  try {
+    const dailyDocs = await listDocs(PLAN_PROPOSALS_DAILY_COLLECTION);
+    versionRollup = summarizePlanVersion(dailyDocs.filter((d: any) => d?.tenant === TENANT), ENGINE_VERSION, TENANT);
+    await setDoc(planVersionRollupPath(TENANT, ENGINE_VERSION), versionRollup);
+    console.log('[plan-replay] version rollup:', JSON.stringify(versionRollup));
+  } catch (e: any) { console.warn('[plan-replay] version rollup failed:', e?.message); }
+
   const summary = {
     ok: true, tenant: TENANT, engine_version: ENGINE_VERSION,
     dates_considered: dates.length, dates_scored: scored.length,
     dates_skipped_too_early: skippedTooEarly.length, dates_skipped_no_history: skippedNoHistory.length,
     last_scored: scored.length ? scored[scored.length - 1].date : null,
-    stopped_at: stoppedAt, scored, ms: Date.now() - t0,
+    stopped_at: stoppedAt, version_rollup: versionRollup, scored, ms: Date.now() - t0,
   };
   console.log('[plan-replay] done:', JSON.stringify({ ...summary, scored: undefined }));
   return new Response(JSON.stringify(summary), { status: 200, headers });

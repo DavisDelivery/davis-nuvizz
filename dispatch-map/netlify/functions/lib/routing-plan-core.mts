@@ -55,6 +55,70 @@ export function planDailyPath(tenant: string, date: string): string {
   return `${PLAN_PROPOSALS_DAILY_COLLECTION}/${tenant}__${date}`;
 }
 
+// ── per-ENGINE-VERSION progress rollup ───────────────────────────────────────
+// A replay / nightly overwrites each plan_proposals_daily doc IN PLACE, so the
+// prior engine version's day scores are lost the moment a newer version rescores
+// them — which is why "is the engine getting better across versions?" was
+// unmeasurable (the whole trend is always one version). This snapshots the
+// window aggregate for ONE engine version into its OWN doc, keyed by version, so
+// it is never clobbered by the next version — turning the flat single-version
+// trend into a real cross-version series. Also carries the trips-delta and
+// travel-delta (engine vs dispatch), so the over-split gap is tracked directly.
+export const PLAN_VERSION_ROLLUPS_COLLECTION = 'plan_version_rollups';
+export function planVersionRollupPath(tenant: string, version: string): string {
+  return `${PLAN_VERSION_ROLLUPS_COLLECTION}/${tenant}__${version}`;
+}
+
+export interface PlanVersionRollup {
+  tenant: string; engine_version: string;
+  days_scored: number; planned_stops_total: number;
+  window_from: string | null; window_to: string | null;
+  stop_agreement_wmean: number | null;        // stop-weighted mean, %
+  stop_agreement_known_wmean: number | null;   // known-envelope segment only
+  coload_agreement_wmean: number | null;
+  trips_engine_total: number; trips_actual_total: number; trips_delta_pct: number | null; // (eng−act)/act ×100 — the over-split signal
+  travel_engine_total: number; travel_actual_total: number; travel_delta_pct: number | null;
+  computed_at: string;
+}
+
+// Pure: fold every plan_proposals_daily doc for `version` into one rollup.
+// STOP-WEIGHTED — a 2-stop skeleton day (e.g. a holiday's lone route scoring a
+// trivial 100%) can't swing the mean the way a plain average would. Days with no
+// score or zero planned stops are dropped.
+export function summarizePlanVersion(dayDocs: any[], version: string, tenant = 'davis', nowIso?: string): PlanVersionRollup {
+  const days = (dayDocs || []).filter((d) =>
+    d && d.engine_version === version && d.stop_agreement_pct != null && Number(d.planned_stops) > 0);
+  let wStop = 0, wCoload = 0, sw = 0, wKnown = 0, wKnownDen = 0;
+  let te = 0, ta = 0, tre = 0, tra = 0, pst = 0;
+  let from: string | null = null, to: string | null = null;
+  for (const d of days) {
+    const w = Number(d.planned_stops) || 0;
+    sw += w; pst += w;
+    wStop += (Number(d.stop_agreement_pct) || 0) * w;
+    if (d.coload_agreement_pct != null) wCoload += (Number(d.coload_agreement_pct) || 0) * w;
+    if (d.stop_agreement_known_pct != null) { wKnown += (Number(d.stop_agreement_known_pct) || 0) * w; wKnownDen += w; }
+    te += Number(d.trips_engine) || 0; ta += Number(d.trips_actual) || 0;
+    tre += Number(d.est_travel_engine_min) || 0; tra += Number(d.est_travel_actual_min) || 0;
+    const dt = String(d.date || '');
+    if (dt) { if (!from || dt < from) from = dt; if (!to || dt > to) to = dt; }
+  }
+  const round1 = (n: number) => Math.round(n * 10) / 10;
+  const wmean = (num: number, den: number) => (den > 0 ? round1(num / den) : null);
+  return {
+    tenant, engine_version: version,
+    days_scored: days.length, planned_stops_total: pst,
+    window_from: from, window_to: to,
+    stop_agreement_wmean: wmean(wStop, sw),
+    stop_agreement_known_wmean: wmean(wKnown, wKnownDen),
+    coload_agreement_wmean: wmean(wCoload, sw),
+    trips_engine_total: te, trips_actual_total: ta,
+    trips_delta_pct: ta > 0 ? round1(((te - ta) / ta) * 100) : null,
+    travel_engine_total: Math.round(tre), travel_actual_total: Math.round(tra),
+    travel_delta_pct: tra > 0 ? round1(((tre - tra) / tra) * 100) : null,
+    computed_at: nowIso || new Date().toISOString(),
+  };
+}
+
 function finiteNum(v: any): number | null {
   if (v === null || v === undefined || v === '') return null;
   const n = Number(v); return Number.isFinite(n) ? n : null;
