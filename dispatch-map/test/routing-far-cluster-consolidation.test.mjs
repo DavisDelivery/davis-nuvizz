@@ -120,10 +120,10 @@ test('far-zone cohesion charges each extra driver, scaled by how far out the zon
 
 test('one-stop far stragglers fold onto the zone owner (fewest trucks at the end of the road)', () => {
   // The production pattern: an owner carries the far loop; ONE far stop sits on
-  // another truck. Folding it onto the owner crosses the owner's trip ceiling
-  // (re-split → +w_trips + overload), which used to tie the trade and leave the
-  // straggler alive. Distance-scaled cohesion (8 × 62/45 ≈ 11) + ownership (10)
-  // must now decisively win.
+  // another truck. Under the 2.1.1 weight ceiling, folding it re-split the
+  // owner's trip (+w_trips + overload), which used to tie the trade and leave
+  // the straggler alive; distance-scaled cohesion (8 × 62/45 ≈ 11) + ownership
+  // (10) decisively win (and the 2.8.0 skid cap doesn't bind at 14 skid-eq).
   const owners = new Map([['FARZ', { owners: new Set(['OWN']), n: 300 }]]);
   const mkEnv = (p85, day) => ({ driver_key: '', source: 'driver', truck_class: 'box_truck', observed_days: 20,
     per_trip: { stops_median: 10, stops_p85: 14, pallets_median: 8, pallets_p85: 12, weight_median: 5000, weight_p85: p85, weight_max: p85 },

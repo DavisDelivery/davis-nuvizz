@@ -11,20 +11,21 @@
 //   • equipment — a stop flagged "can't take a tractor" (customer_notes
 //     equipment_restrictions ∩ the trailer-blocker set) may not go to a tractor
 //     driver. tractor_locations is POSITIVE capability and never restricts.
-//   • per-trip ceiling — a trip's weight may not exceed the driver's per-trip
-//     envelope p85 × hard_cap_factor (the LEARNED BEHAVIORAL ceiling — the
-//     soft-max of the driver's observed practice, NOT truck GVWR/physics; a
-//     driver who never loaded heavy simply hasn't shown us more). Unknown
-//     envelope → no ceiling (can't enforce what we haven't observed).
-// SOFT costs (config-weighted): envelope over/under-load, zone-affinity misfit,
-// trips-count vs propensity, shift-hours overflow, far-first violation,
+//   • per-trip skid cap (Phase 2.8) — a trip's SKID-EQUIVALENT load (skids +
+//     loose/loose_per_skid) may not exceed the driver's CLASS hard cap (box 22,
+//     tractor 37 — p95 of ~900 real dispatch trips). This replaced the 2.1.1
+//     per-driver WEIGHT ceiling: dispatch cubes out, it doesn't weigh out, and
+//     the weight ceiling manufactured phantom splits on loads drivers really ran.
+// SOFT costs (config-weighted): skid load past the class SOFT cap, zone-affinity
+// misfit, trips-count vs propensity, shift-hours overflow, far-first violation,
 // STRICT-window risk, plan compactness.
 //
-// Method: greedy seed (weight-desc → best feasible driver by affinity + headroom;
-// split each driver's freight far-first to respect the ceiling) → deterministic
-// local search (relocate across drivers, swap, move between a driver's trips,
-// re-split/merge repairs) minimizing total soft cost, hard constraints never
-// broken. Deterministic seed from the date; wall-clock cap from config.
+// Method: greedy seed (skid-equiv-desc → best candidate driver by ownership,
+// room-gated at the class day budget; split each driver's freight far-first
+// within the class hard skid cap) → deterministic local search (relocate across
+// drivers, swap, move between a driver's trips, re-split/merge repairs)
+// minimizing total soft cost, hard constraints never broken. Deterministic seed
+// from the date; wall-clock cap from config.
 //
 // Travel is the Phase 1 haversine estimator (ZERO Route Matrix calls). Final
 // trip sequencing is delegated to the Phase 1 solver by the caller.
@@ -137,21 +138,30 @@ export function driverCanServe(driver: AssignDriver, stop: AssignStop): boolean 
   if (stop.blocksTractor && isTractor(driver)) return false;
   return true;
 }
-function tripCeiling(driver: AssignDriver, cfg: EngineConfig): number {
-  // LEARNED BEHAVIORAL ceiling, tightened to real practice: p85 × factor chops
-  // the top-15% tail of trips dispatch ACTUALLY ran (by definition of p85) and
-  // manufactures phantom splits the crew can't cover. The observed per-trip MAX
-  // is proof the weight fits on one truck, so the ceiling is whichever is
-  // higher — never split what a driver has already carried in one trip.
-  const pt = driver.envelope?.per_trip;
-  const p85 = pt?.weight_p85;
-  const seen = pt?.weight_max;
-  const capP85 = p85 != null && p85 > 0 ? p85 * cfg.hard_cap_factor : null;
-  const capSeen = seen != null && seen > 0 ? seen : null;
-  if (capP85 == null && capSeen == null) return Infinity;
-  return Math.max(capP85 ?? 0, capSeen ?? 0);
+
+// ── Phase 2.8: per-class skid caps ───────────────────────────────────────────
+
+// A stop's skid-equivalent floor footprint. Loose pieces share skid positions at
+// loose_per_skid apiece. A stop with NO skid/loose breakdown (pre-capture rows)
+// counts its total pieces ("pallets") as positions — the conservative read.
+export function stopSkidEquiv(s: AssignStop, cfg: EngineConfig): number {
+  const skids = s.skids || 0, loose = s.loose || 0;
+  if (skids > 0 || loose > 0) return skids + loose / Math.max(1, cfg.loose_per_skid);
+  return s.pallets || 0;
 }
-function tripWeight(t: AssignedTrip): number { return t.stops.reduce((a, s) => a + (s.weight || 0), 0); }
+
+// Class caps (unknown class reads as box_truck — same default as plan-core's
+// resolveClass). hard is floored at soft so a mis-tuned config can't invert them.
+export function classCapsFor(truck_class: string | null | undefined, cfg: EngineConfig): { soft: number; hard: number } {
+  const tractor = String(truck_class || '') === 'tractor';
+  const soft = tractor ? cfg.skid_cap_tractor_soft : cfg.skid_cap_box_soft;
+  const hard = Math.max(soft, tractor ? cfg.skid_cap_tractor_hard : cfg.skid_cap_box_hard);
+  return { soft, hard };
+}
+
+function tripSkidEquiv(t: AssignedTrip, cfg: EngineConfig): number {
+  return t.stops.reduce((a, s) => a + stopSkidEquiv(s, cfg), 0);
+}
 
 // Nearest-neighbor tour minutes for a trip (depot → stops), cheap proxy used
 // inside the search; the final proposal re-sequences with the Phase 1 solver.
@@ -192,22 +202,18 @@ export function shiftCost(
   if (!trips.length) return 0;
   let cost = 0;
 
-  const wMedian = env.per_trip.weight_median;
+  const caps = classCapsFor(shift.driver.truck_class, cfg);
   let shiftActiveMin = 0;
   const tripRadii: number[] = [];
 
   for (let ti = 0; ti < trips.length; ti++) {
     const t = trips[ti];
-    const w = tripWeight(t);
-    // Overload vs the driver's typical trip weight. Phase 2.6 dropped the UNDERLOAD
-    // penalty: charging a light trip is cross-driver balancing (it pushes to fill
-    // everyone up), and the data shows dispatch happily runs 1-3-stop days. Only the
-    // OVER side is kept as a soft feasibility guard until Phase 3 replaces it with a
-    // hard per-class skid cap.
-    if (wMedian != null && wMedian > 0) {
-      const dev = (w - wMedian) / wMedian;
-      if (dev > 0) cost += cfg.w_overload * dev;
-    }
+    // Phase 2.8 — skid load past the class SOFT cap. The 20-22 (box) band is
+    // where dispatch starts handing a zone's overflow to the cast's #2 driver;
+    // charging per skid-equiv over soft makes the search do the same. NOT a
+    // balancer: below soft, concentration is free (the 2.5.0 lesson).
+    const eq = tripSkidEquiv(t, cfg);
+    if (eq > caps.soft) cost += cfg.w_skid_soft * (eq - caps.soft);
     // zone-affinity misfit: stops in gh5 zones this driver rarely serves
     let misfit = 0;
     for (const s of t.stops) misfit += 1 - (shift.driver.affinity.get(s.gh5) || 0);
@@ -323,19 +329,21 @@ export function planCost(shifts: AssignedShift[], input: AssignInput, matrixCach
 
 // ── far-first splitting ──────────────────────────────────────────────────────
 
-// Split a driver's stop bag into trips each within the ceiling, farther stops in
-// earlier trips (far-first). Greedy: stops miles-desc, open a new trip when the
-// current would breach the ceiling.
-export function splitFarFirst(stops: AssignStop[], ceiling: number): AssignedTrip[] {
+// Split a driver's stop bag into trips each within the class HARD skid cap,
+// farther stops in earlier trips (far-first). Greedy: stops miles-desc, open a
+// new trip when the current would breach the cap. A single over-cap stop still
+// rides (alone) — the cap splits bags, it never strands freight.
+export function splitFarFirst(stops: AssignStop[], capSkidEquiv: number, cfg: EngineConfig): AssignedTrip[] {
   if (!stops.length) return [];
   const sorted = [...stops].sort((a, b) => (b.miles - a.miles) || a.id.localeCompare(b.id));
-  const totalW = sorted.reduce((a, s) => a + s.weight, 0);
-  if (!(ceiling < Infinity) || totalW <= ceiling) return [{ stops: [...stops] }];
+  const total = sorted.reduce((a, s) => a + stopSkidEquiv(s, cfg), 0);
+  if (!(capSkidEquiv < Infinity) || total <= capSkidEquiv) return [{ stops: [...stops] }];
   const trips: AssignedTrip[] = [];
-  let cur: AssignStop[] = [], curW = 0;
+  let cur: AssignStop[] = [], curEq = 0;
   for (const s of sorted) {
-    if (cur.length && curW + s.weight > ceiling) { trips.push({ stops: cur }); cur = []; curW = 0; }
-    cur.push(s); curW += s.weight;
+    const eq = stopSkidEquiv(s, cfg);
+    if (cur.length && curEq + eq > capSkidEquiv) { trips.push({ stops: cur }); cur = []; curEq = 0; }
+    cur.push(s); curEq += eq;
   }
   if (cur.length) trips.push({ stops: cur });
   return trips;
@@ -356,15 +364,27 @@ export function solveAssignment(input: AssignInput): AssignResult {
   const driverByKey = new Map(drivers.map((d) => [d.driver_key, d] as const));
   const unassigned: AssignStop[] = [];
 
-  // greedy seed — weight-desc, best feasible driver by OWNERSHIP: habit + affinity
-  // + far-consolidation + learned territory. Phase 2.6 removed the load-balancing
-  // headroom/capacity term entirely: the data shows dispatch CONCENTRATES work on a
-  // zone's owner until the truck is full and never balances (the 2.5.0 balancing
-  // cost ~5pts agreement and +30pts travel). Feasibility is the cost function's job
-  // (over-trip weight, trip count, shift hours), NOT the seed's.
-  const seedStops = [...stops].sort((a, b) => (b.weight - a.weight) || a.id.localeCompare(b.id));
+  // greedy seed — biggest freight first, best feasible driver by OWNERSHIP: habit
+  // + affinity + far-consolidation + learned territory. Phase 2.6 removed load
+  // BALANCING entirely (dispatch concentrates on a zone's owner and never levels;
+  // the 2.5.0 balancing cost ~5pts agreement and +30pts travel). Phase 2.8 adds
+  // the one capacity idea that survives that lesson: a CAP. Ordering among
+  // candidates with room is still pure ownership — but a candidate already past
+  // their day skid budget (class hard cap × trips propensity) drops a tier, so a
+  // zone's overflow lands on the cast's #2/#3 driver exactly the way dispatch
+  // splits a corridor's work. Tiers: candidate-with-room > candidate-full >
+  // any-feasible (territory still beats capacity; never strand a stop).
+  const bagEq = new Map<string, number>();                 // driver_key → seeded skid-equiv
+  const dayBudget = (d: AssignDriver): number => {
+    const p = Math.max(0, Math.min(1, d.envelope?.trips_per_day_propensity || 0));
+    return classCapsFor(d.truck_class, cfg).hard * (1 + p);
+  };
+  const seedStops = [...stops].sort((a, b) =>
+    (stopSkidEquiv(b, cfg) - stopSkidEquiv(a, cfg)) || (b.weight - a.weight) || a.id.localeCompare(b.id));
   for (const s of seedStops) {
-    let best: AssignDriver | null = null, bestScore = -Infinity;         // best TERRITORY candidate
+    const eq = stopSkidEquiv(s, cfg);
+    let best: AssignDriver | null = null, bestScore = -Infinity;         // candidate WITH room
+    let bestFull: AssignDriver | null = null, bestFullScore = -Infinity; // candidate past day budget
     let anyBest: AssignDriver | null = null, anyScore = -Infinity;       // best feasible driver overall
     for (const d of drivers) {
       if (!driverCanServe(d, s)) continue;
@@ -385,19 +405,25 @@ export function solveAssignment(input: AssignInput): AssignResult {
       const score = habit * 3 + affinity * 2 + consolidation + ownerBoost + rand() * 1e-6; // deterministic jitter breaks ties
       if (score > anyScore) { anyScore = score; anyBest = d; }
       // Phase 2.7: prefer a driver in the stop's TERRITORY candidate set.
-      if (isCandidate(s, d.driver_key) && score > bestScore) { bestScore = score; best = d; }
+      if (isCandidate(s, d.driver_key)) {
+        if ((bagEq.get(d.driver_key) || 0) + eq <= dayBudget(d)) {
+          if (score > bestScore) { bestScore = score; best = d; }
+        } else if (score > bestFullScore) { bestFullScore = score; bestFull = d; }
+      }
     }
-    // Prefer the territory candidate; fall back to the best feasible driver only when
-    // NO candidate can serve this stop (e.g. all candidates are tractors + a
-    // tractor-blocked stop) — so a candidate set never strands a delivery.
-    const chosen = best || anyBest;
+    // Candidate with room first; a FULL candidate still beats a non-candidate
+    // (dispatch over-fills or double-trips within the zone's cast before pulling
+    // an outsider); the open fallback only fires when NO candidate can serve the
+    // stop (e.g. all candidates are tractors + a tractor-blocked stop).
+    const chosen = best || bestFull || anyBest;
     if (!chosen) { unassigned.push(s); continue; }
     bag.get(chosen.driver_key)!.push(s);
+    bagEq.set(chosen.driver_key, (bagEq.get(chosen.driver_key) || 0) + eq);
   }
 
   const buildShifts = (): AssignedShift[] => drivers.map((d) => ({
     driver: d,
-    trips: splitFarFirst(bag.get(d.driver_key) || [], tripCeiling(d, cfg)),
+    trips: splitFarFirst(bag.get(d.driver_key) || [], classCapsFor(d.truck_class, cfg).hard, cfg),
   }));
 
   let shifts = buildShifts();

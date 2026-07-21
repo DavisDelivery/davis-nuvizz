@@ -1,7 +1,10 @@
-// Regression tests for the trip-split tightening (engine 2.1.1): the engine was
-// proposing ~10-15% more trips/day than dispatch actually ran because the hard
-// per-trip ceiling was p85 × hard_cap_factor — which by definition chops the
-// top-15% tail of trips dispatch REALLY ran, manufacturing phantom splits.
+// Regression tests for trip-split behavior. History: engine 2.1.1 tightened the
+// per-driver WEIGHT ceiling because p85 × hard_cap_factor chopped the top-15%
+// tail of trips dispatch REALLY ran, manufacturing phantom splits. Engine 2.8.0
+// removed the weight ceiling entirely — the freight study showed loads bind on
+// per-CLASS skid positions (dispatch cubes out, it doesn't weigh out) — so the
+// no-phantom-splits guarantee is now: WEIGHT never splits a trip, only the
+// class skid cap does. The envelope still mines weight (kept as data).
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
@@ -48,30 +51,37 @@ test('envelope mines the observed per-trip weight_max (as-of filter still applie
   assert.ok(env.per_trip.weight_max < 99000, 'a future day never leaks into the max');
 });
 
-test('never split a weight the driver has actually carried in one trip', () => {
-  // p85=5000 → old ceiling 5000×1.15=5750 would force this 8500-lb bag into 2 trips.
-  // The driver has RUN 9000 in one trip, so it must stay one trip.
+test('weight NEVER splits a trip: a heavy bag under the class skid cap stays ONE trip', () => {
+  // 8500 lbs on a p85=5000 envelope — the 2.1.1 weight ceiling split this. The
+  // bag is 6 skid-equiv (pallets fallback), far under the tractor cap of 37, so
+  // it must ride as one load no matter what the scale says.
   const stops = [aStop('A', 3000), aStop('B', 3000), aStop('C', 2500)];
   const res = solve(stops, ENV(5000, 9000));
   const shift = res.shifts.find((s) => s.driver.driver_key === 'GPITTS');
   const trips = shift.trips.filter((t) => t.stops.length);
-  assert.equal(trips.length, 1, `8500 lbs under the observed 9000 max must be ONE trip, got ${trips.length}`);
+  assert.equal(trips.length, 1, `6 skid-eq under the tractor cap must be ONE trip, got ${trips.length}`);
 });
 
-test('the ceiling still splits above everything the driver has ever carried', () => {
-  const stops = [aStop('A', 5000), aStop('B', 5000), aStop('C', 4000)]; // 14000 > max 9000
+test('even a bag past every observed weight stays whole — only the skid cap splits', () => {
+  // 14000 lbs vs weight_max 9000: the old ceiling split this; skids (6 eq) say one load.
+  const stops = [aStop('A', 5000), aStop('B', 5000), aStop('C', 4000)];
   const res = solve(stops, ENV(5000, 9000));
   const shift = res.shifts.find((s) => s.driver.driver_key === 'GPITTS');
   const trips = shift.trips.filter((t) => t.stops.length);
-  assert.ok(trips.length >= 2, 'a bag above the observed max still splits');
+  assert.equal(trips.length, 1, 'weight is not a split dimension anymore');
 });
 
-test('missing weight_max falls back to p85 × hard_cap_factor (old behavior preserved)', () => {
-  const stops = [aStop('A', 3000), aStop('B', 3000), aStop('C', 2500)]; // 8500 > 5750
-  const res = solve(stops, ENV(5000, null));
+test('the class hard skid cap still splits a genuinely over-cap bag', () => {
+  // 20 stops × 2 pallets = 40 skid-eq > tractor hard 37 → must split.
+  const stops = Array.from({ length: 20 }, (_, i) => aStop(`S${i}`, 400));
+  const res = solve(stops, ENV(5000, 9000));
   const shift = res.shifts.find((s) => s.driver.driver_key === 'GPITTS');
   const trips = shift.trips.filter((t) => t.stops.length);
-  assert.ok(trips.length >= 2, 'without an observed max, the p85 ceiling still governs');
+  assert.ok(trips.length >= 2, `40 skid-eq over the tractor cap of 37 must split, got ${trips.length}`);
+  for (const t of trips) {
+    const eq = t.stops.reduce((a, s) => a + s.pallets, 0);
+    assert.ok(eq <= 37 + 1e-9, `each trip within the tractor cap (got ${eq})`);
+  }
 });
 
 test('w_trips default is a real vote now', () => {

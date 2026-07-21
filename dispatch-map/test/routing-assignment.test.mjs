@@ -155,16 +155,16 @@ test('dwellMinutes / palletBucket / quantile basics', () => {
 
 // ── far-first splitting ──────────────────────────────────────────────────────
 
-test('splitFarFirst: respects the ceiling and puts farther stops in earlier trips', () => {
-  const s = (id, miles, weight) => ({ id, miles, weight, lat: 0, lng: 0, zone: '', gh5: '', pallets: 1, matchKey: id, strict: false, blocksTractor: false });
-  const stops = [s('near', 5, 4000), s('far', 50, 4000), s('mid', 25, 4000)];
-  const trips = splitFarFirst(stops, 8000); // ceiling forces 2 trips
+test('splitFarFirst: respects the skid cap and puts farther stops in earlier trips', () => {
+  const s = (id, miles, skids) => ({ id, miles, skids, loose: 0, weight: 4000, lat: 0, lng: 0, zone: '', gh5: '', pallets: skids, matchKey: id, strict: false, blocksTractor: false });
+  const stops = [s('near', 5, 8), s('far', 50, 8), s('mid', 25, 8)];
+  const trips = splitFarFirst(stops, 16, CFG); // 24 skid-eq over a 16 cap forces 2 trips
   assert.equal(trips.length, 2);
   // farthest ('far') must be in trip 1
   assert.ok(trips[0].stops.some((x) => x.id === 'far'));
-  for (const t of trips) assert.ok(t.stops.reduce((a, x) => a + x.weight, 0) <= 8000);
-  // single trip when under ceiling
-  assert.equal(splitFarFirst(stops, 100000).length, 1);
+  for (const t of trips) assert.ok(t.stops.reduce((a, x) => a + x.skids, 0) <= 16);
+  // single trip when under the cap
+  assert.equal(splitFarFirst(stops, 100, CFG).length, 1);
 });
 
 // ── hard-constraint inviolability ────────────────────────────────────────────
@@ -186,7 +186,7 @@ test('restrictionsBlockTractor + driverCanServe: equipment is inviolable', () =>
   assert.equal(driverCanServe(box, aStop('x', { blocksTractor: true })), true);
 });
 
-test('solveAssignment: never puts a no-tractor stop on a tractor, never exceeds the trip ceiling', () => {
+test('solveAssignment: never puts a no-tractor stop on a tractor, never exceeds the class skid cap', () => {
   const drivers = [
     { driver_key: 'TRAC', driver_user_name: 'TRAC', driver_name: 'T', truck_class: 'tractor', start_minute: 240, envelope: { ...ENV(9000), driver_key: 'TRAC' }, affinity: new Map() },
     { driver_key: 'BOX', driver_user_name: 'BOX', driver_name: 'B', truck_class: 'box_truck', start_minute: 300, envelope: { ...ENV(6000), driver_key: 'BOX' }, affinity: new Map() },
@@ -200,11 +200,11 @@ test('solveAssignment: never puts a no-tractor stop on a tractor, never exceeds 
   // equipment: r1/r2 never on the tractor
   for (const sh of res.shifts) {
     const isTractor = sh.driver.truck_class === 'tractor';
-    for (const t of sh.trips) for (const s of t.stops) {
-      if (s.blocksTractor) assert.ok(!isTractor, `${s.id} must not be on a tractor`);
-      // ceiling: each trip's weight ≤ p85 × hard_cap_factor
-      const ceil = sh.driver.envelope.per_trip.weight_p85 * CFG.hard_cap_factor;
-      assert.ok(t.stops.reduce((a, x) => a + x.weight, 0) <= ceil + 1e-6, `trip weight within ceiling for ${sh.driver.driver_key}`);
+    const cap = isTractor ? CFG.skid_cap_tractor_hard : CFG.skid_cap_box_hard;
+    for (const t of sh.trips) {
+      for (const s of t.stops) if (s.blocksTractor) assert.ok(!isTractor, `${s.id} must not be on a tractor`);
+      // Phase 2.8: each trip's skid-equiv (pallets fallback here) ≤ the CLASS hard cap
+      assert.ok(t.stops.reduce((a, x) => a + x.pallets, 0) <= cap + 1e-6, `trip skid load within the ${sh.driver.truck_class} cap`);
     }
   }
   // every stop placed (both drivers can carry the generic freight)
