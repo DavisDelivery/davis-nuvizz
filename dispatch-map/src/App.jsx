@@ -59,7 +59,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.50.68';
+const APP_VERSION = '0.50.69';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -104,6 +104,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.50.69', 'BIG MANIFEST PDFs now read automatically. The manifest reader’s request has a hard ~256 KB size cap (a platform limit on the background job), so a scanned manifest a page or two longer than usual failed with “too large — split it yourself.” It now splits the PDF into page groups that each fit, reads each group, and merges the rows back into one intake — no manual splitting. A truly huge single page still can’t be split and gives a clear message; everything else just works.'],
   ['0.50.66', 'CALL-COUNT FIX — the reconsignment check was quietly leaking /stop/info calls. The address-change detector (added in 0.50.48) compared the cheap saved-search list address against the address stored from a prior /stop/info pull. Those come from two different NuVizz endpoints and can format the same address slightly differently (a leading suite number, a padded ZIP), so for those stops it looked like the address changed on EVERY scan and re-pulled the order each time — never settling. Now it compares the list address to the LAST LIST address we saw for that stop (same source, same format), so it only re-pulls on a REAL reconsignment and then stops. Real address changes are still caught; the per-scan call bleed is gone.'],
   ['0.50.65', 'VIEWING A ROUTE now always shows that driver\'s stops on the map \u2014 even with a board filter on. Before, if you had a filter active (e.g. "unplanned only") and opened a driver\'s load, the map framed an EMPTY area because the route\'s planned stops were being hidden by the filter. Now, whenever a route is open, its stops are always drawn (numbered, full-color) regardless of the active filters, while everything else still dims as usual. Applies to both desktop and mobile.'],
   ['0.50.64', 'MOBILE \u2014 "View on map" from an open route. When you open a route on your phone (Loads \u2192 a route), the stop list is a full-screen sheet that covers the map, so you couldn\'t see the route laid out. There\'s now a blue "View on map" button at the top of that route sheet: tap it and the sheet minimizes to a slim bar at the bottom, revealing the map framed on that route with its stops numbered in delivery order. Tap any pin to open that stop; tap "Stops" on the bar to bring the full list back, or \u2715 to close the route. Desktop is unchanged (the route list already sits beside the map there).'],
@@ -17626,30 +17627,74 @@ function BulkOrderScreen() {
         if (intakeBusy) { setImportErr('A push is in progress — wait for it to finish before reading a new manifest.'); return; }
         setImportBusy(`Reading "${file.name}" — a scanned manifest takes ~20–40s…`);
         try {
-          const buf = new Uint8Array(await file.arrayBuffer());
-          let bin = '';
-          for (let i = 0; i < buf.length; i += 0x8000) bin += String.fromCharCode.apply(null, buf.subarray(i, i + 0x8000));
-          const b64 = btoa(bin);
-          if (b64.length > 240000) { setImportErr('That PDF is too large for the manifest reader — split it (print-to-PDF a page range) and drop the halves.'); return; }
-          const jobId = (crypto?.randomUUID?.() || `j${Date.now()}${Math.random().toString(36).slice(2, 10)}`).toLowerCase();
-          const kick = await fetch('/.netlify/functions/manifest-ocr-background', {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ jobId, pdfBase64: b64, filename: file.name }),
-          });
-          if (!kick.ok && kick.status !== 202) { setImportErr(`manifest reader unavailable (HTTP ${kick.status})`); return; }
-          const t0 = Date.now();
-          let data = null;
-          while (Date.now() - t0 < 150000) {   // poll up to 2.5 min; the reader itself caps at 110s
-            await new Promise((r) => setTimeout(r, 3000));
-            setImportBusy(`Reading "${file.name}" — ${Math.round((Date.now() - t0) / 1000)}s (a scanned manifest takes ~20–40s)…`);
-            try {
-              const pr = await fetch(`/.netlify/functions/manifest-ocr-result?job=${jobId}`);
-              const pd = await pr.json();
-              if (pd.status === 'done') { data = pd; break; }
-              if (pd.status === 'error') { setImportErr(pd.error || 'manifest read failed'); return; }
-            } catch { /* transient poll failure — keep waiting */ }
+          const arrayBuffer = await file.arrayBuffer();
+          const toB64 = (bytes) => { let bin = ''; for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000)); return btoa(bin); };
+          // The reader is a BACKGROUND function — AWS async-Lambda caps its request body at
+          // 256 KB, so ~240 KB of base64 (less the JSON wrapper) is the ceiling per pass.
+          const CAP = 240000;
+
+          // OCR one PDF (base64) via the background reader; resolves {manifest,rows,warnings} or throws.
+          const ocrOnePdf = async (b64, label) => {
+            const jobId = (crypto?.randomUUID?.() || `j${Date.now()}${Math.random().toString(36).slice(2, 10)}`).toLowerCase();
+            const kick = await fetch('/.netlify/functions/manifest-ocr-background', {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ jobId, pdfBase64: b64, filename: file.name }),
+            });
+            if (!kick.ok && kick.status !== 202) throw new Error(`manifest reader unavailable (HTTP ${kick.status})`);
+            const t0 = Date.now();
+            while (Date.now() - t0 < 150000) {   // poll up to 2.5 min; the reader itself caps at 110s
+              await new Promise((r) => setTimeout(r, 3000));
+              setImportBusy(`Reading ${label} — ${Math.round((Date.now() - t0) / 1000)}s (a scanned manifest takes ~20–40s)…`);
+              let pd = null;
+              try { pd = await (await fetch(`/.netlify/functions/manifest-ocr-result?job=${jobId}`)).json(); }
+              catch { /* transient poll failure — keep waiting */ }
+              if (pd?.status === 'done') return pd;
+              if (pd?.status === 'error') throw new Error(pd.error || 'manifest read failed');
+            }
+            throw new Error('The manifest reader did not answer in time — drop the file again.');
+          };
+
+          // Split a too-big PDF into page-range chunks that each fit the reader's cap, OCR
+          // each, and merge — so a manifest a page or two longer reads as several passes
+          // instead of failing. Returns null if it can't be split (e.g. one huge page).
+          const splitPdfToChunks = async () => {
+            const { PDFDocument } = await import('pdf-lib');   // lazy — only when a big PDF is dropped
+            const src = await PDFDocument.load(arrayBuffer, { ignoreEncryption: true });
+            const n = src.getPageCount();
+            if (n <= 1) return null;
+            const perPage = Math.ceil(arrayBuffer.byteLength * 4 / 3) / n;
+            const build = async (ppc) => {
+              const out = [];
+              for (let start = 0; start < n; start += ppc) {
+                const doc = await PDFDocument.create();
+                const idxs = []; for (let i = start; i < Math.min(start + ppc, n); i++) idxs.push(i);
+                (await doc.copyPages(src, idxs)).forEach((p) => doc.addPage(p));
+                out.push(toB64(await doc.save()));
+              }
+              return out;
+            };
+            let chunks = await build(Math.max(1, Math.floor(175000 / Math.max(1, perPage))));
+            if (chunks.length && chunks.some((c) => c.length > CAP)) chunks = await build(1);   // estimate overshot → one page each
+            return chunks.some((c) => c.length > CAP) ? null : chunks;   // a lone page over the cap can't be handled here
+          };
+
+          const fullB64 = toB64(new Uint8Array(arrayBuffer));
+          let data;
+          if (fullB64.length <= CAP) {
+            data = await ocrOnePdf(fullB64, `"${file.name}"`);
+          } else {
+            setImportBusy(`"${file.name}" is a big manifest — splitting into page groups…`);
+            const chunks = await splitPdfToChunks().catch(() => null);
+            if (!chunks || !chunks.length) { setImportErr('That PDF is too large and could not be auto-split — print-to-PDF at a lower quality, or split it into a few pages and drop each.'); return; }
+            const parts = [];
+            for (let i = 0; i < chunks.length; i++) parts.push(await ocrOnePdf(chunks[i], `page group ${i + 1} of ${chunks.length}`));
+            data = {
+              manifest: (parts.find((p) => p.manifest && (p.manifest.carrier || p.manifest.manifestNumber)) || parts[0]).manifest || {},
+              rows: parts.flatMap((p) => p.rows || []),
+              warnings: parts.flatMap((p) => p.warnings || []),
+            };
+            if (!data.rows.length) { setImportErr('No consignee rows could be read from that manifest.'); return; }
           }
-          if (!data) { setImportErr('The manifest reader did not answer in time — drop the file again.'); return; }
           // Carrier → the Order # prefix (matches the board's existing ESTES-<digits> convention).
           const carrierWord = String(data.manifest?.carrier || 'ESTES').trim().split(/\s+/)[0].toUpperCase().replace(/[^A-Z0-9]/g, '') || 'ESTES';
           // Manifest rows open the dedicated INTAKE panel (review → check → Push to NuVizz),
