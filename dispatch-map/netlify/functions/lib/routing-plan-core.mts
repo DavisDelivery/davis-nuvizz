@@ -170,6 +170,10 @@ export async function runPlanForDate(
     const lk = loadKeyForStop(s)!;
     (actualLoadGroups.get(lk) ?? actualLoadGroups.set(lk, []).get(lk)!).push(id);
   }
+  // Actual delivery position per stop (1-based within its load, in true driven
+  // order) — lets the map draw the dispatch route in real sequence and number the
+  // pins, instead of the warehouse-document order the diff view used to zig-zag by.
+  const stopToActualPos = new Map<string, number>();
   for (const [lk, ids] of actualLoadGroups) {
     const ordered = [...ids].sort((a, b) => {
       const ra = finiteNum(rawById.get(a)?.routeSeq), rb = finiteNum(rawById.get(b)?.routeSeq);
@@ -178,6 +182,7 @@ export async function runPlanForDate(
       const eb = String(rawById.get(b)?.deliveredDTTM ?? rawById.get(b)?.plannedEtaDTTM ?? '');
       return ea < eb ? -1 : ea > eb ? 1 : a.localeCompare(b);
     });
+    ordered.forEach((id, i) => stopToActualPos.set(id, i + 1));
     actualLoadOrdered.set(lk, { driverKey: driverKeyFor(rawById.get(ids[0])), ids: ordered });
   }
 
@@ -362,6 +367,7 @@ export async function runPlanForDate(
       id: s.id, businessName: rawById.get(s.id)?.businessName ?? null, lat: s.lat, lng: s.lng,
       actual_driver: stopToActualDriver.get(s.id) ?? null,
       engine_driver: stopToEngineDriver.get(s.id) ?? null,
+      actual_pos: stopToActualPos.get(s.id) ?? null,   // dispatch delivery order (for map sequencing + pin numbers)
     })),
     engine_trips: engineTrips.map((t) => ({ driver_key: t.driverKey, seq: t.seq, stop_ids: t.orderedIds, travel_min: Math.round(t.travelMin * 10) / 10 })),
     fleet_chain: { far_first_rate: fleet.far_first_rate, reload_gap_median_min: fleet.reload_gap_median_min, source: fleet.source },

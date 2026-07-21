@@ -59,7 +59,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.50.66';
+const APP_VERSION = '0.50.67';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -16311,7 +16311,7 @@ function EngineScreen() {
 
   return (
     <div className="flex-1 min-h-0 overflow-y-auto bg-slate-50">
-      <div className="max-w-[1400px] mx-auto p-3 space-y-3 text-sm">
+      <div className="max-w-[1900px] mx-auto p-3 space-y-3 text-sm">
         {/* header */}
         <div className="flex items-center justify-between gap-2 flex-wrap">
           <div className="flex items-center gap-2 flex-wrap">
@@ -16567,6 +16567,14 @@ function EngineAssignmentView({ google, mapsError }) {
     const isSel = (id) => !selectedDriver || id === selectedDriver.key || id === selectedDriver.name;
     const stopInSel = (s) => !selectedDriver || isSel(s.actual_driver) || isSel(s.engine_driver);
 
+    // Engine visiting order per stop (index within its trip), derived on the client
+    // so pin numbers work on EVERY plan — even ones built before actual_pos existed.
+    const enginePos = new Map();
+    for (const t of engineTrips) (t.stop_ids || []).forEach((id, i) => enginePos.set(id, i + 1));
+    const DISPATCH_LINE = '#64748b';   // neutral grey — "dispatch (today)", never a driver color
+    const MOVED_COLOR = '#d97706';     // amber — engine moved this stop to a different driver
+    const focused = !!selectedDriver;  // number the pins only when ONE driver is isolated
+
     // engine polylines: one per trip, colored by driver, trip1 solid / trip2+ dashed
     const drawEngine = () => {
       for (const t of engineTrips) {
@@ -16577,27 +16585,33 @@ function EngineAssignmentView({ google, mapsError }) {
         if (path.length < 2) continue;
         const color = driverColor.get(t.driver_key) || BRAND;
         const dashed = t.seq > 1;
-        const pl = new google.maps.Polyline({ path, strokeColor: color, strokeOpacity: dashed ? 0 : 0.9, strokeWeight: 3, zIndex: 5,
-          icons: dashed ? [{ icon: { path: 'M 0,-1 0,1', strokeOpacity: 0.9, scale: 3 }, offset: '0', repeat: '12px' }] : undefined });
+        const pl = new google.maps.Polyline({ path, strokeColor: color, strokeOpacity: dashed ? 0 : 0.95, strokeWeight: mapMode === 'diff' ? 4 : 3, zIndex: 6,
+          icons: dashed ? [{ icon: { path: 'M 0,-1 0,1', strokeOpacity: 0.95, scale: 3 }, offset: '0', repeat: '12px' }] : undefined });
         pl.setMap(mapRef.current); linesRef.current.push(pl);
       }
     };
-    // dispatch polylines: group actual stops by actual_driver
-    const drawDispatch = (muted) => {
+    // dispatch polylines: group actual stops by actual_driver, drawn in TRUE delivery
+    // order (actual_pos) when the plan carries it. In Diff, dispatch is a neutral grey
+    // baseline so it can never be mistaken for the engine's colored routes.
+    const drawDispatch = (mode) => {
       const byDriver = new Map();
       for (const s of stops) { if (!s.actual_driver) continue; (byDriver.get(s.actual_driver) ?? byDriver.set(s.actual_driver, []).get(s.actual_driver)).push(s); }
       for (const [drv, ds] of byDriver) {
         if (movedOnly && !movedDrivers.has(drv)) continue;
         if (!isSel(drv)) continue;
-        const path = [depotPt, ...ds.map((s) => ({ lat: s.lat, lng: s.lng }))];
+        const ordered = [...ds].sort((a, b) => (a.actual_pos ?? 1e9) - (b.actual_pos ?? 1e9));
+        const path = [depotPt, ...ordered.map((s) => ({ lat: s.lat, lng: s.lng }))];
         if (path.length < 2) continue;
-        const pl = new google.maps.Polyline({ path, strokeColor: driverColor.get(drv) || '#64748b', strokeOpacity: muted ? 0.35 : 0.9, strokeWeight: muted ? 2.5 : 3, zIndex: muted ? 3 : 5 });
+        const grey = mode === 'diff';
+        const pl = new google.maps.Polyline({ path,
+          strokeColor: grey ? DISPATCH_LINE : (driverColor.get(drv) || DISPATCH_LINE),
+          strokeOpacity: grey ? 0.5 : 0.9, strokeWeight: grey ? 2.5 : 3, zIndex: grey ? 4 : 5 });
         pl.setMap(mapRef.current); linesRef.current.push(pl);
       }
     };
-    if (mapMode === 'dispatch') drawDispatch(false);
+    if (mapMode === 'dispatch') drawDispatch('dispatch');
     else if (mapMode === 'engine') drawEngine();
-    else { drawDispatch(true); drawEngine(); }
+    else { drawDispatch('diff'); drawEngine(); }
 
     const movedSet = new Set(moved.map((s) => s.id));
     for (const s of stops) {
@@ -16605,10 +16619,20 @@ function EngineAssignmentView({ google, mapsError }) {
       if (!stopInSel(s)) continue;
       const drv = mapMode === 'dispatch' ? s.actual_driver : s.engine_driver;
       const isMoved = mapMode === 'diff' && movedSet.has(s.id);
-      const color = isMoved ? '#d97706' : (driverColor.get(drv) || '#64748b');
+      const color = isMoved ? MOVED_COLOR : (driverColor.get(drv) || '#64748b');
+      // Pin number tracks the mode's primary line: delivery order in Dispatch,
+      // engine visiting order in Engine/Diff. Only when a single driver is focused —
+      // numbering the whole day would be a wall of digits.
+      let label = null;
+      if (focused && !isMoved) {
+        const seq = mapMode === 'dispatch' ? s.actual_pos : enginePos.get(s.id);
+        if (seq != null) label = String(seq);
+      }
+      const hollow = !isMoved && mapMode === 'diff' && label == null;
+      const sz = label ? 26 : 24;
       const mk = new google.maps.Marker({ position: { lat: s.lat, lng: s.lng }, map: mapRef.current,
-        icon: { url: circleMarkerSvg(color, { hollow: !isMoved && mapMode === 'diff' }), scaledSize: new google.maps.Size(24, 24), anchor: new google.maps.Point(12, 12) },
-        title: `${s.businessName || s.id} — dispatch ${s.actual_driver || '?'}${s.engine_driver ? `, engine ${s.engine_driver}` : ''}`, zIndex: isMoved ? 30 : 15 });
+        icon: { url: circleMarkerSvg(color, { hollow, label }), scaledSize: new google.maps.Size(sz, sz), anchor: new google.maps.Point(sz / 2, sz / 2) },
+        title: `${s.businessName || s.id} — dispatch ${s.actual_driver || '?'}${s.actual_pos ? ` #${s.actual_pos}` : ''}${s.engine_driver ? `, engine ${s.engine_driver}${enginePos.get(s.id) ? ` #${enginePos.get(s.id)}` : ''}` : ''}`, zIndex: isMoved ? 30 : 15 });
       markersRef.current.push(mk);
     }
     const bounds = new google.maps.LatLngBounds(); bounds.extend(depotPt);
@@ -16684,14 +16708,14 @@ function EngineAssignmentView({ google, mapsError }) {
       </div>
 
       <div className="flex flex-col xl:flex-row gap-3 items-stretch">
-        <div className={`${mapExpanded ? 'hidden' : 'xl:w-[42%]'} border rounded-lg bg-white overflow-hidden flex flex-col`}>
+        <div className={`${mapExpanded ? 'hidden' : 'xl:w-[38%]'} border rounded-lg bg-white overflow-hidden flex flex-col`}>
           <div className="flex items-center justify-between gap-2 px-3 pt-2 pb-1">
             <div className="text-[11px] font-semibold text-slate-600 truncate">Drivers{movedOnly ? ` · moved only (${movedDrivers.size})` : ''}{dayLoading ? ' · loading…' : ''}{dayErr ? ` · ⚠ ${dayErr}` : ''}<span className="font-normal text-slate-400"> · tap a row to focus the map</span></div>
             <button onClick={() => setMovedOnly((v) => !v)} title="Show only the drivers/routes the engine moved a stop to or from — on the table AND the map"
               className={`text-[10px] font-semibold px-2 py-0.5 rounded border shrink-0 ${movedOnly ? 'text-white' : 'text-slate-600 bg-white border-slate-200 hover:bg-slate-50'}`}
               style={movedOnly ? { background: BRAND, borderColor: BRAND } : {}}>Only moved</button>
           </div>
-          <div className="overflow-x-auto overflow-y-auto max-h-[420px]">
+          <div className="overflow-x-auto overflow-y-auto max-h-[560px]">
             <table className="w-full text-xs">
               <thead className="bg-slate-50 sticky top-0"><tr>
                 <SortableTh label="Driver" k="driver" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />
@@ -16722,7 +16746,7 @@ function EngineAssignmentView({ google, mapsError }) {
           </div>
         </div>
 
-        <div className={`${mapExpanded ? 'xl:w-full' : 'xl:w-[58%]'} border rounded-lg bg-white overflow-hidden flex flex-col`}>
+        <div className={`${mapExpanded ? 'xl:w-full' : 'xl:w-[62%]'} border rounded-lg bg-white overflow-hidden flex flex-col`}>
           <div className="flex items-center justify-between gap-2 px-3 pt-2 pb-1">
             <div className="text-[11px] font-semibold text-slate-600 truncate">
               {selectedDriver
@@ -16739,7 +16763,24 @@ function EngineAssignmentView({ google, mapsError }) {
                 className="px-2 py-1 text-[11px] font-semibold rounded text-slate-600 bg-white border border-slate-200 hover:bg-slate-50">{mapExpanded ? '⤡ Collapse' : '⤢ Expand'}</button>
             </div>
           </div>
-          <div ref={mapDiv} className={`w-full ${mapExpanded ? 'h-[640px]' : 'h-[460px]'} bg-slate-100`} />
+          {/* Legend — spells out the diff's visual language (grey = dispatch, driver
+              color = engine, amber = moved) so the map reads without guessing. */}
+          <div className="flex items-center gap-x-3 gap-y-0.5 flex-wrap px-3 pb-1.5 text-[10px] leading-tight text-slate-500 border-b border-slate-100">
+            {mapMode === 'diff' && <>
+              <span className="inline-flex items-center gap-1"><span className="inline-block w-4 h-[3px] rounded" style={{ background: '#64748b', opacity: 0.6 }} />Dispatch · today (grey)</span>
+              <span className="inline-flex items-center gap-1"><span className="inline-block w-4 h-[3px] rounded" style={{ background: BRAND }} />Engine · trip 1 (driver color)</span>
+              <span className="inline-flex items-center gap-1"><span className="inline-block w-4 border-t-2 border-dotted" style={{ borderColor: BRAND }} />trip 2+</span>
+              <span className="inline-flex items-center gap-1"><span className="inline-block w-2.5 h-2.5 rounded-full" style={{ background: '#d97706' }} />moved to another driver</span>
+            </>}
+            {mapMode === 'dispatch' && <span>Actual routes — <b className="text-slate-600">one color per driver</b>, drawn in delivery order</span>}
+            {mapMode === 'engine' && <>
+              <span className="inline-flex items-center gap-1"><span className="inline-block w-4 h-[3px] rounded" style={{ background: BRAND }} />trip 1</span>
+              <span className="inline-flex items-center gap-1"><span className="inline-block w-4 border-t-2 border-dotted" style={{ borderColor: BRAND }} />trip 2+</span>
+              <span>· <b className="text-slate-600">one color per driver</b></span>
+            </>}
+            <span className="text-slate-400">{selectedDriver ? `· pins numbered in ${mapMode === 'dispatch' ? 'delivery' : 'engine'} order` : '· tap a driver row to number the stops'}</span>
+          </div>
+          <div ref={mapDiv} className={`w-full ${mapExpanded ? 'h-[720px]' : 'h-[560px]'} bg-slate-100`} />
           {mapsError && <div className="text-[11px] text-red-600 px-3 py-1">⚠ map failed to load: {String(mapsError)}</div>}
           {mapMode === 'diff' && plan && (
             <div className="px-3 py-2 border-t max-h-[130px] overflow-y-auto">
