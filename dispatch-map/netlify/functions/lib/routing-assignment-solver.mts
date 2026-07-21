@@ -262,8 +262,11 @@ export function shiftCost(
   // (73/86 box, 32/38 tractor): a forced reload is dispatch's normal answer to
   // a full truck. 2.8.0 charged it (~9.6) while the wrong cast-#2 handoff cost
   // ~2, so the objective actively preferred the mistake. `needed` = trips this
-  // shift's skid load physically requires at the class hard cap.
-  const needed = Math.max(1, Math.ceil(shiftEq / caps.hard - 1e-9));
+  // shift's skid load physically requires at the class hard cap — CAPPED AT
+  // TWO: past two full loads dispatch hands off to the cast (day p99 < 2×hard),
+  // so a third trip is never free and the search can't quietly rebuild the
+  // mega-days the seed just shed.
+  const needed = Math.max(1, Math.min(2, Math.ceil(shiftEq / caps.hard - 1e-9)));
   const expectedTrips = Math.max(1 + (env.trips_per_day_propensity || 0), needed);
   cost += cfg.w_trips * Math.abs(trips.length - expectedTrips);
 
@@ -393,46 +396,81 @@ export function solveAssignment(input: AssignInput): AssignResult {
   // wrong truck (agreement 27.9→24.6). Double-tripping is a response to load,
   // not a personality trait.
   const dayBudget = (d: AssignDriver): number => classCapsFor(d.truck_class, cfg).hard * 2;
+  // Ownership scoring shared by both seed passes (jitter is deterministic).
+  const scoreFor = (s: AssignStop, d: AssignDriver): number => {
+    const affinity = d.affinity.get(s.gh5) || 0;
+    const isFar = s.miles > cfg.far_deadhead_mi;
+    // Phase 2.1: the customer's habitual driver gets a head start proportional to
+    // the habit strength; Phase 2.2 discounts that for FAR stops so a distant loop
+    // isn't scattered across each customer's usual driver.
+    const habitRaw = s.habit?.topDriver && d.driver_user_name &&
+      s.habit.topDriver === String(d.driver_user_name).toUpperCase()
+      ? habitStrength(s.habit, cfg.habit_shrink_n) : 0;
+    const habit = isFar ? habitRaw * cfg.habit_far_discount : habitRaw;
+    // Phase 2.2: for a FAR stop, favor a driver already committed to the far field.
+    const consolidation = isFar && (bag.get(d.driver_key) || []).some((x) => x.miles > cfg.far_deadhead_mi) ? 1 : 0;
+    // Phase 2.3: learned territory owners dominate the seed for far stops.
+    const owned = ownedBy(s, d.driver_user_name, input);
+    const ownerBoost = owned === true ? 4 : owned === false ? -4 : 0;
+    return habit * 3 + affinity * 2 + consolidation + ownerBoost + rand() * 1e-6;
+  };
+
+  // PASS 1 — pure ownership, exactly the 2.7.0 assignment: every stop to its
+  // best TERRITORY candidate (open fallback only when no candidate can serve
+  // it). Budgets are deliberately ignored here: WHO owns a stop and WHAT
+  // overflows are separate questions — 2.8.0/2.8.1 conflated them, letting
+  // seeding order decide the overflow (arbitrary fringe, wrong truck).
+  const claim = new Map<string, number>();   // stop.id → its winning territorial score
   const seedStops = [...stops].sort((a, b) =>
     (stopSkidEquiv(b, cfg) - stopSkidEquiv(a, cfg)) || (b.weight - a.weight) || a.id.localeCompare(b.id));
   for (const s of seedStops) {
-    const eq = stopSkidEquiv(s, cfg);
-    let best: AssignDriver | null = null, bestScore = -Infinity;         // candidate WITH room
-    let bestFull: AssignDriver | null = null, bestFullScore = -Infinity; // candidate past day budget
-    let anyBest: AssignDriver | null = null, anyScore = -Infinity;       // best feasible driver overall
+    let best: AssignDriver | null = null, bestScore = -Infinity;   // best TERRITORY candidate
+    let anyBest: AssignDriver | null = null, anyScore = -Infinity; // best feasible driver overall
     for (const d of drivers) {
       if (!driverCanServe(d, s)) continue;
-      const affinity = d.affinity.get(s.gh5) || 0;
-      const isFar = s.miles > cfg.far_deadhead_mi;
-      // Phase 2.1: the customer's habitual driver gets a head start proportional to
-      // the habit strength; Phase 2.2 discounts that for FAR stops so a distant loop
-      // isn't scattered across each customer's usual driver.
-      const habitRaw = s.habit?.topDriver && d.driver_user_name &&
-        s.habit.topDriver === String(d.driver_user_name).toUpperCase()
-        ? habitStrength(s.habit, cfg.habit_shrink_n) : 0;
-      const habit = isFar ? habitRaw * cfg.habit_far_discount : habitRaw;
-      // Phase 2.2: for a FAR stop, favor a driver already committed to the far field.
-      const consolidation = isFar && (bag.get(d.driver_key) || []).some((x) => x.miles > cfg.far_deadhead_mi) ? 1 : 0;
-      // Phase 2.3: learned territory owners dominate the seed for far stops.
-      const owned = ownedBy(s, d.driver_user_name, input);
-      const ownerBoost = owned === true ? 4 : owned === false ? -4 : 0;
-      const score = habit * 3 + affinity * 2 + consolidation + ownerBoost + rand() * 1e-6; // deterministic jitter breaks ties
+      const score = scoreFor(s, d);
       if (score > anyScore) { anyScore = score; anyBest = d; }
-      // Phase 2.7: prefer a driver in the stop's TERRITORY candidate set.
-      if (isCandidate(s, d.driver_key)) {
-        if ((bagEq.get(d.driver_key) || 0) + eq <= dayBudget(d)) {
-          if (score > bestScore) { bestScore = score; best = d; }
-        } else if (score > bestFullScore) { bestFullScore = score; bestFull = d; }
-      }
+      if (isCandidate(s, d.driver_key) && score > bestScore) { bestScore = score; best = d; }
     }
-    // Candidate with room first; a FULL candidate still beats a non-candidate
-    // (dispatch over-fills or double-trips within the zone's cast before pulling
-    // an outsider); the open fallback only fires when NO candidate can serve the
-    // stop (e.g. all candidates are tractors + a tractor-blocked stop).
-    const chosen = best || bestFull || anyBest;
+    const chosen = best || anyBest;
     if (!chosen) { unassigned.push(s); continue; }
     bag.get(chosen.driver_key)!.push(s);
-    bagEq.set(chosen.driver_key, (bagEq.get(chosen.driver_key) || 0) + eq);
+    bagEq.set(chosen.driver_key, (bagEq.get(chosen.driver_key) || 0) + stopSkidEquiv(s, cfg));
+    claim.set(s.id, best ? bestScore : -Infinity);  // an open-fallback stop holds no territorial claim
+  }
+
+  // PASS 2 — cap the overflow, keep the core. A driver over TWO full loads
+  // sheds their WEAKEST-claim stops: dispatch keeps the habitual/affinity core
+  // on the owner and flexes the fringe to the cast — the 2.8.1 replay showed
+  // shedding by seeding order instead costs real agreement. Each shed stop goes
+  // to its next candidate WITH room; a cast with no room still absorbs it
+  // (territory beats capacity); a stop only its owner can serve stays put.
+  // Single deterministic sweep — the local search polishes the rest.
+  for (const d of drivers) {
+    const budget = dayBudget(d);
+    if ((bagEq.get(d.driver_key) || 0) <= budget) continue;
+    const mine = bag.get(d.driver_key)!;
+    mine.sort((a, b) => ((claim.get(a.id) ?? -Infinity) - (claim.get(b.id) ?? -Infinity)) || a.id.localeCompare(b.id)); // weakest claim first
+    let idx = 0;
+    while ((bagEq.get(d.driver_key) || 0) > budget && idx < mine.length) {
+      const s = mine[idx];
+      const eq = stopSkidEquiv(s, cfg);
+      let alt: AssignDriver | null = null, altScore = -Infinity;         // candidate WITH room
+      let altFull: AssignDriver | null = null, altFullScore = -Infinity; // candidate past budget
+      for (const d2 of drivers) {
+        if (d2.driver_key === d.driver_key || !driverCanServe(d2, s) || !isCandidate(s, d2.driver_key)) continue;
+        const score = scoreFor(s, d2);
+        if ((bagEq.get(d2.driver_key) || 0) + eq <= dayBudget(d2)) {
+          if (score > altScore) { altScore = score; alt = d2; }
+        } else if (score > altFullScore) { altFullScore = score; altFull = d2; }
+      }
+      const to = alt || altFull;
+      if (!to) { idx++; continue; }
+      mine.splice(idx, 1);
+      bagEq.set(d.driver_key, (bagEq.get(d.driver_key) || 0) - eq);
+      bag.get(to.driver_key)!.push(s);
+      bagEq.set(to.driver_key, (bagEq.get(to.driver_key) || 0) + eq);
+    }
   }
 
   const buildShifts = (): AssignedShift[] => drivers.map((d) => ({

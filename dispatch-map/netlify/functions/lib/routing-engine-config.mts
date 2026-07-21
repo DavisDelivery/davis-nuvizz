@@ -18,7 +18,7 @@
 
 import { getDoc, setDoc } from './firestore.mts';
 
-export const ENGINE_VERSION = '2.8.1';
+export const ENGINE_VERSION = '2.8.2';
 
 export const ENGINE_CONFIG_COLLECTION = 'routing_engine_config';
 
@@ -311,15 +311,17 @@ export function engineConfigDefaults(env: Record<string, string | undefined> = p
     // split bound; the p99+ tail reads as data quirks, not truck capacity).
     // loose_per_skid=10: only 22/912 trips were loose-dominant — loose barely
     // moves the caps (p85 +0.2) but a 100-piece Uline day still occupies floor.
-    // w_skid_soft=2/skid-eq over soft: redirecting a 2-skid overflow stop saves 4,
-    // beating mild affinity misfit (≤2) but NOT a strong customer habit (3) —
-    // dispatch keeps a strongly-habitual customer on a packed truck too.
+    // w_skid_soft DEFAULTS TO 0 (2.8.2): the 20-22 box band is dispatch's OWN
+    // p85-p95 — normal full trucks. Charging it (2.8.0/2.8.1 used 2) paid the
+    // search to shave stops off legitimately-packed owners onto lighter
+    // candidates, moving them off the agreeing driver. Physics is the HARD
+    // cap's job; the knob stays for tuning experiments only.
     skid_cap_box_soft: num('SKID_CAP_BOX_SOFT', 20),
     skid_cap_box_hard: num('SKID_CAP_BOX_HARD', 22),
     skid_cap_tractor_soft: num('SKID_CAP_TRACTOR_SOFT', 31),
     skid_cap_tractor_hard: num('SKID_CAP_TRACTOR_HARD', 37),
     loose_per_skid: num('LOOSE_PER_SKID', 10),
-    w_skid_soft: num('W_SKID_SOFT', 2),
+    w_skid_soft: num('W_SKID_SOFT', 0),
     routing_calendar: routingCalendarDefaults(env),
   };
 }
