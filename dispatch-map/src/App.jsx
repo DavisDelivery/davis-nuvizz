@@ -59,7 +59,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.50.65';
+const APP_VERSION = '0.50.66';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -104,6 +104,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.50.66', 'CALL-COUNT FIX — the reconsignment check was quietly leaking /stop/info calls. The address-change detector (added in 0.50.48) compared the cheap saved-search list address against the address stored from a prior /stop/info pull. Those come from two different NuVizz endpoints and can format the same address slightly differently (a leading suite number, a padded ZIP), so for those stops it looked like the address changed on EVERY scan and re-pulled the order each time — never settling. Now it compares the list address to the LAST LIST address we saw for that stop (same source, same format), so it only re-pulls on a REAL reconsignment and then stops. Real address changes are still caught; the per-scan call bleed is gone.'],
   ['0.50.65', 'VIEWING A ROUTE now always shows that driver\'s stops on the map \u2014 even with a board filter on. Before, if you had a filter active (e.g. "unplanned only") and opened a driver\'s load, the map framed an EMPTY area because the route\'s planned stops were being hidden by the filter. Now, whenever a route is open, its stops are always drawn (numbered, full-color) regardless of the active filters, while everything else still dims as usual. Applies to both desktop and mobile.'],
   ['0.50.64', 'MOBILE \u2014 "View on map" from an open route. When you open a route on your phone (Loads \u2192 a route), the stop list is a full-screen sheet that covers the map, so you couldn\'t see the route laid out. There\'s now a blue "View on map" button at the top of that route sheet: tap it and the sheet minimizes to a slim bar at the bottom, revealing the map framed on that route with its stops numbered in delivery order. Tap any pin to open that stop; tap "Stops" on the bar to bring the full list back, or \u2715 to close the route. Desktop is unchanged (the route list already sits beside the map there).'],
   ['0.50.63', 'ENGINE (shadow \u00b7 Assignment) \u2014 the LAST far-corner straggler dies. After v0.50.61 the engine used barely half the far trucks dispatch does (11.6 vs 20.3 a day) \u2014 but one 1-stop truck still tagged along to the NW corner, because the \u201cextra truck in a far area\u201d charge grouped stops by tiny ~5-km cells: a lone stop sat in its own cell, looked \u201cperfectly cohesive\u201d, and its truck was never charged. The charge now works at the AREA level \u2014 the same \u201cDalton\u201d-sized grain the territory-ownership rules use \u2014 so an isolated stop a few miles from the owner\'s loop belongs to that area\'s math and folds onto the owner\'s truck. Engine 2.4.1; full history re-scored.'],
