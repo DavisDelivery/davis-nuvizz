@@ -65,6 +65,16 @@ export interface AssignStop {
   // Phase 2.1: the customer's habitual driver as-of the plan date (< D), from
   // routing_customer_drivers. Null when the customer has no delivered history.
   habit?: { topDriver: string; topShare: number; n: number } | null;
+  // Phase 2.7: the driver_keys this stop may be assigned to — its zone's trailing
+  // top drivers ∪ customer habit ∪ area fallback (see candidateDriversFor). An
+  // EMPTY array means unseen geography → any driver is allowed (open fallback).
+  candidates?: string[];
+}
+
+// Is a driver an allowed candidate for this stop? Empty/absent candidates ⇒ the
+// stop's geography is unseen, so every feasible driver is allowed (never strand a stop).
+function isCandidate(s: AssignStop, driverKey: string): boolean {
+  return !s.candidates || s.candidates.length === 0 || s.candidates.includes(driverKey);
 }
 
 // Habit signal strength: top_share shrunk toward 0 for thin history —
@@ -354,7 +364,8 @@ export function solveAssignment(input: AssignInput): AssignResult {
   // (over-trip weight, trip count, shift hours), NOT the seed's.
   const seedStops = [...stops].sort((a, b) => (b.weight - a.weight) || a.id.localeCompare(b.id));
   for (const s of seedStops) {
-    let best: AssignDriver | null = null, bestScore = -Infinity;
+    let best: AssignDriver | null = null, bestScore = -Infinity;         // best TERRITORY candidate
+    let anyBest: AssignDriver | null = null, anyScore = -Infinity;       // best feasible driver overall
     for (const d of drivers) {
       if (!driverCanServe(d, s)) continue;
       const affinity = d.affinity.get(s.gh5) || 0;
@@ -372,10 +383,16 @@ export function solveAssignment(input: AssignInput): AssignResult {
       const owned = ownedBy(s, d.driver_user_name, input);
       const ownerBoost = owned === true ? 4 : owned === false ? -4 : 0;
       const score = habit * 3 + affinity * 2 + consolidation + ownerBoost + rand() * 1e-6; // deterministic jitter breaks ties
-      if (score > bestScore) { bestScore = score; best = d; }
+      if (score > anyScore) { anyScore = score; anyBest = d; }
+      // Phase 2.7: prefer a driver in the stop's TERRITORY candidate set.
+      if (isCandidate(s, d.driver_key) && score > bestScore) { bestScore = score; best = d; }
     }
-    if (!best) { unassigned.push(s); continue; }
-    bag.get(best.driver_key)!.push(s);
+    // Prefer the territory candidate; fall back to the best feasible driver only when
+    // NO candidate can serve this stop (e.g. all candidates are tractors + a
+    // tractor-blocked stop) — so a candidate set never strands a delivery.
+    const chosen = best || anyBest;
+    if (!chosen) { unassigned.push(s); continue; }
+    bag.get(chosen.driver_key)!.push(s);
   }
 
   const buildShifts = (): AssignedShift[] => drivers.map((d) => ({
@@ -400,7 +417,7 @@ export function solveAssignment(input: AssignInput): AssignResult {
       for (let i = 0; i < from.length && now() < deadline; i++) {
         const s = from[i];
         for (const d2 of drivers) {
-          if (d2.driver_key === d.driver_key || !driverCanServe(d2, s)) continue;
+          if (d2.driver_key === d.driver_key || !driverCanServe(d2, s) || !isCandidate(s, d2.driver_key)) continue;
           from.splice(i, 1);
           bag.get(d2.driver_key)!.push(s);
           const cand = buildShifts();
@@ -420,6 +437,7 @@ export function solveAssignment(input: AssignInput): AssignResult {
         for (let i = 0; i < A.length; i++) {
           for (let j = 0; j < B.length; j++) {
             if (!driverCanServe(drivers[b], A[i]) || !driverCanServe(drivers[a], B[j])) continue;
+            if (!isCandidate(A[i], drivers[b].driver_key) || !isCandidate(B[j], drivers[a].driver_key)) continue;   // Phase 2.7
             const sa = A[i], sb = B[j];
             A[i] = sb; B[j] = sa;
             const cand = buildShifts();
