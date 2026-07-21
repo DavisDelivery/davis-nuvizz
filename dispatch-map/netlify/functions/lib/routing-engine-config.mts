@@ -18,7 +18,7 @@
 
 import { getDoc, setDoc } from './firestore.mts';
 
-export const ENGINE_VERSION = '2.7.0';
+export const ENGINE_VERSION = '2.8.0';
 
 export const ENGINE_CONFIG_COLLECTION = 'routing_engine_config';
 
@@ -71,8 +71,6 @@ export interface EngineConfig {
   far_first_adherence: number;         // fleet far-first seed (trip1 farther than trip2)
   trip2_radius_mi: number;             // fleet trip-2 close-in radius seed
   // soft-cost weights (assignment objective = Σ weight × normalized term)
-  w_overload: number;
-  w_underload: number;
   w_affinity: number;
   w_trips: number;
   w_shift_overflow: number;
@@ -111,6 +109,22 @@ export interface EngineConfig {
   zone_owner_min_share: number; // a driver owns a zone at ≥ this share of its historical stops (0..1)
   zone_owner_min_obs: number;   // a zone needs ≥ this many observed stops before ownership applies
 
+  // ── Phase 2.8: per-CLASS skid caps (what a truck physically holds) ─────────
+  // The freight study's core capacity fact: the binding dimension of a load is
+  // SKID POSITIONS, not weight (dispatch cubes out, it doesn't weigh out — the
+  // 2.1.1 weight ceiling manufactured phantom splits and 2.5.0's weight
+  // balancing fought territory concentration). Caps are per truck CLASS, mined
+  // from ~900 real dispatch trips: box p85=19/p95=22, tractor p85=31/p95=37.
+  // Soft = where dispatch starts splitting a zone's work across its candidate
+  // cast; hard = the splitter's physical bound. A cap is NOT a balancer: below
+  // it, concentration is free — it only binds when a truck is genuinely full.
+  skid_cap_box_soft: number;
+  skid_cap_box_hard: number;
+  skid_cap_tractor_soft: number;
+  skid_cap_tractor_hard: number;
+  loose_per_skid: number;      // loose pieces occupying one skid position (skid_equiv = skids + loose/this)
+  w_skid_soft: number;         // per skid-equiv above the class SOFT cap on a trip
+
   // ── Phase 2.1: THE ROUTING CALENDAR ─────────────────────────────────────────
   // Encoded operating fact, not lore: dispatch builds routes OVERNIGHT
   // (~20:00 ET → ~07:00 ET next morning; Sunday night builds Monday, Thursday
@@ -142,12 +156,14 @@ const NUMERIC_KEYS: Array<keyof EngineConfig> = [
   'service_min_clamp', 'service_max_clamp', 'min_observation_days', 'hard_cap_factor',
   'assignment_ms_cap', 'reload_gap_min', 'typical_shift_hours', 'far_first_adherence',
   'trip2_radius_mi',
-  'w_overload', 'w_underload', 'w_affinity', 'w_trips', 'w_shift_overflow',
+  'w_affinity', 'w_trips', 'w_shift_overflow',
   'w_far_first', 'w_strict_window', 'w_compactness',
   'reference_top_k', 'reference_half_life_days', 'same_driver_multiplier', 'reference_edge_floor',
   'w_habit', 'habit_shrink_n',
   'far_deadhead_mi', 'w_far_deadhead', 'habit_far_discount', 'w_zone_cohesion',
   'w_zone_owner', 'zone_owner_min_share', 'zone_owner_min_obs',
+  'skid_cap_box_soft', 'skid_cap_box_hard', 'skid_cap_tractor_soft', 'skid_cap_tractor_hard',
+  'loose_per_skid', 'w_skid_soft',
 ];
 
 export const ENGINE_CONFIG_BOUNDS: Record<Exclude<keyof EngineConfig, 'routing_calendar'>, [number, number]> = {
@@ -180,8 +196,6 @@ export const ENGINE_CONFIG_BOUNDS: Record<Exclude<keyof EngineConfig, 'routing_c
   typical_shift_hours: [4, 16],
   far_first_adherence: [0, 1],
   trip2_radius_mi: [1, 200],
-  w_overload: [0, 1000],
-  w_underload: [0, 1000],
   w_affinity: [0, 1000],
   w_trips: [0, 1000],
   w_shift_overflow: [0, 1000],
@@ -201,6 +215,12 @@ export const ENGINE_CONFIG_BOUNDS: Record<Exclude<keyof EngineConfig, 'routing_c
   w_zone_owner: [0, 1000],
   zone_owner_min_share: [0.01, 1],
   zone_owner_min_obs: [1, 10_000],
+  skid_cap_box_soft: [5, 60],
+  skid_cap_box_hard: [5, 80],
+  skid_cap_tractor_soft: [5, 100],
+  skid_cap_tractor_hard: [5, 120],
+  loose_per_skid: [1, 100],
+  w_skid_soft: [0, 1000],
 };
 
 // NOTE: routing_calendar is NOT in ENGINE_CONFIG_BOUNDS — it is structured, not
@@ -249,8 +269,6 @@ export function engineConfigDefaults(env: Record<string, string | undefined> = p
     typical_shift_hours: num('TYPICAL_SHIFT_HOURS', 10),
     far_first_adherence: num('FAR_FIRST_ADHERENCE', 0.82),
     trip2_radius_mi: num('TRIP2_RADIUS_MI', 20),
-    w_overload: num('W_OVERLOAD', 3),
-    w_underload: num('W_UNDERLOAD', 1),
     w_affinity: num('W_AFFINITY', 2),
     w_trips: num('W_TRIPS', 12),  // strong vote: trip count must track the driver's real double-trip propensity (was 1.5, too weak to matter)
     w_shift_overflow: num('W_SHIFT_OVERFLOW', 4),
@@ -287,6 +305,21 @@ export function engineConfigDefaults(env: Record<string, string | undefined> = p
     w_zone_owner: num('W_ZONE_OWNER', 10),
     zone_owner_min_share: num('ZONE_OWNER_MIN_SHARE', 0.10),
     zone_owner_min_obs: num('ZONE_OWNER_MIN_OBS', 25),
+    // Phase 2.8 — per-class skid caps, mined from 912 dispatch trips (6/29-7/20):
+    // box p50=14 p85=19 p95=22 max=38; tractor p50=26 p85=31 p95=37 max=67.
+    // Soft=p85 rounded up (where the cast split starts), hard=p95 (the physical
+    // split bound; the p99+ tail reads as data quirks, not truck capacity).
+    // loose_per_skid=10: only 22/912 trips were loose-dominant — loose barely
+    // moves the caps (p85 +0.2) but a 100-piece Uline day still occupies floor.
+    // w_skid_soft=2/skid-eq over soft: redirecting a 2-skid overflow stop saves 4,
+    // beating mild affinity misfit (≤2) but NOT a strong customer habit (3) —
+    // dispatch keeps a strongly-habitual customer on a packed truck too.
+    skid_cap_box_soft: num('SKID_CAP_BOX_SOFT', 20),
+    skid_cap_box_hard: num('SKID_CAP_BOX_HARD', 22),
+    skid_cap_tractor_soft: num('SKID_CAP_TRACTOR_SOFT', 31),
+    skid_cap_tractor_hard: num('SKID_CAP_TRACTOR_HARD', 37),
+    loose_per_skid: num('LOOSE_PER_SKID', 10),
+    w_skid_soft: num('W_SKID_SOFT', 2),
     routing_calendar: routingCalendarDefaults(env),
   };
 }
