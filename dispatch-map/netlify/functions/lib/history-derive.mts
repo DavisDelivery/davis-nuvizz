@@ -166,7 +166,12 @@ export function deriveRoutes(stops: Stop[], ctx: DeriveCtx): any[] {
         customerMatchKey: stopMatchKey(s),
         lat: s.lat ?? null,
         lng: s.lng ?? null,
-        pallets: s.pallets ?? null,
+        // FREIGHT: NuVizz mislabels its fields — `pallets` is TOTAL pieces, the real
+        // skid/pallet-position count is `cartons`, loose pieces is `volume`. Carry the
+        // real dimensions explicitly so capacity can be judged on skids + loose.
+        pallets: s.pallets ?? null,     // = TOTAL pieces (skids + loose), mislabeled by NuVizz
+        skids: s.cartons ?? null,       // real skid/pallet positions
+        loose: s.volume ?? null,        // loose pieces
         weight: s.weight ?? null,
         normalizedStatus: s.normalizedStatus ?? null,
         plannedEtaDTTM: s.plannedEtaDTTM ?? null,
@@ -175,6 +180,8 @@ export function deriveRoutes(stops: Stop[], ctx: DeriveCtx): any[] {
       stopCount: ordered.length,
       completedCount: ordered.filter(isDelivered).length,
       totalPallets: ordered.reduce((a, s) => a + (num(s.pallets) ?? 0), 0),
+      totalSkids: ordered.reduce((a, s) => a + (num(s.cartons) ?? 0), 0),
+      totalLoose: ordered.reduce((a, s) => a + (num(s.volume) ?? 0), 0),
       totalWeight: ordered.reduce((a, s) => a + (num(s.weight) ?? 0), 0),
       plannedDistance: legs.plannedDistance,
       plannedDuration: legs.plannedDuration,
