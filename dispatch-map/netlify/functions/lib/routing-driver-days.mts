@@ -47,7 +47,14 @@ export interface DriverTrip {
   load_key: string;
   seq_index: number | null;   // 1..N executed time order; null when the load has no timestamps
   stops: number;
+  // FREIGHT DIMENSIONS. NuVizz MISLABELS its fields (see freight-geometry.mts):
+  //   skids  = NuVizz "cartons"  → real pallet/skid positions (what fills a truck's floor)
+  //   loose  = NuVizz "volume"   → loose pieces
+  //   pallets = NuVizz "pallets" → TOTAL pieces (skids + loose); kept for back-compat only.
+  // Capacity should be judged on skids + loose, NOT weight (rarely the binding constraint).
   pallets: number;
+  skids: number;
+  loose: number;
   weight: number;
   avg_mi: number | null;      // mean stop distance-from-origin
   max_mi: number | null;      // farthest stop
@@ -63,7 +70,7 @@ export interface DriverDayDoc {
   driver_name: string | null;
   truck_class: string | null;
   trips: DriverTrip[];
-  day_totals: { stops: number; pallets: number; weight: number };
+  day_totals: { stops: number; pallets: number; skids: number; loose: number; weight: number };
   trips_count: number;
   start_time: string | null;
   end_time: string | null;
@@ -139,11 +146,17 @@ export function extractDriverDays(
       const lasts = ls.map(touchLast).filter(Boolean) as string[];
       const miles = ls.map(stopMiles).filter((m): m is number => m != null);
       const pallets = ls.reduce((a, s) => a + (finiteNum(s?.pallets) || 0), 0);
+      // Real freight dimensions from the mislabeled NuVizz fields: skids = "cartons",
+      // loose = "volume" (see DriverTrip). These are what actually fill a truck.
+      const skids = ls.reduce((a, s) => a + (finiteNum(s?.cartons) || 0), 0);
+      const loose = ls.reduce((a, s) => a + (finiteNum(s?.volume) || 0), 0);
       const weight = ls.reduce((a, s) => a + (finiteNum(s?.weight) || 0), 0);
       return {
         load_key,
         stops: ls.length,
         pallets,
+        skids,
+        loose,
         weight,
         avg_mi: miles.length ? Math.round((miles.reduce((a, b) => a + b, 0) / miles.length) * 10) / 10 : null,
         max_mi: miles.length ? Math.round(Math.max(...miles) * 10) / 10 : null,
@@ -163,6 +176,8 @@ export function extractDriverDays(
       seq_index: seqOf.get(t.load_key) ?? null,
       stops: t.stops,
       pallets: Math.round(t.pallets * 10) / 10,
+      skids: Math.round(t.skids * 10) / 10,
+      loose: Math.round(t.loose * 10) / 10,
       weight: Math.round(t.weight * 10) / 10,
       avg_mi: t.avg_mi,
       max_mi: t.max_mi,
@@ -173,6 +188,8 @@ export function extractDriverDays(
     const day_totals = {
       stops: trips.reduce((a, t) => a + t.stops, 0),
       pallets: Math.round(trips.reduce((a, t) => a + t.pallets, 0) * 10) / 10,
+      skids: Math.round(trips.reduce((a, t) => a + t.skids, 0) * 10) / 10,
+      loose: Math.round(trips.reduce((a, t) => a + t.loose, 0) * 10) / 10,
       weight: Math.round(trips.reduce((a, t) => a + t.weight, 0) * 10) / 10,
     };
     const trip1 = timed[0] || null;
