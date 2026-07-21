@@ -204,6 +204,7 @@ export function shiftCost(
 
   const caps = classCapsFor(shift.driver.truck_class, cfg);
   let shiftActiveMin = 0;
+  let shiftEq = 0;
   const tripRadii: number[] = [];
 
   for (let ti = 0; ti < trips.length; ti++) {
@@ -213,6 +214,7 @@ export function shiftCost(
     // charging per skid-equiv over soft makes the search do the same. NOT a
     // balancer: below soft, concentration is free (the 2.5.0 lesson).
     const eq = tripSkidEquiv(t, cfg);
+    shiftEq += eq;
     if (eq > caps.soft) cost += cfg.w_skid_soft * (eq - caps.soft);
     // zone-affinity misfit: stops in gh5 zones this driver rarely serves
     let misfit = 0;
@@ -255,8 +257,14 @@ export function shiftCost(
   // far-first: trip 1 should be farther out than trip 2 (chain shape)
   if (trips.length >= 2 && tripRadii[0] < tripRadii[1]) cost += cfg.w_far_first * fleetChain.far_first_rate;
 
-  // trips-count vs propensity (a driver who rarely double-trips shouldn't be forced to)
-  const expectedTrips = 1 + (env.trips_per_day_propensity || 0);
+  // trips-count vs propensity — but NEVER charge the trips the freight forces.
+  // Conditioned on a day over the class cap, 85% of real driver-days reloaded
+  // (73/86 box, 32/38 tractor): a forced reload is dispatch's normal answer to
+  // a full truck. 2.8.0 charged it (~9.6) while the wrong cast-#2 handoff cost
+  // ~2, so the objective actively preferred the mistake. `needed` = trips this
+  // shift's skid load physically requires at the class hard cap.
+  const needed = Math.max(1, Math.ceil(shiftEq / caps.hard - 1e-9));
+  const expectedTrips = Math.max(1 + (env.trips_per_day_propensity || 0), needed);
   cost += cfg.w_trips * Math.abs(trips.length - expectedTrips);
 
   // shift-hours overflow
@@ -375,10 +383,16 @@ export function solveAssignment(input: AssignInput): AssignResult {
   // splits a corridor's work. Tiers: candidate-with-room > candidate-full >
   // any-feasible (territory still beats capacity; never strand a stop).
   const bagEq = new Map<string, number>();                 // driver_key → seeded skid-equiv
-  const dayBudget = (d: AssignDriver): number => {
-    const p = Math.max(0, Math.min(1, d.envelope?.trips_per_day_propensity || 0));
-    return classCapsFor(d.truck_class, cfg).hard * (1 + p);
-  };
+  // Day budget = TWO full loads. Reloading is dispatch's normal answer to a full
+  // truck — 85% of real over-cap driver-days ran 2+ trips (73/86 box, 32/38
+  // tractor) — so the zone owner keeps their zone through a reload, and the
+  // cast's #2 driver only inherits past two full loads (p99 territory, where
+  // dispatch really does hand off). 2.8.0 budgeted by the UNCONDITIONAL
+  // double-trip rate (propensity ~0.2, i.e. ~1.2 loads): it demoted owners at
+  // ~26 box skids and handed their freight to cast #2 — right split count,
+  // wrong truck (agreement 27.9→24.6). Double-tripping is a response to load,
+  // not a personality trait.
+  const dayBudget = (d: AssignDriver): number => classCapsFor(d.truck_class, cfg).hard * 2;
   const seedStops = [...stops].sort((a, b) =>
     (stopSkidEquiv(b, cfg) - stopSkidEquiv(a, cfg)) || (b.weight - a.weight) || a.id.localeCompare(b.id));
   for (const s of seedStops) {

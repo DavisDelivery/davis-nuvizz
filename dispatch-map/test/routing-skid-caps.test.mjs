@@ -59,19 +59,38 @@ test('splitFarFirst: splits at the skid cap, far-first, every trip within cap', 
   assert.equal(splitFarFirst([stop('l', { skids: 0, loose: 100 }), stop('k', { skids: 15 })], 22, CFG).length, 2);
 });
 
-test('a bag over the class day budget overflows to the cast\'s #2 candidate (corridor split)', () => {
-  // D1 owns the zone (affinity 1.0); D2 is the cast's #2. 15 two-skid stops = 30
-  // eq — over one box truck. The seed must fill D1 to the cap and hand the
-  // overflow to D2, NOT pile 30 on D1 (the 2.7.0 over-concentration bug).
+test('a full truck RELOADS its owner (2 trips) — overflow does NOT jump to the cast #2 (2.8.1)', () => {
+  // D1 owns the zone; 15 two-skid stops = 30 eq — over one box load but under
+  // two. Dispatch's answer to a full truck is a same-driver reload (85% of real
+  // over-cap days: 73/86 box, 32/38 tractor), so ALL 30 eq stay on D1 as two
+  // capped trips; D2 gets nothing. (2.8.0 demoted the owner at ~1.2 loads and
+  // handed freight to D2 — right split count, wrong truck: agreement 27.9→24.6.)
   const drivers = [driver('D1', { aff: 1.0 }), driver('D2')];
   const stops = Array.from({ length: 15 }, (_, i) => stop(`s${i}`, { skids: 2, candidates: ['D1', 'D2'] }));
   const res = solve(stops, drivers);
   assert.equal(res.unassigned.length, 0);
+  assert.equal(tripsOf(res, 'D2').length, 0, 'the owner reloads; the cast #2 stays empty');
+  const d1 = tripsOf(res, 'D1');
+  assert.equal(d1.length, 2, `30 eq = one reload on the owner, got ${d1.length} trips`);
+  for (const t of d1) assert.ok(eqOf(t) <= 22 + 1e-9, 'both trips within the box cap');
+});
+
+test('past TWO full loads the zone finally overflows to the cast\'s #2 candidate', () => {
+  // 25 two-skid stops = 50 eq > the 44-eq two-load budget: the owner runs their
+  // two full trips and the tail lands on D2 — the p99 day where dispatch really
+  // does hand a corridor's overflow to the cast.
+  const drivers = [driver('D1', { aff: 1.0 }), driver('D2')];
+  const stops = Array.from({ length: 25 }, (_, i) => stop(`s${i}`, { skids: 2, candidates: ['D1', 'D2'] }));
+  const res = solve(stops, drivers);
+  assert.equal(res.unassigned.length, 0);
   const used = new Set(res.shifts.filter((sh) => sh.trips.some((t) => t.stops.length)).map((sh) => sh.driver.driver_key));
-  assert.ok(used.has('D1') && used.has('D2'), `overflow must reach D2, got ${[...used]}`);
-  for (const sh of res.shifts) for (const t of sh.trips) {
+  assert.ok(used.has('D2'), `past two loads the overflow must reach D2, got ${[...used]}`);
+  let totalTrips = 0;
+  for (const sh of res.shifts) for (const t of sh.trips) if (t.stops.length) {
+    totalTrips++;
     assert.ok(eqOf(t) <= classCapsFor(sh.driver.truck_class, CFG).hard + 1e-9, 'no trip over its class hard cap');
   }
+  assert.ok(totalTrips >= 3, `50 eq needs ≥3 box trips, got ${totalTrips}`);
 });
 
 test('territory outranks capacity: a FULL candidate still beats a roomy non-candidate', () => {
