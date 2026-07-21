@@ -17,21 +17,29 @@
 // ANTHROPIC_API_KEY that powers AI search). Fires only on an explicit file drop.
 
 import { MANIFEST_SYSTEM, MANIFEST_PROMPT, extractJsonBlock, normalizeManifestRows } from './lib/manifest-extract.mts';
-import { isFirestoreEnabled, setDoc } from './lib/firestore.mts';
+import { isFirestoreEnabled, setDoc, getDoc, deleteDoc } from './lib/firestore.mts';
 
 const MESSAGES_URL = 'https://api.anthropic.com/v1/messages';
 const ANTHROPIC_VERSION = '2023-06-01';
 // Sonnet by default — fax-quality digits (PRO numbers) punish a weaker reader.
 const OCR_MODEL = process.env.ANTHROPIC_OCR_MODEL || 'claude-sonnet-4-6';
 // Generous now that we're off the request path; still bounded so a hung upstream call
-// can't pin the function for the full 15-minute background allowance.
-const OCR_TIMEOUT_MS = 110_000;
-// Netlify background functions cap the request BODY around 256 KB — the client checks
-// before sending; this is the server-side backstop. (A typical Estes fax page is ~40 KB
-// of base64, so 5-page manifests fit comfortably.)
+// can't pin the function for the full 15-minute background allowance. A heavy
+// high-resolution scan takes longer than the old 3-page fax baseline, so this is
+// wider than the original 110s (the client polls up to 6 minutes).
+const OCR_TIMEOUT_MS = Math.max(60_000, Number(process.env.MANIFEST_OCR_TIMEOUT_MS) || 300_000);
+// Netlify background functions cap the request BODY around 256 KB, so an INLINE
+// pdfBase64 is limited to this; the client sends anything bigger through the chunked
+// manifest-upload path ({jobId, chunks: N} here) instead of inlining it.
 const MAX_B64_CHARS = 250_000;
+// Assembled (chunked) PDFs: ≤32 parts × ≤900k chars ≈ 21 MB base64 (~16 MB PDF) —
+// far past any fax manifest, still well under the AI reader's 32 MB request cap.
+export const MAX_PDF_CHUNKS = 32;
+export const MAX_CHUNK_B64_CHARS = 900_000;
+const MAX_TOTAL_B64_CHARS = MAX_PDF_CHUNKS * MAX_CHUNK_B64_CHARS;
 
 export const jobDocPath = (jobId: string) => `nuvizz_ops/manifest_ocr__${jobId}`;
+export const pdfChunkDocPath = (jobId: string, seq: number) => `nuvizz_ops/manifest_pdf__${jobId}__${seq}`;
 export const isValidJobId = (id: string) => /^[a-z0-9-]{8,64}$/.test(id);
 
 export default async (req: Request): Promise<Response> => {
@@ -45,15 +53,40 @@ export default async (req: Request): Promise<Response> => {
   let body: any;
   try { body = await req.json(); } catch { return J({ ok: false, error: 'invalid JSON body' }, 400); }
   const jobId = String(body?.jobId || '').toLowerCase();
-  const pdfBase64 = String(body?.pdfBase64 || '');
+  let pdfBase64 = String(body?.pdfBase64 || '');
+  const chunks = Number(body?.chunks || 0);
   if (!isValidJobId(jobId)) return J({ ok: false, error: 'bad jobId' }, 400);
-  if (!pdfBase64) return J({ ok: false, error: 'pdfBase64 required' }, 400);
-  if (pdfBase64.length > MAX_B64_CHARS) return J({ ok: false, error: 'PDF too large for background processing — split it and drop the halves.' }, 413);
-  // '%PDF' base64-encodes to 'JVBERi' — cheap sanity check that this is actually a PDF.
-  if (!pdfBase64.startsWith('JVBERi')) return J({ ok: false, error: 'That file does not look like a PDF.' }, 400);
+  if (!pdfBase64 && !chunks) return J({ ok: false, error: 'pdfBase64 or chunks required' }, 400);
 
   const doc = jobDocPath(jobId);
   const stamp = () => new Date().toISOString();
+
+  if (pdfBase64) {
+    // Inline path (small PDFs) — bounded by the background-function body cap.
+    if (pdfBase64.length > MAX_B64_CHARS) return J({ ok: false, error: 'PDF too large for an inline drop — the app uploads big files in parts; hard-refresh the app and drop it again.' }, 413);
+  } else {
+    // Chunked path: reassemble the base64 the client uploaded via manifest-upload.
+    if (!Number.isInteger(chunks) || chunks < 1 || chunks > MAX_PDF_CHUNKS) return J({ ok: false, error: 'bad chunk count' }, 400);
+    const parts: string[] = [];
+    for (let i = 0; i < chunks; i++) {
+      const c: any = await getDoc(pdfChunkDocPath(jobId, i)).catch(() => null);
+      if (!c || typeof c.data !== 'string' || !c.data) {
+        await setDoc(doc, { status: 'error', error: `Upload incomplete — part ${i + 1} of ${chunks} never arrived. Drop the file again.`, created_at: stamp() }).catch(() => {});
+        return J({ ok: true, jobId });
+      }
+      parts.push(c.data);
+    }
+    pdfBase64 = parts.join('');
+    // Chunks are single-use — clean up now (best-effort) so they never accumulate,
+    // whatever the OCR outcome below.
+    for (let i = 0; i < chunks; i++) deleteDoc(pdfChunkDocPath(jobId, i)).catch(() => {});
+    if (pdfBase64.length > MAX_TOTAL_B64_CHARS) {
+      await setDoc(doc, { status: 'error', error: 'That PDF is too large for the reader (over ~16 MB) — print-to-PDF a smaller page range and drop that.', created_at: stamp() }).catch(() => {});
+      return J({ ok: true, jobId });
+    }
+  }
+  // '%PDF' base64-encodes to 'JVBERi' — cheap sanity check that this is actually a PDF.
+  if (!pdfBase64.startsWith('JVBERi')) return J({ ok: false, error: 'That file does not look like a PDF.' }, 400);
   const key = process.env.ANTHROPIC_API_KEY;
   if (!key) {
     await setDoc(doc, { status: 'error', error: 'AI is not configured on this site (ANTHROPIC_API_KEY unset) — manifest reading needs it.', created_at: stamp() }).catch(() => {});
@@ -97,7 +130,7 @@ export default async (req: Request): Promise<Response> => {
     return J({ ok: true, jobId });
   } catch (e: any) {
     const aborted = e?.name === 'AbortError';
-    await setDoc(doc, { status: 'error', error: aborted ? 'The AI reader took over 110s — try again.' : (e?.message || 'manifest read failed'), created_at: stamp() }).catch(() => {});
+    await setDoc(doc, { status: 'error', error: aborted ? `The AI reader took over ${Math.round(OCR_TIMEOUT_MS / 1000)}s — try again.` : (e?.message || 'manifest read failed'), created_at: stamp() }).catch(() => {});
     return J({ ok: true, jobId });
   } finally {
     clearTimeout(timer);
