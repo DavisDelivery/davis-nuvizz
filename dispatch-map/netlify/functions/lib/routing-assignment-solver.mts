@@ -54,7 +54,9 @@ export interface AssignStop {
   lat: number; lng: number;
   zone: string;         // gh6
   gh5: string;          // gh5 (affinity bucket)
-  pallets: number;
+  pallets: number;      // TOTAL pieces (skids + loose) — NuVizz's mislabeled "pallets"
+  skids: number;        // real skid/pallet positions (NuVizz "cartons") — a truck-fill dimension
+  loose: number;        // loose pieces (NuVizz "volume") — a truck-fill dimension
   weight: number;
   matchKey: string | null;
   strict: boolean;      // STRICT delivery window
@@ -241,6 +243,23 @@ export function shiftCost(
   const shiftBudgetMin = (env.shift_hours_typical ?? cfg.typical_shift_hours) * 60;
   if (shiftActiveMin > shiftBudgetMin) cost += cfg.w_shift_overflow * ((shiftActiveMin - shiftBudgetMin) / 60);
 
+  // Phase 2.5 — daily-capacity overflow. A driver-day past their LEARNED daily
+  // skid/loose capacity (the real truck-fill dimensions) is charged per fractional
+  // unit over, so the plan won't pile a whole day onto one broad-territory driver —
+  // and, unlike the seed's head-start alone, the SEARCH now respects it too (the
+  // seed spread a pileup only for w_habit to pull it back, since the habitual
+  // driver pays no habit cost). Whichever dimension fills first binds. Charged only
+  // when capacity is learned and w_day_capacity > 0 (else pure back-compat).
+  if (cfg.w_day_capacity > 0) {
+    const daySkids = trips.reduce((a, t) => a + t.stops.reduce((b, s) => b + (s.skids || 0), 0), 0);
+    const dayLoose = trips.reduce((a, t) => a + t.stops.reduce((b, s) => b + (s.loose || 0), 0), 0);
+    const overs: number[] = [];
+    if (env.day_skids_p85 && env.day_skids_p85 > 0) overs.push((daySkids - env.day_skids_p85) / env.day_skids_p85);
+    if (env.day_loose_p85 && env.day_loose_p85 > 0) overs.push((dayLoose - env.day_loose_p85) / env.day_loose_p85);
+    const over = overs.length ? Math.max(...overs) : 0;
+    if (over > 0) cost += cfg.w_day_capacity * over;
+  }
+
   // Phase 2.2 — far-deadhead reach. A driver reaching past far_deadhead_mi pays a
   // per-shift charge for the deep leg, charged ONCE on their farthest stop. So
   // once a driver is already out at the edge, adding MORE far stops to them is
@@ -339,10 +358,27 @@ export function solveAssignment(input: AssignInput): AssignResult {
   const driverByKey = new Map(drivers.map((d) => [d.driver_key, d] as const));
   const unassigned: AssignStop[] = [];
 
-  // headroom proxy: driver's day weight p85 minus current bag weight
-  const bagWeight = (k: string) => (bag.get(k) || []).reduce((a, s) => a + s.weight, 0);
+  // Per-driver running bag totals (incremental → O(1) capacity lookups). The real
+  // truck-fill dimensions (skids, loose) plus a weight fallback.
+  const bagTot = new Map<string, { skids: number; loose: number; weight: number }>();
+  for (const d of drivers) bagTot.set(d.driver_key, { skids: 0, loose: 0, weight: 0 });
 
-  // greedy seed — weight-desc, best feasible driver by habit + affinity + headroom
+  // Fraction of a driver's LEARNED daily capacity the current bag would use. Prefer
+  // the real freight dimensions (skids + loose); fall back to weight when a driver
+  // has no learned skid/loose capacity yet. 0 when nothing is known — an unlearned
+  // driver imposes no capacity pressure (behavior as before this phase). Uses the
+  // MAX across dimensions, so whichever fills first (floor positions or loose count)
+  // binds — exactly how a truck runs out of room.
+  const capacityUse = (d: AssignDriver): number => {
+    const e = d.envelope; const t = bagTot.get(d.driver_key)!;
+    const uses: number[] = [];
+    if (e.day_skids_p85 && e.day_skids_p85 > 0) uses.push(t.skids / e.day_skids_p85);
+    if (e.day_loose_p85 && e.day_loose_p85 > 0) uses.push(t.loose / e.day_loose_p85);
+    if (!uses.length && e.day_weight_p85 && e.day_weight_p85 > 0) uses.push(t.weight / e.day_weight_p85);
+    return uses.length ? Math.max(...uses) : 0;
+  };
+
+  // greedy seed — weight-desc, best feasible driver by habit + affinity + capacity balance
   const seedStops = [...stops].sort((a, b) => (b.weight - a.weight) || a.id.localeCompare(b.id));
   for (const s of seedStops) {
     let best: AssignDriver | null = null, bestScore = -Infinity;
@@ -358,8 +394,15 @@ export function solveAssignment(input: AssignInput): AssignResult {
         s.habit.topDriver === String(d.driver_user_name).toUpperCase()
         ? habitStrength(s.habit, cfg.habit_shrink_n) : 0;
       const habit = isFar ? habitRaw * cfg.habit_far_discount : habitRaw;
-      const cap = d.envelope.day_weight_p85 ?? d.envelope.per_trip.weight_p85 ?? Infinity;
-      const headroom = cap === Infinity ? 1 : Math.max(0, (cap - bagWeight(d.driver_key)) / (cap || 1));
+      // Phase 2.5: daily-capacity balance. Two ASYMMETRIC parts:
+      //   • headroom reward — coefficient 1, IDENTICAL to the prior term, so it does
+      //     not drown the far-cluster consolidation signal (also weight ~1);
+      //   • overfill repel — ×w_day_capacity, biting ONLY once a driver is past their
+      //     learned daily skid/loose capacity. This negative is the missing force
+      //     that let a broad-territory owner vacuum a whole day's stops (the old
+      //     headroom floored at 0 and could never push back).
+      const use = capacityUse(d);
+      const capBalance = (use <= 1 ? 1 - use : 0) - cfg.w_day_capacity * Math.max(0, use - 1);
       // Phase 2.2: for a FAR stop, favor a driver already committed to the far
       // field (consolidation) over one whose bag is near/empty (a fresh deep leg).
       const consolidation = isFar && (bag.get(d.driver_key) || []).some((x) => x.miles > cfg.far_deadhead_mi) ? 1 : 0;
@@ -367,11 +410,13 @@ export function solveAssignment(input: AssignInput): AssignResult {
       // a Dalton stop starts on a Dalton owner, not on whoever has headroom.
       const owned = ownedBy(s, d.driver_user_name, input);
       const ownerBoost = owned === true ? 4 : owned === false ? -4 : 0;
-      const score = habit * 3 + affinity * 2 + headroom + consolidation + ownerBoost + rand() * 1e-6; // deterministic jitter breaks ties
+      const score = habit * 3 + affinity * 2 + capBalance + consolidation + ownerBoost + rand() * 1e-6; // deterministic jitter breaks ties
       if (score > bestScore) { bestScore = score; best = d; }
     }
     if (!best) { unassigned.push(s); continue; }
     bag.get(best.driver_key)!.push(s);
+    const t = bagTot.get(best.driver_key)!;
+    t.skids += s.skids; t.loose += s.loose; t.weight += s.weight;
   }
 
   const buildShifts = (): AssignedShift[] => drivers.map((d) => ({
