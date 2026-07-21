@@ -93,20 +93,27 @@ export function historyLookbackDates(today: string, n: number): string[] {
 // carried: if it differs, the order was reconsigned and we re-enrich the stop (fresh address
 // + re-geocoded pin + line items) instead of merging the stale detail over it.
 //
-// Compare only the format-stable parts — the 5-digit ZIP and the street NUMBER — so ordinary
-// formatting drift ("St" vs "Street", casing) can NEVER trigger a spurious re-enrich (which
-// would leak a /stop/info call every scan). A real reconsignment to a new address changes the
-// ZIP or the house number virtually always. PURE / exported for tests.
-export function listAddressChanged(listStop: any, prior: any): boolean {
-  if (!listStop || !prior) return false;
-  const zip5 = (v: any) => String(v ?? '').replace(/\D/g, '').slice(0, 5);
-  const streetNum = (v: any) => (String(v ?? '').match(/\d+/)?.[0] || '');
-  const lz = zip5(listStop.zip), lsn = streetNum(listStop.addr1);
-  if (!lz && !lsn) return false;                 // the list carried no usable address this scan
-  const pz = zip5(prior.zip), psn = streetNum(prior.addr1);
-  if (lz && pz && lz !== pz) return true;        // ZIP changed → reconsigned
-  if (lsn && psn && lsn !== psn) return true;    // street number changed → reconsigned
-  return false;
+// CONVERGENCE: compare the list address to the LAST LIST address we saw for this stop — a
+// signature we stamp on the board stop and persist — NOT to the /stop/info-derived stored
+// address. The saved-search list and /stop/info come from DIFFERENT endpoints and can format
+// the same address differently (a leading suite/unit number, a padded ZIP), so comparing
+// list↔stored re-fired every scan for those stops and burned a /stop/info each time, never
+// converging. list↔list is same-format, so it fires only on a REAL change and then converges
+// on the very next scan. The signature is the format-stable parts (5-digit ZIP + street
+// number) so trivial drift ("St" vs "Street", casing) is ignored. PURE / exported for tests.
+export function addrListSig(stop: any): string {
+  const zip5 = String(stop?.zip ?? '').replace(/\D/g, '').slice(0, 5);
+  const streetNum = String(stop?.addr1 ?? '').match(/\d+/)?.[0] || '';
+  return (zip5 || streetNum) ? `${zip5}|${streetNum}` : '';
+}
+// True when the stop's CURRENT list address differs from the signature we last stored for it.
+// No stored baseline (first sighting) or no usable current list address → never a change, so a
+// fresh field rollout and a momentarily address-less list row both stay quiet (no false re-pull).
+export function reconsignedByListSig(priorSig: string | null | undefined, listStop: any): boolean {
+  if (!priorSig) return false;
+  const cur = addrListSig(listStop);
+  if (!cur) return false;
+  return cur !== priorSig;
 }
 
 // Factory: memoized (per-scan), read-capped lookup of a stop's most-recent sealed
@@ -813,14 +820,14 @@ export async function runRefreshStops(req: Request): Promise<Response> {
         const reconsignedNbrs = new Set<string>();
         for (const s of dateStops) {
           const p = prevByNbr.get(String(s.stopNbr));
+          const listSig = addrListSig(s);   // this scan's LIST address signature (same source every scan)
           if (p) {
-            // Reconsignment: the fresh list row carries a DIFFERENT delivery address (new ZIP or
-            // street number) than the enriched detail we carried. Do NOT merge the stale address/
-            // coords/line-items over it — leave s as the raw list row (which already holds the new
-            // addr1/city/zip) so the `!s.enriched` check below re-enriches it: fresh address,
-            // re-geocoded pin, and refreshed detail. Skip seeding the OLD coords too. Rare event,
-            // so the extra /stop/info is negligible (never a full scan).
-            const wasReconsigned = p.enriched && listAddressChanged(s, p);
+            // Reconsignment: the LIST address changed vs the last list signature we stored for this
+            // stop (list↔list — converges; see addrListSig). Do NOT merge the stale address/coords/
+            // line-items over it — leave s as the raw list row (which already holds the new addr1/
+            // city/zip) so the `!s.enriched` check below re-enriches it: fresh address, re-geocoded
+            // pin, and refreshed detail. Skip seeding the OLD coords too. Rare → negligible calls.
+            const wasReconsigned = p.enriched && reconsignedByListSig(p.addrListSig, s);
             if (p.enriched && !wasReconsigned) mergeEnrich(s, p); // carry same-day enriched detail forward
             if (wasReconsigned) { reconsigned++; reconsignedNbrs.add(String(s.stopNbr)); }
             // A recent CONFIRMED live Save (write-through, #361) outranks a lagging list row:
@@ -838,6 +845,11 @@ export async function runRefreshStops(req: Request): Promise<Response> {
             // Don't seed a reconsigned stop's OLD coords — they belong to the previous address.
             if (!wasReconsigned && typeof p.lat === 'number' && typeof p.lng === 'number') { const k = addrKey(p); if (k) seed.set(k, { lat: p.lat, lng: p.lng }); }
           }
+          // Stamp THIS scan's list signature so the next scan compares list↔list. Current list
+          // wins; fall back to the stored sig when the list carried no address this scan, so a
+          // momentarily address-less row can't wipe the baseline (which would re-arm a false
+          // positive). addrListSig is a LIVE_LIST_FIELD, so later enrichment merges never clobber it.
+          s.addrListSig = listSig || (p && p.addrListSig) || null;
           // Status AND the delivery time are FREE & live from the list every scan (see
           // LIVE_LIST_FIELDS + toBoardStop's deliveredDTTM), so we do NOT spend a /stop/info
           // call to track delivery. We enrich a PRO exactly ONCE — when it first appears — for

@@ -644,6 +644,9 @@ export const LIVE_LIST_FIELDS = [
   // the list key next day → a permanent miss → that PRO re-enriched forever. Pinning stopNbr to
   // the list value keeps the registry read/write key identical across days.
   'stopNbr',
+  // addrListSig is stamped fresh from the LIST every scan (reconsignment detection). It must
+  // never be carried back from an enriched record, or the list↔list comparison would drift.
+  'addrListSig',
 ];
 // Copy ALL non-live fields from src (a /stop/info-normalized stop, or a prior enriched
 // index doc) onto target, then mark it enriched. Never overwrites a real value with a
