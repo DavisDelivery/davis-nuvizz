@@ -189,10 +189,14 @@ export function shiftCost(
   for (let ti = 0; ti < trips.length; ti++) {
     const t = trips[ti];
     const w = tripWeight(t);
-    // over/under-load vs the driver's typical trip weight
+    // Overload vs the driver's typical trip weight. Phase 2.6 dropped the UNDERLOAD
+    // penalty: charging a light trip is cross-driver balancing (it pushes to fill
+    // everyone up), and the data shows dispatch happily runs 1-3-stop days. Only the
+    // OVER side is kept as a soft feasibility guard until Phase 3 replaces it with a
+    // hard per-class skid cap.
     if (wMedian != null && wMedian > 0) {
       const dev = (w - wMedian) / wMedian;
-      cost += dev > 0 ? cfg.w_overload * dev : cfg.w_underload * -dev;
+      if (dev > 0) cost += cfg.w_overload * dev;
     }
     // zone-affinity misfit: stops in gh5 zones this driver rarely serves
     let misfit = 0;
@@ -243,22 +247,6 @@ export function shiftCost(
   const shiftBudgetMin = (env.shift_hours_typical ?? cfg.typical_shift_hours) * 60;
   if (shiftActiveMin > shiftBudgetMin) cost += cfg.w_shift_overflow * ((shiftActiveMin - shiftBudgetMin) / 60);
 
-  // Phase 2.5 — daily-capacity overflow. A driver-day past their LEARNED daily
-  // skid/loose capacity (the real truck-fill dimensions) is charged per fractional
-  // unit over, so the plan won't pile a whole day onto one broad-territory driver —
-  // and, unlike the seed's head-start alone, the SEARCH now respects it too (the
-  // seed spread a pileup only for w_habit to pull it back, since the habitual
-  // driver pays no habit cost). Whichever dimension fills first binds. Charged only
-  // when capacity is learned and w_day_capacity > 0 (else pure back-compat).
-  if (cfg.w_day_capacity > 0) {
-    const daySkids = trips.reduce((a, t) => a + t.stops.reduce((b, s) => b + (s.skids || 0), 0), 0);
-    const dayLoose = trips.reduce((a, t) => a + t.stops.reduce((b, s) => b + (s.loose || 0), 0), 0);
-    const overs: number[] = [];
-    if (env.day_skids_p85 && env.day_skids_p85 > 0) overs.push((daySkids - env.day_skids_p85) / env.day_skids_p85);
-    if (env.day_loose_p85 && env.day_loose_p85 > 0) overs.push((dayLoose - env.day_loose_p85) / env.day_loose_p85);
-    const over = overs.length ? Math.max(...overs) : 0;
-    if (over > 0) cost += cfg.w_day_capacity * over;
-  }
 
   // Phase 2.2 — far-deadhead reach. A driver reaching past far_deadhead_mi pays a
   // per-shift charge for the deep leg, charged ONCE on their farthest stop. So
@@ -358,27 +346,12 @@ export function solveAssignment(input: AssignInput): AssignResult {
   const driverByKey = new Map(drivers.map((d) => [d.driver_key, d] as const));
   const unassigned: AssignStop[] = [];
 
-  // Per-driver running bag totals (incremental → O(1) capacity lookups). The real
-  // truck-fill dimensions (skids, loose) plus a weight fallback.
-  const bagTot = new Map<string, { skids: number; loose: number; weight: number }>();
-  for (const d of drivers) bagTot.set(d.driver_key, { skids: 0, loose: 0, weight: 0 });
-
-  // Fraction of a driver's LEARNED daily capacity the current bag would use. Prefer
-  // the real freight dimensions (skids + loose); fall back to weight when a driver
-  // has no learned skid/loose capacity yet. 0 when nothing is known — an unlearned
-  // driver imposes no capacity pressure (behavior as before this phase). Uses the
-  // MAX across dimensions, so whichever fills first (floor positions or loose count)
-  // binds — exactly how a truck runs out of room.
-  const capacityUse = (d: AssignDriver): number => {
-    const e = d.envelope; const t = bagTot.get(d.driver_key)!;
-    const uses: number[] = [];
-    if (e.day_skids_p85 && e.day_skids_p85 > 0) uses.push(t.skids / e.day_skids_p85);
-    if (e.day_loose_p85 && e.day_loose_p85 > 0) uses.push(t.loose / e.day_loose_p85);
-    if (!uses.length && e.day_weight_p85 && e.day_weight_p85 > 0) uses.push(t.weight / e.day_weight_p85);
-    return uses.length ? Math.max(...uses) : 0;
-  };
-
-  // greedy seed — weight-desc, best feasible driver by habit + affinity + capacity balance
+  // greedy seed — weight-desc, best feasible driver by OWNERSHIP: habit + affinity
+  // + far-consolidation + learned territory. Phase 2.6 removed the load-balancing
+  // headroom/capacity term entirely: the data shows dispatch CONCENTRATES work on a
+  // zone's owner until the truck is full and never balances (the 2.5.0 balancing
+  // cost ~5pts agreement and +30pts travel). Feasibility is the cost function's job
+  // (over-trip weight, trip count, shift hours), NOT the seed's.
   const seedStops = [...stops].sort((a, b) => (b.weight - a.weight) || a.id.localeCompare(b.id));
   for (const s of seedStops) {
     let best: AssignDriver | null = null, bestScore = -Infinity;
@@ -386,37 +359,23 @@ export function solveAssignment(input: AssignInput): AssignResult {
       if (!driverCanServe(d, s)) continue;
       const affinity = d.affinity.get(s.gh5) || 0;
       const isFar = s.miles > cfg.far_deadhead_mi;
-      // Phase 2.1: seed agrees with the search — the customer's habitual driver
-      // gets a head start proportional to the habit strength. Phase 2.2: that
-      // head start is discounted for FAR stops so the seed doesn't scatter a
-      // distant loop across each customer's usual driver before the search runs.
+      // Phase 2.1: the customer's habitual driver gets a head start proportional to
+      // the habit strength; Phase 2.2 discounts that for FAR stops so a distant loop
+      // isn't scattered across each customer's usual driver.
       const habitRaw = s.habit?.topDriver && d.driver_user_name &&
         s.habit.topDriver === String(d.driver_user_name).toUpperCase()
         ? habitStrength(s.habit, cfg.habit_shrink_n) : 0;
       const habit = isFar ? habitRaw * cfg.habit_far_discount : habitRaw;
-      // Phase 2.5: daily-capacity balance. Two ASYMMETRIC parts:
-      //   • headroom reward — coefficient 1, IDENTICAL to the prior term, so it does
-      //     not drown the far-cluster consolidation signal (also weight ~1);
-      //   • overfill repel — ×w_day_capacity, biting ONLY once a driver is past their
-      //     learned daily skid/loose capacity. This negative is the missing force
-      //     that let a broad-territory owner vacuum a whole day's stops (the old
-      //     headroom floored at 0 and could never push back).
-      const use = capacityUse(d);
-      const capBalance = (use <= 1 ? 1 - use : 0) - cfg.w_day_capacity * Math.max(0, use - 1);
-      // Phase 2.2: for a FAR stop, favor a driver already committed to the far
-      // field (consolidation) over one whose bag is near/empty (a fresh deep leg).
+      // Phase 2.2: for a FAR stop, favor a driver already committed to the far field.
       const consolidation = isFar && (bag.get(d.driver_key) || []).some((x) => x.miles > cfg.far_deadhead_mi) ? 1 : 0;
-      // Phase 2.3: learned territory owners dominate the seed for far stops —
-      // a Dalton stop starts on a Dalton owner, not on whoever has headroom.
+      // Phase 2.3: learned territory owners dominate the seed for far stops.
       const owned = ownedBy(s, d.driver_user_name, input);
       const ownerBoost = owned === true ? 4 : owned === false ? -4 : 0;
-      const score = habit * 3 + affinity * 2 + capBalance + consolidation + ownerBoost + rand() * 1e-6; // deterministic jitter breaks ties
+      const score = habit * 3 + affinity * 2 + consolidation + ownerBoost + rand() * 1e-6; // deterministic jitter breaks ties
       if (score > bestScore) { bestScore = score; best = d; }
     }
     if (!best) { unassigned.push(s); continue; }
     bag.get(best.driver_key)!.push(s);
-    const t = bagTot.get(best.driver_key)!;
-    t.skids += s.skids; t.loose += s.loose; t.weight += s.weight;
   }
 
   const buildShifts = (): AssignedShift[] => drivers.map((d) => ({
