@@ -192,6 +192,76 @@ export function zoneOwnersAsOf(
   return out;
 }
 
+// ── Phase 2.7: territory candidate sets ──────────────────────────────────────
+// The strongest predictor of dispatch's driver choice is GEOGRAPHY: a stop's
+// ~0.05° zone (≈3.5 mi) is run by a stable 2-3 driver cast. Restricting each stop
+// to its zone's trailing top drivers (∪ the customer's habitual driver, ∪ the
+// coarser 0.2° area for cold zones) contains dispatch's actual pick ~62% of the
+// time and ~doubles agreement vs the old open N-driver search. Validated on 15
+// board days, leave-one-day-out: top-1 ≈ 37%, top-3 containment ≈ 62%.
+const ZONE_G = 0.05, AREA_G = 0.2;
+function cellKey(lat: number, lng: number, g: number): string {
+  return `${Math.round(lat / g)}:${Math.round(lng / g)}`;   // integer cell indices — no float-key drift
+}
+// Canonical driver key from a reference route — mirrors history-derive.driverKeyFor
+// (driver_user_name first, uppercased/underscored; else a folded driver_name) so it
+// matches the roster's driver_key exactly.
+function refDriverKey(r: ReferenceRouteDoc): string | null {
+  const u = String(r.driver_user_name ?? '').trim();
+  if (u) return u.toUpperCase().replace(/\s+/g, '_');
+  const n = String(r.driver_name ?? '').trim();
+  if (n) return 'name_' + n.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+  return null;
+}
+
+export interface TerritoryMaps {
+  zone: Map<string, Map<string, number>>;   // 0.05° cell → driver_key → visit count
+  area: Map<string, Map<string, number>>;   // 0.2° cell  → driver_key → visit count
+}
+export function territoryMapsAsOf(references: ReferenceRouteDoc[], asOfDate: string): TerritoryMaps {
+  const zone = new Map<string, Map<string, number>>();
+  const area = new Map<string, Map<string, number>>();
+  const bump = (m: Map<string, Map<string, number>>, key: string, drv: string) => {
+    let d = m.get(key); if (!d) { d = new Map(); m.set(key, d); }
+    d.set(drv, (d.get(drv) || 0) + 1);
+  };
+  for (const r of references || []) {
+    if (String(r.date) >= asOfDate) continue;   // leakage guard (re-checked here)
+    const drv = refDriverKey(r);
+    if (!drv) continue;
+    for (const s of r.stops || []) {
+      const lat = Number(s.lat), lng = Number(s.lng);
+      if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
+      bump(zone, cellKey(lat, lng, ZONE_G), drv);
+      bump(area, cellKey(lat, lng, AREA_G), drv);
+    }
+  }
+  return { zone, area };
+}
+
+function topDriversInCell(cell: Map<string, number> | undefined, roster: Set<string>, k: number): string[] {
+  if (!cell) return [];
+  return [...cell.entries()].filter(([d]) => roster.has(d))
+    .sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1)).slice(0, k).map(([d]) => d);
+}
+// Ordered candidate driver_keys for a stop: the customer's habitual driver (if on
+// the roster) first, then the zone's trailing top-K, then the coarser area's top
+// drivers as a cold-zone fallback — roster-filtered, de-duped, order-preserving.
+// Empty ⇒ truly unseen geography, and the solver falls back to any driver.
+export function candidateDriversFor(
+  lat: number, lng: number, habitKey: string | null, maps: TerritoryMaps, roster: Set<string>,
+  opts: { zoneK?: number; areaK?: number } = {},
+): string[] {
+  const z = topDriversInCell(maps.zone.get(cellKey(lat, lng, ZONE_G)), roster, opts.zoneK ?? 5);
+  const a = topDriversInCell(maps.area.get(cellKey(lat, lng, AREA_G)), roster, opts.areaK ?? 3);
+  const out: string[] = [];
+  const add = (d: string | null) => { if (d && roster.has(d) && !out.includes(d)) out.push(d); };
+  add(habitKey);
+  for (const d of z) add(d);
+  for (const d of a) add(d);
+  return out;
+}
+
 export interface FleetTripChain {
   source: 'mined' | 'seed';
   chains_observed: number;

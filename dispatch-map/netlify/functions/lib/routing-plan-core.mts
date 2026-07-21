@@ -34,6 +34,7 @@ import {
 import { customerDriversPath, habitAsOf } from './routing-customer-drivers.mts';
 import {
   driverEnvelope, driverZoneAffinity, fleetTripChain, zoneOwnersAsOf,
+  territoryMapsAsOf, candidateDriversFor,
 } from './routing-envelope.mts';
 import {
   solveAssignment, restrictionsBlockTractor, type AssignStop, type AssignDriver, type AssignedShift,
@@ -260,13 +261,26 @@ export async function runPlanForDate(
   // ── as-of inputs (< D only) ──
   const inputs = opts.inputs || await loadPlanInputs(tenant, date, planned);
 
-  const activeDrivers: AssignDriver[] = actualDriverDays.map((dd) => {
+  // Phase 2.7 hygiene: supervisors run occasional 1-3 stop days — they are not a
+  // real route-driver pool, so exclude them (they never become a zone candidate or
+  // a dumping ground; their own stops still route to real candidate drivers).
+  const SUPERVISOR_KEYS = new Set(['CHAD_DAVIS']);
+  // Unknown/blank truck_class defaults to box_truck (the fleet majority); the one
+  // verified tractor among the roster-unmatched drivers is pinned. Class gates
+  // tractor-blocked stops today; Phase 3 will use it for per-class skid caps.
+  const CLASS_OVERRIDE = new Map<string, string>([['JUNIOR_THOMAS', 'tractor']]);
+  const resolveClass = (key: string, raw: string | null) =>
+    CLASS_OVERRIDE.get(key) || (raw === 'tractor' ? 'tractor' : 'box_truck');
+
+  const activeDrivers: AssignDriver[] = actualDriverDays
+    .filter((dd) => !SUPERVISOR_KEYS.has(dd.driver_key))
+    .map((dd) => {
     const envelope = driverEnvelope(dd.driver_key, inputs.driverDaysBefore, date, cfg);
     return {
       driver_key: dd.driver_key,
       driver_user_name: dd.driver_user_name,
       driver_name: dd.driver_name,
-      truck_class: dd.truck_class,
+      truck_class: resolveClass(dd.driver_key, dd.truck_class),
       // AS-OF START (Phase 2.1, audit finding 3): the shadow must only use what
       // Assist would know at PLANNING time. The driver's executed first touch
       // on day D is settlement data — a driver who happened to clock in early
@@ -282,11 +296,19 @@ export async function runPlanForDate(
     };
   });
 
+  // Phase 2.7: today's roster + the trailing zone/area ownership maps → per-stop
+  // candidate driver sets. Territory is built ONCE from references < D.
+  const rosterKeys = new Set(activeDrivers.map((d) => d.driver_key));
+  const territory = territoryMapsAsOf(inputs.referencesBefore, date);
+
   // ── the engine's planned stop set ──
   const assignStops: AssignStop[] = planned.map((s) => {
     const id = stopId(s);
     const lat = Number(s.lat), lng = Number(s.lng);
     const mk = s.customerMatchKey ?? null;
+    const habit = mk ? habitAsOf(inputs.habitDocByKey.get(mk) ?? null, date) : null;
+    // Habit driver → the same driver_key form the roster + territory maps use.
+    const habitKey = habit?.topDriver ? String(habit.topDriver).toUpperCase().replace(/\s+/g, '_') : null;
     return {
       id, lat, lng,
       zone: zoneId(lat, lng, precisions),
@@ -306,7 +328,11 @@ export async function runPlanForDate(
       miles: haversineMiles(DEPOT.lat, DEPOT.lng, lat, lng),
       blocksTractor: mk ? restrictionsBlockTractor(inputs.notesRestrictions.get(mk) || []) : false,
       // Phase 2.1: the customer's habitual driver, as-of < D (leakage-safe reader).
-      habit: mk ? habitAsOf(inputs.habitDocByKey.get(mk) ?? null, date) : null,
+      habit,
+      // Phase 2.7: allowed drivers — this stop's zone trailing top-5 ∪ habit ∪ the
+      // coarser 0.2° area (cold-zone fallback), roster-filtered. Empty ⇒ unseen
+      // geography, and the solver falls back to any feasible driver.
+      candidates: candidateDriversFor(lat, lng, habitKey, territory, rosterKeys),
     };
   });
 
@@ -358,6 +384,20 @@ export async function runPlanForDate(
 
   // ── agreement metrics (pure, tested incl. the label-swap case) ──
   const agreement = computePlanAgreement(stopToActualDriver, stopToEngineDriver, actualLoadGroups, engineTripGroups);
+
+  // Phase 2.7 diagnostic — candidate CONTAINMENT: share of stops whose ACTUAL driver
+  // is reachable (in the stop's candidate set, or the set is open). It is the CEILING
+  // on agreement: high containment + low agreement ⇒ the search is failing within
+  // candidates; low containment ⇒ the candidate sets are too tight.
+  const candById = new Map(assignStops.map((s) => [s.id, s.candidates] as const));
+  let reachable = 0, containDenom = 0;
+  for (const [id, actual] of stopToActualDriver) {
+    if (!actual) continue;
+    containDenom++;
+    const c = candById.get(id);
+    if (!c || c.length === 0 || c.includes(actual)) reachable++;
+  }
+  const candidate_containment_pct = containDenom ? Math.round((reachable / containDenom) * 1000) / 10 : null;
 
   // ── per-driver breakdown ──
   const perDriver: any[] = [];
@@ -425,6 +465,7 @@ export async function runPlanForDate(
     coload_precision_pct: agreement.coload_precision_pct,
     stop_agreement_known_pct: pct(knownAgree, knownTotal),      // drivers w/ own-history envelopes
     stop_agreement_fallback_pct: pct(fallbackAgree, fallbackTotal), // class/none fallback drivers
+    candidate_containment_pct,                                  // Phase 2.7: ceiling on agreement (actual driver reachable)
     est_travel_engine_min: Math.round(est_travel_engine * 10) / 10,
     est_travel_actual_min: Math.round(est_travel_actual * 10) / 10,
     matched_load_sequence_score: matchedSeqScore,
@@ -447,6 +488,7 @@ export async function runPlanForDate(
     coload_precision_pct: proposal.coload_precision_pct,
     stop_agreement_known_pct: proposal.stop_agreement_known_pct,
     stop_agreement_fallback_pct: proposal.stop_agreement_fallback_pct,
+    candidate_containment_pct: proposal.candidate_containment_pct,
     est_travel_engine_min: proposal.est_travel_engine_min, est_travel_actual_min: proposal.est_travel_actual_min,
     matched_load_sequence_score: matchedSeqScore,
   });
