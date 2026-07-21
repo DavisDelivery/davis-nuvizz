@@ -59,7 +59,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.50.64';
+const APP_VERSION = '0.50.65';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -104,6 +104,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.50.65', 'VIEWING A ROUTE now always shows that driver\'s stops on the map \u2014 even with a board filter on. Before, if you had a filter active (e.g. "unplanned only") and opened a driver\'s load, the map framed an EMPTY area because the route\'s planned stops were being hidden by the filter. Now, whenever a route is open, its stops are always drawn (numbered, full-color) regardless of the active filters, while everything else still dims as usual. Applies to both desktop and mobile.'],
   ['0.50.64', 'MOBILE \u2014 "View on map" from an open route. When you open a route on your phone (Loads \u2192 a route), the stop list is a full-screen sheet that covers the map, so you couldn\'t see the route laid out. There\'s now a blue "View on map" button at the top of that route sheet: tap it and the sheet minimizes to a slim bar at the bottom, revealing the map framed on that route with its stops numbered in delivery order. Tap any pin to open that stop; tap "Stops" on the bar to bring the full list back, or \u2715 to close the route. Desktop is unchanged (the route list already sits beside the map there).'],
   ['0.50.63', 'ENGINE (shadow \u00b7 Assignment) \u2014 the LAST far-corner straggler dies. After v0.50.61 the engine used barely half the far trucks dispatch does (11.6 vs 20.3 a day) \u2014 but one 1-stop truck still tagged along to the NW corner, because the \u201cextra truck in a far area\u201d charge grouped stops by tiny ~5-km cells: a lone stop sat in its own cell, looked \u201cperfectly cohesive\u201d, and its truck was never charged. The charge now works at the AREA level \u2014 the same \u201cDalton\u201d-sized grain the territory-ownership rules use \u2014 so an isolated stop a few miles from the owner\'s loop belongs to that area\'s math and folds onto the owner\'s truck. Engine 2.4.1; full history re-scored.'],
   ['0.50.62', 'ENGINE TAB \u2014 live tuning, no more deploys. New \u2699 Tuning button on the Engine tab opens the engine\'s live settings: the far-route/territory knobs (far threshold, extra-truck-in-a-far-area cost, territory ownership, usual-driver pull out far, ownership floors) each with a plain-English explanation, plus every other engine setting under Advanced. Edits save to the cloud, are clamped to safe ranges (a bad value can\'t stick), show a \u201ccustomized\u201d badge with one-tap reset to default, and take effect on tonight\'s run automatically. A \u201cRe-score history\u201d button re-runs all past days with the current settings in the background (zero NuVizz) so you can see the effect on the charts in minutes instead of waiting for nights to accumulate.'],
@@ -8193,7 +8194,22 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef }) {
     // Day-aware receiving-hours clock: only light the clock on the weekday the
     // map is showing. A Friday-only customer's clock appears on Fridays only.
     const selectedDayKey = weekdayKeyFromDate(selectedDate);
-    const positioned = filteredStops.filter((s) => s.lat != null && s.lng != null);
+    let positioned = filteredStops.filter((s) => s.lat != null && s.lng != null);
+    // When you're VIEWING A ROUTE, always show that route's stops — even if the current
+    // board filters (e.g. "unplanned only") would otherwise hide its planned stops. Add any
+    // of the route's stops missing from the filtered set, applying the same location_override
+    // filteredStops uses. Without this, opening a driver's load with a filter on framed an
+    // empty map (the pins were all filtered out). Fixes desktop + mobile (shared effect).
+    if (selectedRoute && selectedRouteStops.length) {
+      const have = new Set(positioned.map((s) => s.stopNbr));
+      const extra = selectedRouteStops
+        .filter((s) => !have.has(s.stopNbr) && s.lat != null && s.lng != null)
+        .map((s) => {
+          const ov = notes.get(s.matchKey)?.location_override;
+          return (ov && typeof ov.lat === 'number' && typeof ov.lng === 'number') ? { ...s, lat: ov.lat, lng: ov.lng } : s;
+        });
+      if (extra.length) positioned = positioned.concat(extra);
+    }
     // When a route is open, number its stops in delivery sequence (planned-ETA
     // order = NuVizz's optimized order) and render numbered pins; dim the rest.
     const routeSeqByStop = new Map();
