@@ -21,6 +21,7 @@ import { getCreds, basicAuthHeader } from './nuvizz-scan.mts';
 import {
   buildOpRequest, parseOpResponse, toEditHeader, normalizeLoad, planSequence, deliveryOrder,
   importEchoFromRaw, assembleImportHeader, sameOrder, buildStopPayload, normStopNbr,
+  rawStopExecStatus, isExecutedStopStatus,
   type SingleOp, type WriteOp, type WriteCreds,
 } from './nuvizz-write-ops.mts';
 import { isHashLikeId } from './nuvizz-list.mts';
@@ -1385,6 +1386,29 @@ export async function runCommitBoardRwb(requester: RequesterLike, payload: any, 
     if (unaccounted.length) {
       p.result.ok = false;
       p.result.error = `commitBoard(rwb): load ${p.loadNbr} has ${unaccounted.length} stop(s) the board isn't showing (${unaccounted.slice(0, 3).join(', ')}${unaccounted.length > 3 ? '…' : ''}) — a declarative RWB save would unplan them. Refresh and retry.`;
+      continue;
+    }
+
+    // ── EXECUTED-STOP REMOVAL GUARD (pre-save; the AVRT-0179332708 case, Jul 22).
+    // A stop the driver has already acted on (dispatched / arrived / pickup
+    // confirmed …) cannot leave a load via the declarative save: NuVizz answers
+    // SUCCESS and silently KEEPS it, which used to surface only AFTER the write
+    // as the post-verify KEPT banner (one wasted save + one wasted repair).
+    // The pre-save load read already carries each raw stop's execution status,
+    // so refuse UP FRONT — zero extra calls. Covers explicit removals AND the
+    // source side of a staged move (both mean "this stop must LEAVE this load").
+    // Fail-open: an absent/unknown status never blocks — the KEPT verify still
+    // has the final word.
+    const mustLeave = [
+      ...removeNbrs,
+      ...[...p.stopIdByNbr.keys()].filter((n: string) => !orderedSet.has(n) && !removeSet.has(n) && batchOrderedNbrs.has(n)),
+    ];
+    const executedLeaver = mustLeave
+      .map((n: string) => ({ n, status: rawStopExecStatus(p.load, n) }))
+      .find((x) => isExecutedStopStatus(x.status));
+    if (executedLeaver) {
+      p.result.ok = false;
+      p.result.error = `commitBoard(rwb): stop ${executedLeaver.n} on ${p.loadNbr} is already ${executedLeaver.status} — NuVizz keeps an executed stop even when a Save removes it. Reopen + unplan it in the portal first, then refresh and re-Save.`;
       continue;
     }
 

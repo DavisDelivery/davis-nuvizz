@@ -12,6 +12,7 @@ import assert from 'node:assert/strict';
 
 import { rwbEngineBlocked, rwbConfigReady, rwbAddStopsToRoute, rwbSequenceStops } from '../netlify/functions/lib/nuvizz-rwb.mts';
 import { runCommitBoardRwb } from '../netlify/functions/lib/nuvizz-write.mts';
+import { rawStopExecStatus, isExecutedStopStatus } from '../netlify/functions/lib/nuvizz-write-ops.mts';
 
 const CREDS = { base: 'https://portal.nuvizz.com/deliverit/openapi/v7', companyCode: 'DAVIS', auth: 'Basic xyz' };
 const HEXID = '6a438e9d52ef82bd1ed4516b';
@@ -37,7 +38,7 @@ async function withRwb(over, fn) {
 // set the load's stops to exactly the entry's trip order, like the real portal — so the
 // post-save membership+ORDER verify sees the save. Pass applySave:false to simulate the
 // Jul 9 DAWSONVILLE portal behavior: SUCCESS answered, nothing applied.
-function makeRequester({ saveBody = { responseCode: 200 }, saveStatus = 200, loadStops, stopHolders = {}, applySave = true, seqless = false, stopTypes = {}, stopSeqs = {}, stopAddrs = {}, idAlias = {} } = {}) {
+function makeRequester({ saveBody = { responseCode: 200 }, saveStatus = 200, loadStops, stopHolders = {}, applySave = true, seqless = false, stopTypes = {}, stopSeqs = {}, stopAddrs = {}, idAlias = {}, stopExecStatuses = {} } = {}) {
   const calls = [];
   const stopDoc = (n) => ({ stop: { stopId: `id-${n}`, stopNbr: String(n), stopType: stopTypes[n] || 'DO', to: { seq: 1 } } });
   const loadJson = () => ({ Load: {
@@ -46,7 +47,7 @@ function makeRequester({ saveBody = { responseCode: 200 }, saveStatus = 200, loa
     // weight/totalPallets/totalCartons/volume ride the RAW stop record (normalizeLoad.rawStops)
     // — the save entry's totalData sums them (Jul 9 manual-reorder HAR fidelity). `seqless`
     // simulates a read that lands before NuVizz stamps to.seq (the settling window).
-    stops: (loadStops?.value ?? []).map((n, i) => ({ stop: { stopId: `id-${n}`, stopNbr: String(n), stopType: stopTypes[n] || 'DO', to: seqless ? {} : { seq: stopSeqs[n] ?? (i + 2), ...(stopAddrs[n] ? { address: { name: stopAddrs[n], addressLine1: '1 Main St', city: 'Dalton' } } : {}) }, weight: 100, totalPallets: 2, totalCartons: 1, volume: 3 } })),
+    stops: (loadStops?.value ?? []).map((n, i) => ({ stop: { stopId: `id-${n}`, stopNbr: String(n), stopType: stopTypes[n] || 'DO', to: seqless ? {} : { seq: stopSeqs[n] ?? (i + 2), ...(stopAddrs[n] ? { address: { name: stopAddrs[n], addressLine1: '1 Main St', city: 'Dalton' } } : {}) }, weight: 100, totalPallets: 2, totalCartons: 1, volume: 3 }, ...(stopExecStatuses[n] ? { stopExecutionInfo: { stopStatus: stopExecStatuses[n] } } : {}) })),
   } });
   return {
     calls,
@@ -1176,6 +1177,53 @@ test('runCommitBoardRwb: totalData sums ONLY the stops being saved (removals exc
     const entry = JSON.parse(String(calls.find((c) => c.url.includes('saveComparedRouteData')).body.get('routeJsonData')))[0];
     // One kept stop × {2 pieces, 1 skid, 3 loose, 100 lbs} — the removed stop must NOT count.
     assert.deepEqual(entry.totalData, { totalP: 2, totalC: 1, totalW: 100, totalV: 3, weightUOM: 'Lbs', volumeUOM: 'Loose' });
+  });
+});
+
+// ── Phase: executed-stop removal guard (the AVRT-0179332708 case, Jul 22) ──
+// A dispatched/executed stop survives a Save-removal on the live tenant (NuVizz
+// answers SUCCESS and keeps it). The guard refuses UP FRONT from the pre-save
+// load read — zero writes fired, exact remedy named — instead of the wasted
+// save + repair + post-hoc KEPT banner.
+
+test('isExecutedStopStatus: blocks execution vocab, fails open on planned/unknown', () => {
+  for (const s of ['DISPATCHED', 'ARRIVED', 'DELIVERED', 'PICKED_UP', 'IN_TRANSIT', 'IN TRANSIT', 'OUT_FOR_DELIVERY', 'DEPARTED', 'COMPLETED', 'Dispatched']) {
+    assert.equal(isExecutedStopStatus(s), true, `${s} must read as executed`);
+  }
+  for (const s of [null, undefined, '', '  ', 'PLANNED', 'SCHEDULED', 'OPEN', 'CONFIRMED', 'PICKUP', 'READY', 'UNPLANNED']) {
+    assert.equal(isExecutedStopStatus(s), false, `${String(s)} must NOT block (fail-open)`);
+  }
+});
+
+test('rawStopExecStatus: reads the raw load entry wrapper; absent info → null', () => {
+  const load = { rawStops: [
+    { stop: { stopNbr: 'A' } },                                                    // no exec info
+    { stop: { stopNbr: 'B' }, stopExecutionInfo: { stopStatus: 'DISPATCHED' } },   // wrapper-level
+  ] };
+  assert.equal(rawStopExecStatus(load, 'A'), null);
+  assert.equal(rawStopExecStatus(load, 'B'), 'DISPATCHED');
+  assert.equal(rawStopExecStatus(load, 'MISSING'), null);
+  assert.equal(rawStopExecStatus({}, 'A'), null, 'no rawStops (older mocks/paths) → null, never throws');
+});
+
+test('runCommitBoardRwb: removing a DISPATCHED stop is refused UP FRONT — no save fired', async () => {
+  await withRwb({}, async () => {
+    const loadStops = { value: ['A', 'B'] };
+    const { requester, calls } = makeRequester({ loadStops, stopExecStatuses: { B: 'DISPATCHED' } });
+    const r = await runCommitBoardRwb(requester, { loads: [{ loadNbr: 'DAVIS000000123', loadId: HEXID, orderedStopNbrs: ['A'], removeStopNbrs: ['B'] }] }, CREDS);
+    assert.equal(r.ok, false, 'an executed-stop removal must refuse, never half-apply');
+    assert.match(String(r.loads[0].error || ''), /stop B .* already DISPATCHED/i);
+    assert.match(String(r.loads[0].error || ''), /unplan it in the portal/i, 'the remedy is named');
+    assert.equal(calls.filter((c) => c.url.includes('saveComparedRouteData')).length, 0, 'guard fires BEFORE any write');
+  });
+});
+
+test('runCommitBoardRwb: removing a merely PLANNED stop still saves (guard fails open)', async () => {
+  await withRwb({}, async () => {
+    const loadStops = { value: ['A', 'B'] };
+    const { requester } = makeRequester({ loadStops, stopExecStatuses: { B: 'PLANNED' } });
+    const r = await runCommitBoardRwb(requester, { loads: [{ loadNbr: 'DAVIS000000123', loadId: HEXID, orderedStopNbrs: ['A'], removeStopNbrs: ['B'] }] }, CREDS);
+    assert.equal(r.ok, true, JSON.stringify(r.loads?.[0]?.error));
   });
 });
 
