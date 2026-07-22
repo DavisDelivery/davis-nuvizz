@@ -78,8 +78,9 @@ export default async (req: Request): Promise<Response> => {
     if (h?.tenant !== TENANT) continue;
     if (h?.match_key) habitDocByKey.set(String(h.match_key), h); // habitAsOf re-filters < D per date
   }
-  const [notesRows, tractorRows] = await Promise.all([
+  const [notesRows, tractorRows, employees] = await Promise.all([
     listDocs('customer_notes'), listDocs('tractor_locations'),
+    listDocs('employees').catch(() => [] as any[]),  // roster absent → class fallbacks
   ]);
   const notesRestrictions = new Map<string, any[]>();
   for (const n of notesRows) { const mk = n?.match_key || n?._id; if (mk) notesRestrictions.set(String(mk), n?.equipment_restrictions || []); }
@@ -89,7 +90,7 @@ export default async (req: Request): Promise<Response> => {
   const refDates = [...new Set(allRefs.map((r) => String(r.date)))].sort();
   const ddDates = new Set(allDriverDays.map((d) => String(d.date)));
 
-  const inputs: PlanInputs = { driverDaysBefore: allDriverDays, referencesBefore: allRefs, serviceDocByKey, fleetServiceDoc: fleetDoc, habitDocByKey, notesRestrictions, tractorCapable };
+  const inputs: PlanInputs = { driverDaysBefore: allDriverDays, referencesBefore: allRefs, serviceDocByKey, fleetServiceDoc: fleetDoc, habitDocByKey, notesRestrictions, tractorCapable, employees };
 
   const scored: Array<{ date: string; stop_agreement_pct: number | null; coload_agreement_pct: number | null }> = [];
   const skippedTooEarly: string[] = [];
