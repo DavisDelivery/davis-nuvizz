@@ -10,7 +10,7 @@
 //   GET ?pro=<pro number>       → customers whose saved history contains that PRO
 //                                 (numeric PROs are matched zero-padded to 9 too)
 import { isFirestoreEnabled } from './lib/firestore.mts';
-import { queryCustomersByName, queryCustomersByPro } from './lib/history-customers.mts';
+import { queryCustomersByName, queryCustomersByPro, getCustomerByMatchKey } from './lib/history-customers.mts';
 import { getStop } from './lib/history-store.mts';
 
 const TENANT = 'davis';
@@ -24,6 +24,7 @@ export default async (req: Request): Promise<Response> => {
   }
   const url = new URL(req.url);
   const name = (url.searchParams.get('name') || '').trim();
+  const matchKey = (url.searchParams.get('matchKey') || '').trim();
   const pro = (url.searchParams.get('pro') || '').trim();
   const stop = (url.searchParams.get('stop') || '').trim();
   const date = (url.searchParams.get('date') || '').trim();
@@ -38,6 +39,13 @@ export default async (req: Request): Promise<Response> => {
         JSON.stringify(doc ? { ok: true, mode: 'stop', stop: doc } : { ok: false, mode: 'stop', reason: 'not_found', stop: null }),
         { status: 200, headers: cors },
       );
+    }
+    // Exact per-customer lookup by the stop's normalized matchKey — one getDoc,
+    // immune to the name variants the token search can miss. Powers the stop
+    // card's "Recent deliveries here" footer (desktop + mobile).
+    if (matchKey) {
+      const c = await getCustomerByMatchKey(TENANT, matchKey);
+      return new Response(JSON.stringify({ ok: true, mode: 'matchKey', customers: c ? [c] : [] }), { status: 200, headers: cors });
     }
     if (name) {
       const customers = await queryCustomersByName(name, 25);

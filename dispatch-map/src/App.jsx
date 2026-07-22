@@ -59,7 +59,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.50.72';
+const APP_VERSION = '0.50.73';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -104,6 +104,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.50.73', 'STOP HISTORY — "Recent deliveries here" now ALWAYS shows on the stop card, mobile included. The section (past PROs with the driver who ran each and the date) was already shared by desktop and mobile, but it hid itself completely when a customer had no saved history — so on a first-visit customer (Chad\'s MODEL ROUNDUP) the mobile card looked like the feature didn\'t exist. It now says "No prior deliveries recorded — first visit to this customer" instead of vanishing. Lookup is also stronger: it resolves the customer by the stop\'s exact matchKey first (one direct read — immune to business-name variants the name search can miss), with the name search kept as fallback. Firestore-only, zero NuVizz calls, session-cached as before.'],
   ['0.50.72', 'SAVE GUARD — removing an already-executed stop now refuses UP FRONT. The AVRT case (7/22): a stop the driver had already been dispatched on / arrived at survives a Save-removal — NuVizz answers SUCCESS but silently keeps the stop, and the app could only tell you AFTER the save (the "NuVizz KEPT stop" banner) at the cost of a wasted write + repair. The Save now checks each removed stop\'s execution status on the pre-save load read (zero extra NuVizz calls) and refuses immediately with the exact remedy: "stop X is already DISPATCHED — reopen + unplan it in the portal first." Covers explicit removals and the source side of a staged move. Fails open: an unknown status never blocks, and the post-save verify still has the final word.'],
   ['0.50.71', 'ROUTING MAP — the Status filter now filters the MAP, not just the grid. Checking "Planned" (or any status/driver filter in the bottom grid) hides every non-matching pin on the Routing map, so the map and the grid finally show the same stops (Chad: "should only be showing planned"). Safety exemptions: stops you have SELECTED and stops on a shown route stay visible even when filtered out — a selection can never ride invisibly into a build, and a route\'s numbered pins never lose members. Search is unchanged (burnt-orange highlight, never hides). Clearing the filter restores every pin.'],
   ['0.50.70', 'MANIFEST READER — high-resolution scans now work (the real fix). Chad\'s Manifest_04753105 (5 pages, 3.9 MB — a heavy fax scan) still failed: the 0.50.69 page-splitting fix couldn\'t help because at ~1 MB PER PAGE even a single page was over the reader\'s ~256 KB request cap. The PDF now rides AROUND that cap: a big file is uploaded in ~700 KB parts to our own store (with a per-part retry), and the reader reassembles it and reads the WHOLE manifest in one pass — one AI call, no splitting, no quality loss. Handles scans up to ~16 MB; the reader also gets more time (up to 5 min) for heavy scans and the app waits accordingly. Small manifests are unchanged.'],
@@ -5325,41 +5326,62 @@ function useProDrivers(name, historyLen) {
 // customer with saved history — no note required. Renders nothing while loading or when the
 // customer has no history, so it never adds blank chrome. Session-cached per customer name.
 const _custRecentCache = new Map();
-function useCustomerRecent(name) {
-  const [rows, setRows] = useState(() => _custRecentCache.get((name || '').trim()) || null);
+function useCustomerRecent(matchKey, name) {
+  const mk = (matchKey || '').trim();
+  const nm = (name || '').trim();
+  const cacheKey = mk || nm;
+  const [rows, setRows] = useState(() => _custRecentCache.get(cacheKey) || null);
   useEffect(() => {
-    const nm = (name || '').trim();
-    if (!nm) { setRows(null); return; }
-    if (_custRecentCache.has(nm)) { setRows(_custRecentCache.get(nm)); return; }
+    if (!cacheKey) { setRows(null); return; }
+    if (_custRecentCache.has(cacheKey)) { setRows(_custRecentCache.get(cacheKey)); return; }
     let alive = true;
-    fetch(`/.netlify/functions/nuvizz-customer-history?name=${encodeURIComponent(nm)}`)
-      .then((r) => r.json())
-      .then((j) => {
-        const c = j?.ok ? (j.customers || [])[0] : null;
-        const list = (c?.pros || []).map((h) => ({ pro: String(h?.pro || ''), date: h?.date || '', driver: h?.driver || '' })).filter((h) => h.pro);
-        if (j?.ok) _custRecentCache.set(nm, list);   // a failed lookup must not blank the section all session
-        if (alive) setRows(list);
-      })
-      .catch(() => { if (alive) setRows([]); });
+    const shape = (j) => {
+      const c = j?.ok ? (j.customers || [])[0] : null;
+      return (c?.pros || []).map((h) => ({ pro: String(h?.pro || ''), date: h?.date || '', driver: h?.driver || '' })).filter((h) => h.pro);
+    };
+    // EXACT lookup by the stop's normalized matchKey first (one doc read — immune
+    // to the name variants the token search misses), then the name search as a
+    // fallback for stops whose key drifted (e.g. after an address edit).
+    (async () => {
+      let list = null;
+      if (mk) {
+        const j = await fetch(`/.netlify/functions/nuvizz-customer-history?matchKey=${encodeURIComponent(mk)}`).then((r) => r.json()).catch(() => null);
+        if (j?.ok) list = shape(j);
+      }
+      if ((!list || !list.length) && nm) {
+        const j = await fetch(`/.netlify/functions/nuvizz-customer-history?name=${encodeURIComponent(nm)}`).then((r) => r.json()).catch(() => null);
+        if (j?.ok) list = shape(j); else if (!list) list = null;
+      }
+      if (list != null) _custRecentCache.set(cacheKey, list);   // a failed lookup must not blank the section all session
+      if (alive) setRows(list ?? []);
+    })();
     return () => { alive = false; };
-  }, [name]);
+  }, [cacheKey]);
   return rows;
 }
 function StopRecentDeliveries({ stop }) {
-  const rows = useCustomerRecent(stop?.businessName);
-  if (!rows || !rows.length) return null;
+  const rows = useCustomerRecent(stop?.matchKey, stop?.businessName);
+  // rows === null → still loading (or no identity at all): stay silent.
+  // rows === []   → the lookup RAN and found nothing: say so, so an empty
+  // section is distinguishable from the feature not existing (Chad's mobile
+  // report — desktop and mobile render this identically; it was hiding).
+  if (!rows) return null;
   return (
     <div className="px-4 py-3 border-t">
       <div className="text-xs uppercase font-semibold text-slate-500 mb-1.5">Recent deliveries here</div>
-      <div className="flex flex-wrap gap-1">
-        {rows.slice(0, 8).map((h, i) => (
-          <span key={i} className="text-[10px] bg-slate-100 border border-slate-200 rounded px-1.5 py-0.5 whitespace-nowrap">
-            <span className="font-mono">{h.pro}</span>
-            {h.driver && <span className="text-slate-700"> · {h.driver}</span>}
-            {h.date && <span className="text-slate-400"> · {fmtMdy(h.date)}</span>}
-          </span>
-        ))}
-      </div>
+      {rows.length ? (
+        <div className="flex flex-wrap gap-1">
+          {rows.slice(0, 8).map((h, i) => (
+            <span key={i} className="text-[10px] bg-slate-100 border border-slate-200 rounded px-1.5 py-0.5 whitespace-nowrap">
+              <span className="font-mono">{h.pro}</span>
+              {h.driver && <span className="text-slate-700"> · {h.driver}</span>}
+              {h.date && <span className="text-slate-400"> · {fmtMdy(h.date)}</span>}
+            </span>
+          ))}
+        </div>
+      ) : (
+        <div className="text-xs text-slate-500 italic">No prior deliveries recorded — first visit to this customer.</div>
+      )}
     </div>
   );
 }

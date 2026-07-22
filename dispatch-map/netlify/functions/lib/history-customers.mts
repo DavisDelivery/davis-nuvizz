@@ -91,6 +91,18 @@ export function rollupPath(tenant: string, matchKey: string): string {
   return `${CUSTOMERS_COLLECTION}/${rollupId(tenant, matchKey)}`;
 }
 
+// EXACT per-customer lookup by matchKey — one getDoc on the rollup, no name
+// search involved. This is how the stop card's history footer resolves its
+// customer: the board stop already carries the normalized matchKey, and the
+// name-token search can miss variants the key matches exactly. Null when the
+// customer has no rollup (a genuine first-time customer).
+export async function getCustomerByMatchKey(tenant: string, matchKey: string): Promise<any | null> {
+  const mk = String(matchKey || '').trim();
+  if (!mk) return null;
+  const doc = await getDoc(rollupPath(tenant, mk));
+  return doc ? shapeCustomer(doc) : null;
+}
+
 // PURE: merge two {pro,date,driver?} lists into one, de-duped by pro (keeping the
 // most recent date for a repeated pro), sorted newest-date first, capped at `max`.
 // The `driver` (who delivered) rides along. On an EQUAL date a driver-bearing entry
