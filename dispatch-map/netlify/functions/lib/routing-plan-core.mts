@@ -180,6 +180,27 @@ export interface PlanInputs {
   habitDocByKey: Map<string, any>;     // customer driver-habit docs (obs dated; habitAsOf applies < D)
   notesRestrictions: Map<string, any[]>; // matchKey → equipment_restrictions
   tractorCapable: Set<string>;         // matchKey → served by a tractor before (positive; carried, not a restriction)
+  employees?: any[];                   // MarginIQ employees roster (vehicleType source); absent → class fallbacks
+}
+
+// Phase 2.9 — PURE: employees roster → driver_key → truck class. Joined on the
+// same fold the engine keys everything by (NuVizz alias, else fullName,
+// else first+last; explicit aliases too), so Chad's MarginIQ Vehicle Type edits
+// flow straight into class gating and the per-class skid caps.
+export function employeeClassMap(employees: any[]): Map<string, string> {
+  const fold = (s: any) => String(s || '').trim().toUpperCase().replace(/\s+/g, '_');
+  const out = new Map<string, string>();
+  for (const e of employees || []) {
+    const vt = String(e?.vehicleType || '').toLowerCase();
+    if (vt !== 'tractor' && vt !== 'box_truck') continue;
+    const names = new Set<string>([
+      (e?.externalIds || {})?.nuvizz, e?.fullName,
+      `${e?.firstName || ''} ${e?.lastName || ''}`.trim(),
+      ...(Array.isArray(e?.aliases) ? e.aliases : []),
+    ].filter(Boolean).map(fold));
+    for (const k of names) if (k && !out.has(k)) out.set(k, vt);
+  }
+  return out;
 }
 
 export interface PlanDaySummary {
@@ -265,12 +286,15 @@ export async function runPlanForDate(
   // real route-driver pool, so exclude them (they never become a zone candidate or
   // a dumping ground; their own stops still route to real candidate drivers).
   const SUPERVISOR_KEYS = new Set(['CHAD_DAVIS']);
-  // Unknown/blank truck_class defaults to box_truck (the fleet majority); the one
-  // verified tractor among the roster-unmatched drivers is pinned. Class gates
-  // tractor-blocked stops today; Phase 3 will use it for per-class skid caps.
+  // Phase 2.9: truck class comes from the MarginIQ employees roster
+  // (vehicleType) — the source Chad actually maintains — joined through the
+  // NuVizz alias/fullName fold. The hardcoded pin stays only as a fallback for
+  // drivers without an employees record; unknown/blank still reads box_truck
+  // (the fleet majority). Class gates tractor-blocked stops + per-class skid caps.
+  const empClass = employeeClassMap(inputs.employees || []);
   const CLASS_OVERRIDE = new Map<string, string>([['JUNIOR_THOMAS', 'tractor']]);
   const resolveClass = (key: string, raw: string | null) =>
-    CLASS_OVERRIDE.get(key) || (raw === 'tractor' ? 'tractor' : 'box_truck');
+    empClass.get(key) || CLASS_OVERRIDE.get(key) || (raw === 'tractor' ? 'tractor' : 'box_truck');
 
   const activeDrivers: AssignDriver[] = actualDriverDays
     .filter((dd) => !SUPERVISOR_KEYS.has(dd.driver_key))
@@ -332,7 +356,8 @@ export async function runPlanForDate(
       // Phase 2.7: allowed drivers — this stop's zone trailing top-5 ∪ habit ∪ the
       // coarser 0.2° area (cold-zone fallback), roster-filtered. Empty ⇒ unseen
       // geography, and the solver falls back to any feasible driver.
-      candidates: candidateDriversFor(lat, lng, habitKey, territory, rosterKeys),
+      candidates: candidateDriversFor(lat, lng, habitKey, territory, rosterKeys,
+        { zoneK: cfg.candidate_zone_k, areaK: cfg.candidate_area_k }),
     };
   });
 
@@ -507,12 +532,13 @@ export async function runPlanForDate(
 // Load the as-of inputs for one date (< D where the guard applies). The replay
 // preloads these once and passes them in.
 export async function loadPlanInputs(tenant: string, date: string, plannedStops: any[]): Promise<PlanInputs> {
-  const [ddRows, refRows, fleetDoc, notesRows, tractorRows] = await Promise.all([
+  const [ddRows, refRows, fleetDoc, notesRows, tractorRows, employees] = await Promise.all([
     runQuery({ from: [{ collectionId: DRIVER_DAYS_COLLECTION }], where: { fieldFilter: { field: { fieldPath: 'date' }, op: 'LESS_THAN', value: { stringValue: date } } } }),
     runQuery({ from: [{ collectionId: REFERENCE_ROUTES_COLLECTION }], where: { fieldFilter: { field: { fieldPath: 'date' }, op: 'LESS_THAN', value: { stringValue: date } } } }),
     getDoc(fleetServicePath(tenant)),
     listDocs(CUSTOMER_NOTES_COLLECTION),
     listDocs(TRACTOR_LOCATIONS_COLLECTION),
+    listDocs('employees').catch(() => [] as any[]),  // roster absent → class fallbacks
   ]);
   const driverDaysBefore = (ddRows as any[]).filter((r) => r?.tenant === tenant) as DriverDayDoc[];
   const referencesBefore = (refRows as any[]).filter((r) => r?.tenant === tenant) as ReferenceRouteDoc[];
@@ -544,5 +570,5 @@ export async function loadPlanInputs(tenant: string, date: string, plannedStops:
   };
   await Promise.all(Array.from({ length: Math.min(8, wantKeys.length || 1) }, worker));
 
-  return { driverDaysBefore, referencesBefore, serviceDocByKey, fleetServiceDoc: fleetDoc, habitDocByKey, notesRestrictions, tractorCapable };
+  return { driverDaysBefore, referencesBefore, serviceDocByKey, fleetServiceDoc: fleetDoc, habitDocByKey, notesRestrictions, tractorCapable, employees };
 }
