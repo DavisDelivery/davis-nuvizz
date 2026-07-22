@@ -59,7 +59,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.50.70';
+const APP_VERSION = '0.50.71';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -104,6 +104,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.50.71', 'ROUTING MAP — the Status filter now filters the MAP, not just the grid. Checking "Planned" (or any status/driver filter in the bottom grid) hides every non-matching pin on the Routing map, so the map and the grid finally show the same stops (Chad: "should only be showing planned"). Safety exemptions: stops you have SELECTED and stops on a shown route stay visible even when filtered out — a selection can never ride invisibly into a build, and a route\'s numbered pins never lose members. Search is unchanged (burnt-orange highlight, never hides). Clearing the filter restores every pin.'],
   ['0.50.70', 'MANIFEST READER — high-resolution scans now work (the real fix). Chad\'s Manifest_04753105 (5 pages, 3.9 MB — a heavy fax scan) still failed: the 0.50.69 page-splitting fix couldn\'t help because at ~1 MB PER PAGE even a single page was over the reader\'s ~256 KB request cap. The PDF now rides AROUND that cap: a big file is uploaded in ~700 KB parts to our own store (with a per-part retry), and the reader reassembles it and reads the WHOLE manifest in one pass — one AI call, no splitting, no quality loss. Handles scans up to ~16 MB; the reader also gets more time (up to 5 min) for heavy scans and the app waits accordingly. Small manifests are unchanged.'],
   ['0.50.69', 'BIG MANIFEST PDFs now read automatically. The manifest reader’s request has a hard ~256 KB size cap (a platform limit on the background job), so a scanned manifest a page or two longer than usual failed with “too large — split it yourself.” It now splits the PDF into page groups that each fit, reads each group, and merges the rows back into one intake — no manual splitting. A truly huge single page still can’t be split and gives a clear message; everything else just works.'],
   ['0.50.66', 'CALL-COUNT FIX — the reconsignment check was quietly leaking /stop/info calls. The address-change detector (added in 0.50.48) compared the cheap saved-search list address against the address stored from a prior /stop/info pull. Those come from two different NuVizz endpoints and can format the same address slightly differently (a leading suite number, a padded ZIP), so for those stops it looked like the address changed on EVERY scan and re-pulled the order each time — never settling. Now it compares the list address to the LAST LIST address we saw for that stop (same source, same format), so it only re-pulls on a REAL reconsignment and then stops. Real address changes are still caught; the per-scan call bleed is gone.'],
@@ -9424,7 +9425,7 @@ const LOAD_BUCKET_STYLE = {
   cancelled: 'bg-red-100 text-red-700',
 };
 
-function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open, setOpen, onPick, onPickLoad, headerRight, onWindowRowsChange, onSearchMatchChange = null, planVersion = 0, highlightIds = null, rootRef = null }) {
+function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open, setOpen, onPick, onPickLoad, headerRight, onWindowRowsChange, onSearchMatchChange = null, onStatusFilterChange = null, planVersion = 0, highlightIds = null, rootRef = null }) {
   // Loads view groups the FULL board's loads (loadStops) so stop-level filters —
   // notably "Unplanned only" — don't empty it. Falls back to the visible stops.
   const loadSrc = loadStops || stops;
@@ -9622,6 +9623,24 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
   const debouncedMatchIds = useDebouncedValue(searchMatchIds, 180);
   useEffect(() => { onSearchMatchChange?.(debouncedMatchIds); }, [debouncedMatchIds, onSearchMatchChange]);
   useEffect(() => () => onSearchMatchChange?.(null), [onSearchMatchChange]);
+  // Status/driver filters reach the MAP too (WYSIWYG — Chad: "Planned checked
+  // should only be showing planned"). Reported as the id set of rows PASSING the
+  // status+driver filters (search is deliberately NOT folded in: search is a
+  // burnt-orange highlight, never a hide). null when no filter is active → the
+  // map shows everything, exactly as before.
+  const statusFilterIds = useMemo(() => {
+    if (!statusSel.size && !driverSel) return null;
+    const out = new Set();
+    for (const s of baseStops) {
+      if (statusSel.size && !statusSel.has(tableStatusBucket(s))) continue;
+      if (driverSel && (s.driverName || '') !== driverSel) continue;
+      out.add(String(s.stopNbr));
+    }
+    return out;
+  }, [baseStops, statusSel, driverSel]);
+  const debouncedStatusIds = useDebouncedValue(statusFilterIds, 180);
+  useEffect(() => { onStatusFilterChange?.(debouncedStatusIds); }, [debouncedStatusIds, onStatusFilterChange]);
+  useEffect(() => () => onStatusFilterChange?.(null), [onStatusFilterChange]);
   // Stops with NO geocoded location. They list here but have no map marker, so they can't be
   // box/lasso-selected OR routed (the map's stopById is coord-only) — this is how an order gets
   // silently MISSED. Surfaced as a count + one-click filter so they're findable and fixable.
@@ -12886,6 +12905,7 @@ function RoutingScreen({ debugCaptureRef }) {
   // Bottom-grid SEARCH matches (stopNbr Set, or null) reported up by BottomStopsTable, so the
   // Routing map can highlight them in burnt orange on the top layer — parity with the Map screen.
   const [searchMatchIds, setSearchMatchIds] = useState(null);
+  const [statusFilterIds, setStatusFilterIds] = useState(null); // grid status/driver filter → map visibility (null = no filter)
 
   // Touch-native selection. No DrawingManager (its drag-to-draw never worked on
   // a phone and its async load could silently no-op): Box = tap two corners,
@@ -14440,11 +14460,18 @@ function RoutingScreen({ debugCaptureRef }) {
     if (!google || !mapRef.current) return;
     markersRef.current.forEach((m) => m.setMap(null));
     const byId = new Map();
+    // Grid status/driver filter → the map hides non-matching stops (WYSIWYG with
+    // the bottom grid). Exemptions: a SELECTED stop and any stop on a shown route
+    // stay visible — hiding a selection would let invisible stops ride into a
+    // build, and a route's numbered pins must never lose members mid-view.
+    const visibleStops = statusFilterIds
+      ? vPositioned.filter((s) => { const id = String(s.stopNbr); return statusFilterIds.has(id) || selectedIds.has(id) || effectiveRouteInfo.has(id); })
+      : vPositioned;
     // Location → its member stopNbrs. Length feeds the count badge; the member list feeds the
     // one-click group select (clicking a multi-order marker toggles every order at the place).
     const locMates = new Map();
-    for (const s of vPositioned) { const k = stopLocKey(s); const a = locMates.get(k); a ? a.push(String(s.stopNbr)) : locMates.set(k, [String(s.stopNbr)]); }
-    markersRef.current = vPositioned.map((s) => {
+    for (const s of visibleStops) { const k = stopLocKey(s); const a = locMates.get(k); a ? a.push(String(s.stopNbr)) : locMates.set(k, [String(s.stopNbr)]); }
+    markersRef.current = visibleStops.map((s) => {
       const id = String(s.stopNbr);
       const sel = !viewing && selectedIds.has(id);
       // A bottom-grid SEARCH hit — highlighted BURNT ORANGE (distinct from the amber selection
@@ -14502,7 +14529,7 @@ function RoutingScreen({ debugCaptureRef }) {
     });
     markerByIdRef.current = byId;
     lastEmphRef.current = hoverIdRef.current; // markers were built already-emphasized
-  }, [google, vPositioned, viewing, selectedIds, searchMatchIds, effectiveRouteInfo, notes, tractorLocs, toggleStopGroup, mapReady, selectedDayKey, emphIcon]);
+  }, [google, vPositioned, viewing, selectedIds, searchMatchIds, statusFilterIds, effectiveRouteInfo, notes, tractorLocs, toggleStopGroup, mapReady, selectedDayKey, emphIcon]);
 
   // Hover emphasis — touch only the two affected markers, not all of them. Keeps
   // the sequence label intact (only the icon scale/ring change).
@@ -15201,6 +15228,7 @@ function RoutingScreen({ debugCaptureRef }) {
             onPickLoad={pickLoadToCompare}
             onWindowRowsChange={setGridWindowStops}
             onSearchMatchChange={setSearchMatchIds}
+            onStatusFilterChange={setStatusFilterIds}
             highlightIds={selectedIds}
             planVersion={planVersion}
           />}
