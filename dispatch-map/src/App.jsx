@@ -59,7 +59,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.50.71';
+const APP_VERSION = '0.50.72';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -104,6 +104,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.50.72', 'SAVE GUARD — removing an already-executed stop now refuses UP FRONT. The AVRT case (7/22): a stop the driver had already been dispatched on / arrived at survives a Save-removal — NuVizz answers SUCCESS but silently keeps the stop, and the app could only tell you AFTER the save (the "NuVizz KEPT stop" banner) at the cost of a wasted write + repair. The Save now checks each removed stop\'s execution status on the pre-save load read (zero extra NuVizz calls) and refuses immediately with the exact remedy: "stop X is already DISPATCHED — reopen + unplan it in the portal first." Covers explicit removals and the source side of a staged move. Fails open: an unknown status never blocks, and the post-save verify still has the final word.'],
   ['0.50.71', 'ROUTING MAP — the Status filter now filters the MAP, not just the grid. Checking "Planned" (or any status/driver filter in the bottom grid) hides every non-matching pin on the Routing map, so the map and the grid finally show the same stops (Chad: "should only be showing planned"). Safety exemptions: stops you have SELECTED and stops on a shown route stay visible even when filtered out — a selection can never ride invisibly into a build, and a route\'s numbered pins never lose members. Search is unchanged (burnt-orange highlight, never hides). Clearing the filter restores every pin.'],
   ['0.50.70', 'MANIFEST READER — high-resolution scans now work (the real fix). Chad\'s Manifest_04753105 (5 pages, 3.9 MB — a heavy fax scan) still failed: the 0.50.69 page-splitting fix couldn\'t help because at ~1 MB PER PAGE even a single page was over the reader\'s ~256 KB request cap. The PDF now rides AROUND that cap: a big file is uploaded in ~700 KB parts to our own store (with a per-part retry), and the reader reassembles it and reads the WHOLE manifest in one pass — one AI call, no splitting, no quality loss. Handles scans up to ~16 MB; the reader also gets more time (up to 5 min) for heavy scans and the app waits accordingly. Small manifests are unchanged.'],
   ['0.50.69', 'BIG MANIFEST PDFs now read automatically. The manifest reader’s request has a hard ~256 KB size cap (a platform limit on the background job), so a scanned manifest a page or two longer than usual failed with “too large — split it yourself.” It now splits the PDF into page groups that each fit, reads each group, and merges the rows back into one intake — no manual splitting. A truly huge single page still can’t be split and gives a clear message; everything else just works.'],

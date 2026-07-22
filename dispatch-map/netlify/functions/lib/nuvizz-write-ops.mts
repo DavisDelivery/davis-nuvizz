@@ -345,6 +345,36 @@ function firstError(body: any): string | null {
   return null;
 }
 
+// ── executed-stop detection (the AVRT-0179332708 case, Jul 22) ────────────────
+// NuVizz will NOT remove a stop that is already in execution via the declarative
+// RWB save: it answers SUCCESS and silently KEEPS the stop (verified live — a
+// dispatched pickup survived a Save-removal twice, incl. one repair round). The
+// pre-save load read already carries each stop's execution status in the RAW
+// entries, so a Save can refuse UP FRONT for free instead of half-applying.
+
+/** Execution status of one stop on a normalizeLoad() result, read from rawStops
+ * (the raw load/info entries — the normalized stops[] deliberately keep only
+ * id/nbr/seq/type). Null when the entry or its execution info is absent. */
+export function rawStopExecStatus(load: any, stopNbr: string): string | null {
+  for (const w of load?.rawStops || []) {
+    const st = w?.stop || w || {};
+    if (st?.stopNbr == null || String(st.stopNbr) !== String(stopNbr)) continue;
+    const s = w?.stopExecutionInfo?.stopStatus ?? st?.stopExecutionInfo?.stopStatus ?? st?.stopStatus ?? null;
+    return s != null && String(s).trim() !== '' ? String(s).trim() : null;
+  }
+  return null;
+}
+
+// Statuses that mean the driver/vendor already ACTED on the stop. Deliberately a
+// BLOCKLIST with fail-open semantics: an unknown or absent status never blocks a
+// removal (the post-save KEPT verify still has the final word). PICKED (not PICK)
+// and no CONFIRMED: a pickup-TYPE stop or an appointment-confirmed but
+// undispatched stop is still legitimately removable.
+const EXECUTED_STOP_STATUS_RE = /^(DISPATCH|IN[_ ]?TRANSIT|OUT[_ ]?FOR|ARRIV|DEPART|DELIVER|COMPLET|PICKED|EXEC)/i;
+export function isExecutedStopStatus(status: string | null | undefined): boolean {
+  return !!status && EXECUTED_STOP_STATUS_RE.test(String(status).trim());
+}
+
 /** normalizeStop (§6) — getStop response → flat shape (incl. the load it's on now). */
 export function normalizeStop(j: any): any {
   const S = j?.Stop || j || {};
