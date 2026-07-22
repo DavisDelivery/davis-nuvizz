@@ -18,7 +18,7 @@
 
 import { getDoc, setDoc } from './firestore.mts';
 
-export const ENGINE_VERSION = '2.9.0';
+export const ENGINE_VERSION = '2.9.1';
 
 export const ENGINE_CONFIG_COLLECTION = 'routing_engine_config';
 
@@ -126,10 +126,14 @@ export interface EngineConfig {
   w_skid_soft: number;         // per skid-equiv above the class SOFT cap on a trip
 
   // ── Phase 2.9: candidate-set width ─────────────────────────────────────────
-  // Leave-day-out on 16 board days: zone top-7 + area top-5 lifts containment
-  // (actual driver ∈ candidates) from 82.4% → 87.1% vs the 5/3 defaults, while
-  // ownership scoring still concentrates picks on the cast's core — width
-  // raises the CEILING, the economics keep the floor.
+  // 2.9.0 tried zone-7/area-5: containment (the CEILING — actual driver ∈
+  // candidates) rose 68.0→72.8% exactly as the offline sizing predicted, but
+  // realized agreement FELL 27.9→26.2%: the newly-admitted #6-7 zone / #4-5
+  // area drivers sometimes out-score the true cast core on habit/affinity, and
+  // the narrow sets had been doing silent enforcement work. 2.9.1 reverts the
+  // DEFAULTS to the proven 5/3; the knobs stay for the "rank-aware solver"
+  // experiment (candidates weighted by cast rank), which is what would let
+  // width pay — prototype that BEFORE re-widening.
   candidate_zone_k: number;    // zone (0.05°) trailing top-K drivers admitted
   candidate_area_k: number;    // area (0.2°) fallback top-K drivers admitted
 
@@ -333,10 +337,11 @@ export function engineConfigDefaults(env: Record<string, string | undefined> = p
     skid_cap_tractor_hard: num('SKID_CAP_TRACTOR_HARD', 37),
     loose_per_skid: num('LOOSE_PER_SKID', 10),
     w_skid_soft: num('W_SKID_SOFT', 0),
-    // Phase 2.9 — measured on 16 board days leave-day-out: 7/5 beats 5/3 by
-    // +4.7pts containment (82.4→87.1). Wider than 7/5 showed diminishing gains.
-    candidate_zone_k: num('CANDIDATE_ZONE_K', 7),
-    candidate_area_k: num('CANDIDATE_AREA_K', 5),
+    // Phase 2.9.1 — back to the PROVEN 5/3 (see the interface comment: 7/5
+    // raised the ceiling +4.8 but cost 1.7pts realized agreement in the full
+    // replay; width without a rank-aware solver is a net loss).
+    candidate_zone_k: num('CANDIDATE_ZONE_K', 5),
+    candidate_area_k: num('CANDIDATE_AREA_K', 3),
     routing_calendar: routingCalendarDefaults(env),
   };
 }

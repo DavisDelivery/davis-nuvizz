@@ -15,10 +15,13 @@ import { engineConfigDefaults } from '../netlify/functions/lib/routing-engine-co
 const ref = (date, drv, pts) => ({ date, driver_user_name: drv, driver_name: drv, stops: pts.map(([lat, lng]) => ({ lat, lng })) });
 const Z = [34.15, -83.95];
 
-test('config: candidate width knobs default to the measured 7/5', () => {
+test('config: candidate width knobs default to the PROVEN 5/3 (2.9.1 revert)', () => {
+  // 2.9.0's 7/5 raised containment 68.0→72.8 but cost 1.7pts realized agreement
+  // (27.9→26.2) — the narrow sets were doing silent enforcement work. Defaults
+  // stay 5/3 until a rank-aware solver makes width pay; the knobs remain.
   const cfg = engineConfigDefaults({});
-  assert.equal(cfg.candidate_zone_k, 7);
-  assert.equal(cfg.candidate_area_k, 5);
+  assert.equal(cfg.candidate_zone_k, 5);
+  assert.equal(cfg.candidate_area_k, 3);
 });
 
 test('candidateDriversFor honors zoneK: the 6th and 7th zone drivers are admitted at K=7', () => {
