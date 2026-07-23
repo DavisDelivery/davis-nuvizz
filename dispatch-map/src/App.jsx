@@ -59,7 +59,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.50.75';
+const APP_VERSION = '0.50.76';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -104,6 +104,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.50.76', 'DAY STATUS BREAKDOWN on the bottom-grid header. The Stops/Loads bar now shows what percentage of the SELECTED DAY\'s board is in each status — e.g. "Planned 62% · Unplanned 28% · Out 4% · Delivered 6%" — right next to the Stops/Loads count (Chad\'s ask: a percentage breakdown of the planned stops for the day). It\'s computed over the WHOLE day, so it stays a steady progress read while you search or filter the list (it doesn\'t follow the filtered rows). Same status buckets as the Status filter, zero-count statuses hidden, and the hover tooltip gives the raw counts. Reflects whichever day/window the bar is set to. Desktop bottom grid on both the Map and Routing screens.'],
   ['0.50.75', 'MANIFEST INTAKE — the consignee column now shows the FULL address. Each order row displays the street line (address + suite) between the consignee name and the city/state/ZIP, in both the intake grid and the Pushed-to-NuVizz log, so you can sanity-check where an order is going without expanding the row. (Expanding ▸ still opens the full editor.)'],
   ['0.50.74', 'MOBILE ROUTING — you can now SEE your selection. Tapping the "N selected" badge (or Setup) on the mobile Build screen opens a "Selected stops (N)" section: the same stacked stop cards the desktop right-rail Stops tab has — customer, city, skids · loose · pcs · weight, restriction icons, remove ✕, sortable by any column, tap a card for its detail. Chad\'s report: 36 stops lassoed and "no way to see the 36 I have selected" — the mobile Setup sheet only showed build controls; the selection list existed on desktop only. The section is collapsible and starts open while composing a selection (collapsed once a build workbench is active, so route cards aren\'t buried). Live counts in the header: Selected stops (36) · 77 sk · 80 pcs.'],
   ['0.50.73', 'STOP HISTORY — "Recent deliveries here" now ALWAYS shows on the stop card, mobile included. The section (past PROs with the driver who ran each and the date) was already shared by desktop and mobile, but it hid itself completely when a customer had no saved history — so on a first-visit customer (Chad\'s MODEL ROUNDUP) the mobile card looked like the feature didn\'t exist. It now says "No prior deliveries recorded — first visit to this customer" instead of vanishing. Lookup is also stronger: it resolves the customer by the stop\'s exact matchKey first (one direct read — immune to business-name variants the name search can miss), with the name search kept as fallback. Firestore-only, zero NuVizz calls, session-cached as before.'],
@@ -9441,6 +9442,18 @@ function tableStatusBucket(stop) {
   const b = TABLE_STATUS_BUCKETS.find((x) => x.match.includes(st));
   return b ? b.k : 'planned';
 }
+// Header-row day breakdown: the % of the WHOLE day's board in each status (Chad —
+// "a percentage breakdown of the planned stops for the day"). Same buckets as the
+// Status filter, so the header pill and the filter agree. Rendered in bucket order,
+// zero buckets hidden. Percentage over the whole day (not the filtered rows), the
+// same steady-denominator philosophy as the "% delivered" count.
+const DAY_STATUS_PILLS = [
+  { k: 'planned', label: 'Planned', cls: 'text-blue-700' },
+  { k: 'unplanned', label: 'Unplanned', cls: 'text-slate-500' },
+  { k: 'in_transit', label: 'Out', cls: 'text-amber-600' },
+  { k: 'completed', label: 'Delivered', cls: 'text-green-700' },
+  { k: 'cancelled', label: 'Cancelled', cls: 'text-red-600' },
+];
 // Per-status chips for the Loads view status breakdown.
 const LOAD_BUCKET_STYLE = {
   unplanned: 'bg-slate-100 text-slate-600',
@@ -9634,6 +9647,17 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
       return true;
     });
   }, [baseStops, q, statusSel, driverSel, nvWindow]);
+  // Day-level status breakdown over the WHOLE board (baseStops), independent of the
+  // active search/status filter — a steady progress read of the selected day, shown
+  // as a percentage pill on the header row.
+  const dayStatus = useMemo(() => {
+    const c = { unplanned: 0, planned: 0, in_transit: 0, completed: 0, cancelled: 0 };
+    for (const s of baseStops) { const b = tableStatusBucket(s); c[b] = (c[b] || 0) + 1; }
+    const total = baseStops.length;
+    const pct = {};
+    for (const k of Object.keys(c)) pct[k] = total ? Math.round((c[k] / total) * 100) : 0;
+    return { c, pct, total };
+  }, [baseStops]);
   // Report the CURRENT SEARCH matches UP (stopNbr set) so the Routing map can highlight them
   // (burnt orange, top layer) — parity with the Map screen's search highlight, which the Routing
   // screen never had. Exactly the rows the grid is showing (WYSIWYG: search + status + driver),
@@ -9873,6 +9897,20 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
             <span className="font-normal opacity-60">{loadRows.length}</span>
           </button>
         </div>
+        {/* Day status breakdown — % of the selected day's board in each status (Chad:
+            "a percentage breakdown of the planned stops for the day"). Whole-day
+            denominator, so it's a steady progress read while you search/filter.
+            hidden on narrow widths so the packed bar never overflows. */}
+        {dayStatus.total > 0 && (
+          <div
+            className="hidden lg:flex items-center gap-x-2 text-[11px] whitespace-nowrap pl-1"
+            title={`${nvWindow ? 'Selected window' : "Today's board"}: ` + DAY_STATUS_PILLS.map((p) => `${p.label} ${dayStatus.c[p.k]}`).join(' · ') + ` · ${dayStatus.total} stop${dayStatus.total === 1 ? '' : 's'} total`}
+          >
+            {DAY_STATUS_PILLS.filter((p) => dayStatus.c[p.k] > 0).map((p) => (
+              <span key={p.k} className={p.cls}>{p.label} <span className="font-semibold">{dayStatus.pct[p.k]}%</span></span>
+            ))}
+          </div>
+        )}
         {/* PROFILES — save/switch the bar settings (view · status · window · driver · sort). */}
         <div className="relative">
           <button
