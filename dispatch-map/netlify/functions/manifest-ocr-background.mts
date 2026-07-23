@@ -21,8 +21,10 @@ import { isFirestoreEnabled, setDoc, getDoc, deleteDoc } from './lib/firestore.m
 
 const MESSAGES_URL = 'https://api.anthropic.com/v1/messages';
 const ANTHROPIC_VERSION = '2023-06-01';
-// Sonnet by default — fax-quality digits (PRO numbers) punish a weaker reader.
-const OCR_MODEL = process.env.ANTHROPIC_OCR_MODEL || 'claude-sonnet-4-6';
+// Sonnet 5 by default — fax-quality digits (PRO numbers) punish a weaker reader,
+// so we run the strongest current Sonnet vision model (upgraded from
+// claude-sonnet-4-6). Overridable per-site via ANTHROPIC_OCR_MODEL with no deploy.
+const OCR_MODEL = process.env.ANTHROPIC_OCR_MODEL || 'claude-sonnet-5';
 // Generous now that we're off the request path; still bounded so a hung upstream call
 // can't pin the function for the full 15-minute background allowance. A heavy
 // high-resolution scan takes longer than the old 3-page fax baseline, so this is

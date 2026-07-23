@@ -59,7 +59,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.50.76';
+const APP_VERSION = '0.50.77';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -104,6 +104,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.50.77', 'MANIFEST READER upgraded to a newer, stronger AI model (Claude Sonnet 5, up from Sonnet 4.6). Fax-quality scans — where a smudged PRO digit or a cramped address line is easy to misread — should come back more accurately. Nothing changes in how you use it: drop the PDF, review the grid, Create. Still zero NuVizz calls; the model is env-configurable so it can be tuned without a code change.'],
   ['0.50.76', 'DAY STATUS BREAKDOWN on the bottom-grid header. The Stops/Loads bar now shows what percentage of the SELECTED DAY\'s board is in each status — e.g. "Planned 62% · Unplanned 28% · Out 4% · Delivered 6%" — right next to the Stops/Loads count (Chad\'s ask: a percentage breakdown of the planned stops for the day). It\'s computed over the WHOLE day, so it stays a steady progress read while you search or filter the list (it doesn\'t follow the filtered rows). Same status buckets as the Status filter, zero-count statuses hidden, and the hover tooltip gives the raw counts. Reflects whichever day/window the bar is set to. Desktop bottom grid on both the Map and Routing screens.'],
   ['0.50.75', 'MANIFEST INTAKE — the consignee column now shows the FULL address. Each order row displays the street line (address + suite) between the consignee name and the city/state/ZIP, in both the intake grid and the Pushed-to-NuVizz log, so you can sanity-check where an order is going without expanding the row. (Expanding ▸ still opens the full editor.)'],
   ['0.50.74', 'MOBILE ROUTING — you can now SEE your selection. Tapping the "N selected" badge (or Setup) on the mobile Build screen opens a "Selected stops (N)" section: the same stacked stop cards the desktop right-rail Stops tab has — customer, city, skids · loose · pcs · weight, restriction icons, remove ✕, sortable by any column, tap a card for its detail. Chad\'s report: 36 stops lassoed and "no way to see the 36 I have selected" — the mobile Setup sheet only showed build controls; the selection list existed on desktop only. The section is collapsible and starts open while composing a selection (collapsed once a build workbench is active, so route cards aren\'t buried). Live counts in the header: Selected stops (36) · 77 sk · 80 pcs.'],
