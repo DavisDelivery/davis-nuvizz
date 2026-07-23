@@ -59,7 +59,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.50.74';
+const APP_VERSION = '0.50.75';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -104,6 +104,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.50.75', 'MANIFEST INTAKE — the consignee column now shows the FULL address. Each order row displays the street line (address + suite) between the consignee name and the city/state/ZIP, in both the intake grid and the Pushed-to-NuVizz log, so you can sanity-check where an order is going without expanding the row. (Expanding ▸ still opens the full editor.)'],
   ['0.50.74', 'MOBILE ROUTING — you can now SEE your selection. Tapping the "N selected" badge (or Setup) on the mobile Build screen opens a "Selected stops (N)" section: the same stacked stop cards the desktop right-rail Stops tab has — customer, city, skids · loose · pcs · weight, restriction icons, remove ✕, sortable by any column, tap a card for its detail. Chad\'s report: 36 stops lassoed and "no way to see the 36 I have selected" — the mobile Setup sheet only showed build controls; the selection list existed on desktop only. The section is collapsible and starts open while composing a selection (collapsed once a build workbench is active, so route cards aren\'t buried). Live counts in the header: Selected stops (36) · 77 sk · 80 pcs.'],
   ['0.50.73', 'STOP HISTORY — "Recent deliveries here" now ALWAYS shows on the stop card, mobile included. The section (past PROs with the driver who ran each and the date) was already shared by desktop and mobile, but it hid itself completely when a customer had no saved history — so on a first-visit customer (Chad\'s MODEL ROUNDUP) the mobile card looked like the feature didn\'t exist. It now says "No prior deliveries recorded — first visit to this customer" instead of vanishing. Lookup is also stronger: it resolves the customer by the stop\'s exact matchKey first (one direct read — immune to business-name variants the name search can miss), with the name search kept as fallback. Firestore-only, zero NuVizz calls, session-cached as before.'],
   ['0.50.72', 'SAVE GUARD — removing an already-executed stop now refuses UP FRONT. The AVRT case (7/22): a stop the driver had already been dispatched on / arrived at survives a Save-removal — NuVizz answers SUCCESS but silently keeps the stop, and the app could only tell you AFTER the save (the "NuVizz KEPT stop" banner) at the cost of a wasted write + repair. The Save now checks each removed stop\'s execution status on the pre-save load read (zero extra NuVizz calls) and refuses immediately with the exact remedy: "stop X is already DISPATCHED — reopen + unplan it in the portal first." Covers explicit removals and the source side of a staged move. Fails open: an unknown status never blocks, and the post-save verify still has the final word.'],
@@ -18401,6 +18402,7 @@ function BulkOrderScreen() {
                             </td>
                             <td className="px-1 py-1 min-w-[170px]">
                               <div className="font-semibold text-slate-800 leading-tight">{r.name || <span className="text-amber-600">name missing</span>}{pushed && r._updated && <span className="ml-1 text-[9px] font-bold text-amber-600 uppercase">updated</span>}</div>
+                              {(r.addr1 || r.addr2) && <div className="text-[10px] text-slate-600 leading-tight">{[r.addr1, r.addr2].filter(Boolean).join(', ')}</div>}
                               <div className="text-[10px] text-slate-500">{[r.city, r.state].filter(Boolean).join(', ')} {r.zip}</div>
                               {r._error && <div className="text-[10px] text-red-600 mt-0.5"><AlertTriangle size={10} className="inline -mt-0.5" /> {r._error}</div>}
                               {!pushed && !r._error && missing.length > 0 && <div className="text-[10px] text-amber-600 mt-0.5">need {missing.length} field(s) — expand ▸</div>}
@@ -18615,7 +18617,7 @@ function BulkOrderScreen() {
                       <tr><td colSpan={8} className="py-4 text-center text-slate-400">{pushedLog.loading ? 'Loading…' : `Nothing pushed on ${pushedDate}.`}</td></tr>
                     ) : recs.map((r, i) => (
                       <tr key={`${r.orderRef || r.nuvizzNbr || i}_${i}`} className="border-b border-slate-100 align-top">
-                        <td className="px-2 py-1"><div className="font-medium text-slate-700">{r.name || '—'}</div>{(r.city || r.state) && <div className="text-[11px] text-slate-400">{[r.city, r.state].filter(Boolean).join(', ')}</div>}</td>
+                        <td className="px-2 py-1"><div className="font-medium text-slate-700">{r.name || '—'}</div>{(r.addr1 || r.addr2) && <div className="text-[11px] text-slate-500">{[r.addr1, r.addr2].filter(Boolean).join(', ')}</div>}{(r.city || r.state) && <div className="text-[11px] text-slate-400">{[r.city, r.state].filter(Boolean).join(', ')}</div>}</td>
                         <td className="px-2 py-1 text-slate-600 tabular-nums">{r.orderRef || '—'}</td>
                         <td className="px-2 py-1 tabular-nums">{r.nuvizzNbr || '—'}{r.updated && <span className="ml-1 text-[10px] px-1 py-0.5 rounded bg-amber-100 text-amber-700 align-middle">updated</span>}</td>
                         <td className="px-2 py-1 text-right tabular-nums">{r.pallets || ''}</td>
