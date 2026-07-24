@@ -60,7 +60,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.52.0';
+const APP_VERSION = '0.52.1';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -105,6 +105,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.52.1', 'ROUTE WORKBENCH — three defects found in a review of the Compare cards, all fixed. (1) A STOP WITH NO MAP LOCATION COULD LOCK A LOAD OUT OF SAVING. Cards were built from the map\'s pin list, so a stop that hadn\'t geocoded (or never will — a bad address) was simply absent from the card; Save then sent the load one stop short, and the safety guard correctly refused it ("stop(s) the board isn\'t showing … Refresh and retry"). Refreshing could never fix it — a stop with no geocode never joins the pin list — so that load was unsaveable with no way out. Cards are now built from the BOARD, so the stop rides along: shown, counted in the freight totals, printed on the manifest and included in the Save, flagged as "no map location" (it just can\'t be drawn or auto-sequenced until the address is fixed). (2) UNDO NOW PUTS THE STOP BACK WHERE IT WAS. Removing stop #2 of 10 and immediately undoing left it at #10 — so a slip of the mouse silently RESEQUENCED the real load in NuVizz on the next Save. Undo restores the original position, which also means undoing every removal leaves the card genuinely clean instead of holding a phantom reorder. (3) NO MORE SILENT DROPS. If a staged stop left the board (delivered, cancelled, reconsigned elsewhere), the card just stopped showing it while still sending it on Save — the card under-reported its own stop count, freight and manifest. Those now appear as a flagged row ("not on today\'s board — still saved") with an ✕ to drop them deliberately, and printing a manifest that can\'t include one says so out loud.'],
   ['0.52.0', 'WRITE NOTES TO NUVIZZ ORDERS. The stop card now has "Add note in NuVizz" — type an instruction, choose who sees it (Dispatcher, Driver, or both), Send. It lands on the real order in NuVizz, showing up in the portal\'s Dispatcher/Driver Instruction panels and on the driver\'s device, exactly like a note typed in the portal. Until now the app could only READ those instructions. IMPORTANT SAFETY DETAIL: NuVizz replaces an order\'s ENTIRE note list on this API, so a naive write would erase the carrier\'s own instructions ("DO NOT BREAKDOWN SKID", "INSIDE DELIVERY"). Every note is therefore written by reading the order first, adding yours to what\'s already there, and then re-reading to confirm the note landed AND that nothing else on the order changed — if anything else moved, it tells you loudly instead of claiming success. Re-sending the same note is a no-op instead of a duplicate. 3 NuVizz calls per note; nothing fires until you press Send.'],
   ['0.51.1', 'HOTFIX — manifest/paste reads broken by the 0.50.77 model upgrade. The new AI model rejects a legacy request setting (temperature) the reader still sent, so every manifest PDF drop and pasted-rows read failed with "anthropic_400: temperature is deprecated". The setting is removed (harmless on every model, old or new); reads work again immediately after this deploys.'],
   ['0.51.0', 'TWO DISPATCHERS, ONE BOARD + MULTI-PDF DROP. (1) Multi-user presence: with two people in the dispatch map at once you now SEE each other — a chip in the header shows who else is on (click it to set your name), and the stops the other device is STAGING on its Compare cards are claimed live: the selection tools (click, box, lasso, Ninja, Send) skip them with a "being staged by <name> on another device" note, a colliding Save warns before it fires, and a Save on either device silently re-reads the other\'s board within seconds (no more waiting out the 2-minute poll to see each other\'s work — and no more both planning the same order onto two different loads). All Firestore-only, zero NuVizz calls, and totally fail-soft: if presence is unavailable the app behaves exactly as before. (2) Bulk Add: the drop zone now takes SEVERAL files at once — drop 2 (or more) manifest PDFs together and each is read in turn (progress shows "file 1 of 2"), all landing in the same Manifest Intake list deduped as always. The file picker allows multi-select too. One spreadsheet per drop still (the column-mapper is one-at-a-time); extra non-PDFs are skipped with a note.'],
@@ -11990,7 +11991,14 @@ function RoutingWorkbenchCard({ route, stopById, otherKeys, ninjaMode, isActive,
   // The live-dispatch UI gate is now the gear toggle (prop) rather than the module-level
   // ?write=1/env const. Aliased to the original name so the gate sites below are unchanged.
   const LIVE_WRITE_FLAG = liveWrite;
-  const rows = route.order.map((id) => stopById.get(String(id))).filter(Boolean);
+  // NEVER silently drop an id the lookup can't resolve. `rows` used to be
+  // `.map(get).filter(Boolean)`, so a staged stop that left the board (delivered,
+  // cancelled, reconsigned) vanished from the card, from the freight totals and from
+  // the PRINTED MANIFEST — while still riding in route.order and in the Save. The card
+  // must show exactly what Save will send, so an unresolved id renders as a stub row.
+  const rows = route.order.map((id) => stopById.get(String(id)) || { stopNbr: String(id), __unresolved: true });
+  const unresolvedCount = rows.filter((s) => s.__unresolved).length;
+  const unmappedCount = rows.filter((s) => !s.__unresolved && (s.lat == null || s.lng == null)).length;
   // Orders staged for removal (in `removed` but no longer in the live order) — shown in the footer.
   const removedRows = (route.removed || [])
     .filter((id) => !route.order.includes(String(id)))
@@ -12014,6 +12022,7 @@ function RoutingWorkbenchCard({ route, stopById, otherKeys, ninjaMode, isActive,
   let skids = 0, loose = 0, weight = 0, delivered = 0;
   let driverName = '', driverId = '';
   for (const s of rows) {
+    if (s.__unresolved) continue;   // a stub row carries no freight/status to total
     skids += Number(s.cartons) || 0; loose += Number(s.volume) || 0; weight += Number(s.weight) || 0;
     if (classifyStopStatus(s) === 'DELIVERED') delivered += 1;
     if (!driverName && (s.driverName || s.driverUserName)) driverName = s.driverName || s.driverUserName;
@@ -12066,6 +12075,14 @@ function RoutingWorkbenchCard({ route, stopById, otherKeys, ninjaMode, isActive,
           {' · '}{Math.round(weight).toLocaleString()} lb · {rows.length ? Math.round((100 * delivered) / rows.length) : 0}%
         </div>
         ); })()}
+        {/* Stops that can't be drawn or auto-sequenced, called out so the card explains itself
+            rather than looking like it lost them. Both still ride in the Save. */}
+        {(unmappedCount > 0 || unresolvedCount > 0) && (
+          <div className="text-[10px] text-amber-700 leading-tight mt-0.5">
+            {unmappedCount > 0 && <>⚠ {unmappedCount} stop{unmappedCount === 1 ? '' : 's'} with no map location — fix the address to sequence {unmappedCount === 1 ? 'it' : 'them'}. </>}
+            {unresolvedCount > 0 && <>⚠ {unresolvedCount} stop{unresolvedCount === 1 ? '' : 's'} no longer on today’s board.</>}
+          </div>
+        )}
         {!route.collapsed && (
           // The dropdown shows the APPLIED strategy and keeps showing it until you change it (#280/
           // #263). EVERY hand-edit (drag, move in/out, ninja, send-selection, remove, undo) flips the
@@ -12109,6 +12126,23 @@ function RoutingWorkbenchCard({ route, stopById, otherKeys, ninjaMode, isActive,
             const id = String(s.stopNbr);
             const isExp = expanded.has(id);
             const nextMi = nextMiById.get(id);
+            // STUB ROW — the id is in this card's order (so Save WILL send it) but the board
+            // no longer carries the stop. Shown rather than hidden so the card can't
+            // under-report what it's about to save; not draggable/expandable (there's no
+            // record behind it), but removable so the dispatcher can drop it deliberately.
+            if (s.__unresolved) {
+              return (
+                <li key={id} className="text-[11px] bg-amber-50/60">
+                  <div className="px-2 py-1 flex items-center gap-1.5">
+                    <span className="w-4 text-right text-slate-400 font-mono shrink-0">{i + 1}</span>
+                    <AlertTriangle size={11} className="text-amber-600 shrink-0" />
+                    <span className="font-mono text-slate-700">{id}</span>
+                    <span className="text-[10px] text-amber-700 truncate">not on today’s board — still saved</span>
+                    <button onClick={(e) => { e.stopPropagation(); onRemoveStop(route.key, s.stopNbr); }} className="ml-auto text-slate-400 hover:text-red-600 shrink-0" title="Remove from this route">✕</button>
+                  </div>
+                </li>
+              );
+            }
             return (
             <li
               key={id}
@@ -12181,7 +12215,12 @@ function RoutingWorkbenchCard({ route, stopById, otherKeys, ninjaMode, isActive,
 // The route workbench (part 4): the 1–3 route cards opened from the right Routes panel, laid out
 // side by side (desktop) or stacked (mobile). Replaces the Setup stack on the left while routes
 // are open; "Back to Setup" closes them all.
-function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmNinja, activeKey, onSetActive, onResequence, onCollapse, onClose, onCloseAll, onMoveStop, onDropStop, onRemoveStop, onUndoRemove, onClearRemoved, onOpenStop, onPrintManifest, selectedCount = 0, onSendSelection, isMobile, liveWrite, onBoardSync, boardDate, peerClaimFor = null }) {
+// `stopById` is the MAP's coord-only index; `boardStopById` is every board row including
+// ungeocoded ones. Card membership, display, freight totals and the Save payload all use
+// boardStopById so what the card shows == what Save sends (a coord-less stop is still on
+// the load). Anything that needs geometry keeps using stopById.
+function RoutingWorkbench({ wbRoutes, stopById, boardStopById, ninjaMode, onToggleNinja, onArmNinja, activeKey, onSetActive, onResequence, onCollapse, onClose, onCloseAll, onMoveStop, onDropStop, onRemoveStop, onUndoRemove, onClearRemoved, onOpenStop, onPrintManifest, selectedCount = 0, onSendSelection, isMobile, liveWrite, onBoardSync, boardDate, peerClaimFor = null }) {
+  const lookup = boardStopById || stopById;
   // Live-dispatch gate comes from the gear toggle (prop), aliased to the original name so the
   // many gate sites in this component (Save, Beta/Live toggle, dirty guards, confirm) are unchanged.
   const LIVE_WRITE_FLAG = liveWrite;
@@ -12298,7 +12337,7 @@ function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmN
         load.orderedStopNbrs = r.order.map(String);
         // Enriched stopIds when we have them — REQUIRED for the loadId-only insert path (#328), where
         // there's no loadNbr to resolve stopNbrs against.
-        const ids = r.order.map((nbr) => stopById.get(String(nbr))?.stopId).filter(Boolean);
+        const ids = r.order.map((nbr) => lookup.get(String(nbr))?.stopId).filter(Boolean);
         if (ids.length) load.orderedStopIds = ids;
         // Same ids as an EXPLICIT nbr→id map (orderedStopIds is positional and only safe when
         // complete). The RWB engine uses these to skip its one-getStop-per-added-stop id lookup —
@@ -12306,7 +12345,7 @@ function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmN
         // stopId from the scan's Stop-Id column and from enrichment; rows without one simply
         // aren't in the map and the server reads those the old way.
         const idByNbr = {};
-        for (const nbr of r.order) { const sid = stopById.get(String(nbr))?.stopId; if (sid) idByNbr[String(nbr)] = String(sid); }
+        for (const nbr of r.order) { const sid = lookup.get(String(nbr))?.stopId; if (sid) idByNbr[String(nbr)] = String(sid); }
         if (Object.keys(idByNbr).length) load.stopIdsByNbr = idByNbr;
         if (!r.loadNbr && ids.length !== r.order.length) {
           // Numberless load + unenriched stops → can't safely resolve the reorder. Drop the ORDER
@@ -12725,7 +12764,7 @@ function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmN
           <RoutingWorkbenchCard
             key={r.key}
             route={r}
-            stopById={stopById}
+            stopById={lookup}
             otherKeys={wbRoutes.map((x) => x.key).filter((k) => k !== r.key)}
             ninjaMode={ninjaMode}
             isActive={activeKey === r.key}
@@ -13463,14 +13502,16 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
       .map((s) => ({ ...s, windowExtra: true }));
     return extra.length ? [...stops, ...extra] : stops;
   }, [stops, gridWindowStops]);
-  const positionedAll = useMemo(() => {
-    // Apply a customer's corrected pin (location_override from the "Edit address" fix) so the routing
-    // map moves the stop to the fixed spot — and recompute on `notes` so it happens LIVE, not only
-    // after closing/reopening the map (#287). Mirrors the dispatch Map's override handling.
-    return mapBaseStops
-      .map((s) => { const ov = notes.get(s.matchKey)?.location_override; return (ov && typeof ov.lat === 'number' && typeof ov.lng === 'number') ? { ...s, lat: ov.lat, lng: ov.lng } : s; })
-      .filter((s) => s.lat != null && s.lng != null);
-  }, [mapBaseStops, notes]);
+  // EVERY board row for the day, with any corrected pin applied (location_override from the
+  // "Edit address" fix) — INCLUDING stops that have no coordinates yet. Recomputed on `notes`
+  // so a pin fix lands LIVE, not only after closing/reopening the map (#287).
+  const boardStopsAll = useMemo(() => mapBaseStops
+    .map((s) => { const ov = notes.get(s.matchKey)?.location_override; return (ov && typeof ov.lat === 'number' && typeof ov.lng === 'number') ? { ...s, lat: ov.lat, lng: ov.lng } : s; }),
+  [mapBaseStops, notes]);
+  // positionedAll = the MAP's contract: markers, polylines and re-sequencing all need real
+  // lat/lng, so coord-less rows are excluded here and everywhere downstream (stopById).
+  // Compare-card MEMBERSHIP deliberately does NOT use this list — see boardStopById.
+  const positionedAll = useMemo(() => boardStopsAll.filter((s) => s.lat != null && s.lng != null), [boardStopsAll]);
   // EVERY identity of each open Compare card — key AND display name AND load number. A card
   // opened from an empty Draft load is keyed by its load NUMBER (DAVIS000198668), but the
   // save's board write-through stamps rows with the route NAME (OWUSU 1): matching on the key
@@ -13496,11 +13537,21 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
   // With the filtered map, what you saw ≠ what Save sent (hidden stops were still committed,
   // and a re-sequence shoved them to the end of the real order).
   const stopById = useMemo(() => new Map(positionedAll.map((s) => [String(s.stopNbr), s])), [positionedAll]);
+  // MEMBERSHIP lookup for Compare cards — every board row, coord-less ones included. A stop
+  // with no geocode is still ON its load, so a card must carry it: omitting it made Save send
+  // an orderedStopNbrs list short one stop, which the server's stale-board guard rightly
+  // refused ("…stop(s) the board isn't showing … Refresh and retry") — an unfixable loop,
+  // since a stop with no geocode never joins positionedAll however often you refresh. The map
+  // keeps using the coord-only stopById; only card membership/display/payload use this.
+  const boardStopById = useMemo(() => new Map(boardStopsAll.map((s) => [String(s.stopNbr), s])), [boardStopsAll]);
   const positionedRef = useRef(positioned);
   useEffect(() => { positionedRef.current = positioned; }, [positioned]);
   // Unfiltered ref so opening a route captures ALL its stops even while "Unplanned only" is on.
   const positionedAllRef = useRef(positionedAll);
   useEffect(() => { positionedAllRef.current = positionedAll; }, [positionedAll]);
+  // …and the coord-inclusive twin, which is what seeds a Compare card (see boardStopById).
+  const boardStopsAllRef = useRef(boardStopsAll);
+  useEffect(() => { boardStopsAllRef.current = boardStopsAll; }, [boardStopsAll]);
 
   // The day's routes/drivers roster — group the board by load (route name) for the right-panel
   // "Routes" view: stop count, driver, skids (cartons), weight, and delivery progress per route.
@@ -13516,7 +13567,12 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
       // grid's date range) — seeding by bare name match across them merged every historical
       // load that ever used this route name into one card. A card is always the selected
       // day's load instance; other-day orders reach a card only by explicit staging.
-      const routeStops = positionedAllRef.current.filter((s) => !s.windowExtra && (s.routeName || s.loadNbr) === key);
+      // COORD-INCLUSIVE on purpose (boardStopsAllRef, not positionedAllRef): a load's
+      // ungeocoded stop is still on the load, and seeding without it produced a card whose
+      // Save was one stop short — refused by the server's stale-board guard with advice
+      // ("Refresh and retry") that could never work. It rides in the card as a "no map
+      // location" row instead: visible, counted, saved, just not drawn or auto-sequenced.
+      const routeStops = boardStopsAllRef.current.filter((s) => !s.windowExtra && (s.routeName || s.loadNbr) === key);
       // TWO same-day loads sharing this NAME would merge onto one card and a Save would reorder
       // across loads (and could pair one load's id with the other's number). Refuse to open.
       const distinctLoadIds = new Set(routeStops.map((s) => s.raw?.load?.loadId ?? s.loadId).filter(Boolean).map(String));
@@ -13587,7 +13643,9 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
     const pts = r.order.map((id) => { const s = stopById.get(String(id)); return s ? { id: String(id), lat: s.lat, lng: s.lng } : null; }).filter(Boolean);
     if (pts.length < 2) {
       const missing = r.order.length - pts.length;
-      setLastAction(`Can't re-sequence ${loadDisplayName(key) || 'load'} — ${missing > 0 ? `${missing} stop(s) have no map position yet (they geocode as the board loads); try again in a moment` : 'it needs at least 2 stops'}.`);
+      // Cards now legitimately carry stops that will NEVER geocode (bad address), so "try
+      // again in a moment" alone would be a lie — point at the actual fix too.
+      setLastAction(`Can't re-sequence ${loadDisplayName(key) || 'load'} — ${missing > 0 ? `${missing} stop(s) have no map location (still geocoding, or the address needs fixing — see the card)` : 'it needs at least 2 stops'}.`);
       return;
     }
     const newOrder = resequence(pts, ROUTING_DEPOT, strategy).map((s) => s.id);
@@ -13642,7 +13700,12 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
     setWbRoutes((prev) => prev.map((r) => {
       if (r.key !== key || !r.order.includes(id)) return r;
       const removed = (r.removed || []).includes(id) ? r.removed : [...(r.removed || []), id];
-      return { ...r, order: r.order.filter((x) => x !== id), removed, strategy: 'manual' };
+      // Remember WHERE it sat so Undo is a true undo. Without this the restore appended to the
+      // end, so "remove #2 of 10 → oops → Undo" left the stop at #10: the card stayed dirty and
+      // any later Save silently REORDERED the real load in NuVizz. Parallel map (not a reshaped
+      // `removed`) so every existing consumer of the id list keeps working unchanged.
+      const removedIdx = { ...(r.removedIdx || {}), [id]: r.order.indexOf(id) };
+      return { ...r, order: r.order.filter((x) => x !== id), removed, removedIdx, strategy: 'manual' };
     }));
     setLastAction(`Removed ${stopNbr} from ${loadDisplayName(key) || 'load'} — unplans on Save`);
   }, []);
@@ -13650,9 +13713,20 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
     const id = String(stopNbr);
     setWbRoutes((prev) => prev.map((r) => {
       if (r.key !== key) return r;
-      // Appending the restored stop is a hand-edit too — clear any applied strategy so the
-      // dropdown can re-apply it (see wbMoveStop note).
-      return { ...r, order: r.order.includes(id) ? r.order : [...r.order, id], removed: (r.removed || []).filter((x) => x !== id), strategy: r.order.includes(id) ? r.strategy : 'manual' };
+      const removed = (r.removed || []).filter((x) => x !== id);
+      const { [id]: idx, ...restIdx } = (r.removedIdx || {});
+      if (r.order.includes(id)) return { ...r, removed, removedIdx: restIdx };
+      // Splice back where it was. Clamped, because other edits may have shortened the order
+      // since. Landing in its original slot means undoing every removal returns the card to
+      // its baseline order — i.e. genuinely CLEAN, so Save stops offering a phantom reorder.
+      const order = r.order.slice();
+      const at = Number.isInteger(idx) && idx >= 0 ? Math.min(idx, order.length) : order.length;
+      order.splice(at, 0, id);
+      // Restored in place = back to baseline, so DON'T force 'manual' (that would keep the
+      // re-sequence dropdown stuck on "Manual order (edited)" after a no-op remove+undo).
+      // A restore anywhere else IS a hand-edit and still clears the strategy.
+      const inPlace = Number.isInteger(idx) && at === idx;
+      return { ...r, order, removed, removedIdx: restIdx, strategy: inPlace ? r.strategy : 'manual' };
     }));
   }, []);
   // Print the driver manifest for a Compare card's stops, in the card's CURRENT order (#263). Opens
@@ -13661,14 +13735,20 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
   const printWbManifest = useCallback((key) => {
     const route = wbRoutes.find((r) => r.key === key);
     if (!route) return;
-    const stops = route.order.map((id) => stopById.get(String(id))).filter(Boolean);
+    // boardStopById, not stopById: a stop with no geocode is still a stop the driver has to
+    // make, and printing from the coord-only index silently dropped it off the manifest.
+    const stops = route.order.map((id) => boardStopById.get(String(id))).filter(Boolean);
     if (!stops.length) { setLastAction(`${loadDisplayName(key)} has no stops to print`); return; }
+    // Any id the board can't resolve at all can't be printed (no address to put on paper) —
+    // say so out loud rather than handing over a manifest that's quietly one stop short.
+    const missing = route.order.length - stops.length;
+    if (missing > 0) setLastAction(`${loadDisplayName(key)}: ${missing} stop(s) aren’t on today’s board and are NOT on this manifest — check the card.`);
     const logo = (typeof window !== 'undefined' ? window.location.origin : '') + '/davis-logo.jpg';
     // Pass the card's human route NAME (not the DAVIS load number a Loads-grid-opened card is
     // keyed by) as the manifest header name.
     const displayName = route.name || loadDisplayName(key) || String(key);
     setWbManifest({ title: `Driver Manifest · ${displayName}`, html: buildManifestHtml(stops, logo, displayName) });
-  }, [wbRoutes, stopById]);
+  }, [wbRoutes, boardStopById]);
   // Ninja-add: append a clicked stop to the active route (in click order), removing it from any
   // OTHER open route so a stop only ever sits on one compare-panel card. No-op if it's already there.
   const ninjaAddStop = useCallback((stopNbr) => {
@@ -15521,7 +15601,7 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
                       </MobileSelectedStops>
                     )}
                     {wbRoutes.length > 0
-                      ? <RoutingWorkbench wbRoutes={wbRoutesColored} stopById={stopById} ninjaMode={ninjaMode} onToggleNinja={setNinjaMode} onArmNinja={armNinjaFromPanel} activeKey={effectiveActiveKey} onSetActive={setActiveRouteKey} onResequence={wbResequence} onCollapse={toggleWbCollapse} onClose={closeWbRoute} onCloseAll={closeAllWb} onMoveStop={wbMoveStop} onDropStop={wbDropStop} onRemoveStop={wbRemoveStop} onUndoRemove={wbUndoRemove} onClearRemoved={clearWbRemoved} onOpenStop={openStop} onPrintManifest={printWbManifest} selectedCount={selectedStops.length} onSendSelection={sendSelectionToRoute} isMobile liveWrite={liveWrite} onBoardSync={syncBoardAfterSave} boardDate={selectedDate} peerClaimFor={peerClaimFor} />
+                      ? <RoutingWorkbench wbRoutes={wbRoutesColored} stopById={stopById} boardStopById={boardStopById} ninjaMode={ninjaMode} onToggleNinja={setNinjaMode} onArmNinja={armNinjaFromPanel} activeKey={effectiveActiveKey} onSetActive={setActiveRouteKey} onResequence={wbResequence} onCollapse={toggleWbCollapse} onClose={closeWbRoute} onCloseAll={closeAllWb} onMoveStop={wbMoveStop} onDropStop={wbDropStop} onRemoveStop={wbRemoveStop} onUndoRemove={wbUndoRemove} onClearRemoved={clearWbRemoved} onOpenStop={openStop} onPrintManifest={printWbManifest} selectedCount={selectedStops.length} onSendSelection={sendSelectionToRoute} isMobile liveWrite={liveWrite} onBoardSync={syncBoardAfterSave} boardDate={selectedDate} peerClaimFor={peerClaimFor} />
                       : controlsContent}
                   </>
                 : mobilePanel === 'loads'
@@ -15580,7 +15660,7 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
           routes are open. With the Setup panel off and no routes open, the map gets the full width. */}
       {wbRoutes.length > 0 ? (
         <div className="shrink-0 border-r bg-white min-h-0 overflow-x-auto" style={{ width: wbWidth }}>
-          <RoutingWorkbench wbRoutes={wbRoutesColored} stopById={stopById} ninjaMode={ninjaMode} onToggleNinja={setNinjaMode} onArmNinja={armNinjaFromPanel} activeKey={effectiveActiveKey} onSetActive={setActiveRouteKey} onResequence={wbResequence} onCollapse={toggleWbCollapse} onClose={closeWbRoute} onCloseAll={closeAllWb} onMoveStop={wbMoveStop} onDropStop={wbDropStop} onRemoveStop={wbRemoveStop} onUndoRemove={wbUndoRemove} onClearRemoved={clearWbRemoved} onOpenStop={openStop} onPrintManifest={printWbManifest} selectedCount={selectedStops.length} onSendSelection={sendSelectionToRoute} isMobile={false} liveWrite={liveWrite} onBoardSync={syncBoardAfterSave} boardDate={selectedDate} peerClaimFor={peerClaimFor} />
+          <RoutingWorkbench wbRoutes={wbRoutesColored} stopById={stopById} boardStopById={boardStopById} ninjaMode={ninjaMode} onToggleNinja={setNinjaMode} onArmNinja={armNinjaFromPanel} activeKey={effectiveActiveKey} onSetActive={setActiveRouteKey} onResequence={wbResequence} onCollapse={toggleWbCollapse} onClose={closeWbRoute} onCloseAll={closeAllWb} onMoveStop={wbMoveStop} onDropStop={wbDropStop} onRemoveStop={wbRemoveStop} onUndoRemove={wbUndoRemove} onClearRemoved={clearWbRemoved} onOpenStop={openStop} onPrintManifest={printWbManifest} selectedCount={selectedStops.length} onSendSelection={sendSelectionToRoute} isMobile={false} liveWrite={liveWrite} onBoardSync={syncBoardAfterSave} boardDate={selectedDate} peerClaimFor={peerClaimFor} />
         </div>
       ) : leftPanelOn ? (
         <div className="shrink-0 border-r bg-white overflow-y-auto p-3 space-y-3 text-sm" style={{ width: leftPanel.width }}>
