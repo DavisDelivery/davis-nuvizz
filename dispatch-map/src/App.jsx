@@ -38,6 +38,7 @@ import { BULK_FIELDS, parseDelimited, looksLikeHeader, autoMapColumns, mappedRow
 import { scanStop, scanStopFull } from './lib/signal-scanner';
 import { applyScannerResults } from './lib/customer-notes-writer';
 import { aiParse, aiChat, applyFilterSpec, summarizeSpec, buildTrimmedStops } from './lib/ai-search.js';
+import { loadDeviceIdentity, saveDeviceName, activePeers, buildPeerClaims, peerChipLabel, latestPeerSaveAt, PRESENCE_HEARTBEAT_MS } from './lib/presence.js';
 import ChatPanel, { ChatLauncher, MessagesLauncher } from './components/ChatPanel.jsx';
 import MessagesPanel from './components/MessagesPanel.jsx';
 
@@ -59,7 +60,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.50.77';
+const APP_VERSION = '0.51.0';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -104,6 +105,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.51.0', 'TWO DISPATCHERS, ONE BOARD + MULTI-PDF DROP. (1) Multi-user presence: with two people in the dispatch map at once you now SEE each other — a chip in the header shows who else is on (click it to set your name), and the stops the other device is STAGING on its Compare cards are claimed live: the selection tools (click, box, lasso, Ninja, Send) skip them with a "being staged by <name> on another device" note, a colliding Save warns before it fires, and a Save on either device silently re-reads the other\'s board within seconds (no more waiting out the 2-minute poll to see each other\'s work — and no more both planning the same order onto two different loads). All Firestore-only, zero NuVizz calls, and totally fail-soft: if presence is unavailable the app behaves exactly as before. (2) Bulk Add: the drop zone now takes SEVERAL files at once — drop 2 (or more) manifest PDFs together and each is read in turn (progress shows "file 1 of 2"), all landing in the same Manifest Intake list deduped as always. The file picker allows multi-select too. One spreadsheet per drop still (the column-mapper is one-at-a-time); extra non-PDFs are skipped with a note.'],
   ['0.50.77', 'MANIFEST READER upgraded to a newer, stronger AI model (Claude Sonnet 5, up from Sonnet 4.6). Fax-quality scans — where a smudged PRO digit or a cramped address line is easy to misread — should come back more accurately. Nothing changes in how you use it: drop the PDF, review the grid, Create. Still zero NuVizz calls; the model is env-configurable so it can be tuned without a code change.'],
   ['0.50.76', 'DAY STATUS BREAKDOWN on the bottom-grid header. The Stops/Loads bar now shows what percentage of the SELECTED DAY\'s board is in each status — e.g. "Planned 62% · Unplanned 28% · Out 4% · Delivered 6%" — right next to the Stops/Loads count (Chad\'s ask: a percentage breakdown of the planned stops for the day). It\'s computed over the WHOLE day, so it stays a steady progress read while you search or filter the list (it doesn\'t follow the filtered rows). Same status buckets as the Status filter, zero-count statuses hidden, and the hover tooltip gives the raw counts. Reflects whichever day/window the bar is set to. Desktop bottom grid on both the Map and Routing screens.'],
   ['0.50.75', 'MANIFEST INTAKE — the consignee column now shows the FULL address. Each order row displays the street line (address + suite) between the consignee name and the city/state/ZIP, in both the intake grid and the Pushed-to-NuVizz log, so you can sanity-check where an order is going without expanding the row. (Expanding ▸ still opens the full editor.)'],
@@ -6023,7 +6025,7 @@ function makeDriverLabelOverlayClass(google) {
 // MOBILE_BREAKPOINT. Renders the "D" mark, "Dispatch" label, and a tap-able
 // version chip on the right. Tapping the chip toggles a small overflow menu
 // the parent owns (Diagnostics access lives here, per brief P5.1).
-function MobileAppBar({ version, onChipMenu, chipMenuOpen, onSelectMenu, smsUnread = 0 }) {
+function MobileAppBar({ version, onChipMenu, chipMenuOpen, onSelectMenu, smsUnread = 0, presence = null }) {
   return (
     <header
       className="flex-shrink-0 z-30 flex items-center justify-between gap-2 px-3 text-white relative"
@@ -6043,7 +6045,9 @@ function MobileAppBar({ version, onChipMenu, chipMenuOpen, onSelectMenu, smsUnre
         </div>
         <span className="font-semibold text-[14px] leading-none truncate">Dispatch</span>
       </div>
-      <div className="relative">
+      <div className="relative flex items-center gap-1.5">
+        {/* Presence: shows only when another dispatcher is on (space is tight on phones). */}
+        <PresenceChip presence={presence} compact />
         <button
           onClick={onChipMenu}
           className="text-[12px] px-2.5 py-1.5 min-h-[36px] rounded bg-white/15 text-white/90 active:bg-white/25 inline-flex items-center gap-1.5"
@@ -7407,7 +7411,7 @@ function DebugCaptureSheet({ open, onClose, captureRef }) {
   );
 }
 
-function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef }) {
+function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = null }) {
   // M5 — selectedDate drives every fetch. Defaults to today (ET) and is NOT
   // persisted: every page load resets to today (brief P2.2).
   const [selectedDate, setSelectedDate] = useState(() => todayInET());
@@ -7436,6 +7440,16 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef }) {
   // Manual "Scan now" — the cheap list-discovery scan, shared logic in useManualScan
   // (also used by the Routing tab's status card). See the hook for the cost notes.
   const { scanning, scanCooldown, scanErr, manualScan } = useManualScan(selectedDate, lastScannedAt, refresh);
+
+  // Another dispatcher just SAVED (their presence doc's saveAt moved) → silently
+  // re-read the Firestore board now, instead of waiting out the 2-minute poll.
+  // Zero NuVizz calls — same cheap cache read the poll does.
+  const lastPeerSaveRef = useRef(null);
+  useEffect(() => {
+    const t = latestPeerSaveAt(presence?.peers);
+    if (lastPeerSaveRef.current == null) { lastPeerSaveRef.current = t; return; }
+    if (t > lastPeerSaveRef.current) { lastPeerSaveRef.current = t; refresh({ silent: true }); }
+  }, [presence?.peers, refresh]);
 
   const { notes, ready: notesReady } = useCustomerNotes();
   const tractorLocs = useTractorLocations();
@@ -12087,7 +12101,7 @@ function RoutingWorkbenchCard({ route, stopById, otherKeys, ninjaMode, isActive,
 // The route workbench (part 4): the 1–3 route cards opened from the right Routes panel, laid out
 // side by side (desktop) or stacked (mobile). Replaces the Setup stack on the left while routes
 // are open; "Back to Setup" closes them all.
-function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmNinja, activeKey, onSetActive, onResequence, onCollapse, onClose, onCloseAll, onMoveStop, onDropStop, onRemoveStop, onUndoRemove, onClearRemoved, onOpenStop, onPrintManifest, selectedCount = 0, onSendSelection, isMobile, liveWrite, onBoardSync, boardDate }) {
+function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmNinja, activeKey, onSetActive, onResequence, onCollapse, onClose, onCloseAll, onMoveStop, onDropStop, onRemoveStop, onUndoRemove, onClearRemoved, onOpenStop, onPrintManifest, selectedCount = 0, onSendSelection, isMobile, liveWrite, onBoardSync, boardDate, peerClaimFor = null }) {
   // Live-dispatch gate comes from the gear toggle (prop), aliased to the original name so the
   // many gate sites in this component (Save, Beta/Live toggle, dirty guards, confirm) are unchanged.
   const LIVE_WRITE_FLAG = liveWrite;
@@ -12258,6 +12272,14 @@ function RoutingWorkbench({ wbRoutes, stopById, ninjaMode, onToggleNinja, onArmN
     if (!loads.length) { showToast(warnings[0] || 'No changes to save.'); return; }
     if (!liveMode) { showToast(`Beta — nothing sent (${loads.length} load(s) simulated).`); return; }
     if (warnings.length) showToast(`⚠ ${warnings[0]}`);
+    // Cross-device collision heads-up (presence layer): the OTHER dispatcher's
+    // Compare cards are staging stop(s) this Save also plans. Warn — don't block:
+    // a stale card on an idle device must never be able to freeze a real Save.
+    if (peerClaimFor) {
+      const claimed = [];
+      for (const L of loads) for (const nbr of (L.orderedStopNbrs || [])) { const who = peerClaimFor(nbr); if (who) claimed.push({ nbr, who }); }
+      if (claimed.length) showToast(`⚠ ${claimed.length} stop(s) in this Save (${claimed.slice(0, 3).map((c) => c.nbr).join(', ')}${claimed.length > 3 ? '…' : ''}) are ALSO being staged by ${claimed[0].who} on another device — the later Save wins. Coordinate before sending twice.`);
+    }
     await onPanelConfirm({ loads, clientOpId: newClientOpId() });
   };
 
@@ -12919,7 +12941,7 @@ function VersionLogModal({ onClose }) {
   );
 }
 
-function RoutingScreen({ debugCaptureRef }) {
+function RoutingScreen({ debugCaptureRef, presence = null }) {
   const [selectedDate, setSelectedDate] = useState(() => todayInET());
   const { stops, loading, error: stopsError, refresh: refreshStops, lastScannedAt, lastLoadScanAt, lastUnplannedScanAt, ops } = useStops(selectedDate);
   // Stops status card (same pill as the dispatch Map, top-right of the routing map):
@@ -12957,6 +12979,9 @@ function RoutingScreen({ debugCaptureRef }) {
     //    make a confirmed save look unbuilt here again.
     recordPlanOverlay(patch);
     setPlanVersion((v) => v + 1); // re-paint consumers that hold already-fetched rows (bottom grid window mode)
+    // Tell the OTHER dispatcher's device a save landed — its presence watcher
+    // silently re-reads the board within seconds (vs the 2-minute poll).
+    presence?.bumpSave();
     // 2) Server write-through (+ carry-over rescue) so other devices/tabs agree too.
     //    Returns {patched, missing, rescued} so the Save toast can surface a miss.
     let out = null;
@@ -12973,7 +12998,7 @@ function RoutingScreen({ debugCaptureRef }) {
     console.log('[board-sync]', { date: selectedDate, sent: patch, result: out });
     try { refreshStops(); } catch { /* ignore */ }
     return out;
-  }, [selectedDate, refreshStops]);
+  }, [selectedDate, refreshStops, presence?.bumpSave]);
   const { notes } = useCustomerNotes();
   const tractorLocs = useTractorLocations();
   const { profiles, saveProfile } = useTruckProfiles();
@@ -13265,7 +13290,26 @@ function RoutingScreen({ debugCaptureRef }) {
     const m = new Map();
     for (const r of wbRoutes) for (const id of r.order) m.set(String(id), r.key);
     wbStagedRef.current = m;
-  }, [wbRoutes]);
+    // Publish what THIS device is staging so the other dispatcher's selection
+    // tools stay off these stops (presence layer; best-effort, Firestore-only).
+    presence?.publishStaged([...m.keys()], selectedDate);
+  }, [wbRoutes, selectedDate, presence?.publishStaged]);
+  // Every stop the OTHER dispatcher's device is staging (same board date), mapped
+  // to their name. A ref — the selection guards live in stable callbacks, exactly
+  // like wbStagedRef above.
+  const peerClaimsRef = useRef(new Map());
+  useEffect(() => {
+    peerClaimsRef.current = presence ? buildPeerClaims(presence.peers, selectedDate) : new Map();
+  }, [presence?.peers, selectedDate]);
+  const peerClaimFor = useCallback((nbr) => peerClaimsRef.current.get(String(nbr)) || null, []);
+  // Another device's confirmed Save → silently re-read the board now (zero NuVizz
+  // calls — the same cheap Firestore read the 2-minute poll does).
+  const lastPeerSaveRef = useRef(null);
+  useEffect(() => {
+    const t = latestPeerSaveAt(presence?.peers);
+    if (lastPeerSaveRef.current == null) { lastPeerSaveRef.current = t; return; }
+    if (t > lastPeerSaveRef.current) { lastPeerSaveRef.current = t; refreshStops({ silent: true }); }
+  }, [presence?.peers, refreshStops]);
   // Ninja mode (part 5): while on, each stop clicked on the map is appended (in click order) to
   // the ACTIVE compare-panel route. activeRouteKey picks the target; defaults to the leftmost card.
   const [ninjaMode, setNinjaMode] = useState(false);
@@ -13549,6 +13593,10 @@ function RoutingScreen({ debugCaptureRef }) {
   // OTHER open route so a stop only ever sits on one compare-panel card. No-op if it's already there.
   const ninjaAddStop = useCallback((stopNbr) => {
     const id = String(stopNbr);
+    // The OTHER dispatcher's device is staging this stop — don't grab it out from
+    // under them (both Saves would fight over it; the later one silently wins).
+    const claimedBy = peerClaimsRef.current.get(id);
+    if (claimedBy) { showMapToast(`${stopNbr} is being staged by ${claimedBy} on another device — coordinate before planning it.`); return; }
     // A stop still PLANNED on a load that is NOT open in Compare must not be ninja'd onto a card:
     // nothing would stage its removal from the holder load, so Save would double-plan it (the
     // server can only see loads that are in the payload). Open the holder first = staged move.
@@ -13586,6 +13634,14 @@ function RoutingScreen({ debugCaptureRef }) {
   const sendSelectionToRoute = useCallback((key) => {
     let ids = [...selectedIds].map(String);
     if (!key || !ids.length) return;
+    // Strip stops the OTHER dispatcher's device started staging AFTER they were
+    // selected here (the selection tools already refuse to add claimed stops).
+    const claimedSel = ids.filter((id) => peerClaimsRef.current.get(id));
+    if (claimedSel.length) {
+      ids = ids.filter((id) => !peerClaimsRef.current.get(id));
+      showMapToast(`Skipped ${claimedSel.length} stop(s) being staged by ${peerClaimsRef.current.get(claimedSel[0])} on another device.`);
+      if (!ids.length) return;
+    }
     // A stop planned on a load NOT open in Compare can't just be added to the target: the Save is
     // DECLARATIVE over the loads in the payload, so without the SOURCE load in the Save the stop would
     // double-plan. Instead of silently skipping it, AUTO-OPEN each such source load into Compare
@@ -13628,7 +13684,7 @@ function RoutingScreen({ debugCaptureRef }) {
         const s = stopById.get(id);
         for (const t of (s?.matchKey ? byMatchKey.get(s.matchKey) : null) || []) {
           const tn = String(t.stopNbr);
-          if (wbStagedRef.current.get(tn)) continue;   // deliberately staged on another card — same guard as click/box select
+          if (wbStagedRef.current.get(tn) || peerClaimsRef.current.get(tn)) continue;   // staged on another card / another device — same guard as click/box select
           if (!inIds.has(tn)) { inIds.add(tn); twinNames.push(`${t.stopNbr} (${t.businessName || 'same address'})`); }
         }
       }
@@ -14107,6 +14163,15 @@ function RoutingScreen({ debugCaptureRef }) {
       if (!removed) setLastAction(`${k} is already on ${loadDisplayName(holder) || holder} — remove it there or use Ninja to move it`);
       return;
     }
+    // Claimed by the OTHER dispatcher's Compare cards (presence layer) — same rule
+    // as a local card: de-select is allowed, adding it to the selection is not.
+    const peer = peerClaimsRef.current.get(k);
+    if (peer) {
+      let removed = false;
+      setSelectedIds((prev) => { if (!prev.has(k)) return prev; removed = true; const n = new Set(prev); n.delete(k); return n; });
+      if (!removed) setLastAction(`${k} is being staged by ${peer} on another device — coordinate before planning it`);
+      return;
+    }
     setSelectedIds((prev) => { const n = new Set(prev); n.has(k) ? n.delete(k) : n.add(k); return n; });
   }, []);
   const removeStop = useCallback((id) => {
@@ -14121,10 +14186,17 @@ function RoutingScreen({ debugCaptureRef }) {
     const k = String(id);
     const ids = (Array.isArray(mateIds) && mateIds.length ? mateIds : [k]).map(String);
     const held = ids.filter((x) => wbStagedRef.current.get(x));
-    const free = ids.filter((x) => !wbStagedRef.current.get(x));
+    const free = ids.filter((x) => !wbStagedRef.current.get(x) && !peerClaimsRef.current.get(x));
     if (!free.length) {
       const h = wbStagedRef.current.get(k) || wbStagedRef.current.get(held[0]);
-      setLastAction(`${held.length > 1 ? `These ${held.length} orders are` : `${k} is`} already on ${loadDisplayName(h) || h} — remove there or use Ninja to move`);
+      if (h) {
+        setLastAction(`${held.length > 1 ? `These ${held.length} orders are` : `${k} is`} already on ${loadDisplayName(h) || h} — remove there or use Ninja to move`);
+      } else {
+        // Whole group claimed by the other dispatcher's device (presence layer).
+        const claimed = ids.filter((x) => peerClaimsRef.current.get(x));
+        const who = peerClaimsRef.current.get(k) || peerClaimsRef.current.get(claimed[0]);
+        setLastAction(`${claimed.length > 1 ? `These ${claimed.length} orders are` : `${k} is`} being staged by ${who} on another device — coordinate before planning`);
+      }
       return;
     }
     setSelectedIds((prev) => {
@@ -14232,13 +14304,21 @@ function RoutingScreen({ debugCaptureRef }) {
   const addEnclosed = useCallback((arr) => {
     if (!arr.length) { setLastAction('No stops in that area'); return; }
     // Skip stops already staged on an open Compare card (see wbStagedRef) — a box/lasso over
-    // an area with an open route must not re-grab its stops onto the selection.
+    // an area with an open route must not re-grab its stops onto the selection. Same for
+    // stops the OTHER dispatcher's device is staging (peerClaimsRef, presence layer).
     const staged = wbStagedRef.current;
-    const take = arr.filter((s) => !staged.has(String(s.stopNbr)));
-    const skipped = arr.length - take.length;
-    if (!take.length) { setLastAction(`All ${arr.length} stop${arr.length === 1 ? ' is' : 's are'} already on open Compare cards`); return; }
+    const claims = peerClaimsRef.current;
+    const take = arr.filter((s) => !staged.has(String(s.stopNbr)) && !claims.has(String(s.stopNbr)));
+    const skippedLocal = arr.filter((s) => staged.has(String(s.stopNbr))).length;
+    const skippedPeer = arr.length - take.length - skippedLocal;
+    if (!take.length) {
+      setLastAction(skippedPeer && !skippedLocal
+        ? `All ${arr.length} stop${arr.length === 1 ? ' is' : 's are'} being staged on another device`
+        : `All ${arr.length} stop${arr.length === 1 ? ' is' : 's are'} already on open Compare cards${skippedPeer ? ' or staged on another device' : ''}`);
+      return;
+    }
     setSelectedIds((prev) => { const n = new Set(prev); for (const s of take) n.add(String(s.stopNbr)); return n; });
-    setLastAction(`Added ${take.length} stop${take.length === 1 ? '' : 's'}${skipped ? ` · skipped ${skipped} already on open cards` : ''}`);
+    setLastAction(`Added ${take.length} stop${take.length === 1 ? '' : 's'}${skippedLocal ? ` · skipped ${skippedLocal} already on open cards` : ''}${skippedPeer ? ` · skipped ${skippedPeer} staged on another device` : ''}`);
   }, []);
 
   // ── Pin relocation + address edit handlers (ported from MapScreen 6826-6909) ──
@@ -15361,7 +15441,7 @@ function RoutingScreen({ debugCaptureRef }) {
                       </MobileSelectedStops>
                     )}
                     {wbRoutes.length > 0
-                      ? <RoutingWorkbench wbRoutes={wbRoutesColored} stopById={stopById} ninjaMode={ninjaMode} onToggleNinja={setNinjaMode} onArmNinja={armNinjaFromPanel} activeKey={effectiveActiveKey} onSetActive={setActiveRouteKey} onResequence={wbResequence} onCollapse={toggleWbCollapse} onClose={closeWbRoute} onCloseAll={closeAllWb} onMoveStop={wbMoveStop} onDropStop={wbDropStop} onRemoveStop={wbRemoveStop} onUndoRemove={wbUndoRemove} onClearRemoved={clearWbRemoved} onOpenStop={openStop} onPrintManifest={printWbManifest} selectedCount={selectedStops.length} onSendSelection={sendSelectionToRoute} isMobile liveWrite={liveWrite} onBoardSync={syncBoardAfterSave} boardDate={selectedDate} />
+                      ? <RoutingWorkbench wbRoutes={wbRoutesColored} stopById={stopById} ninjaMode={ninjaMode} onToggleNinja={setNinjaMode} onArmNinja={armNinjaFromPanel} activeKey={effectiveActiveKey} onSetActive={setActiveRouteKey} onResequence={wbResequence} onCollapse={toggleWbCollapse} onClose={closeWbRoute} onCloseAll={closeAllWb} onMoveStop={wbMoveStop} onDropStop={wbDropStop} onRemoveStop={wbRemoveStop} onUndoRemove={wbUndoRemove} onClearRemoved={clearWbRemoved} onOpenStop={openStop} onPrintManifest={printWbManifest} selectedCount={selectedStops.length} onSendSelection={sendSelectionToRoute} isMobile liveWrite={liveWrite} onBoardSync={syncBoardAfterSave} boardDate={selectedDate} peerClaimFor={peerClaimFor} />
                       : controlsContent}
                   </>
                 : mobilePanel === 'loads'
@@ -15420,7 +15500,7 @@ function RoutingScreen({ debugCaptureRef }) {
           routes are open. With the Setup panel off and no routes open, the map gets the full width. */}
       {wbRoutes.length > 0 ? (
         <div className="shrink-0 border-r bg-white min-h-0 overflow-x-auto" style={{ width: wbWidth }}>
-          <RoutingWorkbench wbRoutes={wbRoutesColored} stopById={stopById} ninjaMode={ninjaMode} onToggleNinja={setNinjaMode} onArmNinja={armNinjaFromPanel} activeKey={effectiveActiveKey} onSetActive={setActiveRouteKey} onResequence={wbResequence} onCollapse={toggleWbCollapse} onClose={closeWbRoute} onCloseAll={closeAllWb} onMoveStop={wbMoveStop} onDropStop={wbDropStop} onRemoveStop={wbRemoveStop} onUndoRemove={wbUndoRemove} onClearRemoved={clearWbRemoved} onOpenStop={openStop} onPrintManifest={printWbManifest} selectedCount={selectedStops.length} onSendSelection={sendSelectionToRoute} isMobile={false} liveWrite={liveWrite} onBoardSync={syncBoardAfterSave} boardDate={selectedDate} />
+          <RoutingWorkbench wbRoutes={wbRoutesColored} stopById={stopById} ninjaMode={ninjaMode} onToggleNinja={setNinjaMode} onArmNinja={armNinjaFromPanel} activeKey={effectiveActiveKey} onSetActive={setActiveRouteKey} onResequence={wbResequence} onCollapse={toggleWbCollapse} onClose={closeWbRoute} onCloseAll={closeAllWb} onMoveStop={wbMoveStop} onDropStop={wbDropStop} onRemoveStop={wbRemoveStop} onUndoRemove={wbUndoRemove} onClearRemoved={clearWbRemoved} onOpenStop={openStop} onPrintManifest={printWbManifest} selectedCount={selectedStops.length} onSendSelection={sendSelectionToRoute} isMobile={false} liveWrite={liveWrite} onBoardSync={syncBoardAfterSave} boardDate={selectedDate} peerClaimFor={peerClaimFor} />
         </div>
       ) : leftPanelOn ? (
         <div className="shrink-0 border-r bg-white overflow-y-auto p-3 space-y-3 text-sm" style={{ width: leftPanel.width }}>
@@ -17035,7 +17115,7 @@ function RoutingSubTabs({ tab, onChange }) {
 // Routing section = the beta Build screen + the Engine (shadow) tab. `routingTab`/`setRoutingTab`
 // are LIFTED to the shell so the Build/Engine toggle can live in the top nav row on desktop; the
 // in-screen sub-tab bar renders only on mobile (`showSubTabs`).
-function RoutingSection({ debugCaptureRef, routingTab, setRoutingTab, showSubTabs }) {
+function RoutingSection({ debugCaptureRef, routingTab, setRoutingTab, showSubTabs, presence }) {
   return (
     <div className="flex-1 flex flex-col min-h-0">
       {showSubTabs && (
@@ -17044,13 +17124,150 @@ function RoutingSection({ debugCaptureRef, routingTab, setRoutingTab, showSubTab
         </div>
       )}
       {routingTab === 'build'
-        ? <RoutingScreen debugCaptureRef={debugCaptureRef} />
+        ? <RoutingScreen debugCaptureRef={debugCaptureRef} presence={presence} />
         : <EngineScreen />}
     </div>
   );
 }
 
 // ---------- shell ----------
+
+// ── Multi-dispatcher presence (v0.51.0) ──
+// Two people in the dispatch map at once used to be invisible to each other: all
+// in-progress work (Compare cards, staged stops, selections) is per-device state,
+// so both could grab the same unplanned stop onto different loads and the later
+// Save silently won. This hook publishes a tiny heartbeat doc for THIS device to
+// Firestore (`dispatch_presence/{deviceId}` — who's on, which screen, which stops
+// its Compare cards are staging, when it last saved) and subscribes to everyone
+// else's. Pure logic (staleness, claims, labels) lives in lib/presence.js.
+// ENTIRELY fail-soft: no Firestore (or a denied rule) just means the feature is
+// off — the app behaves exactly as before, nothing throws.
+const PRESENCE_COLL = 'dispatch_presence';
+function useDispatchPresence(screen) {
+  const [identity] = useState(() => loadDeviceIdentity(typeof localStorage !== 'undefined' ? localStorage : null));
+  const [name, setName] = useState(identity.name);
+  const [peers, setPeers] = useState([]);
+  const docsRef = useRef([]);        // latest raw snapshot docs (staleness re-evaluated on a timer)
+  const peersJsonRef = useRef('[]'); // ref-stability: identical peer sets keep the SAME state array
+  // What this device publishes. A ref (not state) so the stable publish callback
+  // always reads current values without re-subscribing anything.
+  const selfRef = useRef({ name: identity.name, screen, staged: [], stagedDate: null, saveAt: 0 });
+  selfRef.current.screen = screen;
+
+  const publish = useCallback(() => {
+    if (!db) return;
+    const s = selfRef.current;
+    try {
+      setDoc(doc(db, PRESENCE_COLL, identity.id), {
+        deviceId: identity.id,
+        name: s.name,
+        screen: s.screen,
+        // Cap the staged list — presence is a signal, not a datastore; 400 stops
+        // is far past any real Compare board and keeps the doc tiny.
+        staged: s.staged.slice(0, 400).map(String),
+        stagedDate: s.stagedDate || null,
+        saveAt: s.saveAt || 0,
+        updatedAt: Date.now(),
+        appVersion: APP_VERSION,
+      }, { merge: true }).catch(() => { /* best-effort */ });
+    } catch { /* presence must never break the app */ }
+  }, [identity.id]);
+
+  // Debounced publish for chatty updates (staged-set edits while building).
+  const pushTimer = useRef(null);
+  const publishSoon = useCallback(() => {
+    if (pushTimer.current) clearTimeout(pushTimer.current);
+    pushTimer.current = setTimeout(publish, 600);
+  }, [publish]);
+
+  // Heartbeat + screen changes; delete the doc on the way out (best-effort — the
+  // staleness window covers a killed tab that never got to say goodbye).
+  useEffect(() => { publish(); }, [screen, publish]);
+  useEffect(() => {
+    const t = setInterval(publish, PRESENCE_HEARTBEAT_MS);
+    const bye = () => { try { if (db) deleteDoc(doc(db, PRESENCE_COLL, identity.id)); } catch { /* ignore */ } };
+    window.addEventListener('beforeunload', bye);
+    return () => { clearInterval(t); if (pushTimer.current) clearTimeout(pushTimer.current); window.removeEventListener('beforeunload', bye); };
+  }, [publish, identity.id]);
+
+  // Subscribe to everyone's presence; re-evaluate staleness every 30s so a peer
+  // whose heartbeat stopped (without a doc change) still ages out of the chip.
+  useEffect(() => {
+    if (!db) return;
+    const recompute = () => {
+      // Strip the volatile heartbeat stamp before the equality check: consumers
+      // only read the fields below, and keeping updatedAt in the state would
+      // re-render every screen on each peer heartbeat (~25s) for no visible change.
+      const next = activePeers(docsRef.current, identity.id, Date.now())
+        .map(({ deviceId, name: n, screen: sc, staged, stagedDate, saveAt }) => ({ deviceId, name: n, screen: sc, staged, stagedDate, saveAt }));
+      const json = JSON.stringify(next);
+      if (json !== peersJsonRef.current) { peersJsonRef.current = json; setPeers(next); }
+    };
+    let unsub = null;
+    try {
+      unsub = onSnapshot(collection(db, PRESENCE_COLL),
+        (snap) => { docsRef.current = snap.docs.map((d) => d.data()); recompute(); },
+        () => { /* rules denied / offline — feature silently off */ });
+    } catch { /* ignore */ }
+    const t = setInterval(recompute, 30000);
+    return () => { if (unsub) try { unsub(); } catch { /* ignore */ } clearInterval(t); };
+  }, [identity.id]);
+
+  // The Routing screen reports what its Compare cards are staging (stopNbrs + board date).
+  const publishStaged = useCallback((stopNbrs, date) => {
+    const s = selfRef.current;
+    const next = (stopNbrs || []).map(String);
+    if (s.stagedDate === date && s.staged.length === next.length && s.staged.every((v, i) => v === next[i])) return;
+    s.staged = next; s.stagedDate = date || null;
+    publishSoon();
+  }, [publishSoon]);
+
+  // Stamped on every CONFIRMED save — peers watching latestPeerSaveAt re-read the
+  // board within seconds instead of waiting out the 2-minute poll.
+  const bumpSave = useCallback(() => { selfRef.current.saveAt = Date.now(); publish(); }, [publish]);
+
+  const rename = useCallback((n) => {
+    const clean = String(n || '').trim().slice(0, 24);
+    if (!clean) return;
+    selfRef.current.name = clean;
+    setName(clean);
+    saveDeviceName(typeof localStorage !== 'undefined' ? localStorage : null, clean);
+    publish();
+  }, [publish]);
+
+  // Memoized so consumers can depend on the stable member callbacks without the
+  // whole object churning every render (it still updates when peers/name change).
+  return useMemo(() => ({ deviceId: identity.id, name, rename, peers, publishStaged, bumpSave }),
+    [identity.id, name, rename, peers, publishStaged, bumpSave]);
+}
+
+// Header chip: green + who else is on when someone is; quiet gray "you" chip when
+// alone. Click either to set the name other dispatchers see for this device.
+function PresenceChip({ presence, compact = false }) {
+  if (!presence) return null;
+  const label = peerChipLabel(presence.peers);
+  const rename = () => {
+    const n = window.prompt('Your dispatcher name (what the other dispatcher sees):', presence.name);
+    if (n && n.trim()) presence.rename(n);
+  };
+  if (!label) {
+    if (compact) return null;   // mobile: no chrome when alone
+    return (
+      <button onClick={rename} title={`Only you are on right now. Shown to other dispatchers when someone else opens the app. Click to change your name (now "${presence.name}").`}
+        className="text-[11px] px-2 py-1 rounded border border-slate-200 text-slate-400 hover:text-slate-600 hover:bg-slate-50 inline-flex items-center gap-1.5 max-w-[160px]">
+        <span className="w-1.5 h-1.5 rounded-full bg-slate-300 shrink-0" />
+        <span className="truncate">{presence.name}</span>
+      </button>
+    );
+  }
+  return (
+    <button onClick={rename} title={`${label}. Stops they're staging are locked on your selection tools. Click to change YOUR name (now "${presence.name}").`}
+      className={`text-[11px] px-2 py-1 rounded inline-flex items-center gap-1.5 ${compact ? 'bg-white/15 text-white max-w-[150px]' : 'border border-emerald-300 bg-emerald-50 text-emerald-800 hover:bg-emerald-100 max-w-[260px]'}`}>
+      <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${compact ? 'bg-emerald-300' : 'bg-emerald-500'} animate-pulse`} />
+      <span className="truncate">{label}</span>
+    </button>
+  );
+}
 
 function Shell() {
   const [tab, setTab] = useState('map');
@@ -17072,6 +17289,10 @@ function Shell() {
   // Opening the Routing screen defaults to the BUILD tab (Chad's preference). Switching to
   // Engine while you're on the screen stays put; navigating back to Routing lands on Build again.
   useEffect(() => { if (tab === 'routing') setRoutingTab('build'); }, [tab]);
+
+  // Multi-dispatcher presence — published for every tab so "who's on" is honest
+  // even from New Order / Quote; the Routing screen adds its staged-stop claims.
+  const presence = useDispatchPresence(tab);
 
   // SMS messages + unread badge. Messages is a WINDOW over the current screen
   // (it doesn't navigate away), so it's a toggle, not a tab.
@@ -17133,6 +17354,7 @@ function Shell() {
           onChipMenu={() => setChipMenuOpen((v) => !v)}
           onSelectMenu={onSelectMenu}
           smsUnread={smsUnread}
+          presence={presence}
         />
       ) : (
         <header className="shrink-0 relative z-30 flex items-center justify-between px-4 py-2 border-b bg-white" style={{ paddingTop: 'env(safe-area-inset-top)' }}>
@@ -17149,15 +17371,16 @@ function Shell() {
             <TabBtn label="Diagnostics" icon={<Activity size={14} />} active={tab === 'diag'} onClick={() => setTab('diag')} />
             <TabBtn label="Debug" icon={<Bug size={14} />} active={debugOpen} onClick={() => setDebugOpen(true)} />
           </nav>
-          {/* Far right of the nav row: the Routing Build/Engine toggle — shown ONLY on the
-              Routing screen (empty otherwise so the row keeps its spacing). */}
-          {tab === 'routing' && ROUTING_FLAG
-            ? <RoutingSubTabs tab={routingTab} onChange={setRoutingTab} />
-            : <div />}
+          {/* Far right of the nav row: the presence chip (who else is on) plus the Routing
+              Build/Engine toggle — the toggle shows ONLY on the Routing screen. */}
+          <div className="flex items-center gap-2">
+            <PresenceChip presence={presence} />
+            {tab === 'routing' && ROUTING_FLAG && <RoutingSubTabs tab={routingTab} onChange={setRoutingTab} />}
+          </div>
         </header>
       )}
 
-      {tab === 'map' ? <MapScreen onOpenMessages={openMessages} smsUnread={smsUnread} debugCaptureRef={debugCaptureRef} /> : (tab === 'routing' && ROUTING_FLAG) ? <RoutingSection debugCaptureRef={debugCaptureRef} routingTab={routingTab} setRoutingTab={setRoutingTab} showSubTabs={isMobile} /> : tab === 'neworder' ? <NewOrderScreen /> : tab === 'quote' ? <QuoteScreen /> : <DiagnosticsRoute />}
+      {tab === 'map' ? <MapScreen onOpenMessages={openMessages} smsUnread={smsUnread} debugCaptureRef={debugCaptureRef} presence={presence} /> : (tab === 'routing' && ROUTING_FLAG) ? <RoutingSection debugCaptureRef={debugCaptureRef} routingTab={routingTab} setRoutingTab={setRoutingTab} showSubTabs={isMobile} presence={presence} /> : tab === 'neworder' ? <NewOrderScreen /> : tab === 'quote' ? <QuoteScreen /> : <DiagnosticsRoute />}
 
       {/* Messages floats OVER the current screen (you never leave the map). */}
       {messagesOpen && <MessagesPanel messages={inbound} seenAt={smsSeenAt} onClose={closeMessages} customerContacts={customerContacts} />}
@@ -17727,9 +17950,17 @@ function BulkOrderScreen() {
     while (parsed.length && parsed[parsed.length - 1].every((x) => String(x).trim() === '')) parsed.pop();
     finishIngest(parsed);
   };
-  const onFile = async (file) => {
+  // One file. Multi-file drops come through onFiles below, which processes them
+  // sequentially — seq/total only label the progress + error lines ("file 1 of 2").
+  const onFile = async (file, { seq = 1, total = 1 } = {}) => {
     if (!file) return;
-    setImportErr(''); setImportInfo('');
+    const busyTag = total > 1 ? ` (file ${seq} of ${total})` : '';
+    // Errors APPEND (with the file named) instead of replacing, so on a 2-PDF drop
+    // file 1's failure isn't wiped the moment file 2 starts.
+    const fail = (msg) => setImportErr((p) => {
+      const m = total > 1 && !String(msg).includes(file.name) ? `"${file.name}": ${msg}` : msg;
+      return p ? `${p} · ${m}` : m;
+    });
     const name = (file.name || '').toLowerCase();
     try {
       if (name.endsWith('.xlsx') || name.endsWith('.xls')) {
@@ -17750,8 +17981,8 @@ function BulkOrderScreen() {
         // A new manifest ADDS to the current intake — held orders are kept and the new orders
         // are appended below them, so you can stack several manifests before pushing (no more
         // "replace and drop held"). Only a push in flight blocks a read.
-        if (intakeBusy) { setImportErr('A push is in progress — wait for it to finish before reading a new manifest.'); return; }
-        setImportBusy(`Reading "${file.name}" — a scanned manifest takes ~20–40s…`);
+        if (intakeBusy) { fail('A push is in progress — wait for it to finish before reading a new manifest.'); return; }
+        setImportBusy(`Reading "${file.name}"${busyTag} — a scanned manifest takes ~20–40s…`);
         try {
           // NOTE: an earlier fix auto-SPLIT a big PDF into page groups client-side (pdf-lib)
           // and OCR'd each under the 240 KB inline cap. A high-resolution fax scan defeats
@@ -17771,14 +18002,14 @@ function BulkOrderScreen() {
           // uploaded in ~700 KB parts to manifest-upload (a regular function, no such cap) and
           // the reader reassembles it — no more "split it and drop the halves".
           const INLINE_MAX = 240000, CHUNK = 700000, TOTAL_MAX = 21000000; // chars of base64 (~16 MB PDF)
-          if (b64.length > TOTAL_MAX) { setImportErr('That PDF is over ~16 MB — even the chunked reader won\'t take it. Print-to-PDF a smaller page range and drop that.'); return; }
+          if (b64.length > TOTAL_MAX) { fail('That PDF is over ~16 MB — even the chunked reader won\'t take it. Print-to-PDF a smaller page range and drop that.'); return; }
           let kickBody;
           if (b64.length <= INLINE_MAX) {
             kickBody = { jobId, pdfBase64: b64, filename: file.name };
           } else {
             const total = Math.ceil(b64.length / CHUNK);
             for (let i = 0; i < total; i++) {
-              setImportBusy(`Uploading "${file.name}" — part ${i + 1} of ${total}…`);
+              setImportBusy(`Uploading "${file.name}"${busyTag} — part ${i + 1} of ${total}…`);
               let up = null;
               try {
                 up = await fetch('/.netlify/functions/manifest-upload', {
@@ -17796,29 +18027,29 @@ function BulkOrderScreen() {
                   });
                 } catch { up = null; }
               }
-              if (!up || !up.ok) { setImportErr(`Upload failed on part ${i + 1} of ${total}${up ? ` (HTTP ${up.status})` : ''} — drop the file again.`); return; }
+              if (!up || !up.ok) { fail(`Upload failed on part ${i + 1} of ${total}${up ? ` (HTTP ${up.status})` : ''} — drop the file again.`); return; }
             }
             kickBody = { jobId, chunks: total, filename: file.name };
           }
-          setImportBusy(`Reading "${file.name}" — a scanned manifest takes ~20–40s (a heavy scan can take a few minutes)…`);
+          setImportBusy(`Reading "${file.name}"${busyTag} — a scanned manifest takes ~20–40s (a heavy scan can take a few minutes)…`);
           const kick = await fetch('/.netlify/functions/manifest-ocr-background', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(kickBody),
           });
-          if (!kick.ok && kick.status !== 202) { setImportErr(`manifest reader unavailable (HTTP ${kick.status})`); return; }
+          if (!kick.ok && kick.status !== 202) { fail(`manifest reader unavailable (HTTP ${kick.status})`); return; }
           const t0 = Date.now();
           let data = null;
           while (Date.now() - t0 < 360000) {   // poll up to 6 min; the reader itself caps at 5
             await new Promise((r) => setTimeout(r, 3000));
-            setImportBusy(`Reading "${file.name}" — ${Math.round((Date.now() - t0) / 1000)}s (a scanned manifest takes ~20–40s; a heavy scan can take a few minutes)…`);
+            setImportBusy(`Reading "${file.name}"${busyTag} — ${Math.round((Date.now() - t0) / 1000)}s (a scanned manifest takes ~20–40s; a heavy scan can take a few minutes)…`);
             try {
               const pr = await fetch(`/.netlify/functions/manifest-ocr-result?job=${jobId}`);
               const pd = await pr.json();
               if (pd.status === 'done') { data = pd; break; }
-              if (pd.status === 'error') { setImportErr(pd.error || 'manifest read failed'); return; }
+              if (pd.status === 'error') { fail(pd.error || 'manifest read failed'); return; }
             } catch { /* transient poll failure — keep waiting */ }
           }
-          if (!data) { setImportErr('The manifest reader did not answer in time — drop the file again.'); return; }
+          if (!data) { fail('The manifest reader did not answer in time — drop the file again.'); return; }
           // Carrier → the Order # prefix (matches the board's existing ESTES-<digits> convention).
           const carrierWord = String(data.manifest?.carrier || 'ESTES').trim().split(/\s+/)[0].toUpperCase().replace(/[^A-Z0-9]/g, '') || 'ESTES';
           // Manifest rows open the dedicated INTAKE panel (review → check → Push to NuVizz),
@@ -17854,7 +18085,25 @@ function BulkOrderScreen() {
       } else {
         ingestText(await file.text());   // .csv / .tsv / .txt
       }
-    } catch (err) { setImportErr(`Could not read "${file.name}": ${err?.message || 'unreadable file'}`); setImportBusy(''); }
+    } catch (err) { fail(`Could not read "${file.name}": ${err?.message || 'unreadable file'}`); setImportBusy(''); }
+  };
+  // Multi-file drop/pick (Chad: "drop 2 PDFs at the same time"). PDFs process
+  // SEQUENTIALLY — each OCR pass appends its orders to the same Manifest Intake
+  // (deduped by order ref, as always), so several manifests stack in one drop.
+  // Spreadsheets stay one-per-drop: the column-mapper handles a single parse at a
+  // time, so extra non-PDFs are skipped with a note rather than silently eaten.
+  // The lone spreadsheet runs FIRST — finishIngest clears the error line when it
+  // starts, so running it after a failed PDF would wipe that PDF's error.
+  const onFiles = async (fileList) => {
+    const files = Array.from(fileList || []).filter(Boolean);
+    if (!files.length) return;
+    setImportErr(''); setImportInfo('');
+    const isPdf = (f) => (f.name || '').toLowerCase().endsWith('.pdf');
+    const pdfs = files.filter(isPdf);
+    const others = files.filter((f) => !isPdf(f));
+    if (others.length > 1) setImportErr(`One spreadsheet per drop — reading "${others[0].name}", skipped ${others.length - 1} other non-PDF file(s). (Several PDF manifests at once is fine.)`);
+    if (others.length) await onFile(others[0]);
+    for (let i = 0; i < pdfs.length; i++) await onFile(pdfs[i], { seq: i + 1, total: pdfs.length });
   };
   // Shared by the mapper's Import button and the confident-header AUTO path: land the mapped
   // orders in the grid (ghost residue dropped), remember the header mapping, report what happened.
@@ -18259,14 +18508,14 @@ function BulkOrderScreen() {
           <div
             onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
             onDragLeave={() => setDragOver(false)}
-            onDrop={(e) => { e.preventDefault(); setDragOver(false); onFile(e.dataTransfer?.files?.[0]); }}
+            onDrop={(e) => { e.preventDefault(); setDragOver(false); onFiles(e.dataTransfer?.files); }}
             className={`rounded-lg border-2 border-dashed px-3 py-4 text-center text-[12px] ${dragOver ? 'border-blue-400 bg-blue-50 text-blue-700' : 'border-slate-300 text-slate-500'}`}
           >
             <FileText size={18} className="inline mb-1" /><br />
             {importBusy
               ? <span className="text-blue-700 font-medium inline-flex items-center gap-1.5"><RefreshCw size={13} className="animate-spin" /> {importBusy}</span>
-              : <>Drop a <b>.xlsx</b>, <b>.csv</b>, or a scanned <b>manifest .pdf</b> (Estes-style) here, or <button onClick={() => fileRef.current?.click()} className="text-blue-600 underline font-medium">choose a file</button>.</>}
-            <input ref={fileRef} type="file" accept=".csv,.tsv,.txt,.xlsx,.xls,.pdf" className="hidden" onChange={(e) => { onFile(e.target.files?.[0]); e.target.value = ''; }} />
+              : <>Drop a <b>.xlsx</b>, <b>.csv</b>, or scanned <b>manifest .pdf</b>(s) here — several PDFs at once is fine, each is read in turn — or <button onClick={() => fileRef.current?.click()} className="text-blue-600 underline font-medium">choose files</button>.</>}
+            <input ref={fileRef} type="file" multiple accept=".csv,.tsv,.txt,.xlsx,.xls,.pdf" className="hidden" onChange={(e) => { onFiles(e.target.files); e.target.value = ''; }} />
           </div>
           <div className="text-[11px] text-slate-500">…or paste rows copied from Excel / Google Sheets:</div>
           <textarea
