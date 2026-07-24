@@ -106,7 +106,11 @@ export default async (req: Request): Promise<Response> => {
       body: JSON.stringify({
         model: OCR_MODEL,
         max_tokens: 6000,
-        temperature: 0,
+        // NO temperature: claude-sonnet-5 DEPRECATED the parameter — sending it
+        // is a hard 400 ("`temperature` is deprecated for this model"), which
+        // broke every manifest/paste read the moment v0.50.77 switched models
+        // (Chad hit it live, 7/23). Older models treat the omission as default,
+        // so leaving it off is correct across every ANTHROPIC_OCR_MODEL value.
         system: MANIFEST_SYSTEM,
         messages: [{
           role: 'user',

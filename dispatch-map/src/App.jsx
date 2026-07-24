@@ -60,7 +60,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.51.0';
+const APP_VERSION = '0.51.1';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -105,6 +105,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.51.1', 'HOTFIX — manifest/paste reads broken by the 0.50.77 model upgrade. The new AI model rejects a legacy request setting (temperature) the reader still sent, so every manifest PDF drop and pasted-rows read failed with "anthropic_400: temperature is deprecated". The setting is removed (harmless on every model, old or new); reads work again immediately after this deploys.'],
   ['0.51.0', 'TWO DISPATCHERS, ONE BOARD + MULTI-PDF DROP. (1) Multi-user presence: with two people in the dispatch map at once you now SEE each other — a chip in the header shows who else is on (click it to set your name), and the stops the other device is STAGING on its Compare cards are claimed live: the selection tools (click, box, lasso, Ninja, Send) skip them with a "being staged by <name> on another device" note, a colliding Save warns before it fires, and a Save on either device silently re-reads the other\'s board within seconds (no more waiting out the 2-minute poll to see each other\'s work — and no more both planning the same order onto two different loads). All Firestore-only, zero NuVizz calls, and totally fail-soft: if presence is unavailable the app behaves exactly as before. (2) Bulk Add: the drop zone now takes SEVERAL files at once — drop 2 (or more) manifest PDFs together and each is read in turn (progress shows "file 1 of 2"), all landing in the same Manifest Intake list deduped as always. The file picker allows multi-select too. One spreadsheet per drop still (the column-mapper is one-at-a-time); extra non-PDFs are skipped with a note.'],
   ['0.50.77', 'MANIFEST READER upgraded to a newer, stronger AI model (Claude Sonnet 5, up from Sonnet 4.6). Fax-quality scans — where a smudged PRO digit or a cramped address line is easy to misread — should come back more accurately. Nothing changes in how you use it: drop the PDF, review the grid, Create. Still zero NuVizz calls; the model is env-configurable so it can be tuned without a code change.'],
   ['0.50.76', 'DAY STATUS BREAKDOWN on the bottom-grid header. The Stops/Loads bar now shows what percentage of the SELECTED DAY\'s board is in each status — e.g. "Planned 62% · Unplanned 28% · Out 4% · Delivered 6%" — right next to the Stops/Loads count (Chad\'s ask: a percentage breakdown of the planned stops for the day). It\'s computed over the WHOLE day, so it stays a steady progress read while you search or filter the list (it doesn\'t follow the filtered rows). Same status buckets as the Status filter, zero-count statuses hidden, and the hover tooltip gives the raw counts. Reflects whichever day/window the bar is set to. Desktop bottom grid on both the Map and Routing screens.'],
