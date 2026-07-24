@@ -37,6 +37,13 @@ export const previewCommit = (payload, opts = {}) => callWrite('commitLoad', pay
 export const commitLoad = (payload, opts = {}) => callWrite('commitLoad', payload, { ...opts, dryRun: false });
 export const fetchRoster = (opts = {}) => callWrite('roster', {}, { ...opts, dryRun: false });
 
+// Write a dispatcher/driver instruction onto a live order (§N). The server reads the
+// order first and merges onto its CURRENT comments — NuVizz replaces the whole list on
+// this endpoint, so a blind write would erase the carrier's own instructions — then
+// reads back to prove nothing else moved. audience: 'dispatcher' | 'driver' | 'both'.
+export const addStopNote = (stopNbr, text, audience = 'both', opts = {}) =>
+  callWrite('addStopNote', { stopNbr, text, audience }, { ...opts, dryRun: false });
+
 // Stable id so a Save can be retried without creating duplicate orders/assignments.
 export function newClientOpId() {
   try { if (globalThis.crypto?.randomUUID) return `op_${globalThis.crypto.randomUUID()}`; } catch { /* fall through */ }
