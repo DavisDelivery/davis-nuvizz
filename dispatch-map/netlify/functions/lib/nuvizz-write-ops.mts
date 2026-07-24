@@ -35,13 +35,13 @@
 // is not in this builder allowlist.
 export const SINGLE_OPS = [
   'createStop', 'getStop', 'getLoad', 'getLoadByRouteId', 'insertStops', 'removeStops',
-  'assignDriver', 'dispatchLoad', 'roster', 'importLoad',
+  'assignDriver', 'dispatchLoad', 'roster', 'importLoad', 'partialUpdateStop',
 ] as const;
 export type SingleOp = typeof SINGLE_OPS[number];
 
 // Ops the HTTP handler accepts (single ops + the per-load Save batch + the panel Save +
 // the async load-import commit with its convergence recipe).
-export const WRITE_OPS = [...SINGLE_OPS, 'commitLoad', 'commitBoard', 'commitImport'] as const;
+export const WRITE_OPS = [...SINGLE_OPS, 'commitLoad', 'commitBoard', 'commitImport', 'addStopNote'] as const;
 export type WriteOp = typeof WRITE_OPS[number];
 
 /** Ops that MUTATE NuVizz (everything except the GET reads). Used by the
@@ -49,6 +49,7 @@ export type WriteOp = typeof WRITE_OPS[number];
 export const MUTATING_OPS = new Set<WriteOp>([
   'createStop', 'insertStops', 'removeStops', 'assignDriver', 'dispatchLoad',
   'importLoad', 'commitLoad', 'commitBoard', 'commitImport',
+  'partialUpdateStop', 'addStopNote',
 ]);
 
 export interface WriteCreds {
@@ -274,7 +275,12 @@ export interface WriteSummary {
 // SUCCESSFULLY", an async import "…is SUCCESS. Find more info…", an assign "…Success". Accept any
 // status carrying success/successful/successfully UNLESS a failure word is present (so
 // PARTIALSUCCESS / "SUCCESS WITH ERRORS" / FAIL / REJECT stay failures).
-const STATUS_SUCCESS_WORD = /\bsuccess(ful(ly)?)?\b/i;
+// `sucess` is NOT a typo here — it is NuVizz's OWN misspelling on the v7 stop
+// endpoints ({"status":"SUCESS"} — portal HAR, Jul 24). Without it statusAccepted()
+// returns false, statusBad flips true, and a write that actually APPLIED is reported
+// as failed. The FAIL word list still runs after this, so "PARTIALSUCESS" is still
+// caught. Accept both spellings; never trust the vendor's orthography.
+const STATUS_SUCCESS_WORD = /\b(success(ful(ly)?)?|sucess(ful(ly)?)?)\b/i;
 const STATUS_FAIL_WORD = /\b(partial|fail|failure|error|reject|invalid|denied)/i;
 function statusAccepted(s: any): boolean {
   const t = String(s ?? '').trim();
@@ -373,6 +379,91 @@ export function rawStopExecStatus(load: any, stopNbr: string): string | null {
 const EXECUTED_STOP_STATUS_RE = /^(DISPATCH|IN[_ ]?TRANSIT|OUT[_ ]?FOR|ARRIV|DEPART|DELIVER|COMPLET|PICKED|EXEC)/i;
 export function isExecutedStopStatus(status: string | null | undefined): boolean {
   return !!status && EXECUTED_STOP_STATUS_RE.test(String(status).trim());
+}
+
+// ── STOP NOTES (§N) — writing a dispatcher/driver instruction onto a live order ──
+//
+// Portal-verified from Chad's HAR capture (Jul 24): adding a note in the NuVizz
+// portal fires ONE call —
+//   POST /v7/stop/partialUpdate/{CC}   body { stops: [ { …stop…, comments: [...] } ] }
+//   → {"status":"SUCESS","apiResult":{"updated":1,"failed":0,"errors":[]}}
+//
+// THE CRITICAL SEMANTIC: `comments` is a FULL REPLACE, not an append. The portal
+// re-sent the new note PLUS all three pre-existing ULINE ORD_IN comments, each
+// echoed with its full metadata (addedByName/addedOn/source/key). Sending only the
+// new note would ERASE the carrier's "DO NOT BREAKDOWN SKID" / "INSIDE DELIVERY"
+// instructions off live freight. Every writer here merges onto the CURRENT list read
+// back from NuVizz immediately beforehand — never a blind write.
+//
+// A manually-added note uses cmtType PVST_IN (pre-visit instruction) — distinct from
+// the ORD_IN type the ULINE integration writes, so ours are distinguishable from the
+// carrier's. accessLevels is the Dispatcher-vs-Driver panel switch.
+
+export const NOTE_AUDIENCES = { dispatcher: ['DISPATCHER'], driver: ['DRIVER'], both: ['DRIVER', 'DISPATCHER'] } as const;
+export type NoteAudience = keyof typeof NOTE_AUDIENCES;
+export const STOP_NOTE_CMT_TYPE = 'PVST_IN';
+const NOTE_MAX_CHARS = 500;
+
+/** PURE: a new note → the exact comment object the portal posts (key included: the
+ *  portal's client-side identity `description|LEVELS|cmtType`). */
+export function buildStopNoteComment(text: string, audience: NoteAudience = 'both'): any {
+  const body = safeSlice(String(text ?? '').trim(), NOTE_MAX_CHARS);
+  if (!body) throw new Error('addStopNote: note text is empty');
+  const accessLevels = [...(NOTE_AUDIENCES[audience] || NOTE_AUDIENCES.both)];
+  return { commentDescription: body, accessLevels, cmtType: STOP_NOTE_CMT_TYPE, key: `${body}|${accessLevels.join(',')}|${STOP_NOTE_CMT_TYPE}` };
+}
+
+/** PURE: unwrap the RAW stop record from any getStop/stop-info envelope. The v7 reads
+ *  nest differently by URL form ({Stop:{stop}} vs {stop:{stop}}), so probe rather than
+ *  assume — reading comments one level off would silently look like "no comments" and
+ *  a merge would then WIPE them. Returns {} when nothing stop-shaped is found. */
+export function rawStopFrom(j: any): any {
+  const cands = [j?.Stop?.stop, j?.stop?.stop, j?.Stop, j?.stop, j];
+  for (const c of cands) if (c && typeof c === 'object' && (c.stopNbr != null || c.stopId != null)) return c;
+  return {};
+}
+
+/** PURE: the stop's current comments (always an array, never null). */
+export function stopCommentsFrom(rawStop: any): any[] {
+  return Array.isArray(rawStop?.comments) ? rawStop.comments : [];
+}
+
+/** PURE: existing comments + the new note, echoed verbatim so nothing is lost. An
+ *  identical note (same text+audience+type) is a no-op rather than a duplicate. */
+export function mergeStopComments(existing: any[], note: any): { comments: any[]; duplicate: boolean } {
+  const list = Array.isArray(existing) ? existing.filter((c) => c && typeof c === 'object') : [];
+  const same = (c: any) => String(c?.commentDescription ?? '') === String(note.commentDescription)
+    && String(c?.cmtType ?? '') === String(note.cmtType)
+    && JSON.stringify([...(c?.accessLevels || [])].sort()) === JSON.stringify([...note.accessLevels].sort());
+  if (list.some(same)) return { comments: list, duplicate: true };
+  return { comments: [...list, note], duplicate: false };
+}
+
+// The fields a note-write must NEVER disturb. Compared before/after as a data-loss
+// tripwire: partialUpdate is sent MINIMAL (ids + comments only), so any drift here
+// means the endpoint blanked unsent fields and the caller must be told loudly.
+const NOTE_GUARD_PATHS = [
+  'stopSeq', 'stopType', 'weight', 'totalPallets', 'totalCartons', 'sealNbr',
+  'proNumber', 'bol', 'reference1', 'reference2', 'shipmentNbr',
+  'to.address.addr1', 'to.address.city', 'to.address.state', 'to.address.zip',
+  'to.contact.phone', 'to.contact.email', 'to.schedule.timeFrom', 'to.schedule.timeTo',
+  'from.address.addr1', 'from.address.city',
+];
+const atPath = (o: any, p: string) => p.split('.').reduce((a: any, k) => (a == null ? a : a[k]), o);
+
+/** PURE: a comparable snapshot of the fields a note-write must not touch. */
+export function stopNoteFingerprint(rawStop: any): Record<string, string> {
+  const fp: Record<string, string> = {};
+  for (const p of NOTE_GUARD_PATHS) {
+    const v = atPath(rawStop, p);
+    fp[p] = v === undefined || v === null ? '' : String(v);
+  }
+  return fp;
+}
+
+/** PURE: which guarded fields changed between two fingerprints (empty = clean). */
+export function fingerprintDrift(before: Record<string, string>, after: Record<string, string>): string[] {
+  return Object.keys(before).filter((k) => before[k] !== (after || {})[k]);
 }
 
 /** normalizeStop (§6) — getStop response → flat shape (incl. the load it's on now). */
@@ -1006,6 +1097,16 @@ export function buildOpRequest(op: SingleOp, payload: any, creds: WriteCreds): B
       return { url: `${base}/stop/info/${enc(stopNbr)}/${enc(cc)}`, method: 'GET', headers: H, meta: { route: '/stop/info', tenant: cc, source: 'live-write' } };
     }
 
+    // Portal-verified note write (§N). Body carries ONLY the identity + the merged
+    // comments list — the endpoint's name promises a partial update and the caller
+    // (runAddStopNote) verifies with a read-back tripwire that nothing else moved,
+    // so an unsent field can never be silently blanked without us reporting it.
+    case 'partialUpdateStop': {
+      const stops = payload?.stops;
+      if (!Array.isArray(stops) || !stops.length) throw new Error('partialUpdateStop: missing stops[]');
+      return { url: `${base}/stop/partialUpdate/${enc(cc)}`, method: 'POST', headers: H, body: JSON.stringify({ stops }), meta: { route: '/stop/partialUpdate', tenant: cc, source: 'live-write' } };
+    }
+
     case 'getLoad': {
       const loadNbr = req(payload?.loadNbr, 'getLoad: loadNbr');
       return { url: `${base}/load/info/${enc(loadNbr)}/${enc(cc)}`, method: 'GET', headers: H, meta: { route: '/load/info', tenant: cc, source: 'live-write' } };
@@ -1075,7 +1176,10 @@ export function buildOpRequest(op: SingleOp, payload: any, creds: WriteCreds): B
 export function parseOpResponse(op: SingleOp, httpOk: boolean, j: any): any {
   switch (op) {
     case 'roster': return { ok: httpOk, drivers: parseRoster(j) };
-    case 'getStop': return { ok: httpOk, stop: normalizeStop(j) };
+    // `raw` rides along (additive) so note writes can merge onto the stop's ACTUAL
+    // comments[] and fingerprint its guarded fields — normalizeStop deliberately
+    // flattens both away, and a merge against a flattened view would drop comments.
+    case 'getStop': return { ok: httpOk, stop: normalizeStop(j), raw: rawStopFrom(j) };
     case 'getLoad': return { ok: httpOk, load: normalizeLoad(j) };
     case 'getLoadByRouteId': return { ok: httpOk, load: normalizeStaticLoad(j) };
     case 'createStop':

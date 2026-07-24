@@ -33,7 +33,7 @@ import { haversineMiles, naiveEtaMinutes, formatEtaClockTime } from './lib/dista
 import { todayInET, isTodayET, formatDateForDisplay, formatDateLong } from './lib/date-util.js';
 import { pointInPolygon, latLngInBounds, boxFromCorners, formatReceivingHours, lineItemDims, moveItem, recomputeRoute, resequence, fmtTime12, DEFAULT_SERVICE_SEC } from './lib/routing-select.js';
 import { formatDateTime, tsToMillis, loadSummary, buildLoadAutoName } from './lib/routing-loads.js';
-import { callWrite, newClientOpId } from './lib/nuvizzWrite.js';
+import { callWrite, newClientOpId, addStopNote } from './lib/nuvizzWrite.js';
 import { BULK_FIELDS, parseDelimited, looksLikeHeader, autoMapColumns, mappedRowsToOrders, bulkRowMissing, bulkRowIsBlank, bulkRowIsGhost, mappingCoversRequired, headerSignature, manifestRowsToIntake, normalizePhone, bulkRowNuvizzRefs } from './lib/bulk-orders.js';
 import { scanStop, scanStopFull } from './lib/signal-scanner';
 import { applyScannerResults } from './lib/customer-notes-writer';
@@ -60,7 +60,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.51.1';
+const APP_VERSION = '0.52.0';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -105,6 +105,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.52.0', 'WRITE NOTES TO NUVIZZ ORDERS. The stop card now has "Add note in NuVizz" — type an instruction, choose who sees it (Dispatcher, Driver, or both), Send. It lands on the real order in NuVizz, showing up in the portal\'s Dispatcher/Driver Instruction panels and on the driver\'s device, exactly like a note typed in the portal. Until now the app could only READ those instructions. IMPORTANT SAFETY DETAIL: NuVizz replaces an order\'s ENTIRE note list on this API, so a naive write would erase the carrier\'s own instructions ("DO NOT BREAKDOWN SKID", "INSIDE DELIVERY"). Every note is therefore written by reading the order first, adding yours to what\'s already there, and then re-reading to confirm the note landed AND that nothing else on the order changed — if anything else moved, it tells you loudly instead of claiming success. Re-sending the same note is a no-op instead of a duplicate. 3 NuVizz calls per note; nothing fires until you press Send.'],
   ['0.51.1', 'HOTFIX — manifest/paste reads broken by the 0.50.77 model upgrade. The new AI model rejects a legacy request setting (temperature) the reader still sent, so every manifest PDF drop and pasted-rows read failed with "anthropic_400: temperature is deprecated". The setting is removed (harmless on every model, old or new); reads work again immediately after this deploys.'],
   ['0.51.0', 'TWO DISPATCHERS, ONE BOARD + MULTI-PDF DROP. (1) Multi-user presence: with two people in the dispatch map at once you now SEE each other — a chip in the header shows who else is on (click it to set your name), and the stops the other device is STAGING on its Compare cards are claimed live: the selection tools (click, box, lasso, Ninja, Send) skip them with a "being staged by <name> on another device" note, a colliding Save warns before it fires, and a Save on either device silently re-reads the other\'s board within seconds (no more waiting out the 2-minute poll to see each other\'s work — and no more both planning the same order onto two different loads). All Firestore-only, zero NuVizz calls, and totally fail-soft: if presence is unavailable the app behaves exactly as before. (2) Bulk Add: the drop zone now takes SEVERAL files at once — drop 2 (or more) manifest PDFs together and each is read in turn (progress shows "file 1 of 2"), all landing in the same Manifest Intake list deduped as always. The file picker allows multi-select too. One spreadsheet per drop still (the column-mapper is one-at-a-time); extra non-PDFs are skipped with a note.'],
   ['0.50.77', 'MANIFEST READER upgraded to a newer, stronger AI model (Claude Sonnet 5, up from Sonnet 4.6). Fax-quality scans — where a smudged PRO digit or a cramped address line is easy to misread — should come back more accurately. Nothing changes in how you use it: drop the PDF, review the grid, Create. Still zero NuVizz calls; the model is env-configurable so it can be tuned without a code change.'],
@@ -4824,6 +4825,83 @@ function StopActivityTimeline({ stopNbr, stopId, onRefreshed }) {
 // NuVizz (/stop/info via nuvizz-pro-lookup) and merges the fresh detail — full comment
 // list, stopId, route sequence — into a LOCAL copy so the panel updates immediately. Keyed
 // by stop number at the call site so it resets when a different order is opened.
+// Write a note onto the ORDER IN NUVIZZ (not our own customer notes — those live in
+// Firestore and are per-customer). This posts a PVST_IN instruction visible in the
+// portal's Dispatcher / Driver Instruction panels and to the driver on their device.
+// The server merges onto the order's existing comments and verifies nothing else moved
+// (NuVizz replaces the whole comment list on this endpoint), so the dispatcher just
+// types and sends. 3 NuVizz calls per note; nothing fires until Send is pressed.
+function StopNuvizzNoteComposer({ stop, onRefreshed }) {
+  const [open, setOpen] = useState(false);
+  const [text, setText] = useState('');
+  const [audience, setAudience] = useState('both');
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState(null);       // { kind:'ok'|'err', text }
+  const pro = stop?.stopNbr || stop?.primaryPro || stop?.pro || '';
+  const send = async () => {
+    const body = text.trim();
+    if (!body || busy || !pro) return;
+    setBusy(true); setMsg(null);
+    try {
+      const r = await addStopNote(pro, body, audience);
+      if (r?.ok && r?.duplicate) setMsg({ kind: 'ok', text: 'That note is already on this order — nothing sent.' });
+      else if (r?.ok) {
+        setMsg({ kind: 'ok', text: 'Note added in NuVizz.' });
+        setText('');
+        // Pull the order back so the note shows in the notes list immediately.
+        try {
+          const d = await fetch('/.netlify/functions/nuvizz-pro-lookup?pro=' + encodeURIComponent(pro), { cache: 'no-store' }).then((x) => x.json());
+          if (d?.ok && d.stop) onRefreshed?.(d.stop);
+        } catch { /* the note landed; the refresh is a nicety */ }
+      } else setMsg({ kind: 'err', text: r?.error || 'Could not add the note.' });
+    } catch (e) { setMsg({ kind: 'err', text: e?.message || 'Could not add the note.' }); }
+    finally { setBusy(false); }
+  };
+  if (!pro) return null;
+  return (
+    <div className="pt-1">
+      {!open ? (
+        <button onClick={() => { setOpen(true); setMsg(null); }} className="inline-flex items-center gap-1.5 text-xs font-semibold text-blue-700 hover:underline">
+          <Plus size={12} /> Add note in NuVizz
+        </button>
+      ) : (
+        <div className="rounded-md border border-slate-200 p-2 space-y-2">
+          <div className="flex items-center justify-between">
+            <div className="text-xs uppercase font-semibold text-slate-500">Add note in NuVizz</div>
+            <button onClick={() => { setOpen(false); setMsg(null); }} className="text-slate-400 hover:text-slate-700"><X size={13} /></button>
+          </div>
+          <textarea
+            value={text}
+            onChange={(e) => setText(e.target.value.slice(0, 500))}
+            disabled={busy}
+            rows={2}
+            placeholder="e.g. call Bob on arrival, dock 4 after 2pm"
+            className="w-full border border-slate-300 rounded px-2 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-400"
+          />
+          <div className="flex items-center gap-1.5 text-[11px]">
+            <span className="text-slate-500">Show to:</span>
+            {[['both', 'Both'], ['dispatcher', 'Dispatcher'], ['driver', 'Driver']].map(([k, label]) => (
+              <button
+                key={k} onClick={() => setAudience(k)} disabled={busy}
+                className={'px-1.5 py-0.5 rounded border ' + (audience === k ? 'border-blue-400 bg-blue-50 text-blue-700 font-semibold' : 'border-slate-300 text-slate-600 hover:bg-slate-50')}
+              >{label}</button>
+            ))}
+          </div>
+          <div className="flex items-center justify-between gap-2">
+            <div className="text-[10px] text-slate-400">{text.trim().length}/500 · writes to order {pro}</div>
+            <button
+              onClick={send} disabled={busy || !text.trim()}
+              className="px-3 py-1 text-xs font-semibold text-white rounded disabled:opacity-40"
+              style={{ background: BRAND, minHeight: 30 }}
+            >{busy ? 'Sending…' : 'Send to NuVizz'}</button>
+          </div>
+          {msg && <div className={'text-[11px] ' + (msg.kind === 'ok' ? 'text-green-700' : 'text-red-600')}>{msg.text}</div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function StopLiveDetail({ stop, onRefreshed }) {
   const [refreshing, setRefreshing] = useState(false);
   const [refreshErr, setRefreshErr] = useState(null);
@@ -4857,6 +4935,7 @@ function StopLiveDetail({ stop, onRefreshed }) {
           <div className="text-[10px] text-slate-400 mt-0.5">Refresh to load all notes</div>
         </div>
       ) : null}
+      <StopNuvizzNoteComposer stop={stop} onRefreshed={onRefreshed} />
       <StopActivityTimeline stopNbr={stop.stopNbr || stop.pro} stopId={stop.stopId} onRefreshed={onRefreshed} />
     </div>
   );

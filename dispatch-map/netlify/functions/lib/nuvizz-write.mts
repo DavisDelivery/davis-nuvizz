@@ -22,6 +22,8 @@ import {
   buildOpRequest, parseOpResponse, toEditHeader, normalizeLoad, planSequence, deliveryOrder,
   importEchoFromRaw, assembleImportHeader, sameOrder, buildStopPayload, normStopNbr,
   rawStopExecStatus, isExecutedStopStatus,
+  buildStopNoteComment, rawStopFrom, stopCommentsFrom, mergeStopComments,
+  stopNoteFingerprint, fingerprintDrift, type NoteAudience,
   type SingleOp, type WriteOp, type WriteCreds,
 } from './nuvizz-write-ops.mts';
 import { isHashLikeId } from './nuvizz-list.mts';
@@ -1896,6 +1898,66 @@ export async function runCommitBoardRwb(requester: RequesterLike, payload: any, 
   return { ok: loads.every((l: any) => l.ok) && (legacyResult.orphaned || []).length === 0, loads, orphaned: legacyResult.orphaned || [] };
 }
 
+/**
+ * runAddStopNote (§N) — write a dispatcher/driver instruction onto a LIVE order.
+ *
+ * Three calls, and every one of them earns its place:
+ *   1. READ  the stop — `comments` is a FULL REPLACE on partialUpdate (portal HAR,
+ *            Jul 24), so the current list must be merged onto, never guessed. A blind
+ *            write would erase the carrier's own instructions ("DO NOT BREAKDOWN
+ *            SKID") off live freight.
+ *   2. WRITE the MINIMAL partialUpdate — identity + merged comments only. Nothing
+ *            else is sent, so nothing else CAN be rewritten with stale values.
+ *   3. VERIFY by reading back: the note must be present, and the guarded fields
+ *            (address / freight / schedule / refs) must be byte-identical. If the
+ *            endpoint blanked an unsent field, we say so LOUDLY instead of reporting
+ *            a clean save — the same no-false-success discipline as the board saves.
+ *
+ * An identical note already on the stop is a no-op (returns duplicate:true, 1 call).
+ */
+export async function runAddStopNote(requester: RequesterLike, payload: any, creds: WriteCreds): Promise<any> {
+  const stopNbr = req(payload?.stopNbr, 'addStopNote: stopNbr');
+  const audience: NoteAudience = (['dispatcher', 'driver', 'both'].includes(payload?.audience) ? payload.audience : 'both');
+  const note = buildStopNoteComment(payload?.text, audience);   // throws on empty text
+  const calls = { reads: 0, writes: 0 };
+
+  const before = await fireSingle(requester, 'getStop', { stopNbr }, creds);
+  calls.reads += 1;
+  if (!before?.ok) return { ok: false, error: `addStopNote: could not read stop ${stopNbr} (${before?.error || 'read failed'}) — nothing was written.`, calls };
+  const rawBefore = rawStopFrom(before.raw ?? before);
+  const stopId = rawBefore?.stopId ?? payload?.stopId ?? null;
+  if (!stopId) return { ok: false, error: `addStopNote: stop ${stopNbr} has no stopId in its record — cannot target the update safely.`, calls };
+
+  const { comments, duplicate } = mergeStopComments(stopCommentsFrom(rawBefore), note);
+  if (duplicate) return { ok: true, duplicate: true, note, comments_total: comments.length, calls, message: 'That exact note is already on the order — nothing written.' };
+
+  const fpBefore = stopNoteFingerprint(rawBefore);
+  const wrote = await fireSingle(requester, 'partialUpdateStop', {
+    stops: [{ stopId, stopNbr: String(rawBefore.stopNbr ?? stopNbr), comments }],
+  }, creds);
+  calls.writes += 1;
+  if (!wrote?.ok) return { ok: false, error: `addStopNote: NuVizz rejected the note (${wrote?.error || 'write failed'}).`, calls };
+
+  const after = await fireSingle(requester, 'getStop', { stopNbr }, creds);
+  calls.reads += 1;
+  if (!after?.ok) {
+    return { ok: false, unverified: true, calls, error: `addStopNote: the note was accepted but the read-back failed (${after?.error || 'read failed'}) — check the order in the portal before re-trying, so you don't double-post.` };
+  }
+  const rawAfter = rawStopFrom(after.raw ?? after);
+  const landed = stopCommentsFrom(rawAfter).some((c: any) => String(c?.commentDescription ?? '') === note.commentDescription && String(c?.cmtType ?? '') === note.cmtType);
+  const drift = fingerprintDrift(fpBefore, stopNoteFingerprint(rawAfter));
+
+  if (drift.length) {
+    return {
+      ok: false, note_landed: landed, drift, calls,
+      error: `addStopNote: the note ${landed ? 'landed' : 'did NOT land'} BUT partialUpdate changed ${drift.length} other field(s) on the order (${drift.slice(0, 4).join(', ')}${drift.length > 4 ? '…' : ''}). Check ${stopNbr} in the portal — do not use notes again until this is investigated.`,
+    };
+  }
+  if (!landed) return { ok: false, calls, error: `addStopNote: NuVizz accepted the write but the note is not on the order when read back — nothing else changed. Try again, or add it in the portal.` };
+
+  return { ok: true, note, audience, comments_total: stopCommentsFrom(rawAfter).length, calls };
+}
+
 export async function runOp(requester: RequesterLike, op: WriteOp, payload: any, creds: WriteCreds): Promise<any> {
   switch (op) {
     // The Compare panel's Save: the in-panel engine toggle sends useRwb OR useImport on the
@@ -1913,6 +1975,7 @@ export async function runOp(requester: RequesterLike, op: WriteOp, payload: any,
     case 'dispatchLoad': return runAssignDispatch(requester, op, payload, creds);
     case 'importLoad': return runImportLoad(requester, payload, creds);
     case 'commitImport': return runCommitImport(requester, payload, creds);
+    case 'addStopNote': return runAddStopNote(requester, payload, creds);
     default: return fireSingle(requester, op as SingleOp, payload, creds);
   }
 }
