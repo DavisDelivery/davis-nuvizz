@@ -554,6 +554,24 @@ export function echoDrift(sent: any, readBack: any, prefix = ''): string[] {
   return out;
 }
 
+/**
+ * PURE: for each drifted path, what it was vs what came back.
+ *
+ * echoDrift names the field; on its own that is not enough to act on. The first real note
+ * write (order 007152089, Jul 26) landed fine but reported `to.documents` moved — and
+ * "a document field changed" spans everything from NuVizz restamping a GUID to the BOL
+ * being dropped off the order. Same message, opposite severities. The values are what
+ * separate them, so the report carries them.
+ */
+export function driftDetail(sent: any, readBack: any, paths: string[], max = 5): string[] {
+  const show = (v: any) => {
+    if (v === undefined) return '(absent)';
+    const s = JSON.stringify(v);
+    return s.length > 200 ? `${s.slice(0, 197)}…` : s;
+  };
+  return paths.slice(0, max).map((p) => `${p}: ${show(atPath(sent, p))} → ${show(atPath(readBack, p))}`);
+}
+
 /** PURE: a comparable snapshot of the fields a note-write must not touch. */
 export function stopNoteFingerprint(rawStop: any): Record<string, string> {
   const fp: Record<string, string> = {};

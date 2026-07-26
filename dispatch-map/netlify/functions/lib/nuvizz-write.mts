@@ -23,7 +23,7 @@ import {
   importEchoFromRaw, assembleImportHeader, sameOrder, buildStopPayload, normStopNbr,
   rawStopExecStatus, isExecutedStopStatus,
   buildStopNoteComment, rawStopFrom, stopCommentsFrom, mergeStopComments,
-  stopNoteFingerprint, fingerprintDrift, buildNoteWriteStop, echoDrift, type NoteAudience,
+  stopNoteFingerprint, fingerprintDrift, buildNoteWriteStop, echoDrift, driftDetail, type NoteAudience,
   type SingleOp, type WriteOp, type WriteCreds,
 } from './nuvizz-write-ops.mts';
 import { isHashLikeId } from './nuvizz-list.mts';
@@ -1956,15 +1956,19 @@ export async function runAddStopNote(requester: RequesterLike, payload: any, cre
   // we sent, which is the check that actually matches the new blast radius. Comparing the
   // read-back through the same builder keeps the key sets symmetric, so the derived keys we
   // deliberately never send don't register as drift.
+  const afterEcho = buildNoteWriteStop(rawAfter, comments);
   const drift = [...new Set([
     ...fingerprintDrift(fpBefore, stopNoteFingerprint(rawAfter)),
-    ...echoDrift(sent, buildNoteWriteStop(rawAfter, comments)),
+    ...echoDrift(sent, afterEcho),
   ])];
 
   if (drift.length) {
+    // Carry the VALUES, not just the field names. "to.documents changed" covers both a
+    // restamped GUID and a lost BOL; only the before/after tells you which one happened.
+    const details = driftDetail(sent, afterEcho, drift);
     return {
-      ok: false, note_landed: landed, drift, calls,
-      error: `addStopNote: the note ${landed ? 'landed' : 'did NOT land'} BUT partialUpdate changed ${drift.length} other field(s) on the order (${drift.slice(0, 4).join(', ')}${drift.length > 4 ? '…' : ''}). Check ${stopNbr} in the portal — do not use notes again until this is investigated.`,
+      ok: false, note_landed: landed, drift, driftDetails: details, calls,
+      error: `addStopNote: the note ${landed ? 'landed' : 'did NOT land'} BUT partialUpdate changed ${drift.length} other field(s) on the order. ${details.join(' | ')}${drift.length > details.length ? ` (+${drift.length - details.length} more)` : ''}. Check ${stopNbr} in the portal — do not use notes again until this is investigated.`,
     };
   }
   if (!landed) return { ok: false, calls, error: `addStopNote: NuVizz accepted the write but the note is not on the order when read back — nothing else changed. Try again, or add it in the portal.` };
