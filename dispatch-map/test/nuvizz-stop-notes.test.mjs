@@ -16,7 +16,7 @@ import assert from 'node:assert/strict';
 import {
   buildStopNoteComment, mergeStopComments, rawStopFrom, stopCommentsFrom,
   stopNoteFingerprint, fingerprintDrift, summarize, buildOpRequest, STOP_NOTE_CMT_TYPE,
-  buildNoteWriteStop, echoDrift, PARTIAL_UPDATE_DERIVED_KEYS,
+  buildNoteWriteStop, echoDrift, driftDetail, PARTIAL_UPDATE_DERIVED_KEYS,
 } from '../netlify/functions/lib/nuvizz-write-ops.mts';
 import { runAddStopNote } from '../netlify/functions/lib/nuvizz-write.mts';
 
@@ -301,4 +301,55 @@ test('runAddStopNote: a full echo that comes back altered ANYWHERE still fails l
   assert.equal(r.ok, false, 'a silently moved coordinate must not report a clean save');
   assert.ok(r.drift.includes('to.address.latitude'), JSON.stringify(r.drift));
   assert.match(String(r.error), /do not use notes again/i);
+});
+
+// ── drift must carry VALUES, not just field names ────────────────────────────
+// First real note write (order 007152089, Jul 26): landed fine, but reported
+// "changed 1 other field(s) (to.documents)" with no way to tell whether NuVizz
+// had restamped a GUID or dropped the BOL off the order. Same words, opposite
+// severities — so the report carries the before/after now.
+
+test('driftDetail: reports before → after for each drifted path', () => {
+  const a = buildNoteWriteStop(rawStop(), CARRIER);
+  const b = JSON.parse(JSON.stringify(a));
+  b.sealNbr = '';
+  assert.deepEqual(driftDetail(a, b, ['sealNbr']), ['sealNbr: "$55.86" → ""']);
+});
+
+test('driftDetail: an absent field reads as (absent), never as undefined', () => {
+  const a = buildNoteWriteStop(rawStop(), CARRIER);
+  const b = JSON.parse(JSON.stringify(a));
+  delete b.sealNbr;
+  assert.match(driftDetail(a, b, ['sealNbr'])[0], /→ \(absent\)/);
+});
+
+test('driftDetail: reaches nested paths and truncates huge values', () => {
+  const withDoc = rawStop({ to: { ...rawStop().to, documents: [{ documentGuid: 'g1', documentName: 'BOL' }] } });
+  const a = buildNoteWriteStop(withDoc, CARRIER);
+  const b = JSON.parse(JSON.stringify(a));
+  b.to.documents = [{ documentGuid: 'g2', documentName: 'BOL' }];
+  b.to.address.addr1 = 'x'.repeat(400);
+  const d = driftDetail(a, b, ['to.documents', 'to.address.addr1']);
+  assert.ok(d[0].includes('g1') && d[0].includes('g2'), d[0]);
+  assert.ok(d[1].endsWith('…'), 'long values truncated');
+});
+
+test('driftDetail: caps how many paths it prints', () => {
+  const a = buildNoteWriteStop(rawStop(), CARRIER);
+  assert.equal(driftDetail(a, a, ['a', 'b', 'c', 'd', 'e', 'f', 'g']).length, 5);
+});
+
+test('runAddStopNote: the drift error names the VALUES, so it can be acted on', async () => {
+  const withDoc = rawStop({ to: { ...rawStop().to, documents: [{ documentGuid: 'old-guid', documentName: 'BOL' }] } });
+  const state = { stop: withDoc };
+  const { requester } = makeRequester({ state, onWrite: (sent, st) => {
+    st.stop = { ...st.stop, comments: sent.comments, to: { ...st.stop.to, documents: [{ documentGuid: 'new-guid', documentName: 'BOL' }] } };
+  } });
+  const r = await runAddStopNote(requester, { stopNbr: '007152089', text: 'Test' }, CREDS);
+  assert.equal(r.ok, false);
+  assert.equal(r.note_landed, true, 'the note itself still landed');
+  assert.deepEqual(r.drift, ['to.documents']);
+  assert.equal(r.driftDetails.length, 1);
+  assert.match(r.error, /old-guid/, 'the error shows what it WAS');
+  assert.match(r.error, /new-guid/, 'and what it BECAME');
 });
