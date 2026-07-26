@@ -484,6 +484,76 @@ const NOTE_GUARD_PATHS = [
 ];
 const atPath = (o: any, p: string) => p.split('.').reduce((a: any, k) => (a == null ? a : a[k]), o);
 
+/**
+ * Fields present on a getStop read that the portal does NOT echo back on partialUpdate
+ * (portal HAR, Jul 24 — read shape vs the write it produced).
+ *
+ * `stopDetails` is the important one: it's the freight lines, and the portal maintains
+ * them through a SEPARATE endpoint (stop/stopdetail/update, seen firing in that same
+ * flow moments before the note write). Echoing them here would put the freight lines in
+ * the blast radius of a note. The rest are derived/read-only projections NuVizz computes
+ * (tracking state, visibility matrix, pricing attributes, the shipper back-pointer, and a
+ * `volume` figure it recomputes from the detail lines).
+ */
+export const PARTIAL_UPDATE_DERIVED_KEYS = [
+  'stopDetails', 'trackingInfo', 'visibility', 'customAttributes', 'shipForBP', 'volume',
+] as const;
+
+/**
+ * Build the stop object for a note write.
+ *
+ * partialUpdate is NOT partial. Sending only { stopId, stopNbr, comments } — which reads as
+ * the safest possible payload, and was what we shipped — is rejected outright by NuVizz with
+ * a bare `status='SOMETHING WENT WRONG!!, PLEASE TRY AGAIN'`. The portal sends the WHOLE stop
+ * back with `comments` swapped, and that is the only shape the endpoint accepts.
+ *
+ * So the write echoes the stop we just read, with two rules:
+ *   - drop the derived keys above (never put freight lines in a note's blast radius);
+ *   - NEVER invent a value we didn't read. The portal also sends six empty placeholders
+ *     (estimationInfo:null, hubId:"", invoiceRef:{}, serviceType:"", vehicleTypes:[],
+ *     volumeUOM:"cu ft"); the first five are inert, but volumeUOM is a real unit we have no
+ *     read value for, so we send none of them rather than write a value we made up.
+ *
+ * The echo widens the blast radius from 3 fields to the whole stop, which is exactly why the
+ * caller's read-back tripwire now diffs EVERY echoed field rather than a guard list.
+ */
+export function buildNoteWriteStop(rawStop: any, comments: any[]): Record<string, any> {
+  if (!rawStop || typeof rawStop !== 'object') throw new Error('buildNoteWriteStop: no stop to echo');
+  const out: Record<string, any> = { ...rawStop };
+  for (const k of PARTIAL_UPDATE_DERIVED_KEYS) delete out[k];
+  out.comments = comments;
+  return out;
+}
+
+/**
+ * PURE: deep-compare what we SENT against what came back, ignoring `comments` (the field the
+ * note deliberately changes). Returns the dotted paths that moved.
+ *
+ * A 3-field write only needed a guard list. A full-object echo needs the opposite default:
+ * everything is suspect unless proven identical, because any field NuVizz round-trips
+ * differently than it serves it would now be written back in that altered form.
+ */
+const ECHO_IGNORE_TOP = new Set(['comments', 'createUpdateInfo']);
+
+export function echoDrift(sent: any, readBack: any, prefix = ''): string[] {
+  const out: string[] = [];
+  const isObj = (v: any) => v !== null && typeof v === 'object' && !Array.isArray(v);
+  const keys = new Set([...Object.keys(sent || {}), ...Object.keys(readBack || {})]);
+  for (const k of keys) {
+    // `comments` is the change we came to make. `createUpdateInfo` is the modified-by/on
+    // stamp the write itself moves — flagging either would make EVERY note report drift and
+    // cry wolf on a clean save. Nothing else gets a pass.
+    if (!prefix && ECHO_IGNORE_TOP.has(k)) continue;
+    const path = prefix ? `${prefix}.${k}` : k;
+    const a = (sent || {})[k];
+    const b = (readBack || {})[k];
+    if (isObj(a) && isObj(b)) { out.push(...echoDrift(a, b, path)); continue; }
+    // Arrays and scalars compare by value. JSON order is stable for a round-tripped object.
+    if (JSON.stringify(a ?? null) !== JSON.stringify(b ?? null)) out.push(path);
+  }
+  return out;
+}
+
 /** PURE: a comparable snapshot of the fields a note-write must not touch. */
 export function stopNoteFingerprint(rawStop: any): Record<string, string> {
   const fp: Record<string, string> = {};

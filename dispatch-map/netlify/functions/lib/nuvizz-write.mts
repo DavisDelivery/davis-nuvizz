@@ -23,7 +23,7 @@ import {
   importEchoFromRaw, assembleImportHeader, sameOrder, buildStopPayload, normStopNbr,
   rawStopExecStatus, isExecutedStopStatus,
   buildStopNoteComment, rawStopFrom, stopCommentsFrom, mergeStopComments,
-  stopNoteFingerprint, fingerprintDrift, type NoteAudience,
+  stopNoteFingerprint, fingerprintDrift, buildNoteWriteStop, echoDrift, type NoteAudience,
   type SingleOp, type WriteOp, type WriteCreds,
 } from './nuvizz-write-ops.mts';
 import { isHashLikeId } from './nuvizz-list.mts';
@@ -1906,12 +1906,18 @@ export async function runCommitBoardRwb(requester: RequesterLike, payload: any, 
  *            Jul 24), so the current list must be merged onto, never guessed. A blind
  *            write would erase the carrier's own instructions ("DO NOT BREAKDOWN
  *            SKID") off live freight.
- *   2. WRITE the MINIMAL partialUpdate — identity + merged comments only. Nothing
- *            else is sent, so nothing else CAN be rewritten with stale values.
- *   3. VERIFY by reading back: the note must be present, and the guarded fields
- *            (address / freight / schedule / refs) must be byte-identical. If the
- *            endpoint blanked an unsent field, we say so LOUDLY instead of reporting
- *            a clean save — the same no-false-success discipline as the board saves.
+ *   2. WRITE the stop back with `comments` swapped. partialUpdate is NOT partial: a
+ *            minimal { stopId, stopNbr, comments } body — which is what we shipped
+ *            first, and reads as the safest thing possible — is rejected outright
+ *            ("SOMETHING WENT WRONG!!, PLEASE TRY AGAIN"). The portal echoes the whole
+ *            stop, so we do too, minus the derived keys it also drops (freight lines
+ *            above all) and without inventing a single value we didn't read.
+ *   3. VERIFY by reading back: the note must be present, and EVERY field we echoed
+ *            must come back byte-identical. The echo is what makes step 3 load-bearing
+ *            — the blast radius is now the whole stop, so the check is "nothing moved"
+ *            rather than a guard list. If anything did, we say so LOUDLY instead of
+ *            reporting a clean save — the same no-false-success discipline as the
+ *            board saves.
  *
  * An identical note already on the stop is a no-op (returns duplicate:true, 1 call).
  */
@@ -1932,9 +1938,9 @@ export async function runAddStopNote(requester: RequesterLike, payload: any, cre
   if (duplicate) return { ok: true, duplicate: true, note, comments_total: comments.length, calls, message: 'That exact note is already on the order — nothing written.' };
 
   const fpBefore = stopNoteFingerprint(rawBefore);
-  const wrote = await fireSingle(requester, 'partialUpdateStop', {
-    stops: [{ stopId, stopNbr: String(rawBefore.stopNbr ?? stopNbr), comments }],
-  }, creds);
+  // The WHOLE stop, comments swapped — the only shape this endpoint accepts (§ buildNoteWriteStop).
+  const sent = buildNoteWriteStop({ ...rawBefore, stopId, stopNbr: String(rawBefore.stopNbr ?? stopNbr) }, comments);
+  const wrote = await fireSingle(requester, 'partialUpdateStop', { stops: [sent] }, creds);
   calls.writes += 1;
   if (!wrote?.ok) return { ok: false, error: `addStopNote: NuVizz rejected the note (${wrote?.error || 'write failed'}).`, calls };
 
@@ -1945,7 +1951,15 @@ export async function runAddStopNote(requester: RequesterLike, payload: any, cre
   }
   const rawAfter = rawStopFrom(after.raw ?? after);
   const landed = stopCommentsFrom(rawAfter).some((c: any) => String(c?.commentDescription ?? '') === note.commentDescription && String(c?.cmtType ?? '') === note.cmtType);
-  const drift = fingerprintDrift(fpBefore, stopNoteFingerprint(rawAfter));
+  // Two checks, unioned. The curated guard list names the fields a dispatcher cares about
+  // first (address / freight / schedule / refs); the echo diff then catches EVERYTHING else
+  // we sent, which is the check that actually matches the new blast radius. Comparing the
+  // read-back through the same builder keeps the key sets symmetric, so the derived keys we
+  // deliberately never send don't register as drift.
+  const drift = [...new Set([
+    ...fingerprintDrift(fpBefore, stopNoteFingerprint(rawAfter)),
+    ...echoDrift(sent, buildNoteWriteStop(rawAfter, comments)),
+  ])];
 
   if (drift.length) {
     return {
