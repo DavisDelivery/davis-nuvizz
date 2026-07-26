@@ -52,6 +52,39 @@ export const MUTATING_OPS = new Set<WriteOp>([
   'partialUpdateStop', 'addStopNote',
 ]);
 
+/**
+ * Hoist the REASON a fired op failed onto the HTTP envelope.
+ *
+ * runOp's executors put their diagnosis on `result.error` — precise, actionable strings
+ * ("could not read stop X … nothing was written", "partialUpdate changed 3 other field(s)").
+ * The envelope used to report `ok:false` and nothing else, so a caller reading `error` off
+ * the response got `undefined` and fell back to its own generic message: the real reason was
+ * built, returned, and then thrown away at the last hop. Most call sites had learned to reach
+ * into `res.result?.error` themselves; the one that hadn't (the stop-note composer) could only
+ * say "Could not add the note." That's a contract bug, not a UI bug — a response that says a
+ * write failed must say why. Batch ops keep their per-load detail; this is the summary line.
+ */
+export function hoistResultError(result: any): string | null {
+  if (!result || result.ok) return null;
+  const str = (v: any) => (typeof v === 'string' ? v.trim() : '');
+  const direct = str(result.error);
+  if (direct) return direct;
+  // commitLoad / commitBoard / commitImport report per-load, so the top-level result has no
+  // single `error` — summarise the first few so the banner still names a cause.
+  for (const key of ['loads', 'results', 'stops']) {
+    const arr = Array.isArray(result?.[key]) ? result[key] : null;
+    if (!arr) continue;
+    const parts = arr.map((r: any) => str(r?.error) || str(r?.result?.error)).filter(Boolean);
+    if (parts.length) {
+      const head = parts.slice(0, 3).join(' · ');
+      return parts.length > 3 ? `${head} (+${parts.length - 3} more)` : head;
+    }
+  }
+  // Never return null for a failure: a bare "it failed" is still better than the caller
+  // inventing its own wording and hiding the fact that the server reported nothing.
+  return 'write failed (NuVizz reported no reason)';
+}
+
 export interface WriteCreds {
   /** v7 API base, e.g. https://portal.nuvizz.com/deliverit/openapi/v7 (no trailing slash). */
   base: string;

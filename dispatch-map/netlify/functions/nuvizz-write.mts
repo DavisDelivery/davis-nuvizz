@@ -25,7 +25,7 @@
 //   • The response always reports `tenant` + `live` so the UI banner shows PROD vs the
 //     write-enabled state. No NuVizz creds ever reach the browser (this fn is the proxy).
 
-import { WRITE_OPS, MUTATING_OPS, type WriteOp } from './lib/nuvizz-write-ops.mts';
+import { WRITE_OPS, MUTATING_OPS, hoistResultError, type WriteOp } from './lib/nuvizz-write-ops.mts';
 import { runOp, resolveWriteCreds, loadImportBlocked } from './lib/nuvizz-write.mts';
 import { rwbEngineBlocked } from './lib/nuvizz-rwb.mts';
 import { getNuvizzRequester, setCallTrigger, effectiveDailyCeiling, NuvizzCircuitOpenError } from './lib/nuvizz-request.mts';
@@ -209,5 +209,8 @@ export default async (req: Request): Promise<Response> => {
     if (clientOpId) await putOpRecord({ clientOpId, op, status: result?.ok ? 'succeeded' : 'failed', result, tenant, at: new Date().toISOString() });
   }
 
-  return J({ ok: !!result?.ok, op, tenant, live, dryRun: false, result, callsUsed: callsSince(), ops: await opsSnapshot() }, result?.ok ? 200 : 502);
+  // 8) Answer. A failure MUST carry its reason at the top level — the executors always build
+  //    one, and this envelope used to drop it, leaving callers to guess (see hoistResultError).
+  const failure = hoistResultError(result);
+  return J({ ok: !!result?.ok, op, tenant, live, dryRun: false, ...(failure ? { error: failure } : {}), result, callsUsed: callsSince(), ops: await opsSnapshot() }, result?.ok ? 200 : 502);
 };

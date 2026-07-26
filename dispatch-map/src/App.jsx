@@ -60,7 +60,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.52.1';
+const APP_VERSION = '0.52.2';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -105,6 +105,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.52.2', 'FAILED WRITES NOW TELL YOU WHY. Chad\'s "Add note in NuVizz" on mobile failed with just "Could not add the note." — no reason, nothing to act on. The server had actually built a precise explanation ("could not read the order — nothing was written", "NuVizz rejected the note", "the note landed BUT the update changed 2 other fields — check the order in the portal") and then threw it away at the last step: the response said the write failed without saying why. Every write now carries its reason at the top level, so the note box — and every other Save banner in the app — repeats the server\'s own words instead of a generic message. Multi-load Saves summarise the first few per-load reasons rather than reporting a bare failure. A failure can no longer come back with no explanation at all. Nothing about WHAT gets written changed; this is purely about being told what happened.'],
   ['0.52.1', 'ROUTE WORKBENCH — three defects found in a review of the Compare cards, all fixed. (1) A STOP WITH NO MAP LOCATION COULD LOCK A LOAD OUT OF SAVING. Cards were built from the map\'s pin list, so a stop that hadn\'t geocoded (or never will — a bad address) was simply absent from the card; Save then sent the load one stop short, and the safety guard correctly refused it ("stop(s) the board isn\'t showing … Refresh and retry"). Refreshing could never fix it — a stop with no geocode never joins the pin list — so that load was unsaveable with no way out. Cards are now built from the BOARD, so the stop rides along: shown, counted in the freight totals, printed on the manifest and included in the Save, flagged as "no map location" (it just can\'t be drawn or auto-sequenced until the address is fixed). (2) UNDO NOW PUTS THE STOP BACK WHERE IT WAS. Removing stop #2 of 10 and immediately undoing left it at #10 — so a slip of the mouse silently RESEQUENCED the real load in NuVizz on the next Save. Undo restores the original position, which also means undoing every removal leaves the card genuinely clean instead of holding a phantom reorder. (3) NO MORE SILENT DROPS. If a staged stop left the board (delivered, cancelled, reconsigned elsewhere), the card just stopped showing it while still sending it on Save — the card under-reported its own stop count, freight and manifest. Those now appear as a flagged row ("not on today\'s board — still saved") with an ✕ to drop them deliberately, and printing a manifest that can\'t include one says so out loud.'],
   ['0.52.0', 'WRITE NOTES TO NUVIZZ ORDERS. The stop card now has "Add note in NuVizz" — type an instruction, choose who sees it (Dispatcher, Driver, or both), Send. It lands on the real order in NuVizz, showing up in the portal\'s Dispatcher/Driver Instruction panels and on the driver\'s device, exactly like a note typed in the portal. Until now the app could only READ those instructions. IMPORTANT SAFETY DETAIL: NuVizz replaces an order\'s ENTIRE note list on this API, so a naive write would erase the carrier\'s own instructions ("DO NOT BREAKDOWN SKID", "INSIDE DELIVERY"). Every note is therefore written by reading the order first, adding yours to what\'s already there, and then re-reading to confirm the note landed AND that nothing else on the order changed — if anything else moved, it tells you loudly instead of claiming success. Re-sending the same note is a no-op instead of a duplicate. 3 NuVizz calls per note; nothing fires until you press Send.'],
   ['0.51.1', 'HOTFIX — manifest/paste reads broken by the 0.50.77 model upgrade. The new AI model rejects a legacy request setting (temperature) the reader still sent, so every manifest PDF drop and pasted-rows read failed with "anthropic_400: temperature is deprecated". The setting is removed (harmless on every model, old or new); reads work again immediately after this deploys.'],
@@ -4854,7 +4855,11 @@ function StopNuvizzNoteComposer({ stop, onRefreshed }) {
           const d = await fetch('/.netlify/functions/nuvizz-pro-lookup?pro=' + encodeURIComponent(pro), { cache: 'no-store' }).then((x) => x.json());
           if (d?.ok && d.stop) onRefreshed?.(d.stop);
         } catch { /* the note landed; the refresh is a nicety */ }
-      } else setMsg({ kind: 'err', text: r?.error || 'Could not add the note.' });
+      // `res.error || res.result?.error` is the house idiom for every write call site — the
+      // reason can arrive on either, and this one only read the first, so a real failure showed
+      // as a bare "Could not add the note." with the server's diagnosis discarded. (The envelope
+      // now hoists it too, so the fallback is belt-and-braces against a stale cached bundle.)
+      } else setMsg({ kind: 'err', text: r?.error || r?.result?.error || 'Could not add the note.' });
     } catch (e) { setMsg({ kind: 'err', text: e?.message || 'Could not add the note.' }); }
     finally { setBusy(false); }
   };
@@ -4896,7 +4901,9 @@ function StopNuvizzNoteComposer({ stop, onRefreshed }) {
               style={{ background: BRAND, minHeight: 30 }}
             >{busy ? 'Sending…' : 'Send to NuVizz'}</button>
           </div>
-          {msg && <div className={'text-[11px] ' + (msg.kind === 'ok' ? 'text-green-700' : 'text-red-600')}>{msg.text}</div>}
+          {/* break-words + leading-snug: the server's failure reasons are full sentences and
+              this panel is ~320px on a phone — they must wrap, not overflow the card. */}
+          {msg && <div className={'text-[11px] leading-snug break-words ' + (msg.kind === 'ok' ? 'text-green-700' : 'text-red-600')}>{msg.text}</div>}
         </div>
       )}
     </div>
