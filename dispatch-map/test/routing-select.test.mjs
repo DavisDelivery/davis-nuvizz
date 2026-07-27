@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import {
   pointInPolygon, latLngInBounds, boxFromCorners,
   fmtTime12, formatReceivingHours, lineItemDims,
-  moveItem, recomputeRoute, haversineMeters,
+  moveItem, recomputeRoute, haversineMeters, isPlannedStop
 } from '../src/lib/routing-select.js';
 
 // ── Lasso: ray-casting point-in-polygon ──
@@ -217,4 +217,38 @@ test("resequence 'loop' makes a U-shape — down one side of the corridor and ba
   const sides = out.map((s) => (s.lat < 0 ? 'S' : 'N'));
   const switches = sides.filter((v, i) => i > 0 && v !== sides[i - 1]).length;
   assert.equal(switches, 1, `expected one side-switch (U-shape), got ${switches}: ${ids(out).join(',')}`);
+});
+
+// ── isPlannedStop ────────────────────────────────────────────────────────────
+// Drives the Routing map's muted "already on a load" pin. Chad, 7/27: he saved a
+// 13-stop MITCHELL route, closed the card, and every stop went back to looking
+// like the unplanned pool around it. The board rows were correct (SCHEDULED,
+// isPlanned, routeName MITCHELL) — planned simply had no pin of its own.
+
+test('isPlannedStop: the board flag is the primary signal', () => {
+  assert.equal(isPlannedStop({ isPlanned: true, routeName: 'MITCHELL' }), true);
+  assert.equal(isPlannedStop({ isPlanned: false }), false);
+});
+
+test('isPlannedStop: isUnplanned wins outright over a stale route name', () => {
+  // The write-through sets isUnplanned explicitly when a stop comes OFF a load, and a
+  // stale routeName can still be sitting on the row. Trusting the name would keep the
+  // stop muted after it was un-planned — invisible work.
+  assert.equal(isPlannedStop({ isUnplanned: true, routeName: 'MITCHELL', isPlanned: true }), false);
+  assert.equal(isPlannedStop({ isUnplanned: true, loadNbr: 'DAVIS000199806' }), false);
+});
+
+test('isPlannedStop: a route/load name alone counts (older cache rows carry no flag)', () => {
+  assert.equal(isPlannedStop({ routeName: 'MITCHELL' }), true);
+  assert.equal(isPlannedStop({ loadNbr: 'DAVIS000199806' }), true);
+});
+
+test('isPlannedStop: an unplanned pool stop is never planned', () => {
+  assert.equal(isPlannedStop({ isUnplanned: true }), false);
+  assert.equal(isPlannedStop({ stopNbr: '007152277' }), false);
+  assert.equal(isPlannedStop({ routeName: '', loadNbr: null }), false);
+});
+
+test('isPlannedStop: junk input never throws', () => {
+  for (const v of [null, undefined, {}, 0, '']) assert.equal(isPlannedStop(v), false);
 });
