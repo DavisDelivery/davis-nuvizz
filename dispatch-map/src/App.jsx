@@ -60,7 +60,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.52.4';
+const APP_VERSION = '0.53.0';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -105,6 +105,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.53.0', 'SAVED PROFILES NOW FOLLOW YOU TO EVERY DEVICE. Bottom-bar profiles were stored in the browser, so a profile saved on the desktop didn\'t exist on the phone, and the other dispatcher never saw it at all (Chad: "they shouldn\'t be local to the device, should be across all devices"). The list is now shared: save one anywhere and it appears everywhere within a second or two, on every device and for everyone — same for Update and Delete. Two details worth knowing. (1) The profile you have SELECTED stays yours: picking "Tomorrow AM" here doesn\'t yank someone else\'s grid out from under them mid-plan. (2) Deleting a profile now deletes it for everybody, not just on your screen. Profiles you\'d already saved on this device are carried up automatically the first time it connects, so nothing is lost. If the shared store is unreachable the bar keeps working exactly as before, off the copy held on the device, and syncs up when it reconnects.'],
   ['0.52.4', 'NOTE WARNINGS NOW SHOW WHAT ACTUALLY CHANGED. The first real note write (order 007152089) worked — the note landed — but the safety check reported "partialUpdate changed 1 other field(s) on the order (to.documents)" and stopped there. That names the field and nothing else, and "the document list changed" covers both NuVizz harmlessly re-stamping an internal id on the BOL AND the BOL being knocked off the order. Same warning, opposite severity, no way to tell which. The warning now prints the before and after for every field that moved — e.g. to.documents: [{"documentGuid":"abc"…}] → [{"documentGuid":"xyz"…}] — so you can see at a glance whether something real was lost or an id was reshuffled. Values are truncated so the message stays readable, and it shows up to five changed fields before summarising the rest. Nothing about how notes are written changed; this is the warning explaining itself.'],
   ['0.52.3', 'NOTES TO NUVIZZ NOW ACTUALLY SEND. The 0.52.2 fix made the note box report NuVizz\'s real answer, and the answer was: "SOMETHING WENT WRONG!!, PLEASE TRY AGAIN". Cause: NuVizz\'s update endpoint is called "partialUpdate" but it is NOT partial. We were sending the smallest, safest possible payload — the order number and the notes, nothing else — precisely so no other field could be touched. NuVizz rejects that outright. Comparing against the portal\'s own traffic: when you add a note in NuVizz, it sends the ENTIRE order back with the notes swapped in. So we do the same — we read the order, swap in the note list, and send the order back exactly as we read it. Two rules keep that safe: the freight lines are never included (NuVizz maintains those through a separate endpoint, and a note has no business touching them), and no value is ever invented — every field we send is a value we just read off the order. Because a note now rewrites the whole order rather than one field, the safety check after the write was widened to match: instead of spot-checking about 20 important fields, it now compares EVERY field it sent against what came back, and if anything at all moved it tells you loudly and says not to use notes again until it\'s looked at. Same 3 NuVizz calls per note.'],
   ['0.52.2', 'FAILED WRITES NOW TELL YOU WHY. Chad\'s "Add note in NuVizz" on mobile failed with just "Could not add the note." — no reason, nothing to act on. The server had actually built a precise explanation ("could not read the order — nothing was written", "NuVizz rejected the note", "the note landed BUT the update changed 2 other fields — check the order in the portal") and then threw it away at the last step: the response said the write failed without saying why. Every write now carries its reason at the top level, so the note box — and every other Save banner in the app — repeats the server\'s own words instead of a generic message. Multi-load Saves summarise the first few per-load reasons rather than reporting a bare failure. A failure can no longer come back with no explanation at all. Nothing about WHAT gets written changed; this is purely about being told what happened.'],
@@ -698,8 +699,10 @@ const LS_SEARCH_HISTORY = 'dispatchMap.searchHistory';
 const LS_LEGEND_EXPANDED = 'dispatchMap.legendExpanded';
 const LS_TABLE_COLUMNS = 'dispatchMap.tableColumns';
 // Saved bottom-panel PROFILES — named snapshots of the grid's bar settings (view,
-// status filter, date window + range, driver, no-location filter, sort). Shared across
-// the grid instances. { list: [{name, s}], active: name|null }.
+// status filter, date window + range, driver, no-location filter, sort). The list now
+// lives in Firestore and follows you to every device (see useBottomPanelProfiles);
+// this key is the offline cache + the source for the one-time migration of profiles
+// saved back when they were device-local. Shape: { list: [{name, s}] }.
 const LS_BOTTOM_PROFILES = 'dispatchMap.bottomPanelProfiles';
 // M4.4 — Filter toolbar persistence. mapFilters is the full toggle state object;
 // toolbarCollapsed is just the open/closed UI state of the toolbar itself.
@@ -9922,13 +9925,10 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
   // ── Bottom-panel PROFILES ─────────────────────────────────────────────────
   // Save the current bar settings under a name and switch between saved profiles.
   // A profile snapshots view / status / date-window + range / driver / no-location /
-  // sort — everything on the bar EXCEPT the transient search text. Persisted to
-  // localStorage (shared across the grid's instances), keyed by profile name.
-  const [profiles, setProfiles] = useState(() => {
-    const p = safeReadJSON(LS_BOTTOM_PROFILES, null);
-    return (p && Array.isArray(p.list)) ? p : { list: [], active: null };
-  });
-  useEffect(() => { safeWriteJSON(LS_BOTTOM_PROFILES, profiles); }, [profiles]);
+  // sort — everything on the bar EXCEPT the transient search text. The LIST lives in
+  // Firestore so it follows you to every device; which one is ACTIVE stays on this
+  // device (see useBottomPanelProfiles).
+  const { list: profileList, active: activeProfileName, setActive: setActiveProfileName, saveProfile: persistProfile, removeProfile } = useBottomPanelProfiles();
   const [profilesOpen, setProfilesOpen] = useState(false);
   const [newProfileName, setNewProfileName] = useState('');
   const [savedFlash, setSavedFlash] = useState(false); // brief "✓ Saved" confirmation
@@ -9947,28 +9947,28 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
     setLoadSort(s.loadSort && 'key' in s.loadSort ? s.loadSort : { key: null, dir: 'asc' });
     setOpen(true);
   };
-  const activeProfile = profiles.list.find((p) => p.name === profiles.active) || null;
+  const activeProfile = profileList.find((p) => p.name === activeProfileName) || null;
   const selectProfile = (name) => {
-    const p = profiles.list.find((x) => x.name === name);
+    const p = profileList.find((x) => x.name === name);
     if (!p) return;
     applyBarSettings(p.s);
-    setProfiles((v) => ({ ...v, active: name }));
+    setActiveProfileName(name);
     setProfilesOpen(false);
   };
   const saveNewProfile = () => {
     const name = newProfileName.trim();
     if (!name) return;
-    const prof = { name, s: barSnapshot() };   // same name overwrites (no dupes)
-    setProfiles((v) => ({ list: [...v.list.filter((x) => x.name !== name), prof].sort((a, b) => a.name.localeCompare(b.name)), active: name }));
+    persistProfile(name, barSnapshot());     // same name overwrites (no dupes)
+    setActiveProfileName(name);
     setNewProfileName('');
     flashSaved();
   };
   const updateActiveProfile = () => {
     if (!activeProfile) return;
-    setProfiles((v) => ({ ...v, list: v.list.map((p) => (p.name === v.active ? { ...p, s: barSnapshot() } : p)) }));
+    persistProfile(activeProfile.name, barSnapshot());
     flashSaved();
   };
-  const deleteProfile = (name) => setProfiles((v) => ({ list: v.list.filter((p) => p.name !== name), active: v.active === name ? null : v.active }));
+  const deleteProfile = (name) => removeProfile(name);
 
   return (
     <div ref={rootRef} className="absolute left-0 right-0 bottom-0 z-[12] bg-white border-t border-slate-200 shadow-[0_-2px_10px_rgba(0,0,0,0.10)] flex flex-col" style={{ height: open ? height : undefined, maxHeight: open ? 'calc(100% - 4rem)' : undefined }}>
@@ -10030,11 +10030,11 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
             <>
               <div className="fixed inset-0 z-10" onClick={() => setProfilesOpen(false)} />
               <div className="absolute left-0 bottom-full mb-1 w-64 bg-white border border-slate-200 rounded-lg shadow-lg z-20 p-1 text-xs">
-                {profiles.list.length === 0 && <div className="px-2 py-1.5 text-slate-400 italic">No saved profiles yet — set the bar how you like it, name it below, and Save.</div>}
-                {profiles.list.map((p) => (
-                  <div key={p.name} className={'flex items-center gap-1 rounded ' + (p.name === profiles.active ? 'bg-blue-50' : 'hover:bg-slate-50')}>
+                {profileList.length === 0 && <div className="px-2 py-1.5 text-slate-400 italic">No saved profiles yet — set the bar how you like it, name it below, and Save.</div>}
+                {profileList.map((p) => (
+                  <div key={p.name} className={'flex items-center gap-1 rounded ' + (p.name === activeProfileName ? 'bg-blue-50' : 'hover:bg-slate-50')}>
                     <button onClick={() => selectProfile(p.name)} className="flex-1 min-w-0 text-left px-2 py-1.5 truncate" title={`Apply “${p.name}”`}>
-                      {p.name === profiles.active ? '● ' : ''}{p.name}
+                      {p.name === activeProfileName ? '● ' : ''}{p.name}
                     </button>
                     <button onClick={() => deleteProfile(p.name)} title={`Delete “${p.name}”`} className="px-1.5 py-1 text-slate-400 hover:text-red-600 shrink-0"><Trash2 size={12} /></button>
                   </div>
@@ -10060,6 +10060,11 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
                   >
                     {savedFlash ? '✓ Saved' : (newProfileName.trim() || !activeProfile ? 'Save' : 'Update')}
                   </button>
+                </div>
+                {/* Say it out loud: a saved profile is now everyone's, and deleting one
+                    deletes it for everyone. Which profile you're VIEWING stays yours. */}
+                <div className="px-2 pt-1 text-[10px] text-slate-400 leading-snug">
+                  Shared across all devices. The profile you have selected is just for this device.
                 </div>
               </div>
             </>
@@ -10976,6 +10981,88 @@ function formatRoutingEta(sec) {
 // category L. (The authoritative geometry is computed server-side at build time.)
 function stopLooksOversize(s) {
   return Array.isArray(s?.stopDetails) && s.stopDetails.some((d) => String(d?.productCategory || '').toUpperCase() === 'L');
+}
+
+/**
+ * Bottom-panel PROFILES, shared across every device (Chad, 7/27: "they shouldn't be
+ * local to the device, should be across all devices").
+ *
+ * Firestore `bottom_panel_profiles`, one doc per profile keyed by a slug of its name —
+ * not one doc holding the whole list, so two dispatchers saving different profiles at
+ * the same moment can't clobber each other's write.
+ *
+ * What syncs and what doesn't: the LIST is shared, the ACTIVE selection is not. Which
+ * profile you're currently looking through is your own view of the board — if picking
+ * "Tomorrow AM" here yanked the other dispatcher's grid out from under them mid-plan,
+ * that's a worse bug than the one being fixed. So `active` stays in localStorage.
+ *
+ * Fail-soft: with Firestore unavailable (db null, offline, rules) this behaves exactly
+ * as the old localStorage version did, and a device that saved while offline migrates
+ * its profiles up the next time it connects.
+ */
+const LS_BOTTOM_PROFILES_ACTIVE = 'dispatchMap.bottomPanelProfiles.active';
+const LS_BOTTOM_PROFILES_MIGRATED = 'dispatchMap.bottomPanelProfiles.migrated';
+const profileDocId = (name) => String(name).trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 120) || 'profile';
+
+function useBottomPanelProfiles() {
+  // Seed from localStorage so the bar renders instantly (and still works with no db).
+  const [list, setList] = useState(() => {
+    const p = safeReadJSON(LS_BOTTOM_PROFILES, null);
+    return (p && Array.isArray(p.list)) ? p.list : [];
+  });
+  const [active, setActiveState] = useState(() => {
+    const a = safeReadJSON(LS_BOTTOM_PROFILES_ACTIVE, null);
+    if (typeof a === 'string') return a;
+    const legacy = safeReadJSON(LS_BOTTOM_PROFILES, null);   // pre-sync shape carried it inline
+    return (legacy && typeof legacy.active === 'string') ? legacy.active : null;
+  });
+  const setActive = useCallback((name) => {
+    setActiveState(name);
+    safeWriteJSON(LS_BOTTOM_PROFILES_ACTIVE, name);
+  }, []);
+
+  useEffect(() => {
+    if (!db) return;
+    const unsub = onSnapshot(collection(db, 'bottom_panel_profiles'), async (snap) => {
+      const remote = snap.docs
+        .map((d) => ({ name: d.data()?.name || d.id, s: d.data()?.s || null }))
+        .filter((p) => p.s)
+        .sort((a, b) => a.name.localeCompare(b.name));
+      // ONE-TIME migration of whatever this device saved before profiles were shared.
+      // Guarded by a local flag so a profile someone deletes on another device doesn't
+      // get resurrected every time this browser reconnects.
+      if (!safeReadJSON(LS_BOTTOM_PROFILES_MIGRATED, false)) {
+        const localOnly = (safeReadJSON(LS_BOTTOM_PROFILES, null)?.list || [])
+          .filter((p) => p?.name && p?.s && !remote.some((r) => r.name === p.name));
+        safeWriteJSON(LS_BOTTOM_PROFILES_MIGRATED, true);
+        if (localOnly.length) {
+          try {
+            await Promise.all(localOnly.map((p) => setDoc(doc(db, 'bottom_panel_profiles', profileDocId(p.name)), { name: p.name, s: p.s, updated_at: serverTimestamp() })));
+          } catch { /* the snapshot below still shows what IS shared */ }
+          return;   // the write re-fires this listener with the merged set
+        }
+      }
+      setList(remote);
+      safeWriteJSON(LS_BOTTOM_PROFILES, { list: remote });   // offline cache for next cold start
+    }, () => { /* rules/offline: keep the localStorage list already in state */ });
+    return () => unsub();
+  }, []);
+
+  const saveProfile = useCallback(async (name, s) => {
+    const prof = { name, s };
+    setList((v) => [...v.filter((x) => x.name !== name), prof].sort((a, b) => a.name.localeCompare(b.name)));
+    if (!db) { safeWriteJSON(LS_BOTTOM_PROFILES, { list: [...(safeReadJSON(LS_BOTTOM_PROFILES, null)?.list || []).filter((x) => x.name !== name), prof] }); return; }
+    try { await setDoc(doc(db, 'bottom_panel_profiles', profileDocId(name)), { name, s, updated_at: serverTimestamp() }); } catch { /* optimistic row stands */ }
+  }, []);
+
+  const removeProfile = useCallback(async (name) => {
+    setList((v) => v.filter((p) => p.name !== name));
+    setActiveState((a) => (a === name ? null : a));
+    if (!db) { safeWriteJSON(LS_BOTTOM_PROFILES, { list: (safeReadJSON(LS_BOTTOM_PROFILES, null)?.list || []).filter((x) => x.name !== name) }); return; }
+    try { await deleteDoc(doc(db, 'bottom_panel_profiles', profileDocId(name))); } catch { /* optimistic removal stands */ }
+  }, []);
+
+  return { list, active, setActive, saveProfile, removeProfile, shared: !!db };
 }
 
 // Live truck_profiles, seeded on first run. Returns profiles + a persist helper.
