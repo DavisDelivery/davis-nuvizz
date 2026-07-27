@@ -23,7 +23,8 @@ import {
   importEchoFromRaw, assembleImportHeader, sameOrder, buildStopPayload, normStopNbr,
   rawStopExecStatus, isExecutedStopStatus,
   buildStopNoteComment, rawStopFrom, stopCommentsFrom, mergeStopComments,
-  stopNoteFingerprint, fingerprintDrift, buildNoteWriteStop, echoDrift, driftDetail, type NoteAudience,
+  stopNoteFingerprint, fingerprintDrift, buildNoteWriteStop, echoDrift, driftDetail,
+  unsentLosses, documentHandlesMoved, type NoteAudience,
   type SingleOp, type WriteOp, type WriteCreds,
 } from './nuvizz-write-ops.mts';
 import { isHashLikeId } from './nuvizz-list.mts';
@@ -1961,19 +1962,36 @@ export async function runAddStopNote(requester: RequesterLike, payload: any, cre
     ...fingerprintDrift(fpBefore, stopNoteFingerprint(rawAfter)),
     ...echoDrift(sent, afterEcho),
   ])];
+  // …and the third: the keys we deliberately DON'T send (freight lines, file attachments) are
+  // invisible to that diff by construction, so they are proven surviving by comparing the
+  // PRE-write read to the POST-write read. Identity only — NuVizz restamping a document's
+  // storage GUID is not the BOL falling off the order, and conflating the two is what made
+  // the last two real note writes read as disasters.
+  const losses = unsentLosses(rawBefore, rawAfter);
 
-  if (drift.length) {
+  if (drift.length || losses.length) {
     // Carry the VALUES, not just the field names. "to.documents changed" covers both a
     // restamped GUID and a lost BOL; only the before/after tells you which one happened.
-    const details = driftDetail(sent, afterEcho, drift);
+    const details = [
+      ...driftDetail(sent, afterEcho, drift),
+      ...losses.map((l) => `${l.path}: LOST ${l.lost.join(' · ')}`),
+    ];
+    const paths = [...drift, ...losses.map((l) => l.path)];
     return {
-      ok: false, note_landed: landed, drift, driftDetails: details, calls,
-      error: `addStopNote: the note ${landed ? 'landed' : 'did NOT land'} BUT partialUpdate changed ${drift.length} other field(s) on the order. ${details.join(' | ')}${drift.length > details.length ? ` (+${drift.length - details.length} more)` : ''}. Check ${stopNbr} in the portal — do not use notes again until this is investigated.`,
+      ok: false, note_landed: landed, drift: paths, driftDetails: details, calls,
+      error: `addStopNote: the note ${landed ? 'landed' : 'did NOT land'} BUT partialUpdate changed ${paths.length} other field(s) on the order. ${details.join(' | ')}${paths.length > details.length ? ` (+${paths.length - details.length} more)` : ''}. Check ${stopNbr} in the portal — do not use notes again until this is investigated.`,
     };
   }
   if (!landed) return { ok: false, calls, error: `addStopNote: NuVizz accepted the write but the note is not on the order when read back — nothing else changed. Try again, or add it in the portal.` };
 
-  return { ok: true, note, audience, comments_total: stopCommentsFrom(rawAfter).length, calls };
+  // Clean save. `documentRestamp` rides along (journaled with the op) when every attachment is
+  // still on the order but NuVizz moved its own GUIDs — the thing we used to fail on. It is
+  // worth watching for a pattern; it is not worth a red banner in the dispatcher's face.
+  const restamped = documentHandlesMoved(rawBefore, rawAfter);
+  return {
+    ok: true, note, audience, comments_total: stopCommentsFrom(rawAfter).length, calls,
+    ...(restamped ? { documentRestamp: true } : {}),
+  };
 }
 
 export async function runOp(requester: RequesterLike, op: WriteOp, payload: any, creds: WriteCreds): Promise<any> {
