@@ -31,7 +31,7 @@ import { normalizeMatchKey } from './lib/matchKey.js';
 import { addressLooksOff, suggestAddressFix } from './lib/address-fix.js';
 import { haversineMiles, naiveEtaMinutes, formatEtaClockTime } from './lib/distance.js';
 import { todayInET, isTodayET, formatDateForDisplay, formatDateLong } from './lib/date-util.js';
-import { pointInPolygon, latLngInBounds, boxFromCorners, formatReceivingHours, lineItemDims, moveItem, recomputeRoute, resequence, fmtTime12, DEFAULT_SERVICE_SEC } from './lib/routing-select.js';
+import { pointInPolygon, latLngInBounds, boxFromCorners, formatReceivingHours, lineItemDims, moveItem, recomputeRoute, resequence, fmtTime12, isPlannedStop, DEFAULT_SERVICE_SEC } from './lib/routing-select.js';
 import { formatDateTime, tsToMillis, loadSummary, buildLoadAutoName } from './lib/routing-loads.js';
 import { callWrite, newClientOpId, addStopNote } from './lib/nuvizzWrite.js';
 import { BULK_FIELDS, parseDelimited, looksLikeHeader, autoMapColumns, mappedRowsToOrders, bulkRowMissing, bulkRowIsBlank, bulkRowIsGhost, mappingCoversRequired, headerSignature, manifestRowsToIntake, normalizePhone, bulkRowNuvizzRefs } from './lib/bulk-orders.js';
@@ -60,7 +60,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.53.0';
+const APP_VERSION = '0.53.1';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -105,6 +105,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.53.1', 'PLANNED STOPS NOW LOOK PLANNED ON THE ROUTING MAP. Chad saved a 13-stop MITCHELL route, closed the card, and every one of those stops went straight back to looking like the unplanned pool around it — impossible to tell what was still to route. The board was right all along (all 13 read planned, on MITCHELL, in sequence); the PIN was the problem. A planned stop had no colour of its own, so it fell through to the truck-eligibility colour, or to the default blue — and when the customer has restriction notes, to a purple a shade off the unplanned purple. At pin size that is the same dot. Planned stops now draw as a quiet hollow slate ring, so what stands out on the map is what still needs a truck. Deliberate exceptions, because these are the ones you need to see: stops already moving keep their live colours (out for delivery, arrived, delivered, exception), and a do-not-send stop, anything you have selected, a search hit, and every stop on an open route card all look exactly as before. Closing a route card is now the moment its stops go from numbered-in-route-colour to quiet slate — never back to looking unrouted.'],
   ['0.53.0', 'SAVED PROFILES NOW FOLLOW YOU TO EVERY DEVICE. Bottom-bar profiles were stored in the browser, so a profile saved on the desktop didn\'t exist on the phone, and the other dispatcher never saw it at all (Chad: "they shouldn\'t be local to the device, should be across all devices"). The list is now shared: save one anywhere and it appears everywhere within a second or two, on every device and for everyone — same for Update and Delete. Two details worth knowing. (1) The profile you have SELECTED stays yours: picking "Tomorrow AM" here doesn\'t yank someone else\'s grid out from under them mid-plan. (2) Deleting a profile now deletes it for everybody, not just on your screen. Profiles you\'d already saved on this device are carried up automatically the first time it connects, so nothing is lost. If the shared store is unreachable the bar keeps working exactly as before, off the copy held on the device, and syncs up when it reconnects.'],
   ['0.52.4', 'NOTE WARNINGS NOW SHOW WHAT ACTUALLY CHANGED. The first real note write (order 007152089) worked — the note landed — but the safety check reported "partialUpdate changed 1 other field(s) on the order (to.documents)" and stopped there. That names the field and nothing else, and "the document list changed" covers both NuVizz harmlessly re-stamping an internal id on the BOL AND the BOL being knocked off the order. Same warning, opposite severity, no way to tell which. The warning now prints the before and after for every field that moved — e.g. to.documents: [{"documentGuid":"abc"…}] → [{"documentGuid":"xyz"…}] — so you can see at a glance whether something real was lost or an id was reshuffled. Values are truncated so the message stays readable, and it shows up to five changed fields before summarising the rest. Nothing about how notes are written changed; this is the warning explaining itself.'],
   ['0.52.3', 'NOTES TO NUVIZZ NOW ACTUALLY SEND. The 0.52.2 fix made the note box report NuVizz\'s real answer, and the answer was: "SOMETHING WENT WRONG!!, PLEASE TRY AGAIN". Cause: NuVizz\'s update endpoint is called "partialUpdate" but it is NOT partial. We were sending the smallest, safest possible payload — the order number and the notes, nothing else — precisely so no other field could be touched. NuVizz rejects that outright. Comparing against the portal\'s own traffic: when you add a note in NuVizz, it sends the ENTIRE order back with the notes swapped in. So we do the same — we read the order, swap in the note list, and send the order back exactly as we read it. Two rules keep that safe: the freight lines are never included (NuVizz maintains those through a separate endpoint, and a note has no business touching them), and no value is ever invented — every field we send is a value we just read off the order. Because a note now rewrites the whole order rather than one field, the safety check after the write was widened to match: instead of spot-checking about 20 important fields, it now compares EVERY field it sent against what came back, and if anything at all moved it tells you loudly and says not to use notes again until it\'s looked at. Same 3 NuVizz calls per note.'],
@@ -508,6 +509,9 @@ const FLAG_OPTIONS = ['red', 'yellow', 'green', 'question'];
 const ADDRESS_OFF_TINT = '#d97706';   // amber pin for an auto-detected mis-split address
 const RESTRICTION_TINT = '#7c3aed';        // has restriction notes but no priority flag
 const UNFLAGGED_TINT = '#4285F4';          // default delivery pin — bright blue, reads on satellite
+// Routing map: a stop already planned onto a load, with no open card. Slate + hollow so
+// planned work recedes and the unplanned pool is what stands out (see plannedMuted).
+const PLANNED_MUTED_COLOR = '#64748b';
 const DRIVER_TINT = '#0f172a';             // M4 Motive driver pins
 
 // Dispatcher-set vehicle eligibility (Routing). Green = a 53' tractor-trailer fits
@@ -2283,7 +2287,15 @@ function stopMarkerIcon(google, s, note, opts = {}) {
   //   and tap behavior stay identical. DNS and search-match orange keep
   //   precedence (safety / active-search visibility), as does an explicit
   //   Routing routeColor on numbered pins.
-  const { selectedDayKey, matched = false, inRoute = false, seq, routeColor, sameLocCount = 1, tractorDelivered = false, searchMatched = false } = opts;
+  //   opts.plannedMuted — Routing map only. A stop that is ALREADY PLANNED on a load but
+  //   isn't part of an open Compare card. Planned had no colour of its own (STATUS_META
+  //   .SCHEDULED.color is null), so it fell through to the freight-eligibility colour or
+  //   flagColor()'s default — landing on #4285F4 blue, or #7c3aed when the customer has
+  //   restriction notes, which is a shade off the unplanned #6d28d9. At 16px that read as
+  //   "still in the pool": Chad closed a saved MITCHELL route and its 13 stops looked
+  //   exactly like the 600 unplanned ones around them. Planned work is DONE work — it gets
+  //   a slate hollow ring so it recedes and can't be mistaken for something to route.
+  const { selectedDayKey, matched = false, inRoute = false, seq, routeColor, sameLocCount = 1, tractorDelivered = false, searchMatched = false, plannedMuted = false } = opts;
   // count badge only when 2+ deliveries share the place (Chad: "put the number on the delivery
   // icon"). 0 = no badge.
   const count = sameLocCount > 1 ? sameLocCount : 0;
@@ -2316,11 +2328,27 @@ function stopMarkerIcon(google, s, note, opts = {}) {
     + statusKind + '\x1f' + restrictions.join(',') + '\x1f' + (matched ? 'M' : '') + '\x1f'
     + (note?.priority_flag || '') + '\x1f' + (elig || '') + '\x1f' + (tractorDelivered ? 'T' : '')
     + '\x1f' + (addrOff ? 'A' : '') + '\x1f' + (note?.delivery_window || '') + '\x1f' + count
-    + '\x1f' + (routeColor || '') + '\x1f' + (searchMatched ? 'S' : '');
+    + '\x1f' + (routeColor || '') + '\x1f' + (searchMatched ? 'S' : '') + '\x1f' + (plannedMuted ? 'P' : '');
   const cached = __stopIconCache.get(cacheKey);
   if (cached) return cached;
 
   let result;
+  // SCHEDULED only. "Planned" also covers OUT_FOR_DEL / ARRIVED / DELIVERED / EXCEPTION —
+  // the live execution states Chad watches all day — and grey-ing those out would trade one
+  // blind spot for a worse one. Muting applies to planned-but-not-yet-moving work.
+  if (plannedMuted && statusKind === 'SCHEDULED' && !dnsStop && !matched && !searchMatched && !inRoute) {
+    // ALREADY ON A LOAD. Deliberately the quietest pin on the map: slate, hollow, no
+    // eligibility colour (that colour answers "what truck can take this?" — a question
+    // already settled once the stop is planned). DNS, an active selection, a search hit
+    // and an open route all still win, so nothing safety- or task-critical is muted.
+    result = {
+      url: circleMarkerSvg(PLANNED_MUTED_COLOR, { hollow: true, count }),
+      scaledSize: new google.maps.Size(14, 14),
+      anchor: new google.maps.Point(7, 7),
+    };
+    __stopIconCache.set(cacheKey, result);
+    return result;
+  }
   if (dnsStop) {
     // DNS — strong red circle with a white ✕, taking precedence over everything else.
     result = { url: circleMarkerSvg(DNS_COLOR, { glyph: 'dns' }), scaledSize: new google.maps.Size(28, 28), anchor: new google.maps.Point(14, 14) };
@@ -14921,6 +14949,10 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
         routeColor: ri?.color,
         sameLocCount: (locMates.get(stopLocKey(s)) || []).length || 1,
         tractorDelivered: tractorLocs.has(s.matchKey),
+        // Planned onto a load and no card open for it → mute. `numbered` covers the
+        // open-card case, so closing a card is exactly the moment a route's stops go
+        // from numbered-in-route-colour to quiet slate — never back to pool-coloured.
+        plannedMuted: !numbered && isPlannedStop(s),
       });
       // Search hits ride the TOP layer above everything (Chad), even above numbered route pins,
       // so a hit is never hidden; otherwise numbered > selected > resting.

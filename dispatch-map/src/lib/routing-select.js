@@ -256,3 +256,17 @@ export function resequence(stops, depot, strategy) {
     default: return [...arr];
   }
 }
+
+// Is this stop already committed to a load?
+//
+// Drives the Routing map's muted "already planned" pin. Trusts the board's own isPlanned
+// flag first (what the scan and the save write-through both set), then falls back to simply
+// carrying a route/load name — a row from an older cache shape can have the name without the
+// flag, and a planned stop that reads unplanned is the failure this exists to prevent.
+// isUnplanned wins outright: the write-through sets it explicitly when a stop comes OFF a
+// load, and a stale routeName can still be sitting on that row.
+export function isPlannedStop(s) {
+  if (s?.isUnplanned === true) return false;
+  if (s?.isPlanned === true) return true;
+  return !!(s?.routeName || s?.loadNbr);
+}
