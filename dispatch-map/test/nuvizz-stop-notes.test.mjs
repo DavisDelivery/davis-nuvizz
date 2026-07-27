@@ -17,8 +17,18 @@ import {
   buildStopNoteComment, mergeStopComments, rawStopFrom, stopCommentsFrom,
   stopNoteFingerprint, fingerprintDrift, summarize, buildOpRequest, STOP_NOTE_CMT_TYPE,
   buildNoteWriteStop, echoDrift, driftDetail, PARTIAL_UPDATE_DERIVED_KEYS,
+  documentIdentities, documentHandles, documentHandlesMoved, stopDetailIdentities, unsentLosses,
 } from '../netlify/functions/lib/nuvizz-write-ops.mts';
 import { runAddStopNote } from '../netlify/functions/lib/nuvizz-write.mts';
+
+const atPath = (o, p) => p.split('.').reduce((a, k) => (a == null ? a : a[k]), o);
+
+// The BOL row exactly as order 007150559 returns it (Jul 27) — metadata only, no bytes:
+// `documentData` comes back EMPTY because the file itself lives behind the document API.
+const BOL = (reference) => ({
+  description: '', dispositionType: '01', documentData: '', documentExtType: 'pdf',
+  documentName: 'BOL', documentType: '03', documentCategory: '', reference,
+});
 
 const CREDS = { base: 'https://portal.example.com/deliverit/openapi/v7', companyCode: 'DAVIS', authHeader: 'Basic x' };
 
@@ -217,9 +227,9 @@ test('buildNoteWriteStop: echoes the stop and swaps ONLY comments', () => {
   }
 });
 
-test('buildNoteWriteStop: never sends freight lines or other derived keys', () => {
+test('buildNoteWriteStop: never sends freight lines, attachments, or other derived keys', () => {
   // stopDetails is maintained by a DIFFERENT endpoint (stop/stopdetail/update). A note
-  // must not put the freight lines in its blast radius.
+  // must not put the freight lines in its blast radius — nor the order's FILES.
   const raw = rawStop({
     stopDetails: [{ product: 'STEEL RECEPTACLE', quantity: 1, weight: 44 }],
     trackingInfo: { trackingEnabled: false },
@@ -227,9 +237,20 @@ test('buildNoteWriteStop: never sends freight lines or other derived keys', () =
     customAttributes: [{ keyField: 'stopOrigPrice', keyValue: '65' }],
     shipForBP: 'ULINE',
     volume: 0,
+    to: { ...rawStop().to, documents: [BOL('0bb95e56-7ffc-497b-a434-57618533ad72')] },
+    from: { ...rawStop().from, documents: [BOL('aaaa1111-0000-0000-0000-000000000000')] },
   });
   const out = buildNoteWriteStop(raw, []);
-  for (const k of PARTIAL_UPDATE_DERIVED_KEYS) assert.ok(!(k in out), `${k} must NOT be echoed`);
+  for (const p of PARTIAL_UPDATE_DERIVED_KEYS) assert.equal(atPath(out, p), undefined, `${p} must NOT be echoed`);
+});
+
+test('buildNoteWriteStop: stripping a nested key does not mutate the read it was given', () => {
+  // rawBefore is the before-image the data-loss check compares against — a shallow delete
+  // through the shared `to` object would erase the evidence and make every loss invisible.
+  const raw = rawStop({ to: { ...rawStop().to, documents: [BOL('keep-me')] } });
+  buildNoteWriteStop(raw, []);
+  assert.equal(raw.to.documents.length, 1, 'the caller keeps its documents');
+  assert.equal(raw.to.documents[0].reference, 'keep-me');
 });
 
 test('buildNoteWriteStop: invents nothing the read did not provide', () => {
@@ -324,13 +345,12 @@ test('driftDetail: an absent field reads as (absent), never as undefined', () =>
 });
 
 test('driftDetail: reaches nested paths and truncates huge values', () => {
-  const withDoc = rawStop({ to: { ...rawStop().to, documents: [{ documentGuid: 'g1', documentName: 'BOL' }] } });
-  const a = buildNoteWriteStop(withDoc, CARRIER);
+  const a = buildNoteWriteStop(rawStop(), CARRIER);
   const b = JSON.parse(JSON.stringify(a));
-  b.to.documents = [{ documentGuid: 'g2', documentName: 'BOL' }];
+  b.to.contact.phone = '5551234567';
   b.to.address.addr1 = 'x'.repeat(400);
-  const d = driftDetail(a, b, ['to.documents', 'to.address.addr1']);
-  assert.ok(d[0].includes('g1') && d[0].includes('g2'), d[0]);
+  const d = driftDetail(a, b, ['to.contact.phone', 'to.address.addr1']);
+  assert.ok(d[0].includes('6788787161') && d[0].includes('5551234567'), d[0]);
   assert.ok(d[1].endsWith('…'), 'long values truncated');
 });
 
@@ -340,16 +360,103 @@ test('driftDetail: caps how many paths it prints', () => {
 });
 
 test('runAddStopNote: the drift error names the VALUES, so it can be acted on', async () => {
-  const withDoc = rawStop({ to: { ...rawStop().to, documents: [{ documentGuid: 'old-guid', documentName: 'BOL' }] } });
-  const state = { stop: withDoc };
+  const state = { stop: rawStop() };
   const { requester } = makeRequester({ state, onWrite: (sent, st) => {
-    st.stop = { ...st.stop, comments: sent.comments, to: { ...st.stop.to, documents: [{ documentGuid: 'new-guid', documentName: 'BOL' }] } };
+    st.stop = { ...st.stop, comments: sent.comments, sealNbr: '' };
   } });
   const r = await runAddStopNote(requester, { stopNbr: '007152089', text: 'Test' }, CREDS);
   assert.equal(r.ok, false);
   assert.equal(r.note_landed, true, 'the note itself still landed');
-  assert.deepEqual(r.drift, ['to.documents']);
+  assert.deepEqual(r.drift, ['sealNbr']);
   assert.equal(r.driftDetails.length, 1);
-  assert.match(r.error, /old-guid/, 'the error shows what it WAS');
-  assert.match(r.error, /new-guid/, 'and what it BECAME');
+  assert.match(r.error, /\$55\.86/, 'the error shows what it WAS');
+  assert.match(r.error, /→ ""/, 'and what it BECAME');
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ATTACHMENTS (Jul 27). Two real note writes, two orders (007152089, 007150559),
+// same report: "the note landed BUT partialUpdate changed 1 other field(s) —
+// to.documents", with the SAME BOL coming back under a fresh `reference` GUID.
+// The note is unusable while a clean save reads as a disaster, so:
+//   • documents leave the wire entirely (the read gives metadata with no bytes;
+//     echoing it can only be ignored or re-create the row from nothing), and
+//   • they are proven surviving by comparing the two READS, on identity — a
+//     vendor GUID moving is not a BOL falling off an order.
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('documentIdentities: identity ignores the vendor handles; handles are tracked apart', () => {
+  const a = rawStop({ to: { ...rawStop().to, documents: [BOL('guid-1')] } });
+  const b = rawStop({ to: { ...rawStop().to, documents: [BOL('guid-2')] } });
+  assert.deepEqual(documentIdentities(a), documentIdentities(b), 'same BOL, restamped reference');
+  assert.notDeepEqual(documentHandles(a), documentHandles(b));
+  assert.equal(documentHandlesMoved(a, b), true);
+  assert.deepEqual(documentIdentities(a), ['to|BOL|03||pdf||01'], 'name/type/category/ext/description/disposition');
+  // A renamed/retyped document is NOT the same document.
+  const c = rawStop({ to: { ...rawStop().to, documents: [{ ...BOL('guid-1'), documentName: 'POD' }] } });
+  assert.notDeepEqual(documentIdentities(a), documentIdentities(c));
+  assert.deepEqual(documentIdentities(rawStop()), [], 'a stop with no files has no identities');
+});
+
+test('unsentLosses: a restamp is clean; a DROPPED document is a loss', () => {
+  const before = rawStop({ to: { ...rawStop().to, documents: [BOL('old')] } });
+  const restamped = rawStop({ to: { ...rawStop().to, documents: [BOL('new')] } });
+  assert.deepEqual(unsentLosses(before, restamped), [], 'a moved GUID is not data loss');
+  const dropped = rawStop({ to: { ...rawStop().to, documents: [] } });
+  const loss = unsentLosses(before, dropped);
+  assert.equal(loss.length, 1);
+  assert.equal(loss[0].path, 'documents');
+  assert.match(loss[0].lost[0], /BOL/);
+  // Two copies before, one after → still a loss (multiset, not a set).
+  const two = rawStop({ to: { ...rawStop().to, documents: [BOL('a'), BOL('b')] } });
+  assert.equal(unsentLosses(two, restamped).length, 1);
+  // A document ARRIVING between the reads (a driver capture mid-write) is not our doing.
+  assert.deepEqual(unsentLosses(dropped, before), []);
+});
+
+test('unsentLosses: freight lines we never echo are still proven surviving', () => {
+  const before = rawStop({ stopDetails: [{ product: 'STEEL RECEPTACLE', productIdentifier: 'G6', quantity: 1, quantityUOM: 'PCS', weight: 44 }] });
+  assert.deepEqual(stopDetailIdentities(before), ['STEEL RECEPTACLE|G6|1|PCS|44|']);
+  assert.deepEqual(unsentLosses(before, before), []);
+  const wiped = rawStop({ stopDetails: [] });
+  assert.deepEqual(unsentLosses(before, wiped).map((l) => l.path), ['stopDetails']);
+});
+
+test('runAddStopNote: a restamped document GUID is a CLEAN save, not a red banner', async () => {
+  // The exact shape of both real writes: NuVizz answers with the same BOL under a new
+  // reference. The note landed and nothing was lost — it must read as success.
+  const state = { stop: rawStop({ to: { ...rawStop().to, documents: [BOL('0bb95e56-7ffc-497b-a434-57618533ad72')] } }) };
+  const { requester, calls } = makeRequester({ state, onWrite: (sent, st) => {
+    st.stop = { ...st.stop, comments: sent.comments, to: { ...st.stop.to, documents: [BOL('6780c4c3-eb4a-4904-a672-d95f8eb1fd3e')] } };
+  } });
+  const r = await runAddStopNote(requester, { stopNbr: '007150559', text: 'Test.' }, CREDS);
+  assert.equal(r.ok, true, JSON.stringify(r));
+  assert.equal(r.comments_total, 4);
+  assert.equal(r.documentRestamp, true, 'still reported on the result (and so in the write log)');
+  const sent = JSON.parse(calls.find((c) => c.url.includes('partialUpdate')).body).stops[0];
+  assert.equal(sent.to.documents, undefined, 'the order\'s files never ride along with a note');
+});
+
+test('runAddStopNote: a note that COSTS the order its BOL still fails loudly', async () => {
+  const state = { stop: rawStop({ to: { ...rawStop().to, documents: [BOL('old')] } }) };
+  const { requester } = makeRequester({ state, onWrite: (sent, st) => {
+    st.stop = { ...st.stop, comments: sent.comments, to: { ...st.stop.to, documents: [] } };
+  } });
+  const r = await runAddStopNote(requester, { stopNbr: '007150559', text: 'Test.' }, CREDS);
+  assert.equal(r.ok, false, 'a lost attachment must never read as a clean save');
+  assert.equal(r.note_landed, true);
+  assert.deepEqual(r.drift, ['documents']);
+  assert.match(r.error, /LOST/);
+  assert.match(r.error, /BOL/);
+  assert.match(r.error, /do not use notes again/i);
+});
+
+test('runAddStopNote: freight lines wiped by the write are caught even though we never sent them', async () => {
+  const state = { stop: rawStop({ stopDetails: [{ product: 'STEEL RECEPTACLE', quantity: 1 }] }) };
+  const { requester } = makeRequester({ state, onWrite: (sent, st) => {
+    st.stop = { ...st.stop, comments: sent.comments, stopDetails: [] };
+  } });
+  const r = await runAddStopNote(requester, { stopNbr: '007152286', text: 'x' }, CREDS);
+  assert.equal(r.ok, false);
+  assert.deepEqual(r.drift, ['stopDetails']);
+  assert.match(r.error, /LOST .*STEEL RECEPTACLE/);
 });

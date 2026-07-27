@@ -485,19 +485,59 @@ const NOTE_GUARD_PATHS = [
 const atPath = (o: any, p: string) => p.split('.').reduce((a: any, k) => (a == null ? a : a[k]), o);
 
 /**
- * Fields present on a getStop read that the portal does NOT echo back on partialUpdate
+ * Fields present on a getStop read that a note write does NOT echo back on partialUpdate
  * (portal HAR, Jul 24 — read shape vs the write it produced).
  *
  * `stopDetails` is the important one: it's the freight lines, and the portal maintains
  * them through a SEPARATE endpoint (stop/stopdetail/update, seen firing in that same
  * flow moments before the note write). Echoing them here would put the freight lines in
- * the blast radius of a note. The rest are derived/read-only projections NuVizz computes
- * (tracking state, visibility matrix, pricing attributes, the shipper back-pointer, and a
- * `volume` figure it recomputes from the detail lines).
+ * the blast radius of a note. The next group are derived/read-only projections NuVizz
+ * computes (tracking state, visibility matrix, pricing attributes, the shipper
+ * back-pointer, and a `volume` figure it recomputes from the detail lines).
+ *
+ * ATTACHMENTS (Jul 27) — `to.documents` / `from.documents` are the order's FILES: the BOL
+ * row, the driver's capture photos, the signed POD. They are the ONLY field a real note
+ * write has ever been observed to move: order 007152089 (Jul 26) and order 007150559
+ * (Jul 27) both came back with the same single BOL — same documentName/documentType/
+ * documentCategory/extension — carrying a FRESH `reference` GUID. Three reasons they now
+ * leave the wire:
+ *   • The read hands them back as metadata with `documentData:""` — the bytes live behind
+ *     the separate document API. Echoing a required-but-empty payload can only be ignored
+ *     (pointless) or make NuVizz re-create the attachment row from nothing (destructive).
+ *     A note has no business doing either.
+ *   • The portal HAR the whole-stop echo was modelled on had NO documents on its stop, so
+ *     echoing them was never portal-proven — it was extrapolation. House rule: unproven
+ *     and no upside ⇒ don't send it.
+ *   • Attachments are maintained through the document API, exactly like stopDetails.
+ * Dropping them from the echo also drops them out of echoDrift's view, so the caller now
+ * proves they SURVIVED by comparing the pre-write read to the post-write read
+ * (unsentLosses) instead of trusting silence.
  */
 export const PARTIAL_UPDATE_DERIVED_KEYS = [
   'stopDetails', 'trackingInfo', 'visibility', 'customAttributes', 'shipForBP', 'volume',
+  'to.documents', 'from.documents',
 ] as const;
+
+/** PURE: a copy of `src` with each dotted path removed, CLONING every object on the way
+ *  down. The caller's raw read must survive untouched — it is the before-image the
+ *  data-loss checks compare against, and a shallow delete would corrupt it. A path whose
+ *  parent is absent (or isn't a plain object) is simply skipped. */
+function withoutPaths(src: Record<string, any>, paths: readonly string[]): Record<string, any> {
+  const out: Record<string, any> = { ...src };
+  const isPlain = (v: any) => v !== null && typeof v === 'object' && !Array.isArray(v);
+  for (const p of paths) {
+    const seg = p.split('.');
+    let node: any = out;
+    let reached = true;
+    for (let i = 0; i < seg.length - 1; i++) {
+      if (!isPlain(node[seg[i]])) { reached = false; break; }
+      node[seg[i]] = { ...node[seg[i]] };
+      node = node[seg[i]];
+    }
+    if (reached) delete node[seg[seg.length - 1]];
+  }
+  return out;
+}
 
 /**
  * Build the stop object for a note write.
@@ -519,10 +559,96 @@ export const PARTIAL_UPDATE_DERIVED_KEYS = [
  */
 export function buildNoteWriteStop(rawStop: any, comments: any[]): Record<string, any> {
   if (!rawStop || typeof rawStop !== 'object') throw new Error('buildNoteWriteStop: no stop to echo');
-  const out: Record<string, any> = { ...rawStop };
-  for (const k of PARTIAL_UPDATE_DERIVED_KEYS) delete out[k];
+  const out = withoutPaths(rawStop, PARTIAL_UPDATE_DERIVED_KEYS);
   out.comments = comments;
   return out;
+}
+
+// ── what we DON'T send still has to survive ──────────────────────────────────
+//
+// Everything in PARTIAL_UPDATE_DERIVED_KEYS is invisible to echoDrift by construction —
+// both sides of that diff are built through buildNoteWriteStop, so a key stripped from the
+// write is stripped from the comparison too. That is the correct diff for "did NuVizz alter
+// what we sent", and a blind spot for "did the write cost the order something we didn't
+// send". Freight lines and attachments are precisely what a dispatcher can least afford to
+// lose, so they get the other check: the PRE-write read against the POST-write read.
+//
+// Compared on IDENTITY, not on NuVizz's storage handles. `reference` / `documentGuid` /
+// `createdDTTM` are the vendor's own pointers and have been seen to change across a write
+// while the document stayed the same BOL; treating that as loss is how a safety check
+// becomes noise nobody reads. A document is "the same document" when its name, type,
+// category, extension, description and disposition match.
+
+const DOC_IDENTITY_FIELDS = ['documentName', 'documentType', 'documentCategory', 'documentExtType', 'description', 'dispositionType'] as const;
+const DOC_HANDLE_FIELDS = ['reference', 'documentGuid'] as const;
+const DETAIL_IDENTITY_FIELDS = ['product', 'productIdentifier', 'quantity', 'quantityUOM', 'weight', 'lineType'] as const;
+
+const joinFields = (o: any, keys: readonly string[]) => keys.map((k) => String(o?.[k] ?? '')).join('|');
+
+/** PURE: every attachment on the stop as `side|identity`, sorted (a multiset, so two BOLs
+ *  are two entries). Both delivery- and pickup-side documents count. */
+export function documentIdentities(rawStop: any): string[] {
+  const out: string[] = [];
+  for (const side of ['to', 'from'] as const) {
+    const list = (rawStop || {})[side]?.documents;
+    if (!Array.isArray(list)) continue;
+    for (const d of list) if (d && typeof d === 'object') out.push(`${side}|${joinFields(d, DOC_IDENTITY_FIELDS)}`);
+  }
+  return out.sort();
+}
+
+/** PURE: the vendor's storage handles for those attachments. Not identity — a change here
+ *  with identity intact is a RESTAMP (the file is still on the order), which is reportable
+ *  but is not data loss. */
+export function documentHandles(rawStop: any): string[] {
+  const out: string[] = [];
+  for (const side of ['to', 'from'] as const) {
+    const list = (rawStop || {})[side]?.documents;
+    if (!Array.isArray(list)) continue;
+    for (const d of list) if (d && typeof d === 'object') out.push(`${side}|${joinFields(d, DOC_HANDLE_FIELDS)}`);
+  }
+  return out.sort();
+}
+
+/** PURE: the freight lines reduced to what a data-loss check cares about. */
+export function stopDetailIdentities(rawStop: any): string[] {
+  const list = Array.isArray(rawStop?.stopDetails) ? rawStop.stopDetails : [];
+  return list.filter((d: any) => d && typeof d === 'object').map((d: any) => joinFields(d, DETAIL_IDENTITY_FIELDS)).sort();
+}
+
+/** Multiset difference: entries in `before` with no counterpart left in `after`. */
+function missingFrom(before: string[], after: string[]): string[] {
+  const pool = [...after];
+  return before.filter((x) => {
+    const i = pool.indexOf(x);
+    if (i < 0) return true;
+    pool.splice(i, 1);
+    return false;
+  });
+}
+
+export interface UnsentLoss { path: string; lost: string[] }
+
+/**
+ * PURE: did the write cost the order anything we deliberately did NOT echo?
+ *
+ * Only LOSSES are reported. Something ARRIVING between the two reads (a driver uploading a
+ * capture photo mid-write) is not the note's doing and not a reason to fail the note.
+ */
+export function unsentLosses(before: any, after: any): UnsentLoss[] {
+  const out: UnsentLoss[] = [];
+  const docs = missingFrom(documentIdentities(before), documentIdentities(after));
+  if (docs.length) out.push({ path: 'documents', lost: docs });
+  const lines = missingFrom(stopDetailIdentities(before), stopDetailIdentities(after));
+  if (lines.length) out.push({ path: 'stopDetails', lost: lines });
+  return out;
+}
+
+/** PURE: the attachments are all still there, but NuVizz moved their storage handles.
+ *  Benign — kept on the result (and so in the write log) so a systemic restamp stays
+ *  visible without turning every clean note into a red banner. */
+export function documentHandlesMoved(before: any, after: any): boolean {
+  return JSON.stringify(documentHandles(before)) !== JSON.stringify(documentHandles(after));
 }
 
 /**
