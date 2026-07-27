@@ -32,6 +32,7 @@ import { addressLooksOff, suggestAddressFix } from './lib/address-fix.js';
 import { haversineMiles, naiveEtaMinutes, formatEtaClockTime } from './lib/distance.js';
 import { todayInET, isTodayET, formatDateForDisplay, formatDateLong } from './lib/date-util.js';
 import { pointInPolygon, latLngInBounds, boxFromCorners, formatReceivingHours, lineItemDims, moveItem, recomputeRoute, resequence, fmtTime12, isPlannedStop, DEFAULT_SERVICE_SEC } from './lib/routing-select.js';
+import { entryScriptFromHtml, isNewBuild } from './lib/build-update.js';
 import { formatDateTime, tsToMillis, loadSummary, buildLoadAutoName } from './lib/routing-loads.js';
 import { callWrite, newClientOpId, addStopNote } from './lib/nuvizzWrite.js';
 import { BULK_FIELDS, parseDelimited, looksLikeHeader, autoMapColumns, mappedRowsToOrders, bulkRowMissing, bulkRowIsBlank, bulkRowIsGhost, mappingCoversRequired, headerSignature, manifestRowsToIntake, normalizePhone, bulkRowNuvizzRefs } from './lib/bulk-orders.js';
@@ -60,7 +61,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.53.1';
+const APP_VERSION = '0.53.2';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -105,6 +106,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.53.2', 'THE APP NOW TELLS YOU WHEN IT IS OUT OF DATE. Chad, on a stop card: "No where to put notes on this order on desktop." The note box was there — it shipped four days earlier in v0.52.0, and the live site was serving it correctly. His BROWSER TAB was still running the code it downloaded on July 23. A dispatch console gets left open for days, and a single-page app never re-fetches its own JavaScript, so shipping a fix does not put it on your screen — you have to reload, and nothing ever told you to. Every fix from v0.51 through v0.53.1 was invisible on that tab: writing notes to NuVizz orders, the failure reasons, shared profiles, the planned-stop pins. A blue bar now appears across the top the moment a newer version is deployed — "A newer version of Dispatch Map is available" with a Reload button. It checks when the tab regains focus (the usual case: a deploy landed while you were in NuVizz) and every three minutes otherwise, costing about a kilobyte a check. It will NOT reload on its own — you could be mid-plan with unsaved route cards — and it cannot be dismissed, because a dismissed banner is exactly how a tab ends up four days stale. It can never appear wrongly: it compares the fingerprint of the code the page is running against the fingerprint the site is serving, so it only fires when the code genuinely changed, and stays silent when offline.'],
   ['0.53.1', 'PLANNED STOPS NOW LOOK PLANNED ON THE ROUTING MAP. Chad saved a 13-stop MITCHELL route, closed the card, and every one of those stops went straight back to looking like the unplanned pool around it — impossible to tell what was still to route. The board was right all along (all 13 read planned, on MITCHELL, in sequence); the PIN was the problem. A planned stop had no colour of its own, so it fell through to the truck-eligibility colour, or to the default blue — and when the customer has restriction notes, to a purple a shade off the unplanned purple. At pin size that is the same dot. Planned stops now draw as a quiet hollow slate ring, so what stands out on the map is what still needs a truck. Deliberate exceptions, because these are the ones you need to see: stops already moving keep their live colours (out for delivery, arrived, delivered, exception), and a do-not-send stop, anything you have selected, a search hit, and every stop on an open route card all look exactly as before. Closing a route card is now the moment its stops go from numbered-in-route-colour to quiet slate — never back to looking unrouted.'],
   ['0.53.0', 'SAVED PROFILES NOW FOLLOW YOU TO EVERY DEVICE. Bottom-bar profiles were stored in the browser, so a profile saved on the desktop didn\'t exist on the phone, and the other dispatcher never saw it at all (Chad: "they shouldn\'t be local to the device, should be across all devices"). The list is now shared: save one anywhere and it appears everywhere within a second or two, on every device and for everyone — same for Update and Delete. Two details worth knowing. (1) The profile you have SELECTED stays yours: picking "Tomorrow AM" here doesn\'t yank someone else\'s grid out from under them mid-plan. (2) Deleting a profile now deletes it for everybody, not just on your screen. Profiles you\'d already saved on this device are carried up automatically the first time it connects, so nothing is lost. If the shared store is unreachable the bar keeps working exactly as before, off the copy held on the device, and syncs up when it reconnects.'],
   ['0.52.4', 'NOTE WARNINGS NOW SHOW WHAT ACTUALLY CHANGED. The first real note write (order 007152089) worked — the note landed — but the safety check reported "partialUpdate changed 1 other field(s) on the order (to.documents)" and stopped there. That names the field and nothing else, and "the document list changed" covers both NuVizz harmlessly re-stamping an internal id on the BOL AND the BOL being knocked off the order. Same warning, opposite severity, no way to tell which. The warning now prints the before and after for every field that moved — e.g. to.documents: [{"documentGuid":"abc"…}] → [{"documentGuid":"xyz"…}] — so you can see at a glance whether something real was lost or an id was reshuffled. Values are truncated so the message stays readable, and it shows up to five changed fields before summarising the rest. Nothing about how notes are written changed; this is the warning explaining itself.'],
@@ -1845,6 +1847,65 @@ function useDriverRoster() {
 }
 
 // ---------- helpers ----------
+
+// Watch for a newer deploy while this tab stays open, and offer a reload.
+//
+// The console is left running for days, and a single-page app never re-fetches its own
+// JavaScript — so shipping a fix does NOT put it on the dispatcher's screen. That gap is
+// invisible from both ends: the site serves the new build, the tab keeps running the old
+// one, and the only symptom is a feature that "isn't there". Polls the deployed
+// index.html and compares its fingerprinted entry bundle against the one this page
+// booted from. ~1KB every 3 minutes, plus a check whenever the tab regains focus (the
+// common case — the tab was in the background while the deploy landed).
+function useBuildUpdate() {
+  const [stale, setStale] = useState(false);
+  useEffect(() => {
+    // The <script type=module> this page actually booted from. Absent under the dev
+    // server (unhashed entry) — in that case never poll and never prompt.
+    const current = document.querySelector('script[type="module"][src]')?.src || null;
+    if (!current || !/\/assets\/.+\.js$/.test(new URL(current, location.href).pathname)) return;
+    let alive = true;
+    const check = async () => {
+      if (!alive || document.hidden) return;
+      try {
+        const html = await fetch('/', { cache: 'no-store' }).then((r) => (r.ok ? r.text() : null));
+        // A null/!ok response is "don't know" (offline, captive portal, 502) — stay quiet.
+        if (alive && isNewBuild(current, entryScriptFromHtml(html))) setStale(true);
+      } catch { /* offline — the next tick tries again */ }
+    };
+    const onVisible = () => { if (!document.hidden) check(); };
+    const id = setInterval(check, 3 * 60 * 1000);
+    document.addEventListener('visibilitychange', onVisible);
+    window.addEventListener('focus', onVisible);
+    check();
+    return () => {
+      alive = false;
+      clearInterval(id);
+      document.removeEventListener('visibilitychange', onVisible);
+      window.removeEventListener('focus', onVisible);
+    };
+  }, []);
+  return stale;
+}
+
+// Full-width bar offering the reload. Deliberately NOT auto-reloading: a dispatcher may be
+// mid-plan with staged, unsaved route cards, and yanking the page out from under them to
+// deliver a bug fix would be a worse bug than the one being fixed. It also can't be
+// dismissed — a dismissed banner is how a tab ends up four days stale again.
+function UpdateBanner() {
+  return (
+    <div className="shrink-0 flex items-center justify-center gap-3 px-4 py-1.5 bg-blue-600 text-white text-xs font-semibold">
+      <RefreshCw size={13} />
+      <span>A newer version of Dispatch Map is available — this tab is running older code.</span>
+      <button
+        onClick={() => window.location.reload()}
+        className="rounded bg-white px-2.5 py-1 text-[11px] font-bold text-blue-700 hover:bg-blue-50 active:bg-blue-100"
+      >
+        Reload
+      </button>
+    </div>
+  );
+}
 
 function flagColor(note) {
   if (note?.priority_flag && FLAG_COLORS[note.priority_flag]) return FLAG_COLORS[note.priority_flag];
@@ -17566,6 +17627,7 @@ function Shell() {
   const viewportWidth = useViewportWidth();
   const { h: viewportHeight, w: visibleWidth, x: viewportLeft, y: viewportTop } = useViewportSize();
   const isMobile = viewportWidth < MOBILE_BREAKPOINT;
+  const updateAvailable = useBuildUpdate();
   const [chipMenuOpen, setChipMenuOpen] = useState(false);
 
   // Routing Build ⇄ Engine sub-tab, lifted here so the toggle can render in the top nav row
@@ -17635,6 +17697,9 @@ function Shell() {
           : {}),
       }}
     >
+      {/* Above BOTH headers and outside the tab switch, so it can't be scrolled past or
+          lost by changing screens — a stale tab is a whole-app condition, not a per-tab one. */}
+      {updateAvailable && <UpdateBanner />}
       {isMobile ? (
         <MobileAppBar
           version={APP_VERSION}
