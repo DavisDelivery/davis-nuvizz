@@ -105,13 +105,23 @@ export default async (req: Request): Promise<Response> => {
       headers: { 'x-api-key': key, 'anthropic-version': ANTHROPIC_VERSION, 'content-type': 'application/json' },
       body: JSON.stringify({
         model: OCR_MODEL,
-        // A 37-PRO Estes manifest pretty-printed lands around 4k output tokens — 68% of the
-        // old 6000 cap, so a routine 50-80 PRO manifest silently overran it, the response
-        // stopped mid-row, and the whole file failed as "no usable JSON". The prompt now asks
-        // for COMPACT JSON (roughly halves the output) and the cap is wide enough that even a
-        // pretty-printed 150-row manifest fits. Truncation is also DETECTED below and its
-        // complete rows recovered, so this is depth, not the only defense.
-        max_tokens: 32000,
+        // max_tokens caps THINKING PLUS TEXT, and on claude-sonnet-5 thinking is ON whenever
+        // the request omits a `thinking` field (it was OFF by that same omission on
+        // claude-sonnet-4-6). So when v0.50.77 swapped the model, adaptive thinking silently
+        // started drawing from the very same 6000-token budget the JSON had to fit inside —
+        // the rows didn't have 6000 tokens, they had whatever thinking left behind. That is
+        // the likeliest reason a manifest well under the nominal cap still stopped mid-row.
+        //
+        // 16000 rather than more: this is a NON-STREAMING request, and the Anthropic guidance
+        // is to stream anything above ~16k of output. 16000 is still 5-8x the largest realistic
+        // Estes manifest — a 37-PRO manifest is ~3k tokens of COMPACT JSON (the prompt now asks
+        // for compact, roughly halving it), so this leaves ~12k for thinking and covers a
+        // 200-PRO manifest outright. Truncation is also DETECTED below and its complete rows
+        // recovered, so the cap is depth, not the only defense.
+        //
+        // Well inside the model's own limits: claude-sonnet-5 allows 128k output, 600 PDF pages,
+        // and a 32 MB request; these scans run 4-8 pages and a few hundred KB.
+        max_tokens: 16000,
         // NO temperature: claude-sonnet-5 DEPRECATED the parameter — sending it
         // is a hard 400 ("`temperature` is deprecated for this model"), which
         // broke every manifest/paste read the moment v0.50.77 switched models
