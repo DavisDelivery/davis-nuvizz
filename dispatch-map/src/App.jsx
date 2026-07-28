@@ -61,7 +61,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.53.3';
+const APP_VERSION = '0.53.4';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -106,6 +106,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.53.4', 'THE LIME "TRACTOR DELIVERED" PAINT CAN NO LONGER FAIL SILENTLY. Chad sent a phone screenshot of a 707-stop board: "my stops aren\'t painted tractor trailer friendly like a lot of them should be — either a render fail or automatic painting fail." Reading the actual pixels settled half of it: every green pin on that board was the DISPATCHER-SET green you paint by hand, and there was not a single pixel of the lime automatic green anywhere on the map. So the lime layer was serving nothing at all. It was NOT a mismatch between the map and the saved locations — the customer notes on those same pins load through the exact same customer key, and the restriction icons and your hand-painted greens all came through fine on that render. Which leaves three things that all look identical on the map (nothing lime) and that the app gave you no way to tell apart: the paint switched OFF on that device, the read of the saved locations failing, or there being no saved locations to read. Three changes. FIRST, the Tractor delivered box in the Legend now says which one it is — "1,284 saved locations loaded", or "0 saved locations — nothing to paint yet", or "couldn\'t load" with a Retry. Loaded a number but no lime on the map is a paint bug; loaded zero is the nightly pass, not the map. SECOND, that box now exists ON THE PHONE, under Filters → Map display. The Legend that holds it has only ever rendered on desktop, so if the switch was off on your phone there was nothing on that screen to show it, let alone turn it back on. THIRD, a failed load now heals itself: it retries twice on its own and offers a Retry button, where before one hiccup as the page opened blanked every lime pin, the stop-panel line, and the green rows for the rest of the session with no way back but a full reload.'],
   ['0.53.3', 'NOTES WORK AGAIN — THE WARNING WAS ABOUT THE ORDER\'S FILES. Two real notes, two orders (007152089 and 007150559), same red message: "the note landed BUT partialUpdate changed 1 other field(s) on the order." Both times the field was the order\'s attached files, and thanks to the 0.52.4 fix printing the values we could finally see WHAT changed: the same BOL, same name, same type, same pdf — carrying a different internal id. Nothing was lost. NuVizz simply hands its own file rows a new id when the order is written. Two changes. FIRST, notes no longer send the file list at all. When we read an order back, NuVizz gives us the file rows as labels with no file in them (the documents themselves live behind a different NuVizz service), so sending them back can only be ignored — or worse, re-create the row from an empty payload. The portal traffic this write was copied from had no attachments on its order, so including them was a guess, and it was the only thing that has ever moved. Freight lines already stayed off the wire for the same reason; the files now join them. SECOND, and this is the part that matters: the safety check no longer just goes quiet about what it stopped sending. It now compares the order BEFORE the note against the order AFTER it, and if a document or a freight line went missing it fails just as loudly as before — naming the document that vanished. A note can still never quietly cost you a BOL. What changed is that an id being reshuffled is no longer reported as though it had. Still 3 NuVizz calls per note, still read-merge-verify, and a clean note now says "Note added in NuVizz." and nothing else.'],
   ['0.53.2', 'THE APP NOW TELLS YOU WHEN IT IS OUT OF DATE. Chad, on a stop card: "No where to put notes on this order on desktop." The note box was there — it shipped four days earlier in v0.52.0, and the live site was serving it correctly. His BROWSER TAB was still running the code it downloaded on July 23. A dispatch console gets left open for days, and a single-page app never re-fetches its own JavaScript, so shipping a fix does not put it on your screen — you have to reload, and nothing ever told you to. Every fix from v0.51 through v0.53.1 was invisible on that tab: writing notes to NuVizz orders, the failure reasons, shared profiles, the planned-stop pins. A blue bar now appears across the top the moment a newer version is deployed — "A newer version of Dispatch Map is available" with a Reload button. It checks when the tab regains focus (the usual case: a deploy landed while you were in NuVizz) and every three minutes otherwise, costing about a kilobyte a check. It will NOT reload on its own — you could be mid-plan with unsaved route cards — and it cannot be dismissed, because a dismissed banner is exactly how a tab ends up four days stale. It can never appear wrongly: it compares the fingerprint of the code the page is running against the fingerprint the site is serving, so it only fires when the code genuinely changed, and stays silent when offline.'],
   ['0.53.1', 'PLANNED STOPS NOW LOOK PLANNED ON THE ROUTING MAP. Chad saved a 13-stop MITCHELL route, closed the card, and every one of those stops went straight back to looking like the unplanned pool around it — impossible to tell what was still to route. The board was right all along (all 13 read planned, on MITCHELL, in sequence); the PIN was the problem. A planned stop had no colour of its own, so it fell through to the truck-eligibility colour, or to the default blue — and when the customer has restriction notes, to a purple a shade off the unplanned purple. At pin size that is the same dot. Planned stops now draw as a quiet hollow slate ring, so what stands out on the map is what still needs a truck. Deliberate exceptions, because these are the ones you need to see: stops already moving keep their live colours (out for delivery, arrived, delivered, exception), and a do-not-send stop, anything you have selected, a search hit, and every stop on an open route card all look exactly as before. Closing a route card is now the moment its stops go from numbered-in-route-colour to quiet slate — never back to looking unrouted.'],
@@ -1444,60 +1445,108 @@ function useTractorPaintToggle() {
   }, []);
   return [on, setTractorPaintOn];
 }
-let __tractorLocsCache = null;          // resolved Map once loaded
+const EMPTY_TRACTOR_MAP = new Map();
+
+// LOAD STATE for the one-shot fetch, published to the UI so an unpainted map is never
+// ambiguous. Four different causes all render identically — not one lime pin — and the
+// legend showed none of them apart: the paint toggle OFF, a BLOCKED/failed Firestore
+// read, a collection that is genuinely EMPTY (the nightly derivation never flagged
+// anything), and a real join/render fault. Chad hit exactly that: a board with zero lime
+// pins and no way to tell "render fail" from "automatic painting fail". The status +
+// location count below is what tells them apart — count > 0 with no lime pins is a paint
+// bug, count === 0 is a derivation bug, 'error' is a read problem.
+//   status: 'idle' | 'loading' | 'ready' | 'error'
+let __tractorLocs = { status: 'idle', map: null, error: null };
+const __tractorLocsSubs = new Set();    // live subscribers — NEVER bulk-cleared (see retry note)
+function __publishTractorLocs(next) {
+  __tractorLocs = { ...__tractorLocs, ...next };
+  for (const cb of [...__tractorLocsSubs]) cb(__tractorLocs);
+}
 let __tractorLocsPromise = null;        // in-flight fetch (dedup)
-const __tractorLocsWaiters = new Set();
-function fetchTractorLocationsOnce() {
-  if (__tractorLocsCache) return Promise.resolve(__tractorLocsCache);
-  if (!__tractorLocsPromise) {
-    __tractorLocsPromise = (async () => {
-      const map = new Map();
-      if (db) {
-        try {
-          const snap = await getDocs(collection(db, 'tractor_locations'));
-          snap.forEach((d) => {
-            if (!d.id.startsWith(TRACTOR_TENANT_PREFIX)) return;
-            const v = d.data() || {};
-            const mk = v.match_key || d.id.slice(TRACTOR_TENANT_PREFIX.length);
-            map.set(mk, {
-              last: v.last_tractor_date || null,
-              first: v.first_tractor_date || null,
-              drivers: Array.isArray(v.tractor_drivers) ? v.tractor_drivers : [],
-              count: Number(v.delivery_count) || 0,
-            });
-          });
-        } catch (err) {
-          console.error('tractor_locations fetch error', err);
-          // Do NOT cache the empty result of a failed fetch — one transient error at page
-          // load blanked every lime pin + panel line + green row for the whole session.
-          __tractorLocsPromise = null;
-          for (const cb of __tractorLocsWaiters) cb(map);
-          __tractorLocsWaiters.clear();
-          return map;
-        }
-      }
-      __tractorLocsCache = map;
-      for (const cb of __tractorLocsWaiters) cb(map);
-      __tractorLocsWaiters.clear();
+let __tractorAutoRetries = 0;
+const TRACTOR_MAX_AUTO_RETRIES = 2;
+function fetchTractorLocationsOnce({ force = false } = {}) {
+  if (__tractorLocs.status === 'ready' && !force) return Promise.resolve(__tractorLocs.map);
+  if (__tractorLocsPromise) return __tractorLocsPromise;
+  __publishTractorLocs({ status: 'loading', error: null });
+  __tractorLocsPromise = (async () => {
+    const map = new Map();
+    if (!db) { __publishTractorLocs({ status: 'ready', map, error: null }); return map; }
+    try {
+      const snap = await getDocs(collection(db, 'tractor_locations'));
+      snap.forEach((d) => {
+        if (!d.id.startsWith(TRACTOR_TENANT_PREFIX)) return;
+        const v = d.data() || {};
+        const mk = v.match_key || d.id.slice(TRACTOR_TENANT_PREFIX.length);
+        map.set(mk, {
+          last: v.last_tractor_date || null,
+          first: v.first_tractor_date || null,
+          drivers: Array.isArray(v.tractor_drivers) ? v.tractor_drivers : [],
+          count: Number(v.delivery_count) || 0,
+        });
+      });
+      __tractorAutoRetries = 0;
+      __publishTractorLocs({ status: 'ready', map, error: null });
       return map;
-    })();
-  }
+    } catch (err) {
+      console.error('tractor_locations fetch error', err);
+      // Do NOT cache the empty result of a failed fetch — one transient error at page
+      // load blanked every lime pin + panel line + green row for the whole session.
+      // Dropping the in-flight promise was never enough on its own: every consumer's
+      // effect has already run with [] deps and the old waiter set was cleared, so
+      // NOTHING re-drove the fetch — the session stayed blank until a full reload. Now
+      // the subscriber set persists, we auto-retry on a backoff, and the legend carries
+      // a manual Retry for whatever the backoff doesn't cover.
+      __publishTractorLocs({ status: 'error', error: err?.message || String(err) });
+      if (__tractorAutoRetries < TRACTOR_MAX_AUTO_RETRIES) {
+        const delay = 2000 * 2 ** __tractorAutoRetries;
+        __tractorAutoRetries++;
+        setTimeout(() => {
+          if (__tractorLocs.status === 'error') fetchTractorLocationsOnce({ force: true });
+        }, delay);
+      }
+      return EMPTY_TRACTOR_MAP;
+    } finally {
+      __tractorLocsPromise = null;
+    }
+  })();
   return __tractorLocsPromise;
 }
-const EMPTY_TRACTOR_MAP = new Map();
-function useTractorLocations() {
-  const [locs, setLocs] = useState(__tractorLocsCache);
-  const [paintOn] = useTractorPaintToggle();
+function retryTractorLocations() {
+  __tractorAutoRetries = 0;
+  return fetchTractorLocationsOnce({ force: true });
+}
+// Subscribe to the shared load state. Also kicks the fetch, so whichever consumer
+// mounts first starts it (deduped) — the legend can render before any map does.
+function useTractorLocsState() {
+  const [state, setState] = useState(__tractorLocs);
   useEffect(() => {
-    if (__tractorLocsCache) { setLocs(__tractorLocsCache); return undefined; }
-    let alive = true;
-    const cb = (m) => { if (alive) setLocs(m); };
-    __tractorLocsWaiters.add(cb);
+    const cb = (s) => setState(s);
+    __tractorLocsSubs.add(cb);
     fetchTractorLocationsOnce();
-    return () => { alive = false; __tractorLocsWaiters.delete(cb); };
+    setState(__tractorLocs);   // catch a transition between render and effect
+    return () => { __tractorLocsSubs.delete(cb); };
   }, []);
+  return state;
+}
+function useTractorLocations() {
+  const state = useTractorLocsState();
+  const [paintOn] = useTractorPaintToggle();
+  // Referentially stable both ways: the resolved Map is one object for the page's life
+  // and EMPTY_TRACTOR_MAP is a module constant, so marker effects that carry this in
+  // their deps only rebuild when the data actually changes.
   if (!paintOn) return EMPTY_TRACTOR_MAP;
-  return locs || EMPTY_TRACTOR_MAP;
+  return state.map || EMPTY_TRACTOR_MAP;
+}
+// Diagnostics for the paint control: is the lime layer loaded, empty, or broken?
+function useTractorPaintStatus() {
+  const state = useTractorLocsState();
+  return {
+    status: state.status,
+    error: state.error,
+    count: state.map ? state.map.size : 0,
+    retry: retryTractorLocations,
+  };
 }
 
 // Subscribe to ALL customer_notes docs and expose as a Map<match_key, note>.
@@ -3050,8 +3099,23 @@ function LegendMarkerExample({ restrictions, label }) {
 // Flipping it off blanks the lime pins AND the stop-panel line everywhere,
 // instantly, on this device (persisted) — the data keeps accumulating
 // server-side either way, so flipping back on loses nothing.
-function TractorLegendEntry() {
+// Also the DIAGNOSTIC for the lime layer. "No lime pins on the board" used to be a
+// dead end — the toggle being off, a failed read, and an empty collection were
+// indistinguishable from a paint bug. The status line below names which one it is.
+function TractorPaintControl() {
   const [on, setOn] = useTractorPaintToggle();
+  const { status, error, count, retry } = useTractorPaintStatus();
+  // Read this as: loaded N locations but the map shows no lime → the paint/join is at
+  // fault. Loaded ZERO → the nightly derivation is at fault, not the map.
+  const diag = !on
+    ? { tone: 'text-slate-500', text: 'Off on this device — no stop paints lime.' }
+    : status === 'error'
+      ? { tone: 'text-red-600', text: `Couldn't load saved locations${error ? ` (${error})` : ''} — nothing will paint lime.`, retry: true }
+      : status === 'loading' || status === 'idle'
+        ? { tone: 'text-slate-500', text: 'Loading saved locations…' }
+        : count === 0
+          ? { tone: 'text-amber-700', text: '0 saved locations — nothing to paint yet. The nightly pass hasn\'t flagged any (check the tractor roster / run the rebuild).', retry: true }
+          : { tone: 'text-slate-500', text: `${count.toLocaleString()} saved location${count === 1 ? '' : 's'} loaded.` };
   return (
     <div>
       <div className="flex items-center justify-between mb-1">
@@ -3066,9 +3130,21 @@ function TractorLegendEntry() {
           {on ? 'On' : 'Off'}
         </label>
       </div>
-      <div className="flex items-center gap-2" style={{ opacity: on ? 1 : 0.45 }}>
+      <div className="flex items-center gap-2 text-[11px]" style={{ opacity: on ? 1 : 0.45 }}>
         <span className="w-3 h-3 rounded-full border-2 border-white shadow flex-shrink-0" style={{ background: TRACTOR_DELIVERED_COLOR, boxShadow: '0 0 0 1px rgba(0,0,0,0.15)' }} />
         <span>Tractor delivered — a tractor driver has completed a delivery here (automatic, from saved history)</span>
+      </div>
+      <div className={`mt-1 text-[10px] leading-snug ${diag.tone}`}>
+        {diag.text}
+        {diag.retry && on && (
+          <button
+            type="button"
+            onClick={retry}
+            className="ml-1.5 underline font-semibold hover:no-underline"
+          >
+            Retry
+          </button>
+        )}
       </div>
     </div>
   );
@@ -3108,7 +3184,7 @@ function Legend({ expanded, setExpanded }) {
               </div>
             </div>
           </div>
-          <TractorLegendEntry />
+          <TractorPaintControl />
           <div>
             <div className="text-[10px] uppercase font-semibold text-slate-500 mb-1">Restricted stops</div>
             <p className="text-slate-600 mb-2 leading-snug">
@@ -6940,6 +7016,13 @@ function MobileFiltersTab({
             <span className="text-[10px] uppercase text-amber-700 italic flex-shrink-0 whitespace-nowrap">required on mobile</span>
           </div>
         </div>
+      </div>
+      {/* The lime tractor-delivered paint. The <Legend> that carries this control on
+      desktop is NOT rendered on mobile, so the phone had no way to see the toggle's
+      state — let alone flip it back on, or tell an off switch from an empty/failed
+      load. Same component, same persisted per-device setting. */}
+      <div className="border-t px-3 py-3">
+        <TractorPaintControl />
       </div>
     </div>
   );
