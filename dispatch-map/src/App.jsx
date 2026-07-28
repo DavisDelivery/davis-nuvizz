@@ -61,7 +61,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.53.4';
+const APP_VERSION = '0.53.5';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -106,6 +106,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.53.5', 'THE STATUS CARD NOW TELLS YOU HOW MANY UNPLANNED STOPS THE LAST SCAN FOUND. Chad: "I want a row that shows how many unplanned deliveries were in the last scan so I know how many stops I should have on the bottom panel." The card showed the total stop count, the pallets, the feed times and the call meter — but nothing you could hold the stops list up against. A new row reads "612 unplanned in last scan". That number is counted over the WHOLE feed the scan produced, carry-over from prior days folded in, before a single map filter or search touches it — so it is the ceiling: the list can show that many or fewer, never more. And when it IS fewer, the row says so rather than leaving you to subtract: "612 unplanned in last scan · 24 hidden by filters" in amber, which is usually Unplanned only, Hide terminal, Hide stem out or a carry-over window doing exactly what you set it to. The count was already being calculated on the server and thrown away by the app, so this costs ZERO extra NuVizz calls and zero extra reads — it rides the board feed you were already getting. It shows on the phone, on desktop, and on the Routing pill (Routing shows the whole board, so it never reports a filter gap). On an older cached feed that doesn\'t carry the number, the row simply doesn\'t appear rather than claiming zero.'],
   ['0.53.4', 'THE LIME "TRACTOR DELIVERED" PAINT CAN NO LONGER FAIL SILENTLY. Chad sent a phone screenshot of a 707-stop board: "my stops aren\'t painted tractor trailer friendly like a lot of them should be — either a render fail or automatic painting fail." Reading the actual pixels settled half of it: every green pin on that board was the DISPATCHER-SET green you paint by hand, and there was not a single pixel of the lime automatic green anywhere on the map. So the lime layer was serving nothing at all. It was NOT a mismatch between the map and the saved locations — the customer notes on those same pins load through the exact same customer key, and the restriction icons and your hand-painted greens all came through fine on that render. Which leaves three things that all look identical on the map (nothing lime) and that the app gave you no way to tell apart: the paint switched OFF on that device, the read of the saved locations failing, or there being no saved locations to read. Three changes. FIRST, the Tractor delivered box in the Legend now says which one it is — "1,284 saved locations loaded", or "0 saved locations — nothing to paint yet", or "couldn\'t load" with a Retry. Loaded a number but no lime on the map is a paint bug; loaded zero is the nightly pass, not the map. SECOND, that box now exists ON THE PHONE, under Filters → Map display. The Legend that holds it has only ever rendered on desktop, so if the switch was off on your phone there was nothing on that screen to show it, let alone turn it back on. THIRD, a failed load now heals itself: it retries twice on its own and offers a Retry button, where before one hiccup as the page opened blanked every lime pin, the stop-panel line, and the green rows for the rest of the session with no way back but a full reload.'],
   ['0.53.3', 'NOTES WORK AGAIN — THE WARNING WAS ABOUT THE ORDER\'S FILES. Two real notes, two orders (007152089 and 007150559), same red message: "the note landed BUT partialUpdate changed 1 other field(s) on the order." Both times the field was the order\'s attached files, and thanks to the 0.52.4 fix printing the values we could finally see WHAT changed: the same BOL, same name, same type, same pdf — carrying a different internal id. Nothing was lost. NuVizz simply hands its own file rows a new id when the order is written. Two changes. FIRST, notes no longer send the file list at all. When we read an order back, NuVizz gives us the file rows as labels with no file in them (the documents themselves live behind a different NuVizz service), so sending them back can only be ignored — or worse, re-create the row from an empty payload. The portal traffic this write was copied from had no attachments on its order, so including them was a guess, and it was the only thing that has ever moved. Freight lines already stayed off the wire for the same reason; the files now join them. SECOND, and this is the part that matters: the safety check no longer just goes quiet about what it stopped sending. It now compares the order BEFORE the note against the order AFTER it, and if a document or a freight line went missing it fails just as loudly as before — naming the document that vanished. A note can still never quietly cost you a BOL. What changed is that an id being reshuffled is no longer reported as though it had. Still 3 NuVizz calls per note, still read-merge-verify, and a clean note now says "Note added in NuVizz." and nothing else.'],
   ['0.53.2', 'THE APP NOW TELLS YOU WHEN IT IS OUT OF DATE. Chad, on a stop card: "No where to put notes on this order on desktop." The note box was there — it shipped four days earlier in v0.52.0, and the live site was serving it correctly. His BROWSER TAB was still running the code it downloaded on July 23. A dispatch console gets left open for days, and a single-page app never re-fetches its own JavaScript, so shipping a fix does not put it on your screen — you have to reload, and nothing ever told you to. Every fix from v0.51 through v0.53.1 was invisible on that tab: writing notes to NuVizz orders, the failure reasons, shared profiles, the planned-stop pins. A blue bar now appears across the top the moment a newer version is deployed — "A newer version of Dispatch Map is available" with a Reload button. It checks when the tab regains focus (the usual case: a deploy landed while you were in NuVizz) and every three minutes otherwise, costing about a kilobyte a check. It will NOT reload on its own — you could be mid-plan with unsaved route cards — and it cannot be dismissed, because a dismissed banner is exactly how a tab ends up four days stale. It can never appear wrongly: it compares the fingerprint of the code the page is running against the fingerprint the site is serving, so it only fires when the code genuinely changed, and stays silent when offline.'],
@@ -1311,6 +1312,11 @@ function useStops(date, carryDays = 0) {
   const [scanState, setScanState] = useState(null);
   const [source, setSource] = useState(null);
   const [ops, setOps] = useState(null); // today's NuVizz call volume (Fix 5)
+  // How many stops the LAST SCAN holds as unplanned for this date — counted server-side
+  // over the whole served feed (carry-over folded in) before any map filter or search
+  // touches it. This is the reference number for "how many stops should be in the list":
+  // the board can only ever show this many or fewer.
+  const [scanUnplannedCount, setScanUnplannedCount] = useState(null);
 
   const refresh = useCallback(async ({ silent = false } = {}) => {
     if (!silent) setLoading(true);
@@ -1337,6 +1343,7 @@ function useStops(date, carryDays = 0) {
       setLastUnplannedScanAt(data.lastUnplannedScanAt || null);
       setScanState(data.scanState || null);
       setOps(data.ops || null);
+      setScanUnplannedCount(typeof data.unplannedCount === 'number' ? data.unplannedCount : null);
       setLastRefreshed(new Date());
     } catch (e) {
       if (!silent) setError(e.message); // a failed silent poll shouldn't surface an error banner
@@ -1359,7 +1366,7 @@ function useStops(date, carryDays = 0) {
     return () => { clearInterval(timer); document.removeEventListener('visibilitychange', onVis); };
   }, [refresh]);
 
-  return { stops, loading, error, lastRefreshed, lastScannedAt, lastLoadScanAt, lastUnplannedScanAt, scanState, source, ops, refresh };
+  return { stops, loading, error, lastRefreshed, lastScannedAt, lastLoadScanAt, lastUnplannedScanAt, scanState, source, ops, scanUnplannedCount, refresh };
 }
 const CARRYOVER_DAYS = 7; // how many prior days of still-unplanned orders to fold in
 
@@ -2672,12 +2679,34 @@ function useManualScan(selectedDate, lastScannedAt, refresh) {
   return { scanning, scanCooldown, scanErr, manualScan };
 }
 
+// "N unplanned in last scan" — the reference count for how many stops the list SHOULD
+// hold. `count` is the server's tally over the whole served feed (carry-over folded in,
+// before any map filter or search), so the board can only ever show this many or fewer.
+// `visible` is what the board is actually showing right now; when it comes up short the
+// row names the gap instead of leaving two numbers to reconcile by eye. Renders nothing
+// on a feed too old to carry the count (null), rather than claiming zero.
+function UnplannedScanCount({ count, visible, className }) {
+  if (typeof count !== 'number') return null;
+  const hidden = typeof visible === 'number' ? count - visible : 0;
+  return (
+    <div
+      className={className}
+      title={`The last scan holds ${count.toLocaleString()} unplanned stop(s) for this date, including any carry-over from prior days. Counted before map filters and search, so it is what the stops list should show with nothing filtered out.`}
+    >
+      {count.toLocaleString()} unplanned in last scan
+      {hidden > 0 && (
+        <span className="text-amber-700"> · {hidden.toLocaleString()} hidden by filters</span>
+      )}
+    </div>
+  );
+}
+
 // The stops status card — the "N stops / total pallets / feed freshness / NuVizz call
 // meter + hourly sparkline" pill that lives top-right on the dispatch Map, reusable on
 // other screens (Routing renders it too). Collapsible to just the stops count; the
 // refresh icon fires the cheap manual scan (useManualScan). Pure presentation — all
 // state comes in as props so each screen wires its own useStops/useManualScan.
-function StopsStatusCard({ stopCount, carryoverCount = 0, totalPallets, loadAt, unplannedAt, isToday, ops, scanErr, scanning, scanCooldown, onRefresh, collapsed, onToggleCollapsed }) {
+function StopsStatusCard({ stopCount, carryoverCount = 0, totalPallets, loadAt, unplannedAt, isToday, ops, scanErr, scanning, scanCooldown, onRefresh, collapsed, onToggleCollapsed, scanUnplannedCount, visibleUnplannedCount }) {
   return (
     <div className="bg-white/95 backdrop-blur border border-slate-200 rounded-lg shadow px-2.5 py-1.5 text-xs">
       {/* Header row: stops count + collapse/refresh — always visible. */}
@@ -2704,6 +2733,7 @@ function StopsStatusCard({ stopCount, carryoverCount = 0, totalPallets, loadAt, 
       {!collapsed && (
         <div className="mt-0.5 leading-tight">
           <div className="text-slate-600">{Number(totalPallets || 0).toLocaleString()} total pallets</div>
+          <UnplannedScanCount count={scanUnplannedCount} visible={visibleUnplannedCount} className="text-slate-600" />
           <FeedTimestamps loadAt={loadAt} unplannedAt={unplannedAt} isToday={isToday} className="text-slate-500" stacked />
           {ops && typeof ops.dayCount === 'number' && (
             <>
@@ -7701,7 +7731,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
     return { ...DEFAULT_MAP_FILTERS, ...stored };
   });
 
-  const { stops, loading, error, lastRefreshed, lastScannedAt, lastLoadScanAt, lastUnplannedScanAt, scanState, source, ops, refresh } = useStops(selectedDate, mapFilters.carryoverDays || 0);
+  const { stops, loading, error, lastRefreshed, lastScannedAt, lastLoadScanAt, lastUnplannedScanAt, scanState, source, ops, scanUnplannedCount, refresh } = useStops(selectedDate, mapFilters.carryoverDays || 0);
 
   // Manual "Scan now" — the cheap list-discovery scan, shared logic in useManualScan
   // (also used by the Routing tab's status card). See the hook for the cost notes.
@@ -7966,6 +7996,13 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
     [stops],
   );
   const carryoverCount = useMemo(() => stops.reduce((n, s) => n + (s.carryover ? 1 : 0), 0), [stops]);
+  // Unplanned stops the board is CURRENTLY showing — the map-filtered set, which is what
+  // feeds the stops list. Paired with the scan's own tally (scanUnplannedCount) so the
+  // status card can name how many the filters are holding back.
+  const visibleUnplannedCount = useMemo(
+    () => filteredStops.reduce((n, s) => n + (s.isUnplanned ? 1 : 0), 0),
+    [filteredStops],
+  );
 
   // ── Box / lasso selection ──────────────────────────────────────────────────
   // The live pixel<->LatLng projection is published by an OverlayView created in
@@ -9045,6 +9082,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
             {!statusCollapsed && (
               <div className="mt-0.5 leading-tight min-w-0 [&>div]:truncate">
                 <div className="text-slate-600 text-[10px]">{totalPalletsCount.toLocaleString()} total pallets</div>
+                <UnplannedScanCount count={scanUnplannedCount} visible={visibleUnplannedCount} className="text-slate-600 text-[10px]" />
                 <FeedTimestamps loadAt={lastLoadScanAt} unplannedAt={lastUnplannedScanAt} isToday={dateIsToday} className="text-slate-500 text-[10px]" stacked />
                 {ops && typeof ops.dayCount === 'number' && (
                   <>
@@ -9475,6 +9513,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
               {!statusCollapsed && (
                 <div className="mt-0.5 leading-tight">
                   <div className="text-slate-600">{totalPalletsCount.toLocaleString()} total pallets</div>
+                  <UnplannedScanCount count={scanUnplannedCount} visible={visibleUnplannedCount} className="text-slate-600" />
                   <FeedTimestamps loadAt={lastLoadScanAt} unplannedAt={lastUnplannedScanAt} isToday={dateIsToday} className="text-slate-500" stacked />
                   {ops && typeof ops.dayCount === 'number' && (
                     <>
@@ -13331,7 +13370,7 @@ function VersionLogModal({ onClose }) {
 
 function RoutingScreen({ debugCaptureRef, presence = null }) {
   const [selectedDate, setSelectedDate] = useState(() => todayInET());
-  const { stops, loading, error: stopsError, refresh: refreshStops, lastScannedAt, lastLoadScanAt, lastUnplannedScanAt, ops } = useStops(selectedDate);
+  const { stops, loading, error: stopsError, refresh: refreshStops, lastScannedAt, lastLoadScanAt, lastUnplannedScanAt, ops, scanUnplannedCount } = useStops(selectedDate);
   // Stops status card (same pill as the dispatch Map, top-right of the routing map):
   // stops count + total pallets + feed freshness + NuVizz call meter. Shares the Map's
   // collapse preference and the cheap manual-scan path (~4 calls, never the number-probe).
@@ -13347,6 +13386,10 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
       loadAt={lastLoadScanAt}
       unplannedAt={lastUnplannedScanAt}
       isToday={isTodayET(selectedDate)}
+      scanUnplannedCount={scanUnplannedCount}
+      // Routing renders the whole board (its own grid/status filters live below the map),
+      // so the pool here IS the scan's unplanned set — no filter gap to report.
+      visibleUnplannedCount={undefined}
       ops={ops}
       scanErr={scanErr}
       scanning={scanning}
