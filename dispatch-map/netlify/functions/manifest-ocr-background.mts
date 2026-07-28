@@ -16,7 +16,7 @@
 // ZERO NuVizz calls. One Anthropic vision call per manifest (a few cents; the same
 // ANTHROPIC_API_KEY that powers AI search). Fires only on an explicit file drop.
 
-import { MANIFEST_SYSTEM, MANIFEST_PROMPT, extractJsonBlock, normalizeManifestRows } from './lib/manifest-extract.mts';
+import { MANIFEST_SYSTEM, MANIFEST_PROMPT, extractManifestJson, normalizeManifestRows } from './lib/manifest-extract.mts';
 import { isFirestoreEnabled, setDoc, getDoc, deleteDoc } from './lib/firestore.mts';
 
 const MESSAGES_URL = 'https://api.anthropic.com/v1/messages';
@@ -105,7 +105,13 @@ export default async (req: Request): Promise<Response> => {
       headers: { 'x-api-key': key, 'anthropic-version': ANTHROPIC_VERSION, 'content-type': 'application/json' },
       body: JSON.stringify({
         model: OCR_MODEL,
-        max_tokens: 6000,
+        // A 37-PRO Estes manifest pretty-printed lands around 4k output tokens — 68% of the
+        // old 6000 cap, so a routine 50-80 PRO manifest silently overran it, the response
+        // stopped mid-row, and the whole file failed as "no usable JSON". The prompt now asks
+        // for COMPACT JSON (roughly halves the output) and the cap is wide enough that even a
+        // pretty-printed 150-row manifest fits. Truncation is also DETECTED below and its
+        // complete rows recovered, so this is depth, not the only defense.
+        max_tokens: 32000,
         // NO temperature: claude-sonnet-5 DEPRECATED the parameter — sending it
         // is a hard 400 ("`temperature` is deprecated for this model"), which
         // broke every manifest/paste read the moment v0.50.77 switched models
@@ -128,11 +134,34 @@ export default async (req: Request): Promise<Response> => {
     }
     const data: any = await resp.json();
     const text = (data?.content || []).filter((b: any) => b?.type === 'text').map((b: any) => b.text).join('\n').trim();
-    const parsed = extractJsonBlock(text);
-    if (!parsed) { await setDoc(doc, { status: 'error', error: 'The reader returned no usable JSON — try the drop again.', created_at: stamp() }); return J({ ok: true, jobId }); }
-    const { manifest, rows, warnings } = normalizeManifestRows(parsed);
-    if (!rows.length) { await setDoc(doc, { status: 'error', error: 'No consignee rows could be read from this PDF.', warnings, created_at: stamp() }); return J({ ok: true, jobId }); }
-    await setDoc(doc, { status: 'done', manifest, rows, warnings, created_at: stamp() });
+    // stop_reason tells us WHY a response is short. Without it, a response cut off at the
+    // token cap was indistinguishable from garbage and got reported as "try the drop again"
+    // — advice that could never work, because the same PDF truncates identically every time.
+    const cutOff = data?.stop_reason === 'max_tokens';
+    const { parsed, repairs } = extractManifestJson(text);
+    if (!parsed) {
+      // Keep a slice of what the reader actually said. A bare "no usable JSON" left nothing
+      // to diagnose the NEXT time this happens.
+      await setDoc(doc, {
+        status: 'error',
+        error: cutOff
+          ? 'The reader ran out of room before finishing this manifest and nothing could be recovered — split the PDF into two halves and drop them separately.'
+          : 'The reader returned no usable JSON. This PDF fails the same way every time, so re-dropping it will not help — send it to Chad/support with this message.',
+        raw_snippet: text.slice(0, 800),
+        stop_reason: data?.stop_reason ?? null,
+        created_at: stamp(),
+      });
+      return J({ ok: true, jobId });
+    }
+    const { manifest, rows, warnings, integrity } = normalizeManifestRows(parsed);
+    if (!rows.length) { await setDoc(doc, { status: 'error', error: 'No consignee rows could be read from this PDF.', warnings, raw_snippet: text.slice(0, 800), created_at: stamp() }); return J({ ok: true, jobId }); }
+    // Any repair is loud: the dispatcher must know the file needed fixing up, because a
+    // repaired read is exactly where a missing order would hide.
+    const allWarnings = repairs.length
+      ? [`The reader's response was malformed and had to be repaired (${repairs.join('; ')}) — check the row count against the paper.`, ...warnings]
+      : warnings;
+    if (cutOff) allWarnings.unshift('The reader hit its output limit — rows after the cut are MISSING. Split this manifest and re-drop if the count is short.');
+    await setDoc(doc, { status: 'done', manifest, rows, warnings: allWarnings, integrity, created_at: stamp() });
     return J({ ok: true, jobId });
   } catch (e: any) {
     const aborted = e?.name === 'AbortError';

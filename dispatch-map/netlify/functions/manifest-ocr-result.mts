@@ -22,7 +22,7 @@ export default async (req: Request): Promise<Response> => {
   if (doc.status === 'done' || doc.status === 'error') {
     deleteDoc(jobDocPath(jobId)).catch(() => { /* best-effort cleanup */ });
     return doc.status === 'done'
-      ? J({ ok: true, status: 'done', manifest: doc.manifest || null, rows: doc.rows || [], warnings: doc.warnings || [] })
+      ? J({ ok: true, status: 'done', manifest: doc.manifest || null, rows: doc.rows || [], warnings: doc.warnings || [], integrity: doc.integrity || null })
       : J({ ok: true, status: 'error', error: doc.error || 'manifest read failed' });
   }
   return J({ ok: true, status: 'pending' });
