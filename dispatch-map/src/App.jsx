@@ -61,7 +61,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.53.5';
+const APP_VERSION = '0.53.6';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -106,6 +106,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.53.6', 'THE ROUTES PANEL STAYS LIVE — NO MORE FLIPPING OFF BETA EVERY TIME. Chad, on the Routes roster: "want to turn the beta off here and it to be live all the time." The ○ Beta / ● LIVE switch beside the route search reset to Beta on EVERY page load, so assigning a driver for real meant flipping it again each session — and a safety switch you always flip is one you stop reading, which is worse than not having it. It now starts on ● LIVE and remembers whatever you last set, per device. That is not a new door opened: this whole row only appears once "Live dispatch (assign driver + dispatch)" is switched on in the ⚙ gear, which is already a deliberate, remembered choice — the panel was just asking you to make the same decision twice. WHAT LIVE MEANS, plainly: picking a driver from a route card\'s dropdown assigns that driver to that load in NuVizz immediately, and the dispatch button dispatches it, both with no second confirm. That was always true in Live mode; it is now the mode you land in. The button is still there and still red when hot — click it to ○ Beta any time and picks go back to preview-only ("would assign X, nothing sent"), and THAT sticks too. Untouched on purpose: the Compare/route-card Save toggle still starts in Beta, because that one fires a batch of route writes at once rather than a single pick — say the word if you want it to match.'],
   ['0.53.5', 'THE STATUS CARD NOW TELLS YOU HOW MANY UNPLANNED STOPS THE LAST SCAN FOUND. Chad: "I want a row that shows how many unplanned deliveries were in the last scan so I know how many stops I should have on the bottom panel." The card showed the total stop count, the pallets, the feed times and the call meter — but nothing you could hold the stops list up against. A new row reads "612 unplanned in last scan". That number is counted over the WHOLE feed the scan produced, carry-over from prior days folded in, before a single map filter or search touches it — so it is the ceiling: the list can show that many or fewer, never more. And when it IS fewer, the row says so rather than leaving you to subtract: "612 unplanned in last scan · 24 hidden by filters" in amber, which is usually Unplanned only, Hide terminal, Hide stem out or a carry-over window doing exactly what you set it to. The count was already being calculated on the server and thrown away by the app, so this costs ZERO extra NuVizz calls and zero extra reads — it rides the board feed you were already getting. It shows on the phone, on desktop, and on the Routing pill (Routing shows the whole board, so it never reports a filter gap). On an older cached feed that doesn\'t carry the number, the row simply doesn\'t appear rather than claiming zero.'],
   ['0.53.4', 'THE LIME "TRACTOR DELIVERED" PAINT CAN NO LONGER FAIL SILENTLY. Chad sent a phone screenshot of a 707-stop board: "my stops aren\'t painted tractor trailer friendly like a lot of them should be — either a render fail or automatic painting fail." Reading the actual pixels settled half of it: every green pin on that board was the DISPATCHER-SET green you paint by hand, and there was not a single pixel of the lime automatic green anywhere on the map. So the lime layer was serving nothing at all. It was NOT a mismatch between the map and the saved locations — the customer notes on those same pins load through the exact same customer key, and the restriction icons and your hand-painted greens all came through fine on that render. Which leaves three things that all look identical on the map (nothing lime) and that the app gave you no way to tell apart: the paint switched OFF on that device, the read of the saved locations failing, or there being no saved locations to read. Three changes. FIRST, the Tractor delivered box in the Legend now says which one it is — "1,284 saved locations loaded", or "0 saved locations — nothing to paint yet", or "couldn\'t load" with a Retry. Loaded a number but no lime on the map is a paint bug; loaded zero is the nightly pass, not the map. SECOND, that box now exists ON THE PHONE, under Filters → Map display. The Legend that holds it has only ever rendered on desktop, so if the switch was off on your phone there was nothing on that screen to show it, let alone turn it back on. THIRD, a failed load now heals itself: it retries twice on its own and offers a Retry button, where before one hiccup as the page opened blanked every lime pin, the stop-panel line, and the green rows for the rest of the session with no way back but a full reload.'],
   ['0.53.3', 'NOTES WORK AGAIN — THE WARNING WAS ABOUT THE ORDER\'S FILES. Two real notes, two orders (007152089 and 007150559), same red message: "the note landed BUT partialUpdate changed 1 other field(s) on the order." Both times the field was the order\'s attached files, and thanks to the 0.52.4 fix printing the values we could finally see WHAT changed: the same BOL, same name, same type, same pdf — carrying a different internal id. Nothing was lost. NuVizz simply hands its own file rows a new id when the order is written. Two changes. FIRST, notes no longer send the file list at all. When we read an order back, NuVizz gives us the file rows as labels with no file in them (the documents themselves live behind a different NuVizz service), so sending them back can only be ignored — or worse, re-create the row from an empty payload. The portal traffic this write was copied from had no attachments on its order, so including them was a guess, and it was the only thing that has ever moved. Freight lines already stayed off the wire for the same reason; the files now join them. SECOND, and this is the part that matters: the safety check no longer just goes quiet about what it stopped sending. It now compares the order BEFORE the note against the order AFTER it, and if a document or a freight line went missing it fails just as loudly as before — naming the document that vanished. A note can still never quietly cost you a BOL. What changed is that an id being reshuffled is no longer reported as though it had. Still 3 NuVizz calls per note, still read-merge-verify, and a clean note now says "Note added in NuVizz." and nothing else.'],
@@ -11934,10 +11935,11 @@ function RoutingRoutesPanel({ groups, onPick, liveWrite = false, roster = [], ro
           <button onClick={() => { setQ(''); setSelected(new Set()); }} className="text-[11px] text-slate-500 hover:text-slate-800 shrink-0">Clear</button>
         )}
         {/* Driver-assign mode (only when Live dispatch is enabled). Beta = a pick previews; Live =
-            a pick assigns the driver in NuVizz immediately. Mirrors the Compare panel's safety. */}
+            a pick assigns the driver in NuVizz immediately. Defaults to LIVE and the choice is
+            remembered on this device — see the assignLive state in RoutingScreen. */}
         {liveWrite && setAssignLive && (
           <button onClick={() => setAssignLive((v) => !v)}
-            title={assignLive ? 'LIVE — picking a driver assigns it in NuVizz immediately. Click for Beta (preview only).' : 'BETA — picking a driver only previews. Click to go Live and assign for real.'}
+            title={assignLive ? 'LIVE — picking a driver assigns it in NuVizz immediately. Click for Beta (preview only); the mode is remembered on this device.' : 'BETA — picking a driver only previews, nothing is sent. Click to go Live and assign for real; the mode is remembered on this device.'}
             className={`inline-flex items-center gap-1 text-[11px] font-bold px-2 py-1 rounded border shrink-0 ${assignLive ? 'border-red-600 bg-red-600 text-white' : 'border-slate-300 bg-white text-slate-600 hover:bg-slate-50'}`}>
             {assignLive ? '● LIVE' : '○ Beta'}
           </button>
@@ -14211,14 +14213,25 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
 
   // ── Routes-panel driver assignment (live) ─────────────────────────────────────
   // A driver dropdown on each Routes card assigns a driver to that load on pick. Gated behind the
-  // Live-dispatch gear toggle (liveWrite); a Beta/Live mode (default Beta) is the safety — in Beta a
-  // pick only previews, in Live it writes immediately via the assignDriver op (ASSIGN_DISPATCH with
+  // Live-dispatch gear toggle (liveWrite); the Beta/Live mode is the second gate — in Beta a pick
+  // only previews, in Live it writes immediately via the assignDriver op (ASSIGN_DISPATCH with
   // assignDtls only = assign, not release). Declared here, AFTER liveWrite + showMapToast, which it
   // reads in its dependency arrays during render (TDZ guard).
+  //
+  // DEFAULTS LIVE, and the choice STICKS (Chad: "turn the beta off here and it to be live all the
+  // time"). It used to reset to Beta on every page load, so a real assignment meant flipping the
+  // switch again every single time — and a safety you always flip is one you stop reading. The
+  // panel this lives in only appears when the Live-dispatch gear is already on, which is itself a
+  // persisted, explicit opt-in, so this honors that choice instead of re-asking for it. The button
+  // stays put: flip to ○ Beta any time for a dry run, and that sticks too.
   const [assignRoster, setAssignRoster] = useState([]);
   const [assignRosterError, setAssignRosterError] = useState(null);
   const assignRosterLoaded = useRef(false);
-  const [assignLive, setAssignLive] = useState(false);
+  const [assignLive, setAssignLive] = useState(() => {
+    try { if (localStorage.getItem('routing.assignLive') === 'off') return false; } catch { /* private mode */ }
+    return true;
+  });
+  useEffect(() => { try { localStorage.setItem('routing.assignLive', assignLive ? 'on' : 'off'); } catch { /* private mode */ } }, [assignLive]);
   const [assignedOverride, setAssignedOverride] = useState({});   // route key → driver name
   const [assigningKey, setAssigningKey] = useState(null);
   useEffect(() => { setAssignedOverride({}); }, [selectedDate]);   // don't carry a day's assignments onto another board
