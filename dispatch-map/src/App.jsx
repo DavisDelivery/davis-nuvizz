@@ -61,7 +61,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.53.6';
+const APP_VERSION = '0.53.7';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -106,6 +106,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.53.7', 'COMPARE PANEL: LOCKED TO LIVE, LOCKED TO RWB. Chad, on the Compare header: "same here lock it into live and rwb don\'t need the other options classic and import." Both done. (1) LIVE. The ○ Beta / ● LIVE switch reset to Beta on every mount, so a real Save meant flipping it again each session — the same ritual the Routes panel just lost in 0.53.6. It now starts on ● LIVE and remembers what you last set, per device. Say it plainly, because there is no second gate behind it: in Live, pressing Save SENDS to NuVizz, immediately, with no confirm popup (that popup was removed a while back on purpose). The button is still there — click to ○ Beta and a Save just simulates ("nothing sent, N loads simulated"), and that sticks too. (2) RWB ONLY. The engine button no longer cycles ⚙ Classic → ⚡ Import → 🔗 RWB; RWB is simply what a Save runs, and the header now shows 🔗 RWB as a plain badge instead of a picker. RWB is the right one to keep: it is the only engine that references stops BY ID ONLY, so a Save physically cannot blank or clone freight and address data — that is the failure class behind the Jul 2 Import incident — and it commits in 2 synchronous calls per load rather than Import\'s async wait-and-poll or Classic\'s remove-and-reinsert ladder. Nothing about the safety net changed: the SERVER still has the final say, and if the RWB switch is ever turned off there, a Save quietly falls back to the classic path on its own instead of failing. Your old engine choice stored on this device is simply ignored from now on.'],
   ['0.53.6', 'THE ROUTES PANEL STAYS LIVE — NO MORE FLIPPING OFF BETA EVERY TIME. Chad, on the Routes roster: "want to turn the beta off here and it to be live all the time." The ○ Beta / ● LIVE switch beside the route search reset to Beta on EVERY page load, so assigning a driver for real meant flipping it again each session — and a safety switch you always flip is one you stop reading, which is worse than not having it. It now starts on ● LIVE and remembers whatever you last set, per device. That is not a new door opened: this whole row only appears once "Live dispatch (assign driver + dispatch)" is switched on in the ⚙ gear, which is already a deliberate, remembered choice — the panel was just asking you to make the same decision twice. WHAT LIVE MEANS, plainly: picking a driver from a route card\'s dropdown assigns that driver to that load in NuVizz immediately, and the dispatch button dispatches it, both with no second confirm. That was always true in Live mode; it is now the mode you land in. The button is still there and still red when hot — click it to ○ Beta any time and picks go back to preview-only ("would assign X, nothing sent"), and THAT sticks too. Untouched on purpose: the Compare/route-card Save toggle still starts in Beta, because that one fires a batch of route writes at once rather than a single pick — say the word if you want it to match.'],
   ['0.53.5', 'THE STATUS CARD NOW TELLS YOU HOW MANY UNPLANNED STOPS THE LAST SCAN FOUND. Chad: "I want a row that shows how many unplanned deliveries were in the last scan so I know how many stops I should have on the bottom panel." The card showed the total stop count, the pallets, the feed times and the call meter — but nothing you could hold the stops list up against. A new row reads "612 unplanned in last scan". That number is counted over the WHOLE feed the scan produced, carry-over from prior days folded in, before a single map filter or search touches it — so it is the ceiling: the list can show that many or fewer, never more. And when it IS fewer, the row says so rather than leaving you to subtract: "612 unplanned in last scan · 24 hidden by filters" in amber, which is usually Unplanned only, Hide terminal, Hide stem out or a carry-over window doing exactly what you set it to. The count was already being calculated on the server and thrown away by the app, so this costs ZERO extra NuVizz calls and zero extra reads — it rides the board feed you were already getting. It shows on the phone, on desktop, and on the Routing pill (Routing shows the whole board, so it never reports a filter gap). On an older cached feed that doesn\'t carry the number, the row simply doesn\'t appear rather than claiming zero.'],
   ['0.53.4', 'THE LIME "TRACTOR DELIVERED" PAINT CAN NO LONGER FAIL SILENTLY. Chad sent a phone screenshot of a 707-stop board: "my stops aren\'t painted tractor trailer friendly like a lot of them should be — either a render fail or automatic painting fail." Reading the actual pixels settled half of it: every green pin on that board was the DISPATCHER-SET green you paint by hand, and there was not a single pixel of the lime automatic green anywhere on the map. So the lime layer was serving nothing at all. It was NOT a mismatch between the map and the saved locations — the customer notes on those same pins load through the exact same customer key, and the restriction icons and your hand-painted greens all came through fine on that render. Which leaves three things that all look identical on the map (nothing lime) and that the app gave you no way to tell apart: the paint switched OFF on that device, the read of the saved locations failing, or there being no saved locations to read. Three changes. FIRST, the Tractor delivered box in the Legend now says which one it is — "1,284 saved locations loaded", or "0 saved locations — nothing to paint yet", or "couldn\'t load" with a Retry. Loaded a number but no lime on the map is a paint bug; loaded zero is the nightly pass, not the map. SECOND, that box now exists ON THE PHONE, under Filters → Map display. The Legend that holds it has only ever rendered on desktop, so if the switch was off on your phone there was nothing on that screen to show it, let alone turn it back on. THIRD, a failed load now heals itself: it retries twice on its own and offers a Retry button, where before one hiccup as the page opened blanked every lime pin, the stop-panel line, and the green rows for the rest of the session with no way back but a full reload.'],
@@ -12534,31 +12535,32 @@ function RoutingWorkbench({ wbRoutes, stopById, boardStopById, ninjaMode, onTogg
   // Live-dispatch gate comes from the gear toggle (prop), aliased to the original name so the
   // many gate sites in this component (Save, Beta/Live toggle, dirty guards, confirm) are unchanged.
   const LIVE_WRITE_FLAG = liveWrite;
-  // Live dispatch (beta) — Beta vs Live applies to EVERY card here. Always starts in Beta
-  // on mount (Live is never sticky across reloads, for safety). The driver roster is pulled
-  // once (one cheap user/list read) so each card's picker is populated; a failure degrades
-  // to a disabled picker, never a crash. All hooks run unconditionally (the LIVE_WRITE_FLAG
-  // gate is inside the effect + the render), so hook order is stable when the flag is off.
-  const [liveMode, setLiveMode] = useState(false);
-  // Engine toggle — YOUR switch for which stop-ORDER path a Save runs: 'classic' (anchor
-  // remove + one-at-a-time re-insert, as before), 'import' (the async one-call LOAD IMPORT +
-  // convergence poll), or 'rwb' (the 2-call SYNCHRONOUS Route Workbench sequence — no async
-  // wait, and it references stops by id only so freight/address data can't be blanked/cloned).
-  // Remembered on this device. This is the ONLY client-side switch — the server keeps its own
-  // emergency hard-off brake for each (NUVIZZ_LOAD_IMPORT / NUVIZZ_RWB_ENABLED) independent of
-  // what the client asks for.
-  const [engine, setEngine] = useState(() => {
-    try {
-      const v = localStorage.getItem('dd_write_engine');
-      if (v === 'rwb' || v === 'import' || v === 'classic') return v;
-      return localStorage.getItem('dd_import_engine') === '1' ? 'import' : 'classic'; // migrate the old boolean
-    } catch { return 'classic'; }
+  // Live dispatch — Beta vs Live applies to EVERY card here. DEFAULTS LIVE and the choice
+  // STICKS per device (Chad: "same here lock it into live"), matching the Routes panel's
+  // assign toggle. It used to reset to Beta on every mount, so a real Save meant flipping the
+  // switch again each session — a safety you always flip is one you stop reading. The panel
+  // only renders at all when the Live-dispatch gear is on, which is itself a persisted, explicit
+  // opt-in. Note there is no confirm step behind this (see onPanelSave): in Live, Save sends.
+  // Flip to ○ Beta any time for a simulated Save, and that sticks too.
+  // The driver roster is pulled once (one cheap user/list read) so each card's picker is
+  // populated; a failure degrades to a disabled picker, never a crash. All hooks run
+  // unconditionally (the LIVE_WRITE_FLAG gate is inside the effect + the render), so hook order
+  // is stable when the flag is off.
+  const [liveMode, setLiveMode] = useState(() => {
+    try { if (localStorage.getItem('routing.compareLive') === 'off') return false; } catch { /* private mode */ }
+    return true;
   });
-  const cycleEngine = () => setEngine((v) => {
-    const n = v === 'classic' ? 'import' : v === 'import' ? 'rwb' : 'classic';
-    try { localStorage.setItem('dd_write_engine', n); } catch { /* ignore */ }
-    return n;
-  });
+  useEffect(() => { try { localStorage.setItem('routing.compareLive', liveMode ? 'on' : 'off'); } catch { /* private mode */ } }, [liveMode]);
+  // Save ENGINE — PINNED TO RWB. The ⚙ Classic / ⚡ Import picker is retired (Chad: "rwb don't
+  // need the other options classic and import"). RWB is the only path that references stops BY
+  // ID ONLY, so a Save cannot blank or clone freight/address data — the exact failure class
+  // behind the Jul 2 Import incident — and it commits in 2 synchronous calls per load instead of
+  // Import's async convergence poll or Classic's remove-and-reinsert ladder.
+  // The SERVER brake is untouched and still has the last word: with NUVIZZ_RWB_ENABLED unset,
+  // commitBoard falls through to the classic path on its own (nuvizz-write.mts —
+  // `useRwb === true && !rwbEngineBlocked()`), so pinning the client here can never strand a
+  // Save. The header keeps a static 🔗 RWB badge so the engine in use is still visible.
+  // The old dd_write_engine / dd_import_engine localStorage keys are simply no longer read.
   // Per-card verification generation: each Save bumps its cards' generation so any OLDER
   // background verification loop for those cards exits instead of re-imposing a stale order.
   const verifyGenRef = useRef(new Map());
@@ -12727,7 +12729,7 @@ function RoutingWorkbench({ wbRoutes, stopById, boardStopById, ninjaMode, onTogg
     // This Save supersedes any in-flight verification loop for the same cards (see verifyGenRef).
     for (const L of loads) { const k = L.__key ?? L.routeName ?? L.loadNbr ?? L.loadId; if (k) verifyGenRef.current.set(k, (verifyGenRef.current.get(k) || 0) + 1); }
     setBusy(true);
-    const res = await callWrite('commitBoard', { loads, date: boardDate || undefined, origin: savedShipFrom(), useImport: engine === 'import' || undefined, useRwb: engine === 'rwb' || undefined }, { dryRun: false, clientOpId, createdBy: 'dispatcher' });
+    const res = await callWrite('commitBoard', { loads, date: boardDate || undefined, origin: savedShipFrom(), useRwb: true }, { dryRun: false, clientOpId, createdBy: 'dispatcher' });
     setBusy(false); setConfirm(null);
     const resLoads = res.result?.loads || [];
     const orphaned = res.result?.orphaned || [];
@@ -13032,20 +13034,14 @@ function RoutingWorkbench({ wbRoutes, stopById, boardStopById, ninjaMode, onTogg
               <Save size={12} /> {busy ? '…' : `Save (${dirtyRoutes.length})`}
             </button>
           )}
+          {/* Engine indicator, not a picker — RWB is the only Save engine now (see the pin above). */}
           {LIVE_WRITE_FLAG && (
-            <button
-              onClick={cycleEngine}
-              title={
-                engine === 'rwb'
-                  ? 'RWB engine — Save sets each load\'s stop order via the NuVizz Route Workbench portal: 2 SYNCHRONOUS calls per load (preview + save), no async wait, and it references stops BY ID ONLY so freight/address data can\'t be blanked or cloned. Click for the classic engine.'
-                  : engine === 'import'
-                    ? 'IMPORT engine — Save sets each load\'s full stop list in exact order with ONE NuVizz call per load, then verifies the order landed (read-back). Click for the RWB engine.'
-                    : 'CLASSIC engine — Save uses the anchor remove + one-at-a-time re-insert path (as before). Click to use the new one-call IMPORT engine.'
-              }
-              className={`inline-flex items-center gap-1 text-[11px] font-bold px-2 py-1 rounded border ${engine === 'rwb' ? 'border-teal-600 bg-teal-600 text-white' : engine === 'import' ? 'border-violet-600 bg-violet-600 text-white' : 'border-slate-300 bg-white text-slate-600 hover:bg-slate-50'}`}
+            <span
+              title="RWB engine — Save sets each load's stop order via the NuVizz Route Workbench portal: 2 SYNCHRONOUS calls per load (preview + save), no async wait, and it references stops BY ID ONLY so freight/address data can't be blanked or cloned. This is the only Save engine; Classic and Import were retired."
+              className="inline-flex items-center gap-1 text-[11px] font-bold px-2 py-1 rounded border border-teal-600 bg-teal-600 text-white"
             >
-              {engine === 'rwb' ? '🔗 RWB' : engine === 'import' ? '⚡ Import' : '⚙ Classic'}
-            </button>
+              🔗 RWB
+            </span>
           )}
           {LIVE_WRITE_FLAG && (
             <button
