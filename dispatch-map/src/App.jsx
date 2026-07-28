@@ -61,7 +61,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.53.9';
+const APP_VERSION = '0.53.10';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -106,6 +106,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.53.10', 'THE BOTTOM BAR STOPS HIDING ITS OWN BUTTONS. Chad: "I can\'t see my drivers or stops buttons anymore and they are more important." The window picker read "Last 7 days · board day", and a dropdown is always as wide as its longest line — so that one label was the widest thing on the bar, and everything it pushed past the right edge simply vanished. It now reads "Last 7 days" and "Last 14 days". Nothing about how they work changed: both still count back from the board date you have selected, exactly as before. The deeper fix is that the bar now WRAPS. It has gained a control at a time — the status percentages, Profiles, the no-location chip, the window, the driver filter, the gear — and until now a bar that ran out of room pushed the leftovers off the end, where they were not just invisible but unreachable, with no scroll and no hint they existed. When the room runs out it now takes a second line instead. Stops/Loads and the driver filter additionally hold their width no matter what else is on the bar, because they are the two you reach for most.'],
   ['0.53.9', 'LOOSE COUNT PER STOP + THE REST OF THE MANIFEST STORY. (1) LOOSE ON EVERY STOP. A route card totalled "26 sk · 21 loose" but there was no way to tell WHICH stops carried the loose pieces. Each stop row now reads e.g. "MARIETTA · 2 sk · 3 loose", and expanding a stop shows lb · sk · loose · pcs together — those cross-check each other, since skids plus loose should equal total pieces. Loose only shows on the collapsed row when a stop actually has some, so the rows that do have loose are the ones that stand out. (2) THE OTHER HALF OF YESTERDAY\'S MANIFEST BUG. The inch-mark fix was real, but it was not the whole story. The reader\'s answer has a size limit, and that limit covers its THINKING as well as the orders it writes out. When the reader was upgraded to a newer AI model back in v0.50.77, that model started thinking by default where the previous one had not — quietly drawing from the exact same budget the orders had to fit inside. So a manifest nowhere near the nominal limit could still run out of room and stop mid-order. The budget is now sized to cover thinking AND a manifest several times larger than anything Estes sends (roughly 200 orders), and it is set for the way we make the request rather than pushed as high as it will go. For the record, since it comes up: the reader can take a PDF up to 600 pages and 32 MB — your manifests are 4 to 8 pages and a few hundred KB, so 50 orders in one PDF is not close to any limit that exists.'],
   ['0.53.8', 'BULK ADD — ONE INCH MARK WAS THROWING AWAY A WHOLE MANIFEST. Chad dropped two Estes manifests together and got "The reader returned no usable JSON — try the drop again." Dropping it again did nothing, and it never would have: THE FAILURE IS THE SAME EVERY TIME. Here is what actually happened. Manifest 047-54026\'s very first consignee, DELMAR GARDENS OF GWINNETT, has a description reading TEM130BKWY 20" WIDE ELECTRIC COIL R. That quote mark after the 20 is an inch symbol — and in the data format the reader answers in, a bare quote mark ENDS the text. One character in one description made the entire answer unreadable, so all 24 orders on that manifest were dropped on the floor and you were told to try again. FOUR FIXES, none of them a retry. (1) A stray quote mark inside a description is now repaired automatically and the orders come through — with a warning telling you the file needed fixing, because a repaired read is exactly where a missing order would hide. (2) The reader had a hard ceiling on how much it could write back, and a long manifest could hit it and stop MID-ROW — the same "no usable JSON" for a totally different reason. The ceiling is now five times higher, the reader is asked to write compactly (about half the size), and if it ever does get cut off, the orders that DID arrive are kept instead of the whole file being binned. (3) MISSING ORDERS NOW SHOUT. Every Estes manifest prints its own "Total Pros" count. If we read 31 of 37, that used to be one line in a long amber warning strip. It is now a RED box at the top of the intake: "Orders are missing — do not push until you have checked the paper," naming the file and the exact shortfall. (4) The instructions we send the reader used to illustrate the format with the REAL numbers off an old manifest (047-52228, trailer 521104). A reader that cannot make out a blurry header has an obvious out there: copy the example. Those are now obvious dummy values, and if one is ever echoed back it is thrown away and flagged instead of landing as a real-looking manifest number. Also: when a read does fail, we now keep what the reader actually said so it can be diagnosed, instead of a dead-end "try again". Zero NuVizz calls, as always.'],
   ['0.53.7', 'COMPARE PANEL: LOCKED TO LIVE, LOCKED TO RWB. Chad, on the Compare header: "same here lock it into live and rwb don\'t need the other options classic and import." Both done. (1) LIVE. The ○ Beta / ● LIVE switch reset to Beta on every mount, so a real Save meant flipping it again each session — the same ritual the Routes panel just lost in 0.53.6. It now starts on ● LIVE and remembers what you last set, per device. Say it plainly, because there is no second gate behind it: in Live, pressing Save SENDS to NuVizz, immediately, with no confirm popup (that popup was removed a while back on purpose). The button is still there — click to ○ Beta and a Save just simulates ("nothing sent, N loads simulated"), and that sticks too. (2) RWB ONLY. The engine button no longer cycles ⚙ Classic → ⚡ Import → 🔗 RWB; RWB is simply what a Save runs, and the header now shows 🔗 RWB as a plain badge instead of a picker. RWB is the right one to keep: it is the only engine that references stops BY ID ONLY, so a Save physically cannot blank or clone freight and address data — that is the failure class behind the Jul 2 Import incident — and it commits in 2 synchronous calls per load rather than Import\'s async wait-and-poll or Classic\'s remove-and-reinsert ladder. Nothing about the safety net changed: the SERVER still has the final say, and if the RWB switch is ever turned off there, a Save quietly falls back to the classic path on its own instead of failing. Your old engine choice stored on this device is simply ignored from now on.'],
@@ -10198,11 +10199,17 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
           <div className="w-10 h-1 rounded-full bg-slate-300 group-hover:bg-slate-400" />
         </div>
       )}
-      <div className="flex items-center gap-2 px-3 py-1.5 border-b border-slate-100">
+      {/* flex-wrap: this bar has grown a control at a time (status %, profiles, no-location,
+          window, driver, gear) and a non-wrapping row simply pushes the tail off the right
+          edge — invisible AND unreachable, which is how the Stops/Loads toggle and the driver
+          filter disappeared. Wrapping costs one extra line at narrow widths and can never hide
+          a control. */}
+      <div className="flex flex-wrap items-center gap-2 px-3 py-1.5 border-b border-slate-100">
         <button onClick={() => setOpen(!open)} className="inline-flex items-center justify-center min-w-[34px] min-h-[34px] rounded text-slate-600 hover:text-slate-900 hover:bg-slate-100" aria-expanded={open} title={open ? 'Collapse' : 'Expand'}>
           {open ? <ChevronDown size={14} /> : <ChevronUp size={14} />}
         </button>
-        <div className="inline-flex rounded-md border border-slate-200 overflow-hidden text-xs font-semibold whitespace-nowrap">
+        {/* shrink-0: Stops/Loads is the bar's primary control — it never gives up width. */}
+        <div className="inline-flex shrink-0 rounded-md border border-slate-200 overflow-hidden text-xs font-semibold whitespace-nowrap">
           <button
             onClick={() => { setView('stops'); setOpen(true); }}
             className={'inline-flex items-center gap-1.5 px-2.5 py-1 ' + (view === 'stops' ? 'bg-blue-50 text-blue-700' : 'text-slate-600 hover:bg-slate-50')}
@@ -10357,8 +10364,12 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
                   <option value="">Board (today)</option>
                   <option value="0d">NuVizz · Today</option>
                   <option value="+/-7d">NuVizz · ±7 days</option>
-                  <option value="-7d">Last 7 days · board day</option>
-                  <option value="-14d">Last 14 days · board day</option>
+                  {/* Label kept SHORT on purpose: a <select> is as wide as its longest option,
+                      and "· board day" was the widest string in this toolbar — it pushed the
+                      Stops/Loads toggle and the driver filter off the end of the bar. The
+                      behaviour is unchanged (both still track the board date backwards). */}
+                  <option value="-7d">Last 7 days</option>
+                  <option value="-14d">Last 14 days</option>
                   <option value="custom">Custom range…</option>
                 </select>
                 {nvWindow === 'custom' && (
@@ -10380,7 +10391,7 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
                   value={driverSel}
                   onChange={(e) => { setDriverSel(e.target.value); setOpen(true); }}
                   title="Filter by driver"
-                  className="hidden sm:inline-block border border-slate-300 rounded px-1.5 py-1 text-xs text-slate-700 max-w-[150px] focus:outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-400"
+                  className="hidden sm:inline-block shrink-0 border border-slate-300 rounded px-1.5 py-1 text-xs text-slate-700 max-w-[150px] focus:outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-400"
                 >
                   <option value="">All drivers</option>
                   {driverOptions.map((d) => <option key={d} value={d}>{d}</option>)}
