@@ -21,7 +21,7 @@
 import { getDoc, setDoc, patchDoc, listDocs, isFirestoreEnabled } from './lib/firestore.mts';
 import { DRIVER_AUTH, UNMATCHED_ALIASES, authenticate, hashPin, isValidPinFormat } from './lib/auth.mts';
 import { normalizeDriverAlias, findAmbiguousAliases } from './lib/aliases.mts';
-import { ok, bad, unauthorized, forbidden, readJson } from './lib/http.mts';
+import { ok, bad, unauthorized, forbidden, readJson, viaProxy } from './lib/http.mts';
 
 /** Strip anything that must never leave the server. */
 const publicCred = (d: any) => ({
@@ -56,6 +56,9 @@ export default async (req: Request): Promise<Response> => {
 
   if (!isFirestoreEnabled()) return bad('not configured', 503);
 
+  // Provenance, for the audit trail: which surface issued this admin action.
+  const surface = viaProxy(req) ? 'dispatch-map-proxy' : 'load-scan-direct';
+
   if (req.method === 'GET') {
     if (!isDispatcher) return forbidden('dispatcher role required');
     const url = new URL(req.url);
@@ -79,6 +82,7 @@ export default async (req: Request): Promise<Response> => {
 
   const body = await readJson(req);
   const action = String(body?.action || '');
+  console.log(`[driver-admin] ${action} via ${surface} by ${claims?.sub ?? 'bootstrap'}`);
   const driverNumber = String(body?.driverNumber ?? '').trim();
 
   // ── Bootstrap is allowed exactly one action ────────────────────────────────

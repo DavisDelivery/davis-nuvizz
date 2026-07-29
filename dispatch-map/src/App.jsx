@@ -45,6 +45,7 @@ import { aiParse, aiChat, applyFilterSpec, summarizeSpec, buildTrimmedStops } fr
 import { loadDeviceIdentity, saveDeviceName, activePeers, buildPeerClaims, peerChipLabel, latestPeerSaveAt, PRESENCE_HEARTBEAT_MS } from './lib/presence.js';
 import ChatPanel, { ChatLauncher, MessagesLauncher } from './components/ChatPanel.jsx';
 import MessagesPanel from './components/MessagesPanel.jsx';
+import DriversPanel from './components/DriversPanel.jsx';
 
 // Quote console — lazy so its ~345 KB (the @davisdelivery/quote-generator code plus its
 // geo/model JSON) loads only when the Quote tab is first opened, instead of riding in the
@@ -64,7 +65,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.54.12';
+const APP_VERSION = '0.54.13';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -109,6 +110,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.54.13', 'DOCK SCANNER DRIVER LOGINS ARE NOW MANAGED FROM THIS APP. The driver-facing load scanner needs its own logins, because NuVizz has no per-driver auth at all — it is one service account for the whole company, so a driver cannot sign in \"as themselves\" anywhere in it. That means a separate credential store, and until now the only way to touch it was a second admin URL. Settings menu, Dock scanner drivers: create a driver number, issue a temporary PIN they are forced to change, reset a PIN, clear a lockout after five wrong tries, and deactivate someone the moment they are gone — which takes effect on their very next request, not whenever a laptop is next opened. THE PART THAT MATTERS MOST IS THE ALIAS LIST. The scanner has to know which of today\'s stops belong to the driver holding the phone, and the only driver field on the board is unreliable by construction: it carries a short code like VINCENT on stops that came from a NuVizz scan, but the FULL NAME on stops our own routing engine planned, and it has historically had internal ids leak into it. So matching is not a guess — each driver login holds the full set of spellings they appear under, maintained by hand. Pull the alias report and every NuVizz name on the board for the last 14 or 30 days is listed with how many stops it appeared on and whether it is mapped yet; unmapped ones are highlighted and can be attached to a driver by clicking them instead of typing. If a driver\'s spellings match nothing, or two drivers claim the same one, the scanner refuses to show a load and asks for the load number off the paperwork — it will never put someone on a plausible wrong truck. Those refusals land in a review queue on this panel. NOTHING ABOUT THE CREDENTIAL STORE LIVES IN THIS APP: PIN hashing and every write stay in the scanner, reached server-to-server so no browser ever talks across sites. Zero NuVizz calls anywhere in this feature.'],
   ['0.54.12', 'THE LIVE DRIVER MAP NOW SHOWS THE WHOLE FLEET — IT WAS ONLY EVER SHOWING PAGE ONE OF MOTIVE\'S ANSWER. Chad, holding our map next to Motive\'s Fleet View: "not matching what motive." Verified against the live feed before answering: our layer was serving 22 trucks, every one of them numbered 2195 or below, and the four missing trucks — 2618T Rasko Suljic, 5042 Enock Akyea, 7521 Mone Watkins, 7750 Chris Head — are all numbered above that. That split is not a coincidence. When we ask Motive for vehicle positions, Motive answers in PAGES of about 25 — and our request never asked for page two. Any truck past the first page simply did not exist on our map: no pin, no label, nothing to even hint it was missing. The fleet grew past 25 trucks and the map silently stopped keeping up. THE FIX: the request now walks every page until Motive says the fleet is complete, removes duplicates, and can never loop even if Motive misbehaves — with a safety bound far past any fleet Davis will ever run (1,000 vehicles). ALSO CHECKED WHILE VERIFYING, because your screenshot showed it: truck 0424 read "(no driver) stale" on our map while Motive named Allen Council driving at 36 mph. The live feed NOW carries Allen Council on 0424 with a fresh ping — so that one was a moment-in-time gap (the pairing landed after your screenshot), not a second defect; the honest "(no driver)" label only shows when Motive itself names nobody. And one small landmine defused: Motive sends truck 0186T\'s number with a trailing space, which would silently break any exact match against a clean roster — numbers are now trimmed. Nothing else changed: same 60-second refresh, same labels, same stale fade after 30 minutes.'],
   ['0.54.11', 'RA ORDERS NOW READ AS PICKUPS EVERYWHERE — IMMEDIATELY, NOT EVENTUALLY. Chad: "Ra\'s should be marked as pickups and not deliveries." They were typed as deliveries at the source: the saved-search feed carries no stop-type column, so every row entering the board was stamped Drop-Off, and a pickup only became a pickup when its one-time detailed lookup happened to run and correct it. Until then the stop card said Drop Off, the grid showed it like any delivery, and the map drew it as one. RA-prefixed order numbers ARE pickups — that is Davis\'s own numbering — so the board now types them as pickups the moment the scan sees the number, with the detailed lookup still the final authority if the two ever disagree. WHERE YOU\'LL SEE IT: the bottom grid shows an amber PU chip in front of the customer name; the map pin carries a PU tag in the same slot the AM/PM window uses (a delivery-window tag or a restriction icon still outranks it — a safety mark beats a type mark); route cards keep the amber PU badge from 0.54.10; and the stop card\'s Type row now says Pick Up from the first scan instead of after enrichment. Nothing about counts, statuses, or routing changed — this is the same stop, finally wearing the right label from the start.'],
   ['0.54.10', 'THE TWO "STOP 16"S ON RASHEED ARE PICKUPS WEARING THE TERMINAL\'S NUMBER — NOW LABELLED AS WHAT THEY ARE. Chad: "our system should match NuVizz and we are showing two stop 16\'s in ours." Verified against the stored board before answering: those two rows are the route\'s two PICKUPS (the desk at College Station Rd and the Georgia Univ pickup), and they are real, single stops — not duplicates. Here is the trap. The stop number our feed carries is NuVizz\'s ShipTo Display-Seq, which numbers the DESTINATION side of each order. For a delivery, the destination IS the customer, so the number is the stop\'s true position — that is why every delivery on your panel matched the workbench exactly. For a pickup, the destination is where the freight is GOING: the terminal. Both pickups return to the same terminal, so both inherited the TERMINAL RETURN\'S slot — one shared number, one past the last delivery. 15 when the route had 15 positions, 16 on your screen after a stop was added. The workbench numbers pickups by where the truck actually visits them — 4 and 13 — and the proof is in our own deliveries: their numbers skip exactly 4 and 13. THE HONEST PART: the pickup\'s true run position lives only inside NuVizz\'s route record. It is not in the saved-search feed we scan, at any price, so this app cannot print 4 and 13 without asking NuVizz — and it will not pretend otherwise. WHAT CHANGED: a pickup on a route card now shows an amber PU badge instead of a number (hover it and it says why), and on the framed route map it pins as P instead of a numbered circle. No number ever prints twice, deliveries are untouched, and the pickups sit at the end of the list where the terminal-return slot files them. If the run order of pickups matters for planning a specific route, the workbench remains the authority — one click away.'],
@@ -13760,6 +13762,9 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
   const [histSeed, setHistSeed] = useState('');
   const openCustomerHistory = useCallback((s) => { setHistSeed((s?.businessName || '').trim()); setHistOpen(true); }, []);
   const [versionLogOpen, setVersionLogOpen] = useState(false);
+  // Dock scanner driver logins. Lives here because dispatch works in this app all
+  // day; the credential store itself stays in load-scan (see DriversPanel).
+  const [driversPanelOpen, setDriversPanelOpen] = useState(false);
   const openStop = useCallback((s) => setPanelStop(s || null), []);
 
   // ── Edit-address + Correct-pin-location (ported from MapScreen) ──────────────
@@ -15878,6 +15883,7 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
     eligView,
   ];
   const routingSettingsActions = [
+    { key: 'dockDrivers', label: '🚻 Dock scanner drivers', onClick: () => setDriversPanelOpen(true) },
     { key: 'versionLog', label: `ⓘ Version history (v${APP_VERSION})`, onClick: () => setVersionLogOpen(true) },
     { key: 'reset', label: '↺ Reset layout to defaults', onClick: resetRoutingLayout },
   ];
@@ -18243,6 +18249,9 @@ function Shell() {
 
       {/* Messages floats OVER the current screen (you never leave the map). */}
       {messagesOpen && <MessagesPanel messages={inbound} seenAt={smsSeenAt} onClose={closeMessages} customerContacts={customerContacts} />}
+
+      {/* Dock scanner driver logins — proxied server-side to load-scan. */}
+      {driversPanelOpen && <DriversPanel onClose={() => setDriversPanelOpen(false)} />}
 
       {/* "Debug this view" — reachable from any tab; captures the active screen. */}
       <DebugCaptureSheet open={debugOpen} onClose={() => setDebugOpen(false)} captureRef={debugCaptureRef} />

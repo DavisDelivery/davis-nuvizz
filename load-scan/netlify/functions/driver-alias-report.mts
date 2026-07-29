@@ -16,7 +16,7 @@
 import { readStops, listDocs, isFirestoreEnabled } from './lib/firestore.mts';
 import { DRIVER_AUTH, authenticate } from './lib/auth.mts';
 import { normalizeDriverAlias } from './lib/aliases.mts';
-import { ok, bad, unauthorized, forbidden, etDayString } from './lib/http.mts';
+import { ok, bad, unauthorized, forbidden, etDayString, viaProxy } from './lib/http.mts';
 
 const TENANT = 'davis';
 
@@ -39,6 +39,8 @@ export default async (req: Request): Promise<Response> => {
 
   if (!isFirestoreEnabled()) return bad('not configured', 503);
   if (claims.role !== 'dispatcher') return forbidden('dispatcher role required');
+
+  console.log(`[driver-alias-report] via ${viaProxy(req) ? 'dispatch-map-proxy' : 'load-scan-direct'} by ${claims.sub}`);
 
   const url = new URL(req.url);
   const days = Math.min(30, Math.max(1, Number(url.searchParams.get('days') || 14) || 14));

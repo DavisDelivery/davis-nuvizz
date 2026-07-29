@@ -51,3 +51,24 @@ export function etDayString(d: Date = new Date()): string {
 }
 
 export const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * Did this request arrive through dispatch-map's server-side proxy?
+ *
+ * Honest about what this is worth: the dispatcher TOKEN is the authorization gate,
+ * not this header. The shared secret proves provenance — that the hop came from
+ * dispatch-map's function rather than an arbitrary client — and it is logged so an
+ * admin action can be traced to a surface. Browser access from load-scan's own
+ * break-glass panel legitimately arrives WITHOUT it, so this must not be a hard
+ * requirement or that path dies the moment dispatch-map is the only way in.
+ */
+export function viaProxy(req: Request): boolean {
+  const want = process.env.LOADSCAN_ADMIN_PROXY_SECRET;
+  if (!want || want.length < 16) return false;
+  const got = req.headers.get('x-proxy-secret') || '';
+  if (got.length !== want.length) return false;
+  // Constant-time compare: this value is long-lived and shared between two sites.
+  let diff = 0;
+  for (let i = 0; i < want.length; i++) diff |= want.charCodeAt(i) ^ got.charCodeAt(i);
+  return diff === 0;
+}

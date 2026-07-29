@@ -56,6 +56,19 @@ function todayUTC(): string {
 // DAVIS_DRIVERS — full registry mirrored from the parent app
 // (src/lib/api.js:99-134). Used to resolve a Motive full name into a NuVizz
 // userName, which is the stable matching key. Keep in sync with parent.
+//
+// NOT THE SOURCE OF TRUTH FOR DRIVER IDENTITY ANY MORE.
+// The dock scanner (load-scan) resolves a driver to their loads from
+// `nuvizzAliases` on the driver_auth/{driverNumber} document, which is
+// hand-maintained through the Dock scanner drivers panel in this app. That set is
+// authoritative: it holds EVERY spelling a person appears under, including the
+// full names that boardWritePlannedFields writes into driverUserName, which this
+// list does not cover.
+//
+// This array was the one-time seed for those alias sets and is still used for the
+// Motive name -> userName lookup below. It WILL drift. If a driver is added,
+// removed or renamed, update driver_auth — a change here alone does not reach the
+// scanner, and a change there alone does not reach this lookup.
 const DAVIS_DRIVERS: Array<{ userName: string; name: string }> = [
   { userName: 'AARON',   name: 'Aaron Mitchell' },
   { userName: 'ALLEN',   name: 'Allen Council' },
