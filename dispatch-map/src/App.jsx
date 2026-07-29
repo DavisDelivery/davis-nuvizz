@@ -30,7 +30,7 @@ import { db } from './lib/firebase.js';
 import { normalizeMatchKey } from './lib/matchKey.js';
 import { planOverlayAction, PLAN_OVERLAY_TTL_MS } from './lib/plan-overlay.js';
 import { routeStopEta, routeStopFreight } from './lib/route-stop-line.js';
-import { diffRouteStyle, DIFF_ORIGINAL_COLOR } from './lib/diff-route-style.js';
+import { diffRouteStyle, DIFF_ORIGINAL_COLOR, groupDispatchTrips } from './lib/diff-route-style.js';
 import { addressLooksOff, suggestAddressFix } from './lib/address-fix.js';
 import { haversineMiles, naiveEtaMinutes, formatEtaClockTime } from './lib/distance.js';
 import { todayInET, isTodayET, formatDateForDisplay, formatDateLong } from './lib/date-util.js';
@@ -64,7 +64,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.54.7';
+const APP_VERSION = '0.54.8';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -109,6 +109,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.54.8', 'THE ENGINE IS NOT THE ONE PUTTING 20 STOPS ON MARCUS AND LEROY — DISPATCH DID. PLUS A LEGEND FOR THAT WHOLE PAGE, AND AN ANSWER ON THE GREY LINES. Chad: "marcus and leroy have never taken 20 stops on one trip ever so why in the world would it put that many on them? Owusu, that page needs a legend so someone knows how to interpret what they are looking at on the map, and what is all the gray shadow lines?" THREE THINGS, AND THE FIRST ONE IS THE PAGE LYING BY ABBREVIATION. Read the drivers table: Leroy Smith 12/19, Marcus Crumpton 11/20. That column was headed "Stops E/A", and E/A means ENGINE / ACTUAL. So the engine proposed TWELVE stops for Leroy and ELEVEN for Marcus. The 19 and the 20 are what dispatch actually sent them out with on Jul 28. The engine agrees with you — it is cutting those routes roughly in half. The Routes table above says the same thing from the other side: it lists the routes DISPATCH BUILT and scores how the engine would have re-sequenced them, so DAWSONVILLE\'s 21 stops and CRUMPTON\'s 20 are dispatch\'s numbers, not proposals. Two letters were carrying the entire meaning of that page and they were carrying it badly. The columns now read "Stops eng/disp", "Trips eng/disp", "Lbs eng/disp", and the Routes table says "Stops (dispatch)" outright. SECOND, THE LEGEND. There is now a "How to read this page" panel at the top that says in plain words what the page is (it replays a past day and asks what the engine would have done — it never changes a route), that every paired number is engine first and dispatch second, what the Score actually measures, that a negative Travel Δ is the engine SAVING minutes, what Guided versus Unguided means and why they should be read apart, and what every line and colour on the map is. It remembers whether you have it open. THIRD, THE GREY SHADOW LINES — and this one was a real bug that yesterday\'s change exposed rather than caused. Those are the ORIGINAL route, the one dispatch ran. The reason it looked like four or five bands raking across the whole metro is that a driver\'s stops are numbered 1, 2, 3 within EACH TRIP — so Owusu, who ran two trips, had two stop 1s, two stop 2s and so on, and the map was drawing all of them as ONE line sorted by that number. Trip-one stop, trip-two stop, trip-one stop: a line shuttling between Marietta and the warehouse over and over. It has been doing that the whole time; at 2.5 pixels and half-transparent nobody could see it, and making the line thick enough to be useful is what made it obvious. Dispatch now draws ONE LINE PER TRIP, exactly like the engine side always has. A long leg back across town is now the truck genuinely reloading, not a drawing error. That correction lands on days the engine re-runs — older stored days keep the single line until they are re-scored, rather than breaking.'],
   ['0.54.7', 'THE DIFF TAB NOW ACTUALLY SHOWS YOU TWO ROUTES. Chad, on the Diff tab with Aaron Mitchell pulled up: "need an original line and new line." The legend promised a grey line for what dispatch ran and a coloured line for what the engine wants — and there was only ever one line on the map. HERE IS THE THING: BOTH LINES WERE BEING DRAWN. They had been all along. The problem was how. The original was drawn 2.5 pixels wide at half opacity; the engine\'s line was drawn 4 pixels wide, solid, and ON TOP of it. A thinner, fainter line underneath a thicker, solid one is not faint — it is GONE. And two plans for the same driver agree over most of the route, which is exactly where they sit on top of each other, so the original disappeared along nearly its whole length. The bits that did poke out were a 50%-grey line on a Google basemap, which looks precisely like a road. So the one screen whose entire job is comparing two routes was showing you one route and a legend describing a line you could not find. THE FIX IS WIDTH, and it had to be. Colour loses to whatever is painted on top of it. Opacity loses. Width does not: a wider line underneath a narrower one still shows on both sides of it. So the ORIGINAL route is now drawn as a wide grey sleeve UNDER the engine\'s line. Where the two plans agree, you see the new route running inside a grey casing — that IS the "they agree here" signal, and it is visible at every zoom. Where they diverge, the grey peels away and you see two plainly separate lines going two different places. Neither state is ambiguous and neither line can hide the other any more. The legend now says ORIGINAL · what dispatch ran and NEW · engine, and its little colour chips are drawn at the real thicknesses so the legend matches the map. ONE THING DELIBERATELY NOT DONE: the original is not dashed. On this map a dashed line already means "trip 2 or later", and using dashes for the original would have made a driver\'s second trip impossible to tell from the route they actually ran.'],
   ['0.54.6', 'THE DATE CHANGE THAT "DIDN\'T WRITE" — YOU WERE RIGHT, AND HERE IS WHY IT CAME BACK. Chad: "i changed this to 7/30 and it didn\'t write to nuvizz so it showed up in a new scan." Both halves of that sentence are true, and the second one is the actual bug. CHANGING A DATE IS TWO WRITES, NOT ONE. One goes to NuVizz — the order\'s delivery window. The other is ours: a note on our board saying "this order belongs on the 30th," which every later scan has to honor. That second one is not optional and never has been. NuVizz files orders on our board by its "Estimated Arrival" column, and it does NOT recompute that column when the delivery window moves — so without our own note, the very next scan reads the old arrival and puts the order right back on today. NOW THE CASE YOU HIT. An Estes import the customer deferred to the 30th ALREADY CARRIES the 30th as its delivery window — that is exactly the situation this whole feature was built for, back in 0.54.0. So when you set it to the 30th, the app read the order, saw NuVizz already had the 30th, and correctly decided there was nothing to send. Correct — and then it stopped there and skipped the second write as well. Nothing was recorded on our board, so the next scan filed the order onto today all over again. The one case the board note exists for was the one case it never ran in. Setting a date the order already has now still takes it off your board, and says so: "Order 007… already carries 2026-07-30 in NuVizz — nothing sent there. Taken off today\'s board, and scans will keep honoring the day." It costs the same single lookup it always did; the board half is our own storage and hits NuVizz zero times. A SECOND THING, FOUND WHILE FIXING IT: that board note could FAIL — a storage hiccup — and the card would still tell you "off this board until then" in green, then the order would be back ten minutes later with nothing having warned you. If the note doesn\'t land, the message is now amber and tells you plainly that the next scan will pull the order back and to move it again. The NuVizz half succeeding is never allowed to speak for the board half.'],
   ['0.54.5', 'KAI WONG, PART TWO — THIS TIME IT WAS THE BOARD, NOT YOUR BROWSER. Chad: "kai wong issue fix did not work, still showing on route when it\'s actually unplanned in NuVizz." He was right, and the fact that 0.54.3 did NOT fix it is what identified the real cause. That fix was to a note this app keeps in YOUR BROWSER after a Save. This time the wrong answer was coming from the board itself — the shared one, the same for every dispatcher — so nothing in your browser could have been responsible. HERE IS THE HOLE, AND IT IS A BIG ONE. Every scan reads two saved searches: open orders and finished ones. A stop can briefly match neither — in transit, mid-status-flip — so any stop already on the board that the scan does not return is kept exactly as it was. That is deliberate and it is right; without it a truck would lose stops off its route every few minutes. But it was applied to EVERY absent stop, with no exception and no way to question it. Now: when you UNPLAN a stop in NuVizz, it leaves the planned saved search. The scan stops returning it. So it was absent — and absent meant "keep it exactly as it was", which was PLANNED ON SUW 5. Meanwhile the app already HAS a safety net for exactly this: when the list claims a routed stop is no longer planned, we do not believe it — we go and ask NuVizz about that specific stop before dropping it off a route (that is what protects live routes from a lagging saved search). But that net only ever inspected stops the list actually RETURNED. A stop that vanished was never checked by it. So one half of the scan treated absence as proof the plan was still good, and the other half never got to look. There was no scan that could ever have fixed it. Kai Wong would have sat on Trevor\'s SUW 5 until the board rolled over. THE FIX: a PLANNED stop that disappears from a scan is no longer taken at its word — it now goes through that same check. Nothing is dropped just for being absent. We ask NuVizz: does that load still hold this stop? Only NuVizz answering "no" removes it. If the answer does not come back — read failed, or we are at the call budget for that scan — the stop KEEPS its route, exactly as before. A Save you just made still outranks all of it. Deliveries are excluded outright: a delivered stop is meant to drop off its load, and it must never be turned back into an unplanned order. And if a scan comes back thin — half the board missing, which means the scan failed, not that a hundred stops got unplanned — the whole check switches itself off and every plan carries forward untouched. COSTS NOTHING EXTRA: these checks share the call budget the existing route-protection already had (one load lookup covers a whole route), so a scan cannot spend more NuVizz calls than it could yesterday. ONE THING TO KNOW: this corrects itself on the NEXT SCAN, and orders are paused until 10 AM — so Kai Wong will come off SUW 5 when scanning resumes, not the moment you reload.'],
@@ -16934,6 +16935,82 @@ function EngineStatTile({ label, value, hint }) {
   );
 }
 
+// "How to read this" — the page's own legend. Chad, on the plan-vs-engine screen: "that page
+// needs a legend so someone knows how to interpret what they are looking at on the map."
+//
+// It is not a nicety. Every number here is a COMPARISON between two things — what the engine
+// proposes and what dispatch actually ran — and the screen was labelling those "E/A". Reading
+// a driver's "11/20" as the engine loading someone with 20 stops, when 20 is what dispatch ran
+// and 11 is the engine's answer, inverts the meaning of the whole page. Collapsed by default so
+// it costs nothing once you know it; the state sticks per device.
+function EngineHowToRead() {
+  const [open, setOpen] = useState(() => {
+    try { return localStorage.getItem('engine.howto') !== 'closed'; } catch { return true; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem('engine.howto', open ? 'open' : 'closed'); } catch { /* private mode */ }
+  }, [open]);
+  const Row = ({ term, children }) => (
+    <div className="flex gap-2 py-0.5">
+      <div className="w-[124px] shrink-0 font-semibold text-slate-600">{term}</div>
+      <div className="min-w-0 text-slate-600">{children}</div>
+    </div>
+  );
+  return (
+    <div className="border rounded-lg bg-white p-2">
+      <button onClick={() => setOpen((v) => !v)}
+        className="w-full flex items-center justify-between text-[11px] font-semibold text-slate-600 px-1 pb-1">
+        <span>How to read this page</span>
+        <span className="text-slate-400 ml-2 shrink-0">{open ? '▾ hide' : '▸ show'}</span>
+      </button>
+      {open && (
+        <div className="px-1 pb-1 text-[11px] leading-snug">
+          <div className="text-slate-700 font-semibold pb-1">
+            Nothing on this page changes a route. It replays a past day and asks what the engine
+            would have done instead.
+          </div>
+          <Row term="eng / disp">
+            Every paired number is <b>engine first, dispatch second</b>. “11/20” is the engine
+            proposing 11 stops for a driver who actually ran 20 — never the other way round.
+          </Row>
+          <Row term="Routes table">
+            One row per route <b>dispatch actually built</b>. Its Stops and Zones are theirs; the
+            engine only re-sequenced them.
+          </Row>
+          <Row term="Score">
+            0–1, how closely the engine’s ORDER for that same route matches the order dispatch
+            drove. 1.0 is identical. A low score is a disagreement, not an error.
+          </Row>
+          <Row term="Travel Δ">
+            Estimated driving minutes, engine minus dispatch, same distance model both sides.
+            <b> Negative is the engine saving time.</b>
+          </Row>
+          <Row term="Guided">
+            The engine found a similar route in history to learn the shape from.
+            <b> Unguided</b> means it had no example and worked from clustering alone — read
+            those separately, they are a harder problem.
+          </Row>
+          <Row term="Agree %">
+            Share of that driver’s stops the engine put on the same driver as dispatch.
+          </Row>
+          <Row term="Map · Dispatch">One colour per driver, drawn in true delivery order.</Row>
+          <Row term="Map · Engine">The proposal. Solid = trip 1, dotted = trip 2 or later.</Row>
+          <Row term="Map · Diff">
+            Both at once. The wide grey sleeve is <b>ORIGINAL — what dispatch ran</b>; the narrow
+            coloured line inside it is <b>NEW — the engine</b>. Where they run together the plans
+            agree; where the grey peels away they don’t. One line per trip on each side, each
+            starting from the warehouse — a driver with two trips has two lines, so a long leg
+            back across town is the truck reloading, not a mistake.
+          </Row>
+          <Row term="Amber pins">
+            Stops the engine would give to a <b>different driver</b>. Listed under the map.
+          </Row>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // Live engine tuning — reads/writes routing_engine_config through the
 // routing-engine-tuning function (clamped server-side by the same pure helpers
 // the solver uses, so a bad value can never persist). Edits take effect on the
@@ -17354,7 +17431,10 @@ function EngineScreen() {
                     <SortableTh label="Route / load" k="load_key" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />
                     <SortableTh label="Driver" k="driver" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />
                     <SortableTh label="Class" k="truck_class" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />
-                    <SortableTh label="Stops" k="stops" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />
+                    {/* This table scores the routes DISPATCH BUILT — the stop count is theirs,
+                        not a proposal. Named so, because a bare "Stops" next to a score reads
+                        like the engine is the one handing out 21-stop routes. */}
+                    <SortableTh label="Stops (dispatch)" k="stops" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />
                     <SortableTh label="Zones" k="zones" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />
                     <SortableTh label="Score" k="score" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />
                     <SortableTh label="Travel Δ" k="delta" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />
@@ -17546,16 +17626,13 @@ function EngineAssignmentView({ google, mapsError }) {
         pl.setMap(mapRef.current); linesRef.current.push(pl);
       }
     };
-    // dispatch polylines: group actual stops by actual_driver, drawn in TRUE delivery
-    // order (actual_pos) when the plan carries it. In Diff, dispatch is a neutral grey
-    // baseline so it can never be mistaken for the engine's colored routes.
+    // dispatch polylines: ONE PER ACTUAL TRIP, drawn in true delivery order — the same shape
+    // the engine side draws (see groupDispatchTrips for why per-driver was wrong). In Diff,
+    // dispatch is a neutral grey casing so it can never be mistaken for an engine route.
     const drawDispatch = (mode) => {
-      const byDriver = new Map();
-      for (const s of stops) { if (!s.actual_driver) continue; (byDriver.get(s.actual_driver) ?? byDriver.set(s.actual_driver, []).get(s.actual_driver)).push(s); }
-      for (const [drv, ds] of byDriver) {
+      for (const { drv, stops: ordered } of groupDispatchTrips(stops)) {
         if (movedOnly && !movedDrivers.has(drv)) continue;
         if (!isSel(drv)) continue;
-        const ordered = [...ds].sort((a, b) => (a.actual_pos ?? 1e9) - (b.actual_pos ?? 1e9));
         const path = [depotPt, ...ordered.map((s) => ({ lat: s.lat, lng: s.lng }))];
         if (path.length < 2) continue;
         // In Diff this is the ORIGINAL route, drawn as a WIDE casing under the engine's line.
@@ -17659,6 +17736,8 @@ function EngineAssignmentView({ google, mapsError }) {
 
       <EngineVersionProgress versions={versions} current={daily?.engine_version} />
 
+      <EngineHowToRead />
+
       <div className="border rounded-lg bg-white p-2">
         <button onClick={() => setChartOpen((v) => !v)} title={chartOpen ? 'Hide chart' : 'Show chart'}
           className="w-full flex items-center justify-between text-[11px] font-semibold text-slate-600 px-1 pb-1">
@@ -17681,9 +17760,13 @@ function EngineAssignmentView({ google, mapsError }) {
               <thead className="bg-slate-50 sticky top-0"><tr>
                 <SortableTh label="Driver" k="driver" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />
                 <SortableTh label="Class" k="class" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />
-                <SortableTh label="Trips E/A" k="trips_actual" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />
-                <SortableTh label="Stops E/A" k="stops_actual" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />
-                <SortableTh label="Lbs E/A" k="lbs_actual" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />
+                {/* "E/A" was too short to be read correctly: Chad read a 11/20 as the engine
+                    putting 20 stops on a driver, when 20 is what DISPATCH ran and 11 is the
+                    engine's proposal. Spell both sides out — this column is a comparison, and
+                    which number is which is the whole point of it. */}
+                <SortableTh label="Trips eng/disp" k="trips_actual" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />
+                <SortableTh label="Stops eng/disp" k="stops_actual" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />
+                <SortableTh label="Lbs eng/disp" k="lbs_actual" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />
                 <SortableTh label="Agree %" k="agreement_pct" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />
               </tr></thead>
               <tbody>
