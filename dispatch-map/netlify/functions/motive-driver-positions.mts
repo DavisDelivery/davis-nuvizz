@@ -64,17 +64,61 @@ function lastInitialOf(name: string | null): string | null {
   return parts[parts.length - 1].charAt(0).toUpperCase();
 }
 
-async function fetchVehicleLocations(key: string): Promise<any[]> {
-  const url = `${MOTIVE_BASE}/vehicle_locations`;
-  const resp = await fetch(url, {
-    headers: { 'X-API-KEY': key, Accept: 'application/json' },
-  });
-  if (!resp.ok) {
-    const text = await resp.text().catch(() => '');
-    throw Object.assign(new Error(`Motive HTTP ${resp.status}`), { status: resp.status, body: text.slice(0, 400) });
+// ── Pagination (Jul 29: "not matching what motive") ──────────────────────────
+//
+// This used to fetch /vehicle_locations ONCE, with no paging params — and Motive pages that
+// endpoint (default ~25 per page). With the fleet past 25 vehicles, every truck past page 1
+// simply did not exist on our map: Chad's Motive Fleet View showed 2618T·Rasko, 5042·Enock,
+// 7521·Mone Watkins, 7750·Chris Head, and our layer showed none of them — while every truck
+// we DID show was numerically below all four. Verified against the live endpoint: 22 served,
+// all ≤ 2195, the four missing exactly. Nothing filtered them; they were never fetched.
+//
+// PURE page-walker, exported for tests. Trusts pagination.total when Motive sends it, stops
+// on a short page otherwise, DEDUPES by vehicle id, and stops the moment a page contributes
+// nothing new — so an API that ignored page_no could never loop or double-pin a truck. The
+// page cap is a runaway bound (10 × 100 = a 1,000-vehicle fleet), not an expected limit.
+export async function fetchAllVehiclePages(
+  fetchPage: (pageNo: number) => Promise<any>,
+  opts: { perPage?: number; maxPages?: number } = {},
+): Promise<any[]> {
+  const perPage = opts.perPage ?? 100;
+  const maxPages = opts.maxPages ?? 10;
+  const out: any[] = [];
+  const seen = new Set<string>();
+  for (let pageNo = 1; pageNo <= maxPages; pageNo++) {
+    const j: any = await fetchPage(pageNo);
+    const batch: any[] = j?.vehicles || j?.data || [];
+    let added = 0;
+    for (const entry of batch) {
+      const v = entry?.vehicle || entry || {};
+      const id = String(v.id ?? v.number ?? v.name ?? JSON.stringify(entry));
+      if (seen.has(id)) continue;
+      seen.add(id);
+      out.push(entry);
+      added++;
+    }
+    const total = Number(j?.pagination?.total);
+    if (Number.isFinite(total) && out.length >= total) break;
+    if (batch.length < perPage) break;   // short page = the last page (covers unpaginated replies too)
+    if (added === 0) break;              // page_no ignored / repeating — never loop
   }
-  const data: any = await resp.json();
-  return data?.vehicles || data?.data || [];
+  return out;
+}
+
+const VEHICLES_PER_PAGE = 100;
+
+async function fetchVehicleLocations(key: string): Promise<any[]> {
+  return fetchAllVehiclePages(async (pageNo) => {
+    const url = `${MOTIVE_BASE}/vehicle_locations?per_page=${VEHICLES_PER_PAGE}&page_no=${pageNo}`;
+    const resp = await fetch(url, {
+      headers: { 'X-API-KEY': key, Accept: 'application/json' },
+    });
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => '');
+      throw Object.assign(new Error(`Motive HTTP ${resp.status}`), { status: resp.status, body: text.slice(0, 400) });
+    }
+    return resp.json();
+  }, { perPage: VEHICLES_PER_PAGE });
 }
 
 // Fallback: pull current driver-vehicle assignments to fill in any vehicles
@@ -108,7 +152,7 @@ async function fetchAssignments(key: string): Promise<Map<string | number, any>>
   return map;
 }
 
-function normalizeEntry(entry: any, assignmentLookup: Map<string | number, any>): DriverPosition {
+export function normalizeEntry(entry: any, assignmentLookup: Map<string | number, any>): DriverPosition {
   const v = entry.vehicle || entry;
   const loc = v.current_location || entry.current_location || {};
   let driver = v.current_driver || v.driver || entry.current_driver || null;
@@ -120,7 +164,9 @@ function normalizeEntry(entry: any, assignmentLookup: Map<string | number, any>)
     : null;
   return {
     vehicleId: v.id ?? null,
-    vehicleNumber: v.number || v.name || null,
+    // Verbatim but TRIMMED — the live feed carries '0186T ' with a trailing space, and an
+    // untrimmed number quietly breaks any equality join against a roster's clean '0186T'.
+    vehicleNumber: (String(v.number ?? '').trim() || String(v.name ?? '').trim()) || null,
     driverId: driver?.id ?? null,
     driverName,
     driverFirstName: driver?.first_name || firstNameOf(driverName),
