@@ -1069,3 +1069,87 @@ export async function readActiveUnplannedSet(tenant: string): Promise<{ at: stri
   try { arr = JSON.parse(doc.stopNbrsJson || '[]'); } catch { arr = []; }
   return { at: doc.at || null, windowStart: doc.windowStart || null, stopNbrs: new Set(arr.map(String)) };
 }
+
+// ── Dispatcher-set board dates (§D) ──────────────────────────────────────────
+//
+// When a customer defers an order ("not until the 30th"), the dispatcher moves its delivery
+// window in NuVizz through setStopDate. That fixes NuVizz — but NOT our filing: the board
+// buckets on the saved search's Estimated Arrival, which NuVizz does not recompute for an
+// unplanned order, so the very next scan would drag the order straight back onto today.
+//
+// So a confirmed date change is also recorded HERE, and boardDayFor honors it over anything
+// the list reports. One doc per tenant (a JSON map stopNbr → 'YYYY-MM-DD'), so the scan pays
+// ONE Firestore read for the whole set and zero NuVizz calls. Entries whose day has passed
+// are pruned on every write — this is a "not yet" list, and yesterday's "not yet" is noise.
+const BOARD_DATE_COLLECTION = 'nuvizz_board_dates';
+const boardDatePath = (tenant: string) => `${BOARD_DATE_COLLECTION}/${String(tenant || '').toLowerCase()}`;
+
+/** Every live dispatcher-set board date: { stopNbr: 'YYYY-MM-DD' }. Empty when unset/unreadable
+ *  — an override is an ADJUSTMENT, so losing it must degrade to normal filing, never to a blank
+ *  board. */
+export async function readBoardDateOverrides(tenant: string): Promise<Record<string, string>> {
+  try {
+    const doc = await getDoc(boardDatePath(tenant));
+    if (!doc) return {};
+    const map = JSON.parse(doc.datesJson || '{}');
+    return map && typeof map === 'object' ? map : {};
+  } catch { return {}; }
+}
+
+/** PURE: drop entries whose day is before `today` (and any malformed pair). Exported for tests. */
+export function pruneBoardDateOverrides(map: Record<string, string>, today: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [nbr, d] of Object.entries(map || {})) {
+    if (!nbr || typeof d !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(d)) continue;
+    if (d < today) continue;
+    out[String(nbr)] = d;
+  }
+  return out;
+}
+
+/** Record (or clear, with date=null) one stop's dispatcher-set board date. Returns the new size. */
+export async function setBoardDateOverride(tenant: string, stopNbr: string, date: string | null, at: string): Promise<{ count: number; date: string | null }> {
+  if (!isFirestoreEnabled()) return { count: 0, date: null };
+  const today = etDayString();
+  const cur = pruneBoardDateOverrides(await readBoardDateOverrides(tenant), today);
+  if (date) cur[String(stopNbr)] = date; else delete cur[String(stopNbr)];
+  await setDoc(boardDatePath(tenant), { tenant: String(tenant || '').toLowerCase(), at, count: Object.keys(cur).length, datesJson: JSON.stringify(cur) } as any);
+  return { count: Object.keys(cur).length, date: date || null };
+}
+
+/**
+ * Move one cached stop row from its current day doc onto `toDate` so the board reflects a
+ * confirmed date change NOW instead of at the next scan (~10 min).
+ *
+ * `fromDate` is a hint, not a requirement: the row may be filed on a day nobody told us about
+ * (the whole reason this feature exists), so a miss walks back through the recent boards the
+ * way patchBoardPlan's carry-over rescue does. Nothing is fabricated — if no cached row is
+ * found anywhere, the move reports `found:false` and the next scan files it from the override.
+ */
+export async function moveBoardStopDay(
+  tenant: string, stopNbr: string, fromDate: string | null, toDate: string, at: string,
+): Promise<{ found: boolean; from: string | null; to: string; removed: boolean }> {
+  if (!isFirestoreEnabled()) return { found: false, from: null, to: toDate, removed: false };
+  const nbr = String(stopNbr);
+  const today = etDayString();
+  const dayBack = (n: number) => new Date(Date.parse(today + 'T00:00:00Z') - n * 86400000).toISOString().slice(0, 10);
+  // Search order: the caller's hint, then today, then back through the window the grid serves.
+  const candidates = [fromDate, today, ...Array.from({ length: 62 }, (_, i) => dayBack(i + 1))]
+    .filter((d): d is string => !!d && d !== toDate);
+  for (const day of [...new Set(candidates)]) {
+    const src = `${COLLECTION}/${parentId(tenant, day)}/stops/${encodeURIComponent(nbr)}`;
+    let cur: any = null;
+    try { cur = await getDoc(src); } catch { continue; }
+    if (!cur) continue;
+    const { _id, ...rest } = cur;
+    // The moved row is stamped with the new day AND board_write_at, so the scan-merge grace
+    // defends it exactly like a confirmed plan write while NuVizz's list catches up.
+    await setDoc(`${COLLECTION}/${parentId(tenant, toDate)}/stops/${nbr}`, {
+      ...rest, boardDate: toDate, scheduledDate: toDate, carryover: false, board_write_at: at, board_date_set_at: at,
+    });
+    let removed = false;
+    try { await deleteDoc(src); removed = true; } catch { /* the next scan prunes it */ }
+    return { found: true, from: day, to: toDate, removed };
+  }
+  return { found: false, from: null, to: toDate, removed: false };
+}

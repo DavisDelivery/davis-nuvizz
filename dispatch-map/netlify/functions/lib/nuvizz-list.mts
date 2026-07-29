@@ -316,9 +316,18 @@ export function toBoardStop(r: any): any {
 // stop's board"; both bucketByDate (initial filing) AND the two-scan carry-forward guard
 // (refresh-stops-core) call it, so a stop can never be filed one way and carried another
 // — which is exactly how today's board was bleeding wholesale onto tomorrow's.
-export function boardDayFor(s: any, today: string = etDayString()): string | null {
+export function boardDayFor(s: any, today: string = etDayString(), overrides?: Record<string, string> | null): string | null {
+  const finishedEarly = s.normalizedStatus === 'DELIVERED' || s.normalizedStatus === 'EXCEPTION';
+  // A DISPATCHER-SET date beats every inferred one. When a customer defers an order the
+  // dispatcher moves its delivery window in NuVizz (setStopDate) — but the saved search keeps
+  // reporting the ORIGINAL Estimated Arrival, because NuVizz doesn't recompute it for an
+  // unplanned order. Without this the next scan files the order right back onto today and the
+  // deferral looks broken ten minutes after it was made. Finished stops are exempt: where a
+  // delivery actually happened is history, not a plan, and history is never re-filed.
+  const set = overrides && s.stopNbr != null ? overrides[String(s.stopNbr)] : null;
+  if (set && !finishedEarly) return set;
   let d = s.boardDate || s.requestedDate || s.scheduledDate || null;
-  const finished = s.normalizedStatus === 'DELIVERED' || s.normalizedStatus === 'EXCEPTION';
+  const finished = finishedEarly;
   const onRoute = !!s.loadNbr;
   if (!finished && onRoute && (!d || d < today)) d = today; // live route work → today, not the past
   // A DATELESS open order is live work too — NuVizz's "-1" re-delivery duplicates arrive with
@@ -329,10 +338,10 @@ export function boardDayFor(s: any, today: string = etDayString()): string | nul
   return d || null;
 }
 
-export function bucketByDate(stops: any[], today: string = etDayString()): Map<string, any[]> {
+export function bucketByDate(stops: any[], today: string = etDayString(), overrides?: Record<string, string> | null): Map<string, any[]> {
   const m = new Map<string, any[]>();
   for (const s of stops) {
-    const d = boardDayFor(s, today);
+    const d = boardDayFor(s, today, overrides);
     if (!d) continue;
     if (!m.has(d)) m.set(d, []);
     m.get(d)!.push(s);
@@ -601,20 +610,22 @@ export async function fetchSavedSearchRaw(
 // the active search and reappears here). Buckets by each stop's scheduled-arrival date so
 // a stop sits on its delivery day's board through its whole lifecycle; stops with no
 // parseable arrival date can't be placed and are dropped. PURE — unit-tested.
-export function mergeTwoScan(activeRows: any[], completedRows: any[]): Map<string, any[]> {
+export function mergeTwoScan(activeRows: any[], completedRows: any[], overrides?: Record<string, string> | null): Map<string, any[]> {
   const byNbr = new Map<string, any>();
   for (const r of activeRows) { const s = toBoardStop(r); if (s.stopNbr) byNbr.set(s.stopNbr, s); }
   for (const r of completedRows) { const s = toBoardStop(r); if (s.stopNbr) byNbr.set(s.stopNbr, s); }
-  return bucketByDate([...byNbr.values()]);
+  return bucketByDate([...byNbr.values()], etDayString(), overrides);
 }
 
-// Run both saved searches (in parallel) → per-date board buckets.
-export async function twoScanBuckets(): Promise<Map<string, any[]>> {
+// Run both saved searches (in parallel) → per-date board buckets. `overrides` are the
+// dispatcher-set board dates (setStopDate); the caller reads them once per scan and hands
+// them in, so this stays a two-call function with no Firestore knowledge of its own.
+export async function twoScanBuckets(overrides?: Record<string, string> | null): Promise<Map<string, any[]>> {
   const [active, completed] = await Promise.all([
     fetchSavedSearchRows(SAVED_SEARCHES.active),
     fetchSavedSearchRows(SAVED_SEARCHES.completed),
   ]);
-  return mergeTwoScan(active, completed);
+  return mergeTwoScan(active, completed, overrides);
 }
 
 // The saved searches bucket by ET arrival date, but the scanner keys boards by UTC date.
