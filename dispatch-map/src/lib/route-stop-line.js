@@ -69,3 +69,27 @@ export function routeStopFreight(stop) {
   if (!parts.length && pieces) parts.push(`${pieces} pcs`);
   return { skids, loose, pieces, text: parts.join(' · ') };
 }
+
+// ── The stop-number on a route card / framed-route pin ──────────────────────
+//
+// Chad, RASHEED 07-29: "we are showing two stop 16's in ours" — while NuVizz's workbench ran
+// those two stops at 4 and 13. They are PICKUPS, and the sequence field our feed carries is
+// NuVizz's ShipTo-Display-Seq: it sequences the DESTINATION side. For a delivery, ShipTo is
+// the customer, so the number is the stop's true run position. For a pickup, ShipTo is where
+// the freight is GOING — the terminal — so every pickup on a load inherits the TERMINAL
+// RETURN's slot: one shared number, one past the last delivery (15, then 16 as the route
+// grew). The proof is in the deliveries themselves: their numbers skip exactly the slots
+// (4 and 13) the workbench gives the pickups.
+//
+// The pickup's own run position exists only inside NuVizz's route record — it is not in the
+// saved-search feed at all — so it cannot be recovered here. What CAN be fixed is the lie:
+// a pickup must never wear its destination's number as if it were a position. It shows as a
+// pickup, unnumbered, and the card says why.
+export function routeStopSeq(stop) {
+  const pickup = String(stop?.stopType || '').toUpperCase() === 'PU';
+  if (pickup) return { seq: null, pickup: true };
+  if (typeof stop?.routeSeq === 'number') return { seq: stop.routeSeq, pickup: false };
+  const t = stop?.raw?.stop?.to?.seq;
+  const f = stop?.raw?.stop?.from?.seq;
+  return { seq: typeof t === 'number' ? t : typeof f === 'number' ? f : null, pickup: false };
+}
