@@ -61,7 +61,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.54.1';
+const APP_VERSION = '0.54.2';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -106,6 +106,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.54.2', 'CLICK A ROUTE LINE ON THE MAP TO PULL UP THE ROUTE. Chad: "I want to be able to click on these route lines and it pull up the route." With Show routes on you get a coloured line per load, and until now they were decoration — the only way to open one was to find it in the Routes list on the right. Click any line now and that route opens: on the Map screen it opens in the route panel and frames it, on Routing it opens as a Compare card. Same gesture on both maps. THE PART THAT MAKES IT USABLE: those lines are drawn 2.5 to 3 pixels wide, and a 3-pixel diagonal is a genuinely bad thing to ask anyone to hit with a mouse — worse for the faded lines, which are drawn at a quarter opacity when another route is already open. So the click target is not the line you see; it is a 16-pixel-wide invisible line running the same path. You aim near the route and it opens. Hovering shows a pointer and thickens the line so you can tell what you are about to open before you commit. Two things deliberately still work exactly as before: clicking a STOP that happens to sit on top of a line opens the stop, not the route (pins always win), and dragging the map across a line still pans instead of opening anything.'],
   ['0.54.1', 'THE STOP COUNT ON THE ROUTING MAP NOW COUNTS THE DOTS YOU CAN SEE. Chad: "why are there more dots on the map than on the bottom panel, they should match." The chip in the corner of the routing map said "833 stops" — and that was the WHOLE day\'s board, counted before anything was hidden. The map underneath it was drawing a filtered subset, because your bottom grid had a status filter on (Un-Planned) and the map follows that filter on purpose. So the number and the pins under it were describing two different things, and neither of them matched the grid. The chip now reads "15 of 833 stops" whenever a grid filter is hiding stops, with the first number in amber, and hovering it explains what is hidden. TWO THINGS THAT ARE WORKING AS INTENDED and are worth knowing, because they are why the counts still will not be identical. FIRST, a route you have pulled up in Compare always draws in full — those nine numbered SUW 4 pins stay on the map no matter what the status filter says, because a route losing members mid-view while you are working it is far worse than an extra pin. Anything you have selected is exempt for the same reason: a hidden stop could otherwise ride into a build unseen. SECOND, the bottom grid and the map are not looking at the same days. The grid was set to "Last 7 days" (4,264 stops); the map shows the one board day you have picked, plus any unplanned orders from the grid\'s window so you can actually select and plan them. Different date ranges, so different counts — by design.'],
   ['0.54.0', 'CHANGE AN ORDER\'S DELIVERY DATE FROM THE STOP CARD. An Estes import the customer didn\'t want until the 30th sat in the 29th board and let itself be planned. WHY, exactly: the board files every order by the "Estimated Arrival" column on the saved search — and NuVizz does not fill that in for an order nobody has routed yet. An order with no arrival is filed on TODAY, by design (it is how re-delivery duplicates with no dates at all stay visible instead of vanishing). The DropOff date the portal shows, the one field that said the 30th, is not in the feed we scan at all, so nothing in the pipeline could have known. The stop card now has "Change delivery date". Pick a day, Send, and three things happen: the order\'s delivery window moves in NuVizz — the real field, the one the portal and the driver read, with the appointment TIME kept exactly as it was — the order leaves today\'s board immediately rather than at the next scan, and the day you chose is remembered so every future scan keeps honoring it. That last part is not optional: NuVizz will go on reporting the old arrival forever, so without it the order would be back on your board ten minutes later and the whole thing would look broken. Safety is the same as the note box, because it is the same machinery: it reads the order, moves only the window, reads it back, and if ANY other field on that order moved — or the freight lines or the BOL went missing — it refuses to call it a success and tells you to check the portal. It will not touch an order the driver is already running, and if the order is already built into a route it says which one before you send, since moving the date leaves it on a truck running a different day. An order already on the day you picked costs one call and writes nothing.'],
   ['0.53.11', 'AN EMPTY BOARD NOW TELLS YOU WHY IT IS EMPTY. Chad sent a grid reading "No stops match." with 64 loads sitting right next to it and asked why his board showed no deliveries. Two separate things were making that message lie. FIRST, IT WAS STILL LOADING. The header said "pulling…" while the table underneath had already announced "No stops match." — the grid stating a conclusion it did not have yet. Pulling a week-long window takes a few seconds, and for those seconds the board looked broken. It now says "Pulling this window…" with a spinner until the answer actually arrives. SECOND, AND THIS IS THE REAL ONE: the Status filter was on (the bar showed "Status (1)"), and for a date window that filter is sent along with the request — the pull itself only asks for that one status. So when the chosen status has nothing in the window, ZERO rows come back, and the grid\'s "N stops exist but a filter is hiding them — [Clear filters]" message could not fire, because from where it was standing no stops existed at all. You got the bare "No stops match." with nothing naming the filter and no button to clear it. That is exactly the silent-blank trap closed back in v0.45.6, quietly reopened through the server side. An empty grid with any filter on now names the filter, explains that a status filter is applied to the pull itself, and gives you the same one-click Clear. No filter can blank your board without saying so.'],
@@ -8858,10 +8859,45 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
         geodesic: false,
         zIndex: isSelected ? 3 : 1,
         map: mapRef.current,
+        clickable: false,   // the hit line below owns the pointer; see why
       });
       routePolylinesRef.current.push(poly);
+      // CLICK THE LINE TO OPEN THE ROUTE (Chad). A 3px stroke is a miserable click target —
+      // Google's hit test is the drawn width, so at 3px you are aiming at 3 pixels on a
+      // diagonal, and the dimmed 0.25-opacity lines are effectively invisible to aim at.
+      // So the pointer lives on a SEPARATE fully transparent 16px line following the same
+      // path: easy to hit, draws nothing. The visible line is clickable:false so the two can
+      // never both answer a click.
+      //
+      // It cannot steal clicks from pins: Google renders markers in a higher pane than
+      // polylines regardless of zIndex, so a stop under the line still wins the click. Same
+      // reason the existing zIndex-1 lines never blocked pins.
+      const hit = new google.maps.Polyline({
+        path,
+        strokeColor: route.color,
+        strokeOpacity: 0,
+        strokeWeight: 16,
+        geodesic: false,
+        clickable: true,
+        zIndex: isSelected ? 3 : 1,
+        map: mapRef.current,
+      });
+      hit.addListener('click', () => { setSelectedStop(null); openRouteExplicit(route.loadNbr); });
+      // Hover feedback so the line reads as clickable — pointer cursor + the visible stroke
+      // thickens. Skipped for the already-open route, which is drawn heavy already.
+      hit.addListener('mouseover', () => {
+        mapRef.current?.setOptions({ draggableCursor: 'pointer' });
+        if (!isSelected) poly.setOptions({ strokeWeight: 5, strokeOpacity: anySelected ? 0.6 : 0.95 });
+      });
+      hit.addListener('mouseout', () => {
+        mapRef.current?.setOptions({ draggableCursor: null });
+        if (!isSelected) poly.setOptions({ strokeWeight: 3, strokeOpacity: anySelected ? 0.25 : 0.7 });
+      });
+      routePolylinesRef.current.push(hit);
     }
-  }, [google, showRoutes, routeData, selectedRoute]);
+    // Leave no cursor override behind when the overlay is torn down mid-hover.
+    return () => { mapRef.current?.setOptions({ draggableCursor: null }); };
+  }, [google, showRoutes, routeData, selectedRoute]);   // eslint-disable-line react-hooks/exhaustive-deps
 
   // Auto-zoom on search results: 1 match → center + open sidebar, 2-10 → fit bounds.
   const pendingSearchFitRef = useRef(false);   // search settled before the board had rows — fit once when they land
@@ -15423,10 +15459,27 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
     dayRoutePolylinesRef.current.forEach((p) => p.setMap(null));
     dayRoutePolylinesRef.current = [];
     dayRoutes.forEach((r) => {
-      const pl = new google.maps.Polyline({ path: r.path, strokeColor: r.color, strokeWeight: 2.5, strokeOpacity: 0.6, zIndex: 4 });
+      const pl = new google.maps.Polyline({ path: r.path, strokeColor: r.color, strokeWeight: 2.5, strokeOpacity: 0.6, zIndex: 4, clickable: false });
       pl.setMap(mapRef.current);
       dayRoutePolylinesRef.current.push(pl);
+      // Clicking a day-route line opens that route in Compare — same gesture as the Map
+      // screen's route lines, so the two maps behave alike. Transparent 16px hit line for
+      // the same reason: 2.5px is not a click target. Markers still win the click (higher
+      // pane), so a stop sitting on the line opens the stop, not the route.
+      const hit = new google.maps.Polyline({ path: r.path, strokeColor: r.color, strokeOpacity: 0, strokeWeight: 16, zIndex: 4, clickable: true });
+      hit.setMap(mapRef.current);
+      hit.addListener('click', () => openRouteRef.current?.(r.key));
+      hit.addListener('mouseover', () => {
+        mapRef.current?.setOptions({ draggableCursor: 'pointer' });
+        pl.setOptions({ strokeWeight: 4.5, strokeOpacity: 0.9 });
+      });
+      hit.addListener('mouseout', () => {
+        mapRef.current?.setOptions({ draggableCursor: null });
+        pl.setOptions({ strokeWeight: 2.5, strokeOpacity: 0.6 });
+      });
+      dayRoutePolylinesRef.current.push(hit);
     });
+    return () => { mapRef.current?.setOptions({ draggableCursor: null }); };
   }, [google, dayRoutes, mapReady]);
 
   const selectedTrucks = useMemo(() => profiles.filter((p) => selectedTruckIds.has(p.id)), [profiles, selectedTruckIds]);
