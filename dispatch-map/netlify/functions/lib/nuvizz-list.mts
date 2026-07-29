@@ -754,6 +754,37 @@ export function demotionLookupVerdict(r: { ok: boolean; reason?: string; stop?: 
   return !!(s.isPlanned && s.loadNbr);
 }
 
+/**
+ * PURE: the row a previously-PLANNED stop enters the demotion verify as when it is ABSENT
+ * from this scan's pull entirely.
+ *
+ * Why this shape. The verify decides by comparing a fresh row against the prior board row:
+ * `p.isPlanned && p.loadNbr && !s.isPlanned` queues the check, and a `false` verdict simply
+ * leaves the fresh row as it came. A row the LIST returned already arrives unplanned, so that
+ * works — but an ABSENT stop has no fresh row at all, and the carry-forward re-added the prior
+ * row verbatim. Plan intact, so it never queued; nothing to demote to, so a `false` verdict
+ * would have changed nothing anyway. That is how a stop unplanned in the portal — which leaves
+ * the planned saved search, and so stops being returned at all — rode the carry-forward back
+ * onto its load on every scan, indefinitely (KAI WONG on Trevor Brent's SUW 5: "I just did a
+ * fresh scan", and no scan could ever dislodge it).
+ *
+ * So absence produces a candidate that is unplanned by DEFAULT and asks NuVizz to justify the
+ * plan, rather than a fact that asks nothing. It is not a demotion: applyDemotionVerify's
+ * keepPlan restores every one of these fields from `p` unless NuVizz's own answer (load
+ * membership first, then the stop record) says the load no longer holds it. A failed or
+ * over-budget read HOLDS the plan, and the confirmed-save write grace still outranks all of it.
+ *
+ * Clears exactly PLAN_FIELDS — asserted against it in test, so the two can't drift apart.
+ */
+export function absentPlanDemoteCandidate(p: any): any {
+  return {
+    ...p,
+    status: '10', normalizedStatus: 'UNPLANNED', isPlanned: false, isUnplanned: true,
+    loadNbr: null, routeName: null, routeSeq: null, driverName: null, driverUserName: null,
+    absentFromPull: true,   // diagnostic only — never read as truth, the verify decides
+  };
+}
+
 export async function applyDemotionVerify(
   checks: Array<{ s: any; p: any }>,
   opts: { max: number; scannedAt: string; lookup: (stopNbr: string) => Promise<boolean | null> },
