@@ -29,6 +29,7 @@ import {
 import { db } from './lib/firebase.js';
 import { normalizeMatchKey } from './lib/matchKey.js';
 import { planOverlayAction, PLAN_OVERLAY_TTL_MS } from './lib/plan-overlay.js';
+import { routeStopEta, routeStopFreight } from './lib/route-stop-line.js';
 import { addressLooksOff, suggestAddressFix } from './lib/address-fix.js';
 import { haversineMiles, naiveEtaMinutes, formatEtaClockTime } from './lib/distance.js';
 import { todayInET, isTodayET, formatDateForDisplay, formatDateLong } from './lib/date-util.js';
@@ -62,7 +63,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.54.3';
+const APP_VERSION = '0.54.4';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -107,6 +108,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.54.4', 'THE DATE CHANGE WAS REAL — THE CARD WAS LYING ABOUT IT. PLUS SKIDS, LOOSE AND A REAL ETA ON ROUTE STOP CARDS. Chad: "Don\'t think that this is actually writing to NuVizz when you change the date. Also these stop cards should have skid and loose counts on them, as well as that time should be reflecting what NuVizz is showing as an ETA." THE DATE, FIRST — IT WAS WRITING. Every time. The write moves the order\'s real delivery window, reads the order back out of NuVizz to confirm the day actually landed, and refuses to report success if so much as one other field on that order moved. What it did NOT do was update the copy of the order sitting in our own cache. Moving the date re-filed the order onto the new day and left the order\'s own window pointing at the old one — and that window is the exact field the "Change delivery date (…)" label reads first. It is also a field the scanner never refreshes: it is filled in once, when an order is first looked up in detail, and carried forward untouched from then on. So the label kept showing the old day forever, through every scan, for an order NuVizz had already moved. Close the card, open it again, and it read like nothing had happened. It now moves with the write — same clock, same window length, and an overnight window keeps its span. A SECOND, SEPARATE BUG IN THE SAME BOX, and this one was worse: if you picked a day the order was ALREADY on, the server correctly answered "already dated the 30th, nothing written" — and the card ignored that answer and told you "Moved to the 30th in NuVizz" anyway. It was reading for that answer in the wrong place, so it never once saw it. It reads it properly now, and a real move now names the day it came FROM, straight off the server\'s read-back of the order: "Moved 2026-07-29 → 2026-07-30 in NuVizz." That sentence is evidence, not an echo of what you typed. THE STOP CARDS ON A ROUTE. Two changes. (1) Every stop now shows its skid and loose count under the PRO — the same two numbers as the Compare panel, from the same NuVizz fields. A stop we have no freight numbers for yet shows nothing rather than "0 sk", because an order nobody has looked up in detail is unknown, not empty. (2) THE TIME. Six stops on TRAILER 7 all read 8:00 AM, and no route ever runs like that. That was not an ETA. There are two different things in NuVizz that arrive under one name here: the real per-stop ETA off the route, and the saved search\'s "Estimated Arrival" column — which is a generic window every stop on the load shares. Orders we have looked up in detail carry the real ETA; everything else carries the window, and the card was printing whichever it found first, as a clock, with no way to tell them apart. The card now reads the real ETA only from where the real ETA lives. When NuVizz has one you get "ETA 2:35 PM". When it does not — nothing is dispatched yet, so no ETA exists — you still get the appointment, but labelled "appt 8:00 AM", so a window can never be read as an arrival prediction again. Delivered and arrived stops are unchanged: they show their actual stamped time.'],
   ['0.54.3', 'A PLAN YOU UNDID IN NUVIZZ NO LONGER STICKS TO THE LOAD ON YOUR SCREEN. Chad: "I just did a fresh scan, why is Kai Wong showing up on Trevor\'s load, it is unplanned status in NuVizz." Here is what was happening, and it was only happening on HIS screen. When a Save is confirmed, this app writes that plan down locally — which stop, which load, which driver — and paints it over the board until a scan comes back agreeing with it. That is deliberate and it is a good thing: it is what stops a route you just watched save from looking unbuilt while NuVizz catches up. The flaw was in what counts as "agreeing". A stop recorded as planned onto SUW 5 only agreed with a board row that showed it planned on SUW 5. So when the stop came back UNPLANNED — the honest answer, because it had been unplanned in the portal — the app read that as "the scan is behind" and painted it right back onto SUW 5. That is the one thing the paint exists to do, so it kept doing it, through every fresh scan, for up to twelve hours. And because the note lives only in your browser, no other dispatcher saw the contradiction — and a build run off that board would have planned against a stop the load does not hold. THE FIX: a scan that ran AFTER your save has, by definition, seen the world after your save — so its answer is a verdict, not lag, and it now wins. Scans that merely overlapped your save do not count, since one can finish just after a save while having read NuVizz just before. Nothing was loosened: the server still refuses to un-plan a stop on the saved-search list\'s word alone (it goes and asks NuVizz about that specific stop first), and the overnight case that the twelve hours existed for is untouched — with the scanner paused, no scan ever passes your save, so a confirmed carry-over still holds until morning. Nine tests cover it, Kai Wong\'s case included.'],
   ['0.54.2', 'CLICK A ROUTE LINE ON THE MAP TO PULL UP THE ROUTE. Chad: "I want to be able to click on these route lines and it pull up the route." With Show routes on you get a coloured line per load, and until now they were decoration — the only way to open one was to find it in the Routes list on the right. Click any line now and that route opens: on the Map screen it opens in the route panel and frames it, on Routing it opens as a Compare card. Same gesture on both maps. THE PART THAT MAKES IT USABLE: those lines are drawn 2.5 to 3 pixels wide, and a 3-pixel diagonal is a genuinely bad thing to ask anyone to hit with a mouse — worse for the faded lines, which are drawn at a quarter opacity when another route is already open. So the click target is not the line you see; it is a 16-pixel-wide invisible line running the same path. You aim near the route and it opens. Hovering shows a pointer and thickens the line so you can tell what you are about to open before you commit. Two things deliberately still work exactly as before: clicking a STOP that happens to sit on top of a line opens the stop, not the route (pins always win), and dragging the map across a line still pans instead of opening anything.'],
   ['0.54.1', 'THE STOP COUNT ON THE ROUTING MAP NOW COUNTS THE DOTS YOU CAN SEE. Chad: "why are there more dots on the map than on the bottom panel, they should match." The chip in the corner of the routing map said "833 stops" — and that was the WHOLE day\'s board, counted before anything was hidden. The map underneath it was drawing a filtered subset, because your bottom grid had a status filter on (Un-Planned) and the map follows that filter on purpose. So the number and the pins under it were describing two different things, and neither of them matched the grid. The chip now reads "15 of 833 stops" whenever a grid filter is hiding stops, with the first number in amber, and hovering it explains what is hidden. TWO THINGS THAT ARE WORKING AS INTENDED and are worth knowing, because they are why the counts still will not be identical. FIRST, a route you have pulled up in Compare always draws in full — those nine numbered SUW 4 pins stay on the map no matter what the status filter says, because a route losing members mid-view while you are working it is far worse than an extra pin. Anything you have selected is exempt for the same reason: a hidden stop could otherwise ride into a build unseen. SECOND, the bottom grid and the map are not looking at the same days. The grid was set to "Last 7 days" (4,264 stops); the map shows the one board day you have picked, plus any unplanned orders from the grid\'s window so you can actually select and plan them. Different date ranges, so different counts — by design.'],
@@ -5155,19 +5157,34 @@ function StopDeliveryDateEditor({ stop, onRefreshed }) {
   const [date, setDate] = useState('');
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState(null);       // { kind:'ok'|'err', text }
+  // The day a Save on THIS device watched NuVizz confirm, pinned to the order it was for.
+  // Same principle as the plan overlay: a write the dispatcher just watched land must never
+  // read back as the old value because a cached field hasn't caught up.
+  const [confirmed, setConfirmed] = useState(null);   // { pro, date }
   const pro = stop?.stopNbr || stop?.primaryPro || stop?.pro || '';
   // The order's OWN delivery window when we have it (enrichment stores the real one), falling
   // back to the day it's filed under. Shown so you can see what you're changing FROM.
-  const current = String(stop?.scheduledFrom || '').slice(0, 10) || stop?.scheduledDate || stop?.boardDate || '';
+  const current = (confirmed?.pro === pro ? confirmed.date : '')
+    || String(stop?.scheduledFrom || '').slice(0, 10) || stop?.scheduledDate || stop?.boardDate || '';
   const onLoad = stop?.loadNbr || stop?.routeName || null;
   const send = async () => {
     if (!date || busy || !pro) return;
     setBusy(true); setMsg(null);
     try {
       const r = await setStopDate(pro, date);
-      if (r?.ok && r?.unchanged) setMsg({ kind: 'ok', text: r.message || `Already dated ${date} — nothing sent.` });
-      else if (r?.ok) {
-        setMsg({ kind: 'ok', text: `Moved to ${date} in NuVizz — off this board until then.` });
+      // The executor's payload rides on `result` — `unchanged`/`fromDate`/`message` live THERE
+      // and never at the top level, so reading them off `r` made the already-dated case fall
+      // into the success branch and announce a move the server had explicitly declined to make.
+      // Same house idiom as the error path below: the answer can arrive on either key.
+      const out = r?.result || r || {};
+      if (r?.ok && out.unchanged) {
+        setConfirmed({ pro, date });
+        setMsg({ kind: 'ok', text: out.message || `Already dated ${date} — nothing sent.` });
+      } else if (r?.ok) {
+        setConfirmed({ pro, date });
+        // Name the day it moved FROM, taken from the server's own read-back of the order —
+        // that's evidence the write landed, not an echo of what was typed into the box.
+        setMsg({ kind: 'ok', text: `Moved ${out.fromDate ? `${out.fromDate} → ${date}` : `to ${date}`} in NuVizz — off this board until then.` });
         try {
           const d = await fetch('/.netlify/functions/nuvizz-pro-lookup?pro=' + encodeURIComponent(pro), { cache: 'no-store' }).then((x) => x.json());
           if (d?.ok && d.stop) onRefreshed?.(d.stop);
@@ -7515,9 +7532,14 @@ function RouteDetailBody({ stops, onPickStop, onViewOnMap }) {
         {sorted.map((s, i) => {
           const kind = classifyStopStatus(s);
           const exec = s.raw?.stopExecutionInfo || {};
+          // Delivered/arrived read their real execution stamp; anything still to run reads
+          // NuVizz's ETA — and when NuVizz has no ETA the scheduled window shows LABELLED,
+          // because an unlabelled window is what made six stops all say "8:00 AM".
+          const eta = kind === 'DELIVERED' || kind === 'ARRIVED' ? null : routeStopEta(s);
           const time = kind === 'DELIVERED' ? fmtClockShort(s.deliveredDTTM || execDeliveredTs(exec))
                      : kind === 'ARRIVED' ? fmtClockShort(s.arrivalDTTM || execArrivalTs(exec))
-                     : fmtClockShort(s.plannedEtaDTTM || exec.to?.plannedEtaDTTM);
+                     : fmtClockShort(eta?.ts);
+          const freight = routeStopFreight(s);
           // Number by NuVizz's own sequence (routeSeq) so the list matches the Route
           // Workbench and the numbered map pins 1:1; fall back to position if absent.
           const rs = routeSeqOf(s);
@@ -7537,8 +7559,12 @@ function RouteDetailBody({ stops, onPickStop, onViewOnMap }) {
                   {addr && <div className="text-[11px] text-slate-500 truncate">{addr}</div>}
                   <div className="text-[11px] text-slate-400 truncate">
                     {s.pro && <span className="font-mono mr-1">{s.pro}</span>}
-                    {time && <span>{time}</span>}
+                    {/* "appt" is never dropped for width: a window read as an ETA is the bug. */}
+                    {time && <span>{eta?.label === 'appt' ? `appt ${time}` : eta ? `ETA ${time}` : time}</span>}
                   </div>
+                  {/* What's actually on the stop — skids and loose, the two numbers a
+                      dispatcher checks against the trailer before it rolls. */}
+                  {freight.text && <div className="text-[11px] font-medium text-slate-600 truncate">{freight.text}</div>}
                 </div>
               </button>
             </li>
