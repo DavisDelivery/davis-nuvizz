@@ -64,7 +64,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.54.10';
+const APP_VERSION = '0.54.11';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -109,6 +109,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.54.11', 'RA ORDERS NOW READ AS PICKUPS EVERYWHERE — IMMEDIATELY, NOT EVENTUALLY. Chad: "Ra\'s should be marked as pickups and not deliveries." They were typed as deliveries at the source: the saved-search feed carries no stop-type column, so every row entering the board was stamped Drop-Off, and a pickup only became a pickup when its one-time detailed lookup happened to run and correct it. Until then the stop card said Drop Off, the grid showed it like any delivery, and the map drew it as one. RA-prefixed order numbers ARE pickups — that is Davis\'s own numbering — so the board now types them as pickups the moment the scan sees the number, with the detailed lookup still the final authority if the two ever disagree. WHERE YOU\'LL SEE IT: the bottom grid shows an amber PU chip in front of the customer name; the map pin carries a PU tag in the same slot the AM/PM window uses (a delivery-window tag or a restriction icon still outranks it — a safety mark beats a type mark); route cards keep the amber PU badge from 0.54.10; and the stop card\'s Type row now says Pick Up from the first scan instead of after enrichment. Nothing about counts, statuses, or routing changed — this is the same stop, finally wearing the right label from the start.'],
   ['0.54.10', 'THE TWO "STOP 16"S ON RASHEED ARE PICKUPS WEARING THE TERMINAL\'S NUMBER — NOW LABELLED AS WHAT THEY ARE. Chad: "our system should match NuVizz and we are showing two stop 16\'s in ours." Verified against the stored board before answering: those two rows are the route\'s two PICKUPS (the desk at College Station Rd and the Georgia Univ pickup), and they are real, single stops — not duplicates. Here is the trap. The stop number our feed carries is NuVizz\'s ShipTo Display-Seq, which numbers the DESTINATION side of each order. For a delivery, the destination IS the customer, so the number is the stop\'s true position — that is why every delivery on your panel matched the workbench exactly. For a pickup, the destination is where the freight is GOING: the terminal. Both pickups return to the same terminal, so both inherited the TERMINAL RETURN\'S slot — one shared number, one past the last delivery. 15 when the route had 15 positions, 16 on your screen after a stop was added. The workbench numbers pickups by where the truck actually visits them — 4 and 13 — and the proof is in our own deliveries: their numbers skip exactly 4 and 13. THE HONEST PART: the pickup\'s true run position lives only inside NuVizz\'s route record. It is not in the saved-search feed we scan, at any price, so this app cannot print 4 and 13 without asking NuVizz — and it will not pretend otherwise. WHAT CHANGED: a pickup on a route card now shows an amber PU badge instead of a number (hover it and it says why), and on the framed route map it pins as P instead of a numbered circle. No number ever prints twice, deliveries are untouched, and the pickups sit at the end of the list where the terminal-return slot files them. If the run order of pickups matters for planning a specific route, the workbench remains the authority — one click away.'],
   ['0.54.9', 'CHAD WAS RIGHT ABOUT MARCUS AND LEROY — THE ENGINE PAGE\'S "WHAT DISPATCH RAN" NUMBERS WERE INFLATED, AND HERE IS THE PROOF AND THE FIX. Yesterday this changelog told you 19 and 20 were "what dispatch actually sent them out with." That was wrong. NuVizz\'s own load records for Jul 28: DAWSONVILLE 14 stops, 2,799 lb. CRUMPTON 13 stops, 3,716 lb. Chad: "Marcus and Leroy have never taken 20 stops on one trip ever." Correct — they did not do it on Jul 28 either. WHAT THE VERIFICATION FOUND, reading our own stored day back with zero NuVizz calls: DAWSONVILLE\'s stored 21 rows split into 14 rows DELIVERED on the 28th whose weights sum to 2,799 lb TO THE POUND — exactly NuVizz\'s 14 — plus 7 ESTES orders sitting SCHEDULED with no delivery time at all. CRUMPTON identically: 13 delivered rows summing to exactly 3,716 lb, plus 7 un-delivered ESTES rows. And every one of those 14 extra orders is ON TODAY\'S BOARD RIGHT NOW, on today\'s DAWSONVILLE and CRUMPTON runs — three of them already delivered this morning. THEY ARE TODAY\'S FREIGHT. What happened: when tomorrow\'s routes get built in the evening out of Estes imports, those orders carry no Estimated Arrival, so the board files them on TODAY — that is the same by-design behaviour the date-change feature exists to work around. At the last scan of the 28th they were sitting planned on the 28th\'s board; the nightly history capture sealed the board as-is; and the engine\'s replay then counted tomorrow\'s stops and tomorrow\'s pounds as work Leroy and Marcus did. THE FIX — THE REPLAY NOW DEMANDS EVIDENCE. A stop only counts as "what dispatch ran on day D" if its delivery stamp lands on day D. Planned-but-never-stamped rows are excluded from the actuals, from the engine\'s input pool, from the driver-day profiles the engine learns from, and from the mined route shapes. That one rule also kills the other zombie classes in one move: a stale plan carried forward for days, and a delivered order double-counted on the day it rolled FROM as well as the day it ran. A stop that rolls overnight now counts on the day it was actually driven — once. SAFETY: on a day where most stops carry no delivery stamps at all (old sparse captures), the check switches itself off and that day replays exactly as before, so old history is not erased. ALSO FIXED WHILE IN THERE: the stop count and the pounds on a driver row were computed over two DIFFERENT sets of stops — pounds included rows the stop count skipped — which is why the numbers could not be reconciled against each other. They now describe the same stops. HOW IT ROLLS OUT: this corrects days as the engine re-scores them (tonight\'s run, or Re-score history in the tuning panel — cached data only, zero NuVizz calls). And to be plain about the accounting: with the phantoms removed, the engine\'s Jul 28 answer for Leroy was 12 stops against a real 14 — near agreement — not the halving yesterday\'s explanation described.'],
   ['0.54.8', 'THE ENGINE IS NOT THE ONE PUTTING 20 STOPS ON MARCUS AND LEROY — DISPATCH DID. PLUS A LEGEND FOR THAT WHOLE PAGE, AND AN ANSWER ON THE GREY LINES. Chad: "marcus and leroy have never taken 20 stops on one trip ever so why in the world would it put that many on them? Owusu, that page needs a legend so someone knows how to interpret what they are looking at on the map, and what is all the gray shadow lines?" THREE THINGS, AND THE FIRST ONE IS THE PAGE LYING BY ABBREVIATION. Read the drivers table: Leroy Smith 12/19, Marcus Crumpton 11/20. That column was headed "Stops E/A", and E/A means ENGINE / ACTUAL. So the engine proposed TWELVE stops for Leroy and ELEVEN for Marcus. The 19 and the 20 are what dispatch actually sent them out with on Jul 28. The engine agrees with you — it is cutting those routes roughly in half. The Routes table above says the same thing from the other side: it lists the routes DISPATCH BUILT and scores how the engine would have re-sequenced them, so DAWSONVILLE\'s 21 stops and CRUMPTON\'s 20 are dispatch\'s numbers, not proposals. Two letters were carrying the entire meaning of that page and they were carrying it badly. The columns now read "Stops eng/disp", "Trips eng/disp", "Lbs eng/disp", and the Routes table says "Stops (dispatch)" outright. SECOND, THE LEGEND. There is now a "How to read this page" panel at the top that says in plain words what the page is (it replays a past day and asks what the engine would have done — it never changes a route), that every paired number is engine first and dispatch second, what the Score actually measures, that a negative Travel Δ is the engine SAVING minutes, what Guided versus Unguided means and why they should be read apart, and what every line and colour on the map is. It remembers whether you have it open. THIRD, THE GREY SHADOW LINES — and this one was a real bug that yesterday\'s change exposed rather than caused. Those are the ORIGINAL route, the one dispatch ran. The reason it looked like four or five bands raking across the whole metro is that a driver\'s stops are numbered 1, 2, 3 within EACH TRIP — so Owusu, who ran two trips, had two stop 1s, two stop 2s and so on, and the map was drawing all of them as ONE line sorted by that number. Trip-one stop, trip-two stop, trip-one stop: a line shuttling between Marietta and the warehouse over and over. It has been doing that the whole time; at 2.5 pixels and half-transparent nobody could see it, and making the line thick enough to be useful is what made it obvious. Dispatch now draws ONE LINE PER TRIP, exactly like the engine side always has. A long leg back across town is now the truck genuinely reloading, not a drawing error. That correction lands on days the engine re-runs — older stored days keep the single line until they are re-scored, rather than breaking.'],
@@ -2211,7 +2212,7 @@ function unplannedDotSvg(color, opts = {}) {
     const txt = Number(count) > 99 ? '99+' : String(count);
     const fs = txt.length >= 3 ? 8 : (txt.length === 2 ? 9.5 : 12);
     core = `<text x="12" y="${txt.length >= 2 ? 15.4 : 16}" font-family="system-ui, sans-serif" font-size="${fs}" font-weight="800" fill="${txtColor}" text-anchor="middle" letter-spacing="-0.5">${txt}</text>`;
-  } else if (tag === 'AM' || tag === 'PM') {
+  } else if (tag === 'AM' || tag === 'PM' || tag === 'PU') {
     core = `<text x="12" y="15.2" font-family="system-ui, sans-serif" font-size="8.5" font-weight="800" fill="${txtColor}" text-anchor="middle" letter-spacing="-0.5">${tag}</text>`;
   } else if (glyph === 'bang') {
     core = `<text x="12" y="16.5" font-family="system-ui, sans-serif" font-size="12" font-weight="800" fill="${txtColor}" text-anchor="middle">!</text>`;
@@ -2464,6 +2465,10 @@ function stopMarkerIcon(google, s, note, opts = {}) {
     restrictions = restrictions.filter((r) => !TRAILER_BLOCKER_KEYS.has(resolveRestrictionKey(r)));
   }
   const dnsStop = !!note?.do_not_send;
+  // Pickups are MARKED on the pin (Chad: "Ra's should be marked as pickups and not
+  // deliveries") — a PU tag in the same slot the AM/PM window uses. A delivery-window tag or
+  // a restriction icon still wins the slot: a safety mark beats a type mark.
+  const pickup = String(s?.stopType || '').toUpperCase() === 'PU';
   const statusKind = classifyStopStatus(s);
   const addrOff = addressLooksOff(s, note);
   // Signature of EVERY input that changes the rendered icon (restrictions already folds in
@@ -2474,6 +2479,7 @@ function stopMarkerIcon(google, s, note, opts = {}) {
     + statusKind + '\x1f' + restrictions.join(',') + '\x1f' + (matched ? 'M' : '') + '\x1f'
     + (note?.priority_flag || '') + '\x1f' + (elig || '') + '\x1f' + (tractorDelivered ? 'T' : '')
     + '\x1f' + (addrOff ? 'A' : '') + '\x1f' + (note?.delivery_window || '') + '\x1f' + count
+    + '\x1f' + (pickup ? 'PU' : '')
     + '\x1f' + (routeColor || '') + '\x1f' + (searchMatched ? 'S' : '') + '\x1f' + (plannedMuted ? 'P' : '');
   const cached = __stopIconCache.get(cacheKey);
   if (cached) return cached;
@@ -2508,7 +2514,7 @@ function stopMarkerIcon(google, s, note, opts = {}) {
     // State A — status drives the pin; matched stops pop orange; a priority flag,
     // AM/PM window, or "address looks off" signal recolor/reglyph as appropriate.
     const meta = STATUS_META[statusKind] || STATUS_META.SCHEDULED;
-    const tag = (note?.delivery_window === 'AM' || note?.delivery_window === 'PM') ? note.delivery_window : null;
+    const tag = (note?.delivery_window === 'AM' || note?.delivery_window === 'PM') ? note.delivery_window : (pickup ? 'PU' : null);
     // A "highlighted" pop dot = selection (matched → amber) OR a Routing search hit
     // (searchMatched → burnt orange). Both share the 22px pop size, solid fill, and top-glyph
     // handling; only the COLOR differs, so a selected stop and a searched stop read distinctly
@@ -10042,7 +10048,14 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
       },
       sortVal: (s) => rowDayOf(s) || '~',
     }] : []),
-    { k: 'name', label: 'Ship To Name', w: 220, get: (s) => s.businessName || '—', sortVal: (s) => s.businessName },
+    // A pickup names itself in the grid (Chad: "Ra's should be marked as pickups and not
+    // deliveries") — the chip rides the name cell so no new column is needed and it survives
+    // any column re-order the gear menu applies.
+    { k: 'name', label: 'Ship To Name', w: 220, get: (s) => (
+        String(s.stopType || '').toUpperCase() === 'PU'
+          ? <><span className="inline-block text-[9px] font-bold rounded bg-amber-100 text-amber-800 px-1 py-px mr-1.5 align-middle" title="Pickup — freight comes back to the terminal">PU</span>{s.businessName || '—'}</>
+          : (s.businessName || '—')
+      ), sortVal: (s) => s.businessName },
     { k: 'addr1', label: 'Address 1', w: 200, get: (s) => s.addr1 || '—', sortVal: (s) => s.addr1 },
     { k: 'addr2', label: 'Address 2', w: 150, get: (s) => s.addr2 || '', sortVal: (s) => s.addr2 },
     { k: 'city', label: 'City', w: 120, get: (s) => s.city || '—', sortVal: (s) => s.city },
