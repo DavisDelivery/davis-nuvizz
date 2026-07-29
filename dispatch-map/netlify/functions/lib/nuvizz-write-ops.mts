@@ -41,7 +41,7 @@ export type SingleOp = typeof SINGLE_OPS[number];
 
 // Ops the HTTP handler accepts (single ops + the per-load Save batch + the panel Save +
 // the async load-import commit with its convergence recipe).
-export const WRITE_OPS = [...SINGLE_OPS, 'commitLoad', 'commitBoard', 'commitImport', 'addStopNote'] as const;
+export const WRITE_OPS = [...SINGLE_OPS, 'commitLoad', 'commitBoard', 'commitImport', 'addStopNote', 'setStopDate'] as const;
 export type WriteOp = typeof WRITE_OPS[number];
 
 /** Ops that MUTATE NuVizz (everything except the GET reads). Used by the
@@ -49,7 +49,7 @@ export type WriteOp = typeof WRITE_OPS[number];
 export const MUTATING_OPS = new Set<WriteOp>([
   'createStop', 'insertStops', 'removeStops', 'assignDriver', 'dispatchLoad',
   'importLoad', 'commitLoad', 'commitBoard', 'commitImport',
-  'partialUpdateStop', 'addStopNote',
+  'partialUpdateStop', 'addStopNote', 'setStopDate',
 ]);
 
 /**
@@ -558,10 +558,86 @@ function withoutPaths(src: Record<string, any>, paths: readonly string[]): Recor
  * caller's read-back tripwire now diffs EVERY echoed field rather than a guard list.
  */
 export function buildNoteWriteStop(rawStop: any, comments: any[]): Record<string, any> {
+  return buildPartialUpdateStop(rawStop, { comments });
+}
+
+/**
+ * The general form of the above: echo the stop we just read, minus the derived keys, with
+ * `overrides` swapped in at the top level. Every partialUpdate write goes through here, so
+ * the "whole stop or NuVizz rejects it" rule and the never-send-attachments rule are stated
+ * once. A note swaps `comments`; a date change swaps `to`.
+ */
+export function buildPartialUpdateStop(rawStop: any, overrides: Record<string, any>): Record<string, any> {
   if (!rawStop || typeof rawStop !== 'object') throw new Error('buildNoteWriteStop: no stop to echo');
-  const out = withoutPaths(rawStop, PARTIAL_UPDATE_DERIVED_KEYS);
-  out.comments = comments;
-  return out;
+  // Overrides are applied BEFORE the strip, never after: a `to` override is built by
+  // spreading the block we read, which carries `to.documents` — applying it afterwards
+  // would put the order's files straight back on the wire that the strip exists to keep
+  // them off. Strip last, and the derived keys cannot return by any route.
+  const merged: Record<string, any> = { ...rawStop };
+  for (const [k, v] of Object.entries(overrides || {})) merged[k] = v;
+  return withoutPaths(merged, PARTIAL_UPDATE_DERIVED_KEYS);
+}
+
+// ── DELIVERY DATE (§D) — moving an order to the day the customer actually wants ──
+//
+// The v7 Stop schema has NO "requested date" field: `to.schedule.timeFrom/timeTo` IS the
+// delivery date (it's what the portal labels "DropOff Date"). So changing an order's date
+// means moving that window — same partialUpdate whole-stop echo a note uses.
+//
+// The window's TIME OF DAY is the customer's appointment and is never touched: we move the
+// DAY and keep the clock, preserving a multi-day span if the record has one. A stop with no
+// window at all gets the same 12:00–17:00 default the create path uses (buildStopPayload) —
+// the one invented value here, and only when there is nothing to preserve.
+
+const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
+/** PURE: is this a real calendar day (YYYY-MM-DD, and an actual date)? */
+export function isDayString(v: any): boolean {
+  const s = String(v ?? '');
+  if (!DAY_RE.test(s)) return false;
+  const d = new Date(`${s}T00:00:00Z`);
+  return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === s;
+}
+const dayMs = (s: string) => Date.parse(`${s}T00:00:00Z`);
+const addDayString = (s: string, n: number) => new Date(dayMs(s) + n * 86400000).toISOString().slice(0, 10);
+
+/** The block a stop's delivery window lives on: `to` for a delivery, `from` for a pickup. */
+export function primarySideKey(rawStop: any): 'to' | 'from' {
+  return String(rawStop?.stopType || 'DO').toUpperCase() === 'PU' ? 'from' : 'to';
+}
+
+/** PURE: the stop's CURRENT delivery day (YYYY-MM-DD) from its own window, or null. */
+export function stopDeliveryDate(rawStop: any): string | null {
+  const tf = rawStop?.[primarySideKey(rawStop)]?.schedule?.timeFrom;
+  return typeof tf === 'string' && isDayString(tf.slice(0, 10)) ? tf.slice(0, 10) : null;
+}
+
+/** PURE: the same schedule with its window moved to `date`, clock (and span) preserved. */
+export function shiftScheduleToDate(schedule: any, date: string): Record<string, any> {
+  if (!isDayString(date)) throw new Error(`setStopDate: '${date}' is not a YYYY-MM-DD date`);
+  const s = schedule && typeof schedule === 'object' ? schedule : {};
+  const timePart = (v: any, fallback: string) => {
+    const str = typeof v === 'string' ? v : '';
+    const m = str.match(/T(\d{2}:\d{2}:\d{2})/);
+    return m ? m[1] : fallback;
+  };
+  const fromDay = typeof s.timeFrom === 'string' && isDayString(s.timeFrom.slice(0, 10)) ? s.timeFrom.slice(0, 10) : null;
+  const toDay = typeof s.timeTo === 'string' && isDayString(s.timeTo.slice(0, 10)) ? s.timeTo.slice(0, 10) : null;
+  // A window that already spans midnight keeps its span; anything else lands inside one day.
+  const span = fromDay && toDay ? Math.max(0, Math.round((dayMs(toDay) - dayMs(fromDay)) / 86400000)) : 0;
+  return {
+    ...s,
+    timeFrom: `${date}T${timePart(s.timeFrom, '12:00:00')}`,
+    timeTo: `${addDayString(date, span)}T${timePart(s.timeTo, '17:00:00')}`,
+  };
+}
+
+/** PURE: the `to`/`from` override a date change sends — the read block with only its
+ *  schedule moved. Returns { side, block } so the caller can spread it into the echo. */
+export function buildStopDateOverride(rawStop: any, date: string): { side: 'to' | 'from'; block: Record<string, any> } {
+  const side = primarySideKey(rawStop);
+  const cur = rawStop?.[side];
+  if (!cur || typeof cur !== 'object') throw new Error(`setStopDate: the stop has no "${side}" block to move`);
+  return { side, block: { ...cur, schedule: shiftScheduleToDate(cur.schedule, date) } };
 }
 
 // ── what we DON'T send still has to survive ──────────────────────────────────

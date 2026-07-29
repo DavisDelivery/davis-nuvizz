@@ -22,7 +22,7 @@
 
 import { scanDate, scansEnabled, deriveFleetSummary, estimateLoadRange, buildScanState, shadowWouldProbe, selectLoadProbeTargets, groupLoadMembers, estimateStopFrontier, unplannedFloor, FLOOR_MARGIN, loadNbrToInt, stopNbrToInt, shouldDeepSweep, deepSweepGate, lookupStopByPro, lookupLoadStopNbrs } from './nuvizz-scan.mts';
 import { loadProbeParity, frontierParity, loadMembershipDelta, dateSliceMismatch } from './scan-parity.mts';
-import { isFirestoreEnabled, writeStops, writeFleetIndex, getDoc, markScanState, readCallStats, readCircuit, readScanState, writeScanState, readRecentFrontier, recordScanMetric, etDayString, readScanConfig, readStops, readEnrichedPros, writeEnrichedPros, writeLoadRoster, readLoadRoster, writeActiveUnplannedSet } from './firestore.mts';
+import { isFirestoreEnabled, writeStops, writeFleetIndex, getDoc, markScanState, readCallStats, readCircuit, readScanState, writeScanState, readRecentFrontier, recordScanMetric, etDayString, readScanConfig, readStops, readEnrichedPros, writeEnrichedPros, writeLoadRoster, readLoadRoster, writeActiveUnplannedSet, readBoardDateOverrides } from './firestore.mts';
 import { listScanForDate, mergeEnrich, twoScanBuckets, etDateForTargetUTC, boardDayFor, applyBoardWriteGrace, applyDemotionVerify, demotionLookupVerdict } from './nuvizz-list.mts';
 import { loadIdsForDate, dropForeignLoadStops, loadRosterForDate } from './nuvizz-loads.mts';
 import { getStop } from './history-store.mts';
@@ -718,7 +718,15 @@ export async function runRefreshStops(req: Request): Promise<Response> {
       }
       // Two-scan mode pulls both saved searches ONCE up front (not per target day) and
       // buckets by date; a fetch failure throws → outer catch preserves the last-good board.
-      const buckets = TWO_SCAN ? await twoScanBuckets() : null;
+      // Dispatcher-set board dates (setStopDate — "the customer doesn't want it until the
+      // 30th"). ONE Firestore read for the whole set, zero NuVizz calls. They must reach BOTH
+      // the bucketing below AND the carry-forward guard further down: boardDayFor is the single
+      // authority for a stop's day, and a stop filed one way but carried another is exactly the
+      // snowball that once bled a whole board onto the wrong day.
+      const boardDateOverrides = await readBoardDateOverrides(TENANT);
+      const overrideCount = Object.keys(boardDateOverrides).length;
+      if (overrideCount) console.log(`[scan] honoring ${overrideCount} dispatcher-set board date(s)`);
+      const buckets = TWO_SCAN ? await twoScanBuckets(boardDateOverrides) : null;
       // Snapshot the CURRENT live unplanned stop-number set (across the whole ±7d pull) so the
       // read-time carry-over fold-in can drop prior-day stops that have since been delivered/
       // planned (they vanish from the active search → not in this set). Zero extra calls. The
@@ -791,7 +799,7 @@ export async function runRefreshStops(req: Request): Promise<Response> {
           let dropped = 0, healedDelivered = 0;
           for (const [nbr, p] of prevByNbr) {
             if (have.has(nbr)) continue;
-            if (boardDayFor(p) !== boardEtDate) { dropped++; continue; } // belongs to another day
+            if (boardDayFor(p, undefined, boardDateOverrides) !== boardEtDate) { dropped++; continue; } // belongs to another day
             // The stop lived on THIS board while open, and the pull now shows it FINISHED under a
             // stale past arrival day (rolled-over work delivered today). File the finished row HERE
             // — pinned to this board's day so it stays — instead of re-carrying the open snapshot,

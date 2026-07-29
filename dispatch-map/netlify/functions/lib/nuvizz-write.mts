@@ -25,10 +25,11 @@ import {
   buildStopNoteComment, rawStopFrom, stopCommentsFrom, mergeStopComments,
   stopNoteFingerprint, fingerprintDrift, buildNoteWriteStop, echoDrift, driftDetail,
   unsentLosses, documentHandlesMoved, type NoteAudience,
+  buildPartialUpdateStop, buildStopDateOverride, stopDeliveryDate, isDayString,
   type SingleOp, type WriteOp, type WriteCreds,
 } from './nuvizz-write-ops.mts';
 import { isHashLikeId } from './nuvizz-list.mts';
-import { patchBoardPlan, isFirestoreEnabled, etDayString } from './firestore.mts';
+import { patchBoardPlan, isFirestoreEnabled, etDayString, setBoardDateOverride, moveBoardStopDay } from './firestore.mts';
 import { rwbEngineBlocked, rwbConfigReady, rwbAddStopsToRoute, rwbSequenceStops, rwbSequenceRoutes } from './nuvizz-rwb.mts';
 
 const hasDriverId = (v: any) => v != null && String(v).trim() !== '' && Number(v) !== 0;
@@ -1994,6 +1995,112 @@ export async function runAddStopNote(requester: RequesterLike, payload: any, cre
   };
 }
 
+/**
+ * runSetStopDate (§D) — move an order to the day the customer actually wants it.
+ *
+ * Chad, on an Estes import the customer deferred to the 30th: "can we create a way to change
+ * the requested date in dispatch map so it doesn't show up." Two halves, and both are needed
+ * or the change doesn't hold:
+ *
+ *   1. NUVIZZ. There is no "requested date" field in the v7 stop schema — `to.schedule` IS
+ *      the delivery date (the portal's "DropOff Date"). So this moves that window, through
+ *      the same whole-stop partialUpdate echo a note uses, with the same read-back tripwires:
+ *      the new window must be there, every echoed field must come back identical, and the
+ *      freight lines / attachments we never send must still be on the order.
+ *   2. OUR BOARD. The board files a stop by the saved search's Estimated Arrival, and NuVizz
+ *      does not recompute that for an unplanned order — so the list will keep reporting the
+ *      old day and the next scan would drag the order straight back onto today. The confirmed
+ *      date is therefore recorded as a board-date OVERRIDE (Firestore, zero NuVizz calls) that
+ *      every later scan honors, and the cached row is moved between day docs immediately so
+ *      the order leaves today's board now rather than in ten minutes.
+ *
+ * Refuses a stop the driver has already acted on: a delivery in flight does not get its date
+ * moved out from under it. 3 NuVizz calls (read → write → verify); an order already on the
+ * requested day costs 1 and writes nothing.
+ */
+export async function runSetStopDate(requester: RequesterLike, payload: any, creds: WriteCreds): Promise<any> {
+  const stopNbr = req(payload?.stopNbr, 'setStopDate: stopNbr');
+  const date = String(req(payload?.date, 'setStopDate: date')).trim();
+  if (!isDayString(date)) return { ok: false, error: `setStopDate: '${date}' is not a YYYY-MM-DD date.`, calls: { reads: 0, writes: 0 } };
+  const calls = { reads: 0, writes: 0 };
+
+  const before = await fireSingle(requester, 'getStop', { stopNbr }, creds);
+  calls.reads += 1;
+  if (!before?.ok) return { ok: false, error: `setStopDate: could not read stop ${stopNbr} (${before?.error || 'read failed'}) — nothing was written.`, calls };
+  const rawBefore = rawStopFrom(before.raw ?? before);
+  const stopId = rawBefore?.stopId ?? payload?.stopId ?? null;
+  if (!stopId) return { ok: false, error: `setStopDate: stop ${stopNbr} has no stopId in its record — cannot target the update safely.`, calls };
+
+  const status = before.stop?.status ?? null;
+  if (isExecutedStopStatus(status)) {
+    return { ok: false, calls, error: `setStopDate: stop ${stopNbr} is already ${status} — a delivery in flight can't have its date moved. Handle it on the route instead.` };
+  }
+  const fromDate = stopDeliveryDate(rawBefore);
+  const onLoad = before.stop?.assignedLoadNbr ?? null;
+  if (fromDate === date) {
+    return { ok: true, unchanged: true, stopNbr, fromDate, date, onLoad, calls, message: `Order ${stopNbr} is already dated ${date} — nothing written.` };
+  }
+
+  const { side, block } = buildStopDateOverride(rawBefore, date);
+  const sent = buildPartialUpdateStop({ ...rawBefore, stopId, stopNbr: String(rawBefore.stopNbr ?? stopNbr) }, { [side]: block });
+  const fpBefore = stopNoteFingerprint(rawBefore);
+  const wrote = await fireSingle(requester, 'partialUpdateStop', { stops: [sent] }, creds);
+  calls.writes += 1;
+  if (!wrote?.ok) return { ok: false, calls, error: `setStopDate: NuVizz rejected the date change (${wrote?.error || 'write failed'}).` };
+
+  const after = await fireSingle(requester, 'getStop', { stopNbr }, creds);
+  calls.reads += 1;
+  if (!after?.ok) {
+    return { ok: false, unverified: true, calls, error: `setStopDate: the change was accepted but the read-back failed (${after?.error || 'read failed'}) — check ${stopNbr} in the portal before re-trying.` };
+  }
+  const rawAfter = rawStopFrom(after.raw ?? after);
+  const landed = stopDeliveryDate(rawAfter) === date;
+  // The schedule is the field we came to change, so it is excluded from the drift diff the
+  // way `comments` is on a note — everything else must still come back byte-identical.
+  const afterEcho = buildPartialUpdateStop(rawAfter, { [side]: { ...rawAfter?.[side], schedule: sent?.[side]?.schedule } });
+  const drift = [...new Set([
+    ...fingerprintDrift(fpBefore, stopNoteFingerprint(rawAfter)).filter((p) => !p.startsWith(`${side}.schedule`)),
+    ...echoDrift(sent, afterEcho),
+  ])];
+  const losses = unsentLosses(rawBefore, rawAfter);
+  if (drift.length || losses.length) {
+    const details = [...driftDetail(sent, afterEcho, drift), ...losses.map((l) => `${l.path}: LOST ${l.lost.join(' · ')}`)];
+    const paths = [...drift, ...losses.map((l) => l.path)];
+    return {
+      ok: false, dateLanded: landed, drift: paths, driftDetails: details, calls,
+      error: `setStopDate: the date ${landed ? 'moved' : 'did NOT move'} BUT partialUpdate changed ${paths.length} other field(s) on the order. ${details.join(' | ')}. Check ${stopNbr} in the portal — do not change dates again until this is investigated.`,
+    };
+  }
+  if (!landed) {
+    return { ok: false, calls, error: `setStopDate: NuVizz accepted the write but ${stopNbr} still reads ${stopDeliveryDate(rawAfter) || 'no date'} when read back — nothing else changed. Try again, or set it in the portal.` };
+  }
+
+  // NuVizz agrees. Now make OUR board agree too, and keep agreeing after the next scan.
+  const board = await applyBoardDateChange(creds, stopNbr, fromDate, date);
+  return { ok: true, stopNbr, fromDate, date, onLoad, calls, board };
+}
+
+/**
+ * The Firestore half of a confirmed date change — zero NuVizz calls, best-effort by design:
+ * the date is already true in NuVizz, so a cache hiccup must never turn a landed write into a
+ * reported failure. It returns what it managed so the outcome is journaled with the op.
+ */
+async function applyBoardDateChange(creds: WriteCreds, stopNbr: string, fromDate: string | null, toDate: string): Promise<any> {
+  if (!isFirestoreEnabled()) return { skipped: 'firestore-disabled' };
+  // parentId/boardDatePath case-normalize, so the uppercase companyCode every write path
+  // carries lands on the same 'davis__' tree the scanner writes (the phantom-tree lesson).
+  const tenant = String((creds as any)?.companyCode || 'DAVIS');
+  const at = new Date().toISOString();
+  const out: any = { at };
+  try {
+    out.override = await setBoardDateOverride(tenant, String(stopNbr), toDate, at);
+  } catch (e: any) { out.overrideError = e?.message || 'override write failed'; }
+  try {
+    out.moved = await moveBoardStopDay(tenant, String(stopNbr), fromDate, toDate, at);
+  } catch (e: any) { out.moveError = e?.message || 'board move failed'; }
+  return out;
+}
+
 export async function runOp(requester: RequesterLike, op: WriteOp, payload: any, creds: WriteCreds): Promise<any> {
   switch (op) {
     // The Compare panel's Save: the in-panel engine toggle sends useRwb OR useImport on the
@@ -2012,6 +2119,7 @@ export async function runOp(requester: RequesterLike, op: WriteOp, payload: any,
     case 'importLoad': return runImportLoad(requester, payload, creds);
     case 'commitImport': return runCommitImport(requester, payload, creds);
     case 'addStopNote': return runAddStopNote(requester, payload, creds);
+    case 'setStopDate': return runSetStopDate(requester, payload, creds);
     default: return fireSingle(requester, op as SingleOp, payload, creds);
   }
 }
