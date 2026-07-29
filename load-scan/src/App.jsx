@@ -3,7 +3,7 @@ import { PackageCheck, RefreshCw, CheckCircle2, XCircle } from 'lucide-react';
 
 // Bumped by hand on every meaningful change, same convention as dispatch-map.
 // Rendered visibly below so a deploy can be confirmed from the page itself.
-const APP_VERSION = '0.1.0';
+const APP_VERSION = '0.1.1';
 
 const BUILD_COMMIT = typeof __BUILD_COMMIT__ !== 'undefined' ? __BUILD_COMMIT__ : 'dev';
 const BUILD_TIME = typeof __BUILD_TIME__ !== 'undefined' ? __BUILD_TIME__ : '';
