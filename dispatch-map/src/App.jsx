@@ -28,6 +28,7 @@ import {
 
 import { db } from './lib/firebase.js';
 import { normalizeMatchKey } from './lib/matchKey.js';
+import { planOverlayAction, PLAN_OVERLAY_TTL_MS } from './lib/plan-overlay.js';
 import { addressLooksOff, suggestAddressFix } from './lib/address-fix.js';
 import { haversineMiles, naiveEtaMinutes, formatEtaClockTime } from './lib/distance.js';
 import { todayInET, isTodayET, formatDateForDisplay, formatDateLong } from './lib/date-util.js';
@@ -61,7 +62,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.54.2';
+const APP_VERSION = '0.54.3';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -106,6 +107,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.54.3', 'A PLAN YOU UNDID IN NUVIZZ NO LONGER STICKS TO THE LOAD ON YOUR SCREEN. Chad: "I just did a fresh scan, why is Kai Wong showing up on Trevor\'s load, it is unplanned status in NuVizz." Here is what was happening, and it was only happening on HIS screen. When a Save is confirmed, this app writes that plan down locally — which stop, which load, which driver — and paints it over the board until a scan comes back agreeing with it. That is deliberate and it is a good thing: it is what stops a route you just watched save from looking unbuilt while NuVizz catches up. The flaw was in what counts as "agreeing". A stop recorded as planned onto SUW 5 only agreed with a board row that showed it planned on SUW 5. So when the stop came back UNPLANNED — the honest answer, because it had been unplanned in the portal — the app read that as "the scan is behind" and painted it right back onto SUW 5. That is the one thing the paint exists to do, so it kept doing it, through every fresh scan, for up to twelve hours. And because the note lives only in your browser, no other dispatcher saw the contradiction — and a build run off that board would have planned against a stop the load does not hold. THE FIX: a scan that ran AFTER your save has, by definition, seen the world after your save — so its answer is a verdict, not lag, and it now wins. Scans that merely overlapped your save do not count, since one can finish just after a save while having read NuVizz just before. Nothing was loosened: the server still refuses to un-plan a stop on the saved-search list\'s word alone (it goes and asks NuVizz about that specific stop first), and the overnight case that the twelve hours existed for is untouched — with the scanner paused, no scan ever passes your save, so a confirmed carry-over still holds until morning. Nine tests cover it, Kai Wong\'s case included.'],
   ['0.54.2', 'CLICK A ROUTE LINE ON THE MAP TO PULL UP THE ROUTE. Chad: "I want to be able to click on these route lines and it pull up the route." With Show routes on you get a coloured line per load, and until now they were decoration — the only way to open one was to find it in the Routes list on the right. Click any line now and that route opens: on the Map screen it opens in the route panel and frames it, on Routing it opens as a Compare card. Same gesture on both maps. THE PART THAT MAKES IT USABLE: those lines are drawn 2.5 to 3 pixels wide, and a 3-pixel diagonal is a genuinely bad thing to ask anyone to hit with a mouse — worse for the faded lines, which are drawn at a quarter opacity when another route is already open. So the click target is not the line you see; it is a 16-pixel-wide invisible line running the same path. You aim near the route and it opens. Hovering shows a pointer and thickens the line so you can tell what you are about to open before you commit. Two things deliberately still work exactly as before: clicking a STOP that happens to sit on top of a line opens the stop, not the route (pins always win), and dragging the map across a line still pans instead of opening anything.'],
   ['0.54.1', 'THE STOP COUNT ON THE ROUTING MAP NOW COUNTS THE DOTS YOU CAN SEE. Chad: "why are there more dots on the map than on the bottom panel, they should match." The chip in the corner of the routing map said "833 stops" — and that was the WHOLE day\'s board, counted before anything was hidden. The map underneath it was drawing a filtered subset, because your bottom grid had a status filter on (Un-Planned) and the map follows that filter on purpose. So the number and the pins under it were describing two different things, and neither of them matched the grid. The chip now reads "15 of 833 stops" whenever a grid filter is hiding stops, with the first number in amber, and hovering it explains what is hidden. TWO THINGS THAT ARE WORKING AS INTENDED and are worth knowing, because they are why the counts still will not be identical. FIRST, a route you have pulled up in Compare always draws in full — those nine numbered SUW 4 pins stay on the map no matter what the status filter says, because a route losing members mid-view while you are working it is far worse than an extra pin. Anything you have selected is exempt for the same reason: a hidden stop could otherwise ride into a build unseen. SECOND, the bottom grid and the map are not looking at the same days. The grid was set to "Last 7 days" (4,264 stops); the map shows the one board day you have picked, plus any unplanned orders from the grid\'s window so you can actually select and plan them. Different date ranges, so different counts — by design.'],
   ['0.54.0', 'CHANGE AN ORDER\'S DELIVERY DATE FROM THE STOP CARD. An Estes import the customer didn\'t want until the 30th sat in the 29th board and let itself be planned. WHY, exactly: the board files every order by the "Estimated Arrival" column on the saved search — and NuVizz does not fill that in for an order nobody has routed yet. An order with no arrival is filed on TODAY, by design (it is how re-delivery duplicates with no dates at all stay visible instead of vanishing). The DropOff date the portal shows, the one field that said the 30th, is not in the feed we scan at all, so nothing in the pipeline could have known. The stop card now has "Change delivery date". Pick a day, Send, and three things happen: the order\'s delivery window moves in NuVizz — the real field, the one the portal and the driver read, with the appointment TIME kept exactly as it was — the order leaves today\'s board immediately rather than at the next scan, and the day you chose is remembered so every future scan keeps honoring it. That last part is not optional: NuVizz will go on reporting the old arrival forever, so without it the order would be back on your board ten minutes later and the whole thing would look broken. Safety is the same as the note box, because it is the same machinery: it reads the order, moves only the window, reads it back, and if ANY other field on that order moved — or the freight lines or the BOL went missing — it refuses to call it a success and tells you to check the portal. It will not touch an order the driver is already running, and if the order is already built into a route it says which one before you send, since moving the date leaves it on a truck running a different day. An order already on the day you picked costs one call and writes nothing.'],
@@ -1220,7 +1222,8 @@ const LS_PLAN_OVERLAY = 'dispatchMap.planOverlay';
 // a stop the server-side patch happened to miss (WIEDMANN/GEORGE L: a confirmed carry-over
 // save) silently reverted to unplanned when the overlay lapsed with no scan to take over.
 // 12 h always spans the pause window; the first agreeing scan still cleans immediately.
-const PLAN_OVERLAY_TTL_MS = 12 * 60 * 60 * 1000;
+// TTL + the per-entry decision live in lib/plan-overlay.js (pure, unit-tested — including the
+// KAI WONG case: a plan undone in the portal that this overlay kept repainting for 12 hours).
 
 function readPlanOverlay() {
   const m = safeReadJSON(LS_PLAN_OVERLAY, {});
@@ -1243,7 +1246,12 @@ function recordPlanOverlay(patch) {
 // Paint live overlay entries over a fetched board. Self-cleaning: an entry is dropped the
 // moment the fetched row already agrees (the scan caught up — authoritative again) or when
 // it expires; disagreeing rows within the TTL take the confirmed plan fields instead.
-function applyPlanOverlay(stops) {
+// `boardScannedAt` is the feed's last_scanned_at — the moment the board this row came from was
+// read from NuVizz. An entry saved BEFORE that scan has been overtaken by it and is released,
+// even when the row disagrees. Omit it (or pass null) and behaviour is exactly as before:
+// agreement-or-TTL only. Overnight, when the scanner is paused, no scan ever passes the save
+// so the 12-hour hold still covers a server patch that missed (the WIEDMANN carry-over case).
+function applyPlanOverlay(stops, boardScannedAt = null) {
   try {
     const m = readPlanOverlay();
     if (!Object.keys(m).length) return stops;
@@ -1260,10 +1268,11 @@ function applyPlanOverlay(stops) {
         const key = String(s.stopNbr ?? '');
         const e = m[key];
         if (!e) return s;
-        const agrees = e.isPlanned
-          ? (s.isPlanned && String(s.loadNbr || s.routeName || '') === String(e.loadNbr))
-          : !!s.isUnplanned;
-        if (agrees) { delete m[key]; dirty = true; return s; }
+        // agree / overtaken / expired all mean "the board is authoritative now" → drop the
+        // entry and use the row as fetched. Only 'paint' keeps the confirmed plan on screen.
+        if (planOverlayAction(e, s, { now, scannedAt: boardScannedAt }) !== 'paint') {
+          delete m[key]; dirty = true; return s;
+        }
         touched = true;
         return e.isPlanned
           ? { ...s, isPlanned: true, isUnplanned: false, status: '20', normalizedStatus: 'SCHEDULED', loadNbr: e.loadNbr, routeName: e.loadNbr, routeSeq: e.routeSeq, driverName: e.driverName ?? s.driverName, driverUserName: e.driverName ?? s.driverUserName, planOverlay: true }
@@ -1343,9 +1352,10 @@ function useStops(date, carryDays = 0) {
         ...s,
         matchKey: normalizeMatchKey(s.businessName || '', s.addr1 || '', s.city || '', s.zip || ''),
       }));
-      // Confirmed-save overlay: a just-saved plan paints over stale cache/scan rows
-      // until the feed agrees (entries self-clean on agreement/expiry).
-      setStops(applyPlanOverlay(decorated));
+      // Confirmed-save overlay: a just-saved plan paints over stale cache/scan rows until the
+      // feed agrees, the entry expires, or — passing lastScannedAt — a scan that ran after the
+      // save overtakes it (a post-save scan is a verdict, not lag; see the constants above).
+      setStops(applyPlanOverlay(decorated, data.lastScannedAt || null));
       setSource(data.source || 'nuvizz');
       setLastScannedAt(data.lastScannedAt || null);
       setLastLoadScanAt(data.lastLoadScanAt || null);
