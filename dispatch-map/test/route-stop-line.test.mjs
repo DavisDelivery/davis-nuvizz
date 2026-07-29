@@ -105,3 +105,36 @@ test('junk and negatives never reach the card', () => {
   assert.equal(routeStopFreight({ cartons: 'four', volume: -2, pallets: NaN }).text, '');
   assert.equal(routeStopFreight({ cartons: '3', volume: '2.4' }).text, '3 sk · 2 loose');
 });
+
+// ── routeStopSeq: pickups never wear the terminal's number ──────────────────
+//
+// RASHEED 07-29: two PU rows both carried routeSeq 16 (the terminal return's slot — ShipTo-
+// Display-Seq sequences the DESTINATION, and every pickup's destination is the terminal),
+// while NuVizz's workbench ran them at 4 and 13. The card printed "16" twice and looked like
+// a duplicated stop.
+import { routeStopSeq } from '../src/lib/route-stop-line.js';
+
+test('a pickup gets NO number — its Display-Seq is the terminal\'s slot, not its position', () => {
+  const desk = { stopNbr: 'RA50848266', stopType: 'PU', routeSeq: 16 };
+  const univ = { stopNbr: 'RA55384202', stopType: 'PU', routeSeq: 16 };
+  assert.deepEqual(routeStopSeq(desk), { seq: null, pickup: true });
+  assert.deepEqual(routeStopSeq(univ), { seq: null, pickup: true });
+});
+
+test('deliveries keep NuVizz\'s own sequence, raw fallbacks intact', () => {
+  assert.deepEqual(routeStopSeq({ stopType: 'DO', routeSeq: 3 }), { seq: 3, pickup: false });
+  assert.deepEqual(routeStopSeq({ stopType: 'DO', raw: { stop: { to: { seq: 7 } } } }), { seq: 7, pickup: false });
+  assert.deepEqual(routeStopSeq({ raw: { stop: { from: { seq: 2 } } } }), { seq: 2, pickup: false });
+  assert.deepEqual(routeStopSeq({ stopType: 'DO' }), { seq: null, pickup: false });
+  assert.deepEqual(routeStopSeq(null), { seq: null, pickup: false });
+});
+
+test('the RASHEED shape: delivery numbers skip the pickups\' true slots — no duplicates printed', () => {
+  const route = [
+    { stopType: 'DO', routeSeq: 2 }, { stopType: 'DO', routeSeq: 3 }, { stopType: 'DO', routeSeq: 5 },
+    { stopType: 'PU', routeSeq: 16 }, { stopType: 'PU', routeSeq: 16 },
+  ];
+  const labels = route.map((s) => routeStopSeq(s).seq).filter((n) => n != null);
+  assert.deepEqual(labels, [2, 3, 5]);
+  assert.equal(new Set(labels).size, labels.length, 'no number ever prints twice');
+});
