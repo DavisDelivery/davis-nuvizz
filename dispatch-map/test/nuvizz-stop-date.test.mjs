@@ -16,7 +16,7 @@ import {
 } from '../netlify/functions/lib/nuvizz-write-ops.mts';
 import { runSetStopDate } from '../netlify/functions/lib/nuvizz-write.mts';
 import { boardDayFor, bucketByDate } from '../netlify/functions/lib/nuvizz-list.mts';
-import { pruneBoardDateOverrides } from '../netlify/functions/lib/firestore.mts';
+import { pruneBoardDateOverrides, shiftBoardStopWindow } from '../netlify/functions/lib/firestore.mts';
 
 const CREDS = { base: 'https://portal.example.com/deliverit/openapi/v7', companyCode: 'DAVIS', authHeader: 'Basic x' };
 
@@ -134,6 +134,61 @@ test('pruneBoardDateOverrides: a "not yet" whose day has passed is dropped', () 
   const map = { a: '2026-07-28', b: '2026-07-29', c: '2026-08-05', d: 'nonsense', '': '2026-08-05' };
   assert.deepEqual(pruneBoardDateOverrides(map, '2026-07-29'), { b: '2026-07-29', c: '2026-08-05' });
   assert.deepEqual(pruneBoardDateOverrides(null, '2026-07-29'), {});
+});
+
+// ── the cached row's OWN window moves too ────────────────────────────────────
+//
+// Chad, Jul 29: "Dont think that this is actually writing to nuvizz when you change the date."
+// It was writing — and verifying, and refusing to claim success on drift. What never moved was
+// the CACHED row: moveBoardStopDay re-filed it under the new boardDate/scheduledDate and left
+// `scheduledFrom` on the old day. That is the first field the "Change delivery date (…)" label
+// reads, it is not a LIVE_LIST_FIELD (mergeEnrich carries it forward untouched), and an
+// already-enriched stop is never re-read — so the stale day outlived every later scan and a
+// confirmed write read back as if it had never happened.
+
+test('shiftBoardStopWindow: the row\'s delivery window follows the write, clock kept', () => {
+  const row = { scheduledFrom: '2026-07-29T12:00:00', scheduledTo: '2026-07-29T12:30:00' };
+  assert.deepEqual(shiftBoardStopWindow(row, '2026-07-30'), {
+    scheduledFrom: '2026-07-30T12:00:00', scheduledTo: '2026-07-30T12:30:00',
+  });
+});
+
+test('shiftBoardStopWindow: a window spanning midnight keeps its span', () => {
+  const row = { scheduledFrom: '2026-07-29T22:00:00', scheduledTo: '2026-07-30T02:00:00' };
+  assert.deepEqual(shiftBoardStopWindow(row, '2026-08-03'), {
+    scheduledFrom: '2026-08-03T22:00:00', scheduledTo: '2026-08-04T02:00:00',
+  });
+});
+
+test('shiftBoardStopWindow: moving BACKWARD works the same way', () => {
+  assert.deepEqual(shiftBoardStopWindow({ scheduledFrom: '2026-08-05T09:00:00' }, '2026-07-30'), {
+    scheduledFrom: '2026-07-30T09:00:00',
+  });
+});
+
+test('shiftBoardStopWindow: nothing to move → no keys, so setDoc never fabricates a time', () => {
+  // A row with no window, a junk window, a junk target, or one already on the day: the spread
+  // in moveBoardStopDay must add NOTHING rather than write a null over a real value.
+  assert.deepEqual(shiftBoardStopWindow({}, '2026-07-30'), {});
+  assert.deepEqual(shiftBoardStopWindow({ scheduledFrom: null }, '2026-07-30'), {});
+  assert.deepEqual(shiftBoardStopWindow({ scheduledFrom: 'sometime tuesday' }, '2026-07-30'), {});
+  assert.deepEqual(shiftBoardStopWindow({ scheduledFrom: '2026-07-29T12:00:00' }, 'next week'), {});
+  assert.deepEqual(shiftBoardStopWindow({ scheduledFrom: '2026-07-29T12:00:00' }, '2026-07-29'), {});
+  assert.deepEqual(shiftBoardStopWindow(null, '2026-07-30'), {});
+});
+
+test('shiftBoardStopWindow: a missing scheduledTo does not invent one', () => {
+  const out = shiftBoardStopWindow({ scheduledFrom: '2026-07-29T12:00:00', scheduledTo: null }, '2026-07-30');
+  assert.deepEqual(out, { scheduledFrom: '2026-07-30T12:00:00' });
+  assert.equal('scheduledTo' in out, false);
+});
+
+test('shiftBoardStopWindow: the row lands on the day the label reads back', () => {
+  // The editor's `current`: scheduledFrom.slice(0,10) → scheduledDate → boardDate. All three
+  // must agree with the day NuVizz now holds, or the label contradicts the write.
+  const row = { scheduledFrom: '2026-07-29T12:00:00', scheduledTo: '2026-07-29T12:30:00', scheduledDate: '2026-07-29', boardDate: '2026-07-29' };
+  const moved = { ...row, ...shiftBoardStopWindow(row, '2026-07-30'), boardDate: '2026-07-30', scheduledDate: '2026-07-30' };
+  assert.equal(String(moved.scheduledFrom).slice(0, 10) || moved.scheduledDate || moved.boardDate, '2026-07-30');
 });
 
 // ── end to end through the op runner ─────────────────────────────────────────

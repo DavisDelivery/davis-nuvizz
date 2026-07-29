@@ -1107,6 +1107,43 @@ export function pruneBoardDateOverrides(map: Record<string, string>, today: stri
   return out;
 }
 
+/**
+ * PURE: the cached row's OWN delivery window, moved onto `toDate` with the clock kept.
+ *
+ * Why this exists (Chad, Jul 29: "Dont think that this is actually writing to nuvizz when you
+ * change the date"). setStopDate DOES write — it moves `to.schedule`, reads the order back, and
+ * refuses to report success on any drift. What never moved was the CACHED row: moveBoardStopDay
+ * re-filed it under boardDate/scheduledDate and left `scheduledFrom` holding the pre-change day.
+ * That field is the first thing the editor's "Change delivery date (…)" label reads, and it is
+ * NOT a LIVE_LIST_FIELD — mergeEnrich carries it forward untouched, and an already-enriched stop
+ * is never re-read — so the stale day survived every later scan. Reopen the card and it still
+ * showed the old date: a confirmed, verified write that looked like it never happened.
+ *
+ * This is cache coherency, not a guess: `scheduledFrom`/`scheduledTo` on an enriched row ARE
+ * `to.schedule.timeFrom/timeTo`, the exact fields the write just moved in NuVizz. `plannedEtaDTTM`
+ * is deliberately NOT touched — that is the saved search's Estimated Arrival, which NuVizz really
+ * does leave on the old day (the whole reason a board-date override has to exist).
+ *
+ * The DELTA is applied to both ends so a window spanning midnight keeps its span, and an
+ * unparseable/absent value yields no key at all rather than a fabricated time.
+ */
+export function shiftBoardStopWindow(row: any, toDate: string): { scheduledFrom?: string; scheduledTo?: string } {
+  const DAY = /^\d{4}-\d{2}-\d{2}$/;
+  const from = typeof row?.scheduledFrom === 'string' ? row.scheduledFrom : '';
+  if (!DAY.test(String(toDate)) || !DAY.test(from.slice(0, 10))) return {};
+  const dayMs = (d: string) => Date.parse(d + 'T00:00:00Z');
+  const delta = Math.round((dayMs(toDate) - dayMs(from.slice(0, 10))) / 86400000);
+  if (!Number.isFinite(delta) || delta === 0) return {};
+  const shift = (ts: any): string | undefined => {
+    if (typeof ts !== 'string' || !DAY.test(ts.slice(0, 10))) return undefined;
+    return new Date(dayMs(ts.slice(0, 10)) + delta * 86400000).toISOString().slice(0, 10) + ts.slice(10);
+  };
+  const out: { scheduledFrom?: string; scheduledTo?: string } = {};
+  const f = shift(from); if (f) out.scheduledFrom = f;
+  const t = shift(row?.scheduledTo); if (t) out.scheduledTo = t;
+  return out;
+}
+
 /** Record (or clear, with date=null) one stop's dispatcher-set board date. Returns the new size. */
 export async function setBoardDateOverride(tenant: string, stopNbr: string, date: string | null, at: string): Promise<{ count: number; date: string | null }> {
   if (!isFirestoreEnabled()) return { count: 0, date: null };
@@ -1144,8 +1181,12 @@ export async function moveBoardStopDay(
     const { _id, ...rest } = cur;
     // The moved row is stamped with the new day AND board_write_at, so the scan-merge grace
     // defends it exactly like a confirmed plan write while NuVizz's list catches up.
+    // shiftBoardStopWindow also moves the row's OWN delivery window, because that is the field
+    // the write actually changed in NuVizz and the one the date editor's label reads — without
+    // it a confirmed move kept showing the old day forever (see the helper's note).
     await setDoc(`${COLLECTION}/${parentId(tenant, toDate)}/stops/${nbr}`, {
-      ...rest, boardDate: toDate, scheduledDate: toDate, carryover: false, board_write_at: at, board_date_set_at: at,
+      ...rest, ...shiftBoardStopWindow(rest, toDate),
+      boardDate: toDate, scheduledDate: toDate, carryover: false, board_write_at: at, board_date_set_at: at,
     });
     let removed = false;
     try { await deleteDoc(src); removed = true; } catch { /* the next scan prunes it */ }
