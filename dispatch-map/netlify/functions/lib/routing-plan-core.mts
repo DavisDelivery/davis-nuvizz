@@ -500,6 +500,14 @@ export async function runPlanForDate(
       actual_driver: stopToActualDriver.get(s.id) ?? null,
       engine_driver: stopToEngineDriver.get(s.id) ?? null,
       actual_pos: stopToActualPos.get(s.id) ?? null,   // dispatch delivery order (for map sequencing + pin numbers)
+      // WHICH actual trip the stop was on. actual_pos restarts at 1 per LOAD, so a driver
+      // running two trips has two stops at position 1, two at position 2, and so on. The diff
+      // map grouped a driver's stops into ONE line and sorted them by that position, which
+      // interleaved the two trips and drew a line shuttling between them across the metro —
+      // the grey bands Chad asked about. The engine side already draws one line per trip
+      // (engine_trips); dispatch needs the same key to do it. Old stored plans have no
+      // actual_trip and the map falls back to per-driver, so this heals as plans recompute.
+      actual_trip: loadKeyForStop(rawById.get(s.id)) ?? null,
     })),
     engine_trips: engineTrips.map((t) => ({ driver_key: t.driverKey, seq: t.seq, stop_ids: t.orderedIds, travel_min: Math.round(t.travelMin * 10) / 10 })),
     fleet_chain: { far_first_rate: fleet.far_first_rate, reload_gap_median_min: fleet.reload_gap_median_min, source: fleet.source },
