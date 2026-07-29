@@ -25,7 +25,7 @@
 
 import { getDoc, setDoc } from './firestore.mts';
 import { histDocId } from './history-store.mts';
-import { loadKeyForStop } from './routing-reference.mts';
+import { loadKeyForStop, dropUnexecuted } from './routing-reference.mts';
 import { driverKeyFor, DEPOT } from './history-derive.mts';
 import { haversineMiles } from './routing-engine-solver.mts';
 import { routingEngineDisabled } from './routing-engine-config.mts';
@@ -124,8 +124,14 @@ export function extractDriverDays(
   opts: { tenant: string; date: string; truckClassOf?: (s: any) => string | null; nowIso?: string },
 ): DriverDayDoc[] {
   const truckClassOf = opts.truckClassOf || (() => null);
+  // Execution-evidence gate (see routing-reference dropUnexecuted): a driver-day envelope is
+  // the day a driver ACTUALLY ran. Next-day freight pre-planned onto a same-named run — and
+  // any stale carried-forward plan — sat on the board as SCHEDULED with no delivery stamp and
+  // inflated these envelopes' stop counts and weights (DAWSONVILLE read ~4,900 lb against a
+  // 2,799 lb load), which then widened every candidate width learned from them.
+  const { stops: dayStops } = dropUnexecuted(stops || [], opts.date);
   const byDriver = new Map<string, any[]>();
-  for (const s of stops || []) {
+  for (const s of dayStops) {
     if (!routeEligible(s)) continue;
     if (!loadKeyForStop(s)) continue;
     const dk = driverKeyFor(s);

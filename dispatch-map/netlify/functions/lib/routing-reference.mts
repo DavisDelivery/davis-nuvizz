@@ -72,6 +72,8 @@ export interface ExtractionSkip {
 export interface ExtractionResult {
   routes: ReferenceRouteDoc[];
   skipped: ExtractionSkip[];
+  /** Rows dropped by the execution-evidence gate (planned but never stamped on this day). */
+  unexecuted_excluded: number;
 }
 
 // PURE: load identity — loadNbr when present, else routeName__driverUserName.
@@ -112,6 +114,49 @@ function hasCoords(s: any): boolean {
 // re-delivery attempt.
 function routeEligible(s: any): boolean {
   return !!s && s.isPlanned === true && s.isTerminal !== true && s.isUnplanned !== true && s.isAttempt !== true;
+}
+
+// ── Execution evidence (Jul 29, DAWSONVILLE/CRUMPTON) ────────────────────────
+//
+// "Planned on day D's board" is NOT "ran on day D", and the difference is not noise. The
+// engine's replay of 2026-07-28 charged Leroy Smith with 19-21 stops / ~4,900 lb and Marcus
+// Crumpton with 20 / 7,966 lb, when NuVizz's own load records closed at 14 stops / 2,799 lb
+// and 13 / 3,716 lb. Chad (who knows his drivers): "marcus and leroy have never taken 20
+// stops on one trip ever." He was right — reading the stored day back, each load's DELIVERED
+// rows matched NuVizz to the stop and TO THE POUND, and everything above that was ESTES-*
+// orders sitting SCHEDULED with no delivery stamp: the NEXT day's freight, planned onto the
+// next day's same-named run during the evening, filed onto D's board because an Estes import
+// carries no Estimated Arrival (boardDayFor files a dateless open row on TODAY, by design),
+// and then sealed into D's history at capture. The same door admits every stale carried-
+// forward plan (the KAI WONG class) and patchBoardPlan's prior-day rescue stamps.
+//
+// So the replay now demands EVIDENCE: a row only counts toward "what dispatch ran on D" if
+// its delivery stamp lands on D. That one test excludes tomorrow's pre-built freight, zombie
+// plans, and rescue stamps in a single move — and a stop that ROLLS overnight stops being
+// double-counted, because it counts on the day its stamp says it was actually driven.
+export function executedOnDate(s: any, date: string): boolean {
+  return String(s?.deliveredDTTM ?? '').slice(0, 10) === String(date);
+}
+
+/**
+ * Drop the rows a day's replay must not count: route-eligible, load-keyed rows with NO
+ * delivery stamp on that day. Everything else (unplanned pool, attempts, keyless rows)
+ * passes through untouched — the callers' own filters already handle those.
+ *
+ * SELF-DISABLING on days without evidence: if fewer than half the eligible rows carry a
+ * same-day stamp, the day's stamps can't be trusted as a census (sparse legacy capture, a
+ * feed that dropped the delivered column) and filtering would erase real work — so nothing
+ * is dropped and `applied: false` says so. 2026-07-28 itself: 715 of 831 rows stamped.
+ */
+export function dropUnexecuted(stops: any[], date: string): { stops: any[]; excluded: number; applied: boolean } {
+  const all = Array.isArray(stops) ? stops : [];
+  const eligible = all.filter((s) => routeEligible(s) && !!loadKeyForStop(s));
+  const executed = eligible.filter((s) => executedOnDate(s, date));
+  if (!eligible.length || executed.length < eligible.length * 0.5) {
+    return { stops: all, excluded: 0, applied: false };
+  }
+  const kept = all.filter((s) => !(routeEligible(s) && !!loadKeyForStop(s) && !executedOnDate(s, date)));
+  return { stops: kept, excluded: all.length - kept.length, applied: true };
 }
 
 // Unique per-route stop id: the PRO when it's unique within the route, else
@@ -160,8 +205,13 @@ export function extractReferenceRoutes(
     top_precision: cfg.top_precision,
   };
 
+  // Evidence gate first: a reference route mined from day D must be the route D actually
+  // RAN — next-day freight pre-planned under the same recurring name (see dropUnexecuted)
+  // otherwise rides in with its own routeSeq and poisons the mined shape.
+  const { stops: dayStops, excluded: unexecutedExcluded } = dropUnexecuted(stops || [], date);
+
   const groups = new Map<string, any[]>();
-  for (const s of stops || []) {
+  for (const s of dayStops) {
     if (!routeEligible(s)) continue;
     const key = loadKeyForStop(s);
     if (!key) continue;
@@ -232,7 +282,7 @@ export function extractReferenceRoutes(
     });
   }
 
-  return { routes, skipped };
+  return { routes, skipped, unexecuted_excluded: unexecutedExcluded };
 }
 
 // PURE: pick the reference route for a target route — candidates must be

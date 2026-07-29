@@ -231,7 +231,8 @@ export async function runShadowForDate(
   } catch (e: any) {
     console.error('[routing-engine] roster load failed (truck_class null):', e?.message);
   }
-  const { routes, skipped } = extractReferenceRoutes(stops, { tenant, date, cfg, truckClassOf });
+  const { routes, skipped, unexecuted_excluded } = extractReferenceRoutes(stops, { tenant, date, cfg, truckClassOf });
+  if (unexecuted_excluded) console.log(`[routing-engine] ${date}: execution gate excluded ${unexecuted_excluded} planned-but-unstamped row(s) before mining`);
   const references = opts.references ?? await listReferencesBefore(tenant, date);
 
   const nowIso = new Date().toISOString();

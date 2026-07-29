@@ -18,7 +18,9 @@
 
 import { getDoc, setDoc } from './firestore.mts';
 
-export const ENGINE_VERSION = '2.9.1';
+// 2.10.0: execution-evidence gate — replays count only rows with a same-day delivery stamp
+// (DAWSONVILLE/CRUMPTON 07-28: next-day Estes freight sealed into the day inflated actuals).
+export const ENGINE_VERSION = '2.10.0';
 
 export const ENGINE_CONFIG_COLLECTION = 'routing_engine_config';
 

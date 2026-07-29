@@ -24,7 +24,7 @@ import { DEPOT, driverKeyFor } from './history-derive.mts';
 import { ENGINE_VERSION, loadEngineConfig, type EngineConfig } from './routing-engine-config.mts';
 import { zoneId, superOfZone, type ZonePrecisions } from './zones.mts';
 import { loadVehicleRoster, vehicleTypeForStop, type VehicleRoster } from './tractor-flags.mts';
-import { loadKeyForStop, REFERENCE_ROUTES_COLLECTION, type ReferenceRouteDoc } from './routing-reference.mts';
+import { loadKeyForStop, dropUnexecuted, REFERENCE_ROUTES_COLLECTION, type ReferenceRouteDoc } from './routing-reference.mts';
 import {
   DRIVER_DAYS_COLLECTION, extractDriverDays, type DriverDayDoc,
 } from './routing-driver-days.mts';
@@ -237,7 +237,18 @@ export async function runPlanForDate(
     }
   }
 
-  const dateStops = await listStops(tenant, date);
+  const rawDateStops = await listStops(tenant, date);
+  // Execution-evidence gate: the warehouse day is a board snapshot, and a board can hold
+  // freight that never ran that day — most plainly the NEXT day's routes, pre-built in the
+  // evening from Estes imports that carry no Estimated Arrival and so file on TODAY. On
+  // 2026-07-28 that charged Leroy Smith/Marcus Crumpton with 19-21 stops when their loads
+  // closed at 14/13 in NuVizz (delivered rows matched NuVizz to the pound; every extra row
+  // was an un-stamped SCHEDULED order that delivered the NEXT day). Both the answer key AND
+  // the engine's input pool are gated, so the replay assigns the freight the day really ran.
+  const { stops: dateStops, excluded: unexecuted_excluded, applied: executedGateApplied } =
+    dropUnexecuted(rawDateStops || [], date);
+  if (unexecuted_excluded) console.log(`[plan] ${date}: execution gate excluded ${unexecuted_excluded} planned-but-unstamped row(s) (pre-built next-day freight / stale plans)`);
+  if (!executedGateApplied) console.warn(`[plan] ${date}: execution gate NOT applied — under half the eligible rows carry a same-day delivery stamp; replaying the board as stored`);
   let roster: VehicleRoster | null = null;
   try { roster = await loadVehicleRoster(); } catch (e: any) { console.error('[plan] roster load failed:', e?.message); }
   const truckClassOf = (s: any) => (roster ? vehicleTypeForStop(s, roster) : null);
@@ -452,7 +463,11 @@ export async function runPlanForDate(
       envelope_source: envelopeSource,
       trips_engine: eng.trips, trips_actual: dd.trips.filter((t) => t.stops > 0).length,
       stops_engine: eng.stops, stops_actual: actualStops.length,
-      lbs_engine: eng.lbs, lbs_actual: Math.round(dd.day_totals?.weight || 0),
+      // lbs over the SAME stop set the stop count uses (coord-filtered, deduped by stopNbr).
+      // day_totals.weight was summed over a different, wider set — no coord filter, no dedup —
+      // so the two columns never described the same freight (a coordless or duplicate row
+      // added pounds but no stop). One row set, both numbers.
+      lbs_engine: eng.lbs, lbs_actual: Math.round(actualStops.reduce((a, id) => a + (finiteNum(rawById.get(id)?.weight) || 0), 0)),
       agreement_pct: pct(agree, actualStops.length),
     });
   }
@@ -484,6 +499,9 @@ export async function runPlanForDate(
     drivers: activeDrivers.length,
     trips_engine, trips_actual,
     planned_stops: planned.length,
+    // Observability for the execution gate: how many board rows this replay refused to count
+    // as day-D work (0 with the gate un-applied — see the log line at listStops).
+    unexecuted_excluded,
     unassigned_count: result.unassigned.length,
     stop_agreement_pct: agreement.stop_agreement_pct,
     coload_agreement_pct: agreement.coload_agreement_pct,

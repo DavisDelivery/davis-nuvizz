@@ -59,21 +59,41 @@ test('extractDriverDays: two loads become seq-ordered trips by earliest touch', 
   assert.ok(t1.avg_mi > t2.avg_mi);
 });
 
-test('extractDriverDays: a load with no timestamps keeps its freight but gets null seq', () => {
+test('extractDriverDays: on a stamped day, a no-stamp load is NOT this day\'s work', () => {
+  // This test used to pin the opposite — "ghost freight still counts in day totals" — and that
+  // pin was the bug (Jul 29, DAWSONVILLE/CRUMPTON): the un-stamped load on a stamped day is the
+  // NEXT day's pre-built freight (or a stale plan), and counting it charged Leroy Smith with
+  // ~4,900 lb against a 2,799 lb load. Execution evidence now decides: no same-day delivery
+  // stamp on an otherwise-stamped day → the load did not run that day.
   const stops = [
     mkStop({ stopNbr: 'a1', loadNbr: 'L1', arr: '2026-07-08T04:00:00', del: '2026-07-08T04:20:00', weight: 3000 }),
     mkStop({ stopNbr: 'a2', loadNbr: 'L1', arr: '2026-07-08T05:00:00', del: '2026-07-08T05:10:00', weight: 1000 }),
     mkStop({ stopNbr: 'a3', loadNbr: 'L1', arr: '2026-07-08T05:30:00', del: '2026-07-08T05:40:00', weight: 1000 }),
     mkStop({ stopNbr: 'a4', loadNbr: 'L1', arr: '2026-07-08T06:00:00', del: '2026-07-08T06:10:00', weight: 1000 }),
     mkStop({ stopNbr: 'a5', loadNbr: 'L1', arr: '2026-07-08T06:30:00', del: '2026-07-08T06:40:00', weight: 1000 }),
-    // ghost load with no stamps
+    // ghost load with no stamps — tomorrow's freight sitting planned on today's board
+    mkStop({ stopNbr: 'z1', loadNbr: 'L9', weight: 800 }),
+  ];
+  const [dd] = extractDriverDays(stops, { tenant: 'davis', date: '2026-07-08' });
+  assert.equal(dd.trips.find((t) => t.load_key === 'L9'), undefined, 'the phantom load is not a trip');
+  assert.equal(dd.day_totals.weight, 7000, 'and its freight is not in the day totals');
+  assert.equal(dd.day_totals.stops, 5);
+});
+
+test('extractDriverDays: a wholly UN-stamped day keeps the legacy behaviour (null seq, freight counted)', () => {
+  // The evidence gate self-disables when under half the day is stamped (a sparse legacy
+  // capture is not proof nothing ran) — there the original rule stands: the load cannot be
+  // time-ordered (seq_index null) but its freight still counts.
+  const stops = [
+    mkStop({ stopNbr: 'a1', loadNbr: 'L1', weight: 3000 }),
+    mkStop({ stopNbr: 'a2', loadNbr: 'L1', weight: 1000 }),
     mkStop({ stopNbr: 'z1', loadNbr: 'L9', weight: 800 }),
   ];
   const [dd] = extractDriverDays(stops, { tenant: 'davis', date: '2026-07-08' });
   const ghost = dd.trips.find((t) => t.load_key === 'L9');
   assert.equal(ghost.seq_index, null, 'no-timestamp load is not time-ordered');
   assert.equal(ghost.weight, 800);
-  assert.equal(dd.day_totals.weight, 7800, 'ghost freight still counts in day totals');
+  assert.equal(dd.day_totals.weight, 4800, 'freight still counts when the day itself carries no evidence');
 });
 
 // ── as-of leakage ────────────────────────────────────────────────────────────
