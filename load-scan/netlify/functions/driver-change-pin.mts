@@ -14,10 +14,12 @@ import { ok, bad, unauthorized, readJson } from './lib/http.mts';
 
 export default async (req: Request): Promise<Response> => {
   if (req.method !== 'POST') return bad('POST only', 405);
-  if (!isFirestoreEnabled()) return bad('FIREBASE_SA not set', 503);
-
+  // Authenticate BEFORE any configuration check: a caller with no token must not
+  // be able to learn whether this site is configured.
   const claims = authenticate(req);
   if (!claims) return unauthorized();
+
+  if (!isFirestoreEnabled()) return bad('not configured', 503);
 
   const body = await readJson(req);
   const currentPin = String(body?.currentPin ?? '');

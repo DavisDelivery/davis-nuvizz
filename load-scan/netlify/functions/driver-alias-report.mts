@@ -32,10 +32,12 @@ const isWeekend = (dateStr: string) => {
 
 export default async (req: Request): Promise<Response> => {
   if (req.method !== 'GET') return bad('GET only', 405);
-  if (!isFirestoreEnabled()) return bad('FIREBASE_SA not set', 503);
-
+  // Authenticate BEFORE any configuration check: a caller with no token must not
+  // be able to learn whether this site is configured.
   const claims = authenticate(req);
   if (!claims) return unauthorized();
+
+  if (!isFirestoreEnabled()) return bad('not configured', 503);
   if (claims.role !== 'dispatcher') return forbidden('dispatcher role required');
 
   const url = new URL(req.url);

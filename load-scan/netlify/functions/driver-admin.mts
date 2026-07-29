@@ -46,13 +46,15 @@ function bootstrapAllowed(req: Request): boolean {
 }
 
 export default async (req: Request): Promise<Response> => {
-  if (!isFirestoreEnabled()) return bad('FIREBASE_SA not set', 503);
-
+  // Authorize BEFORE any configuration check: a caller with no token must not be
+  // able to learn whether this site is configured.
   const claims = authenticate(req);
   const isDispatcher = claims?.role === 'dispatcher';
   const isBootstrap = bootstrapAllowed(req);
 
   if (!isDispatcher && !isBootstrap) return claims ? forbidden('dispatcher role required') : unauthorized();
+
+  if (!isFirestoreEnabled()) return bad('not configured', 503);
 
   if (req.method === 'GET') {
     if (!isDispatcher) return forbidden('dispatcher role required');

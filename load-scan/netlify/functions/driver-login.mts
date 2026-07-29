@@ -16,7 +16,13 @@ import { ok, bad, json, readJson } from './lib/http.mts';
 
 export default async (req: Request): Promise<Response> => {
   if (req.method !== 'POST') return bad('POST only', 405);
-  if (!isFirestoreEnabled()) return bad('FIREBASE_SA not set', 503);
+  // This is the one endpoint that cannot demand a token, so it must not name the
+  // missing variable either — an anonymous caller learns only that sign-in is
+  // unavailable. The real reason is in the function log.
+  if (!isFirestoreEnabled()) {
+    console.error('[driver-login] FIREBASE_SA is not set — sign-in cannot work');
+    return bad('sign-in unavailable', 503);
+  }
 
   const body = await readJson(req);
   const driverNumber = String(body?.driverNumber ?? '').trim();
