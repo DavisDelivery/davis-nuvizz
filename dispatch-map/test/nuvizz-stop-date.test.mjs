@@ -12,7 +12,7 @@ import assert from 'node:assert/strict';
 
 import {
   isDayString, primarySideKey, stopDeliveryDate, shiftScheduleToDate, buildStopDateOverride,
-  buildPartialUpdateStop, PARTIAL_UPDATE_DERIVED_KEYS, WRITE_OPS, MUTATING_OPS,
+  buildPartialUpdateStop, PARTIAL_UPDATE_DERIVED_KEYS, WRITE_OPS, MUTATING_OPS, boardDateHoldWarning,
 } from '../netlify/functions/lib/nuvizz-write-ops.mts';
 import { runSetStopDate } from '../netlify/functions/lib/nuvizz-write.mts';
 import { boardDayFor, bucketByDate } from '../netlify/functions/lib/nuvizz-list.mts';
@@ -238,6 +238,59 @@ test('runSetStopDate: an order already on that day writes NOTHING', async () => 
   assert.equal(r.ok, true);
   assert.equal(r.unchanged, true);
   assert.equal(calls.filter((c) => c.method === 'POST').length, 0);
+});
+
+// ── "already dated" must still take it off OUR board ────────────────────────
+//
+// Chad, on an order he set to 7/30: "i changed this to 7/30 and it didn't write to nuvizz so it
+// showed up in a new scan." Both halves of that are true, and the second is the bug. A date
+// change is TWO writes: the delivery window in NuVizz, and a board-date override of our own that
+// every later scan honors — needed because NuVizz never recomputes the Estimated Arrival the
+// board files by. When NuVizz ALREADY carries the requested day (an Estes import the customer
+// deferred to the 30th arrives that way — the founding case for this whole feature), the first
+// write is correctly skipped… and the short-circuit used to skip the SECOND one too. So nothing
+// was recorded anywhere, and the next scan filed the order straight back onto today. The one
+// case the override exists for was the one case it never ran in.
+
+test('runSetStopDate: an order already on that day still gets the BOARD override', async () => {
+  const state = { stop: rawStop() };
+  const { requester, calls } = makeRequester({ state });
+  const r = await runSetStopDate(requester, { stopNbr: '007150559', date: '2026-07-29' }, CREDS);
+  assert.equal(r.ok, true);
+  assert.equal(r.unchanged, true);
+  assert.equal(calls.filter((c) => c.method === 'POST').length, 0, 'still writes NOTHING to NuVizz');
+  assert.equal(r.calls.writes, 0);
+  assert.equal(r.calls.reads, 1, 'and still costs exactly one read — the board half is Firestore only');
+  // The board half RAN. (Firestore is off under test, so it reports skipped rather than a
+  // write — the point is that it was attempted at all, where before it was never reached.)
+  assert.ok(r.board, 'the board half must run on the already-dated path');
+  assert.match(String(r.message), /already carries 2026-07-29/i);
+});
+
+test('runSetStopDate: an already-dated order says so plainly, and says what the board did', async () => {
+  const { requester } = makeRequester({ state: { stop: rawStop() } });
+  const r = await runSetStopDate(requester, { stopNbr: '007150559', date: '2026-07-29' }, CREDS);
+  // Never "Moved …" — nothing moved in NuVizz. But the message must not stop there either:
+  // whether the order leaves today's board is the thing the dispatcher actually asked for.
+  assert.doesNotMatch(String(r.message), /^Moved/i);
+  assert.ok(String(r.message).length > 40, 'says what happened to the board too');
+});
+
+// ── the board half can fail, and it may never fail silently ─────────────────
+
+test('boardDateHoldWarning: a failed override is reported, a healthy one is silent', () => {
+  assert.equal(boardDateHoldWarning({ at: 'x', override: { count: 3, date: '2026-07-30' }, moved: { found: true } }), null);
+  assert.match(boardDateHoldWarning({ skipped: 'firestore-disabled' }), /pull this order back onto today/i);
+  assert.match(boardDateHoldWarning({ overrideError: 'PERMISSION_DENIED' }), /PERMISSION_DENIED/);
+  assert.match(boardDateHoldWarning({ overrideError: 'boom' }), /pull this order back onto today/i);
+  assert.equal(boardDateHoldWarning(null), boardDateHoldWarning({ skipped: true }), 'no result at all is the same as skipped');
+});
+
+test('boardDateHoldWarning: a failed ROW MOVE is a lesser note — the day itself still holds', () => {
+  // The override is what survives a scan; the row move only makes the board catch up sooner.
+  const w = boardDateHoldWarning({ override: { count: 1 }, moveError: 'not found' });
+  assert.match(w, /until the next scan/i);
+  assert.doesNotMatch(w, /pull this order back/i, 'must not imply the day was lost');
 });
 
 test('runSetStopDate: refuses a stop the driver is already running', async () => {

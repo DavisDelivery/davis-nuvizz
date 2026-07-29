@@ -611,6 +611,28 @@ export function stopDeliveryDate(rawStop: any): string | null {
   return typeof tf === 'string' && isDayString(tf.slice(0, 10)) ? tf.slice(0, 10) : null;
 }
 
+/**
+ * PURE: what to tell the dispatcher when the NuVizz write landed but OUR board didn't record it.
+ *
+ * A date change is two halves. NuVizz holds the delivery window; our board holds a date override
+ * that makes every later scan keep honouring the day — because NuVizz never recomputes the
+ * Estimated Arrival the board files by, so without the override the next scan drags the order
+ * straight back onto today. applyBoardDateChange is best-effort by design (the date is already
+ * true in NuVizz; a cache hiccup must not turn a landed write into a reported failure), which
+ * meant a failed override was invisible: the card said "off this board until then" and ten
+ * minutes later the order was back. Chad, on an order he'd moved to the 30th: "it didn't write
+ * to nuvizz so it showed up in a new scan." The reappearance IS the symptom of this half failing.
+ *
+ * @returns the warning to append to a success message, or null when the board holds it.
+ */
+export function boardDateHoldWarning(board: any): string | null {
+  if (!board || board.skipped) return 'our board could NOT record the day (cache unavailable), so the next scan will pull this order back onto today — move it again once the cache is back.';
+  if (board.overrideError) return `our board could NOT record the day (${board.overrideError}), so the next scan will pull this order back onto today — move it again, or set the date in the portal.`;
+  // The override is the half that holds across scans; the row move is only cosmetic speed.
+  if (board.moveError) return 'the order stays visible on this board until the next scan catches up (the day itself is recorded).';
+  return null;
+}
+
 /** PURE: the same schedule with its window moved to `date`, clock (and span) preserved. */
 export function shiftScheduleToDate(schedule: any, date: string): Record<string, any> {
   if (!isDayString(date)) throw new Error(`setStopDate: '${date}' is not a YYYY-MM-DD date`);

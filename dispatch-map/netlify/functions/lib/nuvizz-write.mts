@@ -25,7 +25,7 @@ import {
   buildStopNoteComment, rawStopFrom, stopCommentsFrom, mergeStopComments,
   stopNoteFingerprint, fingerprintDrift, buildNoteWriteStop, echoDrift, driftDetail,
   unsentLosses, documentHandlesMoved, type NoteAudience,
-  buildPartialUpdateStop, buildStopDateOverride, stopDeliveryDate, isDayString,
+  buildPartialUpdateStop, buildStopDateOverride, stopDeliveryDate, isDayString, boardDateHoldWarning,
   type SingleOp, type WriteOp, type WriteCreds,
 } from './nuvizz-write-ops.mts';
 import { isHashLikeId } from './nuvizz-list.mts';
@@ -2038,7 +2038,22 @@ export async function runSetStopDate(requester: RequesterLike, payload: any, cre
   const fromDate = stopDeliveryDate(rawBefore);
   const onLoad = before.stop?.assignedLoadNbr ?? null;
   if (fromDate === date) {
-    return { ok: true, unchanged: true, stopNbr, fromDate, date, onLoad, calls, message: `Order ${stopNbr} is already dated ${date} — nothing written.` };
+    // NuVizz already holds this day — so there is nothing to SEND. But this is the exact case
+    // the board override exists for, and it used to return right here, doing nothing: an Estes
+    // import the customer deferred to the 30th already carries the 30th as its DropOff window,
+    // while the board files it on TODAY off a stale/blank Estimated Arrival. Setting it to the
+    // 30th correctly wrote nothing to NuVizz, recorded nothing on our board either, and the very
+    // next scan filed it straight back onto today (Chad: "i changed this to 7/30 and it didn't
+    // write to nuvizz so it showed up in a new scan"). Agreement with NuVizz is not the goal —
+    // getting the order off today's board is — so the board half runs regardless. Zero NuVizz
+    // calls: this is Firestore only, so an already-dated order still costs exactly 1 read.
+    const board = await applyBoardDateChange(creds, stopNbr, fromDate, date);
+    const warn = boardDateHoldWarning(board);
+    return {
+      ok: true, unchanged: true, stopNbr, fromDate, date, onLoad, calls, board,
+      ...(warn ? { boardWarning: warn } : {}),
+      message: `Order ${stopNbr} already carries ${date} in NuVizz — nothing sent there. ${warn || 'Taken off today’s board, and scans will keep honoring the day.'}`,
+    };
   }
 
   const { side, block } = buildStopDateOverride(rawBefore, date);
@@ -2076,8 +2091,11 @@ export async function runSetStopDate(requester: RequesterLike, payload: any, cre
   }
 
   // NuVizz agrees. Now make OUR board agree too, and keep agreeing after the next scan.
+  // A failure HERE is not a failed write — the date is true in NuVizz — but it is the half that
+  // decides whether the order stays off this board, so it can never stay silent.
   const board = await applyBoardDateChange(creds, stopNbr, fromDate, date);
-  return { ok: true, stopNbr, fromDate, date, onLoad, calls, board };
+  const boardWarning = boardDateHoldWarning(board);
+  return { ok: true, stopNbr, fromDate, date, onLoad, calls, board, ...(boardWarning ? { boardWarning } : {}) };
 }
 
 /**
