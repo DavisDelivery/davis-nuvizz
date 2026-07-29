@@ -23,7 +23,7 @@
 import { scanDate, scansEnabled, deriveFleetSummary, estimateLoadRange, buildScanState, shadowWouldProbe, selectLoadProbeTargets, groupLoadMembers, estimateStopFrontier, unplannedFloor, FLOOR_MARGIN, loadNbrToInt, stopNbrToInt, shouldDeepSweep, deepSweepGate, lookupStopByPro, lookupLoadStopNbrs } from './nuvizz-scan.mts';
 import { loadProbeParity, frontierParity, loadMembershipDelta, dateSliceMismatch } from './scan-parity.mts';
 import { isFirestoreEnabled, writeStops, writeFleetIndex, getDoc, markScanState, readCallStats, readCircuit, readScanState, writeScanState, readRecentFrontier, recordScanMetric, etDayString, readScanConfig, readStops, readEnrichedPros, writeEnrichedPros, writeLoadRoster, readLoadRoster, writeActiveUnplannedSet, readBoardDateOverrides } from './firestore.mts';
-import { listScanForDate, mergeEnrich, twoScanBuckets, etDateForTargetUTC, boardDayFor, applyBoardWriteGrace, applyDemotionVerify, demotionLookupVerdict } from './nuvizz-list.mts';
+import { listScanForDate, mergeEnrich, twoScanBuckets, etDateForTargetUTC, boardDayFor, applyBoardWriteGrace, applyDemotionVerify, demotionLookupVerdict, absentPlanDemoteCandidate } from './nuvizz-list.mts';
 import { loadIdsForDate, dropForeignLoadStops, loadRosterForDate } from './nuvizz-loads.mts';
 import { getStop } from './history-store.mts';
 import { resolveCoords, addrKey } from './geocode.mts';
@@ -345,6 +345,13 @@ export async function runRefreshStops(req: Request): Promise<Response> {
   // load, so a whole just-saved route (16 flips) verifies in a single call.
   const demoteLoadRaw = String(process.env.NUVIZZ_DEMOTE_VERIFY_LOAD_MAX ?? '').trim();
   const DEMOTE_VERIFY_LOAD_MAX = demoteLoadRaw !== '' && Number.isFinite(Number(demoteLoadRaw)) ? Number(demoteLoadRaw) : 4;
+  // How whole this scan's pull has to look before a PLANNED stop's ABSENCE from it is worth
+  // asking NuVizz about (carry-forward, below). 0.5 = the pull returned at least half of what
+  // the prior board held. Under that, "everything vanished" reads as a scan failure and every
+  // plan carries forward unquestioned — the behaviour that predates the absent-check entirely.
+  // Set 0 to question absences on any pull; set >1 to switch the absent-check off.
+  const absentRatioRaw = String(process.env.NUVIZZ_ABSENT_DEMOTE_MIN_RATIO ?? '').trim();
+  const ABSENT_DEMOTE_MIN_RATIO = absentRatioRaw !== '' && Number.isFinite(Number(absentRatioRaw)) ? Number(absentRatioRaw) : 0.5;
 
   // Read today's last LOAD scan time — this is what drives the elapsed-time
   // cadence (Fix 1). Also read the shared call counter + breaker for the log line.
@@ -796,7 +803,12 @@ export async function runRefreshStops(req: Request): Promise<Response> {
         const boardEtDate = TWO_SCAN ? etDateForTargetUTC(date, today) : date;
         if (TWO_SCAN) {
           const have = new Set(dateStops.map((s) => String(s.stopNbr)));
-          let dropped = 0, healedDelivered = 0;
+          // Absence only MEANS anything when the pull itself came back whole. A thin pull (a
+          // vendor hiccup, a half-returned saved search) makes EVERY stop look absent, and
+          // "everything vanished" is a scan failure, not a hundred unplannings. Below the
+          // ratio, plans carry forward untouched and unquestioned exactly as they always have.
+          const pullHealthy = prevByNbr.size === 0 || dateStops.length >= prevByNbr.size * ABSENT_DEMOTE_MIN_RATIO;
+          let dropped = 0, healedDelivered = 0, absentPlanned = 0;
           for (const [nbr, p] of prevByNbr) {
             if (have.has(nbr)) continue;
             if (boardDayFor(p, undefined, boardDateOverrides) !== boardEtDate) { dropped++; continue; } // belongs to another day
@@ -816,10 +828,31 @@ export async function runRefreshStops(req: Request): Promise<Response> {
               const histFin = await histTerminal.lookup(nbr);
               if (histFin) { healedDelivered++; continue; }
             }
+            // A PLANNED stop that vanished from the pull: carry it forward as a demote
+            // CANDIDATE rather than as an unquestionable fact. This is the ONLY way a stop
+            // unplanned in the portal can ever be corrected — unplanning removes it from the
+            // planned saved search, so the list never returns it again, and the verify below
+            // only ever saw rows the list DID return. It rode this line back onto its load on
+            // every scan instead (KAI WONG / SUW 5). Nothing is demoted on absence: the
+            // candidate goes through the same load-membership-then-stop-record verify as any
+            // list disagreement, and only NuVizz's own "that load does not hold it" drops the
+            // plan. Over budget, a failed read, or a recent confirmed Save all keep it planned.
+            // TERMINAL rows are excluded outright. A delivered stop is routinely absent from a
+            // later pull, its load legitimately stops holding it, and demotionLookupVerdict
+            // answers `false` for a terminal record — so a delivered stop that became a
+            // candidate would be "demoted" into an UNPLANNED row and the delivery would vanish
+            // off the board. Absence is a question about the PLAN, never about the outcome.
+            if (pullHealthy && p.isPlanned === true && p.loadNbr && !isTerminalHistoryStatus(p)) {
+              dateStops.push(absentPlanDemoteCandidate(p));
+              absentPlanned++;
+              continue;
+            }
             dateStops.push(p);
           }
           if (dropped) console.log(`[scan] ${date}: carry-forward dropped ${dropped} wrong-day stop(s) (board=${boardEtDate})`);
           if (healedDelivered) console.log(`[scan] ${date}: dropped ${healedDelivered} stale-Scheduled stop(s) sealed DELIVERED in recent history (histReads=${histTerminal.reads()})`);
+          if (absentPlanned) console.warn(`[scan] ${date}: ${absentPlanned} planned stop(s) absent from this pull — queued for demote verify (plan held unless NuVizz says the load dropped them)`);
+          if (!pullHealthy) console.warn(`[scan] ${date}: pull looks thin (${dateStops.length} rows vs ${prevByNbr.size} on the prior board) — carrying plans forward UNVERIFIED; absence is being read as a scan failure, not as unplanning`);
         }
         const seed = new Map<string, { lat: number; lng: number }>();
         const toEnrich: any[] = [];
@@ -836,7 +869,10 @@ export async function runRefreshStops(req: Request): Promise<Response> {
             // city/zip) so the `!s.enriched` check below re-enriches it: fresh address, re-geocoded
             // pin, and refreshed detail. Skip seeding the OLD coords too. Rare → negligible calls.
             const wasReconsigned = p.enriched && reconsignedByListSig(p.addrListSig, s);
-            if (p.enriched && !wasReconsigned) mergeEnrich(s, p); // carry same-day enriched detail forward
+            // An absent-plan candidate IS the prior row (cloned, plan cleared) so there is no
+            // detail to merge — and merging would restore routeSeq, part of the very plan the
+            // candidate exists to put a question mark over.
+            if (p.enriched && !wasReconsigned && !s.absentFromPull) mergeEnrich(s, p); // carry same-day enriched detail forward
             if (wasReconsigned) { reconsigned++; reconsignedNbrs.add(String(s.stopNbr)); }
             // A recent CONFIRMED live Save (write-through, #361) outranks a lagging list row:
             // hold the confirmed plan fields until the list agrees or the grace expires.
