@@ -61,7 +61,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.54.0';
+const APP_VERSION = '0.54.1';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -106,7 +106,9 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.54.1', 'THE STOP COUNT ON THE ROUTING MAP NOW COUNTS THE DOTS YOU CAN SEE. Chad: "why are there more dots on the map than on the bottom panel, they should match." The chip in the corner of the routing map said "833 stops" — and that was the WHOLE day\'s board, counted before anything was hidden. The map underneath it was drawing a filtered subset, because your bottom grid had a status filter on (Un-Planned) and the map follows that filter on purpose. So the number and the pins under it were describing two different things, and neither of them matched the grid. The chip now reads "15 of 833 stops" whenever a grid filter is hiding stops, with the first number in amber, and hovering it explains what is hidden. TWO THINGS THAT ARE WORKING AS INTENDED and are worth knowing, because they are why the counts still will not be identical. FIRST, a route you have pulled up in Compare always draws in full — those nine numbered SUW 4 pins stay on the map no matter what the status filter says, because a route losing members mid-view while you are working it is far worse than an extra pin. Anything you have selected is exempt for the same reason: a hidden stop could otherwise ride into a build unseen. SECOND, the bottom grid and the map are not looking at the same days. The grid was set to "Last 7 days" (4,264 stops); the map shows the one board day you have picked, plus any unplanned orders from the grid\'s window so you can actually select and plan them. Different date ranges, so different counts — by design.'],
   ['0.54.0', 'CHANGE AN ORDER\'S DELIVERY DATE FROM THE STOP CARD. An Estes import the customer didn\'t want until the 30th sat in the 29th board and let itself be planned. WHY, exactly: the board files every order by the "Estimated Arrival" column on the saved search — and NuVizz does not fill that in for an order nobody has routed yet. An order with no arrival is filed on TODAY, by design (it is how re-delivery duplicates with no dates at all stay visible instead of vanishing). The DropOff date the portal shows, the one field that said the 30th, is not in the feed we scan at all, so nothing in the pipeline could have known. The stop card now has "Change delivery date". Pick a day, Send, and three things happen: the order\'s delivery window moves in NuVizz — the real field, the one the portal and the driver read, with the appointment TIME kept exactly as it was — the order leaves today\'s board immediately rather than at the next scan, and the day you chose is remembered so every future scan keeps honoring it. That last part is not optional: NuVizz will go on reporting the old arrival forever, so without it the order would be back on your board ten minutes later and the whole thing would look broken. Safety is the same as the note box, because it is the same machinery: it reads the order, moves only the window, reads it back, and if ANY other field on that order moved — or the freight lines or the BOL went missing — it refuses to call it a success and tells you to check the portal. It will not touch an order the driver is already running, and if the order is already built into a route it says which one before you send, since moving the date leaves it on a truck running a different day. An order already on the day you picked costs one call and writes nothing.'],
+  ['0.53.11', 'AN EMPTY BOARD NOW TELLS YOU WHY IT IS EMPTY. Chad sent a grid reading "No stops match." with 64 loads sitting right next to it and asked why his board showed no deliveries. Two separate things were making that message lie. FIRST, IT WAS STILL LOADING. The header said "pulling…" while the table underneath had already announced "No stops match." — the grid stating a conclusion it did not have yet. Pulling a week-long window takes a few seconds, and for those seconds the board looked broken. It now says "Pulling this window…" with a spinner until the answer actually arrives. SECOND, AND THIS IS THE REAL ONE: the Status filter was on (the bar showed "Status (1)"), and for a date window that filter is sent along with the request — the pull itself only asks for that one status. So when the chosen status has nothing in the window, ZERO rows come back, and the grid\'s "N stops exist but a filter is hiding them — [Clear filters]" message could not fire, because from where it was standing no stops existed at all. You got the bare "No stops match." with nothing naming the filter and no button to clear it. That is exactly the silent-blank trap closed back in v0.45.6, quietly reopened through the server side. An empty grid with any filter on now names the filter, explains that a status filter is applied to the pull itself, and gives you the same one-click Clear. No filter can blank your board without saying so.'],
   ['0.53.10', 'THE BOTTOM BAR STOPS HIDING ITS OWN BUTTONS. Chad: "I can\'t see my drivers or stops buttons anymore and they are more important." The window picker read "Last 7 days · board day", and a dropdown is always as wide as its longest line — so that one label was the widest thing on the bar, and everything it pushed past the right edge simply vanished. It now reads "Last 7 days" and "Last 14 days". Nothing about how they work changed: both still count back from the board date you have selected, exactly as before. The deeper fix is that the bar now WRAPS. It has gained a control at a time — the status percentages, Profiles, the no-location chip, the window, the driver filter, the gear — and until now a bar that ran out of room pushed the leftovers off the end, where they were not just invisible but unreachable, with no scroll and no hint they existed. When the room runs out it now takes a second line instead. Stops/Loads and the driver filter additionally hold their width no matter what else is on the bar, because they are the two you reach for most.'],
   ['0.53.9', 'LOOSE COUNT PER STOP + THE REST OF THE MANIFEST STORY. (1) LOOSE ON EVERY STOP. A route card totalled "26 sk · 21 loose" but there was no way to tell WHICH stops carried the loose pieces. Each stop row now reads e.g. "MARIETTA · 2 sk · 3 loose", and expanding a stop shows lb · sk · loose · pcs together — those cross-check each other, since skids plus loose should equal total pieces. Loose only shows on the collapsed row when a stop actually has some, so the rows that do have loose are the ones that stand out. (2) THE OTHER HALF OF YESTERDAY\'S MANIFEST BUG. The inch-mark fix was real, but it was not the whole story. The reader\'s answer has a size limit, and that limit covers its THINKING as well as the orders it writes out. When the reader was upgraded to a newer AI model back in v0.50.77, that model started thinking by default where the previous one had not — quietly drawing from the exact same budget the orders had to fit inside. So a manifest nowhere near the nominal limit could still run out of room and stop mid-order. The budget is now sized to cover thinking AND a manifest several times larger than anything Estes sends (roughly 200 orders), and it is set for the way we make the request rather than pushed as high as it will go. For the record, since it comes up: the reader can take a PDF up to 600 pages and 32 MB — your manifests are 4 to 8 pages and a few hundred KB, so 50 orders in one PDF is not close to any limit that exists.'],
   ['0.53.8', 'BULK ADD — ONE INCH MARK WAS THROWING AWAY A WHOLE MANIFEST. Chad dropped two Estes manifests together and got "The reader returned no usable JSON — try the drop again." Dropping it again did nothing, and it never would have: THE FAILURE IS THE SAME EVERY TIME. Here is what actually happened. Manifest 047-54026\'s very first consignee, DELMAR GARDENS OF GWINNETT, has a description reading TEM130BKWY 20" WIDE ELECTRIC COIL R. That quote mark after the 20 is an inch symbol — and in the data format the reader answers in, a bare quote mark ENDS the text. One character in one description made the entire answer unreadable, so all 24 orders on that manifest were dropped on the floor and you were told to try again. FOUR FIXES, none of them a retry. (1) A stray quote mark inside a description is now repaired automatically and the orders come through — with a warning telling you the file needed fixing, because a repaired read is exactly where a missing order would hide. (2) The reader had a hard ceiling on how much it could write back, and a long manifest could hit it and stop MID-ROW — the same "no usable JSON" for a totally different reason. The ceiling is now five times higher, the reader is asked to write compactly (about half the size), and if it ever does get cut off, the orders that DID arrive are kept instead of the whole file being binned. (3) MISSING ORDERS NOW SHOUT. Every Estes manifest prints its own "Total Pros" count. If we read 31 of 37, that used to be one line in a long amber warning strip. It is now a RED box at the top of the intake: "Orders are missing — do not push until you have checked the paper," naming the file and the exact shortfall. (4) The instructions we send the reader used to illustrate the format with the REAL numbers off an old manifest (047-52228, trailer 521104). A reader that cannot make out a blurry header has an obvious out there: copy the example. Those are now obvious dummy values, and if one is ever echoed back it is thrown away and flagged instead of landing as a real-looking manifest number. Also: when a read does fail, we now keep what the reader actually said so it can be diagnosed, instead of a dead-end "try again". Zero NuVizz calls, as always.'],
@@ -2712,7 +2714,13 @@ function UnplannedScanCount({ count, visible, className }) {
 // other screens (Routing renders it too). Collapsible to just the stops count; the
 // refresh icon fires the cheap manual scan (useManualScan). Pure presentation — all
 // state comes in as props so each screen wires its own useStops/useManualScan.
-function StopsStatusCard({ stopCount, carryoverCount = 0, totalPallets, loadAt, unplannedAt, isToday, ops, scanErr, scanning, scanCooldown, onRefresh, collapsed, onToggleCollapsed, scanUnplannedCount, visibleUnplannedCount }) {
+function StopsStatusCard({ stopCount, carryoverCount = 0, totalPallets, loadAt, unplannedAt, isToday, ops, scanErr, scanning, scanCooldown, onRefresh, collapsed, onToggleCollapsed, scanUnplannedCount, visibleUnplannedCount, drawnCount = null }) {
+  // `drawnCount` (Routing) = pins actually on the map right now. The card used to publish the
+  // whole day board while the map drew a filtered subset, so the number on the chip matched
+  // neither the pins beneath it nor the bottom grid — Chad, counting dots: "there are more dots
+  // on the map than on the bottom panel, they should match." When a filter is hiding stops the
+  // header now reads "15 of 833 stops" so the chip describes the map you are looking at.
+  const filtering = typeof drawnCount === 'number' && drawnCount !== stopCount;
   return (
     <div className="bg-white/95 backdrop-blur border border-slate-200 rounded-lg shadow px-2.5 py-1.5 text-xs">
       {/* Header row: stops count + collapse/refresh — always visible. */}
@@ -2724,7 +2732,14 @@ function StopsStatusCard({ stopCount, carryoverCount = 0, totalPallets, loadAt, 
           aria-expanded={!collapsed}
         >
           {collapsed ? <ChevronDown size={13} className="text-slate-400" /> : <ChevronUp size={13} className="text-slate-400" />}
-          <span>{stopCount} stops{carryoverCount > 0 ? <span className="text-amber-700 font-normal"> · {carryoverCount} c/o</span> : null}</span>
+          <span
+            title={filtering
+              ? `${drawnCount.toLocaleString()} of ${Number(stopCount || 0).toLocaleString()} stops are on the map — the rest are hidden by the bottom grid's status/driver filter. Stops on an open route card and anything you have selected always stay visible.`
+              : undefined}
+          >
+            {filtering ? <><span className="text-amber-700">{drawnCount.toLocaleString()}</span> of {Number(stopCount || 0).toLocaleString()} stops</> : <>{stopCount} stops</>}
+            {carryoverCount > 0 ? <span className="text-amber-700 font-normal"> · {carryoverCount} c/o</span> : null}
+          </span>
         </button>
         <button
           onClick={onRefresh}
@@ -10510,11 +10525,36 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
             <tbody>
               {sortedRows.length === 0 && (
                 <tr><td colSpan={cols.length} className="px-3 py-5 text-center">
-                  {baseStops.length > 0 && activeFilterLabels.length ? (
+                  {nvLoading ? (
+                    // STILL PULLING. The window pull can take seconds, and until it lands nvRows is
+                    // empty — which used to render as the flat "No stops match.", i.e. the grid
+                    // asserting an answer it did not have yet while the header right above it said
+                    // "pulling…". An empty board mid-pull reads as a broken board.
+                    <span className="text-slate-400 italic inline-flex items-center gap-1.5">
+                      <RefreshCw size={12} className="animate-spin" /> Pulling this window…
+                    </span>
+                  ) : baseStops.length > 0 && activeFilterLabels.length ? (
                     // There ARE stops in this window/board — a filter is hiding them. Say which, and
                     // give a one-click clear (the invisible-search-term trap that blanked the grid).
                     <div className="text-xs text-slate-500 space-y-2">
                       <div>None of the <span className="font-semibold">{baseStops.length.toLocaleString()}</span> stops in this {nvWindow ? 'window' : 'board'} match — hidden by {activeFilterLabels.join(', ')}.</div>
+                      <button onClick={clearAllFilters} className="inline-flex items-center gap-1 px-2.5 py-1 rounded border border-blue-400 text-blue-700 bg-blue-50 hover:bg-blue-100 text-xs font-semibold">
+                        <X size={12} /> Clear filters
+                      </button>
+                    </div>
+                  ) : activeFilterLabels.length ? (
+                    // ZERO CAME BACK **AND** A FILTER IS ON. The branch above counts what was
+                    // fetched, so it can only fire for client-side filtering — but in window mode
+                    // the STATUS filter rides the pull itself (statusCodes on the request), so a
+                    // status with nothing in the window returns zero rows, baseStops is 0, and the
+                    // count branch is skipped. That dropped the dispatcher onto a bare "No stops
+                    // match." with the responsible filter unnamed and no way to clear it from here
+                    // — exactly the silent-blank trap v0.45.6 closed, reopened via the server path.
+                    <div className="text-xs text-slate-500 space-y-2">
+                      <div>
+                        Nothing came back for this {nvWindow ? 'window' : 'board'} — filtered by {activeFilterLabels.join(', ')}.
+                        {statusSel.size ? <span className="block text-slate-400">The status filter is applied to the pull itself, so a status with no stops here returns an empty grid.</span> : null}
+                      </div>
                       <button onClick={clearAllFilters} className="inline-flex items-center gap-1 px-2.5 py-1 rounded border border-blue-400 text-blue-700 bg-blue-50 hover:bg-blue-100 text-xs font-semibold">
                         <X size={12} /> Clear filters
                       </button>
@@ -13479,9 +13519,16 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
   useEffect(() => { safeWriteJSON(LS_STATUS_PILL_COLLAPSED, statusCollapsed); }, [statusCollapsed]);
   // NuVizz records the pallet count in its carton field (stop.cartons) — same sum/label as the Map.
   const boardTotalPallets = useMemo(() => stops.reduce((sum, s) => sum + (Number(s.cartons) || 0), 0), [stops]);
-  const statusCard = (
+  // A FUNCTION, not a pre-built element: it reads `drawnStops`, which is declared far below
+  // (it needs vPositioned / effectiveRouteInfo). Building the element here would evaluate that
+  // reference during this line and throw "Cannot access 'drawnStops' before initialization" —
+  // the same temporal-dead-zone crash that blanked Routing in v0.32.11. A function body is not
+  // evaluated until it's called, and both call sites are below the declaration.
+  const statusCard = () => (
     <StopsStatusCard
       stopCount={stops.length}
+      // What the map is ACTUALLY drawing, so the chip can't disagree with the pins under it.
+      drawnCount={drawnStops.length}
       totalPallets={boardTotalPallets}
       loadAt={lastLoadScanAt}
       unplannedAt={lastUnplannedScanAt}
@@ -15209,22 +15256,28 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
   // pin in its truck's route color (sequence 1..N matching the panel). Click toggles
   // selection; hover drives the map<->list linkage. Numbers/colors track routeInfo so
   // a manual reorder updates the labels live.
+  //
+  // Grid status/driver filter → the map hides non-matching stops (WYSIWYG with the bottom
+  // grid). Exemptions: a SELECTED stop and any stop on a shown route stay visible — hiding a
+  // selection would let invisible stops ride into a build, and a route's numbered pins must
+  // never lose members mid-view.
+  //
+  // HOISTED out of the marker effect so the status card can report what is actually DRAWN.
+  // It used to publish `stops.length` — the whole unfiltered day board — while the map drew a
+  // filtered subset, so the chip and the pins under it disagreed, and neither matched the
+  // bottom grid. A count nobody can reconcile is worse than no count.
+  const drawnStops = useMemo(() => (statusFilterIds
+    ? vPositioned.filter((s) => { const id = String(s.stopNbr); return statusFilterIds.has(id) || selectedIds.has(id) || effectiveRouteInfo.has(id); })
+    : vPositioned), [statusFilterIds, vPositioned, selectedIds, effectiveRouteInfo]);
   useEffect(() => {
     if (!google || !mapRef.current) return;
     markersRef.current.forEach((m) => m.setMap(null));
     const byId = new Map();
-    // Grid status/driver filter → the map hides non-matching stops (WYSIWYG with
-    // the bottom grid). Exemptions: a SELECTED stop and any stop on a shown route
-    // stay visible — hiding a selection would let invisible stops ride into a
-    // build, and a route's numbered pins must never lose members mid-view.
-    const visibleStops = statusFilterIds
-      ? vPositioned.filter((s) => { const id = String(s.stopNbr); return statusFilterIds.has(id) || selectedIds.has(id) || effectiveRouteInfo.has(id); })
-      : vPositioned;
     // Location → its member stopNbrs. Length feeds the count badge; the member list feeds the
     // one-click group select (clicking a multi-order marker toggles every order at the place).
     const locMates = new Map();
-    for (const s of visibleStops) { const k = stopLocKey(s); const a = locMates.get(k); a ? a.push(String(s.stopNbr)) : locMates.set(k, [String(s.stopNbr)]); }
-    markersRef.current = visibleStops.map((s) => {
+    for (const s of drawnStops) { const k = stopLocKey(s); const a = locMates.get(k); a ? a.push(String(s.stopNbr)) : locMates.set(k, [String(s.stopNbr)]); }
+    markersRef.current = drawnStops.map((s) => {
       const id = String(s.stopNbr);
       const sel = !viewing && selectedIds.has(id);
       // A bottom-grid SEARCH hit — highlighted BURNT ORANGE (distinct from the amber selection
@@ -15286,7 +15339,7 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
     });
     markerByIdRef.current = byId;
     lastEmphRef.current = hoverIdRef.current; // markers were built already-emphasized
-  }, [google, vPositioned, viewing, selectedIds, searchMatchIds, statusFilterIds, effectiveRouteInfo, notes, tractorLocs, toggleStopGroup, mapReady, selectedDayKey, emphIcon]);
+  }, [google, drawnStops, vPositioned, viewing, selectedIds, searchMatchIds, statusFilterIds, effectiveRouteInfo, notes, tractorLocs, toggleStopGroup, mapReady, selectedDayKey, emphIcon]);
 
   // Hover emphasis — touch only the two affected markers, not all of them. Keeps
   // the sequence label intact (only the icon scale/ring change).
@@ -15940,7 +15993,7 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
           <div ref={mapDiv} className="absolute inset-0" />
           <RoutingMapFilters unplannedOnly={routeUnplannedOnly} setUnplannedOnly={setRouteUnplannedOnly} satellite={routeSatellite} setSatellite={setRouteSatellite} showRoutes={routeShowRoutes} setShowRoutes={setRouteShowRoutes} hideLabels={routeHideLabels} setHideLabels={setRouteHideLabels} />
           {/* Stops status card — same pill as the dispatch Map (below the ⚙ filters button). */}
-          <div className="absolute top-12 right-2 z-[15] max-w-[230px]">{statusCard}</div>
+          <div className="absolute top-12 right-2 z-[15] max-w-[230px]">{statusCard()}</div>
           {!viewing && <RoutingMapTools selectMode={selectMode} onBox={() => (selectMode === 'box' ? cancelMode() : beginMode('box'))} onLasso={() => (selectMode === 'lasso' ? cancelMode() : beginMode('lasso'))} ninjaMode={ninjaMode} onToggleNinja={onNinjaTool} ninjaAvailable={wbRoutes.length > 0} />}
           {mapsError && <div className="absolute top-2 left-1/2 -translate-x-1/2 bg-red-50 border border-red-300 text-red-700 text-[11px] rounded px-2 py-1">{mapsError}</div>}
           {mapToast && <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-30 max-w-[92%] bg-slate-900/90 text-white text-[11px] rounded-lg shadow-lg px-3 py-1.5 text-center"><NinjaIcon size={12} className="inline -mt-0.5 mr-1" />{mapToast}</div>}
@@ -16102,7 +16155,7 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
         <div ref={mapDiv} className="absolute inset-0" />
         <RoutingMapFilters unplannedOnly={routeUnplannedOnly} setUnplannedOnly={setRouteUnplannedOnly} satellite={routeSatellite} setSatellite={setRouteSatellite} showRoutes={routeShowRoutes} setShowRoutes={setRouteShowRoutes} hideLabels={routeHideLabels} setHideLabels={setRouteHideLabels} />
         {/* Stops status card — same pill as the dispatch Map (below the ⚙ filters button). */}
-        <div className="absolute top-12 right-2 z-[15] max-w-[240px]">{statusCard}</div>
+        <div className="absolute top-12 right-2 z-[15] max-w-[240px]">{statusCard()}</div>
         {!viewing && <RoutingMapTools selectMode={selectMode} onBox={() => (selectMode === 'box' ? cancelMode() : beginMode('box'))} onLasso={() => (selectMode === 'lasso' ? cancelMode() : beginMode('lasso'))} ninjaMode={ninjaMode} onToggleNinja={onNinjaTool} ninjaAvailable={wbRoutes.length > 0} />}
         {mapsError && <div className="absolute top-2 left-1/2 -translate-x-1/2 bg-red-50 border border-red-300 text-red-700 text-[11px] rounded px-2 py-1">{mapsError}</div>}
         {mapToast && <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-30 max-w-[80%] bg-slate-900/90 text-white text-[12px] rounded-lg shadow-lg px-3 py-1.5 text-center"><NinjaIcon size={13} className="inline -mt-0.5 mr-1" />{mapToast}</div>}
