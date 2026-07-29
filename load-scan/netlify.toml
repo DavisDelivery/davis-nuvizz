@@ -14,6 +14,16 @@
 
 [functions]
   node_bundler = "esbuild"
+  # The seeding report walks up to 30 day-partitions of the stop index (~600 stops
+  # each) to collect distinct driver aliases. Netlify's 10s DEFAULT kills it part
+  # way through and the dispatcher gets a truncated table with no warning, so give
+  # it the same 26s headroom the NuVizz-facing functions get on the other sites.
+  # Still zero NuVizz calls — this is Firestore reads only.
+  [functions."driver-alias-report"]
+    timeout = 26
+  # A queued flush after a long dead zone can carry a few hundred scans.
+  [functions."scan-session"]
+    timeout = 26
 
 # SPA fallback: every non-asset path serves index.html so client routing works.
 #
