@@ -34,7 +34,7 @@ import { todayInET, isTodayET, formatDateForDisplay, formatDateLong } from './li
 import { pointInPolygon, latLngInBounds, boxFromCorners, formatReceivingHours, lineItemDims, moveItem, recomputeRoute, resequence, fmtTime12, isPlannedStop, DEFAULT_SERVICE_SEC } from './lib/routing-select.js';
 import { entryScriptFromHtml, isNewBuild } from './lib/build-update.js';
 import { formatDateTime, tsToMillis, loadSummary, buildLoadAutoName } from './lib/routing-loads.js';
-import { callWrite, newClientOpId, addStopNote } from './lib/nuvizzWrite.js';
+import { callWrite, newClientOpId, addStopNote, setStopDate } from './lib/nuvizzWrite.js';
 import { BULK_FIELDS, parseDelimited, looksLikeHeader, autoMapColumns, mappedRowsToOrders, bulkRowMissing, bulkRowIsBlank, bulkRowIsGhost, mappingCoversRequired, headerSignature, manifestRowsToIntake, normalizePhone, bulkRowNuvizzRefs } from './lib/bulk-orders.js';
 import { scanStop, scanStopFull } from './lib/signal-scanner';
 import { applyScannerResults } from './lib/customer-notes-writer';
@@ -61,7 +61,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.53.10';
+const APP_VERSION = '0.54.0';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -106,6 +106,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.54.0', 'CHANGE AN ORDER\'S DELIVERY DATE FROM THE STOP CARD. An Estes import the customer didn\'t want until the 30th sat in the 29th board and let itself be planned. WHY, exactly: the board files every order by the "Estimated Arrival" column on the saved search — and NuVizz does not fill that in for an order nobody has routed yet. An order with no arrival is filed on TODAY, by design (it is how re-delivery duplicates with no dates at all stay visible instead of vanishing). The DropOff date the portal shows, the one field that said the 30th, is not in the feed we scan at all, so nothing in the pipeline could have known. The stop card now has "Change delivery date". Pick a day, Send, and three things happen: the order\'s delivery window moves in NuVizz — the real field, the one the portal and the driver read, with the appointment TIME kept exactly as it was — the order leaves today\'s board immediately rather than at the next scan, and the day you chose is remembered so every future scan keeps honoring it. That last part is not optional: NuVizz will go on reporting the old arrival forever, so without it the order would be back on your board ten minutes later and the whole thing would look broken. Safety is the same as the note box, because it is the same machinery: it reads the order, moves only the window, reads it back, and if ANY other field on that order moved — or the freight lines or the BOL went missing — it refuses to call it a success and tells you to check the portal. It will not touch an order the driver is already running, and if the order is already built into a route it says which one before you send, since moving the date leaves it on a truck running a different day. An order already on the day you picked costs one call and writes nothing.'],
   ['0.53.10', 'THE BOTTOM BAR STOPS HIDING ITS OWN BUTTONS. Chad: "I can\'t see my drivers or stops buttons anymore and they are more important." The window picker read "Last 7 days · board day", and a dropdown is always as wide as its longest line — so that one label was the widest thing on the bar, and everything it pushed past the right edge simply vanished. It now reads "Last 7 days" and "Last 14 days". Nothing about how they work changed: both still count back from the board date you have selected, exactly as before. The deeper fix is that the bar now WRAPS. It has gained a control at a time — the status percentages, Profiles, the no-location chip, the window, the driver filter, the gear — and until now a bar that ran out of room pushed the leftovers off the end, where they were not just invisible but unreachable, with no scroll and no hint they existed. When the room runs out it now takes a second line instead. Stops/Loads and the driver filter additionally hold their width no matter what else is on the bar, because they are the two you reach for most.'],
   ['0.53.9', 'LOOSE COUNT PER STOP + THE REST OF THE MANIFEST STORY. (1) LOOSE ON EVERY STOP. A route card totalled "26 sk · 21 loose" but there was no way to tell WHICH stops carried the loose pieces. Each stop row now reads e.g. "MARIETTA · 2 sk · 3 loose", and expanding a stop shows lb · sk · loose · pcs together — those cross-check each other, since skids plus loose should equal total pieces. Loose only shows on the collapsed row when a stop actually has some, so the rows that do have loose are the ones that stand out. (2) THE OTHER HALF OF YESTERDAY\'S MANIFEST BUG. The inch-mark fix was real, but it was not the whole story. The reader\'s answer has a size limit, and that limit covers its THINKING as well as the orders it writes out. When the reader was upgraded to a newer AI model back in v0.50.77, that model started thinking by default where the previous one had not — quietly drawing from the exact same budget the orders had to fit inside. So a manifest nowhere near the nominal limit could still run out of room and stop mid-order. The budget is now sized to cover thinking AND a manifest several times larger than anything Estes sends (roughly 200 orders), and it is set for the way we make the request rather than pushed as high as it will go. For the record, since it comes up: the reader can take a PDF up to 600 pages and 32 MB — your manifests are 4 to 8 pages and a few hundred KB, so 50 orders in one PDF is not close to any limit that exists.'],
   ['0.53.8', 'BULK ADD — ONE INCH MARK WAS THROWING AWAY A WHOLE MANIFEST. Chad dropped two Estes manifests together and got "The reader returned no usable JSON — try the drop again." Dropping it again did nothing, and it never would have: THE FAILURE IS THE SAME EVERY TIME. Here is what actually happened. Manifest 047-54026\'s very first consignee, DELMAR GARDENS OF GWINNETT, has a description reading TEM130BKWY 20" WIDE ELECTRIC COIL R. That quote mark after the 20 is an inch symbol — and in the data format the reader answers in, a bare quote mark ENDS the text. One character in one description made the entire answer unreadable, so all 24 orders on that manifest were dropped on the floor and you were told to try again. FOUR FIXES, none of them a retry. (1) A stray quote mark inside a description is now repaired automatically and the orders come through — with a warning telling you the file needed fixing, because a repaired read is exactly where a missing order would hide. (2) The reader had a hard ceiling on how much it could write back, and a long manifest could hit it and stop MID-ROW — the same "no usable JSON" for a totally different reason. The ceiling is now five times higher, the reader is asked to write compactly (about half the size), and if it ever does get cut off, the orders that DID arrive are kept instead of the whole file being binned. (3) MISSING ORDERS NOW SHOUT. Every Estes manifest prints its own "Total Pros" count. If we read 31 of 37, that used to be one line in a long amber warning strip. It is now a RED box at the top of the intake: "Orders are missing — do not push until you have checked the paper," naming the file and the exact shortfall. (4) The instructions we send the reader used to illustrate the format with the REAL numbers off an old manifest (047-52228, trailer 521104). A reader that cannot make out a blurry header has an obvious out there: copy the example. Those are now obvious dummy values, and if one is ever echoed back it is thrown away and flagged instead of landing as a real-looking manifest number. Also: when a read does fail, we now keep what the reader actually said so it can be diagnosed, instead of a dead-end "try again". Zero NuVizz calls, as always.'],
@@ -5116,6 +5117,84 @@ function StopNuvizzNoteComposer({ stop, onRefreshed }) {
   );
 }
 
+// Move an order to the day the customer actually wants it (§D). Chad, on an Estes import a
+// customer deferred: "can we create a way to change the requested date in dispatch map so it
+// doesn't show up." NuVizz has no "requested date" field — the DropOff window IS the delivery
+// date — so Send moves that window (keeping the appointment TIME) and records the day as a
+// board override, because NuVizz never recomputes the Estimated Arrival our board files on and
+// the next scan would otherwise drag the order straight back onto today. 3 NuVizz calls; the
+// order leaves this board immediately.
+function StopDeliveryDateEditor({ stop, onRefreshed }) {
+  const [open, setOpen] = useState(false);
+  const [date, setDate] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState(null);       // { kind:'ok'|'err', text }
+  const pro = stop?.stopNbr || stop?.primaryPro || stop?.pro || '';
+  // The order's OWN delivery window when we have it (enrichment stores the real one), falling
+  // back to the day it's filed under. Shown so you can see what you're changing FROM.
+  const current = String(stop?.scheduledFrom || '').slice(0, 10) || stop?.scheduledDate || stop?.boardDate || '';
+  const onLoad = stop?.loadNbr || stop?.routeName || null;
+  const send = async () => {
+    if (!date || busy || !pro) return;
+    setBusy(true); setMsg(null);
+    try {
+      const r = await setStopDate(pro, date);
+      if (r?.ok && r?.unchanged) setMsg({ kind: 'ok', text: r.message || `Already dated ${date} — nothing sent.` });
+      else if (r?.ok) {
+        setMsg({ kind: 'ok', text: `Moved to ${date} in NuVizz — off this board until then.` });
+        try {
+          const d = await fetch('/.netlify/functions/nuvizz-pro-lookup?pro=' + encodeURIComponent(pro), { cache: 'no-store' }).then((x) => x.json());
+          if (d?.ok && d.stop) onRefreshed?.(d.stop);
+        } catch { /* the date landed; the refresh is a nicety */ }
+      // Same house idiom as every other write call site: the reason can arrive on either key.
+      } else setMsg({ kind: 'err', text: r?.error || r?.result?.error || 'Could not change the delivery date.' });
+    } catch (e) { setMsg({ kind: 'err', text: e?.message || 'Could not change the delivery date.' }); }
+    finally { setBusy(false); }
+  };
+  if (!pro) return null;
+  return (
+    <div className="pt-1">
+      {!open ? (
+        <button onClick={() => { setOpen(true); setMsg(null); setDate(current || ''); }} className="inline-flex items-center gap-1.5 text-xs font-semibold text-blue-700 hover:underline">
+          <Clock size={12} /> Change delivery date{current ? ` (${current})` : ''}
+        </button>
+      ) : (
+        <div className="rounded-md border border-slate-200 p-2 space-y-2">
+          <div className="flex items-center justify-between">
+            <div className="text-xs uppercase font-semibold text-slate-500">Delivery date in NuVizz</div>
+            <button onClick={() => { setOpen(false); setMsg(null); }} className="text-slate-400 hover:text-slate-700"><X size={13} /></button>
+          </div>
+          <div className="text-[11px] text-slate-500">
+            {current ? <>Currently <span className="font-semibold text-slate-700">{current}</span>. </> : null}
+            Moving it takes this order off today’s board until that day. The appointment time is kept.
+          </div>
+          {onLoad && (
+            // Never silent about this: the order is already built into a route, so moving its
+            // date leaves it on a truck running a different day.
+            <div className="text-[11px] text-amber-700 leading-snug">
+              This order is planned on <span className="font-semibold">{onLoad}</span> — take it off that route first, or it stays on a truck running a different day.
+            </div>
+          )}
+          <div className="flex items-center gap-2">
+            <input
+              type="date" value={date} disabled={busy}
+              onChange={(e) => setDate(e.target.value)}
+              className="border border-slate-300 rounded px-2 py-1 text-xs text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-400"
+            />
+            <button
+              onClick={send} disabled={busy || !date || date === current}
+              className="px-3 py-1 text-xs font-semibold text-white rounded disabled:opacity-40"
+              style={{ background: BRAND, minHeight: 30 }}
+            >{busy ? 'Sending…' : 'Send to NuVizz'}</button>
+          </div>
+          <div className="text-[10px] text-slate-400">writes order {pro} · 3 NuVizz calls</div>
+          {msg && <div className={'text-[11px] leading-snug break-words ' + (msg.kind === 'ok' ? 'text-green-700' : 'text-red-600')}>{msg.text}</div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function StopLiveDetail({ stop, onRefreshed }) {
   const [refreshing, setRefreshing] = useState(false);
   const [refreshErr, setRefreshErr] = useState(null);
@@ -5149,6 +5228,7 @@ function StopLiveDetail({ stop, onRefreshed }) {
           <div className="text-[10px] text-slate-400 mt-0.5">Refresh to load all notes</div>
         </div>
       ) : null}
+      <StopDeliveryDateEditor stop={stop} onRefreshed={onRefreshed} />
       <StopNuvizzNoteComposer stop={stop} onRefreshed={onRefreshed} />
       <StopActivityTimeline stopNbr={stop.stopNbr || stop.pro} stopId={stop.stopId} onRefreshed={onRefreshed} />
     </div>

@@ -44,6 +44,14 @@ export const fetchRoster = (opts = {}) => callWrite('roster', {}, { ...opts, dry
 export const addStopNote = (stopNbr, text, audience = 'both', opts = {}) =>
   callWrite('addStopNote', { stopNbr, text, audience }, { ...opts, dryRun: false });
 
+// Move an order to the day the customer actually wants it (§D). There is no "requested
+// date" field in NuVizz — `to.schedule` IS the delivery date — so the server moves that
+// window (keeping the appointment TIME), verifies nothing else on the order moved, and
+// records the day as a board override so our own scans stop dragging it back onto today.
+// date: 'YYYY-MM-DD'. 3 NuVizz calls; an order already on that day costs 1 and writes nothing.
+export const setStopDate = (stopNbr, date, opts = {}) =>
+  callWrite('setStopDate', { stopNbr, date }, { ...opts, dryRun: false });
+
 // Stable id so a Save can be retried without creating duplicate orders/assignments.
 export function newClientOpId() {
   try { if (globalThis.crypto?.randomUUID) return `op_${globalThis.crypto.randomUUID()}`; } catch { /* fall through */ }
