@@ -674,3 +674,26 @@ test('demotionLookupVerdict: assigned keeps, unassigned drops', () => {
   assert.equal(demotionLookupVerdict({ ok: true, stop: { normalizedStatus: 'UNPLANNED', isPlanned: false, loadNbr: null } }), false);
   assert.equal(demotionLookupVerdict({ ok: true, stop: { isPlanned: true, loadNbr: '' } }), false, 'planned flag without a load is not assigned');
 });
+
+test('toBoardStop: RA-prefixed orders are PICKUPS off the bare list — not deliveries-until-enriched', () => {
+  // Chad, on RASHEED's RA rows reading like deliveries: "Ra's should be marked as pickups and
+  // not deliveries." The saved search carries no type column and this used to hard-code 'DO',
+  // so a pickup wore delivery type everywhere until its one-time enrichment corrected it.
+  // RA-prefixed order numbers ARE pickups (Davis's numbering, per Chad) — typed immediately.
+  assert.equal(toBoardStop({ stopNbr: 'RA50848266', statusCode: '20', routeName: 'RASHEED' }).stopType, 'PU');
+  assert.equal(toBoardStop({ stopNbr: 'ra55384202', statusCode: '10' }).stopType, 'PU', 'case-insensitive');
+  // Everything else stays a delivery, exactly as before.
+  assert.equal(toBoardStop({ stopNbr: '007153929', statusCode: '20', routeName: 'RASHEED' }).stopType, 'DO');
+  assert.equal(toBoardStop({ stopNbr: 'AVRT-0369005825', statusCode: '20' }).stopType, 'DO');
+  assert.equal(toBoardStop({ stopNbr: 'ESTES-0463115797', statusCode: '20' }).stopType, 'DO');
+  assert.equal(toBoardStop({ stopNbr: '', statusCode: '10' }).stopType, 'DO', 'no number → no guess');
+});
+
+test('mergeEnrich: the /stop/info stopType remains the authority over the RA heuristic', () => {
+  // stopType is not a LIVE field, so the enriched record's value lands on merge — if some RA
+  // order ever really is a delivery, enrichment corrects the prefix guess.
+  const row = toBoardStop({ stopNbr: 'RA99999999', statusCode: '20', routeName: 'X' });
+  assert.equal(row.stopType, 'PU');
+  mergeEnrich(row, { stopType: 'DO', lat: 34.1, lng: -84.0 });
+  assert.equal(row.stopType, 'DO');
+});

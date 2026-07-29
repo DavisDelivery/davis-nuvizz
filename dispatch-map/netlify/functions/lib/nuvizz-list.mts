@@ -248,7 +248,14 @@ export function toBoardStop(r: any): any {
     loadNbr: hasRoute ? r.routeName : null,
     routeName: r.routeName || null,
     routeSeq: typeof r.routeSeq === 'number' ? r.routeSeq : null,   // delivery order within the load (ShipTo Display Seq)
-    stopType: 'DO',
+    // The saved search carries no stop-type column, and this used to hard-code 'DO' — so every
+    // PICKUP entered the board as a delivery until its one-time /stop/info enrichment happened
+    // to correct it (Chad, on RASHEED's RA rows: "Ra's should be marked as pickups and not
+    // deliveries"). The list DOES carry the order number, and RA-prefixed orders ARE pickups —
+    // that is Davis's own numbering, stated by Chad — so type them off the prefix immediately.
+    // Enrichment remains the authority: stopType is not a LIVE field, so the real /stop/info
+    // value overwrites this on merge if the two ever disagree.
+    stopType: /^RA/i.test(String(r.stopNbr || '')) ? 'PU' : 'DO',
     status: r.statusCode || null,
     businessName: r.businessName || null,
     addr1: r.addr1 || null,
