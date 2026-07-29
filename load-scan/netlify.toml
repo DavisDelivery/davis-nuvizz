@@ -1,0 +1,24 @@
+# load-scan — dock/loadout scanning app (Netlify site: ddsloadout).
+#
+# This repo is a monorepo: the root and dispatch-map/ each deploy to their own
+# Netlify site. `base` pins THIS site to the load-scan/ subtree, so Netlify reads
+# this file (not the root netlify.toml) and builds only this package.
+#
+# With `base` set, `publish` and `functions` below are resolved RELATIVE TO the
+# base directory — i.e. load-scan/dist and load-scan/netlify/functions.
+[build]
+  base = "load-scan"
+  command = "npm run build"
+  publish = "dist"
+  functions = "netlify/functions"
+
+[functions]
+  node_bundler = "esbuild"
+
+# SPA fallback: every non-asset path serves index.html so client routing works.
+# /.netlify/functions/* is matched by Netlify BEFORE redirects, so this does not
+# shadow the function routes.
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200

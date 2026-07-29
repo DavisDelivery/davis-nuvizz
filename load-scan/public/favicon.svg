@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Load Scan">
+  <rect width="64" height="64" rx="14" fill="#1e5b92"/>
+  <!-- scan frame corners -->
+  <g fill="none" stroke="#ffffff" stroke-width="4" stroke-linecap="round">
+    <path d="M16 24v-4a4 4 0 0 1 4-4h4"/>
+    <path d="M48 24v-4a4 4 0 0 0-4-4h-4"/>
+    <path d="M16 40v4a4 4 0 0 0 4 4h4"/>
+    <path d="M48 40v4a4 4 0 0 1-4 4h-4"/>
+  </g>
+  <!-- scan line -->
+  <rect x="14" y="30" width="36" height="4" rx="2" fill="#7dd3fc"/>
+</svg>
