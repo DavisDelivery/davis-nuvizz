@@ -9,6 +9,37 @@ const BUILD_COMMIT = typeof __BUILD_COMMIT__ !== 'undefined' ? __BUILD_COMMIT__ 
 const BUILD_TIME = typeof __BUILD_TIME__ !== 'undefined' ? __BUILD_TIME__ : '';
 const BUILD_CONTEXT = typeof __BUILD_CONTEXT__ !== 'undefined' ? __BUILD_CONTEXT__ : 'dev';
 
+/**
+ * Fetch JSON from a Netlify function, refusing to guess.
+ *
+ * This site's SPA catch-all answers ANY unmatched path with index.html and
+ * HTTP 200 — including /.netlify/functions/<name> for a function that isn't
+ * deployed. (Verified on this site: a redirect scoped to /.netlify/functions/*
+ * does not take precedence, because Netlify runs Compute before Static
+ * routing.) So a typo'd or undeployed function name arrives here looking like
+ * a successful request, and a bare res.json() dies on "Unexpected token '<'" —
+ * a parse error that says nothing about the real cause.
+ *
+ * Checking the content-type turns that into a diagnosis: HTML back from a
+ * function path means the function isn't there.
+ */
+async function fetchJson(path, init) {
+  const res = await fetch(path, init);
+  const type = res.headers.get('content-type') || '';
+
+  if (!type.includes('application/json')) {
+    throw new Error(
+      res.ok
+        ? `${path} returned ${type || 'no content-type'} instead of JSON — the function is probably not deployed on this site (the SPA fallback served index.html).`
+        : `${path} failed: HTTP ${res.status} (${type || 'no content-type'})`,
+    );
+  }
+
+  const body = await res.json();
+  if (!res.ok) throw new Error(body?.error || `${path} failed: HTTP ${res.status}`);
+  return body;
+}
+
 export default function App() {
   // Health probe against the scaffold's one function. This is the scaffold's whole
   // point: it proves the publish dir AND the functions dir resolved correctly from
@@ -18,9 +49,8 @@ export default function App() {
   async function probe() {
     setHealth({ state: 'loading' });
     try {
-      const res = await fetch('/.netlify/functions/health', { cache: 'no-store' });
-      const body = await res.json();
-      setHealth({ state: res.ok && body?.ok ? 'ok' : 'fail', body, status: res.status });
+      const body = await fetchJson('/.netlify/functions/health', { cache: 'no-store' });
+      setHealth({ state: body?.ok ? 'ok' : 'fail', body });
     } catch (e) {
       setHealth({ state: 'fail', body: { error: e?.message || 'fetch failed' } });
     }

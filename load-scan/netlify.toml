@@ -15,18 +15,16 @@
 [functions]
   node_bundler = "esbuild"
 
-# A call to a function that ISN'T deployed must not fall through to the SPA
-# catch-all below — that answers HTTP 200 with index.html, and the caller's
-# res.json() then dies on "Unexpected token '<'" instead of surfacing the real
-# problem (exactly the failure dispatch-map hit on nuvizz-stop-explorer).
-# Netlify matches real functions BEFORE redirects, so this only catches names
-# that genuinely aren't deployed — and answers them as JSON, with a 404.
-[[redirects]]
-  from = "/.netlify/functions/*"
-  to = "/function-not-found.json"
-  status = 404
-
-# SPA fallback: every remaining path serves index.html so client routing works.
+# SPA fallback: every non-asset path serves index.html so client routing works.
+#
+# CAVEAT, measured on this site — a call to a function that ISN'T deployed also
+# lands here, so it answers HTTP 200 with text/html instead of a 404. Netlify
+# runs Compute (functions) before Static routing (redirects), and a redirect
+# scoped to "/.netlify/functions/*" does NOT take precedence — we deployed one
+# and unknown function names still fell through to this rule. So the guard has
+# to live in the client: see fetchJson() in src/App.jsx, which rejects a
+# non-JSON content-type rather than letting res.json() die on "Unexpected
+# token '<'" (the failure dispatch-map hit on nuvizz-stop-explorer).
 [[redirects]]
   from = "/*"
   to = "/index.html"
