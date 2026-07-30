@@ -414,6 +414,33 @@ export function isExecutedStopStatus(status: string | null | undefined): boolean
   return !!status && EXECUTED_STOP_STATUS_RE.test(String(status).trim());
 }
 
+// ── cancel-response classification (PURE) ────────────────────────────────────
+//
+// Emptying a load CANCELS the route, and NuVizz may report that cancel as a non-OK
+// body ("Cancelled route") rather than a clean success — so an intentional empty
+// treats a cancellation response as success. The original test for that was
+// `/cancel/i.test(error)`, which cannot tell NuVizz CONFIRMING a cancel from NuVizz
+// REFUSING one: "Load cannot be cancelled — already dispatched" contains "cancel"
+// too, and read as success. That was merely a wrong message until v0.54.18 gave a
+// confirmed cancel a board write-through — now a refusal would stamp every order
+// board-unplanned for the full 60-minute grace while NuVizz still has them planned
+// on a live route, inviting a double-plan onto another truck. So a refusal must
+// read as the failure it is.
+//
+// Positive only: the text must mention a cancellation AND carry no refusal/negation
+// language. Anything unrecognized stays false — an unconfirmed cancel fails the Save
+// loudly (recoverable: re-Save, or check the portal), which is the cheap direction.
+const CANCEL_REFUSAL_RE = /\b(?:can'?t|cannot|could\s*n[o']t|couldn'?t|unable|fail(?:s|ed|ure)?|denied|deny|reject(?:ed)?|invalid|not\s+(?:be\s+)?(?:cancell?(?:ed|able)|allowed|permitted)|non-?cancell?able)\b/i;
+/** True when a removeStops response POSITIVELY confirms the route was cancelled.
+ *  `ok` responses confirm outright; a non-OK body confirms only if it reads as a
+ *  cancellation notice rather than a refusal to cancel. */
+export function cancelResponseConfirms(r: { ok?: boolean; error?: any } | null | undefined): boolean {
+  if (r?.ok === true) return true;
+  const txt = String(r?.error ?? '').trim();
+  if (!txt || !/cancel/i.test(txt)) return false;
+  return !CANCEL_REFUSAL_RE.test(txt);
+}
+
 // ── STOP NOTES (§N) — writing a dispatcher/driver instruction onto a live order ──
 //
 // Portal-verified from Chad's HAR capture (Jul 24): adding a note in the NuVizz

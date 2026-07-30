@@ -21,7 +21,7 @@ import { getCreds, basicAuthHeader } from './nuvizz-scan.mts';
 import {
   buildOpRequest, parseOpResponse, toEditHeader, normalizeLoad, planSequence, deliveryOrder,
   importEchoFromRaw, assembleImportHeader, sameOrder, buildStopPayload, normStopNbr,
-  rawStopExecStatus, isExecutedStopStatus,
+  rawStopExecStatus, isExecutedStopStatus, cancelResponseConfirms,
   buildStopNoteComment, rawStopFrom, stopCommentsFrom, mergeStopComments,
   stopNoteFingerprint, fingerprintDrift, buildNoteWriteStop, echoDrift, driftDetail,
   unsentLosses, documentHandlesMoved, type NoteAudience,
@@ -403,6 +403,21 @@ export async function runCommitBoard(requester: RequesterLike, payload: any, cre
     let plan: any;
     if (!desired.length && intendedEmpty) {
       if (!curIds.length) { result.ok = false; result.error = 'commitBoard: load already has no deliveries to remove'; planned.push({ L, curIds, result }); continue; }
+      // EXECUTED-STOP GUARD for the cancel (the AVRT case's classic-path twin). NuVizz keeps a
+      // stop the driver has already acted on even when a Save removes it — so a load carrying one
+      // cannot truly be emptied, and pushing the cancel anyway half-applies it AND (since v0.54.18)
+      // stamps finished work board-unplanned under a 60-minute grace. RWB has refused this up front
+      // since Jul 22; emptying only ever rides THIS path, so the guard has to live here too. Reads
+      // the load we already fetched — zero extra NuVizz calls. Fail-open on an absent/unknown
+      // status, exactly like the RWB guard.
+      const executed = (load.stops || [])
+        .map((s: any) => ({ n: String(s?.stopNbr ?? ''), status: rawStopExecStatus(load, String(s?.stopNbr ?? '')) }))
+        .find((x: any) => x.n && isExecutedStopStatus(x.status));
+      if (executed) {
+        result.ok = false;
+        result.error = `commitBoard: stop ${executed.n} on ${loadNbrX} is already ${executed.status} — a load with an executed stop cannot be emptied (NuVizz keeps the stop and the route is not cancelled). Unplan it in the portal first, then refresh and re-Save.`;
+        planned.push({ L, curIds, result }); continue;
+      }
       plan = { ok: true, unchanged: false, removeStopIds: curIds, insertOrdered: [], cancelRoute: true };
     } else {
       plan = desired.length ? planSequence(curIds, desired) : { ok: true, unchanged: true, removeStopIds: [], insertOrdered: [] };
@@ -460,7 +475,11 @@ export async function runCommitBoard(requester: RequesterLike, payload: any, cre
     // (a "Cancelled route" message). For an INTENTIONAL empty-load we treat a cancellation response
     // as success. (Defensive: the exact cancel-response shape is pending a live confirm on a stable
     // load — the raw result is kept in the step so the first real cancel is diagnosable.)
-    const cancelled = !!p.plan.cancelRoute && /cancel/i.test(String(r.error ?? ''));
+    // …but a REFUSAL to cancel says "cancel" too ("cannot be cancelled — already
+    // dispatched"), and the old /cancel/i test read that as success. Harmless when it
+    // only mis-worded a message; not harmless now that a confirmed cancel stamps the
+    // board unplanned under a 60-minute grace. cancelResponseConfirms is positive-only.
+    const cancelled = !!p.plan.cancelRoute && cancelResponseConfirms(r);
     const ok = !!r.ok || cancelled;
     p.result.steps.push({ op: 'removeStops', ok, result: r, error: ok ? null : (r.error || 'failed'), cancelledRoute: (p.plan.cancelRoute && ok) || undefined });
     if (!ok) { p.result.ok = false; p.aborted = true; }
