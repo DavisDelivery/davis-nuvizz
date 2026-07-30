@@ -8,7 +8,8 @@
     "build": "vite build",
     "preview": "vite preview",
     "test": "node --test \"test/**/*.test.mjs\"",
-    "lint": "echo 'no lint configured'"
+    "lint": "echo 'no lint configured'",
+    "smoke": "node scripts/smoke-app.mjs dist"
   },
   "dependencies": {
     "@davisdelivery/quote-generator": "git+ssh://git@github.com/DavisDelivery/Quotes.git#main",
@@ -24,6 +25,7 @@
   "devDependencies": {
     "@vitejs/plugin-react": "^4.3.1",
     "autoprefixer": "^10.4.19",
+    "playwright-core": "^1.62.0",
     "postcss": "^8.4.39",
     "rollup-plugin-visualizer": "^7.0.1",
     "tailwindcss": "^3.4.4",

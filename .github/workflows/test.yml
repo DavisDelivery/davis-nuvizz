@@ -25,3 +25,36 @@ jobs:
       # node: builtins, so Node 22's native TypeScript stripping runs them with no
       # install step. `npm test` == `node --test "test/**/*.test.mjs"`.
       - run: npm test
+
+  # ── Does the app actually START? ───────────────────────────────────────────
+  # v0.54.14 shipped a bundle that was blank on every device: state declared in
+  # RoutingScreen and read in Shell threw `driversPanelOpen is not defined` on the
+  # first render, React unmounted the tree, white screen. CI was green and could not
+  # have been otherwise — it is a RUNTIME error the bundler cannot see, `npm run lint`
+  # is a stub, and none of the unit tests above mount the app. A passing build says
+  # nothing about whether the app starts.
+  #
+  # This job builds the real bundle, serves it, loads it in headless Chromium at phone
+  # size, and fails on any uncaught startup error or an empty #root. Verified BOTH ways
+  # against the actual broken v0.54.14 bundle (fails, naming the identifier) and the
+  # fixed one (passes). Separate job so the fast no-install `unit` gate is unchanged.
+  smoke:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: dispatch-map
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: dispatch-map/package-lock.json
+      - run: npm ci
+      # playwright-core ships no browser; fetch just chromium. The CLI version is read
+      # from the RESOLVED playwright-core so the browser revision always matches the
+      # library that will drive it — a hardcoded version silently drifts on a lockfile
+      # bump and then fails to find its browser.
+      - run: npx --yes playwright@$(node -p "require('playwright-core/package.json').version") install chromium
+      - run: npm run build
+      - run: npm run smoke
