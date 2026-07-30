@@ -62,7 +62,9 @@ async function withRwb(over, fn) {
 
 // ── NuVizz requester harness — multi-load /load/info plus a failable /load/edit ──
 // loads: { [loadNbr]: { loadId, routeName, stops: ['nbr', …] } }
-function makeRequester({ loads = {}, stopHolders = {}, editResponse = null } = {}) {
+// execStatus: { [stopNbr]: 'ARRIVED' } — the per-stop execution status load/info carries on its
+// RAW entries (what rawStopExecStatus reads); absent = no execution info at all.
+function makeRequester({ loads = {}, stopHolders = {}, editResponse = null, execStatus = {} } = {}) {
   const calls = [];
   return {
     calls,
@@ -78,7 +80,10 @@ function makeRequester({ loads = {}, stopHolders = {}, editResponse = null } = {
           return J({ Load: {
             loadHeader: { loadId: Ld.loadId, loadNbr: nbr, routeName: Ld.routeName, rtOrigin: { address: { latitude: 34.04, longitude: -83.71 } } },
             versionId: 'v1', loadExecutionInfo: { loadStatus: 'PLANNED' },
-            stops: Ld.stops.map((n, i) => ({ stop: { stopId: `id-${n}`, stopNbr: String(n), stopType: 'DO', to: { seq: i + 2 }, weight: 100, totalPallets: 2, totalCartons: 1, volume: 3 } })),
+            stops: Ld.stops.map((n, i) => ({
+              stop: { stopId: `id-${n}`, stopNbr: String(n), stopType: 'DO', to: { seq: i + 2 }, weight: 100, totalPallets: 2, totalCartons: 1, volume: 3 },
+              ...(Object.prototype.hasOwnProperty.call(execStatus, n) ? { stopExecutionInfo: { stopStatus: execStatus[n] } } : {}),
+            })),
           } });
         }
         if (url.includes('/stop/info/')) {
@@ -309,5 +314,81 @@ test('regression: a normal (non-cancel) classic save touches the board ZERO time
     assert.equal(fs.log.sets.length, 0, 'classic reorders leave board stamping to the client belt, exactly as before');
     assert.equal(fs.log.gets.length, 0, 'not even a read');
     assert.deepEqual(Object.keys(r.loads[0]), ['loadNbr', 'loadId', 'ok', 'error', 'steps'], 'byte-identical result-load shape (no boardSync key at all)');
+  } finally { fs.restore(); }
+});
+
+// ── HARDENING (adversarial review of the v0.54.18 write-through) ──────────────
+// Two holes the write-through turned from cosmetic into dangerous, both found by review
+// before they were ever hit in the field:
+//   • the cancel-success test was /cancel/i over the error body, which cannot tell NuVizz
+//     CONFIRMING a cancel from NuVizz REFUSING one ("cannot be cancelled — already
+//     dispatched" matches). A refusal used to be a wrong message; with the write-through it
+//     would stamp every order board-unplanned for the 60-minute grace while NuVizz still has
+//     them planned on a LIVE route — a double-plan invitation.
+//   • emptying only ever rides the classic path, which had no executed-stop guard (RWB has
+//     refused since the Jul 22 AVRT case). NuVizz KEEPS an executed stop even when a Save
+//     removes it, so such a load cannot truly be emptied — and stamping would resurrect
+//     finished work as unplanned.
+
+test('hardening: a REFUSAL that merely contains the word "cancel" fails the Save and stamps NOTHING', async () => {
+  for (const refusal of [
+    'Load cannot be cancelled — already dispatched',
+    'Unable to cancel route: driver en route',
+    'Cancel request denied',
+    'Route could not be cancelled',
+    'Cancellation failed',
+    'Stop is not cancellable',
+  ]) {
+    const fs = installFirestoreFake(seedPlanned());
+    try {
+      const { requester } = makeRequester({
+        loads: T6,
+        editResponse: () => new Response(JSON.stringify({ error: refusal }), { status: 200 }),
+      });
+      const r = await runCommitBoard(requester, { date: DAY, loads: [emptyT6()] }, CREDS);
+      assert.equal(r.ok, false, `refusal must fail the Save: ${refusal}`);
+      assert.equal(fs.log.sets.length, 0, `refusal must stamp nothing: ${refusal}`);
+      assert.ok(!('boardSync' in r.loads[0]), `refusal must claim no boardSync: ${refusal}`);
+    } finally { fs.restore(); }
+  }
+});
+
+test('hardening: a genuine cancellation NOTICE still confirms (the §10 non-OK body)', async () => {
+  for (const notice of ['Route has been Cancelled', 'Load cancelled successfully', 'CANCELLED']) {
+    const fs = installFirestoreFake(seedPlanned());
+    try {
+      const { requester } = makeRequester({
+        loads: T6,
+        editResponse: () => new Response(JSON.stringify({ error: notice }), { status: 200 }),
+      });
+      const r = await runCommitBoard(requester, { date: DAY, loads: [emptyT6()] }, CREDS);
+      assert.equal(r.ok, true, `a real cancel notice must still succeed: ${notice}`);
+      assert.deepEqual(r.loads[0].boardSync, { patched: 6, rescued: 0, missing: 0 }, notice);
+    } finally { fs.restore(); }
+  }
+});
+
+test('hardening: a load with an EXECUTED stop refuses to empty — no NuVizz write, no stamp', async () => {
+  const fs = installFirestoreFake(seedPlanned());
+  try {
+    // ROSSINI is already ARRIVED: NuVizz would keep it, so the route would NOT actually cancel.
+    const { requester, calls } = makeRequester({ loads: T6, execStatus: { ROSSINI: 'ARRIVED' } });
+    const r = await runCommitBoard(requester, { date: DAY, loads: [emptyT6()] }, CREDS);
+    assert.equal(r.ok, false, 'the Save refuses up front');
+    assert.match(r.loads[0].error, /stop ROSSINI on DAVIS000000123 is already ARRIVED/);
+    assert.match(r.loads[0].error, /cannot be emptied/);
+    assert.ok(!calls.some((c) => c.url.includes('/load/edit/')), 'the destructive write never fired');
+    assert.equal(fs.log.sets.length, 0, 'finished work is never stamped unplanned');
+  } finally { fs.restore(); }
+});
+
+test('hardening: an unknown/absent execution status fails OPEN — an ordinary cancel still works', async () => {
+  const fs = installFirestoreFake(seedPlanned());
+  try {
+    // Same guard, benign statuses: nothing here means "the driver already acted on it".
+    const { requester } = makeRequester({ loads: T6, execStatus: { THG: 'PLANNED', HAEWA: '', DMS: null } });
+    const r = await runCommitBoard(requester, { date: DAY, loads: [emptyT6()] }, CREDS);
+    assert.equal(r.ok, true, JSON.stringify(r.loads?.[0]?.error));
+    assert.deepEqual(r.loads[0].boardSync, { patched: 6, rescued: 0, missing: 0 });
   } finally { fs.restore(); }
 });
