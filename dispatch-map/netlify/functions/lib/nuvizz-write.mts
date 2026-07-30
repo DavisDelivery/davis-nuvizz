@@ -500,6 +500,48 @@ export async function runCommitBoard(requester: RequesterLike, payload: any, cre
     if (!ok) p.result.ok = false;
   }
 
+  // ── SERVER-SIDE BOARD WRITE-THROUGH for a CANCELLED (emptied) route ─────────
+  // The RWB engine's #361 write-through only covers loads it sequences, and BOTH engines route
+  // an empty-load save down this classic path — so a confirmed cancel used to leave the board
+  // unchanged: every order NuVizz had just returned to Un-Planned kept showing planned on the
+  // dead route until a scan happened to win against the demotion hold (TRAILER 6, Jul 30;
+  // v0.54.17 made the last stop removable, opening this door). Stamp the load's own removed
+  // deliveries unplanned. Ghost-guard at the SOURCE: the set comes from plan.removeStopIds —
+  // OUR read of the load (curIds), never the client's removeStopNbrs — so a stop the dispatcher
+  // struck off that the load never held is filtered before the board. A stop this same Save
+  // re-planted onto another load (Phase 2 `inserted`) stays planned; a cross-engine move is safe
+  // by ordering (the RWB write-through stamps its planned loads AFTER this). The unplanned
+  // fields null loadNbr/routeName/routeSeq — no rows left grouped under the dead route — and
+  // carry board_write_at, so the 60-min grace defends the cancel against a lagging list.
+  // Best-effort: a board hiccup never fails the Save (the outcome rides the result journal).
+  if (isFirestoreEnabled()) {
+    const cancels = live.filter((p) => p.result.ok && p.plan?.cancelRoute === true);
+    if (cancels.length) {
+      const tenantET = String((creds as any)?.companyCode || 'DAVIS').toUpperCase();
+      const boardDay = /^\d{4}-\d{2}-\d{2}$/.test(String(payload?.date ?? '')) ? String(payload.date) : etDayString();
+      for (const p of cancels) {
+        try {
+          const nbrById = new Map<string, string>();
+          for (const s of (p.load?.stops || [])) {
+            const id = String(s?.stopId ?? ''); const n = String(s?.stopNbr ?? '');
+            if (id && n) nbrById.set(id, n);
+          }
+          const unplannedStopNbrs = (p.plan.removeStopIds || [])
+            .map((id: any) => String(id))
+            .filter((id: string) => !inserted.has(id))
+            .map((id: string) => nbrById.get(id))
+            .filter((n: string | undefined): n is string => !!n);
+          const r = await patchBoardPlan(tenantET, boardDay, {
+            routeName: '', orderedStopNbrs: [], unplannedStopNbrs, driverName: null, at: new Date().toISOString(),
+          });
+          p.result.boardSync = { patched: r.patched, rescued: r.rescued, missing: r.missing, ...(r.missingNbrs?.length ? { missingNbrs: r.missingNbrs } : {}) };
+        } catch (e: any) {
+          p.result.boardSync = { error: e?.message || 'board write-through failed' };
+        }
+      }
+    }
+  }
+
   // Orphans: a stop that was FREED (removed from its source) and was meant to land on some load
   // (in a desired order) but its insert never succeeded — it is now UNPLANNED in NuVizz. Surfaced
   // so the dispatcher can re-Save. (A freed stop NOT in any desired order is an intended unplan.)
@@ -507,7 +549,9 @@ export async function runCommitBoard(requester: RequesterLike, payload: any, cre
   for (const p of live) for (const id of (p.want || [])) intendedOnSomeLoad.add(String(id));
   const orphaned = [...actuallyFreed].filter((id) => intendedOnSomeLoad.has(id) && !inserted.has(id));
 
-  const loads = planned.map((p) => ({ loadNbr: p.result.loadNbr, loadId: p.loadId ?? p.L?.loadId ?? null, ok: p.result.ok, error: p.result.error, steps: p.result.steps }));
+  // boardSync spreads in ONLY when the cancel write-through ran — a normal save's result stays
+  // byte-identical to before (no new key, even an undefined one, for deepEqual consumers).
+  const loads = planned.map((p) => ({ loadNbr: p.result.loadNbr, loadId: p.loadId ?? p.L?.loadId ?? null, ok: p.result.ok, error: p.result.error, steps: p.result.steps, ...(p.result.boardSync ? { boardSync: p.result.boardSync } : {}) }));
   return { ok: loads.every((l) => l.ok) && orphaned.length === 0, loads, orphaned };
 }
 
