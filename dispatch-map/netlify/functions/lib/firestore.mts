@@ -1070,6 +1070,67 @@ export async function readActiveUnplannedSet(tenant: string): Promise<{ at: stri
   return { at: doc.at || null, windowStart: doc.windowStart || null, stopNbrs: new Set(arr.map(String)) };
 }
 
+// ── Retired carry-over (the phantom-unplanned fix) ───────────────────────────
+//
+// Carry-over folds still-unplanned rows from prior days onto today's board. Prior-day board
+// docs are FROZEN — the scanner never rewrites them — so a row that read UNPLANNED on the
+// 17th reads UNPLANNED forever. The only thing that could retire it was the live
+// active-unplanned snapshot, and that snapshot is built from a saved search with a ±7d
+// arrival window: mergeCarryover deliberately refuses to prune anything older than
+// `windowStart`, because absence from a 7-day search is not proof for a 14-day-old order.
+//
+// Net effect (measured Jul 30 on the live board): 199 carried rows, 41 genuinely open,
+// 44 correctly-exempt planned — and 114 rows from Jul 16-21 folding in as UNPLANNED with
+// nothing able to retire them. Every order that ages past the snapshot window becomes
+// permanent, so the unplanned count can only grow and the dispatcher cannot trust it.
+//
+// This map is the missing evidence: stopNbr → the day the IMMUTABLE history warehouse
+// sealed it DELIVERED/EXCEPTION/CANCELLED. History never ages out of a 7-day window, so it
+// can retire a row of any age. The SCAN proves and writes it (bounded reads, amortized);
+// the read path just consumes it in ONE getDoc. Zero NuVizz calls on either side.
+const CARRYOVER_RETIRED_COLLECTION = 'nuvizz_carryover_retired';
+const carryoverRetiredPath = (tenant: string) => `${CARRYOVER_RETIRED_COLLECTION}/${String(tenant || '').toLowerCase()}`;
+
+/** stopNbr → sealed-terminal day. Empty on any failure: a missing retirement list must
+ *  degrade to today's over-count, never to dropping work off the board. */
+export async function readCarryoverRetired(tenant: string): Promise<Record<string, string>> {
+  try {
+    const doc = await getDoc(carryoverRetiredPath(tenant));
+    if (!doc) return {};
+    const map = JSON.parse(doc.retiredJson || '{}');
+    return map && typeof map === 'object' ? map : {};
+  } catch { return {}; }
+}
+
+/** PURE: keep only entries still inside the carry window — past that, the row is no longer
+ *  foldable anyway and the entry is dead weight. Exported for tests. */
+export function pruneCarryoverRetired(map: Record<string, string>, floorDate: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [nbr, d] of Object.entries(map || {})) {
+    if (!nbr || typeof d !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(d)) continue;
+    if (d < floorDate) continue;
+    out[String(nbr)] = d;
+  }
+  return out;
+}
+
+/** Merge newly-proven retirements in and prune to the carry window. Read-modify-write,
+ *  last-write-wins — a lost race just re-proves a few stops next scan (self-healing), the
+ *  same trade mergeTerminalStops makes. Returns the resulting size. */
+export async function mergeCarryoverRetired(
+  tenant: string, additions: Record<string, string>, floorDate: string,
+): Promise<number> {
+  if (!isFirestoreEnabled()) return 0;
+  const cur = pruneCarryoverRetired(await readCarryoverRetired(tenant), floorDate);
+  for (const [nbr, d] of Object.entries(additions || {})) if (nbr && d) cur[String(nbr)] = d;
+  const next = pruneCarryoverRetired(cur, floorDate);
+  await setDoc(carryoverRetiredPath(tenant), {
+    tenant: String(tenant || '').toLowerCase(), at: new Date().toISOString(),
+    count: Object.keys(next).length, retiredJson: JSON.stringify(next),
+  } as any);
+  return Object.keys(next).length;
+}
+
 // ── Dispatcher-set board dates (§D) ──────────────────────────────────────────
 //
 // When a customer defers an order ("not until the 30th"), the dispatcher moves its delivery

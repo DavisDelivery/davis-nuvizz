@@ -22,7 +22,7 @@
 
 import { scanDate, scansEnabled, deriveFleetSummary, estimateLoadRange, buildScanState, shadowWouldProbe, selectLoadProbeTargets, groupLoadMembers, estimateStopFrontier, unplannedFloor, FLOOR_MARGIN, loadNbrToInt, stopNbrToInt, shouldDeepSweep, deepSweepGate, lookupStopByPro, lookupLoadStopNbrs } from './nuvizz-scan.mts';
 import { loadProbeParity, frontierParity, loadMembershipDelta, dateSliceMismatch } from './scan-parity.mts';
-import { isFirestoreEnabled, writeStops, writeFleetIndex, getDoc, markScanState, readCallStats, readCircuit, readScanState, writeScanState, readRecentFrontier, recordScanMetric, etDayString, readScanConfig, readStops, readEnrichedPros, writeEnrichedPros, writeLoadRoster, readLoadRoster, writeActiveUnplannedSet, readBoardDateOverrides } from './firestore.mts';
+import { isFirestoreEnabled, writeStops, writeFleetIndex, getDoc, markScanState, readCallStats, readCircuit, readScanState, writeScanState, readRecentFrontier, recordScanMetric, etDayString, readScanConfig, readStops, readEnrichedPros, writeEnrichedPros, writeLoadRoster, readLoadRoster, writeActiveUnplannedSet, readBoardDateOverrides, readActiveUnplannedSet, readCarryoverRetired, mergeCarryoverRetired } from './firestore.mts';
 import { listScanForDate, mergeEnrich, twoScanBuckets, etDateForTargetUTC, boardDayFor, applyBoardWriteGrace, applyDemotionVerify, demotionLookupVerdict, absentPlanDemoteCandidate } from './nuvizz-list.mts';
 import { loadIdsForDate, dropForeignLoadStops, loadRosterForDate } from './nuvizz-loads.mts';
 import { getStop } from './history-store.mts';
@@ -80,6 +80,64 @@ export function isTerminalHistoryStatus(rec: any): boolean {
 export function historyLookbackDates(today: string, n: number): string[] {
   const out: string[] = [];
   for (let i = 1; i <= Math.max(0, n); i++) out.push(addDaysUTC(today, -i));
+  return out;
+}
+
+// ── Carry-over retirement (the phantom-unplanned fix) ────────────────────────
+//
+// Chad, on a board reading 548 unplanned against a 650-order Uline day he could not
+// reconcile: "it's showing more than that and we need a permanent and correct fix for that
+// so I can trust the numbers."
+//
+// mergeCarryover can only retire a carried row when the live active-unplanned snapshot
+// vouches against it, and that snapshot's saved search reaches back ~7 days — so it refuses
+// to judge anything older (correctly: absence from a 7-day search is not proof). Prior-day
+// board docs are frozen, so nothing else can ever retire those rows either. They fold as
+// UNPLANNED forever and the count only grows.
+//
+// The immutable history warehouse has no such window. This pass asks it, once per scan, about
+// exactly the rows the snapshot cannot vouch for, and records the proven-finished ones so the
+// read path can drop them in a single getDoc. Bounded and fail-open throughout: an exhausted
+// read budget or an unreadable day leaves the row folding (an over-count the dispatcher can
+// see beats silently hiding real freight).
+
+/** PURE: which carried rows need a history verdict — still-open rows the live snapshot is
+ *  not entitled to judge (older than its window, or no usable snapshot at all). Rows the
+ *  snapshot DOES cover are already handled by mergeCarryover's own prune. */
+export function carryoverRetirementCandidates(
+  priorRows: Array<{ date: string; stops: any[] }>,
+  live: { windowStart: string | null; stopNbrs: Set<string> } | null,
+  alreadyRetired: Record<string, string>,
+): Array<{ nbr: string; date: string }> {
+  const out: Array<{ nbr: string; date: string }> = [];
+  const seen = new Set<string>();
+  const vouchFrom = live?.windowStart || null;
+  for (const { date, stops } of priorRows || []) {
+    for (const s of stops || []) {
+      const nbr = String(s?.stopNbr ?? '');
+      if (!nbr || seen.has(nbr)) continue;
+      if (alreadyRetired[nbr]) continue;                       // proven once, never re-proved
+      if (s?.isPlanned) continue;                              // planned rows fold by their own rule
+      const st = String(s?.normalizedStatus ?? '').toUpperCase();
+      if (st === 'DELIVERED' || st === 'EXCEPTION' || st === 'CANCELLED') continue;  // never folds anyway
+      // Inside the snapshot's window the snapshot is authoritative — leave it alone.
+      if (vouchFrom && date >= vouchFrom && live!.stopNbrs.size) continue;
+      seen.add(nbr);
+      out.push({ nbr, date });
+    }
+  }
+  return out;
+}
+
+/** PURE: the days a row's delivery could have been sealed on — its own day forward to
+ *  yesterday, newest first (a recent seal is found in one read). Bounded by `cap` days. */
+export function retirementSearchDates(rowDate: string, today: string, cap = 21): string[] {
+  const out: string[] = [];
+  for (let i = 1; i <= cap; i++) {
+    const d = addDaysUTC(today, -i);
+    if (d < rowDate) break;
+    out.push(d);
+  }
   return out;
 }
 
@@ -1027,6 +1085,49 @@ export async function runRefreshStops(req: Request): Promise<Response> {
           if (n.matched) console.log(`[cs-notify] date=${date} matched=${n.matched} sent=${n.sent} failed=${n.failed}${n.skipped ? ` skipped=${n.skipped}` : ''}`);
         } catch (e: any) { console.warn(`[cs-notify] ${date} failed: ${e?.message}`); }
         results.push({ date, ok: true, source: 'list', count: meta.count, planned: meta.plannedCount, unplanned: meta.unplannedCount, enriched, newPros: stillNeed.length });
+      }
+
+      // ── Retire carried rows the live snapshot can't judge (phantom-unplanned fix) ──
+      // Best-effort and strictly additive: any failure leaves the board exactly as it is
+      // today (over-counting), never dropping a row on a guess.
+      try {
+        const RETIRE_DAYS = Math.max(1, Math.min(30, Number(process.env.NUVIZZ_CARRYOVER_DAYS_MAX) || 14));
+        const RETIRE_READ_CAP = Math.max(0, Number(process.env.NUVIZZ_RETIRE_READ_CAP) || 400);
+        const floorDate = addDaysUTC(today, -RETIRE_DAYS);
+        const priorDates = Array.from({ length: RETIRE_DAYS }, (_, i) => addDaysUTC(today, -(i + 1)));
+        const [live, retired] = await Promise.all([
+          readActiveUnplannedSet(TENANT).catch(() => null),
+          readCarryoverRetired(TENANT),
+        ]);
+        // Only the identity + status fields — this is a counting pass, not a data pull.
+        const RETIRE_MASK = ['stopNbr', 'isPlanned', 'isUnplanned', 'normalizedStatus'];
+        const priorRows = await Promise.all(priorDates.map((d) =>
+          readStops(TENANT, d, { mask: RETIRE_MASK }).then((r) => ({ date: d, stops: r.stops || [] })).catch(() => ({ date: d, stops: [] as any[] }))));
+        const candidates = carryoverRetirementCandidates(priorRows, live, retired);
+        const additions: Record<string, string> = {};
+        // ONE read budget across the whole pass. Each row searches its own window (its day →
+        // yesterday, newest first), so a recent seal costs a single read; the budget is what
+        // stops a long tail of never-sealed rows from turning into hundreds. Rows left unproven
+        // when it runs out simply keep folding, and the next scan picks up where this stopped.
+        let spent = 0;
+        for (const c of candidates) {
+          if (spent >= RETIRE_READ_CAP) break;
+          const perRow = makeHistoryTerminalLookup({
+            readStop: (d, nbr) => getStop(TENANT, d, nbr),
+            dates: retirementSearchDates(c.date, today, RETIRE_DAYS),
+            isTerminal: isTerminalHistoryStatus,
+            readCap: RETIRE_READ_CAP - spent,
+          });
+          const rec = await perRow.lookup(c.nbr);
+          spent += perRow.reads();
+          if (rec) additions[c.nbr] = String(rec.date || rec.boardDate || today);
+        }
+        if (Object.keys(additions).length || Object.keys(retired).length) {
+          const size = await mergeCarryoverRetired(TENANT, additions, floorDate);
+          console.log(`[carryover-retire] candidates=${candidates.length} newly-proven=${Object.keys(additions).length} listSize=${size}`);
+        }
+      } catch (e: any) {
+        console.warn(`[carryover-retire] skipped: ${e?.message}`);
       }
     } catch (e: any) {
       // List-only: do NOT fall back to the number-probe; preserve the existing index.

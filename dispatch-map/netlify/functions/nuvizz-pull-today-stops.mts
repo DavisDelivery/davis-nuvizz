@@ -21,7 +21,7 @@
 
 import fixture from '../../test/fixtures/nuvizz-today-stops.json' with { type: 'json' };
 import { scanDate, normalizeStop } from './lib/nuvizz-scan.mts';
-import { isFirestoreEnabled, readStops, readCallStats, readCircuit, etDayString, readScanMetrics, readScanConfig, readActiveUnplannedSet } from './lib/firestore.mts';
+import { isFirestoreEnabled, readStops, readCallStats, readCircuit, etDayString, readScanMetrics, readScanConfig, readActiveUnplannedSet, readCarryoverRetired } from './lib/firestore.mts';
 import { summarizeScanMetrics } from './lib/scan-metrics.mts';
 import { filterFinishedPriorDay } from './lib/nuvizz-list.mts';
 import { breakerMode } from './lib/nuvizz-request.mts';
@@ -75,14 +75,20 @@ function addDaysUTC(dateStr: string, n: number): string {
 export async function mergeCarryover(stops: any[], date: string, carryDays: number, io?: {
   readStops?: (tenant: string, dateStr: string, opts?: { mask?: string[] }) => Promise<{ stops: any[] }>;
   readActiveUnplannedSet?: (tenant: string) => Promise<{ at: string | null; windowStart: string | null; stopNbrs: Set<string> } | null>;
+  readCarryoverRetired?: (tenant: string) => Promise<Record<string, string>>;
   now?: () => number;
 }, mask?: string[]): Promise<number> {
   const readStopsFn = io?.readStops ?? readStops;
   const readActiveFn = io?.readActiveUnplannedSet ?? readActiveUnplannedSet;
+  const readRetiredFn = io?.readCarryoverRetired ?? readCarryoverRetired;
   const now = io?.now ?? Date.now;
   const seen = new Set(stops.map((s) => String(s.stopNbr)));
   const priorDates = Array.from({ length: carryDays }, (_, i) => addDaysUTC(date, -(i + 1)));
   const live = await readActiveFn(TENANT).catch(() => null);
+  // Rows the scan has PROVEN finished against the immutable history warehouse — the only
+  // evidence that survives past the live snapshot's ~7-day window. ONE getDoc; {} on failure,
+  // which degrades to the old over-count rather than hiding work.
+  const retired = await readRetiredFn(TENANT).catch(() => ({} as Record<string, string>));
   // FRESHNESS GUARD: only prune against the live set when the snapshot is recent. A stale snapshot
   // (after a weekend/breaker scan blackout, or one left behind if TWO_SCAN is turned off) no longer
   // reflects what's open, so trusting it could prune stops that are STILL unplanned — under-counting
@@ -141,6 +147,13 @@ export async function mergeCarryover(stops: any[], date: string, carryDays: numb
       // since. Applies to the UNPLANNED fold only — a confirmed-planned row is EXPECTED to be
       // absent from the unplanned snapshot (it just got planned; that's not "closed since").
       if (!confirmedPlanned && liveOk && d >= live!.windowStart! && !live!.stopNbrs.has(key)) { pruned++; continue; }
+      // OUTSIDE that window the snapshot is not entitled to judge, and prior-day board docs are
+      // frozen — which is how rows from a fortnight ago kept folding as UNPLANNED with nothing
+      // able to retire them (Chad: "it's showing more than that"). The scan proves those against
+      // the IMMUTABLE history warehouse and records the finished ones here, so a row sealed
+      // DELIVERED/EXCEPTION/CANCELLED on ANY day retires at any age. Unproven rows are absent
+      // from the map and still fold — this can only ever remove a stop history says is done.
+      if (!confirmedPlanned && retired[key]) { pruned++; continue; }
       seen.add(key);
       // boardDate pinned to the served day (consistency with the replace path): downstream
       // day-bucketing must file this row under the board it is being served on.
