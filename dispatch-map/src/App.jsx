@@ -65,7 +65,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.54.16';
+const APP_VERSION = '0.54.17';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -110,6 +110,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.54.17', 'TWO FIXES FROM THIS MORNING. (1) YOU CAN NOW TAKE THE LAST ORDER OFF A LOAD. Chad, five of six orders struck off a TRAILER 6 card: "I have no way of unplanning all stops off this load." The ✕ was hidden on whatever stop was last, from a time when the server genuinely could not empty a load — but that was fixed back in v0.32.20 and the server has handled it ever since, so the button was hiding something the app could already do. The last ✕ is there now, coloured amber and labelled for what it is, because emptying a load CANCELS the route in NuVizz. That is NuVizz\'s own rule for removing every delivery, not a choice of ours — the orders come back to unplanned, the route goes away. (2) A CANCELLED ORDER IS NO LONGER TREATED AS WORK TO PLAN. Those orange dots on the routing map with nothing else around them: exceptions. One of them, MICROSOFT ATL22, was cancelled on the 23rd and never had a route — and because it had no route the app read it as "not planned", which it then treated as "still needs planning". A week-old cancellation was sitting on the map looking like freight, it could be selected and built onto a truck, and anywhere it landed on a day\'s board it counted toward the unplanned total. Cancelled and unable-to-deliver are finished outcomes now, with or without a route: they are neither planned nor unplanned, they stay off the plan-me pile, and they stop inflating the count. Genuinely unplanned orders are untouched — a test pins each status so this cannot drift.'],
   ['0.54.16', 'CI NOW CHECKS THAT THE APP ACTUALLY STARTS. Nothing about the app changed here — this is about last night never happening again. The blank-screen deploy went out with every check green, and it had to: the fault was the kind that only appears when the code RUNS, the build has no reason to complain about it, there was no linter, and not one of the 1,100 tests opens the app. A passing build told you nothing about whether the app would start. Every build now gets served to a real browser at phone size and has to render before it can merge — if the page comes up blank or throws on startup, the merge is blocked instead of you finding out on your phone. It was checked both ways against last night\'s actual broken bundle: it fails on that one, naming the exact culprit, and passes on the fixed one. Costs about a minute per pull request and runs separately, so the fast test gate is unchanged.'],
   ['0.54.15', 'THE UNPLANNED COUNT IS TRUSTWORTHY AGAIN. Chad, holding a 650-order Uline day against a board reading 548 unplanned: "I can\'t drop the carry over setting I need to see what ever is actually unplanned from however many days I have it set for but it\'s showing more than that." He was right, and the freight itself was never the problem — all 650 Uline orders were on the board, 1,035 skids against their 1,031, 204 loose against their 204. The bad number was the carry-over. Carry-over folds still-unplanned orders from previous days onto today. Those older days are frozen the moment they are scanned — we never rewrite them — so an order that was unplanned on the 17th reads unplanned on that day\'s record forever, even after it is delivered. The one thing that could retire it was the live unplanned list, and that list only reaches back about seven days, so it deliberately refuses to judge anything older. Nothing else could either. On the day this was found: 199 orders carried in, 41 genuinely open, 44 correctly held as planned, and 114 from the 16th through the 21st that were finished and had no way out. Worse, that pile can only grow — every order that ages past a week becomes permanent. Now the nightly scan settles them against the delivery history, which unlike the seven-day list never expires: if any day recorded that order delivered, cancelled or failed, it is retired and stops folding, at any age. Reading the board costs one extra lookup for the whole list. The rule is one-directional on purpose — an order is only ever removed on positive proof it finished. No proof, an unreadable record, a scan that runs out of budget: it keeps showing, exactly as it does today. This can under-count nothing; it can only stop counting work that is already done. Your carry-over setting is untouched — set it to whatever number of days you want to see.'],
   ['0.54.14', 'HOTFIX — THE APP WOULD NOT LOAD AT ALL. Chad: "App isn\'t loading on mobile." It was not loading anywhere; a phone was just the first device to fetch the new code, because a desktop tab that has been open a while keeps running the copy it downloaded earlier. Yesterday\'s Dock-scanner-drivers work (v0.54.13) put the panel\'s open/closed switch inside the Routing screen but drew the panel itself from the app\'s outermost frame — two different places in the code, and the outer one has no idea that switch exists. The very first thing the app did on startup was ask for a value that was not there, which stops the page dead before a single pixel is drawn: a white screen, no error, nothing to tap. The panel is now drawn in the same place that owns the switch and the ⚙ menu item that opens it, so the two can never drift apart again. Nothing else changed and no data was affected — the app could not start, so it never read or wrote anything. Worth knowing for next time: a build passing does not catch this. JavaScript only complains about a missing value at the moment it runs, and no test opens the real app, so it went out green. The fix was verified by loading the built app in a real phone-sized browser and confirming it renders — which is now the check to run before anything ships that touches the app frame.'],
@@ -8137,10 +8138,13 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
     return rows.filter((s) => {
       if (mapFilters.hideTerminal && s.isTerminal) return false;
       if (mapFilters.hideStemOut && stemOutKeys.has(s.stopNbr)) return false;
-      // "Unplanned only" ON → hide everything that IS planned (on a load/route);
-      // OFF → show all. (isUnplanned means "no driver yet" — wrong signal here;
-      // a routed stop with no driver assigned is still planned.)
-      if (mapFilters.unplannedOnly && s.isPlanned) return false;
+      // "Unplanned only" ON → show only what is STILL TO DO; OFF → show all.
+      // Tested on isPlanned rather than !isUnplanned, this let a CANCELLED stop with no route
+      // through: statusFromCode gives it planned:false, so `!s.isPlanned` was true and a
+      // week-old cancellation sat on the map looking like freight to plan (007151447-2
+      // MICROSOFT ATL22, cancelled Jul 23). isUnplanned now excludes terminal statuses at the
+      // source, so it is the flag that actually answers "is there work here".
+      if (mapFilters.unplannedOnly && !s.isUnplanned) return false;
       return true;
     });
   }, [mapFilters.hideTerminal, mapFilters.hideStemOut, mapFilters.unplannedOnly, stemOutKeys]);
@@ -12732,10 +12736,16 @@ function RoutingWorkbenchCard({ route, stopById, otherKeys, ninjaMode, isActive,
                   </select>
                 )}
                 {/* Remove from route — drops the order off this load; it becomes Unplanned on Save.
-                    Hidden on the last remaining stop: NuVizz can't re-sequence a load to empty, so that
-                    one's a no-op (move it to another load or leave the load with at least one stop). */}
-                {onRemoveStop && rows.length > 1 && (
-                  <button onClick={(e) => { e.stopPropagation(); onRemoveStop(s.stopNbr); }} className="text-slate-300 hover:text-red-600 shrink-0" title="Remove from route (unplans on Save)" aria-label={`Remove ${s.businessName || id} from route`}>
+                    The LAST stop is removable too. It used to be hidden ("NuVizz can't re-sequence a load
+                    to empty"), which was true before v0.32.20 taught the server the documented remove-all
+                    flow — commitBoard has carried an identity-guarded EMPTY-LOAD intent ever since, so the
+                    gate was hiding a capability the backend already had. Chad, six orders in with five
+                    struck off: "I have no way of unplanning all stops off this load."
+                    Emptying a load CANCELS the route in NuVizz — that is NuVizz's own behaviour on
+                    removing every delivery, not our choice — so the last ✕ says so plainly and colours
+                    amber to mark it as the different action it is. */}
+                {onRemoveStop && (
+                  <button onClick={(e) => { e.stopPropagation(); onRemoveStop(s.stopNbr); }} className={'shrink-0 hover:text-red-600 ' + (rows.length === 1 ? 'text-amber-500' : 'text-slate-300')} title={rows.length === 1 ? 'Remove the LAST order — this EMPTIES the load, which CANCELS the route in NuVizz on Save' : 'Remove from route (unplans on Save)'} aria-label={`Remove ${s.businessName || id} from route`}>
                     <X size={13} />
                   </button>
                 )}

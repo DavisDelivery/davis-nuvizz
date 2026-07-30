@@ -189,6 +189,26 @@ export function statusFromCode(code: any, hasRoute: boolean): { status: string; 
   }
 }
 
+/**
+ * PURE: is this normalized status a FINISHED outcome — delivered, cancelled, or unable to
+ * deliver? A terminal stop is never work waiting to be planned, whatever its route says.
+ *
+ * Chad, on seven orange pins sitting on the routing map: "they are marked as exceptions."
+ * PRO 007151447-2 (MICROSOFT ATL22) was CANCELLED on Jul 23 and never assigned a route, and
+ * statusFromCode hands a cancelled stop `planned: hasRoute` — so with no route it came out
+ * isPlanned:false, isUnplanned:TRUE. A cancelled order was classified as plannable freight:
+ * it survived "Unplanned only" while all 700+ delivered/scheduled stops were filtered out,
+ * it could be selected and built onto a truck, and anywhere it landed in a board day's own
+ * doc it counted toward "unplanned in last scan".
+ *
+ * `planned` stays as it was (a route-less stop must not claim to be on a route) — it is
+ * `isUnplanned` that has to stop meaning "not planned" and start meaning "still to do".
+ */
+export function isTerminalStatus(normalizedStatus: any): boolean {
+  const s = String(normalizedStatus ?? '').toUpperCase();
+  return s === 'DELIVERED' || s === 'EXCEPTION' || s === 'CANCELLED';
+}
+
 // Parse NuVizz's "M/D/YY h:mm AM" arrival into { date:'YYYY-MM-DD', iso } (local —
 // used for date bucketing + route ordering, not absolute-tz math). Null if unparseable.
 export function parseSchedDate(s: any): { date: string; iso: string } | null {
@@ -275,7 +295,10 @@ export function toBoardStop(r: any): any {
     driverUserName: r.driverName || null,
     driverId: r.driverId || null,
     isPlanned: planned,
-    isUnplanned: !planned,
+    // NOT simply !planned — see isTerminalStatus. A cancelled/unable-to-deliver stop with no
+    // route is neither planned NOR unplanned: it is done. Both flags read false, which is the
+    // honest answer and keeps it out of every "still to plan" pool.
+    isUnplanned: !planned && !isTerminalStatus(status),
     normalizedStatus: status,
     plannedEtaDTTM: sched ? sched.iso : null, // drives the planned-route stop ordering
     scheduledFrom: sched ? sched.iso : null,
