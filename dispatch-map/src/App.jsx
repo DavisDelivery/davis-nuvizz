@@ -43,6 +43,7 @@ import { scanStop, scanStopFull } from './lib/signal-scanner';
 import { applyScannerResults } from './lib/customer-notes-writer';
 import { aiParse, aiChat, applyFilterSpec, summarizeSpec, buildTrimmedStops } from './lib/ai-search.js';
 import { loadDeviceIdentity, saveDeviceName, activePeers, buildPeerClaims, peerChipLabel, latestPeerSaveAt, PRESENCE_HEARTBEAT_MS } from './lib/presence.js';
+import { cancelsIn, cancelSummary } from './lib/cancel-guard.js';
 import ChatPanel, { ChatLauncher, MessagesLauncher } from './components/ChatPanel.jsx';
 import MessagesPanel from './components/MessagesPanel.jsx';
 import DriversPanel from './components/DriversPanel.jsx';
@@ -65,7 +66,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.54.18';
+const APP_VERSION = '0.54.19';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -110,6 +111,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.54.19', 'CANCELLING A ROUTE NOW ASKS FIRST. Chad: "before you are allowed to cancel the entire route i want a warning to pop up that this will delete a route." Emptying a load is the one edit in the Compare panel that DESTROYS something — NuVizz cancels the route, the load stops existing, and its orders go back to Un-Planned. There is no undo for it in this app. Until now the only notice was the same small toast used for ordinary notes like "2 stops not loaded yet", and it appeared at the exact moment the write was already on its way to NuVizz — a heads-up you could not act on. Save now stops and asks. The box is red, says plainly that this DELETES the route, names it, says how many orders are coming back to Un-Planned, and states that it cannot be undone from here — rebuilding means creating the route again in NuVizz. Two buttons: "Keep the route" and "Cancel the route". Escape and clicking outside both keep the route, because the safe answer should be the easy one, and neither works once the send is actually in flight so a stray tap cannot look like it called off a write NuVizz is already acting on. IF YOUR SAVE ALSO TOUCHES OTHER LOADS, the box says so — only the emptied ones are being deleted and the rest save normally, so agreeing here never means throwing away the rest of your work. AND NOTHING ELSE GAINED A POPUP. This panel deliberately does not confirm ordinary saves, and that is unchanged: reorders, unplanning some of the orders, driver assignments and dispatches all still commit straight through with no interruption. The gate reads the actual Save being sent and only trips on a load explicitly marked as emptied — six tests pin both directions, including that an ordinary reorder can never trip it.'],
   ['0.54.18', 'EMPTYING A LOAD NOW TELLS THE BOARD, NOT JUST NUVIZZ. Chad emptied TRAILER 6 this morning — six orders struck off, Save in LIVE — and NuVizz did exactly the right thing: route cancelled, all six orders back in Un-Planned in the portal. The board never heard about any of it. The orders kept showing planned on a route that no longer existed, and the status card read "0 unplanned in last scan" even after a fresh scan. HERE IS WHY, and it took the v0.54.17 change to expose it: when a Save confirms, the server writes the result straight onto the board so you see it immediately — but that write-through only ever covered saves that leave stops ON the load. An empty-load save leaves zero stops on the load, and it runs down a different path inside the server (emptying is a route CANCEL, which NuVizz handles through an older, simpler sequence of calls) — and that path never had a board write at all. Nobody hit this before because until yesterday the app would not let you remove the last stop from a load; the moment that became possible, the hole behind it was reachable. AND THE SCAN COULD NOT RESCUE YOU, which is the genuinely unfair part: a scan that sees a previously-planned stop go missing deliberately refuses to drop it off its route until NuVizz itself confirms — that is the protection that keeps a lagging feed from tearing stops off live trucks (the Kai Wong fix). With no record that YOU unplanned them, the six orders looked exactly like feed lag, so every scan carefully put them back on the dead route. The protection was doing its job against the wrong target. THE FIX: a confirmed cancel now stamps every order the load actually held as unplanned on the board, the moment the Save comes back — same machinery as a normal save, same 60-minute protection so a lagging NuVizz list cannot flip them back to planned in the meantime. The stamped rows carry no route name, so nothing stays grouped under a route that does not exist. THE SAFETY RAILS, because unplanning by mistake is worse than the bug: the stamp only fires when NuVizz actually confirmed the cancel — a failed cancel stamps nothing; the list of orders comes from the load\'s OWN record as the server read it, never from what was clicked on screen, so a stale card row that the load never really held cannot be flipped; and if the same Save moved an order onto another truck, that order stays planned — only the genuinely freed ones stamp. Six new tests pin all of it, including that a normal save\'s behavior is byte-for-byte unchanged.'],
   ['0.54.17', 'TWO FIXES FROM THIS MORNING. (1) YOU CAN NOW TAKE THE LAST ORDER OFF A LOAD. Chad, five of six orders struck off a TRAILER 6 card: "I have no way of unplanning all stops off this load." The ✕ was hidden on whatever stop was last, from a time when the server genuinely could not empty a load — but that was fixed back in v0.32.20 and the server has handled it ever since, so the button was hiding something the app could already do. The last ✕ is there now, coloured amber and labelled for what it is, because emptying a load CANCELS the route in NuVizz. That is NuVizz\'s own rule for removing every delivery, not a choice of ours — the orders come back to unplanned, the route goes away. (2) A CANCELLED ORDER IS NO LONGER TREATED AS WORK TO PLAN. Those orange dots on the routing map with nothing else around them: exceptions. One of them, MICROSOFT ATL22, was cancelled on the 23rd and never had a route — and because it had no route the app read it as "not planned", which it then treated as "still needs planning". A week-old cancellation was sitting on the map looking like freight, it could be selected and built onto a truck, and anywhere it landed on a day\'s board it counted toward the unplanned total. Cancelled and unable-to-deliver are finished outcomes now, with or without a route: they are neither planned nor unplanned, they stay off the plan-me pile, and they stop inflating the count. Genuinely unplanned orders are untouched — a test pins each status so this cannot drift.'],
   ['0.54.16', 'CI NOW CHECKS THAT THE APP ACTUALLY STARTS. Nothing about the app changed here — this is about last night never happening again. The blank-screen deploy went out with every check green, and it had to: the fault was the kind that only appears when the code RUNS, the build has no reason to complain about it, there was no linter, and not one of the 1,100 tests opens the app. A passing build told you nothing about whether the app would start. Every build now gets served to a real browser at phone size and has to render before it can merge — if the page comes up blank or throws on startup, the merge is blocked instead of you finding out on your phone. It was checked both ways against last night\'s actual broken bundle: it fails on that one, naming the exact culprit, and passes on the fixed one. Costs about a minute per pull request and runs separately, so the fast test gate is unchanged.'],
@@ -12864,6 +12866,17 @@ function RoutingWorkbench({ wbRoutes, stopById, boardStopById, ninjaMode, onTogg
   const [confirm, setConfirm] = useState(null);
   const [busy, setBusy] = useState(false);
   const [closeGuard, setCloseGuard] = useState(null);
+  // Pending destructive Save held for confirmation: { loads, warnings, cancels }. Only ever set
+  // for a LIVE save that would cancel one or more routes (see onPanelSave).
+  const [cancelGuard, setCancelGuard] = useState(null);
+  // Escape dismisses the cancel gate — but never mid-send: once the write is in flight, dropping
+  // the dialog would imply it was called off when NuVizz is already acting on it.
+  useEffect(() => {
+    if (!cancelGuard) return undefined;
+    const onKey = (e) => { if (e.key === 'Escape' && !busy) setCancelGuard(null); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [cancelGuard, busy]);
   const setStageFor = useCallback((key, patch) => setStaged((p) => ({ ...p, [key]: { ...(p[key] || {}), ...patch } })), []);
   useEffect(() => {
     const liveKeys = new Set(wbRoutes.map((r) => r.key));
@@ -12959,12 +12972,16 @@ function RoutingWorkbench({ wbRoutes, stopById, boardStopById, ninjaMode, onTogg
   // Save sends to NuVizz DIRECTLY — no confirmation popup (dispatcher's call). The per-load
   // dry-run preview + the LiveCommitConfirm "Send to NuVizz" gate were removed. The server
   // still validates every write and a save NuVizz accepts-but-doesn't-apply still fails
-  // loudly, so nothing is silently lost. Beta mode still simulates; any destructive notice
-  // (e.g. emptying a load CANCELS the route) surfaces as a non-blocking toast, not a modal.
-  const onPanelSave = async () => {
-    const { loads, warnings } = buildBoardPayload();
-    if (!loads.length) { showToast(warnings[0] || 'No changes to save.'); return; }
-    if (!liveMode) { showToast(`Beta — nothing sent (${loads.length} load(s) simulated).`); return; }
+  // loudly, so nothing is silently lost. Beta mode still simulates.
+  //
+  // ONE EXCEPTION, and it is deliberately narrow (Chad, Jul 30): emptying a load CANCELS the
+  // route in NuVizz — the load stops existing and its orders return to Un-Planned, with no
+  // undo in this app. That was announced by the same non-blocking toast used for "N stops not
+  // loaded yet", fired at the instant the write left. A destructive, unrecoverable action gets
+  // a real gate: `cancelsIn` reads the BUILT payload and qualifies a load only on the explicit
+  // emptyLoad flag, so an ordinary reorder/unplan/driver Save can never trip it and still
+  // commits with no popup at all.
+  const sendBoardSave = async (loads, warnings = []) => {
     if (warnings.length) showToast(`⚠ ${warnings[0]}`);
     // Cross-device collision heads-up (presence layer): the OTHER dispatcher's
     // Compare cards are staging stop(s) this Save also plans. Warn — don't block:
@@ -12975,6 +12992,15 @@ function RoutingWorkbench({ wbRoutes, stopById, boardStopById, ninjaMode, onTogg
       if (claimed.length) showToast(`⚠ ${claimed.length} stop(s) in this Save (${claimed.slice(0, 3).map((c) => c.nbr).join(', ')}${claimed.length > 3 ? '…' : ''}) are ALSO being staged by ${claimed[0].who} on another device — the later Save wins. Coordinate before sending twice.`);
     }
     await onPanelConfirm({ loads, clientOpId: newClientOpId() });
+  };
+  const onPanelSave = async () => {
+    const { loads, warnings } = buildBoardPayload();
+    if (!loads.length) { showToast(warnings[0] || 'No changes to save.'); return; }
+    if (!liveMode) { showToast(`Beta — nothing sent (${loads.length} load(s) simulated).`); return; }
+    // Beta returns above, so the gate can only ever stand in front of a REAL write.
+    const cancels = cancelsIn(loads);
+    if (cancels.length) { setCancelGuard({ loads, warnings, cancels }); return; }
+    await sendBoardSave(loads, warnings);
   };
 
   const markSaved = (keys) => setBaselines((prev) => {
@@ -13357,7 +13383,61 @@ function RoutingWorkbench({ wbRoutes, stopById, boardStopById, ninjaMode, onTogg
           />
         ))}
       </div>
-      {/* The "Send to NuVizz" confirmation popup was removed — Save commits directly (onPanelSave). */}
+      {/* The "Send to NuVizz" confirmation popup was removed — Save commits directly (onPanelSave).
+          The ONE popup left is this: a Save that would CANCEL a route (delete it in NuVizz) is
+          unrecoverable from this app, so it asks first. Red, names every route and the order count,
+          and defaults to the safe side — backdrop click, Escape and "Keep the route" all cancel;
+          only the explicit button sends. Busy-disabled so a double-tap can't double-fire the write. */}
+      {cancelGuard && (
+        <div
+          className="fixed inset-0 z-[70] bg-black/50 flex items-center justify-center p-4"
+          role="dialog" aria-modal="true" aria-label="Confirm route cancellation"
+          onMouseDown={(e) => { if (e.target === e.currentTarget && !busy) setCancelGuard(null); }}
+        >
+          <div className="bg-white rounded-lg shadow-xl w-full max-w-md max-h-[85dvh] flex flex-col">
+            <div className="px-4 py-3 border-b font-semibold text-red-700 flex items-center gap-2">
+              <AlertTriangle size={16} className="text-red-600" />
+              {cancelGuard.cancels.length === 1 ? 'This DELETES a route' : `This DELETES ${cancelGuard.cancels.length} routes`}
+            </div>
+            <div className="px-4 py-3 overflow-y-auto text-sm text-slate-700 space-y-2">
+              <div className="text-[13px] text-red-800 bg-red-50 border border-red-200 rounded p-2">
+                {cancelSummary(cancelGuard.cancels, (c) => loadDisplayName(c.routeName, c.loadNbr) || 'this load')}
+              </div>
+              <ul className="list-disc pl-5 space-y-0.5">
+                {cancelGuard.cancels.map((c, i) => (
+                  <li key={i}>
+                    <b>{loadDisplayName(c.routeName, c.loadNbr) || 'Unnamed load'}</b> — every order removed
+                    {c.orderCount ? ` (${c.orderCount} order${c.orderCount === 1 ? '' : 's'} back to Un-Planned)` : ''}
+                  </li>
+                ))}
+              </ul>
+              {/* Other loads in the same Save are NOT cancelled — say so, so "Cancel the route(s)"
+                  never reads as "throw away everything I staged". */}
+              {cancelGuard.loads.length > cancelGuard.cancels.length && (
+                <div className="text-[12px] text-slate-500">
+                  The other {cancelGuard.loads.length - cancelGuard.cancels.length} load(s) in this Save are unaffected and will be saved normally.
+                </div>
+              )}
+            </div>
+            <div className="px-4 py-3 border-t flex items-center justify-end gap-2">
+              <button
+                onClick={() => setCancelGuard(null)}
+                disabled={busy}
+                className="px-3 py-1.5 text-sm rounded border border-slate-300 text-slate-600 hover:bg-slate-50 disabled:opacity-60"
+              >
+                Keep the {cancelGuard.cancels.length === 1 ? 'route' : 'routes'}
+              </button>
+              <button
+                onClick={async () => { const g = cancelGuard; setCancelGuard(null); await sendBoardSave(g.loads, g.warnings); }}
+                disabled={busy}
+                className="px-3 py-1.5 text-sm rounded font-semibold text-white bg-red-600 hover:bg-red-700 disabled:opacity-60"
+              >
+                {busy ? 'Sending…' : `Cancel the ${cancelGuard.cancels.length === 1 ? 'route' : 'routes'}`}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       {LIVE_WRITE_FLAG && closeGuard && (
         <div className="fixed inset-0 z-[60] bg-black/40 flex items-center justify-center p-4" onMouseDown={(e) => { if (e.target === e.currentTarget) setCloseGuard(null); }}>
           <div className="bg-white rounded-lg shadow-xl w-full max-w-sm">
