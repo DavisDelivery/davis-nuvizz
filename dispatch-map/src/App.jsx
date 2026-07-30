@@ -44,6 +44,7 @@ import { applyScannerResults } from './lib/customer-notes-writer';
 import { aiParse, aiChat, applyFilterSpec, summarizeSpec, buildTrimmedStops } from './lib/ai-search.js';
 import { loadDeviceIdentity, saveDeviceName, activePeers, buildPeerClaims, peerChipLabel, latestPeerSaveAt, PRESENCE_HEARTBEAT_MS } from './lib/presence.js';
 import { cancelsIn, cancelSummary } from './lib/cancel-guard.js';
+import { validateNewRoute } from './lib/route-create.js';
 import ChatPanel, { ChatLauncher, MessagesLauncher } from './components/ChatPanel.jsx';
 import MessagesPanel from './components/MessagesPanel.jsx';
 
@@ -65,7 +66,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.54.21';
+const APP_VERSION = '0.54.22';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -110,6 +111,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.54.22', 'YOU CAN CREATE A ROUTE FROM THE ROUTING TAB. Chad: "I want to be able to create a route in the routing tab." Until now this app could DESTROY a route but never make one — emptying a load cancels it in NuVizz, and the rebuild had to happen in the portal. That was a one-way door, and it got a lot easier to walk through yesterday when the last order became removable. There is now a green ＋ New route button at the top of the Routes list. Give it a name — TRAILER 6, SUW 2, whatever you would call it on the board — and it creates an empty route on the day the board is showing, then opens it as a Compare card so you can drag orders straight onto it and Save exactly like any other route. WHY IT IS SAFE TO SHIP THIS, given the history: the July 2 incident that wiped freight off 10 live orders came from the load-import path, where sending an order by REFERENCE made NuVizz replace the whole order. That engine is still switched off and this does not use it. Creating a route sends a HEADER ONLY — a name, a day, and the warehouse it leaves from. There is not one order in the message, so there is nothing it could overwrite. The orders get planned onto the route afterwards by the ordinary Save you already use, which refers to orders by id and cannot blank them. THREE THINGS IT CHECKS BEFORE IT WRITES ANYTHING. (1) The load number has to be genuinely free. NuVizz uses one call for "create or update", so aiming it at a number that already exists would quietly EDIT that route instead. It only proceeds when NuVizz confirms the number is unused — and if the check itself fails, it stops rather than guess, because "I could not look" is not "it is free". (2) It reads the route back afterwards. NuVizz answers these calls before the work is actually done, so a success message is not proof; the route has to be readable or you are told it did not land — and told NOT to create it again under the same name, since that is how you end up with two. (3) It checks the NAME that came back. If NuVizz numbers the route itself instead of taking your name, you are told what it is actually called, so you are never hunting the board for a route that is not there under the name you typed. NuVizz caps a route name at 20 characters and needs its own load number, which is built from your name plus the date (TRAILER 6 on the 31st becomes TRAILER6-0731) — so the same route can be created again tomorrow without colliding with today. The form shows you that number before you commit. You need a ship-from address saved in the New Order tab, because NuVizz accepts a route with no origin and then silently creates nothing. Routes are created for the day the board is on — switch the board date first to build tomorrow. And there is a Beta/Live switch on the Routes panel exactly like driver assignment: in Beta it tells you what it would do and sends nothing.'],
   ['0.54.21', 'WHY "SCAN UNAVAILABLE" — AND THE CALL CEILING IS NOW A REAL 2,000. Chad: "Why is my scan not available?" and "set the max calls to 2000 and that needs to be enforced." Both done. THE SCAN BUTTON. That red line means one thing: the Scan now button POSTed to the scanner and the scanner did not accept the request. Your scheduled scans were fine the whole time — the same card said Loads updated 32 min ago. Here is why the button specifically fails: it posts to the BACKGROUND scanner, and that function also carries the every-15-minutes cron schedule. A function with a schedule attached is a scheduled function, and a scheduled function is not reliably reachable over plain HTTP — so the cron fires it happily on its own timer while a manual POST to the same address gets refused. The app already ships a second, plain endpoint that runs the exact same cheap scan, so the button now falls back to it automatically when the first one is refused. Two things worth knowing. FIRST, the fallback is called with NO date attached — deliberately. Handing it a date flips it into the roughly 3,000-call number-probe scan; without one it is the same 4-call list scan the scheduled path runs. SECOND, if it still fails you now get the actual reason and the HTTP code instead of a dead-end "Scan unavailable". And the reason you were reaching for that button matters: a MANUAL scan bypasses the orders-paused-until-10-AM hold and pulls orders for today AND tomorrow, so it is exactly the right tool when you need the board caught up before the pause lifts. THE CEILING, 2,000, ENFORCED. Your card read 133 / 20,000. It now reads out of 2,000, and 2,000 is a genuine hard ceiling: it cannot be raised by the site setting that had it at 20,000, cannot be raised by the Diagnostics editor (which could previously go to 200,000), and cannot be raised by any caller passing its own number. It can only be lowered. Enforcement also no longer depends on a setting being present — the breaker used to default to COUNT-AND-WARN-ONLY if its switch went missing or was mistyped, which is a spend cap that quietly stops being one; blocking is now the default and monitoring is the thing you have to ask for. Sizing: a normal day runs a few hundred calls, so 2,000 is about ten times real usage. Note deliberately: 2,000 sits BELOW the roughly 3,000-call cold full scan, so that scan can no longer complete by accident — it trips the breaker partway. That is the point of the number, not a side effect.'],
   ['0.54.21', 'YOUR 600 PLANNED ORDERS ARE THERE — "UNPLANNED ONLY" WAS ON, AND THE EMPTY GRID BLAMED THE WRONG FILTER. Chad: "says i don\'t have any planned orders today however i have like 600 of them." They are all there. The grid read "None of the 6 stops in this board match — hidden by status (1)", and BOTH numbers in that sentence were wrong. Your board holds 723 stops, not 6. And the thing that removed them was not the status filter — it was Unplanned only, the toggle in the map Filters panel, which was switched on. Here is the mechanism. The map panel filters the stops FIRST, then hands what survives to the bottom grid. With Unplanned only on, 723 stops became the 6 unplanned ones before the grid ever saw them. You then ticked Planned in the grid\'s own Status filter — and of course none of 6 unplanned stops are planned, so you got zero. The grid could only see its own filters, so it reported the 6 as though that were your whole board and named the only culprit it knew about. It now names every filter in the chain and reports the REAL board total: "None of the 723 stops in this board match — hidden by Unplanned only, status (1)." Hide terminal and Hide stem out are named the same way. Clear filters still clears in one click. Nothing about filtering changed — only what the app tells you when the result is empty. This is the same trap as v0.53.11, one layer further up: back then a status filter could blank the board without saying so, and the fix taught the grid to name its own filters. It could not name a filter applied before it, so the next silent blanking came from upstream.'],
   ['0.54.20', 'TWO WAYS A ROUTE CANCEL COULD GO WRONG, CLOSED BEFORE EITHER HAPPENED. A review of this morning\'s cancel work turned up two holes. Neither has been hit in the field, and both got a lot more dangerous the moment the board started trusting a cancel. (1) A REFUSAL FROM NUVIZZ COULD READ AS A SUCCESS. When you empty a load, NuVizz might report the cancellation as an error-shaped message rather than a plain success, so the code accepted any answer containing the word "cancel" as proof the route was cancelled. The problem: a REFUSAL says "cancel" too — "Load cannot be cancelled, already dispatched". That used to be a cosmetic mistake, a wrongly-worded result. Since this morning it would have been much worse: the board would mark all six orders unplanned and defend that for an hour, while NuVizz still had them planned on a route with a driver on it — and orders that look unplanned are orders someone builds onto another truck. The check now has to see an actual cancellation notice, and anything that reads like a refusal fails the Save loudly instead. If we cannot tell, the Save fails — you re-send or check the portal, which costs a minute; the other direction costs a double-planned order. (2) YOU CAN NO LONGER EMPTY A LOAD A DRIVER HAS ALREADY STARTED. NuVizz will not let go of a stop the driver has acted on — arrived, picked up, delivered. It answers SUCCESS and quietly keeps it. The route-building screen has refused those removals up front since the AVRT case back on the 22nd, but emptying a load runs down an older, separate path that never got that check — and until yesterday you could not empty a load at all, so it never came up. Now that you can, it does. Emptying a load with an executed stop is refused before anything is sent, naming the stop and its status, so nothing half-applies and finished work never gets flipped back to unplanned on the board. A stop with no execution status recorded is not treated as executed, so ordinary cancels are untouched. Four tests pin both, including that a real cancellation notice still works exactly as it did.'],
@@ -12148,7 +12150,9 @@ function RouteStatusBadge({ status }) {
   );
 }
 
-function RoutingRoutesPanel({ groups, onPick, liveWrite = false, roster = [], rosterError = null, assignLive = false, setAssignLive, onAssignDriver, assignedOverride = {}, assigningKey = null, onDispatchLoad, dispatchingKey = null }) {
+// onNewRoute is OPTIONAL on purpose: this panel is also rendered by the dispatch Map screen
+// (which passes only groups/onPick), and a create button has no business there.
+function RoutingRoutesPanel({ groups, onPick, liveWrite = false, roster = [], rosterError = null, assignLive = false, setAssignLive, onAssignDriver, assignedOverride = {}, assigningKey = null, onDispatchLoad, dispatchingKey = null, onNewRoute = null }) {
   const [selected, setSelected] = useState(() => new Set());   // empty = All
   const [menuOpen, setMenuOpen] = useState(false);
   const [q, setQ] = useState('');
@@ -12222,6 +12226,14 @@ function RoutingRoutesPanel({ groups, onPick, liveWrite = false, roster = [], ro
             title={assignLive ? 'LIVE — picking a driver assigns it in NuVizz immediately. Click for Beta (preview only); the mode is remembered on this device.' : 'BETA — picking a driver only previews, nothing is sent. Click to go Live and assign for real; the mode is remembered on this device.'}
             className={`inline-flex items-center gap-1 text-[11px] font-bold px-2 py-1 rounded border shrink-0 ${assignLive ? 'border-red-600 bg-red-600 text-white' : 'border-slate-300 bg-white text-slate-600 hover:bg-slate-50'}`}>
             {assignLive ? '● LIVE' : '○ Beta'}
+          </button>
+        )}
+        {/* Make a route (§R). Until v0.54.21 the app could CANCEL a route but never create one,
+            so emptying a load was one-way — the rebuild had to happen in the portal. */}
+        {onNewRoute && (
+          <button onClick={onNewRoute} title="Create a new, empty route on this day's board, then drag orders onto it"
+            className="inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-1 rounded border border-emerald-600 bg-emerald-600 text-white hover:bg-emerald-700 shrink-0">
+            <Plus size={12} /> New route
           </button>
         )}
       </div>
@@ -13695,6 +13707,87 @@ function RoutingMapFilters({ unplannedOnly, setUnplannedOnly, satellite, setSate
   );
 }
 
+// The saved ship-from (New Order tab). NuVizz will not create a route without a full origin —
+// it accepts the call and creates nothing — so the create refuses unless name/addr1/city/zip are
+// all present, which is stricter than the addr1-only check the board Save uses for its fallback.
+function readShipFromOrigin() {
+  try {
+    const o = JSON.parse(localStorage.getItem(NEWORDER_ORIGIN_KEY) || 'null');
+    const ok = o && ['name', 'addr1', 'city', 'zip'].every((k) => String(o[k] ?? '').trim());
+    return ok ? o : null;
+  } catch { return null; }
+}
+
+/**
+ * NewRouteModal (§R) — make an empty route the dispatcher can then build onto.
+ *
+ * MODULE SCOPE, not nested in RoutingScreen: a component re-created on every parent render
+ * remounts its inputs, and the text field would lose focus on every keystroke (the same
+ * reason OrderField lives at module scope).
+ *
+ * The route is created for the day the board is ALREADY showing. That is not a shortcut —
+ * changing the board date closes every Compare card, so letting this form pick a different
+ * day would create the route and then destroy the card that was about to receive orders.
+ * To build tomorrow's route, move the board to tomorrow first.
+ *
+ * No driver field: routePlan/update takes no assignment, and the created card carries the
+ * ordinary driver dropdown. One thing per dialog, and the assign path stays the verified one.
+ */
+function NewRouteModal({ date, existingNames, origin, live, busy, error, onCancel, onCreate }) {
+  const [routeName, setRouteName] = useState('');
+  const check = validateNewRoute({ routeName, date, existingNames, hasOrigin: !!origin });
+  const showCheck = routeName.trim().length > 0;
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === 'Escape' && !busy) onCancel(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onCancel, busy]);
+  return (
+    <div className="fixed inset-0 z-[70] bg-black/50 flex items-center justify-center p-4"
+      role="dialog" aria-modal="true" aria-label="New route"
+      onMouseDown={(e) => { if (e.target === e.currentTarget && !busy) onCancel(); }}>
+      <div className="bg-white rounded-lg shadow-xl w-full max-w-md max-h-[85dvh] flex flex-col">
+        <div className="px-4 py-3 border-b font-semibold text-slate-800 flex items-center gap-2">
+          <Plus size={16} className="text-emerald-600" /> New route for {formatDateLong(date)}
+        </div>
+        <form
+          className="px-4 py-3 overflow-y-auto text-sm space-y-3"
+          onSubmit={(e) => { e.preventDefault(); if (check.ok && !busy) onCreate(routeName.trim(), check.loadNbr); }}
+        >
+          <OrderField label="Route name" req value={routeName} onChange={(e) => setRouteName(e.target.value)}
+            placeholder="e.g. TRAILER 6" disabled={busy} />
+          <div className="text-[11px] text-slate-500">
+            This is the name the board groups by. NuVizz also needs its own load number, which is made from the
+            name and the day{check.loadNbr ? <> — this one would be <b className="font-mono">{check.loadNbr}</b>.</> : '.'}
+          </div>
+          {showCheck && !check.ok && (
+            <div className="text-[12px] text-amber-800 bg-amber-50 border border-amber-200 rounded p-2">{check.error}</div>
+          )}
+          {error && <div className="text-[12px] text-red-800 bg-red-50 border border-red-200 rounded p-2">{error}</div>}
+          <div className="text-[11px] text-slate-500">
+            The route is created EMPTY on {formatDateLong(date)} and opens as a Compare card — drag orders onto it and
+            Save to plan them. To build another day&apos;s route, change the board date first.
+          </div>
+          {!live && (
+            <div className="text-[12px] text-slate-600 bg-slate-50 border border-slate-200 rounded p-2">
+              ○ Beta — nothing will be sent to NuVizz. Flip the panel to ● LIVE to create the route for real.
+            </div>
+          )}
+          <button type="submit" className="hidden" aria-hidden="true" tabIndex={-1} />
+        </form>
+        <div className="px-4 py-3 border-t flex items-center justify-end gap-2">
+          <button onClick={onCancel} disabled={busy}
+            className="px-3 py-1.5 text-sm rounded border border-slate-300 text-slate-600 hover:bg-slate-50 disabled:opacity-60">Cancel</button>
+          <button onClick={() => onCreate(routeName.trim(), check.loadNbr)} disabled={!check.ok || busy}
+            className="px-3 py-1.5 text-sm rounded font-semibold text-white bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60">
+            {busy ? 'Creating…' : (live ? 'Create route' : 'Preview (Beta)')}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // Beta version history popup (opened from the build badge).
 function VersionLogModal({ onClose }) {
   useEffect(() => {
@@ -15103,6 +15196,61 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
     mapRef.current.fitBounds(b, fitPad());
   }, [openRouteInWorkbench, google, positionedAll, fitPad]);
 
+  // ── NEW ROUTE (§R) ──────────────────────────────────────────────────────────
+  // Chad, Jul 30: "I want to be able to create a route in the routing tab." Cancelling a
+  // route was one-way until now — the app could destroy one but the rebuild had to happen in
+  // the portal.
+  const [newRouteOpen, setNewRouteOpen] = useState(false);
+  const [newRouteBusy, setNewRouteBusy] = useState(false);
+  const [newRouteError, setNewRouteError] = useState(null);
+  const openNewRoute = useCallback(() => { setNewRouteError(null); setNewRouteOpen(true); }, []);
+  const createNewRoute = useCallback(async (routeName, loadNbr) => {
+    setNewRouteError(null);
+    if (wbRoutes.length >= WB_MAX) { setNewRouteError(`Compare is full (${WB_MAX} routes) — close one first, then create.`); return; }
+    const origin = readShipFromOrigin();
+    if (!assignLive) {
+      setNewRouteOpen(false);
+      showMapToast(`Beta — would create route ${routeName} (${loadNbr}) for ${selectedDate}. Nothing sent. Flip the Routes panel to ● LIVE to create it.`);
+      return;
+    }
+    setNewRouteBusy(true);
+    let res;
+    try {
+      res = await callWrite('newRoute', { routeName, loadNbr, date: selectedDate, origin },
+        { dryRun: false, clientOpId: newClientOpId(), createdBy: 'dispatcher' });
+    } catch (e) { res = { ok: false, error: e?.message || 'network error' }; }
+    setNewRouteBusy(false);
+    const r = res?.result || {};
+    if (!(res?.ok && r.ok)) {
+      // `pending` is NOT a retry prompt — NuVizz took the route and it may still land, so a
+      // second create with the same name would either collide or double up. Its own message
+      // says so; surface the server's text rather than a generic ✗.
+      setNewRouteError(res?.error || r.error || 'Could not create the route.');
+      return;
+    }
+    setNewRouteOpen(false);
+    // Seed the loads roster so the rest of the screen (assign-driver identity, "plan onto my
+    // loads", a later re-open) can resolve this route before the next roster fetch — that
+    // effect only re-runs on date/panel change, so without this the new route is invisible to
+    // every identity lookup for the rest of the session.
+    const entry = { loadId: r.loadId ? String(r.loadId) : null, name: r.routeName || routeName, loadNbr: r.loadNbr ? String(r.loadNbr) : null };
+    try {
+      const idx = loadRosterRef.current;
+      if (entry.name) idx.set(String(entry.name).trim().toLowerCase(), entry);
+      if (entry.loadId) idx.set(String(entry.loadId), entry);
+      if (entry.loadNbr) idx.set(String(entry.loadNbr), entry);
+    } catch { /* a stale index never blocks the card below */ }
+    // Open the card DIRECTLY with the identity the create just verified. openRouteInWorkbench
+    // derives identity from board stops (there are none) and then the roster, so it would land
+    // a card with loadId/loadNbr null — and the first Save would fail "load not found".
+    const key = r.routeName || routeName;
+    setWbRoutes((prev) => (prev.some((x) => x.key === key) ? prev : [...prev,
+      { key, name: entry.name, loadNbr: entry.loadNbr, loadId: entry.loadId, order: [], baseline: [], collapsed: false }]));
+    showMapToast(r.nameMatched === false
+      ? `⚠ Route created, but NuVizz named it ${r.routeName} (not ${routeName}) — it's open in Compare under that name.`
+      : `✓ Route ${key} created and open in Compare — drag orders onto it, then Save.`);
+  }, [assignLive, selectedDate, showMapToast, wbRoutes.length]);
+
   // Frame ALL of a driver's stops (they may run multiple routes). Lighter than onPickRoute —
   // it only fits the map bounds, it doesn't open every route in the workbench.
   const onPickDriver = useCallback((routeKeys) => {
@@ -16226,6 +16374,21 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
   );
 
   // ── Mobile: map + collapsible bottom sheet (Setup / Result) ──
+  // Rendered in BOTH layout branches below — RoutingScreen returns separately for mobile and
+  // desktop, and a modal defined in only one is invisible on the other.
+  const newRouteModal = newRouteOpen ? (
+    <NewRouteModal
+      date={selectedDate}
+      existingNames={routeGroups.map((g) => g.name || g.key)}
+      origin={readShipFromOrigin()}
+      live={assignLive}
+      busy={newRouteBusy}
+      error={newRouteError}
+      onCancel={() => { if (!newRouteBusy) { setNewRouteOpen(false); setNewRouteError(null); } }}
+      onCreate={createNewRoute}
+    />
+  ) : null;
+
   if (isMobile) {
     const tabCls = (on) => `flex-1 py-1.5 text-xs font-semibold rounded ${on ? 'text-white' : 'text-slate-600 bg-slate-100'}`;
     return (
@@ -16332,7 +16495,7 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
                           <RoutesDriversToggle subTab={routesSubTab} setSubTab={setRoutesSubTab} routesCount={routeGroups.length} className="mb-2" />
                           {routesSubTab === 'drivers'
                             ? <RoutingDriversPanel roster={driverRoster} routeGroups={routeGroups} onRefresh={refreshDriverRoster} onPickDriver={onPickDriver} />
-                            : <RoutingRoutesPanel groups={routeGroups} onPick={onPickRoute} liveWrite={liveWrite} roster={assignRoster} rosterError={assignRosterError} assignLive={assignLive} setAssignLive={setAssignLive} onAssignDriver={onAssignDriver} assignedOverride={assignedOverride} assigningKey={assigningKey} onDispatchLoad={onDispatchLoad} dispatchingKey={dispatchingKey} />}
+                            : <RoutingRoutesPanel groups={routeGroups} onPick={onPickRoute} liveWrite={liveWrite} roster={assignRoster} rosterError={assignRosterError} assignLive={assignLive} setAssignLive={setAssignLive} onAssignDriver={onAssignDriver} assignedOverride={assignedOverride} assigningKey={assigningKey} onDispatchLoad={onDispatchLoad} dispatchingKey={dispatchingKey} onNewRoute={liveWrite ? openNewRoute : null} />}
                         </>
                       )
                       : loadsContent)
@@ -16341,6 +16504,7 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
             )
           )}
         </div>
+        {newRouteModal}
         {movingStop && <MoveLocationBar stop={movingStop} saving={savingLoc} onSave={saveStopLocation} onCancel={cancelMoveLocation} onReset={resetStopLocation} />}
         {editAddrStop && <AddressEditModal stop={editAddrStop} note={notes.get(editAddrStop.matchKey)} google={google} seed={editAddrSeed} onClose={() => { setEditAddrStop(null); setEditAddrSeed(null); }} onSaved={() => refreshStops({ silent: true })} />}
         {routingSmsTargets && <SmsComposeModal title={routingSmsTargets.title} recipients={routingSmsTargets.recipients} initialText={routingSmsTargets.initialText} onClose={() => setRoutingSmsTargets(null)} />}
@@ -16509,7 +16673,7 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
             </div>
             {routesSubTab === 'drivers'
               ? <RoutingDriversPanel roster={driverRoster} routeGroups={routeGroups} onRefresh={refreshDriverRoster} onPickDriver={onPickDriver} />
-              : <RoutingRoutesPanel groups={routeGroups} onPick={onPickRoute} liveWrite={liveWrite} roster={assignRoster} rosterError={assignRosterError} assignLive={assignLive} setAssignLive={setAssignLive} onAssignDriver={onAssignDriver} assignedOverride={assignedOverride} assigningKey={assigningKey} onDispatchLoad={onDispatchLoad} dispatchingKey={dispatchingKey} />}
+              : <RoutingRoutesPanel groups={routeGroups} onPick={onPickRoute} liveWrite={liveWrite} roster={assignRoster} rosterError={assignRosterError} assignLive={assignLive} setAssignLive={setAssignLive} onAssignDriver={onAssignDriver} assignedOverride={assignedOverride} assigningKey={assigningKey} onDispatchLoad={onDispatchLoad} dispatchingKey={dispatchingKey} onNewRoute={liveWrite ? openNewRoute : null} />}
           </>
         ) : (
         <>
@@ -16534,6 +16698,7 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
       </div>
       </>
       )}
+      {newRouteModal}
       {movingStop && <MoveLocationBar stop={movingStop} saving={savingLoc} onSave={saveStopLocation} onCancel={cancelMoveLocation} onReset={resetStopLocation} />}
       {editAddrStop && <AddressEditModal stop={editAddrStop} note={notes.get(editAddrStop.matchKey)} google={google} seed={editAddrSeed} onClose={() => { setEditAddrStop(null); setEditAddrSeed(null); }} onSaved={() => refreshStops({ silent: true })} />}
       {routingSmsTargets && <SmsComposeModal title={routingSmsTargets.title} recipients={routingSmsTargets.recipients} initialText={routingSmsTargets.initialText} onClose={() => setRoutingSmsTargets(null)} />}

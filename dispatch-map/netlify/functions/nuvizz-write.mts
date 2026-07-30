@@ -97,6 +97,13 @@ function planFor(op: WriteOp, payload: any): string[] {
       return `Load ${L?.loadHeader?.routeName ?? L?.loadHeader?.loadNbr ?? '?'}: IMPORT ${n} stop(s) in exact array order (async load/update/default + convergence read-backs; gated by ${gate})`;
     });
   }
+  if (op === 'newRoute') {
+    return [
+      `CHECK load ${payload?.loadNbr ?? '?'} is free (must read 404 — an existing number is refused, never overwritten)`,
+      `CREATE empty route "${payload?.routeName ?? payload?.loadNbr ?? '?'}" for ${payload?.date ?? '(no date)'} — routePlan/update, HEADER ONLY (no stops in the payload)`,
+      'VERIFY by reading the load back (the ack is async) and confirm the route NAME landed',
+    ];
+  }
   return [`${op} → 1 NuVizz call`];
 }
 

@@ -52,6 +52,14 @@ export const addStopNote = (stopNbr, text, audience = 'both', opts = {}) =>
 export const setStopDate = (stopNbr, date, opts = {}) =>
   callWrite('setStopDate', { stopNbr, date }, { ...opts, dryRun: false });
 
+// Create an EMPTY route the dispatcher can then build onto (§R). The server checks the load
+// number is genuinely free (routePlan/update is create-OR-UPDATE — an existing number would
+// be EDITED, so anything but a clean 404 refuses), writes a HEADER ONLY — no stops node, which
+// is why this cannot repeat the Jul 2 import freight-wipe — then reads the route back, because
+// the ack is async and a 200 is not proof. Resolves { ok, loadNbr, loadId, routeName }.
+export const createRoute = (payload, opts = {}) =>
+  callWrite('newRoute', payload, { ...opts, dryRun: false });
+
 // Stable id so a Save can be retried without creating duplicate orders/assignments.
 export function newClientOpId() {
   try { if (globalThis.crypto?.randomUUID) return `op_${globalThis.crypto.randomUUID()}`; } catch { /* fall through */ }
