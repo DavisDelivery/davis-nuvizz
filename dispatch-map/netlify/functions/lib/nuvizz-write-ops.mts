@@ -35,13 +35,13 @@
 // is not in this builder allowlist.
 export const SINGLE_OPS = [
   'createStop', 'getStop', 'getLoad', 'getLoadByRouteId', 'insertStops', 'removeStops',
-  'assignDriver', 'dispatchLoad', 'roster', 'importLoad', 'partialUpdateStop',
+  'assignDriver', 'dispatchLoad', 'roster', 'importLoad', 'partialUpdateStop', 'createRoute',
 ] as const;
 export type SingleOp = typeof SINGLE_OPS[number];
 
 // Ops the HTTP handler accepts (single ops + the per-load Save batch + the panel Save +
 // the async load-import commit with its convergence recipe).
-export const WRITE_OPS = [...SINGLE_OPS, 'commitLoad', 'commitBoard', 'commitImport', 'addStopNote', 'setStopDate'] as const;
+export const WRITE_OPS = [...SINGLE_OPS, 'commitLoad', 'commitBoard', 'commitImport', 'addStopNote', 'setStopDate', 'newRoute'] as const;
 export type WriteOp = typeof WRITE_OPS[number];
 
 /** Ops that MUTATE NuVizz (everything except the GET reads). Used by the
@@ -50,6 +50,7 @@ export const MUTATING_OPS = new Set<WriteOp>([
   'createStop', 'insertStops', 'removeStops', 'assignDriver', 'dispatchLoad',
   'importLoad', 'commitLoad', 'commitBoard', 'commitImport',
   'partialUpdateStop', 'addStopNote', 'setStopDate',
+  'createRoute', 'newRoute',
 ]);
 
 /**
@@ -1410,6 +1411,71 @@ export function assembleImportHeader(rawHeader: any, rawStops: any[], clientOrig
   };
 }
 
+// ── §R  ROUTE CREATE — an EMPTY route the dispatcher can then build onto ─────
+//
+// POST /routePlan/update/{serviceName}/{companyCode}  ("Create or Update Route Plan")
+// body: { companyCode, route: { loadHeader, planStops?, stops?, loadAssignment? } }
+//
+// WHY THIS ENDPOINT AND NOT THE LOAD IMPORT. The import (`load/update`, §I) is the app's
+// only other create path and it is gated OFF since the Jul 2 2026 incident: production
+// treats import REFERENCE stops as FULL REPLACES, which wiped freight on 10 live orders.
+// That failure mode is a property of sending STOPS. `routePlan/update` requires only a
+// loadHeader — the schema makes `stops`/`planStops` optional — so an empty-route create
+// carries no stop data at all and cannot replace, blank, or clone a single order. The
+// dispatcher then plans orders onto the new route with the ordinary Compare Save, which
+// runs the proven RWB engine (references stops BY ID, never by value).
+//
+// THE INVARIANT THIS BUILDER EXISTS TO HOLD: the body it returns has NO `stops` and NO
+// `planStops` key, ever, whatever the caller passes. Asserted in test — it is the whole
+// reason this is a separate builder instead of a flag on buildImportBody.
+export interface RouteCreateInput {
+  loadNbr: string;              // unique to the business, ≤20 (NuVizz LoadHeader.loadNbr)
+  routeName?: string | null;    // the friendly board name ("TRAILER 6"), ≤20
+  date?: string | null;         // yyyy-mm-dd service day — derives the start window
+  earliestStartDttm?: string | null;
+  latestStartDttm?: string | null;
+  origin?: any;                 // the saved ship-from { name, addr1, addr2, city, state, zip }
+  loadTimeZone?: string | null;
+}
+
+// NuVizz caps both at 20 chars. Over-long values are the classic silent-discard trap on an
+// async worker (§I: "SUCCESS ack, nothing lands"), so refuse UP FRONT rather than send them.
+export const ROUTE_FIELD_MAX = 20;
+
+export function buildRouteCreateBody(input: RouteCreateInput, companyCode: string): any {
+  const loadNbr = String(req(input?.loadNbr, 'createRoute: loadNbr')).trim();
+  if (!loadNbr) throw new Error('createRoute: loadNbr is required');
+  if (loadNbr.length > ROUTE_FIELD_MAX) throw new Error(`createRoute: loadNbr "${loadNbr}" is ${loadNbr.length} chars — NuVizz caps it at ${ROUTE_FIELD_MAX}`);
+  const routeName = strField(input?.routeName);
+  if (routeName.length > ROUTE_FIELD_MAX) throw new Error(`createRoute: route name "${routeName}" is ${routeName.length} chars — NuVizz caps it at ${ROUTE_FIELD_MAX}`);
+  // Same proven window shape as the import header: full seconds form, never millis/offset.
+  const iso = (v: any) => (typeof v === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(v) ? v.slice(0, 19) : null);
+  const day = isDayString(input?.date) ? String(input.date) : null;
+  const earliest = iso(input?.earliestStartDttm) || (day ? `${day}T06:00:00` : null);
+  const latest = iso(input?.latestStartDttm) || (day ? `${day}T18:00:00` : null);
+  if (!earliest) throw new Error('createRoute: a service date (or an explicit earliestStartDttm) is required — NuVizz will not create a route without a start');
+
+  const o = input?.origin || {};
+  if (!(strField(o.name) && strField(o.addr1) && strField(o.city) && strField(o.zip))) {
+    throw new Error('createRoute: no ship-from origin available — set one in the New Order tab first (NuVizz accepts a route with no origin and then creates nothing)');
+  }
+  const loadHeader: any = {
+    loadNbr,
+    ...(routeName ? { routeName } : {}),
+    earliestStartDttm: earliest,
+    ...(latest ? { latestStartDttm: latest } : {}),
+    origin: 'WHSE',
+    originName: strField(o.name), originAddr1: strField(o.addr1),
+    ...(strField(o.addr2) ? { originAddr2: strField(o.addr2) } : {}),
+    originCity: strField(o.city), originState: stateCode(o.state), originZip: strField(o.zip),
+    originCountry: countryCode(o.country) || 'USA',
+    loadTimeZone: strField(input?.loadTimeZone) || 'EST',
+  };
+  // `route` carries loadHeader and NOTHING else. No stops, no planStops, no loadAssignment
+  // (a driver is assigned afterwards by the existing assignDriver op, which is verified).
+  return { companyCode, route: { loadHeader } };
+}
+
 /** normStopNbr (§I) — canonical stopNbr for ORDER COMPARISON ONLY (display/journals keep raw):
  *  trim, uppercase, strip leading zeros ("007141643" ≡ "7141643" ≡ 7141643). NuVizz isn't
  *  consistent about zero-padding/typing across endpoints; a padding mismatch must never read
@@ -1528,6 +1594,13 @@ export function buildOpRequest(op: SingleOp, payload: any, creds: WriteCreds): B
       return { url: `${base}/load/assignanddispatch/${enc(cc)}`, method: 'POST', headers: H, body: JSON.stringify(body), meta: { route: '/load/assignanddispatch(dispatch)', tenant: cc, source: 'live-write' } };
     }
 
+    case 'createRoute': {
+      // §R — create an EMPTY route from a header alone. The builder guarantees the body
+      // carries no stops/planStops node, so this can never touch existing freight.
+      const body = buildRouteCreateBody(payload?.route ?? payload, cc);
+      return { url: `${base}/routePlan/update/default/${enc(cc)}`, method: 'POST', headers: H, body: JSON.stringify(body), meta: { route: '/routePlan/update/default', tenant: cc, source: 'live-write' } };
+    }
+
     case 'importLoad': {
       // ONE async call sets a load's complete stop list in exact array order (§I above).
       // buildImportBody hard-validates the header (silent-failure trap) + stops (no empty
@@ -1560,6 +1633,9 @@ export function parseOpResponse(op: SingleOp, httpOk: boolean, j: any): any {
     case 'assignDriver':
     case 'dispatchLoad': return assignOk(j);
     case 'importLoad': return importOk(httpOk, j);
+    // routePlan/update answers the same ImportResponse envelope as the load import — an
+    // async ack, never proof the route landed. runNewRoute converges with a real read.
+    case 'createRoute': return importOk(httpOk, j);
     default: return summarize(httpOk, j);
   }
 }

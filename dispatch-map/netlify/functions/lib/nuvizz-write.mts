@@ -2182,6 +2182,105 @@ async function applyBoardDateChange(creds: WriteCreds, stopNbr: string, fromDate
   return out;
 }
 
+/**
+ * runNewRoute (§R) — create an EMPTY route the dispatcher can then build onto.
+ *
+ * Chad, Jul 30: "I want to be able to create a route in the routing tab." Until now nothing
+ * in the app could create a route: the Compare Save needs a load that already exists, and
+ * the only other create path is the load import — gated OFF since the Jul 2 incident where
+ * production treated import REFERENCE stops as full replaces and wiped freight on 10 live
+ * orders. Cancelling a route was therefore one-way: the app could destroy one (and, since
+ * v0.54.17, easily) but not make one.
+ *
+ * This uses routePlan/update with a HEADER ONLY — no stops node exists in the payload, so the
+ * Jul 2 failure mode is structurally impossible here. Orders are planned onto the new route
+ * afterwards by the ordinary Compare Save (the RWB engine, which references stops by id).
+ *
+ * THREE CALLS, and the first one is the safety:
+ *   1. READ  the load number. routePlan/update is "create OR UPDATE" — aimed at a number that
+ *            already exists it would EDIT that route's header. So a create demands a clean
+ *            404 first: anything else (the load resolves, OR the read fails and we cannot
+ *            tell) refuses. Never write blind at a number that might be a live route.
+ *   2. WRITE the header.
+ *   3. VERIFY by reading the load back — the ack is async and a 200 is not proof (§I). The
+ *            read-back also confirms the ROUTE NAME landed, which closes the gap that the
+ *            import path never checked: NuVizz assigning its own name would otherwise pass
+ *            as success and the dispatcher would hunt for a route that isn't there.
+ */
+export function routeCreateBlocked(): boolean {
+  // Emergency hard-off, mirroring NUVIZZ_LOAD_IMPORT's brake — but DEFAULT-ON, because this
+  // path carries no stop data and its worst case is a spare empty route (cancellable in-app).
+  // Set NUVIZZ_ROUTE_CREATE=0/false/off/no to kill it without a deploy.
+  return /^(0|false|off|no)$/i.test(String(process.env.NUVIZZ_ROUTE_CREATE ?? '').trim());
+}
+
+export async function runNewRoute(requester: RequesterLike, payload: any, creds: WriteCreds): Promise<any> {
+  if (routeCreateBlocked()) return { ok: false, blocked: true, error: 'route creation is disabled on this server (NUVIZZ_ROUTE_CREATE=off)' };
+  const steps: any[] = [];
+  const loadNbr = String(payload?.loadNbr ?? '').trim();
+  const routeName = String(payload?.routeName ?? '').trim();
+  if (!loadNbr) return { ok: false, error: 'createRoute: loadNbr is required', steps };
+
+  // ── 1. COLLISION GUARD — the number must be genuinely free ──────────────────
+  const pre = await fetchLoad(requester, loadNbr, creds);
+  steps.push({ op: 'getLoad', ok: true, result: { found: !!pre.load, httpStatus: pre.httpStatus }, error: null });
+  if (pre.load) {
+    return { ok: false, exists: true, loadNbr, loadId: pre.load.loadId ?? null,
+      error: `createRoute: load ${loadNbr} already exists in NuVizz (${loadDisplayLabel(pre.load)}) — pick a different route name/date, or open that route from the board instead`, steps };
+  }
+  // A 404 is the only proof the number is free. A 5xx/network failure is NOT — creating on an
+  // unreadable number risks silently editing a live route's header.
+  if (pre.httpStatus != null && pre.httpStatus !== 404) {
+    return { ok: false, error: `createRoute: could not confirm load ${loadNbr} is free (NuVizz answered ${pre.httpStatus} to the check) — nothing was created; try again`, steps };
+  }
+
+  // ── 2. WRITE the header ─────────────────────────────────────────────────────
+  const r = await fireSingle(requester, 'createRoute', {
+    route: {
+      loadNbr, routeName: routeName || undefined,
+      date: payload?.date ?? null,
+      earliestStartDttm: payload?.earliestStartDttm ?? null,
+      latestStartDttm: payload?.latestStartDttm ?? null,
+      origin: payload?.origin ?? null,
+      loadTimeZone: payload?.loadTimeZone ?? null,
+    },
+  }, creds);
+  steps.push({ op: 'createRoute', ok: !!r.ok, result: r, error: r.ok ? null : (r.error || 'failed') });
+  if (!r.ok) return { ok: false, error: `createRoute: ${r.error || 'NuVizz rejected the route'}`, steps };
+
+  // ── 3. VERIFY — the ack is async; only a read proves the route exists ────────
+  const pacing = payload?.pacing || {};
+  const tries = Number(pacing.tries ?? 6);
+  const waitMs = Number(pacing.waitMs ?? 1500);
+  const sleep = pacing.sleep || ((ms: number) => new Promise((res) => setTimeout(res, ms)));
+  let made: any = null;
+  for (let i = 0; i < tries; i++) {
+    await sleep(waitMs);
+    const f = await fetchLoad(requester, loadNbr, creds);
+    if (f.load) { made = f.load; break; }
+  }
+  steps.push({ op: 'verifyLoad', ok: !!made, result: { found: !!made }, error: made ? null : 'not readable yet' });
+  if (!made) {
+    return { ok: false, pending: true, loadNbr,
+      error: `createRoute: NuVizz accepted the route but ${loadNbr} is not readable yet — it may still land. Refresh in a moment before creating it again (do NOT re-create with the same name).`, steps };
+  }
+  // The name is verified, not assumed: an import-family endpoint that quietly assigns its own
+  // name would otherwise report success for a route the dispatcher can't find on the board.
+  const gotName = String(made.routeName ?? '').trim();
+  const nameOk = !routeName || gotName === routeName;
+  return {
+    ok: true, loadNbr: made.loadNbr ?? loadNbr, loadId: made.loadId ?? null,
+    routeName: gotName || null, requestedRouteName: routeName || null, nameMatched: nameOk,
+    ...(nameOk ? {} : { warning: `NuVizz created the route but named it "${gotName || '(none)'}" instead of "${routeName}" — it will show under that name on the board.` }),
+    steps,
+  };
+}
+
+function loadDisplayLabel(load: any): string {
+  const n = String(load?.routeName ?? '').trim();
+  return n && !isHashLikeId(n) ? n : String(load?.loadNbr ?? 'existing load');
+}
+
 export async function runOp(requester: RequesterLike, op: WriteOp, payload: any, creds: WriteCreds): Promise<any> {
   switch (op) {
     // The Compare panel's Save: the in-panel engine toggle sends useRwb OR useImport on the
@@ -2201,6 +2300,9 @@ export async function runOp(requester: RequesterLike, op: WriteOp, payload: any,
     case 'commitImport': return runCommitImport(requester, payload, creds);
     case 'addStopNote': return runAddStopNote(requester, payload, creds);
     case 'setStopDate': return runSetStopDate(requester, payload, creds);
+    // §R — the orchestration (collision check → header write → read-back verify). The bare
+    // 'createRoute' single op stays available for tests/diagnostics; the app calls 'newRoute'.
+    case 'newRoute': return runNewRoute(requester, payload, creds);
     default: return fireSingle(requester, op as SingleOp, payload, creds);
   }
 }
