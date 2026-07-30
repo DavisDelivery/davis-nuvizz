@@ -149,3 +149,60 @@ test('monitor mode: crosses the ceiling but never trips or blocks (logs would-tr
   assert.equal(wouldTrip.length, 1, 'logs a single would-trip warning at the ceiling');
   assert.equal(wouldTrip[0].mode, 'monitor');
 });
+
+// ── The HARD daily ceiling (Jul 29) ─────────────────────────────────────────
+//
+// Chad: "Also need to set the max calls to 2000 and that needs to be enforced." The site was
+// running at 20,000 (an env var), the Diagnostics editor could reach 200,000, and the breaker
+// defaulted to MONITOR — count and warn, never block. Three separate ways the spend cap could
+// be higher than intended, or not a cap at all.
+import { clampCeiling, HARD_DAILY_CEILING, effectiveDailyCeiling, setDailyCeilingOverride, BREAKER_MODE } from '../netlify/functions/lib/nuvizz-request.mts';
+
+test('the hard cap is 2,000 and nothing may raise it', () => {
+  assert.equal(HARD_DAILY_CEILING, 2000);
+  assert.equal(clampCeiling(20_000), 2000, 'the 20,000 the site was running');
+  assert.equal(clampCeiling(200_000), 2000, 'the old editable maximum');
+  assert.equal(clampCeiling(2001), 2000);
+});
+
+test('a LOWER ceiling is honoured — the cap is a maximum, not a target', () => {
+  assert.equal(clampCeiling(500), 500);
+  assert.equal(clampCeiling(1), 1);
+});
+
+test('junk clamps to the cap rather than to zero — never a self-disabling breaker', () => {
+  // A ceiling of 0/NaN would compare `total >= 0` true on the first call and trip instantly,
+  // or (worse, read the other way) be treated as "no limit". Both are wrong; the cap is safe.
+  for (const junk of [0, -5, NaN, Infinity, null, undefined, '', 'lots', {}]) {
+    assert.equal(clampCeiling(junk), 2000, String(junk));
+  }
+});
+
+test('effectiveDailyCeiling clamps the override AND the caller fallback', () => {
+  setDailyCeilingOverride(50_000);
+  assert.equal(effectiveDailyCeiling(), 2000, 'a runtime override cannot lift the cap');
+  setDailyCeilingOverride(750);
+  assert.equal(effectiveDailyCeiling(), 750);
+  setDailyCeilingOverride(null);
+  assert.equal(effectiveDailyCeiling(99_999), 2000, 'nor can a caller-supplied fallback');
+});
+
+test('ENFORCE is the default — a missing env var can no longer disarm the cap', () => {
+  // Previously: anything other than the exact string 'enforce' meant monitor (never blocks).
+  assert.equal(BREAKER_MODE, 'enforce');
+});
+
+test('the breaker BLOCKS at the clamped ceiling, not at the requested one', async () => {
+  // Built asking for 20,000; the requester must still stop at 2,000.
+  let calls = 0;
+  const deps = {
+    fetchImpl: async () => { calls++; return new Response('{}', { status: 200 }); },
+    recordCall: async () => calls,
+    readCircuit: async () => ({ open: false }),
+    tripCircuit: async () => {},
+    now: () => Date.now(),
+    sleep: async () => {},
+  };
+  const r = createNuvizzRequester(deps, { dailyCeiling: 20_000, breakerMode: 'enforce', maxRetries: 0, backoffTotalCapMs: 1000 });
+  assert.equal(r.getStats().ceiling, 2000, 'the pill reports the ENFORCED number, not the requested one');
+});

@@ -65,7 +65,9 @@ export const SCAN_CONFIG_BOUNDS: Record<string, [number, number]> = {
   weekendBlackoutEnd: [0, 23],
   deepSweepHours: [1, 168],
   deepSweepHour: [0, 23],
-  dailyCeiling: [100, 200_000],
+  // Upper bound is the HARD cap (nuvizz-request HARD_DAILY_CEILING). The Diagnostics editor
+  // could previously set 200,000 — an editable box that can lift a spend cap 100x is not a cap.
+  dailyCeiling: [100, 2_000],
 };
 
 // The default schedule, computed from env (so the UI shows the SITE's real current
@@ -82,7 +84,8 @@ export function scanConfigDefaults(env: Record<string, any> = process.env): Requ
     weekendBlackoutEnd: Number(env.NUVIZZ_WEEKEND_BLACKOUT_END_ET) || 19,
     deepSweepHours: Number(env.NUVIZZ_DEEP_SWEEP_HOURS) || 8,
     deepSweepHour: Number(env.NUVIZZ_DEEP_SWEEP_HOUR) || 13,
-    dailyCeiling: Number(env.NUVIZZ_DAILY_CEILING) || 12_000,
+    // Clamped to the hard cap: an env var cannot raise the ceiling, only lower it.
+    dailyCeiling: Math.min(2_000, Number(env.NUVIZZ_DAILY_CEILING) || 2_000),
     scansEnabled: String(env.NUVIZZ_SCANS_ENABLED ?? '').toLowerCase() !== 'false',
   };
 }

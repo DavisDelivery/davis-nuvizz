@@ -62,13 +62,40 @@ export type BreakerMode = 'monitor' | 'enforce';
  *   Lets us measure real volume safely before turning on enforcement.
  * enforce: trip the breaker + block at the ceiling (the eventual spend cap).
  */
+// ENFORCE is the default (Chad, Jul 29: "set the max calls to 2000 and that needs to be
+// enforced"). It used to default to 'monitor' — count and warn, never block — so losing or
+// mistyping the env var silently removed the only thing standing between a runaway loop and
+// the vendor bill. A spend cap that stops mattering when a config value goes missing is not a
+// cap. Opt OUT explicitly with NUVIZZ_BREAKER_MODE=monitor if a diagnosis ever needs it.
 export const BREAKER_MODE: BreakerMode =
-  (process.env.NUVIZZ_BREAKER_MODE || '').toLowerCase() === 'enforce' ? 'enforce' : 'monitor';
+  (process.env.NUVIZZ_BREAKER_MODE || '').toLowerCase() === 'monitor' ? 'monitor' : 'enforce';
+
+// ── The HARD ceiling ─────────────────────────────────────────────────────────
+//
+// 2,000 NuVizz calls a day, and nothing may raise it — not the env var, not the stored
+// Diagnostics config, not a caller passing its own fallback. Every path that produces a
+// ceiling runs through clampCeiling(), so the number on the Diagnostics pill is the number
+// actually enforced. Before this, NUVIZZ_DAILY_CEILING was free to set 20,000 (what the site
+// was running) and the editable config could reach 200,000.
+//
+// Sized against real usage: a normal day is a few hundred calls (133 by mid-morning on Jul 29),
+// so 2,000 is ~10x headroom for scheduled scans, enrichment, live writes and manual pulls.
+// It is deliberately BELOW the ~3,000-call cold number-probe scan that CLAUDE.md exists to
+// prevent — that scan can no longer run to completion by accident; it trips the breaker
+// partway. That is the intent, not a side effect.
+export const HARD_DAILY_CEILING = 2_000;
+
+/** PURE: any proposed ceiling, clamped into [1, HARD_DAILY_CEILING]. Junk → the hard cap. */
+export function clampCeiling(n: any): number {
+  const v = Math.floor(Number(n));
+  if (!Number.isFinite(v) || v < 1) return HARD_DAILY_CEILING;
+  return Math.min(HARD_DAILY_CEILING, v);
+}
 
 export function breakerMode(): BreakerMode { return BREAKER_MODE; }
 
 export interface RequesterConfig {
-  /** Hard daily call ceiling across the whole fleet. Default 12_000 (budget cap). */
+  /** Daily call ceiling across the whole fleet. Always <= HARD_DAILY_CEILING (2,000). */
   dailyCeiling: number;
   /** monitor (count+warn, never block) vs enforce (trip+block) at the ceiling. */
   breakerMode: BreakerMode;
@@ -83,10 +110,9 @@ export interface RequesterConfig {
 }
 
 export const DEFAULT_CONFIG: RequesterConfig = {
-  // Default tuned to the operational budget (~6k target, 12k cap). In monitor
-  // mode this only sets the "would-trip" warning threshold + the ceiling shown
-  // in the UI pill — it never blocks. Override per-site via NUVIZZ_DAILY_CEILING.
-  dailyCeiling: Number(process.env.NUVIZZ_DAILY_CEILING) || 12_000,
+  // The hard cap is the default. NUVIZZ_DAILY_CEILING may only LOWER it (clampCeiling).
+  // In enforce mode — now the default — hitting it trips the breaker and blocks further calls.
+  dailyCeiling: clampCeiling(Number(process.env.NUVIZZ_DAILY_CEILING) || HARD_DAILY_CEILING),
   breakerMode: BREAKER_MODE,
   maxRetries: 4,
   backoffBaseMs: 500,
@@ -102,10 +128,11 @@ export const DEFAULT_CONFIG: RequesterConfig = {
 // live config at the start of each run (see refresh-stops-core).
 let __dailyCeilingOverride: number | null = null;
 export function setDailyCeilingOverride(n: number | null | undefined): void {
-  __dailyCeilingOverride = (typeof n === 'number' && Number.isFinite(n) && n > 0) ? Math.floor(n) : null;
+  __dailyCeilingOverride = (typeof n === 'number' && Number.isFinite(n) && n > 0) ? clampCeiling(n) : null;
 }
 export function effectiveDailyCeiling(fallback = DEFAULT_CONFIG.dailyCeiling): number {
-  return __dailyCeilingOverride ?? fallback;
+  // Clamped on the way OUT too: a caller-supplied fallback is just another proposal.
+  return clampCeiling(__dailyCeilingOverride ?? fallback);
 }
 
 export interface RequesterDeps {
@@ -206,7 +233,7 @@ export function createNuvizzRequester(deps: RequesterDeps, config: Partial<Reque
       log({ app: APP_NAME, trigger: meta.trigger ?? __callTrigger ?? 'unknown', source: meta.source, route: meta.route, tenant: meta.tenant, status: resp.status, ms, dayTotal: total, mode: cfg.breakerMode });
       // At the ceiling: enforce → trip + (next call) block; monitor → warn only.
       // The effective ceiling honors a live UI override (scan_config) over cfg.
-      const ceiling = __dailyCeilingOverride ?? cfg.dailyCeiling;
+      const ceiling = clampCeiling(__dailyCeilingOverride ?? cfg.dailyCeiling);
       if (total >= ceiling) {
         if (cfg.breakerMode === 'enforce') {
           if (!breakerOpen) {
@@ -254,7 +281,7 @@ export function createNuvizzRequester(deps: RequesterDeps, config: Partial<Reque
   }
 
   function getStats() {
-    return { totalThisInstance, breakerOpen, inflight: inflight.size, ceiling: __dailyCeilingOverride ?? cfg.dailyCeiling, mode: cfg.breakerMode };
+    return { totalThisInstance, breakerOpen, inflight: inflight.size, ceiling: clampCeiling(__dailyCeilingOverride ?? cfg.dailyCeiling), mode: cfg.breakerMode };
   }
 
   return { request, getStats, _config: cfg };

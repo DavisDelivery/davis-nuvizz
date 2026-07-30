@@ -42,7 +42,11 @@ test('clampScanConfig: a non-forward day band is rejected (falls back to default
 test('scanConfigDefaults: reads env overrides (else the documented baseline)', () => {
   const d = scanConfigDefaults({ NUVIZZ_DEEP_SWEEP_HOURS: '24', NUVIZZ_DAILY_CEILING: '35000' });
   assert.equal(d.deepSweepHours, 24);
-  assert.equal(d.dailyCeiling, 35000);
+  // The env var may only LOWER the ceiling. This test used to assert 35000 — i.e. that an env
+  // var could set the spend cap to whatever it liked, which is how the site ended up running
+  // at 20,000 (Chad: "set the max calls to 2000 and that needs to be enforced").
+  assert.equal(d.dailyCeiling, 2000, 'env cannot raise the ceiling above the hard cap');
+  assert.equal(scanConfigDefaults({ NUVIZZ_DAILY_CEILING: '500' }).dailyCeiling, 500, 'but it can lower it');
   assert.equal(d.intervalDayMin, 30);
   assert.equal(d.deepSweepHour, 13);
   assert.equal(d.scansEnabled, true);
