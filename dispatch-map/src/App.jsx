@@ -110,6 +110,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.54.20', 'YOUR 600 PLANNED ORDERS ARE THERE — "UNPLANNED ONLY" WAS ON, AND THE EMPTY GRID BLAMED THE WRONG FILTER. Chad: "says i don\'t have any planned orders today however i have like 600 of them." They are all there. The grid read "None of the 6 stops in this board match — hidden by status (1)", and BOTH numbers in that sentence were wrong. Your board holds 723 stops, not 6. And the thing that removed them was not the status filter — it was Unplanned only, the toggle in the map Filters panel, which was switched on. Here is the mechanism. The map panel filters the stops FIRST, then hands what survives to the bottom grid. With Unplanned only on, 723 stops became the 6 unplanned ones before the grid ever saw them. You then ticked Planned in the grid\'s own Status filter — and of course none of 6 unplanned stops are planned, so you got zero. The grid could only see its own filters, so it reported the 6 as though that were your whole board and named the only culprit it knew about. It now names every filter in the chain and reports the REAL board total: "None of the 723 stops in this board match — hidden by Unplanned only, status (1)." Hide terminal and Hide stem out are named the same way. Clear filters still clears in one click. Nothing about filtering changed — only what the app tells you when the result is empty. This is the same trap as v0.53.11, one layer further up: back then a status filter could blank the board without saying so, and the fix taught the grid to name its own filters. It could not name a filter applied before it, so the next silent blanking came from upstream.'],
   ['0.54.13', 'WHY "SCAN UNAVAILABLE" — AND THE CALL CEILING IS NOW A REAL 2,000. Chad: "Why is my scan not available?" and "set the max calls to 2000 and that needs to be enforced." Both done. THE SCAN BUTTON. That red line means one thing: the Scan now button POSTed to the scanner and the scanner did not accept the request. Your scheduled scans were fine the whole time — the same card said Loads updated 32 min ago. Here is why the button specifically fails: it posts to the BACKGROUND scanner, and that function also carries the every-15-minutes cron schedule. A function with a schedule attached is a scheduled function, and a scheduled function is not reliably reachable over plain HTTP — so the cron fires it happily on its own timer while a manual POST to the same address gets refused. The app already ships a second, plain endpoint that runs the exact same cheap scan, so the button now falls back to it automatically when the first one is refused. Two things worth knowing. FIRST, the fallback is called with NO date attached — deliberately. Handing it a date flips it into the roughly 3,000-call number-probe scan; without one it is the same 4-call list scan the scheduled path runs. SECOND, if it still fails you now get the actual reason and the HTTP code instead of a dead-end "Scan unavailable". And the reason you were reaching for that button matters: a MANUAL scan bypasses the orders-paused-until-10-AM hold and pulls orders for today AND tomorrow, so it is exactly the right tool when you need the board caught up before the pause lifts. THE CEILING, 2,000, ENFORCED. Your card read 133 / 20,000. It now reads out of 2,000, and 2,000 is a genuine hard ceiling: it cannot be raised by the site setting that had it at 20,000, cannot be raised by the Diagnostics editor (which could previously go to 200,000), and cannot be raised by any caller passing its own number. It can only be lowered. Enforcement also no longer depends on a setting being present — the breaker used to default to COUNT-AND-WARN-ONLY if its switch went missing or was mistyped, which is a spend cap that quietly stops being one; blocking is now the default and monitoring is the thing you have to ask for. Sizing: a normal day runs a few hundred calls, so 2,000 is about ten times real usage. Note deliberately: 2,000 sits BELOW the roughly 3,000-call cold full scan, so that scan can no longer complete by accident — it trips the breaker partway. That is the point of the number, not a side effect.'],
   ['0.54.20', 'TWO WAYS A ROUTE CANCEL COULD GO WRONG, CLOSED BEFORE EITHER HAPPENED. A review of this morning\'s cancel work turned up two holes. Neither has been hit in the field, and both got a lot more dangerous the moment the board started trusting a cancel. (1) A REFUSAL FROM NUVIZZ COULD READ AS A SUCCESS. When you empty a load, NuVizz might report the cancellation as an error-shaped message rather than a plain success, so the code accepted any answer containing the word "cancel" as proof the route was cancelled. The problem: a REFUSAL says "cancel" too — "Load cannot be cancelled, already dispatched". That used to be a cosmetic mistake, a wrongly-worded result. Since this morning it would have been much worse: the board would mark all six orders unplanned and defend that for an hour, while NuVizz still had them planned on a route with a driver on it — and orders that look unplanned are orders someone builds onto another truck. The check now has to see an actual cancellation notice, and anything that reads like a refusal fails the Save loudly instead. If we cannot tell, the Save fails — you re-send or check the portal, which costs a minute; the other direction costs a double-planned order. (2) YOU CAN NO LONGER EMPTY A LOAD A DRIVER HAS ALREADY STARTED. NuVizz will not let go of a stop the driver has acted on — arrived, picked up, delivered. It answers SUCCESS and quietly keeps it. The route-building screen has refused those removals up front since the AVRT case back on the 22nd, but emptying a load runs down an older, separate path that never got that check — and until yesterday you could not empty a load at all, so it never came up. Now that you can, it does. Emptying a load with an executed stop is refused before anything is sent, naming the stop and its status, so nothing half-applies and finished work never gets flipped back to unplanned on the board. A stop with no execution status recorded is not treated as executed, so ordinary cancels are untouched. Four tests pin both, including that a real cancellation notice still works exactly as it did.'],
   ['0.54.19', 'CANCELLING A ROUTE NOW ASKS FIRST. Chad: "before you are allowed to cancel the entire route i want a warning to pop up that this will delete a route." Emptying a load is the one edit in the Compare panel that DESTROYS something — NuVizz cancels the route, the load stops existing, and its orders go back to Un-Planned. There is no undo for it in this app. Until now the only notice was the same small toast used for ordinary notes like "2 stops not loaded yet", and it appeared at the exact moment the write was already on its way to NuVizz — a heads-up you could not act on. Save now stops and asks. The box is red, says plainly that this DELETES the route, names it, says how many orders are coming back to Un-Planned, and states that it cannot be undone from here — rebuilding means creating the route again in NuVizz. Two buttons: "Keep the route" and "Cancel the route". Escape and clicking outside both keep the route, because the safe answer should be the easy one, and neither works once the send is actually in flight so a stray tap cannot look like it called off a write NuVizz is already acting on. IF YOUR SAVE ALSO TOUCHES OTHER LOADS, the box says so — only the emptied ones are being deleted and the rest save normally, so agreeing here never means throwing away the rest of your work. AND NOTHING ELSE GAINED A POPUP. This panel deliberately does not confirm ordinary saves, and that is unchanged: reorders, unplanning some of the orders, driver assignments and dispatches all still commit straight through with no interruption. The gate reads the actual Save being sent and only trips on a load explicitly marked as emptied — six tests pin both directions, including that an ordinary reorder can never trip it.'],
@@ -8159,6 +8160,14 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
     });
   }, [mapFilters.hideTerminal, mapFilters.hideStemOut, mapFilters.unplannedOnly, stemOutKeys]);
 
+  // The same three toggles applyMapFilters tests, in words — so the bottom grid's empty state can
+  // NAME what removed the rows instead of blaming only its own status/search bar.
+  const mapFilterLabels = useMemo(() => [
+    mapFilters.unplannedOnly && 'Unplanned only',
+    mapFilters.hideTerminal && 'Hide terminal',
+    mapFilters.hideStemOut && 'Hide stem out',
+  ].filter(Boolean), [mapFilters.unplannedOnly, mapFilters.hideTerminal, mapFilters.hideStemOut]);
+
   // Filter pipeline: filters → mapFilters → search. Memoized so we don't recompute on each render.
   // A saved customer_notes.location_override replaces the (often wrong) NuVizz
   // geocode for that customer, so the corrected pin sticks for every future load.
@@ -9845,6 +9854,8 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
         <BottomStopsTable
           rootRef={bottomGridRef}
           stops={visibleStops}
+          boardTotal={stops.length}
+          upstreamFilterLabels={mapFilterLabels}
           loadStops={stops}
           boardDate={selectedDate}
           notes={notes}
@@ -10000,7 +10011,15 @@ const LOAD_BUCKET_STYLE = {
   cancelled: 'bg-red-100 text-red-700',
 };
 
-function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open, setOpen, onPick, onPickLoad, headerRight, onWindowRowsChange, onSearchMatchChange = null, onStatusFilterChange = null, planVersion = 0, highlightIds = null, rootRef = null }) {
+// `boardTotal` / `upstreamFilterLabels`: the Map screen hands this table an ALREADY
+// map-filtered set (visibleStops), so `stops.length` is not the board. Without the real
+// total and the names of the filters that did the cutting, the empty state reported the
+// filtered count AS the board and blamed only its own bar — "None of the 6 stops in this
+// board match — hidden by status (1)" on a 723-stop board with ~600 planned orders, where
+// the actual culprit was the map panel's Unplanned only (Chad: "says i don't have any
+// planned orders today however i have like 600 of them"). Defaults keep Routing, which
+// passes the whole board, behaving exactly as before.
+function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open, setOpen, onPick, onPickLoad, headerRight, onWindowRowsChange, onSearchMatchChange = null, onStatusFilterChange = null, planVersion = 0, highlightIds = null, rootRef = null, boardTotal = null, upstreamFilterLabels = [] }) {
   // Loads view groups the FULL board's loads (loadStops) so stop-level filters —
   // notably "Unplanned only" — don't empty it. Falls back to the visible stops.
   const loadSrc = loadStops || stops;
@@ -10352,6 +10371,9 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
   // Human list of what's currently hiding rows — powers the "0 shown but N exist" empty state so a
   // stray (and, with the panel narrow, invisible) search term can never silently blank the grid.
   const activeFilterLabels = [
+    // Upstream (map-panel) filters FIRST — they cut the set before this table ever saw it,
+    // so they are the likeliest answer to "where did my rows go".
+    ...(upstreamFilterLabels || []),
     q.trim() && `search “${q.trim()}”`,
     statusSel.size && `status (${statusSel.size})`,
     driverSel && `driver “${driverSel}”`,
@@ -10661,7 +10683,7 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
                     // There ARE stops in this window/board — a filter is hiding them. Say which, and
                     // give a one-click clear (the invisible-search-term trap that blanked the grid).
                     <div className="text-xs text-slate-500 space-y-2">
-                      <div>None of the <span className="font-semibold">{baseStops.length.toLocaleString()}</span> stops in this {nvWindow ? 'window' : 'board'} match — hidden by {activeFilterLabels.join(', ')}.</div>
+                      <div>None of the <span className="font-semibold">{(nvWindow ? baseStops.length : (boardTotal ?? baseStops.length)).toLocaleString()}</span> stops in this {nvWindow ? 'window' : 'board'} match — hidden by {activeFilterLabels.join(', ')}.</div>
                       <button onClick={clearAllFilters} className="inline-flex items-center gap-1 px-2.5 py-1 rounded border border-blue-400 text-blue-700 bg-blue-50 hover:bg-blue-100 text-xs font-semibold">
                         <X size={12} /> Clear filters
                       </button>
