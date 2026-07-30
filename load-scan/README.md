@@ -55,8 +55,14 @@ it — do not "fix" this side to match.
 | --- | --- | --- |
 | `FIREBASE_SA` | yes | service-account JSON; without it no endpoint can read the stop index |
 | `LOADSCAN_JWT_SECRET` | yes | at least 32 chars, signs session tokens. Rotating it signs everyone out. |
-| `LOADSCAN_ADMIN_BOOTSTRAP_SECRET` | temporary | at least 16 chars. Lets one request create the first dispatcher credential. **Unset it once that is done.** |
+| `LOADSCAN_ADMIN_PROXY_SECRET` | yes | at least 16 chars, set on **both** ddsloadout and dd-dispatch-map. Proves an admin call came from dispatch-map's server. |
+| `LOADSCAN_ADMIN_BOOTSTRAP_SECRET` | temporary | at least 16 chars. Lets one request create the first dispatcher credential. **Already used and removed — set it again only to create another first dispatcher.** |
 | `FIRESTORE_DATABASE` | no | named database; unset = `(default)` |
+
+`FIREBASE_SA` is defined **twice**: site-scoped on dd-dispatch-map and site-scoped
+here. Team-level was considered and rejected — Netlify shared variables reach every
+site in the team (24 of them, several unrelated to Davis dispatch) and cannot be
+limited to a subset. A rotation therefore has to be applied in both places.
 
 ## Endpoints
 
@@ -72,6 +78,18 @@ header anywhere: the app is same-origin with its functions, so none is needed.
 | `GET/POST /driver-admin` | dispatcher | credentials, PINs, lockouts, alias editing, review queue |
 | `GET /driver-alias-report` | dispatcher | distinct `driverUserName` values for hand-mapping |
 | `GET /health` | anyone | routing check, no data |
+
+## Driver identity — seeding the alias sets
+
+`driver_auth/{driverNumber}.nuvizzAliases` is authoritative and hand-maintained
+through the Dock scanner drivers panel in dispatch-map.
+
+Measured over the 22 dispatch days to Jul 29, 2026: the stop index carries **64
+distinct driver values, every one a full name present in both the `driverName` and
+`driverUserName` columns**. No bare short code (`VINCENT`, `BRAD`) appears anywhere.
+So `DAVIS_DRIVERS.userName` in dispatch-map's `nuvizz-driver-route.mts` is not a
+usable alias value — only the full-name column matches a real stop. Seed from the
+alias report, then add the short code as a second alias only if it ever shows up.
 
 ## First-run setup
 

@@ -65,10 +65,20 @@ function todayUTC(): string {
 // full names that boardWritePlannedFields writes into driverUserName, which this
 // list does not cover.
 //
-// This array was the one-time seed for those alias sets and is still used for the
-// Motive name -> userName lookup below. It WILL drift. If a driver is added,
-// removed or renamed, update driver_auth — a change here alone does not reach the
-// scanner, and a change there alone does not reach this lookup.
+// This array is still used for the Motive name -> userName lookup below. It WILL
+// drift. If a driver is added, removed or renamed, update driver_auth — a change
+// here alone does not reach the scanner, and a change there alone does not reach
+// this lookup.
+//
+// MEASURED, and the reason it is NOT a usable seed for the scanner's alias sets:
+// the live stop index over the 22 dispatch days to Jul 29, 2026 carries 64 distinct
+// driver values, and EVERY ONE of them is a FULL NAME appearing in BOTH the
+// driverName and driverUserName columns. Not one bare short code ("VINCENT",
+// "BRAD") appears anywhere on the board. So the userName column below matches
+// nothing on a real stop; only the name column does. The board also holds ~30
+// people absent from this list (NANA OWUSU, KOBE BOAKYE, DENIS SALKIC, TONY SMITH,
+// TREVARR HOWARD and more), while this list still names drivers with no stops in
+// the window. Seed driver_auth from the live alias report, not from here.
 const DAVIS_DRIVERS: Array<{ userName: string; name: string }> = [
   { userName: 'AARON',   name: 'Aaron Mitchell' },
   { userName: 'ALLEN',   name: 'Allen Council' },
