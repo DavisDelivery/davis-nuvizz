@@ -68,7 +68,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.54.30';
+const APP_VERSION = '0.54.31';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -113,6 +113,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.54.31', 'THE LIVE TRUCK ICONS ARE SMALLER. Chad: "make the motive truck icons smaller." They were 40 pixels across — the BIGGEST marker on the map, larger than a numbered route pin and more than twice the size of an unplanned stop dot. That was survivable while the driver layer was only ever showing part of the fleet; once v0.54.12 fixed the page-one cutoff and every truck started drawing, twenty-odd 40-pixel trucks blanketed metro Atlanta on a phone and buried the stops underneath them. The truck is now 28 pixels: still an easy tap, still obviously a truck, but it sits BELOW a route pin in size, so your stops read on top of the traffic instead of the other way round. The driver name plate moves with it — its offset is now calculated from the icon size rather than typed in separately, so the label can never end up sitting on top of the truck if the size is ever changed again. Nothing else about the layer changed: same 60-second refresh, same names, same fade after 30 minutes without a ping.'],
   ['0.54.30', 'SCAN NOW NO LONGER DIES ON A BIG MORNING. Chad: "Scan refused (HTTP 504)" on the status card. That 504 was not NuVizz and not the call ceiling — it was our own button. HERE IS THE HISTORY, because this is the second time this button has broken and the two breaks are connected. The scheduled scanner runs as a background job with a 15-minute budget, precisely because a scan takes longer than the ~26 seconds a normal web request is allowed to live — its own code has said so for months. But carrying a cron schedule also makes that function unreachable by a button press (the Jul 29 "why is my scan not available?"). The Jul 29 fix added a fallback that runs the scan INSIDE a normal request — which works on a light board and dies by timeout on a heavy one. Today was a heavy one: 743 stops, 44 carry-overs, 61 NuVizz calls in the 6 AM hour alone. The scan outran its 26 seconds, the gateway killed it, and the button reported "refused" — the worst version of the message, because the scanner had ACCEPTED and was working when it was shot. So the button failed exactly on the mornings a dispatcher most needs a fresh scan. THE FIX IS THE MISSING THIRD PIECE: the same scan behind a background function WITHOUT a schedule. No schedule means a button press reaches it; background means it answers immediately and takes its 15 minutes in peace; the board refreshes itself when the scan lands, exactly as it already did. The two older routes stay as fallbacks. The button also stops lying when a timeout does happen: a 502/504 now reads "Scan timed out — the board is too big for the synchronous scanner", not "refused". AND THE GUARDRAIL THAT MATTERS: the new endpoint structurally CANNOT run the expensive scan — it strips any date parameter before scanning, and a date is what flips the scanner into the ~3,000-call full probe. However this endpoint is called, it is the same cheap ~4-call scan the schedule runs. Three tests pin all of it: no schedule may ever be added to this function, the background suffix must stay, and the date parameter can never ride through.'],
   ['0.54.29', 'THE CUSTOMER\'S PHONE NUMBER IS ON THE STOP CARD NOW. Chad, with NuVizz open beside the app: "why are we not displaying customer phone numbers?" KAI WONG\'s number was sitting in NuVizz\'s Ship-To block and nowhere on our card. WE HAD IT THE WHOLE TIME — that is the annoying part. The scan already pulls the consignee contact off every order, and the Text customer button has always used it; that is exactly how that button knew whether to say "Text customer" or "Text customer (add #)". The number was one click deep inside a compose box and printed nowhere, so the single thing you need in order to CALL a customer was the one thing the card would not tell you. It now shows under the address, with the contact name in front of it when NuVizz has one, and it is a real link — tap it on a phone and it dials. If you have saved your own number for that customer in the notes, yours is shown, exactly the way texting already picks it. Numbers print in the normal (678) 860-8099 shape, EXCEPT when they are not plain US numbers: an extension or an international number is shown exactly as it is stored, because a number reshaped to look American is a number you might dial wrong. Nothing to turn on, no NuVizz calls — this data was already in every stop.'],
   ['0.54.28', 'A SEARCH THAT FINDS NOTHING NOW TELLS YOU WHEN YOUR FILTERS ARE THE REASON. Chad searched PRO 7153822 and got "No stops match" — then: "this is showing nothing however this is planned on a route today, trailer 6." The order was on the board the entire time. Two filters were holding it back: "Has receiving hours" in the left Filters panel and "Hide stem out" on the map. His own conclusion: "all stop filters were the problem." THE SEARCH BOX WAS TELLING HIM SOMETHING FALSE. Search only looks at the stops that survive your filters, so an order a filter has removed can never be found — and the box reported that as "No stops match", which reads as "that order isn\'t on today\'s board." Those are completely different statements, and the wrong one sends you to NuVizz to hunt for an order that was two clicks away. The bottom grid has named its own filters since v0.45.6 and got smarter again in v0.53.11; the search box never learned to do it. Now, when a search comes back empty, the app re-runs the SAME search against the unfiltered board. If the order is there, it says so plainly — "It IS on this board — hidden by your filters" — with a Clear filters button beside it, on both the search box and the map. The button clears BOTH sets, the panel filters and the map toggles, because your board had one of each and clearing either alone would still have hidden it. If the order genuinely is not on the day, the message is unchanged: no stops match, and now you can trust it. Costs nothing when a search finds something, since it only runs on an empty result.'],
@@ -2592,6 +2593,17 @@ function stopMarkerIcon(google, s, note, opts = {}) {
   if (__stopIconCache.size > 8000) __stopIconCache.clear();
   return result;
 }
+
+// Live-driver truck marker size, in px. Was 40 — the LARGEST marker on the map, bigger than a
+// numbered route pin (30) and more than twice an unplanned stop dot (16). With the whole fleet
+// now drawing (v0.54.12 fixed the page-1 cutoff), 20-odd 40px trucks blanketed metro Atlanta on
+// a phone and buried the stops underneath (Chad: "make the motive truck icons smaller").
+// 28 keeps it comfortably tappable and still clearly a truck, while sitting BELOW a route pin
+// so stops read on top of traffic rather than the other way round.
+const DRIVER_MARKER_PX = 28;
+// The label sits clear of the marker by deriving its offset from that size — half the marker
+// plus a fixed gap — so resizing the truck can never leave the name plate overlapping it.
+const DRIVER_LABEL_OFFSET_PX = DRIVER_MARKER_PX / 2 + 8;
 
 function truckSvg(color) {
   const svg = `
@@ -6491,7 +6503,7 @@ function makeDriverLabelOverlayClass(google) {
     onAdd() {
       const div = document.createElement('div');
       div.style.position = 'absolute';
-      div.style.transform = 'translate(-50%, 28px)';
+      div.style.transform = `translate(-50%, ${DRIVER_LABEL_OFFSET_PX}px)`;
       div.style.pointerEvents = 'none';
       div.style.background = 'rgba(255,255,255,0.85)';
       div.style.border = '1px solid rgba(0,0,0,0.1)';
@@ -9164,8 +9176,8 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
         map: mapRef.current,
         icon: {
           url: truckSvg(DRIVER_TINT),
-          scaledSize: new google.maps.Size(40, 40),
-          anchor: new google.maps.Point(20, 20),
+          scaledSize: new google.maps.Size(DRIVER_MARKER_PX, DRIVER_MARKER_PX),
+          anchor: new google.maps.Point(DRIVER_MARKER_PX / 2, DRIVER_MARKER_PX / 2),
         },
         title: `${d.driverName || 'Driver'} · ${d.vehicleNumber || ''}`,
         opacity: stale ? 0.55 : 1,
