@@ -25,6 +25,39 @@
 // When neither can answer, the caller falls back to the execution-derived status (built from
 // the route's own stops), which is always about THIS route and can never be another load's.
 
+// A CANCELLED load holds no planned work — NuVizz returns its orders to Un-Planned. So when a
+// name is carried by two loads and only one of them is live, there is no real contest: the
+// live one owns the name, and the board's stops can only be its. Chad, Jul 31, on his two
+// STEVENs: "the active and canceled one". Without this the app refuses to guess — correct but
+// useless, since it cost him the status badge AND the ability to save the card. With it, the
+// everyday cancel-and-rebuild case just works, and a genuine contest (two LIVE loads sharing a
+// name) still refuses.
+export function isCancelledStatus(raw) {
+  return /cancel/i.test(String(raw ?? ''));
+}
+
+/**
+ * Which load owns `name` on this day → { load, ambiguous }.
+ *   • one candidate              → it owns the name
+ *   • several, one not cancelled → the live one owns it
+ *   • several live               → ambiguous; nothing may speak for the name
+ */
+export function resolveNameOwner(name, rosterLoads = []) {
+  const nm = String(name ?? '').trim().toLowerCase();
+  if (!nm) return { load: null, ambiguous: false };
+  const all = (rosterLoads || []).filter((l) => String(l?.name ?? '').trim().toLowerCase() === nm);
+  // The SAME load listed twice is not a contest.
+  const distinct = [];
+  for (const l of all) {
+    const id = String(l?.loadId ?? l?.loadNbr ?? '');
+    if (!distinct.some((x) => String(x?.loadId ?? x?.loadNbr ?? '') === id)) distinct.push(l);
+  }
+  if (distinct.length <= 1) return { load: distinct[0] || null, ambiguous: false };
+  const live = distinct.filter((l) => !isCancelledStatus(l?.status));
+  if (live.length === 1) return { load: live[0], ambiguous: false };
+  return { load: null, ambiguous: true };
+}
+
 export const ROSTER_ID_PREFIX = '#id:';
 export const ROSTER_AMBIGUOUS_PREFIX = '#amb:';
 
@@ -46,16 +79,19 @@ export const rosterAmbiguousKey = (name) => ROSTER_AMBIGUOUS_PREFIX + String(nam
  */
 export function buildRosterStatusMap(rosterLoads = []) {
   const status = new Map();
-  const idByName = new Map();
+  const owners = new Map();   // name lc → { load, ambiguous }; a cancelled twin never wins
   for (const l of rosterLoads || []) {
     const nm = String(l?.name ?? '').trim().toLowerCase();
     const id = l?.loadId != null ? String(l.loadId) : null;
     const raw = l?.status ?? '';
     if (nm) {
-      const prior = idByName.get(nm);
-      if (prior !== undefined && String(prior) !== String(id)) status.set(rosterAmbiguousKey(nm), true);
-      else idByName.set(nm, id);
-      status.set(nm, raw);
+      if (!owners.has(nm)) owners.set(nm, resolveNameOwner(nm, rosterLoads));
+      const own = owners.get(nm);
+      // The NAME key carries the OWNER's status — never last-write-wins, and never a cancelled
+      // twin's while a live load holds the name.
+      if (own.ambiguous) status.set(rosterAmbiguousKey(nm), true);
+      else if (own.load) status.set(nm, own.load.status ?? '');
+      if (!status.has(nm)) status.set(nm, raw);
     }
     if (id) status.set(rosterIdKey(id), raw);
     // The real load NUMBER is just as unambiguous as the id, and a group that resolved one

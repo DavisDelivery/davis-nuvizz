@@ -46,7 +46,7 @@ import { loadDeviceIdentity, saveDeviceName, activePeers, buildPeerClaims, peerC
 import { cancelsIn, cancelSummary } from './lib/cancel-guard.js';
 import { validateNewRoute } from './lib/route-create.js';
 import { mergeDayLoads, dayLoadTally } from './lib/day-loads.js';
-import { buildRosterStatusMap, resolveRosterStatus } from './lib/route-status.js';
+import { buildRosterStatusMap, resolveRosterStatus, resolveNameOwner } from './lib/route-status.js';
 import ChatPanel, { ChatLauncher, MessagesLauncher } from './components/ChatPanel.jsx';
 import MessagesPanel from './components/MessagesPanel.jsx';
 
@@ -68,7 +68,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.54.24';
+const APP_VERSION = '0.54.25';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -113,6 +113,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.54.25', 'BOTH STEVENS NOW EXIST, AND CLICKING THE LIVE ONE PUTS HIS STOPS BACK ON THE MAP. Chad: "shouldn\'t they have different load numbers so for this particular day we should display both — the active and canceled one." Yes, and that is the better answer than the one I shipped an hour earlier. Yesterday\'s fix stopped a cancelled load from stealing the live one\'s status badge, but it did it by REFUSING TO GUESS whenever two loads shared a name — safe, and useless: the app then could not tell which STEVEN a card belonged to, so clicking his route opened nothing and his 16 stops vanished off the map. Correct and unusable is still broken. HERE IS THE RULE THAT FIXES IT PROPERLY. A cancelled load holds no work — NuVizz sends its orders back to Un-Planned when you cancel it. So when two loads share a name and only ONE of them is alive, there is nothing to guess at: the live one owns the name, and any stops on the board under it can only be his. The app now says so. STEVEN\'s card opens again, his stops draw on the map, his status reads Planned, and a Save works — while a real tie (two LIVE loads with the same name) still refuses rather than pick, because that one genuinely cannot be resolved from the board. AND BOTH LOADS ARE NOW LISTED, which is what you actually asked for. The Loads column used to key everything by NAME, so a second load wearing the same name was simply hidden behind the first. NuVizz identifies a load by its NUMBER — a name is just a label, and two loads can wear it at once. So the day\'s load list is now the authority: one row per load, each with its own number, its own status and its own stop count straight from NuVizz. Your two STEVENs show as two rows — one Cancelled with 0 stops, one Dispatched with 16 — and each prints its load number underneath so you can tell them apart and find either in the portal. The one carrying work sorts first. One deliberate limitation, stated plainly: the stop feed we scan carries the route NAME but no load number, so when two loads share a name the board\'s stops cannot always be traced to one of them. When that happens those orders get their own row saying exactly that, rather than being quietly attached to whichever load the app happened to read last — which is the mistake that started all of this.'],
   ['0.54.24', 'STEVEN WAS NEVER CANCELLED — TWO LOADS SHARE THAT NAME AND THE WRONG ONE WAS DOING THE TALKING. Chad, with the portal open beside the app: "why are we showing this load canceled its not canceled in nuvizz." STEVEN had 16 orders, a driver and 52 miles on it in NuVizz, and a red CANCELLED badge on our board. HERE IS THE MECHANIC. A route\'s status does not come from its stops — it comes from the day\'s load list, looked up in a table this app builds. That table was keyed BY NAME, and when two loads on the same day share a name the second one simply overwrites the first. So the day\'s list held two STEVENs — one cancelled, one live — and the cancelled one won the name. Worse, the lookup asked for the name FIRST, before the load\'s own id, EVEN THOUGH we knew this route\'s exact id from its own stops. We had the right answer in hand and asked the wrong question. Identity now wins: a route reads its status from its own load id, and a name shared by two loads is not allowed to speak for either of them — in that case the status is worked out from the route\'s own stops instead, which can never be another load\'s. The code already refused to trust a shared name when assigning a driver or opening a card; the status badge was the one place that never got the same rule. THE SAME DUPLICATE EXPLAINS THE SAVE ERROR you hit right after: "null: commitBoard(rwb): loadNbr or loadId required" while adding orders, with NOR refusing too. When two loads share a name, this app deliberately refuses to guess which one a card belongs to — so the STEVEN card opened carrying NO load number and NO id, and a card like that can never be saved. It let you build the whole thing and told you afterwards. It now refuses AT THE MOMENT YOU OPEN IT and says why: two loads are named STEVEN today, rename one in the portal or cancel the one you are not using. Assigning a driver and dispatching already refused this way; opening a Compare card was the last path that let you do the work first and find out later. NOR\'s message was not a second fault — it is the safety net doing its job: a stop being moved onto a card that failed would have been unplanned by saving NOR, so NOR stopped rather than drop it. And a failed card no longer prints as the word "null" in front of its error. THE REAL REMEDY IS IN NUVIZZ: while two live loads carry one name, this app cannot tell them apart and will keep declining to guess. Rename or clean up the duplicate and both symptoms go with it.'],
   ['0.54.23', 'THE LOADS COLUMN NOW SHOWS YOUR LOADS, AND SELECTED STOPS STAY IN THE ORDER YOU ADD THEM. Chad, looking at the Routing screen with 99 loads listed in the bottom panel and the column beside it reading "No saved loads yet": "can you make loads that are showing up in this bottom panel show up on the right panel, it currently doesn\'t hold or do anything, routes never end up on the column even though it says its what its for." He was right, and it was not a broken feature — it was two different things sharing one word. A LOAD in that column meant a SAVED PLAN: the output of the routing optimiser, the thing the Save load button writes. A load everywhere else in this app means a real route on the day\'s board. So the column was working perfectly and answering a question nobody was asking, while the 99 real loads sat two inches below it. THE COLUMN NOW SHOWS THE DAY\'S ACTUAL LOADS — the same set as the bottom panel: every route built on the board, plus every empty Draft. That second half matters more than it sounds. An empty load has no orders, and everything else in the app finds loads by looking at their orders — so a load with none is invisible to it. They only exist in the day\'s load roster, which is why your 99 loads are nearly all Drafts and why they never showed up in a routes list. Each row shows the driver, stop count, skids and loose, and how much of it is delivered; empty ones are marked "No orders yet". Click any row and it opens in Compare, exactly like clicking it in the bottom panel. There is a search box, and a Built only button that hides the Drafts — on a board like yours that is the difference between scrolling 99 rows and seeing the handful actually carrying freight. If two loads share a name that row says so, because a name is not enough to tell them apart and the app will not guess. YOUR SAVED PLANS ARE NOT GONE: the tab has an On the board / Saved plans switch, and it remembers which one you were using. SECOND FIX, THE STOPS LIST. "when stops are added to this screen i want the default sorted to the order they are added." It was sorting alphabetically by customer, so the stop you just clicked landed somewhere in the middle of the list and you had to hunt for it to confirm it went in. It now stays in the order you added them, which is also the order you were thinking in when you clicked. All the sort buttons still work; there is a new Added chip at the front to get back to add-order after you have sorted by something else. Both the side panel and the floating Selected list behave the same way, so they cannot disagree with each other.'],
   ['0.54.22', 'YOU CAN CREATE A ROUTE FROM THE ROUTING TAB. Chad: "I want to be able to create a route in the routing tab." Until now this app could DESTROY a route but never make one — emptying a load cancels it in NuVizz, and the rebuild had to happen in the portal. That was a one-way door, and it got a lot easier to walk through yesterday when the last order became removable. There is now a green ＋ New route button at the top of the Routes list. Give it a name — TRAILER 6, SUW 2, whatever you would call it on the board — and it creates an empty route on the day the board is showing, then opens it as a Compare card so you can drag orders straight onto it and Save exactly like any other route. WHY IT IS SAFE TO SHIP THIS, given the history: the July 2 incident that wiped freight off 10 live orders came from the load-import path, where sending an order by REFERENCE made NuVizz replace the whole order. That engine is still switched off and this does not use it. Creating a route sends a HEADER ONLY — a name, a day, and the warehouse it leaves from. There is not one order in the message, so there is nothing it could overwrite. The orders get planned onto the route afterwards by the ordinary Save you already use, which refers to orders by id and cannot blank them. THREE THINGS IT CHECKS BEFORE IT WRITES ANYTHING. (1) The load number has to be genuinely free. NuVizz uses one call for "create or update", so aiming it at a number that already exists would quietly EDIT that route instead. It only proceeds when NuVizz confirms the number is unused — and if the check itself fails, it stops rather than guess, because "I could not look" is not "it is free". (2) It reads the route back afterwards. NuVizz answers these calls before the work is actually done, so a success message is not proof; the route has to be readable or you are told it did not land — and told NOT to create it again under the same name, since that is how you end up with two. (3) It checks the NAME that came back. If NuVizz numbers the route itself instead of taking your name, you are told what it is actually called, so you are never hunting the board for a route that is not there under the name you typed. NuVizz caps a route name at 20 characters and needs its own load number, which is built from your name plus the date (TRAILER 6 on the 31st becomes TRAILER6-0731) — so the same route can be created again tomorrow without colliding with today. The form shows you that number before you commit. You need a ship-from address saved in the New Order tab, because NuVizz accepts a route with no origin and then silently creates nothing. Routes are created for the day the board is on — switch the board date first to build tomorrow. And there is a Beta/Live switch on the Routes panel exactly like driver assignment: in Beta it tells you what it would do and sends nothing.'],
@@ -14120,18 +14121,24 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
         if (cancelled) return;
         // Status map via the shared builder: it writes the by-id keys AND the '#amb:' markers
         // that stop a name shared by two loads from deciding either one's status (§S).
-        const status = buildRosterStatusMap((j && j.ok) ? (j.loads || []) : []);
+        const rosterLoads = (j && j.ok) ? (j.loads || []) : [];
+        const status = buildRosterStatusMap(rosterLoads);
         const index = new Map();
-        if (j && j.ok) for (const l of (j.loads || [])) {
+        const owners = new Map();   // name lc → { load, ambiguous }
+        const asEntry = (l) => ({ loadId: l?.loadId ? String(l.loadId) : null, name: l?.name || '', loadNbr: l?.loadNbr ? String(l.loadNbr) : null });
+        if (j && j.ok) for (const l of rosterLoads) {
           const nm = String(l.name || '').trim().toLowerCase();
-          const entry = { loadId: l.loadId ? String(l.loadId) : null, name: l.name || '', loadNbr: l.loadNbr ? String(l.loadNbr) : null };
+          const entry = asEntry(l);
           if (nm) {
-            // Two roster loads sharing a NAME → the name key is AMBIGUOUS: last-write-wins here
-            // could hand one load's number/id to the other's card. Mark it; identity consumers
-            // (openRouteInWorkbench / onAssignDriver) refuse ambiguous entries.
-            const prior = index.get(nm);
-            if (prior && String(prior.loadId) !== String(entry.loadId)) index.set(nm, { ...entry, ambiguous: true });
-            else index.set(nm, entry);
+            // Two roster loads sharing a NAME → last-write-wins here could hand one load's
+            // number/id to the other's card. But a CANCELLED load holds no planned work, so
+            // "the active and canceled one" (Chad's two STEVENs) is not a real contest — the
+            // LIVE load owns the name. Only two LIVE loads are ambiguous, and identity
+            // consumers (openRouteInWorkbench / onAssignDriver) still refuse those.
+            if (!owners.has(nm)) owners.set(nm, resolveNameOwner(nm, rosterLoads));
+            const own = owners.get(nm);
+            if (own.ambiguous) index.set(nm, { ...entry, ambiguous: true });
+            else index.set(nm, asEntry(own.load || l));
           }
           if (l.loadId) { index.set(String(l.loadId), entry); }
           // Also key by the REAL load number: an empty load's Loads-grid row is keyed by it since
@@ -17025,12 +17032,19 @@ function RoutingDayLoadsPanel({ rows, tally, onPickLoad, isOpen }) {
                 </div>
                 <div className="mt-0.5 flex items-center gap-2 text-[11px] text-slate-500">
                   <span className="truncate flex-1 min-w-0">{r.driver || (r.empty ? (r.status || 'Draft') : 'No driver')}</span>
-                  {!r.empty && <span className="shrink-0 tabular-nums">{r.count} stop{r.count === 1 ? '' : 's'} · {r.skids} sk · {r.loose} loose</span>}
+                  {!r.empty && <span className="shrink-0 tabular-nums">{r.count} stop{r.count === 1 ? '' : 's'}{r.onBoard ? ` · ${r.skids} sk · ${r.loose} loose` : ''}</span>}
                 </div>
-                {/* Two loads sharing a name can't be told apart by name — the same reason
-                    opening one as a card is refused. Say so instead of showing a row that
-                    silently belongs to whichever load was read last. */}
-                {r.ambiguous && <div className="mt-0.5 text-[10px] text-amber-700">⚠ Two loads share this name today — open it in the portal to tell them apart.</div>}
+                {/* Two loads CAN share a name — a route cancelled and rebuilt leaves both on the
+                    day. They always have different NUMBERS, so show the number: it is the only
+                    thing that tells them apart, and the dispatcher needs it for the portal. */}
+                {r.ambiguous && r.loadNbr && (
+                  <div className="mt-0.5 text-[10px] text-amber-700 font-mono">
+                    {r.status || 'load'} · {r.loadNbr}
+                  </div>
+                )}
+                {r.unattributed && (
+                  <div className="mt-0.5 text-[10px] text-amber-700">⚠ {r.count} order(s) on the board under this name — two loads share it, so which one holds them can&apos;t be told from the board.</div>
+                )}
               </button>
             );
           })}
