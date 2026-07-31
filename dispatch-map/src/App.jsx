@@ -68,7 +68,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.54.28';
+const APP_VERSION = '0.54.29';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -113,6 +113,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.54.29', 'THE CUSTOMER\'S PHONE NUMBER IS ON THE STOP CARD NOW. Chad, with NuVizz open beside the app: "why are we not displaying customer phone numbers?" KAI WONG\'s number was sitting in NuVizz\'s Ship-To block and nowhere on our card. WE HAD IT THE WHOLE TIME — that is the annoying part. The scan already pulls the consignee contact off every order, and the Text customer button has always used it; that is exactly how that button knew whether to say "Text customer" or "Text customer (add #)". The number was one click deep inside a compose box and printed nowhere, so the single thing you need in order to CALL a customer was the one thing the card would not tell you. It now shows under the address, with the contact name in front of it when NuVizz has one, and it is a real link — tap it on a phone and it dials. If you have saved your own number for that customer in the notes, yours is shown, exactly the way texting already picks it. Numbers print in the normal (678) 860-8099 shape, EXCEPT when they are not plain US numbers: an extension or an international number is shown exactly as it is stored, because a number reshaped to look American is a number you might dial wrong. Nothing to turn on, no NuVizz calls — this data was already in every stop.'],
   ['0.54.28', 'A SEARCH THAT FINDS NOTHING NOW TELLS YOU WHEN YOUR FILTERS ARE THE REASON. Chad searched PRO 7153822 and got "No stops match" — then: "this is showing nothing however this is planned on a route today, trailer 6." The order was on the board the entire time. Two filters were holding it back: "Has receiving hours" in the left Filters panel and "Hide stem out" on the map. His own conclusion: "all stop filters were the problem." THE SEARCH BOX WAS TELLING HIM SOMETHING FALSE. Search only looks at the stops that survive your filters, so an order a filter has removed can never be found — and the box reported that as "No stops match", which reads as "that order isn\'t on today\'s board." Those are completely different statements, and the wrong one sends you to NuVizz to hunt for an order that was two clicks away. The bottom grid has named its own filters since v0.45.6 and got smarter again in v0.53.11; the search box never learned to do it. Now, when a search comes back empty, the app re-runs the SAME search against the unfiltered board. If the order is there, it says so plainly — "It IS on this board — hidden by your filters" — with a Clear filters button beside it, on both the search box and the map. The button clears BOTH sets, the panel filters and the map toggles, because your board had one of each and clearing either alone would still have hidden it. If the order genuinely is not on the day, the message is unchanged: no stops match, and now you can trust it. Costs nothing when a search finds something, since it only runs on an empty result.'],
   ['0.54.27', 'THE STOP CARD LISTED ITS FREIGHT TWICE. Chad: "why are items listed twice, get rid of the second one and make the one a little bigger." He was looking at ITEMS (8) with "3 pallets · 31 loose · 34 pieces · 862 Lbs" and then, directly underneath, "3 pallets  31 loose pcs  34 total pieces" — the same three numbers again, worded slightly differently, which reads like the two lines might be saying different things when they never were. The second line is gone and the remaining one is bigger and darker. WHICH ONE I KEPT, AND WHY IT IS NOT AS OBVIOUS AS IT LOOKS: the top line is the better of the two — same numbers plus the weight, which the lower one never showed. But it is written once, by the nightly scan, and it is NOT recalculated when an order is later looked up in detail. So there are stops whose pallet and piece counts arrive only from that detailed lookup, and on those the top line can still read "—" while the numbers underneath are real. Simply deleting the lower line would have blanked the freight on exactly those orders. So the lower line became the BACKUP instead: the card shows the scan\'s summary when it has one, and otherwise builds the same sentence from the live numbers. Either way you get one line, and no order loses its freight. Four tests cover it, including the awkward case.'],
   ['0.54.26', 'NEW ROUTE WORKS NOW — NUVIZZ SAYS "400" WHERE WE EXPECTED "NOT FOUND". Chad tried the new ＋ New route button and got: "could not confirm load TRAILER-0731 is free (NuVizz answered 400 to the check) — nothing was created". Nothing was wrong with the route or the name; the app refused ITSELF. HERE IS WHY, and it is the exact thing I told you I could not test without spending calls on your live system. Before creating a route the app asks NuVizz "do you already have this load number?" — because the call that creates a route is the same call that EDITS one, so pointing it at a number already in use would quietly rewrite a real route instead of making a new one. That check has to be certain. I coded it to accept one answer as proof the number was free: a 404, the standard "not found". Your NuVizz answers 400 instead. So every check came back as an answer the app did not recognise, it correctly refused to guess, and no route could ever be created. WORTH KNOWING: the app already asks NuVizz whether an ORDER number exists, and there NuVizz does answer 404. So the two are genuinely inconsistent, and there was no way to know which one applied to loads without asking it for real — which is what your click just did. Both answers mean the same thing and are now both accepted: the lookup came back with no load, so there is nothing at that number to overwrite. WHAT STILL REFUSES, deliberately: a login or permission error, a rate-limit, or a server/network failure. Those are not "the number is free", they are "I could not check" — and creating on one of those risks editing a live route. The rest of the safety is unchanged: the route is still read back after it is created, because NuVizz acknowledges these before the work is actually done, and the name is still verified so you never hunt the board for a route that landed under a different one. And if the number turns out to be malformed rather than merely unknown, the create itself fails loudly and nothing is written.'],
@@ -3601,6 +3602,17 @@ function resolveStopPhone(stop, note) {
   return String(fromNote || fromStop || '').trim();
 }
 
+// Display form for a US number: 6788608099 → (678) 860-8099. Anything that isn't a plain
+// 10/11-digit US number (an extension, an international number) is shown exactly as stored —
+// never mangled into a shape it isn't.
+export function formatPhone(raw) {
+  const s = String(raw ?? '').trim();
+  const d = s.replace(/\D/g, '');
+  if (d.length === 10) return `(${d.slice(0, 3)}) ${d.slice(3, 6)}-${d.slice(6)}`;
+  if (d.length === 11 && d[0] === '1') return `(${d.slice(1, 4)}) ${d.slice(4, 7)}-${d.slice(7)}`;
+  return s;
+}
+
 async function postSendSms(payload) {
   const r = await fetch('/.netlify/functions/send-sms', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
@@ -5404,6 +5416,19 @@ function StopDataSections({ stop, note, onRefreshed, onOpenRoute, onMoveLocation
           {(note?.address_override?.city ?? live.city)}, {(note?.address_override?.state ?? live.state)} {(note?.address_override?.zip ?? live.zip)}
         </div>
         <AddressFixBanner stop={live} note={note} onAutoFix={onAutoFixAddress} onEdit={onEditAddress} />
+        {/* The customer's PHONE (Chad, Jul 31: "why are we not displaying customer phone
+            numbers?"). NuVizz shows it on the Ship-To block; we had it all along — the scan
+            carries to.contact (nuvizz-scan.mts) and resolveStopPhone already feeds the Text
+            customer button, which is why that button knew whether to say "(add #)". It was
+            simply never printed, so the one thing a dispatcher needs to CALL a customer was a
+            click away inside a compose box. A tel: link, so it dials from a phone. A manually
+            saved contact number wins over NuVizz's, exactly as texting resolves it. */}
+        {textPhone && (
+          <div className="mt-1 text-xs text-slate-700">
+            {live.contact?.name && <span className="text-slate-500">{live.contact.name} · </span>}
+            <a href={`tel:${String(textPhone).replace(/[^\d+]/g, '')}`} className="text-blue-700 hover:underline font-medium">{formatPhone(textPhone)}</a>
+          </div>
+        )}
         <div className="flex items-center gap-x-4 gap-y-1 flex-wrap mt-1">
           <StreetViewLink stop={live} />
           <GoogleMapsLink stop={live} />
