@@ -68,7 +68,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.54.26';
+const APP_VERSION = '0.54.27';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -113,6 +113,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.54.27', 'THE STOP CARD LISTED ITS FREIGHT TWICE. Chad: "why are items listed twice, get rid of the second one and make the one a little bigger." He was looking at ITEMS (8) with "3 pallets · 31 loose · 34 pieces · 862 Lbs" and then, directly underneath, "3 pallets  31 loose pcs  34 total pieces" — the same three numbers again, worded slightly differently, which reads like the two lines might be saying different things when they never were. The second line is gone and the remaining one is bigger and darker. WHICH ONE I KEPT, AND WHY IT IS NOT AS OBVIOUS AS IT LOOKS: the top line is the better of the two — same numbers plus the weight, which the lower one never showed. But it is written once, by the nightly scan, and it is NOT recalculated when an order is later looked up in detail. So there are stops whose pallet and piece counts arrive only from that detailed lookup, and on those the top line can still read "—" while the numbers underneath are real. Simply deleting the lower line would have blanked the freight on exactly those orders. So the lower line became the BACKUP instead: the card shows the scan\'s summary when it has one, and otherwise builds the same sentence from the live numbers. Either way you get one line, and no order loses its freight. Four tests cover it, including the awkward case.'],
   ['0.54.26', 'NEW ROUTE WORKS NOW — NUVIZZ SAYS "400" WHERE WE EXPECTED "NOT FOUND". Chad tried the new ＋ New route button and got: "could not confirm load TRAILER-0731 is free (NuVizz answered 400 to the check) — nothing was created". Nothing was wrong with the route or the name; the app refused ITSELF. HERE IS WHY, and it is the exact thing I told you I could not test without spending calls on your live system. Before creating a route the app asks NuVizz "do you already have this load number?" — because the call that creates a route is the same call that EDITS one, so pointing it at a number already in use would quietly rewrite a real route instead of making a new one. That check has to be certain. I coded it to accept one answer as proof the number was free: a 404, the standard "not found". Your NuVizz answers 400 instead. So every check came back as an answer the app did not recognise, it correctly refused to guess, and no route could ever be created. WORTH KNOWING: the app already asks NuVizz whether an ORDER number exists, and there NuVizz does answer 404. So the two are genuinely inconsistent, and there was no way to know which one applied to loads without asking it for real — which is what your click just did. Both answers mean the same thing and are now both accepted: the lookup came back with no load, so there is nothing at that number to overwrite. WHAT STILL REFUSES, deliberately: a login or permission error, a rate-limit, or a server/network failure. Those are not "the number is free", they are "I could not check" — and creating on one of those risks editing a live route. The rest of the safety is unchanged: the route is still read back after it is created, because NuVizz acknowledges these before the work is actually done, and the name is still verified so you never hunt the board for a route that landed under a different one. And if the number turns out to be malformed rather than merely unknown, the create itself fails loudly and nothing is written.'],
   ['0.54.25', 'BOTH STEVENS NOW EXIST, AND CLICKING THE LIVE ONE PUTS HIS STOPS BACK ON THE MAP. Chad: "shouldn\'t they have different load numbers so for this particular day we should display both — the active and canceled one." Yes, and that is the better answer than the one I shipped an hour earlier. Yesterday\'s fix stopped a cancelled load from stealing the live one\'s status badge, but it did it by REFUSING TO GUESS whenever two loads shared a name — safe, and useless: the app then could not tell which STEVEN a card belonged to, so clicking his route opened nothing and his 16 stops vanished off the map. Correct and unusable is still broken. HERE IS THE RULE THAT FIXES IT PROPERLY. A cancelled load holds no work — NuVizz sends its orders back to Un-Planned when you cancel it. So when two loads share a name and only ONE of them is alive, there is nothing to guess at: the live one owns the name, and any stops on the board under it can only be his. The app now says so. STEVEN\'s card opens again, his stops draw on the map, his status reads Planned, and a Save works — while a real tie (two LIVE loads with the same name) still refuses rather than pick, because that one genuinely cannot be resolved from the board. AND BOTH LOADS ARE NOW LISTED, which is what you actually asked for. The Loads column used to key everything by NAME, so a second load wearing the same name was simply hidden behind the first. NuVizz identifies a load by its NUMBER — a name is just a label, and two loads can wear it at once. So the day\'s load list is now the authority: one row per load, each with its own number, its own status and its own stop count straight from NuVizz. Your two STEVENs show as two rows — one Cancelled with 0 stops, one Dispatched with 16 — and each prints its load number underneath so you can tell them apart and find either in the portal. The one carrying work sorts first. One deliberate limitation, stated plainly: the stop feed we scan carries the route NAME but no load number, so when two loads share a name the board\'s stops cannot always be traced to one of them. When that happens those orders get their own row saying exactly that, rather than being quietly attached to whichever load the app happened to read last — which is the mistake that started all of this.'],
   ['0.54.24', 'STEVEN WAS NEVER CANCELLED — TWO LOADS SHARE THAT NAME AND THE WRONG ONE WAS DOING THE TALKING. Chad, with the portal open beside the app: "why are we showing this load canceled its not canceled in nuvizz." STEVEN had 16 orders, a driver and 52 miles on it in NuVizz, and a red CANCELLED badge on our board. HERE IS THE MECHANIC. A route\'s status does not come from its stops — it comes from the day\'s load list, looked up in a table this app builds. That table was keyed BY NAME, and when two loads on the same day share a name the second one simply overwrites the first. So the day\'s list held two STEVENs — one cancelled, one live — and the cancelled one won the name. Worse, the lookup asked for the name FIRST, before the load\'s own id, EVEN THOUGH we knew this route\'s exact id from its own stops. We had the right answer in hand and asked the wrong question. Identity now wins: a route reads its status from its own load id, and a name shared by two loads is not allowed to speak for either of them — in that case the status is worked out from the route\'s own stops instead, which can never be another load\'s. The code already refused to trust a shared name when assigning a driver or opening a card; the status badge was the one place that never got the same rule. THE SAME DUPLICATE EXPLAINS THE SAVE ERROR you hit right after: "null: commitBoard(rwb): loadNbr or loadId required" while adding orders, with NOR refusing too. When two loads share a name, this app deliberately refuses to guess which one a card belongs to — so the STEVEN card opened carrying NO load number and NO id, and a card like that can never be saved. It let you build the whole thing and told you afterwards. It now refuses AT THE MOMENT YOU OPEN IT and says why: two loads are named STEVEN today, rename one in the portal or cancel the one you are not using. Assigning a driver and dispatching already refused this way; opening a Compare card was the last path that let you do the work first and find out later. NOR\'s message was not a second fault — it is the safety net doing its job: a stop being moved onto a card that failed would have been unplanned by saving NOR, so NOR stopped rather than drop it. And a failed card no longer prints as the word "null" in front of its error. THE REAL REMEDY IS IN NUVIZZ: while two live loads carry one name, this app cannot tell them apart and will keep declining to guess. Rename or clean up the duplicate and both symptoms go with it.'],
@@ -3469,19 +3470,27 @@ function WebSearchLink({ stop, className }) {
 // (confirmed by Davis dispatch): the field it calls `cartons` is really PALLETS, `volume`
 // is LOOSE pieces, and `pallets` is the TOTAL piece count (pallets + loose). The normalized
 // field names still mirror NuVizz's raw naming; we relabel to the real meaning here.
-function FreightBreakdown({ stop }) {
+// ONE freight line, not two (Chad, Jul 31: "why are items listed twice — get rid of the
+// second one and make the one a little bigger"). The card used to print the scan's
+// itemsSummary AND a breakdown of the same three fields underneath it, which said the same
+// thing twice in two different phrasings ("31 loose" / "31 loose pcs").
+//
+// itemsSummary is normally the better line — same numbers PLUS the weight — but it is built
+// once by the SCAN and is not recomputed by enrichment, so a stop whose freight arrived only
+// through a detailed lookup can carry real cartons/volume/pallets behind a '—' summary.
+// Deleting the breakdown outright would blank the freight on exactly those stops, so it
+// becomes the FALLBACK instead: use the summary when it says something, else build the same
+// sentence from the live fields.
+export function freightSummaryLine(stop) {
+  const summary = String(stop?.itemsSummary ?? '').trim();
+  if (summary && summary !== '—') return summary;
   const parts = [];
-  if (stop.cartons) parts.push([stop.cartons, `pallet${stop.cartons === 1 ? '' : 's'}`]);
-  if (stop.volume) parts.push([stop.volume, `loose pc${stop.volume === 1 ? '' : 's'}`]);
-  if (stop.pallets) parts.push([stop.pallets, `total piece${stop.pallets === 1 ? '' : 's'}`]);
-  if (!parts.length) return null;
-  return (
-    <div className="mt-0.5 flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-slate-500">
-      {parts.map(([n, label], i) => (
-        <span key={i}><b className="text-slate-700">{n}</b> {label}</span>
-      ))}
-    </div>
-  );
+  const n = (v) => (typeof v === 'number' ? v : Number(v)) || 0;
+  if (n(stop?.cartons)) parts.push(`${n(stop.cartons)} pallet${n(stop.cartons) === 1 ? '' : 's'}`);
+  if (n(stop?.volume)) parts.push(`${n(stop.volume)} loose`);
+  if (n(stop?.pallets)) parts.push(`${n(stop.pallets)} ${n(stop.pallets) === 1 ? 'piece' : 'pieces'}`);
+  if (n(stop?.weight)) parts.push(`${n(stop.weight)} lbs`);
+  return parts.join(' · ');
 }
 
 function OrderItemsSection({ stop, defaultOpen = false }) {
@@ -3492,8 +3501,7 @@ function OrderItemsSection({ stop, defaultOpen = false }) {
     return (
       <div>
         <div className="text-xs uppercase font-semibold text-slate-500">Items</div>
-        <div className="text-sm">{stop.itemsSummary || '—'}</div>
-        <FreightBreakdown stop={stop} />
+        <div className="text-[15px] font-medium text-slate-800">{freightSummaryLine(stop) || '—'}</div>
       </div>
     );
   }
@@ -3506,8 +3514,7 @@ function OrderItemsSection({ stop, defaultOpen = false }) {
       >
         <span className="min-w-0">
           <span className="text-xs uppercase font-semibold text-slate-500">Items ({items.length})</span>
-          <span className="block text-sm text-slate-700 truncate">{stop.itemsSummary || '—'}</span>
-          <FreightBreakdown stop={stop} />
+          <span className="block text-[15px] font-medium text-slate-800 truncate">{freightSummaryLine(stop) || '—'}</span>
         </span>
         {open ? <ChevronUp size={15} className="text-slate-400 flex-shrink-0" /> : <ChevronDown size={15} className="text-slate-400 flex-shrink-0" />}
       </button>
