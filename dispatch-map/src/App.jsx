@@ -68,7 +68,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.54.27';
+const APP_VERSION = '0.54.28';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -113,6 +113,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.54.28', 'A SEARCH THAT FINDS NOTHING NOW TELLS YOU WHEN YOUR FILTERS ARE THE REASON. Chad searched PRO 7153822 and got "No stops match" — then: "this is showing nothing however this is planned on a route today, trailer 6." The order was on the board the entire time. Two filters were holding it back: "Has receiving hours" in the left Filters panel and "Hide stem out" on the map. His own conclusion: "all stop filters were the problem." THE SEARCH BOX WAS TELLING HIM SOMETHING FALSE. Search only looks at the stops that survive your filters, so an order a filter has removed can never be found — and the box reported that as "No stops match", which reads as "that order isn\'t on today\'s board." Those are completely different statements, and the wrong one sends you to NuVizz to hunt for an order that was two clicks away. The bottom grid has named its own filters since v0.45.6 and got smarter again in v0.53.11; the search box never learned to do it. Now, when a search comes back empty, the app re-runs the SAME search against the unfiltered board. If the order is there, it says so plainly — "It IS on this board — hidden by your filters" — with a Clear filters button beside it, on both the search box and the map. The button clears BOTH sets, the panel filters and the map toggles, because your board had one of each and clearing either alone would still have hidden it. If the order genuinely is not on the day, the message is unchanged: no stops match, and now you can trust it. Costs nothing when a search finds something, since it only runs on an empty result.'],
   ['0.54.27', 'THE STOP CARD LISTED ITS FREIGHT TWICE. Chad: "why are items listed twice, get rid of the second one and make the one a little bigger." He was looking at ITEMS (8) with "3 pallets · 31 loose · 34 pieces · 862 Lbs" and then, directly underneath, "3 pallets  31 loose pcs  34 total pieces" — the same three numbers again, worded slightly differently, which reads like the two lines might be saying different things when they never were. The second line is gone and the remaining one is bigger and darker. WHICH ONE I KEPT, AND WHY IT IS NOT AS OBVIOUS AS IT LOOKS: the top line is the better of the two — same numbers plus the weight, which the lower one never showed. But it is written once, by the nightly scan, and it is NOT recalculated when an order is later looked up in detail. So there are stops whose pallet and piece counts arrive only from that detailed lookup, and on those the top line can still read "—" while the numbers underneath are real. Simply deleting the lower line would have blanked the freight on exactly those orders. So the lower line became the BACKUP instead: the card shows the scan\'s summary when it has one, and otherwise builds the same sentence from the live numbers. Either way you get one line, and no order loses its freight. Four tests cover it, including the awkward case.'],
   ['0.54.26', 'NEW ROUTE WORKS NOW — NUVIZZ SAYS "400" WHERE WE EXPECTED "NOT FOUND". Chad tried the new ＋ New route button and got: "could not confirm load TRAILER-0731 is free (NuVizz answered 400 to the check) — nothing was created". Nothing was wrong with the route or the name; the app refused ITSELF. HERE IS WHY, and it is the exact thing I told you I could not test without spending calls on your live system. Before creating a route the app asks NuVizz "do you already have this load number?" — because the call that creates a route is the same call that EDITS one, so pointing it at a number already in use would quietly rewrite a real route instead of making a new one. That check has to be certain. I coded it to accept one answer as proof the number was free: a 404, the standard "not found". Your NuVizz answers 400 instead. So every check came back as an answer the app did not recognise, it correctly refused to guess, and no route could ever be created. WORTH KNOWING: the app already asks NuVizz whether an ORDER number exists, and there NuVizz does answer 404. So the two are genuinely inconsistent, and there was no way to know which one applied to loads without asking it for real — which is what your click just did. Both answers mean the same thing and are now both accepted: the lookup came back with no load, so there is nothing at that number to overwrite. WHAT STILL REFUSES, deliberately: a login or permission error, a rate-limit, or a server/network failure. Those are not "the number is free", they are "I could not check" — and creating on one of those risks editing a live route. The rest of the safety is unchanged: the route is still read back after it is created, because NuVizz acknowledges these before the work is actually done, and the name is still verified so you never hunt the board for a route that landed under a different one. And if the number turns out to be malformed rather than merely unknown, the create itself fails loudly and nothing is written.'],
   ['0.54.25', 'BOTH STEVENS NOW EXIST, AND CLICKING THE LIVE ONE PUTS HIS STOPS BACK ON THE MAP. Chad: "shouldn\'t they have different load numbers so for this particular day we should display both — the active and canceled one." Yes, and that is the better answer than the one I shipped an hour earlier. Yesterday\'s fix stopped a cancelled load from stealing the live one\'s status badge, but it did it by REFUSING TO GUESS whenever two loads shared a name — safe, and useless: the app then could not tell which STEVEN a card belonged to, so clicking his route opened nothing and his 16 stops vanished off the map. Correct and unusable is still broken. HERE IS THE RULE THAT FIXES IT PROPERLY. A cancelled load holds no work — NuVizz sends its orders back to Un-Planned when you cancel it. So when two loads share a name and only ONE of them is alive, there is nothing to guess at: the live one owns the name, and any stops on the board under it can only be his. The app now says so. STEVEN\'s card opens again, his stops draw on the map, his status reads Planned, and a Save works — while a real tie (two LIVE loads with the same name) still refuses rather than pick, because that one genuinely cannot be resolved from the board. AND BOTH LOADS ARE NOW LISTED, which is what you actually asked for. The Loads column used to key everything by NAME, so a second load wearing the same name was simply hidden behind the first. NuVizz identifies a load by its NUMBER — a name is just a label, and two loads can wear it at once. So the day\'s load list is now the authority: one row per load, each with its own number, its own status and its own stop count straight from NuVizz. Your two STEVENs show as two rows — one Cancelled with 0 stops, one Dispatched with 16 — and each prints its load number underneath so you can tell them apart and find either in the portal. The one carrying work sorts first. One deliberate limitation, stated plainly: the stop feed we scan carries the route NAME but no load number, so when two loads share a name the board\'s stops cannot always be traced to one of them. When that happens those orders get their own row saying exactly that, rather than being quietly attached to whichever load the app happened to read last — which is the mistake that started all of this.'],
@@ -3009,6 +3010,9 @@ function ResizeHandle({ onMouseDown, onDoubleClick }) {
 // debounce + filter. onSubmit is called when Enter is pressed (used to commit
 // to localStorage history).
 function SearchBar({
+  // hiddenByFilters/onClearFilters are OPTIONAL — the Routing screen reuses this box without
+  // the map-filter machinery, and its empty state stays exactly as it was.
+  hiddenByFilters = 0, onClearFilters = null,
   value, onChange, onSubmit, history, inputRef, resultCount, totalCount,
   // M6 — AI search props. When aiAvailable, a sparkle toggle switches the box
   // into "Ask AI" mode; Enter (or the button) then runs a natural-language parse.
@@ -3083,6 +3087,15 @@ function SearchBar({
             ? <>Showing <span className="font-semibold text-slate-700">{resultCount}</span> of {totalCount} stops</>
             : <>No stops match "<span className="font-semibold">{value}</span>"</>
           }
+          {/* The stop IS on the board — a filter is holding it back. Without this the box just
+              said "no stops match", which reads as "that order isn't here today" (Chad, Jul 31,
+              hunting PRO 7153822 that was planned on TRAILER 6 the whole time). */}
+          {resultCount === 0 && hiddenByFilters > 0 && (
+            <div className="mt-0.5 text-amber-800">
+              {hiddenByFilters === 1 ? 'It IS on this board' : `${hiddenByFilters} matching stops ARE on this board`} — hidden by your filters.
+              {onClearFilters && <button onClick={onClearFilters} className="ml-1 underline font-semibold hover:text-amber-900">Clear filters</button>}
+            </div>
+          )}
         </div>
       ) : null}
       {aiError && <div className="mt-1 text-[10px] text-amber-700">{aiError}</div>}
@@ -8391,6 +8404,34 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
     return set;
   }, [filteredStops, notes, debouncedSearch, aiMode]);
 
+  // Clear EVERY stop filter — the left Filters panel AND the three map toggles. Chad's board
+  // had one of each ("Has receiving hours" + "Hide stem out"), so clearing either alone would
+  // still have hidden the stop he was looking for.
+  const clearAllStopFilters = useCallback(() => {
+    setFilters({});
+    setMapFilters((prev) => ({ ...prev, hideTerminal: false, hideStemOut: false, unplannedOnly: false }));
+  }, []);
+
+  // A search that finds NOTHING because the FILTERS hid it (Chad, Jul 31: searched PRO
+  // 7153822, got 'No stops match "7153822"' — "this is showing nothing however this is planned
+  // on a route today trailer 6"; then: "all stop filters were the problem"). The stop was on
+  // the board the whole time; "Has receiving hours" and "Hide stem out" were holding it back,
+  // and the search box said only that nothing matched.
+  //
+  // searchMatchSet is built from filteredStops, so a filtered-out stop can never be found and
+  // the message can never explain itself. This re-runs the SAME matcher over the unfiltered
+  // board purely to answer "would this have matched if nothing were hidden?" — the grid has
+  // named its own filters since v0.45.6/v0.53.11; the search box never learned to.
+  // Only computed when a search is active and found nothing, so it costs nothing normally.
+  const searchHiddenByFilters = useMemo(() => {
+    if (aiMode || aiResult || selectionSet) return 0;
+    const q = debouncedSearch.trim();
+    if (!q || (searchMatchSet && searchMatchSet.size > 0)) return 0;
+    let n = 0;
+    for (const s of stops) if (stopMatchesSearch(s, notes.get(s.matchKey), q)) n += 1;
+    return n;
+  }, [stops, notes, debouncedSearch, searchMatchSet, aiMode, aiResult, selectionSet]);
+
   // M6 — an active AI result (search parse or chat highlight) takes precedence
   // over the literal keyword set. Everything downstream (list + map dim/fit) reads
   // effectiveMatchSet so all surfaces share one filter mechanism. Box/lasso
@@ -9360,8 +9401,14 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
           </div>
         )}
         {!visibleStops.length && !loading && !mapsError && (
-          <div className="absolute top-14 left-1/2 -translate-x-1/2 bg-white border border-slate-200 rounded shadow px-3 py-1 text-[11px] text-slate-600 z-10">
+          <div className="absolute top-14 left-1/2 -translate-x-1/2 bg-white border border-slate-200 rounded shadow px-3 py-1.5 text-[11px] text-slate-600 z-10 max-w-[92vw] text-center">
             {debouncedSearch ? `No stops match "${debouncedSearch}"` : 'No stops match filters'}
+            {searchHiddenByFilters > 0 && (
+              <div className="mt-1 text-amber-800">
+                {searchHiddenByFilters === 1 ? 'It IS on this board' : `${searchHiddenByFilters} matching stops ARE on this board`} — your filters are hiding {searchHiddenByFilters === 1 ? 'it' : 'them'}.
+                <button onClick={clearAllStopFilters} className="ml-1 underline font-semibold hover:text-amber-900">Clear filters</button>
+              </div>
+            )}
           </div>
         )}
 
@@ -9429,6 +9476,8 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
               setSearchInput={setSearchInput}
               resultCount={visibleStops.length}
               totalCount={filteredStops.length}
+              hiddenByFilters={searchHiddenByFilters}
+              onClearFilters={clearAllStopFilters}
               completedPct={boardCompletion?.pct ?? null}
               onPickStop={pickStopFromMobile}
               aiAvailable={aiAvailable}
@@ -9620,6 +9669,8 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
           inputRef={searchInputRef}
           resultCount={visibleStops.length}
           totalCount={filteredStops.length}
+          hiddenByFilters={searchHiddenByFilters}
+          onClearFilters={clearAllStopFilters}
           aiAvailable={aiAvailable}
           aiMode={aiMode}
           setAiMode={(v) => { setAiMode(v); if (!v) clearAi(); }}
