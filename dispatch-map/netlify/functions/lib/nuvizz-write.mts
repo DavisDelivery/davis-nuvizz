@@ -2207,6 +2207,10 @@ async function applyBoardDateChange(creds: WriteCreds, stopNbr: string, fromDate
  *            import path never checked: NuVizz assigning its own name would otherwise pass
  *            as success and the dispatcher would hunt for a route that isn't there.
  */
+// load/info answers for a number the tenant does not hold. 404 is the documented shape; 400 is
+// what the live DAVIS tenant actually returns (Jul 31). Both = "no load there".
+export const LOAD_ABSENT_STATUSES = new Set([400, 404]);
+
 export function routeCreateBlocked(): boolean {
   // Emergency hard-off, mirroring NUVIZZ_LOAD_IMPORT's brake — but DEFAULT-ON, because this
   // path carries no stop data and its worst case is a spare empty route (cancellable in-app).
@@ -2228,9 +2232,17 @@ export async function runNewRoute(requester: RequesterLike, payload: any, creds:
     return { ok: false, exists: true, loadNbr, loadId: pre.load.loadId ?? null,
       error: `createRoute: load ${loadNbr} already exists in NuVizz (${loadDisplayLabel(pre.load)}) — pick a different route name/date, or open that route from the board instead`, steps };
   }
-  // A 404 is the only proof the number is free. A 5xx/network failure is NOT — creating on an
-  // unreadable number risks silently editing a live route's header.
-  if (pre.httpStatus != null && pre.httpStatus !== 404) {
+  // WHICH ANSWERS MEAN "FREE". load/info returns 400 — not 404 — for a load number the tenant
+  // does not have. Observed on the first real create (Jul 31): TRAILER-0731 refused itself with
+  // "NuVizz answered 400 to the check" on a number that plainly did not exist. (The STOP
+  // existence gate above sees a true 404, so the two endpoints genuinely differ.) Either way
+  // the read came back with NO LOAD, so there is nothing at that number to overwrite.
+  //
+  // Everything else still refuses: 401/403 (auth), 429 (throttled) and 5xx/network are
+  // "I could not check", and creating on one risks silently editing a live route's header.
+  // A malformed number is safe here too — it simply fails the CREATE below, loudly, having
+  // written nothing.
+  if (pre.httpStatus != null && !LOAD_ABSENT_STATUSES.has(pre.httpStatus)) {
     return { ok: false, error: `createRoute: could not confirm load ${loadNbr} is free (NuVizz answered ${pre.httpStatus} to the check) — nothing was created; try again`, steps };
   }
 
