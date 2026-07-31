@@ -45,6 +45,7 @@ import { aiParse, aiChat, applyFilterSpec, summarizeSpec, buildTrimmedStops } fr
 import { loadDeviceIdentity, saveDeviceName, activePeers, buildPeerClaims, peerChipLabel, latestPeerSaveAt, PRESENCE_HEARTBEAT_MS } from './lib/presence.js';
 import { cancelsIn, cancelSummary } from './lib/cancel-guard.js';
 import { validateNewRoute } from './lib/route-create.js';
+import { mergeDayLoads, dayLoadTally } from './lib/day-loads.js';
 import ChatPanel, { ChatLauncher, MessagesLauncher } from './components/ChatPanel.jsx';
 import MessagesPanel from './components/MessagesPanel.jsx';
 
@@ -66,7 +67,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.54.22';
+const APP_VERSION = '0.54.23';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -111,6 +112,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.54.23', 'THE LOADS COLUMN NOW SHOWS YOUR LOADS, AND SELECTED STOPS STAY IN THE ORDER YOU ADD THEM. Chad, looking at the Routing screen with 99 loads listed in the bottom panel and the column beside it reading "No saved loads yet": "can you make loads that are showing up in this bottom panel show up on the right panel, it currently doesn\'t hold or do anything, routes never end up on the column even though it says its what its for." He was right, and it was not a broken feature — it was two different things sharing one word. A LOAD in that column meant a SAVED PLAN: the output of the routing optimiser, the thing the Save load button writes. A load everywhere else in this app means a real route on the day\'s board. So the column was working perfectly and answering a question nobody was asking, while the 99 real loads sat two inches below it. THE COLUMN NOW SHOWS THE DAY\'S ACTUAL LOADS — the same set as the bottom panel: every route built on the board, plus every empty Draft. That second half matters more than it sounds. An empty load has no orders, and everything else in the app finds loads by looking at their orders — so a load with none is invisible to it. They only exist in the day\'s load roster, which is why your 99 loads are nearly all Drafts and why they never showed up in a routes list. Each row shows the driver, stop count, skids and loose, and how much of it is delivered; empty ones are marked "No orders yet". Click any row and it opens in Compare, exactly like clicking it in the bottom panel. There is a search box, and a Built only button that hides the Drafts — on a board like yours that is the difference between scrolling 99 rows and seeing the handful actually carrying freight. If two loads share a name that row says so, because a name is not enough to tell them apart and the app will not guess. YOUR SAVED PLANS ARE NOT GONE: the tab has an On the board / Saved plans switch, and it remembers which one you were using. SECOND FIX, THE STOPS LIST. "when stops are added to this screen i want the default sorted to the order they are added." It was sorting alphabetically by customer, so the stop you just clicked landed somewhere in the middle of the list and you had to hunt for it to confirm it went in. It now stays in the order you added them, which is also the order you were thinking in when you clicked. All the sort buttons still work; there is a new Added chip at the front to get back to add-order after you have sorted by something else. Both the side panel and the floating Selected list behave the same way, so they cannot disagree with each other.'],
   ['0.54.22', 'YOU CAN CREATE A ROUTE FROM THE ROUTING TAB. Chad: "I want to be able to create a route in the routing tab." Until now this app could DESTROY a route but never make one — emptying a load cancels it in NuVizz, and the rebuild had to happen in the portal. That was a one-way door, and it got a lot easier to walk through yesterday when the last order became removable. There is now a green ＋ New route button at the top of the Routes list. Give it a name — TRAILER 6, SUW 2, whatever you would call it on the board — and it creates an empty route on the day the board is showing, then opens it as a Compare card so you can drag orders straight onto it and Save exactly like any other route. WHY IT IS SAFE TO SHIP THIS, given the history: the July 2 incident that wiped freight off 10 live orders came from the load-import path, where sending an order by REFERENCE made NuVizz replace the whole order. That engine is still switched off and this does not use it. Creating a route sends a HEADER ONLY — a name, a day, and the warehouse it leaves from. There is not one order in the message, so there is nothing it could overwrite. The orders get planned onto the route afterwards by the ordinary Save you already use, which refers to orders by id and cannot blank them. THREE THINGS IT CHECKS BEFORE IT WRITES ANYTHING. (1) The load number has to be genuinely free. NuVizz uses one call for "create or update", so aiming it at a number that already exists would quietly EDIT that route instead. It only proceeds when NuVizz confirms the number is unused — and if the check itself fails, it stops rather than guess, because "I could not look" is not "it is free". (2) It reads the route back afterwards. NuVizz answers these calls before the work is actually done, so a success message is not proof; the route has to be readable or you are told it did not land — and told NOT to create it again under the same name, since that is how you end up with two. (3) It checks the NAME that came back. If NuVizz numbers the route itself instead of taking your name, you are told what it is actually called, so you are never hunting the board for a route that is not there under the name you typed. NuVizz caps a route name at 20 characters and needs its own load number, which is built from your name plus the date (TRAILER 6 on the 31st becomes TRAILER6-0731) — so the same route can be created again tomorrow without colliding with today. The form shows you that number before you commit. You need a ship-from address saved in the New Order tab, because NuVizz accepts a route with no origin and then silently creates nothing. Routes are created for the day the board is on — switch the board date first to build tomorrow. And there is a Beta/Live switch on the Routes panel exactly like driver assignment: in Beta it tells you what it would do and sends nothing.'],
   ['0.54.21', 'WHY "SCAN UNAVAILABLE" — AND THE CALL CEILING IS NOW A REAL 2,000. Chad: "Why is my scan not available?" and "set the max calls to 2000 and that needs to be enforced." Both done. THE SCAN BUTTON. That red line means one thing: the Scan now button POSTed to the scanner and the scanner did not accept the request. Your scheduled scans were fine the whole time — the same card said Loads updated 32 min ago. Here is why the button specifically fails: it posts to the BACKGROUND scanner, and that function also carries the every-15-minutes cron schedule. A function with a schedule attached is a scheduled function, and a scheduled function is not reliably reachable over plain HTTP — so the cron fires it happily on its own timer while a manual POST to the same address gets refused. The app already ships a second, plain endpoint that runs the exact same cheap scan, so the button now falls back to it automatically when the first one is refused. Two things worth knowing. FIRST, the fallback is called with NO date attached — deliberately. Handing it a date flips it into the roughly 3,000-call number-probe scan; without one it is the same 4-call list scan the scheduled path runs. SECOND, if it still fails you now get the actual reason and the HTTP code instead of a dead-end "Scan unavailable". And the reason you were reaching for that button matters: a MANUAL scan bypasses the orders-paused-until-10-AM hold and pulls orders for today AND tomorrow, so it is exactly the right tool when you need the board caught up before the pause lifts. THE CEILING, 2,000, ENFORCED. Your card read 133 / 20,000. It now reads out of 2,000, and 2,000 is a genuine hard ceiling: it cannot be raised by the site setting that had it at 20,000, cannot be raised by the Diagnostics editor (which could previously go to 200,000), and cannot be raised by any caller passing its own number. It can only be lowered. Enforcement also no longer depends on a setting being present — the breaker used to default to COUNT-AND-WARN-ONLY if its switch went missing or was mistyped, which is a spend cap that quietly stops being one; blocking is now the default and monitoring is the thing you have to ask for. Sizing: a normal day runs a few hundred calls, so 2,000 is about ten times real usage. Note deliberately: 2,000 sits BELOW the roughly 3,000-call cold full scan, so that scan can no longer complete by accident — it trips the breaker partway. That is the point of the number, not a side effect.'],
   ['0.54.21', 'YOUR 600 PLANNED ORDERS ARE THERE — "UNPLANNED ONLY" WAS ON, AND THE EMPTY GRID BLAMED THE WRONG FILTER. Chad: "says i don\'t have any planned orders today however i have like 600 of them." They are all there. The grid read "None of the 6 stops in this board match — hidden by status (1)", and BOTH numbers in that sentence were wrong. Your board holds 723 stops, not 6. And the thing that removed them was not the status filter — it was Unplanned only, the toggle in the map Filters panel, which was switched on. Here is the mechanism. The map panel filters the stops FIRST, then hands what survives to the bottom grid. With Unplanned only on, 723 stops became the 6 unplanned ones before the grid ever saw them. You then ticked Planned in the grid\'s own Status filter — and of course none of 6 unplanned stops are planned, so you got zero. The grid could only see its own filters, so it reported the 6 as though that were your whole board and named the only culprit it knew about. It now names every filter in the chain and reports the REAL board total: "None of the 723 stops in this board match — hidden by Unplanned only, status (1)." Hide terminal and Hide stem out are named the same way. Clear filters still clears in one click. Nothing about filtering changed — only what the app tells you when the result is empty. This is the same trap as v0.53.11, one layer further up: back then a status filter could blank the board without saying so, and the fix taught the grid to name its own filters. It could not name a filter applied before it, so the next silent blanking came from upstream.'],
@@ -11873,10 +11875,15 @@ function RoutingSelectedList({ selectedStops, notes, onRemove, open, setOpen, on
       weight: Number(s.weight) || 0,
     };
   }), [selectedStops, notes]);
-  const { sorted, sortKey, sortDir, toggle } = useSortable(rows, 'customer', 'asc');
+  // DEFAULT = the order you added them (Chad, Jul 31: "i want the default sorted to the order
+  // they are added"). selectedIds is a Set and a Set keeps insertion order, so selectedStops is
+  // ALREADY add-order — the panel was throwing that away with an alphabetical default. A null
+  // sort key means "leave the rows alone", so that is the whole fix; the Added chip is how you
+  // get back to it once you have sorted by something else.
+  const { sorted, sortKey, sortDir, toggle } = useSortable(rows, null, 'asc');
   const SortBtn = ({ label, k }) => (
     <button onClick={() => toggle(k)} className="inline-flex items-center gap-0.5 hover:text-slate-700">
-      {label}{sortKey === k ? (sortDir === 'asc' ? <ChevronUp size={10} /> : <ChevronDown size={10} />) : null}
+      {label}{sortKey === k && k != null ? (sortDir === 'asc' ? <ChevronUp size={10} /> : <ChevronDown size={10} />) : null}
     </button>
   );
   return (
@@ -11890,7 +11897,7 @@ function RoutingSelectedList({ selectedStops, notes, onRemove, open, setOpen, on
       ) : (
         <div className="border-t">
           <div className="flex items-center gap-3 px-2 py-1 text-[10px] uppercase tracking-wide text-slate-500 border-b bg-slate-50">
-            <SortBtn label="Customer" k="customer" /><SortBtn label="City" k="city" /><SortBtn label="Skids" k="skids" /><SortBtn label="Loose" k="loose" /><SortBtn label="Pcs" k="pieces" /><SortBtn label="Wt" k="weight" />
+            <SortBtn label="Added" k={null} /><SortBtn label="Customer" k="customer" /><SortBtn label="City" k="city" /><SortBtn label="Skids" k="skids" /><SortBtn label="Loose" k="loose" /><SortBtn label="Pcs" k="pieces" /><SortBtn label="Wt" k="weight" />
           </div>
           <div className="max-h-[42vh] overflow-y-auto divide-y">
             {sorted.map((r) => (
@@ -11966,7 +11973,12 @@ function RoutingStopsPanel({ selectedStops, notes, onRemove, hoverId, setHoverId
       skids: Number(s.cartons) || 0, loose: Number(s.volume) || 0, pieces: Number(s.pallets) || 0, weight: Number(s.weight) || 0,
     };
   }), [selectedStops, notes]);
-  const { sorted, sortKey, sortDir, toggle } = useSortable(rows, 'customer', 'asc');
+  // DEFAULT = the order you added them (Chad, Jul 31: "i want the default sorted to the order
+  // they are added"). selectedIds is a Set and a Set keeps insertion order, so selectedStops is
+  // ALREADY add-order — the panel was throwing that away with an alphabetical default. A null
+  // sort key means "leave the rows alone", so that is the whole fix; the Added chip is how you
+  // get back to it once you have sorted by something else.
+  const { sorted, sortKey, sortDir, toggle } = useSortable(rows, null, 'asc');
   // Keep the hovered row visible. block:'nearest' is a no-op when the row is
   // already on screen (pointer hover), so this only scrolls for map-driven hover.
   useEffect(() => {
@@ -11979,7 +11991,7 @@ function RoutingStopsPanel({ selectedStops, notes, onRemove, hoverId, setHoverId
   // These chips keep the columns sortable without needing the width.
   const SortBtn = ({ label, k }) => (
     <button onClick={() => toggle(k)} className={`inline-flex items-center gap-0.5 hover:text-slate-700 ${sortKey === k ? 'text-slate-700 font-semibold' : ''}`}>
-      {label}{sortKey === k ? (sortDir === 'asc' ? <ChevronUp size={10} /> : <ChevronDown size={10} />) : null}
+      {label}{sortKey === k && k != null ? (sortDir === 'asc' ? <ChevronUp size={10} /> : <ChevronDown size={10} />) : null}
     </button>
   );
 
@@ -11990,7 +12002,7 @@ function RoutingStopsPanel({ selectedStops, notes, onRemove, hoverId, setHoverId
     <div className="flex-1 min-h-0 flex flex-col">
       <div className="flex items-center flex-wrap gap-x-3 gap-y-0.5 px-2 py-1 text-[10px] uppercase tracking-wide text-slate-500 border-b bg-slate-50 shrink-0">
         <span className="text-slate-400">Sort:</span>
-        <SortBtn label="Customer" k="customer" /><SortBtn label="City" k="city" /><SortBtn label="Skids" k="skids" /><SortBtn label="Loose" k="loose" /><SortBtn label="Pcs" k="pieces" /><SortBtn label="Wt" k="weight" />
+        <SortBtn label="Added" k={null} /><SortBtn label="Customer" k="customer" /><SortBtn label="City" k="city" /><SortBtn label="Skids" k="skids" /><SortBtn label="Loose" k="loose" /><SortBtn label="Pcs" k="pieces" /><SortBtn label="Wt" k="weight" />
       </div>
       <div className="flex-1 min-h-0 overflow-y-auto divide-y">
         {sorted.map((r) => {
@@ -13991,6 +14003,14 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
   // collapsed by default so it doesn't cover the map until opened.
   const [bottomTableOpen, setBottomTableOpen] = useState(false);
 
+  // Which list the rail's Loads tab shows: 'board' = the day's NuVizz loads (what a dispatcher
+  // means by a load), 'saved' = saved optimizer plans. Defaults to the board — the tab pointing
+  // only at saved plans is what made it look dead (§L). Remembered per device.
+  const [loadsRailView, setLoadsRailView] = useState(() => {
+    try { return localStorage.getItem('routing.loadsRail') === 'saved' ? 'saved' : 'board'; } catch { return 'board'; }
+  });
+  useEffect(() => { try { localStorage.setItem('routing.loadsRail', loadsRailView); } catch { /* ignore */ } }, [loadsRailView]);
+
   // Desktop right rail: Stops | Result. Persisted as a view pref (localStorage ok).
   const [desktopRail, setDesktopRail] = useState(() => {
     try { return localStorage.getItem('routing.rail') === 'result' ? 'result' : 'stops'; } catch { return 'stops'; }
@@ -14332,6 +14352,12 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
   // The day's routes/drivers roster — group the board by load (route name) for the right-panel
   // "Routes" view: stop count, driver, skids (cartons), weight, and delivery progress per route.
   const routeGroups = useMemo(() => computeRouteGroups(stops, loadStatusByName), [stops, loadStatusByName]);
+  // The day's NuVizz LOADS for the right rail — routes built on the board PLUS the roster's
+  // empty Drafts, which have no stops to group and so exist nowhere else (§L). This is the
+  // same set the bottom grid's Loads view shows; the rail used to show saved optimizer plans
+  // instead, which is why real routes never appeared in a column labelled Loads.
+  const dayLoads = useMemo(() => mergeDayLoads(routeGroups, loadRosterList), [routeGroups, loadRosterList]);
+  const dayLoadsTally = useMemo(() => dayLoadTally(dayLoads), [dayLoads]);
 
   // Workbench handlers — open a route into the side-by-side cards, tune it, close it.
   const openRouteInWorkbench = useCallback((key) => {
@@ -16679,17 +16705,35 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
         <>
         <div className="flex border-b shrink-0">
           {railTab('stops', `Stops${tally.count ? ` (${tally.count})` : ''}`)}
-          {railTab('loads', `Loads${loads.length ? ` (${loads.length})` : ''}`)}
+          {railTab('loads', `Loads${dayLoads.length ? ` (${dayLoads.length})` : ''}`)}
           {railTab('result', `Result${baseResult ? ` (${baseResult.routes.length})` : (job?.status === 'running' || job?.status === 'queued') ? ' …' : ''}`)}
           <button onClick={() => setRightCollapsed(true)} className="shrink-0 px-1.5 text-slate-400 hover:text-slate-700 border-l" title="Collapse panel"><ChevronRight size={15} /></button>
         </div>
         {desktopRail === 'stops' ? (
           <RoutingStopsPanel selectedStops={selectedStops} notes={notes} onRemove={removeStop} hoverId={hoverId} setHoverId={setHoverId} onOpenStop={openStop} />
         ) : desktopRail === 'loads' ? (
-          <RoutingLoadsPanel loads={loads} loading={loadsLoading} error={loadsError}
-            viewedId={viewedLoad?.id || null}
-            onOpen={(l) => { setViewedLoad(l); setDesktopRail('result'); }}
-            onRename={renameLoad} onToggleDispatch={toggleDispatched} onDelete={deleteLoad} manageError={manageError} />
+          <div className="flex-1 min-h-0 flex flex-col">
+            {/* Two different things are called a load. The board's routes are what a dispatcher
+                wants here; saved optimizer plans stay one click away rather than being cut. */}
+            <div className="flex gap-1 px-2 py-1.5 border-b shrink-0">
+              {[['board', `On the board${dayLoads.length ? ` (${dayLoads.length})` : ''}`], ['saved', `Saved plans${loads.length ? ` (${loads.length})` : ''}`]].map(([id, label]) => (
+                <button key={id} onClick={() => setLoadsRailView(id)}
+                  className={`flex-1 text-[11px] font-semibold px-2 py-1 rounded border ${loadsRailView === id ? 'border-blue-600 bg-blue-600 text-white' : 'border-slate-300 bg-white text-slate-600 hover:bg-slate-50'}`}>
+                  {label}
+                </button>
+              ))}
+            </div>
+            {loadsRailView === 'saved' ? (
+              <RoutingLoadsPanel loads={loads} loading={loadsLoading} error={loadsError}
+                viewedId={viewedLoad?.id || null}
+                onOpen={(l) => { setViewedLoad(l); setDesktopRail('result'); }}
+                onRename={renameLoad} onToggleDispatch={toggleDispatched} onDelete={deleteLoad} manageError={manageError} />
+            ) : (
+              <RoutingDayLoadsPanel rows={dayLoads} tally={dayLoadsTally}
+                onPickLoad={(r) => pickLoadToCompare(r.loadNbr || r.loadId || r.key)}
+                isOpen={(r) => wbRoutes.some((w) => w.key === r.key || (r.name && w.key === r.name) || (r.loadNbr && (w.key === r.loadNbr || w.loadNbr === r.loadNbr)))} />
+            )}
+          </div>
         ) : (
           <div className="flex-1 min-h-0 overflow-y-auto p-3 space-y-3 text-sm">{resultContent}</div>
         )}
@@ -16895,6 +16939,80 @@ function SavedLoadManageBar({ load, onClose, onRename, onToggleDispatch, onDelet
 
 // The live, shared Loads list — fed by useSavedLoads (onSnapshot). Sortable;
 // explicit loading / empty / error. Each row opens the load on the map.
+/**
+ * RoutingDayLoadsPanel (§L) — the day's NuVizz LOADS in the right rail.
+ *
+ * Chad, Jul 31: "eroutes never end up on the column even though it says its what its for."
+ * The rail's Loads tab listed SAVED PLANS (optimizer output, Firestore) while the bottom grid
+ * beside it listed 99 real loads — two different things wearing the same word. This panel is
+ * the same set the bottom grid shows: routes built on the board, plus the day's empty Drafts,
+ * which exist only in the roster because they have no stops to group.
+ *
+ * Clicking a row opens it in Compare, exactly like the bottom grid's Loads row.
+ */
+function RoutingDayLoadsPanel({ rows, tally, onPickLoad, isOpen }) {
+  const [q, setQ] = useState('');
+  const [hideEmpty, setHideEmpty] = useState(false);
+  const shown = useMemo(() => {
+    const needle = q.trim().toLowerCase();
+    return rows.filter((r) => {
+      if (hideEmpty && (r.empty || r.count === 0)) return false;
+      if (!needle) return true;
+      return [r.display, r.name, r.loadNbr, r.driver].filter(Boolean).join(' ').toLowerCase().includes(needle);
+    });
+  }, [rows, q, hideEmpty, ]);
+  return (
+    <div className="flex-1 min-h-0 flex flex-col">
+      <div className="sticky top-0 z-20 bg-white border-b px-2 py-1.5 flex items-center gap-1.5 shrink-0">
+        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search loads / driver"
+          className="flex-1 min-w-0 text-[12px] border border-slate-300 rounded px-2 py-1" />
+        {/* On a board that is mostly Drafts, this is the difference between browsing 99 rows
+            and browsing the handful that actually carry freight. */}
+        <button onClick={() => setHideEmpty((v) => !v)}
+          title={hideEmpty ? 'Showing only loads that carry orders — click to show empty Drafts too' : 'Showing every load on the day — click to hide the empty Drafts'}
+          className={`text-[11px] font-semibold px-2 py-1 rounded border shrink-0 ${hideEmpty ? 'border-blue-600 bg-blue-600 text-white' : 'border-slate-300 bg-white text-slate-600 hover:bg-slate-50'}`}>
+          Built only
+        </button>
+      </div>
+      <div className="px-3 py-1.5 text-[11px] text-slate-500 border-b bg-slate-50 shrink-0">
+        {tally.withOrders} built · {tally.empty} empty · {tally.stops} stops
+        {shown.length !== rows.length ? ` · showing ${shown.length}` : ''}
+      </div>
+      {rows.length === 0 ? (
+        <div className="p-4 text-[12px] text-slate-400">No loads on this day&apos;s board yet. Use <b>＋ New route</b> in the Routes panel to make one.</div>
+      ) : shown.length === 0 ? (
+        <div className="p-4 text-[12px] text-slate-400">No loads match.</div>
+      ) : (
+        <div className="flex-1 min-h-0 overflow-y-auto divide-y">
+          {shown.map((r) => {
+            const pct = r.count ? Math.round((100 * r.delivered) / r.count) : 0;
+            const open = isOpen ? isOpen(r) : false;
+            return (
+              <button key={r.key} onClick={() => onPickLoad(r)}
+                className={`w-full text-left px-3 py-2 hover:bg-slate-50 ${open ? 'bg-blue-50' : ''}`}>
+                <div className="flex items-center gap-2">
+                  <span className="font-semibold text-[12px] text-blue-700 truncate flex-1 min-w-0">{loadDisplayName(r.name, r.loadNbr) || r.display}</span>
+                  {r.empty
+                    ? <span className="shrink-0 px-1.5 rounded text-[10px] font-medium bg-amber-50 text-amber-700 border border-amber-200" title={r.status ? `Load status: ${r.status}` : 'No orders assigned yet'}>No orders yet</span>
+                    : <span className="shrink-0 text-[11px] font-semibold tabular-nums" style={{ color: pct === 100 ? '#16a34a' : BRAND }}>{pct}%</span>}
+                </div>
+                <div className="mt-0.5 flex items-center gap-2 text-[11px] text-slate-500">
+                  <span className="truncate flex-1 min-w-0">{r.driver || (r.empty ? (r.status || 'Draft') : 'No driver')}</span>
+                  {!r.empty && <span className="shrink-0 tabular-nums">{r.count} stop{r.count === 1 ? '' : 's'} · {r.skids} sk · {r.loose} loose</span>}
+                </div>
+                {/* Two loads sharing a name can't be told apart by name — the same reason
+                    opening one as a card is refused. Say so instead of showing a row that
+                    silently belongs to whichever load was read last. */}
+                {r.ambiguous && <div className="mt-0.5 text-[10px] text-amber-700">⚠ Two loads share this name today — open it in the portal to tell them apart.</div>}
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function RoutingLoadsPanel({ loads, loading, error, viewedId, onOpen, onRename, onToggleDispatch, onDelete, manageError }) {
   const rows = useMemo(() => (loads || []).map((l) => ({
     id: l.id, doc: l,
