@@ -17,7 +17,7 @@ import {
   MapPin, RefreshCw, X, Filter, Truck, Save, Plus, Trash2,
   Activity, ChevronDown, ChevronUp, Eye, EyeOff,
   Search, Tag, Tags, ArrowLeft, ArrowRight, Gauge, Clock, MapPinned,
-  Info, Settings, LayoutList, Sparkles, MessageSquare, Square, Lasso, AlertTriangle, Ban, Send, Package,
+  Info, Settings, LayoutList, Sparkles, MessageSquare, Square, Lasso, AlertTriangle, Ban, Send, Package, Phone,
   FileCheck, ExternalLink, Image as ImageIcon, Printer, FileText, Bug,
   ChevronRight, GripVertical, Calculator, Menu,
 } from 'lucide-react';
@@ -30,6 +30,7 @@ import { db } from './lib/firebase.js';
 import { normalizeMatchKey } from './lib/matchKey.js';
 import { planOverlayAction, PLAN_OVERLAY_TTL_MS } from './lib/plan-overlay.js';
 import { routeStopEta, routeStopFreight, routeStopSeq } from './lib/route-stop-line.js';
+import { stopTimelineModel } from './lib/stop-timeline.js';
 import { diffRouteStyle, DIFF_ORIGINAL_COLOR, groupDispatchTrips } from './lib/diff-route-style.js';
 import { addressLooksOff, suggestAddressFix } from './lib/address-fix.js';
 import { haversineMiles, naiveEtaMinutes, formatEtaClockTime } from './lib/distance.js';
@@ -68,7 +69,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.54.31';
+const APP_VERSION = '0.54.32';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -113,6 +114,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.54.32', 'THE STOP CARD NOW ANSWERS "WHERE IS THIS ORDER?" AT A GLANCE — AND THE BUTTONS YOU ACTUALLY USE ARE REAL BUTTONS. This is Enhancement 6 from the UI report, built as approved. THREE CHANGES. (1) A STATUS TIMELINE at the top of every stop card: Scheduled → Out for delivery → Delivered, with the current step highlighted and the times the app truly has — arrival and delivery stamps when they exist, and an ETA on the last step ONLY when NuVizz has a real one. A schedule window is never dressed up as an arrival prediction; that is the exact lie v0.54.4 stamped out, and the timeline keeps the rule. An exception shows as a red terminal state instead of being forced into a delivery story, and unplanned or cancelled orders keep the plain status chip they had. (2) THE HEADER CARRIES THE ROUTE — "SUW 4 · stop 6" sits at the top right, so you no longer scroll five sections to learn which truck an order is on. The PRO also has a small copy button: one tap and it is on your clipboard for pasting into NuVizz, Estes, or a text. (3) FOUR THUMB-SIZE BUTTONS — Text, Call, Navigate, Ticket — replace the pile of look-alike text links. Those four are nearly every tap this card ever gets, and on a phone a text link is the hardest thing on the screen to hit. Call only appears when there is a number to call; Navigate opens Google Maps on the corrected pin when you have saved one. Everything else — Street View, Edit address, Correct pin, Text driver, History — is one tap away under "More", and nothing was removed. The big Delivery Ticket button is gone because the Ticket button in the bar IS it, one screen position higher. Both the Map and Routing cards get all of this, desktop and phone, because they have been the same card since v0.45.22. Seven tests pin the timeline\'s honesty rules — including that the out-for-delivery step never invents a time the app does not have.'],
   ['0.54.31', 'THE LIVE TRUCK ICONS ARE SMALLER. Chad: "make the motive truck icons smaller." They were 40 pixels across — the BIGGEST marker on the map, larger than a numbered route pin and more than twice the size of an unplanned stop dot. That was survivable while the driver layer was only ever showing part of the fleet; once v0.54.12 fixed the page-one cutoff and every truck started drawing, twenty-odd 40-pixel trucks blanketed metro Atlanta on a phone and buried the stops underneath them. The truck is now 28 pixels: still an easy tap, still obviously a truck, but it sits BELOW a route pin in size, so your stops read on top of the traffic instead of the other way round. The driver name plate moves with it — its offset is now calculated from the icon size rather than typed in separately, so the label can never end up sitting on top of the truck if the size is ever changed again. Nothing else about the layer changed: same 60-second refresh, same names, same fade after 30 minutes without a ping.'],
   ['0.54.30', 'SCAN NOW NO LONGER DIES ON A BIG MORNING. Chad: "Scan refused (HTTP 504)" on the status card. That 504 was not NuVizz and not the call ceiling — it was our own button. HERE IS THE HISTORY, because this is the second time this button has broken and the two breaks are connected. The scheduled scanner runs as a background job with a 15-minute budget, precisely because a scan takes longer than the ~26 seconds a normal web request is allowed to live — its own code has said so for months. But carrying a cron schedule also makes that function unreachable by a button press (the Jul 29 "why is my scan not available?"). The Jul 29 fix added a fallback that runs the scan INSIDE a normal request — which works on a light board and dies by timeout on a heavy one. Today was a heavy one: 743 stops, 44 carry-overs, 61 NuVizz calls in the 6 AM hour alone. The scan outran its 26 seconds, the gateway killed it, and the button reported "refused" — the worst version of the message, because the scanner had ACCEPTED and was working when it was shot. So the button failed exactly on the mornings a dispatcher most needs a fresh scan. THE FIX IS THE MISSING THIRD PIECE: the same scan behind a background function WITHOUT a schedule. No schedule means a button press reaches it; background means it answers immediately and takes its 15 minutes in peace; the board refreshes itself when the scan lands, exactly as it already did. The two older routes stay as fallbacks. The button also stops lying when a timeout does happen: a 502/504 now reads "Scan timed out — the board is too big for the synchronous scanner", not "refused". AND THE GUARDRAIL THAT MATTERS: the new endpoint structurally CANNOT run the expensive scan — it strips any date parameter before scanning, and a date is what flips the scanner into the ~3,000-call full probe. However this endpoint is called, it is the same cheap ~4-call scan the schedule runs. Three tests pin all of it: no schedule may ever be added to this function, the background suffix must stay, and the date parameter can never ride through.'],
   ['0.54.29', 'THE CUSTOMER\'S PHONE NUMBER IS ON THE STOP CARD NOW. Chad, with NuVizz open beside the app: "why are we not displaying customer phone numbers?" KAI WONG\'s number was sitting in NuVizz\'s Ship-To block and nowhere on our card. WE HAD IT THE WHOLE TIME — that is the annoying part. The scan already pulls the consignee contact off every order, and the Text customer button has always used it; that is exactly how that button knew whether to say "Text customer" or "Text customer (add #)". The number was one click deep inside a compose box and printed nowhere, so the single thing you need in order to CALL a customer was the one thing the card would not tell you. It now shows under the address, with the contact name in front of it when NuVizz has one, and it is a real link — tap it on a phone and it dials. If you have saved your own number for that customer in the notes, yours is shown, exactly the way texting already picks it. Numbers print in the normal (678) 860-8099 shape, EXCEPT when they are not plain US numbers: an extension or an international number is shown exactly as it is stored, because a number reshaped to look American is a number you might dial wrong. Nothing to turn on, no NuVizz calls — this data was already in every stop.'],
@@ -5415,6 +5417,14 @@ function StopDataSections({ stop, note, onRefreshed, onOpenRoute, onMoveLocation
     [showTicket, live],
   );
   const textPhone = resolveStopPhone(live, note);
+  // Secondary actions fold away by default; nothing is removed, only tucked (Enhancement 6).
+  const [moreOpen, setMoreOpen] = useState(false);
+  // Same target GoogleMapsLink used: pin coords when we have them, else the address string.
+  const mapsNavUrl = useMemo(() => {
+    const addr = [live.addr1, live.city, live.state, live.zip].filter(Boolean).join(', ');
+    const q = (live.lat != null && live.lng != null) ? `${live.lat},${live.lng}` : addr;
+    return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(q)}`;
+  }, [live.addr1, live.city, live.state, live.zip, live.lat, live.lng]);
   return (
     <div className="px-4 py-3 border-b text-sm space-y-1">
       {tractorInfo && (
@@ -5452,50 +5462,59 @@ function StopDataSections({ stop, note, onRefreshed, onOpenRoute, onMoveLocation
             <a href={`tel:${String(textPhone).replace(/[^\d+]/g, '')}`} className="text-blue-700 hover:underline font-medium">{formatPhone(textPhone)}</a>
           </div>
         )}
-        <div className="flex items-center gap-x-4 gap-y-1 flex-wrap mt-1">
-          <StreetViewLink stop={live} />
-          <GoogleMapsLink stop={live} />
-          <WebSearchLink stop={live} />
-        </div>
-        <div className="flex items-center gap-x-4 gap-y-1 flex-wrap">
-          {onEditAddress && (
-            <button onClick={() => onEditAddress(live)} className="mt-1.5 inline-flex items-center gap-1 text-xs text-blue-700 hover:underline">
-              <MapPin size={13} /> Edit address
-            </button>
-          )}
-          {onMoveLocation && (
-            <button onClick={() => onMoveLocation(live)} className="mt-1.5 inline-flex items-center gap-1 text-xs text-blue-700 hover:underline">
-              <MapPin size={13} /> Correct pin location{note?.location_override ? ' · custom saved' : ''}
-            </button>
-          )}
+        {/* Enhancement 6 — the four actions that account for nearly every tap, as
+            thumb-size buttons (text links are the hardest targets on a phone). The long
+            tail folds into More; every existing action stays reachable. */}
+        <div className="grid grid-cols-4 gap-1.5 mt-2.5">
           {onText && (
-            <button onClick={() => onText(live)} className="mt-1.5 inline-flex items-center gap-1 text-xs text-blue-700 hover:underline">
-              <MessageSquare size={13} /> Text customer{textPhone ? '' : ' (add #)'}
+            <button onClick={() => onText(live)} className="border border-slate-200 rounded-lg py-1.5 text-[10px] text-slate-700 hover:bg-slate-50 active:bg-slate-100 flex flex-col items-center gap-0.5" title={textPhone ? 'Text customer' : 'Text customer — no number on file yet; add one in the compose box'}>
+            <MessageSquare size={16} className="text-slate-500" /> Text{textPhone ? '' : ' (add #)'}
             </button>
           )}
-          {onTextDriver && live.driverName && (
-            <button onClick={() => onTextDriver(live)} className="mt-1.5 inline-flex items-center gap-1 text-xs text-blue-700 hover:underline" title={`Text ${live.driverName} — prefilled with this order's PRO and customer`}>
-              <MessageSquare size={13} /> Text driver ({live.driverName})
-            </button>
+          {textPhone && (
+            <a href={`tel:${String(textPhone).replace(/[^\d+]/g, '')}`} className="border border-slate-200 rounded-lg py-1.5 text-[10px] text-slate-700 hover:bg-slate-50 active:bg-slate-100 flex flex-col items-center gap-0.5" title={`Call ${formatPhone(textPhone)}`}>
+              <Phone size={16} className="text-slate-500" /> Call
+            </a>
           )}
-          {onOpenHistory && (
-            <button onClick={() => onOpenHistory(live)} className="mt-1.5 inline-flex items-center gap-1 text-xs text-blue-700 hover:underline" title="This customer's past PROs and who delivered them">
-              <Clock size={13} /> History
-            </button>
-          )}
+          <a href={mapsNavUrl} target="_blank" rel="noopener noreferrer" className="border border-slate-200 rounded-lg py-1.5 text-[10px] text-slate-700 hover:bg-slate-50 active:bg-slate-100 flex flex-col items-center gap-0.5" title="Open in Google Maps">
+            <MapPin size={16} className="text-slate-500" /> Navigate
+          </a>
+          <button onClick={() => setShowTicket(true)} className="border border-slate-200 rounded-lg py-1.5 text-[10px] text-slate-700 hover:bg-slate-50 active:bg-slate-100 flex flex-col items-center gap-0.5" title="Print-ready Delivery Ticket">
+            <FileText size={16} className="text-slate-500" /> Ticket
+          </button>
         </div>
+        <button onClick={() => setMoreOpen((o) => !o)} className="mt-1.5 text-[11px] text-slate-500 hover:text-slate-800" aria-expanded={moreOpen}>
+          More: Street View · Edit address · Correct pin · History {moreOpen ? '▴' : '▾'}
+        </button>
+        {moreOpen && (
+          <div className="flex items-center gap-x-4 gap-y-1 flex-wrap">
+            <StreetViewLink stop={live} />
+            <WebSearchLink stop={live} />
+            {onEditAddress && (
+              <button onClick={() => onEditAddress(live)} className="mt-1.5 inline-flex items-center gap-1 text-xs text-blue-700 hover:underline">
+                <MapPin size={13} /> Edit address
+              </button>
+            )}
+            {onMoveLocation && (
+              <button onClick={() => onMoveLocation(live)} className="mt-1.5 inline-flex items-center gap-1 text-xs text-blue-700 hover:underline">
+                <MapPin size={13} /> Correct pin location{note?.location_override ? ' · custom saved' : ''}
+              </button>
+            )}
+            {onTextDriver && live.driverName && (
+              <button onClick={() => onTextDriver(live)} className="mt-1.5 inline-flex items-center gap-1 text-xs text-blue-700 hover:underline" title={`Text ${live.driverName} — prefilled with this order's PRO and customer`}>
+                <MessageSquare size={13} /> Text driver ({live.driverName})
+              </button>
+            )}
+            {onOpenHistory && (
+              <button onClick={() => onOpenHistory(live)} className="mt-1.5 inline-flex items-center gap-1 text-xs text-blue-700 hover:underline" title="This customer's past PROs and who delivered them">
+                <Clock size={13} /> History
+              </button>
+            )}
+          </div>
+        )}
       </div>
       <div className="pt-2">
         <OrderItemsSection stop={live} />
-      </div>
-      <div className="pt-2">
-        <button
-          onClick={() => setShowTicket(true)}
-          className="w-full inline-flex items-center justify-center gap-1.5 text-xs font-semibold text-white rounded-md px-3 py-2"
-          style={{ background: BRAND }}
-        >
-          <FileText size={14} /> Delivery Ticket
-        </button>
       </div>
       {showTicket && (
         <PrintDocModal
@@ -5995,6 +6014,56 @@ function UsualDriverLine({ matchKey }) {
   );
 }
 
+/**
+ * StopTimeline (Enhancement 6) — Scheduled → Out for delivery → Delivered as one strip.
+ * Renders nothing for the model's 'badge' variant so the caller can keep the existing chip;
+ * that keeps CANCELLED/UNPLANNED/unknown states exactly as they render today.
+ */
+function StopTimeline({ model }) {
+  if (!model || model.variant === 'badge') return null;
+  if (model.variant === 'terminal') {
+    return (
+      <div className="flex items-center gap-2 text-[12px] font-semibold" style={{ color: '#b91c1c' }}>
+        <span className="w-2.5 h-2.5 rounded-full" style={{ background: '#dc2626' }} /> {model.label}
+      </div>
+    );
+  }
+  const dot = (state) => state === 'done' ? { background: '#047857' }
+    : state === 'active' ? { background: BRAND, outline: '3px solid #dbeafe' }
+    : { background: '#e2e8f0' };
+  return (
+    <div className="flex w-full text-[10px] text-slate-500 text-center select-none">
+      {model.steps.map((st, i) => (
+        <div key={st.key} className="flex-1 relative min-w-0">
+          {i > 0 && (
+            <div className="absolute h-0.5" style={{ top: 5, left: '-50%', right: '50%', background: model.steps[i - 1].state === 'done' ? '#047857' : '#e2e8f0' }} />
+          )}
+          <div className="w-2.5 h-2.5 rounded-full mx-auto relative" style={dot(st.state)} />
+          <div className={st.state === 'active' ? 'font-bold' : ''} style={st.state === 'active' ? { color: BRAND } : undefined}>{st.label}</div>
+          {st.time && <div className="text-slate-400">{st.time}</div>}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// Tap-to-copy PRO for the card header — for pasting into NuVizz, Estes, or a text. Uses the
+// clipboard API with a select-fallback-free design: on failure it simply doesn't flash ✓.
+function CopyProButton({ pro }) {
+  const [ok, setOk] = useState(false);
+  if (!pro) return null;
+  return (
+    <button
+      onClick={async () => {
+        try { await navigator.clipboard.writeText(String(pro)); setOk(true); setTimeout(() => setOk(false), 1500); }
+        catch { /* clipboard unavailable (http, permissions) — stay quiet */ }
+      }}
+      className="ml-1.5 align-middle text-[9px] font-semibold border border-white/40 rounded px-1 py-px opacity-80 hover:opacity-100"
+      title="Copy PRO"
+    >{ok ? '✓ copied' : 'copy'}</button>
+  );
+}
+
 function StopSidebar({ stop, note, onClose, onSave, saving, saveError, onOpenRoute, onMoveLocation, onEditAddress, onAutoFixAddress, onText, onTextDriver, onOpenHistory, drivers = [], mobile = false, side = 'right', embedded = false }) {
   const [draft, setDraft] = useState(() => note || emptyNote(stop));
   const [editing, setEditing] = useState(!note);
@@ -6028,6 +6097,20 @@ function StopSidebar({ stop, note, onClose, onSave, saving, saveError, onOpenRou
     ? fmtClockShort(live.arrivalDTTM || execArrivalTs(live.raw?.stopExecutionInfo || {})) : null;
   const sidebarDeliveredAt = sidebarStatusKind === 'DELIVERED'
     ? fmtClockShort(live.deliveredDTTM || execDeliveredTs(live.raw?.stopExecutionInfo || {})) : null;
+  // Enhancement 6 — the journey strip. routeStopEta already separates a REAL per-stop ETA
+  // from a schedule window (v0.54.4); only the real kind may ride the timeline.
+  const sidebarEta = routeStopEta(live);
+  const sidebarTimeline = stopTimelineModel({
+    kind: sidebarStatusKind,
+    arrivedAt: sidebarArrivedAt,
+    deliveredAt: sidebarDeliveredAt,
+    etaClock: sidebarEta ? fmtClockShort(sidebarEta.ts) : null,
+    etaIsReal: sidebarEta?.label === 'ETA',
+  });
+  const sidebarRouteName = loadDisplayName(live.routeName, live.loadNbr);
+  const sidebarRouteLabel = sidebarRouteName
+    ? (live.routeSeq != null ? `${sidebarRouteName} · stop ${live.routeSeq}` : sidebarRouteName)
+    : null;
   const D = draft;
   // setD merges a PARTIAL patch and marks the draft dirty (guards background
   // writes from clobbering in-progress edits). All field helpers live in the
@@ -6044,21 +6127,37 @@ function StopSidebar({ stop, note, onClose, onSave, saving, saveError, onOpenRou
       }
       style={mobile ? { paddingBottom: 'env(safe-area-inset-bottom)' } : undefined}
     >
-      <div className="px-4 py-3 border-b flex items-center justify-between" style={{ background: BRAND, color: 'white' }}>
-        <div className="min-w-0">
-          <div className="text-sm font-semibold tracking-wide opacity-90">PRO {stop.pro || '—'}</div>
+      <div className="px-4 py-3 border-b flex items-center justify-between gap-2" style={{ background: BRAND, color: 'white' }}>
+        <div className="min-w-0 flex-1">
+          <div className="text-sm font-semibold tracking-wide opacity-90 flex items-center min-w-0">
+            <span className="truncate">PRO {stop.pro || '—'}</span>
+            <CopyProButton pro={stop.pro} />
+            {/* WHERE this order sits — the route + position used to live five sections down.
+                routeSeq is NuVizz's own run position; no "of N" is shown because the card
+                doesn't hold the route's stop count and a guessed total is worse than none. */}
+            {sidebarRouteLabel && <span className="ml-auto pl-2 text-[11px] font-medium opacity-85 whitespace-nowrap">{sidebarRouteLabel}</span>}
+          </div>
           <div className="font-bold truncate">{stop.businessName || '(no name)'}</div>
         </div>
-        <button onClick={onClose} className="p-1 hover:bg-white/20 rounded"><X size={20} /></button>
+        <button onClick={onClose} className="p-1 hover:bg-white/20 rounded flex-shrink-0"><X size={20} /></button>
       </div>
 
-      {/* M5.1 — execution-status badge bar */}
-      <div className="px-4 py-2 border-b bg-slate-50 flex items-center gap-2 flex-wrap">
-        <StatusBadge kind={sidebarStatusKind} />
-        <DnsBadge note={note} showDrivers />
-        {sidebarDeliveredAt && <span className="text-[11px] text-slate-500">Delivered {sidebarDeliveredAt}</span>}
-        {sidebarArrivedAt && <span className="text-[11px] text-slate-500">Arrived {sidebarArrivedAt}</span>}
-        <UsualDriverLine matchKey={stop.matchKey} />
+      {/* Enhancement 6 — the status TIMELINE. The old chip stays as the fallback for states
+          the journey doesn't fit (unplanned, cancelled, anything new). */}
+      <div className="px-4 py-2 border-b bg-slate-50 space-y-1.5">
+        {sidebarTimeline.variant === 'badge' ? (
+          <div className="flex items-center gap-2 flex-wrap">
+            <StatusBadge kind={sidebarStatusKind} />
+            {sidebarDeliveredAt && <span className="text-[11px] text-slate-500">Delivered {sidebarDeliveredAt}</span>}
+            {sidebarArrivedAt && <span className="text-[11px] text-slate-500">Arrived {sidebarArrivedAt}</span>}
+          </div>
+        ) : (
+          <StopTimeline model={sidebarTimeline} />
+        )}
+        <div className="flex items-center gap-2 flex-wrap">
+          <DnsBadge note={note} showDrivers />
+          <UsualDriverLine matchKey={stop.matchKey} />
+        </div>
       </div>
 
       <div className="overflow-y-auto flex-1">
