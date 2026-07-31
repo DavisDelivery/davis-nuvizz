@@ -45,8 +45,11 @@ function makeRequester({ existing = {}, createAnswer = null, onCreate = null, ge
         const J = (obj, status = 200) => new Response(JSON.stringify(obj), { status });
         if (url.includes('/load/info/')) {
           const nbr = decodeURIComponent(url.split('/load/info/')[1].split('/')[0]);
-          if (getLoadStatus && getLoadStatus[nbr] != null) return J({}, getLoadStatus[nbr]);
           const L = state[nbr];
+          // A forced status stands in for "the tenant has no such load" — so it applies only
+          // while the load really is absent. Once the create lands it, the read-back sees it,
+          // exactly as NuVizz would.
+          if (!L && getLoadStatus && getLoadStatus[nbr] != null) return J({}, getLoadStatus[nbr]);
           if (!L) return J({}, 404);
           return J({ Load: {
             loadHeader: { loadId: L.loadId, loadNbr: nbr, routeName: L.routeName },
@@ -128,8 +131,23 @@ test('an EXISTING load number is refused — routePlan/update is create-OR-UPDAT
   assert.ok(!calls.some((c) => c.url.includes('/routePlan/update/')), 'no write fired at a number that is taken');
 });
 
-test('an UNREADABLE load number is refused too — "could not check" is not "it is free"', async () => {
-  for (const status of [500, 502, 403]) {
+test('a 400 means the tenant does not have that number — the create proceeds (live shape, Jul 31)', async () => {
+  // The FIRST real create refused itself: "NuVizz answered 400 to the check" on a number that
+  // plainly did not exist. load/info answers 400, not 404, for an unknown load — while the
+  // STOP existence gate elsewhere sees a true 404, so the two endpoints genuinely differ.
+  // Either way the read returned NO LOAD, so nothing is there to overwrite.
+  for (const status of [400, 404]) {
+    const { requester, calls } = makeRequester({ getLoadStatus: { 'TRAILER6-0731': status }, onCreate: landing('TRAILER 6') });
+    const r = await runNewRoute(requester, { ...OK_INPUT, pacing: NOW_PACING }, CREDS);
+    assert.equal(r.ok, true, `status ${status}: ${r.error}`);
+    assert.ok(calls.some((c) => c.url.includes('/routePlan/update/')), `status ${status} let the create fire`);
+  }
+});
+
+test('an UNREADABLE load number is still refused — "could not check" is not "it is free"', async () => {
+  // Auth, throttling and server errors are NOT absence: creating on one risks silently
+  // editing a live route's header.
+  for (const status of [500, 502, 403, 401, 429]) {
     const { requester, calls } = makeRequester({ getLoadStatus: { 'TRAILER6-0731': status } });
     const r = await runNewRoute(requester, { ...OK_INPUT, pacing: NOW_PACING }, CREDS);
     assert.equal(r.ok, false, `status ${status}`);
