@@ -7,59 +7,94 @@
 // Cause: the roster status map was keyed by NAME with last-write-wins, and the lookup asked
 // the name BEFORE the load id — even for a route whose id came from its own stops. A second
 // roster row named STEVEN (a cancelled instance) therefore decided the live route's badge.
-// The identity index built on the very next line already refused ambiguous names; the status
-// path was the one consumer that never did.
 //
-// Newly easy to hit: cancel a route and rebuild it under the same name — exactly what
-// v0.54.19–v0.54.22 made possible — and the day carries two STEVENs, one Cancelled.
+// Then Chad: "shouldn't they have different load numbers so for this particular day we should
+// display both … the active and canceled one." Right on both counts, and the second half is
+// the real rule: a CANCELLED load holds no planned work, so when one of two same-named loads
+// is cancelled there is no contest at all — the live one owns the name. Merely refusing to
+// guess (the first cut) was correct but useless: it cost the badge AND the ability to save the
+// card. A genuine contest — two LIVE loads sharing a name — still refuses.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { buildRosterStatusMap, resolveRosterStatus, rosterIdKey, rosterAmbiguousKey } from '../src/lib/route-status.js';
+import {
+  buildRosterStatusMap, resolveRosterStatus, resolveNameOwner, isCancelledStatus,
+  rosterIdKey, rosterAmbiguousKey,
+} from '../src/lib/route-status.js';
 
-// The day Chad hit: STEVEN was cancelled and rebuilt, so the roster carries both.
+// Chad's actual day: STEVEN was cancelled and rebuilt, so the roster carries both.
 const STEVEN_DAY = [
   { loadId: 'hexOLD', name: 'STEVEN', loadNbr: 'DAVIS000200100', status: 'Cancelled' },
   { loadId: 'hexNEW', name: 'STEVEN', loadNbr: 'DAVIS000200400', status: 'Dispatched' },
   { loadId: 'hexSUW', name: 'SUW 2', loadNbr: 'DAVIS000200500', status: 'Planned' },
 ];
+// A genuine contest: two loads named ZULU, both alive.
+const CONTESTED = [
+  { loadId: 'hexZ1', name: 'ZULU', loadNbr: 'DAVIS000300001', status: 'Planned' },
+  { loadId: 'hexZ2', name: 'ZULU', loadNbr: 'DAVIS000300002', status: 'Dispatched' },
+];
 
-test("Chad's STEVEN: the LIVE route keeps its own status even though a cancelled load shares the name", () => {
+test("Chad's STEVEN: the live route keeps its own status even though a cancelled load shares the name", () => {
   const map = buildRosterStatusMap(STEVEN_DAY);
-  // The board group carries the id derived from its OWN stops — that is the route on screen.
-  const live = resolveRosterStatus({ name: 'STEVEN', loadId: 'hexNEW', loadNbr: 'STEVEN' }, map);
-  assert.equal(live, 'Dispatched', 'identity wins — never the other STEVEN\'s Cancelled');
+  // Identified by the id derived from its own stops — the route actually on screen.
+  assert.equal(resolveRosterStatus({ name: 'STEVEN', loadId: 'hexNEW', loadNbr: 'STEVEN' }, map), 'Dispatched');
   // And the genuinely cancelled one still reads cancelled.
   assert.equal(resolveRosterStatus({ name: 'STEVEN', loadId: 'hexOLD' }, map), 'Cancelled');
 });
 
-test('an ambiguous name may NOT decide a status when the route has no id — null, so the caller derives from the stops', () => {
+test("…and it works with NO id at all — a cancelled load can't hold planned stops, so it can't own the name", () => {
   const map = buildRosterStatusMap(STEVEN_DAY);
-  // No id to identify it: guessing between two STEVENs is exactly how a live route got a red
-  // CANCELLED badge. Answer nothing and let the execution-derived status stand.
-  assert.equal(resolveRosterStatus({ name: 'STEVEN', loadId: null, loadNbr: null }, map), null);
-  // An unambiguous name is still perfectly usable.
-  assert.equal(resolveRosterStatus({ name: 'SUW 2', loadId: null, loadNbr: null }, map), 'Planned');
+  // This is the case that actually bit: board stops carried no load id, so identity couldn't
+  // settle it. Refusing (null) was safe but left the route unusable; the live load owns it.
+  assert.equal(resolveRosterStatus({ name: 'STEVEN', loadId: null, loadNbr: null }, map), 'Dispatched');
+  assert.equal(map.get(rosterAmbiguousKey('STEVEN')), undefined, 'not a contest — one of them is cancelled');
 });
 
-test('the old NAME-FIRST behaviour is what produced the wrong badge — pinned so it cannot come back', () => {
-  const map = buildRosterStatusMap(STEVEN_DAY);
-  // What the buggy lookup did: name first, last-write-wins.
-  const nameFirst = map.get('steven');
-  assert.equal(nameFirst, 'Dispatched', 'the raw name key is still last-write-wins…');
-  // …which is precisely why the resolver must not consult it while the name is ambiguous.
-  assert.equal(map.get(rosterAmbiguousKey('STEVEN')), true, 'the collision is recorded');
-  // With the roster in the other order, the name key would have said Cancelled — order of the
-  // vendor's rows must never change what the board shows.
-  const flipped = buildRosterStatusMap([...STEVEN_DAY].reverse());
-  assert.equal(flipped.get('steven'), 'Cancelled', 'name key flips with row order — untrustworthy');
-  assert.equal(resolveRosterStatus({ name: 'STEVEN', loadId: 'hexNEW' }, flipped), 'Dispatched',
-    'the resolver is order-independent because it uses identity');
+test('two LIVE loads sharing a name still refuse — that is a real contest', () => {
+  const map = buildRosterStatusMap(CONTESTED);
+  assert.equal(map.get(rosterAmbiguousKey('ZULU')), true);
+  assert.equal(resolveRosterStatus({ name: 'ZULU', loadId: null }, map), null, 'no guess; caller derives from stops');
+  // Identity still settles it when the caller has one.
+  assert.equal(resolveRosterStatus({ name: 'ZULU', loadId: 'hexZ2' }, map), 'Dispatched');
+});
+
+test('the result is ORDER-INDEPENDENT — the vendor listing rows differently must not change a badge', () => {
+  const a = buildRosterStatusMap(STEVEN_DAY);
+  const b = buildRosterStatusMap([...STEVEN_DAY].reverse());
+  for (const map of [a, b]) {
+    assert.equal(resolveRosterStatus({ name: 'STEVEN', loadId: null }, map), 'Dispatched');
+    assert.equal(resolveRosterStatus({ name: 'STEVEN', loadId: 'hexOLD' }, map), 'Cancelled');
+  }
+  // The old code took the name key last-write-wins, which flipped with row order — the whole bug.
+  assert.equal(a.get('steven'), b.get('steven'), 'the name key no longer depends on row order');
+});
+
+test('resolveNameOwner states the rule directly', () => {
+  assert.equal(resolveNameOwner('STEVEN', STEVEN_DAY).load.loadId, 'hexNEW');
+  assert.equal(resolveNameOwner('STEVEN', STEVEN_DAY).ambiguous, false);
+  assert.equal(resolveNameOwner('SUW 2', STEVEN_DAY).load.loadId, 'hexSUW');
+  assert.equal(resolveNameOwner('ZULU', CONTESTED).load, null);
+  assert.equal(resolveNameOwner('ZULU', CONTESTED).ambiguous, true);
+  // Every candidate cancelled → no live owner, and it is not a contest either.
+  const allDead = [{ loadId: 'a', name: 'X', status: 'Cancelled' }, { loadId: 'b', name: 'X', status: 'Cancelled' }];
+  assert.equal(resolveNameOwner('X', allDead).ambiguous, true, 'nothing live to pick — refuse rather than guess');
+  assert.equal(resolveNameOwner('', STEVEN_DAY).ambiguous, false);
+  assert.equal(resolveNameOwner('NOPE', STEVEN_DAY).load, null);
+});
+
+test('cancelled is matched however NuVizz spells it', () => {
+  for (const s of ['Cancelled', 'CANCELED', 'cancel', 'Route Cancelled', 'CANCELLED_BY_USER']) {
+    assert.equal(isCancelledStatus(s), true, s);
+  }
+  for (const s of ['Planned', 'Dispatched', 'Completed', '', null, undefined]) {
+    assert.equal(isCancelledStatus(s), false, String(s));
+  }
 });
 
 test('a real load NUMBER resolves too — it is as unambiguous as the id', () => {
   const map = buildRosterStatusMap(STEVEN_DAY);
   assert.equal(resolveRosterStatus({ name: 'STEVEN', loadId: null, loadNbr: 'DAVIS000200400' }, map), 'Dispatched');
+  assert.equal(resolveRosterStatus({ name: 'STEVEN', loadId: null, loadNbr: 'DAVIS000200100' }, map), 'Cancelled');
 });
 
 test('the same load listed twice is NOT a name collision', () => {
@@ -67,24 +102,13 @@ test('the same load listed twice is NOT a name collision', () => {
     { loadId: 'hexA', name: 'ALPHA', status: 'Planned' },
     { loadId: 'hexA', name: 'ALPHA', status: 'Planned' },
   ]);
-  assert.equal(map.get(rosterAmbiguousKey('ALPHA')), undefined, 'one load, listed twice — no ambiguity');
+  assert.equal(map.get(rosterAmbiguousKey('ALPHA')), undefined);
   assert.equal(resolveRosterStatus({ name: 'ALPHA', loadId: null }, map), 'Planned');
 });
 
-test('an id with no roster row falls through to an unambiguous name rather than answering nothing', () => {
+test('an id with no roster row falls through to the name rather than answering nothing', () => {
   const map = buildRosterStatusMap([{ loadId: 'hexZ', name: 'ZULU', status: 'In-Transit' }]);
   assert.equal(resolveRosterStatus({ name: 'ZULU', loadId: 'hexMISSING' }, map), 'In-Transit');
-});
-
-test('an EMPTY roster status is a real answer, not a miss — it must not fall through to the name', () => {
-  // A load whose status column is blank is identified; answering '' lets the caller derive
-  // from execution. Falling through to a same-named load's status would reintroduce the bug.
-  const map = buildRosterStatusMap([
-    { loadId: 'hexA', name: 'ECHO', status: '' },
-    { loadId: 'hexB', name: 'ECHO', status: 'Cancelled' },
-  ]);
-  assert.equal(resolveRosterStatus({ name: 'ECHO', loadId: 'hexA' }, map), '', 'its own blank status');
-  assert.equal(map.get(rosterAmbiguousKey('ECHO')), true);
 });
 
 test('junk in, no crash out', () => {
