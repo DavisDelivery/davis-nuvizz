@@ -7,7 +7,9 @@
 //   • planned prior-day rows never fold EXCEPT a fresh confirmed live Save
 //     (board_write_planned within 48h — NOLAN/OWUSU 1), stale stamps age out (F6)
 //   • a confirmed plan REPLACES a stale-unplanned today row in place (F2)
-//   • the live active-unplanned snapshot prunes closed-since orders — only while FRESH,
+//   • the live active-unplanned snapshot prunes closed-since orders — trusted until an
+//     orders scan SUPERSEDES it (never by wall-clock age alone: the Aug 2 weekend showed
+//     127 phantom carry-overs because an 18h clock guard binned Friday's good snapshot),
 //     and never a confirmed-planned row
 //   • dedupe by stopNbr across prior days (nearest day wins)
 import test from 'node:test';
@@ -112,11 +114,44 @@ test('carryover: the FRESH live snapshot prunes closed-since orders — confirme
   assert.deepEqual(nbrs, ['140', '142'], 'pruned the closed one, kept the live one AND the confirmed plan');
 });
 
-test('carryover: a STALE snapshot never prunes — fold everything rather than under-count the board', async () => {
-  const live = { at: hoursAgo(19), windowStart: D2, stopNbrs: new Set(['150']) };   // >18h old
+test('carryover: time alone never stales the snapshot — a weekend-old one still prunes (Aug 2 phantom fix)', async () => {
+  // Friday-night scan, read on Sunday: snapshot AND the board stamp are both 60h old — the
+  // whole pipeline is frozen, so the snapshot is still the newest knowledge there is. The old
+  // 18h wall-clock guard ignored it here and folded 127 rows Chad knew were closed.
+  const live = { at: hoursAgo(60), windowStart: D2, stopNbrs: new Set(['150']) };
+  const stops = [];
+  const added = await mergeCarryover(stops, DATE, 1,
+    io({ [D1]: [unplanned('150'), unplanned('151')] }, live), undefined, hoursAgo(60));
+  assert.equal(added, 1, 'the closed-since row is pruned even though the snapshot is days old');
+  assert.equal(stops[0].stopNbr, '150', 'the genuinely-open row still folds');
+});
+
+test('carryover: a SUPERSEDED snapshot never prunes — an orders scan ran after it without refreshing it', async () => {
+  // The case the old guard actually existed for (TWO_SCAN turned off): boards keep scanning
+  // but the snapshot writer is dead. The snapshot no longer reflects what's open — fold all.
+  const live = { at: hoursAgo(19), windowStart: D2, stopNbrs: new Set(['150']) };
+  const stops = [];
+  const added = await mergeCarryover(stops, DATE, 1,
+    io({ [D1]: [unplanned('150'), unplanned('151')] }, live), undefined, hoursAgo(1));
+  assert.equal(added, 2, 'left-behind snapshot ignored — both fold');
+});
+
+test('carryover: the 7-day ceiling is the absolute backstop — past it, fold everything', async () => {
+  const live = { at: hoursAgo(8 * 24), windowStart: D2, stopNbrs: new Set(['150']) };
+  const stops = [];
+  const added = await mergeCarryover(stops, DATE, 1,
+    io({ [D1]: [unplanned('150'), unplanned('151')] }, live), undefined, hoursAgo(8 * 24));
+  assert.equal(added, 2, 'week-plus snapshot ignored — both fold');
+});
+
+test('carryover: no board scan stamp (index-empty future day) — the snapshot still prunes', async () => {
+  // Serving a day the scanner has not written yet: there is nothing the snapshot could be
+  // behind, so the latest knowledge applies. lastUnplannedScanAt omitted = the handler's null.
+  const live = { at: hoursAgo(30), windowStart: D2, stopNbrs: new Set(['150']) };
   const stops = [];
   const added = await mergeCarryover(stops, DATE, 1, io({ [D1]: [unplanned('150'), unplanned('151')] }, live));
-  assert.equal(added, 2, 'stale snapshot ignored — both fold');
+  assert.equal(added, 1);
+  assert.equal(stops[0].stopNbr, '150');
 });
 
 test('carryover: dedupe by stopNbr across prior days — the nearest day wins', async () => {

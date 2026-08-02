@@ -70,6 +70,8 @@ function addDaysUTC(dateStr: string, n: number): string {
 // the carry-over (issue #253). Guard: cross-check each candidate against the scan's live
 // active-unplanned snapshot; if the day is within that snapshot's window and the stop is no longer
 // in it, it's been closed since — skip it. Best-effort: no snapshot ⇒ legacy behaviour.
+// `lastUnplannedScanAt` is the served board's own orders-scan stamp — the snapshot-trust rule
+// below compares the two to detect a snapshot the scanner stopped refreshing.
 // Exported for tests with the reads + clock injectable (io defaults to the real Firestore
 // readers and Date.now, so the handler's call is byte-identical in behavior).
 export async function mergeCarryover(stops: any[], date: string, carryDays: number, io?: {
@@ -77,7 +79,7 @@ export async function mergeCarryover(stops: any[], date: string, carryDays: numb
   readActiveUnplannedSet?: (tenant: string) => Promise<{ at: string | null; windowStart: string | null; stopNbrs: Set<string> } | null>;
   readCarryoverRetired?: (tenant: string) => Promise<Record<string, string>>;
   now?: () => number;
-}, mask?: string[]): Promise<number> {
+}, mask?: string[], lastUnplannedScanAt: string | null = null): Promise<number> {
   const readStopsFn = io?.readStops ?? readStops;
   const readActiveFn = io?.readActiveUnplannedSet ?? readActiveUnplannedSet;
   const readRetiredFn = io?.readCarryoverRetired ?? readCarryoverRetired;
@@ -89,17 +91,33 @@ export async function mergeCarryover(stops: any[], date: string, carryDays: numb
   // evidence that survives past the live snapshot's ~7-day window. ONE getDoc; {} on failure,
   // which degrades to the old over-count rather than hiding work.
   const retired = await readRetiredFn(TENANT).catch(() => ({} as Record<string, string>));
-  // FRESHNESS GUARD: only prune against the live set when the snapshot is recent. A stale snapshot
-  // (after a weekend/breaker scan blackout, or one left behind if TWO_SCAN is turned off) no longer
-  // reflects what's open, so trusting it could prune stops that are STILL unplanned — under-counting
-  // the board, which for a dispatch app is worse than the over-count #253 set out to fix. When the
-  // snapshot is stale/missing we fall back to legacy behaviour (fold everything in, prune nothing).
-  const STALE_SNAPSHOT_MS = 18 * 60 * 60 * 1000;   // ~18h: survives an overnight gap, not a weekend
-  const snapshotAgeMs = live?.at ? (now() - new Date(live.at).getTime()) : Infinity;
-  const fresh = Number.isFinite(snapshotAgeMs) && snapshotAgeMs >= 0 && snapshotAgeMs <= STALE_SNAPSHOT_MS;
+  // SNAPSHOT TRUST — scan-relative, not wall-clock (the weekend phantom fix, Aug 2). The old
+  // guard aged the snapshot against the clock (18h — "survives an overnight gap, not a
+  // weekend"), so every weekend scan blackout switched pruning OFF and the board folded EVERY
+  // frozen prior-day unplanned row: Aug 2 it showed 127 carry-overs of which 105 were already
+  // closed (Chad: "we do not have 127 orders carrying over from last week"). But time alone
+  // cannot stale this snapshot — the prior-day boards it judges are frozen by the SAME blackout,
+  // so nothing served here is ever newer than the snapshot unless a scan ran after it. So: trust
+  // the snapshot until an orders scan SUPERSEDES it without refreshing it (list scans write the
+  // board stamp and the snapshot from one shared scannedAt, so a board stamp measurably newer
+  // than the snapshot means the snapshot writer is off — the TWO_SCAN-disabled case the old
+  // guard actually existed for). A 7-day ceiling stays as an absolute backstop; past it (or when
+  // trust fails) we fall back to legacy behaviour: fold everything in, prune nothing —
+  // over-counting, never hiding work.
+  const SNAPSHOT_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;   // absolute backstop, not the working rule
+  const SUPERSEDE_SLACK_MS = 15 * 60 * 1000;   // same scan ⇒ identical stamps; slack absorbs legacy paths
+  const snapAtMs = live?.at ? new Date(live.at).getTime() : NaN;
+  const snapshotAgeMs = Number.isFinite(snapAtMs) ? (now() - snapAtMs) : Infinity;
+  const boardScanMs = lastUnplannedScanAt ? new Date(lastUnplannedScanAt).getTime() : NaN;
+  const superseded = Number.isFinite(snapAtMs) && Number.isFinite(boardScanMs)
+    && (boardScanMs - snapAtMs) > SUPERSEDE_SLACK_MS;
+  const fresh = Number.isFinite(snapshotAgeMs) && snapshotAgeMs >= 0 && snapshotAgeMs <= SNAPSHOT_MAX_AGE_MS && !superseded;
   const liveOk = !!(live && live.stopNbrs.size && live.windowStart && fresh);
   if (live && live.stopNbrs.size && live.windowStart && !fresh) {
-    console.log(`[carryover] ${date}: live unplanned snapshot is stale (age ${Number.isFinite(snapshotAgeMs) ? Math.round(snapshotAgeMs / 3.6e6) + 'h' : 'n/a'}) — skipping prune, folding all carry-over`);
+    const why = superseded
+      ? `superseded — an orders scan at ${lastUnplannedScanAt} never refreshed the ${live.at} snapshot`
+      : `age ${Number.isFinite(snapshotAgeMs) ? Math.round(snapshotAgeMs / 3.6e6) + 'h' : 'n/a'} is past the ${Math.round(SNAPSHOT_MAX_AGE_MS / 3.6e6)}h backstop`;
+    console.log(`[carryover] ${date}: live unplanned snapshot not trusted (${why}) — skipping prune, folding all carry-over`);
   }
   const reads = await Promise.all(
     priorDates.map((d) => readStopsFn(TENANT, d, mask ? { mask } : undefined).then((r) => ({ d, stops: r.stops })).catch(() => ({ d, stops: [] as any[] }))),
@@ -232,7 +250,7 @@ export default async (req: Request): Promise<Response> => {
     // Fold in prior-day carry-over (Firestore-backed reads only).
     let carryoverCount = 0;
     if (carryDays > 0 && !useMock && !live && isFirestoreEnabled()) {
-      try { carryoverCount = await mergeCarryover(stops, date, carryDays, undefined, stopMask); } catch { /* keep base stops */ }
+      try { carryoverCount = await mergeCarryover(stops, date, carryDays, undefined, stopMask, lastUnplannedScanAt); } catch { /* keep base stops */ }
     }
 
     const unplannedCount = stops.filter((s) => s.isUnplanned).length;
