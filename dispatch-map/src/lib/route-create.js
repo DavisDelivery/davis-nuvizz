@@ -39,11 +39,13 @@ export function routeLoadNbr(routeName, date) {
  * the load NUMBER, read live from NuVizz. This is the courtesy check, not the safety one.)
  *
  * `existingNames` = route names already on the board for that day.
- * `seedStopNbr` = the first order the route is created with — NuVizz refuses a route with
- * no stop node (reason 903, live Aug 3 2026), so an empty create is not possible.
  * Returns { ok, error, loadNbr }.
+ *
+ * NOTE (Aug 3 2026): NuVizz refuses a route with no stop node (reason 903), but that check
+ * does NOT live here — the form only makes a LOCAL Compare card; the create is sent on Save
+ * with the card's orders riding along, and Save is where an empty card is refused.
  */
-export function validateNewRoute({ routeName, date, existingNames = [], hasOrigin = true, seedStopNbr = '' } = {}) {
+export function validateNewRoute({ routeName, date, existingNames = [], hasOrigin = true } = {}) {
   const name = String(routeName ?? '').trim();
   if (!name) return { ok: false, error: 'Give the route a name (what you want to see on the board, e.g. TRAILER 6).', loadNbr: '' };
   if (name.length > ROUTE_FIELD_MAX) return { ok: false, error: `NuVizz caps a route name at ${ROUTE_FIELD_MAX} characters — "${name}" is ${name.length}.`, loadNbr: '' };
@@ -52,6 +54,5 @@ export function validateNewRoute({ routeName, date, existingNames = [], hasOrigi
   const clash = existingNames.map((n) => String(n ?? '').trim().toUpperCase()).includes(name.toUpperCase());
   if (clash) return { ok: false, error: `${name} is already on the board for that day — open it from the Routes list instead of creating a second one.`, loadNbr: '' };
   if (!hasOrigin) return { ok: false, error: 'Set a ship-from address in the New Order tab first — NuVizz will not create a route without one.', loadNbr: '' };
-  if (!String(seedStopNbr ?? '').trim()) return { ok: false, error: 'Pick the first order for the route — NuVizz will not create an empty one.', loadNbr: routeLoadNbr(name, date) };
   return { ok: true, error: null, loadNbr: routeLoadNbr(name, date) };
 }

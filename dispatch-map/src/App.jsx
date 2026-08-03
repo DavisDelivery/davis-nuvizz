@@ -114,7 +114,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
-  ['0.54.34', 'NEW ROUTE, ROUND TWO — NUVIZZ REFUSES AN EMPTY ROUTE, SO A ROUTE NOW STARTS WITH ITS FIRST ORDER. Chad tried ＋ New route again after the 400-fix and hit a NEW rejection: reason 903, "Either PlanStop or Stop node should be present". Translation: NuVizz will not create a route with no stops on it, full stop — the "create it empty, drag orders on after" design cannot work, and no retry will change that. THE FIX CHANGES THE SHAPE OF THE FEATURE: the New route form now asks for ONE thing more — the FIRST ORDER, picked from the day\'s unplanned orders (searchable by name, city or number). The route is created WITH that order already planned on it, opens in Compare showing it, and the rest are dragged on and Saved exactly as before. WHY THIS IS STILL SAFE, because that was the whole point of the original design: the order rides the create as a REFERENCE — its number and its own schedule, echoed straight off NuVizz\'s record — never its address or freight, so the July 2 class of accident (a create overwriting real order data) remains structurally impossible. And the first order gets the same respect as any Save: the app reads it first and REFUSES to create if it can\'t be read, if it\'s already planned on another route (you\'re told which one), or if a driver has already acted on it. After the create, the app reads the route back and confirms the order actually landed on it — if NuVizz\'s async worker is slow, you\'re told the route exists but the order hasn\'t attached yet, instead of being left to discover it. The board is stamped immediately too, so the seeded order stops showing as unplanned (and stops wearing its old driver\'s name) without waiting for the next scan.'],
+  ['0.54.34', 'NEW ROUTE, ROUND TWO — BUILD THE ROUTE FIRST, SEND IT WITH ALL ITS STOPS AT ONCE. Chad tried ＋ New route again after the 400-fix and hit a NEW rejection: reason 903, "Either PlanStop or Stop node should be present". Translation: NuVizz will not create a route with no stops on it, full stop — the "create it empty, drag orders on after" design cannot work, and no retry will change that. THE NEW SHAPE IS CHAD\'S OWN: "when a new route is created on our end then it puts it in the compare panel where we can add stops then we send new route and all stops at same time." Exactly that. ＋ New route now just OPENS A CARD — nothing is sent to NuVizz. The card sits in Compare marked "not sent", you drag orders onto it (and stage a driver if you like) exactly like any other card, and SAVE creates the route in NuVizz with the entire stop list — and the staged driver, and dispatch — riding one create. Close the card before saving and it simply never existed. WHY THIS IS STILL SAFE, because that was the whole point of the original design: each order rides the create as a REFERENCE — its number and its own schedule, echoed straight off NuVizz\'s record — never its address or freight, so the July 2 class of accident (a create overwriting real order data) remains structurally impossible. And every order on the card gets the same respect as any Save: the app reads each one first and REFUSES the whole create if any can\'t be read, is already planned on another route (you\'re told which one), or has already been acted on by a driver. Moving stops OFF a live load onto the new card works in one Save too — the live load\'s save runs first, then the create. Afterwards the app reads the route back and confirms every order actually landed — if NuVizz\'s async worker is slow you\'re told how many attached rather than being left to discover it — and the board is stamped immediately, so the stops flip to planned (and drop their old drivers\' names) without waiting for the next scan.'],
   ['0.54.33', 'THE WEEKEND NO LONGER INVENTS CARRY-OVER ORDERS. Chad, Sunday morning, holding the Uline manifest: "We do not have 127 orders carrying over from last week so scan is not showing closed out orders correctly." He was right about the number and the scan was innocent — I checked his manifest against the board order by order, and the day\'s own freight matched Uline EXACTLY: 545 orders, 848 skids, 117 loose, 260,898 lbs, every PRO present. The phantoms were all in the carry-over fold. WHAT ACTUALLY HAPPENED: every scan writes down which old orders are still genuinely open, and the board uses that list to keep delivered work from re-appearing as carry-over. Friday night\'s 10:31 PM scan wrote that list correctly. But the board only trusted the list while it was under 18 hours old — a rule meant to survive one quiet night, written before scans went dark on weekends. So from Saturday afternoon on, the board threw Friday\'s perfectly good list away and, having nothing to check against, showed EVERY undelivered-looking old order — 127 of them, when the real count was 24. Sunday\'s 1:13 PM scan wrote a new list and the number collapsed on its own, which is exactly the proof of what broke. THE FIX: the list no longer expires by clock. Nothing on the board changes while scans are dark — so a Friday list is still the newest truth on Sunday, and the board now keeps using it straight through a weekend or a breaker pause. It is set aside only for the reasons that are REAL: a scan ran but the list somehow was not rewritten (then it truly is behind), or it is over a week old (past what it can vouch for at all). In both of those cases the board still folds everything rather than hide work — showing too much stays the failure mode, never showing too little. Four tests pin the new rule, including a replay of this weekend.'],
   ['0.54.32', 'THE STOP CARD NOW ANSWERS "WHERE IS THIS ORDER?" AT A GLANCE — AND THE BUTTONS YOU ACTUALLY USE ARE REAL BUTTONS. This is Enhancement 6 from the UI report, built as approved. THREE CHANGES. (1) A STATUS TIMELINE at the top of every stop card: Scheduled → Out for delivery → Delivered, with the current step highlighted and the times the app truly has — arrival and delivery stamps when they exist, and an ETA on the last step ONLY when NuVizz has a real one. A schedule window is never dressed up as an arrival prediction; that is the exact lie v0.54.4 stamped out, and the timeline keeps the rule. An exception shows as a red terminal state instead of being forced into a delivery story, and unplanned or cancelled orders keep the plain status chip they had. (2) THE HEADER CARRIES THE ROUTE — "SUW 4 · stop 6" sits at the top right, so you no longer scroll five sections to learn which truck an order is on. The PRO also has a small copy button: one tap and it is on your clipboard for pasting into NuVizz, Estes, or a text. (3) FOUR THUMB-SIZE BUTTONS — Text, Call, Navigate, Ticket — replace the pile of look-alike text links. Those four are nearly every tap this card ever gets, and on a phone a text link is the hardest thing on the screen to hit. Call only appears when there is a number to call; Navigate opens Google Maps on the corrected pin when you have saved one. Everything else — Street View, Edit address, Correct pin, Text driver, History — is one tap away under "More", and nothing was removed. The big Delivery Ticket button is gone because the Ticket button in the bar IS it, one screen position higher. Both the Map and Routing cards get all of this, desktop and phone, because they have been the same card since v0.45.22. Seven tests pin the timeline\'s honesty rules — including that the out-for-delivery step never invents a time the app does not have.'],
   ['0.54.31', 'THE LIVE TRUCK ICONS ARE SMALLER. Chad: "make the motive truck icons smaller." They were 40 pixels across — the BIGGEST marker on the map, larger than a numbered route pin and more than twice the size of an unplanned stop dot. That was survivable while the driver layer was only ever showing part of the fleet; once v0.54.12 fixed the page-one cutoff and every truck started drawing, twenty-odd 40-pixel trucks blanketed metro Atlanta on a phone and buried the stops underneath them. The truck is now 28 pixels: still an easy tap, still obviously a truck, but it sits BELOW a route pin in size, so your stops read on top of the traffic instead of the other way round. The driver name plate moves with it — its offset is now calculated from the icon size rather than typed in separately, so the label can never end up sitting on top of the truck if the size is ever changed again. Nothing else about the layer changed: same 60-second refresh, same names, same fade after 30 minutes without a ping.'],
@@ -12878,6 +12878,12 @@ function RoutingWorkbenchCard({ route, stopById, otherKeys, ninjaMode, isActive,
             {route.collapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
             <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: color }} title="Route colour on the map" />
             <span className="font-semibold text-slate-800 truncate" title={route.name || loadDisplayName(route.key) || 'Unnamed load'}>{route.name || loadDisplayName(route.key) || 'Unnamed load'}</span>
+            {route.pendingCreate && (
+              <span className="text-[9px] font-bold uppercase text-amber-800 bg-amber-100 border border-amber-300 rounded px-1 shrink-0"
+                title="This route exists only on this screen so far — Save creates it in NuVizz with all its stops (NuVizz refuses an empty route)">
+                not sent
+              </span>
+            )}
           </button>
           <div className="flex items-center gap-1.5 shrink-0">
             {ninjaMode && (
@@ -13056,7 +13062,7 @@ function RoutingWorkbenchCard({ route, stopById, otherKeys, ninjaMode, isActive,
 // ungeocoded ones. Card membership, display, freight totals and the Save payload all use
 // boardStopById so what the card shows == what Save sends (a coord-less stop is still on
 // the load). Anything that needs geometry keeps using stopById.
-function RoutingWorkbench({ wbRoutes, stopById, boardStopById, ninjaMode, onToggleNinja, onArmNinja, activeKey, onSetActive, onResequence, onCollapse, onClose, onCloseAll, onMoveStop, onDropStop, onRemoveStop, onUndoRemove, onClearRemoved, onOpenStop, onPrintManifest, selectedCount = 0, onSendSelection, isMobile, liveWrite, onBoardSync, boardDate, peerClaimFor = null }) {
+function RoutingWorkbench({ wbRoutes, stopById, boardStopById, ninjaMode, onToggleNinja, onArmNinja, activeKey, onSetActive, onResequence, onCollapse, onClose, onCloseAll, onMoveStop, onDropStop, onRemoveStop, onUndoRemove, onClearRemoved, onOpenStop, onPrintManifest, selectedCount = 0, onSendSelection, isMobile, liveWrite, onBoardSync, boardDate, peerClaimFor = null, onRouteCreated = null }) {
   const lookup = boardStopById || stopById;
   // Live-dispatch gate comes from the gear toggle (prop), aliased to the original name so the
   // many gate sites in this component (Save, Beta/Live toggle, dirty guards, confirm) are unchanged.
@@ -13171,6 +13177,10 @@ function RoutingWorkbench({ wbRoutes, stopById, boardStopById, ninjaMode, onTogg
   const buildBoardPayload = () => {
     const loads = [], warnings = [];
     for (const r of dirtyRoutes) {
+      // A PENDING card's route does not exist in NuVizz yet — it goes through the newRoute
+      // create in onPanelSave (header + all stops in one call), never through commitBoard
+      // (which would 404 "load not found" on the derived number).
+      if (r.pendingCreate) continue;
       const s = staged[r.key] || {};
       // loadNbr = the REAL NuVizz number (load/info is keyed by it) — NEVER the r.key, which for a
       // load opened from the Loads grid is the hex loadId; sending that as loadNbr made load/info 404
@@ -13254,14 +13264,77 @@ function RoutingWorkbench({ wbRoutes, stopById, boardStopById, ninjaMode, onTogg
     }
     await onPanelConfirm({ loads, clientOpId: newClientOpId() });
   };
+  // A PENDING card (＋ New route) is created here — the route header + its WHOLE stop list in
+  // one routePlan/update (NuVizz refuses an empty route, reason 903), with any staged
+  // driver/dispatch riding the same Save (Chad's design, Aug 3: "we send new route and all
+  // stops at same time"). Separate from commitBoard on purpose: the load doesn't exist yet,
+  // so every piece of the existing-load machinery (load/info resolve, RWB adds, retarget)
+  // would just 404 on the derived number.
+  const sendPendingCreates = async (pending) => {
+    for (const r of pending) {
+      const name = r.name || r.key;
+      if (!r.order.length) { showToast(`⚠ ${name}: drag at least one order onto the card first — NuVizz won't create an empty route.`); continue; }
+      const origin = readShipFromOrigin();
+      if (!origin) { showToast(`⚠ ${name}: set a ship-from address in the New Order tab first — NuVizz will not create a route without one.`); continue; }
+      const s = staged[r.key] || {};
+      setBusy(true);
+      let res;
+      try {
+        res = await callWrite('newRoute', {
+          routeName: name, loadNbr: r.loadNbr, date: boardDate || undefined, origin,
+          orderedStopNbrs: r.order.map(String),
+          ...(s.driverId != null && s.driverId !== '' ? { driverId: s.driverId, driverName: s.driverName } : {}),
+          ...(s.dispatch ? { dispatch: true } : {}),
+        }, { dryRun: false, clientOpId: newClientOpId(), createdBy: 'dispatcher' });
+      } catch (e) { res = { ok: false, error: e?.message || 'network error' }; }
+      setBusy(false);
+      const rr = res?.result || {};
+      if (!(res?.ok && rr.ok)) {
+        // `pending:true` on the result = NuVizz took the create and it may still land — its own
+        // message says not to re-create; surface the server's text verbatim, never a generic ✗.
+        showToast(`✗ ${name}: ${res?.error || rr.error || 'create failed'}`);
+        continue;
+      }
+      // Flip the card to its verified identity (same key), clean its dirty state, and belt-sync
+      // the board (the server already write-through-stamped the verified plan — this is the
+      // same belt the commit path keeps).
+      if (onRouteCreated) onRouteCreated(r.key, { loadId: rr.loadId, loadNbr: rr.loadNbr, name: rr.routeName || name });
+      markSaved([r.key]);
+      setStaged((p) => { const n = { ...p }; delete n[r.key]; return n; });
+      if (onClearRemoved) onClearRemoved([r.key]);
+      if (onBoardSync && rr.stopsAttached) {
+        const nameForBoard = rr.routeName || name;
+        if (nameForBoard && !isHashLikeId(nameForBoard)) {
+          try { await onBoardSync({ routeName: nameForBoard, orderedStopNbrs: r.order.map(String), unplannedStopNbrs: [], driverName: rr.driverApplied ? (s.driverName || null) : null }); } catch { /* the server's own stamp is the primary */ }
+        }
+      }
+      showToast(rr.warning
+        ? `⚠ ${rr.warning}`
+        : `✓ Route ${rr.routeName || name} created in NuVizz with ${rr.stopsAttached ?? r.order.length} stop(s)${rr.driverApplied ? ` · ${s.driverName || 'driver'} assigned` : ''}${rr.dispatched ? ' · dispatched' : ''}.`);
+    }
+  };
   const onPanelSave = async () => {
+    const pending = dirtyRoutes.filter((r) => r.pendingCreate);
     const { loads, warnings } = buildBoardPayload();
-    if (!loads.length) { showToast(warnings[0] || 'No changes to save.'); return; }
-    if (!liveMode) { showToast(`Beta — nothing sent (${loads.length} load(s) simulated).`); return; }
-    // Beta returns above, so the gate can only ever stand in front of a REAL write.
-    const cancels = cancelsIn(loads);
-    if (cancels.length) { setCancelGuard({ loads, warnings, cancels }); return; }
-    await sendBoardSave(loads, warnings);
+    if (!pending.length && !loads.length) { showToast(warnings[0] || 'No changes to save.'); return; }
+    if (!liveMode) { showToast(`Beta — nothing sent (${pending.length + loads.length} load(s) simulated).`); return; }
+    // Beta returns above, so everything below is a REAL write.
+    //
+    // ORDER MATTERS: the EXISTING-load saves run FIRST, then the pending creates. A stop
+    // dragged off a live load onto a new-route card is still planned on the source until that
+    // load's save unplans it — created first, the new route's already-planned guard would
+    // refuse the whole create. Saved first, the stop is unplanned by the time the create's
+    // guard reads it, so the one Save click covers the whole move.
+    if (loads.length) {
+      const cancels = cancelsIn(loads);
+      if (cancels.length) {
+        setCancelGuard({ loads, warnings, cancels });
+        if (pending.length) showToast('⚠ New-route card(s) not sent yet — decide the route cancellation above first, then Save again.');
+        return;
+      }
+      await sendBoardSave(loads, warnings);
+    }
+    if (pending.length) await sendPendingCreates(pending);
   };
 
   const markSaved = (keys) => setBaselines((prev) => {
@@ -13953,44 +14026,29 @@ function readShipFromOrigin() {
 }
 
 /**
- * NewRouteModal (§R) — make a new route the dispatcher can then build onto.
+ * NewRouteModal (§R) — open a LOCAL route card the dispatcher builds onto, sent on Save.
  *
  * MODULE SCOPE, not nested in RoutingScreen: a component re-created on every parent render
  * remounts its inputs, and the text field would lose focus on every keystroke (the same
  * reason OrderField lives at module scope).
  *
- * The route is created for the day the board is ALREADY showing. That is not a shortcut —
+ * NOTHING IS SENT FROM THIS FORM (Aug 3). NuVizz refuses a route with no stop node (reason
+ * 903), so the old create-empty-then-drag design cannot work. Chad's design instead: the
+ * form opens a pending Compare card (local only), orders are dragged on as usual, and SAVE
+ * creates the route in NuVizz with the whole stop list riding the one create call. Closing
+ * the card before saving simply discards it — nothing ever existed in NuVizz.
+ *
+ * The card is made for the day the board is ALREADY showing. That is not a shortcut —
  * changing the board date closes every Compare card, so letting this form pick a different
- * day would create the route and then destroy the card that was about to receive orders.
- * To build tomorrow's route, move the board to tomorrow first.
+ * day would make a card the date change immediately destroys. To build tomorrow's route,
+ * move the board to tomorrow first.
  *
- * FIRST ORDER (Aug 3): NuVizz refuses a route with no stop node (reason 903), so a route
- * cannot be created empty — the form requires ONE unplanned order to seed it with. The seed
- * rides the create as a reference (stop number only) and lands already planned on the route;
- * the rest are dragged on in Compare as before.
- *
- * No driver field: routePlan/update takes no assignment, and the created card carries the
- * ordinary driver dropdown. One thing per dialog, and the assign path stays the verified one.
+ * No driver field: the pending card carries the ordinary driver dropdown, and the staged
+ * assignment rides the same Save that creates the route.
  */
-function NewRouteModal({ date, existingNames, origin, live, busy, error, candidates = [], onCancel, onCreate }) {
+function NewRouteModal({ date, existingNames, origin, busy, error, onCancel, onCreate }) {
   const [routeName, setRouteName] = useState('');
-  const [seed, setSeed] = useState('');
-  const [seedFilter, setSeedFilter] = useState('');
-  // Unplanned orders, filtered by the search text (name / city / number), capped so a 500-row
-  // day cannot flood the select. The chosen seed always stays in the list even when the filter
-  // no longer matches it — otherwise narrowing the search would silently unpick it.
-  const seedOptions = useMemo(() => {
-    const q = seedFilter.trim().toLowerCase();
-    const match = (s) => !q || [s.businessName, s.city, s.stopNbr, s.primaryPro, s.pro]
-      .some((v) => v != null && String(v).toLowerCase().includes(q));
-    const list = candidates.filter(match).slice(0, 200);
-    if (seed && !list.some((s) => String(s.stopNbr) === seed)) {
-      const chosen = candidates.find((s) => String(s.stopNbr) === seed);
-      if (chosen) list.unshift(chosen);
-    }
-    return list;
-  }, [candidates, seedFilter, seed]);
-  const check = validateNewRoute({ routeName, date, existingNames, hasOrigin: !!origin, seedStopNbr: seed });
+  const check = validateNewRoute({ routeName, date, existingNames, hasOrigin: !!origin });
   const showCheck = routeName.trim().length > 0;
   useEffect(() => {
     const onKey = (e) => { if (e.key === 'Escape' && !busy) onCancel(); };
@@ -14007,7 +14065,7 @@ function NewRouteModal({ date, existingNames, origin, live, busy, error, candida
         </div>
         <form
           className="px-4 py-3 overflow-y-auto text-sm space-y-3"
-          onSubmit={(e) => { e.preventDefault(); if (check.ok && !busy) onCreate(routeName.trim(), check.loadNbr, seed); }}
+          onSubmit={(e) => { e.preventDefault(); if (check.ok && !busy) onCreate(routeName.trim(), check.loadNbr); }}
         >
           <OrderField label="Route name" req value={routeName} onChange={(e) => setRouteName(e.target.value)}
             placeholder="e.g. TRAILER 6" disabled={busy} />
@@ -14015,47 +14073,24 @@ function NewRouteModal({ date, existingNames, origin, live, busy, error, candida
             This is the name the board groups by. NuVizz also needs its own load number, which is made from the
             name and the day{check.loadNbr ? <> — this one would be <b className="font-mono">{check.loadNbr}</b>.</> : '.'}
           </div>
-          {/* The seed order — NuVizz refuses a stopless route (903), so one is REQUIRED. */}
-          <div>
-            <label className="block text-[12px] font-semibold text-slate-700 mb-0.5">First order <span className="text-red-600">*</span></label>
-            <input value={seedFilter} onChange={(e) => setSeedFilter(e.target.value)} disabled={busy}
-              placeholder="Search unplanned orders — name, city or number"
-              className="w-full border rounded px-2 py-1.5 text-sm mb-1" />
-            <select value={seed} onChange={(e) => setSeed(e.target.value)} disabled={busy}
-              className="w-full border rounded px-2 py-1.5 text-sm bg-white" aria-label="First order for the new route">
-              <option value="">— pick an unplanned order —</option>
-              {seedOptions.map((s) => (
-                <option key={String(s.stopNbr)} value={String(s.stopNbr)}>
-                  {[s.businessName || String(s.stopNbr), s.city, s.primaryPro || s.pro || s.stopNbr].filter(Boolean).join(' · ')}
-                </option>
-              ))}
-            </select>
-            {candidates.length === 0 && (
-              <div className="text-[11px] text-amber-700 mt-0.5">No unplanned orders on this day&apos;s board — a route can&apos;t be created without one.</div>
-            )}
-          </div>
           {showCheck && !check.ok && (
             <div className="text-[12px] text-amber-800 bg-amber-50 border border-amber-200 rounded p-2">{check.error}</div>
           )}
           {error && <div className="text-[12px] text-red-800 bg-red-50 border border-red-200 rounded p-2">{error}</div>}
           <div className="text-[11px] text-slate-500">
-            NuVizz won&apos;t create an empty route, so it&apos;s created on {formatDateLong(date)} with this first order already
-            planned on it, and opens as a Compare card — drag the rest on and Save. To build another day&apos;s route,
+            The route opens as a Compare card for {formatDateLong(date)} — <b>nothing is sent to NuVizz yet</b>.
+            Drag orders onto it, then Save: the route and all its stops are created together (NuVizz won&apos;t
+            accept an empty route). Closing the card before saving discards it. To build another day&apos;s route,
             change the board date first.
           </div>
-          {!live && (
-            <div className="text-[12px] text-slate-600 bg-slate-50 border border-slate-200 rounded p-2">
-              ○ Beta — nothing will be sent to NuVizz. Flip the panel to ● LIVE to create the route for real.
-            </div>
-          )}
           <button type="submit" className="hidden" aria-hidden="true" tabIndex={-1} />
         </form>
         <div className="px-4 py-3 border-t flex items-center justify-end gap-2">
           <button onClick={onCancel} disabled={busy}
             className="px-3 py-1.5 text-sm rounded border border-slate-300 text-slate-600 hover:bg-slate-50 disabled:opacity-60">Cancel</button>
-          <button onClick={() => onCreate(routeName.trim(), check.loadNbr, seed)} disabled={!check.ok || busy}
+          <button onClick={() => onCreate(routeName.trim(), check.loadNbr)} disabled={!check.ok || busy}
             className="px-3 py-1.5 text-sm rounded font-semibold text-white bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60">
-            {busy ? 'Creating…' : (live ? 'Create route' : 'Preview (Beta)')}
+            Open route card
           </button>
         </div>
       </div>
@@ -15513,67 +15548,35 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
   const [newRouteBusy, setNewRouteBusy] = useState(false);
   const [newRouteError, setNewRouteError] = useState(null);
   const openNewRoute = useCallback(() => { setNewRouteError(null); setNewRouteOpen(true); }, []);
-  // Seed candidates for the modal: every UNPLANNED order on the day's board (mapped or not —
-  // a coord-less order can still be planned), name-sorted. NuVizz refuses a stopless route
-  // (903), so the create needs one of these to ride along. Only computed while the modal is up.
-  const newRouteCandidates = useMemo(() => {
-    if (!newRouteOpen) return [];
-    return boardStopsAll
-      .filter((s) => s.isUnplanned)
-      .map((s) => ({ stopNbr: s.stopNbr, businessName: s.businessName, city: s.city, primaryPro: s.primaryPro, pro: s.pro }))
-      .sort((a, b) => String(a.businessName || '').localeCompare(String(b.businessName || '')));
-  }, [newRouteOpen, boardStopsAll]);
-  const createNewRoute = useCallback(async (routeName, loadNbr, seedStopNbr) => {
+  // Opening a new route is now LOCAL ONLY (Aug 3): NuVizz refuses an empty route (903), so
+  // nothing can be sent until the card has orders. The modal makes a PENDING card
+  // (pendingCreate: true, no loadId); the workbench Save creates the route in NuVizz with the
+  // card's whole stop list riding the one create call. Closing the card discards it —
+  // nothing ever existed in NuVizz.
+  const createNewRoute = useCallback((routeName, loadNbr) => {
     setNewRouteError(null);
     if (wbRoutes.length >= WB_MAX) { setNewRouteError(`Compare is full (${WB_MAX} routes) — close one first, then create.`); return; }
-    const seed = String(seedStopNbr ?? '').trim();
-    if (!seed) { setNewRouteError('Pick the first order for the route — NuVizz will not create an empty one.'); return; }
-    const origin = readShipFromOrigin();
-    if (!assignLive) {
-      setNewRouteOpen(false);
-      showMapToast(`Beta — would create route ${routeName} (${loadNbr}) for ${selectedDate} with first order ${seed}. Nothing sent. Flip the Routes panel to ● LIVE to create it.`);
-      return;
-    }
-    setNewRouteBusy(true);
-    let res;
-    try {
-      res = await callWrite('newRoute', { routeName, loadNbr, date: selectedDate, origin, seedStopNbr: seed },
-        { dryRun: false, clientOpId: newClientOpId(), createdBy: 'dispatcher' });
-    } catch (e) { res = { ok: false, error: e?.message || 'network error' }; }
-    setNewRouteBusy(false);
-    const r = res?.result || {};
-    if (!(res?.ok && r.ok)) {
-      // `pending` is NOT a retry prompt — NuVizz took the route and it may still land, so a
-      // second create with the same name would either collide or double up. Its own message
-      // says so; surface the server's text rather than a generic ✗.
-      setNewRouteError(res?.error || r.error || 'Could not create the route.');
-      return;
-    }
     setNewRouteOpen(false);
-    // Seed the loads roster so the rest of the screen (assign-driver identity, "plan onto my
-    // loads", a later re-open) can resolve this route before the next roster fetch — that
-    // effect only re-runs on date/panel change, so without this the new route is invisible to
-    // every identity lookup for the rest of the session.
-    const entry = { loadId: r.loadId ? String(r.loadId) : null, name: r.routeName || routeName, loadNbr: r.loadNbr ? String(r.loadNbr) : null };
+    const key = routeName;
+    setWbRoutes((prev) => (prev.some((x) => x.key === key) ? prev : [...prev,
+      { key, name: routeName, loadNbr, loadId: null, pendingCreate: true, order: [], baseline: [], collapsed: false }]));
+    showMapToast(`Route card ${routeName} opened — drag orders onto it, then Save to create it in NuVizz with all its stops.`);
+  }, [showMapToast, wbRoutes.length]);
+  // A pending card's create CONFIRMED by the server: flip it to a real card in place (same
+  // key) and index its verified identity so assign-driver / later re-opens resolve it before
+  // the next roster fetch.
+  const onRouteCreated = useCallback((key, made) => {
+    const entry = { loadId: made.loadId ? String(made.loadId) : null, name: made.name || key, loadNbr: made.loadNbr ? String(made.loadNbr) : null };
     try {
       const idx = loadRosterRef.current;
       if (entry.name) idx.set(String(entry.name).trim().toLowerCase(), entry);
       if (entry.loadId) idx.set(String(entry.loadId), entry);
       if (entry.loadNbr) idx.set(String(entry.loadNbr), entry);
-    } catch { /* a stale index never blocks the card below */ }
-    // Open the card DIRECTLY with the identity the create just verified. openRouteInWorkbench
-    // derives identity from board stops (there are none) and then the roster, so it would land
-    // a card with loadId/loadNbr null — and the first Save would fail "load not found".
-    // The card opens WITH the seed order the create planned (order === baseline: not dirty) —
-    // unless the read-back reported the seed hasn't attached, in which case the card opens
-    // empty and the seed stays unplanned for the dispatcher to drag on.
-    const key = r.routeName || routeName;
-    const seededOrder = r.seedAttached && r.seedStopNbr ? [String(r.seedStopNbr)] : [];
-    setWbRoutes((prev) => (prev.some((x) => x.key === key) ? prev : [...prev,
-      { key, name: entry.name, loadNbr: entry.loadNbr, loadId: entry.loadId, order: seededOrder, baseline: [...seededOrder], collapsed: false }]));
-    if (r.warning) showMapToast(`⚠ ${r.warning}`);
-    else showMapToast(`✓ Route ${key} created with its first order and open in Compare — drag the rest on, then Save.`);
-  }, [assignLive, selectedDate, showMapToast, wbRoutes.length]);
+    } catch { /* a stale index never blocks the card update below */ }
+    setWbRoutes((prev) => prev.map((r) => (r.key === key
+      ? { ...r, pendingCreate: false, name: entry.name, loadNbr: entry.loadNbr ?? r.loadNbr, loadId: entry.loadId ?? r.loadId }
+      : r)));
+  }, []);
 
   // Frame ALL of a driver's stops (they may run multiple routes). Lighter than onPickRoute —
   // it only fits the map bounds, it doesn't open every route in the workbench.
@@ -16705,10 +16708,8 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
       date={selectedDate}
       existingNames={routeGroups.map((g) => g.name || g.key)}
       origin={readShipFromOrigin()}
-      live={assignLive}
       busy={newRouteBusy}
       error={newRouteError}
-      candidates={newRouteCandidates}
       onCancel={() => { if (!newRouteBusy) { setNewRouteOpen(false); setNewRouteError(null); } }}
       onCreate={createNewRoute}
     />
@@ -16810,7 +16811,7 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
                       </MobileSelectedStops>
                     )}
                     {wbRoutes.length > 0
-                      ? <RoutingWorkbench wbRoutes={wbRoutesColored} stopById={stopById} boardStopById={boardStopById} ninjaMode={ninjaMode} onToggleNinja={setNinjaMode} onArmNinja={armNinjaFromPanel} activeKey={effectiveActiveKey} onSetActive={setActiveRouteKey} onResequence={wbResequence} onCollapse={toggleWbCollapse} onClose={closeWbRoute} onCloseAll={closeAllWb} onMoveStop={wbMoveStop} onDropStop={wbDropStop} onRemoveStop={wbRemoveStop} onUndoRemove={wbUndoRemove} onClearRemoved={clearWbRemoved} onOpenStop={openStop} onPrintManifest={printWbManifest} selectedCount={selectedStops.length} onSendSelection={sendSelectionToRoute} isMobile liveWrite={liveWrite} onBoardSync={syncBoardAfterSave} boardDate={selectedDate} peerClaimFor={peerClaimFor} />
+                      ? <RoutingWorkbench wbRoutes={wbRoutesColored} stopById={stopById} boardStopById={boardStopById} ninjaMode={ninjaMode} onToggleNinja={setNinjaMode} onArmNinja={armNinjaFromPanel} activeKey={effectiveActiveKey} onSetActive={setActiveRouteKey} onResequence={wbResequence} onCollapse={toggleWbCollapse} onClose={closeWbRoute} onCloseAll={closeAllWb} onMoveStop={wbMoveStop} onDropStop={wbDropStop} onRemoveStop={wbRemoveStop} onUndoRemove={wbUndoRemove} onClearRemoved={clearWbRemoved} onOpenStop={openStop} onPrintManifest={printWbManifest} selectedCount={selectedStops.length} onSendSelection={sendSelectionToRoute} isMobile liveWrite={liveWrite} onBoardSync={syncBoardAfterSave} boardDate={selectedDate} peerClaimFor={peerClaimFor} onRouteCreated={onRouteCreated} />
                       : controlsContent}
                   </>
                 : mobilePanel === 'loads'
@@ -16870,7 +16871,7 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
           routes are open. With the Setup panel off and no routes open, the map gets the full width. */}
       {wbRoutes.length > 0 ? (
         <div className="shrink-0 border-r bg-white min-h-0 overflow-x-auto" style={{ width: wbWidth }}>
-          <RoutingWorkbench wbRoutes={wbRoutesColored} stopById={stopById} boardStopById={boardStopById} ninjaMode={ninjaMode} onToggleNinja={setNinjaMode} onArmNinja={armNinjaFromPanel} activeKey={effectiveActiveKey} onSetActive={setActiveRouteKey} onResequence={wbResequence} onCollapse={toggleWbCollapse} onClose={closeWbRoute} onCloseAll={closeAllWb} onMoveStop={wbMoveStop} onDropStop={wbDropStop} onRemoveStop={wbRemoveStop} onUndoRemove={wbUndoRemove} onClearRemoved={clearWbRemoved} onOpenStop={openStop} onPrintManifest={printWbManifest} selectedCount={selectedStops.length} onSendSelection={sendSelectionToRoute} isMobile={false} liveWrite={liveWrite} onBoardSync={syncBoardAfterSave} boardDate={selectedDate} peerClaimFor={peerClaimFor} />
+          <RoutingWorkbench wbRoutes={wbRoutesColored} stopById={stopById} boardStopById={boardStopById} ninjaMode={ninjaMode} onToggleNinja={setNinjaMode} onArmNinja={armNinjaFromPanel} activeKey={effectiveActiveKey} onSetActive={setActiveRouteKey} onResequence={wbResequence} onCollapse={toggleWbCollapse} onClose={closeWbRoute} onCloseAll={closeAllWb} onMoveStop={wbMoveStop} onDropStop={wbDropStop} onRemoveStop={wbRemoveStop} onUndoRemove={wbUndoRemove} onClearRemoved={clearWbRemoved} onOpenStop={openStop} onPrintManifest={printWbManifest} selectedCount={selectedStops.length} onSendSelection={sendSelectionToRoute} isMobile={false} liveWrite={liveWrite} onBoardSync={syncBoardAfterSave} boardDate={selectedDate} peerClaimFor={peerClaimFor} onRouteCreated={onRouteCreated} />
         </div>
       ) : leftPanelOn ? (
         <div className="shrink-0 border-r bg-white overflow-y-auto p-3 space-y-3 text-sm" style={{ width: leftPanel.width }}>
