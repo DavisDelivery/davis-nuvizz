@@ -41,6 +41,9 @@ test('unusable input yields no number rather than a bad one', () => {
 });
 
 test('the form pre-flight catches what would otherwise cost a NuVizz round-trip', () => {
+  // NOTE: no first-order requirement HERE — the form only opens a LOCAL card (nothing is
+  // sent), and the 903 empty-route refusal lives at Save, where the card's orders ride the
+  // create. Pinned server-side in nuvizz-route-create.test.mjs.
   const ok = validateNewRoute({ routeName: 'TRAILER 6', date: '2026-07-31' });
   assert.equal(ok.ok, true);
   assert.equal(ok.loadNbr, 'TRAILER6-0731');

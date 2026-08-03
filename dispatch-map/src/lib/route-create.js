@@ -40,6 +40,10 @@ export function routeLoadNbr(routeName, date) {
  *
  * `existingNames` = route names already on the board for that day.
  * Returns { ok, error, loadNbr }.
+ *
+ * NOTE (Aug 3 2026): NuVizz refuses a route with no stop node (reason 903), but that check
+ * does NOT live here — the form only makes a LOCAL Compare card; the create is sent on Save
+ * with the card's orders riding along, and Save is where an empty card is refused.
  */
 export function validateNewRoute({ routeName, date, existingNames = [], hasOrigin = true } = {}) {
   const name = String(routeName ?? '').trim();

@@ -2192,20 +2192,30 @@ async function applyBoardDateChange(creds: WriteCreds, stopNbr: string, fromDate
  * orders. Cancelling a route was therefore one-way: the app could destroy one (and, since
  * v0.54.17, easily) but not make one.
  *
- * This uses routePlan/update with a HEADER ONLY — no stops node exists in the payload, so the
- * Jul 2 failure mode is structurally impossible here. Orders are planned onto the new route
- * afterwards by the ordinary Compare Save (the RWB engine, which references stops by id).
+ * This uses routePlan/update with the header + the CARD'S ORDERS as PlanStop REFERENCES. The
+ * header-only form was refused live (Aug 3, reason 903: "Either PlanStop or Stop node should
+ * be present"), so a route cannot be created empty — the dispatcher builds it locally in
+ * Compare and the create sends the route AND its whole stop list in one call (Chad's design,
+ * Aug 3). A PlanStop carries no address/freight by schema ("only the schedule and route
+ * information is updated"), so the Jul 2 failure mode stays structurally impossible.
  *
- * THREE CALLS, and the first one is the safety:
+ * THE CALL LADDER, and the first two rungs are the safety:
  *   1. READ  the load number. routePlan/update is "create OR UPDATE" — aimed at a number that
  *            already exists it would EDIT that route's header. So a create demands a clean
  *            404 first: anything else (the load resolves, OR the read fails and we cannot
  *            tell) refuses. Never write blind at a number that might be a live route.
- *   2. WRITE the header.
- *   3. VERIFY by reading the load back — the ack is async and a 200 is not proof (§I). The
- *            read-back also confirms the ROUTE NAME landed, which closes the gap that the
- *            import path never checked: NuVizz assigning its own name would otherwise pass
- *            as success and the dispatcher would hunt for a route that isn't there.
+ *   2. READ  every order on the card (parallel). Each planStops entry MOVES that stop onto
+ *            the new route, so each must be readable, UNPLANNED (never silently steal a stop
+ *            off a live load) and not yet executed. Any failure refuses the WHOLE create —
+ *            nothing written. Each stop's own from/to schedule is echoed into its reference.
+ *   3. WRITE the header + references, in card order (seq 1..N).
+ *   4. VERIFY by reading the load back — the ack is async and a 200 is not proof (§I). The
+ *            read-back confirms the ROUTE NAME landed AND every order rides the route; the
+ *            confirmed plan is written through to the board (#361) so the stops flip planned
+ *            (and drop their stale drivers) without waiting for a scan.
+ *   5. Optionally ASSIGN + DISPATCH the staged driver — same one-Save contract as an
+ *            existing load's card. An assign failure never un-reports a created route: the
+ *            result stays ok with a loud warning.
  */
 // load/info answers for a number the tenant does not hold. 404 is the documented shape; 400 is
 // what the live DAVIS tenant actually returns (Jul 31). Both = "no load there".
@@ -2224,6 +2234,15 @@ export async function runNewRoute(requester: RequesterLike, payload: any, creds:
   const loadNbr = String(payload?.loadNbr ?? '').trim();
   const routeName = String(payload?.routeName ?? '').trim();
   if (!loadNbr) return { ok: false, error: 'createRoute: loadNbr is required', steps };
+  // The card's orders, in card order. `seedStopNbr` (singular) is the short-lived first-order
+  // form of this op — accepted so a stale tab's Save still works.
+  const nbrsIn = Array.isArray(payload?.orderedStopNbrs) ? payload.orderedStopNbrs.map((n: any) => String(n ?? '').trim()).filter(Boolean) : [];
+  const seedLegacy = String(payload?.seedStopNbr ?? '').trim();
+  const nbrs: string[] = nbrsIn.length ? nbrsIn : (seedLegacy ? [seedLegacy] : []);
+  // NuVizz refuses a stopless route (903, live Aug 3) — refuse up front, zero calls.
+  if (!nbrs.length) return { ok: false, error: 'createRoute: the route needs at least one order — NuVizz will not create an empty one (reason 903). Drag orders onto the card, then Save', steps };
+  const dupes = nbrs.filter((n, i) => nbrs.indexOf(n) !== i);
+  if (dupes.length) return { ok: false, error: `createRoute: order ${dupes[0]} appears twice on the card — remove the duplicate and re-Save`, steps };
 
   // ── 1. COLLISION GUARD — the number must be genuinely free ──────────────────
   const pre = await fetchLoad(requester, loadNbr, creds);
@@ -2246,7 +2265,35 @@ export async function runNewRoute(requester: RequesterLike, payload: any, creds:
     return { ok: false, error: `createRoute: could not confirm load ${loadNbr} is free (NuVizz answered ${pre.httpStatus} to the check) — nothing was created; try again`, steps };
   }
 
-  // ── 2. WRITE the header ─────────────────────────────────────────────────────
+  // ── 2. ORDER GUARD — every order must be readable, unplanned and unexecuted ──
+  // Each planStops entry MOVES that stop onto the new route, so each gets the same respect
+  // as an RWB add: never write on a stop we could not read, never silently steal a stop off
+  // a live load, never plan work a driver already acted on. ANY failure refuses the WHOLE
+  // create — a partial route the dispatcher didn't ask for is worse than a loud refusal.
+  // The reads also donate each stop's OWN from/to schedule for its reference (echo, never
+  // invent). Parallel, like the RWB path's per-added-stop reads.
+  const reads = new Map<string, any>(await Promise.all(nbrs.map(async (n): Promise<[string, any]> => {
+    try { return [n, await fireSingle(requester, 'getStop', { stopNbr: n }, creds)]; }
+    catch (e: any) { return [n, { ok: false, error: e?.message || 'getStop failed' }]; }
+  })));
+  steps.push({ op: 'getStops', ok: true, result: { requested: nbrs.length, readable: [...reads.values()].filter((g: any) => g?.ok && g.stop?.stopId).length }, error: null });
+  for (const n of nbrs) {
+    const gs = reads.get(n);
+    if (!gs?.ok || !gs.stop?.stopId) {
+      return { ok: false, error: `createRoute: could not read order ${n} (stale board — refresh and re-Save) — nothing was created`, steps };
+    }
+    const holderNbr = String(gs.stop?.assignedLoadNbr ?? '').trim();
+    if (holderNbr) {
+      const src = loadLabel(gs.stop?.routeName, holderNbr);
+      return { ok: false, error: `createRoute: order ${n} is ALREADY PLANNED on ${src} — remove it from this card, or open ${src} in Compare to move it. Nothing was created`, steps };
+    }
+    const st = String(gs.stop?.status ?? '').trim();
+    if (isExecutedStopStatus(st)) {
+      return { ok: false, error: `createRoute: order ${n} is already ${st} — finished work cannot ride a new route. Remove it and re-Save. Nothing was created`, steps };
+    }
+  }
+
+  // ── 3. WRITE the header + the references, in card order ─────────────────────
   const r = await fireSingle(requester, 'createRoute', {
     route: {
       loadNbr, routeName: routeName || undefined,
@@ -2255,23 +2302,38 @@ export async function runNewRoute(requester: RequesterLike, payload: any, creds:
       latestStartDttm: payload?.latestStartDttm ?? null,
       origin: payload?.origin ?? null,
       loadTimeZone: payload?.loadTimeZone ?? null,
+      seeds: nbrs.map((n) => {
+        const raw = reads.get(n)?.raw || {};
+        return { stopNbr: n, fromSchedule: raw?.from?.schedule ?? null, toSchedule: raw?.to?.schedule ?? null };
+      }),
     },
   }, creds);
   steps.push({ op: 'createRoute', ok: !!r.ok, result: r, error: r.ok ? null : (r.error || 'failed') });
   if (!r.ok) return { ok: false, error: `createRoute: ${r.error || 'NuVizz rejected the route'}`, steps };
 
-  // ── 3. VERIFY — the ack is async; only a read proves the route exists ────────
+  // ── 4. VERIFY — the ack is async; only a read proves the route exists ────────
+  // The read-back must also show the ORDERS riding it: the async worker can land the header
+  // without the plan, and "created" with stops silently unattached is the same dispatcher
+  // trap as a renamed route.
   const pacing = payload?.pacing || {};
   const tries = Number(pacing.tries ?? 6);
   const waitMs = Number(pacing.waitMs ?? 1500);
   const sleep = pacing.sleep || ((ms: number) => new Promise((res) => setTimeout(res, ms)));
+  const wantSet = new Set(nbrs.map(normStopNbr));
   let made: any = null;
+  let attachedNbrs: string[] = [];
   for (let i = 0; i < tries; i++) {
     await sleep(waitMs);
     const f = await fetchLoad(requester, loadNbr, creds);
-    if (f.load) { made = f.load; break; }
+    if (!f.load) continue;
+    made = f.load;
+    // The load's DELIVERY stops in NuVizz's own visit order, narrowed to what we asked for —
+    // this observed order (not our requested one) is what the board write-through stamps.
+    attachedNbrs = deliveryOrder(made).filter((n) => wantSet.has(normStopNbr(n)));
+    if (attachedNbrs.length === nbrs.length) break;   // keep polling while the plan settles
   }
-  steps.push({ op: 'verifyLoad', ok: !!made, result: { found: !!made }, error: made ? null : 'not readable yet' });
+  const allAttached = attachedNbrs.length === nbrs.length;
+  steps.push({ op: 'verifyLoad', ok: !!made, result: { found: !!made, requested: nbrs.length, attached: attachedNbrs.length }, error: made ? null : 'not readable yet' });
   if (!made) {
     return { ok: false, pending: true, loadNbr,
       error: `createRoute: NuVizz accepted the route but ${loadNbr} is not readable yet — it may still land. Refresh in a moment before creating it again (do NOT re-create with the same name).`, steps };
@@ -2280,10 +2342,62 @@ export async function runNewRoute(requester: RequesterLike, payload: any, creds:
   // name would otherwise report success for a route the dispatcher can't find on the board.
   const gotName = String(made.routeName ?? '').trim();
   const nameOk = !routeName || gotName === routeName;
+  const warnings: string[] = [];
+  if (!nameOk) warnings.push(`NuVizz created the route but named it "${gotName || '(none)'}" instead of "${routeName}" — it will show under that name on the board.`);
+  if (!allAttached) warnings.push(`The route exists but only ${attachedNbrs.length} of ${nbrs.length} orders have attached so far — give it a moment, then reopen the route in Compare and re-Save the stragglers (do NOT re-create).`);
+
+  // ── 5. ASSIGN + DISPATCH the staged driver (optional, same Save) ─────────────
+  // The card's staged assignment rides the create so "send new route and all stops at same
+  // time" includes the driver. Failures here never un-report a created route — the route and
+  // its plan are already real in NuVizz; the warning says exactly what's left to do.
+  let driverApplied = false, dispatched = false;
+  if (hasDriverId(payload?.driverId)) {
+    const routeId = made.loadId ?? null;
+    if (!routeId) {
+      warnings.push('Route created, but the driver was NOT assigned (no internal load id came back) — assign from the card and re-Save.');
+    } else {
+      const a = await fireSingle(requester, 'assignDriver', { routeId, driverId: payload.driverId }, creds);
+      steps.push({ op: 'assignDriver', ok: !!a.ok, result: a, error: a.ok ? null : (a.error || 'failed') });
+      driverApplied = !!a.ok;
+      if (!a.ok) warnings.push(`Route created, but the driver was NOT assigned (${a.error || 'NuVizz refused'}) — assign from the card and re-Save.`);
+      else if (payload?.dispatch) {
+        const d = await fireSingle(requester, 'dispatchLoad', { routeId }, creds);
+        steps.push({ op: 'dispatchLoad', ok: !!d.ok, result: d, error: d.ok ? null : (d.error || 'failed') });
+        dispatched = !!d.ok;
+        if (!d.ok) warnings.push(`Route created and driver assigned, but the DISPATCH failed (${d.error || 'NuVizz refused'}) — dispatch from the card and re-Save.`);
+      }
+    }
+  }
+
+  // ── 6. BOARD WRITE-THROUGH — same contract as the commit paths (#361) ────────
+  // The read-back just CONFIRMED which orders ride the new route, so stamp the board with
+  // that OBSERVED order: without this the stops keep showing unplanned (and carrying their
+  // old drivers) until the next scan. Best-effort — a board hiccup never fails a create
+  // NuVizz confirmed.
+  let boardSync: any = null;
+  if (attachedNbrs.length && isFirestoreEnabled()) {
+    try {
+      const tenantET = String((creds as any)?.companyCode || 'DAVIS').toUpperCase();
+      const boardDay = /^\d{4}-\d{2}-\d{2}$/.test(String(payload?.date ?? '')) ? String(payload.date) : etDayString();
+      const b = await patchBoardPlan(tenantET, boardDay, {
+        routeName: (gotName && !isHashLikeId(gotName)) ? gotName : String(made.loadNbr ?? loadNbr),
+        orderedStopNbrs: attachedNbrs.map(String),
+        driverName: driverApplied ? (payload?.driverName ?? null) : null,
+        at: new Date().toISOString(),
+      });
+      boardSync = { patched: b.patched, rescued: b.rescued, missing: b.missing };
+    } catch (e: any) { boardSync = { error: e?.message || 'board write-through failed' }; }
+  }
+
   return {
     ok: true, loadNbr: made.loadNbr ?? loadNbr, loadId: made.loadId ?? null,
     routeName: gotName || null, requestedRouteName: routeName || null, nameMatched: nameOk,
-    ...(nameOk ? {} : { warning: `NuVizz created the route but named it "${gotName || '(none)'}" instead of "${routeName}" — it will show under that name on the board.` }),
+    stopsRequested: nbrs.length, stopsAttached: attachedNbrs.length, allAttached,
+    driverApplied, dispatched,
+    // Echoes for the short-lived first-order client (a stale tab): its card-seeding reads these.
+    ...(seedLegacy ? { seedStopNbr: seedLegacy, seedAttached: allAttached } : {}),
+    ...(warnings.length ? { warning: warnings.join(' ') } : {}),
+    ...(boardSync ? { boardSync } : {}),
     steps,
   };
 }
