@@ -1419,15 +1419,28 @@ export function assembleImportHeader(rawHeader: any, rawStops: any[], clientOrig
 // WHY THIS ENDPOINT AND NOT THE LOAD IMPORT. The import (`load/update`, §I) is the app's
 // only other create path and it is gated OFF since the Jul 2 2026 incident: production
 // treats import REFERENCE stops as FULL REPLACES, which wiped freight on 10 live orders.
-// That failure mode is a property of sending STOPS. `routePlan/update` requires only a
-// loadHeader — the schema makes `stops`/`planStops` optional — so an empty-route create
-// carries no stop data at all and cannot replace, blank, or clone a single order. The
-// dispatcher then plans orders onto the new route with the ordinary Compare Save, which
-// runs the proven RWB engine (references stops BY ID, never by value).
+// That failure mode is a property of sending STOP VALUE nodes (`stops`). This builder
+// never emits a `stops` key.
 //
-// THE INVARIANT THIS BUILDER EXISTS TO HOLD: the body it returns has NO `stops` and NO
-// `planStops` key, ever, whatever the caller passes. Asserted in test — it is the whole
-// reason this is a separate builder instead of a flag on buildImportBody.
+// WHY THE CREATE CARRIES ONE planStops REFERENCE (Aug 3 2026). The original design sent a
+// HEADER ONLY — the OpenAPI schema marks `stops`/`planStops` optional — but the live tenant
+// refuses it: reasonCode 903, "Either PlanStop or Stop node should be present". So an empty
+// route cannot be created, full stop. The create therefore rides in with exactly ONE
+// `PlanStop` — the SEED order the dispatcher picked to start the route. A PlanStop is
+// reference-shaped BY SCHEMA ({stopNbr, from:{seq,schedule}, to:{seq,schedule}},
+// additionalProperties:false): the spec's own words are "All the stops exist in the system.
+// Hence only the schedule and route information is updated" — it carries no address and no
+// freight, so the Jul 2 failure mode remains structurally impossible. The seed's existing
+// schedule is ECHOED from NuVizz's own stop record (echo, never invent), and the remaining
+// orders are planned on afterwards by the ordinary Compare Save (the proven RWB engine).
+//
+// THE INVARIANT THIS BUILDER HOLDS NOW: no `stops` key ever, and `planStops` is exactly the
+// one sanitized seed reference — caller-passed stop junk can never widen it. Asserted in test.
+export interface RouteCreateSeed {
+  stopNbr: string;              // an EXISTING stop (the server verifies unplanned + readable first)
+  fromSchedule?: any;           // the stop's own from/to schedule, echoed off its NuVizz record
+  toSchedule?: any;
+}
 export interface RouteCreateInput {
   loadNbr: string;              // unique to the business, ≤20 (NuVizz LoadHeader.loadNbr)
   routeName?: string | null;    // the friendly board name ("TRAILER 6"), ≤20
@@ -1436,6 +1449,30 @@ export interface RouteCreateInput {
   latestStartDttm?: string | null;
   origin?: any;                 // the saved ship-from { name, addr1, addr2, city, state, zip }
   loadTimeZone?: string | null;
+  seed?: RouteCreateSeed | null; // the first order — NuVizz refuses a route with no stop node (903)
+}
+
+// Schedule keys the v7 Schedule schema accepts (additionalProperties:false) — anything else
+// off the echoed record (lat/exec/address junk) is dropped so the wire body stays reference-only.
+const PLAN_STOP_SCHEDULE_KEYS = ['timeFrom', 'timeTo', 'timeZone', 'srvcTimeCode', 'estimatedDuration', 'timeConstraint'] as const;
+function planStopSchedule(sch: any): any {
+  const out: any = {};
+  if (sch && typeof sch === 'object') {
+    for (const k of PLAN_STOP_SCHEDULE_KEYS) if (sch[k] !== undefined && sch[k] !== null) out[k] = sch[k];
+  }
+  return out;   // {} is valid — the Schedule schema has no required fields
+}
+
+/** PURE: the one sanitized PlanStop reference the create carries. Shape is pinned by the
+ *  schema ({stopNbr, from, to} only) and by test — nothing address- or freight-shaped can ride. */
+export function buildPlanStopRef(seed: RouteCreateSeed): any {
+  const stopNbr = String(req(seed?.stopNbr, 'createRoute: seed stopNbr')).trim();
+  if (stopNbr.length > ROUTE_FIELD_MAX) throw new Error(`createRoute: seed stopNbr "${stopNbr}" is ${stopNbr.length} chars — NuVizz caps it at ${ROUTE_FIELD_MAX}`);
+  return {
+    stopNbr,
+    from: { seq: 1, schedule: planStopSchedule(seed?.fromSchedule) },
+    to: { seq: 1, schedule: planStopSchedule(seed?.toSchedule) },
+  };
 }
 
 // NuVizz caps both at 20 chars. Over-long values are the classic silent-discard trap on an
@@ -1471,9 +1508,15 @@ export function buildRouteCreateBody(input: RouteCreateInput, companyCode: strin
     originCountry: countryCode(o.country) || 'USA',
     loadTimeZone: strField(input?.loadTimeZone) || 'EST',
   };
-  // `route` carries loadHeader and NOTHING else. No stops, no planStops, no loadAssignment
-  // (a driver is assigned afterwards by the existing assignDriver op, which is verified).
-  return { companyCode, route: { loadHeader } };
+  // NuVizz refuses a stopless route (903), so the seed is REQUIRED — refuse up front rather
+  // than burn the collision-check read on a create that cannot land.
+  if (!input?.seed?.stopNbr) {
+    throw new Error('createRoute: a first order (seed) is required — NuVizz refuses an empty route (reason 903: "Either PlanStop or Stop node should be present")');
+  }
+  // `route` carries loadHeader + the ONE seed reference and NOTHING else. No `stops` node, no
+  // loadAssignment (a driver is assigned afterwards by the existing assignDriver op, which is
+  // verified). buildPlanStopRef sanitizes, so caller-passed junk can never widen the payload.
+  return { companyCode, route: { loadHeader, planStops: [buildPlanStopRef(input.seed)] } };
 }
 
 /** normStopNbr (§I) — canonical stopNbr for ORDER COMPARISON ONLY (display/journals keep raw):
@@ -1595,8 +1638,9 @@ export function buildOpRequest(op: SingleOp, payload: any, creds: WriteCreds): B
     }
 
     case 'createRoute': {
-      // §R — create an EMPTY route from a header alone. The builder guarantees the body
-      // carries no stops/planStops node, so this can never touch existing freight.
+      // §R — create a route from a header + ONE seed PlanStop reference (NuVizz refuses a
+      // stopless route, reason 903). The builder guarantees the body carries no `stops`
+      // value node and only the sanitized seed reference, so it can never touch freight.
       const body = buildRouteCreateBody(payload?.route ?? payload, cc);
       return { url: `${base}/routePlan/update/default/${enc(cc)}`, method: 'POST', headers: H, body: JSON.stringify(body), meta: { route: '/routePlan/update/default', tenant: cc, source: 'live-write' } };
     }

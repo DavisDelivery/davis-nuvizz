@@ -2192,20 +2192,27 @@ async function applyBoardDateChange(creds: WriteCreds, stopNbr: string, fromDate
  * orders. Cancelling a route was therefore one-way: the app could destroy one (and, since
  * v0.54.17, easily) but not make one.
  *
- * This uses routePlan/update with a HEADER ONLY — no stops node exists in the payload, so the
- * Jul 2 failure mode is structurally impossible here. Orders are planned onto the new route
- * afterwards by the ordinary Compare Save (the RWB engine, which references stops by id).
+ * This uses routePlan/update with the header + ONE seed PlanStop REFERENCE. The header-only
+ * form was refused live (Aug 3, reason 903: "Either PlanStop or Stop node should be present"),
+ * so a route cannot be created empty — it is created WITH the first order the dispatcher
+ * picked. A PlanStop carries no address/freight by schema ("only the schedule and route
+ * information is updated"), so the Jul 2 failure mode stays structurally impossible. The
+ * remaining orders are planned on afterwards by the ordinary Compare Save (the RWB engine,
+ * which references stops by id).
  *
- * THREE CALLS, and the first one is the safety:
+ * FOUR CALLS, and the first two are the safety:
  *   1. READ  the load number. routePlan/update is "create OR UPDATE" — aimed at a number that
  *            already exists it would EDIT that route's header. So a create demands a clean
  *            404 first: anything else (the load resolves, OR the read fails and we cannot
  *            tell) refuses. Never write blind at a number that might be a live route.
- *   2. WRITE the header.
- *   3. VERIFY by reading the load back — the ack is async and a 200 is not proof (§I). The
- *            read-back also confirms the ROUTE NAME landed, which closes the gap that the
- *            import path never checked: NuVizz assigning its own name would otherwise pass
- *            as success and the dispatcher would hunt for a route that isn't there.
+ *   2. READ  the seed stop. The planStops entry MOVES it onto the new route, so it must be
+ *            readable, UNPLANNED (never silently steal a stop off a live load) and not yet
+ *            executed. Its own from/to schedule is echoed into the reference.
+ *   3. WRITE the header + seed reference.
+ *   4. VERIFY by reading the load back — the ack is async and a 200 is not proof (§I). The
+ *            read-back confirms the ROUTE NAME landed AND the seed rides the route; a
+ *            confirmed seed is written through to the board (#361) so it stops showing
+ *            unplanned (with its stale driver) while the scan catches up.
  */
 // load/info answers for a number the tenant does not hold. 404 is the documented shape; 400 is
 // what the live DAVIS tenant actually returns (Jul 31). Both = "no load there".
@@ -2223,7 +2230,10 @@ export async function runNewRoute(requester: RequesterLike, payload: any, creds:
   const steps: any[] = [];
   const loadNbr = String(payload?.loadNbr ?? '').trim();
   const routeName = String(payload?.routeName ?? '').trim();
+  const seedNbr = String(payload?.seedStopNbr ?? '').trim();
   if (!loadNbr) return { ok: false, error: 'createRoute: loadNbr is required', steps };
+  // NuVizz refuses a stopless route (903, live Aug 3) — refuse up front, zero calls.
+  if (!seedNbr) return { ok: false, error: 'createRoute: pick the first order for the route — NuVizz will not create an empty one (reason 903)', steps };
 
   // ── 1. COLLISION GUARD — the number must be genuinely free ──────────────────
   const pre = await fetchLoad(requester, loadNbr, creds);
@@ -2246,7 +2256,30 @@ export async function runNewRoute(requester: RequesterLike, payload: any, creds:
     return { ok: false, error: `createRoute: could not confirm load ${loadNbr} is free (NuVizz answered ${pre.httpStatus} to the check) — nothing was created; try again`, steps };
   }
 
-  // ── 2. WRITE the header ─────────────────────────────────────────────────────
+  // ── 2. SEED GUARD — the first order must be readable, unplanned and unexecuted ─
+  // The create's planStops entry MOVES the seed onto the new route, so it gets the same
+  // respect as an RWB add: never write on a stop we could not read, never silently steal a
+  // stop off a live load, never seed a route with work a driver already acted on. The read
+  // also donates the stop's OWN from/to schedule for the reference (echo, never invent).
+  let gs: any = null;
+  try { gs = await fireSingle(requester, 'getStop', { stopNbr: seedNbr }, creds); }
+  catch (e: any) { gs = { ok: false, error: e?.message || 'getStop failed' }; }
+  steps.push({ op: 'getStop', ok: !!gs?.ok, result: gs?.ok ? { stopNbr: seedNbr, found: true } : gs, error: gs?.ok ? null : (gs?.error || 'failed') });
+  if (!gs?.ok || !gs.stop?.stopId) {
+    return { ok: false, error: `createRoute: could not read first order ${seedNbr} (stale board — refresh and pick again) — nothing was created`, steps };
+  }
+  const holderNbr = String(gs.stop?.assignedLoadNbr ?? '').trim();
+  if (holderNbr) {
+    const src = loadLabel(gs.stop?.routeName, holderNbr);
+    return { ok: false, error: `createRoute: first order ${seedNbr} is ALREADY PLANNED on ${src} — pick an unplanned order, or open ${src} in Compare to move it. Nothing was created`, steps };
+  }
+  const seedStatus = String(gs.stop?.status ?? '').trim();
+  if (isExecutedStopStatus(seedStatus)) {
+    return { ok: false, error: `createRoute: first order ${seedNbr} is already ${seedStatus} — finished work cannot start a new route. Nothing was created`, steps };
+  }
+  const rawSeed = gs.raw || {};
+
+  // ── 3. WRITE the header + the one seed reference ────────────────────────────
   const r = await fireSingle(requester, 'createRoute', {
     route: {
       loadNbr, routeName: routeName || undefined,
@@ -2255,23 +2288,31 @@ export async function runNewRoute(requester: RequesterLike, payload: any, creds:
       latestStartDttm: payload?.latestStartDttm ?? null,
       origin: payload?.origin ?? null,
       loadTimeZone: payload?.loadTimeZone ?? null,
+      seed: { stopNbr: seedNbr, fromSchedule: rawSeed?.from?.schedule ?? null, toSchedule: rawSeed?.to?.schedule ?? null },
     },
   }, creds);
   steps.push({ op: 'createRoute', ok: !!r.ok, result: r, error: r.ok ? null : (r.error || 'failed') });
   if (!r.ok) return { ok: false, error: `createRoute: ${r.error || 'NuVizz rejected the route'}`, steps };
 
-  // ── 3. VERIFY — the ack is async; only a read proves the route exists ────────
+  // ── 4. VERIFY — the ack is async; only a read proves the route exists ────────
+  // The read-back must also show the SEED riding on it: the async worker can land the header
+  // without the plan, and "created" with the first order silently unattached is the same
+  // dispatcher trap as a renamed route.
   const pacing = payload?.pacing || {};
   const tries = Number(pacing.tries ?? 6);
   const waitMs = Number(pacing.waitMs ?? 1500);
   const sleep = pacing.sleep || ((ms: number) => new Promise((res) => setTimeout(res, ms)));
   let made: any = null;
+  let seedAttached = false;
   for (let i = 0; i < tries; i++) {
     await sleep(waitMs);
     const f = await fetchLoad(requester, loadNbr, creds);
-    if (f.load) { made = f.load; break; }
+    if (!f.load) continue;
+    made = f.load;
+    seedAttached = (made.stops || []).some((st: any) => st?.stopNbr != null && normStopNbr(st.stopNbr) === normStopNbr(seedNbr));
+    if (seedAttached) break;   // keep polling while the load is readable but the plan hasn't settled
   }
-  steps.push({ op: 'verifyLoad', ok: !!made, result: { found: !!made }, error: made ? null : 'not readable yet' });
+  steps.push({ op: 'verifyLoad', ok: !!made, result: { found: !!made, seedAttached }, error: made ? null : 'not readable yet' });
   if (!made) {
     return { ok: false, pending: true, loadNbr,
       error: `createRoute: NuVizz accepted the route but ${loadNbr} is not readable yet — it may still land. Refresh in a moment before creating it again (do NOT re-create with the same name).`, steps };
@@ -2280,10 +2321,35 @@ export async function runNewRoute(requester: RequesterLike, payload: any, creds:
   // name would otherwise report success for a route the dispatcher can't find on the board.
   const gotName = String(made.routeName ?? '').trim();
   const nameOk = !routeName || gotName === routeName;
+  const warnings: string[] = [];
+  if (!nameOk) warnings.push(`NuVizz created the route but named it "${gotName || '(none)'}" instead of "${routeName}" — it will show under that name on the board.`);
+  if (!seedAttached) warnings.push(`The route exists but first order ${seedNbr} has not attached to it yet — open the route in Compare, drag the order on and Save (do NOT re-create).`);
+
+  // ── 5. BOARD WRITE-THROUGH — same contract as the commit paths (#361) ────────
+  // The read-back just CONFIRMED the seed rides the new route, so stamp the board directly:
+  // without this the seed keeps showing unplanned (and carrying its old driver) until the
+  // next scan. Best-effort — a board hiccup never fails a create NuVizz confirmed.
+  let boardSync: any = null;
+  if (seedAttached && isFirestoreEnabled()) {
+    try {
+      const tenantET = String((creds as any)?.companyCode || 'DAVIS').toUpperCase();
+      const boardDay = /^\d{4}-\d{2}-\d{2}$/.test(String(payload?.date ?? '')) ? String(payload.date) : etDayString();
+      const b = await patchBoardPlan(tenantET, boardDay, {
+        routeName: (gotName && !isHashLikeId(gotName)) ? gotName : String(made.loadNbr ?? loadNbr),
+        orderedStopNbrs: [seedNbr],
+        driverName: null,
+        at: new Date().toISOString(),
+      });
+      boardSync = { patched: b.patched, rescued: b.rescued, missing: b.missing };
+    } catch (e: any) { boardSync = { error: e?.message || 'board write-through failed' }; }
+  }
+
   return {
     ok: true, loadNbr: made.loadNbr ?? loadNbr, loadId: made.loadId ?? null,
     routeName: gotName || null, requestedRouteName: routeName || null, nameMatched: nameOk,
-    ...(nameOk ? {} : { warning: `NuVizz created the route but named it "${gotName || '(none)'}" instead of "${routeName}" — it will show under that name on the board.` }),
+    seedStopNbr: seedNbr, seedAttached,
+    ...(warnings.length ? { warning: warnings.join(' ') } : {}),
+    ...(boardSync ? { boardSync } : {}),
     steps,
   };
 }

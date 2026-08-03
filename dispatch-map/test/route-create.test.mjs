@@ -41,7 +41,7 @@ test('unusable input yields no number rather than a bad one', () => {
 });
 
 test('the form pre-flight catches what would otherwise cost a NuVizz round-trip', () => {
-  const ok = validateNewRoute({ routeName: 'TRAILER 6', date: '2026-07-31' });
+  const ok = validateNewRoute({ routeName: 'TRAILER 6', date: '2026-07-31', seedStopNbr: '007155216' });
   assert.equal(ok.ok, true);
   assert.equal(ok.loadNbr, 'TRAILER6-0731');
 
@@ -56,14 +56,25 @@ test('the form pre-flight catches what would otherwise cost a NuVizz round-trip'
   }
 });
 
+test('a create with no FIRST ORDER is refused — NuVizz will not make an empty route (903)', () => {
+  const r = validateNewRoute({ routeName: 'TRAILER 6', date: '2026-07-31' });
+  assert.equal(r.ok, false);
+  assert.match(r.error, /Pick the first order/);
+  // The derived number still shows, so the form can keep displaying "this one would be …"
+  // while it waits for the seed pick.
+  assert.equal(r.loadNbr, 'TRAILER6-0731');
+  // A whitespace-only seed is not a seed.
+  assert.equal(validateNewRoute({ routeName: 'TRAILER 6', date: '2026-07-31', seedStopNbr: '   ' }).ok, false);
+});
+
 test('a name already on that day is refused before sending — and case does not hide it', () => {
   const existing = ['SUW 2', 'trailer 6', 'DAWSONVILLE'];
-  const r = validateNewRoute({ routeName: 'TRAILER 6', date: '2026-07-31', existingNames: existing });
+  const r = validateNewRoute({ routeName: 'TRAILER 6', date: '2026-07-31', existingNames: existing, seedStopNbr: '007155216' });
   assert.equal(r.ok, false);
   assert.match(r.error, /already on the board for that day/);
   assert.match(r.error, /open it from the Routes list/);
   // A genuinely new name on the same day is fine.
-  assert.equal(validateNewRoute({ routeName: 'TRAILER 7', date: '2026-07-31', existingNames: existing }).ok, true);
+  assert.equal(validateNewRoute({ routeName: 'TRAILER 7', date: '2026-07-31', existingNames: existing, seedStopNbr: '007155216' }).ok, true);
   // Blank/garbage entries in the board list never block a create.
-  assert.equal(validateNewRoute({ routeName: 'TRAILER 7', date: '2026-07-31', existingNames: [null, '', undefined] }).ok, true);
+  assert.equal(validateNewRoute({ routeName: 'TRAILER 7', date: '2026-07-31', existingNames: [null, '', undefined], seedStopNbr: '007155216' }).ok, true);
 });
