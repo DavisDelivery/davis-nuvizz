@@ -49,6 +49,15 @@ Note that dispatch-map's header sums `cartons` and labels it "total pallets" on
 screen. That number is skids. `expectedPieces` here will legitimately differ from
 it — do not "fix" this side to match.
 
+### The piece-count identity (measured, not assumed)
+
+`totalPallets` (total pieces) is exactly `totalCartons + volume` (skids +
+loose). Measured Aug 4 2026 across **337 live stops on 20 drivers**: 328
+carried a piece total and **every one matched the sum — zero disagreements**.
+The remaining 9 sent no total at all; all were Averitt orders on the Inbound
+Integration feed, which is why a missing total is computed from the parts
+rather than treated as zero.
+
 ### What the NuVizz order screen shows (verified on a live Averitt stop)
 
 NuVizz's own order screen carries the same mislabel: it displays `totalCartons`
