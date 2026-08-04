@@ -355,6 +355,82 @@ test('loads group and sum expected pieces', () => {
   assert.equal(loads[0].stops[0].stopNbr, '2', 'sorted by stop sequence');
 });
 
+// ── Non-scannable freight ────────────────────────────────────────────────────
+
+test('an Averitt stop (no piece total) is marked not scannable', () => {
+  // No totalPallets on the Inbound Integration feed, and the pallet carries an
+  // Averitt label whose barcodes the scanner cannot parse.
+  const m = manifest.toManifestStop({ stopNbr: '9185096', cartons: 2, volume: 0 });
+  assert.equal(m.scannable, false);
+  assert.equal(m.countIsEstimated, true);
+  assert.equal(m.expectedPieces, 2, 'still counts toward the load');
+});
+
+test('an ordinary Uline stop stays scannable', () => {
+  const m = manifest.toManifestStop({ stopNbr: '7152411', pallets: 7, cartons: 3, volume: 4 });
+  assert.equal(m.scannable, true);
+});
+
+test('an explicit scannable flag on the index row overrides the inference', () => {
+  assert.equal(
+    manifest.toManifestStop({ stopNbr: '1', cartons: 1 }).scannable, false, 'inferred not scannable',
+  );
+  assert.equal(
+    manifest.toManifestStop({ stopNbr: '1', cartons: 1, scannable: true }).scannable, true,
+    'index row can correct it without a deploy',
+  );
+  assert.equal(
+    manifest.toManifestStop({ stopNbr: '1', pallets: 5, scannable: false }).scannable, false,
+    'and can mark a stop unscannable even when it reported a total',
+  );
+});
+
+test('stopIsScannable takes the explicit flag over the estimate in both directions', () => {
+  assert.equal(manifest.stopIsScannable({ scannable: false }, false), false);
+  assert.equal(manifest.stopIsScannable({ scannable: true }, true), true);
+  assert.equal(manifest.stopIsScannable({}, true), false);
+  assert.equal(manifest.stopIsScannable({}, false), true);
+});
+
+// ── Hand-confirm ingest ──────────────────────────────────────────────────────
+
+test('a hand-confirm normalizes and defaults its reason', () => {
+  const { row } = session.normalizeHandConfirm({ stopNbr: '9185096', pieces: 2 });
+  assert.equal(row.stopNbr, '9185096');
+  assert.equal(row.pieces, 2);
+  assert.equal(row.reason, 'not_scannable');
+  assert.ok(Date.parse(row.confirmedAt), 'timestamped');
+});
+
+test('a hand-confirm is rejected with a reason rather than dropped silently', () => {
+  assert.match(session.normalizeHandConfirm({ pieces: 2 }).reason, /stopNbr/);
+  assert.match(session.normalizeHandConfirm({ stopNbr: '1', pieces: -1 }).reason, /piece count/);
+  assert.match(session.normalizeHandConfirm({ stopNbr: '1', pieces: 'two' }).reason, /piece count/);
+});
+
+test('replaying a queued hand-confirm never double-counts a stop', () => {
+  const first = session.normalizeHandConfirm({ stopNbr: '9185096', pieces: 2, confirmedAt: '2026-08-04T10:00:00.000Z' }).row;
+  const replay = session.normalizeHandConfirm({ stopNbr: '9185096', pieces: 2, confirmedAt: '2026-08-04T11:00:00.000Z' }).row;
+
+  const one = session.mergeHandConfirms([], [first]);
+  assert.equal(one.added, 1);
+
+  const two = session.mergeHandConfirms(one.handConfirms, [replay]);
+  assert.equal(two.handConfirms.length, 1, 'still one stop');
+  assert.equal(two.added, 0);
+  assert.equal(two.duplicates, 1);
+  assert.equal(two.handConfirms[0].confirmedAt, '2026-08-04T10:00:00.000Z', 'first confirmation keeps the time');
+});
+
+test('a hand-confirm never becomes a scan — the two sets stay separate', () => {
+  const scan = session.normalizeScan({ og: 'OG6028479182', pro: '7152411' }).row;
+  const hand = session.normalizeHandConfirm({ stopNbr: '9185096', pieces: 2 }).row;
+  assert.equal('og' in hand, false, 'a hand-confirm has no piece ID and must not fake one');
+  assert.equal('pieces' in scan, false);
+  assert.equal(session.mergeScans([], [scan]).scans.length, 1);
+  assert.equal(session.mergeHandConfirms([], [hand]).handConfirms.length, 1);
+});
+
 // ── Loader pick list ─────────────────────────────────────────────────────────
 
 const dayStops = () => [

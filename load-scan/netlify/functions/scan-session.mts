@@ -55,6 +55,65 @@ export function normalizeScan(raw: any): { row?: ScanRow; reason?: string } {
   return { row: { og, pro, scannedAt, stopNbr: String(raw?.stopNbr ?? '').trim(), engine } };
 }
 
+export interface HandConfirmRow {
+  stopNbr: string;
+  pieces: number;
+  confirmedAt: string;
+  /** Why the app could not scan it — carried so the record explains itself later. */
+  reason: string;
+}
+
+/**
+ * Normalize one hand-confirm, or explain why it cannot be used.
+ *
+ * A hand-confirm is a driver asserting a whole stop is on the truck when there
+ * is no label the scanner can read (Averitt freight). It is deliberately NOT a
+ * scan: it carries no piece IDs, it is stored separately, and it never becomes
+ * an OG. Anything that reads this session can tell exactly which pieces were
+ * verified by barcode and which were vouched for by a person.
+ */
+export function normalizeHandConfirm(raw: any): { row?: HandConfirmRow; reason?: string } {
+  const stopNbr = String(raw?.stopNbr ?? '').trim();
+  if (!stopNbr) return { reason: 'missing stopNbr' };
+
+  const pieces = Number(raw?.pieces);
+  if (!Number.isFinite(pieces) || pieces < 0) return { reason: `bad piece count for stop ${stopNbr}` };
+
+  const at = String(raw?.confirmedAt ?? '').trim();
+  const confirmedAt = at && !Number.isNaN(Date.parse(at)) ? new Date(at).toISOString() : new Date().toISOString();
+
+  return {
+    row: {
+      stopNbr,
+      pieces: Math.floor(pieces),
+      confirmedAt,
+      reason: String(raw?.reason ?? 'not_scannable').trim() || 'not_scannable',
+    },
+  };
+}
+
+/** Merge hand-confirms, keyed by stop. First confirmation of a stop wins its timestamp. */
+export function mergeHandConfirms(
+  existing: HandConfirmRow[],
+  incoming: HandConfirmRow[],
+): { handConfirms: HandConfirmRow[]; added: number; duplicates: number } {
+  const byStop = new Map<string, HandConfirmRow>();
+  for (const r of existing) byStop.set(r.stopNbr, r);
+
+  let added = 0;
+  let duplicates = 0;
+  for (const r of incoming) {
+    if (byStop.has(r.stopNbr)) {
+      duplicates++;
+      continue;
+    }
+    byStop.set(r.stopNbr, r);
+    added++;
+  }
+  const handConfirms = [...byStop.values()].sort((a, b) => a.confirmedAt.localeCompare(b.confirmedAt));
+  return { handConfirms, added, duplicates };
+}
+
 /**
  * Merge incoming scans into the existing set, keyed by OG.
  *
@@ -95,6 +154,7 @@ export default async (req: Request): Promise<Response> => {
   if (!loadNbr) return bad('loadNbr is required');
 
   const incomingRaw: any[] = Array.isArray(body?.scans) ? body.scans : [];
+  const incomingHandRaw: any[] = Array.isArray(body?.handConfirms) ? body.handConfirms : [];
 
   // Layer 1 + 3: normalize, keeping every rejection and its reason.
   const accepted: ScanRow[] = [];
@@ -104,15 +164,27 @@ export default async (req: Request): Promise<Response> => {
     if (row) accepted.push(row);
     else rejected.push({ raw: r, reason: reason || 'unknown' });
   }
+  const acceptedHand: HandConfirmRow[] = [];
+  for (const r of incomingHandRaw) {
+    const { row, reason } = normalizeHandConfirm(r);
+    if (row) acceptedHand.push(row);
+    else rejected.push({ raw: r, reason: reason || 'unknown hand-confirm' });
+  }
 
   const path = `${SESSIONS}/${TENANT}__${date}__${loadNbr}`;
   const prior = await getDoc(path);
   const priorScans: ScanRow[] = Array.isArray(prior?.scans) ? prior.scans : [];
+  const priorHand: HandConfirmRow[] = Array.isArray(prior?.handConfirms) ? prior.handConfirms : [];
 
   const { scans, added, duplicates } = mergeScans(priorScans, accepted);
+  const { handConfirms, added: handAdded, duplicates: handDuplicates } = mergeHandConfirms(priorHand, acceptedHand);
 
   const expectedPieces = Number(body?.expectedPieces ?? prior?.expectedPieces ?? 0) || 0;
-  const scannedCount = scans.length;
+  // Pieces verified by barcode, and pieces a person vouched for — counted
+  // together for reconciliation, stored apart so the difference survives.
+  const scannedPieces = scans.length;
+  const confirmedPieces = handConfirms.reduce((n, h) => n + h.pieces, 0);
+  const scannedCount = scannedPieces + confirmedPieces;
 
   // reconciliation is driver-authored on close-out; carry it through untouched
   // unless this request is the one closing the load.
@@ -142,7 +214,10 @@ export default async (req: Request): Promise<Response> => {
     closedAt: closing ? new Date().toISOString() : prior?.closedAt || null,
     expectedPieces,
     scannedCount,
+    scannedPieces,
+    confirmedPieces,
     scans,
+    handConfirms,
     reconciliation,
     // Layer 3, persisted: rejects accumulate rather than overwrite, so a bad
     // label pattern is still visible days later.
@@ -154,8 +229,12 @@ export default async (req: Request): Promise<Response> => {
     loadNbr,
     date,
     scannedCount,
+    scannedPieces,
+    confirmedPieces,
     added,
     duplicates,
+    handAdded,
+    handDuplicates,
     rejected: rejected.length,
     rejectedDetail: rejected.slice(0, 20),
     closed: closing,

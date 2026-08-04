@@ -33,6 +33,58 @@ store it. The "2 of 3" index is printed as text only — it is in neither barcod
 so it cannot be used for completeness. Completeness is distinct OG count against
 `expectedPieces`.
 
+## Averitt freight is NOT scannable — confirmed from the pallet
+
+Photographed on the dock, Aug 2026. An Averitt skid carries **Averitt's own
+label, never a Uline label**. It has three barcodes and none of them fit the
+scanner:
+
+| field on the label | value seen | why it fails |
+| --- | --- | --- |
+| `PRO#` | `0259185096` | 10 bare digits; `isProBarcode` needs exactly 7 |
+| `SHIPMENT#` | `5010437803` | 10 bare digits |
+| `HU` (handling unit) | `1076461290` | 10 bare digits — the per-pallet piece ID |
+
+There is no `OG`-prefixed barcode, so `pairFrame` can never complete a piece.
+Every value classifies as `unknown` and is dropped. The load sits short and
+will not close.
+
+**Do not "just widen the PRO regex".** The three barcodes are indistinguishable
+by format — all bare 10 digits. Accept 7–10 and scanning the SHIPMENT# yields
+PRO `0437803`, which matches no stop, so the driver gets a RED *wrong freight*
+on freight that is correct. A false red at 5am is worse than no scan.
+
+Averitt *does* carry the two things the app needs — a shipment ID and a
+per-pallet HU — so this freight could be made properly scannable later. That
+needs to know what the barcodes actually **encode** (symbology, and any prefix
+not shown in the human-readable text), which takes a physical scan of one
+label. A photograph cannot settle it.
+
+The matching delivery receipt reads `TOTAL HANDLING UNITS: 2` / `TOTAL PIECES: 2`
+for a 2-skid shipment, consistent with HU being one-per-piece here.
+
+### Hand-confirm
+
+A stop the app cannot scan is marked `scannable: false` and gets a hand-confirm
+path instead:
+
+- **Two-step by construction.** The confirm button does not exist until "No
+  barcode we can read" is tapped, and it re-arms on every render. One stray tap
+  cannot book freight onto a truck.
+- **Only where it is needed.** Offered only on a `scannable: false` stop that is
+  still short — never as an alternative to scanning readable freight.
+- **Counts, but is never mistaken for a scan.** Hand-confirms are stored in
+  their own `handConfirms` list on the session doc, keyed and de-duplicated by
+  stop, with `scannedPieces` and `confirmedPieces` recorded separately. They
+  never become an OG.
+- **Covers the remainder only**, so a partly scanned stop cannot double count.
+- **Offline first**, on the same queue as scans, with the same flush and retry.
+
+The trigger derives from `countIsEstimated` (the stop sent no piece total),
+which on live data is exactly the Averitt / Inbound Integration set — 9 of 337
+stops, measured Aug 4 2026. That is a correlation, not a law: setting
+`scannable` on the index row overrides it in both directions, without a deploy.
+
 ## Field semantics
 
 NuVizz mislabels every freight count. Translation happens once, in
