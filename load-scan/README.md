@@ -49,6 +49,24 @@ Note that dispatch-map's header sums `cartons` and labels it "total pallets" on
 screen. That number is skids. `expectedPieces` here will legitimately differ from
 it — do not "fix" this side to match.
 
+### What the NuVizz order screen shows (verified on a live Averitt stop)
+
+NuVizz's own order screen carries the same mislabel: it displays `totalCartons`
+under the heading **"Pallets"**. So both NuVizz's UI and dispatch-map's header
+will disagree with `expectedPieces` here, and both are wrong about what they are
+counting. Do not reconcile toward either screen.
+
+Averitt freight arrives on the **Inbound Integration** feed, not Uline's, and
+those orders send **no piece total at all** — `totalPallets` is absent, so
+`expectedPieces` is computed from skids + loose and `countIsEstimated` is set.
+The flag means "computed here", not "uncertain".
+
+**Never sum the order's item lines.** A real one-pallet Averitt order (ZNShine
+solar panels, residential with liftgate) shows **Items(4)** on the order screen:
+three of the four lines are accessorials — residential delivery, liftgate, fuel
+surcharge — each with quantity 1 and confirmation type "Pieces". Summing item
+lines gives 4 pieces for one physical pallet. Charge lines are not freight.
+
 ## Environment
 
 | var | required | purpose |
