@@ -33,6 +33,57 @@ store it. The "2 of 3" index is printed as text only — it is in neither barcod
 so it cannot be used for completeness. Completeness is distinct OG count against
 `expectedPieces`.
 
+## Load order is the REVERSE of delivery order
+
+A trailer unloads from the doors forward, so the last stop delivered has to go on
+first, at the nose. Each stop carries a `loadSeq`: **1 = first onto the trailer =
+nose = the last stop delivered.**
+
+`loadSeq` is the reverse rank of the delivery sequence (`loadStopSeq ?? routeSeq`
+— measured Aug 4 2026, `loadStopSeq` is never populated on live loads, so this is
+`routeSeq` running 1..N with no nulls). Using the same key as the delivery sort
+means the two orders are exact inverses and cannot drift apart:
+`loadSeq + routeSeq === N + 1` at every position, which is asserted in the tests.
+
+**The server array stays in delivery order.** `loadSeq` is a field that gets
+stamped on, never a re-sort — every other consumer of the manifest reads delivery
+order and must keep getting it. Only the loading screen sorts by `loadSeq`.
+
+### Co-located stops share a position
+
+One address can carry several orders, arriving as separate stops with the same
+sequence number. Measured Aug 4 2026: BEN 1 has one shared pair; DENIS SALKIC has
+17 stops across 15 sequence numbers. They come off the trailer at one place, so
+they go on at one place — stops sharing a delivery sequence get the **same**
+`loadSeq` and stay adjacent.
+
+So `loadSeq` ranks *distinct sequence values*, not stops: Denis's load is
+`loadSeq` 1..15, not 1..17.
+
+### On screen
+
+Every row shows both numbers — "Load 1 of 13 · Delivery stop 13" — so nobody has
+to do the arithmetic on a dock at 5am. The ends are labelled physically, because
+a loader thinks in trailer positions, not integers: the first group reads
+**"nose of the trailer"** and the last reads **"at the doors"**.
+
+### The resequence guard
+
+A loaded trailer is a physical record of *one* route order. If dispatch
+resequences after loading has started, the freight is already in the wrong place
+and re-drawing the screen with new numbers would hide exactly that.
+
+So the sequence in force when the **first piece** is recorded is written down
+(`stampLoadedSequence`) and never overwritten. On every refresh the current
+`sequenceFingerprint` is compared against it. If they differ, the screen **keeps
+showing the order the truck was loaded against** and raises a loud banner instead
+of silently renumbering. The session doc carries `loadedAgainstSequence` (first
+write wins) and a `sequenceChanged` flag, so the record shows it too.
+
+The fingerprint is order-insensitive — a harmless re-sort of the array is not an
+alarm; only a stop's sequence actually changing, or a stop appearing/disappearing,
+is.
+
 ## Averitt freight is NOT scannable — confirmed from the pallet
 
 Photographed on the dock, Aug 2026. An Averitt skid carries **Averitt's own

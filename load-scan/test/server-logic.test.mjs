@@ -355,6 +355,105 @@ test('loads group and sum expected pieces', () => {
   assert.equal(loads[0].stops[0].stopNbr, '2', 'sorted by stop sequence');
 });
 
+// ── Load order = reverse delivery order ──────────────────────────────────────
+
+const seqStops = (seqs) =>
+  seqs.map((seq, i) => ({ stopNbr: `S${i + 1}`, routeSeq: seq, loadStopSeq: null }));
+
+test('a 13-stop load lists delivery stop 13 first and delivery stop 1 last', () => {
+  const stamped = manifest.assignLoadSeq(seqStops([1,2,3,4,5,6,7,8,9,10,11,12,13]));
+  const byLoadSeq = stamped.slice().sort((a, b) => a.loadSeq - b.loadSeq);
+
+  assert.equal(byLoadSeq[0].routeSeq, 13, 'first onto the trailer is the last delivered');
+  assert.equal(byLoadSeq[0].loadSeq, 1);
+  assert.equal(byLoadSeq.at(-1).routeSeq, 1, 'last onto the trailer is the first delivered');
+  assert.equal(byLoadSeq.at(-1).loadSeq, 13);
+  assert.equal(manifest.loadGroupCount(stamped), 13);
+});
+
+test('loadSeq and delivery seq are exact inverses at every position', () => {
+  const stamped = manifest.assignLoadSeq(seqStops([1,2,3,4,5]));
+  for (const s of stamped) {
+    assert.equal(s.loadSeq + s.routeSeq, 6, `stop ${s.stopNbr}: loadSeq + routeSeq must be N+1`);
+  }
+});
+
+test("Denis's 17 stops over 15 sequences make 15 groups, none split", () => {
+  // 15 distinct sequence numbers, two of them carrying a co-located pair.
+  const seqs = [1,2,3,4,5,6,7,7,8,9,10,11,12,13,14,15,15];
+  const stamped = manifest.assignLoadSeq(seqStops(seqs));
+
+  assert.equal(stamped.length, 17, 'every stop is still present');
+  assert.equal(manifest.loadGroupCount(stamped), 15, '15 trailer positions, not 17');
+
+  // Co-located stops share a position.
+  const at7 = stamped.filter((s) => s.routeSeq === 7).map((s) => s.loadSeq);
+  assert.deepEqual(at7, [9, 9], 'both stops at sequence 7 load at the same place');
+  const at15 = stamped.filter((s) => s.routeSeq === 15).map((s) => s.loadSeq);
+  assert.deepEqual(at15, [1, 1], 'the co-located last delivery is the nose');
+
+  // And they stay adjacent once sorted into loading order.
+  const order = stamped.slice().sort((a, b) => a.loadSeq - b.loadSeq || a.stopNbr.localeCompare(b.stopNbr));
+  for (const seq of [7, 15]) {
+    const idx = order.map((s, i) => (s.routeSeq === seq ? i : -1)).filter((i) => i >= 0);
+    assert.equal(idx[1] - idx[0], 1, `stops sharing sequence ${seq} must be adjacent`);
+  }
+});
+
+test('groupIntoLoads keeps delivery order in the array and only ADDS loadSeq', () => {
+  const stops = [3, 1, 2].map((seq) =>
+    manifest.toManifestStop({ stopNbr: `S${seq}`, loadNbr: 'L1', routeSeq: seq, pallets: 1 }),
+  );
+  const [load] = manifest.groupIntoLoads(stops);
+
+  assert.deepEqual(load.stops.map((s) => s.routeSeq), [1, 2, 3], 'array is still delivery order');
+  assert.deepEqual(load.stops.map((s) => s.loadSeq), [3, 2, 1], 'loadSeq is the reverse');
+  assert.equal(load.loadGroupCount, 3);
+  assert.equal(load.stopCount, 3);
+});
+
+test('a stop with no sequence at all gets a null loadSeq rather than position 1', () => {
+  const stamped = manifest.assignLoadSeq([
+    { stopNbr: 'A', routeSeq: 1, loadStopSeq: null },
+    { stopNbr: 'B', routeSeq: null, loadStopSeq: null },
+  ]);
+  assert.equal(stamped.find((s) => s.stopNbr === 'B').loadSeq, null);
+  assert.equal(stamped.find((s) => s.stopNbr === 'A').loadSeq, 1);
+});
+
+test('loadStopSeq wins over routeSeq so the two orders can never drift apart', () => {
+  const stamped = manifest.assignLoadSeq([
+    { stopNbr: 'A', routeSeq: 1, loadStopSeq: 9 },
+    { stopNbr: 'B', routeSeq: 2, loadStopSeq: 5 },
+  ]);
+  assert.equal(stamped.find((s) => s.stopNbr === 'A').loadSeq, 1, 'seq 9 delivers last, loads first');
+  assert.equal(stamped.find((s) => s.stopNbr === 'B').loadSeq, 2);
+});
+
+// ── Resequence guard ─────────────────────────────────────────────────────────
+
+test('the sequence fingerprint changes when dispatch reorders the route', () => {
+  const before = manifest.sequenceFingerprint([
+    { stopNbr: 'A', routeSeq: 1 }, { stopNbr: 'B', routeSeq: 2 },
+  ]);
+  const reordered = manifest.sequenceFingerprint([
+    { stopNbr: 'A', routeSeq: 2 }, { stopNbr: 'B', routeSeq: 1 },
+  ]);
+  assert.notEqual(before, reordered, 'a swap must be detectable');
+});
+
+test('the fingerprint ignores array order, so a harmless re-sort is not an alarm', () => {
+  const a = manifest.sequenceFingerprint([{ stopNbr: 'A', routeSeq: 1 }, { stopNbr: 'B', routeSeq: 2 }]);
+  const b = manifest.sequenceFingerprint([{ stopNbr: 'B', routeSeq: 2 }, { stopNbr: 'A', routeSeq: 1 }]);
+  assert.equal(a, b, 'same stops, same sequences — no false alarm');
+});
+
+test('adding or dropping a stop changes the fingerprint', () => {
+  const base = manifest.sequenceFingerprint([{ stopNbr: 'A', routeSeq: 1 }]);
+  const added = manifest.sequenceFingerprint([{ stopNbr: 'A', routeSeq: 1 }, { stopNbr: 'B', routeSeq: 2 }]);
+  assert.notEqual(base, added);
+});
+
 // ── Non-scannable freight ────────────────────────────────────────────────────
 
 test('an Averitt stop (no piece total) is marked not scannable', () => {

@@ -136,6 +136,30 @@ export async function pruneSynced(days = 14) {
 
 export const cacheKey = (date, driverNumber) => `manifest::${date}::${driverNumber}`;
 
+// ── Loaded-against sequence ──────────────────────────────────────────────────
+//
+// The trailer is a physical record of one particular route order. If dispatch
+// resequences after loading starts, the freight is already in the wrong place
+// and re-drawing the screen with new numbers would hide that. So the sequence
+// in force when the FIRST piece was recorded is written down and never
+// overwritten — it is what the truck actually reflects.
+
+export const seqKey = (loadNbr) => `loadedseq::${loadNbr}`;
+
+/** Write the loaded-against sequence once. Later calls are no-ops by design. */
+export async function stampLoadedSequence(loadNbr, fingerprint, loadSeqByStop) {
+  const key = seqKey(loadNbr);
+  const existing = await getCache(key);
+  if (existing) return false;
+  await putCache(key, { fingerprint, loadSeqByStop, at: new Date().toISOString() });
+  return true;
+}
+
+export async function getLoadedSequence(loadNbr) {
+  const row = await getCache(seqKey(loadNbr));
+  return row ? row.value : null;
+}
+
 export function putCache(key, value) {
   return tx(STORE_CACHE, 'readwrite', (s) => s.put({ key, value, at: new Date().toISOString() }));
 }
