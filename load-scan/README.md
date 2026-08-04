@@ -102,7 +102,7 @@ header anywhere: the app is same-origin with its functions, so none is needed.
 | `POST /driver-change-pin` | driver | 4-6 digits, must differ from current |
 | `GET /load-manifest` | driver | token to alias set to today's stops, filtered server side |
 | `POST /scan-session` | driver | idempotent upsert on `(loadNbr, og)` |
-| `GET/POST /driver-admin` | dispatcher | credentials, PINs, lockouts, alias editing, review queue |
+| `GET/POST /driver-admin` | dispatcher | credentials, PINs, lockouts, alias editing, roles, review queue |
 | `GET /driver-alias-report` | dispatcher | distinct `driverUserName` values for hand-mapping |
 | `GET /health` | anyone | routing check, no data |
 
@@ -132,6 +132,12 @@ curl -X POST https://ddsloadout.netlify.app/.netlify/functions/driver-admin \
 # 3. sign in as that dispatcher, pull the alias report, and hand-map each
 #    distinct driverUserName to a driver number in the Drivers panel.
 ```
+
+After first run, more dispatchers are made from inside the app: a dispatcher
+can promote any credential with `set-role` ("make dispatcher" in the Drivers
+panel) and demote it back. The last active dispatcher can never be demoted or
+deactivated — with the bootstrap secret used and removed, zero dispatchers
+would be unrecoverable. Promote a second dispatcher **before** you need one.
 
 ## Local
 

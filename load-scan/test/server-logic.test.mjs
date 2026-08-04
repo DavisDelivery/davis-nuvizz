@@ -106,6 +106,46 @@ test('the fifth failure locks the credential for 15 minutes', () => {
   assert.equal(auth.isLockedOut({ lockedUntil: fifth.lockedUntil }, now + 16 * 60_000), false, 'expires');
 });
 
+// ── Last-dispatcher guard ────────────────────────────────────────────────────
+
+test('the only active dispatcher is the last one — demotion/deactivation must refuse', () => {
+  const creds = [
+    { _id: '1', role: 'dispatcher', active: true },
+    { _id: '4471', role: 'driver', active: true },
+  ];
+  assert.equal(auth.isLastActiveDispatcher(creds, '1'), true);
+});
+
+test('with a second active dispatcher, either may be demoted', () => {
+  const creds = [
+    { _id: '1', role: 'dispatcher', active: true },
+    { _id: '2', role: 'dispatcher', active: true },
+  ];
+  assert.equal(auth.isLastActiveDispatcher(creds, '1'), false);
+  assert.equal(auth.isLastActiveDispatcher(creds, '2'), false);
+});
+
+test('an INACTIVE second dispatcher does not count as cover', () => {
+  const creds = [
+    { _id: '1', role: 'dispatcher', active: true },
+    { _id: '2', role: 'dispatcher', active: false },
+  ];
+  assert.equal(auth.isLastActiveDispatcher(creds, '1'), true, 'deactivated cover is no cover');
+});
+
+test('the guard never fires for a driver credential', () => {
+  const creds = [
+    { _id: '1', role: 'dispatcher', active: true },
+    { _id: '4471', role: 'driver', active: true },
+  ];
+  assert.equal(auth.isLastActiveDispatcher(creds, '4471'), false);
+});
+
+test('the guard reads driverNumber when _id is absent', () => {
+  const creds = [{ driverNumber: '1', role: 'dispatcher', active: true }];
+  assert.equal(auth.isLastActiveDispatcher(creds, '1'), true);
+});
+
 // ── Alias resolution ─────────────────────────────────────────────────────────
 
 test('the alias normalizer matches the dispatch-map algorithm', () => {

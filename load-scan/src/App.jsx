@@ -13,7 +13,7 @@ import { evaluateScan, loadProgress, stopProgress, ogGapHint, OUTCOME, normalize
 import { useSortable, SortableTh } from './lib/useSortable.jsx';
 
 // Bumped by hand on every change. load-scan versions independently of dispatch-map.
-const APP_VERSION = '0.3.1';
+const APP_VERSION = '0.4.0';
 
 const BUILD_COMMIT = typeof __BUILD_COMMIT__ !== 'undefined' ? __BUILD_COMMIT__ : 'dev';
 const BUILD_TIME = typeof __BUILD_TIME__ !== 'undefined' ? __BUILD_TIME__ : '';
@@ -812,6 +812,7 @@ function DispatcherScreen({ session, onSignOut }) {
                 <SortableTh label="Driver #" k="driverNumber" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />
                 <SortableTh label="Name" k="displayName" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />
                 <SortableTh label="Aliases" k="aliasCount" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />
+                <SortableTh label="Role" k="role" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />
                 <SortableTh label="Active" k="active" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />
                 <SortableTh label="Last login" k="lastLoginAt" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />
                 <th className="px-2 py-1" />
@@ -823,6 +824,9 @@ function DispatcherScreen({ session, onSignOut }) {
                   <td className="px-2 py-2 font-mono">{d.driverNumber}</td>
                   <td className="px-2 py-2">{d.displayName || '—'}</td>
                   <td className="px-2 py-2 text-xs">{d.nuvizzAliases.join(', ') || <span className="text-rose-600">none</span>}</td>
+                  <td className="px-2 py-2 text-xs">
+                    {d.role === 'dispatcher' ? <span className="font-medium text-[#1e5b92]">dispatcher</span> : 'driver'}
+                  </td>
                   <td className="px-2 py-2">
                     {d.active ? <span className="text-emerald-700">yes</span> : <span className="text-rose-700">no</span>}
                     {d.lockedUntil ? <div className="text-[10px] text-amber-700">locked</div> : null}
@@ -837,6 +841,20 @@ function DispatcherScreen({ session, onSignOut }) {
                       onClick={() => act({ action: 'set-active', driverNumber: d.driverNumber, active: !d.active })}
                     >
                       {d.active ? 'deactivate' : 'reactivate'}
+                    </button>
+                    <button
+                      type="button"
+                      className="text-xs underline mr-2"
+                      disabled={busy}
+                      onClick={() =>
+                        act({
+                          action: 'set-role',
+                          driverNumber: d.driverNumber,
+                          role: d.role === 'dispatcher' ? 'driver' : 'dispatcher',
+                        })
+                      }
+                    >
+                      {d.role === 'dispatcher' ? 'make driver' : 'make dispatcher'}
                     </button>
                     {d.lockedUntil ? (
                       <button
