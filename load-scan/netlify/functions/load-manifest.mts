@@ -11,16 +11,24 @@
 //                 number off the paperwork. The unmatched alias is recorded for
 //                 dispatcher review. NEVER a guessed load.
 //
+// A LOADER never takes the identity path at all. A forklift operator has no
+// stops of their own — they load somebody else's truck, one start to finish and
+// several per shift — so with no loadNbr they get the day's loads as pick-list
+// summaries (no stops on the wire) and choose the truck they are working.
+// Running the identity path for them would resolve to nothing and file an
+// unmatched-alias review row on every sign-in.
+//
 // ?loadNbr overrides resolution entirely. That is the manual path — covering
-// another route, or an unresolved identity. Every use is logged.
+// another route, an unresolved identity, or a loader's chosen truck. Every use
+// is logged.
 //
 // ZERO NuVizz calls. The pre-built stop index only. Hard rule.
 // FILTERING IS SERVER SIDE — a phone never receives all ~600 stops.
 
 import { readStops, getDoc, setDoc, isFirestoreEnabled } from './lib/firestore.mts';
-import { DRIVER_AUTH, UNMATCHED_ALIASES, authenticate } from './lib/auth.mts';
+import { DRIVER_AUTH, UNMATCHED_ALIASES, authenticate, normalizeRole } from './lib/auth.mts';
 import { DriverCred, normalizeDriverAlias, stopBelongsToDriver } from './lib/aliases.mts';
-import { toManifestStop, groupIntoLoads } from './lib/manifest.mts';
+import { toManifestStop, groupIntoLoads, loadSummaries } from './lib/manifest.mts';
 import { ok, bad, unauthorized, etDayString, DATE_RE } from './lib/http.mts';
 
 const TENANT = 'davis';
@@ -56,6 +64,10 @@ export default async (req: Request): Promise<Response> => {
     nuvizzAliases: Array.isArray(credDoc.nuvizzAliases) ? credDoc.nuvizzAliases : [],
   };
 
+  // Role comes from the LIVE credential, never the 90-day token: a driver
+  // promoted to loader this morning must not wait for token expiry.
+  const role = normalizeRole(credDoc.role);
+
   // Read the day once. mask keeps the wire small — only what the manifest needs.
   const stops = await readStops(TENANT, date, {
     mask: [
@@ -79,9 +91,28 @@ export default async (req: Request): Promise<Response> => {
       date,
       driverNumber: cred.driverNumber,
       displayName: cred.displayName,
+      role,
       resolvedBy: 'manual_load_number',
       unresolved: false,
       loads,
+      warnings,
+    });
+  }
+
+  // ── Loader path: every truck on the dock, as summaries ─────────────────────
+  if (role === 'loader') {
+    const summaries = loadSummaries(stops.map((s: any) => toManifestStop(s, warn)));
+    console.log(`[load-manifest] LOADER pick-list: loader=${claims.sub} date=${date} loads=${summaries.length}`);
+    return ok({
+      date,
+      driverNumber: cred.driverNumber,
+      displayName: cred.displayName,
+      role,
+      resolvedBy: 'loader_pick_list',
+      unresolved: false,
+      // Summaries only — stops arrive when a truck is picked, never all at once.
+      summariesOnly: true,
+      loads: summaries,
       warnings,
     });
   }
@@ -105,6 +136,7 @@ export default async (req: Request): Promise<Response> => {
       date,
       driverNumber: cred.driverNumber,
       displayName: cred.displayName,
+      role,
       resolvedBy: null,
       unresolved: true,
       reason: (cred.nuvizzAliases || []).length ? 'no_alias_match' : 'no_aliases_seeded',
@@ -118,6 +150,7 @@ export default async (req: Request): Promise<Response> => {
     date,
     driverNumber: cred.driverNumber,
     displayName: cred.displayName,
+    role,
     resolvedBy: 'alias',
     unresolved: false,
     loads,

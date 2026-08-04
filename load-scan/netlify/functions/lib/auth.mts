@@ -70,15 +70,34 @@ function sign(data: string): string {
   return b64url(createHmac('sha256', secret()).update(data).digest());
 }
 
+/**
+ * Three roles, and the difference is only ever "whose load am I looking at":
+ *
+ *   driver      their own load, resolved from the hand-seeded alias set
+ *   loader      a forklift operator loading somebody else's truck. Picks the
+ *               load off the day's list — one truck start to finish, several
+ *               per shift. No aliases, so the identity path never runs.
+ *   dispatcher  the credential admin surface
+ *
+ * Piece matching, duplicate catching, counts and the offline queue are
+ * identical for all three: they work on a load, not on a person.
+ */
+export type Role = 'driver' | 'loader' | 'dispatcher';
+
+/** Anything unrecognized is a driver — the least-privileged role, never a guess upward. */
+export function normalizeRole(v: any): Role {
+  return v === 'dispatcher' ? 'dispatcher' : v === 'loader' ? 'loader' : 'driver';
+}
+
 export interface TokenClaims {
   sub: string; // driverNumber
   name?: string;
-  role: 'driver' | 'dispatcher';
+  role: Role;
   iat: number;
   exp: number;
 }
 
-export function issueToken(driverNumber: string, displayName: string, role: 'driver' | 'dispatcher' = 'driver'): string {
+export function issueToken(driverNumber: string, displayName: string, role: Role = 'driver'): string {
   const now = Math.floor(Date.now() / 1000);
   const header = b64url(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
   const payload = b64url(

@@ -106,6 +106,23 @@ test('the fifth failure locks the credential for 15 minutes', () => {
   assert.equal(auth.isLockedOut({ lockedUntil: fifth.lockedUntil }, now + 16 * 60_000), false, 'expires');
 });
 
+// ── Roles ────────────────────────────────────────────────────────────────────
+
+test('roles normalize, and anything unrecognized is a driver', () => {
+  assert.equal(auth.normalizeRole('dispatcher'), 'dispatcher');
+  assert.equal(auth.normalizeRole('loader'), 'loader');
+  assert.equal(auth.normalizeRole('driver'), 'driver');
+  for (const junk of [undefined, null, '', 'admin', 'DISPATCHER', 'Loader', 42]) {
+    assert.equal(auth.normalizeRole(junk), 'driver', `${JSON.stringify(junk)} is not a promotion`);
+  }
+});
+
+test('a loader token round-trips with its role', () => {
+  const claims = auth.verifyToken(auth.issueToken('9001', 'Warehouse Ops', 'loader'));
+  assert.equal(claims.role, 'loader');
+  assert.equal(claims.sub, '9001');
+});
+
 // ── Last-dispatcher guard ────────────────────────────────────────────────────
 
 test('the only active dispatcher is the last one — demotion/deactivation must refuse', () => {
@@ -336,6 +353,49 @@ test('loads group and sum expected pieces', () => {
   assert.equal(loads[0].loadNbr, 'L1');
   assert.equal(loads[0].expectedPieces, 5);
   assert.equal(loads[0].stops[0].stopNbr, '2', 'sorted by stop sequence');
+});
+
+// ── Loader pick list ─────────────────────────────────────────────────────────
+
+const dayStops = () => [
+  manifest.toManifestStop({ stopNbr: '1', loadNbr: 'L1', pallets: 3, loadStopSeq: 1, driverName: 'MICHAEL FRYE', routeName: 'R-1' }),
+  manifest.toManifestStop({ stopNbr: '2', loadNbr: 'L1', pallets: 2, loadStopSeq: 2, driverName: 'MICHAEL FRYE', routeName: 'R-1' }),
+  manifest.toManifestStop({ stopNbr: '3', loadNbr: 'L2', pallets: 5, driverName: 'BRAD GOODROE', routeName: 'R-2' }),
+];
+
+test('the pick list is one row per load, with whose truck it is', () => {
+  const rows = manifest.loadSummaries(dayStops());
+  assert.equal(rows.length, 2);
+  assert.deepEqual(rows[0], {
+    loadNbr: 'L1', routeName: 'R-1', driverName: 'MICHAEL FRYE', stopCount: 2, expectedPieces: 5,
+  });
+  assert.equal(rows[1].driverName, 'BRAD GOODROE');
+});
+
+test('a pick-list row carries NO stops — a phone never gets the whole board', () => {
+  for (const row of manifest.loadSummaries(dayStops())) {
+    assert.equal('stops' in row, false, `${row.loadNbr} must not ship its stops`);
+    assert.equal('raw' in row, false);
+  }
+});
+
+test('the pick list falls back to driverUserName, then to null', () => {
+  const rows = manifest.loadSummaries([
+    manifest.toManifestStop({ stopNbr: '1', loadNbr: 'A', driverUserName: 'VINCENT BONZO' }),
+    manifest.toManifestStop({ stopNbr: '2', loadNbr: 'B' }),
+  ]);
+  assert.equal(rows[0].driverName, 'VINCENT BONZO');
+  assert.equal(rows[1].driverName, null, 'an unassigned truck says so rather than inventing a name');
+});
+
+test('pick-list piece totals match what the load screen will show', () => {
+  const stops = dayStops();
+  const rows = manifest.loadSummaries(stops);
+  const full = manifest.groupIntoLoads(stops);
+  for (let i = 0; i < rows.length; i++) {
+    assert.equal(rows[i].expectedPieces, full[i].expectedPieces, `${rows[i].loadNbr} agrees`);
+    assert.equal(rows[i].stopCount, full[i].stopCount);
+  }
 });
 
 // ── Scan ingest idempotency ──────────────────────────────────────────────────

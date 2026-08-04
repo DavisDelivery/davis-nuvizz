@@ -12,11 +12,11 @@
 //                                          one-off reset the driver must replace
 // POST { action:'clear-lockout', ... }  -> zero failedAttempts, drop lockedUntil
 // POST { action:'set-active', ... }     -> deactivate / reactivate
-// POST { action:'set-role', ... }       -> promote to dispatcher / demote to
-//                                          driver. NEVER on the last active
-//                                          dispatcher — with the bootstrap
-//                                          secret used and removed, zero
-//                                          dispatchers is unrecoverable
+// POST { action:'set-role', ... }       -> driver | loader | dispatcher. NEVER
+//                                          moves the last active dispatcher off
+//                                          the role — with the bootstrap secret
+//                                          used and removed, zero dispatchers
+//                                          is unrecoverable
 // POST { action:'resolve-unmatched' }   -> clear a review-queue row
 //
 // BOOTSTRAP: with no dispatcher credential yet, nobody can call this. A request
@@ -26,7 +26,7 @@
 // ZERO NuVizz calls.
 
 import { getDoc, setDoc, patchDoc, listDocs, isFirestoreEnabled } from './lib/firestore.mts';
-import { DRIVER_AUTH, UNMATCHED_ALIASES, authenticate, hashPin, isValidPinFormat, isLastActiveDispatcher } from './lib/auth.mts';
+import { DRIVER_AUTH, UNMATCHED_ALIASES, authenticate, hashPin, isValidPinFormat, isLastActiveDispatcher, normalizeRole } from './lib/auth.mts';
 import { normalizeDriverAlias, findAmbiguousAliases } from './lib/aliases.mts';
 import { ok, bad, unauthorized, forbidden, readJson, viaProxy } from './lib/http.mts';
 
@@ -40,7 +40,7 @@ const publicCred = (d: any) => ({
   hasPin: !!d?.pinHash,
   failedAttempts: Number(d?.failedAttempts || 0),
   lockedUntil: d?.lockedUntil || null,
-  role: d?.role === 'dispatcher' ? 'dispatcher' : 'driver',
+  role: normalizeRole(d?.role),
   createdAt: d?.createdAt || null,
   lastLoginAt: d?.lastLoginAt || null,
 });
@@ -216,9 +216,11 @@ export default async (req: Request): Promise<Response> => {
 
     case 'set-role': {
       if (!existing) return bad('no such driver', 404);
-      const role = body?.role === 'dispatcher' || body?.role === 'driver' ? body.role : null;
-      if (!role) return bad('role must be driver or dispatcher');
-      if (role === 'driver' && isLastActiveDispatcher(await listDocs(DRIVER_AUTH), driverNumber)) {
+      const role = ['driver', 'loader', 'dispatcher'].includes(body?.role) ? body.role : null;
+      if (!role) return bad('role must be driver, loader or dispatcher');
+      // Any move OFF dispatcher is a demotion, loader included — the guard keys
+      // on the target role, not on 'driver' specifically.
+      if (role !== 'dispatcher' && isLastActiveDispatcher(await listDocs(DRIVER_AUTH), driverNumber)) {
         return bad('cannot demote the last dispatcher — promote another one first', 409);
       }
       await patchDoc(path, { role });

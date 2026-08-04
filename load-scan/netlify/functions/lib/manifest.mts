@@ -163,6 +163,33 @@ export function toManifestStop(raw: any, warn?: (msg: string) => void): Manifest
   };
 }
 
+/**
+ * The day's loads as PICK-LIST ROWS — no stops attached.
+ *
+ * This is what a forklift operator chooses from: they load somebody else's
+ * truck, so they need to see every truck on the dock, but a phone must never
+ * receive all ~600 stops. Summaries are a few hundred bytes; picking one then
+ * goes through the existing ?loadNbr= path for that load's stops alone.
+ *
+ * driverName rides along because "whose truck is this" is how a dock talks
+ * about a load — the load number alone is not how anyone identifies a trailer.
+ */
+export function loadSummaries(stops: ManifestStop[]): Array<{
+  loadNbr: string;
+  routeName: string | null;
+  driverName: string | null;
+  stopCount: number;
+  expectedPieces: number;
+}> {
+  return groupIntoLoads(stops).map((l) => ({
+    loadNbr: l.loadNbr,
+    routeName: l.routeName,
+    driverName: str(l.stops[0]?.raw?.driverName) || str(l.stops[0]?.raw?.driverUserName) || null,
+    stopCount: l.stopCount,
+    expectedPieces: l.expectedPieces,
+  }));
+}
+
 /** Group manifest stops into loads, summing expected pieces per load. */
 export function groupIntoLoads(stops: ManifestStop[]): Array<{
   loadNbr: string;
