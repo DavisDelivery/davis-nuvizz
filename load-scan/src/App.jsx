@@ -9,11 +9,13 @@ import { loadSession, saveSession, clearSession, daysRemaining } from './lib/ses
 import * as api from './lib/api.js';
 import * as store from './lib/offline.js';
 import { startScanner } from './lib/scanner.js';
-import { evaluateScan, loadProgress, stopProgress, ogGapHint, OUTCOME, normalizePro } from './lib/scan-logic.js';
+import { evaluateScan, loadProgress, stopProgress, ogGapHint, OUTCOME, normalizePro, createPairBuffer } from './lib/scan-logic.js';
+import { createWedgeAccumulator, WEDGE_PAIR_WINDOW_MS } from './lib/wedge.js';
+import { initAudio, playVerdict } from './lib/feedback.js';
 import { useSortable, SortableTh } from './lib/useSortable.jsx';
 
 // Bumped by hand on every change. load-scan versions independently of dispatch-map.
-const APP_VERSION = '0.4.0';
+const APP_VERSION = '0.5.0';
 
 const BUILD_COMMIT = typeof __BUILD_COMMIT__ !== 'undefined' ? __BUILD_COMMIT__ : 'dev';
 const BUILD_TIME = typeof __BUILD_TIME__ !== 'undefined' ? __BUILD_TIME__ : '';
@@ -319,6 +321,53 @@ function OutcomeCard({ result, partial }) {
   return null; // SILENT — deliberately nothing
 }
 
+/**
+ * Full-screen verdict for gun mode. The beep already said what happened; this
+ * is the glanceable confirmation. Green/amber/dup clear themselves; RED stays
+ * up until the operator taps it — wrong freight must be acknowledged, not
+ * scrolled past.
+ */
+function VerdictFlash({ verdict, onClear }) {
+  if (!verdict) return null;
+  const { kind, evaluated } = verdict;
+  const base = 'fixed inset-0 z-40 flex flex-col items-center justify-center text-center p-6 select-none';
+
+  if (kind === 'red') {
+    return (
+      <button type="button" onClick={onClear} className={`${base} w-full bg-rose-600 text-white`}>
+        <XCircle className="w-24 h-24 mb-4" aria-hidden="true" />
+        <div className="text-4xl font-black leading-tight">WRONG FREIGHT</div>
+        <div className="mt-2 text-2xl font-bold">TAKE IT OFF</div>
+        <div className="mt-4 text-lg">PRO {evaluated?.pro}</div>
+        {evaluated?.owner ? (
+          <div className="text-lg">
+            Belongs to {evaluated.owner.loadNbr}
+            {evaluated.owner.driverName ? ` · ${evaluated.owner.driverName}` : ''}
+          </div>
+        ) : (
+          <div className="text-lg">Not on any load we can see today.</div>
+        )}
+        <div className="mt-8 text-sm uppercase tracking-widest opacity-80">Tap anywhere to clear</div>
+      </button>
+    );
+  }
+
+  const tone = {
+    green: ['bg-emerald-500 text-white', 'ON THIS TRUCK'],
+    amber: ['bg-amber-400 text-amber-950', 'APPT — CONFIRM BOOKED'],
+    dup: ['bg-slate-700 text-white', 'ALREADY SCANNED'],
+  }[kind] || ['bg-emerald-500 text-white', 'ON THIS TRUCK'];
+
+  return (
+    <div className={`${base} ${tone[0]} pointer-events-none`}>
+      {kind === 'green' ? <CheckCircle2 className="w-24 h-24 mb-4" aria-hidden="true" /> : null}
+      {kind === 'amber' ? <AlertTriangle className="w-24 h-24 mb-4" aria-hidden="true" /> : null}
+      <div className="text-4xl font-black leading-tight">{tone[1]}</div>
+      {evaluated?.stop?.businessName ? <div className="mt-2 text-xl">{evaluated.stop.businessName}</div> : null}
+    </div>
+  );
+}
+
 function StopRow({ stop, progress }) {
   const gaps = progress.complete ? null : ogGapHint(progress.ogs);
   const tone = progress.complete
@@ -448,6 +497,16 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut }) 
   const [manualPro, setManualPro] = useState('');
   const [manualOg, setManualOg] = useState('');
 
+  // ── Scanner gun (keyboard wedge) ───────────────────────────────────────────
+  const [gunMode, setGunMode] = useState(false);
+  const [verdict, setVerdict] = useState(null); // { kind, evaluated, sticky }
+  const gunModeRef = useRef(false);
+  const verdictRef = useRef(null);
+  const wedgeInputRef = useRef(null);
+  const wedgePairRef = useRef(null);
+  const wedgeAccRef = useRef(null);
+  const onWedgeScanRef = useRef(() => {});
+
   const load = useMemo(
     () => (manifest?.loads || []).find((l) => l.loadNbr === activeLoad) || null,
     [manifest, activeLoad],
@@ -473,18 +532,20 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut }) 
     refreshLocal();
   }, [refreshLocal]);
 
-  // Record a piece: local first, ALWAYS, then try the network.
+  // Record a piece: local first, ALWAYS, then try the network. Returns the
+  // evaluation so a caller that owns its own feedback (the wedge path) can act
+  // on the verdict — including SILENT, which the camera path ignores.
   const record = useCallback(
     async (pair, engineName) => {
       const evaluated = evaluateScan(pair, stops, scannedOgs, otherLoads);
-      if (evaluated.outcome === OUTCOME.SILENT) return; // no prompt, no button, no decision
+      if (evaluated.outcome === OUTCOME.SILENT) return evaluated; // no prompt, no button, no decision
       setResult(evaluated);
       setPartial({ pro: null, og: null });
 
       if (evaluated.outcome === OUTCOME.RED) {
         // A red piece is NOT recorded against this load — it is not on it.
         if (navigator.vibrate) navigator.vibrate([80, 60, 80]);
-        return;
+        return evaluated;
       }
       if (navigator.vibrate) navigator.vibrate(40);
 
@@ -498,6 +559,7 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut }) 
       await store.enqueueScan(activeLoad, manifest.date, scan);
       await refreshLocal();
       flushQueue();
+      return evaluated;
     },
     [stops, scannedOgs, otherLoads, activeLoad, manifest, refreshLocal],
   );
@@ -557,6 +619,58 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut }) 
   }
 
   useEffect(() => () => stopRef.current?.(), []);
+
+  // The wedge path owns its own feedback: sounds and a full-screen flash
+  // instead of a card nobody reads with gloves on. Kept behind a ref so the
+  // once-created accumulator always calls the latest closure.
+  onWedgeScanRef.current = async (raw) => {
+    if (verdictRef.current?.sticky) {
+      // A red screen must be acknowledged before scanning on — replay the buzz
+      // so the operator knows the gun is not the thing that is stuck.
+      playVerdict('red');
+      return;
+    }
+    const pair = wedgePairRef.current.push([raw]);
+    setPartial(wedgePairRef.current.state());
+    if (!pair) return;
+    const evaluated = await record(pair, 'wedge');
+    if (!evaluated) return;
+    const kind =
+      evaluated.outcome === OUTCOME.SILENT ? 'dup'
+        : evaluated.outcome === OUTCOME.RED ? 'red'
+          : evaluated.outcome === OUTCOME.AMBER ? 'amber'
+            : 'green';
+    playVerdict(kind);
+    setVerdict({ kind, evaluated, sticky: kind === 'red' });
+  };
+
+  if (!wedgePairRef.current) wedgePairRef.current = createPairBuffer({ windowMs: WEDGE_PAIR_WINDOW_MS });
+  if (!wedgeAccRef.current) wedgeAccRef.current = createWedgeAccumulator({ onScan: (v) => onWedgeScanRef.current(v) });
+
+  useEffect(() => {
+    gunModeRef.current = gunMode;
+    if (gunMode) {
+      wedgeInputRef.current?.focus();
+    } else {
+      wedgeAccRef.current?.reset();
+      wedgePairRef.current?.reset();
+      setPartial({ pro: null, og: null });
+    }
+  }, [gunMode]);
+
+  // Green/amber/dup flashes clear themselves; red stays until acknowledged.
+  useEffect(() => {
+    verdictRef.current = verdict;
+    if (!verdict || verdict.sticky) return undefined;
+    const t = setTimeout(() => setVerdict(null), verdict.kind === 'green' ? 650 : 1200);
+    return () => clearTimeout(t);
+  }, [verdict]);
+
+  function toggleGun() {
+    initAudio(); // must happen inside a user gesture, once, or the beeps stay muted
+    if (!gunMode && camOn) toggleCam(); // one capture path at a time
+    setGunMode((v) => !v);
+  }
 
   async function addManual() {
     const pro = normalizePro(manualPro);
@@ -621,36 +735,89 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut }) 
           )}
         </div>
 
-        {/* Camera */}
-        <div className="relative rounded-xl overflow-hidden bg-slate-900 aspect-[3/4]">
-          <video ref={videoRef} className="absolute inset-0 w-full h-full object-cover" playsInline muted />
-          <div ref={containerRef} className="absolute inset-0" />
-          {!camOn ? (
-            <button
-              type="button"
-              onClick={toggleCam}
-              className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-white/90"
-            >
-              <Camera className="w-10 h-10" />
-              <span className="text-sm">Tap to scan</span>
-            </button>
-          ) : (
-            <>
-              {/* Scan window matching the Quagga inset so both engines frame alike. */}
-              <div className="absolute inset-x-[5%] inset-y-[15%] ring-2 ring-white/70 rounded-lg pointer-events-none" />
+        {/* Scanner gun — keystrokes in, same matching logic as the camera. */}
+        <BigButton tone={gunMode ? 'primary' : 'ghost'} onClick={toggleGun}>
+          <span className="inline-flex items-center justify-center gap-2">
+            <ScanLine className="w-5 h-5" />
+            {gunMode ? 'Scanner gun ON — tap for camera' : 'Use scanner gun'}
+          </span>
+        </BigButton>
+
+        {gunMode ? (
+          <div
+            className="relative rounded-xl bg-slate-900 text-white px-4 py-6"
+            onClick={() => wedgeInputRef.current?.focus()}
+          >
+            <div className="flex items-center gap-3">
+              <ScanLine className="w-8 h-8 shrink-0" />
+              <div className="min-w-0">
+                <div className="font-semibold text-lg">Gun ready</div>
+                <div className="text-sm text-white/70">
+                  {partial?.pro
+                    ? 'PRO captured — now the OG barcode (upper)'
+                    : partial?.og
+                      ? 'OG captured — now the PRO barcode (lower)'
+                      : 'Scan both barcodes on the label, either order'}
+                </div>
+              </div>
+            </div>
+            {/* The wedge target: invisible, focused, keyboard-only. inputMode
+                none keeps the tablet's soft keyboard down. */}
+            <input
+              ref={wedgeInputRef}
+              value=""
+              onChange={() => {}}
+              onKeyDown={(e) => {
+                if (wedgeAccRef.current?.key(e.key)) e.preventDefault();
+              }}
+              onBlur={(e) => {
+                // A tap on a real field is deliberate; losing focus to the body
+                // is not — take it back so the next trigger pull still lands.
+                const t = e.relatedTarget;
+                if (t && ['INPUT', 'TEXTAREA', 'SELECT'].includes(t.tagName)) return;
+                setTimeout(() => {
+                  if (gunModeRef.current) wedgeInputRef.current?.focus();
+                }, 60);
+              }}
+              inputMode="none"
+              autoCapitalize="off"
+              autoCorrect="off"
+              spellCheck={false}
+              aria-label="Scanner gun input"
+              className="absolute w-px h-px opacity-0"
+            />
+          </div>
+        ) : (
+          <div className="relative rounded-xl overflow-hidden bg-slate-900 aspect-[3/4]">
+            <video ref={videoRef} className="absolute inset-0 w-full h-full object-cover" playsInline muted />
+            <div ref={containerRef} className="absolute inset-0" />
+            {!camOn ? (
               <button
                 type="button"
                 onClick={toggleCam}
-                className="absolute bottom-2 right-2 rounded-lg bg-black/60 text-white text-xs px-3 py-2"
+                className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-white/90"
               >
-                Stop
+                <Camera className="w-10 h-10" />
+                <span className="text-sm">Tap to scan</span>
               </button>
-              <div className="absolute top-2 left-2 rounded bg-black/50 text-white/80 text-[10px] px-2 py-1">
-                {engine}{status ? ` · ${status}` : ''}
-              </div>
-            </>
-          )}
-        </div>
+            ) : (
+              <>
+                {/* Scan window matching the Quagga inset so both engines frame alike. */}
+                <div className="absolute inset-x-[5%] inset-y-[15%] ring-2 ring-white/70 rounded-lg pointer-events-none" />
+                <button
+                  type="button"
+                  onClick={toggleCam}
+                  className="absolute bottom-2 right-2 rounded-lg bg-black/60 text-white text-xs px-3 py-2"
+                >
+                  Stop
+                </button>
+                <div className="absolute top-2 left-2 rounded bg-black/50 text-white/80 text-[10px] px-2 py-1">
+                  {engine}{status ? ` · ${status}` : ''}
+                </div>
+              </>
+            )}
+          </div>
+        )}
 
         {camErr ? <Banner kind="error">{camErr}</Banner> : null}
         <OutcomeCard result={result} partial={partial} />
@@ -707,6 +874,8 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut }) 
           busy={busy}
         />
       ) : null}
+
+      <VerdictFlash verdict={verdict} onClear={() => setVerdict(null)} />
     </div>
   );
 }
