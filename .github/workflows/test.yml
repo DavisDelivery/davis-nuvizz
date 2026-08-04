@@ -26,6 +26,26 @@ jobs:
       # install step. `npm test` == `node --test "test/**/*.test.mjs"`.
       - run: npm test
 
+  # ── load-scan ─────────────────────────────────────────────────────────────
+  # The dock scanner's suite covers the rules a driver depends on at 5am: PIN
+  # hashing and lockout, token forgery, alias and sign-in resolution, the
+  # NuVizz field-semantics translation, scan-ingest idempotency and wedge
+  # capture. None of it ran here — the job above is pinned to dispatch-map — so
+  # auto-merge was gating claude/* PRs on a suite that never opened this
+  # subtree. Same no-install shape as `unit`: these tests import only local
+  # modules (.js and Node-22-strippable .mts) and node: builtins.
+  unit-load-scan:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: load-scan
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm test
+
   # ── Does the app actually START? ───────────────────────────────────────────
   # v0.54.14 shipped a bundle that was blank on every device: state declared in
   # RoutingScreen and read in Shell threw `driversPanelOpen is not defined` on the
