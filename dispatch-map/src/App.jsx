@@ -69,7 +69,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.54.34';
+const APP_VERSION = '0.54.35';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -114,6 +114,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.54.35', 'YOU CAN GET RID OF A ROUTE COMPLETELY AGAIN — AND NOW IN ONE CLICK. Chad, tonight: "I still have no way to get rid of a route compelely and put all stops back to unplanned." He was right, and here is the uncomfortable reason: the app COULD do this from v0.54.17 (Jul 29, built after this exact complaint the first time) — but v0.54.19, the call-ceiling release the next morning, was cut from an older copy of this screen and its merge quietly put the old code back. The ✕ vanished off the last stop, so a card could be struck down to one order and NO further — while everything behind that button (the route cancel in NuVizz from v0.32.20, the board flip back to Un-Planned from v0.54.18, the red confirm popup, the July 30 refusal/executed-stop hardening) sat fully working and unreachable. THREE THINGS IN THIS RELEASE. (1) THE LAST ✕ IS BACK — amber, labelled for what it really is: removing the last order EMPTIES the load, and an emptied load is a CANCELLED route in NuVizz; that is NuVizz\'s own rule for removing every delivery, not our choice. A test now pins the button itself, so a stale-base merge can never silently take it away again. (2) A CANCEL ROUTE BUTTON on every live Compare card — one click strikes every order off at once instead of eight ✕ clicks. Same staging as the ✕: every struck order is listed with Undo, nothing is sent until Save, and Save still puts the red "This DELETES a route" popup in front of the write. Every guard from the July hardening still stands — a NuVizz refusal fails loudly instead of reading as success, a load with a stop the driver already acted on refuses to empty, and only a positively-confirmed cancel stamps the board. (3) AFTER A CONFIRMED CANCEL THE CARD CLOSES ITSELF — the route no longer exists, and an empty card left open was an invitation to drag stops onto a dead load. The orders land back in Un-Planned on the board immediately, ready for another truck. Not in this release: the ＋ New route card keeps its own rule — it lives only on your screen until Save, so closing the card IS its cancel and it gets no button.'],
   ['0.54.34', 'NEW ROUTE, ROUND TWO — BUILD THE ROUTE FIRST, SEND IT WITH ALL ITS STOPS AT ONCE. Chad tried ＋ New route again after the 400-fix and hit a NEW rejection: reason 903, "Either PlanStop or Stop node should be present". Translation: NuVizz will not create a route with no stops on it, full stop — the "create it empty, drag orders on after" design cannot work, and no retry will change that. THE NEW SHAPE IS CHAD\'S OWN: "when a new route is created on our end then it puts it in the compare panel where we can add stops then we send new route and all stops at same time." Exactly that. ＋ New route now just OPENS A CARD — nothing is sent to NuVizz. The card sits in Compare marked "not sent", you drag orders onto it (and stage a driver if you like) exactly like any other card, and SAVE creates the route in NuVizz with the entire stop list — and the staged driver, and dispatch — riding one create. Close the card before saving and it simply never existed. WHY THIS IS STILL SAFE, because that was the whole point of the original design: each order rides the create as a REFERENCE — its number and its own schedule, echoed straight off NuVizz\'s record — never its address or freight, so the July 2 class of accident (a create overwriting real order data) remains structurally impossible. And every order on the card gets the same respect as any Save: the app reads each one first and REFUSES the whole create if any can\'t be read, is already planned on another route (you\'re told which one), or has already been acted on by a driver. Moving stops OFF a live load onto the new card works in one Save too — the live load\'s save runs first, then the create. Afterwards the app reads the route back and confirms every order actually landed — if NuVizz\'s async worker is slow you\'re told how many attached rather than being left to discover it — and the board is stamped immediately, so the stops flip to planned (and drop their old drivers\' names) without waiting for the next scan.'],
   ['0.54.33', 'THE WEEKEND NO LONGER INVENTS CARRY-OVER ORDERS. Chad, Sunday morning, holding the Uline manifest: "We do not have 127 orders carrying over from last week so scan is not showing closed out orders correctly." He was right about the number and the scan was innocent — I checked his manifest against the board order by order, and the day\'s own freight matched Uline EXACTLY: 545 orders, 848 skids, 117 loose, 260,898 lbs, every PRO present. The phantoms were all in the carry-over fold. WHAT ACTUALLY HAPPENED: every scan writes down which old orders are still genuinely open, and the board uses that list to keep delivered work from re-appearing as carry-over. Friday night\'s 10:31 PM scan wrote that list correctly. But the board only trusted the list while it was under 18 hours old — a rule meant to survive one quiet night, written before scans went dark on weekends. So from Saturday afternoon on, the board threw Friday\'s perfectly good list away and, having nothing to check against, showed EVERY undelivered-looking old order — 127 of them, when the real count was 24. Sunday\'s 1:13 PM scan wrote a new list and the number collapsed on its own, which is exactly the proof of what broke. THE FIX: the list no longer expires by clock. Nothing on the board changes while scans are dark — so a Friday list is still the newest truth on Sunday, and the board now keeps using it straight through a weekend or a breaker pause. It is set aside only for the reasons that are REAL: a scan ran but the list somehow was not rewritten (then it truly is behind), or it is over a week old (past what it can vouch for at all). In both of those cases the board still folds everything rather than hide work — showing too much stays the failure mode, never showing too little. Four tests pin the new rule, including a replay of this weekend.'],
   ['0.54.32', 'THE STOP CARD NOW ANSWERS "WHERE IS THIS ORDER?" AT A GLANCE — AND THE BUTTONS YOU ACTUALLY USE ARE REAL BUTTONS. This is Enhancement 6 from the UI report, built as approved. THREE CHANGES. (1) A STATUS TIMELINE at the top of every stop card: Scheduled → Out for delivery → Delivered, with the current step highlighted and the times the app truly has — arrival and delivery stamps when they exist, and an ETA on the last step ONLY when NuVizz has a real one. A schedule window is never dressed up as an arrival prediction; that is the exact lie v0.54.4 stamped out, and the timeline keeps the rule. An exception shows as a red terminal state instead of being forced into a delivery story, and unplanned or cancelled orders keep the plain status chip they had. (2) THE HEADER CARRIES THE ROUTE — "SUW 4 · stop 6" sits at the top right, so you no longer scroll five sections to learn which truck an order is on. The PRO also has a small copy button: one tap and it is on your clipboard for pasting into NuVizz, Estes, or a text. (3) FOUR THUMB-SIZE BUTTONS — Text, Call, Navigate, Ticket — replace the pile of look-alike text links. Those four are nearly every tap this card ever gets, and on a phone a text link is the hardest thing on the screen to hit. Call only appears when there is a number to call; Navigate opens Google Maps on the corrected pin when you have saved one. Everything else — Street View, Edit address, Correct pin, Text driver, History — is one tap away under "More", and nothing was removed. The big Delivery Ticket button is gone because the Ticket button in the bar IS it, one screen position higher. Both the Map and Routing cards get all of this, desktop and phone, because they have been the same card since v0.45.22. Seven tests pin the timeline\'s honesty rules — including that the out-for-delivery step never invents a time the app does not have.'],
@@ -12815,7 +12816,7 @@ function LiveCommitConfirm({ confirm, liveMode, busy, title, onCancel, onConfirm
   );
 }
 
-function RoutingWorkbenchCard({ route, stopById, otherKeys, ninjaMode, isActive, onSetActive, onResequence, onCollapse, onClose, onMoveStop, onDropStop, onRemoveStop, onUndoRemove, onOpenStop, onPrintManifest, roster, rosterError, staged, onStage, dirty, isMobile, liveWrite }) {
+function RoutingWorkbenchCard({ route, stopById, otherKeys, ninjaMode, isActive, onSetActive, onResequence, onCollapse, onClose, onMoveStop, onDropStop, onRemoveStop, onRemoveAllStops, onUndoRemove, onOpenStop, onPrintManifest, roster, rosterError, staged, onStage, dirty, isMobile, liveWrite }) {
   // The live-dispatch UI gate is now the gear toggle (prop) rather than the module-level
   // ?write=1/env const. Aliased to the original name so the gate sites below are unchanged.
   const LIVE_WRITE_FLAG = liveWrite;
@@ -12941,11 +12942,24 @@ function RoutingWorkbenchCard({ route, stopById, otherKeys, ninjaMode, isActive,
                 {allExpanded ? 'Collapse all stops' : 'Expand all stops'}
               </button>
             ) : <span />}
-            {rows.length > 0 && onPrintManifest && (
-              <button onClick={() => onPrintManifest(route.key)} className="inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded border border-slate-300 text-slate-600 hover:bg-slate-50" title="Print this load's driver manifest">
-                <Printer size={12} /> Print manifest
-              </button>
-            )}
+            <div className="flex items-center gap-1.5 shrink-0">
+              {/* Cancel route — strike EVERY order off in one click ("I still have no way to get
+                  rid of a route completely and put all stops back to unplanned", Aug 3). Staged
+                  like eight individual ✕ clicks: the footer lists every order with Undo, nothing
+                  is sent until Save, and Save gates the cancel behind the red confirm popup.
+                  Hidden on a pending (＋ New route) card — that route doesn't exist in NuVizz
+                  yet, so closing the card IS its cancel. */}
+              {rows.length > 0 && !route.pendingCreate && onRemoveAllStops && (
+                <button onClick={() => onRemoveAllStops(route.key)} className="inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded border border-red-200 text-red-700 hover:bg-red-50" title="Strike every order off this route — on Save this EMPTIES the load, which CANCELS the route in NuVizz and returns all its orders to Un-Planned (you confirm before anything is sent)">
+                  <X size={12} /> Cancel route
+                </button>
+              )}
+              {rows.length > 0 && onPrintManifest && (
+                <button onClick={() => onPrintManifest(route.key)} className="inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded border border-slate-300 text-slate-600 hover:bg-slate-50" title="Print this load's driver manifest">
+                  <Printer size={12} /> Print manifest
+                </button>
+              )}
+            </div>
           </div>
         )}
       </div>
@@ -13012,10 +13026,15 @@ function RoutingWorkbenchCard({ route, stopById, otherKeys, ninjaMode, isActive,
                   </select>
                 )}
                 {/* Remove from route — drops the order off this load; it becomes Unplanned on Save.
-                    Hidden on the last remaining stop: NuVizz can't re-sequence a load to empty, so that
-                    one's a no-op (move it to another load or leave the load with at least one stop). */}
-                {onRemoveStop && rows.length > 1 && (
-                  <button onClick={(e) => { e.stopPropagation(); onRemoveStop(s.stopNbr); }} className="text-slate-300 hover:text-red-600 shrink-0" title="Remove from route (unplans on Save)" aria-label={`Remove ${s.businessName || id} from route`}>
+                    The LAST stop is removable too (v0.54.17 — Chad: "I have no way of unplanning all
+                    stops off this load"): emptying a load CANCELS the route in NuVizz — that is
+                    NuVizz's own behaviour on removing every delivery, not our choice — so the last ✕
+                    says so plainly and colours amber to mark it as the different action it is. Save
+                    then gates the cancel behind the red confirm popup (cancel-guard). NOTE: v0.54.19
+                    reverted this to hidden-on-last-stop by accident (a stale-base merge restored the
+                    pre-0.54.17 code); test/last-stop-removable.test.mjs now pins it. */}
+                {onRemoveStop && (
+                  <button onClick={(e) => { e.stopPropagation(); onRemoveStop(s.stopNbr); }} className={'shrink-0 hover:text-red-600 ' + (rows.length === 1 ? 'text-amber-500' : 'text-slate-300')} title={rows.length === 1 ? 'Remove the LAST order — this EMPTIES the load, which CANCELS the route in NuVizz on Save' : 'Remove from route (unplans on Save)'} aria-label={`Remove ${s.businessName || id} from route`}>
                     <X size={13} />
                   </button>
                 )}
@@ -13062,7 +13081,7 @@ function RoutingWorkbenchCard({ route, stopById, otherKeys, ninjaMode, isActive,
 // ungeocoded ones. Card membership, display, freight totals and the Save payload all use
 // boardStopById so what the card shows == what Save sends (a coord-less stop is still on
 // the load). Anything that needs geometry keeps using stopById.
-function RoutingWorkbench({ wbRoutes, stopById, boardStopById, ninjaMode, onToggleNinja, onArmNinja, activeKey, onSetActive, onResequence, onCollapse, onClose, onCloseAll, onMoveStop, onDropStop, onRemoveStop, onUndoRemove, onClearRemoved, onOpenStop, onPrintManifest, selectedCount = 0, onSendSelection, isMobile, liveWrite, onBoardSync, boardDate, peerClaimFor = null, onRouteCreated = null }) {
+function RoutingWorkbench({ wbRoutes, stopById, boardStopById, ninjaMode, onToggleNinja, onArmNinja, activeKey, onSetActive, onResequence, onCollapse, onClose, onCloseAll, onMoveStop, onDropStop, onRemoveStop, onRemoveAllStops, onUndoRemove, onClearRemoved, onOpenStop, onPrintManifest, selectedCount = 0, onSendSelection, isMobile, liveWrite, onBoardSync, boardDate, peerClaimFor = null, onRouteCreated = null }) {
   const lookup = boardStopById || stopById;
   // Live-dispatch gate comes from the gear toggle (prop), aliased to the original name so the
   // many gate sites in this component (Save, Beta/Live toggle, dirty guards, confirm) are unchanged.
@@ -13456,6 +13475,17 @@ function RoutingWorkbench({ wbRoutes, stopById, boardStopById, ninjaMode, onTogg
     const fired = resLoads.filter((l) => l.ok && (l.steps || []).some((s) => s.ok)).length;
     const noop = resLoads.filter((l) => l.ok && !(l.steps || []).some((s) => s.ok)).length;
     const cancelled = resLoads.filter((l) => (l.steps || []).some((s) => s.cancelledRoute)).length;
+    // A confirmed cancel leaves the card pointing at a route that no longer exists in NuVizz —
+    // close it, so an empty shell can't sit in Compare inviting stops to be dragged onto a dead
+    // load (a Save against it would resolve the cancelled instance, or worse, a same-named twin).
+    // Only on the POSITIVE confirmation (steps[].cancelledRoute — set server-side when
+    // cancelResponseConfirms accepted NuVizz's own cancellation notice AND the remove succeeded);
+    // a failed or refused cancel keeps its card open with the removals still staged for Undo.
+    if (onClose) {
+      for (const l of resLoads) {
+        if (l.ok && (l.steps || []).some((s) => s.cancelledRoute)) { const k = keyOf(l); if (k) onClose(k); }
+      }
+    }
     // IMPORT-engine loads the server fired but couldn't CONFIRM inside its window come back
     // `pending` — not failures. We verify them below (getLoad read-backs + a re-Save nudge).
     const pendings = resLoads.filter((l) => l.pending && l.loadNbr && Array.isArray(l.requestedOrder));
@@ -13712,6 +13742,7 @@ function RoutingWorkbench({ wbRoutes, stopById, boardStopById, ninjaMode, onTogg
             onMoveStop={(stopNbr, toKey) => onMoveStop(r.key, stopNbr, toKey)}
             onDropStop={onDropStop}
             onRemoveStop={(stopNbr) => onRemoveStop(r.key, stopNbr)}
+            onRemoveAllStops={onRemoveAllStops}
             onUndoRemove={(stopNbr) => onUndoRemove(r.key, stopNbr)}
             onOpenStop={onOpenStop}
             onPrintManifest={onPrintManifest}
@@ -14828,6 +14859,27 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
       return { ...r, order: r.order.filter((x) => x !== id), removed, removedIdx, strategy: 'manual' };
     }));
     setLastAction(`Removed ${stopNbr} from ${loadDisplayName(key) || 'load'} — unplans on Save`);
+  }, []);
+  // Strike EVERY order off a card in one click (the card's "Cancel route" button). Identical
+  // staging to clicking each stop's ✕ in turn: all ids move to `removed` with their positions
+  // recorded (so per-stop Undo restores in place), the order empties, and NOTHING is sent until
+  // Save — which then flags emptyLoad and runs the red cancel-confirm popup before the write.
+  const wbRemoveAllStops = useCallback((key) => {
+    let n = 0;
+    setWbRoutes((prev) => prev.map((r) => {
+      if (r.key !== key || !r.order.length) return r;
+      n = r.order.length;
+      const removed = [...(r.removed || [])];
+      const removedIdx = { ...(r.removedIdx || {}) };
+      r.order.forEach((id0, i) => {
+        const id = String(id0);
+        if (!removed.includes(id)) removed.push(id);
+        removedIdx[id] = i;
+      });
+      return { ...r, order: [], removed, removedIdx, strategy: 'manual' };
+    }));
+    setLastAction(`Struck every order off ${loadDisplayName(key) || 'load'} — Save CANCELS the route`);
+    return n;
   }, []);
   const wbUndoRemove = useCallback((key, stopNbr) => {
     const id = String(stopNbr);
@@ -16811,7 +16863,7 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
                       </MobileSelectedStops>
                     )}
                     {wbRoutes.length > 0
-                      ? <RoutingWorkbench wbRoutes={wbRoutesColored} stopById={stopById} boardStopById={boardStopById} ninjaMode={ninjaMode} onToggleNinja={setNinjaMode} onArmNinja={armNinjaFromPanel} activeKey={effectiveActiveKey} onSetActive={setActiveRouteKey} onResequence={wbResequence} onCollapse={toggleWbCollapse} onClose={closeWbRoute} onCloseAll={closeAllWb} onMoveStop={wbMoveStop} onDropStop={wbDropStop} onRemoveStop={wbRemoveStop} onUndoRemove={wbUndoRemove} onClearRemoved={clearWbRemoved} onOpenStop={openStop} onPrintManifest={printWbManifest} selectedCount={selectedStops.length} onSendSelection={sendSelectionToRoute} isMobile liveWrite={liveWrite} onBoardSync={syncBoardAfterSave} boardDate={selectedDate} peerClaimFor={peerClaimFor} onRouteCreated={onRouteCreated} />
+                      ? <RoutingWorkbench wbRoutes={wbRoutesColored} stopById={stopById} boardStopById={boardStopById} ninjaMode={ninjaMode} onToggleNinja={setNinjaMode} onArmNinja={armNinjaFromPanel} activeKey={effectiveActiveKey} onSetActive={setActiveRouteKey} onResequence={wbResequence} onCollapse={toggleWbCollapse} onClose={closeWbRoute} onCloseAll={closeAllWb} onMoveStop={wbMoveStop} onDropStop={wbDropStop} onRemoveStop={wbRemoveStop} onRemoveAllStops={wbRemoveAllStops} onUndoRemove={wbUndoRemove} onClearRemoved={clearWbRemoved} onOpenStop={openStop} onPrintManifest={printWbManifest} selectedCount={selectedStops.length} onSendSelection={sendSelectionToRoute} isMobile liveWrite={liveWrite} onBoardSync={syncBoardAfterSave} boardDate={selectedDate} peerClaimFor={peerClaimFor} onRouteCreated={onRouteCreated} />
                       : controlsContent}
                   </>
                 : mobilePanel === 'loads'
@@ -16871,7 +16923,7 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
           routes are open. With the Setup panel off and no routes open, the map gets the full width. */}
       {wbRoutes.length > 0 ? (
         <div className="shrink-0 border-r bg-white min-h-0 overflow-x-auto" style={{ width: wbWidth }}>
-          <RoutingWorkbench wbRoutes={wbRoutesColored} stopById={stopById} boardStopById={boardStopById} ninjaMode={ninjaMode} onToggleNinja={setNinjaMode} onArmNinja={armNinjaFromPanel} activeKey={effectiveActiveKey} onSetActive={setActiveRouteKey} onResequence={wbResequence} onCollapse={toggleWbCollapse} onClose={closeWbRoute} onCloseAll={closeAllWb} onMoveStop={wbMoveStop} onDropStop={wbDropStop} onRemoveStop={wbRemoveStop} onUndoRemove={wbUndoRemove} onClearRemoved={clearWbRemoved} onOpenStop={openStop} onPrintManifest={printWbManifest} selectedCount={selectedStops.length} onSendSelection={sendSelectionToRoute} isMobile={false} liveWrite={liveWrite} onBoardSync={syncBoardAfterSave} boardDate={selectedDate} peerClaimFor={peerClaimFor} onRouteCreated={onRouteCreated} />
+          <RoutingWorkbench wbRoutes={wbRoutesColored} stopById={stopById} boardStopById={boardStopById} ninjaMode={ninjaMode} onToggleNinja={setNinjaMode} onArmNinja={armNinjaFromPanel} activeKey={effectiveActiveKey} onSetActive={setActiveRouteKey} onResequence={wbResequence} onCollapse={toggleWbCollapse} onClose={closeWbRoute} onCloseAll={closeAllWb} onMoveStop={wbMoveStop} onDropStop={wbDropStop} onRemoveStop={wbRemoveStop} onRemoveAllStops={wbRemoveAllStops} onUndoRemove={wbUndoRemove} onClearRemoved={clearWbRemoved} onOpenStop={openStop} onPrintManifest={printWbManifest} selectedCount={selectedStops.length} onSendSelection={sendSelectionToRoute} isMobile={false} liveWrite={liveWrite} onBoardSync={syncBoardAfterSave} boardDate={selectedDate} peerClaimFor={peerClaimFor} onRouteCreated={onRouteCreated} />
         </div>
       ) : leftPanelOn ? (
         <div className="shrink-0 border-r bg-white overflow-y-auto p-3 space-y-3 text-sm" style={{ width: leftPanel.width }}>
