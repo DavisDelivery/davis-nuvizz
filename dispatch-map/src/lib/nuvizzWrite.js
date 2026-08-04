@@ -41,16 +41,20 @@ export const fetchRoster = (opts = {}) => callWrite('roster', {}, { ...opts, dry
 // order first and merges onto its CURRENT comments — NuVizz replaces the whole list on
 // this endpoint, so a blind write would erase the carrier's own instructions — then
 // reads back to prove nothing else moved. audience: 'dispatcher' | 'driver' | 'both'.
+// opts.stopId (when the board row carries one) pins the write to the record on the
+// dispatcher's SCREEN: NuVizz can hold two orders under one number, its by-number read
+// answers with either, and the server refuses rather than write the other twin.
 export const addStopNote = (stopNbr, text, audience = 'both', opts = {}) =>
-  callWrite('addStopNote', { stopNbr, text, audience }, { ...opts, dryRun: false });
+  callWrite('addStopNote', { stopNbr, text, audience, ...(opts.stopId ? { stopId: String(opts.stopId) } : {}) }, { ...opts, dryRun: false });
 
 // Move an order to the day the customer actually wants it (§D). There is no "requested
 // date" field in NuVizz — `to.schedule` IS the delivery date — so the server moves that
 // window (keeping the appointment TIME), verifies nothing else on the order moved, and
 // records the day as a board override so our own scans stop dragging it back onto today.
 // date: 'YYYY-MM-DD'. 3 NuVizz calls; an order already on that day costs 1 and writes nothing.
+// opts.stopId: same wrong-twin pin as addStopNote — the Estes-0828068215 lesson.
 export const setStopDate = (stopNbr, date, opts = {}) =>
-  callWrite('setStopDate', { stopNbr, date }, { ...opts, dryRun: false });
+  callWrite('setStopDate', { stopNbr, date, ...(opts.stopId ? { stopId: String(opts.stopId) } : {}) }, { ...opts, dryRun: false });
 
 // Create an EMPTY route the dispatcher can then build onto (§R). The server checks the load
 // number is genuinely free (routePlan/update is create-OR-UPDATE — an existing number would

@@ -69,7 +69,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.54.35';
+const APP_VERSION = '0.54.36';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -114,6 +114,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.54.36', 'THE ESTES ORDER THAT KEPT "REVERTING TO THE DAVIS ENTRY" — TWO NUVIZZ RECORDS SHARE ONE NUMBER, AND EVERY BY-NUMBER LOOKUP WAS FREE TO ANSWER WITH THE WRONG ONE. Jessica, on Estes-0828068215: "I have rekeyed it in dispatch map and as soon as i change the date even in Nuvizz, it automatically reverts to the Davis entry" — and an hour later, "I tried to update this Estes delivery date in nuvizz and it completely changed the address." Neither of those is a haunting; both are one defect. NuVizz can hold TWO order records under ONE stop number — here, the rekeyed order to the real customer sitting next to the older entry consigned to Davis — and everything in this app that looks an order up asks BY NUMBER and trusts whichever single record NuVizz hands back. So the date change read the OTHER record, moved ITS window, and then refreshed the card from the same by-number lookup — which is precisely "it completely changed the address". And on every scan, the board collapsed the two records into one card last-wins, so the finished Davis-side entry kept replacing the live rekeyed order — precisely "it automatically reverts". This app learned this exact lesson for LOADS in v0.54.24 (two loads named STEVEN: identity wins, and a shared name is not allowed to speak for either); this release applies it to ORDERS. FIVE PLACES, ONE RULE — the record\'s internal id, which the board\'s feed already carries for every row, is the identity; the number is just a label. (1) Changing a delivery date now pins the write to the exact record on your screen — if NuVizz answers the read with a different record, the app REFUSES, tells you two orders share the number and which record it was offered, and writes NOTHING (before this it would have happily moved the twin\'s date, or recorded a board-date override read off the twin). (2) Notes to NuVizz get the same pin. (3) After a date change lands, the card only repaints from a lookup that returned the SAME record it verified the write against — never the twin. (4) The scan no longer merges a by-number detail pull over a board row when the ids disagree — that merge is exactly how the corrected address kept getting overwritten with the Davis one — and the same check keeps a twin\'s record from voting a live routed stop off (or onto) a truck in the demotion verify. (5) The board no longer lets a finished twin silently replace live work under the shared number: the LIVE record keeps the card, and the card now carries a red warning — "2 orders share this number" — telling you plainly to cancel or renumber the extra entry in the portal, because while the duplicate exists, portal searches and every by-number path (NuVizz\'s own included) will keep finding the wrong one. THE REAL REMEDY, same as STEVEN: clean up the duplicate in NuVizz and every symptom goes with it — the badge clears itself on the next scan once only one record carries the number.'],
   ['0.54.35', 'YOU CAN GET RID OF A ROUTE COMPLETELY AGAIN — AND NOW IN ONE CLICK. Chad, tonight: "I still have no way to get rid of a route compelely and put all stops back to unplanned." He was right, and here is the uncomfortable reason: the app COULD do this from v0.54.17 (Jul 29, built after this exact complaint the first time) — but v0.54.19, the call-ceiling release the next morning, was cut from an older copy of this screen and its merge quietly put the old code back. The ✕ vanished off the last stop, so a card could be struck down to one order and NO further — while everything behind that button (the route cancel in NuVizz from v0.32.20, the board flip back to Un-Planned from v0.54.18, the red confirm popup, the July 30 refusal/executed-stop hardening) sat fully working and unreachable. THREE THINGS IN THIS RELEASE. (1) THE LAST ✕ IS BACK — amber, labelled for what it really is: removing the last order EMPTIES the load, and an emptied load is a CANCELLED route in NuVizz; that is NuVizz\'s own rule for removing every delivery, not our choice. A test now pins the button itself, so a stale-base merge can never silently take it away again. (2) A CANCEL ROUTE BUTTON on every live Compare card — one click strikes every order off at once instead of eight ✕ clicks. Same staging as the ✕: every struck order is listed with Undo, nothing is sent until Save, and Save still puts the red "This DELETES a route" popup in front of the write. Every guard from the July hardening still stands — a NuVizz refusal fails loudly instead of reading as success, a load with a stop the driver already acted on refuses to empty, and only a positively-confirmed cancel stamps the board. (3) AFTER A CONFIRMED CANCEL THE CARD CLOSES ITSELF — the route no longer exists, and an empty card left open was an invitation to drag stops onto a dead load. The orders land back in Un-Planned on the board immediately, ready for another truck. Not in this release: the ＋ New route card keeps its own rule — it lives only on your screen until Save, so closing the card IS its cancel and it gets no button.'],
   ['0.54.34', 'NEW ROUTE, ROUND TWO — BUILD THE ROUTE FIRST, SEND IT WITH ALL ITS STOPS AT ONCE. Chad tried ＋ New route again after the 400-fix and hit a NEW rejection: reason 903, "Either PlanStop or Stop node should be present". Translation: NuVizz will not create a route with no stops on it, full stop — the "create it empty, drag orders on after" design cannot work, and no retry will change that. THE NEW SHAPE IS CHAD\'S OWN: "when a new route is created on our end then it puts it in the compare panel where we can add stops then we send new route and all stops at same time." Exactly that. ＋ New route now just OPENS A CARD — nothing is sent to NuVizz. The card sits in Compare marked "not sent", you drag orders onto it (and stage a driver if you like) exactly like any other card, and SAVE creates the route in NuVizz with the entire stop list — and the staged driver, and dispatch — riding one create. Close the card before saving and it simply never existed. WHY THIS IS STILL SAFE, because that was the whole point of the original design: each order rides the create as a REFERENCE — its number and its own schedule, echoed straight off NuVizz\'s record — never its address or freight, so the July 2 class of accident (a create overwriting real order data) remains structurally impossible. And every order on the card gets the same respect as any Save: the app reads each one first and REFUSES the whole create if any can\'t be read, is already planned on another route (you\'re told which one), or has already been acted on by a driver. Moving stops OFF a live load onto the new card works in one Save too — the live load\'s save runs first, then the create. Afterwards the app reads the route back and confirms every order actually landed — if NuVizz\'s async worker is slow you\'re told how many attached rather than being left to discover it — and the board is stamped immediately, so the stops flip to planned (and drop their old drivers\' names) without waiting for the next scan.'],
   ['0.54.33', 'THE WEEKEND NO LONGER INVENTS CARRY-OVER ORDERS. Chad, Sunday morning, holding the Uline manifest: "We do not have 127 orders carrying over from last week so scan is not showing closed out orders correctly." He was right about the number and the scan was innocent — I checked his manifest against the board order by order, and the day\'s own freight matched Uline EXACTLY: 545 orders, 848 skids, 117 loose, 260,898 lbs, every PRO present. The phantoms were all in the carry-over fold. WHAT ACTUALLY HAPPENED: every scan writes down which old orders are still genuinely open, and the board uses that list to keep delivered work from re-appearing as carry-over. Friday night\'s 10:31 PM scan wrote that list correctly. But the board only trusted the list while it was under 18 hours old — a rule meant to survive one quiet night, written before scans went dark on weekends. So from Saturday afternoon on, the board threw Friday\'s perfectly good list away and, having nothing to check against, showed EVERY undelivered-looking old order — 127 of them, when the real count was 24. Sunday\'s 1:13 PM scan wrote a new list and the number collapsed on its own, which is exactly the proof of what broke. THE FIX: the list no longer expires by clock. Nothing on the board changes while scans are dark — so a Friday list is still the newest truth on Sunday, and the board now keeps using it straight through a weekend or a breaker pause. It is set aside only for the reasons that are REAL: a scan ran but the list somehow was not rewritten (then it truly is behind), or it is over a week old (past what it can vouch for at all). In both of those cases the board still folds everything rather than hide work — showing too much stays the failure mode, never showing too little. Four tests pin the new rule, including a replay of this weekend.'],
@@ -5182,7 +5183,9 @@ function StopNuvizzNoteComposer({ stop, onRefreshed }) {
     if (!body || busy || !pro) return;
     setBusy(true); setMsg(null);
     try {
-      const r = await addStopNote(pro, body, audience);
+      // stopId pins the write to THIS record: two NuVizz orders can share one number
+      // (Estes-0828068215), and the server refuses rather than write the other twin.
+      const r = await addStopNote(pro, body, audience, { stopId: stop?.stopId || undefined });
       if (r?.ok && r?.duplicate) setMsg({ kind: 'ok', text: 'That note is already on this order — nothing sent.' });
       else if (r?.ok) {
         setMsg({ kind: 'ok', text: 'Note added in NuVizz.' });
@@ -5190,7 +5193,9 @@ function StopNuvizzNoteComposer({ stop, onRefreshed }) {
         // Pull the order back so the note shows in the notes list immediately.
         try {
           const d = await fetch('/.netlify/functions/nuvizz-pro-lookup?pro=' + encodeURIComponent(pro), { cache: 'no-store' }).then((x) => x.json());
-          if (d?.ok && d.stop) onRefreshed?.(d.stop);
+          // Same wrong-twin rule as the write: never repaint this card with a record that
+          // isn't the one it is showing (the by-number lookup can answer with the twin).
+          if (d?.ok && d.stop && (!stop?.stopId || !d.stop.stopId || String(d.stop.stopId) === String(stop.stopId))) onRefreshed?.(d.stop);
         } catch { /* the note landed; the refresh is a nicety */ }
       // `res.error || res.result?.error` is the house idiom for every write call site — the
       // reason can arrive on either, and this one only read the first, so a real failure showed
@@ -5273,7 +5278,10 @@ function StopDeliveryDateEditor({ stop, onRefreshed }) {
     if (!date || busy || !pro) return;
     setBusy(true); setMsg(null);
     try {
-      const r = await setStopDate(pro, date);
+      // stopId pins the move to THIS record — two NuVizz orders can share one number
+      // (Estes-0828068215: the date op used to read the OTHER twin, move ITS window, and
+      // the card refreshed into that record's address). The server refuses on a mismatch.
+      const r = await setStopDate(pro, date, { stopId: stop?.stopId || undefined });
       // The executor's payload rides on `result` — `unchanged`/`fromDate`/`message` live THERE
       // and never at the top level, so reading them off `r` made the already-dated case fall
       // into the success branch and announce a move the server had explicitly declined to make.
@@ -5294,7 +5302,12 @@ function StopDeliveryDateEditor({ stop, onRefreshed }) {
           : { kind: 'ok', text: `Moved ${out.fromDate ? `${out.fromDate} → ${date}` : `to ${date}`} in NuVizz — off this board until then.` });
         try {
           const d = await fetch('/.netlify/functions/nuvizz-pro-lookup?pro=' + encodeURIComponent(pro), { cache: 'no-store' }).then((x) => x.json());
-          if (d?.ok && d.stop) onRefreshed?.(d.stop);
+          // The server verified the record it moved (out.stopId). Only repaint the card when
+          // the lookup answered with that same record — the by-number lookup can return the
+          // OTHER order sharing this number, and repainting with it is exactly how a date
+          // change "completely changed the address" on this card.
+          const wantId = out.stopId || stop?.stopId || null;
+          if (d?.ok && d.stop && (!wantId || !d.stop.stopId || String(d.stop.stopId) === String(wantId))) onRefreshed?.(d.stop);
         } catch { /* the date landed; the refresh is a nicety */ }
       // Same house idiom as every other write call site: the reason can arrive on either key.
       } else setMsg({ kind: 'err', text: r?.error || r?.result?.error || 'Could not change the delivery date.' });
@@ -5438,6 +5451,16 @@ function StopDataSections({ stop, note, onRefreshed, onOpenRoute, onMoveLocation
         </div>
       )}
       <div>
+        {/* Two NuVizz records carry this order number (the Estes-0828068215 case). The board is
+            showing the LIVE one, but by-number lookups (portal search included) can answer with
+            the other — so edits "revert" and addresses "change" until the duplicate is cleaned
+            up in the portal. Say so on the card instead of letting it look haunted. */}
+        {(live.dupNbr || live.dupNbrSuspect) && (
+          <div className="flex items-start gap-1.5 text-xs rounded px-2 py-1 -mx-0.5 mb-1 bg-red-50 border border-red-200 text-red-700">
+            <span className="font-semibold shrink-0">⚠ 2 orders share this number.</span>
+            <span>This card shows the live one; cancel or renumber the other entry in the NuVizz portal or edits will keep hitting the wrong record.</span>
+          </div>
+        )}
         <div className="text-xs uppercase font-semibold text-slate-500 flex items-center gap-1.5">
           Address
           {note?.address_override && <span className="px-1 rounded bg-blue-100 text-blue-700 text-[9px] font-semibold normal-case">corrected</span>}

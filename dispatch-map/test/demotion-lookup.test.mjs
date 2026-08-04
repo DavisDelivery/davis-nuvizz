@@ -189,3 +189,36 @@ test('demotion: a 404/failed record read holds (demotionLookupVerdict integratio
   assert.equal(await makeDemotionLookup(deps).lookup('800'), null,
     'a stop NuVizz cannot even find is never demoted on that absence — hold for the next scan');
 });
+
+// ── two records, one number (the Estes-0828068215 lesson, Aug 4) ─────────────
+//
+// The record read is BY NUMBER, and NuVizz can hold two orders under one number. The
+// OTHER record's status must not decide this board row's fate in either direction: a
+// finished twin would vote a live routed stop OFF its truck; a live twin would keep a
+// truly-removed one ON. Identity disagreement → hold, re-check next scan.
+
+test('demotion: a record with a DIFFERENT stopId than the board row holds — never votes', async () => {
+  const p = { stopNbr: '300', isPlanned: true, loadNbr: 'CHAD 1', stopId: '6a63c5844524f7f7b8ab5410' };
+  const { deps, calls } = makeDeps({
+    // The twin: DELIVERED — its verdict alone would demote the live routed stop.
+    readStopRecord: async (nbr) => { calls.stops.push(String(nbr)); return { ok: true, stop: { stopId: 'ffffffffffffffffffffffff', normalizedStatus: 'DELIVERED' } }; },
+  });
+  deps.demoteByNbr = new Map([['300', { s: { stopNbr: '300', normalizedStatus: 'UNPLANNED', isPlanned: false }, p }]]);
+  const d = makeDemotionLookup(deps);
+  assert.equal(await d.lookup('300'), null, 'the twin cannot speak for this row — hold one tick');
+  assert.deepEqual(calls.stops, ['300'], 'the read was spent (and is what exposed the twin)');
+});
+
+test('demotion: matching stopId (or no id on either side) keeps the record\'s verdict', async () => {
+  const mk = (pStopId, recStopId, status = 'DELIVERED') => {
+    const p = { stopNbr: '301', isPlanned: true, loadNbr: 'CHAD 1', ...(pStopId ? { stopId: pStopId } : {}) };
+    const { deps } = makeDeps({
+      readStopRecord: async () => ({ ok: true, stop: { ...(recStopId ? { stopId: recStopId } : {}), normalizedStatus: status } }),
+    });
+    deps.demoteByNbr = new Map([['301', { s: { stopNbr: '301', normalizedStatus: 'UNPLANNED', isPlanned: false }, p }]]);
+    return makeDemotionLookup(deps);
+  };
+  assert.equal(await mk('6a63c5844524f7f7b8ab5410', '6a63c5844524f7f7b8ab5410').lookup('301'), false, 'same record, terminal → demote');
+  assert.equal(await mk(null, 'ffffffffffffffffffffffff').lookup('301'), false, 'board row has no id → cannot judge, old behavior');
+  assert.equal(await mk('6a63c5844524f7f7b8ab5410', null).lookup('301'), false, 'record has no id → same');
+});

@@ -460,3 +460,29 @@ test('runAddStopNote: freight lines wiped by the write are caught even though we
   assert.deepEqual(r.drift, ['stopDetails']);
   assert.match(r.error, /LOST .*STEEL RECEPTACLE/);
 });
+
+// ── the wrong-twin guard (the Estes-0828068215 lesson, Aug 4) ────────────────
+//
+// Two NuVizz records can share one stop number, and the by-number read answers with
+// either. A note pinned to the record on the dispatcher's screen must refuse — before
+// the merge is even built — when NuVizz offers the OTHER record, or the instruction
+// lands on an order nobody is looking at.
+
+test('runAddStopNote: refuses when NuVizz answers with the OTHER record sharing the number', async () => {
+  const state = { stop: rawStop({ stopId: 'ffffffffffffffffffffffff' }) };
+  const { requester, calls } = makeRequester({ state });
+  const r = await runAddStopNote(requester, { stopNbr: '007152286', text: 'Gate code 4417', stopId: '6a63c5844524f7f7b8ab5410' }, CREDS);
+  assert.equal(r.ok, false);
+  assert.equal(r.wrongInstance, true);
+  assert.match(r.error, /TWO NuVizz orders/i);
+  assert.equal(calls.filter((c) => c.method === 'POST').length, 0, 'nothing written');
+});
+
+test('runAddStopNote: a MATCHING id proceeds; no id at all keeps the old behavior', async () => {
+  const s1 = { stop: rawStop() };
+  const a = await runAddStopNote(makeRequester({ state: s1 }).requester, { stopNbr: '007152286', text: 'Gate code 4417', stopId: '6a63c5844524f7f7b8ab5410' }, CREDS);
+  assert.equal(a.ok, true, JSON.stringify(a));
+  const s2 = { stop: rawStop({ stopId: 'ffffffffffffffffffffffff' }) };
+  const b = await runAddStopNote(makeRequester({ state: s2 }).requester, { stopNbr: '007152286', text: 'Gate code 4417' }, CREDS);
+  assert.equal(b.ok, true, 'a caller with no id cannot be judged — old behavior stands');
+});

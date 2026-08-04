@@ -9,7 +9,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { addrListSig, reconsignedByListSig } from '../netlify/functions/lib/refresh-stops-core.mts';
+import { addrListSig, reconsignedByListSig, enrichedRecordMatches } from '../netlify/functions/lib/refresh-stops-core.mts';
 
 test('addrListSig: ZIP5 + street number, format-stable', () => {
   assert.equal(addrListSig({ addr1: '2535 Royal Place', zip: '30084' }), '30084|2535');
@@ -50,4 +50,20 @@ test('reconsignedByListSig: partial signature still compares (street number only
   assert.equal(sig, '|100');
   assert.equal(reconsignedByListSig(sig, { addr1: '200 Main St', zip: '' }), true);
   assert.equal(reconsignedByListSig(sig, { addr1: '100 Main St', zip: '' }), false);
+});
+
+// ── two records, one number (the Estes-0828068215 lesson, Aug 4) ─────────────
+//
+// Enrichment fetches /stop/info BY NUMBER, and NuVizz can hold two orders under one
+// number. Merging the OTHER record's detail put the Davis-side twin's address, coords and
+// line items over Jessica's corrected order on every scan. The list row carries the id of
+// the record the board is showing, so the merge is only allowed when identities agree.
+
+test('enrichedRecordMatches: agree / either id missing → merge allowed; disagree → refused', () => {
+  const LIVE = '6a63c5844524f7f7b8ab5410', TWIN = 'ffffffffffffffffffffffff';
+  assert.equal(enrichedRecordMatches({ stopId: LIVE }, { stopId: LIVE }), true, 'same record');
+  assert.equal(enrichedRecordMatches({ stopId: null }, { stopId: TWIN }), true, 'list row has no id → cannot judge (old behavior)');
+  assert.equal(enrichedRecordMatches({ stopId: LIVE }, {}), true, 'fetched record has no id → same');
+  assert.equal(enrichedRecordMatches({}, {}), true);
+  assert.equal(enrichedRecordMatches({ stopId: LIVE }, { stopId: TWIN }), false, 'the twin\'s detail must never land on this row');
 });

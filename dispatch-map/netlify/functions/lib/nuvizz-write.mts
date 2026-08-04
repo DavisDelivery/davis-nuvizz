@@ -26,6 +26,7 @@ import {
   stopNoteFingerprint, fingerprintDrift, buildNoteWriteStop, echoDrift, driftDetail,
   unsentLosses, documentHandlesMoved, type NoteAudience,
   buildPartialUpdateStop, buildStopDateOverride, stopDeliveryDate, isDayString, boardDateHoldWarning,
+  stopInstanceMismatch,
   type SingleOp, type WriteOp, type WriteCreds,
 } from './nuvizz-write-ops.mts';
 import { isHashLikeId } from './nuvizz-list.mts';
@@ -1996,6 +1997,11 @@ export async function runAddStopNote(requester: RequesterLike, payload: any, cre
   calls.reads += 1;
   if (!before?.ok) return { ok: false, error: `addStopNote: could not read stop ${stopNbr} (${before?.error || 'read failed'}) — nothing was written.`, calls };
   const rawBefore = rawStopFrom(before.raw ?? before);
+  // Wrong-twin guard (§ the Estes-0828068215 lesson): the caller's stopId is the record on
+  // the dispatcher's SCREEN; if NuVizz's by-number read answered with a different record,
+  // this note would land on an order nobody is looking at. Refuse before anything is built.
+  const twin = stopInstanceMismatch('addStopNote', stopNbr, payload?.stopId, rawBefore);
+  if (twin) return { ok: false, wrongInstance: true, calls, error: twin };
   const stopId = rawBefore?.stopId ?? payload?.stopId ?? null;
   if (!stopId) return { ok: false, error: `addStopNote: stop ${stopNbr} has no stopId in its record — cannot target the update safely.`, calls };
 
@@ -2091,6 +2097,11 @@ export async function runSetStopDate(requester: RequesterLike, payload: any, cre
   calls.reads += 1;
   if (!before?.ok) return { ok: false, error: `setStopDate: could not read stop ${stopNbr} (${before?.error || 'read failed'}) — nothing was written.`, calls };
   const rawBefore = rawStopFrom(before.raw ?? before);
+  // Wrong-twin guard (§ the Estes-0828068215 lesson): refuse BEFORE the short-circuit below
+  // too — an "already on that day" answer read off the WRONG record would record a board
+  // override for the order the dispatcher IS looking at, keyed to the twin's date.
+  const twin = stopInstanceMismatch('setStopDate', stopNbr, payload?.stopId, rawBefore);
+  if (twin) return { ok: false, wrongInstance: true, calls, error: twin };
   const stopId = rawBefore?.stopId ?? payload?.stopId ?? null;
   if (!stopId) return { ok: false, error: `setStopDate: stop ${stopNbr} has no stopId in its record — cannot target the update safely.`, calls };
 
@@ -2113,7 +2124,7 @@ export async function runSetStopDate(requester: RequesterLike, payload: any, cre
     const board = await applyBoardDateChange(creds, stopNbr, fromDate, date);
     const warn = boardDateHoldWarning(board);
     return {
-      ok: true, unchanged: true, stopNbr, fromDate, date, onLoad, calls, board,
+      ok: true, unchanged: true, stopNbr, stopId, fromDate, date, onLoad, calls, board,
       ...(warn ? { boardWarning: warn } : {}),
       message: `Order ${stopNbr} already carries ${date} in NuVizz — nothing sent there. ${warn || 'Taken off today’s board, and scans will keep honoring the day.'}`,
     };
@@ -2158,7 +2169,7 @@ export async function runSetStopDate(requester: RequesterLike, payload: any, cre
   // decides whether the order stays off this board, so it can never stay silent.
   const board = await applyBoardDateChange(creds, stopNbr, fromDate, date);
   const boardWarning = boardDateHoldWarning(board);
-  return { ok: true, stopNbr, fromDate, date, onLoad, calls, board, ...(boardWarning ? { boardWarning } : {}) };
+  return { ok: true, stopNbr, stopId, fromDate, date, onLoad, calls, board, ...(boardWarning ? { boardWarning } : {}) };
 }
 
 /**
