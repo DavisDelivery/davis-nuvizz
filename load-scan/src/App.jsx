@@ -13,7 +13,7 @@ import { evaluateScan, loadProgress, stopProgress, ogGapHint, OUTCOME, normalize
 import { useSortable, SortableTh } from './lib/useSortable.jsx';
 
 // Bumped by hand on every change. load-scan versions independently of dispatch-map.
-const APP_VERSION = '0.3.0';
+const APP_VERSION = '0.3.1';
 
 const BUILD_COMMIT = typeof __BUILD_COMMIT__ !== 'undefined' ? __BUILD_COMMIT__ : 'dev';
 const BUILD_TIME = typeof __BUILD_TIME__ !== 'undefined' ? __BUILD_TIME__ : '';
@@ -339,6 +339,7 @@ function StopRow({ stop, progress }) {
         <span>{stop.city}{stop.state ? `, ${stop.state}` : ''}</span>
         <span>PRO {stop.pros.join(', ')}</span>
         <span>{stop.skids} skids · {stop.loose} loose</span>
+        {stop.countIsEstimated ? <span title="No piece total on this order — count computed from skids + loose">count from parts</span> : null}
         {stop.appointmentRequired ? <span className="text-amber-700 font-medium">APPT</span> : null}
       </div>
       {gaps ? (
@@ -863,7 +864,8 @@ function DispatcherScreen({ session, onSignOut }) {
             await act(body);
             setEditing(null);
           }}
-          onIssuePin={async (driverNumber, pin) => act({ action: 'issue-pin', driverNumber, pin })}
+          onIssuePin={async (driverNumber, pin, forceChange) =>
+            act({ action: 'issue-pin', driverNumber, pin, forceChange: forceChange === true })}
         />
       </div>
     </div>
@@ -875,6 +877,7 @@ function DriverEditor({ driver, onSave, onCancel, onIssuePin, busy }) {
   const [displayName, setDisplayName] = useState(driver?.displayName || '');
   const [aliasText, setAliasText] = useState((driver?.nuvizzAliases || []).join(', '));
   const [pin, setPin] = useState('');
+  const [forceChange, setForceChange] = useState(false);
 
   return (
     <div className="rounded-xl bg-white ring-1 ring-slate-200 p-3 space-y-2">
@@ -923,25 +926,37 @@ function DriverEditor({ driver, onSave, onCancel, onIssuePin, busy }) {
         {driver ? <BigButton tone="ghost" onClick={onCancel}>Cancel</BigButton> : null}
       </div>
       {driver ? (
-        <div className="pt-1 flex gap-2 items-center">
-          <input
-            value={pin}
-            onChange={(e) => setPin(e.target.value)}
-            inputMode="numeric"
-            placeholder="Temp PIN"
-            className="flex-1 rounded-lg border border-slate-300 px-3 py-2 text-sm"
-          />
-          <button
-            type="button"
-            disabled={busy || !/^\d{4,6}$/.test(pin)}
-            onClick={async () => {
-              await onIssuePin(driver.driverNumber, pin);
-              setPin('');
-            }}
-            className="rounded-lg bg-[#1e5b92] text-white px-3 py-2 text-sm disabled:opacity-50"
-          >
-            Issue
-          </button>
+        <div className="pt-1 space-y-2">
+          <div className="flex gap-2 items-center">
+            <input
+              value={pin}
+              onChange={(e) => setPin(e.target.value)}
+              inputMode="numeric"
+              placeholder="PIN"
+              className="flex-1 rounded-lg border border-slate-300 px-3 py-2 text-sm"
+            />
+            <button
+              type="button"
+              disabled={busy || !/^\d{4,6}$/.test(pin)}
+              onClick={async () => {
+                await onIssuePin(driver.driverNumber, pin, forceChange);
+                setPin('');
+                setForceChange(false);
+              }}
+              className="rounded-lg bg-[#1e5b92] text-white px-3 py-2 text-sm disabled:opacity-50"
+            >
+              Issue
+            </button>
+          </div>
+          <label className="flex items-center gap-2 text-xs text-slate-600">
+            <input
+              type="checkbox"
+              checked={forceChange}
+              onChange={(e) => setForceChange(e.target.checked)}
+              className="w-4 h-4"
+            />
+            Driver must replace it at next sign-in (one-off reset). Issued PINs are standing PINs otherwise.
+          </label>
         </div>
       ) : null}
     </div>

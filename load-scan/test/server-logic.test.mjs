@@ -7,6 +7,7 @@ const auth = await import('../netlify/functions/lib/auth.mts');
 const aliases = await import('../netlify/functions/lib/aliases.mts');
 const manifest = await import('../netlify/functions/lib/manifest.mts');
 const session = await import('../netlify/functions/scan-session.mts');
+const admin = await import('../netlify/functions/driver-admin.mts');
 
 // ── PIN hashing ──────────────────────────────────────────────────────────────
 
@@ -38,6 +39,12 @@ test('PIN format is 4-6 digits', () => {
   assert.equal(auth.isValidPinFormat('123'), false);
   assert.equal(auth.isValidPinFormat('1234567'), false);
   assert.equal(auth.isValidPinFormat('12a4'), false);
+});
+
+test('an issued PIN is a standing PIN unless the dispatcher forces a change', () => {
+  assert.equal(admin.issuedPinMustChange({}), false, 'the default is standing — no 5am reset calls');
+  assert.equal(admin.issuedPinMustChange({ forceChange: true }), true, 'one-off reset path');
+  assert.equal(admin.issuedPinMustChange({ forceChange: 'yes' }), false, 'strictly boolean true, nothing truthy');
 });
 
 // ── Tokens ───────────────────────────────────────────────────────────────────
@@ -227,6 +234,36 @@ test('a skids + loose mismatch warns and still serves expectedPieces', () => {
   assert.equal(m.expectedPieces, 9, 'served anyway — the truck still needs loading');
   assert.equal(warnings.length, 1);
   assert.match(warnings[0], /7152411/);
+});
+
+test('a stop with no piece total is NOT an empty stop — count computed from the parts', () => {
+  const warnings = [];
+  // The Averitt shape: Inbound Integration orders send no totalPallets at all.
+  const m = manifest.toManifestStop({ stopNbr: '7159301', cartons: 1, volume: 0 }, (w) => warnings.push(w));
+  assert.equal(m.expectedPieces, 1, 'one skid, zero loose = one piece, not zero');
+  assert.equal(m.countIsEstimated, true, 'flag means "computed here", not "uncertain"');
+  assert.equal(warnings.length, 0, 'a computed count cannot mismatch itself');
+});
+
+test('a reported piece total is never overridden and is not marked estimated', () => {
+  const m = manifest.toManifestStop({ stopNbr: '1', pallets: 7, cartons: 3, volume: 4 });
+  assert.equal(m.expectedPieces, 7);
+  assert.equal(m.countIsEstimated, false);
+});
+
+test('an explicit zero total is honored as a value, not treated as missing', () => {
+  const m = manifest.toManifestStop({ stopNbr: '1', pallets: 0, cartons: 2, volume: 0 });
+  assert.equal(m.expectedPieces, 0, 'NuVizz said zero; that is a data problem to surface, not to paper over');
+  assert.equal(m.countIsEstimated, false);
+});
+
+test('load totals include computed counts', () => {
+  const stops = [
+    manifest.toManifestStop({ stopNbr: '1', loadNbr: 'L1', pallets: 3 }),
+    manifest.toManifestStop({ stopNbr: '2', loadNbr: 'L1', cartons: 1, volume: 1 }),
+  ];
+  const loads = manifest.groupIntoLoads(stops);
+  assert.equal(loads[0].expectedPieces, 5, '3 reported + 2 computed');
 });
 
 test('a matching stop does not warn', () => {

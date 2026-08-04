@@ -7,7 +7,9 @@
 // GET  ?action=list                     -> every credential (no hashes)
 // GET  ?action=unmatched                -> the unresolved-alias review queue
 // POST { action:'upsert', ... }         -> create/update displayName, aliases, active
-// POST { action:'issue-pin', ... }      -> set a temp PIN, force change, activate
+// POST { action:'issue-pin', ... }      -> set a PIN, activate. STANDING by
+//                                          default; forceChange:true for a
+//                                          one-off reset the driver must replace
 // POST { action:'clear-lockout', ... }  -> zero failedAttempts, drop lockedUntil
 // POST { action:'set-active', ... }     -> deactivate / reactivate
 // POST { action:'resolve-unmatched' }   -> clear a review-queue row
@@ -37,6 +39,13 @@ const publicCred = (d: any) => ({
   createdAt: d?.createdAt || null,
   lastLoginAt: d?.lastLoginAt || null,
 });
+
+/**
+ * Policy, exported so the test suite can pin it: an issued PIN stands unless
+ * the dispatcher explicitly forces a change. Do not reintroduce a forced
+ * change as the default.
+ */
+export const issuedPinMustChange = (body: any): boolean => body?.forceChange === true;
 
 function bootstrapAllowed(req: Request): boolean {
   const want = process.env.LOADSCAN_ADMIN_BOOTSTRAP_SECRET;
@@ -157,15 +166,20 @@ export default async (req: Request): Promise<Response> => {
       const pin = String(body?.pin ?? '');
       if (!isValidPinFormat(pin)) return bad('pin must be 4-6 digits');
       if (!existing) return bad('create the driver first with action=upsert', 404);
+      // Issued PINs are STANDING PINs — last 4 of the driver's cell, permanent.
+      // Deliberate: nothing to hand out, no 5am reset calls. The security cost
+      // is written up in the README. forceChange:true is the one-off reset path
+      // and the only way mustChangePin gets set here.
+      const forceChange = issuedPinMustChange(body);
       await patchDoc(path, {
         pinHash: await hashPin(pin),
-        mustChangePin: true,
+        mustChangePin: forceChange,
         active: true,
         failedAttempts: 0,
         lockedUntil: null,
         pinIssuedAt: new Date().toISOString(),
       });
-      return ok({ driverNumber, tempPinSet: true });
+      return ok({ driverNumber, pinSet: true, mustChangePin: forceChange });
     }
 
     case 'clear-lockout': {
