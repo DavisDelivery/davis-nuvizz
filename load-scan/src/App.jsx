@@ -13,7 +13,7 @@ import { evaluateScan, loadProgress, stopProgress, ogGapHint, OUTCOME, normalize
 import { useSortable, SortableTh } from './lib/useSortable.jsx';
 
 // Bumped by hand on every change. load-scan versions independently of dispatch-map.
-const APP_VERSION = '0.2.2';
+const APP_VERSION = '0.3.0';
 
 const BUILD_COMMIT = typeof __BUILD_COMMIT__ !== 'undefined' ? __BUILD_COMMIT__ : 'dev';
 const BUILD_TIME = typeof __BUILD_TIME__ !== 'undefined' ? __BUILD_TIME__ : '';
@@ -92,7 +92,7 @@ function LoginScreen({ onLoggedIn }) {
             ? 'This driver number is not active. See dispatch.'
             : e2?.offline
               ? 'No connection — the first sign-in needs signal. Try inside the building.'
-              : 'Driver number or PIN is not right.',
+              : 'That sign-in is not right. Use your driver number, or your name as it shows on the board, plus your PIN.',
       );
     } finally {
       setBusy(false);
@@ -103,14 +103,14 @@ function LoginScreen({ onLoggedIn }) {
     <form onSubmit={submit} className="p-4 space-y-4 max-w-sm mx-auto">
       <Banner kind="info">Sign in once. You stay signed in for 90 days, even with no signal.</Banner>
       <label className="block">
-        <span className="text-sm font-medium text-slate-700">Driver number</span>
+        <span className="text-sm font-medium text-slate-700">Driver number or name</span>
         <input
           value={driverNumber}
           onChange={(e) => setDriverNumber(e.target.value)}
-          inputMode="numeric"
           autoComplete="username"
+          autoCapitalize="characters"
           className="mt-1 w-full rounded-xl border border-slate-300 px-4 py-3 text-lg tracking-wide"
-          placeholder="e.g. 4471"
+          placeholder="e.g. 4471 or MICHAEL FRYE"
         />
       </label>
       <label className="block">

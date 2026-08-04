@@ -77,6 +77,47 @@ export function stopBelongsToDriver(stop: any, cred: DriverCred): boolean {
   return set.has(normalizeDriverAlias(stop?.driverUserName)) || set.has(normalizeDriverAlias(stop?.driverName));
 }
 
+/**
+ * Resolve what a driver typed on the sign-in screen to exactly one credential.
+ *
+ * All digits is a driver number, used as-is. Anything else is the name off the
+ * board, matched against displayName and the hand-seeded alias set under the
+ * same rule as stop resolution: exactly one claimant resolves, zero or several
+ * is a refusal. Never a nearest-name guess — a plausible wrong credential at
+ * 5am signs a driver into somebody else's PIN lockout counter.
+ */
+export function resolveLoginIdentifier(
+  rawInput: any,
+  creds: DriverCred[],
+):
+  | { kind: 'number'; driverNumber: string }
+  | { kind: 'name'; status: 'resolved'; driverNumber: string }
+  | { kind: 'name'; status: 'unresolved'; reason: 'no_match' | 'ambiguous'; claimedBy: string[] } {
+  const input = normalizeDriverAlias(rawInput);
+  if (!input) return { kind: 'name', status: 'unresolved', reason: 'no_match', claimedBy: [] };
+  if (/^\d+$/.test(input)) return { kind: 'number', driverNumber: input };
+
+  const claimedBy = [
+    ...new Set(
+      creds
+        .filter(
+          (c) =>
+            normalizeDriverAlias(c.displayName) === input ||
+            (c.nuvizzAliases || []).some((a) => normalizeDriverAlias(a) === input),
+        )
+        .map((c) => String(c.driverNumber)),
+    ),
+  ];
+
+  if (claimedBy.length === 1) return { kind: 'name', status: 'resolved', driverNumber: claimedBy[0] };
+  return {
+    kind: 'name',
+    status: 'unresolved',
+    reason: claimedBy.length === 0 ? 'no_match' : 'ambiguous',
+    claimedBy,
+  };
+}
+
 /** Aliases claimed by more than one driver — a seeding mistake worth surfacing. */
 export function findAmbiguousAliases(creds: DriverCred[]): Array<{ alias: string; driverNumbers: string[] }> {
   const map = new Map<string, string[]>();

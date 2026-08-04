@@ -147,6 +147,50 @@ test('a driver with no seeded aliases matches nothing', () => {
   assert.equal(aliases.stopBelongsToDriver({ driverUserName: 'BRAD' }, { driverNumber: '9', nuvizzAliases: [] }), false);
 });
 
+// ── Sign-in identifier resolution ────────────────────────────────────────────
+
+const loginCreds = [
+  { driverNumber: '3698', displayName: 'Michael Frye', nuvizzAliases: ['MICHAEL FRYE'] },
+  { driverNumber: '4471', displayName: 'Brad Goodroe', nuvizzAliases: ['BRAD', 'BRAD GOODROE'] },
+];
+
+test('all digits is a driver number, used as-is', () => {
+  const r = aliases.resolveLoginIdentifier('3698', loginCreds);
+  assert.equal(r.kind, 'number');
+  assert.equal(r.driverNumber, '3698');
+});
+
+test('the name on the board resolves to exactly one credential', () => {
+  for (const typed of ['MICHAEL FRYE', 'michael  frye', '  Michael Frye ']) {
+    const r = aliases.resolveLoginIdentifier(typed, loginCreds);
+    assert.equal(r.status, 'resolved', `resolves ${JSON.stringify(typed)}`);
+    assert.equal(r.driverNumber, '3698');
+  }
+});
+
+test('a name matching one credential on BOTH displayName and alias is one claimant, not two', () => {
+  const r = aliases.resolveLoginIdentifier('BRAD GOODROE', loginCreds);
+  assert.equal(r.status, 'resolved');
+  assert.equal(r.driverNumber, '4471');
+});
+
+test('an unknown name is refused, never a nearest-name guess', () => {
+  const r = aliases.resolveLoginIdentifier('MIKE FRYE', loginCreds);
+  assert.equal(r.status, 'unresolved');
+  assert.equal(r.reason, 'no_match');
+});
+
+test('a name two credentials claim is refused as ambiguous', () => {
+  const dupes = [
+    { driverNumber: '1', displayName: 'Chris Smith', nuvizzAliases: ['CHRIS'] },
+    { driverNumber: '2', displayName: 'Chris Jones', nuvizzAliases: ['CHRIS'] },
+  ];
+  const r = aliases.resolveLoginIdentifier('CHRIS', dupes);
+  assert.equal(r.status, 'unresolved');
+  assert.equal(r.reason, 'ambiguous');
+  assert.deepEqual(r.claimedBy.sort(), ['1', '2']);
+});
+
 test('ambiguous seeding is detectable for the dispatcher', () => {
   const found = aliases.findAmbiguousAliases([
     { driverNumber: '1', nuvizzAliases: ['CHRIS'] },
