@@ -49,6 +49,12 @@ export interface ManifestStop {
    * rows that send no total are Averitt orders on the Inbound Integration feed.
    */
   countIsEstimated: boolean;
+  /**
+   * Can the app actually read a barcode off this freight? See stopIsScannable.
+   * False means the driver has to hand-confirm the stop, because there is no
+   * label the scanner can parse.
+   */
+  scannable: boolean;
   skids: number;
   loose: number;
   weight: number;
@@ -94,6 +100,55 @@ export function instructionText(raw: any): string {
 export function isAppointmentRequired(raw: any): boolean {
   if (raw?.appointmentRequired === true) return true;
   return APPOINTMENT_RE.test(instructionText(raw));
+}
+
+/**
+ * Can this stop's freight be scanned at all?
+ *
+ * ── WHY A STOP MIGHT NOT BE SCANNABLE ───────────────────────────────────────
+ *
+ * The scanner reads a Uline label: a bare 7-digit PRO (Code 39) plus an
+ * OG+10-digit piece ID (Code 128). Averitt freight does not carry one. A real
+ * Averitt pallet label, photographed on the dock Aug 2026, carries three
+ * barcodes and NONE of them fit:
+ *
+ *   PRO#:      0259185096   10 bare digits — not 7, so not a PRO to isProBarcode
+ *   SHIPMENT#: 5010437803   10 bare digits
+ *   HU:        1076461290   10 bare digits, the per-pallet handling-unit ID
+ *
+ * There is no OG barcode, so pairFrame can never complete a piece, and every
+ * one of those values classifies as 'unknown' and is silently dropped. The
+ * load then sits short and will not close — worse than the bug it replaced,
+ * because it blocks the driver.
+ *
+ * Worth noting for anyone tempted to "just widen the PRO regex": the three
+ * barcodes are indistinguishable by format — all bare 10-digit numbers. Accept
+ * 7-10 digits and scanning the SHIPMENT# yields PRO 0437803, which matches no
+ * stop and shows the driver a RED "wrong freight" on freight that is correct.
+ * A false red at 5am is worse than no scan. Making Averitt properly scannable
+ * needs to know what those barcodes actually encode (symbology and any
+ * prefix), which takes a physical scan of one label — not a photograph.
+ *
+ * ── THE TRIGGER ─────────────────────────────────────────────────────────────
+ *
+ * `scannable: false` on the index row is authoritative when present, so this
+ * can be corrected without a deploy.
+ *
+ * Otherwise it derives from countIsEstimated — the stop sent no piece total.
+ * Measured Aug 4 2026 over 337 stops on 20 drivers: exactly 9 sent no total,
+ * and every one was an Averitt order on the Inbound Integration feed. So on
+ * live data the two sets coincide.
+ *
+ * That is a correlation, not a law, and it is the weak point here: if a Uline
+ * stop ever arrives with no piece total it would wrongly offer hand-confirm.
+ * The cost is bounded — hand-confirm is deliberate, two-step, and recorded
+ * distinctly from a scan, so a wrong offer is visible in the session record
+ * rather than silent. Set `scannable` on the index row to end the guesswork.
+ */
+export function stopIsScannable(raw: any, countIsEstimated: boolean): boolean {
+  if (raw?.scannable === false) return false;
+  if (raw?.scannable === true) return true;
+  return !countIsEstimated;
 }
 
 /** PRO list, normalized and de-duplicated, tolerant of the several shapes the index uses. */
@@ -153,6 +208,7 @@ export function toManifestStop(raw: any, warn?: (msg: string) => void): Manifest
     proCount: num(raw?.proCount) || pros.length,
     expectedPieces,
     countIsEstimated,
+    scannable: stopIsScannable(raw, countIsEstimated),
     skids,
     loose,
     weight: num(raw?.weight),

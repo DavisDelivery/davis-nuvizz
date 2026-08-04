@@ -1,6 +1,67 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
+// ── Hand-confirmed completeness ──────────────────────────────────────────────
+// A stop the scanner cannot read still has to close the load, without ever
+// being mistaken for a scanned piece.
+
+const averittStop = { stopNbr: '9185096', pros: ['9185096'], expectedPieces: 2, scannable: false };
+const ulineStop = { stopNbr: '7152411', pros: ['7152411'], expectedPieces: 3, scannable: true };
+
+test('a hand-confirmed stop completes without a single scan', async () => {
+  const { stopProgress } = await import('../src/lib/scan-logic.js');
+  const p = stopProgress(averittStop, [], [{ stopNbr: '9185096', pieces: 2 }]);
+  assert.equal(p.complete, true);
+  assert.equal(p.scanned, 2);
+  assert.equal(p.scannedPieces, 0, 'nothing was scanned');
+  assert.equal(p.confirmedPieces, 2, 'a person vouched for both');
+  assert.equal(p.handConfirmed, true);
+  assert.equal(p.short, 0);
+});
+
+test('a hand-confirm covers only the REMAINDER, so a partly scanned stop cannot double count', async () => {
+  const { stopProgress } = await import('../src/lib/scan-logic.js');
+  const scans = [{ og: 'OG6028479182', pro: '9185096' }];
+  const p = stopProgress(averittStop, scans, [{ stopNbr: '9185096', pieces: 2 }]);
+  assert.equal(p.scannedPieces, 1);
+  assert.equal(p.confirmedPieces, 1, 'one scanned + one confirmed, not one + two');
+  assert.equal(p.scanned, 2);
+  assert.equal(p.over, 0, 'the count never inflates past expected');
+});
+
+test('a hand-confirm on one stop does not touch another', async () => {
+  const { loadProgress } = await import('../src/lib/scan-logic.js');
+  const p = loadProgress([averittStop, ulineStop], [], [{ stopNbr: '9185096', pieces: 2 }]);
+  assert.equal(p.expected, 5);
+  assert.equal(p.scanned, 2, 'only the confirmed stop counts');
+  assert.equal(p.clean, false, 'the Uline stop still has to be scanned');
+  assert.deepEqual(p.stopsWithGap.map((s) => s.stopNbr), ['7152411']);
+});
+
+test('the load separates scanned pieces from hand-confirmed ones', async () => {
+  const { loadProgress } = await import('../src/lib/scan-logic.js');
+  const scans = [
+    { og: 'OG6028479182', pro: '7152411' },
+    { og: 'OG6028479183', pro: '7152411' },
+    { og: 'OG6028479184', pro: '7152411' },
+  ];
+  const p = loadProgress([averittStop, ulineStop], scans, [{ stopNbr: '9185096', pieces: 2 }]);
+  assert.equal(p.clean, true, 'both stops reconcile, so the load may close');
+  assert.equal(p.scannedPieces, 3);
+  assert.equal(p.confirmedPieces, 2);
+  assert.equal(p.scanned, 5);
+  assert.deepEqual(p.handConfirmedStops, ['9185096'], 'the session record names which stops were vouched for');
+});
+
+test('with no hand-confirms the progress shape is unchanged', async () => {
+  const { loadProgress } = await import('../src/lib/scan-logic.js');
+  const p = loadProgress([ulineStop], [{ og: 'OG6028479182', pro: '7152411' }]);
+  assert.equal(p.scanned, 1);
+  assert.equal(p.confirmedPieces, 0);
+  assert.deepEqual(p.handConfirmedStops, []);
+  assert.equal(p.short, 2);
+});
+
 import {
   normalizePro, isProBarcode, isOgBarcode, classifyBarcode,
   pairFrame, createPairBuffer, evaluateScan, OUTCOME,

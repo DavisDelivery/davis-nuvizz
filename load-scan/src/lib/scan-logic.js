@@ -161,17 +161,29 @@ export function evaluateScan(pair, manifestStops, scannedOgs, otherLoads = []) {
  * or label reprint breaks an otherwise contiguous run. A gap is a hint for a
  * human, never an input to this number.
  */
-export function stopProgress(stop, scans) {
+export function stopProgress(stop, scans, handConfirms = []) {
   const pros = new Set(stop.pros || []);
   const ogs = new Set(
     (scans || []).filter((s) => pros.has(normalizePro(s.pro))).map((s) => String(s.og).toUpperCase()),
   );
-  const scanned = ogs.size;
   const expected = Number(stop.expectedPieces || 0);
+
+  // A hand-confirm is per STOP and all-or-nothing: there is no piece barcode to
+  // count, so the driver is asserting the whole stop is on the truck. It counts
+  // toward the load but never pretends to be a scan — `handConfirmed` rides all
+  // the way into the session record so completeness can tell them apart.
+  const hand = (handConfirms || []).find((h) => String(h.stopNbr) === String(stop.stopNbr)) || null;
+  const scannedPieces = ogs.size;
+  const confirmedPieces = hand ? Math.max(0, expected - scannedPieces) : 0;
+  const scanned = scannedPieces + confirmedPieces;
+
   return {
     stopNbr: stop.stopNbr,
     expected,
     scanned,
+    scannedPieces,
+    confirmedPieces,
+    handConfirmed: !!hand,
     short: Math.max(0, expected - scanned),
     over: Math.max(0, scanned - expected),
     complete: expected > 0 && scanned === expected,
@@ -179,14 +191,20 @@ export function stopProgress(stop, scans) {
   };
 }
 
-export function loadProgress(stops, scans) {
-  const per = (stops || []).map((s) => stopProgress(s, scans));
+export function loadProgress(stops, scans, handConfirms = []) {
+  const per = (stops || []).map((s) => stopProgress(s, scans, handConfirms));
   const expected = per.reduce((n, p) => n + p.expected, 0);
-  const scanned = new Set((scans || []).map((s) => String(s.og).toUpperCase())).size;
+  // Distinct OGs across the load, plus whatever the hand-confirms vouch for.
+  const scannedPieces = new Set((scans || []).map((s) => String(s.og).toUpperCase())).size;
+  const confirmedPieces = per.reduce((n, p) => n + p.confirmedPieces, 0);
+  const scanned = scannedPieces + confirmedPieces;
   return {
     perStop: per,
     expected,
     scanned,
+    scannedPieces,
+    confirmedPieces,
+    handConfirmedStops: per.filter((p) => p.handConfirmed).map((p) => p.stopNbr),
     short: Math.max(0, expected - scanned),
     over: Math.max(0, scanned - expected),
     // A load may only close cleanly when every stop reconciles.

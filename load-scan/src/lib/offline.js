@@ -61,6 +61,24 @@ function tx(store, mode, fn) {
 
 export const queueKey = (loadNbr, og) => `${loadNbr}::${String(og).toUpperCase()}`;
 
+/**
+ * Hand-confirms share the queue — same flush, same retry, same prune — but sit
+ * in their own key namespace so they can never collide with a scanned piece
+ * and are idempotent per stop: confirming twice is still one confirmation.
+ */
+export const handKey = (loadNbr, stopNbr) => `${loadNbr}::HAND::${String(stopNbr)}`;
+
+/** Record a stop confirmed by hand. Returns false when it was already confirmed. */
+export async function enqueueHandConfirm(loadNbr, date, confirm) {
+  const key = handKey(loadNbr, confirm.stopNbr);
+  const existing = await tx(STORE_QUEUE, 'readonly', (s) => s.get(key));
+  if (existing) return false;
+  await tx(STORE_QUEUE, 'readwrite', (s) =>
+    s.put({ key, kind: 'hand', loadNbr, date, ...confirm, queuedAt: new Date().toISOString() }),
+  );
+  return true;
+}
+
 /** Enqueue one scan. Returns false when this piece was already queued. */
 export async function enqueueScan(loadNbr, date, scan) {
   const key = queueKey(loadNbr, scan.og);

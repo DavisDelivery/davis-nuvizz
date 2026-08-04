@@ -15,7 +15,7 @@ import { initAudio, playVerdict } from './lib/feedback.js';
 import { useSortable, SortableTh } from './lib/useSortable.jsx';
 
 // Bumped by hand on every change. load-scan versions independently of dispatch-map.
-const APP_VERSION = '0.6.0';
+const APP_VERSION = '0.7.0';
 
 const BUILD_COMMIT = typeof __BUILD_COMMIT__ !== 'undefined' ? __BUILD_COMMIT__ : 'dev';
 const BUILD_TIME = typeof __BUILD_TIME__ !== 'undefined' ? __BUILD_TIME__ : '';
@@ -375,13 +375,19 @@ function VerdictFlash({ verdict, onClear }) {
   );
 }
 
-function StopRow({ stop, progress }) {
+function StopRow({ stop, progress, onHandConfirm }) {
+  // Two-step by construction: the confirm button does not exist until "Cannot
+  // scan this" is tapped, and it re-arms after every render of a fresh row. A
+  // single stray tap can never book freight onto the truck.
+  const [arming, setArming] = useState(false);
   const gaps = progress.complete ? null : ogGapHint(progress.ogs);
-  const tone = progress.complete
-    ? 'bg-emerald-50 ring-emerald-200'
-    : progress.scanned > 0
-      ? 'bg-amber-50 ring-amber-200'
-      : 'bg-white ring-slate-200';
+  const tone = progress.handConfirmed
+    ? 'bg-sky-50 ring-sky-300'
+    : progress.complete
+      ? 'bg-emerald-50 ring-emerald-200'
+      : progress.scanned > 0
+        ? 'bg-amber-50 ring-amber-200'
+        : 'bg-white ring-slate-200';
   return (
     <div className={`rounded-xl px-3 py-2 ring-1 ${tone}`}>
       <div className="flex items-baseline gap-2">
@@ -403,6 +409,55 @@ function StopRow({ stop, progress }) {
           Possible gap at {gaps.join(', ')} — a piece may still be on the dock.
         </div>
       ) : null}
+
+      {/* Hand-confirm: only for freight the scanner physically cannot read, and
+          only while the stop is still short. Never an alternative to scanning. */}
+      {stop.scannable === false && !progress.handConfirmed && progress.short > 0 ? (
+        <div className="mt-2 pl-8">
+          {!arming ? (
+            <button
+              type="button"
+              onClick={() => setArming(true)}
+              className="text-xs rounded-lg ring-1 ring-sky-300 bg-sky-50 text-sky-900 px-3 py-2"
+            >
+              No barcode we can read — confirm by hand
+            </button>
+          ) : (
+            <div className="rounded-lg ring-1 ring-sky-300 bg-sky-50 px-3 py-2 space-y-2">
+              <div className="text-xs text-sky-900">
+                Confirming <span className="font-semibold">{progress.short} piece(s)</span> for{' '}
+                {stop.businessName || stop.stopNbr} without scanning. Count them on the truck first — this is
+                recorded as your word, not a scan.
+              </div>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => setArming(false)}
+                  className="flex-1 text-xs rounded-lg ring-1 ring-slate-300 bg-white px-3 py-2"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setArming(false);
+                    onHandConfirm?.(stop, progress.short);
+                  }}
+                  className="flex-1 text-xs rounded-lg bg-sky-700 text-white px-3 py-2 font-medium"
+                >
+                  Yes — all {progress.short} are loaded
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      ) : null}
+
+      {progress.handConfirmed ? (
+        <div className="mt-1 pl-8 text-xs text-sky-800">
+          {progress.confirmedPieces} piece(s) confirmed by hand — no readable barcode
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -417,8 +472,15 @@ function CloseoutSheet({ load, progress, onCancel, onConfirm, busy }) {
       <div className="bg-white w-full rounded-t-2xl p-4 space-y-3 max-h-[85vh] overflow-y-auto">
         <div className="text-lg font-semibold">Close load {load.loadNbr}</div>
         <div className="text-sm text-slate-600">
-          {progress.scanned} of {progress.expected} pieces scanned
+          {progress.scanned} of {progress.expected} pieces accounted for
         </div>
+        {progress.confirmedPieces > 0 ? (
+          <Banner kind="info">
+            {progress.scannedPieces} scanned · <span className="font-medium">{progress.confirmedPieces} confirmed by
+            hand</span> on {progress.handConfirmedStops.length} stop(s) with no readable barcode. Both are recorded,
+            and dispatch can tell them apart.
+          </Banner>
+        ) : null}
 
         {clean ? (
           <Banner kind="good">Every stop reconciles. Safe to close.</Banner>
@@ -497,6 +559,7 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
   const [result, setResult] = useState(null);
   const [partial, setPartial] = useState({ pro: null, og: null });
   const [scans, setScans] = useState([]);
+  const [handConfirms, setHandConfirms] = useState([]);
   const [pending, setPending] = useState(0);
   const [closing, setClosing] = useState(false);
   const [closed, setClosed] = useState(false);
@@ -526,14 +589,21 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
       .map((l) => ({ loadNbr: l.loadNbr, driverName: l.stops?.[0]?.raw?.driverName || null, stops: l.stops })),
     [manifest, activeLoad],
   );
-  const progress = useMemo(() => loadProgress(stops, scans), [stops, scans]);
+  const progress = useMemo(() => loadProgress(stops, scans, handConfirms), [stops, scans, handConfirms]);
   const scannedOgs = useMemo(() => new Set(scans.map((s) => String(s.og).toUpperCase())), [scans]);
 
   // Rehydrate this load's scans from the local queue — the UI's source of truth.
   const refreshLocal = useCallback(async () => {
     if (!activeLoad) return;
     const rows = await store.queuedFor(activeLoad);
-    setScans(rows.map((r) => ({ og: r.og, pro: r.pro, scannedAt: r.scannedAt, stopNbr: r.stopNbr, engine: r.engine })));
+    setScans(
+      rows.filter((r) => r.kind !== 'hand')
+        .map((r) => ({ og: r.og, pro: r.pro, scannedAt: r.scannedAt, stopNbr: r.stopNbr, engine: r.engine })),
+    );
+    setHandConfirms(
+      rows.filter((r) => r.kind === 'hand')
+        .map((r) => ({ stopNbr: r.stopNbr, pieces: r.pieces, confirmedAt: r.confirmedAt, reason: r.reason })),
+    );
     setPending(rows.filter((r) => !r.syncedAt).length);
   }, [activeLoad]);
 
@@ -583,7 +653,10 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
         loadNbr: activeLoad,
         date: manifest.date,
         expectedPieces: progress.expected,
-        scans: rows.map(({ og, pro, scannedAt, stopNbr, engine: eng }) => ({ og, pro, scannedAt, stopNbr, engine: eng })),
+        scans: rows.filter((r) => r.kind !== 'hand')
+          .map(({ og, pro, scannedAt, stopNbr, engine: eng }) => ({ og, pro, scannedAt, stopNbr, engine: eng })),
+        handConfirms: rows.filter((r) => r.kind === 'hand')
+          .map(({ stopNbr, pieces, confirmedAt, reason }) => ({ stopNbr, pieces, confirmedAt, reason })),
       });
       await store.markSynced(rows.map((r) => r.key));
       await refreshLocal();
@@ -681,6 +754,23 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
     setGunMode((v) => !v);
   }
 
+  // Local first, exactly like a scan: the dock has no signal and a confirmation
+  // that only exists in a pending request is one a dropped connection deletes.
+  const handConfirm = useCallback(
+    async (stop, pieces) => {
+      await store.enqueueHandConfirm(activeLoad, manifest.date, {
+        stopNbr: stop.stopNbr,
+        pieces,
+        confirmedAt: new Date().toISOString(),
+        reason: 'not_scannable',
+      });
+      if (navigator.vibrate) navigator.vibrate([30, 40, 30]);
+      await refreshLocal();
+      flushQueue();
+    },
+    [activeLoad, manifest, refreshLocal, flushQueue],
+  );
+
   async function addManual() {
     const pro = normalizePro(manualPro);
     const og = manualOg.trim().toUpperCase();
@@ -703,6 +793,7 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
         date: manifest.date,
         expectedPieces: progress.expected,
         scans: [],
+        handConfirms: [],
         close: true,
         reconciliation: { resolvedBy, note },
       });
@@ -866,7 +957,12 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
             <ClipboardList className="w-4 h-4" /> {stops.length} stops
           </div>
           {stops.map((s) => (
-            <StopRow key={s.stopNbr} stop={s} progress={stopProgress(s, scans)} />
+            <StopRow
+              key={s.stopNbr}
+              stop={s}
+              progress={stopProgress(s, scans, handConfirms)}
+              onHandConfirm={handConfirm}
+            />
           ))}
         </div>
 
