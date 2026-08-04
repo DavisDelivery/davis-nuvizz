@@ -15,7 +15,7 @@ import { initAudio, playVerdict } from './lib/feedback.js';
 import { useSortable, SortableTh } from './lib/useSortable.jsx';
 
 // Bumped by hand on every change. load-scan versions independently of dispatch-map.
-const APP_VERSION = '0.5.0';
+const APP_VERSION = '0.6.0';
 
 const BUILD_COMMIT = typeof __BUILD_COMMIT__ !== 'undefined' ? __BUILD_COMMIT__ : 'dev';
 const BUILD_TIME = typeof __BUILD_TIME__ !== 'undefined' ? __BUILD_TIME__ : '';
@@ -191,7 +191,7 @@ function ChangePinScreen({ session, onDone }) {
 
 // ── Load selection ───────────────────────────────────────────────────────────
 
-function LoadPicker({ manifest, onPick, onManual, onRefresh, busy }) {
+function LoadPicker({ manifest, onPick, onManual, onRefresh, busy, loader }) {
   const [manual, setManual] = useState('');
   const loads = manifest?.loads || [];
 
@@ -221,23 +221,30 @@ function LoadPicker({ manifest, onPick, onManual, onRefresh, busy }) {
 
   return (
     <div className="p-4 space-y-3 max-w-sm mx-auto">
-      <div className="text-sm text-slate-600">{fmtDate(manifest?.date)} · pick your load</div>
+      <div className="text-sm text-slate-600">
+        {fmtDate(manifest?.date)} · {loader ? `pick the truck you are loading — ${loads.length} on the dock` : 'pick your load'}
+      </div>
       {loads.map((l) => (
         <button
           key={l.loadNbr}
           type="button"
+          disabled={busy}
           onClick={() => onPick(l.loadNbr)}
-          className="w-full text-left rounded-xl bg-white ring-1 ring-slate-200 px-4 py-3 hover:bg-slate-50 flex items-center gap-3"
+          className="w-full text-left rounded-xl bg-white ring-1 ring-slate-200 px-4 py-3 hover:bg-slate-50 disabled:opacity-50 flex items-center gap-3"
         >
           <div className="min-w-0 flex-1">
             <div className="font-semibold text-slate-900 truncate">{l.loadNbr}</div>
+            {/* Whose truck: a dock identifies a trailer by its driver, not its load number. */}
+            {l.driverName ? <div className="text-sm text-slate-700 truncate">{l.driverName}</div> : null}
             <div className="text-xs text-slate-500">
               {l.stopCount} stops · {l.expectedPieces} pieces
+              {l.routeName ? ` · ${l.routeName}` : ''}
             </div>
           </div>
           <ChevronRight className="w-5 h-5 text-slate-400" />
         </button>
       ))}
+      {loader && !loads.length ? <Banner kind="warn">No loads on the board for today yet.</Banner> : null}
       <div className="pt-2">
         <input
           value={manual}
@@ -478,7 +485,7 @@ function CloseoutSheet({ load, progress, onCancel, onConfirm, busy }) {
   );
 }
 
-function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut }) {
+function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, loader }) {
   const videoRef = useRef(null);
   const containerRef = useRef(null);
   const stopRef = useRef(null);
@@ -492,6 +499,7 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut }) 
   const [scans, setScans] = useState([]);
   const [pending, setPending] = useState(0);
   const [closing, setClosing] = useState(false);
+  const [closed, setClosed] = useState(false);
   const [busy, setBusy] = useState(false);
   const [flash, setFlash] = useState('');
   const [manualPro, setManualPro] = useState('');
@@ -512,6 +520,7 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut }) 
     [manifest, activeLoad],
   );
   const stops = load?.stops || [];
+  const loadDriverName = load?.stops?.[0]?.raw?.driverName || load?.driverName || '';
   const otherLoads = useMemo(
     () => (manifest?.loads || []).filter((l) => l.loadNbr !== activeLoad)
       .map((l) => ({ loadNbr: l.loadNbr, driverName: l.stops?.[0]?.raw?.driverName || null, stops: l.stops })),
@@ -698,6 +707,7 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut }) 
         reconciliation: { resolvedBy, note },
       });
       setClosing(false);
+      setClosed(true);
       setFlash(`Load ${activeLoad} closed.`);
     } catch (e) {
       setFlash(e?.offline ? 'No signal — close the load once you have signal.' : e?.message || 'Could not close.');
@@ -710,7 +720,13 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut }) 
     <div className="pb-28">
       <Header
         title={load ? load.loadNbr : 'No load'}
-        subtitle={`${fmtDate(manifest?.date)} · ${session.displayName || session.driverNumber}`}
+        subtitle={
+          loader
+            // A loader needs whose truck this is, not who they are — they know
+            // that. Their own name moves to the sign-out side of the question.
+            ? `${loadDriverName || 'unassigned'} · loading as ${session.displayName || session.driverNumber}`
+            : `${fmtDate(manifest?.date)} · ${session.displayName || session.driverNumber}`
+        }
         right={
           <button type="button" onClick={onSignOut} className="p-2 -mr-2" aria-label="Sign out">
             <LogOut className="w-5 h-5" />
@@ -854,10 +870,18 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut }) 
           ))}
         </div>
 
-        <div className="grid grid-cols-2 gap-2">
-          <BigButton tone="ghost" onClick={onSwitchLoad}>Switch load</BigButton>
-          <BigButton onClick={() => setClosing(true)} disabled={!load}>Close load</BigButton>
-        </div>
+        {/* One truck start to finish, several per shift: the way out of a
+            closed load is the next truck, not a dead end. */}
+        {closed ? (
+          <BigButton onClick={onSwitchLoad}>
+            {loader ? 'Next truck' : 'Back to my loads'}
+          </BigButton>
+        ) : (
+          <div className="grid grid-cols-2 gap-2">
+            <BigButton tone="ghost" onClick={onSwitchLoad}>{loader ? 'Different truck' : 'Switch load'}</BigButton>
+            <BigButton onClick={() => setClosing(true)} disabled={!load}>Close load</BigButton>
+          </div>
+        )}
 
         <div className="text-[10px] text-slate-400 text-center pt-2">
           Load Scan v{APP_VERSION} · {BUILD_COMMIT} · {BUILD_CONTEXT}
@@ -994,7 +1018,17 @@ function DispatcherScreen({ session, onSignOut }) {
                   <td className="px-2 py-2">{d.displayName || '—'}</td>
                   <td className="px-2 py-2 text-xs">{d.nuvizzAliases.join(', ') || <span className="text-rose-600">none</span>}</td>
                   <td className="px-2 py-2 text-xs">
-                    {d.role === 'dispatcher' ? <span className="font-medium text-[#1e5b92]">dispatcher</span> : 'driver'}
+                    <select
+                      value={d.role}
+                      disabled={busy}
+                      onChange={(e) => act({ action: 'set-role', driverNumber: d.driverNumber, role: e.target.value })}
+                      className="rounded border border-slate-300 px-1 py-1 text-xs bg-white"
+                      aria-label={`Role for ${d.driverNumber}`}
+                    >
+                      <option value="driver">driver</option>
+                      <option value="loader">loader</option>
+                      <option value="dispatcher">dispatcher</option>
+                    </select>
                   </td>
                   <td className="px-2 py-2">
                     {d.active ? <span className="text-emerald-700">yes</span> : <span className="text-rose-700">no</span>}
@@ -1010,20 +1044,6 @@ function DispatcherScreen({ session, onSignOut }) {
                       onClick={() => act({ action: 'set-active', driverNumber: d.driverNumber, active: !d.active })}
                     >
                       {d.active ? 'deactivate' : 'reactivate'}
-                    </button>
-                    <button
-                      type="button"
-                      className="text-xs underline mr-2"
-                      disabled={busy}
-                      onClick={() =>
-                        act({
-                          action: 'set-role',
-                          driverNumber: d.driverNumber,
-                          role: d.role === 'dispatcher' ? 'driver' : 'dispatcher',
-                        })
-                      }
-                    >
-                      {d.role === 'dispatcher' ? 'make driver' : 'make dispatcher'}
                     </button>
                     {d.lockedUntil ? (
                       <button
@@ -1172,7 +1192,9 @@ export default function App() {
         setManifest(r);
         await store.putCache(key, r);
         const loads = r.loads || [];
-        if (loads.length === 1) setActiveLoad(loads[0].loadNbr);
+        // A lone load opens itself — except in the loader pick-list, where the
+        // rows carry no stops and one truck on the dock is still a choice.
+        if (loads.length === 1 && !r.summariesOnly) setActiveLoad(loads[0].loadNbr);
       } catch (e) {
         if (e?.status === 401) {
           clearSession();
@@ -1251,7 +1273,13 @@ export default function App() {
         session={session}
         manifest={manifest}
         activeLoad={activeLoad}
-        onSwitchLoad={() => setActiveLoad(null)}
+        loader={session.role === 'loader'}
+        // The loader's manifest currently holds only the truck they picked, so
+        // going back has to re-read the day's pick list for the next one.
+        onSwitchLoad={async () => {
+          setActiveLoad(null);
+          if (session.role === 'loader') await getManifest();
+        }}
         onSignOut={signOut}
       />
     );
@@ -1278,7 +1306,13 @@ export default function App() {
           <LoadPicker
             manifest={manifest}
             busy={loading}
-            onPick={setActiveLoad}
+            loader={session.role === 'loader'}
+            // A summary row has no stops: fetch the chosen load before opening
+            // it. Same ?loadNbr path the manual entry already used.
+            onPick={async (loadNbr) => {
+              if (manifest.summariesOnly) await getManifest({ loadNbr });
+              setActiveLoad(loadNbr);
+            }}
             onManual={async (loadNbr) => {
               await getManifest({ loadNbr });
               setActiveLoad(loadNbr);

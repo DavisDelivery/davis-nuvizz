@@ -148,6 +148,41 @@ npm test         # pure-logic suite (node --test)
 npm run build    # -> dist/
 ```
 
+## Roles
+
+Three roles. The only thing that differs is **whose load am I looking at** —
+piece matching, duplicate catching, counts and the offline queue are identical,
+because they work on a load, not on a person.
+
+| role | sees |
+| --- | --- |
+| `driver` | their own load, resolved from the hand-seeded alias set |
+| `loader` | the day's loads as a pick list; chooses the truck they are working |
+| `dispatcher` | the credential admin surface |
+
+Set with `set-role` from the Drivers panel. The role is read from the **live
+credential doc** on every request, not from the 90-day token, so a change takes
+effect on the next call rather than at token expiry.
+
+### Loader mode
+
+A forklift operator loads somebody else's truck — **one truck start to finish,
+several per shift** (confirmed with Chad). So the pick is once per truck, not
+once per scan:
+
+1. Sign in as themselves. The identity path never runs for a loader — they have
+   no aliases, and running it would file an unmatched-alias review row on every
+   sign-in.
+2. `load-manifest` returns the day's loads as **summaries only** (`summariesOnly:
+   true`): load number, driver name, route, stop count, piece count. No stops —
+   a phone must never receive all ~600.
+3. Picking a truck fetches that load through the existing `?loadNbr=` override.
+   No second path was invented for this.
+4. Closing the load offers **Next truck**, which re-reads the pick list.
+
+The header shows whose truck it is, because a dock identifies a trailer by its
+driver, not by its load number.
+
 ## Hardware scanners (keyboard wedge)
 
 The Zebra MC3400 and a DS3678-ER paired to a tablet both deliver barcodes as

@@ -15,7 +15,7 @@
 
 import { getDoc, patchDoc, listDocs, isFirestoreEnabled } from './lib/firestore.mts';
 import {
-  DRIVER_AUTH, hashPin, verifyPin, issueToken, isLockedOut, nextFailureState, LOCKOUT_MINUTES,
+  DRIVER_AUTH, hashPin, verifyPin, issueToken, isLockedOut, nextFailureState, LOCKOUT_MINUTES, normalizeRole,
 } from './lib/auth.mts';
 import { resolveLoginIdentifier } from './lib/aliases.mts';
 import { ok, bad, json, readJson } from './lib/http.mts';
@@ -90,12 +90,13 @@ export default async (req: Request): Promise<Response> => {
     lastLoginAt: nowIso,
   });
 
+  const role = normalizeRole(doc.role);
   return ok({
-    token: issueToken(driverNumber, String(doc.displayName || ''), doc.role === 'dispatcher' ? 'dispatcher' : 'driver'),
+    token: issueToken(driverNumber, String(doc.displayName || ''), role),
     driverNumber,
     displayName: String(doc.displayName || ''),
     mustChangePin: doc.mustChangePin === true,
-    role: doc.role === 'dispatcher' ? 'dispatcher' : 'driver',
+    role,
   });
 };
 
