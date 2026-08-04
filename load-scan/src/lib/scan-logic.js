@@ -161,6 +161,43 @@ export function evaluateScan(pair, manifestStops, scannedOgs, otherLoads = []) {
  * or label reprint breaks an otherwise contiguous run. A gap is a hint for a
  * human, never an input to this number.
  */
+/**
+ * Stops in the order they go ON the trailer — the reverse of delivery order.
+ *
+ * loadSeq 1 is the nose (loaded first, delivered last). Stops that share a
+ * loadSeq are co-located: one address, several orders. They stay adjacent,
+ * ordered by stop number so the screen is stable between refreshes.
+ */
+export function loadOrder(stops) {
+  return (stops || []).slice().sort((a, b) => {
+    const av = a.loadSeq == null ? Infinity : a.loadSeq;
+    const bv = b.loadSeq == null ? Infinity : b.loadSeq;
+    if (av !== bv) return av - bv;
+    return String(a.stopNbr).localeCompare(String(b.stopNbr));
+  });
+}
+
+/** Distinct trailer positions — the "of 13" in "Load 1 of 13". */
+export function loadGroupCount(stops) {
+  return new Set((stops || []).map((s) => s.loadSeq).filter((v) => v != null)).size;
+}
+
+/** Delivery-order sequence for a stop. Kept identical to the server's key. */
+export function deliverySeq(s) {
+  return s?.loadStopSeq ?? s?.routeSeq ?? null;
+}
+
+/**
+ * Fingerprint of the sequence a load was built against — see the resequence
+ * guard in App.jsx. Must match the server's sequenceFingerprint exactly.
+ */
+export function sequenceFingerprint(stops) {
+  return (stops || [])
+    .map((s) => `${s.stopNbr ?? ''}:${deliverySeq(s) ?? ''}`)
+    .sort()
+    .join('|');
+}
+
 export function stopProgress(stop, scans, handConfirms = []) {
   const pros = new Set(stop.pros || []);
   const ogs = new Set(

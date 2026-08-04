@@ -1,6 +1,53 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
+// ── Client-side loading order ────────────────────────────────────────────────
+
+test('loadOrder puts the nose first and the doors last', async () => {
+  const { loadOrder } = await import('../src/lib/scan-logic.js');
+  const stops = [
+    { stopNbr: 'A', loadSeq: 3, routeSeq: 1 },
+    { stopNbr: 'B', loadSeq: 1, routeSeq: 3 },
+    { stopNbr: 'C', loadSeq: 2, routeSeq: 2 },
+  ];
+  assert.deepEqual(loadOrder(stops).map((s) => s.stopNbr), ['B', 'C', 'A']);
+  assert.equal(loadOrder(stops)[0].routeSeq, 3, 'first loaded is the last delivered');
+});
+
+test('co-located stops stay adjacent and in a stable order between refreshes', async () => {
+  const { loadOrder } = await import('../src/lib/scan-logic.js');
+  const stops = [
+    { stopNbr: 'S9', loadSeq: 2 },
+    { stopNbr: 'S1', loadSeq: 1 },
+    { stopNbr: 'S3', loadSeq: 2 },
+    { stopNbr: 'S7', loadSeq: 3 },
+  ];
+  const once = loadOrder(stops).map((s) => s.stopNbr);
+  const again = loadOrder(stops.slice().reverse()).map((s) => s.stopNbr);
+  assert.deepEqual(once, ['S1', 'S3', 'S9', 'S7'], 'the shared position sits together');
+  assert.deepEqual(once, again, 'the order does not shuffle when the input order changes');
+});
+
+test('a stop with no loadSeq sorts last instead of jumping to the nose', async () => {
+  const { loadOrder } = await import('../src/lib/scan-logic.js');
+  const out = loadOrder([{ stopNbr: 'X', loadSeq: null }, { stopNbr: 'Y', loadSeq: 5 }]);
+  assert.deepEqual(out.map((s) => s.stopNbr), ['Y', 'X']);
+});
+
+test('the client fingerprint matches the server fingerprint exactly', async () => {
+  const client = await import('../src/lib/scan-logic.js');
+  const server = await import('../netlify/functions/lib/manifest.mts');
+  const stops = [
+    { stopNbr: 'A', routeSeq: 2, loadStopSeq: null },
+    { stopNbr: 'B', routeSeq: 1, loadStopSeq: null },
+  ];
+  assert.equal(
+    client.sequenceFingerprint(stops),
+    server.sequenceFingerprint(stops),
+    'a mismatch here would make the resequence guard fire constantly or never',
+  );
+});
+
 // ── Hand-confirmed completeness ──────────────────────────────────────────────
 // A stop the scanner cannot read still has to close the load, without ever
 // being mistaken for a scanned piece.

@@ -33,6 +33,12 @@ export interface ManifestStop {
   routeName: string | null;
   routeSeq: number | null;
   loadStopSeq: number | null;
+  /**
+   * Position in LOADING order: 1 = first onto the trailer = nose = the LAST
+   * stop delivered. The exact reverse of delivery order. Null when the stop
+   * carries no sequence at all. See assignLoadSeq.
+   */
+  loadSeq: number | null;
   businessName: string;
   city: string;
   state: string;
@@ -199,6 +205,9 @@ export function toManifestStop(raw: any, warn?: (msg: string) => void): Manifest
     routeName: str(raw?.routeName) || null,
     routeSeq: raw?.routeSeq == null ? null : num(raw.routeSeq),
     loadStopSeq: raw?.loadStopSeq == null ? null : num(raw.loadStopSeq),
+    // Stamped by assignLoadSeq once the stop is grouped into its load — a
+    // trailer position only means anything relative to the rest of the load.
+    loadSeq: null,
     businessName: str(raw?.businessName),
     city: str(raw?.city),
     state: str(raw?.state),
@@ -246,11 +255,77 @@ export function loadSummaries(stops: ManifestStop[]): Array<{
   }));
 }
 
+/**
+ * The sequence that decides DELIVERY order — the key the existing sort uses.
+ *
+ * Measured Aug 4 2026: `loadStopSeq` is never populated on live loads, so this
+ * is `routeSeq` in practice, running 1..N with no nulls. Keeping the fallback
+ * means loadSeq stays the exact inverse of delivery order even if NuVizz ever
+ * starts sending loadStopSeq — the two orders can never drift apart.
+ */
+export function deliverySeq(s: { loadStopSeq?: number | null; routeSeq?: number | null }): number | null {
+  return s?.loadStopSeq ?? s?.routeSeq ?? null;
+}
+
+/**
+ * Stamp each stop with its LOADING position — the reverse of delivery order.
+ *
+ * A trailer is unloaded from the doors forward, so the last stop delivered has
+ * to go on first, at the nose. loadSeq 1 is that stop.
+ *
+ * ── CO-LOCATED STOPS ────────────────────────────────────────────────────────
+ *
+ * Several orders can share one address, and they arrive as separate stops
+ * sharing a routeSeq. Measured Aug 4 2026: BEN 1 has one shared pair, DENIS
+ * SALKIC has 17 stops across 15 sequence numbers. They come off the trailer at
+ * one place, so they go on at one place: stops sharing a delivery seq get the
+ * SAME loadSeq and must never be split apart on the screen.
+ *
+ * So loadSeq ranks DISTINCT sequence values, not stops — a 17-stop load over 15
+ * sequences has loadSeq 1..15, not 1..17.
+ *
+ * This only ADDS a field. The array itself stays in delivery order, because
+ * every other consumer of the manifest reads it that way.
+ */
+export function assignLoadSeq<T extends { loadStopSeq?: number | null; routeSeq?: number | null }>(
+  stops: T[],
+): Array<T & { loadSeq: number | null }> {
+  const distinct = [...new Set((stops || []).map(deliverySeq).filter((n): n is number => n != null))].sort(
+    (a, b) => a - b,
+  );
+  // Reverse rank: the highest delivery seq (last stop delivered) becomes 1.
+  const rank = new Map(distinct.map((seq, i) => [seq, distinct.length - i]));
+  return (stops || []).map((s) => {
+    const d = deliverySeq(s);
+    return { ...s, loadSeq: d == null ? null : (rank.get(d) ?? null) };
+  });
+}
+
+/** How many distinct trailer positions a load has — the "of 13" in "Load 1 of 13". */
+export function loadGroupCount(stops: Array<{ loadSeq?: number | null }>): number {
+  return new Set((stops || []).map((s) => s.loadSeq).filter((v) => v != null)).size;
+}
+
+/**
+ * A fingerprint of the sequence a load was built against.
+ *
+ * If dispatch resequences the route after the truck is loaded, the freight on
+ * the trailer is physically wrong and nothing else would notice. Comparing this
+ * against the stored one turns a silent renumbering into a visible alarm.
+ */
+export function sequenceFingerprint(stops: Array<{ stopNbr?: string; loadStopSeq?: number | null; routeSeq?: number | null }>): string {
+  return (stops || [])
+    .map((s) => `${s.stopNbr ?? ''}:${deliverySeq(s) ?? ''}`)
+    .sort()
+    .join('|');
+}
+
 /** Group manifest stops into loads, summing expected pieces per load. */
 export function groupIntoLoads(stops: ManifestStop[]): Array<{
   loadNbr: string;
   routeName: string | null;
   stopCount: number;
+  loadGroupCount: number;
   expectedPieces: number;
   stops: ManifestStop[];
 }> {
@@ -261,12 +336,20 @@ export function groupIntoLoads(stops: ManifestStop[]): Array<{
     byLoad.get(k)!.push(s);
   }
   return [...byLoad.entries()]
-    .map(([loadNbr, list]) => ({
-      loadNbr,
-      routeName: list[0]?.routeName ?? null,
-      stopCount: list.length,
-      expectedPieces: list.reduce((sum, s) => sum + s.expectedPieces, 0),
-      stops: list.slice().sort((a, b) => (a.loadStopSeq ?? a.routeSeq ?? 0) - (b.loadStopSeq ?? b.routeSeq ?? 0)),
-    }))
+    .map(([loadNbr, list]) => {
+      // Delivery order, exactly as before — every other consumer reads this
+      // array that way. loadSeq is stamped on as a field, never a re-sort.
+      const inDeliveryOrder = assignLoadSeq(
+        list.slice().sort((a, b) => (deliverySeq(a) ?? 0) - (deliverySeq(b) ?? 0)),
+      ) as ManifestStop[];
+      return {
+        loadNbr,
+        routeName: list[0]?.routeName ?? null,
+        stopCount: list.length,
+        loadGroupCount: loadGroupCount(inDeliveryOrder),
+        expectedPieces: list.reduce((sum, s) => sum + s.expectedPieces, 0),
+        stops: inDeliveryOrder,
+      };
+    })
     .sort((a, b) => a.loadNbr.localeCompare(b.loadNbr));
 }

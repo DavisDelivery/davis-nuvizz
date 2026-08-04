@@ -9,13 +9,13 @@ import { loadSession, saveSession, clearSession, daysRemaining } from './lib/ses
 import * as api from './lib/api.js';
 import * as store from './lib/offline.js';
 import { startScanner } from './lib/scanner.js';
-import { evaluateScan, loadProgress, stopProgress, ogGapHint, OUTCOME, normalizePro, createPairBuffer } from './lib/scan-logic.js';
+import { evaluateScan, loadProgress, stopProgress, ogGapHint, OUTCOME, normalizePro, createPairBuffer, loadOrder, loadGroupCount, deliverySeq, sequenceFingerprint } from './lib/scan-logic.js';
 import { createWedgeAccumulator, WEDGE_PAIR_WINDOW_MS } from './lib/wedge.js';
 import { initAudio, playVerdict } from './lib/feedback.js';
 import { useSortable, SortableTh } from './lib/useSortable.jsx';
 
 // Bumped by hand on every change. load-scan versions independently of dispatch-map.
-const APP_VERSION = '0.7.0';
+const APP_VERSION = '0.8.0';
 
 const BUILD_COMMIT = typeof __BUILD_COMMIT__ !== 'undefined' ? __BUILD_COMMIT__ : 'dev';
 const BUILD_TIME = typeof __BUILD_TIME__ !== 'undefined' ? __BUILD_TIME__ : '';
@@ -375,7 +375,7 @@ function VerdictFlash({ verdict, onClear }) {
   );
 }
 
-function StopRow({ stop, progress, onHandConfirm }) {
+function StopRow({ stop, progress, onHandConfirm, groupCount, trailerEnd, sharesPosition }) {
   // Two-step by construction: the confirm button does not exist until "Cannot
   // scan this" is tapped, and it re-arms after every render of a fresh row. A
   // single stray tap can never book freight onto the truck.
@@ -391,11 +391,22 @@ function StopRow({ stop, progress, onHandConfirm }) {
   return (
     <div className={`rounded-xl px-3 py-2 ring-1 ${tone}`}>
       <div className="flex items-baseline gap-2">
-        <span className="text-xs text-slate-500 w-6 shrink-0">{stop.loadStopSeq ?? stop.routeSeq ?? '—'}</span>
+        <span className="text-sm font-semibold text-slate-700 w-6 shrink-0 tabular-nums">{stop.loadSeq ?? '—'}</span>
         <span className="font-medium text-slate-900 truncate flex-1">{stop.businessName || stop.stopNbr}</span>
         <span className="font-mono text-sm">
           {progress.scanned}/{progress.expected}
         </span>
+      </div>
+      {/* Both numbers, always. A loader should never do this arithmetic on a
+          dock at 5am, and "load 1" vs "stop 13" is exactly the mix-up that puts
+          freight at the wrong end of the trailer. */}
+      <div className="mt-0.5 pl-8 text-xs">
+        <span className="text-slate-700 font-medium">
+          Load {stop.loadSeq ?? '—'} of {groupCount}
+        </span>
+        <span className="text-slate-500"> · Delivery stop {deliverySeq(stop) ?? '—'}</span>
+        {trailerEnd ? <span className="text-sky-800 font-medium"> · {trailerEnd}</span> : null}
+        {sharesPosition ? <span className="text-slate-500"> · same address as the stop beside it</span> : null}
       </div>
       <div className="mt-0.5 pl-8 text-xs text-slate-500 flex flex-wrap gap-x-2">
         <span>{stop.city}{stop.state ? `, ${stop.state}` : ''}</span>
@@ -590,6 +601,31 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
     [manifest, activeLoad],
   );
   const progress = useMemo(() => loadProgress(stops, scans, handConfirms), [stops, scans, handConfirms]);
+
+  // ── Resequence guard ───────────────────────────────────────────────────────
+  //
+  // The trailer physically encodes ONE route order. If dispatch resequences
+  // after loading began, silently redrawing the screen with new positions would
+  // hide freight that is already in the wrong place. So we keep showing the
+  // order the truck was loaded against and say loudly that it changed.
+  const [loadedSeq, setLoadedSeq] = useState(null);
+  const resequenced = !!loadedSeq && loadedSeq.fingerprint !== sequenceFingerprint(stops);
+
+  const displayStops = useMemo(() => {
+    if (!resequenced) return stops;
+    const byStop = loadedSeq.loadSeqByStop || {};
+    return stops.map((s) => ({ ...s, loadSeq: byStop[s.stopNbr] ?? s.loadSeq }));
+  }, [stops, resequenced, loadedSeq]);
+
+  const loadingOrder = useMemo(() => loadOrder(displayStops), [displayStops]);
+  const groupCount = useMemo(() => loadGroupCount(displayStops), [displayStops]);
+
+  useEffect(() => {
+    if (!activeLoad) { setLoadedSeq(null); return; }
+    let alive = true;
+    store.getLoadedSequence(activeLoad).then((v) => { if (alive) setLoadedSeq(v); });
+    return () => { alive = false; };
+  }, [activeLoad, scans.length, handConfirms.length]);
   const scannedOgs = useMemo(() => new Set(scans.map((s) => String(s.og).toUpperCase())), [scans]);
 
   // Rehydrate this load's scans from the local queue — the UI's source of truth.
@@ -614,6 +650,15 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
   // Record a piece: local first, ALWAYS, then try the network. Returns the
   // evaluation so a caller that owns its own feedback (the wedge path) can act
   // on the verdict — including SILENT, which the camera path ignores.
+  // Written on the FIRST piece recorded, then never again: this is the route
+  // order the physical trailer reflects. See offline.stampLoadedSequence.
+  const stampSequence = useCallback(async () => {
+    if (!activeLoad || !stops.length) return;
+    const loadSeqByStop = {};
+    for (const s of stops) loadSeqByStop[s.stopNbr] = s.loadSeq ?? null;
+    await store.stampLoadedSequence(activeLoad, sequenceFingerprint(stops), loadSeqByStop);
+  }, [activeLoad, stops]);
+
   const record = useCallback(
     async (pair, engineName) => {
       const evaluated = evaluateScan(pair, stops, scannedOgs, otherLoads);
@@ -636,6 +681,7 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
         engine: engineName || 'manual',
       };
       await store.enqueueScan(activeLoad, manifest.date, scan);
+      await stampSequence();
       await refreshLocal();
       flushQueue();
       return evaluated;
@@ -653,6 +699,7 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
         loadNbr: activeLoad,
         date: manifest.date,
         expectedPieces: progress.expected,
+        sequenceFingerprint: sequenceFingerprint(stops),
         scans: rows.filter((r) => r.kind !== 'hand')
           .map(({ og, pro, scannedAt, stopNbr, engine: eng }) => ({ og, pro, scannedAt, stopNbr, engine: eng })),
         handConfirms: rows.filter((r) => r.kind === 'hand')
@@ -765,10 +812,11 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
         reason: 'not_scannable',
       });
       if (navigator.vibrate) navigator.vibrate([30, 40, 30]);
+      await stampSequence();
       await refreshLocal();
       flushQueue();
     },
-    [activeLoad, manifest, refreshLocal, flushQueue],
+    [activeLoad, manifest, refreshLocal, flushQueue, stampSequence],
   );
 
   async function addManual() {
@@ -954,14 +1002,36 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
         {/* Stops */}
         <div className="space-y-2">
           <div className="flex items-center gap-2 text-sm font-medium text-slate-700">
-            <ClipboardList className="w-4 h-4" /> {stops.length} stops
+            <ClipboardList className="w-4 h-4" /> {stops.length} stops · loading order
           </div>
-          {stops.map((s) => (
+          <div className="text-xs text-slate-500">
+            Top of the list goes on first, at the nose. Work down toward the doors.
+          </div>
+          {resequenced ? (
+            <Banner kind="error">
+              <span className="font-semibold">The route was resequenced after loading started.</span> The freight
+              already on this trailer follows the ORIGINAL order, which is what is shown below — it has not been
+              renumbered. Check with dispatch before loading anything else.
+            </Banner>
+          ) : null}
+          {loadingOrder.map((s, i) => (
             <StopRow
               key={s.stopNbr}
               stop={s}
               progress={stopProgress(s, scans, handConfirms)}
               onHandConfirm={handConfirm}
+              groupCount={groupCount}
+              trailerEnd={
+                s.loadSeq != null && s.loadSeq === 1
+                  ? 'nose of the trailer'
+                  : s.loadSeq != null && s.loadSeq === groupCount
+                    ? 'at the doors'
+                    : null
+              }
+              sharesPosition={
+                s.loadSeq != null &&
+                ((loadingOrder[i - 1]?.loadSeq === s.loadSeq) || (loadingOrder[i + 1]?.loadSeq === s.loadSeq))
+              }
             />
           ))}
         </div>

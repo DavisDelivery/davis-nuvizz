@@ -179,6 +179,11 @@ export default async (req: Request): Promise<Response> => {
   const { scans, added, duplicates } = mergeScans(priorScans, accepted);
   const { handConfirms, added: handAdded, duplicates: handDuplicates } = mergeHandConfirms(priorHand, acceptedHand);
 
+  const incomingSeq = String(body?.sequenceFingerprint ?? '').trim();
+  const priorSeq = String(prior?.loadedAgainstSequence ?? '').trim();
+  const loadedAgainstSequence = priorSeq || incomingSeq || null;
+  const sequenceChanged = !!(priorSeq && incomingSeq && priorSeq !== incomingSeq) || !!prior?.sequenceChanged;
+
   const expectedPieces = Number(body?.expectedPieces ?? prior?.expectedPieces ?? 0) || 0;
   // Pieces verified by barcode, and pieces a person vouched for — counted
   // together for reconciliation, stored apart so the difference survives.
@@ -218,6 +223,11 @@ export default async (req: Request): Promise<Response> => {
     confirmedPieces,
     scans,
     handConfirms,
+    // The route order this trailer was physically loaded against. First write
+    // wins — if a later push carries a different one, dispatch resequenced
+    // mid-load and the freight on the truck no longer matches the manifest.
+    loadedAgainstSequence,
+    sequenceChanged,
     reconciliation,
     // Layer 3, persisted: rejects accumulate rather than overwrite, so a bad
     // label pattern is still visible days later.
