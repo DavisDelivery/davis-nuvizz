@@ -697,3 +697,80 @@ test('mergeEnrich: the /stop/info stopType remains the authority over the RA heu
   mergeEnrich(row, { stopType: 'DO', lat: 34.1, lng: -84.0 });
   assert.equal(row.stopType, 'DO');
 });
+
+// ── two records, one number (the Estes-0828068215 lesson, Aug 4) ─────────────
+//
+// NuVizz can hold two DIFFERENT orders under one stop number. The byNbr collapse used to
+// be last-wins, so the finished old entry (consigned to Davis) replaced the live rekeyed
+// order on every scan — "as soon as i change the date … it automatically reverts to the
+// Davis entry". With the list's Stop-Id column proving the rows are different records,
+// the LIVE one keeps the number and the survivor is flagged.
+
+const LIVE_ID = '6a63c5844524f7f7b8ab5410';
+const TWIN_ID = 'ffffffffffffffffffffffff';
+
+test('mergeTwoScan: a finished TWIN (different id) no longer replaces the live order', () => {
+  // Jessica's rekeyed order — live, unplanned, correct customer address — in the active pull…
+  const active = [{ stopNbr: 'E1', nvStopId: LIVE_ID, statusCode: '10', scheduledArrival: '6/24/26 09:00 AM', businessName: 'REAL CUSTOMER', addr1: '100 MAIN ST' }];
+  // …and the old Davis-side entry, DELIVERED, in the completed pull (same number, other record).
+  const completed = [{ stopNbr: 'E1', nvStopId: TWIN_ID, statusCode: '90', scheduledArrival: '6/24/26 09:00 AM', updatedTime: '6/24/26 02:00 PM', businessName: 'DAVIS DELIVERY', addr1: '943 GAINESVILLE HWY' }];
+  const m = mergeTwoScan(active, completed);
+  const rows = m.get('2026-06-24');
+  assert.equal(rows.length, 1, 'one card per number');
+  const s = rows[0];
+  assert.equal(s.stopId, LIVE_ID, 'the LIVE record keeps the number');
+  assert.equal(s.businessName, 'REAL CUSTOMER', 'the card shows the live order, not the Davis entry');
+  assert.equal(s.dupNbr, true, 'and it is flagged so the card can say why things look haunted');
+  assert.equal(s.dupNbrOtherId, TWIN_ID);
+});
+
+test('mergeTwoScan: order does not matter — a live twin arriving SECOND also wins', () => {
+  const active = [
+    { stopNbr: 'E2', nvStopId: TWIN_ID, statusCode: '99', scheduledArrival: '6/24/26 09:00 AM' },
+    { stopNbr: 'E2', nvStopId: LIVE_ID, statusCode: '10', scheduledArrival: '6/24/26 09:00 AM' },
+  ];
+  const m = mergeTwoScan(active, []);
+  const s = m.get('2026-06-24')[0];
+  assert.equal(s.stopId, LIVE_ID);
+  assert.equal(s.dupNbr, true);
+});
+
+test('mergeTwoScan: SAME id is the normal lifecycle — completed wins, no flag', () => {
+  const active = [{ stopNbr: 'E3', nvStopId: LIVE_ID, statusCode: '20', routeName: 'L1', scheduledArrival: '6/24/26 09:00 AM' }];
+  const completed = [{ stopNbr: 'E3', nvStopId: LIVE_ID, statusCode: '90', routeName: 'L1', scheduledArrival: '6/24/26 09:00 AM', updatedTime: '6/24/26 02:00 PM' }];
+  const s = mergeTwoScan(active, completed).get('2026-06-24')[0];
+  assert.equal(s.normalizedStatus, 'DELIVERED', 'the delivered flip still lands');
+  assert.equal(s.dupNbr, undefined, 'no duplicate, no flag');
+});
+
+test('mergeTwoScan: ids unknown → old last-wins behavior, unflagged (the guard only narrows)', () => {
+  const active = [{ stopNbr: 'E4', statusCode: '10', scheduledArrival: '6/24/26 09:00 AM' }];
+  const completed = [{ stopNbr: 'E4', statusCode: '90', scheduledArrival: '6/24/26 09:00 AM', updatedTime: '6/24/26 02:00 PM' }];
+  const s = mergeTwoScan(active, completed).get('2026-06-24')[0];
+  assert.equal(s.normalizedStatus, 'DELIVERED');
+  assert.equal(s.dupNbr, undefined);
+});
+
+test('mergeTwoScan: the dup flag survives the winner\'s own lifecycle overwrite', () => {
+  // Live twin beats the finished twin in the active pass; then the SAME live record shows up
+  // in the completed pull (it delivered during the scan). The overwrite must keep the flag.
+  const active = [
+    { stopNbr: 'E5', nvStopId: TWIN_ID, statusCode: '99', scheduledArrival: '6/24/26 09:00 AM' },
+    { stopNbr: 'E5', nvStopId: LIVE_ID, statusCode: '10', scheduledArrival: '6/24/26 09:00 AM' },
+  ];
+  const completed = [{ stopNbr: 'E5', nvStopId: LIVE_ID, statusCode: '90', scheduledArrival: '6/24/26 09:00 AM', updatedTime: '6/24/26 02:00 PM' }];
+  const s = mergeTwoScan(active, completed).get('2026-06-24')[0];
+  assert.equal(s.normalizedStatus, 'DELIVERED');
+  assert.equal(s.dupNbr, true, 'the flag rides through the same-id overwrite');
+});
+
+test('LIVE_LIST_FIELDS: dupNbr is re-derived every scan — a stale carried flag cannot stick', () => {
+  // mergeEnrich must never copy a prior scan's dupNbr onto a fresh row: once the duplicate is
+  // cleaned up in the portal, the badge has to clear itself on the very next scan.
+  const fresh = toBoardStop({ stopNbr: 'E6', nvStopId: LIVE_ID, statusCode: '10', scheduledArrival: '6/24/26 09:00 AM' });
+  const prior = { stopNbr: 'E6', dupNbr: true, dupNbrOtherId: TWIN_ID, enriched: true, businessName: 'REAL CUSTOMER' };
+  mergeEnrich(fresh, prior);
+  assert.equal(fresh.dupNbr, undefined, 'the stale flag stays behind');
+  assert.equal(fresh.dupNbrOtherId, undefined);
+  assert.equal(fresh.businessName, 'REAL CUSTOMER', 'ordinary detail still carries forward');
+});

@@ -174,6 +174,21 @@ export function reconsignedByListSig(priorSig: string | null | undefined, listSt
   return cur !== priorSig;
 }
 
+// ── Two records, one number (the Estes-0828068215 lesson, Aug 4) ──────────────
+//
+// /stop/info looks a stop up BY NUMBER, and NuVizz can hold two different orders under one
+// number (a rekeyed order next to the original entry). When that read answers with the OTHER
+// record, merging it would put the twin's address, coords and line items on the dispatcher's
+// card — which is exactly how Jessica's corrected Estes order kept "reverting to the Davis
+// entry". The list row carries the internal id of the record the board is actually showing,
+// so the merge is only allowed when the identities agree (or either side has no id — the
+// guard only ever narrows). PURE / exported for tests.
+export function enrichedRecordMatches(listStop: any, fetched: any): boolean {
+  const a = String(listStop?.stopId ?? '').trim();
+  const b = String(fetched?.stopId ?? '').trim();
+  return !a || !b || a === b;
+}
+
 // Factory: memoized (per-scan), read-capped lookup of a stop's most-recent sealed
 // terminal history record. readStop is injected (getStop over history_days) so the
 // window / cap / memoization are unit-testable without Firestore. Returns the terminal
@@ -280,7 +295,15 @@ export function makeDemotionLookup(deps: {
     demoteStopReads++;
     // Verdict policy (404 holds, terminal statuses drop) lives in demotionLookupVerdict —
     // pure + unit-tested; this closure only supplies the metered read.
-    return deps.verdictFromRecord(await deps.readStopRecord(nbr));
+    const rec = await deps.readStopRecord(nbr);
+    // Wrong-twin guard (the Estes-0828068215 lesson): the by-number record can be the OTHER
+    // order sharing this number, and its status must not speak for the row on this board —
+    // in either direction (a live twin keeping a truly-removed stop, a finished twin
+    // dropping a live routed one). Identity disagreement → hold, re-check next scan.
+    const recId = String(rec?.stop?.stopId ?? rec?.stopId ?? '').trim();
+    const priorId = String(p?.stopId ?? '').trim();
+    if (recId && priorId && recId !== priorId) return null;
+    return deps.verdictFromRecord(rec);
   };
   return { lookup, reads: () => ({ loadReads: demoteLoadReads, stopReads: demoteStopReads }) };
 }
@@ -1045,7 +1068,21 @@ export async function runRefreshStops(req: Request): Promise<Response> {
           const worker = async () => {
             while (i < batch.length) {
               const s = batch[i++];
-              try { const r = await lookupStopByPro(s.stopNbr); if (r.ok && r.stop) { mergeEnrich(s, r.stop); enriched++; } } catch { /* skip; geocode fallback below */ }
+              try {
+                const r = await lookupStopByPro(s.stopNbr);
+                if (r.ok && r.stop) {
+                  if (enrichedRecordMatches(s, r.stop)) { mergeEnrich(s, r.stop); enriched++; }
+                  else {
+                    // The by-number read answered with the OTHER record sharing this number.
+                    // Keep the row on LIST truth (its address is the record the board shows),
+                    // and register it as enriched anyway — re-pulling by number would return
+                    // the same twin every scan and burn a call each time. On-demand refresh
+                    // (card open / timeline) still re-fetches when the duplicate is cleaned up.
+                    s.enriched = true; s.dupNbrSuspect = true; enriched++;
+                    console.warn(`[scan] ${date}: /stop/info for ${s.stopNbr} returned a DIFFERENT record (id ${String(r.stop.stopId ?? '?')} vs list ${String(s.stopId)}) — two orders share this number; keeping the list row, NOT merging the twin's detail`);
+                  }
+                }
+              } catch { /* skip; geocode fallback below */ }
             }
           };
           await Promise.all(Array.from({ length: Math.min(ENRICH_CONC, batch.length) }, worker));

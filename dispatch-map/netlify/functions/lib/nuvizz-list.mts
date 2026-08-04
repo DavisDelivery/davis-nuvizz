@@ -640,10 +640,39 @@ export async function fetchSavedSearchRaw(
 // the active search and reappears here). Buckets by each stop's scheduled-arrival date so
 // a stop sits on its delivery day's board through its whole lifecycle; stops with no
 // parseable arrival date can't be placed and are dropped. PURE — unit-tested.
+//
+// TWO RECORDS, ONE NUMBER (the Estes-0828068215 lesson, Aug 4): NuVizz can hold two
+// DIFFERENT orders under one stop number — a rekeyed order next to the original entry.
+// This map used to collapse them last-wins, so the DELIVERED old entry (consigned to
+// Davis's own terminal) silently replaced the live rekeyed order on every scan — Jessica:
+// "as soon as i change the date … it automatically reverts to the Davis entry." When the
+// list's Stop-Id column proves the rows are different records, the LIVE (non-terminal) one
+// keeps the number, and the survivor is flagged dupNbr so the card can say what's going on.
+// Same-id overwrites (the normal active→completed lifecycle) behave exactly as before.
 export function mergeTwoScan(activeRows: any[], completedRows: any[], overrides?: Record<string, string> | null): Map<string, any[]> {
   const byNbr = new Map<string, any>();
-  for (const r of activeRows) { const s = toBoardStop(r); if (s.stopNbr) byNbr.set(s.stopNbr, s); }
-  for (const r of completedRows) { const s = toBoardStop(r); if (s.stopNbr) byNbr.set(s.stopNbr, s); }
+  const put = (s: any) => {
+    if (!s.stopNbr) return;
+    const prev = byNbr.get(s.stopNbr);
+    if (prev && prev.stopId && s.stopId && String(prev.stopId) !== String(s.stopId)) {
+      const prevLive = !isTerminalStatus(prev.normalizedStatus);
+      const curLive = !isTerminalStatus(s.normalizedStatus);
+      // Live work outranks a finished twin; two live (or two finished) twins keep the
+      // later row — the old last-wins order, but now FLAGGED instead of silent.
+      const winner = prevLive === curLive ? s : (curLive ? s : prev);
+      const loser = winner === s ? prev : s;
+      winner.dupNbr = true;
+      winner.dupNbrOtherId = String(loser.stopId);
+      byNbr.set(s.stopNbr, winner);
+      return;
+    }
+    // Same record (or ids unknown): lifecycle overwrite. Carry a dup flag forward so the
+    // completed-row pass can't wash it off the surviving instance.
+    if (prev?.dupNbr && !s.dupNbr) { s.dupNbr = true; s.dupNbrOtherId = prev.dupNbrOtherId; }
+    byNbr.set(s.stopNbr, s);
+  };
+  for (const r of activeRows) put(toBoardStop(r));
+  for (const r of completedRows) put(toBoardStop(r));
   return bucketByDate([...byNbr.values()], etDayString(), overrides);
 }
 
@@ -688,6 +717,10 @@ export const LIVE_LIST_FIELDS = [
   // addrListSig is stamped fresh from the LIST every scan (reconsignment detection). It must
   // never be carried back from an enriched record, or the list↔list comparison would drift.
   'addrListSig',
+  // The two-records-one-number flag is re-derived from the list every scan (mergeTwoScan).
+  // LIVE so a prior scan's flag can't stick to a stop after the duplicate is cleaned up in
+  // the portal — the moment only one record carries the number, the badge goes away.
+  'dupNbr', 'dupNbrOtherId',
 ];
 // Copy ALL non-live fields from src (a /stop/info-normalized stop, or a prior enriched
 // index doc) onto target, then mark it enriched. Never overwrites a real value with a

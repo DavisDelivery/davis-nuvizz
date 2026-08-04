@@ -606,6 +606,42 @@ export function buildPartialUpdateStop(rawStop: any, overrides: Record<string, a
   return withoutPaths(merged, PARTIAL_UPDATE_DERIVED_KEYS);
 }
 
+// ── Wrong-twin guard (§D/§N) — the Estes-0828068215 lesson, Aug 4 ─────────────
+//
+// NuVizz allows TWO live order records to carry ONE stop number (a rekeyed order next to
+// the original entry, a recurring reference PRO's older instance), and /stop/info BY NUMBER
+// answers with whichever instance the vendor picks — not necessarily the one the dispatcher
+// is looking at. Jessica, on Estes-0828068215: "I tried to update this Estes delivery date
+// … and it completely changed the address" — the date op read the OTHER record (the one
+// consigned to Davis), moved ITS window, and the card refreshed into that record's address.
+// The board KNOWS which instance it is showing (the saved-search list carries the internal
+// stop id), so a single-stop op must refuse when the record NuVizz answered with is not the
+// record on the dispatcher's screen. Same rule as v0.54.24's duplicate load names: when two
+// records share a name, this app declines to guess which one is meant.
+
+// Local id-shape check (mirrors nuvizz-list's isHashLikeId; restated here so this module
+// stays import-free/pure). Only an id-shaped value ever arms the guard — a stop NUMBER
+// accidentally passed as an id must never block a write.
+function idShaped(v: any): boolean {
+  const s = String(v ?? '').trim();
+  if (!s || /\s/.test(s)) return false;
+  if (/^[0-9a-f]{16,}$/i.test(s)) return true;                      // Mongo ObjectId / long hex token
+  if (/^[A-Za-z0-9_-]{20,}$/.test(s) && /\d/.test(s)) return true;  // long id-ish token containing a digit
+  return false;
+}
+
+/** PURE: the refusal when the by-number read returned a DIFFERENT record than the one the
+ *  caller is operating on — null when the identities agree, or when either side carries no
+ *  usable id (a caller with no id gets the old behavior; the guard only ever narrows). */
+export function stopInstanceMismatch(op: string, stopNbr: any, expectedStopId: any, rawStop: any): string | null {
+  const want = String(expectedStopId ?? '').trim();
+  const got = String(rawStop?.stopId ?? '').trim();
+  if (!idShaped(want) || !idShaped(got) || want === got) return null;
+  const addr = rawStop?.to?.address || {};
+  const who = [addr.name, addr.addr1, addr.city].map((v: any) => String(v ?? '').trim()).filter(Boolean).join(', ');
+  return `${op}: TWO NuVizz orders appear to carry number ${stopNbr} — NuVizz answered with a different record (${who || 'unknown consignee'}; id …${got.slice(-6)}), not the one on your board (id …${want.slice(-6)}). Nothing was written. Cancel or renumber the duplicate in the portal, then refresh this stop.`;
+}
+
 // ── DELIVERY DATE (§D) — moving an order to the day the customer actually wants ──
 //
 // The v7 Stop schema has NO "requested date" field: `to.schedule.timeFrom/timeTo` IS the

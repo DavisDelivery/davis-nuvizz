@@ -13,6 +13,7 @@ import assert from 'node:assert/strict';
 import {
   isDayString, primarySideKey, stopDeliveryDate, shiftScheduleToDate, buildStopDateOverride,
   buildPartialUpdateStop, PARTIAL_UPDATE_DERIVED_KEYS, WRITE_OPS, MUTATING_OPS, boardDateHoldWarning,
+  stopInstanceMismatch,
 } from '../netlify/functions/lib/nuvizz-write-ops.mts';
 import { runSetStopDate } from '../netlify/functions/lib/nuvizz-write.mts';
 import { boardDayFor, bucketByDate } from '../netlify/functions/lib/nuvizz-list.mts';
@@ -355,4 +356,67 @@ test('runSetStopDate: a planned order still moves, and says which load it is on'
   const r = await runSetStopDate(requester, { stopNbr: '007150559', date: '2026-07-30' }, CREDS);
   assert.equal(r.ok, true, JSON.stringify(r));
   assert.equal(r.onLoad, 'MITCHELL 1');
+});
+
+// ── the wrong-twin guard (the Estes-0828068215 lesson, Aug 4) ────────────────
+//
+// NuVizz can hold TWO order records under ONE stop number (a rekeyed order next to the
+// original entry), and /stop/info BY NUMBER answers with whichever instance it picks.
+// Jessica: "I tried to update this Estes delivery date … and it completely changed the
+// address" — the read returned the OTHER record (consigned to Davis), the write moved ITS
+// window, and the card refreshed into its address. The board knows which record it is
+// showing (the list's Stop-Id column), so the op must refuse when the read disagrees.
+
+test('stopInstanceMismatch: agrees / missing ids / number-shaped ids → never arms', () => {
+  const raw = rawStop();
+  assert.equal(stopInstanceMismatch('setStopDate', '007150559', raw.stopId, raw), null, 'same record');
+  assert.equal(stopInstanceMismatch('setStopDate', '007150559', null, raw), null, 'caller has no id → old behavior');
+  assert.equal(stopInstanceMismatch('setStopDate', '007150559', '', raw), null);
+  assert.equal(stopInstanceMismatch('setStopDate', '007150559', '007150559', raw), null, 'a stop NUMBER passed as an id must never block a write');
+  assert.equal(stopInstanceMismatch('setStopDate', '007150559', 'ffffffffffffffffffffffff', { stopNbr: '007150559' }), null, 'record with no id → cannot judge, old behavior');
+});
+
+test('stopInstanceMismatch: a DIFFERENT record refuses, naming both ids and the twin', () => {
+  const twin = rawStop({ stopId: 'ffffffffffffffffffffffff' });
+  twin.to.address.name = 'DAVIS DELIVERY';
+  const msg = stopInstanceMismatch('setStopDate', 'Estes-0828068215', '6a63c5844524f7f7b8ab5410', twin);
+  assert.ok(msg, 'must refuse');
+  assert.match(msg, /TWO NuVizz orders/i);
+  assert.match(msg, /Estes-0828068215/);
+  assert.match(msg, /ffffff/, 'names the record NuVizz answered with');
+  assert.match(msg, /ab5410/, 'names the record on the board');
+  assert.match(msg, /DAVIS DELIVERY/, 'says WHO the twin is consigned to');
+  assert.match(msg, /Nothing was written/i);
+});
+
+test('runSetStopDate: refuses when NuVizz answers with the OTHER record sharing the number', async () => {
+  // The board's card carries the live record's id; the by-number read returns the twin.
+  const state = { stop: rawStop({ stopId: 'ffffffffffffffffffffffff' }) };
+  const { requester, calls } = makeRequester({ state });
+  const r = await runSetStopDate(requester, { stopNbr: '007150559', date: '2026-07-30', stopId: '6a63c5844524f7f7b8ab5410' }, CREDS);
+  assert.equal(r.ok, false);
+  assert.equal(r.wrongInstance, true);
+  assert.match(r.error, /TWO NuVizz orders/i);
+  assert.equal(calls.filter((c) => c.method === 'POST').length, 0, 'nothing written');
+  assert.equal(r.calls.reads, 1);
+});
+
+test('runSetStopDate: the already-dated short-circuit refuses the twin too', async () => {
+  // The date read off the WRONG record must never seed a board override for the right one:
+  // "already carries that day" is a claim about the twin, not about the dispatcher's order.
+  const state = { stop: rawStop({ stopId: 'ffffffffffffffffffffffff' }) };
+  const { requester, calls } = makeRequester({ state });
+  const r = await runSetStopDate(requester, { stopNbr: '007150559', date: '2026-07-29', stopId: '6a63c5844524f7f7b8ab5410' }, CREDS);
+  assert.equal(r.ok, false);
+  assert.equal(r.wrongInstance, true);
+  assert.equal(r.board, undefined, 'the board half must not run on the twin');
+  assert.equal(calls.filter((c) => c.method === 'POST').length, 0);
+});
+
+test('runSetStopDate: a MATCHING id proceeds, and the result names the verified record', async () => {
+  const state = { stop: rawStop() };
+  const { requester } = makeRequester({ state });
+  const r = await runSetStopDate(requester, { stopNbr: '007150559', date: '2026-07-30', stopId: '6a63c5844524f7f7b8ab5410' }, CREDS);
+  assert.equal(r.ok, true, JSON.stringify(r));
+  assert.equal(r.stopId, '6a63c5844524f7f7b8ab5410', 'the client repaint guard needs the verified id');
 });
