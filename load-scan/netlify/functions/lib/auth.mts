@@ -127,6 +127,27 @@ export function authenticate(req: Request): TokenClaims | null {
   return m ? verifyToken(m[1]) : null;
 }
 
+// ── Role guard ───────────────────────────────────────────────────────────────
+
+/**
+ * Is this credential the LAST active dispatcher?
+ *
+ * Guard for demotion and deactivation: the bootstrap secret has been used and
+ * removed, so a system with zero active dispatchers cannot be administered by
+ * anyone. A dispatcher demoting or deactivating the last one — including
+ * themselves — is refused.
+ */
+export function isLastActiveDispatcher(
+  creds: Array<{ _id?: any; driverNumber?: any; role?: any; active?: any }>,
+  driverNumber: string,
+): boolean {
+  const id = String(driverNumber);
+  const activeDispatchers = (creds || [])
+    .filter((c) => c?.role === 'dispatcher' && c?.active !== false)
+    .map((c) => String(c?._id ?? c?.driverNumber ?? ''));
+  return activeDispatchers.includes(id) && !activeDispatchers.some((n) => n !== id);
+}
+
 // ── Lockout ──────────────────────────────────────────────────────────────────
 
 export function isLockedOut(doc: any, nowMs = Date.now()): boolean {

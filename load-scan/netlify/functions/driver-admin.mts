@@ -7,9 +7,16 @@
 // GET  ?action=list                     -> every credential (no hashes)
 // GET  ?action=unmatched                -> the unresolved-alias review queue
 // POST { action:'upsert', ... }         -> create/update displayName, aliases, active
-// POST { action:'issue-pin', ... }      -> set a temp PIN, force change, activate
+// POST { action:'issue-pin', ... }      -> set a PIN, activate. STANDING by
+//                                          default; forceChange:true for a
+//                                          one-off reset the driver must replace
 // POST { action:'clear-lockout', ... }  -> zero failedAttempts, drop lockedUntil
 // POST { action:'set-active', ... }     -> deactivate / reactivate
+// POST { action:'set-role', ... }       -> promote to dispatcher / demote to
+//                                          driver. NEVER on the last active
+//                                          dispatcher — with the bootstrap
+//                                          secret used and removed, zero
+//                                          dispatchers is unrecoverable
 // POST { action:'resolve-unmatched' }   -> clear a review-queue row
 //
 // BOOTSTRAP: with no dispatcher credential yet, nobody can call this. A request
@@ -19,7 +26,7 @@
 // ZERO NuVizz calls.
 
 import { getDoc, setDoc, patchDoc, listDocs, isFirestoreEnabled } from './lib/firestore.mts';
-import { DRIVER_AUTH, UNMATCHED_ALIASES, authenticate, hashPin, isValidPinFormat } from './lib/auth.mts';
+import { DRIVER_AUTH, UNMATCHED_ALIASES, authenticate, hashPin, isValidPinFormat, isLastActiveDispatcher } from './lib/auth.mts';
 import { normalizeDriverAlias, findAmbiguousAliases } from './lib/aliases.mts';
 import { ok, bad, unauthorized, forbidden, readJson, viaProxy } from './lib/http.mts';
 
@@ -38,6 +45,13 @@ const publicCred = (d: any) => ({
   lastLoginAt: d?.lastLoginAt || null,
 });
 
+/**
+ * Policy, exported so the test suite can pin it: an issued PIN stands unless
+ * the dispatcher explicitly forces a change. Do not reintroduce a forced
+ * change as the default.
+ */
+export const issuedPinMustChange = (body: any): boolean => body?.forceChange === true;
+
 function bootstrapAllowed(req: Request): boolean {
   const want = process.env.LOADSCAN_ADMIN_BOOTSTRAP_SECRET;
   if (!want || want.length < 16) return false;
@@ -55,6 +69,16 @@ export default async (req: Request): Promise<Response> => {
   if (!isDispatcher && !isBootstrap) return claims ? forbidden('dispatcher role required') : unauthorized();
 
   if (!isFirestoreEnabled()) return bad('not configured', 503);
+
+  // Tokens live 90 days, so the role claim alone would let a demoted or
+  // deactivated dispatcher keep administering until expiry. Re-check the live
+  // credential: demotion takes effect on the next admin call, not next sign-in.
+  if (isDispatcher) {
+    const me = await getDoc(`${DRIVER_AUTH}/${claims!.sub}`);
+    if (!me || me.active === false || me.role !== 'dispatcher') {
+      return forbidden('dispatcher role required');
+    }
+  }
 
   // Provenance, for the audit trail: which surface issued this admin action.
   const surface = viaProxy(req) ? 'dispatch-map-proxy' : 'load-scan-direct';
@@ -157,15 +181,20 @@ export default async (req: Request): Promise<Response> => {
       const pin = String(body?.pin ?? '');
       if (!isValidPinFormat(pin)) return bad('pin must be 4-6 digits');
       if (!existing) return bad('create the driver first with action=upsert', 404);
+      // Issued PINs are STANDING PINs — last 4 of the driver's cell, permanent.
+      // Deliberate: nothing to hand out, no 5am reset calls. The security cost
+      // is written up in the README. forceChange:true is the one-off reset path
+      // and the only way mustChangePin gets set here.
+      const forceChange = issuedPinMustChange(body);
       await patchDoc(path, {
         pinHash: await hashPin(pin),
-        mustChangePin: true,
+        mustChangePin: forceChange,
         active: true,
         failedAttempts: 0,
         lockedUntil: null,
         pinIssuedAt: new Date().toISOString(),
       });
-      return ok({ driverNumber, tempPinSet: true });
+      return ok({ driverNumber, pinSet: true, mustChangePin: forceChange });
     }
 
     case 'clear-lockout': {
@@ -177,9 +206,25 @@ export default async (req: Request): Promise<Response> => {
     case 'set-active': {
       if (!existing) return bad('no such driver', 404);
       const active = body?.active === true;
+      if (!active && isLastActiveDispatcher(await listDocs(DRIVER_AUTH), driverNumber)) {
+        return bad('cannot deactivate the last dispatcher — promote another one first', 409);
+      }
       await patchDoc(path, { active });
       console.log(`[driver-admin] ${active ? 'reactivated' : 'DEACTIVATED'} ${driverNumber}`);
       return ok({ driverNumber, active });
+    }
+
+    case 'set-role': {
+      if (!existing) return bad('no such driver', 404);
+      const role = body?.role === 'dispatcher' || body?.role === 'driver' ? body.role : null;
+      if (!role) return bad('role must be driver or dispatcher');
+      if (role === 'driver' && isLastActiveDispatcher(await listDocs(DRIVER_AUTH), driverNumber)) {
+        return bad('cannot demote the last dispatcher — promote another one first', 409);
+      }
+      await patchDoc(path, { role });
+      // Role changes are the audit line that matters most in this file.
+      console.log(`[driver-admin] role=${role} set on ${driverNumber} by ${claims?.sub} via ${surface}`);
+      return ok({ driverNumber, role });
     }
 
     default:

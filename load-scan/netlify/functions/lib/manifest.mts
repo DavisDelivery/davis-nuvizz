@@ -41,6 +41,14 @@ export interface ManifestStop {
   primaryPro: string | null;
   proCount: number;
   expectedPieces: number;
+  /**
+   * True when the index row carried NO piece total and expectedPieces was
+   * computed as skids + loose. Means "computed here", NOT "uncertain": the
+   * identity totalPallets = totalCartons + volume held on every one of the 328
+   * live stops that carried a value (337 stops, 20 drivers, Aug 4 2026). The
+   * rows that send no total are Averitt orders on the Inbound Integration feed.
+   */
+  countIsEstimated: boolean;
   skids: number;
   loose: number;
   weight: number;
@@ -54,6 +62,13 @@ export interface ManifestStop {
 const num = (v: any): number => {
   const n = Number(v);
   return Number.isFinite(n) ? n : 0;
+};
+
+/** Distinguishes "no value sent" from an explicit zero — num() collapses both. */
+const numOrNull = (v: any): number | null => {
+  if (v === null || v === undefined || v === '') return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
 };
 
 const str = (v: any): string => String(v ?? '').trim();
@@ -104,12 +119,20 @@ export function normalizePro(v: any): string {
  * truck, and a refused manifest at 5am is worse than a logged inconsistency.
  */
 export function toManifestStop(raw: any, warn?: (msg: string) => void): ManifestStop {
-  const expectedPieces = num(raw?.pallets);
   const skids = num(raw?.cartons);
   const loose = num(raw?.volume);
+  // A stop with no piece total is NOT an empty stop. Averitt orders on the
+  // Inbound Integration feed send no totalPallets at all; treating that as 0
+  // made those stops complete-at-zero and let a load close with freight still
+  // on the dock. The total is exactly skids + loose everywhere NuVizz does send
+  // it (328/328 stops carrying a value, Aug 4 2026), so compute it from the
+  // parts and say so.
+  const reported = numOrNull(raw?.pallets);
+  const expectedPieces = reported === null ? skids + loose : reported;
+  const countIsEstimated = reported === null;
   const pros = prosFor(raw);
 
-  if (warn && expectedPieces > 0 && skids + loose !== expectedPieces) {
+  if (warn && !countIsEstimated && expectedPieces > 0 && skids + loose !== expectedPieces) {
     warn(
       `piece-count mismatch PRO ${pros[0] || raw?.stopNbr || '?'}: skids ${skids} + loose ${loose} = ${skids + loose}, expectedPieces ${expectedPieces} — serving expectedPieces`,
     );
@@ -129,6 +152,7 @@ export function toManifestStop(raw: any, warn?: (msg: string) => void): Manifest
     primaryPro: normalizePro(raw?.primaryPro) || pros[0] || null,
     proCount: num(raw?.proCount) || pros.length,
     expectedPieces,
+    countIsEstimated,
     skids,
     loose,
     weight: num(raw?.weight),

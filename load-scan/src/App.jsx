@@ -9,11 +9,13 @@ import { loadSession, saveSession, clearSession, daysRemaining } from './lib/ses
 import * as api from './lib/api.js';
 import * as store from './lib/offline.js';
 import { startScanner } from './lib/scanner.js';
-import { evaluateScan, loadProgress, stopProgress, ogGapHint, OUTCOME, normalizePro } from './lib/scan-logic.js';
+import { evaluateScan, loadProgress, stopProgress, ogGapHint, OUTCOME, normalizePro, createPairBuffer } from './lib/scan-logic.js';
+import { createWedgeAccumulator, WEDGE_PAIR_WINDOW_MS } from './lib/wedge.js';
+import { initAudio, playVerdict } from './lib/feedback.js';
 import { useSortable, SortableTh } from './lib/useSortable.jsx';
 
 // Bumped by hand on every change. load-scan versions independently of dispatch-map.
-const APP_VERSION = '0.2.2';
+const APP_VERSION = '0.5.0';
 
 const BUILD_COMMIT = typeof __BUILD_COMMIT__ !== 'undefined' ? __BUILD_COMMIT__ : 'dev';
 const BUILD_TIME = typeof __BUILD_TIME__ !== 'undefined' ? __BUILD_TIME__ : '';
@@ -92,7 +94,7 @@ function LoginScreen({ onLoggedIn }) {
             ? 'This driver number is not active. See dispatch.'
             : e2?.offline
               ? 'No connection — the first sign-in needs signal. Try inside the building.'
-              : 'Driver number or PIN is not right.',
+              : 'That sign-in is not right. Use your driver number, or your name as it shows on the board, plus your PIN.',
       );
     } finally {
       setBusy(false);
@@ -103,14 +105,14 @@ function LoginScreen({ onLoggedIn }) {
     <form onSubmit={submit} className="p-4 space-y-4 max-w-sm mx-auto">
       <Banner kind="info">Sign in once. You stay signed in for 90 days, even with no signal.</Banner>
       <label className="block">
-        <span className="text-sm font-medium text-slate-700">Driver number</span>
+        <span className="text-sm font-medium text-slate-700">Driver number or name</span>
         <input
           value={driverNumber}
           onChange={(e) => setDriverNumber(e.target.value)}
-          inputMode="numeric"
           autoComplete="username"
+          autoCapitalize="characters"
           className="mt-1 w-full rounded-xl border border-slate-300 px-4 py-3 text-lg tracking-wide"
-          placeholder="e.g. 4471"
+          placeholder="e.g. 4471 or MICHAEL FRYE"
         />
       </label>
       <label className="block">
@@ -319,6 +321,53 @@ function OutcomeCard({ result, partial }) {
   return null; // SILENT — deliberately nothing
 }
 
+/**
+ * Full-screen verdict for gun mode. The beep already said what happened; this
+ * is the glanceable confirmation. Green/amber/dup clear themselves; RED stays
+ * up until the operator taps it — wrong freight must be acknowledged, not
+ * scrolled past.
+ */
+function VerdictFlash({ verdict, onClear }) {
+  if (!verdict) return null;
+  const { kind, evaluated } = verdict;
+  const base = 'fixed inset-0 z-40 flex flex-col items-center justify-center text-center p-6 select-none';
+
+  if (kind === 'red') {
+    return (
+      <button type="button" onClick={onClear} className={`${base} w-full bg-rose-600 text-white`}>
+        <XCircle className="w-24 h-24 mb-4" aria-hidden="true" />
+        <div className="text-4xl font-black leading-tight">WRONG FREIGHT</div>
+        <div className="mt-2 text-2xl font-bold">TAKE IT OFF</div>
+        <div className="mt-4 text-lg">PRO {evaluated?.pro}</div>
+        {evaluated?.owner ? (
+          <div className="text-lg">
+            Belongs to {evaluated.owner.loadNbr}
+            {evaluated.owner.driverName ? ` · ${evaluated.owner.driverName}` : ''}
+          </div>
+        ) : (
+          <div className="text-lg">Not on any load we can see today.</div>
+        )}
+        <div className="mt-8 text-sm uppercase tracking-widest opacity-80">Tap anywhere to clear</div>
+      </button>
+    );
+  }
+
+  const tone = {
+    green: ['bg-emerald-500 text-white', 'ON THIS TRUCK'],
+    amber: ['bg-amber-400 text-amber-950', 'APPT — CONFIRM BOOKED'],
+    dup: ['bg-slate-700 text-white', 'ALREADY SCANNED'],
+  }[kind] || ['bg-emerald-500 text-white', 'ON THIS TRUCK'];
+
+  return (
+    <div className={`${base} ${tone[0]} pointer-events-none`}>
+      {kind === 'green' ? <CheckCircle2 className="w-24 h-24 mb-4" aria-hidden="true" /> : null}
+      {kind === 'amber' ? <AlertTriangle className="w-24 h-24 mb-4" aria-hidden="true" /> : null}
+      <div className="text-4xl font-black leading-tight">{tone[1]}</div>
+      {evaluated?.stop?.businessName ? <div className="mt-2 text-xl">{evaluated.stop.businessName}</div> : null}
+    </div>
+  );
+}
+
 function StopRow({ stop, progress }) {
   const gaps = progress.complete ? null : ogGapHint(progress.ogs);
   const tone = progress.complete
@@ -339,6 +388,7 @@ function StopRow({ stop, progress }) {
         <span>{stop.city}{stop.state ? `, ${stop.state}` : ''}</span>
         <span>PRO {stop.pros.join(', ')}</span>
         <span>{stop.skids} skids · {stop.loose} loose</span>
+        {stop.countIsEstimated ? <span title="No piece total on this order — count computed from skids + loose">count from parts</span> : null}
         {stop.appointmentRequired ? <span className="text-amber-700 font-medium">APPT</span> : null}
       </div>
       {gaps ? (
@@ -447,6 +497,16 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut }) 
   const [manualPro, setManualPro] = useState('');
   const [manualOg, setManualOg] = useState('');
 
+  // ── Scanner gun (keyboard wedge) ───────────────────────────────────────────
+  const [gunMode, setGunMode] = useState(false);
+  const [verdict, setVerdict] = useState(null); // { kind, evaluated, sticky }
+  const gunModeRef = useRef(false);
+  const verdictRef = useRef(null);
+  const wedgeInputRef = useRef(null);
+  const wedgePairRef = useRef(null);
+  const wedgeAccRef = useRef(null);
+  const onWedgeScanRef = useRef(() => {});
+
   const load = useMemo(
     () => (manifest?.loads || []).find((l) => l.loadNbr === activeLoad) || null,
     [manifest, activeLoad],
@@ -472,18 +532,20 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut }) 
     refreshLocal();
   }, [refreshLocal]);
 
-  // Record a piece: local first, ALWAYS, then try the network.
+  // Record a piece: local first, ALWAYS, then try the network. Returns the
+  // evaluation so a caller that owns its own feedback (the wedge path) can act
+  // on the verdict — including SILENT, which the camera path ignores.
   const record = useCallback(
     async (pair, engineName) => {
       const evaluated = evaluateScan(pair, stops, scannedOgs, otherLoads);
-      if (evaluated.outcome === OUTCOME.SILENT) return; // no prompt, no button, no decision
+      if (evaluated.outcome === OUTCOME.SILENT) return evaluated; // no prompt, no button, no decision
       setResult(evaluated);
       setPartial({ pro: null, og: null });
 
       if (evaluated.outcome === OUTCOME.RED) {
         // A red piece is NOT recorded against this load — it is not on it.
         if (navigator.vibrate) navigator.vibrate([80, 60, 80]);
-        return;
+        return evaluated;
       }
       if (navigator.vibrate) navigator.vibrate(40);
 
@@ -497,6 +559,7 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut }) 
       await store.enqueueScan(activeLoad, manifest.date, scan);
       await refreshLocal();
       flushQueue();
+      return evaluated;
     },
     [stops, scannedOgs, otherLoads, activeLoad, manifest, refreshLocal],
   );
@@ -556,6 +619,58 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut }) 
   }
 
   useEffect(() => () => stopRef.current?.(), []);
+
+  // The wedge path owns its own feedback: sounds and a full-screen flash
+  // instead of a card nobody reads with gloves on. Kept behind a ref so the
+  // once-created accumulator always calls the latest closure.
+  onWedgeScanRef.current = async (raw) => {
+    if (verdictRef.current?.sticky) {
+      // A red screen must be acknowledged before scanning on — replay the buzz
+      // so the operator knows the gun is not the thing that is stuck.
+      playVerdict('red');
+      return;
+    }
+    const pair = wedgePairRef.current.push([raw]);
+    setPartial(wedgePairRef.current.state());
+    if (!pair) return;
+    const evaluated = await record(pair, 'wedge');
+    if (!evaluated) return;
+    const kind =
+      evaluated.outcome === OUTCOME.SILENT ? 'dup'
+        : evaluated.outcome === OUTCOME.RED ? 'red'
+          : evaluated.outcome === OUTCOME.AMBER ? 'amber'
+            : 'green';
+    playVerdict(kind);
+    setVerdict({ kind, evaluated, sticky: kind === 'red' });
+  };
+
+  if (!wedgePairRef.current) wedgePairRef.current = createPairBuffer({ windowMs: WEDGE_PAIR_WINDOW_MS });
+  if (!wedgeAccRef.current) wedgeAccRef.current = createWedgeAccumulator({ onScan: (v) => onWedgeScanRef.current(v) });
+
+  useEffect(() => {
+    gunModeRef.current = gunMode;
+    if (gunMode) {
+      wedgeInputRef.current?.focus();
+    } else {
+      wedgeAccRef.current?.reset();
+      wedgePairRef.current?.reset();
+      setPartial({ pro: null, og: null });
+    }
+  }, [gunMode]);
+
+  // Green/amber/dup flashes clear themselves; red stays until acknowledged.
+  useEffect(() => {
+    verdictRef.current = verdict;
+    if (!verdict || verdict.sticky) return undefined;
+    const t = setTimeout(() => setVerdict(null), verdict.kind === 'green' ? 650 : 1200);
+    return () => clearTimeout(t);
+  }, [verdict]);
+
+  function toggleGun() {
+    initAudio(); // must happen inside a user gesture, once, or the beeps stay muted
+    if (!gunMode && camOn) toggleCam(); // one capture path at a time
+    setGunMode((v) => !v);
+  }
 
   async function addManual() {
     const pro = normalizePro(manualPro);
@@ -620,36 +735,89 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut }) 
           )}
         </div>
 
-        {/* Camera */}
-        <div className="relative rounded-xl overflow-hidden bg-slate-900 aspect-[3/4]">
-          <video ref={videoRef} className="absolute inset-0 w-full h-full object-cover" playsInline muted />
-          <div ref={containerRef} className="absolute inset-0" />
-          {!camOn ? (
-            <button
-              type="button"
-              onClick={toggleCam}
-              className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-white/90"
-            >
-              <Camera className="w-10 h-10" />
-              <span className="text-sm">Tap to scan</span>
-            </button>
-          ) : (
-            <>
-              {/* Scan window matching the Quagga inset so both engines frame alike. */}
-              <div className="absolute inset-x-[5%] inset-y-[15%] ring-2 ring-white/70 rounded-lg pointer-events-none" />
+        {/* Scanner gun — keystrokes in, same matching logic as the camera. */}
+        <BigButton tone={gunMode ? 'primary' : 'ghost'} onClick={toggleGun}>
+          <span className="inline-flex items-center justify-center gap-2">
+            <ScanLine className="w-5 h-5" />
+            {gunMode ? 'Scanner gun ON — tap for camera' : 'Use scanner gun'}
+          </span>
+        </BigButton>
+
+        {gunMode ? (
+          <div
+            className="relative rounded-xl bg-slate-900 text-white px-4 py-6"
+            onClick={() => wedgeInputRef.current?.focus()}
+          >
+            <div className="flex items-center gap-3">
+              <ScanLine className="w-8 h-8 shrink-0" />
+              <div className="min-w-0">
+                <div className="font-semibold text-lg">Gun ready</div>
+                <div className="text-sm text-white/70">
+                  {partial?.pro
+                    ? 'PRO captured — now the OG barcode (upper)'
+                    : partial?.og
+                      ? 'OG captured — now the PRO barcode (lower)'
+                      : 'Scan both barcodes on the label, either order'}
+                </div>
+              </div>
+            </div>
+            {/* The wedge target: invisible, focused, keyboard-only. inputMode
+                none keeps the tablet's soft keyboard down. */}
+            <input
+              ref={wedgeInputRef}
+              value=""
+              onChange={() => {}}
+              onKeyDown={(e) => {
+                if (wedgeAccRef.current?.key(e.key)) e.preventDefault();
+              }}
+              onBlur={(e) => {
+                // A tap on a real field is deliberate; losing focus to the body
+                // is not — take it back so the next trigger pull still lands.
+                const t = e.relatedTarget;
+                if (t && ['INPUT', 'TEXTAREA', 'SELECT'].includes(t.tagName)) return;
+                setTimeout(() => {
+                  if (gunModeRef.current) wedgeInputRef.current?.focus();
+                }, 60);
+              }}
+              inputMode="none"
+              autoCapitalize="off"
+              autoCorrect="off"
+              spellCheck={false}
+              aria-label="Scanner gun input"
+              className="absolute w-px h-px opacity-0"
+            />
+          </div>
+        ) : (
+          <div className="relative rounded-xl overflow-hidden bg-slate-900 aspect-[3/4]">
+            <video ref={videoRef} className="absolute inset-0 w-full h-full object-cover" playsInline muted />
+            <div ref={containerRef} className="absolute inset-0" />
+            {!camOn ? (
               <button
                 type="button"
                 onClick={toggleCam}
-                className="absolute bottom-2 right-2 rounded-lg bg-black/60 text-white text-xs px-3 py-2"
+                className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-white/90"
               >
-                Stop
+                <Camera className="w-10 h-10" />
+                <span className="text-sm">Tap to scan</span>
               </button>
-              <div className="absolute top-2 left-2 rounded bg-black/50 text-white/80 text-[10px] px-2 py-1">
-                {engine}{status ? ` · ${status}` : ''}
-              </div>
-            </>
-          )}
-        </div>
+            ) : (
+              <>
+                {/* Scan window matching the Quagga inset so both engines frame alike. */}
+                <div className="absolute inset-x-[5%] inset-y-[15%] ring-2 ring-white/70 rounded-lg pointer-events-none" />
+                <button
+                  type="button"
+                  onClick={toggleCam}
+                  className="absolute bottom-2 right-2 rounded-lg bg-black/60 text-white text-xs px-3 py-2"
+                >
+                  Stop
+                </button>
+                <div className="absolute top-2 left-2 rounded bg-black/50 text-white/80 text-[10px] px-2 py-1">
+                  {engine}{status ? ` · ${status}` : ''}
+                </div>
+              </>
+            )}
+          </div>
+        )}
 
         {camErr ? <Banner kind="error">{camErr}</Banner> : null}
         <OutcomeCard result={result} partial={partial} />
@@ -706,6 +874,8 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut }) 
           busy={busy}
         />
       ) : null}
+
+      <VerdictFlash verdict={verdict} onClear={() => setVerdict(null)} />
     </div>
   );
 }
@@ -811,6 +981,7 @@ function DispatcherScreen({ session, onSignOut }) {
                 <SortableTh label="Driver #" k="driverNumber" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />
                 <SortableTh label="Name" k="displayName" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />
                 <SortableTh label="Aliases" k="aliasCount" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />
+                <SortableTh label="Role" k="role" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />
                 <SortableTh label="Active" k="active" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />
                 <SortableTh label="Last login" k="lastLoginAt" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />
                 <th className="px-2 py-1" />
@@ -822,6 +993,9 @@ function DispatcherScreen({ session, onSignOut }) {
                   <td className="px-2 py-2 font-mono">{d.driverNumber}</td>
                   <td className="px-2 py-2">{d.displayName || '—'}</td>
                   <td className="px-2 py-2 text-xs">{d.nuvizzAliases.join(', ') || <span className="text-rose-600">none</span>}</td>
+                  <td className="px-2 py-2 text-xs">
+                    {d.role === 'dispatcher' ? <span className="font-medium text-[#1e5b92]">dispatcher</span> : 'driver'}
+                  </td>
                   <td className="px-2 py-2">
                     {d.active ? <span className="text-emerald-700">yes</span> : <span className="text-rose-700">no</span>}
                     {d.lockedUntil ? <div className="text-[10px] text-amber-700">locked</div> : null}
@@ -836,6 +1010,20 @@ function DispatcherScreen({ session, onSignOut }) {
                       onClick={() => act({ action: 'set-active', driverNumber: d.driverNumber, active: !d.active })}
                     >
                       {d.active ? 'deactivate' : 'reactivate'}
+                    </button>
+                    <button
+                      type="button"
+                      className="text-xs underline mr-2"
+                      disabled={busy}
+                      onClick={() =>
+                        act({
+                          action: 'set-role',
+                          driverNumber: d.driverNumber,
+                          role: d.role === 'dispatcher' ? 'driver' : 'dispatcher',
+                        })
+                      }
+                    >
+                      {d.role === 'dispatcher' ? 'make driver' : 'make dispatcher'}
                     </button>
                     {d.lockedUntil ? (
                       <button
@@ -863,7 +1051,8 @@ function DispatcherScreen({ session, onSignOut }) {
             await act(body);
             setEditing(null);
           }}
-          onIssuePin={async (driverNumber, pin) => act({ action: 'issue-pin', driverNumber, pin })}
+          onIssuePin={async (driverNumber, pin, forceChange) =>
+            act({ action: 'issue-pin', driverNumber, pin, forceChange: forceChange === true })}
         />
       </div>
     </div>
@@ -875,6 +1064,7 @@ function DriverEditor({ driver, onSave, onCancel, onIssuePin, busy }) {
   const [displayName, setDisplayName] = useState(driver?.displayName || '');
   const [aliasText, setAliasText] = useState((driver?.nuvizzAliases || []).join(', '));
   const [pin, setPin] = useState('');
+  const [forceChange, setForceChange] = useState(false);
 
   return (
     <div className="rounded-xl bg-white ring-1 ring-slate-200 p-3 space-y-2">
@@ -923,25 +1113,37 @@ function DriverEditor({ driver, onSave, onCancel, onIssuePin, busy }) {
         {driver ? <BigButton tone="ghost" onClick={onCancel}>Cancel</BigButton> : null}
       </div>
       {driver ? (
-        <div className="pt-1 flex gap-2 items-center">
-          <input
-            value={pin}
-            onChange={(e) => setPin(e.target.value)}
-            inputMode="numeric"
-            placeholder="Temp PIN"
-            className="flex-1 rounded-lg border border-slate-300 px-3 py-2 text-sm"
-          />
-          <button
-            type="button"
-            disabled={busy || !/^\d{4,6}$/.test(pin)}
-            onClick={async () => {
-              await onIssuePin(driver.driverNumber, pin);
-              setPin('');
-            }}
-            className="rounded-lg bg-[#1e5b92] text-white px-3 py-2 text-sm disabled:opacity-50"
-          >
-            Issue
-          </button>
+        <div className="pt-1 space-y-2">
+          <div className="flex gap-2 items-center">
+            <input
+              value={pin}
+              onChange={(e) => setPin(e.target.value)}
+              inputMode="numeric"
+              placeholder="PIN"
+              className="flex-1 rounded-lg border border-slate-300 px-3 py-2 text-sm"
+            />
+            <button
+              type="button"
+              disabled={busy || !/^\d{4,6}$/.test(pin)}
+              onClick={async () => {
+                await onIssuePin(driver.driverNumber, pin, forceChange);
+                setPin('');
+                setForceChange(false);
+              }}
+              className="rounded-lg bg-[#1e5b92] text-white px-3 py-2 text-sm disabled:opacity-50"
+            >
+              Issue
+            </button>
+          </div>
+          <label className="flex items-center gap-2 text-xs text-slate-600">
+            <input
+              type="checkbox"
+              checked={forceChange}
+              onChange={(e) => setForceChange(e.target.checked)}
+              className="w-4 h-4"
+            />
+            Driver must replace it at next sign-in (one-off reset). Issued PINs are standing PINs otherwise.
+          </label>
         </div>
       ) : null}
     </div>

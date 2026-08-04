@@ -49,6 +49,33 @@ Note that dispatch-map's header sums `cartons` and labels it "total pallets" on
 screen. That number is skids. `expectedPieces` here will legitimately differ from
 it — do not "fix" this side to match.
 
+### The piece-count identity (measured, not assumed)
+
+`totalPallets` (total pieces) is exactly `totalCartons + volume` (skids +
+loose). Measured Aug 4 2026 across **337 live stops on 20 drivers**: 328
+carried a piece total and **every one matched the sum — zero disagreements**.
+The remaining 9 sent no total at all; all were Averitt orders on the Inbound
+Integration feed, which is why a missing total is computed from the parts
+rather than treated as zero.
+
+### What the NuVizz order screen shows (verified on a live Averitt stop)
+
+NuVizz's own order screen carries the same mislabel: it displays `totalCartons`
+under the heading **"Pallets"**. So both NuVizz's UI and dispatch-map's header
+will disagree with `expectedPieces` here, and both are wrong about what they are
+counting. Do not reconcile toward either screen.
+
+Averitt freight arrives on the **Inbound Integration** feed, not Uline's, and
+those orders send **no piece total at all** — `totalPallets` is absent, so
+`expectedPieces` is computed from skids + loose and `countIsEstimated` is set.
+The flag means "computed here", not "uncertain".
+
+**Never sum the order's item lines.** A real one-pallet Averitt order (ZNShine
+solar panels, residential with liftgate) shows **Items(4)** on the order screen:
+three of the four lines are accessorials — residential delivery, liftgate, fuel
+surcharge — each with quantity 1 and confirmation type "Pieces". Summing item
+lines gives 4 pieces for one physical pallet. Charge lines are not freight.
+
 ## Environment
 
 | var | required | purpose |
@@ -75,7 +102,7 @@ header anywhere: the app is same-origin with its functions, so none is needed.
 | `POST /driver-change-pin` | driver | 4-6 digits, must differ from current |
 | `GET /load-manifest` | driver | token to alias set to today's stops, filtered server side |
 | `POST /scan-session` | driver | idempotent upsert on `(loadNbr, og)` |
-| `GET/POST /driver-admin` | dispatcher | credentials, PINs, lockouts, alias editing, review queue |
+| `GET/POST /driver-admin` | dispatcher | credentials, PINs, lockouts, alias editing, roles, review queue |
 | `GET /driver-alias-report` | dispatcher | distinct `driverUserName` values for hand-mapping |
 | `GET /health` | anyone | routing check, no data |
 
@@ -106,6 +133,12 @@ curl -X POST https://ddsloadout.netlify.app/.netlify/functions/driver-admin \
 #    distinct driverUserName to a driver number in the Drivers panel.
 ```
 
+After first run, more dispatchers are made from inside the app: a dispatcher
+can promote any credential with `set-role` ("make dispatcher" in the Drivers
+panel) and demote it back. The last active dispatcher can never be demoted or
+deactivated — with the bootstrap secret used and removed, zero dispatchers
+would be unrecoverable. Promote a second dispatcher **before** you need one.
+
 ## Local
 
 ```bash
@@ -115,11 +148,36 @@ npm test         # pure-logic suite (node --test)
 npm run build    # -> dist/
 ```
 
+## Hardware scanners (keyboard wedge)
+
+The Zebra MC3400 and a DS3678-ER paired to a tablet both deliver barcodes as
+**keystrokes ending in Enter** (Tab also accepted), not camera frames. "Use
+scanner gun" on the scan screen focuses a hidden input that accumulates the
+burst and commits on the suffix; the committed string feeds the exact same
+classify → pair → `evaluateScan` path as the camera. Configure the gun for
+keystroke output with an Enter suffix (DataWedge default).
+
+The verdict is audible, because nobody reads a screen forty times a truck at
+5am with gloves on:
+
+| verdict | sound | screen |
+| --- | --- | --- |
+| good piece | short high beep | green full-screen flash, clears itself |
+| wrong freight | harsh double buzz | red screen, **stays until tapped** |
+| duplicate | flat low tone | "already scanned", clears itself |
+| appointment stop | two quick high beeps | amber flash, clears itself |
+
+The two label barcodes arrive as two trigger pulls, so the gun pair window is
+8s (vs 1.5–5s for camera frames). A lone half-scan still expires before the
+operator reaches the next pallet.
+
 ## Layout
 
 ```text
 src/lib/scan-logic.js    barcode classification, frame pairing, match outcomes, completeness
 src/lib/scanner.js       dual-engine capture: BarcodeDetector, Quagga2 fallback
+src/lib/wedge.js         keyboard-wedge capture for hardware scanner guns
+src/lib/feedback.js      WebAudio verdict sounds for gun mode
 src/lib/offline.js       IndexedDB scan queue + manifest cache
 src/lib/session.js       token storage, offline expiry check
 netlify/functions/lib/   firestore client, auth, alias resolution, field translation

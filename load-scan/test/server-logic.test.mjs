@@ -7,6 +7,7 @@ const auth = await import('../netlify/functions/lib/auth.mts');
 const aliases = await import('../netlify/functions/lib/aliases.mts');
 const manifest = await import('../netlify/functions/lib/manifest.mts');
 const session = await import('../netlify/functions/scan-session.mts');
+const admin = await import('../netlify/functions/driver-admin.mts');
 
 // ── PIN hashing ──────────────────────────────────────────────────────────────
 
@@ -38,6 +39,12 @@ test('PIN format is 4-6 digits', () => {
   assert.equal(auth.isValidPinFormat('123'), false);
   assert.equal(auth.isValidPinFormat('1234567'), false);
   assert.equal(auth.isValidPinFormat('12a4'), false);
+});
+
+test('an issued PIN is a standing PIN unless the dispatcher forces a change', () => {
+  assert.equal(admin.issuedPinMustChange({}), false, 'the default is standing — no 5am reset calls');
+  assert.equal(admin.issuedPinMustChange({ forceChange: true }), true, 'one-off reset path');
+  assert.equal(admin.issuedPinMustChange({ forceChange: 'yes' }), false, 'strictly boolean true, nothing truthy');
 });
 
 // ── Tokens ───────────────────────────────────────────────────────────────────
@@ -99,6 +106,46 @@ test('the fifth failure locks the credential for 15 minutes', () => {
   assert.equal(auth.isLockedOut({ lockedUntil: fifth.lockedUntil }, now + 16 * 60_000), false, 'expires');
 });
 
+// ── Last-dispatcher guard ────────────────────────────────────────────────────
+
+test('the only active dispatcher is the last one — demotion/deactivation must refuse', () => {
+  const creds = [
+    { _id: '1', role: 'dispatcher', active: true },
+    { _id: '4471', role: 'driver', active: true },
+  ];
+  assert.equal(auth.isLastActiveDispatcher(creds, '1'), true);
+});
+
+test('with a second active dispatcher, either may be demoted', () => {
+  const creds = [
+    { _id: '1', role: 'dispatcher', active: true },
+    { _id: '2', role: 'dispatcher', active: true },
+  ];
+  assert.equal(auth.isLastActiveDispatcher(creds, '1'), false);
+  assert.equal(auth.isLastActiveDispatcher(creds, '2'), false);
+});
+
+test('an INACTIVE second dispatcher does not count as cover', () => {
+  const creds = [
+    { _id: '1', role: 'dispatcher', active: true },
+    { _id: '2', role: 'dispatcher', active: false },
+  ];
+  assert.equal(auth.isLastActiveDispatcher(creds, '1'), true, 'deactivated cover is no cover');
+});
+
+test('the guard never fires for a driver credential', () => {
+  const creds = [
+    { _id: '1', role: 'dispatcher', active: true },
+    { _id: '4471', role: 'driver', active: true },
+  ];
+  assert.equal(auth.isLastActiveDispatcher(creds, '4471'), false);
+});
+
+test('the guard reads driverNumber when _id is absent', () => {
+  const creds = [{ driverNumber: '1', role: 'dispatcher', active: true }];
+  assert.equal(auth.isLastActiveDispatcher(creds, '1'), true);
+});
+
 // ── Alias resolution ─────────────────────────────────────────────────────────
 
 test('the alias normalizer matches the dispatch-map algorithm', () => {
@@ -147,6 +194,50 @@ test('a driver with no seeded aliases matches nothing', () => {
   assert.equal(aliases.stopBelongsToDriver({ driverUserName: 'BRAD' }, { driverNumber: '9', nuvizzAliases: [] }), false);
 });
 
+// ── Sign-in identifier resolution ────────────────────────────────────────────
+
+const loginCreds = [
+  { driverNumber: '3698', displayName: 'Michael Frye', nuvizzAliases: ['MICHAEL FRYE'] },
+  { driverNumber: '4471', displayName: 'Brad Goodroe', nuvizzAliases: ['BRAD', 'BRAD GOODROE'] },
+];
+
+test('all digits is a driver number, used as-is', () => {
+  const r = aliases.resolveLoginIdentifier('3698', loginCreds);
+  assert.equal(r.kind, 'number');
+  assert.equal(r.driverNumber, '3698');
+});
+
+test('the name on the board resolves to exactly one credential', () => {
+  for (const typed of ['MICHAEL FRYE', 'michael  frye', '  Michael Frye ']) {
+    const r = aliases.resolveLoginIdentifier(typed, loginCreds);
+    assert.equal(r.status, 'resolved', `resolves ${JSON.stringify(typed)}`);
+    assert.equal(r.driverNumber, '3698');
+  }
+});
+
+test('a name matching one credential on BOTH displayName and alias is one claimant, not two', () => {
+  const r = aliases.resolveLoginIdentifier('BRAD GOODROE', loginCreds);
+  assert.equal(r.status, 'resolved');
+  assert.equal(r.driverNumber, '4471');
+});
+
+test('an unknown name is refused, never a nearest-name guess', () => {
+  const r = aliases.resolveLoginIdentifier('MIKE FRYE', loginCreds);
+  assert.equal(r.status, 'unresolved');
+  assert.equal(r.reason, 'no_match');
+});
+
+test('a name two credentials claim is refused as ambiguous', () => {
+  const dupes = [
+    { driverNumber: '1', displayName: 'Chris Smith', nuvizzAliases: ['CHRIS'] },
+    { driverNumber: '2', displayName: 'Chris Jones', nuvizzAliases: ['CHRIS'] },
+  ];
+  const r = aliases.resolveLoginIdentifier('CHRIS', dupes);
+  assert.equal(r.status, 'unresolved');
+  assert.equal(r.reason, 'ambiguous');
+  assert.deepEqual(r.claimedBy.sort(), ['1', '2']);
+});
+
 test('ambiguous seeding is detectable for the dispatcher', () => {
   const found = aliases.findAmbiguousAliases([
     { driverNumber: '1', nuvizzAliases: ['CHRIS'] },
@@ -183,6 +274,36 @@ test('a skids + loose mismatch warns and still serves expectedPieces', () => {
   assert.equal(m.expectedPieces, 9, 'served anyway — the truck still needs loading');
   assert.equal(warnings.length, 1);
   assert.match(warnings[0], /7152411/);
+});
+
+test('a stop with no piece total is NOT an empty stop — count computed from the parts', () => {
+  const warnings = [];
+  // The Averitt shape: Inbound Integration orders send no totalPallets at all.
+  const m = manifest.toManifestStop({ stopNbr: '7159301', cartons: 1, volume: 0 }, (w) => warnings.push(w));
+  assert.equal(m.expectedPieces, 1, 'one skid, zero loose = one piece, not zero');
+  assert.equal(m.countIsEstimated, true, 'flag means "computed here", not "uncertain"');
+  assert.equal(warnings.length, 0, 'a computed count cannot mismatch itself');
+});
+
+test('a reported piece total is never overridden and is not marked estimated', () => {
+  const m = manifest.toManifestStop({ stopNbr: '1', pallets: 7, cartons: 3, volume: 4 });
+  assert.equal(m.expectedPieces, 7);
+  assert.equal(m.countIsEstimated, false);
+});
+
+test('an explicit zero total is honored as a value, not treated as missing', () => {
+  const m = manifest.toManifestStop({ stopNbr: '1', pallets: 0, cartons: 2, volume: 0 });
+  assert.equal(m.expectedPieces, 0, 'NuVizz said zero; that is a data problem to surface, not to paper over');
+  assert.equal(m.countIsEstimated, false);
+});
+
+test('load totals include computed counts', () => {
+  const stops = [
+    manifest.toManifestStop({ stopNbr: '1', loadNbr: 'L1', pallets: 3 }),
+    manifest.toManifestStop({ stopNbr: '2', loadNbr: 'L1', cartons: 1, volume: 1 }),
+  ];
+  const loads = manifest.groupIntoLoads(stops);
+  assert.equal(loads[0].expectedPieces, 5, '3 reported + 2 computed');
 });
 
 test('a matching stop does not warn', () => {
