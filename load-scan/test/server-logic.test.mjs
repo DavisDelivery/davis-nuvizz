@@ -397,6 +397,51 @@ test('a driver may be re-assigned a name they already hold without self-blocking
   assert.ok(!plan.error, 'a driver never conflicts with themselves');
 });
 
+test('a DEACTIVATED credential holding the alias does not block a live driver', () => {
+  // This is what stranded ALFRED MORGAN: his name sat on inactive credential
+  // 9001, and blocking on that would stop the real driver ever claiming it.
+  const target = cred('4471', []);
+  const dead = { ...cred('9001', ['ALFRED MORGAN']), active: false };
+  const plan = aliases.planAliasAdd(target, 'ALFRED MORGAN', [target, dead]);
+  assert.ok(!plan.error, 'a dead account must not hold a live driver hostage');
+  assert.deepEqual(plan.aliases, ['ALFRED MORGAN']);
+});
+
+test('an ACTIVE credential holding the alias still blocks', () => {
+  const target = cred('4471', []);
+  const live = { ...cred('4472', ['ALFRED MORGAN']), active: true };
+  assert.ok(aliases.planAliasAdd(target, 'ALFRED MORGAN', [target, live]).error);
+});
+
+test('removing one alias leaves the rest of the set alone', () => {
+  // The upsert path rewrites the whole array from a text field; this is the
+  // surgical alternative, so a slip cannot silently delete a spelling.
+  const target = cred('4471', ['BRAD', 'BRAD GOODROE', 'B GOODROE']);
+  const plan = aliases.planAliasRemove(target, 'brad goodroe');
+  assert.deepEqual(plan.aliases, ['BRAD', 'B GOODROE']);
+  assert.equal(plan.removed, true);
+});
+
+test('removing an alias that is not there changes nothing', () => {
+  const target = cred('4471', ['BRAD']);
+  const plan = aliases.planAliasRemove(target, 'SOMEONE ELSE');
+  assert.deepEqual(plan.aliases, ['BRAD']);
+  assert.equal(plan.removed, false);
+});
+
+test('ambiguity counts ACTIVE credentials only', () => {
+  // An active/inactive pair is not actually ambiguous — login never sees the
+  // inactive one — so reporting it would be a false alarm.
+  const live = { driverNumber: '4471', nuvizzAliases: ['SHARED'], active: true };
+  const dead = { driverNumber: '9001', nuvizzAliases: ['SHARED'], active: false };
+  assert.deepEqual(aliases.findAmbiguousAliases([live, dead]), [], 'not ambiguous in practice');
+
+  const alsoLive = { driverNumber: '4472', nuvizzAliases: ['SHARED'], active: true };
+  const found = aliases.findAmbiguousAliases([live, alsoLive]);
+  assert.equal(found.length, 1, 'two live claimants IS ambiguous');
+  assert.deepEqual(found[0].driverNumbers, ['4471', '4472']);
+});
+
 test('an empty alias is refused rather than stored', () => {
   const plan = aliases.planAliasAdd(cred('0000'), '   ', [cred('0000')]);
   assert.ok(plan.error);

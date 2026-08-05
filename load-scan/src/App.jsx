@@ -13,10 +13,10 @@ import { evaluateScan, loadProgress, stopProgress, ogGapHint, OUTCOME, normalize
 import { createWedgeAccumulator, WEDGE_PAIR_WINDOW_MS } from './lib/wedge.js';
 import { initAudio, playVerdict } from './lib/feedback.js';
 import { useSortable, SortableTh } from './lib/useSortable.jsx';
-import { partitionBoardRows } from './lib/roster.js';
+import { partitionBoardRows, filterCredentials } from './lib/roster.js';
 
 // Bumped by hand on every change. load-scan versions independently of dispatch-map.
-const APP_VERSION = '0.10.0';
+const APP_VERSION = '0.11.0';
 
 const BUILD_COMMIT = typeof __BUILD_COMMIT__ !== 'undefined' ? __BUILD_COMMIT__ : 'dev';
 const BUILD_TIME = typeof __BUILD_TIME__ !== 'undefined' ? __BUILD_TIME__ : '';
@@ -1074,6 +1074,178 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
 // ── Dispatcher ───────────────────────────────────────────────────────────────
 
 /**
+ * A centred overlay. The dispatcher screen used to render its editor at the
+ * BOTTOM of a fifty-row table, so clicking "edit" populated a form three
+ * thousand pixels below the click and the button looked broken. An editor that
+ * cannot be off-screen cannot have that bug.
+ */
+function Modal({ title, onClose, children }) {
+  useEffect(() => {
+    const onKey = (e) => e.key === 'Escape' && onClose();
+    window.addEventListener('keydown', onKey);
+    // Stop the table scrolling behind the dialog on touch.
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      document.body.style.overflow = prev;
+    };
+  }, [onClose]);
+
+  return (
+    <div
+      className="fixed inset-0 z-50 bg-slate-900/50 flex items-start sm:items-center justify-center p-3 overflow-y-auto"
+      onMouseDown={(e) => e.target === e.currentTarget && onClose()}
+    >
+      <div role="dialog" aria-modal="true" aria-label={title} className="w-full max-w-lg my-auto rounded-2xl bg-white shadow-xl">
+        <div className="flex items-center gap-2 px-4 py-3 border-b border-slate-200 sticky top-0 bg-white rounded-t-2xl">
+          <div className="font-semibold text-slate-800 flex-1 truncate">{title}</div>
+          <button type="button" onClick={onClose} className="p-1 -mr-1 text-slate-500" aria-label="Close">
+            <XCircle className="w-5 h-5" />
+          </button>
+        </div>
+        <div className="p-4 space-y-3">{children}</div>
+      </div>
+    </div>
+  );
+}
+
+/** Destructive actions get a deliberate second click, never a lone one. */
+function ConfirmAction({ label, confirmLabel, onConfirm, disabled, tone = 'danger' }) {
+  const [armed, setArmed] = useState(false);
+  useEffect(() => {
+    if (!armed) return undefined;
+    const t = setTimeout(() => setArmed(false), 5000);
+    return () => clearTimeout(t);
+  }, [armed]);
+
+  if (!armed) {
+    return (
+      <button type="button" className="text-xs underline" disabled={disabled} onClick={() => setArmed(true)}>
+        {label}
+      </button>
+    );
+  }
+  return (
+    <span className="inline-flex items-center gap-1">
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={() => { setArmed(false); onConfirm(); }}
+        className={`text-xs rounded px-2 py-0.5 text-white ${tone === 'danger' ? 'bg-rose-600' : 'bg-[#1e5b92]'}`}
+      >
+        {confirmLabel}
+      </button>
+      <button type="button" className="text-xs underline text-slate-500" onClick={() => setArmed(false)}>
+        cancel
+      </button>
+    </span>
+  );
+}
+
+/**
+ * Aliases as removable chips plus an add box.
+ *
+ * They used to be one comma-separated string posted through `upsert`, which
+ * REPLACES the whole array. A dispatcher tidying that field could silently drop
+ * a spelling, and the only symptom is a driver quietly getting no loads days
+ * later. One alias in, one alias out, nothing else touched.
+ */
+function AliasChips({ aliases, onAdd, onRemove, busy }) {
+  const [next, setNext] = useState('');
+  const add = () => {
+    const v = next.trim();
+    if (!v) return;
+    setNext('');
+    onAdd(v);
+  };
+  return (
+    <div>
+      <div className="text-xs text-slate-600">
+        NuVizz aliases — every spelling this person shows up as on the board
+      </div>
+      <div className="mt-1 flex flex-wrap gap-1">
+        {aliases.length ? (
+          aliases.map((a) => (
+            <span key={a} className="inline-flex items-center gap-1 rounded-lg bg-slate-100 px-2 py-1 text-xs font-mono">
+              {a}
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => onRemove(a)}
+                className="text-slate-500 hover:text-rose-600"
+                aria-label={`Remove alias ${a}`}
+              >
+                ×
+              </button>
+            </span>
+          ))
+        ) : (
+          <span className="text-xs text-rose-600">None — this driver matches nothing and will get no loads.</span>
+        )}
+      </div>
+      <div className="mt-2 flex gap-2">
+        <input
+          value={next}
+          onChange={(e) => setNext(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); add(); } }}
+          placeholder="Add a spelling from the board"
+          className="flex-1 rounded-lg border border-slate-300 px-2 py-1.5 text-sm font-mono"
+        />
+        <button
+          type="button"
+          disabled={busy || !next.trim()}
+          onClick={add}
+          className="text-sm rounded-lg bg-[#1e5b92] text-white px-3 py-1.5 disabled:opacity-50"
+        >
+          Add
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/** Pick an existing credential — searchable, because there are fifty of them. */
+function CredentialPicker({ creds, onPick, busy, exclude = [] }) {
+  const [q, setQ] = useState('');
+  const shown = useMemo(
+    () => filterCredentials(creds, q).filter((c) => !exclude.includes(c.driverNumber)).slice(0, 40),
+    [creds, q, exclude],
+  );
+  return (
+    <div>
+      <input
+        value={q}
+        onChange={(e) => setQ(e.target.value)}
+        placeholder="Search by number, name or alias…"
+        className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+      />
+      <div className="mt-2 max-h-64 overflow-y-auto rounded-lg ring-1 ring-slate-200 divide-y divide-slate-100">
+        {shown.length ? (
+          shown.map((c) => (
+            <button
+              key={c.driverNumber}
+              type="button"
+              disabled={busy}
+              onClick={() => onPick(c)}
+              className="block w-full text-left px-3 py-2 text-sm hover:bg-sky-50 disabled:opacity-50"
+            >
+              <span className="font-mono">{c.driverNumber}</span> · {c.displayName || '—'}
+              {c.active === false ? <span className="text-rose-600 text-xs"> · deactivated</span> : null}
+              <div className="text-xs text-slate-500 truncate">
+                {(c.nuvizzAliases || []).join(', ') || 'no aliases'}
+              </div>
+            </button>
+          ))
+        ) : (
+          <div className="px-3 py-2 text-sm text-slate-500">No credential matches “{q}”.</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/**
  * One unmatched sign-in, with the means to actually fix it.
  *
  * This driver signed in and got NO loads: none of their seeded aliases matched
@@ -1183,12 +1355,43 @@ function UnmatchedRow({ u, onAssign, onDismiss }) {
  *
  * Reads the pre-built stop index only. ZERO NuVizz calls.
  */
-function BoardToday({ rows, window: win, days, onDays, onAdd, busy }) {
-  const { identified, unidentified, ambiguous: ambiguousRows } = useMemo(
+function BoardToday({ rows, window: win, days, onDays, onAdd, onAttach, busy }) {
+  const { identified, unidentified, inactiveOnly, ambiguous: ambiguousRows } = useMemo(
     () => partitionBoardRows(rows),
     [rows],
   );
   const [showAll, setShowAll] = useState(false);
+
+  // Each bucket is a DIFFERENT fix, so they are never merged into one count.
+  const Problem = ({ row, kind }) => (
+    <div className="flex items-center gap-2 text-sm py-0.5">
+      <span className="flex-1 truncate">{row.alias}</span>
+      {kind === 'inactive' ? (
+        <span className="text-xs text-rose-700 shrink-0">only {row.inactiveClaimedBy.join(', ')} (deactivated)</span>
+      ) : kind === 'ambiguous' ? (
+        <span className="text-xs text-rose-700 shrink-0">{row.claimedBy.join(', ')}</span>
+      ) : null}
+      <span className="text-xs text-slate-500 shrink-0">{row.stops} stop(s)</span>
+      <button
+        type="button"
+        disabled={busy}
+        onClick={() => onAttach(row.alias)}
+        className="text-xs rounded-lg ring-1 ring-slate-300 bg-white px-2 py-1 shrink-0"
+      >
+        Attach to driver
+      </button>
+      {kind !== 'ambiguous' ? (
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => onAdd(row.alias)}
+          className="text-xs rounded-lg bg-[#1e5b92] text-white px-2 py-1 shrink-0"
+        >
+          New driver
+        </button>
+      ) : null}
+    </div>
+  );
 
   return (
     <div className="space-y-2">
@@ -1220,17 +1423,38 @@ function BoardToday({ rows, window: win, days, onDays, onAdd, busy }) {
         <div className="text-xs text-slate-500">
           {win.daysRead.length} day(s) read · {rows.length} distinct names ·{' '}
           <span className="text-emerald-700 font-medium">{identified.length} identified</span>
-          {unidentified.length ? (
-            <> · <span className="text-rose-700 font-medium">{unidentified.length} NOT identified</span></>
+          {unidentified.length + inactiveOnly.length + ambiguousRows.length ? (
+            <>
+              {' '}· <span className="text-rose-700 font-medium">
+                {unidentified.length + inactiveOnly.length + ambiguousRows.length} need attention
+              </span>
+            </>
           ) : null}
         </div>
       )}
 
       {ambiguousRows.length ? (
-        <Banner kind="error">
-          {ambiguousRows.length} name(s) claimed by more than one driver — these resolve to NEITHER driver:{' '}
-          {ambiguousRows.map((r) => `${r.alias} (${r.claimedBy.join(', ')})`).join('; ')}
-        </Banner>
+        <div className="rounded-xl bg-rose-50 ring-1 ring-rose-300 px-3 py-2">
+          <div className="text-xs font-medium text-rose-900">
+            Claimed by more than one active driver — these resolve to NEITHER, so both get nothing. Take the name off
+            one of them.
+          </div>
+          <div className="mt-1">
+            {ambiguousRows.map((r) => <Problem key={r.alias} row={r} kind="ambiguous" />)}
+          </div>
+        </div>
+      ) : null}
+
+      {inactiveOnly.length ? (
+        <div className="rounded-xl bg-rose-50 ring-1 ring-rose-300 px-3 py-2">
+          <div className="text-xs font-medium text-rose-900">
+            Claimed only by a DEACTIVATED credential — that account cannot sign in, so these drivers get nothing.
+            Reactivate it, or move the name to a live driver.
+          </div>
+          <div className="mt-1">
+            {inactiveOnly.map((r) => <Problem key={r.alias} row={r} kind="inactive" />)}
+          </div>
+        </div>
       ) : null}
 
       {unidentified.length ? (
@@ -1238,21 +1462,8 @@ function BoardToday({ rows, window: win, days, onDays, onAdd, busy }) {
           <div className="text-xs font-medium text-rose-900">
             These names have loads but no driver set up — they would get nothing on the handset
           </div>
-          <div className="mt-2 space-y-1">
-            {unidentified.map((r) => (
-              <div key={r.alias} className="flex items-center gap-2 text-sm">
-                <span className="flex-1 truncate">{r.alias}</span>
-                <span className="text-xs text-slate-500 shrink-0">{r.stops} stop(s)</span>
-                <button
-                  type="button"
-                  disabled={busy}
-                  onClick={() => onAdd(r.alias)}
-                  className="text-xs rounded-lg bg-[#1e5b92] text-white px-2 py-1 shrink-0"
-                >
-                  Add driver
-                </button>
-              </div>
-            ))}
+          <div className="mt-1">
+            {unidentified.map((r) => <Problem key={r.alias} row={r} kind="none" />)}
           </div>
         </div>
       ) : null}
@@ -1294,13 +1505,17 @@ function DispatcherScreen({ session, onSignOut }) {
   const [boardWindow, setBoardWindow] = useState(null);
   const [boardDays, setBoardDays] = useState(1);
   const [boardNonce, setBoardNonce] = useState(0);
-  const editorRef = useRef(null);
+  const [query, setQuery] = useState('');
+  // A board name looking for an existing credential to attach itself to.
+  const [attaching, setAttaching] = useState(null);
+  const [roleDraft, setRoleDraft] = useState(null);
 
+  // Both editors open in a MODAL. Previously the form sat below a fifty-row
+  // table, so "edit" set state three thousand pixels off-screen and read as a
+  // dead button — the single loudest complaint about this screen.
   const openAdd = useCallback((alias) => {
     setEditing(null);
     setPrefill({ alias, displayName: alias });
-    // The form lives below a long table; without this the click looks like a no-op.
-    setTimeout(() => editorRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 50);
   }, []);
 
   const reload = useCallback(async () => {
@@ -1336,7 +1551,13 @@ function DispatcherScreen({ session, onSignOut }) {
     return () => { alive = false; };
   }, [session, boardDays, boardNonce]);
 
-  const { sorted, sortKey, sortDir, toggle } = useSortable(drivers, 'driverNumber', 'asc');
+  const shownDrivers = useMemo(() => filterCredentials(drivers, query), [drivers, query]);
+  const { sorted, sortKey, sortDir, toggle } = useSortable(shownDrivers, 'driverNumber', 'asc');
+
+  const closeEditor = useCallback(() => { setEditing(null); setPrefill(null); }, []);
+  // Both lists must move together: a fix made in the editor has to show up in
+  // the board roster too, or the dispatcher cannot tell whether it worked.
+  const refreshAll = useCallback(() => setBoardNonce((n) => n + 1), []);
 
   async function act(body) {
     setBusy(true);
@@ -1402,11 +1623,16 @@ function DispatcherScreen({ session, onSignOut }) {
           days={boardDays}
           onDays={setBoardDays}
           onAdd={openAdd}
+          onAttach={setAttaching}
           busy={busy}
         />
 
-        <div className="flex items-center justify-between gap-2">
-          <div className="text-sm font-medium text-slate-700">{drivers.length} credentials</div>
+        <div className="flex items-center justify-between gap-2 flex-wrap">
+          <div className="text-sm font-medium text-slate-700">
+            {shownDrivers.length === drivers.length
+              ? `${drivers.length} credentials`
+              : `${shownDrivers.length} of ${drivers.length} credentials`}
+          </div>
           <button
             type="button"
             className="text-xs rounded-lg ring-1 ring-slate-300 bg-white px-2 py-1"
@@ -1415,6 +1641,13 @@ function DispatcherScreen({ session, onSignOut }) {
             Add a driver
           </button>
         </div>
+
+        <input
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Search credentials by number, name or alias…"
+          className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+        />
 
         <div className="overflow-x-auto rounded-xl bg-white ring-1 ring-slate-200">
           <table className="min-w-full text-sm">
@@ -1435,18 +1668,42 @@ function DispatcherScreen({ session, onSignOut }) {
                   <td className="px-2 py-2 font-mono">{d.driverNumber}</td>
                   <td className="px-2 py-2">{d.displayName || '—'}</td>
                   <td className="px-2 py-2 text-xs">{d.nuvizzAliases.join(', ') || <span className="text-rose-600">none</span>}</td>
+                  {/* Role was a bare <select> that applied on change — one stray
+                      scroll over a focused control granted somebody dispatcher
+                      rights. It now stages the choice and needs a confirm. */}
                   <td className="px-2 py-2 text-xs">
-                    <select
-                      value={d.role}
-                      disabled={busy}
-                      onChange={(e) => act({ action: 'set-role', driverNumber: d.driverNumber, role: e.target.value })}
-                      className="rounded border border-slate-300 px-1 py-1 text-xs bg-white"
-                      aria-label={`Role for ${d.driverNumber}`}
-                    >
-                      <option value="driver">driver</option>
-                      <option value="loader">loader</option>
-                      <option value="dispatcher">dispatcher</option>
-                    </select>
+                    {roleDraft && roleDraft.driverNumber === d.driverNumber ? (
+                      <span className="inline-flex items-center gap-1">
+                        <span className="font-medium">{roleDraft.role}</span>
+                        <button
+                          type="button"
+                          disabled={busy}
+                          className="text-xs rounded bg-[#1e5b92] text-white px-2 py-0.5"
+                          onClick={() => {
+                            const r = roleDraft;
+                            setRoleDraft(null);
+                            act({ action: 'set-role', driverNumber: r.driverNumber, role: r.role });
+                          }}
+                        >
+                          apply
+                        </button>
+                        <button type="button" className="text-xs underline text-slate-500" onClick={() => setRoleDraft(null)}>
+                          cancel
+                        </button>
+                      </span>
+                    ) : (
+                      <select
+                        value={d.role}
+                        disabled={busy}
+                        onChange={(e) => setRoleDraft({ driverNumber: d.driverNumber, role: e.target.value })}
+                        className="rounded border border-slate-300 px-1 py-1 text-xs bg-white"
+                        aria-label={`Role for ${d.driverNumber}`}
+                      >
+                        <option value="driver">driver</option>
+                        <option value="loader">loader</option>
+                        <option value="dispatcher">dispatcher</option>
+                      </select>
+                    )}
                   </td>
                   <td className="px-2 py-2">
                     {d.active ? <span className="text-emerald-700">yes</span> : <span className="text-rose-700">no</span>}
@@ -1454,15 +1711,28 @@ function DispatcherScreen({ session, onSignOut }) {
                   </td>
                   <td className="px-2 py-2 text-xs">{d.lastLoginAt ? fmtDateTime(d.lastLoginAt) : '—'}</td>
                   <td className="px-2 py-2 text-right whitespace-nowrap">
-                    <button type="button" className="text-xs underline mr-2" onClick={() => setEditing(d)}>edit</button>
-                    <button
-                      type="button"
-                      className="text-xs underline mr-2"
-                      disabled={busy}
-                      onClick={() => act({ action: 'set-active', driverNumber: d.driverNumber, active: !d.active })}
-                    >
-                      {d.active ? 'deactivate' : 'reactivate'}
-                    </button>
+                    <button type="button" className="text-xs underline mr-2" onClick={() => { setPrefill(null); setEditing(d); }}>edit</button>
+                    <span className="mr-2">
+                      {d.active ? (
+                        // Deactivating strands a driver: they cannot sign in and
+                        // load-manifest 403s them. Never a single click.
+                        <ConfirmAction
+                          label="deactivate"
+                          confirmLabel="really deactivate"
+                          disabled={busy}
+                          onConfirm={() => act({ action: 'set-active', driverNumber: d.driverNumber, active: false })}
+                        />
+                      ) : (
+                        <button
+                          type="button"
+                          className="text-xs underline"
+                          disabled={busy}
+                          onClick={() => act({ action: 'set-active', driverNumber: d.driverNumber, active: true })}
+                        >
+                          reactivate
+                        </button>
+                      )}
+                    </span>
                     {d.lockedUntil ? (
                       <button
                         type="button"
@@ -1480,89 +1750,124 @@ function DispatcherScreen({ session, onSignOut }) {
           </table>
         </div>
 
-        <div ref={editorRef} />
-        <DriverEditor
-          key={editing?.driverNumber || `new:${prefill?.alias || ''}`}
-          driver={editing}
-          prefill={editing ? null : prefill}
-          busy={busy}
-          onCancel={() => { setEditing(null); setPrefill(null); }}
-          onSave={async (body) => {
-            await act(body);
-            setEditing(null);
-            setPrefill(null);
-            // Re-read the roster so a driver just added moves out of "NOT
-            // identified" immediately — otherwise the fix looks like it failed.
-            setBoardNonce((n) => n + 1);
-          }}
-          onIssuePin={async (driverNumber, pin, forceChange) =>
-            act({ action: 'issue-pin', driverNumber, pin, forceChange: forceChange === true })}
-        />
       </div>
+
+      {editing || prefill ? (
+        <Modal
+          title={editing ? `${editing.driverNumber} · ${editing.displayName || 'driver'}` : 'Add a driver'}
+          onClose={closeEditor}
+        >
+          <DriverEditor
+            key={editing?.driverNumber || `new:${prefill?.alias || ''}`}
+            driver={editing}
+            prefill={editing ? null : prefill}
+            busy={busy}
+            onCancel={closeEditor}
+            onSave={async (body) => { await act(body); refreshAll(); closeEditor(); }}
+            onAddAlias={async (alias) => {
+              await act({ action: 'add-alias', driverNumber: editing.driverNumber, alias });
+              refreshAll();
+            }}
+            onRemoveAlias={async (alias) => {
+              await act({ action: 'remove-alias', driverNumber: editing.driverNumber, alias });
+              refreshAll();
+            }}
+            onIssuePin={async (driverNumber, pin, forceChange) =>
+              act({ action: 'issue-pin', driverNumber, pin, forceChange: forceChange === true })}
+          />
+        </Modal>
+      ) : null}
+
+      {attaching ? (
+        <Modal title={`Attach “${attaching}” to a driver`} onClose={() => setAttaching(null)}>
+          <div className="text-sm text-slate-600">
+            Pick the credential this person already has. The name is added to their aliases — nothing else on the
+            credential changes, and you do not have to retype anything.
+          </div>
+          <CredentialPicker
+            creds={drivers}
+            busy={busy}
+            onPick={async (c) => {
+              const alias = attaching;
+              setAttaching(null);
+              await act({ action: 'add-alias', driverNumber: c.driverNumber, alias });
+              refreshAll();
+            }}
+          />
+        </Modal>
+      ) : null}
     </div>
   );
 }
 
-function DriverEditor({ driver, prefill, onSave, onCancel, onIssuePin, busy }) {
+function DriverEditor({ driver, prefill, onSave, onCancel, onIssuePin, onAddAlias, onRemoveAlias, busy }) {
   const [driverNumber, setDriverNumber] = useState(driver?.driverNumber || '');
   const [displayName, setDisplayName] = useState(driver?.displayName || prefill?.displayName || '');
-  const [aliasText, setAliasText] = useState(
-    (driver?.nuvizzAliases || []).join(', ') || prefill?.alias || '',
-  );
+  // NEW drivers still stage their aliases locally — there is no credential to
+  // attach them to until Save. An EXISTING driver edits them one at a time
+  // through add-alias / remove-alias so a slip cannot wipe the set.
+  const [newAliases, setNewAliases] = useState(prefill?.alias ? [prefill.alias] : []);
   const [pin, setPin] = useState('');
   const [forceChange, setForceChange] = useState(false);
 
   return (
-    <div className={`rounded-xl bg-white p-3 space-y-2 ring-1 ${prefill ? 'ring-[#1e5b92] ring-2' : 'ring-slate-200'}`}>
-      <div className="text-sm font-medium text-slate-700">
-        {driver ? `Edit ${driver.driverNumber}` : 'Add a driver'}
-      </div>
+    <div className="space-y-3">
       {prefill?.alias ? (
         <div className="text-xs text-slate-600">
-          Setting up <span className="font-semibold">{prefill.alias}</span> from the board. Give them a driver number
-          (the one on their paperwork), then issue a PIN below once saved.
+          Setting up <span className="font-semibold">{prefill.alias}</span> from the board. Give them the driver number
+          off their paperwork, save, then issue a PIN.
         </div>
       ) : null}
-      <input
-        value={driverNumber}
-        onChange={(e) => setDriverNumber(e.target.value)}
-        disabled={!!driver}
-        placeholder="Driver number"
-        className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm disabled:bg-slate-50"
-      />
-      <input
-        value={displayName}
-        onChange={(e) => setDisplayName(e.target.value)}
-        placeholder="Display name"
-        className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
-      />
       <label className="block">
-        <span className="text-xs text-slate-600">
-          NuVizz aliases, comma separated — every spelling that shows up for this person
-        </span>
+        <span className="text-xs text-slate-600">Driver number{driver ? '' : ' — from their paperwork'}</span>
         <input
-          value={aliasText}
-          onChange={(e) => setAliasText(e.target.value)}
-          placeholder="BRAD, BRAD GOODROE"
-          className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono"
+          value={driverNumber}
+          onChange={(e) => setDriverNumber(e.target.value)}
+          disabled={!!driver}
+          placeholder="e.g. 4471"
+          className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm disabled:bg-slate-50"
         />
       </label>
+      <label className="block">
+        <span className="text-xs text-slate-600">Display name</span>
+        <input
+          value={displayName}
+          onChange={(e) => setDisplayName(e.target.value)}
+          placeholder="Display name"
+          className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+        />
+      </label>
+
+      <AliasChips
+        aliases={driver ? (driver.nuvizzAliases || []) : newAliases}
+        busy={busy}
+        onAdd={(a) => (driver ? onAddAlias(a) : setNewAliases((v) => [...new Set([...v, a.trim().toUpperCase()])]))}
+        onRemove={(a) => (driver ? onRemoveAlias(a) : setNewAliases((v) => v.filter((x) => x !== a)))}
+      />
+      {driver ? (
+        <div className="text-xs text-slate-500">
+          Alias changes save immediately. Everything else needs Save.
+        </div>
+      ) : null}
+
       <div className="flex gap-2">
         <BigButton
-          tone="ghost"
-          disabled={busy || !driverNumber}
+          disabled={busy || !driverNumber.trim()}
           onClick={() =>
             onSave({
               action: 'upsert',
               driverNumber: driverNumber.trim(),
               displayName,
-              nuvizzAliases: aliasText.split(',').map((s) => s.trim()).filter(Boolean),
+              // For an existing driver send back the set UNCHANGED — the chips
+              // already wrote any edits. Deriving it from a text field here is
+              // what let a careless keystroke silently delete a spelling.
+              nuvizzAliases: driver ? (driver.nuvizzAliases || []) : newAliases,
             })
           }
         >
           Save
         </BigButton>
-        {driver ? <BigButton tone="ghost" onClick={onCancel}>Cancel</BigButton> : null}
+        <BigButton tone="ghost" onClick={onCancel}>Cancel</BigButton>
       </div>
       {driver ? (
         <div className="pt-1 space-y-2">

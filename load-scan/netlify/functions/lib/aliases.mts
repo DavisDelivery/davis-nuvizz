@@ -135,8 +135,13 @@ export function planAliasAdd(
   const alias = normalizeDriverAlias(rawAlias);
   if (!alias) return { error: 'alias is required', claimedBy: [] };
 
+  // Only ACTIVE credentials can conflict. A deactivated credential holding this
+  // name resolves to nothing — login filters to active before resolving — so it
+  // must not block a live driver from claiming their own name. This is exactly
+  // the case that stranded ALFRED MORGAN behind a deactivated test credential.
   const claimedBy = allCreds
     .filter((c) => String(c.driverNumber) !== String(target.driverNumber))
+    .filter((c) => c.active !== false)
     .filter((c) => (c.nuvizzAliases || []).some((a) => normalizeDriverAlias(a) === alias))
     .map((c) => String(c.driverNumber));
 
@@ -152,10 +157,24 @@ export function planAliasAdd(
   return { aliases: [...current, alias], added: true };
 }
 
-/** Aliases claimed by more than one driver — a seeding mistake worth surfacing. */
+/** Drop one alias from a credential. Never touches the rest of the set. */
+export function planAliasRemove(target: DriverCred, rawAlias: any): { aliases: string[]; removed: boolean } {
+  const alias = normalizeDriverAlias(rawAlias);
+  const current = (target.nuvizzAliases || []).map(normalizeDriverAlias).filter(Boolean);
+  const aliases = current.filter((a) => a !== alias);
+  return { aliases, removed: aliases.length !== current.length };
+}
+
+/**
+ * Aliases claimed by more than one driver — a seeding mistake worth surfacing.
+ *
+ * Counts ACTIVE credentials only, for the same reason planAliasAdd does: a
+ * deactivated credential is invisible to login, so an active/inactive pair is
+ * not actually ambiguous and must not be reported as a fault.
+ */
 export function findAmbiguousAliases(creds: DriverCred[]): Array<{ alias: string; driverNumbers: string[] }> {
   const map = new Map<string, string[]>();
-  for (const c of creds) {
+  for (const c of creds.filter((c) => c.active !== false)) {
     for (const a of c.nuvizzAliases || []) {
       const k = normalizeDriverAlias(a);
       if (!k) continue;

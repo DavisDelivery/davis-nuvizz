@@ -96,14 +96,33 @@ export default async (req: Request): Promise<Response> => {
   }
 
   // Which aliases are already claimed, and by whom.
+  //
+  // ── ACTIVE ONLY, AND WHY IT MATTERS ────────────────────────────────────────
+  //
+  // `claimedBy` means "who will actually receive these loads", so it counts
+  // ACTIVE credentials only — because that is what the rest of the system does:
+  // driver-login filters to active before resolving a name, and load-manifest
+  // 403s an inactive credential outright.
+  //
+  // Counting a deactivated credential here reported a driver as identified when
+  // they could not sign in and would get nothing. Observed live: ALFRED MORGAN
+  // was held by credential 9001 (an INACTIVE acceptance-test account), so he
+  // never appeared as needing a driver while having no working one. A green tick
+  // over a driver who gets nothing is the worst failure this screen can have.
+  //
+  // Inactive claimants are reported separately rather than dropped, because
+  // "claimed only by a deactivated account" needs a different fix from "claimed
+  // by nobody" — you reactivate or move the alias, you do not create a driver.
   const creds = await listDocs(DRIVER_AUTH);
   const claimed = new Map<string, string[]>();
+  const claimedInactive = new Map<string, string[]>();
   for (const c of creds) {
+    const bucket = c?.active === false ? claimedInactive : claimed;
     for (const a of Array.isArray(c?.nuvizzAliases) ? c.nuvizzAliases : []) {
       const k = normalizeDriverAlias(a);
       if (!k) continue;
-      if (!claimed.has(k)) claimed.set(k, []);
-      claimed.get(k)!.push(String(c._id || c.driverNumber || ''));
+      if (!bucket.has(k)) bucket.set(k, []);
+      bucket.get(k)!.push(String(c._id || c.driverNumber || ''));
     }
   }
 
@@ -124,6 +143,7 @@ export default async (req: Request): Promise<Response> => {
       lastSeen: e.lastSeen,
       sampleLoads: [...e.sampleLoads],
       claimedBy: claimed.get(e.alias) || [],
+      inactiveClaimedBy: claimedInactive.get(e.alias) || [],
       needsMapping: !(claimed.get(e.alias) || []).length,
     }))
     .sort((a, b) => b.stops - a.stops || a.alias.localeCompare(b.alias));
