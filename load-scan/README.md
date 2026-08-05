@@ -33,6 +33,35 @@ store it. The "2 of 3" index is printed as text only — it is in neither barcod
 so it cannot be used for completeness. Completeness is distinct OG count against
 `expectedPieces`.
 
+## Signing in: there is no driver number, and no "login name" field
+
+Drivers sign in with **the name on the board** and a PIN (the last 4 of their
+cell). The driver number is an internal document key — it is generated, never
+asked for, and no longer shown as a column.
+
+**Sign-in is an EXACT match.** `resolveLoginIdentifier` normalizes (trim,
+collapse whitespace, uppercase) and compares the whole string against the
+display name and each alias. `ALFRED` does **not** match `ALFRED MORGAN`. A
+driver typing their first name gets a flat refusal, and until v0.15.0 nothing on
+screen showed what they should have typed.
+
+So there is no single "login name" field: the usable set is *derived*.
+`loginNamesFor` computes it and the **Signs in as** column shows it. Three rules,
+each of which was a real defect before it was written down:
+
+- A name must resolve to **exactly one active credential, and that credential
+  must be this one.** A name resolving to one *other* driver is worse than a dead
+  one — typing it signs the wrong person in — so it is reported as
+  "signs in as <them>", never as working.
+- A **deactivated** credential signs in as nothing at all, whatever names it
+  holds. Reporting per-name verdicts for it was noise, and when a live driver
+  held the same spelling it was an outright lie about ownership.
+- A credential with **no PIN** cannot sign in, which looked identical to a wrong
+  password. `hasPin` came back from the server all along and was never displayed.
+
+If a driver wants to type something shorter, add it as an alias — that is what
+the alias set is for, and the **Signs in as** column will pick it up.
+
 ## The day — daily monitoring
 
 `scan-activity?date=` gives the dispatcher the operational picture each morning:
