@@ -1185,6 +1185,15 @@ three states (so the marker visually "stands on" the lat/lng point).
   `{ url, width, height, anchor: [x, y] }` so the marker effect picks the
   correct `scaledSize` and `anchor`.
 
+The State B / C diameters in the table above are **design-space**: the SVG
+still carries those coordinates, but since v0.54.37 the returned
+`width`/`height`/`anchor` are multiplied by `RESTRICTION_MARKER_SCALE`
+(0.5) so a single-restriction marker draws 20×22 rather than 40×44 — a
+restriction annotates a stop, so it should not out-shout the route pin
+(30) it sits beside. Change that one constant to resize the whole family;
+the glyph templates stay on their 22×22 grid either way. The Legend
+previews read the same scaled `width`/`height`, so they resize with it.
+
 The marker effect (in `MapScreen`) picks one path:
 
 ```js
