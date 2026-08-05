@@ -31,6 +31,37 @@ export function partitionBoardRows(rows) {
   };
 }
 
+/**
+ * Board names still going spare — the ones to offer when setting a driver up.
+ *
+ * A person usually appears under SEVERAL spellings ("BRENT BOYD" and "BRENT"),
+ * and a credential only works for the spellings it holds. The dispatcher cannot
+ * know the full set from memory, so the editor offers what is actually on the
+ * board rather than asking them to type it.
+ *
+ * "Spare" means no ACTIVE credential claims it — same rule as identification,
+ * because an inactive claimant resolves to nothing and must not reserve a name.
+ * Those are still offered, flagged, since a name stuck on a deactivated account
+ * is exactly the one a dispatcher needs to move.
+ *
+ * Sorted by stop count: the spelling carrying the most freight matters most.
+ */
+export function availableAliases(rows, alreadyHave = []) {
+  const arr = (v) => (Array.isArray(v) ? v : []);
+  const up = (s) => String(s ?? '').trim().toUpperCase();
+  const mine = new Set(arr(alreadyHave).map(up));
+
+  return arr(rows)
+    .filter((r) => arr(r?.claimedBy).length === 0)
+    .filter((r) => up(r?.alias) && !mine.has(up(r?.alias)))
+    .map((r) => ({
+      alias: r.alias,
+      stops: Number(r?.stops || 0),
+      heldByInactive: arr(r?.inactiveClaimedBy),
+    }))
+    .sort((a, b) => b.stops - a.stops || a.alias.localeCompare(b.alias));
+}
+
 /** Everything that still needs a human, newest problem first. */
 export function boardNeedsAttention(rows) {
   const p = partitionBoardRows(rows);

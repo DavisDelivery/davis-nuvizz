@@ -13,10 +13,10 @@ import { evaluateScan, loadProgress, stopProgress, ogGapHint, OUTCOME, normalize
 import { createWedgeAccumulator, WEDGE_PAIR_WINDOW_MS } from './lib/wedge.js';
 import { initAudio, playVerdict } from './lib/feedback.js';
 import { useSortable, SortableTh } from './lib/useSortable.jsx';
-import { partitionBoardRows, filterCredentials } from './lib/roster.js';
+import { partitionBoardRows, filterCredentials, availableAliases } from './lib/roster.js';
 
 // Bumped by hand on every change. load-scan versions independently of dispatch-map.
-const APP_VERSION = '0.11.0';
+const APP_VERSION = '0.12.0';
 
 const BUILD_COMMIT = typeof __BUILD_COMMIT__ !== 'undefined' ? __BUILD_COMMIT__ : 'dev';
 const BUILD_TIME = typeof __BUILD_TIME__ !== 'undefined' ? __BUILD_TIME__ : '';
@@ -1151,14 +1151,21 @@ function ConfirmAction({ label, confirmLabel, onConfirm, disabled, tone = 'dange
  * a spelling, and the only symptom is a driver quietly getting no loads days
  * later. One alias in, one alias out, nothing else touched.
  */
-function AliasChips({ aliases, onAdd, onRemove, busy }) {
+function AliasChips({ aliases, onAdd, onRemove, busy, available = [] }) {
   const [next, setNext] = useState('');
+  const [q, setQ] = useState('');
   const add = () => {
     const v = next.trim();
     if (!v) return;
     setNext('');
     onAdd(v);
   };
+  const shown = useMemo(() => {
+    const needle = q.trim().toUpperCase();
+    const list = needle ? available.filter((a) => a.alias.includes(needle)) : available;
+    return list.slice(0, 60);
+  }, [available, q]);
+
   return (
     <div>
       <div className="text-xs text-slate-600">
@@ -1201,6 +1208,45 @@ function AliasChips({ aliases, onAdd, onRemove, busy }) {
           Add
         </button>
       </div>
+
+      {/* Names actually on the board that no live credential holds. A person
+          runs under several spellings and a credential only matches the ones it
+          has, so offer the real list instead of asking anyone to recall it. */}
+      {available.length ? (
+        <div className="mt-3 rounded-lg ring-1 ring-slate-200 p-2">
+          <div className="text-xs text-slate-600">
+            {available.length} name(s) on the board not used by any other driver — tap to add
+          </div>
+          {available.length > 8 ? (
+            <input
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              placeholder="Filter…"
+              className="mt-1 w-full rounded border border-slate-300 px-2 py-1 text-xs"
+            />
+          ) : null}
+          <div className="mt-1 max-h-40 overflow-y-auto flex flex-wrap gap-1">
+            {shown.length ? (
+              shown.map((a) => (
+                <button
+                  key={a.alias}
+                  type="button"
+                  disabled={busy}
+                  onClick={() => onAdd(a.alias)}
+                  className="rounded-lg ring-1 ring-slate-300 bg-white px-2 py-1 text-xs hover:bg-sky-50 disabled:opacity-50"
+                  title={a.heldByInactive.length ? `Currently on deactivated ${a.heldByInactive.join(', ')}` : undefined}
+                >
+                  <span className="font-mono">{a.alias}</span>
+                  <span className="text-slate-400"> · {a.stops}</span>
+                  {a.heldByInactive.length ? <span className="text-amber-700"> · on a deactivated account</span> : null}
+                </button>
+              ))
+            ) : (
+              <span className="text-xs text-slate-500">Nothing on the board matches “{q}”.</span>
+            )}
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -1761,6 +1807,7 @@ function DispatcherScreen({ session, onSignOut }) {
             key={editing?.driverNumber || `new:${prefill?.alias || ''}`}
             driver={editing}
             prefill={editing ? null : prefill}
+            board={board}
             busy={busy}
             onCancel={closeEditor}
             onSave={async (body) => { await act(body); refreshAll(); closeEditor(); }}
@@ -1800,7 +1847,7 @@ function DispatcherScreen({ session, onSignOut }) {
   );
 }
 
-function DriverEditor({ driver, prefill, onSave, onCancel, onIssuePin, onAddAlias, onRemoveAlias, busy }) {
+function DriverEditor({ driver, prefill, board, onSave, onCancel, onIssuePin, onAddAlias, onRemoveAlias, busy }) {
   const [driverNumber, setDriverNumber] = useState(driver?.driverNumber || '');
   const [displayName, setDisplayName] = useState(driver?.displayName || prefill?.displayName || '');
   // NEW drivers still stage their aliases locally — there is no credential to
@@ -1809,6 +1856,9 @@ function DriverEditor({ driver, prefill, onSave, onCancel, onIssuePin, onAddAlia
   const [newAliases, setNewAliases] = useState(prefill?.alias ? [prefill.alias] : []);
   const [pin, setPin] = useState('');
   const [forceChange, setForceChange] = useState(false);
+
+  const held = driver ? (driver.nuvizzAliases || []) : newAliases;
+  const availableForThisDriver = useMemo(() => availableAliases(board, held), [board, held]);
 
   return (
     <div className="space-y-3">
@@ -1840,6 +1890,7 @@ function DriverEditor({ driver, prefill, onSave, onCancel, onIssuePin, onAddAlia
 
       <AliasChips
         aliases={driver ? (driver.nuvizzAliases || []) : newAliases}
+        available={availableForThisDriver}
         busy={busy}
         onAdd={(a) => (driver ? onAddAlias(a) : setNewAliases((v) => [...new Set([...v, a.trim().toUpperCase()])]))}
         onRemove={(a) => (driver ? onRemoveAlias(a) : setNewAliases((v) => v.filter((x) => x !== a)))}
