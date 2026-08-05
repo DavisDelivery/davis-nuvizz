@@ -32,6 +32,66 @@ export function partitionBoardRows(rows) {
 }
 
 /**
+ * What can this person actually TYPE to sign in?
+ *
+ * There is no "login name" field. Sign-in matches the typed text against the
+ * display name AND every alias, and resolves only when EXACTLY ONE active
+ * credential claims it — see resolveLoginIdentifier in aliases.mts. So a
+ * credential's usable sign-in names are a derived set, and nothing on the
+ * screen used to show it: a dispatcher could not tell a driver what to type,
+ * and could not see that one of the names was dead.
+ *
+ * Anything claimed by two active credentials resolves to NEITHER, so it is
+ * listed separately as broken rather than quietly dropped — the driver will try
+ * it, it will fail, and that is worth showing before 5am.
+ *
+ * Normalization matches normalizeDriverAlias byte for byte: trim, collapse
+ * internal whitespace, uppercase. Keep the two together.
+ */
+const up = (s) => String(s ?? '').trim().replace(/\s+/g, ' ').toUpperCase();
+
+export function loginNamesFor(cred, allCreds) {
+  // A deactivated credential cannot sign in under ANY name — login filters to
+  // active credentials before it resolves anything. Reporting per-name results
+  // for it is noise at best and, when a live driver holds one of the same
+  // spellings, an outright lie about who that name signs in as.
+  if (cred?.active === false) return { works: [], broken: [], inactive: true };
+
+  const live = (Array.isArray(allCreds) ? allCreds : []).filter((c) => c?.active !== false);
+  const isMe = (c) => String(c?.driverNumber) === String(cred?.driverNumber);
+
+  // Every string that would identify SOMEBODY, and who it lands on.
+  const claimants = (name) =>
+    live.filter(
+      (c) =>
+        up(c?.displayName) === name ||
+        (Array.isArray(c?.nuvizzAliases) ? c.nuvizzAliases : []).some((a) => up(a) === name),
+    );
+
+  const mine = [up(cred?.displayName), ...(Array.isArray(cred?.nuvizzAliases) ? cred.nuvizzAliases : []).map(up)]
+    .filter(Boolean);
+
+  const works = [];
+  const broken = [];
+  for (const name of [...new Set(mine)]) {
+    const who = claimants(name);
+    // One claimant is not enough — it has to be THIS credential. A name that
+    // resolves to exactly one OTHER driver is worse than a dead one: typing it
+    // signs the wrong person in.
+    if (who.length === 1 && isMe(who[0])) {
+      works.push(name);
+    } else {
+      broken.push({
+        name,
+        claimedBy: who.map((c) => String(c.driverNumber)),
+        signsInAsSomeoneElse: who.length === 1 && !isMe(who[0]) ? String(who[0].displayName || who[0].driverNumber) : null,
+      });
+    }
+  }
+  return { works: works.sort((a, b) => a.length - b.length || a.localeCompare(b)), broken, inactive: false };
+}
+
+/**
  * Board names still going spare — the ones to offer when setting a driver up.
  *
  * A person usually appears under SEVERAL spellings ("BRENT BOYD" and "BRENT"),

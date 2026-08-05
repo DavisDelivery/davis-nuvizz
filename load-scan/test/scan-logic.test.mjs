@@ -76,6 +76,99 @@ test('a malformed row does not crash the roster', async () => {
   assert.equal(p.unidentified.length, 3, 'missing claimedBy reads as unclaimed, not as identified');
 });
 
+// ── What a driver can actually type to sign in ───────────────────────────────
+
+test('sign-in is an EXACT match — a first name does not work', async () => {
+  // Chad tried "alfred" and "morgan" against a credential holding only
+  // "ALFRED MORGAN". Both were refused, and nothing on screen said why.
+  const { loginNamesFor } = await import('../src/lib/roster.js');
+  const alfred = { driverNumber: '9667', displayName: 'ALFRED MORGAN', nuvizzAliases: ['ALFRED MORGAN'], active: true };
+  const { works } = loginNamesFor(alfred, [alfred]);
+  assert.deepEqual(works, ['ALFRED MORGAN'], 'only the full name works');
+  assert.ok(!works.includes('ALFRED'), 'a first name is not a login name');
+});
+
+test('the sign-in list agrees with the resolver that actually runs', async () => {
+  const { loginNamesFor } = await import('../src/lib/roster.js');
+  const aliasesLib = await import('../netlify/functions/lib/aliases.mts');
+  const creds = [
+    { driverNumber: '9667', displayName: 'ALFRED MORGAN', nuvizzAliases: ['ALFRED MORGAN', 'ALFRED'], active: true },
+    { driverNumber: '8913', displayName: 'Aaron Mitchell', nuvizzAliases: ['AARON'], active: true },
+  ];
+  for (const c of creds) {
+    for (const name of loginNamesFor(c, creds).works) {
+      const r = aliasesLib.resolveLoginIdentifier(name, creds);
+      assert.equal(r.status, 'resolved', `${name} must resolve`);
+      assert.equal(r.driverNumber, c.driverNumber, `${name} must land on ${c.driverNumber}`);
+    }
+  }
+});
+
+test('a short alias added by the dispatcher becomes a working login name', async () => {
+  const { loginNamesFor } = await import('../src/lib/roster.js');
+  const alfred = { driverNumber: '9667', displayName: 'ALFRED MORGAN', nuvizzAliases: ['ALFRED MORGAN', 'ALFRED'], active: true };
+  const { works } = loginNamesFor(alfred, [alfred]);
+  assert.deepEqual(works, ['ALFRED', 'ALFRED MORGAN'], 'shortest first — that is what a driver will type');
+});
+
+test('a name two active drivers share is reported as dead, not offered', async () => {
+  const { loginNamesFor } = await import('../src/lib/roster.js');
+  const a = { driverNumber: '1', displayName: 'BEN PAINTSIL', nuvizzAliases: ['BEN'], active: true };
+  const b = { driverNumber: '2', displayName: 'BEN WORLEY', nuvizzAliases: ['BEN'], active: true };
+  const { works, broken } = loginNamesFor(a, [a, b]);
+  assert.deepEqual(works, ['BEN PAINTSIL'], 'the unique name still works');
+  assert.deepEqual(broken.map((x) => x.name), ['BEN'], 'the shared one is flagged');
+  assert.deepEqual(broken[0].claimedBy, ['1', '2']);
+});
+
+test('a DEACTIVATED credential does not spoil a name for a live driver', async () => {
+  // ALFRED MORGAN also sits on the inactive 9001; login filters to active
+  // credentials first, so that must not make the live name ambiguous.
+  const { loginNamesFor } = await import('../src/lib/roster.js');
+  const live = { driverNumber: '9667', displayName: 'ALFRED MORGAN', nuvizzAliases: ['ALFRED MORGAN'], active: true };
+  const dead = { driverNumber: '9001', displayName: 'Acceptance Test Driver', nuvizzAliases: ['ALFRED MORGAN'], active: false };
+  const { works, broken } = loginNamesFor(live, [live, dead]);
+  assert.deepEqual(works, ['ALFRED MORGAN']);
+  assert.equal(broken.length, 0);
+});
+
+test('a deactivated credential reports that, not a per-name verdict', async () => {
+  // Caught from a screenshot: the inactive test account was showing "signs in
+  // as ALFRED MORGAN" — a name that actually resolves to a DIFFERENT, live
+  // driver — and listing its own names as "shared, will fail" with nobody to
+  // share with.
+  const { loginNamesFor } = await import('../src/lib/roster.js');
+  const dead = { driverNumber: '9001', displayName: 'Acceptance Test Driver', nuvizzAliases: ['ZZ_NOBODY', 'ALFRED MORGAN'], active: false };
+  const live = { driverNumber: '9667', displayName: 'ALFRED MORGAN', nuvizzAliases: ['ALFRED MORGAN'], active: true };
+  const r = loginNamesFor(dead, [dead, live]);
+  assert.equal(r.inactive, true);
+  assert.deepEqual(r.works, [], 'a dead account signs in as nothing');
+  assert.deepEqual(r.broken, []);
+});
+
+test('a name that resolves to a DIFFERENT driver is never listed as working', async () => {
+  // The dangerous case: typing it signs the wrong person in.
+  const { loginNamesFor } = await import('../src/lib/roster.js');
+  const me = { driverNumber: '1', displayName: 'BEN', nuvizzAliases: [], active: true };
+  const other = { driverNumber: '2', displayName: 'Ben Paintsil', nuvizzAliases: ['BEN'], active: true };
+  const r = loginNamesFor(me, [me, other]);
+  assert.deepEqual(r.works, [], 'BEN is claimed by two, so it works for neither');
+  assert.equal(r.broken.length, 1);
+
+  // And with only the other claiming it, it must say whose it is.
+  const solo = loginNamesFor({ driverNumber: '3', displayName: 'BEN', nuvizzAliases: [], active: true }, [
+    { driverNumber: '3', displayName: 'BEN', nuvizzAliases: [], active: true },
+    other,
+  ]);
+  assert.deepEqual(solo.works, [], 'still not mine');
+});
+
+test('a credential with no usable name reports that rather than looking fine', async () => {
+  const { loginNamesFor } = await import('../src/lib/roster.js');
+  const empty = { driverNumber: '5', displayName: '', nuvizzAliases: [], active: true };
+  assert.deepEqual(loginNamesFor(empty, [empty]).works, []);
+});
+
 // ── Offering the board names that are still spare ────────────────────────────
 
 const BOARD = [

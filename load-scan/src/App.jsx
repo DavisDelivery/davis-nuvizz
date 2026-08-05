@@ -13,10 +13,10 @@ import { evaluateScan, loadProgress, stopProgress, ogGapHint, OUTCOME, normalize
 import { createWedgeAccumulator, WEDGE_PAIR_WINDOW_MS } from './lib/wedge.js';
 import { initAudio, playVerdict } from './lib/feedback.js';
 import { useSortable, SortableTh } from './lib/useSortable.jsx';
-import { partitionBoardRows, filterCredentials, availableAliases } from './lib/roster.js';
+import { partitionBoardRows, filterCredentials, availableAliases, loginNamesFor } from './lib/roster.js';
 
 // Bumped by hand on every change. load-scan versions independently of dispatch-map.
-const APP_VERSION = '0.14.0';
+const APP_VERSION = '0.15.0';
 
 const BUILD_COMMIT = typeof __BUILD_COMMIT__ !== 'undefined' ? __BUILD_COMMIT__ : 'dev';
 const BUILD_TIME = typeof __BUILD_TIME__ !== 'undefined' ? __BUILD_TIME__ : '';
@@ -101,7 +101,7 @@ function LoginScreen({ onLoggedIn }) {
             ? 'This driver number is not active. See dispatch.'
             : e2?.offline
               ? 'No connection — the first sign-in needs signal. Try inside the building.'
-              : 'That sign-in is not right. Use your driver number, or your name as it shows on the board, plus your PIN.',
+              : 'That sign-in is not right. Use your name exactly as it shows on the board, plus your PIN — the last 4 of your cell.',
       );
     } finally {
       setBusy(false);
@@ -112,18 +112,18 @@ function LoginScreen({ onLoggedIn }) {
     <form onSubmit={submit} className="p-4 space-y-4 max-w-sm mx-auto">
       <Banner kind="info">Sign in once. You stay signed in for 90 days, even with no signal.</Banner>
       <label className="block">
-        <span className="text-sm font-medium text-slate-700">Driver number or name</span>
+        <span className="text-sm font-medium text-slate-700">Your name, as it shows on the board</span>
         <input
           value={driverNumber}
           onChange={(e) => setDriverNumber(e.target.value)}
           autoComplete="username"
           autoCapitalize="characters"
           className="mt-1 w-full rounded-xl border border-slate-300 px-4 py-3 text-lg tracking-wide"
-          placeholder="e.g. 4471 or MICHAEL FRYE"
+          placeholder="e.g. MICHAEL FRYE"
         />
       </label>
       <label className="block">
-        <span className="text-sm font-medium text-slate-700">PIN</span>
+        <span className="text-sm font-medium text-slate-700">PIN — last 4 of your cell</span>
         <input
           value={pin}
           onChange={(e) => setPin(e.target.value)}
@@ -1080,6 +1080,48 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
 // ── Dispatcher ───────────────────────────────────────────────────────────────
 
 /**
+ * Exactly what this person can type on the sign-in screen.
+ *
+ * Sign-in is an EXACT match after normalizing — "ALFRED" does not match the
+ * alias "ALFRED MORGAN". A dispatcher had no way to know that, so a driver
+ * typing their first name got a flat refusal and nobody could see why. Every
+ * usable string is listed; names claimed by two active credentials are called
+ * out as dead, because the driver will try one and it will fail.
+ *
+ * A credential with no PIN cannot sign in at all, and that looked identical to
+ * a wrong password. `hasPin` came back from the server all along and was never
+ * shown.
+ */
+function SignsInAs({ cred, creds }) {
+  const { works, broken, inactive } = useMemo(() => loginNamesFor(cred, creds), [cred, creds]);
+
+  if (inactive) return <span className="text-slate-500">deactivated — cannot sign in</span>;
+
+  return (
+    <div className="space-y-0.5">
+      {cred.hasPin === false ? (
+        <div className="text-rose-700 font-medium">NO PIN — cannot sign in at all</div>
+      ) : null}
+      {works.length ? (
+        works.map((n) => (
+          <div key={n} className="font-mono">
+            {n}
+          </div>
+        ))
+      ) : (
+        <div className="text-rose-700">nothing works — no usable name</div>
+      )}
+      {broken.map((b) => (
+        <div key={b.name} className="text-rose-700">
+          <span className="font-mono line-through">{b.name}</span>{' '}
+          {b.signsInAsSomeoneElse ? `signs in as ${b.signsInAsSomeoneElse}` : 'shared, will fail'}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/**
  * The day on the dock: every truck, who worked it, and who never opened the app.
  *
  * Built from the BOARD, not from the scan sessions, so a truck nobody touched
@@ -1419,7 +1461,7 @@ function CredentialPicker({ creds, onPick, busy, exclude = [] }) {
       <input
         value={q}
         onChange={(e) => setQ(e.target.value)}
-        placeholder="Search by number, name or alias…"
+        placeholder="Search by name or alias…"
         className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
       />
       <div className="mt-2 max-h-64 overflow-y-auto rounded-lg ring-1 ring-slate-200 divide-y divide-slate-100">
@@ -1767,7 +1809,7 @@ function DispatcherScreen({ session, onSignOut }) {
   }, [session, activityDate, boardNonce]);
 
   const shownDrivers = useMemo(() => filterCredentials(drivers, query), [drivers, query]);
-  const { sorted, sortKey, sortDir, toggle } = useSortable(shownDrivers, 'driverNumber', 'asc');
+  const { sorted, sortKey, sortDir, toggle } = useSortable(shownDrivers, 'displayName', 'asc');
 
   const closeEditor = useCallback(() => { setEditing(null); setPrefill(null); }, []);
   // Both lists must move together: a fix made in the editor has to show up in
@@ -1868,7 +1910,7 @@ function DispatcherScreen({ session, onSignOut }) {
         <input
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search credentials by number, name or alias…"
+          placeholder="Find a driver by name or alias…"
           className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
         />
 
@@ -1876,8 +1918,8 @@ function DispatcherScreen({ session, onSignOut }) {
           <table className="min-w-full text-sm">
             <thead className="bg-slate-50">
               <tr>
-                <SortableTh label="Driver #" k="driverNumber" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />
                 <SortableTh label="Name" k="displayName" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />
+                <th className="px-2 py-1 text-left font-medium">Signs in as</th>
                 <SortableTh label="Aliases" k="aliasCount" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />
                 <SortableTh label="Role" k="role" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />
                 <SortableTh label="Active" k="active" sortKey={sortKey} sortDir={sortDir} onToggle={toggle} />
@@ -1888,8 +1930,13 @@ function DispatcherScreen({ session, onSignOut }) {
             <tbody>
               {sorted.map((d) => (
                 <tr key={d.driverNumber} className="border-t border-slate-100">
-                  <td className="px-2 py-2 font-mono">{d.driverNumber}</td>
                   <td className="px-2 py-2">{d.displayName || '—'}</td>
+                  {/* There is no login-name field: sign-in matches the display
+                      name AND every alias, and only when exactly one active
+                      credential claims it. So show what actually works. */}
+                  <td className="px-2 py-2 text-xs">
+                    <SignsInAs cred={d} creds={drivers} />
+                  </td>
                   <td className="px-2 py-2 text-xs">{d.nuvizzAliases.join(', ') || <span className="text-rose-600">none</span>}</td>
                   {/* Role was a bare <select> that applied on change — one stray
                       scroll over a focused control granted somebody dispatcher
@@ -1985,6 +2032,7 @@ function DispatcherScreen({ session, onSignOut }) {
             driver={editing}
             prefill={editing ? null : prefill}
             board={board}
+            allCreds={drivers}
             busy={busy}
             onCancel={closeEditor}
             onSave={async (body) => { await act(body); refreshAll(); closeEditor(); }}
@@ -2024,7 +2072,7 @@ function DispatcherScreen({ session, onSignOut }) {
   );
 }
 
-function DriverEditor({ driver, prefill, board, onSave, onCancel, onIssuePin, onAddAlias, onRemoveAlias, busy }) {
+function DriverEditor({ driver, prefill, board, allCreds = [], onSave, onCancel, onIssuePin, onAddAlias, onRemoveAlias, busy }) {
   const [driverNumber, setDriverNumber] = useState(driver?.driverNumber || '');
   const [displayName, setDisplayName] = useState(driver?.displayName || prefill?.displayName || '');
   // NEW drivers still stage their aliases locally — there is no credential to
@@ -2087,8 +2135,15 @@ function DriverEditor({ driver, prefill, board, onSave, onCancel, onIssuePin, on
           )}
         </label>
       ) : (
-        <div className="text-xs text-slate-500">
-          Driver number <span className="font-mono">{driver.driverNumber}</span> · internal only, they never type it
+        <div className="rounded-lg bg-slate-50 ring-1 ring-slate-200 px-3 py-2">
+          <div className="text-xs text-slate-600">They sign in by typing one of these, exactly:</div>
+          <div className="mt-1 text-sm">
+            <SignsInAs cred={driver} creds={allCreds} />
+          </div>
+          <div className="mt-1 text-[11px] text-slate-500">
+            It must match in full — “ALFRED” will not match “ALFRED MORGAN”. Add a short spelling above if they want
+            to type less.
+          </div>
         </div>
       )}
 
