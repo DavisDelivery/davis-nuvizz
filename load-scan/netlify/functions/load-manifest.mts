@@ -77,6 +77,10 @@ export default async (req: Request): Promise<Response> => {
       'businessName', 'city', 'state', 'addr1', 'address1',
       'cartons', 'volume', 'pallets', 'weight',
       'normalizedStatus', 'instruction', 'instructions', 'notes', 'orderInstructions',
+      // Already written to the cached stop doc by dispatch-map's normalizer, and
+      // free to read — a mask is a projection, not a fetch. Omitting them was
+      // hiding detail the phone had already paid for.
+      'zip', 'postalCode', 'contactName', 'phone', 'sealNbr', 'plannedFrom', 'plannedTo',
     ],
   });
 
