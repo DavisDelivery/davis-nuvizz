@@ -355,6 +355,120 @@ test('loads group and sum expected pieces', () => {
   assert.equal(loads[0].stops[0].stopNbr, '2', 'sorted by stop sequence');
 });
 
+// ── The dispatcher's daily picture ───────────────────────────────────────────
+
+const ACT = await import('../netlify/functions/lib/activity.mts');
+
+test('a truck nobody touched still appears, as not_started', async () => {
+  // The whole point: this row exists only as an ABSENCE. A screen built from
+  // scan sessions alone cannot show it, and that is the truck that rolls out
+  // unscanned.
+  const out = ACT.buildActivity({
+    date: '2026-08-05',
+    loads: [{ loadNbr: 'L1', expectedPieces: 10, stopCount: 3, driverName: 'ALFRED MORGAN' }],
+    sessions: [],
+    creds: [],
+  });
+  assert.equal(out.loads.length, 1);
+  assert.equal(out.loads[0].status, 'not_started');
+  assert.equal(out.totals.notStarted, 1);
+  assert.equal(out.loads[0].workedBy.length, 0);
+});
+
+test('load status distinguishes open, clean, short and over', async () => {
+  const mk = (session, expected = 10) => ACT.loadStatus(session, expected);
+  assert.equal(mk(null), 'not_started');
+  assert.equal(mk({ scannedCount: 4, closedAt: null }), 'in_progress');
+  assert.equal(mk({ scannedCount: 10, closedAt: 'x' }), 'closed_clean');
+  assert.equal(mk({ scannedCount: 9, closedAt: 'x' }), 'closed_short');
+  assert.equal(mk({ scannedCount: 11, closedAt: 'x' }), 'closed_over');
+});
+
+test('everyone who worked a truck is kept, not just the last one to push', async () => {
+  // The session doc carried a single driverNumber, overwritten each push — so a
+  // loader who loaded the truck vanished the moment the driver scanned it.
+  let w = ACT.mergeWorker(null, { driverNumber: '100', role: 'loader', pieces: 6, at: '2026-08-05T05:00:00Z' });
+  w = ACT.mergeWorker(w, { driverNumber: '200', role: 'driver', pieces: 4, at: '2026-08-05T09:00:00Z' });
+  assert.deepEqual(w.map((x) => x.driverNumber), ['100', '200'], 'both kept');
+  assert.deepEqual(w.map((x) => x.role), ['loader', 'driver']);
+});
+
+test('the same person pushing twice accumulates rather than duplicating', async () => {
+  let w = ACT.mergeWorker(null, { driverNumber: '100', role: 'loader', pieces: 6, at: '2026-08-05T05:00:00Z' });
+  w = ACT.mergeWorker(w, { driverNumber: '100', role: 'loader', pieces: 3, at: '2026-08-05T06:00:00Z' });
+  assert.equal(w.length, 1);
+  assert.equal(w[0].pieces, 9);
+  assert.equal(w[0].firstAt, '2026-08-05T05:00:00Z', 'first touch kept');
+  assert.equal(w[0].lastAt, '2026-08-05T06:00:00Z', 'last touch advanced');
+});
+
+test('an out-of-order push does not rewrite the first-touch time', async () => {
+  let w = ACT.mergeWorker(null, { driverNumber: '100', role: 'loader', pieces: 1, at: '2026-08-05T09:00:00Z' });
+  w = ACT.mergeWorker(w, { driverNumber: '100', role: 'loader', pieces: 1, at: '2026-08-05T05:00:00Z' });
+  assert.equal(w[0].firstAt, '2026-08-05T05:00:00Z');
+  assert.equal(w[0].lastAt, '2026-08-05T09:00:00Z');
+});
+
+test('which trucks each person loaded is answerable, per role', async () => {
+  const out = ACT.buildActivity({
+    date: '2026-08-05',
+    loads: [
+      { loadNbr: 'L1', expectedPieces: 10, stopCount: 2 },
+      { loadNbr: 'L2', expectedPieces: 5, stopCount: 1 },
+    ],
+    sessions: [
+      { loadNbr: 'L1', date: '2026-08-05', scannedCount: 10, scannedPieces: 10, closedAt: 'x',
+        workedBy: [{ driverNumber: '100', role: 'loader', pieces: 10, firstAt: 'a', lastAt: 'b' }] },
+      { loadNbr: 'L2', date: '2026-08-05', scannedCount: 5, scannedPieces: 5, closedAt: 'x',
+        workedBy: [{ driverNumber: '100', role: 'loader', pieces: 5, firstAt: 'a', lastAt: 'b' }] },
+    ],
+    creds: [{ driverNumber: '100', displayName: 'Sam Loader', role: 'loader', active: true, lastLoginAt: '2026-08-05T05:00:00Z' }],
+  });
+  const sam = out.people.find((p) => p.driverNumber === '100');
+  assert.deepEqual(sam.loads, ['L1', 'L2'], 'both trucks attributed to him');
+  assert.equal(sam.pieces, 15);
+  assert.equal(sam.usedAppToday, true);
+  assert.equal(out.totals.loadersUsedApp, 1);
+});
+
+test('someone who never opened the app is visible, not merely absent', async () => {
+  const out = ACT.buildActivity({
+    date: '2026-08-05',
+    loads: [],
+    sessions: [],
+    creds: [
+      { driverNumber: '100', displayName: 'Used It', role: 'driver', active: true, lastLoginAt: '2026-08-05T05:00:00Z' },
+      { driverNumber: '200', displayName: 'Never Showed', role: 'driver', active: true, lastLoginAt: null },
+    ],
+  });
+  const ghost = out.people.find((p) => p.driverNumber === '200');
+  assert.ok(ghost, 'still listed');
+  assert.equal(ghost.usedAppToday, false);
+  assert.equal(ghost.lastLoginAt, null);
+  assert.equal(out.totals.peopleUsedApp, 0, 'signing in is not the same as doing work');
+});
+
+test('deactivated staff are left out of the daily people list', async () => {
+  const out = ACT.buildActivity({
+    date: '2026-08-05',
+    loads: [],
+    sessions: [],
+    creds: [{ driverNumber: '9001', displayName: 'Old Account', role: 'driver', active: false, lastLoginAt: null }],
+  });
+  assert.equal(out.people.length, 0, 'a dead account is not a person who failed to show up');
+});
+
+test('a resequenced load is counted and flagged', async () => {
+  const out = ACT.buildActivity({
+    date: '2026-08-05',
+    loads: [{ loadNbr: 'L1', expectedPieces: 3, stopCount: 1 }],
+    sessions: [{ loadNbr: 'L1', date: '2026-08-05', scannedCount: 3, closedAt: 'x', sequenceChanged: true }],
+    creds: [],
+  });
+  assert.equal(out.loads[0].sequenceChanged, true);
+  assert.equal(out.totals.resequenced, 1);
+});
+
 // ── Drivers have no driver number ────────────────────────────────────────────
 // They sign in with the name on the board and a PIN. The number is an internal
 // document key, so it is generated and never asked for.

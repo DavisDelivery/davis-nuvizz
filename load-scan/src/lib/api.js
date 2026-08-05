@@ -81,3 +81,7 @@ export const adminUnmatched = (token) => call('/.netlify/functions/driver-admin?
 export const adminPost = (token, body) => call('/.netlify/functions/driver-admin', { method: 'POST', token, body });
 export const aliasReport = (token, days = 14) =>
   call(`/.netlify/functions/driver-alias-report?days=${days}`, { token, timeoutMs: 60_000 });
+
+/** The dispatcher's daily picture: trucks, who worked them, who never showed. */
+export const scanActivity = (token, date) =>
+  call(`/.netlify/functions/scan-activity${date ? `?date=${date}` : ''}`, { token, timeoutMs: 60_000 });

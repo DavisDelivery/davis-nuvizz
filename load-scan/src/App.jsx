@@ -16,7 +16,7 @@ import { useSortable, SortableTh } from './lib/useSortable.jsx';
 import { partitionBoardRows, filterCredentials, availableAliases } from './lib/roster.js';
 
 // Bumped by hand on every change. load-scan versions independently of dispatch-map.
-const APP_VERSION = '0.13.0';
+const APP_VERSION = '0.14.0';
 
 const BUILD_COMMIT = typeof __BUILD_COMMIT__ !== 'undefined' ? __BUILD_COMMIT__ : 'dev';
 const BUILD_TIME = typeof __BUILD_TIME__ !== 'undefined' ? __BUILD_TIME__ : '';
@@ -33,6 +33,12 @@ function Header({ title, subtitle, right }) {
         {subtitle ? <p className="text-xs text-white/70 leading-tight truncate">{subtitle}</p> : null}
       </div>
       {right}
+      {/* Version, far right on every screen. Bumped on every merged PR, so
+          "which build is that phone on" is answered by looking at it rather
+          than by asking the driver to describe what they see. */}
+      <span className="text-[11px] font-mono text-white/70 shrink-0 tabular-nums" title={`build ${BUILD_COMMIT}`}>
+        v{APP_VERSION}
+      </span>
     </div>
   );
 }
@@ -1074,6 +1080,156 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
 // ── Dispatcher ───────────────────────────────────────────────────────────────
 
 /**
+ * The day on the dock: every truck, who worked it, and who never opened the app.
+ *
+ * Built from the BOARD, not from the scan sessions, so a truck nobody touched
+ * still has a row — that absence is the thing worth catching, and a view built
+ * from activity alone renders it invisible. Same for people: the list comes from
+ * the credential roster, so someone who never signed in is visibly missing
+ * rather than simply not there.
+ */
+function DayPanel({ data, date, onDate, busy, onRefresh }) {
+  const [tab, setTab] = useState('trucks');
+  if (!data) {
+    return (
+      <div className="rounded-xl bg-white ring-1 ring-slate-200 px-3 py-2 text-sm text-slate-500">
+        Loading the day…
+      </div>
+    );
+  }
+  const t = data.totals || {};
+  const loads = data.loads || [];
+  const people = data.people || [];
+
+  const TONE = {
+    not_started: 'bg-rose-50 ring-rose-300 text-rose-900',
+    in_progress: 'bg-amber-50 ring-amber-300 text-amber-900',
+    closed_clean: 'bg-emerald-50 ring-emerald-200 text-emerald-900',
+    closed_short: 'bg-rose-50 ring-rose-300 text-rose-900',
+    closed_over: 'bg-rose-50 ring-rose-300 text-rose-900',
+  };
+  const LABEL = {
+    not_started: 'NOT STARTED',
+    in_progress: 'in progress',
+    closed_clean: 'closed clean',
+    closed_short: 'CLOSED SHORT',
+    closed_over: 'CLOSED OVER',
+  };
+
+  const Stat = ({ n, label, bad }) => (
+    <div className={`rounded-lg px-2 py-1 ring-1 ${bad && n > 0 ? 'bg-rose-50 ring-rose-300' : 'bg-white ring-slate-200'}`}>
+      <div className={`text-lg font-semibold tabular-nums ${bad && n > 0 ? 'text-rose-700' : 'text-slate-800'}`}>{n}</div>
+      <div className="text-[11px] text-slate-500 leading-tight">{label}</div>
+    </div>
+  );
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center gap-2 flex-wrap">
+        <div className="text-sm font-medium text-slate-700 flex items-center gap-2">
+          <ClipboardList className="w-4 h-4" /> The day
+        </div>
+        <input
+          type="date"
+          value={date}
+          onChange={(e) => onDate(e.target.value)}
+          className="rounded-lg border border-slate-300 px-2 py-1 text-xs"
+        />
+        <button type="button" onClick={onRefresh} disabled={busy} className="text-xs underline text-slate-600">
+          refresh
+        </button>
+      </div>
+
+      <div className="grid grid-cols-3 sm:grid-cols-6 gap-1">
+        <Stat n={t.loadsOnBoard || 0} label="trucks on board" />
+        <Stat n={t.notStarted || 0} label="never started" bad />
+        <Stat n={t.inProgress || 0} label="in progress" />
+        <Stat n={t.closedShort || 0} label="closed short" bad />
+        <Stat n={t.closedClean || 0} label="closed clean" />
+        <Stat n={t.peopleUsedApp || 0} label="people used app" />
+      </div>
+      <div className="text-xs text-slate-500">
+        {t.piecesScanned || 0} scanned + {t.piecesConfirmed || 0} hand-confirmed of {t.piecesExpected || 0} expected ·{' '}
+        {t.loadersUsedApp || 0} loader(s), {t.driversUsedApp || 0} driver(s)
+        {t.resequenced ? <span className="text-rose-700 font-medium"> · {t.resequenced} resequenced mid-load</span> : null}
+      </div>
+
+      <div className="flex gap-1 text-xs">
+        {[['trucks', `Trucks (${loads.length})`], ['people', `People (${people.length})`]].map(([k, label]) => (
+          <button
+            key={k}
+            type="button"
+            onClick={() => setTab(k)}
+            className={`rounded-lg px-2 py-1 ring-1 ${tab === k ? 'bg-[#1e5b92] text-white ring-[#1e5b92]' : 'bg-white ring-slate-300 text-slate-600'}`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {tab === 'trucks' ? (
+        <div className="rounded-xl bg-white ring-1 ring-slate-200 divide-y divide-slate-100 max-h-96 overflow-y-auto">
+          {loads.length ? (
+            loads.map((l) => (
+              <div key={l.loadNbr} className="px-3 py-2 text-sm">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="font-mono font-medium">{l.loadNbr}</span>
+                  <span className="text-slate-600 truncate flex-1 min-w-0">{l.driverName || '—'}</span>
+                  <span className={`text-[11px] rounded px-1.5 py-0.5 ring-1 ${TONE[l.status]}`}>{LABEL[l.status]}</span>
+                  <span className="font-mono text-xs tabular-nums">
+                    {l.scannedCount}/{l.expectedPieces}
+                  </span>
+                </div>
+                <div className="text-xs text-slate-500 mt-0.5 flex flex-wrap gap-x-2">
+                  <span>{l.stopCount} stop(s)</span>
+                  {l.confirmedPieces ? <span className="text-sky-700">{l.confirmedPieces} by hand</span> : null}
+                  {l.short ? <span className="text-rose-700 font-medium">{l.short} short</span> : null}
+                  {l.over ? <span className="text-rose-700 font-medium">{l.over} over</span> : null}
+                  {l.sequenceChanged ? <span className="text-rose-700 font-medium">resequenced mid-load</span> : null}
+                  {l.workedBy?.length ? (
+                    <span>
+                      worked by {l.workedBy.map((w) => `${w.displayName} (${w.role}, ${w.pieces})`).join(', ')}
+                    </span>
+                  ) : (
+                    <span className="text-rose-700 font-medium">nobody has touched this truck</span>
+                  )}
+                  {l.closedAt ? <span>closed {fmtDateTime(l.closedAt)}</span> : null}
+                </div>
+              </div>
+            ))
+          ) : (
+            <div className="px-3 py-2 text-sm text-slate-500">No loads on the board for this date.</div>
+          )}
+        </div>
+      ) : (
+        <div className="rounded-xl bg-white ring-1 ring-slate-200 divide-y divide-slate-100 max-h-96 overflow-y-auto">
+          {people.map((p) => (
+            <div key={p.driverNumber} className="px-3 py-2 text-sm flex items-center gap-2 flex-wrap">
+              {p.usedAppToday ? (
+                <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+              ) : (
+                <XCircle className="w-4 h-4 text-slate-300 shrink-0" />
+              )}
+              <span className="truncate flex-1 min-w-0">{p.displayName}</span>
+              <span className="text-[11px] text-slate-500">{p.role}</span>
+              {p.usedAppToday ? (
+                <span className="text-xs text-slate-600">
+                  {p.pieces} piece(s) · {p.loads.length} truck(s): <span className="font-mono">{p.loads.join(', ')}</span>
+                </span>
+              ) : (
+                <span className="text-xs text-slate-400">
+                  no activity{p.lastLoginAt ? ` · last signed in ${fmtDateTime(p.lastLoginAt)}` : ' · never signed in'}
+                </span>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
  * A centred overlay. The dispatcher screen used to render its editor at the
  * BOTTOM of a fifty-row table, so clicking "edit" populated a form three
  * thousand pixels below the click and the button looked broken. An editor that
@@ -1551,6 +1707,8 @@ function DispatcherScreen({ session, onSignOut }) {
   const [boardWindow, setBoardWindow] = useState(null);
   const [boardDays, setBoardDays] = useState(1);
   const [boardNonce, setBoardNonce] = useState(0);
+  const [activity, setActivity] = useState(null);
+  const [activityDate, setActivityDate] = useState(etToday());
   const [query, setQuery] = useState('');
   // A board name looking for an existing credential to attach itself to.
   const [attaching, setAttaching] = useState(null);
@@ -1596,6 +1754,17 @@ function DispatcherScreen({ session, onSignOut }) {
       .catch((e) => alive && setErr(e?.message || 'Could not read the board.'));
     return () => { alive = false; };
   }, [session, boardDays, boardNonce]);
+
+  // The day's activity. Its own read, on its own date, so changing the date does
+  // not disturb the board roster or the credential list.
+  useEffect(() => {
+    let alive = true;
+    api
+      .scanActivity(session.token, activityDate)
+      .then((r) => alive && setActivity(r))
+      .catch((e) => alive && setErr(e?.message || 'Could not read the day.'));
+    return () => { alive = false; };
+  }, [session, activityDate, boardNonce]);
 
   const shownDrivers = useMemo(() => filterCredentials(drivers, query), [drivers, query]);
   const { sorted, sortKey, sortDir, toggle } = useSortable(shownDrivers, 'driverNumber', 'asc');
@@ -1662,6 +1831,14 @@ function DispatcherScreen({ session, onSignOut }) {
             ))}
           </div>
         ) : null}
+
+        <DayPanel
+          data={activity}
+          date={activityDate}
+          onDate={setActivityDate}
+          busy={busy}
+          onRefresh={refreshAll}
+        />
 
         <BoardToday
           rows={board}
