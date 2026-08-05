@@ -33,6 +33,31 @@ store it. The "2 of 3" index is printed as text only — it is in neither barcod
 so it cannot be used for completeness. Completeness is distinct OG count against
 `expectedPieces`.
 
+## "On the board" — who has loads, and who the app can identify
+
+A driver with loads in NuVizz but no credential claiming their name gets **no
+loads on the handset and no error anyone sees**. The failure is silent right up
+until they are standing at the dock at 5am. The dispatcher screen now opens with
+that list, from `driver-alias-report` (stop index only, **zero NuVizz calls**):
+
+- **NOT identified** — names with stops that no credential claims. Each has an
+  **Add driver** button that opens the add form pre-filled with that name as both
+  display name and first alias, and scrolls to it. This is the "there is no way
+  to add Alfred Morgan" path: see the name, click, give them a number, issue a PIN.
+- **Identified** — collapsed by default, showing which driver number claims each.
+- **Claimed by more than one driver** — surfaced as an error, because these
+  resolve to **neither** driver.
+
+Window is Today / 7 days / 14 days. Weekends are skipped and a day with no index
+yet reads as empty, so an empty result says which days were actually read rather
+than implying an empty board.
+
+`partitionBoardRows` (`src/lib/roster.js`) holds the rule and is tested against
+`resolveDriverForAlias` so the screen and the resolver cannot drift: exactly one
+claimant is identified, zero is not, and **two is not either**. Counting a
+twice-claimed name as identified would hide two broken drivers behind a green
+tick.
+
 ## Reviewing an unmatched sign-in
 
 A driver signs in, none of their seeded aliases match any name on that day's
