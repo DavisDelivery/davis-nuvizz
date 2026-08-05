@@ -50,11 +50,20 @@ export interface ScanRow {
  */
 export const TYPED_RE = /^TYPED-\d{7}-\d{1,3}$/;
 
+/**
+ * A piece SCANNED by PRO where the OG barcode was never decoded.
+ *
+ * The scanner no longer waits for both barcodes — see createScanResolver. A PRO
+ * alone is a piece, so it needs an id, and it must stay distinguishable from a
+ * piece with a real OG (exact per-piece dedup) and from one typed by hand.
+ */
+export const NOOG_RE = /^NOOG-\d{7}-\d{1,3}$/;
+
 export function normalizeScan(raw: any): { row?: ScanRow; reason?: string } {
   const og = String(raw?.og ?? '').trim().toUpperCase();
   if (!og) return { reason: 'missing og' };
-  if (!OG_RE.test(og) && !TYPED_RE.test(og)) {
-    return { reason: `og not OG+10 digits or TYPED-pro-n: ${og.slice(0, 24)}` };
+  if (!OG_RE.test(og) && !TYPED_RE.test(og) && !NOOG_RE.test(og)) {
+    return { reason: `og not OG+10 digits, TYPED-pro-n or NOOG-pro-n: ${og.slice(0, 24)}` };
   }
 
   const pro = normalizePro(raw?.pro);

@@ -66,6 +66,58 @@ export function pairFrame(rawValues) {
  * stays eligible for pairing, so a PRO from one label can never marry an OG from
  * the next.
  */
+/**
+ * One frame's decode, resolved the way the WMS scanner does it — because that
+ * one demonstrably works on the same phones and the same labels.
+ *
+ * ── WHY THIS CHANGED ────────────────────────────────────────────────────────
+ *
+ * This app used to require BOTH barcodes before it would record anything: a
+ * Code 39 PRO and a Code 128 OG, paired inside a 1.5s window. The WMS needs
+ * only the PRO, and it reads reliably. Demanding a pair while autofocus hunts
+ * across a big label is a much harder problem, and on the dock it simply did
+ * not complete — the driver got "point at a label" while pointing at one.
+ *
+ * So: A PRO ALONE IS A PIECE. The OG is an upgrade, not a requirement. When it
+ * lands in the same frame it is used, and dedup is then exact per physical
+ * piece. When it does not, the piece still counts.
+ *
+ * An OG with no PRO cannot identify a stop, so it is held briefly in case the
+ * PRO arrives in the next frame.
+ */
+export function createScanResolver({ ogHoldMs = 1200 } = {}) {
+  let heldOg = null;
+  let heldAt = 0;
+
+  return {
+    /** Feed one frame. Returns {pro, og|null} when there is something to record. */
+    push(rawValues, now = Date.now()) {
+      const frame = pairFrame(rawValues);
+
+      if (frame.pro) {
+        const fresh = heldOg && now - heldAt <= ogHoldMs ? heldOg : null;
+        const og = frame.og || fresh;
+        heldOg = null;
+        heldAt = 0;
+        return { pro: frame.pro, og: og || null };
+      }
+
+      if (frame.og) {
+        heldOg = frame.og;
+        heldAt = now;
+      }
+      return null;
+    },
+    state(now = Date.now()) {
+      return { pro: null, og: heldOg && now - heldAt <= ogHoldMs ? heldOg : null };
+    },
+    reset() {
+      heldOg = null;
+      heldAt = 0;
+    },
+  };
+}
+
 export function createPairBuffer({ windowMs = 2500 } = {}) {
   let pending = { pro: null, og: null, at: 0 };
 

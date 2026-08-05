@@ -16,7 +16,7 @@ import { useSortable, SortableTh } from './lib/useSortable.jsx';
 import { partitionBoardRows, filterCredentials, availableAliases, loginNamesFor } from './lib/roster.js';
 
 // Bumped by hand on every change. load-scan versions independently of dispatch-map.
-const APP_VERSION = '0.17.0';
+const APP_VERSION = '0.18.0';
 
 const BUILD_COMMIT = typeof __BUILD_COMMIT__ !== 'undefined' ? __BUILD_COMMIT__ : 'dev';
 const BUILD_TIME = typeof __BUILD_TIME__ !== 'undefined' ? __BUILD_TIME__ : '';
@@ -587,6 +587,8 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
   // doesn't work" cannot be told apart from "it read something and the rules
   // rejected it", and those need opposite fixes.
   const [rawLog, setRawLog] = useState([]);
+  // A repeat PRO waiting for a deliberate tap before it books another piece.
+  const [dupPending, setDupPending] = useState(null);
   const rawSeen = useRef(0);
   const [manualPro, setManualPro] = useState('');
   const [manualOg, setManualOg] = useState('');
@@ -673,6 +675,22 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
 
   const record = useCallback(
     async (pair, engineName) => {
+      // A PRO with no OG. The piece is real, but there is no per-piece id to
+      // de-duplicate on, so a label drifting back into view minutes later would
+      // silently count twice. The WMS solved this by never auto-logging a
+      // repeat: first read logs, every read after that asks for a tap.
+      if (!pair.og) {
+        const pro7 = normalizePro(pair.pro);
+        const already = scans.filter((s2) => normalizePro(s2.pro) === pro7).length;
+        if (already > 0 && engineName !== 'manual') {
+          setDupPending({ pro: pro7, count: already });
+          return null;
+        }
+        let n = 1;
+        const used = new Set(scans.map((s2) => String(s2.og).toUpperCase()));
+        while (used.has(`NOOG-${pro7}-${n}`)) n += 1;
+        pair = { ...pair, og: `NOOG-${pro7}-${n}` };
+      }
       const evaluated = evaluateScan(pair, stops, scannedOgs, otherLoads);
       if (evaluated.outcome === OUTCOME.SILENT) return evaluated; // no prompt, no button, no decision
       setResult(evaluated);
@@ -1026,6 +1044,40 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
         {camErr ? <Banner kind="error">{camErr}</Banner> : null}
         <OutcomeCard result={result} partial={partial} />
         {flash ? <Banner kind="info">{flash}</Banner> : null}
+
+        {/* Repeat PRO. Never auto-logged: walking a tall pallet drifts the same
+            label back into view minutes later, far past any cooldown, so a
+            timer cannot tell a second piece from a second look. A tap can. */}
+        {dupPending ? (
+          <div className="rounded-xl bg-amber-50 ring-1 ring-amber-300 px-3 py-3">
+            <div className="text-sm text-amber-900 font-medium">
+              PRO {dupPending.pro} already logged ×{dupPending.count}
+            </div>
+            <div className="text-xs text-amber-900 mt-0.5">
+              Same label seen again. If this is another piece, tap to add it.
+            </div>
+            <div className="flex gap-2 mt-2">
+              <button
+                type="button"
+                className="flex-1 text-sm rounded-lg ring-1 ring-slate-300 bg-white px-3 py-2"
+                onClick={() => setDupPending(null)}
+              >
+                Same piece
+              </button>
+              <button
+                type="button"
+                className="flex-1 text-sm rounded-lg bg-[#1e5b92] text-white px-3 py-2 font-medium"
+                onClick={() => {
+                  const p = dupPending;
+                  setDupPending(null);
+                  record({ pro: p.pro, og: null }, 'manual');
+                }}
+              >
+                Another piece
+              </button>
+            </div>
+          </div>
+        ) : null}
 
         {/* What the decoder is ACTUALLY seeing. Silence here means the camera
             is reading nothing (focus, lighting, engine); values here with the

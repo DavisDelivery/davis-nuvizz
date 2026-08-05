@@ -28,7 +28,7 @@
 //   - Split rearm windows: 1500 ms iOS/Quagga, 5000 ms Android native, because
 //     the native detector hunts focus at close range and drops a held label.
 
-import { createPairBuffer } from './scan-logic.js';
+import { createScanResolver } from './scan-logic.js';
 
 const QUAGGA_CDN = 'https://cdn.jsdelivr.net/npm/@ericblade/quagga2@1.8.4/dist/quagga.min.js';
 
@@ -77,13 +77,15 @@ function loadQuagga() {
  */
 export async function startScanner({ videoEl, containerEl, onPair, onPartial, onStatus, onRaw }) {
   const useNative = await detectNativeSupport();
-  const buffer = createPairBuffer({ windowMs: useNative ? REARM_MS_NATIVE : REARM_MS_QUAGGA });
+  // A PRO alone is a piece — see createScanResolver. The old pair buffer waited
+  // for both barcodes and, on iOS with a big label, usually never got them.
+  const resolver = createScanResolver({ ogHoldMs: useNative ? REARM_MS_NATIVE : REARM_MS_QUAGGA });
 
   const emit = (values, engine) => {
     onRaw?.(values);
-    const pair = buffer.push(values);
-    if (pair) onPair?.({ ...pair, engine });
-    else onPartial?.(buffer.state());
+    const hit = resolver.push(values);
+    if (hit) onPair?.({ ...hit, engine });
+    else onPartial?.(resolver.state());
   };
 
   if (useNative) {
@@ -204,8 +206,10 @@ async function startQuagga({ containerEl, emit, onStatus }) {
         },
         locator: { patchSize: 'medium', halfSample: true },
         numOfWorkers: navigator.hardwareConcurrency || 4,
-        // multiple: true is the change from the WMS — both label barcodes at once.
-        decoder: { readers: ['code_128_reader', 'code_39_reader'], multiple: true },
+        // multiple:false, matching the WMS scanner that works on these phones.
+        // We no longer need both barcodes in one frame, and Quagga2's multiple
+        // mode is markedly less reliable on a close-held label.
+        decoder: { readers: ['code_128_reader', 'code_39_reader'], multiple: false },
         locate: true,
         frequency: 20,
       },
