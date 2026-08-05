@@ -69,7 +69,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.54.36';
+const APP_VERSION = '0.54.37';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -114,6 +114,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.54.37', 'THE RESTRICTION ICONS ARE HALF THE SIZE. Chad, pointing at a red no-tractor-trailer truck parked over a stretch of highway: "make this icon half as big." Done — every icon that REPLACES a stop\'s pin when that stop carries restrictions (the red no-T/T truck, the amber Uline straight-truck advisory, liftgate, appointment, the receiving-hours day badges, and the "+N" overflow) now draws at 20×22 instead of 40×44. It had been the biggest thing on the map: taller than a numbered route pin (30) and more than twice an unplanned stop dot (16), which is backwards for a mark whose whole job is to ANNOTATE a stop rather than be one. A stop carrying two or three restrictions shrinks by the same half, so a row of icons stays in proportion with a single one. Nothing else moves: same artwork, same colors, same slash, and the same anchor point — the icon still sits on its exact address, not shifted half a marker off it — and because it is vector art it is drawn smaller, not squashed, so it stays crisp on a phone. The Legend previews shrink to match, on purpose: they render the very same image the map draws, so what you see in the legend is what you will find on the board. Cosmetic only — no data, filtering, scanning, or routing behavior changed.'],
   ['0.54.36', 'THE ESTES ORDER THAT KEPT "REVERTING TO THE DAVIS ENTRY" — TWO NUVIZZ RECORDS SHARE ONE NUMBER, AND EVERY BY-NUMBER LOOKUP WAS FREE TO ANSWER WITH THE WRONG ONE. Jessica, on Estes-0828068215: "I have rekeyed it in dispatch map and as soon as i change the date even in Nuvizz, it automatically reverts to the Davis entry" — and an hour later, "I tried to update this Estes delivery date in nuvizz and it completely changed the address." Neither of those is a haunting; both are one defect. NuVizz can hold TWO order records under ONE stop number — here, the rekeyed order to the real customer sitting next to the older entry consigned to Davis — and everything in this app that looks an order up asks BY NUMBER and trusts whichever single record NuVizz hands back. So the date change read the OTHER record, moved ITS window, and then refreshed the card from the same by-number lookup — which is precisely "it completely changed the address". And on every scan, the board collapsed the two records into one card last-wins, so the finished Davis-side entry kept replacing the live rekeyed order — precisely "it automatically reverts". This app learned this exact lesson for LOADS in v0.54.24 (two loads named STEVEN: identity wins, and a shared name is not allowed to speak for either); this release applies it to ORDERS. FIVE PLACES, ONE RULE — the record\'s internal id, which the board\'s feed already carries for every row, is the identity; the number is just a label. (1) Changing a delivery date now pins the write to the exact record on your screen — if NuVizz answers the read with a different record, the app REFUSES, tells you two orders share the number and which record it was offered, and writes NOTHING (before this it would have happily moved the twin\'s date, or recorded a board-date override read off the twin). (2) Notes to NuVizz get the same pin. (3) After a date change lands, the card only repaints from a lookup that returned the SAME record it verified the write against — never the twin. (4) The scan no longer merges a by-number detail pull over a board row when the ids disagree — that merge is exactly how the corrected address kept getting overwritten with the Davis one — and the same check keeps a twin\'s record from voting a live routed stop off (or onto) a truck in the demotion verify. (5) The board no longer lets a finished twin silently replace live work under the shared number: the LIVE record keeps the card, and the card now carries a red warning — "2 orders share this number" — telling you plainly to cancel or renumber the extra entry in the portal, because while the duplicate exists, portal searches and every by-number path (NuVizz\'s own included) will keep finding the wrong one. THE REAL REMEDY, same as STEVEN: clean up the duplicate in NuVizz and every symptom goes with it — the badge clears itself on the next scan once only one record carries the number.'],
   ['0.54.35', 'YOU CAN GET RID OF A ROUTE COMPLETELY AGAIN — AND NOW IN ONE CLICK. Chad, tonight: "I still have no way to get rid of a route compelely and put all stops back to unplanned." He was right, and here is the uncomfortable reason: the app COULD do this from v0.54.17 (Jul 29, built after this exact complaint the first time) — but v0.54.19, the call-ceiling release the next morning, was cut from an older copy of this screen and its merge quietly put the old code back. The ✕ vanished off the last stop, so a card could be struck down to one order and NO further — while everything behind that button (the route cancel in NuVizz from v0.32.20, the board flip back to Un-Planned from v0.54.18, the red confirm popup, the July 30 refusal/executed-stop hardening) sat fully working and unreachable. THREE THINGS IN THIS RELEASE. (1) THE LAST ✕ IS BACK — amber, labelled for what it really is: removing the last order EMPTIES the load, and an emptied load is a CANCELLED route in NuVizz; that is NuVizz\'s own rule for removing every delivery, not our choice. A test now pins the button itself, so a stale-base merge can never silently take it away again. (2) A CANCEL ROUTE BUTTON on every live Compare card — one click strikes every order off at once instead of eight ✕ clicks. Same staging as the ✕: every struck order is listed with Undo, nothing is sent until Save, and Save still puts the red "This DELETES a route" popup in front of the write. Every guard from the July hardening still stands — a NuVizz refusal fails loudly instead of reading as success, a load with a stop the driver already acted on refuses to empty, and only a positively-confirmed cancel stamps the board. (3) AFTER A CONFIRMED CANCEL THE CARD CLOSES ITSELF — the route no longer exists, and an empty card left open was an invitation to drag stops onto a dead load. The orders land back in Un-Planned on the board immediately, ready for another truck. Not in this release: the ＋ New route card keeps its own rule — it lives only on your screen until Save, so closing the card IS its cancel and it gets no button.'],
   ['0.54.34', 'NEW ROUTE, ROUND TWO — BUILD THE ROUTE FIRST, SEND IT WITH ALL ITS STOPS AT ONCE. Chad tried ＋ New route again after the 400-fix and hit a NEW rejection: reason 903, "Either PlanStop or Stop node should be present". Translation: NuVizz will not create a route with no stops on it, full stop — the "create it empty, drag orders on after" design cannot work, and no retry will change that. THE NEW SHAPE IS CHAD\'S OWN: "when a new route is created on our end then it puts it in the compare panel where we can add stops then we send new route and all stops at same time." Exactly that. ＋ New route now just OPENS A CARD — nothing is sent to NuVizz. The card sits in Compare marked "not sent", you drag orders onto it (and stage a driver if you like) exactly like any other card, and SAVE creates the route in NuVizz with the entire stop list — and the staged driver, and dispatch — riding one create. Close the card before saving and it simply never existed. WHY THIS IS STILL SAFE, because that was the whole point of the original design: each order rides the create as a REFERENCE — its number and its own schedule, echoed straight off NuVizz\'s record — never its address or freight, so the July 2 class of accident (a create overwriting real order data) remains structurally impossible. And every order on the card gets the same respect as any Save: the app reads each one first and REFUSES the whole create if any can\'t be read, is already planned on another route (you\'re told which one), or has already been acted on by a driver. Moving stops OFF a live load onto the new card works in one Save too — the live load\'s save runs first, then the create. Afterwards the app reads the route back and confirms every order actually landed — if NuVizz\'s async worker is slow you\'re told how many attached rather than being left to discover it — and the board is stamped immediately, so the stops flip to planned (and drop their old drivers\' names) without waiting for the next scan.'],
@@ -2191,7 +2192,9 @@ function badgeInnerSvg(kind) {
 //     correctly. State B (1 restriction): single 36-diameter circle. State
 //     C (2+): 32-diameter circles side-by-side, capped at 3 elements (4+
 //     becomes "first 2 + overflow '+N' badge"). Geographic anchor is the
-//     bottom-center of the marker group in both states.
+//     bottom-center of the marker group in both states. Those diameters are
+//     DESIGN-space; the returned width/height/anchor are scaled down by
+//     RESTRICTION_MARKER_SCALE before anything draws them.
 
 function pinSvgClassic(color) {
   const svg = `
@@ -2359,6 +2362,27 @@ function renderMarkerGlyph(restrictionKey, glyphX, glyphY, tint) {
   return `<g transform="translate(${glyphX},${glyphY})">${glyph}${slash}</g>`;
 }
 
+// How big a restriction marker DRAWS, as a fraction of the SVG geometry below
+// (Chad: "make this icon half as big"). At 1.0 a single no-T/T truck came out
+// 40×44 — taller than a numbered route pin (30) and more than twice a stop dot,
+// so a restriction, which only ANNOTATES a stop, was the loudest thing on the
+// satellite base. The SVG keeps its design coordinates: the glyphs stay on the
+// 22×22 grid the markerGlyph templates are drawn against, and SVG being vector
+// means shrinking at draw time costs no sharpness.
+const RESTRICTION_MARKER_SCALE = 0.5;
+// Shrink a {url,width,height,anchor} spec to the drawn size. The anchor scales
+// with it — it's a point INSIDE the image, so leaving it unscaled would slide
+// the marker off the coordinate it marks.
+function scaleMarkerSpec(spec) {
+  const f = RESTRICTION_MARKER_SCALE;
+  return {
+    url: spec.url,
+    width: Math.round(spec.width * f),
+    height: Math.round(spec.height * f),
+    anchor: [spec.anchor[0] * f, spec.anchor[1] * f],
+  };
+}
+
 function iconMarkerSvg(restrictions, tint) {
   if (!restrictions || restrictions.length === 0) return null;
 
@@ -2373,12 +2397,12 @@ function iconMarkerSvg(restrictions, tint) {
         <circle cx="20" cy="20" r="18" fill="white" fill-opacity="0.95" stroke="${accent}" stroke-width="2"/>
         ${renderMarkerGlyph(r, 9, 9, tint)}
       </svg>`;
-    return {
+    return scaleMarkerSpec({
       url: 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent(svg),
       width: 40,
       height: 44,
       anchor: [20, 38],
-    };
+    });
   }
 
   // State C: side-by-side 32-diameter circles. 2 or 3 raw restrictions
@@ -2418,12 +2442,12 @@ function iconMarkerSvg(restrictions, tint) {
       <ellipse cx="${totalW / 2}" cy="36" rx="${shadowRx}" ry="1.8" fill="black" opacity="0.15"/>
       ${elementsMarkup}
     </svg>`;
-  return {
+  return scaleMarkerSpec({
     url: 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent(svg),
     width: totalW,
     height: totalH,
     anchor: [totalW / 2, 34],
-  };
+  });
 }
 
 // Build the rich dispatch-map marker icon for a single stop — the shared source of
