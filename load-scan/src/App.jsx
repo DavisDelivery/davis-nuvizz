@@ -16,7 +16,7 @@ import { useSortable, SortableTh } from './lib/useSortable.jsx';
 import { partitionBoardRows, filterCredentials, availableAliases, loginNamesFor } from './lib/roster.js';
 
 // Bumped by hand on every change. load-scan versions independently of dispatch-map.
-const APP_VERSION = '0.19.0';
+const APP_VERSION = '0.20.0';
 
 const BUILD_COMMIT = typeof __BUILD_COMMIT__ !== 'undefined' ? __BUILD_COMMIT__ : 'dev';
 const BUILD_TIME = typeof __BUILD_TIME__ !== 'undefined' ? __BUILD_TIME__ : '';
@@ -283,10 +283,19 @@ function LoadPicker({ manifest, onPick, onManual, onRefresh, busy, loader }) {
  * already on the phone. Order contents and seal are the only fields that would
  * need a live vendor call, so they are not shown rather than faked.
  */
+/** "2026-08-05T14:30:00" -> "2:30 PM". Anything unparseable is shown as-is. */
+function clockTime(v) {
+  const d = new Date(v);
+  if (Number.isNaN(d.getTime())) return String(v);
+  return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+}
+
 function OrderCard({ stop, progress, groupCount, onClose }) {
   if (!stop) return null;
-  const addr = [stop.addr1, [stop.city, stop.state].filter(Boolean).join(', ')].filter(Boolean).join('\n');
-  const mapQ = encodeURIComponent([stop.addr1, stop.city, stop.state].filter(Boolean).join(', '));
+  const cityLine = [[stop.city, stop.state].filter(Boolean).join(', '), stop.zip].filter(Boolean).join(' ');
+  const addr = [stop.addr1, cityLine].filter(Boolean).join('\n');
+  const mapQ = encodeURIComponent([stop.addr1, stop.city, stop.state, stop.zip].filter(Boolean).join(', '));
+  const window_ = [stop.plannedFrom, stop.plannedTo].filter(Boolean).map(clockTime).join(' - ');
 
   const Field = ({ label, children, wide }) => (
     <div className={wide ? 'col-span-2' : ''}>
@@ -323,9 +332,14 @@ function OrderCard({ stop, progress, groupCount, onClose }) {
         </Field>
         <Field label="Delivery stop">{deliverySeq(stop) ?? '—'}</Field>
         <Field label="Address" wide>{addr}</Field>
+        {window_ ? <Field label="Delivery window" wide>{window_}</Field> : null}
+        {stop.contactName || stop.phone ? (
+          <Field label="Contact" wide>{[stop.contactName, stop.phone].filter(Boolean).join(' \u00b7 ')}</Field>
+        ) : null}
         <Field label="Skids / loose">{stop.skids} / {stop.loose}</Field>
         <Field label="Weight">{stop.weight ? `${stop.weight} lb` : '—'}</Field>
         <Field label="Route / Load">{[stop.routeName, stop.loadNbr].filter(Boolean).join(' · ')}</Field>
+        {stop.sealNbr ? <Field label="Seal #">{stop.sealNbr}</Field> : null}
         <Field label="Pieces expected">
           {stop.expectedPieces}
           {stop.countIsEstimated ? ' (from skids + loose)' : ''}

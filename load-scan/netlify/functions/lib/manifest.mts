@@ -43,6 +43,16 @@ export interface ManifestStop {
   city: string;
   state: string;
   addr1: string;
+  /** Cached alongside addr1 — a loader reading a label wants the whole address. */
+  zip: string;
+  /** Who to ask for at the dock, when the cache has it. */
+  contactName: string;
+  phone: string;
+  /** The seal on the trailer for this stop, when NuVizz recorded one. */
+  sealNbr: string;
+  /** The delivery window, so an early or late load is obvious on the card. */
+  plannedFrom: string;
+  plannedTo: string;
   pros: string[];
   primaryPro: string | null;
   proCount: number;
@@ -212,6 +222,14 @@ export function toManifestStop(raw: any, warn?: (msg: string) => void): Manifest
     city: str(raw?.city),
     state: str(raw?.state),
     addr1: str(raw?.addr1 ?? raw?.address1 ?? raw?.address),
+    // All already in the cached stop doc — they cost NOTHING extra to carry,
+    // they were simply never asked for. See the mask in load-manifest.mts.
+    zip: str(raw?.zip ?? raw?.postalCode),
+    contactName: str(raw?.contactName),
+    phone: str(raw?.phone),
+    sealNbr: str(raw?.sealNbr),
+    plannedFrom: str(raw?.plannedFrom),
+    plannedTo: str(raw?.plannedTo),
     pros,
     primaryPro: normalizePro(raw?.primaryPro) || pros[0] || null,
     proCount: num(raw?.proCount) || pros.length,
