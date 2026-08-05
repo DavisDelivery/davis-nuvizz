@@ -69,7 +69,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.54.39';
+const APP_VERSION = '0.54.40';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -114,6 +114,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.54.40', 'THE STOP NUMBER SHOWS IN FULL. Chad, on the bottom Stops grid reading "ESTES-2958…" and "ESTES-0158…": "i want the whole number to show." The Stop # column had a fixed 96-pixel ceiling, sized back when a stop number was a bare nine digits like 007157031 — a carrier-prefixed one (ESTES-0828068215) runs half again as long and got cut mid-number. That is worse than it looks: a stop number is an IDENTIFIER, and half of one is not a shorter version of it, it is unusable — you cannot search it, quote it to a carrier, or tell two Estes orders apart by it, which is exactly the kind of confusion that cost us the duplicate-number hunt in v0.54.36. The column now sizes to the longest number actually on screen, in both the Stops and Loads grids, and the grid scrolls sideways as it always has. EVERY OTHER COLUMN IS UNCHANGED and still trims with an ellipsis — a long address should give way rather than shove the whole grid sideways; the exception is deliberately for identifiers. A test pins it, so the clamp cannot quietly come back in a later merge.'],
   ['0.54.39', 'THE ROUTE BOX ON AN ORDER NOW CARRIES THE DRIVER\'S NUMBER, AND THE NUMBER IS THE TEXT BUTTON. Chad, on a stop\'s ROUTE section: "this should have the route name drivers name and their phone number that is a hyperlink that brings up simple text with the pro number and name of customer pre populated." It now reads route name, driver, and the driver\'s mobile — and tapping the number opens the SimpleTexting composer already filled in with "PRO 007157031 — GOOGLE: ", the same reference line every order-text opens with since v0.54.38. So the answer to "who has this order and how do I reach them" is one line and one tap, instead of scrolling for the Text driver button. WHERE THE NUMBER COMES FROM: the MarginIQ employee card, resolved on the server — not matched in the browser. That matters because NuVizz names a driver however the load was keyed and the employee card carries the ALIASES for exactly that ("Mike Frye", "Frye, Michael"), so a browser-side name match would quietly fail for the drivers aliases exist to cover. Each name is looked up once and remembered for the page, misses included, so opening twenty stops on one driver is one lookup. NO NUMBER ON FILE, NO LINE — a driver whose card has no mobile simply shows no phone row rather than a dead link, and that is the honest answer: add the number in MarginIQ and it appears. Sending is unchanged and still resolves the number server-side at send time, so even a stale label can never misdirect a message. Zero NuVizz calls — this reads the employee roster, nothing else.'],
   ['0.54.38', 'TEXTING A CUSTOMER NO LONGER STARTS FROM A BLANK BOX. Chad, looking at the Text window on a GOOGLE stop: "i want it to prepopulate the message with the customer name and their pro number." Done — the Text button on an order now opens on that order\'s reference line, "PRO 007157031 — GOOGLE: ", with the caret sitting after it so you just type what you want to say. That is the same line the "Text driver about this order" button has always opened with, so a message about a delivery now reads the same whether it is going to the driver or to the customer. It is ordinary editable text: trim it, or delete it entirely, and nothing else changes. A missing field never leaves a mess — no PRO on the order gives you "GOOGLE: ", no customer name gives you "PRO 007157031: ", and an order with a stop number but no PRO uses the stop number. Both places the order text lives are wired: the Map stop panel AND the same panel ported into Routing, with a test pinning both so a stale-base merge can\'t quietly blank one of them out (that is exactly how the last-stop ✕ went missing for days in v0.54.19). Bulk "Text selected" is deliberately left blank — those messages go to many different orders at once, so there is no single PRO to seed. AND TO ANSWER THE OTHER HALF OF THE QUESTION — "shouldn\'t this be using simple text": it already is. This window has always sent through SimpleTexting on the Davis number, not through your phone and not through NuVizz, which is why replies come back into the Messages panel. Nothing about that changed here; the only change is what is already typed in the box when it opens.'],
   ['0.54.37', 'THE RESTRICTION ICONS ARE HALF THE SIZE. Chad, pointing at a red no-tractor-trailer truck parked over a stretch of highway: "make this icon half as big." Done — every icon that REPLACES a stop\'s pin when that stop carries restrictions (the red no-T/T truck, the amber Uline straight-truck advisory, liftgate, appointment, the receiving-hours day badges, and the "+N" overflow) now draws at 20×22 instead of 40×44. It had been the biggest thing on the map: taller than a numbered route pin (30) and more than twice an unplanned stop dot (16), which is backwards for a mark whose whole job is to ANNOTATE a stop rather than be one. A stop carrying two or three restrictions shrinks by the same half, so a row of icons stays in proportion with a single one. Nothing else moves: same artwork, same colors, same slash, and the same anchor point — the icon still sits on its exact address, not shifted half a marker off it — and because it is vector art it is drawn smaller, not squashed, so it stays crisp on a phone. The Legend previews shrink to match, on purpose: they render the very same image the map draws, so what you see in the legend is what you will find on the board. Cosmetic only — no data, filtering, scanning, or routing behavior changed.'],
@@ -10397,7 +10398,12 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
   const rowDayOf = (s) => s.boardDate || s.scheduledDate || s.requestedDate || '';
   const todayET = todayInET();
   const cols = [
-    { k: 'stop', label: 'Stop #', w: 96, get: (s) => <span className="font-mono text-blue-700">{s.stopNbr}</span>, sortVal: (s) => (Number.isFinite(Number(s.stopNbr)) ? Number(s.stopNbr) : s.stopNbr) },
+    // `fit` (Chad: "i want the whole number to show") — never clip this cell. A stop number is
+    // an IDENTIFIER: half of one is not a shorter version of it, it is unusable, and these run
+    // from a bare "007157031" to a carrier-prefixed "ESTES-0828068215" that the old 96px clamp
+    // cut to "ESTES-2958…". The 150 is only the layout's opening bid; the column takes whatever
+    // the longest number on screen needs, and the grid already scrolls sideways.
+    { k: 'stop', label: 'Stop #', w: 150, fit: true, get: (s) => <span className="font-mono text-blue-700">{s.stopNbr}</span>, sortVal: (s) => (Number.isFinite(Number(s.stopNbr)) ? Number(s.stopNbr) : s.stopNbr) },
     // DAY — only in a date-window pull. A ±7-day list mixes past carry-over, today, and
     // FUTURE-day orders (tomorrow's appointments legitimately sit unplanned tonight); without
     // this column those read as one big backlog and the counts look "drifted" vs the board.
@@ -11048,7 +11054,10 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
                   title={s.carryover ? `Carry-over from ${s.scheduledDate}` : undefined}
                 >
                   {cols.map((c) => (
-                    <td key={c.k} className="px-2 py-1 border-b border-slate-100 whitespace-nowrap overflow-hidden text-ellipsis" style={{ maxWidth: c.w, textAlign: c.align || 'left' }}>{c.get(s)}</td>
+                    // A `fit` column drops the max-width clamp (and with it the ellipsis), so the
+                    // cell sizes to its content instead of being cut. Everything else keeps the
+                    // clamp — a long address SHOULD ellipsize rather than shove the grid sideways.
+                    <td key={c.k} className={'px-2 py-1 border-b border-slate-100 whitespace-nowrap' + (c.fit ? '' : ' overflow-hidden text-ellipsis')} style={{ maxWidth: c.fit ? undefined : c.w, textAlign: c.align || 'left' }}>{c.get(s)}</td>
                   ))}
                 </tr>
               ))}
@@ -11077,7 +11086,8 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
                   className="cursor-pointer hover:bg-blue-50"
                 >
                   {loadCols.map((c) => (
-                    <td key={c.k} className="px-2 py-1 border-b border-slate-100 whitespace-nowrap overflow-hidden text-ellipsis" style={{ maxWidth: c.w, textAlign: c.align || 'left' }}>{c.get(g)}</td>
+                    // Same `fit` rule as the Stops table above, so the two grids can't drift.
+                    <td key={c.k} className={'px-2 py-1 border-b border-slate-100 whitespace-nowrap' + (c.fit ? '' : ' overflow-hidden text-ellipsis')} style={{ maxWidth: c.fit ? undefined : c.w, textAlign: c.align || 'left' }}>{c.get(g)}</td>
                   ))}
                 </tr>
               ))}
