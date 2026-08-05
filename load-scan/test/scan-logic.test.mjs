@@ -49,6 +49,53 @@ test('a scanned-without-OG id is accepted and stays distinct from typed', async 
   assert.equal(session.mergeScans([], [scanned, typed]).scans.length, 2, 'different ids, both counted');
 });
 
+// ── The 3/2 over-count seen on the dock ──────────────────────────────────────
+
+test('a burst of frames for one label books ONE piece, not one per frame', async () => {
+  // SURVIVAL SUPPLIES, 2 skids, read 64 times, recorded 3/2. The scanner was
+  // fine — `record` closed over a stale `scans` array, so every frame in the
+  // burst saw "no prior scan" and each booked a piece. This models the gate that
+  // now decides synchronously.
+  const { createScanGate } = await import('../src/lib/scan-logic.js');
+  const gate = createScanGate({ cooldownMs: 3000 });
+
+  let booked = 0;
+  // 64 frames of the same label over one second, exactly as Quagga delivers them.
+  for (let i = 0; i < 64; i++) if (gate.allow('7157016', 1000 + i * 16)) booked += 1;
+
+  assert.equal(booked, 1, 'one pallet in frame is one piece, however many times it decodes');
+});
+
+test('the same PRO is accepted again once the cooldown has passed', async () => {
+  const { createScanGate } = await import('../src/lib/scan-logic.js');
+  const gate = createScanGate({ cooldownMs: 3000 });
+  assert.equal(gate.allow('7157016', 1000), true);
+  assert.equal(gate.allow('7157016', 2000), false, 'still the same piece in frame');
+  assert.equal(gate.allow('7157016', 4500), true, 'a genuine second piece can be booked');
+});
+
+test('a different label is never blocked by the cooldown on another', async () => {
+  const { createScanGate } = await import('../src/lib/scan-logic.js');
+  const gate = createScanGate({ cooldownMs: 3000 });
+  assert.equal(gate.allow('7157016', 1000), true);
+  assert.equal(gate.allow('7157403', 1100), true, 'the next pallet must not wait');
+});
+
+test('completed stops sort below unfinished ones, order otherwise preserved', async () => {
+  const { sortForLoading } = await import('../src/lib/scan-logic.js');
+  const rows = [
+    { stop: { loadSeq: 1 }, progress: { complete: true } },
+    { stop: { loadSeq: 2 }, progress: { complete: false } },
+    { stop: { loadSeq: 3 }, progress: { complete: true } },
+    { stop: { loadSeq: 4 }, progress: { complete: false } },
+  ];
+  assert.deepEqual(
+    sortForLoading(rows).map((r) => r.stop.loadSeq),
+    [2, 4, 1, 3],
+    'next to load on top; finished work drops away without being reordered',
+  );
+});
+
 // ── The IndexedDB unwrap that silently threw away every scan ─────────────────
 
 test('a get that finds NOTHING must resolve undefined, not the request object', async () => {

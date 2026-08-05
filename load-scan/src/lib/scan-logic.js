@@ -323,3 +323,63 @@ export function ogGapHint(ogs) {
   }
   return gaps.length ? gaps.slice(0, 10) : null;
 }
+
+
+/**
+ * The gate that decides whether a decode becomes a piece.
+ *
+ * ── WHY THIS EXISTS ─────────────────────────────────────────────────────────
+ *
+ * On the dock a 2-skid stop recorded 3/2 — more pieces than the order contains,
+ * which is not physically possible. The scanner was not at fault: it read the
+ * label 64 times, correctly, in about a second.
+ *
+ * The fault was timing. `record` closed over React's `scans` array, and Quagga
+ * delivers ~20 frames a second, so several calls ran before a re-render. Every
+ * one of them saw the same stale array, concluded "nothing scanned for this PRO
+ * yet", and booked a piece.
+ *
+ * State cannot fix that, because the whole problem is that state has not caught
+ * up. This gate holds its own answer and updates it synchronously, so the second
+ * frame of a burst sees what the first one did.
+ *
+ * `cooldownMs` covers the walk-away: a pallet stays in frame for a beat after
+ * the decode lands, and the loader is still moving. Those frames are the same
+ * piece.
+ */
+export function createScanGate({ cooldownMs = 3000 } = {}) {
+  let lastPro = null;
+  let lastAt = 0;
+
+  return {
+    /** True if this decode should become a piece. Records the decision. */
+    allow(pro, now = Date.now()) {
+      if (lastPro === pro && now - lastAt < cooldownMs) return false;
+      lastPro = pro;
+      lastAt = now;
+      return true;
+    },
+    /** Let the next read of `pro` through immediately (after a deliberate tap). */
+    clear() {
+      lastPro = null;
+      lastAt = 0;
+    },
+  };
+}
+
+/**
+ * Loading order, with finished stops pushed to the bottom.
+ *
+ * The list is the loader's worklist. A completed stop still sitting at the top
+ * pushes the NEXT one to load off the screen, which is the opposite of what the
+ * list is for. Done work drops away; the order among unfinished stops, and among
+ * finished ones, is otherwise untouched.
+ */
+export function sortForLoading(rows) {
+  return [...rows].sort((a, b) => {
+    const ad = a.progress.complete ? 1 : 0;
+    const bd = b.progress.complete ? 1 : 0;
+    if (ad !== bd) return ad - bd;
+    return (a.stop.loadSeq ?? 1e9) - (b.stop.loadSeq ?? 1e9);
+  });
+}
