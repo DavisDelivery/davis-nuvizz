@@ -76,6 +76,57 @@ test('a malformed row does not crash the roster', async () => {
   assert.equal(p.unidentified.length, 3, 'missing claimedBy reads as unclaimed, not as identified');
 });
 
+// ── Offering the board names that are still spare ────────────────────────────
+
+const BOARD = [
+  { alias: 'BRENT BOYD', stops: 36, claimedBy: [], inactiveClaimedBy: [] },
+  { alias: 'BRENT', stops: 4, claimedBy: [], inactiveClaimedBy: [] },
+  { alias: 'AARON MITCHELL', stops: 12, claimedBy: ['8913'], inactiveClaimedBy: [] },
+  { alias: 'ALFRED MORGAN', stops: 21, claimedBy: [], inactiveClaimedBy: ['9001'] },
+];
+
+test('only names no ACTIVE driver is using are offered', async () => {
+  const { availableAliases } = await import('../src/lib/roster.js');
+  const out = availableAliases(BOARD).map((a) => a.alias);
+  assert.ok(!out.includes('AARON MITCHELL'), 'a name in use by a live driver is not on offer');
+  assert.deepEqual(out, ['BRENT BOYD', 'ALFRED MORGAN', 'BRENT'], 'busiest spelling first');
+});
+
+test('a name stuck on a deactivated account is offered, and flagged', async () => {
+  // It resolves to nothing, so it is genuinely spare — and it is exactly the
+  // name a dispatcher needs to move onto a live driver.
+  const { availableAliases } = await import('../src/lib/roster.js');
+  const alfred = availableAliases(BOARD).find((a) => a.alias === 'ALFRED MORGAN');
+  assert.ok(alfred, 'offered');
+  assert.deepEqual(alfred.heldByInactive, ['9001'], 'flagged so the dispatcher knows why it is loose');
+});
+
+test('names this driver already holds are not offered again', async () => {
+  const { availableAliases } = await import('../src/lib/roster.js');
+  const out = availableAliases(BOARD, ['BRENT BOYD']).map((a) => a.alias);
+  assert.deepEqual(out, ['ALFRED MORGAN', 'BRENT'], 'no duplicate of what is already on the chip list');
+});
+
+test('the already-held check ignores case and padding', async () => {
+  const { availableAliases } = await import('../src/lib/roster.js');
+  const out = availableAliases(BOARD, ['  brent boyd ']).map((a) => a.alias);
+  assert.ok(!out.includes('BRENT BOYD'));
+});
+
+test('a driver with several spellings can collect them all', async () => {
+  // The point of the feature: one person, several board spellings, and a
+  // credential only matches the ones it holds.
+  const { availableAliases } = await import('../src/lib/roster.js');
+  const both = availableAliases(BOARD).filter((a) => a.alias.startsWith('BRENT')).map((a) => a.alias);
+  assert.deepEqual(both, ['BRENT BOYD', 'BRENT'], 'both spellings are on offer');
+});
+
+test('an empty or malformed board offers nothing rather than crashing', async () => {
+  const { availableAliases } = await import('../src/lib/roster.js');
+  assert.deepEqual(availableAliases(null), []);
+  assert.deepEqual(availableAliases([null, { alias: '' }]), []);
+});
+
 // ── Finding a credential among fifty ─────────────────────────────────────────
 
 test('credential search matches number, display name, and aliases', async () => {

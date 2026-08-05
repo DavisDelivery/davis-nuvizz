@@ -82,6 +82,18 @@ driver quietly getting no loads days later. Existing drivers now add and remove
 one alias at a time (`add-alias` / `remove-alias`); nothing else is touched. New
 drivers still stage locally, since there is no credential to write to until Save.
 
+### The editor offers the spare board names
+
+A person usually appears under **several** spellings — "BRENT BOYD" and "BRENT" —
+and a credential only matches the ones it holds. Nobody can recall that set from
+memory, so the editor lists the names actually on the board, tap to add.
+
+Only names **no active credential is using** are offered, and they are sorted by
+stop count so the spelling carrying the most freight comes first. A name held
+only by a *deactivated* account is still offered but flagged — it resolves to
+nothing, so it is genuinely spare, and it is exactly the name that needs moving
+onto a live driver.
+
 ### Attach without retyping
 
 **Attach to driver** on any problem name opens a searchable credential picker and
