@@ -16,7 +16,7 @@ import { useSortable, SortableTh } from './lib/useSortable.jsx';
 import { partitionBoardRows, filterCredentials, availableAliases, loginNamesFor } from './lib/roster.js';
 
 // Bumped by hand on every change. load-scan versions independently of dispatch-map.
-const APP_VERSION = '0.15.0';
+const APP_VERSION = '0.16.0';
 
 const BUILD_COMMIT = typeof __BUILD_COMMIT__ !== 'undefined' ? __BUILD_COMMIT__ : 'dev';
 const BUILD_TIME = typeof __BUILD_TIME__ !== 'undefined' ? __BUILD_TIME__ : '';
@@ -950,7 +950,10 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
             />
           </div>
         ) : (
-          <div className="relative rounded-xl overflow-hidden bg-slate-900 aspect-[3/4]">
+          <div className="relative rounded-xl overflow-hidden bg-slate-900 aspect-[3/2]">
+            {/* Half the old height (was aspect-[3/4], 1.33x width). A shorter
+                viewport keeps more of the stop list on screen, which is what a
+                loader reads between pallets. */}
             <video ref={videoRef} className="absolute inset-0 w-full h-full object-cover" playsInline muted />
             <div ref={containerRef} className="absolute inset-0" />
             {!camOn ? (
