@@ -33,6 +33,38 @@ store it. The "2 of 3" index is printed as text only — it is in neither barcod
 so it cannot be used for completeness. Completeness is distinct OG count against
 `expectedPieces`.
 
+## The day — daily monitoring
+
+`scan-activity?date=` gives the dispatcher the operational picture each morning:
+which trucks nobody has touched, who is halfway through, what closed short or
+over, whether the loaders and drivers are using the app at all, and **which
+trucks each person actually worked**. Stop index + scan-session docs only —
+**zero NuVizz calls**.
+
+**Loads come from the board, not from the sessions.** A truck nobody scanned
+exists only as an *absence*: it has no session, so a view built from activity
+alone cannot render it — and that is precisely the truck that rolls out
+unscanned. Same for people: the list comes from the credential roster, so
+someone who never opened the app is visibly missing rather than simply not there.
+
+`not_started` · `in_progress` · `closed_clean` · `closed_short` · `closed_over`,
+plus a flag for a load resequenced mid-load.
+
+### workedBy
+
+The session doc carried a single `driverNumber`, **overwritten on every push**.
+When a loader loaded a truck and the driver scanned it later, the loader vanished
+and "which trucks did my loaders do" had no answer. `mergeWorker` keeps everyone
+who touched a load, with their role, first and last touch, and a running piece
+count — accumulating on repeat pushes rather than duplicating, and never letting
+an out-of-order push rewrite the first-touch time.
+
+## Version in the header
+
+`APP_VERSION` renders top-right on **every** screen, so "which build is that
+phone on" is answered by looking at it rather than asking a driver to describe
+what they see. Bumped on every merged PR.
+
 ## The dispatcher screen
 
 Rebuilt around the four things a dispatcher actually does: see who on the board

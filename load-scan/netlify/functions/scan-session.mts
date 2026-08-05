@@ -21,6 +21,7 @@
 import { getDoc, setDoc, isFirestoreEnabled } from './lib/firestore.mts';
 import { authenticate } from './lib/auth.mts';
 import { normalizePro } from './lib/manifest.mts';
+import { mergeWorker } from './lib/activity.mts';
 import { ok, bad, unauthorized, readJson, etDayString, DATE_RE } from './lib/http.mts';
 
 const SESSIONS = 'nuvizz_load_scans';
@@ -215,6 +216,15 @@ export default async (req: Request): Promise<Response> => {
     date,
     loadNbr,
     driverNumber: String(claims.sub),
+    // Everyone who touched this load, with their role — a loader who loads the
+    // truck and a driver who scans it later are both part of its history, and a
+    // single overwritten driverNumber erased whichever came first.
+    workedBy: mergeWorker(prior?.workedBy, {
+      driverNumber: String(claims.sub),
+      role: String((claims as any).role || 'driver'),
+      pieces: added + handAdded,
+      at: new Date().toISOString(),
+    }),
     startedAt: prior?.startedAt || new Date().toISOString(),
     closedAt: closing ? new Date().toISOString() : prior?.closedAt || null,
     expectedPieces,
