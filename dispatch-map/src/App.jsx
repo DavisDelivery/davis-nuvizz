@@ -69,7 +69,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.54.40';
+const APP_VERSION = '0.54.41';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -114,6 +114,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.54.41', 'THE ESTES TWIN WAS STEALING THE CARD BEFORE THE DATE CHANGE EVEN RAN — THE LAST DOOR IS NOW SHUT. Chad, the morning after v0.54.36: "Changed the date on Estes again and it changed all the addresses so your fix did not work." He was right that it happened and here is the honest accounting of why: the v0.54.36 guards DID hold, but they guarded the date write and its repaint — and the card has three OTHER buttons that pull the order by number and fold the answer straight in: Refresh from NuVizz, opening the Activity timeline, and the delivery-photo check. None of them checked WHICH record NuVizz answered with. So one tap on Refresh (or one timeline open) on an order with a duplicate number quietly replaced the whole card with the twin — every address line at once, which is exactly "it changed all the addresses" — and, worse, the card ADOPTED THE TWIN\'S INTERNAL ID. From that moment the date-change guard was comparing the twin to itself and passing honestly. The theft happened before the write began; the guard never saw it. THE FIX GOES WHERE ALL OF THOSE PATHS MEET: every fold-into-the-card now flows through one checkpoint that compares the incoming record\'s id to the id the card is showing. A mismatch is REFUSED — the card keeps its identity, the red "2 orders share this number" warning lights up, and the Refresh button says plainly that NuVizz answered with the other order instead of pretending nothing happened. The Refresh button, the timeline, the photo check, and both of the already-guarded repaints all pass through it — and so does anything added later, which is the point: v0.54.36 guarded call sites one by one and missed three; this guards the door they all walk through. STILL TRUE AND STILL THE REAL REMEDY: the duplicate Estes entry must be cancelled or renumbered in the NuVizz portal. While it exists, NuVizz\'s own by-number answers keep flipping a coin — this app now refuses to act on the wrong side of that coin anywhere, but only the portal cleanup makes the coin go away. Zero NuVizz calls in this change; six new tests pin the checkpoint and the wiring.'],
   ['0.54.40', 'THE STOP NUMBER SHOWS IN FULL. Chad, on the bottom Stops grid reading "ESTES-2958…" and "ESTES-0158…": "i want the whole number to show." The Stop # column had a fixed 96-pixel ceiling, sized back when a stop number was a bare nine digits like 007157031 — a carrier-prefixed one (ESTES-0828068215) runs half again as long and got cut mid-number. That is worse than it looks: a stop number is an IDENTIFIER, and half of one is not a shorter version of it, it is unusable — you cannot search it, quote it to a carrier, or tell two Estes orders apart by it, which is exactly the kind of confusion that cost us the duplicate-number hunt in v0.54.36. The column now sizes to the longest number actually on screen, in both the Stops and Loads grids, and the grid scrolls sideways as it always has. EVERY OTHER COLUMN IS UNCHANGED and still trims with an ellipsis — a long address should give way rather than shove the whole grid sideways; the exception is deliberately for identifiers. A test pins it, so the clamp cannot quietly come back in a later merge.'],
   ['0.54.39', 'THE ROUTE BOX ON AN ORDER NOW CARRIES THE DRIVER\'S NUMBER, AND THE NUMBER IS THE TEXT BUTTON. Chad, on a stop\'s ROUTE section: "this should have the route name drivers name and their phone number that is a hyperlink that brings up simple text with the pro number and name of customer pre populated." It now reads route name, driver, and the driver\'s mobile — and tapping the number opens the SimpleTexting composer already filled in with "PRO 007157031 — GOOGLE: ", the same reference line every order-text opens with since v0.54.38. So the answer to "who has this order and how do I reach them" is one line and one tap, instead of scrolling for the Text driver button. WHERE THE NUMBER COMES FROM: the MarginIQ employee card, resolved on the server — not matched in the browser. That matters because NuVizz names a driver however the load was keyed and the employee card carries the ALIASES for exactly that ("Mike Frye", "Frye, Michael"), so a browser-side name match would quietly fail for the drivers aliases exist to cover. Each name is looked up once and remembered for the page, misses included, so opening twenty stops on one driver is one lookup. NO NUMBER ON FILE, NO LINE — a driver whose card has no mobile simply shows no phone row rather than a dead link, and that is the honest answer: add the number in MarginIQ and it appears. Sending is unchanged and still resolves the number server-side at send time, so even a stale label can never misdirect a message. Zero NuVizz calls — this reads the employee roster, nothing else.'],
   ['0.54.38', 'TEXTING A CUSTOMER NO LONGER STARTS FROM A BLANK BOX. Chad, looking at the Text window on a GOOGLE stop: "i want it to prepopulate the message with the customer name and their pro number." Done — the Text button on an order now opens on that order\'s reference line, "PRO 007157031 — GOOGLE: ", with the caret sitting after it so you just type what you want to say. That is the same line the "Text driver about this order" button has always opened with, so a message about a delivery now reads the same whether it is going to the driver or to the customer. It is ordinary editable text: trim it, or delete it entirely, and nothing else changes. A missing field never leaves a mess — no PRO on the order gives you "GOOGLE: ", no customer name gives you "PRO 007157031: ", and an order with a stop number but no PRO uses the stop number. Both places the order text lives are wired: the Map stop panel AND the same panel ported into Routing, with a test pinning both so a stale-base merge can\'t quietly blank one of them out (that is exactly how the last-stop ✕ went missing for days in v0.54.19). Bulk "Text selected" is deliberately left blank — those messages go to many different orders at once, so there is no single PRO to seed. AND TO ANSWER THE OTHER HALF OF THE QUESTION — "shouldn\'t this be using simple text": it already is. This window has always sent through SimpleTexting on the Davis number, not through your phone and not through NuVizz, which is why replies come back into the Messages panel. Nothing about that changed here; the only change is what is already typed in the box when it opens.'],
@@ -5437,8 +5438,12 @@ function StopLiveDetail({ stop, onRefreshed }) {
     try {
       const r = await fetch('/.netlify/functions/nuvizz-pro-lookup?pro=' + encodeURIComponent(pro), { cache: 'no-store' });
       const d = await r.json();
-      if (d.ok && d.stop) onRefreshed?.(d.stop);
-      else setRefreshErr(d.reason || 'not found');
+      if (d.ok && d.stop) {
+        // The funnel refuses a pull that answered with the OTHER order sharing this number
+        // (the Estes twin) — say so right here, where the dispatcher just clicked.
+        const refusal = onRefreshed?.(d.stop);
+        if (refusal) setRefreshErr(refusal);
+      } else setRefreshErr(d.reason || 'not found');
     } catch (e) { setRefreshErr(e.message); }
     finally { setRefreshing(false); }
   };
@@ -5467,18 +5472,56 @@ function StopLiveDetail({ stop, onRefreshed }) {
   );
 }
 
+// PURE: should a fresh /stop/info pull be folded into the card, or is it the OTHER order
+// sharing this number? Returns null to merge, or the refusal message. Only refuses when
+// BOTH sides carry an id-shaped stopId that disagrees — a card or lookup without an id gets
+// the old behavior (the guard only ever narrows). This is the client twin of the server's
+// stopInstanceMismatch (nuvizz-write-ops), and it exists because v0.54.36 guarded the date
+// WRITE and its repaint but left the card's own refresh paths (the Refresh button, the
+// timeline fold-back, the POD pull) merging by-number answers unchecked. One such merge
+// didn't just flip the visible address — it ADOPTED the twin's stopId, so every later
+// write-guard compared the twin to itself and passed. Chad, the morning after v0.54.36:
+// "Changed the date on Estes again and it changed all the addresses so your fix did not
+// work." The identity was stolen before the write began.
+function liveStopFoldGuard(cardStopId, incoming) {
+  const want = String(cardStopId ?? '').trim();
+  const got = String(incoming?.stopId ?? '').trim();
+  if (!isHashLikeId(want) || !isHashLikeId(got) || want === got) return null;
+  return `NuVizz answered with the OTHER order carrying this number (id …${got.slice(-6)}), not the one on this card (…${want.slice(-6)}) — the card was NOT updated. Cancel or renumber the duplicate in the portal, then refresh.`;
+}
+
 // Owns the "live" overlay for an open stop. A Refresh / timeline-open / "View delivery
 // photo" pull merges fresh /stop/info fields over the board stop, so the WHOLE card — the
 // header status badge included — reflects the latest NuVizz state (e.g. a stop the board
 // still shows Scheduled flips to Delivered once its real status 90 comes back). Resets when
 // a different stop opens. Returns [liveStop, onRefreshed].
+//
+// onRefreshed is the ONE funnel every fold-back flows through, so the wrong-twin check
+// lives HERE, not at each call site: a by-number pull that answered with a different
+// record than the card is showing is refused (the card keeps its identity), the red
+// "2 orders share this number" badge is lit via dupNbrSuspect, and the refusal message is
+// returned for call sites that can show it. Merges return null.
 function useLiveStop(stop) {
   const stopKey = stop?.stopNbr || stop?.pro;
   const [fresh, setFresh] = useState(null);
   const [prevKey, setPrevKey] = useState(stopKey);
   if (stopKey !== prevKey) { setPrevKey(stopKey); setFresh(null); }
   const live = fresh ? { ...stop, ...fresh } : stop;
-  const onRefreshed = useCallback((d) => { if (d) setFresh((prev) => ({ ...(prev || {}), ...d })); }, []);
+  // The identity the card is showing RIGHT NOW, on a ref — onRefreshed is a stable
+  // callback, and a stale closure here would compare against the id the card opened
+  // with instead of the one it currently holds.
+  const liveIdRef = useRef('');
+  liveIdRef.current = String(live?.stopId ?? '').trim();
+  const onRefreshed = useCallback((d) => {
+    if (!d) return null;
+    const refusal = liveStopFoldGuard(liveIdRef.current, d);
+    if (refusal) {
+      setFresh((prev) => ({ ...(prev || {}), dupNbrSuspect: true, dupNbrOtherId: String(d?.stopId ?? '') }));
+      return refusal;
+    }
+    setFresh((prev) => ({ ...(prev || {}), ...d }));
+    return null;
+  }, []);
   return [live, onRefreshed];
 }
 
