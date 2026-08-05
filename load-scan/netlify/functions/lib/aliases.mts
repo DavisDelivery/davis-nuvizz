@@ -118,6 +118,40 @@ export function resolveLoginIdentifier(
   };
 }
 
+/**
+ * Plan attaching one board name to a driver's alias set — the actual fix for an
+ * unmatched sign-in.
+ *
+ * The refusal is the important part. An alias claimed by two credentials
+ * resolves to NEITHER (see resolveDriverForAlias: two claimants is 'ambiguous'),
+ * so assigning an already-claimed name would fix nobody and break the driver who
+ * had it. Fixing one driver by leaving two unresolved is worse than the problem.
+ */
+export function planAliasAdd(
+  target: DriverCred,
+  rawAlias: any,
+  allCreds: DriverCred[],
+): { aliases: string[]; added: boolean } | { error: string; claimedBy: string[] } {
+  const alias = normalizeDriverAlias(rawAlias);
+  if (!alias) return { error: 'alias is required', claimedBy: [] };
+
+  const claimedBy = allCreds
+    .filter((c) => String(c.driverNumber) !== String(target.driverNumber))
+    .filter((c) => (c.nuvizzAliases || []).some((a) => normalizeDriverAlias(a) === alias))
+    .map((c) => String(c.driverNumber));
+
+  if (claimedBy.length) {
+    return {
+      error: `"${alias}" is already claimed by ${claimedBy.join(', ')} — assigning it here would leave BOTH drivers unresolved`,
+      claimedBy,
+    };
+  }
+
+  const current = (target.nuvizzAliases || []).map(normalizeDriverAlias).filter(Boolean);
+  if (current.includes(alias)) return { aliases: current, added: false };
+  return { aliases: [...current, alias], added: true };
+}
+
 /** Aliases claimed by more than one driver — a seeding mistake worth surfacing. */
 export function findAmbiguousAliases(creds: DriverCred[]): Array<{ alias: string; driverNumbers: string[] }> {
   const map = new Map<string, string[]>();
