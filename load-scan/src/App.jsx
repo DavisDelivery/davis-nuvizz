@@ -16,7 +16,7 @@ import { useSortable, SortableTh } from './lib/useSortable.jsx';
 import { partitionBoardRows, filterCredentials, availableAliases, loginNamesFor } from './lib/roster.js';
 
 // Bumped by hand on every change. load-scan versions independently of dispatch-map.
-const APP_VERSION = '0.18.0';
+const APP_VERSION = '0.19.0';
 
 const BUILD_COMMIT = typeof __BUILD_COMMIT__ !== 'undefined' ? __BUILD_COMMIT__ : 'dev';
 const BUILD_TIME = typeof __BUILD_TIME__ !== 'undefined' ? __BUILD_TIME__ : '';
@@ -271,6 +271,82 @@ function LoadPicker({ manifest, onPick, onManual, onRefresh, busy, loader }) {
 
 // ── Scan screen ──────────────────────────────────────────────────────────────
 
+/**
+ * Everything known about one order, in the shape of the WMS lookup card.
+ *
+ * Two ways in — tapping a stop in the list, or Look Up on a typed PRO — because
+ * they are the same question: "what is this order and where does it go?".
+ *
+ * Built ENTIRELY from the cached manifest, so it is instant, works with no
+ * signal, and costs ZERO NuVizz calls. The WMS card fetches per lookup; here the
+ * consignee, address, stop, pieces, skids/loose, weight and appointment flag are
+ * already on the phone. Order contents and seal are the only fields that would
+ * need a live vendor call, so they are not shown rather than faked.
+ */
+function OrderCard({ stop, progress, groupCount, onClose }) {
+  if (!stop) return null;
+  const addr = [stop.addr1, [stop.city, stop.state].filter(Boolean).join(', ')].filter(Boolean).join('\n');
+  const mapQ = encodeURIComponent([stop.addr1, stop.city, stop.state].filter(Boolean).join(', '));
+
+  const Field = ({ label, children, wide }) => (
+    <div className={wide ? 'col-span-2' : ''}>
+      <div className="text-[11px] uppercase tracking-wide text-slate-500">{label}</div>
+      <div className="text-sm text-slate-900 whitespace-pre-line">{children || '—'}</div>
+    </div>
+  );
+
+  return (
+    <Modal title={stop.businessName || stop.stopNbr} onClose={onClose}>
+      {stop.appointmentRequired ? (
+        <Banner kind="warn">
+          <span className="font-semibold">APPOINTMENT REQUIRED</span> — do not deliver without one.
+        </Banner>
+      ) : null}
+      {stop.scannable === false ? (
+        <Banner kind="info">No barcode this app can read on this freight — confirm it by hand.</Banner>
+      ) : null}
+
+      <div className="rounded-lg bg-slate-50 ring-1 ring-slate-200 px-3 py-2">
+        <div className="text-2xl font-semibold tabular-nums">
+          {progress.scanned}/{progress.expected}
+          <span className="text-sm font-normal text-slate-500"> pieces loaded</span>
+        </div>
+        {progress.short ? <div className="text-sm text-rose-700 font-medium">{progress.short} still to load</div> : null}
+        {progress.complete ? <div className="text-sm text-emerald-700 font-medium">This stop is complete</div> : null}
+      </div>
+
+      <div className="grid grid-cols-2 gap-3">
+        <Field label="PRO">{stop.pros.join(', ')}</Field>
+        <Field label="Stop #">{stop.stopNbr}</Field>
+        <Field label="Load position">
+          {stop.loadSeq != null ? `Load ${stop.loadSeq} of ${groupCount}` : '—'}
+        </Field>
+        <Field label="Delivery stop">{deliverySeq(stop) ?? '—'}</Field>
+        <Field label="Address" wide>{addr}</Field>
+        <Field label="Skids / loose">{stop.skids} / {stop.loose}</Field>
+        <Field label="Weight">{stop.weight ? `${stop.weight} lb` : '—'}</Field>
+        <Field label="Route / Load">{[stop.routeName, stop.loadNbr].filter(Boolean).join(' · ')}</Field>
+        <Field label="Pieces expected">
+          {stop.expectedPieces}
+          {stop.countIsEstimated ? ' (from skids + loose)' : ''}
+        </Field>
+        {stop.instructions ? <Field label="Instructions" wide>{stop.instructions}</Field> : null}
+      </div>
+
+      {mapQ ? (
+        <a
+          href={`https://maps.google.com/?q=${mapQ}`}
+          target="_blank"
+          rel="noreferrer"
+          className="block text-center text-sm rounded-lg ring-1 ring-slate-300 bg-white px-3 py-2"
+        >
+          Open in Maps
+        </a>
+      ) : null}
+    </Modal>
+  );
+}
+
 function OutcomeCard({ result, partial }) {
   if (!result) {
     const need = partial?.pro ? 'OG barcode (upper)' : partial?.og ? 'PRO barcode (lower)' : null;
@@ -382,7 +458,7 @@ function VerdictFlash({ verdict, onClear }) {
   );
 }
 
-function StopRow({ stop, progress, onHandConfirm, groupCount, trailerEnd, sharesPosition }) {
+function StopRow({ stop, progress, onHandConfirm, onOpen, groupCount, trailerEnd, sharesPosition }) {
   // Two-step by construction: the confirm button does not exist until "Cannot
   // scan this" is tapped, and it re-arms after every render of a fresh row. A
   // single stray tap can never book freight onto the truck.
@@ -397,13 +473,16 @@ function StopRow({ stop, progress, onHandConfirm, groupCount, trailerEnd, shares
         : 'bg-white ring-slate-200';
   return (
     <div className={`rounded-xl px-3 py-2 ring-1 ${tone}`}>
-      <div className="flex items-baseline gap-2">
+      {/* The whole row opens the order — address, pieces, instructions. A
+          loader holding a pallet wants the detail, not just the tally. */}
+      <button type="button" onClick={onOpen} className="w-full text-left flex items-baseline gap-2">
         <span className="text-sm font-semibold text-slate-700 w-6 shrink-0 tabular-nums">{stop.loadSeq ?? '—'}</span>
         <span className="font-medium text-slate-900 truncate flex-1">{stop.businessName || stop.stopNbr}</span>
         <span className="font-mono text-sm">
           {progress.scanned}/{progress.expected}
         </span>
-      </div>
+        <ChevronRight className="w-4 h-4 text-slate-400 shrink-0" />
+      </button>
       {/* Both numbers, always. A loader should never do this arithmetic on a
           dock at 5am, and "load 1" vs "stop 13" is exactly the mix-up that puts
           freight at the wrong end of the trailer. */}
@@ -589,6 +668,8 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
   const [rawLog, setRawLog] = useState([]);
   // A repeat PRO waiting for a deliberate tap before it books another piece.
   const [dupPending, setDupPending] = useState(null);
+  // The order whose card is open — from a stop tap or a PRO lookup.
+  const [openStop, setOpenStop] = useState(null);
   const rawSeen = useRef(0);
   const [manualPro, setManualPro] = useState('');
   const [manualOg, setManualOg] = useState('');
@@ -865,6 +946,22 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
    * under a synthetic id (TYPED-<pro>-<n>), which cannot collide with a real OG
    * and is stored as typed rather than scanned.
    */
+  /** Find the order for a typed PRO and show its card. No network, no vendor calls. */
+  function lookUpPro() {
+    const pro = normalizePro(manualPro);
+    if (!/^\d{7}$/.test(pro)) {
+      setFlash('Enter the 7-digit PRO from the label.');
+      return;
+    }
+    const hit = stops.find((s2) => (s2.pros || []).some((p) => normalizePro(p) === pro));
+    if (!hit) {
+      setFlash(`PRO ${pro} is not on this load.`);
+      return;
+    }
+    setFlash('');
+    setOpenStop(hit);
+  }
+
   async function addManual() {
     const pro = normalizePro(manualPro);
     if (!/^\d{7}$/.test(pro)) {
@@ -1004,10 +1101,10 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
             />
           </div>
         ) : (
-          <div className="relative rounded-xl overflow-hidden bg-slate-900 aspect-[3/2]">
-            {/* Half the old height (was aspect-[3/4], 1.33x width). A shorter
-                viewport keeps more of the stop list on screen, which is what a
-                loader reads between pallets. */}
+          <div className="relative rounded-xl overflow-hidden bg-slate-900 h-[195px]">
+            {/* 195px fixed, the same as the WMS cam-wrap. An aspect ratio grows
+                with screen width and pushed the stop list off the bottom; a
+                fixed height keeps the orders visible on every handset. */}
             <video ref={videoRef} className="absolute inset-0 w-full h-full object-cover" playsInline muted />
             <div ref={containerRef} className="absolute inset-0" />
             {!camOn ? (
@@ -1123,7 +1220,10 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
               placeholder="OG number"
               className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono"
             />
+            <div className="flex gap-2">
+            <BigButton tone="ghost" onClick={lookUpPro}>Look up</BigButton>
             <BigButton tone="ghost" onClick={addManual}>Add piece</BigButton>
+          </div>
           </div>
         </details>
 
@@ -1148,6 +1248,7 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
               stop={s}
               progress={stopProgress(s, scans, handConfirms)}
               onHandConfirm={handConfirm}
+              onOpen={() => setOpenStop(s)}
               groupCount={groupCount}
               trailerEnd={
                 s.loadSeq != null && s.loadSeq === 1
@@ -1190,6 +1291,15 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
           onCancel={() => setClosing(false)}
           onConfirm={confirmClose}
           busy={busy}
+        />
+      ) : null}
+
+      {openStop ? (
+        <OrderCard
+          stop={openStop}
+          progress={stopProgress(openStop, scans, handConfirms)}
+          groupCount={groupCount}
+          onClose={() => setOpenStop(null)}
         />
       ) : null}
 
