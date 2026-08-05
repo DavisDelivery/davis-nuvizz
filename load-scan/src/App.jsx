@@ -9,14 +9,14 @@ import { loadSession, saveSession, clearSession, daysRemaining } from './lib/ses
 import * as api from './lib/api.js';
 import * as store from './lib/offline.js';
 import { startScanner } from './lib/scanner.js';
-import { evaluateScan, loadProgress, stopProgress, ogGapHint, OUTCOME, normalizePro, createPairBuffer, loadOrder, loadGroupCount, deliverySeq, sequenceFingerprint } from './lib/scan-logic.js';
+import { evaluateScan, loadProgress, stopProgress, ogGapHint, OUTCOME, normalizePro, createPairBuffer, loadOrder, loadGroupCount, deliverySeq, sequenceFingerprint, classifyBarcode } from './lib/scan-logic.js';
 import { createWedgeAccumulator, WEDGE_PAIR_WINDOW_MS } from './lib/wedge.js';
 import { initAudio, playVerdict } from './lib/feedback.js';
 import { useSortable, SortableTh } from './lib/useSortable.jsx';
 import { partitionBoardRows, filterCredentials, availableAliases, loginNamesFor } from './lib/roster.js';
 
 // Bumped by hand on every change. load-scan versions independently of dispatch-map.
-const APP_VERSION = '0.16.0';
+const APP_VERSION = '0.17.0';
 
 const BUILD_COMMIT = typeof __BUILD_COMMIT__ !== 'undefined' ? __BUILD_COMMIT__ : 'dev';
 const BUILD_TIME = typeof __BUILD_TIME__ !== 'undefined' ? __BUILD_TIME__ : '';
@@ -583,6 +583,11 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
   const [closed, setClosed] = useState(false);
   const [busy, setBusy] = useState(false);
   const [flash, setFlash] = useState('');
+  // Raw decoder output. The dock has no console: without this, "the scanner
+  // doesn't work" cannot be told apart from "it read something and the rules
+  // rejected it", and those need opposite fixes.
+  const [rawLog, setRawLog] = useState([]);
+  const rawSeen = useRef(0);
   const [manualPro, setManualPro] = useState('');
   const [manualOg, setManualOg] = useState('');
 
@@ -745,6 +750,13 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
         onPair: (p) => record(p, p.engine),
         onPartial: setPartial,
         onStatus: setStatus,
+        onRaw: (values) => {
+          rawSeen.current += values.length;
+          setRawLog((prev) => [
+            ...values.map((v) => ({ v: String(v), kind: classifyBarcode(v).kind })),
+            ...prev,
+          ].slice(0, 6));
+        },
       });
       stopRef.current = stop;
       setEngine(eng);
@@ -826,15 +838,39 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
     [activeLoad, manifest, refreshLocal, flushQueue, stampSequence],
   );
 
+  /**
+   * Add one piece by hand.
+   *
+   * The OG is OPTIONAL. It used to be required, so a torn, smudged or missing
+   * OG barcode left the driver with no way to record the piece at all — the
+   * form just refused. A PRO on its own now books one piece against that stop
+   * under a synthetic id (TYPED-<pro>-<n>), which cannot collide with a real OG
+   * and is stored as typed rather than scanned.
+   */
   async function addManual() {
     const pro = normalizePro(manualPro);
-    const og = manualOg.trim().toUpperCase();
-    if (!/^\d{7}$/.test(pro) || !/^OG\d{10}$/.test(og)) {
-      setFlash('Need a 7-digit PRO and an OG number with 10 digits.');
+    if (!/^\d{7}$/.test(pro)) {
+      setFlash('Enter the 7-digit PRO from the label.');
       return;
     }
+    const typedOg = manualOg.trim().toUpperCase();
+    if (typedOg && !/^OG\d{10}$/.test(typedOg)) {
+      setFlash('That OG is not right — it is OG followed by 10 digits. Leave it blank to add by PRO alone.');
+      return;
+    }
+
+    let og = typedOg;
+    if (!og) {
+      // Next free index for this PRO, so adding three pieces books three.
+      const used = new Set(scans.map((s) => String(s.og).toUpperCase()));
+      let n = 1;
+      while (used.has(`TYPED-${pro}-${n}`)) n += 1;
+      og = `TYPED-${pro}-${n}`;
+    }
+
     setFlash('');
-    await record({ pro, og }, 'manual');
+    const evaluated = await record({ pro, og }, 'manual');
+    if (evaluated?.outcome === OUTCOME.RED) setFlash(`PRO ${pro} is not on this load.`);
     setManualPro('');
     setManualOg('');
   }
@@ -967,8 +1003,11 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
               </button>
             ) : (
               <>
-                {/* Scan window matching the Quagga inset so both engines frame alike. */}
-                <div className="absolute inset-x-[5%] inset-y-[15%] ring-2 ring-white/70 rounded-lg pointer-events-none" />
+                {/* No inset ring any more. It drew a box at the old 15% Quagga
+                    inset and told the driver to aim inside it, while the OG
+                    barcode on a close-held label sits above that line. Both
+                    engines now read the whole frame, so anything you can see is
+                    a candidate — drawing a smaller target would be a lie. */}
                 <button
                   type="button"
                   onClick={toggleCam}
@@ -987,6 +1026,33 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
         {camErr ? <Banner kind="error">{camErr}</Banner> : null}
         <OutcomeCard result={result} partial={partial} />
         {flash ? <Banner kind="info">{flash}</Banner> : null}
+
+        {/* What the decoder is ACTUALLY seeing. Silence here means the camera
+            is reading nothing (focus, lighting, engine); values here with the
+            wrong shape mean it reads fine and the rules are rejecting them.
+            Those two need opposite fixes and looked identical before. */}
+        {camOn ? (
+          <details className="rounded-xl bg-white ring-1 ring-slate-200 px-3 py-2 text-xs">
+            <summary className="cursor-pointer text-slate-600">
+              Scanner detail — {engine || '…'} · {rawSeen.current} read{rawSeen.current === 1 ? '' : 's'}
+            </summary>
+            {rawLog.length ? (
+              <div className="mt-2 space-y-0.5 font-mono">
+                {rawLog.map((r, i) => (
+                  <div key={`${r.v}-${i}`} className={r.kind === 'unknown' ? 'text-rose-700' : 'text-emerald-700'}>
+                    {r.kind.toUpperCase()} {r.v}
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="mt-2 text-slate-500">
+                Nothing decoded yet. If this stays empty while a label fills the frame, the camera is not reading —
+                move 20–30cm back, steady, and make sure the label is lit.
+              </div>
+            )}
+            {status ? <div className="mt-2 text-slate-500">{status}</div> : null}
+          </details>
+        ) : null}
 
         {/* Manual entry — the degraded path when the camera will not cooperate. */}
         <details className="rounded-xl bg-white ring-1 ring-slate-200 px-3 py-2">
