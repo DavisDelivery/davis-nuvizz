@@ -33,6 +33,33 @@ store it. The "2 of 3" index is printed as text only — it is in neither barcod
 so it cannot be used for completeness. Completeness is distinct OG count against
 `expectedPieces`.
 
+## Reviewing an unmatched sign-in
+
+A driver signs in, none of their seeded aliases match any name on that day's
+board, and they get **no loads**. The row lands in "Unmatched sign-ins to review".
+
+The fix is to attach the board name the driver actually runs under to their
+credential (`action: 'add-alias'`). The panel lists **every** name that was on
+that day's board — sorted and filterable — and clicking one assigns it and clears
+the row in a single request.
+
+It used to render `boardAliases.slice(0, 12)`. The stored list holds up to 200
+names and is built by `[...new Set(...)]` over stops in index order, so it is
+**unsorted** — the twelve shown were an arbitrary twelve, and the name you needed
+was usually in the part you could not see. With the only button being "Mark
+reviewed", which just sets `resolved: true`, the panel named a problem and
+offered no way to solve it: the driver stayed broken and the row came back on the
+next sign-in.
+
+**Assigning an already-claimed alias is refused** (409). Two credentials claiming
+one alias resolves to *neither* — see `resolveDriverForAlias`, where two
+claimants is `ambiguous` — so it would fix nobody and break the driver who had
+it. Fixing one driver by leaving two unresolved is worse than the original
+problem.
+
+"Dismiss without fixing" still exists for genuine noise, such as the seeded
+`ZZ_NOBODY` acceptance-test row, and is labelled for what it does.
+
 ## Load order is the REVERSE of delivery order
 
 A trailer unloads from the doors forward, so the last stop delivered has to go on

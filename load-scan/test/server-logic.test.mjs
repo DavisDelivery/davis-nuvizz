@@ -355,6 +355,62 @@ test('loads group and sum expected pieces', () => {
   assert.equal(loads[0].stops[0].stopNbr, '2', 'sorted by stop sequence');
 });
 
+// ── Fixing an unmatched sign-in ──────────────────────────────────────────────
+
+const cred = (driverNumber, nuvizzAliases = []) => ({ driverNumber, nuvizzAliases });
+
+test('assigning a board name attaches it to the driver credential', () => {
+  const target = cred('0000', ['ZZ_NOBODY']);
+  const plan = aliases.planAliasAdd(target, 'Alfred Morgan', [target, cred('0001', ['SAMUEL OSEI'])]);
+  assert.deepEqual(plan.aliases, ['ZZ_NOBODY', 'ALFRED MORGAN'], 'normalized and appended, existing kept');
+  assert.equal(plan.added, true);
+});
+
+test('assigning an alias another driver already claims is REFUSED', () => {
+  // Two claimants resolve to neither, so this would break the other driver too.
+  const target = cred('0000', []);
+  const other = cred('0001', ['ALFRED MORGAN']);
+  const plan = aliases.planAliasAdd(target, 'ALFRED MORGAN', [target, other]);
+  assert.ok(plan.error, 'must refuse');
+  assert.deepEqual(plan.claimedBy, ['0001']);
+  assert.match(plan.error, /already claimed/);
+});
+
+test('the refusal survives spelling differences, since matching is normalized', () => {
+  const target = cred('0000', []);
+  const other = cred('0001', ['ALFRED MORGAN']);
+  const plan = aliases.planAliasAdd(target, '  alfred   morgan ', [target, other]);
+  assert.ok(plan.error, 'whitespace and case must not sneak a duplicate past the guard');
+});
+
+test('re-assigning a name the driver already has is a no-op, not a duplicate', () => {
+  const target = cred('0000', ['ALFRED MORGAN']);
+  const plan = aliases.planAliasAdd(target, 'alfred morgan', [target]);
+  assert.deepEqual(plan.aliases, ['ALFRED MORGAN']);
+  assert.equal(plan.added, false);
+});
+
+test('a driver may be re-assigned a name they already hold without self-blocking', () => {
+  // The claimed-by check must exclude the target, or fixing a driver twice fails.
+  const target = cred('0000', ['ALFRED MORGAN']);
+  const plan = aliases.planAliasAdd(target, 'ALFRED MORGAN', [target, cred('0001', [])]);
+  assert.ok(!plan.error, 'a driver never conflicts with themselves');
+});
+
+test('an empty alias is refused rather than stored', () => {
+  const plan = aliases.planAliasAdd(cred('0000'), '   ', [cred('0000')]);
+  assert.ok(plan.error);
+});
+
+test('the assigned alias actually resolves the driver afterwards', () => {
+  // End to end: the point of the fix is that tomorrow the stop matches.
+  const target = cred('0000', ['ZZ_NOBODY']);
+  const plan = aliases.planAliasAdd(target, 'ALFRED MORGAN', [target]);
+  const fixed = { ...target, nuvizzAliases: plan.aliases };
+  assert.equal(aliases.stopBelongsToDriver({ driverUserName: 'ALFRED MORGAN' }, fixed), true);
+  assert.equal(aliases.resolveDriverForAlias('Alfred  Morgan', [fixed]).driverNumber, '0000');
+});
+
 // ── Load order = reverse delivery order ──────────────────────────────────────
 
 const seqStops = (seqs) =>

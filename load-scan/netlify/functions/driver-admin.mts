@@ -27,7 +27,7 @@
 
 import { getDoc, setDoc, patchDoc, listDocs, isFirestoreEnabled } from './lib/firestore.mts';
 import { DRIVER_AUTH, UNMATCHED_ALIASES, authenticate, hashPin, isValidPinFormat, isLastActiveDispatcher, normalizeRole } from './lib/auth.mts';
-import { normalizeDriverAlias, findAmbiguousAliases } from './lib/aliases.mts';
+import { normalizeDriverAlias, findAmbiguousAliases, planAliasAdd } from './lib/aliases.mts';
 import { ok, bad, unauthorized, forbidden, readJson, viaProxy } from './lib/http.mts';
 
 /** Strip anything that must never leave the server. */
@@ -175,6 +175,33 @@ export default async (req: Request): Promise<Response> => {
         await patchDoc(path, fields);
       }
       return ok({ driverNumber, aliases, created: !existing });
+    }
+
+    case 'add-alias': {
+      // The real fix for an unmatched sign-in: attach the name that IS on the
+      // board to this driver's credential. "Mark reviewed" only hides the row —
+      // this is what stops it coming back tomorrow.
+      if (!existing) return bad('create the driver first with action=upsert', 404);
+
+      const all = (await listDocs(DRIVER_AUTH)).map(publicCred);
+      const plan = planAliasAdd(publicCred({ ...existing, _id: driverNumber }), body?.alias, all);
+      if ('error' in plan) return bad(plan.error, 409);
+
+      await patchDoc(path, { nuvizzAliases: plan.aliases });
+
+      // Clear the review row in the SAME request. Two round trips could leave a
+      // driver fixed but still flagged, or flagged-clear but still broken.
+      const resolveId = String(body?.resolveId ?? '').trim();
+      if (resolveId) {
+        await patchDoc(`${UNMATCHED_ALIASES}/${resolveId}`, {
+          resolved: true,
+          resolvedAt: new Date().toISOString(),
+          resolvedBy: 'alias_assigned',
+          assignedAlias: normalizeDriverAlias(body?.alias),
+        });
+      }
+      console.log(`[driver-admin] ALIAS ${normalizeDriverAlias(body?.alias)} -> ${driverNumber} (added=${plan.added})`);
+      return ok({ driverNumber, aliases: plan.aliases, added: plan.added, resolved: resolveId || null });
     }
 
     case 'issue-pin': {

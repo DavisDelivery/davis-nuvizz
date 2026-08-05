@@ -15,7 +15,7 @@ import { initAudio, playVerdict } from './lib/feedback.js';
 import { useSortable, SortableTh } from './lib/useSortable.jsx';
 
 // Bumped by hand on every change. load-scan versions independently of dispatch-map.
-const APP_VERSION = '0.8.0';
+const APP_VERSION = '0.9.0';
 
 const BUILD_COMMIT = typeof __BUILD_COMMIT__ !== 'undefined' ? __BUILD_COMMIT__ : 'dev';
 const BUILD_TIME = typeof __BUILD_TIME__ !== 'undefined' ? __BUILD_TIME__ : '';
@@ -1072,6 +1072,106 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
 
 // ── Dispatcher ───────────────────────────────────────────────────────────────
 
+/**
+ * One unmatched sign-in, with the means to actually fix it.
+ *
+ * This driver signed in and got NO loads: none of their seeded aliases matched
+ * any name on that day's board. The fix is to attach the right board name to
+ * their credential — so every board name is listed here, sorted and searchable,
+ * and clicking one assigns it. Truncating the list to a dozen arbitrary names
+ * made the panel unreviewable: the name you needed was usually in the part you
+ * could not see.
+ */
+function UnmatchedRow({ u, onAssign, onDismiss }) {
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState('');
+  const [pending, setPending] = useState(null);
+
+  const board = useMemo(
+    () => [...new Set(u.boardAliases || [])].sort((a, b) => a.localeCompare(b)),
+    [u.boardAliases],
+  );
+  const shown = useMemo(() => {
+    const needle = q.trim().toUpperCase();
+    return needle ? board.filter((n) => n.includes(needle)) : board;
+  }, [board, q]);
+
+  return (
+    <div className="rounded-xl bg-amber-50 ring-1 ring-amber-200 px-3 py-2 text-sm">
+      <div className="font-medium">
+        {u.displayName || u.driverNumber} · {fmtDate(u.date)}
+      </div>
+      <div className="text-xs text-slate-600 mt-1">
+        Seeded: {(u.seededAliases || []).join(', ') || 'none'} — none of these were on the board that day, so this
+        driver got no loads.
+      </div>
+
+      {pending ? (
+        <div className="mt-2 rounded-lg bg-white ring-1 ring-amber-300 px-3 py-2">
+          <div className="text-xs">
+            Assign <span className="font-semibold">{pending}</span> to{' '}
+            <span className="font-semibold">{u.displayName || u.driverNumber}</span> ({u.driverNumber})?
+          </div>
+          <div className="flex gap-2 mt-2">
+            <button type="button" className="flex-1 text-xs rounded-lg ring-1 ring-slate-300 px-3 py-2" onClick={() => setPending(null)}>
+              Cancel
+            </button>
+            <button
+              type="button"
+              className="flex-1 text-xs rounded-lg bg-[#1e5b92] text-white px-3 py-2 font-medium"
+              onClick={() => { const a = pending; setPending(null); onAssign(a); }}
+            >
+              Assign alias
+            </button>
+          </div>
+        </div>
+      ) : (
+        <>
+          <button type="button" className="mt-2 text-xs underline" onClick={() => setOpen((v) => !v)}>
+            {open ? 'Hide' : `Show all ${board.length} names on the board that day`}
+          </button>
+
+          {open ? (
+            <div className="mt-2">
+              <input
+                value={q}
+                onChange={(e) => setQ(e.target.value)}
+                placeholder="Filter names…"
+                className="w-full rounded-lg border border-slate-300 px-2 py-1 text-xs"
+              />
+              <div className="mt-1 max-h-56 overflow-y-auto rounded-lg bg-white ring-1 ring-slate-200 divide-y divide-slate-100">
+                {shown.length ? (
+                  shown.map((name) => (
+                    <button
+                      key={name}
+                      type="button"
+                      onClick={() => setPending(name)}
+                      className="block w-full text-left px-2 py-1.5 text-xs hover:bg-sky-50"
+                    >
+                      {name}
+                    </button>
+                  ))
+                ) : (
+                  <div className="px-2 py-1.5 text-xs text-slate-500">No name on that board matches “{q}”.</div>
+                )}
+              </div>
+              <div className="mt-1 text-xs text-slate-500">
+                Click the name this driver runs under. It is added to their credential and this row clears.
+              </div>
+            </div>
+          ) : null}
+
+          <div className="mt-2">
+            <button type="button" className="text-xs underline text-slate-500" onClick={onDismiss}>
+              Dismiss without fixing
+            </button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 function DispatcherScreen({ session, onSignOut }) {
   const [drivers, setDrivers] = useState([]);
   const [unmatched, setUnmatched] = useState([]);
@@ -1141,25 +1241,19 @@ function DispatcherScreen({ session, onSignOut }) {
           <div className="space-y-2">
             <div className="text-sm font-medium text-slate-700">Unmatched sign-ins to review</div>
             {unmatched.map((u) => (
-              <div key={`${u.date}__${u.driverNumber}`} className="rounded-xl bg-amber-50 ring-1 ring-amber-200 px-3 py-2 text-sm">
-                <div className="font-medium">
-                  {u.displayName || u.driverNumber} · {fmtDate(u.date)}
-                </div>
-                <div className="text-xs text-slate-600 mt-1">
-                  Seeded: {(u.seededAliases || []).join(', ') || 'none'}
-                </div>
-                <div className="text-xs text-slate-600">
-                  On the board: {(u.boardAliases || []).slice(0, 12).join(', ')}
-                  {(u.boardAliases || []).length > 12 ? ' …' : ''}
-                </div>
-                <button
-                  type="button"
-                  className="mt-2 text-xs underline"
-                  onClick={() => act({ action: 'resolve-unmatched', id: `${u.date}__${u.driverNumber}` })}
-                >
-                  Mark reviewed
-                </button>
-              </div>
+              <UnmatchedRow
+                key={`${u.date}__${u.driverNumber}`}
+                u={u}
+                onAssign={(alias) =>
+                  act({
+                    action: 'add-alias',
+                    driverNumber: u.driverNumber,
+                    alias,
+                    resolveId: `${u.date}__${u.driverNumber}`,
+                  })
+                }
+                onDismiss={() => act({ action: 'resolve-unmatched', id: `${u.date}__${u.driverNumber}` })}
+              />
             ))}
           </div>
         ) : null}
