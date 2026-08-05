@@ -16,7 +16,7 @@ import { useSortable, SortableTh } from './lib/useSortable.jsx';
 import { partitionBoardRows, filterCredentials, availableAliases } from './lib/roster.js';
 
 // Bumped by hand on every change. load-scan versions independently of dispatch-map.
-const APP_VERSION = '0.12.0';
+const APP_VERSION = '0.13.0';
 
 const BUILD_COMMIT = typeof __BUILD_COMMIT__ !== 'undefined' ? __BUILD_COMMIT__ : 'dev';
 const BUILD_TIME = typeof __BUILD_TIME__ !== 'undefined' ? __BUILD_TIME__ : '';
@@ -1855,7 +1855,14 @@ function DriverEditor({ driver, prefill, board, onSave, onCancel, onIssuePin, on
   // through add-alias / remove-alias so a slip cannot wipe the set.
   const [newAliases, setNewAliases] = useState(prefill?.alias ? [prefill.alias] : []);
   const [pin, setPin] = useState('');
+  const [newPin, setNewPin] = useState('');
   const [forceChange, setForceChange] = useState(false);
+
+  // Show what the PIN will actually be, so a pasted phone number is not a guess.
+  const pinPreview = useMemo(() => {
+    const d = newPin.replace(/\D/g, '');
+    return d.length >= 4 ? d.slice(-4) : '';
+  }, [newPin]);
 
   const held = driver ? (driver.nuvizzAliases || []) : newAliases;
   const availableForThisDriver = useMemo(() => availableAliases(board, held), [board, held]);
@@ -1864,29 +1871,49 @@ function DriverEditor({ driver, prefill, board, onSave, onCancel, onIssuePin, on
     <div className="space-y-3">
       {prefill?.alias ? (
         <div className="text-xs text-slate-600">
-          Setting up <span className="font-semibold">{prefill.alias}</span> from the board. Give them the driver number
-          off their paperwork, save, then issue a PIN.
+          Setting up <span className="font-semibold">{prefill.alias}</span> from the board. Check the name and PIN,
+          add any other spellings they run under, then Save — that is the whole job.
         </div>
       ) : null}
+      {/* Davis drivers have no number on their paperwork. They sign in with the
+          name on the board and a PIN, so that is what this form asks for; the
+          number is an internal key and the server generates it. */}
       <label className="block">
-        <span className="text-xs text-slate-600">Driver number{driver ? '' : ' — from their paperwork'}</span>
-        <input
-          value={driverNumber}
-          onChange={(e) => setDriverNumber(e.target.value)}
-          disabled={!!driver}
-          placeholder="e.g. 4471"
-          className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm disabled:bg-slate-50"
-        />
-      </label>
-      <label className="block">
-        <span className="text-xs text-slate-600">Display name</span>
+        <span className="text-xs text-slate-600">Name — what they type to sign in</span>
         <input
           value={displayName}
           onChange={(e) => setDisplayName(e.target.value)}
-          placeholder="Display name"
+          placeholder="e.g. ALFRED MORGAN"
+          autoCapitalize="characters"
           className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
         />
       </label>
+
+      {!driver ? (
+        <label className="block">
+          <span className="text-xs text-slate-600">
+            PIN — last 4 of their cell. Paste the whole number if easier.
+          </span>
+          <input
+            value={newPin}
+            onChange={(e) => setNewPin(e.target.value)}
+            inputMode="numeric"
+            placeholder="2099  or  (678) 226-2099"
+            className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+          />
+          {newPin.trim() && !pinPreview ? (
+            <span className="text-xs text-rose-600">Need at least 4 digits.</span>
+          ) : pinPreview ? (
+            <span className="text-xs text-slate-500">PIN will be <span className="font-mono">{pinPreview}</span></span>
+          ) : (
+            <span className="text-xs text-slate-500">Leave blank to set it later.</span>
+          )}
+        </label>
+      ) : (
+        <div className="text-xs text-slate-500">
+          Driver number <span className="font-mono">{driver.driverNumber}</span> · internal only, they never type it
+        </div>
+      )}
 
       <AliasChips
         aliases={driver ? (driver.nuvizzAliases || []) : newAliases}
@@ -1903,12 +1930,16 @@ function DriverEditor({ driver, prefill, board, onSave, onCancel, onIssuePin, on
 
       <div className="flex gap-2">
         <BigButton
-          disabled={busy || !driverNumber.trim()}
+          // Gated on the NAME, not a number nobody has. That gate is what made
+          // adding a driver impossible.
+          disabled={busy || !displayName.trim() || (!!newPin.trim() && !pinPreview)}
           onClick={() =>
             onSave({
               action: 'upsert',
+              // Blank on create: the server generates the internal key.
               driverNumber: driverNumber.trim(),
               displayName,
+              ...(newPin.trim() ? { pin: pinPreview } : {}),
               // For an existing driver send back the set UNCHANGED — the chips
               // already wrote any edits. Deriving it from a text field here is
               // what let a careless keystroke silently delete a spelling.

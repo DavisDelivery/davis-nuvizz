@@ -355,6 +355,48 @@ test('loads group and sum expected pieces', () => {
   assert.equal(loads[0].stops[0].stopNbr, '2', 'sorted by stop sequence');
 });
 
+// ── Drivers have no driver number ────────────────────────────────────────────
+// They sign in with the name on the board and a PIN. The number is an internal
+// document key, so it is generated and never asked for.
+
+test('the generated number is the next one after every id in use', async () => {
+  const ids = await import('../netlify/functions/lib/driver-ids.mts');
+  assert.equal(ids.nextDriverNumber(['1000', '1001', '2803']), '2804');
+  assert.equal(ids.nextDriverNumber([]), '1000', 'first driver starts at the floor');
+});
+
+test('non-numeric ids are skipped, not crashed on', async () => {
+  // The bootstrap dispatcher and hand-seeded rows may use anything, and they
+  // must not break creation for everyone else.
+  const ids = await import('../netlify/functions/lib/driver-ids.mts');
+  assert.equal(ids.nextDriverNumber(['admin', null, undefined, '', '1500', 'ZZ']), '1501');
+});
+
+test('the generated number never collides with an existing one', async () => {
+  const ids = await import('../netlify/functions/lib/driver-ids.mts');
+  const existing = ['1000', '9001', '4471'];
+  const next = ids.nextDriverNumber(existing);
+  assert.ok(!existing.includes(next));
+  assert.equal(next, '9002', 'above the highest, not filling a gap that a stale token may still hold');
+});
+
+test('a PIN is taken from the last 4 digits of a phone number', async () => {
+  const ids = await import('../netlify/functions/lib/driver-ids.mts');
+  // However the dispatcher pastes it off a contact card.
+  assert.equal(ids.pinFromPhone('(678) 226-2099'), '2099');
+  assert.equal(ids.pinFromPhone('678-226-2099'), '2099');
+  assert.equal(ids.pinFromPhone('6782262099'), '2099');
+  assert.equal(ids.pinFromPhone('2099'), '2099', 'already just the PIN');
+});
+
+test('too few digits yields no PIN, so the caller refuses rather than setting a short one', async () => {
+  const ids = await import('../netlify/functions/lib/driver-ids.mts');
+  assert.equal(ids.pinFromPhone('209'), '');
+  assert.equal(ids.pinFromPhone(''), '');
+  assert.equal(ids.pinFromPhone(null), '');
+  assert.equal(ids.pinFromPhone('abc'), '');
+});
+
 // ── Fixing an unmatched sign-in ──────────────────────────────────────────────
 
 const cred = (driverNumber, nuvizzAliases = []) => ({ driverNumber, nuvizzAliases });

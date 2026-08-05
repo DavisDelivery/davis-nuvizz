@@ -28,6 +28,7 @@
 import { getDoc, setDoc, patchDoc, listDocs, isFirestoreEnabled } from './lib/firestore.mts';
 import { DRIVER_AUTH, UNMATCHED_ALIASES, authenticate, hashPin, isValidPinFormat, isLastActiveDispatcher, normalizeRole } from './lib/auth.mts';
 import { normalizeDriverAlias, findAmbiguousAliases, planAliasAdd, planAliasRemove } from './lib/aliases.mts';
+import { nextDriverNumber, pinFromPhone } from './lib/driver-ids.mts';
 import { ok, bad, unauthorized, forbidden, readJson, viaProxy } from './lib/http.mts';
 
 /** Strip anything that must never leave the server. */
@@ -107,7 +108,7 @@ export default async (req: Request): Promise<Response> => {
   const body = await readJson(req);
   const action = String(body?.action || '');
   console.log(`[driver-admin] ${action} via ${surface} by ${claims?.sub ?? 'bootstrap'}`);
-  const driverNumber = String(body?.driverNumber ?? '').trim();
+  let driverNumber = String(body?.driverNumber ?? '').trim();
 
   // ── Bootstrap is allowed exactly one action ────────────────────────────────
   if (isBootstrap && !isDispatcher) {
@@ -141,6 +142,16 @@ export default async (req: Request): Promise<Response> => {
     return ok({ resolved: id });
   }
 
+  // Davis drivers have NO number on their paperwork — they sign in with the name
+  // on the board and a PIN. Demanding one here is what made "Add a driver"
+  // impossible: the Save button gated on a field nobody could fill. The number
+  // survives only as the document id, so generate it and never ask.
+  if (!driverNumber && action === 'upsert') {
+    const all = await listDocs(DRIVER_AUTH);
+    driverNumber = nextDriverNumber(all.map((d: any) => d?._id ?? d?.driverNumber));
+    console.log(`[driver-admin] generated driverNumber ${driverNumber}`);
+  }
+
   if (!driverNumber) return bad('driverNumber is required');
   const path = `${DRIVER_AUTH}/${driverNumber}`;
   const existing = await getDoc(path);
@@ -162,19 +173,35 @@ export default async (req: Request): Promise<Response> => {
         nuvizzAliases: aliases,
         active: body?.active === undefined ? existing?.active !== false : body.active === true,
       };
+      // A PIN may ride along on creation. Adding a driver is ONE job — name,
+      // spellings, PIN — and splitting it left half-made credentials that could
+      // not sign in, with nothing on screen saying why.
+      const rawPin = String(body?.pin ?? '').trim();
+      const pin = rawPin ? (isValidPinFormat(rawPin) ? rawPin : pinFromPhone(rawPin)) : '';
+      if (rawPin && !pin) return bad('PIN must be 4-6 digits, or a phone number to take the last 4 from');
+
       if (!existing) {
-        fields.pinHash = '';
-        fields.role = 'driver';
-        fields.mustChangePin = true;
+        fields.pinHash = pin ? await hashPin(pin) : '';
+        fields.role = normalizeRole(body?.role) || 'driver';
+        // A PIN the dispatcher set from the driver's cell is a STANDING PIN —
+        // there is nothing to hand out and nothing to reset at 5am.
+        fields.mustChangePin = !pin;
         fields.failedAttempts = 0;
         fields.lockedUntil = null;
         fields.createdAt = new Date().toISOString();
         fields.lastLoginAt = null;
+        if (pin) fields.pinIssuedAt = new Date().toISOString();
         await setDoc(path, fields);
       } else {
+        if (pin) {
+          fields.pinHash = await hashPin(pin);
+          fields.pinIssuedAt = new Date().toISOString();
+          fields.failedAttempts = 0;
+          fields.lockedUntil = null;
+        }
         await patchDoc(path, fields);
       }
-      return ok({ driverNumber, aliases, created: !existing });
+      return ok({ driverNumber, aliases, created: !existing, pinSet: !!pin });
     }
 
     case 'add-alias': {
