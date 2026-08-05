@@ -52,7 +52,22 @@ function tx(store, mode, fn) {
           reject(e);
           return;
         }
-        t.oncomplete = () => resolve(result && result.result !== undefined ? result.result : result);
+        // Unwrap the IDBRequest. This used to read:
+        //
+        //   resolve(result && result.result !== undefined ? result.result : result)
+        //
+        // which returned the REQUEST OBJECT whenever a get found nothing —
+        // because `request.result` is `undefined` for a miss, so the ternary
+        // fell through to the request itself, which is truthy.
+        //
+        // That made `enqueueScan`'s "have I already queued this piece?" check
+        // ALWAYS true, so it returned false and NEVER WROTE A SCAN. Every piece
+        // flashed green, the counter never moved, and nothing was ever uploaded.
+        // Same fault silently disabled stampLoadedSequence.
+        //
+        // Unwrap on shape, not on value: a miss must be undefined.
+        t.oncomplete = () =>
+          resolve(result && typeof result === 'object' && 'result' in result ? result.result : result);
         t.onerror = () => reject(t.error);
         t.onabort = () => reject(t.error);
       }),

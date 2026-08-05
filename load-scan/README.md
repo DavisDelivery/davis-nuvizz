@@ -33,6 +33,59 @@ store it. The "2 of 3" index is printed as text only — it is in neither barcod
 so it cannot be used for completeness. Completeness is distinct OG count against
 `expectedPieces`.
 
+## The bug that made everything look broken
+
+`offline.js` unwrapped an `IDBRequest` like this:
+
+```js
+resolve(result && result.result !== undefined ? result.result : result)
+```
+
+For a key that is **not present**, `request.result` is `undefined`, so the
+ternary fell through and returned **the request object** — which is truthy.
+
+`enqueueScan` opens with "have I already queued this piece?". That check was
+therefore **always true**, so it returned `false` and **never wrote a scan**.
+
+The visible symptoms, all from this one line:
+
+- a piece scans **green** — the outcome is computed before the write
+- the counter **never moves**
+- nothing is ever uploaded, and "all uploaded" is technically true
+- `stampLoadedSequence` never stamps, so the resequence guard never arms
+
+Fixed by unwrapping on **shape** rather than value, so a miss is `undefined`:
+
+```js
+resolve(result && typeof result === 'object' && 'result' in result ? result.result : result)
+```
+
+## Adding a piece by PRO
+
+The OG is **optional**. It used to be required, so a torn, smudged or missing OG
+barcode left the driver with no way to record the piece at all — the form just
+refused. A PRO alone books one piece under a synthetic id `TYPED-<pro>-<n>`,
+which cannot collide with a real OG, still de-duplicates on replay, and is
+stored with `engine: 'manual'` so it is never counted as scanned.
+
+## Scanner: the decode area was throwing away the OG
+
+Quagga ran with `area: { top: '15%', bottom: '15%' }` — the top and bottom bands
+of every frame were discarded. On a Uline label held close the **OG barcode sits
+right at the top edge**, so it could never be decoded, the pair never completed,
+and the driver saw "point at a label" while pointing straight at one. Both
+engines now read the **whole frame**, and the on-screen ring that used to draw
+the old 15% box is gone — it was telling the driver to aim inside a target that
+excluded the barcode they needed.
+
+## Scanner detail
+
+The dock has no console. A collapsible line under the camera shows the engine,
+a running count of raw decodes, and the last few values with their
+classification — green if the rules accepted them, red if not. Without it,
+"the scanner doesn't work" cannot be told apart from "it reads fine and the
+rules reject it", and those need opposite fixes.
+
 ## Signing in: there is no driver number, and no "login name" field
 
 Drivers sign in with **the name on the board** and a PIN (the last 4 of their

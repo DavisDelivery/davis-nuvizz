@@ -28,7 +28,7 @@
 //   - Split rearm windows: 1500 ms iOS/Quagga, 5000 ms Android native, because
 //     the native detector hunts focus at close range and drops a held label.
 
-import { createPairBuffer } from './scan-logic.js';
+import { createScanResolver } from './scan-logic.js';
 
 const QUAGGA_CDN = 'https://cdn.jsdelivr.net/npm/@ericblade/quagga2@1.8.4/dist/quagga.min.js';
 
@@ -69,16 +69,23 @@ function loadQuagga() {
  * @param onPair      ({pro, og, engine}) for each complete piece
  * @param onPartial   ({pro, og}) so the UI can say "hold steady, need the OG"
  * @param onStatus    (string) human-readable engine/state line
+ * @param onRaw       (string[]) EVERY value the decoder returned, classified or
+ *                    not. The dock has no console, so without this "the scanner
+ *                    doesn't work" cannot be told apart from "it read something
+ *                    the rules rejected".
  * @returns { stop, engine }
  */
-export async function startScanner({ videoEl, containerEl, onPair, onPartial, onStatus }) {
+export async function startScanner({ videoEl, containerEl, onPair, onPartial, onStatus, onRaw }) {
   const useNative = await detectNativeSupport();
-  const buffer = createPairBuffer({ windowMs: useNative ? REARM_MS_NATIVE : REARM_MS_QUAGGA });
+  // A PRO alone is a piece — see createScanResolver. The old pair buffer waited
+  // for both barcodes and, on iOS with a big label, usually never got them.
+  const resolver = createScanResolver({ ogHoldMs: useNative ? REARM_MS_NATIVE : REARM_MS_QUAGGA });
 
   const emit = (values, engine) => {
-    const pair = buffer.push(values);
-    if (pair) onPair?.({ ...pair, engine });
-    else onPartial?.(buffer.state());
+    onRaw?.(values);
+    const hit = resolver.push(values);
+    if (hit) onPair?.({ ...hit, engine });
+    else onPartial?.(resolver.state());
   };
 
   if (useNative) {
@@ -187,12 +194,22 @@ async function startQuagga({ containerEl, emit, onStatus }) {
             focusMode: 'continuous',
             advanced: [{ focusMode: 'continuous' }, { focusMode: 'auto' }],
           },
-          area: { top: '15%', right: '5%', left: '5%', bottom: '15%' },
+          // WHOLE FRAME. This was { top: '15%', bottom: '15%' }, which threw
+          // away the top and bottom bands of every frame — and on a Uline label
+          // held close the OG barcode sits right at the top edge, so it could
+          // never be decoded and the pair never completed. The driver saw
+          // "point at a label" while pointing straight at one.
+          //
+          // The cost is CPU on a frame with nothing in it. That is the right
+          // trade: a missed decode is a truck loaded wrong.
+          area: { top: '0%', right: '0%', left: '0%', bottom: '0%' },
         },
         locator: { patchSize: 'medium', halfSample: true },
         numOfWorkers: navigator.hardwareConcurrency || 4,
-        // multiple: true is the change from the WMS — both label barcodes at once.
-        decoder: { readers: ['code_128_reader', 'code_39_reader'], multiple: true },
+        // multiple:false, matching the WMS scanner that works on these phones.
+        // We no longer need both barcodes in one frame, and Quagga2's multiple
+        // mode is markedly less reliable on a close-held label.
+        decoder: { readers: ['code_128_reader', 'code_39_reader'], multiple: false },
         locate: true,
         frequency: 20,
       },

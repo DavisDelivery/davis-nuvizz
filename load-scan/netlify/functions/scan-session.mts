@@ -38,10 +38,33 @@ export interface ScanRow {
 }
 
 /** Normalize one incoming scan, or explain why it cannot be used. */
+/**
+ * A piece typed in by PRO when the OG could not be read.
+ *
+ * The OG is the dedup key, so a piece without one still needs a unique id. This
+ * is that id: TYPED-<pro>-<n>. It can never collide with a real OG (different
+ * prefix) and it is obvious in the record that nobody scanned it.
+ *
+ * Needed because a torn, smudged or missing OG barcode used to leave the driver
+ * with NO way to record the piece at all — the manual form demanded both.
+ */
+export const TYPED_RE = /^TYPED-\d{7}-\d{1,3}$/;
+
+/**
+ * A piece SCANNED by PRO where the OG barcode was never decoded.
+ *
+ * The scanner no longer waits for both barcodes — see createScanResolver. A PRO
+ * alone is a piece, so it needs an id, and it must stay distinguishable from a
+ * piece with a real OG (exact per-piece dedup) and from one typed by hand.
+ */
+export const NOOG_RE = /^NOOG-\d{7}-\d{1,3}$/;
+
 export function normalizeScan(raw: any): { row?: ScanRow; reason?: string } {
   const og = String(raw?.og ?? '').trim().toUpperCase();
   if (!og) return { reason: 'missing og' };
-  if (!OG_RE.test(og)) return { reason: `og not OG+10 digits: ${og.slice(0, 24)}` };
+  if (!OG_RE.test(og) && !TYPED_RE.test(og) && !NOOG_RE.test(og)) {
+    return { reason: `og not OG+10 digits, TYPED-pro-n or NOOG-pro-n: ${og.slice(0, 24)}` };
+  }
 
   const pro = normalizePro(raw?.pro);
   if (!pro) return { reason: `missing or unparseable pro for ${og}` };
@@ -53,7 +76,16 @@ export function normalizeScan(raw: any): { row?: ScanRow; reason?: string } {
   const at = String(raw?.scannedAt ?? '').trim();
   const scannedAt = at && !Number.isNaN(Date.parse(at)) ? new Date(at).toISOString() : new Date().toISOString();
 
-  return { row: { og, pro, scannedAt, stopNbr: String(raw?.stopNbr ?? '').trim(), engine } };
+  return {
+    row: {
+      og,
+      pro,
+      scannedAt,
+      stopNbr: String(raw?.stopNbr ?? '').trim(),
+      // A typed piece is never reported as scanned, whatever the client claims.
+      engine: TYPED_RE.test(og) ? 'manual' : engine,
+    },
+  };
 }
 
 export interface HandConfirmRow {

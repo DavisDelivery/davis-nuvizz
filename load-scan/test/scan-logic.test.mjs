@@ -1,6 +1,126 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
+// ── A PRO alone is a piece (matching the WMS scanner that works) ─────────────
+
+test('a PRO on its own resolves to a piece — no OG required', async () => {
+  // The old buffer waited for BOTH barcodes inside a window. On iOS with a big
+  // label that pairing usually never completed, so the driver got "point at a
+  // label" while pointing at one. The WMS reads a single PRO and works.
+  const { createScanResolver } = await import('../src/lib/scan-logic.js');
+  const r = createScanResolver();
+  assert.deepEqual(r.push(['7156834'], 1000), { pro: '7156834', og: null });
+});
+
+test('an OG in the same frame is used, giving exact per-piece dedup', async () => {
+  const { createScanResolver } = await import('../src/lib/scan-logic.js');
+  const r = createScanResolver();
+  assert.deepEqual(r.push(['OG6028555794', '7156834'], 1000), { pro: '7156834', og: 'OG6028555794' });
+});
+
+test('an OG seen just before its PRO still pairs', async () => {
+  const { createScanResolver } = await import('../src/lib/scan-logic.js');
+  const r = createScanResolver({ ogHoldMs: 1200 });
+  assert.equal(r.push(['OG6028555794'], 1000), null, 'an OG alone identifies no stop');
+  assert.deepEqual(r.push(['7156834'], 1500), { pro: '7156834', og: 'OG6028555794' });
+});
+
+test('a stale OG is not married to a later label', async () => {
+  // The failure this guards: an OG from the pallet you just did, attached to
+  // the PRO of the one you are on now.
+  const { createScanResolver } = await import('../src/lib/scan-logic.js');
+  const r = createScanResolver({ ogHoldMs: 1200 });
+  r.push(['OG6028555794'], 1000);
+  assert.deepEqual(r.push(['7156834'], 5000), { pro: '7156834', og: null }, 'expired, so the piece stands alone');
+});
+
+test('junk in the frame never becomes a piece', async () => {
+  const { createScanResolver } = await import('../src/lib/scan-logic.js');
+  const r = createScanResolver();
+  assert.equal(r.push(['0259185096', 'DECATUR', ''], 1000), null, 'an Averitt PRO and text are not a Uline piece');
+});
+
+test('a scanned-without-OG id is accepted and stays distinct from typed', async () => {
+  const session = await import('../netlify/functions/scan-session.mts');
+  const scanned = session.normalizeScan({ og: 'NOOG-7156834-1', pro: '7156834', engine: 'quagga' }).row;
+  const typed = session.normalizeScan({ og: 'TYPED-7156834-1', pro: '7156834', engine: 'quagga' }).row;
+  assert.equal(scanned.engine, 'quagga', 'it really was scanned');
+  assert.equal(typed.engine, 'manual', 'this one was not');
+  assert.equal(session.mergeScans([], [scanned, typed]).scans.length, 2, 'different ids, both counted');
+});
+
+// ── The IndexedDB unwrap that silently threw away every scan ─────────────────
+
+test('a get that finds NOTHING must resolve undefined, not the request object', async () => {
+  // THE bug behind "nothing works". tx() unwrapped an IDBRequest with
+  //   result && result.result !== undefined ? result.result : result
+  // For a miss, request.result is undefined, so the ternary fell through and
+  // returned the REQUEST — which is truthy. enqueueScan's "already queued?"
+  // guard was therefore always true: it returned false and never wrote. Every
+  // piece flashed green, the counter never moved, nothing uploaded.
+  //
+  // This reproduces the unwrap in isolation, since node has no IndexedDB.
+  const unwrapOld = (r) => (r && r.result !== undefined ? r.result : r);
+  const unwrapNew = (r) => (r && typeof r === 'object' && 'result' in r ? r.result : r);
+
+  const miss = { result: undefined };          // IDBRequest for a key not present
+  const hit = { result: { key: 'a', og: 'OG6028555794' } };
+
+  assert.notEqual(unwrapOld(miss), undefined, 'the old unwrap returned a truthy request on a miss');
+  assert.equal(unwrapNew(miss), undefined, 'a miss is undefined, so the guard lets the write through');
+  assert.deepEqual(unwrapNew(hit), hit.result, 'a hit still returns the row');
+
+  // The shapes tx() also handles: getAll, and a callback returning nothing.
+  assert.deepEqual(unwrapNew({ result: [] }), [], 'empty getAll stays an array');
+  assert.equal(unwrapNew(undefined), undefined, 'a void callback stays undefined');
+});
+
+// ── Adding a piece by PRO when the OG cannot be read ─────────────────────────
+
+test('a typed piece id is accepted, and never reported as scanned', async () => {
+  // Reported from the dock: typing a PRO and pressing Add piece did nothing,
+  // because the form demanded an OG as well. A torn or missing OG barcode left
+  // no way to record the piece at all.
+  const session = await import('../netlify/functions/scan-session.mts');
+  const { row } = session.normalizeScan({ og: 'TYPED-7156834-1', pro: '7156834', engine: 'quagga' });
+  assert.ok(row, 'accepted');
+  assert.equal(row.og, 'TYPED-7156834-1');
+  assert.equal(row.engine, 'manual', 'a typed piece is never credited to a scanner');
+});
+
+test('typed ids still de-duplicate, so a replay cannot double-count', async () => {
+  const session = await import('../netlify/functions/scan-session.mts');
+  const a = session.normalizeScan({ og: 'TYPED-7156834-1', pro: '7156834' }).row;
+  const b = session.normalizeScan({ og: 'TYPED-7156834-1', pro: '7156834' }).row;
+  const merged = session.mergeScans([a], [b]);
+  assert.equal(merged.scans.length, 1);
+  assert.equal(merged.duplicates, 1);
+});
+
+test('successive typed pieces for one PRO are distinct', async () => {
+  const session = await import('../netlify/functions/scan-session.mts');
+  const rows = ['TYPED-7156834-1', 'TYPED-7156834-2', 'TYPED-7156834-3']
+    .map((og) => session.normalizeScan({ og, pro: '7156834' }).row);
+  assert.equal(session.mergeScans([], rows).scans.length, 3, 'three pieces, not one');
+});
+
+test('a typed id cannot masquerade as a real OG, and junk is still refused', async () => {
+  const session = await import('../netlify/functions/scan-session.mts');
+  assert.ok(session.normalizeScan({ og: 'OG6028555794', pro: '7156834' }).row, 'a real OG still works');
+  assert.ok(session.normalizeScan({ og: 'TYPED-123-1', pro: '7156834' }).reason, 'PRO must be 7 digits');
+  assert.ok(session.normalizeScan({ og: 'TYPED-7156834-', pro: '7156834' }).reason, 'needs an index');
+  assert.ok(session.normalizeScan({ og: 'NONSENSE', pro: '7156834' }).reason, 'junk still rejected');
+});
+
+test('the OG off the photographed label classifies correctly', async () => {
+  // From IMG_4752 on the dock: OG6028555794 above PRO 7156834. Both are valid,
+  // so the pairing failure was not a classification problem.
+  const { classifyBarcode, pairFrame } = await import('../src/lib/scan-logic.js');
+  assert.equal(classifyBarcode('OG6028555794').kind, 'og');
+  assert.equal(classifyBarcode('7156834').kind, 'pro');
+  assert.equal(pairFrame(['OG6028555794', '7156834']).complete, true);
+});
+
 // ── Board roster: who the app can identify ───────────────────────────────────
 
 test('a name claimed by exactly one driver is identified', async () => {
