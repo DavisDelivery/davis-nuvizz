@@ -28,18 +28,44 @@ test('a name claimed by TWO drivers is NOT identified', async () => {
   assert.equal(p.ambiguous.length, 1);
 });
 
-test('the partition agrees with the resolver it mirrors', async () => {
+test('a name claimed ONLY by a deactivated credential is NOT identified', async () => {
+  // The live fault: ALFRED MORGAN sat on credential 9001, an INACTIVE
+  // acceptance-test account. Login filters to active credentials and
+  // load-manifest 403s an inactive one, so he got nothing while the screen
+  // counted him among the identified.
+  const { partitionBoardRows } = await import('../src/lib/roster.js');
+  const p = partitionBoardRows([{ alias: 'ALFRED MORGAN', claimedBy: [], inactiveClaimedBy: ['9001'] }]);
+  assert.equal(p.identified.length, 0, 'a deactivated claimant is not an identification');
+  assert.equal(p.inactiveOnly.length, 1, 'and it needs its own fix, not "create a driver"');
+  assert.equal(p.unidentified.length, 0);
+});
+
+test('an active claimant wins even when a deactivated one also holds the name', async () => {
+  const { partitionBoardRows } = await import('../src/lib/roster.js');
+  const p = partitionBoardRows([{ alias: 'ALFRED MORGAN', claimedBy: ['4471'], inactiveClaimedBy: ['9001'] }]);
+  assert.equal(p.identified.length, 1, 'the live credential resolves; the dead one is irrelevant');
+  assert.equal(p.inactiveOnly.length, 0);
+});
+
+test('the partition agrees with the resolver it mirrors, including on active', async () => {
   const { partitionBoardRows } = await import('../src/lib/roster.js');
   const aliasesLib = await import('../netlify/functions/lib/aliases.mts');
   const creds = [
-    { driverNumber: '4471', nuvizzAliases: ['ALFRED MORGAN'] },
-    { driverNumber: '4472', nuvizzAliases: ['SHARED NAME'] },
-    { driverNumber: '4473', nuvizzAliases: ['SHARED NAME'] },
+    { driverNumber: '4471', nuvizzAliases: ['ALFRED MORGAN'], active: true },
+    { driverNumber: '4472', nuvizzAliases: ['SHARED NAME'], active: true },
+    { driverNumber: '4473', nuvizzAliases: ['SHARED NAME'], active: true },
+    { driverNumber: '9001', nuvizzAliases: ['DEAD ACCOUNT NAME'], active: false },
   ];
-  for (const alias of ['ALFRED MORGAN', 'SHARED NAME', 'NOBODY AT ALL']) {
-    const claimedBy = creds.filter((c) => c.nuvizzAliases.includes(alias)).map((c) => c.driverNumber);
-    const p = partitionBoardRows([{ alias, claimedBy }]);
-    const resolved = aliasesLib.resolveDriverForAlias(alias, creds).status === 'resolved';
+  // Login resolves against ACTIVE credentials only (driver-login.mts), so the
+  // screen must partition against the same set or it will disagree with reality.
+  const live = creds.filter((c) => c.active !== false);
+  for (const alias of ['ALFRED MORGAN', 'SHARED NAME', 'DEAD ACCOUNT NAME', 'NOBODY AT ALL']) {
+    const claimedBy = live.filter((c) => c.nuvizzAliases.includes(alias)).map((c) => c.driverNumber);
+    const inactiveClaimedBy = creds
+      .filter((c) => c.active === false && c.nuvizzAliases.includes(alias))
+      .map((c) => c.driverNumber);
+    const p = partitionBoardRows([{ alias, claimedBy, inactiveClaimedBy }]);
+    const resolved = aliasesLib.resolveDriverForAlias(alias, live).status === 'resolved';
     assert.equal(p.identified.length === 1, resolved, `${alias}: screen and resolver must agree`);
   }
 });
@@ -48,6 +74,22 @@ test('a malformed row does not crash the roster', async () => {
   const { partitionBoardRows } = await import('../src/lib/roster.js');
   const p = partitionBoardRows([{ alias: 'X' }, null, undefined]);
   assert.equal(p.unidentified.length, 3, 'missing claimedBy reads as unclaimed, not as identified');
+});
+
+// ── Finding a credential among fifty ─────────────────────────────────────────
+
+test('credential search matches number, display name, and aliases', async () => {
+  const { filterCredentials } = await import('../src/lib/roster.js');
+  const creds = [
+    { driverNumber: '4471', displayName: 'Michael Frye', nuvizzAliases: ['MIKE F'] },
+    { driverNumber: '8913', displayName: 'Aaron Mitchell', nuvizzAliases: ['AARON MITCHELL', 'AARON'] },
+  ];
+  assert.deepEqual(filterCredentials(creds, '4471').map((c) => c.driverNumber), ['4471'], 'by number');
+  assert.deepEqual(filterCredentials(creds, 'mitchell').map((c) => c.driverNumber), ['8913'], 'by name, case-insensitive');
+  // The dispatcher usually arrives holding a spelling off the board, not a name.
+  assert.deepEqual(filterCredentials(creds, 'mike f').map((c) => c.driverNumber), ['4471'], 'by alias');
+  assert.equal(filterCredentials(creds, '').length, 2, 'empty query shows everyone');
+  assert.equal(filterCredentials(creds, 'nobody').length, 0);
 });
 
 // ── Client-side loading order ────────────────────────────────────────────────

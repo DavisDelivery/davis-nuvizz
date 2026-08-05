@@ -27,7 +27,7 @@
 
 import { getDoc, setDoc, patchDoc, listDocs, isFirestoreEnabled } from './lib/firestore.mts';
 import { DRIVER_AUTH, UNMATCHED_ALIASES, authenticate, hashPin, isValidPinFormat, isLastActiveDispatcher, normalizeRole } from './lib/auth.mts';
-import { normalizeDriverAlias, findAmbiguousAliases, planAliasAdd } from './lib/aliases.mts';
+import { normalizeDriverAlias, findAmbiguousAliases, planAliasAdd, planAliasRemove } from './lib/aliases.mts';
 import { ok, bad, unauthorized, forbidden, readJson, viaProxy } from './lib/http.mts';
 
 /** Strip anything that must never leave the server. */
@@ -202,6 +202,17 @@ export default async (req: Request): Promise<Response> => {
       }
       console.log(`[driver-admin] ALIAS ${normalizeDriverAlias(body?.alias)} -> ${driverNumber} (added=${plan.added})`);
       return ok({ driverNumber, aliases: plan.aliases, added: plan.added, resolved: resolveId || null });
+    }
+
+    case 'remove-alias': {
+      // Drop ONE alias. The upsert path rewrites the whole set from a
+      // comma-separated string, so a careless edit there silently deletes the
+      // other spellings and that driver stops matching their stops.
+      if (!existing) return bad('unknown driver', 404);
+      const plan = planAliasRemove(publicCred({ ...existing, _id: driverNumber }), body?.alias);
+      await patchDoc(path, { nuvizzAliases: plan.aliases });
+      console.log(`[driver-admin] ALIAS-REMOVE ${normalizeDriverAlias(body?.alias)} from ${driverNumber} (removed=${plan.removed})`);
+      return ok({ driverNumber, aliases: plan.aliases, removed: plan.removed });
     }
 
     case 'issue-pin': {

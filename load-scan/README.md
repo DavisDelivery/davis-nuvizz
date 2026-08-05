@@ -33,6 +33,71 @@ store it. The "2 of 3" index is printed as text only — it is in neither barcod
 so it cannot be used for completeness. Completeness is distinct OG count against
 `expectedPieces`.
 
+## The dispatcher screen
+
+Rebuilt around the four things a dispatcher actually does: see who on the board
+will not get loads, fix it, find one credential among fifty, and issue a PIN.
+
+### Identity is computed over ACTIVE credentials only
+
+This is the correctness rule everything else hangs off. `driver-login.mts:53`
+filters to active credentials before resolving a name, and `load-manifest.mts:59`
+403s an inactive one. So a board name claimed **only by a deactivated credential
+resolves to nothing** — that driver gets an empty truck.
+
+`driver-alias-report` used to build `claimedBy` from every credential regardless
+of `active`, so those names were reported **identified**. Observed live: ALFRED
+MORGAN was held by credential 9001, an inactive acceptance-test account, so he
+never showed as needing a driver while having no working one. A green tick over a
+driver who gets nothing is the worst failure this screen can have.
+
+`claimedBy` now means *who will actually receive these loads* and counts active
+credentials only; inactive claimants come back separately as `inactiveClaimedBy`.
+`findAmbiguousAliases` and `planAliasAdd` count active only for the same reason —
+an active/inactive pair is not really ambiguous, and a dead account must never
+block a live driver from claiming their own name.
+
+### Three failure buckets, three different fixes
+
+Never merged into one count, because the remedy differs:
+
+| bucket | meaning | fix offered |
+| --- | --- | --- |
+| claimed by nobody | no credential has this name | **New driver**, or **Attach to driver** |
+| claimed only by inactive | a deactivated account holds it | reactivate, or **Attach to driver** |
+| claimed by 2+ active | resolves to **neither** | take the name off one |
+
+### Editing happens in a modal
+
+The editor used to render at the bottom of a fifty-row table, so `edit` populated
+a form ~3000px below the click and the button looked dead. That was the loudest
+complaint about this screen, and it is structural: an editor that **cannot** be
+off-screen cannot have that bug.
+
+### Aliases are chips, not a comma-separated string
+
+The old field posted the whole set through `upsert`, which **replaces** the array.
+One careless keystroke silently dropped a spelling, and the only symptom is a
+driver quietly getting no loads days later. Existing drivers now add and remove
+one alias at a time (`add-alias` / `remove-alias`); nothing else is touched. New
+drivers still stage locally, since there is no credential to write to until Save.
+
+### Attach without retyping
+
+**Attach to driver** on any problem name opens a searchable credential picker and
+adds that exact spelling to the chosen driver. Previously the only route was:
+memorise the name, scroll to find the driver, click an edit button that looked
+broken, then hand-type it into a comma-separated field without clobbering the rest.
+
+### Search, and confirmations
+
+`filterCredentials` searches number, display name **and aliases** — the dispatcher
+usually arrives holding a spelling off the board, not a person's name.
+
+Deactivate needs a second click (it strands a driver). Role changes stage and
+need **apply**: it was a bare `<select>` applying on change, so one stray scroll
+over a focused control could grant somebody dispatcher rights.
+
 ## "On the board" — who has loads, and who the app can identify
 
 A driver with loads in NuVizz but no credential claiming their name gets **no
