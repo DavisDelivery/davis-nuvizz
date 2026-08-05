@@ -69,7 +69,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.54.38';
+const APP_VERSION = '0.54.39';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -114,6 +114,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.54.39', 'THE ROUTE BOX ON AN ORDER NOW CARRIES THE DRIVER\'S NUMBER, AND THE NUMBER IS THE TEXT BUTTON. Chad, on a stop\'s ROUTE section: "this should have the route name drivers name and their phone number that is a hyperlink that brings up simple text with the pro number and name of customer pre populated." It now reads route name, driver, and the driver\'s mobile — and tapping the number opens the SimpleTexting composer already filled in with "PRO 007157031 — GOOGLE: ", the same reference line every order-text opens with since v0.54.38. So the answer to "who has this order and how do I reach them" is one line and one tap, instead of scrolling for the Text driver button. WHERE THE NUMBER COMES FROM: the MarginIQ employee card, resolved on the server — not matched in the browser. That matters because NuVizz names a driver however the load was keyed and the employee card carries the ALIASES for exactly that ("Mike Frye", "Frye, Michael"), so a browser-side name match would quietly fail for the drivers aliases exist to cover. Each name is looked up once and remembered for the page, misses included, so opening twenty stops on one driver is one lookup. NO NUMBER ON FILE, NO LINE — a driver whose card has no mobile simply shows no phone row rather than a dead link, and that is the honest answer: add the number in MarginIQ and it appears. Sending is unchanged and still resolves the number server-side at send time, so even a stale label can never misdirect a message. Zero NuVizz calls — this reads the employee roster, nothing else.'],
   ['0.54.38', 'TEXTING A CUSTOMER NO LONGER STARTS FROM A BLANK BOX. Chad, looking at the Text window on a GOOGLE stop: "i want it to prepopulate the message with the customer name and their pro number." Done — the Text button on an order now opens on that order\'s reference line, "PRO 007157031 — GOOGLE: ", with the caret sitting after it so you just type what you want to say. That is the same line the "Text driver about this order" button has always opened with, so a message about a delivery now reads the same whether it is going to the driver or to the customer. It is ordinary editable text: trim it, or delete it entirely, and nothing else changes. A missing field never leaves a mess — no PRO on the order gives you "GOOGLE: ", no customer name gives you "PRO 007157031: ", and an order with a stop number but no PRO uses the stop number. Both places the order text lives are wired: the Map stop panel AND the same panel ported into Routing, with a test pinning both so a stale-base merge can\'t quietly blank one of them out (that is exactly how the last-stop ✕ went missing for days in v0.54.19). Bulk "Text selected" is deliberately left blank — those messages go to many different orders at once, so there is no single PRO to seed. AND TO ANSWER THE OTHER HALF OF THE QUESTION — "shouldn\'t this be using simple text": it already is. This window has always sent through SimpleTexting on the Davis number, not through your phone and not through NuVizz, which is why replies come back into the Messages panel. Nothing about that changed here; the only change is what is already typed in the box when it opens.'],
   ['0.54.37', 'THE RESTRICTION ICONS ARE HALF THE SIZE. Chad, pointing at a red no-tractor-trailer truck parked over a stretch of highway: "make this icon half as big." Done — every icon that REPLACES a stop\'s pin when that stop carries restrictions (the red no-T/T truck, the amber Uline straight-truck advisory, liftgate, appointment, the receiving-hours day badges, and the "+N" overflow) now draws at 20×22 instead of 40×44. It had been the biggest thing on the map: taller than a numbered route pin (30) and more than twice an unplanned stop dot (16), which is backwards for a mark whose whole job is to ANNOTATE a stop rather than be one. A stop carrying two or three restrictions shrinks by the same half, so a row of icons stays in proportion with a single one. Nothing else moves: same artwork, same colors, same slash, and the same anchor point — the icon still sits on its exact address, not shifted half a marker off it — and because it is vector art it is drawn smaller, not squashed, so it stays crisp on a phone. The Legend previews shrink to match, on purpose: they render the very same image the map draws, so what you see in the legend is what you will find on the board. Cosmetic only — no data, filtering, scanning, or routing behavior changed.'],
   ['0.54.36', 'THE ESTES ORDER THAT KEPT "REVERTING TO THE DAVIS ENTRY" — TWO NUVIZZ RECORDS SHARE ONE NUMBER, AND EVERY BY-NUMBER LOOKUP WAS FREE TO ANSWER WITH THE WRONG ONE. Jessica, on Estes-0828068215: "I have rekeyed it in dispatch map and as soon as i change the date even in Nuvizz, it automatically reverts to the Davis entry" — and an hour later, "I tried to update this Estes delivery date in nuvizz and it completely changed the address." Neither of those is a haunting; both are one defect. NuVizz can hold TWO order records under ONE stop number — here, the rekeyed order to the real customer sitting next to the older entry consigned to Davis — and everything in this app that looks an order up asks BY NUMBER and trusts whichever single record NuVizz hands back. So the date change read the OTHER record, moved ITS window, and then refreshed the card from the same by-number lookup — which is precisely "it completely changed the address". And on every scan, the board collapsed the two records into one card last-wins, so the finished Davis-side entry kept replacing the live rekeyed order — precisely "it automatically reverts". This app learned this exact lesson for LOADS in v0.54.24 (two loads named STEVEN: identity wins, and a shared name is not allowed to speak for either); this release applies it to ORDERS. FIVE PLACES, ONE RULE — the record\'s internal id, which the board\'s feed already carries for every row, is the identity; the number is just a label. (1) Changing a delivery date now pins the write to the exact record on your screen — if NuVizz answers the read with a different record, the app REFUSES, tells you two orders share the number and which record it was offered, and writes NOTHING (before this it would have happily moved the twin\'s date, or recorded a board-date override read off the twin). (2) Notes to NuVizz get the same pin. (3) After a date change lands, the card only repaints from a lookup that returned the SAME record it verified the write against — never the twin. (4) The scan no longer merges a by-number detail pull over a board row when the ids disagree — that merge is exactly how the corrected address kept getting overwritten with the Davis one — and the same check keeps a twin\'s record from voting a live routed stop off (or onto) a truck in the demotion verify. (5) The board no longer lets a finished twin silently replace live work under the shared number: the LIVE record keeps the card, and the card now carries a red warning — "2 orders share this number" — telling you plainly to cancel or renumber the extra entry in the portal, because while the duplicate exists, portal searches and every by-number path (NuVizz\'s own included) will keep finding the wrong one. THE REAL REMEDY, same as STEVEN: clean up the duplicate in NuVizz and every symptom goes with it — the badge clears itself on the next scan once only one record carries the number.'],
@@ -3667,6 +3668,45 @@ export function formatPhone(raw) {
   return s;
 }
 
+// Driver mobile numbers, by name, cached for the life of the page. The stop panel's Route
+// block shows the number beside the driver so the dispatcher can see who is carrying the
+// order and tap straight into a text about it.
+//
+// The lookup is a server round-trip because that is where the employee card's ALIASES live —
+// a NuVizz load can name a driver differently from their roster card, and matching in the
+// browser would miss exactly those drivers. One request per distinct name, shared by every
+// panel that asks. MISSES ARE CACHED TOO, so a driver with no roster match doesn't re-ask on
+// every stop you open.
+const __driverPhoneCache = new Map();     // lowercased name → phone string | null
+const __driverPhoneInFlight = new Map();  // lowercased name → in-flight promise
+function fetchDriverPhone(name) {
+  const key = String(name ?? '').trim().toLowerCase();
+  if (!key) return Promise.resolve(null);
+  if (__driverPhoneCache.has(key)) return Promise.resolve(__driverPhoneCache.get(key));
+  if (__driverPhoneInFlight.has(key)) return __driverPhoneInFlight.get(key);
+  const p = fetch(`/.netlify/functions/driver-phone?name=${encodeURIComponent(String(name).trim())}`)
+    .then((r) => r.json())
+    .then((d) => (d && d.ok && d.phone ? String(d.phone) : null))
+    .catch(() => null) // a failed lookup just means no number to show — never a broken panel
+    .then((phone) => { __driverPhoneCache.set(key, phone); __driverPhoneInFlight.delete(key); return phone; });
+  __driverPhoneInFlight.set(key, p);
+  return p;
+}
+function useDriverPhone(driverName) {
+  const key = String(driverName ?? '').trim().toLowerCase();
+  // Seed from cache so re-opening a stop on the same driver paints the number immediately
+  // instead of flickering in.
+  const [phone, setPhone] = useState(() => __driverPhoneCache.get(key) ?? null);
+  useEffect(() => {
+    if (!key) { setPhone(null); return undefined; }
+    let alive = true;
+    setPhone(__driverPhoneCache.get(key) ?? null);
+    fetchDriverPhone(driverName).then((p) => { if (alive) setPhone(p); });
+    return () => { alive = false; };
+  }, [key, driverName]);
+  return phone;
+}
+
 async function postSendSms(payload) {
   const r = await fetch('/.netlify/functions/send-sms', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
@@ -5461,6 +5501,9 @@ function StopDataSections({ stop, note, onRefreshed, onOpenRoute, onMoveLocation
     [showTicket, live],
   );
   const textPhone = resolveStopPhone(live, note);
+  // The assigned driver's mobile, for the Route block's tap-to-text line (null until the
+  // roster answers, and for drivers with no number on file).
+  const driverPhone = useDriverPhone(live.driverName);
   // Secondary actions fold away by default; nothing is removed, only tucked (Enhancement 6).
   const [moreOpen, setMoreOpen] = useState(false);
   // Same target GoogleMapsLink used: pin coords when we have them, else the address string.
@@ -5587,6 +5630,23 @@ function StopDataSections({ stop, note, onRefreshed, onOpenRoute, onMoveLocation
             <div className="min-w-0 flex-1 text-sm">
               <div className="font-semibold text-slate-900 truncate">{live.routeName || live.loadNbr}</div>
               {live.driverName && <div className="text-xs text-slate-500 truncate">{live.driverName}</div>}
+              {/* The driver's number, tap-to-text about THIS order (prefilled with its PRO +
+                  customer). Absent until the roster lookup answers, and absent for good if
+                  that driver has no number on their employee card — a missing line is the
+                  honest answer, better than a dead link. */}
+              {live.driverName && driverPhone && (
+                onTextDriver ? (
+                  <button
+                    onClick={() => onTextDriver(live)}
+                    className="text-xs text-blue-700 hover:underline"
+                    title={`Text ${live.driverName} — prefilled with this order's PRO and customer`}
+                  >
+                    {formatPhone(driverPhone)}
+                  </button>
+                ) : (
+                  <a href={`tel:${driverPhone}`} className="block text-xs text-blue-700 hover:underline">{formatPhone(driverPhone)}</a>
+                )
+              )}
               {live.routeName && <div className="text-[10px] text-slate-400 font-mono">{live.loadNbr}</div>}
             </div>
             {onOpenRoute && (
