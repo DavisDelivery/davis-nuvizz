@@ -13,9 +13,10 @@ import { evaluateScan, loadProgress, stopProgress, ogGapHint, OUTCOME, normalize
 import { createWedgeAccumulator, WEDGE_PAIR_WINDOW_MS } from './lib/wedge.js';
 import { initAudio, playVerdict } from './lib/feedback.js';
 import { useSortable, SortableTh } from './lib/useSortable.jsx';
+import { partitionBoardRows } from './lib/roster.js';
 
 // Bumped by hand on every change. load-scan versions independently of dispatch-map.
-const APP_VERSION = '0.9.0';
+const APP_VERSION = '0.10.0';
 
 const BUILD_COMMIT = typeof __BUILD_COMMIT__ !== 'undefined' ? __BUILD_COMMIT__ : 'dev';
 const BUILD_TIME = typeof __BUILD_TIME__ !== 'undefined' ? __BUILD_TIME__ : '';
@@ -1172,6 +1173,113 @@ function UnmatchedRow({ u, onAssign, onDismiss }) {
   );
 }
 
+/**
+ * Who is on the board, and which of them the app can actually identify.
+ *
+ * A driver with loads in NuVizz but no credential claiming their name gets NO
+ * loads on the handset and no error anyone sees — the failure is silent until
+ * they are standing at the dock. This is the list that makes it visible before
+ * then, and every unidentified name here is one click from becoming a driver.
+ *
+ * Reads the pre-built stop index only. ZERO NuVizz calls.
+ */
+function BoardToday({ rows, window: win, days, onDays, onAdd, busy }) {
+  const { identified, unidentified, ambiguous: ambiguousRows } = useMemo(
+    () => partitionBoardRows(rows),
+    [rows],
+  );
+  const [showAll, setShowAll] = useState(false);
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center gap-2 flex-wrap">
+        <div className="text-sm font-medium text-slate-700 flex items-center gap-2">
+          <Users className="w-4 h-4" /> On the board
+        </div>
+        <div className="flex gap-1 text-xs">
+          {[[1, 'Today'], [7, '7 days'], [14, '14 days']].map(([d, label]) => (
+            <button
+              key={d}
+              type="button"
+              disabled={busy}
+              onClick={() => onDays(d)}
+              className={`rounded-lg px-2 py-1 ring-1 ${days === d ? 'bg-[#1e5b92] text-white ring-[#1e5b92]' : 'bg-white ring-slate-300 text-slate-600'}`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {!win?.daysRead?.length ? (
+        <Banner kind="warn">
+          No board was read for this window{win?.anchor ? ` (anchor ${win.anchor})` : ''}. Weekends are skipped, and a
+          day with no stop index yet reads as empty. Try a wider window.
+        </Banner>
+      ) : (
+        <div className="text-xs text-slate-500">
+          {win.daysRead.length} day(s) read · {rows.length} distinct names ·{' '}
+          <span className="text-emerald-700 font-medium">{identified.length} identified</span>
+          {unidentified.length ? (
+            <> · <span className="text-rose-700 font-medium">{unidentified.length} NOT identified</span></>
+          ) : null}
+        </div>
+      )}
+
+      {ambiguousRows.length ? (
+        <Banner kind="error">
+          {ambiguousRows.length} name(s) claimed by more than one driver — these resolve to NEITHER driver:{' '}
+          {ambiguousRows.map((r) => `${r.alias} (${r.claimedBy.join(', ')})`).join('; ')}
+        </Banner>
+      ) : null}
+
+      {unidentified.length ? (
+        <div className="rounded-xl bg-rose-50 ring-1 ring-rose-200 px-3 py-2">
+          <div className="text-xs font-medium text-rose-900">
+            These names have loads but no driver set up — they would get nothing on the handset
+          </div>
+          <div className="mt-2 space-y-1">
+            {unidentified.map((r) => (
+              <div key={r.alias} className="flex items-center gap-2 text-sm">
+                <span className="flex-1 truncate">{r.alias}</span>
+                <span className="text-xs text-slate-500 shrink-0">{r.stops} stop(s)</span>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => onAdd(r.alias)}
+                  className="text-xs rounded-lg bg-[#1e5b92] text-white px-2 py-1 shrink-0"
+                >
+                  Add driver
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
+
+      {identified.length ? (
+        <div className="rounded-xl bg-white ring-1 ring-slate-200 px-3 py-2">
+          <button type="button" className="text-xs underline" onClick={() => setShowAll((v) => !v)}>
+            {showAll ? 'Hide' : `Show the ${identified.length} identified`}
+          </button>
+          {showAll ? (
+            <div className="mt-2 space-y-1">
+              {identified.map((r) => (
+                <div key={r.alias} className="flex items-center gap-2 text-sm">
+                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                  <span className="flex-1 truncate">{r.alias}</span>
+                  <span className="text-xs text-slate-500 shrink-0">→ {r.claimedBy[0]}</span>
+                  <span className="text-xs text-slate-400 shrink-0">{r.stops} stop(s)</span>
+                </div>
+              ))}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function DispatcherScreen({ session, onSignOut }) {
   const [drivers, setDrivers] = useState([]);
   const [unmatched, setUnmatched] = useState([]);
@@ -1179,6 +1287,21 @@ function DispatcherScreen({ session, onSignOut }) {
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
   const [editing, setEditing] = useState(null);
+  // A board name waiting to become a driver. Separate from `editing` because a
+  // NEW driver still needs its number typed — the edit form locks that field.
+  const [prefill, setPrefill] = useState(null);
+  const [board, setBoard] = useState([]);
+  const [boardWindow, setBoardWindow] = useState(null);
+  const [boardDays, setBoardDays] = useState(1);
+  const [boardNonce, setBoardNonce] = useState(0);
+  const editorRef = useRef(null);
+
+  const openAdd = useCallback((alias) => {
+    setEditing(null);
+    setPrefill({ alias, displayName: alias });
+    // The form lives below a long table; without this the click looks like a no-op.
+    setTimeout(() => editorRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 50);
+  }, []);
 
   const reload = useCallback(async () => {
     setErr('');
@@ -1197,6 +1320,21 @@ function DispatcherScreen({ session, onSignOut }) {
   useEffect(() => {
     reload();
   }, [reload]);
+
+  // The board roster is a separate, slower read (it walks the index day by day),
+  // so it loads on its own and never holds up the credential list.
+  useEffect(() => {
+    let alive = true;
+    api
+      .aliasReport(session.token, boardDays)
+      .then((r) => {
+        if (!alive) return;
+        setBoard(r.rows || []);
+        setBoardWindow(r.window || null);
+      })
+      .catch((e) => alive && setErr(e?.message || 'Could not read the board.'));
+    return () => { alive = false; };
+  }, [session, boardDays, boardNonce]);
 
   const { sorted, sortKey, sortDir, toggle } = useSortable(drivers, 'driverNumber', 'asc');
 
@@ -1257,6 +1395,26 @@ function DispatcherScreen({ session, onSignOut }) {
             ))}
           </div>
         ) : null}
+
+        <BoardToday
+          rows={board}
+          window={boardWindow}
+          days={boardDays}
+          onDays={setBoardDays}
+          onAdd={openAdd}
+          busy={busy}
+        />
+
+        <div className="flex items-center justify-between gap-2">
+          <div className="text-sm font-medium text-slate-700">{drivers.length} credentials</div>
+          <button
+            type="button"
+            className="text-xs rounded-lg ring-1 ring-slate-300 bg-white px-2 py-1"
+            onClick={() => openAdd('')}
+          >
+            Add a driver
+          </button>
+        </div>
 
         <div className="overflow-x-auto rounded-xl bg-white ring-1 ring-slate-200">
           <table className="min-w-full text-sm">
@@ -1322,14 +1480,20 @@ function DispatcherScreen({ session, onSignOut }) {
           </table>
         </div>
 
+        <div ref={editorRef} />
         <DriverEditor
-          key={editing?.driverNumber || 'new'}
+          key={editing?.driverNumber || `new:${prefill?.alias || ''}`}
           driver={editing}
+          prefill={editing ? null : prefill}
           busy={busy}
-          onCancel={() => setEditing(null)}
+          onCancel={() => { setEditing(null); setPrefill(null); }}
           onSave={async (body) => {
             await act(body);
             setEditing(null);
+            setPrefill(null);
+            // Re-read the roster so a driver just added moves out of "NOT
+            // identified" immediately — otherwise the fix looks like it failed.
+            setBoardNonce((n) => n + 1);
           }}
           onIssuePin={async (driverNumber, pin, forceChange) =>
             act({ action: 'issue-pin', driverNumber, pin, forceChange: forceChange === true })}
@@ -1339,18 +1503,26 @@ function DispatcherScreen({ session, onSignOut }) {
   );
 }
 
-function DriverEditor({ driver, onSave, onCancel, onIssuePin, busy }) {
+function DriverEditor({ driver, prefill, onSave, onCancel, onIssuePin, busy }) {
   const [driverNumber, setDriverNumber] = useState(driver?.driverNumber || '');
-  const [displayName, setDisplayName] = useState(driver?.displayName || '');
-  const [aliasText, setAliasText] = useState((driver?.nuvizzAliases || []).join(', '));
+  const [displayName, setDisplayName] = useState(driver?.displayName || prefill?.displayName || '');
+  const [aliasText, setAliasText] = useState(
+    (driver?.nuvizzAliases || []).join(', ') || prefill?.alias || '',
+  );
   const [pin, setPin] = useState('');
   const [forceChange, setForceChange] = useState(false);
 
   return (
-    <div className="rounded-xl bg-white ring-1 ring-slate-200 p-3 space-y-2">
+    <div className={`rounded-xl bg-white p-3 space-y-2 ring-1 ${prefill ? 'ring-[#1e5b92] ring-2' : 'ring-slate-200'}`}>
       <div className="text-sm font-medium text-slate-700">
         {driver ? `Edit ${driver.driverNumber}` : 'Add a driver'}
       </div>
+      {prefill?.alias ? (
+        <div className="text-xs text-slate-600">
+          Setting up <span className="font-semibold">{prefill.alias}</span> from the board. Give them a driver number
+          (the one on their paperwork), then issue a PIN below once saved.
+        </div>
+      ) : null}
       <input
         value={driverNumber}
         onChange={(e) => setDriverNumber(e.target.value)}

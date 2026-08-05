@@ -1,6 +1,55 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
+// ── Board roster: who the app can identify ───────────────────────────────────
+
+test('a name claimed by exactly one driver is identified', async () => {
+  const { partitionBoardRows } = await import('../src/lib/roster.js');
+  const p = partitionBoardRows([{ alias: 'ALFRED MORGAN', claimedBy: ['4471'] }]);
+  assert.equal(p.identified.length, 1);
+  assert.equal(p.unidentified.length, 0);
+  assert.equal(p.ambiguous.length, 0);
+});
+
+test('a name claimed by NOBODY is flagged — that driver would get no loads', async () => {
+  const { partitionBoardRows } = await import('../src/lib/roster.js');
+  const p = partitionBoardRows([{ alias: 'ALFRED MORGAN', claimedBy: [] }]);
+  assert.deepEqual(p.unidentified.map((r) => r.alias), ['ALFRED MORGAN']);
+  assert.equal(p.identified.length, 0);
+});
+
+test('a name claimed by TWO drivers is NOT identified', async () => {
+  // The one that is easy to get wrong: two claimants resolve to neither driver,
+  // so counting this as identified would hide two broken drivers behind a tick.
+  const { partitionBoardRows } = await import('../src/lib/roster.js');
+  const p = partitionBoardRows([{ alias: 'ALFRED MORGAN', claimedBy: ['4471', '4472'] }]);
+  assert.equal(p.identified.length, 0, 'must not count as identified');
+  assert.equal(p.unidentified.length, 0, 'nor as simply unclaimed — it is a different fault');
+  assert.equal(p.ambiguous.length, 1);
+});
+
+test('the partition agrees with the resolver it mirrors', async () => {
+  const { partitionBoardRows } = await import('../src/lib/roster.js');
+  const aliasesLib = await import('../netlify/functions/lib/aliases.mts');
+  const creds = [
+    { driverNumber: '4471', nuvizzAliases: ['ALFRED MORGAN'] },
+    { driverNumber: '4472', nuvizzAliases: ['SHARED NAME'] },
+    { driverNumber: '4473', nuvizzAliases: ['SHARED NAME'] },
+  ];
+  for (const alias of ['ALFRED MORGAN', 'SHARED NAME', 'NOBODY AT ALL']) {
+    const claimedBy = creds.filter((c) => c.nuvizzAliases.includes(alias)).map((c) => c.driverNumber);
+    const p = partitionBoardRows([{ alias, claimedBy }]);
+    const resolved = aliasesLib.resolveDriverForAlias(alias, creds).status === 'resolved';
+    assert.equal(p.identified.length === 1, resolved, `${alias}: screen and resolver must agree`);
+  }
+});
+
+test('a malformed row does not crash the roster', async () => {
+  const { partitionBoardRows } = await import('../src/lib/roster.js');
+  const p = partitionBoardRows([{ alias: 'X' }, null, undefined]);
+  assert.equal(p.unidentified.length, 3, 'missing claimedBy reads as unclaimed, not as identified');
+});
+
 // ── Client-side loading order ────────────────────────────────────────────────
 
 test('loadOrder puts the nose first and the doors last', async () => {
