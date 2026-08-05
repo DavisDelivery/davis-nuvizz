@@ -9,14 +9,24 @@ import { loadSession, saveSession, clearSession, daysRemaining } from './lib/ses
 import * as api from './lib/api.js';
 import * as store from './lib/offline.js';
 import { startScanner } from './lib/scanner.js';
-import { evaluateScan, loadProgress, stopProgress, ogGapHint, OUTCOME, normalizePro, createPairBuffer, loadOrder, loadGroupCount, deliverySeq, sequenceFingerprint, classifyBarcode } from './lib/scan-logic.js';
+import { evaluateScan, loadProgress, stopProgress, ogGapHint, OUTCOME, normalizePro, createPairBuffer, createScanGate, sortForLoading, loadOrder, loadGroupCount, deliverySeq, sequenceFingerprint, classifyBarcode } from './lib/scan-logic.js';
 import { createWedgeAccumulator, WEDGE_PAIR_WINDOW_MS } from './lib/wedge.js';
 import { initAudio, playVerdict } from './lib/feedback.js';
 import { useSortable, SortableTh } from './lib/useSortable.jsx';
 import { partitionBoardRows, filterCredentials, availableAliases, loginNamesFor } from './lib/roster.js';
 
 // Bumped by hand on every change. load-scan versions independently of dispatch-map.
-const APP_VERSION = '0.20.0';
+/**
+ * How long the same PRO is ignored after a good read.
+ *
+ * A pallet sits in frame for a second or more after the decode lands, and the
+ * loader is still walking. Every one of those frames is the SAME piece. 3s is
+ * long enough to cover the walk-away and short enough that a genuine second
+ * piece of the same PRO is not annoying to book.
+ */
+const SAME_PRO_COOLDOWN_MS = 3000;
+
+const APP_VERSION = '0.21.0';
 
 const BUILD_COMMIT = typeof __BUILD_COMMIT__ !== 'undefined' ? __BUILD_COMMIT__ : 'dev';
 const BUILD_TIME = typeof __BUILD_TIME__ !== 'undefined' ? __BUILD_TIME__ : '';
@@ -682,6 +692,20 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
   const [rawLog, setRawLog] = useState([]);
   // A repeat PRO waiting for a deliberate tap before it books another piece.
   const [dupPending, setDupPending] = useState(null);
+  /**
+   * The scan gate, and it MUST be a ref.
+   *
+   * Quagga fires ~20 frames a second. `record` is a useCallback closing over
+   * `scans`, so several calls run before React re-renders and every one of them
+   * sees the same stale array — each concludes "no prior scan for this PRO" and
+   * each books a piece. That is how a 2-skid stop reached 3/2 on the dock: not a
+   * scanning fault, a state-timing fault.
+   *
+   * A ref updates synchronously, so the second frame sees what the first did.
+   */
+  const gate = useRef(createScanGate({ cooldownMs: SAME_PRO_COOLDOWN_MS }));
+  /** Guards against two frames both passing the gate while the first is still awaiting. */
+  const recording = useRef(false);
   // The order whose card is open — from a stop tap or a PRO lookup.
   const [openStop, setOpenStop] = useState(null);
   const rawSeen = useRef(0);
@@ -774,19 +798,59 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
       // de-duplicate on, so a label drifting back into view minutes later would
       // silently count twice. The WMS solved this by never auto-logging a
       // repeat: first read logs, every read after that asks for a tap.
+      // Three ways a piece arrives, and they get different guards:
+      //   scanner   camera frames — needs the cooldown AND the count check
+      //   manual    typed by hand — needs the count check, no cooldown
+      //   override  a deliberate tap on "Another piece" — bypasses both, because
+      //             the loader is asserting the paperwork is wrong
+      const isOverride = engineName === 'override';
+      const isScanner = engineName !== 'manual' && !isOverride;
+      if (isOverride) engineName = 'manual';
+
+      // A stop cannot hold more pieces than the manifest says, however the piece
+      // got here — scanned, typed, or replayed. This sits above the OG branch on
+      // purpose: an earlier version checked only inside it, and the typed path
+      // (which mints its own TYPED- id) walked straight past to 8/2.
+      // Only a deliberate override gets through.
+      if (!isOverride) {
+        const p7 = normalizePro(pair.pro);
+        const owner = stops.find((s2) => (s2.pros || []).some((x) => normalizePro(x) === p7));
+        if (owner) {
+          const done = stopProgress(owner, scans, handConfirms);
+          if (done.expected > 0 && done.scanned >= done.expected) {
+            setDupPending({ pro: p7, count: done.scanned, full: owner.businessName, expected: done.expected });
+            return null;
+          }
+        }
+      }
+
       if (!pair.og) {
         const pro7 = normalizePro(pair.pro);
+        const now = Date.now();
+
+        if (isScanner) {
+          // One piece at a time, and one label at a time — both decided
+          // synchronously, because React's state is exactly what is behind here.
+          if (recording.current) return null;
+          if (!gate.current.allow(pro7, now)) return null;
+        }
+
         const already = scans.filter((s2) => normalizePro(s2.pro) === pro7).length;
-        if (already > 0 && engineName !== 'manual') {
+        if (already > 0 && isScanner) {
           setDupPending({ pro: pro7, count: already });
           return null;
         }
+
+        // A stop can never hold more pieces than the manifest says. Refuse the
+        // extra and say which stop, rather than quietly printing 3/2.
+        if (isScanner) recording.current = true;
         let n = 1;
         const used = new Set(scans.map((s2) => String(s2.og).toUpperCase()));
         while (used.has(`NOOG-${pro7}-${n}`)) n += 1;
         pair = { ...pair, og: `NOOG-${pro7}-${n}` };
       }
       const evaluated = evaluateScan(pair, stops, scannedOgs, otherLoads);
+      recording.current = false;
       if (evaluated.outcome === OUTCOME.SILENT) return evaluated; // no prompt, no button, no decision
       setResult(evaluated);
       setPartial({ pro: null, og: null });
@@ -1119,6 +1183,12 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
             {/* 195px fixed, the same as the WMS cam-wrap. An aspect ratio grows
                 with screen width and pushed the stop list off the bottom; a
                 fixed height keeps the orders visible on every handset. */}
+            {/* Target outline, copied from the WMS scan-reticle. Without it the
+                loader has no idea where in the frame the decoder is looking, and
+                aims at the middle of a pallet instead of at the label. */}
+            <div className="pointer-events-none absolute inset-0 z-[5] flex items-center justify-center">
+              <div className="w-[90%] max-w-[320px] h-[85px] rounded border-2 border-amber-400 shadow-[0_0_0_2000px_rgba(0,0,0,0.2)]" />
+            </div>
             <video ref={videoRef} className="absolute inset-0 w-full h-full object-cover" playsInline muted />
             <div ref={containerRef} className="absolute inset-0" />
             {!camOn ? (
@@ -1162,10 +1232,14 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
         {dupPending ? (
           <div className="rounded-xl bg-amber-50 ring-1 ring-amber-300 px-3 py-3">
             <div className="text-sm text-amber-900 font-medium">
-              PRO {dupPending.pro} already logged ×{dupPending.count}
+              {dupPending.full
+                ? `${dupPending.full} is already complete — ${dupPending.count} of ${dupPending.expected}`
+                : `PRO ${dupPending.pro} already logged ×${dupPending.count}`}
             </div>
             <div className="text-xs text-amber-900 mt-0.5">
-              Same label seen again. If this is another piece, tap to add it.
+              {dupPending.full
+                ? 'The manifest says this stop is full. Only add another if the paperwork is wrong.'
+                : 'Same label seen again. If this is another piece, tap to add it.'}
             </div>
             <div className="flex gap-2 mt-2">
               <button
@@ -1181,7 +1255,8 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
                 onClick={() => {
                   const p = dupPending;
                   setDupPending(null);
-                  record({ pro: p.pro, og: null }, 'manual');
+                  gate.current.clear();
+                  record({ pro: p.pro, og: null }, 'override');
                 }}
               >
                 Another piece
@@ -1256,11 +1331,13 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
               renumbered. Check with dispatch before loading anything else.
             </Banner>
           ) : null}
-          {loadingOrder.map((s, i) => (
+          {sortForLoading(
+            loadingOrder.map((s) => ({ stop: s, progress: stopProgress(s, scans, handConfirms) })),
+          ).map(({ stop: s, progress: sp }, i) => (
             <StopRow
               key={s.stopNbr}
               stop={s}
-              progress={stopProgress(s, scans, handConfirms)}
+              progress={sp}
               onHandConfirm={handConfirm}
               onOpen={() => setOpenStop(s)}
               groupCount={groupCount}
@@ -1273,7 +1350,7 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
               }
               sharesPosition={
                 s.loadSeq != null &&
-                ((loadingOrder[i - 1]?.loadSeq === s.loadSeq) || (loadingOrder[i + 1]?.loadSeq === s.loadSeq))
+                loadingOrder.filter((o) => o.loadSeq === s.loadSeq).length > 1
               }
             />
           ))}
