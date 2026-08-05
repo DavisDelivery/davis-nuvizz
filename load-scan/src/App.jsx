@@ -5,6 +5,9 @@ import {
 } from 'lucide-react';
 
 import { fmtDate, fmtDateTime, etToday } from './lib/fmt.js';
+import { shiftDayString } from './lib/shift.js';
+import ReportScreen from './ReportScreen.jsx';
+import AssignScreen from './AssignScreen.jsx';
 import { loadSession, saveSession, clearSession, daysRemaining } from './lib/session.js';
 import * as api from './lib/api.js';
 import * as store from './lib/offline.js';
@@ -26,7 +29,7 @@ import { partitionBoardRows, filterCredentials, availableAliases, loginNamesFor 
  */
 const SAME_PRO_COOLDOWN_MS = 3000;
 
-const APP_VERSION = '0.21.0';
+const APP_VERSION = '0.22.0';
 
 const BUILD_COMMIT = typeof __BUILD_COMMIT__ !== 'undefined' ? __BUILD_COMMIT__ : 'dev';
 const BUILD_TIME = typeof __BUILD_TIME__ !== 'undefined' ? __BUILD_TIME__ : '';
@@ -208,9 +211,18 @@ function ChangePinScreen({ session, onDone }) {
 
 // ── Load selection ───────────────────────────────────────────────────────────
 
-function LoadPicker({ manifest, onPick, onManual, onRefresh, busy, loader }) {
+function LoadPicker({ manifest, onPick, onManual, onRefresh, busy, loader, assigned = [] }) {
   const [manual, setManual] = useState('');
-  const loads = manifest?.loads || [];
+  const all = manifest?.loads || [];
+
+  // Trucks handed to this person come first, under their own heading. A loader
+  // with five of twenty trucks should not have to hunt the list for them — but
+  // the other fifteen stay visible and pickable, because assignment steers the
+  // work and never gates it.
+  const mine = new Set((assigned || []).map(String));
+  const loads = mine.size
+    ? [...all.filter((l) => mine.has(String(l.loadNbr))), ...all.filter((l) => !mine.has(String(l.loadNbr)))]
+    : all;
 
   if (manifest?.unresolved) {
     return (
@@ -241,9 +253,15 @@ function LoadPicker({ manifest, onPick, onManual, onRefresh, busy, loader }) {
       <div className="text-sm text-slate-600">
         {fmtDate(manifest?.date)} · {loader ? `pick the truck you are loading — ${loads.length} on the dock` : 'pick your load'}
       </div>
-      {loads.map((l) => (
+      {loads.map((l, i) => (
+        <React.Fragment key={l.loadNbr}>
+          {mine.size && i === 0 ? (
+            <div className="text-xs font-semibold text-[#1e5b92] pt-1">Your trucks</div>
+          ) : null}
+          {mine.size && i === mine.size ? (
+            <div className="text-xs font-semibold text-slate-500 pt-2">Everything else on the dock</div>
+          ) : null}
         <button
-          key={l.loadNbr}
           type="button"
           disabled={busy}
           onClick={() => onPick(l.loadNbr)}
@@ -260,6 +278,7 @@ function LoadPicker({ manifest, onPick, onManual, onRefresh, busy, loader }) {
           </div>
           <ChevronRight className="w-5 h-5 text-slate-400" />
         </button>
+        </React.Fragment>
       ))}
       {loader && !loads.length ? <Banner kind="warn">No loads on the board for today yet.</Banner> : null}
       <div className="pt-2">
@@ -1081,6 +1100,22 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
         close: true,
         reconciliation: { resolvedBy, note },
       });
+      // Stop the clock. Fire-and-forget for the same reason clockIn is: the
+      // load IS closed at this point, and a failed timing write must not tell
+      // the driver otherwise. The report falls back to scan times if it misses.
+      api
+        .postWorkEvents(session.token, [
+          {
+            kind: 'finish',
+            loadNbr: activeLoad,
+            at: new Date().toISOString(),
+            workerName: session.displayName,
+            closedOut: true,
+            pieces: progress.scanned,
+          },
+        ])
+        .catch(() => {});
+
       setClosing(false);
       setClosed(true);
       setFlash(`Load ${activeLoad} closed.`);
@@ -1452,7 +1487,7 @@ function SignsInAs({ cred, creds }) {
  * the credential roster, so someone who never signed in is visibly missing
  * rather than simply not there.
  */
-function DayPanel({ data, date, onDate, busy, onRefresh }) {
+function DayPanel({ data, date, onDate, busy, onRefresh, session }) {
   const [tab, setTab] = useState('trucks');
   if (!data) {
     return (
@@ -1519,7 +1554,12 @@ function DayPanel({ data, date, onDate, busy, onRefresh }) {
       </div>
 
       <div className="flex gap-1 text-xs">
-        {[['trucks', `Trucks (${loads.length})`], ['people', `People (${people.length})`]].map(([k, label]) => (
+        {[
+          ['trucks', `Trucks (${loads.length})`],
+          ['people', `People (${people.length})`],
+          ['assign', 'Assign'],
+          ['report', 'Report'],
+        ].map(([k, label]) => (
           <button
             key={k}
             type="button"
@@ -1531,7 +1571,11 @@ function DayPanel({ data, date, onDate, busy, onRefresh }) {
         ))}
       </div>
 
-      {tab === 'trucks' ? (
+      {tab === 'assign' ? (
+        <AssignScreen session={session} loads={loads} people={people} />
+      ) : tab === 'report' ? (
+        <ReportScreen session={session} />
+      ) : tab === 'trucks' ? (
         <div className="rounded-xl bg-white ring-1 ring-slate-200 divide-y divide-slate-100 max-h-96 overflow-y-auto">
           {loads.length ? (
             loads.map((l) => (
@@ -2197,6 +2241,7 @@ function DispatcherScreen({ session, onSignOut }) {
         ) : null}
 
         <DayPanel
+          session={session}
           data={activity}
           date={activityDate}
           onDate={setActivityDate}
@@ -2549,6 +2594,49 @@ export default function App() {
   const [session, setSession] = useState(() => loadSession());
   const [manifest, setManifest] = useState(null);
   const [activeLoad, setActiveLoad] = useState(null);
+  /** Loads the dispatcher handed to this person for the current shift. */
+  const [assigned, setAssigned] = useState([]);
+
+  useEffect(() => {
+    // Runs in the ROOT, where there is no session until someone signs in.
+    if (!session?.token) {
+      setAssigned([]);
+      return undefined;
+    }
+    let alive = true;
+    api
+      .fetchAssignments(session.token, shiftDayString())
+      .then((r) => alive && setAssigned(r?.mine ?? []))
+      // No assignments, or the endpoint is not deployed yet: the board still
+      // works exactly as it did. This must never block getting to a truck.
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [session?.token]);
+
+  /**
+   * Start the clock on a truck.
+   *
+   * Deliberately NOT awaited by the caller and deliberately silent on failure.
+   * The worklog is a record OF the work, never a gate ON it — a loader at 3am
+   * must not be held at the door because a timing write timed out. A start that
+   * never lands degrades the report to a scan-derived duration, which is exactly
+   * what the 'derived' timing source exists to admit to.
+   */
+  const clockIn = useCallback(
+    (loadNbr) => {
+      // The root renders before anyone has signed in, so the session is legitimately
+      // null here and the dependency array below must not dereference it either.
+      if (!loadNbr || !session?.token) return;
+      api
+        .postWorkEvents(session.token, [
+          { kind: 'start', loadNbr, at: new Date().toISOString(), workerName: session.displayName },
+        ])
+        .catch(() => {});
+    },
+    [session?.token, session?.displayName],
+  );
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState('');
 
@@ -2680,15 +2768,18 @@ export default function App() {
             manifest={manifest}
             busy={loading}
             loader={session.role === 'loader'}
+            assigned={assigned}
             // A summary row has no stops: fetch the chosen load before opening
             // it. Same ?loadNbr path the manual entry already used.
             onPick={async (loadNbr) => {
               if (manifest.summariesOnly) await getManifest({ loadNbr });
               setActiveLoad(loadNbr);
+              clockIn(loadNbr);
             }}
             onManual={async (loadNbr) => {
               await getManifest({ loadNbr });
               setActiveLoad(loadNbr);
+              clockIn(loadNbr);
             }}
             onRefresh={() => getManifest()}
           />
