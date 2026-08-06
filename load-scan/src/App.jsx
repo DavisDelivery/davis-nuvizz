@@ -268,7 +268,7 @@ function clockTime(v) {
   return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 }
 
-function OrderCard({ stop, progress, groupCount, onClose, onAddPiece }) {
+function OrderCard({ stop, progress, groupCount, onClose, onAddPiece, onMarkDamaged, onVoidPiece }) {
   if (!stop) return null;
   const cityLine = [[stop.city, stop.state].filter(Boolean).join(', '), stop.zip].filter(Boolean).join(' ');
   const addr = [stop.addr1, cityLine].filter(Boolean).join('\n');
@@ -327,6 +327,58 @@ function OrderCard({ stop, progress, groupCount, onClose, onAddPiece }) {
         </Field>
         {stop.instructions ? <Field label="Instructions" wide>{stop.instructions}</Field> : null}
       </div>
+
+      {/* The pieces themselves, and the only place a booked scan can be acted on.
+          It lives on the order card for the same reason the hand-add does: the
+          count it changes is right there on screen, so a loader sees 3/3 become
+          2/3 rather than trusting that something happened. */}
+      {progress.pieces?.length ? (
+        <div>
+          <div className="text-[11px] uppercase tracking-wide text-slate-500 mb-1">
+            Pieces on the truck
+          </div>
+          <ul className="divide-y divide-slate-100 rounded-lg ring-1 ring-slate-200">
+            {progress.pieces.map((p) => (
+              <li key={p.og} className="flex items-center gap-2 px-2 py-1.5">
+                <span className="font-mono text-xs text-slate-700 flex-1 truncate">{p.og}</span>
+                {p.damaged ? (
+                  <span
+                    className="text-[11px] font-semibold text-amber-800 bg-amber-50 ring-1 ring-amber-300 rounded px-1.5 py-0.5"
+                    title={p.damageNote || 'Damaged — still loaded, flagged for a claim'}
+                  >
+                    DAMAGED
+                  </span>
+                ) : null}
+                {onMarkDamaged ? (
+                  <button
+                    type="button"
+                    onClick={() => onMarkDamaged(p.og, !p.damaged)}
+                    className="text-xs underline text-slate-500"
+                  >
+                    {p.damaged ? 'not damaged' : 'damaged'}
+                  </button>
+                ) : null}
+                {/* Taking a piece back off the count is destructive — it makes a
+                    complete load short — so it gets the same deliberate second
+                    click as every other destructive action in the app. */}
+                {onVoidPiece ? (
+                  <ConfirmAction
+                    label="remove"
+                    confirmLabel="take it off"
+                    onConfirm={() => onVoidPiece(p.og)}
+                  />
+                ) : null}
+              </li>
+            ))}
+          </ul>
+          {progress.damagedCount > 0 ? (
+            <p className="mt-1 text-xs text-slate-500">
+              Damaged freight still counts as loaded — it is on the truck. The flag is what
+              gets the claim raised.
+            </p>
+          ) : null}
+        </div>
+      ) : null}
 
       {/* The degraded path, and it belongs HERE rather than beside the search
           box: the count it changes is on screen, so a loader can see 2/3 become
@@ -774,7 +826,14 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
     const rows = await store.queuedFor(activeLoad);
     setScans(
       rows.filter((r) => r.kind !== 'hand')
-        .map((r) => ({ og: r.og, pro: r.pro, scannedAt: r.scannedAt, stopNbr: r.stopNbr, engine: r.engine })),
+        .map((r) => ({
+          og: r.og, pro: r.pro, scannedAt: r.scannedAt, stopNbr: r.stopNbr, engine: r.engine,
+          // These are projected deliberately: this mapping is what stopProgress
+          // sees, so a field missing here is a flag that silently does nothing
+          // however carefully it was stored.
+          damaged: !!r.damaged, damageNote: r.damageNote || '',
+          voidedAt: r.voidedAt || null, voidReason: r.voidReason || '',
+        })),
     );
     setHandConfirms(
       rows.filter((r) => r.kind === 'hand')
@@ -1461,6 +1520,20 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
             const pro = openStop.primaryPro || openStop.pros?.[0];
             setOpenStop(null);
             addManualFor(pro);
+          }}
+          // Both write to the queue and re-read it, exactly like a scan does, so
+          // the count on screen comes from the same source of truth either way.
+          // flushQueue is best-effort: the flags are already durable locally, and
+          // a dock with no signal must not block a loader from recording damage.
+          onMarkDamaged={async (og, damaged) => {
+            await store.markDamaged(activeLoad, og, damaged);
+            await refreshLocal();
+            flushQueue();
+          }}
+          onVoidPiece={async (og) => {
+            await store.voidScan(activeLoad, og);
+            await refreshLocal();
+            flushQueue();
           }}
           onClose={() => setOpenStop(null)}
         />

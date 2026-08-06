@@ -275,11 +275,33 @@ export function sequenceFingerprint(stops) {
     .join('|');
 }
 
+/**
+ * A scan the loader took back.
+ *
+ * Voids are TOMBSTONED, never deleted. The queue is also the sync source: a scan
+ * that already reached the server and is then dropped from the phone leaves the
+ * server still counting it, and the dock and the office disagree forever. A row
+ * that stays, marked, can be pushed like any other and reconciles both ends.
+ * It is also the honest record — somebody scanned that piece, and then somebody
+ * un-scanned it.
+ */
+export const isVoided = (s) => !!(s && s.voidedAt);
+
+/** Scans that still count. The only place voiding is allowed to matter. */
+export const activeScans = (scans) => (scans || []).filter((s) => !isVoided(s));
+
 export function stopProgress(stop, scans, handConfirms = []) {
   const pros = new Set(stop.pros || []);
-  const ogs = new Set(
-    (scans || []).filter((s) => pros.has(normalizePro(s.pro))).map((s) => String(s.og).toUpperCase()),
-  );
+
+  // First scan of an OG wins, so a piece marked damaged after the fact keeps its
+  // flag rather than being overwritten by a re-read of the same label.
+  const byOg = new Map();
+  for (const s of activeScans(scans)) {
+    if (!pros.has(normalizePro(s.pro))) continue;
+    const og = String(s.og).toUpperCase();
+    if (!byOg.has(og)) byOg.set(og, s);
+  }
+  const ogs = new Set(byOg.keys());
   const expected = Number(stop.expectedPieces || 0);
 
   // A hand-confirm is per STOP and all-or-nothing: there is no piece barcode to
@@ -290,6 +312,13 @@ export function stopProgress(stop, scans, handConfirms = []) {
   const scannedPieces = ogs.size;
   const confirmedPieces = hand ? Math.max(0, expected - scannedPieces) : 0;
   const scanned = scannedPieces + confirmedPieces;
+
+  // Damaged freight still WENT ON THE TRUCK, so it counts exactly like any other
+  // piece — the trailer is full either way, and a load that reads short because
+  // someone flagged a crushed carton would send a loader hunting for freight that
+  // is already aboard. What it needs is to be visible: the piece rides into the
+  // session record so the office can raise the claim.
+  const damaged = [...byOg.entries()].filter(([, s]) => s.damaged);
 
   return {
     stopNbr: stop.stopNbr,
@@ -302,6 +331,15 @@ export function stopProgress(stop, scans, handConfirms = []) {
     over: Math.max(0, scanned - expected),
     complete: expected > 0 && scanned === expected,
     ogs: [...ogs],
+    // Enough for the UI to list the pieces and act on one of them.
+    pieces: [...byOg.entries()].map(([og, s]) => ({
+      og,
+      pro: normalizePro(s.pro),
+      damaged: !!s.damaged,
+      damageNote: s.damageNote || '',
+    })),
+    damagedOgs: damaged.map(([og]) => og),
+    damagedCount: damaged.length,
   };
 }
 
@@ -326,7 +364,9 @@ export function loadProgress(stops, scans, handConfirms = []) {
   const per = splitPickups(stops).loading.map((s) => stopProgress(s, scans, handConfirms));
   const expected = per.reduce((n, p) => n + p.expected, 0);
   // Distinct OGs across the load, plus whatever the hand-confirms vouch for.
-  const scannedPieces = new Set((scans || []).map((s) => String(s.og).toUpperCase())).size;
+  // Voided scans drop out here too, or the load total would keep counting a piece
+  // the stop total has already let go of and the two would never agree.
+  const scannedPieces = new Set(activeScans(scans).map((s) => String(s.og).toUpperCase())).size;
   const confirmedPieces = per.reduce((n, p) => n + p.confirmedPieces, 0);
   const scanned = scannedPieces + confirmedPieces;
   return {
@@ -336,6 +376,11 @@ export function loadProgress(stops, scans, handConfirms = []) {
     scannedPieces,
     confirmedPieces,
     handConfirmedStops: per.filter((p) => p.handConfirmed).map((p) => p.stopNbr),
+    // Every damaged piece on the truck, so closeout can hand the office one list
+    // rather than making someone reopen each stop to find them.
+    damagedOgs: per.flatMap((p) => p.damagedOgs),
+    damagedCount: per.reduce((n, p) => n + p.damagedCount, 0),
+    stopsWithDamage: per.filter((p) => p.damagedCount > 0).map((p) => p.stopNbr),
     short: Math.max(0, expected - scanned),
     over: Math.max(0, scanned - expected),
     // A load may only close cleanly when every stop reconciles.

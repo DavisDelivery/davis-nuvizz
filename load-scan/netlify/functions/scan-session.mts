@@ -35,6 +35,21 @@ export interface ScanRow {
   scannedAt: string;
   stopNbr: string;
   engine: 'native' | 'quagga' | 'manual';
+  /**
+   * Damaged freight that STILL WENT ON THE TRUCK. It counts toward the load like
+   * any other piece — the trailer is full either way — so this changes no
+   * arithmetic. It exists so the office can raise the claim, which it cannot do
+   * if the flag stops at the phone.
+   */
+  damaged?: boolean;
+  damageNote?: string;
+  /**
+   * A scan the loader took back. Tombstoned rather than deleted so the void can
+   * be pushed: a scan that reached here and was then merely dropped from the
+   * phone would leave this record counting a piece the dock has let go of.
+   */
+  voidedAt?: string | null;
+  voidReason?: string;
 }
 
 /** Normalize one incoming scan, or explain why it cannot be used. */
@@ -76,6 +91,9 @@ export function normalizeScan(raw: any): { row?: ScanRow; reason?: string } {
   const at = String(raw?.scannedAt ?? '').trim();
   const scannedAt = at && !Number.isNaN(Date.parse(at)) ? new Date(at).toISOString() : new Date().toISOString();
 
+  const voidedRaw = String(raw?.voidedAt ?? '').trim();
+  const voidedAt = voidedRaw && !Number.isNaN(Date.parse(voidedRaw)) ? new Date(voidedRaw).toISOString() : null;
+
   return {
     row: {
       og,
@@ -84,6 +102,10 @@ export function normalizeScan(raw: any): { row?: ScanRow; reason?: string } {
       stopNbr: String(raw?.stopNbr ?? '').trim(),
       // A typed piece is never reported as scanned, whatever the client claims.
       engine: TYPED_RE.test(og) ? 'manual' : engine,
+      damaged: !!raw?.damaged,
+      damageNote: raw?.damaged ? String(raw?.damageNote ?? '').slice(0, 500) : '',
+      voidedAt,
+      voidReason: voidedAt ? String(raw?.voidReason ?? '').slice(0, 500) : '',
     },
   };
 }

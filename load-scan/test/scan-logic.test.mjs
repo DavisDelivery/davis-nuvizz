@@ -769,3 +769,120 @@ test('a gap NEVER changes completeness', () => {
   assert.equal(p.complete, true, 'counting distinct OGs decides completeness');
   assert.ok(ogGapHint(p.ogs), 'and the gap is still surfaced for the human');
 });
+
+// ── Damaged freight, and taking a scan back ─────────────────────────────────
+//
+// Two different problems that both arrive at the same moment: the loader is
+// holding a piece and something about it is wrong. Either it is broken (it still
+// goes on the truck, and the office needs to know) or it should never have been
+// booked to this load at all (it has to come back off the count).
+
+const dmgStop = { stopNbr: 'A', pros: ['7156834'], expectedPieces: 3 };
+const scan = (og, extra = {}) => ({ pro: '7156834', og, ...extra });
+
+test('a damaged piece still counts — it is on the truck', async () => {
+  // The whole point of the "damaged = still loaded" rule. A crushed carton that
+  // ships is freight aboard the trailer; making the load read short would send a
+  // loader hunting the dock for a piece that is already behind them.
+  const { stopProgress } = await import('../src/lib/scan-logic.js');
+  const p = stopProgress(dmgStop, [
+    scan('OG6028555790'),
+    scan('OG6028555791', { damaged: true, damageNote: 'corner crushed' }),
+    scan('OG6028555792'),
+  ]);
+  assert.equal(p.scanned, 3, 'damaged freight is still loaded freight');
+  assert.equal(p.complete, true, 'and the stop still reconciles');
+  assert.equal(p.short, 0);
+});
+
+test('a damaged piece is reported so the office can claim it', async () => {
+  const { stopProgress } = await import('../src/lib/scan-logic.js');
+  const p = stopProgress(dmgStop, [
+    scan('OG6028555790'),
+    scan('OG6028555791', { damaged: true, damageNote: 'corner crushed' }),
+    scan('OG6028555792'),
+  ]);
+  assert.deepEqual(p.damagedOgs, ['OG6028555791']);
+  assert.equal(p.damagedCount, 1);
+  assert.equal(p.pieces.find((x) => x.og === 'OG6028555791').damageNote, 'corner crushed');
+});
+
+test('a voided scan stops counting', async () => {
+  // The gap that had no answer at all: a piece booked to the load that then does
+  // not make the truck. Without this the dock count says loaded forever.
+  const { stopProgress } = await import('../src/lib/scan-logic.js');
+  const p = stopProgress(dmgStop, [
+    scan('OG6028555790'),
+    scan('OG6028555791', { voidedAt: '2026-08-06T12:00:00.000Z', voidReason: 'left on dock' }),
+    scan('OG6028555792'),
+  ]);
+  assert.equal(p.scanned, 2, 'the voided piece came back off the count');
+  assert.equal(p.short, 1, 'and the stop is honestly short');
+  assert.equal(p.complete, false);
+  assert.equal(p.pieces.length, 2, 'it is not listed as a piece on the stop either');
+});
+
+test('voiding is not the same as damaging — one counts, one does not', async () => {
+  const { stopProgress } = await import('../src/lib/scan-logic.js');
+  const damaged = stopProgress(dmgStop, [scan('OG6028555790', { damaged: true })]);
+  const voided = stopProgress(dmgStop, [scan('OG6028555790', { voidedAt: '2026-08-06T12:00:00.000Z' })]);
+  assert.equal(damaged.scanned, 1);
+  assert.equal(voided.scanned, 0);
+});
+
+test('the load total drops a voided piece too, or the two counts disagree', async () => {
+  // loadProgress counts distinct OGs across the WHOLE load by its own path, so it
+  // has to honour the void independently — otherwise the stop says 2 and the load
+  // says 3 and nobody can tell which is lying.
+  const { loadProgress } = await import('../src/lib/scan-logic.js');
+  const stops = [
+    { stopNbr: 'A', pros: ['7156834'], expectedPieces: 2 },
+    { stopNbr: 'B', pros: ['7156835'], expectedPieces: 1 },
+  ];
+  const scans = [
+    scan('OG6028555790'),
+    scan('OG6028555791', { voidedAt: '2026-08-06T12:00:00.000Z' }),
+    { pro: '7156835', og: 'OG6028555792' },
+  ];
+  const p = loadProgress(stops, scans);
+  assert.equal(p.scanned, 2, 'two pieces actually on the truck');
+  assert.equal(p.short, 1);
+  assert.equal(p.clean, false, 'and the load cannot close clean while it is short');
+});
+
+test('damage across the load is gathered into one list for closeout', async () => {
+  const { loadProgress } = await import('../src/lib/scan-logic.js');
+  const stops = [
+    { stopNbr: 'A', pros: ['7156834'], expectedPieces: 1 },
+    { stopNbr: 'B', pros: ['7156835'], expectedPieces: 1 },
+  ];
+  const p = loadProgress(stops, [
+    scan('OG6028555790', { damaged: true }),
+    { pro: '7156835', og: 'OG6028555792', damaged: true },
+  ]);
+  assert.equal(p.damagedCount, 2);
+  assert.deepEqual(p.stopsWithDamage, ['A', 'B']);
+  assert.equal(p.clean, true, 'damage does not stop a full truck closing clean');
+});
+
+test('a re-read of a damaged label does not clear the flag', async () => {
+  // The camera fires repeatedly at one label. If a later frame overwrote the
+  // stored row, marking a piece damaged and then walking past it again would
+  // quietly un-damage it.
+  const { stopProgress } = await import('../src/lib/scan-logic.js');
+  const p = stopProgress(dmgStop, [
+    scan('OG6028555790', { damaged: true, damageNote: 'wet' }),
+    scan('OG6028555790'),
+  ]);
+  assert.equal(p.damagedCount, 1, 'first scan of an OG wins');
+  assert.equal(p.pieces[0].damageNote, 'wet');
+});
+
+test('activeScans is the only thing that decides what a void hides', async () => {
+  const { activeScans, isVoided } = await import('../src/lib/scan-logic.js');
+  const rows = [scan('OG6028555790'), scan('OG6028555791', { voidedAt: '2026-08-06T12:00:00.000Z' })];
+  assert.equal(activeScans(rows).length, 1);
+  assert.equal(isVoided(rows[1]), true);
+  assert.equal(isVoided(rows[0]), false);
+  assert.equal(isVoided(null), false, 'a missing row is not a voided one');
+});
