@@ -46,6 +46,32 @@ jobs:
           node-version: '22'
       - run: npm test
 
+  # ── Does the SCANNER actually start? ───────────────────────────────────────
+  # Same gap as `smoke` below, in the app that matters most at 5am. load-scan had
+  # 211 unit tests and not one that mounts the app: a blank-screen deploy — the
+  # exact v0.54.14 failure dispatch-map already shipped once — would have gone out
+  # green. `npm run lint` here is a stub too, so nothing else was watching.
+  # Needs an install and a browser, so it cannot ride along on the no-install
+  # `unit-load-scan` job above.
+  smoke-load-scan:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: load-scan
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: load-scan/package-lock.json
+      - run: npm ci
+      # Browser revision is read from the RESOLVED playwright-core so it always matches
+      # the library that drives it; a hardcoded version silently drifts on a lockfile bump.
+      - run: npx --yes playwright@$(node -p "require('playwright-core/package.json').version") install chromium
+      - run: npm run build
+      - run: npm run smoke
+
   # ── Does the app actually START? ───────────────────────────────────────────
   # v0.54.14 shipped a bundle that was blank on every device: state declared in
   # RoutingScreen and read in Shell threw `driversPanelOpen is not defined` on the
