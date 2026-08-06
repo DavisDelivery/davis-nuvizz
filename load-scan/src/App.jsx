@@ -30,7 +30,7 @@ import { partitionBoardRows, filterCredentials, availableAliases, loginNamesFor 
  */
 const SAME_PRO_COOLDOWN_MS = 3000;
 
-const APP_VERSION = '0.23.0';
+const APP_VERSION = '0.24.0';
 
 const BUILD_COMMIT = typeof __BUILD_COMMIT__ !== 'undefined' ? __BUILD_COMMIT__ : 'dev';
 const BUILD_TIME = typeof __BUILD_TIME__ !== 'undefined' ? __BUILD_TIME__ : '';
@@ -320,7 +320,7 @@ function clockTime(v) {
   return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 }
 
-function OrderCard({ stop, progress, groupCount, onClose }) {
+function OrderCard({ stop, progress, groupCount, onClose, onAddPiece }) {
   if (!stop) return null;
   const cityLine = [[stop.city, stop.state].filter(Boolean).join(', '), stop.zip].filter(Boolean).join(' ');
   const addr = [stop.addr1, cityLine].filter(Boolean).join('\n');
@@ -377,6 +377,19 @@ function OrderCard({ stop, progress, groupCount, onClose }) {
         {stop.instructions ? <Field label="Instructions" wide>{stop.instructions}</Field> : null}
       </div>
 
+      {/* The degraded path, and it belongs HERE rather than beside the search
+          box: the count it changes is on screen, so a loader can see 2/3 become
+          3/3 instead of typing a number into a field with no context. */}
+      {onAddPiece && !progress.complete ? (
+        <button
+          type="button"
+          onClick={onAddPiece}
+          className="w-full rounded-lg ring-1 ring-slate-300 bg-white px-3 py-2 text-sm"
+        >
+          Can't scan it — add a piece by hand
+        </button>
+      ) : null}
+
       {mapQ ? (
         <a
           href={`https://maps.google.com/?q=${mapQ}`}
@@ -399,7 +412,7 @@ function OutcomeCard({ result, partial }) {
         {need ? (
           <span className="font-medium">Hold steady — need the {need}</span>
         ) : (
-          <span>Point at a label. Both barcodes.</span>
+          <span>Point at the PRO barcode.</span>
         )}
       </Banner>
     );
@@ -737,7 +750,6 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
   const [openStop, setOpenStop] = useState(null);
   const rawSeen = useRef(0);
   const [manualPro, setManualPro] = useState('');
-  const [manualOg, setManualOg] = useState('');
 
   // ── Scanner gun (keyboard wedge) ───────────────────────────────────────────
   const [gunMode, setGunMode] = useState(false);
@@ -1068,31 +1080,25 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
   }
 
   async function addManual() {
-    const pro = normalizePro(manualPro);
+    return addManualFor(manualPro);
+  }
+
+  async function addManualFor(proInput) {
+    const pro = normalizePro(proInput);
     if (!/^\d{7}$/.test(pro)) {
       setFlash('Enter the 7-digit PRO from the label.');
       return;
     }
-    const typedOg = manualOg.trim().toUpperCase();
-    if (typedOg && !/^OG\d{10}$/.test(typedOg)) {
-      setFlash('That OG is not right — it is OG followed by 10 digits. Leave it blank to add by PRO alone.');
-      return;
-    }
-
-    let og = typedOg;
-    if (!og) {
-      // Next free index for this PRO, so adding three pieces books three.
-      const used = new Set(scans.map((s) => String(s.og).toUpperCase()));
-      let n = 1;
-      while (used.has(`TYPED-${pro}-${n}`)) n += 1;
-      og = `TYPED-${pro}-${n}`;
-    }
+    // Next free index for this PRO, so adding three pieces books three.
+    const used = new Set(scans.map((s) => String(s.og).toUpperCase()));
+    let n = 1;
+    while (used.has(`TYPED-${pro}-${n}`)) n += 1;
+    const og = `TYPED-${pro}-${n}`;
 
     setFlash('');
     const evaluated = await record({ pro, og }, 'manual');
     if (evaluated?.outcome === OUTCOME.RED) setFlash(`PRO ${pro} is not on this load.`);
     setManualPro('');
-    setManualOg('');
   }
 
   async function confirmClose({ resolvedBy, note }) {
@@ -1335,29 +1341,34 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
           </details>
         ) : null}
 
-        {/* Manual entry — the degraded path when the camera will not cooperate. */}
-        <details className="rounded-xl bg-white ring-1 ring-slate-200 px-3 py-2">
-          <summary className="text-sm text-slate-600 cursor-pointer">Type it instead</summary>
-          <div className="mt-2 space-y-2">
-            <input
-              value={manualPro}
-              onChange={(e) => setManualPro(e.target.value)}
-              inputMode="numeric"
-              placeholder="PRO (7 digits)"
-              className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
-            />
-            <input
-              value={manualOg}
-              onChange={(e) => setManualOg(e.target.value)}
-              placeholder="OG number"
-              className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono"
-            />
-            <div className="flex gap-2">
-            <BigButton tone="ghost" onClick={lookUpPro}>Look up</BigButton>
-            <BigButton tone="ghost" onClick={addManual}>Add piece</BigButton>
-          </div>
-          </div>
-        </details>
+        {/* One row, always visible. It was a dropdown holding four controls —
+            a PRO field, an OG field and two buttons — which is three taps and a
+            scroll to look up a number you are already holding. The OG field is
+            gone entirely: since a PRO alone is a piece, typing an OG bought
+            nothing the scanner does not do better.
+
+            Adding a piece by hand moved onto the order card, where the count it
+            is about is on screen. */}
+        <div className="flex gap-2">
+          <input
+            value={manualPro}
+            onChange={(e) => setManualPro(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') lookUpPro();
+            }}
+            inputMode="numeric"
+            placeholder="PRO number"
+            aria-label="PRO number"
+            className="flex-1 min-w-0 rounded-xl border border-slate-300 px-3 py-3 text-base font-mono tracking-wide"
+          />
+          <button
+            type="button"
+            onClick={lookUpPro}
+            className="shrink-0 rounded-xl bg-[#1e5b92] text-white px-5 py-3 text-base font-medium"
+          >
+            Look up
+          </button>
+        </div>
 
         {/* Stops */}
         <div className="space-y-2">
@@ -1433,6 +1444,7 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
           stop={openStop}
           progress={stopProgress(openStop, scans, handConfirms)}
           groupCount={groupCount}
+          onAddPiece={() => addManualFor(openStop.primaryPro || openStop.pros?.[0])}
           onClose={() => setOpenStop(null)}
         />
       ) : null}
