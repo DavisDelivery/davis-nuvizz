@@ -98,9 +98,73 @@ export async function enqueueHandConfirm(loadNbr, date, confirm) {
 export async function enqueueScan(loadNbr, date, scan) {
   const key = queueKey(loadNbr, scan.og);
   const existing = await tx(STORE_QUEUE, 'readonly', (s) => s.get(key));
+  // A voided row still occupies the key. Scanning that piece again is the loader
+  // undoing the void — putting the freight back on the truck — so it must revive
+  // the row rather than be swallowed as a duplicate. Anything already marked on
+  // it (damage, most of all) survives: the piece did not stop being damaged.
+  if (existing?.voidedAt) {
+    await tx(STORE_QUEUE, 'readwrite', (s) =>
+      s.put({ ...existing, voidedAt: null, voidReason: '', syncedAt: null }),
+    );
+    return true;
+  }
   if (existing) return false;
   await tx(STORE_QUEUE, 'readwrite', (s) =>
     s.put({ key, loadNbr, date, ...scan, queuedAt: new Date().toISOString() }),
+  );
+  return true;
+}
+
+/**
+ * Take a scan back.
+ *
+ * TOMBSTONE, never delete. The queue is the sync source: a scan that already
+ * reached the server and is then dropped from the phone leaves the server still
+ * counting it, and the dock and the office disagree forever. Clearing `syncedAt`
+ * is the point — the row goes back in the flush and carries the void up.
+ *
+ * The tombstone also keeps the OG key occupied, so re-scanning a voided piece is
+ * a deliberate un-void rather than a silent second booking.
+ */
+export async function voidScan(loadNbr, og, reason = '') {
+  const key = queueKey(loadNbr, og);
+  const row = await tx(STORE_QUEUE, 'readonly', (s) => s.get(key));
+  if (!row || row.voidedAt) return false;
+  await tx(STORE_QUEUE, 'readwrite', (s) =>
+    s.put({ ...row, voidedAt: new Date().toISOString(), voidReason: String(reason || ''), syncedAt: null }),
+  );
+  return true;
+}
+
+/** Put a voided scan back on the load. */
+export async function unvoidScan(loadNbr, og) {
+  const key = queueKey(loadNbr, og);
+  const row = await tx(STORE_QUEUE, 'readonly', (s) => s.get(key));
+  if (!row || !row.voidedAt) return false;
+  await tx(STORE_QUEUE, 'readwrite', (s) =>
+    s.put({ ...row, voidedAt: null, voidReason: '', syncedAt: null }),
+  );
+  return true;
+}
+
+/**
+ * Flag a piece as damaged. It STAYS on the load — see stopProgress — because it
+ * is physically on the truck; this is what tells the office to raise a claim.
+ * Clearing `syncedAt` re-pushes the row so the flag actually leaves the phone.
+ */
+export async function markDamaged(loadNbr, og, damaged = true, note = '') {
+  const key = queueKey(loadNbr, og);
+  const row = await tx(STORE_QUEUE, 'readonly', (s) => s.get(key));
+  if (!row) return false;
+  if (!!row.damaged === !!damaged && String(row.damageNote || '') === String(note || '')) return false;
+  await tx(STORE_QUEUE, 'readwrite', (s) =>
+    s.put({
+      ...row,
+      damaged: !!damaged,
+      damageNote: damaged ? String(note || '') : '',
+      damagedAt: damaged ? new Date().toISOString() : null,
+      syncedAt: null,
+    }),
   );
   return true;
 }

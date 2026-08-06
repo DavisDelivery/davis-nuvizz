@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  PackageCheck, ScanLine, CheckCircle2, XCircle, AlertTriangle, RefreshCw, CloudOff,
+  ScanLine, CheckCircle2, XCircle, AlertTriangle, RefreshCw, CloudOff,
   LogOut, Users, ClipboardList, Camera, KeyRound, ChevronRight,
 } from 'lucide-react';
 
@@ -18,6 +18,8 @@ import { createWedgeAccumulator, WEDGE_PAIR_WINDOW_MS } from './lib/wedge.js';
 import { initAudio, playVerdict } from './lib/feedback.js';
 import { useSortable, SortableTh } from './lib/useSortable.jsx';
 import { partitionBoardRows, filterCredentials, availableAliases, loginNamesFor } from './lib/roster.js';
+import { APP_VERSION, BUILD_COMMIT, BUILD_TIME, BUILD_CONTEXT } from './lib/build.js';
+import { Header, Banner, BigButton, Modal, ConfirmAction } from './components/ui.jsx';
 
 // Bumped by hand on every change. load-scan versions independently of dispatch-map.
 /**
@@ -30,61 +32,7 @@ import { partitionBoardRows, filterCredentials, availableAliases, loginNamesFor 
  */
 const SAME_PRO_COOLDOWN_MS = 3000;
 
-const APP_VERSION = '0.26.0';
-
-const BUILD_COMMIT = typeof __BUILD_COMMIT__ !== 'undefined' ? __BUILD_COMMIT__ : 'dev';
-const BUILD_TIME = typeof __BUILD_TIME__ !== 'undefined' ? __BUILD_TIME__ : '';
-const BUILD_CONTEXT = typeof __BUILD_CONTEXT__ !== 'undefined' ? __BUILD_CONTEXT__ : 'dev';
-
 // ── Shell ────────────────────────────────────────────────────────────────────
-
-function Header({ title, subtitle, right }) {
-  return (
-    <div className="bg-[#1e5b92] px-4 py-3 text-white flex items-center gap-3 sticky top-0 z-20">
-      <PackageCheck className="w-6 h-6 shrink-0" aria-hidden="true" />
-      <div className="min-w-0 flex-1">
-        <h1 className="text-base font-semibold leading-tight truncate">{title}</h1>
-        {subtitle ? <p className="text-xs text-white/70 leading-tight truncate">{subtitle}</p> : null}
-      </div>
-      {right}
-      {/* Version, far right on every screen. Bumped on every merged PR, so
-          "which build is that phone on" is answered by looking at it rather
-          than by asking the driver to describe what they see. */}
-      <span className="text-[11px] font-mono text-white/70 shrink-0 tabular-nums" title={`build ${BUILD_COMMIT}`}>
-        v{APP_VERSION}
-      </span>
-    </div>
-  );
-}
-
-function Banner({ kind, children }) {
-  const tone = {
-    info: 'bg-slate-50 ring-slate-200 text-slate-700',
-    warn: 'bg-amber-50 ring-amber-300 text-amber-900',
-    error: 'bg-rose-50 ring-rose-300 text-rose-900',
-    good: 'bg-emerald-50 ring-emerald-300 text-emerald-900',
-  }[kind || 'info'];
-  return <div className={`rounded-xl px-3 py-2 text-sm ring-1 ${tone}`}>{children}</div>;
-}
-
-const BigButton = ({ children, onClick, disabled, tone = 'primary', type = 'button' }) => {
-  const cls = {
-    primary: 'bg-[#1e5b92] hover:bg-[#194b78] active:bg-[#153f64] text-white',
-    ghost: 'bg-white ring-1 ring-slate-300 text-slate-700 hover:bg-slate-50',
-    danger: 'bg-rose-600 hover:bg-rose-700 text-white',
-  }[tone];
-  return (
-    <button
-      type={type}
-      onClick={onClick}
-      disabled={disabled}
-      // 48px min target: gloves, 5am, one hand.
-      className={`w-full rounded-xl px-4 py-3 text-base font-medium transition-colors disabled:opacity-50 ${cls}`}
-    >
-      {children}
-    </button>
-  );
-};
 
 // ── Login ────────────────────────────────────────────────────────────────────
 
@@ -320,17 +268,20 @@ function clockTime(v) {
   return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 }
 
-function OrderCard({ stop, progress, groupCount, onClose, onAddPiece }) {
+function OrderCard({ stop, progress, groupCount, onClose, onAddPiece, onMarkDamaged, onVoidPiece }) {
   if (!stop) return null;
   const cityLine = [[stop.city, stop.state].filter(Boolean).join(', '), stop.zip].filter(Boolean).join(' ');
   const addr = [stop.addr1, cityLine].filter(Boolean).join('\n');
   const mapQ = encodeURIComponent([stop.addr1, stop.city, stop.state, stop.zip].filter(Boolean).join(', '));
   const window_ = [stop.plannedFrom, stop.plannedTo].filter(Boolean).map(clockTime).join(' - ');
 
-  const Field = ({ label, children, wide }) => (
+  // `strong` is for the one or two fields a loader reads at arm's length rather
+  // than studies up close; everything else stays text-sm so emphasis still means
+  // something.
+  const Field = ({ label, children, wide, strong }) => (
     <div className={wide ? 'col-span-2' : ''}>
       <div className="text-[11px] uppercase tracking-wide text-slate-500">{label}</div>
-      <div className="text-sm text-slate-900 whitespace-pre-line">{children || '—'}</div>
+      <div className={`${strong ? 'text-lg font-bold' : 'text-sm'} text-slate-900 whitespace-pre-line`}>{children || '—'}</div>
     </div>
   );
 
@@ -366,7 +317,7 @@ function OrderCard({ stop, progress, groupCount, onClose, onAddPiece }) {
         {stop.contactName || stop.phone ? (
           <Field label="Contact" wide>{[stop.contactName, stop.phone].filter(Boolean).join(' \u00b7 ')}</Field>
         ) : null}
-        <Field label="Skids / loose">{stop.skids} / {stop.loose}</Field>
+        <Field label="Skids / loose" strong>{stop.skids} / {stop.loose}</Field>
         <Field label="Weight">{stop.weight ? `${stop.weight} lb` : '—'}</Field>
         <Field label="Route / Load">{[stop.routeName, stop.loadNbr].filter(Boolean).join(' · ')}</Field>
         {stop.sealNbr ? <Field label="Seal #">{stop.sealNbr}</Field> : null}
@@ -376,6 +327,58 @@ function OrderCard({ stop, progress, groupCount, onClose, onAddPiece }) {
         </Field>
         {stop.instructions ? <Field label="Instructions" wide>{stop.instructions}</Field> : null}
       </div>
+
+      {/* The pieces themselves, and the only place a booked scan can be acted on.
+          It lives on the order card for the same reason the hand-add does: the
+          count it changes is right there on screen, so a loader sees 3/3 become
+          2/3 rather than trusting that something happened. */}
+      {progress.pieces?.length ? (
+        <div>
+          <div className="text-[11px] uppercase tracking-wide text-slate-500 mb-1">
+            Pieces on the truck
+          </div>
+          <ul className="divide-y divide-slate-100 rounded-lg ring-1 ring-slate-200">
+            {progress.pieces.map((p) => (
+              <li key={p.og} className="flex items-center gap-2 px-2 py-1.5">
+                <span className="font-mono text-xs text-slate-700 flex-1 truncate">{p.og}</span>
+                {p.damaged ? (
+                  <span
+                    className="text-[11px] font-semibold text-amber-800 bg-amber-50 ring-1 ring-amber-300 rounded px-1.5 py-0.5"
+                    title={p.damageNote || 'Damaged — still loaded, flagged for a claim'}
+                  >
+                    DAMAGED
+                  </span>
+                ) : null}
+                {onMarkDamaged ? (
+                  <button
+                    type="button"
+                    onClick={() => onMarkDamaged(p.og, !p.damaged)}
+                    className="text-xs underline text-slate-500"
+                  >
+                    {p.damaged ? 'not damaged' : 'damaged'}
+                  </button>
+                ) : null}
+                {/* Taking a piece back off the count is destructive — it makes a
+                    complete load short — so it gets the same deliberate second
+                    click as every other destructive action in the app. */}
+                {onVoidPiece ? (
+                  <ConfirmAction
+                    label="remove"
+                    confirmLabel="take it off"
+                    onConfirm={() => onVoidPiece(p.og)}
+                  />
+                ) : null}
+              </li>
+            ))}
+          </ul>
+          {progress.damagedCount > 0 ? (
+            <p className="mt-1 text-xs text-slate-500">
+              Damaged freight still counts as loaded — it is on the truck. The flag is what
+              gets the claim raised.
+            </p>
+          ) : null}
+        </div>
+      ) : null}
 
       {/* The degraded path, and it belongs HERE rather than beside the search
           box: the count it changes is on screen, so a loader can see 2/3 become
@@ -559,10 +562,21 @@ function StopRow({ stop, progress, onHandConfirm, onOpen, groupCount, trailerEnd
           {stop.pros.join(', ')}
         </span>
       </div>
+      {/* Skids and loose are the SHAPE of the work: 3 skids is a pallet jack and
+          three trips to the nose, 12 loose is hand-stacking. A loader decides how
+          to attack the stop off these two numbers, and they sat in the same small
+          grey line as the city — the work read smaller than the town it ships to.
+          Same promotion the PRO got above, one step down so the PRO still leads. */}
+      <div className="mt-1 pl-8 flex items-baseline flex-wrap gap-x-2">
+        <span className="text-base font-bold text-slate-900">
+          {stop.skids} skids · {stop.loose} loose
+        </span>
+        {stop.countIsEstimated ? (
+          <span className="text-xs text-slate-500" title="No piece total on this order — count computed from skids + loose">count from parts</span>
+        ) : null}
+      </div>
       <div className="mt-0.5 pl-8 text-xs text-slate-500 flex flex-wrap gap-x-2">
         <span>{stop.city}{stop.state ? `, ${stop.state}` : ''}</span>
-        <span>{stop.skids} skids · {stop.loose} loose</span>
-        {stop.countIsEstimated ? <span title="No piece total on this order — count computed from skids + loose">count from parts</span> : null}
         {stop.appointmentRequired ? <span className="text-amber-700 font-medium">APPT</span> : null}
       </div>
       {gaps ? (
@@ -812,7 +826,14 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
     const rows = await store.queuedFor(activeLoad);
     setScans(
       rows.filter((r) => r.kind !== 'hand')
-        .map((r) => ({ og: r.og, pro: r.pro, scannedAt: r.scannedAt, stopNbr: r.stopNbr, engine: r.engine })),
+        .map((r) => ({
+          og: r.og, pro: r.pro, scannedAt: r.scannedAt, stopNbr: r.stopNbr, engine: r.engine,
+          // These are projected deliberately: this mapping is what stopProgress
+          // sees, so a field missing here is a flag that silently does nothing
+          // however carefully it was stored.
+          damaged: !!r.damaged, damageNote: r.damageNote || '',
+          voidedAt: r.voidedAt || null, voidReason: r.voidReason || '',
+        })),
     );
     setHandConfirms(
       rows.filter((r) => r.kind === 'hand')
@@ -1500,6 +1521,20 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
             setOpenStop(null);
             addManualFor(pro);
           }}
+          // Both write to the queue and re-read it, exactly like a scan does, so
+          // the count on screen comes from the same source of truth either way.
+          // flushQueue is best-effort: the flags are already durable locally, and
+          // a dock with no signal must not block a loader from recording damage.
+          onMarkDamaged={async (og, damaged) => {
+            await store.markDamaged(activeLoad, og, damaged);
+            await refreshLocal();
+            flushQueue();
+          }}
+          onVoidPiece={async (og) => {
+            await store.voidScan(activeLoad, og);
+            await refreshLocal();
+            flushQueue();
+          }}
           onClose={() => setOpenStop(null)}
         />
       ) : null}
@@ -1709,76 +1744,6 @@ function DayPanel({ data, date, onDate, busy, onRefresh, session }) {
         </div>
       )}
     </div>
-  );
-}
-
-/**
- * A centred overlay. The dispatcher screen used to render its editor at the
- * BOTTOM of a fifty-row table, so clicking "edit" populated a form three
- * thousand pixels below the click and the button looked broken. An editor that
- * cannot be off-screen cannot have that bug.
- */
-function Modal({ title, onClose, children }) {
-  useEffect(() => {
-    const onKey = (e) => e.key === 'Escape' && onClose();
-    window.addEventListener('keydown', onKey);
-    // Stop the table scrolling behind the dialog on touch.
-    const prev = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
-    return () => {
-      window.removeEventListener('keydown', onKey);
-      document.body.style.overflow = prev;
-    };
-  }, [onClose]);
-
-  return (
-    <div
-      className="fixed inset-0 z-50 bg-slate-900/50 flex items-start sm:items-center justify-center p-3 overflow-y-auto"
-      onMouseDown={(e) => e.target === e.currentTarget && onClose()}
-    >
-      <div role="dialog" aria-modal="true" aria-label={title} className="w-full max-w-lg my-auto rounded-2xl bg-white shadow-xl">
-        <div className="flex items-center gap-2 px-4 py-3 border-b border-slate-200 sticky top-0 bg-white rounded-t-2xl">
-          <div className="font-semibold text-slate-800 flex-1 truncate">{title}</div>
-          <button type="button" onClick={onClose} className="p-1 -mr-1 text-slate-500" aria-label="Close">
-            <XCircle className="w-5 h-5" />
-          </button>
-        </div>
-        <div className="p-4 space-y-3">{children}</div>
-      </div>
-    </div>
-  );
-}
-
-/** Destructive actions get a deliberate second click, never a lone one. */
-function ConfirmAction({ label, confirmLabel, onConfirm, disabled, tone = 'danger' }) {
-  const [armed, setArmed] = useState(false);
-  useEffect(() => {
-    if (!armed) return undefined;
-    const t = setTimeout(() => setArmed(false), 5000);
-    return () => clearTimeout(t);
-  }, [armed]);
-
-  if (!armed) {
-    return (
-      <button type="button" className="text-xs underline" disabled={disabled} onClick={() => setArmed(true)}>
-        {label}
-      </button>
-    );
-  }
-  return (
-    <span className="inline-flex items-center gap-1">
-      <button
-        type="button"
-        disabled={disabled}
-        onClick={() => { setArmed(false); onConfirm(); }}
-        className={`text-xs rounded px-2 py-0.5 text-white ${tone === 'danger' ? 'bg-rose-600' : 'bg-[#1e5b92]'}`}
-      >
-        {confirmLabel}
-      </button>
-      <button type="button" className="text-xs underline text-slate-500" onClick={() => setArmed(false)}>
-        cancel
-      </button>
-    </span>
   );
 }
 
