@@ -6,6 +6,7 @@ import {
 
 import { fmtDate, fmtDateTime, etToday } from './lib/fmt.js';
 import { shiftDayString } from './lib/shift.js';
+import { watchForUpdate, applyUpdate } from './lib/appupdate.js';
 import ReportScreen from './ReportScreen.jsx';
 import AssignScreen from './AssignScreen.jsx';
 import { loadSession, saveSession, clearSession, daysRemaining } from './lib/session.js';
@@ -29,7 +30,7 @@ import { partitionBoardRows, filterCredentials, availableAliases, loginNamesFor 
  */
 const SAME_PRO_COOLDOWN_MS = 3000;
 
-const APP_VERSION = '0.22.0';
+const APP_VERSION = '0.23.0';
 
 const BUILD_COMMIT = typeof __BUILD_COMMIT__ !== 'undefined' ? __BUILD_COMMIT__ : 'dev';
 const BUILD_TIME = typeof __BUILD_TIME__ !== 'undefined' ? __BUILD_TIME__ : '';
@@ -537,9 +538,16 @@ function StopRow({ stop, progress, onHandConfirm, onOpen, groupCount, trailerEnd
         {trailerEnd ? <span className="text-sky-800 font-medium"> · {trailerEnd}</span> : null}
         {sharesPosition ? <span className="text-slate-500"> · same address as the stop beside it</span> : null}
       </div>
+      {/* The PRO is the number a loader matches against the label in their hand,
+          so it is the one thing on this row that must be readable at arm's length
+          under a dock light. It was the same small grey text as the city. */}
+      <div className="mt-1 pl-8">
+        <span className="font-mono text-lg font-bold tracking-wide text-slate-900">
+          {stop.pros.join(', ')}
+        </span>
+      </div>
       <div className="mt-0.5 pl-8 text-xs text-slate-500 flex flex-wrap gap-x-2">
         <span>{stop.city}{stop.state ? `, ${stop.state}` : ''}</span>
-        <span>PRO {stop.pros.join(', ')}</span>
         <span>{stop.skids} skids · {stop.loose} loose</span>
         {stop.countIsEstimated ? <span title="No piece total on this order — count computed from skids + loose">count from parts</span> : null}
         {stop.appointmentRequired ? <span className="text-amber-700 font-medium">APPT</span> : null}
@@ -2588,6 +2596,33 @@ function DriverEditor({ driver, prefill, board, allCreds = [], onSave, onCancel,
   );
 }
 
+/**
+ * "A new version is ready."
+ *
+ * Fixed to the bottom so it cannot push the scan button or the stop list around,
+ * and dismissible — a driver mid-truck should be able to make it go away and take
+ * the update between loads. It comes back on the next check if still pending.
+ */
+function UpdateBanner({ onApply, onDismiss }) {
+  return (
+    <div className="fixed inset-x-0 bottom-0 z-50 p-3 pointer-events-none">
+      <div className="pointer-events-auto mx-auto max-w-md rounded-xl bg-[#1e5b92] text-white shadow-lg px-3 py-2 flex items-center gap-2">
+        <RefreshCw className="w-4 h-4 shrink-0" />
+        <div className="flex-1 text-sm">
+          <div className="font-medium">A new version is ready</div>
+          <div className="text-[11px] text-white/80">Safe to take between trucks — nothing scanned is lost.</div>
+        </div>
+        <button type="button" onClick={onApply} className="rounded-lg bg-white text-[#1e5b92] px-3 py-1.5 text-sm font-medium">
+          Update
+        </button>
+        <button type="button" onClick={onDismiss} aria-label="Later" className="text-white/70 px-1 text-lg leading-none">
+          ×
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // ── Root ─────────────────────────────────────────────────────────────────────
 
 export default function App() {
@@ -2596,6 +2631,10 @@ export default function App() {
   const [activeLoad, setActiveLoad] = useState(null);
   /** Loads the dispatcher handed to this person for the current shift. */
   const [assigned, setAssigned] = useState([]);
+  /** A newer build is deployed and waiting to be taken. */
+  const [updateReady, setUpdateReady] = useState(false);
+
+  useEffect(() => watchForUpdate(() => setUpdateReady(true)), []);
 
   useEffect(() => {
     // Runs in the ROOT, where there is no session until someone signs in.
@@ -2730,6 +2769,8 @@ export default function App() {
 
   if (activeLoad && manifest) {
     return (
+      <>
+      {updateReady ? <UpdateBanner onApply={applyUpdate} onDismiss={() => setUpdateReady(false)} /> : null}
       <ScanScreen
         session={session}
         manifest={manifest}
@@ -2743,11 +2784,15 @@ export default function App() {
         }}
         onSignOut={signOut}
       />
+      </>
     );
   }
 
   return (
     <div className="min-h-full">
+      {/* Between trucks is the SAFEST moment to take an update — nothing is
+          half-counted — so the banner belongs here as much as on the scan screen. */}
+      {updateReady ? <UpdateBanner onApply={applyUpdate} onDismiss={() => setUpdateReady(false)} /> : null}
       <Header
         title="Your load"
         subtitle={`${fmtDate(date)} · ${session.displayName || session.driverNumber}`}
