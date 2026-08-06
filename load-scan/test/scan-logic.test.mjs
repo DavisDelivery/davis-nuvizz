@@ -49,6 +49,87 @@ test('a scanned-without-OG id is accepted and stays distinct from typed', async 
   assert.equal(session.mergeScans([], [scanned, typed]).scans.length, 2, 'different ids, both counted');
 });
 
+// ── Pickups are not loading work ─────────────────────────────────────────────
+
+test('a pickup is kept out of the loading list', async () => {
+  // The first thing on Alfred Morgan's truck was a PICKUP — a stop where the
+  // driver COLLECTS freight on the route. There is nothing to load and nothing
+  // to scan, so it must not head the list of work.
+  const { splitPickups } = await import('../src/lib/scan-logic.js');
+  const stops = [
+    { stopNbr: 'A', isPickup: true, pros: ['1111111'], expectedPieces: 3 },
+    { stopNbr: 'B', isPickup: false, pros: ['2222222'], expectedPieces: 4 },
+  ];
+  const { loading, pickups } = splitPickups(stops);
+  assert.deepEqual(loading.map((s) => s.stopNbr), ['B']);
+  assert.deepEqual(pickups.map((s) => s.stopNbr), ['A'], 'still listed, just not as loading work');
+});
+
+test("a pickup's pieces never count toward the load total", async () => {
+  // The bug this prevents: the loader works every real stop, the truck is full,
+  // and the app still says 4/7 because three pieces belong to a stop that will
+  // never be scanned at the dock. The load could never read complete.
+  const { loadProgress } = await import('../src/lib/scan-logic.js');
+  const stops = [
+    { stopNbr: 'A', isPickup: true, pros: ['1111111'], expectedPieces: 3, skids: 3, loose: 0 },
+    { stopNbr: 'B', isPickup: false, pros: ['2222222'], expectedPieces: 4, skids: 4, loose: 0 },
+  ];
+  const scans = Array.from({ length: 4 }, (_, i) => ({ pro: '2222222', og: `OG000000000${i}` }));
+  const p = loadProgress(stops, scans);
+  assert.equal(p.expected, 4, 'only the deliveries have to go on the truck');
+  assert.equal(p.scanned, 4);
+  assert.equal(p.short, 0, 'the load reads complete, because it is');
+});
+
+test('a load of nothing but pickups has no loading work', async () => {
+  const { loadProgress, splitPickups } = await import('../src/lib/scan-logic.js');
+  const stops = [{ stopNbr: 'A', isPickup: true, pros: ['1111111'], expectedPieces: 3 }];
+  assert.equal(splitPickups(stops).loading.length, 0);
+  assert.equal(loadProgress(stops, []).expected, 0, 'nothing to load, so nothing outstanding');
+});
+
+test('a stop with no pickup flag is treated as loading work', async () => {
+  // The safe default: an unmarked stop is freight until proven otherwise.
+  // Guessing "pickup" would silently drop real work off the truck.
+  const { splitPickups } = await import('../src/lib/scan-logic.js');
+  const { loading } = splitPickups([{ stopNbr: 'A', pros: ['1111111'], expectedPieces: 2 }]);
+  assert.equal(loading.length, 1);
+});
+
+test('PU is recognised from either field the index has used', async () => {
+  const m = await import('../netlify/functions/lib/manifest.mts');
+  const base = { stopNbr: 'S', loadNbr: 'L', pallets: 1 };
+  assert.equal(m.toManifestStop({ ...base, type: 'PU' }).isPickup, true, "dispatch-map's normalized field");
+  assert.equal(m.toManifestStop({ ...base, stopType: 'PU' }).isPickup, true, 'the raw vendor field');
+  assert.equal(m.toManifestStop({ ...base, stopType: 'pickup' }).isPickup, true, 'the GreenBridge spelling');
+  assert.equal(m.toManifestStop({ ...base, type: 'DO' }).isPickup, false, 'a delivery is not a pickup');
+  assert.equal(m.toManifestStop(base).isPickup, false, 'and neither is an unmarked stop');
+});
+
+test('positions are renumbered so none exceeds its own count', async () => {
+  // Removing a pickup from position 1 left the deliveries at 2 and 3 against a
+  // count of 2 — the list read "Load 3 of 2".
+  const { renumberPositions, loadGroupCount } = await import('../src/lib/scan-logic.js');
+  const out = renumberPositions([
+    { stopNbr: 'B', loadSeq: 2 },
+    { stopNbr: 'C', loadSeq: 3 },
+  ]);
+  assert.deepEqual(out.map((s) => s.loadSeq), [1, 2]);
+  assert.equal(loadGroupCount(out), 2, 'and the count agrees with the positions');
+});
+
+test('two stops sharing a trailer position keep sharing it', async () => {
+  // One address, two orders, one drop. Splitting them would send a loader
+  // looking for a second place to put freight that belongs in the first.
+  const { renumberPositions } = await import('../src/lib/scan-logic.js');
+  const out = renumberPositions([
+    { stopNbr: 'B', loadSeq: 2 },
+    { stopNbr: 'C', loadSeq: 2 },
+    { stopNbr: 'D', loadSeq: 4 },
+  ]);
+  assert.deepEqual(out.map((s) => s.loadSeq), [1, 1, 2]);
+});
+
 // ── The 3/2 over-count seen on the dock ──────────────────────────────────────
 
 test('a burst of frames for one label books ONE piece, not one per frame', async () => {

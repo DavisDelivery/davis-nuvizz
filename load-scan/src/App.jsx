@@ -13,7 +13,7 @@ import { loadSession, saveSession, clearSession, daysRemaining } from './lib/ses
 import * as api from './lib/api.js';
 import * as store from './lib/offline.js';
 import { startScanner } from './lib/scanner.js';
-import { evaluateScan, loadProgress, stopProgress, ogGapHint, OUTCOME, normalizePro, createPairBuffer, createScanGate, sortForLoading, loadOrder, loadGroupCount, deliverySeq, sequenceFingerprint, classifyBarcode } from './lib/scan-logic.js';
+import { evaluateScan, loadProgress, stopProgress, ogGapHint, OUTCOME, normalizePro, createPairBuffer, createScanGate, sortForLoading, splitPickups, renumberPositions, loadOrder, loadGroupCount, deliverySeq, sequenceFingerprint, classifyBarcode } from './lib/scan-logic.js';
 import { createWedgeAccumulator, WEDGE_PAIR_WINDOW_MS } from './lib/wedge.js';
 import { initAudio, playVerdict } from './lib/feedback.js';
 import { useSortable, SortableTh } from './lib/useSortable.jsx';
@@ -30,7 +30,7 @@ import { partitionBoardRows, filterCredentials, availableAliases, loginNamesFor 
  */
 const SAME_PRO_COOLDOWN_MS = 3000;
 
-const APP_VERSION = '0.25.0';
+const APP_VERSION = '0.26.0';
 
 const BUILD_COMMIT = typeof __BUILD_COMMIT__ !== 'undefined' ? __BUILD_COMMIT__ : 'dev';
 const BUILD_TIME = typeof __BUILD_TIME__ !== 'undefined' ? __BUILD_TIME__ : '';
@@ -789,8 +789,14 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
     return stops.map((s) => ({ ...s, loadSeq: byStop[s.stopNbr] ?? s.loadSeq }));
   }, [stops, resequenced, loadedSeq]);
 
-  const loadingOrder = useMemo(() => loadOrder(displayStops), [displayStops]);
-  const groupCount = useMemo(() => loadGroupCount(displayStops), [displayStops]);
+  // Pickups are not loading work. They come off the loading list entirely and
+  // get their own short section, so the first thing on the truck is something
+  // the loader can actually do.
+  const { loading: loadableStops, pickups } = useMemo(() => splitPickups(displayStops), [displayStops]);
+  // Renumbered so the positions are contiguous once pickups are out — otherwise
+  // the last delivery reads "Load 3 of 2".
+  const loadingOrder = useMemo(() => renumberPositions(loadOrder(loadableStops)), [loadableStops]);
+  const groupCount = useMemo(() => loadGroupCount(loadingOrder), [loadingOrder]);
 
   useEffect(() => {
     if (!activeLoad) { setLoadedSeq(null); return; }
@@ -1388,7 +1394,7 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
         {/* Stops */}
         <div className="space-y-2">
           <div className="flex items-center gap-2 text-sm font-medium text-slate-700">
-            <ClipboardList className="w-4 h-4" /> {stops.length} stops · loading order
+            <ClipboardList className="w-4 h-4" /> {loadableStops.length} stops · loading order
           </div>
           <div className="text-xs text-slate-500">
             Top of the list goes on first, at the nose. Work down toward the doors.
@@ -1452,6 +1458,36 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
           onConfirm={confirmClose}
           busy={busy}
         />
+      ) : null}
+
+      {/* Pickups. Listed so nobody thinks the app lost a stop, but plainly
+          separated: there is nothing to scan and nothing to load. */}
+      {pickups.length ? (
+        <div className="px-3 pb-3 space-y-2">
+          <div className="flex items-center gap-2 text-sm font-medium text-slate-700">
+            <ClipboardList className="w-4 h-4" /> {pickups.length} pickup{pickups.length === 1 ? '' : 's'} — not loaded
+          </div>
+          <div className="text-xs text-slate-500">
+            Collected on the route, not put on the truck here. They are not counted in the piece total.
+          </div>
+          <div className="rounded-xl bg-slate-50 ring-1 ring-slate-200 divide-y divide-slate-200">
+            {pickups.map((p) => (
+              <button
+                key={p.stopNbr}
+                type="button"
+                onClick={() => setOpenStop(p)}
+                className="w-full text-left px-3 py-2 flex items-center gap-2"
+              >
+                <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-500 bg-white ring-1 ring-slate-300 rounded px-1.5 py-0.5 shrink-0">
+                  Pickup
+                </span>
+                <span className="flex-1 min-w-0 truncate text-slate-700">{p.businessName || p.stopNbr}</span>
+                <span className="text-xs text-slate-500">{p.city}</span>
+                <ChevronRight className="w-4 h-4 text-slate-400 shrink-0" />
+              </button>
+            ))}
+          </div>
+        </div>
       ) : null}
 
       {openStop ? (

@@ -229,6 +229,31 @@ export function loadOrder(stops) {
   });
 }
 
+/**
+ * Close the gaps a removed pickup leaves in the trailer positions.
+ *
+ * Positions come from the route, so a pickup sitting at position 1 leaves the
+ * deliveries numbered 2 and 3. Dropping the pickup from the list without
+ * renumbering printed "Load 3 of 2" — a position outside its own count, which is
+ * nonsense to read at 5am.
+ *
+ * Stops SHARING a position keep sharing it: two orders for one address are one
+ * drop in the trailer, and splitting them would send a loader looking for a
+ * second place to put freight that belongs in the first.
+ */
+export function renumberPositions(orderedStops) {
+  let next = 0;
+  let lastSeen = null;
+  return (orderedStops || []).map((s) => {
+    if (s.loadSeq == null) return s;
+    if (s.loadSeq !== lastSeen) {
+      lastSeen = s.loadSeq;
+      next += 1;
+    }
+    return { ...s, loadSeq: next };
+  });
+}
+
 /** Distinct trailer positions — the "of 13" in "Load 1 of 13". */
 export function loadGroupCount(stops) {
   return new Set((stops || []).map((s) => s.loadSeq).filter((v) => v != null)).size;
@@ -280,8 +305,25 @@ export function stopProgress(stop, scans, handConfirms = []) {
   };
 }
 
+/**
+ * Split a load into what gets loaded and what does not.
+ *
+ * A PICKUP is on the route because the driver collects freight there. Nothing
+ * about it happens at the dock. Counting its pieces toward the load total made
+ * the truck unfinishable — the loader would work every real stop and still be
+ * short by a number nobody could scan.
+ */
+export function splitPickups(stops) {
+  const all = stops || [];
+  return {
+    loading: all.filter((s) => !s.isPickup),
+    pickups: all.filter((s) => s.isPickup),
+  };
+}
+
 export function loadProgress(stops, scans, handConfirms = []) {
-  const per = (stops || []).map((s) => stopProgress(s, scans, handConfirms));
+  // Pickups never count toward what has to go on the truck.
+  const per = splitPickups(stops).loading.map((s) => stopProgress(s, scans, handConfirms));
   const expected = per.reduce((n, p) => n + p.expected, 0);
   // Distinct OGs across the load, plus whatever the hand-confirms vouch for.
   const scannedPieces = new Set((scans || []).map((s) => String(s.og).toUpperCase())).size;
