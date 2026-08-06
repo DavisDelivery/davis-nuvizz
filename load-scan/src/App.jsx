@@ -30,7 +30,7 @@ import { partitionBoardRows, filterCredentials, availableAliases, loginNamesFor 
  */
 const SAME_PRO_COOLDOWN_MS = 3000;
 
-const APP_VERSION = '0.26.0';
+const APP_VERSION = '0.27.0';
 
 const BUILD_COMMIT = typeof __BUILD_COMMIT__ !== 'undefined' ? __BUILD_COMMIT__ : 'dev';
 const BUILD_TIME = typeof __BUILD_TIME__ !== 'undefined' ? __BUILD_TIME__ : '';
@@ -327,10 +327,13 @@ function OrderCard({ stop, progress, groupCount, onClose, onAddPiece }) {
   const mapQ = encodeURIComponent([stop.addr1, stop.city, stop.state, stop.zip].filter(Boolean).join(', '));
   const window_ = [stop.plannedFrom, stop.plannedTo].filter(Boolean).map(clockTime).join(' - ');
 
-  const Field = ({ label, children, wide }) => (
+  // `strong` is for the one or two fields a loader reads at arm's length rather
+  // than studies up close; everything else stays text-sm so emphasis still means
+  // something.
+  const Field = ({ label, children, wide, strong }) => (
     <div className={wide ? 'col-span-2' : ''}>
       <div className="text-[11px] uppercase tracking-wide text-slate-500">{label}</div>
-      <div className="text-sm text-slate-900 whitespace-pre-line">{children || '—'}</div>
+      <div className={`${strong ? 'text-lg font-bold' : 'text-sm'} text-slate-900 whitespace-pre-line`}>{children || '—'}</div>
     </div>
   );
 
@@ -366,7 +369,7 @@ function OrderCard({ stop, progress, groupCount, onClose, onAddPiece }) {
         {stop.contactName || stop.phone ? (
           <Field label="Contact" wide>{[stop.contactName, stop.phone].filter(Boolean).join(' \u00b7 ')}</Field>
         ) : null}
-        <Field label="Skids / loose">{stop.skids} / {stop.loose}</Field>
+        <Field label="Skids / loose" strong>{stop.skids} / {stop.loose}</Field>
         <Field label="Weight">{stop.weight ? `${stop.weight} lb` : '—'}</Field>
         <Field label="Route / Load">{[stop.routeName, stop.loadNbr].filter(Boolean).join(' · ')}</Field>
         {stop.sealNbr ? <Field label="Seal #">{stop.sealNbr}</Field> : null}
@@ -559,10 +562,21 @@ function StopRow({ stop, progress, onHandConfirm, onOpen, groupCount, trailerEnd
           {stop.pros.join(', ')}
         </span>
       </div>
+      {/* Skids and loose are the SHAPE of the work: 3 skids is a pallet jack and
+          three trips to the nose, 12 loose is hand-stacking. A loader decides how
+          to attack the stop off these two numbers, and they sat in the same small
+          grey line as the city — the work read smaller than the town it ships to.
+          Same promotion the PRO got above, one step down so the PRO still leads. */}
+      <div className="mt-1 pl-8 flex items-baseline flex-wrap gap-x-2">
+        <span className="text-base font-bold text-slate-900">
+          {stop.skids} skids · {stop.loose} loose
+        </span>
+        {stop.countIsEstimated ? (
+          <span className="text-xs text-slate-500" title="No piece total on this order — count computed from skids + loose">count from parts</span>
+        ) : null}
+      </div>
       <div className="mt-0.5 pl-8 text-xs text-slate-500 flex flex-wrap gap-x-2">
         <span>{stop.city}{stop.state ? `, ${stop.state}` : ''}</span>
-        <span>{stop.skids} skids · {stop.loose} loose</span>
-        {stop.countIsEstimated ? <span title="No piece total on this order — count computed from skids + loose">count from parts</span> : null}
         {stop.appointmentRequired ? <span className="text-amber-700 font-medium">APPT</span> : null}
       </div>
       {gaps ? (
