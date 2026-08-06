@@ -30,7 +30,7 @@ import { partitionBoardRows, filterCredentials, availableAliases, loginNamesFor 
  */
 const SAME_PRO_COOLDOWN_MS = 3000;
 
-const APP_VERSION = '0.24.0';
+const APP_VERSION = '0.25.0';
 
 const BUILD_COMMIT = typeof __BUILD_COMMIT__ !== 'undefined' ? __BUILD_COMMIT__ : 'dev';
 const BUILD_TIME = typeof __BUILD_TIME__ !== 'undefined' ? __BUILD_TIME__ : '';
@@ -477,7 +477,7 @@ function OutcomeCard({ result, partial }) {
 function VerdictFlash({ verdict, onClear }) {
   if (!verdict) return null;
   const { kind, evaluated } = verdict;
-  const base = 'fixed inset-0 z-40 flex flex-col items-center justify-center text-center p-6 select-none';
+  const base = 'fixed inset-0 z-[60] flex flex-col items-center justify-center text-center p-6 select-none';
 
   if (kind === 'red') {
     return (
@@ -963,7 +963,7 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
       const { stop, engine: eng } = await startScanner({
         videoEl: videoRef.current,
         containerEl: containerRef.current,
-        onPair: (p) => record(p, p.engine),
+        onPair: async (p) => announce(await record(p, p.engine)),
         onPartial: setPartial,
         onStatus: setStatus,
         onRaw: (values) => {
@@ -998,6 +998,19 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
     setPartial(wedgePairRef.current.state());
     if (!pair) return;
     const evaluated = await record(pair, 'wedge');
+    announce(evaluated);
+  };
+
+  /**
+   * Show the verdict for a recorded piece — full screen, with the sound.
+   *
+   * This used to live inside the scanner-gun handler alone, so a piece scanned
+   * with the CAMERA produced no flash and no beep: the only feedback was a small
+   * card changing text further down the screen. On a dock, holding a phone at a
+   * pallet, that is invisible — which is why "did that scan?" was being answered
+   * by scanning again.
+   */
+  function announce(evaluated) {
     if (!evaluated) return;
     const kind =
       evaluated.outcome === OUTCOME.SILENT ? 'dup'
@@ -1005,8 +1018,9 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
           : evaluated.outcome === OUTCOME.AMBER ? 'amber'
             : 'green';
     playVerdict(kind);
+    if (navigator.vibrate) navigator.vibrate(kind === 'red' ? [80, 60, 80] : 40);
     setVerdict({ kind, evaluated, sticky: kind === 'red' });
-  };
+  }
 
   if (!wedgePairRef.current) wedgePairRef.current = createPairBuffer({ windowMs: WEDGE_PAIR_WINDOW_MS });
   if (!wedgeAccRef.current) wedgeAccRef.current = createWedgeAccumulator({ onScan: (v) => onWedgeScanRef.current(v) });
@@ -1026,7 +1040,7 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
   useEffect(() => {
     verdictRef.current = verdict;
     if (!verdict || verdict.sticky) return undefined;
-    const t = setTimeout(() => setVerdict(null), verdict.kind === 'green' ? 650 : 1200);
+    const t = setTimeout(() => setVerdict(null), verdict.kind === 'green' ? 900 : 1400);
     return () => clearTimeout(t);
   }, [verdict]);
 
@@ -1097,6 +1111,7 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
 
     setFlash('');
     const evaluated = await record({ pro, og }, 'manual');
+    announce(evaluated);
     if (evaluated?.outcome === OUTCOME.RED) setFlash(`PRO ${pro} is not on this load.`);
     setManualPro('');
   }
@@ -1444,7 +1459,11 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
           stop={openStop}
           progress={stopProgress(openStop, scans, handConfirms)}
           groupCount={groupCount}
-          onAddPiece={() => addManualFor(openStop.primaryPro || openStop.pros?.[0])}
+          onAddPiece={() => {
+            const pro = openStop.primaryPro || openStop.pros?.[0];
+            setOpenStop(null);
+            addManualFor(pro);
+          }}
           onClose={() => setOpenStop(null)}
         />
       ) : null}
