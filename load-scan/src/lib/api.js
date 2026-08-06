@@ -85,3 +85,40 @@ export const aliasReport = (token, days = 14) =>
 /** The dispatcher's daily picture: trucks, who worked them, who never showed. */
 export const scanActivity = (token, date) =>
   call(`/.netlify/functions/scan-activity${date ? `?date=${date}` : ''}`, { token, timeoutMs: 60_000 });
+
+// ── Assignment, worklog and the admin report ─────────────────────────────────
+
+/** What the dispatcher handed out for a shift. A loader gets only their own. */
+export const fetchAssignments = (token, shiftDay) =>
+  call(`/.netlify/functions/load-assign${shiftDay ? `?shiftDay=${encodeURIComponent(shiftDay)}` : ''}`, { token });
+
+/** Assign or un-assign loads. `changes` is [{loadNbr, loaders:[driverNumber]}]. */
+export const setAssignments = (token, shiftDay, changes) =>
+  call('/.netlify/functions/load-assign', { method: 'POST', token, body: { shiftDay, changes } });
+
+/**
+ * Clock a load start or finish.
+ *
+ * Deliberately fire-and-forget at the call site: a loader must never be blocked
+ * from working because the timing write failed. The worklog is a record OF the
+ * work, not a gate ON it.
+ */
+export const postWorkEvents = (token, events) =>
+  call('/.netlify/functions/work-session', { method: 'POST', token, body: { events } });
+
+/** The admin report. `days` walks backwards from shiftDay. */
+export const workReport = (token, { shiftDay, days = 1 } = {}) => {
+  const qs = new URLSearchParams();
+  if (shiftDay) qs.set('shiftDay', shiftDay);
+  qs.set('days', String(days));
+  return call(`/.netlify/functions/work-report?${qs}`, { token });
+};
+
+/** The CSV export URL for the analyst — opened directly so the browser saves it. */
+export const workReportCsvUrl = ({ shiftDay, days = 1 } = {}) => {
+  const qs = new URLSearchParams();
+  if (shiftDay) qs.set('shiftDay', shiftDay);
+  qs.set('days', String(days));
+  qs.set('format', 'csv');
+  return `/.netlify/functions/work-report?${qs}`;
+};
