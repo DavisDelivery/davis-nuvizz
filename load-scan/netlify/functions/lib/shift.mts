@@ -36,12 +36,12 @@
 //   2. It matches the manifest date the app already loads, so "the Monday
 //      board" and "the Monday shift" are the same word for the same freight.
 //
-// ── ASSUMPTION WORTH CHALLENGING ─────────────────────────────────────────────
+// ── CONFIRMED, NOT ASSUMED ───────────────────────────────────────────────────
 //
-// If the yard actually calls the Sunday-night shift "Sunday", flip
-// ROLLOVER_HOUR's effect by labelling with the START date instead — it is the
-// one-line change in shiftDayString() and every report follows it. Nothing else
-// in the codebase encodes the choice.
+// This was put to Chad directly and confirmed: the Sunday-night shift is called
+// MONDAY. Do not "fix" it to label by the start date — that would silently
+// re-date every historical report and put the numbers an operating day out of
+// step with the rest of the business.
 //
 // ── DST ──────────────────────────────────────────────────────────────────────
 //
