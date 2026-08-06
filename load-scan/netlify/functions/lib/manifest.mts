@@ -76,6 +76,16 @@ export interface ManifestStop {
   weight: number;
   normalizedStatus: string | null;
   appointmentRequired: boolean;
+  /**
+   * A PICKUP, not a delivery.
+   *
+   * NuVizz marks these stopType 'PU'. They are on the route because the driver
+   * collects freight there — nothing about them is loaded at the dock. They
+   * appeared in the loading list anyway, so the first thing on Alfred Morgan's
+   * truck was a job nobody could do, and any pieces they carried counted toward
+   * a total the loader could never reach.
+   */
+  isPickup: boolean;
   instructions: string;
   /** Four-layer preservation: the untouched index row, nothing dropped. */
   raw: any;
@@ -241,6 +251,13 @@ export function toManifestStop(raw: any, warn?: (msg: string) => void): Manifest
     weight: num(raw?.weight),
     normalizedStatus: str(raw?.normalizedStatus) || null,
     appointmentRequired: isAppointmentRequired(raw),
+    // 'type' is what dispatch-map's normalizer writes; 'stopType' is what the
+    // raw vendor row carries. Accept either, because the index has held both
+    // shapes and a missed pickup is worse than a redundant check.
+    isPickup:
+      String(raw?.type ?? '').toUpperCase() === 'PU' ||
+      String(raw?.stopType ?? '').toUpperCase() === 'PU' ||
+      String(raw?.stopType ?? '').toLowerCase() === 'pickup',
     instructions: instructionText(raw),
     raw,
   };

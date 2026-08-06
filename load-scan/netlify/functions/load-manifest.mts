@@ -81,6 +81,8 @@ export default async (req: Request): Promise<Response> => {
       // free to read — a mask is a projection, not a fetch. Omitting them was
       // hiding detail the phone had already paid for.
       'zip', 'postalCode', 'contactName', 'phone', 'sealNbr', 'plannedFrom', 'plannedTo',
+      // Pickups are not loading work — see ManifestStop.isPickup.
+      'type', 'stopType',
     ],
   });
 
