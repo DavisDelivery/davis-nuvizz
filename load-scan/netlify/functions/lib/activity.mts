@@ -72,6 +72,72 @@ const nameOf = (creds: any[], driverNumber: string) => {
   return c?.displayName || driverNumber;
 };
 
+export interface StopDetail {
+  stopNbr: string;
+  businessName: string;
+  isPickup: boolean;
+  expected: number;
+  scanned: number;
+  short: number;
+  complete: boolean;
+  handConfirmed: boolean;
+  damagedCount: number;
+  damagedOgs: string[];
+  scannedOgs: string[];
+}
+
+/**
+ * Reconcile a load's stops against what was actually scanned — the answer to
+ * "which stops did they finish, which did they skip, what is missing", for a
+ * dispatcher looking at one truck.
+ *
+ * Matched to the scan's OWN recorded stopNbr, which is the stop the phone
+ * resolved the piece to when it booked it. Voided scans drop out; a piece marked
+ * damaged still counts, because it went on the truck. First scan of an OG wins,
+ * so a re-read of a damaged label does not overwrite the flag. Same rules the
+ * driver's screen uses — the dispatcher must see the identical number.
+ */
+export function reconcileStops(stops: any[], scans: any[], handConfirms: any[]): StopDetail[] {
+  const active = (scans || []).filter((s) => !s?.voidedAt);
+  const hands = new Set((handConfirms || []).map((h) => String(h?.stopNbr ?? '')));
+
+  const byStop = new Map<string, Map<string, any>>();
+  for (const s of active) {
+    const stopNbr = String(s?.stopNbr ?? '');
+    const og = String(s?.og ?? '').toUpperCase();
+    if (!stopNbr || !og) continue;
+    if (!byStop.has(stopNbr)) byStop.set(stopNbr, new Map());
+    const m = byStop.get(stopNbr)!;
+    if (!m.has(og)) m.set(og, s);
+  }
+
+  return (stops || []).map((st) => {
+    const stopNbr = String(st?.stopNbr ?? '');
+    const expected = Number(st?.expectedPieces || 0);
+    const m = byStop.get(stopNbr) || new Map<string, any>();
+    const scannedPieces = m.size;
+    const handConfirmed = hands.has(stopNbr);
+    // A pickup is collected on the route — nothing loads at the dock, so it is
+    // never "short". Everything else reconciles distinct OGs against expected.
+    const confirmedPieces = handConfirmed ? Math.max(0, expected - scannedPieces) : 0;
+    const scanned = scannedPieces + confirmedPieces;
+    const damaged = [...m.values()].filter((x) => x.damaged);
+    return {
+      stopNbr,
+      businessName: String(st?.businessName || ''),
+      isPickup: !!st?.isPickup,
+      expected,
+      scanned,
+      short: st?.isPickup ? 0 : Math.max(0, expected - scanned),
+      complete: st?.isPickup ? true : expected > 0 && scanned === expected,
+      handConfirmed,
+      damagedCount: damaged.length,
+      damagedOgs: damaged.map((x) => String(x.og).toUpperCase()),
+      scannedOgs: [...m.keys()],
+    };
+  });
+}
+
 /**
  * Fold the board, the sessions and the credential list into one day's picture.
  *
@@ -87,7 +153,7 @@ export function buildActivity({
   creds,
 }: {
   date: string;
-  loads: Array<{ loadNbr: string; routeName?: string | null; driverName?: string | null; expectedPieces: number; stopCount: number }>;
+  loads: Array<{ loadNbr: string; routeName?: string | null; driverName?: string | null; expectedPieces: number; stopCount: number; stops?: any[] }>;
   sessions: any[];
   creds: any[];
 }) {
@@ -122,6 +188,9 @@ export function buildActivity({
       sequenceChanged: s?.sequenceChanged === true,
       status: loadStatus(s, expected),
       workedBy: workers.map((w) => ({ ...w, displayName: nameOf(creds, w.driverNumber) })),
+      // Per-stop reconciliation for the drill-down. Empty when the board row
+      // carried no stops (older payload) — the summary above still stands.
+      stops: reconcileStops(l.stops || [], s?.scans || [], s?.handConfirms || []),
     };
   });
 
