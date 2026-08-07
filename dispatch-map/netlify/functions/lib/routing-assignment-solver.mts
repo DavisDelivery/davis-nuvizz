@@ -16,6 +16,19 @@
 //     tractor 37 — p95 of ~900 real dispatch trips). This replaced the 2.1.1
 //     per-driver WEIGHT ceiling: dispatch cubes out, it doesn't weigh out, and
 //     the weight ceiling manufactured phantom splits on loads drivers really ran.
+//   • per-trip PAYLOAD cap (Phase 2.11) — a trip's total pounds may not exceed
+//     the truck class's payload RATING (box 10,000, tractor 44,000 — the same
+//     numbers truck-profiles.mts already gates the Phase 1 solver on). This is
+//     NOT the 2.1.1 ceiling returning. That ceiling was weight_p85 ×
+//     hard_cap_factor: a PERCENTILE of the driver's own history, which by
+//     construction sits below the heaviest 15% of trips they had really run —
+//     it split loads that were proven to fit, and the weight_max floor was
+//     bolted on to undo that. A rating is not a percentile of anything and
+//     cannot chop a tail; a trip over it was never legal to build, so splitting
+//     it corrects an overload rather than manufacturing a phantom.
+//     Expect it to be QUIET: observed freight runs ~300 lb per skid position, so
+//     a full 22-skid box is ~6,800 lb and the skid cap still binds first. It
+//     bites only on dense freight, which is exactly when it should.
 // SOFT costs (config-weighted): skid load past the class SOFT cap, zone-affinity
 // misfit, trips-count vs propensity, shift-hours overflow, far-first violation,
 // STRICT-window risk, plan compactness.
@@ -151,16 +164,32 @@ export function stopSkidEquiv(s: AssignStop, cfg: EngineConfig): number {
 }
 
 // Class caps (unknown class reads as box_truck — same default as plan-core's
-// resolveClass). hard is floored at soft so a mis-tuned config can't invert them.
-export function classCapsFor(truck_class: string | null | undefined, cfg: EngineConfig): { soft: number; hard: number } {
+// resolveClass, so an unrostered driver gets the STRICTER payload rating). hard
+// is floored at soft so a mis-tuned config can't invert them. weightLb is the
+// class payload rating; non-positive means NO weight gate for that class — the
+// same "a capacity only constrains when it's a real positive number" rule
+// routing-constraints.mts capLimited() uses, and the kill switch if the vendor's
+// weight feed ever goes bad.
+export function classCapsFor(truck_class: string | null | undefined, cfg: EngineConfig): { soft: number; hard: number; weightLb: number } {
   const tractor = String(truck_class || '') === 'tractor';
   const soft = tractor ? cfg.skid_cap_tractor_soft : cfg.skid_cap_box_soft;
   const hard = Math.max(soft, tractor ? cfg.skid_cap_tractor_hard : cfg.skid_cap_box_hard);
-  return { soft, hard };
+  const rated = Number(tractor ? cfg.weight_cap_tractor_lb : cfg.weight_cap_box_lb);
+  return { soft, hard, weightLb: Number.isFinite(rated) && rated > 0 ? rated : Infinity };
 }
 
 function tripSkidEquiv(t: AssignedTrip, cfg: EngineConfig): number {
   return t.stops.reduce((a, s) => a + stopSkidEquiv(s, cfg), 0);
+}
+
+// A trip's total pounds. A stop whose vendor weight was blank reads 0 (plan-core
+// does `finiteNum(s.weight) || 0`), so the payload gate FAILS OPEN on unknown
+// freight — it can only ever under-count, never manufacture a split from a gap
+// in the feed. Weight is the oldest and most consistently captured freight field
+// in the archive (skids/loose came later and need a pallets fallback), so this
+// is a narrow exposure, but it is the honest reading of the data.
+function tripWeightLb(t: AssignedTrip): number {
+  return t.stops.reduce((a, s) => a + (Number(s.weight) || 0), 0);
 }
 
 // Nearest-neighbor tour minutes for a trip (depot → stops), cheap proxy used
@@ -205,6 +234,7 @@ export function shiftCost(
   const caps = classCapsFor(shift.driver.truck_class, cfg);
   let shiftActiveMin = 0;
   let shiftEq = 0;
+  let shiftLb = 0;
   const tripRadii: number[] = [];
 
   for (let ti = 0; ti < trips.length; ti++) {
@@ -215,6 +245,7 @@ export function shiftCost(
     // balancer: below soft, concentration is free (the 2.5.0 lesson).
     const eq = tripSkidEquiv(t, cfg);
     shiftEq += eq;
+    shiftLb += tripWeightLb(t);
     if (eq > caps.soft) cost += cfg.w_skid_soft * (eq - caps.soft);
     // zone-affinity misfit: stops in gh5 zones this driver rarely serves
     let misfit = 0;
@@ -266,7 +297,14 @@ export function shiftCost(
   // TWO: past two full loads dispatch hands off to the cast (day p99 < 2×hard),
   // so a third trip is never free and the search can't quietly rebuild the
   // mega-days the seed just shed.
-  const needed = Math.max(1, Math.min(2, Math.ceil(shiftEq / caps.hard - 1e-9)));
+  // Phase 2.11 — `needed` reads BOTH hard dimensions. Skid-only accounting here
+  // would charge w_trips (12) for a reload the PAYLOAD rating forced, so the
+  // search would pay to shave a legitimately-loaded owner onto a lighter truck
+  // to dodge a split it cannot avoid — verbatim the 2.8.0 mistake described
+  // above, just via the other cap. Whichever dimension forces more trips wins.
+  const neededSkid = Math.ceil(shiftEq / caps.hard - 1e-9);
+  const neededWeight = caps.weightLb < Infinity ? Math.ceil(shiftLb / caps.weightLb - 1e-9) : 0;
+  const needed = Math.max(1, Math.min(2, Math.max(neededSkid, neededWeight)));
   const expectedTrips = Math.max(1 + (env.trips_per_day_propensity || 0), needed);
   cost += cfg.w_trips * Math.abs(trips.length - expectedTrips);
 
@@ -340,21 +378,40 @@ export function planCost(shifts: AssignedShift[], input: AssignInput, matrixCach
 
 // ── far-first splitting ──────────────────────────────────────────────────────
 
-// Split a driver's stop bag into trips each within the class HARD skid cap,
-// farther stops in earlier trips (far-first). Greedy: stops miles-desc, open a
-// new trip when the current would breach the cap. A single over-cap stop still
-// rides (alone) — the cap splits bags, it never strands freight.
-export function splitFarFirst(stops: AssignStop[], capSkidEquiv: number, cfg: EngineConfig): AssignedTrip[] {
+// Split a driver's stop bag into trips within BOTH class hard bounds — skid
+// positions (what fits) and pounds (what the axles are rated for) — farther
+// stops in earlier trips (far-first). Greedy: stops miles-desc, open a new trip
+// when the current would breach EITHER bound. A single over-cap stop still rides
+// (alone) on either dimension — the caps split bags, they never strand freight.
+//
+// This is the ONLY place a trip is ever constructed. The local search mutates
+// each driver's flat stop bag and re-derives trips through buildShifts(), so
+// every move inherits both caps here and none of them can violate one.
+//
+// `cap` accepts a bare skid number (legacy callers → no payload gate) or the
+// full {hard, weightLb} shape classCapsFor returns.
+export function splitFarFirst(
+  stops: AssignStop[], cap: number | { hard: number; weightLb?: number }, cfg: EngineConfig,
+): AssignedTrip[] {
   if (!stops.length) return [];
+  const capSkidEquiv = typeof cap === 'number' ? cap : cap.hard;
+  const capWeightLb = typeof cap === 'number' ? Infinity
+    : (Number.isFinite(Number(cap.weightLb)) && Number(cap.weightLb) > 0 ? Number(cap.weightLb) : Infinity);
   const sorted = [...stops].sort((a, b) => (b.miles - a.miles) || a.id.localeCompare(b.id));
   const total = sorted.reduce((a, s) => a + stopSkidEquiv(s, cfg), 0);
-  if (!(capSkidEquiv < Infinity) || total <= capSkidEquiv) return [{ stops: [...stops] }];
+  const totalLb = sorted.reduce((a, s) => a + (Number(s.weight) || 0), 0);
+  const skidFits = !(capSkidEquiv < Infinity) || total <= capSkidEquiv;
+  const weightFits = !(capWeightLb < Infinity) || totalLb <= capWeightLb;
+  if (skidFits && weightFits) return [{ stops: [...stops] }];
   const trips: AssignedTrip[] = [];
-  let cur: AssignStop[] = [], curEq = 0;
+  let cur: AssignStop[] = [], curEq = 0, curLb = 0;
   for (const s of sorted) {
     const eq = stopSkidEquiv(s, cfg);
-    if (cur.length && curEq + eq > capSkidEquiv) { trips.push({ stops: cur }); cur = []; curEq = 0; }
-    cur.push(s); curEq += eq;
+    const lb = Number(s.weight) || 0;
+    if (cur.length && (curEq + eq > capSkidEquiv || curLb + lb > capWeightLb)) {
+      trips.push({ stops: cur }); cur = []; curEq = 0; curLb = 0;
+    }
+    cur.push(s); curEq += eq; curLb += lb;
   }
   if (cur.length) trips.push({ stops: cur });
   return trips;
@@ -475,7 +532,7 @@ export function solveAssignment(input: AssignInput): AssignResult {
 
   const buildShifts = (): AssignedShift[] => drivers.map((d) => ({
     driver: d,
-    trips: splitFarFirst(bag.get(d.driver_key) || [], classCapsFor(d.truck_class, cfg).hard, cfg),
+    trips: splitFarFirst(bag.get(d.driver_key) || [], classCapsFor(d.truck_class, cfg), cfg),
   }));
 
   let shifts = buildShifts();

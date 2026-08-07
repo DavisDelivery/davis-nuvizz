@@ -18,9 +18,11 @@
 
 import { getDoc, setDoc } from './firestore.mts';
 
+// 2.11.0: per-trip PAYLOAD caps — a box trip may not exceed 10,000 lb, a tractor
+// trip 44,000 (the truck-profiles.mts ratings the Phase 1 solver already gates on).
 // 2.10.0: execution-evidence gate — replays count only rows with a same-day delivery stamp
 // (DAWSONVILLE/CRUMPTON 07-28: next-day Estes freight sealed into the day inflated actuals).
-export const ENGINE_VERSION = '2.10.0';
+export const ENGINE_VERSION = '2.11.0';
 
 export const ENGINE_CONFIG_COLLECTION = 'routing_engine_config';
 
@@ -127,6 +129,23 @@ export interface EngineConfig {
   loose_per_skid: number;      // loose pieces occupying one skid position (skid_equiv = skids + loose/this)
   w_skid_soft: number;         // per skid-equiv above the class SOFT cap on a trip
 
+  // ── Phase 2.11: per-CLASS per-TRIP weight caps (what a truck may LEGALLY haul)
+  // NOT a return of the 2.1.1 weight ceiling. That ceiling was a LEARNED,
+  // per-DRIVER statistic (weight_p85 × hard_cap_factor) — it chopped the top-15%
+  // tail of trips dispatch had really run, so it split loads that demonstrably
+  // fit, which is what "phantom splits" meant. These caps are the opposite kind
+  // of number: a fixed PHYSICAL payload rating of the truck class, the same
+  // 10,000 / 44,000 lb already enforced on the live route builder's box_26 /
+  // tractor_53 profiles (truck-profiles.mts). A load over the rating was never
+  // legal to build, so splitting it is a correction, not a phantom.
+  // Per TRIP, not per day: a driver may run two 10,000 lb loads through a Buford
+  // reload — the cap bounds what rides at once, never how much a driver moves.
+  // Set a cap to 0 to disable that class's weight gate entirely (the same
+  // "non-positive means NO LIMIT" rule routing-constraints.mts uses), which also
+  // makes it a kill switch if the vendor's weight feed ever goes bad.
+  weight_cap_box_lb: number;
+  weight_cap_tractor_lb: number;
+
   // ── Phase 2.9: candidate-set width ─────────────────────────────────────────
   // 2.9.0 tried zone-7/area-5: containment (the CEILING — actual driver ∈
   // candidates) rose 68.0→72.8% exactly as the offline sizing predicted, but
@@ -178,6 +197,7 @@ const NUMERIC_KEYS: Array<keyof EngineConfig> = [
   'w_zone_owner', 'zone_owner_min_share', 'zone_owner_min_obs',
   'skid_cap_box_soft', 'skid_cap_box_hard', 'skid_cap_tractor_soft', 'skid_cap_tractor_hard',
   'loose_per_skid', 'w_skid_soft',
+  'weight_cap_box_lb', 'weight_cap_tractor_lb',
   'candidate_zone_k', 'candidate_area_k',
 ];
 
@@ -236,6 +256,9 @@ export const ENGINE_CONFIG_BOUNDS: Record<Exclude<keyof EngineConfig, 'routing_c
   skid_cap_tractor_hard: [5, 120],
   loose_per_skid: [1, 100],
   w_skid_soft: [0, 1000],
+  // Lower bound 0 = "no weight gate for this class" (never a zero-lb cap).
+  weight_cap_box_lb: [0, 80_000],
+  weight_cap_tractor_lb: [0, 80_000],
   candidate_zone_k: [1, 20],
   candidate_area_k: [1, 20],
 };
@@ -339,6 +362,15 @@ export function engineConfigDefaults(env: Record<string, string | undefined> = p
     skid_cap_tractor_hard: num('SKID_CAP_TRACTOR_HARD', 37),
     loose_per_skid: num('LOOSE_PER_SKID', 10),
     w_skid_soft: num('W_SKID_SOFT', 0),
+    // Phase 2.11 — per-trip payload ratings, taken from the SAME truck profiles
+    // the live route builder already gates on (truck-profiles.mts: box_26 =
+    // 10,000 lb, tractor_53 = 44,000 lb) so the two systems can't drift apart on
+    // what a truck may legally carry. A 26ft straight truck at 26,000 lb GVWR
+    // has ~10,000 lb of payload — this is the vehicle's rating, not a statistic
+    // mined from what dispatch happened to do, which is exactly why it is safe
+    // to make hard where the 2.1.1 learned ceiling was not.
+    weight_cap_box_lb: num('WEIGHT_CAP_BOX_LB', 10_000),
+    weight_cap_tractor_lb: num('WEIGHT_CAP_TRACTOR_LB', 44_000),
     // Phase 2.9.1 — back to the PROVEN 5/3 (see the interface comment: 7/5
     // raised the ceiling +4.8 but cost 1.7pts realized agreement in the full
     // replay; width without a rank-aware solver is a net loss).

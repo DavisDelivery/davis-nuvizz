@@ -2,9 +2,22 @@
 // per-driver WEIGHT ceiling because p85 × hard_cap_factor chopped the top-15%
 // tail of trips dispatch REALLY ran, manufacturing phantom splits. Engine 2.8.0
 // removed the weight ceiling entirely — the freight study showed loads bind on
-// per-CLASS skid positions (dispatch cubes out, it doesn't weigh out) — so the
-// no-phantom-splits guarantee is now: WEIGHT never splits a trip, only the
-// class skid cap does. The envelope still mines weight (kept as data).
+// per-CLASS skid positions (dispatch cubes out, it doesn't weigh out).
+//
+// 2.11 REFINES that guarantee rather than reversing it. The rule is no longer
+// "weight never splits" but the sharper thing 2.1.1 was actually reaching for:
+// NO LEARNED STATISTIC MAY SPLIT A TRIP. A percentile of a driver's own history
+// sits below their own heaviest real trips by construction — that is what made
+// phantom splits — so nothing derived from the envelope is allowed to split
+// anything, and these tests still pin exactly that. What may split a trip is a
+// truck's PAYLOAD RATING (box 10,000 / tractor 44,000 lb, from truck-profiles
+// .mts), because a load over the rating was never legal to build in the first
+// place. See routing-weight-cap.test.mjs. The envelope's weight_p85 / weight_max
+// remain data and constrain nothing.
+//
+// Every driver below is a TRACTOR, and the heaviest bag here is 14,000 lb —
+// under the 44,000 lb tractor rating — so these cases are untouched by 2.11 and
+// still prove the learned ceiling is gone.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
