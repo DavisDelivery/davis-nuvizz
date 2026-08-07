@@ -50,6 +50,11 @@ raw = re.sub(r'^\*Ranked for.*?\*\n', '', raw, count=1, flags=re.M)
 # …and its own "A note on how I ranked these" paragraph, which the cover lede restates.
 raw = re.sub(r'^A note on how I ranked these\..*?(?=\n\n)', '', raw, count=1, flags=re.S | re.M)
 
+# A wholly-bold line before the first section heading is a byline ("For: Chad · Written: …").
+# The cover already carries that information, and left in the body it becomes a card of its own
+# — one line marooned on an otherwise blank page.
+raw = re.sub(r'\A\s*\*\*[^\n]+\*\*\s*\n(?=\s*(\n|---|##\s))', '', raw, count=1)
+
 # The source writes risk bullets directly under the bold lead-in with no blank line, so the
 # markdown parser swallows them into that paragraph as literal "- " text. Give every such run
 # the blank line it needs to become a real list.
@@ -97,6 +102,7 @@ body = re.sub(r'(<p class="row"><span class="lbl">Risks and dependencies</span>.
 
 body = re.sub(r'<h3>\s*Sources\s*</h3>',
               '</section><section class="band sources"><h1>Sources</h1>', body)
+body = re.sub(r'</code>\s*\n\s*<code>', '</code><br><code>', body)
 body = body.replace('<hr />', '')
 body = '<section class="card">' + body + '</section>'
 body = body.replace('<section class="card"></section>', '')
@@ -172,6 +178,17 @@ section.band p { margin: 0 0 3mm; }
 section.band > ul { padding-left: 5mm; }
 section.band > ul li { margin-bottom: 2.4mm; }
 h3 { font-size: 11pt; margin: 4mm 0 2mm; color: #1e5b92; }
+
+table { border-collapse: collapse; width: 100%; margin: 2mm 0 3mm; font-size: 9.4pt; }
+th { background: #f4f7fa; text-align: left; font-family: 'Helvetica Neue',Helvetica,Arial,sans-serif;
+  font-size: 8pt; letter-spacing: .05em; text-transform: uppercase; color: #55636f;
+  padding: 2mm 2.5mm; border-bottom: 1.5px solid #cfdae3; vertical-align: bottom; }
+td { padding: 2mm 2.5mm; border-bottom: 1px solid #edf1f5; vertical-align: top; }
+tr:last-child td { border-bottom: none; }
+blockquote { margin: 2mm 0 3mm; padding: 2.5mm 4mm; background: #f7f9fb;
+  border-left: 3px solid #9fc0dc; border-radius: 2px; }
+blockquote p { margin: 0; }
+code { font-family: 'SF Mono',Menlo,Consolas,monospace; font-size: 9pt; }
 
 a { color: #1e5b92; text-decoration: none; }
 strong { color: #10202f; }
