@@ -11,11 +11,18 @@
 //   • equipment — a stop flagged "can't take a tractor" (customer_notes
 //     equipment_restrictions ∩ the trailer-blocker set) may not go to a tractor
 //     driver. tractor_locations is POSITIVE capability and never restricts.
-//   • per-trip skid cap (Phase 2.8) — a trip's SKID-EQUIVALENT load (skids +
-//     loose/loose_per_skid) may not exceed the driver's CLASS hard cap (box 22,
-//     tractor 37 — p95 of ~900 real dispatch trips). This replaced the 2.1.1
-//     per-driver WEIGHT ceiling: dispatch cubes out, it doesn't weigh out, and
-//     the weight ceiling manufactured phantom splits on loads drivers really ran.
+//   • per-trip skid cap (Phase 2.8, per-DRIVER since 2.12) — a trip's
+//     SKID-EQUIVALENT load (skids + loose/loose_per_skid) may not exceed the
+//     driver's own hard cap. This replaced the 2.1.1 per-driver WEIGHT ceiling:
+//     dispatch cubes out, it doesn't weigh out, and the weight ceiling
+//     manufactured phantom splits on loads drivers really ran.
+//     2.8 bounded every driver by their CLASS (box 22, tractor 37 — the p95 of
+//     ~900 real dispatch trips). But p95 is the heaviest end of the fleet, and
+//     the same study puts the MEDIAN box trip at 14: most box drivers run 12-15
+//     skids and only a few take 17-18, so a flat p95 loaded all of them like the
+//     strongest one. 2.12 bounds each driver by the most THEY have actually
+//     carried in one trip, clamped at the class cap and floored at
+//     skid_cap_driver_min — see capsFor().
 //   • per-trip PAYLOAD cap (Phase 2.11) — a trip's total pounds may not exceed
 //     the truck class's payload RATING (box 10,000, tractor 44,000 — the same
 //     numbers truck-profiles.mts already gates the Phase 1 solver on). This is
@@ -178,6 +185,41 @@ export function classCapsFor(truck_class: string | null | undefined, cfg: Engine
   return { soft, hard, weightLb: Number.isFinite(rated) && rated > 0 ? rated : Infinity };
 }
 
+// Phase 2.12 — THIS DRIVER'S cap, not the fleet's. The class caps above are a
+// FLEET statistic: box hard 22 is the p95 of all box trips, while the same study
+// puts the MEDIAN box trip at 14. Applying p95 to everyone let the solver load
+// every box driver like the heaviest box driver — "most of them can't put 22
+// skids on a box truck; most are 12-15, some take 17-18."
+//
+// So the hard bound becomes the most this driver has ACTUALLY carried in one
+// trip (envelope.per_trip.skid_equiv_max, mined from days < D), which is the
+// 2.1.1 lesson applied properly: never split below what dispatch has already
+// proven fits on that truck. A percentile would cut into their own real trips;
+// their observed max cannot.
+//
+// Two guards make this strictly safer than what it replaces:
+//   • CLAMPED AT THE CLASS HARD CAP, so a data quirk can't invent a 38-skid box
+//     truck. A per-driver cap is therefore always ≤ today's cap — this change
+//     can never make the engine split MORE than it does now, only less.
+//   • FLOORED at skid_cap_driver_min, so a driver whose observed history is all
+//     small days doesn't get a 4-skid truck. Setting that floor to the class
+//     hard cap disables per-driver tightening entirely (every cap floors to the
+//     class number) — the kill switch.
+// No skid/loose history at all (pre-capture rows) ⇒ the class caps, unchanged.
+// A driver under min_observation_days already carries a CLASS-level envelope
+// from driverEnvelope, so they learn the class's numbers, not a stranger's.
+export function capsFor(driver: AssignDriver, cfg: EngineConfig): { soft: number; hard: number; weightLb: number; learned: boolean } {
+  const cls = classCapsFor(driver?.truck_class, cfg);
+  const pt = driver?.envelope?.per_trip as { skid_equiv_p85?: number | null; skid_equiv_max?: number | null } | undefined;
+  const max = Number(pt?.skid_equiv_max);
+  if (!Number.isFinite(max) || max <= 0) return { ...cls, learned: false };
+  const floor = Math.max(1, Number(cfg.skid_cap_driver_min) || 1);
+  const hard = Math.min(cls.hard, Math.max(floor, max));
+  const p85 = Number(pt?.skid_equiv_p85);
+  const soft = Math.min(hard, Math.max(floor, Number.isFinite(p85) && p85 > 0 ? p85 : hard));
+  return { soft, hard, weightLb: cls.weightLb, learned: true };
+}
+
 function tripSkidEquiv(t: AssignedTrip, cfg: EngineConfig): number {
   return t.stops.reduce((a, s) => a + stopSkidEquiv(s, cfg), 0);
 }
@@ -231,7 +273,7 @@ export function shiftCost(
   if (!trips.length) return 0;
   let cost = 0;
 
-  const caps = classCapsFor(shift.driver.truck_class, cfg);
+  const caps = capsFor(shift.driver, cfg);
   let shiftActiveMin = 0;
   let shiftEq = 0;
   let shiftLb = 0;
@@ -452,7 +494,7 @@ export function solveAssignment(input: AssignInput): AssignResult {
   // ~26 box skids and handed their freight to cast #2 — right split count,
   // wrong truck (agreement 27.9→24.6). Double-tripping is a response to load,
   // not a personality trait.
-  const dayBudget = (d: AssignDriver): number => classCapsFor(d.truck_class, cfg).hard * 2;
+  const dayBudget = (d: AssignDriver): number => capsFor(d, cfg).hard * 2;
   // Ownership scoring shared by both seed passes (jitter is deterministic).
   const scoreFor = (s: AssignStop, d: AssignDriver): number => {
     const affinity = d.affinity.get(s.gh5) || 0;
@@ -532,7 +574,7 @@ export function solveAssignment(input: AssignInput): AssignResult {
 
   const buildShifts = (): AssignedShift[] => drivers.map((d) => ({
     driver: d,
-    trips: splitFarFirst(bag.get(d.driver_key) || [], classCapsFor(d.truck_class, cfg), cfg),
+    trips: splitFarFirst(bag.get(d.driver_key) || [], capsFor(d, cfg), cfg),
   }));
 
   let shifts = buildShifts();
