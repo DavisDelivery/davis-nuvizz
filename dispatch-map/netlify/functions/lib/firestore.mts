@@ -614,6 +614,50 @@ export async function readEnrichedPros(tenant: string, stopNbrs: string[], conc 
 
 // Record freshly-enriched PROs in the registry. Drops the bulky raw NuVizz payload; keeps the
 // normalized detail (line items, coords, contact, pros, stopId, notes) needed to carry forward.
+// ── notes write-back ─────────────────────────────────────────────────────────
+// Opening a stop card, tapping Refresh, or opening the Activity Timeline already
+// pays for a /stop/info, and that answer carries the stop's CURRENT notes. Until
+// now the client folded them into the open card and threw them away on close —
+// so the notes on the board stayed frozen at whatever the one-and-only
+// first-sight enrichment captured, which for a repeat customer can be weeks old.
+//
+// This persists them: same call, no extra NuVizz cost, and the repair is
+// permanent for everyone rather than cosmetic for one tab.
+//
+// READ-MERGE-WRITE, and ONLY the note fields. A blind overwrite would race the
+// scan (which rewrites the whole doc every 15 minutes) and could roll back
+// planning that landed in between. Nothing outside NOTE_FIELDS is touched, and a
+// stop that isn't on the day's board is skipped rather than created.
+export const NOTE_FIELDS = ['allComments', 'signalSources', 'orderInstructions'] as const;
+
+export async function writeStopNotes(
+  tenant: string, dateStr: string, stopNbr: string, fresh: any, atISO: string,
+): Promise<'written' | 'unchanged' | 'missing' | 'off'> {
+  if (!isFirestoreEnabled()) return 'off';
+  const nbr = String(stopNbr || '').trim();
+  if (!nbr || !fresh) return 'missing';
+  const base = `${COLLECTION}/${parentId(tenant, dateStr)}`;
+  const path = `${base}/stops/${encodeURIComponent(nbr)}`;
+  const cur: any = await getDoc(path).catch(() => null);
+  if (!cur) return 'missing';
+
+  const patch: any = {};
+  for (const k of NOTE_FIELDS) {
+    const v = (fresh as any)[k];
+    // An absent or empty value is not evidence the notes were deleted — the same
+    // rule mergeEnrich uses. Only a real value is allowed to replace a real one.
+    if (v === null || v === undefined || v === '') continue;
+    if (Array.isArray(v) && v.length === 0) continue;
+    if (JSON.stringify(v) === JSON.stringify(cur[k])) continue;
+    patch[k] = v;
+  }
+  if (!Object.keys(patch).length) return 'unchanged';
+
+  const { _id, ...rest } = cur;
+  await setDoc(path, { ...rest, ...patch, notes_refreshed_at: atISO });
+  return 'written';
+}
+
 export async function writeEnrichedPros(tenant: string, stops: any[], atISO: string, conc = 12): Promise<number> {
   const list = stops.filter((s) => s && s.stopNbr && s.enriched);
   let i = 0, n = 0;
