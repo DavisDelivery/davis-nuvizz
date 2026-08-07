@@ -30,6 +30,7 @@ import { db } from './lib/firebase.js';
 import { normalizeMatchKey } from './lib/matchKey.js';
 import { planOverlayAction, PLAN_OVERLAY_TTL_MS } from './lib/plan-overlay.js';
 import { routeStopEta, routeStopFreight, routeStopSeq } from './lib/route-stop-line.js';
+import { routeLoadLine, podPhotoFetchOffer, podSectionVisible, isPodImageExt } from './lib/stop-card-sections.js';
 import { stopTimelineModel } from './lib/stop-timeline.js';
 import { diffRouteStyle, DIFF_ORIGINAL_COLOR, groupDispatchTrips } from './lib/diff-route-style.js';
 import { addressLooksOff, suggestAddressFix } from './lib/address-fix.js';
@@ -69,7 +70,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.54.44';
+const APP_VERSION = '0.54.45';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -114,6 +115,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.54.45', 'THE ROUTE NAME STOPPED PRINTING ITSELF TWICE, AND THE DELIVERY PHOTOS ARE REACHABLE AGAIN. Chad, on a delivered VINCENT order: "why is the route name listed twice here get rid of the second one. also where is my view photos of delivery under the pod section." Two separate defects on one card. THE DOUBLE NAME: the Route box prints the route NAME in bold and the load NUMBER in small grey underneath, which is right when they are different things — route "SUW 4" on load "047-54019" tells you two useful facts. But NuVizz frequently names a route after its own load, and on this order both were the word VINCENT, so the card stacked the same word on top of itself and read as a rendering bug. The grey line now appears ONLY when the load number is genuinely something other than the route name, compared ignoring case and spacing. A load number that differs is a real identifier and still shows — this hides a duplicate, it does not throw away information. THE MISSING PHOTOS, which is the worse of the two: the driver\'s capture photos are not included in the cheap scan — NuVizz only hands them over when we re-pull the order — so the card carries a "View delivery photos" button that fetches them on demand. That button was written inside a branch that only ran when the stop had NO documents whatsoever. So the instant an order picked up any document at all — and a delivered order almost always has a signed BOL, a PDF — the button disappeared, and there was no way left to ask for the photos. It failed precisely on the delivered orders most likely to have photos, which is why the section showed a lone BOL line and nothing else. The rule is now about PHOTOS, not documents: if a delivered order has no image on file yet, the button is there, however many PDFs sit above it. The BOL keeps its own line rather than being swallowed by the photo grid, and the card only says "no delivery photos on file" AFTER a pull actually came back empty — before that, silence means nobody has asked yet, which is a different thing and shouldn\'t be reported as an answer. COST: the button is one NuVizz call, on your explicit tap, exactly as before — the same single call the Refresh from NuVizz button makes. Nothing here scans. Eleven new tests pin both rules, including a replay of this screenshot.'],
   ['0.54.44', 'THE PER-DRIVER SKID CAP NOW USES A DRIVER\'S TYPICAL FULL LOAD, NOT THEIR ONE BIGGEST DAY EVER — v0.54.43 WOULD BARELY HAVE MOVED. Correcting my own release from an hour ago, because a review of it found the number I chose was the wrong one and I would rather say so than let it ship quietly doing nothing. v0.54.43 capped each driver at the MOST they had ever carried on a single trip. That sounds right — never split a load someone has proven they can carry — but here is the arithmetic that kills it: a driver has to work 10 observed days before the engine uses their own history at all, which is 12 to 25 trips, and the MAXIMUM of a sample that size is that driver\'s own 95th-to-100th percentile, not their normal. So one 21-skid day in ten weeks would have put a genuine 14-skid driver right back at the class cap of 22 — meaning the release would have changed nothing for exactly the drivers Chad was pointing at. THE BOUND IS NOW THE 85TH PERCENTILE of that driver\'s own per-trip skids — "a full truck for this driver" — which is what "most are 12-15, some take 17-18" actually describes. A driver who normally tops out at 14 gets 14 even if they once squeezed on 21. AND A DIAL IF I HAVE JUDGED IT WRONG: a new Engine setting, skid cap driver headroom, slides the bound from typical (0, the default) to their all-time max (1) with no code change — so if these caps come out too tight against real drivers, that is one number to nudge, not a rebuild. THE HONEST TRADE: a tighter cap means the engine will sometimes split a day dispatch really did run whole, which shows up as more proposed trips and can cost agreement points. I think buildable routes beat a better score against routes drivers can\'t run, but the Skid cap column on the Engine page is there precisely so Chad can check the numbers against what he knows about his own people and tell me if I have it wrong. WORTH KNOWING, and it corroborates Chad: the Build screen\'s truck profiles have capped a box truck at 14 skids this whole time. The live route builder has agreed with him all along; only the shadow engine ever said 22. Also hardened here: the class clamp explicitly reads the driver\'s roster class rather than the class on their learned envelope, because a brand-new driver\'s envelope is a whole-FLEET one with box and tractor days mixed together, and without that clamp a box driver could inherit a tractor\'s numbers. Three new tests, 1,272 total, zero NuVizz calls.'],
   ['0.54.43', 'THE ENGINE STOPPED LOADING EVERY BOX TRUCK LIKE THE STRONGEST ONE. Chad: "Most box truck drivers can\'t put 22 skids on a box truck. You should id the ones who can take 17-18 but most are 12-15." He is right, and the engine\'s own freight study already said so — it measured 912 real dispatch trips and found the MEDIAN box trip is 14 skids. The cap of 22 was the 95th percentile of that same study, meaning the engine was allowed to load EVERY box driver the way the single heaviest box driver loads. That is why routes kept coming back with 20-odd stops on people who have never run them. WHAT CHANGES: each driver is now capped by the most THEY have actually carried on one trip, learned from their own history rather than the fleet\'s. A driver whose real trips top out at 15 gets 15. A driver who has genuinely run 18 gets 18. The data was already being collected per trip — skids and loose pieces per load, every day — it just had never been turned into a per-driver number. THIS IS THE 2.1.1 LESSON APPLIED CORRECTLY, not repeated: that old failure used a PERCENTILE of a driver\'s history, which by definition cuts below their own heaviest real trips and split loads they had already proven would fit. Using their observed MAXIMUM cannot do that — it is the proof itself. AND THE SAFETY RAIL THAT MATTERS: a per-driver cap is clamped at the old class cap, so it is always the same or LOWER than what the flat 22 allowed. This change can only ever split less than before, never more — one bad data point cannot invent a 38-skid box truck. A driver whose observed days were all small is floored at 10 so nobody gets a 4-skid truck, a driver with no skid history yet keeps the class number exactly as today, and setting the floor to 22 in Engine settings turns the whole thing off. YOU CAN NOW SEE WHO IS WHO: the Engine page\'s driver table has a new SKID CAP column, sortable — sort by it and the 17-18 drivers separate from the 12-15 drivers at a glance. A bold number is learned from that driver\'s own trips; a grey one means no skid history yet, so they are still on the class default. Eleven new tests pin all of it, including that an 18-skid bag rides one trip for an 18-skid driver and splits for a 15-skid driver. Zero NuVizz calls. Re-score history to see it applied to past days.'],
   ['0.54.42', 'A BOX TRUCK CAN NO LONGER BE SENT OUT OVER 10,000 POUNDS — AND THE ENGINE CHART THAT "ISN\'T CHANGING" WAS STUCK FOR A REASON I CAN SHOW YOU. Chad, on the engine page: "This isn\'t improving or changing. Also can\'t put more than 10k pounds on a box truck per trip." Two separate things, both real. THE WEIGHT CAP: the planning engine enforced a per-trip SKID cap (box 22, tractor 37) and no weight limit at all, so it was free to propose a box truck loaded to 15,800 lb — which is what Steven Adjetey\'s two proposed trips added up to. It now also enforces a per-trip PAYLOAD cap: 10,000 lb on a box, 44,000 on a tractor. Those are not numbers I picked; they are the SAME ratings this app already enforces on the Build screen\'s truck profiles, so the two halves of the app finally agree on what a truck may legally haul. I WANT TO BE STRAIGHT ABOUT THE HISTORY HERE, because the engine used to have a weight limit and it was deliberately deleted in July for causing "phantom splits." That old limit was a LEARNED number — each driver\'s own 85th-percentile trip weight — and a percentile by definition sits below that driver\'s heaviest real trips, so it kept splitting loads they had already proven would fit. A truck\'s payload rating is not a percentile of anything and cannot chop a tail that way: a trip over 10,000 lb was never legal to build, so splitting it corrects an overload instead of inventing one. WHAT TO EXPECT: mostly quiet. Real freight runs about 300 lb per skid position, so a box packed to its 22-skid cap weighs about 6,600 lb and the skid cap still binds first — this only bites on dense freight, which is exactly when it should. A single order heavier than the whole rating still ships (alone) rather than being stranded, an order NuVizz never gave a weight for is never split on a guess, and either cap can be set to 0 in Engine settings to switch it off if the weight feed ever goes bad. The engine also no longer PENALIZES the reload a payload forces — without that it would have paid to shove a legitimately-loaded driver\'s freight onto a lighter truck to dodge a split it can\'t avoid, which is the precise mistake that cost 3 points of agreement in July. Nine new tests pin all of it. NOW THE CHART. It was not changing because the re-score could never finish: one pass fits about a week of days into its 12-minute budget, notes where it stopped — and then threw that note away, because a background job answers instantly with an empty receipt the browser cannot read. So every tap of "Re-score history" started over at the OLDEST day and re-did the same first week forever; the rest of the summer was never reached, and the trend you were staring at was frozen at whatever engine version happened to be live the night each day was first scored. The stopping point is now SAVED on the server, so each tap genuinely continues where the last left off until the window is done. AND THE CHART COULD NOT HAVE SHOWN PROGRESS EVEN IF IT HAD: it drew a fixed 0-100% scale into 56 pixels, so the whole realistic range (agreement runs 20-30%) lived in the bottom quarter and a genuine 2-point gain moved the line about ONE PIXEL. The scale now fits the data, with zero still at the bottom. One honest caveat: because a re-score OVERWRITES each day in place, even a finished pass leaves every day showing one engine version — the per-version cards below the chart are the real "is it getting better" instrument, and that is a deeper fix than this release. Zero NuVizz calls in any of this.'],
@@ -4467,7 +4469,7 @@ function podDocUrl(d, opts = {}) {
   if (opts.dataUri) p.set('format', 'datauri');
   return `/.netlify/functions/nuvizz-pod?${p.toString()}`;
 }
-const isPodImage = (ext) => /^(jpe?g|png|gif|webp)$/i.test(String(ext || ''));
+const isPodImage = isPodImageExt;   // one source of truth (see lib/stop-card-sections.js)
 
 // In-app viewer for a POD photo / document. Opens OVER the app with a clear Close (X) —
 // previously these opened via target="_blank", which inside the installed PWA has no
@@ -4517,7 +4519,6 @@ function PodViewerModal({ doc, onClose }) {
 
 function PodDocsSection({ stop, onRefreshed }) {
   const [viewDoc, setViewDoc] = useState(null);
-  const docs = Array.isArray(stop?.podDocs) ? stop.podDocs : [];
   const delivered = classifyStopStatus(stop) === 'DELIVERED';
   const [loading, setLoading] = useState(false);
   const [tried, setTried] = useState(false);
@@ -4537,31 +4538,29 @@ function PodDocsSection({ stop, onRefreshed }) {
     } catch (e) { setErr(e.message); }
     finally { setLoading(false); }
   };
-  // No docs on the stop yet. For a DELIVERED order, the driver almost always captured a
-  // photo — surface an explicit button to fetch it (this is the button the dispatcher was
-  // looking for). For a not-yet-delivered order there's nothing to show.
-  if (!docs.length) {
-    if (!delivered) return null;
-    return (
-      <div className="pt-2">
-        <div className="text-xs uppercase font-semibold text-slate-500 flex items-center gap-1.5">
-          <FileCheck size={13} /> Proof of delivery
-        </div>
-        <button
-          onClick={loadPhotos}
-          disabled={loading}
-          className="mt-1.5 inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold text-blue-700 border border-blue-300 rounded hover:bg-blue-50 active:bg-blue-100 disabled:opacity-50"
-        >
-          <ImageIcon size={13} className={loading ? 'animate-pulse' : ''} />
-          {loading ? 'Loading photo…' : 'View delivery photo'}
-        </button>
-        {err && <div className="text-[11px] text-amber-700 mt-1">Couldn’t load photo: {err}</div>}
-        {tried && !err && <div className="text-[11px] text-slate-400 mt-1">No delivery photo on file for this order.</div>}
-      </div>
-    );
-  }
-  const photos = docs.filter((d) => isPodImage(d.extension));
-  const others = docs.filter((d) => !isPodImage(d.extension));
+  // The driver's capture photos are NOT in the cheap scan — NuVizz only hands them over on
+  // a /stop/info pull — so a delivered order offers a button to fetch them on demand.
+  // THAT BUTTON USED TO LIVE BEHIND "this stop has NO documents at all", which meant the
+  // moment a stop carried any document (typically a signed BOL, a PDF) the button vanished
+  // and the photos became unreachable — on exactly the delivered orders most likely to have
+  // them. The rule is about PHOTOS, not documents: offer the fetch whenever a delivered stop
+  // has no image on file yet, however many PDFs it carries.
+  const { photos, others, offer: offerPhotoFetch, exhausted } = podPhotoFetchOffer(stop, { delivered, tried });
+  if (!podSectionVisible(stop, { delivered })) return null;
+  const photoFetchButton = offerPhotoFetch && (
+    <div className="mt-1.5">
+      <button
+        onClick={loadPhotos}
+        disabled={loading}
+        className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold text-blue-700 border border-blue-300 rounded hover:bg-blue-50 active:bg-blue-100 disabled:opacity-50"
+      >
+        <ImageIcon size={13} className={loading ? 'animate-pulse' : ''} />
+        {loading ? 'Loading photos…' : 'View delivery photos'}
+      </button>
+      {err && <div className="text-[11px] text-amber-700 mt-1">Couldn’t load photos: {err}</div>}
+      {exhausted && !err && <div className="text-[11px] text-slate-400 mt-1">No delivery photos on file for this order.</div>}
+    </div>
+  );
   return (
     <div className="pt-2">
       <div className="text-xs uppercase font-semibold text-slate-500 flex items-center gap-1.5">
@@ -4600,6 +4599,7 @@ function PodDocsSection({ stop, onRefreshed }) {
           })}
         </ul>
       )}
+      {photoFetchButton}
       <PodViewerModal doc={viewDoc} onClose={() => setViewDoc(null)} />
     </div>
   );
@@ -5694,7 +5694,11 @@ function StopDataSections({ stop, note, onRefreshed, onOpenRoute, onMoveLocation
                   <a href={`tel:${driverPhone}`} className="block text-xs text-blue-700 hover:underline">{formatPhone(driverPhone)}</a>
                 )
               )}
-              {live.routeName && <div className="text-[10px] text-slate-400 font-mono">{live.loadNbr}</div>}
+              {/* The load number — but only when it is not simply the route name again.
+                  NuVizz often names a route after its own load (a route VINCENT on load
+                  VINCENT), and printing both stacked the same word twice and read as a
+                  rendering bug. A load number that differs is a real identifier and stays. */}
+              {routeLoadLine(live) && <div className="text-[10px] text-slate-400 font-mono">{routeLoadLine(live)}</div>}
             </div>
             {onOpenRoute && (
               <button
