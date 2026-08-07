@@ -52,6 +52,15 @@ export interface DriverEnvelope {
     pallets_median: number | null; pallets_p85: number | null;
     weight_median: number | null; weight_p85: number | null;
     weight_max: number | null;   // heaviest single trip ever observed — the never-split floor
+    // SKID POSITIONS PER TRIP — what actually fills this driver's truck. The
+    // flat class cap (box p95=22) is a FLEET statistic: it let every box driver
+    // load to the 95th percentile of all box trips when the same study puts the
+    // median box trip at 14. Most box drivers run 12-15; a few take 17-18. These
+    // are that driver's OWN numbers, so the cap can finally be theirs.
+    // NULL when no observed trip carried a skid/loose breakdown (pre-capture
+    // history) — never 0, which would read as a zero-capacity truck.
+    skid_equiv_p85: number | null;
+    skid_equiv_max: number | null;  // most ever carried in one trip — the never-split floor
   };
   trips_per_day_propensity: number;      // share of observed days with 2+ trips
   start_minute_typical: number | null;   // median first-touch minute-of-day
@@ -66,11 +75,20 @@ export interface DriverEnvelope {
   day_loose_p85: number | null;
 }
 
-function envelopeFromDays(days: DriverDayDoc[]): Omit<DriverEnvelope, 'driver_key' | 'source' | 'truck_class'> {
+function envelopeFromDays(days: DriverDayDoc[], loosePerSkid: number): Omit<DriverEnvelope, 'driver_key' | 'source' | 'truck_class'> {
   const trips = days.flatMap((d) => (d.trips || []));
   const stops = trips.map((t) => t.stops);
   const pallets = trips.map((t) => t.pallets);
   const weight = trips.map((t) => t.weight);
+  // Per-trip SKID-EQUIVALENT, the same arithmetic the solver's stopSkidEquiv
+  // uses (loose pieces share a skid position at loose_per_skid apiece), so a
+  // learned cap and the load it is measured against are in the same units.
+  // Only trips that actually CARRY a breakdown count: a pre-capture trip reads
+  // 0/0 and would otherwise drag a real driver's cap toward zero.
+  const div = Math.max(1, loosePerSkid);
+  const skidEquiv = trips
+    .filter((t) => (t.skids || 0) > 0 || (t.loose || 0) > 0)
+    .map((t) => (t.skids || 0) + (t.loose || 0) / div);
   const starts = days.map((d) => wallMinuteOfDay(d.start_time)).filter((v): v is number => v != null);
   const shiftHours = days.map((d) => minutesBetween(d.start_time, d.end_time)).filter((v): v is number => v != null && v > 0).map((m) => m / 60);
   const dayWeights = days.map((d) => d.day_totals?.weight ?? 0);
@@ -92,6 +110,10 @@ function envelopeFromDays(days: DriverDayDoc[]): Omit<DriverEnvelope, 'driver_ke
       // forced to split below it — p85×factor alone chops the real top-15% tail
       // and manufactures phantom trips.
       weight_max: weight.length ? Math.max(...weight) : null,
+      // Both null when NO observed trip carried a breakdown — the caller then
+      // keeps the class cap rather than inventing a zero-capacity truck.
+      skid_equiv_p85: skidEquiv.length ? quantile(skidEquiv, 0.85) : null,
+      skid_equiv_max: skidEquiv.length ? Math.max(...skidEquiv) : null,
     },
     trips_per_day_propensity: days.length ? multiTripDays / days.length : 0,
     start_minute_typical: median(starts),
@@ -112,18 +134,18 @@ export function driverEnvelope(
   const truckClass = mostCommon(mine.map((d) => d.truck_class ?? null));
 
   if (mine.length >= cfg.min_observation_days) {
-    return { driver_key: driverKey, source: 'driver', truck_class: truckClass, ...envelopeFromDays(mine) };
+    return { driver_key: driverKey, source: 'driver', truck_class: truckClass, ...envelopeFromDays(mine, cfg.loose_per_skid) };
   }
   // class fallback (same truck_class; if class unknown, the whole fleet)
   const classDays = truckClass
     ? before.filter((d) => d.truck_class === truckClass)
     : before;
   if (classDays.length) {
-    return { driver_key: driverKey, source: 'class', truck_class: truckClass, ...envelopeFromDays(classDays) };
+    return { driver_key: driverKey, source: 'class', truck_class: truckClass, ...envelopeFromDays(classDays, cfg.loose_per_skid) };
   }
   return {
     driver_key: driverKey, source: 'none', truck_class: truckClass, observed_days: 0,
-    per_trip: { stops_median: null, stops_p85: null, pallets_median: null, pallets_p85: null, weight_median: null, weight_p85: null, weight_max: null },
+    per_trip: { stops_median: null, stops_p85: null, pallets_median: null, pallets_p85: null, weight_median: null, weight_p85: null, weight_max: null, skid_equiv_p85: null, skid_equiv_max: null },
     trips_per_day_propensity: 0, start_minute_typical: null, shift_hours_typical: null, day_weight_p85: null,
     day_skids_p85: null, day_loose_p85: null,
   };

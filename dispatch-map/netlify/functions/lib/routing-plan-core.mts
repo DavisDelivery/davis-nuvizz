@@ -37,7 +37,7 @@ import {
   territoryMapsAsOf, candidateDriversFor,
 } from './routing-envelope.mts';
 import {
-  solveAssignment, restrictionsBlockTractor, type AssignStop, type AssignDriver, type AssignedShift,
+  solveAssignment, restrictionsBlockTractor, capsFor, type AssignStop, type AssignDriver, type AssignedShift,
 } from './routing-assignment-solver.mts';
 import {
   DEPOT_ID, buildTravelMatrix, solveRoute, travelMinutesForOrder, haversineMiles, type EngineStop,
@@ -458,6 +458,11 @@ export async function runPlanForDate(
   // engine actually knows; a 'class'/'none' fallback driver is being guessed
   // at. Report agreement per segment so guesses never dilute the headline.
   const envSourceByKey = new Map(activeDrivers.map((d) => [d.driver_key, d.envelope.source] as const));
+  // Phase 2.12 — the skid cap the solver actually used for each driver, reported
+  // so a dispatcher can SEE which trucks the engine thinks take 17-18 and which
+  // are 12-15 instead of inferring it from the plan. `learned` false means this
+  // driver had no per-trip skid history and fell back to the class number.
+  const capsByKey = new Map(activeDrivers.map((d) => [d.driver_key, capsFor(d, cfg)] as const));
   let knownAgree = 0, knownTotal = 0, fallbackAgree = 0, fallbackTotal = 0;
   for (const dd of actualDriverDays) {
     const actualStops = [...stopToActualDriver.entries()].filter(([, drv]) => drv === dd.driver_key).map(([id]) => id);
@@ -471,6 +476,8 @@ export async function runPlanForDate(
       driver_key: dd.driver_key,
       class: dd.truck_class,
       envelope_source: envelopeSource,
+      skid_cap: Math.round((capsByKey.get(dd.driver_key)?.hard ?? 0) * 10) / 10 || null,
+      skid_cap_learned: capsByKey.get(dd.driver_key)?.learned ?? false,
       trips_engine: eng.trips, trips_actual: dd.trips.filter((t) => t.stops > 0).length,
       stops_engine: eng.stops, stops_actual: actualStops.length,
       // lbs over the SAME stop set the stop count uses (coord-filtered, deduped by stopNbr).
