@@ -30,7 +30,7 @@ import { db } from './lib/firebase.js';
 import { normalizeMatchKey } from './lib/matchKey.js';
 import { planOverlayAction, PLAN_OVERLAY_TTL_MS } from './lib/plan-overlay.js';
 import { routeStopEta, routeStopFreight, routeStopSeq } from './lib/route-stop-line.js';
-import { routeLoadLine, podPhotoFetchOffer, podSectionVisible, isPodImageExt } from './lib/stop-card-sections.js';
+import { routeLoadLine, podPhotoFetchOffer, podSectionVisible, isPodImageExt, foldFreshStop } from './lib/stop-card-sections.js';
 import { stopTimelineModel } from './lib/stop-timeline.js';
 import { diffRouteStyle, DIFF_ORIGINAL_COLOR, groupDispatchTrips } from './lib/diff-route-style.js';
 import { addressLooksOff, suggestAddressFix } from './lib/address-fix.js';
@@ -70,7 +70,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.54.45';
+const APP_VERSION = '0.54.46';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -115,6 +115,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.54.46', 'THE DELIVERY-PHOTO BUTTON IS ACTUALLY THERE THIS TIME — I DROVE THE REAL APP IN A BROWSER AND WATCHED IT WORK BEFORE WRITING THIS. Chad: "still no button and this delivery definitely has photos." He was right, and v0.54.45 deserved the complaint: I swapped one bad condition for another. THE FIRST VERSION hid the button unless the order had NO documents at all, so a BOL killed it. THE SECOND VERSION hid it unless the order was DELIVERED — and this order\'s card reads SCHEDULED. It can, and here is why, because it matters beyond this button: the status the card trusts comes from the cheap saved-search scan, and the delivery timestamp is NOT one of the fields that scan keeps current. NuVizz\'s own saved-search index is documented in this app as lagging real status by 30+ minutes and sometimes hours. So an order genuinely delivered can sit on our board marked Scheduled — and my gate made the button disappear at exactly the moment the board was stale, which is precisely when a dispatcher needs to go ask. SO THERE IS NO STATUS GATE ANY MORE. The button asks NuVizz a question. Asking is one call on your tap and is always a reasonable thing to want. The only condition left is the honest one: you don\'t already have photos. Worst case the answer is "no delivery photos on file" — a real answer, and strictly better than hiding the ability to ask. A SECOND BUG FOUND WHILE VERIFYING THIS ONE, and it would have bitten within a day: the card folded a refresh in by simply overwriting every field the pull returned — and a pull that found no documents returns an EMPTY document list. So tapping the button on an order NuVizz has nothing for would have DELETED the BOL you were already looking at. You ask for more and get less. The server has had a guard against exactly this for months (an empty value is never allowed to overwrite a good one); it was never mirrored on the browser side. It is now. WHY YOUR BOL SAYS 6:01 PM AND WHY IT ISN\'T A DELIVERY TIME: NuVizz\'s own guide says a BOL is generated one to three days BEFORE delivery, so that stamp is when the document was made. Printed bare under a heading that says "Proof of delivery", it read as an arrival time. It now says "created 6:01 PM". AND THE LIKELY REASON THE PHOTOS WERE MISSING FROM THE CARD IN THE FIRST PLACE: the cheap scan never carries document data at all. The BOL on your screen came from the single detail lookup this app does when a PRO FIRST APPEARS on the board — days before the driver ever went there — and that snapshot is then carried forward untouched forever. So the card was showing you a document list frozen from before the delivery happened. The button is what unfreezes it. HOW THIS WAS CHECKED, since twice was enough: there is now a script that serves the real built app in a real browser, feeds it this exact order (PRO 007157687-1, route VINCENT, one BOL, status Scheduled), clicks it open and fails unless the button is on screen — then clicks the button and checks both outcomes, photos coming back and nothing coming back. I also deliberately re-broke each fix and confirmed the script caught it, so it is a real test and not a green light that means nothing. 1,286 tests plus that browser check, zero NuVizz calls.'],
   ['0.54.45', 'THE ROUTE NAME STOPPED PRINTING ITSELF TWICE, AND THE DELIVERY PHOTOS ARE REACHABLE AGAIN. Chad, on a delivered VINCENT order: "why is the route name listed twice here get rid of the second one. also where is my view photos of delivery under the pod section." Two separate defects on one card. THE DOUBLE NAME: the Route box prints the route NAME in bold and the load NUMBER in small grey underneath, which is right when they are different things — route "SUW 4" on load "047-54019" tells you two useful facts. But NuVizz frequently names a route after its own load, and on this order both were the word VINCENT, so the card stacked the same word on top of itself and read as a rendering bug. The grey line now appears ONLY when the load number is genuinely something other than the route name, compared ignoring case and spacing. A load number that differs is a real identifier and still shows — this hides a duplicate, it does not throw away information. THE MISSING PHOTOS, which is the worse of the two: the driver\'s capture photos are not included in the cheap scan — NuVizz only hands them over when we re-pull the order — so the card carries a "View delivery photos" button that fetches them on demand. That button was written inside a branch that only ran when the stop had NO documents whatsoever. So the instant an order picked up any document at all — and a delivered order almost always has a signed BOL, a PDF — the button disappeared, and there was no way left to ask for the photos. It failed precisely on the delivered orders most likely to have photos, which is why the section showed a lone BOL line and nothing else. The rule is now about PHOTOS, not documents: if a delivered order has no image on file yet, the button is there, however many PDFs sit above it. The BOL keeps its own line rather than being swallowed by the photo grid, and the card only says "no delivery photos on file" AFTER a pull actually came back empty — before that, silence means nobody has asked yet, which is a different thing and shouldn\'t be reported as an answer. COST: the button is one NuVizz call, on your explicit tap, exactly as before — the same single call the Refresh from NuVizz button makes. Nothing here scans. Eleven new tests pin both rules, including a replay of this screenshot.'],
   ['0.54.44', 'THE PER-DRIVER SKID CAP NOW USES A DRIVER\'S TYPICAL FULL LOAD, NOT THEIR ONE BIGGEST DAY EVER — v0.54.43 WOULD BARELY HAVE MOVED. Correcting my own release from an hour ago, because a review of it found the number I chose was the wrong one and I would rather say so than let it ship quietly doing nothing. v0.54.43 capped each driver at the MOST they had ever carried on a single trip. That sounds right — never split a load someone has proven they can carry — but here is the arithmetic that kills it: a driver has to work 10 observed days before the engine uses their own history at all, which is 12 to 25 trips, and the MAXIMUM of a sample that size is that driver\'s own 95th-to-100th percentile, not their normal. So one 21-skid day in ten weeks would have put a genuine 14-skid driver right back at the class cap of 22 — meaning the release would have changed nothing for exactly the drivers Chad was pointing at. THE BOUND IS NOW THE 85TH PERCENTILE of that driver\'s own per-trip skids — "a full truck for this driver" — which is what "most are 12-15, some take 17-18" actually describes. A driver who normally tops out at 14 gets 14 even if they once squeezed on 21. AND A DIAL IF I HAVE JUDGED IT WRONG: a new Engine setting, skid cap driver headroom, slides the bound from typical (0, the default) to their all-time max (1) with no code change — so if these caps come out too tight against real drivers, that is one number to nudge, not a rebuild. THE HONEST TRADE: a tighter cap means the engine will sometimes split a day dispatch really did run whole, which shows up as more proposed trips and can cost agreement points. I think buildable routes beat a better score against routes drivers can\'t run, but the Skid cap column on the Engine page is there precisely so Chad can check the numbers against what he knows about his own people and tell me if I have it wrong. WORTH KNOWING, and it corroborates Chad: the Build screen\'s truck profiles have capped a box truck at 14 skids this whole time. The live route builder has agreed with him all along; only the shadow engine ever said 22. Also hardened here: the class clamp explicitly reads the driver\'s roster class rather than the class on their learned envelope, because a brand-new driver\'s envelope is a whole-FLEET one with box and tractor days mixed together, and without that clamp a box driver could inherit a tractor\'s numbers. Three new tests, 1,272 total, zero NuVizz calls.'],
   ['0.54.43', 'THE ENGINE STOPPED LOADING EVERY BOX TRUCK LIKE THE STRONGEST ONE. Chad: "Most box truck drivers can\'t put 22 skids on a box truck. You should id the ones who can take 17-18 but most are 12-15." He is right, and the engine\'s own freight study already said so — it measured 912 real dispatch trips and found the MEDIAN box trip is 14 skids. The cap of 22 was the 95th percentile of that same study, meaning the engine was allowed to load EVERY box driver the way the single heaviest box driver loads. That is why routes kept coming back with 20-odd stops on people who have never run them. WHAT CHANGES: each driver is now capped by the most THEY have actually carried on one trip, learned from their own history rather than the fleet\'s. A driver whose real trips top out at 15 gets 15. A driver who has genuinely run 18 gets 18. The data was already being collected per trip — skids and loose pieces per load, every day — it just had never been turned into a per-driver number. THIS IS THE 2.1.1 LESSON APPLIED CORRECTLY, not repeated: that old failure used a PERCENTILE of a driver\'s history, which by definition cuts below their own heaviest real trips and split loads they had already proven would fit. Using their observed MAXIMUM cannot do that — it is the proof itself. AND THE SAFETY RAIL THAT MATTERS: a per-driver cap is clamped at the old class cap, so it is always the same or LOWER than what the flat 22 allowed. This change can only ever split less than before, never more — one bad data point cannot invent a 38-skid box truck. A driver whose observed days were all small is floored at 10 so nobody gets a 4-skid truck, a driver with no skid history yet keeps the class number exactly as today, and setting the floor to 22 in Engine settings turns the whole thing off. YOU CAN NOW SEE WHO IS WHO: the Engine page\'s driver table has a new SKID CAP column, sortable — sort by it and the 17-18 drivers separate from the 12-15 drivers at a glance. A bold number is learned from that driver\'s own trips; a grey one means no skid history yet, so they are still on the class default. Eleven new tests pin all of it, including that an 18-skid bag rides one trip for an 18-skid driver and splits for a 15-skid driver. Zero NuVizz calls. Re-score history to see it applied to past days.'],
@@ -4519,7 +4520,7 @@ function PodViewerModal({ doc, onClose }) {
 
 function PodDocsSection({ stop, onRefreshed }) {
   const [viewDoc, setViewDoc] = useState(null);
-  const delivered = classifyStopStatus(stop) === 'DELIVERED';
+  const status = classifyStopStatus(stop);
   const [loading, setLoading] = useState(false);
   const [tried, setTried] = useState(false);
   const [err, setErr] = useState(null);
@@ -4538,15 +4539,13 @@ function PodDocsSection({ stop, onRefreshed }) {
     } catch (e) { setErr(e.message); }
     finally { setLoading(false); }
   };
-  // The driver's capture photos are NOT in the cheap scan — NuVizz only hands them over on
-  // a /stop/info pull — so a delivered order offers a button to fetch them on demand.
-  // THAT BUTTON USED TO LIVE BEHIND "this stop has NO documents at all", which meant the
-  // moment a stop carried any document (typically a signed BOL, a PDF) the button vanished
-  // and the photos became unreachable — on exactly the delivered orders most likely to have
-  // them. The rule is about PHOTOS, not documents: offer the fetch whenever a delivered stop
-  // has no image on file yet, however many PDFs it carries.
-  const { photos, others, offer: offerPhotoFetch, exhausted } = podPhotoFetchOffer(stop, { delivered, tried });
-  if (!podSectionVisible(stop, { delivered })) return null;
+  // NO STATUS GATE ON THE FETCH BUTTON — see podPhotoFetchOffer. Two gates have already
+  // hidden it: "has no documents at all" (killed by any BOL) and "is DELIVERED" (killed by
+  // a stop delivered in NuVizz that our board still reads as SCHEDULED, because
+  // deliveredDTTM is not a live list field). The button asks NuVizz a question; the only
+  // honest condition is that we have no photos yet.
+  const { photos, others, offer: offerPhotoFetch, exhausted } = podPhotoFetchOffer(stop, { tried });
+  if (!podSectionVisible(stop, { unplanned: status === 'UNPLANNED' })) return null;
   const photoFetchButton = offerPhotoFetch && (
     <div className="mt-1.5">
       <button
@@ -4593,7 +4592,11 @@ function PodDocsSection({ stop, onRefreshed }) {
                   {label} <Eye size={12} />
                 </button>
                 {d.extension && <span className="px-1 rounded bg-slate-100 text-slate-500 text-[9px] uppercase">{d.extension}</span>}
-                {when && <span className="text-slate-400">· {when}</span>}
+                {/* A document's createdTime is when the DOCUMENT was made, not when the stop
+                    was delivered — NuVizz's own guide warns a BOL is generated 1-3 days ahead
+                    (which is why confirmedDTTM, not a doc stamp, is the delivery time). Printed
+                    bare next to "Proof of delivery" it read as an arrival, so it is labelled. */}
+                {when && <span className="text-slate-400" title="When this document was created — not the delivery time">· created {when}</span>}
               </li>
             );
           })}
@@ -5522,7 +5525,9 @@ function useLiveStop(stop) {
       setFresh((prev) => ({ ...(prev || {}), dupNbrSuspect: true, dupNbrOtherId: String(d?.stopId ?? '') }));
       return refusal;
     }
-    setFresh((prev) => ({ ...(prev || {}), ...d }));
+    // foldFreshStop, not a raw spread: a pull that returns an empty podDocs must
+    // not erase the BOL already on the card (the mergeEnrich rule, client-side).
+    setFresh((prev) => foldFreshStop(prev, d));
     return null;
   }, []);
   return [live, onRefreshed];
