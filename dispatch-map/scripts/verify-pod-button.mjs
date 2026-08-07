@@ -46,6 +46,9 @@ const BOARD_STOP = {
   pallets: 1, cartons: 0, volume: 1, weight: 149,
   enriched: true,
   podDocs: [{ documentName: 'BOL', documentGuid: 'bol-guid-1', documentPath: '/x/bol.pdf', extension: 'PDF', createdTime: '2026-08-06T18:01:00' }],
+  // Stored rich notes are behind what the latest scan carries — the stale-notes case.
+  allComments: [{ text: 'TOTAL-AMOUNT : 84.21', type: 'ORD_IN', typeDesc: 'Order Instructions', addedBy: 'INTG ULINE', addedOn: '2026-08-06T18:20:00' }],
+  orderInstructions: 'TOTAL-AMOUNT : 84.21 LIFT GATE NEEDED INSIDE DELIVERY',
 };
 
 try { if (!(await stat(DIST)).isDirectory()) throw new Error('not a dir'); }
@@ -112,6 +115,14 @@ if (cardOpen) {
     : bad('no PROOF OF DELIVERY section on a stop that has a BOL');
 
   /\bBOL\b/.test(body) ? ok('the BOL is still listed') : bad('the BOL vanished from the section');
+
+  // Notes freshness: the scan carries instructions the stored notes lack.
+  /NuVizz has newer instructions/i.test(body)
+    ? ok('the stale-notes banner renders when the scan has newer instructions')
+    : bad('no stale-notes banner on a stop whose scan text is ahead of its stored notes');
+  /LIFT GATE NEEDED INSIDE DELIVERY/.test(body)
+    ? ok('...and shows the newer text itself')
+    : bad('the banner did not show the newer note text');
 
   // Same card proves the other fix. Scope to the card's ROUTE block (between the
   // ROUTE heading and the PROS heading) — the page also lists VINCENT in the

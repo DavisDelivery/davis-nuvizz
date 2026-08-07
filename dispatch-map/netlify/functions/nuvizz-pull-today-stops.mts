@@ -51,6 +51,7 @@ const LEAN_STOP_FIELDS = [
   'loadNbr', 'loadStopSeq', 'normalizedStatus', 'orderNbr', 'pallets', 'plannedDistanceToNextStop',
   'plannedDurationToNextStop', 'plannedEtaDTTM', 'poRef', 'podDocs', 'primaryPro', 'pro',
   'proCount', 'proNbr', 'pros', 'requestedDate', 'routeName', 'routeSeq',
+  'orderInstructions', 'notes_refreshed_at',
   'scheduledDate', 'scheduledFrom', 'scheduledTo', 'shipmentNbr', 'signalSources', 'source',
   'state', 'status', 'stopDetails', 'stopDistance', 'stopId', 'stopNbr',
   'stopType', 'terms', 'timeConstraint', 'volume', 'warehouse', 'weight',

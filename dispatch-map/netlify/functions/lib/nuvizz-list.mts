@@ -721,6 +721,18 @@ export const LIVE_LIST_FIELDS = [
   // LIVE so a prior scan's flag can't stick to a stop after the duplicate is cleaned up in
   // the portal — the moment only one record carries the number, the badge goes away.
   'dupNbr', 'dupNbrOtherId',
+  // ORDER INSTRUCTIONS ARE LIVE. Chad: "notes should be updated with every scan
+  // planned unplanned and completed deliveries." The saved-search row carries the
+  // note text on EVERY scan at no extra cost — it was simply being discarded,
+  // because a non-live field is copied back from the stored doc and the stored
+  // value came from the ONE first-sight enrichment. So a note added or edited
+  // after an order first appeared never reached the board.
+  //
+  // What this refreshes is the list's plain text only. The RICH notes the card
+  // renders (allComments — author, type, timestamp) exist only in /stop/info and
+  // still need an enrichment; keeping this field current is what lets the app
+  // notice they have gone stale. See noteTextChanged in stop-notes-freshness.js.
+  'orderInstructions',
 ];
 // Copy ALL non-live fields from src (a /stop/info-normalized stop, or a prior enriched
 // index doc) onto target, then mark it enriched. Never overwrites a real value with a
