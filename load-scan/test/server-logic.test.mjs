@@ -458,6 +458,89 @@ test('deactivated staff are left out of the daily people list', async () => {
   assert.equal(out.people.length, 0, 'a dead account is not a person who failed to show up');
 });
 
+// ── The drill-down: which stops got scanned, which did not, what is missing ──
+
+const dstops = [
+  { stopNbr: '1', businessName: 'TIFOSI', expectedPieces: 3, isPickup: false },
+  { stopNbr: '2', businessName: 'AVERITT', expectedPieces: 2, isPickup: false },
+  { stopNbr: '3', businessName: 'DOCK PICKUP', expectedPieces: 4, isPickup: true },
+];
+const sc = (og, stopNbr, extra = {}) => ({ og, pro: '7000000', stopNbr, ...extra });
+
+test('reconcileStops names the finished stop, the short one and the untouched one', async () => {
+  const rows = ACT.reconcileStops(dstops, [
+    sc('OG0000000001', '1'), sc('OG0000000002', '1'), sc('OG0000000003', '1'), // stop 1: 3/3
+    sc('OG0000000004', '2'),                                                    // stop 2: 1/2
+    // stop 3 is a pickup — nothing scanned, and that is correct
+  ], []);
+  const one = rows.find((r) => r.stopNbr === '1');
+  const two = rows.find((r) => r.stopNbr === '2');
+  const three = rows.find((r) => r.stopNbr === '3');
+  assert.equal(one.complete, true);
+  assert.equal(one.scanned, 3);
+  assert.equal(two.complete, false);
+  assert.equal(two.short, 1, 'one piece missing on AVERITT');
+  assert.equal(two.scanned, 1);
+  assert.equal(three.isPickup, true);
+  assert.equal(three.short, 0, 'a pickup is never short — nothing loads there');
+  assert.equal(three.complete, true);
+});
+
+test('a stop nobody scanned reads as zero, not as absent', async () => {
+  const rows = ACT.reconcileStops(dstops, [sc('OG0000000001', '1')], []);
+  const two = rows.find((r) => r.stopNbr === '2');
+  assert.equal(two.scanned, 0);
+  assert.equal(two.short, 2, 'both AVERITT pieces still missing');
+});
+
+test('a voided scan is not counted against its stop', async () => {
+  const rows = ACT.reconcileStops(dstops, [
+    sc('OG0000000001', '1'), sc('OG0000000002', '1'),
+    sc('OG0000000003', '1', { voidedAt: '2026-08-06T12:00:00Z' }),
+  ], []);
+  const one = rows.find((r) => r.stopNbr === '1');
+  assert.equal(one.scanned, 2, 'the voided piece dropped off');
+  assert.equal(one.short, 1);
+});
+
+test('a damaged piece still counts, and is reported for the claim', async () => {
+  const rows = ACT.reconcileStops(dstops, [
+    sc('OG0000000001', '1'), sc('OG0000000002', '1'),
+    sc('OG0000000003', '1', { damaged: true, damageNote: 'crushed' }),
+  ], []);
+  const one = rows.find((r) => r.stopNbr === '1');
+  assert.equal(one.scanned, 3, 'damaged freight is still on the truck');
+  assert.equal(one.complete, true);
+  assert.equal(one.damagedCount, 1);
+  assert.deepEqual(one.damagedOgs, ['OG0000000003']);
+});
+
+test('a hand-confirmed stop reconciles without a scan barcode', async () => {
+  const rows = ACT.reconcileStops(dstops, [], [{ stopNbr: '2', pieces: 2 }]);
+  const two = rows.find((r) => r.stopNbr === '2');
+  assert.equal(two.handConfirmed, true);
+  assert.equal(two.scanned, 2, 'the hand-confirm vouches for the whole stop');
+  assert.equal(two.complete, true);
+});
+
+test('buildActivity attaches the per-stop reconciliation to the load', async () => {
+  const out = ACT.buildActivity({
+    date: '2026-08-06',
+    loads: [{ loadNbr: 'L1', expectedPieces: 5, stopCount: 2, driverName: 'ALFRED MORGAN',
+      stops: [
+        { stopNbr: '1', businessName: 'TIFOSI', expectedPieces: 3, isPickup: false },
+        { stopNbr: '2', businessName: 'AVERITT', expectedPieces: 2, isPickup: false },
+      ] }],
+    sessions: [{ loadNbr: 'L1', date: '2026-08-06', scannedCount: 3, scannedPieces: 3,
+      scans: [sc('OG0000000001', '1'), sc('OG0000000002', '1'), sc('OG0000000003', '1')] }],
+    creds: [],
+  });
+  const detail = out.loads[0].stops;
+  assert.equal(detail.length, 2);
+  assert.equal(detail.find((s) => s.stopNbr === '1').complete, true);
+  assert.equal(detail.find((s) => s.stopNbr === '2').scanned, 0, 'AVERITT untouched');
+});
+
 test('a resequenced load is counted and flagged', async () => {
   const out = ACT.buildActivity({
     date: '2026-08-05',

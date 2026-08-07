@@ -1605,6 +1605,7 @@ function DayPanel({ data, date, onDate, busy, onRefresh, session }) {
   // the count was a dead end and they had to eyeball the whole list for it.
   const [statusFilter, setStatusFilter] = useState(null);
   const [peopleUsedOnly, setPeopleUsedOnly] = useState(false);
+  const [openLoad, setOpenLoad] = useState(null);
   if (!data) {
     return (
       <div className="rounded-xl bg-white ring-1 ring-slate-200 px-3 py-2 text-sm text-slate-500">
@@ -1760,7 +1761,12 @@ function DayPanel({ data, date, onDate, busy, onRefresh, session }) {
           ) : null}
           {shownLoads.length ? (
             shownLoads.map((l) => (
-              <div key={l.loadNbr} className="px-3 py-2 text-sm">
+              <button
+                key={l.loadNbr}
+                type="button"
+                onClick={() => setOpenLoad(l)}
+                className="w-full text-left px-3 py-2 text-sm hover:bg-slate-50"
+              >
                 <div className="flex items-center gap-2 flex-wrap">
                   <span className="font-mono font-medium">{l.loadNbr}</span>
                   <span className="text-slate-600 truncate flex-1 min-w-0">{l.driverName || '—'}</span>
@@ -1768,6 +1774,7 @@ function DayPanel({ data, date, onDate, busy, onRefresh, session }) {
                   <span className="font-mono text-xs tabular-nums">
                     {l.scannedCount}/{l.expectedPieces}
                   </span>
+                  <ChevronRight className="w-4 h-4 text-slate-400 shrink-0" />
                 </div>
                 <div className="text-xs text-slate-500 mt-0.5 flex flex-wrap gap-x-2">
                   <span>{l.stopCount} stop(s)</span>
@@ -1784,7 +1791,7 @@ function DayPanel({ data, date, onDate, busy, onRefresh, session }) {
                   )}
                   {l.closedAt ? <span>closed {fmtDateTime(l.closedAt)}</span> : null}
                 </div>
-              </div>
+              </button>
             ))
           ) : (
             <div className="px-3 py-2 text-sm text-slate-500">
@@ -1829,7 +1836,101 @@ function DayPanel({ data, date, onDate, busy, onRefresh, session }) {
           ) : null}
         </div>
       )}
+
+      {openLoad ? <LoadDetail load={openLoad} onClose={() => setOpenLoad(null)} /> : null}
     </div>
+  );
+}
+
+/**
+ * One truck, opened up: every stop, what was scanned against it, what is still
+ * missing. The dispatcher's answer to "did Alfred finish this load, and if not,
+ * where is the gap" — the receipt behind the summary row.
+ */
+function LoadDetail({ load, onClose }) {
+  const TONE = {
+    not_started: 'bg-rose-50 ring-rose-300 text-rose-900',
+    in_progress: 'bg-amber-50 ring-amber-300 text-amber-900',
+    closed_clean: 'bg-emerald-50 ring-emerald-200 text-emerald-900',
+    closed_short: 'bg-rose-50 ring-rose-300 text-rose-900',
+    closed_over: 'bg-rose-50 ring-rose-300 text-rose-900',
+  };
+  const LABEL = {
+    not_started: 'NOT STARTED', in_progress: 'in progress', closed_clean: 'closed clean',
+    closed_short: 'CLOSED SHORT', closed_over: 'CLOSED OVER',
+  };
+  const stops = load.stops || [];
+  const deliveries = stops.filter((s) => !s.isPickup);
+  const pickups = stops.filter((s) => s.isPickup);
+  const done = deliveries.filter((s) => s.complete).length;
+  const untouched = deliveries.filter((s) => s.scanned === 0).length;
+
+  // One stop's line: the badge is the verdict a dispatcher reads first.
+  const StopRow = ({ s }) => {
+    const badge = s.isPickup
+      ? ['bg-slate-100 ring-slate-300 text-slate-600', 'pickup']
+      : s.scanned === 0
+        ? ['bg-rose-50 ring-rose-300 text-rose-800', 'not scanned']
+        : s.complete
+          ? ['bg-emerald-50 ring-emerald-200 text-emerald-800', 'all here']
+          : ['bg-amber-50 ring-amber-300 text-amber-900', `${s.short} missing`];
+    return (
+      <li className="px-2 py-1.5 flex items-center gap-2">
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-slate-900">{s.businessName || `Stop ${s.stopNbr}`}</div>
+          <div className="text-[11px] text-slate-500 flex flex-wrap gap-x-2">
+            <span>stop {s.stopNbr}</span>
+            {s.handConfirmed ? <span className="text-sky-700">confirmed by hand</span> : null}
+            {s.damagedCount > 0 ? <span className="text-amber-800 font-medium">{s.damagedCount} damaged</span> : null}
+          </div>
+        </div>
+        {!s.isPickup ? <span className="font-mono text-xs tabular-nums text-slate-600">{s.scanned}/{s.expected}</span> : null}
+        <span className={`text-[11px] rounded px-1.5 py-0.5 ring-1 ${badge[0]}`}>{badge[1]}</span>
+      </li>
+    );
+  };
+
+  return (
+    <Modal title={`${load.loadNbr} · ${load.driverName || '—'}`} onClose={onClose}>
+      <div className="flex items-center gap-2 flex-wrap text-sm">
+        <span className={`text-[11px] rounded px-1.5 py-0.5 ring-1 ${TONE[load.status]}`}>{LABEL[load.status]}</span>
+        <span className="font-mono tabular-nums">{load.scannedCount}/{load.expectedPieces} pieces</span>
+        {load.short ? <span className="text-rose-700 font-medium">{load.short} short</span> : null}
+        {load.over ? <span className="text-rose-700 font-medium">{load.over} over</span> : null}
+      </div>
+
+      {load.workedBy?.length ? (
+        <div className="text-xs text-slate-600">
+          Worked by {load.workedBy.map((w) => `${w.displayName} (${w.role}, ${w.pieces})`).join(', ')}
+        </div>
+      ) : (
+        <Banner kind="warn">Nobody has scanned this truck.</Banner>
+      )}
+
+      {deliveries.length ? (
+        <div>
+          <div className="text-xs text-slate-500 mb-1">
+            {done} of {deliveries.length} stops complete{untouched ? ` · ${untouched} not started` : ''}
+          </div>
+          <ul className="rounded-lg ring-1 ring-slate-200 divide-y divide-slate-100 bg-white">
+            {deliveries.map((s) => <StopRow key={s.stopNbr} s={s} />)}
+          </ul>
+        </div>
+      ) : (
+        <div className="text-sm text-slate-500">
+          No stop detail for this truck — it was on the board with no stops in the cached index.
+        </div>
+      )}
+
+      {pickups.length ? (
+        <div>
+          <div className="text-xs text-slate-500 mb-1">Pickups — collected on the route, nothing to load</div>
+          <ul className="rounded-lg ring-1 ring-slate-200 divide-y divide-slate-100 bg-white">
+            {pickups.map((s) => <StopRow key={s.stopNbr} s={s} />)}
+          </ul>
+        </div>
+      ) : null}
+    </Modal>
   );
 }
 

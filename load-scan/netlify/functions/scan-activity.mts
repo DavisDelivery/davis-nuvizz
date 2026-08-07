@@ -51,6 +51,14 @@ export default async (req: Request): Promise<Response> => {
     driverName: l.stops[0]?.raw?.driverName || l.stops[0]?.raw?.driverUserName || null,
     expectedPieces: l.expectedPieces,
     stopCount: l.stopCount,
+    // The per-stop skeleton the drill-down reconciles against. Just what a
+    // dispatcher needs to name a stop and judge it — not the whole cached row.
+    stops: (l.stops || []).map((s: any) => ({
+      stopNbr: s.stopNbr,
+      businessName: s.businessName,
+      expectedPieces: s.expectedPieces,
+      isPickup: s.isPickup,
+    })),
   }));
 
   const [allSessions, credDocs] = await Promise.all([listDocs(SESSIONS), listDocs(DRIVER_AUTH)]);
