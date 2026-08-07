@@ -47,7 +47,13 @@ const server = createServer(async (req, res) => {
 await new Promise((r) => server.listen(PORT, '127.0.0.1', r));
 
 const browser = await chromium.launch({ ...(process.env.CHROMIUM_PATH ? { executablePath: process.env.CHROMIUM_PATH } : {}), args: ['--no-sandbox'] });
-const page = await (await browser.newContext({ viewport: { width: 1440, height: 1000 } })).newPage();
+// MOBILE=1 runs the phone layout, where the whole nav is one chip menu. v0.54.48
+// shipped the tab on desktop only and it was unreachable from a phone — this is
+// the run that would have caught it.
+const MOBILE = process.env.MOBILE === '1';
+const page = await (await browser.newContext(MOBILE
+  ? { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, deviceScaleFactor: 2 }
+  : { viewport: { width: 1440, height: 1000 } })).newPage();
 let checkCalls = 0, probeParam = null;
 await page.route('**/.netlify/functions/**', async (route) => {
   const url = route.request().url();
@@ -58,12 +64,17 @@ await page.route('**/.netlify/functions/**', async (route) => {
 });
 page.on('pageerror', (e) => bad(`uncaught page error: ${e.message}`));
 
-console.log(`\nManifest check tab — live render (${N} missing order(s) stubbed)`);
+console.log(`\nManifest check tab — live render (${N} missing order(s) stubbed)${MOBILE ? ' [PHONE]' : ''}`);
 await page.goto(`http://127.0.0.1:${PORT}/`, { waitUntil: 'networkidle' });
 await page.waitForTimeout(1200);
 
-const more = page.getByRole('button', { name: /more/i }).first();
-(await more.isVisible().catch(() => false)) ? ok('the More menu is on the nav') : bad('no More menu on the nav');
+// Desktop: the "More" button. Phone: the version chip that opens the whole menu.
+const more = MOBILE
+  ? page.locator('button[title="Version menu"]').first()
+  : page.getByRole('button', { name: /more/i }).first();
+(await more.isVisible().catch(() => false))
+  ? ok(MOBILE ? 'the phone menu chip is on the bar' : 'the More menu is on the nav')
+  : bad(MOBILE ? 'no phone menu chip' : 'no More menu on the nav');
 await more.click(); await page.waitForTimeout(400);
 const item = page.getByRole('menuitem', { name: /manifest check/i }).first();
 (await item.isVisible().catch(() => false)) ? ok('Manifest check is listed inside it') : bad('Manifest check missing from the menu');
@@ -93,18 +104,27 @@ if (N > 0) {
 /match the ones printed on the manifest/i.test(body) ? ok('and are marked as reconciled') : bad('no reconciliation statement');
 
 // THE FLAG on the nav, and whether it survives a reload.
-const badgeOf = async () => page.evaluate(() => {
+const badgeOf = async (mobile) => page.evaluate((isM) => {
+  if (isM) {
+    // The phone chip carries a DOT, not a number — the nav is one control, so the
+    // only thing that fits is "something behind here needs you".
+    const chip = document.querySelector('button[title="Version menu"]');
+    return chip && chip.querySelector('span.bg-red-600') ? 1 : 0;
+  }
   const b = [...document.querySelectorAll('button')].find((x) => /more/i.test(x.textContent || ''));
   const m = b && (b.textContent || '').match(/(\d+)\s*$/);
   return m ? Number(m[1]) : 0;
-});
-const live = await badgeOf();
-live === N ? ok(`the nav badge reads ${N} without leaving the tab`) : bad(`nav badge is ${live}, expected ${N}`);
+}, mobile);
+const want = MOBILE ? (N > 0 ? 1 : 0) : N;
+const live = await badgeOf(MOBILE);
+live === want
+  ? ok(MOBILE ? `the phone chip ${want ? 'shows the alert dot' : 'shows no dot'} without leaving the tab` : `the nav badge reads ${N} without leaving the tab`)
+  : bad(`badge is ${live}, expected ${want}`);
 
 await page.reload({ waitUntil: 'networkidle' });
 await page.waitForTimeout(1200);
-const after = await badgeOf();
-after === N ? ok(`the flag SURVIVES a reload (still ${N})`) : bad(`after reload the badge is ${after}, expected ${N}`);
+const after = await badgeOf(MOBILE);
+after === want ? ok(`the flag SURVIVES a reload (still ${after})`) : bad(`after reload the badge is ${after}, expected ${want}`);
 
 await browser.close(); server.close();
 if (fails.length) { console.error(`\n✗ ${fails.length} check(s) failed\n`); process.exit(1); }

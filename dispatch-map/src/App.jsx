@@ -72,7 +72,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.54.49';
+const APP_VERSION = '0.54.50';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -117,6 +117,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.54.50', 'THE MANIFEST CHECK WAS UNREACHABLE ON YOUR PHONE. Chad sent a screenshot of the menu on his phone asking "did you merge?" — and the answer was yes, he was running the right build, but the tab simply was not there. This one is entirely on me. This app has TWO navigations: a row of tabs on desktop, and on a phone the whole thing collapses to a single chip menu behind the version number. I built the new More dropdown into the desktop row, tested it at desktop size, and never opened the phone menu. So Manifest check shipped visible on a laptop and invisible on a phone — and dispatch runs on a phone. WORSE, IT FAILED SILENTLY. The phone menu maps each entry to a screen and quietly falls back to the MAP for anything it does not recognise, so even if you had found a way to ask for the tab you would have landed on the map with no error, which is the kind of thing you would reasonably read as "the feature never shipped." Manifest check is now in the phone menu, the fallback is written so a screen has to be named on purpose, and a comment there says why. THE FLAG WORKS ON A PHONE TOO, but it had to be a different shape. On desktop the red count sits on the More button. On a phone the entire nav is one chip, so there is nowhere to hang a number where you would see it — the chip now carries a small red DOT when something behind the menu needs you, and the count itself is on the Manifest check row when you open it. Same rule as always: it only counts orders to chase, and it survives a reload. AND THE TEST NOW RUNS AT PHONE SIZE. The browser check I wrote for this tab ran at 1440 pixels wide, which is exactly why it passed while the feature was broken for you. It runs both sizes now — phone and desktop, with and without a problem to report — so a screen that is reachable on a laptop and not on a phone fails the build instead of reaching you. Also confirming what merged: v0.54.48 (the manifest tab, the More menu, the POD photo fix) and v0.54.49 (notes refreshing on every scan) are both in.'],
   ['0.54.49', 'NOTES NOW REFRESH ON EVERY SCAN, AND A CARD YOU OPEN REPAIRS ITS OWN NOTES FOR GOOD. Chad: "Notes should be updated with every scan planned unplanned and completed deliveries." Here is what was actually happening, because it is worse than "a bit behind": an order\'s notes were captured ONCE — the single detail lookup this app does the first time a PRO ever appears on the board — and then never touched again. Not by the next scan, not by any scan. And because that captured record is filed per PRO and reused across days, a repeat customer like ULINE could be showing you notes captured weeks before the instruction you actually needed was written. TWO CHANGES, BOTH FREE. FIRST, the note text now refreshes on every scan. The saved searches you already run — planned, unplanned and completed — have been carrying each order\'s instruction text the whole time, at no extra cost; the app was simply throwing it away, because a field not on the "keep this current" list gets overwritten by the older stored copy on every pass. It is on that list now. Zero extra NuVizz calls, all three searches, every scan. SECOND, opening a stop now FIXES it permanently. Tapping a card, hitting Refresh from NuVizz, or opening the Activity Timeline already pays for a full detail read, and that read comes back with the order\'s current notes — the app was folding them into the card on your screen and then discarding them the moment you closed it. They are now written back, so the next person to open that order sees the good notes without re-fetching anything. Same call, no new cost, and the repair sticks. THE HONEST LIMIT, and it is why there is a new amber banner: what the scans can refresh for free is the note TEXT. The full notes the card renders — with who wrote it, what type it is, and when — exist only in the detail read. So when a scan is carrying instructions the stored notes do not have, the card now says "NuVizz has newer instructions than these" and shows you the new text right there, rather than presenting weeks-old notes as if they were current. Refresh pulls the full version with its author and time. That banner is deliberately hard to trigger: it only fires when the scan has something we do not, never the reverse (the list squashes every comment into one line, so it usually carries LESS — flagging that would mark nearly every stop and you would learn to ignore it within a day), and one stray word is treated as noise rather than a new instruction. IF YOU WANT THE FULL NOTES ON EVERY SCAN TOO, that is one change on your side rather than mine: the saved searches would need the comment author, type and timestamp added as columns. Say the word and I will wire it. 1,334 tests, and the banner was verified rendering in a real browser.'],
   ['0.54.48', 'THE MANIFEST CHECK HAS A SCREEN NOW, AND A FLAG THAT FINDS YOU. Chad: "i want to run the manifest against what is scanned into firestore and want there to be a flag when there is an issue as well as i want to add a more dropdown to start storing things like this tab we are about to build." All three. A MORE MENU ON THE NAV. The tab row was full, and screens like this one are places you visit deliberately rather than live in — so rather than shrink every tab to squeeze them in, there is now a More dropdown at the right of the row and overflow tabs go there. Manifest check is the first one in it; the menu is built to take more. THE TAB. Drop the nightly Uline freight report on it and every order printed on that report is checked against what the scan actually put in Firestore. You get the headline first — either "all 660 manifest orders found in the scan" or the number that are not — then the manifest\'s own totals, then a table of exactly which orders are unaccounted for, with PRO, customer, city, ZIP, weight, skids and loose, so you can go chase them without hunting for the numbers. IT COSTS NOTHING. Not "a little" — nothing. The report is a text-layer PDF so reading it needs no AI pass, and the comparison reads Firestore. The endpoint underneath is capable of going on to ask NuVizz about each unaccounted order, but that is deliberately NOT wired to any button on this screen: nothing you can click here spends a NuVizz call, so it can never surprise you with one. THE FLAG, AND WHY IT SITS ON THE NAV. A problem found on a screen you are not looking at is the same as no problem, so the count of unaccounted orders shows as a red badge on the More menu itself — and it is stored, so it is still there tomorrow morning after a reload. It counts ORDERS TO CHASE, not categories of complaint: three missing orders reads 3, never "3 kinds of thing went wrong." Two things it deliberately does NOT flag: orders in the scan that are not on the manifest (the board carries every shipper, not just Uline — flagging those would bury the one order that matters under hundreds that are fine), and a manifest whose own totals do not reconcile, which warns in amber and marks the freight numbers unconfirmed rather than raising an order alert, because that is a reading problem and not a missing order. HONEST LIMIT, worth saying plainly: this tells you an order is not in the scan for the days it checked. That is not the same as proving NuVizz never got it — the order could be dated to another day. The table says so, and the PRO is right there to search. Verified in a real browser, not just unit tests: the menu opens, dropping a PDF runs the check exactly once, it never once asks for the NuVizz probe, the missing orders render with their customers, the badge appears on the nav without leaving the tab, and it is still there after a reload. Both the found-something and found-nothing paths were run. 1,325 tests.'],
   ['0.54.47', 'AN ORDER ON ULINE\'S NIGHTLY MANIFEST THAT NEVER REACHED NUVIZZ CAN NOW BE FOUND. Chad, with the 8/06 freight report in hand: "an order is on the nightly manifest that is not in nuvizz need to build a way to detect this." WHY NOTHING CAUGHT THIS BEFORE, and it is worth stating plainly: every integrity check this app has starts FROM NuVizz. The scan reads NuVizz. The board reconcile reads NuVizz. The capture seal checks what we captured out of NuVizz. So an order Uline physically handed us that NuVizz never received is invisible to all of them — there is no record to notice the absence of. Uline\'s own manifest is the only independent statement of what we were actually given, which is exactly why it can catch what nothing else can. WHAT WAS BUILT. The nightly PDF is now readable end to end: 660 orders off the 8/06 report, each with its PRO, customer, city, zip, weight, skids and loose pieces. It costs NOTHING to read — this report carries real text, unlike the faxed Estes manifests that need an AI vision pass, so there is no AI call and no NuVizz call in reading it. THE PART THAT TOOK THREE TRIES, because it would have quietly handed you wrong freight counts: the numbers on that report are RIGHT-ALIGNED, so a value\'s position never lines up with its column heading, and an order with no skids simply has no SKID column at all. Reading the numbers in the order they appear — the obvious approach, and my first two attempts — swapped SKIDS and LOOSE on 45 of the 660 orders. The reader now works off real column positions, and then PROVES its reading by reproducing the manifest\'s own FINAL TOTALS line, all four numbers: 660 orders, 359,769 lbs, 1,019 skids, 310 pieces. If a future manifest cannot be reconciled against its own totals it FAILS LOUDLY instead of handing you numbers it could not verify. THE CHECK ITSELF RUNS IN TWO STEPS, and the split is about cost. Step one is FREE: it compares every manifest PRO against the board, zero NuVizz calls, and produces SUSPECTS — orders on the manifest that are not on the board. Step two is the only part that costs anything: one NuVizz call per suspect, capped, and you have to ask for it explicitly. AND THE DISTINCTION THE WHOLE THING RESTS ON: "not on our board" and "not in NuVizz" are different claims. An order can be off the board because it is dated to another day, or cancelled, or on a day we did not scan. Only NuVizz answering "that order does not exist" proves it never arrived. Everything else — scans switched off, auth rejected, throttling, the daily call ceiling tripping — is UNVERIFIED, never absence, because every one of those fails for all 660 orders at once and a lazier design would cheerfully report your entire manifest as missing on a bad night. There is a test that fires all five of those failure modes at 660 orders and demands ZERO false accusations. One more real trap closed: the board stores some orders as 007157687-1 while Uline prints the bare 007157687, so matching had to handle the segment suffix — without that, every one of those orders would have read as missing and the report would have been nothing but false alarms. 26 new tests. NEXT: a drop zone so you can drag the nightly PDF in rather than calling the endpoint, and a nightly run that emails you only when something is actually missing.'],
@@ -6847,7 +6848,7 @@ function makeDriverLabelOverlayClass(google) {
 // MOBILE_BREAKPOINT. Renders the "D" mark, "Dispatch" label, and a tap-able
 // version chip on the right. Tapping the chip toggles a small overflow menu
 // the parent owns (Diagnostics access lives here, per brief P5.1).
-function MobileAppBar({ version, onChipMenu, chipMenuOpen, onSelectMenu, smsUnread = 0, presence = null }) {
+function MobileAppBar({ version, onChipMenu, chipMenuOpen, onSelectMenu, smsUnread = 0, presence = null, manifestBadge = 0 }) {
   return (
     <header
       className="flex-shrink-0 z-30 flex items-center justify-between gap-2 px-3 text-white relative"
@@ -6872,12 +6873,16 @@ function MobileAppBar({ version, onChipMenu, chipMenuOpen, onSelectMenu, smsUnre
         <PresenceChip presence={presence} compact />
         <button
           onClick={onChipMenu}
-          className="text-[12px] px-2.5 py-1.5 min-h-[36px] rounded bg-white/15 text-white/90 active:bg-white/25 inline-flex items-center gap-1.5"
+          className="relative text-[12px] px-2.5 py-1.5 min-h-[36px] rounded bg-white/15 text-white/90 active:bg-white/25 inline-flex items-center gap-1.5"
           aria-haspopup="menu"
           aria-expanded={chipMenuOpen}
           title="Version menu"
         >
           <Menu size={14} /> v{version}
+          {/* A problem behind the menu is invisible on a phone — the whole nav is one
+              chip. A dot on the chip is the only way the manifest flag can reach you
+              without opening the menu to look for it. */}
+          {manifestBadge > 0 && <span className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-red-600 border border-white" />}
         </button>
         {chipMenuOpen && (
           <div
@@ -6914,6 +6919,14 @@ function MobileAppBar({ version, onChipMenu, chipMenuOpen, onSelectMenu, smsUnre
             >
               <MessageSquare size={12} /> Messages
               {smsUnread > 0 && <span className="ml-auto min-w-[16px] h-4 px-1 rounded-full bg-red-600 text-white text-[10px] font-bold inline-flex items-center justify-center">{smsUnread > 99 ? '99+' : smsUnread}</span>}
+            </button>
+            <button
+              className="w-full text-left px-3 py-2 hover:bg-slate-50 inline-flex items-center gap-2 border-t border-slate-100"
+              onClick={() => onSelectMenu('manifest')}
+              role="menuitem"
+            >
+              <FileCheck size={12} /> Manifest check
+              {manifestBadge > 0 && <span className="ml-auto min-w-[16px] h-4 px-1 rounded-full bg-red-600 text-white text-[10px] font-bold inline-flex items-center justify-center">{manifestBadge > 99 ? '99+' : manifestBadge}</span>}
             </button>
             <button
               className="w-full text-left px-3 py-2 hover:bg-slate-50 inline-flex items-center gap-2 border-t border-slate-100"
@@ -19173,7 +19186,12 @@ function Shell() {
     setChipMenuOpen(false);
     if (next === 'debug') { setDebugOpen(true); return; }
     if (next === 'messages') { openMessages(); return; }
-    setTab(next === 'diagnostics' ? 'diag' : next === 'routing' ? 'routing' : next === 'neworder' ? 'neworder' : next === 'quote' ? 'quote' : 'map');
+    // NOTE the default: anything unrecognised lands on 'map'. A new screen must be
+    // named here or the phone menu silently opens the map instead — which is what
+    // happened to Manifest check in v0.54.48: the desktop nav had it, the chip
+    // menu did not, and there was no way to reach it from a phone at all.
+    const KNOWN = ['routing', 'neworder', 'quote', 'manifest'];
+    setTab(next === 'diagnostics' ? 'diag' : KNOWN.includes(next) ? next : 'map');
   };
 
   return (
@@ -19208,6 +19226,7 @@ function Shell() {
           onSelectMenu={onSelectMenu}
           smsUnread={smsUnread}
           presence={presence}
+          manifestBadge={moreBadge}
         />
       ) : (
         <header className="shrink-0 relative z-30 flex items-center justify-between px-4 py-2 border-b bg-white" style={{ paddingTop: 'env(safe-area-inset-top)' }}>
