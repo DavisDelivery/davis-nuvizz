@@ -7,9 +7,16 @@
 // put 22 skids on a box truck. You should id the ones who can take 17-18 but
 // most are 12-15."
 //
-// So a driver's hard bound is now the most THEY have actually carried in one
-// trip (envelope.per_trip.skid_equiv_max, mined from days < D) — the 2.1.1
-// lesson applied properly: never split below what dispatch has proven fits.
+// So a driver's hard bound is now THEIR OWN typical full load — the p85 of
+// their per-trip skid-equivalents, mined from days < D.
+//
+// It is deliberately NOT their observed max, which is the tempting choice. A
+// driver needs 10 observed DAYS before their own envelope is used at all, so
+// their max is drawn from ~12-25 trips and sits at their own p95-p100: one
+// 21-skid day in ten weeks would put a 14-skid driver back at the class cap of
+// 22 and change nothing for exactly the drivers this targets. p85 is what "most
+// are 12-15, some take 17-18" describes. skid_cap_driver_headroom dials toward
+// the max for anyone who wants the looser reading.
 //
 // THE SAFETY PROPERTY THESE TESTS EXIST TO PIN: a per-driver cap is clamped at
 // the class cap, so it is always <= what the flat cap allowed. This change can
@@ -49,23 +56,55 @@ const skidsOf = (t) => t.stops.reduce((a, s) => a + s.skids, 0);
 
 test('a 12-15 skid driver gets a 12-15 skid cap, not the fleet p95 of 22', () => {
   const caps = capsFor(driver('TYPICAL', { p85: 14, max: 15 }), CFG);
-  assert.equal(caps.hard, 15, "the most they've actually carried, not 22");
+  assert.equal(caps.hard, 14, 'a full truck for THIS driver');
   assert.equal(caps.soft, 14);
   assert.equal(caps.learned, true);
 });
 
+test('ONE outlier day does not hand a 14-skid driver the class cap back', () => {
+  // The whole point of using p85 over the observed max. A driver needs 10
+  // observed DAYS before their own envelope is used at all, so their max is
+  // drawn from ~12-25 trips and sits at their own p95-p100. If the bound were
+  // the raw max, a single 21-skid day in ten weeks would put this driver back
+  // at 22 and the phase would change nothing for exactly the drivers it targets.
+  const caps = capsFor(driver('ONEBIGDAY', { p85: 14, max: 21 }), CFG);
+  assert.equal(caps.hard, 14, 'the outlier does not become the everyday cap');
+  assert.ok(caps.hard < classCapsFor('box_truck', CFG).hard);
+});
+
+test('skid_cap_driver_headroom dials from typical full load to the observed max', () => {
+  const d = driver('ONEBIGDAY', { p85: 14, max: 21 });
+  assert.equal(capsFor(d, { ...CFG, skid_cap_driver_headroom: 0 }).hard, 14, '0 = p85');
+  assert.equal(capsFor(d, { ...CFG, skid_cap_driver_headroom: 1 }).hard, 21, '1 = observed max');
+  assert.equal(capsFor(d, { ...CFG, skid_cap_driver_headroom: 0.5 }).hard, 17.5, 'halfway');
+  assert.equal(CFG.skid_cap_driver_headroom, 0, 'default is the typical full load');
+});
+
+test('the class clamp reads the SOLVER class, never the envelope class', () => {
+  // A driver with no prior days gets a 'class' envelope whose truck_class is
+  // null — which makes it a FLEET envelope, box and tractor days mixed. Clamping
+  // on envelope.truck_class would let a box driver inherit a tractor's numbers.
+  const boxDriverTractorEnvelope = {
+    driver_key: 'X', driver_user_name: 'X', driver_name: 'X',
+    truck_class: 'box_truck', start_minute: 240, affinity: new Map(),
+    envelope: { ...ENV('tractor', { p85: 31, max: 37 }), truck_class: 'tractor' },
+  };
+  assert.equal(capsFor(boxDriverTractorEnvelope, CFG).hard, 22,
+    'clamped at the BOX cap because the solver says box, whatever the envelope says');
+});
+
 test('the 17-18 drivers are identified as such — same class, bigger cap', () => {
-  const big = capsFor(driver('STRONG', { p85: 17, max: 18 }), CFG);
+  const big = capsFor(driver('STRONG', { p85: 18, max: 20 }), CFG);
   const typical = capsFor(driver('TYPICAL', { p85: 14, max: 15 }), CFG);
   assert.equal(big.hard, 18);
-  assert.equal(typical.hard, 15);
+  assert.equal(typical.hard, 14);
   assert.ok(big.hard > typical.hard, 'two box drivers, two different caps — that is the point');
 });
 
 test('SAFETY: a per-driver cap can never exceed the class cap', () => {
   // An outlier trip (the study saw a box "max" of 38) must not invent a 38-skid
   // box truck — that would split LESS than the flat cap and hide a real overload.
-  const caps = capsFor(driver('OUTLIER', { p85: 20, max: 38 }), CFG);
+  const caps = capsFor(driver('OUTLIER', { p85: 30, max: 38 }), CFG);
   assert.equal(caps.hard, classCapsFor('box_truck', CFG).hard, 'clamped at the class hard cap of 22');
   assert.ok(caps.hard <= 22);
 });
@@ -97,17 +136,17 @@ test('the floor doubles as a kill switch: set it to the class cap and everyone i
 
 test('tractors keep their own class bound', () => {
   const caps = capsFor(driver('T', { cls: 'tractor', p85: 28, max: 30 }), CFG);
-  assert.equal(caps.hard, 30, 'a tractor driver learns their own number too');
+  assert.equal(caps.hard, 28, 'a tractor driver learns their own number too');
   assert.equal(capsFor(driver('T2', { cls: 'tractor', p85: 40, max: 67 }), CFG).hard, 37, 'clamped at tractor 37');
 });
 
 test('end to end: an 18-skid bag rides ONE trip for the 17-18 driver and SPLITS for the 12-15 driver', () => {
   const bag = () => Array.from({ length: 18 }, (_, i) => stop(`s${i}`, { miles: 30 - i }));
-  assert.equal(tripsOf(solve(bag(), [driver('STRONG', { p85: 17, max: 18 })]), 'STRONG').length, 1,
-    '18 skids is a normal load for a driver who has run 18');
+  assert.equal(tripsOf(solve(bag(), [driver('STRONG', { p85: 18, max: 20 })]), 'STRONG').length, 1,
+    '18 skids is a normal load for a driver whose full truck is 18');
   const weak = tripsOf(solve(bag(), [driver('TYPICAL', { p85: 14, max: 15 })]), 'TYPICAL');
   assert.ok(weak.length >= 2, `18 skids must not ride one truck for a 15-skid driver, got ${weak.length}`);
-  for (const t of weak) assert.ok(skidsOf(t) <= 15, `each trip within their real cap (got ${skidsOf(t)})`);
+  for (const t of weak) assert.ok(skidsOf(t) <= 14, `each trip within their real cap (got ${skidsOf(t)})`);
 });
 
 test('the driver-day warehouse actually feeds these caps (envelope wiring, not a fixture)', () => {
@@ -125,7 +164,8 @@ test('the driver-day warehouse actually feeds these caps (envelope wiring, not a
   assert.equal(env.source, 'driver', '12+ observed days uses the driver envelope');
   assert.equal(env.per_trip.skid_equiv_max, 15, 'mined from real per-trip skids, future day excluded');
   assert.ok(env.per_trip.skid_equiv_max < 99, 'as-of filter holds');
-  assert.equal(capsFor({ truck_class: 'box_truck', envelope: env }, CFG).hard, 15);
+  assert.equal(env.per_trip.skid_equiv_p85, 14, 'their typical full load across 25 real trips');
+  assert.equal(capsFor({ truck_class: 'box_truck', envelope: env }, CFG).hard, 14);
 });
 
 test('loose pieces count toward a learned cap, and pre-capture trips do not drag it to zero', () => {
@@ -146,6 +186,6 @@ test('splitFarFirst still honors a learned cap through the caps object', () => {
   const stops = Array.from({ length: 16 }, (_, i) => stop(`s${i}`, { miles: 40 - i }));
   const caps = capsFor(driver('TYPICAL', { p85: 14, max: 15 }), CFG);
   const trips = splitFarFirst(stops, caps, CFG);
-  assert.equal(trips.length, 2, '16 skids over a 15 cap splits');
-  for (const t of trips) assert.ok(skidsOf(t) <= 15);
+  assert.equal(trips.length, 2, '16 skids over a 14 cap splits');
+  for (const t of trips) assert.ok(skidsOf(t) <= 14);
 });

@@ -209,14 +209,37 @@ export function classCapsFor(truck_class: string | null | undefined, cfg: Engine
 // A driver under min_observation_days already carries a CLASS-level envelope
 // from driverEnvelope, so they learn the class's numbers, not a stranger's.
 export function capsFor(driver: AssignDriver, cfg: EngineConfig): { soft: number; hard: number; weightLb: number; learned: boolean } {
+  // CLAMP ON THE SOLVER'S CLASS, NEVER envelope.truck_class. A driver with no
+  // prior days gets a 'class' envelope whose class is null, which makes it a
+  // FLEET envelope — box and tractor days mixed — and the two class fields can
+  // disagree anyway (the envelope's comes from driver-day docs, the solver's
+  // from resolveClass + the MarginIQ roster + CLASS_OVERRIDE). This clamp is the
+  // only thing stopping a box driver from inheriting a tractor's numbers.
   const cls = classCapsFor(driver?.truck_class, cfg);
   const pt = driver?.envelope?.per_trip as { skid_equiv_p85?: number | null; skid_equiv_max?: number | null } | undefined;
-  const max = Number(pt?.skid_equiv_max);
-  if (!Number.isFinite(max) || max <= 0) return { ...cls, learned: false };
-  const floor = Math.max(1, Number(cfg.skid_cap_driver_min) || 1);
-  const hard = Math.min(cls.hard, Math.max(floor, max));
   const p85 = Number(pt?.skid_equiv_p85);
-  const soft = Math.min(hard, Math.max(floor, Number.isFinite(p85) && p85 > 0 ? p85 : hard));
+  const max = Number(pt?.skid_equiv_max);
+  const hasP85 = Number.isFinite(p85) && p85 > 0;
+  const hasMax = Number.isFinite(max) && max > 0;
+  if (!hasP85 && !hasMax) return { ...cls, learned: false };
+
+  // THE BOUND IS THEIR TYPICAL FULL LOAD, NOT THEIR MOST EXTREME DAY. Using the
+  // observed MAX looks principled ("never split what they've proven they can
+  // carry") but does almost nothing in practice: a driver needs 10 observed DAYS
+  // before their own envelope is used at all, so the max is drawn from ~12-25
+  // trips and lands at their own p95-p100. One 21-skid day in ten weeks would
+  // put a 14-skid driver back at the class cap of 22 — the exact number this
+  // phase exists to stop applying to everyone. p85 is "a full truck for THIS
+  // driver", which is what 12-15 vs 17-18 actually describes.
+  // skid_cap_driver_headroom blends toward the observed max (0 = p85, 1 = max)
+  // for anyone who wants the looser reading without a code change.
+  const base = hasP85 ? p85 : max;
+  const head = Math.min(1, Math.max(0, Number(cfg.skid_cap_driver_headroom) || 0));
+  const target = hasMax && max > base ? base + (max - base) * head : base;
+
+  const floor = Math.max(1, Number(cfg.skid_cap_driver_min) || 1);
+  const hard = Math.min(cls.hard, Math.max(floor, target));
+  const soft = Math.min(hard, Math.max(floor, hasP85 ? p85 : hard));
   return { soft, hard, weightLb: cls.weightLb, learned: true };
 }
 

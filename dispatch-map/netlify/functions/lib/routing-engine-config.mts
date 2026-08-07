@@ -18,13 +18,15 @@
 
 import { getDoc, setDoc } from './firestore.mts';
 
-// 2.12.0: per-DRIVER skid caps — each driver is bounded by the most THEY have
-// carried in one trip (clamped at the class cap), not the fleet p95 of 22.
+// 2.12.1: the per-driver bound is their TYPICAL full load (p85), not their most
+// extreme day — an observed max sits at their own p95-p100 and barely moved the cap.
+// 2.12.0: per-DRIVER skid caps — each driver is bounded by their own history
+// (clamped at the class cap), not the fleet p95 of 22.
 // 2.11.0: per-trip PAYLOAD caps — a box trip may not exceed 10,000 lb, a tractor
 // trip 44,000 (the truck-profiles.mts ratings the Phase 1 solver already gates on).
 // 2.10.0: execution-evidence gate — replays count only rows with a same-day delivery stamp
 // (DAWSONVILLE/CRUMPTON 07-28: next-day Estes freight sealed into the day inflated actuals).
-export const ENGINE_VERSION = '2.12.0';
+export const ENGINE_VERSION = '2.12.1';
 
 export const ENGINE_CONFIG_COLLECTION = 'routing_engine_config';
 
@@ -143,6 +145,15 @@ export interface EngineConfig {
   // cap, so this can only ever split LESS than the flat cap did, never more.
   // SET THIS TO THE CLASS HARD CAP TO DISABLE per-driver tightening entirely.
   skid_cap_driver_min: number;
+  // Where between "a full truck for this driver" (p85, 0) and "their most
+  // extreme day ever" (observed max, 1) the hard bound sits. Defaults to 0.
+  // The MAX is the tempting choice — "never split what they've proven they can
+  // carry" — but a driver needs 10 observed DAYS before their own envelope is
+  // used, so their max is drawn from ~12-25 trips and sits at their own
+  // p95-p100. One outlier day would put a 14-skid driver back at the class cap
+  // of 22, i.e. change nothing. p85 is what "most are 12-15, some take 17-18"
+  // actually describes.
+  skid_cap_driver_headroom: number;
 
   // ── Phase 2.11: per-CLASS per-TRIP weight caps (what a truck may LEGALLY haul)
   // NOT a return of the 2.1.1 weight ceiling. That ceiling was a LEARNED,
@@ -211,7 +222,7 @@ const NUMERIC_KEYS: Array<keyof EngineConfig> = [
   'far_deadhead_mi', 'w_far_deadhead', 'habit_far_discount', 'w_zone_cohesion',
   'w_zone_owner', 'zone_owner_min_share', 'zone_owner_min_obs',
   'skid_cap_box_soft', 'skid_cap_box_hard', 'skid_cap_tractor_soft', 'skid_cap_tractor_hard',
-  'loose_per_skid', 'w_skid_soft', 'skid_cap_driver_min',
+  'loose_per_skid', 'w_skid_soft', 'skid_cap_driver_min', 'skid_cap_driver_headroom',
   'weight_cap_box_lb', 'weight_cap_tractor_lb',
   'candidate_zone_k', 'candidate_area_k',
 ];
@@ -272,6 +283,7 @@ export const ENGINE_CONFIG_BOUNDS: Record<Exclude<keyof EngineConfig, 'routing_c
   loose_per_skid: [1, 100],
   w_skid_soft: [0, 1000],
   skid_cap_driver_min: [1, 120],
+  skid_cap_driver_headroom: [0, 1],
   // Lower bound 0 = "no weight gate for this class" (never a zero-lb cap).
   weight_cap_box_lb: [0, 80_000],
   weight_cap_tractor_lb: [0, 80_000],
@@ -384,6 +396,7 @@ export function engineConfigDefaults(env: Record<string, string | undefined> = p
     // genuinely all small — it keeps them a usable truck without erasing the
     // per-driver signal for everyone else.
     skid_cap_driver_min: num('SKID_CAP_DRIVER_MIN', 10),
+    skid_cap_driver_headroom: num('SKID_CAP_DRIVER_HEADROOM', 0),
     // Phase 2.11 — per-trip payload ratings, taken from the SAME truck profiles
     // the live route builder already gates on (truck-profiles.mts: box_26 =
     // 10,000 lb, tractor_53 = 44,000 lb) so the two systems can't drift apart on
