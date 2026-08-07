@@ -14,9 +14,11 @@
 // before it (no envelopes to reason from). Chunked to the 15-min budget; reports
 // stopped_at for continuation. Ignores ROUTING_ENGINE=off (running it IS intent).
 //
-//   POST /.netlify/functions/routing-engine-plan-replay-background   → ALL days
-//     ?from=YYYY-MM-DD&to=YYYY-MM-DD  → inclusive range
+//   POST /.netlify/functions/routing-engine-plan-replay-background   → RESUMES
+//                                       from the stored cursor, else all days
+//     ?from=YYYY-MM-DD&to=YYYY-MM-DD  → inclusive range (ignores the cursor)
 //     ?force=1                        → rescore even at the current engine version
+//     ?restart=1                      → ignore the cursor, start a fresh pass
 import { isFirestoreEnabled, listDocs, getDoc, setDoc } from './lib/firestore.mts';
 import { HISTORY_COLLECTION } from './lib/history-store.mts';
 import { ENGINE_VERSION, loadEngineConfig } from './lib/routing-engine-config.mts';
@@ -24,7 +26,7 @@ import { REFERENCE_ROUTES_COLLECTION, type ReferenceRouteDoc } from './lib/routi
 import { DRIVER_DAYS_COLLECTION, type DriverDayDoc } from './lib/routing-driver-days.mts';
 import { SERVICE_TIMES_COLLECTION, fleetServicePath } from './lib/routing-service-times.mts';
 import { CUSTOMER_DRIVERS_COLLECTION } from './lib/routing-customer-drivers.mts';
-import { runPlanForDate, summarizePlanVersion, planVersionRollupPath, PLAN_PROPOSALS_DAILY_COLLECTION, type PlanInputs } from './lib/routing-plan-core.mts';
+import { runPlanForDate, summarizePlanVersion, planVersionRollupPath, replayCursorPath, PLAN_PROPOSALS_DAILY_COLLECTION, type PlanInputs } from './lib/routing-plan-core.mts';
 
 const TENANT = 'davis';
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -50,8 +52,33 @@ export default async (req: Request): Promise<Response> => {
   const from = url.searchParams.get('from');
   const to = url.searchParams.get('to');
   const force = url.searchParams.get('force') === '1';
+  const restart = url.searchParams.get('restart') === '1';
 
   let dates = await listCapturedDates();
+  // RESUME (the treadmill fix). One pass only covers what fits in TIME_BUDGET_MS
+  // — roughly 8 days at the 90s assignment cap — and then reports stopped_at.
+  // But this is a Netlify *-background* function: it answers 202 with no body,
+  // so the caller can NEVER read stopped_at and can never pass it back as ?from.
+  // Every tap therefore restarted at the OLDEST date, and with force=1 bypassing
+  // the already-current guard it re-scored the same first ~8 days forever. The
+  // tail of the window was never reached, which is exactly why the agreement
+  // trend never moved no matter how many engine versions shipped.
+  //
+  // So the cursor lives here instead: an early stop persists where it stopped,
+  // the next unqualified call picks up from there, and finishing the window
+  // clears it so the following tap starts a fresh pass. An explicit ?from / ?to
+  // still wins (a targeted range must never be hijacked by a stale cursor), and
+  // ?restart=1 forces a clean pass from the top.
+  const cursorDoc = replayCursorPath(TENANT);
+  let resumedFrom: string | null = null;
+  if (!from && !to && !restart) {
+    const cur = await getDoc(cursorDoc).catch(() => null);
+    const at = String((cur as any)?.stopped_at || '');
+    // A cursor from a DIFFERENT engine version is stale: that pass is moot now,
+    // so start over rather than leaving the window half-scored across versions.
+    if (DATE_RE.test(at) && (cur as any)?.engine_version === ENGINE_VERSION) resumedFrom = at;
+  }
+  if (resumedFrom) dates = dates.filter((d) => d >= resumedFrom!);
   if (from && DATE_RE.test(from)) dates = dates.filter((d) => d >= from);
   if (to && DATE_RE.test(to)) dates = dates.filter((d) => d <= to);
 
@@ -107,6 +134,21 @@ export default async (req: Request): Promise<Response> => {
     console.log(`[plan-replay] ${date}: stop ${s.stop_agreement_pct ?? '—'}% coload ${s.coload_agreement_pct ?? '—'}% (${s.drivers} drivers, ${s.trips_engine}v${s.trips_actual} trips)`);
   }
 
+  // Park (or clear) the resume cursor before anything else that can fail — the
+  // whole point is that the NEXT tap advances, so losing this to a downstream
+  // error would put the treadmill right back. A range-scoped call never touches
+  // the cursor; it isn't walking the full window.
+  if (!to) {
+    try {
+      if (stoppedAt) {
+        await setDoc(cursorDoc, { tenant: TENANT, stopped_at: stoppedAt, engine_version: ENGINE_VERSION, updated_at: new Date().toISOString() });
+      } else if (!from || resumedFrom) {
+        // Reached the end of the window — next tap starts a clean pass.
+        await setDoc(cursorDoc, { tenant: TENANT, stopped_at: null, engine_version: ENGINE_VERSION, updated_at: new Date().toISOString() });
+      }
+    } catch (e: any) { console.warn('[plan-replay] cursor write failed:', e?.message); }
+  }
+
   // Snapshot THIS engine version's window aggregate into its own (version-keyed)
   // doc, so the cross-version progress series survives the next rescoring pass
   // overwriting the per-day docs. Read the daily docs fresh (the loop above just
@@ -124,7 +166,9 @@ export default async (req: Request): Promise<Response> => {
     dates_considered: dates.length, dates_scored: scored.length,
     dates_skipped_too_early: skippedTooEarly.length, dates_skipped_no_history: skippedNoHistory.length,
     last_scored: scored.length ? scored[scored.length - 1].date : null,
-    stopped_at: stoppedAt, version_rollup: versionRollup, scored, ms: Date.now() - t0,
+    stopped_at: stoppedAt, resumed_from: resumedFrom,
+    window_complete: !stoppedAt,
+    version_rollup: versionRollup, scored, ms: Date.now() - t0,
   };
   console.log('[plan-replay] done:', JSON.stringify({ ...summary, scored: undefined }));
   return new Response(JSON.stringify(summary), { status: 200, headers });

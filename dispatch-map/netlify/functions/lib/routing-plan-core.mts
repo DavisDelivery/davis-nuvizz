@@ -56,6 +56,16 @@ export function planDailyPath(tenant: string, date: string): string {
   return `${PLAN_PROPOSALS_DAILY_COLLECTION}/${tenant}__${date}`;
 }
 
+// ── replay resume cursor ─────────────────────────────────────────────────────
+// Where the last history replay ran out of its time budget. A *-background
+// function answers 202 with no body, so the caller cannot read stopped_at and
+// cannot feed it back as ?from — without this the replay restarted at the oldest
+// date on every tap and never reached the tail of the window.
+export const PLAN_REPLAY_CURSOR_COLLECTION = 'plan_replay_cursor';
+export function replayCursorPath(tenant: string): string {
+  return `${PLAN_REPLAY_CURSOR_COLLECTION}/${tenant}`;
+}
+
 // ── per-ENGINE-VERSION progress rollup ───────────────────────────────────────
 // A replay / nightly overwrites each plan_proposals_daily doc IN PLACE, so the
 // prior engine version's day scores are lost the moment a newer version rescores

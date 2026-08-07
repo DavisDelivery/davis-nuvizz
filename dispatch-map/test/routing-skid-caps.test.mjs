@@ -41,10 +41,19 @@ test('stopSkidEquiv: skids + loose/loose_per_skid; pallets fallback when the bre
 });
 
 test('classCapsFor: per-class caps; unknown class reads as box; hard can never invert below soft', () => {
-  assert.deepEqual(classCapsFor('box_truck', CFG), { soft: 20, hard: 22 });
-  assert.deepEqual(classCapsFor('tractor', CFG), { soft: 31, hard: 37 });
-  assert.deepEqual(classCapsFor(null, CFG), { soft: 20, hard: 22 });
+  assert.deepEqual(classCapsFor('box_truck', CFG), { soft: 20, hard: 22, weightLb: 10000 });
+  assert.deepEqual(classCapsFor('tractor', CFG), { soft: 31, hard: 37, weightLb: 44000 });
+  assert.deepEqual(classCapsFor(null, CFG), { soft: 20, hard: 22, weightLb: 10000 },
+    'an unrostered driver inherits the STRICTER box payload rating');
   assert.equal(classCapsFor('box_truck', { ...CFG, skid_cap_box_hard: 10 }).hard, 20, 'inverted config floors hard at soft');
+});
+
+test('classCapsFor: a non-positive payload rating means NO weight gate (kill switch)', () => {
+  // Same "a capacity only constrains when it's a real positive number" rule the
+  // Phase 1 solver uses — never a zero-lb cap that would strand every stop.
+  assert.equal(classCapsFor('box_truck', { ...CFG, weight_cap_box_lb: 0 }).weightLb, Infinity);
+  assert.equal(classCapsFor('box_truck', { ...CFG, weight_cap_box_lb: -1 }).weightLb, Infinity);
+  assert.equal(classCapsFor('tractor', { ...CFG, weight_cap_tractor_lb: NaN }).weightLb, Infinity);
 });
 
 test('splitFarFirst: splits at the skid cap, far-first, every trip within cap', () => {
