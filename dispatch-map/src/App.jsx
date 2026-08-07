@@ -19,7 +19,7 @@ import {
   Search, Tag, Tags, ArrowLeft, ArrowRight, Gauge, Clock, MapPinned,
   Info, Settings, LayoutList, Sparkles, MessageSquare, Square, Lasso, AlertTriangle, Ban, Send, Package, Phone,
   FileCheck, ExternalLink, Image as ImageIcon, Printer, FileText, Bug,
-  ChevronRight, GripVertical, Calculator, Menu,
+  ChevronRight, GripVertical, Calculator, Menu, MoreHorizontal,
 } from 'lucide-react';
 import {
   collection, doc, getDoc, getDocs, onSnapshot, setDoc, serverTimestamp,
@@ -30,7 +30,8 @@ import { db } from './lib/firebase.js';
 import { normalizeMatchKey } from './lib/matchKey.js';
 import { planOverlayAction, PLAN_OVERLAY_TTL_MS } from './lib/plan-overlay.js';
 import { routeStopEta, routeStopFreight, routeStopSeq } from './lib/route-stop-line.js';
-import { routeLoadLine, podPhotoFetchOffer, podSectionVisible, isPodImageExt } from './lib/stop-card-sections.js';
+import { routeLoadLine, podPhotoFetchOffer, podSectionVisible, isPodImageExt, foldFreshStop } from './lib/stop-card-sections.js';
+import { manifestIssues, manifestHeadline, toStored, loadStored, saveStored } from './lib/manifest-check-view.js';
 import { stopTimelineModel } from './lib/stop-timeline.js';
 import { diffRouteStyle, DIFF_ORIGINAL_COLOR, groupDispatchTrips } from './lib/diff-route-style.js';
 import { addressLooksOff, suggestAddressFix } from './lib/address-fix.js';
@@ -70,7 +71,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.54.45';
+const APP_VERSION = '0.54.48';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -115,6 +116,9 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.54.48', 'THE MANIFEST CHECK HAS A SCREEN NOW, AND A FLAG THAT FINDS YOU. Chad: "i want to run the manifest against what is scanned into firestore and want there to be a flag when there is an issue as well as i want to add a more dropdown to start storing things like this tab we are about to build." All three. A MORE MENU ON THE NAV. The tab row was full, and screens like this one are places you visit deliberately rather than live in — so rather than shrink every tab to squeeze them in, there is now a More dropdown at the right of the row and overflow tabs go there. Manifest check is the first one in it; the menu is built to take more. THE TAB. Drop the nightly Uline freight report on it and every order printed on that report is checked against what the scan actually put in Firestore. You get the headline first — either "all 660 manifest orders found in the scan" or the number that are not — then the manifest\'s own totals, then a table of exactly which orders are unaccounted for, with PRO, customer, city, ZIP, weight, skids and loose, so you can go chase them without hunting for the numbers. IT COSTS NOTHING. Not "a little" — nothing. The report is a text-layer PDF so reading it needs no AI pass, and the comparison reads Firestore. The endpoint underneath is capable of going on to ask NuVizz about each unaccounted order, but that is deliberately NOT wired to any button on this screen: nothing you can click here spends a NuVizz call, so it can never surprise you with one. THE FLAG, AND WHY IT SITS ON THE NAV. A problem found on a screen you are not looking at is the same as no problem, so the count of unaccounted orders shows as a red badge on the More menu itself — and it is stored, so it is still there tomorrow morning after a reload. It counts ORDERS TO CHASE, not categories of complaint: three missing orders reads 3, never "3 kinds of thing went wrong." Two things it deliberately does NOT flag: orders in the scan that are not on the manifest (the board carries every shipper, not just Uline — flagging those would bury the one order that matters under hundreds that are fine), and a manifest whose own totals do not reconcile, which warns in amber and marks the freight numbers unconfirmed rather than raising an order alert, because that is a reading problem and not a missing order. HONEST LIMIT, worth saying plainly: this tells you an order is not in the scan for the days it checked. That is not the same as proving NuVizz never got it — the order could be dated to another day. The table says so, and the PRO is right there to search. Verified in a real browser, not just unit tests: the menu opens, dropping a PDF runs the check exactly once, it never once asks for the NuVizz probe, the missing orders render with their customers, the badge appears on the nav without leaving the tab, and it is still there after a reload. Both the found-something and found-nothing paths were run. 1,325 tests.'],
+  ['0.54.47', 'AN ORDER ON ULINE\'S NIGHTLY MANIFEST THAT NEVER REACHED NUVIZZ CAN NOW BE FOUND. Chad, with the 8/06 freight report in hand: "an order is on the nightly manifest that is not in nuvizz need to build a way to detect this." WHY NOTHING CAUGHT THIS BEFORE, and it is worth stating plainly: every integrity check this app has starts FROM NuVizz. The scan reads NuVizz. The board reconcile reads NuVizz. The capture seal checks what we captured out of NuVizz. So an order Uline physically handed us that NuVizz never received is invisible to all of them — there is no record to notice the absence of. Uline\'s own manifest is the only independent statement of what we were actually given, which is exactly why it can catch what nothing else can. WHAT WAS BUILT. The nightly PDF is now readable end to end: 660 orders off the 8/06 report, each with its PRO, customer, city, zip, weight, skids and loose pieces. It costs NOTHING to read — this report carries real text, unlike the faxed Estes manifests that need an AI vision pass, so there is no AI call and no NuVizz call in reading it. THE PART THAT TOOK THREE TRIES, because it would have quietly handed you wrong freight counts: the numbers on that report are RIGHT-ALIGNED, so a value\'s position never lines up with its column heading, and an order with no skids simply has no SKID column at all. Reading the numbers in the order they appear — the obvious approach, and my first two attempts — swapped SKIDS and LOOSE on 45 of the 660 orders. The reader now works off real column positions, and then PROVES its reading by reproducing the manifest\'s own FINAL TOTALS line, all four numbers: 660 orders, 359,769 lbs, 1,019 skids, 310 pieces. If a future manifest cannot be reconciled against its own totals it FAILS LOUDLY instead of handing you numbers it could not verify. THE CHECK ITSELF RUNS IN TWO STEPS, and the split is about cost. Step one is FREE: it compares every manifest PRO against the board, zero NuVizz calls, and produces SUSPECTS — orders on the manifest that are not on the board. Step two is the only part that costs anything: one NuVizz call per suspect, capped, and you have to ask for it explicitly. AND THE DISTINCTION THE WHOLE THING RESTS ON: "not on our board" and "not in NuVizz" are different claims. An order can be off the board because it is dated to another day, or cancelled, or on a day we did not scan. Only NuVizz answering "that order does not exist" proves it never arrived. Everything else — scans switched off, auth rejected, throttling, the daily call ceiling tripping — is UNVERIFIED, never absence, because every one of those fails for all 660 orders at once and a lazier design would cheerfully report your entire manifest as missing on a bad night. There is a test that fires all five of those failure modes at 660 orders and demands ZERO false accusations. One more real trap closed: the board stores some orders as 007157687-1 while Uline prints the bare 007157687, so matching had to handle the segment suffix — without that, every one of those orders would have read as missing and the report would have been nothing but false alarms. 26 new tests. NEXT: a drop zone so you can drag the nightly PDF in rather than calling the endpoint, and a nightly run that emails you only when something is actually missing.'],
+  ['0.54.46', 'THE DELIVERY-PHOTO BUTTON IS ACTUALLY THERE THIS TIME — I DROVE THE REAL APP IN A BROWSER AND WATCHED IT WORK BEFORE WRITING THIS. Chad: "still no button and this delivery definitely has photos." He was right, and v0.54.45 deserved the complaint: I swapped one bad condition for another. THE FIRST VERSION hid the button unless the order had NO documents at all, so a BOL killed it. THE SECOND VERSION hid it unless the order was DELIVERED — and this order\'s card reads SCHEDULED. It can, and here is why, because it matters beyond this button: the status the card trusts comes from the cheap saved-search scan, and the delivery timestamp is NOT one of the fields that scan keeps current. NuVizz\'s own saved-search index is documented in this app as lagging real status by 30+ minutes and sometimes hours. So an order genuinely delivered can sit on our board marked Scheduled — and my gate made the button disappear at exactly the moment the board was stale, which is precisely when a dispatcher needs to go ask. SO THERE IS NO STATUS GATE ANY MORE. The button asks NuVizz a question. Asking is one call on your tap and is always a reasonable thing to want. The only condition left is the honest one: you don\'t already have photos. Worst case the answer is "no delivery photos on file" — a real answer, and strictly better than hiding the ability to ask. A SECOND BUG FOUND WHILE VERIFYING THIS ONE, and it would have bitten within a day: the card folded a refresh in by simply overwriting every field the pull returned — and a pull that found no documents returns an EMPTY document list. So tapping the button on an order NuVizz has nothing for would have DELETED the BOL you were already looking at. You ask for more and get less. The server has had a guard against exactly this for months (an empty value is never allowed to overwrite a good one); it was never mirrored on the browser side. It is now. WHY YOUR BOL SAYS 6:01 PM AND WHY IT ISN\'T A DELIVERY TIME: NuVizz\'s own guide says a BOL is generated one to three days BEFORE delivery, so that stamp is when the document was made. Printed bare under a heading that says "Proof of delivery", it read as an arrival time. It now says "created 6:01 PM". AND THE LIKELY REASON THE PHOTOS WERE MISSING FROM THE CARD IN THE FIRST PLACE: the cheap scan never carries document data at all. The BOL on your screen came from the single detail lookup this app does when a PRO FIRST APPEARS on the board — days before the driver ever went there — and that snapshot is then carried forward untouched forever. So the card was showing you a document list frozen from before the delivery happened. The button is what unfreezes it. HOW THIS WAS CHECKED, since twice was enough: there is now a script that serves the real built app in a real browser, feeds it this exact order (PRO 007157687-1, route VINCENT, one BOL, status Scheduled), clicks it open and fails unless the button is on screen — then clicks the button and checks both outcomes, photos coming back and nothing coming back. I also deliberately re-broke each fix and confirmed the script caught it, so it is a real test and not a green light that means nothing. 1,286 tests plus that browser check, zero NuVizz calls.'],
   ['0.54.45', 'THE ROUTE NAME STOPPED PRINTING ITSELF TWICE, AND THE DELIVERY PHOTOS ARE REACHABLE AGAIN. Chad, on a delivered VINCENT order: "why is the route name listed twice here get rid of the second one. also where is my view photos of delivery under the pod section." Two separate defects on one card. THE DOUBLE NAME: the Route box prints the route NAME in bold and the load NUMBER in small grey underneath, which is right when they are different things — route "SUW 4" on load "047-54019" tells you two useful facts. But NuVizz frequently names a route after its own load, and on this order both were the word VINCENT, so the card stacked the same word on top of itself and read as a rendering bug. The grey line now appears ONLY when the load number is genuinely something other than the route name, compared ignoring case and spacing. A load number that differs is a real identifier and still shows — this hides a duplicate, it does not throw away information. THE MISSING PHOTOS, which is the worse of the two: the driver\'s capture photos are not included in the cheap scan — NuVizz only hands them over when we re-pull the order — so the card carries a "View delivery photos" button that fetches them on demand. That button was written inside a branch that only ran when the stop had NO documents whatsoever. So the instant an order picked up any document at all — and a delivered order almost always has a signed BOL, a PDF — the button disappeared, and there was no way left to ask for the photos. It failed precisely on the delivered orders most likely to have photos, which is why the section showed a lone BOL line and nothing else. The rule is now about PHOTOS, not documents: if a delivered order has no image on file yet, the button is there, however many PDFs sit above it. The BOL keeps its own line rather than being swallowed by the photo grid, and the card only says "no delivery photos on file" AFTER a pull actually came back empty — before that, silence means nobody has asked yet, which is a different thing and shouldn\'t be reported as an answer. COST: the button is one NuVizz call, on your explicit tap, exactly as before — the same single call the Refresh from NuVizz button makes. Nothing here scans. Eleven new tests pin both rules, including a replay of this screenshot.'],
   ['0.54.44', 'THE PER-DRIVER SKID CAP NOW USES A DRIVER\'S TYPICAL FULL LOAD, NOT THEIR ONE BIGGEST DAY EVER — v0.54.43 WOULD BARELY HAVE MOVED. Correcting my own release from an hour ago, because a review of it found the number I chose was the wrong one and I would rather say so than let it ship quietly doing nothing. v0.54.43 capped each driver at the MOST they had ever carried on a single trip. That sounds right — never split a load someone has proven they can carry — but here is the arithmetic that kills it: a driver has to work 10 observed days before the engine uses their own history at all, which is 12 to 25 trips, and the MAXIMUM of a sample that size is that driver\'s own 95th-to-100th percentile, not their normal. So one 21-skid day in ten weeks would have put a genuine 14-skid driver right back at the class cap of 22 — meaning the release would have changed nothing for exactly the drivers Chad was pointing at. THE BOUND IS NOW THE 85TH PERCENTILE of that driver\'s own per-trip skids — "a full truck for this driver" — which is what "most are 12-15, some take 17-18" actually describes. A driver who normally tops out at 14 gets 14 even if they once squeezed on 21. AND A DIAL IF I HAVE JUDGED IT WRONG: a new Engine setting, skid cap driver headroom, slides the bound from typical (0, the default) to their all-time max (1) with no code change — so if these caps come out too tight against real drivers, that is one number to nudge, not a rebuild. THE HONEST TRADE: a tighter cap means the engine will sometimes split a day dispatch really did run whole, which shows up as more proposed trips and can cost agreement points. I think buildable routes beat a better score against routes drivers can\'t run, but the Skid cap column on the Engine page is there precisely so Chad can check the numbers against what he knows about his own people and tell me if I have it wrong. WORTH KNOWING, and it corroborates Chad: the Build screen\'s truck profiles have capped a box truck at 14 skids this whole time. The live route builder has agreed with him all along; only the shadow engine ever said 22. Also hardened here: the class clamp explicitly reads the driver\'s roster class rather than the class on their learned envelope, because a brand-new driver\'s envelope is a whole-FLEET one with box and tractor days mixed together, and without that clamp a box driver could inherit a tractor\'s numbers. Three new tests, 1,272 total, zero NuVizz calls.'],
   ['0.54.43', 'THE ENGINE STOPPED LOADING EVERY BOX TRUCK LIKE THE STRONGEST ONE. Chad: "Most box truck drivers can\'t put 22 skids on a box truck. You should id the ones who can take 17-18 but most are 12-15." He is right, and the engine\'s own freight study already said so — it measured 912 real dispatch trips and found the MEDIAN box trip is 14 skids. The cap of 22 was the 95th percentile of that same study, meaning the engine was allowed to load EVERY box driver the way the single heaviest box driver loads. That is why routes kept coming back with 20-odd stops on people who have never run them. WHAT CHANGES: each driver is now capped by the most THEY have actually carried on one trip, learned from their own history rather than the fleet\'s. A driver whose real trips top out at 15 gets 15. A driver who has genuinely run 18 gets 18. The data was already being collected per trip — skids and loose pieces per load, every day — it just had never been turned into a per-driver number. THIS IS THE 2.1.1 LESSON APPLIED CORRECTLY, not repeated: that old failure used a PERCENTILE of a driver\'s history, which by definition cuts below their own heaviest real trips and split loads they had already proven would fit. Using their observed MAXIMUM cannot do that — it is the proof itself. AND THE SAFETY RAIL THAT MATTERS: a per-driver cap is clamped at the old class cap, so it is always the same or LOWER than what the flat 22 allowed. This change can only ever split less than before, never more — one bad data point cannot invent a 38-skid box truck. A driver whose observed days were all small is floored at 10 so nobody gets a 4-skid truck, a driver with no skid history yet keeps the class number exactly as today, and setting the floor to 22 in Engine settings turns the whole thing off. YOU CAN NOW SEE WHO IS WHO: the Engine page\'s driver table has a new SKID CAP column, sortable — sort by it and the 17-18 drivers separate from the 12-15 drivers at a glance. A bold number is learned from that driver\'s own trips; a grey one means no skid history yet, so they are still on the class default. Eleven new tests pin all of it, including that an 18-skid bag rides one trip for an 18-skid driver and splits for a 15-skid driver. Zero NuVizz calls. Re-score history to see it applied to past days.'],
@@ -4519,7 +4523,7 @@ function PodViewerModal({ doc, onClose }) {
 
 function PodDocsSection({ stop, onRefreshed }) {
   const [viewDoc, setViewDoc] = useState(null);
-  const delivered = classifyStopStatus(stop) === 'DELIVERED';
+  const status = classifyStopStatus(stop);
   const [loading, setLoading] = useState(false);
   const [tried, setTried] = useState(false);
   const [err, setErr] = useState(null);
@@ -4538,15 +4542,13 @@ function PodDocsSection({ stop, onRefreshed }) {
     } catch (e) { setErr(e.message); }
     finally { setLoading(false); }
   };
-  // The driver's capture photos are NOT in the cheap scan — NuVizz only hands them over on
-  // a /stop/info pull — so a delivered order offers a button to fetch them on demand.
-  // THAT BUTTON USED TO LIVE BEHIND "this stop has NO documents at all", which meant the
-  // moment a stop carried any document (typically a signed BOL, a PDF) the button vanished
-  // and the photos became unreachable — on exactly the delivered orders most likely to have
-  // them. The rule is about PHOTOS, not documents: offer the fetch whenever a delivered stop
-  // has no image on file yet, however many PDFs it carries.
-  const { photos, others, offer: offerPhotoFetch, exhausted } = podPhotoFetchOffer(stop, { delivered, tried });
-  if (!podSectionVisible(stop, { delivered })) return null;
+  // NO STATUS GATE ON THE FETCH BUTTON — see podPhotoFetchOffer. Two gates have already
+  // hidden it: "has no documents at all" (killed by any BOL) and "is DELIVERED" (killed by
+  // a stop delivered in NuVizz that our board still reads as SCHEDULED, because
+  // deliveredDTTM is not a live list field). The button asks NuVizz a question; the only
+  // honest condition is that we have no photos yet.
+  const { photos, others, offer: offerPhotoFetch, exhausted } = podPhotoFetchOffer(stop, { tried });
+  if (!podSectionVisible(stop, { unplanned: status === 'UNPLANNED' })) return null;
   const photoFetchButton = offerPhotoFetch && (
     <div className="mt-1.5">
       <button
@@ -4593,7 +4595,11 @@ function PodDocsSection({ stop, onRefreshed }) {
                   {label} <Eye size={12} />
                 </button>
                 {d.extension && <span className="px-1 rounded bg-slate-100 text-slate-500 text-[9px] uppercase">{d.extension}</span>}
-                {when && <span className="text-slate-400">· {when}</span>}
+                {/* A document's createdTime is when the DOCUMENT was made, not when the stop
+                    was delivered — NuVizz's own guide warns a BOL is generated 1-3 days ahead
+                    (which is why confirmedDTTM, not a doc stamp, is the delivery time). Printed
+                    bare next to "Proof of delivery" it read as an arrival, so it is labelled. */}
+                {when && <span className="text-slate-400" title="When this document was created — not the delivery time">· created {when}</span>}
               </li>
             );
           })}
@@ -5522,7 +5528,9 @@ function useLiveStop(stop) {
       setFresh((prev) => ({ ...(prev || {}), dupNbrSuspect: true, dupNbrOtherId: String(d?.stopId ?? '') }));
       return refusal;
     }
-    setFresh((prev) => ({ ...(prev || {}), ...d }));
+    // foldFreshStop, not a raw spread: a pull that returns an empty podDocs must
+    // not erase the BOL already on the card (the mergeEnrich rule, client-side).
+    setFresh((prev) => foldFreshStop(prev, d));
     return null;
   }, []);
   return [live, onRefreshed];
@@ -19088,6 +19096,22 @@ function Shell() {
   const updateAvailable = useBuildUpdate();
   const [chipMenuOpen, setChipMenuOpen] = useState(false);
 
+  // The manifest-check flag. Read from the last stored run so a problem found
+  // yesterday is still on the nav after a reload — the whole point is that you
+  // should not have to remember to go and look at a tab to learn something is
+  // wrong. Refreshed when the tab stores a new run, and when another tab in this
+  // browser does (the `storage` event).
+  const [moreBadge, setMoreBadge] = useState(() => manifestIssues(loadStored()).badge);
+  useEffect(() => {
+    const sync = () => setMoreBadge(manifestIssues(loadStored()).badge);
+    window.addEventListener('dd-manifest-check-updated', sync);
+    window.addEventListener('storage', sync);
+    return () => {
+      window.removeEventListener('dd-manifest-check-updated', sync);
+      window.removeEventListener('storage', sync);
+    };
+  }, []);
+
   // Routing Build ⇄ Engine sub-tab, lifted here so the toggle can render in the top nav row
   // (far right) on desktop while the Routing screen consumes the same state.
   const [routingTab, setRoutingTab] = useState(() => {
@@ -19180,6 +19204,15 @@ function Shell() {
             <TabBtn label="Quote" icon={<Calculator size={14} />} active={tab === 'quote'} onClick={() => setTab('quote')} />
             <TabBtn label="Messages" icon={<MessageSquare size={14} />} active={messagesOpen} onClick={openMessages} badge={smsUnread} />
             <TabBtn label="Diagnostics" icon={<Activity size={14} />} active={tab === 'diag'} onClick={() => setTab('diag')} />
+            {/* Overflow tabs. Screens you visit deliberately rather than live in go here
+                instead of shrinking the whole nav row; the badge surfaces a problem from
+                a screen you are NOT on, which is the entire point of the manifest check. */}
+            <MoreMenu
+              activeId={tab}
+              onPick={setTab}
+              badge={moreBadge}
+              items={[{ id: 'manifest', label: 'Manifest check', hint: 'Uline nightly vs the scan', icon: <FileCheck size={14} />, badge: moreBadge }]}
+            />
             <TabBtn label="Debug" icon={<Bug size={14} />} active={debugOpen} onClick={() => setDebugOpen(true)} />
           </nav>
           {/* Far right of the nav row: the presence chip (who else is on) plus the Routing
@@ -19191,7 +19224,7 @@ function Shell() {
         </header>
       )}
 
-      {tab === 'map' ? <MapScreen onOpenMessages={openMessages} smsUnread={smsUnread} debugCaptureRef={debugCaptureRef} presence={presence} /> : (tab === 'routing' && ROUTING_FLAG) ? <RoutingSection debugCaptureRef={debugCaptureRef} routingTab={routingTab} setRoutingTab={setRoutingTab} showSubTabs={isMobile} presence={presence} /> : tab === 'neworder' ? <NewOrderScreen /> : tab === 'quote' ? <QuoteScreen /> : <DiagnosticsRoute />}
+      {tab === 'map' ? <MapScreen onOpenMessages={openMessages} smsUnread={smsUnread} debugCaptureRef={debugCaptureRef} presence={presence} /> : (tab === 'routing' && ROUTING_FLAG) ? <RoutingSection debugCaptureRef={debugCaptureRef} routingTab={routingTab} setRoutingTab={setRoutingTab} showSubTabs={isMobile} presence={presence} /> : tab === 'neworder' ? <NewOrderScreen /> : tab === 'quote' ? <QuoteScreen /> : tab === 'manifest' ? <ManifestCheckScreen /> : <DiagnosticsRoute />}
 
       {/* Messages floats OVER the current screen (you never leave the map). */}
       {messagesOpen && <MessagesPanel messages={inbound} seenAt={smsSeenAt} onClose={closeMessages} customerContacts={customerContacts} />}
@@ -20754,6 +20787,222 @@ function BulkOrderScreen() {
             </div>
           );
         })()}
+      </div>
+    </div>
+  );
+}
+
+
+// ── "More" — the overflow tab menu ───────────────────────────────────────────
+// The nav row is full, and screens like the manifest check are ones you visit
+// deliberately rather than live in. Rather than shrink every tab to fit them,
+// they live here. `badge` surfaces a problem from a screen you are NOT on — the
+// whole point of the manifest check is that you should not have to remember to
+// go and look.
+function MoreMenu({ items, activeId, onPick, badge = 0 }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+  useEffect(() => {
+    if (!open) return undefined;
+    const away = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    const esc = (e) => { if (e.key === 'Escape') setOpen(false); };
+    document.addEventListener('mousedown', away);
+    document.addEventListener('keydown', esc);
+    return () => { document.removeEventListener('mousedown', away); document.removeEventListener('keydown', esc); };
+  }, [open]);
+  const active = items.some((i) => i.id === activeId);
+  return (
+    <div className="relative" ref={ref}>
+      <button
+        onClick={() => setOpen((v) => !v)}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        className={`relative px-3 py-1.5 rounded inline-flex items-center gap-1.5 font-medium ${active ? 'text-white' : 'text-slate-600 hover:bg-slate-100'}`}
+        style={active ? { background: BRAND } : {}}
+      >
+        <MoreHorizontal size={14} />More
+        <ChevronDown size={12} className={open ? 'rotate-180 transition-transform' : 'transition-transform'} />
+        {badge > 0 && (
+          <span className="ml-0.5 min-w-[16px] h-4 px-1 rounded-full bg-red-600 text-white text-[10px] font-bold inline-flex items-center justify-center">{badge > 99 ? '99+' : badge}</span>
+        )}
+      </button>
+      {open && (
+        <div role="menu" className="absolute right-0 mt-1 w-64 bg-white border rounded-lg shadow-lg py-1 z-50">
+          {items.map((it) => (
+            <button
+              key={it.id}
+              role="menuitem"
+              onClick={() => { setOpen(false); onPick(it.id); }}
+              className={`w-full text-left px-3 py-2 text-sm flex items-center gap-2 ${activeId === it.id ? 'bg-blue-50 text-blue-800 font-semibold' : 'text-slate-700 hover:bg-slate-50'}`}
+            >
+              {it.icon}
+              <span className="flex-1 min-w-0">
+                <span className="block truncate">{it.label}</span>
+                {it.hint && <span className="block text-[10px] text-slate-400 truncate">{it.hint}</span>}
+              </span>
+              {it.badge > 0 && (
+                <span className="min-w-[16px] h-4 px-1 rounded-full bg-red-600 text-white text-[10px] font-bold inline-flex items-center justify-center">{it.badge > 99 ? '99+' : it.badge}</span>
+              )}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Manifest check ───────────────────────────────────────────────────────────
+// Drop the nightly Uline freight report; every PRO on it is checked against what
+// the scan actually put in Firestore. ZERO NuVizz calls — the report is a
+// text-layer PDF so reading it needs no AI either, and the board side is a
+// Firestore read. The endpoint CAN go on to ask NuVizz about each unmatched
+// order, but that is not wired to any button here: nothing on this screen spends
+// a NuVizz call, so it can never surprise you with one.
+function ManifestCheckScreen() {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState(null);
+  const [result, setResult] = useState(() => loadStored());
+  const [fileName, setFileName] = useState(() => loadStored()?.fileName || null);
+  const [drag, setDrag] = useState(false);
+
+  const run = async (file) => {
+    if (!file || busy) return;
+    setBusy(true); setErr(null);
+    try {
+      const buf = await file.arrayBuffer();
+      let bin = '';
+      const bytes = new Uint8Array(buf);
+      for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+      const pdfBase64 = btoa(bin);
+      const r = await fetch('/.netlify/functions/manifest-check', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pdfBase64 }),
+      });
+      const d = await r.json();
+      if (!d?.ok) { setErr(d?.error || `check failed (HTTP ${r.status})`); setResult(null); }
+      else {
+        setResult(d); setFileName(file.name);
+        saveStored(toStored(d, file.name));
+        window.dispatchEvent(new Event('dd-manifest-check-updated'));
+      }
+    } catch (e) { setErr(String(e?.message || e)); }
+    setBusy(false);
+  };
+
+  const clear = () => { setResult(null); setFileName(null); setErr(null); saveStored(null); window.dispatchEvent(new Event('dd-manifest-check-updated')); };
+  const { issues, level } = manifestIssues(result);
+  const suspects = result?.suspects || [];
+  const m = result?.manifest;
+
+  return (
+    <div className="flex-1 overflow-auto bg-slate-50">
+      <div className="max-w-5xl mx-auto p-4 space-y-3">
+        <div>
+          <h1 className="text-lg font-bold text-slate-800">Manifest check</h1>
+          <p className="text-xs text-slate-500 mt-0.5">
+            Drop the nightly Uline freight report. Every order on it is checked against what the scan
+            put in Firestore — so an order the shipper handed us that never reached NuVizz shows up here.
+            <span className="font-semibold text-slate-600"> Zero NuVizz calls.</span>
+          </p>
+        </div>
+
+        <label
+          onDragOver={(e) => { e.preventDefault(); setDrag(true); }}
+          onDragLeave={() => setDrag(false)}
+          onDrop={(e) => { e.preventDefault(); setDrag(false); run(e.dataTransfer?.files?.[0]); }}
+          className={`block border-2 border-dashed rounded-lg p-6 text-center cursor-pointer ${drag ? 'border-blue-400 bg-blue-50' : 'border-slate-300 bg-white hover:bg-slate-50'}`}
+        >
+          <input type="file" accept=".pdf" className="hidden" onChange={(e) => run(e.target.files?.[0])} disabled={busy} />
+          <FileCheck size={20} className="mx-auto text-slate-400" />
+          <div className="text-sm font-semibold text-slate-700 mt-1">
+            {busy ? 'Checking…' : 'Drop the Uline freight report PDF, or click to choose'}
+          </div>
+          {fileName && !busy && <div className="text-[11px] text-slate-400 mt-0.5">{fileName}</div>}
+        </label>
+
+        {err && <div className="text-xs text-red-700 bg-red-50 border border-red-200 rounded p-2">{err}</div>}
+
+        {result && (
+          <>
+            <div className={`rounded-lg border p-3 ${level === 'alert' ? 'border-red-300 bg-red-50' : level === 'warn' ? 'border-amber-300 bg-amber-50' : 'border-emerald-300 bg-emerald-50'}`}>
+              <div className={`text-sm font-bold ${level === 'alert' ? 'text-red-800' : level === 'warn' ? 'text-amber-800' : 'text-emerald-800'}`}>
+                {manifestHeadline(result)}
+              </div>
+              {issues.length > 0 && (
+                <ul className="mt-1 space-y-0.5">
+                  {issues.map((i) => (
+                    <li key={i.kind} className={`text-xs ${i.level === 'alert' ? 'text-red-700' : 'text-amber-700'}`}>• {i.text}</li>
+                  ))}
+                </ul>
+              )}
+              <div className="text-[11px] text-slate-500 mt-1.5">
+                Checked against {(result.checkedAgainst || []).map((d) => `${d.date} (${d.stops})`).join(' · ') || '—'}
+                {' · '}{result.boardOnly} scanned order(s) not on this manifest (other shippers — normal)
+              </div>
+            </div>
+
+            {m && (
+              <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
+                {[['Orders', m.orders], ['Pounds', m.totals?.lbs], ['Skids', m.totals?.skids], ['Loose', m.totals?.pieces], ['In the scan', result.onBoard]].map(([k, v]) => (
+                  <div key={k} className="bg-white border rounded p-2">
+                    <div className="text-[10px] uppercase font-semibold text-slate-400">{k}</div>
+                    <div className="text-base font-bold text-slate-800 tabular-nums">{v == null ? '—' : Number(v).toLocaleString()}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+            {m && (
+              <div className="text-[11px] text-slate-500">
+                {m.verified
+                  ? <span className="text-emerald-700 font-semibold">✓ These totals match the ones printed on the manifest.</span>
+                  : <span className="text-amber-700 font-semibold">⚠ These numbers could NOT be reconciled against the manifest’s printed totals — treat them as unconfirmed.</span>}
+                {(m.warnings || []).map((w, i) => <div key={i} className="text-amber-700">• {w}</div>)}
+              </div>
+            )}
+
+            {suspects.length > 0 && (
+              <div className="bg-white border rounded-lg overflow-hidden">
+                <div className="px-3 py-2 border-b bg-red-50 text-xs font-bold text-red-800">
+                  On the manifest, not in the scan ({result.suspectsTotal ?? suspects.length})
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="min-w-full text-xs">
+                    <thead className="bg-slate-50 text-slate-500">
+                      <tr>
+                        {['PRO', 'Customer', 'City', 'ZIP', 'Lbs', 'Skids', 'Loose', 'Shipped'].map((h) => (
+                          <th key={h} className="px-2 py-1 text-left font-semibold whitespace-nowrap">{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {suspects.map((r) => (
+                        <tr key={r.pro} className="border-t">
+                          <td className="px-2 py-1 font-mono font-semibold text-slate-800 whitespace-nowrap">{r.pro}</td>
+                          <td className="px-2 py-1 text-slate-700">{r.custName || '—'}</td>
+                          <td className="px-2 py-1 text-slate-600">{r.city || '—'}</td>
+                          <td className="px-2 py-1 text-slate-600">{r.zip || '—'}</td>
+                          <td className="px-2 py-1 tabular-nums">{r.lbs ?? '—'}</td>
+                          <td className="px-2 py-1 tabular-nums">{r.skids ?? '—'}</td>
+                          <td className="px-2 py-1 tabular-nums">{r.pieces ?? '—'}</td>
+                          <td className="px-2 py-1 text-slate-500 whitespace-nowrap">{r.shipDate || '—'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <div className="px-3 py-2 border-t text-[11px] text-slate-500">
+                  These are on Uline’s manifest but not in the scan for the day(s) above. That is not by itself proof
+                  the order is missing from NuVizz — it could be dated to another day. Search the PRO to check.
+                </div>
+              </div>
+            )}
+
+            <div className="flex items-center gap-2">
+              <button onClick={clear} className="px-2 py-1 text-xs font-semibold text-slate-600 border rounded hover:bg-slate-50">Clear</button>
+              {result.at && <span className="text-[11px] text-slate-400">checked {String(result.at).slice(0, 16).replace('T', ' ')}</span>}
+            </div>
+          </>
+        )}
       </div>
     </div>
   );

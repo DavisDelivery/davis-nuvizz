@@ -31,19 +31,30 @@ export const isPodImageExt = (ext) => POD_IMAGE_RE.test(String(ext || ''));
 // ── PROOF OF DELIVERY: when to offer "View delivery photos" ──────────────────
 // The driver's capture photos are NOT returned by the cheap scan — NuVizz only
 // hands them over on a /stop/info pull — so the card offers a button to fetch
-// them on demand. That button used to live inside an "if this stop has NO
-// documents at all" branch, which meant the moment a stop carried ANY document
-// (typically a signed BOL, a PDF) the button vanished and there was no way left
-// to ask for the photos. A delivered order showing a BOL and nothing else was
-// exactly the case where the photos were most likely to exist and least likely
-// to be reachable.
+// them on demand.
 //
-// The rule is about PHOTOS, not documents: offer the fetch whenever a delivered
-// stop has no image on file yet, however many PDFs it may have.
-export function podPhotoFetchOffer(stop, { delivered, tried } = {}) {
+// TWO GATES HAVE NOW HIDDEN THAT BUTTON, and both were the same mistake: making
+// a QUESTION the dispatcher wants to ask conditional on something the app
+// believes.
+//   1. It first lived inside "this stop has NO documents at all", so the moment
+//      an order picked up a BOL the button vanished.
+//   2. Replacing that with "this stop is DELIVERED" failed too — on an order
+//      with a signed BOL at 6:01 PM whose card still read Scheduled. It can: the
+//      status the card trusts (normalizedStatus) is refreshed from the cheap
+//      saved-search list, and deliveredDTTM is NOT a live list field, so a stop
+//      delivered in NuVizz can sit on our board classified SCHEDULED until
+//      something re-enriches it. Gating on that means the button disappears
+//      precisely when the board is stale — the moment you most want to ask.
+//
+// So there is no status gate. The button asks NuVizz a question; asking is one
+// call on an explicit tap and is always a legitimate thing to want. The only
+// condition is the honest one: there are no photos on the card yet. Worst case
+// the answer is "none on file", which is a real answer and strictly better than
+// hiding the ability to ask.
+export function podPhotoFetchOffer(stop, { tried } = {}) {
   const docs = Array.isArray(stop?.podDocs) ? stop.podDocs : [];
   const photos = docs.filter((d) => isPodImageExt(d?.extension));
-  const offer = !!delivered && photos.length === 0;
+  const offer = photos.length === 0;
   return {
     photos,
     others: docs.filter((d) => !isPodImageExt(d?.extension)),
@@ -54,10 +65,32 @@ export function podPhotoFetchOffer(stop, { delivered, tried } = {}) {
   };
 }
 
-// Does this stop's PROOF OF DELIVERY section have anything at all to render?
-// A not-yet-delivered stop with no documents has nothing to say and the whole
-// section stays hidden, exactly as before.
-export function podSectionVisible(stop, { delivered } = {}) {
+// ── folding a fresh /stop/info pull over the open card ───────────────────────
+// The client folded a refresh in with a raw spread, so ANY key the pull returned
+// shadowed the card's — including an EMPTY one. normalizeStop always emits a
+// podDocs key (an array, possibly []), so tapping "View delivery photos" on a
+// stop whose pull came back with no documents would ERASE the BOL already on
+// screen: you ask for more and get less.
+//
+// The server has had exactly this guard for its own fold since mergeEnrich —
+// "a missing/empty value must never clobber a good one" — but mergeEnrich is
+// server-only and was never mirrored here. Same rule, same reason: an absent
+// value in a response is not evidence the value is gone.
+export function foldFreshStop(prev, incoming) {
+  const out = { ...(prev || {}) };
+  for (const [k, v] of Object.entries(incoming || {})) {
+    if (v === null || v === undefined || v === '') continue;
+    if (Array.isArray(v) && v.length === 0) continue;
+    out[k] = v;
+  }
+  return out;
+}
+
+// Does this stop's PROOF OF DELIVERY section have anything to render? Documents
+// to show, or a photo fetch to offer — which, per above, is now always true for
+// a real order. An UNPLANNED order that nobody has scheduled is the one case
+// with genuinely nothing to say.
+export function podSectionVisible(stop, { unplanned } = {}) {
   const docs = Array.isArray(stop?.podDocs) ? stop.podDocs : [];
-  return docs.length > 0 || !!delivered;
+  return docs.length > 0 || !unplanned;
 }
