@@ -1599,6 +1599,12 @@ function SignsInAs({ cred, creds }) {
  */
 function DayPanel({ data, date, onDate, busy, onRefresh, session }) {
   const [tab, setTab] = useState('trucks');
+  // The six cards up top are filters, not just numbers. statusFilter narrows the
+  // Trucks list to one status; peopleUsedOnly narrows People to just those who
+  // touched the app. A dispatcher's first move is "show me the 64" — before this
+  // the count was a dead end and they had to eyeball the whole list for it.
+  const [statusFilter, setStatusFilter] = useState(null);
+  const [peopleUsedOnly, setPeopleUsedOnly] = useState(false);
   if (!data) {
     return (
       <div className="rounded-xl bg-white ring-1 ring-slate-200 px-3 py-2 text-sm text-slate-500">
@@ -1625,12 +1631,35 @@ function DayPanel({ data, date, onDate, busy, onRefresh, session }) {
     closed_over: 'CLOSED OVER',
   };
 
-  const Stat = ({ n, label, bad }) => (
-    <div className={`rounded-lg px-2 py-1 ring-1 ${bad && n > 0 ? 'bg-rose-50 ring-rose-300' : 'bg-white ring-slate-200'}`}>
+  // A card is a button now. `active` is the currently-applied filter, drawn with
+  // a blue ring so the list below has a visible owner. `bad` keeps its rose tint
+  // when it holds a non-zero problem count, exactly as before.
+  const Stat = ({ n, label, bad, active, onClick }) => (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={!!active}
+      className={`text-left rounded-lg px-2 py-1 ring-1 transition-colors ${
+        active
+          ? 'ring-2 ring-[#1e5b92] bg-[#1e5b92]/5'
+          : bad && n > 0
+            ? 'bg-rose-50 ring-rose-300 hover:bg-rose-100'
+            : 'bg-white ring-slate-200 hover:bg-slate-50'
+      }`}
+    >
       <div className={`text-lg font-semibold tabular-nums ${bad && n > 0 ? 'text-rose-700' : 'text-slate-800'}`}>{n}</div>
       <div className="text-[11px] text-slate-500 leading-tight">{label}</div>
-    </div>
+    </button>
   );
+
+  // Toggle a status filter and jump to the Trucks list that shows it. Clicking the
+  // active one again clears it — the card is both the way in and the way out.
+  const filterTrucks = (status) => {
+    setTab('trucks');
+    setStatusFilter((s) => (s === status ? null : status));
+  };
+  const shownLoads = statusFilter ? loads.filter((l) => l.status === statusFilter) : loads;
+  const shownPeople = peopleUsedOnly ? people.filter((p) => p.usedAppToday) : people;
 
   return (
     <div className="space-y-2">
@@ -1650,12 +1679,44 @@ function DayPanel({ data, date, onDate, busy, onRefresh, session }) {
       </div>
 
       <div className="grid grid-cols-3 sm:grid-cols-6 gap-1">
-        <Stat n={t.loadsOnBoard || 0} label="trucks on board" />
-        <Stat n={t.notStarted || 0} label="never started" bad />
-        <Stat n={t.inProgress || 0} label="in progress" />
-        <Stat n={t.closedShort || 0} label="closed short" bad />
-        <Stat n={t.closedClean || 0} label="closed clean" />
-        <Stat n={t.peopleUsedApp || 0} label="people used app" />
+        <Stat
+          n={t.loadsOnBoard || 0}
+          label="trucks on board"
+          active={tab === 'trucks' && statusFilter === null}
+          onClick={() => { setTab('trucks'); setStatusFilter(null); }}
+        />
+        <Stat
+          n={t.notStarted || 0}
+          label="never started"
+          bad
+          active={tab === 'trucks' && statusFilter === 'not_started'}
+          onClick={() => filterTrucks('not_started')}
+        />
+        <Stat
+          n={t.inProgress || 0}
+          label="in progress"
+          active={tab === 'trucks' && statusFilter === 'in_progress'}
+          onClick={() => filterTrucks('in_progress')}
+        />
+        <Stat
+          n={t.closedShort || 0}
+          label="closed short"
+          bad
+          active={tab === 'trucks' && statusFilter === 'closed_short'}
+          onClick={() => filterTrucks('closed_short')}
+        />
+        <Stat
+          n={t.closedClean || 0}
+          label="closed clean"
+          active={tab === 'trucks' && statusFilter === 'closed_clean'}
+          onClick={() => filterTrucks('closed_clean')}
+        />
+        <Stat
+          n={t.peopleUsedApp || 0}
+          label="people used app"
+          active={tab === 'people' && peopleUsedOnly}
+          onClick={() => { setTab('people'); setPeopleUsedOnly((v) => !v); }}
+        />
       </div>
       <div className="text-xs text-slate-500">
         {t.piecesScanned || 0} scanned + {t.piecesConfirmed || 0} hand-confirmed of {t.piecesExpected || 0} expected ·{' '}
@@ -1687,8 +1748,18 @@ function DayPanel({ data, date, onDate, busy, onRefresh, session }) {
         <ReportScreen session={session} />
       ) : tab === 'trucks' ? (
         <div className="rounded-xl bg-white ring-1 ring-slate-200 divide-y divide-slate-100 max-h-96 overflow-y-auto">
-          {loads.length ? (
-            loads.map((l) => (
+          {statusFilter ? (
+            <div className="px-3 py-1.5 text-xs bg-slate-50 flex items-center gap-2 sticky top-0 z-10">
+              <span className="text-slate-600">
+                Showing <span className="font-medium">{LABEL[statusFilter]}</span> — {shownLoads.length} of {loads.length}
+              </span>
+              <button type="button" className="underline text-slate-500 ml-auto" onClick={() => setStatusFilter(null)}>
+                show all
+              </button>
+            </div>
+          ) : null}
+          {shownLoads.length ? (
+            shownLoads.map((l) => (
               <div key={l.loadNbr} className="px-3 py-2 text-sm">
                 <div className="flex items-center gap-2 flex-wrap">
                   <span className="font-mono font-medium">{l.loadNbr}</span>
@@ -1716,12 +1787,22 @@ function DayPanel({ data, date, onDate, busy, onRefresh, session }) {
               </div>
             ))
           ) : (
-            <div className="px-3 py-2 text-sm text-slate-500">No loads on the board for this date.</div>
+            <div className="px-3 py-2 text-sm text-slate-500">
+              {statusFilter ? `No trucks are ${LABEL[statusFilter]} for this date.` : 'No loads on the board for this date.'}
+            </div>
           )}
         </div>
       ) : (
         <div className="rounded-xl bg-white ring-1 ring-slate-200 divide-y divide-slate-100 max-h-96 overflow-y-auto">
-          {people.map((p) => (
+          {peopleUsedOnly ? (
+            <div className="px-3 py-1.5 text-xs bg-slate-50 flex items-center gap-2 sticky top-0 z-10">
+              <span className="text-slate-600">Showing only people who used the app — {shownPeople.length}</span>
+              <button type="button" className="underline text-slate-500 ml-auto" onClick={() => setPeopleUsedOnly(false)}>
+                show all
+              </button>
+            </div>
+          ) : null}
+          {shownPeople.map((p) => (
             <div key={p.driverNumber} className="px-3 py-2 text-sm flex items-center gap-2 flex-wrap">
               {p.usedAppToday ? (
                 <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
@@ -1741,6 +1822,11 @@ function DayPanel({ data, date, onDate, busy, onRefresh, session }) {
               )}
             </div>
           ))}
+          {shownPeople.length === 0 ? (
+            <div className="px-3 py-2 text-sm text-slate-500">
+              {peopleUsedOnly ? 'Nobody has used the app yet for this date.' : 'No people for this date.'}
+            </div>
+          ) : null}
         </div>
       )}
     </div>
