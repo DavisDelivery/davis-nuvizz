@@ -76,6 +76,24 @@ const more = MOBILE
   ? ok(MOBILE ? 'the phone menu chip is on the bar' : 'the More menu is on the nav')
   : bad(MOBILE ? 'no phone menu chip' : 'no More menu on the nav');
 await more.click(); await page.waitForTimeout(400);
+
+if (MOBILE) {
+  // The phone menu has its own More container (Chad: "there is no more button on
+  // mobile"). It must be a real button — and it must start OPEN, so adding the
+  // container never buries a tab an extra tap deep.
+  const moreRow = page.getByRole('menuitem', { name: /^more$/i }).first();
+  (await moreRow.isVisible().catch(() => false))
+    ? ok('the phone menu has a More button')
+    : bad('no More button inside the phone menu');
+  (await page.getByRole('menuitem', { name: /manifest check/i }).first().isVisible().catch(() => false))
+    ? ok('and it starts OPEN — the tab is still one tap away')
+    : bad('More is collapsed by default, burying the tab');
+  await moreRow.click(); await page.waitForTimeout(300);
+  !(await page.getByRole('menuitem', { name: /manifest check/i }).first().isVisible().catch(() => false))
+    ? ok('tapping More collapses it') : bad('More did not collapse');
+  await moreRow.click(); await page.waitForTimeout(300);   // reopen for the rest of the run
+}
+
 const item = page.getByRole('menuitem', { name: /manifest check/i }).first();
 (await item.isVisible().catch(() => false)) ? ok('Manifest check is listed inside it') : bad('Manifest check missing from the menu');
 await item.click(); await page.waitForTimeout(800);
@@ -125,6 +143,19 @@ await page.reload({ waitUntil: 'networkidle' });
 await page.waitForTimeout(1200);
 const after = await badgeOf(MOBILE);
 after === want ? ok(`the flag SURVIVES a reload (still ${after})`) : bad(`after reload the badge is ${after}, expected ${want}`);
+
+if (MOBILE) {
+  // Folding the container away must never hide a problem underneath it.
+  await page.locator('button[title="Version menu"]').first().click();
+  await page.waitForTimeout(400);
+  const moreRow = page.getByRole('menuitem', { name: /^more/i }).first();
+  await moreRow.click(); await page.waitForTimeout(300);
+  const txt = (await moreRow.textContent().catch(() => '')) || '';
+  const carries = N > 0 ? /\d/.test(txt) : !/\d/.test(txt);
+  carries
+    ? ok(N > 0 ? `collapsed, the More row carries the flag ("${txt.trim()}") — folding it cannot hide a problem` : 'collapsed and clean, no badge')
+    : bad(`collapsed More row badge wrong for ${N} suspect(s): "${txt.trim()}"`);
+}
 
 await browser.close(); server.close();
 if (fails.length) { console.error(`\n✗ ${fails.length} check(s) failed\n`); process.exit(1); }

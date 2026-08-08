@@ -72,7 +72,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.54.50';
+const APP_VERSION = '0.54.51';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -117,6 +117,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.54.51', 'THE MORE BUTTON EXISTS ON THE PHONE NOW TOO. Chad: "There is no more button on mobile." Correct — v0.54.50 put Manifest check INTO the phone menu but left it as one more line in a flat list, and the container itself was still desktop-only. That misses the point of what he asked for: the More dropdown was never about hiding one tab, it was somewhere for extra screens to live as they get added, and a phone menu that just grows forever is the thing it was meant to prevent. There is now a real More button inside the phone menu, with the overflow tabs grouped under it. IT STARTS OPEN, AND THAT IS DELIBERATE. On desktop More is a closed dropdown because the nav row has no space. On a phone the whole navigation is ALREADY a menu, so nesting a shut dropdown inside it would put a tab two taps deep — the container would have made the app worse to use in order to look tidier. So it opens and closes like a real button, it remembers which way you left it, and it starts open: nothing that works today becomes harder to reach, and the list has a lid for when it grows. AND FOLDING IT AWAY CANNOT HIDE A PROBLEM. When More is collapsed, whatever flag is sitting underneath moves UP onto the More row itself — collapse it with two unaccounted manifest orders and the row reads "More 2". The version chip keeps its red dot regardless, so a problem is still visible before you open anything at all. THE TEST NOW CHECKS THE CONTAINER, not just the tab: that the button is there, that it starts open, that it actually collapses, and that a collapsed More still carries the count. Phone and desktop, with and without something to report. That is the same gap as last time — I verified the tab and not the thing around it — so it is pinned now.'],
   ['0.54.50', 'THE MANIFEST CHECK WAS UNREACHABLE ON YOUR PHONE. Chad sent a screenshot of the menu on his phone asking "did you merge?" — and the answer was yes, he was running the right build, but the tab simply was not there. This one is entirely on me. This app has TWO navigations: a row of tabs on desktop, and on a phone the whole thing collapses to a single chip menu behind the version number. I built the new More dropdown into the desktop row, tested it at desktop size, and never opened the phone menu. So Manifest check shipped visible on a laptop and invisible on a phone — and dispatch runs on a phone. WORSE, IT FAILED SILENTLY. The phone menu maps each entry to a screen and quietly falls back to the MAP for anything it does not recognise, so even if you had found a way to ask for the tab you would have landed on the map with no error, which is the kind of thing you would reasonably read as "the feature never shipped." Manifest check is now in the phone menu, the fallback is written so a screen has to be named on purpose, and a comment there says why. THE FLAG WORKS ON A PHONE TOO, but it had to be a different shape. On desktop the red count sits on the More button. On a phone the entire nav is one chip, so there is nowhere to hang a number where you would see it — the chip now carries a small red DOT when something behind the menu needs you, and the count itself is on the Manifest check row when you open it. Same rule as always: it only counts orders to chase, and it survives a reload. AND THE TEST NOW RUNS AT PHONE SIZE. The browser check I wrote for this tab ran at 1440 pixels wide, which is exactly why it passed while the feature was broken for you. It runs both sizes now — phone and desktop, with and without a problem to report — so a screen that is reachable on a laptop and not on a phone fails the build instead of reaching you. Also confirming what merged: v0.54.48 (the manifest tab, the More menu, the POD photo fix) and v0.54.49 (notes refreshing on every scan) are both in.'],
   ['0.54.49', 'NOTES NOW REFRESH ON EVERY SCAN, AND A CARD YOU OPEN REPAIRS ITS OWN NOTES FOR GOOD. Chad: "Notes should be updated with every scan planned unplanned and completed deliveries." Here is what was actually happening, because it is worse than "a bit behind": an order\'s notes were captured ONCE — the single detail lookup this app does the first time a PRO ever appears on the board — and then never touched again. Not by the next scan, not by any scan. And because that captured record is filed per PRO and reused across days, a repeat customer like ULINE could be showing you notes captured weeks before the instruction you actually needed was written. TWO CHANGES, BOTH FREE. FIRST, the note text now refreshes on every scan. The saved searches you already run — planned, unplanned and completed — have been carrying each order\'s instruction text the whole time, at no extra cost; the app was simply throwing it away, because a field not on the "keep this current" list gets overwritten by the older stored copy on every pass. It is on that list now. Zero extra NuVizz calls, all three searches, every scan. SECOND, opening a stop now FIXES it permanently. Tapping a card, hitting Refresh from NuVizz, or opening the Activity Timeline already pays for a full detail read, and that read comes back with the order\'s current notes — the app was folding them into the card on your screen and then discarding them the moment you closed it. They are now written back, so the next person to open that order sees the good notes without re-fetching anything. Same call, no new cost, and the repair sticks. THE HONEST LIMIT, and it is why there is a new amber banner: what the scans can refresh for free is the note TEXT. The full notes the card renders — with who wrote it, what type it is, and when — exist only in the detail read. So when a scan is carrying instructions the stored notes do not have, the card now says "NuVizz has newer instructions than these" and shows you the new text right there, rather than presenting weeks-old notes as if they were current. Refresh pulls the full version with its author and time. That banner is deliberately hard to trigger: it only fires when the scan has something we do not, never the reverse (the list squashes every comment into one line, so it usually carries LESS — flagging that would mark nearly every stop and you would learn to ignore it within a day), and one stray word is treated as noise rather than a new instruction. IF YOU WANT THE FULL NOTES ON EVERY SCAN TOO, that is one change on your side rather than mine: the saved searches would need the comment author, type and timestamp added as columns. Say the word and I will wire it. 1,334 tests, and the banner was verified rendering in a real browser.'],
   ['0.54.48', 'THE MANIFEST CHECK HAS A SCREEN NOW, AND A FLAG THAT FINDS YOU. Chad: "i want to run the manifest against what is scanned into firestore and want there to be a flag when there is an issue as well as i want to add a more dropdown to start storing things like this tab we are about to build." All three. A MORE MENU ON THE NAV. The tab row was full, and screens like this one are places you visit deliberately rather than live in — so rather than shrink every tab to squeeze them in, there is now a More dropdown at the right of the row and overflow tabs go there. Manifest check is the first one in it; the menu is built to take more. THE TAB. Drop the nightly Uline freight report on it and every order printed on that report is checked against what the scan actually put in Firestore. You get the headline first — either "all 660 manifest orders found in the scan" or the number that are not — then the manifest\'s own totals, then a table of exactly which orders are unaccounted for, with PRO, customer, city, ZIP, weight, skids and loose, so you can go chase them without hunting for the numbers. IT COSTS NOTHING. Not "a little" — nothing. The report is a text-layer PDF so reading it needs no AI pass, and the comparison reads Firestore. The endpoint underneath is capable of going on to ask NuVizz about each unaccounted order, but that is deliberately NOT wired to any button on this screen: nothing you can click here spends a NuVizz call, so it can never surprise you with one. THE FLAG, AND WHY IT SITS ON THE NAV. A problem found on a screen you are not looking at is the same as no problem, so the count of unaccounted orders shows as a red badge on the More menu itself — and it is stored, so it is still there tomorrow morning after a reload. It counts ORDERS TO CHASE, not categories of complaint: three missing orders reads 3, never "3 kinds of thing went wrong." Two things it deliberately does NOT flag: orders in the scan that are not on the manifest (the board carries every shipper, not just Uline — flagging those would bury the one order that matters under hundreds that are fine), and a manifest whose own totals do not reconcile, which warns in amber and marks the freight numbers unconfirmed rather than raising an order alert, because that is a reading problem and not a missing order. HONEST LIMIT, worth saying plainly: this tells you an order is not in the scan for the days it checked. That is not the same as proving NuVizz never got it — the order could be dated to another day. The table says so, and the PRO is right there to search. Verified in a real browser, not just unit tests: the menu opens, dropping a PDF runs the check exactly once, it never once asks for the NuVizz probe, the missing orders render with their customers, the badge appears on the nav without leaving the tab, and it is still there after a reload. Both the found-something and found-nothing paths were run. 1,325 tests.'],
@@ -6849,6 +6850,13 @@ function makeDriverLabelOverlayClass(google) {
 // version chip on the right. Tapping the chip toggles a small overflow menu
 // the parent owns (Diagnostics access lives here, per brief P5.1).
 function MobileAppBar({ version, onChipMenu, chipMenuOpen, onSelectMenu, smsUnread = 0, presence = null, manifestBadge = 0 }) {
+  // Starts open so the tabs under it stay one tap away; remembered per device.
+  const [moreOpen, setMoreOpen] = useState(() => {
+    try { return window.localStorage.getItem('dd_more_open') !== '0'; } catch { return true; }
+  });
+  useEffect(() => {
+    try { window.localStorage.setItem('dd_more_open', moreOpen ? '1' : '0'); } catch { /* private mode */ }
+  }, [moreOpen]);
   return (
     <header
       className="flex-shrink-0 z-30 flex items-center justify-between gap-2 px-3 text-white relative"
@@ -6920,14 +6928,36 @@ function MobileAppBar({ version, onChipMenu, chipMenuOpen, onSelectMenu, smsUnre
               <MessageSquare size={12} /> Messages
               {smsUnread > 0 && <span className="ml-auto min-w-[16px] h-4 px-1 rounded-full bg-red-600 text-white text-[10px] font-bold inline-flex items-center justify-center">{smsUnread > 99 ? '99+' : smsUnread}</span>}
             </button>
+            {/* MORE — the same overflow container the desktop nav has. Chad asked for
+                the dropdown so extra screens have somewhere to live; on a phone the
+                whole nav is already one menu, so nesting a second dropdown inside it
+                would bury a tab two taps deep. This is a real button that opens and
+                closes, but it starts OPEN and remembers your choice — so nothing that
+                works today gets harder to reach, and the list still has a lid for when
+                it grows. Collapsed, its badge carries whatever is flagged underneath,
+                so folding it away can never hide a problem. */}
             <button
-              className="w-full text-left px-3 py-2 hover:bg-slate-50 inline-flex items-center gap-2 border-t border-slate-100"
-              onClick={() => onSelectMenu('manifest')}
+              className="w-full text-left px-3 py-1.5 border-t border-slate-100 inline-flex items-center gap-2 text-[10px] uppercase tracking-wide font-semibold text-slate-400 hover:bg-slate-50"
+              onClick={(e) => { e.stopPropagation(); setMoreOpen((v) => !v); }}
+              aria-expanded={moreOpen}
               role="menuitem"
             >
-              <FileCheck size={12} /> Manifest check
-              {manifestBadge > 0 && <span className="ml-auto min-w-[16px] h-4 px-1 rounded-full bg-red-600 text-white text-[10px] font-bold inline-flex items-center justify-center">{manifestBadge > 99 ? '99+' : manifestBadge}</span>}
+              <MoreHorizontal size={12} /> More
+              <ChevronDown size={11} className={`ml-auto ${moreOpen ? 'rotate-180' : ''} transition-transform`} />
+              {!moreOpen && manifestBadge > 0 && (
+                <span className="min-w-[16px] h-4 px-1 rounded-full bg-red-600 text-white text-[10px] font-bold inline-flex items-center justify-center">{manifestBadge > 99 ? '99+' : manifestBadge}</span>
+              )}
             </button>
+            {moreOpen && (
+              <button
+                className="w-full text-left pl-6 pr-3 py-2 hover:bg-slate-50 inline-flex items-center gap-2"
+                onClick={() => onSelectMenu('manifest')}
+                role="menuitem"
+              >
+                <FileCheck size={12} /> Manifest check
+                {manifestBadge > 0 && <span className="ml-auto min-w-[16px] h-4 px-1 rounded-full bg-red-600 text-white text-[10px] font-bold inline-flex items-center justify-center">{manifestBadge > 99 ? '99+' : manifestBadge}</span>}
+              </button>
+            )}
             <button
               className="w-full text-left px-3 py-2 hover:bg-slate-50 inline-flex items-center gap-2 border-t border-slate-100"
               onClick={() => onSelectMenu('diagnostics')}
