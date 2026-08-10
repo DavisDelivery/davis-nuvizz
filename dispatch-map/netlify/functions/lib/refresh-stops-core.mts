@@ -28,7 +28,7 @@ import { loadIdsForDate, dropForeignLoadStops, loadRosterForDate } from './nuviz
 import { getStop } from './history-store.mts';
 import { resolveCoords, addrKey } from './geocode.mts';
 import { maxConsecutiveGap } from './scan-metrics.mts';
-import { notifyMarkedCustomers } from './cs-notify.mts';
+import { notifyMarkedCustomers, pendingNotifyDates } from './cs-notify.mts';
 import { breakerTripped, scanIntervalElapsed, breakerMode, setDailyCeilingOverride, setCallTrigger } from './nuvizz-request.mts';
 import { scanDecision, isInRoutingWindow, clampScanConfig } from './scan-schedule.mts';
 
@@ -1122,6 +1122,39 @@ export async function runRefreshStops(req: Request): Promise<Response> {
           if (n.matched) console.log(`[cs-notify] date=${date} matched=${n.matched} sent=${n.sent} failed=${n.failed}${n.skipped ? ` skipped=${n.skipped}` : ''}`);
         } catch (e: any) { console.warn(`[cs-notify] ${date} failed: ${e?.message}`); }
         results.push({ date, ok: true, source: 'list', count: meta.count, planned: meta.plannedCount, unplanned: meta.unplannedCount, enriched, newPros: stillNeed.length });
+      }
+
+      // ── CS notify for the REST of the pull (Chad, 8/10) ──────────────────────────
+      // "DSV came in on Friday. The moment the scan picked it up on Friday, it should
+      // have sent the email. Why is it sending the email today? It's too late."
+      //
+      // The loop above only notifies the days it WRITES: today, plus the next 1-2
+      // business days and only from 10:00 ET (scanDecision gates every future day
+      // behind scanTomorrow*). So a marked customer's email waited on that day's board
+      // being built, not on the order being seen — an order landing Friday for Tuesday
+      // sat unreported through every weekend scan and went out on Monday's first
+      // post-10am tick. That is the 10:16 email.
+      //
+      // The rows were already here. `buckets` is the ±7d saved-search pull, bucketed by
+      // day, and the days past the write horizon were simply dropped. Sweeping them is
+      // ZERO extra NuVizz calls — same data, one Firestore ledger read per day that
+      // actually matches a marked customer. Emails off the raw list row, which carries
+      // the whole match key (businessName/addr1/city/zip) plus PRO, route and driver.
+      // Un-enriched text can't double-send: the ledger also records the stop NUMBER, so
+      // when the day finally IS written and the enriched address computes a slightly
+      // different key, that stop is recognised and skipped.
+      //
+      // Deliberately notify-only. The 10:00 gate and the 2-3-day horizon stay exactly as
+      // they are for WRITES and enrichment — those cost vendor calls; this does not.
+      if (TWO_SCAN && buckets) {
+        try {
+          for (const date of pendingNotifyDates(buckets.keys(), today, targets)) {
+            const rows = buckets.get(date) || [];
+            if (!rows.length) continue;
+            const n = await notifyMarkedCustomers(date, rows, { statusWhenIdle: false });
+            if (n.matched) console.log(`[cs-notify] EARLY date=${date} matched=${n.matched} sent=${n.sent} failed=${n.failed}${n.skipped ? ` skipped=${n.skipped}` : ''}`);
+          }
+        } catch (e: any) { console.warn(`[cs-notify] early pass failed: ${e?.message}`); }
       }
 
       // ── Retire carried rows the live snapshot can't judge (phantom-unplanned fix) ──
