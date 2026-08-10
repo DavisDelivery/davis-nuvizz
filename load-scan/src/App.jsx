@@ -407,9 +407,24 @@ function OrderCard({ stop, progress, groupCount, onClose, onAddPiece, onMarkDama
   );
 }
 
-function OutcomeCard({ result, partial }) {
+function OutcomeCard({ result, partial, orphan }) {
   if (!result) {
     const need = partial?.pro ? 'OG barcode (upper)' : partial?.og ? 'PRO barcode (lower)' : null;
+    // A half-read label that timed out. This has to be LOUDER than the idle
+    // prompt: nothing was booked, and the operator has already walked on unless
+    // they are told now. It outranks "point at the PRO" because it is the reason
+    // the count will not add up.
+    if (!need && orphan) {
+      return (
+        <Banner kind="warn">
+          <span className="font-semibold">Only got one barcode — scan that label again.</span>
+          <span className="block text-xs mt-0.5">
+            Read the {orphan.kind === 'pro' ? 'PRO' : 'piece ID'} {orphan.value} but never its partner, so
+            nothing was counted.
+          </span>
+        </Banner>
+      );
+    }
     return (
       <Banner kind="info">
         {need ? (
@@ -733,6 +748,8 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
   const [camErr, setCamErr] = useState('');
   const [result, setResult] = useState(null);
   const [partial, setPartial] = useState({ pro: null, og: null });
+  // The last half-label thrown away, so the operator is TOLD to rescan it.
+  const [orphan, setOrphan] = useState(null);
   const [scans, setScans] = useState([]);
   const [handConfirms, setHandConfirms] = useState([]);
   const [pending, setPending] = useState(0);
@@ -774,6 +791,7 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
   const wedgePairRef = useRef(null);
   const wedgeAccRef = useRef(null);
   const onWedgeScanRef = useRef(() => {});
+  const onOrphanRef = useRef(() => {});
 
   const load = useMemo(
     () => (manifest?.loads || []).find((l) => l.loadNbr === activeLoad) || null,
@@ -1014,6 +1032,18 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
   // The wedge path owns its own feedback: sounds and a full-screen flash
   // instead of a card nobody reads with gloves on. Kept behind a ref so the
   // once-created accumulator always calls the latest closure.
+  // Expire a half-pair on the clock. Without this, an operator who scans one
+  // barcode and then stops hears nothing until the NEXT label arrives — which is
+  // precisely the moment the stale half does its damage. 500ms is well inside
+  // the 2.5s window and costs nothing when there is nothing pending.
+  useEffect(() => {
+    const t = setInterval(() => {
+      wedgePairRef.current?.tick();
+      setPartial(wedgePairRef.current?.state() || { pro: null, og: null });
+    }, 500);
+    return () => clearInterval(t);
+  }, []);
+
   onWedgeScanRef.current = async (raw) => {
     if (verdictRef.current?.sticky) {
       // A red screen must be acknowledged before scanning on — replay the buzz
@@ -1024,6 +1054,9 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
     const pair = wedgePairRef.current.push([raw]);
     setPartial(wedgePairRef.current.state());
     if (!pair) return;
+    // A completed pair means the operator is back on track; the stale warning
+    // must not linger over a piece that scanned fine.
+    setOrphan(null);
     const evaluated = await record(pair, 'wedge');
     announce(evaluated);
   };
@@ -1049,7 +1082,26 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
     setVerdict({ kind, evaluated, sticky: kind === 'red' });
   }
 
-  if (!wedgePairRef.current) wedgePairRef.current = createPairBuffer({ windowMs: WEDGE_PAIR_WINDOW_MS });
+  // A half-pair that never completed is now ANNOUNCED rather than dropped in
+  // silence. Silence is what let a whole load be mis-attributed: the operator
+  // had no way to know a label had only half-read until the counts disagreed
+  // hours later. The instruction is the whole point — rescan THAT label.
+  onOrphanRef.current = (half) => {
+    playVerdict('orphan');
+    if (navigator.vibrate) navigator.vibrate([40, 50, 40]);
+    setOrphan({
+      kind: half.kind,
+      value: half.value,
+      at: Date.now(),
+    });
+  };
+
+  if (!wedgePairRef.current) {
+    wedgePairRef.current = createPairBuffer({
+      windowMs: WEDGE_PAIR_WINDOW_MS,
+      onAbandon: (half) => onOrphanRef.current?.(half),
+    });
+  }
   if (!wedgeAccRef.current) wedgeAccRef.current = createWedgeAccumulator({ onScan: (v) => onWedgeScanRef.current(v) });
 
   useEffect(() => {
@@ -1314,7 +1366,7 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
         )}
 
         {camErr ? <Banner kind="error">{camErr}</Banner> : null}
-        <OutcomeCard result={result} partial={partial} />
+        <OutcomeCard result={result} partial={partial} orphan={orphan} />
         {flash ? <Banner kind="info">{flash}</Banner> : null}
 
         {/* Repeat PRO. Never auto-logged: walking a tall pallet drifts the same
@@ -1870,13 +1922,21 @@ const LOAD_LABEL = {
 // One stop's line: the badge is the verdict a dispatcher reads first. (Named
 // apart from the scan screen's StopRow, which is a different row entirely.)
 function StopDetailRow({ s }) {
+  // Surplus is computed defensively rather than trusted: a stop over its count
+  // is not `complete`, so it used to fall through to the shortfall branch and
+  // render "0 missing" — a stop holding freight it should not have, reporting
+  // contentment. Surplus is checked FIRST because it is the loudest signal of
+  // mis-attribution: those pieces belong to some other stop that now reads short.
+  const extra = Number(s.extra ?? Math.max(0, (s.scanned || 0) - (s.expected || 0)));
   const badge = s.isPickup
     ? ['bg-slate-100 ring-slate-300 text-slate-600', 'pickup']
-    : s.scanned === 0
-      ? ['bg-rose-50 ring-rose-300 text-rose-800', 'not scanned']
-      : s.complete
-        ? ['bg-emerald-50 ring-emerald-200 text-emerald-800', 'all here']
-        : ['bg-amber-50 ring-amber-300 text-amber-900', `${s.short} missing`];
+    : extra > 0
+      ? ['bg-rose-50 ring-rose-300 text-rose-800', `${extra} extra`]
+      : s.scanned === 0
+        ? ['bg-rose-50 ring-rose-300 text-rose-800', 'not scanned']
+        : s.complete
+          ? ['bg-emerald-50 ring-emerald-200 text-emerald-800', 'all here']
+          : ['bg-amber-50 ring-amber-300 text-amber-900', `${s.short} missing`];
   return (
     <li className="px-2 py-1.5 flex items-center gap-2">
       <div className="min-w-0 flex-1">
@@ -1925,7 +1985,58 @@ function LoadStops({ load }) {
           </ul>
         </div>
       ) : null}
+
+      <ScanLog rows={load.scanLog} stops={stops} />
     </>
+  );
+}
+
+/**
+ * Every scan on this truck, oldest first.
+ *
+ * Totals cannot tell "extra freight turned up" apart from "freight was counted
+ * against the wrong stop" — that ambiguity cost a full diagnosis cycle on
+ * Alfred's load. The ORDER is the evidence: a mis-paired piece appears as one
+ * label's PRO carrying the next label's OG, sitting next to its neighbour here.
+ * Collapsed by default so it is available without burying the summary.
+ */
+function ScanLog({ rows, stops }) {
+  const [open, setOpen] = useState(false);
+  const list = rows || [];
+  if (!list.length) return null;
+  const nameOf = (stopNbr) =>
+    (stops || []).find((s) => String(s.stopNbr) === String(stopNbr))?.businessName || `stop ${stopNbr || '—'}`;
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="text-xs underline text-slate-600"
+      >
+        {open ? 'Hide' : 'Show'} the {list.length} scan(s), in order
+      </button>
+      {open ? (
+        <ul className="mt-1 rounded-lg ring-1 ring-slate-200 divide-y divide-slate-100 bg-white max-h-72 overflow-y-auto">
+          {list.map((r, i) => (
+            <li key={`${r.og}-${i}`} className="px-2 py-1.5 text-[11px] flex items-baseline gap-2">
+              <span className="tabular-nums text-slate-400 w-6 shrink-0">{i + 1}</span>
+              <div className="min-w-0 flex-1">
+                <div className="font-mono text-slate-800 truncate">
+                  {r.pro || '—'} · {r.og}
+                </div>
+                <div className="text-slate-500 truncate">
+                  {nameOf(r.stopNbr)}
+                  {r.engine ? ` · ${r.engine}` : ''}
+                  {r.damaged ? ' · damaged' : ''}
+                  {r.voided ? ' · VOIDED' : ''}
+                </div>
+              </div>
+              <span className="text-slate-400 shrink-0">{r.scannedAt ? fmtDateTime(r.scannedAt) : ''}</span>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </div>
   );
 }
 

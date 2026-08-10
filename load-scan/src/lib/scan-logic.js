@@ -118,20 +118,49 @@ export function createScanResolver({ ogHoldMs = 1200 } = {}) {
   };
 }
 
-export function createPairBuffer({ windowMs = 2500 } = {}) {
+export function createPairBuffer({ windowMs = 2500, onAbandon } = {}) {
   let pending = { pro: null, og: null, at: 0 };
 
   const expired = (now) => pending.at && now - pending.at > windowMs;
+
+  /**
+   * Drop the half-label being held, and SAY SO.
+   *
+   * This used to happen silently, which is how a whole load went wrong without
+   * anyone noticing: the lone survivor was quietly dropped or quietly
+   * overwritten, and the only clue was a count that did not add up hours later.
+   */
+  const abandon = (reason, now) => {
+    const half = pending.pro
+      ? { kind: 'pro', value: pending.pro }
+      : pending.og
+        ? { kind: 'og', value: pending.og }
+        : null;
+    pending = { pro: null, og: null, at: 0 };
+    if (half) onAbandon?.({ ...half, reason, at: now });
+    return half;
+  };
 
   return {
     /** Feed one frame's raw values. Returns a complete pair, or null. */
     push(rawValues, now = Date.now()) {
       const frame = pairFrame(rawValues);
+
+      // Both barcodes in one read is unambiguously ONE label. Anything still
+      // held belonged to a different label and never completed.
       if (frame.complete) {
-        pending = { pro: null, og: null, at: 0 };
+        abandon('superseded', now);
         return { pro: frame.pro, og: frame.og };
       }
-      if (expired(now)) pending = { pro: null, og: null, at: 0 };
+
+      if (expired(now)) abandon('expired', now);
+
+      // TWO OF THE SAME TYPE IN A ROW means a label was abandoned mid-pair — the
+      // operator moved on. The old half must be discarded, never silently
+      // overwritten, or the survivor marries the NEXT label's other barcode and
+      // books a piece against the wrong stop.
+      if (frame.pro && pending.pro) abandon('superseded', now);
+      if (frame.og && pending.og) abandon('superseded', now);
 
       if (frame.pro) pending = { ...pending, pro: frame.pro, at: now };
       if (frame.og) pending = { ...pending, og: frame.og, at: now };
@@ -141,6 +170,18 @@ export function createPairBuffer({ windowMs = 2500 } = {}) {
         pending = { pro: null, og: null, at: 0 };
         return out;
       }
+      return null;
+    },
+    /**
+     * Expire a half-pair on the clock alone.
+     *
+     * push() only runs when another barcode arrives. An operator who scans one
+     * barcode and then stops never pushes again, so without this the half-pair
+     * sits unreported until the next label — which is exactly the moment it does
+     * damage. The UI ticks this.
+     */
+    tick(now = Date.now()) {
+      if (expired(now)) return abandon('expired', now);
       return null;
     },
     /** What is still half-captured — drives the "hold steady" hint. */
