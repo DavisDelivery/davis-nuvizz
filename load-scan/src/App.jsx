@@ -517,6 +517,26 @@ function VerdictFlash({ verdict, onClear }) {
     );
   }
 
+  // NOT COUNTED. The gun flashes green on every successful decode — that is the
+  // gun reporting it read a barcode, not the app reporting it booked a piece.
+  // Without this the two were indistinguishable and a refused scan looked like a
+  // good one. Deliberately not sticky: the amber card underneath carries the
+  // "Same piece / Another piece" decision and must stay reachable.
+  if (kind === 'blocked') {
+    return (
+      <div className={`${base} bg-amber-400 text-amber-950 pointer-events-none`}>
+        <AlertTriangle className="w-24 h-24 mb-4" aria-hidden="true" />
+        <div className="text-4xl font-black leading-tight">NOT COUNTED</div>
+        {evaluated?.stop?.businessName ? (
+          <div className="mt-2 text-xl font-semibold">{evaluated.stop.businessName} is already full</div>
+        ) : (
+          <div className="mt-2 text-xl font-semibold">PRO {evaluated?.pro} already logged</div>
+        )}
+        <div className="mt-4 text-lg">If this is another piece, tap “Another piece”.</div>
+      </div>
+    );
+  }
+
   const tone = {
     green: ['bg-emerald-500 text-white', 'ON THIS TRUCK'],
     amber: ['bg-amber-400 text-amber-950', 'APPT — CONFIRM BOOKED'],
@@ -912,14 +932,29 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
       // purpose: an earlier version checked only inside it, and the typed path
       // (which mints its own TYPED- id) walked straight past to 8/2.
       // Only a deliberate override gets through.
+      // A REFUSAL MUST BE AS LOUD AS AN ACCEPTANCE.
+      //
+      // These paths used to set the amber card and return null, which meant the
+      // app made no sound and no flash. The scanner gun flashes green on its own
+      // whenever it decodes a barcode — that is the GUN saying "I read it", not
+      // the app saying "I counted it" — so a silent refusal reads as success and
+      // the loader walks away with the piece unbooked. Exactly what happened to
+      // GLOBAL AVIATION's second skid.
+      const refuse = (dup) => {
+        setDupPending(dup);
+        playVerdict('dup');
+        if (navigator.vibrate) navigator.vibrate([60, 40, 60]);
+        setVerdict({ kind: 'blocked', evaluated: { pro: dup.pro, stop: dup.full ? { businessName: dup.full } : null } });
+        return null;
+      };
+
       if (!isOverride) {
         const p7 = normalizePro(pair.pro);
         const owner = stops.find((s2) => (s2.pros || []).some((x) => normalizePro(x) === p7));
         if (owner) {
           const done = stopProgress(owner, scans, handConfirms);
           if (done.expected > 0 && done.scanned >= done.expected) {
-            setDupPending({ pro: p7, count: done.scanned, full: owner.businessName, expected: done.expected });
-            return null;
+            return refuse({ pro: p7, count: done.scanned, full: owner.businessName, expected: done.expected });
           }
         }
       }
@@ -937,8 +972,7 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
 
         const already = scans.filter((s2) => normalizePro(s2.pro) === pro7).length;
         if (already > 0 && isScanner) {
-          setDupPending({ pro: pro7, count: already });
-          return null;
+          return refuse({ pro: pro7, count: already });
         }
 
         // A stop can never hold more pieces than the manifest says. Refuse the
@@ -1399,6 +1433,13 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
               {dupPending.full
                 ? 'The manifest says this stop is full. Only add another if the paperwork is wrong.'
                 : 'Same label seen again. If this is another piece, tap to add it.'}
+            </div>
+            {/* Said plainly, because the gun's own green flash says the opposite.
+                A loader reading the gun instead of the screen walks away with an
+                unbooked piece — which is how GLOBAL AVIATION's second skid went
+                missing. */}
+            <div className="text-xs text-amber-900 font-semibold mt-1">
+              This piece was NOT counted yet.
             </div>
             <div className="flex gap-2 mt-2">
               <button
