@@ -306,6 +306,26 @@ export function deliverySeq(s) {
 }
 
 /**
+ * Should the screen keep showing the OLD route order?
+ *
+ * Only while freight is physically aboard. The freeze exists because a trailer
+ * is a physical record of one particular route order: renumbering the screen
+ * under a half-loaded truck would hide freight that is already in the wrong
+ * place. That reasoning applies to loaded freight and to NOTHING ELSE.
+ *
+ * An empty trailer has no order to protect, so it always shows the newest one.
+ * Mandi's Aug 10 load sat at 0/14 wearing "the route was resequenced after
+ * loading started" — loading had not started, and the stale order it was
+ * defending was a previous day's, inherited through a stamp key that carried no
+ * date. A loader was being told to distrust a screen that was simply correct.
+ */
+export function shouldFreezeSequence({ loadedSeq, stops, piecesAboard }) {
+  if (!piecesAboard) return false;
+  if (!loadedSeq?.fingerprint) return false;
+  return loadedSeq.fingerprint !== sequenceFingerprint(stops);
+}
+
+/**
  * Fingerprint of the sequence a load was built against — see the resequence
  * guard in App.jsx. Must match the server's sequenceFingerprint exactly.
  */
