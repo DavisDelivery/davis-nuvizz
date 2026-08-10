@@ -42,10 +42,19 @@ function tone(freq, ms, { type = 'sine', gain = 0.5, delayMs = 0 } = {}) {
 }
 
 /**
- * Play the sound for a scan verdict: 'green' | 'amber' | 'red' | 'dup'.
+ * Play the sound for a scan verdict: 'green' | 'amber' | 'red' | 'dup' | 'orphan'.
  * Distinct enough to tell apart over a forklift with ear protection on.
  */
 export function playVerdict(kind) {
+  if (kind === 'orphan') {
+    // A falling two-tone: something was read, and then thrown away. Deliberately
+    // unlike 'green' (nothing was booked) and unlike 'red' (nothing is wrong with
+    // the freight) — the label just needs scanning again. Silence here is what
+    // let a whole load be mis-attributed unnoticed.
+    tone(760, 120, { type: 'triangle', gain: 0.45 });
+    tone(430, 200, { type: 'triangle', gain: 0.45, delayMs: 130 });
+    return;
+  }
   if (kind === 'green') {
     tone(1400, 130, { type: 'square', gain: 0.35 });
   } else if (kind === 'amber') {

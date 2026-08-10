@@ -79,6 +79,15 @@ export interface StopDetail {
   expected: number;
   scanned: number;
   short: number;
+  /**
+   * MORE distinct pieces than the manifest allows.
+   *
+   * Reported because "0 missing" on a stop holding freight it should not have is
+   * actively misleading — five stops read a contented 2/1 while the pieces they
+   * had stolen were missing from FRSTEAM and COREFIVE. Surplus is the signature
+   * of mis-attribution, and it has to be as visible as shortfall.
+   */
+  extra: number;
   complete: boolean;
   handConfirmed: boolean;
   damagedCount: number;
@@ -129,6 +138,7 @@ export function reconcileStops(stops: any[], scans: any[], handConfirms: any[]):
       expected,
       scanned,
       short: st?.isPickup ? 0 : Math.max(0, expected - scanned),
+      extra: st?.isPickup ? 0 : Math.max(0, scanned - expected),
       complete: st?.isPickup ? true : expected > 0 && scanned === expected,
       handConfirmed,
       damagedCount: damaged.length,
@@ -191,6 +201,24 @@ export function buildActivity({
       // Per-stop reconciliation for the drill-down. Empty when the board row
       // carried no stops (older payload) — the summary above still stands.
       stops: reconcileStops(l.stops || [], s?.scans || [], s?.handConfirms || []),
+      // The scans themselves, oldest first — PRO, OG, time, and the stop each
+      // one landed on. Totals alone cannot tell "extra freight arrived" apart
+      // from "freight was counted against the wrong stop", and that ambiguity
+      // cost a full diagnosis cycle on Alfred's load. The order is the evidence:
+      // a mis-paired piece shows up as one label's PRO against the next label's
+      // OG, adjacent in this list.
+      scanLog: [...(s?.scans || [])]
+        .filter((x: any) => x?.og)
+        .sort((a: any, b: any) => String(a.scannedAt || '').localeCompare(String(b.scannedAt || '')))
+        .map((x: any) => ({
+          og: String(x.og || ''),
+          pro: String(x.pro || ''),
+          stopNbr: String(x.stopNbr || ''),
+          scannedAt: x.scannedAt || null,
+          engine: x.engine || '',
+          damaged: !!x.damaged,
+          voided: !!x.voidedAt,
+        })),
     };
   });
 

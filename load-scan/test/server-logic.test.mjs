@@ -949,3 +949,71 @@ test('merging is order independent and sorted by time', () => {
   const out = session.mergeScans([], [a, b]);
   assert.deepEqual(out.scans.map((s) => s.og), ['OG6028479183', 'OG6028479182']);
 });
+
+// ── Surplus must be as visible as shortfall ─────────────────────────────────
+//
+// Five stops on Alfred's load sat at 2/1 reporting "0 missing" while the pieces
+// they had stolen were missing from FRSTEAM and COREFIVE. A stop over its count
+// is the SIGNATURE of mis-attribution, and it read as contentment.
+
+test('ACCEPTANCE: a stop with more distinct OGs than expected reports the surplus', () => {
+  const rows = ACT.reconcileStops(
+    [{ stopNbr: '1', businessName: 'ONE PIECE STOP', expectedPieces: 1, isPickup: false }],
+    [sc('OG0000000001', '1'), sc('OG0000000002', '1')],
+    [],
+  );
+  const one = rows[0];
+  assert.equal(one.scanned, 2);
+  assert.equal(one.extra, 1, 'the surplus piece is named');
+  assert.equal(one.short, 0, 'and it is NOT short');
+  assert.equal(one.complete, false, 'over its count is not complete either');
+});
+
+test('a stop exactly on its count has no surplus', () => {
+  const rows = ACT.reconcileStops(
+    [{ stopNbr: '1', businessName: 'EXACT', expectedPieces: 2, isPickup: false }],
+    [sc('OG0000000001', '1'), sc('OG0000000002', '1')],
+    [],
+  );
+  assert.equal(rows[0].extra, 0);
+  assert.equal(rows[0].complete, true);
+});
+
+test('a pickup never reports surplus — nothing loads there', () => {
+  const rows = ACT.reconcileStops(
+    [{ stopNbr: '3', businessName: 'ROUTE PICKUP', expectedPieces: 0, isPickup: true }],
+    [sc('OG0000000009', '3')],
+    [],
+  );
+  assert.equal(rows[0].extra, 0);
+  assert.equal(rows[0].short, 0);
+});
+
+test('the per-scan log is exposed in order, with the stop each piece landed on', () => {
+  // Totals alone could not tell "extra freight" apart from "counted against the
+  // wrong stop". The order is the evidence.
+  const out = ACT.buildActivity({
+    date: '2026-08-07',
+    loads: [{ loadNbr: 'ATL', expectedPieces: 2, stopCount: 2, driverName: 'ALFRED MORGAN',
+      stops: [
+        { stopNbr: '1', businessName: 'TIFOSI', expectedPieces: 1, isPickup: false },
+        { stopNbr: '2', businessName: 'FRSTEAM', expectedPieces: 1, isPickup: false },
+      ] }],
+    sessions: [{ loadNbr: 'ATL', date: '2026-08-07', scannedCount: 2,
+      scans: [
+        { og: 'OG0000000002', pro: '7000002', stopNbr: '1', scannedAt: '2026-08-07T10:00:05Z', engine: 'wedge' },
+        { og: 'OG0000000001', pro: '7000001', stopNbr: '1', scannedAt: '2026-08-07T10:00:01Z', engine: 'wedge' },
+      ] }],
+    creds: [],
+  });
+  const log = out.loads[0].scanLog;
+  assert.equal(log.length, 2);
+  assert.deepEqual(log.map((r) => r.og), ['OG0000000001', 'OG0000000002'], 'oldest first, regardless of stored order');
+  assert.equal(log[0].pro, '7000001');
+  assert.equal(log[0].stopNbr, '1', 'the stop the piece actually landed on');
+  assert.equal(log[0].engine, 'wedge');
+  // And the mis-attribution is legible: both pieces on stop 1, none on stop 2.
+  const detail = out.loads[0].stops;
+  assert.equal(detail.find((s) => s.stopNbr === '1').extra, 1, 'TIFOSI holds one it should not');
+  assert.equal(detail.find((s) => s.stopNbr === '2').short, 1, 'FRSTEAM is short by exactly that piece');
+});
