@@ -114,6 +114,29 @@ export function alreadySent(ledger: NotifyLedger | null | undefined, matchKey: s
   return !!(nbr && ledger.notifiedStops?.[nbr]);
 }
 
+// Which marked customers this batch of scanned stops hits. One entry per match_key —
+// CS gets one email per marked customer per delivery date, naming the first order seen —
+// but the entry carries EVERY stop number behind that key, because all of them are
+// stamped into the ledger on send. That is what closes the two-orders case: a marked
+// customer with orders A and B on one date, emailed early off A's raw list row, must not
+// produce a second email when the write-day pass re-keys off B's enriched address.
+// PURE → unit-tested.
+export interface NotifyHit { stop: any; nbrs: string[] }
+
+export function collectHits(stops: any[], marked: Set<string> | Map<string, any>): Map<string, NotifyHit> {
+  const hits = new Map<string, NotifyHit>();
+  for (const s of stops || []) {
+    if (!s) continue;
+    const key = normalizeMatchKey(s.businessName, s.addr1, s.city, s.zip);
+    if (!marked.has(key)) continue;
+    const hit = hits.get(key) || { stop: s, nbrs: [] };
+    const nbr = String(s.stopNbr ?? '').trim();
+    if (nbr && !hit.nbrs.includes(nbr)) hit.nbrs.push(nbr);
+    hits.set(key, hit);
+  }
+  return hits;
+}
+
 export function buildEmail(stop: any, date: string): { subject: string; text: string; html: string } {
   const name = stop.businessName || '(unknown customer)';
   const addr = [stop.addr1, stop.addr2, stop.city, stop.state, stop.zip].filter(Boolean).join(', ');
@@ -158,13 +181,7 @@ export async function notifyMarkedCustomers(
   const to = csRecipients();
   const marked = await loadMarkedCustomers();
 
-  // First scanned stop per opted-in match_key (dedupe within this batch).
-  const hits = new Map<string, any>();
-  for (const s of stops || []) {
-    if (!s) continue;
-    const key = normalizeMatchKey(s.businessName, s.addr1, s.city, s.zip);
-    if (marked.has(key) && !hits.has(key)) hits.set(key, s);
-  }
+  const hits = collectHits(stops, marked);
 
   let sent = 0, failed = 0;
   let skipped: string | undefined;
@@ -179,9 +196,9 @@ export async function notifyMarkedCustomers(
     // alone is not enough once the same order can be seen un-enriched and enriched.
     const notifiedStops: Record<string, string> = (doc && typeof doc.notifiedStops === 'object' && doc.notifiedStops) || {};
     let changed = false;
-    for (const [key, stop] of hits) {
-      const nbr = String(stop?.stopNbr ?? '').trim();
-      if (alreadySent({ notified, notifiedStops }, key, nbr)) continue; // already emailed today
+    for (const [key, { stop, nbrs }] of hits) {
+      if (nbrs.some((n) => alreadySent({ notified, notifiedStops }, key, n))
+        || alreadySent({ notified, notifiedStops }, key, null)) continue; // already emailed today
       // Re-check the ledger right before each send: a manual "Scan now" overlapping the
       // scheduled scan used to read the doc once up front, so both invocations saw an
       // empty ledger and CS got the same email twice. A fresh read narrows that window
@@ -194,13 +211,14 @@ export async function notifyMarkedCustomers(
         const liveStops = (liveDoc && typeof liveDoc.notifiedStops === 'object' && liveDoc.notifiedStops) || {};
         Object.assign(notified, liveNotified);
         Object.assign(notifiedStops, liveStops);
-        if (alreadySent({ notified, notifiedStops }, key, nbr)) continue;
+        if (nbrs.some((n) => alreadySent({ notified, notifiedStops }, key, n))
+          || alreadySent({ notified, notifiedStops }, key, null)) continue;
       } catch { /* ledger read is best-effort — proceed on the snapshot */ }
       const { subject, text, html } = buildEmail(stop, date);
       const res = await sendEmail({ to, subject, text, html });
       if (res.ok) {
         const at = new Date().toISOString();
-        notified[key] = at; if (nbr) notifiedStops[nbr] = at;
+        notified[key] = at; for (const n of nbrs) notifiedStops[n] = at;
         changed = true; sent++;
         try { await setDoc(docPath, { notified, notifiedStops, updated_at: at, date }); }
         catch (e: any) { console.warn(`[cs-notify] dedup write failed after ${key}: ${e?.message}`); }

@@ -15,7 +15,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { pendingNotifyDates, NOTIFY_PULL_HORIZON_DAYS, alreadySent } from '../netlify/functions/lib/cs-notify.mts';
+import { pendingNotifyDates, NOTIFY_PULL_HORIZON_DAYS, alreadySent, collectHits } from '../netlify/functions/lib/cs-notify.mts';
+import { normalizeMatchKey } from '../netlify/functions/lib/match-key.mts';
 
 // The real shape: a ±7d pull bucketed by day, around Friday 2026-08-07.
 const FRIDAY_PULL = [
@@ -108,8 +109,16 @@ test('horizonDays=0 collapses the sweep to today only', () => {
 // with the /stop/info version. If those two normalize to different match keys, the
 // customer axis alone would treat the second sighting as new and CS gets a duplicate.
 
-const EARLY_KEY = 'dsv_contract_logistics__300_riverside_pkwy__lithiasprings__30122';
-const ENRICHED_KEY = 'dsv_contract_logistics__300_riverside_pkwy_ste_200__lithiasprings__30122';
+// The two shapes of the same customer. Left: the raw saved-search row. Right: what the
+// board holds after enrichment folds in the /stop/info address (a suite line appears).
+const RAW = { businessName: 'DSV CONTRACT LOGISTICS LLC', addr1: '300 RIVERSIDE PKWY', city: 'LITHIA SPRINGS', zip: '30122' };
+const ENRICHED = { ...RAW, addr1: '300 RIVERSIDE PKWY STE 200' };
+const EARLY_KEY = normalizeMatchKey(RAW.businessName, RAW.addr1, RAW.city, RAW.zip);
+const ENRICHED_KEY = normalizeMatchKey(ENRICHED.businessName, ENRICHED.addr1, ENRICHED.city, ENRICHED.zip);
+
+test('the fixture is honest: enrichment really does move this customer to a different key', () => {
+  assert.notEqual(EARLY_KEY, ENRICHED_KEY, 'if these matched, the dedup tests below would prove nothing');
+});
 
 test('an empty ledger sends', () => {
   assert.equal(alreadySent(null, EARLY_KEY, '007159533'), false);
@@ -152,6 +161,62 @@ test('stop numbers are compared trimmed, as strings', () => {
   const ledger = { notifiedStops: { '007159533': 'x' } };
   assert.equal(alreadySent(ledger, 'k', ' 007159533 '), true);
   assert.equal(alreadySent(ledger, 'k', '007159534'), false, 'a neighbouring PRO is a different order');
+});
+
+// ── collectHits: one email per marked customer, but EVERY order stamped ──────
+
+test('collectHits ignores customers with no flag on', () => {
+  const marked = new Set([EARLY_KEY]);
+  const hits = collectHits([{ ...RAW, stopNbr: '007159533' }, { businessName: 'SOMEONE ELSE', addr1: '1 MAIN ST', city: 'DALTON', zip: '30721', stopNbr: '007160000' }], marked);
+  assert.equal(hits.size, 1);
+  assert.deepEqual([...hits.keys()], [EARLY_KEY]);
+});
+
+test('THE TWO-ORDERS CASE: one email, but both order numbers go into the ledger', () => {
+  // This is the hole a customer-only ledger leaves. CS is emailed early off order A's raw
+  // row; on the write day the enriched address re-keys the customer and `hits` happens to
+  // pick order B — neither the new key nor B's number is in the ledger, so CS is told
+  // twice about a customer they already heard about. Stamping every matched order number
+  // on send is what closes it.
+  const marked = new Set([EARLY_KEY]);
+  const hits = collectHits([
+    { ...RAW, stopNbr: '007159533' },
+    { ...RAW, stopNbr: '007159999' },
+  ], marked);
+  assert.equal(hits.size, 1, 'one email for the customer, not one per order');
+  const hit = hits.get(EARLY_KEY);
+  assert.equal(hit.stop.stopNbr, '007159533', 'the email names the first order seen');
+  assert.deepEqual(hit.nbrs, ['007159533', '007159999'], 'but BOTH are stamped into the ledger');
+
+  // Replay the write-day pass: the address has drifted, so it lands on the other key and
+  // could pick the other order. Both are already in the ledger → nothing is sent.
+  const ledger = { notified: { [EARLY_KEY]: 'x' }, notifiedStops: Object.fromEntries(hit.nbrs.map((n) => [n, 'x'])) };
+  const later = collectHits([{ ...ENRICHED, stopNbr: '007159999' }, { ...ENRICHED, stopNbr: '007159533' }], new Set([ENRICHED_KEY]));
+  const laterHit = later.get(ENRICHED_KEY);
+  assert.ok(laterHit.nbrs.some((n) => alreadySent(ledger, ENRICHED_KEY, n)), 'the second sighting is recognised despite the new key');
+});
+
+test('collectHits works off a Map too — loadMarkedCustomers returns match_key → name', () => {
+  const marked = new Map([[EARLY_KEY, 'DSV CONTRACT LOGISTICS LLC']]);
+  const hits = collectHits([{ ...RAW, stopNbr: '007159533' }], marked);
+  assert.equal(hits.size, 1);
+});
+
+test('collectHits survives a ragged batch: nulls, blank numbers, repeats', () => {
+  const marked = new Set([EARLY_KEY]);
+  const hits = collectHits([
+    null, undefined,
+    { ...RAW, stopNbr: '  007159533  ' },
+    { ...RAW, stopNbr: '007159533' },   // same order twice in one pull
+    { ...RAW, stopNbr: null },          // a row with no number at all
+    { ...RAW },
+  ], marked);
+  assert.deepEqual(hits.get(EARLY_KEY).nbrs, ['007159533'], 'trimmed and de-duplicated; blanks dropped');
+});
+
+test('collectHits on an empty batch hits nothing', () => {
+  assert.equal(collectHits([], new Set([EARLY_KEY])).size, 0);
+  assert.equal(collectHits(null, new Set([EARLY_KEY])).size, 0);
 });
 
 // ── the Monday-morning case, end to end ──────────────────────────────────────
