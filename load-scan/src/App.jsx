@@ -415,6 +415,21 @@ function OutcomeCard({ result, partial, orphan }) {
     // they are told now. It outranks "point at the PRO" because it is the reason
     // the count will not add up.
     if (!need && orphan) {
+      // An unrecognised barcode is a different problem from a half-read label,
+      // and naming the exact string is the whole point: it is the one fact that
+      // says whether the label is wrong, the gun is adding characters, or this
+      // is simply not a freight barcode.
+      if (orphan.kind === 'unknown') {
+        return (
+          <Banner kind="warn">
+            <span className="font-semibold">That barcode is not a PRO or a piece ID.</span>
+            <span className="block text-xs mt-0.5 font-mono break-all">{orphan.value}</span>
+            <span className="block text-xs mt-0.5">
+              Nothing was counted. A PRO is 7 digits; a piece ID is OG plus 10 digits.
+            </span>
+          </Banner>
+        );
+      }
       return (
         <Banner kind="warn">
           <span className="font-semibold">Only got one barcode — scan that label again.</span>
@@ -1105,6 +1120,27 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
       playVerdict('red');
       return;
     }
+    // EVERY read the gun sends is logged, classified, before anything else can
+    // drop it. Until now this list was fed only by the camera, so in gun mode the
+    // app showed nothing at all about what it had received — a barcode it did not
+    // recognise vanished without a sound and the only way to find out what the
+    // gun actually sent was to scan into a notes app.
+    const cls = classifyBarcode(raw);
+    rawSeen.current += 1;
+    setRawLog((prev) => [{ v: String(raw), kind: cls.kind }, ...prev].slice(0, 6));
+
+    // A barcode we cannot classify is NOT a piece, and it must not be silent.
+    // isProBarcode wants exactly 7 digits and isOgBarcode wants OG + 10 digits;
+    // anything else — a check digit, a prefix, a different symbology on the
+    // pallet — used to be discarded without a word, which reads as "the app is
+    // ignoring me" while the gun happily beeps.
+    if (cls.kind === 'unknown') {
+      playVerdict('orphan');
+      if (navigator.vibrate) navigator.vibrate([40, 50, 40]);
+      setOrphan({ kind: 'unknown', value: String(raw).slice(0, 32), at: Date.now() });
+      return;
+    }
+
     // The SAME barcode fired twice in quick succession is one trigger pull the
     // gun repeated, never two pieces. Dropping it here also stops a stutter from
     // discarding the half-pair it is already holding.
@@ -1490,14 +1526,20 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
           </div>
         ) : null}
 
-        {/* What the decoder is ACTUALLY seeing. Silence here means the camera
-            is reading nothing (focus, lighting, engine); values here with the
-            wrong shape mean it reads fine and the rules are rejecting them.
-            Those two need opposite fixes and looked identical before. */}
-        {camOn ? (
+        {/* What the decoder is ACTUALLY seeing. Silence here means nothing is
+            being read at all (focus, lighting, engine, or a gun that is not
+            paired); values here with the wrong shape mean it reads fine and the
+            rules are rejecting them. Those two need opposite fixes and looked
+            identical before.
+
+            Shown for the GUN as well as the camera. It used to be camera-only,
+            so a gun sending a barcode the app did not recognise produced no
+            evidence anywhere on the screen and the only way to see what it had
+            actually sent was to scan into a notes app. */}
+        {camOn || gunMode || rawLog.length ? (
           <details className="rounded-xl bg-white ring-1 ring-slate-200 px-3 py-2 text-xs">
             <summary className="cursor-pointer text-slate-600">
-              Scanner detail — {engine || '…'} · {rawSeen.current} read{rawSeen.current === 1 ? '' : 's'}
+              Scanner detail — {camOn ? engine || '…' : 'gun'} · {rawSeen.current} read{rawSeen.current === 1 ? '' : 's'}
             </summary>
             {rawLog.length ? (
               <div className="mt-2 space-y-0.5 font-mono">
