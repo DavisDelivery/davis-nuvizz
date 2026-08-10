@@ -223,20 +223,41 @@ export const cacheKey = (date, driverNumber) => `manifest::${date}::${driverNumb
 // in force when the FIRST piece was recorded is written down and never
 // overwritten — it is what the truck actually reflects.
 
-export const seqKey = (loadNbr) => `loadedseq::${loadNbr}`;
+/**
+ * SCOPED BY DATE, like the manifest cache beside it.
+ *
+ * It used to be `loadedseq::<loadNbr>` with no date. Load numbers recur, nothing
+ * prunes this store, and so a truck loaded weeks ago left its frozen route order
+ * lying in wait for the next load to reuse that number — which then opened
+ * wearing "the route was resequenced after loading started" against an order
+ * from a different day. Mandi's Aug 10 load showed exactly that at 0/14.
+ */
+export const seqKey = (loadNbr, date) => `loadedseq::${date || 'nodate'}::${loadNbr}`;
 
 /** Write the loaded-against sequence once. Later calls are no-ops by design. */
-export async function stampLoadedSequence(loadNbr, fingerprint, loadSeqByStop) {
-  const key = seqKey(loadNbr);
+export async function stampLoadedSequence(loadNbr, date, fingerprint, loadSeqByStop) {
+  const key = seqKey(loadNbr, date);
   const existing = await getCache(key);
   if (existing) return false;
   await putCache(key, { fingerprint, loadSeqByStop, at: new Date().toISOString() });
   return true;
 }
 
-export async function getLoadedSequence(loadNbr) {
-  const row = await getCache(seqKey(loadNbr));
+export async function getLoadedSequence(loadNbr, date) {
+  const row = await getCache(seqKey(loadNbr, date));
   return row ? row.value : null;
+}
+
+/**
+ * Forget the stamped order.
+ *
+ * Used when the trailer is empty: with no freight aboard there is nothing to
+ * protect, so the next first piece should stamp against whatever the route says
+ * NOW rather than against a stale order nobody loaded to.
+ */
+export async function clearLoadedSequence(loadNbr, date) {
+  await tx(STORE_CACHE, 'readwrite', (s) => s.delete(seqKey(loadNbr, date)));
+  return true;
 }
 
 export function putCache(key, value) {

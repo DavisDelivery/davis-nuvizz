@@ -886,3 +886,81 @@ test('activeScans is the only thing that decides what a void hides', async () =>
   assert.equal(isVoided(rows[0]), false);
   assert.equal(isVoided(null), false, 'a missing row is not a voided one');
 });
+
+// ── The route order must follow the route, not a ghost ──────────────────────
+//
+// MANDI MALBROUGH, Aug 10: a load sitting at 0/14 — nothing scanned, nothing on
+// the trailer — displaying "The route was resequenced after loading started."
+// Loading had not started. The order it was defending came from an earlier load
+// that reused the same number, inherited through a stamp key carrying no date.
+// A loader was being told to distrust a screen that was simply correct.
+
+const seqStops = [
+  { stopNbr: '1', pros: ['7159301'], expectedPieces: 2, loadSeq: 1, loadStopSeq: 10 },
+  { stopNbr: '2', pros: ['7159250'], expectedPieces: 2, loadSeq: 2, loadStopSeq: 9 },
+];
+
+test('an EMPTY trailer always shows the current route order', async () => {
+  const { shouldFreezeSequence } = await import('../src/lib/scan-logic.js');
+  const stale = { fingerprint: 'an-order-from-some-other-day', loadSeqByStop: { 1: 9, 2: 8 } };
+  assert.equal(
+    shouldFreezeSequence({ loadedSeq: stale, stops: seqStops, piecesAboard: false }),
+    false,
+    'nothing is aboard, so there is no physical order to protect',
+  );
+});
+
+test('freight aboard against a changed route DOES freeze — that is the whole point', async () => {
+  const { shouldFreezeSequence } = await import('../src/lib/scan-logic.js');
+  const stale = { fingerprint: 'the-order-this-truck-was-loaded-to', loadSeqByStop: { 1: 9, 2: 8 } };
+  assert.equal(
+    shouldFreezeSequence({ loadedSeq: stale, stops: seqStops, piecesAboard: true }),
+    true,
+    'renumbering under a half-loaded truck would hide misplaced freight',
+  );
+});
+
+test('freight aboard against an UNCHANGED route does not cry resequenced', async () => {
+  const { shouldFreezeSequence, sequenceFingerprint } = await import('../src/lib/scan-logic.js');
+  const stamped = { fingerprint: sequenceFingerprint(seqStops), loadSeqByStop: {} };
+  assert.equal(shouldFreezeSequence({ loadedSeq: stamped, stops: seqStops, piecesAboard: true }), false);
+});
+
+test('no stamp at all never freezes, however much is aboard', async () => {
+  const { shouldFreezeSequence } = await import('../src/lib/scan-logic.js');
+  assert.equal(shouldFreezeSequence({ loadedSeq: null, stops: seqStops, piecesAboard: true }), false);
+  assert.equal(shouldFreezeSequence({ loadedSeq: {}, stops: seqStops, piecesAboard: true }), false);
+});
+
+test('the stamp key is scoped by date, so a reused load number cannot inherit an old order', async () => {
+  const { seqKey } = await import('../src/lib/offline.js');
+  assert.notEqual(
+    seqKey('MANDI', '2026-08-10'),
+    seqKey('MANDI', '2026-07-27'),
+    'the same truck on two days must not share one frozen order',
+  );
+  assert.ok(seqKey('MANDI', '2026-08-10').includes('2026-08-10'));
+});
+
+test('an already-scanned piece names the stop it is already on', async () => {
+  // MANDI's truck: a skid was rescanned again and again expecting ONE
+  // DIVERSIFIED, and the label on it was CENTRICSIT's — already aboard. The app
+  // knew whose it was and returned stop:null, so the screen said only "ALREADY
+  // SCANNED" and the question "whose is this then?" had no answer on the dock.
+  const { evaluateScan, OUTCOME } = await import('../src/lib/scan-logic.js');
+  const centricsit = { stopNbr: '4', pros: ['7159406'], expectedPieces: 1, businessName: 'CENTRICSIT' };
+  const oneDiv = { stopNbr: '6', pros: ['7159057'], expectedPieces: 1, businessName: 'ONE DIVERSIFIED LLC' };
+  const seen = new Set(['OG6028599592']);
+
+  const r = evaluateScan({ pro: '7159406', og: 'OG6028599592' }, [centricsit, oneDiv], seen);
+  assert.equal(r.outcome, OUTCOME.SILENT, 'still a duplicate — nothing is booked twice');
+  assert.equal(r.stop?.businessName, 'CENTRICSIT', 'and now it says whose label it is');
+  assert.equal(r.pro, '7159406');
+});
+
+test('a duplicate whose PRO is on no stop still resolves to no owner', async () => {
+  const { evaluateScan, OUTCOME } = await import('../src/lib/scan-logic.js');
+  const r = evaluateScan({ pro: '9999999', og: 'OG6028599592' }, [], new Set(['OG6028599592']));
+  assert.equal(r.outcome, OUTCOME.SILENT);
+  assert.equal(r.stop, null, 'nothing to name, and that must not throw');
+});

@@ -13,7 +13,7 @@ import { loadSession, saveSession, clearSession, daysRemaining } from './lib/ses
 import * as api from './lib/api.js';
 import * as store from './lib/offline.js';
 import { startScanner } from './lib/scanner.js';
-import { evaluateScan, loadProgress, stopProgress, ogGapHint, OUTCOME, normalizePro, createPairBuffer, createScanGate, sortForLoading, splitPickups, renumberPositions, loadOrder, loadGroupCount, deliverySeq, sequenceFingerprint, classifyBarcode } from './lib/scan-logic.js';
+import { evaluateScan, loadProgress, stopProgress, ogGapHint, OUTCOME, normalizePro, createPairBuffer, createScanGate, sortForLoading, splitPickups, renumberPositions, loadOrder, loadGroupCount, deliverySeq, sequenceFingerprint, shouldFreezeSequence, classifyBarcode } from './lib/scan-logic.js';
 import { createWedgeAccumulator, WEDGE_PAIR_WINDOW_MS } from './lib/wedge.js';
 import { initAudio, playVerdict } from './lib/feedback.js';
 import { useSortable, SortableTh } from './lib/useSortable.jsx';
@@ -407,9 +407,39 @@ function OrderCard({ stop, progress, groupCount, onClose, onAddPiece, onMarkDama
   );
 }
 
-function OutcomeCard({ result, partial }) {
+function OutcomeCard({ result, partial, orphan }) {
   if (!result) {
     const need = partial?.pro ? 'OG barcode (upper)' : partial?.og ? 'PRO barcode (lower)' : null;
+    // A half-read label that timed out. This has to be LOUDER than the idle
+    // prompt: nothing was booked, and the operator has already walked on unless
+    // they are told now. It outranks "point at the PRO" because it is the reason
+    // the count will not add up.
+    if (!need && orphan) {
+      // An unrecognised barcode is a different problem from a half-read label,
+      // and naming the exact string is the whole point: it is the one fact that
+      // says whether the label is wrong, the gun is adding characters, or this
+      // is simply not a freight barcode.
+      if (orphan.kind === 'unknown') {
+        return (
+          <Banner kind="warn">
+            <span className="font-semibold">That barcode is not a PRO or a piece ID.</span>
+            <span className="block text-xs mt-0.5 font-mono break-all">{orphan.value}</span>
+            <span className="block text-xs mt-0.5">
+              Nothing was counted. A PRO is 7 digits; a piece ID is OG plus 10 digits.
+            </span>
+          </Banner>
+        );
+      }
+      return (
+        <Banner kind="warn">
+          <span className="font-semibold">Only got one barcode — scan that label again.</span>
+          <span className="block text-xs mt-0.5">
+            Read the {orphan.kind === 'pro' ? 'PRO' : 'piece ID'} {orphan.value} but never its partner, so
+            nothing was counted.
+          </span>
+        </Banner>
+      );
+    }
     return (
       <Banner kind="info">
         {need ? (
@@ -502,6 +532,26 @@ function VerdictFlash({ verdict, onClear }) {
     );
   }
 
+  // NOT COUNTED. The gun flashes green on every successful decode — that is the
+  // gun reporting it read a barcode, not the app reporting it booked a piece.
+  // Without this the two were indistinguishable and a refused scan looked like a
+  // good one. Deliberately not sticky: the amber card underneath carries the
+  // "Same piece / Another piece" decision and must stay reachable.
+  if (kind === 'blocked') {
+    return (
+      <div className={`${base} bg-amber-400 text-amber-950 pointer-events-none`}>
+        <AlertTriangle className="w-24 h-24 mb-4" aria-hidden="true" />
+        <div className="text-4xl font-black leading-tight">NOT COUNTED</div>
+        {evaluated?.stop?.businessName ? (
+          <div className="mt-2 text-xl font-semibold">{evaluated.stop.businessName} is already full</div>
+        ) : (
+          <div className="mt-2 text-xl font-semibold">PRO {evaluated?.pro} already logged</div>
+        )}
+        <div className="mt-4 text-lg">If this is another piece, tap “Another piece”.</div>
+      </div>
+    );
+  }
+
   const tone = {
     green: ['bg-emerald-500 text-white', 'ON THIS TRUCK'],
     amber: ['bg-amber-400 text-amber-950', 'APPT — CONFIRM BOOKED'],
@@ -514,6 +564,14 @@ function VerdictFlash({ verdict, onClear }) {
       {kind === 'amber' ? <AlertTriangle className="w-24 h-24 mb-4" aria-hidden="true" /> : null}
       <div className="text-4xl font-black leading-tight">{tone[1]}</div>
       {evaluated?.stop?.businessName ? <div className="mt-2 text-xl">{evaluated.stop.businessName}</div> : null}
+      {/* WHOSE label this is. On a duplicate that is the entire question: the
+          loader is holding a skid that will not scan and needs to know it is
+          already aboard, and under whose name — not just that it is a repeat. */}
+      {kind === 'dup' ? (
+        <div className="mt-2 text-lg">
+          PRO {evaluated?.pro} is already on this truck
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -733,6 +791,8 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
   const [camErr, setCamErr] = useState('');
   const [result, setResult] = useState(null);
   const [partial, setPartial] = useState({ pro: null, og: null });
+  // The last half-label thrown away, so the operator is TOLD to rescan it.
+  const [orphan, setOrphan] = useState(null);
   const [scans, setScans] = useState([]);
   const [handConfirms, setHandConfirms] = useState([]);
   const [pending, setPending] = useState(0);
@@ -774,6 +834,7 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
   const wedgePairRef = useRef(null);
   const wedgeAccRef = useRef(null);
   const onWedgeScanRef = useRef(() => {});
+  const onOrphanRef = useRef(() => {});
 
   const load = useMemo(
     () => (manifest?.loads || []).find((l) => l.loadNbr === activeLoad) || null,
@@ -794,8 +855,12 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
   // after loading began, silently redrawing the screen with new positions would
   // hide freight that is already in the wrong place. So we keep showing the
   // order the truck was loaded against and say loudly that it changed.
+  //
+  // ONLY while freight is aboard. An empty trailer has no order to protect, and
+  // freezing one there tells a loader to distrust a screen that is simply right.
   const [loadedSeq, setLoadedSeq] = useState(null);
-  const resequenced = !!loadedSeq && loadedSeq.fingerprint !== sequenceFingerprint(stops);
+  const piecesAboard = scans.length > 0 || handConfirms.length > 0;
+  const resequenced = shouldFreezeSequence({ loadedSeq, stops, piecesAboard });
 
   const displayStops = useMemo(() => {
     if (!resequenced) return stops;
@@ -815,9 +880,21 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
   useEffect(() => {
     if (!activeLoad) { setLoadedSeq(null); return; }
     let alive = true;
-    store.getLoadedSequence(activeLoad).then((v) => { if (alive) setLoadedSeq(v); });
+    const date = manifest?.date;
+    (async () => {
+      const v = await store.getLoadedSequence(activeLoad, date);
+      // Nothing aboard means nothing to protect. Drop any stamp so the next
+      // first piece records the order the route says NOW — otherwise a load
+      // whose freight was all voided keeps defending an order nobody loaded to.
+      if (v && !(scans.length > 0 || handConfirms.length > 0)) {
+        await store.clearLoadedSequence(activeLoad, date);
+        if (alive) setLoadedSeq(null);
+        return;
+      }
+      if (alive) setLoadedSeq(v);
+    })();
     return () => { alive = false; };
-  }, [activeLoad, scans.length, handConfirms.length]);
+  }, [activeLoad, manifest?.date, scans.length, handConfirms.length]);
   const scannedOgs = useMemo(() => new Set(scans.map((s) => String(s.og).toUpperCase())), [scans]);
 
   // Rehydrate this load's scans from the local queue — the UI's source of truth.
@@ -855,8 +932,8 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
     if (!activeLoad || !stops.length) return;
     const loadSeqByStop = {};
     for (const s of stops) loadSeqByStop[s.stopNbr] = s.loadSeq ?? null;
-    await store.stampLoadedSequence(activeLoad, sequenceFingerprint(stops), loadSeqByStop);
-  }, [activeLoad, stops]);
+    await store.stampLoadedSequence(activeLoad, manifest?.date, sequenceFingerprint(stops), loadSeqByStop);
+  }, [activeLoad, manifest?.date, stops]);
 
   const record = useCallback(
     async (pair, engineName) => {
@@ -878,14 +955,29 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
       // purpose: an earlier version checked only inside it, and the typed path
       // (which mints its own TYPED- id) walked straight past to 8/2.
       // Only a deliberate override gets through.
+      // A REFUSAL MUST BE AS LOUD AS AN ACCEPTANCE.
+      //
+      // These paths used to set the amber card and return null, which meant the
+      // app made no sound and no flash. The scanner gun flashes green on its own
+      // whenever it decodes a barcode — that is the GUN saying "I read it", not
+      // the app saying "I counted it" — so a silent refusal reads as success and
+      // the loader walks away with the piece unbooked. Exactly what happened to
+      // GLOBAL AVIATION's second skid.
+      const refuse = (dup) => {
+        setDupPending(dup);
+        playVerdict('dup');
+        if (navigator.vibrate) navigator.vibrate([60, 40, 60]);
+        setVerdict({ kind: 'blocked', evaluated: { pro: dup.pro, stop: dup.full ? { businessName: dup.full } : null } });
+        return null;
+      };
+
       if (!isOverride) {
         const p7 = normalizePro(pair.pro);
         const owner = stops.find((s2) => (s2.pros || []).some((x) => normalizePro(x) === p7));
         if (owner) {
           const done = stopProgress(owner, scans, handConfirms);
           if (done.expected > 0 && done.scanned >= done.expected) {
-            setDupPending({ pro: p7, count: done.scanned, full: owner.businessName, expected: done.expected });
-            return null;
+            return refuse({ pro: p7, count: done.scanned, full: owner.businessName, expected: done.expected });
           }
         }
       }
@@ -898,13 +990,16 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
           // One piece at a time, and one label at a time — both decided
           // synchronously, because React's state is exactly what is behind here.
           if (recording.current) return null;
-          if (!gate.current.allow(pro7, now)) return null;
+          // The camera re-decodes the same label many times a second, so it needs
+          // the cooldown here. The gun is already gated on the exact barcode as
+          // it arrives; running it again would compare this PRO against the very
+          // read that produced it and refuse the piece outright.
+          if (engineName !== 'wedge' && !gate.current.allow(pro7, now)) return null;
         }
 
         const already = scans.filter((s2) => normalizePro(s2.pro) === pro7).length;
         if (already > 0 && isScanner) {
-          setDupPending({ pro: pro7, count: already });
-          return null;
+          return refuse({ pro: pro7, count: already });
         }
 
         // A stop can never hold more pieces than the manifest says. Refuse the
@@ -1014,6 +1109,18 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
   // The wedge path owns its own feedback: sounds and a full-screen flash
   // instead of a card nobody reads with gloves on. Kept behind a ref so the
   // once-created accumulator always calls the latest closure.
+  // Expire a half-pair on the clock. Without this, an operator who scans one
+  // barcode and then stops hears nothing until the NEXT label arrives — which is
+  // precisely the moment the stale half does its damage. 500ms is well inside
+  // the 2.5s window and costs nothing when there is nothing pending.
+  useEffect(() => {
+    const t = setInterval(() => {
+      wedgePairRef.current?.tick();
+      setPartial(wedgePairRef.current?.state() || { pro: null, og: null });
+    }, 500);
+    return () => clearInterval(t);
+  }, []);
+
   onWedgeScanRef.current = async (raw) => {
     if (verdictRef.current?.sticky) {
       // A red screen must be acknowledged before scanning on — replay the buzz
@@ -1021,9 +1128,37 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
       playVerdict('red');
       return;
     }
+    // EVERY read the gun sends is logged, classified, before anything else can
+    // drop it. Until now this list was fed only by the camera, so in gun mode the
+    // app showed nothing at all about what it had received — a barcode it did not
+    // recognise vanished without a sound and the only way to find out what the
+    // gun actually sent was to scan into a notes app.
+    const cls = classifyBarcode(raw);
+    rawSeen.current += 1;
+    setRawLog((prev) => [{ v: String(raw), kind: cls.kind }, ...prev].slice(0, 6));
+
+    // A barcode we cannot classify is NOT a piece, and it must not be silent.
+    // isProBarcode wants exactly 7 digits and isOgBarcode wants OG + 10 digits;
+    // anything else — a check digit, a prefix, a different symbology on the
+    // pallet — used to be discarded without a word, which reads as "the app is
+    // ignoring me" while the gun happily beeps.
+    if (cls.kind === 'unknown') {
+      playVerdict('orphan');
+      if (navigator.vibrate) navigator.vibrate([40, 50, 40]);
+      setOrphan({ kind: 'unknown', value: String(raw).slice(0, 32), at: Date.now() });
+      return;
+    }
+
+    // The SAME barcode fired twice in quick succession is one trigger pull the
+    // gun repeated, never two pieces. Dropping it here also stops a stutter from
+    // discarding the half-pair it is already holding.
+    if (!gate.current.allow(raw)) return;
     const pair = wedgePairRef.current.push([raw]);
     setPartial(wedgePairRef.current.state());
     if (!pair) return;
+    // A completed pair means the operator is back on track; the stale warning
+    // must not linger over a piece that scanned fine.
+    setOrphan(null);
     const evaluated = await record(pair, 'wedge');
     announce(evaluated);
   };
@@ -1049,7 +1184,43 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
     setVerdict({ kind, evaluated, sticky: kind === 'red' });
   }
 
-  if (!wedgePairRef.current) wedgePairRef.current = createPairBuffer({ windowMs: WEDGE_PAIR_WINDOW_MS });
+  // A half-pair that never completed is now ANNOUNCED rather than dropped in
+  // silence. Silence is what let a whole load be mis-attributed: the operator
+  // had no way to know a label had only half-read until the counts disagreed
+  // hours later. The instruction is the whole point — rescan THAT label.
+  onOrphanRef.current = async (half) => {
+    // A STRANDED PRO IS STILL A PIECE.
+    //
+    // The gun used to book nothing at all unless BOTH barcodes read — record()
+    // only ran on a complete pair — so a label whose piece ID would not decode
+    // could not be loaded however many times it was scanned. The camera has
+    // always treated a lone PRO as a piece; the gun now agrees. The piece IDs
+    // stay preferred: they arrive together when both are scanned back to back,
+    // and only a PRO left alone past the pair window falls back to a NOOG id.
+    //
+    // An OG alone cannot identify a stop, so that one is still just reported.
+    if (half.kind === 'pro' && half.reason === 'expired') {
+      const evaluated = await record({ pro: half.value, og: null }, 'wedge');
+      if (evaluated) { announce(evaluated); return; }
+      // record() refused it (already logged, or the stop is full) and has
+      // already made its own noise — do not also cry orphan over the top.
+      return;
+    }
+    playVerdict('orphan');
+    if (navigator.vibrate) navigator.vibrate([40, 50, 40]);
+    setOrphan({
+      kind: half.kind,
+      value: half.value,
+      at: Date.now(),
+    });
+  };
+
+  if (!wedgePairRef.current) {
+    wedgePairRef.current = createPairBuffer({
+      windowMs: WEDGE_PAIR_WINDOW_MS,
+      onAbandon: (half) => onOrphanRef.current?.(half),
+    });
+  }
   if (!wedgeAccRef.current) wedgeAccRef.current = createWedgeAccumulator({ onScan: (v) => onWedgeScanRef.current(v) });
 
   useEffect(() => {
@@ -1314,7 +1485,7 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
         )}
 
         {camErr ? <Banner kind="error">{camErr}</Banner> : null}
-        <OutcomeCard result={result} partial={partial} />
+        <OutcomeCard result={result} partial={partial} orphan={orphan} />
         {flash ? <Banner kind="info">{flash}</Banner> : null}
 
         {/* Repeat PRO. Never auto-logged: walking a tall pallet drifts the same
@@ -1331,6 +1502,13 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
               {dupPending.full
                 ? 'The manifest says this stop is full. Only add another if the paperwork is wrong.'
                 : 'Same label seen again. If this is another piece, tap to add it.'}
+            </div>
+            {/* Said plainly, because the gun's own green flash says the opposite.
+                A loader reading the gun instead of the screen walks away with an
+                unbooked piece — which is how GLOBAL AVIATION's second skid went
+                missing. */}
+            <div className="text-xs text-amber-900 font-semibold mt-1">
+              This piece was NOT counted yet.
             </div>
             <div className="flex gap-2 mt-2">
               <button
@@ -1356,14 +1534,20 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
           </div>
         ) : null}
 
-        {/* What the decoder is ACTUALLY seeing. Silence here means the camera
-            is reading nothing (focus, lighting, engine); values here with the
-            wrong shape mean it reads fine and the rules are rejecting them.
-            Those two need opposite fixes and looked identical before. */}
-        {camOn ? (
+        {/* What the decoder is ACTUALLY seeing. Silence here means nothing is
+            being read at all (focus, lighting, engine, or a gun that is not
+            paired); values here with the wrong shape mean it reads fine and the
+            rules are rejecting them. Those two need opposite fixes and looked
+            identical before.
+
+            Shown for the GUN as well as the camera. It used to be camera-only,
+            so a gun sending a barcode the app did not recognise produced no
+            evidence anywhere on the screen and the only way to see what it had
+            actually sent was to scan into a notes app. */}
+        {camOn || gunMode || rawLog.length ? (
           <details className="rounded-xl bg-white ring-1 ring-slate-200 px-3 py-2 text-xs">
             <summary className="cursor-pointer text-slate-600">
-              Scanner detail — {engine || '…'} · {rawSeen.current} read{rawSeen.current === 1 ? '' : 's'}
+              Scanner detail — {camOn ? engine || '…' : 'gun'} · {rawSeen.current} read{rawSeen.current === 1 ? '' : 's'}
             </summary>
             {rawLog.length ? (
               <div className="mt-2 space-y-0.5 font-mono">
@@ -1606,6 +1790,7 @@ function DayPanel({ data, date, onDate, busy, onRefresh, session }) {
   const [statusFilter, setStatusFilter] = useState(null);
   const [peopleUsedOnly, setPeopleUsedOnly] = useState(false);
   const [openLoad, setOpenLoad] = useState(null);
+  const [openPerson, setOpenPerson] = useState(null);
   if (!data) {
     return (
       <div className="rounded-xl bg-white ring-1 ring-slate-200 px-3 py-2 text-sm text-slate-500">
@@ -1809,26 +1994,37 @@ function DayPanel({ data, date, onDate, busy, onRefresh, session }) {
               </button>
             </div>
           ) : null}
-          {shownPeople.map((p) => (
-            <div key={p.driverNumber} className="px-3 py-2 text-sm flex items-center gap-2 flex-wrap">
-              {p.usedAppToday ? (
-                <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
-              ) : (
-                <XCircle className="w-4 h-4 text-slate-300 shrink-0" />
-              )}
-              <span className="truncate flex-1 min-w-0">{p.displayName}</span>
-              <span className="text-[11px] text-slate-500">{p.role}</span>
-              {p.usedAppToday ? (
-                <span className="text-xs text-slate-600">
-                  {p.pieces} piece(s) · {p.loads.length} truck(s): <span className="font-mono">{p.loads.join(', ')}</span>
-                </span>
-              ) : (
-                <span className="text-xs text-slate-400">
-                  no activity{p.lastLoginAt ? ` · last signed in ${fmtDateTime(p.lastLoginAt)}` : ' · never signed in'}
-                </span>
-              )}
-            </div>
-          ))}
+          {shownPeople.map((p) => {
+            // Only people who worked have a receipt to open. A no-show row stays
+            // a plain div — there is nothing behind it to drill into.
+            const Row = p.usedAppToday ? 'button' : 'div';
+            const rowProps = p.usedAppToday
+              ? { type: 'button', onClick: () => setOpenPerson(p), className: 'w-full text-left px-3 py-2 text-sm flex items-center gap-2 flex-wrap hover:bg-slate-50' }
+              : { className: 'px-3 py-2 text-sm flex items-center gap-2 flex-wrap' };
+            return (
+              <Row key={p.driverNumber} {...rowProps}>
+                {p.usedAppToday ? (
+                  <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                ) : (
+                  <XCircle className="w-4 h-4 text-slate-300 shrink-0" />
+                )}
+                <span className="truncate flex-1 min-w-0">{p.displayName}</span>
+                <span className="text-[11px] text-slate-500">{p.role}</span>
+                {p.usedAppToday ? (
+                  <>
+                    <span className="text-xs text-slate-600">
+                      {p.pieces} piece(s) · {p.loads.length} truck(s): <span className="font-mono">{p.loads.join(', ')}</span>
+                    </span>
+                    <ChevronRight className="w-4 h-4 text-slate-400 shrink-0" />
+                  </>
+                ) : (
+                  <span className="text-xs text-slate-400">
+                    no activity{p.lastLoginAt ? ` · last signed in ${fmtDateTime(p.lastLoginAt)}` : ' · never signed in'}
+                  </span>
+                )}
+              </Row>
+            );
+          })}
           {shownPeople.length === 0 ? (
             <div className="px-3 py-2 text-sm text-slate-500">
               {peopleUsedOnly ? 'Nobody has used the app yet for this date.' : 'No people for this date.'}
@@ -1838,6 +2034,140 @@ function DayPanel({ data, date, onDate, busy, onRefresh, session }) {
       )}
 
       {openLoad ? <LoadDetail load={openLoad} onClose={() => setOpenLoad(null)} /> : null}
+      {openPerson ? <PersonDetail person={openPerson} loads={loads} onClose={() => setOpenPerson(null)} /> : null}
+    </div>
+  );
+}
+
+const LOAD_TONE = {
+  not_started: 'bg-rose-50 ring-rose-300 text-rose-900',
+  in_progress: 'bg-amber-50 ring-amber-300 text-amber-900',
+  closed_clean: 'bg-emerald-50 ring-emerald-200 text-emerald-900',
+  closed_short: 'bg-rose-50 ring-rose-300 text-rose-900',
+  closed_over: 'bg-rose-50 ring-rose-300 text-rose-900',
+};
+const LOAD_LABEL = {
+  not_started: 'NOT STARTED', in_progress: 'in progress', closed_clean: 'closed clean',
+  closed_short: 'CLOSED SHORT', closed_over: 'CLOSED OVER',
+};
+
+// One stop's line: the badge is the verdict a dispatcher reads first. (Named
+// apart from the scan screen's StopRow, which is a different row entirely.)
+function StopDetailRow({ s }) {
+  // Surplus is computed defensively rather than trusted: a stop over its count
+  // is not `complete`, so it used to fall through to the shortfall branch and
+  // render "0 missing" — a stop holding freight it should not have, reporting
+  // contentment. Surplus is checked FIRST because it is the loudest signal of
+  // mis-attribution: those pieces belong to some other stop that now reads short.
+  const extra = Number(s.extra ?? Math.max(0, (s.scanned || 0) - (s.expected || 0)));
+  const badge = s.isPickup
+    ? ['bg-slate-100 ring-slate-300 text-slate-600', 'pickup']
+    : extra > 0
+      ? ['bg-rose-50 ring-rose-300 text-rose-800', `${extra} extra`]
+      : s.scanned === 0
+        ? ['bg-rose-50 ring-rose-300 text-rose-800', 'not scanned']
+        : s.complete
+          ? ['bg-emerald-50 ring-emerald-200 text-emerald-800', 'all here']
+          : ['bg-amber-50 ring-amber-300 text-amber-900', `${s.short} missing`];
+  return (
+    <li className="px-2 py-1.5 flex items-center gap-2">
+      <div className="min-w-0 flex-1">
+        <div className="truncate text-slate-900">{s.businessName || `Stop ${s.stopNbr}`}</div>
+        <div className="text-[11px] text-slate-500 flex flex-wrap gap-x-2">
+          <span>stop {s.stopNbr}</span>
+          {s.handConfirmed ? <span className="text-sky-700">confirmed by hand</span> : null}
+          {s.damagedCount > 0 ? <span className="text-amber-800 font-medium">{s.damagedCount} damaged</span> : null}
+        </div>
+      </div>
+      {!s.isPickup ? <span className="font-mono text-xs tabular-nums text-slate-600">{s.scanned}/{s.expected}</span> : null}
+      <span className={`text-[11px] rounded px-1.5 py-0.5 ring-1 ${badge[0]}`}>{badge[1]}</span>
+    </li>
+  );
+}
+
+/** The per-stop body of one truck — deliveries with a done-count, pickups apart. */
+function LoadStops({ load }) {
+  const stops = load.stops || [];
+  const deliveries = stops.filter((s) => !s.isPickup);
+  const pickups = stops.filter((s) => s.isPickup);
+  const done = deliveries.filter((s) => s.complete).length;
+  const untouched = deliveries.filter((s) => s.scanned === 0).length;
+  return (
+    <>
+      {deliveries.length ? (
+        <div>
+          <div className="text-xs text-slate-500 mb-1">
+            {done} of {deliveries.length} stops complete{untouched ? ` · ${untouched} not started` : ''}
+          </div>
+          <ul className="rounded-lg ring-1 ring-slate-200 divide-y divide-slate-100 bg-white">
+            {deliveries.map((s) => <StopDetailRow key={s.stopNbr} s={s} />)}
+          </ul>
+        </div>
+      ) : (
+        <div className="text-sm text-slate-500">
+          No stop detail for this truck — it was on the board with no stops in the cached index.
+        </div>
+      )}
+
+      {pickups.length ? (
+        <div>
+          <div className="text-xs text-slate-500 mb-1">Pickups — collected on the route, nothing to load</div>
+          <ul className="rounded-lg ring-1 ring-slate-200 divide-y divide-slate-100 bg-white">
+            {pickups.map((s) => <StopDetailRow key={s.stopNbr} s={s} />)}
+          </ul>
+        </div>
+      ) : null}
+
+      <ScanLog rows={load.scanLog} stops={stops} />
+    </>
+  );
+}
+
+/**
+ * Every scan on this truck, oldest first.
+ *
+ * Totals cannot tell "extra freight turned up" apart from "freight was counted
+ * against the wrong stop" — that ambiguity cost a full diagnosis cycle on
+ * Alfred's load. The ORDER is the evidence: a mis-paired piece appears as one
+ * label's PRO carrying the next label's OG, sitting next to its neighbour here.
+ * Collapsed by default so it is available without burying the summary.
+ */
+function ScanLog({ rows, stops }) {
+  const [open, setOpen] = useState(false);
+  const list = rows || [];
+  if (!list.length) return null;
+  const nameOf = (stopNbr) =>
+    (stops || []).find((s) => String(s.stopNbr) === String(stopNbr))?.businessName || `stop ${stopNbr || '—'}`;
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="text-xs underline text-slate-600"
+      >
+        {open ? 'Hide' : 'Show'} the {list.length} scan(s), in order
+      </button>
+      {open ? (
+        <ul className="mt-1 rounded-lg ring-1 ring-slate-200 divide-y divide-slate-100 bg-white max-h-72 overflow-y-auto">
+          {list.map((r, i) => (
+            <li key={`${r.og}-${i}`} className="px-2 py-1.5 text-[11px] flex items-baseline gap-2">
+              <span className="tabular-nums text-slate-400 w-6 shrink-0">{i + 1}</span>
+              <div className="min-w-0 flex-1">
+                <div className="font-mono text-slate-800 truncate">
+                  {r.pro || '—'} · {r.og}
+                </div>
+                <div className="text-slate-500 truncate">
+                  {nameOf(r.stopNbr)}
+                  {r.engine ? ` · ${r.engine}` : ''}
+                  {r.damaged ? ' · damaged' : ''}
+                  {r.voided ? ' · VOIDED' : ''}
+                </div>
+              </div>
+              <span className="text-slate-400 shrink-0">{r.scannedAt ? fmtDateTime(r.scannedAt) : ''}</span>
+            </li>
+          ))}
+        </ul>
+      ) : null}
     </div>
   );
 }
@@ -1848,52 +2178,10 @@ function DayPanel({ data, date, onDate, busy, onRefresh, session }) {
  * where is the gap" — the receipt behind the summary row.
  */
 function LoadDetail({ load, onClose }) {
-  const TONE = {
-    not_started: 'bg-rose-50 ring-rose-300 text-rose-900',
-    in_progress: 'bg-amber-50 ring-amber-300 text-amber-900',
-    closed_clean: 'bg-emerald-50 ring-emerald-200 text-emerald-900',
-    closed_short: 'bg-rose-50 ring-rose-300 text-rose-900',
-    closed_over: 'bg-rose-50 ring-rose-300 text-rose-900',
-  };
-  const LABEL = {
-    not_started: 'NOT STARTED', in_progress: 'in progress', closed_clean: 'closed clean',
-    closed_short: 'CLOSED SHORT', closed_over: 'CLOSED OVER',
-  };
-  const stops = load.stops || [];
-  const deliveries = stops.filter((s) => !s.isPickup);
-  const pickups = stops.filter((s) => s.isPickup);
-  const done = deliveries.filter((s) => s.complete).length;
-  const untouched = deliveries.filter((s) => s.scanned === 0).length;
-
-  // One stop's line: the badge is the verdict a dispatcher reads first.
-  const StopRow = ({ s }) => {
-    const badge = s.isPickup
-      ? ['bg-slate-100 ring-slate-300 text-slate-600', 'pickup']
-      : s.scanned === 0
-        ? ['bg-rose-50 ring-rose-300 text-rose-800', 'not scanned']
-        : s.complete
-          ? ['bg-emerald-50 ring-emerald-200 text-emerald-800', 'all here']
-          : ['bg-amber-50 ring-amber-300 text-amber-900', `${s.short} missing`];
-    return (
-      <li className="px-2 py-1.5 flex items-center gap-2">
-        <div className="min-w-0 flex-1">
-          <div className="truncate text-slate-900">{s.businessName || `Stop ${s.stopNbr}`}</div>
-          <div className="text-[11px] text-slate-500 flex flex-wrap gap-x-2">
-            <span>stop {s.stopNbr}</span>
-            {s.handConfirmed ? <span className="text-sky-700">confirmed by hand</span> : null}
-            {s.damagedCount > 0 ? <span className="text-amber-800 font-medium">{s.damagedCount} damaged</span> : null}
-          </div>
-        </div>
-        {!s.isPickup ? <span className="font-mono text-xs tabular-nums text-slate-600">{s.scanned}/{s.expected}</span> : null}
-        <span className={`text-[11px] rounded px-1.5 py-0.5 ring-1 ${badge[0]}`}>{badge[1]}</span>
-      </li>
-    );
-  };
-
   return (
     <Modal title={`${load.loadNbr} · ${load.driverName || '—'}`} onClose={onClose}>
       <div className="flex items-center gap-2 flex-wrap text-sm">
-        <span className={`text-[11px] rounded px-1.5 py-0.5 ring-1 ${TONE[load.status]}`}>{LABEL[load.status]}</span>
+        <span className={`text-[11px] rounded px-1.5 py-0.5 ring-1 ${LOAD_TONE[load.status]}`}>{LOAD_LABEL[load.status]}</span>
         <span className="font-mono tabular-nums">{load.scannedCount}/{load.expectedPieces} pieces</span>
         {load.short ? <span className="text-rose-700 font-medium">{load.short} short</span> : null}
         {load.over ? <span className="text-rose-700 font-medium">{load.over} over</span> : null}
@@ -1907,29 +2195,47 @@ function LoadDetail({ load, onClose }) {
         <Banner kind="warn">Nobody has scanned this truck.</Banner>
       )}
 
-      {deliveries.length ? (
-        <div>
-          <div className="text-xs text-slate-500 mb-1">
-            {done} of {deliveries.length} stops complete{untouched ? ` · ${untouched} not started` : ''}
-          </div>
-          <ul className="rounded-lg ring-1 ring-slate-200 divide-y divide-slate-100 bg-white">
-            {deliveries.map((s) => <StopRow key={s.stopNbr} s={s} />)}
-          </ul>
-        </div>
-      ) : (
-        <div className="text-sm text-slate-500">
-          No stop detail for this truck — it was on the board with no stops in the cached index.
-        </div>
-      )}
+      <LoadStops load={load} />
+    </Modal>
+  );
+}
 
-      {pickups.length ? (
-        <div>
-          <div className="text-xs text-slate-500 mb-1">Pickups — collected on the route, nothing to load</div>
-          <ul className="rounded-lg ring-1 ring-slate-200 divide-y divide-slate-100 bg-white">
-            {pickups.map((s) => <StopRow key={s.stopNbr} s={s} />)}
-          </ul>
-        </div>
-      ) : null}
+/**
+ * One person, opened up: every truck they worked and the stop-by-stop detail of
+ * what got scanned on it. The stop breakdown is the TRUCK's — combined across
+ * anyone who touched it — so when two people share a truck the piece line names
+ * this person's share and the stops stay honest about the whole load.
+ */
+function PersonDetail({ person, loads, onClose }) {
+  const worked = (person.loads || [])
+    .map((nbr) => (loads || []).find((l) => String(l.loadNbr) === String(nbr)))
+    .filter(Boolean);
+  const mine = (load) => load.workedBy?.find((w) => String(w.driverNumber) === String(person.driverNumber))?.pieces ?? 0;
+
+  return (
+    <Modal title={person.displayName} onClose={onClose}>
+      <div className="flex items-center gap-2 flex-wrap text-sm">
+        <span className="text-[11px] text-slate-500">{person.role}</span>
+        <span className="font-mono tabular-nums">{person.pieces} piece(s)</span>
+        <span className="text-slate-500">· {worked.length} truck(s)</span>
+      </div>
+
+      {worked.length ? (
+        worked.map((load) => (
+          <div key={load.loadNbr} className="space-y-1">
+            <div className="flex items-center gap-2 flex-wrap text-sm border-t border-slate-100 pt-2">
+              <span className="font-mono font-medium">{load.loadNbr}</span>
+              <span className={`text-[11px] rounded px-1.5 py-0.5 ring-1 ${LOAD_TONE[load.status]}`}>{LOAD_LABEL[load.status]}</span>
+              {/* Their share of this truck, distinct from the load total below. */}
+              <span className="text-xs text-slate-600">{person.displayName.split(' ')[0]} scanned {mine(load)}</span>
+              <span className="font-mono text-xs tabular-nums text-slate-500 ml-auto">{load.scannedCount}/{load.expectedPieces} on the truck</span>
+            </div>
+            <LoadStops load={load} />
+          </div>
+        ))
+      ) : (
+        <div className="text-sm text-slate-500">No truck detail for this person on this date.</div>
+      )}
     </Modal>
   );
 }

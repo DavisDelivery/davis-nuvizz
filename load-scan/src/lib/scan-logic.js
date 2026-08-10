@@ -118,20 +118,49 @@ export function createScanResolver({ ogHoldMs = 1200 } = {}) {
   };
 }
 
-export function createPairBuffer({ windowMs = 2500 } = {}) {
+export function createPairBuffer({ windowMs = 2500, onAbandon } = {}) {
   let pending = { pro: null, og: null, at: 0 };
 
   const expired = (now) => pending.at && now - pending.at > windowMs;
+
+  /**
+   * Drop the half-label being held, and SAY SO.
+   *
+   * This used to happen silently, which is how a whole load went wrong without
+   * anyone noticing: the lone survivor was quietly dropped or quietly
+   * overwritten, and the only clue was a count that did not add up hours later.
+   */
+  const abandon = (reason, now) => {
+    const half = pending.pro
+      ? { kind: 'pro', value: pending.pro }
+      : pending.og
+        ? { kind: 'og', value: pending.og }
+        : null;
+    pending = { pro: null, og: null, at: 0 };
+    if (half) onAbandon?.({ ...half, reason, at: now });
+    return half;
+  };
 
   return {
     /** Feed one frame's raw values. Returns a complete pair, or null. */
     push(rawValues, now = Date.now()) {
       const frame = pairFrame(rawValues);
+
+      // Both barcodes in one read is unambiguously ONE label. Anything still
+      // held belonged to a different label and never completed.
       if (frame.complete) {
-        pending = { pro: null, og: null, at: 0 };
+        abandon('superseded', now);
         return { pro: frame.pro, og: frame.og };
       }
-      if (expired(now)) pending = { pro: null, og: null, at: 0 };
+
+      if (expired(now)) abandon('expired', now);
+
+      // TWO OF THE SAME TYPE IN A ROW means a label was abandoned mid-pair — the
+      // operator moved on. The old half must be discarded, never silently
+      // overwritten, or the survivor marries the NEXT label's other barcode and
+      // books a piece against the wrong stop.
+      if (frame.pro && pending.pro) abandon('superseded', now);
+      if (frame.og && pending.og) abandon('superseded', now);
 
       if (frame.pro) pending = { ...pending, pro: frame.pro, at: now };
       if (frame.og) pending = { ...pending, og: frame.og, at: now };
@@ -141,6 +170,18 @@ export function createPairBuffer({ windowMs = 2500 } = {}) {
         pending = { pro: null, og: null, at: 0 };
         return out;
       }
+      return null;
+    },
+    /**
+     * Expire a half-pair on the clock alone.
+     *
+     * push() only runs when another barcode arrives. An operator who scans one
+     * barcode and then stops never pushes again, so without this the half-pair
+     * sits unreported until the next label — which is exactly the moment it does
+     * damage. The UI ticks this.
+     */
+    tick(now = Date.now()) {
+      if (expired(now)) return abandon('expired', now);
       return null;
     },
     /** What is still half-captured — drives the "hold steady" hint. */
@@ -174,11 +215,21 @@ export function evaluateScan(pair, manifestStops, scannedOgs, otherLoads = []) {
   const pro = normalizePro(pair?.pro);
   const og = String(pair?.og ?? '').toUpperCase();
 
+  // Which stop it is ALREADY on. Resolved before the duplicate check so the
+  // "already scanned" verdict can name it.
+  //
+  // It used to return stop:null, so a loader re-reading a label was told only
+  // "ALREADY SCANNED" with no clue WHOSE it was. On Mandi's truck that turned a
+  // one-second answer into a night of work: a skid was scanned again and again
+  // expecting ONE DIVERSIFIED, and the label on it was CENTRICSIT's — already
+  // aboard. The app knew that the whole time and would not say the name.
+  const owner = (manifestStops || []).find((s) => (s.pros || []).includes(pro)) || null;
+
   if (scannedOgs && scannedOgs.has(og)) {
-    return { outcome: OUTCOME.SILENT, pro, og, stop: null };
+    return { outcome: OUTCOME.SILENT, pro, og, stop: owner };
   }
 
-  const stop = (manifestStops || []).find((s) => (s.pros || []).includes(pro)) || null;
+  const stop = owner;
 
   if (!stop) {
     // Name the owning load when the index can tell us — "this belongs to Brad's
@@ -262,6 +313,26 @@ export function loadGroupCount(stops) {
 /** Delivery-order sequence for a stop. Kept identical to the server's key. */
 export function deliverySeq(s) {
   return s?.loadStopSeq ?? s?.routeSeq ?? null;
+}
+
+/**
+ * Should the screen keep showing the OLD route order?
+ *
+ * Only while freight is physically aboard. The freeze exists because a trailer
+ * is a physical record of one particular route order: renumbering the screen
+ * under a half-loaded truck would hide freight that is already in the wrong
+ * place. That reasoning applies to loaded freight and to NOTHING ELSE.
+ *
+ * An empty trailer has no order to protect, so it always shows the newest one.
+ * Mandi's Aug 10 load sat at 0/14 wearing "the route was resequenced after
+ * loading started" — loading had not started, and the stale order it was
+ * defending was a previous day's, inherited through a stamp key that carried no
+ * date. A loader was being told to distrust a screen that was simply correct.
+ */
+export function shouldFreezeSequence({ loadedSeq, stops, piecesAboard }) {
+  if (!piecesAboard) return false;
+  if (!loadedSeq?.fingerprint) return false;
+  return loadedSeq.fingerprint !== sequenceFingerprint(stops);
 }
 
 /**
@@ -435,14 +506,23 @@ export function ogGapHint(ogs) {
  * piece.
  */
 export function createScanGate({ cooldownMs = 3000 } = {}) {
-  let lastPro = null;
+  let lastCode = null;
   let lastAt = 0;
 
   return {
-    /** True if this decode should become a piece. Records the decision. */
-    allow(pro, now = Date.now()) {
-      if (lastPro === pro && now - lastAt < cooldownMs) return false;
-      lastPro = pro;
+    /**
+     * True if this decode should be acted on. Records the decision.
+     *
+     * Keyed on the EXACT barcode, not on the PRO behind it. Keying on the PRO
+     * meant the two barcodes of a single label counted as the same thing, so
+     * reading the piece ID straight after its PRO was suppressed and a loader
+     * had to pause between them. They are different barcodes; only an identical
+     * one repeating is a repeat. This is what lets the two be scanned back to
+     * back while a label re-read by a hovering camera is still ignored.
+     */
+    allow(code, now = Date.now()) {
+      if (lastCode === code && now - lastAt < cooldownMs) return false;
+      lastCode = code;
       lastAt = now;
       return true;
     },

@@ -14,12 +14,26 @@
 export const WEDGE_COMMIT_KEYS = ['Enter', 'Tab'];
 
 /**
- * A gun fires the two label barcodes as two separate trigger pulls, seconds
- * apart — much slower than a camera frame. The pair window has to cover a
- * human re-aiming between the PRO and the OG, while still expiring a lone
- * half-scan before the operator walks to the next pallet.
+ * How long a lone barcode stays eligible to pair with its partner.
+ *
+ * ── WHY THIS IS 2500 AND NOT 8000 ───────────────────────────────────────────
+ *
+ * It was 8000ms, chosen to cover a human re-aiming between the PRO and the OG.
+ * That is far longer than it takes a working operator to reach the NEXT SKID,
+ * and the consequence was silent and expensive: when one barcode on a label
+ * failed to read, the survivor stayed pending and married the next label's
+ * opposite barcode. The piece counted against the wrong stop and the right stop
+ * went short.
+ *
+ * Seen on ALFRED MORGAN's load, Aug 7: 25 scanned against 24 expected, five
+ * stops sitting at 2/1 while FRSTEAM read 5/8 and COREFIVE never started. No
+ * surplus freight existed — pieces had been attributed to the wrong stops.
+ *
+ * A pair must be ONE LABEL, not a rolling window. Re-aiming on a single label is
+ * comfortably inside 2500ms; walking to the next skid is not. This now matches
+ * the camera path, so both entry routes have identical pairing behaviour.
  */
-export const WEDGE_PAIR_WINDOW_MS = 8000;
+export const WEDGE_PAIR_WINDOW_MS = 2500;
 
 /** Longer than any real barcode we accept; a runaway buffer is discarded, not trusted. */
 export const WEDGE_MAX_LENGTH = 64;
