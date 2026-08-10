@@ -20,6 +20,30 @@ Project-level guidance for Claude Code in this repository.
 - When a task seems to need fresh data, STOP and ask first — state the
   expected call cost — instead of scanning.
 
+## Reports — always a PDF (Chad, Aug 2026)
+
+- **Every report goes to Chad as a formatted PDF, never as raw
+  Markdown and never as a `.md` file.** Chad: "stop giving me reports
+  this way — all reports i want in an easy to read well formatted pdf."
+  A `.md` file opens in a text editor showing `**bold**` and `##` as
+  literal characters, which is unreadable.
+- "Report" means any research, analysis, audit, comparison, findings
+  write-up, or recommendation deliverable — anything longer than a chat
+  answer. Short answers stay in chat as normal prose.
+- Build it with `tools/report-pdf.py` (Markdown → styled HTML → PDF via
+  headless Chromium). Write the content as Markdown, then render:
+
+  ```bash
+  python3 tools/report-pdf.py report.md "Some-Report.pdf" --title "Title" --subtitle "Subtitle"
+  ```
+
+- **Look at the rendered pages before sending** — render a few to PNG
+  (`pypdfium2`) and actually read them. Catching a duplicated intro, a
+  blank page, or bullets collapsed into a text run takes one minute and
+  is the difference between a report and a mess.
+- Send the PDF with SendUserFile. Keep the chat message a short summary
+  of the findings; the PDF carries the detail.
+
 ## Response formatting
 
 - Every coding response must be presented inside a wrapped window. In
