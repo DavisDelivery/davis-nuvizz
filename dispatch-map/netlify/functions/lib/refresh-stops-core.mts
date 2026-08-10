@@ -23,12 +23,12 @@
 import { scanDate, scansEnabled, deriveFleetSummary, estimateLoadRange, buildScanState, shadowWouldProbe, selectLoadProbeTargets, groupLoadMembers, estimateStopFrontier, unplannedFloor, FLOOR_MARGIN, loadNbrToInt, stopNbrToInt, shouldDeepSweep, deepSweepGate, lookupStopByPro, lookupLoadStopNbrs } from './nuvizz-scan.mts';
 import { loadProbeParity, frontierParity, loadMembershipDelta, dateSliceMismatch } from './scan-parity.mts';
 import { isFirestoreEnabled, writeStops, writeFleetIndex, getDoc, markScanState, readCallStats, readCircuit, readScanState, writeScanState, readRecentFrontier, recordScanMetric, etDayString, readScanConfig, readStops, readEnrichedPros, writeEnrichedPros, writeLoadRoster, readLoadRoster, writeActiveUnplannedSet, readBoardDateOverrides, readActiveUnplannedSet, readCarryoverRetired, mergeCarryoverRetired } from './firestore.mts';
-import { listScanForDate, mergeEnrich, twoScanBuckets, etDateForTargetUTC, boardDayFor, applyBoardWriteGrace, applyDemotionVerify, demotionLookupVerdict, absentPlanDemoteCandidate } from './nuvizz-list.mts';
+import { listScanForDate, mergeEnrich, twoScanBuckets, etDateForTargetUTC, boardDayFor, applyBoardWriteGrace, applyDemotionVerify, demotionLookupVerdict, absentPlanDemoteCandidate, isTerminalStatus } from './nuvizz-list.mts';
 import { loadIdsForDate, dropForeignLoadStops, loadRosterForDate } from './nuvizz-loads.mts';
 import { getStop } from './history-store.mts';
 import { resolveCoords, addrKey } from './geocode.mts';
 import { maxConsecutiveGap } from './scan-metrics.mts';
-import { notifyMarkedCustomers } from './cs-notify.mts';
+import { notifyMarkedCustomers, pendingNotifyDates } from './cs-notify.mts';
 import { breakerTripped, scanIntervalElapsed, breakerMode, setDailyCeilingOverride, setCallTrigger } from './nuvizz-request.mts';
 import { scanDecision, isInRoutingWindow, clampScanConfig } from './scan-schedule.mts';
 
@@ -815,6 +815,55 @@ export async function runRefreshStops(req: Request): Promise<Response> {
       const overrideCount = Object.keys(boardDateOverrides).length;
       if (overrideCount) console.log(`[scan] honoring ${overrideCount} dispatcher-set board date(s)`);
       const buckets = TWO_SCAN ? await twoScanBuckets(boardDateOverrides) : null;
+
+      // ── CS NOTIFY, FIRST THING, ACROSS THE WHOLE PULL (Chad, 8/10) ───────────────
+      // "DSV came in on Friday. The moment the scan picked it up on Friday, it should
+      // have sent the email. Why is it sending the email today? It's too late."
+      //
+      // The notify below (inside the write loop) only ever ran for the days this scan
+      // WRITES: today, plus the next 1-2 business days and only from 10:00 ET, because
+      // scanDecision gates every future day behind scanTomorrow*. So the trigger was
+      // never "a scan saw this order" — it was "this order's DELIVERY DATE finally came
+      // inside the write horizon". An order for a day past that horizon sat in every
+      // pull and was reported by none of them, then went out on the first post-10:00
+      // tick of the day its date came into range. That is the 10:16 email.
+      //
+      // The rows are already here, in `buckets` — the ±7d saved-search pull, filed by
+      // day, of which the loop below reads two or three days and drops the rest. So this
+      // costs ZERO extra NuVizz calls: same data, plus one Firestore ledger read per day
+      // that actually matches a marked customer.
+      //
+      // It runs HERE, before enrichment and the board writes, because those take the
+      // best part of a minute (up to ENRICH_MAX /stop/info at concurrency 8, geocoding,
+      // then the writes) and none of it is needed to say "this customer is on Tuesday".
+      //
+      // Emails off the raw list row, which carries the whole match key
+      // (businessName/addr1/city/zip) plus PRO, route and driver via toBoardStop. Two
+      // known limits, both fail-safe and both documented rather than papered over:
+      //   · If enrichment later rewrites the address into a different match key, this
+      //     pass MISSES that customer and the write-day pass catches them exactly as it
+      //     does today — late, but never wrong.
+      //   · If it matches, the ledger records every stop number behind the key, so the
+      //     enriched sighting on the write day is recognised and CS is not told twice.
+      if (TWO_SCAN && buckets) {
+        try {
+          for (const date of pendingNotifyDates(buckets.keys(), today, targets)) {
+            // Terminal rows ride the same pull (the COMPLETED saved search folds in), and
+            // "Marked customer scheduled for delivery" is a lie about an order that has
+            // already delivered or been cancelled. The write-day pass has the same
+            // exposure; on a FUTURE day it is far likelier to be the only thing there.
+            const rows = (buckets.get(date) || []).filter((s: any) => !isTerminalStatus(s?.normalizedStatus));
+            if (!rows.length) continue;
+            const n = await notifyMarkedCustomers(date, rows, { statusWhenIdle: false });
+            if (n.matched) console.log(`[cs-notify] EARLY date=${date} matched=${n.matched} sent=${n.sent} failed=${n.failed}${n.skipped ? ` skipped=${n.skipped}` : ''}`);
+          }
+        } catch (e: any) { console.warn(`[cs-notify] early pass failed: ${e?.message}`); }
+      } else {
+        // The pull is per-day in legacy mode, so there is no ±7d bucket map to sweep and
+        // the email is back to waiting on the write horizon. Say so on every scan rather
+        // than being quietly inert — if a CS email is still late, this line is the answer.
+        console.warn('[cs-notify] early pass INERT (NUVIZZ_TWO_SCAN is not on) — CS email still waits for the write horizon');
+      }
       // Snapshot the CURRENT live unplanned stop-number set (across the whole ±7d pull) so the
       // read-time carry-over fold-in can drop prior-day stops that have since been delivered/
       // planned (they vanish from the active search → not in this set). Zero extra calls. The

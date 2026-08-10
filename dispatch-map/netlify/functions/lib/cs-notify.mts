@@ -46,6 +46,97 @@ export function csRecipients(): string[] {
   return raw.length ? raw : [CS_DEFAULT_TO];
 }
 
+// ── WHICH DAYS GET A NOTIFY PASS ─────────────────────────────────────────────
+//
+// Chad, 8/10: "DSV came in on Friday. The moment the scan picked it up on Friday,
+// it should have sent the email. Why is it sending the email today? It's too late."
+//
+// The email used to ride the scan's WRITE targets — today plus the next 1-2 business
+// days, and those future days are only added from 10:00 ET (the scanTomorrow* gate in
+// scan-schedule). So a marked customer whose delivery date sat outside that narrow
+// horizon could not be reported at all, however many scans had already SEEN the order:
+// an order landing Friday for Tuesday waited until Monday's first post-10am scan.
+//
+// The rows were already in hand. The active saved search is a ±7d pull and the scan
+// buckets EVERY date in it, so notifying the rest of the pull costs ZERO extra NuVizz
+// calls — it is the same data, previously discarded. This picks the days the write
+// loop did not already cover: forward-looking only (a past day's board is history),
+// bounded by the pull's own reach so a stray far-future row can't spray emails.
+//
+// PURE → unit-tested in test/cs-notify-window.test.mjs.
+export const NOTIFY_PULL_HORIZON_DAYS = 7;
+
+export function pendingNotifyDates(
+  pullDates: Iterable<string>,
+  today: string,
+  alreadyNotified: Iterable<string> = [],
+  horizonDays: number = NOTIFY_PULL_HORIZON_DAYS,
+): string[] {
+  const done = new Set<string>();
+  for (const d of alreadyNotified) if (d) done.add(String(d));
+  const last = new Date(Date.parse(today + 'T00:00:00Z') + Math.max(0, horizonDays) * 86400000)
+    .toISOString().slice(0, 10);
+  const out = new Set<string>();
+  for (const raw of pullDates) {
+    const d = String(raw || '');
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) continue;   // junk key → never a notify day
+    if (d < today || d > last) continue;            // past is history; beyond the pull is noise
+    if (done.has(d)) continue;                      // the write loop already notified this day
+    out.add(d);
+  }
+  return [...out].sort();
+}
+
+// ── THE LEDGER ───────────────────────────────────────────────────────────────
+//
+// nuvizz_ops/cs_notify__<deliveryDate> records what has already gone out for that
+// delivery date, on TWO axes:
+//
+//   notified[matchKey]   — the customer. One email per marked customer per date,
+//                          whichever of their orders triggered it.
+//   notifiedStops[nbr]   — the order. Needed because the same stop is now seen in
+//                          two shapes: as a raw saved-search row (the early pass,
+//                          which fires the moment the order appears in a pull) and
+//                          again on its write day, after enrichment has replaced the
+//                          address with the /stop/info version. If those two texts
+//                          normalize to even slightly different match keys — a
+//                          "STE 200" that becomes "Suite 200", an ATTN line that
+//                          moves — the customer axis alone would not recognise the
+//                          second sighting and CS would get the same order twice.
+//
+// PURE → unit-tested. Either axis matching means "already sent".
+export interface NotifyLedger { notified?: Record<string, string>; notifiedStops?: Record<string, string> }
+
+export function alreadySent(ledger: NotifyLedger | null | undefined, matchKey: string, stopNbr: any): boolean {
+  if (!ledger) return false;
+  if (matchKey && ledger.notified?.[matchKey]) return true;
+  const nbr = String(stopNbr ?? '').trim();
+  return !!(nbr && ledger.notifiedStops?.[nbr]);
+}
+
+// Which marked customers this batch of scanned stops hits. One entry per match_key —
+// CS gets one email per marked customer per delivery date, naming the first order seen —
+// but the entry carries EVERY stop number behind that key, because all of them are
+// stamped into the ledger on send. That is what closes the two-orders case: a marked
+// customer with orders A and B on one date, emailed early off A's raw list row, must not
+// produce a second email when the write-day pass re-keys off B's enriched address.
+// PURE → unit-tested.
+export interface NotifyHit { stop: any; nbrs: string[] }
+
+export function collectHits(stops: any[], marked: Set<string> | Map<string, any>): Map<string, NotifyHit> {
+  const hits = new Map<string, NotifyHit>();
+  for (const s of stops || []) {
+    if (!s) continue;
+    const key = normalizeMatchKey(s.businessName, s.addr1, s.city, s.zip);
+    if (!marked.has(key)) continue;
+    const hit = hits.get(key) || { stop: s, nbrs: [] };
+    const nbr = String(s.stopNbr ?? '').trim();
+    if (nbr && !hit.nbrs.includes(nbr)) hit.nbrs.push(nbr);
+    hits.set(key, hit);
+  }
+  return hits;
+}
+
 export function buildEmail(stop: any, date: string): { subject: string; text: string; html: string } {
   const name = stop.businessName || '(unknown customer)';
   const addr = [stop.addr1, stop.addr2, stop.city, stop.state, stop.zip].filter(Boolean).join(', ');
@@ -85,17 +176,12 @@ export function buildEmail(stop: any, date: string): { subject: string; text: st
 export async function notifyMarkedCustomers(
   date: string,
   stops: any[],
+  opts: { statusWhenIdle?: boolean } = {},
 ): Promise<{ skipped?: string; matched: number; sent: number; failed: number }> {
   const to = csRecipients();
   const marked = await loadMarkedCustomers();
 
-  // First scanned stop per opted-in match_key (dedupe within this batch).
-  const hits = new Map<string, any>();
-  for (const s of stops || []) {
-    if (!s) continue;
-    const key = normalizeMatchKey(s.businessName, s.addr1, s.city, s.zip);
-    if (marked.has(key) && !hits.has(key)) hits.set(key, s);
-  }
+  const hits = collectHits(stops, marked);
 
   let sent = 0, failed = 0;
   let skipped: string | undefined;
@@ -106,9 +192,13 @@ export async function notifyMarkedCustomers(
     const docPath = `${OPS_COLLECTION}/cs_notify__${date}`;
     const doc = (await getDoc(docPath)) as any;
     const notified: Record<string, string> = (doc && typeof doc.notified === 'object' && doc.notified) || {};
+    // Second axis — the stop NUMBER. See alreadySent above for why the customer key
+    // alone is not enough once the same order can be seen un-enriched and enriched.
+    const notifiedStops: Record<string, string> = (doc && typeof doc.notifiedStops === 'object' && doc.notifiedStops) || {};
     let changed = false;
-    for (const [key, stop] of hits) {
-      if (notified[key]) continue; // already emailed today
+    for (const [key, { stop, nbrs }] of hits) {
+      if (nbrs.some((n) => alreadySent({ notified, notifiedStops }, key, n))
+        || alreadySent({ notified, notifiedStops }, key, null)) continue; // already emailed today
       // Re-check the ledger right before each send: a manual "Scan now" overlapping the
       // scheduled scan used to read the doc once up front, so both invocations saw an
       // empty ledger and CS got the same email twice. A fresh read narrows that window
@@ -118,19 +208,24 @@ export async function notifyMarkedCustomers(
       try {
         const liveDoc = (await getDoc(docPath)) as any;
         const liveNotified = (liveDoc && typeof liveDoc.notified === 'object' && liveDoc.notified) || {};
+        const liveStops = (liveDoc && typeof liveDoc.notifiedStops === 'object' && liveDoc.notifiedStops) || {};
         Object.assign(notified, liveNotified);
-        if (notified[key]) continue;
+        Object.assign(notifiedStops, liveStops);
+        if (nbrs.some((n) => alreadySent({ notified, notifiedStops }, key, n))
+          || alreadySent({ notified, notifiedStops }, key, null)) continue;
       } catch { /* ledger read is best-effort — proceed on the snapshot */ }
       const { subject, text, html } = buildEmail(stop, date);
       const res = await sendEmail({ to, subject, text, html });
       if (res.ok) {
-        notified[key] = new Date().toISOString(); changed = true; sent++;
-        try { await setDoc(docPath, { notified, updated_at: new Date().toISOString(), date }); }
+        const at = new Date().toISOString();
+        notified[key] = at; for (const n of nbrs) notifiedStops[n] = at;
+        changed = true; sent++;
+        try { await setDoc(docPath, { notified, notifiedStops, updated_at: at, date }); }
         catch (e: any) { console.warn(`[cs-notify] dedup write failed after ${key}: ${e?.message}`); }
       } else { failed++; console.warn(`[cs-notify] send failed for ${key}: ${res.error}`); }
     }
     if (changed) {
-      try { await setDoc(docPath, { notified, updated_at: new Date().toISOString(), date }); }
+      try { await setDoc(docPath, { notified, notifiedStops, updated_at: new Date().toISOString(), date }); }
       catch (e: any) { console.warn(`[cs-notify] dedup write failed: ${e?.message}`); }
     }
   }
@@ -139,6 +234,13 @@ export async function notifyMarkedCustomers(
   // nuvizz_ops/cs_notify_status__<date> to diagnose: marked=0 → nobody has the flag on;
   // matched=0 while marked>0 → the customer's match-key drifted (NuVizz returned a slightly
   // different name/address than when the flag was set); sent>0 → it's working. Best-effort.
+  //
+  // statusWhenIdle:false is for the early pass over the rest of the pull — it sweeps ~5 extra
+  // days on every scan, and stamping a "nothing here" doc for each of them, every 30 minutes,
+  // would be several hundred pointless writes a day. Those days still get a status doc the
+  // moment they actually match a marked customer, and the real board days (the write targets)
+  // keep stamping unconditionally, so the diagnostic Chad relies on is unchanged.
+  if (opts.statusWhenIdle === false && !hits.size) return { skipped, matched: 0, sent, failed };
   try {
     await setDoc(`${OPS_COLLECTION}/cs_notify_status__${date}`, {
       date, at: new Date().toISOString(), recipients: to,
