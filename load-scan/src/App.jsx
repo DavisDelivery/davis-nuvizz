@@ -13,7 +13,7 @@ import { loadSession, saveSession, clearSession, daysRemaining } from './lib/ses
 import * as api from './lib/api.js';
 import * as store from './lib/offline.js';
 import { startScanner } from './lib/scanner.js';
-import { evaluateScan, loadProgress, stopProgress, ogGapHint, OUTCOME, normalizePro, createPairBuffer, createScanGate, sortForLoading, splitPickups, renumberPositions, loadOrder, loadGroupCount, deliverySeq, sequenceFingerprint, classifyBarcode } from './lib/scan-logic.js';
+import { evaluateScan, loadProgress, stopProgress, ogGapHint, OUTCOME, normalizePro, createPairBuffer, createScanGate, sortForLoading, splitPickups, renumberPositions, loadOrder, loadGroupCount, deliverySeq, sequenceFingerprint, shouldFreezeSequence, classifyBarcode } from './lib/scan-logic.js';
 import { createWedgeAccumulator, WEDGE_PAIR_WINDOW_MS } from './lib/wedge.js';
 import { initAudio, playVerdict } from './lib/feedback.js';
 import { useSortable, SortableTh } from './lib/useSortable.jsx';
@@ -812,8 +812,12 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
   // after loading began, silently redrawing the screen with new positions would
   // hide freight that is already in the wrong place. So we keep showing the
   // order the truck was loaded against and say loudly that it changed.
+  //
+  // ONLY while freight is aboard. An empty trailer has no order to protect, and
+  // freezing one there tells a loader to distrust a screen that is simply right.
   const [loadedSeq, setLoadedSeq] = useState(null);
-  const resequenced = !!loadedSeq && loadedSeq.fingerprint !== sequenceFingerprint(stops);
+  const piecesAboard = scans.length > 0 || handConfirms.length > 0;
+  const resequenced = shouldFreezeSequence({ loadedSeq, stops, piecesAboard });
 
   const displayStops = useMemo(() => {
     if (!resequenced) return stops;
@@ -833,9 +837,21 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
   useEffect(() => {
     if (!activeLoad) { setLoadedSeq(null); return; }
     let alive = true;
-    store.getLoadedSequence(activeLoad).then((v) => { if (alive) setLoadedSeq(v); });
+    const date = manifest?.date;
+    (async () => {
+      const v = await store.getLoadedSequence(activeLoad, date);
+      // Nothing aboard means nothing to protect. Drop any stamp so the next
+      // first piece records the order the route says NOW — otherwise a load
+      // whose freight was all voided keeps defending an order nobody loaded to.
+      if (v && !(scans.length > 0 || handConfirms.length > 0)) {
+        await store.clearLoadedSequence(activeLoad, date);
+        if (alive) setLoadedSeq(null);
+        return;
+      }
+      if (alive) setLoadedSeq(v);
+    })();
     return () => { alive = false; };
-  }, [activeLoad, scans.length, handConfirms.length]);
+  }, [activeLoad, manifest?.date, scans.length, handConfirms.length]);
   const scannedOgs = useMemo(() => new Set(scans.map((s) => String(s.og).toUpperCase())), [scans]);
 
   // Rehydrate this load's scans from the local queue — the UI's source of truth.
@@ -873,8 +889,8 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
     if (!activeLoad || !stops.length) return;
     const loadSeqByStop = {};
     for (const s of stops) loadSeqByStop[s.stopNbr] = s.loadSeq ?? null;
-    await store.stampLoadedSequence(activeLoad, sequenceFingerprint(stops), loadSeqByStop);
-  }, [activeLoad, stops]);
+    await store.stampLoadedSequence(activeLoad, manifest?.date, sequenceFingerprint(stops), loadSeqByStop);
+  }, [activeLoad, manifest?.date, stops]);
 
   const record = useCallback(
     async (pair, engineName) => {
