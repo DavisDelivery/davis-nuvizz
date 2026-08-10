@@ -967,7 +967,11 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
           // One piece at a time, and one label at a time — both decided
           // synchronously, because React's state is exactly what is behind here.
           if (recording.current) return null;
-          if (!gate.current.allow(pro7, now)) return null;
+          // The camera re-decodes the same label many times a second, so it needs
+          // the cooldown here. The gun is already gated on the exact barcode as
+          // it arrives; running it again would compare this PRO against the very
+          // read that produced it and refuse the piece outright.
+          if (engineName !== 'wedge' && !gate.current.allow(pro7, now)) return null;
         }
 
         const already = scans.filter((s2) => normalizePro(s2.pro) === pro7).length;
@@ -1101,6 +1105,10 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
       playVerdict('red');
       return;
     }
+    // The SAME barcode fired twice in quick succession is one trigger pull the
+    // gun repeated, never two pieces. Dropping it here also stops a stutter from
+    // discarding the half-pair it is already holding.
+    if (!gate.current.allow(raw)) return;
     const pair = wedgePairRef.current.push([raw]);
     setPartial(wedgePairRef.current.state());
     if (!pair) return;
@@ -1136,7 +1144,24 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
   // silence. Silence is what let a whole load be mis-attributed: the operator
   // had no way to know a label had only half-read until the counts disagreed
   // hours later. The instruction is the whole point — rescan THAT label.
-  onOrphanRef.current = (half) => {
+  onOrphanRef.current = async (half) => {
+    // A STRANDED PRO IS STILL A PIECE.
+    //
+    // The gun used to book nothing at all unless BOTH barcodes read — record()
+    // only ran on a complete pair — so a label whose piece ID would not decode
+    // could not be loaded however many times it was scanned. The camera has
+    // always treated a lone PRO as a piece; the gun now agrees. The piece IDs
+    // stay preferred: they arrive together when both are scanned back to back,
+    // and only a PRO left alone past the pair window falls back to a NOOG id.
+    //
+    // An OG alone cannot identify a stop, so that one is still just reported.
+    if (half.kind === 'pro' && half.reason === 'expired') {
+      const evaluated = await record({ pro: half.value, og: null }, 'wedge');
+      if (evaluated) { announce(evaluated); return; }
+      // record() refused it (already logged, or the stop is full) and has
+      // already made its own noise — do not also cry orphan over the top.
+      return;
+    }
     playVerdict('orphan');
     if (navigator.vibrate) navigator.vibrate([40, 50, 40]);
     setOrphan({

@@ -185,3 +185,50 @@ test('a clean pair reports nothing abandoned', () => {
   buf.push(['OG6028479182'], t0 + 500);
   assert.equal(abandoned.length, 0, 'no false alarms on the happy path');
 });
+
+// ── Two barcodes, back to back, no pause ────────────────────────────────────
+
+test('the cooldown keys on the EXACT barcode, so a PRO and its OG go back to back', async () => {
+  const { createScanGate } = await import('../src/lib/scan-logic.js');
+  const gate = createScanGate({ cooldownMs: 3000 });
+  const t0 = 1_000_000;
+  // One label, both barcodes, as fast as the operator can pull the trigger.
+  assert.equal(gate.allow('7159250', t0), true, 'the PRO is read');
+  assert.equal(gate.allow('OG6028580332', t0 + 120), true, 'its piece ID follows immediately — different barcode');
+  // Keying on the PRO used to make these "the same thing" and suppress the second.
+});
+
+test('the identical barcode repeating inside the window is still ignored', async () => {
+  const { createScanGate } = await import('../src/lib/scan-logic.js');
+  const gate = createScanGate({ cooldownMs: 3000 });
+  const t0 = 1_000_000;
+  assert.equal(gate.allow('7159250', t0), true);
+  assert.equal(gate.allow('7159250', t0 + 400), false, 'a stutter on one trigger pull is not a second piece');
+  assert.equal(gate.allow('7159250', t0 + 3001), true, 'past the window it is a genuine new read');
+});
+
+test('two different PROs never block each other', async () => {
+  const { createScanGate } = await import('../src/lib/scan-logic.js');
+  const gate = createScanGate({ cooldownMs: 3000 });
+  const t0 = 1_000_000;
+  assert.equal(gate.allow('7159250', t0), true);
+  assert.equal(gate.allow('7159301', t0 + 200), true, 'the next skid is not held up by the last one');
+});
+
+test('a stranded PRO is reported as expired so the gun can still book it', async () => {
+  // The gun used to book NOTHING unless both barcodes read. The PRO that times
+  // out alone is the one the app now turns into a piece; a lone OG cannot
+  // identify a stop and stays a warning.
+  const seen = [];
+  const buf = createPairBuffer({ windowMs: WEDGE_PAIR_WINDOW_MS, onAbandon: (h) => seen.push(h) });
+  const t0 = 1_000_000;
+  buf.push(['7159250'], t0);
+  buf.tick(t0 + WEDGE_PAIR_WINDOW_MS + 1);
+  assert.deepEqual(seen.map((h) => [h.kind, h.reason]), [['pro', 'expired']], 'a PRO, expired — bookable');
+
+  const seen2 = [];
+  const buf2 = createPairBuffer({ windowMs: WEDGE_PAIR_WINDOW_MS, onAbandon: (h) => seen2.push(h) });
+  buf2.push(['OG6028580332'], t0);
+  buf2.tick(t0 + WEDGE_PAIR_WINDOW_MS + 1);
+  assert.deepEqual(seen2.map((h) => h.kind), ['og'], 'an OG alone identifies no stop — warn only');
+});

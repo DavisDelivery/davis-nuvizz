@@ -496,14 +496,23 @@ export function ogGapHint(ogs) {
  * piece.
  */
 export function createScanGate({ cooldownMs = 3000 } = {}) {
-  let lastPro = null;
+  let lastCode = null;
   let lastAt = 0;
 
   return {
-    /** True if this decode should become a piece. Records the decision. */
-    allow(pro, now = Date.now()) {
-      if (lastPro === pro && now - lastAt < cooldownMs) return false;
-      lastPro = pro;
+    /**
+     * True if this decode should be acted on. Records the decision.
+     *
+     * Keyed on the EXACT barcode, not on the PRO behind it. Keying on the PRO
+     * meant the two barcodes of a single label counted as the same thing, so
+     * reading the piece ID straight after its PRO was suppressed and a loader
+     * had to pause between them. They are different barcodes; only an identical
+     * one repeating is a repeat. This is what lets the two be scanned back to
+     * back while a label re-read by a hovering camera is still ignored.
+     */
+    allow(code, now = Date.now()) {
+      if (lastCode === code && now - lastAt < cooldownMs) return false;
+      lastCode = code;
       lastAt = now;
       return true;
     },
