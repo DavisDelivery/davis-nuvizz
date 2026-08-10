@@ -564,6 +564,14 @@ function VerdictFlash({ verdict, onClear }) {
       {kind === 'amber' ? <AlertTriangle className="w-24 h-24 mb-4" aria-hidden="true" /> : null}
       <div className="text-4xl font-black leading-tight">{tone[1]}</div>
       {evaluated?.stop?.businessName ? <div className="mt-2 text-xl">{evaluated.stop.businessName}</div> : null}
+      {/* WHOSE label this is. On a duplicate that is the entire question: the
+          loader is holding a skid that will not scan and needs to know it is
+          already aboard, and under whose name — not just that it is a repeat. */}
+      {kind === 'dup' ? (
+        <div className="mt-2 text-lg">
+          PRO {evaluated?.pro} is already on this truck
+        </div>
+      ) : null}
     </div>
   );
 }

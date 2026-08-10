@@ -215,11 +215,21 @@ export function evaluateScan(pair, manifestStops, scannedOgs, otherLoads = []) {
   const pro = normalizePro(pair?.pro);
   const og = String(pair?.og ?? '').toUpperCase();
 
+  // Which stop it is ALREADY on. Resolved before the duplicate check so the
+  // "already scanned" verdict can name it.
+  //
+  // It used to return stop:null, so a loader re-reading a label was told only
+  // "ALREADY SCANNED" with no clue WHOSE it was. On Mandi's truck that turned a
+  // one-second answer into a night of work: a skid was scanned again and again
+  // expecting ONE DIVERSIFIED, and the label on it was CENTRICSIT's — already
+  // aboard. The app knew that the whole time and would not say the name.
+  const owner = (manifestStops || []).find((s) => (s.pros || []).includes(pro)) || null;
+
   if (scannedOgs && scannedOgs.has(og)) {
-    return { outcome: OUTCOME.SILENT, pro, og, stop: null };
+    return { outcome: OUTCOME.SILENT, pro, og, stop: owner };
   }
 
-  const stop = (manifestStops || []).find((s) => (s.pros || []).includes(pro)) || null;
+  const stop = owner;
 
   if (!stop) {
     // Name the owning load when the index can tell us — "this belongs to Brad's

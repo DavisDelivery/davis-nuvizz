@@ -941,3 +941,26 @@ test('the stamp key is scoped by date, so a reused load number cannot inherit an
   );
   assert.ok(seqKey('MANDI', '2026-08-10').includes('2026-08-10'));
 });
+
+test('an already-scanned piece names the stop it is already on', async () => {
+  // MANDI's truck: a skid was rescanned again and again expecting ONE
+  // DIVERSIFIED, and the label on it was CENTRICSIT's — already aboard. The app
+  // knew whose it was and returned stop:null, so the screen said only "ALREADY
+  // SCANNED" and the question "whose is this then?" had no answer on the dock.
+  const { evaluateScan, OUTCOME } = await import('../src/lib/scan-logic.js');
+  const centricsit = { stopNbr: '4', pros: ['7159406'], expectedPieces: 1, businessName: 'CENTRICSIT' };
+  const oneDiv = { stopNbr: '6', pros: ['7159057'], expectedPieces: 1, businessName: 'ONE DIVERSIFIED LLC' };
+  const seen = new Set(['OG6028599592']);
+
+  const r = evaluateScan({ pro: '7159406', og: 'OG6028599592' }, [centricsit, oneDiv], seen);
+  assert.equal(r.outcome, OUTCOME.SILENT, 'still a duplicate — nothing is booked twice');
+  assert.equal(r.stop?.businessName, 'CENTRICSIT', 'and now it says whose label it is');
+  assert.equal(r.pro, '7159406');
+});
+
+test('a duplicate whose PRO is on no stop still resolves to no owner', async () => {
+  const { evaluateScan, OUTCOME } = await import('../src/lib/scan-logic.js');
+  const r = evaluateScan({ pro: '9999999', og: 'OG6028599592' }, [], new Set(['OG6028599592']));
+  assert.equal(r.outcome, OUTCOME.SILENT);
+  assert.equal(r.stop, null, 'nothing to name, and that must not throw');
+});
