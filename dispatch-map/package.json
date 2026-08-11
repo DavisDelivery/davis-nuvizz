@@ -9,7 +9,8 @@
     "preview": "vite preview",
     "test": "node --test \"test/**/*.test.mjs\"",
     "lint": "echo 'no lint configured'",
-    "smoke": "node scripts/smoke-app.mjs dist"
+    "smoke": "node scripts/smoke-app.mjs dist",
+    "verify:hide-labels": "node scripts/verify-hide-place-labels.mjs dist"
   },
   "dependencies": {
     "@davisdelivery/quote-generator": "git+ssh://git@github.com/DavisDelivery/Quotes.git#main",

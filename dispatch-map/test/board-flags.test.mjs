@@ -216,7 +216,7 @@ test(`an over-cap rule collapses to ONE summary row (cap ${RED_CAP} red)`, () =>
   assert.equal(out.redCount, 1, 'the badge counts the summary, not the flood');
 });
 
-// ── v0.54.56: the four silent-R5 regressions Chad hit ("no flags ... isn't working") ──
+// ── v0.54.57: the four silent-R5 regressions Chad hit ("no flags ... isn't working") ──
 
 test('a sequence living only in the raw feed shape still gets judged (UI parity)', () => {
   // The cheap list feed sometimes carries the sequence only as raw.stop.to.seq. The route

@@ -1,6 +1,6 @@
 // test/customer-notes-writer-hours-only.test.mjs — the write gate must not require equipment.
 //
-// The v0.54.56 headline bug: decideWrite early-returned whenever the scan produced no
+// The v0.54.57 headline bug: decideWrite early-returned whenever the scan produced no
 // EQUIPMENT flag, silently discarding hours-only and closed-day-only detections. The
 // receiving-hours scanner could match "HOURS 8AM-2PM" on every order for months and the
 // customer_notes doc never learned it — which starved the Board Flags hours-risk check

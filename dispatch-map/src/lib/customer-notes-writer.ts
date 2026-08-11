@@ -182,7 +182,7 @@ export function decideWrite(
   // hours nor closed days would change, there's nothing meaningful to write — skip to
   // avoid churning audit fields. Hours and closed-day detections count as meaningful on
   // their own: an hours-only stop passed the hasAnySignal gate above, and dropping it here
-  // (as this line did until v0.54.56) silently starved every receiving-hours and
+  // (as this line did until v0.54.57) silently starved every receiving-hours and
   // closed-day feature of scanner data unless an equipment flag happened to co-occur.
   if (!detectedFlags.length && !shouldMigrate && !hoursWouldChange && !daysWouldChange) return null;
 
