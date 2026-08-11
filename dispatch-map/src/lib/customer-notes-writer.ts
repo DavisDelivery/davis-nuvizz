@@ -23,11 +23,21 @@
 //   auto_detected_at: Timestamp                             // last auto-scan write
 //   auto_detected_by: string                                // 'auto-scanner v0.3.0'
 
-import { doc, writeBatch, serverTimestamp, deleteField, Firestore } from 'firebase/firestore';
+import type { Firestore } from 'firebase/firestore';
 import type {
   ScanResult, SignalSource, FlagValue, DayCode,
   HoursScanResult, ClosedDayScanResult,
 } from './signal-scanner';
+
+// CI runs the unit suite with NO npm install — test files may import only local modules
+// and node: builtins, and decideWrite is unit-tested directly. So this module must be
+// importable without 'firebase/firestore' resolving: the type imports above are stripped
+// at runtime, the value imports load lazily inside applyScannerResults, and decideWrite
+// receives the two sentinel factories it needs by injection.
+export interface FirestoreStamps {
+  serverTimestamp: () => unknown;
+  deleteField: () => unknown;
+}
 
 const MAX_BATCH = 450;       // Firestore caps at 500; leave headroom
 const SCANNER_TAG = 'auto-scanner v0.7.0';
@@ -86,6 +96,7 @@ function todayYmd(): string {
 export function decideWrite(
   stop: ScannedStop,
   existing: ExistingNote | undefined,
+  stamps: FirestoreStamps,
 ): WriteDecision | null {
   if (!stop.matchKey) return null;
   // Need at least one signal class to write — equipment restriction, hours, or closed day.
@@ -194,15 +205,15 @@ export function decideWrite(
     // Merge persisted auto trail so flags detected on earlier scans aren't lost.
     auto_sources: { ...existingSources, ...sourcesByFlag },
     auto_matches: matchesByFlag,
-    auto_detected_at: serverTimestamp(),
+    auto_detected_at: stamps.serverTimestamp(),
     auto_detected_by: SCANNER_TAG,
   };
   if (shouldMigrate) {
     // Drop the stale audit entry for the migrated-away flag so the UI doesn't
     // keep listing it under its old name. Nested deleteField in a setDoc-merge
     // call removes just that sub-key, leaving the rest of the map intact.
-    payload.auto_sources = { ...payload.auto_sources, no_tractor_trailer: deleteField() };
-    payload.auto_matches = { ...payload.auto_matches, no_tractor_trailer: deleteField() };
+    payload.auto_sources = { ...payload.auto_sources, no_tractor_trailer: stamps.deleteField() };
+    payload.auto_matches = { ...payload.auto_matches, no_tractor_trailer: stamps.deleteField() };
   }
 
   if (overrideOnRestrictions) {
@@ -302,6 +313,9 @@ export async function applyScannerResults(
 ): Promise<ApplyResult> {
   const result: ApplyResult = { attempted: 0, written: 0, overrideSkips: 0, legacyMigrations: 0, errors: [] };
   if (!db) return result;
+  // Lazy so this MODULE loads without firebase/firestore present (see FirestoreStamps).
+  const { doc, writeBatch, serverTimestamp, deleteField } = await import('firebase/firestore');
+  const stamps: FirestoreStamps = { serverTimestamp, deleteField };
 
   // Dedupe by match_key — two stops at the same customer merge into one write.
   // M4.4 — also dedupe hours (first wins) and closed_days (union across stops).
@@ -339,6 +353,7 @@ export async function applyScannerResults(
     const d = decideWrite(
       { ...stop, scanResults: results, hoursResult: hours, closedDaysResult: closedDays },
       existingNotes.get(stop.matchKey),
+      stamps,
     );
     if (!d) continue;
     decisions.push(d);
