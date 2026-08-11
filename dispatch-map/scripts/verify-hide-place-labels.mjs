@@ -36,6 +36,8 @@ const TODAY = new Date(Date.now() - 4 * 3600_000).toISOString().slice(0, 10);
 const fails = [];
 const ok = (m) => console.log(`  ✓ ${m}`);
 const bad = (m) => { fails.push(m); console.error(`  ✗ ${m}`); };
+// Neither pass nor fail: something this run could not exercise, said out loud.
+const note = (m) => console.log(`  · ${m}`);
 
 const stop = (n, lat, lng, extra = {}) => ({
   _id: `davis__00715${n}`, stopNbr: `00715${n}`, pro: `00715${n}`, primaryPro: `00715${n}`, pros: [`00715${n}`],
@@ -81,6 +83,11 @@ const FAKE_MAPS = `
     getCenter() { return new LatLng(34.05, -84.07); }
     getNorthEast() { return new LatLng(34.2, -83.9); }
     getSouthWest() { return new LatLng(33.9, -84.2); }
+    // The real API has these; leaving them off made the app throw mid-check and the
+    // rest of the run reported "could not reach…" for a page that had already died.
+    contains() { return true; }
+    union(b) { return this; }
+    toJSON() { return { north: 34.2, south: 33.9, east: -83.9, west: -84.2 }; }
   }
   class FakeMap {
     constructor(div, opts) {
@@ -95,7 +102,7 @@ const FAKE_MAPS = `
     }
     setMapTypeId(t) { this.type = t; }
     setOptions(o) { Object.assign(this.opts, o); if (o && 'styles' in o) this.styles = o.styles; }
-    getCenter() { const c = this.center; return { lat: () => c.lat, lng: () => c.lng }; }
+    getCenter() { const c = this.center; return { lat: () => c.lat, lng: () => c.lng, toJSON: () => ({ lat: c.lat, lng: c.lng }) }; }
     getZoom() { return this.zoom; }
     setCenter(c) { this.center = c && c.lat !== undefined ? c : this.center; }
     setZoom(z) { this.zoom = z; }
@@ -177,6 +184,10 @@ const snapshot = () => page.evaluate(() => (window.__maps || []).map((m) => ({
   styleCount: Array.isArray(m.styles) ? m.styles.length : null,
   center: m.center, zoom: m.zoom,
   markers: m.markers ? m.markers.size : 0,
+  // The "Correct pin location" drag pin is the one marker a dispatcher is HOLDING when
+  // they toggle. It is the only handle on the map in that mode, so if a rebuild orphans
+  // it there is no way back short of reselecting the stop.
+  draggable: m.markers ? [...m.markers].filter((k) => k.opts && k.opts.draggable).length : 0,
 })));
 
 const latest = async () => (await snapshot()).at(-1);
@@ -277,6 +288,51 @@ await page.goto(`http://127.0.0.1:${PORT}/`, { waitUntil: 'domcontentloaded' });
 await page.waitForTimeout(2500);
 
 await checkScreen('Map tab');
+
+// ── the drag pin, which is what makes the rebuild dangerous ──────────────────
+// Correcting a pin puts you in a mode where ONE draggable marker is the whole
+// interaction. Rebuild the map under it without re-binding and it silently disappears.
+console.log('\n── "Correct pin location" survives the toggle ──');
+{
+  const row = await page.$('tbody tr');
+  if (!row) bad('no stop row in the grid — could not enter pin-correction mode');
+  else {
+    await row.click(); await page.waitForTimeout(1200);
+    const more = page.getByText(/Correct pin\b/i).first();       // the "More:" disclosure
+    if (await more.isVisible().catch(() => false)) { await more.click(); await page.waitForTimeout(500); }
+    const correct = page.getByRole('button', { name: /correct pin location/i }).first();
+    if (!(await correct.isVisible().catch(() => false))) {
+      bad('could not find "Correct pin location" — this path went unverified');
+    } else {
+      await correct.click(); await page.waitForTimeout(1200);
+      const held = await latest();
+      held?.draggable > 0 ? ok('the draggable pin is on the map') : bad('no draggable pin appeared — nothing to test');
+
+      // Can a dispatcher actually toggle labels WHILE holding the pin? Find out by doing
+      // it, rather than assuming either way. If the switch is reachable this is a live
+      // path and gets a real assertion; if it is not, the rebind on that effect is
+      // defensive only — and that is said out loud instead of quietly passing.
+      const fb = page.getByRole('button', { name: /^filters$/i }).first();
+      if (await fb.isVisible().catch(() => false)) { await fb.click(); await page.waitForTimeout(600); }
+      const sw = page.getByRole('switch', { name: /hide place labels/i }).first();
+      if (!(await sw.isVisible().catch(() => false))) {
+        note('the Filters toggle is NOT reachable while a stop card is open, so labels cannot be flipped mid-correction — the rebind on that effect is defensive, not a live fix');
+      } else {
+        const n0 = (await snapshot()).length;
+        await sw.click(); await page.waitForTimeout(1800);
+        const after = await latest();
+        if ((await snapshot()).length <= n0) {
+          note('no rebuild happened here, so the drag pin was never at risk in this path');
+        } else {
+          after?.draggable > 0
+            ? ok('THE DRAG PIN CAME BACK on the rebuilt map — not orphaned on the discarded one')
+            : bad('the drag pin was left on the discarded map — correcting a pin breaks the moment you declutter');
+        }
+        await sw.click(); await page.waitForTimeout(1200);   // leave it as we found it
+      }
+    }
+  }
+}
 
 // And the screen from the report — Chad's screenshot is Routing's Filters panel.
 const routingTab = page.getByRole('button', { name: /routing/i }).first();
