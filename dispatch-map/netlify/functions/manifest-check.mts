@@ -17,39 +17,29 @@
 // COST, deliberately in two steps:
 //   Step 1 (default) — ZERO NuVizz calls. Parse the PDF (a text-layer document, so
 //     no AI call either) and diff its PROs against the Firestore stop index.
-//     Produces SUSPECTS: on the manifest, not on our board.
+//     Produces SUSPECTS: on the manifest, not on our board. This step lives in
+//     lib/manifest-run.mts and is SHARED with the scheduled email ingest — the
+//     nightly report arriving by email runs the same free diff automatically.
 //   Step 2 (?probe=1) — ONE NuVizz call per suspect, capped. Only this step can
 //     turn a suspect into "not in NuVizz", and only on an explicit not_found/404.
 //     Any other failure (scans disabled, auth, throttle, breaker) is UNKNOWN —
 //     never absence — because those fail for every PRO at once and a two-state
 //     model would report the whole manifest as missing on a bad night.
+//     The probe step is HTTP-only, behind a human click: no scheduled path can
+//     reach it, so automation can never spend NuVizz calls.
 //
 // Never scheduled. It runs only when someone asks, and the free step is the default.
 
-import { isFirestoreEnabled, listDocs, etDayString } from './lib/firestore.mts';
-import { readUlineManifest } from './lib/uline-manifest.mts';
-import { reconcileAgainstBoard, classifyProbes, summarize } from './lib/manifest-reconcile.mts';
-import { lookupStopByPro, getCreds } from './lib/nuvizz-scan.mts';
+import { isFirestoreEnabled } from './lib/firestore.mts';
+import { runManifestBoardDiff, manifestDateToIso, addDays } from './lib/manifest-run.mts';
+import { classifyProbes, summarize } from './lib/manifest-reconcile.mts';
+import { lookupStopByPro } from './lib/nuvizz-scan.mts';
+
+// Re-exported for the tests (and any caller) that imported these from here.
+export { manifestDateToIso, addDays };
 
 const MAX_PROBE_CEILING = 100;
 const DEFAULT_PROBE_CAP = 25;
-
-/** "8/06/26" → "2026-08-06". The manifest prints M/DD/YY. */
-export function manifestDateToIso(v: any): string | null {
-  const m = /^(\d{1,2})\/(\d{1,2})\/(\d{2})$/.exec(String(v ?? '').trim());
-  if (!m) return null;
-  const yy = Number(m[3]);
-  const year = 2000 + yy;
-  const mm = String(Number(m[1])).padStart(2, '0');
-  const dd = String(Number(m[2])).padStart(2, '0');
-  return `${year}-${mm}-${dd}`;
-}
-
-export function addDays(iso: string, n: number): string {
-  const d = new Date(`${iso}T00:00:00Z`);
-  d.setUTCDate(d.getUTCDate() + n);
-  return d.toISOString().slice(0, 10);
-}
 
 export default async (req: Request): Promise<Response> => {
   const cors = { 'Access-Control-Allow-Origin': '*', 'Content-Type': 'application/json', 'Cache-Control': 'no-store' };
@@ -70,62 +60,12 @@ export default async (req: Request): Promise<Response> => {
 
   let buf: Buffer;
   try { buf = Buffer.from(b64, 'base64'); } catch { return J({ ok: false, error: 'pdfBase64 is not base64' }, 400); }
-  if (buf.subarray(0, 4).toString('latin1') !== '%PDF') return J({ ok: false, error: 'not a PDF' }, 400);
 
-  const manifest = readUlineManifest(buf);
-  if (!manifest.rows.length) {
-    return J({ ok: false, error: 'no orders found — is this the Uline freight report?', warnings: manifest.warnings });
-  }
+  const diff = await runManifestBoardDiff(buf, { dateOverride: url.searchParams.get('date'), spanDays });
+  if (!diff.ok) return J(diff, diff.error === 'not a PDF' || diff.notManifest ? 400 : 200);
+  const { _board: board, ...common } = diff;
 
-  // The board days to accept a PRO on. Uline ships tonight for tomorrow, and an
-  // order deferred a day would otherwise read as missing, so a small forward
-  // window is checked rather than a single date. Firestore only.
-  const base = String(url.searchParams.get('date') || '')
-    || manifestDateToIso(manifest.rows[0]?.shipDate) || etDayString(new Date());
-  const dates = Array.from({ length: spanDays + 1 }, (_, i) => addDays(base, i));
-
-  let tenant = 'davis';
-  try { tenant = String(getCreds().companyCode || 'davis'); } catch { /* default */ }
-  const t = tenant.toLowerCase();
-
-  const boardPros: string[] = [];
-  const boardDays: Array<{ date: string; stops: number }> = [];
-  for (const d of dates) {
-    const rows = await listDocs(`nuvizz_stop_index/${t}__${d}/stops`, { mask: ['stopNbr'] }).catch(() => []);
-    boardDays.push({ date: d, stops: rows.length });
-    for (const r of rows) { const id = String((r as any)?._id ?? (r as any)?.stopNbr ?? ''); if (id) boardPros.push(id); }
-  }
-  if (!boardPros.length) {
-    return J({
-      ok: false, base, dates, boardDays,
-      error: 'no board rows cached for those dates — a scan must run first, or pass ?date=',
-    });
-  }
-
-  const board = reconcileAgainstBoard(manifest.rows, boardPros);
-
-  const common = {
-    ok: true,
-    manifest: {
-      orders: manifest.rows.length, totals: manifest.totals,
-      verified: manifest.verified, warnings: manifest.warnings,
-    },
-    checkedAgainst: boardDays,
-    onBoard: board.onBoardCount,
-    boardOnly: board.boardOnlyCount,
-    duplicatePros: board.duplicatePros,
-  };
-
-  if (!probe) {
-    return J({
-      ...common, mode: 'board-diff', nuvizzCalls: 0,
-      suspects: board.offBoard,
-      summary: summarize(board, null),
-      note: board.offBoard.length
-        ? `${board.offBoard.length} order(s) on the manifest are not on the board. That is NOT yet "missing from NuVizz" — add &probe=1 to ask NuVizz about each one (1 call per suspect, capped at ${cap}).`
-        : 'Every order on the manifest is on the board. Zero NuVizz calls were made.',
-    });
-  }
+  if (!probe) return J(common);
 
   // ── step 2, explicit: one call per suspect, hard-capped ────────────────────
   const toProbe = board.offBoard.slice(0, cap);
