@@ -27,14 +27,14 @@ test("the hours model knows what time it is — today's board passes nowMin", ()
   );
 });
 
-test('the chip renders in BOTH pills (desktop and mobile)', () => {
+test('the chip renders on the Map (desktop + mobile) AND on Routing', () => {
   const n = (src.match(/<BoardFlagsChip /g) || []).length;
-  assert.equal(n, 2, `expected the flag chip in the desktop and mobile status pills, found ${n} render site(s)`);
+  assert.equal(n, 3, `expected the flag chip in the Map's two pills and the Routing overlay, found ${n} render site(s)`);
 });
 
 test('the panel renders and can open stops', () => {
   const n = (src.match(/<BoardFlagsPanel /g) || []).length;
-  assert.equal(n, 2, `expected the panel in both layouts, found ${n}`);
+  assert.equal(n, 3, `expected the panel in all three layouts, found ${n}`);
   assert.ok(src.includes('onOpenStop={openFlaggedStop}'), 'panel rows must click through to the stop card');
 });
 
@@ -58,7 +58,7 @@ test('the panel proves what it looked at and can restore dismissals', () => {
     'the panel footer must state the checked tally — a quiet panel is a claim, not an absence.',
   );
   const n = (src.match(/onRestoreAll=\{restoreDismissedFlags\}/g) || []).length;
-  assert.equal(n, 2, `both panels must offer the restore-dismissed path, found ${n}`);
+  assert.equal(n, 3, `all three panels must offer the restore-dismissed path, found ${n}`);
 });
 
 test('the mobile panel escapes the backdrop-blur containing block', () => {
