@@ -407,7 +407,7 @@ function OrderCard({ stop, progress, groupCount, onClose, onAddPiece, onMarkDama
   );
 }
 
-function OutcomeCard({ result, partial, orphan }) {
+function OutcomeCard({ result, partial, orphan, onClear }) {
   if (!result) {
     const need = partial?.pro ? 'OG barcode (upper)' : partial?.og ? 'PRO barcode (lower)' : null;
     // A half-read label that timed out. This has to be LOUDER than the idle
@@ -419,6 +419,11 @@ function OutcomeCard({ result, partial, orphan }) {
       // and naming the exact string is the whole point: it is the one fact that
       // says whether the label is wrong, the gun is adding characters, or this
       // is simply not a freight barcode.
+      const dismiss = onClear ? (
+        <button type="button" onClick={onClear} className="mt-2 text-xs underline text-amber-900">
+          Clear
+        </button>
+      ) : null;
       if (orphan.kind === 'unknown') {
         return (
           <Banner kind="warn">
@@ -427,6 +432,7 @@ function OutcomeCard({ result, partial, orphan }) {
             <span className="block text-xs mt-0.5">
               Nothing was counted. A PRO is 7 digits; a piece ID is OG plus 10 digits.
             </span>
+            {dismiss}
           </Banner>
         );
       }
@@ -437,6 +443,7 @@ function OutcomeCard({ result, partial, orphan }) {
             Read the {orphan.kind === 'pro' ? 'PRO' : 'piece ID'} {orphan.value} but never its partner, so
             nothing was counted.
           </span>
+          {dismiss}
         </Banner>
       );
     }
@@ -476,6 +483,17 @@ function OutcomeCard({ result, partial, orphan }) {
           <div className="mt-1 text-xs text-amber-900 whitespace-pre-wrap break-words">{result.instructions}</div>
         ) : null}
         <div className="text-xs font-mono text-amber-800 mt-1">{result.og}</div>
+        {/* Same reason as the red card: an appointment warning a loader has read
+            and acted on should not have to wait for the next scan to go away. */}
+        {onClear ? (
+          <button
+            type="button"
+            onClick={onClear}
+            className="mt-2 w-full rounded-lg bg-amber-500 text-amber-950 px-3 py-2 text-sm font-medium"
+          >
+            Got it — clear
+          </button>
+        ) : null}
       </div>
     );
   }
@@ -495,6 +513,21 @@ function OutcomeCard({ result, partial, orphan }) {
           <div className="text-sm text-rose-900">Not on any load we can see today.</div>
         )}
         <div className="text-xs font-mono text-rose-800 mt-1">{result.og}</div>
+        {/* The red card had NO way out. `result` was set on every scan and never
+            cleared, so a rejected piece left this sitting on the screen until
+            another scan happened to replace it — and a loader who had just been
+            told to take the freight off is not about to scan something else.
+            The biggest, reddest thing on the screen was the one thing that could
+            not be acknowledged. */}
+        {onClear ? (
+          <button
+            type="button"
+            onClick={onClear}
+            className="mt-2 w-full rounded-lg bg-rose-600 text-white px-3 py-2 text-sm font-medium"
+          >
+            Got it — clear
+          </button>
+        ) : null}
       </div>
     );
   }
@@ -1485,7 +1518,15 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
         )}
 
         {camErr ? <Banner kind="error">{camErr}</Banner> : null}
-        <OutcomeCard result={result} partial={partial} orphan={orphan} />
+        <OutcomeCard
+          result={result}
+          partial={partial}
+          orphan={orphan}
+          // Clears the verdict AND the orphan note together: they are both
+          // "the last thing that happened", and dismissing one while the other
+          // stayed would just look like the card refused to go.
+          onClear={() => { setResult(null); setOrphan(null); }}
+        />
         {flash ? <Banner kind="info">{flash}</Banner> : null}
 
         {/* Repeat PRO. Never auto-logged: walking a tall pallet drifts the same
