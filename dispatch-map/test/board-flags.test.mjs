@@ -289,6 +289,48 @@ test('any movement evidence keeps the scheduled departure model — POD, arrival
   }
 });
 
+// ── v0.54.58: Chad's LVILLE case — a deadline route with no driver assigned ──
+
+test('past departure, a driverless route with a receiving close today flags NOW', () => {
+  // 9:24a, LVILLE untouched, LUND closes 2:00p, nobody assigned. The ETA walk stays quiet
+  // (a re-anchored clock still lands mid-morning) — the no-driver fact is the flag.
+  const notesObj = { 'lund|k': note({ receiving_hours: { mon: { open: '06:00', close: '14:00' } } }) };
+  const stops = [
+    stop({ stopNbr: '1', routeSeq: 1, loadNbr: 'LVILLE', routeName: 'LVILLE', driverName: null, driverUserName: null }),
+    stop({ stopNbr: '2', routeSeq: 2, loadNbr: 'LVILLE', routeName: 'LVILLE', driverName: null, driverUserName: null, matchKey: 'lund|k', businessName: 'LUND INTERNATIONAL' }),
+  ];
+  const out = run(stops, notesObj, { opts: { ...OPTS, nowMin: 9 * 60 + 24 } });
+  const r = out.rows.find((x) => x.rule === 'no_driver_hours');
+  assert.ok(r, 'a driverless deadline route must flag as soon as departure time passes');
+  assert.equal(r.tier, 'amber', 'scanner-guessed hours cap at amber');
+  assert.ok(r.title.includes('LVILLE') && r.title.includes('2:00p'));
+  assert.ok(/LUND INTERNATIONAL/.test(r.detail), 'the earliest-close stop is named');
+  assert.equal(out.rows.filter((x) => x.rule === 'hours_risk').length, 0, 'the ETA walk alone stays quiet at 9:24a');
+});
+
+test('driverless-deadline goes RED when any constrained stop has dispatcher-typed hours', () => {
+  const notesObj = { 'lund|k': note({ receiving_hours: { mon: { open: '06:00', close: '14:00' } }, manual_overrides: { receiving_hours: true } }) };
+  const stops = [stop({ stopNbr: '1', routeSeq: 1, driverName: null, driverUserName: null, matchKey: 'lund|k' })];
+  const r = run(stops, notesObj, { opts: { ...OPTS, nowMin: 10 * 60 } }).rows.find((x) => x.rule === 'no_driver_hours');
+  assert.ok(r && r.tier === 'red');
+});
+
+test('the no-driver check stays quiet when it should', () => {
+  const notesObj = { 'lund|k': note({ receiving_hours: { mon: { open: '06:00', close: '14:00' } } }) };
+  const base = { stopNbr: '1', routeSeq: 1, matchKey: 'lund|k', driverName: null, driverUserName: null };
+  const fires = (stops, opts) => run(stops, notesObj, { opts }).rows.some((x) => x.rule === 'no_driver_hours');
+  // A driver on ANY stop of the route = assigned.
+  assert.equal(fires([stop({ ...base, driverName: 'Joe Gibbs' })], { ...OPTS, nowMin: 10 * 60 }), false);
+  // Before the scheduled departure, assignment is normal morning work — not a flag.
+  assert.equal(fires([stop(base)], { ...OPTS, nowMin: 7 * 60 }), false);
+  // Not the today board (no nowMin) — tomorrow's unassigned route is just tomorrow.
+  assert.equal(fires([stop(base)], OPTS), false);
+  // Movement evidence implies a driver, whatever the feed says.
+  assert.equal(fires([stop({ stopNbr: '0', normalizedStatus: 'ARRIVED' }), stop(base)], { ...OPTS, nowMin: 10 * 60 }), false);
+  // No receiving hours anywhere on the route — no deadline, no flag.
+  assert.equal(run([stop({ ...base, matchKey: 'plain|k' })], {}, { opts: { ...OPTS, nowMin: 10 * 60 } }).rows.some((x) => x.rule === 'no_driver_hours'), false);
+});
+
 test('a chain-broken route is NOT counted as judged — the tallies may not contradict', () => {
   const stops = [
     stop({ stopNbr: '1', routeSeq: 1, lat: null, lng: null }), // no position → chain breaks

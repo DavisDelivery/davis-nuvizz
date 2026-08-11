@@ -321,6 +321,34 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
       if (chainBroken) skipped.routesNoSequence.push(`${k} (missing pin)`);
       else checked.routesJudged += 1;
     }
+
+    // R6 — Chad's LVILLE case: "lund needs to be delivered by 2pm and there isn't even a
+    // driver assigned to it". The ETA walk above cannot see this — at 9:24a even a
+    // re-anchored clock lands mid-morning, hours before a 2:00p close — but a route that
+    // is PAST its scheduled departure, shows no movement, carries a receiving close today
+    // and has NO driver assigned is a problem right now, not at 1:30p when the arrival
+    // math finally crosses the line. Facts only: driver assignment and hours are both
+    // read straight off the board; the only estimate here is none at all. Today-board
+    // only (nowMin present) — a tomorrow route without a driver yet is just tomorrow.
+    if (nowMin != null && nowMin >= departMin) {
+      for (const [k, group] of byRoute) {
+        if (startedRoutes.has(k)) continue; // moving freight implies a driver, whatever the feed says
+        const hasDriver = group.some((s) => String(s?.driverName || s?.driverUserName || '').trim());
+        if (hasDriver) continue;
+        const constrained = group
+          .map((s) => ({ s, w: dayReceivingWindow(noteOf(s), day) }))
+          .filter((x) => x.w);
+        if (!constrained.length) continue;
+        constrained.sort((a, b) => a.w.closeMin - b.w.closeMin);
+        const first = constrained[0];
+        const tier = constrained.some((x) => x.w.tier === 'typed') ? 'red' : 'amber';
+        rows.push(row(tier, 'no_driver_hours', first.s, {
+          title: `No driver — ${k} must make ${fmtMin(first.w.closeMin)}`,
+          detail: `${k} has ${constrained.length} stop${constrained.length === 1 ? '' : 's'} with receiving hours today (earliest close ${fmtMin(first.w.closeMin)} at ${first.s.businessName || first.s.stopNbr}), it is past the ${fmtMin(departMin)} departure with no movement recorded, and no driver is assigned.${tier === 'amber' ? ' Hours were auto-detected from order text, not typed by a dispatcher — verify before acting.' : ''} Assign a driver, or move the affected dates.`,
+          scope: 'occurrence', servedDate, fingerprint: `nodrv|${servedDate}|${k}|${first.w.closeMin}`,
+        }));
+      }
+    }
   }
 
   // Volume caps — a wall of rows is how badges die. Collapse an over-cap rule to one line.

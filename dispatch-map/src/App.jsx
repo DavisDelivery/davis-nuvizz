@@ -74,7 +74,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.54.57';
+const APP_VERSION = '0.54.58';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -119,6 +119,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.54.58', 'A ROUTE WITH A DEADLINE AND NO DRIVER NOW FLAGS IMMEDIATELY — AND FLAGS SHOW ON THE ROUTING SCREEN. Chad, looking at LVILLE at 9:24a: "Should this route not be flagged since lund needs to be delivered by 2pm and there isn\'t even a driver assigned to it?" Two gaps, both real. (1) The arrival-time check only fires when the modeled clock actually passes the close — at 9:24a even an honest clock puts LUND hours before 2:00p, so nothing would trip until early afternoon. But "no driver assigned" is not an estimate, it is a fact on the board: a route that is PAST its departure time, showing no movement, carrying stops with receiving hours today, and assigned to nobody now flags at once — red when the hours were dispatcher-typed, amber when the text scanner guessed them (and the row says which stop closes first). Assigning a driver anywhere on the route clears it. (2) The flag chip only existed on the dispatch Map — the Routing screen, where you were looking, had no flags at all. The same chip + panel now sits above the stops pill on Routing (both layouts), reading the same data this screen already loads (the loads roster included, so the two-live-loads check works there too) and sharing the same dismissals, so dismissing a flag on either screen clears it on both.'],
   ['0.54.57', 'BOARD FLAGS ACTUALLY FIRE NOW — Chad, on a quiet board: "there are no flags so system where its looking for eta and hours of operation conflicts isn\'t working." He was right, four separate ways, each one silent: (1) The text scanner\'s note writer THREW AWAY hours-only and closed-day-only detections — a detection only got saved if an equipment flag happened to co-occur on the same scan, so customer notes never learned the very hours the check judges. (2) The hours model always simulated an 8:00a departure — a route that hadn\'t left by 3:00p was still modeled as running on schedule since morning, so nothing ever looked late. The clock now starts at NOW for a route showing no movement (no POD, no arrival stamp, no out-for-delivery status) once an hour\'s grace past departure has passed — and the row states that evidence; a rolling route keeps the schedule model. (3) The detector read the route sequence from one field while the route panel and pins read it with fallbacks — so a route could display numbered 1..15 while the checks reported "no sequence" and skipped it. They now share one accessor. (4) Routes with several pickups were skipped entirely (pickups counted against sequence coverage they can never have). Also: legacy hours saved as "6AM-2PM" strings now count as real windows. And the part that made all four invisible: a zero-flag board rendered NO chip at all, so a silenced detector looked exactly like a clean one. The flag chip now always shows — gray outline when quiet — and opens the panel, whose footer states what was watched ("N stops · N routes judged · N with receiving hours on file") plus a Restore link for dismissed flags. If "receiving hours on file" reads 0, that\'s the fix: type hours on the customers that matter. ROUTE PANEL: the route card now totals the whole truck (skids · loose · pieces · lbs — same numbers as the printed manifest cover, with "freight known for N of M" honesty when the feed hasn\'t caught up), and the header no longer prints the route name twice when the load id IS the name.'],
   ['0.54.56', 'HIDE PLACE LABELS ACTUALLY HIDES THEM NOW. Chad: "hiding place labels is not working." It wasn\'t, and on the plain map it never could have. The switch had two levers and both were dead there. (1) With SATELLITE ON it swaps the labelled imagery for the unlabelled imagery — that half genuinely worked, which is why this looked like it worked at all. (2) With satellite OFF you are on the roadmap, there is no label-free roadmap to swap to, so the only tool left is a style rule saying "POI labels off" — and Google IGNORES style rules on our maps, because we build them with a cloud map ID and those are styled in Google\'s console instead. The old code even had that written down and skipped the style on purpose. So you flipped a switch that did nothing, on both the Map tab and Routing. THE FIX: while the toggle is ON, the map is rebuilt WITHOUT the cloud map ID, which is the only way to make Google honour "POI labels off" — and it now works on the roadmap, on hybrid, everywhere. Flip it back and the cloud map ID returns. THE TRADE, SAID OUT LOUD RATHER THAN HIDDEN: no map ID means it is not a vector map, so WHILE labels are hidden the 3D tilt / rotate compass on the Map tab is unavailable. Turning the toggle back off brings them straight back. That is Google\'s rule, not a choice I made — and a switch that does nothing was the worse half of it. The rebuild keeps you exactly where you were looking (same center and zoom, no snap back to Buford) and re-draws every pin, route line and truck. Also: the Map tab called it "Hide map labels" and Routing called it "Hide place labels" — both now read "Hide place labels", which is what it does; it never touched street names. And every toggle switch in the filter panels now announces its own name to a screen reader (they were all just "switch, on"). TESTED THE WAY YOU ASKED: a browser test drives the real built app with a map ID, on the roadmap, on BOTH screens — it flips the switch, proves the map came back with no map ID and with POI labels off, that the pins are still there afterwards, that the view did not move, and that turning it off puts everything back. It runs in CI now, so this cannot quietly break again.'],
   ['0.54.55', 'THE MANIFEST CHECK NOW RUNS ITSELF FROM THE NIGHTLY EMAIL. Chad, on the drop screen: "This should happen automatically from email parse." It does now: a scheduled job polls an email inbox every 30 minutes, and when the nightly Uline freight report arrives, it runs the exact same free check the drop screen runs — parse the PDF, diff every order against what the scan put in Firestore — and stores the result where EVERY browser\'s Manifest-check flag reads it. So the red flag on the More menu lights on its own, on every dispatcher\'s screen, before anyone is even in the office; dropping the PDF by hand still works and a hand-dropped run that is newer simply wins. HOW IT DECIDES, without brittle rules: it does not care who sent the email or what the subject says — any PDF that actually PARSES as the freight report IS the freight report; any other PDF is noted and never fetched again. A report that arrives before the morning scan has cached the board is retried on the next cycle rather than half-checked. WHAT IT NEVER DOES: probe NuVizz. The automatic path runs only the zero-call diff; turning a suspect into "missing from NuVizz" stays behind the human probe button, so automation can never spend vendor calls. ONE-TIME SETUP still needed to switch it on: enable Receiving on the warehouse.davisdelivery.com domain in the Resend dashboard, add the MX record it shows, and auto-forward the nightly Uline email to manifests@warehouse.davisdelivery.com — until then the job no-ops silently. Nine new tests script a fake inbox end to end: found-and-checked, dedupe, wrong-PDF ignored, transient failures retried, the per-cycle cap, and the stored shape staying interchangeable with a manual run.'],
@@ -14977,6 +14978,52 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
     return () => { cancelled = true; };
   }, [rightPanelMode, selectedDate]);
 
+  // Board Flags on Routing too — Chad, staring at a driverless LVILLE with a 2:00p LUND
+  // close on THIS screen: the chip only existed on the dispatch Map, so Routing could never
+  // warn him. Same detector, same dismissal store (shared localStorage — dismiss once,
+  // both screens agree), zero new network: the roster this screen already fetches rides
+  // along, so the two-live-loads check works here as well.
+  const [flagsPanelOpen, setFlagsPanelOpen] = useState(false);
+  const [dismissedFlags, setDismissedFlags] = useState(() => readDismissedFlags());
+  const [flagsClockTick, setFlagsClockTick] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => setFlagsClockTick((t) => t + 1), 5 * 60 * 1000);
+    return () => clearInterval(id);
+  }, []);
+  const routingBoardFlags = useMemo(() => {
+    const now = new Date();
+    return computeBoardFlags({
+      stops, notes, rosterRows: loadRosterList.length ? loadRosterList : null, servedDate: selectedDate,
+      dayKey: weekdayKeyFromDate(selectedDate),
+      // nowMin only for the today board — see the Map screen's twin of this call.
+      opts: { depot: ROUTING_DEPOT, ...(selectedDate === todayLocalYMD() ? { nowMin: now.getHours() * 60 + now.getMinutes() } : {}) },
+    });
+  }, [stops, notes, loadRosterList, selectedDate, flagsClockTick]); // eslint-disable-line react-hooks/exhaustive-deps
+  const visibleFlagCounts = useMemo(() => {
+    const live = routingBoardFlags.rows.filter((r) => !dismissedFlags[r.dismissKey]);
+    return { ...routingBoardFlags, redCount: live.filter((r) => r.tier === 'red').length, amberCount: live.filter((r) => r.tier === 'amber').length };
+  }, [routingBoardFlags, dismissedFlags]);
+  const dismissFlag = useCallback((key) => setDismissedFlags({ ...writeDismissedFlag(key) }), []);
+  const restoreDismissedFlags = useCallback(() => { safeWriteJSON(LS_BOARD_FLAGS_DISMISSED, {}); setDismissedFlags({}); }, []);
+  const openFlaggedStop = useCallback((stopNbr) => {
+    const s = stops.find((x) => String(x.stopNbr) === String(stopNbr));
+    if (s) openStop(s);
+  }, [stops, openStop]);
+  // A function like statusCard (not a pre-built element) so it can be rendered at both map
+  // layouts; the panel hangs off the chip's own (non-blurred) wrapper — never nest it in a
+  // backdrop-blur pill, that clips it (the mobile Map bug).
+  const flagsOverlay = () => (
+    <div className="relative flex flex-col items-end pointer-events-auto">
+      <div className="bg-white/95 rounded-lg shadow text-[11px]">
+        <BoardFlagsChip flags={visibleFlagCounts} open={flagsPanelOpen} onToggle={() => setFlagsPanelOpen((o) => !o)} />
+      </div>
+      {flagsPanelOpen && (
+        <div className="absolute right-0 top-full mt-1 z-[70]">
+          <BoardFlagsPanel flags={routingBoardFlags} dismissed={dismissedFlags} onDismiss={dismissFlag} onOpenStop={openFlaggedStop} onClose={() => setFlagsPanelOpen(false)} onRestoreAll={restoreDismissedFlags} />
+        </div>
+      )}
+    </div>
+  );
 
   // Part 6 — resizable left & right panels (the bottom grid already resizes via BottomStopsTable),
   // and a bottom-grid on/off toggle. All persisted; Routing-beta only.
@@ -17282,8 +17329,9 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
         <div className="flex-1 relative min-w-0">
           <div ref={mapDiv} className="absolute inset-0" />
           <RoutingMapFilters unplannedOnly={routeUnplannedOnly} setUnplannedOnly={setRouteUnplannedOnly} satellite={routeSatellite} setSatellite={setRouteSatellite} showRoutes={routeShowRoutes} setShowRoutes={setRouteShowRoutes} hideLabels={routeHideLabels} setHideLabels={setRouteHideLabels} />
-          {/* Stops status card — same pill as the dispatch Map (below the ⚙ filters button). */}
-          <div className="absolute top-12 right-2 z-[15] max-w-[230px]">{statusCard()}</div>
+          {/* Stops status card — same pill as the dispatch Map (below the ⚙ filters button),
+              with the Board Flags chip stacked above it. */}
+          <div className="absolute top-12 right-2 z-[15] max-w-[230px] flex flex-col items-end gap-1">{flagsOverlay()}{statusCard()}</div>
           {!viewing && <RoutingMapTools selectMode={selectMode} onBox={() => (selectMode === 'box' ? cancelMode() : beginMode('box'))} onLasso={() => (selectMode === 'lasso' ? cancelMode() : beginMode('lasso'))} ninjaMode={ninjaMode} onToggleNinja={onNinjaTool} ninjaAvailable={wbRoutes.length > 0} />}
           {mapsError && <div className="absolute top-2 left-1/2 -translate-x-1/2 bg-red-50 border border-red-300 text-red-700 text-[11px] rounded px-2 py-1">{mapsError}</div>}
           {mapToast && <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-30 max-w-[92%] bg-slate-900/90 text-white text-[11px] rounded-lg shadow-lg px-3 py-1.5 text-center"><NinjaIcon size={12} className="inline -mt-0.5 mr-1" />{mapToast}</div>}
@@ -17445,8 +17493,9 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
       <div className="flex-1 relative min-w-0">
         <div ref={mapDiv} className="absolute inset-0" />
         <RoutingMapFilters unplannedOnly={routeUnplannedOnly} setUnplannedOnly={setRouteUnplannedOnly} satellite={routeSatellite} setSatellite={setRouteSatellite} showRoutes={routeShowRoutes} setShowRoutes={setRouteShowRoutes} hideLabels={routeHideLabels} setHideLabels={setRouteHideLabels} />
-        {/* Stops status card — same pill as the dispatch Map (below the ⚙ filters button). */}
-        <div className="absolute top-12 right-2 z-[15] max-w-[240px]">{statusCard()}</div>
+        {/* Stops status card — same pill as the dispatch Map (below the ⚙ filters button),
+            with the Board Flags chip stacked above it. */}
+        <div className="absolute top-12 right-2 z-[15] max-w-[240px] flex flex-col items-end gap-1">{flagsOverlay()}{statusCard()}</div>
         {!viewing && <RoutingMapTools selectMode={selectMode} onBox={() => (selectMode === 'box' ? cancelMode() : beginMode('box'))} onLasso={() => (selectMode === 'lasso' ? cancelMode() : beginMode('lasso'))} ninjaMode={ninjaMode} onToggleNinja={onNinjaTool} ninjaAvailable={wbRoutes.length > 0} />}
         {mapsError && <div className="absolute top-2 left-1/2 -translate-x-1/2 bg-red-50 border border-red-300 text-red-700 text-[11px] rounded px-2 py-1">{mapsError}</div>}
         {mapToast && <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-30 max-w-[80%] bg-slate-900/90 text-white text-[12px] rounded-lg shadow-lg px-3 py-1.5 text-center"><NinjaIcon size={13} className="inline -mt-0.5 mr-1" />{mapToast}</div>}
