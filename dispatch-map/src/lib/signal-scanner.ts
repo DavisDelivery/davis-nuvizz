@@ -136,17 +136,23 @@ export function scanStop(stop: ScannableStop): ScanResult[] {
 // wrapper is just a gate and the inner time parser can be reused. matchedText
 // returns the full wrapper+range slice so the audit trail shows what triggered
 // detection.
+// One time token: "7", "7:30", "7 30" (Chad's 08-11 EOD manifest: Uline sent
+// "RECEIVING HOURS" and "7 30-1" as separate comments — the space IS the colon),
+// or "7.30", each with an optional meridiem. Minutes are locked to two digits
+// 00-59 so "7 3-1" can't half-match. Shared by every wrapper below.
+const TIME_TOKEN = '[0-9]{1,2}(?:[:. ][0-5][0-9])?\\s*(?:AM|PM)?';
+const TIME_RANGE = `${TIME_TOKEN}\\s*(?:-|TO|—)\\s*${TIME_TOKEN}`;
 const HOURS_WRAPPERS: RegExp[] = [
-  /\bHOURS?\s*[:\-]?\s*([0-9]{1,2}(?::[0-9]{2})?\s*(?:AM|PM)?\s*(?:-|TO|—)\s*[0-9]{1,2}(?::[0-9]{2})?\s*(?:AM|PM)?)/i,
-  /\bOPEN\s*[:\-]?\s*([0-9]{1,2}(?::[0-9]{2})?\s*(?:AM|PM)?\s*(?:-|TO|—)\s*[0-9]{1,2}(?::[0-9]{2})?\s*(?:AM|PM)?)/i,
+  new RegExp(`\\bHOURS?\\s*[:\\-]?\\s*(${TIME_RANGE})`, 'i'),
+  new RegExp(`\\bOPEN\\s*[:\\-]?\\s*(${TIME_RANGE})`, 'i'),
   // "RECEIVING" optionally followed by "HOURS" — Uline often splits the label
-  // ("RECEIVING HOURS") and the range ("8AM-12PM") across separate SPL-INSTR-TEXT
-  // segments that join with whitespace/newline.
-  /\bRECEIVING(?:\s+HOURS?)?\s*[:\-]?\s*([0-9]{1,2}(?::[0-9]{2})?\s*(?:AM|PM)?\s*(?:-|TO|—)\s*[0-9]{1,2}(?::[0-9]{2})?\s*(?:AM|PM)?)/i,
+  // ("RECEIVING HOURS") and the range ("8AM-12PM" / "7 30-1") across separate
+  // SPL-INSTR-TEXT segments that join with whitespace/newline.
+  new RegExp(`\\bRECEIVING(?:\\s+HOURS?)?\\s*[:\\-]?\\s*(${TIME_RANGE})`, 'i'),
   // Uline "RH" = Receiving Hours, e.g. "RH 7-11AM" / "RH 8-3" / "RH7-11AM".
-  /\bRH\s*[:\-]?\s*([0-9]{1,2}(?::[0-9]{2})?\s*(?:AM|PM)?\s*(?:-|TO|—)\s*[0-9]{1,2}(?::[0-9]{2})?\s*(?:AM|PM)?)/i,
-  /\bDELIVER(?:Y)?\s+BETWEEN\s+([0-9]{1,2}(?::[0-9]{2})?\s*(?:AM|PM)?\s*(?:-|TO|AND|—)\s*[0-9]{1,2}(?::[0-9]{2})?\s*(?:AM|PM)?)/i,
-  /\bDELIVER(?:Y)?\s+BY\s+([0-9]{1,2}(?::[0-9]{2})?\s*(?:AM|PM)?)/i,
+  new RegExp(`\\bRH\\s*[:\\-]?\\s*(${TIME_RANGE})`, 'i'),
+  new RegExp(`\\bDELIVER(?:Y)?\\s+BETWEEN\\s+(${TIME_TOKEN}\\s*(?:-|TO|AND|—)\\s*${TIME_TOKEN})`, 'i'),
+  new RegExp(`\\bDELIVER(?:Y)?\\s+BY\\s+(${TIME_TOKEN})`, 'i'),
 ];
 
 // Parse a captured range like "6AM-2PM" or "8-4" or "6:30 AM to 2:30 PM" into
@@ -158,8 +164,20 @@ function parseTimeRange(rangeText: string): { open: string; close: string } | nu
   const parts = cleaned.split('-').map((p) => p.trim()).filter(Boolean);
   if (parts.length !== 2) return null;
   const open = parseTimePiece(parts[0], parts[1]);
-  const close = parseTimePiece(parts[1], parts[0]);
+  let close = parseTimePiece(parts[1], parts[0]);
   if (!open || !close) return null;
+  // Business-hours correction — the same rules board-flags applies to legacy range
+  // strings. A close at or before the open with NO written meridiem is afternoon
+  // ("8-3" means 8a-3p, "7 30-1" means 7:30a-1p) — peer inference alone left these
+  // as 03:00/01:00, a dawn close that would flag nearly every real arrival. A close
+  // that is EXPLICITLY earlier ("9PM-5AM", an overnight dock) is not a daytime
+  // window and is refused rather than silently flipped 12 hours.
+  const toMin = (t: string) => parseInt(t.slice(0, 2), 10) * 60 + parseInt(t.slice(3), 10);
+  if (toMin(close) <= toMin(open)) {
+    const closeHadMeridiem = /(AM|PM)\s*$/i.test(parts[1]);
+    if (closeHadMeridiem || toMin(close) >= 720) return null;
+    close = `${String(parseInt(close.slice(0, 2), 10) + 12).padStart(2, '0')}:${close.slice(3)}`;
+  }
   return { open, close };
 }
 
@@ -168,7 +186,8 @@ function parseTimeRange(rangeText: string): { open: string; close: string } | nu
 // because business hours straddle noon ~95% of the time and 4-hour evening
 // receiving windows are vanishingly rare).
 function parseTimePiece(piece: string, peer: string): string | null {
-  const m = /^([0-9]{1,2})(?::([0-9]{2}))?\s*(AM|PM)?$/i.exec(piece);
+  // Separator can be ":", "." or a space — Uline's "7 30-1" writes 7:30 with a space.
+  const m = /^([0-9]{1,2})(?:[:. ]([0-5][0-9]))?\s*(AM|PM)?$/i.exec(piece);
   if (!m) return null;
   let hour = parseInt(m[1], 10);
   const minute = m[2] ? parseInt(m[2], 10) : 0;
@@ -224,7 +243,7 @@ function scanHours(text: string | null | undefined, source: SignalSource): Hours
         };
       }
       // Single-time "DELIVER BY 2PM" — treat as close-by with 06:00 default open.
-      const single = /^([0-9]{1,2})(?::([0-9]{2}))?\s*(AM|PM)?$/i.exec(range.trim());
+      const single = /^([0-9]{1,2})(?:[:. ]([0-5][0-9]))?\s*(AM|PM)?$/i.exec(range.trim());
       if (single) {
         const close = parseTimePiece(range.trim(), '6AM');
         if (close) {
