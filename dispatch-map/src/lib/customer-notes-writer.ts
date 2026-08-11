@@ -140,9 +140,40 @@ export function decideWrite(
     ntSources.includes('orderInstructions') &&
     !dismissed.has('uline_straight_truck'); // user explicitly said this customer isn't ST-only
 
-  // If everything detected this scan was dismissed AND no migration is needed,
-  // there's nothing meaningful to write — skip to avoid churning audit fields.
-  if (!detectedFlags.length && !shouldMigrate) return null;
+  // Hours: three guards decide whether the FIELD gets written (the audit trail rides along
+  // whenever a write happens for other reasons).
+  //   lock       — the dispatcher owns the field; never touch it.
+  //   provenance — only overwrite hours the scanner itself wrote (auto_sources fingerprint)
+  //                or an empty field. Legacy per-day data (M2.x strings, hand-shaped maps
+  //                with no scanner trail) would be flattened to one uniform 7-day range.
+  //   change     — identical hours already stored ⇒ nothing to say. Without this, every
+  //                scan pass rewrites every hours-carrying customer (serverTimestamp always
+  //                mutates), which is exactly the churn this gate exists to avoid.
+  const overrideHours = existing?.manual_overrides?.receiving_hours === true;
+  const existingHours = (existing?.receiving_hours || {}) as Record<string, any>;
+  const scannerOwnsHours =
+    Object.keys(existingHours).length === 0 || !!existing?.auto_sources?.receiving_hours;
+  const hoursWouldChange =
+    !!stop.hoursResult && !overrideHours && scannerOwnsHours &&
+    DAY_CODES.some((d) => {
+      const e = existingHours[d];
+      return !e || typeof e === 'string' || e.open !== stop.hoursResult!.open || e.close !== stop.hoursResult!.close;
+    });
+
+  // Closed days: same change rule — the union must actually ADD a day.
+  const overrideClosed = existing?.manual_overrides?.closed_days === true;
+  const existingClosed = new Set<string>((existing?.closed_days || []) as string[]);
+  const daysWouldChange =
+    !overrideClosed &&
+    !!stop.closedDaysResult && stop.closedDaysResult.some((r) => !existingClosed.has(r.day));
+
+  // If everything detected this scan was dismissed AND no migration is needed AND neither
+  // hours nor closed days would change, there's nothing meaningful to write — skip to
+  // avoid churning audit fields. Hours and closed-day detections count as meaningful on
+  // their own: an hours-only stop passed the hasAnySignal gate above, and dropping it here
+  // (as this line did until v0.54.56) silently starved every receiving-hours and
+  // closed-day feature of scanner data unless an equipment flag happened to co-occur.
+  if (!detectedFlags.length && !shouldMigrate && !hoursWouldChange && !daysWouldChange) return null;
 
   if (shouldMigrate) {
     // Carry the legacy audit trail forward under the new flag so the UI keeps
@@ -202,13 +233,12 @@ export function decideWrite(
 
   // ---------- M4.4: receiving hours + closed days ----------
 
-  // Receiving hours: if the scanner found a range and the dispatcher hasn't
-  // locked the field, populate all 7 days with that range. The audit trail
+  // Receiving hours: if the scanner found a range and the lock/provenance/change guards
+  // (computed above) allow it, populate all 7 days with that range. The audit trail
   // (auto_sources.receiving_hours + auto_matches.receiving_hours) records the
   // exact matched text and source so the dispatcher can review.
   if (stop.hoursResult) {
-    const overrideHours = existing?.manual_overrides?.receiving_hours === true;
-    if (!overrideHours) {
+    if (hoursWouldChange) {
       const { open, close } = stop.hoursResult;
       const filled: Record<string, { open: string; close: string }> = {};
       // Don't overwrite days the dispatcher has set per-day (we have no
@@ -235,8 +265,7 @@ export function decideWrite(
   // Closed days: union with anything previously detected (don't drop days
   // the scanner found yesterday but missed today — text may have rotated).
   if (stop.closedDaysResult && stop.closedDaysResult.length) {
-    const overrideClosed = existing?.manual_overrides?.closed_days === true;
-    if (!overrideClosed) {
+    if (daysWouldChange) {
       const next = new Set<DayCode>((existing?.closed_days || []) as DayCode[]);
       for (const r of stop.closedDaysResult) next.add(r.day);
       payload.closed_days = [...next];
