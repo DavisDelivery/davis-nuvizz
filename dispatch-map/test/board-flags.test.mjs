@@ -216,6 +216,123 @@ test(`an over-cap rule collapses to ONE summary row (cap ${RED_CAP} red)`, () =>
   assert.equal(out.redCount, 1, 'the badge counts the summary, not the flood');
 });
 
+// ── v0.54.57: the four silent-R5 regressions Chad hit ("no flags ... isn't working") ──
+
+test('a sequence living only in the raw feed shape still gets judged (UI parity)', () => {
+  // The cheap list feed sometimes carries the sequence only as raw.stop.to.seq. The route
+  // panel and the numbered pins read that shape (routeStopSeq) — the detector must too, or
+  // the UI shows a numbered route the checks refuse to judge, silently.
+  const notesObj = { 'far|k': note({ receiving_hours: { mon: { open: '08:00', close: '09:00' } }, manual_overrides: { receiving_hours: true } }) };
+  const stops = [
+    stop({ stopNbr: '1', routeSeq: null, raw: { stop: { to: { seq: 1 } } } }),
+    stop({ stopNbr: '2', routeSeq: null, raw: { stop: { to: { seq: 2 } } }, matchKey: 'far|k', lat: 33.60, lng: -84.60 }),
+  ];
+  const out = run(stops, notesObj);
+  assert.equal(out.skipped.routesNoSequence.length, 0, 'raw-shape sequence must count as a sequence');
+  const r = out.rows.find((x) => x.rule === 'hours_risk');
+  assert.ok(r && r.tier === 'red' && r.stopNbr === '2');
+});
+
+test('pickups do not poison the sequence-coverage gate (deliveries-only denominator)', () => {
+  // 2 sequenced deliveries + 2 pickups used to compute 2/4 = 50% < 70% and skip the route.
+  const notesObj = { 'far|k': note({ receiving_hours: { mon: { open: '08:00', close: '09:00' } }, manual_overrides: { receiving_hours: true } }) };
+  const stops = [
+    stop({ stopNbr: '1', routeSeq: 1 }),
+    stop({ stopNbr: '2', routeSeq: 2, matchKey: 'far|k', lat: 33.60, lng: -84.60 }),
+    stop({ stopNbr: 'P1', stopType: 'PU', routeSeq: null }),
+    stop({ stopNbr: 'P2', stopType: 'PU', routeSeq: null }),
+  ];
+  const out = run(stops, notesObj);
+  assert.equal(out.skipped.routesNoSequence.length, 0, 'pickups must not count against sequence coverage');
+  assert.ok(out.rows.some((x) => x.rule === 'hours_risk' && x.stopNbr === '2'));
+});
+
+test("a route with no sign of movement cannot depart in the past — the clock starts at now", () => {
+  // Near stop, 2:00p close: from an 8:00a depart the model arrives ~8:30a and stays quiet.
+  // But at 3:00p with nothing delivered or arrived the truck shows no movement — the clock
+  // must run from 3:00p, land after close, and state the EVIDENCE (nothing recorded), not
+  // assert "not started" as fact.
+  const notesObj = { 'near|k': note({ receiving_hours: { mon: { open: '08:00', close: '14:00' } }, manual_overrides: { receiving_hours: true } }) };
+  const stops = [stop({ stopNbr: '1', routeSeq: 1, matchKey: 'near|k' })];
+  assert.equal(run(stops, notesObj).rows.filter((r) => r.rule === 'hours_risk').length, 0, 'on-schedule morning model stays quiet');
+  const late = run(stops, notesObj, { opts: { ...OPTS, nowMin: 15 * 60 } });
+  const r = late.rows.find((x) => x.rule === 'hours_risk');
+  assert.ok(r, 'a 3:00p unmoved route must flag a 2:00p close');
+  assert.ok(/no delivery or arrival recorded on this route as of 3:00p/.test(r.detail), 'the row must state the evidence for the re-anchored clock');
+});
+
+test('the first hour after departure is grace — a truck en route to stop 1 is not "late"', () => {
+  // 8:30a, nothing scanned yet: that is every normal morning, not evidence of a parked
+  // truck. The clock must NOT re-anchor inside the grace hour.
+  const notesObj = { 'near|k': note({ receiving_hours: { mon: { open: '08:00', close: '08:20' } }, manual_overrides: { receiving_hours: true } }) };
+  const stops = [stop({ stopNbr: '1', routeSeq: 1, matchKey: 'near|k' })];
+  const out = run(stops, notesObj, { opts: { ...OPTS, nowMin: 8 * 60 + 30 } });
+  const r = out.rows.find((x) => x.rule === 'hours_risk');
+  // The 8:00a-model arrival (~8:13a) is before the 8:20a close → quiet. A re-anchored
+  // 8:30a clock would have flagged it.
+  assert.equal(r, undefined, 'inside the grace hour the schedule model holds');
+});
+
+test('any movement evidence keeps the scheduled departure model — POD, arrival stamp, or status', () => {
+  // 3:00p clock, but a sibling stop shows the truck is out. All three evidence shapes count:
+  // a DELIVERED stop, an ARRIVED status (driver at a dock, no POD yet), an arrivalDTTM stamp.
+  const notesObj = { 'near|k': note({ receiving_hours: { mon: { open: '08:00', close: '14:00' } }, manual_overrides: { receiving_hours: true } }) };
+  for (const evidence of [
+    { stopNbr: '0', normalizedStatus: 'DELIVERED', deliveredDTTM: '2026-08-10T10:00:00' },
+    { stopNbr: '0', normalizedStatus: 'ARRIVED' },
+    { stopNbr: '0', arrivalDTTM: '2026-08-10T08:40:00' },
+    { stopNbr: '0', status: '40' }, // out for delivery
+  ]) {
+    const out = run([stop(evidence), stop({ stopNbr: '1', routeSeq: 1, matchKey: 'near|k' })], notesObj, { opts: { ...OPTS, nowMin: 15 * 60 } });
+    assert.equal(out.rows.filter((r) => r.rule === 'hours_risk').length, 0,
+      `a route with ${JSON.stringify(evidence)} is rolling — never re-anchored to now`);
+  }
+});
+
+test('a chain-broken route is NOT counted as judged — the tallies may not contradict', () => {
+  const stops = [
+    stop({ stopNbr: '1', routeSeq: 1, lat: null, lng: null }), // no position → chain breaks
+    stop({ stopNbr: '2', routeSeq: 2 }),
+  ];
+  const out = run(stops);
+  assert.equal(out.checked.routesJudged, 0, 'zero stops were actually assessed');
+  assert.ok(out.skipped.routesNoSequence.some((k) => k.includes('missing pin')));
+});
+
+test('legacy M2.x range strings are windows, not free text', () => {
+  // Old docs store per-day strings like "6AM-2PM"; the note editor's clock badge lights for
+  // them, so the detector must read them too. "8-5" follows the business-hours convention.
+  assert.deepEqual(
+    dayReceivingWindow(note({ receiving_hours: { mon: '6AM-2PM' } }), 'mon'),
+    { openMin: 6 * 60, closeMin: 14 * 60, tier: 'auto' },
+  );
+  assert.equal(dayReceivingWindow(note({ receiving_hours: { mon: '8-5' } }), 'mon').closeMin, 17 * 60);
+  assert.equal(dayReceivingWindow(note({ receiving_hours: { mon: '11AM-1PM' } }), 'mon').closeMin, 13 * 60);
+  // A bare time is still close-only; true free text is still refused.
+  assert.equal(dayReceivingWindow(note({ receiving_hours: { mon: '2PM' } }), 'mon').closeMin, 14 * 60);
+  assert.equal(dayReceivingWindow(note({ receiving_hours: { mon: 'RH 7-11AM appt only' } }), 'mon'), null);
+});
+
+test('half-parseable and overnight ranges are refused — a guessed window is a false flag factory', () => {
+  // BOTH halves must parse: "noon-5" would otherwise invent a 5:00 AM close and flag every
+  // arrival after dawn; "24-7" (always open!) would become a 7:00 AM close.
+  assert.equal(dayReceivingWindow(note({ receiving_hours: { mon: 'noon-5' } }), 'mon'), null);
+  assert.equal(dayReceivingWindow(note({ receiving_hours: { mon: '24-7' } }), 'mon'), null);
+  // An explicit overnight window ("9PM-5AM" dock) is not comparable to a daytime route —
+  // the "8-5" pm-shift must never relabel a written AM close as afternoon.
+  assert.equal(dayReceivingWindow(note({ receiving_hours: { mon: '9PM-5AM' } }), 'mon'), null);
+  assert.equal(dayReceivingWindow(note({ receiving_hours: { mon: '10PM-6AM' } }), 'mon'), null);
+});
+
+test('the checked tally proves what a quiet board actually looked at', () => {
+  const notesObj = { 'near|k': note({ receiving_hours: { mon: { open: '08:00', close: '17:00' } } }) };
+  const out = run([stop({ stopNbr: '1', routeSeq: 1, matchKey: 'near|k' }), stop({ stopNbr: '2', routeSeq: 2 })], notesObj);
+  assert.equal(out.rows.length, 0, 'this board is genuinely clean');
+  assert.equal(out.checked.stops, 2);
+  assert.equal(out.checked.routesJudged, 1);
+  assert.equal(out.checked.stopsWithHours, 1);
+});
+
 test('red sorts before amber, and the counts split by tier', () => {
   const notesObj = { 'b|k': note({ closed_days: ['mon'], auto_matches: { closed_days: [{ text: 'x', pattern: 'closed_mon' }] } }) };
   const out = run([stop({ dupNbr: true }), stop({ stopNbr: '2', matchKey: 'b|k' })], notesObj);

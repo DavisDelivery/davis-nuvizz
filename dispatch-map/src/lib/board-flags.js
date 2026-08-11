@@ -34,6 +34,7 @@
 //   scope 'occurrence' → key includes servedDate; clears itself at the next board day.
 
 import { resolveNameOwner } from './route-status.js';
+import { routeStopSeq } from './route-stop-line.js';
 import {
   haversineMeters, ROUTE_ROAD_FACTOR, ROUTE_AVG_SPEED_MPS, DEFAULT_SERVICE_SEC,
 } from './routing-select.js';
@@ -73,6 +74,26 @@ export function dayReceivingWindow(note, dayKey) {
   const v = note.receiving_hours?.[dayKey];
   if (!v) return null;
   if (typeof v === 'string') {
+    // Legacy M2.x docs store a per-day RANGE string ("6AM-2PM", "8 - 5"). The UI's clock
+    // badge lights for these, so the detector must read them too or a customer with real
+    // hours on file silently never flags. The refusal rules matter as much as the parse:
+    // BOTH halves must read as clock times ("noon-5" and "24-7" are free text, and free
+    // text is never guessed at), and a close that lands at or before the open is only
+    // rescued by the "8-5" business-hours convention when it carries NO meridiem — an
+    // explicit overnight window ("9PM-5AM") is not comparable to a daytime route and is
+    // refused rather than silently flipped 12 hours. A bare time stays close-only.
+    const m = v.match(/^(.+?)\s*(?:-|–|—|to)\s*(.+)$/i);
+    if (m) {
+      const openMin = parseClockMin(m[1]);
+      let closeMin = parseClockMin(m[2]);
+      if (openMin == null || closeMin == null) return null;
+      if (closeMin <= openMin) {
+        const closeHasMeridiem = /[ap]\.?m?\.?\s*$/i.test(m[2]);
+        if (closeHasMeridiem || closeMin >= 720) return null; // overnight dock — refuse
+        closeMin += 720; // "8-5" = 8:00a–5:00p
+      }
+      return { openMin, closeMin, tier: tierOfHours(note) };
+    }
     const one = parseClockMin(v);
     return one == null ? null : { openMin: null, closeMin: one, tier: tierOfHours(note) };
   }
@@ -105,6 +126,19 @@ export function isFinishedStop(s) {
   return TERMINAL_CODES.has(String(s?.status ?? '').trim());
 }
 
+// Evidence the route's truck is MOVING: any finished stop, an on-site arrival stamp, or an
+// out-for-delivery/arrived status ('40'/'50'). Used only to decide whether the hours model
+// may re-anchor a route's departure to "now" — a rolling truck must never be told it
+// hasn't left just because its first POD hasn't posted.
+const ROLLING_STATUSES = new Set(['OUT_FOR_DEL', 'ARRIVED']);
+const ROLLING_CODES = new Set(['40', '50']);
+export function isRollingEvidence(s) {
+  if (isFinishedStop(s)) return true;
+  if (s?.arrivalDTTM) return true;
+  if (ROLLING_STATUSES.has(String(s?.normalizedStatus ?? ''))) return true;
+  return ROLLING_CODES.has(String(s?.status ?? '').trim());
+}
+
 const numOr = (v) => { const n = typeof v === 'number' ? v : parseFloat(v); return Number.isFinite(n) ? n : null; };
 
 // The stop's judged position: the dispatcher's saved pin override outranks the feed's geocode
@@ -118,7 +152,13 @@ export function stopPosition(s, note) {
   return null;
 }
 
-const seqOf = (s) => (typeof s?.routeSeq === 'number' ? s.routeSeq : null);
+// Sequence + pickup detection go through the SAME accessor the route panel and the numbered
+// map pins use (routeStopSeq: top-level routeSeq, then the raw feed's stop.to/from.seq, and
+// pickups never wear a number). The detector used to read only the top-level field, so a
+// board whose sequence lived in the raw shape showed numbered routes in the UI while every
+// route here reported "no delivery sequence" — silently, because the chip hid itself too.
+const seqOf = (s) => routeStopSeq(s).seq;
+const isPickupStop = (s) => routeStopSeq(s).pickup;
 const routeKeyOf = (s) => String(s?.loadNbr || s?.routeName || '').trim();
 
 // ── the detector ──────────────────────────────────────────────────────────────
@@ -147,6 +187,10 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
   const noteOf = (s) => (s?.matchKey ? notes.get(s.matchKey) : null) || null;
   const rows = [];
   const skipped = { noRoster: false, ambiguousRoutes: [], routesNoSequence: [], stopsNoPosition: 0 };
+  // What the detector actually LOOKED at — the panel shows these so a quiet board can
+  // prove it was watched, and so "no hours on file" is visibly a data gap, not a bug.
+  const checked = { stops: open.length, routesJudged: 0, stopsWithHours: 0 };
+  if (day) for (const s of open) { if (dayReceivingWindow(noteOf(s), day)) checked.stopsWithHours += 1; }
 
   // R1 — two NuVizz orders under one stop number (the Estes twin). Proof, not a guess: the
   // scan flags this only when record ids differ. Occurrence-scoped: cleaning the portal
@@ -218,7 +262,23 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
   // (depart + crow-flies×1.3 @ ~30 mph + service time per prior stop) and every row says so.
   // Typed hours can go red; scanner-guessed hours only ever amber; free-text hours are not
   // comparable and are skipped. A route where most stops carry no sequence is not judged.
+  // The clock is honest about the real day too: a route with no sign of movement cannot
+  // depart in the past, so its chain starts at max(depart, now) — the "it's noon and JOE
+  // hasn't left" case used to simulate an 8:00a departure and conclude everything was fine.
+  // "Sign of movement" is EVIDENCE, not inference: a delivery, an exception, an arrival
+  // stamp, or an out-for-delivery/arrived status all mean the truck is rolling even when
+  // no POD has posted yet — re-anchoring a rolling route to "now" manufactured lateness.
+  // The grace hour after departure covers the every-morning gap where a truck that left
+  // on time simply hasn't reached its first stop's scanner.
+  const nowMin = Number.isFinite(opts.nowMin) ? opts.nowMin : null;
+  const NOT_STARTED_GRACE_MIN = 60;
   if (day && depot) {
+    const startedRoutes = new Set();
+    for (const s of stops) {
+      if (!isRollingEvidence(s)) continue;
+      const k = routeKeyOf(s);
+      if (k) startedRoutes.add(k);
+    }
     const byRoute = new Map();
     for (const s of open) {
       const k = routeKeyOf(s);
@@ -227,13 +287,19 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
       byRoute.get(k).push(s);
     }
     for (const [k, group] of byRoute) {
-      const seqd = group.filter((s) => seqOf(s) != null && String(s?.stopType ?? '').toUpperCase() !== 'PU');
-      if (!seqd.length || seqd.length < group.length * 0.7) {
+      const deliveries = group.filter((s) => !isPickupStop(s));
+      const seqd = deliveries.filter((s) => seqOf(s) != null);
+      // Judge against DELIVERIES only: pickups never carry a usable sequence (their
+      // Display-Seq is the terminal's slot), so counting them in the denominator used
+      // to skip any route where pickups were >30% of the stops.
+      if (!seqd.length || seqd.length < deliveries.length * 0.7) {
         if (group.length > 1) skipped.routesNoSequence.push(k);
         continue; // an invented order would produce confident wrong answers
       }
       seqd.sort((a, b) => seqOf(a) - seqOf(b));
-      let cur = depot; let clockMin = departMin; let chainBroken = false;
+      const notStarted = !startedRoutes.has(k) && nowMin != null && nowMin > departMin + NOT_STARTED_GRACE_MIN;
+      const effDepart = notStarted ? nowMin : departMin;
+      let cur = depot; let clockMin = effDepart; let chainBroken = false;
       for (const s of seqd) {
         const pos = stopPosition(s, noteOf(s));
         if (!pos) { chainBroken = true; break; } // a missing pin breaks the chain honestly
@@ -243,14 +309,17 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
           const lateBy = Math.round(clockMin - w.closeMin);
           rows.push(row(w.tier === 'typed' ? 'red' : 'amber', 'hours_risk', s, {
             title: `May miss receiving hours — ${s.businessName || s.stopNbr}`,
-            detail: `Stop ${seqOf(s)} on ${k}: estimated arrival ~${fmtMin(clockMin)} vs close ${fmtMin(w.closeMin)} (${lateBy} min late). Estimate only — flat ~30 mph model, route departing ${fmtMin(departMin)}.${w.tier === 'auto' ? ' Hours were auto-detected from order text, not typed by a dispatcher — verify before acting.' : ''} Resequence it earlier, move the date, or call ahead.`,
+            detail: `Stop ${seqOf(s)} on ${k}: estimated arrival ~${fmtMin(clockMin)} vs close ${fmtMin(w.closeMin)} (${lateBy} min late). Estimate only — flat ~30 mph model, ${notStarted ? `no delivery or arrival recorded on this route as of ${fmtMin(nowMin)}, so the clock models departure from then` : `route departing ${fmtMin(effDepart)}`}.${w.tier === 'auto' ? ' Hours were auto-detected from order text, not typed by a dispatcher — verify before acting.' : ''} Resequence it earlier, move the date, or call ahead.`,
             scope: 'occurrence', servedDate, fingerprint: `hours|${servedDate}|${k}|${s.stopNbr}|${w.closeMin}`,
           }));
         }
         clockMin += serviceSec / 60;
         cur = pos;
       }
+      // A chain-broken route was NOT judged — counting it would make the panel claim
+      // "1 route judged" and "1 route not judged" about the same truck in one breath.
       if (chainBroken) skipped.routesNoSequence.push(`${k} (missing pin)`);
+      else checked.routesJudged += 1;
     }
   }
 
@@ -275,6 +344,7 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
     redCount: capped.filter((r) => r.tier === 'red').length,
     amberCount: capped.filter((r) => r.tier === 'amber').length,
     skipped,
+    checked,
   };
 }
 

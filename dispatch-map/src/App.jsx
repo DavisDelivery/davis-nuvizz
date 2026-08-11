@@ -74,7 +74,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.54.56';
+const APP_VERSION = '0.54.57';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -119,6 +119,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.54.57', 'BOARD FLAGS ACTUALLY FIRE NOW — Chad, on a quiet board: "there are no flags so system where its looking for eta and hours of operation conflicts isn\'t working." He was right, four separate ways, each one silent: (1) The text scanner\'s note writer THREW AWAY hours-only and closed-day-only detections — a detection only got saved if an equipment flag happened to co-occur on the same scan, so customer notes never learned the very hours the check judges. (2) The hours model always simulated an 8:00a departure — a route that hadn\'t left by 3:00p was still modeled as running on schedule since morning, so nothing ever looked late. The clock now starts at NOW for a route showing no movement (no POD, no arrival stamp, no out-for-delivery status) once an hour\'s grace past departure has passed — and the row states that evidence; a rolling route keeps the schedule model. (3) The detector read the route sequence from one field while the route panel and pins read it with fallbacks — so a route could display numbered 1..15 while the checks reported "no sequence" and skipped it. They now share one accessor. (4) Routes with several pickups were skipped entirely (pickups counted against sequence coverage they can never have). Also: legacy hours saved as "6AM-2PM" strings now count as real windows. And the part that made all four invisible: a zero-flag board rendered NO chip at all, so a silenced detector looked exactly like a clean one. The flag chip now always shows — gray outline when quiet — and opens the panel, whose footer states what was watched ("N stops · N routes judged · N with receiving hours on file") plus a Restore link for dismissed flags. If "receiving hours on file" reads 0, that\'s the fix: type hours on the customers that matter. ROUTE PANEL: the route card now totals the whole truck (skids · loose · pieces · lbs — same numbers as the printed manifest cover, with "freight known for N of M" honesty when the feed hasn\'t caught up), and the header no longer prints the route name twice when the load id IS the name.'],
   ['0.54.56', 'HIDE PLACE LABELS ACTUALLY HIDES THEM NOW. Chad: "hiding place labels is not working." It wasn\'t, and on the plain map it never could have. The switch had two levers and both were dead there. (1) With SATELLITE ON it swaps the labelled imagery for the unlabelled imagery — that half genuinely worked, which is why this looked like it worked at all. (2) With satellite OFF you are on the roadmap, there is no label-free roadmap to swap to, so the only tool left is a style rule saying "POI labels off" — and Google IGNORES style rules on our maps, because we build them with a cloud map ID and those are styled in Google\'s console instead. The old code even had that written down and skipped the style on purpose. So you flipped a switch that did nothing, on both the Map tab and Routing. THE FIX: while the toggle is ON, the map is rebuilt WITHOUT the cloud map ID, which is the only way to make Google honour "POI labels off" — and it now works on the roadmap, on hybrid, everywhere. Flip it back and the cloud map ID returns. THE TRADE, SAID OUT LOUD RATHER THAN HIDDEN: no map ID means it is not a vector map, so WHILE labels are hidden the 3D tilt / rotate compass on the Map tab is unavailable. Turning the toggle back off brings them straight back. That is Google\'s rule, not a choice I made — and a switch that does nothing was the worse half of it. The rebuild keeps you exactly where you were looking (same center and zoom, no snap back to Buford) and re-draws every pin, route line and truck. Also: the Map tab called it "Hide map labels" and Routing called it "Hide place labels" — both now read "Hide place labels", which is what it does; it never touched street names. And every toggle switch in the filter panels now announces its own name to a screen reader (they were all just "switch, on"). TESTED THE WAY YOU ASKED: a browser test drives the real built app with a map ID, on the roadmap, on BOTH screens — it flips the switch, proves the map came back with no map ID and with POI labels off, that the pins are still there afterwards, that the view did not move, and that turning it off puts everything back. It runs in CI now, so this cannot quietly break again.'],
   ['0.54.55', 'THE MANIFEST CHECK NOW RUNS ITSELF FROM THE NIGHTLY EMAIL. Chad, on the drop screen: "This should happen automatically from email parse." It does now: a scheduled job polls an email inbox every 30 minutes, and when the nightly Uline freight report arrives, it runs the exact same free check the drop screen runs — parse the PDF, diff every order against what the scan put in Firestore — and stores the result where EVERY browser\'s Manifest-check flag reads it. So the red flag on the More menu lights on its own, on every dispatcher\'s screen, before anyone is even in the office; dropping the PDF by hand still works and a hand-dropped run that is newer simply wins. HOW IT DECIDES, without brittle rules: it does not care who sent the email or what the subject says — any PDF that actually PARSES as the freight report IS the freight report; any other PDF is noted and never fetched again. A report that arrives before the morning scan has cached the board is retried on the next cycle rather than half-checked. WHAT IT NEVER DOES: probe NuVizz. The automatic path runs only the zero-call diff; turning a suspect into "missing from NuVizz" stays behind the human probe button, so automation can never spend vendor calls. ONE-TIME SETUP still needed to switch it on: enable Receiving on the warehouse.davisdelivery.com domain in the Resend dashboard, add the MX record it shows, and auto-forward the nightly Uline email to manifests@warehouse.davisdelivery.com — until then the job no-ops silently. Nine new tests script a fake inbox end to end: found-and-checked, dedupe, wrong-PDF ignored, transient failures retried, the per-cycle cap, and the stored shape staying interchangeable with a manual run.'],
   ['0.54.54', 'BOARD FLAGS — A RED FLAG ON THE TOP BAR THAT LISTS WHAT NEEDS LOOKING AT. Chad: "if it seems like a route might not make a particular set of receiving hours … it has, like, a little red flag that pops up with a list of potential issues, on the top bar, that you need looking at closer." Built, and it is exactly that: every scan, a set of checks runs over the finished board, and a red flag with a count appears beside the stops pill — ONLY when there is something to look at; a clean board shows no flag at all, because a flag that is always there becomes furniture. Click it for the list: each row is one plain sentence, click-through opens the stop card, ✕ dismisses it. WHAT IT CHECKS, in v1: (1) two NuVizz orders sharing one stop number (the Estes twin — proof, not a guess); (2) a stop with NO map location — checked AFTER your saved pin corrections, so a pin you already fixed can never stay flagged; (3) two LIVE loads sharing one route name — your cancel-then-rebuild habit never flags, because a cancelled load cannot own a name (same rule as the STEVEN fix); (4) delivering to a customer recorded CLOSED that weekday — dispatcher-recorded days go red, scanner-guessed days go amber WITH the order text they came from, and ticking one day by hand can never promote the scanner\'s inventions to red; (5) THE CHECK YOU ASKED FOR — a stop sequenced so late it lands after the customer\'s receiving hours close. Honest about its limits: the arrival time is OUR estimate (flat ~30 mph on straight-line-×1.3 legs from the Buford terminal, departing 8:00a) and every row says so; hours a dispatcher typed can go red, hours the text scanner guessed cap at amber and say why, free-text hours ("RH 7-11AM") are never regex-guessed, and a route with no delivery sequence is not judged at all — an invented order would produce confident wrong answers. WHAT KEEPS IT QUIET ENOUGH TO TRUST: delivered and exception freight is never flagged; any check that would list more than a dozen stops collapses to ONE summary row so the badge stays a number worth reading; dismissing a standing problem (an un-geocodable address, a closed day) STAYS dismissed until the underlying facts change, while day-specific flags clear themselves overnight; and the panel footer says plainly what could NOT be judged — no loads roster loaded means route checks read "not checked", never "clean". ZERO COST: every check reads data already in your browser — no NuVizz calls, no Google calls, nothing new fetched. 41 new tests pin every rule and every wiring point.'],
@@ -2872,19 +2873,32 @@ function writeDismissedFlag(key) {
 }
 
 function BoardFlagsChip({ flags, open, onToggle }) {
-  if (!flags || (flags.redCount === 0 && flags.amberCount === 0)) return null;
+  if (!flags) return null;
+  // The chip is ALWAYS rendered now. It used to unrender itself on a zero count, which made
+  // a silenced detector (no sequence data, no roster, everything dismissed) pixel-identical
+  // to a clean board — Chad, looking at a quiet chip-less board: "the system where its
+  // looking for eta and hours of operation conflicts isn't working." The quiet state is a
+  // gray outline flag that opens the same panel, where the footer says what was actually
+  // checked and what could not be judged.
   const red = flags.redCount > 0;
+  const amber = !red && flags.amberCount > 0;
+  const quiet = !red && !amber;
   return (
     <button
       onClick={onToggle}
       aria-expanded={open}
       className={
         'flex items-center gap-1 px-1.5 py-0.5 rounded font-semibold flex-shrink-0 border ' +
-        (red ? 'bg-red-50 text-red-700 border-red-300 hover:bg-red-100' : 'bg-amber-50 text-amber-700 border-amber-300 hover:bg-amber-100')
+        (red ? 'bg-red-50 text-red-700 border-red-300 hover:bg-red-100'
+          : amber ? 'bg-amber-50 text-amber-700 border-amber-300 hover:bg-amber-100'
+            : 'bg-white text-slate-400 border-slate-200 hover:bg-slate-50 hover:text-slate-600')
       }
-      title={`${flags.redCount} need attention · ${flags.amberCount} advisory — click for the list`}
+      title={quiet
+        ? 'No flags right now — click to see what was checked (and what could not be judged)'
+        : `${flags.redCount} need attention · ${flags.amberCount} advisory — click for the list`}
+      aria-label={quiet ? 'Board flags — none right now' : `Board flags — ${flags.redCount} red, ${flags.amberCount} advisory`}
     >
-      <Flag size={12} /> {red ? flags.redCount : flags.amberCount}
+      <Flag size={12} />{quiet ? null : <> {red ? flags.redCount : flags.amberCount}</>}
     </button>
   );
 }
@@ -2893,10 +2907,17 @@ function BoardFlagsChip({ flags, open, onToggle }) {
 // ✕ to dismiss. The footer is REQUIRED honesty — what the checks could not judge (no
 // roster fetched, routes with no sequence, note coverage) — because "no flags" from a
 // detector that could not look is not the same claim as "nothing is wrong".
-function BoardFlagsPanel({ flags, dismissed, onDismiss, onOpenStop, onClose }) {
+function BoardFlagsPanel({ flags, dismissed, onDismiss, onOpenStop, onClose, onRestoreAll }) {
   if (!flags) return null;
   const rows = flags.rows.filter((r) => !dismissed[r.dismissKey]);
+  const hiddenByDismiss = flags.rows.length - rows.length;
+  // Header counts come from the DISMISS-FILTERED rows — the same numbers the chip shows.
+  // Printing the raw detector counts here made a fully-dismissed board read "1 red · 0
+  // advisory" directly above "Nothing needs looking at", one claim contradicting the other.
+  const liveRed = rows.filter((r) => r.tier === 'red').length;
+  const liveAmber = rows.filter((r) => r.tier === 'amber').length;
   const sk = flags.skipped || {};
+  const ck = flags.checked || {};
   const skippedBits = [
     sk.noRoster ? 'route checks off (open Routes once to load the day\'s loads)' : null,
     sk.routesNoSequence?.length ? `${sk.routesNoSequence.length} route(s) not judged — no delivery sequence` : null,
@@ -2906,13 +2927,15 @@ function BoardFlagsPanel({ flags, dismissed, onDismiss, onOpenStop, onClose }) {
       <div className="px-3 py-2 border-b flex items-center justify-between bg-slate-50">
         <div className="text-xs font-semibold text-slate-700 inline-flex items-center gap-1.5">
           <Flag size={13} className="text-red-600" /> Board flags
-          <span className="font-normal text-slate-500">{flags.redCount} red · {flags.amberCount} advisory</span>
+          <span className="font-normal text-slate-500">{liveRed} red · {liveAmber} advisory</span>
         </div>
         <button onClick={onClose} className="p-1 rounded hover:bg-slate-200" aria-label="Close"><X size={14} /></button>
       </div>
       <div className="max-h-[46vh] overflow-y-auto divide-y divide-slate-100">
         {rows.length === 0 && (
-          <div className="px-3 py-3 text-xs text-slate-500">Nothing needs looking at{Object.keys(dismissed).length ? ' (all dismissed)' : ''}.</div>
+          <div className="px-3 py-3 text-xs text-slate-500">
+            Nothing needs looking at{hiddenByDismiss > 0 ? ` — ${hiddenByDismiss} flag${hiddenByDismiss === 1 ? '' : 's'} dismissed` : ''}.
+          </div>
         )}
         {rows.map((r) => (
           <div key={r.dismissKey} className="px-3 py-2 flex items-start gap-2 hover:bg-slate-50">
@@ -2934,8 +2957,16 @@ function BoardFlagsPanel({ flags, dismissed, onDismiss, onOpenStop, onClose }) {
         ))}
       </div>
       <div className="px-3 py-1.5 border-t bg-slate-50 text-[10px] text-slate-400 leading-snug">
-        Checked at the last scan, from data already on this board — zero NuVizz calls. Arrival times are estimates (flat ~30 mph model).
+        {/* What was actually looked at — so a quiet panel is a CLAIM, not an absence. A zero
+            in "receiving hours on file" tells the dispatcher the fix is data, not the code. */}
+        Watched {ck.stops ?? 0} open stop{(ck.stops ?? 0) === 1 ? '' : 's'} · {ck.routesJudged ?? 0} route{(ck.routesJudged ?? 0) === 1 ? '' : 's'} judged for hours risk · {ck.stopsWithHours ?? 0} stop{(ck.stopsWithHours ?? 0) === 1 ? '' : 's'} with receiving hours on file today.
+        {' '}From data already on this board — zero NuVizz calls. Arrival times are estimates (flat ~30 mph model).
         {skippedBits.length > 0 && <> Not judged: {skippedBits.join(' · ')}.</>}
+        {/* The restore path lives HERE, not only in the empty state — 3 of 4 dismissed
+            still deserves a way back. */}
+        {hiddenByDismiss > 0 && onRestoreAll && (
+          <> {hiddenByDismiss} dismissed · <button onClick={onRestoreAll} className="underline text-slate-500 hover:text-slate-800">Restore dismissed</button></>
+        )}
       </div>
     </div>
   );
@@ -8029,6 +8060,11 @@ function StatusBadge({ kind }) {
   );
 }
 
+// The route header prints the human name big and the load number as fine print — but for
+// every list-discovered route the load id IS the name (nuvizz-list: "routeName doubles as
+// the load id"), so without this check the header read "JOE" twice, stacked.
+const sameRouteId = (a, b) => String(a ?? '').trim().toLowerCase() === String(b ?? '').trim().toLowerCase();
+
 // M5.2 — Route detail body, shared between the desktop sidebar and mobile drawer.
 // Shows the load's stops in compareByPlannedEta order (== polyline order) with status
 // badge + delivery/arrival/ETA time. Tap a row → onPickStop closes route + opens stop.
@@ -8037,6 +8073,24 @@ function RouteDetailBody({ stops, onPickStop, onViewOnMap }) {
   const driverName = sorted[0]?.driverName || sorted[0]?.driverUserName || '—';
   const delivered = sorted.filter((s) => classifyStopStatus(s) === 'DELIVERED').length;
   const pct = sorted.length ? Math.round((100 * delivered) / sorted.length) : 0;
+  // Route freight totals — the same four fields the printed manifest cover sums
+  // (routeStopFreight reads stop.cartons/volume/pallets; weight rides alongside). A stop
+  // whose freight columns are all blank (un-enriched row) contributes nothing, and the
+  // line says so rather than passing off a partial sum as the whole truck.
+  const totals = { skids: 0, loose: 0, pieces: 0, lbs: 0, reporting: 0 };
+  for (const s of sorted) {
+    const f = routeStopFreight(s);
+    totals.skids += f.skids; totals.loose += f.loose; totals.pieces += f.pieces;
+    totals.lbs += Number(s.weight) || 0;
+    // "Known" means PIECE knowledge (skids/loose/pieces) — a weight-only stop must not
+    // count as covered, or the honesty line hides exactly when piece counts are missing.
+    if (s.cartons != null || s.volume != null || s.pallets != null) totals.reporting += 1;
+  }
+  const totalBits = [];
+  if (totals.skids) totalBits.push(`${totals.skids} sk`);
+  if (totals.loose) totalBits.push(`${totals.loose} loose`);
+  if (totals.pieces) totalBits.push(`${totals.pieces} pcs`);
+  if (totals.lbs) totalBits.push(`${Math.round(totals.lbs).toLocaleString()} lb`);
   const [showManifest, setShowManifest] = useState(false);
   const routeName = sorted.find((s) => s.routeName)?.routeName || sorted.find((s) => s.loadNbr)?.loadNbr || 'Route';
   const manifestHtml = useMemo(
@@ -8055,6 +8109,15 @@ function RouteDetailBody({ stops, onPickStop, onViewOnMap }) {
           <div className="text-[11px] text-slate-500 mt-0.5">{delivered}/{sorted.length} delivered</div>
         </div>
       </div>
+      {/* What's on the truck, route-wide — same numbers the manifest cover prints. */}
+      {totalBits.length > 0 && (
+        <div className="px-4 py-1.5 border-b bg-slate-50 text-[11px] font-medium text-slate-600">
+          {sorted.length} stop{sorted.length === 1 ? '' : 's'} · {totalBits.join(' · ')}
+          {totals.reporting < sorted.length && (
+            <span className="font-normal text-slate-400"> · freight known for {totals.reporting} of {sorted.length}</span>
+          )}
+        </div>
+      )}
       <div className="px-4 py-2 border-b space-y-2">
         {/* Mobile only: reveal the map with this route framed (numbered pins). The route
             detail is a full-screen sheet over the map, so this minimizes it to a slim bar. */}
@@ -8152,7 +8215,7 @@ function RouteDetailSidebar({ loadNbr, stops, onClose, onPickStop, mobile = fals
         <div className="min-w-0">
           <div className="text-[10px] uppercase tracking-wider opacity-75">Route</div>
           <div className="font-bold truncate">{routeName || loadNbr}</div>
-          {routeName && <div className="text-[10px] font-mono opacity-75">{loadNbr}</div>}
+          {routeName && !sameRouteId(routeName, loadNbr) && <div className="text-[10px] font-mono opacity-75">{loadNbr}</div>}
         </div>
         <button onClick={onClose} className="p-1 hover:bg-white/20 rounded" aria-label="Close route"><X size={20} /></button>
       </div>
@@ -8171,7 +8234,7 @@ function MobileRouteDetailDrawer({ loadNbr, stops, onClose, onPickStop, onViewOn
         <div className="min-w-0">
           <div className="text-[10px] uppercase tracking-wider text-slate-500">Route</div>
           <div className="font-bold truncate">{routeName || loadNbr}</div>
-          {routeName && <div className="text-[10px] font-mono text-slate-400">{loadNbr}</div>}
+          {routeName && !sameRouteId(routeName, loadNbr) && <div className="text-[10px] font-mono text-slate-400">{loadNbr}</div>}
         </div>
         <button onClick={onClose} className="p-2 -mr-2" aria-label="Close route"><X size={20} /></button>
       </div>
@@ -8495,16 +8558,31 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
   // fact-fingerprint (standing) or board-day (occurrence) — see board-flags.js.
   const [flagsPanelOpen, setFlagsPanelOpen] = useState(false);
   const [dismissedFlags, setDismissedFlags] = useState(() => readDismissedFlags());
-  const boardFlags = useMemo(() => computeBoardFlags({
-    stops, notes, rosterRows: rosterRawRows, servedDate: selectedDate,
-    dayKey: weekdayKeyFromDate(selectedDate), opts: { depot: ROUTING_DEPOT },
-  }), [stops, notes, rosterRawRows, selectedDate]);
+  // A coarse clock for the hours-risk model: the detector clamps a not-yet-started route's
+  // departure to "now", so the memo must re-run as the day moves even when the board data
+  // doesn't. 5-minute ticks — the model is a flat ~30 mph estimate; minute precision is noise.
+  const [flagsClockTick, setFlagsClockTick] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => setFlagsClockTick((t) => t + 1), 5 * 60 * 1000);
+    return () => clearInterval(id);
+  }, []);
+  const boardFlags = useMemo(() => {
+    const now = new Date();
+    return computeBoardFlags({
+      stops, notes, rosterRows: rosterRawRows, servedDate: selectedDate,
+      dayKey: weekdayKeyFromDate(selectedDate),
+      // nowMin only makes sense for the day being looked at — a tomorrow board's routes
+      // haven't started because tomorrow hasn't, and clamping them to now would be a lie.
+      opts: { depot: ROUTING_DEPOT, ...(selectedDate === todayLocalYMD() ? { nowMin: now.getHours() * 60 + now.getMinutes() } : {}) },
+    });
+  }, [stops, notes, rosterRawRows, selectedDate, flagsClockTick]); // eslint-disable-line react-hooks/exhaustive-deps
   // The chip's number excludes dismissed rows — a cleared list must read as cleared.
   const visibleFlagCounts = useMemo(() => {
     const live = boardFlags.rows.filter((r) => !dismissedFlags[r.dismissKey]);
     return { ...boardFlags, redCount: live.filter((r) => r.tier === 'red').length, amberCount: live.filter((r) => r.tier === 'amber').length };
   }, [boardFlags, dismissedFlags]);
   const dismissFlag = useCallback((key) => setDismissedFlags({ ...writeDismissedFlag(key) }), []);
+  const restoreDismissedFlags = useCallback(() => { safeWriteJSON(LS_BOARD_FLAGS_DISMISSED, {}); setDismissedFlags({}); }, []);
   const openFlaggedStop = useCallback((stopNbr) => {
     const s = stops.find((x) => String(x.stopNbr) === String(stopNbr));
     if (s) { setSelectedStop(s); handlePanToStop(s); }
@@ -9861,6 +9939,9 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
             )}
           </div>
 
+          {/* Right-side cluster: status pill + Board Flags chip. One group so the row's
+              justify-between still reads date-left / status-right with the chip outboard. */}
+          <div className="flex items-start gap-1.5 min-w-0 flex-shrink">
           {/* Compact status pill — collapsible to just the stops count (shares
               statusCollapsed with desktop). min-w-0 lets it shrink before it can
               ever reach the date chip. */}
@@ -9893,13 +9974,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
               >
                 <Filter size={14} /> Filters
               </button>
-              <BoardFlagsChip flags={visibleFlagCounts} open={flagsPanelOpen} onToggle={() => setFlagsPanelOpen((o) => !o)} />
             </div>
-            {flagsPanelOpen && (
-              <div className="fixed inset-x-2 top-16 z-[70] flex justify-center">
-                <BoardFlagsPanel flags={boardFlags} dismissed={dismissedFlags} onDismiss={dismissFlag} onOpenStop={openFlaggedStop} onClose={() => setFlagsPanelOpen(false)} />
-              </div>
-            )}
             {/* Stacked details — hidden when collapsed (mirrors desktop). */}
             {!statusCollapsed && (
               <div className="mt-0.5 leading-tight min-w-0 [&>div]:truncate">
@@ -9925,7 +10000,22 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
               </div>
             )}
           </div>
+          {/* Board Flags — its OWN pill, not a child of the status pill: the status pill is
+              max-w-[60vw] overflow-hidden, and as its last flex child the chip was first to
+              be clipped off exactly on the narrow phones where flags matter most. */}
+          <div className="bg-white/95 backdrop-blur rounded-lg shadow pointer-events-auto flex-shrink-0 text-[11px]">
+            <BoardFlagsChip flags={visibleFlagCounts} open={flagsPanelOpen} onToggle={() => setFlagsPanelOpen((o) => !o)} />
+          </div>
+          </div>
         </div>
+        {/* The open panel lives OUTSIDE the backdrop-blur pill: backdrop-filter creates a
+            containing block, so a `fixed` descendant anchored to the pill's tiny clipped box
+            instead of the viewport — an opened panel could be invisible on mobile. */}
+        {flagsPanelOpen && (
+          <div className="fixed inset-x-2 top-16 z-[70] flex justify-center pointer-events-auto">
+            <BoardFlagsPanel flags={boardFlags} dismissed={dismissedFlags} onDismiss={dismissFlag} onOpenStop={openFlaggedStop} onClose={() => setFlagsPanelOpen(false)} onRestoreAll={restoreDismissedFlags} />
+          </div>
+        )}
         {driverGateNote && (
           <div className="absolute top-28 left-1/2 -translate-x-1/2 z-20 bg-amber-50 border border-amber-300 rounded shadow px-2 py-1 text-[10px] text-amber-800">
             Live drivers only available for today.
@@ -10344,7 +10434,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
               </div>
               {flagsPanelOpen && (
                 <div className="absolute right-0 top-full mt-1 z-[70]">
-                  <BoardFlagsPanel flags={boardFlags} dismissed={dismissedFlags} onDismiss={dismissFlag} onOpenStop={openFlaggedStop} onClose={() => setFlagsPanelOpen(false)} />
+                  <BoardFlagsPanel flags={boardFlags} dismissed={dismissedFlags} onDismiss={dismissFlag} onOpenStop={openFlaggedStop} onClose={() => setFlagsPanelOpen(false)} onRestoreAll={restoreDismissedFlags} />
                 </div>
               )}
               {/* Stacked details — hidden when collapsed. */}
