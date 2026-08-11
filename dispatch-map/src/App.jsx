@@ -8913,7 +8913,13 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
       if ((mapRef.current.getZoom() || 0) < 16) mapRef.current.setZoom(18);
     }
     return () => { m.setMap(null); };
-  }, [google, movingStop]); // eslint-disable-line react-hooks/exhaustive-deps
+    // mapReady: this marker is the ONLY handle on the map while you are correcting a pin.
+    // "Hide place labels" rebuilds the map (a cloud mapId cannot be shed any other way), and
+    // without this the pin would stay attached to the discarded map and simply vanish, with
+    // no way back short of reselecting the stop. Re-running puts it on the live map. It
+    // restarts from the stop's saved position, so a drag in progress is lost — losing the
+    // drag beats losing the pin.
+  }, [google, movingStop, mapReady]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const searchMatchSet = useMemo(() => {
     if (aiMode) return null;                       // AI mode: literal keyword filter suspended
@@ -16240,7 +16246,13 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
       if ((mapRef.current.getZoom() || 0) < 16) mapRef.current.setZoom(18);
     }
     return () => { m.setMap(null); };
-  }, [google, movingStop]); // eslint-disable-line react-hooks/exhaustive-deps
+    // mapReady: this marker is the ONLY handle on the map while you are correcting a pin.
+    // "Hide place labels" rebuilds the map (a cloud mapId cannot be shed any other way), and
+    // without this the pin would stay attached to the discarded map and simply vanish, with
+    // no way back short of reselecting the stop. Re-running puts it on the live map. It
+    // restarts from the stop's saved position, so a drag in progress is lost — losing the
+    // drag beats losing the pin.
+  }, [google, movingStop, mapReady]); // eslint-disable-line react-hooks/exhaustive-deps
   const addInView = useCallback(() => {
     if (!google || !mapRef.current) { setLastAction('Map not ready'); return; }
     const b = mapRef.current.getBounds();
