@@ -104,3 +104,14 @@ jobs:
       - run: npx --yes playwright@$(node -p "require('playwright-core/package.json').version") install chromium
       - run: npm run build
       - run: npm run smoke
+      # "Hide place labels" can only misbehave on a build that HAS a cloud mapId: Google
+      # ignores the JS `styles` array on those maps, so the toggle had nothing to do on the
+      # roadmap base. Honouring it means REBUILDING the map without the mapId, and the risk
+      # that creates is invisible to a unit test — a rebind that misses would leave the
+      # dispatcher on a clean map with no pins on it. So rebuild with a stub id and drive
+      # the real toggle, on both the Map and the Routing screen.
+      - run: npm run build
+        env:
+          VITE_GOOGLE_MAPS_API_KEY: ci-test-key
+          VITE_GOOGLE_MAP_ID: ci-test-map-id
+      - run: npm run verify:hide-labels

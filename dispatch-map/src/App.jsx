@@ -33,6 +33,7 @@ import { routeStopEta, routeStopFreight, routeStopSeq } from './lib/route-stop-l
 import { routeLoadLine, podPhotoFetchOffer, podSectionVisible, isPodImageExt, foldFreshStop } from './lib/stop-card-sections.js';
 import { manifestIssues, manifestHeadline, toStored, loadStored, saveStored } from './lib/manifest-check-view.js';
 import { noteFreshness } from './lib/stop-notes-freshness.js';
+import { mapBaseOptions, mapLiveOptions, mapIdKey, keepView } from './lib/map-base-options.js';
 import { stopTimelineModel } from './lib/stop-timeline.js';
 import { diffRouteStyle, DIFF_ORIGINAL_COLOR, groupDispatchTrips } from './lib/diff-route-style.js';
 import { addressLooksOff, suggestAddressFix } from './lib/address-fix.js';
@@ -73,7 +74,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.54.55';
+const APP_VERSION = '0.54.56';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -118,6 +119,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.54.56', 'HIDE PLACE LABELS ACTUALLY HIDES THEM NOW. Chad: "hiding place labels is not working." It wasn\'t, and on the plain map it never could have. The switch had two levers and both were dead there. (1) With SATELLITE ON it swaps the labelled imagery for the unlabelled imagery — that half genuinely worked, which is why this looked like it worked at all. (2) With satellite OFF you are on the roadmap, there is no label-free roadmap to swap to, so the only tool left is a style rule saying "POI labels off" — and Google IGNORES style rules on our maps, because we build them with a cloud map ID and those are styled in Google\'s console instead. The old code even had that written down and skipped the style on purpose. So you flipped a switch that did nothing, on both the Map tab and Routing. THE FIX: while the toggle is ON, the map is rebuilt WITHOUT the cloud map ID, which is the only way to make Google honour "POI labels off" — and it now works on the roadmap, on hybrid, everywhere. Flip it back and the cloud map ID returns. THE TRADE, SAID OUT LOUD RATHER THAN HIDDEN: no map ID means it is not a vector map, so WHILE labels are hidden the 3D tilt / rotate compass on the Map tab is unavailable. Turning the toggle back off brings them straight back. That is Google\'s rule, not a choice I made — and a switch that does nothing was the worse half of it. The rebuild keeps you exactly where you were looking (same center and zoom, no snap back to Buford) and re-draws every pin, route line and truck. Also: the Map tab called it "Hide map labels" and Routing called it "Hide place labels" — both now read "Hide place labels", which is what it does; it never touched street names. And every toggle switch in the filter panels now announces its own name to a screen reader (they were all just "switch, on"). TESTED THE WAY YOU ASKED: a browser test drives the real built app with a map ID, on the roadmap, on BOTH screens — it flips the switch, proves the map came back with no map ID and with POI labels off, that the pins are still there afterwards, that the view did not move, and that turning it off puts everything back. It runs in CI now, so this cannot quietly break again.'],
   ['0.54.55', 'THE MANIFEST CHECK NOW RUNS ITSELF FROM THE NIGHTLY EMAIL. Chad, on the drop screen: "This should happen automatically from email parse." It does now: a scheduled job polls an email inbox every 30 minutes, and when the nightly Uline freight report arrives, it runs the exact same free check the drop screen runs — parse the PDF, diff every order against what the scan put in Firestore — and stores the result where EVERY browser\'s Manifest-check flag reads it. So the red flag on the More menu lights on its own, on every dispatcher\'s screen, before anyone is even in the office; dropping the PDF by hand still works and a hand-dropped run that is newer simply wins. HOW IT DECIDES, without brittle rules: it does not care who sent the email or what the subject says — any PDF that actually PARSES as the freight report IS the freight report; any other PDF is noted and never fetched again. A report that arrives before the morning scan has cached the board is retried on the next cycle rather than half-checked. WHAT IT NEVER DOES: probe NuVizz. The automatic path runs only the zero-call diff; turning a suspect into "missing from NuVizz" stays behind the human probe button, so automation can never spend vendor calls. ONE-TIME SETUP still needed to switch it on: enable Receiving on the warehouse.davisdelivery.com domain in the Resend dashboard, add the MX record it shows, and auto-forward the nightly Uline email to manifests@warehouse.davisdelivery.com — until then the job no-ops silently. Nine new tests script a fake inbox end to end: found-and-checked, dedupe, wrong-PDF ignored, transient failures retried, the per-cycle cap, and the stored shape staying interchangeable with a manual run.'],
   ['0.54.54', 'BOARD FLAGS — A RED FLAG ON THE TOP BAR THAT LISTS WHAT NEEDS LOOKING AT. Chad: "if it seems like a route might not make a particular set of receiving hours … it has, like, a little red flag that pops up with a list of potential issues, on the top bar, that you need looking at closer." Built, and it is exactly that: every scan, a set of checks runs over the finished board, and a red flag with a count appears beside the stops pill — ONLY when there is something to look at; a clean board shows no flag at all, because a flag that is always there becomes furniture. Click it for the list: each row is one plain sentence, click-through opens the stop card, ✕ dismisses it. WHAT IT CHECKS, in v1: (1) two NuVizz orders sharing one stop number (the Estes twin — proof, not a guess); (2) a stop with NO map location — checked AFTER your saved pin corrections, so a pin you already fixed can never stay flagged; (3) two LIVE loads sharing one route name — your cancel-then-rebuild habit never flags, because a cancelled load cannot own a name (same rule as the STEVEN fix); (4) delivering to a customer recorded CLOSED that weekday — dispatcher-recorded days go red, scanner-guessed days go amber WITH the order text they came from, and ticking one day by hand can never promote the scanner\'s inventions to red; (5) THE CHECK YOU ASKED FOR — a stop sequenced so late it lands after the customer\'s receiving hours close. Honest about its limits: the arrival time is OUR estimate (flat ~30 mph on straight-line-×1.3 legs from the Buford terminal, departing 8:00a) and every row says so; hours a dispatcher typed can go red, hours the text scanner guessed cap at amber and say why, free-text hours ("RH 7-11AM") are never regex-guessed, and a route with no delivery sequence is not judged at all — an invented order would produce confident wrong answers. WHAT KEEPS IT QUIET ENOUGH TO TRUST: delivered and exception freight is never flagged; any check that would list more than a dozen stops collapses to ONE summary row so the badge stays a number worth reading; dismissing a standing problem (an un-geocodable address, a closed day) STAYS dismissed until the underlying facts change, while day-specific flags clear themselves overnight; and the panel footer says plainly what could NOT be judged — no loads roster loaded means route checks read "not checked", never "clean". ZERO COST: every check reads data already in your browser — no NuVizz calls, no Google calls, nothing new fetched. 41 new tests pin every rule and every wiring point.'],
   ['0.54.53', 'THE TERMINAL IS NOW PINNED TO ITS REAL ADDRESS. Every route the app measures — the drive out to the first stop, the drive home from the last, every re-sequence, and the finish-time estimate behind "will he get done" — is measured from one point that stands for the Buford terminal. That point was set by hand a long time ago and never checked against the actual address. It is now geocoded to 943 Gainesville Hwy, Buford, GA 30518 (Chad), matched to the building rather than to the middle of the road. THE GOOD NEWS: the old point was already right to within about 500 feet, so no route you have ever run was measured meaningfully wrong — this corrects the record, not the arithmetic. It is worth pinning anyway, because that address is confusing in two separate ways and the next person to touch it would have had to work both out again: "Gainesville Highway" is a street IN Buford, not the city of Gainesville forty minutes north; and public map data splits that same road across two ZIP codes, 30518 in Gwinnett and 30542 in Hall, whose midpoints sit five miles apart. Guessing from the road name alone can put the terminal five miles from where the trucks actually are. The coordinates now carry the address, the ZIP and both traps in a comment beside them. NOT CHANGED: the map\'s opening view still centres further south, nearer the middle of the delivery territory — that is a framing choice, not the terminal, and it stays until you say otherwise.'],
@@ -870,6 +872,10 @@ const DEFAULT_TABLE_COLUMNS = {
 // a 6th later doesn't churn separate LS keys. Defaults match the brief:
 // terminal/stem-out hidden = OFF (markers visible), unplanned/vehicles/clustering = ON.
 const DEFAULT_MAP_FILTERS = {
+  // Explicit, though the map already behaved as roadmap without it: the key was simply
+  // missing, so the Satellite switch rendered aria-checked={undefined} — no state at all
+  // for a screen reader, and `undefined` handed to the map-options builder.
+  satellite: false,
   hideTerminal: false,
   hideStemOut: false,
   unplannedOnly: false,
@@ -3533,6 +3539,10 @@ function MapFilterToggle({ label, checked, onChange, warning, disabled, disabled
       <span className="text-xs text-slate-700 min-w-0 flex-1 pr-2" title={disabled ? disabledHint : undefined}>{label}</span>
       <button
         role="switch"
+        // The label is a sibling span, so without this the switch has NO accessible name:
+        // a screen reader announces "switch, on" with no idea what is on, and nothing can
+        // address it by name. Naming it is also what lets the browser check drive it.
+        aria-label={typeof label === 'string' ? label : undefined}
         aria-checked={checked}
         disabled={disabled}
         onClick={() => !disabled && onChange(!checked)}
@@ -4334,7 +4344,7 @@ function FilterToolbar({ filters, setFilters, collapsed, setCollapsed, stopCount
             onChange={set('satellite')}
           />
           <MapFilterToggle
-            label="Hide map labels"
+            label="Hide place labels"
             checked={filters.hideLabels}
             onChange={set('hideLabels')}
           />
@@ -7710,7 +7720,7 @@ function MobileFiltersTab({
             onChange={setShowRoutes}
           />
           <MapFilterToggle
-            label="Hide map labels"
+            label="Hide place labels"
             checked={mapFilters.hideLabels}
             onChange={setMF('hideLabels')}
           />
@@ -8623,6 +8633,10 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
   const searchInputRef = useRef(null);
   const mapRef = useRef(null);
   const mapDiv = useRef(null);
+  // Bumped every time the map object is (re)built — "Hide place labels" has to rebuild it,
+  // because Google ignores JS styles on a cloud-mapId map. Every effect that DRAWS on the
+  // map depends on this, so a rebuild repaints instead of leaving an empty board.
+  const [mapReady, setMapReady] = useState(0);
   const recenterRef = useRef(null); // latest "fit to stops" fn for the custom control
   const clustererRef = useRef(null);
   const markersRef = useRef([]);
@@ -9183,17 +9197,25 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
     return [...m.values()].sort((a, b) => String(a.routeName || a.loadNbr).localeCompare(String(b.routeName || b.loadNbr)));
   }, [stops]);
 
-  // Init map once google + container are ready.
+  // Init the map. Normally once — but "Hide place labels" forces a rebuild, because a
+  // cloud mapId makes this a VECTOR map and Google ignores the JS `styles` array on those
+  // entirely (that is why the toggle did nothing on the roadmap base). Dropping the mapId
+  // is the only way to strip POI labels at runtime, and mapId cannot be changed on a live
+  // map. Everything that draws on the map re-binds through the mapReady counter below.
+  //
+  // The visible cost, stated rather than hidden: no mapId means no vector map, so the 3D
+  // tilt / rotate compass are unavailable WHILE labels are hidden. Toggling back restores
+  // them, along with the cloud style.
   useEffect(() => {
-    if (!google || !mapDiv.current || mapRef.current) return;
+    if (!google || !mapDiv.current) return;
     mapRef.current = new google.maps.Map(mapDiv.current, {
-      center: BUFORD,
-      zoom: 10,
+      // Keep the dispatcher where they were looking; BUFORD is only the cold-start view.
+      ...keepView(mapRef.current, BUFORD, 10),
       // Exactly the vector-map control set the dispatcher asked for: the rotate
       // compass + 2D/3D tilt (rotateControl on a vector mapId), zoom, the Street
       // View pegman, and a custom Recenter crosshair (added below). Map-type +
       // fullscreen are dropped (the Filters panel has the Satellite toggle).
-      ...(MAP_ID ? { mapId: MAP_ID } : {}),
+      ...mapBaseOptions({ mapId: MAP_ID, hideLabels: mapFilters.hideLabels, satellite: mapFilters.satellite }),
       mapTypeControl: false,
       streetViewControl: true,
       streetViewControlOptions: { position: google.maps.ControlPosition.RIGHT_BOTTOM },
@@ -9226,7 +9248,13 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
     projOv.onAdd = projOv.draw = projOv.onRemove = () => {};
     projOv.setMap(mapRef.current);
     selectionOverlayRef.current = projOv;
-  }, [google]);
+    // Everything drawn on the map (pins, route lines, driver trucks, the search highlight,
+    // the fit) hangs off this counter, so a rebuild re-paints instead of leaving the
+    // dispatcher staring at an empty board.
+    setMapReady((n) => n + 1);
+    // mapIdKey, not hideLabels: this flips only when the map genuinely has to be rebuilt,
+    // so a build with no VITE_GOOGLE_MAP_ID still inits exactly once.
+  }, [google, mapIdKey(MAP_ID, mapFilters.hideLabels)]); // eslint-disable-line
 
   // The bottom data grid is an ABSOLUTE OVERLAY inside the map container, so Google's canvas
   // extends UNDERNEATH it — a flat 60px fitBounds pad framed a route's southern stops behind
@@ -9247,33 +9275,26 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
       pts.forEach((s) => b.extend({ lat: s.lat, lng: s.lng }));
       mapRef.current.fitBounds(b, fitPad());
     };
-  }, [google, filteredStops, fitPad]);
+  }, [google, filteredStops, fitPad, mapReady]);
 
   // M4.4 — satellite/roadmap toggle. 'hybrid' = satellite imagery + road labels,
   // which is most useful for spotting docks/yards while keeping street names.
-  // "Hide map labels": on the vector mapId map, JS styles are ignored — so the
-  // mapId-safe lever is the TYPE (satellite has no labels, hybrid does). When there's
-  // no mapId, also apply a POI/transit label-off style so the roadmap base honors it.
+  // The TYPE can change on a live map; the mapId cannot, which is why "Hide place labels"
+  // rebuilds the map in the init effect above. `styles: null` here means the live map is
+  // still mapId-backed, so there is nothing worth asking Google for.
   useEffect(() => {
     if (!google || !mapRef.current) return;
-    const type = mapFilters.satellite ? (mapFilters.hideLabels ? 'satellite' : 'hybrid') : 'roadmap';
-    try { mapRef.current.setMapTypeId(type); } catch { /* ignore */ }
-    if (!MAP_ID) {
-      try {
-        mapRef.current.setOptions({ styles: mapFilters.hideLabels
-          ? [{ featureType: 'poi', elementType: 'labels', stylers: [{ visibility: 'off' }] },
-             { featureType: 'transit', elementType: 'labels', stylers: [{ visibility: 'off' }] }]
-          : [] });
-      } catch { /* ignore */ }
-    }
-  }, [google, mapFilters.satellite, mapFilters.hideLabels]);
+    const { mapTypeId, styles } = mapLiveOptions({ mapId: MAP_ID, hideLabels: mapFilters.hideLabels, satellite: mapFilters.satellite });
+    try { mapRef.current.setMapTypeId(mapTypeId); } catch { /* ignore */ }
+    if (styles) { try { mapRef.current.setOptions({ styles }); } catch { /* ignore */ } }
+  }, [google, mapFilters.satellite, mapFilters.hideLabels, mapReady]);
 
   // Tell Google Maps to redraw as soon as the panel width changes — otherwise
   // the map tiles leave a gap until the next interaction.
   useEffect(() => {
     if (!google || !mapRef.current) return;
     google.maps.event.trigger(mapRef.current, 'resize');
-  }, [google, panel.width]);
+  }, [google, panel.width, mapReady]);
 
   // M4.1: render stop markers with full set + search opacity. We render ALL
   // filteredStops as markers but dim non-matches when a search is active so
@@ -9393,7 +9414,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
     } else {
       newMarkers.forEach((m) => m.setMap(mapRef.current));
     }
-  }, [google, filteredStops, notes, tractorLocs, effectiveMatchSet, mapFilters.showClustered, selectedDate, selectedRoute, selectedRouteStops]);
+  }, [google, filteredStops, notes, tractorLocs, effectiveMatchSet, mapFilters.showClustered, selectedDate, selectedRoute, selectedRouteStops, mapReady]);
 
   // Center/zoom the map to fit a route's stops when it's opened (per dispatcher
   // request — NuVizz frames the route on open). Restores the prior board view on close.
@@ -9550,7 +9571,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
     }
     // Leave no cursor override behind when the overlay is torn down mid-hover.
     return () => { mapRef.current?.setOptions({ draggableCursor: null }); };
-  }, [google, showRoutes, routeData, selectedRoute]);   // eslint-disable-line react-hooks/exhaustive-deps
+  }, [google, showRoutes, routeData, selectedRoute, mapReady]);   // eslint-disable-line react-hooks/exhaustive-deps
 
   // Auto-zoom on search results: 1 match → center + open sidebar, 2-10 → fit bounds.
   const pendingSearchFitRef = useRef(false);   // search settled before the board had rows — fit once when they land
@@ -9575,7 +9596,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
     // drifted the map out to frame far-apart matches while the dispatcher sat idle
     // (e.g. "floor" spanning Dalton→Conyers→Marietta). Keying on the stable search
     // inputs fixes that; filteredStops is read live from the closure.
-  }, [google, debouncedSearch, aiResult, selectionSet]);  // eslint-disable-line react-hooks/exhaustive-deps
+  }, [google, debouncedSearch, aiResult, selectionSet, mapReady]);  // eslint-disable-line react-hooks/exhaustive-deps
   // One-shot deferred fit: typing during a cold load / date flip used to find zero rows and
   // never re-fit (the effect above deliberately doesn't key on the board). Runs at most once
   // per pending search, then disarms — the 120s-refresh drift fix stays intact.
@@ -9669,7 +9690,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
         return overlay;
       });
     }
-  }, [google, drivers, showDrivers, showDriverLabels, driverStatusLine]);
+  }, [google, drivers, showDrivers, showDriverLabels, driverStatusLine, mapReady]);
 
   // Keyboard shortcuts: `/` focuses search; Escape clears + blurs (handled in input).
   useEffect(() => {
@@ -9689,7 +9710,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
     if (!google || !mapRef.current) return;
     const id = setTimeout(() => google.maps.event.trigger(mapRef.current, 'resize'), 50);
     return () => clearTimeout(id);
-  }, [google]);
+  }, [google, mapReady]);
 
   const handleSave = async (draft) => {
     if (!db || !selectedStop) return;
@@ -16367,12 +16388,16 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
     boxCornersRef.current = []; lassoVtxRef.current = [];
     selectModeRef.current = null; setSelectMode(null); setBoxStep(0); setLassoCount(0);
     mapRef.current = new google.maps.Map(mapDiv.current, {
-      center: ROUTING_DEPOT, zoom: 9, mapTypeControl: false, streetViewControl: false, fullscreenControl: false,
+      mapTypeControl: false, streetViewControl: false, fullscreenControl: false,
       gestureHandling: 'greedy', // one-finger pan/zoom on touch (no two-finger requirement)
       // Match the dispatch Map's look: the same vector map style (mapId) + satellite
-      // imagery with road labels (hybrid), instead of the plain roadmap base.
-      ...(MAP_ID ? { mapId: MAP_ID } : {}),
-      mapTypeId: routeSatellite ? 'hybrid' : 'roadmap',
+      // imagery with road labels (hybrid), instead of the plain roadmap base — EXCEPT
+      // while "Hide place labels" is on, when the mapId has to be dropped so Google will
+      // honour the poi/transit style at all (see lib/map-base-options.js).
+      ...mapBaseOptions({ mapId: MAP_ID, hideLabels: routeHideLabels, satellite: routeSatellite }),
+      // Rebuilding at the depot would throw the dispatcher back across the state every
+      // time they decluttered; keep them looking at what they were looking at.
+      ...keepView(mapRef.current, ROUTING_DEPOT, 9),
     });
     // Single click listener drives Box/Lasso. Empty-map taps place points; the
     // latest handler is read via a ref so the listener is bound only once per map.
@@ -16383,7 +16408,11 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
     ov.setMap(mapRef.current);
     overlayRef.current = ov;
     setMapReady((n) => n + 1);
-  }, [google, isMobile]); // eslint-disable-line
+    // mapIdKey — NOT routeHideLabels directly. A mapId is immutable once the map exists,
+    // so honouring the toggle means building a new map; this key flips only when that is
+    // actually required, so a build with no VITE_GOOGLE_MAP_ID never re-inits at all (its
+    // styles are just set on the live map below, exactly as before).
+  }, [google, isMobile, mapIdKey(MAP_ID, routeHideLabels)]); // eslint-disable-line
 
   // Render stop markers — the SAME rich dispatch-map pins (status / priority flag /
   // AM-PM window / restriction icons / DNS) via the shared stopMarkerIcon helper, so
@@ -16517,20 +16546,12 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
   // mobile/desktop re-init.
   useEffect(() => {
     if (!google || !mapRef.current) return;
-    // Satellite: 'satellite' drops ALL of Google's labels; 'hybrid' keeps them. Roadmap always
-    // carries labels — with a cloud mapId JS styles can't strip them, so "Hide place labels"
-    // primarily cleans the satellite view (where the POI clutter overlaps the pins). When there's
-    // NO mapId, also apply a POI/transit-off style so roadmap honors it too.
-    const type = routeSatellite ? (routeHideLabels ? 'satellite' : 'hybrid') : 'roadmap';
-    try { mapRef.current.setMapTypeId(type); } catch { /* ignore */ }
-    if (!MAP_ID) {
-      try {
-        mapRef.current.setOptions({ styles: routeHideLabels
-          ? [{ featureType: 'poi', elementType: 'labels', stylers: [{ visibility: 'off' }] },
-             { featureType: 'transit', elementType: 'labels', stylers: [{ visibility: 'off' }] }]
-          : [] });
-      } catch { /* ignore */ }
-    }
+    // Type is free to change on a live map; the mapId is not, which is why hiding labels
+    // rebuilds the map above. `styles: null` means this map is still mapId-backed and
+    // Google would only warn at us, so we don't ask.
+    const { mapTypeId, styles } = mapLiveOptions({ mapId: MAP_ID, hideLabels: routeHideLabels, satellite: routeSatellite });
+    try { mapRef.current.setMapTypeId(mapTypeId); } catch { /* ignore */ }
+    if (styles) { try { mapRef.current.setOptions({ styles }); } catch { /* ignore */ } }
   }, [google, routeSatellite, routeHideLabels, mapReady]);
 
   // "Show routes" overlay — group the day's positioned stops by load, order each by the same
