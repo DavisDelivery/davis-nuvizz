@@ -31,10 +31,16 @@ export interface ScanResult {
 // source-locked trust model: addressLine2 is curated, orderInstructions is
 // advisory; the writer respects the matching manual_overrides flags.
 export interface HoursScanResult {
-  open: string;  // "HH:MM" 24-hour
-  close: string; // "HH:MM" 24-hour
+  open: string;  // "HH:MM" 24-hour — '' when only a close is known ("UNTIL 2PM")
+  close: string; // "HH:MM" 24-hour — '' when only an open is known ("OPENS AT 11AM")
   matchedSource: SignalSource;
   matchedText: string;
+  // Day-qualified schedules (corpus sweep, Aug 2026): "MON-THURS 6 30-4 / FRI 8-12"
+  // carries DIFFERENT windows per weekday — the one-range-fills-seven model cannot say
+  // "Friday closes at noon", which is exactly the day that bites. When present, the
+  // writer fills ONLY these days; `open`/`close` above hold the most common window as
+  // a back-compat summary. Absent for plain single-range detections.
+  byDay?: Partial<Record<DayCode, { open: string; close: string }>>;
 }
 
 export interface ClosedDayScanResult {
@@ -136,24 +142,72 @@ export function scanStop(stop: ScannableStop): ScanResult[] {
 // wrapper is just a gate and the inner time parser can be reused. matchedText
 // returns the full wrapper+range slice so the audit trail shows what triggered
 // detection.
-// One time token: "7", "7:30", "7 30" (Chad's 08-11 EOD manifest: Uline sent
-// "RECEIVING HOURS" and "7 30-1" as separate comments — the space IS the colon),
-// or "7.30", each with an optional meridiem. Minutes are locked to two digits
-// 00-59 so "7 3-1" can't half-match. Shared by every wrapper below.
-const TIME_TOKEN = '[0-9]{1,2}(?:[:. ][0-5][0-9])?\\s*(?:AM|PM)?';
+// One time token — every shape the Firestore corpus actually holds (Aug 2026 sweep):
+// "7", "7:30", "7 30" (space as the colon — Chad's 08-11 EOD manifest), "7.30",
+// meridiem as AM/PM or the single letter A/P ("8A-1P", "4 30P"), or the word NOON.
+// Minutes are locked to two digits 00-59 so "7 3-1" can't half-match.
+const TIME_TOKEN = '(?:NOON\\b|[0-9]{1,2}(?:[:. ]?[0-5][0-9])?\\s*(?:AM|PM|A|P)?\\b\\.?)';
 const TIME_RANGE = `${TIME_TOKEN}\\s*(?:-|TO|—)\\s*${TIME_TOKEN}`;
+// The receiving-hours label vocabulary, as actually written: RECEIVING HOURS,
+// REC HRS, RCVG HRS, RCV HRS, HOURS, HRS, RH.
+const HOURS_LABEL = '(?:(?:RECEIVING|RCVNG|RCVG|RCV|REC)\\s*)?(?:HOURS?|HRS?)|RECEIVING|RH';
 const HOURS_WRAPPERS: RegExp[] = [
-  new RegExp(`\\bHOURS?\\s*[:\\-]?\\s*(${TIME_RANGE})`, 'i'),
-  new RegExp(`\\bOPEN\\s*[:\\-]?\\s*(${TIME_RANGE})`, 'i'),
-  // "RECEIVING" optionally followed by "HOURS" — Uline often splits the label
-  // ("RECEIVING HOURS") and the range ("8AM-12PM" / "7 30-1") across separate
-  // SPL-INSTR-TEXT segments that join with whitespace/newline.
-  new RegExp(`\\bRECEIVING(?:\\s+HOURS?)?\\s*[:\\-]?\\s*(${TIME_RANGE})`, 'i'),
-  // Uline "RH" = Receiving Hours, e.g. "RH 7-11AM" / "RH 8-3" / "RH7-11AM".
-  new RegExp(`\\bRH\\s*[:\\-]?\\s*(${TIME_RANGE})`, 'i'),
+  // Label + range. The label and the range often arrive as SEPARATE SPL-INSTR-TEXT
+  // comments that join with a newline — \s bridges it.
+  new RegExp(`\\b(?:${HOURS_LABEL})\\s*[:\\-]?\\s*(${TIME_RANGE})`, 'i'),
+  new RegExp(`\\bOPEN(?:\\s+FROM)?\\s*[:\\-]?\\s*(${TIME_RANGE})`, 'i'),
   new RegExp(`\\bDELIVER(?:Y)?\\s+BETWEEN\\s+(${TIME_TOKEN}\\s*(?:-|TO|AND|—)\\s*${TIME_TOKEN})`, 'i'),
-  new RegExp(`\\bDELIVER(?:Y)?\\s+BY\\s+(${TIME_TOKEN})`, 'i'),
+  // A range labelled as a jobsite delivery window ("$80.00 8AM-11AM Jobsite Delivery").
+  new RegExp(`(${TIME_RANGE})\\s+JOBSITE\\b`, 'i'),
 ];
+// Close-only forms → {open: 06:00 default, close}: "DELIVER BY 2PM", "DEL BY NOON",
+// "RCVG HRS UNTIL 2PM ONLY", "CLOSE AT 3PM", "HAS TO BE PICKED UP BEFORE 3PM".
+const CLOSE_ONLY_WRAPPERS: RegExp[] = [
+  new RegExp(`\\bDEL(?:IVER(?:Y|ED)?)?\\s+(?:BY|BEFORE|UNTIL)\\s+(${TIME_TOKEN})`, 'i'),
+  new RegExp(`\\b(?:${HOURS_LABEL})\\s*(?:UNTIL|TIL|BY)\\s+(${TIME_TOKEN})`, 'i'),
+  new RegExp(`\\bCLOSE[SD]?\\s+(?:AT|@)\\s*(${TIME_TOKEN})`, 'i'),
+  new RegExp(`\\bPICK(?:ED)?\\s*UP\\s+(?:BY|BEFORE)\\s+(${TIME_TOKEN})`, 'i'),
+];
+// Open-only forms → {open, close: ''}: "OPENS AT 11AM", "RECEIVING AFTER 10AM",
+// "NO DELIVERIES BEFORE 8AM". A missing close arms nothing downstream (the hours-risk
+// check needs a close), but the window shows on the customer card instead of vanishing.
+const OPEN_ONLY_WRAPPERS: RegExp[] = [
+  new RegExp(`\\bOPENS?\\s+(?:AT|@)\\s*(${TIME_TOKEN})`, 'i'),
+  new RegExp(`\\b(?:RECEIVING|RCVNG|RCVG|RCV|DELIVER(?:Y|IES)?)\\s+AFTER\\s+(${TIME_TOKEN})`, 'i'),
+  new RegExp(`\\bNO\\s+DELIVER(?:Y|IES)?\\s+BEFORE\\s+(${TIME_TOKEN})`, 'i'),
+];
+
+// ── Day-qualified schedules ──────────────────────────────────────────────────
+// "MON-THURS 6 30-4 / FRI 8-12", "M-TH ONLY 9-4PM", "MONDAY-THURS 6 30A-3 30P /
+// FRIDAY 6 30A-11A", and the label-on-its-own-line form ("FRIDAY" then
+// "7 00 AM - 12 00 PM" in the next comment). Also day-qualified closes:
+// "FRIDAYS CLOSE AT NOON", "CLOSED FRI AT 12PM", "DEL BY NOON ON FRIDAYS".
+const DAY_WORD: Record<string, DayCode> = {
+  M: 'mon', MON: 'mon', MONDAY: 'mon',
+  TU: 'tue', TUE: 'tue', TUES: 'tue', TUESDAY: 'tue',
+  W: 'wed', WED: 'wed', WEDNESDAY: 'wed',
+  TH: 'thu', THU: 'thu', THUR: 'thu', THURS: 'thu', THURSDAY: 'thu',
+  F: 'fri', FRI: 'fri', FRIDAY: 'fri',
+  SA: 'sat', SAT: 'sat', SATURDAY: 'sat',
+  SU: 'sun', SUN: 'sun', SUNDAY: 'sun',
+};
+const DAY_ORDER: DayCode[] = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
+// Multi-letter tokens can stand alone ("FRI 8-12"); single letters only inside a
+// span ("M-TH") where the dash disambiguates them from ordinary prose.
+const DAY_TOKEN_MULTI = '(?:MONDAY|MON|TUESDAY|TUES|TUE|WEDNESDAY|WED|THURSDAY|THURS|THUR|THU|FRIDAY|FRI|SATURDAY|SAT|SUNDAY|SUN)';
+const DAY_TOKEN_ANY = `(?:${DAY_TOKEN_MULTI}|M|TU|W|TH|F|SA|SU)`;
+const DAY_SPAN = `(?:${DAY_TOKEN_ANY}\\s*-\\s*${DAY_TOKEN_ANY}|${DAY_TOKEN_MULTI})S?`;
+function expandDaySpan(spanText: string): DayCode[] {
+  const t = spanText.trim().toUpperCase().replace(/S$/, '');
+  const m = t.split(/\s*-\s*/);
+  const a = DAY_WORD[m[0]?.replace(/S$/, '') ?? ''];
+  if (!a) return [];
+  if (m.length === 1) return [a];
+  const b = DAY_WORD[m[1]?.replace(/S$/, '') ?? ''];
+  if (!b) return [a];
+  const ai = DAY_ORDER.indexOf(a), bi = DAY_ORDER.indexOf(b);
+  return ai <= bi ? DAY_ORDER.slice(ai, bi + 1) : [a];
+}
 
 // Parse a captured range like "6AM-2PM" or "8-4" or "6:30 AM to 2:30 PM" into
 // {open, close} 24-hour strings. Returns null if the range can't be parsed
@@ -174,7 +228,8 @@ function parseTimeRange(rangeText: string): { open: string; close: string } | nu
   // window and is refused rather than silently flipped 12 hours.
   const toMin = (t: string) => parseInt(t.slice(0, 2), 10) * 60 + parseInt(t.slice(3), 10);
   if (toMin(close) <= toMin(open)) {
-    const closeHadMeridiem = /(AM|PM)\s*$/i.test(parts[1]);
+    // NOON counts as explicit — it names 12:00 outright.
+    const closeHadMeridiem = /(?:(A|P)M?\.?|NOON)\s*$/i.test(parts[1]);
     if (closeHadMeridiem || toMin(close) >= 720) return null;
     close = `${String(parseInt(close.slice(0, 2), 10) + 12).padStart(2, '0')}:${close.slice(3)}`;
   }
@@ -186,29 +241,33 @@ function parseTimeRange(rangeText: string): { open: string; close: string } | nu
 // because business hours straddle noon ~95% of the time and 4-hour evening
 // receiving windows are vanishingly rare).
 function parseTimePiece(piece: string, peer: string): string | null {
+  if (/^NOON\.?$/i.test(piece.trim())) return '12:00';
   // Separator can be ":", "." or a space — Uline's "7 30-1" writes 7:30 with a space.
-  const m = /^([0-9]{1,2})(?:[:. ]([0-5][0-9]))?\s*(AM|PM)?$/i.exec(piece);
+  // Meridiem can be the single letter: "8A", "4 30P" (corpus: "RECEIVING HOURS 8A-1P").
+  const m = /^([0-9]{1,2})(?:[:. ]?([0-5][0-9]))?\s*(AM|PM|A|P)?\.?$/i.exec(piece);
   if (!m) return null;
   let hour = parseInt(m[1], 10);
   const minute = m[2] ? parseInt(m[2], 10) : 0;
-  let meridiem = m[3] ? m[3].toUpperCase() : null;
+  let meridiem = m[3] ? (m[3][0].toUpperCase() + 'M') : null;
   if (hour < 0 || hour > 24) return null;
   if (minute < 0 || minute > 59) return null;
   if (!meridiem) {
     // Peer-based inference. If peer has a meridiem, use the opposite for the
     // earlier hour and same for the later hour. If neither has one, assume
     // morning-open + afternoon-close.
-    const peerM = /(AM|PM)$/i.exec(peer);
-    const peerMeridiem = peerM ? peerM[1].toUpperCase() : null;
-    if (peerMeridiem) {
-      // We're the half without meridiem. If we're "lower" numerically, mirror;
-      // if higher, take opposite of peer.
-      const peerHour = parseInt(/^[0-9]{1,2}/.exec(peer)?.[0] || '0', 10);
-      if (hour <= peerHour) {
-        meridiem = peerMeridiem === 'PM' ? 'AM' : peerMeridiem;
-      } else {
-        meridiem = peerMeridiem;
-      }
+    const peerM = /(A|P)M?\.?\s*$/i.exec(peer);
+    const peerMeridiem = peerM ? (peerM[1].toUpperCase() + 'M') : (/NOON\.?\s*$/i.test(peer) ? 'PM' : null);
+    if (peerMeridiem === 'PM') {
+      // Bare half against a PM peer. Business windows straddle noon: "9-4PM" opens 9 AM,
+      // "2-4PM" runs same-afternoon, "8-12P" ends at noon with a morning open, and a bare
+      // 12 is always noon. (The old "mirror if lower" rule read "9-4PM" as 9 PM and the
+      // range refused itself.)
+      // Anchored so compact times backtrack correctly: the peer hour of "430PM" is 4, not 43.
+      const peerHour = /NOON/i.test(peer) ? 12
+        : parseInt(/^([0-9]{1,2})(?:[:. ]?[0-5][0-9])?\s*(?:AM|PM|A|P)?\.?$/i.exec(peer.trim())?.[1] || '0', 10);
+      meridiem = hour === 12 ? 'PM' : (peerHour !== 12 && hour < peerHour) ? 'PM' : 'AM';
+    } else if (peerMeridiem === 'AM') {
+      meridiem = 'AM'; // a bare half next to an AM peer is morning; the afternoon-shift rescues "8AM-4"
     } else {
       meridiem = hour < 12 ? 'AM' : 'PM';
     }
@@ -229,33 +288,88 @@ function stripCommentPrefixes(text: string): string {
 function scanHours(text: string | null | undefined, source: SignalSource): HoursScanResult | null {
   if (!text) return null;
   const normalized = stripCommentPrefixes(text);
+
+  // 1 — Day-qualified segments (most specific evidence wins). Both shapes: day span +
+  // range ("MON-THURS 6 30-4", "FRIDAY ⏎ 7 00 AM - 12 00 PM") and day-qualified closes
+  // ("FRIDAYS CLOSE AT NOON", "CLOSED FRI AT 12PM", "DEL BY NOON ON FRIDAYS").
+  const byDay: Partial<Record<DayCode, { open: string; close: string }>> = {};
+  const matchedBits: string[] = [];
+  const daySegRe = new RegExp(`\\b(${DAY_SPAN})\\s*(?:ONLY)?\\s*[:\\-]?\\s*(${TIME_RANGE})`, 'gi');
+  for (let m = daySegRe.exec(normalized); m; m = daySegRe.exec(normalized)) {
+    const days = expandDaySpan(m[1]);
+    const parsed = parseTimeRange(m[2]);
+    if (!days.length || !parsed) continue;
+    for (const d of days) byDay[d] = { open: parsed.open, close: parsed.close };
+    matchedBits.push(m[0]);
+  }
+  const dayCloseRes: RegExp[] = [
+    new RegExp(`\\b(${DAY_SPAN})\\s+CLOSES?\\s+(?:AT|@)\\s*(${TIME_TOKEN})`, 'gi'),
+    new RegExp(`\\bCLOSE[SD]?\\s+(?:ON\\s+)?(${DAY_SPAN})\\s+(?:AT|@)\\s*(${TIME_TOKEN})`, 'gi'),
+  ];
+  for (const re of dayCloseRes) {
+    for (let m = re.exec(normalized); m; m = re.exec(normalized)) {
+      const days = expandDaySpan(m[1]);
+      const close = parseTimePiece(m[2].trim(), 'PM');
+      if (!days.length || !close) continue;
+      for (const d of days) byDay[d] = { open: byDay[d]?.open || '', close };
+      matchedBits.push(m[0]);
+    }
+  }
+  const delByOnRe = new RegExp(`\\bDEL(?:IVER(?:Y)?)?\\s+BY\\s+(${TIME_TOKEN})\\s+(?:ON\\s+)?(${DAY_SPAN})`, 'gi');
+  for (let m = delByOnRe.exec(normalized); m; m = delByOnRe.exec(normalized)) {
+    const days = expandDaySpan(m[2]);
+    const close = parseTimePiece(m[1].trim(), 'PM');
+    if (!days.length || !close) continue;
+    for (const d of days) byDay[d] = { open: byDay[d]?.open || '', close };
+    matchedBits.push(m[0]);
+  }
+
+  // 2 — Generic (day-less) range via the label wrappers.
+  let generic: { open: string; close: string; matchedText: string } | null = null;
   for (const w of HOURS_WRAPPERS) {
     const m = w.exec(normalized);
-    if (m) {
-      const range = m[1];
-      const parsed = parseTimeRange(range);
-      if (parsed) {
-        return {
-          open: parsed.open,
-          close: parsed.close,
-          matchedSource: source,
-          matchedText: m[0],
-        };
-      }
-      // Single-time "DELIVER BY 2PM" — treat as close-by with 06:00 default open.
-      const single = /^([0-9]{1,2})(?:[:. ]([0-5][0-9]))?\s*(AM|PM)?$/i.exec(range.trim());
-      if (single) {
-        const close = parseTimePiece(range.trim(), '6AM');
-        if (close) {
-          return {
-            open: '06:00',
-            close,
-            matchedSource: source,
-            matchedText: m[0],
-          };
-        }
-      }
+    if (!m) continue;
+    // A day-qualified segment already claimed this exact slice — don't double-read
+    // "FRI 8-12" as a generic all-week window through the bare-range wrappers.
+    if (matchedBits.some((b) => b.includes(m[1]))) continue;
+    const parsed = parseTimeRange(m[1]);
+    if (parsed) { generic = { ...parsed, matchedText: m[0] }; break; }
+  }
+
+  // 3 — Assemble. Day-qualified evidence produces byDay (generic fills the week first
+  // when both exist); a lone generic range keeps the legacy single-window shape.
+  const dayKeys = Object.keys(byDay) as DayCode[];
+  if (dayKeys.length) {
+    if (generic) {
+      for (const d of DAY_ORDER) if (!byDay[d]) byDay[d] = { open: generic.open, close: generic.close };
+      matchedBits.unshift(generic.matchedText);
     }
+    // Summary open/close for back-compat consumers: the most common window among the days.
+    const counts = new Map<string, { n: number; w: { open: string; close: string } }>();
+    for (const d of dayKeys) {
+      const w = byDay[d]!;
+      const k = `${w.open}|${w.close}`;
+      counts.set(k, { n: (counts.get(k)?.n || 0) + 1, w });
+    }
+    const top = [...counts.values()].sort((a, b) => b.n - a.n)[0].w;
+    return { open: top.open, close: top.close, byDay, matchedSource: source, matchedText: matchedBits.join(' · ') };
+  }
+  if (generic) return { open: generic.open, close: generic.close, matchedSource: source, matchedText: generic.matchedText };
+
+  // 4 — One-sided forms. Close-only keeps the legacy 06:00 default open ("DELIVER BY
+  // 2PM" behavior); open-only stores the open with no close (informs the card, arms
+  // nothing — the hours-risk check needs a close).
+  for (const re of CLOSE_ONLY_WRAPPERS) {
+    const m = re.exec(normalized);
+    if (!m) continue;
+    const close = parseTimePiece(m[1].trim(), 'PM');
+    if (close) return { open: '06:00', close, matchedSource: source, matchedText: m[0] };
+  }
+  for (const re of OPEN_ONLY_WRAPPERS) {
+    const m = re.exec(normalized);
+    if (!m) continue;
+    const open = parseTimePiece(m[1].trim(), 'AM');
+    if (open) return { open, close: '', matchedSource: source, matchedText: m[0] };
   }
   return null;
 }
@@ -267,13 +381,13 @@ function scanHours(text: string | null | undefined, source: SignalSource): Hours
 // trailing "S" plural ("CLOSED ON FRIDAYS" — the exact Uline instruction format),
 // in addition to the bare "CLOSED FRIDAY" / "NO FRIDAY" / "FRIDAY CLOSED" forms.
 const CLOSED_DAY_PATTERNS: { day: DayCode; patterns: RegExp[] }[] = [
-  { day: 'mon', patterns: [/\bCLOSED\s+(?:ON\s+)?MON(?:DAY)?S?\b/i, /\bNO\s+MONDAYS?\b/i, /\bMONDAYS?\s+CLOSED\b/i] },
-  { day: 'tue', patterns: [/\bCLOSED\s+(?:ON\s+)?TUE(?:S|SDAY)?S?\b/i, /\bNO\s+TUESDAYS?\b/i, /\bTUESDAYS?\s+CLOSED\b/i] },
-  { day: 'wed', patterns: [/\bCLOSED\s+(?:ON\s+)?WED(?:NESDAY)?S?\b/i, /\bNO\s+WEDNESDAYS?\b/i, /\bWEDNESDAYS?\s+CLOSED\b/i] },
-  { day: 'thu', patterns: [/\bCLOSED\s+(?:ON\s+)?THU(?:RS|RSDAY)?S?\b/i, /\bNO\s+THURSDAYS?\b/i, /\bTHURSDAYS?\s+CLOSED\b/i] },
-  { day: 'fri', patterns: [/\bCLOSED\s+(?:ON\s+)?FRI(?:DAY)?S?\b/i, /\bNO\s+FRIDAYS?\b/i, /\bNOT\s+OPEN\s+FRIDAYS?\b/i, /\bFRIDAYS?\s+CLOSED\b/i] },
-  { day: 'sat', patterns: [/\bCLOSED\s+(?:ON\s+)?SAT(?:URDAY)?S?\b/i, /\bNO\s+SATURDAYS?\b/i, /\bSATURDAYS?\s+CLOSED\b/i] },
-  { day: 'sun', patterns: [/\bCLOSED\s+(?:ON\s+)?SUN(?:DAY)?S?\b/i, /\bNO\s+SUNDAYS?\b/i, /\bSUNDAYS?\s+CLOSED\b/i] },
+  { day: 'mon', patterns: [/\bCLOSED\s+(?:ON\s+)?MON(?:DAY)?S?\b/i, /\bNO\s+MONDAYS?\b/i, /\bMONDAYS?\s+CLOSED\b/i, /\bNO\s+DELIVER(?:Y|IES)?\s+(?:ON\s+)?MONDAYS?\b/i] },
+  { day: 'tue', patterns: [/\bCLOSED\s+(?:ON\s+)?TUE(?:S|SDAY)?S?\b/i, /\bNO\s+TUESDAYS?\b/i, /\bTUESDAYS?\s+CLOSED\b/i, /\bNO\s+DELIVER(?:Y|IES)?\s+(?:ON\s+)?TUESDAYS?\b/i] },
+  { day: 'wed', patterns: [/\bCLOSED\s+(?:ON\s+)?WED(?:NESDAY)?S?\b/i, /\bNO\s+WEDNESDAYS?\b/i, /\bWEDNESDAYS?\s+CLOSED\b/i, /\bNO\s+DELIVER(?:Y|IES)?\s+(?:ON\s+)?WEDNESDAYS?\b/i] },
+  { day: 'thu', patterns: [/\bCLOSED\s+(?:ON\s+)?THU(?:RS|RSDAY)?S?\b/i, /\bNO\s+THURSDAYS?\b/i, /\bTHURSDAYS?\s+CLOSED\b/i, /\bNO\s+DELIVER(?:Y|IES)?\s+(?:ON\s+)?THURSDAYS?\b/i] },
+  { day: 'fri', patterns: [/\bCLOSED\s+(?:ON\s+)?FRI(?:DAY)?S?\b/i, /\bNO\s+FRIDAYS?\b/i, /\bNOT\s+OPEN\s+FRIDAYS?\b/i, /\bFRIDAYS?\s+CLOSED\b/i, /\bNO\s+DELIVER(?:Y|IES)?\s+(?:ON\s+)?FRIDAYS?\b/i] },
+  { day: 'sat', patterns: [/\bCLOSED\s+(?:ON\s+)?SAT(?:URDAY)?S?\b/i, /\bNO\s+SATURDAYS?\b/i, /\bSATURDAYS?\s+CLOSED\b/i, /\bNO\s+DELIVER(?:Y|IES)?\s+(?:ON\s+)?SATURDAYS?\b/i] },
+  { day: 'sun', patterns: [/\bCLOSED\s+(?:ON\s+)?SUN(?:DAY)?S?\b/i, /\bNO\s+SUNDAYS?\b/i, /\bSUNDAYS?\s+CLOSED\b/i, /\bNO\s+DELIVER(?:Y|IES)?\s+(?:ON\s+)?SUNDAYS?\b/i] },
 ];
 
 function scanClosedDays(text: string | null | undefined, source: SignalSource): ClosedDayScanResult[] {
@@ -283,6 +397,11 @@ function scanClosedDays(text: string | null | undefined, source: SignalSource): 
     for (const p of entry.patterns) {
       const m = p.exec(text);
       if (m) {
+        // "CLOSED FRI AT 12PM" is an EARLY CLOSE, not a closed day — the customer is open
+        // Friday morning. The day-qualified hours scanner owns that form; marking the day
+        // closed here would tell dispatch to skip a morning that is actually deliverable.
+        const tail = text.slice(m.index + m[0].length, m.index + m[0].length + 16);
+        if (/^\s+AT\s+(?:NOON|[0-9])/i.test(tail)) continue;
         out.push({ day: entry.day, matchedSource: source, matchedText: m[0] });
         break; // one hit per day is enough
       }

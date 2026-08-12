@@ -52,3 +52,12 @@ test('addressLine2 source also detected (curated field)', () => {
   const r = scanStopFull({ signalSources: { addressLine2: 'STE 5 — CLOSED ON FRIDAYS' } });
   assert.deepEqual(r.closedDays.map((c) => c.day), ['fri']);
 });
+
+test('"NO DELIVERIES ON FRIDAYS" is a closed day (corpus, Aug 2026)', () => {
+  assert.deepEqual(days('NO DELIVERIES ON FRIDAYS'), ['fri']);
+});
+
+test('"CLOSED FRI AT 12PM" is NOT a closed day — the early close belongs to hours', () => {
+  assert.deepEqual(days('CLOSED FRI AT 12PM'), []);
+  assert.deepEqual(days('FRIDAYS CLOSE AT NOON'), []);
+});

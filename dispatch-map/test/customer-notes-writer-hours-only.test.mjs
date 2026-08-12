@@ -120,3 +120,26 @@ test('already-recorded closed days are a no-op; a NEW day still writes', () => {
 test('no signals at all still writes nothing', () => {
   assert.equal(write(scannedStop(), undefined), null);
 });
+
+test('a day-qualified detection fills ONLY its days — Friday keeps its early close', () => {
+  const d = write(scannedStop({
+    hoursResult: {
+      open: '06:30', close: '16:00',
+      byDay: { mon: { open: '06:30', close: '16:00' }, fri: { open: '08:00', close: '12:00' } },
+      matchedSource: 'orderInstructions', matchedText: 'MON 6 30-4 · FRI 8-12',
+    },
+  }), undefined);
+  assert.ok(d);
+  assert.deepEqual(d.payload.receiving_hours.mon, { open: '06:30', close: '16:00' });
+  assert.deepEqual(d.payload.receiving_hours.fri, { open: '08:00', close: '12:00' });
+  assert.equal(d.payload.receiving_hours.sat, undefined, 'a uniform 7-day copy would erase the per-day schedule');
+});
+
+test('identical stored per-day hours are still a no-op (idempotent byDay writes)', () => {
+  const byDay = { fri: { open: '', close: '12:00' } };
+  const existing = { receiving_hours: { fri: { open: '', close: '12:00' } }, auto_sources: { receiving_hours: ['orderInstructions'] } };
+  const d = write(scannedStop({
+    hoursResult: { open: '', close: '12:00', byDay, matchedSource: 'orderInstructions', matchedText: 'DEL BY NOON ON FRIDAYS' },
+  }), existing);
+  assert.equal(d, null);
+});
