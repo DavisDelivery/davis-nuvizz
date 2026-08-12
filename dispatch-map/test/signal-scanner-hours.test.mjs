@@ -158,3 +158,33 @@ test('an explicit-meridiem bare pair is a window even under 3 hours', () => {
 test('a paid time GUARANTEE is a delivery deadline', () => {
   assert.equal(hours('$69.99 *11:00 AM GUARANTEE LAMAR 470-732-8195*').close, '11:00');
 });
+
+// ── Lunch-split continuations (Chad, Aug 12: "they just break for lunch then start
+// receiving again from 1-5pm"). One window per day in the schema → store the ENVELOPE. ──
+
+test('two-range hours store first open to last close — real corpus customers', () => {
+  assert.equal(hours('SPL-INSTR-TEXT: RECEIVING HOURS\nSPL-INSTR-TEXT: 8-12 & 1-5').close, '17:00', 'FN USA');
+  assert.equal(hours('SPL-INSTR-TEXT: RECEIVING HOURS\nSPL-INSTR-TEXT: 7-11 30AM AND 1-4PM').close, '16:00', 'Fulfillex');
+  assert.equal(hours('SPL-INSTR-TEXT: RECEIVING HOURS\nSPL-INSTR-TEXT: 6 45-11 30 & 12 30-3 45').close, '15:45', 'Vintage Modern');
+  assert.equal(hours('SPL-INSTR-TEXT: RH  9 30A - 1P & 2P-5 30P').close, '17:30', 'Atlanta Network');
+  assert.equal(hours('SPL-INSTR-TEXT: RECEIVING HRS 9-12, 2-5').close, '17:00', 'True Precision — bare afternoon half reads PM');
+  assert.equal(hours('SPL-INSTR-TEXT: RECEIVING HOURS\nSPL-INSTR-TEXT: 9 00-11 30 AND 1 00-4 00').close, '16:00', 'Thoracent');
+  assert.equal(hours('SPL-INSTR-TEXT: RECEIVING HOURS\nSPL-INSTR-TEXT: 7AM-12PM AND 1PM-3PM').close, '15:00', 'Plaid');
+});
+
+test('day-qualified lunch splits keep the envelope per day — the RIOF false flag', () => {
+  const riof = hours('SPL-INSTR-TEXT: RH  MON-FRI 8AM-12P\nSPL-INSTR-TEXT: AND 1PM-4PM');
+  assert.deepEqual(riof.byDay.mon, { open: '08:00', close: '16:00' }, 'noon close was a lunch break, not the day end');
+  const sany = hours('SPL-INSTR-TEXT: M-F 8AM - 11AM, 1PM - 5PM');
+  assert.deepEqual(sany.byDay.fri, { open: '08:00', close: '17:00' });
+  const mjc = hours('SPL-INSTR-TEXT: RECEIVING HOURS MON-THUR\nSPL-INSTR-TEXT: 7A-11 30A AND 12 30P-4P.');
+  assert.deepEqual(mjc.byDay.thu, { open: '07:00', close: '16:00' });
+  assert.equal(mjc.byDay.fri, undefined);
+});
+
+test('a genuine noon close is NOT extended, and day pairs are not eaten as continuations', () => {
+  assert.equal(hours('SPL-INSTR-TEXT: RECEIVING HOURS\nSPL-INSTR-TEXT: 8 AM -12 PM').close, '12:00', 'Subaru really does close at noon');
+  const h = hours('SPL-INSTR-TEXT: RECEIVING HOURS\nSPL-INSTR-TEXT: MON-TH 12-5 & FRI 1130-4');
+  assert.deepEqual(h.byDay.mon, { open: '12:00', close: '17:00' });
+  assert.deepEqual(h.byDay.fri, { open: '11:30', close: '16:00' }, '"& FRI ..." is a new day segment, not a same-day continuation');
+});

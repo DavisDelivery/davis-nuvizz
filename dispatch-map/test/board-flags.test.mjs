@@ -383,6 +383,45 @@ test('red sorts before amber, and the counts split by tier', () => {
   assert.equal(out.amberCount, 1);
 });
 
+// ── the duplicate-visit collapse (Chad's screenshot: "repeat information here") ──
+
+test('a multi-order customer flags ONCE, not once per board row', () => {
+  // Subaru case: three orders at one customer arrive as three board rows sharing the
+  // sequence slot — the panel showed the same "may miss" flag at 1:06p, 1:26p and 1:46p,
+  // one phantom service block apart.
+  const notesObj = { 'subaru|k': note({ receiving_hours: { mon: { open: '08:00', close: '09:00' } } }) };
+  const dupRow = { stopNbr: '2', routeSeq: 2, matchKey: 'subaru|k', businessName: 'SUBARU', lat: 33.60, lng: -84.60 };
+  const stops = [
+    stop({ stopNbr: '1', routeSeq: 1 }),
+    stop({ ...dupRow }), stop({ ...dupRow, stopNbr: '2b' }), stop({ ...dupRow, stopNbr: '2c' }),
+  ];
+  const out = run(stops, notesObj);
+  assert.equal(out.rows.filter((r) => r.rule === 'hours_risk').length, 1, 'one visit, one flag');
+});
+
+test('duplicate rows add no phantom service time to later stops on the route', () => {
+  // The stop AFTER the duplicated visit must get the same ETA whether the customer
+  // arrived as one row or three — each extra row used to add a full service block.
+  const notesObj = { 'far|k': note({ receiving_hours: { mon: { open: '08:00', close: '09:00' } } }) };
+  const mid = { stopNbr: '2', routeSeq: 2, matchKey: 'mid|k', businessName: 'MID', lat: 34.05, lng: -84.20 };
+  const far = stop({ stopNbr: '3', routeSeq: 3, matchKey: 'far|k', businessName: 'FAR CO', lat: 33.60, lng: -84.60 });
+  const once = run([stop({ stopNbr: '1', routeSeq: 1 }), stop({ ...mid }), far], notesObj);
+  const tripled = run([stop({ stopNbr: '1', routeSeq: 1 }), stop({ ...mid }), stop({ ...mid, stopNbr: '2b' }), stop({ ...mid, stopNbr: '2c' }), far], notesObj);
+  const detailOf = (o) => o.rows.find((r) => r.rule === 'hours_risk' && String(r.stopNbr) === '3')?.detail;
+  assert.ok(detailOf(once), 'far stop misses its 9:00 close in the clean walk');
+  assert.equal(detailOf(tripled), detailOf(once), 'identical ETA math with or without duplicate rows');
+});
+
+test('the driverless-deadline count speaks in customers, not board rows', () => {
+  const notesObj = { 'subaru|k': note({ receiving_hours: { mon: { open: '08:00', close: '14:00' } } }) };
+  const dupRow = { stopNbr: '2', routeSeq: 2, matchKey: 'subaru|k', businessName: 'SUBARU', driverName: '' };
+  const stops = [stop({ ...dupRow }), stop({ ...dupRow, stopNbr: '2b' }), stop({ ...dupRow, stopNbr: '2c' })];
+  const out = run(stops.map((s) => ({ ...s, driverName: '' })), notesObj, { opts: { ...OPTS, nowMin: 9 * 60 } });
+  const r = out.rows.find((x) => x.rule === 'no_driver_hours');
+  assert.ok(r, 'expected the driverless-deadline flag');
+  assert.match(r.detail, /has 1 stop with receiving hours/, 'three rows, one customer, count of 1');
+});
+
 // ── appointment routes (Chad: "dont put uline appt's in the flag") ────────────
 //
 // ULINE APPT is a holding pen, not a truck: freight sits on it BECAUSE it is waiting on a
