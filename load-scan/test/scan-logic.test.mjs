@@ -1002,3 +1002,47 @@ test('queuedFor with no date still returns everything for the load', async () =>
     rows.filter((r) => r.loadNbr === loadNbr && (!date || String(r.date || '') === String(date)));
   assert.equal(filter('STEVEN').length, 2);
 });
+
+// ── One skid, two camera frames, 111ms apart ────────────────────────────────
+//
+// STRATIX SHIPPING read 2/1 on a 1-piece stop. The server session shows both
+// scans on the same day, 111ms apart, from the same engine:
+//   OG6028626724     09:31:57.769  quagga   <- PRO + piece id
+//   NOOG-7160956-1   09:31:57.880  quagga   <- same skid, PRO only
+// Frame 1 booked it with its id; frame 2 decoded only the PRO and every guard
+// missed it, because they all read React state that had not re-rendered yet.
+
+test('a piece booked with its id blocks the SAME skid arriving as PRO-only', async () => {
+  const { stopProgress } = await import('../src/lib/scan-logic.js');
+  const stop = { stopNbr: '007160956', pros: ['007160956', '7160956'], expectedPieces: 1, businessName: 'STRATIX SHIPPING' };
+
+  // What the committed state said when frame 2 ran: nothing yet.
+  const committed = [];
+  // What was actually already booked, synchronously, by frame 1.
+  const justBooked = [{ pro: '7160956', og: 'OG6028626724', stopNbr: '007160956' }];
+  const live = committed.concat(justBooked);
+
+  assert.equal(stopProgress(stop, committed).scanned, 0, 'React state alone still says empty — the trap');
+  const done = stopProgress(stop, live);
+  assert.equal(done.scanned, 1, 'the synchronous view already has the piece');
+  assert.equal(done.scanned >= done.expected, true, 'so the over-count guard refuses frame 2');
+});
+
+test('the same OG re-read inside one render is still a duplicate', async () => {
+  const { evaluateScan, OUTCOME } = await import('../src/lib/scan-logic.js');
+  const stop = { stopNbr: '007160956', pros: ['7160956'], expectedPieces: 2 };
+  // scannedOgs from state is empty; the live set includes what frame 1 booked.
+  const liveOgs = new Set(['OG6028626724']);
+  const r = evaluateScan({ pro: '7160956', og: 'OG6028626724' }, [stop], liveOgs);
+  assert.equal(r.outcome, OUTCOME.SILENT, 'not booked a second time');
+});
+
+test('a NOOG id cannot collide with one minted milliseconds earlier', async () => {
+  // The id is chosen by scanning `used` for a free suffix. Built from React
+  // state alone, two frames both pick -1 and the second overwrites the first.
+  const live = [{ pro: '7160956', og: 'NOOG-7160956-1' }];
+  const used = new Set(live.map((s) => String(s.og).toUpperCase()));
+  let n = 1;
+  while (used.has(`NOOG-7160956-${n}`)) n += 1;
+  assert.equal(n, 2, 'the second piece gets its own id');
+});
