@@ -167,6 +167,8 @@ const CLOSE_ONLY_WRAPPERS: RegExp[] = [
   new RegExp(`\\b(?:${HOURS_LABEL})\\s*(?:UNTIL|TIL|BY)\\s+(${TIME_TOKEN})`, 'i'),
   new RegExp(`\\bCLOSE[SD]?\\s+(?:AT|@)\\s*(${TIME_TOKEN})`, 'i'),
   new RegExp(`\\bPICK(?:ED)?\\s*UP\\s+(?:BY|BEFORE)\\s+(${TIME_TOKEN})`, 'i'),
+  // "$69.99 *11:00 AM GUARANTEE LAMAR ...*" — a paid delivery deadline (month study, x16).
+  new RegExp(`(${TIME_TOKEN})\\s*GUARANTEE\\b`, 'i'),
 ];
 // Open-only forms → {open, close: ''}: "OPENS AT 11AM", "RECEIVING AFTER 10AM",
 // "NO DELIVERIES BEFORE 8AM". A missing close arms nothing downstream (the hours-risk
@@ -257,14 +259,24 @@ function parseTimePiece(piece: string, peer: string): string | null {
     // morning-open + afternoon-close.
     const peerM = /(A|P)M?\.?\s*$/i.exec(peer);
     const peerMeridiem = peerM ? (peerM[1].toUpperCase() + 'M') : (/NOON\.?\s*$/i.test(peer) ? 'PM' : null);
-    if (peerMeridiem === 'PM') {
+    // Anchored so compact times backtrack correctly: the peer hour of "430PM" is 4, not 43.
+    // NaN when the peer carries no digits — the close-only callers pass a bare 'PM'/'AM'
+    // HINT as the peer ("CLOSES AT 4" has no other half to infer from).
+    const peerHour = /NOON/i.test(peer) ? 12
+      : parseInt(/^([0-9]{1,2})(?:[:. ]?[0-5][0-9])?\s*(?:AM|PM|A|P)?\.?$/i.exec(peer.trim())?.[1] ?? 'x', 10);
+    if (peerMeridiem === 'PM' && !Number.isFinite(peerHour)) {
+      // Digit-less PM hint (close-only forms). Daytime docks: "CLOSES AT 4" / "3 30" is
+      // afternoon; 12 is noon; a bare 8-11 is ambiguous (8:00a produce dock vs 8:00p
+      // retail) and is REFUSED rather than guessed. The month-of-data study caught the
+      // regression this branch fixes: v0.54.60's peer rule read "CLOSES AT 4" as 04:00,
+      // a dawn close that would have amber-flagged every arrival all day.
+      if (hour === 12 || hour <= 7) meridiem = 'PM';
+      else return null;
+    } else if (peerMeridiem === 'PM') {
       // Bare half against a PM peer. Business windows straddle noon: "9-4PM" opens 9 AM,
       // "2-4PM" runs same-afternoon, "8-12P" ends at noon with a morning open, and a bare
       // 12 is always noon. (The old "mirror if lower" rule read "9-4PM" as 9 PM and the
       // range refused itself.)
-      // Anchored so compact times backtrack correctly: the peer hour of "430PM" is 4, not 43.
-      const peerHour = /NOON/i.test(peer) ? 12
-        : parseInt(/^([0-9]{1,2})(?:[:. ]?[0-5][0-9])?\s*(?:AM|PM|A|P)?\.?$/i.exec(peer.trim())?.[1] || '0', 10);
       meridiem = hour === 12 ? 'PM' : (peerHour !== 12 && hour < peerHour) ? 'PM' : 'AM';
     } else if (peerMeridiem === 'AM') {
       meridiem = 'AM'; // a bare half next to an AM peer is morning; the afternoon-shift rescues "8AM-4"
@@ -396,7 +408,11 @@ function scanHours(text: string | null | undefined, source: SignalSource): Hours
     const o = toMin(parsed.open), c = toMin(parsed.close);
     if (o < 300 || o > 720) continue;      // opens 5:00a-12:00p
     if (c > 19 * 60) continue;             // closes by 7:00p
-    if (c - o < 180) continue;             // at least 3 hours wide
+    // Width floor: 3 hours for fully bare pairs; 90 minutes when a meridiem is WRITTEN
+    // ("8-10am Delivery" is self-evidently a window — month study, x18 — while the
+    // 1-hour lunch pairs never carry one).
+    const hasMeridiem = /(A|P)M?\.?\s*(?:-|TO|—)|(A|P)M?\.?\s*$/i.test(m[2]) || /NOON/i.test(m[2]);
+    if (c - o < (hasMeridiem ? 90 : 180)) continue;
     return { open: parsed.open, close: parsed.close, matchedSource: source, matchedText: m[2] };
   }
   return null;

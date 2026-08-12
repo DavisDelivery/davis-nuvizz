@@ -135,3 +135,26 @@ test('garbage still refuses: "83A-30P", lunch closures, AM-required prose', () =
   assert.equal(hours('SPL-INSTR-TEXT: CLOSED 2P-3P'), null);
   assert.equal(hours('SPL-INSTR-TEXT: AM DELIVERY REQ - NO GUARANTEE'), null);
 });
+
+// ── Month-of-data study (Jul 13 – Aug 11): the cases 23 boards surfaced ──
+
+test('digit-less closes read as afternoon — the dawn-close regression the study caught', () => {
+  // v0.54.60's peer-inference rewrite read "CLOSES AT 4" as 04:00; eleven real texts
+  // hit it, and a 4:00 AM close would amber-flag every arrival all day.
+  assert.equal(hours('SPL-INSTR-TEXT: CLOSES AT 4').close, '16:00');
+  assert.equal(hours('SPL-INSTR-TEXT: CLOSES AT 3 30').close, '15:30');
+  assert.equal(hours('SPL-INSTR-TEXT: CLOSE AT 330').close, '15:30');
+  assert.equal(hours('SPL-INSTR-TEXT: CLOSES AT 12').close, '12:00');
+  assert.equal(hours('SPL-INSTR-TEXT: DELIVER BY 2').close, '14:00');
+  assert.equal(hours('SPL-INSTR-TEXT: CLOSES AT 11'), null, 'a bare 8-11 close is ambiguous — refused, never guessed');
+});
+
+test('an explicit-meridiem bare pair is a window even under 3 hours', () => {
+  const h = hours('8-10am Delivery. Call Bobby Lyons (678-223-2170) prior.');
+  assert.deepEqual([h.open, h.close], ['08:00', '10:00']);
+  assert.equal(hours('SPL-INSTR-TEXT: 1-2'), null, 'meridiem-less 1-hour pairs stay lunch-shaped');
+});
+
+test('a paid time GUARANTEE is a delivery deadline', () => {
+  assert.equal(hours('$69.99 *11:00 AM GUARANTEE LAMAR 470-732-8195*').close, '11:00');
+});
