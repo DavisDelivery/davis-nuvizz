@@ -352,7 +352,11 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
           const lateBy = Math.round(clockMin - w.closeMin);
           rows.push(row(w.tier === 'typed' ? 'red' : 'amber', 'hours_risk', s, {
             title: `May miss receiving hours — ${s.businessName || s.stopNbr}`,
-            detail: `Stop ${seqOf(s)} on ${k}: estimated arrival ~${fmtMin(clockMin)} vs close ${fmtMin(w.closeMin)} (${lateBy} min late). Estimate only — flat ~30 mph model, ${notStarted ? `no delivery or arrival recorded on this route as of ${fmtMin(nowMin)}, so the clock models departure from then` : `route departing ${fmtMin(effDepart)}`}.${w.tier === 'auto' ? ' Hours were auto-detected from order text, not typed by a dispatcher — verify before acting.' : ''} Resequence it earlier, move the date, or call ahead.`,
+            // Facts only, one breath (Chad, Aug 12: "fotmatting issues" — every card carried
+            // four lines of identical boilerplate and the panel read as a wall of text).
+            // The model disclaimer lives ONCE in the panel footer; "estimated" on the number
+            // keeps the row honest; the auto-detected caveat is four words, not two sentences.
+            detail: `Stop ${seqOf(s)} on ${k} — estimated arrival ~${fmtMin(clockMin)} vs close ${fmtMin(w.closeMin)} (${lateBy} min late)${notStarted ? `; no movement yet, clock runs from ${fmtMin(nowMin)}` : `; departs ${fmtMin(effDepart)}`}.${w.tier === 'auto' ? ' Hours auto-detected — verify.' : ''}`,
             scope: 'occurrence', servedDate, fingerprint: `hours|${servedDate}|${k}|${s.stopNbr}|${w.closeMin}`,
           }));
         }
@@ -396,7 +400,7 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
         const tier = constrained.some((x) => x.w.tier === 'typed') ? 'red' : 'amber';
         rows.push(row(tier, 'no_driver_hours', first.s, {
           title: `No driver — ${k} must make ${fmtMin(first.w.closeMin)}`,
-          detail: `${k} has ${constrained.length} stop${constrained.length === 1 ? '' : 's'} with receiving hours today (earliest close ${fmtMin(first.w.closeMin)} at ${first.s.businessName || first.s.stopNbr}), it is past the ${fmtMin(departMin)} departure with no movement recorded, and no driver is assigned.${tier === 'amber' ? ' Hours were auto-detected from order text, not typed by a dispatcher — verify before acting.' : ''} Assign a driver, or move the affected dates.`,
+          detail: `${k} has ${constrained.length} stop${constrained.length === 1 ? '' : 's'} with receiving hours today (earliest close ${fmtMin(first.w.closeMin)} at ${first.s.businessName || first.s.stopNbr}); past the ${fmtMin(departMin)} departure, no movement, no driver.${tier === 'amber' ? ' Hours auto-detected — verify.' : ''} Assign a driver or move the dates.`,
           scope: 'occurrence', servedDate, fingerprint: `nodrv|${servedDate}|${k}|${first.w.closeMin}`,
         }));
       }
