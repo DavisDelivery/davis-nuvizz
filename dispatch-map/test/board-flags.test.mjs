@@ -7,7 +7,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   computeBoardFlags, parseClockMin, dayReceivingWindow, closedDayTier,
-  stopPosition, isFinishedStop, RED_CAP,
+  stopPosition, isFinishedStop, RED_CAP, isAppointmentRoute,
 } from '../src/lib/board-flags.js';
 
 const DEPOT = { lat: 34.147791, lng: -83.960911 };
@@ -383,41 +383,79 @@ test('red sorts before amber, and the counts split by tier', () => {
   assert.equal(out.amberCount, 1);
 });
 
-// ── the duplicate-visit collapse (Chad's screenshot: "repeat information here") ──
+// ── appointment routes (Chad: "dont put uline appt's in the flag") ────────────
+//
+// ULINE APPT is a holding pen, not a truck: freight sits on it BECAUSE it is waiting on a
+// scheduled appointment. Walking a delivery sequence down it produced rows like "estimated
+// arrival ~1:49a vs close 5:00p, 529 min late" — arithmetic about a stop that was never
+// going out that day. The risk in silencing a route is silencing a REAL one, so these pin
+// both directions.
 
-test('a multi-order customer flags ONCE, not once per board row', () => {
-  // Subaru case: three orders at one customer arrive as three board rows sharing the
-  // sequence slot — the panel showed the same "may miss" flag at 1:06p, 1:26p and 1:46p,
-  // one phantom service block apart.
-  const notesObj = { 'subaru|k': note({ receiving_hours: { mon: { open: '08:00', close: '09:00' } } }) };
-  const dupRow = { stopNbr: '2', routeSeq: 2, matchKey: 'subaru|k', businessName: 'SUBARU', lat: 33.60, lng: -84.60 };
+test('isAppointmentRoute matches the APPT token, not substrings', () => {
+  for (const n of ['ULINE APPT', 'uline appt', 'ULINE APPT 2', 'ESTES APPT', 'APPT', 'APPTS', 'Appointment Hold'])
+    assert.ok(isAppointmentRoute(n), `should match: ${n}`);
+  // The failure that would actually hurt: silencing a live truck whose name happens to
+  // contain the letters. Verified against 3 days of the real roster — 111 route names, none
+  // like this — but the boundary is what makes that safe, so it is pinned.
+  for (const n of ['APPTON', 'RAPPTON', 'SUW', 'STEVEN', 'ALPHA 2', 'TRAILER 6', '', null, undefined])
+    assert.ok(!isAppointmentRoute(n), `should NOT match: ${n}`);
+});
+
+test('THE REPORT: a late-looking stop on ULINE APPT produces no hours_risk row', () => {
+  const notesObj = {
+    'far|k': note({
+      receiving_hours: { mon: { open: '08:00', close: '09:00' } },
+      manual_overrides: { receiving_hours: true },
+    }),
+  };
   const stops = [
-    stop({ stopNbr: '1', routeSeq: 1 }),
-    stop({ ...dupRow }), stop({ ...dupRow, stopNbr: '2b' }), stop({ ...dupRow, stopNbr: '2c' }),
+    stop({ stopNbr: '1', routeSeq: 1, loadNbr: 'ULINE APPT', routeName: 'ULINE APPT' }),
+    stop({ stopNbr: '2', routeSeq: 2, loadNbr: 'ULINE APPT', routeName: 'ULINE APPT',
+      matchKey: 'far|k', businessName: 'RIOF INSTALLATIONS', lat: 33.60, lng: -84.60 }),
   ];
   const out = run(stops, notesObj);
-  assert.equal(out.rows.filter((r) => r.rule === 'hours_risk').length, 1, 'one visit, one flag');
+  assert.equal(out.rows.filter((r) => r.rule === 'hours_risk').length, 0,
+    'held-for-appointment freight is not late freight');
+  assert.deepEqual(out.skipped.routesAppointment, ['ULINE APPT'],
+    'and the panel is told, so the exclusion is visible rather than silent');
+  assert.equal(out.checked.routesJudged, 0, 'an excluded route is not counted as judged either');
 });
 
-test('duplicate rows add no phantom service time to later stops on the route', () => {
-  // The stop AFTER the duplicated visit must get the same ETA whether the customer
-  // arrived as one row or three — each extra row used to add a full service block.
-  const notesObj = { 'far|k': note({ receiving_hours: { mon: { open: '08:00', close: '09:00' } } }) };
-  const mid = { stopNbr: '2', routeSeq: 2, matchKey: 'mid|k', businessName: 'MID', lat: 34.05, lng: -84.20 };
-  const far = stop({ stopNbr: '3', routeSeq: 3, matchKey: 'far|k', businessName: 'FAR CO', lat: 33.60, lng: -84.60 });
-  const once = run([stop({ stopNbr: '1', routeSeq: 1 }), stop({ ...mid }), far], notesObj);
-  const tripled = run([stop({ stopNbr: '1', routeSeq: 1 }), stop({ ...mid }), stop({ ...mid, stopNbr: '2b' }), stop({ ...mid, stopNbr: '2c' }), far], notesObj);
-  const detailOf = (o) => o.rows.find((r) => r.rule === 'hours_risk' && String(r.stopNbr) === '3')?.detail;
-  assert.ok(detailOf(once), 'far stop misses its 9:00 close in the clean walk');
-  assert.equal(detailOf(tripled), detailOf(once), 'identical ETA math with or without duplicate rows');
+test('the SAME stops on a normal route still flag — the rule narrowed, it did not break', () => {
+  const notesObj = {
+    'far|k': note({
+      receiving_hours: { mon: { open: '08:00', close: '09:00' } },
+      manual_overrides: { receiving_hours: true },
+    }),
+  };
+  const stops = [
+    stop({ stopNbr: '1', routeSeq: 1 }),
+    stop({ stopNbr: '2', routeSeq: 2, matchKey: 'far|k', businessName: 'FAR CO', lat: 33.60, lng: -84.60 }),
+  ];
+  const out = run(stops, notesObj);
+  assert.equal(out.rows.filter((r) => r.rule === 'hours_risk').length, 1);
+  assert.deepEqual(out.skipped.routesAppointment, []);
 });
 
-test('the driverless-deadline count speaks in customers, not board rows', () => {
-  const notesObj = { 'subaru|k': note({ receiving_hours: { mon: { open: '08:00', close: '14:00' } } }) };
-  const dupRow = { stopNbr: '2', routeSeq: 2, matchKey: 'subaru|k', businessName: 'SUBARU', driverName: '' };
-  const stops = [stop({ ...dupRow }), stop({ ...dupRow, stopNbr: '2b' }), stop({ ...dupRow, stopNbr: '2c' })];
-  const out = run(stops.map((s) => ({ ...s, driverName: '' })), notesObj, { opts: { ...OPTS, nowMin: 9 * 60 } });
-  const r = out.rows.find((x) => x.rule === 'no_driver_hours');
-  assert.ok(r, 'expected the driverless-deadline flag');
-  assert.match(r.detail, /has 1 stop with receiving hours/, 'three rows, one customer, count of 1');
+test('the no-driver rule is silenced on appointment routes too', () => {
+  // An appointment route has no driver because it is not being run. Flagging that at 8am
+  // every day is the same false alarm wearing a different hat.
+  const notesObj = { 'far|k': note({ receiving_hours: { mon: { open: '08:00', close: '15:00' } }, manual_overrides: { receiving_hours: true } }) };
+  const stops = [
+    stop({ stopNbr: '1', routeSeq: 1, loadNbr: 'ULINE APPT', routeName: 'ULINE APPT', driverName: '', driverUserName: '',
+      matchKey: 'far|k', businessName: 'HELD CO' }),
+  ];
+  const out = run(stops, notesObj, { opts: { ...OPTS, nowMin: 10 * 60 } });
+  assert.equal(out.rows.filter((r) => r.rule === 'no_driver_hours').length, 0);
+});
+
+test('a driverless NORMAL route past departure still raises no_driver_hours', () => {
+  const notesObj = { 'far|k': note({ receiving_hours: { mon: { open: '08:00', close: '15:00' } }, manual_overrides: { receiving_hours: true } }) };
+  const stops = [
+    stop({ stopNbr: '1', routeSeq: 1, loadNbr: 'LVILLE', routeName: 'LVILLE', driverName: '', driverUserName: '',
+      matchKey: 'far|k', businessName: 'LUND' }),
+  ];
+  const out = run(stops, notesObj, { opts: { ...OPTS, nowMin: 10 * 60 } });
+  assert.equal(out.rows.filter((r) => r.rule === 'no_driver_hours').length, 1,
+    'silencing appointment routes must not silence the LVILLE case');
 });

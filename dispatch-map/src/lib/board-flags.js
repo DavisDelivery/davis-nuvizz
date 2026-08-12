@@ -161,6 +161,29 @@ const seqOf = (s) => routeStopSeq(s).seq;
 const isPickupStop = (s) => routeStopSeq(s).pickup;
 const routeKeyOf = (s) => String(s?.loadNbr || s?.routeName || '').trim();
 
+// APPOINTMENT ROUTES ARE NOT LATE — Chad: "dont put uline appt's in the flag as they are
+// being held for appointments."
+//
+// ULINE APPT is a holding pen, not a truck. Freight sits on it precisely BECAUSE it cannot
+// be delivered on a normal run — it is waiting on a scheduled appointment with the customer.
+// Walking a delivery sequence down it and comparing the arrival estimate against receiving
+// hours therefore measures nothing real: the route has no departure, the sequence is a
+// filing order rather than a driving order, and "arrives 1:49a, 529 minutes late" is an
+// arithmetic artefact of a stop that was never going out today. Same for the no-driver
+// check — an appointment route has no driver because it is not being run, which is the
+// normal state, not a problem to flag at 8am.
+//
+// Matched on the APPT/APPOINTMENT token with word boundaries rather than the literal string
+// "ULINE APPT", so a future ESTES APPT or ULINE APPT 2 is covered the day it appears.
+// Verified safe against three days of the real load roster (111 distinct route names):
+// exactly one name carries the token, and no name contains "appt" inside another word, so
+// the boundary match cannot silence a real route by accident.
+const APPT_ROUTE_RE = /\b(?:APPTS?|APPOINTMENTS?)\b/i;
+
+export function isAppointmentRoute(name) {
+  return APPT_ROUTE_RE.test(String(name ?? ''));
+}
+
 // ── the detector ──────────────────────────────────────────────────────────────
 
 export const RED_CAP = 12;    // per rule; beyond this a rule collapses to one summary row
@@ -186,7 +209,7 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
   const open = stops.filter((s) => !isFinishedStop(s));
   const noteOf = (s) => (s?.matchKey ? notes.get(s.matchKey) : null) || null;
   const rows = [];
-  const skipped = { noRoster: false, ambiguousRoutes: [], routesNoSequence: [], stopsNoPosition: 0 };
+  const skipped = { noRoster: false, ambiguousRoutes: [], routesNoSequence: [], routesAppointment: [], stopsNoPosition: 0 };
   // What the detector actually LOOKED at — the panel shows these so a quiet board can
   // prove it was watched, and so "no hours on file" is visibly a data gap, not a bug.
   const checked = { stops: open.length, routesJudged: 0, stopsWithHours: 0 };
@@ -280,12 +303,20 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
       if (k) startedRoutes.add(k);
     }
     const byRoute = new Map();
+    const apptRoutes = new Set();
     for (const s of open) {
       const k = routeKeyOf(s);
       if (!k || ambiguousNames.has(k.toLowerCase())) continue; // never judge a phantom route
+      // Appointment routes are excluded HERE, at the one place both the arrival walk (R5)
+      // and the no-driver check (R6) read from — so neither rule can fire on freight that
+      // is deliberately parked waiting on a customer appointment.
+      if (isAppointmentRoute(k)) { apptRoutes.add(k); continue; }
       if (!byRoute.has(k)) byRoute.set(k, []);
       byRoute.get(k).push(s);
     }
+    // Say what was set aside rather than quietly narrowing the sweep — the panel's footer
+    // reports it, so "why is ULINE APPT never flagged" has a visible answer.
+    for (const k of apptRoutes) skipped.routesAppointment.push(k);
     for (const [k, group] of byRoute) {
       const deliveries = group.filter((s) => !isPickupStop(s));
       const seqd = deliveries.filter((s) => seqOf(s) != null);
