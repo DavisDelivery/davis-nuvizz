@@ -86,7 +86,10 @@ export const handKey = (loadNbr, stopNbr) => `${loadNbr}::HAND::${String(stopNbr
 /** Record a stop confirmed by hand. Returns false when it was already confirmed. */
 export async function enqueueHandConfirm(loadNbr, date, confirm) {
   const key = handKey(loadNbr, confirm.stopNbr);
-  const existing = await tx(STORE_QUEUE, 'readonly', (s) => s.get(key));
+  const prior = await tx(STORE_QUEUE, 'readonly', (s) => s.get(key));
+  // Same-day only. A hand-confirm from an earlier shift on this load number is
+  // not this stop's confirmation and must not silently swallow it.
+  const existing = prior && String(prior.date || '') === String(date) ? prior : null;
   if (existing) return false;
   await tx(STORE_QUEUE, 'readwrite', (s) =>
     s.put({ key, kind: 'hand', loadNbr, date, ...confirm, queuedAt: new Date().toISOString() }),
@@ -97,7 +100,11 @@ export async function enqueueHandConfirm(loadNbr, date, confirm) {
 /** Enqueue one scan. Returns false when this piece was already queued. */
 export async function enqueueScan(loadNbr, date, scan) {
   const key = queueKey(loadNbr, scan.og);
-  const existing = await tx(STORE_QUEUE, 'readonly', (s) => s.get(key));
+  const existingAny = await tx(STORE_QUEUE, 'readonly', (s) => s.get(key));
+  // The key carries no date, so a row left from an earlier shift on the SAME
+  // load number occupies it. That row is not this piece and must never make
+  // today's scan look like a duplicate — it is overwritten.
+  const existing = existingAny && String(existingAny.date || '') === String(date) ? existingAny : null;
   // A voided row still occupies the key. Scanning that piece again is the loader
   // undoing the void — putting the freight back on the truck — so it must revive
   // the row rather than be swallowed as a duplicate. Anything already marked on
@@ -173,14 +180,26 @@ export function allQueued() {
   return tx(STORE_QUEUE, 'readonly', (s) => s.getAll());
 }
 
-export async function queuedFor(loadNbr) {
+/**
+ * This load's rows FOR THIS DAY.
+ *
+ * The date filter is the whole point. Load numbers are not unique across days —
+ * Steven's load is literally "STEVEN" — so filtering on loadNbr alone handed
+ * back every scan ever queued against that name. Opening his truck on a fresh
+ * morning showed 7/24 already loaded, from a previous shift, with stops that
+ * looked done and freight a loader would have walked straight past.
+ *
+ * Rows carry `date` (enqueueScan writes it); anything without one is from before
+ * that and is correctly excluded once a date is asked for.
+ */
+export async function queuedFor(loadNbr, date) {
   const all = await allQueued();
-  return all.filter((r) => r.loadNbr === loadNbr);
+  return all.filter((r) => r.loadNbr === loadNbr && (!date || String(r.date || '') === String(date)));
 }
 
 /** Count still awaiting upload — this is the number the driver sees. */
-export async function pendingCount(loadNbr) {
-  const rows = loadNbr ? await queuedFor(loadNbr) : await allQueued();
+export async function pendingCount(loadNbr, date) {
+  const rows = loadNbr ? await queuedFor(loadNbr, date) : await allQueued();
   return rows.filter((r) => !r.syncedAt).length;
 }
 
