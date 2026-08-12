@@ -164,11 +164,27 @@ export function decideWrite(
   const existingHours = (existing?.receiving_hours || {}) as Record<string, any>;
   const scannerOwnsHours =
     Object.keys(existingHours).length === 0 || !!existing?.auto_sources?.receiving_hours;
+  // The intended fill: a day-qualified detection ("MON-THURS 6 30-4 / FRI 8-12") writes
+  // ONLY the days it names — a uniform 7-day copy would erase exactly the early-Friday
+  // distinction the schedule exists to record. A plain range still fills the week.
+  // Unnamed days on the doc survive (setDoc merge is per-field).
+  const intendedHours: Record<string, { open: string; close: string }> | null = stop.hoursResult
+    ? (() => {
+      const filled: Record<string, { open: string; close: string }> = {};
+      const byDay = stop.hoursResult!.byDay;
+      if (byDay && Object.keys(byDay).length) {
+        for (const [d, w] of Object.entries(byDay)) filled[d] = { open: w.open, close: w.close };
+      } else {
+        for (const d of DAY_CODES) filled[d] = { open: stop.hoursResult!.open, close: stop.hoursResult!.close };
+      }
+      return filled;
+    })()
+    : null;
   const hoursWouldChange =
-    !!stop.hoursResult && !overrideHours && scannerOwnsHours &&
-    DAY_CODES.some((d) => {
+    !!intendedHours && !overrideHours && scannerOwnsHours &&
+    Object.entries(intendedHours).some(([d, w]) => {
       const e = existingHours[d];
-      return !e || typeof e === 'string' || e.open !== stop.hoursResult!.open || e.close !== stop.hoursResult!.close;
+      return !e || typeof e === 'string' || e.open !== w.open || e.close !== w.close;
     });
 
   // Closed days: same change rule — the union must actually ADD a day.
@@ -249,14 +265,8 @@ export function decideWrite(
   // (auto_sources.receiving_hours + auto_matches.receiving_hours) records the
   // exact matched text and source so the dispatcher can review.
   if (stop.hoursResult) {
-    if (hoursWouldChange) {
-      const { open, close } = stop.hoursResult;
-      const filled: Record<string, { open: string; close: string }> = {};
-      // Don't overwrite days the dispatcher has set per-day (we have no
-      // per-day override flag — only the whole field — so this is all-or-nothing
-      // until the editor lands).
-      for (const d of DAY_CODES) filled[d] = { open, close };
-      payload.receiving_hours = filled;
+    if (hoursWouldChange && intendedHours) {
+      payload.receiving_hours = intendedHours;
     }
     // Audit trail regardless of override.
     payload.auto_sources = {
