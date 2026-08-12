@@ -371,6 +371,34 @@ function scanHours(text: string | null | undefined, source: SignalSource): Hours
     const open = parseTimePiece(m[1].trim(), 'AM');
     if (open) return { open, close: '', matchedSource: source, matchedText: m[0] };
   }
+
+  // 5 — BARE number pairs, last resort (Chad, Aug 2026: "we should learn the bare number
+  // pairs because ... most businesses we deliver to are normal day time hours as we don't
+  // run through the night"). A pair with no hours label counts ONLY when everything about
+  // it says daytime receiving window:
+  //   • the resolved window is daytime: opens 5:00a-12:00p, closes by 7:00p — Davis never
+  //     runs nights, so anything else is not a window we could be being told about;
+  //   • it is at least 3 hours wide — every labeled window in the corpus is; the 1-hour
+  //     pairs are LUNCH CLOSURES ("CLOSED 1-2 FOR LUNCH"), the exact opposite of hours;
+  //   • it is not preceded by a refusing context (CLOSED / NO DELIVERIES / BTWN) and not
+  //     followed by FOR LUNCH or a MIN/MINS qualifier ("CALL 30-1 MIN AHEAD");
+  //   • it is not digit-adjacent (phone numbers, PO numbers, weights already fail the
+  //     token/hour rules, and this keeps it that way).
+  const bareRe = new RegExp(`(^|[^0-9-])(${TIME_RANGE})(?!\\s*-)`, 'gi');
+  for (let m = bareRe.exec(normalized); m; m = bareRe.exec(normalized)) {
+    const before = normalized.slice(Math.max(0, m.index - 28), m.index + m[1].length);
+    if (/(CLOSED|NO\s+DELIVER\w*|BTWN|BETWEEN|LUNCH)\s*$/i.test(before)) continue;
+    const after = normalized.slice(m.index + m[0].length, m.index + m[0].length + 24);
+    if (/^\s*(FOR\s+LUNCH|MINS?\b|MINUTES?\b)/i.test(after)) continue;
+    const parsed = parseTimeRange(m[2]);
+    if (!parsed || !parsed.open || !parsed.close) continue;
+    const toMin = (t: string) => parseInt(t.slice(0, 2), 10) * 60 + parseInt(t.slice(3), 10);
+    const o = toMin(parsed.open), c = toMin(parsed.close);
+    if (o < 300 || o > 720) continue;      // opens 5:00a-12:00p
+    if (c > 19 * 60) continue;             // closes by 7:00p
+    if (c - o < 180) continue;             // at least 3 hours wide
+    return { open: parsed.open, close: parsed.close, matchedSource: source, matchedText: m[2] };
+  }
   return null;
 }
 
