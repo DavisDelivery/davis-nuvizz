@@ -297,6 +297,35 @@ function stripCommentPrefixes(text: string): string {
   return text.replace(/SPL-INSTR-TEXT\s*:?\s*/gi, ' ').replace(/[ \t]+/g, ' ');
 }
 
+// Lunch-split continuations (Chad, Aug 12: "they just break for lunch then start receiving
+// again from 1-5pm"). Ten customers a month write hours as TWO ranges — "8-12 & 1-5",
+// "8AM-12P ⏎ AND 1PM-4PM", "8AM - 11AM, 1PM - 5PM" — and keeping only the first stored a
+// noon close that false-flagged every afternoon arrival. The schema holds one window per
+// day, so we store the ENVELOPE (first open, last close): an arrival in the lunch gap is a
+// short wait, not a miss. Bare afternoon halves ("& 1-5", "AND 2-5") read as PM — a
+// continuation can only extend the day, never rewind it — and anything incoherent
+// (before the prior close after the PM shift, or past 8:00p) stops the chain.
+const CONTINUATION_RE = new RegExp(`^\\s*(?:&|AND|,|/|;|\\+|THEN)\\s*(${TIME_RANGE})`, 'i');
+function envelopeClose(normalized: string, afterIdx: number, firstClose: string): { close: string; extraText: string } {
+  const toMin = (t: string) => parseInt(t.slice(0, 2), 10) * 60 + parseInt(t.slice(3), 10);
+  const fmt = (min: number) => `${String(Math.floor(min / 60)).padStart(2, '0')}:${String(min % 60).padStart(2, '0')}`;
+  let close = firstClose; let idx = afterIdx; let extraText = '';
+  for (;;) {
+    const m = CONTINUATION_RE.exec(normalized.slice(idx));
+    if (!m) break;
+    const p = parseTimeRange(m[1]);
+    if (!p) break;
+    let o = toMin(p.open), cl = toMin(p.close);
+    const closeMin = toMin(close);
+    if (o < closeMin) { o += 720; if (cl <= o) cl += 720; } // "& 1-5" after a noon close is 1p-5p
+    if (o < closeMin || cl <= o || cl > 20 * 60) break;
+    close = fmt(cl);
+    extraText += m[0];
+    idx += m[0].length;
+  }
+  return { close, extraText };
+}
+
 function scanHours(text: string | null | undefined, source: SignalSource): HoursScanResult | null {
   if (!text) return null;
   const normalized = stripCommentPrefixes(text);
@@ -311,8 +340,10 @@ function scanHours(text: string | null | undefined, source: SignalSource): Hours
     const days = expandDaySpan(m[1]);
     const parsed = parseTimeRange(m[2]);
     if (!days.length || !parsed) continue;
-    for (const d of days) byDay[d] = { open: parsed.open, close: parsed.close };
-    matchedBits.push(m[0]);
+    const env = envelopeClose(normalized, m.index + m[0].length, parsed.close);
+    for (const d of days) byDay[d] = { open: parsed.open, close: env.close };
+    matchedBits.push(m[0] + env.extraText);
+    daySegRe.lastIndex += env.extraText.length; // the continuation is consumed, not re-scanned
   }
   const dayCloseRes: RegExp[] = [
     new RegExp(`\\b(${DAY_SPAN})\\s+CLOSES?\\s+(?:AT|@)\\s*(${TIME_TOKEN})`, 'gi'),
@@ -345,7 +376,11 @@ function scanHours(text: string | null | undefined, source: SignalSource): Hours
     // "FRI 8-12" as a generic all-week window through the bare-range wrappers.
     if (matchedBits.some((b) => b.includes(m[1]))) continue;
     const parsed = parseTimeRange(m[1]);
-    if (parsed) { generic = { ...parsed, matchedText: m[0] }; break; }
+    if (parsed) {
+      const env = envelopeClose(normalized, m.index + m[0].length, parsed.close);
+      generic = { open: parsed.open, close: env.close, matchedText: m[0] + env.extraText };
+      break;
+    }
   }
 
   // 3 — Assemble. Day-qualified evidence produces byDay (generic fills the week first
@@ -413,7 +448,8 @@ function scanHours(text: string | null | undefined, source: SignalSource): Hours
     // 1-hour lunch pairs never carry one).
     const hasMeridiem = /(A|P)M?\.?\s*(?:-|TO|—)|(A|P)M?\.?\s*$/i.test(m[2]) || /NOON/i.test(m[2]);
     if (c - o < (hasMeridiem ? 90 : 180)) continue;
-    return { open: parsed.open, close: parsed.close, matchedSource: source, matchedText: m[2] };
+    const env = envelopeClose(normalized, m.index + m[0].length, parsed.close);
+    return { open: parsed.open, close: env.close, matchedSource: source, matchedText: m[2] + env.extraText };
   }
   return null;
 }
