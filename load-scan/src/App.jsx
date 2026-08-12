@@ -933,7 +933,10 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
   // Rehydrate this load's scans from the local queue — the UI's source of truth.
   const refreshLocal = useCallback(async () => {
     if (!activeLoad) return;
-    const rows = await store.queuedFor(activeLoad);
+    // Scoped to the DAY, not just the load number: load numbers repeat (Steven's
+    // load is called "STEVEN"), so without the date a fresh truck opened wearing
+    // a previous shift's scans and stops looked already loaded.
+    const rows = await store.queuedFor(activeLoad, manifest?.date);
     setScans(
       rows.filter((r) => r.kind !== 'hand')
         .map((r) => ({
@@ -950,7 +953,9 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
         .map((r) => ({ stopNbr: r.stopNbr, pieces: r.pieces, confirmedAt: r.confirmedAt, reason: r.reason })),
     );
     setPending(rows.filter((r) => !r.syncedAt).length);
-  }, [activeLoad]);
+    // manifest.date is a real dependency now that the read is date-scoped: without
+    // it a date change would keep showing the previous day's rows.
+  }, [activeLoad, manifest?.date]);
 
   useEffect(() => {
     refreshLocal();
@@ -1076,7 +1081,9 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
   const flushQueue = useCallback(async () => {
     if (!activeLoad || !navigator.onLine) return;
     try {
-      const rows = (await store.queuedFor(activeLoad)).filter((r) => !r.syncedAt);
+      // Same-day only. An unsynced row from an earlier shift would otherwise be
+      // uploaded here tagged with TODAY's date, moving old freight onto this load.
+      const rows = (await store.queuedFor(activeLoad, manifest?.date)).filter((r) => !r.syncedAt);
       if (!rows.length) return;
       await api.pushScans(session.token, {
         loadNbr: activeLoad,

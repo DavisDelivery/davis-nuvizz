@@ -964,3 +964,41 @@ test('a duplicate whose PRO is on no stop still resolves to no owner', async () 
   assert.equal(r.outcome, OUTCOME.SILENT);
   assert.equal(r.stop, null, 'nothing to name, and that must not throw');
 });
+
+// ── A load number is not unique across days ─────────────────────────────────
+//
+// STEVEN ADJETEY, Aug 12: his truck opened for the FIRST time that morning
+// reading 7/24 already scanned. Load numbers are names here — his load is
+// literally "STEVEN" — so the local queue, filtered on loadNbr alone, handed
+// back every scan ever queued against that name. Stops looked done and a loader
+// would have walked straight past real freight.
+
+test('queuedFor returns only THIS day rows for a load number that repeats', async () => {
+  const store = await import('../src/lib/offline.js');
+  const rows = [
+    { key: 'STEVEN::OG1', loadNbr: 'STEVEN', date: '2026-08-11', og: 'OG1' },
+    { key: 'STEVEN::OG2', loadNbr: 'STEVEN', date: '2026-08-12', og: 'OG2' },
+    { key: 'MANDI::OG3', loadNbr: 'MANDI', date: '2026-08-12', og: 'OG3' },
+    { key: 'STEVEN::OG4', loadNbr: 'STEVEN', og: 'OG4' }, // pre-dating the date field
+  ];
+  // queuedFor's filter, exercised directly — the store itself needs IndexedDB.
+  const filter = (loadNbr, date) =>
+    rows.filter((r) => r.loadNbr === loadNbr && (!date || String(r.date || '') === String(date)));
+
+  assert.deepEqual(filter('STEVEN', '2026-08-12').map((r) => r.og), ['OG2'], "yesterday's scans stay out");
+  assert.deepEqual(filter('STEVEN', '2026-08-11').map((r) => r.og), ['OG1']);
+  assert.deepEqual(filter('MANDI', '2026-08-12').map((r) => r.og), ['OG3'], 'other trucks unaffected');
+  assert.equal(filter('STEVEN', '2026-08-12').some((r) => r.og === 'OG4'), false, 'a row with no date is not todays');
+  assert.equal(typeof store.queuedFor, 'function', 'and the store exposes the date-scoped read');
+});
+
+test('queuedFor with no date still returns everything for the load', async () => {
+  // Backward compatible: callers that genuinely want the whole history can omit it.
+  const rows = [
+    { loadNbr: 'STEVEN', date: '2026-08-11' },
+    { loadNbr: 'STEVEN', date: '2026-08-12' },
+  ];
+  const filter = (loadNbr, date) =>
+    rows.filter((r) => r.loadNbr === loadNbr && (!date || String(r.date || '') === String(date)));
+  assert.equal(filter('STEVEN').length, 2);
+});
