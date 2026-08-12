@@ -46,9 +46,28 @@ test('DELIVER BY single time keeps its 06:00 default open', () => {
   assert.deepEqual([h.open, h.close], ['06:00', '14:00']);
 });
 
-test('a bare range with NO hours label is never guessed at', () => {
-  assert.equal(hours('SPL-INSTR-TEXT: 7 30-1'), null, 'context is required — a naked number pair is not hours');
-  assert.equal(hours('CALL 30-1 MIN AHEAD'), null);
+// Chad (Aug 2026), reversing the original refusal: "we should learn the bare number
+// pairs because ... most businesses we deliver to are normal day time hours as we
+// don't run through the night." The daytime constraint IS the safety: a bare pair only
+// counts when it resolves to a 5:00a-12:00p open, a close by 7:00p, and at least a
+// 3-hour width — and never out of a refusing context.
+test('a bare daytime pair with no label IS learned (last resort, amber tier as always)', () => {
+  assert.deepEqual([hours('SPL-INSTR-TEXT: 7 30-1').open, hours('SPL-INSTR-TEXT: 7 30-1').close], ['07:30', '13:00']);
+  assert.deepEqual([hours('SPL-INSTR-TEXT: 8-4').open, hours('SPL-INSTR-TEXT: 8-4').close], ['08:00', '16:00']);
+  assert.deepEqual([hours('PREFERS 9AM-12PM BUT WILL BE ON SITE').open, hours('PREFERS 9AM-12PM BUT WILL BE ON SITE').close], ['09:00', '12:00']);
+});
+
+test('bare-pair guards: everything that is NOT a daytime receiving window still refuses', () => {
+  assert.equal(hours('CALL 30-1 MIN AHEAD'), null, 'invalid hour');
+  assert.equal(hours('CALL 9-5 MINS PRIOR'), null, 'MIN/MINS qualifier');
+  assert.equal(hours('SPL-INSTR-TEXT: CLOSED 1-2 FOR LUNCH'), null, 'lunch closure — the opposite of hours');
+  assert.equal(hours('SPL-INSTR-TEXT: NO DELIVERIES BTWN 12-1PM'), null, 'refusing context');
+  assert.equal(hours('SPL-INSTR-TEXT: 7PM-11PM'), null, 'we never run nights');
+  assert.equal(hours('SPL-INSTR-TEXT: 1-2'), null, 'a 1-hour pair is lunch-shaped, not a window');
+  assert.equal(hours('SPL-INSTR-TEXT: 678-900-4210'), null, 'phone number');
+  assert.equal(hours('SPL-INSTR-TEXT: 029785-09 ,SEQ# 1'), null, 'PO identifier');
+  assert.equal(hours('TOTAL-AMOUNT : 87.56'), null);
+  assert.equal(hours('12 AUG 2026 12:00 AM - 08:00 AM'), null, 'requested-window timestamps open before 5a');
 });
 
 // ── Corpus sweep (Aug 2026): every case below is a REAL string from the Firestore boards ──
