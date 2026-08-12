@@ -31,6 +31,7 @@ import { normalizeMatchKey } from './lib/matchKey.js';
 import { planOverlayAction, PLAN_OVERLAY_TTL_MS } from './lib/plan-overlay.js';
 import { routeStopEta, routeStopFreight, routeStopSeq } from './lib/route-stop-line.js';
 import { routeLoadLine, podPhotoFetchOffer, podSectionVisible, isPodImageExt, foldFreshStop } from './lib/stop-card-sections.js';
+import { resolveStopContact, resolveStopPhone, orderContactAside, mergeSavedContact, isDialable } from './lib/stop-contact.js';
 import { manifestIssues, manifestHeadline, toStored, loadStored, saveStored } from './lib/manifest-check-view.js';
 import { noteFreshness } from './lib/stop-notes-freshness.js';
 import { mapBaseOptions, mapLiveOptions, mapIdKey, keepView } from './lib/map-base-options.js';
@@ -74,7 +75,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.54.67';
+const APP_VERSION = '0.54.68';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -119,6 +120,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.54.68', 'A CUSTOMER NUMBER YOU CAN ADD, RIGHT WHERE THE NUMBER GOES. Chad: "make a spot where the customer number is on normal orders where if one of the orders doesn\'t have a customer name or number we can add it like we add notes." Orders WE create always carry one — New Order and Bulk Add both have the Phone field, and the Davis NuVizz export\'s "Customer Number" column feeds straight into it. Orders that arrive from a carrier often carry nothing, and the card printed the contact line ONLY when a number already existed: the orders that needed a number were exactly the orders with nowhere to put one. Getting one on file meant going through the notes editor — Edit, scroll past priority, hours, restrictions and dock notes, Contacts, add, Save. Now every stop card carries a CUSTOMER # block, under the address, on desktop and phone alike. With a number on file it reads "KAI WONG · (678) 860-8099", tap to dial, Edit beside it. With nothing on file it says "Not on this order" and offers "+ Add customer name / number" — two fields and Save, right there. It writes to the customer\'s notes exactly like a note does, so it is on file for that customer\'s NEXT order too, and it is the same number the Text and Call buttons use. THREE THINGS THAT WERE QUIETLY WRONG, fixed by moving the resolution rule into one tested place: (1) the card printed the ORDER\'s contact NAME beside whichever number won, so a number a dispatcher had typed showed up captioned with whoever NuVizz had on file — an attribution the data never supported. Name and number now come from ONE source, and whatever is missing says it is missing. (2) The Routing stop row preferred the ORDER\'s contact where every other surface preferred the saved one, so a corrected number read as the old one in one panel and the new one in the panel beside it. (3) Overriding the carrier\'s number used to hide it — the card now keeps a small "Order lists …" line so you can still see what came in on the order. 17 tests pin the precedence, the merge (roles and a customer\'s other contacts survive an edit made from the card) and clearing a number back off.'],
   ['0.54.67', 'BOARD FLAGS READ LIKE A LIST AGAIN, NOT A LEAFLET. Chad: "fotmatting issues" \u2014 with a screenshot where every advisory card carried the same four lines of boilerplate ("Estimate only \u2014 flat ~30 mph model...", "Hours were auto-detected from order text, not typed by a dispatcher \u2014 verify before acting. Resequence it earlier, move the date, or call ahead.") repeated on every row, burying the one line that differs: which stop, which route, how late. Each hours row is now a single breath \u2014 "Stop 9 on BEN 2 \u2014 estimated arrival ~2:12p vs close 12:00p (132 min late); departs 8:00a. Hours auto-detected \u2014 verify." \u2014 and the shared caveats live ONCE in the panel footer, which now also explains what amber means ("Amber rows use hours auto-detected from order text \u2014 verify before acting") alongside the existing estimates disclaimer. The re-anchored-clock evidence survives in compact form ("no movement yet, clock runs from 10:11a"), the word "estimated" stays on every number so no row overstates itself, and the driverless card got the same trim. At phone width the panel now shows three flags per screen instead of one and a half.'],
   ['0.54.66', 'LUNCH BREAKS ARE NOT CLOSING TIME. Chad, on a flagged stop: "look at this one it flagged they just break for lunch then start receiving again from 1-5pm." The parser was keeping only the FIRST range of two-window days \u2014 "8-12 & 1-5" stored a NOON close \u2014 so every afternoon arrival at those customers false-flagged as a miss. The month corpus says this is a whole class, not one customer: TEN of them write hours this way (RIOF "8AM-12P AND 1PM-4PM", FN USA "8-12 & 1-5", SANY "M-F 8AM - 11AM, 1PM - 5PM", Fulfillex, Vintage Modern, MJC, Atlanta Network, True Precision, Thoracent, Plaid) \u2014 and several of them sat wrongly on the early-close list in this morning\u2019s PDF report. Now: a continuation range after the first ("& 1-5", "AND 1PM-4PM", ", 1PM - 5PM" \u2014 even in the next comment) extends the stored window to the ENVELOPE, first open to last close \u2014 an arrival in the lunch gap is a short wait, not a miss, which is exactly how Chad framed it. Bare afternoon halves read as PM ("& 2-5" is 2p-5p; a continuation can only extend the day, never rewind it), incoherent continuations stop the chain, genuine noon closes (SUBARU "8 AM -12 PM", nothing after) stay exactly as they are, and "MON-TH 12-5 & FRI 1130-4" still reads as two day segments, not a continuation. Stored noon-closes for the ten self-heal on the next scan pass. The flag panel keeps its job \u2014 it just stops crying about lunch.'],
   ['0.54.65', 'THE "DISPATCH" LINK ON THE SAVED-LOADS LIST WAS A DECOY \u2014 IT NEVER TOUCHED NUVIZZ. Chad: "There\'s no way to dispatch a driver\'s load from the mobile app." Going looking for why, I found something worse than a missing button. On your phone, Routing \u2192 the Loads tab is the DEFAULT view, and every saved plan in that list had a link reading "Dispatch". It only flipped a flag on the saved plan in our own database \u2014 the driver never heard a thing. If you tapped it, the app told you it had dispatched and nothing had. It now reads "Mark dispatched", with a tooltip saying plainly that it does not release the load in NuVizz. The bar at the top of a saved load already said "Mark dispatched" for the same toggle, so the two now agree. WHERE DISPATCH ACTUALLY LIVES TODAY, until the next release puts it where you look: Routing (beta) \u2192 the Loads/Routes tab \u2192 flip the sub-toggle from Drivers to ROUTES \u2192 each route card has a real Dispatch button. It needs "Live dispatch" switched on in the Routing settings first. There is also a Dispatch checkbox on the driver row in the Compare workbench that fires when you Save. GROUNDWORK FOR THE REAL FIX, and it is the part with teeth: every write against a load \u2014 assign, dispatch, save \u2014 has to turn a route name into NuVizz\'s internal load id, because the board only ever carries the NAME. That lookup was written out by hand in four different places, each carrying its own copy of the guard that refuses when two live loads share a name. Handing a dispatch to the wrong STEVEN is silent and permanent in NuVizz, so that guard is the most expensive line in the app to get wrong. It is now one tested helper: a cancelled twin never blocks the live load, two live loads refuse outright rather than guessing, a route name is never sent where a load number belongs, and a load with no id yet refuses with a reason you can act on. Twelve tests on that alone. Next release puts a working Dispatch on the phone\'s Loads tab.'],
@@ -3815,14 +3817,10 @@ function SelectionControls({ mode, setMode, count, onClear, onText, onTextDriver
   );
 }
 
-// Resolve a customer's text number: prefer a manually-entered notes contact
-// phone, fall back to the NuVizz scan's destination contact. Returns '' if none.
-function resolveStopPhone(stop, note) {
-  const has10 = (p) => p && String(p).replace(/\D/g, '').length >= 10;
-  const fromNote = (note?.contacts || []).map((c) => c?.phone).find(has10);
-  const fromStop = has10(stop?.contact?.phone) ? stop.contact.phone : null;
-  return String(fromNote || fromStop || '').trim();
-}
+// resolveStopPhone (prefer a manually-entered notes contact phone, fall back to the
+// NuVizz scan's destination contact) now lives in lib/stop-contact.js alongside the rest
+// of the CUSTOMER # block's rules, so the number the card prints, the number Text sends
+// to and the number Call dials come from one definition. Imported at the top.
 
 // Display form for a US number: 6788608099 → (678) 860-8099. Anything that isn't a plain
 // 10/11-digit US number (an extension, an international number) is shown exactly as stored —
@@ -5708,7 +5706,118 @@ function useLiveStop(stop) {
   return [live, onRefreshed];
 }
 
-function StopDataSections({ stop, note, onRefreshed, onOpenRoute, onMoveLocation, onEditAddress, onAutoFixAddress, onText, onTextDriver, onOpenHistory }) {
+// ── CUSTOMER # — the contact block on a stop card ────────────────────────────
+// Chad: "make a spot where the customer number is on normal orders where if one of the
+// orders doesn't have a customer name or number we can add it like we add notes."
+//
+// Orders WE create carry a number — New Order and Bulk Add both have the Phone field, and
+// the Davis NuVizz export's "Customer Number" column maps straight into it. Orders that
+// arrive from a carrier often carry nothing, and the card printed the contact line ONLY
+// when a number already existed: the orders that needed one were exactly the orders with
+// nowhere to put one. The only way in was the notes editor — Edit, scroll past priority,
+// hours, restrictions and dock notes, Contacts, add, Save.
+//
+// So the block is always here now. Empty, it says so and offers the two fields inline; a
+// save writes the customer_notes doc through the SAME path as the notes editor's Save, so
+// the number lands where Text, Call and the Messages contact list already look for it —
+// and it is remembered for this customer's NEXT order, exactly like a note.
+//
+// `onSaveContacts` takes { name, phone } and is supplied by whichever panel owns the note
+// draft; without it (the read-only PRO lookup) the block renders but does not offer edits.
+function StopContactBlock({ stop, note, onSaveContacts, saving = false, saveError = null }) {
+  const resolved = resolveStopContact(stop, note);
+  const aside = orderContactAside(stop, resolved);
+  const canEdit = typeof onSaveContacts === 'function';
+  const [editing, setEditing] = useState(false);
+  const [name, setName] = useState('');
+  const [phone, setPhone] = useState('');
+  const [busy, setBusy] = useState(false);
+  // Opening a DIFFERENT order must never inherit an open editor — or, worse, the previous
+  // customer's half-typed number sitting over this one's name.
+  useEffect(() => { setEditing(false); setBusy(false); }, [stop?.stopNbr, stop?.pro]);
+
+  const startEdit = () => { setName(resolved.name); setPhone(resolved.phone); setEditing(true); };
+  const submit = async () => {
+    setBusy(true);
+    try { await onSaveContacts({ name, phone }); setEditing(false); } finally { setBusy(false); }
+  };
+  const working = busy || saving;
+  const tel = String(resolved.phone).replace(/[^\d+]/g, '');
+  const typedShort = !!phone.trim() && !isDialable(phone);
+
+  return (
+    <div className="mt-2 pt-2 border-t border-slate-100">
+      <div className="text-xs uppercase font-semibold text-slate-500 flex items-center gap-1.5">
+        Customer #
+        {resolved.source === 'saved' && (
+          <span className="px-1 rounded bg-blue-100 text-blue-700 text-[9px] font-semibold normal-case">added here</span>
+        )}
+      </div>
+      {editing ? (
+        <div className="mt-1 space-y-1.5">
+          {/* Sized for a thumb: this block renders in the mobile sheet as well as the
+              desktop sidebar, and it is most often used standing at a dock. */}
+          <input
+            value={name} onChange={(e) => setName(e.target.value)} placeholder="Contact name (optional)"
+            style={{ minHeight: 40 }}
+            className="w-full border border-slate-300 rounded px-2 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-300"
+          />
+          <input
+            value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="Phone number" type="tel" inputMode="tel"
+            style={{ minHeight: 40 }}
+            className="w-full border border-slate-300 rounded px-2 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-300"
+          />
+          <div className="flex items-center gap-2">
+            <button
+              onClick={submit} disabled={working}
+              className="px-3 py-1 text-xs text-white font-semibold rounded inline-flex items-center gap-1 disabled:opacity-50"
+              style={{ background: BRAND, minHeight: 36 }}
+            >
+              {working ? <RefreshCw size={11} className="animate-spin" /> : <Save size={11} />} Save
+            </button>
+            <button onClick={() => setEditing(false)} disabled={working} style={{ minHeight: 36 }} className="px-3 py-1 text-xs text-slate-600 hover:bg-slate-100 rounded">
+              Cancel
+            </button>
+            {/* Saved either way — a partial number is better than none on a card someone is
+                reading at a dock — but say plainly that it won't dial or text yet. */}
+            {typedShort && <span className="text-[10px] text-amber-700">Under 10 digits — won’t call or text</span>}
+          </div>
+          {saveError && <div className="text-[11px] text-red-600 break-words">{saveError}</div>}
+        </div>
+      ) : (resolved.source ? (
+        <div className="mt-0.5 text-xs text-slate-700 flex items-center gap-1.5 flex-wrap">
+          {resolved.name && <span className="text-slate-500">{resolved.name}{resolved.dialable ? ' ·' : ' —'}</span>}
+          {resolved.dialable
+            ? <a href={`tel:${tel}`} className="text-blue-700 hover:underline font-medium">{formatPhone(resolved.phone)}</a>
+            : <span className="text-slate-400 italic">no number on file</span>}
+          {canEdit && (
+            <button onClick={startEdit} className="text-[11px] text-blue-700 hover:underline">
+              {resolved.dialable ? 'Edit' : 'Add number'}
+            </button>
+          )}
+        </div>
+      ) : (
+        <div className="mt-0.5 text-xs flex items-center gap-1.5 flex-wrap">
+          <span className="text-slate-400 italic">Not on this order</span>
+          {canEdit && (
+            <button onClick={startEdit} className="inline-flex items-center gap-1 text-[11px] text-blue-700 hover:underline font-medium">
+              <Plus size={11} /> Add customer name / number
+            </button>
+          )}
+        </div>
+      ))}
+      {/* Overriding the carrier's number must not HIDE it — the dispatcher who typed over it
+          is entitled to see what the order actually says. */}
+      {aside && !editing && (
+        <div className="mt-0.5 text-[10px] text-slate-400 break-words">
+          Order lists {aside.name ? `${aside.name} · ` : ''}{formatPhone(aside.phone)}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function StopDataSections({ stop, note, onRefreshed, onOpenRoute, onMoveLocation, onEditAddress, onAutoFixAddress, onText, onTextDriver, onOpenHistory, onSaveContacts, savingNote = false, noteSaveError = null }) {
   // `stop` is the already-merged "live" stop the PARENT owns (see useLiveStop). The parent
   // holds the refresh overlay so the header status badge updates too — not just this body.
   // `onRefreshed` bubbles a fresh /stop/info pull (Refresh button, timeline open, or the
@@ -5779,13 +5888,10 @@ function StopDataSections({ stop, note, onRefreshed, onOpenRoute, onMoveLocation
             customer button, which is why that button knew whether to say "(add #)". It was
             simply never printed, so the one thing a dispatcher needs to CALL a customer was a
             click away inside a compose box. A tel: link, so it dials from a phone. A manually
-            saved contact number wins over NuVizz's, exactly as texting resolves it. */}
-        {textPhone && (
-          <div className="mt-1 text-xs text-slate-700">
-            {live.contact?.name && <span className="text-slate-500">{live.contact.name} · </span>}
-            <a href={`tel:${String(textPhone).replace(/[^\d+]/g, '')}`} className="text-blue-700 hover:underline font-medium">{formatPhone(textPhone)}</a>
-          </div>
-        )}
+            saved contact number wins over NuVizz's, exactly as texting resolves it.
+            It is now a PERMANENT block rather than a line that appears only when a number
+            already exists — see StopContactBlock for why that mattered. */}
+        <StopContactBlock stop={live} note={note} onSaveContacts={onSaveContacts} saving={savingNote} saveError={noteSaveError} />
         {/* Enhancement 6 — the four actions that account for nearly every tap, as
             thumb-size buttons (text links are the hardest targets on a phone). The long
             tail folds into More; every existing action stays reachable. */}
@@ -6461,6 +6567,16 @@ function StopSidebar({ stop, note, onClose, onSave, saving, saveError, onOpenRou
   // writes from clobbering in-progress edits). All field helpers live in the
   // shared <StopNotesEditor>.
   const setD = (patch) => { dirtyRef.current = true; setDraft({ ...D, ...patch }); };
+  // Adding a customer number from the card writes through the SAME path as the notes
+  // editor's Save — one route into customer_notes — and folds the change into the open
+  // draft so a later Save can't quietly revert the number that was just added. NOT marked
+  // dirty: it is already persisted, and a false dirty flag would stop this panel adopting
+  // background note updates.
+  const saveContacts = onSave ? async (patch) => {
+    const next = { ...D, contacts: mergeSavedContact(D.contacts, patch) };
+    setDraft(next);
+    await onSave(next);
+  } : null;
 
   return (
     <aside
@@ -6506,7 +6622,7 @@ function StopSidebar({ stop, note, onClose, onSave, saving, saveError, onOpenRou
       </div>
 
       <div className="overflow-y-auto flex-1">
-        <StopDataSections stop={live} note={note} onRefreshed={onRefreshed} onOpenRoute={onOpenRoute} onMoveLocation={onMoveLocation} onEditAddress={onEditAddress} onAutoFixAddress={onAutoFixAddress} onText={onText} onTextDriver={onTextDriver} onOpenHistory={onOpenHistory} />
+        <StopDataSections stop={live} note={note} onRefreshed={onRefreshed} onOpenRoute={onOpenRoute} onMoveLocation={onMoveLocation} onEditAddress={onEditAddress} onAutoFixAddress={onAutoFixAddress} onText={onText} onTextDriver={onTextDriver} onOpenHistory={onOpenHistory} onSaveContacts={saveContacts} savingNote={saving} noteSaveError={saveError} />
         <ProsSection stop={live} />
         <StopNotesSection note={note} editing={editing} setEditing={setEditing} draft={D} setDraft={setD} compact drivers={drivers} />
         <StopRecentDeliveries stop={stop} />
@@ -7945,6 +8061,12 @@ function MobileStopDetailDrawer({ stop, note, onClose, onSave, saving, saveError
   if (!stop) return null;
   const D = draft;
   const setD = (patch) => { dirtyRef.current = true; setDraft({ ...D, ...patch }); };
+  // Same one-write-path rule as StopSidebar — see the comment there.
+  const saveContacts = onSave ? async (patch) => {
+    const next = { ...D, contacts: mergeSavedContact(D.contacts, patch) };
+    setDraft(next);
+    await onSave(next);
+  } : null;
 
   const hasUnsaved = editing && JSON.stringify(draft) !== JSON.stringify(note || emptyNote(stop));
 
@@ -7990,7 +8112,7 @@ function MobileStopDetailDrawer({ stop, note, onClose, onSave, saving, saveError
           <StatusBadge kind={classifyStopStatus(live)} />
           <DnsBadge note={note} showDrivers />
         </div>
-        <StopDataSections stop={live} note={note} onRefreshed={onRefreshed} onOpenRoute={onOpenRoute} onMoveLocation={onMoveLocation} onEditAddress={onEditAddress} onAutoFixAddress={onAutoFixAddress} onText={onText} onTextDriver={onTextDriver} onOpenHistory={onOpenHistory} />
+        <StopDataSections stop={live} note={note} onRefreshed={onRefreshed} onOpenRoute={onOpenRoute} onMoveLocation={onMoveLocation} onEditAddress={onEditAddress} onAutoFixAddress={onAutoFixAddress} onText={onText} onTextDriver={onTextDriver} onOpenHistory={onOpenHistory} onSaveContacts={saveContacts} savingNote={saving} noteSaveError={saveError} />
         <ProsSection stop={live} />
         <StopNotesSection note={note} editing={editing} setEditing={setEditing} draft={D} setDraft={setD} drivers={drivers} />
         <StopRecentDeliveries stop={stop} />
@@ -12396,8 +12518,10 @@ function RoutingStopDetail({ stop, note, onOpen, windowViolated, onMoveLocation,
   const aState = note?.address_override?.state ?? stop.state;
   const aZip = note?.address_override?.zip ?? stop.zip;
   const addr = [aAddr1, [aCity, aState].filter(Boolean).join(', '), aZip].filter(Boolean).join(' · ');
-  const contact = (stop.contact && (stop.contact.name || stop.contact.phone)) ? stop.contact
-    : (note?.contacts && note.contacts[0]) || null;
+  // Same resolution as the stop card's CUSTOMER # block (a saved contact wins over the
+  // order's). This row used to prefer the ORDER's contact, so a number a dispatcher had
+  // corrected showed here as the old one while the panel beside it showed the new one.
+  const contact = resolveStopContact(stop, note);
   const Cap = ({ children }) => <div className="text-[9px] uppercase font-semibold text-slate-500 tracking-wide">{children}</div>;
   const pro = stop.pro || stop.stopNbr || stop.primaryPro || null;
   return (
@@ -12428,7 +12552,7 @@ function RoutingStopDetail({ stop, note, onOpen, windowViolated, onMoveLocation,
           </div>
         )}
       </div>
-      {contact && (
+      {contact.source && (
         <div><Cap>Contact</Cap><div className="text-slate-800">{[contact.name, contact.phone].filter(Boolean).join(' · ') || '—'}</div></div>
       )}
       <div className="flex gap-6 flex-wrap">
