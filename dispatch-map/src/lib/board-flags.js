@@ -297,10 +297,22 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
         continue; // an invented order would produce confident wrong answers
       }
       seqd.sort((a, b) => seqOf(a) - seqOf(b));
+      // Collapse duplicate board rows of the SAME physical visit (a multi-order customer
+      // arrives as one row per order, all sharing the sequence slot) before walking. Each
+      // extra row added a phantom service block — inflating every later ETA on the route —
+      // and emitted its own copy of the flag (Chad's screenshot: Subaru flagged at 1:06p,
+      // 1:26p AND 1:46p, exactly one service-time apart). One visit, one clock, one flag.
+      const visitSeen = new Set();
+      const visits = seqd.filter((s) => {
+        const vk = `${seqOf(s)}|${String(s.matchKey || s.businessName || s.stopNbr || '').toLowerCase()}`;
+        if (visitSeen.has(vk)) return false;
+        visitSeen.add(vk);
+        return true;
+      });
       const notStarted = !startedRoutes.has(k) && nowMin != null && nowMin > departMin + NOT_STARTED_GRACE_MIN;
       const effDepart = notStarted ? nowMin : departMin;
       let cur = depot; let clockMin = effDepart; let chainBroken = false;
-      for (const s of seqd) {
+      for (const s of visits) {
         const pos = stopPosition(s, noteOf(s));
         if (!pos) { chainBroken = true; break; } // a missing pin breaks the chain honestly
         clockMin += (haversineMeters(cur, pos) * ROUTE_ROAD_FACTOR / ROUTE_AVG_SPEED_MPS) / 60;
@@ -335,7 +347,16 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
         if (startedRoutes.has(k)) continue; // moving freight implies a driver, whatever the feed says
         const hasDriver = group.some((s) => String(s?.driverName || s?.driverUserName || '').trim());
         if (hasDriver) continue;
+        // Same physical-visit collapse as the ETA walk: a 3-order customer is ONE stop
+        // with hours, not three — "has 3 stops with receiving hours" overstated the load.
+        const cSeen = new Set();
         const constrained = group
+          .filter((s) => {
+            const vk = String(s.matchKey || s.businessName || s.stopNbr || '').toLowerCase();
+            if (cSeen.has(vk)) return false;
+            cSeen.add(vk);
+            return true;
+          })
           .map((s) => ({ s, w: dayReceivingWindow(noteOf(s), day) }))
           .filter((x) => x.w);
         if (!constrained.length) continue;
