@@ -274,14 +274,14 @@ export function toManifestStop(raw: any, warn?: (msg: string) => void): Manifest
  * driverName rides along because "whose truck is this" is how a dock talks
  * about a load — the load number alone is not how anyone identifies a trailer.
  */
-export function loadSummaries(stops: ManifestStop[]): Array<{
+export function loadSummaries(stops: ManifestStop[], roster?: any[]): Array<{
   loadNbr: string;
   routeName: string | null;
   driverName: string | null;
   stopCount: number;
   expectedPieces: number;
 }> {
-  return groupIntoLoads(stops).map((l) => ({
+  return groupIntoLoads(stops, roster).map((l) => ({
     loadNbr: l.loadNbr,
     routeName: l.routeName,
     driverName: str(l.stops[0]?.raw?.driverName) || str(l.stops[0]?.raw?.driverUserName) || null,
@@ -356,9 +356,18 @@ export function sequenceFingerprint(stops: Array<{ stopNbr?: string; loadStopSeq
 }
 
 /** Group manifest stops into loads, summing expected pieces per load. */
-export function groupIntoLoads(stops: ManifestStop[]): Array<{
+export function groupIntoLoads(stops: ManifestStop[], roster?: any[]): Array<{
   loadNbr: string;
   routeName: string | null;
+  /**
+   * The genuine per-day identity, joined from the roster. Null when the roster
+   * is cold or the route name is ambiguous — never guessed. `loadNbr` above
+   * stays the ROUTE NAME so every existing consumer is unchanged; these are an
+   * addition, not a rename.
+   */
+  loadId: string | null;
+  loadNbrReal: string | null;
+  loadIdAmbiguous: boolean;
   stopCount: number;
   loadGroupCount: number;
   expectedPieces: number;
@@ -377,9 +386,13 @@ export function groupIntoLoads(stops: ManifestStop[]): Array<{
       const inDeliveryOrder = assignLoadSeq(
         list.slice().sort((a, b) => (deliverySeq(a) ?? 0) - (deliverySeq(b) ?? 0)),
       ) as ManifestStop[];
+      const ident = resolveLoadIdentity(roster || [], loadNbr);
       return {
         loadNbr,
         routeName: list[0]?.routeName ?? null,
+        loadId: ident.loadId,
+        loadNbrReal: ident.loadNbr,
+        loadIdAmbiguous: ident.ambiguous,
         stopCount: list.length,
         loadGroupCount: loadGroupCount(inDeliveryOrder),
         expectedPieces: list.reduce((sum, s) => sum + s.expectedPieces, 0),
@@ -387,4 +400,38 @@ export function groupIntoLoads(stops: ManifestStop[]): Array<{
       };
     })
     .sort((a, b) => a.loadNbr.localeCompare(b.loadNbr));
+}
+
+/**
+ * The genuine load identity for a route name, from the day's roster.
+ *
+ * A stop's `loadNbr` is the ROUTE NAME (nuvizz-list.mts:268 overwrites it), so
+ * "STEVEN" is not a load — it is the same truck's name every day he works. The
+ * roster carries what the stop does not: a per-day `loadNbr` (DAVIS000201463)
+ * and the `loadId` NuVizz itself accepts for writes.
+ *
+ * REFUSES TO GUESS. Two loads in one day can share a route name — a cancelled
+ * STEVEN load once put a red badge on the live one — so a name appearing more
+ * than once resolves to nothing. Silently attaching a scan to the wrong truck is
+ * worse than not resolving, and the caller can fall back to name + date, which
+ * is exactly as good as what it had before.
+ */
+export function resolveLoadIdentity(roster: any[], routeName: string): {
+  loadId: string | null;
+  loadNbr: string | null;
+  ambiguous: boolean;
+} {
+  const want = String(routeName ?? '').trim().toUpperCase();
+  if (!want) return { loadId: null, loadNbr: null, ambiguous: false };
+
+  const hits = (roster || []).filter((l) => String(l?.name ?? '').trim().toUpperCase() === want);
+  if (hits.length !== 1) {
+    // 0 = not on this day's roster; >1 = two trucks share the name today.
+    return { loadId: null, loadNbr: null, ambiguous: hits.length > 1 };
+  }
+  return {
+    loadId: String(hits[0]?.loadId ?? '') || null,
+    loadNbr: String(hits[0]?.loadNbr ?? '') || null,
+    ambiguous: false,
+  };
 }

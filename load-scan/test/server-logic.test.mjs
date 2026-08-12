@@ -1017,3 +1017,63 @@ test('the per-scan log is exposed in order, with the stop each piece landed on',
   assert.equal(detail.find((s) => s.stopNbr === '1').extra, 1, 'TIFOSI holds one it should not');
   assert.equal(detail.find((s) => s.stopNbr === '2').short, 1, 'FRSTEAM is short by exactly that piece');
 });
+
+// ── The real load identity ──────────────────────────────────────────────────
+//
+// A stop's `loadNbr` is the ROUTE NAME — nuvizz-list.mts:268 overwrites it — so
+// Steven's every stop reads "STEVEN", the same string every day. The roster is
+// where the genuine per-day numbers live:
+//   08-10  STEVEN  DAVIS000201342  6a7987c21b7e7eee4b47441f
+//   08-11  STEVEN  DAVIS000201345  6a7ac732cc81cf65c8e52bd6
+//   08-12  STEVEN  DAVIS000201463  6a7c36733a2a78b090799a4f
+
+const roster0812 = [
+  { loadId: '6a7c36733a2a78b090799a4f', name: 'STEVEN', loadNbr: 'DAVIS000201463', status: 'Dispatched' },
+  { loadId: '6a7c36733a2a78b090799b11', name: 'MANDI', loadNbr: 'DAVIS000201464', status: 'Dispatched' },
+];
+
+test('a route name resolves to the days real load number and id', async () => {
+  const { resolveLoadIdentity } = await import('../netlify/functions/lib/manifest.mts');
+  const r = resolveLoadIdentity(roster0812, 'STEVEN');
+  assert.equal(r.loadId, '6a7c36733a2a78b090799a4f');
+  assert.equal(r.loadNbr, 'DAVIS000201463', 'not "STEVEN" — the genuine number');
+  assert.equal(r.ambiguous, false);
+});
+
+test('the same route on another day is a DIFFERENT load', async () => {
+  const { resolveLoadIdentity } = await import('../netlify/functions/lib/manifest.mts');
+  const prior = [{ loadId: '6a7ac732cc81cf65c8e52bd6', name: 'STEVEN', loadNbr: 'DAVIS000201345' }];
+  assert.notEqual(
+    resolveLoadIdentity(roster0812, 'STEVEN').loadId,
+    resolveLoadIdentity(prior, 'STEVEN').loadId,
+    'which is the whole point — the route name never distinguished these',
+  );
+});
+
+test('two loads sharing a name in one day REFUSE to resolve', async () => {
+  // A cancelled STEVEN load once put a red badge on the live one. Picking either
+  // would silently attach scans to the wrong truck.
+  const { resolveLoadIdentity } = await import('../netlify/functions/lib/manifest.mts');
+  const dup = [
+    { loadId: 'aaa', name: 'STEVEN', loadNbr: 'DAVIS000201463', status: 'Dispatched' },
+    { loadId: 'bbb', name: 'STEVEN', loadNbr: 'DAVIS000201399', status: 'Cancelled' },
+  ];
+  const r = resolveLoadIdentity(dup, 'STEVEN');
+  assert.equal(r.loadId, null, 'no guess');
+  assert.equal(r.ambiguous, true, 'and it says why');
+});
+
+test('a name absent from the roster is unresolved, not ambiguous', async () => {
+  const { resolveLoadIdentity } = await import('../netlify/functions/lib/manifest.mts');
+  const r = resolveLoadIdentity(roster0812, 'NOBODY');
+  assert.equal(r.loadId, null);
+  assert.equal(r.ambiguous, false, 'a cold or partial roster is not a collision');
+});
+
+test('an empty roster resolves nothing and does not throw', async () => {
+  const { resolveLoadIdentity } = await import('../netlify/functions/lib/manifest.mts');
+  for (const bad of [[], null, undefined]) {
+    assert.equal(resolveLoadIdentity(bad, 'STEVEN').loadId, null);
+  }
+  assert.equal(resolveLoadIdentity(roster0812, '').loadId, null);
+});
