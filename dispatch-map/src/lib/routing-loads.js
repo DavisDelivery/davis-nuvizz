@@ -55,3 +55,79 @@ export function buildLoadAutoName(result, nowInput) {
   const t = loadTruckCount(result), s = loadStopCount(result);
   return `${formatDateTime(nowInput)} · ${t} truck${t === 1 ? '' : 's'} · ${s} stop${s === 1 ? '' : 's'}`;
 }
+
+// ── WHICH LOAD IS THIS, REALLY ────────────────────────────────────────────────
+//
+// Every write against a load — assign a driver, dispatch it, save a reorder — needs NuVizz's
+// internal loadId, and the board does not carry one. A board stop's `loadNbr` field holds the
+// route NAME ("STEVEN"), not the load number: see nuvizz-list.mts toBoardStop, which sets
+// `loadNbr: hasRoute ? r.routeName : null`. The real identity lives on the day's load roster,
+// where the same route name maps to a different loadId every day (STEVEN was
+// 6a7987c2… on 8/10, 6a7ac732… on 8/11, 6a7c3673… on 8/12).
+//
+// So identity is resolved by looking the route up in that day's roster. This was written out
+// by hand in four places in App.jsx; extracting it makes the one guard that actually costs
+// money testable.
+//
+// THE GUARD: two loads on one day CAN share a name. Handing a write to the wrong one is
+// silent and irreversible in NuVizz — it is the STEVEN case documented in route-status.js.
+// A cancelled load next to a live one is NOT a contest (the live load owns the name), but two
+// LIVE loads are, and there the answer must be "refuse", never "pick one".
+
+/**
+ * Build the name/id/number → identity index from a day's roster rows.
+ * `resolveOwner` is route-status.js's resolveNameOwner, injected so this stays pure.
+ */
+export function buildLoadRosterIndex(rosterLoads = [], resolveOwner = null) {
+  const index = new Map();
+  const owners = new Map();
+  const asEntry = (l) => ({
+    loadId: l?.loadId ? String(l.loadId) : null,
+    name: l?.name || '',
+    loadNbr: l?.loadNbr ? String(l.loadNbr) : null,
+  });
+  for (const l of rosterLoads || []) {
+    const nm = String(l?.name ?? '').trim().toLowerCase();
+    const entry = asEntry(l);
+    if (nm) {
+      if (!owners.has(nm)) {
+        owners.set(nm, resolveOwner ? resolveOwner(nm, rosterLoads) : { load: l, ambiguous: false });
+      }
+      const own = owners.get(nm);
+      if (own?.ambiguous) index.set(nm, { ...entry, ambiguous: true });
+      else index.set(nm, asEntry(own?.load || l));
+    }
+    if (l?.loadId) index.set(String(l.loadId), entry);
+    // An empty load's grid row is keyed by its real load number, so that must resolve too.
+    if (l?.loadNbr) index.set(String(l.loadNbr), entry);
+  }
+  return index;
+}
+
+/**
+ * The identity to write against, or null when we must not write.
+ *
+ * Returns null — meaning REFUSE, do not guess — when the name is ambiguous (two live loads)
+ * or when no loadId can be found at all (a draft/empty load whose id has not loaded yet).
+ * `looksLikeLoadNbr` is injected: a stop's loadNbr is usually a route name, and sending a
+ * name where NuVizz expects a number fails in a way that reads like a vendor error.
+ */
+export function resolveLoadIdentity(g, index, looksLikeLoadNbr = () => false) {
+  const idx = index || new Map();
+  const get = (k) => (k ? idx.get(String(k).trim().toLowerCase()) || idx.get(String(k).trim()) : null);
+  const hit = get(g?.name) || get(g?.key) || (g?.loadId ? get(g.loadId) : null) || null;
+  const entry = hit && !hit.ambiguous ? hit : null;
+  const loadId = g?.loadId || entry?.loadId || null;
+  if (!loadId) return null;
+  const loadNbr = (g?.loadNbr && looksLikeLoadNbr(g.loadNbr)) ? g.loadNbr : (entry?.loadNbr || null);
+  return { loadId: String(loadId), loadNbr: loadNbr ? String(loadNbr) : null, ambiguous: false };
+}
+
+/** Why a resolve refused — for a message a dispatcher can act on. */
+export function loadIdentityRefusal(g, index) {
+  const idx = index || new Map();
+  const get = (k) => (k ? idx.get(String(k).trim().toLowerCase()) || idx.get(String(k).trim()) : null);
+  const hit = get(g?.name) || get(g?.key) || null;
+  if (hit?.ambiguous) return 'two live loads share this name — rename one in the portal first';
+  return 'its NuVizz load id has not loaded yet';
+}
