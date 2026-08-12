@@ -420,6 +420,7 @@ test('the driverless-deadline count speaks in customers, not board rows', () => 
   const r = out.rows.find((x) => x.rule === 'no_driver_hours');
   assert.ok(r, 'expected the driverless-deadline flag');
   assert.match(r.detail, /has 1 stop with receiving hours/, 'three rows, one customer, count of 1');
+});
 
 // ── appointment routes (Chad: "dont put uline appt's in the flag") ────────────
 //
