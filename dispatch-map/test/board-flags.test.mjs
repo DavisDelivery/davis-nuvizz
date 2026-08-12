@@ -145,7 +145,9 @@ test('a stop sequenced past a TYPED close flags red, labelled as an estimate', (
   assert.equal(r.tier, 'red');
   assert.equal(r.stopNbr, '2');
   assert.ok(/estimate/i.test(r.detail), 'the row must say it is an estimate');
-  assert.ok(/30 mph/.test(r.detail), 'the row must name the model');
+  // The "flat ~30 mph model" disclaimer lives ONCE in the panel footer, not on every row —
+  // Chad (Aug 12): repeating it per card made the panel a wall of identical boilerplate.
+  assert.ok(!/30 mph/.test(r.detail), 'the model note belongs to the footer, not each row');
 });
 
 test('scanner-guessed hours cap the same miss at AMBER, and say why', () => {
@@ -258,7 +260,7 @@ test("a route with no sign of movement cannot depart in the past — the clock s
   const late = run(stops, notesObj, { opts: { ...OPTS, nowMin: 15 * 60 } });
   const r = late.rows.find((x) => x.rule === 'hours_risk');
   assert.ok(r, 'a 3:00p unmoved route must flag a 2:00p close');
-  assert.ok(/no delivery or arrival recorded on this route as of 3:00p/.test(r.detail), 'the row must state the evidence for the re-anchored clock');
+  assert.ok(/no movement yet, clock runs from 3:00p/.test(r.detail), 'the row must state the evidence for the re-anchored clock (compact wording, Aug 12)');
 });
 
 test('the first hour after departure is grace — a truck en route to stop 1 is not "late"', () => {
