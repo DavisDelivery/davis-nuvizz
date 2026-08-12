@@ -7,7 +7,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   computeBoardFlags, parseClockMin, dayReceivingWindow, closedDayTier,
-  stopPosition, isFinishedStop, RED_CAP,
+  stopPosition, isFinishedStop, RED_CAP, isAppointmentRoute,
 } from '../src/lib/board-flags.js';
 
 const DEPOT = { lat: 34.147791, lng: -83.960911 };
@@ -420,4 +420,80 @@ test('the driverless-deadline count speaks in customers, not board rows', () => 
   const r = out.rows.find((x) => x.rule === 'no_driver_hours');
   assert.ok(r, 'expected the driverless-deadline flag');
   assert.match(r.detail, /has 1 stop with receiving hours/, 'three rows, one customer, count of 1');
+
+// ── appointment routes (Chad: "dont put uline appt's in the flag") ────────────
+//
+// ULINE APPT is a holding pen, not a truck: freight sits on it BECAUSE it is waiting on a
+// scheduled appointment. Walking a delivery sequence down it produced rows like "estimated
+// arrival ~1:49a vs close 5:00p, 529 min late" — arithmetic about a stop that was never
+// going out that day. The risk in silencing a route is silencing a REAL one, so these pin
+// both directions.
+
+test('isAppointmentRoute matches the APPT token, not substrings', () => {
+  for (const n of ['ULINE APPT', 'uline appt', 'ULINE APPT 2', 'ESTES APPT', 'APPT', 'APPTS', 'Appointment Hold'])
+    assert.ok(isAppointmentRoute(n), `should match: ${n}`);
+  // The failure that would actually hurt: silencing a live truck whose name happens to
+  // contain the letters. Verified against 3 days of the real roster — 111 route names, none
+  // like this — but the boundary is what makes that safe, so it is pinned.
+  for (const n of ['APPTON', 'RAPPTON', 'SUW', 'STEVEN', 'ALPHA 2', 'TRAILER 6', '', null, undefined])
+    assert.ok(!isAppointmentRoute(n), `should NOT match: ${n}`);
+});
+
+test('THE REPORT: a late-looking stop on ULINE APPT produces no hours_risk row', () => {
+  const notesObj = {
+    'far|k': note({
+      receiving_hours: { mon: { open: '08:00', close: '09:00' } },
+      manual_overrides: { receiving_hours: true },
+    }),
+  };
+  const stops = [
+    stop({ stopNbr: '1', routeSeq: 1, loadNbr: 'ULINE APPT', routeName: 'ULINE APPT' }),
+    stop({ stopNbr: '2', routeSeq: 2, loadNbr: 'ULINE APPT', routeName: 'ULINE APPT',
+      matchKey: 'far|k', businessName: 'RIOF INSTALLATIONS', lat: 33.60, lng: -84.60 }),
+  ];
+  const out = run(stops, notesObj);
+  assert.equal(out.rows.filter((r) => r.rule === 'hours_risk').length, 0,
+    'held-for-appointment freight is not late freight');
+  assert.deepEqual(out.skipped.routesAppointment, ['ULINE APPT'],
+    'and the panel is told, so the exclusion is visible rather than silent');
+  assert.equal(out.checked.routesJudged, 0, 'an excluded route is not counted as judged either');
+});
+
+test('the SAME stops on a normal route still flag — the rule narrowed, it did not break', () => {
+  const notesObj = {
+    'far|k': note({
+      receiving_hours: { mon: { open: '08:00', close: '09:00' } },
+      manual_overrides: { receiving_hours: true },
+    }),
+  };
+  const stops = [
+    stop({ stopNbr: '1', routeSeq: 1 }),
+    stop({ stopNbr: '2', routeSeq: 2, matchKey: 'far|k', businessName: 'FAR CO', lat: 33.60, lng: -84.60 }),
+  ];
+  const out = run(stops, notesObj);
+  assert.equal(out.rows.filter((r) => r.rule === 'hours_risk').length, 1);
+  assert.deepEqual(out.skipped.routesAppointment, []);
+});
+
+test('the no-driver rule is silenced on appointment routes too', () => {
+  // An appointment route has no driver because it is not being run. Flagging that at 8am
+  // every day is the same false alarm wearing a different hat.
+  const notesObj = { 'far|k': note({ receiving_hours: { mon: { open: '08:00', close: '15:00' } }, manual_overrides: { receiving_hours: true } }) };
+  const stops = [
+    stop({ stopNbr: '1', routeSeq: 1, loadNbr: 'ULINE APPT', routeName: 'ULINE APPT', driverName: '', driverUserName: '',
+      matchKey: 'far|k', businessName: 'HELD CO' }),
+  ];
+  const out = run(stops, notesObj, { opts: { ...OPTS, nowMin: 10 * 60 } });
+  assert.equal(out.rows.filter((r) => r.rule === 'no_driver_hours').length, 0);
+});
+
+test('a driverless NORMAL route past departure still raises no_driver_hours', () => {
+  const notesObj = { 'far|k': note({ receiving_hours: { mon: { open: '08:00', close: '15:00' } }, manual_overrides: { receiving_hours: true } }) };
+  const stops = [
+    stop({ stopNbr: '1', routeSeq: 1, loadNbr: 'LVILLE', routeName: 'LVILLE', driverName: '', driverUserName: '',
+      matchKey: 'far|k', businessName: 'LUND' }),
+  ];
+  const out = run(stops, notesObj, { opts: { ...OPTS, nowMin: 10 * 60 } });
+  assert.equal(out.rows.filter((r) => r.rule === 'no_driver_hours').length, 1,
+    'silencing appointment routes must not silence the LVILLE case');
 });

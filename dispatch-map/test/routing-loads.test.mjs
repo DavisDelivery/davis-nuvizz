@@ -44,3 +44,66 @@ test('buildLoadAutoName combines time + summary (no spill in the name)', () => {
     'Jun 5, 2026 2:14p · 2 trucks · 5 stops',
   );
 });
+
+// ── load identity: the guard that stops a write hitting the wrong truck ───────
+//
+// A board stop's `loadNbr` is the route NAME, not a load number (nuvizz-list toBoardStop sets
+// it from routeName), and the real per-day loadId lives on the roster — STEVEN is a different
+// loadId every day. So every write resolves identity through the roster, and the case that
+// matters is two live loads sharing one name: picking either is silent and irreversible in
+// NuVizz, so the only safe answer is to refuse.
+import { buildLoadRosterIndex, resolveLoadIdentity, loadIdentityRefusal } from '../src/lib/routing-loads.js';
+import { resolveNameOwner } from '../src/lib/route-status.js';
+
+const L = (over) => ({ loadId: '6a7c3673aaaa', name: 'STEVEN', loadNbr: 'DAVIS000201463', status: 'Dispatched', ...over });
+const idxOf = (rows) => buildLoadRosterIndex(rows, resolveNameOwner);
+const looksLikeNbr = (v) => /^DAVIS\d+$/i.test(String(v ?? ''));
+
+test('a route name resolves to that day\'s loadId and real load number', () => {
+  const idx = idxOf([L()]);
+  const got = resolveLoadIdentity({ key: 'STEVEN', name: 'STEVEN' }, idx, looksLikeNbr);
+  assert.deepEqual(got, { loadId: '6a7c3673aaaa', loadNbr: 'DAVIS000201463', ambiguous: false });
+});
+
+test('lookup is case- and whitespace-insensitive, and works by loadId or load number too', () => {
+  const idx = idxOf([L()]);
+  assert.ok(resolveLoadIdentity({ name: '  steven ' }, idx, looksLikeNbr));
+  assert.ok(resolveLoadIdentity({ name: '6a7c3673aaaa' }, idx, looksLikeNbr));
+  assert.ok(resolveLoadIdentity({ name: 'DAVIS000201463' }, idx, looksLikeNbr));
+});
+
+test('THE GUARD: two LIVE loads sharing a name refuse to resolve', () => {
+  const idx = idxOf([L({ loadId: 'aaa' }), L({ loadId: 'bbb' })]);
+  assert.equal(resolveLoadIdentity({ key: 'STEVEN', name: 'STEVEN' }, idx, looksLikeNbr), null,
+    'a write must never pick one of two live loads with the same name');
+  assert.match(loadIdentityRefusal({ name: 'STEVEN' }, idx), /two live loads/i);
+});
+
+test('a CANCELLED twin is not a contest — the live load owns the name', () => {
+  const idx = idxOf([L({ loadId: 'dead', status: 'Cancelled' }), L({ loadId: 'live', status: 'Dispatched' })]);
+  const got = resolveLoadIdentity({ key: 'STEVEN', name: 'STEVEN' }, idx, looksLikeNbr);
+  assert.equal(got?.loadId, 'live', 'a cancelled load holds no work and must not block the live one');
+});
+
+test('no loadId anywhere ⇒ refuse, with a reason a dispatcher can act on', () => {
+  const idx = idxOf([]);
+  assert.equal(resolveLoadIdentity({ key: 'NEW ROUTE', name: 'NEW ROUTE' }, idx, looksLikeNbr), null);
+  assert.match(loadIdentityRefusal({ name: 'NEW ROUTE' }, idx), /load id has not loaded/i);
+});
+
+test('a route NAME in loadNbr is not sent as a load number', () => {
+  // Stops carry "SUW" in loadNbr. Sending that where NuVizz wants DAVIS000201463 fails oddly.
+  const idx = idxOf([L({ name: 'SUW', loadNbr: 'DAVIS000201999', loadId: 'suwid' })]);
+  const got = resolveLoadIdentity({ key: 'SUW', name: 'SUW', loadNbr: 'SUW' }, idx, looksLikeNbr);
+  assert.equal(got.loadNbr, 'DAVIS000201999', 'the roster\'s real number wins over the route name');
+});
+
+test('a group that already carries its own loadId resolves even with an empty roster', () => {
+  const got = resolveLoadIdentity({ key: 'X', name: 'X', loadId: 'known' }, new Map(), looksLikeNbr);
+  assert.equal(got.loadId, 'known');
+});
+
+test('buildLoadRosterIndex tolerates junk rows without throwing', () => {
+  const idx = buildLoadRosterIndex([null, {}, { name: '   ' }, L()], resolveNameOwner);
+  assert.ok(resolveLoadIdentity({ name: 'STEVEN' }, idx, looksLikeNbr));
+});

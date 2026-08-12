@@ -853,6 +853,25 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
   const gate = useRef(createScanGate({ cooldownMs: SAME_PRO_COOLDOWN_MS }));
   /** Guards against two frames both passing the gate while the first is still awaiting. */
   const recording = useRef(false);
+  /**
+   * Pieces booked but not yet visible in `scans`.
+   *
+   * STRATIX SHIPPING went to 2/1 on a 1-piece stop from TWO CAMERA FRAMES 111ms
+   * APART: the first decoded the PRO and its piece id and booked it, the second
+   * decoded only the PRO. Every guard missed the second one —
+   *
+   *   recording.current  is armed only inside the no-OG branch, so a piece that
+   *                      arrived WITH its id never set it;
+   *   the cooldown gate  is consulted only inside the no-OG branch, so that PRO
+   *                      was never registered as recently seen;
+   *   `already` and the over-count check read React state, which had not caught
+   *                      up 111ms later.
+   *
+   * React state is the wrong thing to gate on when frames arrive faster than a
+   * render. This ref is written the instant a piece is enqueued and is merged
+   * into every check below, so a second frame sees the first one immediately.
+   */
+  const justBooked = useRef([]);
   // The order whose card is open — from a stop tap or a PRO lookup.
   const [openStop, setOpenStop] = useState(null);
   const rawSeen = useRef(0);
@@ -910,6 +929,10 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
   const loadingOrder = useMemo(() => renumberPositions(loadOrder(loadableStops)), [loadableStops]);
   const groupCount = useMemo(() => loadGroupCount(loadingOrder), [loadingOrder]);
 
+  // A different truck starts with an empty synchronous set — otherwise a piece
+  // booked on the last load would still be shadowing the checks on this one.
+  useEffect(() => { justBooked.current = []; }, [activeLoad, manifest?.date]);
+
   useEffect(() => {
     if (!activeLoad) { setLoadedSeq(null); return; }
     let alive = true;
@@ -933,7 +956,10 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
   // Rehydrate this load's scans from the local queue — the UI's source of truth.
   const refreshLocal = useCallback(async () => {
     if (!activeLoad) return;
-    const rows = await store.queuedFor(activeLoad);
+    // Scoped to the DAY, not just the load number: load numbers repeat (Steven's
+    // load is called "STEVEN"), so without the date a fresh truck opened wearing
+    // a previous shift's scans and stops looked already loaded.
+    const rows = await store.queuedFor(activeLoad, manifest?.date);
     setScans(
       rows.filter((r) => r.kind !== 'hand')
         .map((r) => ({
@@ -950,7 +976,14 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
         .map((r) => ({ stopNbr: r.stopNbr, pieces: r.pieces, confirmedAt: r.confirmedAt, reason: r.reason })),
     );
     setPending(rows.filter((r) => !r.syncedAt).length);
-  }, [activeLoad]);
+    // Anything the queue now reports is no longer "pending a render" — drop it
+    // from the synchronous set so that set stays small and can never disagree
+    // with the durable copy.
+    const landed = new Set(rows.map((r) => String(r.og).toUpperCase()));
+    justBooked.current = justBooked.current.filter((b) => !landed.has(String(b.og).toUpperCase()));
+    // manifest.date is a real dependency now that the read is date-scoped: without
+    // it a date change would keep showing the previous day's rows.
+  }, [activeLoad, manifest?.date]);
 
   useEffect(() => {
     refreshLocal();
@@ -1004,11 +1037,18 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
         return null;
       };
 
+      // What is actually on the truck RIGHT NOW: committed state plus anything
+      // enqueued since the last render. Every check below reads this, never
+      // `scans` directly — at camera frame rate the two are not the same thing.
+      const liveScans = scans.concat(
+        justBooked.current.filter((b) => !scans.some((s2) => String(s2.og).toUpperCase() === String(b.og).toUpperCase())),
+      );
+
       if (!isOverride) {
         const p7 = normalizePro(pair.pro);
         const owner = stops.find((s2) => (s2.pros || []).some((x) => normalizePro(x) === p7));
         if (owner) {
-          const done = stopProgress(owner, scans, handConfirms);
+          const done = stopProgress(owner, liveScans, handConfirms);
           if (done.expected > 0 && done.scanned >= done.expected) {
             return refuse({ pro: p7, count: done.scanned, full: owner.businessName, expected: done.expected });
           }
@@ -1030,7 +1070,7 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
           if (engineName !== 'wedge' && !gate.current.allow(pro7, now)) return null;
         }
 
-        const already = scans.filter((s2) => normalizePro(s2.pro) === pro7).length;
+        const already = liveScans.filter((s2) => normalizePro(s2.pro) === pro7).length;
         if (already > 0 && isScanner) {
           return refuse({ pro: pro7, count: already });
         }
@@ -1039,11 +1079,12 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
         // extra and say which stop, rather than quietly printing 3/2.
         if (isScanner) recording.current = true;
         let n = 1;
-        const used = new Set(scans.map((s2) => String(s2.og).toUpperCase()));
+        const used = new Set(liveScans.map((s2) => String(s2.og).toUpperCase()));
         while (used.has(`NOOG-${pro7}-${n}`)) n += 1;
         pair = { ...pair, og: `NOOG-${pro7}-${n}` };
       }
-      const evaluated = evaluateScan(pair, stops, scannedOgs, otherLoads);
+      const liveOgs = new Set([...scannedOgs, ...justBooked.current.map((b) => String(b.og).toUpperCase())]);
+      const evaluated = evaluateScan(pair, stops, liveOgs, otherLoads);
       recording.current = false;
       if (evaluated.outcome === OUTCOME.SILENT) return evaluated; // no prompt, no button, no decision
       setResult(evaluated);
@@ -1063,6 +1104,15 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
         stopNbr: evaluated.stop?.stopNbr || '',
         engine: engineName || 'manual',
       };
+      // SYNCHRONOUSLY, before the first await. The next camera frame can arrive
+      // in ~100ms — far inside a render — and it must see this piece already on
+      // the truck. This is what stops one skid being booked twice: once with its
+      // piece id, then again as a PRO-only piece when the id misses a frame.
+      justBooked.current = [...justBooked.current, scan];
+      // Register the PRO as just-seen whichever branch we came down. The gate is
+      // only consulted in the no-OG branch, so a piece booked WITH its id never
+      // used to enter it — leaving the very next PRO-only read unguarded.
+      gate.current.allow(normalizePro(evaluated.pro));
       await store.enqueueScan(activeLoad, manifest.date, scan);
       await stampSequence();
       await refreshLocal();
@@ -1076,7 +1126,9 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
   const flushQueue = useCallback(async () => {
     if (!activeLoad || !navigator.onLine) return;
     try {
-      const rows = (await store.queuedFor(activeLoad)).filter((r) => !r.syncedAt);
+      // Same-day only. An unsynced row from an earlier shift would otherwise be
+      // uploaded here tagged with TODAY's date, moving old freight onto this load.
+      const rows = (await store.queuedFor(activeLoad, manifest?.date)).filter((r) => !r.syncedAt);
       if (!rows.length) return;
       await api.pushScans(session.token, {
         loadNbr: activeLoad,

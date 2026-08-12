@@ -25,7 +25,7 @@
 // ZERO NuVizz calls. The pre-built stop index only. Hard rule.
 // FILTERING IS SERVER SIDE — a phone never receives all ~600 stops.
 
-import { readStops, getDoc, setDoc, isFirestoreEnabled } from './lib/firestore.mts';
+import { readStops, getDoc, setDoc, isFirestoreEnabled, readLoadRoster } from './lib/firestore.mts';
 import { DRIVER_AUTH, UNMATCHED_ALIASES, authenticate, normalizeRole } from './lib/auth.mts';
 import { DriverCred, normalizeDriverAlias, stopBelongsToDriver } from './lib/aliases.mts';
 import { toManifestStop, groupIntoLoads, loadSummaries } from './lib/manifest.mts';
@@ -86,13 +86,26 @@ export default async (req: Request): Promise<Response> => {
     ],
   });
 
+  // The day's load roster — the ONLY place the genuine per-day load number and
+  // loadId live, since the stop's `loadNbr` is the route name. Read straight
+  // from the cache: dispatch-map's /nuvizz-loads-roster endpoint falls through
+  // to a LIVE metered vendor pull when the cache is cold, and this must never
+  // be able to spend money. A cold roster simply leaves loadId null.
+  let roster: any[] = [];
+  try {
+    const r = await readLoadRoster(TENANT, date);
+    roster = r?.loads || [];
+  } catch {
+    roster = [];
+  }
+
   // ── The manual path: an explicit load number wins over identity ────────────
   if (loadOverride) {
     const mine = stops.filter((s: any) => String(s?.loadNbr || '').trim() === loadOverride);
     console.log(
       `[load-manifest] MANUAL load override: driver=${claims.sub} date=${date} loadNbr=${loadOverride} stops=${mine.length}`,
     );
-    const loads = groupIntoLoads(mine.map((s: any) => toManifestStop(s, warn)));
+    const loads = groupIntoLoads(mine.map((s: any) => toManifestStop(s, warn)), roster);
     return ok({
       date,
       driverNumber: cred.driverNumber,
@@ -107,7 +120,7 @@ export default async (req: Request): Promise<Response> => {
 
   // ── Loader path: every truck on the dock, as summaries ─────────────────────
   if (role === 'loader') {
-    const summaries = loadSummaries(stops.map((s: any) => toManifestStop(s, warn)));
+    const summaries = loadSummaries(stops.map((s: any) => toManifestStop(s, warn)), roster);
     console.log(`[load-manifest] LOADER pick-list: loader=${claims.sub} date=${date} loads=${summaries.length}`);
     return ok({
       date,
@@ -151,7 +164,7 @@ export default async (req: Request): Promise<Response> => {
     });
   }
 
-  const loads = groupIntoLoads(mine.map((s: any) => toManifestStop(s, warn)));
+  const loads = groupIntoLoads(mine.map((s: any) => toManifestStop(s, warn)), roster);
   return ok({
     date,
     driverNumber: cred.driverNumber,
