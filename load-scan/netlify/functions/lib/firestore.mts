@@ -212,3 +212,35 @@ export async function readStops(tenant: string, dateStr: string, opts?: { mask?:
   // Drop the index's internal bookkeeping before anything downstream sees a stop.
   return docs.map(({ _id, last_scanned_at, ...rest }: any) => rest);
 }
+
+// ── Load roster ──────────────────────────────────────────────────────────────
+//
+// The genuine per-day load identity, which the STOP INDEX DOES NOT CARRY.
+//
+// A stop's `loadNbr` is a misnomer: nuvizz-list.mts:268 writes the ROUTE NAME
+// into it (`loadNbr: hasRoute ? r.routeName : null`), so every stop on Steven's
+// truck reads "STEVEN" — the same string every day he works. The stop's `loadId`
+// is served by the vendor but arrives empty on every row.
+//
+// The real numbers live in the roster the background scanner already persists:
+//
+//   08-10  STEVEN  DAVIS000201342  6a7987c21b7e7eee4b47441f
+//   08-11  STEVEN  DAVIS000201345  6a7ac732cc81cf65c8e52bd6
+//   08-12  STEVEN  DAVIS000201463  6a7c36733a2a78b090799a4f
+//
+// Read STRAIGHT FROM THE CACHE, deliberately not through dispatch-map's
+// /nuvizz-loads-roster endpoint: that endpoint falls through to a LIVE metered
+// vendor pull when the cache is cold. Here a cold cache simply means "cannot
+// resolve", which is the correct and free outcome. ZERO NuVizz calls, always.
+const LOAD_ROSTER = 'nuvizz_load_roster';
+
+export async function readLoadRoster(
+  tenant: string,
+  dateStr: string,
+): Promise<{ at: string | null; loads: any[] } | null> {
+  const doc = await getDoc(`${LOAD_ROSTER}/${stopIndexParent(tenant, dateStr)}`);
+  if (!doc) return null;
+  let loads: any[] = [];
+  try { loads = JSON.parse(doc.loadsJson || '[]'); } catch { loads = []; }
+  return { at: doc.at || doc._updatedAt || null, loads };
+}
