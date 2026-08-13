@@ -104,6 +104,19 @@ function planFor(op: WriteOp, payload: any): string[] {
       'VERIFY by reading the load back (the ack is async) and confirm the route NAME landed',
     ];
   }
+  // The three single-order partialUpdate ops all run the same ladder, and it is never one
+  // call — the read is what makes the write safe (partialUpdate is a full replace) and the
+  // read-back is what proves it didn't cost the order anything else. Say so.
+  if (op === 'addStopNote' || op === 'setStopDate' || op === 'setStopContact') {
+    const what = op === 'addStopNote' ? 'merge the note onto the order\'s existing comments'
+      : op === 'setStopDate' ? `move the delivery window to ${payload?.date ?? '(no date)'}`
+        : `set the customer contact to ${[payload?.name, payload?.phone].filter(Boolean).join(' · ') || '(nothing)'}`;
+    return [
+      `READ stop ${payload?.stopNbr ?? '?'} (partialUpdate is a FULL replace — the current record is what gets echoed back)`,
+      `WRITE the echo with one block swapped: ${what}`,
+      'VERIFY by reading the order back — the change must be there AND every other field byte-identical',
+    ];
+  }
   return [`${op} → 1 NuVizz call`];
 }
 
