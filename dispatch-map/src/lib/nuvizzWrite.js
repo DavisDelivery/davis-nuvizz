@@ -56,6 +56,22 @@ export const addStopNote = (stopNbr, text, audience = 'both', opts = {}) =>
 export const setStopDate = (stopNbr, date, opts = {}) =>
   callWrite('setStopDate', { stopNbr, date, ...(opts.stopId ? { stopId: String(opts.stopId) } : {}) }, { ...opts, dryRun: false });
 
+// Put the customer's name + number on the ORDER in NuVizz (§C). The CUSTOMER # block's Save
+// writes our own customer_notes doc — per-CUSTOMER, so it carries onto their next order, and
+// it is what Text/Call read — but NuVizz never heard about it, so the portal and the DRIVER's
+// device still showed an order with no contact. This writes the order the dispatcher is
+// looking at; the two halves are complementary, not alternatives. Only the fields you pass
+// are touched: clearing the saved contact never blanks the carrier's own number.
+// 3 NuVizz calls (read → write → verify); an order already carrying it costs 1 and writes
+// nothing. opts.stopId: the same wrong-twin pin as addStopNote/setStopDate.
+export const setStopContact = (stopNbr, { name, phone } = {}, opts = {}) =>
+  callWrite('setStopContact', {
+    stopNbr,
+    ...(name ? { name: String(name) } : {}),
+    ...(phone ? { phone: String(phone) } : {}),
+    ...(opts.stopId ? { stopId: String(opts.stopId) } : {}),
+  }, { ...opts, dryRun: false });
+
 // Create an EMPTY route the dispatcher can then build onto (§R). The server checks the load
 // number is genuinely free (routePlan/update is create-OR-UPDATE — an existing number would
 // be EDITED, so anything but a clean 404 refuses), writes a HEADER ONLY — no stops node, which

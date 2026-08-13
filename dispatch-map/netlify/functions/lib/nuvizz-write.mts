@@ -26,7 +26,7 @@ import {
   stopNoteFingerprint, fingerprintDrift, buildNoteWriteStop, echoDrift, driftDetail,
   unsentLosses, documentHandlesMoved, type NoteAudience,
   buildPartialUpdateStop, buildStopDateOverride, stopDeliveryDate, isDayString, boardDateHoldWarning,
-  stopInstanceMismatch,
+  stopInstanceMismatch, buildStopContactOverride, stopContactFrom, normalizeContactPhone,
   type SingleOp, type WriteOp, type WriteCreds,
 } from './nuvizz-write-ops.mts';
 import { isHashLikeId } from './nuvizz-list.mts';
@@ -2194,6 +2194,101 @@ async function applyBoardDateChange(creds: WriteCreds, stopNbr: string, fromDate
 }
 
 /**
+ * runSetStopContact (§C) — put the customer's name + number on the ORDER in NuVizz.
+ *
+ * Chad, on the CUSTOMER # block that shipped in v0.54.68: "does it write it to nuvizz?" It
+ * did not. The block saves to our own customer_notes doc, which is per-CUSTOMER and is what
+ * Text, Call and the Messages list read — but the portal, the carrier's record and the
+ * DRIVER's device kept showing an order with no contact on it. So the card now does both:
+ * Firestore keeps carrying the customer forward to their next order, and this puts the
+ * number on the order the dispatcher is looking at.
+ *
+ * Same three-call ladder as a note, for the same reason — partialUpdate is NOT partial, so
+ * the whole stop is echoed back with one block swapped, and the read-back has to prove
+ * nothing else moved:
+ *   1. READ  the stop (and refuse a wrong twin — the Estes-0828068215 lesson).
+ *   2. WRITE the echo with `to.contact` (or `from.contact` on a pickup) carrying the new
+ *            name/number. Only the fields actually filled in are touched: a dispatcher
+ *            clearing OUR saved contact must never blank the carrier's own number.
+ *   3. VERIFY the contact reads back as sent, every echoed field is byte-identical, and the
+ *            freight lines / attachments we never send are still on the order.
+ *
+ * An order that already carries exactly this contact costs 1 call and writes nothing.
+ */
+export async function runSetStopContact(requester: RequesterLike, payload: any, creds: WriteCreds): Promise<any> {
+  const stopNbr = req(payload?.stopNbr, 'setStopContact: stopNbr');
+  const name = String(payload?.name ?? '').trim();
+  const phoneIn = String(payload?.phone ?? '').trim();
+  const phone = normalizeContactPhone(phoneIn);
+  const calls = { reads: 0, writes: 0 };
+  // A typed number that survives as no digits at all ("call the office") is a mistake, not a
+  // contact — writing it would put junk in the field NuVizz sends its customer SMS from.
+  if (phoneIn && !phone) return { ok: false, calls, error: `setStopContact: '${phoneIn}' has no digits in it — nothing was written to NuVizz.` };
+  if (!name && !phone) return { ok: false, calls, error: 'setStopContact: nothing to write — give a name, a number, or both. (Clearing a contact only removes the one saved here; the order keeps whatever the carrier sent.)' };
+
+  const before = await fireSingle(requester, 'getStop', { stopNbr }, creds);
+  calls.reads += 1;
+  if (!before?.ok) return { ok: false, calls, error: `setStopContact: could not read stop ${stopNbr} (${before?.error || 'read failed'}) — nothing was written.` };
+  const rawBefore = rawStopFrom(before.raw ?? before);
+  const twin = stopInstanceMismatch('setStopContact', stopNbr, payload?.stopId, rawBefore);
+  if (twin) return { ok: false, wrongInstance: true, calls, error: twin };
+  const stopId = rawBefore?.stopId ?? payload?.stopId ?? null;
+  if (!stopId) return { ok: false, calls, error: `setStopContact: stop ${stopNbr} has no stopId in its record — cannot target the update safely.` };
+
+  const was = stopContactFrom(rawBefore);
+  const sameName = !name || was.name.toUpperCase() === name.toUpperCase();
+  const samePhone = !phone || normalizeContactPhone(was.phone) === phone;
+  if (sameName && samePhone) {
+    return {
+      ok: true, unchanged: true, stopNbr, stopId, was, calls,
+      message: `Order ${stopNbr} already carries this contact in NuVizz — nothing sent.`,
+    };
+  }
+
+  const { side, block } = buildStopContactOverride(rawBefore, { name, phone });
+  const sent = buildPartialUpdateStop({ ...rawBefore, stopId, stopNbr: String(rawBefore.stopNbr ?? stopNbr) }, { [side]: block });
+  const fpBefore = stopNoteFingerprint(rawBefore);
+  const wrote = await fireSingle(requester, 'partialUpdateStop', { stops: [sent] }, creds);
+  calls.writes += 1;
+  if (!wrote?.ok) return { ok: false, calls, error: `setStopContact: NuVizz rejected the contact (${wrote?.error || 'write failed'}).` };
+
+  const after = await fireSingle(requester, 'getStop', { stopNbr }, creds);
+  calls.reads += 1;
+  if (!after?.ok) {
+    return { ok: false, unverified: true, calls, error: `setStopContact: the contact was accepted but the read-back failed (${after?.error || 'read failed'}) — check ${stopNbr} in the portal before re-trying.` };
+  }
+  const rawAfter = rawStopFrom(after.raw ?? after);
+  const now = stopContactFrom(rawAfter);
+  // NuVizz upper-cases what it stores, so the name is compared case-insensitively; the number
+  // is compared on digits, because it echoes the formatting back however it likes.
+  const landed = (!name || now.name.toUpperCase() === name.toUpperCase())
+    && (!phone || normalizeContactPhone(now.phone) === phone);
+  // The contact is the field we came to change, so it is excluded from the drift diff the way
+  // `comments` is on a note and `schedule` is on a date change. Everything else must still come
+  // back byte-identical — including to.contact.EMAIL, which we never send and which the guard
+  // list still watches.
+  const afterEcho = buildPartialUpdateStop(rawAfter, { [side]: { ...rawAfter?.[side], contact: sent?.[side]?.contact } });
+  const drift = [...new Set([
+    ...fingerprintDrift(fpBefore, stopNoteFingerprint(rawAfter)).filter((p) => p !== `${side}.contact.phone`),
+    ...echoDrift(sent, afterEcho),
+  ])];
+  const losses = unsentLosses(rawBefore, rawAfter);
+  if (drift.length || losses.length) {
+    const details = [...driftDetail(sent, afterEcho, drift), ...losses.map((l) => `${l.path}: LOST ${l.lost.join(' · ')}`)];
+    const paths = [...drift, ...losses.map((l) => l.path)];
+    return {
+      ok: false, contactLanded: landed, drift: paths, driftDetails: details, calls,
+      error: `setStopContact: the contact ${landed ? 'landed' : 'did NOT land'} BUT partialUpdate changed ${paths.length} other field(s) on the order. ${details.join(' | ')}. Check ${stopNbr} in the portal — do not use this again until it is investigated.`,
+    };
+  }
+  if (!landed) {
+    return { ok: false, calls, error: `setStopContact: NuVizz accepted the write but ${stopNbr} still reads ${[now.name, now.phone].filter(Boolean).join(' · ') || 'no contact'} when read back — nothing else changed. Try again, or set it in the portal.` };
+  }
+
+  return { ok: true, stopNbr, stopId, side, was, now, wrote: { name: name || null, phone: phone || null }, calls };
+}
+
+/**
  * runNewRoute (§R) — create an EMPTY route the dispatcher can then build onto.
  *
  * Chad, Jul 30: "I want to be able to create a route in the routing tab." Until now nothing
@@ -2437,6 +2532,7 @@ export async function runOp(requester: RequesterLike, op: WriteOp, payload: any,
     case 'commitImport': return runCommitImport(requester, payload, creds);
     case 'addStopNote': return runAddStopNote(requester, payload, creds);
     case 'setStopDate': return runSetStopDate(requester, payload, creds);
+    case 'setStopContact': return runSetStopContact(requester, payload, creds);
     // §R — the orchestration (collision check → header write → read-back verify). The bare
     // 'createRoute' single op stays available for tests/diagnostics; the app calls 'newRoute'.
     case 'newRoute': return runNewRoute(requester, payload, creds);

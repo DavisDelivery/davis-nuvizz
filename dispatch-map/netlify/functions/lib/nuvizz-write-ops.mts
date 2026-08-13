@@ -41,7 +41,7 @@ export type SingleOp = typeof SINGLE_OPS[number];
 
 // Ops the HTTP handler accepts (single ops + the per-load Save batch + the panel Save +
 // the async load-import commit with its convergence recipe).
-export const WRITE_OPS = [...SINGLE_OPS, 'commitLoad', 'commitBoard', 'commitImport', 'addStopNote', 'setStopDate', 'newRoute'] as const;
+export const WRITE_OPS = [...SINGLE_OPS, 'commitLoad', 'commitBoard', 'commitImport', 'addStopNote', 'setStopDate', 'setStopContact', 'newRoute'] as const;
 export type WriteOp = typeof WRITE_OPS[number];
 
 /** Ops that MUTATE NuVizz (everything except the GET reads). Used by the
@@ -49,7 +49,7 @@ export type WriteOp = typeof WRITE_OPS[number];
 export const MUTATING_OPS = new Set<WriteOp>([
   'createStop', 'insertStops', 'removeStops', 'assignDriver', 'dispatchLoad',
   'importLoad', 'commitLoad', 'commitBoard', 'commitImport',
-  'partialUpdateStop', 'addStopNote', 'setStopDate',
+  'partialUpdateStop', 'addStopNote', 'setStopDate', 'setStopContact',
   'createRoute', 'newRoute',
 ]);
 
@@ -509,6 +509,10 @@ const NOTE_GUARD_PATHS = [
   'to.address.addr1', 'to.address.city', 'to.address.state', 'to.address.zip',
   'to.contact.phone', 'to.contact.email', 'to.schedule.timeFrom', 'to.schedule.timeTo',
   'from.address.addr1', 'from.address.city',
+  // The pickup side's contact is watched for the same reason as the delivery side's: §C
+  // writes `from.contact` on a PU stop, and the field it must not touch there — the email —
+  // would otherwise be covered by nothing (the echo diff excludes the block being written).
+  'from.contact.phone', 'from.contact.email',
 ];
 const atPath = (o: any, p: string) => p.split('.').reduce((a: any, k) => (a == null ? a : a[k]), o);
 
@@ -724,6 +728,71 @@ export function buildStopDateOverride(rawStop: any, date: string): { side: 'to' 
   const cur = rawStop?.[side];
   if (!cur || typeof cur !== 'object') throw new Error(`setStopDate: the stop has no "${side}" block to move`);
   return { side, block: { ...cur, schedule: shiftScheduleToDate(cur.schedule, date) } };
+}
+
+// ── §C the customer contact ON THE ORDER ─────────────────────────────────────
+//
+// The CUSTOMER # block (v0.54.68) saves a name + number onto our own customer_notes doc:
+// per-CUSTOMER, so it carries onto that customer's next order, and it is what Text, Call
+// and the Messages list read. NuVizz never heard about it. Chad: "does it write it to
+// nuvizz?" — it did not, so the portal, the carrier's own record and the DRIVER's device
+// all still showed an order with no contact on it.
+//
+// NuVizz's contact is per-ORDER (`to.contact`, the block createStop already fills from the
+// New Order form's Phone field), so this writes THIS order and the Firestore save keeps
+// carrying the customer forward. Neither replaces the other.
+
+/** PURE: the contact block as the app reads it back — contactName with the legacy `name`
+ *  as fallback (live records carry either), and the phone/email beside it. */
+export function stopContactFrom(rawStop: any): { name: string; phone: string; email: string } {
+  const c = rawStop?.[primarySideKey(rawStop)]?.contact || {};
+  const s = (v: any) => String(v ?? '').trim();
+  return { name: s(c.contactName) || s(c.name), phone: s(c.phone), email: s(c.email) };
+}
+
+/**
+ * PURE: a phone as NuVizz will accept it — CLEAN DIGITS.
+ *
+ * The same rule buildStopPayload learned the hard way (v0.50.29): the UI's phone mask put
+ * "678-226-2099" on the wire and NuVizz — which server-side-validates this number, because
+ * it feeds the driver→customer SMS — rejected it. A leading "+" survives for international.
+ */
+export function normalizeContactPhone(v: any): string {
+  const s = String(v ?? '').trim();
+  return s ? s.replace(/(?!^\+)\D/g, '').slice(0, 200) : '';
+}
+
+/**
+ * PURE: the `to`/`from` override a contact write sends — the block we read with only the
+ * contact's name/number swapped. Returns { side, block } so the caller can spread it into
+ * the echo, exactly like buildStopDateOverride.
+ *
+ * ONLY the fields the dispatcher actually filled in are written. An absent/blank patch field
+ * leaves NuVizz's value alone: a dispatcher clearing OUR saved contact must never blank the
+ * carrier's own number on the order — deleting vendor data is not what "remove my note" means.
+ */
+export function buildStopContactOverride(
+  rawStop: any,
+  patch: { name?: string | null; phone?: string | null },
+): { side: 'to' | 'from'; block: Record<string, any> } {
+  const side = primarySideKey(rawStop);
+  const cur = rawStop?.[side];
+  if (!cur || typeof cur !== 'object') throw new Error(`setStopContact: the stop has no "${side}" block to write a contact onto`);
+  const contact: Record<string, any> = { ...(cur.contact && typeof cur.contact === 'object' ? cur.contact : {}) };
+
+  const name = safeSlice(String(patch?.name ?? '').trim(), 200);
+  const phone = normalizeContactPhone(patch?.phone);
+  if (name) {
+    contact.contactName = name;
+    // A live record can carry a LEGACY `name` beside contactName, and the read above prefers
+    // contactName — so a stale `name` is invisible until something reads the other one. Keep
+    // the two in step when the record already had it. Never ADD it: inventing a key we didn't
+    // read is the one thing the echo rule forbids.
+    if ('name' in contact) contact.name = name;
+  }
+  if (phone) contact.phone = phone;
+
+  return { side, block: { ...cur, contact } };
 }
 
 // ── what we DON'T send still has to survive ──────────────────────────────────

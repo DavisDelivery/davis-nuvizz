@@ -43,7 +43,7 @@ import { todayInET, isTodayET, formatDateForDisplay, formatDateLong } from './li
 import { pointInPolygon, latLngInBounds, boxFromCorners, formatReceivingHours, lineItemDims, moveItem, recomputeRoute, resequence, fmtTime12, isPlannedStop, DEFAULT_SERVICE_SEC } from './lib/routing-select.js';
 import { entryScriptFromHtml, isNewBuild } from './lib/build-update.js';
 import { formatDateTime, tsToMillis, loadSummary, buildLoadAutoName } from './lib/routing-loads.js';
-import { callWrite, newClientOpId, addStopNote, setStopDate } from './lib/nuvizzWrite.js';
+import { callWrite, newClientOpId, addStopNote, setStopDate, setStopContact } from './lib/nuvizzWrite.js';
 import { BULK_FIELDS, parseDelimited, looksLikeHeader, autoMapColumns, mappedRowsToOrders, bulkRowMissing, bulkRowIsBlank, bulkRowIsGhost, mappingCoversRequired, headerSignature, manifestRowsToIntake, normalizePhone, bulkRowNuvizzRefs } from './lib/bulk-orders.js';
 import { scanStop, scanStopFull } from './lib/signal-scanner';
 import { applyScannerResults } from './lib/customer-notes-writer';
@@ -75,7 +75,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.54.68';
+const APP_VERSION = '0.54.69';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -120,6 +120,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.54.69', 'THE CUSTOMER NUMBER NOW GOES ON THE ORDER IN NUVIZZ TOO. Chad, on the block that shipped last version: "does it write it to nuvizz?" It did not. Saving a customer number wrote our OWN customer_notes doc — which is per-CUSTOMER, so it carries onto their next order, and it is what Text, Call and the Messages list read — but NuVizz never heard about it, so the portal, the carrier\'s record and the DRIVER\'s device all still showed an order with no contact on it. A Save now does BOTH, and the two halves are complementary rather than alternatives: NuVizz\'s contact lives on the ORDER (fix it there and the customer\'s next order arrives blank again), ours lives on the CUSTOMER. There is a checkbox under the two fields — on by default, and only offered when we know which order to write — so the order half can be skipped when you just want the number on file here. The Firestore save runs FIRST and unconditionally: a vendor write that fails can never cost you the number you just typed, and the message says the saved half first for exactly that reason. The write itself is the note-write\'s safety contract applied to a second field, because NuVizz\'s partialUpdate is a FULL replace: read the order, echo the whole record with only the contact swapped, then read it back and refuse to report a save unless the contact landed AND every other field came back byte-identical AND the freight lines and attachments we never send are still on the order. A field you left blank keeps whatever NuVizz has — clearing the contact saved here never blanks the carrier\'s own number — and a "number" with no digits in it is refused rather than written into the field NuVizz sends its customer SMS from. Same wrong-twin pin as dates and notes (Estes-0828068215). 3 NuVizz calls per save; an order already carrying the contact costs 1 and writes nothing.'],
   ['0.54.68', 'A CUSTOMER NUMBER YOU CAN ADD, RIGHT WHERE THE NUMBER GOES. Chad: "make a spot where the customer number is on normal orders where if one of the orders doesn\'t have a customer name or number we can add it like we add notes." Orders WE create always carry one — New Order and Bulk Add both have the Phone field, and the Davis NuVizz export\'s "Customer Number" column feeds straight into it. Orders that arrive from a carrier often carry nothing, and the card printed the contact line ONLY when a number already existed: the orders that needed a number were exactly the orders with nowhere to put one. Getting one on file meant going through the notes editor — Edit, scroll past priority, hours, restrictions and dock notes, Contacts, add, Save. Now every stop card carries a CUSTOMER # block, under the address, on desktop and phone alike. With a number on file it reads "KAI WONG · (678) 860-8099", tap to dial, Edit beside it. With nothing on file it says "Not on this order" and offers "+ Add customer name / number" — two fields and Save, right there. It writes to the customer\'s notes exactly like a note does, so it is on file for that customer\'s NEXT order too, and it is the same number the Text and Call buttons use. THREE THINGS THAT WERE QUIETLY WRONG, fixed by moving the resolution rule into one tested place: (1) the card printed the ORDER\'s contact NAME beside whichever number won, so a number a dispatcher had typed showed up captioned with whoever NuVizz had on file — an attribution the data never supported. Name and number now come from ONE source, and whatever is missing says it is missing. (2) The Routing stop row preferred the ORDER\'s contact where every other surface preferred the saved one, so a corrected number read as the old one in one panel and the new one in the panel beside it. (3) Overriding the carrier\'s number used to hide it — the card now keeps a small "Order lists …" line so you can still see what came in on the order. 17 tests pin the precedence, the merge (roles and a customer\'s other contacts survive an edit made from the card) and clearing a number back off.'],
   ['0.54.67', 'BOARD FLAGS READ LIKE A LIST AGAIN, NOT A LEAFLET. Chad: "fotmatting issues" \u2014 with a screenshot where every advisory card carried the same four lines of boilerplate ("Estimate only \u2014 flat ~30 mph model...", "Hours were auto-detected from order text, not typed by a dispatcher \u2014 verify before acting. Resequence it earlier, move the date, or call ahead.") repeated on every row, burying the one line that differs: which stop, which route, how late. Each hours row is now a single breath \u2014 "Stop 9 on BEN 2 \u2014 estimated arrival ~2:12p vs close 12:00p (132 min late); departs 8:00a. Hours auto-detected \u2014 verify." \u2014 and the shared caveats live ONCE in the panel footer, which now also explains what amber means ("Amber rows use hours auto-detected from order text \u2014 verify before acting") alongside the existing estimates disclaimer. The re-anchored-clock evidence survives in compact form ("no movement yet, clock runs from 10:11a"), the word "estimated" stays on every number so no row overstates itself, and the driverless card got the same trim. At phone width the panel now shows three flags per screen instead of one and a half.'],
   ['0.54.66', 'LUNCH BREAKS ARE NOT CLOSING TIME. Chad, on a flagged stop: "look at this one it flagged they just break for lunch then start receiving again from 1-5pm." The parser was keeping only the FIRST range of two-window days \u2014 "8-12 & 1-5" stored a NOON close \u2014 so every afternoon arrival at those customers false-flagged as a miss. The month corpus says this is a whole class, not one customer: TEN of them write hours this way (RIOF "8AM-12P AND 1PM-4PM", FN USA "8-12 & 1-5", SANY "M-F 8AM - 11AM, 1PM - 5PM", Fulfillex, Vintage Modern, MJC, Atlanta Network, True Precision, Thoracent, Plaid) \u2014 and several of them sat wrongly on the early-close list in this morning\u2019s PDF report. Now: a continuation range after the first ("& 1-5", "AND 1PM-4PM", ", 1PM - 5PM" \u2014 even in the next comment) extends the stored window to the ENVELOPE, first open to last close \u2014 an arrival in the lunch gap is a short wait, not a miss, which is exactly how Chad framed it. Bare afternoon halves read as PM ("& 2-5" is 2p-5p; a continuation can only extend the day, never rewind it), incoherent continuations stop the chain, genuine noon closes (SUBARU "8 AM -12 PM", nothing after) stay exactly as they are, and "MON-TH 12-5 & FRI 1130-4" still reads as two day segments, not a continuation. Stored noon-closes for the ten self-heal on the next scan pass. The flag panel keeps its job \u2014 it just stops crying about lunch.'],
@@ -5722,9 +5723,16 @@ function useLiveStop(stop) {
 // the number lands where Text, Call and the Messages contact list already look for it —
 // and it is remembered for this customer's NEXT order, exactly like a note.
 //
+// TWO PLACES A NUMBER CAN LIVE, and a Save now writes both (Chad: "does it write it to
+// nuvizz?" — it didn't). Firestore is per-CUSTOMER: on file for their NEXT order, and what
+// Text, Call and the Messages list read. NuVizz's contact is per-ORDER, and it is what the
+// portal, the carrier's record and the DRIVER's device show. Neither one covers the other,
+// so the checkbox is on by default and the Firestore half never depends on the vendor half
+// succeeding — a number the dispatcher typed is saved whatever NuVizz does with it.
+//
 // `onSaveContacts` takes { name, phone } and is supplied by whichever panel owns the note
 // draft; without it (the read-only PRO lookup) the block renders but does not offer edits.
-function StopContactBlock({ stop, note, onSaveContacts, saving = false, saveError = null }) {
+function StopContactBlock({ stop, note, onSaveContacts, onRefreshed, saving = false, saveError = null }) {
   const resolved = resolveStopContact(stop, note);
   const aside = orderContactAside(stop, resolved);
   const canEdit = typeof onSaveContacts === 'function';
@@ -5732,14 +5740,42 @@ function StopContactBlock({ stop, note, onSaveContacts, saving = false, saveErro
   const [name, setName] = useState('');
   const [phone, setPhone] = useState('');
   const [busy, setBusy] = useState(false);
+  const [toNuvizz, setToNuvizz] = useState(true);
+  const [push, setPush] = useState(null);     // { kind:'busy'|'ok'|'warn', text }
+  const pro = stop?.stopNbr || stop?.primaryPro || stop?.pro || '';
   // Opening a DIFFERENT order must never inherit an open editor — or, worse, the previous
-  // customer's half-typed number sitting over this one's name.
-  useEffect(() => { setEditing(false); setBusy(false); }, [stop?.stopNbr, stop?.pro]);
+  // customer's half-typed number sitting over this one's name. The write result goes with it:
+  // "written onto the order in NuVizz" under a different order is a lie about that order.
+  useEffect(() => { setEditing(false); setBusy(false); setPush(null); }, [stop?.stopNbr, stop?.pro]);
 
   const startEdit = () => { setName(resolved.name); setPhone(resolved.phone); setEditing(true); };
   const submit = async () => {
-    setBusy(true);
-    try { await onSaveContacts({ name, phone }); setEditing(false); } finally { setBusy(false); }
+    setBusy(true); setPush(null);
+    try {
+      // Firestore FIRST, and unconditionally: it is the durable half, and a vendor write that
+      // fails must never cost the dispatcher the number they just typed.
+      await onSaveContacts({ name, phone });
+      setEditing(false);
+      if (!toNuvizz || !pro || !(name.trim() || phone.trim())) return;
+      setPush({ kind: 'busy', text: 'Writing it onto the order in NuVizz…' });
+      // stopId pins the write to THIS record: two NuVizz orders can share one number
+      // (Estes-0828068215), and the server refuses rather than write the other twin.
+      const r = await setStopContact(pro, { name: name.trim(), phone: phone.trim() }, { stopId: stop?.stopId || undefined });
+      const out = r?.result || r || {};
+      if (r?.ok && out.unchanged) setPush({ kind: 'ok', text: 'Saved — the order already carried this contact in NuVizz.' });
+      else if (r?.ok) {
+        setPush({ kind: 'ok', text: 'Saved, and written onto the order in NuVizz.' });
+        // Pull the order back so the "Order lists …" line stops quoting the number we just
+        // replaced. Same wrong-twin rule as the write: never repaint this card with a record
+        // that isn't the one it is showing.
+        try {
+          const d = await fetch('/.netlify/functions/nuvizz-pro-lookup?pro=' + encodeURIComponent(pro), { cache: 'no-store' }).then((x) => x.json());
+          if (d?.ok && d.stop && (!stop?.stopId || !d.stop.stopId || String(d.stop.stopId) === String(stop.stopId))) onRefreshed?.(d.stop);
+        } catch { /* the contact landed; the refresh is a nicety */ }
+      // amber, not red, and the saved half is stated FIRST — the number IS on file for this
+      // customer either way, and a dispatcher reading a red error assumes they lost it.
+      } else setPush({ kind: 'warn', text: `Saved here, but NuVizz did not take it: ${r?.error || out.error || 'the write failed.'}` });
+    } finally { setBusy(false); }
   };
   const working = busy || saving;
   const tel = String(resolved.phone).replace(/[^\d+]/g, '');
@@ -5782,6 +5818,18 @@ function StopContactBlock({ stop, note, onSaveContacts, saving = false, saveErro
                 reading at a dock — but say plainly that it won't dial or text yet. */}
             {typedShort && <span className="text-[10px] text-amber-700">Under 10 digits — won’t call or text</span>}
           </div>
+          {/* The order half. Saving here always files the number under the CUSTOMER; this also
+              puts it on THIS ORDER in NuVizz, which is what the portal and the driver see.
+              Only offered when we know which order to write — the PRO lookup has no board row. */}
+          {pro && (
+            <label className="flex items-start gap-1.5 text-[10px] text-slate-600 cursor-pointer">
+              <input
+                type="checkbox" checked={toNuvizz} onChange={(e) => setToNuvizz(e.target.checked)}
+                className="mt-0.5 accent-blue-700" style={{ minWidth: 14, minHeight: 14 }}
+              />
+              <span>Also put it on the order in NuVizz — the portal and the driver’s device see it too</span>
+            </label>
+          )}
           {saveError && <div className="text-[11px] text-red-600 break-words">{saveError}</div>}
         </div>
       ) : (resolved.source ? (
@@ -5811,6 +5859,14 @@ function StopContactBlock({ stop, note, onSaveContacts, saving = false, saveErro
       {aside && !editing && (
         <div className="mt-0.5 text-[10px] text-slate-400 break-words">
           Order lists {aside.name ? `${aside.name} · ` : ''}{formatPhone(aside.phone)}
+        </div>
+      )}
+      {/* What happened to the ORDER half, kept after the editor closes — the Firestore save is
+          already visible as the number on the card, so this line only ever reports NuVizz. */}
+      {push && (
+        <div className={`mt-1 text-[10px] break-words flex items-start gap-1 ${push.kind === 'warn' ? 'text-amber-700' : 'text-slate-500'}`}>
+          {push.kind === 'busy' && <RefreshCw size={9} className="animate-spin mt-0.5 flex-shrink-0" />}
+          <span>{push.text}</span>
         </div>
       )}
     </div>
@@ -5891,7 +5947,7 @@ function StopDataSections({ stop, note, onRefreshed, onOpenRoute, onMoveLocation
             saved contact number wins over NuVizz's, exactly as texting resolves it.
             It is now a PERMANENT block rather than a line that appears only when a number
             already exists — see StopContactBlock for why that mattered. */}
-        <StopContactBlock stop={live} note={note} onSaveContacts={onSaveContacts} saving={savingNote} saveError={noteSaveError} />
+        <StopContactBlock stop={live} note={note} onSaveContacts={onSaveContacts} onRefreshed={onRefreshed} saving={savingNote} saveError={noteSaveError} />
         {/* Enhancement 6 — the four actions that account for nearly every tap, as
             thumb-size buttons (text links are the hardest targets on a phone). The long
             tail folds into More; every existing action stays reachable. */}
