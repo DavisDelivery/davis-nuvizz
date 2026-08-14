@@ -279,6 +279,6 @@ test('setStopContact: a twin answering the read-back is a twin verdict, never a 
   assert.equal(r.unverified, true);
   assert.equal(r.drift, undefined, 'no cross-record diff presented as changes');
   assert.match(r.error, /DIFFERENT record/i);
-  assert.match(r.error, /TWO orders carry this number/i);
+  assert.match(r.error, /TWO orders appear to carry this number/i);
   assert.ok(!/partialUpdate changed/.test(r.error));
 });

@@ -626,6 +626,8 @@ export function buildPartialUpdateStop(rawStop: any, overrides: Record<string, a
 // Local id-shape check (mirrors nuvizz-list's isHashLikeId; restated here so this module
 // stays import-free/pure). Only an id-shaped value ever arms the guard — a stop NUMBER
 // accidentally passed as an id must never block a write.
+export function isIdShaped(v: any): boolean { return idShaped(v); }
+
 function idShaped(v: any): boolean {
   const s = String(v ?? '').trim();
   if (!s || /\s/.test(s)) return false;
@@ -664,13 +666,37 @@ export function stopInstanceMismatch(op: string, stopNbr: any, expectedStopId: a
  * diff must not run at all. The write itself targeted the right record (partialUpdate goes by
  * stopId); what failed is VERIFICATION, and the honest report is exactly that.
  */
-export function readBackInstanceMismatch(op: string, stopNbr: any, writtenStopId: any, rawAfter: any): string | null {
+export function readBackInstanceMismatch(op: string, stopNbr: any, writtenStopId: any, rawAfter: any, pinned = false): string | null {
   const want = String(writtenStopId ?? '').trim();
   const got = String(rawAfter?.stopId ?? '').trim();
   if (!idShaped(want) || !idShaped(got) || want === got) return null;
-  const addr = rawAfter?.to?.address || {};
+  const addr = rawAfter?.to?.address || rawAfter?.from?.address || {};
   const who = [addr.name, addr.addr1, addr.city].map((v: any) => String(v ?? '').trim()).filter(Boolean).join(', ');
-  return `${op}: the update was written to the record on your screen (id …${want.slice(-6)}), but reading ${stopNbr} back, NuVizz answered with a DIFFERENT record that shares the number (${who || 'unknown consignee'}; id …${got.slice(-6)}). TWO orders carry this number, so the change could not be verified — and any field differences would be between two records, not changes to your order. Find BOTH entries for ${stopNbr} in the portal, confirm your order took the change, then cancel or renumber the duplicate.`;
+  // `pinned` = the CALLER supplied the on-screen record's id and it is the id we wrote. Only
+  // then may this message say "the record on your screen" — without the pin, the pre-read is
+  // itself an unguarded by-number lookup, and in the flipped case (pre-read answered the twin,
+  // read-back answered the screen's record) the confident wording inverted both identity
+  // claims: the dispatcher was told their change landed on their order when it landed on the
+  // twin. Same restraint as the pre-read sibling: claim exactly what is proven, no more.
+  const wrote = pinned
+    ? `the update was written to the record on your screen (id …${want.slice(-6)})`
+    : `the update was accepted for the record NuVizz answered our pre-write read with (id …${want.slice(-6)}) — which may or may not be the one on your screen`;
+  return `${op}: ${wrote}, but reading ${stopNbr} back, NuVizz answered with a DIFFERENT record that shares the number (${who || 'unknown consignee'}; id …${got.slice(-6)}). TWO orders appear to carry this number, so the change could not be verified — and any field differences would be between two records, not changes to your order. Find BOTH entries for ${stopNbr} in the portal, confirm which record took the change, then cancel or renumber the duplicate.`;
+}
+
+/**
+ * The read-back came back 200 but carries no usable identity (no id-shaped stopId — an
+ * empty/foreign body, or a record the vendor serves without its id). When we KNOW which id we
+ * wrote, diffing an unidentifiable record is the same two-different-things trap as the twin:
+ * the echo diff would report "field → (absent)" about a record nobody can name. Unverified is
+ * the honest verdict. Null when we hold no id-shaped written id — then nothing narrows.
+ */
+export function readBackUnidentifiable(op: string, stopNbr: any, writtenStopId: any, rawAfter: any): string | null {
+  const want = String(writtenStopId ?? '').trim();
+  if (!idShaped(want)) return null;
+  const got = String(rawAfter?.stopId ?? '').trim();
+  if (idShaped(got)) return null;
+  return `${op}: the write was accepted for id …${want.slice(-6)}, but the read-back returned a record with no usable identity, so the change could not be verified against the right order. Check ${stopNbr} in the portal before re-trying.`;
 }
 
 /**
@@ -688,10 +714,11 @@ export function orderDriftPaths(paths: string[]): string[] {
   return [...paths].sort((a, b) => weight(a) - weight(b));
 }
 
-/** The one-line escalation when a SAME-record drift touched an address field. */
+/** The one-line escalation when a SAME-record drift touched an address field. Worded for
+ *  either side — `from.address` drift is the pickup origin moving, not the consignment. */
 export function addressDriftWarning(paths: string[]): string {
   return (paths || []).some((p) => /^(to|from)\.address\./.test(String(p)))
-    ? ' THE ADDRESS ON THE ORDER MOVED — verify where this order is consigned before it ships.'
+    ? ' AN ADDRESS ON THE ORDER MOVED — verify the order\'s addresses in the portal before it ships.'
     : '';
 }
 
