@@ -325,7 +325,7 @@ export default function MessagesPanel({ messages, seenAt = 0, onClose, customerC
         <>
           <MessageSquare size={18} className="flex-shrink-0" />
           <div className="font-semibold flex-1 truncate">Messages</div>
-          <button onClick={() => { setNewQuery(''); setView('new'); }} className="p-1.5 -mr-0.5 rounded-full hover:bg-white/15" aria-label="New message" title="New message">
+          <button onClick={() => { setNewQuery(''); setView('new'); }} className="w-11 h-11 inline-flex items-center justify-center rounded-full hover:bg-white/15" aria-label="New message" title="New message">
             <SquarePen size={19} />
           </button>
         </>
@@ -349,7 +349,7 @@ export default function MessagesPanel({ messages, seenAt = 0, onClose, customerC
           </div>
         </>
       )}
-      <button onClick={onClose} className="p-1.5 -mr-0.5 rounded-full hover:bg-white/15 flex-shrink-0" aria-label="Close messages"><X size={18} /></button>
+      <button onClick={onClose} className="w-11 h-11 inline-flex items-center justify-center rounded-full hover:bg-white/15 flex-shrink-0" aria-label="Close messages"><X size={18} /></button>
     </div>
   );
 

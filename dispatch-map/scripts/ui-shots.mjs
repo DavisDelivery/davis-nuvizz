@@ -94,6 +94,7 @@ const FN_STUBS = (url) => {
 // `go` receives the page + device name and must leave the app on that screen.
 // Phone and desktop reach the same screens by different chrome, which is itself
 // a thing worth photographing side by side.
+const isPhoneLayout = (device) => device.startsWith('phone'); // < 768px; tablet takes the desktop layout
 const MOBILE_TAB = (label) => async (page) => {
   await page.locator('nav button', { hasText: new RegExp(`^${label}$`, 'i') }).first().click();
 };
@@ -102,34 +103,42 @@ const openChipMenu = async (page) => {
   await page.waitForTimeout(350);
 };
 const chipMenuItem = (label) => async (page, device) => {
-  if (device.startsWith('phone') || device === 'tablet') {
+  if (isPhoneLayout(device)) {
     await openChipMenu(page);
-    await page.getByRole('button', { name: new RegExp(label, 'i') }).first().click();
+    // The menu rows carry role="menuitem", which overrides their implicit button role — so
+    // getByRole('button') never matched them and every tools screen silently photographed
+    // the map with the menu hanging open instead. Ask for what they actually are.
+    await page.getByRole('menuitem', { name: new RegExp(label, 'i') }).first().click();
   } else {
-    const direct = page.getByRole('button', { name: new RegExp(`^${label}$`, 'i') }).first();
+    // Prefix, not exact: the desktop tab reads "Routing (beta)", and anchoring the end
+    // meant that screen was never found and the shot stayed on the map.
+    const direct = page.getByRole('button', { name: new RegExp(`^${label}`, 'i') }).first();
     if (await direct.isVisible().catch(() => false)) await direct.click();
     else {
+      // Desktop overflow: the More menu's rows carry role="menuitem" too (MoreMenu in
+      // App.jsx), so asking for a button here matched nothing and the shot silently stayed
+      // on whatever screen was already up.
       await page.getByRole('button', { name: /more/i }).first().click();
       await page.waitForTimeout(300);
-      await page.getByRole('button', { name: new RegExp(label, 'i') }).first().click();
+      await page.getByRole('menuitem', { name: new RegExp(label, 'i') }).first().click();
     }
   }
 };
 
 const SCREENS = {
-  map: { go: async (page, d) => { if (d !== 'desktop') await MOBILE_TAB('Map')(page); } },
-  stops: { go: async (page, d) => { if (d !== 'desktop') await MOBILE_TAB('Stops')(page); } },
-  filters: { go: async (page, d) => { if (d !== 'desktop') await MOBILE_TAB('Filters')(page); } },
-  loads: { go: async (page, d) => { if (d !== 'desktop') await MOBILE_TAB('Loads')(page); } },
+  map: { go: async (page, d) => { if (isPhoneLayout(d)) await MOBILE_TAB('Map')(page); } },
+  stops: { go: async (page, d) => { if (isPhoneLayout(d)) await MOBILE_TAB('Stops')(page); } },
+  filters: { go: async (page, d) => { if (isPhoneLayout(d)) await MOBILE_TAB('Filters')(page); } },
+  loads: { go: async (page, d) => { if (isPhoneLayout(d)) await MOBILE_TAB('Loads')(page); } },
   'stop-detail': {
     go: async (page, d) => {
-      if (d !== 'desktop') await MOBILE_TAB('Stops')(page);
+      if (isPhoneLayout(d)) await MOBILE_TAB('Stops')(page);
       await page.waitForTimeout(400);
       // The first row in the board list — opens the detail sheet / sidebar.
       await page.locator('button, [role="button"]').filter({ hasText: /00716/ }).first().click().catch(() => {});
     },
   },
-  'chip-menu': { go: async (page, d) => { if (d !== 'desktop') await openChipMenu(page); } },
+  'chip-menu': { go: async (page, d) => { if (isPhoneLayout(d)) await openChipMenu(page); } },
   routing: { go: chipMenuItem('Routing') },
   neworder: { go: chipMenuItem('New order') },
   quote: { go: chipMenuItem('Quote') },
@@ -179,7 +188,14 @@ for (const device of wantDevices) {
     const page = await ctx.newPage();
     const errors = [];
     page.on('pageerror', (e) => errors.push(e.message));
-    page.on('console', (m) => { if (m.type() === 'error') errors.push(`console: ${m.text().slice(0, 200)}`); });
+    page.on('console', (m) => {
+      if (m.type() !== 'error') return;
+      const text = m.text();
+      // Third-party is deliberately aborted below (map tiles, fonts) — the vendored quote
+      // console @imports a Google font, and that expected failure is not an app error.
+      if (/net::ERR_|Failed to load resource/.test(text)) return;
+      errors.push(`console: ${text.slice(0, 200)}`);
+    });
     await page.route('**/.netlify/functions/**', (route) =>
       route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(FN_STUBS(route.request().url())) }));
     // Google Maps / fonts / tiles are third-party and unreachable here; abort rather than
