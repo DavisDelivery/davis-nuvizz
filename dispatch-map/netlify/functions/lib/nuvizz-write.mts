@@ -26,7 +26,8 @@ import {
   stopNoteFingerprint, fingerprintDrift, buildNoteWriteStop, echoDrift, driftDetail,
   unsentLosses, documentHandlesMoved, type NoteAudience,
   buildPartialUpdateStop, buildStopDateOverride, stopDeliveryDate, isDayString, boardDateHoldWarning,
-  stopInstanceMismatch, buildStopContactOverride, stopContactFrom, normalizeContactPhone,
+  stopInstanceMismatch, readBackInstanceMismatch, orderDriftPaths, addressDriftWarning,
+  buildStopContactOverride, stopContactFrom, normalizeContactPhone,
   type SingleOp, type WriteOp, type WriteCreds,
 } from './nuvizz-write-ops.mts';
 import { isHashLikeId } from './nuvizz-list.mts';
@@ -2021,6 +2022,10 @@ export async function runAddStopNote(requester: RequesterLike, payload: any, cre
     return { ok: false, unverified: true, calls, error: `addStopNote: the note was accepted but the read-back failed (${after?.error || 'read failed'}) — check the order in the portal before re-trying, so you don't double-post.` };
   }
   const rawAfter = rawStopFrom(after.raw ?? after);
+  // Read-back identity first — a twin answering here would make "did the note land" and the
+  // whole echo diff statements about the OTHER order sharing this number (§ ESTES-2938079387).
+  const rbTwin = readBackInstanceMismatch('addStopNote', stopNbr, stopId, rawAfter);
+  if (rbTwin) return { ok: false, unverified: true, wrongInstanceReadback: true, calls, error: rbTwin };
   const landed = stopCommentsFrom(rawAfter).some((c: any) => String(c?.commentDescription ?? '') === note.commentDescription && String(c?.cmtType ?? '') === note.cmtType);
   // Two checks, unioned. The curated guard list names the fields a dispatcher cares about
   // first (address / freight / schedule / refs); the echo diff then catches EVERYTHING else
@@ -2028,10 +2033,10 @@ export async function runAddStopNote(requester: RequesterLike, payload: any, cre
   // read-back through the same builder keeps the key sets symmetric, so the derived keys we
   // deliberately never send don't register as drift.
   const afterEcho = buildNoteWriteStop(rawAfter, comments);
-  const drift = [...new Set([
+  const drift = orderDriftPaths([...new Set([
     ...fingerprintDrift(fpBefore, stopNoteFingerprint(rawAfter)),
     ...echoDrift(sent, afterEcho),
-  ])];
+  ])]);
   // …and the third: the keys we deliberately DON'T send (freight lines, file attachments) are
   // invisible to that diff by construction, so they are proven surviving by comparing the
   // PRE-write read to the POST-write read. Identity only — NuVizz restamping a document's
@@ -2049,7 +2054,7 @@ export async function runAddStopNote(requester: RequesterLike, payload: any, cre
     const paths = [...drift, ...losses.map((l) => l.path)];
     return {
       ok: false, note_landed: landed, drift: paths, driftDetails: details, calls,
-      error: `addStopNote: the note ${landed ? 'landed' : 'did NOT land'} BUT partialUpdate changed ${paths.length} other field(s) on the order. ${details.join(' | ')}${paths.length > details.length ? ` (+${paths.length - details.length} more)` : ''}. Check ${stopNbr} in the portal — do not use notes again until this is investigated.`,
+      error: `addStopNote: the note ${landed ? 'landed' : 'did NOT land'} BUT partialUpdate changed ${paths.length} other field(s) on the order.${addressDriftWarning(paths)} ${details.join(' | ')}${paths.length > details.length ? ` (+${paths.length - details.length} more)` : ''}. Check ${stopNbr} in the portal — do not use notes again until this is investigated.`,
     };
   }
   if (!landed) return { ok: false, calls, error: `addStopNote: NuVizz accepted the write but the note is not on the order when read back — nothing else changed. Try again, or add it in the portal.` };
@@ -2143,21 +2148,30 @@ export async function runSetStopDate(requester: RequesterLike, payload: any, cre
     return { ok: false, unverified: true, calls, error: `setStopDate: the change was accepted but the read-back failed (${after?.error || 'read failed'}) — check ${stopNbr} in the portal before re-trying.` };
   }
   const rawAfter = rawStopFrom(after.raw ?? after);
+  // READ-BACK identity, before anything is concluded from this record (§ ESTES-2938079387):
+  // the by-number read can answer with the OTHER order sharing the number, and every check
+  // below — did the date land, did anything drift — would then be about the twin, not the
+  // order we wrote. That is how a date change on Khalid Mutakabbir's order was reported as
+  // re-addressing it to Davis's own terminal: the "changed fields" were the twin's data.
+  const rbTwin = readBackInstanceMismatch('setStopDate', stopNbr, stopId, rawAfter);
+  if (rbTwin) return { ok: false, unverified: true, wrongInstanceReadback: true, calls, error: rbTwin };
   const landed = stopDeliveryDate(rawAfter) === date;
   // The schedule is the field we came to change, so it is excluded from the drift diff the
   // way `comments` is on a note — everything else must still come back byte-identical.
   const afterEcho = buildPartialUpdateStop(rawAfter, { [side]: { ...rawAfter?.[side], schedule: sent?.[side]?.schedule } });
-  const drift = [...new Set([
+  const drift = orderDriftPaths([...new Set([
     ...fingerprintDrift(fpBefore, stopNoteFingerprint(rawAfter)).filter((p) => !p.startsWith(`${side}.schedule`)),
     ...echoDrift(sent, afterEcho),
-  ])];
+  ])]);
   const losses = unsentLosses(rawBefore, rawAfter);
   if (drift.length || losses.length) {
     const details = [...driftDetail(sent, afterEcho, drift), ...losses.map((l) => `${l.path}: LOST ${l.lost.join(' · ')}`)];
     const paths = [...drift, ...losses.map((l) => l.path)];
     return {
       ok: false, dateLanded: landed, drift: paths, driftDetails: details, calls,
-      error: `setStopDate: the date ${landed ? 'moved' : 'did NOT move'} BUT partialUpdate changed ${paths.length} other field(s) on the order. ${details.join(' | ')}. Check ${stopNbr} in the portal — do not change dates again until this is investigated.`,
+      // Address drift outranks the cap (orderDriftPaths) and gets named in words — freight
+      // consigned to the wrong building is the concrete risk, not "a field changed".
+      error: `setStopDate: the date ${landed ? 'moved' : 'did NOT move'} BUT partialUpdate changed ${paths.length} other field(s) on the order.${addressDriftWarning(paths)} ${details.join(' | ')}${paths.length > details.length ? ` (+${paths.length - details.length} more)` : ''}. Check ${stopNbr} in the portal — do not change dates again until this is investigated.`,
     };
   }
   if (!landed) {
@@ -2258,6 +2272,9 @@ export async function runSetStopContact(requester: RequesterLike, payload: any, 
     return { ok: false, unverified: true, calls, error: `setStopContact: the contact was accepted but the read-back failed (${after?.error || 'read failed'}) — check ${stopNbr} in the portal before re-trying.` };
   }
   const rawAfter = rawStopFrom(after.raw ?? after);
+  // Read-back identity first — same rule as the note and date paths (§ ESTES-2938079387).
+  const rbTwin = readBackInstanceMismatch('setStopContact', stopNbr, stopId, rawAfter);
+  if (rbTwin) return { ok: false, unverified: true, wrongInstanceReadback: true, calls, error: rbTwin };
   const now = stopContactFrom(rawAfter);
   // NuVizz upper-cases what it stores, so the name is compared case-insensitively; the number
   // is compared on digits, because it echoes the formatting back however it likes.
@@ -2268,17 +2285,17 @@ export async function runSetStopContact(requester: RequesterLike, payload: any, 
   // back byte-identical — including to.contact.EMAIL, which we never send and which the guard
   // list still watches.
   const afterEcho = buildPartialUpdateStop(rawAfter, { [side]: { ...rawAfter?.[side], contact: sent?.[side]?.contact } });
-  const drift = [...new Set([
+  const drift = orderDriftPaths([...new Set([
     ...fingerprintDrift(fpBefore, stopNoteFingerprint(rawAfter)).filter((p) => p !== `${side}.contact.phone`),
     ...echoDrift(sent, afterEcho),
-  ])];
+  ])]);
   const losses = unsentLosses(rawBefore, rawAfter);
   if (drift.length || losses.length) {
     const details = [...driftDetail(sent, afterEcho, drift), ...losses.map((l) => `${l.path}: LOST ${l.lost.join(' · ')}`)];
     const paths = [...drift, ...losses.map((l) => l.path)];
     return {
       ok: false, contactLanded: landed, drift: paths, driftDetails: details, calls,
-      error: `setStopContact: the contact ${landed ? 'landed' : 'did NOT land'} BUT partialUpdate changed ${paths.length} other field(s) on the order. ${details.join(' | ')}. Check ${stopNbr} in the portal — do not use this again until it is investigated.`,
+      error: `setStopContact: the contact ${landed ? 'landed' : 'did NOT land'} BUT partialUpdate changed ${paths.length} other field(s) on the order.${addressDriftWarning(paths)} ${details.join(' | ')}${paths.length > details.length ? ` (+${paths.length - details.length} more)` : ''}. Check ${stopNbr} in the portal — do not use this again until it is investigated.`,
     };
   }
   if (!landed) {
