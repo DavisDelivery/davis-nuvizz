@@ -466,7 +466,7 @@ test('THE INCIDENT: a twin answering the read-back is reported as a twin, not as
   assert.equal(r.drift, undefined, 'no cross-record field list is presented as changes');
   assert.equal(r.dateLanded, undefined, 'the twin\'s window must not be read as "the date moved"');
   assert.match(r.error, /DIFFERENT record/i);
-  assert.match(r.error, /TWO orders carry this number/i);
+  assert.match(r.error, /TWO orders appear to carry this number/i);
   assert.match(r.error, /943 GAINESVILLE HIGHWAY/, 'names the twin\'s consignee so the portal hunt is short');
   assert.match(r.error, new RegExp(khalid.stopId.slice(-6)), 'names the id we wrote');
   assert.match(r.error, new RegExp(TWIN.stopId.slice(-6)), 'and the id that answered');
@@ -489,7 +489,7 @@ test('the SAME record with a genuinely rewritten address still fails loudly — 
   const r = await runSetStopDate(requester, { stopNbr: '007150559', date: '2026-07-30', stopId: '6a63c5844524f7f7b8ab5410' }, CREDS);
   assert.equal(r.ok, false);
   assert.equal(r.wrongInstanceReadback, undefined, 'same record — this genuinely IS drift');
-  assert.match(r.error, /THE ADDRESS ON THE ORDER MOVED/, 'address drift is called out in words');
+  assert.match(r.error, /AN ADDRESS ON THE ORDER MOVED/, 'address drift is called out in words');
   assert.match(r.error, /to\.address\.addr1/, 'and the address field is in the visible details, not behind the cap');
   assert.equal(r.dateLanded, true, 'the date claim is trustworthy here because the record is ours');
 });
@@ -509,4 +509,76 @@ test('readBackInstanceMismatch: unarmed without two id-shaped ids; silent when t
   assert.equal(readBackInstanceMismatch('setStopDate', 'X', null, TWIN), null, 'no written id → cannot judge');
   assert.equal(readBackInstanceMismatch('setStopDate', 'X', '6a63c5844524f7f7b8ab5410', { stopId: null }), null, 'no read-back id → cannot judge');
   assert.match(readBackInstanceMismatch('setStopDate', 'X', '6a63c5844524f7f7b8ab5410', TWIN) || '', /DIFFERENT record/);
+});
+
+// ── the review's findings, pinned (v0.54.73) ─────────────────────────────────
+
+test('UNPINNED FLIP: with no client stopId, the twin banner claims only what is proven', async () => {
+  // The adversarial review's D1: no payload.stopId → the pre-read is itself an unguarded
+  // by-number lookup. If the PRE-read answers the TWIN and the READ-BACK answers the screen's
+  // record, a banner saying "written to the record on your screen" inverts both identity
+  // claims — the write actually landed on the twin. Unpinned wording must hedge.
+  const khalid = rawStop({ stopNbr: 'ESTES-2938079387' });
+  const state = { stop: TWIN };                       // pre-read answers the TWIN
+  const { requester } = makeRequester({
+    state,
+    onWrite: () => { state.stop = khalid; },          // read-back answers the screen's record
+  });
+  // 8/18, not 8/17: the TWIN fixture already carries 8/17, and an unchanged date would
+  // short-circuit before the write — the flip needs the write to actually happen.
+  const r = await runSetStopDate(requester, { stopNbr: 'ESTES-2938079387', date: '2026-08-18' }, CREDS);
+  assert.equal(r.ok, false);
+  assert.equal(r.wrongInstanceReadback, true);
+  assert.ok(!/record on your screen/.test(r.error), 'unpinned must not claim the screen record was written');
+  assert.match(r.error, /may or may not be the one on your screen/);
+  assert.match(r.error, /confirm which record took the change/);
+});
+
+test('PINNED twin verdict still speaks plainly — the hedge is only for the unpinned case', async () => {
+  const khalid = rawStop({ stopNbr: 'ESTES-2938079387' });
+  const state = { stop: khalid };
+  const { requester } = makeRequester({ state, onWrite: () => { state.stop = TWIN; } });
+  const r = await runSetStopDate(requester, { stopNbr: 'ESTES-2938079387', date: '2026-08-17', stopId: khalid.stopId }, CREDS);
+  assert.match(r.error, /record on your screen/);
+  assert.ok(!/may or may not/.test(r.error));
+});
+
+test('an UNIDENTIFIABLE read-back verdicts as unverified, never as a drift list', async () => {
+  // D3: a 200 read-back whose record carries no usable stopId. Diffing it is the same
+  // two-different-things trap as the twin — "field → (absent)" about a record nobody named.
+  const mine = rawStop();
+  const state = { stop: mine };
+  const { requester } = makeRequester({
+    state,
+    onWrite: () => { const { stopId, ...rest } = mine; state.stop = { ...rest, to: { schedule: { timeFrom: '2026-07-30T12:00:00' } } }; },
+  });
+  const r = await runSetStopDate(requester, { stopNbr: '007150559', date: '2026-07-30', stopId: mine.stopId }, CREDS);
+  assert.equal(r.ok, false);
+  assert.equal(r.unverified, true);
+  assert.equal(r.drift, undefined, 'no diff against an unidentified record');
+  assert.match(r.error, /no usable identity/);
+});
+
+test('CAP DEFEAT end to end: with >5 drifted fields, the address line is visible, not hidden', async () => {
+  // D6: the incident had 15 drifted fields and a 5-line cap; discovery order decided what the
+  // dispatcher saw. This drives >5 drifts through the real executor with the address changed
+  // LAST in echo order, and requires it in the shown details plus an honest (+N more).
+  const state = { stop: rawStop() };
+  const { requester } = makeRequester({
+    state,
+    onWrite: (sent) => {
+      state.stop = {
+        ...state.stop,
+        weight: 9999, totalPallets: 9, totalCartons: 9, sealNbr: '$0.01',
+        proNumber: 'ZZ', bol: 'CHANGED',
+        to: { ...state.stop.to, schedule: sent.to.schedule, address: { ...state.stop.to.address, addr1: '943 GAINESVILLE HIGHWAY' } },
+      };
+    },
+  });
+  const r = await runSetStopDate(requester, { stopNbr: '007150559', date: '2026-07-30', stopId: '6a63c5844524f7f7b8ab5410' }, CREDS);
+  assert.equal(r.ok, false);
+  assert.ok(r.drift.length > 5, `needs more drift than the cap, got ${r.drift.length}`);
+  assert.equal(r.drift[0], 'to.address.addr1', 'address ordered first');
+  assert.match(r.error, /to\.address\.addr1: .*943 GAINESVILLE HIGHWAY/, 'address inside the visible five');
+  assert.match(r.error, /\(\+\d+ more\)/, 'the hidden remainder is accounted for');
 });

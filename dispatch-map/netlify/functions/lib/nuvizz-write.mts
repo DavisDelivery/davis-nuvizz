@@ -26,7 +26,7 @@ import {
   stopNoteFingerprint, fingerprintDrift, buildNoteWriteStop, echoDrift, driftDetail,
   unsentLosses, documentHandlesMoved, type NoteAudience,
   buildPartialUpdateStop, buildStopDateOverride, stopDeliveryDate, isDayString, boardDateHoldWarning,
-  stopInstanceMismatch, readBackInstanceMismatch, orderDriftPaths, addressDriftWarning,
+  stopInstanceMismatch, readBackInstanceMismatch, readBackUnidentifiable, isIdShaped, orderDriftPaths, addressDriftWarning,
   buildStopContactOverride, stopContactFrom, normalizeContactPhone,
   type SingleOp, type WriteOp, type WriteCreds,
 } from './nuvizz-write-ops.mts';
@@ -2024,8 +2024,15 @@ export async function runAddStopNote(requester: RequesterLike, payload: any, cre
   const rawAfter = rawStopFrom(after.raw ?? after);
   // Read-back identity first — a twin answering here would make "did the note land" and the
   // whole echo diff statements about the OTHER order sharing this number (§ ESTES-2938079387).
-  const rbTwin = readBackInstanceMismatch('addStopNote', stopNbr, stopId, rawAfter);
+  // `pinned` = the caller supplied the on-screen record's id and it IS the id we wrote —
+  // only then may the twin banner say "the record on your screen" (the unpinned flip case
+  // inverted both identity claims). An unidentifiable read-back (200, no usable stopId) is
+  // the same two-different-things trap and verdicts as unverified instead of being diffed.
+  const pinned = isIdShaped(payload?.stopId) && String(payload.stopId) === String(stopId);
+  const rbTwin = readBackInstanceMismatch('addStopNote', stopNbr, stopId, rawAfter, pinned);
   if (rbTwin) return { ok: false, unverified: true, wrongInstanceReadback: true, calls, error: rbTwin };
+  const rbNoId = readBackUnidentifiable('addStopNote', stopNbr, stopId, rawAfter);
+  if (rbNoId) return { ok: false, unverified: true, calls, error: rbNoId };
   const landed = stopCommentsFrom(rawAfter).some((c: any) => String(c?.commentDescription ?? '') === note.commentDescription && String(c?.cmtType ?? '') === note.cmtType);
   // Two checks, unioned. The curated guard list names the fields a dispatcher cares about
   // first (address / freight / schedule / refs); the echo diff then catches EVERYTHING else
@@ -2153,8 +2160,15 @@ export async function runSetStopDate(requester: RequesterLike, payload: any, cre
   // below — did the date land, did anything drift — would then be about the twin, not the
   // order we wrote. That is how a date change on Khalid Mutakabbir's order was reported as
   // re-addressing it to Davis's own terminal: the "changed fields" were the twin's data.
-  const rbTwin = readBackInstanceMismatch('setStopDate', stopNbr, stopId, rawAfter);
+  // `pinned` = the caller supplied the on-screen record's id and it IS the id we wrote —
+  // only then may the twin banner say "the record on your screen" (the unpinned flip case
+  // inverted both identity claims). An unidentifiable read-back (200, no usable stopId) is
+  // the same two-different-things trap and verdicts as unverified instead of being diffed.
+  const pinned = isIdShaped(payload?.stopId) && String(payload.stopId) === String(stopId);
+  const rbTwin = readBackInstanceMismatch('setStopDate', stopNbr, stopId, rawAfter, pinned);
   if (rbTwin) return { ok: false, unverified: true, wrongInstanceReadback: true, calls, error: rbTwin };
+  const rbNoId = readBackUnidentifiable('setStopDate', stopNbr, stopId, rawAfter);
+  if (rbNoId) return { ok: false, unverified: true, calls, error: rbNoId };
   const landed = stopDeliveryDate(rawAfter) === date;
   // The schedule is the field we came to change, so it is excluded from the drift diff the
   // way `comments` is on a note — everything else must still come back byte-identical.
@@ -2273,8 +2287,15 @@ export async function runSetStopContact(requester: RequesterLike, payload: any, 
   }
   const rawAfter = rawStopFrom(after.raw ?? after);
   // Read-back identity first — same rule as the note and date paths (§ ESTES-2938079387).
-  const rbTwin = readBackInstanceMismatch('setStopContact', stopNbr, stopId, rawAfter);
+  // `pinned` = the caller supplied the on-screen record's id and it IS the id we wrote —
+  // only then may the twin banner say "the record on your screen" (the unpinned flip case
+  // inverted both identity claims). An unidentifiable read-back (200, no usable stopId) is
+  // the same two-different-things trap and verdicts as unverified instead of being diffed.
+  const pinned = isIdShaped(payload?.stopId) && String(payload.stopId) === String(stopId);
+  const rbTwin = readBackInstanceMismatch('setStopContact', stopNbr, stopId, rawAfter, pinned);
   if (rbTwin) return { ok: false, unverified: true, wrongInstanceReadback: true, calls, error: rbTwin };
+  const rbNoId = readBackUnidentifiable('setStopContact', stopNbr, stopId, rawAfter);
+  if (rbNoId) return { ok: false, unverified: true, calls, error: rbNoId };
   const now = stopContactFrom(rawAfter);
   // NuVizz upper-cases what it stores, so the name is compared case-insensitively; the number
   // is compared on digits, because it echoes the formatting back however it likes.
