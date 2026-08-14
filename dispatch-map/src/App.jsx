@@ -32,6 +32,7 @@ import { planOverlayAction, PLAN_OVERLAY_TTL_MS } from './lib/plan-overlay.js';
 import { routeStopEta, routeStopFreight, routeStopSeq } from './lib/route-stop-line.js';
 import { routeLoadLine, podPhotoFetchOffer, podSectionVisible, isPodImageExt, foldFreshStop } from './lib/stop-card-sections.js';
 import { resolveStopContact, resolveStopPhone, orderContactAside, mergeSavedContact, isDialable } from './lib/stop-contact.js';
+import { readViewportSize } from './lib/viewport.js';
 import { manifestIssues, manifestHeadline, toStored, loadStored, saveStored } from './lib/manifest-check-view.js';
 import { noteFreshness } from './lib/stop-notes-freshness.js';
 import { mapBaseOptions, mapLiveOptions, mapIdKey, keepView } from './lib/map-base-options.js';
@@ -75,7 +76,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.54.69';
+const APP_VERSION = '0.54.70';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -120,6 +121,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.54.70', 'THE SCREEN COMES BACK AFTER THE KEYBOARD. Chad sent a phone screenshot: the board list squeezed into three rows, "Showing 50 of 728 stops" above it, and the bottom quarter of the screen a dead grey slab under the tab bar. The cause was the keyboard he had just used. The app pins its shell to a PIXEL height read from visualViewport — it has to, because 100vh extends behind iOS\'s dynamic toolbars and because the map container needs a real non-zero number — and when the keyboard opens, that height correctly shrinks so the UI sits above it. When the keyboard closed, iOS never fired the final resize event, so the app went on believing the screen was 630px tall on an 844px phone. The grey was the page showing through under a shell that had stopped believing in a quarter of the screen; the three-row list was the same shortfall. THE RULE NOW: a visible viewport SHORTER than the layout viewport is only believable while something is focused — a text field, or a <select>, whose iOS picker shrinks it the same way. With nothing focused, a shrunken reading is stale and the real screen height wins. It is a FLOOR, never an overwrite, so scrolling Safari\'s toolbars away still lets the app grow past the layout viewport, and the keyboard case it protects is untouched. The app also re-measures on focus changes, on returning to a backgrounded tab, and once more 350ms later, because iOS reports the post-keyboard size a beat after the event that announces it. Two new harnesses back this up, since neither the unit suite nor the startup smoke can see a layout: scripts/ui-shots.mjs photographs every screen at four device sizes with the board stubbed full of orders, and scripts/verify-viewport-recovery.mjs drives a keyboard through the real bundle and asserts the shell recovers — it reports "shell stuck at 630px on an 844px phone" on a build without the fix. 11 tests pin the rule.'],
   ['0.54.69', 'THE CUSTOMER NUMBER NOW GOES ON THE ORDER IN NUVIZZ TOO. Chad, on the block that shipped last version: "does it write it to nuvizz?" It did not. Saving a customer number wrote our OWN customer_notes doc — which is per-CUSTOMER, so it carries onto their next order, and it is what Text, Call and the Messages list read — but NuVizz never heard about it, so the portal, the carrier\'s record and the DRIVER\'s device all still showed an order with no contact on it. A Save now does BOTH, and the two halves are complementary rather than alternatives: NuVizz\'s contact lives on the ORDER (fix it there and the customer\'s next order arrives blank again), ours lives on the CUSTOMER. There is a checkbox under the two fields — on by default, and only offered when we know which order to write — so the order half can be skipped when you just want the number on file here. The Firestore save runs FIRST and unconditionally: a vendor write that fails can never cost you the number you just typed, and the message says the saved half first for exactly that reason. The write itself is the note-write\'s safety contract applied to a second field, because NuVizz\'s partialUpdate is a FULL replace: read the order, echo the whole record with only the contact swapped, then read it back and refuse to report a save unless the contact landed AND every other field came back byte-identical AND the freight lines and attachments we never send are still on the order. A field you left blank keeps whatever NuVizz has — clearing the contact saved here never blanks the carrier\'s own number — and a "number" with no digits in it is refused rather than written into the field NuVizz sends its customer SMS from. Same wrong-twin pin as dates and notes (Estes-0828068215). 3 NuVizz calls per save; an order already carrying the contact costs 1 and writes nothing.'],
   ['0.54.68', 'A CUSTOMER NUMBER YOU CAN ADD, RIGHT WHERE THE NUMBER GOES. Chad: "make a spot where the customer number is on normal orders where if one of the orders doesn\'t have a customer name or number we can add it like we add notes." Orders WE create always carry one — New Order and Bulk Add both have the Phone field, and the Davis NuVizz export\'s "Customer Number" column feeds straight into it. Orders that arrive from a carrier often carry nothing, and the card printed the contact line ONLY when a number already existed: the orders that needed a number were exactly the orders with nowhere to put one. Getting one on file meant going through the notes editor — Edit, scroll past priority, hours, restrictions and dock notes, Contacts, add, Save. Now every stop card carries a CUSTOMER # block, under the address, on desktop and phone alike. With a number on file it reads "KAI WONG · (678) 860-8099", tap to dial, Edit beside it. With nothing on file it says "Not on this order" and offers "+ Add customer name / number" — two fields and Save, right there. It writes to the customer\'s notes exactly like a note does, so it is on file for that customer\'s NEXT order too, and it is the same number the Text and Call buttons use. THREE THINGS THAT WERE QUIETLY WRONG, fixed by moving the resolution rule into one tested place: (1) the card printed the ORDER\'s contact NAME beside whichever number won, so a number a dispatcher had typed showed up captioned with whoever NuVizz had on file — an attribution the data never supported. Name and number now come from ONE source, and whatever is missing says it is missing. (2) The Routing stop row preferred the ORDER\'s contact where every other surface preferred the saved one, so a corrected number read as the old one in one panel and the new one in the panel beside it. (3) Overriding the carrier\'s number used to hide it — the card now keeps a small "Order lists …" line so you can still see what came in on the order. 17 tests pin the precedence, the merge (roles and a customer\'s other contacts survive an edit made from the card) and clearing a number back off.'],
   ['0.54.67', 'BOARD FLAGS READ LIKE A LIST AGAIN, NOT A LEAFLET. Chad: "fotmatting issues" \u2014 with a screenshot where every advisory card carried the same four lines of boilerplate ("Estimate only \u2014 flat ~30 mph model...", "Hours were auto-detected from order text, not typed by a dispatcher \u2014 verify before acting. Resequence it earlier, move the date, or call ahead.") repeated on every row, burying the one line that differs: which stop, which route, how late. Each hours row is now a single breath \u2014 "Stop 9 on BEN 2 \u2014 estimated arrival ~2:12p vs close 12:00p (132 min late); departs 8:00a. Hours auto-detected \u2014 verify." \u2014 and the shared caveats live ONCE in the panel footer, which now also explains what amber means ("Amber rows use hours auto-detected from order text \u2014 verify before acting") alongside the existing estimates disclaimer. The re-anchored-clock evidence survives in compact form ("no movement yet, clock runs from 10:11a"), the word "estimated" stays on every number so no row overstates itself, and the driverless card got the same trim. At phone width the panel now shows three flags per screen instead of one and a half.'],
@@ -1734,34 +1736,49 @@ function useViewportWidth() {
 // button) off the visible screen. Sizing the shell to the live visualViewport
 // width keeps every control inside the visible area. Definite pixels (not dvh/vw)
 // so the Google Maps container always resolves a real, non-zero size.
+// The measurement RULE lives in src/lib/viewport.js (pure, tested). The short version:
+// visualViewport is the truth while a field is focused, and a stale shrunken reading is
+// discarded once nothing is — which is the whole of Chad's "grey slab" bug (v0.54.69: iOS
+// never fired the final resize after the search keyboard closed, so the shell stayed
+// keyboard-height and the bottom quarter of the phone went dead).
 function useViewportSize() {
-  const read = () => {
-    if (typeof window === 'undefined') return { h: 0, w: 0, x: 0, y: 0 };
-    const vv = window.visualViewport;
-    return {
-      h: (vv?.height || window.innerHeight || 0),
-      w: (vv?.width || window.innerWidth || 0),
-      // iOS can scroll the VISUAL viewport sideways inside the (wider) LAYOUT
-      // viewport when an input is focused — e.g. the search field. offsetLeft/Top
-      // is how far the visible area has shifted; we re-apply it so the shell
-      // tracks the visible area instead of sliding off the left edge.
-      x: (vv?.offsetLeft || 0),
-      y: (vv?.offsetTop || 0),
-    };
-  };
-  const [size, setSize] = useState(read);
+  const [size, setSize] = useState(readViewportSize);
   useEffect(() => {
-    const onResize = () => setSize(read());
-    window.addEventListener('resize', onResize);
-    window.addEventListener('orientationchange', onResize);
-    window.visualViewport?.addEventListener('resize', onResize);
+    let settle = null;
+    const measure = () => setSize(readViewportSize());
+    // iOS reports the post-keyboard size a beat LATE: the event that tells you the keyboard
+    // is going away fires while the viewport is still mid-animation, so a measurement taken
+    // right then reads the old height. Measure now (for everything that is already settled)
+    // and again once the animation is over.
+    const remeasure = () => {
+      measure();
+      clearTimeout(settle);
+      settle = setTimeout(measure, 350);
+    };
+    window.addEventListener('resize', remeasure);
+    window.addEventListener('orientationchange', remeasure);
+    // The keyboard going away is a FOCUS event, and on iOS it is sometimes the only signal
+    // that arrives — the visualViewport resize that should follow can simply never fire.
+    // This is the listener that actually ends the grey slab.
+    window.addEventListener('focusout', remeasure);
+    window.addEventListener('focusin', remeasure);
+    // Coming back to a backgrounded tab (or out of the bfcache) restores stale values with
+    // no resize either.
+    window.addEventListener('pageshow', remeasure);
+    document.addEventListener('visibilitychange', remeasure);
+    window.visualViewport?.addEventListener('resize', remeasure);
     // offsetLeft/Top change fires 'scroll' on visualViewport (not 'resize').
-    window.visualViewport?.addEventListener('scroll', onResize);
+    window.visualViewport?.addEventListener('scroll', remeasure);
     return () => {
-      window.removeEventListener('resize', onResize);
-      window.removeEventListener('orientationchange', onResize);
-      window.visualViewport?.removeEventListener('resize', onResize);
-      window.visualViewport?.removeEventListener('scroll', onResize);
+      clearTimeout(settle);
+      window.removeEventListener('resize', remeasure);
+      window.removeEventListener('orientationchange', remeasure);
+      window.removeEventListener('focusout', remeasure);
+      window.removeEventListener('focusin', remeasure);
+      window.removeEventListener('pageshow', remeasure);
+      document.removeEventListener('visibilitychange', remeasure);
+      window.visualViewport?.removeEventListener('resize', remeasure);
+      window.visualViewport?.removeEventListener('scroll', remeasure);
     };
   }, []);
   return size;
