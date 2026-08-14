@@ -28,6 +28,15 @@ body { position: fixed; inset: 0; font-family: system-ui, -apple-system, sans-se
 @media (max-width: 767px) and (pointer: coarse) {
   input, select, textarea { font-size: 16px !important; }
   input[type="checkbox"] { width: 18px; height: 18px; }
+  /* FINGERTIP FLOOR. The app sets its own standard at 44px (MobileTabBar's tabs are 50,
+     ChatPanel's icon buttons 44), but a lot of controls shared with the dense desktop
+     panels came in at 20-30px — the filter chips, the carry-over presets, the map's
+     selection tools, the Board Flags chip. Opt-in class rather than a blanket `button`
+     rule, which would stretch icon rows and inline chips that are deliberately tight.
+     Scoped to touch phones, so desktop density is untouched. */
+  .tap-target { min-height: 44px; min-width: 44px; }
+  /* For controls that sit inside a fixed-height row and only need the vertical floor. */
+  .tap-target-y { min-height: 44px; }
 }
 
 /* Google Maps InfoWindow restyling — match the brand */

@@ -33,6 +33,7 @@ import { routeStopEta, routeStopFreight, routeStopSeq } from './lib/route-stop-l
 import { routeLoadLine, podPhotoFetchOffer, podSectionVisible, isPodImageExt, foldFreshStop } from './lib/stop-card-sections.js';
 import { resolveStopContact, resolveStopPhone, orderContactAside, mergeSavedContact, isDialable } from './lib/stop-contact.js';
 import { readViewportSize } from './lib/viewport.js';
+import { sortStops, nextStopSort, stopSort, STOP_SORTS } from './lib/stop-sort.js';
 import { manifestIssues, manifestHeadline, toStored, loadStored, saveStored } from './lib/manifest-check-view.js';
 import { noteFreshness } from './lib/stop-notes-freshness.js';
 import { mapBaseOptions, mapLiveOptions, mapIdKey, keepView } from './lib/map-base-options.js';
@@ -76,7 +77,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.54.70';
+const APP_VERSION = '0.54.71';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -121,6 +122,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.54.71', 'SORT THE STOPS BY SKIDS — AND A SWEEP OF EVERY SCREEN AT FOUR DEVICE SIZES. Chad: "also want to be able to sort this screen by skids." There is now a Sort row on the phone\'s Stops tab: Board order (the default, and still the order every other surface agrees with) and Skids. One tap gives most-skids-first, which is what you are looking at a phone for; tapping again flips it to fewest. The choice is remembered across a reload, because sorting the morning board again after every refresh would make the control not worth reaching for. Two details worth knowing: skids are read from the SAME field the row prints (NuVizz calls skids "cartons" and loose pieces "volume" — the field actually named "pallets" is the total piece count, and sorting on it would quietly disagree with the number on the card); and stops with equal skids KEEP BOARD ORDER, which matters on a 728-stop board where most rows are 1 skid — without it hundreds of equal rows would reshuffle on every render and the list would jitter under your thumb. THE REST OF THIS RELEASE CAME FROM LOOKING. Nothing in this app could see a layout: the unit suite is pure functions and the startup smoke only proves the app is not blank. So every screen was rendered at four device sizes — 390px phone, 360px small phone, 820px tablet, 1440px desktop — with the board stubbed full of orders, photographed, and read. WHAT THAT FOUND, all now fixed. (1) THE PHONE HAD TWO ROWS OF THE SAME NAVIGATION: the stops sheet printed Stops/Filters/Loads across its top while the bar at the bottom of the same screen showed those three plus Map, both driving the same state. The top strip is gone and the list got ~47px back — on the screen that had three stops visible in your screenshot. (2) THE CITY WAS BEING EATEN: a stop card let the city share one truncate box with the street, so a long address swallowed it ("4395 PEACHTREE INDUSTRIAL BOULEVARD NORTHWE…" and no Suwanee). Only the street truncates now. (3) THE STOP COUNT truncated to "728 st…" on a narrow phone because it was the only part of its row allowed to shrink; it no longer shrinks, and the Filters button beside it drops its label under 380px instead — the bottom nav has a labelled Filters tab two inches below. (4) THE PHONE MENU was too narrow for its own labels, so rows wrapped onto two lines. (5) ~15 CONTROLS WERE UNDER THE APP\'S OWN 40px TAP FLOOR — filter chips, carry-over presets, the map selection tools, the Board Flags chip, the lasso Done/Cancel, the Messages header buttons — all raised, on touch phones only, so the dense desktop panels are untouched. (6) THE MANIFEST SCREEN was a 96px drop strip above 644px of dead grey, and a PDF let go in that grey hit the BROWSER\'s default handler, which navigates away and throws the whole session out. The target now fills the empty screen, and a dropped file can no longer navigate away from the app anywhere in it. (7) THE DESKTOP NAV crushed its own title into the tabs at narrow widths; Diagnostics and Debug moved into the More menu where the nav\'s own comment says deliberate-visit screens belong. (8) A BAD RESPONSE COULD WHITE-SCREEN DIAGNOSTICS: a schedule payload that answered ok but without its settings was destructured straight into undefined and took the tree down — the v0.54.14 blank screen in miniature. It now says what happened. Plus the phone tab bar was rebuilding all four of its buttons on every render, which throws away the tap in progress. TWO NEW HARNESSES keep this honest: scripts/ui-shots.mjs photographs every screen at every size and reports what overflows, and scripts/verify-stop-sort.mjs drives the real bundle to prove the Skids chip reorders the board and survives a reload. 1,526 tests green.'],
   ['0.54.70', 'THE SCREEN COMES BACK AFTER THE KEYBOARD. Chad sent a phone screenshot: the board list squeezed into three rows, "Showing 50 of 728 stops" above it, and the bottom quarter of the screen a dead grey slab under the tab bar. The cause was the keyboard he had just used. The app pins its shell to a PIXEL height read from visualViewport — it has to, because 100vh extends behind iOS\'s dynamic toolbars and because the map container needs a real non-zero number — and when the keyboard opens, that height correctly shrinks so the UI sits above it. When the keyboard closed, iOS never fired the final resize event, so the app went on believing the screen was 630px tall on an 844px phone. The grey was the page showing through under a shell that had stopped believing in a quarter of the screen; the three-row list was the same shortfall. THE RULE NOW: a visible viewport SHORTER than the layout viewport is only believable while something is focused — a text field, or a <select>, whose iOS picker shrinks it the same way. With nothing focused, a shrunken reading is stale and the real screen height wins. It is a FLOOR, never an overwrite, so scrolling Safari\'s toolbars away still lets the app grow past the layout viewport, and the keyboard case it protects is untouched. The app also re-measures on focus changes, on returning to a backgrounded tab, and once more 350ms later, because iOS reports the post-keyboard size a beat after the event that announces it. Two new harnesses back this up, since neither the unit suite nor the startup smoke can see a layout: scripts/ui-shots.mjs photographs every screen at four device sizes with the board stubbed full of orders, and scripts/verify-viewport-recovery.mjs drives a keyboard through the real bundle and asserts the shell recovers — it reports "shell stuck at 630px on an 844px phone" on a build without the fix. 11 tests pin the rule.'],
   ['0.54.69', 'THE CUSTOMER NUMBER NOW GOES ON THE ORDER IN NUVIZZ TOO. Chad, on the block that shipped last version: "does it write it to nuvizz?" It did not. Saving a customer number wrote our OWN customer_notes doc — which is per-CUSTOMER, so it carries onto their next order, and it is what Text, Call and the Messages list read — but NuVizz never heard about it, so the portal, the carrier\'s record and the DRIVER\'s device all still showed an order with no contact on it. A Save now does BOTH, and the two halves are complementary rather than alternatives: NuVizz\'s contact lives on the ORDER (fix it there and the customer\'s next order arrives blank again), ours lives on the CUSTOMER. There is a checkbox under the two fields — on by default, and only offered when we know which order to write — so the order half can be skipped when you just want the number on file here. The Firestore save runs FIRST and unconditionally: a vendor write that fails can never cost you the number you just typed, and the message says the saved half first for exactly that reason. The write itself is the note-write\'s safety contract applied to a second field, because NuVizz\'s partialUpdate is a FULL replace: read the order, echo the whole record with only the contact swapped, then read it back and refuse to report a save unless the contact landed AND every other field came back byte-identical AND the freight lines and attachments we never send are still on the order. A field you left blank keeps whatever NuVizz has — clearing the contact saved here never blanks the carrier\'s own number — and a "number" with no digits in it is refused rather than written into the field NuVizz sends its customer SMS from. Same wrong-twin pin as dates and notes (Estes-0828068215). 3 NuVizz calls per save; an order already carrying the contact costs 1 and writes nothing.'],
   ['0.54.68', 'A CUSTOMER NUMBER YOU CAN ADD, RIGHT WHERE THE NUMBER GOES. Chad: "make a spot where the customer number is on normal orders where if one of the orders doesn\'t have a customer name or number we can add it like we add notes." Orders WE create always carry one — New Order and Bulk Add both have the Phone field, and the Davis NuVizz export\'s "Customer Number" column feeds straight into it. Orders that arrive from a carrier often carry nothing, and the card printed the contact line ONLY when a number already existed: the orders that needed a number were exactly the orders with nowhere to put one. Getting one on file meant going through the notes editor — Edit, scroll past priority, hours, restrictions and dock notes, Contacts, add, Save. Now every stop card carries a CUSTOMER # block, under the address, on desktop and phone alike. With a number on file it reads "KAI WONG · (678) 860-8099", tap to dial, Edit beside it. With nothing on file it says "Not on this order" and offers "+ Add customer name / number" — two fields and Save, right there. It writes to the customer\'s notes exactly like a note does, so it is on file for that customer\'s NEXT order too, and it is the same number the Text and Call buttons use. THREE THINGS THAT WERE QUIETLY WRONG, fixed by moving the resolution rule into one tested place: (1) the card printed the ORDER\'s contact NAME beside whichever number won, so a number a dispatcher had typed showed up captioned with whoever NuVizz had on file — an attribution the data never supported. Name and number now come from ONE source, and whatever is missing says it is missing. (2) The Routing stop row preferred the ORDER\'s contact where every other surface preferred the saved one, so a corrected number read as the old one in one panel and the new one in the panel beside it. (3) Overriding the carrier\'s number used to hide it — the card now keeps a small "Order lists …" line so you can still see what came in on the order. 17 tests pin the precedence, the merge (roles and a customer\'s other contacts survive an edit made from the card) and clearing a number back off.'],
@@ -796,6 +798,9 @@ const MAP_ID = import.meta.env.VITE_GOOGLE_MAP_ID || undefined;
 
 // M4.1 localStorage keys + sizing constants for the resizable left panel.
 const LS_PANEL_WIDTH = 'dispatchMap.leftPanelWidth';
+// How the phone's Stops list is ordered. Remembered so the morning's skids sort survives a
+// reload; the active sort is always named on screen, so nothing is hidden by persisting it.
+const LS_MOBILE_STOP_SORT = 'dispatchMap.mobileStopSort';
 const LS_DRIVER_LABELS = 'dispatchMap.driverLabelsVisible';
 const LS_SEARCH_HISTORY = 'dispatchMap.searchHistory';
 const LS_LEGEND_EXPANDED = 'dispatchMap.legendExpanded';
@@ -2918,7 +2923,7 @@ function BoardFlagsChip({ flags, open, onToggle }) {
       onClick={onToggle}
       aria-expanded={open}
       className={
-        'flex items-center gap-1 px-1.5 py-0.5 rounded font-semibold flex-shrink-0 border ' +
+        'tap-target inline-flex items-center justify-center gap-1 px-1.5 py-0.5 rounded font-semibold flex-shrink-0 border ' +
         (red ? 'bg-red-50 text-red-700 border-red-300 hover:bg-red-100'
           : amber ? 'bg-amber-50 text-amber-700 border-amber-300 hover:bg-amber-100'
             : 'bg-white text-slate-400 border-slate-200 hover:bg-slate-50 hover:text-slate-600')
@@ -3610,7 +3615,7 @@ function MapFilterToggle({ label, checked, onChange, warning, disabled, disabled
         aria-checked={checked}
         disabled={disabled}
         onClick={() => !disabled && onChange(!checked)}
-        className={`flex-shrink-0 relative w-9 h-5 rounded-full transition-colors ${disabled ? 'cursor-not-allowed' : ''}`}
+        className={`flex-shrink-0 relative w-9 h-5 rounded-full transition-colors after:absolute after:content-[''] after:-inset-y-3 after:-inset-x-2 ${disabled ? 'cursor-not-allowed' : ''}`}
         style={{ background: checked && !disabled ? '#16a34a' : '#cbd5e1' }}
         title={disabled ? disabledHint : undefined}
       >
@@ -3806,7 +3811,7 @@ function OrderItemsSection({ stop, defaultOpen = false }) {
 // exists, a count chip clears it. Reused on desktop + mobile.
 function SelectionControls({ mode, setMode, count, onClear, onText, onTextDrivers, className }) {
   const btn = (active) =>
-    'p-1.5 rounded inline-flex items-center justify-center border ' +
+    'tap-target p-1.5 rounded inline-flex items-center justify-center border ' +
     (active ? 'text-white border-transparent' : 'bg-white border-slate-300 text-slate-600 hover:bg-slate-50');
   return (
     <div className={'bg-white/95 backdrop-blur border border-slate-200 rounded-lg shadow p-0.5 flex items-center gap-0.5 ' + (className || '')}>
@@ -4316,7 +4321,7 @@ function CarryoverControl({ value = 0, onChange, boardDate }) {
             key={p.d}
             type="button"
             onClick={() => onChange(p.d)}
-            className={'text-[11px] px-2 py-0.5 rounded border ' + (value === p.d ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50')}
+            className={'tap-target text-[11px] px-2 py-0.5 rounded border inline-flex items-center justify-center ' + (value === p.d ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50')}
           >
             {p.label}
           </button>
@@ -4449,7 +4454,7 @@ function FilterPanel({ filters, setFilters, counts }) {
                   const next = cur.includes(v) ? cur.filter((x) => x !== v) : [...cur, v];
                   setFilters({ ...F, flag: next.length ? next : undefined });
                 }}
-                className={`px-2 py-0.5 rounded-full text-[11px] border flex items-center gap-1 ${active ? 'bg-slate-900 text-white border-slate-900' : 'bg-white border-slate-300 text-slate-700'}`}
+                className={`tap-target px-2 py-0.5 rounded-full text-[11px] border inline-flex items-center justify-center gap-1 ${active ? 'bg-slate-900 text-white border-slate-900' : 'bg-white border-slate-300 text-slate-700'}`}
               >
                 <span className="w-2 h-2 rounded-full" style={{ background: swatch }} />
                 {v}
@@ -4521,7 +4526,7 @@ function FilterPanel({ filters, setFilters, counts }) {
 
 function Toggle({ label, checked, onChange }) {
   return (
-    <label className="flex items-center gap-2 cursor-pointer">
+    <label className="tap-target-y flex items-center gap-2 cursor-pointer">
       <input
         type="checkbox"
         checked={checked}
@@ -7235,12 +7240,15 @@ function MobileAppBar({ version, onChipMenu, chipMenuOpen, onSelectMenu, smsUnre
         </button>
         {chipMenuOpen && (
           <div
-            className="absolute top-full right-0 mt-1 bg-white text-slate-800 rounded shadow-lg border border-slate-200 text-xs min-w-[140px] z-50"
+            // w-max sizes the menu to its longest label — 140px alone was narrower than
+            // "Manifest check" + icon, so rows wrapped onto two lines. Capped to the screen
+            // so a future long label can't push it off the right edge.
+            className="absolute top-full right-0 mt-1 bg-white text-slate-800 rounded shadow-lg border border-slate-200 text-xs w-max min-w-[200px] max-w-[calc(100vw-24px)] z-50"
             role="menu"
           >
             {ROUTING_FLAG && (
               <button
-                className="w-full text-left px-3 py-2 hover:bg-slate-50 inline-flex items-center gap-2"
+                className="w-full text-left px-3 py-2 min-h-[44px] hover:bg-slate-50 inline-flex items-center gap-2"
                 onClick={() => onSelectMenu('routing')}
                 role="menuitem"
               >
@@ -7248,21 +7256,21 @@ function MobileAppBar({ version, onChipMenu, chipMenuOpen, onSelectMenu, smsUnre
               </button>
             )}
             <button
-              className={`w-full text-left px-3 py-2 hover:bg-slate-50 inline-flex items-center gap-2${ROUTING_FLAG ? ' border-t border-slate-100' : ''}`}
+              className={`w-full text-left px-3 py-2 min-h-[44px] hover:bg-slate-50 inline-flex items-center gap-2${ROUTING_FLAG ? ' border-t border-slate-100' : ''}`}
               onClick={() => onSelectMenu('neworder')}
               role="menuitem"
             >
               <Package size={12} /> New Order
             </button>
             <button
-              className="w-full text-left px-3 py-2 hover:bg-slate-50 inline-flex items-center gap-2 border-t border-slate-100"
+              className="w-full text-left px-3 py-2 min-h-[44px] hover:bg-slate-50 inline-flex items-center gap-2 border-t border-slate-100"
               onClick={() => onSelectMenu('quote')}
               role="menuitem"
             >
               <Calculator size={12} /> Quote
             </button>
             <button
-              className="w-full text-left px-3 py-2 hover:bg-slate-50 inline-flex items-center gap-2 border-t border-slate-100"
+              className="w-full text-left px-3 py-2 min-h-[44px] hover:bg-slate-50 inline-flex items-center gap-2 border-t border-slate-100"
               onClick={() => onSelectMenu('messages')}
               role="menuitem"
             >
@@ -7291,7 +7299,7 @@ function MobileAppBar({ version, onChipMenu, chipMenuOpen, onSelectMenu, smsUnre
             </button>
             {moreOpen && (
               <button
-                className="w-full text-left pl-6 pr-3 py-2 hover:bg-slate-50 inline-flex items-center gap-2"
+                className="w-full text-left pl-6 pr-3 py-2 min-h-[44px] hover:bg-slate-50 inline-flex items-center gap-2"
                 onClick={() => onSelectMenu('manifest')}
                 role="menuitem"
               >
@@ -7300,21 +7308,21 @@ function MobileAppBar({ version, onChipMenu, chipMenuOpen, onSelectMenu, smsUnre
               </button>
             )}
             <button
-              className="w-full text-left px-3 py-2 hover:bg-slate-50 inline-flex items-center gap-2 border-t border-slate-100"
+              className="w-full text-left px-3 py-2 min-h-[44px] hover:bg-slate-50 inline-flex items-center gap-2 border-t border-slate-100"
               onClick={() => onSelectMenu('diagnostics')}
               role="menuitem"
             >
               <Activity size={12} /> Diagnostics
             </button>
             <button
-              className="w-full text-left px-3 py-2 hover:bg-slate-50 inline-flex items-center gap-2 border-t border-slate-100"
+              className="w-full text-left px-3 py-2 min-h-[44px] hover:bg-slate-50 inline-flex items-center gap-2 border-t border-slate-100"
               onClick={() => onSelectMenu('debug')}
               role="menuitem"
             >
               <Bug size={12} /> Debug this view
             </button>
             <button
-              className="w-full text-left px-3 py-2 hover:bg-slate-50 inline-flex items-center gap-2 border-t border-slate-100"
+              className="w-full text-left px-3 py-2 min-h-[44px] hover:bg-slate-50 inline-flex items-center gap-2 border-t border-slate-100"
               onClick={() => onSelectMenu('map')}
               role="menuitem"
             >
@@ -7355,30 +7363,39 @@ function MobileFAB({ open, onToggle }) {
 // Persistent bottom navigation for the mobile app. Lives OUTSIDE the map/drawer
 // area so it stays visible over every full-screen view — tap Map to return to
 // the board, Stops/Filters/Loads to open that full-screen view.
+// Declared at MODULE scope, not inside MobileTabBar. A component defined in a render body is
+// a brand-new component *type* on every render, so React unmounts and remounts all four
+// buttons each time — which throws away the in-flight touch on the button you are pressing
+// (mousedown lands on one node, mouseup on its replacement) and makes the bar feel like it
+// drops taps.
+function MobileTabBarTab({ on, label, icon, onClick }) {
+  return (
+    <button
+      onClick={onClick}
+      aria-current={on ? 'page' : undefined}
+      className="flex-1 flex flex-col items-center justify-center gap-0.5 active:bg-slate-100"
+      style={{ color: on ? BRAND : '#64748b', minHeight: 50 }}
+    >
+      {icon}
+      <span className="text-[10px] font-semibold leading-none">{label}</span>
+    </button>
+  );
+}
+
 function MobileTabBar({ active, onMap, onStops, onFilters, onLoads }) {
-  const Tab = ({ id, label, icon, onClick }) => {
-    const on = active === id;
-    return (
-      <button
-        onClick={onClick}
-        aria-current={on ? 'page' : undefined}
-        className="flex-1 flex flex-col items-center justify-center gap-0.5 active:bg-slate-100"
-        style={{ color: on ? BRAND : '#64748b', minHeight: 50 }}
-      >
-        {icon}
-        <span className="text-[10px] font-semibold leading-none">{label}</span>
-      </button>
-    );
-  };
+  // Note there is no local <Tab> wrapper here: a wrapper declared in this body would be a new
+  // type every render too, and remounting it remounts everything under it — the indirection
+  // would put the bug straight back.
+  const Tab = MobileTabBarTab;
   return (
     <nav
       className="flex-shrink-0 flex items-stretch border-t border-slate-200 bg-white"
       style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}
     >
-      <Tab id="map" label="Map" icon={<MapPin size={20} />} onClick={onMap} />
-      <Tab id="stops" label="Stops" icon={<LayoutList size={20} />} onClick={onStops} />
-      <Tab id="filters" label="Filters" icon={<Filter size={20} />} onClick={onFilters} />
-      <Tab id="loads" label="Loads" icon={<Package size={20} />} onClick={onLoads} />
+      <Tab on={active === 'map'} label="Map" icon={<MapPin size={20} />} onClick={onMap} />
+      <Tab on={active === 'stops'} label="Stops" icon={<LayoutList size={20} />} onClick={onStops} />
+      <Tab on={active === 'filters'} label="Filters" icon={<Filter size={20} />} onClick={onFilters} />
+      <Tab on={active === 'loads'} label="Loads" icon={<Package size={20} />} onClick={onLoads} />
     </nav>
   );
 }
@@ -7425,32 +7442,15 @@ function BottomSheet({ open, onClose, children, ariaLabel, fitContent = false })
   );
 }
 
-function MobileDrawer({ open, onClose, activeTab, setActiveTab, children }) {
+// NO TAB STRIP OF ITS OWN. This sheet used to repeat Stops / Filters / Loads across its top
+// while MobileTabBar showed the same three (plus Map) at the bottom of the same screen —
+// both setting the same `mobileDrawerTab`. Two rows of identical navigation, ~47px apart, on
+// the screen with the least room to spare: the phone list in Chad's v0.54.69 screenshot had
+// three stops visible. The bottom bar is a superset and is where a thumb already is, so the
+// strip is gone and the sheet is all content.
+function MobileDrawer({ open, onClose, children }) {
   return (
     <BottomSheet open={open} onClose={onClose} heights={SHEET_HEIGHTS} ariaLabel="Stops, Filters, Loads">
-      <div className="flex-shrink-0 flex border-b border-slate-200">
-        {[
-          { id: 'stops', label: 'Stops' },
-          { id: 'filters', label: 'Filters' },
-          { id: 'loads', label: 'Loads' },
-        ].map((t) => {
-          const active = activeTab === t.id;
-          return (
-            <button
-              key={t.id}
-              onClick={() => setActiveTab(t.id)}
-              className={`flex-1 py-3 text-sm font-semibold transition-colors ${active ? '' : 'text-slate-500'}`}
-              style={{
-                color: active ? BRAND : undefined,
-                borderBottom: active ? `2px solid ${BRAND}` : '2px solid transparent',
-                minHeight: 44,
-              }}
-            >
-              {t.label}
-            </button>
-          );
-        })}
-      </div>
       <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain" data-sheet-scroll>
         {children}
       </div>
@@ -7779,6 +7779,19 @@ function MobileStopsTab({
   aiAvailable, onAskAi, aiBusy, aiSummary, aiError, onClearAi,
 }) {
   const [histOpen, setHistOpen] = useState(false);
+  // The sort survives a reload: Chad sorts the morning board by skids, and having to set it
+  // again after every refresh would make the control not worth reaching for. Safe to persist
+  // because the active sort is always named on screen — there is no silent hidden ordering.
+  const [sort, setSort] = useState(() => {
+    const saved = safeReadJSON(LS_MOBILE_STOP_SORT, null);
+    return saved && stopSort(saved.key).key === saved.key ? saved : { key: 'board', dir: 'desc' };
+  });
+  const applySort = (key) => {
+    const next = nextStopSort(sort, key);
+    setSort(next);
+    safeWriteJSON(LS_MOBILE_STOP_SORT, next);
+  };
+  const sortedStops = useMemo(() => sortStops(stops, sort.key, sort.dir), [stops, sort.key, sort.dir]);
   if (histOpen) return <PastProSearch notes={notes} initialQuery={searchInput} onPickCustomer={onPickStop} onClose={() => setHistOpen(false)} />;
   return (
     <div className="flex flex-col">
@@ -7830,6 +7843,28 @@ function MobileStopsTab({
           </div>
         )}
         {aiError && <div className="mt-1 text-[11px] text-amber-700">{aiError}</div>}
+        {/* Sort. Board order is the default and stays the default — it is the order every
+            other surface agrees with; a sort is an overlay on top of it. */}
+        <div className="mt-2 flex items-center gap-1.5">
+          <span className="text-[11px] text-slate-400 flex-shrink-0">Sort</span>
+          {STOP_SORTS.map((s) => {
+            const on = sort.key === s.key;
+            return (
+              <button
+                key={s.key}
+                onClick={() => applySort(s.key)}
+                aria-pressed={on}
+                className={`inline-flex items-center gap-0.5 rounded-full border px-3 text-xs font-semibold ${on ? 'text-white' : 'bg-white text-slate-600 border-slate-300'}`}
+                style={{ minHeight: 34, ...(on ? { background: BRAND, borderColor: BRAND } : {}) }}
+              >
+                {s.label}
+                {/* The arrow only shows on an active sort that HAS a direction — "Board order"
+                    has none, and an arrow on it would imply a direction to flip. */}
+                {on && s.value && (sort.dir === 'desc' ? <ChevronDown size={12} /> : <ChevronUp size={12} />)}
+              </button>
+            );
+          })}
+        </div>
         <button
           onClick={() => setHistOpen(true)}
           className="mt-2 w-full inline-flex items-center justify-center gap-1.5 text-xs font-semibold text-slate-700 border border-slate-300 rounded-lg py-2 active:bg-slate-100"
@@ -7838,12 +7873,12 @@ function MobileStopsTab({
         </button>
       </div>
       <div className="divide-y divide-slate-100">
-        {stops.length === 0 && (
+        {sortedStops.length === 0 && (
           <div className="text-xs text-slate-400 italic px-4 py-6 text-center">
             No stops match the current filters.
           </div>
         )}
-        {stops.map((s) => (
+        {sortedStops.map((s) => (
           <MobileStopCard
             key={s.stopNbr}
             stop={s}
@@ -7888,8 +7923,13 @@ function MobileStopCard({ stop, note, onPick }) {
             </span>
           )}
         </div>
-        <div className="text-[11px] text-slate-500 truncate">
-          {stop.addr1 ? `${stop.addr1} · ` : ''}{stop.city || '—'}{stop.state ? `, ${stop.state}` : ''}
+        {/* The CITY is the part a dispatcher scans this list for — it says which side of town
+            the stop is on. It used to share one truncate box with the street, so a long
+            address ate it ("4395 PEACHTREE INDUSTRIAL BOULEVARD NORTHWE…" with Suwanee gone).
+            Only the street truncates now; the city and state always survive. */}
+        <div className="text-[11px] text-slate-500 flex items-baseline gap-1 min-w-0">
+          {stop.addr1 && <><span className="truncate min-w-0">{stop.addr1}</span><span className="flex-shrink-0">·</span></>}
+          <span className="flex-shrink-0">{stop.city || '—'}{stop.state ? `, ${stop.state}` : ''}</span>
         </div>
         <div className="mt-1 flex items-center gap-x-2 gap-y-1 flex-wrap">
           <StatusBadge kind={statusKind} />
@@ -10158,12 +10198,16 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
             <div className="flex items-center gap-2">
               <button
                 onClick={() => setStatusCollapsed((c) => !c)}
-                className="flex items-center gap-1 font-semibold min-w-0"
+                className="flex items-center gap-1 font-semibold flex-shrink-0"
                 aria-expanded={!statusCollapsed}
                 title={statusCollapsed ? 'Show details' : 'Collapse'}
               >
                 {statusCollapsed ? <ChevronDown size={13} className="text-slate-400 flex-shrink-0" /> : <ChevronUp size={13} className="text-slate-400 flex-shrink-0" />}
-                <span className="truncate">{stops.length} stops{carryoverCount > 0 ? <span className="text-amber-700 font-normal"> · {carryoverCount} c/o</span> : null}</span>
+                {/* The stop count is the one number this pill exists to show, and it was the
+                    only child allowed to shrink — so on a narrow phone it truncated to
+                    "728 st…" while the buttons beside it kept their full width. It no longer
+                    shrinks; the row's slack comes out of the controls instead. */}
+                <span className="whitespace-nowrap">{stops.length} stops{carryoverCount > 0 ? <span className="text-amber-700 font-normal"> · {carryoverCount} c/o</span> : null}</span>
               </button>
               <button
                 onClick={manualScan}
@@ -10180,7 +10224,12 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
                 className="flex items-center gap-1 px-1.5 py-1 rounded hover:bg-slate-100 active:bg-slate-200 font-semibold text-slate-700 flex-shrink-0"
                 aria-label="Open filters"
               >
-                <Filter size={14} /> Filters
+                {/* Label hidden on the narrowest phones: the stop count beside it must not
+                    shrink (it is the number this pill exists for), and on a 360px screen
+                    something has to give or the button runs off the right edge. The bottom
+                    nav has a labelled Filters tab two inches below, so the word is the
+                    cheapest thing in the row to lose. */}
+                <Filter size={14} /> <span className="hidden min-[380px]:inline">Filters</span>
               </button>
             </div>
             {/* Stacked details — hidden when collapsed (mirrors desktop). */}
@@ -10302,8 +10351,6 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
         <MobileDrawer
           open={mobileDrawerOpen}
           onClose={() => setMobileDrawerOpen(false)}
-          activeTab={mobileDrawerTab}
-          setActiveTab={setMobileDrawerTab}
         >
           {mobileDrawerTab === 'stops' && (
             <MobileStopsTab
@@ -11702,7 +11749,10 @@ function StopMiniTable({ stops, notes, onPick, columns, onColumnsChange, searchQ
         <div className="text-xs font-semibold text-slate-600">Stops ({rows.length})</div>
         {onColumnsChange && <ColumnsMenu columns={cols} onChange={onColumnsChange} />}
       </div>
-      <div className="max-h-[40vh] overflow-y-auto overflow-x-auto">
+      {/* No max-height + no vertical scroller here on purpose: this table sits INSIDE the
+          sidebar's own scroll region, and a nested 40vh scroller meant two scrollbars
+          competing for one drag while the table was capped well under the room it had. */}
+      <div className="overflow-x-auto">
         <table className="w-full text-xs">
           <thead className="bg-slate-50 sticky top-0">
             <tr>
@@ -12237,6 +12287,20 @@ function SchedulePanel({ onScanNow, scanning, onSaved }) {
   }
   if (status === 'error' && !data) {
     return <Panel title="Scan Schedule"><div className="text-sm text-red-600 flex items-center gap-2"><AlertTriangle size={14} /> Couldn't load schedule: {err}</div></Panel>;
+  }
+  // An `ok:true` answer that is MISSING defaults/bounds used to be destructured straight into
+  // undefined and every field below then read `.intervalDayMin` off it — one bad response and
+  // the whole Diagnostics screen went white, React having unmounted the tree. That is the
+  // v0.54.14 blank-screen failure in miniature, so this refuses the payload instead of
+  // rendering off it. Say so plainly rather than showing an empty form that cannot save.
+  if (!data?.defaults || !data?.bounds) {
+    return (
+      <Panel title="Scan Schedule">
+        <div className="text-sm text-amber-700 flex items-center gap-2">
+          <AlertTriangle size={14} /> The schedule service answered without its settings — nothing to edit here until it does.
+        </div>
+      </Panel>
+    );
   }
 
   const { defaults, bounds, persistent, stored } = data;
@@ -17532,7 +17596,7 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
   ) : null;
 
   if (isMobile) {
-    const tabCls = (on) => `flex-1 py-1.5 text-xs font-semibold rounded ${on ? 'text-white' : 'text-slate-600 bg-slate-100'}`;
+    const tabCls = (on) => `tap-target-y flex-1 py-1.5 text-xs font-semibold rounded inline-flex items-center justify-center ${on ? 'text-white' : 'text-slate-600 bg-slate-100'}`;
     return (
       <div className="flex-1 flex flex-col min-h-0">
         <div className="flex-1 relative min-w-0">
@@ -17561,9 +17625,9 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
                 ? <span>⬠ Tap points · {lassoCount} placed{lassoCount < 3 ? ' (need ≥3)' : ''}</span>
                 : <span>📦 Tap two corners · {boxStep === 0 ? '1 of 2' : '2 of 2'}</span>}
               {selectMode === 'lasso' && (
-                <button onClick={finishLasso} disabled={lassoCount < 3} className="rounded-full bg-white text-amber-700 px-2.5 py-0.5 font-bold disabled:opacity-50">Done</button>
+                <button onClick={finishLasso} disabled={lassoCount < 3} className="tap-target rounded-full bg-white text-amber-700 px-2.5 py-0.5 font-bold disabled:opacity-50 inline-flex items-center justify-center">Done</button>
               )}
-              <button onClick={cancelMode} className="rounded-full bg-white/25 px-2 py-0.5 font-normal">Cancel</button>
+              <button onClick={cancelMode} className="tap-target rounded-full bg-white/25 px-2 py-0.5 font-normal inline-flex items-center justify-center">Cancel</button>
             </div>
           )}
           {viewing
@@ -17595,7 +17659,7 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
             <button onClick={() => setSheetOpen((o) => !o)} className="text-xs px-2 py-1 rounded border border-slate-300" aria-label={sheetOpen ? 'Collapse' : 'Expand'}>{sheetOpen ? '▾' : '▴'}</button>
             <div className="flex-1 flex gap-1">
               <button onClick={() => { setPanelStop(null); setMobilePanel('setup'); setSheetOpen(true); }} className={tabCls(mobilePanel === 'setup')} style={mobilePanel === 'setup' ? { background: BRAND } : {}}>Setup{tally.count ? ` (${tally.count})` : ''}</button>
-              <button onClick={() => { setPanelStop(null); setMobilePanel('loads'); setSheetOpen(true); }} className={tabCls(mobilePanel === 'loads')} style={mobilePanel === 'loads' ? { background: BRAND } : {}}>{rightPanelMode === 'routes' ? `Routes${routeGroups.length ? ` (${routeGroups.length})` : ''}` : `Loads${loads.length ? ` (${loads.length})` : ''}`}</button>
+              <button onClick={() => { setPanelStop(null); setMobilePanel('loads'); setSheetOpen(true); }} className={tabCls(mobilePanel === 'loads')} style={mobilePanel === 'loads' ? { background: BRAND } : {}}>{rightPanelMode === 'routes' ? `Routes${routeGroups.length ? ` (${routeGroups.length})` : ''}` : `Saved${loads.length ? ` (${loads.length})` : ''}`}</button>
               <button onClick={() => { setPanelStop(null); setMobilePanel('result'); setSheetOpen(true); }} className={tabCls(mobilePanel === 'result')} style={mobilePanel === 'result' ? { background: BRAND } : {}}>Result{baseResult ? ` (${baseResult.routes.length})` : job?.status === 'running' || job?.status === 'queued' ? ' …' : ''}</button>
             </div>
           </div>
@@ -18340,6 +18404,12 @@ function RoutingRouteCard({ rv, stopById, usedGoogle, readOnly, onReorder, onMov
 function QuoteScreen() {
   return (
     <div className="flex-1 min-h-0 overflow-auto bg-slate-50">
+      {/* The console gates its FOOTER on `embedded` but not its HEADER (UlineQuoteConsole.jsx
+          :591-594), so embedding it as a tab printed a second title bar directly under this
+          app's own — two headers stacked, ~64px of it. The real fix belongs upstream in
+          DavisDelivery/Quotes, next to the footer's existing gate; until that lands this
+          hides it here, scoped to .rc-embedded so the standalone console is untouched. */}
+      <style>{'.rc-root.rc-embedded .rc-head{display:none}'}</style>
       <React.Suspense fallback={<div className="p-6 text-sm text-slate-500">Loading quote console…</div>}>
         <UlineQuoteConsole embedded />
       </React.Suspense>
@@ -19700,6 +19770,22 @@ function Shell() {
   // should not have to remember to go and look at a tab to learn something is
   // wrong. Refreshed when the tab stores a new run, and when another tab in this
   // browser does (the `storage` event).
+  // A FILE DROPPED ANYWHERE MUST NOT THROW THE SESSION AWAY. Dropping a file on a page with
+  // no drop handler is a browser NAVIGATION — Chrome opens the file and the whole SPA is
+  // gone, taking the board, the selection and any unsaved editor with it. The manifest screen
+  // invites exactly that gesture with a PDF, and a near-miss on its target used to land on
+  // bare page. Real drop targets keep working: they call preventDefault on their own element
+  // first, and this only runs afterwards on the way up.
+  useEffect(() => {
+    const swallow = (e) => e.preventDefault();
+    window.addEventListener('dragover', swallow);
+    window.addEventListener('drop', swallow);
+    return () => {
+      window.removeEventListener('dragover', swallow);
+      window.removeEventListener('drop', swallow);
+    };
+  }, []);
+
   const [moreBadge, setMoreBadge] = useState(() => manifestIssues(loadStored()).badge);
   useEffect(() => {
     const sync = () => setMoreBadge(manifestIssues(loadStored()).badge);
@@ -19817,27 +19903,34 @@ function Shell() {
         />
       ) : (
         <header className="shrink-0 relative z-30 flex items-center justify-between px-4 py-2 border-b bg-white" style={{ paddingTop: 'env(safe-area-inset-top)' }}>
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 shrink-0">
             <img src="/davis-logo.jpg" alt="Davis Delivery Service" className="h-9 w-auto" />
-            <div className="font-bold leading-tight text-slate-800 border-l border-slate-200 pl-3">Dispatch Map</div>
+            {/* The wordmark is the first thing to go on a narrow desktop window: the logo
+                already says whose app this is, and letting this be crushed instead ran the
+                title into the tab row. */}
+            <div className="hidden xl:block font-bold leading-tight text-slate-800 border-l border-slate-200 pl-3">Dispatch Map</div>
           </div>
-          <nav className="flex items-center gap-1 text-sm">
+          {/* min-w-0 + scroll: when the tabs genuinely don't fit, the row scrolls rather
+              than overlapping its neighbours. */}
+          <nav className="flex items-center gap-1 text-sm min-w-0 overflow-x-auto">
             <TabBtn label="Map" icon={<MapPin size={14} />} active={tab === 'map'} onClick={() => setTab('map')} />
             {ROUTING_FLAG && <TabBtn label="Routing (beta)" icon={<MapPinned size={14} />} active={tab === 'routing'} onClick={() => setTab('routing')} />}
             <TabBtn label="New Order" icon={<Package size={14} />} active={tab === 'neworder'} onClick={() => setTab('neworder')} />
             <TabBtn label="Quote" icon={<Calculator size={14} />} active={tab === 'quote'} onClick={() => setTab('quote')} />
             <TabBtn label="Messages" icon={<MessageSquare size={14} />} active={messagesOpen} onClick={openMessages} badge={smsUnread} />
-            <TabBtn label="Diagnostics" icon={<Activity size={14} />} active={tab === 'diag'} onClick={() => setTab('diag')} />
             {/* Overflow tabs. Screens you visit deliberately rather than live in go here
                 instead of shrinking the whole nav row; the badge surfaces a problem from
                 a screen you are NOT on, which is the entire point of the manifest check. */}
             <MoreMenu
-              activeId={tab}
-              onPick={setTab}
+              activeId={debugOpen ? 'debug' : tab}
+              onPick={(id) => (id === 'debug' ? setDebugOpen(true) : setTab(id))}
               badge={moreBadge}
-              items={[{ id: 'manifest', label: 'Manifest check', hint: 'Uline nightly vs the scan', icon: <FileCheck size={14} />, badge: moreBadge }]}
+              items={[
+                { id: 'manifest', label: 'Manifest check', hint: 'Uline nightly vs the scan', icon: <FileCheck size={14} />, badge: moreBadge },
+                { id: 'diag', label: 'Diagnostics', hint: 'Scan health, API calls, schedule', icon: <Activity size={14} /> },
+                { id: 'debug', label: 'Debug this view', hint: 'Bundle what you are looking at', icon: <Bug size={14} /> },
+              ]}
             />
-            <TabBtn label="Debug" icon={<Bug size={14} />} active={debugOpen} onClick={() => setDebugOpen(true)} />
           </nav>
           {/* Far right of the nav row: the presence chip (who else is on) plus the Routing
               Build/Engine toggle — the toggle shows ONLY on the Routing screen. */}
@@ -20199,7 +20292,11 @@ function NewOrderSingleScreen() {
         <div className="bg-white border border-slate-200 rounded-lg p-3 space-y-2">
           <div className="text-[13px] font-semibold text-slate-700">Order details</div>
           <OrderField label="Item description (optional)" value={row.itemDesc} onChange={set('itemDesc')} placeholder="e.g. 2 pallets appliances" />
-          <div className="grid grid-cols-2 gap-2">
+          {/* items-end: "PRO / shipment # (optional)" wraps to two lines on a phone while
+              "Order # (optional)" stays on one, and without this the taller label shoved its
+              own input a line below its neighbour's — two fields on one row, visibly out of
+              step. Aligning on the bottom edge keeps the inputs level however the labels wrap. */}
+          <div className="grid grid-cols-2 gap-2 items-end">
             <OrderField label="Order # (optional)" value={row.stopNbr} onChange={set('stopNbr')} placeholder="auto if blank" />
             <OrderField label="PRO / shipment # (optional)" value={row.pro} onChange={set('pro')} placeholder="e.g. 12345" />
           </div>
@@ -21441,7 +21538,7 @@ function MoreMenu({ items, activeId, onPick, badge = 0 }) {
         onClick={() => setOpen((v) => !v)}
         aria-haspopup="menu"
         aria-expanded={open}
-        className={`relative px-3 py-1.5 rounded inline-flex items-center gap-1.5 font-medium ${active ? 'text-white' : 'text-slate-600 hover:bg-slate-100'}`}
+        className={`relative shrink-0 whitespace-nowrap px-3 py-1.5 rounded inline-flex items-center gap-1.5 font-medium ${active ? 'text-white' : 'text-slate-600 hover:bg-slate-100'}`}
         style={active ? { background: BRAND } : {}}
       >
         <MoreHorizontal size={14} />More
@@ -21530,11 +21627,19 @@ function ManifestCheckScreen() {
           </p>
         </div>
 
+        {/* THE TARGET FILLS THE EMPTY SCREEN. Before a report is dropped this page is nothing
+            but the drop zone, and the zone was a ~96px strip with ~640px of inert grey under
+            it — and a PDF let go in that grey hit the BROWSER's default handler, which
+            navigates away from the app and throws the session out. There is no window-level
+            preventDefault to catch it (see the guard in the effect above). So on the empty
+            state the label claims the pane; once there are results to read, it shrinks back
+            to a strip so it isn't in the way. (The navigate-away itself is stopped app-wide
+            by the drop guard in Shell — this is about not making you aim.) */}
         <label
           onDragOver={(e) => { e.preventDefault(); setDrag(true); }}
           onDragLeave={() => setDrag(false)}
           onDrop={(e) => { e.preventDefault(); setDrag(false); run(e.dataTransfer?.files?.[0]); }}
-          className={`block border-2 border-dashed rounded-lg p-6 text-center cursor-pointer ${drag ? 'border-blue-400 bg-blue-50' : 'border-slate-300 bg-white hover:bg-slate-50'}`}
+          className={`block border-2 border-dashed rounded-lg p-6 text-center cursor-pointer ${result ? '' : 'min-h-[60vh] flex flex-col items-center justify-center'} ${drag ? 'border-blue-400 bg-blue-50' : 'border-slate-300 bg-white hover:bg-slate-50'}`}
         >
           <input type="file" accept=".pdf" className="hidden" onChange={(e) => run(e.target.files?.[0])} disabled={busy} />
           <FileCheck size={20} className="mx-auto text-slate-400" />
@@ -21636,7 +21741,7 @@ function TabBtn({ label, icon, active, onClick, badge = 0 }) {
   return (
     <button
       onClick={onClick}
-      className={`relative px-3 py-1.5 rounded inline-flex items-center gap-1.5 font-medium ${active ? 'text-white' : 'text-slate-600 hover:bg-slate-100'}`}
+      className={`relative shrink-0 whitespace-nowrap px-3 py-1.5 rounded inline-flex items-center gap-1.5 font-medium ${active ? 'text-white' : 'text-slate-600 hover:bg-slate-100'}`}
       style={active ? { background: BRAND } : {}}
     >
       {icon}{label}
