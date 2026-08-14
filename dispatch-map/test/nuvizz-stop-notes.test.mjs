@@ -486,3 +486,27 @@ test('runAddStopNote: a MATCHING id proceeds; no id at all keeps the old behavio
   const b = await runAddStopNote(makeRequester({ state: s2 }).requester, { stopNbr: '007152286', text: 'Gate code 4417' }, CREDS);
   assert.equal(b.ok, true, 'a caller with no id cannot be judged — old behavior stands');
 });
+
+// ── the read-back twin (ESTES-2938079387, Aug 14) — same rule as setStopDate ──
+// The pre-read guard (v0.54.36) checks the record BEFORE writing; nothing checked the
+// record the VERIFY read answered with. A twin there made the echo diff compare two
+// different orders and report the differences as damage this write had done.
+
+test('addStopNote: a twin answering the read-back is a twin verdict, never a drift list', async () => {
+  const mine = rawStop();
+  const state = { stop: mine };
+  const twin = {
+    ...rawStop(),
+    stopId: '7b8c99aa11223344556677ff',
+    to: { ...rawStop().to, address: { name: 'DAVIS DELIVERY', addr1: '943 GAINESVILLE HIGHWAY', city: 'BUFORD', state: 'GEORGIA', zip: '30518' } },
+  };
+  const { requester } = makeRequester({ state, onWrite: () => { state.stop = twin; } });
+  const r = await runAddStopNote(requester, { stopNbr: mine.stopNbr, text: 'Test', audience: 'both', stopId: mine.stopId }, CREDS);
+  assert.equal(r.ok, false);
+  assert.equal(r.wrongInstanceReadback, true);
+  assert.equal(r.unverified, true);
+  assert.equal(r.drift, undefined, 'no cross-record diff presented as changes');
+  assert.match(r.error, /DIFFERENT record/i);
+  assert.match(r.error, /TWO orders carry this number/i);
+  assert.ok(!/partialUpdate changed/.test(r.error));
+});

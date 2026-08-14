@@ -44,8 +44,17 @@ export const fetchRoster = (opts = {}) => callWrite('roster', {}, { ...opts, dry
 // opts.stopId (when the board row carries one) pins the write to the record on the
 // dispatcher's SCREEN: NuVizz can hold two orders under one number, its by-number read
 // answers with either, and the server refuses rather than write the other twin.
+//
+// Every one of these three single-stop ops now MINTS a clientOpId. Not for retry — none of
+// them is ever auto-retried — but because the server's write ledger (putOpRecord) only
+// records an op that carries one. Twice now a serious incident on this path (the
+// stopAssignment drift, the ESTES-2938079387 read-back twin) left NO server-side record:
+// the only artifact was the red text on the dispatcher's phone. The ledger row stores the
+// full result — drift paths, values, refusals — so the next one is diagnosable from
+// nuvizz-write-log alone.
 export const addStopNote = (stopNbr, text, audience = 'both', opts = {}) =>
-  callWrite('addStopNote', { stopNbr, text, audience, ...(opts.stopId ? { stopId: String(opts.stopId) } : {}) }, { ...opts, dryRun: false });
+  callWrite('addStopNote', { stopNbr, text, audience, ...(opts.stopId ? { stopId: String(opts.stopId) } : {}) },
+    { clientOpId: newClientOpId(), ...opts, dryRun: false });
 
 // Move an order to the day the customer actually wants it (§D). There is no "requested
 // date" field in NuVizz — `to.schedule` IS the delivery date — so the server moves that
@@ -54,7 +63,8 @@ export const addStopNote = (stopNbr, text, audience = 'both', opts = {}) =>
 // date: 'YYYY-MM-DD'. 3 NuVizz calls; an order already on that day costs 1 and writes nothing.
 // opts.stopId: same wrong-twin pin as addStopNote — the Estes-0828068215 lesson.
 export const setStopDate = (stopNbr, date, opts = {}) =>
-  callWrite('setStopDate', { stopNbr, date, ...(opts.stopId ? { stopId: String(opts.stopId) } : {}) }, { ...opts, dryRun: false });
+  callWrite('setStopDate', { stopNbr, date, ...(opts.stopId ? { stopId: String(opts.stopId) } : {}) },
+    { clientOpId: newClientOpId(), ...opts, dryRun: false });
 
 // Put the customer's name + number on the ORDER in NuVizz (§C). The CUSTOMER # block's Save
 // writes our own customer_notes doc — per-CUSTOMER, so it carries onto their next order, and
@@ -70,7 +80,7 @@ export const setStopContact = (stopNbr, { name, phone } = {}, opts = {}) =>
     ...(name ? { name: String(name) } : {}),
     ...(phone ? { phone: String(phone) } : {}),
     ...(opts.stopId ? { stopId: String(opts.stopId) } : {}),
-  }, { ...opts, dryRun: false });
+  }, { clientOpId: newClientOpId(), ...opts, dryRun: false });
 
 // Create an EMPTY route the dispatcher can then build onto (§R). The server checks the load
 // number is genuinely free (routePlan/update is create-OR-UPDATE — an existing number would

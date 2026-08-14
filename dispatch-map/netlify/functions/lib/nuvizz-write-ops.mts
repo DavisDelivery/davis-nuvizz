@@ -646,6 +646,55 @@ export function stopInstanceMismatch(op: string, stopNbr: any, expectedStopId: a
   return `${op}: TWO NuVizz orders appear to carry number ${stopNbr} — NuVizz answered with a different record (${who || 'unknown consignee'}; id …${got.slice(-6)}), not the one on your board (id …${want.slice(-6)}). Nothing was written. Cancel or renumber the duplicate in the portal, then refresh this stop.`;
 }
 
+/**
+ * The SAME lesson, aimed at the READ-BACK (§ ESTES-2938079387, Aug 14).
+ *
+ * v0.54.36 armed the PRE-read: a by-number read answering with a different record than the
+ * one on the dispatcher's screen refuses before anything is written. Nothing armed the
+ * post-write verify, and it uses the same by-number read — so when NuVizz answered the
+ * read-back with the OTHER record sharing the number, the echo diff faithfully compared two
+ * DIFFERENT ORDERS and reported the result as "partialUpdate changed 15 other field(s)":
+ * Khalid Mutakabbir's date change appeared to have re-addressed his order to Davis's own
+ * terminal (943 Gainesville Highway), state "GA" became "GEORGIA", the shipper renamed
+ * itself. Every one of those was the twin's data. A wrong diagnosis that alarming sends a
+ * dispatcher to the portal hunting for a rewrite that never happened — and buries the real
+ * finding, which is that TWO live orders carry the number.
+ *
+ * So: when the read-back's stopId is id-shaped and differs from the id we WROTE, the drift
+ * diff must not run at all. The write itself targeted the right record (partialUpdate goes by
+ * stopId); what failed is VERIFICATION, and the honest report is exactly that.
+ */
+export function readBackInstanceMismatch(op: string, stopNbr: any, writtenStopId: any, rawAfter: any): string | null {
+  const want = String(writtenStopId ?? '').trim();
+  const got = String(rawAfter?.stopId ?? '').trim();
+  if (!idShaped(want) || !idShaped(got) || want === got) return null;
+  const addr = rawAfter?.to?.address || {};
+  const who = [addr.name, addr.addr1, addr.city].map((v: any) => String(v ?? '').trim()).filter(Boolean).join(', ');
+  return `${op}: the update was written to the record on your screen (id …${want.slice(-6)}), but reading ${stopNbr} back, NuVizz answered with a DIFFERENT record that shares the number (${who || 'unknown consignee'}; id …${got.slice(-6)}). TWO orders carry this number, so the change could not be verified — and any field differences would be between two records, not changes to your order. Find BOTH entries for ${stopNbr} in the portal, confirm your order took the change, then cancel or renumber the duplicate.`;
+}
+
+/**
+ * Drift paths ordered by what a dispatcher must see first. driftDetail caps at five lines, so
+ * with 15 drifted fields the cap decided what the banner showed — and the order they happened
+ * to be discovered in is not the order of consequence. Address drift means freight can ship to
+ * the wrong building; it never belongs behind the cap.
+ */
+export function orderDriftPaths(paths: string[]): string[] {
+  const weight = (p: string) => (
+    /^(to|from)\.address\./.test(p) ? 0
+      : /^(to|from)\.contact\./.test(p) ? 1
+        : /^(to|from)\.schedule\./.test(p) ? 2
+          : 3);
+  return [...paths].sort((a, b) => weight(a) - weight(b));
+}
+
+/** The one-line escalation when a SAME-record drift touched an address field. */
+export function addressDriftWarning(paths: string[]): string {
+  return (paths || []).some((p) => /^(to|from)\.address\./.test(String(p)))
+    ? ' THE ADDRESS ON THE ORDER MOVED — verify where this order is consigned before it ships.'
+    : '';
+}
+
 // ── DELIVERY DATE (§D) — moving an order to the day the customer actually wants ──
 //
 // The v7 Stop schema has NO "requested date" field: `to.schedule.timeFrom/timeTo` IS the

@@ -258,3 +258,27 @@ test('runSetStopContact: a rejected write says so and never claims a save', asyn
   assert.equal(r.ok, false);
   assert.match(r.error, /rejected the contact/);
 });
+
+// ── the read-back twin (ESTES-2938079387, Aug 14) — same rule as setStopDate ──
+// The pre-read guard (v0.54.36) checks the record BEFORE writing; nothing checked the
+// record the VERIFY read answered with. A twin there made the echo diff compare two
+// different orders and report the differences as damage this write had done.
+
+test('setStopContact: a twin answering the read-back is a twin verdict, never a drift list', async () => {
+  const mine = rawStop();
+  const state = { stop: mine };
+  const twin = {
+    ...rawStop(),
+    stopId: '7b8c99aa11223344556677ff',
+    to: { ...rawStop().to, address: { name: 'DAVIS DELIVERY', addr1: '943 GAINESVILLE HIGHWAY', city: 'BUFORD', state: 'GEORGIA', zip: '30518' } },
+  };
+  const { requester } = makeRequester({ state, onWrite: () => { state.stop = twin; } });
+  const r = await runSetStopContact(requester, { stopNbr: mine.stopNbr, phone: '6788608099', stopId: mine.stopId }, CREDS);
+  assert.equal(r.ok, false);
+  assert.equal(r.wrongInstanceReadback, true);
+  assert.equal(r.unverified, true);
+  assert.equal(r.drift, undefined, 'no cross-record diff presented as changes');
+  assert.match(r.error, /DIFFERENT record/i);
+  assert.match(r.error, /TWO orders carry this number/i);
+  assert.ok(!/partialUpdate changed/.test(r.error));
+});

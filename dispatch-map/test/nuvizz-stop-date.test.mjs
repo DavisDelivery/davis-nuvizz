@@ -420,3 +420,93 @@ test('runSetStopDate: a MATCHING id proceeds, and the result names the verified 
   assert.equal(r.ok, true, JSON.stringify(r));
   assert.equal(r.stopId, '6a63c5844524f7f7b8ab5410', 'the client repaint guard needs the verified id');
 });
+
+// ── the read-back twin (ESTES-2938079387, Aug 14) ────────────────────────────
+//
+// Brandi moved a date on Khalid Mutakabbir's Estes order. Pre-read: his record (the screen's
+// stopId — the v0.54.36 guard passed). Write: his stopId, his address, the new window. But
+// the READ-BACK is the same by-number lookup, and NuVizz answered it with the OTHER record
+// sharing the number — consigned to Davis's own terminal. The echo diff then compared two
+// DIFFERENT ORDERS and the banner claimed the write had re-addressed the order to
+// "943 GAINESVILLE HIGHWAY", turned "GA" into "GEORGIA", and renamed the shipper. Every one
+// of those "changes" was the twin's data. These tests pin the honest verdict.
+
+import { readBackInstanceMismatch, orderDriftPaths, addressDriftWarning } from '../netlify/functions/lib/nuvizz-write-ops.mts';
+
+// The twin: same stop number, different record — the Estes linehaul entry consigned to the
+// Davis terminal, formatted by a different system ("GEORGIA", "DAVIS DELIVERY").
+const TWIN = {
+  stopId: '7b8c99aa11223344556677ff', stopNbr: 'ESTES-2938079387', stopType: 'DO',
+  weight: 2477, totalPallets: 4, totalCartons: 4,
+  to: {
+    address: { name: 'DAVIS DELIVERY', addr1: '943 GAINESVILLE HIGHWAY', city: 'BUFORD', state: 'GEORGIA', zip: '30518' },
+    schedule: { timeFrom: '2026-08-17T12:00:00', timeTo: '2026-08-17T17:00:00', timeZone: 'America/New_York' },
+  },
+  from: { address: { name: 'DAVIS DELIVERY', addr1: '943 GAINESVILLE HWY', city: 'BUFORD' } },
+};
+
+test('THE INCIDENT: a twin answering the read-back is reported as a twin, not as 15 changed fields', async () => {
+  const khalid = rawStop({
+    stopNbr: 'ESTES-2938079387',
+    to: {
+      address: { name: 'KHALID MUTAKABBIR', addr1: '670 HUNTERS CT', city: 'LAWRENCEVILLE', state: 'GA', zip: '30043' },
+      schedule: { timeFrom: '2026-08-12T12:00:00', timeTo: '2026-08-12T17:00:00', timeZone: 'America/New_York' },
+    },
+  });
+  const state = { stop: khalid };
+  const { requester } = makeRequester({
+    state,
+    // The write succeeds against Khalid's record; the read-back answers with the TWIN.
+    onWrite: () => { state.stop = TWIN; },
+  });
+  const r = await runSetStopDate(requester, { stopNbr: 'ESTES-2938079387', date: '2026-08-17', stopId: khalid.stopId }, CREDS);
+  assert.equal(r.ok, false);
+  assert.equal(r.wrongInstanceReadback, true, 'the verdict is identity, not drift');
+  assert.equal(r.unverified, true);
+  assert.equal(r.drift, undefined, 'no cross-record field list is presented as changes');
+  assert.equal(r.dateLanded, undefined, 'the twin\'s window must not be read as "the date moved"');
+  assert.match(r.error, /DIFFERENT record/i);
+  assert.match(r.error, /TWO orders carry this number/i);
+  assert.match(r.error, /943 GAINESVILLE HIGHWAY/, 'names the twin\'s consignee so the portal hunt is short');
+  assert.match(r.error, new RegExp(khalid.stopId.slice(-6)), 'names the id we wrote');
+  assert.match(r.error, new RegExp(TWIN.stopId.slice(-6)), 'and the id that answered');
+  assert.ok(!/partialUpdate changed/.test(r.error), 'the old terrifying wording is gone for this case');
+});
+
+test('the SAME record with a genuinely rewritten address still fails loudly — and says ADDRESS first', async () => {
+  const state = { stop: rawStop() };
+  const { requester } = makeRequester({
+    state,
+    // Same stopId, but NuVizz "re-addressed" the order during the write — the other world
+    // the screenshot could have meant. This must stay a red banner, sharper than before.
+    onWrite: (sent) => {
+      state.stop = {
+        ...state.stop,
+        to: { ...state.stop.to, schedule: sent.to.schedule, address: { ...state.stop.to.address, addr1: '943 GAINESVILLE HIGHWAY', zip: '30518' } },
+      };
+    },
+  });
+  const r = await runSetStopDate(requester, { stopNbr: '007150559', date: '2026-07-30', stopId: '6a63c5844524f7f7b8ab5410' }, CREDS);
+  assert.equal(r.ok, false);
+  assert.equal(r.wrongInstanceReadback, undefined, 'same record — this genuinely IS drift');
+  assert.match(r.error, /THE ADDRESS ON THE ORDER MOVED/, 'address drift is called out in words');
+  assert.match(r.error, /to\.address\.addr1/, 'and the address field is in the visible details, not behind the cap');
+  assert.equal(r.dateLanded, true, 'the date claim is trustworthy here because the record is ours');
+});
+
+test('orderDriftPaths puts address ahead of everything; addressDriftWarning fires only on address paths', () => {
+  const ordered = orderDriftPaths(['sealNbr', 'to.schedule.timeZone', 'to.contact.phone', 'weight', 'to.address.addr1']);
+  assert.equal(ordered[0], 'to.address.addr1');
+  assert.equal(ordered[1], 'to.contact.phone');
+  assert.deepEqual(orderDriftPaths([]), []);
+  assert.match(addressDriftWarning(['to.address.zip']), /ADDRESS ON THE ORDER MOVED/);
+  assert.equal(addressDriftWarning(['sealNbr', 'to.contact.phone']), '');
+  assert.equal(addressDriftWarning([]), '');
+});
+
+test('readBackInstanceMismatch: unarmed without two id-shaped ids; silent when they agree', () => {
+  assert.equal(readBackInstanceMismatch('setStopDate', 'X', '6a63c5844524f7f7b8ab5410', { stopId: '6a63c5844524f7f7b8ab5410' }), null);
+  assert.equal(readBackInstanceMismatch('setStopDate', 'X', null, TWIN), null, 'no written id → cannot judge');
+  assert.equal(readBackInstanceMismatch('setStopDate', 'X', '6a63c5844524f7f7b8ab5410', { stopId: null }), null, 'no read-back id → cannot judge');
+  assert.match(readBackInstanceMismatch('setStopDate', 'X', '6a63c5844524f7f7b8ab5410', TWIN) || '', /DIFFERENT record/);
+});
