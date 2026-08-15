@@ -69,6 +69,27 @@ export function manifestHeadline(result) {
   return `All ${orders} manifest order${orders === 1 ? '' : 's'} found in the scan`;
 }
 
+/** Human labels for the mailboxes the automatic check can read from. */
+const MAILBOX_LABELS = { gmail: 'Gmail', resend: 'the warehouse inbox' };
+
+/**
+ * Where this run came from. A dispatcher reads an automatic run and a
+ * hand-dropped one differently — an automatic one can be hours old and may have
+ * checked a board the morning scan had not filled yet, while a dropped one is as
+ * fresh as the click — so the tab says which, and from which mailbox.
+ * Returns null when there is nothing worth saying.
+ */
+export function manifestProvenance(result) {
+  if (!result || result.ok === false) return null;
+  if (result.source !== 'email') return result.fileName ? `Dropped by hand · ${result.fileName}` : null;
+  const box = MAILBOX_LABELS[result.mailbox] || null;
+  return [
+    box ? `Checked automatically from ${box}` : 'Checked automatically from email',
+    String(result.from || '').trim() || null,
+    result.fileName || null,
+  ].filter(Boolean).join(' · ');
+}
+
 /** Persisted shape — small enough for localStorage even at 660 orders. */
 export function toStored(result, fileName) {
   if (!result || result.ok === false) return null;
