@@ -6,7 +6,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  manifestIssues, manifestHeadline, toStored, loadStored, saveStored, MANIFEST_CHECK_KEY,
+  manifestIssues, manifestHeadline, manifestProvenance, toStored, loadStored, saveStored, MANIFEST_CHECK_KEY,
 } from '../src/lib/manifest-check-view.js';
 
 const clean = { ok: true, manifest: { orders: 660, verified: true }, onBoard: 660, boardOnly: 12, suspects: [], duplicatePros: [] };
@@ -97,4 +97,19 @@ test('clearing removes the stored run', () => {
   saveStored(null, s);
   assert.equal(loadStored(s), null);
   assert.equal(s.getItem(MANIFEST_CHECK_KEY), null);
+});
+
+test('the tab says which mailbox an automatic run came from', () => {
+  const emailRun = { ...clean, source: 'email', mailbox: 'gmail', from: 'freight@uline.com', fileName: 'freight.pdf' };
+  assert.equal(manifestProvenance(emailRun), 'Checked automatically from Gmail · freight@uline.com · freight.pdf');
+  assert.match(manifestProvenance({ ...emailRun, mailbox: 'resend' }), /^Checked automatically from the warehouse inbox/);
+  // An older stored run predates the mailbox field — still readable, no "undefined".
+  assert.match(manifestProvenance({ ...emailRun, mailbox: undefined }), /^Checked automatically from email/);
+});
+
+test('a hand-dropped run says so, and a run with nothing to say says nothing', () => {
+  assert.equal(manifestProvenance({ ...clean, fileName: 'DA_210878183.pdf' }), 'Dropped by hand · DA_210878183.pdf');
+  assert.equal(manifestProvenance({ ...clean }), null);
+  assert.equal(manifestProvenance(null), null);
+  assert.equal(manifestProvenance({ ok: false, error: 'boom' }), null);
 });
