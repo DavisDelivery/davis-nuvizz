@@ -14,6 +14,12 @@
 // smaller blast radius, and it works on a plain @gmail.com account too. Scope
 // gmail.readonly is enough: we never send, label, or delete.
 //
+// THE ONE CONFIGURATION THAT SILENTLY ROTS: an External consent screen left in
+// "Testing" issues refresh tokens that expire after SEVEN DAYS. The check would
+// run for a week and then stop with invalid_grant — the exact failure mode this
+// whole feature exists to prevent, one level up. Use User type Internal (a
+// Workspace mailbox) or publish the app to production. See .env.example.
+//
 // COST: zero NuVizz calls, by construction — nothing here can reach NuVizz. The
 // Gmail API itself is free within a quota this uses a rounding error of (one list
 // + one get per unseen message + one download per PDF, every 30 minutes).
