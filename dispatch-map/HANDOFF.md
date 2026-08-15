@@ -15,6 +15,72 @@
   floor (highWaterUnplanned − 200) never revisits them → silently missed. The deep sweep
   must descend the full multi-day creation window WITHOUT early-stopping to catch them.
 
+## Connect Gmail from the tab (v0.54.75)
+
+Chad: *"I want the gmail auth added to the manifest tabs so it can parse my
+emails looking for manifest to check against data we have in firestore to make
+sure nothing is missing."*
+
+**This builds on v0.54.74 (#659), it does not replace it.** That release taught
+the nightly check to read Gmail as a `MailSource`; the credential it runs on came
+from `GMAIL_REFRESH_TOKEN`, minted by hand in the OAuth playground and pasted
+into Netlify. This adds the consent round-trip itself, so connecting — and, more
+importantly, RECONNECTING — is a button on the Manifest check tab.
+
+Why that matters beyond convenience: an External consent screen still in
+"Testing" issues refresh tokens that expire after **seven days** (v0.54.74's own
+`.env.example` flags this). A hand-minted token cannot be renewed from the app,
+so the check would stop and nothing would say so — the exact silent rot the
+feature exists to catch, one level up. The tab now shows the last poll, and a
+lapsed grant turns into "reconnect the mailbox" instead of a quiet nothing.
+
+### Setup
+1. Google Cloud Console → enable **Gmail API**; OAuth consent screen → add the
+   mailbox as a Test user (or publish the app — see the 7-day note above).
+2. *Credentials → OAuth client ID → Web application*. Authorized redirect URI,
+   exactly: `https://<this-site>.netlify.app/.netlify/functions/gmail-auth`
+3. Set `GMAIL_CLIENT_ID` and `GMAIL_CLIENT_SECRET` in Netlify (the same two
+   v0.54.74 already documents). **Leave `GMAIL_REFRESH_TOKEN` unset** — env wins
+   over anything connected from the tab, deliberately, and the card says so when
+   it is set.
+4. Manifest check → **Connect Gmail**.
+
+| optional var | what it does |
+| --- | --- |
+| `GMAIL_ALLOWED_ACCOUNTS` | comma-separated addresses allowed to connect. Unset ⇒ trust-on-first-use: the first mailbox connected is pinned and no other may replace it. |
+| `GMAIL_TOKEN_KEY` | passphrase the refresh token is sealed with. Unset ⇒ derived from `FIREBASE_SA`'s private key. **Rotating either invalidates the stored grant** — just reconnect. |
+| `GMAIL_ADMIN_SECRET` | when set, connect/disconnect/save-search require `?key=<it>`; the tab prompts once per session. |
+| `GMAIL_OAUTH_REDIRECT_URI` | override the redirect URI (custom domain). Must match the Console exactly. |
+
+### Why it is built this way
+- **The mailbox is pinned.** This site has no login, so the start URL is
+  reachable by anyone who finds it. Without the callback refusing an unknown
+  account, a stranger finishing the flow would replace Chad's grant with their
+  own mailbox. See `accountAllowed` in `lib/gmail.mts`.
+- **The refresh token is sealed** (AES-256-GCM, server-only key) before it
+  touches Firestore, which an unauthenticated browser reads.
+  `nuvizz_secrets/gmail` holds ciphertext; `nuvizz_ops/gmail_status` holds the
+  secret-free half the tab reads. No endpoint returns a token, sealed or not.
+- **One source of truth for which mailboxes are on.** `lib/mail-sources.mts` is
+  shared by the schedule and the tab's "Check email now" button, so the button
+  can never test a different set of inboxes than runs at night.
+
+### Files
+Added: `lib/gmail.mts` (consent URL, code exchange, profile, revoke, allow-list)
+· `lib/gmail-store.mts` (sealing, Firestore, OAuth state) · `lib/mail-sources.mts`
+(mailbox resolution + run reporting) · `gmail-auth.mts` · `manifest-email-check.mts`.
+Changed: `manifest-email-ingest-background.mts` (uses the shared resolver, records
+the run), `src/App.jsx` (the Gmail card). Tests: `test/gmail-lib.test.mjs`.
+Untouched: the v0.54.74 ingest, `lib/gmail-source.mts`, and their tests.
+
+### Known gap, worth a decision
+`nuvizz_ops/gmail_status` (including the saved search) sits in the same
+open-rules Firestore as `scan_config` and everything else, so anyone who can
+write that database can change which emails are searched. The sealed token is
+safe either way, and the self-validating parse means a tampered search cannot
+produce a wrong answer — only extra reads. If the rules are ever tightened,
+tighten them for `nuvizz_ops` and `nuvizz_secrets` together.
+
 ## Incremental-scan call reduction (Jul 2025) — Phase 1 SHADOW (v0.27.14)
 Goal: cut NuVizz calls/scan (~690 measured: 510 /load/info + 180 /stop/info) by
 probing only known-active loads + a small buffer instead of a ±300 window.

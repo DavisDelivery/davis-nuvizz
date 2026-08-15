@@ -19,7 +19,7 @@ import {
   Search, Tag, Tags, ArrowLeft, ArrowRight, Gauge, Clock, MapPinned,
   Info, Settings, LayoutList, Sparkles, MessageSquare, Square, Lasso, AlertTriangle, Ban, Send, Package, Phone,
   FileCheck, ExternalLink, Image as ImageIcon, Printer, FileText, Bug,
-  ChevronRight, GripVertical, Calculator, Menu, MoreHorizontal,
+  ChevronRight, GripVertical, Calculator, Menu, MoreHorizontal, Mail, Link2, Unlink,
 } from 'lucide-react';
 import {
   collection, doc, getDoc, getDocs, onSnapshot, setDoc, serverTimestamp,
@@ -77,7 +77,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.54.74';
+const APP_VERSION = '0.54.75';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -122,6 +122,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.54.75', 'CONNECT GMAIL WITH A BUTTON, AND SEE THAT IT IS STILL WORKING. Last release taught the nightly check to read Gmail — but the permission it runs on had to be minted by hand in Google\'s OAuth playground and pasted into Netlify as GMAIL_REFRESH_TOKEN. Chad: "I want the gmail auth added to the manifest tabs." It is: the Manifest check tab now has a Gmail card with a Connect Gmail button, and the whole consent round-trip happens in the app. THIS IS NOT COSMETIC. A Google consent screen still in "Testing" hands out permissions that DIE AFTER SEVEN DAYS. A token pasted into Netlify cannot be renewed from the app, so the check would have run for a week, stopped, and said nothing — which is precisely the silent failure this whole feature exists to catch, one level up. The card now shows when the last poll ran and what it found, and a permission Google has stopped accepting turns into a red "reconnect the mailbox" line instead of a screen that still says Connected. Reconnecting is one click, and it pre-selects the mailbox you used last time. ALSO ON THE CARD: a Check email now button, which runs one poll of the SAME mailboxes the 30-minute schedule reads (one shared list, so the button can never quietly test something different from what runs at night) and drops the result straight onto the screen; and an editable "which emails to look at" search, because what counts as a manifest email is your judgement, not a constant compiled into a function. Widening it is safe by design — a PDF is the freight report only if it PARSES as one, so a broad search costs a few one-off attachment reads and never a wrong answer. WHAT IT CAN DO TO YOUR MAILBOX: read it. The permission is gmail.readonly, so this app cannot send, label, archive or delete a single message, and Google says so on the consent screen. It still costs ZERO NuVizz calls — same free check as dropping the PDF here — and turning a suspect into "NuVizz never got this" is still behind its own human click. SECURITY, because this app has no login: the first Google account to connect is locked in and no second account can replace it without disconnecting first (GMAIL_ALLOWED_ACCOUNTS names it outright), and the permission itself is sealed with AES-256-GCM under a server-only key before it is stored, so it is unreadable to anything but this server. Disconnect revokes it at Google. If GMAIL_REFRESH_TOKEN is still set in Netlify it keeps winning — the card tells you so rather than offering a button that would be ignored.'],
   ['0.54.74', 'THE NIGHTLY MANIFEST CHECK CAN NOW READ GMAIL. Chad, after we traced a Uline order that reached us on paper and never reached the board: "this is what we need to be flagging, so let\'s write google mail into the app so we can parse for these manifests and look for any missing orders every night." The automatic check already existed (v0.54.55) but could only read the Resend receiving inbox, which needs an MX record and a forwarding rule — so in practice the report sat in a Google mailbox and the job had nothing to poll. It can now read Gmail directly: list the recent PDFs, pull the attachment, run the SAME zero-call board diff, and light the red flag on every dispatcher\'s screen before anyone is in the office. WHAT PROMPTED IT, concretely: the 8/13 manifest carried two Anduril orders, PRO 007161743 (373 lbs) and 007162319 (860 lbs). The first is on the board and was delivered 8/14. The second is in no stop document, no customer rollup, and no undelivered report — the only independent record that it existed at all was the shipper\'s own PDF. That is the entire case for parsing this thing nightly: every other integrity check in this app starts FROM NuVizz, so an order NuVizz never received is invisible to all of them. BOTH MAILBOXES, INDEPENDENTLY. Resend and Gmail are now two adapters behind one pipeline, each with its own markers, its own per-cycle cap, and its own error line — an expired Google token cannot stop the other inbox from being read, and a noisy inbox cannot starve the one the report lands in. It still refuses to guess: the Gmail query is a cheap prefilter and NOT a sender or subject match, because the real test is whether the PDF parses as the freight report. It still never probes NuVizz — turning a suspect into "NuVizz never got this" stays behind the human button, so the automatic path can never spend vendor calls. The tab now also says where a run came from, since an automatic run hours old and a PDF you dropped a second ago deserve different trust. SETUP: three env vars (GMAIL_CLIENT_ID / GMAIL_CLIENT_SECRET / GMAIL_REFRESH_TOKEN, read-only scope, minted once as the mailbox that gets the report — steps are in .env.example); until they are set the Gmail half no-ops silently. 22 new tests, including the MIME tree three levels deep whose attachment a one-level read would have missed.'],
   ['0.54.73', 'THE TWIN BANNER NOW CLAIMS ONLY WHAT IT CAN PROVE. An independent review of the v0.54.72 fix confirmed it sound and found one wording hazard worth closing immediately: when a stop row carries NO pinned record id, the app cannot actually know that the record it wrote is the one on your screen \u2014 and in the flipped case (the pre-write read answers the twin, the read-back answers your record) the old confident wording would have told you your change landed on your order when it landed on the twin. The banner now hedges exactly when it should: with a pinned id it still says "the record on your screen"; without one it says "the record NuVizz answered our pre-write read with \u2014 which may or may not be the one on your screen \u2014 confirm which record took the change." Also from the review: a read-back that returns a record with NO identity at all is now reported as "could not verify" instead of being diffed (diffing an unnamed record is the same two-different-things trap), and the address alarm now reads "AN ADDRESS ON THE ORDER MOVED" since it covers the pickup side too. Four new tests pin all of it, including one that drives fifteen changed fields through the real write path and proves the address line can never hide behind the five-line cap again.'],
   ['0.54.72', 'THE SCARY "15 FIELDS CHANGED" DATE ERROR — WHAT IT ACTUALLY WAS, AND WHAT IT SAYS NOW. Brandi moved ESTES-2938079387 (Khalid Mutakabbir) to 8/17 and the app reported the write had also re-addressed the order to 943 GAINESVILLE HIGHWAY — our own terminal — turned GA into GEORGIA, and renamed the shipper. Here is the mechanism: every write is verified by reading the order back BY ITS NUMBER, and NuVizz can hold TWO orders under one number (the Estes lesson from v0.54.36 — Jessica\'s date change that "completely changed the address"). v0.54.36 armed the read BEFORE the write: if NuVizz answers with the wrong record, the app refuses to write. Nothing armed the read AFTER the write. So when the verify read comes back with the OTHER record sharing the number, the app compared YOUR order against THAT one and reported every difference between two different orders as damage the write had done. The fields in that banner — our terminal\'s address, the spelled-out state, the reformatted shipper name — are the signature of a second record entered by a different system, not of your order being rewritten. NOW FIXED ON ALL THREE WRITE PATHS (date, note, customer number): the verify read checks WHICH record answered before concluding anything. A twin answering now says exactly that — "TWO orders carry this number, the change could not be verified, find both in the portal" — naming both record ids and the twin\'s consignee, instead of a terrifying field list. AND IF THE ADDRESS EVER REALLY MOVES on the SAME record, that banner is sharper too: address changes jump to the front of the list ahead of the five-line cap, the message says THE ADDRESS ON THE ORDER MOVED in words, and a "(+N more)" count accounts for what the cap hid — the old banner said "15 fields" and showed five with no explanation. ON RECORD FROM NOW ON: these three writes previously left NO server-side trace — twice now the only evidence of an incident was a photo of the screen. Every note, date and customer-number write now lands in the write ledger with its full result, so the next oddity is diagnosable from the log alone. WHAT YOU SHOULD STILL DO ONCE: look up ESTES-2938079387 in the NuVizz portal. If it shows TWO entries, your order is fine — cancel or renumber the duplicate. If it shows ONE entry consigned to 943 Gainesville Highway, the write genuinely re-addressed it and the address must be corrected there before it ships on 8/17.'],
@@ -19757,7 +19758,14 @@ function PresenceChip({ presence, compact = false }) {
 }
 
 function Shell() {
-  const [tab, setTab] = useState('map');
+  // Google sends the browser back to "/" after the Gmail consent screen, with
+  // the outcome in the query string (see gmail-auth.mts). Land on the Manifest
+  // check tab so the answer is on the screen that asked the question — returning
+  // to the map would make a successful connect look like it did nothing at all.
+  const [tab, setTab] = useState(() => {
+    try { return new URLSearchParams(window.location.search).has('gmail') ? 'manifest' : 'map'; }
+    catch { return 'map'; }
+  });
   // Shared "Debug this view" capture: the active screen registers its bundle
   // builder here; the chip menu / nav entry opens the sheet, which posts it.
   const debugCaptureRef = useRef(null);
@@ -21575,6 +21583,280 @@ function MoreMenu({ items, activeId, onPick, badge = 0 }) {
   );
 }
 
+// ── Gmail, on the Manifest check tab ─────────────────────────────────────────
+// Chad: "I want the gmail auth added to the manifest tabs so it can parse my
+// emails looking for manifest to check against data we have in firestore to make
+// sure nothing is missing."
+//
+// The freight report arrives in a MAILBOX, not on this screen. Connect the
+// mailbox once and the server runs the SAME free board diff the drop zone runs,
+// every half hour, on its own — the nav badge lights and nobody has to remember
+// to come here with a PDF.
+//
+// What this card is careful about, because none of it is visible when it works:
+//   • READ-ONLY. The grant is gmail.readonly. Nothing in this app can send,
+//     label, archive or delete mail, and the card says so where you connect.
+//   • ZERO NuVizz calls. Same free Firestore diff as the drop zone. The probe
+//     step is not reachable from any automatic path.
+//   • The mailbox search is EDITABLE, because "what counts as a manifest email"
+//     is Chad's judgement, not a constant compiled into a function.
+const GMAIL_KEY_SS = 'dd_gmail_admin_key';
+
+function agoText(iso) {
+  const t = Date.parse(String(iso || ''));
+  if (!Number.isFinite(t)) return '';
+  const s = Math.max(0, Math.round((Date.now() - t) / 1000));
+  if (s < 90) return 'just now';
+  const m = Math.round(s / 60);
+  if (m < 60) return `${m} min ago`;
+  const h = Math.round(m / 60);
+  if (h < 36) return `${h}h ago`;
+  return `${Math.round(h / 24)}d ago`;
+}
+
+function GmailCard({ onStoredRun }) {
+  const [status, setStatus] = useState(null);
+  const [busy, setBusy] = useState('load');    // 'load' | 'check' | 'save' | 'disconnect' | null
+  const [err, setErr] = useState(null);
+  const [note, setNote] = useState(null);      // one-line result of the last action
+  const [query, setQuery] = useState('');
+  const [openSearch, setOpenSearch] = useState(false);
+
+  const adminKey = () => { try { return sessionStorage.getItem(GMAIL_KEY_SS) || ''; } catch { return ''; } };
+  const withKey = (u) => {
+    const k = adminKey();
+    return k ? `${u}${u.includes('?') ? '&' : '?'}key=${encodeURIComponent(k)}` : u;
+  };
+
+  const load = useCallback(async () => {
+    try {
+      const r = await fetch('/.netlify/functions/gmail-auth?action=status');
+      const d = await r.json();
+      setStatus(d);
+      setQuery(d?.query || d?.defaultQuery || '');
+      return d;
+    } catch (e) { setErr(String(e?.message || e)); return null; }
+  }, []);
+
+  useEffect(() => { load().finally(() => setBusy(null)); }, [load]);
+
+  // Coming back from Google's consent screen: gmail-auth redirects here with the
+  // outcome in the query string. Report it, then STRIP it — a reload that
+  // re-shows "connected" (or worse, an old error) would be a lie about what
+  // just happened.
+  useEffect(() => {
+    let params;
+    try { params = new URLSearchParams(window.location.search); } catch { return; }
+    const outcome = params.get('gmail');
+    if (!outcome) return;
+    if (outcome === 'connected') setNote(`Connected ${params.get('account') || ''}`.trim());
+    else setErr(params.get('reason') || 'the Gmail connection did not complete');
+    try {
+      params.delete('gmail'); params.delete('account'); params.delete('reason');
+      const q = params.toString();
+      window.history.replaceState({}, '', `${window.location.pathname}${q ? `?${q}` : ''}`);
+    } catch { /* URL cleanup is cosmetic */ }
+  }, []);
+
+  const connect = () => {
+    if (status?.needsKey && !adminKey()) {
+      const k = window.prompt('This site is locked with a Gmail admin key (GMAIL_ADMIN_SECRET). Paste it to connect a mailbox:');
+      if (!k) return;
+      try { sessionStorage.setItem(GMAIL_KEY_SS, k.trim()); } catch { /* prompt again next time */ }
+    }
+    window.location.href = withKey('/.netlify/functions/gmail-auth?action=start');
+  };
+
+  const checkNow = async () => {
+    setBusy('check'); setErr(null); setNote(null);
+    try {
+      // The SAME endpoint set the schedule polls (lib/mail-sources.mts), so this
+      // button can never quietly test a different mailbox than runs at night.
+      const r = await fetch('/.netlify/functions/manifest-email-check', { method: 'POST' });
+      const d = await r.json();
+      if (d?.ok === false) setErr(d.error || 'the check failed');
+      else if (d?.stored) {
+        // Adopt the run straight away. The Firestore subscription in Shell would
+        // do this too, but only in a browser where the client config is present —
+        // and "1 report checked" printed over yesterday's results is worse than
+        // no button at all.
+        onStoredRun?.(d.stored);
+        setNote(`Read “${d.stored.subject || d.stored.fileName || 'the report'}” — the results below are from that email.`);
+      } else setNote(d?.summary || d?.skipped || 'Nothing new.');
+      await load();
+    } catch (e) { setErr(String(e?.message || e)); }
+    setBusy(null);
+  };
+
+  const saveQuery = async () => {
+    setBusy('save'); setErr(null); setNote(null);
+    try {
+      const r = await fetch(withKey('/.netlify/functions/gmail-auth?action=query'), {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query }),
+      });
+      const d = await r.json();
+      if (!d?.ok) setErr(d?.error || 'could not save the search');
+      else { setNote('Search saved.'); await load(); }
+    } catch (e) { setErr(String(e?.message || e)); }
+    setBusy(null);
+  };
+
+  const disconnect = async () => {
+    if (!window.confirm(`Disconnect ${status?.email || 'this mailbox'}? The permission is revoked at Google and the automatic check stops until you connect again.`)) return;
+    setBusy('disconnect'); setErr(null); setNote(null);
+    try {
+      const r = await fetch(withKey('/.netlify/functions/gmail-auth?action=disconnect'), { method: 'POST' });
+      const d = await r.json();
+      if (!d?.ok) setErr(d?.error || 'could not disconnect');
+      else { setNote('Disconnected.'); await load(); }
+    } catch (e) { setErr(String(e?.message || e)); }
+    setBusy(null);
+  };
+
+  const btn = 'px-2 py-1 text-xs font-semibold rounded border disabled:opacity-50';
+  // `connected` = a grant obtained through THIS card. `envPinned` = a refresh
+  // token set in Netlify env, which every poll prefers — so the card reports it
+  // rather than offering a Connect button whose result would be ignored.
+  const connected = !!status?.connected;
+  const envPinned = !!status?.envPinned;
+  const active = connected || envPinned;
+
+  return (
+    <div className="bg-white border rounded-lg">
+      <div className="px-3 py-2 flex items-center gap-2 flex-wrap">
+        <Mail size={15} className={active ? 'text-emerald-600' : 'text-slate-400'} />
+        <div className="text-sm font-bold text-slate-800">Gmail</div>
+        {active && (
+          <span className="text-[11px] px-1.5 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 font-semibold truncate max-w-[220px]">
+            {connected ? status.email : 'set in Netlify env'}
+          </span>
+        )}
+        <div className="flex-1" />
+        {busy === 'load' ? (
+          <span className="text-[11px] text-slate-400">checking…</span>
+        ) : !status ? (
+          // The status call itself failed. Offering Connect here would send you
+          // to Google on the strength of a server we could not reach.
+          <button onClick={() => { setBusy('load'); load().finally(() => setBusy(null)); }} className={`${btn} border-slate-300 text-slate-600 hover:bg-slate-50`}>Retry</button>
+        ) : !status.configured ? (
+          <span className="text-[11px] text-slate-400">not set up on this site</span>
+        ) : active ? (
+          <>
+            <button onClick={checkNow} disabled={!!busy} className={`${btn} border-slate-300 text-slate-700 hover:bg-slate-50 inline-flex items-center gap-1`}>
+              <RefreshCw size={12} className={busy === 'check' ? 'animate-spin' : ''} />
+              {busy === 'check' ? 'Checking email…' : 'Check email now'}
+            </button>
+            {connected && !envPinned && (
+              <button onClick={disconnect} disabled={!!busy} title="Revoke this app's read access and stop the automatic check"
+                className={`${btn} border-slate-200 text-slate-500 hover:bg-slate-50 inline-flex items-center gap-1`}>
+                <Unlink size={12} /> Disconnect
+              </button>
+            )}
+          </>
+        ) : (
+          <button onClick={connect} disabled={!!busy} className={`${btn} border-transparent text-white inline-flex items-center gap-1`} style={{ background: BRAND }}>
+            <Link2 size={12} /> Connect Gmail
+          </button>
+        )}
+      </div>
+
+      <div className="px-3 pb-2 text-[11px] text-slate-500 space-y-1">
+        {status && !status.configured && status.firestore !== false && (
+          <div>
+            Gmail isn’t configured on this site. Set <span className="font-mono">GMAIL_CLIENT_ID</span> and{' '}
+            <span className="font-mono">GMAIL_CLIENT_SECRET</span> in Netlify, and register this site’s{' '}
+            <span className="font-mono">/.netlify/functions/gmail-auth</span> as the OAuth redirect URI.
+          </div>
+        )}
+        {status?.firestore === false && <div className="text-amber-700">Firestore is off on this site — there is no board to check a manifest against.</div>}
+
+        {!status && busy !== 'load' && <div className="text-amber-700">Could not reach this site’s Gmail settings — the automatic check may still be running on the server.</div>}
+
+        {!active && status?.configured && (
+          <div>
+            Connect the mailbox the freight report arrives in and every report that lands there is checked
+            automatically — the same check as dropping the PDF here, run every 30 minutes.{' '}
+            <span className="font-semibold text-slate-600">Read-only access: this app can read mail and nothing else.</span>
+          </div>
+        )}
+
+        {/* A hand-minted token in Netlify env is what v0.54.74 shipped with, and every
+            poll still prefers it. Say so plainly: a Connect button here would appear to
+            work and then be ignored, which is worse than not offering one. */}
+        {envPinned && (
+          <div>
+            This mailbox is pinned by <span className="font-mono">GMAIL_REFRESH_TOKEN</span> in Netlify, which takes
+            precedence over anything connected here. Clear that variable to manage the mailbox from this tab instead —
+            worth doing, because a token minted by hand cannot be renewed from here when it lapses.
+          </div>
+        )}
+
+        {active && (
+          <>
+            <div>
+              Checked automatically every 30 minutes.{' '}
+              {status.lastRunAt
+                ? <>Last poll <span className="font-semibold text-slate-600">{agoText(status.lastRunAt)}</span>{status.lastRunSummary ? ` — ${status.lastRunSummary}` : ''}.</>
+                : 'No poll has run yet.'}
+            </div>
+            {status.needsReconnect && (
+              <div className="text-red-700 font-semibold">
+                Google is refusing this permission — reconnect the mailbox. Until then no email is being checked.
+              </div>
+            )}
+            {connected && !status.allowListSet && (
+              <div className="text-slate-400">
+                Locked to {status.email} (first mailbox connected). Set <span className="font-mono">GMAIL_ALLOWED_ACCOUNTS</span> to pin it explicitly.
+              </div>
+            )}
+          </>
+        )}
+
+        {note && <div className="text-emerald-700 font-semibold">{note}</div>}
+        {err && <div className="text-red-700 bg-red-50 border border-red-200 rounded p-1.5">{err}</div>}
+      </div>
+
+      {/* The mailbox search. WHAT counts as a manifest email is a judgement call —
+          which sender, how far back — so it is editable rather than compiled in.
+          Note the ingest does NOT trust this to identify the report: a PDF is the
+          report only if it PARSES as one, so a search that is too wide costs a
+          few extra attachment reads, never a wrong answer.
+          Shown only for a mailbox connected HERE: an env-pinned one takes its search from
+          GMAIL_QUERY, and an input that silently did nothing would be worse than none. */}
+      {connected && !envPinned && (
+        <div className="border-t px-3 py-2">
+          <button onClick={() => setOpenSearch((v) => !v)} className="text-[11px] font-semibold text-slate-500 hover:text-slate-700 inline-flex items-center gap-1">
+            <ChevronDown size={12} className={openSearch ? 'rotate-180 transition-transform' : 'transition-transform'} />
+            Which emails to look at
+          </button>
+          {openSearch && (
+            <div className="mt-1.5 space-y-1">
+              <div className="flex items-center gap-2">
+                <input
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  spellCheck={false}
+                  className="flex-1 min-w-0 border rounded px-2 py-1 text-xs font-mono"
+                  placeholder={status.defaultQuery}
+                />
+                <button onClick={saveQuery} disabled={!!busy || !query.trim()} className={`${btn} border-slate-300 text-slate-700 hover:bg-slate-50`}>
+                  {busy === 'save' ? 'Saving…' : 'Save'}
+                </button>
+              </div>
+              <div className="text-[10px] text-slate-400">
+                A normal Gmail search. Default <span className="font-mono">{status.defaultQuery}</span>. Every PDF in a matching
+                email is opened once and judged on its contents, so a wide search is safe — only a PDF that actually parses as
+                the freight report is used, and a PDF that doesn’t is never opened again.
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Manifest check ───────────────────────────────────────────────────────────
 // Drop the nightly Uline freight report; every PRO on it is checked against what
 // the scan actually put in Firestore. ZERO NuVizz calls — the report is a
@@ -21588,6 +21870,39 @@ function ManifestCheckScreen() {
   const [result, setResult] = useState(() => loadStored());
   const [fileName, setFileName] = useState(() => loadStored()?.fileName || null);
   const [drag, setDrag] = useState(false);
+
+  // ADOPT A RUN THAT ARRIVED WHILE THIS SCREEN WAS OPEN. The automatic checks
+  // (the Gmail poll, the Resend poll) write one Firestore doc; Shell mirrors it
+  // into the same localStorage slot the drop zone uses and fires this event.
+  // Without this the one screen you are actually LOOKING AT is the last to know:
+  // the nav badge would update while the results under it stayed yesterday's.
+  // Only a NEWER run is adopted, so a manual drop is never overwritten by an
+  // older stored one.
+  useEffect(() => {
+    const sync = () => {
+      const stored = loadStored();
+      if (!stored?.at) return;
+      setResult((cur) => (cur?.at && String(cur.at) >= String(stored.at) ? cur : stored));
+      setFileName((cur) => stored.fileName || cur);
+    };
+    window.addEventListener('dd-manifest-check-updated', sync);
+    window.addEventListener('storage', sync);
+    return () => {
+      window.removeEventListener('dd-manifest-check-updated', sync);
+      window.removeEventListener('storage', sync);
+    };
+  }, []);
+
+  // A run the Gmail card just pulled in, adopted without waiting for the
+  // Firestore subscription (which needs client config this browser may not have).
+  const adoptRun = useCallback((stored) => {
+    if (!stored?.at) return;
+    saveStored(stored);
+    setResult(stored);
+    setFileName(stored.fileName || null);
+    setErr(null);
+    window.dispatchEvent(new Event('dd-manifest-check-updated'));
+  }, []);
 
   const run = async (file) => {
     if (!file || busy) return;
@@ -21624,11 +21939,14 @@ function ManifestCheckScreen() {
         <div>
           <h1 className="text-lg font-bold text-slate-800">Manifest check</h1>
           <p className="text-xs text-slate-500 mt-0.5">
-            Drop the nightly Uline freight report. Every order on it is checked against what the scan
-            put in Firestore — so an order the shipper handed us that never reached NuVizz shows up here.
-            <span className="font-semibold text-slate-600"> Zero NuVizz calls.</span>
+            Every order on the nightly Uline freight report is checked against what the scan put in
+            Firestore — so an order the shipper handed us that never reached NuVizz shows up here.
+            Connect Gmail below and the report is found and checked on its own; or drop the PDF yourself.
+            <span className="font-semibold text-slate-600"> Zero NuVizz calls, either way.</span>
           </p>
         </div>
+
+        <GmailCard onStoredRun={adoptRun} />
 
         {/* THE TARGET FILLS THE EMPTY SCREEN. Before a report is dropped this page is nothing
             but the drop zone, and the zone was a ~96px strip with ~640px of inert grey under
@@ -21637,12 +21955,15 @@ function ManifestCheckScreen() {
             preventDefault to catch it (see the guard in the effect above). So on the empty
             state the label claims the pane; once there are results to read, it shrinks back
             to a strip so it isn't in the way. (The navigate-away itself is stopped app-wide
-            by the drop guard in Shell — this is about not making you aim.) */}
+            by the drop guard in Shell — this is about not making you aim.)
+            40vh, not the original 60: the Gmail card now sits above this, and a target sized
+            for an otherwise-empty screen pushed the connect button off the first screenful —
+            which is the one thing on this page you have to see before dropping anything. */}
         <label
           onDragOver={(e) => { e.preventDefault(); setDrag(true); }}
           onDragLeave={() => setDrag(false)}
           onDrop={(e) => { e.preventDefault(); setDrag(false); run(e.dataTransfer?.files?.[0]); }}
-          className={`block border-2 border-dashed rounded-lg p-6 text-center cursor-pointer ${result ? '' : 'min-h-[60vh] flex flex-col items-center justify-center'} ${drag ? 'border-blue-400 bg-blue-50' : 'border-slate-300 bg-white hover:bg-slate-50'}`}
+          className={`block border-2 border-dashed rounded-lg p-6 text-center cursor-pointer ${result ? '' : 'min-h-[40vh] flex flex-col items-center justify-center'} ${drag ? 'border-blue-400 bg-blue-50' : 'border-slate-300 bg-white hover:bg-slate-50'}`}
         >
           <input type="file" accept=".pdf" className="hidden" onChange={(e) => run(e.target.files?.[0])} disabled={busy} />
           <FileCheck size={20} className="mx-auto text-slate-400" />
