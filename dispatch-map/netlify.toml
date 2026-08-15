@@ -28,6 +28,15 @@
     timeout = 26
   [functions."motive-driver-positions"]
     timeout = 10
+  # "Check email now" on the Manifest check tab: one poll of every configured
+  # mailbox (list + a get per unseen message + an attachment download) plus the free
+  # board diff, which reads a full day's stop index out of Firestore. Comfortably
+  # under 10s on a normal night, but a slow Firestore list on a 700-stop day would be
+  # killed at the DEFAULT with an HTML 502 the client can't parse. The ingest caps
+  # itself per mailbox, so this stays a click — the every-30-min background poll is
+  # where a real backlog gets worked off.
+  [functions."manifest-email-check"]
+    timeout = 26
   # Scanned-manifest OCR runs as manifest-ocr-BACKGROUND (vision over a multi-page fax
   # PDF takes 20-40s — over the 26s request cap that killed the synchronous version).
   # Background functions get Netlify's 15-min allowance; no timeout override needed.

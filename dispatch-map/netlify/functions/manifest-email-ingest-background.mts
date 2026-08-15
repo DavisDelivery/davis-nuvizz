@@ -25,17 +25,16 @@
 
 import { isFirestoreEnabled, getDoc, setDoc } from './lib/firestore.mts';
 import { runManifestBoardDiff } from './lib/manifest-run.mts';
-import { ingestManifestEmails, resendSource } from './lib/manifest-email-ingest.mts';
-import { gmailConfigFromEnv, gmailSource } from './lib/gmail-source.mts';
-import type { MailSource } from './lib/mail-source.mts';
+import { ingestManifestEmails } from './lib/manifest-email-ingest.mts';
+import { buildMailSources, recordGmailRun } from './lib/mail-sources.mts';
 
 export default async (): Promise<Response> => {
   if (!isFirestoreEnabled()) return Response.json({ ok: true, skipped: 'firestore off' });
 
-  const sources: MailSource[] = [];
-  if (process.env.RESEND_API_KEY) sources.push(resendSource(process.env.RESEND_API_KEY, fetch));
-  const gmailCfg = gmailConfigFromEnv();
-  if (gmailCfg) sources.push(gmailSource(gmailCfg, fetch));
+  // Which mailboxes are on is decided in ONE place, shared with the tab's
+  // "Check email now" button, so the button can never test a different set of
+  // inboxes than the schedule reads.
+  const { sources } = await buildMailSources(fetch);
 
   const out = await ingestManifestEmails({
     sources,
@@ -43,6 +42,10 @@ export default async (): Promise<Response> => {
     getDoc, setDoc,
     runDiff: (buf) => runManifestBoardDiff(buf),
   });
+  // Let the Manifest check tab see that this ran, and whether a tab-connected
+  // Gmail grant has lapsed — otherwise a dead token looks exactly like a quiet
+  // night, which is the failure this whole feature exists to prevent.
+  await recordGmailRun(out);
   if (out.processed || out.error) console.log('[manifest-email-ingest]', JSON.stringify(out));
   return Response.json(out);
 };
