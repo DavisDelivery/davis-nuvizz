@@ -207,6 +207,25 @@ test('an un-enriched list row composes city/zip without a dangling comma', () =>
   assert.equal(stopVars({ city: null, state: null, zip: null }, '2026-08-16').cityStateZip, '');
 });
 
+test('the suite line is shown, and takes its own line break with it when absent', () => {
+  // Freight goes to a dock. Printing an address we delivered to with "Ste 200" silently
+  // dropped reads to the customer as us having gone to the wrong door.
+  const withSte = renderTemplate(DEFAULT_HTML, escapeVars(stopVars({ ...LIST_STOP, addr2: 'Ste 200' }, '2026-08-16')));
+  assert.ok(withSte.includes('Ste 200'), 'addr2 must reach the rendered email');
+
+  const without = renderTemplate(DEFAULT_HTML, escapeVars(stopVars({ ...LIST_STOP, addr2: null }, '2026-08-16')));
+  assert.ok(!/<br><br>/.test(without), 'an absent suite must not leave a blank line behind');
+  assert.ok(without.includes('Buford 30518'), 'the rest of the address still renders');
+});
+
+test('the default template carries no remote image — a blocked or 404 asset cannot break it', () => {
+  // The URL this shipped with (tracking.davisdelivery.com/logo.png) is a 404, and Outlook
+  // and Gmail block remote images by default anyway, so the masthead is text.
+  assert.ok(!/<img\b/i.test(DEFAULT_HTML), 'no <img> in the default template');
+  assert.ok(!/logo\.png/i.test(DEFAULT_HTML));
+  assert.ok(DEFAULT_HTML.includes('DAVIS'), 'the wordmark still names the company');
+});
+
 test('pieces falls back to the list freight columns when the stop is not enriched', () => {
   // NuVizz mislabels these and the scan relabels them: cartons = pallets, volume = loose,
   // and the enriched `pallets` is the TOTAL. cartons+volume is that same total.

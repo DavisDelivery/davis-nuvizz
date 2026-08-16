@@ -47,7 +47,7 @@ export const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 // stopVars() that supplies them, so the editor's list and the renderer cannot drift.
 export const MERGE_FIELDS = [
   'pro', 'customer', 'driver', 'deliveredDate', 'deliveredTime', 'deliveredWhen',
-  'address', 'city', 'state', 'zip', 'cityStateZip', 'pieces', 'weight',
+  'address', 'address2', 'city', 'state', 'zip', 'cityStateZip', 'pieces', 'weight',
   'trackingUrl', 'reviewUrl', 'year',
 ];
 
@@ -408,6 +408,10 @@ export function stopVars(stop: any, date: string): Record<string, string> {
     deliveredTime: dTime,
     deliveredWhen: dTime ? `${dDate} at ${dTime}` : dDate,
     address: String(stop?.addr1 || ''),
+    // The suite/unit line. Freight goes to a dock, and "Ste 200" is often the difference
+    // between the right door and the wrong one — showing the customer an address we
+    // delivered to with the unit silently dropped reads as us having got it wrong.
+    address2: String(stop?.addr2 || ''),
     city, state, zip, cityStateZip,
     pieces,
     weight: stop?.weight != null ? String(stop.weight) : '',
@@ -678,8 +682,20 @@ export async function readSweepStatus(date: string): Promise<any | null> {
 }
 
 // ── DEFAULT TEMPLATE ─────────────────────────────────────────────────────────
-// Table-based and inline-styled: Gmail and Outlook strip <style> blocks and do not
-// render SVG, so the logo must be a hosted PNG and the layout must be tables.
+// Table-based and inline-styled: Gmail and Outlook strip <style> blocks, so every rule is
+// on the element and the layout is tables.
+//
+// NO IMAGE IN THE HEADER, and that is deliberate rather than lazy. The masthead is a styled
+// text wordmark because (a) the URL this template shipped with,
+// tracking.davisdelivery.com/logo.png, is a 404 — every send would have opened with a broken
+// image — and (b) Outlook and Gmail block remote images by default, so even a working logo is
+// blank on first view for a large share of recipients. Text always renders.
+//
+// TO USE THE REAL LOGO: host it somewhere stable (the repo's copy is
+// dispatch-map/public/davis-logo.jpg) and swap this block for an <img> from the
+// Communications tab — htmlTemplate lives in Firestore, so it needs no redeploy. Note the
+// asset is blue-on-WHITE, so give it a white header band rather than this navy one, keep it
+// under ~40 KB, and always set alt text: that alt is what the blocked-image case shows.
 //
 // NO PHONE NUMBER, deliberately. Netlify's secrets scan greps every file here for the
 // VALUES of this site's env vars, and SIMPLETEXTING_FROM is an account phone — a bare
@@ -692,8 +708,10 @@ export async function readSweepStatus(date: string): Promise<any | null> {
 export const DEFAULT_HTML = `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#EDF1F5;padding:24px 12px;">
 <tr><td align="center">
 <table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%;background:#fff;border-radius:4px;overflow:hidden;font-family:'DM Sans','Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
-  <tr><td style="background:#123A63;padding:20px 32px;">
-    <img src="https://tracking.davisdelivery.com/logo.png" width="190" alt="Davis Delivery Service" style="display:block;border:0;">
+  <tr><td style="background:#123A63;padding:22px 32px;">
+    <div style="font-size:23px;font-weight:700;letter-spacing:3px;color:#fff;line-height:1;">DAVIS</div>
+    <div style="font-size:11px;font-weight:600;letter-spacing:3.4px;color:#8FB2D4;padding-top:5px;">DELIVERY SERVICE</div>
+    <div style="font-size:11px;color:#6E90B4;padding-top:5px;font-style:italic;">Family owned since 1985</div>
   </td></tr>
   <tr><td style="background:#1B7A4B;padding:13px 32px;text-align:center;color:#fff;font-size:15px;font-weight:700;">
     &#10003;&nbsp; DELIVERED &nbsp;<span style="color:#B8E2CB;font-weight:400;">{{deliveredWhen}}</span>
@@ -712,7 +730,7 @@ export const DEFAULT_HTML = `<table role="presentation" width="100%" cellpadding
       </td></tr>
       <tr><td style="padding:18px 20px;font-size:14px;color:#16202B;">
         <div style="font-size:10px;letter-spacing:1.2px;color:#7C8B9A;text-transform:uppercase;padding-bottom:4px;">Delivered To</div>
-        <div style="font-weight:600;line-height:1.5;">{{customer}}<br><span style="font-weight:400;color:#5A6B7C;">{{address}}<br>{{cityStateZip}}</span></div>
+        <div style="font-weight:600;line-height:1.5;">{{customer}}<br><span style="font-weight:400;color:#5A6B7C;">{{address}}{{#address2}}<br>{{address2}}{{/address2}}<br>{{cityStateZip}}</span></div>
         {{#driver}}<div style="font-size:10px;letter-spacing:1.2px;color:#7C8B9A;text-transform:uppercase;padding:14px 0 4px;">Driver</div>
         <div style="font-weight:600;">{{driver}}</div>{{/driver}}
         <div style="border-top:1px dashed #C3D0DC;margin-top:14px;padding-top:12px;">
