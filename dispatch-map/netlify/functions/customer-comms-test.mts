@@ -7,7 +7,7 @@
 //   GET  ?date=YYYY-MM-DD&pro=<pro>&preview=1   → rendered HTML, sends nothing
 //   GET  ?coverage=1&date=YYYY-MM-DD            → how many delivered stops have an
 //                                                 address on file (the go/no-go number)
-//   POST ?date=&pro=&to=you@davisdelivery.com   → sends one [TEST] email
+//   POST ?date=&pro=&to=you@example.com   → sends one [TEST] email
 //
 // Works with enabled=false — that is the point, verify BEFORE switching on — and a test
 // never consumes the daily cap or blocks the real send: it sends directly and writes no
