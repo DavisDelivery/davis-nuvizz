@@ -55,7 +55,7 @@ GET  /.netlify/functions/customer-comms-log?days=7          → entries + totals
 
 GET  /.netlify/functions/customer-comms-test?preview=1&date=&pro=   renders, sends nothing
 GET  /.netlify/functions/customer-comms-test?coverage=1&date=       how many stops have an address
-POST /.netlify/functions/customer-comms-test?to=you@davisdelivery.com&pro=   one [TEST] email
+POST /.netlify/functions/customer-comms-test?to=you@example.com&pro=   one [TEST] email
 ```
 
 ## Before you turn it on

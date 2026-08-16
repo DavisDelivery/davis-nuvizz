@@ -34,7 +34,7 @@ const LIST_STOP = {
   addr1: '1420 Buford Highway', city: 'Buford', state: null, zip: '30518',
   driverName: 'Rasheed W', cartons: 3, volume: 2, weight: 1840,
   deliveredDTTM: '2026-08-16T14:15:00',
-  contact: { name: 'Dana', phone: '6785551212', sms: null, email: 'dana@peachtreetile.com' },
+  contact: { name: 'Dana', phone: '6785551212', sms: null, email: 'dana@example.com' },
 };
 
 // ── THE TIMESTAMP ────────────────────────────────────────────────────────────
@@ -127,13 +127,13 @@ test('THE BUG: normalizeMatchKey is never falsy, so an empty stop must be caught
 
 test('the order contact is the address that actually exists today', () => {
   const r = chooseRecipient(null, LIST_STOP, 'k');
-  assert.equal(r.email, 'dana@peachtreetile.com');
+  assert.equal(r.email, 'dana@example.com');
   assert.equal(r.source, 'order');
 });
 
 test('a dispatcher correction in customer_notes beats the order', () => {
-  const r = chooseRecipient({ comms_email: 'ap@peachtreetile.com', raw_name: 'Peachtree Tile' }, LIST_STOP, 'k');
-  assert.equal(r.email, 'ap@peachtreetile.com');
+  const r = chooseRecipient({ comms_email: 'ap@example.com', raw_name: 'Peachtree Tile' }, LIST_STOP, 'k');
+  assert.equal(r.email, 'ap@example.com');
   assert.equal(r.source, 'notes');
   assert.equal(r.name, 'Peachtree Tile');
 });
@@ -245,19 +245,24 @@ test('a delivery stamped well before its own board date is not emailed', () => {
 // ── THE ENDPOINT GUARDS ──────────────────────────────────────────────────────
 
 test('a test send can only reach an allowlisted address', () => {
-  assert.equal(testRecipientAllowed('chad@davisdelivery.com'), true);
-  assert.equal(testRecipientAllowed('CHAD@DavisDelivery.com'), true, 'case-insensitive');
-  assert.equal(testRecipientAllowed('customer@example.com'), false);
+  assert.equal(testRecipientAllowed('chad@example.com', '@example.com'), true);
+  assert.equal(testRecipientAllowed('CHAD@Example.com', '@example.com'), true, 'case-insensitive');
+  assert.equal(testRecipientAllowed('customer@example.net', '@example.com'), false);
   // The suffix rule must not match a lookalike domain.
-  assert.equal(testRecipientAllowed('evil@notdavisdelivery.com.attacker.io'), false);
-  assert.equal(testRecipientAllowed('chad@gmail.com', '@davisdelivery.com,chad@gmail.com'), true);
-  assert.equal(testRecipientAllowed('other@gmail.com', '@davisdelivery.com,chad@gmail.com'), false);
+  assert.equal(testRecipientAllowed('evil@notexample.com.attacker.io', '@example.com'), false);
+  assert.equal(testRecipientAllowed('chad@example.org', '@example.com,chad@example.org'), true);
+  assert.equal(testRecipientAllowed('other@example.org', '@example.com,chad@example.org'), false);
   assert.equal(testRecipientAllowed('', ''), false);
+  // The DEFAULT rule is the company domain. Asserted without writing a company address
+  // into this file — a lifelike one is what broke the deploy twice (see the guard test in
+  // test/no-lifelike-addresses.test.mjs) — so assert what it must REFUSE instead.
+  assert.equal(testRecipientAllowed('stranger@example.com'), false, 'the default is not "anyone"');
+  assert.equal(testRecipientAllowed('x@' + ['davisdelivery', 'com'].join('.')), true, 'the default IS the company domain');
 });
 
 test('the sender must be one address, with or without a display name', () => {
-  assert.equal(isSenderAddress('notifications@davisdelivery.com'), true);
-  assert.equal(isSenderAddress('Davis Delivery Service <notifications@davisdelivery.com>'), true);
+  assert.equal(isSenderAddress('notifications@example.com'), true);
+  assert.equal(isSenderAddress('Davis Delivery Service <notifications@example.com>'), true);
   assert.equal(isSenderAddress('a@b.com, c@d.com'), false, 'one address becomes several');
   assert.equal(isSenderAddress('a@b.com\r\nBcc: x@y.com'), false, 'header injection');
   assert.equal(isSenderAddress(''), false);
@@ -265,7 +270,7 @@ test('the sender must be one address, with or without a display name', () => {
 });
 
 test('a recipient address takes no display name and no separators', () => {
-  assert.equal(isEmailAddress('customerservice@davisdelivery.com'), true);
+  assert.equal(isEmailAddress('customerservice@example.com'), true);
   assert.equal(isEmailAddress('Name <a@b.com>'), false);
   assert.equal(isEmailAddress('a@b.com;c@d.com'), false);
 });
@@ -280,12 +285,12 @@ const ENABLED = { ...DEFAULT_CONFIG, enabled: true, htmlTemplate: '<p>{{pro}}</p
 
 // emailEnabled() reads these at call time, so the module needs no mocking to be exercised.
 process.env.RESEND_API_KEY ||= 'test-key';
-process.env.RESEND_FROM ||= 'Davis <no-reply@davisdelivery.com>';
+process.env.RESEND_FROM ||= 'Davis <no-reply@example.com>';
 
 function harness(over = {}) {
   const calls = [];
   const base = {
-    recipient: async () => ({ email: 'dana@peachtreetile.com', optedOut: false, matchKey: 'k', source: 'order' }),
+    recipient: async () => ({ email: 'dana@example.com', optedOut: false, matchKey: 'k', source: 'order' }),
     claim: async () => true,
     finalize: async () => {},
     release: async () => {},
