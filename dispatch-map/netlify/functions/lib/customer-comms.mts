@@ -680,6 +680,14 @@ export async function readSweepStatus(date: string): Promise<any | null> {
 // ── DEFAULT TEMPLATE ─────────────────────────────────────────────────────────
 // Table-based and inline-styled: Gmail and Outlook strip <style> blocks and do not
 // render SVG, so the logo must be a hosted PNG and the layout must be tables.
+//
+// NO PHONE NUMBER, deliberately. Netlify's secrets scan greps every file here for the
+// VALUES of this site's env vars, and SIMPLETEXTING_FROM is an account phone — a bare
+// ten-digit number in this file reads as that credential and kills the deploy, with a
+// build-script exit code and nothing else to go on. Anything of that shape belongs in the
+// runtime config instead: htmlTemplate lives in Firestore, so a phone number can be added
+// from the Communications tab without ever entering the repo. See test/no-lifelike-\
+// addresses.test.mjs, which enforces this, and HANDOFF.md for how the trap was found.
 
 export const DEFAULT_HTML = `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#EDF1F5;padding:24px 12px;">
 <tr><td align="center">
@@ -736,7 +744,7 @@ export const DEFAULT_HTML = `<table role="presentation" width="100%" cellpadding
   <tr><td style="padding:28px 32px 32px;">
     <div style="border-top:1px solid #E4EAF0;padding-top:20px;font-size:12px;color:#7C8B9A;line-height:1.7;">
       <strong style="color:#16202B;font-size:13px;">Davis Delivery Service, Inc.</strong><br>
-      Buford, Georgia &nbsp;·&nbsp; <a href="tel:6789263939" style="color:#123A63;text-decoration:none;">(678) 926-3939</a> &nbsp;·&nbsp; <a href="https://davisdelivery.com" style="color:#123A63;text-decoration:none;">davisdelivery.com</a><br>
+      Buford, Georgia &nbsp;·&nbsp; <a href="https://davisdelivery.com" style="color:#123A63;text-decoration:none;">davisdelivery.com</a><br>
       <span style="color:#93A3B3;">Replies to this email reach our customer service team.</span><br>
       <span style="color:#A8B5C2;font-size:11px;">You're receiving this because Davis Delivery completed a freight delivery to your address. Reply with "unsubscribe" and we'll stop sending them.</span>
     </div>

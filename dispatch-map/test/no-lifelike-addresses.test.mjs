@@ -70,6 +70,15 @@ test('no file carries a lifelike company email address', () => {
     + offenders.join('\n  '));
 });
 
+// Addresses are not the only env values with a recognisable shape — SIMPLETEXTING_FROM is
+// documented in lib/sms.mts as "an optional accountPhone to send from", a bare ten-digit
+// number — but there is deliberately NO guard for those here. The tree already carries
+// plenty of ten-digit literals that deploy fine (bitmasks in routing-engine-solver, digit
+// sequences in zones and sms, real phone fixtures in App.jsx and format-phone.test.mjs), so
+// a phone rule would fail on code that is known good, and a check that cries wolf on the
+// existing tree is worse than no check. The rule stays prose: don't put the COMPANY's own
+// contact number in a source file — put it in the runtime config, where htmlTemplate lives.
+
 test('the guard actually fires — it is sensitive, not just quiet', () => {
   // A quiet guard that matches nothing is worse than none: it reads as proof. Drive the
   // same regex over a control string to show it catches what broke the deploy.

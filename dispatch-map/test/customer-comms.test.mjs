@@ -34,7 +34,7 @@ const LIST_STOP = {
   addr1: '1420 Buford Highway', city: 'Buford', state: null, zip: '30518',
   driverName: 'Rasheed W', cartons: 3, volume: 2, weight: 1840,
   deliveredDTTM: '2026-08-16T14:15:00',
-  contact: { name: 'Dana', phone: '6785551212', sms: null, email: 'dana@example.com' },
+  contact: { name: 'Dana', phone: '555-0100', sms: null, email: 'dana@example.com' },
 };
 
 // ── THE TIMESTAMP ────────────────────────────────────────────────────────────
