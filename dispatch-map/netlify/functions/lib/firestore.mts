@@ -188,51 +188,9 @@ export async function setDoc(path: string, data: any): Promise<boolean> {
   return true;
 }
 
-/**
- * ATOMIC CREATE — write `path` only if no document is there, and say which happened.
- *
- * setDoc above is a blind PATCH: read-then-write around it is a lost update waiting to
- * happen, because two instances both read "absent" and both write. That is exactly the
- * race cs-notify hit in production (see its comment about a manual "Scan now" overlapping
- * the scheduled scan and CS getting the same email twice) — and a re-read before the write
- * only narrows the window, it never closes it.
- *
- * This closes it. `currentDocument: { exists: false }` is evaluated by Firestore inside the
- * commit, so of two racing callers exactly one gets `true`. That makes it a real
- * compare-and-swap and therefore usable as a CLAIM: whoever wins the create owns the side
- * effect (sending one customer an email), and the loser skips.
- *
- * Returns true when this call created the doc, false when one already existed. Any OTHER
- * failure THROWS — a caller guarding a side effect must be able to tell "someone else has
- * it" (skip, fine) from "Firestore is unreachable" (skip, and do NOT proceed unclaimed).
- */
-export async function createDocIfAbsent(path: string, data: any): Promise<boolean> {
-  const token = await getAccessToken();
-  const sa = loadServiceAccount();
-  const db = `projects/${sa.project_id}/databases/${firestoreDatabase()}`;
-  const resp = await fetch(`${FIRESTORE_BASE}/${db}/documents:commit`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      writes: [{
-        update: { name: `${db}/documents/${path}`, fields: objectToFields(data) },
-        currentDocument: { exists: false },
-      }],
-    }),
-  });
-  if (resp.ok) return true;
-  // Firestore reports a failed exists:false precondition as 400 FAILED_PRECONDITION (409
-  // ALREADY_EXISTS on some paths). Both mean "already claimed" — the ONE non-exceptional
-  // outcome. Everything else is a real error and must not be mistaken for a lost race.
-  const body = await resp.text().catch(() => '');
-  if ((resp.status === 400 || resp.status === 409)
-    && /FAILED_PRECONDITION|ALREADY_EXISTS|already exists/i.test(body)) return false;
-  throw new Error(`createDocIfAbsent ${path} failed: ${resp.status} ${body.slice(0, 200)}`);
-}
-
 // opts.mask — Firestore `list` field mask (mask.fieldPaths). When given, Firestore returns
 // ONLY those field paths per doc (dot notation for nested, e.g. 'raw.load'), which cuts the
-// bytes streamed out of Firestore — the lean projection lever for the map feed. Read COUNT
+// bytes streamed out of Firestore — the lever for the map feed's lean projection. Read COUNT
 // (billing) is unchanged; this only trims the payload/latency. Omit for the full doc.
 export async function listDocs(collectionPath: string, opts?: { mask?: string[] }): Promise<any[]> {
   const token = await getAccessToken();
