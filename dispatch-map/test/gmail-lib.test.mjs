@@ -29,17 +29,24 @@ test('the consent URL asks for read-only, offline, with consent forced', () => {
 });
 
 test('a known mailbox is pre-selected on reconnect', () => {
-  const u = new URL(buildAuthUrl({ clientId: 'c', redirectUri: 'r', state: 's', loginHint: 'chad@davis.com' }));
-  assert.equal(u.searchParams.get('login_hint'), 'chad@davis.com');
+  const u = new URL(buildAuthUrl({ clientId: 'c', redirectUri: 'r', state: 's', loginHint: 'inbox@example.com' }));
+  assert.equal(u.searchParams.get('login_hint'), 'inbox@example.com');
   assert.equal(new URL(buildAuthUrl({ clientId: 'c', redirectUri: 'r', state: 's' })).searchParams.get('login_hint'), null);
 });
 
 // ── which mailbox may be stored ──────────────────────────────────────────────
+//
+// FIXTURE ADDRESSES ARE example.com ON PURPOSE — do not make them look real.
+// Netlify's secrets scanning greps every file under this directory for the
+// VALUES of the site's environment variables, and NUVIZZ_DAVIS_USER is an
+// address. A lifelike example that merely CONTAINS it as a substring reads as
+// that credential committed to the repo, and the deploy fails with no clue
+// beyond a line number (v0.54.75 shipped exactly that and broke main's deploy).
 
 test('with an allow-list, only a listed account may connect', () => {
-  const allowList = 'chad@davisdelivery.com, ops@davisdelivery.com';
-  assert.equal(accountAllowed('CHAD@DavisDelivery.com', { allowList }).ok, true, 'case-insensitive');
-  const no = accountAllowed('stranger@gmail.com', { allowList });
+  const allowList = 'inbox@example.com, ops@example.com';
+  assert.equal(accountAllowed('INBOX@Example.com', { allowList }).ok, true, 'case-insensitive');
+  const no = accountAllowed('stranger@example.net', { allowList });
   assert.equal(no.ok, false);
   assert.match(no.reason, /GMAIL_ALLOWED_ACCOUNTS/);
 });
@@ -47,11 +54,11 @@ test('with an allow-list, only a listed account may connect', () => {
 test('with no allow-list, the first account is pinned and a second one is refused', () => {
   // This is what stops a stranger who finds the start URL from replacing the
   // grant with their own mailbox on a site that has no login.
-  assert.equal(accountAllowed('chad@davisdelivery.com', {}).ok, true, 'first connect');
-  const second = accountAllowed('stranger@gmail.com', { pinned: 'chad@davisdelivery.com' });
+  assert.equal(accountAllowed('inbox@example.com', {}).ok, true, 'first connect');
+  const second = accountAllowed('stranger@example.net', { pinned: 'inbox@example.com' });
   assert.equal(second.ok, false);
   assert.match(second.reason, /disconnect that account first/);
-  assert.equal(accountAllowed('chad@davisdelivery.com', { pinned: 'chad@davisdelivery.com' }).ok, true, 'reconnect same account');
+  assert.equal(accountAllowed('inbox@example.com', { pinned: 'inbox@example.com' }).ok, true, 'reconnect same account');
 });
 
 test('an account Google did not name is refused', () => {
