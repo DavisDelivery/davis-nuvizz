@@ -235,7 +235,11 @@ export function manifestRowsToIntake(rows, { prefix = 'ESTES-' } = {}) {
     stopNbr: r.proDigits ? `${prefix}${r.proDigits}` : '', pro: r.proDigits || '',
     pallets: r.units != null ? String(r.units) : '', loose: '',
     weight: r.weight != null ? String(r.weight) : '', price: '',
-    phone: '', dispatchNotes: '',
+    // The manifest carries neither, but both must EXIST on the row or the intake grid has
+    // nothing to bind an input to. email in particular is what the delivery-complete email
+    // is addressed to — pushChecked already maps it to to.contact.email, so a missing key
+    // here was the whole reason manifest orders reached NuVizz with no consignee address.
+    phone: '', email: '', dispatchNotes: '',
     _checked: false, _status: 'held',
   }));
 }

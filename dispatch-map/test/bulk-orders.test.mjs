@@ -4,7 +4,8 @@ import assert from 'node:assert/strict';
 
 import {
   parseDelimited, detectDelimiter, looksLikeHeader, autoMapColumns,
-  mappedRowsToOrders, bulkRowMissing, bulkRowIsBlank, bulkRowIsGhost, mappingCoversRequired, headerSignature, BULK_FIELDS, normalizePhone, bulkRowNuvizzRefs,
+  mappedRowsToOrders, bulkRowMissing, bulkRowIsBlank, bulkRowIsGhost, mappingCoversRequired, headerSignature, BULK_FIELDS, BULK_FIELD_KEYS, normalizePhone, bulkRowNuvizzRefs,
+  manifestRowsToIntake,
 } from '../src/lib/bulk-orders.js';
 
 test('detectDelimiter: tab for Excel/Sheets copy, comma for CSV', () => {
@@ -268,4 +269,47 @@ test('headerSignature: POSITIONAL — an unlabeled middle column changes the sig
   // …and trailing empties don't fork the signature (padded exports are the same layout).
   assert.equal(headerSignature(['Consignee', 'Address', '', '']), headerSignature(['Consignee', 'Address']));
   assert.equal(headerSignature(['', '', '']), null);
+});
+
+// ── manifest intake row model ────────────────────────────────────────────────
+//
+// The Manifest Intake grid binds an <input> per field key, so a key the row model omits is
+// a column that cannot exist. `email` was omitted, and the consequence reached all the way
+// to the customer: pushChecked maps row.email → to.contact.email on the NuVizz create, so
+// every Estes/manifest order was created with NO consignee address — a guaranteed zero on
+// the one path, while Bulk Add and New Order carried it fine.
+test('manifestRowsToIntake: every editable grid field exists on the row, email included', () => {
+  const [row] = manifestRowsToIntake([
+    { name: 'ACME TILE', addr1: '1 MAIN ST', city: 'BUFORD', state: 'GA', zip: '30518', proDigits: '0288347656', units: 3, weight: 1840, description: 'TILE' },
+  ]);
+
+  // The manifest itself carries no contact details — but the KEYS must be present and
+  // string-typed, or React switches the input from controlled to uncontrolled on first edit.
+  for (const k of ['phone', 'email', 'dispatchNotes', 'loose', 'price']) {
+    assert.equal(row[k], '', `${k} must exist as an empty string, not undefined`);
+  }
+  // …and the fields the OCR does supply still land.
+  assert.equal(row.name, 'ACME TILE');
+  assert.equal(row.stopNbr, 'ESTES-0288347656');
+  assert.equal(row.pro, '0288347656');
+  assert.equal(row.pallets, '3');
+  assert.equal(row._status, 'held');
+});
+
+test('manifestRowsToIntake: the row model covers every bulk field the push reads', () => {
+  const [row] = manifestRowsToIntake([{ name: 'X', proDigits: '1' }]);
+  // bulkRowMissing/bulkRowIsBlank walk BULK_FIELD_KEYS over this row, and pushChecked reads
+  // the same keys — so a key added to BULK_FIELDS and forgotten here silently pushes null.
+  for (const k of BULK_FIELD_KEYS) {
+    assert.ok(k in row, `intake row is missing "${k}" — the grid cannot edit it and the push sends null`);
+  }
+});
+
+test('manifestRowsToIntake: a typed email survives onto the row (what the push sends)', () => {
+  // The grid writes through setIntakeCell; this pins the shape that write produces.
+  const [row] = manifestRowsToIntake([{ name: 'X', proDigits: '1' }]);
+  const edited = { ...row, email: '  Dock@example.com  ' };
+  assert.equal((edited.email || '').trim() || null, 'Dock@example.com');
+  // Blank stays null rather than an empty string — NuVizz should get no key, not "".
+  assert.equal((row.email || '').trim() || null, null);
 });

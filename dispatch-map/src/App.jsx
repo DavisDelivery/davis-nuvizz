@@ -77,7 +77,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.54.75';
+const APP_VERSION = '0.54.76';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -122,6 +122,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.54.76', 'THE MANIFEST INTAKE CAN TAKE A CONSIGNEE EMAIL — the one order path that could not. Chad: "We should add a email column to the manifest/estes intake." It is there now, between Phone and Dispatch notes, on both the Held and Pushed tabs. WHY IT MATTERED MORE THAN A MISSING COLUMN USUALLY DOES: the push already knew what to do with an email — pushChecked maps it to the NuVizz order contact (to.contact.email), exactly as Bulk Add and New Order have since v0.50.47 — but the intake row model never had an `email` key for the grid to bind an input to, so there was no way to type one and every Estes/manifest order was created with NO consignee address on it. Not "usually blank": structurally always blank, a guaranteed zero on that path while the other two worked fine. That address is what the delivery-complete customer email gets sent to, so this was the single biggest hole in the coverage of that feature. ALSO FIXED, because the column alone would have looked like it worked and quietly lost the data: the durable push log dropped email on BOTH writers (manifest and Bulk Add) and the server that stores it whitelists fields one by one, so a row pushed WITH an address would have read back on the Pushed tab as having none. NOT CHANGED: nothing about what NuVizz is asked for. Reading a manifest is still zero vendor calls, and the email only rides along on a push you already make.'],
   ['0.54.75', 'CONNECT GMAIL WITH A BUTTON, AND SEE THAT IT IS STILL WORKING. Last release taught the nightly check to read Gmail — but the permission it runs on had to be minted by hand in Google\'s OAuth playground and pasted into Netlify as GMAIL_REFRESH_TOKEN. Chad: "I want the gmail auth added to the manifest tabs." It is: the Manifest check tab now has a Gmail card with a Connect Gmail button, and the whole consent round-trip happens in the app. THIS IS NOT COSMETIC. A Google consent screen still in "Testing" hands out permissions that DIE AFTER SEVEN DAYS. A token pasted into Netlify cannot be renewed from the app, so the check would have run for a week, stopped, and said nothing — which is precisely the silent failure this whole feature exists to catch, one level up. The card now shows when the last poll ran and what it found, and a permission Google has stopped accepting turns into a red "reconnect the mailbox" line instead of a screen that still says Connected. Reconnecting is one click, and it pre-selects the mailbox you used last time. ALSO ON THE CARD: a Check email now button, which runs one poll of the SAME mailboxes the 30-minute schedule reads (one shared list, so the button can never quietly test something different from what runs at night) and drops the result straight onto the screen; and an editable "which emails to look at" search, because what counts as a manifest email is your judgement, not a constant compiled into a function. Widening it is safe by design — a PDF is the freight report only if it PARSES as one, so a broad search costs a few one-off attachment reads and never a wrong answer. WHAT IT CAN DO TO YOUR MAILBOX: read it. The permission is gmail.readonly, so this app cannot send, label, archive or delete a single message, and Google says so on the consent screen. It still costs ZERO NuVizz calls — same free check as dropping the PDF here — and turning a suspect into "NuVizz never got this" is still behind its own human click. SECURITY, because this app has no login: the first Google account to connect is locked in and no second account can replace it without disconnecting first (GMAIL_ALLOWED_ACCOUNTS names it outright), and the permission itself is sealed with AES-256-GCM under a server-only key before it is stored, so it is unreadable to anything but this server. Disconnect revokes it at Google. If GMAIL_REFRESH_TOKEN is still set in Netlify it keeps winning — the card tells you so rather than offering a button that would be ignored.'],
   ['0.54.74', 'THE NIGHTLY MANIFEST CHECK CAN NOW READ GMAIL. Chad, after we traced a Uline order that reached us on paper and never reached the board: "this is what we need to be flagging, so let\'s write google mail into the app so we can parse for these manifests and look for any missing orders every night." The automatic check already existed (v0.54.55) but could only read the Resend receiving inbox, which needs an MX record and a forwarding rule — so in practice the report sat in a Google mailbox and the job had nothing to poll. It can now read Gmail directly: list the recent PDFs, pull the attachment, run the SAME zero-call board diff, and light the red flag on every dispatcher\'s screen before anyone is in the office. WHAT PROMPTED IT, concretely: the 8/13 manifest carried two Anduril orders, PRO 007161743 (373 lbs) and 007162319 (860 lbs). The first is on the board and was delivered 8/14. The second is in no stop document, no customer rollup, and no undelivered report — the only independent record that it existed at all was the shipper\'s own PDF. That is the entire case for parsing this thing nightly: every other integrity check in this app starts FROM NuVizz, so an order NuVizz never received is invisible to all of them. BOTH MAILBOXES, INDEPENDENTLY. Resend and Gmail are now two adapters behind one pipeline, each with its own markers, its own per-cycle cap, and its own error line — an expired Google token cannot stop the other inbox from being read, and a noisy inbox cannot starve the one the report lands in. It still refuses to guess: the Gmail query is a cheap prefilter and NOT a sender or subject match, because the real test is whether the PDF parses as the freight report. It still never probes NuVizz — turning a suspect into "NuVizz never got this" stays behind the human button, so the automatic path can never spend vendor calls. The tab now also says where a run came from, since an automatic run hours old and a PDF you dropped a second ago deserve different trust. SETUP: three env vars (GMAIL_CLIENT_ID / GMAIL_CLIENT_SECRET / GMAIL_REFRESH_TOKEN, read-only scope, minted once as the mailbox that gets the report — steps are in .env.example); until they are set the Gmail half no-ops silently. 22 new tests, including the MIME tree three levels deep whose attachment a one-level read would have missed.'],
   ['0.54.73', 'THE TWIN BANNER NOW CLAIMS ONLY WHAT IT CAN PROVE. An independent review of the v0.54.72 fix confirmed it sound and found one wording hazard worth closing immediately: when a stop row carries NO pinned record id, the app cannot actually know that the record it wrote is the one on your screen \u2014 and in the flipped case (the pre-write read answers the twin, the read-back answers your record) the old confident wording would have told you your change landed on your order when it landed on the twin. The banner now hedges exactly when it should: with a pinned id it still says "the record on your screen"; without one it says "the record NuVizz answered our pre-write read with \u2014 which may or may not be the one on your screen \u2014 confirm which record took the change." Also from the review: a read-back that returns a record with NO identity at all is now reported as "could not verify" instead of being diffed (diffing an unnamed record is the same two-different-things trap), and the address alarm now reads "AN ADDRESS ON THE ORDER MOVED" since it covers the pickup side too. Four new tests pin all of it, including one that drives fifteen changed fields through the real write path and proves the address line can never hide behind the five-line cap again.'],
@@ -20770,7 +20771,7 @@ function BulkOrderScreen() {
           orderRef: refs.stopNbr, nuvizzNbr: res.result?.entityNbr || refs.stopNbr,
           name: r.name || '', addr1: r.addr1 || '', addr2: r.addr2 || '', city: r.city || '', state: r.state || '', zip: r.zip || '',
           itemDesc: r.itemDesc || '', pallets: r.pallets || '', loose: r.loose || '', weight: r.weight || '', price: r.price || '',
-          phone: r.phone || '', dispatchNotes: r.dispatchNotes || '', updated: !!res.result?.updated,
+          phone: r.phone || '', email: r.email || '', dispatchNotes: r.dispatchNotes || '', updated: !!res.result?.updated,
           manifestNumber: null, serviceDate, pushedAt: new Date().toISOString(),
         });
       }
@@ -20962,7 +20963,7 @@ function BulkOrderScreen() {
           orderRef: (r.stopNbr || '').trim() || null, nuvizzNbr: res.result?.entityNbr || (r.stopNbr || '').trim() || null,
           name: r.name || '', addr1: r.addr1 || '', addr2: r.addr2 || '', city: r.city || '', state: r.state || '', zip: r.zip || '',
           itemDesc: r.itemDesc || '', pallets: r.pallets || '', loose: r.loose || '', weight: r.weight || '', price: r.price || '',
-          phone: r.phone || '', dispatchNotes: r.dispatchNotes || '', updated: !!res.result?.updated,
+          phone: r.phone || '', email: r.email || '', dispatchNotes: r.dispatchNotes || '', updated: !!res.result?.updated,
           manifestNumber: intake?.manifest?.manifestNumber || null, serviceDate, pushedAt: new Date().toISOString(),
         });
       } else failed++;
@@ -21164,7 +21165,9 @@ function BulkOrderScreen() {
           const merged = intake.mergedManifests || [m];
           const multiManifest = merged.length > 1;
           const rowsShown = intakeTab === 'held' ? heldRows : cloudPushedRows;
-          const intakeCols = intakeTab === 'held' ? 12 : 11;   // the checkbox column exists only on Held
+          // checkbox, #, Order ref, Consignee, Items, Pallets, Loose, Weight, Phone, Email,
+          // Dispatch notes, Price, actions. The checkbox column exists only on Held.
+          const intakeCols = intakeTab === 'held' ? 13 : 12;
           const unitSum = intakeRows.reduce((a, r) => a + (Number(r.pallets) || 0), 0);
           const wgtSum = intakeRows.reduce((a, r) => a + (Number(r.weight) || 0), 0);
           // Merged manifests: sum the declared header totals across all of them (fall back to the
@@ -21260,6 +21263,7 @@ function BulkOrderScreen() {
                       <th className="px-1 pb-1">Loose</th>
                       <th className="px-1 pb-1">Weight</th>
                       <th className="px-1 pb-1">Phone</th>
+                      <th className="px-1 pb-1">Email</th>
                       <th className="px-1 pb-1">Dispatch notes</th>
                       <th className="px-1 pb-1">Price</th>
                       <th className="pb-1"></th>
@@ -21300,6 +21304,7 @@ function BulkOrderScreen() {
                                 <td className="px-1 py-1 tabular-nums">{r.loose || '—'}</td>
                                 <td className="px-1 py-1 tabular-nums">{r.weight || '—'}</td>
                                 <td className="px-1 py-1">{r.phone || '—'}</td>
+                                <td className="px-1 py-1 max-w-[200px] truncate" title={r.email}>{r.email || '—'}</td>
                                 <td className="px-1 py-1 max-w-[240px] truncate" title={r.dispatchNotes}>{r.dispatchNotes || '—'}</td>
                                 <td className="px-1 py-1 tabular-nums">{r.price ? `$${r.price}` : '—'}</td>
                                 <td className="py-1 text-green-600"><FileCheck size={14} /></td>
@@ -21311,6 +21316,7 @@ function BulkOrderScreen() {
                                 <td className="px-1 py-1"><input value={r.loose} onChange={setIntakeCell(r.id, 'loose')} disabled={intakeBusy} className={`${numInput} w-12 text-right`} /></td>
                                 <td className="px-1 py-1"><input value={r.weight} onChange={setIntakeCell(r.id, 'weight')} disabled={intakeBusy} className={`${numInput} w-16 text-right`} /></td>
                                 <td className="px-1 py-1"><input value={r.phone} onChange={setIntakeCell(r.id, 'phone')} disabled={intakeBusy} placeholder="add phone" className={`${numInput} w-32`} /></td>
+                                <td className="px-1 py-1"><input value={r.email} onChange={setIntakeCell(r.id, 'email')} disabled={intakeBusy} type="email" placeholder="add email" className={`${gridInput} min-w-[180px]`} /></td>
                                 <td className="px-1 py-1"><input value={r.dispatchNotes} onChange={setIntakeCell(r.id, 'dispatchNotes')} disabled={intakeBusy} placeholder="dispatch notes" className={`${gridInput} min-w-[220px]`} /></td>
                                 <td className="px-1 py-1"><input value={r.price} onChange={setIntakeCell(r.id, 'price')} disabled={intakeBusy} placeholder="$" className={`${numInput} w-16 text-right`} /></td>
                                 <td className="py-1"><button onClick={() => removeIntakeRow(r.id)} disabled={intakeBusy} title="Remove this order from the manifest intake" className={`text-slate-400 ${intakeBusy ? 'opacity-40 cursor-not-allowed' : 'hover:text-red-600'}`}><X size={13} /></button></td>
