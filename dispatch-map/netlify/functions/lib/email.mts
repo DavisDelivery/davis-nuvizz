@@ -21,14 +21,24 @@ export interface SendEmailArgs {
   html?: string;
   text?: string;
   replyTo?: string;
+  // Per-send sender OVERRIDE. Omit (the case for every cs-notify send) and RESEND_FROM is
+  // used exactly as before. Customer-facing mail wants a different, branded sender from the
+  // internal alerts, and that address is edited at runtime from Firestore — so it cannot come
+  // from an env var. Whatever is passed must still be on a domain verified in Resend, or the
+  // API rejects the send; callers are expected to validate before storing one.
+  from?: string;
 }
 
 // Sends one email. Best-effort: returns {ok} and never throws, so a mail failure
 // can never break a scan. Caller decides whether to record dedup state on ok.
 export async function sendEmail(args: SendEmailArgs): Promise<{ ok: boolean; id?: string; error?: string }> {
   const key = process.env.RESEND_API_KEY;
-  const from = process.env.RESEND_FROM;
-  if (!key || !from) return { ok: false, error: 'RESEND_API_KEY/RESEND_FROM not set' };
+  // RESEND_FROM stays REQUIRED even when a caller overrides the sender: it is the
+  // known-verified address, so its absence still means "this site cannot send" and
+  // emailEnabled() keeps telling the truth.
+  const envFrom = process.env.RESEND_FROM;
+  if (!key || !envFrom) return { ok: false, error: 'RESEND_API_KEY/RESEND_FROM not set' };
+  const from = (args.from || '').trim() || envFrom;
   try {
     const resp = await fetch(RESEND_ENDPOINT, {
       method: 'POST',
