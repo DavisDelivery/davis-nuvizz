@@ -73,6 +73,29 @@ Changed: `manifest-email-ingest-background.mts` (uses the shared resolver, recor
 the run), `src/App.jsx` (the Gmail card). Tests: `test/gmail-lib.test.mjs`.
 Untouched: the v0.54.74 ingest, `lib/gmail-source.mts`, and their tests.
 
+### Trap this release fell into — read before writing test fixtures
+
+v0.54.75 broke main's Netlify deploy, and the cause is worth knowing because
+nothing local catches it. **Netlify secrets scanning greps every file under
+`dispatch-map/` for the VALUES of this site's environment variables.**
+`NUVIZZ_DAVIS_USER` is an email address, and the example addresses in
+`test/gmail-lib.test.mjs` were lifelike enough to CONTAIN it as a substring —
+so the scanner read them as that credential committed to the repo and failed
+the deploy with `Build script returned non-zero exit code: 2` and a line
+number, nothing more.
+
+What makes it nasty: **every local and CI check passes.** `npm test`, the Vite
+build, the startup smoke, even `zip-it-and-ship-it` are all green — the scan
+only runs inside Netlify's build, and its "enhanced" pattern scan (the one you
+can reproduce offline with no env) finds nothing. It is the plain key-VALUE
+scan that fires, and reproducing it needs the site's real env.
+
+Rules: use `example.com` / `example.net` in fixtures, never a plausible real
+address; and if a deploy fails fast with a non-zero build script exit and the
+Actions jobs are green, read `deploy_validations_report.secret_scan_result`
+on the deploy (Netlify MCP `get-deploy-for-site`, or the build log) before
+theorising — it names the file and line.
+
 ### Known gap, worth a decision
 `nuvizz_ops/gmail_status` (including the saved search) sits in the same
 open-rules Firestore as `scan_config` and everything else, so anyone who can
