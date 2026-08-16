@@ -37,16 +37,6 @@
   # where a real backlog gets worked off.
   [functions."manifest-email-check"]
     timeout = 26
-  # The customer delivery-email pre-flight. Both are Firestore-only (ZERO NuVizz calls) but
-  # both read WIDE: ?coverage=1 lists a full day's stop index and then reads one
-  # customer_notes doc per delivered stop, and ?days=30 on the log walks 30 per-day send
-  # subcollections. Comfortably under 10s on a normal day, but the DEFAULT would kill a slow
-  # Firestore list with an HTML 502 the client cannot parse — the same failure that bit the
-  # stop explorer. Both are click-driven and self-bounded (the coverage sample is capped).
-  [functions."customer-comms-test"]
-    timeout = 26
-  [functions."customer-comms-log"]
-    timeout = 26
   # Scanned-manifest OCR runs as manifest-ocr-BACKGROUND (vision over a multi-page fax
   # PDF takes 20-40s — over the 26s request cap that killed the synchronous version).
   # Background functions get Netlify's 15-min allowance; no timeout override needed.
