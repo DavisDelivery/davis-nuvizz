@@ -38,7 +38,10 @@ function shapeRecord(r: any): any {
     city: s(r.city) || '', state: s(r.state) || '', zip: s(r.zip) || '',
     itemDesc: s(r.itemDesc) || '',
     pallets: s(r.pallets) || '', loose: s(r.loose) || '', weight: s(r.weight) || '', price: s(r.price) || '',
-    phone: s(r.phone) || '', dispatchNotes: s(r.dispatchNotes) || '',
+    // email rides with phone: the Pushed tab renders it, and it is the address the
+    // delivery-complete mail goes to — dropping it here would make a row that pushed WITH
+    // an address read back as having none.
+    phone: s(r.phone) || '', email: s(r.email) || '', dispatchNotes: s(r.dispatchNotes) || '',
     updated: r.updated === true || r._updated === true,
     manifestNumber: s(r.manifestNumber) || null,
     serviceDate: s(r.serviceDate) || null,
