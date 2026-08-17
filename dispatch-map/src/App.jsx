@@ -122,6 +122,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.54.82', 'FIFTY-ONE AGENTS READ THE WHOLE APP FOR PHONE DEFECTS; TWENTY SURVIVED A SECOND AGENT TRYING TO REFUTE THEM. Chad: "Spawn many agents and go through entire code base and fix these issues." Every screen was audited by an agent reading its real source, and every finding handed to a second agent whose job was to REFUTE it — 24 of 44 died there, which is the point of running it that way. What survived, fixed here. TWO MORE THINGS v0.54.80\'s TOUCH FLOOR BROKE, both invisible to the layout guard because nothing overflows and nothing clips. (1) THE MAP\'S TOP OVERLAYS. The phone search bar grew from ~40px to ~62px when its input and both buttons took the 44px floor, and every overlay under it hung at a hard-coded offset — a promise the bar had to keep forever, and stopped keeping. The date chip was sliced by the overlap and taps on that strip focused the search field instead of opening the date picker. The bar is MEASURED now, so the next change to its height moves what sits under it instead of colliding. (2) THE SCHEDULED-SCANS SWITCH in Diagnostics painted its track on the button itself, so the floor made it a 44x44 circle with a 20px dot in it. Same fix as the comms switch and the map filters: the button is the hit box, a span is the switch. THE "IT DID NOTHING" CLASS — the complaint Chad raised about Customer emails — turned out to be four more screens. Map: scan errors and the daily-ceiling warning rendered only inside the expanded status pill, while the Scan button stayed visible when collapsed, so a failed scan, a tripped ceiling and a success were pixel-identical, and the obvious response is to tap again — the expensive mistake this app exists to avoid. Routing: lastAction is the screen\'s entire refusal channel ("Compare is full", "can\'t re-sequence, N stops have no map location", "no stops in that area") and it renders in ONE place, which the phone replaces with the workbench the moment a card is open; it now mirrors into the on-map toast. Diagnostics: the "saved" confirmation and the read-only explanation both sat ~1,400px above the Save button that produces them. Bulk Add: an import failure rendered above a 650px column mapper while the operator was at its bottom. All four now answer where the control is. ALSO: five controls the floor never reached because an inline style beats a stylesheet — both "Send to NuVizz" buttons (a note write and a delivery-date change), the Customer # Save/Cancel pair, and the only entry into the notes editor. The map\'s "No stops match" banner sat at the same offset as the date/status row and painted over Filters and Scan at exactly the moment you need them. Routing lost its date picker and settings gear entirely on a phone once a Compare card was open. The manifest suspects table showed eight columns through a 358px window, so reading the freight numbers scrolled the PRO — the row\'s whole identity — off the left edge; it is cards on a phone now. Bulk Add\'s two tabs needed 382px in a 334px card. Diagnostics rendered four different NuVizz endpoints as four identical truncated rows. AND THE GUARD ITSELF HAD TWO HOLES, which is the finding that mattered most: it only ever measured a screen AT REST, so six sub-40px controls sat safely inside the note composer, the customer-# editor and the notes editor while the build stayed green; and <summary> escaped both the floor and the measurement. It now opens sheets, drawers and disclosures and measures inside them — and each probe must PROVE it opened the surface, because a probe that silently no-ops measures the resting screen twice and passes. That assertion immediately caught a bad probe of my own. 1,637 tests green.'],
   ['0.54.82', 'THE PHONE MENU PUTS THE MAP FIRST. Chad, with the menu open on his phone: "Put map at top of menu and put diagnostics and debug under more." Both were backwards. MAP was the LAST entry, at the bottom of a nine-row menu, underneath two developer tools — and it is the screen you come back to between every other one, so it had the longest reach in the menu for the most-used destination. It is now the first thing your thumb lands on. DIAGNOSTICS and DEBUG THIS VIEW have moved under More, alongside Manifest check and Customer emails. Neither is a screen for running the day: one reports scan health and API call counts, the other bundles up what you are looking at for a coding agent. They were sitting between the dispatcher and the Map for no reason. Nothing was removed and nothing changed what it does — More still starts open and remembers whether you folded it, and its badge still carries anything flagged underneath, so tucking those two away cannot hide a problem. The desktop nav already worked this way (Map is the first tab, Diagnostics and Debug live in its More dropdown); this is the phone catching up to it.'],
   ['0.54.81', 'TWO CONTROLS THE NEW TOUCH FLOOR ITSELF BROKE. v0.54.80 made 44px the default minimum for every button on a phone, which fixed 45 controls and quietly damaged two — a class of defect the layout guard cannot see, because nothing overflows and nothing is clipped; the control simply looks wrong. A parallel read of the whole file found both. (1) THE MAP FILTER SWITCHES. On MapFilterToggle the BUTTON is the track: a 36x20 pill whose background is the switch and whose child span is the knob. The floor stretched that track to 44px tall and left a 16px knob floating at the top of it, on all five map filters at once. It now carries .tap-dense — the opt-out the same release added for exactly this — because its hit area was ALREADY 44px and always had been (that is what the after:-inset-y-3 is for), so the floor had nothing to add and only distorted the paint. (2) THE CUSTOMER-NOTES CONTACTS ROW. Name, Phone and Role sat abreast with a delete button, which left about 90px per field on a 390px phone even before the delete button took its 44px. The row is now two lines on a phone — name across the top, phone/role/delete beneath — and unchanged on desktop. Both fixes keep the guard green on every screen at both phone sizes.'],
   ['0.54.80', 'THE PHONE IS ITS OWN APP NOW — AND A GUARD SO CHAD STOPS BEING THE ONE WHO FINDS THIS. Chad, on v0.54.79, with a photograph of the Customer emails screen sliding sideways on his iPhone: "This is not formatted correctly to mobile. This entire app should have a mobile version and desktop version like 2 different beings. I\'m tired of sending your formatting issues. Also I clicked a button on this screen and didn\'t work. Also emails are supposed to come from notifications@davisdelivery.com." He is right about the cause, not just the symptom: there was ONE layout with responsive classes bolted on, so a phone always got a squeezed desktop. WHAT HIS SCREENSHOT ACTUALLY WAS. The page had slid right under the fixed header — the title read "randed delivery-complete email" — and most of the screen was blank. The email preview is an <iframe>, and iOS Safari does not honour a CSS width on an iframe: it sizes the frame to its CONTENT, and the content is the email\'s real 600px table. On a 390px phone the frame became 600px and pushed the whole document wide, so what he was looking at was the empty right margin beside the email. Chromium does not reproduce it and no WebKit build exists in this environment to prove it against, so it is fixed BY CONSTRUCTION instead of by chasing one engine: the frame is given exactly the width its content wants so no engine has reason to grow it, scaled with a transform to fit the space, and the wrapper CLIPS — even an engine ignoring both cannot push the page through an overflow-hidden box. Its height is now measured from the loaded document rather than guessed, so there is no dead grey space under the message and no scrollbar inside a scrollbar. THE BUTTON THAT DID NOTHING did something: it reported a failure into a red banner at the TOP of a long scrolling page, from a control near the bottom. On a phone that is indistinguishable from a dead button. Every message on this screen is now ADDRESSED — it renders at the control that raised it. And the specific failure he would have hit at 4am is gone too: a real-delivery preview needs a delivered stop, and before the day\'s first delivery there is not one, so it now falls back to the previous board and says which day it is showing. TWO BEINGS, FOR REAL. useCommsConsole() holds all state, loading and writes; <CommsPhone> and <CommsDesktop> are separate components that share it. The phone screen is designed as a phone screen — the email first and full-bleed, everything else collapsed into 52px rows you open one at a time, the send log as cards instead of a five-column table, 44px targets throughout. The desktop keeps its two-column console. One brain, two bodies; a fix to a save path fixes both. THE FINGERTIP FLOOR IS NOW DEFAULT-ON. v0.54.70 added an opt-in .tap-target class, and opt-in is exactly why this kept happening: a sweep found FORTY-FIVE unmarked controls still under 40px — the Routing tabs at 26, the Map search field at 24, the Quote steppers at 34, the version chip at 36. All raised. The rule is now default for every interactive control on a touch phone with .tap-dense as the deliberate opt-out, so the failure mode flips from "silently missed" to "excused on purpose". Desktop density is untouched. Also fixed: the Map\'s Filters label, whose 380px threshold was set by eye ~50px too low, so on a 390px iPhone it rendered and was then sliced in half by the row\'s clip — the button read "Fil". THE GUARD is the actual answer to "I\'m tired of sending your formatting issues": scripts/verify-mobile-layout.mjs walks EVERY screen at 390 and 360 and fails on horizontal overflow (naming the widest offending element), content clipped by an overflow-hidden ancestor, sub-40px targets, and dead regions — crediting the app\'s own ::after hit-area expansion so it does not flag deliberate patterns. Every screen passes on both phones. THE SENDER is notifications@ as asked, but on the warehouse domain, not the apex: Resend refuses to add davisdelivery.com at all on the current plan ("You have reached the domain limit"), and an address on an unverified domain does not degrade politely — Resend rejects every send, which would have turned the test button into a guaranteed failure. The screen states the target, the blocker and the two steps that flip it, neither of which needs a deploy. 1,618 tests green.'],
@@ -5514,7 +5515,7 @@ function StopNuvizzNoteComposer({ stop, onRefreshed }) {
             <button
               onClick={send} disabled={busy || !text.trim()}
               className="px-3 py-1 text-xs font-semibold text-white rounded disabled:opacity-40"
-              style={{ background: BRAND, minHeight: 30 }}
+              style={{ background: BRAND, minHeight: 44 }}
             >{busy ? 'Sending…' : 'Send to NuVizz'}</button>
           </div>
           {/* break-words + leading-snug: the server's failure reasons are full sentences and
@@ -5621,7 +5622,7 @@ function StopDeliveryDateEditor({ stop, onRefreshed }) {
             <button
               onClick={send} disabled={busy || !date || date === current}
               className="px-3 py-1 text-xs font-semibold text-white rounded disabled:opacity-40"
-              style={{ background: BRAND, minHeight: 30 }}
+              style={{ background: BRAND, minHeight: 44 }}
             >{busy ? 'Sending…' : 'Send to NuVizz'}</button>
           </div>
           <div className="text-[10px] text-slate-400">writes order {pro} · 3 NuVizz calls</div>
@@ -5847,11 +5848,11 @@ function StopContactBlock({ stop, note, onSaveContacts, onRefreshed, saving = fa
             <button
               onClick={submit} disabled={working}
               className="px-3 py-1 text-xs text-white font-semibold rounded inline-flex items-center gap-1 disabled:opacity-50"
-              style={{ background: BRAND, minHeight: 36 }}
+              style={{ background: BRAND, minHeight: 44 }}
             >
               {working ? <RefreshCw size={11} className="animate-spin" /> : <Save size={11} />} Save
             </button>
-            <button onClick={() => setEditing(false)} disabled={working} style={{ minHeight: 36 }} className="px-3 py-1 text-xs text-slate-600 hover:bg-slate-100 rounded">
+            <button onClick={() => setEditing(false)} disabled={working} style={{ minHeight: 44 }} className="px-3 py-1 text-xs text-slate-600 hover:bg-slate-100 rounded">
               Cancel
             </button>
             {/* Saved either way — a partial number is better than none on a card someone is
@@ -6539,7 +6540,7 @@ function StopNotesSection({ note, editing, setEditing, draft, setDraft, compact 
         {!editing && (
           compact
             ? <button onClick={() => setEditing(true)} className="text-xs text-blue-600 hover:underline">Edit</button>
-            : <button onClick={() => setEditing(true)} className="px-3 py-1.5 text-xs text-white font-semibold rounded" style={{ background: BRAND, minHeight: 36 }}>Edit</button>
+            : <button onClick={() => setEditing(true)} className="px-3 py-1.5 text-xs text-white font-semibold rounded" style={{ background: BRAND, minHeight: 44 }}>Edit</button>
         )}
       </div>
       {!editing && !note && <div className="text-xs text-slate-500 italic">No notes yet. {compact ? 'Click' : 'Tap'} Edit to add.</div>}
@@ -8833,6 +8834,25 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
   const { google, error: mapsError } = useGoogleMaps();
   const viewportWidth = useViewportWidth();
   const isMobile = viewportWidth < MOBILE_BREAKPOINT;
+  // The phone map's top overlays hang beneath the search bar. Their offsets were once
+  // constants, which is a promise the bar has to keep forever — and it stopped keeping it
+  // the moment the v0.54.80 touch floor made its controls 44px. Measure it instead: the
+  // row below sits 8px under whatever the bar actually is, and the selection tools 42px
+  // under that. ResizeObserver covers rotation and the AI-mode swap.
+  const searchBarRef = useRef(null);
+  const [searchBarH, setSearchBarH] = useState(48);
+  useEffect(() => {
+    const el = searchBarRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return undefined;
+    const measure = () => setSearchBarH(el.getBoundingClientRect().height || 48);
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [isMobile]);
+  // 8px is the bar's own top-2 inset, repeated as the gap beneath it.
+  const overlayTop = Math.round(8 + searchBarH + 8);
+
 
   const [selectedStop, setSelectedStop] = useState(null);
   const [selectedDriver, setSelectedDriver] = useState(null);
@@ -10214,8 +10234,16 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
             offset beneath it without a runtime height measurement. Shares the same
             searchInput/aiMode state as desktop, so results/auto-zoom behave
             identically; "Recent searches" renders as an absolutely-positioned
-            dropdown (doesn't push this row's height). */}
-        <div className="absolute top-2 left-2 right-2 z-[17]">
+            dropdown (doesn't push this row's height).
+
+            The offsets below used to be hard-coded (top-14 / top-28) on the premise,
+            stated above, that this bar has a fixed single-line height. v0.54.80 broke
+            that premise from a distance: the phone touch floor raised the bar's input
+            and both its buttons to 44px, so the bar became ~62px and the date chip
+            underneath was sliced by the 6px it overlapped — and taps on that strip hit
+            the search field instead of the date picker. It is measured now, so a future
+            change to the bar's height moves what sits under it instead of colliding. */}
+        <div ref={searchBarRef} className="absolute top-2 left-2 right-2 z-[17]">
           <MobileMapSearchBar
             value={searchInput}
             onChange={setSearchInput}
@@ -10228,7 +10256,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
             aiBusy={aiBusy}
           />
         </div>
-        <div className="absolute top-28 left-2 z-[16] flex flex-col items-start gap-1">
+        <div className="absolute left-2 z-[16] flex flex-col items-start gap-1" style={{ top: overlayTop + 42 }}>
           <SelectionControls mode={selectMode} setMode={setSelectMode} count={selectionSet?.size || 0} onClear={clearSelection} onText={textSelected} onTextDrivers={textSelectedDrivers} />
           {selectNote && <div className="text-[10px] bg-white/95 border border-slate-200 rounded px-1.5 py-0.5 shadow text-slate-700">{selectNote}</div>}
         </div>
@@ -10237,7 +10265,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
             side-by-side and can NEVER overlap (the old separate top-2 left/right
             absolutes collided in the middle). The wrapper passes map gestures
             through the gap (pointer-events-none) while each control stays tappable. */}
-        <div className="absolute top-14 left-2 right-2 z-10 flex items-start justify-between gap-2 pointer-events-none">
+        <div className="absolute left-2 right-2 z-10 flex items-start justify-between gap-2 pointer-events-none" style={{ top: overlayTop }}>
           {/* date chip (P2.7): core control, visible without opening the drawer. */}
           <div className="flex items-center gap-1 bg-white/95 backdrop-blur border border-slate-200 rounded-lg shadow px-1.5 py-1 pointer-events-auto flex-shrink-0">
             <input
@@ -10322,16 +10350,22 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
                     <HourlyCalls byHour={ops.byHour} className="text-slate-400 text-[10px] mt-0.5" />
                   </>
                 )}
-                {scanState?.halted && (
-                  <div className="text-[10px] font-semibold text-red-700">
-                    {scanState.reason === 'ceiling'
-                      ? 'Daily scan limit reached — updates resume after midnight UTC'
-                      : 'Scanning paused (kill switch) — board may be stale'}
-                  </div>
-                )}
-                {scanErr && <div className="text-[10px] text-red-600">{scanErr}</div>}
               </div>
             )}
+            {/* OUTSIDE the !statusCollapsed block, deliberately. Collapsing this pill is the
+                obvious thing to do on a phone — it covers the map — and the state persists.
+                While collapsed the Scan button stays visible but every answer it can give
+                did not: a failed scan, a tripped daily ceiling and a successful one were
+                pixel-identical, so the button read as dead and the natural response is to
+                tap it again. That is the expensive mistake this app exists to avoid. */}
+            {scanState?.halted && (
+              <div className="text-[10px] font-semibold text-red-700 px-1.5 pb-1">
+                {scanState.reason === 'ceiling'
+                  ? 'Daily scan limit reached — updates resume after midnight UTC'
+                  : 'Scanning paused (kill switch) — board may be stale'}
+              </div>
+            )}
+            {scanErr && <div className="text-[10px] text-red-600 px-1.5 pb-1">{scanErr}</div>}
           </div>
           {/* Board Flags — its OWN pill, not a child of the status pill: the status pill is
               max-w-[60vw] overflow-hidden, and as its last flex child the chip was first to
@@ -10350,7 +10384,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
           </div>
         )}
         {driverGateNote && (
-          <div className="absolute top-28 left-1/2 -translate-x-1/2 z-20 bg-amber-50 border border-amber-300 rounded shadow px-2 py-1 text-[10px] text-amber-800">
+          <div className="absolute left-1/2 -translate-x-1/2 z-20 bg-amber-50 border border-amber-300 rounded shadow px-2 py-1 text-[10px] text-amber-800" style={{ top: overlayTop + 42 }}>
             Live drivers only available for today.
           </div>
         )}
@@ -10364,12 +10398,19 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
           </div>
         )}
         {!visibleStops.length && !loading && !mapsError && (
-          <div className="absolute top-14 left-1/2 -translate-x-1/2 bg-white border border-slate-200 rounded shadow px-3 py-1.5 text-[11px] text-slate-600 z-10 max-w-[92vw] text-center">
+          // This sat at the SAME offset as the date/status row and, being later in the DOM at
+          // equal z, painted over it — an opaque box swallowing taps on Filters, Scan and the
+          // Board Flags chip at the one moment they matter: nothing is on the map and the
+          // operator wants to undo whatever is hiding it. It clears the row now, and the
+          // wrapper passes taps through so anything it still overlaps stays reachable.
+          <div className="absolute left-1/2 -translate-x-1/2 bg-white border border-slate-200 rounded shadow px-3 py-1.5 text-[11px] text-slate-600 z-10 max-w-[92vw] text-center pointer-events-none" style={{ top: overlayTop + 42 }}>
             {debouncedSearch ? `No stops match "${debouncedSearch}"` : 'No stops match filters'}
             {searchHiddenByFilters > 0 && (
               <div className="mt-1 text-amber-800">
                 {searchHiddenByFilters === 1 ? 'It IS on this board' : `${searchHiddenByFilters} matching stops ARE on this board`} — your filters are hiding {searchHiddenByFilters === 1 ? 'it' : 'them'}.
-                <button onClick={clearAllStopFilters} className="ml-1 underline font-semibold hover:text-amber-900">Clear filters</button>
+                {/* The banner wrapper is pointer-events-none so it cannot swallow taps meant
+                    for the controls behind it; this is the one thing in it you tap. */}
+                <button onClick={clearAllStopFilters} className="pointer-events-auto ml-1 underline font-semibold hover:text-amber-900">Clear filters</button>
               </div>
             )}
           </div>
@@ -12150,8 +12191,13 @@ function RouteBars({ byRoute }) {
   return (
     <div className="space-y-1.5">
       {entries.map(([route, v]) => (
-        <div key={route} className="flex items-center gap-2 text-xs">
-          <div className="w-28 shrink-0 truncate text-slate-600 font-mono" title={route}>{route}</div>
+        // Stacked on a phone: 112px of mono holds ~15 characters, which renders
+        // /entity/filterdata, /entity/filterdata(load), /entity/filterdata(roster) and
+        // /entity/filtercount as four identical rows with different numbers — in the panel
+        // whose entire job is naming which endpoint is burning the call budget. The only
+        // recovery was a title tooltip, which a touch device never shows.
+        <div key={route} className="flex flex-col sm:flex-row sm:items-center gap-1 sm:gap-2 text-xs">
+          <div className="w-full sm:w-28 min-w-0 shrink-0 truncate text-slate-600 font-mono" title={route}>{route}</div>
           <div className="flex-1 bg-slate-100 rounded h-4 overflow-hidden">
             <div className="h-full bg-sky-400/80 rounded" style={{ width: `${Math.max(2, Math.round((v / max) * 100))}%` }} />
           </div>
@@ -12307,12 +12353,19 @@ function SwitchToggle({ checked, onChange, label, hint }) {
         <div className="text-sm font-medium text-slate-800">{label}</div>
         {hint && <div className="text-[11px] text-slate-400">{hint}</div>}
       </div>
+      {/* The button is the 44px hit box; the SPAN is the switch. Painting the track on the
+          button itself meant v0.54.80's phone floor stretched this into a 44x44 circle with
+          a 20px dot in it — the master control for scheduled scans stopped looking like a
+          switch at all, and its thumb travel (2px to 20px) no longer read as on/off inside
+          a box twice that tall. Same shape as CommsSwitch and the map filter toggles. */}
       <button
         role="switch" aria-checked={checked} aria-label={label}
         onClick={() => onChange(!checked)}
-        className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors ${checked ? 'bg-emerald-500' : 'bg-slate-300'}`}
+        className="inline-flex shrink-0 items-center min-h-[44px]"
       >
-        <span className={`inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform ${checked ? 'translate-x-5' : 'translate-x-0.5'}`} />
+        <span className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${checked ? 'bg-emerald-500' : 'bg-slate-300'}`}>
+          <span className={`inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform ${checked ? 'translate-x-5' : 'translate-x-0.5'}`} />
+        </span>
       </button>
     </div>
   );
@@ -12455,7 +12508,20 @@ function SchedulePanel({ onScanNow, scanning, onSaved }) {
         <div className="flex items-center justify-between gap-2 pt-1 border-t">
           <button onClick={resetDefaults} disabled={!persistent || status === 'saving'}
             className="text-xs text-slate-500 hover:text-slate-700 underline disabled:opacity-50">Reset to defaults</button>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap justify-end">
+            {/* Both of these used to live only in the panel HEADER — about 1,400px above this
+                button once the phone floor made all nine NumberFields 44px, i.e. two screens
+                of scrolling away. Tapping Save just greyed the button out (dirty goes false),
+                which is indistinguishable from the disabled state; and when the service is
+                non-persistent the operator filled in the whole form, scrolled down, and found
+                two dead buttons with nothing saying why. Same defect Chad reported on the
+                Comms screen at v0.54.79: the answer has to be where the control is. */}
+            {!persistent && (
+              <span className="text-[11px] text-amber-700 inline-flex items-center gap-1">
+                <AlertTriangle size={12} /> Read-only — the schedule service can’t persist changes right now.
+              </span>
+            )}
+            {status === 'saved' && <MiniBadge tone="green">saved</MiniBadge>}
             {stored?.updatedAt && <span className="text-[10px] text-slate-400">edited {fmtFeedAge(stored.updatedAt) || ''}</span>}
             <button onClick={() => save()} disabled={!persistent || !dirty || status === 'saving'}
               className="inline-flex items-center gap-1.5 rounded-md bg-sky-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-sky-700 disabled:opacity-40 disabled:cursor-not-allowed">
@@ -15957,6 +16023,19 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
   }, []);
   useEffect(() => () => { if (mapToastTimer.current) clearTimeout(mapToastTimer.current); }, []);
 
+  // Mirror lastAction into the toast on a phone. lastAction is this screen's refusal channel —
+  // "Compare is full", "two loads share that name", "can't re-sequence, N stops have no map
+  // location", "no stops in that area" — and it renders in exactly ONE place: controlsContent.
+  // The Setup tab swaps that for the workbench as soon as a Compare card is open, and the
+  // Loads/Result tabs never render it, so on a phone those messages went nowhere. The operator
+  // picks "Shortest distance", nothing moves, nothing is said, and the control reads as dead —
+  // the same complaint Chad raised about Customer emails at v0.54.79. The toast already renders
+  // over the map on mobile and dismisses itself, so it is the right channel; desktop is
+  // unaffected because controlsContent is always on screen there.
+  useEffect(() => {
+    if (isMobile && lastAction) showMapToast(lastAction);
+  }, [isMobile, lastAction, showMapToast]);
+
   // Live-dispatch (write) UI visibility — a persisted gear toggle so the dispatcher reveals the
   // driver-assign + dispatch controls without the ?write=1 URL flag. Seeds from that flag/env the
   // first time, then the toggle is the source of truth. A real write still needs the card's Live mode
@@ -17711,11 +17790,20 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
             : <button onClick={() => { setMobilePanel('setup'); setSheetOpen(true); }} className="absolute top-2 left-2 z-20 bg-white/95 border border-slate-200 rounded shadow px-2 py-1 text-[11px]" title="Review selected stops in the Setup panel">{tally.count} selected · {tally.skids} skids · {tally.pieces} pcs</button>}
           {/* On mobile the selected list lives in the Setup sheet (tap the chip) — a full-width map
               overlay here covered the stops and tool rail (issue #232), so it's desktop-only now. */}
-          {/* The dispatch-Map data grid — Stops/Loads spreadsheet, route-able. Toggleable (gear). */}
+          {/* The dispatch-Map data grid — Stops/Loads spreadsheet, route-able. Toggleable (gear).
+
+              headerRight is passed here as well as on the desktop call below. It used to be
+              desktop-only, and DatePicker + the settings gear render in exactly two places —
+              here and controlsContent, which the Setup tab swaps out for the workbench the
+              moment a Compare card is open, i.e. the normal working state. So on a phone,
+              opening one route removed the board-date picker and the gear from the entire
+              screen: no Live-dispatch toggle, no right-panel switch, no eligibility brush,
+              and the only way back was "Back to Setup", which closes every open card. */}
           {bottomGridOn && <BottomStopsTable
             rootRef={bottomGridRef}
             stops={stops}
             loadStops={stops}
+            headerRight={bottomGridHeaderRight}
             boardDate={selectedDate}
             notes={notes}
             totalCount={stops.length}
@@ -21230,6 +21318,18 @@ function BulkOrderScreen() {
                   );
                 })()}
                 <button onClick={() => setImporter(null)} className="text-[12px] font-medium px-2.5 py-1 rounded border border-slate-300 bg-white text-slate-600 hover:bg-slate-50">Cancel</button>
+                {/* A second home for importErr, at the button that produces it. Its other
+                    render site is above the whole column mapper, and a 12-16 column
+                    spreadsheet makes that mapper 500-650px tall on a phone — so a failed
+                    import ("the grid is full", "a push is running") left the operator
+                    looking at an unchanged button with the reason scrolled off the top.
+                    commitImport returns false without closing the mapper, so nothing else
+                    moves either. */}
+                {importErr && (
+                  <span className="w-full text-[12px] text-red-600 inline-flex items-start gap-1">
+                    <AlertTriangle size={13} className="shrink-0 mt-0.5" /> {importErr}
+                  </span>
+                )}
               </div>
             </div>
           )}
@@ -21295,7 +21395,11 @@ function BulkOrderScreen() {
                   ⚠ {intake.warnings.join(' · ')}
                 </div>
               )}
-              <div className="flex items-center gap-2">
+              {/* flex-wrap: both TabBtns are shrink-0 whitespace-nowrap and together need
+                  ~382px, against ~334px inside this card on a 390px phone. Without wrapping
+                  the row ran past the edge and the Pushed tab's count — what has already gone
+                  to NuVizz — sat off-screen. */}
+              <div className="flex items-center gap-2 flex-wrap">
                 <TabBtn label="Bulk Add — Held" badge={heldRows.length} active={intakeTab === 'held'} onClick={() => setIntakeTab('held')} icon={<Clock size={13} />} />
                 <TabBtn label="Pushed to NuVizz" badge={pushedRows.length} active={intakeTab === 'pushed'} onClick={() => setIntakeTab('pushed')} icon={<FileCheck size={13} />} />
               </div>
@@ -22837,7 +22941,26 @@ function ManifestCheckScreen() {
                 <div className="px-3 py-2 border-b bg-red-50 text-xs font-bold text-red-800">
                   On the manifest, not in the scan ({result.suspectsTotal ?? suspects.length})
                 </div>
-                <div className="overflow-x-auto">
+                {/* Cards on a phone, the table on desktop — the same split CommsPhone makes for
+                    its send log, and for the same reason: eight columns is ~700-800px of table
+                    behind a 358px window, so reading Lbs/Skids/Loose meant scrolling the PRO
+                    clean off the left edge. The PRO is the row's whole identity here, and the
+                    footnote below tells the operator to go search it. */}
+                <ul className="md:hidden divide-y divide-slate-100">
+                  {suspects.map((r) => (
+                    <li key={r.pro} className="px-3 py-2.5">
+                      <div className="flex items-baseline gap-2">
+                        <span className="font-mono font-semibold text-slate-800 shrink-0">{r.pro}</span>
+                        <span className="text-slate-700 flex-1 min-w-0 truncate">{r.custName || '—'}</span>
+                      </div>
+                      <div className="text-[11px] text-slate-500">{[r.city, r.zip].filter(Boolean).join(', ') || '—'}</div>
+                      <div className="text-[11px] text-slate-500 tabular-nums">
+                        {r.lbs ?? '—'} lbs · {r.skids ?? '—'} sk · {r.pieces ?? '—'} loose{r.shipDate ? ` · ${r.shipDate}` : ''}
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+                <div className="hidden md:block overflow-x-auto">
                   <table className="min-w-full text-xs">
                     <thead className="bg-slate-50 text-slate-500">
                       <tr>
