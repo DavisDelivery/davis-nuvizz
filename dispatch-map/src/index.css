@@ -48,6 +48,22 @@ body { position: fixed; inset: 0; font-family: system-ui, -apple-system, sans-se
   input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"]) {
     min-height: 44px;
   }
+  /* THREE MORE SHAPES A TAP TARGET TAKES IN THIS APP, all of which slipped the rule above
+     and were found by a full-file sweep at v0.54.83:
+       a[href]        — the POD viewer's "Open in browser" was 34px, and a miss there does not
+                        close the photo, it throws the tab out to the browser.
+       th[onclick]    — a sortable column header is not a button; header-tap is the ONLY way to
+                        sort the phone's bottom grid, and those headers were 26-28px.
+       label:has(input) — a label wrapping a checkbox or radio IS the control (checkboxes and
+                        radios are deliberately excluded above, because the BOX should stay
+                        small — the label around it should not).
+     Anchors are inline by default, and min-height does nothing to an inline box, so they get
+     inline-flex too. */
+  a[href], label:has(> input[type="checkbox"]), label:has(> input[type="radio"]) {
+    min-height: 44px;
+  }
+  a[href] { display: inline-flex; align-items: center; }
+  th[onclick], th.cursor-pointer { min-height: 44px; }
   /* An icon-only control has no text to widen it, so it needs the horizontal floor too.
      :has() keeps this precise — a button whose only child is an icon. */
   button:has(> svg:only-child), a:has(> svg:only-child), [role="button"]:has(> svg:only-child) {
