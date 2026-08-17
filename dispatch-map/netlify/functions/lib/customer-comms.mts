@@ -72,11 +72,21 @@ export const DEFAULT_CONFIG: CommsConfig = {
   // OFF until deliberately switched on. A feature that mails customers must never
   // start sending because it happened to deploy.
   enabled: false,
-  // EMPTY means "use RESEND_FROM" — the address cs-notify already sends from, so it is
-  // the one sender known to be verified in Resend. Setting this overrides the sender for
-  // customer mail only; an address on an UNVERIFIED domain makes Resend reject every
-  // send, so writeConfig validates the shape and the operator must verify the domain.
-  fromAddress: '',
+  // Chad, v0.54.79: "emails are supposed to come from notifications@davisdelivery.com".
+  //
+  // THE TARGET IS THE APEX: notifications@davisdelivery.com. It is not set here because
+  // it cannot send yet — Resend refuses to add davisdelivery.com at all:
+  //   403 "You have reached the domain limit of your plan. Upgrade to add more."
+  // The only verified sending domain on the account is warehouse.davisdelivery.com. An
+  // address on an unverified domain does not degrade politely; Resend rejects EVERY send,
+  // so putting the apex address here would turn the test button into a guaranteed failure.
+  //
+  // So the local part is right today and the domain follows when the plan allows:
+  // notifications@ on the verified warehouse domain. Two steps flip it to the apex, and
+  // neither needs a deploy — the config lives in Firestore:
+  //   1. upgrade the Resend plan, add davisdelivery.com, publish its DNS in cPanel,
+  //   2. change this one field in More → Customer emails → Sender.
+  fromAddress: 'Davis Delivery Service <notifications@warehouse.davisdelivery.com>',
   replyTo: 'customerservice@davisdelivery.com',
   subjectTemplate: 'Delivered — PRO {{pro}}',
   htmlTemplate: '', // seeded from DEFAULT_HTML on first read

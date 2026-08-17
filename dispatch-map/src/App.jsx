@@ -77,7 +77,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.54.79';
+const APP_VERSION = '0.54.80';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -122,6 +122,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.54.80', 'THE PHONE IS ITS OWN APP NOW — AND A GUARD SO CHAD STOPS BEING THE ONE WHO FINDS THIS. Chad, on v0.54.79, with a photograph of the Customer emails screen sliding sideways on his iPhone: "This is not formatted correctly to mobile. This entire app should have a mobile version and desktop version like 2 different beings. I\'m tired of sending your formatting issues. Also I clicked a button on this screen and didn\'t work. Also emails are supposed to come from notifications@davisdelivery.com." He is right about the cause, not just the symptom: there was ONE layout with responsive classes bolted on, so a phone always got a squeezed desktop. WHAT HIS SCREENSHOT ACTUALLY WAS. The page had slid right under the fixed header — the title read "randed delivery-complete email" — and most of the screen was blank. The email preview is an <iframe>, and iOS Safari does not honour a CSS width on an iframe: it sizes the frame to its CONTENT, and the content is the email\'s real 600px table. On a 390px phone the frame became 600px and pushed the whole document wide, so what he was looking at was the empty right margin beside the email. Chromium does not reproduce it and no WebKit build exists in this environment to prove it against, so it is fixed BY CONSTRUCTION instead of by chasing one engine: the frame is given exactly the width its content wants so no engine has reason to grow it, scaled with a transform to fit the space, and the wrapper CLIPS — even an engine ignoring both cannot push the page through an overflow-hidden box. Its height is now measured from the loaded document rather than guessed, so there is no dead grey space under the message and no scrollbar inside a scrollbar. THE BUTTON THAT DID NOTHING did something: it reported a failure into a red banner at the TOP of a long scrolling page, from a control near the bottom. On a phone that is indistinguishable from a dead button. Every message on this screen is now ADDRESSED — it renders at the control that raised it. And the specific failure he would have hit at 4am is gone too: a real-delivery preview needs a delivered stop, and before the day\'s first delivery there is not one, so it now falls back to the previous board and says which day it is showing. TWO BEINGS, FOR REAL. useCommsConsole() holds all state, loading and writes; <CommsPhone> and <CommsDesktop> are separate components that share it. The phone screen is designed as a phone screen — the email first and full-bleed, everything else collapsed into 52px rows you open one at a time, the send log as cards instead of a five-column table, 44px targets throughout. The desktop keeps its two-column console. One brain, two bodies; a fix to a save path fixes both. THE FINGERTIP FLOOR IS NOW DEFAULT-ON. v0.54.70 added an opt-in .tap-target class, and opt-in is exactly why this kept happening: a sweep found FORTY-FIVE unmarked controls still under 40px — the Routing tabs at 26, the Map search field at 24, the Quote steppers at 34, the version chip at 36. All raised. The rule is now default for every interactive control on a touch phone with .tap-dense as the deliberate opt-out, so the failure mode flips from "silently missed" to "excused on purpose". Desktop density is untouched. Also fixed: the Map\'s Filters label, whose 380px threshold was set by eye ~50px too low, so on a 390px iPhone it rendered and was then sliced in half by the row\'s clip — the button read "Fil". THE GUARD is the actual answer to "I\'m tired of sending your formatting issues": scripts/verify-mobile-layout.mjs walks EVERY screen at 390 and 360 and fails on horizontal overflow (naming the widest offending element), content clipped by an overflow-hidden ancestor, sub-40px targets, and dead regions — crediting the app\'s own ::after hit-area expansion so it does not flag deliberate patterns. Every screen passes on both phones. THE SENDER is notifications@ as asked, but on the warehouse domain, not the apex: Resend refuses to add davisdelivery.com at all on the current plan ("You have reached the domain limit"), and an address on an unverified domain does not degrade politely — Resend rejects every send, which would have turned the test button into a guaranteed failure. The screen states the target, the blocker and the two steps that flip it, neither of which needs a deploy. 1,618 tests green.'],
   ['0.54.79', 'THE CUSTOMER EMAILS SCREEN, REBUILT — NO TOKEN, AND THE EMAIL ITSELF IS THE PAGE. Chad, on v0.54.78: "Get rid of this need for a token. Also the ui on this page looks like a 5 year old made it… I want the template for the email to be an exact replica of the actual email that is going to be sent. With Branding." All three. THE TOKEN IS GONE. The config endpoints passed writes through a shared-secret header, and the screen prompted for it — a real operator paying a tax against a hypothetical attacker, on an app that has no login anywhere else and takes unauthenticated writes to NuVizz itself. The server gate now stands down when no token is configured (setting COMMS_ADMIN_TOKEN re-arms it with no code change, and a unit test pins both directions), the variable was removed from the site, and the prompt is deleted. What still holds without it: test sends stay allow-listed to Davis inboxes, enabling still refuses while the mail service is unconfigured, and the daily cap still clamps. THE SCREEN WAS REDESIGNED AROUND THE EMAIL. The old page was a stack of grey boxes with the message buried behind two clicks. Now the branded email IS the page: it renders the moment the tab opens, framed in inbox chrome — subject line, sender avatar, the from address the send will actually use — exactly the way Gmail will frame it, LIVE against realistic sample delivery data. Open Edit HTML and the preview follows every keystroke, 300ms behind, with merge values escaped by a client mirror of the SAME renderer the send uses — the preview cannot lie about markup in a customer name. One click swaps the sample for a REAL delivered stop rendered server-side by the production code path, with the actual recipient decision printed above it; one click swaps back. EDITS FUNNEL TO ONE SAVE: touch the subject, the body, the sender, or the cap, and a single sticky save bar appears — "which save button" stops being a question, and Discard is beside it. The controls sit in a left rail on desktop and below the email on a phone, where the preview comes FIRST — on the screen whose whole point is what the customer sees. Verified in a real browser at both widths: the live preview renders sample data on load with escaping intact, the real-delivery preview replaces it and offers the way back, an edit surfaces the save bar, the save round-trips subject and body in one write with NO token header and NO prompt ever appearing, and the menu item is hit-tested. 1,615 unit tests green.'],
   ['0.54.78', 'THE CUSTOMER EMAIL PROGRAM HAS ITS CONSOLE — AND THE OPT-OUT IS REAL NOW. The delivery-complete email backend shipped dark earlier this week: our own branded note from our own domain the moment freight lands, off by default, one email per PRO ever, daily-capped, zero NuVizz calls. What it lacked was any way to SEE it — and, more seriously, any way to honour a customer who asks to stop receiving them. Both land here. FIRST, THE NUMBER THAT DECIDED THIS WAS WORTH FINISHING: coverage. Of the delivered stops sampled on 8/13 and 8/14, essentially ALL of them — 599 of 600, and 598 of 600 — carry a consignee email straight off the order. That is not a projection; it is our own cached board counted. ~700+ deliveries a day, nearly every one reachable. A NEW SCREEN under More → Customer emails: the on/off switch (it refuses to enable when the mail service is unconfigured, so ON can never silently mean nothing), sender + reply-to + the daily cap, the full template editor with every merge field one tap away, a PREVIEW rendered server-side against a real delivered stop by the same code the real send uses — so what you preview cannot drift from what a customer gets — a one-click [TEST] send that is allow-listed to Davis inboxes and can never reach a customer, and the 7-day send log that can tell "nobody was emailed" apart from "the sweep never ran". THE SCREEN IS HONEST ABOUT THE ONE THING IT DOES NOT DO: the automatic trigger is deliberately not wired yet. Even switched on, nothing sends on its own today — a banner says exactly that. Template and sender domain get signed off first; the trigger ships as its own reviewed change, because the first email 700 customers receive should not also be the first one anybody saw. SECOND, THE OPT-OUT. The backend has honoured comms_opt_out from day one, but nothing could WRITE it — the server code itself carries a warning that the feature must not be enabled until this exists, because an opt-out you cannot honour is worse than no opt-out. The customer-notes editor now has it: "No delivery emails to this customer", a red suppression toggle that skips them on every future order, plus a per-customer address override that beats the order\'s consignee email and carries to their next delivery. Config writes need the admin token (asked once per session, kept in sessionStorage, never in the bundle) — the same pattern the Gmail card uses. Verified in a real browser at phone and desktop widths, including the hit-test that would have caught the v0.54.71 clipped-menu bug: the tab is reachable from BOTH navigations, renders every card, and a template save round-trips. 1,614 unit tests green.'],
   ['0.54.77', 'THE MORE MENU WOULD NOT DROP DOWN ON DESKTOP. Chad: "more is not dropping down like it should on desktop." It was opening every time — you just could not see it. THE CAUSE WAS MINE, from the v0.54.71 layout sweep. That release fixed a desktop nav that crushed its own title into the tabs at narrow widths, and the fix was to let the tab row scroll: overflow-x-auto. But the More dropdown is positioned absolutely INSIDE that row, and a scroll container clips what overflows it. Worse, CSS does not let you scroll one axis only — set overflow-x to auto and overflow-y computes to auto as well. So the nav became a clipping box about forty pixels tall and the menu opened straight into it, out of sight. The scrollbar visible at the right of the tab row in Chad\'s screenshot was the tell: that was the nav\'s own scrollbar, on a row that should never have had one. THE FIX is structural rather than a z-index nudge, because raising z-index does nothing about clipping — a clipped element is not behind something, it is not painted. The scrolling tab row and the More button are now SIBLINGS: the tabs still scroll when they genuinely do not fit, and the menu now opens outside that box. It also means the overflow menu can no longer scroll out of reach on a narrow window, which was a second, quieter bug in the old arrangement. WHY THE BROWSER TEST DID NOT CATCH IT, which matters more than the fix. There has been a real-browser check on this menu since v0.54.48, and it passed on every broken build. It asked Playwright whether the menu was visible, and an element clipped by an ancestor still has a non-empty bounding box — so "visible" came back true while nobody could see the thing. That is the same shape of hole as v0.54.50, where the check ran at desktop width and missed a feature broken on phones: the test agreed with the code instead of with the screen. It now HIT-TESTS the point a dispatcher would actually click and asks the browser what is painted there; if anything else answers, the check fails. That assertion was run against the broken build first and it fails, then against the fix and it passes — a test that cannot fail is not evidence. The phone menu was never affected: the phone has its own bar and does not use this row. 1,614 tests green.'],
@@ -3053,7 +3054,7 @@ function StopsStatusCard({ stopCount, carryoverCount = 0, totalPallets, loadAt, 
         <button
           onClick={onRefresh}
           disabled={scanning || scanCooldown}
-          className="ml-auto p-1 rounded hover:bg-slate-100 disabled:opacity-50 min-w-[30px] min-h-[30px] inline-flex items-center justify-center"
+          className="ml-auto p-1 rounded hover:bg-slate-100 disabled:opacity-50 min-w-[44px] min-h-[44px] inline-flex items-center justify-center"
           title={scanCooldown ? 'Just scanned — try again shortly' : 'Refresh from NuVizz — planned/unplanned + completed + loads (~4 calls)'}
         >
           <RefreshCw size={13} className={scanning ? 'animate-spin' : ''} />
@@ -4444,7 +4445,7 @@ function FilterPanel({ filters, setFilters, counts }) {
         <div className="font-semibold flex items-center gap-2"><Filter size={14} /> Filters</div>
         <button
           onClick={() => setFilters({})}
-          className="text-xs text-slate-500 hover:text-slate-800 px-2 py-1.5 min-h-[34px] rounded hover:bg-slate-100"
+          className="text-xs text-slate-500 hover:text-slate-800 px-2 py-1.5 min-h-[44px] rounded hover:bg-slate-100"
         >
           Reset
         </button>
@@ -7271,7 +7272,7 @@ function MobileAppBar({ version, onChipMenu, chipMenuOpen, onSelectMenu, smsUnre
         <PresenceChip presence={presence} compact />
         <button
           onClick={onChipMenu}
-          className="relative text-[12px] px-2.5 py-1.5 min-h-[36px] rounded bg-white/15 text-white/90 active:bg-white/25 inline-flex items-center gap-1.5"
+          className="relative text-[12px] px-2.5 py-1.5 min-h-[44px] rounded bg-white/15 text-white/90 active:bg-white/25 inline-flex items-center gap-1.5"
           aria-haspopup="menu"
           aria-expanded={chipMenuOpen}
           title="Version menu"
@@ -7908,7 +7909,7 @@ function MobileStopsTab({
                 onClick={() => applySort(s.key)}
                 aria-pressed={on}
                 className={`inline-flex items-center gap-0.5 rounded-full border px-3 text-xs font-semibold ${on ? 'text-white' : 'bg-white text-slate-600 border-slate-300'}`}
-                style={{ minHeight: 34, ...(on ? { background: BRAND, borderColor: BRAND } : {}) }}
+                style={{ minHeight: 44, ...(on ? { background: BRAND, borderColor: BRAND } : {}) }}
               >
                 {s.label}
                 {/* The arrow only shows on an active sort that HAS a direction — "Board order"
@@ -10265,7 +10266,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
               <button
                 onClick={manualScan}
                 disabled={scanning || scanCooldown}
-                className="ml-auto p-1 rounded hover:bg-slate-100 active:bg-slate-200 disabled:opacity-50 flex-shrink-0 min-w-[34px] min-h-[34px] inline-flex items-center justify-center"
+                className="ml-auto p-1 rounded hover:bg-slate-100 active:bg-slate-200 disabled:opacity-50 flex-shrink-0 min-w-[44px] min-h-[44px] inline-flex items-center justify-center"
                 aria-label="Scan now"
                 title={scanCooldown ? 'Just scanned — try again shortly' : 'Refresh from NuVizz — planned/unplanned + completed + loads (~4 calls)'}
               >
@@ -10282,7 +10283,12 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
                     something has to give or the button runs off the right edge. The bottom
                     nav has a labelled Filters tab two inches below, so the word is the
                     cheapest thing in the row to lose. */}
-                <Filter size={14} /> <span className="hidden min-[380px]:inline">Filters</span>
+                {/* 440, not 380. v0.54.71 set this threshold by eye and picked it ~50px too
+                    low: on a 390px iPhone the label DID render and was then sliced in half by
+                    the row's clip, so the button read "Fil". Measured, the row needs 426px
+                    before the word fits. Under that the icon stands alone — the bottom nav
+                    has a labelled Filters tab an inch below. */}
+                <Filter size={14} /> <span className="hidden min-[440px]:inline">Filters</span>
               </button>
             </div>
             {/* Stacked details — hidden when collapsed (mirrors desktop). */}
@@ -10734,7 +10740,7 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
                 <button
                   onClick={manualScan}
                   disabled={scanning || scanCooldown}
-                  className="ml-auto p-1 rounded hover:bg-slate-100 disabled:opacity-50 min-w-[30px] min-h-[30px] inline-flex items-center justify-center"
+                  className="ml-auto p-1 rounded hover:bg-slate-100 disabled:opacity-50 min-w-[44px] min-h-[44px] inline-flex items-center justify-center"
                   title={scanCooldown ? 'Just scanned — try again shortly' : 'Refresh from NuVizz — planned/unplanned + completed + loads (~4 calls)'}
                 >
                   <RefreshCw size={13} className={scanning ? 'animate-spin' : ''} />
@@ -11461,7 +11467,7 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
           filter disappeared. Wrapping costs one extra line at narrow widths and can never hide
           a control. */}
       <div className="flex flex-wrap items-center gap-2 px-3 py-1.5 border-b border-slate-100">
-        <button onClick={() => setOpen(!open)} className="inline-flex items-center justify-center min-w-[34px] min-h-[34px] rounded text-slate-600 hover:text-slate-900 hover:bg-slate-100" aria-expanded={open} title={open ? 'Collapse' : 'Expand'}>
+        <button onClick={() => setOpen(!open)} className="inline-flex items-center justify-center min-w-[44px] min-h-[44px] rounded text-slate-600 hover:text-slate-900 hover:bg-slate-100" aria-expanded={open} title={open ? 'Collapse' : 'Expand'}>
           {open ? <ChevronDown size={14} /> : <ChevronUp size={14} />}
         </button>
         {/* shrink-0: Stops/Loads is the bar's primary control — it never gives up width. */}
@@ -21929,33 +21935,44 @@ function GmailCard({ onStoredRun }) {
 // ── Customer Communications — the branded delivery-complete email ────────────
 // Chad's program: our own delivery email from our own domain, instead of NuVizz's
 // unbranded one. The backend (customer-comms-*) shipped dark: enabled=false, atomic
-// claim-before-send, daily cap, per-customer opt-out, zero NuVizz calls. This screen
-// is its console, built around the EMAIL ITSELF: the preview pane renders the exact
-// branded message — live, as the template is edited — because "what will the customer
-// see" is the only question this screen exists to answer.
+// claim-before-send, daily cap, per-customer opt-out, zero NuVizz calls.
 //
-// No admin token. Chad: "get rid of this need for a token." adminTokenOk() now passes
-// when COMMS_ADMIN_TOKEN is unset (see the lib's comment for what still holds); the UI
-// still sends the header if a value is ever re-armed into sessionStorage.
+// PHONE AND DESKTOP ARE TWO SEPARATE COMPONENTS HERE. Chad, on v0.54.79: "This entire
+// app should have a mobile version and desktop version like 2 different beings."
+// The reason the phone kept losing is that there was ONE layout with responsive
+// classes bolted on, so the phone always rendered a squeezed desktop. So:
+//
+//   useCommsConsole()  — ALL state, loading and writes. One brain, no duplication;
+//                        a fix to a save path fixes both bodies at once.
+//   <CommsPhone>       — a phone screen designed as a phone screen: the email first
+//                        and full-bleed, everything else collapsed into 48px rows you
+//                        open one at a time, 44px targets, feedback under the control
+//                        that fired it.
+//   <CommsDesktop>     — the two-column console: controls in a left rail, email in the
+//                        main pane, everything visible at once because there is room.
+//
+// This is the pattern for the rest of the app, not a one-off for this screen.
 const COMMS_KEY_SS = 'dd_comms_admin_key';
 
-// Sample merge data for the LIVE preview — same fields stopVars() emits, shaped like a
-// real Buford delivery. The real-data preview (server-rendered from an actual delivered
-// stop) is one click away; this exists so the email is on screen the moment the tab opens.
+// The email is a 600px table — that is what lands in the customer's inbox, and it is
+// what the preview must show. It is NEVER reflowed to phone width: a preview that
+// re-laid-out the email would be showing Chad something no customer receives.
+const EMAIL_WIDTH = 600;
+
+// Sample merge data for the live preview, shaped like a real Buford delivery.
 const COMMS_SAMPLE_VARS = {
   pro: '007161743', customer: 'BUFORD TILE & STONE', driver: 'FRANK OKINE',
   deliveredDate: 'Mon, Aug 17', deliveredTime: '1:46 PM', deliveredWhen: 'Mon, Aug 17 at 1:46 PM',
-  address: '943 GAINESVILLE HWY', city: 'BUFORD', state: 'GA', zip: '30518',
+  address: '943 GAINESVILLE HWY', address2: 'STE 200', city: 'BUFORD', state: 'GA', zip: '30518',
   cityStateZip: 'BUFORD, GA 30518', pieces: '6', weight: '860',
   trackingUrl: 'https://tracking.davisdelivery.com/?pro=007161743',
-  reviewUrl: 'https://tracking.davisdelivery.com/?pro=007161743#review',
+  reviewUrl: 'https://tracking.davisdelivery.com/?pro=007161743',
   year: String(new Date().getFullYear()),
 };
 
 // CLIENT MIRROR of the server's renderTemplate + escapeVars (lib/customer-comms.mts).
-// Same two passes — {{#field}}…{{/field}} sections first, then {{field}} substitution —
-// and the same HTML escaping of every merge value. If the server renderer ever changes,
-// change this with it: the entire value of a live preview is that it cannot lie.
+// Same two passes and the same escaping. If the server renderer changes, change this
+// with it: the entire value of a live preview is that it cannot lie.
 function renderCommsPreview(tpl, rawVars) {
   const esc = (s) => String(s ?? '')
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
@@ -21969,58 +21986,114 @@ function renderCommsPreview(tpl, rawVars) {
   return withSections.replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (_m, k) => (vars[k] == null ? '' : vars[k]));
 }
 
-// The one visual container every section of this screen uses, so the page reads as one
-// designed surface instead of a pile of ad-hoc boxes.
-function CommsCard({ title, aside = null, children, className = '' }) {
+/**
+ * The email, rendered at its true 600px width and SCALED to whatever room it has.
+ *
+ * This is the fix for the screenshot Chad sent: his page slid sideways under the fixed
+ * header, so the title read "randed delivery-complete email". A plain `w-full` iframe
+ * is not enough, because iOS Safari does not honour a CSS width on an iframe — it sizes
+ * the frame to its CONTENT, and the content here is a 600px table. On his phone the
+ * frame became 600px inside a 390px page and pushed the whole document wide.
+ *
+ * Chromium does not reproduce that (and no WebKit build is available here to prove it
+ * against), so this is fixed BY CONSTRUCTION rather than by chasing one engine:
+ *   • the frame is given exactly the width its content wants (600px), so no engine has
+ *     any reason to grow it,
+ *   • it is scaled down by transform to fit the space available,
+ *   • and the wrapper CLIPS. Even an engine that ignored both of the above cannot push
+ *     the page sideways through an overflow-hidden box.
+ *
+ * The height is measured from the loaded document rather than guessed, so the frame is
+ * exactly as tall as the email — no dead grey space under a short message, no scrollbar
+ * inside a scrollbar on a long one. sandbox allows same-origin ONLY so that height can
+ * be read; scripts are still blocked, so template HTML cannot execute.
+ */
+function EmailFrame({ html, className = '' }) {
+  const boxRef = useRef(null);
+  const frameRef = useRef(null);
+  const [scale, setScale] = useState(1);
+  const [docH, setDocH] = useState(560);
+
+  const measure = useCallback(() => {
+    const box = boxRef.current;
+    if (box && box.clientWidth > 0) setScale(Math.min(1, box.clientWidth / EMAIL_WIDTH));
+    try {
+      const d = frameRef.current?.contentDocument;
+      const h = Math.max(d?.body?.scrollHeight || 0, d?.documentElement?.scrollHeight || 0);
+      if (h > 0) setDocH(h);
+    } catch { /* opaque document — keep the last known height */ }
+  }, []);
+
+  // Re-measure on template edits (the html prop) and on rotation/resize.
+  useEffect(() => { const t = setTimeout(measure, 60); return () => clearTimeout(t); }, [html, measure]);
+  useEffect(() => {
+    if (typeof ResizeObserver === 'undefined' || !boxRef.current) return undefined;
+    const ro = new ResizeObserver(measure);
+    ro.observe(boxRef.current);
+    return () => ro.disconnect();
+  }, [measure]);
+
   return (
-    <section className={`bg-white border border-slate-200 rounded-xl shadow-sm ${className}`}>
-      {title && (
-        <header className="flex items-center justify-between gap-2 px-4 pt-3 pb-2 border-b border-slate-100">
-          <h2 className="text-[11px] font-bold tracking-[0.12em] uppercase text-slate-500">{title}</h2>
-          {aside}
-        </header>
-      )}
-      <div className="p-4">{children}</div>
-    </section>
+    <div ref={boxRef} className={`w-full overflow-hidden bg-white ${className}`} style={{ height: Math.max(120, Math.round(docH * scale)) }}>
+      <iframe
+        ref={frameRef}
+        title="Email preview"
+        sandbox="allow-same-origin"
+        srcDoc={html}
+        onLoad={measure}
+        scrolling="no"
+        style={{ width: EMAIL_WIDTH, height: docH, border: 0, display: 'block', transform: `scale(${scale})`, transformOrigin: 'top left' }}
+      />
+    </div>
   );
 }
 
-function CommsSwitch({ checked, onChange, disabled, label }) {
+/** Inbox chrome — subject, sender, recipient — so the preview reads as an email. */
+function EmailHeaderStrip({ subject, from, to, note, compact }) {
   return (
-    <button
-      role="switch" aria-checked={checked} aria-label={label} disabled={disabled}
-      onClick={() => !disabled && onChange(!checked)}
-      className={`flex-shrink-0 relative w-11 h-6 rounded-full transition-colors ${disabled ? 'cursor-not-allowed opacity-50' : ''}`}
-      style={{ background: checked ? '#16a34a' : '#cbd5e1' }}
-    >
-      <span className="absolute top-0.5 w-5 h-5 bg-white rounded-full shadow transition-all" style={{ left: checked ? 'calc(100% - 22px)' : '2px' }} />
-    </button>
+    <div className={`${compact ? 'px-3 py-2.5' : 'px-4 py-3'} bg-slate-50 border-b border-slate-200`}>
+      <div className="text-sm font-semibold text-slate-900 break-words">{subject || '(no subject)'}</div>
+      <div className="mt-1.5 flex items-center gap-2 min-w-0">
+        <span className="w-8 h-8 rounded-full flex items-center justify-center text-white text-xs font-bold shrink-0" style={{ background: BRAND }}>D</span>
+        <div className="min-w-0 leading-tight">
+          <div className="text-xs font-semibold text-slate-800 truncate">{from || 'Davis Delivery'}</div>
+          <div className="text-[10px] text-slate-500 truncate">to {to}</div>
+        </div>
+        {note}
+      </div>
+    </div>
   );
 }
 
-function CustomerCommsScreen() {
+/**
+ * ONE state hook for both bodies. Every fetch, every write, every piece of derived
+ * state lives here — the phone and the desktop differ only in how they lay it out.
+ */
+function useCommsConsole() {
   const [cfgResp, setCfgResp] = useState(null);
   const [log, setLog] = useState(null);
   const [busy, setBusy] = useState('load');
-  const [err, setErr] = useState(null);
-  const [note, setNote] = useState(null);
+  // Feedback is ADDRESSED: { where, kind, text }. A message raised by the test-send
+  // button renders at the test-send button, not in a banner at the top of a screen the
+  // operator has already scrolled past — which on a phone is indistinguishable from a
+  // button that did nothing at all. That is exactly what Chad hit.
+  const [msg, setMsg] = useState(null);
+  const say = (where, kind, text) => setMsg({ where, kind, text });
+  const clear = () => setMsg(null);
 
   const [subjectT, setSubjectT] = useState('');
   const [htmlT, setHtmlT] = useState('');
   const [fromAddr, setFromAddr] = useState('');
   const [replyTo, setReplyTo] = useState('');
   const [dailyCap, setDailyCap] = useState(25);
-  const [showHtml, setShowHtml] = useState(false);
   const [dirty, setDirty] = useState(false);
 
   const [covDate, setCovDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [coverage, setCoverage] = useState(null);
-  const [realPreview, setRealPreview] = useState(null);   // server render of a real stop, or null = live sample
+  const [realPreview, setRealPreview] = useState(null);
   const [pvPro, setPvPro] = useState('');
   const [testTo, setTestTo] = useState('');
 
-  // Debounced live render — the preview pane follows the editor keystroke-for-keystroke
-  // (300ms behind), against sample data. Server data replaces it only on request.
   const [liveHtml, setLiveHtml] = useState('');
   const [liveSubject, setLiveSubject] = useState('');
   useEffect(() => {
@@ -22031,9 +22104,8 @@ function CustomerCommsScreen() {
     return () => clearTimeout(t);
   }, [htmlT, subjectT]);
 
-  // Kept for re-arming: if a token is ever configured again, paste it once into
-  // sessionStorage and every write carries it. With none set, the header is empty
-  // and the server (also unset) does not ask.
+  // No token is asked for any more (v0.54.79). The header is still sent if one was
+  // ever put in sessionStorage, so re-arming COMMS_ADMIN_TOKEN needs no code change.
   const hdrs = () => {
     const h = { 'Content-Type': 'application/json' };
     try { const t = sessionStorage.getItem(COMMS_KEY_SS); if (t) h['x-comms-token'] = t; } catch { /* private mode */ }
@@ -22041,7 +22113,7 @@ function CustomerCommsScreen() {
   };
 
   const loadAll = async () => {
-    setBusy('load'); setErr(null);
+    setBusy('load'); clear();
     try {
       const [c, l] = await Promise.all([
         fetch('/.netlify/functions/customer-comms-config').then((r) => r.json()),
@@ -22056,87 +22128,359 @@ function CustomerCommsScreen() {
       setDailyCap(c.config.dailyCap);
       setDirty(false);
       setLog(l.ok ? l : null);
-    } catch (e) { setErr(e.message); }
+    } catch (e) { say('top', 'err', e.message); }
     setBusy(null);
   };
   useEffect(() => { loadAll(); }, []);
 
-  const putConfig = async (patch, busyKey = 'save') => {
-    setBusy(busyKey); setErr(null); setNote(null);
+  const putConfig = async (patch, busyKey, where) => {
+    setBusy(busyKey); clear();
     try {
       const r = await fetch('/.netlify/functions/customer-comms-config', { method: 'PUT', headers: hdrs(), body: JSON.stringify(patch) });
       const j = await r.json();
       if (!j.ok) throw new Error(j.error || 'save failed');
-      setCfgResp((prev) => (prev ? { ...prev, config: j.config, resendConfigured: j.resendConfigured, effectiveFrom: j.config.fromAddress || prev.effectiveFrom } : prev));
-      setNote('Saved.');
+      setCfgResp((prev) => (prev ? { ...prev, config: j.config, resendConfigured: j.resendConfigured, effectiveFrom: j.effectiveFrom || prev.effectiveFrom } : prev));
       return j;
-    } catch (e) { setErr(e.message); return null; }
+    } catch (e) { say(where, 'err', e.message); return null; }
     finally { setBusy(null); }
   };
 
   const saveAll = async () => {
-    const j = await putConfig({ subjectTemplate: subjectT, htmlTemplate: htmlT, fromAddress: fromAddr, replyTo, dailyCap: Number(dailyCap) });
-    if (j) setDirty(false);
+    const j = await putConfig({ subjectTemplate: subjectT, htmlTemplate: htmlT, fromAddress: fromAddr, replyTo, dailyCap: Number(dailyCap) }, 'save', 'save');
+    if (j) { setDirty(false); say('save', 'ok', 'Saved.'); }
   };
 
   const toggleEnabled = async () => {
     const on = !cfgResp?.config?.enabled;
-    const msg = on
-      ? 'Turn the customer delivery-email program ON?\n\nNothing sends today — the automatic trigger is not wired yet. This stages the switch so the trigger can ship separately. The daily cap and per-customer opt-out apply from the first send.'
+    const q = on
+      ? 'Turn the customer delivery-email program ON?\n\nNothing sends today — the automatic trigger is not wired yet. This stages the switch so the trigger can ship separately.'
       : 'Turn the program OFF? Any future trigger will send nothing while off.';
-    if (!window.confirm(msg)) return;
-    await putConfig({ enabled: on }, 'enable');
+    if (!window.confirm(q)) return;
+    const j = await putConfig({ enabled: on }, 'enable', 'program');
+    if (j) say('program', 'ok', on ? 'Program is ON — still nothing sends until the trigger ships.' : 'Program is OFF.');
   };
 
   const runCoverage = async () => {
-    setBusy('coverage'); setErr(null); setCoverage(null);
+    setBusy('coverage'); clear(); setCoverage(null);
     try {
       const j = await fetch(`/.netlify/functions/customer-comms-test?coverage=1&date=${covDate}&limit=600`).then((r) => r.json());
       if (!j.ok) throw new Error(j.error || 'coverage failed');
       setCoverage(j);
-    } catch (e) { setErr(e.message); }
+    } catch (e) { say('coverage', 'err', e.message); }
     setBusy(null);
   };
 
+  // A real-delivery preview needs a delivered stop, and before the first delivery of the
+  // day there is not one — the endpoint answers "no cached stops for <date>". Rather than
+  // report that as a failure at 4am, fall back to the previous board and SAY so.
   const loadRealPreview = async () => {
-    setBusy('preview'); setErr(null);
-    try {
+    setBusy('preview'); clear();
+    const ask = async (date) => {
       const q = new URLSearchParams({ preview: '1' });
       if (pvPro.trim()) q.set('pro', pvPro.trim());
-      const j = await fetch(`/.netlify/functions/customer-comms-test?${q}`).then((r) => r.json());
+      if (date) q.set('date', date);
+      return fetch(`/.netlify/functions/customer-comms-test?${q}`).then((r) => r.json());
+    };
+    try {
+      let j = await ask(null);
+      let fellBack = false;
+      if (!j.ok && /no cached stops|no delivered/i.test(String(j.error || ''))) {
+        const y = new Date(Date.now() - 864e5).toISOString().slice(0, 10);
+        const j2 = await ask(y);
+        if (j2.ok) { j = j2; fellBack = true; }
+      }
       if (!j.ok) throw new Error(j.error || 'preview failed');
-      setRealPreview(j);
-    } catch (e) { setErr(e.message); }
+      setRealPreview({ ...j, fellBack });
+      if (fellBack) say('preview', 'ok', `Today's board has no delivered stop yet — showing ${j.date}.`);
+    } catch (e) { say('preview', 'err', e.message); }
     setBusy(null);
   };
 
   const sendTest = async () => {
     const to = testTo.trim();
-    if (!to) { setErr('Enter the address the test should go to — a Davis inbox.'); return; }
-    setBusy('test'); setErr(null);
+    if (!to) { say('test', 'err', 'Enter the address the test should go to — a Davis inbox.'); return; }
+    setBusy('test'); clear();
     try {
       const q = new URLSearchParams({ to });
       if (pvPro.trim()) q.set('pro', pvPro.trim());
       const j = await fetch(`/.netlify/functions/customer-comms-test?${q}`, { method: 'POST', headers: hdrs() }).then((r) => r.json());
       if (!j.ok) throw new Error(j.error || 'test send failed');
-      setNote(`Test sent to ${to} — check that inbox.`);
-    } catch (e) { setErr(e.message); }
+      say('test', 'ok', `Test sent to ${to} — check that inbox.`);
+    } catch (e) { say('test', 'err', e.message); }
     setBusy(null);
   };
 
   const cfg = cfgResp?.config;
-  const enabled = !!cfg?.enabled;
   const showingReal = !!realPreview;
-  const frameHtml = showingReal ? realPreview.html : liveHtml;
-  const frameSubject = showingReal ? realPreview.subject : liveSubject;
-  const input = 'w-full border border-slate-300 rounded-lg px-2.5 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-200';
+  return {
+    cfgResp, cfg, log, busy, msg, say, clear,
+    enabled: !!cfg?.enabled,
+    subjectT, setSubjectT, htmlT, setHtmlT, fromAddr, setFromAddr, replyTo, setReplyTo,
+    dailyCap, setDailyCap, dirty, setDirty,
+    covDate, setCovDate, coverage, pvPro, setPvPro, testTo, setTestTo,
+    realPreview, setRealPreview, showingReal,
+    frameHtml: showingReal ? realPreview.html : liveHtml,
+    frameSubject: showingReal ? realPreview.subject : liveSubject,
+    recipientLine: showingReal
+      ? (realPreview.optedOut ? 'nobody — customer opted out' : (realPreview.recipientOnFile || 'nobody — no address on file'))
+      : 'the consignee on the order',
+    loadAll, saveAll, toggleEnabled, runCoverage, loadRealPreview, sendTest,
+    resetTemplate: () => { setSubjectT('Delivered — PRO {{pro}}'); setHtmlT(cfgResp?.defaultHtml || ''); setDirty(true); },
+  };
+}
+
+/**
+ * The sender is not where Chad asked for it yet, and the screen should say so rather
+ * than let him discover it when a send bounces. Target: notifications@davisdelivery.com.
+ * Blocker: Resend will not add the apex domain on the current plan (403, domain limit),
+ * and only warehouse.davisdelivery.com is verified.
+ */
+function SenderTargetNote({ compact }) {
+  return (
+    <div className={`mt-2 ${compact ? 'text-[12px]' : 'text-[11px]'} leading-relaxed text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-2`}>
+      Target is <b>notifications@davisdelivery.com</b>. Resend will not add
+      <span className="font-mono"> davisdelivery.com</span> on the current plan (domain limit reached), and only
+      <span className="font-mono"> warehouse.davisdelivery.com</span> is verified — so sends use
+      <span className="font-mono"> notifications@warehouse.davisdelivery.com</span> until the plan is upgraded and
+      the DNS published. Then this one field changes; no deploy.
+    </div>
+  );
+}
+
+/** Feedback rendered where the action is. Never a banner on a screen you have left. */
+function CommsMsg({ msg, where, className = '' }) {
+  if (!msg || msg.where !== where) return null;
+  const err = msg.kind === 'err';
+  return (
+    <div className={`mt-2 text-[12px] leading-snug rounded-lg px-2.5 py-2 border ${err ? 'bg-red-50 border-red-200 text-red-800' : 'bg-emerald-50 border-emerald-200 text-emerald-800'} ${className}`}>
+      {msg.text}
+    </div>
+  );
+}
+
+function CommsSwitch({ checked, onChange, disabled, label }) {
+  return (
+    <button
+      role="switch" aria-checked={checked} aria-label={label} disabled={disabled}
+      onClick={() => !disabled && onChange(!checked)}
+      className={`flex-shrink-0 inline-flex items-center min-h-[44px] ${disabled ? 'cursor-not-allowed opacity-50' : ''}`}
+    >
+      {/* The TRACK is 48×28; the BUTTON around it is 44px tall so the thumb is a
+          fingertip target rather than a 28px sliver. Painting the track as an inner
+          span keeps the control looking right at both sizes. */}
+      <span className="relative block w-12 h-7 rounded-full transition-colors" style={{ background: checked ? '#16a34a' : '#cbd5e1' }}>
+        <span className="absolute top-0.5 w-6 h-6 bg-white rounded-full shadow transition-all" style={{ left: checked ? 'calc(100% - 26px)' : '2px' }} />
+      </span>
+    </button>
+  );
+}
+
+// ── PHONE ────────────────────────────────────────────────────────────────────
+// Designed for a thumb: one column, the email first and full-bleed, everything else
+// behind 52px section rows opened one at a time. Every control clears the 44px floor.
+
+function PhoneSection({ title, subtitle, open, onToggle, children, badge }) {
+  return (
+    <section className="bg-white border-y border-slate-200 -mx-3 mb-2">
+      <button
+        onClick={onToggle}
+        aria-expanded={open}
+        className="w-full min-h-[52px] px-4 flex items-center gap-2 text-left active:bg-slate-50"
+      >
+        <span className="flex-1 min-w-0">
+          <span className="block text-[13px] font-bold text-slate-800">{title}</span>
+          {subtitle && <span className="block text-[11px] text-slate-500 truncate">{subtitle}</span>}
+        </span>
+        {badge}
+        <ChevronDown size={18} className={`text-slate-400 shrink-0 transition-transform ${open ? 'rotate-180' : ''}`} />
+      </button>
+      {open && <div className="px-4 pb-4 pt-1">{children}</div>}
+    </section>
+  );
+}
+
+function CommsPhone(c) {
+  const [open, setOpen] = useState(null);
+  const toggle = (k) => setOpen((v) => (v === k ? null : k));
+  const input = 'w-full min-h-[44px] border border-slate-300 rounded-lg px-3 text-[15px] focus:outline-none focus:ring-2 focus:ring-blue-200';
   const label = 'block text-[11px] font-semibold text-slate-500 mb-1';
-  const btnPri = 'px-3.5 py-2 rounded-lg text-sm font-semibold text-white disabled:opacity-50';
-  const btnGhost = 'px-3 py-1.5 rounded-lg text-xs font-semibold border border-slate-300 bg-white text-slate-600 hover:bg-slate-50';
+  const btn = 'min-h-[44px] px-4 rounded-lg text-[14px] font-semibold';
 
   return (
-    <div className="flex-1 min-h-0 overflow-y-auto bg-slate-100">
-      {/* Page header — plain, not a card: this is the screen's identity, not a section. */}
+    <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden bg-slate-100">
+      {/* Compact sticky identity bar — title, state, reload. Nothing else competes. */}
+      <div className="sticky top-0 z-20 bg-white border-b border-slate-200 px-3 py-2 flex items-center gap-2">
+        <Mail size={16} style={{ color: BRAND }} className="shrink-0" />
+        <span className="text-[15px] font-bold text-slate-900 flex-1 min-w-0 truncate">Customer emails</span>
+        <span className={`text-[10px] font-bold px-2 py-1 rounded-full shrink-0 ${c.enabled ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-200 text-slate-600'}`}>{c.enabled ? 'ON' : 'OFF'}</span>
+        <button onClick={c.loadAll} disabled={c.busy === 'load'} className="min-h-[44px] min-w-[44px] px-3 rounded-lg text-[13px] font-semibold border border-slate-300 text-slate-600 active:bg-slate-50">
+          {c.busy === 'load' ? '…' : 'Reload'}
+        </button>
+      </div>
+
+      <div className="px-3 pt-3">
+        <CommsMsg msg={c.msg} where="top" className="mb-2" />
+
+        {/* THE EMAIL — first, full-bleed, scaled to the phone. */}
+        <div className="-mx-3 bg-white border-y border-slate-200">
+          <div className="px-3 py-2 flex items-center gap-1.5">
+            <button
+              onClick={() => c.setRealPreview(null)}
+              className={`flex-1 min-h-[44px] rounded-lg text-[13px] font-semibold border ${!c.showingReal ? 'text-white border-transparent' : 'bg-white border-slate-300 text-slate-600'}`}
+              style={!c.showingReal ? { background: BRAND } : undefined}
+            >Sample</button>
+            <button
+              onClick={c.loadRealPreview}
+              disabled={c.busy === 'preview'}
+              className={`flex-1 min-h-[44px] rounded-lg text-[13px] font-semibold border ${c.showingReal ? 'text-white border-transparent' : 'bg-white border-slate-300 text-slate-600'}`}
+              style={c.showingReal ? { background: BRAND } : undefined}
+            >{c.busy === 'preview' ? 'Loading…' : 'Real delivery'}</button>
+          </div>
+          <div className="px-3 pb-2"><CommsMsg msg={c.msg} where="preview" className="mt-0" /></div>
+          <EmailHeaderStrip compact subject={c.frameSubject} from={c.cfgResp?.effectiveFrom} to={c.recipientLine} />
+          <EmailFrame html={c.frameHtml} />
+          <div className="px-3 py-2 text-[10px] text-slate-400 border-t border-slate-100">
+            {c.showingReal
+              ? `Rendered server-side from PRO ${c.realPreview.pro} by the same code the live send uses.`
+              : 'Follows the template as you edit it, with sample delivery data. Shown at the real 600px width, scaled to fit.'}
+          </div>
+        </div>
+
+        <div className="h-3" />
+
+        <PhoneSection title="Program" subtitle={c.enabled ? 'ON — trigger still unwired' : 'OFF — nothing sends'} open={open === 'program'} onToggle={() => toggle('program')}>
+          <div className="flex items-center gap-3">
+            <CommsSwitch checked={c.enabled} disabled={!c.cfg || c.busy === 'enable' || (!c.enabled && !c.cfgResp?.resendConfigured)} onChange={c.toggleEnabled} label="Delivery-complete emails" />
+            <span className="text-[13px] text-slate-700">Send a delivery-complete email — one per PRO, ever.</span>
+          </div>
+          {c.cfgResp && !c.cfgResp.resendConfigured && <div className="mt-2 text-[12px] text-red-700 font-semibold">Mail service unconfigured — the switch refuses to turn on.</div>}
+          <div className="mt-3 text-[12px] leading-relaxed text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+            The automatic trigger is <b>not wired yet</b> — even switched on, nothing sends on its own today.
+          </div>
+          <CommsMsg msg={c.msg} where="program" />
+        </PhoneSection>
+
+        <PhoneSection title="Sender" subtitle={c.cfgResp?.effectiveFrom || '—'} open={open === 'sender'} onToggle={() => toggle('sender')}>
+          <label className={label}>From address</label>
+          <input className={input} value={c.fromAddr} onChange={(e) => { c.setFromAddr(e.target.value); c.setDirty(true); }} placeholder="blank = the site default sender" inputMode="email" autoCapitalize="off" autoCorrect="off" />
+          <div className="text-[11px] text-slate-400 mt-1">An address on an unverified domain makes Resend reject every send.</div>
+          <SenderTargetNote compact />
+          <label className={`${label} mt-3`}>Replies go to</label>
+          <input className={input} value={c.replyTo} onChange={(e) => { c.setReplyTo(e.target.value); c.setDirty(true); }} inputMode="email" autoCapitalize="off" autoCorrect="off" />
+          <label className={`${label} mt-3`}>Daily cap</label>
+          <input className={input} type="number" inputMode="numeric" min="0" max="2000" value={c.dailyCap} onChange={(e) => { c.setDailyCap(e.target.value); c.setDirty(true); }} />
+          <div className="text-[11px] text-slate-400 mt-1">A full day delivers ~700+. Raise this before the trigger ships.</div>
+        </PhoneSection>
+
+        <PhoneSection title="Coverage" subtitle={c.coverage ? `${c.coverage.pct}% reachable` : 'How many we could reach'} open={open === 'coverage'} onToggle={() => toggle('coverage')}>
+          <div className="flex gap-2">
+            <input type="date" value={c.covDate} onChange={(e) => c.setCovDate(e.target.value)} className={input} />
+            <button onClick={c.runCoverage} disabled={c.busy === 'coverage'} className={`${btn} text-white shrink-0`} style={{ background: BRAND }}>{c.busy === 'coverage' ? '…' : 'Count'}</button>
+          </div>
+          {c.coverage && (
+            <div className="mt-3">
+              <span className="text-3xl font-bold text-slate-900">{c.coverage.pct}%</span>
+              <span className="ml-2 text-[13px] text-slate-600">— {c.coverage.withEmail} of {c.coverage.sampled} sampled</span>
+              <div className="text-[11px] text-slate-500 mt-1">order email {c.coverage.bySource?.order ?? 0} · override {c.coverage.bySource?.notes ?? 0} · opted out {c.coverage.optedOut ?? 0} · none {c.coverage.withoutEmail ?? 0}</div>
+            </div>
+          )}
+          <CommsMsg msg={c.msg} where="coverage" />
+        </PhoneSection>
+
+        <PhoneSection title="Send a test" subtitle="To a Davis inbox — never a customer" open={open === 'test'} onToggle={() => toggle('test')}>
+          <label className={label}>To</label>
+          <input className={input} value={c.testTo} onChange={(e) => c.setTestTo(e.target.value)} placeholder="your own Davis inbox" inputMode="email" autoCapitalize="off" autoCorrect="off" />
+          <button onClick={c.sendTest} disabled={c.busy === 'test'} className={`${btn} w-full mt-2 text-white`} style={{ background: BRAND }}>{c.busy === 'test' ? 'Sending…' : 'Send test email'}</button>
+          <div className="text-[11px] text-slate-400 mt-1.5">Sends the SAVED template as a marked [TEST]. Never counted against the cap; works while the program is off.</div>
+          <CommsMsg msg={c.msg} where="test" />
+        </PhoneSection>
+
+        <PhoneSection title="Template" subtitle="Subject and HTML body" open={open === 'tpl'} onToggle={() => toggle('tpl')}>
+          <label className={label}>Subject</label>
+          <input className={input} value={c.subjectT} onChange={(e) => { c.setSubjectT(e.target.value); c.setDirty(true); }} maxLength={200} />
+          <label className={`${label} mt-3`}>HTML body</label>
+          <textarea
+            className="w-full border border-slate-300 rounded-lg px-2.5 py-2 text-[12px] font-mono leading-snug focus:outline-none focus:ring-2 focus:ring-blue-200"
+            rows={12} value={c.htmlT} spellCheck={false} autoCapitalize="off" autoCorrect="off"
+            onChange={(e) => { c.setHtmlT(e.target.value); c.setDirty(true); }}
+          />
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {(c.cfgResp?.fields || []).map((f) => (
+              <button key={f}
+                onClick={() => { navigator.clipboard?.writeText(`{{${f}}}`).catch(() => {}); c.say('tpl', 'ok', `{{${f}}} copied — paste it into the body.`); }}
+                className="min-h-[40px] text-[12px] font-mono px-2.5 rounded-lg border border-slate-200 bg-slate-50 text-slate-600 active:bg-slate-100"
+              >{'{{'}{f}{'}}'}</button>
+            ))}
+          </div>
+          <button onClick={c.resetTemplate} className={`${btn} w-full mt-3 border border-slate-300 bg-white text-slate-600`}>Reset to the default template</button>
+          <CommsMsg msg={c.msg} where="tpl" />
+        </PhoneSection>
+
+        <PhoneSection
+          title="Send log"
+          subtitle={c.log?.totals ? `${c.log.totals.sent} sent · ${c.log.totals.failed} failed · ${c.log.totals.inflight} unconfirmed` : 'Last 7 days'}
+          open={open === 'log'} onToggle={() => toggle('log')}
+        >
+          {c.log?.totals?.total === 0 && <div className="text-[12px] text-slate-400">Nothing has been sent yet — expected while the trigger is unwired.</div>}
+          {/* Cards, not a table: a five-column table on a 390px phone is a scroll puzzle. */}
+          <ul className="divide-y divide-slate-100">
+            {(c.log?.entries || []).slice(0, 25).map((e, i) => (
+              <li key={`${e.date}-${e.key}-${i}`} className="py-2.5">
+                <div className="flex items-baseline gap-2">
+                  <span className="text-[13px] font-semibold text-slate-800 flex-1 min-w-0 truncate">{e.customer || '—'}</span>
+                  <span className={`text-[11px] font-bold shrink-0 ${e.ok ? 'text-emerald-700' : e.claimed ? 'text-amber-700' : 'text-red-700'}`}>{e.ok ? 'sent' : e.claimed ? 'unconfirmed' : 'failed'}</span>
+                </div>
+                <div className="text-[11px] text-slate-500 break-all">{e.to || '—'}</div>
+                <div className="text-[10px] text-slate-400">{agoText(e.at) || e.date}</div>
+              </li>
+            ))}
+          </ul>
+        </PhoneSection>
+
+        <div className="text-[11px] text-slate-400 py-4">
+          Per-customer opt-out lives on the stop card: Customer notes → “No delivery emails to this customer.”
+        </div>
+        {/* Room for the sticky bar so the last row is never trapped under it. */}
+        {c.dirty && <div className="h-20" />}
+      </div>
+
+      {c.dirty && (
+        <div className="sticky bottom-0 z-20 bg-slate-900 px-3 py-2.5 flex items-center gap-2">
+          <span className="text-[12px] text-white flex-1 min-w-0">Unsaved changes</span>
+          <button onClick={c.loadAll} className="min-h-[44px] px-3 text-[13px] text-slate-300">Discard</button>
+          <button onClick={c.saveAll} disabled={c.busy === 'save'} className="min-h-[44px] px-4 rounded-lg text-[14px] font-bold text-white" style={{ background: '#16a34a' }}>{c.busy === 'save' ? 'Saving…' : 'Save'}</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── DESKTOP ──────────────────────────────────────────────────────────────────
+// Everything visible at once, because there is room for it: controls in a left rail,
+// the email in the main pane.
+
+function CommsCard({ title, aside = null, children }) {
+  return (
+    <section className="bg-white border border-slate-200 rounded-xl shadow-sm">
+      {title && (
+        <header className="flex items-center justify-between gap-2 px-4 pt-3 pb-2 border-b border-slate-100">
+          <h2 className="text-[11px] font-bold tracking-[0.12em] uppercase text-slate-500">{title}</h2>
+          {aside}
+        </header>
+      )}
+      <div className="p-4">{children}</div>
+    </section>
+  );
+}
+
+function CommsDesktop(c) {
+  const [showHtml, setShowHtml] = useState(false);
+  const input = 'w-full border border-slate-300 rounded-lg px-2.5 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-200';
+  const label = 'block text-[11px] font-semibold text-slate-500 mb-1';
+  const btnGhost = 'min-h-[40px] px-3 rounded-lg text-xs font-semibold border border-slate-300 bg-white text-slate-600 hover:bg-slate-50';
+
+  return (
+    <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden bg-slate-100">
       <div className="bg-white border-b border-slate-200">
         <div className="max-w-6xl mx-auto px-4 py-3 flex items-center justify-between gap-3">
           <div className="min-w-0">
@@ -22144,172 +22488,153 @@ function CustomerCommsScreen() {
             <p className="text-[11px] text-slate-500 truncate">Branded delivery-complete email · zero NuVizz calls — reads only our cached board</p>
           </div>
           <div className="flex items-center gap-2 shrink-0">
-            <span className={`text-[10px] font-bold tracking-wide px-2 py-1 rounded-full ${enabled ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-200 text-slate-600'}`}>{enabled ? 'ON' : 'OFF'}</span>
-            <button onClick={loadAll} disabled={busy === 'load'} className={btnGhost}>{busy === 'load' ? 'Loading…' : 'Reload'}</button>
+            <span className={`text-[10px] font-bold tracking-wide px-2 py-1 rounded-full ${c.enabled ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-200 text-slate-600'}`}>{c.enabled ? 'ON' : 'OFF'}</span>
+            <button onClick={c.loadAll} disabled={c.busy === 'load'} className={btnGhost}>{c.busy === 'load' ? 'Loading…' : 'Reload'}</button>
           </div>
         </div>
       </div>
 
       <div className="max-w-6xl mx-auto p-4 space-y-4">
-        {err && <div className="bg-red-50 border border-red-200 text-red-800 text-sm rounded-lg px-3 py-2">{err}</div>}
-        {note && !err && <div className="bg-emerald-50 border border-emerald-200 text-emerald-800 text-sm rounded-lg px-3 py-2">{note}</div>}
+        <CommsMsg msg={c.msg} where="top" className="mt-0" />
 
         <div className="grid gap-4 lg:grid-cols-[360px_minmax(0,1fr)] items-start">
-          {/* THE EMAIL — first on a phone, right-hand pane on desktop. This is the point
-              of the screen, so it gets the space and the top slot. */}
-          <div className="order-first lg:order-last lg:col-start-2 space-y-4">
+          <div className="lg:col-start-2 space-y-4">
             <CommsCard
-              title={showingReal ? 'The email — a real delivery' : 'The email — live preview'}
+              title={c.showingReal ? 'The email — a real delivery' : 'The email — live preview'}
               aside={
                 <div className="flex items-center gap-1.5">
-                  {showingReal
-                    ? <button onClick={() => setRealPreview(null)} className={btnGhost}>Back to sample data</button>
+                  {c.showingReal
+                    ? <button onClick={() => c.setRealPreview(null)} className={btnGhost}>Back to sample data</button>
                     : (
                       <>
-                        <input className="border border-slate-300 rounded-lg px-2 py-1 text-xs w-28" value={pvPro} onChange={(e) => setPvPro(e.target.value)} placeholder="PRO (optional)" />
-                        <button onClick={loadRealPreview} disabled={busy === 'preview'} className={btnGhost}>{busy === 'preview' ? 'Rendering…' : 'Preview a real delivery'}</button>
+                        <input className="border border-slate-300 rounded-lg px-2 min-h-[40px] text-xs w-28" value={c.pvPro} onChange={(e) => c.setPvPro(e.target.value)} placeholder="PRO (optional)" />
+                        <button onClick={c.loadRealPreview} disabled={c.busy === 'preview'} className={btnGhost}>{c.busy === 'preview' ? 'Rendering…' : 'Preview a real delivery'}</button>
                       </>
                     )}
                 </div>
               }
             >
-              {/* Inbox chrome — the message framed the way Gmail frames it, so the preview
-                  reads as an email, not as a web page in a box. */}
               <div className="border border-slate-200 rounded-xl overflow-hidden">
-                <div className="px-4 py-3 bg-slate-50 border-b border-slate-200">
-                  <div className="text-sm font-semibold text-slate-900 truncate">{frameSubject || '(no subject)'}</div>
-                  <div className="mt-1.5 flex items-center gap-2 min-w-0">
-                    <span className="w-8 h-8 rounded-full flex items-center justify-center text-white text-xs font-bold shrink-0" style={{ background: BRAND }}>D</span>
-                    <div className="min-w-0 leading-tight">
-                      <div className="text-xs font-semibold text-slate-800 truncate">{cfgResp?.effectiveFrom || 'Davis Delivery'}</div>
-                      <div className="text-[10px] text-slate-500 truncate">
-                        to {showingReal ? (realPreview.optedOut ? 'nobody — customer opted out' : (realPreview.recipientOnFile || 'nobody — no address on file')) : 'the consignee on the order'}
-                        {showingReal && realPreview.recipientSource === 'notes' && ' (dispatcher override)'}
-                      </div>
-                    </div>
-                    {dirty && !showingReal && <span className="ml-auto text-[10px] font-semibold text-amber-700 bg-amber-50 border border-amber-200 rounded px-1.5 py-0.5 shrink-0">unsaved edits</span>}
-                  </div>
-                </div>
-                <iframe title="Email preview" sandbox="" srcDoc={frameHtml} className="w-full bg-white block" style={{ height: 'min(70vh, 760px)', border: 0 }} />
+                <EmailHeaderStrip
+                  subject={c.frameSubject} from={c.cfgResp?.effectiveFrom} to={c.recipientLine}
+                  note={c.dirty && !c.showingReal ? <span className="ml-auto text-[10px] font-semibold text-amber-700 bg-amber-50 border border-amber-200 rounded px-1.5 py-0.5 shrink-0">unsaved edits</span> : null}
+                />
+                <EmailFrame html={c.frameHtml} />
               </div>
+              <CommsMsg msg={c.msg} where="preview" />
               <div className="mt-2 flex items-center justify-between gap-2 flex-wrap">
                 <div className="text-[10px] text-slate-400">
-                  {showingReal
-                    ? `Rendered server-side from PRO ${realPreview.pro} by the same code the live send uses.`
-                    : 'Live: follows the editor as you type, with sample delivery data. Real-delivery preview uses the SAVED template.'}
+                  {c.showingReal
+                    ? `Rendered server-side from PRO ${c.realPreview.pro} by the same code the live send uses.`
+                    : 'Live: follows the editor as you type. Shown at the real 600px width, scaled to fit.'}
                 </div>
                 <button onClick={() => setShowHtml((v) => !v)} className={btnGhost}>{showHtml ? 'Hide HTML' : 'Edit HTML'}</button>
               </div>
             </CommsCard>
 
             {showHtml && (
-              <CommsCard
-                title="Template source"
-                aside={<button onClick={() => { setSubjectT('Delivered — PRO {{pro}}'); setHtmlT(cfgResp?.defaultHtml || ''); setDirty(true); setNote('Default restored in the editor — Save to keep it.'); }} className={btnGhost}>Reset to default</button>}
-              >
+              <CommsCard title="Template source" aside={<button onClick={() => { c.resetTemplate(); c.say('tpl', 'ok', 'Default restored in the editor — Save to keep it.'); }} className={btnGhost}>Reset to default</button>}>
                 <label className={label}>Subject</label>
-                <input className={input} value={subjectT} onChange={(e) => { setSubjectT(e.target.value); setDirty(true); }} maxLength={200} />
+                <input className={input} value={c.subjectT} onChange={(e) => { c.setSubjectT(e.target.value); c.setDirty(true); }} maxLength={200} />
                 <label className={`${label} mt-3`}>HTML body</label>
                 <textarea
                   className="w-full border border-slate-300 rounded-lg px-2.5 py-2 text-[11px] font-mono leading-snug focus:outline-none focus:ring-2 focus:ring-blue-200"
-                  rows={16} value={htmlT} spellCheck={false}
-                  onChange={(e) => { setHtmlT(e.target.value); setDirty(true); }}
+                  rows={16} value={c.htmlT} spellCheck={false}
+                  onChange={(e) => { c.setHtmlT(e.target.value); c.setDirty(true); }}
                 />
                 <div className="mt-2 flex flex-wrap gap-1.5">
-                  {(cfgResp?.fields || []).map((f) => (
+                  {(c.cfgResp?.fields || []).map((f) => (
                     <button key={f}
-                      onClick={() => { navigator.clipboard?.writeText(`{{${f}}}`).catch(() => {}); setNote(`{{${f}}} copied.`); }}
+                      onClick={() => { navigator.clipboard?.writeText(`{{${f}}}`).catch(() => {}); c.say('tpl', 'ok', `{{${f}}} copied.`); }}
                       className="text-[10px] font-mono px-1.5 py-0.5 rounded border border-slate-200 bg-slate-50 text-slate-600 hover:bg-slate-100"
                     >{'{{'}{f}{'}}'}</button>
                   ))}
                 </div>
-                <div className="text-[10px] text-slate-400 mt-1.5">Merge values are escaped before rendering — a customer name cannot inject HTML. {'{{#driver}}'}…{'{{/driver}}'} shows a section only when the field has a value.</div>
+                <CommsMsg msg={c.msg} where="tpl" />
               </CommsCard>
             )}
           </div>
 
-          {/* CONTROLS — left rail on desktop, below the email on a phone. */}
-          <div className="space-y-4 lg:order-first">
+          <div className="space-y-4 lg:col-start-1 lg:row-start-1">
             <CommsCard title="Program">
               <div className="flex items-center gap-3">
-                <CommsSwitch checked={enabled} disabled={!cfg || busy === 'enable' || (!enabled && !cfgResp?.resendConfigured)} onChange={toggleEnabled} label="Delivery-complete emails" />
+                <CommsSwitch checked={c.enabled} disabled={!c.cfg || c.busy === 'enable' || (!c.enabled && !c.cfgResp?.resendConfigured)} onChange={c.toggleEnabled} label="Delivery-complete emails" />
                 <div className="min-w-0">
                   <div className="text-sm font-semibold text-slate-800">Delivery-complete emails</div>
                   <div className="text-[11px] text-slate-500">One per PRO, ever — a duplicate is structurally impossible.</div>
                 </div>
               </div>
-              {cfgResp && !cfgResp.resendConfigured && (
-                <div className="mt-2 text-[11px] text-red-700 font-semibold">Mail service unconfigured on this site — nothing can send, so the switch refuses to turn on.</div>
-              )}
+              {c.cfgResp && !c.cfgResp.resendConfigured && <div className="mt-2 text-[11px] text-red-700 font-semibold">Mail service unconfigured on this site — the switch refuses to turn on.</div>}
               <div className="mt-3 text-[11px] leading-relaxed text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-2">
-                The automatic trigger is <b>not wired yet</b> — even switched on, nothing sends on its own today. Template and sender get signed off first; the trigger ships as its own change.
+                The automatic trigger is <b>not wired yet</b> — even switched on, nothing sends on its own today.
               </div>
+              <CommsMsg msg={c.msg} where="program" />
             </CommsCard>
 
             <CommsCard title="Sender">
               <label className={label}>From address</label>
-              <input className={input} value={fromAddr} onChange={(e) => { setFromAddr(e.target.value); setDirty(true); }} placeholder="blank = the site default sender" />
-              <div className="text-[10px] text-slate-400 mt-1">Currently sends as <span className="font-semibold text-slate-500">{cfgResp?.effectiveFrom || '—'}</span>. An unverified domain makes every send bounce — verify DNS first.</div>
+              <input className={input} value={c.fromAddr} onChange={(e) => { c.setFromAddr(e.target.value); c.setDirty(true); }} placeholder="blank = the site default sender" />
+              <div className="text-[10px] text-slate-400 mt-1">Currently sends as <span className="font-semibold text-slate-500">{c.cfgResp?.effectiveFrom || '—'}</span>. An unverified domain makes every send bounce.</div>
+              <SenderTargetNote />
               <label className={`${label} mt-3`}>Replies go to</label>
-              <input className={input} value={replyTo} onChange={(e) => { setReplyTo(e.target.value); setDirty(true); }} />
+              <input className={input} value={c.replyTo} onChange={(e) => { c.setReplyTo(e.target.value); c.setDirty(true); }} />
               <label className={`${label} mt-3`}>Daily cap</label>
-              <input className={input} type="number" min="0" max="2000" value={dailyCap} onChange={(e) => { setDailyCap(e.target.value); setDirty(true); }} />
-              <div className="text-[10px] text-slate-400 mt-1">A full day delivers ~700+. Raise this before the trigger ships or most stops skip at the ceiling.</div>
+              <input className={input} type="number" min="0" max="2000" value={c.dailyCap} onChange={(e) => { c.setDailyCap(e.target.value); c.setDirty(true); }} />
+              <div className="text-[10px] text-slate-400 mt-1">A full day delivers ~700+. Raise this before the trigger ships.</div>
             </CommsCard>
 
             <CommsCard title="Coverage" aside={
               <div className="flex items-center gap-1.5">
-                <input type="date" value={covDate} onChange={(e) => setCovDate(e.target.value)} className="border border-slate-300 rounded-lg px-2 py-1 text-xs" />
-                <button onClick={runCoverage} disabled={busy === 'coverage'} className={btnGhost}>{busy === 'coverage' ? '…' : 'Count'}</button>
+                <input type="date" value={c.covDate} onChange={(e) => c.setCovDate(e.target.value)} className="border border-slate-300 rounded-lg px-2 min-h-[40px] text-xs" />
+                <button onClick={c.runCoverage} disabled={c.busy === 'coverage'} className={btnGhost}>{c.busy === 'coverage' ? '…' : 'Count'}</button>
               </div>
             }>
-              {coverage ? (
+              {c.coverage ? (
                 <div>
-                  <span className="text-3xl font-bold text-slate-900">{coverage.pct}%</span>
-                  <span className="ml-2 text-sm text-slate-600">reachable — {coverage.withEmail} of {coverage.sampled} sampled delivered stops</span>
-                  <div className="text-[11px] text-slate-500 mt-1">order email {coverage.bySource?.order ?? 0} · override {coverage.bySource?.notes ?? 0} · opted out {coverage.optedOut ?? 0} · none {coverage.withoutEmail ?? 0}</div>
+                  <span className="text-3xl font-bold text-slate-900">{c.coverage.pct}%</span>
+                  <span className="ml-2 text-sm text-slate-600">reachable — {c.coverage.withEmail} of {c.coverage.sampled} sampled delivered stops</span>
+                  <div className="text-[11px] text-slate-500 mt-1">order email {c.coverage.bySource?.order ?? 0} · override {c.coverage.bySource?.notes ?? 0} · opted out {c.coverage.optedOut ?? 0} · none {c.coverage.withoutEmail ?? 0}</div>
                 </div>
-              ) : (
-                <div className="text-xs text-slate-400">How many of a day's delivered stops we could actually email. Free — cached board only.</div>
-              )}
+              ) : <div className="text-xs text-slate-400">How many of a day's delivered stops we could actually email. Free — cached board only.</div>}
+              <CommsMsg msg={c.msg} where="coverage" />
             </CommsCard>
 
             <CommsCard title="Send a test">
               <label className={label}>To (Davis inboxes only)</label>
               <div className="flex gap-2">
-                <input className={input} value={testTo} onChange={(e) => setTestTo(e.target.value)} placeholder="your own Davis inbox" />
-                <button onClick={sendTest} disabled={busy === 'test'} className={`${btnPri} shrink-0`} style={{ background: BRAND }}>{busy === 'test' ? 'Sending…' : 'Send'}</button>
+                <input className={input} value={c.testTo} onChange={(e) => c.setTestTo(e.target.value)} placeholder="your own Davis inbox" />
+                <button onClick={c.sendTest} disabled={c.busy === 'test'} className="min-h-[40px] px-3.5 rounded-lg text-sm font-semibold text-white disabled:opacity-50 shrink-0" style={{ background: BRAND }}>{c.busy === 'test' ? 'Sending…' : 'Send'}</button>
               </div>
-              <div className="text-[10px] text-slate-400 mt-1.5">Sends the SAVED template as a marked [TEST] — never a customer, never counted against the cap, works while the program is off.</div>
+              <div className="text-[10px] text-slate-400 mt-1.5">Sends the SAVED template as a marked [TEST] — never a customer, never counted against the cap.</div>
+              <CommsMsg msg={c.msg} where="test" />
             </CommsCard>
           </div>
         </div>
 
-        {/* Sticky save bar renders only when there is something to save — edits anywhere
-            on the screen funnel to ONE Save, so "which save button" stops being a question. */}
-        {dirty && (
+        {c.dirty && (
           <div className="sticky bottom-3 z-10 flex justify-center">
             <div className="bg-slate-900 text-white rounded-xl shadow-lg px-4 py-2.5 flex items-center gap-3">
               <span className="text-xs">Unsaved changes to the template or sender</span>
-              <button onClick={saveAll} disabled={busy === 'save'} className="px-3 py-1.5 rounded-lg text-xs font-bold" style={{ background: '#16a34a' }}>{busy === 'save' ? 'Saving…' : 'Save changes'}</button>
-              <button onClick={() => { loadAll(); }} className="text-xs text-slate-300 hover:text-white">Discard</button>
+              <button onClick={c.saveAll} disabled={c.busy === 'save'} className="min-h-[40px] px-3 rounded-lg text-xs font-bold" style={{ background: '#16a34a' }}>{c.busy === 'save' ? 'Saving…' : 'Save changes'}</button>
+              <button onClick={c.loadAll} className="text-xs text-slate-300 hover:text-white">Discard</button>
             </div>
           </div>
         )}
+        <CommsMsg msg={c.msg} where="save" className="max-w-sm mx-auto text-center" />
 
         <CommsCard title="Send log — last 7 days">
-          {log?.totals && (
+          {c.log?.totals && (
             <div className="text-xs text-slate-600 mb-2">
-              {log.totals.sent} sent · {log.totals.failed} failed · {log.totals.inflight} unconfirmed
-              {log.totals.total === 0 && <span className="text-slate-400"> — nothing has been sent yet, which is expected while the trigger is unwired.</span>}
+              {c.log.totals.sent} sent · {c.log.totals.failed} failed · {c.log.totals.inflight} unconfirmed
+              {c.log.totals.total === 0 && <span className="text-slate-400"> — nothing has been sent yet, which is expected while the trigger is unwired.</span>}
             </div>
           )}
-          {log?.entries?.length > 0 && (
+          {c.log?.entries?.length > 0 && (
             <div className="overflow-x-auto">
               <table className="w-full text-xs">
                 <thead><tr className="text-left text-slate-500 border-b"><th className="py-1.5 pr-3 font-semibold">When</th><th className="py-1.5 pr-3 font-semibold">Customer</th><th className="py-1.5 pr-3 font-semibold">To</th><th className="py-1.5 pr-3 font-semibold">Subject</th><th className="py-1.5 font-semibold">Result</th></tr></thead>
                 <tbody>
-                  {log.entries.slice(0, 50).map((e, i) => (
+                  {c.log.entries.slice(0, 50).map((e, i) => (
                     <tr key={`${e.date}-${e.key}-${i}`} className="border-b border-slate-100">
                       <td className="py-1.5 pr-3 whitespace-nowrap text-slate-500">{agoText(e.at) || e.date}</td>
                       <td className="py-1.5 pr-3">{e.customer || '—'}</td>
@@ -22330,6 +22655,12 @@ function CustomerCommsScreen() {
       </div>
     </div>
   );
+}
+
+function CustomerCommsScreen() {
+  const console_ = useCommsConsole();
+  const isPhone = useViewportWidth() < MOBILE_BREAKPOINT;
+  return isPhone ? <CommsPhone {...console_} /> : <CommsDesktop {...console_} />;
 }
 
 function ManifestCheckScreen() {

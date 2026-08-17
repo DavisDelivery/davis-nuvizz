@@ -28,14 +28,36 @@ body { position: fixed; inset: 0; font-family: system-ui, -apple-system, sans-se
 @media (max-width: 767px) and (pointer: coarse) {
   input, select, textarea { font-size: 16px !important; }
   input[type="checkbox"] { width: 18px; height: 18px; }
-  /* FINGERTIP FLOOR. The app sets its own standard at 44px (MobileTabBar's tabs are 50,
-     ChatPanel's icon buttons 44), but a lot of controls shared with the dense desktop
-     panels came in at 20-30px — the filter chips, the carry-over presets, the map's
-     selection tools, the Board Flags chip. Opt-in class rather than a blanket `button`
-     rule, which would stretch icon rows and inline chips that are deliberately tight.
-     Scoped to touch phones, so desktop density is untouched. */
+  /* FINGERTIP FLOOR — NOW THE DEFAULT, NOT AN OPT-IN.
+     v0.54.70 added `.tap-target` as an opt-in class, on the reasoning that a blanket
+     rule would stretch icon rows. That reasoning was wrong in practice: opt-in means
+     every control anyone forgets to mark stays 24px, and a sweep at v0.54.80 found
+     FORTY-FIVE unmarked ones still under the floor — the Routing tabs at 26px, the
+     Map search field at 24px, the Quote steppers at 34px, the version chip at 36px.
+     Chad found them the only way left: on his own phone.
+
+     So the floor is now default-on for every interactive control on a touch phone, and
+     `.tap-dense` is the deliberate opt-out for a row that genuinely must stay tight.
+     The failure mode flips from "silently missed" to "excused on purpose", and
+     scripts/verify-mobile-layout.mjs fails the build on anything still under 40px.
+     Desktop is untouched — this whole block is phone-only. */
+  button, [role="button"], [role="menuitem"], [role="tab"], select,
+  input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"]) {
+    min-height: 44px;
+  }
+  /* An icon-only control has no text to widen it, so it needs the horizontal floor too.
+     :has() keeps this precise — a button whose only child is an icon. */
+  button:has(> svg:only-child), a:has(> svg:only-child), [role="button"]:has(> svg:only-child) {
+    min-width: 44px;
+  }
+  /* THE OPT-OUT. Put it on a control (or a container) that must stay dense, and say why
+     at the call site. Applies to the element and anything interactive inside it. */
+  .tap-dense, .tap-dense button, .tap-dense input, .tap-dense select, .tap-dense [role="button"] {
+    min-height: 0;
+    min-width: 0;
+  }
+  /* Kept: existing call sites still name these, and they still mean the same thing. */
   .tap-target { min-height: 44px; min-width: 44px; }
-  /* For controls that sit inside a fixed-height row and only need the vertical floor. */
   .tap-target-y { min-height: 44px; }
 }
 
