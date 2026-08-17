@@ -94,8 +94,25 @@ if (MOBILE) {
   await moreRow.click(); await page.waitForTimeout(300);   // reopen for the rest of the run
 }
 
+// isVisible() is NOT enough, and that is exactly how a broken More menu shipped in
+// v0.54.71: an element clipped by an ancestor's overflow still has a non-empty
+// bounding box, so Playwright calls it visible while nobody on a desktop can see
+// it. (The nav had overflow-x-auto, which forces overflow-y to auto too, so the
+// dropdown opened inside a ~40px-tall clip box.) Hit-test the exact point the user
+// would click instead: if the browser paints something else there, the menu is
+// behind a clip and this fails.
+const hittable = (loc) => loc.evaluate((node) => {
+  const r = node.getBoundingClientRect();
+  if (!r.width || !r.height) return false;
+  const top = document.elementFromPoint(r.left + r.width / 2, r.top + Math.min(12, r.height / 2));
+  return !!top && (node === top || node.contains(top));
+}).catch(() => false);
+
 const item = page.getByRole('menuitem', { name: /manifest check/i }).first();
 (await item.isVisible().catch(() => false)) ? ok('Manifest check is listed inside it') : bad('Manifest check missing from the menu');
+(await hittable(item))
+  ? ok('and it is genuinely on screen — not clipped by a scrolling ancestor')
+  : bad('the menu is in the DOM but CLIPPED — something else is painted where the user would click');
 await item.click(); await page.waitForTimeout(800);
 
 let body = await page.evaluate(() => document.body.innerText);
