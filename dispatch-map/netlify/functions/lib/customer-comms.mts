@@ -72,21 +72,28 @@ export const DEFAULT_CONFIG: CommsConfig = {
   // OFF until deliberately switched on. A feature that mails customers must never
   // start sending because it happened to deploy.
   enabled: false,
-  // Chad, v0.54.79: "emails are supposed to come from notifications@davisdelivery.com".
+  // Chad asked for notifications@davisdelivery.com, and as of v0.54.85 that is what this is.
   //
-  // THE TARGET IS THE APEX: notifications@davisdelivery.com. It is not set here because
-  // it cannot send yet — Resend refuses to add davisdelivery.com at all:
-  //   403 "You have reached the domain limit of your plan. Upgrade to add more."
-  // The only verified sending domain on the account is warehouse.davisdelivery.com. An
-  // address on an unverified domain does not degrade politely; Resend rejects EVERY send,
-  // so putting the apex address here would turn the test button into a guaranteed failure.
+  // The two things that blocked it are done: the Resend plan was upgraded (it previously
+  // refused to add a second domain at all — 403 "You have reached the domain limit"), and
+  // davisdelivery.com is now registered in Resend as domain 8eb3cbb7.
   //
-  // So the local part is right today and the domain follows when the plan allows:
-  // notifications@ on the verified warehouse domain. Two steps flip it to the apex, and
-  // neither needs a deploy — the config lives in Firestore:
-  //   1. upgrade the Resend plan, add davisdelivery.com, publish its DNS in cPanel,
-  //   2. change this one field in More → Customer emails → Sender.
-  fromAddress: 'Davis Delivery Service <notifications@warehouse.davisdelivery.com>',
+  // WHAT IS NOT DONE, and it is the one thing that decides whether mail actually leaves:
+  // the domain's DNS. Until these three records resolve, Resend REJECTS every send from
+  // this address — it does not fall back to a working sender, it fails the send:
+  //     TXT  resend._domainkey   p=MIGfMA0GCSqG…   (DKIM)
+  //     MX   send                feedback-smtp.us-east-1.amazonses.com   priority 10
+  //     TXT  send                v=spf1 include:amazonses.com ~all
+  // All three hang off `send.` and `resend._domainkey.`, NOT the apex, so publishing them
+  // does not disturb the existing davisdelivery.com mail setup.
+  //
+  // Nothing is at risk while they are pending: the sweep trigger is still unwired, so the
+  // only path that can attempt a send is the [TEST] button, and it reports its failure at
+  // the button. To fall back while waiting, put the warehouse address in More → Customer
+  // emails → Sender — but know that the FIRST save from that screen writes the whole config
+  // document to Firestore, htmlTemplate included, after which template changes in code stop
+  // reaching the site. Prefer waiting for DNS over taking that trade.
+  fromAddress: 'Davis Delivery Service <notifications@davisdelivery.com>',
   replyTo: 'customerservice@davisdelivery.com',
   subjectTemplate: 'Delivered — PRO {{pro}}',
   htmlTemplate: '', // seeded from DEFAULT_HTML on first read
