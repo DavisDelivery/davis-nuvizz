@@ -20,7 +20,7 @@ import {
   renderTemplate, escapeHtml, escapeVars, normalizeSubject,
   ledgerKey, usableMatchKey, chooseRecipient,
   isSweepableBoardDate, isStaleDelivery, isDefinitiveRejection,
-  isEmailAddress, isSenderAddress, clampDailyCap, testRecipientAllowed, adminTokenOk,
+  isEmailAddress, isSenderAddress, clampDailyCap, testRecipientAllowed, adminTokenOk, buildMessage,
   sendForStop, DEFAULT_CONFIG,
   MERGE_FIELDS, DEFAULT_HTML, MAX_DAILY_CAP,
 } from '../netlify/functions/lib/customer-comms.mts';
@@ -451,4 +451,34 @@ test('adminTokenOk: open when unset (operator asked for no prompt), armed when s
   } finally {
     if (prev === undefined) delete process.env.COMMS_ADMIN_TOKEN; else process.env.COMMS_ADMIN_TOKEN = prev;
   }
+});
+
+// The UI carries a CLIENT MIRROR of this renderer (renderCommsPreview / renderCommsSubject in
+// src/App.jsx) so the live preview can follow the template as it is typed. The mirror is only
+// worth having if it agrees with this, and the asymmetry below is the part that is easy to get
+// wrong — v0.54.83 shipped with the mirror escaping BOTH, so a live preview of a subject
+// containing {{customer}} showed "&amp;" where the real send puts "&". If this test ever has to
+// change, change the mirror in the same commit.
+test('buildMessage: HTML escapes merge values, the SUBJECT does not (it is not HTML)', () => {
+  const stop = {
+    pro: '007161743',
+    businessName: 'BUFORD TILE & STONE',
+    normalizedStatus: 'DELIVERED',
+    deliveredDTTM: '2026-08-17T13:46',
+  };
+  const cfg = {
+    subjectTemplate: 'Delivered — {{customer}} PRO {{pro}}',
+    htmlTemplate: '<p>{{customer}}</p>',
+  };
+  const { subject, html } = buildMessage(stop, '2026-08-17', cfg);
+  assert.match(subject, /BUFORD TILE & STONE/, 'a subject is a header, not markup — no entity encoding');
+  assert.doesNotMatch(subject, /&amp;/);
+  assert.match(html, /BUFORD TILE &amp; STONE/, 'the body IS markup — shipper-typed text must be escaped');
+});
+
+test('buildMessage: a subject is bounded and single-line even if the template is not', () => {
+  const stop = { pro: '1', businessName: `X\r\nY${'z'.repeat(400)}` };
+  const { subject } = buildMessage(stop, '2026-08-17', { subjectTemplate: '{{customer}}', htmlTemplate: '' });
+  assert.ok(subject.length <= 200, 'Resend rejects an unbounded subject');
+  assert.doesNotMatch(subject, /[\r\n]/, 'CR/LF in a header is injection');
 });
