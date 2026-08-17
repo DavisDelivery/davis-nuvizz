@@ -13,7 +13,7 @@ import { loadSession, saveSession, clearSession, daysRemaining } from './lib/ses
 import * as api from './lib/api.js';
 import * as store from './lib/offline.js';
 import { startScanner } from './lib/scanner.js';
-import { evaluateScan, loadProgress, stopProgress, ogGapHint, OUTCOME, normalizePro, createPairBuffer, createScanGate, sortForLoading, splitPickups, renumberPositions, loadOrder, loadGroupCount, deliverySeq, sequenceFingerprint, shouldFreezeSequence, classifyBarcode } from './lib/scan-logic.js';
+import { evaluateScan, loadProgress, stopProgress, ogGapHint, OUTCOME, normalizePro, createPairBuffer, createScanGate, findUpgradeableNoog, sortForLoading, splitPickups, renumberPositions, loadOrder, loadGroupCount, deliverySeq, sequenceFingerprint, shouldFreezeSequence, classifyBarcode } from './lib/scan-logic.js';
 import { createWedgeAccumulator, WEDGE_PAIR_WINDOW_MS } from './lib/wedge.js';
 import { initAudio, playVerdict } from './lib/feedback.js';
 import { useSortable, SortableTh } from './lib/useSortable.jsx';
@@ -891,6 +891,21 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
   const onWedgeScanRef = useRef(() => {});
   const onOrphanRef = useRef(() => {});
 
+  // ── Camera callbacks, ref-routed ───────────────────────────────────────────
+  // The camera session is created ONCE per open, but record() is rebuilt every
+  // time scans land. Passing record's closure straight into startScanner froze
+  // the camera on the version from the moment the lens opened: as refreshLocal
+  // pruned justBooked, that stale closure's view of the truck emptied out and a
+  // label already aboard could book again. The gun has always called through a
+  // ref for exactly this reason; the camera now does the same.
+  const onCameraPairRef = useRef(() => {});
+  const onCameraOrphanRef = useRef(() => {});
+  // toggleCam is async: between the tap and the camera coming up there is a
+  // beat where camOn is still false, and a second tap there started a SECOND
+  // scanner whose stop handle overwrote the first — leaving a live camera
+  // nothing could ever stop, feeding frames forever.
+  const camStarting = useRef(false);
+
   const load = useMemo(
     () => (manifest?.loads || []).find((l) => l.loadNbr === activeLoad) || null,
     [manifest, activeLoad],
@@ -1043,9 +1058,32 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
       // What is actually on the truck RIGHT NOW: committed state plus anything
       // enqueued since the last render. Every check below reads this, never
       // `scans` directly — at camera frame rate the two are not the same thing.
-      const liveScans = scans.concat(
+      let liveScans = scans.concat(
         justBooked.current.filter((b) => !scans.some((s2) => String(s2.og).toUpperCase() === String(b.og).toUpperCase())),
       );
+
+      // THE PIECE ID ARRIVED LATE. When the pair window closes on a lone PRO,
+      // the piece books under a NOOG fallback id — correctly, that is the WMS
+      // rule. But the label is often still under the lens, and two frames later
+      // BOTH barcodes decode. That complete pair is the SAME physical piece, so
+      // the seconds-old NOOG is upgraded: void the fallback row and let the
+      // real id book in its place. One aim, one piece, either way. Only
+      // scanner-minted NOOGs inside the grace window qualify — a typed piece or
+      // an override is a person's deliberate statement, not a half-read.
+      if (pair.og && isScanner) {
+        const stale = findUpgradeableNoog(liveScans, pair.pro);
+        if (stale) {
+          const reason = `piece id arrived — upgraded to ${pair.og}`;
+          // The NOOG's enqueue is normally long since committed, but at frame
+          // rate this can outrun it: one settle-and-retry closes that gap.
+          if (!(await store.voidScan(activeLoad, stale.og, reason))) {
+            await new Promise((r) => setTimeout(r, 150));
+            await store.voidScan(activeLoad, stale.og, reason);
+          }
+          justBooked.current = justBooked.current.filter((b) => b.og !== stale.og);
+          liveScans = liveScans.filter((s2) => s2.og !== stale.og);
+        }
+      }
 
       if (!isOverride) {
         const p7 = normalizePro(pair.pro);
@@ -1161,6 +1199,7 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
   }, [flushQueue]);
 
   async function toggleCam() {
+    if (camStarting.current) return; // a start is already in flight — this tap is a bounce
     if (camOn) {
       stopRef.current?.();
       stopRef.current = null;
@@ -1169,20 +1208,18 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
       return;
     }
     setCamErr('');
+    camStarting.current = true;
     try {
       const { stop, engine: eng } = await startScanner({
         videoEl: videoRef.current,
         containerEl: containerRef.current,
-        onPair: async (p) => announce(await record(p, p.engine)),
+        // Through the refs, never the closures: these run for the whole camera
+        // session and must always see the CURRENT record()/announce, not the
+        // ones from the render that opened the lens.
+        onPair: (p) => onCameraPairRef.current?.(p),
         onPartial: setPartial,
         onStatus: setStatus,
-        // A half-read label superseded by a different one mid-pair — same
-        // announcement the gun makes, so neither entry route drops it silently.
-        onOrphan: (half) => {
-          playVerdict('orphan');
-          if (navigator.vibrate) navigator.vibrate([40, 50, 40]);
-          setOrphan({ kind: half.kind, value: half.value, at: Date.now() });
-        },
+        onOrphan: (half) => onCameraOrphanRef.current?.(half),
         onRaw: (values) => {
           rawSeen.current += values.length;
           setRawLog((prev) => [
@@ -1196,6 +1233,8 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
       setCamOn(true);
     } catch (e) {
       setCamErr(e?.message || 'Camera would not start. Type the barcodes below.');
+    } finally {
+      camStarting.current = false;
     }
   }
 
@@ -1211,10 +1250,25 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
   useEffect(() => {
     const t = setInterval(() => {
       wedgePairRef.current?.tick();
-      setPartial(wedgePairRef.current?.state() || { pro: null, og: null });
+      // The tick runs regardless — a gun half-pair must expire even if the
+      // operator flips modes — but only GUN mode may paint the hint from it.
+      // With the camera up, this write raced the camera's own onPartial and the
+      // hint strobed between the two every half second.
+      if (gunModeRef.current) setPartial(wedgePairRef.current?.state() || { pro: null, og: null });
     }, 500);
     return () => clearInterval(t);
   }, []);
+
+  // Reassigned every render, exactly like the wedge handlers below, so the
+  // running camera session always calls the freshest closures.
+  onCameraPairRef.current = async (p) => announce(await record(p, p.engine));
+  onCameraOrphanRef.current = (half) => {
+    // A half-read label superseded by a different one mid-pair — same
+    // announcement the gun makes, so neither entry route drops it silently.
+    playVerdict('orphan');
+    if (navigator.vibrate) navigator.vibrate([40, 50, 40]);
+    setOrphan({ kind: half.kind, value: half.value, at: Date.now() });
+  };
 
   onWedgeScanRef.current = async (raw) => {
     if (verdictRef.current?.sticky) {

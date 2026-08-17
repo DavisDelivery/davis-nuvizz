@@ -130,6 +130,11 @@ export async function startScanner({ videoEl, containerEl, onPair, onPartial, on
 
   const wrap = (stop) => () => {
     clearInterval(tick);
+    // A pending half is NOT discarded on the way out. The loader scanned that
+    // label — closing the camera (or switching to the gun) must not silently
+    // eat it. Forcing the window closed books a lone PRO through the normal
+    // fallback gates and announces a lone piece-id like any other expiry.
+    buffer.tick(Date.now() + CAMERA_PAIR_WINDOW_MS + 1);
     buffer.reset();
     stop();
   };
