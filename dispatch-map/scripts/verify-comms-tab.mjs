@@ -81,10 +81,10 @@ await page.route('**/.netlify/functions/**', async (route) => {
   const json = (b, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(b) });
   if (url.includes('customer-comms-config')) {
     if (method === 'PUT' || method === 'POST') {
+      // No token gate any more (Chad: "get rid of this need for a token") — the server
+      // passes when COMMS_ADMIN_TOKEN is unset. Record the header so we can assert the
+      // UI did NOT invent one, and the body so the save round-trip is provable.
       savedToken = route.request().headers()['x-comms-token'] || null;
-      // First write with no token → 403, exactly like the real endpoint. The UI must
-      // ask for the token and RETRY — a silent swallow here loses the save.
-      if (!savedToken) return json({ ok: false, error: 'not authorised' }, 403);
       savedBody = JSON.parse(route.request().postData() || '{}');
       return json({ ok: true, config: { ...CONFIG.config, ...savedBody }, resendConfigured: true });
     }
@@ -100,7 +100,8 @@ await page.route('**/.netlify/functions/**', async (route) => {
   return json({ ok: true });
 });
 page.on('pageerror', (e) => bad(`uncaught page error: ${e.message}`));
-page.on('dialog', (d) => d.accept('stub-admin-token'));   // the token prompt + any confirm
+let promptCount = 0;
+page.on('dialog', (d) => { if (d.type() === 'prompt') promptCount++; d.accept(); });
 
 console.log(`\nCustomer emails tab — live render${MOBILE ? ' [PHONE]' : ''}`);
 await page.goto(`http://127.0.0.1:${PORT}/`, { waitUntil: 'networkidle' });
@@ -138,43 +139,49 @@ await page.waitForTimeout(900);
 
 const body = await page.evaluate(() => document.body.innerText);
 /Customer emails/.test(body) ? ok('the tab opened') : bad('the tab did not open');
-/Zero NuVizz calls/i.test(body) ? ok('the screen states its cost up front') : bad('no cost statement');
+/zero NuVizz calls/i.test(body) ? ok('the screen states its cost up front') : bad('no cost statement');
 /not wired yet/i.test(body) ? ok('it is honest that the automatic trigger is not wired') : bad('missing the trigger-not-wired banner');
 /OFF/.test(body) ? ok('the enabled state renders (OFF)') : bad('no enabled/off pill');
-// The subject is an <input> — input values never appear in innerText, so ask the DOM.
-const subjVal = await page.evaluate(() => {
-  const inputs = [...document.querySelectorAll('input')];
-  return inputs.map((i) => i.value).find((v) => /Delivered — PRO \{\{pro\}\}/.test(v)) || '';
-});
-subjVal ? ok('the saved subject template hydrated the editor') : bad('subject template did not hydrate');
 /1 sent · 1 failed/.test(body) ? ok('the log totals line renders') : bad('log totals line missing');
 /ACME SUPPLY/.test(body) ? ok('log entries render') : bad('log entries missing');
 
-// Coverage: run the count, expect the stubbed 100%.
+// THE LIVE PREVIEW — the email is on screen the moment the tab opens, rendered from the
+// SAVED template with sample data, merge values escaped exactly like the server does.
+const liveDoc = await page.evaluate(() => String(document.querySelector('iframe[title="Email preview"]')?.getAttribute('srcdoc') || ''));
+liveDoc.includes('BUFORD TILE') ? ok('the live preview renders the template with sample data on load') : bad('live preview empty on load');
+liveDoc.includes('&amp;') ? ok('merge values are escaped in the preview, matching the server') : bad('sample ampersand not escaped — preview drifts from the send');
+
+// Coverage
 await page.getByRole('button', { name: /^count$/i }).first().click();
 await page.waitForTimeout(500);
-const body2 = await page.evaluate(() => document.body.innerText);
-/100%/.test(body2) ? ok('coverage renders the go/no-go number') : bad('coverage number missing');
+/100%/.test(await page.evaluate(() => document.body.innerText)) ? ok('coverage renders the go/no-go number') : bad('coverage number missing');
 
-// Preview: server-rendered HTML lands in the sandboxed iframe.
-await page.getByRole('button', { name: /preview saved template/i }).first().click();
+// Real-delivery preview — server-rendered, and a way back to the live sample.
+await page.getByRole('button', { name: /preview a real delivery/i }).first().click();
 await page.waitForTimeout(600);
-(previewCalls > 0) ? ok('preview asked the server (same renderer as the real send)') : bad('preview never called the server');
-const iframeHasMark = await page.evaluate(() => {
-  const f = document.querySelector('iframe[title="Email preview"]');
-  return !!f && String(f.getAttribute('srcdoc') || '').includes('pv-mark');
-});
-iframeHasMark ? ok('the rendered email is in the preview frame') : bad('preview frame empty');
-const bodyPv = await page.evaluate(() => document.body.innerText);
-/Would send to:/.test(bodyPv) ? ok('the preview names the real recipient decision') : bad('no recipient line on the preview');
+(previewCalls > 0) ? ok('real preview asked the server (same renderer as the live send)') : bad('real preview never called the server');
+const realDoc = await page.evaluate(() => String(document.querySelector('iframe[title="Email preview"]')?.getAttribute('srcdoc') || ''));
+realDoc.includes('pv-mark') ? ok('the server-rendered email replaced the sample') : bad('server preview not shown');
+(await page.getByRole('button', { name: /back to sample data/i }).first().isVisible().catch(() => false))
+  ? ok('and the way back to the live sample is offered') : bad('no way back to the sample preview');
+await page.getByRole('button', { name: /back to sample data/i }).first().click();
+await page.waitForTimeout(300);
 
-// Save: no token stored → 403 → prompt (auto-accepted) → retried with the token.
-await page.getByRole('button', { name: /save template/i }).first().click();
-await page.waitForTimeout(700);
-savedToken === 'stub-admin-token' ? ok('the save retried with the admin token after a 403') : bad(`save token wrong: ${savedToken}`);
-(savedBody && typeof savedBody.htmlTemplate === 'string' && savedBody.subjectTemplate)
-  ? ok('the template save round-tripped subject + html')
-  : bad('save body missing template fields');
+// Edit → sticky save bar → save. NO token prompt anywhere in this flow.
+await page.getByRole('button', { name: /edit html/i }).first().click();
+await page.waitForTimeout(300);
+const subjInput = page.locator('input[maxlength="200"]').first();
+(await subjInput.isVisible().catch(() => false)) ? ok('the template source opens on request') : bad('Edit HTML did not open the editor');
+await subjInput.fill('Delivered — PRO {{pro}} (edited)');
+await page.waitForTimeout(400);
+(await page.getByRole('button', { name: /save changes/i }).first().isVisible().catch(() => false))
+  ? ok('an edit surfaces the single sticky save bar') : bad('no save bar after an edit');
+await page.getByRole('button', { name: /save changes/i }).first().click();
+await page.waitForTimeout(600);
+(savedBody && /\(edited\)/.test(String(savedBody.subjectTemplate)) && typeof savedBody.htmlTemplate === 'string')
+  ? ok('the save round-tripped the edited subject + html in one write') : bad('save body wrong: ' + JSON.stringify(savedBody || {}).slice(0, 120));
+savedToken === null ? ok('no token header was sent — the gate is gone') : bad('UI still sends a token header: ' + savedToken);
+promptCount === 0 ? ok('and no token prompt ever appeared') : bad(promptCount + ' prompt dialog(s) appeared — the token ask is back');
 
 await browser.close();
 server.close();
