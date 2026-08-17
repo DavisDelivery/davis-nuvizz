@@ -1,6 +1,6 @@
 {
   "name": "load-scan",
-  "version": "0.42.0",
+  "version": "0.43.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -9,7 +9,8 @@
     "preview": "vite preview",
     "test": "node --test \"test/**/*.test.mjs\"",
     "lint": "echo 'no lint configured'",
-    "smoke": "node scripts/smoke-app.mjs dist"
+    "smoke": "node scripts/smoke-app.mjs dist",
+    "e2e:camera": "node scripts/camera-pairing-check.mjs"
   },
   "dependencies": {
     "lucide-react": "^0.400.0",

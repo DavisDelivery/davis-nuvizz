@@ -92,6 +92,146 @@ test('junk in the frame never becomes a piece', async () => {
   assert.deepEqual(buf.state(1001), { pro: null, og: null }, 'and nothing is left pending');
 });
 
+test('a complete frame that finishes its own pending half is a completion, not an abandonment', async () => {
+  // Android's native detector often decodes the PRO a frame before both land
+  // together. Announcing that as "superseded" buzzed a failure and chimed a
+  // success for ONE label at the same moment.
+  const { createPairBuffer } = await import('../src/lib/scan-logic.js');
+  const abandoned = [];
+  const buf = createPairBuffer({ windowMs: CAMERA_WINDOW, onAbandon: (h) => abandoned.push(h) });
+  const t0 = 1_000_000;
+  buf.push(['7162525'], t0);
+  const pair = buf.push(['7162525', 'OG6028653156'], t0 + 120);
+  assert.deepEqual(pair, { pro: '7162525', og: 'OG6028653156' });
+  assert.equal(abandoned.length, 0, 'completing yourself is not abandoning yourself');
+});
+
+test('the frames that keep decoding a just-booked label do not re-emit it', async () => {
+  // ~16 frames a second keep arriving while the loader lowers the phone. Every
+  // one of them used to re-emit the pair — and on a stop that pair had just
+  // completed, each re-emission buzzed a "stop full" refusal over the green.
+  const { createPairBuffer } = await import('../src/lib/scan-logic.js');
+  const abandoned = [];
+  const buf = createPairBuffer({ windowMs: CAMERA_WINDOW, onAbandon: (h) => abandoned.push(h) });
+  const t0 = 1_000_000;
+  assert.ok(buf.push(['7162525', 'OG6028653156'], t0), 'first complete frame books');
+  assert.equal(buf.push(['7162525', 'OG6028653156'], t0 + 60), null, 'the next frame is the same label');
+  assert.equal(buf.push(['7162525', 'OG6028653156'], t0 + 120), null);
+  assert.equal(buf.push(['OG6028653156'], t0 + 180), null, 'a lone re-read of its piece id too');
+  assert.equal(buf.tick(t0 + 180 + CAMERA_WINDOW + 1), null, 'and that lone re-read left NOTHING pending to orphan');
+  assert.equal(abandoned.length, 0);
+});
+
+test('holding a label under the lens keeps it quiet; re-presenting it later is a new read', async () => {
+  const { createPairBuffer } = await import('../src/lib/scan-logic.js');
+  const buf = createPairBuffer({ windowMs: CAMERA_WINDOW });
+  const t0 = 1_000_000;
+  buf.push(['7162525', 'OG6028653156'], t0);
+  // Matches refresh the memory: 2.0s + 2.0s of continuous aim stays silent
+  // even though the FIRST read is by now older than one window.
+  assert.equal(buf.push(['7162525', 'OG6028653156'], t0 + 2000), null);
+  assert.equal(buf.push(['7162525', 'OG6028653156'], t0 + 4000), null);
+  // Off the lens for a full window, back again: that is a deliberate re-scan,
+  // and downstream (evaluateScan) owns saying "already counted".
+  assert.ok(buf.push(['7162525', 'OG6028653156'], t0 + 4000 + CAMERA_WINDOW + 100), 're-emitted for the dup verdict');
+});
+
+test('the next skid of the SAME order books back to back — the pair memory never eats a PRO', async () => {
+  // A multi-piece order is one PRO on every skid; only the piece ids differ.
+  // Suppressing a repeated PRO would break the documented back-to-back flow.
+  const { createPairBuffer } = await import('../src/lib/scan-logic.js');
+  const abandoned = [];
+  const buf = createPairBuffer({ windowMs: CAMERA_WINDOW, onAbandon: (h) => abandoned.push(h) });
+  const t0 = 1_000_000;
+  assert.deepEqual(buf.push(['7162525', 'OG6028653156'], t0), { pro: '7162525', og: 'OG6028653156' });
+  assert.equal(buf.push(['7162525'], t0 + 900), null, 'skid 2, PRO first — held as a half, not swallowed');
+  assert.deepEqual(
+    buf.push(['OG6028653157'], t0 + 1400),
+    { pro: '7162525', og: 'OG6028653157' },
+    'skid 2 books with ITS OWN piece id',
+  );
+  assert.equal(abandoned.length, 0);
+});
+
+test('a straggler frame of the previous label does not supersede the label being scanned now', async () => {
+  const { createPairBuffer } = await import('../src/lib/scan-logic.js');
+  const abandoned = [];
+  const buf = createPairBuffer({ windowMs: CAMERA_WINDOW, onAbandon: (h) => abandoned.push(h) });
+  const t0 = 1_000_000;
+  buf.push(['7162525', 'OG6028653156'], t0);          // label A books
+  buf.push(['7159406'], t0 + 500);                    // label B's PRO is pending
+  assert.equal(buf.push(['7162525', 'OG6028653156'], t0 + 700), null, 'label A at the frame edge is recognised');
+  assert.equal(abandoned.length, 0, 'label B was not orphaned by the ghost');
+  assert.deepEqual(buf.push(['OG6028599592'], t0 + 900), { pro: '7159406', og: 'OG6028599592' }, 'label B completes');
+});
+
+// ── A late piece id upgrades the fallback, never doubles it ──────────────────
+//
+// When the window closes on a lone PRO the piece books under a NOOG id — the
+// WMS rule. But the label is often still under the lens, and seconds later both
+// barcodes decode. findUpgradeableNoog is how record() recognises that pair as
+// the SAME physical piece: the fallback row is voided and the real id books in
+// its place. One aim, one piece.
+
+test('a fresh scanner-minted NOOG for the same PRO is upgradeable', async () => {
+  const { findUpgradeableNoog } = await import('../src/lib/scan-logic.js');
+  const now = Date.parse('2026-08-12T02:10:10.000Z');
+  const row = { og: 'NOOG-7161111-1', pro: '7161111', engine: 'native', scannedAt: '2026-08-12T02:10:08.500Z' };
+  assert.equal(findUpgradeableNoog([row], '7161111', now), row);
+  assert.equal(findUpgradeableNoog([row], '7159999', now), null, 'a different PRO claims nothing');
+});
+
+test('typed pieces and overrides are deliberate statements — never consumed by an upgrade', async () => {
+  const { findUpgradeableNoog } = await import('../src/lib/scan-logic.js');
+  const now = Date.parse('2026-08-12T02:10:10.000Z');
+  const fresh = '2026-08-12T02:10:09.000Z';
+  assert.equal(
+    findUpgradeableNoog([{ og: 'NOOG-7161111-1', pro: '7161111', engine: 'manual', scannedAt: fresh }], '7161111', now),
+    null,
+    'an override books a NOOG with engine=manual, and it must stand',
+  );
+  assert.equal(
+    findUpgradeableNoog([{ og: 'TYPED-7161111-1', pro: '7161111', engine: 'manual', scannedAt: fresh }], '7161111', now),
+    null,
+    'a typed id is not a NOOG at all',
+  );
+});
+
+test('voided and stale NOOGs are not upgrade candidates, and the newest wins', async () => {
+  const { findUpgradeableNoog, NOOG_UPGRADE_GRACE_MS } = await import('../src/lib/scan-logic.js');
+  const now = Date.parse('2026-08-12T02:10:10.000Z');
+  const iso = (msAgo) => new Date(now - msAgo).toISOString();
+  const voided = { og: 'NOOG-7161111-1', pro: '7161111', engine: 'native', scannedAt: iso(500), voidedAt: iso(100) };
+  const stale = { og: 'NOOG-7161111-2', pro: '7161111', engine: 'native', scannedAt: iso(NOOG_UPGRADE_GRACE_MS + 1000) };
+  assert.equal(findUpgradeableNoog([voided], '7161111', now), null, 'already voided');
+  assert.equal(findUpgradeableNoog([stale], '7161111', now), null, 'older than the grace window');
+  const older = { og: 'NOOG-7161111-3', pro: '7161111', engine: 'quagga', scannedAt: iso(3000) };
+  const newest = { og: 'NOOG-7161111-4', pro: '7161111', engine: 'quagga', scannedAt: iso(800) };
+  assert.equal(findUpgradeableNoog([voided, stale, older, newest], '7161111', now), newest);
+  assert.equal(findUpgradeableNoog([], '7161111', now), null);
+  assert.equal(findUpgradeableNoog([newest], 'not a pro', now), null);
+});
+
+test('"Another piece" clears the cooldown without throwing — dead since v0.35.0', async () => {
+  // clear() still assigned the gate's PRE-v0.35 variable name; in a strict-mode
+  // module that assignment THROWS, so the deliberate-override button died the
+  // moment it was tapped. The gate must accept the same code again right after.
+  const { createScanGate } = await import('../src/lib/scan-logic.js');
+  const gate = createScanGate({ cooldownMs: 3000 });
+  const t0 = 1_000_000;
+  assert.equal(gate.allow('7162525', t0), true);
+  assert.equal(gate.allow('7162525', t0 + 200), false, 'cooldown holds');
+  gate.clear(); // used to be the line that threw
+  assert.equal(gate.allow('7162525', t0 + 400), true, 'cleared — the tap lets the next read through');
+});
+
+test('the camera and the gun close their pair windows at the same clock', async () => {
+  const { CAMERA_PAIR_WINDOW_MS } = await import('../src/lib/scanner.js');
+  const { WEDGE_PAIR_WINDOW_MS } = await import('../src/lib/wedge.js');
+  assert.equal(CAMERA_PAIR_WINDOW_MS, WEDGE_PAIR_WINDOW_MS, 'one rule for both entry routes');
+  assert.equal(CAMERA_PAIR_WINDOW_MS, CAMERA_WINDOW, 'and these tests exercise that exact window');
+});
+
 test('a scanned-without-OG id is accepted and stays distinct from typed', async () => {
   const session = await import('../netlify/functions/scan-session.mts');
   const scanned = session.normalizeScan({ og: 'NOOG-7156834-1', pro: '7156834', engine: 'quagga' }).row;

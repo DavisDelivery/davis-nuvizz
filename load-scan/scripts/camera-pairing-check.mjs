@@ -8,7 +8,9 @@
 // pieces from that sequence (NOOG phantom + the real OG). This asserts exactly
 // ONE books, with its real id — and that a label whose OG never decodes at all
 // still books its NOOG fallback when the pair window closes, which is the WMS
-// rule this app scans by.
+// rule this app scans by. Act 3 is the late arrival: the OG that finally
+// decodes seconds AFTER the fallback booked must UPGRADE that NOOG row (void
+// it, book the real id), not double the piece.
 //
 // Run from load-scan/:  npm run build && node scripts/camera-pairing-check.mjs
 //   CHROMIUM_PATH  override the browser binary (as with npm run smoke)
@@ -39,12 +41,14 @@ const manifest = {
   date: DATE,
   loads: [{
     loadNbr: 'STEVEN', routeName: 'STEVEN', driverName: 'Steven Adjetey',
-    expectedPieces: 4, stopCount: 2,
+    expectedPieces: 5, stopCount: 3,
     stops: [
       { stopNbr:'007162525', businessName:'DASAN USA', pros:['7162525'], primaryPro:'7162525',
         expectedPieces:3, skids:3, loose:0, loadSeq:1, loadStopSeq:7, city:'DULUTH', state:'GA', isPickup:false },
       { stopNbr:'007159999', businessName:'TORN LABEL CO', pros:['7159999'], primaryPro:'7159999',
         expectedPieces:1, skids:1, loose:0, loadSeq:2, loadStopSeq:6, city:'NORCROSS', state:'GA', isPickup:false },
+      { stopNbr:'007161111', businessName:'LATE LABEL LLC', pros:['7161111'], primaryPro:'7161111',
+        expectedPieces:1, skids:1, loose:0, loadSeq:3, loadStopSeq:5, city:'ATLANTA', state:'GA', isPickup:false },
     ],
   }],
 };
@@ -71,7 +75,14 @@ await ctx.addInitScript(() => {
   idle(30);                             // aim ends
   // Act 2 — the torn label: PRO only, forever.
   frames.push(['7159999'], ['7159999'], ['7159999']);
-  idle(200);                            // OG never decodes; the window must close on the clock
+  idle(60);                             // OG never decodes; the window must close on the clock
+  // Act 3 — the LATE piece id. The window closes on a lone PRO (the NOOG
+  // fallback books), and THEN the whole label finally decodes. The complete
+  // pair is the same physical piece: it must upgrade the NOOG, not double it.
+  frames.push(['7161111'], ['7161111'], ['7161111']);
+  idle(60);                             // past the window — the fallback books here
+  frames.push(['7161111', 'OG6028777777'], ['7161111', 'OG6028777777'], ['7161111', 'OG6028777777']);
+  idle(40);                             // aim ends
   window.__scanScript = frames;
   window.BarcodeDetector = class {
     static async getSupportedFormats() { return ['code_128', 'code_39']; }
@@ -111,7 +122,7 @@ const queue = await page.evaluate(() => new Promise((res) => {
   r.onsuccess = () => {
     const t = r.result.transaction('scanQueue', 'readonly');
     const g = t.objectStore('scanQueue').getAll();
-    g.onsuccess = () => res(g.result.map((x) => ({ og: x.og, pro: x.pro, kind: x.kind || 'scan' })));
+    g.onsuccess = () => res(g.result.map((x) => ({ og: x.og, pro: x.pro, kind: x.kind || 'scan', voided: !!x.voidedAt })));
     g.onerror = () => res([]);
   };
   r.onerror = () => res([]);
@@ -127,13 +138,25 @@ const torn = queue.filter((r) => r.pro === '7159999');
 if (torn.length !== 1) fail(`the torn label booked ${torn.length} pieces — the WMS rule books exactly 1`);
 if (torn[0] && torn[0].og !== 'NOOG-7159999-1') fail(`torn label og=${torn[0]?.og} — expected the NOOG fallback`);
 
+// Act 3: the piece id that arrived AFTER the fallback booked. The NOOG row must
+// be a void tombstone (never deleted — the sync needs to carry the void up) and
+// the real id must be the ONE live piece. Two live rows here is the dock's
+// double-count, arriving late instead of early.
+const late = queue.filter((r) => r.pro === '7161111');
+const liveLate = late.filter((r) => !r.voided);
+if (liveLate.length !== 1) fail(`LATE LABEL holds ${liveLate.length} live pieces from one aim — must be exactly 1`);
+if (liveLate[0] && liveLate[0].og !== 'OG6028777777') fail(`LATE LABEL live og=${liveLate[0]?.og} — the real id must win`);
+const lateNoog = late.find((r) => String(r.og).startsWith('NOOG-7161111'));
+if (!lateNoog) fail('the NOOG fallback row is missing entirely — it must remain as a void tombstone');
+else if (!lateNoog.voided) fail('the NOOG fallback is still LIVE next to the real id — the upgrade did not fire');
+
 const body = await page.locator('body').innerText();
-if (!/2\s*\/\s*4/.test(body)) fail(`header count should read 2/4, body has: ${body.match(/\d+\s*\/\s*\d+/g)}`);
+if (!/3\s*\/\s*5/.test(body)) fail(`header count should read 3/5, body has: ${body.match(/\d+\s*\/\s*\d+/g)}`);
 if (errs.length) fail('uncaught errors: ' + errs.join(' | '));
 
 await browser.close();
 server.close();
 console.log(ok
-  ? '\n✓ PASS — one aim books ONE piece with its real id; a dead OG still books via NOOG at the window'
+  ? '\n✓ PASS — one aim books ONE piece with its real id; a dead OG books via NOOG at the window; a LATE OG upgrades its NOOG instead of doubling it'
   : '\n✗ failed');
 process.exit(ok ? 0 : 1);

@@ -72,6 +72,17 @@ export function pairFrame(rawValues) {
 
 export function createPairBuffer({ windowMs = 2500, onAbandon } = {}) {
   let pending = { pro: null, og: null, at: 0 };
+  // The pair most recently EMITTED, remembered so the frames that keep
+  // arriving while the loader lowers the phone are recognised as the same
+  // label. Keyed on the piece id alone: an OG is unique to one physical piece,
+  // while the SAME PRO on a new frame may legitimately be the next skid of a
+  // multi-piece order — so a lone PRO is never suppressed by this memory.
+  // Refreshed on every match, so a label held under the lens stays quiet for
+  // as long as it is held; only after it leaves view for a full window does a
+  // re-read become a deliberate re-scan again.
+  let lastPair = { og: null, at: 0 };
+
+  const seenPair = (og, now) => !!og && lastPair.og === og && now - lastPair.at <= windowMs;
 
   const expired = (now) => pending.at && now - pending.at > windowMs;
 
@@ -99,13 +110,39 @@ export function createPairBuffer({ windowMs = 2500, onAbandon } = {}) {
       const frame = pairFrame(rawValues);
 
       // Both barcodes in one read is unambiguously ONE label. Anything still
-      // held belonged to a different label and never completed.
+      // held belonged to a different label and never completed — UNLESS the
+      // held half is one of THIS frame's own barcodes: the native camera often
+      // decodes the PRO a frame before both land together, and announcing that
+      // as "superseded" buzzed a failure and chimed a success for one label at
+      // the same moment. Completion of your own half is not an abandonment.
       if (frame.complete) {
-        abandon('superseded', now);
+        // The pair that JUST emitted, still decoding while the aim comes down.
+        // Without this memory every following frame re-emitted the same label
+        // (~16 times a second), and each re-emission reached the booking gates
+        // — which on a stop the pair had just completed buzzed a "stop full"
+        // refusal over the loader's own green.
+        if (seenPair(frame.og, now)) {
+          lastPair = { og: frame.og, at: now };
+          return null;
+        }
+        if (pending.pro === frame.pro || pending.og === frame.og) {
+          pending = { pro: null, og: null, at: 0 };
+        } else {
+          abandon('superseded', now);
+        }
+        lastPair = { og: frame.og, at: now };
         return { pro: frame.pro, og: frame.og };
       }
 
       if (expired(now)) abandon('expired', now);
+
+      // A lone re-read of the piece id that just completed is the same label on
+      // the way out of frame, NOT a new half — holding it as pending would ring
+      // a false "rescan that label" orphan when the window closed on it.
+      if (frame.og && !frame.pro && seenPair(frame.og, now)) {
+        lastPair = { og: frame.og, at: now };
+        return null;
+      }
 
       // A RE-READ of the half already pending is NOT an abandonment. The camera
       // decodes the same barcode on every frame while the loader holds aim, and
@@ -128,6 +165,9 @@ export function createPairBuffer({ windowMs = 2500, onAbandon } = {}) {
       if (pending.pro && pending.og) {
         const out = { pro: pending.pro, og: pending.og };
         pending = { pro: null, og: null, at: 0 };
+        // A marriage is an emission like any other — the label is still under
+        // the lens, and its next frames must be recognised, not re-booked.
+        lastPair = { og: out.og, at: now };
         return out;
       }
       return null;
@@ -151,6 +191,7 @@ export function createPairBuffer({ windowMs = 2500, onAbandon } = {}) {
     },
     reset() {
       pending = { pro: null, og: null, at: 0 };
+      lastPair = { og: null, at: 0 };
     },
   };
 }
@@ -162,6 +203,44 @@ export function createPairBuffer({ windowMs = 2500, onAbandon } = {}) {
 //           Does not block loading.
 //   RED     PRO is not on this load.
 //   SILENT  this exact OG was already scanned in this session.
+
+/**
+ * How long a scanner-minted NOOG fallback stays upgradeable by a real piece id.
+ *
+ * The window expiring does not stop the decoder: on a stubborn label the OG can
+ * land seconds AFTER the fallback booked, and without this it booked a SECOND
+ * piece — the phantom this pairing work exists to kill, arriving late instead
+ * of early. Four seconds covers "held aim past the green"; a loader who has
+ * walked to the NEXT same-PRO skid and completed its pair takes longer than
+ * that, and the cost of guessing wrong is asymmetric anyway — a wrong upgrade
+ * shows as a visible shortfall the loader fixes on the spot, a missed upgrade
+ * is a silent overcount that poisons the load.
+ */
+export const NOOG_UPGRADE_GRACE_MS = 4000;
+
+/**
+ * The scanner-minted fallback row a real piece id should REPLACE, if any.
+ *
+ * Only scanner engines qualify: a TYPED- piece and an override "Another piece"
+ * are deliberate human assertions and must never be silently consumed by a
+ * barcode that happens to arrive next.
+ */
+export function findUpgradeableNoog(scans, pro, now = Date.now(), graceMs = NOOG_UPGRADE_GRACE_MS) {
+  const p7 = normalizePro(pro);
+  if (!p7) return null;
+  const rx = new RegExp(`^NOOG-${p7}-\\d+$`);
+  return (
+    (scans || [])
+      .filter((s) => rx.test(String(s.og || '')))
+      .filter((s) => !s.voidedAt)
+      .filter((s) => s.engine === 'native' || s.engine === 'quagga' || s.engine === 'wedge')
+      .filter((s) => {
+        const t = Date.parse(s.scannedAt || '');
+        return Number.isFinite(t) && now - t <= graceMs;
+      })
+      .sort((a, b) => String(b.scannedAt).localeCompare(String(a.scannedAt)))[0] || null
+  );
+}
 
 export const OUTCOME = { GREEN: 'green', AMBER: 'amber', RED: 'red', SILENT: 'silent' };
 
@@ -488,7 +567,12 @@ export function createScanGate({ cooldownMs = 3000 } = {}) {
     },
     /** Let the next read of `pro` through immediately (after a deliberate tap). */
     clear() {
-      lastPro = null;
+      // Was `lastPro = null` — a leftover from when the gate keyed on the PRO
+      // (v0.35.0 renamed the closure variable and missed this line). In a
+      // strict-mode ES module that assignment THROWS, and clear() is what the
+      // "Another piece" button calls first — so the deliberate-override path
+      // has been dead since v0.35.0. A loader tapping the button got nothing.
+      lastCode = null;
       lastAt = 0;
     },
   };

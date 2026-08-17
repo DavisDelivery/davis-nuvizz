@@ -71,6 +71,10 @@ jobs:
       - run: npx --yes playwright@$(node -p "require('playwright-core/package.json').version") install chromium
       - run: npm run build
       - run: npm run smoke
+      # The phantom-piece regression proof: scripted camera frames through the
+      # REAL bundle — one aim must book ONE piece (dock incident of Aug 12),
+      # and a piece id arriving late must upgrade its fallback, not double it.
+      - run: npm run e2e:camera
 
   # ── Does the app actually START? ───────────────────────────────────────────
   # v0.54.14 shipped a bundle that was blank on every device: state declared in
