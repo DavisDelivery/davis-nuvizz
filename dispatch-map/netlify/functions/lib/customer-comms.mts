@@ -416,7 +416,15 @@ export function stopVars(stop: any, date: string): Record<string, string> {
     pieces,
     weight: stop?.weight != null ? String(stop.weight) : '',
     trackingUrl: pro ? `https://tracking.davisdelivery.com/?pro=${encodeURIComponent(pro)}` : 'https://tracking.davisdelivery.com/',
-    reviewUrl: pro ? `https://tracking.davisdelivery.com/?pro=${encodeURIComponent(pro)}#review` : 'https://tracking.davisdelivery.com/',
+    // Same page as trackingUrl, and deliberately so: the tracking site's star rating is a
+    // card ON that page, not a separate route. It carried a '#review' fragment that pointed
+    // at nothing — the page has no element with that id, its only ids are app/review-form/
+    // stars-row, it never reads location.hash, and review-form is display:none until a star
+    // is tapped. So the fragment was decoration and any anchor would be: the whole page is
+    // rendered by script into <div id="app">, so there is no target at load time to jump to.
+    // Kept as its own merge field anyway, so the button can be pointed straight at Google
+    // (or anywhere else) from the Communications tab without touching this file.
+    reviewUrl: pro ? `https://tracking.davisdelivery.com/?pro=${encodeURIComponent(pro)}` : 'https://tracking.davisdelivery.com/',
     // ET, not the UTC runtime's year — otherwise a New Year's Eve send stamps next year.
     year: etDayString().slice(0, 4),
   };
@@ -685,17 +693,25 @@ export async function readSweepStatus(date: string): Promise<any | null> {
 // Table-based and inline-styled: Gmail and Outlook strip <style> blocks, so every rule is
 // on the element and the layout is tables.
 //
-// NO IMAGE IN THE HEADER, and that is deliberate rather than lazy. The masthead is a styled
-// text wordmark because (a) the URL this template shipped with,
-// tracking.davisdelivery.com/logo.png, is a 404 — every send would have opened with a broken
-// image — and (b) Outlook and Gmail block remote images by default, so even a working logo is
-// blank on first view for a large share of recipients. Text always renders.
+// THE MASTHEAD. The URL this template originally shipped with,
+// tracking.davisdelivery.com/logo.png, is a 404 — that site serves no static assets at all
+// (its favicon 404s too; it is a pure SPA that renders everything into <div id="app">), so
+// every send would have opened with a broken image.
 //
-// TO USE THE REAL LOGO: host it somewhere stable (the repo's copy is
-// dispatch-map/public/davis-logo.jpg) and swap this block for an <img> from the
-// Communications tab — htmlTemplate lives in Firestore, so it needs no redeploy. Note the
-// asset is blue-on-WHITE, so give it a white header band rather than this navy one, keep it
-// under ~40 KB, and always set alt text: that alt is what the blocked-image case shows.
+// The logo now comes from public/davis-logo-email.png on THIS app's own site, which is the
+// only Davis host we control that actually serves files today (map./dispatch. do not
+// resolve). It is the real mark, white-margin trimmed and rebuilt for email: 520×167 so it
+// stays sharp at the 260px it displays, and 24 KB rather than the 129 KB of the full-size
+// original. The band behind it is WHITE because the mark is blue-on-white — on the navy
+// band it would have been a white rectangle.
+//
+// The alt text is the fallback, not an afterthought: Outlook and Gmail block remote images
+// by default, so a good share of recipients see only that string on first open. It names the
+// company and the tagline, and the font/colour styles on the <img> are what those clients
+// apply when rendering it.
+//
+// TO MOVE IT to a branded URL later, swap the src from the Communications tab — htmlTemplate
+// lives in Firestore, so it needs no redeploy.
 //
 // NO PHONE NUMBER, deliberately. Netlify's secrets scan greps every file here for the
 // VALUES of this site's env vars, and SIMPLETEXTING_FROM is an account phone — a bare
@@ -708,10 +724,8 @@ export async function readSweepStatus(date: string): Promise<any | null> {
 export const DEFAULT_HTML = `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#EDF1F5;padding:24px 12px;">
 <tr><td align="center">
 <table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%;background:#fff;border-radius:4px;overflow:hidden;font-family:'DM Sans','Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
-  <tr><td style="background:#123A63;padding:22px 32px;">
-    <div style="font-size:23px;font-weight:700;letter-spacing:3px;color:#fff;line-height:1;">DAVIS</div>
-    <div style="font-size:11px;font-weight:600;letter-spacing:3.4px;color:#8FB2D4;padding-top:5px;">DELIVERY SERVICE</div>
-    <div style="font-size:11px;color:#6E90B4;padding-top:5px;font-style:italic;">Family owned since 1985</div>
+  <tr><td style="background:#ffffff;padding:22px 32px 18px;border-bottom:1px solid #E4EAF0;">
+    <img src="https://dd-dispatch-map.netlify.app/davis-logo-email.png" width="260" height="84" alt="Davis Delivery Service — family owned since 1985" style="display:block;border:0;width:260px;max-width:100%;height:auto;color:#123A63;font-family:'DM Sans','Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:17px;font-weight:700;">
   </td></tr>
   <tr><td style="background:#1B7A4B;padding:13px 32px;text-align:center;color:#fff;font-size:15px;font-weight:700;">
     &#10003;&nbsp; DELIVERED &nbsp;<span style="color:#B8E2CB;font-weight:400;">{{deliveredWhen}}</span>
@@ -743,7 +757,7 @@ export const DEFAULT_HTML = `<table role="presentation" width="100%" cellpadding
     <table role="presentation" width="100%" style="background:#FDF7EA;border:1px solid #F0DCB4;border-radius:3px;"><tr>
       <td style="padding:22px 24px;" align="center">
         <div style="font-size:16px;font-weight:700;color:#16202B;">How did we do?</div>
-        <div style="font-size:14px;color:#6B5A3E;line-height:1.6;padding:8px 0 16px;">Thirty seconds of feedback helps us keep your freight moving right.</div>
+        <div style="font-size:14px;color:#6B5A3E;line-height:1.6;padding:8px 0 16px;">Tap a star on your tracking page — it takes about thirty seconds, and it helps a family-owned business more than you'd think.</div>
         <a href="{{reviewUrl}}" style="display:inline-block;background:#E8A317;color:#16202B;font-size:15px;font-weight:700;text-decoration:none;padding:13px 34px;border-radius:3px;">Rate this delivery</a>
       </td>
     </tr></table>

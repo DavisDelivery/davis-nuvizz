@@ -218,12 +218,31 @@ test('the suite line is shown, and takes its own line break with it when absent'
   assert.ok(without.includes('Buford 30518'), 'the rest of the address still renders');
 });
 
-test('the default template carries no remote image — a blocked or 404 asset cannot break it', () => {
-  // The URL this shipped with (tracking.davisdelivery.com/logo.png) is a 404, and Outlook
-  // and Gmail block remote images by default anyway, so the masthead is text.
-  assert.ok(!/<img\b/i.test(DEFAULT_HTML), 'no <img> in the default template');
-  assert.ok(!/logo\.png/i.test(DEFAULT_HTML));
-  assert.ok(DEFAULT_HTML.includes('DAVIS'), 'the wordmark still names the company');
+test('the masthead image is not the 404 it shipped with, and degrades to alt text', () => {
+  // tracking.davisdelivery.com serves no static assets — logo.png AND its favicon both 404 —
+  // so that host must never be the src again.
+  assert.ok(!/tracking\.davisdelivery\.com\/[^"']*\.(png|jpe?g|svg|webp)/i.test(DEFAULT_HTML),
+    'the masthead must not load an image from the tracking site');
+
+  const img = /<img\b[^>]*>/i.exec(DEFAULT_HTML);
+  assert.ok(img, 'the masthead is an image');
+  // Outlook and Gmail block remote images by default, so alt is what most recipients see
+  // first. An empty or missing alt leaves a blank band at the top of the email.
+  const alt = /\balt="([^"]+)"/i.exec(img[0]);
+  assert.ok(alt && alt[1].trim().length > 10, 'the masthead image needs real alt text');
+  assert.ok(/davis/i.test(alt[1]), 'the alt text names the company');
+  // Width/height pinned so a blocked image reserves its space instead of collapsing.
+  assert.ok(/\bwidth="\d+"/.test(img[0]) && /\bheight="\d+"/.test(img[0]));
+});
+
+test('the review CTA carries no dead fragment', () => {
+  // The tracking page has no element with id "review", never reads location.hash, and
+  // renders everything into <div id="app"> after load — so a fragment could only ever be
+  // decoration. The star rating is a card on the ?pro= page itself.
+  const vars = stopVars(LIST_STOP, '2026-08-16');
+  assert.ok(!vars.reviewUrl.includes('#'), 'no fragment on the review link');
+  assert.ok(vars.reviewUrl.includes('?pro='), 'it still deep-links to this delivery');
+  assert.equal(vars.reviewUrl, vars.trackingUrl, 'same page — the rating lives on it');
 });
 
 test('pieces falls back to the list freight columns when the stop is not enriched', () => {
