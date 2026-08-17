@@ -54,6 +54,68 @@ const SCREENS = [
   { key: 'diagnostics', label: 'Diagnostics', nav: /diagnostics/i },
 ];
 
+// PROBES — the guard's biggest blind spot was that it only ever measured a screen at REST.
+// Six sub-40px controls were sitting in the note composer, the customer-# editor and the
+// notes editor, all of which only exist AFTER you open a sheet or a drawer — so the build
+// stayed green while the operator mis-tapped a 30px "Send to NuVizz" at a dock. Each probe
+// opens one of those surfaces and the screen is measured again inside it.
+const PROBES = {
+  map: [
+    {
+      name: 'Stops sheet',
+      open: async (page) => {
+        await page.getByRole('button', { name: /^stops$/i }).first().click();
+        await page.waitForTimeout(600);
+        return page.getByText(/CUSTOMER 0/i).first().isVisible().catch(() => false);
+      },
+    },
+    {
+      name: 'Filters sheet',
+      open: async (page) => {
+        await page.getByRole('button', { name: /^filters$/i }).first().click();
+        await page.waitForTimeout(600);
+        return page.getByText(/priority flag/i).first().isVisible().catch(() => false);
+      },
+    },
+    {
+      name: 'stop detail drawer',
+      open: async (page) => {
+        await page.getByRole('button', { name: /^stops$/i }).first().click();
+        await page.waitForTimeout(500);
+        // The first stop row in the list — the drawer is the only way to the notes editor.
+        const row = page.locator('[data-stop-row], li, button').filter({ hasText: /CUSTOMER 0/i }).first();
+        if (!(await row.isVisible().catch(() => false))) return false;
+        await row.click();
+        await page.waitForTimeout(800);
+        // The drawer is proven open by a control only it renders.
+        return page.getByRole('button', { name: /edit|customer #|notes/i }).first().isVisible().catch(() => false);
+      },
+    },
+  ],
+  comms: [
+    {
+      name: 'all sections open',
+      open: async (page) => {
+        // Each accordion row in turn; the last one left open is measured, but every control
+        // inside each is rendered at least once for the clipped/overflow checks.
+        for (const t of [/^program/i, /^sender/i, /^coverage/i, /send a test/i, /^template/i, /send log/i]) {
+          const row = page.getByRole('button', { name: t }).first();
+          if (await row.isVisible().catch(() => false)) { await row.click(); await page.waitForTimeout(300); }
+        }
+        // The accordion shows one section at a time, so assert on the LAST one opened.
+        return page.getByText(/ACME SUPPLY/i).first().isVisible().catch(() => false);
+      },
+    },
+  ],
+};
+
+// Every <details> on the page, opened — a disclosure is a control whose contents are
+// invisible to a resting-state sweep by definition.
+async function openAllDetails(page) {
+  await page.evaluate(() => { document.querySelectorAll('details').forEach((d) => { d.open = true; }); });
+  await page.waitForTimeout(250);
+}
+
 let failures = 0;
 const ok = (m) => console.log(`  \x1b[32m✓\x1b[0m ${m}`);
 const bad = (m) => { failures++; console.log(`  \x1b[31m✗ ${m}\x1b[0m`); };
@@ -151,7 +213,7 @@ const MEASURE = `(() => {
       out.offscreen.push({ el: describe(el), left: Math.round(r.left), right: Math.round(r.right) });
     }
     const tag = el.tagName.toLowerCase();
-    const tappable = tag === 'button' || tag === 'a' || tag === 'select' || (tag === 'input' && !['hidden','checkbox','radio'].includes(el.type)) || el.getAttribute('role') === 'button' || el.getAttribute('role') === 'menuitem';
+    const tappable = tag === 'button' || tag === 'a' || tag === 'select' || tag === 'summary' || (tag === 'input' && !['hidden','checkbox','radio'].includes(el.type)) || el.getAttribute('role') === 'button' || el.getAttribute('role') === 'menuitem';
     if (tappable && !el.disabled) {
       // Credit a deliberately-expanded hit area: the app's own idiom is an absolutely
       // positioned ::after with negative insets (after:-inset-y-3), which really does
@@ -256,6 +318,28 @@ for (const device of DEVICES) {
 
     if (probs.length === 0) ok(`${screen.label}`);
     else { bad(`${screen.label}`); for (const p of probs) console.log(`      ${p}`); }
+
+    // Then the same screen with its sheets, drawers and disclosures open.
+    for (const probe of (PROBES[screen.key] || [])) {
+      await page.goto(`http://127.0.0.1:${PORT}/`, { waitUntil: 'networkidle' });
+      await page.waitForTimeout(1000);
+      if (!(await gotoScreen(page, screen))) continue;
+      await page.waitForTimeout(500);
+      let reached = false;
+      try { reached = await probe.open(page); } catch { reached = false; }
+      if (!reached) { bad(`${screen.label} → ${probe.name}: the probe could not open it — this guard is only as good as its reach`); continue; }
+      await openAllDetails(page);
+      const pm = await page.evaluate(MEASURE);
+      const pp = [];
+      if (pm.docW > pm.vw + 1) {
+        pp.push(`page scrolls sideways (${pm.docW}px in ${pm.vw}px)`);
+        for (const w of pm.wide) pp.push(`   widest: ${w.w}px — ${w.el}`);
+      }
+      for (const cl of pm.clipped) pp.push(`clipped ${cl.cut}px — ${cl.el}`);
+      for (const sm of pm.small) pp.push(`touch target ${sm.w}×${sm.h}px — ${sm.el}`);
+      if (pp.length === 0) ok(`${screen.label} → ${probe.name}`);
+      else { bad(`${screen.label} → ${probe.name}`); for (const x of pp) console.log(`      ${x}`); }
+    }
   }
   await ctx.close();
   console.log('');
