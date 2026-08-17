@@ -1,43 +1,95 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-// ── A PRO alone is a piece (matching the WMS scanner that works) ─────────────
+// ── The camera pairs like the gun: one label, one piece ──────────────────────
+//
+// The camera used to book a PRO the INSTANT it decoded, with no piece id.
+// Quagga is deliberately multiple:false, so on an iPhone the two barcodes of a
+// label always arrive on separate frames — and whenever the PRO decoded a beat
+// before the OG, a phantom NOOG piece booked, the green flash ended the aim,
+// and the OG that landed anyway booked as a SECOND piece. DASAN USA read 3/3
+// off two scans (NOOG-7162525-1 + OG6028653156 + OG6028653157); GEM SHOPPING
+// credited 10 of 11. A PRO alone is STILL a piece — the WMS rule stands — but
+// it books when the pair window closes, not on the first PRO frame.
 
-test('a PRO on its own resolves to a piece — no OG required', async () => {
-  // The old buffer waited for BOTH barcodes inside a window. On iOS with a big
-  // label that pairing usually never completed, so the driver got "point at a
-  // label" while pointing at one. The WMS reads a single PRO and works.
-  const { createScanResolver } = await import('../src/lib/scan-logic.js');
-  const r = createScanResolver();
-  assert.deepEqual(r.push(['7156834'], 1000), { pro: '7156834', og: null });
+const CAMERA_WINDOW = 2500;
+
+test('DASAN: the PRO frame books nothing — its OG lands two frames later and makes ONE piece', async () => {
+  const { createPairBuffer } = await import('../src/lib/scan-logic.js');
+  const abandoned = [];
+  const buf = createPairBuffer({ windowMs: CAMERA_WINDOW, onAbandon: (h) => abandoned.push(h) });
+  const t0 = 1_000_000;
+  assert.equal(buf.push(['7162525'], t0), null, 'no instant booking on the PRO frame');
+  const pair = buf.push(['OG6028653156'], t0 + 400);
+  assert.deepEqual(pair, { pro: '7162525', og: 'OG6028653156' }, 'the OG completes the SAME piece');
+  assert.equal(abandoned.length, 0, 'and no phantom was minted along the way');
 });
 
-test('an OG in the same frame is used, giving exact per-piece dedup', async () => {
-  const { createScanResolver } = await import('../src/lib/scan-logic.js');
-  const r = createScanResolver();
-  assert.deepEqual(r.push(['OG6028555794', '7156834'], 1000), { pro: '7156834', og: 'OG6028555794' });
+test('a PRO whose piece id never decodes becomes a piece when the window closes — not before', async () => {
+  const { createPairBuffer } = await import('../src/lib/scan-logic.js');
+  const abandoned = [];
+  const buf = createPairBuffer({ windowMs: CAMERA_WINDOW, onAbandon: (h) => abandoned.push(h) });
+  const t0 = 1_000_000;
+  buf.push(['7156834'], t0);
+  assert.equal(buf.tick(t0 + CAMERA_WINDOW - 1), null, 'still inside the window');
+  assert.equal(abandoned.length, 0);
+  buf.tick(t0 + CAMERA_WINDOW + 1);
+  assert.deepEqual(
+    abandoned.map((h) => [h.kind, h.value, h.reason]),
+    [['pro', '7156834', 'expired']],
+    'the expiry is what books the PRO-alone piece downstream',
+  );
+});
+
+test('steady aim re-reads the same PRO every frame without restarting the window', async () => {
+  // If a re-read refreshed the timestamp, a label whose OG cannot decode would
+  // hold the loader at "hold steady" forever. The window anchors to the FIRST
+  // sighting; frames re-reading the same barcode change nothing.
+  const { createPairBuffer } = await import('../src/lib/scan-logic.js');
+  const abandoned = [];
+  const buf = createPairBuffer({ windowMs: CAMERA_WINDOW, onAbandon: (h) => abandoned.push(h) });
+  const t0 = 1_000_000;
+  buf.push(['7156834'], t0);
+  assert.equal(buf.push(['7156834'], t0 + 800), null, 're-read, not an abandonment');
+  assert.equal(buf.push(['7156834'], t0 + 1600), null);
+  assert.equal(abandoned.length, 0, 'no superseded noise from holding aim');
+  buf.tick(t0 + CAMERA_WINDOW + 1);
+  assert.deepEqual(abandoned.map((h) => h.reason), ['expired'], 'window measured from the first read');
+});
+
+test('a re-read of a pending OG is also a no-op, and a DIFFERENT label still supersedes', async () => {
+  const { createPairBuffer } = await import('../src/lib/scan-logic.js');
+  const abandoned = [];
+  const buf = createPairBuffer({ windowMs: CAMERA_WINDOW, onAbandon: (h) => abandoned.push(h) });
+  const t0 = 1_000_000;
+  buf.push(['OG6028555794'], t0);
+  assert.equal(buf.push(['OG6028555794'], t0 + 300), null, 'same piece id re-read');
+  assert.equal(abandoned.length, 0);
+  buf.push(['OG6028555795'], t0 + 600); // a different label's id — a real switch
+  assert.deepEqual(abandoned.map((h) => [h.kind, h.value, h.reason]), [['og', 'OG6028555794', 'superseded']]);
 });
 
 test('an OG seen just before its PRO still pairs', async () => {
-  const { createScanResolver } = await import('../src/lib/scan-logic.js');
-  const r = createScanResolver({ ogHoldMs: 1200 });
-  assert.equal(r.push(['OG6028555794'], 1000), null, 'an OG alone identifies no stop');
-  assert.deepEqual(r.push(['7156834'], 1500), { pro: '7156834', og: 'OG6028555794' });
+  const { createPairBuffer } = await import('../src/lib/scan-logic.js');
+  const buf = createPairBuffer({ windowMs: CAMERA_WINDOW });
+  assert.equal(buf.push(['OG6028555794'], 1000), null, 'an OG alone identifies no stop');
+  assert.deepEqual(buf.push(['7156834'], 1500), { pro: '7156834', og: 'OG6028555794' });
 });
 
 test('a stale OG is not married to a later label', async () => {
   // The failure this guards: an OG from the pallet you just did, attached to
   // the PRO of the one you are on now.
-  const { createScanResolver } = await import('../src/lib/scan-logic.js');
-  const r = createScanResolver({ ogHoldMs: 1200 });
-  r.push(['OG6028555794'], 1000);
-  assert.deepEqual(r.push(['7156834'], 5000), { pro: '7156834', og: null }, 'expired, so the piece stands alone');
+  const { createPairBuffer } = await import('../src/lib/scan-logic.js');
+  const buf = createPairBuffer({ windowMs: CAMERA_WINDOW });
+  buf.push(['OG6028555794'], 1000);
+  assert.equal(buf.push(['7156834'], 1000 + CAMERA_WINDOW + 1500), null, 'expired — the PRO starts its own window');
 });
 
 test('junk in the frame never becomes a piece', async () => {
-  const { createScanResolver } = await import('../src/lib/scan-logic.js');
-  const r = createScanResolver();
-  assert.equal(r.push(['0259185096', 'DECATUR', ''], 1000), null, 'an Averitt PRO and text are not a Uline piece');
+  const { createPairBuffer } = await import('../src/lib/scan-logic.js');
+  const buf = createPairBuffer({ windowMs: CAMERA_WINDOW });
+  assert.equal(buf.push(['0259185096', 'DECATUR', ''], 1000), null, 'an Averitt PRO and text are not a Uline piece');
+  assert.deepEqual(buf.state(1001), { pro: null, og: null }, 'and nothing is left pending');
 });
 
 test('a scanned-without-OG id is accepted and stays distinct from typed', async () => {

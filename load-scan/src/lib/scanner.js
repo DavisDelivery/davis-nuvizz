@@ -25,15 +25,27 @@
 //     focus-lock.
 //   - Quagga confidence gating: avgError < 0.15 accept; 0.15-0.35 require two
 //     consecutive identical reads; > 0.35 discard.
-//   - Split rearm windows: 1500 ms iOS/Quagga, 5000 ms Android native, because
-//     the native detector hunts focus at close range and drops a held label.
 
-import { createScanResolver } from './scan-logic.js';
+import { createPairBuffer } from './scan-logic.js';
 
 const QUAGGA_CDN = 'https://cdn.jsdelivr.net/npm/@ericblade/quagga2@1.8.4/dist/quagga.min.js';
 
-export const REARM_MS_QUAGGA = 1500;
-export const REARM_MS_NATIVE = 5000;
+/**
+ * A pair is ONE LABEL — the same rule the gun learned in v0.32. Quagga is
+ * deliberately multiple:false, so on an iPhone the two barcodes of one label
+ * ALWAYS arrive on separate frames; the buffer marries them in either order
+ * inside this window. A PRO whose piece id never decodes is still a piece (the
+ * WMS rule that made this app scan at all) — but it books when the window
+ * closes, not on the first PRO frame. The instant booking minted PHANTOMS: the
+ * PRO decodes a beat before the OG, the phantom books, the green flash ends the
+ * aim, and the OG that lands anyway books as a second piece. Two scans read
+ * 3/3 on DASAN USA; eleven read 10/11 on GEM SHOPPING. Matches the gun's
+ * window, so both entry routes pair identically.
+ */
+export const CAMERA_PAIR_WINDOW_MS = 2500;
+/** How often the window is checked when no further barcode ever decodes. */
+const CAMERA_TICK_MS = 400;
+
 const NATIVE_DETECT_INTERVAL = 60; // ms, ~16 fps — lets autofocus settle
 const NATIVE_ZOOM_TARGET = 1.8;
 
@@ -75,31 +87,71 @@ function loadQuagga() {
  *                    the rules rejected".
  * @returns { stop, engine }
  */
-export async function startScanner({ videoEl, containerEl, onPair, onPartial, onStatus, onRaw }) {
+export async function startScanner({ videoEl, containerEl, onPair, onPartial, onStatus, onRaw, onOrphan }) {
   const useNative = await detectNativeSupport();
-  // A PRO alone is a piece — see createScanResolver. The old pair buffer waited
-  // for both barcodes and, on iOS with a big label, usually never got them.
-  const resolver = createScanResolver({ ogHoldMs: useNative ? REARM_MS_NATIVE : REARM_MS_QUAGGA });
+
+  // Which engine is live, for the scan rows an expiry emits. Set before each
+  // engine starts, so a fallback re-labels it.
+  let engineLabel = useNative ? 'native' : 'quagga';
+
+  const buffer = createPairBuffer({
+    windowMs: CAMERA_PAIR_WINDOW_MS,
+    onAbandon: (half) => {
+      // A PRO that outlived the window with no piece id IS a piece — the WMS
+      // rule, kept. It goes down the same path as any camera piece, where the
+      // no-OG gates decide: mint a NOOG id, or refuse loudly if this PRO is
+      // already accounted for.
+      if (half.kind === 'pro' && half.reason === 'expired') {
+        onPair?.({ pro: half.value, og: null, engine: engineLabel });
+        return;
+      }
+      // A half superseded by a DIFFERENT label mid-pair is worth a word — the
+      // gun says the same. A lone piece-id glimpse that quietly expires is
+      // camera panning noise, and stays silent.
+      if (half.reason === 'superseded') onOrphan?.(half);
+    },
+  });
 
   const emit = (values, engine) => {
+    engineLabel = engine;
     onRaw?.(values);
-    const hit = resolver.push(values);
+    const hit = buffer.push(values);
     if (hit) onPair?.({ ...hit, engine });
-    else onPartial?.(resolver.state());
+    else onPartial?.(buffer.state());
   };
 
-  if (useNative) {
-    try {
-      const stop = await startNative({ videoEl, emit, onStatus });
-      return { stop, engine: 'native' };
-    } catch (e) {
-      console.error('[scanner] native path failed, falling back', e);
-      // fall through — a broken native path should not leave the driver with no scanner
-    }
-  }
+  // The window must close on the CLOCK, not only on the next decode: a PRO
+  // whose OG never reads has to book its fallback even if nothing else ever
+  // decodes — the loader may already be walking away.
+  const tick = setInterval(() => {
+    buffer.tick();
+    onPartial?.(buffer.state());
+  }, CAMERA_TICK_MS);
 
-  const stop = await startQuagga({ containerEl, emit, onStatus });
-  return { stop, engine: 'quagga' };
+  const wrap = (stop) => () => {
+    clearInterval(tick);
+    buffer.reset();
+    stop();
+  };
+
+  try {
+    if (useNative) {
+      try {
+        engineLabel = 'native';
+        const stop = await startNative({ videoEl, emit, onStatus });
+        return { stop: wrap(stop), engine: 'native' };
+      } catch (e) {
+        console.error('[scanner] native path failed, falling back', e);
+        // fall through — a broken native path should not leave the driver with no scanner
+      }
+    }
+    engineLabel = 'quagga';
+    const stop = await startQuagga({ containerEl, emit, onStatus });
+    return { stop: wrap(stop), engine: 'quagga' };
+  } catch (e) {
+    clearInterval(tick);
+    throw e;
+  }
 }
 
 // ── Native (BarcodeDetector) ─────────────────────────────────────────────────
