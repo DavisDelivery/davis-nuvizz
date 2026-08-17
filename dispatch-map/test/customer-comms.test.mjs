@@ -20,7 +20,7 @@ import {
   renderTemplate, escapeHtml, escapeVars, normalizeSubject,
   ledgerKey, usableMatchKey, chooseRecipient,
   isSweepableBoardDate, isStaleDelivery, isDefinitiveRejection,
-  isEmailAddress, isSenderAddress, clampDailyCap, testRecipientAllowed,
+  isEmailAddress, isSenderAddress, clampDailyCap, testRecipientAllowed, adminTokenOk,
   sendForStop, DEFAULT_CONFIG,
   MERGE_FIELDS, DEFAULT_HTML, MAX_DAILY_CAP,
 } from '../netlify/functions/lib/customer-comms.mts';
@@ -398,4 +398,19 @@ test('the daily cap is clamped, not merely validated', () => {
   assert.equal(clampDailyCap(-1), null);
   assert.equal(clampDailyCap('abc'), null);
   assert.equal(clampDailyCap(NaN), null, 'NaN would compare false against every guard');
+});
+
+test('adminTokenOk: open when unset (operator asked for no prompt), armed when set', () => {
+  const req = (tok) => new Request('http://x/', tok ? { headers: { 'x-comms-token': tok } } : {});
+  const prev = process.env.COMMS_ADMIN_TOKEN;
+  try {
+    delete process.env.COMMS_ADMIN_TOKEN;
+    assert.equal(adminTokenOk(req()), true, 'no token configured -> no gate');
+    process.env.COMMS_ADMIN_TOKEN = 'secret1';
+    assert.equal(adminTokenOk(req('secret1')), true, 'matching header passes');
+    assert.equal(adminTokenOk(req('wrong')), false, 'wrong header refused');
+    assert.equal(adminTokenOk(req()), false, 'set but missing header refused');
+  } finally {
+    if (prev === undefined) delete process.env.COMMS_ADMIN_TOKEN; else process.env.COMMS_ADMIN_TOKEN = prev;
+  }
 });

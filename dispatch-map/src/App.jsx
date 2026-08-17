@@ -77,7 +77,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.54.78';
+const APP_VERSION = '0.54.79';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -122,6 +122,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.54.79', 'THE CUSTOMER EMAILS SCREEN, REBUILT — NO TOKEN, AND THE EMAIL ITSELF IS THE PAGE. Chad, on v0.54.78: "Get rid of this need for a token. Also the ui on this page looks like a 5 year old made it… I want the template for the email to be an exact replica of the actual email that is going to be sent. With Branding." All three. THE TOKEN IS GONE. The config endpoints passed writes through a shared-secret header, and the screen prompted for it — a real operator paying a tax against a hypothetical attacker, on an app that has no login anywhere else and takes unauthenticated writes to NuVizz itself. The server gate now stands down when no token is configured (setting COMMS_ADMIN_TOKEN re-arms it with no code change, and a unit test pins both directions), the variable was removed from the site, and the prompt is deleted. What still holds without it: test sends stay allow-listed to Davis inboxes, enabling still refuses while the mail service is unconfigured, and the daily cap still clamps. THE SCREEN WAS REDESIGNED AROUND THE EMAIL. The old page was a stack of grey boxes with the message buried behind two clicks. Now the branded email IS the page: it renders the moment the tab opens, framed in inbox chrome — subject line, sender avatar, the from address the send will actually use — exactly the way Gmail will frame it, LIVE against realistic sample delivery data. Open Edit HTML and the preview follows every keystroke, 300ms behind, with merge values escaped by a client mirror of the SAME renderer the send uses — the preview cannot lie about markup in a customer name. One click swaps the sample for a REAL delivered stop rendered server-side by the production code path, with the actual recipient decision printed above it; one click swaps back. EDITS FUNNEL TO ONE SAVE: touch the subject, the body, the sender, or the cap, and a single sticky save bar appears — "which save button" stops being a question, and Discard is beside it. The controls sit in a left rail on desktop and below the email on a phone, where the preview comes FIRST — on the screen whose whole point is what the customer sees. Verified in a real browser at both widths: the live preview renders sample data on load with escaping intact, the real-delivery preview replaces it and offers the way back, an edit surfaces the save bar, the save round-trips subject and body in one write with NO token header and NO prompt ever appearing, and the menu item is hit-tested. 1,615 unit tests green.'],
   ['0.54.78', 'THE CUSTOMER EMAIL PROGRAM HAS ITS CONSOLE — AND THE OPT-OUT IS REAL NOW. The delivery-complete email backend shipped dark earlier this week: our own branded note from our own domain the moment freight lands, off by default, one email per PRO ever, daily-capped, zero NuVizz calls. What it lacked was any way to SEE it — and, more seriously, any way to honour a customer who asks to stop receiving them. Both land here. FIRST, THE NUMBER THAT DECIDED THIS WAS WORTH FINISHING: coverage. Of the delivered stops sampled on 8/13 and 8/14, essentially ALL of them — 599 of 600, and 598 of 600 — carry a consignee email straight off the order. That is not a projection; it is our own cached board counted. ~700+ deliveries a day, nearly every one reachable. A NEW SCREEN under More → Customer emails: the on/off switch (it refuses to enable when the mail service is unconfigured, so ON can never silently mean nothing), sender + reply-to + the daily cap, the full template editor with every merge field one tap away, a PREVIEW rendered server-side against a real delivered stop by the same code the real send uses — so what you preview cannot drift from what a customer gets — a one-click [TEST] send that is allow-listed to Davis inboxes and can never reach a customer, and the 7-day send log that can tell "nobody was emailed" apart from "the sweep never ran". THE SCREEN IS HONEST ABOUT THE ONE THING IT DOES NOT DO: the automatic trigger is deliberately not wired yet. Even switched on, nothing sends on its own today — a banner says exactly that. Template and sender domain get signed off first; the trigger ships as its own reviewed change, because the first email 700 customers receive should not also be the first one anybody saw. SECOND, THE OPT-OUT. The backend has honoured comms_opt_out from day one, but nothing could WRITE it — the server code itself carries a warning that the feature must not be enabled until this exists, because an opt-out you cannot honour is worse than no opt-out. The customer-notes editor now has it: "No delivery emails to this customer", a red suppression toggle that skips them on every future order, plus a per-customer address override that beats the order\'s consignee email and carries to their next delivery. Config writes need the admin token (asked once per session, kept in sessionStorage, never in the bundle) — the same pattern the Gmail card uses. Verified in a real browser at phone and desktop widths, including the hit-test that would have caught the v0.54.71 clipped-menu bug: the tab is reachable from BOTH navigations, renders every card, and a template save round-trips. 1,614 unit tests green.'],
   ['0.54.77', 'THE MORE MENU WOULD NOT DROP DOWN ON DESKTOP. Chad: "more is not dropping down like it should on desktop." It was opening every time — you just could not see it. THE CAUSE WAS MINE, from the v0.54.71 layout sweep. That release fixed a desktop nav that crushed its own title into the tabs at narrow widths, and the fix was to let the tab row scroll: overflow-x-auto. But the More dropdown is positioned absolutely INSIDE that row, and a scroll container clips what overflows it. Worse, CSS does not let you scroll one axis only — set overflow-x to auto and overflow-y computes to auto as well. So the nav became a clipping box about forty pixels tall and the menu opened straight into it, out of sight. The scrollbar visible at the right of the tab row in Chad\'s screenshot was the tell: that was the nav\'s own scrollbar, on a row that should never have had one. THE FIX is structural rather than a z-index nudge, because raising z-index does nothing about clipping — a clipped element is not behind something, it is not painted. The scrolling tab row and the More button are now SIBLINGS: the tabs still scroll when they genuinely do not fit, and the menu now opens outside that box. It also means the overflow menu can no longer scroll out of reach on a narrow window, which was a second, quieter bug in the old arrangement. WHY THE BROWSER TEST DID NOT CATCH IT, which matters more than the fix. There has been a real-browser check on this menu since v0.54.48, and it passed on every broken build. It asked Playwright whether the menu was visible, and an element clipped by an ancestor still has a non-empty bounding box — so "visible" came back true while nobody could see the thing. That is the same shape of hole as v0.54.50, where the check ran at desktop width and missed a feature broken on phones: the test agreed with the code instead of with the screen. It now HIT-TESTS the point a dispatcher would actually click and asks the browser what is painted there; if anything else answers, the check fails. That assertion was run against the broken build first and it fails, then against the fix and it passes — a test that cannot fail is not evidence. The phone menu was never affected: the phone has its own bar and does not use this row. 1,614 tests green.'],
   ['0.54.76', 'THE MANIFEST INTAKE CAN TAKE A CONSIGNEE EMAIL — the one order path that could not. Chad: "We should add a email column to the manifest/estes intake." It is there now, between Phone and Dispatch notes, on both the Held and Pushed tabs. WHY IT MATTERED MORE THAN A MISSING COLUMN USUALLY DOES: the push already knew what to do with an email — pushChecked maps it to the NuVizz order contact (to.contact.email), exactly as Bulk Add and New Order have since v0.50.47 — but the intake row model never had an `email` key for the grid to bind an input to, so there was no way to type one and every Estes/manifest order was created with NO consignee address on it. Not "usually blank": structurally always blank, a guaranteed zero on that path while the other two worked fine. That address is what the delivery-complete customer email gets sent to, so this was the single biggest hole in the coverage of that feature. ALSO FIXED, because the column alone would have looked like it worked and quietly lost the data: the durable push log dropped email on BOTH writers (manifest and Bulk Add) and the server that stores it whitelists fields one by one, so a row pushed WITH an address would have read back on the Pushed tab as having none. NOT CHANGED: nothing about what NuVizz is asked for. Reading a manifest is still zero vendor calls, and the email only rides along on a push you already make.'],
@@ -21927,51 +21928,117 @@ function GmailCard({ onStoredRun }) {
 // a NuVizz call, so it can never surprise you with one.
 // ── Customer Communications — the branded delivery-complete email ────────────
 // Chad's program: our own delivery email from our own domain, instead of NuVizz's
-// unbranded one. The BACKEND (customer-comms-*) shipped dark earlier: enabled=false,
-// atomic claim-before-send, daily cap, per-customer opt-out. This screen is the
-// operator's console for it — see the template, edit it, preview it against a real
-// delivered stop, send yourself a test, read the send log, and stage the switch.
+// unbranded one. The backend (customer-comms-*) shipped dark: enabled=false, atomic
+// claim-before-send, daily cap, per-customer opt-out, zero NuVizz calls. This screen
+// is its console, built around the EMAIL ITSELF: the preview pane renders the exact
+// branded message — live, as the template is edited — because "what will the customer
+// see" is the only question this screen exists to answer.
 //
-// Two honesty rules the copy on this screen must keep:
-//   • ZERO NuVizz calls — every number here is our own Firestore cache.
-//   • The AUTOMATIC trigger is deliberately not wired yet. Even Enabled=ON sends
-//     nothing on its own today; the switch stages the rollout so the hook can ship
-//     as its own reviewed change. The screen says so instead of implying otherwise.
-//
-// Config writes need COMMS_ADMIN_TOKEN (x-comms-token) — same pattern as the Gmail
-// card's admin key: asked for once, kept in sessionStorage, never in the bundle.
+// No admin token. Chad: "get rid of this need for a token." adminTokenOk() now passes
+// when COMMS_ADMIN_TOKEN is unset (see the lib's comment for what still holds); the UI
+// still sends the header if a value is ever re-armed into sessionStorage.
 const COMMS_KEY_SS = 'dd_comms_admin_key';
 
+// Sample merge data for the LIVE preview — same fields stopVars() emits, shaped like a
+// real Buford delivery. The real-data preview (server-rendered from an actual delivered
+// stop) is one click away; this exists so the email is on screen the moment the tab opens.
+const COMMS_SAMPLE_VARS = {
+  pro: '007161743', customer: 'BUFORD TILE & STONE', driver: 'FRANK OKINE',
+  deliveredDate: 'Mon, Aug 17', deliveredTime: '1:46 PM', deliveredWhen: 'Mon, Aug 17 at 1:46 PM',
+  address: '943 GAINESVILLE HWY', city: 'BUFORD', state: 'GA', zip: '30518',
+  cityStateZip: 'BUFORD, GA 30518', pieces: '6', weight: '860',
+  trackingUrl: 'https://tracking.davisdelivery.com/?pro=007161743',
+  reviewUrl: 'https://tracking.davisdelivery.com/?pro=007161743#review',
+  year: String(new Date().getFullYear()),
+};
+
+// CLIENT MIRROR of the server's renderTemplate + escapeVars (lib/customer-comms.mts).
+// Same two passes — {{#field}}…{{/field}} sections first, then {{field}} substitution —
+// and the same HTML escaping of every merge value. If the server renderer ever changes,
+// change this with it: the entire value of a live preview is that it cannot lie.
+function renderCommsPreview(tpl, rawVars) {
+  const esc = (s) => String(s ?? '')
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  const vars = {};
+  for (const [k, v] of Object.entries(rawVars || {})) vars[k] = esc(v);
+  const withSections = String(tpl || '').replace(
+    /\{\{#\s*([a-zA-Z0-9_]+)\s*\}\}([\s\S]*?)\{\{\/\s*\1\s*\}\}/g,
+    (_m, k, body) => (vars[k] ? body : ''),
+  );
+  return withSections.replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (_m, k) => (vars[k] == null ? '' : vars[k]));
+}
+
+// The one visual container every section of this screen uses, so the page reads as one
+// designed surface instead of a pile of ad-hoc boxes.
+function CommsCard({ title, aside = null, children, className = '' }) {
+  return (
+    <section className={`bg-white border border-slate-200 rounded-xl shadow-sm ${className}`}>
+      {title && (
+        <header className="flex items-center justify-between gap-2 px-4 pt-3 pb-2 border-b border-slate-100">
+          <h2 className="text-[11px] font-bold tracking-[0.12em] uppercase text-slate-500">{title}</h2>
+          {aside}
+        </header>
+      )}
+      <div className="p-4">{children}</div>
+    </section>
+  );
+}
+
+function CommsSwitch({ checked, onChange, disabled, label }) {
+  return (
+    <button
+      role="switch" aria-checked={checked} aria-label={label} disabled={disabled}
+      onClick={() => !disabled && onChange(!checked)}
+      className={`flex-shrink-0 relative w-11 h-6 rounded-full transition-colors ${disabled ? 'cursor-not-allowed opacity-50' : ''}`}
+      style={{ background: checked ? '#16a34a' : '#cbd5e1' }}
+    >
+      <span className="absolute top-0.5 w-5 h-5 bg-white rounded-full shadow transition-all" style={{ left: checked ? 'calc(100% - 22px)' : '2px' }} />
+    </button>
+  );
+}
+
 function CustomerCommsScreen() {
-  const [cfgResp, setCfgResp] = useState(null);   // GET config response (config+fields+defaultHtml+resendConfigured+effectiveFrom)
+  const [cfgResp, setCfgResp] = useState(null);
   const [log, setLog] = useState(null);
-  const [busy, setBusy] = useState('load');       // 'load' | 'save' | 'enable' | 'coverage' | 'preview' | 'test' | null
+  const [busy, setBusy] = useState('load');
   const [err, setErr] = useState(null);
   const [note, setNote] = useState(null);
 
-  // Editor state — hydrated from the server config once, then owned by the editor.
   const [subjectT, setSubjectT] = useState('');
   const [htmlT, setHtmlT] = useState('');
   const [fromAddr, setFromAddr] = useState('');
   const [replyTo, setReplyTo] = useState('');
   const [dailyCap, setDailyCap] = useState(25);
+  const [showHtml, setShowHtml] = useState(false);
+  const [dirty, setDirty] = useState(false);
 
   const [covDate, setCovDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [coverage, setCoverage] = useState(null);
-  const [pvDate, setPvDate] = useState('');
+  const [realPreview, setRealPreview] = useState(null);   // server render of a real stop, or null = live sample
   const [pvPro, setPvPro] = useState('');
-  const [preview, setPreview] = useState(null);
   const [testTo, setTestTo] = useState('');
-  const [testResult, setTestResult] = useState(null);
 
-  const adminKey = () => { try { return sessionStorage.getItem(COMMS_KEY_SS) || ''; } catch { return ''; } };
-  const askKey = () => {
-    const v = window.prompt('Admin token (COMMS_ADMIN_TOKEN on the site) — asked once per session:', adminKey());
-    if (v == null) return null;
-    try { sessionStorage.setItem(COMMS_KEY_SS, v.trim()); } catch { /* private mode */ }
-    return v.trim();
+  // Debounced live render — the preview pane follows the editor keystroke-for-keystroke
+  // (300ms behind), against sample data. Server data replaces it only on request.
+  const [liveHtml, setLiveHtml] = useState('');
+  const [liveSubject, setLiveSubject] = useState('');
+  useEffect(() => {
+    const t = setTimeout(() => {
+      setLiveHtml(renderCommsPreview(htmlT, COMMS_SAMPLE_VARS));
+      setLiveSubject(renderCommsPreview(subjectT, COMMS_SAMPLE_VARS));
+    }, 300);
+    return () => clearTimeout(t);
+  }, [htmlT, subjectT]);
+
+  // Kept for re-arming: if a token is ever configured again, paste it once into
+  // sessionStorage and every write carries it. With none set, the header is empty
+  // and the server (also unset) does not ask.
+  const hdrs = () => {
+    const h = { 'Content-Type': 'application/json' };
+    try { const t = sessionStorage.getItem(COMMS_KEY_SS); if (t) h['x-comms-token'] = t; } catch { /* private mode */ }
+    return h;
   };
-  const tokenHeaders = () => ({ 'Content-Type': 'application/json', 'x-comms-token': adminKey() });
 
   const loadAll = async () => {
     setBusy('load'); setErr(null);
@@ -21987,32 +22054,30 @@ function CustomerCommsScreen() {
       setFromAddr(c.config.fromAddress || '');
       setReplyTo(c.config.replyTo || '');
       setDailyCap(c.config.dailyCap);
+      setDirty(false);
       setLog(l.ok ? l : null);
     } catch (e) { setErr(e.message); }
     setBusy(null);
   };
   useEffect(() => { loadAll(); }, []);
 
-  // One write path for every config change. 403 → ask for the token once and retry.
   const putConfig = async (patch, busyKey = 'save') => {
     setBusy(busyKey); setErr(null); setNote(null);
     try {
-      let r = await fetch('/.netlify/functions/customer-comms-config', { method: 'PUT', headers: tokenHeaders(), body: JSON.stringify(patch) });
-      if (r.status === 403) {
-        if (askKey() == null) { setBusy(null); return null; }
-        r = await fetch('/.netlify/functions/customer-comms-config', { method: 'PUT', headers: tokenHeaders(), body: JSON.stringify(patch) });
-      }
+      const r = await fetch('/.netlify/functions/customer-comms-config', { method: 'PUT', headers: hdrs(), body: JSON.stringify(patch) });
       const j = await r.json();
       if (!j.ok) throw new Error(j.error || 'save failed');
-      setCfgResp((prev) => prev ? { ...prev, config: j.config, resendConfigured: j.resendConfigured, effectiveFrom: j.config.fromAddress || prev.effectiveFrom } : prev);
+      setCfgResp((prev) => (prev ? { ...prev, config: j.config, resendConfigured: j.resendConfigured, effectiveFrom: j.config.fromAddress || prev.effectiveFrom } : prev));
       setNote('Saved.');
       return j;
     } catch (e) { setErr(e.message); return null; }
     finally { setBusy(null); }
   };
 
-  const saveTemplate = () => putConfig({ subjectTemplate: subjectT, htmlTemplate: htmlT });
-  const saveSender = () => putConfig({ fromAddress: fromAddr, replyTo, dailyCap: Number(dailyCap) });
+  const saveAll = async () => {
+    const j = await putConfig({ subjectTemplate: subjectT, htmlTemplate: htmlT, fromAddress: fromAddr, replyTo, dailyCap: Number(dailyCap) });
+    if (j) setDirty(false);
+  };
 
   const toggleEnabled = async () => {
     const on = !cfgResp?.config?.enabled;
@@ -22033,208 +22098,206 @@ function CustomerCommsScreen() {
     setBusy(null);
   };
 
-  const runPreview = async () => {
-    setBusy('preview'); setErr(null); setPreview(null);
+  const loadRealPreview = async () => {
+    setBusy('preview'); setErr(null);
     try {
       const q = new URLSearchParams({ preview: '1' });
-      if (pvDate) q.set('date', pvDate);
       if (pvPro.trim()) q.set('pro', pvPro.trim());
       const j = await fetch(`/.netlify/functions/customer-comms-test?${q}`).then((r) => r.json());
       if (!j.ok) throw new Error(j.error || 'preview failed');
-      setPreview(j);
+      setRealPreview(j);
     } catch (e) { setErr(e.message); }
     setBusy(null);
   };
 
   const sendTest = async () => {
     const to = testTo.trim();
-    if (!to) { setErr('Enter the address the test should go to (a davisdelivery.com inbox).'); return; }
-    setBusy('test'); setErr(null); setTestResult(null);
+    if (!to) { setErr('Enter the address the test should go to — a Davis inbox.'); return; }
+    setBusy('test'); setErr(null);
     try {
       const q = new URLSearchParams({ to });
-      if (pvDate) q.set('date', pvDate);
       if (pvPro.trim()) q.set('pro', pvPro.trim());
-      let r = await fetch(`/.netlify/functions/customer-comms-test?${q}`, { method: 'POST', headers: tokenHeaders() });
-      if (r.status === 403) {
-        if (askKey() == null) { setBusy(null); return; }
-        r = await fetch(`/.netlify/functions/customer-comms-test?${q}`, { method: 'POST', headers: tokenHeaders() });
-      }
-      const j = await r.json();
-      setTestResult(j);
+      const j = await fetch(`/.netlify/functions/customer-comms-test?${q}`, { method: 'POST', headers: hdrs() }).then((r) => r.json());
       if (!j.ok) throw new Error(j.error || 'test send failed');
-      setNote(`Test sent to ${to}.`);
+      setNote(`Test sent to ${to} — check that inbox.`);
     } catch (e) { setErr(e.message); }
     setBusy(null);
   };
 
   const cfg = cfgResp?.config;
   const enabled = !!cfg?.enabled;
-  const card = 'bg-white border rounded-lg p-4';
-  const label = 'text-[11px] font-semibold text-slate-600 mb-1';
-  const input = 'w-full border border-slate-300 rounded px-2 py-1.5 text-sm';
-  const btn = 'px-3 py-1.5 rounded text-sm font-semibold border';
-  const btnPri = `${btn} text-white border-transparent`;
+  const showingReal = !!realPreview;
+  const frameHtml = showingReal ? realPreview.html : liveHtml;
+  const frameSubject = showingReal ? realPreview.subject : liveSubject;
+  const input = 'w-full border border-slate-300 rounded-lg px-2.5 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-200';
+  const label = 'block text-[11px] font-semibold text-slate-500 mb-1';
+  const btnPri = 'px-3.5 py-2 rounded-lg text-sm font-semibold text-white disabled:opacity-50';
+  const btnGhost = 'px-3 py-1.5 rounded-lg text-xs font-semibold border border-slate-300 bg-white text-slate-600 hover:bg-slate-50';
 
   return (
     <div className="flex-1 min-h-0 overflow-y-auto bg-slate-100">
-      <div className="max-w-5xl mx-auto p-4 space-y-4">
-        <div className="flex items-start justify-between gap-3 flex-wrap">
-          <div>
-            <h1 className="text-lg font-bold text-slate-800 flex items-center gap-2"><Mail size={18} /> Customer emails</h1>
-            <p className="text-xs text-slate-500 mt-0.5 max-w-xl">
-              The branded delivery-complete email — our own note from our own domain the moment freight lands, instead of the carrier's unbranded one.
-              Zero NuVizz calls: everything on this screen reads our own cached board.
-            </p>
+      {/* Page header — plain, not a card: this is the screen's identity, not a section. */}
+      <div className="bg-white border-b border-slate-200">
+        <div className="max-w-6xl mx-auto px-4 py-3 flex items-center justify-between gap-3">
+          <div className="min-w-0">
+            <h1 className="text-base font-bold text-slate-900 flex items-center gap-2"><Mail size={17} style={{ color: BRAND }} /> Customer emails</h1>
+            <p className="text-[11px] text-slate-500 truncate">Branded delivery-complete email · zero NuVizz calls — reads only our cached board</p>
           </div>
-          <button onClick={loadAll} disabled={busy === 'load'} className={`${btn} border-slate-300 bg-white text-slate-700`}>{busy === 'load' ? 'Loading…' : 'Reload'}</button>
+          <div className="flex items-center gap-2 shrink-0">
+            <span className={`text-[10px] font-bold tracking-wide px-2 py-1 rounded-full ${enabled ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-200 text-slate-600'}`}>{enabled ? 'ON' : 'OFF'}</span>
+            <button onClick={loadAll} disabled={busy === 'load'} className={btnGhost}>{busy === 'load' ? 'Loading…' : 'Reload'}</button>
+          </div>
         </div>
+      </div>
 
+      <div className="max-w-6xl mx-auto p-4 space-y-4">
         {err && <div className="bg-red-50 border border-red-200 text-red-800 text-sm rounded-lg px-3 py-2">{err}</div>}
         {note && !err && <div className="bg-emerald-50 border border-emerald-200 text-emerald-800 text-sm rounded-lg px-3 py-2">{note}</div>}
 
-        {/* STATUS — the four facts that decide whether mail can move at all. */}
-        <div className={card}>
-          <div className="flex items-center gap-3 flex-wrap">
-            <button
-              onClick={toggleEnabled}
-              disabled={!cfg || busy === 'enable' || (!enabled && !cfgResp?.resendConfigured)}
-              className={btnPri}
-              style={{ background: enabled ? '#dc2626' : '#16a34a', opacity: (!cfg || (!enabled && !cfgResp?.resendConfigured)) ? 0.5 : 1 }}
+        <div className="grid gap-4 lg:grid-cols-[360px_minmax(0,1fr)] items-start">
+          {/* THE EMAIL — first on a phone, right-hand pane on desktop. This is the point
+              of the screen, so it gets the space and the top slot. */}
+          <div className="order-first lg:order-last lg:col-start-2 space-y-4">
+            <CommsCard
+              title={showingReal ? 'The email — a real delivery' : 'The email — live preview'}
+              aside={
+                <div className="flex items-center gap-1.5">
+                  {showingReal
+                    ? <button onClick={() => setRealPreview(null)} className={btnGhost}>Back to sample data</button>
+                    : (
+                      <>
+                        <input className="border border-slate-300 rounded-lg px-2 py-1 text-xs w-28" value={pvPro} onChange={(e) => setPvPro(e.target.value)} placeholder="PRO (optional)" />
+                        <button onClick={loadRealPreview} disabled={busy === 'preview'} className={btnGhost}>{busy === 'preview' ? 'Rendering…' : 'Preview a real delivery'}</button>
+                      </>
+                    )}
+                </div>
+              }
             >
-              {busy === 'enable' ? 'Saving…' : enabled ? 'Turn OFF' : 'Turn ON'}
-            </button>
-            <span className={`text-xs font-bold px-2 py-1 rounded ${enabled ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-200 text-slate-600'}`}>{enabled ? 'ENABLED' : 'OFF'}</span>
-            {cfgResp && !cfgResp.resendConfigured && (
-              <span className="text-xs text-red-700 font-semibold">Resend is not configured on this site — nothing can send, and the switch refuses to turn on.</span>
+              {/* Inbox chrome — the message framed the way Gmail frames it, so the preview
+                  reads as an email, not as a web page in a box. */}
+              <div className="border border-slate-200 rounded-xl overflow-hidden">
+                <div className="px-4 py-3 bg-slate-50 border-b border-slate-200">
+                  <div className="text-sm font-semibold text-slate-900 truncate">{frameSubject || '(no subject)'}</div>
+                  <div className="mt-1.5 flex items-center gap-2 min-w-0">
+                    <span className="w-8 h-8 rounded-full flex items-center justify-center text-white text-xs font-bold shrink-0" style={{ background: BRAND }}>D</span>
+                    <div className="min-w-0 leading-tight">
+                      <div className="text-xs font-semibold text-slate-800 truncate">{cfgResp?.effectiveFrom || 'Davis Delivery'}</div>
+                      <div className="text-[10px] text-slate-500 truncate">
+                        to {showingReal ? (realPreview.optedOut ? 'nobody — customer opted out' : (realPreview.recipientOnFile || 'nobody — no address on file')) : 'the consignee on the order'}
+                        {showingReal && realPreview.recipientSource === 'notes' && ' (dispatcher override)'}
+                      </div>
+                    </div>
+                    {dirty && !showingReal && <span className="ml-auto text-[10px] font-semibold text-amber-700 bg-amber-50 border border-amber-200 rounded px-1.5 py-0.5 shrink-0">unsaved edits</span>}
+                  </div>
+                </div>
+                <iframe title="Email preview" sandbox="" srcDoc={frameHtml} className="w-full bg-white block" style={{ height: 'min(70vh, 760px)', border: 0 }} />
+              </div>
+              <div className="mt-2 flex items-center justify-between gap-2 flex-wrap">
+                <div className="text-[10px] text-slate-400">
+                  {showingReal
+                    ? `Rendered server-side from PRO ${realPreview.pro} by the same code the live send uses.`
+                    : 'Live: follows the editor as you type, with sample delivery data. Real-delivery preview uses the SAVED template.'}
+                </div>
+                <button onClick={() => setShowHtml((v) => !v)} className={btnGhost}>{showHtml ? 'Hide HTML' : 'Edit HTML'}</button>
+              </div>
+            </CommsCard>
+
+            {showHtml && (
+              <CommsCard
+                title="Template source"
+                aside={<button onClick={() => { setSubjectT('Delivered — PRO {{pro}}'); setHtmlT(cfgResp?.defaultHtml || ''); setDirty(true); setNote('Default restored in the editor — Save to keep it.'); }} className={btnGhost}>Reset to default</button>}
+              >
+                <label className={label}>Subject</label>
+                <input className={input} value={subjectT} onChange={(e) => { setSubjectT(e.target.value); setDirty(true); }} maxLength={200} />
+                <label className={`${label} mt-3`}>HTML body</label>
+                <textarea
+                  className="w-full border border-slate-300 rounded-lg px-2.5 py-2 text-[11px] font-mono leading-snug focus:outline-none focus:ring-2 focus:ring-blue-200"
+                  rows={16} value={htmlT} spellCheck={false}
+                  onChange={(e) => { setHtmlT(e.target.value); setDirty(true); }}
+                />
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  {(cfgResp?.fields || []).map((f) => (
+                    <button key={f}
+                      onClick={() => { navigator.clipboard?.writeText(`{{${f}}}`).catch(() => {}); setNote(`{{${f}}} copied.`); }}
+                      className="text-[10px] font-mono px-1.5 py-0.5 rounded border border-slate-200 bg-slate-50 text-slate-600 hover:bg-slate-100"
+                    >{'{{'}{f}{'}}'}</button>
+                  ))}
+                </div>
+                <div className="text-[10px] text-slate-400 mt-1.5">Merge values are escaped before rendering — a customer name cannot inject HTML. {'{{#driver}}'}…{'{{/driver}}'} shows a section only when the field has a value.</div>
+              </CommsCard>
             )}
           </div>
-          <div className="mt-3 grid sm:grid-cols-2 gap-x-6 gap-y-1 text-xs text-slate-600">
-            <div><span className="font-semibold">Sends as:</span> {cfgResp?.effectiveFrom || '—'}</div>
-            <div><span className="font-semibold">Replies go to:</span> {cfg?.replyTo || '—'}</div>
-            <div><span className="font-semibold">Daily cap:</span> {cfg?.dailyCap ?? '—'} emails</div>
-            <div><span className="font-semibold">One email per PRO, ever</span> — the ledger claim makes a duplicate impossible.</div>
-          </div>
-          <div className="mt-3 text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded px-2.5 py-1.5">
-            The automatic trigger is <b>not wired yet</b> — even switched on, nothing sends on its own today. The switch stages the rollout;
-            the trigger ships as its own change once the template and sender domain are signed off.
-          </div>
-        </div>
 
-        {/* COVERAGE — the go/no-go number: of a day's delivered stops, how many can we reach. */}
-        <div className={card}>
-          <div className="flex items-center justify-between gap-2 flex-wrap">
-            <div className="font-semibold text-sm text-slate-800">Coverage — who we could reach</div>
-            <div className="flex items-center gap-2">
-              <input type="date" value={covDate} onChange={(e) => setCovDate(e.target.value)} className="border border-slate-300 rounded px-2 py-1 text-sm" />
-              <button onClick={runCoverage} disabled={busy === 'coverage'} className={btnPri} style={{ background: BRAND }}>{busy === 'coverage' ? 'Counting…' : 'Count'}</button>
-            </div>
-          </div>
-          {coverage && (
-            <div className="mt-3 text-sm text-slate-700">
-              <span className="text-2xl font-bold text-slate-900">{coverage.pct}%</span>
-              <span className="ml-2">of sampled delivered stops have an email on file — {coverage.withEmail} of {coverage.sampled}{coverage.truncated ? ` (sampled from ${coverage.delivered} delivered)` : ''}.</span>
-              <div className="text-xs text-slate-500 mt-1">
-                From the order itself: {coverage.bySource?.order ?? 0} · dispatcher override: {coverage.bySource?.notes ?? 0} · opted out: {coverage.optedOut ?? 0} · no address: {coverage.withoutEmail ?? 0}
+          {/* CONTROLS — left rail on desktop, below the email on a phone. */}
+          <div className="space-y-4 lg:order-first">
+            <CommsCard title="Program">
+              <div className="flex items-center gap-3">
+                <CommsSwitch checked={enabled} disabled={!cfg || busy === 'enable' || (!enabled && !cfgResp?.resendConfigured)} onChange={toggleEnabled} label="Delivery-complete emails" />
+                <div className="min-w-0">
+                  <div className="text-sm font-semibold text-slate-800">Delivery-complete emails</div>
+                  <div className="text-[11px] text-slate-500">One per PRO, ever — a duplicate is structurally impossible.</div>
+                </div>
               </div>
-            </div>
-          )}
-          {!coverage && <div className="mt-2 text-xs text-slate-400">Reads the cached board + customer notes for the chosen day. Free.</div>}
-        </div>
-
-        {/* SENDER + CAP */}
-        <div className={card}>
-          <div className="font-semibold text-sm text-slate-800 mb-3">Sender</div>
-          <div className="grid sm:grid-cols-3 gap-3">
-            <div>
-              <div className={label}>From address</div>
-              <input className={input} value={fromAddr} onChange={(e) => setFromAddr(e.target.value)} placeholder="blank = the site default sender" />
-              <div className="text-[10px] text-slate-400 mt-0.5">An address on an unverified domain makes Resend reject every send — verify the domain first.</div>
-            </div>
-            <div>
-              <div className={label}>Replies go to</div>
-              <input className={input} value={replyTo} onChange={(e) => setReplyTo(e.target.value)} placeholder="customer service inbox" />
-            </div>
-            <div>
-              <div className={label}>Daily cap</div>
-              <input className={input} type="number" min="0" max="2000" value={dailyCap} onChange={(e) => setDailyCap(e.target.value)} />
-              <div className="text-[10px] text-slate-400 mt-0.5">A full day delivers ~700+. Raise this before the trigger ships or most stops skip at the ceiling.</div>
-            </div>
-          </div>
-          <button onClick={saveSender} disabled={busy === 'save'} className={`${btnPri} mt-3`} style={{ background: BRAND }}>{busy === 'save' ? 'Saving…' : 'Save sender settings'}</button>
-        </div>
-
-        {/* TEMPLATE */}
-        <div className={card}>
-          <div className="flex items-center justify-between gap-2 flex-wrap mb-2">
-            <div className="font-semibold text-sm text-slate-800">Template</div>
-            <button
-              onClick={() => { setSubjectT('Delivered — PRO {{pro}}'); setHtmlT(cfgResp?.defaultHtml || ''); setNote('Default template restored in the editor — Save to keep it.'); }}
-              className={`${btn} border-slate-300 bg-white text-slate-600 text-xs`}
-            >Reset editor to default</button>
-          </div>
-          <div className={label}>Subject</div>
-          <input className={input} value={subjectT} onChange={(e) => setSubjectT(e.target.value)} maxLength={200} />
-          <div className={`${label} mt-3`}>HTML body</div>
-          <textarea
-            className="w-full border border-slate-300 rounded px-2 py-1.5 text-[11px] font-mono leading-snug"
-            rows={14}
-            value={htmlT}
-            onChange={(e) => setHtmlT(e.target.value)}
-            spellCheck={false}
-          />
-          <div className="mt-2 flex flex-wrap gap-1.5">
-            {(cfgResp?.fields || []).map((f) => (
-              <button
-                key={f}
-                onClick={() => { navigator.clipboard?.writeText(`{{${f}}}`).catch(() => {}); setNote(`{{${f}}} copied — paste it into the template.`); }}
-                className="text-[10px] font-mono px-1.5 py-0.5 rounded border border-slate-300 bg-slate-50 text-slate-600 hover:bg-slate-100"
-                title="Copy merge field"
-              >{'{{'}{f}{'}}'}</button>
-            ))}
-          </div>
-          <div className="text-[10px] text-slate-400 mt-1.5">Values are escaped before they land in the template — a customer name cannot inject HTML. Wrap a section in {'{{#driver}}'}…{'{{/driver}}'} to show it only when that field has a value.</div>
-          <button onClick={saveTemplate} disabled={busy === 'save'} className={`${btnPri} mt-3`} style={{ background: BRAND }}>{busy === 'save' ? 'Saving…' : 'Save template'}</button>
-        </div>
-
-        {/* PREVIEW + TEST — the saved template rendered against a REAL delivered stop. */}
-        <div className={card}>
-          <div className="font-semibold text-sm text-slate-800 mb-2">Preview &amp; test</div>
-          <div className="flex items-end gap-2 flex-wrap">
-            <div>
-              <div className={label}>Board date (optional)</div>
-              <input type="date" value={pvDate} onChange={(e) => setPvDate(e.target.value)} className="border border-slate-300 rounded px-2 py-1 text-sm" />
-            </div>
-            <div>
-              <div className={label}>PRO (optional)</div>
-              <input className="border border-slate-300 rounded px-2 py-1 text-sm w-36" value={pvPro} onChange={(e) => setPvPro(e.target.value)} placeholder="any delivered stop" />
-            </div>
-            <button onClick={runPreview} disabled={busy === 'preview'} className={btnPri} style={{ background: BRAND }}>{busy === 'preview' ? 'Rendering…' : 'Preview saved template'}</button>
-          </div>
-          <div className="text-[10px] text-slate-400 mt-1">Previews what is SAVED — save template edits first. Rendering happens server-side with the same code the real send uses, so this preview cannot drift from the real thing.</div>
-          {preview && (
-            <div className="mt-3">
-              <div className="text-xs text-slate-600 mb-1">
-                <span className="font-semibold">Subject:</span> {preview.subject}
-                <span className="ml-3 font-semibold">Would send to:</span> {preview.optedOut ? 'nobody — customer opted out' : (preview.recipientOnFile || 'nobody — no address on file')}
-                {preview.recipientSource === 'notes' && <span className="ml-1 text-slate-400">(dispatcher override)</span>}
+              {cfgResp && !cfgResp.resendConfigured && (
+                <div className="mt-2 text-[11px] text-red-700 font-semibold">Mail service unconfigured on this site — nothing can send, so the switch refuses to turn on.</div>
+              )}
+              <div className="mt-3 text-[11px] leading-relaxed text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-2">
+                The automatic trigger is <b>not wired yet</b> — even switched on, nothing sends on its own today. Template and sender get signed off first; the trigger ships as its own change.
               </div>
-              <iframe title="Email preview" sandbox="" srcDoc={preview.html} className="w-full bg-white border rounded" style={{ height: 560 }} />
-            </div>
-          )}
-          <div className="mt-3 pt-3 border-t flex items-end gap-2 flex-wrap">
-            <div className="flex-1 min-w-[220px]">
-              <div className={label}>Send one [TEST] email to</div>
-              <input className={input} value={testTo} onChange={(e) => setTestTo(e.target.value)} placeholder="your own Davis inbox" />
-            </div>
-            <button onClick={sendTest} disabled={busy === 'test'} className={btnPri} style={{ background: '#7c3aed' }}>{busy === 'test' ? 'Sending…' : 'Send test'}</button>
+            </CommsCard>
+
+            <CommsCard title="Sender">
+              <label className={label}>From address</label>
+              <input className={input} value={fromAddr} onChange={(e) => { setFromAddr(e.target.value); setDirty(true); }} placeholder="blank = the site default sender" />
+              <div className="text-[10px] text-slate-400 mt-1">Currently sends as <span className="font-semibold text-slate-500">{cfgResp?.effectiveFrom || '—'}</span>. An unverified domain makes every send bounce — verify DNS first.</div>
+              <label className={`${label} mt-3`}>Replies go to</label>
+              <input className={input} value={replyTo} onChange={(e) => { setReplyTo(e.target.value); setDirty(true); }} />
+              <label className={`${label} mt-3`}>Daily cap</label>
+              <input className={input} type="number" min="0" max="2000" value={dailyCap} onChange={(e) => { setDailyCap(e.target.value); setDirty(true); }} />
+              <div className="text-[10px] text-slate-400 mt-1">A full day delivers ~700+. Raise this before the trigger ships or most stops skip at the ceiling.</div>
+            </CommsCard>
+
+            <CommsCard title="Coverage" aside={
+              <div className="flex items-center gap-1.5">
+                <input type="date" value={covDate} onChange={(e) => setCovDate(e.target.value)} className="border border-slate-300 rounded-lg px-2 py-1 text-xs" />
+                <button onClick={runCoverage} disabled={busy === 'coverage'} className={btnGhost}>{busy === 'coverage' ? '…' : 'Count'}</button>
+              </div>
+            }>
+              {coverage ? (
+                <div>
+                  <span className="text-3xl font-bold text-slate-900">{coverage.pct}%</span>
+                  <span className="ml-2 text-sm text-slate-600">reachable — {coverage.withEmail} of {coverage.sampled} sampled delivered stops</span>
+                  <div className="text-[11px] text-slate-500 mt-1">order email {coverage.bySource?.order ?? 0} · override {coverage.bySource?.notes ?? 0} · opted out {coverage.optedOut ?? 0} · none {coverage.withoutEmail ?? 0}</div>
+                </div>
+              ) : (
+                <div className="text-xs text-slate-400">How many of a day's delivered stops we could actually email. Free — cached board only.</div>
+              )}
+            </CommsCard>
+
+            <CommsCard title="Send a test">
+              <label className={label}>To (Davis inboxes only)</label>
+              <div className="flex gap-2">
+                <input className={input} value={testTo} onChange={(e) => setTestTo(e.target.value)} placeholder="your own Davis inbox" />
+                <button onClick={sendTest} disabled={busy === 'test'} className={`${btnPri} shrink-0`} style={{ background: BRAND }}>{busy === 'test' ? 'Sending…' : 'Send'}</button>
+              </div>
+              <div className="text-[10px] text-slate-400 mt-1.5">Sends the SAVED template as a marked [TEST] — never a customer, never counted against the cap, works while the program is off.</div>
+            </CommsCard>
           </div>
-          <div className="text-[10px] text-slate-400 mt-1">Tests are allow-listed to Davis inboxes, never consume the daily cap, and work while the program is OFF — that is the point.</div>
-          {testResult && !testResult.ok && <div className="mt-1 text-xs text-red-700">{testResult.error}</div>}
         </div>
 
-        {/* SEND LOG */}
-        <div className={card}>
-          <div className="font-semibold text-sm text-slate-800 mb-2">Send log — last 7 days</div>
+        {/* Sticky save bar renders only when there is something to save — edits anywhere
+            on the screen funnel to ONE Save, so "which save button" stops being a question. */}
+        {dirty && (
+          <div className="sticky bottom-3 z-10 flex justify-center">
+            <div className="bg-slate-900 text-white rounded-xl shadow-lg px-4 py-2.5 flex items-center gap-3">
+              <span className="text-xs">Unsaved changes to the template or sender</span>
+              <button onClick={saveAll} disabled={busy === 'save'} className="px-3 py-1.5 rounded-lg text-xs font-bold" style={{ background: '#16a34a' }}>{busy === 'save' ? 'Saving…' : 'Save changes'}</button>
+              <button onClick={() => { loadAll(); }} className="text-xs text-slate-300 hover:text-white">Discard</button>
+            </div>
+          </div>
+        )}
+
+        <CommsCard title="Send log — last 7 days">
           {log?.totals && (
             <div className="text-xs text-slate-600 mb-2">
               {log.totals.sent} sent · {log.totals.failed} failed · {log.totals.inflight} unconfirmed
@@ -22244,26 +22307,25 @@ function CustomerCommsScreen() {
           {log?.entries?.length > 0 && (
             <div className="overflow-x-auto">
               <table className="w-full text-xs">
-                <thead><tr className="text-left text-slate-500 border-b"><th className="py-1 pr-3">When</th><th className="py-1 pr-3">Customer</th><th className="py-1 pr-3">To</th><th className="py-1 pr-3">Subject</th><th className="py-1">Result</th></tr></thead>
+                <thead><tr className="text-left text-slate-500 border-b"><th className="py-1.5 pr-3 font-semibold">When</th><th className="py-1.5 pr-3 font-semibold">Customer</th><th className="py-1.5 pr-3 font-semibold">To</th><th className="py-1.5 pr-3 font-semibold">Subject</th><th className="py-1.5 font-semibold">Result</th></tr></thead>
                 <tbody>
                   {log.entries.slice(0, 50).map((e, i) => (
                     <tr key={`${e.date}-${e.key}-${i}`} className="border-b border-slate-100">
-                      <td className="py-1 pr-3 whitespace-nowrap text-slate-500">{agoText(e.at) || e.date}</td>
-                      <td className="py-1 pr-3">{e.customer || '—'}</td>
-                      <td className="py-1 pr-3">{e.to || '—'}</td>
-                      <td className="py-1 pr-3 max-w-[220px] truncate">{e.subject || '—'}</td>
-                      <td className="py-1">{e.ok ? <span className="text-emerald-700 font-semibold">sent</span> : e.claimed ? <span className="text-amber-700 font-semibold">unconfirmed</span> : <span className="text-red-700 font-semibold">failed</span>}</td>
+                      <td className="py-1.5 pr-3 whitespace-nowrap text-slate-500">{agoText(e.at) || e.date}</td>
+                      <td className="py-1.5 pr-3">{e.customer || '—'}</td>
+                      <td className="py-1.5 pr-3">{e.to || '—'}</td>
+                      <td className="py-1.5 pr-3 max-w-[240px] truncate">{e.subject || '—'}</td>
+                      <td className="py-1.5">{e.ok ? <span className="text-emerald-700 font-semibold">sent</span> : e.claimed ? <span className="text-amber-700 font-semibold">unconfirmed</span> : <span className="text-red-700 font-semibold">failed</span>}</td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
           )}
-        </div>
+        </CommsCard>
 
         <div className="text-[10px] text-slate-400 pb-6">
-          Per-customer opt-out lives on the stop card: open a customer → Customer notes → “No delivery emails to this customer.”
-          The server honours it on every send path, including tests aimed at that customer.
+          Per-customer opt-out lives on the stop card: Customer notes → “No delivery emails to this customer.” The server honours it on every send path.
         </div>
       </div>
     </div>

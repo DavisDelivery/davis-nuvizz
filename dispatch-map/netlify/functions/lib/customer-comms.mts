@@ -113,18 +113,21 @@ export function isEmailAddress(s: any): boolean {
  * the bundle — the same limitation debug-capture states about its own. It stops a drive-by,
  * not a determined attacker.
  *
- * It fails CLOSED. Unset, these two endpoints refuse rather than open, which is the opposite
- * of the read-only functions next door and deliberate: the config document PERSISTS. An
- * anonymous PUT writes htmlTemplate, fromAddress, replyTo and enabled into
- * nuvizz_ops/customer_comms_config, readConfig falls back to DEFAULT_CONFIG only when that
- * doc is ABSENT, and the first live sweep uses whatever is stored — so "ships disabled" is a
- * property of the default, not of the state on disk a month from now. Closed costs nothing
- * today (nothing in src/ calls these yet) and it forces the variable to be set before the
- * feature can be operated at all.
+ * It fails OPEN when the variable is unset — Chad's explicit call ("get rid of this need
+ * for a token"), and consistent with the rest of this app: there is no login anywhere,
+ * nuvizz-write takes unauthenticated writes to the vendor itself, and the dispatchers who
+ * can reach this URL are the people meant to edit this config. The prompt was costing a
+ * real operator more than the gate was worth against a hypothetical one.
+ *
+ * What still holds without the token: TEST sends stay allow-listed to Davis inboxes
+ * (testRecipientAllowed), enabling still refuses while Resend is unconfigured, the daily
+ * cap still clamps, and the live sweep still does not exist until it ships. Setting
+ * COMMS_ADMIN_TOKEN re-arms the gate with no code change, and the UI sends the header
+ * whenever it has a value.
  */
 export function adminTokenOk(req: Request): boolean {
   const want = String(process.env.COMMS_ADMIN_TOKEN || '').trim();
-  if (!want) return false;
+  if (!want) return true;
   const url = (() => { try { return new URL(req.url); } catch { return null; } })();
   const got = String(req.headers.get('x-comms-token') || url?.searchParams.get('token') || '').trim();
   return !!got && got === want;
