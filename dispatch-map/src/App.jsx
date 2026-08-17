@@ -77,7 +77,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.54.81';
+const APP_VERSION = '0.54.82';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -122,6 +122,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.54.82', 'THE PHONE MENU PUTS THE MAP FIRST. Chad, with the menu open on his phone: "Put map at top of menu and put diagnostics and debug under more." Both were backwards. MAP was the LAST entry, at the bottom of a nine-row menu, underneath two developer tools — and it is the screen you come back to between every other one, so it had the longest reach in the menu for the most-used destination. It is now the first thing your thumb lands on. DIAGNOSTICS and DEBUG THIS VIEW have moved under More, alongside Manifest check and Customer emails. Neither is a screen for running the day: one reports scan health and API call counts, the other bundles up what you are looking at for a coding agent. They were sitting between the dispatcher and the Map for no reason. Nothing was removed and nothing changed what it does — More still starts open and remembers whether you folded it, and its badge still carries anything flagged underneath, so tucking those two away cannot hide a problem. The desktop nav already worked this way (Map is the first tab, Diagnostics and Debug live in its More dropdown); this is the phone catching up to it.'],
   ['0.54.81', 'TWO CONTROLS THE NEW TOUCH FLOOR ITSELF BROKE. v0.54.80 made 44px the default minimum for every button on a phone, which fixed 45 controls and quietly damaged two — a class of defect the layout guard cannot see, because nothing overflows and nothing is clipped; the control simply looks wrong. A parallel read of the whole file found both. (1) THE MAP FILTER SWITCHES. On MapFilterToggle the BUTTON is the track: a 36x20 pill whose background is the switch and whose child span is the knob. The floor stretched that track to 44px tall and left a 16px knob floating at the top of it, on all five map filters at once. It now carries .tap-dense — the opt-out the same release added for exactly this — because its hit area was ALREADY 44px and always had been (that is what the after:-inset-y-3 is for), so the floor had nothing to add and only distorted the paint. (2) THE CUSTOMER-NOTES CONTACTS ROW. Name, Phone and Role sat abreast with a delete button, which left about 90px per field on a 390px phone even before the delete button took its 44px. The row is now two lines on a phone — name across the top, phone/role/delete beneath — and unchanged on desktop. Both fixes keep the guard green on every screen at both phone sizes.'],
   ['0.54.80', 'THE PHONE IS ITS OWN APP NOW — AND A GUARD SO CHAD STOPS BEING THE ONE WHO FINDS THIS. Chad, on v0.54.79, with a photograph of the Customer emails screen sliding sideways on his iPhone: "This is not formatted correctly to mobile. This entire app should have a mobile version and desktop version like 2 different beings. I\'m tired of sending your formatting issues. Also I clicked a button on this screen and didn\'t work. Also emails are supposed to come from notifications@davisdelivery.com." He is right about the cause, not just the symptom: there was ONE layout with responsive classes bolted on, so a phone always got a squeezed desktop. WHAT HIS SCREENSHOT ACTUALLY WAS. The page had slid right under the fixed header — the title read "randed delivery-complete email" — and most of the screen was blank. The email preview is an <iframe>, and iOS Safari does not honour a CSS width on an iframe: it sizes the frame to its CONTENT, and the content is the email\'s real 600px table. On a 390px phone the frame became 600px and pushed the whole document wide, so what he was looking at was the empty right margin beside the email. Chromium does not reproduce it and no WebKit build exists in this environment to prove it against, so it is fixed BY CONSTRUCTION instead of by chasing one engine: the frame is given exactly the width its content wants so no engine has reason to grow it, scaled with a transform to fit the space, and the wrapper CLIPS — even an engine ignoring both cannot push the page through an overflow-hidden box. Its height is now measured from the loaded document rather than guessed, so there is no dead grey space under the message and no scrollbar inside a scrollbar. THE BUTTON THAT DID NOTHING did something: it reported a failure into a red banner at the TOP of a long scrolling page, from a control near the bottom. On a phone that is indistinguishable from a dead button. Every message on this screen is now ADDRESSED — it renders at the control that raised it. And the specific failure he would have hit at 4am is gone too: a real-delivery preview needs a delivered stop, and before the day\'s first delivery there is not one, so it now falls back to the previous board and says which day it is showing. TWO BEINGS, FOR REAL. useCommsConsole() holds all state, loading and writes; <CommsPhone> and <CommsDesktop> are separate components that share it. The phone screen is designed as a phone screen — the email first and full-bleed, everything else collapsed into 52px rows you open one at a time, the send log as cards instead of a five-column table, 44px targets throughout. The desktop keeps its two-column console. One brain, two bodies; a fix to a save path fixes both. THE FINGERTIP FLOOR IS NOW DEFAULT-ON. v0.54.70 added an opt-in .tap-target class, and opt-in is exactly why this kept happening: a sweep found FORTY-FIVE unmarked controls still under 40px — the Routing tabs at 26, the Map search field at 24, the Quote steppers at 34, the version chip at 36. All raised. The rule is now default for every interactive control on a touch phone with .tap-dense as the deliberate opt-out, so the failure mode flips from "silently missed" to "excused on purpose". Desktop density is untouched. Also fixed: the Map\'s Filters label, whose 380px threshold was set by eye ~50px too low, so on a 390px iPhone it rendered and was then sliced in half by the row\'s clip — the button read "Fil". THE GUARD is the actual answer to "I\'m tired of sending your formatting issues": scripts/verify-mobile-layout.mjs walks EVERY screen at 390 and 360 and fails on horizontal overflow (naming the widest offending element), content clipped by an overflow-hidden ancestor, sub-40px targets, and dead regions — crediting the app\'s own ::after hit-area expansion so it does not flag deliberate patterns. Every screen passes on both phones. THE SENDER is notifications@ as asked, but on the warehouse domain, not the apex: Resend refuses to add davisdelivery.com at all on the current plan ("You have reached the domain limit"), and an address on an unverified domain does not degrade politely — Resend rejects every send, which would have turned the test button into a guaranteed failure. The screen states the target, the blocker and the two steps that flip it, neither of which needs a deploy. 1,618 tests green.'],
   ['0.54.79', 'THE CUSTOMER EMAILS SCREEN, REBUILT — NO TOKEN, AND THE EMAIL ITSELF IS THE PAGE. Chad, on v0.54.78: "Get rid of this need for a token. Also the ui on this page looks like a 5 year old made it… I want the template for the email to be an exact replica of the actual email that is going to be sent. With Branding." All three. THE TOKEN IS GONE. The config endpoints passed writes through a shared-secret header, and the screen prompted for it — a real operator paying a tax against a hypothetical attacker, on an app that has no login anywhere else and takes unauthenticated writes to NuVizz itself. The server gate now stands down when no token is configured (setting COMMS_ADMIN_TOKEN re-arms it with no code change, and a unit test pins both directions), the variable was removed from the site, and the prompt is deleted. What still holds without it: test sends stay allow-listed to Davis inboxes, enabling still refuses while the mail service is unconfigured, and the daily cap still clamps. THE SCREEN WAS REDESIGNED AROUND THE EMAIL. The old page was a stack of grey boxes with the message buried behind two clicks. Now the branded email IS the page: it renders the moment the tab opens, framed in inbox chrome — subject line, sender avatar, the from address the send will actually use — exactly the way Gmail will frame it, LIVE against realistic sample delivery data. Open Edit HTML and the preview follows every keystroke, 300ms behind, with merge values escaped by a client mirror of the SAME renderer the send uses — the preview cannot lie about markup in a customer name. One click swaps the sample for a REAL delivered stop rendered server-side by the production code path, with the actual recipient decision printed above it; one click swaps back. EDITS FUNNEL TO ONE SAVE: touch the subject, the body, the sender, or the cap, and a single sticky save bar appears — "which save button" stops being a question, and Discard is beside it. The controls sit in a left rail on desktop and below the email on a phone, where the preview comes FIRST — on the screen whose whole point is what the customer sees. Verified in a real browser at both widths: the live preview renders sample data on load with escaping intact, the real-delivery preview replaces it and offers the way back, an edit surfaces the save bar, the save round-trips subject and body in one write with NO token header and NO prompt ever appearing, and the menu item is hit-tested. 1,615 unit tests green.'],
@@ -7301,9 +7302,19 @@ function MobileAppBar({ version, onChipMenu, chipMenuOpen, onSelectMenu, smsUnre
             className="absolute top-full right-0 mt-1 bg-white text-slate-800 rounded shadow-lg border border-slate-200 text-xs w-max min-w-[200px] max-w-[calc(100vw-24px)] z-50"
             role="menu"
           >
+            {/* MAP FIRST (Chad, v0.54.82). It is the screen you come back to between
+                every other one, and it was at the BOTTOM under two developer tools —
+                the longest reach in the menu for the most-used destination. */}
+            <button
+              className="w-full text-left px-3 py-2 min-h-[44px] hover:bg-slate-50 inline-flex items-center gap-2"
+              onClick={() => onSelectMenu('map')}
+              role="menuitem"
+            >
+              <MapPin size={12} /> Map
+            </button>
             {ROUTING_FLAG && (
               <button
-                className="w-full text-left px-3 py-2 min-h-[44px] hover:bg-slate-50 inline-flex items-center gap-2"
+                className="w-full text-left px-3 py-2 min-h-[44px] hover:bg-slate-50 inline-flex items-center gap-2 border-t border-slate-100"
                 onClick={() => onSelectMenu('routing')}
                 role="menuitem"
               >
@@ -7311,7 +7322,7 @@ function MobileAppBar({ version, onChipMenu, chipMenuOpen, onSelectMenu, smsUnre
               </button>
             )}
             <button
-              className={`w-full text-left px-3 py-2 min-h-[44px] hover:bg-slate-50 inline-flex items-center gap-2${ROUTING_FLAG ? ' border-t border-slate-100' : ''}`}
+              className="w-full text-left px-3 py-2 min-h-[44px] hover:bg-slate-50 inline-flex items-center gap-2 border-t border-slate-100"
               onClick={() => onSelectMenu('neworder')}
               role="menuitem"
             >
@@ -7369,29 +7380,25 @@ function MobileAppBar({ version, onChipMenu, chipMenuOpen, onSelectMenu, smsUnre
                 >
                   <Mail size={12} /> Customer emails
                 </button>
+                {/* Diagnostics and Debug moved UNDER More (Chad, v0.54.82). Both are
+                    tools for looking into the app rather than screens for running the
+                    day, and they were sitting between the dispatcher and the Map. */}
+                <button
+                  className="w-full text-left pl-6 pr-3 py-2 min-h-[44px] hover:bg-slate-50 inline-flex items-center gap-2"
+                  onClick={() => onSelectMenu('diagnostics')}
+                  role="menuitem"
+                >
+                  <Activity size={12} /> Diagnostics
+                </button>
+                <button
+                  className="w-full text-left pl-6 pr-3 py-2 min-h-[44px] hover:bg-slate-50 inline-flex items-center gap-2"
+                  onClick={() => onSelectMenu('debug')}
+                  role="menuitem"
+                >
+                  <Bug size={12} /> Debug this view
+                </button>
               </>
             )}
-            <button
-              className="w-full text-left px-3 py-2 min-h-[44px] hover:bg-slate-50 inline-flex items-center gap-2 border-t border-slate-100"
-              onClick={() => onSelectMenu('diagnostics')}
-              role="menuitem"
-            >
-              <Activity size={12} /> Diagnostics
-            </button>
-            <button
-              className="w-full text-left px-3 py-2 min-h-[44px] hover:bg-slate-50 inline-flex items-center gap-2 border-t border-slate-100"
-              onClick={() => onSelectMenu('debug')}
-              role="menuitem"
-            >
-              <Bug size={12} /> Debug this view
-            </button>
-            <button
-              className="w-full text-left px-3 py-2 min-h-[44px] hover:bg-slate-50 inline-flex items-center gap-2 border-t border-slate-100"
-              onClick={() => onSelectMenu('map')}
-              role="menuitem"
-            >
-              <MapPin size={12} /> Map
-            </button>
           </div>
         )}
       </div>
