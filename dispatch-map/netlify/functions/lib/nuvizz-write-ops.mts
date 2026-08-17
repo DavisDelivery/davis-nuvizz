@@ -1056,9 +1056,56 @@ export function echoDrift(sent: any, readBack: any, prefix = ''): string[] {
     const b = (readBack || {})[k];
     if (isObj(a) && isObj(b)) { out.push(...echoDrift(a, b, path)); continue; }
     // Arrays and scalars compare by value. JSON order is stable for a round-tripped object.
-    if (JSON.stringify(a ?? null) !== JSON.stringify(b ?? null)) out.push(path);
+    if (JSON.stringify(a ?? null) !== JSON.stringify(b ?? null)) {
+      if (isBenignVendorNormalisation(path, a, b)) continue;
+      out.push(path);
+    }
   }
   return out;
+}
+
+/**
+ * PURE: is this difference the vendor tidying its own record rather than the write
+ * costing the order something?
+ *
+ * ── why this had to exist (2026-08-17) ──────────────────────────────────────
+ * Until the consignee was retyped ANY, every date change drifted eleven REAL
+ * delivery-address fields, and these four rode along unnoticed underneath:
+ *     from.address.name : "DAVIS DELIVERY SERVICE" → "DAVIS DELIVERY"
+ *     from.address.addr2: (absent) → ""
+ *     from.address.label: (absent) → ""
+ *     vehicleTypes      : (absent) → []
+ * With the real damage fixed they are all that is left — so a perfectly clean date
+ * change now fails with "AN ADDRESS ON THE ORDER MOVED". That is the precise
+ * failure this module's own comments warn about: a false alarm trains a dispatcher
+ * to ignore the true one, and the true one is freight going to the wrong building.
+ *
+ * Two classes, both narrow, both explained:
+ *  1. ABSENT → EMPTY. We deliberately send no value (see the "invent nothing"
+ *     rule) and NuVizz materialises "" / [] / {}. Nothing was lost; there was
+ *     never anything there. An empty → VALUE change is NOT covered, and a
+ *     VALUE → empty change is a real loss that still fails.
+ *  2. THE PICKUP'S NAME. Per the v7 spec, for any addressType but ANY the name
+ *     "will be chosen from address" — so a COM-typed pickup, which on a delivery
+ *     order is always our own terminal, has its name re-resolved to NuVizz's
+ *     canonical spelling on every single write. It is not a field we set, not a
+ *     field that can misdeliver freight, and it moves every time. The STREET of
+ *     the pickup is deliberately NOT covered: if that moves, something is wrong.
+ *
+ * Nothing is hidden — these still surface, as `normalised` on the result, so a
+ * change of vendor behaviour is still visible. They just do not fail the write.
+ */
+export function isBenignVendorNormalisation(path: string, sent: any, readBack: any): boolean {
+  // 1. absent → empty. Only in that direction.
+  if (sent === undefined || sent === null) {
+    if (readBack === '' || readBack === null) return true;
+    if (Array.isArray(readBack) && readBack.length === 0) return true;
+    if (readBack && typeof readBack === 'object' && !Array.isArray(readBack) && Object.keys(readBack).length === 0) return true;
+  }
+  // 2. the pickup's own name, re-resolved from NuVizz's company record.
+  if (path === 'from.address.name' && typeof sent === 'string' && typeof readBack === 'string'
+      && sent.trim() !== '' && readBack.trim() !== '') return true;
+  return false;
 }
 
 /**

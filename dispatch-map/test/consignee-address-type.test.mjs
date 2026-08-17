@@ -31,6 +31,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   buildStopPayload, addressIsResolvable, pinEchoAddress, ADDRESS_BOOK_TYPES,
+  isBenignVendorNormalisation,
 } from '../netlify/functions/lib/nuvizz-write-ops.mts';
 
 const SETTINGS = {
@@ -118,4 +119,46 @@ test('pinEchoAddress does not mutate the read it was given', () => {
   pinEchoAddress(raw);
   assert.equal(raw.addressType, 'COM');
   assert.equal(raw.label, 'L');
+});
+
+// ── the false alarm the fix exposed ─────────────────────────────────────────
+// With the eleven real address drifts gone, four harmless ones were left on
+// their own — and a clean date change started failing with "AN ADDRESS ON THE
+// ORDER MOVED". A false alarm every single time is how a dispatcher learns to
+// ignore the true one, and the true one is freight going to the wrong building.
+// These pin exactly how narrow the excuse is.
+
+test('the four residual drifts from the live 12/30->12/31 test are all excused', () => {
+  // Verbatim from the ZZTEST0817 journal entry.
+  assert.equal(isBenignVendorNormalisation('from.address.name', 'DAVIS DELIVERY SERVICE', 'DAVIS DELIVERY'), true);
+  assert.equal(isBenignVendorNormalisation('from.address.addr2', undefined, ''), true);
+  assert.equal(isBenignVendorNormalisation('from.address.label', undefined, ''), true);
+  assert.equal(isBenignVendorNormalisation('vehicleTypes', undefined, []), true);
+});
+
+test('LOSS is never excused — only absent -> empty, never value -> empty', () => {
+  // This is the line that matters. A field we SENT coming back blank is the
+  // order losing something, and it must still fail loudly.
+  assert.equal(isBenignVendorNormalisation('to.address.addr2', 'SUITE 200', ''), false);
+  assert.equal(isBenignVendorNormalisation('comments', ['a note'], []), false);
+  assert.equal(isBenignVendorNormalisation('to.address.zip', '30039', ''), false);
+});
+
+test('a DELIVERY address is never excused, on any field', () => {
+  // The whole incident in one assertion.
+  assert.equal(isBenignVendorNormalisation('to.address.addr1', '4554 ANNISTWN ROAD CHURCH', '943 GAINESVILLE HIGHWAY'), false);
+  assert.equal(isBenignVendorNormalisation('to.address.city', 'SNELLVILLE', 'BUFORD'), false);
+  assert.equal(isBenignVendorNormalisation('to.address.state', 'GA', 'GEORGIA'), false);
+  assert.equal(isBenignVendorNormalisation('to.address.name', 'YEMI YIKEALO', 'DAVIS DELIVERY'), false);
+  // Not even absent -> a real value.
+  assert.equal(isBenignVendorNormalisation('to.address.addr1', undefined, '943 GAINESVILLE HIGHWAY'), false);
+});
+
+test('the PICKUP STREET is not excused either — only its name', () => {
+  // A moved pickup name is vendor canonicalisation. A moved pickup street means
+  // something is genuinely wrong and must still be reported.
+  assert.equal(isBenignVendorNormalisation('from.address.addr1', '943 GAINESVILLE HWY', '1 OTHER ST'), false);
+  assert.equal(isBenignVendorNormalisation('from.address.zip', '30518', '30039'), false);
+  // and an EMPTIED pickup name is a loss, not a canonicalisation
+  assert.equal(isBenignVendorNormalisation('from.address.name', 'DAVIS DELIVERY SERVICE', ''), false);
 });
