@@ -245,7 +245,18 @@ export function buildStopPayload(row: StopRow, settings: OriginSettings): any {
     },
     to: {
       address: {
-        addressType: 'COM', name: row.name, addr1: row.addr1, addr2: row.addr2 || undefined,
+        // 'ANY', NOT 'COM'. This is the CONSIGNEE — the customer's address — and
+        // NuVizz's own spec defines COM as "Company address". Typing it COM tells
+        // NuVizz this address belongs to the company's address book, and per the
+        // spec ("other than address type ANY, name will be chosen from address",
+        // and a label "will populate line1, line2, city, state, zip, country,
+        // latitude and longitude from the corresponding address") NuVizz is then
+        // free to RESOLVE it away on any later write. On 2026-08-17 it did exactly
+        // that on two live orders: a date change re-sent the correct consignee and
+        // NuVizz stored 943 GAINESVILLE HIGHWAY, BUFORD, GEORGIA — our own terminal.
+        // ANY is the type that means "these literal fields ARE the address"; it is
+        // the only one where the name we supply is honoured (and is mandatory).
+        addressType: 'ANY', name: row.name, addr1: row.addr1, addr2: row.addr2 || undefined,
         city: row.city, state: row.state, zip: row.zip, country: 'USA',
       },
       schedule: { timeFrom: `${d}T12:00:00`, timeTo: `${d}T17:00:00`, timeZone: tz, timeConstraint: 'PREFERRED' },
@@ -608,6 +619,69 @@ export function buildPartialUpdateStop(rawStop: any, overrides: Record<string, a
   const merged: Record<string, any> = { ...rawStop };
   for (const [k, v] of Object.entries(overrides || {})) merged[k] = v;
   return withoutPaths(merged, PARTIAL_UPDATE_DERIVED_KEYS);
+}
+
+/**
+ * PURE. Is this echoed address a LOOKUP KEY rather than data?
+ *
+ * NOT YET WIRED INTO THE WRITE PATH — deliberately. See pinEchoAddress below for
+ * what we would do about it and why that decision is not ours to take alone.
+ *
+ * NuVizz's v7 spec defines COM as "Company address" and COMFAC as "Company
+ * facility"; `label` it defines as a key that repopulates line1/line2/city/state/
+ * zip/country/latitude/longitude from the book entry. An echoed block carrying
+ * either is something the vendor may resolve away, and on 2026-08-17 it did.
+ */
+export const ADDRESS_BOOK_TYPES = ['COM', 'COMFAC'] as const;
+
+export function addressIsResolvable(addr: any): boolean {
+  if (!addr || typeof addr !== 'object' || Array.isArray(addr)) return false;
+  const type = String(addr.addressType ?? '').trim().toUpperCase();
+  if ((ADDRESS_BOOK_TYPES as readonly string[]).includes(type)) return true;
+  return String(addr.label ?? '').trim() !== '';
+}
+
+/**
+ * PURE. Make an echoed address LITERAL so the vendor cannot resolve it away.
+ *
+ * NOT YET WIRED INTO THE WRITE PATH. It changes a value we did not read, which
+ * breaks this module's standing "invent nothing the read did not provide" rule —
+ * a rule that exists for good reason on a whole-stop replace. Wiring it needs one
+ * supervised write against one real order, watching the existing read-back
+ * tripwire, because the alternative to being wrong here is freight going to the
+ * wrong building. Exported and tested so that test is a five-minute job.
+ *
+ * ── why this exists ─────────────────────────────────────────────────────────
+ * partialUpdate is a whole-stop replace, so every note, date and contact write
+ * puts the order's addresses back on the wire. NuVizz's own v7 spec says two
+ * things about what it then does with them:
+ *   • `label` — "with valid given label, other address fields like line1, line2,
+ *     city, state, zip, country, latitude and longitude will be populated from
+ *     the corresponding address of the label."
+ *   • `addressType` — COM is "Company address"; and "other than address type ANY,
+ *     name will be chosen from address."
+ * So an echoed block carrying a book type or a label is not data we are sending —
+ * it is a LOOKUP KEY, and the vendor is entitled to overwrite every field under
+ * it. On 2026-08-17 it did: two orders whose consignee was stamped COM at
+ * creation came back addressed to 943 GAINESVILLE HIGHWAY, BUFORD, GEORGIA —
+ * our own terminal — after nothing but a date change. The drift report proves we
+ * sent the right address and NuVizz stored a different one.
+ *
+ * ANY is the one type that means "these literal fields ARE the address". Setting
+ * it, and dropping `label`, is what turns the echo back into data.
+ *
+ * Returns null when the block cannot be pinned — no name (mandatory for ANY) or
+ * no street. The caller MUST refuse the write in that case: sending a resolvable
+ * block is how orders get re-addressed, and a refused date change is a smaller
+ * problem than freight routed to the wrong building.
+ */
+export function pinEchoAddress(addr: any): Record<string, any> | null {
+  if (!addr || typeof addr !== 'object' || Array.isArray(addr)) return null;
+  const name = String(addr.name ?? '').trim();
+  const addr1 = String(addr.addr1 ?? '').trim();
+  if (!name || !addr1) return null;
+  const { label, ...rest } = addr;
+  return { ...rest, addressType: 'ANY', name };
 }
 
 // ── Wrong-twin guard (§D/§N) — the Estes-0828068215 lesson, Aug 4 ─────────────
@@ -1285,7 +1359,9 @@ export function buildImportStopRef(row: StopRow, settings: OriginSettings): any 
     stopType: 'DO',
     to: {
       address: {
-        addressType: 'COM', name: row.name, addr1: row.addr1, addr2: row.addr2 || undefined,
+        // ANY, not COM — see buildStopPayload. The consignee is the customer's
+        // literal address, not an entry in the company's address book.
+        addressType: 'ANY', name: row.name, addr1: row.addr1, addr2: row.addr2 || undefined,
         city: row.city, state: row.state, zip: row.zip, country: 'USA',
       },
       // The delivery window is the driver-visible appointment ONLY — it NEVER sets order
