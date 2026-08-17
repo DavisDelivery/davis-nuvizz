@@ -36,12 +36,13 @@
 export const SINGLE_OPS = [
   'createStop', 'getStop', 'getLoad', 'getLoadByRouteId', 'insertStops', 'removeStops',
   'assignDriver', 'dispatchLoad', 'roster', 'importLoad', 'partialUpdateStop', 'createRoute',
+  'cancelStop',
 ] as const;
 export type SingleOp = typeof SINGLE_OPS[number];
 
 // Ops the HTTP handler accepts (single ops + the per-load Save batch + the panel Save +
 // the async load-import commit with its convergence recipe).
-export const WRITE_OPS = [...SINGLE_OPS, 'commitLoad', 'commitBoard', 'commitImport', 'addStopNote', 'setStopDate', 'setStopContact', 'newRoute'] as const;
+export const WRITE_OPS = [...SINGLE_OPS, 'commitLoad', 'commitBoard', 'commitImport', 'addStopNote', 'setStopDate', 'setStopContact', 'newRoute', 'cancelOrder'] as const;
 export type WriteOp = typeof WRITE_OPS[number];
 
 /** Ops that MUTATE NuVizz (everything except the GET reads). Used by the
@@ -51,6 +52,9 @@ export const MUTATING_OPS = new Set<WriteOp>([
   'importLoad', 'commitLoad', 'commitBoard', 'commitImport',
   'partialUpdateStop', 'addStopNote', 'setStopDate', 'setStopContact',
   'createRoute', 'newRoute',
+  // Destructive. Gated by NUVIZZ_WRITE_ENABLED like every other mutation, and by
+  // the read-then-cancel-by-id ladder in runCancelOrder — see there for why.
+  'cancelStop', 'cancelOrder',
 ]);
 
 /**
@@ -1875,6 +1879,45 @@ export const ROSTER_BODY = {
  * handler returns a 400 rather than firing a malformed write. createStop expects the
  * caller to have already built payload.stop via buildStopPayload (or to pass {row,settings}).
  */
+
+// ── Cancelling an order (§X, Aug 17 2026) ────────────────────────────────────
+//
+// Chad: "I think we need to write a path to canceling orders and reason should
+// be admin." Until now this app could CREATE an order and never take one back —
+// a mistyped order, or the ZZTEST order the address-rewrite investigation left
+// behind, could only be killed in the portal.
+//
+// NuVizz exposes POST /stop/cancel/{cc}; its own description is "Delete/Reject a
+// stop (in unplanned, created statuses)", so a stop already planned onto a route
+// is expected to refuse — unplan it first.
+//
+// TWO THINGS THIS BUILDER IS DELIBERATE ABOUT:
+//
+//  1. IT CANCELS BY stopId, NEVER BY NUMBER, when an id is available. NuVizz can
+//     hold TWO live orders under one stop number — that is the whole twin lesson
+//     of v0.54.36/72 — and "cancel whatever answers to this number" is the one
+//     phrasing of that hazard you cannot undo. The executor reads the order first
+//     precisely so it can cancel the id it just looked at.
+//  2. reasonCode is REQUIRED by the vendor and has no documented value list. Chad
+//     specified ADMIN, so that is the default and it is capped at the schema's 10
+//     characters. If NuVizz rejects it, the write fails loudly with the vendor's
+//     own reason rather than silently cancelling under a wrong code.
+export const CANCEL_REASON_DEFAULT = 'ADMIN';
+
+export function buildCancelStopBody(payload: any): Record<string, any> {
+  const stopId = String(payload?.stopId ?? '').trim();
+  const stopNbr = String(payload?.stopNbr ?? '').trim();
+  if (!stopId && !stopNbr) throw new Error('cancelStop: stopId or stopNbr is required');
+  const reasonCode = (String(payload?.reasonCode ?? '').trim() || CANCEL_REASON_DEFAULT).slice(0, 10);
+  // ONE identifier goes on the wire. Sending both invites NuVizz to resolve a
+  // disagreement between them, and on a destructive call that choice is not ours
+  // to hand over — the id wins whenever we have one.
+  const body: Record<string, any> = stopId ? { stopId, reasonCode } : { stopNbr, reasonCode };
+  const comments = String(payload?.reasonComments ?? '').trim();
+  if (comments) body.reasonComments = comments.slice(0, 500);
+  return body;
+}
+
 export function buildOpRequest(op: SingleOp, payload: any, creds: WriteCreds): BuiltRequest {
   const { base, companyCode: cc, auth } = creds;
   const H = jsonHeaders(auth);
@@ -1886,6 +1929,11 @@ export function buildOpRequest(op: SingleOp, payload: any, creds: WriteCreds): B
       const stop = payload?.stop || (payload?.row ? buildStopPayload(payload.row, payload.settings) : null);
       if (!stop) throw new Error('createStop: missing stop (provide {stop} or {row,settings})');
       return { url: `${base}/stop/sync/update/${enc(cc)}`, method: 'POST', headers: H, body: JSON.stringify({ companyCode: cc, stop }), meta: { route: '/stop/sync/update', tenant: cc, source: 'live-write' } };
+    }
+
+    case 'cancelStop': {
+      const body = buildCancelStopBody(payload);
+      return { url: `${base}/stop/cancel/${enc(cc)}`, method: 'POST', headers: H, body: JSON.stringify(body), meta: { route: '/stop/cancel', tenant: cc, source: 'live-write' } };
     }
 
     case 'getStop': {
@@ -1988,6 +2036,7 @@ export function parseOpResponse(op: SingleOp, httpOk: boolean, j: any): any {
     case 'getLoadByRouteId': return { ok: httpOk, load: normalizeStaticLoad(j) };
     case 'createStop':
     case 'insertStops':
+    case 'cancelStop':
     case 'removeStops': return summarize(httpOk, j);
     case 'assignDriver':
     case 'dispatchLoad': return assignOk(j);
