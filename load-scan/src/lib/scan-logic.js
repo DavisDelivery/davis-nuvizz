@@ -58,65 +58,17 @@ export function pairFrame(rawValues) {
   return { pro, og, unknown, complete: !!(pro && og) };
 }
 
-/**
- * Accumulate frames until a PRO and an OG have both been seen.
- *
- * Even on a phone that can hold both barcodes in view, autofocus drops one of
- * them between frames constantly. `windowMs` bounds how long a lone half-scan
- * stays eligible for pairing, so a PRO from one label can never marry an OG from
- * the next.
- */
-/**
- * One frame's decode, resolved the way the WMS scanner does it — because that
- * one demonstrably works on the same phones and the same labels.
- *
- * ── WHY THIS CHANGED ────────────────────────────────────────────────────────
- *
- * This app used to require BOTH barcodes before it would record anything: a
- * Code 39 PRO and a Code 128 OG, paired inside a 1.5s window. The WMS needs
- * only the PRO, and it reads reliably. Demanding a pair while autofocus hunts
- * across a big label is a much harder problem, and on the dock it simply did
- * not complete — the driver got "point at a label" while pointing at one.
- *
- * So: A PRO ALONE IS A PIECE. The OG is an upgrade, not a requirement. When it
- * lands in the same frame it is used, and dedup is then exact per physical
- * piece. When it does not, the piece still counts.
- *
- * An OG with no PRO cannot identify a stop, so it is held briefly in case the
- * PRO arrives in the next frame.
- */
-export function createScanResolver({ ogHoldMs = 1200 } = {}) {
-  let heldOg = null;
-  let heldAt = 0;
-
-  return {
-    /** Feed one frame. Returns {pro, og|null} when there is something to record. */
-    push(rawValues, now = Date.now()) {
-      const frame = pairFrame(rawValues);
-
-      if (frame.pro) {
-        const fresh = heldOg && now - heldAt <= ogHoldMs ? heldOg : null;
-        const og = frame.og || fresh;
-        heldOg = null;
-        heldAt = 0;
-        return { pro: frame.pro, og: og || null };
-      }
-
-      if (frame.og) {
-        heldOg = frame.og;
-        heldAt = now;
-      }
-      return null;
-    },
-    state(now = Date.now()) {
-      return { pro: null, og: heldOg && now - heldAt <= ogHoldMs ? heldOg : null };
-    },
-    reset() {
-      heldOg = null;
-      heldAt = 0;
-    },
-  };
-}
+// The camera used to have its own resolver here (createScanResolver) that
+// returned a PRO the INSTANT it decoded, with og:null when no OG was in hand.
+// That rule — a PRO alone is a piece, the way the WMS scans — is correct and is
+// kept. Booking it on the FIRST PRO FRAME was not. Quagga is deliberately
+// multiple:false, so on an iPhone the two barcodes of one label always arrive
+// on separate frames; whenever the PRO decoded a beat before the piece id, the
+// phantom booked, the green flash ended the aim, and the OG that landed anyway
+// booked as a SECOND piece. DASAN USA read 3/3 off two scans; GEM SHOPPING
+// credited 10 of 11. The camera now drives createPairBuffer below, exactly like
+// the gun: both barcodes marry in either order inside the window, and a PRO
+// alone becomes a piece when the window closes — not before.
 
 export function createPairBuffer({ windowMs = 2500, onAbandon } = {}) {
   let pending = { pro: null, og: null, at: 0 };
@@ -154,6 +106,14 @@ export function createPairBuffer({ windowMs = 2500, onAbandon } = {}) {
       }
 
       if (expired(now)) abandon('expired', now);
+
+      // A RE-READ of the half already pending is NOT an abandonment. The camera
+      // decodes the same barcode on every frame while the loader holds aim, and
+      // a gun can double-fire one pull. Deliberately does not refresh the
+      // timestamp either: a steady aim at a label whose other barcode will not
+      // read must still reach the fallback at the window, not defer it forever.
+      if (frame.pro && !frame.og && pending.pro === frame.pro) return null;
+      if (frame.og && !frame.pro && pending.og === frame.og) return null;
 
       // TWO OF THE SAME TYPE IN A ROW means a label was abandoned mid-pair — the
       // operator moved on. The old half must be discarded, never silently

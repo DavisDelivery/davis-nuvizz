@@ -452,7 +452,10 @@ function OutcomeCard({ result, partial, orphan, onClear }) {
         {need ? (
           <span className="font-medium">Hold steady — need the {need}</span>
         ) : (
-          <span>Point at the PRO barcode.</span>
+          // "Point at the PRO barcode" steered loaders into aiming at the PRO
+          // first and moving on — exactly the sequence that minted phantom
+          // pieces. The label carries two barcodes and the scan wants both.
+          <span>Point at the label — it reads both barcodes.</span>
         )}
       </Banner>
     );
@@ -1173,6 +1176,13 @@ function ScanScreen({ session, manifest, activeLoad, onSwitchLoad, onSignOut, lo
         onPair: async (p) => announce(await record(p, p.engine)),
         onPartial: setPartial,
         onStatus: setStatus,
+        // A half-read label superseded by a different one mid-pair — same
+        // announcement the gun makes, so neither entry route drops it silently.
+        onOrphan: (half) => {
+          playVerdict('orphan');
+          if (navigator.vibrate) navigator.vibrate([40, 50, 40]);
+          setOrphan({ kind: half.kind, value: half.value, at: Date.now() });
+        },
         onRaw: (values) => {
           rawSeen.current += values.length;
           setRawLog((prev) => [

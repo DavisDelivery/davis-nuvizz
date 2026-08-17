@@ -11,7 +11,7 @@
  * different jobs, and a shared number would make both look like they changed
  * when only one did.
  */
-export const APP_VERSION = '0.41.0';
+export const APP_VERSION = '0.42.0';
 
 // Injected by vite at build time (see vite.config.js `define`). The `typeof`
 // guard is what keeps `npm run dev` and the unit suite working, where the
