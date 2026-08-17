@@ -213,7 +213,15 @@ const MEASURE = `(() => {
       out.offscreen.push({ el: describe(el), left: Math.round(r.left), right: Math.round(r.right) });
     }
     const tag = el.tagName.toLowerCase();
-    const tappable = tag === 'button' || tag === 'a' || tag === 'select' || tag === 'summary' || (tag === 'input' && !['hidden','checkbox','radio'].includes(el.type)) || el.getAttribute('role') === 'button' || el.getAttribute('role') === 'menuitem';
+    // A tap target is whatever a finger has to hit, not whatever happens to be a <button>.
+    // The sweep at v0.54.83 found three shapes this predicate was blind to: sortable <th>
+    // headers, <label>s wrapping a checkbox, and plain <a href>. All are in here now.
+    const clickableTh = tag === 'th' && (el.className || '').includes('cursor-pointer');
+    const labelForBox = tag === 'label' && !!el.querySelector('input[type="checkbox"], input[type="radio"]');
+    const tappable = tag === 'button' || tag === 'a' || tag === 'select' || tag === 'summary'
+      || (tag === 'input' && !['hidden','checkbox','radio'].includes(el.type))
+      || clickableTh || labelForBox
+      || el.getAttribute('role') === 'button' || el.getAttribute('role') === 'menuitem';
     if (tappable && !el.disabled) {
       // Credit a deliberately-expanded hit area: the app's own idiom is an absolutely
       // positioned ::after with negative insets (after:-inset-y-3), which really does

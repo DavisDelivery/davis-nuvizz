@@ -77,7 +77,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.54.82';
+const APP_VERSION = '0.54.83';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -122,6 +122,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.54.83', 'THE SECOND SWEEP — ALL 22,883 LINES, THIRTEEN REGIONS, FIFTY-EIGHT AGENTS. Where the first pass audited the seven screens, this one read every panel, sheet, modal, drawer and card in the file, and again handed each finding to an agent whose only job was to refute it: 14 died there, 29 came back with an edit that applied cleanly, 2 needed doing by hand. THE FLOOR HAD THREE MORE HOLES, and this is the finding that matters, because each one hid a pile of small targets. A tap target is whatever a finger has to hit, not whatever happens to be a <button> — and the rule only knew about buttons, inputs and selects. It now also covers: a[href] (the POD viewer\'s "Open in browser" was 34px, and a miss there does not close the photo, it throws the tab out to the browser); clickable <th> (a sortable column header is not a button, header-tap is the ONLY way to sort the phone\'s bottom grid, and those headers were 26-28px); and <label> wrapping a checkbox or radio (the BOX should stay small — the label around it should not, and that exemption left the Tractor paint on/off at 18px, the routing gear\'s panel and brush choices at 30px, and the staged Dispatch checkbox at 20px). All three are in the guard\'s measurement too, so they cannot come back. FOUR MORE OF v0.54.80\'s OWN FLOOR REGRESSIONS: the ▲▼ reorder buttons are stacked, so 44px each made every stop row in a route card ~100px tall; the search clear-× got a 44px hit box while the input still reserved 24px for it, so the × sat on the text; the Manifest Intake header\'s now-44px discard button squeezed the title out entirely; and the mobile move-to-route <select> sized itself to its widest option at the forced 16px phone font and ate its row. THE "IT DID NOTHING" CLASS AGAIN, in four more places — including one I shipped myself: CommsPhone never rendered the save-addressed message, so a failed save on the phone reported nothing at all, on the very screen rebuilt to fix that exact complaint. Also: the routing status card hid scan errors inside its collapsed body while the refresh button stayed in the header; the Stops and Loads empty states were centred in tables 1,580px and 1,050px wide, putting "No stops match" and its Clear-filters button ~800px and ~525px off the right edge of a phone; and Engine tuning reported a failed Save in a banner at the top of a scrolling body while Save sat in the pinned footer. TWO THINGS THAT WERE SIMPLY IN THE WRONG PLACE: the update banner renders ABOVE the app bar, so while it is up it owns the top of the screen — without the notch inset the app bar carries, meaning the one message telling you the tab is running stale code sat under the Dynamic Island; and MoveLocationBar was fixed 24px off the bottom, landing squarely on the Map/Stops/Filters/Loads tab bar. Plus three values reachable only through a title= tooltip, which a touch device never shows: a day\'s legacy receiving-hours text, a driver\'s full location, and the Profiles popup that ran off the screen edge. 1,637 tests green; guard green on 11 screen/probe combinations across both phones.'],
   ['0.54.82', 'FIFTY-ONE AGENTS READ THE WHOLE APP FOR PHONE DEFECTS; TWENTY SURVIVED A SECOND AGENT TRYING TO REFUTE THEM. Chad: "Spawn many agents and go through entire code base and fix these issues." Every screen was audited by an agent reading its real source, and every finding handed to a second agent whose job was to REFUTE it — 24 of 44 died there, which is the point of running it that way. What survived, fixed here. TWO MORE THINGS v0.54.80\'s TOUCH FLOOR BROKE, both invisible to the layout guard because nothing overflows and nothing clips. (1) THE MAP\'S TOP OVERLAYS. The phone search bar grew from ~40px to ~62px when its input and both buttons took the 44px floor, and every overlay under it hung at a hard-coded offset — a promise the bar had to keep forever, and stopped keeping. The date chip was sliced by the overlap and taps on that strip focused the search field instead of opening the date picker. The bar is MEASURED now, so the next change to its height moves what sits under it instead of colliding. (2) THE SCHEDULED-SCANS SWITCH in Diagnostics painted its track on the button itself, so the floor made it a 44x44 circle with a 20px dot in it. Same fix as the comms switch and the map filters: the button is the hit box, a span is the switch. THE "IT DID NOTHING" CLASS — the complaint Chad raised about Customer emails — turned out to be four more screens. Map: scan errors and the daily-ceiling warning rendered only inside the expanded status pill, while the Scan button stayed visible when collapsed, so a failed scan, a tripped ceiling and a success were pixel-identical, and the obvious response is to tap again — the expensive mistake this app exists to avoid. Routing: lastAction is the screen\'s entire refusal channel ("Compare is full", "can\'t re-sequence, N stops have no map location", "no stops in that area") and it renders in ONE place, which the phone replaces with the workbench the moment a card is open; it now mirrors into the on-map toast. Diagnostics: the "saved" confirmation and the read-only explanation both sat ~1,400px above the Save button that produces them. Bulk Add: an import failure rendered above a 650px column mapper while the operator was at its bottom. All four now answer where the control is. ALSO: five controls the floor never reached because an inline style beats a stylesheet — both "Send to NuVizz" buttons (a note write and a delivery-date change), the Customer # Save/Cancel pair, and the only entry into the notes editor. The map\'s "No stops match" banner sat at the same offset as the date/status row and painted over Filters and Scan at exactly the moment you need them. Routing lost its date picker and settings gear entirely on a phone once a Compare card was open. The manifest suspects table showed eight columns through a 358px window, so reading the freight numbers scrolled the PRO — the row\'s whole identity — off the left edge; it is cards on a phone now. Bulk Add\'s two tabs needed 382px in a 334px card. Diagnostics rendered four different NuVizz endpoints as four identical truncated rows. AND THE GUARD ITSELF HAD TWO HOLES, which is the finding that mattered most: it only ever measured a screen AT REST, so six sub-40px controls sat safely inside the note composer, the customer-# editor and the notes editor while the build stayed green; and <summary> escaped both the floor and the measurement. It now opens sheets, drawers and disclosures and measures inside them — and each probe must PROVE it opened the surface, because a probe that silently no-ops measures the resting screen twice and passes. That assertion immediately caught a bad probe of my own. 1,637 tests green.'],
   ['0.54.82', 'THE PHONE MENU PUTS THE MAP FIRST. Chad, with the menu open on his phone: "Put map at top of menu and put diagnostics and debug under more." Both were backwards. MAP was the LAST entry, at the bottom of a nine-row menu, underneath two developer tools — and it is the screen you come back to between every other one, so it had the longest reach in the menu for the most-used destination. It is now the first thing your thumb lands on. DIAGNOSTICS and DEBUG THIS VIEW have moved under More, alongside Manifest check and Customer emails. Neither is a screen for running the day: one reports scan health and API call counts, the other bundles up what you are looking at for a coding agent. They were sitting between the dispatcher and the Map for no reason. Nothing was removed and nothing changed what it does — More still starts open and remembers whether you folded it, and its badge still carries anything flagged underneath, so tucking those two away cannot hide a problem. The desktop nav already worked this way (Map is the first tab, Diagnostics and Debug live in its More dropdown); this is the phone catching up to it.'],
   ['0.54.81', 'TWO CONTROLS THE NEW TOUCH FLOOR ITSELF BROKE. v0.54.80 made 44px the default minimum for every button on a phone, which fixed 45 controls and quietly damaged two — a class of defect the layout guard cannot see, because nothing overflows and nothing is clipped; the control simply looks wrong. A parallel read of the whole file found both. (1) THE MAP FILTER SWITCHES. On MapFilterToggle the BUTTON is the track: a 36x20 pill whose background is the switch and whose child span is the knob. The floor stretched that track to 44px tall and left a 16px knob floating at the top of it, on all five map filters at once. It now carries .tap-dense — the opt-out the same release added for exactly this — because its hit area was ALREADY 44px and always had been (that is what the after:-inset-y-3 is for), so the floor had nothing to add and only distorted the paint. (2) THE CUSTOMER-NOTES CONTACTS ROW. Name, Phone and Role sat abreast with a delete button, which left about 90px per field on a 390px phone even before the delete button took its 44px. The row is now two lines on a phone — name across the top, phone/role/delete beneath — and unchanged on desktop. Both fixes keep the guard green on every screen at both phone sizes.'],
@@ -1198,10 +1199,13 @@ function useSortable(rows, defaultKey = null, defaultDir = 'asc') {
 
 function SortableTh({ label, k, sortKey, sortDir, onToggle, className = '' }) {
   const active = sortKey === k;
+  // py-3 below md: same blind spot as GridSortTh — a clickable <th> is not a <button>, so the
+  // 44px phone floor in index.css never reaches it and this header sat at ~26px. The Engine
+  // tables that use it are a phone destination (Routing -> Engine sub-tab). Desktop keeps py-1.
   return (
     <th
       onClick={() => onToggle(k)}
-      className={`px-2 py-1 text-left text-xs font-semibold uppercase tracking-wide text-slate-600 cursor-pointer select-none hover:bg-slate-100 ${className}`}
+      className={`px-2 py-3 md:py-1 text-left text-xs font-semibold uppercase tracking-wide text-slate-600 cursor-pointer select-none hover:bg-slate-100 ${className}`}
     >
       <span className="inline-flex items-center gap-1">
         {label}
@@ -1235,10 +1239,13 @@ function sortRows(rows, cols, sort) {
 // style; keeps the chevron next to the label even for right-aligned columns).
 function GridSortTh({ col, sort, onToggle }) {
   const active = sort.key === col.k;
+  // py-3 below md: a clickable <th> is not a <button>, so the 44px phone floor in index.css
+  // never touches it and this header measured ~28px. The bottom grid IS on the phone (Routing,
+  // default on) and header-tap is the only way to sort it. Desktop keeps the dense py-1.5.
   return (
     <th
       onClick={() => onToggle(col.k)}
-      className="font-semibold text-slate-500 px-2 py-1.5 border-b border-slate-200 whitespace-nowrap cursor-pointer select-none hover:bg-slate-100"
+      className="font-semibold text-slate-500 px-2 py-3 md:py-1.5 border-b border-slate-200 whitespace-nowrap cursor-pointer select-none hover:bg-slate-100"
       style={{ width: col.w, textAlign: col.align || 'left' }}
     >
       <span className="inline-flex items-center gap-1" style={{ flexDirection: col.align === 'right' ? 'row-reverse' : 'row' }}>
@@ -2087,8 +2094,15 @@ function useBuildUpdate() {
 // deliver a bug fix would be a worse bug than the one being fixed. It also can't be
 // dismissed — a dismissed banner is how a tab ends up four days stale again.
 function UpdateBanner() {
+  // This bar renders ABOVE MobileAppBar, so while it is up it owns the top of the screen and the
+  // notch inset the app bar carries protects nothing. Carry the inset here too (viewport-fit=cover
+  // is on) or the text sits under the status bar / Dynamic Island on a home-screen iPhone. env()
+  // is 0 on desktop and in a plain browser tab, so nothing else moves.
   return (
-    <div className="shrink-0 flex items-center justify-center gap-3 px-4 py-1.5 bg-blue-600 text-white text-xs font-semibold">
+    <div
+      className="shrink-0 flex items-center justify-center gap-3 px-4 py-1.5 bg-blue-600 text-white text-xs font-semibold"
+      style={{ paddingTop: 'calc(0.375rem + env(safe-area-inset-top))' }}
+    >
       <RefreshCw size={13} />
       <span>A newer version of Dispatch Map is available — this tab is running older code.</span>
       <button
@@ -3077,9 +3091,12 @@ function StopsStatusCard({ stopCount, carryoverCount = 0, totalPallets, loadAt, 
               <HourlyCalls byHour={ops.byHour} className="text-slate-400 text-[10px] mt-0.5" />
             </>
           )}
-          {scanErr && <div className="text-[11px] text-red-600">{scanErr}</div>}
         </div>
       )}
+      {/* OUTSIDE the collapse. The refresh button lives in the always-visible header, so a scan
+          error rendered inside the collapsed body is feedback nobody sees — on a phone the icon
+          spins for a minute, goes quiet, and the button reads as broken. */}
+      {scanErr && <div className="mt-0.5 text-[11px] text-red-600">{scanErr}</div>}
     </div>
   );
 }
@@ -3498,7 +3515,10 @@ function TractorPaintControl() {
     <div>
       <div className="flex items-center justify-between mb-1">
         <span className="text-[10px] uppercase font-semibold text-slate-500">Tractor delivered</span>
-        <label className="inline-flex items-center gap-1.5 cursor-pointer select-none text-[10px] font-semibold text-slate-600">
+        {/* tap-target-y (phone-only, same as <Toggle/>): index.css exempts checkboxes from the
+            44px floor, so this on/off label was an 18px target — and in the mobile Filters
+            drawer it is the only control for the lime paint. */}
+        <label className="tap-target-y inline-flex items-center gap-1.5 cursor-pointer select-none text-[10px] font-semibold text-slate-600">
           <input
             type="checkbox"
             checked={on}
@@ -4108,7 +4128,11 @@ function SelectionOverlay({ mode, onBox, onLasso }) {
 // pin on the map; this saves (or resets) the per-customer location override.
 function MoveLocationBar({ stop, saving, onSave, onCancel, onReset }) {
   return (
-    <div className="fixed left-1/2 -translate-x-1/2 bottom-6 z-[45] bg-white border border-slate-200 rounded-lg shadow-xl px-3 py-2 flex flex-wrap items-center gap-2 w-[94vw] max-w-md">
+    // bottom-6 is fine on desktop, where nothing is pinned to the bottom of the window. On a
+    // phone MobileTabBar owns that strip — it is a flex-shrink-0 row at the end of the app
+    // shell, ~50px plus the home-indicator inset — so a bar 24px off the bottom sat directly
+    // on Map/Stops/Filters/Loads. This clears it, and the inset keeps it off the indicator.
+    <div className="fixed left-1/2 -translate-x-1/2 bottom-[calc(4.75rem+env(safe-area-inset-bottom))] md:bottom-6 z-[45] bg-white border border-slate-200 rounded-lg shadow-xl px-3 py-2 flex flex-wrap items-center gap-2 w-[94vw] max-w-md">
       <div className="text-xs text-slate-700 min-w-0">
         <div className="font-semibold truncate max-w-[180px]">{stop.businessName || stop.stopNbr}</div>
         <div className="text-slate-500">Drag the blue pin to the correct spot, then Save.</div>
@@ -4699,7 +4723,10 @@ function PodViewerModal({ doc, onClose }) {
           {when && <div className="text-[11px] text-white/70">{when}</div>}
         </div>
         <div className="flex items-center gap-1 flex-shrink-0">
-          <a href={src} target="_blank" rel="noopener noreferrer" className="p-2 rounded-full hover:bg-white/15 text-white/90" title="Open in browser" aria-label="Open in browser"><ExternalLink size={18} /></a>
+          {/* Same 44px box as Close beside it. The phone floor rule doesn't cover <a>, and an
+              inline anchor ignores min-height, so this sat at 34px next to a 44px Close — and a
+              mis-tap here ejects the photo to the browser, the thing this viewer exists to stop. */}
+          <a href={src} target="_blank" rel="noopener noreferrer" className="inline-flex items-center justify-center p-2 rounded-full hover:bg-white/15 text-white/90" title="Open in browser" aria-label="Open in browser" style={{ minWidth: 44, minHeight: 44 }}><ExternalLink size={18} /></a>
           <button onClick={onClose} className="p-2 rounded-full hover:bg-white/15" aria-label="Close" style={{ minWidth: 44, minHeight: 44 }}><X size={22} /></button>
         </div>
       </div>
@@ -6287,7 +6314,7 @@ function StopNotesEditor({ draft, setDraft, compact = false, drivers = [] }) {
             const closed = isClosed(d);
             const legacy = getLegacyString(d);
             return (
-              <div key={d} className="flex items-center gap-2">
+              <div key={d} className="flex items-center gap-2 flex-wrap">
                 <div className="w-10 text-[10px] uppercase font-semibold text-slate-500 flex-shrink-0">{d}</div>
                 {closed ? (
                   <div className="flex-1 flex items-center justify-between gap-2 px-2 py-1 rounded bg-red-50 border border-red-200">
@@ -6301,7 +6328,11 @@ function StopNotesEditor({ draft, setDraft, compact = false, drivers = [] }) {
                     <input type="time" value={getClose(d)} onChange={(e) => setHours(d, { close: e.target.value })} className="flex-1 min-w-0 border border-slate-300 rounded px-1 py-1 text-[11px]" aria-label={`${d} close time`} />
                   </div>
                 )}
-                {legacy && !closed && <div className="text-[9px] text-amber-700 italic flex-shrink-0" title={`Legacy free-text value: ${legacy}`}>(legacy)</div>}
+                {/* The old free-text value used to live ONLY in a title= tooltip. A phone has no
+                    hover, so all the dispatcher saw was "(legacy)" with no way to read what it
+                    said — and the chip stole width from the two time fields. Print it, on its own
+                    wrapped line (w-full + flex-wrap on the row) so it costs the fields nothing. */}
+                {legacy && !closed && <div className="w-full text-[10px] text-amber-700 italic break-words">was: {legacy}</div>}
               </div>
             );
           })}
@@ -6964,11 +6995,14 @@ function DriverSnapshotBody({ driver, snapshot, loading, error, onPanToStop }) {
                     const timeliness = classifyTimeliness(s.scheduledTime, s.actualArrival || s.actualCompletion);
                     const late = timeliness?.kind === 'late';
                     const isClickable = s.lat != null && s.lng != null && onPanToStop;
+                    // tap-target-y because this tap row is an <li>, not a <button>: the phone
+                    // floor in index.css only reaches real controls, so without it the row
+                    // stays ~21px tall in the mobile driver drawer and picks the wrong stop.
                     return (
                       <li
                         key={s.pro || s.stopNbr || i}
                         onClick={isClickable ? () => onPanToStop(s) : undefined}
-                        className={`flex items-center gap-2 text-xs px-1 py-0.5 rounded ${isClickable ? 'cursor-pointer hover:bg-blue-50' : ''}`}
+                        className={`flex items-center gap-2 text-xs px-1 py-0.5 rounded ${isClickable ? 'tap-target-y cursor-pointer hover:bg-blue-50' : ''}`}
                       >
                         <span className="w-3 text-center"><StopStatusIcon status={s.status} /></span>
                         <span className="w-12 font-mono text-[10px] text-slate-500">{fmtClockShort(s.scheduledTime) || '—'}</span>
@@ -7011,7 +7045,10 @@ function DriverSnapshotBody({ driver, snapshot, loading, error, onPanToStop }) {
                   {driver.locatedAt && <span className="text-slate-500"> ({fmtTimeAgo(new Date(driver.locatedAt))})</span>}
                 </div>
                 <MapPinned size={12} className="text-slate-400" />
-                <div className="truncate" title={driver.address || ''}>
+                {/* Wraps instead of truncating: the full value lived only in the title
+                    tooltip, and a phone has no hover — so a long street ate the city with no
+                    way to see it. The grid column is 1fr, so a second line costs nothing. */}
+                <div className="min-w-0 break-words" title={driver.address || ''}>
                   Location: <span className="font-semibold">{driver.address || '—'}</span>
                 </div>
               </div>
@@ -11560,7 +11597,11 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
           </div>
         )}
         {/* PROFILES — save/switch the bar settings (view · status · window · driver · sort). */}
-        <div className="relative">
+        {/* basis-full on a phone: this bar WRAPS, so the button lands wherever the first row runs
+            out (~250px in on a 390px screen) and the 16rem popup below is anchored to its LEFT
+            edge — which put the name box and Save button off the right of the screen, with
+            nothing able to scroll to them. Its own line pins the popup to the bar's left edge. */}
+        <div className="relative basis-full sm:basis-auto">
           <button
             onClick={() => setProfilesOpen((v) => !v)}
             title="Saved views — save the current bar settings as a profile and switch between them"
@@ -11639,10 +11680,13 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
                 onChange={(e) => { setQ(e.target.value); setOpen(true); }}
                 onFocus={() => setOpen(true)}
                 placeholder={view === 'loads' ? 'Search loads…' : 'Search table…'}
-                className={'w-full border rounded pl-7 pr-6 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-400 ' + (q ? 'border-blue-400 bg-blue-50' : 'border-slate-300')}
+                // pr-11 on a phone: the clear-× is an icon-only button, so index.css gives it a
+                // 44px hit box — that box covers the right 44px of the field and the search text
+                // ran under it. Reserve the width, and centre the × inside its own box.
+                className={'w-full border rounded pl-7 pr-11 sm:pr-6 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-400 ' + (q ? 'border-blue-400 bg-blue-50' : 'border-slate-300')}
               />
               {q && (
-                <button onClick={() => setQ('')} title="Clear search" className="absolute right-1.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700">
+                <button onClick={() => setQ('')} title="Clear search" className="absolute right-1.5 top-1/2 -translate-y-1/2 inline-flex items-center justify-center text-slate-400 hover:text-slate-700">
                   <X size={12} />
                 </button>
               )}
@@ -11658,7 +11702,10 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
                 {statusOpen && (
                   <div className="absolute right-0 bottom-full mb-1 w-40 bg-white border border-slate-200 rounded-lg shadow-lg z-20 p-1">
                     {TABLE_STATUS_BUCKETS.map((b) => (
-                      <label key={b.k} className="flex items-center gap-2 px-2 py-1.5 text-xs hover:bg-slate-50 rounded cursor-pointer">
+                      // tap-target-y: a <label> around a checkbox is invisible to the phone floor
+                      // in index.css (which covers button/input/select, and checkboxes are
+                      // deliberately excluded from it), so these rows sat at ~30px, stacked.
+                      <label key={b.k} className="tap-target-y flex items-center gap-2 px-2 py-1.5 text-xs hover:bg-slate-50 rounded cursor-pointer">
                         <input type="checkbox" checked={statusSel.has(b.k)} onChange={() => toggleStatus(b.k)} className="rounded border-slate-300" />
                         {b.label}
                       </label>
@@ -11749,7 +11796,11 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
             </thead>
             <tbody>
               {sortedRows.length === 0 && (
-                <tr><td colSpan={cols.length} className="px-3 py-5 text-center">
+                // The message is LEFT-aligned, not centred: this table is ~1,580px wide (the sum
+                // of its column widths), so centring puts the text ~800px into the horizontal
+                // scroller — off a phone screen entirely. The grid then reads as blank, with no
+                // reason given and the Clear-filters button nowhere in sight.
+                <tr><td colSpan={cols.length} className="px-3 py-5 text-left">
                   {nvLoading ? (
                     // STILL PULLING. The window pull can take seconds, and until it lands nvRows is
                     // empty — which used to render as the flat "No stops match.", i.e. the grid
@@ -11822,7 +11873,9 @@ function BottomStopsTable({ stops, loadStops, boardDate, notes, totalCount, open
             </thead>
             <tbody>
               {sortedLoadRows.length === 0 && (
-                <tr><td colSpan={loadCols.length} className="px-3 py-4 text-slate-400 italic text-center">No loads on the current board.</td></tr>
+                // Left-aligned for the same reason as the Stops empty state above: centred in a
+                // ~1,050px-wide table, this line sits off the right edge of a phone screen.
+                <tr><td colSpan={loadCols.length} className="px-3 py-4 text-slate-400 italic text-left">No loads on the current board.</td></tr>
               )}
               {sortedLoadRows.map((g) => (
                 <tr
@@ -13047,7 +13100,9 @@ function RoutingSelectedList({ selectedStops, notes, onRemove, open, setOpen, on
                     )}
                   </button>
                   <span className="text-[11px] shrink-0"><ProLink stop={r.stop} onOpen={onOpenStop} /></span>
-                  <button onClick={() => onRemove(r.id)} aria-label={`Remove ${r.customer} from selection`} className="text-slate-400 hover:text-red-600 px-1 leading-none text-lg shrink-0">×</button>
+                  {/* tap-target: 18px wide is not a fingertip, and this one drops a stop from
+                      the selection with the PRO link 8px away. Phone-only; desktop unchanged. */}
+                  <button onClick={() => onRemove(r.id)} aria-label={`Remove ${r.customer} from selection`} className="tap-target inline-flex items-center justify-center text-slate-400 hover:text-red-600 px-1 leading-none text-lg shrink-0">×</button>
                 </div>
                 {detailId === r.id && <div className="px-2 pb-2"><RoutingStopDetail stop={r.stop} note={r.note} onOpen={onOpenStop} /></div>}
               </div>
@@ -13159,7 +13214,10 @@ function RoutingStopsPanel({ selectedStops, notes, onRemove, hoverId, setHoverId
                 </div>
                 <div className="shrink-0 flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
                   <ProLink stop={r.stop} onOpen={onOpenStop} className="text-[11px]" />
-                  <button onClick={(e) => { e.stopPropagation(); onRemove(r.id); }} aria-label={`Remove ${r.customer} from selection`} className="text-slate-400 hover:text-red-600 leading-none text-lg">×</button>
+                  {/* tap-target: a bare × glyph is ~10px wide, and the phone floor only widens
+                      icon-only (svg) buttons — so this destructive control sat 4px from the PRO
+                      link with no way to hit it cleanly. Phone-only; desktop stays tight. */}
+                  <button onClick={(e) => { e.stopPropagation(); onRemove(r.id); }} aria-label={`Remove ${r.customer} from selection`} className="tap-target inline-flex items-center justify-center text-slate-400 hover:text-red-600 leading-none text-lg">×</button>
                 </div>
               </div>
             </div>
@@ -13170,7 +13228,9 @@ function RoutingStopsPanel({ selectedStops, notes, onRemove, hoverId, setHoverId
         <div className="shrink-0 border-t bg-white max-h-[42%] overflow-y-auto">
           <div className="flex items-center justify-between px-3 py-1.5 border-b bg-slate-50">
             <div className="font-semibold text-[13px] truncate">{detailRow.customer}</div>
-            <button onClick={() => setDetailId(null)} className="text-slate-400 hover:text-slate-700 text-lg leading-none" aria-label="Close detail">×</button>
+            {/* tap-target: same bare-× problem as the row remove — 10px wide, and the phone
+                floor only widens svg-only buttons. Phone-only; desktop unchanged. */}
+            <button onClick={() => setDetailId(null)} className="tap-target inline-flex items-center justify-center text-slate-400 hover:text-slate-700 text-lg leading-none" aria-label="Close detail">×</button>
           </div>
           <div className="p-3"><RoutingStopDetail stop={detailRow.stop} note={detailRow.note} onOpen={onOpenStop} /></div>
         </div>
@@ -13685,7 +13745,9 @@ function LiveDispatchBar({ route, staged, onStage, roster, rosterError, dirty })
         </select>
       </div>
       <div className="flex items-center justify-between gap-2">
-        <label className="flex items-center gap-1 text-[11px] text-slate-600 cursor-pointer" title="Also release the load to the assigned driver when you Save">
+        {/* tap-target-y (phone-only, index.css): the 44px floor covers buttons and inputs, but this
+            row is a <label> around a checkbox — both exempt — so it stayed ~20px tall. */}
+        <label className="tap-target-y flex items-center gap-1 text-[11px] text-slate-600 cursor-pointer" title="Also release the load to the assigned driver when you Save">
           <input type="checkbox" checked={dispatch} onChange={(e) => onStage({ dispatch: e.target.checked })} /> <Send size={11} /> Dispatch
         </label>
         {dirty && <span className="text-[10px] font-semibold text-amber-600" title="Unsaved staged changes — use Save in the Compare header">● edited</span>}
@@ -13811,7 +13873,9 @@ function RoutingWorkbenchCard({ route, stopById, otherKeys, ninjaMode, isActive,
                 <NinjaIcon size={13} /> {isActive ? 'target' : 'set'}
               </label>
             )}
-            <button onClick={onClose} className="text-slate-400 hover:text-red-600 leading-none text-lg" aria-label={`Close route ${route.name || loadDisplayName(route.key) || ''}`}>×</button>
+            {/* The 44px min-WIDTH rule only fires on a button whose one child is an svg; this × is a
+                text glyph, so on a phone it was 44px tall and ~11px wide. Square it up on touch. */}
+            <button onClick={onClose} className={`text-slate-400 hover:text-red-600 leading-none text-lg ${isMobile ? 'w-11 inline-flex items-center justify-center' : ''}`} aria-label={`Close route ${route.name || loadDisplayName(route.key) || ''}`}>×</button>
           </div>
         </div>
         {/* Mileage + drive time is the light header line; the load details drop BELOW it and wrap
@@ -13936,9 +14000,13 @@ function RoutingWorkbenchCard({ route, stopById, otherKeys, ninjaMode, isActive,
                 </div>
                 <button onClick={() => onOpenStop && onOpenStop(s)} className="font-mono text-blue-700 text-[10px] shrink-0" title="Open stop">{s.primaryPro || s.pro || s.stopNbr}</button>
                 {/* Move-to-other-load picker — desktop drags between cards, so it's only needed on
-                    touch where drag isn't available (#267). */}
+                    touch where drag isn't available (#267). Pinned to 44px: a <select> sizes itself
+                    to its WIDEST option and index.css forces 16px on a phone, so a long route name
+                    stretched this picker and left ~40px for the stop name. The closed box only ever
+                    shows "→" (it resets after a move) and iOS opens the option list full-screen, so
+                    the cap costs nothing. */}
                 {isMobile && otherKeys.length > 0 && (
-                  <select onChange={(e) => { if (e.target.value) onMoveStop(id, e.target.value); e.target.value = ''; }} defaultValue="" className="border rounded text-[10px] px-0.5 py-0.5 bg-white shrink-0" title="Move to another route" aria-label={`Move ${s.businessName || id} to another route`}>
+                  <select onChange={(e) => { if (e.target.value) onMoveStop(id, e.target.value); e.target.value = ''; }} defaultValue="" className="w-11 border rounded text-[10px] px-0.5 py-0.5 bg-white shrink-0" title="Move to another route" aria-label={`Move ${s.businessName || id} to another route`}>
                     <option value="">→</option>
                     {otherKeys.map((k) => <option key={k} value={k}>{k}</option>)}
                   </select>
@@ -14769,8 +14837,10 @@ function RoutingSettingsMenu({ panels = [], views = [], actions = [], dropUp = f
           {views.map((v) => (
             <div key={v.key} className="mb-1.5">
               <div className="font-semibold text-slate-700 px-1 pb-1 mb-1 border-b">{v.label}</div>
+              {/* tap-target-y (phone-only, index.css): the 44px floor covers buttons and inputs, but
+                  this row is a <label> around a radio — both exempt — so it stayed ~30px. */}
               {v.options.map((o) => (
-                <label key={o.value} className="flex items-center gap-2 px-1 py-1.5 rounded hover:bg-slate-50 cursor-pointer">
+                <label key={o.value} className="tap-target-y flex items-center gap-2 px-1 py-1.5 rounded hover:bg-slate-50 cursor-pointer">
                   <input type="radio" name={`rt-view-${v.key}`} checked={v.value === o.value} onChange={() => v.setValue(o.value)} />
                   <span className="text-slate-700">{o.label}</span>
                 </label>
@@ -14780,8 +14850,10 @@ function RoutingSettingsMenu({ panels = [], views = [], actions = [], dropUp = f
           {panels.length > 0 && (
             <>
               <div className="font-semibold text-slate-700 px-1 pb-1 mb-1 border-b">Panels</div>
+              {/* tap-target-y (phone-only, index.css): the 44px floor covers buttons and inputs, but
+                  this row is a <label> around a checkbox — both exempt — so it stayed ~30px. */}
               {panels.map((p) => (
-                <label key={p.key} className="flex items-center justify-between gap-2 px-1 py-1.5 rounded hover:bg-slate-50 cursor-pointer">
+                <label key={p.key} className="tap-target-y flex items-center justify-between gap-2 px-1 py-1.5 rounded hover:bg-slate-50 cursor-pointer">
                   <span className="text-slate-700">{p.label}</span>
                   <input type="checkbox" checked={p.on} onChange={(e) => p.setOn(e.target.checked)} />
                 </label>
@@ -17381,7 +17453,10 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
   // bottom sheet that toggles between the Setup controls and the Result.
   const [mobilePanel, setMobilePanel] = useState('setup');
   const [sheetOpen, setSheetOpen] = useState(true);
-  useEffect(() => { if (job?.status === 'done') { setMobilePanel('result'); setSheetOpen(true); } }, [job?.status]);
+  // 'error' as well as 'done': a failed build only re-enabled the Build button, and the reason
+  // ("Build failed: …") lives in the Result panel — which nothing switched the phone to, so the
+  // failure was completely silent on a phone.
+  useEffect(() => { if (job?.status === 'done' || job?.status === 'error') { setMobilePanel('result'); setSheetOpen(true); } }, [job?.status]);
   // Opening a stop's detail (map click, incl. paint mode) reveals the bottom sheet if collapsed.
   useEffect(() => { if (panelStop) setSheetOpen(true); }, [panelStop]);
   // Tap a load in the bottom Loads grid → OPEN IT IN COMPARE (so you can ninja stops onto it),
@@ -17634,7 +17709,10 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
                       const prof = profiles.find((x) => x.id === planTargetProfileById.get(r.rowKey)) || guessProfileFor(r.display);
                       return (
                         <div key={r.rowKey} className={`px-1.5 py-1 text-[12px] flex items-center gap-1.5 ${r.ambiguous ? 'opacity-50' : ''}`}>
-                          <label className={`flex items-center gap-1.5 flex-1 min-w-0 ${r.ambiguous ? '' : 'cursor-pointer'}`} title={r.ambiguous ? 'Two loads share this name today — rename one in the portal to plan onto it.' : undefined}>
+                          {/* tap-target-y (phone-only, index.css): the whole row is a label, and the
+                              44px floor the stylesheet puts on buttons/selects/inputs skips labels —
+                              an unticked load row was ~26px tall on a phone. */}
+                          <label className={`tap-target-y flex items-center gap-1.5 flex-1 min-w-0 ${r.ambiguous ? '' : 'cursor-pointer'}`} title={r.ambiguous ? 'Two loads share this name today — rename one in the portal to plan onto it.' : undefined}>
                             <input type="checkbox" disabled={r.ambiguous} checked={on}
                               onChange={() => setPlanTargetKeys((prev) => { const n = new Set(prev); n.has(r.rowKey) ? n.delete(r.rowKey) : n.add(r.rowKey); return n; })} />
                             <span className="font-medium truncate">{r.display}</span>
@@ -18548,9 +18626,12 @@ function RoutingRouteCard({ rv, stopById, usedGoogle, readOnly, onReorder, onMov
                 {winViolated.has(row.stopId) && <div className="text-[10px] text-amber-700 font-semibold">⚠ outside appointment window{apptWindowLabel(row.stop) ? ` (${apptWindowLabel(row.stop)})` : ''}</div>}
               </div>
               {!readOnly && (
-                <div className="flex flex-col shrink-0">
-                  <button onClick={() => onMove(rv.truckId, i, -1)} disabled={i === 0} aria-label={`Move ${row.customer} up`} className="text-slate-500 hover:text-slate-900 disabled:opacity-25 leading-none text-[11px]">▲</button>
-                  <button onClick={() => onMove(rv.truckId, i, +1)} disabled={i === lastIdx} aria-label={`Move ${row.customer} down`} className="text-slate-500 hover:text-slate-900 disabled:opacity-25 leading-none text-[11px]">▼</button>
+                /* Abreast on a phone, stacked on desktop. The touch floor makes each arrow a
+                   44px-tall button, and stacked that is an 88px column that drags every stop
+                   row to ~100px — a 15-stop route became ~1,500px in a half-screen sheet. */
+                <div className="flex md:flex-col shrink-0">
+                  <button onClick={() => onMove(rv.truckId, i, -1)} disabled={i === 0} aria-label={`Move ${row.customer} up`} className="px-2 md:px-0 text-slate-500 hover:text-slate-900 disabled:opacity-25 leading-none text-[11px]">▲</button>
+                  <button onClick={() => onMove(rv.truckId, i, +1)} disabled={i === lastIdx} aria-label={`Move ${row.customer} down`} className="px-2 md:px-0 text-slate-500 hover:text-slate-900 disabled:opacity-25 leading-none text-[11px]">▼</button>
                 </div>
               )}
             </li>
@@ -18884,8 +18965,10 @@ function EngineTuningPanel({ onClose }) {
               aria-label={label || k}
             />
             {(isOverridden(k) || edits[k] !== undefined) && (
+              /* px-2: the phone touch floor gives a text button a height but no width, and the
+                 bare ↺ glyph is ~10px wide sitting against a 96px number field. */
               <button onClick={() => { setEdits((m) => { const n = { ...m }; delete n[k]; return n; }); if (data.stored[k] !== undefined) setResets((r) => (r.includes(k) ? r : [...r, k])); }}
-                className="text-[10px] text-slate-400 hover:text-slate-600" title={`Back to the default (${data.defaults[k]})`}>↺</button>
+                className="px-2 text-[10px] text-slate-400 hover:text-slate-600" title={`Back to the default (${data.defaults[k]})`}>↺</button>
             )}
           </div>
         </div>
@@ -18928,6 +19011,11 @@ function EngineTuningPanel({ onClose }) {
             title="Force-replay all scored days with the current settings (background, zero NuVizz)">↻ Re-score history</button>
           <div className="flex items-center gap-2">
             {note && <span className="text-[10px] text-emerald-700 max-w-[220px]">{note}</span>}
+            {/* A rejected save has to report AT the button. The other copy of `err` is the banner
+                at the top of the scrolling body, which on a phone is scrolled out of sight by the
+                time you reach Save — the failure was indistinguishable from a dead button. `data`
+                means the panel already loaded, so an err here can only be from Save / Re-score. */}
+            {err && data && <span className="text-[10px] text-red-600 max-w-[220px]">⚠ {err}</span>}
             <button onClick={save} disabled={!dirty || saving}
               className={`text-[11px] font-semibold py-1.5 px-3 rounded text-white ${dirty && !saving ? '' : 'opacity-40'}`}
               style={{ background: BRAND }}>{saving ? 'Saving…' : 'Save'}</button>
@@ -19598,7 +19686,11 @@ function EngineAssignmentView({ google, mapsError }) {
         </div>
 
         <div className={`${mapExpanded ? 'xl:w-full' : 'xl:w-[62%]'} border rounded-lg bg-white overflow-hidden flex flex-col`}>
-          <div className="flex items-center justify-between gap-2 px-3 pt-2 pb-1">
+          {/* flex-wrap: the button group is shrink-0 and at the phone touch floor it eats nearly
+              the whole 312px row, so the title was squeezed to an ellipsis and Expand sat on the
+              card's clip edge. Wrapping drops the buttons under the title; on a wide screen both
+              still fit one line, so the desktop header is unchanged. */}
+          <div className="flex items-center justify-between gap-2 px-3 pt-2 pb-1 flex-wrap">
             <div className="text-[11px] font-semibold text-slate-600 truncate">
               {selectedDriver
                 ? <>Focused · <span style={{ color: BRAND }}>{selectedDriver.name}</span> — dispatch vs engine</>
@@ -21355,7 +21447,11 @@ function BulkOrderScreen() {
           const mnfWeight = multiManifest ? merged.reduce((a, mm) => a + (Number(mm?.totalWeight) || 0), 0) || wgtSum : (m.totalWeight ?? wgtSum);
           return (
             <div className="bg-white border border-slate-200 rounded-lg p-3 space-y-3">
-              <div className="flex items-start justify-between gap-3">
+              {/* flex-wrap: the right cluster is shrink-0 and now runs ~260px — the preview
+                  badge plus a discard button the touch floor took from 16px to 44px wide — of a
+                  334px card on a 390px phone. The title (a manifest filename is one long token)
+                  had nowhere to shrink to, so the panel ran off the right edge. */}
+              <div className="flex items-start justify-between gap-3 flex-wrap">
                 <div>
                   <div className="text-[14px] font-bold text-slate-800">{carrierWord} Manifest {m.manifestNumber ? `#${m.manifestNumber}` : (m.fileName || '')}{multiManifest ? ` + ${merged.length - 1} more` : ''} — Bulk Add</div>
                   <div className="text-[11px] text-slate-500 mt-0.5">
@@ -22566,10 +22662,18 @@ function CommsPhone(c) {
       </div>
 
       {c.dirty && (
-        <div className="sticky bottom-0 z-20 bg-slate-900 px-3 py-2.5 flex items-center gap-2">
-          <span className="text-[12px] text-white flex-1 min-w-0">Unsaved changes</span>
-          <button onClick={c.loadAll} className="min-h-[44px] px-3 text-[13px] text-slate-300">Discard</button>
-          <button onClick={c.saveAll} disabled={c.busy === 'save'} className="min-h-[44px] px-4 rounded-lg text-[14px] font-bold text-white" style={{ background: '#16a34a' }}>{c.busy === 'save' ? 'Saving…' : 'Save'}</button>
+        <div className="sticky bottom-0 z-20 bg-slate-900 px-3 py-2.5">
+          {/* saveAll addresses its message to where='save' and the phone had nowhere to put
+              it — the only renderer was in CommsDesktop. A refused save leaves `dirty` set,
+              so the bar does not move either: you tap Save, nothing happens, and the reason
+              is on screen nowhere. It goes at the button, not in the top banner you scrolled
+              past to get here. */}
+          <CommsMsg msg={c.msg} where="save" className="mb-2" />
+          <div className="flex items-center gap-2">
+            <span className="text-[12px] text-white flex-1 min-w-0">Unsaved changes</span>
+            <button onClick={c.loadAll} className="min-h-[44px] px-3 text-[13px] text-slate-300">Discard</button>
+            <button onClick={c.saveAll} disabled={c.busy === 'save'} className="min-h-[44px] px-4 rounded-lg text-[14px] font-bold text-white" style={{ background: '#16a34a' }}>{c.busy === 'save' ? 'Saving…' : 'Save'}</button>
+          </div>
         </div>
       )}
     </div>
