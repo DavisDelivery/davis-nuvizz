@@ -45,7 +45,10 @@ const COMPANY = ['davisdelivery', 'com'].join('.');
 // Addresses the product genuinely sends from or replies to. These already ship on main and
 // deploy fine, so they are not any env var's value. Keep this list SHORT — every entry is a
 // string a future credential could collide with.
-const ALLOWED_LOCAL_PARTS = new Set(['customerservice', 'no-reply']);
+// 'notifications' is the sender Chad named for the customer delivery email
+// (v0.54.80). It is a role word the product genuinely sends from, which is the bar this
+// list sets — not a person's name, and it carries no secret.
+const ALLOWED_LOCAL_PARTS = new Set(['customerservice', 'no-reply', 'notifications']);
 
 const SKIP_DIRS = new Set(['node_modules', 'dist', '.git', '.netlify', 'reference']);
 
