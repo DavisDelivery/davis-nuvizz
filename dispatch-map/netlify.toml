@@ -8,22 +8,6 @@
   publish = "dist"
   functions = "netlify/functions"
 
-# Netlify's secret scanner fails the BUILD when the value of any environment
-# variable appears in a scanned file. NUVIZZ_DAVIS_USER's value is the login name
-# "chad" — four common letters, not a credential — so every file containing that
-# word lowercase fails the deploy. It first bit on v0.54.75, whose tests use
-# fixture addresses like chad@davisdelivery.com to prove the Gmail allow-list
-# refuses a stranger's mailbox. Production silently stopped deploying at v0.54.74
-# and sat there for two days: the build failed, the last good deploy kept serving,
-# and nothing in the app could know it was stale.
-#
-# Omitting the KEY, not the path, is deliberate. A path rule would go stale the
-# moment the word appears somewhere new (a changelog quoting Chad, a comment, a
-# new test), which is the same trap one level along. What actually needs guarding
-# is NUVIZZ_DAVIS_PASS, and that stays scanned — as does every other secret.
-[build.environment]
-  SECRETS_SCAN_OMIT_KEYS = "NUVIZZ_DAVIS_USER"
-
 [functions]
   node_bundler = "esbuild"
   [functions."nuvizz-pull-today-stops"]
@@ -52,6 +36,16 @@
   # itself per mailbox, so this stays a click — the every-30-min background poll is
   # where a real backlog gets worked off.
   [functions."manifest-email-check"]
+    timeout = 26
+  # The customer delivery-email pre-flight. Both are Firestore-only (ZERO NuVizz calls) but
+  # both read WIDE: ?coverage=1 lists a full day's stop index and then reads one
+  # customer_notes doc per delivered stop, and ?days=30 on the log walks 30 per-day send
+  # subcollections. Comfortably under 10s on a normal day, but the DEFAULT would kill a slow
+  # Firestore list with an HTML 502 the client cannot parse — the same failure that bit the
+  # stop explorer. Both are click-driven and self-bounded (the coverage sample is capped).
+  [functions."customer-comms-test"]
+    timeout = 26
+  [functions."customer-comms-log"]
     timeout = 26
   # Scanned-manifest OCR runs as manifest-ocr-BACKGROUND (vision over a multi-page fax
   # PDF takes 20-40s — over the 26s request cap that killed the synchronous version).
