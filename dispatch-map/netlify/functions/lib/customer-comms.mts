@@ -47,7 +47,7 @@ export const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 // stopVars() that supplies them, so the editor's list and the renderer cannot drift.
 export const MERGE_FIELDS = [
   'pro', 'customer', 'driver', 'deliveredDate', 'deliveredTime', 'deliveredWhen',
-  'address', 'city', 'state', 'zip', 'cityStateZip', 'pieces', 'weight',
+  'address', 'address2', 'city', 'state', 'zip', 'cityStateZip', 'pieces', 'weight',
   'trackingUrl', 'reviewUrl', 'year',
 ];
 
@@ -411,11 +411,23 @@ export function stopVars(stop: any, date: string): Record<string, string> {
     deliveredTime: dTime,
     deliveredWhen: dTime ? `${dDate} at ${dTime}` : dDate,
     address: String(stop?.addr1 || ''),
+    // The suite/unit line. Freight goes to a dock, and "Ste 200" is often the difference
+    // between the right door and the wrong one — showing the customer an address we
+    // delivered to with the unit silently dropped reads as us having got it wrong.
+    address2: String(stop?.addr2 || ''),
     city, state, zip, cityStateZip,
     pieces,
     weight: stop?.weight != null ? String(stop.weight) : '',
     trackingUrl: pro ? `https://tracking.davisdelivery.com/?pro=${encodeURIComponent(pro)}` : 'https://tracking.davisdelivery.com/',
-    reviewUrl: pro ? `https://tracking.davisdelivery.com/?pro=${encodeURIComponent(pro)}#review` : 'https://tracking.davisdelivery.com/',
+    // Same page as trackingUrl, and deliberately so: the tracking site's star rating is a
+    // card ON that page, not a separate route. It carried a '#review' fragment that pointed
+    // at nothing — the page has no element with that id, its only ids are app/review-form/
+    // stars-row, it never reads location.hash, and review-form is display:none until a star
+    // is tapped. So the fragment was decoration and any anchor would be: the whole page is
+    // rendered by script into <div id="app">, so there is no target at load time to jump to.
+    // Kept as its own merge field anyway, so the button can be pointed straight at Google
+    // (or anywhere else) from the Communications tab without touching this file.
+    reviewUrl: pro ? `https://tracking.davisdelivery.com/?pro=${encodeURIComponent(pro)}` : 'https://tracking.davisdelivery.com/',
     // ET, not the UTC runtime's year — otherwise a New Year's Eve send stamps next year.
     year: etDayString().slice(0, 4),
   };
@@ -681,8 +693,28 @@ export async function readSweepStatus(date: string): Promise<any | null> {
 }
 
 // ── DEFAULT TEMPLATE ─────────────────────────────────────────────────────────
-// Table-based and inline-styled: Gmail and Outlook strip <style> blocks and do not
-// render SVG, so the logo must be a hosted PNG and the layout must be tables.
+// Table-based and inline-styled: Gmail and Outlook strip <style> blocks, so every rule is
+// on the element and the layout is tables.
+//
+// THE MASTHEAD. The URL this template originally shipped with,
+// tracking.davisdelivery.com/logo.png, is a 404 — that site serves no static assets at all
+// (its favicon 404s too; it is a pure SPA that renders everything into <div id="app">), so
+// every send would have opened with a broken image.
+//
+// The logo now comes from public/davis-logo-email.png on THIS app's own site, which is the
+// only Davis host we control that actually serves files today (map./dispatch. do not
+// resolve). It is the real mark, white-margin trimmed and rebuilt for email: 520×167 so it
+// stays sharp at the 260px it displays, and 24 KB rather than the 129 KB of the full-size
+// original. The band behind it is WHITE because the mark is blue-on-white — on the navy
+// band it would have been a white rectangle.
+//
+// The alt text is the fallback, not an afterthought: Outlook and Gmail block remote images
+// by default, so a good share of recipients see only that string on first open. It names the
+// company and the tagline, and the font/colour styles on the <img> are what those clients
+// apply when rendering it.
+//
+// TO MOVE IT to a branded URL later, swap the src from the Communications tab — htmlTemplate
+// lives in Firestore, so it needs no redeploy.
 //
 // NO PHONE NUMBER, deliberately. Netlify's secrets scan greps every file here for the
 // VALUES of this site's env vars, and SIMPLETEXTING_FROM is an account phone — a bare
@@ -695,8 +727,8 @@ export async function readSweepStatus(date: string): Promise<any | null> {
 export const DEFAULT_HTML = `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#EDF1F5;padding:24px 12px;">
 <tr><td align="center">
 <table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%;background:#fff;border-radius:4px;overflow:hidden;font-family:'DM Sans','Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
-  <tr><td style="background:#123A63;padding:20px 32px;">
-    <img src="https://tracking.davisdelivery.com/logo.png" width="190" alt="Davis Delivery Service" style="display:block;border:0;">
+  <tr><td style="background:#ffffff;padding:22px 32px 18px;border-bottom:1px solid #E4EAF0;">
+    <img src="https://dd-dispatch-map.netlify.app/davis-logo-email.png" width="260" height="84" alt="Davis Delivery Service — family owned since 1985" style="display:block;border:0;width:260px;max-width:100%;height:auto;color:#123A63;font-family:'DM Sans','Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:17px;font-weight:700;">
   </td></tr>
   <tr><td style="background:#1B7A4B;padding:13px 32px;text-align:center;color:#fff;font-size:15px;font-weight:700;">
     &#10003;&nbsp; DELIVERED &nbsp;<span style="color:#B8E2CB;font-weight:400;">{{deliveredWhen}}</span>
@@ -715,7 +747,7 @@ export const DEFAULT_HTML = `<table role="presentation" width="100%" cellpadding
       </td></tr>
       <tr><td style="padding:18px 20px;font-size:14px;color:#16202B;">
         <div style="font-size:10px;letter-spacing:1.2px;color:#7C8B9A;text-transform:uppercase;padding-bottom:4px;">Delivered To</div>
-        <div style="font-weight:600;line-height:1.5;">{{customer}}<br><span style="font-weight:400;color:#5A6B7C;">{{address}}<br>{{cityStateZip}}</span></div>
+        <div style="font-weight:600;line-height:1.5;">{{customer}}<br><span style="font-weight:400;color:#5A6B7C;">{{address}}{{#address2}}<br>{{address2}}{{/address2}}<br>{{cityStateZip}}</span></div>
         {{#driver}}<div style="font-size:10px;letter-spacing:1.2px;color:#7C8B9A;text-transform:uppercase;padding:14px 0 4px;">Driver</div>
         <div style="font-weight:600;">{{driver}}</div>{{/driver}}
         <div style="border-top:1px dashed #C3D0DC;margin-top:14px;padding-top:12px;">
@@ -728,7 +760,7 @@ export const DEFAULT_HTML = `<table role="presentation" width="100%" cellpadding
     <table role="presentation" width="100%" style="background:#FDF7EA;border:1px solid #F0DCB4;border-radius:3px;"><tr>
       <td style="padding:22px 24px;" align="center">
         <div style="font-size:16px;font-weight:700;color:#16202B;">How did we do?</div>
-        <div style="font-size:14px;color:#6B5A3E;line-height:1.6;padding:8px 0 16px;">Thirty seconds of feedback helps us keep your freight moving right.</div>
+        <div style="font-size:14px;color:#6B5A3E;line-height:1.6;padding:8px 0 16px;">Tap a star on your tracking page — it takes about thirty seconds, and it helps a family-owned business more than you'd think.</div>
         <a href="{{reviewUrl}}" style="display:inline-block;background:#E8A317;color:#16202B;font-size:15px;font-weight:700;text-decoration:none;padding:13px 34px;border-radius:3px;">Rate this delivery</a>
       </td>
     </tr></table>

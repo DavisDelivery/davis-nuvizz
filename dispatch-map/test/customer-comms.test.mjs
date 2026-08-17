@@ -207,6 +207,44 @@ test('an un-enriched list row composes city/zip without a dangling comma', () =>
   assert.equal(stopVars({ city: null, state: null, zip: null }, '2026-08-16').cityStateZip, '');
 });
 
+test('the suite line is shown, and takes its own line break with it when absent', () => {
+  // Freight goes to a dock. Printing an address we delivered to with "Ste 200" silently
+  // dropped reads to the customer as us having gone to the wrong door.
+  const withSte = renderTemplate(DEFAULT_HTML, escapeVars(stopVars({ ...LIST_STOP, addr2: 'Ste 200' }, '2026-08-16')));
+  assert.ok(withSte.includes('Ste 200'), 'addr2 must reach the rendered email');
+
+  const without = renderTemplate(DEFAULT_HTML, escapeVars(stopVars({ ...LIST_STOP, addr2: null }, '2026-08-16')));
+  assert.ok(!/<br><br>/.test(without), 'an absent suite must not leave a blank line behind');
+  assert.ok(without.includes('Buford 30518'), 'the rest of the address still renders');
+});
+
+test('the masthead image is not the 404 it shipped with, and degrades to alt text', () => {
+  // tracking.davisdelivery.com serves no static assets — logo.png AND its favicon both 404 —
+  // so that host must never be the src again.
+  assert.ok(!/tracking\.davisdelivery\.com\/[^"']*\.(png|jpe?g|svg|webp)/i.test(DEFAULT_HTML),
+    'the masthead must not load an image from the tracking site');
+
+  const img = /<img\b[^>]*>/i.exec(DEFAULT_HTML);
+  assert.ok(img, 'the masthead is an image');
+  // Outlook and Gmail block remote images by default, so alt is what most recipients see
+  // first. An empty or missing alt leaves a blank band at the top of the email.
+  const alt = /\balt="([^"]+)"/i.exec(img[0]);
+  assert.ok(alt && alt[1].trim().length > 10, 'the masthead image needs real alt text');
+  assert.ok(/davis/i.test(alt[1]), 'the alt text names the company');
+  // Width/height pinned so a blocked image reserves its space instead of collapsing.
+  assert.ok(/\bwidth="\d+"/.test(img[0]) && /\bheight="\d+"/.test(img[0]));
+});
+
+test('the review CTA carries no dead fragment', () => {
+  // The tracking page has no element with id "review", never reads location.hash, and
+  // renders everything into <div id="app"> after load — so a fragment could only ever be
+  // decoration. The star rating is a card on the ?pro= page itself.
+  const vars = stopVars(LIST_STOP, '2026-08-16');
+  assert.ok(!vars.reviewUrl.includes('#'), 'no fragment on the review link');
+  assert.ok(vars.reviewUrl.includes('?pro='), 'it still deep-links to this delivery');
+  assert.equal(vars.reviewUrl, vars.trackingUrl, 'same page — the rating lives on it');
+});
+
 test('pieces falls back to the list freight columns when the stop is not enriched', () => {
   // NuVizz mislabels these and the scan relabels them: cartons = pallets, volume = loose,
   // and the enriched `pallets` is the TOTAL. cartons+volume is that same total.
