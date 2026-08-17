@@ -77,7 +77,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.54.77';
+const APP_VERSION = '0.54.78';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -122,6 +122,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.54.78', 'THE CUSTOMER EMAIL PROGRAM HAS ITS CONSOLE — AND THE OPT-OUT IS REAL NOW. The delivery-complete email backend shipped dark earlier this week: our own branded note from our own domain the moment freight lands, off by default, one email per PRO ever, daily-capped, zero NuVizz calls. What it lacked was any way to SEE it — and, more seriously, any way to honour a customer who asks to stop receiving them. Both land here. FIRST, THE NUMBER THAT DECIDED THIS WAS WORTH FINISHING: coverage. Of the delivered stops sampled on 8/13 and 8/14, essentially ALL of them — 599 of 600, and 598 of 600 — carry a consignee email straight off the order. That is not a projection; it is our own cached board counted. ~700+ deliveries a day, nearly every one reachable. A NEW SCREEN under More → Customer emails: the on/off switch (it refuses to enable when the mail service is unconfigured, so ON can never silently mean nothing), sender + reply-to + the daily cap, the full template editor with every merge field one tap away, a PREVIEW rendered server-side against a real delivered stop by the same code the real send uses — so what you preview cannot drift from what a customer gets — a one-click [TEST] send that is allow-listed to Davis inboxes and can never reach a customer, and the 7-day send log that can tell "nobody was emailed" apart from "the sweep never ran". THE SCREEN IS HONEST ABOUT THE ONE THING IT DOES NOT DO: the automatic trigger is deliberately not wired yet. Even switched on, nothing sends on its own today — a banner says exactly that. Template and sender domain get signed off first; the trigger ships as its own reviewed change, because the first email 700 customers receive should not also be the first one anybody saw. SECOND, THE OPT-OUT. The backend has honoured comms_opt_out from day one, but nothing could WRITE it — the server code itself carries a warning that the feature must not be enabled until this exists, because an opt-out you cannot honour is worse than no opt-out. The customer-notes editor now has it: "No delivery emails to this customer", a red suppression toggle that skips them on every future order, plus a per-customer address override that beats the order\'s consignee email and carries to their next delivery. Config writes need the admin token (asked once per session, kept in sessionStorage, never in the bundle) — the same pattern the Gmail card uses. Verified in a real browser at phone and desktop widths, including the hit-test that would have caught the v0.54.71 clipped-menu bug: the tab is reachable from BOTH navigations, renders every card, and a template save round-trips. 1,614 unit tests green.'],
   ['0.54.77', 'THE MORE MENU WOULD NOT DROP DOWN ON DESKTOP. Chad: "more is not dropping down like it should on desktop." It was opening every time — you just could not see it. THE CAUSE WAS MINE, from the v0.54.71 layout sweep. That release fixed a desktop nav that crushed its own title into the tabs at narrow widths, and the fix was to let the tab row scroll: overflow-x-auto. But the More dropdown is positioned absolutely INSIDE that row, and a scroll container clips what overflows it. Worse, CSS does not let you scroll one axis only — set overflow-x to auto and overflow-y computes to auto as well. So the nav became a clipping box about forty pixels tall and the menu opened straight into it, out of sight. The scrollbar visible at the right of the tab row in Chad\'s screenshot was the tell: that was the nav\'s own scrollbar, on a row that should never have had one. THE FIX is structural rather than a z-index nudge, because raising z-index does nothing about clipping — a clipped element is not behind something, it is not painted. The scrolling tab row and the More button are now SIBLINGS: the tabs still scroll when they genuinely do not fit, and the menu now opens outside that box. It also means the overflow menu can no longer scroll out of reach on a narrow window, which was a second, quieter bug in the old arrangement. WHY THE BROWSER TEST DID NOT CATCH IT, which matters more than the fix. There has been a real-browser check on this menu since v0.54.48, and it passed on every broken build. It asked Playwright whether the menu was visible, and an element clipped by an ancestor still has a non-empty bounding box — so "visible" came back true while nobody could see the thing. That is the same shape of hole as v0.54.50, where the check ran at desktop width and missed a feature broken on phones: the test agreed with the code instead of with the screen. It now HIT-TESTS the point a dispatcher would actually click and asks the browser what is painted there; if anything else answers, the check fails. That assertion was run against the broken build first and it fails, then against the fix and it passes — a test that cannot fail is not evidence. The phone menu was never affected: the phone has its own bar and does not use this row. 1,614 tests green.'],
   ['0.54.76', 'THE MANIFEST INTAKE CAN TAKE A CONSIGNEE EMAIL — the one order path that could not. Chad: "We should add a email column to the manifest/estes intake." It is there now, between Phone and Dispatch notes, on both the Held and Pushed tabs. WHY IT MATTERED MORE THAN A MISSING COLUMN USUALLY DOES: the push already knew what to do with an email — pushChecked maps it to the NuVizz order contact (to.contact.email), exactly as Bulk Add and New Order have since v0.50.47 — but the intake row model never had an `email` key for the grid to bind an input to, so there was no way to type one and every Estes/manifest order was created with NO consignee address on it. Not "usually blank": structurally always blank, a guaranteed zero on that path while the other two worked fine. That address is what the delivery-complete customer email gets sent to, so this was the single biggest hole in the coverage of that feature. ALSO FIXED, because the column alone would have looked like it worked and quietly lost the data: the durable push log dropped email on BOTH writers (manifest and Bulk Add) and the server that stores it whitelists fields one by one, so a row pushed WITH an address would have read back on the Pushed tab as having none. NOT CHANGED: nothing about what NuVizz is asked for. Reading a manifest is still zero vendor calls, and the email only rides along on a push you already make.'],
   ['0.54.75', 'CONNECT GMAIL WITH A BUTTON, AND SEE THAT IT IS STILL WORKING. Last release taught the nightly check to read Gmail — but the permission it runs on had to be minted by hand in Google\'s OAuth playground and pasted into Netlify as GMAIL_REFRESH_TOKEN. Chad: "I want the gmail auth added to the manifest tabs." It is: the Manifest check tab now has a Gmail card with a Connect Gmail button, and the whole consent round-trip happens in the app. THIS IS NOT COSMETIC. A Google consent screen still in "Testing" hands out permissions that DIE AFTER SEVEN DAYS. A token pasted into Netlify cannot be renewed from the app, so the check would have run for a week, stopped, and said nothing — which is precisely the silent failure this whole feature exists to catch, one level up. The card now shows when the last poll ran and what it found, and a permission Google has stopped accepting turns into a red "reconnect the mailbox" line instead of a screen that still says Connected. Reconnecting is one click, and it pre-selects the mailbox you used last time. ALSO ON THE CARD: a Check email now button, which runs one poll of the SAME mailboxes the 30-minute schedule reads (one shared list, so the button can never quietly test something different from what runs at night) and drops the result straight onto the screen; and an editable "which emails to look at" search, because what counts as a manifest email is your judgement, not a constant compiled into a function. Widening it is safe by design — a PDF is the freight report only if it PARSES as one, so a broad search costs a few one-off attachment reads and never a wrong answer. WHAT IT CAN DO TO YOUR MAILBOX: read it. The permission is gmail.readonly, so this app cannot send, label, archive or delete a single message, and Google says so on the consent screen. It still costs ZERO NuVizz calls — same free check as dropping the PDF here — and turning a suspect into "NuVizz never got this" is still behind its own human click. SECURITY, because this app has no login: the first Google account to connect is locked in and no second account can replace it without disconnecting first (GMAIL_ALLOWED_ACCOUNTS names it outright), and the permission itself is sealed with AES-256-GCM under a server-only key before it is stored, so it is unreadable to anything but this server. Disconnect revokes it at Google. If GMAIL_REFRESH_TOKEN is still set in Netlify it keeps winning — the card tells you so rather than offering a button that would be ignored.'],
@@ -3135,6 +3136,8 @@ function emptyNote(stop) {
     do_not_send: false,      // DNS — do-not-send flag (red badge everywhere)
     dns_drivers: [],         // names of drivers barred from this customer
     notify_cs: false,        // email customer service when this customer is scheduled
+    comms_email: '',         // delivery-complete email override (blank = the order's consignee email)
+    comms_opt_out: false,    // customer asked us to stop delivery-complete emails — server honours it
   };
 }
 
@@ -6179,6 +6182,40 @@ function StopNotesEditor({ draft, setDraft, compact = false, drivers = [] }) {
           <div className="mt-1 text-[10px] text-slate-500">CS gets one email the first time this customer appears on a day's board.</div>
         )}
       </div>
+      {/* Delivery-complete emails — the fields lib/customer-comms.mts already reads.
+          The server-side note there says plainly: the feature must not be enabled until
+          this opt-out is WRITABLE, because an opt-out you cannot honour is worse than no
+          opt-out. This block is what makes it writable. The toggle is red because it is
+          a suppression: ON means this customer gets nothing. */}
+      <div className="rounded-lg border p-2" style={D.comms_opt_out ? { borderColor: '#dc2626', background: '#fef2f2' } : { borderColor: '#e2e8f0' }}>
+        <button
+          onClick={() => setD({ comms_opt_out: !D.comms_opt_out })}
+          style={{ ...tap, ...(D.comms_opt_out ? { background: '#dc2626', borderColor: '#dc2626', color: '#fff' } : {}) }}
+          className={`w-full flex items-center justify-between gap-2 ${pad} rounded border text-xs font-semibold ${D.comms_opt_out ? '' : 'border-slate-300 bg-white text-slate-700'}`}
+        >
+          <span className="inline-flex items-center gap-1.5">
+            <Mail size={14} strokeWidth={2.5} style={{ color: D.comms_opt_out ? '#fff' : '#dc2626' }} />
+            No delivery emails to this customer
+          </span>
+          <span className={`text-[10px] px-1.5 py-0.5 rounded ${D.comms_opt_out ? 'bg-white/25' : 'bg-slate-100 text-slate-500'}`}>{D.comms_opt_out ? 'ON' : 'OFF'}</span>
+        </button>
+        {D.comms_opt_out ? (
+          <div className="mt-1 text-[10px] text-slate-500">Opted out — the delivery-complete email skips this customer on every future order.</div>
+        ) : (
+          <div className="mt-1.5">
+            <div className="text-[10px] font-semibold text-slate-500 mb-0.5">Delivery-email address override</div>
+            <input
+              type="email"
+              value={D.comms_email || ''}
+              onChange={(e) => setD({ comms_email: e.target.value })}
+              placeholder="blank = the email on the order"
+              className={`w-full ${pad} border border-slate-300 rounded text-xs`}
+              style={tap}
+            />
+            <div className="mt-0.5 text-[9px] text-slate-400">Beats the order's consignee email, and carries to this customer's next order.</div>
+          </div>
+        )}
+      </div>
       <div>
         <div className="text-[11px] font-semibold text-slate-600 mb-1">Priority flag</div>
         <div className="flex flex-wrap gap-1.5">
@@ -7304,14 +7341,23 @@ function MobileAppBar({ version, onChipMenu, chipMenuOpen, onSelectMenu, smsUnre
               )}
             </button>
             {moreOpen && (
-              <button
-                className="w-full text-left pl-6 pr-3 py-2 min-h-[44px] hover:bg-slate-50 inline-flex items-center gap-2"
-                onClick={() => onSelectMenu('manifest')}
-                role="menuitem"
-              >
-                <FileCheck size={12} /> Manifest check
-                {manifestBadge > 0 && <span className="ml-auto min-w-[16px] h-4 px-1 rounded-full bg-red-600 text-white text-[10px] font-bold inline-flex items-center justify-center">{manifestBadge > 99 ? '99+' : manifestBadge}</span>}
-              </button>
+              <>
+                <button
+                  className="w-full text-left pl-6 pr-3 py-2 min-h-[44px] hover:bg-slate-50 inline-flex items-center gap-2"
+                  onClick={() => onSelectMenu('manifest')}
+                  role="menuitem"
+                >
+                  <FileCheck size={12} /> Manifest check
+                  {manifestBadge > 0 && <span className="ml-auto min-w-[16px] h-4 px-1 rounded-full bg-red-600 text-white text-[10px] font-bold inline-flex items-center justify-center">{manifestBadge > 99 ? '99+' : manifestBadge}</span>}
+                </button>
+                <button
+                  className="w-full text-left pl-6 pr-3 py-2 min-h-[44px] hover:bg-slate-50 inline-flex items-center gap-2"
+                  onClick={() => onSelectMenu('comms')}
+                  role="menuitem"
+                >
+                  <Mail size={12} /> Customer emails
+                </button>
+              </>
             )}
             <button
               className="w-full text-left px-3 py-2 min-h-[44px] hover:bg-slate-50 inline-flex items-center gap-2 border-t border-slate-100"
@@ -19876,7 +19922,7 @@ function Shell() {
     // named here or the phone menu silently opens the map instead — which is what
     // happened to Manifest check in v0.54.48: the desktop nav had it, the chip
     // menu did not, and there was no way to reach it from a phone at all.
-    const KNOWN = ['routing', 'neworder', 'quote', 'manifest'];
+    const KNOWN = ['routing', 'neworder', 'quote', 'manifest', 'comms'];
     setTab(next === 'diagnostics' ? 'diag' : KNOWN.includes(next) ? next : 'map');
   };
 
@@ -19947,6 +19993,7 @@ function Shell() {
               badge={moreBadge}
               items={[
                 { id: 'manifest', label: 'Manifest check', hint: 'Uline nightly vs the scan', icon: <FileCheck size={14} />, badge: moreBadge },
+                { id: 'comms', label: 'Customer emails', hint: 'Delivery-complete email program', icon: <Mail size={14} /> },
                 { id: 'diag', label: 'Diagnostics', hint: 'Scan health, API calls, schedule', icon: <Activity size={14} /> },
                 { id: 'debug', label: 'Debug this view', hint: 'Bundle what you are looking at', icon: <Bug size={14} /> },
               ]}
@@ -19961,7 +20008,7 @@ function Shell() {
         </header>
       )}
 
-      {tab === 'map' ? <MapScreen onOpenMessages={openMessages} smsUnread={smsUnread} debugCaptureRef={debugCaptureRef} presence={presence} /> : (tab === 'routing' && ROUTING_FLAG) ? <RoutingSection debugCaptureRef={debugCaptureRef} routingTab={routingTab} setRoutingTab={setRoutingTab} showSubTabs={isMobile} presence={presence} /> : tab === 'neworder' ? <NewOrderScreen /> : tab === 'quote' ? <QuoteScreen /> : tab === 'manifest' ? <ManifestCheckScreen /> : <DiagnosticsRoute />}
+      {tab === 'map' ? <MapScreen onOpenMessages={openMessages} smsUnread={smsUnread} debugCaptureRef={debugCaptureRef} presence={presence} /> : (tab === 'routing' && ROUTING_FLAG) ? <RoutingSection debugCaptureRef={debugCaptureRef} routingTab={routingTab} setRoutingTab={setRoutingTab} showSubTabs={isMobile} presence={presence} /> : tab === 'neworder' ? <NewOrderScreen /> : tab === 'quote' ? <QuoteScreen /> : tab === 'manifest' ? <ManifestCheckScreen /> : tab === 'comms' ? <CustomerCommsScreen /> : <DiagnosticsRoute />}
 
       {/* Messages floats OVER the current screen (you never leave the map). */}
       {messagesOpen && <MessagesPanel messages={inbound} seenAt={smsSeenAt} onClose={closeMessages} customerContacts={customerContacts} />}
@@ -21878,6 +21925,351 @@ function GmailCard({ onStoredRun }) {
 // Firestore read. The endpoint CAN go on to ask NuVizz about each unmatched
 // order, but that is not wired to any button here: nothing on this screen spends
 // a NuVizz call, so it can never surprise you with one.
+// ── Customer Communications — the branded delivery-complete email ────────────
+// Chad's program: our own delivery email from our own domain, instead of NuVizz's
+// unbranded one. The BACKEND (customer-comms-*) shipped dark earlier: enabled=false,
+// atomic claim-before-send, daily cap, per-customer opt-out. This screen is the
+// operator's console for it — see the template, edit it, preview it against a real
+// delivered stop, send yourself a test, read the send log, and stage the switch.
+//
+// Two honesty rules the copy on this screen must keep:
+//   • ZERO NuVizz calls — every number here is our own Firestore cache.
+//   • The AUTOMATIC trigger is deliberately not wired yet. Even Enabled=ON sends
+//     nothing on its own today; the switch stages the rollout so the hook can ship
+//     as its own reviewed change. The screen says so instead of implying otherwise.
+//
+// Config writes need COMMS_ADMIN_TOKEN (x-comms-token) — same pattern as the Gmail
+// card's admin key: asked for once, kept in sessionStorage, never in the bundle.
+const COMMS_KEY_SS = 'dd_comms_admin_key';
+
+function CustomerCommsScreen() {
+  const [cfgResp, setCfgResp] = useState(null);   // GET config response (config+fields+defaultHtml+resendConfigured+effectiveFrom)
+  const [log, setLog] = useState(null);
+  const [busy, setBusy] = useState('load');       // 'load' | 'save' | 'enable' | 'coverage' | 'preview' | 'test' | null
+  const [err, setErr] = useState(null);
+  const [note, setNote] = useState(null);
+
+  // Editor state — hydrated from the server config once, then owned by the editor.
+  const [subjectT, setSubjectT] = useState('');
+  const [htmlT, setHtmlT] = useState('');
+  const [fromAddr, setFromAddr] = useState('');
+  const [replyTo, setReplyTo] = useState('');
+  const [dailyCap, setDailyCap] = useState(25);
+
+  const [covDate, setCovDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [coverage, setCoverage] = useState(null);
+  const [pvDate, setPvDate] = useState('');
+  const [pvPro, setPvPro] = useState('');
+  const [preview, setPreview] = useState(null);
+  const [testTo, setTestTo] = useState('');
+  const [testResult, setTestResult] = useState(null);
+
+  const adminKey = () => { try { return sessionStorage.getItem(COMMS_KEY_SS) || ''; } catch { return ''; } };
+  const askKey = () => {
+    const v = window.prompt('Admin token (COMMS_ADMIN_TOKEN on the site) — asked once per session:', adminKey());
+    if (v == null) return null;
+    try { sessionStorage.setItem(COMMS_KEY_SS, v.trim()); } catch { /* private mode */ }
+    return v.trim();
+  };
+  const tokenHeaders = () => ({ 'Content-Type': 'application/json', 'x-comms-token': adminKey() });
+
+  const loadAll = async () => {
+    setBusy('load'); setErr(null);
+    try {
+      const [c, l] = await Promise.all([
+        fetch('/.netlify/functions/customer-comms-config').then((r) => r.json()),
+        fetch('/.netlify/functions/customer-comms-log?days=7').then((r) => r.json()),
+      ]);
+      if (!c.ok) throw new Error(c.error || 'config load failed');
+      setCfgResp(c);
+      setSubjectT(c.config.subjectTemplate || '');
+      setHtmlT(c.config.htmlTemplate || c.defaultHtml || '');
+      setFromAddr(c.config.fromAddress || '');
+      setReplyTo(c.config.replyTo || '');
+      setDailyCap(c.config.dailyCap);
+      setLog(l.ok ? l : null);
+    } catch (e) { setErr(e.message); }
+    setBusy(null);
+  };
+  useEffect(() => { loadAll(); }, []);
+
+  // One write path for every config change. 403 → ask for the token once and retry.
+  const putConfig = async (patch, busyKey = 'save') => {
+    setBusy(busyKey); setErr(null); setNote(null);
+    try {
+      let r = await fetch('/.netlify/functions/customer-comms-config', { method: 'PUT', headers: tokenHeaders(), body: JSON.stringify(patch) });
+      if (r.status === 403) {
+        if (askKey() == null) { setBusy(null); return null; }
+        r = await fetch('/.netlify/functions/customer-comms-config', { method: 'PUT', headers: tokenHeaders(), body: JSON.stringify(patch) });
+      }
+      const j = await r.json();
+      if (!j.ok) throw new Error(j.error || 'save failed');
+      setCfgResp((prev) => prev ? { ...prev, config: j.config, resendConfigured: j.resendConfigured, effectiveFrom: j.config.fromAddress || prev.effectiveFrom } : prev);
+      setNote('Saved.');
+      return j;
+    } catch (e) { setErr(e.message); return null; }
+    finally { setBusy(null); }
+  };
+
+  const saveTemplate = () => putConfig({ subjectTemplate: subjectT, htmlTemplate: htmlT });
+  const saveSender = () => putConfig({ fromAddress: fromAddr, replyTo, dailyCap: Number(dailyCap) });
+
+  const toggleEnabled = async () => {
+    const on = !cfgResp?.config?.enabled;
+    const msg = on
+      ? 'Turn the customer delivery-email program ON?\n\nNothing sends today — the automatic trigger is not wired yet. This stages the switch so the trigger can ship separately. The daily cap and per-customer opt-out apply from the first send.'
+      : 'Turn the program OFF? Any future trigger will send nothing while off.';
+    if (!window.confirm(msg)) return;
+    await putConfig({ enabled: on }, 'enable');
+  };
+
+  const runCoverage = async () => {
+    setBusy('coverage'); setErr(null); setCoverage(null);
+    try {
+      const j = await fetch(`/.netlify/functions/customer-comms-test?coverage=1&date=${covDate}&limit=600`).then((r) => r.json());
+      if (!j.ok) throw new Error(j.error || 'coverage failed');
+      setCoverage(j);
+    } catch (e) { setErr(e.message); }
+    setBusy(null);
+  };
+
+  const runPreview = async () => {
+    setBusy('preview'); setErr(null); setPreview(null);
+    try {
+      const q = new URLSearchParams({ preview: '1' });
+      if (pvDate) q.set('date', pvDate);
+      if (pvPro.trim()) q.set('pro', pvPro.trim());
+      const j = await fetch(`/.netlify/functions/customer-comms-test?${q}`).then((r) => r.json());
+      if (!j.ok) throw new Error(j.error || 'preview failed');
+      setPreview(j);
+    } catch (e) { setErr(e.message); }
+    setBusy(null);
+  };
+
+  const sendTest = async () => {
+    const to = testTo.trim();
+    if (!to) { setErr('Enter the address the test should go to (a davisdelivery.com inbox).'); return; }
+    setBusy('test'); setErr(null); setTestResult(null);
+    try {
+      const q = new URLSearchParams({ to });
+      if (pvDate) q.set('date', pvDate);
+      if (pvPro.trim()) q.set('pro', pvPro.trim());
+      let r = await fetch(`/.netlify/functions/customer-comms-test?${q}`, { method: 'POST', headers: tokenHeaders() });
+      if (r.status === 403) {
+        if (askKey() == null) { setBusy(null); return; }
+        r = await fetch(`/.netlify/functions/customer-comms-test?${q}`, { method: 'POST', headers: tokenHeaders() });
+      }
+      const j = await r.json();
+      setTestResult(j);
+      if (!j.ok) throw new Error(j.error || 'test send failed');
+      setNote(`Test sent to ${to}.`);
+    } catch (e) { setErr(e.message); }
+    setBusy(null);
+  };
+
+  const cfg = cfgResp?.config;
+  const enabled = !!cfg?.enabled;
+  const card = 'bg-white border rounded-lg p-4';
+  const label = 'text-[11px] font-semibold text-slate-600 mb-1';
+  const input = 'w-full border border-slate-300 rounded px-2 py-1.5 text-sm';
+  const btn = 'px-3 py-1.5 rounded text-sm font-semibold border';
+  const btnPri = `${btn} text-white border-transparent`;
+
+  return (
+    <div className="flex-1 min-h-0 overflow-y-auto bg-slate-100">
+      <div className="max-w-5xl mx-auto p-4 space-y-4">
+        <div className="flex items-start justify-between gap-3 flex-wrap">
+          <div>
+            <h1 className="text-lg font-bold text-slate-800 flex items-center gap-2"><Mail size={18} /> Customer emails</h1>
+            <p className="text-xs text-slate-500 mt-0.5 max-w-xl">
+              The branded delivery-complete email — our own note from our own domain the moment freight lands, instead of the carrier's unbranded one.
+              Zero NuVizz calls: everything on this screen reads our own cached board.
+            </p>
+          </div>
+          <button onClick={loadAll} disabled={busy === 'load'} className={`${btn} border-slate-300 bg-white text-slate-700`}>{busy === 'load' ? 'Loading…' : 'Reload'}</button>
+        </div>
+
+        {err && <div className="bg-red-50 border border-red-200 text-red-800 text-sm rounded-lg px-3 py-2">{err}</div>}
+        {note && !err && <div className="bg-emerald-50 border border-emerald-200 text-emerald-800 text-sm rounded-lg px-3 py-2">{note}</div>}
+
+        {/* STATUS — the four facts that decide whether mail can move at all. */}
+        <div className={card}>
+          <div className="flex items-center gap-3 flex-wrap">
+            <button
+              onClick={toggleEnabled}
+              disabled={!cfg || busy === 'enable' || (!enabled && !cfgResp?.resendConfigured)}
+              className={btnPri}
+              style={{ background: enabled ? '#dc2626' : '#16a34a', opacity: (!cfg || (!enabled && !cfgResp?.resendConfigured)) ? 0.5 : 1 }}
+            >
+              {busy === 'enable' ? 'Saving…' : enabled ? 'Turn OFF' : 'Turn ON'}
+            </button>
+            <span className={`text-xs font-bold px-2 py-1 rounded ${enabled ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-200 text-slate-600'}`}>{enabled ? 'ENABLED' : 'OFF'}</span>
+            {cfgResp && !cfgResp.resendConfigured && (
+              <span className="text-xs text-red-700 font-semibold">Resend is not configured on this site — nothing can send, and the switch refuses to turn on.</span>
+            )}
+          </div>
+          <div className="mt-3 grid sm:grid-cols-2 gap-x-6 gap-y-1 text-xs text-slate-600">
+            <div><span className="font-semibold">Sends as:</span> {cfgResp?.effectiveFrom || '—'}</div>
+            <div><span className="font-semibold">Replies go to:</span> {cfg?.replyTo || '—'}</div>
+            <div><span className="font-semibold">Daily cap:</span> {cfg?.dailyCap ?? '—'} emails</div>
+            <div><span className="font-semibold">One email per PRO, ever</span> — the ledger claim makes a duplicate impossible.</div>
+          </div>
+          <div className="mt-3 text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded px-2.5 py-1.5">
+            The automatic trigger is <b>not wired yet</b> — even switched on, nothing sends on its own today. The switch stages the rollout;
+            the trigger ships as its own change once the template and sender domain are signed off.
+          </div>
+        </div>
+
+        {/* COVERAGE — the go/no-go number: of a day's delivered stops, how many can we reach. */}
+        <div className={card}>
+          <div className="flex items-center justify-between gap-2 flex-wrap">
+            <div className="font-semibold text-sm text-slate-800">Coverage — who we could reach</div>
+            <div className="flex items-center gap-2">
+              <input type="date" value={covDate} onChange={(e) => setCovDate(e.target.value)} className="border border-slate-300 rounded px-2 py-1 text-sm" />
+              <button onClick={runCoverage} disabled={busy === 'coverage'} className={btnPri} style={{ background: BRAND }}>{busy === 'coverage' ? 'Counting…' : 'Count'}</button>
+            </div>
+          </div>
+          {coverage && (
+            <div className="mt-3 text-sm text-slate-700">
+              <span className="text-2xl font-bold text-slate-900">{coverage.pct}%</span>
+              <span className="ml-2">of sampled delivered stops have an email on file — {coverage.withEmail} of {coverage.sampled}{coverage.truncated ? ` (sampled from ${coverage.delivered} delivered)` : ''}.</span>
+              <div className="text-xs text-slate-500 mt-1">
+                From the order itself: {coverage.bySource?.order ?? 0} · dispatcher override: {coverage.bySource?.notes ?? 0} · opted out: {coverage.optedOut ?? 0} · no address: {coverage.withoutEmail ?? 0}
+              </div>
+            </div>
+          )}
+          {!coverage && <div className="mt-2 text-xs text-slate-400">Reads the cached board + customer notes for the chosen day. Free.</div>}
+        </div>
+
+        {/* SENDER + CAP */}
+        <div className={card}>
+          <div className="font-semibold text-sm text-slate-800 mb-3">Sender</div>
+          <div className="grid sm:grid-cols-3 gap-3">
+            <div>
+              <div className={label}>From address</div>
+              <input className={input} value={fromAddr} onChange={(e) => setFromAddr(e.target.value)} placeholder="blank = the site default sender" />
+              <div className="text-[10px] text-slate-400 mt-0.5">An address on an unverified domain makes Resend reject every send — verify the domain first.</div>
+            </div>
+            <div>
+              <div className={label}>Replies go to</div>
+              <input className={input} value={replyTo} onChange={(e) => setReplyTo(e.target.value)} placeholder="customer service inbox" />
+            </div>
+            <div>
+              <div className={label}>Daily cap</div>
+              <input className={input} type="number" min="0" max="2000" value={dailyCap} onChange={(e) => setDailyCap(e.target.value)} />
+              <div className="text-[10px] text-slate-400 mt-0.5">A full day delivers ~700+. Raise this before the trigger ships or most stops skip at the ceiling.</div>
+            </div>
+          </div>
+          <button onClick={saveSender} disabled={busy === 'save'} className={`${btnPri} mt-3`} style={{ background: BRAND }}>{busy === 'save' ? 'Saving…' : 'Save sender settings'}</button>
+        </div>
+
+        {/* TEMPLATE */}
+        <div className={card}>
+          <div className="flex items-center justify-between gap-2 flex-wrap mb-2">
+            <div className="font-semibold text-sm text-slate-800">Template</div>
+            <button
+              onClick={() => { setSubjectT('Delivered — PRO {{pro}}'); setHtmlT(cfgResp?.defaultHtml || ''); setNote('Default template restored in the editor — Save to keep it.'); }}
+              className={`${btn} border-slate-300 bg-white text-slate-600 text-xs`}
+            >Reset editor to default</button>
+          </div>
+          <div className={label}>Subject</div>
+          <input className={input} value={subjectT} onChange={(e) => setSubjectT(e.target.value)} maxLength={200} />
+          <div className={`${label} mt-3`}>HTML body</div>
+          <textarea
+            className="w-full border border-slate-300 rounded px-2 py-1.5 text-[11px] font-mono leading-snug"
+            rows={14}
+            value={htmlT}
+            onChange={(e) => setHtmlT(e.target.value)}
+            spellCheck={false}
+          />
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {(cfgResp?.fields || []).map((f) => (
+              <button
+                key={f}
+                onClick={() => { navigator.clipboard?.writeText(`{{${f}}}`).catch(() => {}); setNote(`{{${f}}} copied — paste it into the template.`); }}
+                className="text-[10px] font-mono px-1.5 py-0.5 rounded border border-slate-300 bg-slate-50 text-slate-600 hover:bg-slate-100"
+                title="Copy merge field"
+              >{'{{'}{f}{'}}'}</button>
+            ))}
+          </div>
+          <div className="text-[10px] text-slate-400 mt-1.5">Values are escaped before they land in the template — a customer name cannot inject HTML. Wrap a section in {'{{#driver}}'}…{'{{/driver}}'} to show it only when that field has a value.</div>
+          <button onClick={saveTemplate} disabled={busy === 'save'} className={`${btnPri} mt-3`} style={{ background: BRAND }}>{busy === 'save' ? 'Saving…' : 'Save template'}</button>
+        </div>
+
+        {/* PREVIEW + TEST — the saved template rendered against a REAL delivered stop. */}
+        <div className={card}>
+          <div className="font-semibold text-sm text-slate-800 mb-2">Preview &amp; test</div>
+          <div className="flex items-end gap-2 flex-wrap">
+            <div>
+              <div className={label}>Board date (optional)</div>
+              <input type="date" value={pvDate} onChange={(e) => setPvDate(e.target.value)} className="border border-slate-300 rounded px-2 py-1 text-sm" />
+            </div>
+            <div>
+              <div className={label}>PRO (optional)</div>
+              <input className="border border-slate-300 rounded px-2 py-1 text-sm w-36" value={pvPro} onChange={(e) => setPvPro(e.target.value)} placeholder="any delivered stop" />
+            </div>
+            <button onClick={runPreview} disabled={busy === 'preview'} className={btnPri} style={{ background: BRAND }}>{busy === 'preview' ? 'Rendering…' : 'Preview saved template'}</button>
+          </div>
+          <div className="text-[10px] text-slate-400 mt-1">Previews what is SAVED — save template edits first. Rendering happens server-side with the same code the real send uses, so this preview cannot drift from the real thing.</div>
+          {preview && (
+            <div className="mt-3">
+              <div className="text-xs text-slate-600 mb-1">
+                <span className="font-semibold">Subject:</span> {preview.subject}
+                <span className="ml-3 font-semibold">Would send to:</span> {preview.optedOut ? 'nobody — customer opted out' : (preview.recipientOnFile || 'nobody — no address on file')}
+                {preview.recipientSource === 'notes' && <span className="ml-1 text-slate-400">(dispatcher override)</span>}
+              </div>
+              <iframe title="Email preview" sandbox="" srcDoc={preview.html} className="w-full bg-white border rounded" style={{ height: 560 }} />
+            </div>
+          )}
+          <div className="mt-3 pt-3 border-t flex items-end gap-2 flex-wrap">
+            <div className="flex-1 min-w-[220px]">
+              <div className={label}>Send one [TEST] email to</div>
+              <input className={input} value={testTo} onChange={(e) => setTestTo(e.target.value)} placeholder="your own Davis inbox" />
+            </div>
+            <button onClick={sendTest} disabled={busy === 'test'} className={btnPri} style={{ background: '#7c3aed' }}>{busy === 'test' ? 'Sending…' : 'Send test'}</button>
+          </div>
+          <div className="text-[10px] text-slate-400 mt-1">Tests are allow-listed to Davis inboxes, never consume the daily cap, and work while the program is OFF — that is the point.</div>
+          {testResult && !testResult.ok && <div className="mt-1 text-xs text-red-700">{testResult.error}</div>}
+        </div>
+
+        {/* SEND LOG */}
+        <div className={card}>
+          <div className="font-semibold text-sm text-slate-800 mb-2">Send log — last 7 days</div>
+          {log?.totals && (
+            <div className="text-xs text-slate-600 mb-2">
+              {log.totals.sent} sent · {log.totals.failed} failed · {log.totals.inflight} unconfirmed
+              {log.totals.total === 0 && <span className="text-slate-400"> — nothing has been sent yet, which is expected while the trigger is unwired.</span>}
+            </div>
+          )}
+          {log?.entries?.length > 0 && (
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead><tr className="text-left text-slate-500 border-b"><th className="py-1 pr-3">When</th><th className="py-1 pr-3">Customer</th><th className="py-1 pr-3">To</th><th className="py-1 pr-3">Subject</th><th className="py-1">Result</th></tr></thead>
+                <tbody>
+                  {log.entries.slice(0, 50).map((e, i) => (
+                    <tr key={`${e.date}-${e.key}-${i}`} className="border-b border-slate-100">
+                      <td className="py-1 pr-3 whitespace-nowrap text-slate-500">{agoText(e.at) || e.date}</td>
+                      <td className="py-1 pr-3">{e.customer || '—'}</td>
+                      <td className="py-1 pr-3">{e.to || '—'}</td>
+                      <td className="py-1 pr-3 max-w-[220px] truncate">{e.subject || '—'}</td>
+                      <td className="py-1">{e.ok ? <span className="text-emerald-700 font-semibold">sent</span> : e.claimed ? <span className="text-amber-700 font-semibold">unconfirmed</span> : <span className="text-red-700 font-semibold">failed</span>}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+
+        <div className="text-[10px] text-slate-400 pb-6">
+          Per-customer opt-out lives on the stop card: open a customer → Customer notes → “No delivery emails to this customer.”
+          The server honours it on every send path, including tests aimed at that customer.
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ManifestCheckScreen() {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState(null);
