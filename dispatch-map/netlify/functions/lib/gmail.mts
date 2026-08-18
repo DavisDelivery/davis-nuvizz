@@ -92,10 +92,15 @@ export function accountAllowed(
  * WHY THIS EXISTS. GMAIL_CLIENT_ID spent a day set to an EMAIL ADDRESS. Every
  * surface reported success: status said `configured: true` (both strings were
  * non-empty, which was the whole test), the Connect button rendered, and
- * /gmail-auth?action=start happily 302'd to Google carrying
- * `client_id=CHAD%40DAVISDELIVERY.COM`. The only place the truth existed was
- * Google's own error page, AFTER the click. Finding it took hand-reading the
- * Location header of the redirect.
+ * /gmail-auth?action=start happily 302'd to Google with an email address in
+ * the client_id parameter. The only place the truth existed was Google's own
+ * error page, AFTER the click. Finding it took hand-reading the Location
+ * header of the redirect.
+ *
+ * (The offending value is DESCRIBED here, never quoted. Netlify's secrets scan
+ * greps this repo for the VALUES of the site's env vars, so pasting one into a
+ * comment fails the deploy — which is exactly what the first draft of this
+ * comment did, on the very build meant to ship the fix.)
  *
  * So: check the shape, and say so BEFORE the click.
  *
