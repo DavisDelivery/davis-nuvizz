@@ -1,29 +1,30 @@
 // test/consignee-pin-on-echo.test.mjs
 //
-// ── THE 2026-08-18 RE-ADDRESSING, WHICH WAS THE SECOND ONE ──────────────────
+// ── THE RE-ADDRESSING THAT WAS NOT ──────────────────────────────────────────
 //
-// On 2026-08-17 two orders had their delivery addresses replaced with our own
-// terminal after a date change. The diagnosis was correct and the fix — stamping
-// the consignee addressType ANY — went onto the CREATION paths. The repair for
-// orders that ALREADY existed, pinEchoAddress, was written, tested, exported,
-// and then deliberately left UNWIRED, on the reasoning that changing a value we
-// did not read breaks this module's "invent nothing" rule and deserved one
-// supervised write first.
+// Three write banners across two days reported that a note or date change had
+// replaced an order's delivery address with our own terminal. The drift report
+// renders `sent -> readBack` and read:
 //
-// It happened again the next day, and that reasoning is what allowed it.
-// ESTES-2958929164, RENE M CONNELL, after nothing but a phone-number NOTE:
+//     to.address.addr1: "800 N COMMERCE ST" -> "943 GAINESVILLE HIGHWAY"
+//     to.address.name:  "MR.LARRY WOELFL"   -> "DAVIS DELIVERY"
 //
-//     to.address.addr1: "1977 BEN HIGGINS RD" -> "943 GAINESVILLE HIGHWAY"
-//     to.address.city:  "DAHLONEGA"           -> "BUFORD"
-//     to.address.zip:   "30533"               -> "30518"
-//     to.address.name:  "RENE M CONNELL"      -> "DAVIS DELIVERY"
+// That was taken as proof the vendor was overwriting stored addresses, and
+// pinEchoedConsignee was wired into every partialUpdate write to stop it.
 //
-// The order came off an ESTES import, so the creation-path fix never touched it.
-// Every imported order, and every order older than v0.54.75, was in the same
-// state: a company-book lookup key waiting for the next note.
+// THEN THE PORTAL WAS CHECKED. NuVizz's own Stop Details for that order:
+//     Ship From: DAVIS DELIVERY SERVICE - 943 Gainesville Highway, Buford, GA
+//     Ship To:   MR.LARRY WOELFL       - 800 N Commerce St, Monroe, GA 30655
+// The delivery address is CORRECT and always was. The values the banner called
+// "stored" are the SHIP FROM block — the pickup origin, legitimately ours.
 //
-// These tests pin the wiring, because the cost of it being unwired is now known
-// twice over and measured in freight delivered to the wrong building.
+// So these tests now pin two things at once:
+//   1. the write path echoes the consignee VERBATIM (the pin is NOT wired), and
+//   2. the pure helper still behaves correctly if it is ever genuinely needed.
+//
+// Do not re-wire it without portal evidence that a stored Ship To actually
+// changed. `sent -> readBack` is not that evidence: readBack is only ever
+// whatever the read-back comparison picked up, which is the actual defect.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
@@ -45,7 +46,7 @@ const READ = {
   comments: [],
 };
 
-test('THE INCIDENT: the echoed consignee goes out as literal data, not a lookup key', () => {
+test('the PURE helper still pins correctly, for the day it is genuinely needed', () => {
   const out = pinEchoedConsignee(READ);
   assert.equal(out.to.address.addressType, 'ANY', 'ANY is the one type that means "these fields ARE the address"');
   assert.equal(addressIsResolvable(out.to.address), false, 'and NuVizz may no longer resolve it away');
@@ -59,22 +60,23 @@ test('THE INCIDENT: the echoed consignee goes out as literal data, not a lookup 
   assert.equal(out.to.address.country, 'USA');
 });
 
-test('a NOTE write — the exact operation that did the damage — carries the pinned address', () => {
+test('THE WRITE PATH IS UNCHANGED: a note echoes the consignee VERBATIM', () => {
+  // The pin is NOT wired. This module's standing rule — invent nothing the read
+  // did not provide — holds, because the thing it was bent for never happened.
   const body = buildNoteWriteStop(READ, [{ comments: 'UPDATED PHONE # 706-555-0100' }]);
-  assert.equal(body.to.address.addressType, 'ANY');
+  assert.equal(body.to.address.addressType, 'COM', 'exactly what the read gave us');
+  assert.ok(!('label' in body.to.address) || body.to.address.label === READ.to.address.label);
   assert.equal(body.to.address.addr1, '1977 BEN HIGGINS RD');
   assert.equal(body.comments.length, 1, 'and the note still lands');
 });
 
-test('a DATE write goes through the same choke point', () => {
-  // buildPartialUpdateStop is where every note, date and contact write converges,
-  // which is why the pin lives there and not in one caller.
+test('a DATE write echoes verbatim too — the choke point pins nothing', () => {
   const body = buildPartialUpdateStop(READ, { to: { ...READ.to, scheduledFrom: '2026-07-28T09:00' } });
-  assert.equal(body.to.address.addressType, 'ANY');
+  assert.equal(body.to.address.addressType, 'COM');
   assert.equal(body.to.scheduledFrom, '2026-07-28T09:00');
 });
 
-test('a label is a lookup key too, and it must not survive the write', () => {
+test('the helper drops a label, which is a lookup key of its own', () => {
   const withLabel = { ...READ, to: { ...READ.to, address: { ...READ.to.address, addressType: 'ANY', label: 'DAVIS-HQ' } } };
   const out = pinEchoedConsignee(withLabel);
   assert.ok(!('label' in out.to.address), 'label repopulates every other field from the book entry');

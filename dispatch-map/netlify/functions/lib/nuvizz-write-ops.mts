@@ -622,58 +622,55 @@ export function buildPartialUpdateStop(rawStop: any, overrides: Record<string, a
   // them off. Strip last, and the derived keys cannot return by any route.
   const merged: Record<string, any> = { ...rawStop };
   for (const [k, v] of Object.entries(overrides || {})) merged[k] = v;
-  return withoutPaths(pinEchoedConsignee(merged), PARTIAL_UPDATE_DERIVED_KEYS);
+  // NOT pinEchoedConsignee(merged) — see that function. It was wired here in v0.54.91 and
+  // unwired again in v0.54.92 when the NuVizz portal showed the order it was meant to protect
+  // was never damaged. Echo verbatim, as everything else in this file does.
+  return withoutPaths(merged, PARTIAL_UPDATE_DERIVED_KEYS);
 }
 
 /**
- * Make the echoed CONSIGNEE literal before it goes back on the wire.
+ * Make the echoed CONSIGNEE literal so the vendor cannot resolve it away.
  *
- * ── WHY THIS BREAKS THIS MODULE'S OWN "INVENT NOTHING" RULE, ON PURPOSE ──────
+ * *** WIRED IN v0.54.91. UNWIRED AGAIN IN v0.54.92. NOT IN THE WRITE PATH. ***
  *
- * Everything else in this file echoes the read verbatim, because on a whole-stop
- * replace a value we make up is a value we have overwritten. That rule held this
- * helper out of the write path from 2026-08-17, when the re-addressing incident
- * was first diagnosed, on the reasoning that wiring it deserved one supervised
- * write first.
+ * ── what happened, so nobody re-wires it on the same evidence ────────────────
  *
- * It happened again on 2026-08-18, and the rule is what allowed it. Chad, with a
- * photo of the drift banner: "The email you reviewed yesterday about the error
- * with updating addresses changing everything in nuvizz to the incorrect things
- * like davis. Just happened again. Please fix this correctly this time."
- * ESTES-2958929164, RENE M CONNELL, after nothing but a phone-number NOTE:
- *     to.address.addr1: "1977 BEN HIGGINS RD" -> "943 GAINESVILLE HIGHWAY"
- *     to.address.city:  "DAHLONEGA"           -> "BUFORD"
- *     to.address.zip:   "30533"               -> "30518"
- *     to.address.name:  "RENE M CONNELL"      -> "DAVIS DELIVERY"
- * The customer's freight is now addressed to our own yard. "GEORGIA" spelled out
- * in the state field is the vendor's own fingerprint — this repo only ever maps
- * the other way, via US_STATE_CODES — so this is NuVizz resolving the address,
- * not us composing it.
+ * Three write banners across two days reported that a note or date change had
+ * replaced an order's delivery address with 943 GAINESVILLE HIGHWAY, BUFORD —
+ * our own terminal. The drift report renders `sent -> readBack`, and it read:
+ *     to.address.addr1: "800 N COMMERCE ST" -> "943 GAINESVILLE HIGHWAY"
+ *     to.address.name:  "MR.LARRY WOELFL"   -> "DAVIS DELIVERY"
+ * That was taken as proof we sent the right address and NuVizz stored the wrong
+ * one, and this helper was wired in to stop it.
  *
- * The v0.54.75 fix set addressType ANY on the CREATION paths, so orders we create
- * are safe. This order was not created by us: it came off an ESTES import and
- * carries whatever type NuVizz gave it. Every such order — every order on the
- * board older than that fix, and every imported one since — is still a lookup key
- * waiting for the next note.
+ * THEN THE PORTAL WAS CHECKED. NuVizz's own Stop Details for that order:
+ *     Ship From: DAVIS DELIVERY SERVICE — 943 Gainesville Highway, Buford, GA
+ *     Ship To:   MR.LARRY WOELFL       — 800 N Commerce St, Monroe, GA 30655
+ * The delivery address is CORRECT and always was. The freight was never
+ * misaddressed, and the values the banner called "stored" are the SHIP FROM
+ * block — the pickup origin, which is legitimately our terminal.
  *
- * So: obeying "invent nothing" costs freight delivered to the wrong building, and
- * the fix is a two-field change to a block whose real values we are preserving
- * exactly. That trade is not close. The rule stands everywhere else in this file.
+ * So the defect is in the READ-BACK COMPARISON, not in what NuVizz stores: the
+ * post-write read is being lined up against our sent payload in a way that puts
+ * the `from` side where `to` should be. `sent -> readBack` proved nothing about
+ * storage, because readBack is only ever "whatever that comparison picked up".
  *
- * ── WHAT IT ACTUALLY CHANGES ────────────────────────────────────────────────
- * Only a consignee that is RESOLVABLE — a company-book addressType, or a label,
- * i.e. one NuVizz is entitled to overwrite. An address already sent as literal
- * data is left untouched, so the common case is a no-op and the blast radius is
- * exactly the orders that are actually in danger.
+ * WHY THAT MATTERS FOR THIS FUNCTION. Its entire justification was that the
+ * echoed consignee was a lookup key the vendor was resolving away. There is no
+ * evidence that ever happened. Wiring it changed a live write path — and added a
+ * refusal that blocks notes on any order whose consignee lacks a name or street —
+ * to fix something that was not broken. It is unwired.
  *
- * The PICKUP is deliberately left alone. Our terminal genuinely is the company
- * address, so resolving it is correct, and isBenignVendorNormalisation already
- * excuses the vendor canonicalising its name.
+ * It stays here, exported and tested, because IF the vendor ever genuinely does
+ * resolve an echoed address away, this is the right shape of repair. Do not wire
+ * it again without portal evidence that a stored Ship To actually changed.
  *
- * REFUSES rather than half-pins: ANY makes `name` mandatory, so a block with no
- * name or no street cannot be made literal. Throwing fails the write loudly and
- * the note is not saved — which is a far smaller problem than the address moving,
- * and is the same call pinEchoAddress's own contract already documented.
+ * ── what it does, if it is ever needed ──────────────────────────────────────
+ * NuVizz's v7 spec: `label` repopulates line1/line2/city/state/zip/country/lat/
+ * long from the book entry, and COM is "Company address"; "other than address
+ * type ANY, name will be chosen from address". ANY is the one type meaning
+ * "these literal fields ARE the address". Only a RESOLVABLE consignee is
+ * touched; the pickup is left alone; and it refuses rather than half-pin.
  */
 export function pinEchoedConsignee(stop: Record<string, any>): Record<string, any> {
   const plain = (v: any) => v !== null && typeof v === 'object' && !Array.isArray(v);
