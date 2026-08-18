@@ -85,12 +85,86 @@ export function accountAllowed(
   return { ok: true };
 }
 
+/**
+ * Is this pair actually a Google OAuth client, or did something else get pasted
+ * into the box?
+ *
+ * WHY THIS EXISTS. GMAIL_CLIENT_ID spent a day set to an EMAIL ADDRESS. Every
+ * surface reported success: status said `configured: true` (both strings were
+ * non-empty, which was the whole test), the Connect button rendered, and
+ * /gmail-auth?action=start happily 302'd to Google carrying
+ * `client_id=CHAD%40DAVISDELIVERY.COM`. The only place the truth existed was
+ * Google's own error page, AFTER the click. Finding it took hand-reading the
+ * Location header of the redirect.
+ *
+ * So: check the shape, and say so BEFORE the click.
+ *
+ * The check is deliberately lopsided, because the two mistakes are not equally
+ * knowable:
+ *
+ *   • REJECT what cannot possibly be a credential. An `@` means somebody pasted
+ *     an address — an email, an account, a mailbox. No Google client id or
+ *     secret has ever contained one. That is the failure we actually had, and
+ *     it is worth blocking outright: the flow cannot complete, so sending the
+ *     user to Google only buys a worse error message.
+ *
+ *   • WARN, don't block, on merely-unfamiliar. Today a client id ends in
+ *     `.apps.googleusercontent.com` and a secret starts with `GOCSPX-`, but
+ *     those are Google's conventions, not our contract. Hard-failing on them
+ *     would mean that the day Google changes a prefix, this app refuses a
+ *     credential that works. A warning costs nothing if we are wrong.
+ *
+ * Returns null when nothing is worth saying.
+ */
+export function credentialProblem(clientId: string, clientSecret: string): string | null {
+  if (!clientId && !clientSecret) return 'GMAIL_CLIENT_ID and GMAIL_CLIENT_SECRET are not set';
+  if (!clientId) return 'GMAIL_CLIENT_ID is not set';
+  if (!clientSecret) return 'GMAIL_CLIENT_SECRET is not set';
+  // The one that bit us. Name the variable AND what it looks like, so the fix
+  // needs no second round trip to work out which box is wrong.
+  if (clientId.includes('@')) {
+    return `GMAIL_CLIENT_ID is an email address, not an OAuth client ID — it should end in .apps.googleusercontent.com (from Google Cloud Console → Credentials)`;
+  }
+  if (clientSecret.includes('@')) {
+    return 'GMAIL_CLIENT_SECRET is an email address, not an OAuth client secret — it should start with GOCSPX-';
+  }
+  // Two names for one value is a copy-paste that fails the token exchange only,
+  // long after the consent screen has already been accepted.
+  if (clientId === clientSecret) return 'GMAIL_CLIENT_ID and GMAIL_CLIENT_SECRET are set to the same value';
+  return null;
+}
+
+/** Shape we recognise, but never require — see credentialProblem. */
+export function credentialWarning(clientId: string, clientSecret: string): string | null {
+  if (clientId && !clientId.endsWith('.apps.googleusercontent.com')) {
+    return 'GMAIL_CLIENT_ID does not end in .apps.googleusercontent.com — check it came from Google Cloud Console → Credentials';
+  }
+  if (clientSecret && !clientSecret.startsWith('GOCSPX-')) {
+    return 'GMAIL_CLIENT_SECRET does not start with GOCSPX- — check it is the client secret and not the client ID';
+  }
+  return null;
+}
+
 /** The OAuth client. Same env names gmail-source.mts already documents in
- *  .env.example — one credential, not two spellings of it. */
-export function gmailOAuthConfig(): { clientId: string; clientSecret: string; configured: boolean } {
+ *  .env.example — one credential, not two spellings of it.
+ *
+ *  `configured` now means "we have a credential that could work", not merely
+ *  "both strings are non-empty". A value we can prove is unusable reads as NOT
+ *  configured, so the Connect button and the start redirect refuse it here
+ *  rather than handing it to Google to reject. */
+export function gmailOAuthConfig(): {
+  clientId: string; clientSecret: string; configured: boolean;
+  problem: string | null; warning: string | null;
+} {
   const clientId = String(process.env.GMAIL_CLIENT_ID || '').trim();
   const clientSecret = String(process.env.GMAIL_CLIENT_SECRET || '').trim();
-  return { clientId, clientSecret, configured: !!(clientId && clientSecret) };
+  const problem = credentialProblem(clientId, clientSecret);
+  return {
+    clientId, clientSecret,
+    configured: !problem,
+    problem,
+    warning: problem ? null : credentialWarning(clientId, clientSecret),
+  };
 }
 
 /** The redirect URI registered in Google Cloud Console. Defaults to this very

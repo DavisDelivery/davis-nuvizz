@@ -96,7 +96,7 @@ async function handle(req: Request): Promise<Response> {
   // ── status ────────────────────────────────────────────────────────────────
   if (action === 'status') {
     if (!isFirestoreEnabled()) {
-      return J({ ok: true, configured: cfg.configured, firestore: false, connected: false, error: 'Firestore is off — there is no board to check against' });
+      return J({ ok: true, configured: cfg.configured, credentialProblem: cfg.problem, credentialWarning: cfg.warning, firestore: false, connected: false, error: 'Firestore is off — there is no board to check against' });
     }
     const status = await readStatus().catch(() => null);
     // Trust the SEALED doc, not the status flag: a rotated key or a hand-deleted
@@ -109,6 +109,11 @@ async function handle(req: Request): Promise<Response> {
     return J({
       ok: true,
       configured: cfg.configured,
+      // WHY these ride on status: the card is the only place anybody looks
+      // before clicking Connect, and a credential that cannot work is exactly
+      // what it must not stay silent about.
+      credentialProblem: cfg.problem,
+      credentialWarning: cfg.warning,
       firestore: true,
       needsKey,
       envPinned,
@@ -127,7 +132,10 @@ async function handle(req: Request): Promise<Response> {
 
   // ── start ─────────────────────────────────────────────────────────────────
   if (action === 'start') {
-    if (!cfg.configured) return J({ ok: false, error: 'Gmail is not configured on this site — set GMAIL_CLIENT_ID and GMAIL_CLIENT_SECRET' }, 503);
+    // cfg.problem always names the actual fault (missing, or an address pasted
+    // into a credential box). Sending the reader to Google to be told "invalid
+    // client" is a worse version of information we already hold.
+    if (!cfg.configured) return J({ ok: false, error: cfg.problem || 'Gmail is not configured on this site — set GMAIL_CLIENT_ID and GMAIL_CLIENT_SECRET' }, 503);
     if (!isFirestoreEnabled()) return J({ ok: false, error: 'Firestore is off — the grant would have nowhere to live' }, 503);
     if (!keyOk) return J({ ok: false, error: 'unauthorized' }, 401);
     const state = await issueState(new Date().toISOString());
@@ -141,7 +149,7 @@ async function handle(req: Request): Promise<Response> {
   // ── callback ──────────────────────────────────────────────────────────────
   if (action === 'callback') {
     if (oauthErr) return backToApp(req.url, { gmail: 'error', reason: String(oauthErr).slice(0, 120) });
-    if (!cfg.configured || !isFirestoreEnabled()) return backToApp(req.url, { gmail: 'error', reason: 'not configured' });
+    if (!cfg.configured || !isFirestoreEnabled()) return backToApp(req.url, { gmail: 'error', reason: cfg.problem || 'not configured' });
     if (!(await consumeState(String(url.searchParams.get('state') || ''), Date.now()))) {
       return backToApp(req.url, { gmail: 'error', reason: 'the sign-in link expired — start again from the Manifest check tab' });
     }
