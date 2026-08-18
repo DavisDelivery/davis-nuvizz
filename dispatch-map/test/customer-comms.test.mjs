@@ -329,6 +329,9 @@ function harness(over = {}) {
   const calls = [];
   const base = {
     recipient: async () => ({ email: 'dana@example.com', optedOut: false, matchKey: 'k', source: 'order' }),
+    // No prior send on either neighbouring board date — the ordinary case. Overriding this
+    // is how the cross-date duplicate guard is driven; see the tests that do.
+    priorSend: async () => null,
     claim: async () => true,
     finalize: async () => {},
     release: async () => {},
@@ -339,7 +342,7 @@ function harness(over = {}) {
   // is left out of the trace: what matters is the claim/send/finalize/release ordering.
   const deps = {};
   for (const [name, fn] of Object.entries(base)) {
-    deps[name] = async (...a) => { if (name !== 'recipient') calls.push(name); return fn(...a); };
+    deps[name] = async (...a) => { if (name !== 'recipient' && name !== 'priorSend') calls.push(name); return fn(...a); };
   }
   return { calls, deps };
 }

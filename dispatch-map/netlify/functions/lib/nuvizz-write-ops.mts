@@ -36,12 +36,13 @@
 export const SINGLE_OPS = [
   'createStop', 'getStop', 'getLoad', 'getLoadByRouteId', 'insertStops', 'removeStops',
   'assignDriver', 'dispatchLoad', 'roster', 'importLoad', 'partialUpdateStop', 'createRoute',
+  'cancelStop',
 ] as const;
 export type SingleOp = typeof SINGLE_OPS[number];
 
 // Ops the HTTP handler accepts (single ops + the per-load Save batch + the panel Save +
 // the async load-import commit with its convergence recipe).
-export const WRITE_OPS = [...SINGLE_OPS, 'commitLoad', 'commitBoard', 'commitImport', 'addStopNote', 'setStopDate', 'setStopContact', 'newRoute'] as const;
+export const WRITE_OPS = [...SINGLE_OPS, 'commitLoad', 'commitBoard', 'commitImport', 'addStopNote', 'setStopDate', 'setStopContact', 'newRoute', 'cancelOrder'] as const;
 export type WriteOp = typeof WRITE_OPS[number];
 
 /** Ops that MUTATE NuVizz (everything except the GET reads). Used by the
@@ -51,6 +52,9 @@ export const MUTATING_OPS = new Set<WriteOp>([
   'importLoad', 'commitLoad', 'commitBoard', 'commitImport',
   'partialUpdateStop', 'addStopNote', 'setStopDate', 'setStopContact',
   'createRoute', 'newRoute',
+  // Destructive. Gated by NUVIZZ_WRITE_ENABLED like every other mutation, and by
+  // the read-then-cancel-by-id ladder in runCancelOrder — see there for why.
+  'cancelStop', 'cancelOrder',
 ]);
 
 /**
@@ -618,14 +622,79 @@ export function buildPartialUpdateStop(rawStop: any, overrides: Record<string, a
   // them off. Strip last, and the derived keys cannot return by any route.
   const merged: Record<string, any> = { ...rawStop };
   for (const [k, v] of Object.entries(overrides || {})) merged[k] = v;
+  // NOT pinEchoedConsignee(merged) — see that function. It was wired here in v0.54.91 and
+  // unwired again in v0.54.92 when the NuVizz portal showed the order it was meant to protect
+  // was never damaged. Echo verbatim, as everything else in this file does.
   return withoutPaths(merged, PARTIAL_UPDATE_DERIVED_KEYS);
+}
+
+/**
+ * Make the echoed CONSIGNEE literal so the vendor cannot resolve it away.
+ *
+ * *** WIRED IN v0.54.91. UNWIRED AGAIN IN v0.54.92. NOT IN THE WRITE PATH. ***
+ *
+ * ── what happened, so nobody re-wires it on the same evidence ────────────────
+ *
+ * Three write banners across two days reported that a note or date change had
+ * replaced an order's delivery address with 943 GAINESVILLE HIGHWAY, BUFORD —
+ * our own terminal. The drift report renders `sent -> readBack`, and it read:
+ *     to.address.addr1: "800 N COMMERCE ST" -> "943 GAINESVILLE HIGHWAY"
+ *     to.address.name:  "MR.LARRY WOELFL"   -> "DAVIS DELIVERY"
+ * That was taken as proof we sent the right address and NuVizz stored the wrong
+ * one, and this helper was wired in to stop it.
+ *
+ * THEN THE PORTAL WAS CHECKED. NuVizz's own Stop Details for that order:
+ *     Ship From: DAVIS DELIVERY SERVICE — 943 Gainesville Highway, Buford, GA
+ *     Ship To:   MR.LARRY WOELFL       — 800 N Commerce St, Monroe, GA 30655
+ * The delivery address is CORRECT and always was. The freight was never
+ * misaddressed, and the values the banner called "stored" are the SHIP FROM
+ * block — the pickup origin, which is legitimately our terminal.
+ *
+ * So the defect is in the READ-BACK COMPARISON, not in what NuVizz stores: the
+ * post-write read is being lined up against our sent payload in a way that puts
+ * the `from` side where `to` should be. `sent -> readBack` proved nothing about
+ * storage, because readBack is only ever "whatever that comparison picked up".
+ *
+ * WHY THAT MATTERS FOR THIS FUNCTION. Its entire justification was that the
+ * echoed consignee was a lookup key the vendor was resolving away. There is no
+ * evidence that ever happened. Wiring it changed a live write path — and added a
+ * refusal that blocks notes on any order whose consignee lacks a name or street —
+ * to fix something that was not broken. It is unwired.
+ *
+ * It stays here, exported and tested, because IF the vendor ever genuinely does
+ * resolve an echoed address away, this is the right shape of repair. Do not wire
+ * it again without portal evidence that a stored Ship To actually changed.
+ *
+ * ── what it does, if it is ever needed ──────────────────────────────────────
+ * NuVizz's v7 spec: `label` repopulates line1/line2/city/state/zip/country/lat/
+ * long from the book entry, and COM is "Company address"; "other than address
+ * type ANY, name will be chosen from address". ANY is the one type meaning
+ * "these literal fields ARE the address". Only a RESOLVABLE consignee is
+ * touched; the pickup is left alone; and it refuses rather than half-pin.
+ */
+export function pinEchoedConsignee(stop: Record<string, any>): Record<string, any> {
+  const plain = (v: any) => v !== null && typeof v === 'object' && !Array.isArray(v);
+  const to = stop?.to;
+  if (!plain(to) || !plain(to.address)) return stop;
+  if (!addressIsResolvable(to.address)) return stop;   // already literal — nothing to do
+
+  const pinned = pinEchoAddress(to.address);
+  if (!pinned) {
+    throw new Error(
+      'refusing to write: this order\'s delivery address is a company-book lookup that cannot be '
+      + 'pinned to literal values (it has no name or no street), and echoing it back lets NuVizz '
+      + 'replace it — which is how orders end up addressed to our own terminal. '
+      + 'Fix the delivery address in the portal first.',
+    );
+  }
+  return { ...stop, to: { ...to, address: pinned } };
 }
 
 /**
  * PURE. Is this echoed address a LOOKUP KEY rather than data?
  *
- * NOT YET WIRED INTO THE WRITE PATH — deliberately. See pinEchoAddress below for
- * what we would do about it and why that decision is not ours to take alone.
+ * WIRED as of v0.54.91 — see pinEchoedConsignee, which uses this to decide whether
+ * an echoed consignee needs pinning at all.
  *
  * NuVizz's v7 spec defines COM as "Company address" and COMFAC as "Company
  * facility"; `label` it defines as a key that repopulates line1/line2/city/state/
@@ -644,12 +713,10 @@ export function addressIsResolvable(addr: any): boolean {
 /**
  * PURE. Make an echoed address LITERAL so the vendor cannot resolve it away.
  *
- * NOT YET WIRED INTO THE WRITE PATH. It changes a value we did not read, which
- * breaks this module's standing "invent nothing the read did not provide" rule —
- * a rule that exists for good reason on a whole-stop replace. Wiring it needs one
- * supervised write against one real order, watching the existing read-back
- * tripwire, because the alternative to being wrong here is freight going to the
- * wrong building. Exported and tested so that test is a five-minute job.
+ * WIRED as of v0.54.91 via pinEchoedConsignee, which every partialUpdate write now
+ * passes through. It deliberately breaks this module's "invent nothing the read did
+ * not provide" rule; pinEchoedConsignee carries the full argument for why, and what
+ * leaving it unwired cost on 2026-08-18.
  *
  * ── why this exists ─────────────────────────────────────────────────────────
  * partialUpdate is a whole-stop replace, so every note, date and contact write
@@ -1875,6 +1942,45 @@ export const ROSTER_BODY = {
  * handler returns a 400 rather than firing a malformed write. createStop expects the
  * caller to have already built payload.stop via buildStopPayload (or to pass {row,settings}).
  */
+
+// ── Cancelling an order (§X, Aug 17 2026) ────────────────────────────────────
+//
+// Chad: "I think we need to write a path to canceling orders and reason should
+// be admin." Until now this app could CREATE an order and never take one back —
+// a mistyped order, or the ZZTEST order the address-rewrite investigation left
+// behind, could only be killed in the portal.
+//
+// NuVizz exposes POST /stop/cancel/{cc}; its own description is "Delete/Reject a
+// stop (in unplanned, created statuses)", so a stop already planned onto a route
+// is expected to refuse — unplan it first.
+//
+// TWO THINGS THIS BUILDER IS DELIBERATE ABOUT:
+//
+//  1. IT CANCELS BY stopId, NEVER BY NUMBER, when an id is available. NuVizz can
+//     hold TWO live orders under one stop number — that is the whole twin lesson
+//     of v0.54.36/72 — and "cancel whatever answers to this number" is the one
+//     phrasing of that hazard you cannot undo. The executor reads the order first
+//     precisely so it can cancel the id it just looked at.
+//  2. reasonCode is REQUIRED by the vendor and has no documented value list. Chad
+//     specified ADMIN, so that is the default and it is capped at the schema's 10
+//     characters. If NuVizz rejects it, the write fails loudly with the vendor's
+//     own reason rather than silently cancelling under a wrong code.
+export const CANCEL_REASON_DEFAULT = 'ADMIN';
+
+export function buildCancelStopBody(payload: any): Record<string, any> {
+  const stopId = String(payload?.stopId ?? '').trim();
+  const stopNbr = String(payload?.stopNbr ?? '').trim();
+  if (!stopId && !stopNbr) throw new Error('cancelStop: stopId or stopNbr is required');
+  const reasonCode = (String(payload?.reasonCode ?? '').trim() || CANCEL_REASON_DEFAULT).slice(0, 10);
+  // ONE identifier goes on the wire. Sending both invites NuVizz to resolve a
+  // disagreement between them, and on a destructive call that choice is not ours
+  // to hand over — the id wins whenever we have one.
+  const body: Record<string, any> = stopId ? { stopId, reasonCode } : { stopNbr, reasonCode };
+  const comments = String(payload?.reasonComments ?? '').trim();
+  if (comments) body.reasonComments = comments.slice(0, 500);
+  return body;
+}
+
 export function buildOpRequest(op: SingleOp, payload: any, creds: WriteCreds): BuiltRequest {
   const { base, companyCode: cc, auth } = creds;
   const H = jsonHeaders(auth);
@@ -1886,6 +1992,11 @@ export function buildOpRequest(op: SingleOp, payload: any, creds: WriteCreds): B
       const stop = payload?.stop || (payload?.row ? buildStopPayload(payload.row, payload.settings) : null);
       if (!stop) throw new Error('createStop: missing stop (provide {stop} or {row,settings})');
       return { url: `${base}/stop/sync/update/${enc(cc)}`, method: 'POST', headers: H, body: JSON.stringify({ companyCode: cc, stop }), meta: { route: '/stop/sync/update', tenant: cc, source: 'live-write' } };
+    }
+
+    case 'cancelStop': {
+      const body = buildCancelStopBody(payload);
+      return { url: `${base}/stop/cancel/${enc(cc)}`, method: 'POST', headers: H, body: JSON.stringify(body), meta: { route: '/stop/cancel', tenant: cc, source: 'live-write' } };
     }
 
     case 'getStop': {
@@ -1988,6 +2099,7 @@ export function parseOpResponse(op: SingleOp, httpOk: boolean, j: any): any {
     case 'getLoadByRouteId': return { ok: httpOk, load: normalizeStaticLoad(j) };
     case 'createStop':
     case 'insertStops':
+    case 'cancelStop':
     case 'removeStops': return summarize(httpOk, j);
     case 'assignDriver':
     case 'dispatchLoad': return assignOk(j);

@@ -27,6 +27,7 @@ import {
   unsentLosses, documentHandlesMoved, type NoteAudience,
   buildPartialUpdateStop, buildStopDateOverride, stopDeliveryDate, isDayString, boardDateHoldWarning,
   stopInstanceMismatch, readBackInstanceMismatch, readBackUnidentifiable, isIdShaped, orderDriftPaths, addressDriftWarning,
+  CANCEL_REASON_DEFAULT,
   buildStopContactOverride, stopContactFrom, normalizeContactPhone,
   type SingleOp, type WriteOp, type WriteCreds,
 } from './nuvizz-write-ops.mts';
@@ -2099,6 +2100,80 @@ export async function runAddStopNote(requester: RequesterLike, payload: any, cre
  * moved out from under it. 3 NuVizz calls (read → write → verify); an order already on the
  * requested day costs 1 and writes nothing.
  */
+
+/**
+ * CANCEL AN ORDER (§X, Aug 17 2026).
+ *
+ * Chad: "I think we need to write a path to canceling orders and reason should
+ * be admin." Until now this app could create an order and never take one back.
+ *
+ * THE LADDER — read, judge, then cancel BY ID. Two calls, and both earn their keep:
+ *
+ *   1. READ the order by number. This is the only chance to record WHAT is about
+ *      to be destroyed (consignee, address, date, status), and a cancel with no
+ *      before-image in the journal is an unexplainable hole in the record later.
+ *   2. REFUSE on a twin. NuVizz can hold two live orders under one number, and
+ *      "cancel whatever answers to this number" is the one phrasing of that
+ *      hazard with no undo. Same stopInstanceMismatch gate the date/note writes
+ *      use — and here it matters more, because there is nothing to put back.
+ *   3. CANCEL BY stopId, the id we just read. Never by number.
+ *
+ * REFUSALS, all before any write:
+ *   • a stop already delivered/executed — cancelling history is not a thing.
+ *   • a stop currently PLANNED on a load — NuVizz's own endpoint doc says it
+ *     cancels stops "in unplanned, created statuses", so we say which load to
+ *     unplan it from rather than letting the vendor return a bare failure.
+ *   • no stopId on the record — we will not fall back to cancelling by number.
+ */
+export async function runCancelOrder(requester: RequesterLike, payload: any, creds: WriteCreds): Promise<any> {
+  const stopNbr = req(payload?.stopNbr, 'cancelOrder: stopNbr');
+  const calls = { reads: 0, writes: 0 };
+
+  const before = await fireSingle(requester, 'getStop', { stopNbr }, creds);
+  calls.reads += 1;
+  if (!before?.ok) return { ok: false, error: `cancelOrder: could not read stop ${stopNbr} (${before?.error || 'read failed'}) — nothing was cancelled.`, calls };
+  const rawBefore = rawStopFrom(before.raw ?? before);
+
+  const twin = stopInstanceMismatch('cancelOrder', stopNbr, payload?.stopId, rawBefore);
+  if (twin) return { ok: false, wrongInstance: true, calls, error: twin };
+
+  const stopId = String(rawBefore?.stopId ?? '').trim();
+  if (!stopId) {
+    return { ok: false, calls, error: `cancelOrder: stop ${stopNbr} has no stopId in its record — refusing to cancel by number, because two orders can share one. Cancel it in the portal.` };
+  }
+
+  const status = before.stop?.status ?? null;
+  if (isExecutedStopStatus(status)) {
+    return { ok: false, calls, error: `cancelOrder: stop ${stopNbr} is already ${status} — a delivered stop cannot be cancelled.` };
+  }
+  const onLoad = before.stop?.assignedLoadNbr ?? null;
+  if (onLoad) {
+    return { ok: false, calls, error: `cancelOrder: stop ${stopNbr} is planned on load ${onLoad}. NuVizz only cancels unplanned orders — take it off the load first, then cancel.` };
+  }
+
+  // The before-image, kept whatever happens next: this is the record of what was destroyed.
+  const addr = rawBefore?.to?.address || {};
+  const cancelled = {
+    stopNbr: String(rawBefore?.stopNbr ?? stopNbr),
+    stopId,
+    consignee: String(addr.name ?? '') || null,
+    address: [addr.addr1, addr.city, addr.state, addr.zip].map((v: any) => String(v ?? '').trim()).filter(Boolean).join(', ') || null,
+    date: stopDeliveryDate(rawBefore),
+    status,
+  };
+
+  const wrote = await fireSingle(requester, 'cancelStop', {
+    stopId,
+    reasonCode: payload?.reasonCode,
+    reasonComments: payload?.reasonComments,
+  }, creds);
+  calls.writes += 1;
+  if (!wrote?.ok) {
+    return { ok: false, calls, cancelled, error: `cancelOrder: NuVizz refused to cancel ${stopNbr} — ${wrote?.error || 'no reason given'}. Nothing was cancelled.` };
+  }
+  return { ok: true, calls, cancelled, reasonCode: (String(payload?.reasonCode ?? '').trim() || CANCEL_REASON_DEFAULT).slice(0, 10) };
+}
+
 export async function runSetStopDate(requester: RequesterLike, payload: any, creds: WriteCreds): Promise<any> {
   const stopNbr = req(payload?.stopNbr, 'setStopDate: stopNbr');
   const date = String(req(payload?.date, 'setStopDate: date')).trim();
@@ -2570,6 +2645,8 @@ export async function runOp(requester: RequesterLike, op: WriteOp, payload: any,
     case 'commitImport': return runCommitImport(requester, payload, creds);
     case 'addStopNote': return runAddStopNote(requester, payload, creds);
     case 'setStopDate': return runSetStopDate(requester, payload, creds);
+    // Destructive: read → judge → cancel by id. See runCancelOrder.
+    case 'cancelOrder': return runCancelOrder(requester, payload, creds);
     case 'setStopContact': return runSetStopContact(requester, payload, creds);
     // §R — the orchestration (collision check → header write → read-back verify). The bare
     // 'createRoute' single op stays available for tests/diagnostics; the app calls 'newRoute'.

@@ -34,7 +34,7 @@
 // Env: RESEND_API_KEY + RESEND_FROM (see lib/email.mts). Config below overrides the
 // sender and reply-to per-site without a redeploy.
 
-import { getDoc, setDoc, deleteDoc, listDocs, createDocIfAbsent, etDayString } from './firestore.mts';
+import { getDoc, setDoc, deleteDoc, listDocs, createDocIfAbsent, etDayString, etHourString } from './firestore.mts';
 import { normalizeMatchKey } from './match-key.mts';
 import { emailEnabled, sendEmail } from './email.mts';
 
@@ -87,9 +87,11 @@ export const DEFAULT_CONFIG: CommsConfig = {
   // All three hang off `send.` and `resend._domainkey.`, NOT the apex, so publishing them
   // does not disturb the existing davisdelivery.com mail setup.
   //
-  // Nothing is at risk while they are pending: the sweep trigger is still unwired, so the
-  // only path that can attempt a send is the [TEST] button, and it reports its failure at
-  // the button. To fall back while waiting, put the warehouse address in More → Customer
+  // The sweep trigger IS wired now (customer-comms-sweep-background.mts), so the [TEST]
+  // button is no longer the only path that can attempt a send. What holds the mail is
+  // `enabled` below, which defaults to false and is flipped only from the UI.
+  //
+  // To fall back while waiting, put the warehouse address in More → Customer
   // emails → Sender — but know that the FIRST save from that screen writes the whole config
   // document to Firestore, htmlTemplate included, after which template changes in code stop
   // reaching the site. Prefer waiting for DNS over taking that trade.
@@ -280,11 +282,12 @@ async function releaseClaim(date: string, key: string): Promise<void> {
 // uses: a dispatcher's correction must beat whatever the order carried, and it carries to
 // the customer's NEXT order too.
 //
-// NOTE ON comms_email / comms_opt_out: nothing WRITES these yet. The notes editor renders
-// name/phone/role contacts and a notify_cs toggle, and has no email field. Reading them
-// here is forward-compatible, not a shipped guarantee — the opt-out is only real once the
-// notes editor gains the toggle, which lands with the UI half. Do not enable this feature
-// before then: an opt-out you cannot honour is worse than no opt-out.
+// NOTE ON comms_email / comms_opt_out: BOTH ARE WRITABLE AS OF v0.54.78 — the customer-notes
+// editor gained the red "No delivery emails to this customer" suppression toggle and the
+// per-customer address override (see App.jsx, the comms_opt_out block). This comment
+// previously said nothing wrote them and that the feature must not be enabled until
+// something did, because an opt-out you cannot honour is worse than no opt-out. That
+// condition is now MET, and it was a precondition of wiring the trigger at all.
 
 export interface Recipient {
   email: string | null;
@@ -292,6 +295,9 @@ export interface Recipient {
   matchKey: string | null;
   name?: string;
   source?: 'notes' | 'order';
+  /** The notes doc could not be READ (not merely absent). We cannot know whether this
+   *  customer opted out, so the caller must decline to send. */
+  notesUnavailable?: boolean;
 }
 
 /**
@@ -319,6 +325,26 @@ export function chooseRecipient(notes: any, stop: any, matchKey: string | null):
  * yields the literal "______" — truthy, and a key every address-less stop would SHARE. The
  * key is only usable if it has actual content in it. PURE.
  */
+/**
+ * Is this row a CUSTOMER DELIVERY — the only thing this feature is entitled to email about?
+ *
+ * DELIVERED alone is not enough. Every stop on the board carries a stopType, 'DO' for a
+ * drop-off and 'PU' for a pickup (nuvizz-list.mts derives it, and enrichment overwrites it
+ * from /stop/info). A completed PICKUP is also normalizedStatus DELIVERED — it means "we
+ * collected the freight", not "your freight arrived". Emailing the shipper "Delivered — PRO
+ * 12345, your delivery is complete" the moment we take custody is wrong on its face, and it
+ * would go out at pickup volume, to the party most likely to notice.
+ *
+ * Unknown/absent stopType is treated as a DELIVERY, deliberately: enrichment is the
+ * authority and a not-yet-enriched row has no type at all. Excluding those would silently
+ * drop real customers, which is the failure this feature exists to prevent — whereas the
+ * thing we are guarding against announces itself with an explicit 'PU'. PURE → unit-tested.
+ */
+export function isCustomerDelivery(stop: any): boolean {
+  if (String(stop?.normalizedStatus || '').toUpperCase() !== 'DELIVERED') return false;
+  return String(stop?.stopType || '').trim().toUpperCase() !== 'PU';
+}
+
 export function usableMatchKey(stop: any): string | null {
   const key = normalizeMatchKey(stop?.businessName, stop?.addr1, stop?.city, stop?.zip);
   return /[a-z0-9]/i.test(String(key || '')) ? key : null;
@@ -326,8 +352,23 @@ export function usableMatchKey(stop: any): string | null {
 
 export async function resolveRecipient(stop: any): Promise<Recipient> {
   const matchKey = usableMatchKey(stop);
-  const notes = matchKey ? await getDoc(`customer_notes/${matchKey}`).catch(() => null) : null;
-  return chooseRecipient(notes, stop, matchKey);
+  if (!matchKey) return chooseRecipient(null, stop, null);
+  // FAIL CLOSED ON AN UNREADABLE NOTES DOC. This used to be `.catch(() => null)`, which
+  // collapsed "Firestore errored" into "this customer has no notes" — and the ONLY thing
+  // that records an opt-out is that document. So a transient read failure did not merely
+  // lose a preference; it emailed a customer who had explicitly asked us to stop, and did
+  // it silently. This module's own note says an opt-out you cannot honour is worse than no
+  // opt-out; honouring it only when the network agrees is the same thing.
+  //
+  // A missing document is NOT an error — getDoc resolves null for that, which is the
+  // ordinary case for the vast majority of customers and still sends.
+  try {
+    const notes = await getDoc(`customer_notes/${matchKey}`);
+    return chooseRecipient(notes, stop, matchKey);
+  } catch (e: any) {
+    console.warn(`[customer-comms] notes read failed for ${matchKey}: ${e?.message}`);
+    return { email: null, optedOut: false, matchKey, notesUnavailable: true };
+  }
 }
 
 // ── TEMPLATE ─────────────────────────────────────────────────────────────────
@@ -495,6 +536,68 @@ export function isStaleDelivery(stop: any, date: string, maxAgeDays = 2): boolea
   return Math.round((d - s) / 86400000) > maxAgeDays;
 }
 
+/**
+ * WHICH BOARD DATES ONE SCHEDULED RUN SWEEPS.
+ *
+ * Today, always. Plus YESTERDAY, but only in the early hours — and that second
+ * date is not housekeeping, it is the difference between a customer getting
+ * their email and never getting it.
+ *
+ * Freight delivered at 23:50 ET is written to YESTERDAY's board. By the time the
+ * next run fires, etDayString() has already rolled to the new day, so a
+ * today-only sweep would step straight over that delivery and never come back to
+ * it — every late-evening customer silently dropped, on a feature whose entire
+ * promise is that the email always arrives. isSweepableBoardDate already permits
+ * yesterday for exactly this reason ("a scan running just after ET midnight
+ * still writes yesterday's board"); this is the caller that uses that allowance.
+ *
+ * Bounded to the early window because the cost is a FULL board read per date per
+ * run. Sweeping yesterday all day long would double the Firestore read volume
+ * for ever, to catch stragglers that the first few runs after midnight have
+ * already caught — and the ledger makes every pass after the first a no-op
+ * anyway. Six hours is many runs' worth of margin on a boundary measured in
+ * minutes.
+ *
+ * DST is a non-issue by construction: the schedule is an INTERVAL (every 30
+ * minutes) rather than a fixed hour, so it does not care that ET is UTC-4 in
+ * summer and UTC-5 in winter, and the window below is tested against ET itself
+ * rather than against the cron clock. PURE → unit-tested.
+ */
+export const YESTERDAY_SWEEP_BEFORE_ET_HOUR = 6;
+
+/** Yesterday, from a YYYY-MM-DD string. Self-contained so this module gains no
+ *  new cross-module dependency for one line of arithmetic. */
+export function dayBefore(ymd: string): string {
+  if (!DATE_RE.test(String(ymd || ''))) return '';
+  const d = new Date(`${ymd}T00:00:00Z`);
+  // DATE_RE only pins the SHAPE. '2026-13-45' is four-two-two digits and sails
+  // through it, but is not a date — and Date#toISOString THROWS on that rather
+  // than returning something wrong. Since sweepDates() is called before the
+  // handler's per-date try/catch, an unchecked throw here would take down the
+  // whole run instead of one date. Validate the parse, not just the pattern.
+  if (Number.isNaN(d.getTime())) return '';
+  d.setUTCDate(d.getUTCDate() - 1);
+  return d.toISOString().slice(0, 10);
+}
+
+/** Tomorrow, from a YYYY-MM-DD string. Same validate-the-parse rule as dayBefore. */
+export function dayAfter(ymd: string): string {
+  if (!DATE_RE.test(String(ymd || ''))) return '';
+  const d = new Date(`${ymd}T00:00:00Z`);
+  if (Number.isNaN(d.getTime())) return '';
+  d.setUTCDate(d.getUTCDate() + 1);
+  return d.toISOString().slice(0, 10);
+}
+
+export function sweepDates(now: Date = new Date()): string[] {
+  const today = etDayString(now);
+  const hour = Number(etHourString(now));
+  if (!Number.isFinite(hour) || hour >= YESTERDAY_SWEEP_BEFORE_ET_HOUR) return [today];
+  const y = dayBefore(today);
+  // Newest first: if a run is ever cut short, the day that matters most is done.
+  return y ? [today, y] : [today];
+}
+
 // ── SEND ONE ─────────────────────────────────────────────────────────────────
 
 export interface SendOutcome {
@@ -513,6 +616,11 @@ export interface SendDeps {
   release: (date: string, key: string) => Promise<void>;
   send: typeof sendEmail;
   recipient: (stop: any) => Promise<Recipient>;
+  /** Has this key already been sent under some OTHER board date? In the seam with the rest
+   *  of the trio because it is now part of the same property they exist to protect — one
+   *  email per PRO ever — and a guard against double-sending that cannot itself be tested
+   *  is not much of a guard. */
+  priorSend: (date: string, key: string) => Promise<any>;
 }
 
 /**
@@ -543,7 +651,9 @@ export async function sendForStop(
 ): Promise<SendOutcome> {
   const d: SendDeps = {
     claim: claimSend, finalize: finalizeSend, release: releaseClaim,
-    send: sendEmail, recipient: resolveRecipient, ...(opts.deps || {}),
+    send: sendEmail, recipient: resolveRecipient,
+    priorSend: (dt, k) => getDoc(sentDoc(dt, k)),
+    ...(opts.deps || {}),
   };
   const cfg = opts.cfg || (await readConfig());
   const pro = String(stop?.pro || stop?.primaryPro || stop?.stopNbr || '');
@@ -553,7 +663,12 @@ export async function sendForStop(
   if (!emailEnabled()) return { pro, key, skipped: 'email_not_configured' };
 
   const status = String(stop?.normalizedStatus || '').toUpperCase();
-  if (status !== 'DELIVERED' && !opts.force) return { pro, key, skipped: `not_delivered(${status || 'unknown'})` };
+  // The SAME predicate the sweep filters on, so the two can never drift apart — this is the
+  // last gate before a customer is emailed, and it must not be the more permissive one.
+  if (!isCustomerDelivery(stop) && !opts.force) {
+    const why = status === 'DELIVERED' ? 'pickup_not_delivery' : `not_delivered(${status || 'unknown'})`;
+    return { pro, key, skipped: why };
+  }
   if (isStaleDelivery(stop, date) && !opts.force) return { pro, key, skipped: 'stale_delivery' };
 
   let to = opts.toOverride || '';
@@ -561,6 +676,10 @@ export async function sendForStop(
   if (!to) {
     const r = await d.recipient(stop);
     if (r.optedOut) return { pro, key, skipped: 'opted_out' };
+    // Not "no notes" — notes UNREADABLE. The opt-out lives in that document, so sending now
+    // would be sending in ignorance of it. Declining costs this customer a delayed email;
+    // the next sweep retries and the ledger has no claim, so nothing is lost permanently.
+    if (r.notesUnavailable) return { pro, key, skipped: 'notes_unavailable' };
     if (!r.email) return { pro, key, skipped: 'no_email_on_file' };
     to = r.email;
     if (r.name) customerName = String(r.name);
@@ -573,6 +692,39 @@ export async function sendForStop(
   // commit, so two overlapping sweeps cannot both win it. A claim that cannot be written
   // is not a reason to send anyway — it is the reason NOT to, because without a durable
   // claim nothing stops the next sweep sending the same email again.
+  // ── ALREADY EMAILED ON A NEIGHBOURING BOARD DATE? ────────────────────────
+  // The ledger is per board date (nuvizz_ops/customer_comms_<date>/sent), so the atomic
+  // claim below only makes this stop unique WITHIN one date. The promise on the tin, and
+  // the one printed on the screen, is one email per PRO EVER.
+  //
+  // Those differ the moment a delivered stop appears on two board dates — a rolled-forward
+  // or re-dated row, which this module already knows happens (it is what isStaleDelivery
+  // exists for, and that guard's two-day tolerance lets a one-day shift straight through).
+  // The stop is then claimed once under each date and the customer is emailed twice about
+  // the same freight. The early-hours yesterday sweep makes that a routine path rather than
+  // a rare one.
+  //
+  // ledgerKey is stable across dates by construction (normalised stopNbr, de-zeroed), so
+  // the neighbouring days can be checked directly. ±1 day only: that is the whole window
+  // isSweepableBoardDate will ever hand us, so a wider search would read documents that
+  // cannot exist. Costs one getDoc per neighbour per stop, and only for stops that got
+  // past every cheaper skip above.
+  //
+  // Fails CLOSED, like every other read on this path: if we cannot tell whether we already
+  // emailed this customer, we do not email them again.
+  for (const neighbour of [dayBefore(date), dayAfter(date)]) {
+    if (!neighbour) continue;
+    let prior: any;
+    try {
+      prior = await d.priorSend(neighbour, key);
+    } catch (e: any) {
+      console.warn(`[customer-comms] neighbour ledger read failed for ${key} on ${neighbour}: ${e?.message}`);
+      return { pro, key, skipped: 'neighbour_ledger_unavailable' };
+    }
+    // A RELEASED claim leaves no document, so only a real prior send is found here.
+    if (prior) return { pro, key, skipped: 'already_sent_other_date' };
+  }
+
   let owned: boolean;
   try {
     owned = await d.claim(date, key, {
@@ -612,35 +764,54 @@ export async function sendForStop(
 
 export const FAILURE_CIRCUIT = 5;
 
+/** How many SENDS between re-reads of the program switch mid-sweep. See the abort check in
+ *  sweepDelivered: small enough that "switch off to stop it" is true in practice, large
+ *  enough that the extra config reads are a rounding error beside the sends themselves. */
+export const ABORT_POLL_EVERY = 25;
+
 export interface SweepResult {
   ran: boolean; sent: number; failed: number;
   skipped: Record<string, number>;
   capped?: boolean; circuitOpen?: boolean; reason?: string;
+  /** The program switch was turned off while this sweep was running, and it stopped. */
+  abandoned?: boolean;
 }
 
 export async function sweepDelivered(
   stops: any[],
   date: string = etDayString(),
-  opts: { today?: string } = {},
+  opts: { today?: string; budgetCeiling?: number } = {},
 ): Promise<SweepResult> {
   const skipped: Record<string, number> = {};
   const bump = (k: string, n = 1) => { skipped[k] = (skipped[k] || 0) + n; };
   const all = Array.isArray(stops) ? stops : [];
 
   if (!isSweepableBoardDate(date, opts.today || etDayString())) {
+    await writeSweepStatus(date, { considered: 0, sent: 0, failed: 0, reason: 'stale_board_date' });
     return { ran: false, sent: 0, failed: 0, skipped: {}, reason: 'stale_board_date' };
   }
 
   const cfg = await readConfig();
+  // NOT recorded: `disabled` is the steady state forty-eight times a day while the program
+  // is off, and writing a document each time would bury the days that matter under noise.
+  // It is also the one outcome nobody needs a record of — the switch itself says so.
   if (!cfg.enabled) return { ran: false, sent: 0, failed: 0, skipped: {}, reason: 'disabled' };
-  if (!emailEnabled()) return { ran: false, sent: 0, failed: 0, skipped: {}, reason: 'email_not_configured' };
+  if (!emailEnabled()) {
+    // Switched ON but unable to send: exactly the state that must never look like a quiet day.
+    await writeSweepStatus(date, { considered: 0, sent: 0, failed: 0, reason: 'email_not_configured' });
+    return { ran: false, sent: 0, failed: 0, skipped: {}, reason: 'email_not_configured' };
+  }
 
   // Count only what this feature is about. Reporting the whole ~600-stop board as
   // "skipped" buries the handful of numbers anyone actually reads.
-  const delivered = all.filter((s) => String(s?.normalizedStatus || '').toUpperCase() === 'DELIVERED');
+  // isCustomerDelivery, not a bare status check: a completed PICKUP is also DELIVERED, and
+  // emailing the shipper "your delivery is complete" when we have just collected the freight
+  // is wrong on its face. See isCustomerDelivery.
+  const delivered = all.filter(isCustomerDelivery);
   if (!delivered.length) {
     // Nothing to do, and no reason to spend a ledger read finding that out. Future board
     // dates hit this on every scan.
+    await writeSweepStatus(date, { considered: 0, sent: 0, failed: 0, reason: 'no_delivered_stops' });
     return { ran: true, sent: 0, failed: 0, skipped: {}, reason: 'no_delivered_stops' };
   }
 
@@ -651,25 +822,60 @@ export async function sweepDelivered(
     already = Object.keys(await readLedger(date)).length;
   } catch (e: any) {
     console.warn(`[customer-comms] ledger read failed for ${date}: ${e?.message}`);
+    await writeSweepStatus(date, { considered: delivered.length, sent: 0, failed: 0, reason: 'ledger_unavailable', errors: [String(e?.message || e)] });
     return { ran: false, sent: 0, failed: 0, skipped: {}, reason: 'ledger_unavailable' };
   }
 
+  // THE CAP IS PER BOARD DATE; THE PROMISE IS PER DAY. The ledger lives under
+  // customer_comms_<date>, so each date starts with its own full budget — and between
+  // 00:00 and 06:00 ET this sweep runs TWO dates. A cap of 1000 could therefore put out
+  // 2000 emails inside one calendar day, while the enable dialog says "up to 1000 a day".
+  // The caller passes what is left of the run's allowance so the two dates share one
+  // ceiling, and the number on the screen is the number that can actually be sent.
   let budget = Math.max(0, cfg.dailyCap - already);
+  if (typeof opts.budgetCeiling === 'number') budget = Math.min(budget, Math.max(0, opts.budgetCeiling));
   if (budget <= 0) {
     await writeSweepStatus(date, { considered: delivered.length, sent: 0, failed: 0, capped: true, skipped: { daily_cap: delivered.length } });
     return { ran: true, sent: 0, failed: 0, skipped: { daily_cap: delivered.length }, capped: true };
   }
 
-  let sent = 0, failed = 0, consecutiveFailures = 0, circuitOpen = false;
+  let sent = 0, failed = 0, consecutiveFailures = 0, circuitOpen = false, abandoned = false;
   const errors: string[] = [];
+  let checked = 0;
   for (const stop of delivered) {
     if (budget <= 0) { bump('daily_cap'); continue; }
     if (circuitOpen) { bump('circuit_open'); continue; }
+    if (abandoned) { bump('switched_off'); continue; }
+
+    // THE OFF SWITCH HAS TO ACTUALLY STOP IT. cfg is read once, before the loop, so a sweep
+    // of several hundred stops runs for minutes on a snapshot of the config. Someone
+    // watching the first wrong email land and diving for the switch would have changed
+    // nothing — the run in flight keeps going to the end of the board. Both the confirm
+    // dialog and the red LIVE banner promise "switch off to stop it", so this is the code
+    // owing the UI a guarantee it already made on its behalf.
+    //
+    // Re-read every ABORT_POLL_EVERY sends: one small document per 25 emails is nothing
+    // beside a send, and it bounds how much mail an abandoned run can still put out.
+    // Checked on SENDS rather than on stops, so a board of skips costs no extra reads.
+    if (checked >= ABORT_POLL_EVERY) {
+      checked = 0;
+      // An unreadable config does NOT abort — that would let a Firestore blip halt a healthy
+      // run mid-board. The pre-loop read already established consent; this only looks for a
+      // deliberate withdrawal of it.
+      const live = await readConfig().catch(() => null);
+      if (live && !live.enabled) {
+        abandoned = true;
+        console.warn(`[customer-comms] program switched OFF mid-sweep on ${date} — stopping after ${sent} sent`);
+        bump('switched_off');
+        continue;
+      }
+    }
+
     try {
       const r = await sendForStop(stop, date, { cfg });
       if (r.skipped) { bump(r.skipped); continue; }
       if (r.ok) {
-        sent++; budget--; consecutiveFailures = 0;
+        sent++; budget--; checked++; consecutiveFailures = 0;
       } else {
         failed++; consecutiveFailures++;
         if (errors.length < 5 && r.error) errors.push(`${r.key}: ${r.error}`);
@@ -688,8 +894,8 @@ export async function sweepDelivered(
     }
   }
 
-  await writeSweepStatus(date, { considered: delivered.length, sent, failed, capped: budget <= 0, circuitOpen, skipped, errors });
-  return { ran: true, sent, failed, skipped, capped: budget <= 0, circuitOpen };
+  await writeSweepStatus(date, { considered: delivered.length, sent, failed, capped: budget <= 0, circuitOpen, abandoned, skipped, errors });
+  return { ran: true, sent, failed, skipped, capped: budget <= 0, circuitOpen, abandoned };
 }
 
 /**
@@ -697,6 +903,12 @@ export async function sweepDelivered(
  * diagnostic cs-notify keeps, for the same reason. Without it a day where all 600 stops
  * skipped `no_email_on_file` reads identically to a day the sweep never ran. Best-effort.
  */
+// EVERY OUTCOME EXCEPT `disabled` WRITES ONE OF THESE. Five exits used to write nothing at
+// all, which made a sweep that could not run byte-for-byte identical to a day with nothing
+// to do: silence either way. That is precisely the confusion this document exists to
+// prevent, so the early returns now record their reason too. `disabled` is excluded on
+// purpose — it is the steady state while the switch is off, and 48 documents a day saying
+// "off" would bury the ones that matter.
 export async function writeSweepStatus(date: string, s: Record<string, any>): Promise<void> {
   try {
     await setDoc(`${OPS}/customer_comms_${date}`, { date, at: new Date().toISOString(), ...s });

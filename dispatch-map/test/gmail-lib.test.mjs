@@ -9,7 +9,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { buildAuthUrl, accountAllowed, GMAIL_SCOPE } from '../netlify/functions/lib/gmail.mts';
+import {
+  buildAuthUrl, accountAllowed, GMAIL_SCOPE,
+  credentialProblem, credentialWarning, gmailOAuthConfig,
+} from '../netlify/functions/lib/gmail.mts';
 import { normalizeQuery, summarizeCycle, gmailNeedsReconnect } from '../netlify/functions/lib/mail-sources.mts';
 import { DEFAULT_GMAIL_QUERY } from '../netlify/functions/lib/gmail-source.mts';
 import { sealSecret, openSecret, stateValid, STATE_TTL_MS } from '../netlify/functions/lib/gmail-store.mts';
@@ -144,4 +147,81 @@ test('the poll summary says what actually happened, in words', () => {
 test('a blank saved search falls back to the shared default, never the whole mailbox', () => {
   for (const v of ['', '   ', null, undefined]) assert.equal(normalizeQuery(v), DEFAULT_GMAIL_QUERY);
   assert.equal(normalizeQuery('  from:uline.com  '), 'from:uline.com');
+});
+
+// ── the credential that was SET, and wrong ──────────────────────────────────
+// GMAIL_CLIENT_ID spent a day holding an email address. Nothing caught it:
+// `configured` only asked whether both strings were non-empty, so status said
+// yes, the Connect button rendered, and ?action=start redirected to Google
+// carrying `client_id=<an email address>`. It took hand-reading the Location
+// header of that redirect to find. These pin the check that now speaks up
+// first — and, just as importantly, pin how NARROW it is allowed to be.
+//
+// FIXTURES: every address below is @example.com / @example.net on purpose, and
+// must stay that way. Netlify's secrets scan greps every file under
+// dispatch-map/ for the VALUES of this site's env vars. In v0.54.75 a lifelike
+// address written into this very file happened to CONTAIN one of those values
+// as a substring, the scan flagged it, and the production deploy failed with a
+// bare "non-zero exit code: 2" that cost hours to trace back to here. Reserved
+// example domains are the fix: RFC 2606 guarantees nobody's credential is one.
+test('the exact failure: an email address in the client ID box is refused', () => {
+  const problem = credentialProblem('ops@example.com', 'GOCSPX-abc123');
+  assert.ok(problem, 'this is the value that shipped, and it must not read as configured');
+  assert.match(problem, /GMAIL_CLIENT_ID/, 'name the box that is wrong');
+  assert.match(problem, /email address/, 'and say what is in it');
+  assert.match(problem, /apps\.googleusercontent\.com/, 'and what belongs there instead');
+});
+
+test('an address pasted into the SECRET box is caught too', () => {
+  const problem = credentialProblem('123-abc.apps.googleusercontent.com', 'ops@example.net');
+  assert.match(problem, /GMAIL_CLIENT_SECRET/);
+  assert.match(problem, /email address/);
+});
+
+test('a real-shaped credential pair is accepted with nothing to say', () => {
+  assert.equal(credentialProblem('123456-abc.apps.googleusercontent.com', 'GOCSPX-notarealsecret'), null);
+  assert.equal(credentialWarning('123456-abc.apps.googleusercontent.com', 'GOCSPX-notarealsecret'), null);
+});
+
+test('missing names the missing one, not both', () => {
+  assert.match(credentialProblem('', 'GOCSPX-x'), /GMAIL_CLIENT_ID is not set/);
+  assert.match(credentialProblem('123-abc.apps.googleusercontent.com', ''), /GMAIL_CLIENT_SECRET is not set/);
+  assert.match(credentialProblem('', ''), /GMAIL_CLIENT_ID and GMAIL_CLIENT_SECRET/);
+});
+
+test('one value pasted into both boxes is caught before the consent screen', () => {
+  // This one completes consent and fails the token exchange afterwards — the
+  // worst ordering, because the user has already granted access by then.
+  const both = '123-abc.apps.googleusercontent.com';
+  assert.match(credentialProblem(both, both), /same value/);
+});
+
+test('an UNFAMILIAR shape only warns — it must never block a working credential', () => {
+  // Google's suffix and GOCSPX- prefix are conventions, not our contract. The
+  // day either changes, this app must keep working; a stale warning is the
+  // cheap failure, a refused-but-valid credential is the expensive one.
+  const odd = '123456-abc.oauth.example.com';
+  assert.equal(credentialProblem(odd, 'GOCSPX-notarealsecret'), null, 'not a refusal');
+  assert.match(credentialWarning(odd, 'GOCSPX-notarealsecret'), /apps\.googleusercontent\.com/);
+  assert.match(credentialWarning('123-abc.apps.googleusercontent.com', 'sekrit'), /GOCSPX-/);
+});
+
+test('gmailOAuthConfig reports NOT configured on a credential it can prove is unusable', () => {
+  const saved = { id: process.env.GMAIL_CLIENT_ID, secret: process.env.GMAIL_CLIENT_SECRET };
+  try {
+    process.env.GMAIL_CLIENT_ID = 'ops@example.com';
+    process.env.GMAIL_CLIENT_SECRET = 'GOCSPX-notarealsecret';
+    const cfg = gmailOAuthConfig();
+    assert.equal(cfg.configured, false, 'both strings non-empty is no longer enough');
+    assert.match(cfg.problem, /GMAIL_CLIENT_ID/);
+    assert.equal(cfg.warning, null, 'one fault at a time — the problem is the headline');
+
+    process.env.GMAIL_CLIENT_ID = '123456-abc.apps.googleusercontent.com';
+    const ok = gmailOAuthConfig();
+    assert.equal(ok.configured, true);
+    assert.equal(ok.problem, null);
+  } finally {
+    if (saved.id === undefined) delete process.env.GMAIL_CLIENT_ID; else process.env.GMAIL_CLIENT_ID = saved.id;
+    if (saved.secret === undefined) delete process.env.GMAIL_CLIENT_SECRET; else process.env.GMAIL_CLIENT_SECRET = saved.secret;
+  }
 });

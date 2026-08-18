@@ -107,6 +107,13 @@ function planFor(op: WriteOp, payload: any): string[] {
   // The three single-order partialUpdate ops all run the same ladder, and it is never one
   // call — the read is what makes the write safe (partialUpdate is a full replace) and the
   // read-back is what proves it didn't cost the order anything else. Say so.
+  if (op === 'cancelOrder') {
+    return [
+      `READ stop ${payload?.stopNbr ?? '?'} — record WHAT is about to be cancelled, and refuse if two orders share the number`,
+      'REFUSE if the order is already delivered, or currently planned on a load (NuVizz only cancels unplanned orders)',
+      `CANCEL BY stopId — never by number — reason ${String(payload?.reasonCode ?? '').trim() || 'ADMIN'}. THIS CANNOT BE UNDONE.`,
+    ];
+  }
   if (op === 'addStopNote' || op === 'setStopDate' || op === 'setStopContact') {
     const what = op === 'addStopNote' ? 'merge the note onto the order\'s existing comments'
       : op === 'setStopDate' ? `move the delivery window to ${payload?.date ?? '(no date)'}`
