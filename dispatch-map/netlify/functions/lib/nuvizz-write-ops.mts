@@ -622,14 +622,82 @@ export function buildPartialUpdateStop(rawStop: any, overrides: Record<string, a
   // them off. Strip last, and the derived keys cannot return by any route.
   const merged: Record<string, any> = { ...rawStop };
   for (const [k, v] of Object.entries(overrides || {})) merged[k] = v;
-  return withoutPaths(merged, PARTIAL_UPDATE_DERIVED_KEYS);
+  return withoutPaths(pinEchoedConsignee(merged), PARTIAL_UPDATE_DERIVED_KEYS);
+}
+
+/**
+ * Make the echoed CONSIGNEE literal before it goes back on the wire.
+ *
+ * ── WHY THIS BREAKS THIS MODULE'S OWN "INVENT NOTHING" RULE, ON PURPOSE ──────
+ *
+ * Everything else in this file echoes the read verbatim, because on a whole-stop
+ * replace a value we make up is a value we have overwritten. That rule held this
+ * helper out of the write path from 2026-08-17, when the re-addressing incident
+ * was first diagnosed, on the reasoning that wiring it deserved one supervised
+ * write first.
+ *
+ * It happened again on 2026-08-18, and the rule is what allowed it. Chad, with a
+ * photo of the drift banner: "The email you reviewed yesterday about the error
+ * with updating addresses changing everything in nuvizz to the incorrect things
+ * like davis. Just happened again. Please fix this correctly this time."
+ * ESTES-2958929164, RENE M CONNELL, after nothing but a phone-number NOTE:
+ *     to.address.addr1: "1977 BEN HIGGINS RD" -> "943 GAINESVILLE HIGHWAY"
+ *     to.address.city:  "DAHLONEGA"           -> "BUFORD"
+ *     to.address.zip:   "30533"               -> "30518"
+ *     to.address.name:  "RENE M CONNELL"      -> "DAVIS DELIVERY"
+ * The customer's freight is now addressed to our own yard. "GEORGIA" spelled out
+ * in the state field is the vendor's own fingerprint — this repo only ever maps
+ * the other way, via US_STATE_CODES — so this is NuVizz resolving the address,
+ * not us composing it.
+ *
+ * The v0.54.75 fix set addressType ANY on the CREATION paths, so orders we create
+ * are safe. This order was not created by us: it came off an ESTES import and
+ * carries whatever type NuVizz gave it. Every such order — every order on the
+ * board older than that fix, and every imported one since — is still a lookup key
+ * waiting for the next note.
+ *
+ * So: obeying "invent nothing" costs freight delivered to the wrong building, and
+ * the fix is a two-field change to a block whose real values we are preserving
+ * exactly. That trade is not close. The rule stands everywhere else in this file.
+ *
+ * ── WHAT IT ACTUALLY CHANGES ────────────────────────────────────────────────
+ * Only a consignee that is RESOLVABLE — a company-book addressType, or a label,
+ * i.e. one NuVizz is entitled to overwrite. An address already sent as literal
+ * data is left untouched, so the common case is a no-op and the blast radius is
+ * exactly the orders that are actually in danger.
+ *
+ * The PICKUP is deliberately left alone. Our terminal genuinely is the company
+ * address, so resolving it is correct, and isBenignVendorNormalisation already
+ * excuses the vendor canonicalising its name.
+ *
+ * REFUSES rather than half-pins: ANY makes `name` mandatory, so a block with no
+ * name or no street cannot be made literal. Throwing fails the write loudly and
+ * the note is not saved — which is a far smaller problem than the address moving,
+ * and is the same call pinEchoAddress's own contract already documented.
+ */
+export function pinEchoedConsignee(stop: Record<string, any>): Record<string, any> {
+  const plain = (v: any) => v !== null && typeof v === 'object' && !Array.isArray(v);
+  const to = stop?.to;
+  if (!plain(to) || !plain(to.address)) return stop;
+  if (!addressIsResolvable(to.address)) return stop;   // already literal — nothing to do
+
+  const pinned = pinEchoAddress(to.address);
+  if (!pinned) {
+    throw new Error(
+      'refusing to write: this order\'s delivery address is a company-book lookup that cannot be '
+      + 'pinned to literal values (it has no name or no street), and echoing it back lets NuVizz '
+      + 'replace it — which is how orders end up addressed to our own terminal. '
+      + 'Fix the delivery address in the portal first.',
+    );
+  }
+  return { ...stop, to: { ...to, address: pinned } };
 }
 
 /**
  * PURE. Is this echoed address a LOOKUP KEY rather than data?
  *
- * NOT YET WIRED INTO THE WRITE PATH — deliberately. See pinEchoAddress below for
- * what we would do about it and why that decision is not ours to take alone.
+ * WIRED as of v0.54.91 — see pinEchoedConsignee, which uses this to decide whether
+ * an echoed consignee needs pinning at all.
  *
  * NuVizz's v7 spec defines COM as "Company address" and COMFAC as "Company
  * facility"; `label` it defines as a key that repopulates line1/line2/city/state/
@@ -648,12 +716,10 @@ export function addressIsResolvable(addr: any): boolean {
 /**
  * PURE. Make an echoed address LITERAL so the vendor cannot resolve it away.
  *
- * NOT YET WIRED INTO THE WRITE PATH. It changes a value we did not read, which
- * breaks this module's standing "invent nothing the read did not provide" rule —
- * a rule that exists for good reason on a whole-stop replace. Wiring it needs one
- * supervised write against one real order, watching the existing read-back
- * tripwire, because the alternative to being wrong here is freight going to the
- * wrong building. Exported and tested so that test is a five-minute job.
+ * WIRED as of v0.54.91 via pinEchoedConsignee, which every partialUpdate write now
+ * passes through. It deliberately breaks this module's "invent nothing the read did
+ * not provide" rule; pinEchoedConsignee carries the full argument for why, and what
+ * leaving it unwired cost on 2026-08-18.
  *
  * ── why this exists ─────────────────────────────────────────────────────────
  * partialUpdate is a whole-stop replace, so every note, date and contact write
