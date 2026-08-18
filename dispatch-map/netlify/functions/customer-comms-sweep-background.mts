@@ -53,10 +53,21 @@ export default async (): Promise<Response> => {
   const dates = sweepDates();
   const runs: Record<string, any> = {};
 
+  // ONE CEILING ACROSS BOTH DATES. Each date keeps its own ledger, so each would otherwise
+  // start with a full cfg.dailyCap of its own — and in the early-hours window this loop runs
+  // two of them, so a cap of N could send 2N inside one calendar day. The enable dialog
+  // promises "up to N a day" in as many words. Today is swept first (see sweepDates), so
+  // when the allowance runs out it is yesterday's stragglers that wait for tomorrow, not
+  // today's customers.
+  let remaining = cfg.dailyCap;
+
   for (const date of dates) {
+    if (remaining <= 0) { runs[date] = { ran: false, sent: 0, failed: 0, skipped: {}, reason: 'run_cap_reached' }; continue; }
     try {
       const { stops } = await readStops(TENANT, date);
-      runs[date] = await sweepDelivered(stops, date);
+      const r = await sweepDelivered(stops, date, { budgetCeiling: remaining });
+      runs[date] = r;
+      remaining -= (r?.sent || 0);
     } catch (e: any) {
       // Fail CLOSED and LOUD: no send happened, and the next run retries. Swallowing
       // this silently is how a feature becomes an invisible no-op, which is the exact
