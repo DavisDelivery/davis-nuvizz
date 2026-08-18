@@ -77,7 +77,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.54.87';
+const APP_VERSION = '0.54.88';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -122,6 +122,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.54.88', 'THE CUSTOMER DELIVERY-EMAIL TRIGGER IS WIRED. Chad: "wire up the trigger now." The engine has been complete and dark since v0.54.78 — recipient resolution, the per-customer opt-out, a one-email-per-PRO ledger with an atomic claim, the daily cap, a five-failure circuit breaker and a per-day status record, all unit-tested — and none of it had a caller. sweepDelivered was exported and invoked by nothing. This adds the one thing missing: a scheduled background function that reads the cached board out of Firestore and calls it, every 30 minutes. ZERO NuVizz calls, ever. IT SWEEPS TODAY, AND YESTERDAY IN THE EARLY HOURS — that second date is not housekeeping. Freight delivered at 23:50 ET is written to YESTERDAY\u2019s board, and by the next run the ET day has rolled; a today-only sweep would step over that customer and never come back, with no error and nothing in the log to notice. Bounded to before 06:00 ET because the cost is a full board read per date per run. DST cannot move it: the schedule is an interval rather than a fixed hour, and the window is measured in Eastern Time, pinned by tests on both sides of the changeover. CONFIG IS READ BEFORE THE BOARD, so a switched-off program costs one document rather than several hundred every half hour — and readConfig fails CLOSED, so an unreachable Firestore stops the mail instead of starting it. THE SCREEN NOW TELLS THE TRUTH. The \u201ctrigger is not wired\u201d banner became a lie the moment this shipped, so it is state-dependent: reassurance while the switch is off, a red LIVE warning while it is on. The confirmation dialog no longer promises that nothing will send — it says, in units that matter, that this emails real customers within 30 minutes and how many a day. Deploying this sends NOTHING; the switch does. 8 new tests, 1,667 green.'],
   ['0.54.87', 'THE GMAIL CARD NOW TELLS YOU WHEN THE CREDENTIAL IS WRONG, INSTEAD OF WHEN IT IS MISSING. Connecting Gmail failed for a day for a reason nothing on this screen could see: GMAIL_CLIENT_ID was set to an EMAIL ADDRESS rather than an OAuth client ID. Every surface reported success — the status check asked only whether the two credential strings were non-empty, so it said configured, the Connect button rendered normally, and clicking it redirected to Google carrying an email address where the client ID belongs. The only place the truth existed was Google\u2019s own error page, AFTER the click; finding it meant hand-reading the redirect header. Now the shape is checked BEFORE the click: a credential box holding an address is refused outright, the card says which variable is wrong and what belongs in it, and start/callback return that same sentence instead of a generic \u201cnot configured\u201d. Deliberately lopsided — it hard-refuses only what cannot possibly be a credential (an @ sign), and merely WARNS on a shape it does not recognise, so the day Google changes its .apps.googleusercontent.com suffix or GOCSPX- prefix this app keeps working rather than rejecting a valid key. \u201cNot set up on this site\u201d now means genuinely unset, which is the state it always claimed to mean. 1,659 unit tests green.'],
   ['0.54.85', 'THE SENDER IS notifications@davisdelivery.com. Chad upgraded the Resend plan, which removes the block that made this impossible before — Resend had been refusing to add a second domain at all (403 "You have reached the domain limit"), and an address on a domain Resend does not know is not a soft failure: it rejects every send. davisdelivery.com is now registered on the account and the config default points at it. ONE THING IS STILL OUTSTANDING, and it is the one that decides whether mail actually leaves the building: the domain\'s DNS. Three records have to resolve before Resend will accept a send from this address — TXT resend._domainkey (the DKIM key), MX send → feedback-smtp.us-east-1.amazonses.com priority 10, and TXT send → v=spf1 include:amazonses.com ~all. All three hang off send. and resend._domainkey., NOT the apex, so publishing them does not touch the existing davisdelivery.com mail setup — no risk to the mailboxes anyone is using today. Until they resolve the domain sits at "pending" and a [TEST] send fails; the Sender card now prints the three records and says exactly that, so a failure there reads as "DNS is not live yet" rather than as a bug. Nothing else is exposed: the sweep trigger is still unwired, so the test button is the only path that can attempt a send at all. WHY THIS WENT IN CODE RATHER THAN THE SCREEN: the same field is editable in More → Customer emails → Sender, but the first save from that screen writes the WHOLE config document to Firestore, htmlTemplate included — and from then on template changes shipped in code stop reaching the site, because readConfig prefers the stored document. Changing the default in code keeps the template tracking the repo. The fallback to the warehouse address is still one field if it is ever wanted, with that trade understood.'],
   ['0.54.84', 'DOUBLE-CHECKING THE PHONE WORK FOUND THE PREVIEW LYING ABOUT THE SUBJECT LINE. Chad: "Double check your work." The strongest claim v0.54.79 made was that the live email preview cannot drift from what a customer receives, because the client renders it through a mirror of the server\'s own template code. The mirror was wrong in one place. The server escapes merge values for the HTML BODY and deliberately does NOT escape them for the SUBJECT — buildMessage renders html with escapeVars(vars) and the subject with the raw vars, because a subject is a mail header, not markup. The mirror escaped both. Nothing shows it today, since the default subject is only {{pro}}; but {{customer}} is an obvious thing to add, and the moment it was added a customer called "BUFORD TILE & STONE" would have previewed as "BUFORD TILE &amp; STONE" in the one line a recipient reads first — while the real send was correct all along. The mirror now splits: renderCommsSubject renders raw and applies normalizeSubject\'s own bounds (single line, 200 chars), renderCommsPreview keeps escaping the body. Two tests pin the asymmetry on the SERVER side, where it originates, so the next person to change it is told the UI carries a mirror that has to change with it. ALSO VERIFIED, not assumed: every one of the seven message keys the comms controller can raise now renders in BOTH the phone and desktop bodies (the missing "save" one was the defect the second sweep caught); the apex address validates in both plain and display-name form, so switching the sender after the Resend upgrade really is one field and no deploy; the test allowlist still refuses a non-Davis inbox; and the layout guard covers every tab the app has. 1,639 tests green.'],
@@ -22405,12 +22406,17 @@ function useCommsConsole() {
 
   const toggleEnabled = async () => {
     const on = !cfgResp?.config?.enabled;
+    // This dialog used to say "nothing sends today". Since v0.54.88 that is false,
+    // and it was the LAST thing a person read before turning on mail to customers.
+    // It now states the consequence in the units that matter: real people, how
+    // soon, and how many.
+    const cap = cfgResp?.config?.dailyCap;
     const q = on
-      ? 'Turn the customer delivery-email program ON?\n\nNothing sends today — the automatic trigger is not wired yet. This stages the switch so the trigger can ship separately.'
-      : 'Turn the program OFF? Any future trigger will send nothing while off.';
+      ? `Turn the customer delivery-email program ON?\n\nTHIS SENDS REAL EMAIL TO REAL CUSTOMERS.\n\nWithin 30 minutes the sweep will email every customer whose freight was delivered today — one per PRO, ever, up to ${cap ?? 'the daily cap'} a day.\n\nSwitch it off again to stop.`
+      : 'Turn the program OFF? The sweep will send nothing while off.';
     if (!window.confirm(q)) return;
     const j = await putConfig({ enabled: on }, 'enable', 'program');
-    if (j) say('program', 'ok', on ? 'Program is ON — still nothing sends until the trigger ships.' : 'Program is OFF.');
+    if (j) say('program', 'ok', on ? 'Program is ON — the sweep will email delivered customers within 30 minutes.' : 'Program is OFF — the sweep sends nothing.');
   };
 
   const runCoverage = async () => {
@@ -22500,8 +22506,8 @@ function SenderTargetNote({ compact }) {
       </span>
       <span className="block mt-1">
         They hang off <span className="font-mono">send.</span> and <span className="font-mono">resend._domainkey.</span>, not the
-        apex, so publishing them does not touch existing davisdelivery.com mail. Nothing sends on its own
-        meanwhile — the trigger is still unwired.
+        apex, so publishing them does not touch existing davisdelivery.com mail. Nothing sends
+        meanwhile — the sweep declines every send while the program switch is off.
       </span>
     </div>
   );
@@ -22608,15 +22614,28 @@ function CommsPhone(c) {
 
         <div className="h-3" />
 
-        <PhoneSection title="Program" subtitle={c.enabled ? 'ON — trigger still unwired' : 'OFF — nothing sends'} open={open === 'program'} onToggle={() => toggle('program')}>
+        <PhoneSection title="Program" subtitle={c.enabled ? 'ON — sweeping every 30 min' : 'OFF — nothing sends'} open={open === 'program'} onToggle={() => toggle('program')}>
           <div className="flex items-center gap-3">
             <CommsSwitch checked={c.enabled} disabled={!c.cfg || c.busy === 'enable' || (!c.enabled && !c.cfgResp?.resendConfigured)} onChange={c.toggleEnabled} label="Delivery-complete emails" />
             <span className="text-[13px] text-slate-700">Send a delivery-complete email — one per PRO, ever.</span>
           </div>
           {c.cfgResp && !c.cfgResp.resendConfigured && <div className="mt-2 text-[12px] text-red-700 font-semibold">Mail service unconfigured — the switch refuses to turn on.</div>}
-          <div className="mt-3 text-[12px] leading-relaxed text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
-            The automatic trigger is <b>not wired yet</b> — even switched on, nothing sends on its own today.
-          </div>
+          {/* The trigger IS wired as of v0.54.88, so the old fixed "nothing sends"
+              note became a lie the moment it shipped. State-dependent now: while
+              the switch is off it is the reassurance, and while it is on it is the
+              warning — because ON means real mail to real customers, unattended,
+              every half hour. */}
+          {c.enabled ? (
+            <div className="mt-3 text-[12px] leading-relaxed text-red-800 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
+              <b>LIVE.</b> The sweep runs every 30 minutes and emails customers whose freight was
+              delivered — one per PRO, ever, capped at {c.cfg?.dailyCap ?? '—'} a day. Switch off to stop it.
+            </div>
+          ) : (
+            <div className="mt-3 text-[12px] leading-relaxed text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+              Nothing sends while this is off. Switch it on and the sweep starts emailing
+              delivered customers within 30 minutes.
+            </div>
+          )}
           <CommsMsg msg={c.msg} where="program" />
         </PhoneSection>
 
@@ -22629,7 +22648,7 @@ function CommsPhone(c) {
           <input className={input} value={c.replyTo} onChange={(e) => { c.setReplyTo(e.target.value); c.setDirty(true); }} inputMode="email" autoCapitalize="off" autoCorrect="off" />
           <label className={`${label} mt-3`}>Daily cap</label>
           <input className={input} type="number" inputMode="numeric" min="0" max="2000" value={c.dailyCap} onChange={(e) => { c.setDailyCap(e.target.value); c.setDirty(true); }} />
-          <div className="text-[11px] text-slate-400 mt-1">A full day delivers ~700+. Raise this before the trigger ships.</div>
+          <div className="text-[11px] text-slate-400 mt-1">A full day delivers ~700+. The sweep stops at this number each day.</div>
         </PhoneSection>
 
         <PhoneSection title="Coverage" subtitle={c.coverage ? `${c.coverage.pct}% reachable` : 'How many we could reach'} open={open === 'coverage'} onToggle={() => toggle('coverage')}>
@@ -22681,7 +22700,7 @@ function CommsPhone(c) {
           subtitle={c.log?.totals ? `${c.log.totals.sent} sent · ${c.log.totals.failed} failed · ${c.log.totals.inflight} unconfirmed` : 'Last 7 days'}
           open={open === 'log'} onToggle={() => toggle('log')}
         >
-          {c.log?.totals?.total === 0 && <div className="text-[12px] text-slate-400">Nothing has been sent yet — expected while the trigger is unwired.</div>}
+          {c.log?.totals?.total === 0 && <div className="text-[12px] text-slate-400">{c.enabled ? 'Nothing sent yet — the sweep runs every 30 minutes.' : 'Nothing has been sent yet — expected while the program is off.'}</div>}
           {/* Cards, not a table: a five-column table on a 390px phone is a scroll puzzle. */}
           <ul className="divide-y divide-slate-100">
             {(c.log?.entries || []).slice(0, 25).map((e, i) => (
@@ -22833,9 +22852,17 @@ function CommsDesktop(c) {
                 </div>
               </div>
               {c.cfgResp && !c.cfgResp.resendConfigured && <div className="mt-2 text-[11px] text-red-700 font-semibold">Mail service unconfigured on this site — the switch refuses to turn on.</div>}
-              <div className="mt-3 text-[11px] leading-relaxed text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-2">
-                The automatic trigger is <b>not wired yet</b> — even switched on, nothing sends on its own today.
-              </div>
+              {c.enabled ? (
+                <div className="mt-3 text-[11px] leading-relaxed text-red-800 bg-red-50 border border-red-200 rounded-lg px-2.5 py-2">
+                  <b>LIVE.</b> The sweep runs every 30 minutes and emails customers whose freight was
+                  delivered — one per PRO, ever, capped at {c.cfg?.dailyCap ?? '—'} a day. Switch off to stop it.
+                </div>
+              ) : (
+                <div className="mt-3 text-[11px] leading-relaxed text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-2">
+                  Nothing sends while this is off. Switch it on and the sweep starts emailing
+                  delivered customers within 30 minutes.
+                </div>
+              )}
               <CommsMsg msg={c.msg} where="program" />
             </CommsCard>
 
@@ -22848,7 +22875,7 @@ function CommsDesktop(c) {
               <input className={input} value={c.replyTo} onChange={(e) => { c.setReplyTo(e.target.value); c.setDirty(true); }} />
               <label className={`${label} mt-3`}>Daily cap</label>
               <input className={input} type="number" min="0" max="2000" value={c.dailyCap} onChange={(e) => { c.setDailyCap(e.target.value); c.setDirty(true); }} />
-              <div className="text-[10px] text-slate-400 mt-1">A full day delivers ~700+. Raise this before the trigger ships.</div>
+              <div className="text-[10px] text-slate-400 mt-1">A full day delivers ~700+. The sweep stops at this number each day.</div>
             </CommsCard>
 
             <CommsCard title="Coverage" aside={
@@ -22894,7 +22921,7 @@ function CommsDesktop(c) {
           {c.log?.totals && (
             <div className="text-xs text-slate-600 mb-2">
               {c.log.totals.sent} sent · {c.log.totals.failed} failed · {c.log.totals.inflight} unconfirmed
-              {c.log.totals.total === 0 && <span className="text-slate-400"> — nothing has been sent yet, which is expected while the trigger is unwired.</span>}
+              {c.log.totals.total === 0 && <span className="text-slate-400">{c.enabled ? ' — nothing sent yet; the sweep runs every 30 minutes.' : ' — nothing has been sent yet, which is expected while the program is off.'}</span>}
             </div>
           )}
           {c.log?.entries?.length > 0 && (
