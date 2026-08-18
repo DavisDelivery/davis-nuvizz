@@ -87,9 +87,11 @@ export const DEFAULT_CONFIG: CommsConfig = {
   // All three hang off `send.` and `resend._domainkey.`, NOT the apex, so publishing them
   // does not disturb the existing davisdelivery.com mail setup.
   //
-  // As of v0.54.88 the sweep trigger IS wired (customer-comms-sweep-background.mts), so the
-  // [TEST] button is no longer the only path that can attempt a send. What holds the mail
-  // now is `enabled` below, which defaults to false and is flipped only from the UI. To fall back while waiting, put the warehouse address in More → Customer
+  // The sweep trigger IS wired now (customer-comms-sweep-background.mts), so the [TEST]
+  // button is no longer the only path that can attempt a send. What holds the mail is
+  // `enabled` below, which defaults to false and is flipped only from the UI.
+  //
+  // To fall back while waiting, put the warehouse address in More → Customer
   // emails → Sender — but know that the FIRST save from that screen writes the whole config
   // document to Firestore, htmlTemplate included, after which template changes in code stop
   // reaching the site. Prefer waiting for DNS over taking that trade.

@@ -52,6 +52,9 @@ const SCREENS = [
   { key: 'manifest', label: 'Manifest check', nav: /manifest check/i, inMore: true },
   { key: 'comms', label: 'Customer emails', nav: /customer emails/i, inMore: true },
   { key: 'diagnostics', label: 'Diagnostics', nav: /diagnostics/i },
+  // Both open as overlays rather than swapping `tab`, which is why they were missed.
+  { key: 'messages', label: 'Messages', nav: /^messages/i },
+  { key: 'debug', label: 'Debug this view', nav: /debug this view/i, inMore: true },
 ];
 
 // PROBES — the guard's biggest blind spot was that it only ever measured a screen at REST.
@@ -158,7 +161,17 @@ function stubRoutes(page, emailHtml) {
 // Measure inside the page: find what actually sticks out, not merely that something does.
 const MEASURE = `(() => {
   const vw = window.innerWidth;
-  const docW = Math.max(document.documentElement.scrollWidth, document.body.scrollWidth);
+  // NOT document.scrollWidth. index.css pins html/body/#root to the viewport with
+  // overflow:hidden, so the document can never report itself as wider than the window —
+  // which made this guard's headline check structurally incapable of firing. Measure the
+  // widest thing that actually lays out instead: the app shell and every scroll container.
+  // #root ONLY. An overflow-hidden box reports its content's width in scrollWidth even
+  // though it clips and cannot scroll — the scaled 600px email preview is exactly that, and
+  // measuring every overflow-* element flagged it as a 600px page. A clipping box cannot
+  // widen the shell, so the shell is the honest measure; anything genuinely too wide shows
+  // up in #root.scrollWidth, and anything merely clipped is caught by the clipped check.
+  const root = document.getElementById('root') || document.body;
+  const docW = Math.max(vw, root.scrollWidth);
   const out = { vw, docW, wide: [], offscreen: [], small: [], dead: [], clipped: [] };
 
   const visible = (el, r) => {
@@ -175,7 +188,11 @@ const MEASURE = `(() => {
   const inScroller = (el) => {
     for (let p = el.parentElement; p; p = p.parentElement) {
       const ox = getComputedStyle(p).overflowX;
-      if (ox === 'auto' || ox === 'scroll') return true;
+      // It must ACTUALLY scroll horizontally. Tailwind's overflow-y-auto computes
+      // overflow-x to 'auto' as well, so the old test treated every vertically scrolling
+      // sheet, drawer and screen body as a deliberate horizontal scroller and silently
+      // switched off the wide/offscreen/clipped checks inside all of them.
+      if ((ox === 'auto' || ox === 'scroll') && p.scrollWidth > p.clientWidth + 1) return true;
     }
     return false;
   };
@@ -191,6 +208,7 @@ const MEASURE = `(() => {
     }
     return 0;
   };
+  const tagOf = (el) => el.tagName.toLowerCase();
   const describe = (el) => {
     const id = el.id ? '#' + el.id : '';
     const cls = typeof el.className === 'string' && el.className ? '.' + el.className.trim().split(/\\s+/).slice(0, 4).join('.') : '';
@@ -205,7 +223,8 @@ const MEASURE = `(() => {
     if (!inScroller(el)) {
       const cut = clippedBy(el, r);
       // Only leaf-ish content: a clipped wrapper is usually just its clipped child again.
-      if (cut > 4 && el.children.length === 0 && (el.textContent || '').trim().length > 0) {
+      const isControl = ['button', 'a', 'select', 'input', 'summary'].includes(tagOf(el));
+      if (cut > 4 && (isControl || (el.children.length === 0 && (el.textContent || '').trim().length > 0))) {
         out.clipped.push({ el: describe(el), cut });
       }
     }
@@ -315,11 +334,9 @@ for (const device of DEVICES) {
     const m = await page.evaluate(MEASURE);
 
     const probs = [];
-    if (m.docW > m.vw + 1) {
-      probs.push(`page scrolls sideways (${m.docW}px wide in a ${m.vw}px viewport)`);
-      for (const w of m.wide) probs.push(`   widest: ${w.w}px — ${w.el}`);
-      for (const o of m.offscreen.slice(0, 3)) probs.push(`   off-screen: right edge ${o.right}px — ${o.el}`);
-    }
+    if (m.docW > m.vw + 1) probs.push(`content is ${m.docW}px wide in a ${m.vw}px viewport`);
+    for (const w of m.wide) probs.push(`wider than the screen: ${w.w}px — ${w.el}`);
+    for (const o of m.offscreen) probs.push(`off-screen: right edge ${o.right}px — ${o.el}`);
     for (const cl of m.clipped) probs.push(`clipped ${cl.cut}px by an overflow-hidden ancestor — ${cl.el}`);
     for (const d of m.dead) probs.push(`dead region ${d.h}px tall with nothing in it — ${d.el}`);
     for (const s of m.small) probs.push(`touch target ${s.w}×${s.h}px — ${s.el}`);
@@ -339,10 +356,9 @@ for (const device of DEVICES) {
       await openAllDetails(page);
       const pm = await page.evaluate(MEASURE);
       const pp = [];
-      if (pm.docW > pm.vw + 1) {
-        pp.push(`page scrolls sideways (${pm.docW}px in ${pm.vw}px)`);
-        for (const w of pm.wide) pp.push(`   widest: ${w.w}px — ${w.el}`);
-      }
+      if (pm.docW > pm.vw + 1) pp.push(`content is ${pm.docW}px wide in a ${pm.vw}px viewport`);
+      for (const w of pm.wide) pp.push(`wider than the screen: ${w.w}px — ${w.el}`);
+      for (const o of pm.offscreen) pp.push(`off-screen: right edge ${o.right}px — ${o.el}`);
       for (const cl of pm.clipped) pp.push(`clipped ${cl.cut}px — ${cl.el}`);
       for (const sm of pm.small) pp.push(`touch target ${sm.w}×${sm.h}px — ${sm.el}`);
       if (pp.length === 0) ok(`${screen.label} → ${probe.name}`);

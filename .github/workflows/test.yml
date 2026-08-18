@@ -108,6 +108,12 @@ jobs:
       - run: npx --yes playwright@$(node -p "require('playwright-core/package.json').version") install chromium
       - run: npm run build
       - run: npm run smoke
+      # THE PHONE GUARD. It walks every screen at 390 and 360, opens the sheets and
+      # drawers, and fails on content wider than the screen, controls clipped out of their
+      # container, sub-40px tap targets and dead regions. It shipped at v0.54.80 described
+      # as build-gating and then was never wired to anything — every claim that it "fails
+      # the build" was false until this line existed. Chromium is already installed above.
+      - run: npm run verify:mobile
       # "Hide place labels" can only misbehave on a build that HAS a cloud mapId: Google
       # ignores the JS `styles` array on those maps, so the toggle had nothing to do on the
       # roadmap base. Honouring it means REBUILDING the map without the mapId, and the risk
