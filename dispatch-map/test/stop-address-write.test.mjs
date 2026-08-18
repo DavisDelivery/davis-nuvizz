@@ -117,3 +117,93 @@ test('a DIFFERENT address is not landed — this is the check that matters', () 
   assert.equal(addressLanded(null, FIX), false);
   assert.equal(addressLanded({}, FIX), false);
 });
+
+// ── THE HOLE AN ADVERSARIAL REVIEW FOUND, BEFORE THIS SHIPPED ───────────────
+//
+// The first draft verified a correction with addressLanded ALONE — and handed it
+// the MERGED block (typed fields spread over the ones that were read). So on a
+// partial correction the three fields it checked (house number, zip, name) were
+// precisely the three the caller had NOT changed, and they verified themselves
+// against the pre-write record. A write NuVizz accepted and ignored came back
+// ok:true with "Order X is now addressed to <what we typed>".
+//
+// That is worse than not having the feature. Today a dispatcher knows NuVizz may
+// be wrong; that version would have told them it was right.
+//
+// The regression test that was supposed to catch this passed only because its
+// fixture moved BOTH the house number and the zip — the one shape addressLanded
+// happens to cover. These cases are the shapes it did not.
+import {
+  addressMatchesTyped, addressMoved,
+} from '../netlify/functions/lib/nuvizz-write-ops.mts';
+
+const STORED = { addressType: 'ANY', name: 'ACME TILE', addr1: '100 MAIN ST', city: 'BUFORD', state: 'GEORGIA', zip: '30518' };
+
+/** The exact expression runSetStopAddress evaluates. */
+function verdict(wasAddr, readAddr, typed) {
+  const merged = buildLiteralAddress(wasAddr, typed);
+  const alreadyRight = addressMatchesTyped(wasAddr, typed);
+  return addressLanded(readAddr, merged)
+    && addressMatchesTyped(readAddr, typed)
+    && (alreadyRight || addressMoved(wasAddr, readAddr));
+}
+
+const SHAPES = [
+  ['a city-only correction', { city: 'SUGAR HILL' }],
+  ['a suite-only correction', { addr2: 'STE 400' }],
+  ['a street name on the same house number', { addr1: '100 OAK ST' }],
+  ['a directional prefix', { addr1: '100 N MAIN ST' }],
+  ['a state-only correction', { state: 'SC' }],
+  ['a PO box renumber (no street number at all)', { addr1: 'PO BOX 2299' }],
+];
+
+for (const [label, typed] of SHAPES) {
+  test(`ACCEPTED-AND-IGNORED is caught for ${label}`, () => {
+    // NuVizz answers 200 and stores nothing: the read-back is the pre-write record.
+    assert.equal(verdict(STORED, STORED, typed), false,
+      'reporting this as saved would tell a dispatcher an address is fixed when it is not');
+  });
+
+  test(`a real save still passes for ${label}, in the vendor's own spelling`, () => {
+    const merged = buildLiteralAddress(STORED, typed);
+    const stored = { ...merged,
+      state: merged.state === 'SC' ? 'SOUTH CAROLINA' : 'GEORGIA',   // NuVizz expands codes
+      addr1: String(merged.addr1).replace(/\bST$/, 'STREET').replace(/\bN\b/, 'NORTH'),
+      zip: `${merged.zip}-1234` };                                    // and returns ZIP+4
+    assert.equal(verdict(STORED, stored, typed), true,
+      'a check that fails every good write is the cry-wolf failure this module already paid for');
+  });
+}
+
+test('"SC" → "SOUTH CAROLINA" passes — one token becoming two', () => {
+  // GA → GEORGIA is 1→1 and passed a naive token compare; SC → SOUTH CAROLINA is
+  // 1→2 and did not. A state-only correction would have failed forever.
+  assert.equal(addressMatchesTyped({ ...STORED, state: 'SOUTH CAROLINA' }, { state: 'SC' }), true);
+  assert.equal(addressMatchesTyped({ ...STORED, state: 'GEORGIA' }, { state: 'GA' }), true);
+  assert.equal(addressMatchesTyped({ ...STORED, state: 'GEORGIA' }, { state: 'SC' }), false);
+});
+
+test('a field the caller never typed cannot vote that the write landed', () => {
+  // The root cause: verifying against the merged block let inherited fields agree
+  // with themselves. addressMatchesTyped is always checked against what was TYPED.
+  assert.equal(addressMatchesTyped(STORED, { city: 'SUGAR HILL' }), false, 'the city did not change');
+  assert.equal(addressMatchesTyped(STORED, {}), true, 'nothing typed, nothing to disprove');
+});
+
+test('an explicitly CLEARED field must read back empty', () => {
+  const withSuite = { ...STORED, addr2: 'APT999' };
+  assert.equal(addressMatchesTyped(withSuite, { addr2: '' }), false, 'the suite is still there');
+  assert.equal(addressMatchesTyped(STORED, { addr2: '' }), true, 'and gone means gone');
+});
+
+test('addressMoved compares two vendor reads, so vendor spelling cancels out', () => {
+  // Both sides come from NuVizz, so this layer cannot false-fail on normalisation.
+  assert.equal(addressMoved(STORED, STORED), false);
+  assert.equal(addressMoved(STORED, { ...STORED, city: 'SUGAR HILL' }), true);
+  assert.equal(addressMoved(STORED, { ...STORED, addr2: 'STE 400' }), true, 'a suite is a move');
+});
+
+test('re-saving an address that is ALREADY right is not reported as a failure', () => {
+  // Nothing moves, and nothing should — the correction was a no-op on purpose.
+  assert.equal(verdict(STORED, STORED, { city: 'BUFORD' }), true);
+});

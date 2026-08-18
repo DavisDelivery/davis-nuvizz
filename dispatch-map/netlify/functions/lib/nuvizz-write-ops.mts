@@ -1019,19 +1019,83 @@ export function buildStopAddressOverride(rawStop: any, next: Record<string, any>
   return { side, block: { ...cur, address: buildLiteralAddress(cur.address, next) } };
 }
 
-/** PURE: did the correction actually land? Compared on the fields a human typed, case- and
- *  space-insensitively, because NuVizz normalises what it stores — it expands "GA" to
- *  "GEORGIA" and "RD" to "ROAD" on its own. Demanding byte equality would report every
- *  successful correction as a failure. */
+/**
+ * VERIFYING AN ADDRESS CORRECTION — THREE LAYERS, AND WHY ONE IS NOT ENOUGH.
+ *
+ * This op deliberately removes the whole `<side>.address` subtree from the drift diff (the
+ * address IS the field being changed), so these functions are the ONLY proof the correction
+ * took. The first draft used addressLanded alone and that was a hole big enough to drive a
+ * truck through: it compares the leading digits of addr1, the 5-digit zip and a name prefix,
+ * and it was handed the MERGED block — the typed fields spread over the ones that were read.
+ * So on a partial correction the three fields it checked were precisely the three the caller
+ * had NOT changed, and they verified themselves against the pre-write record.
+ *
+ * Reproduced against a vendor that accepts the write and stores nothing: a city-only, an
+ * addr2-only, a state-only, a same-house-number street change ("100 MAIN ST" -> "100 OAK ST")
+ * and a directional flip ("100 MAIN ST" -> "100 N MAIN ST") ALL reported success. The shipped
+ * regression test passed only because its fixture moved the house number AND the zip — the
+ * one shape the check happened to cover.
+ *
+ * Telling a dispatcher an address is fixed when it is not is worse than not having the
+ * feature: today they know NuVizz may be wrong; that version would have told them it was right.
+ *
+ * BYTE EQUALITY IS NOT THE ANSWER. NuVizz demonstrably rewrites what it stores — "GA" becomes
+ * "GEORGIA", "RD" becomes "ROAD", both confirmed against the live vendor — so a strict check
+ * fails every good write, which is the cry-wolf failure this module has already paid for.
+ * Hence three layers, none of which can fail on normalisation alone.
+ */
+
+/** PURE. Layer 1 — IDENTITY. Did the block come back as the same physical place, rather than
+ *  resolved away to an address-book entry? House number, 5-digit zip, name prefix. */
 export function addressLanded(readAddr: any, want: Record<string, any>): boolean {
   const norm = (v: any) => String(v ?? '').toUpperCase().replace(/[^A-Z0-9]+/g, ' ').trim();
   const a = (readAddr && typeof readAddr === 'object') ? readAddr : {};
-  // The street NUMBER plus the zip is the identity of a US address; the rest is spelling.
   const num = (v: any) => (norm(v).match(/^\d+/) || [''])[0];
   if (want.addr1 && num(a.addr1) !== num(want.addr1)) return false;
   if (want.zip && norm(a.zip).slice(0, 5) !== norm(want.zip).slice(0, 5)) return false;
   if (want.name && !norm(a.name).startsWith(norm(want.name).slice(0, 8))) return false;
   return true;
+}
+
+/** PURE. Layer 2 — EVERY FIELD THE HUMAN TYPED reads back.
+ *
+ *  Compared against what was TYPED, never against the merged block: a field the caller left
+ *  alone must not be allowed to vote that the write landed. Token-wise and prefix-tolerant in
+ *  both directions, so "GA"/"GEORGIA" and "ST"/"STREET" agree while a different street, town
+ *  or suite does not. An explicitly CLEARED field ('') must read back empty. */
+export function addressMatchesTyped(readAddr: any, typed: Record<string, any>): boolean {
+  const toks = (v: any) => String(v ?? '').toUpperCase().replace(/[^A-Z0-9]+/g, ' ').trim().split(' ').filter(Boolean);
+  const a = (readAddr && typeof readAddr === 'object') ? readAddr : {};
+  const agrees = (stored: any, wanted: any) => {
+    const w = toks(wanted), st = toks(stored);
+    if (!w.length) return true;
+    if (st.length !== w.length) return false;
+    return w.every((t, i) => st[i].startsWith(t) || t.startsWith(st[i]));
+  };
+  // STATE goes through the repo's own code map, not the token comparison. NuVizz expands the
+  // code it is given, and the expansion is not always token-for-token: "GA" -> "GEORGIA" is
+  // 1 -> 1 and passes, but "SC" -> "SOUTH CAROLINA" is 1 -> 2 and would read as a mismatch.
+  // Caught by a probe before this shipped; a state-only correction would have failed forever.
+  if (typed.state !== undefined && String(typed.state).trim() !== ''
+      && stateCode(a.state) !== stateCode(typed.state)) return false;
+  for (const k of ['name', 'addr1', 'addr2', 'city'] as const) {
+    if (typed[k] === undefined) continue;
+    if (String(typed[k]).trim() === '') { if (toks(a[k]).length) return false; continue; }
+    if (!agrees(a[k], typed[k])) return false;
+  }
+  if (typed.state !== undefined && String(typed.state).trim() === '' && toks(a.state).length) return false;
+  if (typed.zip !== undefined && String(typed.zip).trim() !== ''
+      && String(a.zip ?? '').replace(/\D/g, '').slice(0, 5) !== String(typed.zip).replace(/\D/g, '').slice(0, 5)) return false;
+  return true;
+}
+
+/** PURE. Layer 3 — DID IT MOVE AT ALL? Both sides are vendor-STORED reads, so the vendor's
+ *  own spelling conventions cancel out and this cannot produce a false failure. It is the
+ *  layer that catches "accepted and ignored" no matter which field was corrected. */
+export function addressMoved(before: any, after: any): boolean {
+  const sig = (o: any) => ['name', 'addr1', 'addr2', 'city', 'state', 'zip', 'country']
+    .map((k) => String(o?.[k] ?? '').toUpperCase().replace(/[^A-Z0-9]+/g, ' ').trim()).join('|');
+  return sig(before) !== sig(after);
 }
 
 // ── §C the customer contact ON THE ORDER ─────────────────────────────────────

@@ -27,7 +27,7 @@ import {
   unsentLosses, documentHandlesMoved, type NoteAudience,
   buildPartialUpdateStop, buildStopDateOverride, stopDeliveryDate, isDayString, boardDateHoldWarning,
   stopInstanceMismatch, readBackInstanceMismatch, readBackUnidentifiable, isIdShaped, orderDriftPaths, addressDriftWarning,
-  buildStopAddressOverride, addressLanded,
+  buildStopAddressOverride, addressLanded, addressMatchesTyped, addressMoved,
   CANCEL_REASON_DEFAULT,
   buildStopContactOverride, stopContactFrom, normalizeContactPhone,
   type SingleOp, type WriteOp, type WriteCreds,
@@ -2223,8 +2223,9 @@ export async function runSetStopAddress(requester: RequesterLike, payload: any, 
     return { ok: false, calls, error: String(e?.message || e) };
   }
   const wasAddr = rawBefore?.[side]?.address || {};
-  const from = [wasAddr.addr1, wasAddr.city, wasAddr.state, wasAddr.zip].filter(Boolean).join(', ');
-  const to = [block.address.addr1, block.address.city, block.address.state, block.address.zip].filter(Boolean).join(', ');
+  const oneLine = (a: any) => [a?.addr1, a?.addr2, a?.city, a?.state, a?.zip].filter(Boolean).join(', ');
+  const from = oneLine(wasAddr);
+  const to = oneLine(block.address);   // the INTENT — what we sent
 
   const sent = buildPartialUpdateStop({ ...rawBefore, stopId, stopNbr: String(rawBefore.stopNbr ?? stopNbr) }, { [side]: block });
   const fpBefore = stopNoteFingerprint(rawBefore);
@@ -2244,7 +2245,16 @@ export async function runSetStopAddress(requester: RequesterLike, payload: any, 
   const rbNoId = readBackUnidentifiable('setStopAddress', stopNbr, stopId, rawAfter);
   if (rbNoId) return { ok: false, unverified: true, calls, error: rbNoId };
 
-  const landed = addressLanded(rawAfter?.[side]?.address, block.address);
+  const readAddr = rawAfter?.[side]?.address;
+  const now = oneLine(readAddr);   // what NuVizz actually STORED — the only thing worth quoting
+  // Three layers; see the block comment above addressLanded for what each one is for and why
+  // any single one of them is not enough. `addressMatchesTyped` is checked against `next` —
+  // what the human typed — never against the merged block, so a field the caller left alone
+  // can never vote that the write landed.
+  const alreadyRight = addressMatchesTyped(wasAddr, next);   // a legitimate re-save no-op
+  const landed = addressLanded(readAddr, block.address)
+    && addressMatchesTyped(readAddr, next)
+    && (alreadyRight || addressMoved(wasAddr, readAddr));
   // The address subtree is the field we came to change, so it is excluded from the drift
   // diff exactly as `schedule` is on a date change and `comments` is on a note. NuVizz
   // normalises what it stores ("GA" → "GEORGIA", "RD" → "ROAD") and re-derives latitude,
@@ -2258,17 +2268,24 @@ export async function runSetStopAddress(requester: RequesterLike, payload: any, 
   ])].filter((p) => !p.startsWith(`${side}.address`)));
   const losses = unsentLosses(rawBefore, rawAfter);
 
-  if (!landed) {
-    return { ok: false, calls, stopNbr, stopId, side, from, to, drift,
-      error: `setStopAddress: NuVizz accepted the write but ${stopNbr} still does not read back as ${to} — the address did NOT change. Check it in the portal; do not assume it took.` };
-  }
+  // Collateral damage FIRST, exactly as runAddStopNote and runSetStopDate order it. The first
+  // draft returned on !landed before this, throwing `losses` and `driftDetails` away — so the
+  // worst case (the address did NOT change AND the write wiped something else) reported only
+  // the half that was easier to see.
+  const details = [...driftDetail(sent, afterEcho, drift), ...losses.map((l) => `${l.path}: LOST ${l.lost.join(' · ')}`)];
   if (drift.length || losses.length) {
-    const details = [...driftDetail(sent, afterEcho, drift), ...losses.map((l) => `${l.path}: LOST ${l.lost.join(' · ')}`)];
-    return { ok: false, calls, stopNbr, stopId, side, from, to, drift, driftDetails: details, addressLanded: true,
-      error: `setStopAddress: the address changed to ${to} BUT partialUpdate changed ${drift.length + losses.length} other field(s) on the order. ${details.slice(0, 5).join(' | ')}${details.length > 5 ? ` (+${details.length - 5} more)` : ''}. Check ${stopNbr} in the portal.` };
+    return { ok: false, calls, stopNbr, stopId, side, from, to, now, drift, driftDetails: details, addressLanded: landed,
+      error: `setStopAddress: ${landed ? `the address changed to ${now}` : `the address did NOT change (${stopNbr} still reads ${now || '(no address)'})`} AND partialUpdate changed ${drift.length + losses.length} other field(s) on the order. ${details.slice(0, 5).join(' | ')}${details.length > 5 ? ` (+${details.length - 5} more)` : ''}. Check ${stopNbr} in the portal.` };
   }
-  return { ok: true, stopNbr, stopId, side, from, to, calls,
-    message: `Order ${stopNbr} is now addressed to ${to}.` };
+  if (!landed) {
+    return { ok: false, calls, stopNbr, stopId, side, from, to, now, drift,
+      error: `setStopAddress: NuVizz accepted the write but ${stopNbr} still reads ${now || '(no address)'}, not ${to} — the address did NOT change. Check it in the portal; do not assume it took.` };
+  }
+  // The message quotes what NuVizz STORED, not what we sent. Quoting the payload makes the
+  // one sentence a dispatcher reads unfalsifiable — runSetStopContact already reports the
+  // read-back for the same reason.
+  return { ok: true, stopNbr, stopId, side, from, to, now, calls,
+    message: `Order ${stopNbr} now reads ${now}.` };
 }
 
 export async function runSetStopDate(requester: RequesterLike, payload: any, creds: WriteCreds): Promise<any> {

@@ -141,3 +141,42 @@ test('a missing address object is refused before any call is made', async () => 
   assert.equal(r.ok, false);
   assert.equal(calls.length, 0, 'not even the read fired');
 });
+
+test('END TO END: a city-only correction the vendor IGNORES is reported as a FAILURE', async () => {
+  // The shape the original regression test missed: the house number and zip never
+  // move, so the identity layer alone would have called this a save.
+  const state = { stop: rawStop() };
+  const { requester } = makeRequester({ state, onWrite: () => { /* accepted, stored nothing */ } });
+  const r = await runSetStopAddress(requester, { stopNbr: 'ESTES-1', address: { city: 'SUGAR HILL' } }, CREDS);
+  assert.equal(r.ok, false);
+  assert.match(r.error, /did NOT change/i);
+  assert.match(r.error, /still reads/i, 'and it quotes what NuVizz actually holds');
+});
+
+test('the success message quotes what NUVIZZ STORED, never what we sent', async () => {
+  // Quoting the payload makes the one sentence a dispatcher reads unfalsifiable.
+  const state = { stop: rawStop() };
+  const { requester } = makeRequester({ state, onWrite: (sent, st) => {
+    st.stop = { ...st.stop, to: { ...st.stop.to, address: { ...sent.to.address, state: 'GEORGIA', addr1: '800 N COMMERCE STREET' } } };
+  } });
+  const r = await runSetStopAddress(requester, { stopNbr: 'ESTES-1', address: FIX }, CREDS);
+  assert.equal(r.ok, true, JSON.stringify(r));
+  assert.match(r.now, /800 N COMMERCE STREET/, 'the vendor spelling, read back');
+  assert.match(r.message, /now reads/);
+  assert.match(r.message, /800 N COMMERCE STREET/);
+});
+
+test('an address that did NOT land AND collateral damage reports BOTH', async () => {
+  // The first draft returned on !landed before the loss branch, throwing the
+  // driftDetails away — so the worst case showed only the easier half.
+  const state = { stop: rawStop() };
+  const { requester } = makeRequester({ state, onWrite: (sent, st) => {
+    st.stop = { ...st.stop, proNumber: 'CLOBBERED' };   // address untouched, something else wiped
+  } });
+  const r = await runSetStopAddress(requester, { stopNbr: 'ESTES-1', address: FIX }, CREDS);
+  assert.equal(r.ok, false);
+  assert.equal(r.addressLanded, false);
+  assert.ok(r.driftDetails && r.driftDetails.length >= 1, 'the collateral damage is still reported');
+  assert.match(r.error, /did NOT change/i);
+  assert.match(r.error, /other field/i);
+});
