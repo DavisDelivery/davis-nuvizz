@@ -21,6 +21,7 @@ import {
   ledgerKey, usableMatchKey, chooseRecipient,
   isSweepableBoardDate, isStaleDelivery, isDefinitiveRejection,
   isEmailAddress, isSenderAddress, clampDailyCap, testRecipientAllowed, adminTokenOk, buildMessage,
+  isRateLimited, MIN_SEND_INTERVAL_MS,
   sendForStop, DEFAULT_CONFIG,
   MERGE_FIELDS, DEFAULT_HTML, MAX_DAILY_CAP,
 } from '../netlify/functions/lib/customer-comms.mts';
@@ -484,4 +485,27 @@ test('buildMessage: a subject is bounded and single-line even if the template is
   const { subject } = buildMessage(stop, '2026-08-17', { subjectTemplate: '{{customer}}', htmlTemplate: '' });
   assert.ok(subject.length <= 200, 'Resend rejects an unbounded subject');
   assert.doesNotMatch(subject, /[\r\n]/, 'CR/LF in a header is injection');
+});
+
+// PACING (v0.54.94). The first live run measured 25 emails in 12.5s — 2.0/second, exactly
+// Resend's documented default limit. It succeeded, so the limit is at least that, but a run
+// sitting ON a ceiling has no headroom, and at ~700 deliveries a day the sweep will meet it.
+// A 429 must be told apart from a fault: it means "too fast", nothing was queued, and the
+// claim is released — so it must not spend a circuit-breaker life and halt a healthy run.
+test('isRateLimited: a 429 is pace, not a fault — and it is still a definitive rejection', () => {
+  assert.equal(isRateLimited('Resend HTTP 429 Too Many Requests'), true);
+  assert.equal(isRateLimited('Resend HTTP 422 invalid to'), false);
+  assert.equal(isRateLimited('Resend HTTP 500 server error'), false);
+  assert.equal(isRateLimited('socket hang up'), false, 'a thrown/network failure is NOT a rate limit — it is ambiguous and keeps its claim');
+  // Both must be true of a 429: the claim is released (definitive), AND it does not count
+  // toward the failure circuit (rate-limited). Losing either property is a real regression.
+  assert.equal(isDefinitiveRejection('Resend HTTP 429 Too Many Requests'), true,
+    'a 429 queued nothing, so the claim must be released and the customer retried');
+});
+
+test('the send pace leaves headroom under a 2/second ceiling', () => {
+  assert.ok(MIN_SEND_INTERVAL_MS >= 550,
+    'the measured live rate was 2.0/s against a documented 2/s limit — the floor must sit below it, not on it');
+  assert.ok(1000 / MIN_SEND_INTERVAL_MS < 2,
+    `pace of ${MIN_SEND_INTERVAL_MS}ms implies ${(1000 / MIN_SEND_INTERVAL_MS).toFixed(2)}/s, which must stay under 2/s`);
 });
