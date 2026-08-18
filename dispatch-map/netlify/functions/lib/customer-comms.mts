@@ -762,28 +762,43 @@ export async function sendForStop(
 
 export const FAILURE_CIRCUIT = 5;
 
+/** How many SENDS between re-reads of the program switch mid-sweep. See the abort check in
+ *  sweepDelivered: small enough that "switch off to stop it" is true in practice, large
+ *  enough that the extra config reads are a rounding error beside the sends themselves. */
+export const ABORT_POLL_EVERY = 25;
+
 export interface SweepResult {
   ran: boolean; sent: number; failed: number;
   skipped: Record<string, number>;
   capped?: boolean; circuitOpen?: boolean; reason?: string;
+  /** The program switch was turned off while this sweep was running, and it stopped. */
+  abandoned?: boolean;
 }
 
 export async function sweepDelivered(
   stops: any[],
   date: string = etDayString(),
-  opts: { today?: string } = {},
+  opts: { today?: string; budgetCeiling?: number } = {},
 ): Promise<SweepResult> {
   const skipped: Record<string, number> = {};
   const bump = (k: string, n = 1) => { skipped[k] = (skipped[k] || 0) + n; };
   const all = Array.isArray(stops) ? stops : [];
 
   if (!isSweepableBoardDate(date, opts.today || etDayString())) {
+    await writeSweepStatus(date, { considered: 0, sent: 0, failed: 0, reason: 'stale_board_date' });
     return { ran: false, sent: 0, failed: 0, skipped: {}, reason: 'stale_board_date' };
   }
 
   const cfg = await readConfig();
+  // NOT recorded: `disabled` is the steady state forty-eight times a day while the program
+  // is off, and writing a document each time would bury the days that matter under noise.
+  // It is also the one outcome nobody needs a record of — the switch itself says so.
   if (!cfg.enabled) return { ran: false, sent: 0, failed: 0, skipped: {}, reason: 'disabled' };
-  if (!emailEnabled()) return { ran: false, sent: 0, failed: 0, skipped: {}, reason: 'email_not_configured' };
+  if (!emailEnabled()) {
+    // Switched ON but unable to send: exactly the state that must never look like a quiet day.
+    await writeSweepStatus(date, { considered: 0, sent: 0, failed: 0, reason: 'email_not_configured' });
+    return { ran: false, sent: 0, failed: 0, skipped: {}, reason: 'email_not_configured' };
+  }
 
   // Count only what this feature is about. Reporting the whole ~600-stop board as
   // "skipped" buries the handful of numbers anyone actually reads.
@@ -794,6 +809,7 @@ export async function sweepDelivered(
   if (!delivered.length) {
     // Nothing to do, and no reason to spend a ledger read finding that out. Future board
     // dates hit this on every scan.
+    await writeSweepStatus(date, { considered: 0, sent: 0, failed: 0, reason: 'no_delivered_stops' });
     return { ran: true, sent: 0, failed: 0, skipped: {}, reason: 'no_delivered_stops' };
   }
 
@@ -804,25 +820,60 @@ export async function sweepDelivered(
     already = Object.keys(await readLedger(date)).length;
   } catch (e: any) {
     console.warn(`[customer-comms] ledger read failed for ${date}: ${e?.message}`);
+    await writeSweepStatus(date, { considered: delivered.length, sent: 0, failed: 0, reason: 'ledger_unavailable', errors: [String(e?.message || e)] });
     return { ran: false, sent: 0, failed: 0, skipped: {}, reason: 'ledger_unavailable' };
   }
 
+  // THE CAP IS PER BOARD DATE; THE PROMISE IS PER DAY. The ledger lives under
+  // customer_comms_<date>, so each date starts with its own full budget — and between
+  // 00:00 and 06:00 ET this sweep runs TWO dates. A cap of 1000 could therefore put out
+  // 2000 emails inside one calendar day, while the enable dialog says "up to 1000 a day".
+  // The caller passes what is left of the run's allowance so the two dates share one
+  // ceiling, and the number on the screen is the number that can actually be sent.
   let budget = Math.max(0, cfg.dailyCap - already);
+  if (typeof opts.budgetCeiling === 'number') budget = Math.min(budget, Math.max(0, opts.budgetCeiling));
   if (budget <= 0) {
     await writeSweepStatus(date, { considered: delivered.length, sent: 0, failed: 0, capped: true, skipped: { daily_cap: delivered.length } });
     return { ran: true, sent: 0, failed: 0, skipped: { daily_cap: delivered.length }, capped: true };
   }
 
-  let sent = 0, failed = 0, consecutiveFailures = 0, circuitOpen = false;
+  let sent = 0, failed = 0, consecutiveFailures = 0, circuitOpen = false, abandoned = false;
   const errors: string[] = [];
+  let checked = 0;
   for (const stop of delivered) {
     if (budget <= 0) { bump('daily_cap'); continue; }
     if (circuitOpen) { bump('circuit_open'); continue; }
+    if (abandoned) { bump('switched_off'); continue; }
+
+    // THE OFF SWITCH HAS TO ACTUALLY STOP IT. cfg is read once, before the loop, so a sweep
+    // of several hundred stops runs for minutes on a snapshot of the config. Someone
+    // watching the first wrong email land and diving for the switch would have changed
+    // nothing — the run in flight keeps going to the end of the board. Both the confirm
+    // dialog and the red LIVE banner promise "switch off to stop it", so this is the code
+    // owing the UI a guarantee it already made on its behalf.
+    //
+    // Re-read every ABORT_POLL_EVERY sends: one small document per 25 emails is nothing
+    // beside a send, and it bounds how much mail an abandoned run can still put out.
+    // Checked on SENDS rather than on stops, so a board of skips costs no extra reads.
+    if (checked >= ABORT_POLL_EVERY) {
+      checked = 0;
+      // An unreadable config does NOT abort — that would let a Firestore blip halt a healthy
+      // run mid-board. The pre-loop read already established consent; this only looks for a
+      // deliberate withdrawal of it.
+      const live = await readConfig().catch(() => null);
+      if (live && !live.enabled) {
+        abandoned = true;
+        console.warn(`[customer-comms] program switched OFF mid-sweep on ${date} — stopping after ${sent} sent`);
+        bump('switched_off');
+        continue;
+      }
+    }
+
     try {
       const r = await sendForStop(stop, date, { cfg });
       if (r.skipped) { bump(r.skipped); continue; }
       if (r.ok) {
-        sent++; budget--; consecutiveFailures = 0;
+        sent++; budget--; checked++; consecutiveFailures = 0;
       } else {
         failed++; consecutiveFailures++;
         if (errors.length < 5 && r.error) errors.push(`${r.key}: ${r.error}`);
@@ -841,8 +892,8 @@ export async function sweepDelivered(
     }
   }
 
-  await writeSweepStatus(date, { considered: delivered.length, sent, failed, capped: budget <= 0, circuitOpen, skipped, errors });
-  return { ran: true, sent, failed, skipped, capped: budget <= 0, circuitOpen };
+  await writeSweepStatus(date, { considered: delivered.length, sent, failed, capped: budget <= 0, circuitOpen, abandoned, skipped, errors });
+  return { ran: true, sent, failed, skipped, capped: budget <= 0, circuitOpen, abandoned };
 }
 
 /**
@@ -850,6 +901,12 @@ export async function sweepDelivered(
  * diagnostic cs-notify keeps, for the same reason. Without it a day where all 600 stops
  * skipped `no_email_on_file` reads identically to a day the sweep never ran. Best-effort.
  */
+// EVERY OUTCOME EXCEPT `disabled` WRITES ONE OF THESE. Five exits used to write nothing at
+// all, which made a sweep that could not run byte-for-byte identical to a day with nothing
+// to do: silence either way. That is precisely the confusion this document exists to
+// prevent, so the early returns now record their reason too. `disabled` is excluded on
+// purpose — it is the steady state while the switch is off, and 48 documents a day saying
+// "off" would bury the ones that matter.
 export async function writeSweepStatus(date: string, s: Record<string, any>): Promise<void> {
   try {
     await setDoc(`${OPS}/customer_comms_${date}`, { date, at: new Date().toISOString(), ...s });
