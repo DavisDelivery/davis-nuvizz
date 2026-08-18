@@ -293,6 +293,9 @@ export interface Recipient {
   matchKey: string | null;
   name?: string;
   source?: 'notes' | 'order';
+  /** The notes doc could not be READ (not merely absent). We cannot know whether this
+   *  customer opted out, so the caller must decline to send. */
+  notesUnavailable?: boolean;
 }
 
 /**
@@ -320,6 +323,26 @@ export function chooseRecipient(notes: any, stop: any, matchKey: string | null):
  * yields the literal "______" — truthy, and a key every address-less stop would SHARE. The
  * key is only usable if it has actual content in it. PURE.
  */
+/**
+ * Is this row a CUSTOMER DELIVERY — the only thing this feature is entitled to email about?
+ *
+ * DELIVERED alone is not enough. Every stop on the board carries a stopType, 'DO' for a
+ * drop-off and 'PU' for a pickup (nuvizz-list.mts derives it, and enrichment overwrites it
+ * from /stop/info). A completed PICKUP is also normalizedStatus DELIVERED — it means "we
+ * collected the freight", not "your freight arrived". Emailing the shipper "Delivered — PRO
+ * 12345, your delivery is complete" the moment we take custody is wrong on its face, and it
+ * would go out at pickup volume, to the party most likely to notice.
+ *
+ * Unknown/absent stopType is treated as a DELIVERY, deliberately: enrichment is the
+ * authority and a not-yet-enriched row has no type at all. Excluding those would silently
+ * drop real customers, which is the failure this feature exists to prevent — whereas the
+ * thing we are guarding against announces itself with an explicit 'PU'. PURE → unit-tested.
+ */
+export function isCustomerDelivery(stop: any): boolean {
+  if (String(stop?.normalizedStatus || '').toUpperCase() !== 'DELIVERED') return false;
+  return String(stop?.stopType || '').trim().toUpperCase() !== 'PU';
+}
+
 export function usableMatchKey(stop: any): string | null {
   const key = normalizeMatchKey(stop?.businessName, stop?.addr1, stop?.city, stop?.zip);
   return /[a-z0-9]/i.test(String(key || '')) ? key : null;
@@ -327,8 +350,23 @@ export function usableMatchKey(stop: any): string | null {
 
 export async function resolveRecipient(stop: any): Promise<Recipient> {
   const matchKey = usableMatchKey(stop);
-  const notes = matchKey ? await getDoc(`customer_notes/${matchKey}`).catch(() => null) : null;
-  return chooseRecipient(notes, stop, matchKey);
+  if (!matchKey) return chooseRecipient(null, stop, null);
+  // FAIL CLOSED ON AN UNREADABLE NOTES DOC. This used to be `.catch(() => null)`, which
+  // collapsed "Firestore errored" into "this customer has no notes" — and the ONLY thing
+  // that records an opt-out is that document. So a transient read failure did not merely
+  // lose a preference; it emailed a customer who had explicitly asked us to stop, and did
+  // it silently. This module's own note says an opt-out you cannot honour is worse than no
+  // opt-out; honouring it only when the network agrees is the same thing.
+  //
+  // A missing document is NOT an error — getDoc resolves null for that, which is the
+  // ordinary case for the vast majority of customers and still sends.
+  try {
+    const notes = await getDoc(`customer_notes/${matchKey}`);
+    return chooseRecipient(notes, stop, matchKey);
+  } catch (e: any) {
+    console.warn(`[customer-comms] notes read failed for ${matchKey}: ${e?.message}`);
+    return { email: null, optedOut: false, matchKey, notesUnavailable: true };
+  }
 }
 
 // ── TEMPLATE ─────────────────────────────────────────────────────────────────
@@ -540,6 +578,15 @@ export function dayBefore(ymd: string): string {
   return d.toISOString().slice(0, 10);
 }
 
+/** Tomorrow, from a YYYY-MM-DD string. Same validate-the-parse rule as dayBefore. */
+export function dayAfter(ymd: string): string {
+  if (!DATE_RE.test(String(ymd || ''))) return '';
+  const d = new Date(`${ymd}T00:00:00Z`);
+  if (Number.isNaN(d.getTime())) return '';
+  d.setUTCDate(d.getUTCDate() + 1);
+  return d.toISOString().slice(0, 10);
+}
+
 export function sweepDates(now: Date = new Date()): string[] {
   const today = etDayString(now);
   const hour = Number(etHourString(now));
@@ -567,6 +614,11 @@ export interface SendDeps {
   release: (date: string, key: string) => Promise<void>;
   send: typeof sendEmail;
   recipient: (stop: any) => Promise<Recipient>;
+  /** Has this key already been sent under some OTHER board date? In the seam with the rest
+   *  of the trio because it is now part of the same property they exist to protect — one
+   *  email per PRO ever — and a guard against double-sending that cannot itself be tested
+   *  is not much of a guard. */
+  priorSend: (date: string, key: string) => Promise<any>;
 }
 
 /**
@@ -597,7 +649,9 @@ export async function sendForStop(
 ): Promise<SendOutcome> {
   const d: SendDeps = {
     claim: claimSend, finalize: finalizeSend, release: releaseClaim,
-    send: sendEmail, recipient: resolveRecipient, ...(opts.deps || {}),
+    send: sendEmail, recipient: resolveRecipient,
+    priorSend: (dt, k) => getDoc(sentDoc(dt, k)),
+    ...(opts.deps || {}),
   };
   const cfg = opts.cfg || (await readConfig());
   const pro = String(stop?.pro || stop?.primaryPro || stop?.stopNbr || '');
@@ -607,7 +661,12 @@ export async function sendForStop(
   if (!emailEnabled()) return { pro, key, skipped: 'email_not_configured' };
 
   const status = String(stop?.normalizedStatus || '').toUpperCase();
-  if (status !== 'DELIVERED' && !opts.force) return { pro, key, skipped: `not_delivered(${status || 'unknown'})` };
+  // The SAME predicate the sweep filters on, so the two can never drift apart — this is the
+  // last gate before a customer is emailed, and it must not be the more permissive one.
+  if (!isCustomerDelivery(stop) && !opts.force) {
+    const why = status === 'DELIVERED' ? 'pickup_not_delivery' : `not_delivered(${status || 'unknown'})`;
+    return { pro, key, skipped: why };
+  }
   if (isStaleDelivery(stop, date) && !opts.force) return { pro, key, skipped: 'stale_delivery' };
 
   let to = opts.toOverride || '';
@@ -615,6 +674,10 @@ export async function sendForStop(
   if (!to) {
     const r = await d.recipient(stop);
     if (r.optedOut) return { pro, key, skipped: 'opted_out' };
+    // Not "no notes" — notes UNREADABLE. The opt-out lives in that document, so sending now
+    // would be sending in ignorance of it. Declining costs this customer a delayed email;
+    // the next sweep retries and the ledger has no claim, so nothing is lost permanently.
+    if (r.notesUnavailable) return { pro, key, skipped: 'notes_unavailable' };
     if (!r.email) return { pro, key, skipped: 'no_email_on_file' };
     to = r.email;
     if (r.name) customerName = String(r.name);
@@ -627,6 +690,39 @@ export async function sendForStop(
   // commit, so two overlapping sweeps cannot both win it. A claim that cannot be written
   // is not a reason to send anyway — it is the reason NOT to, because without a durable
   // claim nothing stops the next sweep sending the same email again.
+  // ── ALREADY EMAILED ON A NEIGHBOURING BOARD DATE? ────────────────────────
+  // The ledger is per board date (nuvizz_ops/customer_comms_<date>/sent), so the atomic
+  // claim below only makes this stop unique WITHIN one date. The promise on the tin, and
+  // the one printed on the screen, is one email per PRO EVER.
+  //
+  // Those differ the moment a delivered stop appears on two board dates — a rolled-forward
+  // or re-dated row, which this module already knows happens (it is what isStaleDelivery
+  // exists for, and that guard's two-day tolerance lets a one-day shift straight through).
+  // The stop is then claimed once under each date and the customer is emailed twice about
+  // the same freight. The early-hours yesterday sweep makes that a routine path rather than
+  // a rare one.
+  //
+  // ledgerKey is stable across dates by construction (normalised stopNbr, de-zeroed), so
+  // the neighbouring days can be checked directly. ±1 day only: that is the whole window
+  // isSweepableBoardDate will ever hand us, so a wider search would read documents that
+  // cannot exist. Costs one getDoc per neighbour per stop, and only for stops that got
+  // past every cheaper skip above.
+  //
+  // Fails CLOSED, like every other read on this path: if we cannot tell whether we already
+  // emailed this customer, we do not email them again.
+  for (const neighbour of [dayBefore(date), dayAfter(date)]) {
+    if (!neighbour) continue;
+    let prior: any;
+    try {
+      prior = await d.priorSend(neighbour, key);
+    } catch (e: any) {
+      console.warn(`[customer-comms] neighbour ledger read failed for ${key} on ${neighbour}: ${e?.message}`);
+      return { pro, key, skipped: 'neighbour_ledger_unavailable' };
+    }
+    // A RELEASED claim leaves no document, so only a real prior send is found here.
+    if (prior) return { pro, key, skipped: 'already_sent_other_date' };
+  }
+
   let owned: boolean;
   try {
     owned = await d.claim(date, key, {
@@ -691,7 +787,10 @@ export async function sweepDelivered(
 
   // Count only what this feature is about. Reporting the whole ~600-stop board as
   // "skipped" buries the handful of numbers anyone actually reads.
-  const delivered = all.filter((s) => String(s?.normalizedStatus || '').toUpperCase() === 'DELIVERED');
+  // isCustomerDelivery, not a bare status check: a completed PICKUP is also DELIVERED, and
+  // emailing the shipper "your delivery is complete" when we have just collected the freight
+  // is wrong on its face. See isCustomerDelivery.
+  const delivered = all.filter(isCustomerDelivery);
   if (!delivered.length) {
     // Nothing to do, and no reason to spend a ledger read finding that out. Future board
     // dates hit this on every scan.
