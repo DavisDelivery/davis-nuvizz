@@ -77,7 +77,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.54.86';
+const APP_VERSION = '0.54.87';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -122,6 +122,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.54.87', 'A TEXT DRIVER BUTTON WHERE THE DRIVER\'S NAME IS. Chad, looking at the ROUTE section of a stop card: "How do i text the driver? I don\'t see a button for it... should there not be a text driver button here." There should, and there was not — though the app could already do it, which is the annoying part. Two routes existed and both were poor. (1) The driver\'s PHONE NUMBER under their name is a tap-to-text button — but it only renders once the roster lookup matches the name, and the lookup\'s own header notes that a NuVizz load name is not always the employee-card name ("Mike" vs "Michael"). For Michael Tharp it did not match, so that line was simply absent and the section showed a name, a route and nothing to tap. (2) A "Text driver (NAME)" link sat inside the collapsed "More:" row — whose label reads "Street View · Edit address · Correct pin · History" and never mentions texting anyone. Something reachable only behind a disclosure that does not list it is, in practice, not reachable. There is now a plain Text driver button beside View full route, in the ROUTE block, next to the driver it texts. It does NOT depend on the client-side phone lookup — the number resolves server-side from the roster when the message panel opens — so it appears for every assigned driver, including the ones whose names do not match their employee card. It carries the same prefill the old link did: the order\'s PRO and customer, so the driver knows which delivery is being asked about. Shown on the Map stop card, the phone drawer and the Routing stop panel, all three of which render the same component.'],
   ['0.54.86', 'I DOUBLE-CHECKED THE PHONE WORK AND THE GUARD WAS THE WORST OF IT. Chad: "Double check your work." Thirty-four agents reviewed the shipped v0.54.80-v0.54.85 diff through five separate lenses — the bulk-applied edits, the touch floor\'s side effects, every factual claim the changelog makes, the rewritten Customer emails screen, and whether the guard can pass while broken — and each finding went to another agent whose job was to refute it. 23 survived. THE GUARD WAS LARGELY INERT, which matters most because I kept calling it the answer to Chad finding these himself. (1) IT WAS NEVER RUN. No npm script, no CI step, nothing — every claim that it "fails the build" was false until this release wired it into the smoke job. (2) ITS HEADLINE CHECK COULD NOT FIRE: it compared document.scrollWidth against the window, and index.css pins html/body/#root to the viewport with overflow:hidden, so that number can never exceed the window. It measures the app shell now. (3) ITS SCROLLER TEST DISABLED ITSELF: Tailwind\'s overflow-y-auto computes overflow-x to auto too, so every vertically scrolling sheet, drawer and screen body counted as a deliberate horizontal scroller and switched the wide/off-screen/clipped checks off inside all of them. It now requires a container that actually scrolls horizontally. (4) A CLIPPED ICON BUTTON WAS INVISIBLE to the clipped check, which required text. (5) Two phone destinations — Messages and Debug this view — were never visited at all. WITH THOSE FIXED IT IMMEDIATELY CAUGHT A BROKEN ONE OF MINE: on a 360px phone the status pill was squeezed to 126px against the 165px its row needs, because raising the Scan button to the 44px floor in v0.54.82 overflowed it — and the pill\'s overflow-hidden clipped the LAST child, the Filters button, entirely outside itself, where it painted invisibly over the Board Flags chip. A tap aimed at Filters opened Board Flags. The row wraps now. ALSO FIXED, none of which any guard could see: the Customer emails save handler read j.effectiveFrom off a PUT response that never contains it, so the displayed sender froze after every save; a failing send-log endpoint shared one Promise.all with the config and took the whole console down instead of degrading to an empty log; the email preview\'s height could only ratchet UP, because documentElement.scrollHeight is floored by the iframe\'s own current height — so a shorter template kept the taller frame and the dead grey space the code claims to remove; the phone had no PRO field, so only a desktop could preview or test a specific delivery; the phone\'s "Saved." was structurally unreachable, since a successful save clears dirty in the same update that raises the message and the only renderer sat inside the dirty block; the merge-field chips said "copied" even when the clipboard rejected; and the dispatcher-override annotation on the recipient line was dropped in the phone/desktop split while the server still sends it. AND TWO CLAIMS IN THIS LOG WERE WRONG: v0.54.81 said "all five map filters" — there are 18 MapFilterToggle instances across three surfaces, a number copied from a stale comment rather than counted; and v0.54.83 said "three values reachable only through a title= tooltip" then listed two plus a popup that was never a tooltip. Both corrected above. 1,639 tests green; the guard now runs in CI.'],
   ['0.54.85', 'THE SENDER IS notifications@davisdelivery.com. Chad upgraded the Resend plan, which removes the block that made this impossible before — Resend had been refusing to add a second domain at all (403 "You have reached the domain limit"), and an address on a domain Resend does not know is not a soft failure: it rejects every send. davisdelivery.com is now registered on the account and the config default points at it. ONE THING IS STILL OUTSTANDING, and it is the one that decides whether mail actually leaves the building: the domain\'s DNS. Three records have to resolve before Resend will accept a send from this address — TXT resend._domainkey (the DKIM key), MX send → feedback-smtp.us-east-1.amazonses.com priority 10, and TXT send → v=spf1 include:amazonses.com ~all. All three hang off send. and resend._domainkey., NOT the apex, so publishing them does not touch the existing davisdelivery.com mail setup — no risk to the mailboxes anyone is using today. Until they resolve the domain sits at "pending" and a [TEST] send fails; the Sender card now prints the three records and says exactly that, so a failure there reads as "DNS is not live yet" rather than as a bug. Nothing else is exposed: the sweep trigger is still unwired, so the test button is the only path that can attempt a send at all. WHY THIS WENT IN CODE RATHER THAN THE SCREEN: the same field is editable in More → Customer emails → Sender, but the first save from that screen writes the WHOLE config document to Firestore, htmlTemplate included — and from then on template changes shipped in code stop reaching the site, because readConfig prefers the stored document. Changing the default in code keeps the template tracking the repo. The fallback to the warehouse address is still one field if it is ever wanted, with that trade understood.'],
   ['0.54.84', 'DOUBLE-CHECKING THE PHONE WORK FOUND THE PREVIEW LYING ABOUT THE SUBJECT LINE. Chad: "Double check your work." The strongest claim v0.54.79 made was that the live email preview cannot drift from what a customer receives, because the client renders it through a mirror of the server\'s own template code. The mirror was wrong in one place. The server escapes merge values for the HTML BODY and deliberately does NOT escape them for the SUBJECT — buildMessage renders html with escapeVars(vars) and the subject with the raw vars, because a subject is a mail header, not markup. The mirror escaped both. Nothing shows it today, since the default subject is only {{pro}}; but {{customer}} is an obvious thing to add, and the moment it was added a customer called "BUFORD TILE & STONE" would have previewed as "BUFORD TILE &amp; STONE" in the one line a recipient reads first — while the real send was correct all along. The mirror now splits: renderCommsSubject renders raw and applies normalizeSubject\'s own bounds (single line, 200 chars), renderCommsPreview keeps escaping the body. Two tests pin the asymmetry on the SERVER side, where it originates, so the next person to change it is told the UI carries a mirror that has to change with it. ALSO VERIFIED, not assumed: every one of the seven message keys the comms controller can raise now renders in BOTH the phone and desktop bodies (the missing "save" one was the defect the second sweep caught); the apex address validates in both plain and display-name form, so switching the sender after the Resend upgrade really is one field and no deploy; the test allowlist still refuses a non-Davis inbox; and the layout guard covers every tab the app has. 1,639 tests green.'],
@@ -6113,14 +6114,35 @@ function StopDataSections({ stop, note, onRefreshed, onOpenRoute, onMoveLocation
                   rendering bug. A load number that differs is a real identifier and stays. */}
               {routeLoadLine(live) && <div className="text-[10px] text-slate-400 font-mono">{routeLoadLine(live)}</div>}
             </div>
-            {onOpenRoute && (
-              <button
-                onClick={() => onOpenRoute(live.loadNbr)}
-                className="flex-shrink-0 px-2 py-1 text-xs font-semibold text-blue-700 border border-blue-300 rounded hover:bg-blue-50 active:bg-blue-100"
-              >
-                View full route
-              </button>
-            )}
+            {/* Text driver belongs HERE, next to the driver's own name, and until v0.54.87 it
+                did not exist here at all. There were two ways to reach it and both were poor:
+                the driver's PHONE NUMBER above is a text button, but it only appears once the
+                roster lookup matches — and NuVizz names ("Michael Tharp") often do not match
+                the employee card ("Mike"), so for those drivers the line is simply absent; and
+                a "Text driver (NAME)" link sat inside the collapsed "More:" row, whose own
+                label lists Street View / Edit address / Correct pin / History and never
+                mentions it. Chad went looking for it here and reasonably concluded it did not
+                exist. This button does not depend on the client-side lookup — the number is
+                resolved server-side from the roster when the panel opens. */}
+            <div className="flex-shrink-0 flex flex-col items-stretch gap-1">
+              {onTextDriver && live.driverName && (
+                <button
+                  onClick={() => onTextDriver(live)}
+                  className="px-2 py-1 text-xs font-semibold text-blue-700 border border-blue-300 rounded hover:bg-blue-50 active:bg-blue-100 inline-flex items-center justify-center gap-1"
+                  title={`Text ${live.driverName} — prefilled with this order's PRO and customer`}
+                >
+                  <MessageSquare size={12} /> Text driver
+                </button>
+              )}
+              {onOpenRoute && (
+                <button
+                  onClick={() => onOpenRoute(live.loadNbr)}
+                  className="px-2 py-1 text-xs font-semibold text-blue-700 border border-blue-300 rounded hover:bg-blue-50 active:bg-blue-100"
+                >
+                  View full route
+                </button>
+              )}
+            </div>
           </div>
         ) : (
           <div className="text-xs text-slate-500 italic">Not yet assigned</div>
