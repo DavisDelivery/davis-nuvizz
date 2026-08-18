@@ -255,7 +255,10 @@ test("a route with no sign of movement cannot depart in the past — the clock s
   // must run from 3:00p, land after close, and state the EVIDENCE (nothing recorded), not
   // assert "not started" as fact.
   const notesObj = { 'near|k': note({ receiving_hours: { mon: { open: '08:00', close: '14:00' } }, manual_overrides: { receiving_hours: true } }) };
-  const stops = [stop({ stopNbr: '1', routeSeq: 1, matchKey: 'near|k' })];
+  // driverName matters here: without one, R6 (no driver + hours today) fires instead and
+  // SUPERSEDES this row by design — see the "one route, one card" note in board-flags.js.
+  // This test is about R5's re-anchored clock, so the route has a driver.
+  const stops = [stop({ stopNbr: '1', routeSeq: 1, matchKey: 'near|k', driverName: 'MICHAEL THARP' })];
   assert.equal(run(stops, notesObj).rows.filter((r) => r.rule === 'hours_risk').length, 0, 'on-schedule morning model stays quiet');
   const late = run(stops, notesObj, { opts: { ...OPTS, nowMin: 15 * 60 } });
   const r = late.rows.find((x) => x.rule === 'hours_risk');
@@ -499,4 +502,33 @@ test('a driverless NORMAL route past departure still raises no_driver_hours', ()
   const out = run(stops, notesObj, { opts: { ...OPTS, nowMin: 10 * 60 } });
   assert.equal(out.rows.filter((r) => r.rule === 'no_driver_hours').length, 1,
     'silencing appointment routes must not silence the LVILLE case');
+});
+
+// Chad, v0.54.88, on a Board flags screenshot: "there is same one listed twice". A driverless
+// route whose earliest close the arrival walk had ALSO crossed produced two cards for one
+// situation — "May miss receiving hours — MCNAUGHTON MCKAY ELECTRIC" and "No driver — SUW
+// must make 11:30a", the second naming the same customer and the same close.
+test('a driverless route reports ONCE — the no-driver card supersedes the arrival card', () => {
+  const notesObj = {
+    'mck|k': note({ receiving_hours: { mon: { open: '08:00', close: '11:30' } }, manual_overrides: { receiving_hours: true } }),
+  };
+  // No driverName anywhere on the route, past departure, nothing moving: both rules qualify.
+  const stops = [stop({ stopNbr: '5', routeSeq: 5, matchKey: 'mck|k', businessName: 'MCNAUGHTON MCKAY ELECTRIC' })];
+  const out = run(stops, notesObj, { opts: { ...OPTS, nowMin: 11 * 60 + 20 } });
+
+  const noDriver = out.rows.filter((r) => r.rule === 'no_driver_hours');
+  const hours = out.rows.filter((r) => r.rule === 'hours_risk');
+  assert.equal(noDriver.length, 1, 'the no-driver card is the one that names the cause and the action');
+  assert.equal(hours.length, 0, 'the arrival card for the SAME route is the same problem told twice');
+  assert.match(noDriver[0].title, /MCNAUGHTON MCKAY ELECTRIC|must make/);
+});
+
+test('a route WITH a driver still gets its arrival card — the supersede is scoped to the route', () => {
+  const notesObj = {
+    'mck|k': note({ receiving_hours: { mon: { open: '08:00', close: '11:30' } }, manual_overrides: { receiving_hours: true } }),
+  };
+  const stops = [stop({ stopNbr: '5', routeSeq: 5, matchKey: 'mck|k', driverName: 'MICHAEL THARP' })];
+  const out = run(stops, notesObj, { opts: { ...OPTS, nowMin: 11 * 60 + 20 } });
+  assert.equal(out.rows.filter((r) => r.rule === 'no_driver_hours').length, 0);
+  assert.equal(out.rows.filter((r) => r.rule === 'hours_risk').length, 1, 'a driver is assigned — the timing risk is the real story');
 });

@@ -317,6 +317,8 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
     // Say what was set aside rather than quietly narrowing the sweep — the panel's footer
     // reports it, so "why is ULINE APPT never flagged" has a visible answer.
     for (const k of apptRoutes) skipped.routesAppointment.push(k);
+    // R5's arrival flags, kept per route so R6 can supersede them — see the note there.
+    const hoursRowsByRoute = new Map();
     for (const [k, group] of byRoute) {
       const deliveries = group.filter((s) => !isPickupStop(s));
       const seqd = deliveries.filter((s) => seqOf(s) != null);
@@ -350,7 +352,7 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
         const w = dayReceivingWindow(noteOf(s), day);
         if (w && clockMin > w.closeMin) {
           const lateBy = Math.round(clockMin - w.closeMin);
-          rows.push(row(w.tier === 'typed' ? 'red' : 'amber', 'hours_risk', s, {
+          const hoursRow = row(w.tier === 'typed' ? 'red' : 'amber', 'hours_risk', s, {
             title: `May miss receiving hours — ${s.businessName || s.stopNbr}`,
             // Facts only, one breath (Chad, Aug 12: "fotmatting issues" — every card carried
             // four lines of identical boilerplate and the panel read as a wall of text).
@@ -358,7 +360,10 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
             // keeps the row honest; the auto-detected caveat is four words, not two sentences.
             detail: `Stop ${seqOf(s)} on ${k} — estimated arrival ~${fmtMin(clockMin)} vs close ${fmtMin(w.closeMin)} (${lateBy} min late)${notStarted ? `; no movement yet, clock runs from ${fmtMin(nowMin)}` : `; departs ${fmtMin(effDepart)}`}.${w.tier === 'auto' ? ' Hours auto-detected — verify.' : ''}`,
             scope: 'occurrence', servedDate, fingerprint: `hours|${servedDate}|${k}|${s.stopNbr}|${w.closeMin}`,
-          }));
+          });
+          rows.push(hoursRow);
+          if (!hoursRowsByRoute.has(k)) hoursRowsByRoute.set(k, []);
+          hoursRowsByRoute.get(k).push(hoursRow);
         }
         clockMin += serviceSec / 60;
         cur = pos;
@@ -403,6 +408,27 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
           detail: `${k} has ${constrained.length} stop${constrained.length === 1 ? '' : 's'} with receiving hours today (earliest close ${fmtMin(first.w.closeMin)} at ${first.s.businessName || first.s.stopNbr}); past the ${fmtMin(departMin)} departure, no movement, no driver.${tier === 'amber' ? ' Hours auto-detected — verify.' : ''} Assign a driver or move the dates.`,
           scope: 'occurrence', servedDate, fingerprint: `nodrv|${servedDate}|${k}|${first.w.closeMin}`,
         }));
+        // ONE ROUTE, ONE CARD. Chad's screenshot: "May miss receiving hours — MCNAUGHTON
+        // MCKAY ELECTRIC" (stop 5 on SUW, ~11:54a vs close 11:30a) sat three cards above
+        // "No driver — SUW must make 11:30a", which names the SAME customer and the SAME
+        // close — "there is same one listed twice".
+        //
+        // They are two rules, but on a driverless route they are one situation, and the
+        // no-driver card is strictly the better one: it gives the CAUSE (nobody is
+        // driving), counts every constrained stop on the route rather than just the ones
+        // whose estimate happens to have crossed the line yet, and ends in the action to
+        // take. The arrival card, next to it, implies the problem is a slow morning.
+        //
+        // Note this only overlaps sometimes — which is why it was easy to miss. R6 exists
+        // because the ETA walk cannot see a driverless route EARLY (at 9:24a a re-anchored
+        // clock still lands hours before a 2:00p close, so R5 says nothing). Once the clock
+        // does cross, both fire. Suppressing R5 here loses nothing: every stop it would
+        // have named is already inside R6's count, and R6 names the earliest one.
+        const superseded = hoursRowsByRoute.get(k);
+        if (superseded && superseded.length) {
+          const drop = new Set(superseded);
+          for (let i = rows.length - 1; i >= 0; i -= 1) if (drop.has(rows[i])) rows.splice(i, 1);
+        }
       }
     }
   }
