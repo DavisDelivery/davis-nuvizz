@@ -77,7 +77,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.54.85';
+const APP_VERSION = '0.54.87';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -122,6 +122,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.54.87', 'THE GMAIL CARD NOW TELLS YOU WHEN THE CREDENTIAL IS WRONG, INSTEAD OF WHEN IT IS MISSING. Connecting Gmail failed for a day for a reason nothing on this screen could see: GMAIL_CLIENT_ID was set to an EMAIL ADDRESS rather than an OAuth client ID. Every surface reported success — the status check asked only whether the two credential strings were non-empty, so it said configured, the Connect button rendered normally, and clicking it redirected to Google carrying an email address where the client ID belongs. The only place the truth existed was Google\u2019s own error page, AFTER the click; finding it meant hand-reading the redirect header. Now the shape is checked BEFORE the click: a credential box holding an address is refused outright, the card says which variable is wrong and what belongs in it, and start/callback return that same sentence instead of a generic \u201cnot configured\u201d. Deliberately lopsided — it hard-refuses only what cannot possibly be a credential (an @ sign), and merely WARNS on a shape it does not recognise, so the day Google changes its .apps.googleusercontent.com suffix or GOCSPX- prefix this app keeps working rather than rejecting a valid key. \u201cNot set up on this site\u201d now means genuinely unset, which is the state it always claimed to mean. 1,659 unit tests green.'],
   ['0.54.85', 'THE SENDER IS notifications@davisdelivery.com. Chad upgraded the Resend plan, which removes the block that made this impossible before — Resend had been refusing to add a second domain at all (403 "You have reached the domain limit"), and an address on a domain Resend does not know is not a soft failure: it rejects every send. davisdelivery.com is now registered on the account and the config default points at it. ONE THING IS STILL OUTSTANDING, and it is the one that decides whether mail actually leaves the building: the domain\'s DNS. Three records have to resolve before Resend will accept a send from this address — TXT resend._domainkey (the DKIM key), MX send → feedback-smtp.us-east-1.amazonses.com priority 10, and TXT send → v=spf1 include:amazonses.com ~all. All three hang off send. and resend._domainkey., NOT the apex, so publishing them does not touch the existing davisdelivery.com mail setup — no risk to the mailboxes anyone is using today. Until they resolve the domain sits at "pending" and a [TEST] send fails; the Sender card now prints the three records and says exactly that, so a failure there reads as "DNS is not live yet" rather than as a bug. Nothing else is exposed: the sweep trigger is still unwired, so the test button is the only path that can attempt a send at all. WHY THIS WENT IN CODE RATHER THAN THE SCREEN: the same field is editable in More → Customer emails → Sender, but the first save from that screen writes the WHOLE config document to Firestore, htmlTemplate included — and from then on template changes shipped in code stop reaching the site, because readConfig prefers the stored document. Changing the default in code keeps the template tracking the repo. The fallback to the warehouse address is still one field if it is ever wanted, with that trade understood.'],
   ['0.54.84', 'DOUBLE-CHECKING THE PHONE WORK FOUND THE PREVIEW LYING ABOUT THE SUBJECT LINE. Chad: "Double check your work." The strongest claim v0.54.79 made was that the live email preview cannot drift from what a customer receives, because the client renders it through a mirror of the server\'s own template code. The mirror was wrong in one place. The server escapes merge values for the HTML BODY and deliberately does NOT escape them for the SUBJECT — buildMessage renders html with escapeVars(vars) and the subject with the raw vars, because a subject is a mail header, not markup. The mirror escaped both. Nothing shows it today, since the default subject is only {{pro}}; but {{customer}} is an obvious thing to add, and the moment it was added a customer called "BUFORD TILE & STONE" would have previewed as "BUFORD TILE &amp; STONE" in the one line a recipient reads first — while the real send was correct all along. The mirror now splits: renderCommsSubject renders raw and applies normalizeSubject\'s own bounds (single line, 200 chars), renderCommsPreview keeps escaping the body. Two tests pin the asymmetry on the SERVER side, where it originates, so the next person to change it is told the UI carries a mirror that has to change with it. ALSO VERIFIED, not assumed: every one of the seven message keys the comms controller can raise now renders in BOTH the phone and desktop bodies (the missing "save" one was the defect the second sweep caught); the apex address validates in both plain and display-name form, so switching the sender after the Resend upgrade really is one field and no deploy; the test allowlist still refuses a non-Davis inbox; and the layout guard covers every tab the app has. 1,639 tests green.'],
   ['0.54.83', 'THE SECOND SWEEP — ALL 22,883 LINES, THIRTEEN REGIONS, FIFTY-EIGHT AGENTS. Where the first pass audited the seven screens, this one read every panel, sheet, modal, drawer and card in the file, and again handed each finding to an agent whose only job was to refute it: 14 died there, 29 came back with an edit that applied cleanly, 2 needed doing by hand. THE FLOOR HAD THREE MORE HOLES, and this is the finding that matters, because each one hid a pile of small targets. A tap target is whatever a finger has to hit, not whatever happens to be a <button> — and the rule only knew about buttons, inputs and selects. It now also covers: a[href] (the POD viewer\'s "Open in browser" was 34px, and a miss there does not close the photo, it throws the tab out to the browser); clickable <th> (a sortable column header is not a button, header-tap is the ONLY way to sort the phone\'s bottom grid, and those headers were 26-28px); and <label> wrapping a checkbox or radio (the BOX should stay small — the label around it should not, and that exemption left the Tractor paint on/off at 18px, the routing gear\'s panel and brush choices at 30px, and the staged Dispatch checkbox at 20px). All three are in the guard\'s measurement too, so they cannot come back. FOUR MORE OF v0.54.80\'s OWN FLOOR REGRESSIONS: the ▲▼ reorder buttons are stacked, so 44px each made every stop row in a route card ~100px tall; the search clear-× got a 44px hit box while the input still reserved 24px for it, so the × sat on the text; the Manifest Intake header\'s now-44px discard button squeezed the title out entirely; and the mobile move-to-route <select> sized itself to its widest option at the forced 16px phone font and ate its row. THE "IT DID NOTHING" CLASS AGAIN, in four more places — including one I shipped myself: CommsPhone never rendered the save-addressed message, so a failed save on the phone reported nothing at all, on the very screen rebuilt to fix that exact complaint. Also: the routing status card hid scan errors inside its collapsed body while the refresh button stayed in the header; the Stops and Loads empty states were centred in tables 1,580px and 1,050px wide, putting "No stops match" and its Clear-filters button ~800px and ~525px off the right edge of a phone; and Engine tuning reported a failed Save in a banner at the top of a scrolling body while Save sat in the pinned footer. TWO THINGS THAT WERE SIMPLY IN THE WRONG PLACE: the update banner renders ABOVE the app bar, so while it is up it owns the top of the screen — without the notch inset the app bar carries, meaning the one message telling you the tab is running stale code sat under the Dynamic Island; and MoveLocationBar was fixed 24px off the bottom, landing squarely on the Map/Stops/Filters/Loads tab bar. Plus three values reachable only through a title= tooltip, which a touch device never shows: a day\'s legacy receiving-hours text, a driver\'s full location, and the Profiles popup that ran off the screen edge. 1,637 tests green; guard green on 11 screen/probe combinations across both phones.'],
@@ -22027,7 +22028,9 @@ function GmailCard({ onStoredRun }) {
           // to Google on the strength of a server we could not reach.
           <button onClick={() => { setBusy('load'); load().finally(() => setBusy(null)); }} className={`${btn} border-slate-300 text-slate-600 hover:bg-slate-50`}>Retry</button>
         ) : !status.configured ? (
-          <span className="text-[11px] text-slate-400">not set up on this site</span>
+          <span className={`text-[11px] ${status.credentialProblem ? 'text-red-700 font-semibold' : 'text-slate-400'}`}>
+            {status.credentialProblem ? 'credentials are wrong' : 'not set up on this site'}
+          </span>
         ) : active ? (
           <>
             <button onClick={checkNow} disabled={!!busy} className={`${btn} border-slate-300 text-slate-700 hover:bg-slate-50 inline-flex items-center gap-1`}>
@@ -22049,12 +22052,27 @@ function GmailCard({ onStoredRun }) {
       </div>
 
       <div className="px-3 pb-2 text-[11px] text-slate-500 space-y-1">
-        {status && !status.configured && status.firestore !== false && (
+        {/* A credential that is SET but cannot work reads differently from one
+            that is missing — "not set up" would send you looking in the wrong
+            place. GMAIL_CLIENT_ID sat holding an email address for a day
+            because every surface here said "not configured", which is what an
+            EMPTY box looks like too. Say which box, and what is wrong with it. */}
+        {status?.credentialProblem && status.firestore !== false && (
+          <div className="text-red-700">
+            <span className="font-semibold">{status.credentialProblem}.</span>{' '}
+            Fix it in Netlify → Site configuration → Environment variables, then redeploy —
+            functions read env from the deploy, so a value change alone does not reach them.
+          </div>
+        )}
+        {status && !status.configured && !status.credentialProblem && status.firestore !== false && (
           <div>
             Gmail isn’t configured on this site. Set <span className="font-mono">GMAIL_CLIENT_ID</span> and{' '}
             <span className="font-mono">GMAIL_CLIENT_SECRET</span> in Netlify, and register this site’s{' '}
             <span className="font-mono">/.netlify/functions/gmail-auth</span> as the OAuth redirect URI.
           </div>
+        )}
+        {status?.credentialWarning && (
+          <div className="text-amber-700">{status.credentialWarning}.</div>
         )}
         {status?.firestore === false && <div className="text-amber-700">Firestore is off on this site — there is no board to check a manifest against.</div>}
 
