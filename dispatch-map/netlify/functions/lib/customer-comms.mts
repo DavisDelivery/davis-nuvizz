@@ -34,7 +34,7 @@
 // Env: RESEND_API_KEY + RESEND_FROM (see lib/email.mts). Config below overrides the
 // sender and reply-to per-site without a redeploy.
 
-import { getDoc, setDoc, deleteDoc, listDocs, createDocIfAbsent, etDayString } from './firestore.mts';
+import { getDoc, setDoc, deleteDoc, listDocs, createDocIfAbsent, etDayString, etHourString } from './firestore.mts';
 import { normalizeMatchKey } from './match-key.mts';
 import { emailEnabled, sendEmail } from './email.mts';
 
@@ -87,9 +87,9 @@ export const DEFAULT_CONFIG: CommsConfig = {
   // All three hang off `send.` and `resend._domainkey.`, NOT the apex, so publishing them
   // does not disturb the existing davisdelivery.com mail setup.
   //
-  // Nothing is at risk while they are pending: the sweep trigger is still unwired, so the
-  // only path that can attempt a send is the [TEST] button, and it reports its failure at
-  // the button. To fall back while waiting, put the warehouse address in More → Customer
+  // As of v0.54.88 the sweep trigger IS wired (customer-comms-sweep-background.mts), so the
+  // [TEST] button is no longer the only path that can attempt a send. What holds the mail
+  // now is `enabled` below, which defaults to false and is flipped only from the UI. To fall back while waiting, put the warehouse address in More → Customer
   // emails → Sender — but know that the FIRST save from that screen writes the whole config
   // document to Firestore, htmlTemplate included, after which template changes in code stop
   // reaching the site. Prefer waiting for DNS over taking that trade.
@@ -280,11 +280,12 @@ async function releaseClaim(date: string, key: string): Promise<void> {
 // uses: a dispatcher's correction must beat whatever the order carried, and it carries to
 // the customer's NEXT order too.
 //
-// NOTE ON comms_email / comms_opt_out: nothing WRITES these yet. The notes editor renders
-// name/phone/role contacts and a notify_cs toggle, and has no email field. Reading them
-// here is forward-compatible, not a shipped guarantee — the opt-out is only real once the
-// notes editor gains the toggle, which lands with the UI half. Do not enable this feature
-// before then: an opt-out you cannot honour is worse than no opt-out.
+// NOTE ON comms_email / comms_opt_out: BOTH ARE WRITABLE AS OF v0.54.78 — the customer-notes
+// editor gained the red "No delivery emails to this customer" suppression toggle and the
+// per-customer address override (see App.jsx, the comms_opt_out block). This comment
+// previously said nothing wrote them and that the feature must not be enabled until
+// something did, because an opt-out you cannot honour is worse than no opt-out. That
+// condition is now MET, and it was a precondition of wiring the trigger at all.
 
 export interface Recipient {
   email: string | null;
@@ -493,6 +494,59 @@ export function isStaleDelivery(stop: any, date: string, maxAgeDays = 2): boolea
   const s = Date.parse(`${stamp.date}T00:00:00Z`);
   if (Number.isNaN(d) || Number.isNaN(s)) return false;
   return Math.round((d - s) / 86400000) > maxAgeDays;
+}
+
+/**
+ * WHICH BOARD DATES ONE SCHEDULED RUN SWEEPS.
+ *
+ * Today, always. Plus YESTERDAY, but only in the early hours — and that second
+ * date is not housekeeping, it is the difference between a customer getting
+ * their email and never getting it.
+ *
+ * Freight delivered at 23:50 ET is written to YESTERDAY's board. By the time the
+ * next run fires, etDayString() has already rolled to the new day, so a
+ * today-only sweep would step straight over that delivery and never come back to
+ * it — every late-evening customer silently dropped, on a feature whose entire
+ * promise is that the email always arrives. isSweepableBoardDate already permits
+ * yesterday for exactly this reason ("a scan running just after ET midnight
+ * still writes yesterday's board"); this is the caller that uses that allowance.
+ *
+ * Bounded to the early window because the cost is a FULL board read per date per
+ * run. Sweeping yesterday all day long would double the Firestore read volume
+ * for ever, to catch stragglers that the first few runs after midnight have
+ * already caught — and the ledger makes every pass after the first a no-op
+ * anyway. Six hours is many runs' worth of margin on a boundary measured in
+ * minutes.
+ *
+ * DST is a non-issue by construction: the schedule is an INTERVAL (every 30
+ * minutes) rather than a fixed hour, so it does not care that ET is UTC-4 in
+ * summer and UTC-5 in winter, and the window below is tested against ET itself
+ * rather than against the cron clock. PURE → unit-tested.
+ */
+export const YESTERDAY_SWEEP_BEFORE_ET_HOUR = 6;
+
+/** Yesterday, from a YYYY-MM-DD string. Self-contained so this module gains no
+ *  new cross-module dependency for one line of arithmetic. */
+export function dayBefore(ymd: string): string {
+  if (!DATE_RE.test(String(ymd || ''))) return '';
+  const d = new Date(`${ymd}T00:00:00Z`);
+  // DATE_RE only pins the SHAPE. '2026-13-45' is four-two-two digits and sails
+  // through it, but is not a date — and Date#toISOString THROWS on that rather
+  // than returning something wrong. Since sweepDates() is called before the
+  // handler's per-date try/catch, an unchecked throw here would take down the
+  // whole run instead of one date. Validate the parse, not just the pattern.
+  if (Number.isNaN(d.getTime())) return '';
+  d.setUTCDate(d.getUTCDate() - 1);
+  return d.toISOString().slice(0, 10);
+}
+
+export function sweepDates(now: Date = new Date()): string[] {
+  const today = etDayString(now);
+  const hour = Number(etHourString(now));
+  if (!Number.isFinite(hour) || hour >= YESTERDAY_SWEEP_BEFORE_ET_HOUR) return [today];
+  const y = dayBefore(today);
+  // Newest first: if a run is ever cut short, the day that matters most is done.
+  return y ? [today, y] : [today];
 }
 
 // ── SEND ONE ─────────────────────────────────────────────────────────────────
