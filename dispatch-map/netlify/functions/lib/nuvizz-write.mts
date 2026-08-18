@@ -27,6 +27,7 @@ import {
   unsentLosses, documentHandlesMoved, type NoteAudience,
   buildPartialUpdateStop, buildStopDateOverride, stopDeliveryDate, isDayString, boardDateHoldWarning,
   stopInstanceMismatch, readBackInstanceMismatch, readBackUnidentifiable, isIdShaped, orderDriftPaths, addressDriftWarning,
+  buildStopAddressOverride, addressLanded,
   CANCEL_REASON_DEFAULT,
   buildStopContactOverride, stopContactFrom, normalizeContactPhone,
   type SingleOp, type WriteOp, type WriteCreds,
@@ -2174,6 +2175,102 @@ export async function runCancelOrder(requester: RequesterLike, payload: any, cre
   return { ok: true, calls, cancelled, reasonCode: (String(payload?.reasonCode ?? '').trim() || CANCEL_REASON_DEFAULT).slice(0, 10) };
 }
 
+/**
+ * CORRECT THE DELIVERY ADDRESS ON AN ORDER, IN NUVIZZ.
+ *
+ * The gap this closes: "Edit address" on the stop card has only ever written OUR Firestore
+ * override — our pin, our routing — while NuVizz kept whatever came in on the import. The
+ * card could read "ADDRESS corrected" over the right street while the driver's manifest and
+ * the carrier's record still carried the wrong one, and nothing said the two disagreed.
+ *
+ * THE LADDER, the same one the date and note writes use, for the same reasons:
+ *   1. READ by number, so the correction is built on the record NuVizz will actually update.
+ *   2. REFUSE ON A TWIN. Two orders can share a number; re-addressing the wrong one is worse
+ *      here than anywhere else, because the freight then goes to a place nobody chose.
+ *   3. REFUSE ON A DELIVERED STOP. Freight already dropped cannot be re-addressed, and
+ *      rewriting history hides where it actually went.
+ *   4. WRITE the whole stop with only the address block swapped (partialUpdate is a
+ *      whole-stop replace — see buildPartialUpdateStop).
+ *   5. VERIFY: did the address land, and did anything ELSE move.
+ *
+ * The address itself goes out as literal ANY-typed data with no label — see
+ * buildLiteralAddress for the spec lines that force that and what a label would do.
+ */
+export async function runSetStopAddress(requester: RequesterLike, payload: any, creds: WriteCreds): Promise<any> {
+  const stopNbr = req(payload?.stopNbr, 'setStopAddress: stopNbr');
+  const next = (payload?.address && typeof payload.address === 'object') ? payload.address : null;
+  if (!next) return { ok: false, error: 'setStopAddress: an address object is required.', calls: { reads: 0, writes: 0 } };
+  const calls = { reads: 0, writes: 0 };
+
+  const before = await fireSingle(requester, 'getStop', { stopNbr }, creds);
+  calls.reads += 1;
+  if (!before?.ok) return { ok: false, error: `setStopAddress: could not read stop ${stopNbr} (${before?.error || 'read failed'}) — nothing was written.`, calls };
+  const rawBefore = rawStopFrom(before.raw ?? before);
+  const twin = stopInstanceMismatch('setStopAddress', stopNbr, payload?.stopId, rawBefore);
+  if (twin) return { ok: false, wrongInstance: true, calls, error: twin };
+  const stopId = rawBefore?.stopId ?? payload?.stopId ?? null;
+  if (!stopId) return { ok: false, error: `setStopAddress: stop ${stopNbr} has no stopId in its record — cannot target the update safely.`, calls };
+
+  const status = before.stop?.status ?? null;
+  if (isExecutedStopStatus(status)) {
+    return { ok: false, calls, error: `setStopAddress: stop ${stopNbr} is already ${status} — freight that has been delivered cannot be re-addressed, and changing it now would only hide where it went.` };
+  }
+
+  let side: 'to' | 'from', block: Record<string, any>;
+  try {
+    ({ side, block } = buildStopAddressOverride(rawBefore, next));
+  } catch (e: any) {
+    return { ok: false, calls, error: String(e?.message || e) };
+  }
+  const wasAddr = rawBefore?.[side]?.address || {};
+  const from = [wasAddr.addr1, wasAddr.city, wasAddr.state, wasAddr.zip].filter(Boolean).join(', ');
+  const to = [block.address.addr1, block.address.city, block.address.state, block.address.zip].filter(Boolean).join(', ');
+
+  const sent = buildPartialUpdateStop({ ...rawBefore, stopId, stopNbr: String(rawBefore.stopNbr ?? stopNbr) }, { [side]: block });
+  const fpBefore = stopNoteFingerprint(rawBefore);
+  const wrote = await fireSingle(requester, 'partialUpdateStop', { stops: [sent] }, creds);
+  calls.writes += 1;
+  if (!wrote?.ok) return { ok: false, calls, error: `setStopAddress: NuVizz rejected the address change (${wrote?.error || 'write failed'}).` };
+
+  const after = await fireSingle(requester, 'getStop', { stopNbr }, creds);
+  calls.reads += 1;
+  if (!after?.ok) {
+    return { ok: false, unverified: true, calls, from, to, error: `setStopAddress: the change was accepted but the read-back failed (${after?.error || 'read failed'}) — check ${stopNbr} in the portal before re-trying.` };
+  }
+  const rawAfter = rawStopFrom(after.raw ?? after);
+  const pinned = isIdShaped(payload?.stopId) && String(payload.stopId) === String(stopId);
+  const rbTwin = readBackInstanceMismatch('setStopAddress', stopNbr, stopId, rawAfter, pinned);
+  if (rbTwin) return { ok: false, unverified: true, wrongInstanceReadback: true, calls, error: rbTwin };
+  const rbNoId = readBackUnidentifiable('setStopAddress', stopNbr, stopId, rawAfter);
+  if (rbNoId) return { ok: false, unverified: true, calls, error: rbNoId };
+
+  const landed = addressLanded(rawAfter?.[side]?.address, block.address);
+  // The address subtree is the field we came to change, so it is excluded from the drift
+  // diff exactly as `schedule` is on a date change and `comments` is on a note. NuVizz
+  // normalises what it stores ("GA" → "GEORGIA", "RD" → "ROAD") and re-derives latitude,
+  // longitude and fullAddress from the street we just sent — none of that is damage, and
+  // reporting it as drift would make a successful correction read as a failure every time.
+  // `landed` above is what actually proves the address took.
+  const afterEcho = buildPartialUpdateStop(rawAfter, { [side]: { ...rawAfter?.[side], address: sent?.[side]?.address } });
+  const drift = orderDriftPaths([...new Set([
+    ...fingerprintDrift(fpBefore, stopNoteFingerprint(rawAfter)).filter((p) => !p.startsWith(`${side}.address`)),
+    ...echoDrift(sent, afterEcho),
+  ])].filter((p) => !p.startsWith(`${side}.address`)));
+  const losses = unsentLosses(rawBefore, rawAfter);
+
+  if (!landed) {
+    return { ok: false, calls, stopNbr, stopId, side, from, to, drift,
+      error: `setStopAddress: NuVizz accepted the write but ${stopNbr} still does not read back as ${to} — the address did NOT change. Check it in the portal; do not assume it took.` };
+  }
+  if (drift.length || losses.length) {
+    const details = [...driftDetail(sent, afterEcho, drift), ...losses.map((l) => `${l.path}: LOST ${l.lost.join(' · ')}`)];
+    return { ok: false, calls, stopNbr, stopId, side, from, to, drift, driftDetails: details, addressLanded: true,
+      error: `setStopAddress: the address changed to ${to} BUT partialUpdate changed ${drift.length + losses.length} other field(s) on the order. ${details.slice(0, 5).join(' | ')}${details.length > 5 ? ` (+${details.length - 5} more)` : ''}. Check ${stopNbr} in the portal.` };
+  }
+  return { ok: true, stopNbr, stopId, side, from, to, calls,
+    message: `Order ${stopNbr} is now addressed to ${to}.` };
+}
+
 export async function runSetStopDate(requester: RequesterLike, payload: any, creds: WriteCreds): Promise<any> {
   const stopNbr = req(payload?.stopNbr, 'setStopDate: stopNbr');
   const date = String(req(payload?.date, 'setStopDate: date')).trim();
@@ -2645,6 +2742,7 @@ export async function runOp(requester: RequesterLike, op: WriteOp, payload: any,
     case 'commitImport': return runCommitImport(requester, payload, creds);
     case 'addStopNote': return runAddStopNote(requester, payload, creds);
     case 'setStopDate': return runSetStopDate(requester, payload, creds);
+    case 'setStopAddress': return runSetStopAddress(requester, payload, creds);
     // Destructive: read → judge → cancel by id. See runCancelOrder.
     case 'cancelOrder': return runCancelOrder(requester, payload, creds);
     case 'setStopContact': return runSetStopContact(requester, payload, creds);

@@ -42,7 +42,7 @@ export type SingleOp = typeof SINGLE_OPS[number];
 
 // Ops the HTTP handler accepts (single ops + the per-load Save batch + the panel Save +
 // the async load-import commit with its convergence recipe).
-export const WRITE_OPS = [...SINGLE_OPS, 'commitLoad', 'commitBoard', 'commitImport', 'addStopNote', 'setStopDate', 'setStopContact', 'newRoute', 'cancelOrder'] as const;
+export const WRITE_OPS = [...SINGLE_OPS, 'commitLoad', 'commitBoard', 'commitImport', 'addStopNote', 'setStopDate', 'setStopContact', 'setStopAddress', 'newRoute', 'cancelOrder'] as const;
 export type WriteOp = typeof WRITE_OPS[number];
 
 /** Ops that MUTATE NuVizz (everything except the GET reads). Used by the
@@ -50,7 +50,7 @@ export type WriteOp = typeof WRITE_OPS[number];
 export const MUTATING_OPS = new Set<WriteOp>([
   'createStop', 'insertStops', 'removeStops', 'assignDriver', 'dispatchLoad',
   'importLoad', 'commitLoad', 'commitBoard', 'commitImport',
-  'partialUpdateStop', 'addStopNote', 'setStopDate', 'setStopContact',
+  'partialUpdateStop', 'addStopNote', 'setStopDate', 'setStopContact', 'setStopAddress',
   'createRoute', 'newRoute',
   // Destructive. Gated by NUVIZZ_WRITE_ENABLED like every other mutation, and by
   // the read-then-cancel-by-id ladder in runCancelOrder — see there for why.
@@ -945,6 +945,93 @@ export function buildStopDateOverride(rawStop: any, date: string): { side: 'to' 
   const cur = rawStop?.[side];
   if (!cur || typeof cur !== 'object') throw new Error(`setStopDate: the stop has no "${side}" block to move`);
   return { side, block: { ...cur, schedule: shiftScheduleToDate(cur.schedule, date) } };
+}
+
+// ── §E CORRECTING THE DELIVERY ADDRESS ───────────────────────────────────────
+//
+// Until now this app could not change an address in NuVizz at all. "Edit address" on the
+// stop card writes customer_notes.address_override — OUR Firestore, for OUR map pin and
+// OUR routing — and NuVizz never hears about it. That is why a card can read
+// "ADDRESS corrected · 800 N COMMERCE ST" while the order the driver's manifest and the
+// carrier actually work from still carries whatever came in on the import, with nothing
+// anywhere saying the two disagree.
+//
+// nuVizz API v7 has no "update stop address" endpoint. The address lives on the stop, so
+// the route is /stop/partialUpdate — the same endpoint notes and date changes already use.
+//
+// WHAT THE SPEC SAYS, and every line of it matters here (Address schema, v7.0):
+//   addressType  COM=Company · CUS=Customer · ANY=Any · COMFAC=Company facility
+//                RELAY=Relay · SHIP_CUS=Shipper's customer
+//   name         "Name is mandatory for addressType ANY. Other than address type ANY,
+//                 name will be chosen from address."
+//   label        "Label is mandatory for addressType other than COM and ANY."
+//                "With valid given label, other address fields like line1, line2, city,
+//                 state, zip, country, latitude and longitude will be POPULATED FROM THE
+//                 CORRESPONDING ADDRESS OF THE LABEL."
+//
+// So a correction MUST go out as ANY with a name, and MUST NOT carry a label — a label is
+// not data, it is a lookup key, and sending one tells NuVizz to throw away every field we
+// just typed and refill them from its address book. That is the whole design of this
+// builder: turn the typed correction into literal data the vendor cannot resolve away.
+
+/** PURE: the corrected address block to send.
+ *
+ *  Merges the typed fields over the address we read, then forces the two things the spec
+ *  requires of a literal address: type ANY, and no label.
+ *
+ *  latitude / longitude / fullAddress are DROPPED rather than carried. They describe the
+ *  OLD location — sending them alongside a new street asserts a pin in the wrong place, and
+ *  keeping a stale fullAddress next to a corrected addr1 is how the two disagree silently.
+ *  A caller that has geocoded the new address may pass lat/lng and they ride along. */
+export function buildLiteralAddress(current: any, next: Record<string, any>): Record<string, any> {
+  const cur = (current && typeof current === 'object' && !Array.isArray(current)) ? current : {};
+  const s = (v: any) => (v == null ? '' : String(v).trim());
+  const name = s(next.name) || s(cur.name);
+  const addr1 = s(next.addr1) || s(cur.addr1);
+  if (!name) throw new Error('setStopAddress: a name is required — NuVizz makes it mandatory for a literal (ANY) address, and without it the vendor picks the name from its own address book.');
+  if (!addr1) throw new Error('setStopAddress: a street line (addr1) is required.');
+
+  const { label, latitude, longitude, fullAddress, id, ...rest } = cur;
+  const out: Record<string, any> = {
+    ...rest,
+    addressType: 'ANY',   // literal: THESE fields are the address
+    name,
+    addr1,
+    city: s(next.city) || s(cur.city),
+    state: s(next.state) || s(cur.state),
+    zip: s(next.zip) || s(cur.zip),
+    country: s(next.country) || s(cur.country) || 'USA',
+  };
+  // addr2 is a suite/dock line: an explicit empty string CLEARS it, absent keeps what was read.
+  if (next.addr2 !== undefined) { const a2 = s(next.addr2); if (a2) out.addr2 = a2; else delete out.addr2; }
+  if (next.latitude != null && next.longitude != null) {
+    out.latitude = Number(next.latitude); out.longitude = Number(next.longitude);
+  }
+  return out;
+}
+
+/** PURE: the `to`/`from` override an address correction sends — the read block with only
+ *  its address replaced. Mirrors buildStopDateOverride so both changes travel the same way. */
+export function buildStopAddressOverride(rawStop: any, next: Record<string, any>): { side: 'to' | 'from'; block: Record<string, any> } {
+  const side = primarySideKey(rawStop);
+  const cur = rawStop?.[side];
+  if (!cur || typeof cur !== 'object') throw new Error(`setStopAddress: the stop has no "${side}" block to correct`);
+  return { side, block: { ...cur, address: buildLiteralAddress(cur.address, next) } };
+}
+
+/** PURE: did the correction actually land? Compared on the fields a human typed, case- and
+ *  space-insensitively, because NuVizz normalises what it stores — it expands "GA" to
+ *  "GEORGIA" and "RD" to "ROAD" on its own. Demanding byte equality would report every
+ *  successful correction as a failure. */
+export function addressLanded(readAddr: any, want: Record<string, any>): boolean {
+  const norm = (v: any) => String(v ?? '').toUpperCase().replace(/[^A-Z0-9]+/g, ' ').trim();
+  const a = (readAddr && typeof readAddr === 'object') ? readAddr : {};
+  // The street NUMBER plus the zip is the identity of a US address; the rest is spelling.
+  const num = (v: any) => (norm(v).match(/^\d+/) || [''])[0];
+  if (want.addr1 && num(a.addr1) !== num(want.addr1)) return false;
+  if (want.zip && norm(a.zip).slice(0, 5) !== norm(want.zip).slice(0, 5)) return false;
+  if (want.name && !norm(a.name).startsWith(norm(want.name).slice(0, 8))) return false;
+  return true;
 }
 
 // ── §C the customer contact ON THE ORDER ─────────────────────────────────────
