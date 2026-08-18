@@ -114,10 +114,12 @@ function planFor(op: WriteOp, payload: any): string[] {
       `CANCEL BY stopId — never by number — reason ${String(payload?.reasonCode ?? '').trim() || 'ADMIN'}. THIS CANNOT BE UNDONE.`,
     ];
   }
-  if (op === 'addStopNote' || op === 'setStopDate' || op === 'setStopContact') {
+  if (op === 'addStopNote' || op === 'setStopDate' || op === 'setStopContact' || op === 'setStopAddress') {
+    const a = payload?.address || {};
     const what = op === 'addStopNote' ? 'merge the note onto the order\'s existing comments'
       : op === 'setStopDate' ? `move the delivery window to ${payload?.date ?? '(no date)'}`
-        : `set the customer contact to ${[payload?.name, payload?.phone].filter(Boolean).join(' · ') || '(nothing)'}`;
+        : op === 'setStopAddress' ? `RE-ADDRESS the delivery to ${[a.addr1, a.city, a.state, a.zip].filter(Boolean).join(', ') || '(no address)'} — sent as a literal ANY address with no label, so NuVizz cannot resolve it away`
+          : `set the customer contact to ${[payload?.name, payload?.phone].filter(Boolean).join(' · ') || '(nothing)'}`;
     return [
       `READ stop ${payload?.stopNbr ?? '?'} (partialUpdate is a FULL replace — the current record is what gets echoed back)`,
       `WRITE the echo with one block swapped: ${what}`,

@@ -477,15 +477,25 @@ export function stopVars(stop: any, date: string): Record<string, string> {
     pieces,
     weight: stop?.weight != null ? String(stop.weight) : '',
     trackingUrl: pro ? `https://tracking.davisdelivery.com/?pro=${encodeURIComponent(pro)}` : 'https://tracking.davisdelivery.com/',
-    // Same page as trackingUrl, and deliberately so: the tracking site's star rating is a
-    // card ON that page, not a separate route. It carried a '#review' fragment that pointed
-    // at nothing — the page has no element with that id, its only ids are app/review-form/
-    // stars-row, it never reads location.hash, and review-form is display:none until a star
-    // is tapped. So the fragment was decoration and any anchor would be: the whole page is
-    // rendered by script into <div id="app">, so there is no target at load time to jump to.
-    // Kept as its own merge field anyway, so the button can be pointed straight at Google
-    // (or anywhere else) from the Communications tab without touching this file.
-    reviewUrl: pro ? `https://tracking.davisdelivery.com/?pro=${encodeURIComponent(pro)}` : 'https://tracking.davisdelivery.com/',
+    // The same PAGE as trackingUrl — the star rating is a card ON the tracking page, not a
+    // separate route — but no longer the same URL. Chad: "when they click that rate my
+    // delivery in the email, it takes them directly to the tracking page with the rate my
+    // delivery already opened up, ready to click on stars."
+    //
+    // It used to be byte-identical to trackingUrl, so nothing told the page WHY the customer
+    // had come. The page renders the quote banner above the review card, so tapping "Rate my
+    // delivery" landed them on an advert with the stars below the fold — on a phone, most
+    // people never scroll to them.
+    //
+    // `rate=1` is that missing signal, and a query parameter rather than the '#review'
+    // fragment this once carried: that fragment pointed at nothing (the page has no element
+    // with the id, never reads location.hash, and renders itself by script into <div id="app">
+    // AFTER load, so there is no anchor to jump to at parse time). A query parameter is read
+    // by the page's own initFromUrl, which already parses `pro` the same way.
+    //
+    // Still its own merge field, so the button can be pointed straight at Google — or
+    // anywhere else — from the Communications tab without touching this file.
+    reviewUrl: pro ? `https://tracking.davisdelivery.com/?pro=${encodeURIComponent(pro)}&rate=1` : 'https://tracking.davisdelivery.com/',
     // ET, not the UTC runtime's year — otherwise a New Year's Eve send stamps next year.
     year: etDayString().slice(0, 4),
   };

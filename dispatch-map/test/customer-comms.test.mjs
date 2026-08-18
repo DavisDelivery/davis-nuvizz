@@ -235,14 +235,32 @@ test('the masthead image is not the 404 it shipped with, and degrades to alt tex
   assert.ok(/\bwidth="\d+"/.test(img[0]) && /\bheight="\d+"/.test(img[0]));
 });
 
-test('the review CTA carries no dead fragment', () => {
-  // The tracking page has no element with id "review", never reads location.hash, and
-  // renders everything into <div id="app"> after load — so a fragment could only ever be
-  // decoration. The star rating is a card on the ?pro= page itself.
+test('the Rate CTA deep-links INTO the rating, not just to the page', () => {
+  // Chad: "when they click that rate my delivery in the email, it takes them directly to
+  // the tracking page with the rate my delivery already opened up, ready to click on stars."
+  //
+  // reviewUrl used to be byte-identical to trackingUrl, so nothing told the page why the
+  // customer had come — and the page renders the quote banner ABOVE the review card, so
+  // tapping Rate landed them on an advert with the stars below the fold. `rate=1` is the
+  // signal that flips the order. Same page; different intent.
   const vars = stopVars(LIST_STOP, '2026-08-16');
-  assert.ok(!vars.reviewUrl.includes('#'), 'no fragment on the review link');
-  assert.ok(vars.reviewUrl.includes('?pro='), 'it still deep-links to this delivery');
-  assert.equal(vars.reviewUrl, vars.trackingUrl, 'same page — the rating lives on it');
+  assert.ok(vars.reviewUrl.includes('?pro='), 'still deep-links to THIS delivery');
+  assert.ok(vars.reviewUrl.includes('rate=1'), 'and says why they came');
+  assert.notEqual(vars.reviewUrl, vars.trackingUrl, 'Track and Rate are no longer the same link');
+  assert.ok(vars.trackingUrl.startsWith('https://tracking.davisdelivery.com/?pro='));
+  assert.ok(!vars.trackingUrl.includes('rate=1'), 'plain Track must NOT reorder the page');
+  // A query parameter, not the '#review' fragment this once carried: that pointed at nothing,
+  // because the page renders itself into <div id="app"> after load, so there is no anchor to
+  // jump to at parse time. initFromUrl already parses `pro` the same way.
+  assert.ok(!vars.reviewUrl.includes('#'), 'no dead fragment');
+});
+
+test('with no PRO, both CTAs fall back to the bare tracking page', () => {
+  // Nothing to rate and nothing to track — a rate=1 on a page with no shipment would open
+  // an empty rating card.
+  const vars = stopVars({ ...LIST_STOP, stopNbr: '', pro: '', primaryPro: '' }, '2026-08-16');
+  assert.equal(vars.reviewUrl, 'https://tracking.davisdelivery.com/');
+  assert.equal(vars.trackingUrl, 'https://tracking.davisdelivery.com/');
 });
 
 test('pieces falls back to the list freight columns when the stop is not enriched', () => {
