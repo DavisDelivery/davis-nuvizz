@@ -60,6 +60,10 @@
   # timeout override; this note exists so nobody adds one and caps a backfill at 26s.
   # The critical-flag alert reads a full day's stop index plus one customer_notes doc per
   # distinct customer. Declared -background for the 15-minute allowance; no override wanted.
+  # "What would the alert do?" — reads a day's stop index plus a customer_notes doc per
+  # distinct customer. Same wide-Firestore shape as customer-comms-test, same 26s.
+  [functions."eta-flag-check"]
+    timeout = 26
   # Scanned-manifest OCR runs as manifest-ocr-BACKGROUND (vision over a multi-page fax
   # PDF takes 20-40s — over the 26s request cap that killed the synchronous version).
   # Background functions get Netlify's 15-min allowance; no timeout override needed.

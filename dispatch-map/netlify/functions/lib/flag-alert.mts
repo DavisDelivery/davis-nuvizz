@@ -23,14 +23,27 @@
 //      the message except feel bad about it, and it competes for attention with stops that
 //      can still be saved.
 //   3. NEVER FOR A FINISHED STOP. Delivered is delivered.
-//   4. A CAP. A bad data day (a whole board mis-parsed) must not turn into a hundred emails.
+//   4. A RUNAWAY BACKSTOP. Not a budget. If a parser bug marked a whole 700-stop board
+//      critical, that must not become 700 emails — but the ceiling has to sit far above any
+//      real day, because suppressing a genuine "this truck is about to miss" is the one
+//      failure this whole feature exists to prevent.
 //
 // Firestore only for state; the send goes through lib/email.mts. ZERO NuVizz calls.
 import { sendEmail } from './email.mts';
 
 export const ALERT_COLLECTION = 'eta_flag_alerts';
 export const ALERT_TO = 'customerservice@davisdelivery.com';
-export const DAILY_ALERT_CAP = 25;
+// DELIBERATELY NOT THE CUSTOMER-COMMS CAP. Chad: "the flag emails should not be bound to the
+// resend cap we set for customer communications." They never shared code — this module reads
+// no comms config and increments no comms counter, and the two only meet at the Resend
+// account itself. But the first number here was 25, which is exactly the figure the customer
+// email trial ran at, and a constant that LOOKS borrowed will eventually be treated as
+// borrowed by whoever tunes the other one.
+//
+// So it is sized as what it is: an anti-runaway ceiling, an order of magnitude above any
+// plausible day. Operational alerts are not a marketing budget — a day with forty trucks in
+// trouble is a day when customer service needs forty emails, not the first twenty-five.
+export const DAILY_ALERT_CAP = 200;
 
 export function alertClaimPath(tenant: string, date: string, stopNbr: string): string {
   const safe = String(stopNbr).replace(/[^A-Za-z0-9_.-]/g, '_');
