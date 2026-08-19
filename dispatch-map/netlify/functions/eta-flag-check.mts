@@ -86,8 +86,22 @@ export default async (req: Request): Promise<Response> => {
         .map((d: any) => ({ stopNbr: d.stopNbr, customer: d.customer, lateBy: d.lateBy, claimed_at: d.claimed_at }));
     } catch { /* the collection does not exist until the first claim */ }
 
+    // PROVE IT LOOKED. A bare "0 critical" is indistinguishable from "the notes never
+    // loaded and every stop looked deadline-free" — the silent-zero failure this endpoint
+    // exists to catch. computeBoardFlags already counts what it examined; surface it.
+    const diag = {
+      stopsSeen: stops.length,
+      distinctCustomerKeys: keys.length,
+      notesLoaded: notes.size,
+      stopsWithHoursToday: flags.checked?.stopsWithHours ?? null,
+      routesJudged: flags.checked?.routesJudged ?? null,
+      openStopsChecked: flags.checked?.stops ?? null,
+      skipped: flags.skipped,
+      sampleStopKeys: stops.slice(0, 3).map((s: any) => s?.matchKey ?? null),
+    };
+
     return J({
-      ok: true, dryRun: true, date,
+      ok: true, dryRun: true, date, diag,
       now: nowMin != null ? clock(nowMin) : null,
       emailConfigured: emailEnabled(), to: ALERT_TO, dailyCap: DAILY_ALERT_CAP,
       counts: { critical: flags.criticalCount ?? 0, red: flags.redCount ?? 0, amber: flags.amberCount ?? 0 },
