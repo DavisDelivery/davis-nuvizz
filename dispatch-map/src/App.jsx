@@ -77,7 +77,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.58.0';
+const APP_VERSION = '0.58.1';
 
 // ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
 //
@@ -148,6 +148,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.58.1', 'THE UNSUBSCRIBE READINESS IS NOW ACTUALLY ON THE SCREEN \u2014 v0.58.0 CLAIMED IT AND SHIPPED HALF. That release added unsubscribeReady to the config endpoint and said the Communications tab \u201ccan say so out loud\u201d. It could not: nothing rendered it. The flag lived in an API response nobody looks at, which is a fair description of not existing \u2014 and the entire point of that flag is that a missing signing secret is otherwise INVISIBLE, because the footer degrades to \u201creply to this message\u201d and reads exactly like a working feature. Caught by re-reading my own claim against the code, not by anything failing. The Unsubscribed card now carries a plain amber banner naming the variable to set when links are inactive, and a green one confirming they are live when they are. COMMS_UNSUB_SECRET is also now set on the production site (Chad: \u201cYou set it in netlify you have a connector\u201d) \u2014 256 bits of randomness, functions scope, all contexts. Confirmed while doing it that COMMS_ADMIN_TOKEN is genuinely absent from the site, which is exactly why readiness read false: the fallback chain had nothing to fall back to, as the design review predicted.'],
   ['0.58.0', 'THE CUSTOMER CAN TAKE THEMSELVES OFF THE DELIVERY EMAILS NOW. Chad: a customer replied \u201cunsubscribe\u201d to a delivery confirmation and he went into the app and turned her emails off by hand \u2014 \u201cI think we need to set it up in such a way that we can allow the customer to automatically do that, and then also have somewhere that shows us all the customers that have unsubscribed.\u201d The suppression itself has existed and been honoured since v0.54.78 (customer_notes.comms_opt_out, checked in chooseRecipient). What was missing was any way for the CUSTOMER to set it, so every unsubscribe was a person reading a reply and remembering to act on it. Every delivery email now carries an unsubscribe link, and List-Unsubscribe / List-Unsubscribe-Post headers so Gmail and Outlook show their own native button \u2014 which required teaching sendEmail to pass custom headers at all, something it could not do. WHY THE LINK DOES NOT FIRE ON A PLAIN GET, even though Chad asked for automatic: corporate mail filters and link-preview bots fetch every URL in an email before the human sees it, so a GET that unsubscribed would silently opt out customers who never touched it \u2014 and the symptom is indistinguishable from the sweep not running. That is precisely why RFC 8058 specifies one-click as a POST. It is still automatic in the way he meant: nobody at Davis touches anything. THE FOOTER IS APPENDED AT SEND, NOT PUT IN THE TEMPLATE, because the live template lives in Firestore and is edited from the Communications tab \u2014 adding it to the shipped default would have placed it in exactly zero real emails. A template that positions {{unsubscribeUrl}} itself keeps control; anything else gets it appended. THE WRITE IS FIELD-MASKED, via a new updateDocFields helper, and that is load-bearing: setDoc in this repo REPLACES a document rather than merging it (writeStopNotes reads the whole doc back precisely because of this), and customer_notes carries the dispatcher-authored receiving hours the flag engine reads. A blind write of a suppression flag would have taken those hours with it and silently stopped flagging that customer forever. AN ADVERSARIAL REVIEW CAUGHT FOUR THINGS BEFORE MERGE, two of them silent: a DOUBLE FOOTER whenever a template did place the link (the guard compared the raw URL against template output that had been HTML-escaped, so it never matched); a [TEST] send carrying a LIVE unsubscribe link built from a real customer\u2019s delivered stop, so anyone in a Davis inbox clicking it would have suppressed a real customer and been shown their name; the undo sharing the unsubscribe token, which would have let anyone holding the URL put a customer who opted out BACK on the list; and a matchKey \u2014 derived from a business\u2019s public name and address \u2014 interpolated straight into a Firestore path. Fixed with a scoped 30-minute undo token, a key-shape check, and a signing KEY RING, because links live in inboxes for months and rotating the secret without one would make every link already sent answer \u201cnot valid\u201d. AND THE READINESS IS REPORTED RATHER THAN ASSUMED: with no signing secret the footer degrades to \u201creply to this email\u201d, which is honest but indistinguishable from working, so the Communications tab now reads unsubscribeReady from the server and can say so out loud. A new Unsubscribed card on that screen, phone and desktop, lists everyone suppressed and separates the ones who asked from the ones we switched off \u2014 and counts the pre-tracking ones as neither, rather than crediting a customer request that may never have happened. 29 new tests, 1,909 green.'],
   ['0.57.0', 'A HISTORY OF FLAGS, AND WHETHER THEY DID ANY GOOD. Chad: \u201cI want to build a history of flags\u2026 somewhere that tracks all the flags that have presented itself, then the time the shipment actually delivered. And if the flag allowed us to fix the problem or not before it didn\u2019t deliver on time or at all and rolled to the next day.\u201d WHAT DID NOT EXIST: a flag was a live computation \u2014 computeBoardFlags ran over the board, painted the screen, and threw the answer away. The only durable trace was the alert claim, which exists ONLY for stops that earned an email, so ambers and reds that appeared after their window had shut left no record they ever happened. You could not ask how many flags we raised last week, let alone whether any of them helped. The miss ledger answers the other half \u2014 did a stop with a receiving close actually miss it \u2014 but knows nothing about flags, so it cannot tell a stop we SAW COMING from one that blindsided us, which is the entire value of the flag and was until now unmeasurable. TWO WRITERS, NO NEW CRONS. The alert sweep already recomputes the whole board every 20 minutes through the working day; it now folds each sweep into the day\u2019s rows \u2014 first sighting (never overwritten, because how much warning we got is the whole question), worst tier reached, worst lateness, how many sweeps saw it, and whether it emailed. The nightly miss-ledger run, already reading the same sealed day, attaches what actually happened: made, missed, rolled to the next day, never delivered, or not gradable. WHAT THE SCREEN MAY NOT SAY, and this is the point: it CANNOT report that a flag saved a delivery. Nobody instruments the phone call and there is no unflagged control group. \u201cMoved after flag\u201d \u2014 the stop changed route or position after we flagged it \u2014 is the nearest honest signal and is labelled as exactly that. \u201cMissed anyway\u201d is of the flags we could GRADE, how many still missed; it is not the flag\u2019s accuracy. A flag raised after its close counts as too-late-to-act rather than being averaged into \u201cwe warned them\u201d, days with nothing gradable report \u2014 rather than a flattering 0%, and \u201cnever delivered\u201d is only claimed once the next day\u2019s capture exists to rule out a roll. The last measurement built in this repo reported an intent as an outcome for weeks, so every number here is the boring defensible kind. THE PHONE GUARD EARNED ITS KEEP ON THE WAY IN: this app has TWO navigations and I added the screen to the desktop row only \u2014 the same omission that shipped Manifest check invisible on a phone in v0.54.50. The guard failed the build, the chip menu now carries it, and both guards cover the new screen at both phone sizes and on the desktop. 18 new tests, 1,880 green.'],
   ['0.56.4', 'THE DEPLOY WATCHDOG WAS READING THE WRONG NUMBER, AND IT SENT ME HUNTING A PRODUCTION FAILURE THAT WAS NOT THERE. check-deploy-fresh exists because of the morning five merges never went live: it reads APP_VERSION out of the LIVE bundle and goes red when the site disagrees with main. It cannot read a minified variable name, so it inferred the version from the changelog \u2014 taking the FIRST \u201cx.y.z\u201d row it found, on the assumption that VERSION_LOG is strictly newest-first. CLAUDE.md asks for newest-first; nothing enforced it. Several sessions ship in parallel and each inserts its row at whatever anchor it happened to match, so the array had drifted to 0.56.0, 0.55.9, 0.56.2, 0.56.1 \u2014 and the guard reported the live site as v0.56.0 while it was actually serving 0.56.2. Twice in one afternoon. I believed it both times and went looking for a stuck deploy on the same day a genuinely stuck deploy had happened, which is exactly how a watchdog does harm rather than nothing: the false alarm is indistinguishable from the real one it was built to raise. IT NOW TAKES THE HIGHEST version among the rows rather than the first. Every release adds a row for its own version and CI enforces that, so the maximum row IS APP_VERSION no matter what order the rows ended up in \u2014 ordering became a convenience for whoever reads the list instead of a correctness dependency for the release guard. Compared numerically, too, so 0.56.10 outranks 0.56.9 rather than sorting below it as strings would. \u201cI could not tell\u201d still returns null and stays distinguishable from \u201cit is stale\u201d, which is the property that keeps the check quiet on a network blip. AND THE LIST IS SORTED AGAIN \u2014 all 511 rows, newest-first, no duplicates \u2014 because it is what Chad reads to find out what changed and one where 0.55.9 sits above 0.56.2 is one nobody can scan. A test now holds all of it: the guard reads a scrambled changelog correctly, and the app\u2019s own log must stay ordered, duplicate-free, and headed by APP_VERSION. 6 new tests.'],
@@ -23268,7 +23269,7 @@ function CommsPhone(c) {
           title="Unsubscribed" subtitle="Customers not getting delivery emails"
           open={open === 'unsub'} onToggle={() => toggle('unsub')}
         >
-          <UnsubscribedList compact />
+          <UnsubscribedList compact ready={c.cfgResp?.unsubscribeReady ?? null} />
         </PhoneSection>
 
         <PhoneSection
@@ -23646,7 +23647,7 @@ function LogBody({ c, compact = false }) {
 // Self-contained and used by BOTH the phone and desktop screens, because this app has two
 // navigations and two layouts, and a card written into one of them is a card that does not
 // exist on a phone. That has shipped here before.
-function UnsubscribedList({ compact = false }) {
+function UnsubscribedList({ compact = false, ready = null }) {
   const [data, setData] = useState(null);
   const [err, setErr] = useState(null);
   const [busy, setBusy] = useState(true);
@@ -23686,6 +23687,27 @@ function UnsubscribedList({ compact = false }) {
           {busy ? '…' : 'Reload'}
         </button>
       </div>
+
+      {/* THE ONE-WAY-DOOR WARNING. Without a signing secret the email footer falls back to
+          "reply to this message" — honest, but indistinguishable from the link working, so the
+          program would keep sending hundreds a day with no automatic opt-out and nobody would
+          know. The server reports the fact; this is where it gets said out loud. */}
+      {ready === false && (
+        <div className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900 leading-relaxed">
+          <strong>Unsubscribe links are not active.</strong> Delivery emails currently say
+          &ldquo;reply to this message and we&rsquo;ll take you off the list&rdquo; &mdash; which works, but
+          needs a person to act on it. Set <code className="font-mono">COMMS_UNSUB_SECRET</code> on
+          the Netlify site (any long random string) and redeploy; then every email carries a real
+          link and Gmail and Outlook show their own one-click Unsubscribe.
+        </div>
+      )}
+      {ready === true && (
+        <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-800 leading-relaxed">
+          <strong>Unsubscribe links are live.</strong> Every delivery email carries one, and Gmail
+          and Outlook show their own one-click Unsubscribe. Anyone who uses it appears here, with
+          no one here touching anything.
+        </div>
+      )}
 
       {err && <div className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">{err}</div>}
 
@@ -23924,7 +23946,7 @@ function CommsDesktop(c) {
         <CommsMsg msg={c.msg} where="save" className="max-w-sm mx-auto text-center" />
 
         <CommsCard title="Unsubscribed">
-          <UnsubscribedList />
+          <UnsubscribedList ready={c.cfgResp?.unsubscribeReady ?? null} />
         </CommsCard>
 
         <CommsCard title="Send log">
