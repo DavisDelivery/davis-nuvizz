@@ -104,11 +104,29 @@ function vendorEtaMin(s: any): number | null {
   return v ? stampMin(v) : null;
 }
 
+/** CANDIDATE ROUTE-START SIGNALS, most trustworthy first.
+ *  Model A simulates every route as leaving Buford at 8:00. The history says Davis runs
+ *  night and evening work, so the question is not "is 8:00 wrong" (it is) but "does a real
+ *  per-route start EXIST in the data we already hold at routing time". Each candidate is
+ *  counted separately so the answer is a measurement, not an assumption — a signal present
+ *  on 8% of routes cannot carry a flagging policy no matter how accurate it is where it
+ *  does appear. route-stop-line.js warns the TOP-LEVEL plannedEtaDTTM is filled by the list
+ *  scan with a generic saved-search time, so it is ranked below the execution-info path and
+ *  reported on its own line rather than silently blended in. */
+const START_CANDIDATES: Array<[string, (s: any) => any]> = [
+  ['exec_planned_eta', (s) => s?.raw?.stopExecutionInfo?.to?.plannedEtaDTTM],
+  ['exec_schedule_from', (s) => s?.raw?.stopExecutionInfo?.to?.schedule?.timeFrom],
+  ['scheduled_from', (s) => s?.scheduledFrom],
+  ['top_planned_eta', (s) => s?.plannedEtaDTTM],
+];
+
 interface Row {
   date: string; route: string; seq: number; stopNbr: string; customer: string;
   actual: number; predA: number | null; predC: number | null; predD: number | null;
   idx: number; legMeters: number; pallets: number | null;
   predB: number | null;
+  predE: number | null;   // model E: departs at the route's OWN planned start
+  startSignal: string;    // which candidate supplied that start ('' = none, route falls back to 8:00)
   hops: number;   // stops since the last real arrival stamp C could anchor on (0 = none yet)
 }
 
@@ -138,10 +156,27 @@ function replayRoute(stops: any[], date: string, tuned: { speed: number; service
     return true;
   });
 
+  // MODEL E's DEPARTURE. The planned signal is an ARRIVAL at the first stop, not a depot
+  // departure, so the modelled first leg is backed out of it. Everything else about E is
+  // model B — same constants, same walk — which is the point: E isolates the clock.
+  let startSignal = '';
+  let departE = DEPART_MIN;
+  const firstVisit = visits[0];
+  for (const [name, get] of START_CANDIDATES) {
+    const m = stampMin(get(firstVisit));
+    if (m == null) continue;
+    const p0 = posOf(firstVisit);
+    const leg0 = p0 ? haversineMeters(DEPOT, p0) : 0;
+    departE = m - (leg0 * tuned.road / tuned.speed) / 60;
+    startSignal = name;
+    break;
+  }
+
   let cur: any = DEPOT;
   let clockA = DEPART_MIN;          // model A: pure projection, SHIPPED constants
   let clockB = tuned.depart;        // model B: pure projection, TUNED constants (no anchor)
   let clockC = tuned.depart;          // model C: tuned constants AND re-anchored on observed stamps
+  let clockE = departE;             // model E: model B's walk, started at the ROUTE's own clock
   let idx = 0;
   // How far C is projecting past its last real stamp. This is the number that decides whether
   // a re-anchored model can answer "will the truck make a 2pm close five stops from now" —
@@ -163,6 +198,7 @@ function replayRoute(stops: any[], date: string, tuned: { speed: number; service
     clockA += travelA;
     clockB += travelT;
     clockC += travelT;
+    clockE += travelT;
     hops += 1;
 
     const actual = actualArrivalMin(s, date);
@@ -175,6 +211,8 @@ function replayRoute(stops: any[], date: string, tuned: { speed: number; service
         actual,
         predA: Math.round(clockA),
         predB: Math.round(clockB),
+        predE: Math.round(clockE),
+        startSignal,
         predC: Math.round(clockC),
         hops,
         predD: vendorEtaMin(s),
@@ -185,6 +223,7 @@ function replayRoute(stops: any[], date: string, tuned: { speed: number; service
     clockA += SERVICE_SEC / 60;
     clockB += tuned.service / 60;
     clockC += tuned.service / 60;
+    clockE += tuned.service / 60;
 
     // MODEL C's ANCHOR — and the as-of rule that makes it honest. Once this stop's own
     // arrival is known, later stops in the sequence may be projected from it. It is applied
@@ -274,6 +313,7 @@ export default async (req: Request): Promise<Response> => {
 
     const errA = allRows.filter((r) => r.predA != null).map((r) => (r.predA as number) - r.actual);
     const errB = allRows.filter((r) => r.predB != null).map((r) => (r.predB as number) - r.actual);
+    const errE = allRows.filter((r) => r.predE != null).map((r) => (r.predE as number) - r.actual);
     const errC = allRows.filter((r) => r.predC != null).map((r) => (r.predC as number) - r.actual);
     const withVendor = allRows.filter((r) => r.predD != null);
     const errD = withVendor.map((r) => (r.predD as number) - r.actual);
@@ -326,9 +366,24 @@ export default async (req: Request): Promise<Response> => {
       ? { n: svc.length, median_min: pct(svc, 50), p10: pct(svc, 10), p90: pct(svc, 90), mean_min: mean(svc) }
       : { n: 0 };
 
+    // WHICH START SIGNAL ACTUALLY EXISTS, and is E any better where it does? A model that
+    // wins only on the 8% of stops carrying a rare field has not solved the problem; the
+    // per-signal split is what separates "the fix" from "a fix for a few routes".
+    const signalCounts: Record<string, number> = {};
+    for (const r of allRows) signalCounts[r.startSignal || '(none — fell back to 08:00)'] = (signalCounts[r.startSignal || '(none — fell back to 08:00)'] || 0) + 1;
+    const bySignal: Record<string, any> = {};
+    for (const sig of Object.keys(signalCounts)) {
+      const sel = allRows.filter((r) => (r.startSignal || '(none — fell back to 08:00)') === sig);
+      bySignal[sig] = {
+        stops: sel.length,
+        A_current: stats(sel.map((r) => (r.predA as number) - r.actual)),
+        E_route_start: stats(sel.filter((r) => r.predE != null).map((r) => (r.predE as number) - r.actual)),
+      };
+    }
+
     // RAW ERROR ARRAYS so a caller can pool exactly across days instead of averaging medians.
     const raw = url.searchParams.get('raw') === '1'
-      ? allRows.map((r) => [r.actual, r.predA, r.predB, r.predC, r.predD, r.idx, r.hops, r.legMeters])
+      ? allRows.map((r) => [r.actual, r.predA, r.predB, r.predC, r.predD, r.idx, r.hops, r.legMeters, r.predE, r.startSignal])
       : undefined;
 
     const worst = [...allRows]
@@ -358,12 +413,14 @@ export default async (req: Request): Promise<Response> => {
       models: {
         A_current: stats(errA),
         B_calibrated: stats(errB),
+        E_route_start: stats(errE),
         C_anchored: stats(errC),
         D_vendor: stats(errD),
       },
       A_by_route_position: byIdx,
       A_by_hour_of_day: byHour,
       C_by_horizon: byHop,
+      start_signal_split: bySignal,
       observed_departure: departStats,
       observed_service: serviceStats,
       raw,
