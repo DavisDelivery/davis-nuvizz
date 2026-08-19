@@ -165,6 +165,9 @@ interface Row {
   // after it is composing the clock out of the wrong parts.
   arrMin: number | null;      // arrivalDTTM alone
   delMin: number | null;      // deliveredDTTM alone
+  matchKey: string;           // the customer this stop belongs to
+  conMin: number | null;      // stopExecutionInfo.to.confirmedDTTM
+  recMin: number | null;      // stopExecutionInfo.receiveDTTM
 }
 
 /** Replay one route. Returns one row per stop that has BOTH a position and a real
@@ -256,6 +259,9 @@ function replayRoute(stops: any[], date: string, tuned: { speed: number; service
         idx, legMeters: Math.round(legMeters), pallets: numOr(s?.pallets),
         arrMin: sameDayStamp(s?.arrivalDTTM, date),
         delMin: sameDayStamp(s?.deliveredDTTM, date),
+        matchKey: String(s?.customerMatchKey || s?.matchKey || ''),
+        conMin: sameDayStamp(s?.executed?.confirmedDTTM ?? s?.raw?.stopExecutionInfo?.to?.confirmedDTTM, date),
+        recMin: sameDayStamp(s?.executed?.receiveDTTM ?? s?.raw?.stopExecutionInfo?.receiveDTTM, date),
       });
     }
 
@@ -512,6 +518,12 @@ export default async (req: Request): Promise<Response> => {
     const stampCoverage = {
       rows: allRows.length,
       has_arrival: allRows.filter((r) => r.arrMin != null).length,
+      // history-derive stores TWO more execution stamps and calls them "the dwell signal":
+      // confirmedDTTM and receiveDTTM out of raw.stopExecutionInfo. If either has real
+      // coverage, the visit CAN be bracketed after all and per-customer dwell is learnable
+      // without the arrival stamp the driver never taps in time.
+      has_confirmed: allRows.filter((r) => r.conMin != null).length,
+      has_receive: allRows.filter((r) => r.recMin != null).length,
       has_delivered: allRows.filter((r) => r.delMin != null).length,
       has_both: allRows.filter((r) => r.arrMin != null && r.delMin != null).length,
       delivered_before_arrival: allRows.filter((r) => r.arrMin != null && r.delMin != null && r.delMin < r.arrMin).length,
@@ -564,9 +576,53 @@ export default async (req: Request): Promise<Response> => {
       errG.push((a.actual + modelled) - b.actual);      // anchor, NO service block
     }
 
+    // ── IS PER-CUSTOMER COST WORTH MODELLING? THE KILL CRITERION ─────────────
+    // The shipped per-stop cost is a single fleet number (14 min). That is defensible only
+    // if stops are alike. They are obviously not — a 22-skid Uline dock and a two-box shop
+    // door are not the same visit — but "obviously" is how the 20-minute assumption got in.
+    //
+    // Same signal as before: delivered(n+1) - delivered(n) - modelled travel. That residual
+    // is the work at the LATER stop, so it is attributed to stop n+1's customer. Group by
+    // customer, take each one's median, and look at the SPREAD of those medians.
+    //   narrow  -> the fleet number is already right and per-customer mining is complexity
+    //              for nothing. Stop at 14.
+    //   wide    -> there is real signal being averaged away, and the miner earns its keep.
+    const byCust = new Map<string, number[]>();
+    for (let i = 1; i < allRows.length; i += 1) {
+      const a = allRows[i - 1], b = allRows[i];
+      if (a.date !== b.date || a.route !== b.route || b.idx !== a.idx + 1) continue;
+      if (!b.matchKey) continue;
+      const resid = (b.actual - a.actual) - (b.legMeters * ROAD_FACTOR / AVG_SPEED_MPS) / 60;
+      if (resid < -60 || resid > 240) continue;
+      const arr = byCust.get(b.matchKey) || [];
+      arr.push(resid);
+      byCust.set(b.matchKey, arr);
+    }
+    const MIN_OBS = 5;
+    const medians: number[] = [];
+    const heavy: Array<{ customer: string; n: number; median: number }> = [];
+    for (const [k, xs] of byCust) {
+      if (xs.length < MIN_OBS) continue;
+      const m = pct(xs, 50) as number;
+      medians.push(m);
+      heavy.push({ customer: k.slice(0, 40), n: xs.length, median: Math.round(m) });
+    }
+    heavy.sort((x, y) => y.median - x.median);
+    const perCustomer = medians.length ? {
+      customers_with_enough_obs: medians.length,
+      min_obs_required: MIN_OBS,
+      customers_seen: byCust.size,
+      median_of_medians: pct(medians, 50),
+      p10: pct(medians, 10), p25: pct(medians, 25), p75: pct(medians, 75), p90: pct(medians, 90),
+      // The number that decides it: how far apart are the slow and fast customers?
+      spread_p10_to_p90_min: Math.round((pct(medians, 90) as number) - (pct(medians, 10) as number)),
+      slowest: heavy.slice(0, 12),
+      fastest: heavy.slice(-12).reverse(),
+    } : { customers_with_enough_obs: 0 };
+
     // RAW ERROR ARRAYS so a caller can pool exactly across days instead of averaging medians.
     const raw = url.searchParams.get('raw') === '1'
-      ? allRows.map((r) => [r.actual, r.predA, r.predB, r.predC, r.predD, r.idx, r.hops, r.legMeters, r.predE, r.startSignal])
+      ? allRows.map((r) => [r.actual, r.predA, r.predB, r.predC, r.predD, r.idx, r.hops, r.legMeters, r.predE, r.startSignal, r.matchKey])
       : undefined;
 
     const worst = [...allRows]
@@ -613,6 +669,7 @@ export default async (req: Request): Promise<Response> => {
       observed_dwell_min: dwellStats,
       observed_travel: travelStats,
       residual_by_leg_distance: residualByLeg,
+      per_customer_cost: perCustomer,
       raw,
       per_day_scored: perDay,
       worst_rows: worst,

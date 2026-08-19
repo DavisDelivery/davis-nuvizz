@@ -114,6 +114,9 @@ jobs:
       # as build-gating and then was never wired to anything — every claim that it "fails
       # the build" was false until this line existed. Chromium is already installed above.
       - run: npm run verify:mobile
+      # The desktop counterpart — a screen can be perfect at 390px and still waste half a
+      # dispatcher's 1920px monitor, and no phone check can see that.
+      - run: npm run verify:desktop
       # "Hide place labels" can only misbehave on a build that HAS a cloud mapId: Google
       # ignores the JS `styles` array on those maps, so the toggle had nothing to do on the
       # roadmap base. Honouring it means REBUILDING the map without the mapId, and the risk

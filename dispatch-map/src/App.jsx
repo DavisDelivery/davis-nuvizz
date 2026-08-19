@@ -77,7 +77,33 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.55.4';
+const APP_VERSION = '0.55.6';
+
+// ── SCREEN WIDTH: ONE CONVENTION ─────────────────────────────────────────────
+//
+// Chad, on the Diagnostics screen photographed at ~2000px: "i don't like these narrow pages
+// it acts like we dont' have 2 versions of this app one for desktop and one for mobile
+// these page looks like it was designed for mobile." He was right, and it was systemic —
+// four screens carried a hard centred cap (896px, 672px, 1024px, 1152px) that never widened,
+// so on a dispatcher's monitor Diagnostics used 44% of the display and Quote 23%.
+//
+// These are the only screen-width strings a screen container should use. They are named by
+// CONTENT SHAPE, because the shape decides the answer:
+//
+//   SCREEN_DASH  stacked independent cards. Widen AND grid them at xl — one 1600px column
+//                of full-width cards is no better than one 900px column, only emptier.
+//   SCREEN_FORM  a form or prose. Widen, but not without limit: a 1600px text field and a
+//                200-character line read worse than the narrow version, not better.
+//   SCREEN_WIDE  tables, grids and lists, where every extra pixel is another column or
+//                another row readable without scrolling.
+//
+// All three start at the phone-appropriate width and only widen at lg/xl/2xl, so the phone
+// build — deliberately a different being — is untouched by any of this.
+const SCREEN_DASH = 'w-full mx-auto max-w-4xl xl:max-w-[1500px] 2xl:max-w-[1700px]';
+const SCREEN_FORM = 'w-full mx-auto max-w-2xl lg:max-w-4xl xl:max-w-7xl';
+const SCREEN_WIDE = 'w-full mx-auto max-w-5xl xl:max-w-[1600px] 2xl:max-w-[1800px]';
+// Cards inside a SCREEN_DASH screen: one column until there is genuinely room for two.
+const DASH_GRID = 'grid grid-cols-1 xl:grid-cols-2 gap-4 sm:gap-6 items-start';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -122,6 +148,8 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.55.6', 'A FLAG IS NOW ABOUT HOW LATE THE TRUCK IS, NOT WHO TYPED THE HOURS \u2014 AND CUSTOMER SERVICE GETS TOLD. Chad, looking at a live board: \u201cWhat makes one of these flags go red and trigger the email to customerservice@davisdelivery.com\u201d. Two answers, and the first one was embarrassing. RED MEANT ONE THING ONLY: a dispatcher had typed the receiving hours. Amber meant they were parsed from Uline\u2019s order text. That is a statement about where a time came from and says nothing about whether freight is about to be refused \u2014 which is why his board read \u201c0 red \u00b7 6 advisory\u201d while carrying AWC INC predicted 155 minutes past its close, sitting at exactly the same weight as VERITIV at 28 minutes past. And the second answer: NO EMAIL EXISTED. It had been discussed and never built. SEVERITY IS NOW SLACK MEASURED AGAINST HOW WRONG THE ESTIMATE IS KNOWN TO BE. The back-test measured that error in each state over 39 sealed days and 24,238 stops: about 15 minutes when the clock is anchored on a real arrival a stop or two back, growing as it projects further, and 90-plus when nothing on the route has reported and it is still a pure 8:00 projection. Every row now carries the band for its own state. CRITICAL means the overrun clears twice that band \u2014 the miss survives the model being as wrong as it usually is. RED means it clears the band once, or the hours were typed and any overrun is predicted. AMBER means predicted late but inside the bars, where the model genuinely cannot tell late from on-time. Auto-detected hours can now reach critical, because a truck 155 minutes past a close is a problem no matter who wrote the 11:00 down. criticalCount is reported separately AND folded into redCount, so promoting a row can never make the header read calmer than it did a minute earlier. THE EMAIL. First time a stop goes critical, once per stop per board day, to customerservice@davisdelivery.com \u2014 and never once the window has already shut, because past the close the message cannot change anything and competes with stops that can still be saved. The claim is written to Firestore BEFORE the send, which is what stops a truck that simply stays late from emailing every twenty minutes all afternoon; a send that then fails keeps its claim on purpose, because one missed alert beats an alert loop. Capped at 25 a day so a mis-parsed board cannot become a hundred emails. It runs the SAME engine the screen runs \u2014 imported, not reimplemented \u2014 after two separate incidents this session where a copy of the model quietly diverged from it. Dry-run mode reports exactly what would be sent and claims nothing. 1,781 tests.'],
+  ['0.55.5', 'THE DESKTOP GETS ITS DISPLAY BACK \u2014 AND A GUARD SO IT STAYS THAT WAY. Chad, on Diagnostics at ~2000px wide: \u201ci don\u2019t like these narrow pages it acts like we dont\u2019 have 2 versions of this app one for desktop and one for mobile these page looks like it was designed for mobile.\u201d He was right and it was systemic, measured on the real build: Diagnostics used 44% of a 1920px display, Manifest 52%, Customer emails 58%, New Order 33%, Quote 23%. Every guard this app had looked at PHONES \u2014 a screen can be perfect at 390px and still waste half a monitor, and nothing in the build could see it. One convention now, not four ad-hoc caps, named by CONTENT SHAPE because the shape decides the answer: SCREEN_DASH for stacked cards (widen and let panels breathe), SCREEN_FORM for forms (widen, but a 1600px text field reads worse, not better), SCREEN_WIDE for tables and lists where every pixel is another readable column. All three start at the phone width and only widen at lg/xl/2xl, so the phone build \u2014 deliberately a different being \u2014 is untouched. After: Diagnostics 86%, Manifest 92%, Customer emails 92%, New Order 65%. Quote stays narrower ON PURPOSE and says so in the code: it is a single-column calculator whose 468px cap lives upstream in DavisDelivery/Quotes; it is widened to 820px on desktop through the same scoped-override channel as its header fix, and marked data-desktop-narrow with the reason. AND THE GUARD: scripts/verify-desktop-layout.mjs walks the built app at 1440 and 1920, measures the width the content column ACTUALLY occupies, and fails the build under a 62% floor \u2014 wired into CI next to the phone guard. Worth confessing because it is the whole lesson: the first two versions of the measurement PASSED EVERYTHING \u2014 one measured the full-width app shell, the next included the footer bar that spans the viewport by design \u2014 both structurally unable to fire, exactly the vacuous-pass defect the phone guard once shipped with. The check only became real when the number was compared against a screenshot of the starved screen it claimed to measure. Every navigation step must also PROVE the screen opened, or that screen FAILS rather than silently measuring the previous one twice.'],
   ['0.55.4', 'THE ADDRESS IS LIVE \u2014 A RE-ADDRESSED ORDER NOW REACHES THE BOARD, AND THE YELLOW DNS WARNING STOPPED CRYING WOLF. Chad, holding our card beside the NuVizz portal for ESTES-1283081681: \u201cWhy are these not the same[?] nuvizz is showing different than what we are showing[,] a new scan should have fixed this problem.\u201d IT COULD NOT HAVE. NuVizz had MR LARRY WOELFL, 2385 HO HUM HOLLOW ROAD, MONROE 30655. The board showed DAVIS DELIVERY, 943 GAINESVILLE HIGHWAY, BUFORD \u2014 our own yard. WHY: the address was not a LIVE field. The scan refreshes status, load, driver, dates and order instructions every time; everything else is treated as static detail, captured ONCE when an order first appears, and carried forward for ever. So when Estes re-addressed that order the NOTE saying so came through \u2014 notes were made live in an earlier release for exactly this reason \u2014 and the address did not. The card ended up reading \u201cUPDATED ADDY PER ESTES\u201d directly above the old address. The proof was on the card itself: it said \u201cBUFORD, GEORGIA\u201d, and the list feed carries NO state column at all, so that block could only have come from the one-time detail fetch. THE ADDRESS NOW WINS FROM THE LIST, which already carries it free on every scan \u2014 street, suite, city, ZIP and consignee name. Deliberately LIVE-IF-PRESENT, not plain live: a saved-search row can arrive with the address columns blank, and a plain live field would have WIPED a good address board-wide. The list wins wherever it actually carried a value; enrichment still fills whatever it left blank. That distinction also stops the fix undoing itself \u2014 the re-enrichment a move triggers returns NuVizz\u2019s own address, which as an ordinary field would overwrite the list\u2019s copy a few lines later and put the board straight back. AND THE PIN MOVES WITH IT. A corrected address under a pin still sitting on the old building is worse than the stale address was: the card reads right and the driver still goes to the wrong place. A move drops the stored coordinates and re-geocodes. What counts as a move is deliberately format-stable (ZIP5 + street number), because the two NuVizz endpoints spell the same address differently \u2014 comparing the raw text would re-enrich the entire board on every scan. Buford\u2192Monroe registers; \u201cHwy\u201d vs \u201cHIGHWAY\u201d and a ZIP+4 do not. It also converges after one scan now, which the old comparison could not, because the LIST\u2019s spelling is what gets stored. SECOND THING, same screen: \u201cWhat is this yellow window for?\u201d That panel was HARDCODED. It was written while davisdelivery.com genuinely was unverified and never stopped saying \u201cDNS is not verified \u2014 every send is rejected\u201d, on a live program that had just delivered 25 of 25. A warning that cannot stop warning is worse than none, on the one screen you would check to find out whether email works. It now asks Resend. Verified reads as a quiet green line; unverified lists ONLY the records still failing; and \u201ccould not check\u201d says exactly that \u2014 an unknown is never dressed up as a failure, which was the whole mistake. 18 new tests, 1,801 green.'],
   ['0.55.3', 'THE BOARD FLAGS PANEL: THE CHAT BUBBLE IS OFF IT, AND YOU CAN MINIMISE IT. Chad, on a screenshot of 7 advisories: \u201cformatting issue here things are laying on top of one another and no way for me to minimize the flag window.\u201d Both were real. WHY THINGS SAT ON TOP OF EACH OTHER, and it is not what it looks like: the panel already asked to be drawn above everything (z-70). It could not be. It was rendered INSIDE the frosted stops pill, and a backdrop-filter creates a stacking context \u2014 so that z-70 only ever applied WITHIN the pill, and the round message button further down the same column, which asks for no z-index at all, won simply by coming later in the document. Proven rather than guessed: with the panel open, the browser was asked what element is actually on top at a grid of points inside the panel, and it answered with the message button. The panel now hangs off a plain unblurred wrapper instead, and the same probe answers nothing at all \u2014 open and minimised. This repo already knew the rule; the Routing screen carries a comment saying in as many words never to nest this panel in a backdrop-blur pill. The desktop Map was the last place still doing it. MINIMISE, NOT JUST CLOSE. The only control was \u2715, which throws away the counts along with the list. There is now a chevron beside it that collapses the panel to its header \u2014 still showing \u201cN red \u00b7 N advisory\u201d, one click from the list \u2014 and the choice is remembered per device, because a dispatcher who wants it out of the way today wants it out of the way tomorrow. The panel is also bounded to the viewport now and scrolls its LIST rather than itself, so the footer that says what was and was not judged can no longer be pushed off the bottom of the screen by a long list of flags.'],
   ['0.55.2', 'THE SEND LOG IS A HISTORY NOW, NOT A PILE. Chad: the email history \u201cneeds to be done by the day and have ranges and months and so on and so forth, not just a long compilation of all the emails that we\u2019ve sent. We need to be able to sort it.\u201d It was one flat list of every send, newest first, hardcoded to the last 7 days and CUT AT 50 ROWS WITHOUT SAYING SO \u2014 on a 25-a-day program that is two days of history presented as though it were all of it. THE LEDGER WAS ALWAYS DAY-SHAPED: every send is already its own document under customer_comms_<date>/sent. The flattening happened on the way out, so this is a reader change, not a migration \u2014 the same documents, grouped the way they were always written. PICK A RANGE: Today, 7 days, 30 days, This month, any of the last twelve months by name, or a from\u2013to pair. A day opens to its sends; the columns sort by time, customer, address or result, and every day\u2019s table is aligned to the same grid so they read down the page. Months get their own subtotals once a range spans more than one. WHAT IT NOW REFUSES TO HIDE. A day that was READ and had nothing shows as a row saying so \u2014 and says \u2018swept \u2014 nobody to email\u2019 when the sweep ran, which is the one thing that tells a quiet day apart from a broken one. A day Firestore could not return is named in red instead of appearing as a silent gap. A range longer than the 92-day read budget says how many days it asked for and how many it is showing. So does a truncated row list. Every one of those used to look identical to \u2018nothing happened\u2019. A range change reloads only the log, never the config, so browsing history cannot throw away an unsaved template edit. Zero NuVizz calls, as before \u2014 it reads our own ledger. ALSO FIXED, FOUND BY THE NEW TESTS: a date could be silently WRONG rather than rejected. \u20182026-02-30\u2019 is the right shape and does not fail a parse \u2014 the engine rolls it forward to March 2nd and reports success \u2014 so a range could quietly read days nobody asked for. Dates now have to spell themselves back. The same hole was in dayBefore/dayAfter, which the duplicate-send guard uses to check the neighbouring day\u2019s ledger; an impossible date has no board so nothing was mis-sent, but it was a trap and it is closed. 24 new tests, 1,763 green.'],
@@ -2998,7 +3026,10 @@ function BoardFlagsPanel({ flags, dismissed, onDismiss, onOpenStop, onClose, onR
   // Header counts come from the DISMISS-FILTERED rows — the same numbers the chip shows.
   // Printing the raw detector counts here made a fully-dismissed board read "1 red · 0
   // advisory" directly above "Nothing needs looking at", one claim contradicting the other.
-  const liveRed = rows.filter((r) => r.tier === 'red').length;
+  // Critical is counted separately AND inside red — a row promoted from red to critical must
+  // never make the header read calmer than it did a minute earlier.
+  const liveCritical = rows.filter((r) => r.tier === 'critical').length;
+  const liveRed = rows.filter((r) => r.tier === 'critical' || r.tier === 'red').length;
   const liveAmber = rows.filter((r) => r.tier === 'amber').length;
   const sk = flags.skipped || {};
   const ck = flags.checked || {};
@@ -3016,6 +3047,11 @@ function BoardFlagsPanel({ flags, dismissed, onDismiss, onOpenStop, onClose, onR
       <div className="px-3 py-2 border-b flex items-center justify-between bg-slate-50 flex-shrink-0">
         <div className="text-xs font-semibold text-slate-700 inline-flex items-center gap-1.5 min-w-0">
           <Flag size={13} className="text-red-600 flex-shrink-0" /> Board flags
+          {liveCritical > 0 && (
+            <span className="px-1.5 py-0.5 rounded bg-red-600 text-white text-[10px] font-bold tracking-wide flex-shrink-0">
+              {liveCritical} CRITICAL
+            </span>
+          )}
           <span className="font-normal text-slate-500 truncate">{liveRed} red · {liveAmber} advisory</span>
         </div>
         <div className="flex items-center flex-shrink-0">
@@ -3039,7 +3075,12 @@ function BoardFlagsPanel({ flags, dismissed, onDismiss, onOpenStop, onClose, onR
         )}
         {rows.map((r) => (
           <div key={r.dismissKey} className="px-3 py-2 flex items-start gap-2 hover:bg-slate-50">
-            <span className={'mt-1 w-2 h-2 rounded-full flex-shrink-0 ' + (r.tier === 'red' ? 'bg-red-500' : 'bg-amber-400')} />
+            <span
+              className={'mt-1 rounded-full flex-shrink-0 ' + (
+                r.tier === 'critical' ? 'w-2.5 h-2.5 bg-red-600 ring-2 ring-red-300'
+                  : r.tier === 'red' ? 'w-2 h-2 bg-red-500'
+                    : 'w-2 h-2 bg-amber-400')}
+            />
             <button
               onClick={() => { if (r.stopNbr) { onOpenStop?.(r.stopNbr); onClose(); } }}
               className={'min-w-0 flex-1 text-left ' + (r.stopNbr ? 'cursor-pointer' : 'cursor-default')}
@@ -9013,7 +9054,12 @@ function MapScreen({ onOpenMessages, smsUnread = 0, debugCaptureRef, presence = 
   // The chip's number excludes dismissed rows — a cleared list must read as cleared.
   const visibleFlagCounts = useMemo(() => {
     const live = boardFlags.rows.filter((r) => !dismissedFlags[r.dismissKey]);
-    return { ...boardFlags, redCount: live.filter((r) => r.tier === 'red').length, amberCount: live.filter((r) => r.tier === 'amber').length };
+    return {
+      ...boardFlags,
+      criticalCount: live.filter((r) => r.tier === 'critical').length,
+      redCount: live.filter((r) => r.tier === 'critical' || r.tier === 'red').length,
+      amberCount: live.filter((r) => r.tier === 'amber').length,
+    };
   }, [boardFlags, dismissedFlags]);
   const [flagsMinimized, setFlagsMinimized] = useState(() => safeReadJSON(LS_BOARD_FLAGS_MINIMIZED, false) === true);
   const toggleFlagsMinimized = useCallback(() => setFlagsMinimized((m) => { safeWriteJSON(LS_BOARD_FLAGS_MINIMIZED, !m); return !m; }), []);
@@ -12075,7 +12121,7 @@ function DiagnosticsScreen({ stops, notes, ops, lastLoadScanAt, lastUnplannedSca
   }, [onRefresh]);
 
   return (
-    <div className="flex-1 min-h-0 overflow-y-auto p-3 sm:p-6 space-y-4 sm:space-y-6 max-w-4xl mx-auto w-full">
+    <div className={`flex-1 min-h-0 overflow-y-auto p-3 sm:p-6 space-y-4 sm:space-y-6 ${SCREEN_DASH}`}>
       <div>
         <h2 className="text-xl font-bold text-slate-900">Diagnostics</h2>
         <p className="text-sm text-slate-600 mt-1">NuVizz API usage and the live scan schedule. Schedule edits apply to the running scanner.</p>
@@ -15571,7 +15617,12 @@ function RoutingScreen({ debugCaptureRef, presence = null }) {
   }, [stops, notes, loadRosterList, selectedDate, flagsClockTick]); // eslint-disable-line react-hooks/exhaustive-deps
   const visibleFlagCounts = useMemo(() => {
     const live = routingBoardFlags.rows.filter((r) => !dismissedFlags[r.dismissKey]);
-    return { ...routingBoardFlags, redCount: live.filter((r) => r.tier === 'red').length, amberCount: live.filter((r) => r.tier === 'amber').length };
+    return {
+      ...routingBoardFlags,
+      criticalCount: live.filter((r) => r.tier === 'critical').length,
+      redCount: live.filter((r) => r.tier === 'critical' || r.tier === 'red').length,
+      amberCount: live.filter((r) => r.tier === 'amber').length,
+    };
   }, [routingBoardFlags, dismissedFlags]);
   const [flagsMinimized, setFlagsMinimized] = useState(() => safeReadJSON(LS_BOARD_FLAGS_MINIMIZED, false) === true);
   const toggleFlagsMinimized = useCallback(() => setFlagsMinimized((m) => { safeWriteJSON(LS_BOARD_FLAGS_MINIMIZED, !m); return !m; }), []);
@@ -18733,13 +18784,18 @@ function RoutingRouteCard({ rv, stopById, usedGoogle, readOnly, onReorder, onMov
 // data ships inside the package, so no NuVizz calls and no props are required.
 function QuoteScreen() {
   return (
-    <div className="flex-1 min-h-0 overflow-auto bg-slate-50">
+    <div className="flex-1 min-h-0 overflow-auto bg-slate-50" data-desktop-narrow="single-column quote calculator; width capped upstream in DavisDelivery/Quotes (.rc-wrap), widened to 820px on desktop via scoped override">
       {/* The console gates its FOOTER on `embedded` but not its HEADER (UlineQuoteConsole.jsx
           :591-594), so embedding it as a tab printed a second title bar directly under this
           app's own — two headers stacked, ~64px of it. The real fix belongs upstream in
           DavisDelivery/Quotes, next to the footer's existing gate; until that lands this
           hides it here, scoped to .rc-embedded so the standalone console is untouched. */}
       <style>{'.rc-root.rc-embedded .rc-head{display:none}'}</style>
+      {/* The console's own .rc-wrap caps at 468px — an upstream choice in DavisDelivery/
+          Quotes, right for a phone and cramped on a monitor. Same override channel as the
+          header fix above, desktop only: a quote is still a single-column calculator, so it
+          gets room to breathe (fields, zone table) without being stretched absurd. */}
+      <style>{'@media (min-width:1024px){.rc-root.rc-embedded .rc-wrap{max-width:820px}}'}</style>
       <React.Suspense fallback={<div className="p-6 text-sm text-slate-500">Loading quote console…</div>}>
         <UlineQuoteConsole embedded />
       </React.Suspense>
@@ -20565,7 +20621,7 @@ function NewOrderSingleScreen() {
 
   return (
     <div className="flex-1 min-h-0 overflow-auto bg-slate-50">
-      <div className="max-w-2xl mx-auto p-4 space-y-4">
+      <div className={`p-4 space-y-4 ${SCREEN_FORM}`}>
         {/* Header + Beta/Live */}
         <div className="flex items-center justify-between gap-3">
           <div>
@@ -23276,7 +23332,7 @@ function CommsDesktop(c) {
   return (
     <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden bg-slate-100">
       <div className="bg-white border-b border-slate-200">
-        <div className="max-w-6xl mx-auto px-4 py-3 flex items-center justify-between gap-3">
+        <div className={`px-4 py-3 flex items-center justify-between gap-3 ${SCREEN_WIDE}`}>
           <div className="min-w-0">
             <h1 className="text-base font-bold text-slate-900 flex items-center gap-2"><Mail size={17} style={{ color: BRAND }} /> Customer emails</h1>
             <p className="text-[11px] text-slate-500 truncate">Branded delivery-complete email · zero NuVizz calls — reads only our cached board</p>
@@ -23288,7 +23344,7 @@ function CommsDesktop(c) {
         </div>
       </div>
 
-      <div className="max-w-6xl mx-auto p-4 space-y-4">
+      <div className={`p-4 space-y-4 ${SCREEN_WIDE}`}>
         <CommsMsg msg={c.msg} where="top" className="mt-0" />
 
         <div className="grid gap-4 lg:grid-cols-[360px_minmax(0,1fr)] items-start">
@@ -23513,7 +23569,7 @@ function ManifestCheckScreen() {
 
   return (
     <div className="flex-1 overflow-auto bg-slate-50">
-      <div className="max-w-5xl mx-auto p-4 space-y-3">
+      <div className={`p-4 space-y-3 ${SCREEN_WIDE}`}>
         <div>
           <h1 className="text-lg font-bold text-slate-800">Manifest check</h1>
           <p className="text-xs text-slate-500 mt-0.5">
