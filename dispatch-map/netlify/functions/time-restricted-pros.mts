@@ -10,6 +10,14 @@
 //
 //   GET ?date=YYYY-MM-DD        JSON  { ok, date, summary, rows, coverage }
 //   GET ?date=…&format=csv      the same rows as a downloadable CSV
+//   GET ?carryDays=N            also fold in still-unplanned stops from the prior N days
+//
+// carryDays defaults to 0, matching the map's own default so the report and the screen
+// agree unless you ask otherwise. It is worth asking for: on 2026-08-19 three of the four
+// carried-over stops were time-restricted, including a GXO stop undelivered since the
+// 17th that nobody can deliver without booking it first. Those are the most actionable
+// rows on the sheet, and they are invisible on a today-only read. Folding them costs no
+// extra vendor traffic — mergeCarryover reads per-day indexes that were already scanned.
 //
 // WHY THIS IS A FUNCTION AND NOT A SCREEN. The join it needs — a full day's stop index
 // against every customer's notes — is a server-side read. The browser holds customer_notes
@@ -24,6 +32,7 @@
 
 import { isFirestoreEnabled, readStops, getDoc, etDayString } from './lib/firestore.mts';
 import { withCustomerKeys, stopCustomerKey } from './lib/customer-key.mts';
+import { mergeCarryover } from './nuvizz-pull-today-stops.mts';
 import { buildTimeRestrictionRows, summarizeRows, toCsv } from '../../src/lib/time-restrictions.js';
 
 const TENANT = 'davis';
@@ -41,12 +50,20 @@ export default async (req: Request): Promise<Response> => {
     const date = url.searchParams.get('date') || etDayString();
     if (!DATE_RE.test(date)) return json({ ok: false, error: `bad date "${date}" — expected YYYY-MM-DD` }, 400);
     const wantCsv = (url.searchParams.get('format') || '').toLowerCase() === 'csv';
+    const carryDays = Math.max(0, Math.min(14, parseInt(url.searchParams.get('carryDays') || '0', 10) || 0));
 
     const { meta, stops: rawStops } = await readStops(TENANT, date);
     // The stored stop index carries no matchKey; customer_notes are keyed by it. Without
     // this every stop reads as "no hours on file" and the whole board comes back clean —
     // the exact silent-zero eta-flag-check documents.
-    const stops = withCustomerKeys(rawStops || []);
+    const base = rawStops || [];
+    let carryoverAdded = 0;
+    if (carryDays > 0 && base.length) {
+      // Best-effort: a carry-over fold that fails must not cost the caller the day's own
+      // board, which is the part they actually asked for.
+      try { carryoverAdded = await mergeCarryover(base, date, carryDays, undefined, undefined, meta?.lastUnplannedScanAt ?? null); } catch { /* keep base stops */ }
+    }
+    const stops = withCustomerKeys(base);
     if (!stops.length) {
       return json({ ok: true, date, note: 'no board scanned for this date', summary: null, rows: [] });
     }
@@ -93,6 +110,8 @@ export default async (req: Request): Promise<Response> => {
         distinctCustomers: keys.length,
         notesLoaded: notes.size,
         noteReadFailures,
+        carryDays,
+        carryoverAdded,
         lastScannedAt: meta?.last_scanned_at ?? null,
       },
       rows,

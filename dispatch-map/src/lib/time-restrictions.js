@@ -323,7 +323,16 @@ export function classifyStopTimeRestriction(stop, note, servedDate, defaultSlots
   // than implying we were on time.
   const deliveredMin = clockMinFromStamp(stop?.deliveredDTTM);
   let missedByMin = null;
-  if (deliveredMin != null) {
+  // RECEIVING HOURS GOVERN FREIGHT COMING IN, AND A PICKUP IS NOT THAT. Every stop
+  // carries stopType PU or DO, and a completed pickup is also status DELIVERED — the
+  // same conflation that once had this app telling a shipper "your delivery is complete"
+  // at the moment we took custody (v0.54.89). Here it produced two false misses on one
+  // board: an internal Davis pickup collected at 12:05p, exactly as its order asked
+  // ("PICK UP BEFORE 1:00PM"), scored 65 minutes late against a consignee close time it
+  // had inherited from a customer_notes doc that has nothing to do with pickups. The
+  // hours stay on the row as context; only the ACCUSATION is withheld.
+  const isPickup = stop?.stopType === 'PU';
+  if (deliveredMin != null && !isPickup) {
     if (split) {
       // Only the GAP is a miss. Arriving after the dock reopens is exactly what the
       // customer asked for and must never be reported as late.
@@ -396,6 +405,11 @@ export function buildTimeRestrictionRows(stops = [], notes = new Map(), servedDa
       zip: stop.zip || '',
       stopType: stop.stopType === 'PU' ? 'Pickup' : 'Delivery',
       status: stop.normalizedStatus || '',
+      // A stop carried over from an earlier day is still undelivered freight that
+      // carries a clock. Flagged rather than hidden: an appointment-required stop
+      // sitting since Monday is the most actionable row on the sheet.
+      carryover: stop.carryover ? 'Yes' : '',
+      scheduledDate: stop.scheduledDate || '',
       route: stop.routeName || '',
       driver: stop.driverName || '',
       tier: r.tier,
@@ -436,6 +450,8 @@ export const CSV_COLUMNS = [
   ['zip', 'ZIP'],
   ['stopType', 'Type'],
   ['status', 'Status'],
+  ['carryover', 'Carried over'],
+  ['scheduledDate', 'Scheduled for'],
   ['route', 'Route'],
   ['driver', 'Driver'],
   ['tierLabel', 'Restriction type'],
@@ -469,12 +485,17 @@ export function toCsv(rows, columns = CSV_COLUMNS) {
 export function summarizeRows(rows = []) {
   const byTier = {};
   for (const t of TIER_ORDER) byTier[t] = 0;
-  let missed = 0;
+  let missed = 0; let carried = 0; let open = 0;
   const customers = new Set();
   for (const r of rows) {
     byTier[r.tier] = (byTier[r.tier] || 0) + 1;
     if (r.customer) customers.add(r.customer);
     if (r.missedCloseByMin) missed += 1;
+    if (r.carryover) carried += 1;
+    if (r.status && r.status !== 'DELIVERED') open += 1;
   }
-  return { total: rows.length, byTier, customers: customers.size, missedClose: missed };
+  return {
+    total: rows.length, byTier, customers: customers.size,
+    missedClose: missed, carryover: carried, stillOpen: open,
+  };
 }

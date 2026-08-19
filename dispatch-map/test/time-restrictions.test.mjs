@@ -249,6 +249,22 @@ test('delivered INSIDE the window reports no miss at all', () => {
   assert.equal(r.missedByMin, null);
 });
 
+test('a PICKUP is never scored against receiving hours — they govern freight coming IN', () => {
+  // The real shape: an internal Davis pickup whose order said "PICK UP BEFORE 1:00PM",
+  // collected at 12:05p exactly as asked, inheriting a 6a-11a receiving window from a
+  // customer_notes doc that describes the dock, not the pickup.
+  const note = { receiving_hours: { wed: { open: '06:00', close: '11:00' } } };
+  const r = classify({ stopType: 'PU', deliveredDTTM: `${WED}T12:05:00` }, note);
+  assert.equal(r.closeMin, 11 * 60, 'the hours still show as context');
+  assert.equal(r.missedByMin, null, 'but a pickup is never accused of missing them');
+});
+
+test('the same clock on a DELIVERY does score, so the guard is about type not timing', () => {
+  const note = { receiving_hours: { wed: { open: '06:00', close: '11:00' } } };
+  const r = classify({ stopType: 'DO', deliveredDTTM: `${WED}T12:05:00` }, note);
+  assert.equal(r.missedByMin, 65);
+});
+
 test('an undelivered stop never claims we were on time or late', () => {
   const r = classify({ ...instr('RECEIVING HOURS 8AM-2PM'), deliveredDTTM: null, normalizedStatus: 'UNPLANNED' });
   assert.equal(r.missedByMin, null);
@@ -296,6 +312,18 @@ test('CSV quotes commas and doubles embedded quotes', () => {
 test('a cell starting with = is neutered so Excel shows text, not a formula', () => {
   assert.equal(csvCell('=cmd|calc'), "'=cmd|calc");
   assert.equal(csvCell('-ACME'), "'-ACME");
+});
+
+test('a carried-over restricted stop is LABELLED, not silently folded in as today\'s work', () => {
+  const rows = buildTimeRestrictionRows([
+    stop({ primaryPro: 'OLD', businessName: 'GXO', carryover: true, scheduledDate: '2026-08-17',
+      normalizedStatus: 'UNPLANNED', ...instr('NTFY OF DELIVERY-APPT REQD') }),
+  ], new Map(), WED);
+  assert.equal(rows[0].carryover, 'Yes');
+  assert.equal(rows[0].scheduledDate, '2026-08-17', 'the day it was FOR, so its age is visible');
+  const s = summarizeRows(rows);
+  assert.equal(s.carryover, 1);
+  assert.equal(s.stillOpen, 1, 'undelivered freight with a clock on it is the actionable count');
 });
 
 test('the summary counts customers once even when they have several restricted PROs', () => {
