@@ -77,7 +77,7 @@ if (typeof window !== 'undefined') {
 
 // ---------- constants ----------
 
-const APP_VERSION = '0.54.99';
+const APP_VERSION = '0.55.0';
 
 // No auth — see firebase.js. customer_notes writes are stamped with this
 // hardcoded identity until we wire up a real per-user signal (out of scope
@@ -122,6 +122,7 @@ function looksLikeLoadNbr(v) {
 // easy to keep up with what changed. Newest first; APP_VERSION (top) is highlighted.
 // Keep this curated + short (one line each); append a row on each release.
 const VERSION_LOG = [
+  ['0.55.0', 'THE SEND LOG IS A HISTORY NOW, NOT A PILE. Chad: the email history \u201cneeds to be done by the day and have ranges and months and so on and so forth, not just a long compilation of all the emails that we\u2019ve sent. We need to be able to sort it.\u201d It was one flat list of every send, newest first, hardcoded to the last 7 days and CUT AT 50 ROWS WITHOUT SAYING SO \u2014 on a 25-a-day program that is two days of history presented as though it were all of it. THE LEDGER WAS ALWAYS DAY-SHAPED: every send is already its own document under customer_comms_<date>/sent. The flattening happened on the way out, so this is a reader change, not a migration \u2014 the same documents, grouped the way they were always written. PICK A RANGE: Today, 7 days, 30 days, This month, any of the last twelve months by name, or a from\u2013to pair. A day opens to its sends; the columns sort by time, customer, address or result, and every day\u2019s table is aligned to the same grid so they read down the page. Months get their own subtotals once a range spans more than one. WHAT IT NOW REFUSES TO HIDE. A day that was READ and had nothing shows as a row saying so \u2014 and says \u2018swept \u2014 nobody to email\u2019 when the sweep ran, which is the one thing that tells a quiet day apart from a broken one. A day Firestore could not return is named in red instead of appearing as a silent gap. A range longer than the 92-day read budget says how many days it asked for and how many it is showing. So does a truncated row list. Every one of those used to look identical to \u2018nothing happened\u2019. A range change reloads only the log, never the config, so browsing history cannot throw away an unsaved template edit. Zero NuVizz calls, as before \u2014 it reads our own ledger. ALSO FIXED, FOUND BY THE NEW TESTS: a date could be silently WRONG rather than rejected. \u20182026-02-30\u2019 is the right shape and does not fail a parse \u2014 the engine rolls it forward to March 2nd and reports success \u2014 so a range could quietly read days nobody asked for. Dates now have to spell themselves back. The same hole was in dayBefore/dayAfter, which the duplicate-send guard uses to check the neighbouring day\u2019s ledger; an impossible date has no board so nothing was mis-sent, but it was a trap and it is closed. 24 new tests, 1,763 green.'],
   ['0.54.99', 'PACE THE SENDS. The first live day went out clean — 25 emails, 25 delivered, no bounces, no duplicates, and the cap held exactly (every later sweep that day reported considered 764, sent 0, capped). One number in that run is worth acting on before the cap goes up: those 25 took 12.5 seconds, which is 2.0 sends per second, and 2/second is Resend\'s documented default rate limit. It succeeded, so the limit is at least that — but a run sitting ON a ceiling has no headroom, and at ~700 deliveries a day the sweep will meet it. Two changes. (1) A FLOOR ON THE INTERVAL between send starts, not a sleep added to each send. A send already spends ~500ms on its own round trips, so on a healthy run this adds ~100ms and the wall clock barely moves; it only bites when Resend is answering fast enough that we would otherwise outrun it. The distinction matters because the run has a finite wall-clock budget too — a fixed sleep per send would tax the slow case that needed no taxing. (2) A 429 IS NOT A FAULT. It means "too fast": nothing was queued, the claim is released, the customer is reached on the next pass. It used to count toward the five-consecutive-failure circuit breaker, which meant a busy minute could HALT a healthy run and leave the rest of the day\'s mail hours late — the opposite of what a delivery-confirmation email is for. A 429 now backs the pace off instead, doubling the interval up to a 5s ceiling, and the count is reported in the sweep status so a run that quietly slowed down says so rather than leaving an unexplained slow day. Worth stating plainly, because it changes the shape of the risk: on a normal day the mail spreads itself out anyway — deliveries land all day and each half-hourly sweep only picks up what is newly delivered, roughly forty at a time. The all-at-once case is the FIRST day you switch on mid-afternoon, when the whole day sits unclaimed. That was today, and the cap of 25 is what held it.'],
   ['0.54.98', 'BOARD FLAGS: A DRIVERLESS ROUTE IS ONE PROBLEM, NOT TWO. Chad, on a Board flags screenshot: "there is same one listed twice." Three cards apart sat "May miss receiving hours — MCNAUGHTON MCKAY ELECTRIC" (stop 5 on SUW, estimated ~11:54a vs close 11:30a) and "No driver — SUW must make 11:30a" — which names the SAME customer and the SAME close. Two different rules, one situation. They exist for different reasons and that is why they collided. The arrival walk cannot see a driverless route EARLY — at 9:24a a re-anchored clock still lands hours before a 2:00p close, so it says nothing, which is exactly why the no-driver rule was added in v0.54.63. But once the morning wears on and the clock does cross the line, both qualify and both print. The no-driver card now SUPERSEDES the arrival cards for its own route, and nothing is lost by that: it gives the CAUSE (nobody is driving) rather than implying a slow morning, it counts every constrained stop on the route instead of only the ones whose estimate has crossed yet, it already names the earliest-closing customer, and it ends in the action — assign a driver or move the dates. The suppression is scoped to the route: a route WITH a driver still gets its arrival card, because there the timing really is the story. Two tests pin both halves, run at 11:20a against an 11:30a close so the arrival rule genuinely qualifies in both — without the driver-assigned control the first test would pass simply because nothing fired. 1,641 tests green.'],
   ['0.54.97', 'A TEXT DRIVER BUTTON WHERE THE DRIVER\'S NAME IS. Chad, looking at the ROUTE section of a stop card: "How do i text the driver? I don\'t see a button for it... should there not be a text driver button here." There should, and there was not — though the app could already do it, which is the annoying part. Two routes existed and both were poor. (1) The driver\'s PHONE NUMBER under their name is a tap-to-text button — but it only renders once the roster lookup matches the name, and the lookup\'s own header notes that a NuVizz load name is not always the employee-card name ("Mike" vs "Michael"). For Michael Tharp it did not match, so that line was simply absent and the section showed a name, a route and nothing to tap. (2) A "Text driver (NAME)" link sat inside the collapsed "More:" row — whose label reads "Street View · Edit address · Correct pin · History" and never mentions texting anyone. Something reachable only behind a disclosure that does not list it is, in practice, not reachable. There is now a plain Text driver button beside View full route, in the ROUTE block, next to the driver it texts. It does NOT depend on the client-side phone lookup — the number resolves server-side from the roster when the message panel opens — so it appears for every assigned driver, including the ones whose names do not match their employee card. It carries the same prefill the old link did: the order\'s PRO and customer, so the driver knows which delivery is being asked about. Shown on the Map stop card, the phone drawer and the Routing stop panel, all three of which render the same component.'],
@@ -22367,6 +22368,15 @@ function EmailHeaderStrip({ subject, from, to, note, compact }) {
 function useCommsConsole() {
   const [cfgResp, setCfgResp] = useState(null);
   const [log, setLog] = useState(null);
+  // The send log used to be a hardcoded ?days=7 rendered as one flat time-sorted list.
+  // Chad, Aug 2026: it "needs to be done by the day and have ranges and months, not just
+  // a long compilation of all the emails that we've sent. We need to be able to sort it."
+  // `range` is whatever the server understands: {days}, {month}, or {from,to}.
+  const [range, setRange] = useState({ days: 7 });
+  const [logBusy, setLogBusy] = useState(false);
+  // Which day rows are expanded. Day-first is the default view; a day opens to its rows.
+  const [openDays, setOpenDays] = useState(() => new Set());
+  const [sort, setSort] = useState({ by: 'at', dir: 'desc' });
   const [busy, setBusy] = useState('load');
   // Feedback is ADDRESSED: { where, kind, text }. A message raised by the test-send
   // button renders at the test-send button, not in a banner at the top of a screen the
@@ -22407,6 +22417,36 @@ function useCommsConsole() {
     return h;
   };
 
+  // One place that turns a range into a query, so the fetch on mount and the fetch on a
+  // range change cannot drift apart.
+  const rangeQuery = (r) => {
+    if (r?.month) return `month=${encodeURIComponent(r.month)}`;
+    if (r?.from || r?.to) {
+      const p = [];
+      if (r.from) p.push(`from=${encodeURIComponent(r.from)}`);
+      if (r.to) p.push(`to=${encodeURIComponent(r.to)}`);
+      return p.join('&');
+    }
+    if (r?.date) return `date=${encodeURIComponent(r.date)}`;
+    return `days=${Math.max(1, Number(r?.days) || 1)}`;
+  };
+
+  const loadLog = async (r) => {
+    setLogBusy(true);
+    try {
+      const l = await fetch(`/.netlify/functions/customer-comms-log?${rangeQuery(r)}`)
+        .then((x) => x.json()).catch(() => null);
+      setLog(l && l.ok ? l : null);
+      // Collapse on every range change: carrying open days across a new range leaves
+      // rows expanded under dates the user did not ask to see.
+      setOpenDays(new Set());
+    } finally { setLogBusy(false); }
+  };
+
+  // Changing the range reloads ONLY the log. Re-reading the config here would throw away
+  // unsaved template edits, which is a bad thing to do to someone browsing history.
+  const applyRange = (r) => { setRange(r); loadLog(r); };
+
   const loadAll = async () => {
     setBusy('load'); clear();
     try {
@@ -22415,7 +22455,7 @@ function useCommsConsole() {
       // the whole console down with it. It degrades to an empty log now.
       const [c, l] = await Promise.all([
         fetch('/.netlify/functions/customer-comms-config').then((r) => r.json()),
-        fetch('/.netlify/functions/customer-comms-log?days=7').then((r) => r.json()).catch(() => null),
+        fetch(`/.netlify/functions/customer-comms-log?${rangeQuery(range)}`).then((r) => r.json()).catch(() => null),
       ]);
       if (!c.ok) throw new Error(c.error || 'config load failed');
       setCfgResp(c);
@@ -22520,6 +22560,7 @@ function useCommsConsole() {
   const showingReal = !!realPreview;
   return {
     cfgResp, cfg, log, busy, msg, say, clear,
+    range, applyRange, logBusy, openDays, setOpenDays, sort, setSort,
     enabled: !!cfg?.enabled,
     subjectT, setSubjectT, htmlT, setHtmlT, fromAddr, setFromAddr, replyTo, setReplyTo,
     dailyCap, setDailyCap, dirty, setDirty,
@@ -22768,23 +22809,10 @@ function CommsPhone(c) {
 
         <PhoneSection
           title="Send log"
-          subtitle={c.log?.totals ? `${c.log.totals.sent} sent · ${c.log.totals.failed} failed · ${c.log.totals.inflight} unconfirmed` : 'Last 7 days'}
+          subtitle={c.log?.totals ? `${c.log.totals.sent} sent · ${c.log.totals.failed} failed · ${c.log.totals.inflight} unconfirmed` : 'By day'}
           open={open === 'log'} onToggle={() => toggle('log')}
         >
-          {c.log?.totals?.total === 0 && <div className="text-[12px] text-slate-400">{c.enabled ? 'Nothing sent yet — the sweep runs every 30 minutes.' : 'Nothing has been sent yet — expected while the program is off.'}</div>}
-          {/* Cards, not a table: a five-column table on a 390px phone is a scroll puzzle. */}
-          <ul className="divide-y divide-slate-100">
-            {(c.log?.entries || []).slice(0, 25).map((e, i) => (
-              <li key={`${e.date}-${e.key}-${i}`} className="py-2.5">
-                <div className="flex items-baseline gap-2">
-                  <span className="text-[13px] font-semibold text-slate-800 flex-1 min-w-0 truncate">{e.customer || '—'}</span>
-                  <span className={`text-[11px] font-bold shrink-0 ${e.ok ? 'text-emerald-700' : e.claimed ? 'text-amber-700' : 'text-red-700'}`}>{e.ok ? 'sent' : e.claimed ? 'unconfirmed' : 'failed'}</span>
-                </div>
-                <div className="text-[11px] text-slate-500 break-all">{e.to || '—'}</div>
-                <div className="text-[10px] text-slate-400">{agoText(e.at) || e.date}</div>
-              </li>
-            ))}
-          </ul>
+          <LogBody c={c} compact />
         </PhoneSection>
 
         <div className="text-[11px] text-slate-400 py-4">
@@ -22816,6 +22844,295 @@ function CommsPhone(c) {
 // ── DESKTOP ──────────────────────────────────────────────────────────────────
 // Everything visible at once, because there is room for it: controls in a left rail,
 // the email in the main pane.
+
+// ── THE SEND LOG: RANGES, DAYS, MONTHS, SORTING ──────────────────────────────
+//
+// The log was one flat list of every send, newest first, silently cut at 50 rows. Chad,
+// Aug 2026: it "needs to be done by the day and have ranges and months, not just a long
+// compilation of all the emails that we've sent. We need to be able to sort it."
+//
+// The ledger was ALREADY stored one subcollection per day — the flattening happened on
+// the way out. So this is a reader change, not a migration: the same documents, grouped
+// the way they were always written.
+
+const LOG_PRESETS = [
+  { label: 'Today', range: { days: 1 } },
+  { label: '7 days', range: { days: 7 } },
+  { label: '30 days', range: { days: 30 } },
+  { label: 'This month', range: { month: 'CURRENT' } },
+];
+
+/** A YYYY-MM as "August 2026". Built from the parts, never parsed as a local date —
+ *  `new Date('2026-08')` is UTC midnight, which in ET is the 31st of JULY. */
+function monthLabel(m) {
+  const [y, mo] = String(m || '').split('-');
+  const names = ['January', 'February', 'March', 'April', 'May', 'June',
+    'July', 'August', 'September', 'October', 'November', 'December'];
+  const name = names[Number(mo) - 1];
+  return name ? `${name} ${y}` : String(m || '');
+}
+
+/** A YYYY-MM-DD as "Wed 19 Aug". Same rule: from the parts, in UTC, never through the
+ *  browser's local timezone — a date-only string parsed locally slides a day west of ET. */
+function dayLabel(d) {
+  const s = String(d || '');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+  const dt = new Date(`${s}T12:00:00Z`);          // noon, so no offset can move the date
+  if (Number.isNaN(dt.getTime())) return s;
+  return dt.toLocaleDateString('en-GB', {
+    weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC',
+  });
+}
+
+/** The clock time of a send, in ET — the timezone the whole board runs on. */
+function clockText(iso) {
+  const t = Date.parse(String(iso || ''));
+  if (!Number.isFinite(t)) return '';
+  return new Date(t).toLocaleTimeString('en-US', {
+    hour: 'numeric', minute: '2-digit', timeZone: 'America/New_York',
+  });
+}
+
+const outcomeOf = (e) => (e.ok ? 'sent' : e.claimed ? 'unconfirmed' : 'failed');
+const outcomeClass = (e) => (e.ok ? 'text-emerald-700' : e.claimed ? 'text-amber-700' : 'text-red-700');
+
+/** Sort a day's rows. Ties always fall back to time so the order is stable — two rows with
+ *  the same customer jumping about between clicks looks like data changing under you. */
+function sortEntries(entries, sort) {
+  const dir = sort?.dir === 'asc' ? 1 : -1;
+  const by = sort?.by || 'at';
+  const val = (e) => {
+    if (by === 'customer') return String(e.customer || '').toLowerCase();
+    if (by === 'to') return String(e.to || '').toLowerCase();
+    if (by === 'result') return outcomeOf(e);
+    return String(e.at || '');
+  };
+  return [...(entries || [])].sort((a, b) => {
+    const c = val(a).localeCompare(val(b));
+    return c !== 0 ? c * dir : String(b.at || '').localeCompare(String(a.at || ''));
+  });
+}
+
+/** Range controls. `today` comes from the SERVER's ET day, not the browser's — a dispatcher
+ *  in another timezone must still get the board's idea of "this month". */
+function LogRangeBar({ log, range, applyRange, busy, compact = false }) {
+  const today = log?.today || '';
+  const months = log?.months || [];
+  const currentMonth = today.slice(0, 7);
+  const resolve = (r) => (r.month === 'CURRENT' ? { month: currentMonth } : r);
+  const isOn = (r) => {
+    const t = resolve(r);
+    if (t.month) return range?.month === t.month;
+    if (t.days) return !range?.month && !range?.from && !range?.to && range?.days === t.days;
+    return false;
+  };
+  const pill = (on) =>
+    `${compact ? 'min-h-[34px] px-2.5 text-[12px]' : 'px-2.5 py-1 text-xs'} rounded-md border font-semibold ` +
+    (on ? 'border-slate-800 bg-slate-800 text-white' : 'border-slate-300 bg-white text-slate-600 hover:bg-slate-50');
+  const field = `${compact ? 'min-h-[34px]' : ''} px-2 py-1 text-xs rounded-md border border-slate-300 bg-white text-slate-700`;
+
+  return (
+    <div className="flex flex-wrap items-center gap-1.5 mb-2">
+      {LOG_PRESETS.map((p) => (
+        <button key={p.label} disabled={busy} onClick={() => applyRange(resolve(p.range))} className={pill(isOn(p.range))}>
+          {p.label}
+        </button>
+      ))}
+      <select
+        value={range?.month && range.month !== currentMonth ? range.month : ''}
+        disabled={busy}
+        onChange={(e) => e.target.value && applyRange({ month: e.target.value })}
+        className={field}
+      >
+        <option value="">Month…</option>
+        {months.map((m) => <option key={m} value={m}>{monthLabel(m)}</option>)}
+      </select>
+      <span className="flex items-center gap-1">
+        <input
+          type="date" value={range?.from || ''} disabled={busy} max={today}
+          onChange={(e) => applyRange({ from: e.target.value, to: range?.to || today })}
+          className={field} aria-label="From date"
+        />
+        <span className="text-[11px] text-slate-400">to</span>
+        <input
+          type="date" value={range?.to || ''} disabled={busy} max={today}
+          onChange={(e) => applyRange({ from: range?.from || e.target.value, to: e.target.value })}
+          className={field} aria-label="To date"
+        />
+      </span>
+      {busy && <span className="text-[11px] text-slate-400">loading…</span>}
+    </div>
+  );
+}
+
+/** What the range actually covers — and, when they differ, what it does NOT. A clipped
+ *  range or an unreadable day shown as a silent gap reads as "that period was quiet". */
+function LogRangeNote({ log }) {
+  if (!log?.range) return null;
+  const r = log.range;
+  const bits = [];
+  if (r.days > 0) bits.push(`${dayLabel(r.from)}${r.days > 1 ? ` – ${dayLabel(r.to)}` : ''} · ${r.days} day${r.days === 1 ? '' : 's'}`);
+  return (
+    <div className="text-[11px] text-slate-400 mb-2">
+      {bits.join(' ')}
+      {r.clipped && (
+        <span className="text-amber-700 font-semibold">
+          {' '}— asked for {r.requestedDays} days, showing the most recent {r.maxDays}.
+        </span>
+      )}
+      {log.unreadable?.length > 0 && (
+        <span className="text-red-700 font-semibold"> — could not read {log.unreadable.join(', ')}.</span>
+      )}
+      {log.entriesTruncated && (
+        <span className="text-amber-700 font-semibold"> — {log.entriesShown} of {log.entriesTotal} rows listed.</span>
+      )}
+    </div>
+  );
+}
+
+/** Month subtotals. Only shown when the range actually spans more than one month —
+ *  a single-month header above a single-month list is noise. */
+function LogMonthRollup({ log }) {
+  const months = log?.byMonth || [];
+  if (months.length < 2) return null;
+  return (
+    <div className="flex flex-wrap gap-1.5 mb-2">
+      {months.map((m) => (
+        <span key={m.month} className="text-[11px] rounded-md border border-slate-200 bg-slate-50 px-2 py-1">
+          <span className="font-semibold text-slate-700">{monthLabel(m.month)}</span>
+          <span className="text-slate-500"> · {m.sent} sent</span>
+          {m.failed > 0 && <span className="text-red-700"> · {m.failed} failed</span>}
+          {m.inflight > 0 && <span className="text-amber-700"> · {m.inflight} unconfirmed</span>}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+/** One day: a header row that is always present (so a quiet day reads as quiet rather than
+ *  missing), expanding to its sends. */
+function LogDay({ day, entries, open, onToggle, sort, setSort, status, compact }) {
+  const quiet = day.total === 0;
+  const swept = !!status;
+  const th = (key, label, extra = '') => (
+    <th
+      className={`py-1.5 pr-3 font-semibold cursor-pointer select-none hover:text-slate-800 ${extra}`}
+      onClick={() => setSort({ by: key, dir: sort.by === key && sort.dir === 'desc' ? 'asc' : 'desc' })}
+    >
+      {label}{sort.by === key ? (sort.dir === 'desc' ? ' ▾' : ' ▴') : ''}
+    </th>
+  );
+  return (
+    <div className="border-b border-slate-100 last:border-0">
+      <button
+        onClick={onToggle} disabled={quiet}
+        className={`w-full flex items-center gap-2 text-left ${compact ? 'py-2.5 min-h-[44px]' : 'py-2'} ${quiet ? 'cursor-default' : ''}`}
+      >
+        <span className="text-slate-400 text-[11px] w-3 shrink-0">{quiet ? '' : open ? '▾' : '▸'}</span>
+        <span className="text-[13px] font-semibold text-slate-800 shrink-0">{dayLabel(day.date)}</span>
+        <span className="flex-1 min-w-0 text-[11px] text-slate-500 truncate">
+          {quiet
+            // The distinction the per-day status snapshot exists to make.
+            ? (swept ? 'swept — nobody to email' : 'no sends recorded')
+            : <>
+                {day.sent} sent
+                {day.failed > 0 && <span className="text-red-700 font-semibold"> · {day.failed} failed</span>}
+                {day.inflight > 0 && <span className="text-amber-700 font-semibold"> · {day.inflight} unconfirmed</span>}
+              </>}
+        </span>
+      </button>
+
+      {open && !quiet && (compact ? (
+        <ul className="divide-y divide-slate-100 pb-1">
+          {sortEntries(entries, sort).map((e, i) => (
+            <li key={`${e.date}-${e.key}-${i}`} className="py-2 pl-5">
+              <div className="flex items-baseline gap-2">
+                <span className="text-[13px] font-semibold text-slate-800 flex-1 min-w-0 truncate">{e.customer || '—'}</span>
+                <span className={`text-[11px] font-bold shrink-0 ${outcomeClass(e)}`}>{outcomeOf(e)}</span>
+              </div>
+              <div className="text-[11px] text-slate-500 break-all">{e.to || '—'}</div>
+              <div className="text-[10px] text-slate-400">{clockText(e.at)}{e.pro ? ` · ${e.pro}` : ''}</div>
+              {e.error && <div className="text-[10px] text-red-700 break-words">{e.error}</div>}
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <div className="overflow-x-auto pb-1 pl-5">
+          {/* table-fixed + explicit widths: each day renders its OWN table, so
+              content-driven columns made every day line up differently down the page. */}
+          <table className="w-full text-xs table-fixed min-w-[560px]">
+            <colgroup>
+              <col style={{ width: '14%' }} /><col style={{ width: '26%' }} />
+              <col style={{ width: '30%' }} /><col style={{ width: '12%' }} />
+              <col style={{ width: '18%' }} />
+            </colgroup>
+            <thead>
+              <tr className="text-left text-slate-500 border-b">
+                {th('at', 'Time')}{th('customer', 'Customer')}{th('to', 'To')}
+                <th className="py-1.5 pr-3 font-semibold">Pro</th>{th('result', 'Result')}
+              </tr>
+            </thead>
+            <tbody>
+              {sortEntries(entries, sort).map((e, i) => (
+                <tr key={`${e.date}-${e.key}-${i}`} className="border-b border-slate-100 last:border-0">
+                  <td className="py-1.5 pr-3 whitespace-nowrap text-slate-500">{clockText(e.at)}</td>
+                  <td className="py-1.5 pr-3">{e.customer || '—'}</td>
+                  <td className="py-1.5 pr-3 truncate">{e.to || '—'}</td>
+                  <td className="py-1.5 pr-3 font-mono text-slate-500">{e.pro || '—'}</td>
+                  <td className="py-1.5">
+                    <span className={`font-semibold ${outcomeClass(e)}`}>{outcomeOf(e)}</span>
+                    {e.error && <div className="text-[10px] text-red-700 break-words">{e.error}</div>}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** The whole log body, shared by phone and desktop. */
+function LogBody({ c, compact = false }) {
+  const log = c.log;
+  const byDay = log?.byDay || [];
+  const entriesFor = (date) => (log?.entries || []).filter((e) => e.date === date);
+  const toggle = (d) => {
+    const next = new Set(c.openDays);
+    if (next.has(d)) next.delete(d); else next.add(d);
+    c.setOpenDays(next);
+  };
+  return (
+    <>
+      <LogRangeBar log={log} range={c.range} applyRange={c.applyRange} busy={c.logBusy} compact={compact} />
+      <LogRangeNote log={log} />
+      {log?.totals && (
+        <div className="text-xs text-slate-600 mb-2">
+          {log.totals.sent} sent · {log.totals.failed} failed · {log.totals.inflight} unconfirmed
+          {log.totals.total === 0 && (
+            <span className="text-slate-400">
+              {c.enabled ? ' — nothing sent in this range; the sweep runs every 30 minutes.' : ' — nothing sent, which is expected while the program is off.'}
+            </span>
+          )}
+        </div>
+      )}
+      <LogMonthRollup log={log} />
+      {byDay.length > 0 && (
+        <div>
+          {byDay.map((d) => (
+            <LogDay
+              key={d.date} day={d} entries={entriesFor(d.date)}
+              open={c.openDays.has(d.date)} onToggle={() => toggle(d.date)}
+              sort={c.sort} setSort={c.setSort} status={log?.status?.[d.date]} compact={compact}
+            />
+          ))}
+        </div>
+      )}
+      {!log && !c.logBusy && <div className="text-[12px] text-slate-400">The send log could not be loaded.</div>}
+    </>
+  );
+}
 
 function CommsCard({ title, aside = null, children }) {
   return (
@@ -22988,31 +23305,8 @@ function CommsDesktop(c) {
         )}
         <CommsMsg msg={c.msg} where="save" className="max-w-sm mx-auto text-center" />
 
-        <CommsCard title="Send log — last 7 days">
-          {c.log?.totals && (
-            <div className="text-xs text-slate-600 mb-2">
-              {c.log.totals.sent} sent · {c.log.totals.failed} failed · {c.log.totals.inflight} unconfirmed
-              {c.log.totals.total === 0 && <span className="text-slate-400">{c.enabled ? ' — nothing sent yet; the sweep runs every 30 minutes.' : ' — nothing has been sent yet, which is expected while the program is off.'}</span>}
-            </div>
-          )}
-          {c.log?.entries?.length > 0 && (
-            <div className="overflow-x-auto">
-              <table className="w-full text-xs">
-                <thead><tr className="text-left text-slate-500 border-b"><th className="py-1.5 pr-3 font-semibold">When</th><th className="py-1.5 pr-3 font-semibold">Customer</th><th className="py-1.5 pr-3 font-semibold">To</th><th className="py-1.5 pr-3 font-semibold">Subject</th><th className="py-1.5 font-semibold">Result</th></tr></thead>
-                <tbody>
-                  {c.log.entries.slice(0, 50).map((e, i) => (
-                    <tr key={`${e.date}-${e.key}-${i}`} className="border-b border-slate-100">
-                      <td className="py-1.5 pr-3 whitespace-nowrap text-slate-500">{agoText(e.at) || e.date}</td>
-                      <td className="py-1.5 pr-3">{e.customer || '—'}</td>
-                      <td className="py-1.5 pr-3">{e.to || '—'}</td>
-                      <td className="py-1.5 pr-3 max-w-[240px] truncate">{e.subject || '—'}</td>
-                      <td className="py-1.5">{e.ok ? <span className="text-emerald-700 font-semibold">sent</span> : e.claimed ? <span className="text-amber-700 font-semibold">unconfirmed</span> : <span className="text-red-700 font-semibold">failed</span>}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
+        <CommsCard title="Send log">
+          <LogBody c={c} />
         </CommsCard>
 
         <div className="text-[10px] text-slate-400 pb-6">
