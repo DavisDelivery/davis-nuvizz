@@ -20,9 +20,9 @@
 //
 // Read-only. Firestore only. ZERO NuVizz calls.
 import { isFirestoreEnabled, readStops, getDoc, listDocs, etDayString } from './lib/firestore.mts';
-import { computeBoardFlags } from '../../src/lib/board-flags.js';
+import { computeBoardFlags, isFinishedStop } from '../../src/lib/board-flags.js';
 import { withCustomerKeys, stopCustomerKey } from './lib/customer-key.mts';
-import { selectAlertable, buildAlert, ALERT_COLLECTION, ALERT_TO, DAILY_ALERT_CAP } from './lib/flag-alert.mts';
+import { selectAlertable, buildAlert, ALERT_COLLECTION, ALERT_TO, DAILY_ALERT_CAP, ALERT_TIERS, finiteMinutes } from './lib/flag-alert.mts';
 import { emailEnabled } from './lib/email.mts';
 
 const TENANT = 'davis';
@@ -45,6 +45,75 @@ const clock = (m: number) => {
   const h = Math.floor(m / 60), x = m % 60, ap = h >= 12 ? 'p' : 'a', h12 = h % 12 === 0 ? 12 : h % 12;
   return `${h12}:${String(x).padStart(2, '0')}${ap}`;
 };
+
+// ── WHY DID (OR DIDN'T) THIS EMAIL ─────────────────────────────────────────────
+//
+// PURE, and exported, because "why was customer service not told about this stop?" took
+// three modules and a code read to answer the first time it was asked. It should cost one
+// request and be provable by a test.
+
+export function heldReason(r: any, alertable: boolean, nowMin: number | null): string | null {
+  if (alertable) return null;
+  if (r?.rule !== 'hours_risk') return 'not a receiving-hours risk';
+  if (!ALERT_TIERS.has(String(r?.tier))) return `tier is ${r?.tier} — only ${[...ALERT_TIERS].join(' and ')} email`;
+  if (!r?.stopNbr || r?.collapsed) return 'a collapsed summary row, not an individual stop';
+  // The same strict parser the gate uses — Number('') and Number(null) are both 0, which is
+  // finite, so a loose check reports a stop with no deadline as "the window closed at
+  // 12:00a" and sends someone chasing the wrong thing.
+  const close = finiteMinutes(r?.closeMin);
+  if (close == null) return 'no receiving close on this stop';
+  if (nowMin != null && nowMin >= close) {
+    return `the window closed at ${clock(close)} and it is now ${clock(nowMin)} — Chad: "if we are already past the time shouldn't send"`;
+  }
+  return 'held for a reason this endpoint does not model — read selectAlertable';
+}
+
+export function explainRow(r: any, alertableSet: Set<string>, nowMin: number | null) {
+  const alertable = alertableSet.has(String(r?.stopNbr));
+  return {
+    stopNbr: r?.stopNbr, customer: r?.customer, route: r?.routeName, tier: r?.tier,
+    close: clock(r?.closeMin), eta: clock(r?.etaMin), lateBy: r?.lateBy,
+    anchored: r?.anchored, errorBand: r?.errorMin,
+    wouldEmailNow: alertable,
+    heldBecause: heldReason(r, alertable, nowMin),
+  };
+}
+
+// Any stop on the board, flagged or not — because "no email" and "no flag" are different
+// answers and the difference is the whole question.
+export function explainStop(
+  askedStop: string, stops: any[], rows: any[], alertableSet: Set<string>,
+  nowMin: number | null, claimed: any[],
+) {
+  const want = String(askedStop).trim().toUpperCase();
+  const matches = (v: any) => String(v ?? '').trim().toUpperCase().replace(/-\d+$/, '') === want.replace(/-\d+$/, '');
+  const stop = (stops || []).find((s: any) => matches(s?.stopNbr) || matches(s?.pro) || matches(s?.primaryPro));
+  const row = (rows || []).find((r: any) => matches(r?.stopNbr));
+
+  if (!stop && !row) return { asked: askedStop, found: false, note: 'no stop with that number on this board' };
+
+  const alreadyClaimed = (claimed || []).some((c: any) => matches(c?.stopNbr));
+  return {
+    asked: askedStop,
+    found: true,
+    customer: stop?.businessName || row?.customer || null,
+    route: row?.routeName || stop?.routeName || null,
+    status: stop?.normalizedStatus || stop?.status || null,
+    finished: isFinishedStop(stop || {}),
+    flagged: !!row,
+    // No row at all means the hours never reached the engine — a different failure from
+    // "flagged but held", and the one that used to make the whole board read clean.
+    tier: row?.tier ?? null,
+    close: row?.closeMin != null ? clock(row.closeMin) : null,
+    eta: row?.etaMin != null ? clock(row.etaMin) : null,
+    lateBy: row?.lateBy ?? null,
+    emailedToday: alreadyClaimed,
+    wouldEmailNow: row ? alertableSet.has(String(row.stopNbr)) : false,
+    heldBecause: alreadyClaimed ? 'already emailed once today — one per stop per board day'
+      : (row ? heldReason(row, alertableSet.has(String(row.stopNbr)), nowMin)
+             : 'no receiving-hours flag on this stop: either it has no parsed receiving close, or it is not predicted late'),
+  };
+}
 
 export default async (req: Request): Promise<Response> => {
   const J = (b: any, s = 200) => new Response(JSON.stringify(b, null, 1), { status: s, headers: { 'Content-Type': 'application/json' } });
@@ -77,7 +146,13 @@ export default async (req: Request): Promise<Response> => {
       opts: { depot: DEPOT, ...(nowMin != null ? { nowMin } : {}) },
     });
 
-    const criticals = (flags.rows || []).filter((r: any) => r.rule === 'hours_risk' && r.tier === 'critical');
+    // EVERY URGENT ROW, not just the top tier. This list used to filter to
+    // tier === 'critical', which gave it the same blind spot as the alert itself: when Chad
+    // asked why a red flag on SIMPLY CHARLOTTE MASON sent no email, the endpoint built to
+    // answer that question could not see the row either. A diagnostic that shares the bug it
+    // is meant to diagnose is worse than none, because it reads like a clean bill of health.
+    const urgent = (flags.rows || []).filter((r: any) => r.rule === 'hours_risk' && ALERT_TIERS.has(String(r.tier)));
+    const askedStop = url.searchParams.get('stop');
     const alertable = selectAlertable(flags.rows, nowMin);
     const alertableSet = new Set(alertable.map((c) => c.stopNbr));
 
@@ -110,15 +185,12 @@ export default async (req: Request): Promise<Response> => {
       now: nowMin != null ? clock(nowMin) : null,
       emailConfigured: emailEnabled(), to: ALERT_TO, dailyCap: DAILY_ALERT_CAP,
       counts: { critical: flags.criticalCount ?? 0, red: flags.redCount ?? 0, amber: flags.amberCount ?? 0 },
-      // Every critical row, and for each one WHY it would or would not be emailed right now.
-      critical: criticals.map((r: any) => ({
-        stopNbr: r.stopNbr, customer: r.customer, route: r.routeName,
-        close: clock(r.closeMin), eta: clock(r.etaMin), lateBy: r.lateBy,
-        anchored: r.anchored, errorBand: r.errorMin,
-        wouldEmailNow: alertableSet.has(String(r.stopNbr)),
-        heldBecause: alertableSet.has(String(r.stopNbr)) ? null
-          : (nowMin != null && nowMin >= r.closeMin ? 'the window has already closed' : 'not an individual stop row'),
-      })),
+      // Every urgent row, and for each one WHY it would or would not be emailed right now.
+      urgent: urgent.map((r: any) => explainRow(r, alertableSet, nowMin)),
+      // ?stop=<PRO> — the answer to "why did I not get an email about THIS one", for any
+      // stop on the board, flagged or not. Added because answering it once by hand meant
+      // reading three modules; it should cost one request.
+      explain: askedStop ? explainStop(askedStop, stops, flags.rows || [], alertableSet, nowMin, claimed) : undefined,
       alreadyClaimedToday: claimed,
       wouldSendNow: alertable.filter((c) => !claimed.some((x) => x.stopNbr === c.stopNbr)).length,
       sample: alertable[0] ? buildAlert(alertable[0], date).subject : null,
