@@ -21,7 +21,7 @@
 import { isFirestoreEnabled, getDoc, setDoc } from './lib/firestore.mts';
 import { etYesterday } from './lib/history-core.mts';
 import { listStops } from './lib/history-store.mts';
-import { scoreDay, ledgerPath, LEDGER_VERSION } from './lib/miss-ledger.mts';
+import { scoreDay, ledgerPath, ledgerMatchKey, LEDGER_VERSION } from './lib/miss-ledger.mts';
 
 const TENANT = 'davis';
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -79,7 +79,7 @@ export default async (req: Request): Promise<Response> => {
       try { stops = await listStops(TENANT, date); } catch { done.push({ date, skipped: 'no capture' }); continue; }
       if (!stops.length) { done.push({ date, skipped: 'no capture' }); continue; }
 
-      const keys = [...new Set(stops.map((s) => String(s?.matchKey || s?.customerMatchKey || '')).filter(Boolean))];
+      const keys = [...new Set(stops.map((s) => ledgerMatchKey(s)).filter(Boolean) as string[])];
       const noteFor = await warmNotes(keys);
       const { rows, summary } = scoreDay(stops, date, noteFor);
 

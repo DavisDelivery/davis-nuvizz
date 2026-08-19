@@ -101,3 +101,41 @@ test('stamps are read as naive ET digits, never through Date + timeZone', () => 
   assert.equal(stampMinutes('2026-08-17 17:32'), 1052);
   assert.equal(stampMinutes('not a stamp'), null);
 });
+
+// ── REGRESSION GUARDS FOR THE CHAIN NOW CARRYING FINISHED STOPS ───────────────
+
+test('an unpinned but STAMPED finished stop does not abandon the route', () => {
+  // Before the chain carried finished stops, this stop was never walked at all. If a
+  // missing pin still broke the chain, adding it would silently REDUCE flag coverage —
+  // the change would look like an improvement while judging fewer routes.
+  const stops = board(3, { pace: 60 });
+  delete stops[1].lat; delete stops[1].lng;          // CUST 2: delivered, stamped, no pin
+  const out = computeBoardFlags({
+    stops, notes, servedDate: DATE, dayKey: 'mon', opts: { depot: DEPOT, nowMin: 11 * 60 },
+  });
+  assert.ok(out.rows.some((r) => r.rule === 'hours_risk' && /CUST 9/.test(`${r.title} ${r.detail}`)),
+    'route was abandoned by an unpinned delivered stop');
+  assert.equal(out.checked.routesJudged, 1);
+});
+
+test('a stop with NEITHER a pin nor a stamp still breaks the chain honestly', () => {
+  const stops = board(0);
+  delete stops[1].lat; delete stops[1].lng;          // CUST 2: open, unpinned, unstamped
+  const out = computeBoardFlags({
+    stops, notes, servedDate: DATE, dayKey: 'mon', opts: { depot: DEPOT, nowMin: 8 * 60 + 5 },
+  });
+  assert.equal(out.checked.routesJudged, 0);
+  assert.ok(out.skipped.routesNoSequence.some((x) => /missing pin/.test(x)));
+});
+
+test('an unpinned stop leaves the last known position standing for the next leg', () => {
+  // CUST 2 unpinned: the leg into CUST 3 must be measured from CUST 1, not from the depot
+  // and not from a null. A wrong origin here would silently distort every later estimate.
+  const stops = board(3, { pace: 60 });
+  delete stops[1].lat; delete stops[1].lng;
+  const withGap = computeBoardFlags({ stops, notes, servedDate: DATE, dayKey: 'mon',
+    opts: { depot: DEPOT, nowMin: 11 * 60 } })
+    .rows.find((r) => /CUST 9/.test(`${r.title} ${r.detail}`));
+  // Anchored on CUST 3's real 10:30a arrival, so the unpinned gap upstream cannot move it.
+  assert.match(withGap.detail, /from CUST 3's 10:30a arrival/);
+});

@@ -399,8 +399,17 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
       let anchorNote = notStarted ? `no movement yet, clock runs from ${fmtMin(nowMin)}` : `departs ${fmtMin(effDepart)}`;
       for (const s of visits) {
         const pos = stopPosition(s, noteOf(s));
-        if (!pos) { chainBroken = true; break; } // a missing pin breaks the chain honestly
-        clockMin += (haversineMeters(cur, pos) * ROUTE_ROAD_FACTOR / ROUTE_AVG_SPEED_MPS) / 60;
+        // A MISSING PIN NO LONGER HAS TO END THE ROUTE. It used to, and that was right when
+        // the walk only ever saw OPEN stops: with no position there is no leg, so the rest
+        // of the chain was guesswork. But the chain now carries FINISHED stops too, and a
+        // delivered stop that never got a pin would abandon a route that judged fine
+        // yesterday — the change would have QUIETLY REDUCED flag coverage while appearing
+        // to improve the model. When such a stop carries a real stamp we lose only its leg
+        // length, not our grip on the clock: anchor on the stamp and keep walking. The
+        // chain still breaks honestly when there is neither a position nor a stamp.
+        const stamplessGap = !pos && !arrivalAnchor(s, servedDate);
+        if (stamplessGap) { chainBroken = true; break; }
+        if (pos) clockMin += (haversineMeters(cur, pos) * ROUTE_ROAD_FACTOR / ROUTE_AVG_SPEED_MPS) / 60;
         const finished = isFinishedStop(s);
         const w = finished ? null : dayReceivingWindow(noteOf(s), day);
         if (w && clockMin > w.closeMin) {
@@ -437,7 +446,7 @@ export function computeBoardFlags({ stops = [], notes = new Map(), rosterRows = 
         } else {
           clockMin += serviceSec / 60;
         }
-        cur = pos;
+        if (pos) cur = pos;   // an unpinned stop leaves the last known position standing
       }
       // A chain-broken route was NOT judged — counting it would make the panel claim
       // "1 route judged" and "1 route not judged" about the same truck in one breath.

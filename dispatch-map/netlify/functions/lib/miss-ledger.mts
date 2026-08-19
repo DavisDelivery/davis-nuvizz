@@ -22,6 +22,21 @@
 // override, appointment matching — which changed which routes were scored. A scorer that
 // grades a copy of the model grades the wrong thing.
 import { dayReceivingWindow, arrivalAnchor, isFinishedStop } from '../../../src/lib/board-flags.js';
+import { normalizeMatchKey } from '../../../src/lib/matchKey.js';
+
+// THE CUSTOMER KEY IS DERIVED, NOT TRUSTED. customer_notes is keyed by
+// normalizeMatchKey(name, addr1, city, zip); buildStopRecord stores that same value as
+// `customerMatchKey`, so reading the stored field usually works — but "usually" is the
+// problem. If a writer ever omits it, EVERY stop resolves to no-hours-on-file and the
+// ledger reports a serene zero misses, which is indistinguishable from a perfect week.
+// So derive it the way the live email path does (usableMatchKey in customer-comms.mts),
+// fall back to the stored field, and refuse a key with no alphanumerics rather than
+// looking up a garbage document.
+export function ledgerMatchKey(s: any): string | null {
+  const derived = normalizeMatchKey(s?.businessName, s?.addr1, s?.city, s?.zip);
+  const key = /[a-z0-9]/i.test(String(derived || '')) ? derived : (s?.customerMatchKey || s?.matchKey || '');
+  return /[a-z0-9]/i.test(String(key || '')) ? String(key) : null;
+}
 
 export const MISS_LEDGER_COLLECTION = 'eta_miss_ledger';
 export const LEDGER_VERSION = 1;
@@ -55,7 +70,7 @@ export function scoreDay(
   const rows: MissRow[] = [];
 
   for (const s of stops) {
-    const matchKey = String(s?.matchKey || s?.customerMatchKey || '');
+    const matchKey = ledgerMatchKey(s);
     const note = matchKey ? noteFor(matchKey) : null;
     const w = day ? dayReceivingWindow(note, day) : null;
     if (!w || w.closeMin == null) { bump('no_receiving_hours_on_file'); continue; }
@@ -69,7 +84,7 @@ export function scoreDay(
     const lateBy = Math.round(anchor.min - w.closeMin);
     rows.push({
       stopNbr: String(s?.stopNbr ?? ''), customer: String(s?.businessName || ''),
-      route: String(s?.loadNbr || s?.routeName || ''), matchKey,
+      route: String(s?.loadNbr || s?.routeName || ''), matchKey: matchKey as string,
       closeMin: w.closeMin, arrivalMin: anchor.min, lateBy, missed: lateBy > 0,
       tier: w.tier, stampSource: anchor.source,
     });
