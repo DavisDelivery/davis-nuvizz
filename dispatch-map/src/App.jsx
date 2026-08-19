@@ -22937,6 +22937,32 @@ function clockText(iso) {
 const outcomeOf = (e) => (e.ok ? 'sent' : e.claimed ? 'unconfirmed' : 'failed');
 const outcomeClass = (e) => (e.ok ? 'text-emerald-700' : e.claimed ? 'text-amber-700' : 'text-red-700');
 
+/**
+ * Day rows for the log body.
+ *
+ * Prefers the server's byDay (it counts EVERY entry it read, before any row-list
+ * truncation, so its totals are right even when the list is clipped). Falls back to
+ * grouping the entries we were given.
+ *
+ * The fallback is not decoration: a response without byDay used to render a completely
+ * BLANK log — which is exactly what a stale cached function returns mid-deploy, and what
+ * the mobile guard's fixture returned. A blank panel is the worst possible answer here,
+ * because "no sends" and "I could not read the shape" look identical.
+ */
+function dayRowsFor(log) {
+  if (Array.isArray(log?.byDay) && log.byDay.length) return log.byDay;
+  const byDate = new Map();
+  for (const e of log?.entries || []) {
+    const d = String(e?.date || '');
+    if (!d) continue;
+    const cur = byDate.get(d) || { date: d, total: 0, sent: 0, failed: 0, inflight: 0 };
+    cur.total++;
+    if (e.ok) cur.sent++; else if (e.claimed) cur.inflight++; else cur.failed++;
+    byDate.set(d, cur);
+  }
+  return [...byDate.values()].sort((a, b) => b.date.localeCompare(a.date));
+}
+
 /** Sort a day's rows. Ties always fall back to time so the order is stable — two rows with
  *  the same customer jumping about between clicks looks like data changing under you. */
 function sortEntries(entries, sort) {
@@ -22967,10 +22993,13 @@ function LogRangeBar({ log, range, applyRange, busy, compact = false }) {
     if (t.days) return !range?.month && !range?.from && !range?.to && range?.days === t.days;
     return false;
   };
+  // 44px on a phone, not 34: the repo's own mobile guard holds every control to a 44px
+  // touch target and caught these at 34. A range picker you have to aim at is worse than
+  // no range picker — this is the control the whole day view hangs off.
   const pill = (on) =>
-    `${compact ? 'min-h-[34px] px-2.5 text-[12px]' : 'px-2.5 py-1 text-xs'} rounded-md border font-semibold ` +
+    `${compact ? 'min-h-[44px] px-3 text-[13px]' : 'px-2.5 py-1 text-xs'} rounded-md border font-semibold ` +
     (on ? 'border-slate-800 bg-slate-800 text-white' : 'border-slate-300 bg-white text-slate-600 hover:bg-slate-50');
-  const field = `${compact ? 'min-h-[34px]' : ''} px-2 py-1 text-xs rounded-md border border-slate-300 bg-white text-slate-700`;
+  const field = `${compact ? 'min-h-[44px] text-[13px]' : 'text-xs'} px-2 py-1 rounded-md border border-slate-300 bg-white text-slate-700`;
 
   return (
     <div className="flex flex-wrap items-center gap-1.5 mb-2">
@@ -23137,8 +23166,17 @@ function LogDay({ day, entries, open, onToggle, sort, setSort, status, compact }
 /** The whole log body, shared by phone and desktop. */
 function LogBody({ c, compact = false }) {
   const log = c.log;
-  const byDay = log?.byDay || [];
+  const byDay = dayRowsFor(log);
   const entriesFor = (date) => (log?.entries || []).filter((e) => e.date === date);
+  // Open the newest day that actually has sends. A log that opens as nothing but collapsed
+  // headers makes you tap before it has told you anything, and the day people want is
+  // almost always the most recent one. Only when nothing is open yet, so it never fights a
+  // deliberate collapse — and openDays is cleared on every range change, so a new range
+  // gets the same treatment.
+  const newestWithSends = byDay.find((d) => d.total > 0)?.date || null;
+  useEffect(() => {
+    if (newestWithSends && c.openDays.size === 0) c.setOpenDays(new Set([newestWithSends]));
+  }, [newestWithSends]); // eslint-disable-line react-hooks/exhaustive-deps
   const toggle = (d) => {
     const next = new Set(c.openDays);
     if (next.has(d)) next.delete(d); else next.add(d);
