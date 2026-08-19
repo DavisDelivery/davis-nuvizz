@@ -115,6 +115,17 @@ test('the version survives minification and is read back out of the bundle', () 
   assert.equal(versionFromBundle(minified), '0.55.4');
 });
 
+test('THE FALSE ALARM: an embedded OLD version earlier in the bundle must not win', () => {
+  // 2026-08-19, live: the ETA back-test code embeds version strings as DATA ("grade what
+  // v0.55.0 shipped"), and minification placed its array before the changelog. First-match
+  // reported a freshly-published v0.56.2 deploy as "v0.55.0 — DEPLOY IS BEHIND MAIN".
+  // A deploy watchdog that cries wrong twice an hour is one somebody mutes.
+  const minified = 'const grade=[["0.55.0","model C"]];const log=[["0.56.2","…"],["0.56.1","…"],["0.55.0","…"]];';
+  assert.equal(versionFromBundle(minified), '0.56.2', 'the changelog head is the LARGEST version in the bundle');
+  // And semver order is numeric, not lexicographic — 0.10.0 beats 0.9.9.
+  assert.equal(versionFromBundle('a=[["0.9.9","x"]];b=[["0.10.0","y"]];'), '0.10.0');
+});
+
 test('a bundle with no version string is UNKNOWN, never "stale"', () => {
   for (const js of ['', null, undefined, 'console.log("hello")', 'const v=["not-a-version","x"]']) {
     assert.equal(versionFromBundle(js), null, JSON.stringify(String(js).slice(0, 30)));

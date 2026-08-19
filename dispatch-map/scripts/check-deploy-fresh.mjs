@@ -64,10 +64,20 @@ export function entryFromHtml(html) {
 /** APP_VERSION as the MINIFIED bundle carries it — the name is gone, the string is not. */
 export function versionFromBundle(js) {
   const s = String(js || '');
-  // The changelog array's newest row leads with the same version the footer prints, and it
-  // survives minification as a plain string literal at the head of an array literal.
-  const row = /\[\s*"(\d+\.\d+\.\d+)"\s*,/.exec(s);
-  return row ? row[1] : null;
+  // The HIGHEST version among every ["x.y.z", …] array literal — NOT the first match.
+  // First-match false-alarmed on 2026-08-19: the ETA back-test code embeds OLD version
+  // strings as data ("grade what v0.55.0 shipped"), and minification placed one of those
+  // arrays before the changelog — so this reported a freshly-published v0.56.2 deploy as
+  // "v0.55.0, DEPLOY IS BEHIND". A watchdog that cries wrong every 30 minutes gets muted,
+  // and a muted watchdog protects nothing. The changelog's newest row is by construction
+  // the largest version string in the bundle; stray embedded versions are always older.
+  const newer = (a, b) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
+  let best = null;
+  for (const m of s.matchAll(/\[\s*"(\d+)\.(\d+)\.(\d+)"\s*,/g)) {
+    const v = [Number(m[1]), Number(m[2]), Number(m[3])];
+    if (!best || newer(v, best) > 0) best = v;
+  }
+  return best ? best.join('.') : null;
 }
 
 // The CLI. Behind a direct-execution guard so the readers above can be imported by the
